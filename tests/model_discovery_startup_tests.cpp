@@ -92,6 +92,20 @@ UAM_TEST(StartupModelDiscoveryRefreshesFreshCacheOncePerRestart)
 	UAM_ASSERT(fixture.app.provider_model_catalog->BeginDiscovery("codex-cli", workspace));
 }
 
+UAM_TEST(StartupModelDiscoveryRunsAfterAFailedLocalVersionCheck)
+{
+	StartupDiscoveryFixture fixture;
+	fixture.app.folders.resize(1);
+	auto& version = fixture.app.runtime_cli_versions_by_provider_id["codex-cli"];
+	version.supported = false;
+	version.check_error = "Could not check Codex CLI version.";
+	uam::StartupModelDiscoveryService discovery(fixture.Launcher());
+	discovery.Initialize(fixture.app);
+	UAM_ASSERT(discovery.Poll(fixture.app));
+	UAM_ASSERT_EQ(fixture.launched.size(), std::size_t{1});
+	UAM_ASSERT_EQ(fixture.launched.front().provider_id, std::string("codex-cli"));
+}
+
 UAM_TEST(StartupModelDiscoveryDoesNotDuplicateAnExplicitRefresh)
 {
 	StartupDiscoveryFixture fixture;

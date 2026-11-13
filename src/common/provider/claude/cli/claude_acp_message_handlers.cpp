@@ -447,6 +447,7 @@ namespace uam::acp_detail
 					if (const nlohmann::json* command = uam::nlohmann_json::FindStringField(input, "command"))
 						permission.execution_command = command->get_ref<const std::string&>();
 				permission.options = {{"allow", "Allow", "allow_once"}, {"deny", "Deny", "reject_once"}};
+				ApplyCommandSafetyDecision(app, chat, permission); // Before replay: saved responses are checked against the captured scope.
 				if (ReplayPersistedInteractionResponseIfMatched(app, session, chat, {{"id", id}}, &permission)) return;
 			}
 			AcpToolCallState& tool = UpsertToolCall(session, tool_id);
@@ -454,6 +455,7 @@ namespace uam::acp_detail
 			tool.kind = uam::claude::ToolKind(tool_name);
 			tool.is_sub_agent = tool.kind == "sub-agent";
 			tool.args_json = input.dump();
+			tool.declared_timeout_s = ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpToolDeclaredTimeoutSeconds(tool.kind, input);
 			tool.status = uam::acp_statuses::kPending;
 			AppendToolTurnEventIfNeeded(session, tool_id);
 			if (tool_name == "AskUserQuestion")
@@ -500,7 +502,6 @@ namespace uam::acp_detail
 			}
 			else
 			{
-				ApplyCommandSafetyDecision(app, chat, permission);
 				QueueAcpPermission(app, session, chat, std::move(permission));
 			}
 			(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
@@ -529,7 +530,7 @@ void HandleClaudeAssistantMessage(AppState& app, AcpSessionState& session, ChatS
 			{
 				uam::PushStreamToken(browser, chat.id, session.current_assistant_message_index, appended);
 			}
-			ScheduleChatSave(app, chat, 0.5);
+			ScheduleChatSave(app, chat, 0.5, true);
 		}
 		return;
 	}
@@ -589,6 +590,7 @@ void HandleClaudeAssistantMessage(AppState& app, AcpSessionState& session, ChatS
 			if (const nlohmann::json* input = uam::nlohmann_json::FindField(item, "input"); input != nullptr)
 			{
 				tool_call.args_json = input->dump();
+				tool_call.declared_timeout_s = ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpToolDeclaredTimeoutSeconds(tool_call.kind, *input);
 			}
 			ApplySubAgentMetadata(tool_call, item, ProviderRuntimeRegistry::ResolveById(session.provider_id));
 			AppendToolTurnEventIfNeeded(session, tool_id);
@@ -598,7 +600,7 @@ void HandleClaudeAssistantMessage(AppState& app, AcpSessionState& session, ChatS
 
 	if (changed)
 	{
-		SaveChatQuietly(app, chat);
+		SaveChatSoon(app, chat);
 		MarkAcpChatUnseenIfBackground(app, chat);
 	}
 }
@@ -652,7 +654,7 @@ void HandleClaudeUserMessage(AppState& app, AcpSessionState& session, ChatSessio
 
 	if (changed)
 	{
-		SaveChatQuietly(app, chat);
+		SaveChatSoon(app, chat);
 	}
 }
 
@@ -853,7 +855,10 @@ void HandleClaudeResult(AppState& app, AcpSessionState& session, ChatSession& ch
 	{
 		(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
 		if (completed_native_scope && completion_result_fresh && !cancelled && !is_error && !quota_wait && subtype == "success")
+		{
 			RecordCompletedAcpPromptRecoveries(app, session, chat);
+			(void)ConfirmTurnInputReceived(session, chat);
+		}
 		CompletePromptTurnAndHandleGoalLoop(app, session, chat, kAcpLifecycleReady, browser, !cancelled);
 	}
 

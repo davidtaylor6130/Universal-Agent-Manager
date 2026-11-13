@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { HtmlViewCard } from './HtmlViewCard'
 import { HTML_VIEW_SANDBOX, prepareHtmlViewDocument } from './htmlView'
 import { sanitizeTurnEvent } from '../../store/cpp/sanitizers'
@@ -24,13 +24,83 @@ function mount(node: React.ReactNode) {
   return { host, unmount: () => { act(() => view.unmount()); host.remove() } }
 }
 
+const stored = new Map<string, string>()
+beforeEach(() => {
+  stored.clear()
+  Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: {
+    getItem: (key: string) => stored.get(key) ?? null,
+    setItem: (key: string, value: string) => stored.set(key, value),
+  } })
+})
+
 afterEach(() => {
   delete (window as { cefQuery?: unknown }).cefQuery
 })
 
+/** Mounts a card and chooses Run, as the user does before any page loads. */
+function mountRunning(node: React.ReactNode) {
+  const mounted = mount(node)
+  act(() => mounted.host.querySelector<HTMLButtonElement>('.uam-html-view__gate button')!.click())
+  return mounted
+}
+
+describe('HtmlViewCard run gate', () => {
+  it('loads nothing until the user chooses Run', () => {
+    const { host, unmount } = mount(<HtmlViewCard viewId="html-view:a" title="Chart" html="<script>x()</script>" />)
+    expect(host.querySelector('iframe')).toBeNull()
+    expect(host.querySelector('.uam-html-view')!.innerHTML).not.toContain('<script>')
+    const run = host.querySelector<HTMLButtonElement>('button[aria-label="Run HTML view: Chart"]')!
+    expect(run.textContent).toBe('Run')
+    act(() => run.click())
+    expect(host.querySelector('iframe')).not.toBeNull()
+    unmount()
+  })
+
+  it('remembers Run for that view and page only', async () => {
+    const settle = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)) })
+    const first = mountRunning(<HtmlViewCard viewId="html-view:a" title="Chart" html="<p>one</p>" />)
+    expect(document.activeElement).toBe(first.host.querySelector('iframe')) // Focus moves to the page, not the document body.
+    await settle()
+    first.unmount()
+    const again = mount(<HtmlViewCard viewId="html-view:a" title="Chart" html="<p>one</p>" />)
+    await settle()
+    expect(again.host.querySelector('iframe')).not.toBeNull()
+    again.unmount()
+    for (const [viewId, html] of [['html-view:b', '<p>one</p>'], ['html-view:a', '<p>two</p>'], ['', '<p>one</p>']]) {
+      const other = mount(<HtmlViewCard viewId={viewId} title="Chart" html={html} />)
+      await settle()
+      expect(other.host.querySelector('iframe')).toBeNull()
+      other.unmount()
+    }
+  })
+
+  it('asks again when the page changes under the same card', async () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const view = createRoot(host)
+    act(() => view.render(<HtmlViewCard viewId="html-view:a" title="Chart" html="<p>one</p>" />))
+    act(() => host.querySelector<HTMLButtonElement>('.uam-html-view__gate button')!.click())
+    expect(host.querySelector('iframe')).not.toBeNull()
+    act(() => view.render(<HtmlViewCard viewId="html-view:a" title="Chart" html="<p>two</p>" />))
+    expect(host.querySelector('iframe')).toBeNull()
+    act(() => view.unmount())
+    host.remove()
+  })
+})
+
 describe('HtmlViewCard isolation', () => {
+  it('hidden runtime check uses the same frame host and sandbox as the card, with no script of its own', () => {
+    const probe = new DOMParser().parseFromString(readFileSync(resolve(root, 'UI-V2/public/html-view-probe.html'), 'utf8'), 'text/html')
+    const frame = probe.querySelector('iframe')!
+    expect(frame.getAttribute('sandbox')).toBe(HTML_VIEW_SANDBOX)
+    expect(frame.getAttribute('src')).toBe('html-view-frame.html')
+    expect(frame.getAttribute('referrerpolicy')).toBe('no-referrer')
+    expect(frame.style.height).toBe('360px') // The card's inline height, so the page sees the same viewport.
+    expect(probe.querySelectorAll('script, iframe:not([sandbox])')).toHaveLength(0)
+  })
+
   it('loads the frame host in an opaque-origin sandbox instead of srcdoc', () => {
-    const { host, unmount } = mount(<HtmlViewCard title="Chart" html="<p>hi</p>" />)
+    const { host, unmount } = mountRunning(<HtmlViewCard viewId="html-view:test" title="Chart" html="<p>hi</p>" />)
     const frame = host.querySelector('iframe')!
     expect(frame.getAttribute('sandbox')).toBe('allow-scripts')
     expect(HTML_VIEW_SANDBOX).not.toContain('allow-same-origin')
@@ -44,7 +114,7 @@ describe('HtmlViewCard isolation', () => {
   })
 
   it('sends only the page text into the frame, once', () => {
-    const { host, unmount } = mount(<HtmlViewCard title="Chart" html="<!doctype html><p>hi</p>" />)
+    const { host, unmount } = mountRunning(<HtmlViewCard viewId="html-view:test" title="Chart" html="<!doctype html><p>hi</p>" />)
     const frame = host.querySelector('iframe')!
     const post = vi.fn()
     Object.defineProperty(frame, 'contentWindow', { value: { postMessage: post } })
@@ -74,8 +144,9 @@ describe('HtmlViewCard isolation', () => {
     // No policy directive or switch stops these in this CEF, and V8 is unavailable here: the probe in html-views.md proved the behaviour.
     const security = readFileSync(resolve(root, 'src/cef/uam_cef_security.h'), 'utf8')
     const app = readFileSync(resolve(root, 'src/cef/uam_cef_app.cpp'), 'utf8')
+    const renderer = readFileSync(resolve(root, 'src/cef/uam_cef_renderer_app.cpp'), 'utf8')
     for (const name of ['"RTCPeerConnection"', '"webkitRTCPeerConnection"', '"RTCIceTransport"']) expect(security).toContain(name)
-    const hook = app.slice(app.indexOf('void UamCefApp::OnContextCreated'), app.indexOf('void UamCefApp::OnContextReleased'))
+    const hook = renderer.slice(renderer.indexOf('void UamCefRendererApp::OnContextCreated'), renderer.indexOf('void UamCefRendererApp::OnContextReleased'))
     expect(hook).toContain('kRendererGlobalsRemoved) (void)global->DeleteValue(name)')
     expect(hook.indexOf('DeleteValue')).toBeLessThan(hook.indexOf('IsTrustedRendererFrame'))
     expect(security).toContain('kNetworkPredictionNever = 2')
@@ -92,7 +163,7 @@ describe('HtmlViewCard isolation', () => {
 describe('HtmlViewCard presentation', () => {
   it('offers keyboard-reachable labelled actions and expands to the pane', () => {
     window.cefQuery = vi.fn() as unknown as typeof window.cefQuery
-    const { host, unmount } = mount(<HtmlViewCard title="Chart" html="<p>hi</p>" />)
+    const { host, unmount } = mountRunning(<HtmlViewCard viewId="html-view:test" title="Chart" html="<p>hi</p>" />)
     expect(host.querySelector('[role="group"]')!.getAttribute('aria-label')).toBe('HTML view: Chart')
     const labels = [...host.querySelectorAll('button')].map((button) => button.getAttribute('aria-label'))
     expect(labels).toEqual(['Expand HTML view', 'Open in browser', 'Copy HTML source', 'Save as HTML file'])
@@ -105,7 +176,7 @@ describe('HtmlViewCard presentation', () => {
   })
 
   it('hides native-only actions outside the desktop app', () => {
-    const { host, unmount } = mount(<HtmlViewCard title="Chart" html="<p>hi</p>" />)
+    const { host, unmount } = mountRunning(<HtmlViewCard viewId="html-view:test" title="Chart" html="<p>hi</p>" />)
     const labels = [...host.querySelectorAll('button')].map((button) => button.getAttribute('aria-label'))
     expect(labels).toEqual(['Expand HTML view', 'Copy HTML source'])
     unmount()
@@ -122,7 +193,7 @@ describe('HtmlViewCard presentation', () => {
     const matchMedia = window.matchMedia
     window.matchMedia = ((query: string) => ({ matches: false, media: query, addEventListener() {}, removeEventListener() {} })) as unknown as typeof window.matchMedia
     try {
-      const { host, unmount } = mount(<HtmlViewCard title="Chart" html="<p>hi</p>" />)
+      const { host, unmount } = mountRunning(<HtmlViewCard viewId="html-view:test" title="Chart" html="<p>hi</p>" />)
       const before = host.querySelector('iframe')!
       await act(async () => { document.documentElement.setAttribute('data-motion', 'off') })
       const after = host.querySelector('iframe')!

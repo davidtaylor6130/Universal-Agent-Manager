@@ -98,6 +98,11 @@ namespace uam
 
 	inline bool StartCliTerminalForChat(AppState& app, CliTerminalState& terminal, ChatSession& chat, int rows, int cols)
 	{
+		if (const char* refusal = chat.AutomationLaunchRefusal())
+		{
+			terminal.last_error = refusal;
+			return false;
+		}
 		const bool awaiting_baseline = terminal.repository_baseline_pending;
 		if (!awaiting_baseline && terminal.context_preparation == nullptr && !terminal.worktree_launch_pending) StopCliTerminal(terminal);
 		if (terminal.running)
@@ -172,6 +177,10 @@ namespace uam
 		{
 			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, permission_flag_error);
 		}
+		if (const std::string ceiling_error = ProviderInteractiveCeilingError(app, chat); !ceiling_error.empty())
+		{
+			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, ceiling_error);
+		}
 		// Without its created native session this launch is refused anyway; refuse before worktree,
 		// baseline or SSH work. HandleStartCli creates the session (after the baseline) before calling here.
 		if (std::string session_error; runtime.RequiresNativeSessionCreation() &&
@@ -188,7 +197,9 @@ namespace uam
 			const std::string provider_id = provider_ids::CanonicalCliProviderLookupId(provider.id);
 			auto& version = app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey(provider_id, execution_host->id)];
 			const bool checked = version.checked && execution_hosts::SameConnection(version.execution_host, *execution_host);
-			if (checked && (!version.check_error.empty() || !version.supported))
+			// A local failed check proceeds with the version unknown and named thinking stays Default; a CLI View open does not retry it.
+			const bool local_check_failed = !version.check_error.empty() && execution_host->id == uam::execution_hosts::kLocalHostId;
+			if (checked && !local_check_failed && (!version.check_error.empty() || !version.supported))
 				return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, version.check_error.empty()
 				    ? "The installed CLI does not satisfy the native version manager's compatibility policy." : version.check_error);
 			if (!checked)
@@ -240,6 +251,11 @@ namespace uam
 		if (!GitWorktreeService().PrepareForFirstLaunch(app, chat, &runtime_handoff_error))
 		{
 			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, runtime_handoff_error);
+		}
+		// Preparation can clear a pending worktree and still succeed.
+		if (const char* refusal = chat.AutomationLaunchRefusal())
+		{
+			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, refusal);
 		}
 
 		const bool chat_uses_native_history = !remote &&

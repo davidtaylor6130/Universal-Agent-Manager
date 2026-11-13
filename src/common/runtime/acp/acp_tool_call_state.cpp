@@ -60,6 +60,9 @@ void ApplySubAgentMetadata(AcpToolCallState& tool_call, const nlohmann::json& up
 	{
 		tool_call.is_sub_agent = true;
 	}
+	// The input can arrive on a later update than the one that opened the call.
+	if (const auto input = update.find("rawInput"); input != update.end())
+		tool_call.declared_timeout_s = runtime.AcpToolDeclaredTimeoutSeconds(tool_call.kind, *input);
 	runtime.ApplyAcpToolMetadata(tool_call, update);
 }
 

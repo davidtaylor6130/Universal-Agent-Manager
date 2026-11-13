@@ -15,6 +15,7 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <utility>
@@ -28,6 +29,7 @@
 #endif
 #include <fcntl.h>
 #include <io.h>
+#include <aclapi.h>
 #include <sddl.h>
 #include <windows.h>
 
@@ -66,6 +68,22 @@ namespace uam::remote
 			return value;
 		}
 
+		/// <summary>True when the pipe is owned by the current user. The service sets itself as owner, and another account
+		/// cannot give its pipe this user as owner, whatever either side's elevation.</summary>
+		bool PipeOwnedByCurrentUser(HANDLE pipe)
+		{
+			PSID owner = nullptr;
+			PSECURITY_DESCRIPTOR descriptor = nullptr;
+			if (GetSecurityInfo(pipe, SE_KERNEL_OBJECT, OWNER_SECURITY_INFORMATION, &owner, nullptr, nullptr, nullptr, &descriptor) != ERROR_SUCCESS)
+				return false;
+			LPWSTR text = nullptr;
+			const bool converted = owner != nullptr && ConvertSidToStringSidW(owner, &text);
+			const bool matches = converted && std::wstring(text) == CurrentUserSid();
+			if (text != nullptr) LocalFree(text);
+			LocalFree(descriptor);
+			return matches;
+		}
+
 		/// <summary>Directory file identity stays stable across case, short-path and junction aliases.</summary>
 		std::string InstallationIdentity()
 		{
@@ -91,11 +109,6 @@ namespace uam::remote
 			if (suffix.empty()) return {};
 			return std::wstring(kind) +
 			       std::wstring(suffix.begin(), suffix.end());
-		}
-
-		std::wstring PipeName(std::string_view runner_version)
-		{
-			return EndpointName(runner_version, L"\\\\.\\pipe\\uam-runner-");
 		}
 
 		bool StopRequested(HANDLE stop_event)
@@ -222,12 +235,19 @@ namespace uam::remote
 
 		Handle ConnectPipe(std::string_view runner_version)
 		{
-			const std::wstring name = PipeName(runner_version);
+			const std::wstring name = RunnerServicePipeName(runner_version);
 			for (int attempt = 0; attempt < 20; ++attempt)
 			{
-				HANDLE pipe = CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE, 0,
-				                          nullptr, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr);
-				if (pipe != INVALID_HANDLE_VALUE) return Handle(pipe);
+				// Identification level only: the service can read who connected but cannot act as this user.
+				HANDLE pipe = CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+				                          FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, nullptr);
+				if (pipe != INVALID_HANDLE_VALUE)
+				{
+					Handle connected(pipe);
+					if (PipeOwnedByCurrentUser(connected.Get())) return Handle(connected.Release());
+					SetLastError(ERROR_ACCESS_DENIED);
+					return Handle();
+				}
 				const DWORD error = GetLastError();
 				if (error == ERROR_PIPE_BUSY)
 					(void)WaitNamedPipeW(name.c_str(), 250);
@@ -252,6 +272,11 @@ namespace uam::remote
 		};
 	}
 
+	std::wstring RunnerServicePipeName(std::string_view runner_version)
+	{
+		return EndpointName(runner_version, L"\\\\.\\pipe\\uam-runner-");
+	}
+
 	int RunRunnerService(std::string_view runner_version)
 	{
 		const HANDLE singleton_handle = CreateMutexW(nullptr, TRUE,
@@ -262,39 +287,52 @@ namespace uam::remote
 		const std::wstring sid = CurrentUserSid();
 		if (sid.empty()) return 2;
 		PSECURITY_DESCRIPTOR descriptor = nullptr;
-		const std::wstring sddl = L"D:P(A;;GA;;;" + sid + L")";
+		const std::wstring sddl = L"O:" + sid + L"D:P(A;;GA;;;" + sid + L")"; // Clients check this owner.
 		if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
 		        sddl.c_str(), SDDL_REVISION_1, &descriptor, nullptr)) return 2;
 		struct DescriptorGuard { PSECURITY_DESCRIPTOR value; ~DescriptorGuard() { LocalFree(value); } }
 		    descriptor_guard{descriptor};
 		SECURITY_ATTRIBUTES security{sizeof(security), descriptor, FALSE};
 		RunnerState state;
+		state.RemoveOrphanedSpools(); // This helper holds the endpoint lock from here on.
 		std::atomic<bool> stopping{false};
 		std::mutex dispatch_mutex;
 		Handle stop_event(CreateEventW(nullptr, TRUE, FALSE, nullptr));
 		if (stop_event.Get() == nullptr) return 2;
 		std::vector<ClientThread> clients;
-		const std::wstring pipe_name = PipeName(runner_version);
+		const std::wstring pipe_name = RunnerServicePipeName(runner_version);
+		const auto create_instance = [&](DWORD first_instance)
+		{
+			return CreateNamedPipeW(pipe_name.c_str(), PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED | first_instance,
+			    PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+			    PIPE_UNLIMITED_INSTANCES, 64 * 1024, 64 * 1024, 0, &security);
+		};
+		// The first instance must be new, and each replacement is created before an accepted instance is handed off or
+		// reused, so the pipe name always has one of this service's instances and another process cannot claim it.
+		std::optional<Handle> listener;
+		listener.emplace(create_instance(FILE_FLAG_FIRST_PIPE_INSTANCE));
+		if (listener->Get() == INVALID_HANDLE_VALUE) return 2;
 		while (!stopping.load(std::memory_order_acquire))
 		{
-			Handle listener(CreateNamedPipeW(
-			    pipe_name.c_str(), PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
-			    PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
-			    PIPE_UNLIMITED_INSTANCES, 64 * 1024, 64 * 1024, 0, &security));
-			if (listener.Get() == INVALID_HANDLE_VALUE) return 2;
 			Handle connected_event(CreateEventW(nullptr, FALSE, FALSE, nullptr));
 			if (connected_event.Get() == nullptr) return 2;
 			OVERLAPPED connected_operation{};
 			connected_operation.hEvent = connected_event.Get();
-			BOOL connected = ConnectNamedPipe(listener.Get(), &connected_operation);
+			BOOL connected = ConnectNamedPipe(listener->Get(), &connected_operation);
 			if (!connected)
 			{
 				const DWORD connect_error = GetLastError();
 				if (connect_error == ERROR_IO_PENDING)
 				{
 					DWORD transferred = 0;
-					connected = GetOverlappedResult(listener.Get(), &connected_operation,
+					connected = GetOverlappedResult(listener->Get(), &connected_operation,
 					                                &transferred, TRUE);
+				}
+				// A client that connected and closed before this call (every `start` probe does) is not a service failure.
+				else if (connect_error == ERROR_NO_DATA)
+				{
+					(void)DisconnectNamedPipe(listener->Get()); // Ready the same instance for the next client.
+					continue;
 				}
 				else
 					connected = connect_error == ERROR_PIPE_CONNECTED;
@@ -305,8 +343,12 @@ namespace uam::remote
 			{
 				return client.done->load(std::memory_order_acquire);
 			});
+			const HANDLE next = create_instance(0);
+			if (next == INVALID_HANDLE_VALUE) return 2;
+			const HANDLE accepted = listener->Release();
+			listener.emplace(next);
 			auto done = std::make_shared<std::atomic<bool>>(false);
-			clients.push_back({done, std::jthread([&, pipe = listener.Release(), done]
+			clients.push_back({done, std::jthread([&, pipe = accepted, done]
 			{
 				Handle client(pipe);
 				for (;;)
@@ -350,6 +392,7 @@ namespace uam::remote
 					else
 						response = HandleRunnerRequest(request, runner_version, &state);
 					if (!WritePipeFrame(client.Get(), response, stop_event.Get())) break;
+					state.ConfirmResponseDelivered(request, response);
 				}
 				done->store(true, std::memory_order_release);
 			})});
@@ -377,7 +420,8 @@ namespace uam::remote
 		                    nullptr, nullptr, &startup, &process)) return 2;
 		CloseHandle(process.hThread);
 		CloseHandle(process.hProcess);
-		for (int attempt = 0; attempt < 200; ++attempt)
+		// A deadline, not an attempt count: each connect waits up to five seconds on a service that has stopped listening.
+		for (const ULONGLONG deadline = GetTickCount64() + 10000; GetTickCount64() < deadline;)
 		{
 			Handle ready = ConnectPipe(runner_version);
 			if (ready.Get() != INVALID_HANDLE_VALUE) return 0;
@@ -425,6 +469,37 @@ namespace uam::remote
 	int RunRunnerBridge(std::string_view runner_version)
 	{
 		if (!EnableRunnerBinaryStdio()) return 2;
+		// The bridge waits on the service without reading stdin, and a service reply can stall indefinitely (a full
+		// disk, a hung request). Win32-OpenSSH keeps the session process alive while its child runs and does not end
+		// that child when the client drops, and such sessions have been seen spinning a core each for hours. So once
+		// the client's end of stdin is gone during such a wait, the bridge ends at once: the service owns every
+		// process, nothing is lost. A client that half-closes stdin and still expects its reply is not supported;
+		// no UAM client does. Between requests the bridge's own stdin read sees the closure itself, and the watcher
+		// never peeks then: beside a read on an overlapped handle, a peek could corrupt it.
+		struct ClientWatch
+		{
+			std::mutex mutex;
+			bool waiting = false;
+		};
+		const auto watch = std::make_shared<ClientWatch>();
+		std::thread([watch]
+		{
+			const HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
+			for (;; Sleep(250))
+			{
+				const std::scoped_lock lock(watch->mutex);
+				if (!watch->waiting || PeekNamedPipe(input, nullptr, 0, nullptr, nullptr, nullptr)) continue;
+				const DWORD error = GetLastError();
+				if (error == ERROR_BROKEN_PIPE || error == ERROR_PIPE_NOT_CONNECTED)
+					TerminateProcess(GetCurrentProcess(), 0);
+				return; // Not a pipe (an interactive console): nothing to watch.
+			}
+		}).detach();
+		const auto set_waiting = [&watch](bool waiting)
+		{
+			const std::scoped_lock lock(watch->mutex);
+			watch->waiting = waiting;
+		};
 		Handle service = ConnectPipe(runner_version);
 		if (service.Get() == INVALID_HANDLE_VALUE)
 		{
@@ -443,6 +518,7 @@ namespace uam::remote
 				std::cerr << (error.empty() ? "Runner bridge input frame is invalid." : error) << '\n';
 				return 2;
 			}
+			set_waiting(true);
 			if (!WritePipeFrame(service.Get(), request))
 			{
 				std::cerr << "Runner bridge could not write to the service pipe (Windows error "
@@ -456,6 +532,7 @@ namespace uam::remote
 				          << GetLastError() << ").\n";
 				return 2;
 			}
+			set_waiting(false);
 			if (!WriteFrame(std::cout, response, &error))
 			{
 				std::cerr << (error.empty() ? "Runner bridge could not write its response." : error)

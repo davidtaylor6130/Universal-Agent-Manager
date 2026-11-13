@@ -107,7 +107,7 @@ namespace uam::execution_hosts
 		return previous;
 	}
 
-	/// <summary>Compares connection identity without incidental labels or health timestamps.</summary>
+	/// <summary>Compares connection identity without incidental labels, the display-only build label or health timestamps.</summary>
 	inline bool SameConnection(const ExecutionHost& left, const ExecutionHost& right)
 	{
 		return left.id == right.id && left.transport == right.transport &&
@@ -117,6 +117,12 @@ namespace uam::execution_hosts
 		       left.runner_directory == right.runner_directory && left.runner_install_unresolved == right.runner_install_unresolved &&
 		       left.runner_install_nonce == right.runner_install_nonce && left.runner_install_identity == right.runner_install_identity &&
 		       left.instruction_file == right.instruction_file && left.instruction_text == right.instruction_text;
+	}
+
+	/// <summary>True when an SSH host saves instructions; saved inline guidance, even empty, replaces the legacy file.</summary>
+	inline bool HasInstructions(const ExecutionHost& host)
+	{
+		return host.id != kLocalHostId && (host.instruction_text ? !host.instruction_text->empty() : !host.instruction_file.empty());
 	}
 
 	inline bool IsPortableId(std::string_view value)
@@ -253,6 +259,7 @@ namespace uam::execution_hosts
 			host.runner_status = "uninstalled";
 		if (HasInstallFence(host) && host.runner_status != "installing") host.runner_status = "error";
 		host.runner_version = Bounded(host.runner_version, 64);
+		host.runner_build_label = Bounded(host.runner_build_label, 64);
 		host.platform = Bounded(host.platform, 64);
 		host.architecture = Bounded(host.architecture, 64);
 		host.last_seen_at = Bounded(host.last_seen_at, 64);
@@ -327,6 +334,7 @@ namespace uam::execution_hosts
 			    {"runnerDirectory", host.runner_directory},
 			    {"runnerProtocolVersion", host.runner_protocol_version},
 			    {"runnerSha256", host.runner_sha256},
+			    {"runnerBuildLabel", host.runner_build_label},
 			    {"runnerInstallUnresolved", host.runner_install_unresolved},
 			    {"runnerInstallNonce", host.runner_install_nonce}, {"runnerInstallIdentity", host.runner_install_identity},
 			    {"instructionFile", host.instruction_file},
@@ -375,6 +383,7 @@ namespace uam::execution_hosts
 				}
 				if (!hosts.back().runner_install_nonce.empty() || !hosts.back().runner_install_identity.empty()) hosts.back().runner_install_unresolved = true;
 				if (entry.contains("runnerSha256") && entry["runnerSha256"].is_string()) hosts.back().runner_sha256 = entry["runnerSha256"].get<std::string>();
+				if (entry.contains("runnerBuildLabel") && entry["runnerBuildLabel"].is_string()) hosts.back().runner_build_label = entry["runnerBuildLabel"].get<std::string>();
 			}
 		}
 		Normalize(hosts);

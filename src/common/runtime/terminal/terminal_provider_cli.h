@@ -24,6 +24,8 @@ std::string BuildProviderHandoffContext(std::span<const Message> messages, std::
 /// <summary>Holds saved context when quarantined history cannot prove its exact safe projection.</summary>
 bool ValidateProviderHandoffContext(const ChatSession& chat, std::size_t history_count, std::string* error = nullptr, std::stop_token stop_token = {});
 std::vector<std::string> BuildProviderInteractiveArgv(const AppState& app, const ChatSession& chat);
+/// <summary>Refuses CLI View when the provider cannot start in an enforced Plan for a Plan or read-only chat.</summary>
+std::string ProviderInteractiveCeilingError(const AppState& app, const ChatSession& chat);
 /// <summary>Stages prior conversation as provider-native context without synthetic user turns.</summary>
 bool PrepareCliProviderHandoff(AppState& app, ChatSession& chat, const ExecutionHost& host,
     std::vector<std::string>& argv, std::vector<std::pair<std::string, std::string>>& environment,
@@ -35,7 +37,7 @@ bool PrepareCliProviderHandoffAsync(AppState& app, CliTerminalState& terminal, C
 /// <summary>Removes only owned context files after runtime shutdown; false keeps deletion retryable.</summary>
 bool RemoveCliProviderHandoff(AppState& app, const ChatSession& chat, std::string& error, std::stop_token stop_token = {});
 /// <summary>Durably stages cleanup independently of chat deletion and retries it outside the UI thread.</summary>
-bool StageCliProviderContextCleanup(AppState& app, const ChatSession& chat);
+bool StageCliProviderContextCleanup(AppState& app, const ChatSession& chat, const std::vector<ChatSession>& survivors);
 void RetryCliProviderContextCleanup(AppState& app, double now_s);
 void RepairCliTerminalIdentityForChat(AppState& app, CliTerminalState& terminal, const ChatSession& chat, const ProviderProfile& provider);
 CliTerminalState& EnsureCliTerminalForChat(AppState& app, const ChatSession& chat);

@@ -91,8 +91,8 @@ struct CommandProvenanceFixture
 		session->turn_serial = 1;
 		session->turn_user_message_index = session->turn_first_user_message_index = 0;
 		session->goal_review_turn = !unrestricted && goal_review;
-		session->active_uam_agent_workspace_access = !unrestricted && !goal_review ? "read" : "";
-		session->active_uam_agent_id = session->active_uam_agent_workspace_access.empty() ? "" : "private-read-agent";
+		session->active_uam_agent_workspace_access = !unrestricted && !goal_review ? "read" : "write";
+		session->active_uam_agent_id = session->active_uam_agent_workspace_access == "write" ? "" : "private-read-agent";
 		app.acp_sessions.push_back(std::move(owned));
 		wire = std::make_unique<CommandProvenanceWire>(*session, temp.root);
 	}

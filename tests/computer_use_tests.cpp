@@ -1013,3 +1013,34 @@ UAM_TEST(ComputerUseApprovalPollingClearsStaleTurnBeforeAnotherRequest)
 	UAM_ASSERT(!response.value("ok", true));
 	UAM_ASSERT(!fixture.Chat().computer_use_enabled);
 }
+
+UAM_TEST(ComputerUseBackgroundScanIsNotScheduledWhileGloballyDisabled)
+{
+	TempDir temp("uam-computer-use-disabled-scan");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "idle-chat";
+	chat.provider_id = "claude-cli";
+	app.chats.push_back(chat);
+	uam::ComputerUseService service;
+
+	app.settings.computer_use_globally_enabled = false;
+	UAM_ASSERT(!service.PollInBackground(app));
+	UAM_ASSERT(!service.ScanPendingForTests());
+
+	app.settings.computer_use_globally_enabled = true;
+	(void)service.PollInBackground(app);
+	UAM_ASSERT(service.ScanPendingForTests());
+
+	// Disabling adopts no result and schedules nothing further; drain the running scan before the fixture is removed.
+	app.settings.computer_use_globally_enabled = false;
+	for (int attempt = 0; attempt < 5000 && service.ScanPendingForTests(); ++attempt)
+	{
+		(void)service.PollInBackground(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	UAM_ASSERT(!service.ScanPendingForTests());
+	UAM_ASSERT(!service.PollInBackground(app));
+	UAM_ASSERT(!service.ScanPendingForTests());
+}

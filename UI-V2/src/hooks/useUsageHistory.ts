@@ -15,7 +15,9 @@ interface HistoryState {
 // ponytail: in-memory only; after a restart the native ledger answers the first request.
 const cache = new Map<string, UsageHistory>()
 const CACHE_LIMIT = 24
-export function clearUsageHistoryCache() { cache.clear() }
+// The failure dismissed on each machine, kept like the cache so reopening Usage does not bring the same failure back.
+const dismissedErrors = new Map<string, string>()
+export function clearUsageHistoryCache() { cache.clear(); dismissedErrors.clear() }
 
 /** Poll cached accounting snapshots; obsolete replies never replace the selected host/window. */
 export function useUsageHistory(executionHostId: string, window: UsageWindow, prices: UsagePriceOverride[] = [], enabled = true) {
@@ -28,7 +30,9 @@ export function useUsageHistory(executionHostId: string, window: UsageWindow, pr
     const cached = enabled ? cache.get(cacheKey) : undefined
     return { data: cached ?? null, loading: true, error: '', scope: cached ? scope : '', dataScope: cached ? scope : '' }
   })
-  const refresh = useCallback(() => setRefreshIndex(index => index + 1), [])
+  const [, setDismissals] = useState(0)
+  const refresh = useCallback(() => { dismissedErrors.delete(executionHostId); setRefreshIndex(index => index + 1) }, [executionHostId])
+  const dismissError = useCallback((error: string) => { dismissedErrors.set(executionHostId, error); setDismissals(count => count + 1) }, [executionHostId])
   useEffect(() => {
     if (!enabled) return
     let obsolete = false
@@ -37,6 +41,8 @@ export function useUsageHistory(executionHostId: string, window: UsageWindow, pr
     const refreshId = createRequestId('usage')
     const cached = cache.get(cacheKey)
     setState(previous => cached ? { data: cached, loading: true, error: '', scope, dataScope: scope } : { ...previous, loading: true, error: '', scope })
+    // A dismissal ends only on a live answer; a cached one can predate the failure.
+    const settleDismissal = (error: string) => { if (dismissedErrors.get(executionHostId) !== error) dismissedErrors.delete(executionHostId) }
     const load = async () => {
       let expired = false
       try {
@@ -61,6 +67,7 @@ export function useUsageHistory(executionHostId: string, window: UsageWindow, pr
         if (!reply.ok) throw new Error(reply.error || 'Could not load usage history.')
         if (reply.data && typeof reply.data === 'object' && 'pending' in reply.data && reply.data.pending === true) {
           const error = 'collectionError' in reply.data && typeof reply.data.collectionError === 'string' ? reply.data.collectionError : ''
+          if (error) settleDismissal(error)
           setState(previous => ({ ...previous, loading: !error, error, scope }))
           timer = setTimeout(() => { void load() }, error ? 30000 : 500)
           return
@@ -69,11 +76,17 @@ export function useUsageHistory(executionHostId: string, window: UsageWindow, pr
         cache.delete(cacheKey)
         cache.set(cacheKey, data)
         if (cache.size > CACHE_LIMIT) cache.delete(cache.keys().next().value!)
+        // A progress answer mid-pass has not yet shown whether the pass will fail the same way.
+        if (data.collectionError || !data.collecting) settleDismissal(data.collectionError || '')
         setState({ data, loading: data.version === 3 ? Boolean(data.collecting) : !data.complete, error: data.collectionError || '', scope, dataScope: scope })
         timer = setTimeout(() => { void load() }, (data.collecting || data.pricing?.refreshing) ? 2000 : 30000)
       } catch (error) {
         clearTimeout(timeout)
-        if (!obsolete) setState(previous => ({ ...previous, loading: false, scope, error: error instanceof Error ? error.message : 'Could not load usage history.' }))
+        if (obsolete) return
+        const message = error instanceof Error ? error.message : 'Could not load usage history.'
+        setState(previous => ({ ...previous, loading: false, scope, error: message }))
+        // Keep asking, as the other answers do: a dismissed failure must not leave the page silently frozen.
+        timer = setTimeout(() => { void load() }, 30000)
       }
     }
     void load()
@@ -81,5 +94,6 @@ export function useUsageHistory(executionHostId: string, window: UsageWindow, pr
   }, [executionHostId, window.startMs, window.endMs, window.days, priceKey, scope, cacheKey, enabled])
   const current = state.scope === scope
   const kept = state.data !== null && state.dataScope !== scope
-  return { data: state.data, loading: enabled && (!current || state.loading), error: current ? state.error : '', kept, refresh }
+  const error = current ? state.error : ''
+  return { data: state.data, loading: enabled && (!current || state.loading), error, errorDismissed: Boolean(error) && dismissedErrors.get(executionHostId) === error, dismissError, kept, refresh }
 }

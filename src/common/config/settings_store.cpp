@@ -1,8 +1,10 @@
 #include "common/config/voice_input_settings.h"
+#include "common/config/compute_pools.h"
 #include "common/config/central_provider_configuration.h"
 #include "common/config/settings_store.h"
 
 #include "common/config/editor_file_associations.h"
+#include "common/config/svn_repository_layout.h"
 #include "common/config/execution_host_config.h"
 #include "common/config/approval_modes.h"
 #include "common/config/line_value_codec.h"
@@ -48,11 +50,14 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	constexpr std::string_view kProviderExtraFlagsKey = "provider_extra_flags";
 	constexpr std::string_view kCliIdleTimeoutSecondsKey = "cli_idle_timeout_seconds";
 	constexpr std::string_view kActiveTurnInactivityTimeoutSecondsKey = "active_turn_inactivity_timeout_seconds";
+	constexpr std::string_view kToolCallTimeoutSecondsKey = "tool_call_timeout_seconds";
 	constexpr std::string_view kStreamLoopRepeatLimitKey = "stream_loop_repeat_limit";
 	constexpr std::string_view kAcpSetupInactivityTimeoutSecondsKey = "acp_setup_inactivity_timeout_seconds";
 	constexpr std::string_view kUiThemeKey = "ui_theme";
 	constexpr std::string_view kShowProviderIconsInSidebarKey = "show_provider_icons_in_sidebar";
 	constexpr std::string_view kShowWorktreePathInSidebarKey = "show_worktree_path_in_sidebar";
+	constexpr std::string_view kSidebarPinnedChatOrderKey = "sidebar_pinned_chat_order";
+	constexpr std::string_view kSidebarActiveChatOrderKey = "sidebar_active_chat_order";
 	constexpr std::string_view kSteerActiveTurnOnSendKey = "steer_active_turn_on_send";
 	constexpr std::string_view kGitEnabledKey = "git_enabled";
 	constexpr std::string_view kGitAutoWorktreeKey = "git_auto_worktree";
@@ -65,6 +70,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	constexpr std::string_view kWorktreeRetentionDaysKey = "worktree_retention_days";
 	constexpr std::string_view kSvnEnabledKey = "svn_enabled";
 	constexpr std::string_view kSvnUpdateBeforeChatKey = "svn_update_before_chat";
+	constexpr std::string_view kSvnRepositoryLayoutsKey = "svn_repository_layouts";
 	constexpr std::string_view kConfirmDeleteChatKey = "confirm_delete_chat";
 	constexpr std::string_view kConfirmDeleteFolderKey = "confirm_delete_folder";
 	constexpr std::string_view kRememberLastChatKey = "remember_last_chat";
@@ -102,12 +108,13 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	constexpr std::string_view kEditorFileAssociationsKey = "editor_file_associations";
 	constexpr std::string_view kMcpServersKey = "mcp_servers";
 	constexpr std::string_view kExecutionHostsKey = "execution_hosts";
+	constexpr std::string_view kComputePoolsKey = "compute_pools";
 	constexpr std::string_view kProviderAvailabilityKey = "provider_availability";
 	constexpr std::string_view kExecutionRoutingKey = "execution_routing";
 	constexpr std::string_view kFavoriteUamAgentIdsKey = "favorite_uam_agent_ids";
 	constexpr std::string_view kNativeImportExcludedTitlePrefixesKey = "native_import_excluded_title_prefixes";
 	constexpr std::string_view kNativeImportExcludedDirectoriesKey = "native_import_excluded_directories";
-	constexpr std::string_view kNativeImportStartupMaxAgeDaysKey = "native_import_startup_max_age_days";
+	constexpr std::string_view kNativeImportStartupAgeLimitDaysKey = "native_import_startup_age_limit_days";
 	constexpr std::string_view kUamAgentCycleShortcutKey = "uam_agent_cycle_shortcut";
 	constexpr std::string_view kComputerUseGloballyEnabledKey = "computer_use_globally_enabled";
 	constexpr std::string_view kComputerUseAllowlistEnabledKey = "computer_use_allowlist_enabled";
@@ -115,6 +122,8 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 
 	constexpr std::string_view kLegacyGeminiYoloModeKey = "gemini_yolo_mode";
 	constexpr std::string_view kLegacyGeminiExtraFlagsKey = "gemini_extra_flags";
+	// Written on every save while the limit shipped off, so a saved 0 under this key does not record a choice.
+	constexpr std::string_view kLegacyNativeImportStartupMaxAgeDaysKey = "native_import_startup_max_age_days";
 
 	std::string NormalizeProviderId(std::string_view value);
 
@@ -596,6 +605,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 		uam::editor_file_associations::NormalizeEditorFileAssociations(settings.editor_file_associations);
 		if (!uam::mcp_server_config::NormalizeAndValidate(settings.mcp_servers)) settings.mcp_servers.clear();
 		uam::execution_hosts::Normalize(settings.execution_hosts);
+		uam::compute_pools::Normalize(settings.compute_pools);
 		std::erase_if(settings.host_scoped_settings, [&](const std::pair<const std::string, HostScopedSettings>& entry) { const ExecutionHost* host = uam::execution_hosts::Find(settings.execution_hosts, entry.first); return host == nullptr || host->transport != "ssh"; });
 		uam::provider_availability::Normalize(settings.provider_availability);
 		std::string routing_error;
@@ -673,11 +683,14 @@ bool SettingsStore::SaveInternal(const std::filesystem::path& settings_file, con
 		WriteEncodedSetting(lines, kProviderExtraFlagsKey, normalized.provider_extra_flags);
 		WriteSettingValue(lines, kCliIdleTimeoutSecondsKey, normalized.cli_idle_timeout_seconds);
 		WriteSettingValue(lines, kActiveTurnInactivityTimeoutSecondsKey, normalized.active_turn_inactivity_timeout_seconds);
+		WriteSettingValue(lines, kToolCallTimeoutSecondsKey, normalized.tool_call_timeout_seconds);
 		WriteSettingValue(lines, kStreamLoopRepeatLimitKey, normalized.stream_loop_repeat_limit);
 		WriteSettingValue(lines, kAcpSetupInactivityTimeoutSecondsKey, normalized.acp_setup_inactivity_timeout_seconds);
 		WriteEncodedSetting(lines, kUiThemeKey, normalized.ui_theme);
 		WriteBoolSetting(lines, kShowProviderIconsInSidebarKey, normalized.show_provider_icons_in_sidebar);
 		WriteBoolSetting(lines, kShowWorktreePathInSidebarKey, normalized.show_worktree_path_in_sidebar);
+		WriteEncodedSetting(lines, kSidebarPinnedChatOrderKey, EncodeFavoriteUamAgentIds(normalized.sidebar_pinned_chat_order));
+		WriteEncodedSetting(lines, kSidebarActiveChatOrderKey, EncodeFavoriteUamAgentIds(normalized.sidebar_active_chat_order));
 		WriteBoolSetting(lines, kSteerActiveTurnOnSendKey, normalized.steer_active_turn_on_send);
 		WriteBoolSetting(lines, kGitEnabledKey, normalized.git_enabled);
 		WriteBoolSetting(lines, kGitAutoWorktreeKey, normalized.git_auto_worktree);
@@ -690,6 +703,7 @@ bool SettingsStore::SaveInternal(const std::filesystem::path& settings_file, con
 		WriteSettingValue(lines, kWorktreeRetentionDaysKey, normalized.worktree_retention_days);
 		WriteBoolSetting(lines, kSvnEnabledKey, normalized.svn_enabled);
 		WriteBoolSetting(lines, kSvnUpdateBeforeChatKey, normalized.svn_update_before_chat);
+		if (!normalized.svn_repository_layouts.empty()) WriteEncodedSetting(lines, kSvnRepositoryLayoutsKey, uam::svn_layout::ToJson(normalized.svn_repository_layouts).dump());
 		WriteBoolSetting(lines, kConfirmDeleteChatKey, normalized.confirm_delete_chat);
 		WriteBoolSetting(lines, kConfirmDeleteFolderKey, normalized.confirm_delete_folder);
 		WriteBoolSetting(lines, kRememberLastChatKey, normalized.remember_last_chat);
@@ -741,12 +755,13 @@ bool SettingsStore::SaveInternal(const std::filesystem::path& settings_file, con
 		WriteEncodedSetting(lines, "central_provider_configuration", uam::central_configuration::Serialize(settings.central_provider_configuration).dump());
 		WriteEncodedSetting(lines, kMcpServersKey, uam::mcp_server_config::Serialize(normalized.mcp_servers).dump());
 		WriteEncodedSetting(lines, kExecutionHostsKey, uam::execution_hosts::Serialize(normalized.execution_hosts).dump());
+		WriteEncodedSetting(lines, kComputePoolsKey, uam::compute_pools::Serialize(normalized.compute_pools).dump());
 		WriteEncodedSetting(lines, kProviderAvailabilityKey, uam::provider_availability::Serialize(normalized.provider_availability).dump());
 		WriteEncodedSetting(lines, kExecutionRoutingKey, SettingsStore::SerializeExecutionRoutingSettings(normalized.execution_routing).dump());
 		WriteEncodedSetting(lines, kFavoriteUamAgentIdsKey, EncodeFavoriteUamAgentIds(normalized.favorite_uam_agent_ids));
 		WriteEncodedSetting(lines, kNativeImportExcludedTitlePrefixesKey, EncodeFavoriteUamAgentIds(normalized.native_import_excluded_title_prefixes));
 		WriteEncodedSetting(lines, kNativeImportExcludedDirectoriesKey, EncodeFavoriteUamAgentIds(normalized.native_import_excluded_directories));
-		WriteSettingValue(lines, kNativeImportStartupMaxAgeDaysKey, normalized.native_import_startup_max_age_days);
+		WriteSettingValue(lines, kNativeImportStartupAgeLimitDaysKey, normalized.native_import_startup_max_age_days);
 		WriteEncodedSetting(lines, kUamAgentCycleShortcutKey, normalized.uam_agent_cycle_shortcut);
 		WriteBoolSetting(lines, kComputerUseGloballyEnabledKey, normalized.computer_use_globally_enabled);
 		WriteBoolSetting(lines, kComputerUseAllowlistEnabledKey, normalized.computer_use_allowlist_enabled);
@@ -796,7 +811,8 @@ bool SettingsStore::SaveInternal(const std::filesystem::path& settings_file, con
 		    normalized.permission_reviewer_provider_id,
 		    normalized.permission_reviewer_model_id,
 		    normalized.active_turn_inactivity_timeout_seconds,
-		    normalized.stream_loop_repeat_limit};
+		    normalized.stream_loop_repeat_limit,
+		    normalized.tool_call_timeout_seconds};
 		memory_receipt->canonical_values_ready = true;
 		const auto observe_stage = [&](uam::io::AtomicWriteStage stage)
 		{
@@ -948,6 +964,10 @@ SettingsLoadResult SettingsStore::LoadInternal(const std::filesystem::path& sett
 		{
 			settings.stream_loop_repeat_limit = uam::parse::IntOr(value, settings.stream_loop_repeat_limit);
 		}
+		else if (key == kToolCallTimeoutSecondsKey)
+		{
+			settings.tool_call_timeout_seconds = uam::parse::IntOr(value, settings.tool_call_timeout_seconds);
+		}
 		else if (key == kActiveTurnInactivityTimeoutSecondsKey)
 		{
 			settings.active_turn_inactivity_timeout_seconds = uam::parse::IntOr(value, settings.active_turn_inactivity_timeout_seconds);
@@ -1015,6 +1035,11 @@ SettingsLoadResult SettingsStore::LoadInternal(const std::filesystem::path& sett
 		else if (key == kSvnUpdateBeforeChatKey)
 		{
 			settings.svn_update_before_chat = uam::parse::BoolOr(value, settings.svn_update_before_chat);
+		}
+		else if (key == kSvnRepositoryLayoutsKey)
+		{
+			// A damaged entry list keeps the standard layout for every repository rather than failing the load.
+			(void)uam::svn_layout::Parse(nlohmann::json::parse(decoded_value, nullptr, false), settings.svn_repository_layouts);
 		}
 		else if (key == kConfirmDeleteChatKey)
 		{
@@ -1205,6 +1230,11 @@ SettingsLoadResult SettingsStore::LoadInternal(const std::filesystem::path& sett
 			const nlohmann::json parsed = nlohmann::json::parse(decoded_value, nullptr, false);
 			settings.execution_hosts = uam::execution_hosts::Parse(parsed);
 		}
+		else if (key == kComputePoolsKey)
+		{
+			settings.compute_pools = uam::compute_pools::Parse(nlohmann::json::parse(decoded_value, nullptr, false));
+			uam::compute_pools::Normalize(settings.compute_pools);
+		}
 		else if (key == kExecutionRoutingKey)
 		{
 			std::string error;
@@ -1218,13 +1248,25 @@ SettingsLoadResult SettingsStore::LoadInternal(const std::filesystem::path& sett
 		{
 			DecodeFavoriteUamAgentIds(decoded_value, settings.native_import_excluded_title_prefixes);
 		}
+		else if (key == kSidebarPinnedChatOrderKey)
+		{
+			DecodeFavoriteUamAgentIds(decoded_value, settings.sidebar_pinned_chat_order);
+		}
+		else if (key == kSidebarActiveChatOrderKey)
+		{
+			DecodeFavoriteUamAgentIds(decoded_value, settings.sidebar_active_chat_order);
+		}
 		else if (key == kNativeImportExcludedDirectoriesKey)
 		{
 			DecodeFavoriteUamAgentIds(decoded_value, settings.native_import_excluded_directories);
 		}
-		else if (key == kNativeImportStartupMaxAgeDaysKey)
+		else if (key == kNativeImportStartupAgeLimitDaysKey)
 		{
 			settings.native_import_startup_max_age_days = uam::parse::IntOr(value, settings.native_import_startup_max_age_days);
+		}
+		else if (key == kLegacyNativeImportStartupMaxAgeDaysKey)
+		{
+			if (const int legacy_days = uam::parse::IntOr(value, 0); legacy_days > 0) settings.native_import_startup_max_age_days = legacy_days;
 		}
 		else if (key == kUamAgentCycleShortcutKey)
 		{

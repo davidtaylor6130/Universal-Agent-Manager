@@ -1,4 +1,5 @@
 #include "common/runtime/terminal_polling.h"
+#include "common/secrets/secret_redactor.h"
 
 #include "app/chat_domain_service.h"
 #include "app/native_session_link_service.h"
@@ -24,6 +25,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -393,7 +395,9 @@ void ReconcileAndStopCliTerminalAfterProviderExit(uam::AppState& app, uam::CliTe
 
 bool HandleCliTerminalInactivityTimeout(uam::AppState& app, uam::CliTerminalState& terminal, double now_seconds)
 {
-	const CliTerminalInactivityRecoveryAction action = CliTerminalInactivityRecovery(terminal, now_seconds, static_cast<double>(app.settings.active_turn_inactivity_timeout_seconds));
+	// A terminal has no tool events, so a busy turn may hold one long command: its ceiling is the tool call limit, never less than the turn timeout.
+	const int busy_limit_seconds = std::max(app.settings.tool_call_timeout_seconds, app.settings.active_turn_inactivity_timeout_seconds);
+	const CliTerminalInactivityRecoveryAction action = CliTerminalInactivityRecovery(terminal, now_seconds, static_cast<double>(busy_limit_seconds));
 	if (action == CliTerminalInactivityRecoveryAction::None)
 	{
 		return false;
@@ -402,7 +406,8 @@ bool HandleCliTerminalInactivityTimeout(uam::AppState& app, uam::CliTerminalStat
 	{
 		constexpr char interrupt = '\x03';
 		terminal.inactivity_interrupt_requested_time_s = now_seconds;
-		const std::string message = "Provider terminal turn exceeded the " + std::to_string(app.settings.active_turn_inactivity_timeout_seconds) + "-second busy limit. Interrupting it now; the delivered prompt will not be replayed.";
+		const std::string message = "Provider terminal turn exceeded the " + (busy_limit_seconds % 60 == 0 ? std::to_string(busy_limit_seconds / 60) + "-minute " : std::to_string(busy_limit_seconds) + "-second ") +
+		    (app.settings.tool_call_timeout_seconds >= app.settings.active_turn_inactivity_timeout_seconds ? "tool call limit" : "provider turn timeout") + ". Interrupting it now; the delivered prompt will not be replayed.";
 		if (!WriteToCliTerminal(terminal, &interrupt, 1))
 		{
 			StopCliTerminal(terminal, false, CliTerminalStopMode::FastExit);
@@ -433,8 +438,11 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 	constexpr std::size_t kRecentOutputBufferLimitBytes = 256 * 1024;
 	constexpr double kInputReadyFallbackSeconds = 1.5;
 	// Keep PTY draining and CEF delivery within a small UI-thread slice.
-	constexpr int kReadBudgetChunksPerTick = 4;
+	// A macOS PTY read returns at most 1 KB, so the byte budget is the limit that matters.
+	constexpr int kReadBudgetChunksPerTick = 32;
 	constexpr std::size_t kReadBudgetBytesPerTick = 32 * 1024;
+	// Known gap: a bounded blocking wait on the UI thread, per attached terminal. A PTY reader thread removes it.
+	constexpr auto kOutputDrainWaitBudget = std::chrono::milliseconds(4);
 
 	const bool first_launch_output = terminal.last_output_time_s <= 0.0;
 	bool changed = false;
@@ -445,7 +453,6 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 	const int previous_chat_message_count = terminal_chat != nullptr ? static_cast<int>(terminal_chat->messages_loaded ? terminal_chat->messages.size() : terminal_chat->persisted_message_count) : -1;
 	const bool terminal_uses_native_history = (terminal_chat != nullptr) && ProviderResolutionService().ChatUsesNativeOverlayHistory(app, *terminal_chat);
 	const ProviderProfile terminal_provider = (terminal_chat != nullptr) ? ProviderResolutionService().ProviderForChatOrDefault(app, *terminal_chat) : ProviderResolutionService().ActiveProviderOrDefault(app);
-	const std::filesystem::path terminal_native_history_chats_dir = (terminal_chat != nullptr) ? ChatHistorySyncService().ResolveNativeHistoryChatsDirForChat(app, *terminal_chat) : std::filesystem::path{};
 
 	const IPlatformTerminalRuntime& platform_terminal_runtime = PlatformServicesFactory::Instance().terminal_runtime;
 
@@ -473,6 +480,7 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 		return true;
 	}
 
+	const std::chrono::steady_clock::time_point drain_started = std::chrono::steady_clock::now();
 	char buffer[8192];
 	int chunks_read = 0;
 	std::size_t bytes_read_total = 0;
@@ -510,6 +518,13 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 
 		if (read_bytes == -2)
 		{
+			// The writer refills the PTY only after it is scheduled, so an attached terminal
+			// waits briefly for it instead of leaving one read per 16 ms poll.
+			if (chunks_read > 0 && terminal.ui_attached && std::chrono::steady_clock::now() - drain_started < kOutputDrainWaitBudget &&
+			    platform_terminal_runtime.WaitForCliTerminalOutput(terminal, 1))
+			{
+				continue;
+			}
 			break;
 		}
 
@@ -528,6 +543,13 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 		break;
 	}
 
+	if (uam::secrets::Active() && !output_for_frontend.empty())
+	{
+		// Scrubbed before the replay buffer, the live push and the phone's terminal see it. ponytail: one filter per
+		// terminal for the app's life; a held secret prefix appears with that terminal's next output.
+		static std::unordered_map<std::string, uam::secrets::StreamFilter> secret_filters;
+		output_for_frontend = secret_filters[terminal.terminal_id].Push(output_for_frontend);
+	}
 	if (!output_for_frontend.empty())
 	{
 		terminal.recent_output_bytes.append(output_for_frontend);
@@ -617,6 +639,8 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 	if (should_refresh_native_history)
 	{
 		terminal.last_sync_time_s = now;
+		// Resolution can walk every Gemini project directory, so it must not run on each 16 ms poll.
+		const std::filesystem::path terminal_native_history_chats_dir = ChatHistorySyncService().ResolveNativeHistoryChatsDirForChat(app, *terminal_chat);
 
 		if (platform_terminal_runtime.SupportsAsyncNativeGeminiHistoryRefresh())
 		{
@@ -733,12 +757,14 @@ bool PollAllCliTerminals(CefRefPtr<CefBrowser> browser, uam::AppState& app, bool
 					else
 					{
 						terminal->last_error = "Terminal steering restart failed; prompt retained for retry.";
+						terminal->pending_steer_failed = true;
 					}
 					changed = true;
 				}
 				else if (recovery == CliTerminalSteerRecoveryAction::ReportTimeout)
 				{
 					terminal->last_error = "Terminal steering timed out after restart; prompt retained for retry.";
+					terminal->pending_steer_failed = true;
 					uam::LogCliDiagnosticEvent(app, "poll_all_cli_terminals", "steer_timeout", terminal.get());
 					changed = true;
 				}

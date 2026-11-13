@@ -354,6 +354,44 @@ UAM_TEST(ChatRepositoryMigratesLegacyYoloModeToCommandSafetyTier)
 	UAM_ASSERT_EQ(rewritten_json.value("commandSafetyTier", ""), std::string("yolo"));
 }
 
+UAM_TEST(ChatRepositoryLogsPermissionMigrationOncePerChat)
+{
+	TempDir temp("uam-chat-permission-migration-log");
+	const fs::path chats_dir = temp.root / "chats";
+	fs::create_directories(chats_dir);
+	UAM_ASSERT(uam::io::WriteTextFile(chats_dir / "legacy-permission-log.json", R"({
+  "id": "legacy-permission-log",
+  "provider_id": "codex-cli",
+  "approval_mode": "default",
+  "auto_approve_commands": true,
+  "title": "Legacy Permission Log",
+  "created_at": "2026-01-01 00:00:00",
+  "updated_at": "2026-01-01 00:00:01",
+  "messages": []
+})"));
+	UAM_ASSERT(uam::io::WriteTextFile(chats_dir / "legacy-permission-yolo.json", R"({
+  "id": "legacy-permission-yolo",
+  "provider_id": "codex-cli",
+  "approval_mode": "yolo",
+  "title": "Legacy Yolo Log",
+  "created_at": "2026-01-01 00:00:00",
+  "updated_at": "2026-01-01 00:00:02",
+  "messages": []
+})"));
+	const fs::path log = temp.root / "permission.log";
+	std::string log_error;
+	UAM_ASSERT(uam::diagnostics::StartFileLog(log, log_error));
+	struct StopLog { ~StopLog() { uam::diagnostics::StopFileLog(); } } stop_log;
+	UAM_ASSERT_EQ(ChatRepository::LoadLocalChats(temp.root).size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(ChatRepository::LoadLocalChats(temp.root).size(), static_cast<std::size_t>(2));
+	uam::diagnostics::FlushFileLog();
+	const std::string written = uam::io::ReadTextFile(log);
+	UAM_ASSERT(uam::strings::Contains(written, "[permission] chat=legacy-permission-yolo source=migration commandSafetyTier=(empty)->yolo approvalMode=yolo->default"));
+	const std::string entry = "[permission] chat=legacy-permission-log source=migration commandSafetyTier=autoApproveCommands->yolo";
+	UAM_ASSERT(uam::strings::Contains(written, entry));
+	UAM_ASSERT_EQ(written.find(entry), written.rfind(entry));
+}
+
 UAM_TEST(ChatRepositoryMigratesLegacyAutoApproveBooleanToCommandSafetyTier)
 {
 	TempDir temp("uam-chat-auto-approve-migration");
@@ -635,6 +673,41 @@ UAM_TEST(ChatRepositoryPersistsMemoryLevelAndMigratesLegacyBoolean)
 	loaded = ChatRepository::LoadLocalChats(temp.root);
 	UAM_ASSERT_EQ(loaded.front().memory_level, std::string("off"));
 	UAM_ASSERT(!loaded.front().memory_enabled);
+}
+
+UAM_TEST(ChatRepositoryQueuedAgentAccessFailsClosedToRead)
+{
+	TempDir temp("uam-chat-queued-agent-access");
+	ChatSession chat;
+	chat.id = "queued-agent-access";
+	chat.provider_id = "codex-cli";
+	chat.title = "Queued access";
+	chat.created_at = "2026-01-01T00:00:00.000Z";
+	chat.updated_at = "2026-01-01T00:00:01.000Z";
+	for (const std::string id : {"write", "missing", "unknown", "empty"})
+	{
+		uam::AcpQueuedUserPromptState queued;
+		queued.id = id;
+		queued.text = "Queued " + id;
+		chat.acp_queued_prompts.push_back(queued);
+	}
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	const fs::path path = AppPaths::UamChatFilePath(temp.root, chat.id);
+	nlohmann::json saved = nlohmann::json::parse(ReadFile(path));
+	nlohmann::json& prompts = saved["acp_queued_prompts"];
+	UAM_ASSERT_EQ(prompts.size(), std::size_t{4});
+	UAM_ASSERT_EQ(prompts[0].value("uam_agent_workspace_access", ""), std::string("write"));
+	prompts[1].erase("uam_agent_workspace_access");
+	prompts[2]["uam_agent_workspace_access"] = "Write";
+	prompts[3]["uam_agent_workspace_access"] = "";
+	UAM_ASSERT(uam::io::WriteTextFile(path, saved.dump(2)));
+	const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(loaded.has_value());
+	UAM_ASSERT_EQ(loaded->acp_queued_prompts.size(), std::size_t{4});
+	// Only an explicit write grant survives; anything else loads as the read ceiling.
+	UAM_ASSERT_EQ(loaded->acp_queued_prompts[0].uam_agent_workspace_access, std::string("write"));
+	for (std::size_t index = 1; index < 4; ++index)
+		UAM_ASSERT_EQ(loaded->acp_queued_prompts[index].uam_agent_workspace_access, std::string("read"));
 }
 
 UAM_TEST(ChatRepositoryValidPrimaryIgnoresOlderBackupMemoryMetadata)
@@ -1009,9 +1082,36 @@ UAM_TEST(QueueJournalBoundsAndBaseRevisionMismatchNeverAcknowledgeLostInput)
 	UAM_ASSERT(uam::io::WriteTextFile(primary, changed));
 	const std::optional<ChatSession> held = ChatRepository::LoadLocalChat(temp.root, chat.id);
 	UAM_ASSERT(held.has_value());
-	UAM_ASSERT(held->acp_queue_storage_error);
+	// The journal extends this primary's own queue revision and only the file witness changed (a restore,
+	// a sync tool, a touched file). The input is neither lost nor a permanent block: it stays held for the
+	// user, and the chat can be saved and sent to again.
+	UAM_ASSERT(!held->acp_queue_storage_error);
 	UAM_ASSERT(held->acp_queue_held);
 	UAM_ASSERT_EQ(held->acp_queued_prompts.front().text, chat.acp_queued_prompts.front().text);
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, *held));
+	const std::optional<ChatSession> rebound = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(rebound && !rebound->acp_queue_storage_error && rebound->acp_queue_held);
+	UAM_ASSERT_EQ(rebound->acp_queued_prompts.front().text, chat.acp_queued_prompts.front().text);
+}
+
+UAM_TEST(QueueJournalForAnotherQueueRevisionStaysHeldWithStorageError)
+{
+	TempDir temp("uam-queue-journal-other-revision");
+	ChatSession chat = QueueJournalFixture(temp.root);
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	const fs::path primary = AppPaths::UamChatFilePath(temp.root, chat.id);
+	const std::string older_primary = ReadFile(primary);
+	UAM_ASSERT(ChatRepository::SaveQueuedPromptOutbox(temp.root, chat));
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	chat.acp_queued_prompts.front().text = "Edited";
+	++chat.acp_queued_prompts.front().revision;
+	UAM_ASSERT(ChatRepository::SaveQueuedPromptOutbox(temp.root, chat));
+	// An older primary (a backup fallback or restore) carries a queue revision this journal was not written
+	// against. Which queue is newer is not provable, so nothing is repaired automatically.
+	UAM_ASSERT(uam::io::WriteTextFile(primary, older_primary));
+	const std::optional<ChatSession> held = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(held && held->acp_queue_storage_error && held->acp_queue_held);
+	UAM_ASSERT_EQ(held->acp_queued_prompts.front().text, std::string("Edited"));
 	UAM_ASSERT(!ChatRepository::SaveChat(temp.root, *held));
 }
 

@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react'
-import { Check, ChevronRight, TriangleAlert, X } from 'lucide-react'
+import { Check, ChevronRight, CircleAlert, TriangleAlert, X } from 'lucide-react'
 import { Button } from './Button'
 import { IconButton } from './IconButton'
 import { usePresence } from './Overlay'
@@ -34,7 +34,8 @@ export function Notice({
   if (!mounted) return null
   const color = tone === 'success' ? 'success' : tone === 'warning' ? 'warning' : tone === 'error' ? 'error' : 'accent'
   const heading = title ?? (tone === 'error' ? 'Error' : tone === 'warning' ? 'Warning' : tone === 'success' ? 'Completed' : 'Notice')
-  const StatusIcon = tone === 'success' ? Check : tone === 'warning' ? TriangleAlert : tone === 'error' ? X : null
+  // X is reserved for the dismiss control, so the error tone never uses it as its status icon.
+  const StatusIcon = tone === 'success' ? Check : tone === 'warning' ? TriangleAlert : tone === 'error' ? CircleAlert : null
   return (
     <div
       role={tone === 'error' ? 'alert' : 'status'}

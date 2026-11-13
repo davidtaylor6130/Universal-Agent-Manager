@@ -294,6 +294,12 @@ class MacTerminalRuntime final : public IPlatformTerminalRuntime
 		}
 	}
 
+	bool WaitForCliTerminalOutput(const uam::CliTerminalState& terminal, int timeout_ms) const override
+	{
+		pollfd descriptor{terminal.master_fd, POLLIN, 0};
+		return poll(&descriptor, 1, timeout_ms) > 0;
+	}
+
 	bool HasReadableTerminalOutputHandle(const uam::CliTerminalState& terminal) const override
 	{
 		return terminal.master_fd >= 0;

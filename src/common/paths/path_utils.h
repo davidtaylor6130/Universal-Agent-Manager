@@ -6,6 +6,8 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <vector>
+#include <algorithm>
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -325,22 +327,73 @@ namespace uam::paths
 		return ec || relative.empty() ? std::nullopt : std::optional<std::filesystem::path>{relative};
 	}
 
-	struct NearestVcsRoot
+	struct VcsMarkers
 	{
-		std::filesystem::path root;
 		bool git = false;
 		bool svn = false;
+		/// Set by a probe to end the walk early, for example on an unreadable marker. The root stays empty.
+		bool stop = false;
 	};
 
-	/// The nearest directory holding a .git or .svn marker owns the path, so Git nested in an SVN checkout is Git.
-	inline NearestVcsRoot FindNearestVcsRoot(const std::filesystem::path& start)
+	struct NearestVcsRoot : VcsMarkers
 	{
+		std::filesystem::path root;
+	};
+
+	/// GitOrSvn ends the walk at the first .git or .svn. GitOnly ends it only at Git, passing through SVN checkouts;
+	/// the result's svn flag then reports whether any SVN marker was passed on the way.
+	enum class VcsRootKinds { GitOrSvn, GitOnly };
+
+	inline VcsMarkers ProbeVcsMarkers(const std::filesystem::path& directory)
+	{
+		return {PathExistsNoThrow(directory / ".git"), PathExistsNoThrow(directory / ".svn")};
+	}
+
+	/// The nearest directory holding a marker of the requested kinds owns the path, so by default Git nested in an SVN
+	/// checkout is Git. A custom probe decides what one directory reports, for callers with stricter rules or their own early stop.
+	template <typename Probe = decltype(&ProbeVcsMarkers)>
+	inline NearestVcsRoot FindNearestVcsRoot(const std::filesystem::path& start, VcsRootKinds kinds = VcsRootKinds::GitOrSvn, Probe probe = &ProbeVcsMarkers)
+	{
+		NearestVcsRoot result;
 		for (std::filesystem::path directory = start; !directory.empty(); directory = directory.parent_path())
 		{
-			NearestVcsRoot found{directory, PathExistsNoThrow(directory / ".git"), PathExistsNoThrow(directory / ".svn")};
-			if (found.git || found.svn) return found;
+			const VcsMarkers seen = probe(directory);
+			result.git = seen.git;
+			result.svn = result.svn || seen.svn;
+			result.stop = seen.stop;
+			if (seen.stop) return result;
+			if (seen.git || (seen.svn && kinds == VcsRootKinds::GitOrSvn))
+			{
+				result.root = directory;
+				return result;
+			}
 			if (directory == directory.parent_path()) break;
 		}
-		return {};
+		return result;
+	}
+	/// <summary>True when one directory is the other or lies inside it, compared as text so a remote host's paths work
+	/// on any controller: `\\` and `/` are the same separator, `.` segments and trailing separators are ignored, and
+	/// `case_insensitive` suits Windows and default macOS volumes. An empty path overlaps nothing.</summary>
+	inline bool DirectoriesOverlap(std::string_view left, std::string_view right, const bool case_insensitive)
+	{
+		const auto segments = [&](std::string_view path)
+		{
+			std::vector<std::string> parts;
+			std::string part;
+			const auto flush = [&] { if (!part.empty() && part != ".") parts.push_back(part); part.clear(); };
+			for (const char c : path)
+			{
+				if (c == '/' || c == '\\') flush();
+				else part.push_back(case_insensitive && c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c);
+			}
+			flush();
+			return parts;
+		};
+		const std::vector<std::string> a = segments(left), b = segments(right);
+		if (a.empty() || b.empty()) return false;
+		const std::size_t shared = (std::min)(a.size(), b.size());
+		for (std::size_t index = 0; index < shared; ++index)
+			if (a[index] != b[index]) return false;
+		return true;
 	}
 } // namespace uam::paths

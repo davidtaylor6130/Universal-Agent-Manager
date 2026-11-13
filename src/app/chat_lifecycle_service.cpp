@@ -31,6 +31,7 @@
 #include "common/runtime/terminal/terminal_chat_sync.h"
 #include "common/runtime/terminal/terminal_identity.h"
 #include "common/runtime/terminal/terminal_provider_cli.h"
+#include "common/security/permission_change_log.h"
 #include "common/utils/io_utils.h"
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
@@ -79,7 +80,7 @@ namespace
 		{
 			if (!chat->side_cleanup_stop_finished->load()) return true;
 			for (const uam::AsyncAcpProcessStopTask& task : app.acp_process_stop_tasks)
-				if (task.finished == chat->side_cleanup_stop_finished && task.observe_exit && !task.result->exit_confirmed) return true;
+				if (task.finished == chat->side_cleanup_stop_finished && task.observe_exit && (!task.finished->load() || !task.result->exit_confirmed)) return true;
 		}
 		if (chat != nullptr &&
 		    (chat->remote_turn_reconnect_pending || chat->remote_stop_cleanup_pending ||
@@ -224,9 +225,8 @@ namespace
 	{
 		const std::string resolved = uam::ResolvedNativeSessionIdForChat(app, snapshot);
 		if (!resolved.empty()) snapshot.native_session_id = resolved;
-		if (uam::paths::IsControllerLocalWorkspace(snapshot) &&
-		    uam::strings::IsBlank(snapshot.workspace_directory) && uam::strings::IsBlank(snapshot.workspace_worktree_directory))
-			snapshot.workspace_directory = uam::paths::Utf8PathString(uam::paths::ResolveControllerWorkspaceRootPath(app, snapshot));
+		if (uam::strings::IsBlank(snapshot.workspace_directory) && uam::strings::IsBlank(snapshot.workspace_worktree_directory))
+			snapshot.workspace_directory = uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, snapshot));
 	}
 
 	DeletedChatsSelection CollectChatsInFolder(const uam::AppState& app,
@@ -682,7 +682,7 @@ namespace
 		}
 
 		for (const ChatSession& chat : deleted_chats)
-			if (!uam::StageCliProviderContextCleanup(app, chat)) return false;
+			if (!uam::StageCliProviderContextCleanup(app, chat, next_chats)) return false;
 		return true;
 	}
 
@@ -728,11 +728,12 @@ namespace
 			const std::unordered_set<std::string> folder_ids(intent.folder_ids.begin(), intent.folder_ids.end());
 			std::erase_if(next_folders, [&folder_ids](const ChatFolder& folder) { return folder_ids.contains(uam::strings::Trim(folder.id)); });
 			if (!ChatFolderStore::Save(app.data_root, next_folders)) saved = false;
-			app.folders = next_folders;
 		}
+		// Cleanup staging can resolve a chat's workspace through its folder.
 		if (tombstones_saved && saved)
 			for (const ChatSession& chat : deleted_chats)
-				saved = uam::StageCliProviderContextCleanup(app, chat) && saved;
+				saved = uam::StageCliProviderContextCleanup(app, chat, app.chats) && saved;
+		app.folders = next_folders;
 		return saved;
 	}
 
@@ -1259,7 +1260,7 @@ bool uam::PollTemporarySideChatCleanup(AppState& app)
 		{
 			if (!chat->side_cleanup_stop_finished->load()) continue;
 			std::vector<AsyncAcpProcessStopTask>::iterator pending_stop = std::ranges::find_if(app.acp_process_stop_tasks, [&](const AsyncAcpProcessStopTask& task) { return task.finished == chat->side_cleanup_stop_finished; });
-			if (pending_stop != app.acp_process_stop_tasks.end() && pending_stop->observe_exit && !pending_stop->result->exit_confirmed)
+			if (pending_stop != app.acp_process_stop_tasks.end() && pending_stop->observe_exit && pending_stop->finished->load() && !pending_stop->result->exit_confirmed)
 			{
 				const std::shared_ptr<platform::StdioProcessPlatformFields> owned = pending_stop->owned_process;
 				const std::shared_ptr<platform::ObservedProcessStopResult> result = pending_stop->result;
@@ -1617,7 +1618,7 @@ bool uam::QueueHoldHasNoInput(const AppState& app, const ChatSession& chat)
 	const AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
 	// A storage-problem hold may own journal input that never loaded, so its empty queue proves nothing.
 	// Delivery clears a row's not-sent marker first, so an uncertain remote turn can leave no row to see.
-	return !ChatHasUncertainRemoteInput(chat) && !chat.acp_queue_storage_error && !chat.managed_followup_input_unavailable && chat.acp_queued_prompts.empty() && chat.acp_dispatched_queued_prompt_count == 0 && chat.acp_unsent_prompt_recoveries.empty() &&
+	return !ChatHasUncertainRemoteInput(chat) && !chat.acp_queue_storage_error && !chat.managed_followup_input_unavailable && chat.acp_queued_prompts.empty() && chat.acp_dispatched_queued_prompt_count == 0 && !ChatHasActionableUnsentRecovery(chat) &&
 	    (session == nullptr || session->queued_user_prompts.empty()) &&
 	    // A removed row keeps its not-sent marker for history but no longer holds input.
 	    std::ranges::none_of(chat.messages, &Message::AcpPromptAwaitsDecision);
@@ -1705,7 +1706,7 @@ const char* uam::NativeResetRefusalReason(const AppState& app, const ChatSession
 	if (chat.acp_queue_storage_error || chat.managed_followup_input_unavailable) return kQueueStorageRefusal;
 	if (!chat.acp_queued_prompts.empty() || chat.acp_dispatched_queued_prompt_count != 0 || (session != nullptr && !session->queued_user_prompts.empty()))
 		return ScanProviderSwitchQueue(app, chat).clearable ? kHeldQueueRefusal : "This chat has held input with no control. Change the chat's provider and accept the warning, then try again.";
-	if (ChatHasUnsentAcpPrompt(app, chat) || !chat.acp_unsent_prompt_recoveries.empty()) return kUnsentRefusal;
+	if (ChatHasUnsentAcpPrompt(app, chat) || ChatHasActionableUnsentRecovery(chat)) return kUnsentRefusal;
 	// The old turn may already have run this row; a handoff would send it again.
 	if (ChatHasUncertainRemoteInput(chat) && std::ranges::any_of(chat.messages, &Message::AcpPromptAwaitsDecision))
 		return "UAM cannot confirm whether this chat's latest message reached the provider. Wait for that turn to settle, or change the chat's provider and accept the warning, then try again.";
@@ -1807,6 +1808,8 @@ uam::ChatProviderSwitchResult uam::SwitchChatProvider(AppState& app, std::string
 	chat->provider_handoff_session_id.clear();
 	chat->provider_id = provider->id;
 	uam::provider_chat_defaults::ApplyToChat(app.settings, *chat);
+	// The chat keeps its own permission level and memory; only model, reasoning and speed come from the new provider's defaults.
+	uam::provider_chat_defaults::KeepPermissionLevel(*chat, previous_chat);
 	chat->memory_level = previous_chat.memory_level;
 	chat->memory_enabled = previous_chat.memory_enabled;
 	for (Goal& goal : chat->goals)
@@ -1861,6 +1864,7 @@ uam::ChatProviderSwitchResult uam::SwitchChatProvider(AppState& app, std::string
 		}
 		return ChatProviderSwitchResult::SaveFailed;
 	}
+	uam::permission_log::RecordChange(previous_chat, *chat, uam::permission_log::kSourceSwitch);
 
 	(void)ComputerUseService::SetControlState(app, chat->id, "stopped");
 	if (session != nullptr && session->running) (void)StopAcpSession(app, chat->id);
@@ -2147,8 +2151,8 @@ bool uam::PrepareWorkspaceDeletion(AppState& app, const std::vector<std::string>
 	for (const ChatSession& chat : deleted.chats)
 	{
 		const std::string host_id = uam::strings::NonEmptyOrFallback(uam::strings::Trim(chat.execution_host_id), "local");
-		const std::unordered_map<std::string, std::weak_ptr<void>>::const_iterator lease = app.remote_vcs_operation_leases_by_host_id.find(host_id);
-		if (lease != app.remote_vcs_operation_leases_by_host_id.end() && !lease->second.expired())
+		const auto lease = app.remote_vcs_operation_leases_by_host_id.find(host_id);
+		if (lease != app.remote_vcs_operation_leases_by_host_id.end() && !lease->second.idle())
 		{
 			app.status_line = "Wait for the workspace operation to finish.";
 			return false;
@@ -2247,8 +2251,8 @@ bool uam::PrepareChatDeletion(AppState& app, const std::vector<std::string>& cha
 			return false;
 		}
 		const std::string host_id = uam::strings::NonEmptyOrFallback(uam::strings::Trim(chat->execution_host_id), "local");
-		const std::unordered_map<std::string, std::weak_ptr<void>>::const_iterator lease = app.remote_vcs_operation_leases_by_host_id.find(host_id);
-		if (lease != app.remote_vcs_operation_leases_by_host_id.end() && !lease->second.expired())
+		const auto lease = app.remote_vcs_operation_leases_by_host_id.find(host_id);
+		if (lease != app.remote_vcs_operation_leases_by_host_id.end() && !lease->second.idle())
 		{
 			app.status_line = "Wait for the workspace operation to finish.";
 			return false;

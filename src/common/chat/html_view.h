@@ -51,7 +51,7 @@ namespace uam::html_view
 	}
 
 	/// <summary>Static checks for content the sandbox will block, so the agent can fix it before publishing.</summary>
-	/// ponytail: substring heuristics, not a renderer; add a real offscreen render if agents need runtime errors.
+	/// ponytail: substring heuristics, not a renderer; html_view_render_check.h covers what the page does when it runs.
 	inline std::vector<std::string> Diagnostics(std::string_view html)
 	{
 		const std::string lower = uam::strings::ToLowerAscii(std::string(html));

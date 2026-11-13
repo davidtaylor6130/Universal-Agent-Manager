@@ -5,10 +5,12 @@ import { CustomIcon, useCustomIconPicker } from '../shared/CustomIcon'
 import { isCompanionContext } from '../../ipc/cefBridge'
 import { reportAppFailure } from '../../utils/appFailure'
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, useMemo, useSyncExternalStore } from 'react'
-import type { MouseEvent as ReactMouseEvent, ReactNode, RefObject } from 'react'
+import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode, RefObject } from 'react'
+import { automationStartPending, subscribeOutgoingAttempts } from '../../utils/outgoingMessagePresentation'
 import { Check, Plus, Folder as FolderIcon, FolderOpen as FolderOpenIcon, FolderSync, X, MoreHorizontal, MessageSquarePlus, Pencil, Trash2, TriangleAlert, ChevronRight, Library, SearchX, RefreshCw, Monitor, Server } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useAppStore, type AcpAttentionKind } from '../../store/useAppStore'
+import type { AppState } from '../../store/storeTypes'
 import { useShallow } from 'zustand/react/shallow'
 import { shallow } from 'zustand/shallow'
 import { SessionItem } from './SessionItem'
@@ -23,9 +25,10 @@ import {
   tokenizeChatSearchQuery,
 } from './chatSearch'
 import type { Folder, Session, WorkspaceFolderRecoveryPreview } from '../../types/session'
-import { chatGridLeaves, chatPaneColors, readChatGridLayout, subscribeChatGridLayout } from '../../utils/chatGridStorage'
+import { chatGridLeaves, chatPaneColors, readChatGridLayout, setChatInLeaf, subscribeChatGridLayout, writeChatGridLayout } from '../../utils/chatGridStorage'
 import { CollectionMenuItems, moveFolderToCollection } from './CollectionMenuItems'
 import { RowSubmenu } from './RowSubmenu'
+import { applyManualOrder, ChatSortContext, glideAfter, isSorting, MAX_SORTED_CHATS, startSortableDrag, type ChatSortList } from './sortableDrag'
 import { ChatSelectionContext, MenuDivider, SingleOnlyMenuItem, type ChatSelection } from './bulkActions'
 import { runForEach, type BulkTarget } from '../../utils/runForEach'
 import type { ResourceCollection } from '../../types/resourceCollection'
@@ -155,6 +158,8 @@ function SidebarSectionHeader({ label, listId, expanded, onToggle, trailing, act
   return action ? <div className="group/section relative flex items-center">{toggle}<div className="absolute right-2 hidden group-hover/section:flex group-focus-within/section:flex">{action}</div></div> : toggle
 }
 
+const countAutomationStarts = (state: AppState) => state.sessions.filter((chat) => automationStartPending(chat, state.acpBindingBySessionId[chat.id]?.pendingDirectPrompts)).length
+
 export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessionOpen }: FolderTreeProps) {
   const navigationRevision = useSyncExternalStore(subscribeSubagentNavigation, subagentNavigationRevision)
   const companionContext = isCompanionContext()
@@ -162,15 +167,19 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
   const sessions = useAppStore(useShallow((s) => s.sessions))
   const executionHosts = useAppStore(useShallow((s) => s.executionHosts))
   const resourceCollections = useAppStore(useShallow((s) => s.resourceCollections))
-  const runtimeStatuses = useAppStore(useShallow((s) => sessions.map(({ id }) => combinedRuntimeStatus(
-    s.cliBindingBySessionId[id],
-    s.acpBindingBySessionId[id],
-  ))))
+  // Attempts live outside the app store, so their changes need their own re-render; the selector then reads them.
+  useSyncExternalStore(subscribeOutgoingAttempts, () => countAutomationStarts(useAppStore.getState()))
+  const runtimeStatuses = useAppStore(useShallow((s) => sessions.map((chat) => {
+    const status = combinedRuntimeStatus(s.cliBindingBySessionId[chat.id], s.acpBindingBySessionId[chat.id])
+    return (!status || status === 'done') && automationStartPending(chat, s.acpBindingBySessionId[chat.id]?.pendingDirectPrompts) ? 'processing' : status
+  })))
   const runtimeStatusBySessionId = useMemo(
     () => new Map(sessions.map((session, index) => [session.id, runtimeStatuses[index]])),
     [runtimeStatuses, sessions],
   )
   const snoozeNowMs = useSnoozeClock(sessions)
+  const prWatches = useAppStore((s) => s.prWatches)
+  const watchingSessionIds = useMemo(() => new Set(prWatches.filter((watch) => watch.watching).map((watch) => watch.chatId)), [prWatches])
   const runtimeBindings = useMemo<ChatSearchFilterContext>(() => {
     const acpBindingBySessionId: NonNullable<ChatSearchFilterContext['acpBindingBySessionId']> = {}
     sessions.forEach((session, index) => {
@@ -179,8 +188,8 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
       else if (status === 'done') acpBindingBySessionId[session.id] = { readySinceLastSelect: true }
       else if (status) acpBindingBySessionId[session.id] = { attentionKind: status.slice('attention:'.length) as AcpAttentionKind }
     })
-    return { acpBindingBySessionId, nowMs: snoozeNowMs }
-  }, [runtimeStatuses, sessions, snoozeNowMs])
+    return { acpBindingBySessionId, nowMs: snoozeNowMs, watchingSessionIds }
+  }, [runtimeStatuses, sessions, snoozeNowMs, watchingSessionIds])
   const toggleFolder        = useAppStore((s) => s.toggleFolder)
   const addFolder           = useAppStore((s) => s.addFolder)
   const renameFolder        = useAppStore((s) => s.renameFolder)
@@ -237,8 +246,23 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
   const [recoveryLoading, setRecoveryLoading] = useState(false)
   const [recoveryApplying, setRecoveryApplying] = useState(false)
   const [gridLayout, setGridLayout] = useState(readChatGridLayout)
-  const [draggedFolderId, setDraggedFolderId] = useState<string | null>(null)
-  const [folderDropTarget, setFolderDropTarget] = useState<{ id: string; edge: FolderDropEdge } | null>(null)
+  // Outlines the collection a dragged workspace would join, straight on the DOM so the tree never re-renders mid-drag.
+  const showFolderDropTarget = (collectionId: string | null) => {
+    for (const element of treeRef.current?.querySelectorAll<HTMLElement>('[data-drop-collection-id]') ?? []) {
+      element.classList.toggle('uam-sb-drop-target', element.dataset.dropCollectionId === collectionId)
+    }
+  }
+  const pinnedChatOrder = useAppStore((s) => s.sidebarPinnedChatOrder)
+  const activeChatOrder = useAppStore((s) => s.sidebarActiveChatOrder)
+  // Pinned and Active rows reach the latest drag and keyboard handlers through a stable context value.
+  const chatSortRef = useRef<{ start: (list: ChatSortList, sessionId: string, event: ReactPointerEvent<HTMLElement>) => void; move: (list: ChatSortList, sessionId: string, direction: -1 | 1) => void } | null>(null)
+  const chatSort = useMemo(() => ({
+    start: (list: ChatSortList, sessionId: string, event: ReactPointerEvent<HTMLElement>) => chatSortRef.current?.start(list, sessionId, event),
+    move: (list: ChatSortList, sessionId: string, direction: -1 | 1) => chatSortRef.current?.move(list, sessionId, direction),
+  }), [])
+  // Written directly so announcing a drag never re-renders the whole tree.
+  const moveStatusRef = useRef<HTMLDivElement>(null)
+  const setMoveAnnouncement = (text: string) => { if (moveStatusRef.current) moveStatusRef.current.textContent = text }
   const addControlsRef = useRef<HTMLDivElement>(null)
   const treeRef = useRef<HTMLDivElement>(null)
   const unsortedMenuTriggerRef = useRef<HTMLButtonElement>(null)
@@ -333,13 +357,13 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
   const activeStatusCounts = useMemo(() => {
     const counts = { running: 0, attention: 0, done: 0 }
     for (const sessionId of searchModel.activeSessionIds) {
-      const status = runtimeStatusBySessionId.get(sessionId)
+      const status = sessionsById.get(sessionId)?.automationPendingPrompt ? 'attention:automation' : runtimeStatusBySessionId.get(sessionId)
       if (status === 'processing') counts.running += 1
       else if (status?.startsWith('attention:')) counts.attention += 1
       else if (status === 'done') counts.done += 1
     }
     return counts
-  }, [runtimeStatusBySessionId, searchModel.activeSessionIds])
+  }, [runtimeStatusBySessionId, searchModel.activeSessionIds, sessionsById])
   const activeStatusSummary = [
     activeStatusCounts.running ? `${activeStatusCounts.running} running` : '',
     activeStatusCounts.attention ? `${activeStatusCounts.attention} attention` : '',
@@ -792,10 +816,6 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
         selectionTargets={!companionContext && selectedCollectionIds.has(collection.id) ? selectedCollectionTargets : null}
         onHeaderClick={(event) => handleCollectionClick(collection.id, event)}
         onDeleteSelected={requestCollectionDelete}
-        onFolderDrop={(folderId) => {
-          const folder = folders.find((item) => item.id === folderId)
-          if (folder) void moveFolderToCollection(collection.id, folder.id, folder.name)
-        }}
       >
         {collectionGroups.filter((group) => parentOf(group.collection) === collection.id).map(renderCollection)}
         {folderRows.map(renderFolderRow)}
@@ -803,8 +823,8 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
     )
   }
 
-  const commitFolderMove = (sourceId: string, targetId: string, edge: FolderDropEdge) => {
-    if (sourceId === targetId) return
+  const commitFolderMove = async (sourceId: string, targetId: string, edge: FolderDropEdge): Promise<boolean> => {
+    if (sourceId === targetId) return false
     const sourceCollectionId = folderCollectionIds.get(sourceId)
     const targetCollectionId = folderCollectionIds.get(targetId)
     if (sourceCollectionId && sourceCollectionId === targetCollectionId) {
@@ -812,23 +832,142 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
       const referenceIds = collection
         ? reorderCollectionFolderReferences(collection, sourceId, targetId, edge)
         : null
-      if (referenceIds) void reorderResourceReferences(sourceCollectionId, referenceIds)
-      return
+      return referenceIds ? reorderResourceReferences(sourceCollectionId, referenceIds) : false
     }
     if (!sourceCollectionId && !targetCollectionId) {
-      void reorderFolders(moveId(folders.map((folder) => folder.id), sourceId, targetId, edge))
+      return reorderFolders(moveId(folders.map((folder) => folder.id), sourceId, targetId, edge))
     }
+    return false
+  }
+
+  const folderListOf = (folderId: string) => {
+    const collectionId = folderCollectionIds.get(folderId)
+    return collectionId
+      ? collectionGroups.find(({ collection }) => collection.id === collectionId)?.folderRows ?? []
+      : ungroupedFolderRows
+  }
+  const announcePosition = (folderId: string, ids: readonly string[]) => {
+    const name = folders.find((folder) => folder.id === folderId)?.name ?? 'Workspace'
+    setMoveAnnouncement(`${name} moved to position ${ids.indexOf(folderId) + 1} of ${ids.length}`)
   }
 
   const moveFolderWithKeyboard = (sourceId: string, direction: -1 | 1) => {
-    const collectionId = folderCollectionIds.get(sourceId)
-    const rows = collectionId
-      ? collectionGroups.find(({ collection }) => collection.id === collectionId)?.folderRows ?? []
-      : ungroupedFolderRows
+    if (isSorting()) return
+    const rows = folderListOf(sourceId)
     const sourceIndex = rows.findIndex(({ folder }) => folder.id === sourceId)
     const target = rows[sourceIndex + direction]
-    if (target) commitFolderMove(sourceId, target.folder.id, direction < 0 ? 'before' : 'after')
+    if (!target) return
+    const ids = rows.map(({ folder }) => folder.id)
+    ids.splice(sourceIndex + direction, 0, ...ids.splice(sourceIndex, 1))
+    const row = () => sortRow(treeRef.current, sourceId)
+    const header = () => row()?.querySelector<HTMLElement>('[data-workspace-id]')
+    void glideAfter(row(), () => commitFolderMove(sourceId, target.folder.id, direction < 0 ? 'before' : 'after')).then((moved) => {
+      if (!moved) return
+      announcePosition(sourceId, ids)
+      // Reordering moves DOM nodes, which can drop focus; keep it on the moved workspace.
+      if (document.activeElement !== header()) header()?.focus()
+    })
   }
+
+  const startFolderDrag = (folder: Folder, event: ReactPointerEvent<HTMLElement>) => {
+    const ownCollectionId = folderCollectionIds.get(folder.id) ?? ''
+    startSortableDrag(event, {
+      targetAt: (x, y) => {
+        const under = document.elementFromPoint?.(x, y)
+        if (!under?.closest('#all-chat-list')) return null
+        // The innermost collection under the pointer, or '' outside every collection; the row's own list sorts.
+        const collectionId = under.closest<HTMLElement>('[data-drop-collection-id]')?.dataset.dropCollectionId ?? ''
+        return collectionId === ownCollectionId ? null : collectionId
+      },
+      onTargetChange: showFolderDropTarget,
+      onStart: () => setMoveAnnouncement(`Moving ${folder.name}. Press Escape to cancel.`),
+      onCancel: () => setMoveAnnouncement(`Move of ${folder.name} cancelled`),
+      onDrop: async ({ order, target }) => {
+        if (target !== null) {
+          const moved = await moveFolderToCollection(target || null, folder.id, folder.name)
+          const collectionName = resourceCollections.find((collection) => collection.id === target)?.name
+          if (moved) setMoveAnnouncement(collectionName ? `${folder.name} moved into ${collectionName}` : `${folder.name} removed from its collection`)
+          return moved
+        }
+        const index = order.indexOf(folder.id)
+        const neighbour = order[index - 1] ?? order[index + 1]
+        const moved = neighbour ? await commitFolderMove(folder.id, neighbour, index > 0 ? 'after' : 'before') : false
+        if (moved) announcePosition(folder.id, order)
+        return moved
+      },
+    })
+  }
+
+  const chatSortIds = { pinned: applyManualOrder(searchModel.pinnedSessionIds, pinnedChatOrder), active: applyManualOrder(searchModel.activeSessionIds, activeChatOrder) }
+  // A placed chat that leaves Active (Done, Clear all, snooze, inactivity) or is unpinned drops out of the saved order,
+  // so when it comes back it arrives on top like any new arrival. Chats that stay keep their place.
+  // ponytail: a refused prune is not retried in this session; the next reorder saves the visible list anyway.
+  const triedPrunesRef = useRef(new Set<string>())
+  useEffect(() => {
+    if (searchModel.isSearching || companionContext) return
+    const active = new Set(searchModel.activeSessionIds)
+    const prune = (list: ChatSortList, saved: readonly string[], gone: (id: string) => boolean) => {
+      const kept = saved.filter((id) => !gone(id))
+      const key = `${list}:${kept.join('\n')}`
+      if (kept.length === saved.length || triedPrunesRef.current.has(key)) return
+      triedPrunesRef.current.add(key)
+      void useAppStore.getState().setSidebarChatOrder(list, kept)
+    }
+    // Only chats that still exist are judged, so a chat list that has not loaded yet prunes nothing.
+    prune('active', activeChatOrder, (id) => sessionsById.has(id) && !active.has(id))
+    prune('pinned', pinnedChatOrder, (id) => sessionsById.get(id)?.isPinned === false)
+  }, [activeChatOrder, companionContext, pinnedChatOrder, searchModel.activeSessionIds, searchModel.isSearching, sessionsById])
+  const chatListElement = (list: ChatSortList) => document.getElementById(list === 'pinned' ? 'pinned-chat-list' : 'active-chat-list')
+  const chatName = (sessionId: string) => sessionsById.get(sessionId)?.name || 'Chat'
+  const announceChatPosition = (sessionId: string, ids: readonly string[]) =>
+    setMoveAnnouncement(`${chatName(sessionId)} moved to position ${ids.indexOf(sessionId) + 1} of ${ids.length}`)
+  const showPaneDropTarget = (leafId: string | null) => {
+    for (const element of document.querySelectorAll<HTMLElement>('[data-leaf-id]')) element.toggleAttribute('data-pointer-drop', element.dataset.leafId === leafId)
+  }
+  // Active saves exactly what it shows, so a chat that left drops its old place. A snoozed pin is hidden from
+  // Pinned for a while, so it keeps its saved place after the visible ones.
+  const saveChatOrder = (list: ChatSortList, ids: string[]) => useAppStore.getState().setSidebarChatOrder(list,
+    list === 'pinned' ? [...ids, ...pinnedChatOrder.filter((id) => !ids.includes(id))] : ids)
+  chatSortRef.current = {
+    start: (list, sessionId, event) => startSortableDrag(event, {
+      // Dragging a Pinned or Active chat onto a chat pane still opens it there, as dragging any chat row does.
+      targetAt: (x, y) => {
+        const leafId = document.elementFromPoint?.(x, y)?.closest<HTMLElement>('[data-leaf-id]')?.dataset.leafId
+        return leafId ? `pane:${leafId}` : null
+      },
+      onTargetChange: (target) => showPaneDropTarget(target?.slice('pane:'.length) ?? null),
+      onStart: () => setMoveAnnouncement(`Moving ${chatName(sessionId)}. Press Escape to cancel.`),
+      onCancel: () => setMoveAnnouncement(`Move of ${chatName(sessionId)} cancelled`),
+      onDrop: async ({ order, target }) => {
+        if (target !== null) {
+          writeChatGridLayout(setChatInLeaf(readChatGridLayout(), sessionId, target.slice('pane:'.length)))
+          useAppStore.getState().setActiveSession(sessionId)
+          setMoveAnnouncement(`${chatName(sessionId)} opened in the pane`)
+          return true
+        }
+        const saved = await saveChatOrder(list, order)
+        if (saved) announceChatPosition(sessionId, order)
+        return saved
+      },
+    }),
+    move: (list, sessionId, direction) => {
+      if (isSorting()) return
+      const ids = [...chatSortIds[list]]
+      const index = ids.indexOf(sessionId)
+      if (index < 0) return
+      if (!ids[index + direction]) { setMoveAnnouncement(`${chatName(sessionId)} is already ${direction < 0 ? 'first' : 'last'}`); return }
+      ids.splice(index + direction, 0, ...ids.splice(index, 1))
+      const row = () => sortRow(chatListElement(list), sessionId)
+      void glideAfter(row(), () => saveChatOrder(list, ids)).then((moved) => {
+        if (!moved) return
+        announceChatPosition(sessionId, ids)
+        const focusTarget = row()?.querySelector<HTMLElement>('[data-session-id]')
+        if (focusTarget && document.activeElement !== focusTarget) focusTarget.focus()
+      })
+    },
+  }
+  // Sorting is for the plain lists: search shows a filtered view, and the phone companion only browses.
+  const chatSortList = (list: ChatSortList) => searchModel.isSearching || companionContext || chatSortIds[list].length > MAX_SORTED_CHATS ? undefined : list
 
   const renderActivitySessionItem = (id: string) => {
     const activitySession = sessionsById.get(id)
@@ -848,6 +987,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
         activityHostLabel={`Runs on ${host?.label || hostId}`}
         activityHostRemote={SSH_ENABLED && hostId !== 'local'}
         onSessionClick={handleSessionClick} onSessionOpen={onSessionOpen}
+        sortList={chatSortList('active')}
       />
     )
   }
@@ -899,22 +1039,15 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
       selectedSessionIds={companionContext ? EMPTY_SELECTION_IDS : selectedSessionIds}
       onSessionClick={handleSessionClick} onSessionOpen={onSessionOpen}
       draggable={!searchModel.isSearching && !isCompanionContext()}
-      dropEdge={folderDropTarget?.id === folder.id ? folderDropTarget.edge : null}
-      onDragStart={() => setDraggedFolderId(folder.id)}
-      onDragOver={(edge) => setFolderDropTarget({ id: folder.id, edge })}
-      onDragEnd={() => { setDraggedFolderId(null); setFolderDropTarget(null) }}
+      onDragPointerDown={(event) => startFolderDrag(folder, event)}
       onMove={(direction) => moveFolderWithKeyboard(folder.id, direction)}
-      onDrop={(edge) => {
-        if (draggedFolderId) commitFolderMove(draggedFolderId, folder.id, edge)
-        setDraggedFolderId(null)
-        setFolderDropTarget(null)
-      }}
     />
   }
 
   return (
     <SubagentSearchMatches.Provider value={searchModel.matchedSubagentChildIds}>
     <ChatSelectionContext.Provider value={chatSelection}>
+    <ChatSortContext.Provider value={chatSort}>
     <div ref={treeRef} className="select-none"
       onContextMenuCapture={(event) => { if (isCompanionContext()) { event.preventDefault(); event.stopPropagation() } }}
       onDragStartCapture={(event) => { if (isCompanionContext()) { event.preventDefault(); event.stopPropagation() } }}
@@ -996,7 +1129,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
             {...(!activeExpanded ? { inert: '' } : {})}
           >
             <div className="uam-sb-collapse__inner">
-              {activeList.mounted && searchModel.activeSessionIds.map(renderActivitySessionItem)}
+              {activeList.mounted && chatSortIds.active.map(renderActivitySessionItem)}
             </div>
           </div>
           {!activeExpanded && activeStatusCounts.attention > 0 && (
@@ -1047,8 +1180,8 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
             {...(!pinnedExpanded ? { inert: '' } : {})}
           >
             <div className="uam-sb-collapse__inner">
-              {pinnedList.mounted && searchModel.pinnedSessionIds.map((id) => (
-                <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} familySessionIds={familySessionIdsByRootId.get(id)} selected={rowSelection(id)} onSessionClick={handleSessionClick} onSessionOpen={onSessionOpen} />
+              {pinnedList.mounted && chatSortIds.pinned.map((id) => (
+                <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} familySessionIds={familySessionIdsByRootId.get(id)} selected={rowSelection(id)} onSessionClick={handleSessionClick} onSessionOpen={onSessionOpen} sortList={chatSortList('pinned')} />
               ))}
             </div>
           </div>
@@ -1422,11 +1555,17 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
         {workspaceDeleteChatCount > 0 && <p className="mt-2 text-xs" style={{ color: 'var(--error)' }}>Deleted chats cannot be restored from this app.</p>}
         {deletingFolder && <DeletionProgressBar label={workspaceDeleteCount === 1 ? 'Deleting workspace' : 'Deleting workspaces'} className="mt-2" />}
       </DeleteConfirmDialog>
+      <div ref={moveStatusRef} className="sr-only" role="status" aria-live="polite" data-testid="sidebar-move-status" />
     </div>
+    </ChatSortContext.Provider>
     </ChatSelectionContext.Provider>
     </SubagentSearchMatches.Provider>
   )
 }
+
+/** The sortable row with `id` inside `scope`; chat ids can appear in both Pinned and Active, so callers scope the lookup. */
+const sortRow = (scope: ParentNode | null | undefined, id: string) =>
+  Array.from(scope?.querySelectorAll<HTMLElement>('[data-sort-id]') ?? []).find((row) => row.dataset.sortId === id)
 
 const COLLECTION_DRAG_TYPE = 'text/x-uam-collection-id'
 // dataTransfer values are unreadable during dragover, so valid drop targets read the dragged id from here.
@@ -1499,12 +1638,12 @@ async function moveCollection(collectionId: string, parentId: string | null) {
   return false
 }
 
-function FolderCollection({ collection, folderCount, hiddenPaneColors, selected, selectionTargets, onHeaderClick, onDeleteSelected, onFolderDrop, children }: {
+function FolderCollection({ collection, folderCount, hiddenPaneColors, selected, selectionTargets, onHeaderClick, onDeleteSelected, children }: {
   collection: ResourceCollection; folderCount: number; hiddenPaneColors: string[]; selected: boolean
   /** Selected collections the menu acts on when this header is part of a multi-selection. */
   selectionTargets: BulkTarget[] | null
   onHeaderClick: (event: ReactMouseEvent<HTMLElement>) => void; onDeleteSelected: () => void
-  onFolderDrop: (folderId: string) => void; children: ReactNode
+  children: ReactNode
 }) {
   const iconPicker = useCustomIconPicker()
   const toggle = useAppStore((state) => state.toggleResourceCollection)
@@ -1574,27 +1713,27 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
 
   return (
     <div
-      className="mb-0"
       data-testid={`folder-collection-${collection.id}`}
+      // Workspace rows drag by pointer (sortableDrag) and find their target collection through this attribute.
+      data-drop-collection-id={collection.id}
+      // The lifted workspace covers the header, so a workspace drop outlines the whole collection (uam-sb-drop-target).
+      className="mb-0 rounded-md"
       onDragOver={(event) => {
-        const nesting = isCollectionDrag(event)
-        if (!nesting && !event.dataTransfer.types.includes('text/x-uam-folder-resource-id')) return
+        if (!isCollectionDrag(event)) return
         // Only the innermost collection is a target; invalid nesting targets do not accept the drop.
         event.stopPropagation()
-        if (nesting && (!draggedCollectionId || !canNestCollection(collections, draggedCollectionId, collection.id))) return
+        if (!draggedCollectionId || !canNestCollection(collections, draggedCollectionId, collection.id)) return
         event.preventDefault()
         setDropTarget(true)
       }}
       onDragLeave={() => setDropTarget(false)}
       onDrop={(event) => {
         const nestedId = event.dataTransfer.getData(COLLECTION_DRAG_TYPE)
-        const folderId = event.dataTransfer.getData('text/x-uam-folder-resource-id')
-        if (!nestedId && !folderId) return
+        if (!nestedId) return
         event.preventDefault()
         event.stopPropagation()
         setDropTarget(false)
-        if (nestedId) { if (canNestCollection(collections, nestedId, collection.id)) void moveCollection(nestedId, collection.id) }
-        else onFolderDrop(folderId)
+        if (canNestCollection(collections, nestedId, collection.id)) void moveCollection(nestedId, collection.id)
       }}
     >
       <Tooltip label={isCompanionContext() ? undefined : 'Shift-click to select collections'}>
@@ -1966,12 +2105,8 @@ interface FolderRowProps {
   onSessionOpen?: (sessionId: string) => void
   onSessionClick: (sessionId: string, event: ReactMouseEvent<HTMLDivElement>) => boolean
   draggable: boolean
-  dropEdge: FolderDropEdge | null
-  onDragStart: () => void
-  onDragOver: (edge: FolderDropEdge) => void
-  onDragEnd: () => void
+  onDragPointerDown: (event: ReactPointerEvent<HTMLElement>) => void
   onMove: (direction: -1 | 1) => void
-  onDrop: (edge: FolderDropEdge) => void
 }
 
 const FolderRow = memo(function FolderRow({
@@ -2003,12 +2138,8 @@ const FolderRow = memo(function FolderRow({
   onSessionClick,
   onSessionOpen,
   draggable,
-  dropEdge,
-  onDragStart,
-  onDragOver,
-  onDragEnd,
+  onDragPointerDown,
   onMove,
-  onDrop,
 }: FolderRowProps) {
   const iconPicker = useCustomIconPicker()
   const host = useAppStore((state) => state.executionHosts.find((candidate) => candidate.id === (folder.executionHostId || 'local')))
@@ -2048,35 +2179,7 @@ const FolderRow = memo(function FolderRow({
     <div
       className="mb-0"
       data-testid={`folder-row-${folder.id}`}
-      draggable={draggable}
-      onDragStart={(event) => {
-        event.dataTransfer.effectAllowed = 'move'
-        event.dataTransfer.setData('text/x-uam-folder-id', folder.id)
-        event.dataTransfer.setData('text/x-uam-folder-resource-id', folder.id)
-        onDragStart()
-      }}
-      onDragOver={(event) => {
-        // Only workspace drags reorder rows; a collection drag passes through to the enclosing collection or list.
-        if (!draggable || !event.dataTransfer.types.includes('text/x-uam-folder-id')) return
-        event.preventDefault()
-        const rect = event.currentTarget.getBoundingClientRect()
-        onDragOver(event.clientY < rect.top + rect.height / 2 ? 'before' : 'after')
-      }}
-      onDrop={(event) => {
-        if (!event.dataTransfer.types.includes('text/x-uam-folder-id')) return
-        event.preventDefault()
-        const rect = event.currentTarget.getBoundingClientRect()
-        onDrop(event.clientY < rect.top + rect.height / 2 ? 'before' : 'after')
-      }}
-      onDragEnd={onDragEnd}
-      style={{
-        boxShadow:
-          dropEdge === 'before'
-            ? 'inset 0 2px var(--accent)'
-            : dropEdge === 'after'
-              ? 'inset 0 -2px var(--accent)'
-              : 'none',
-      }}
+      data-sort-id={folder.id}
     >
       {/* Folder header; its actions button is a sibling, not nested inside the role=button header. */}
       <div
@@ -2105,6 +2208,7 @@ const FolderRow = memo(function FolderRow({
           color: selected ? 'var(--text)' : 'var(--text-2)',
         }}
         onClick={onToggle}
+        onPointerDown={draggable && !isEditing ? onDragPointerDown : undefined}
         onKeyDown={(event) => {
           if (event.currentTarget !== event.target) return
           if (event.key === 'Enter' || event.key === ' ') {

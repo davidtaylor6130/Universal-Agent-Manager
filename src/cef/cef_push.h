@@ -36,6 +36,13 @@ namespace uam
 	/// </summary>
 	bool DeferredStatePushDue();
 	/// <summary>
+	/// True when a push reused stamped values and the reconciliation interval has since elapsed: the poll loop
+	/// then runs one verifying push even though no stage reported a change.
+	/// </summary>
+	bool StateReconciliationDue();
+	/// <summary>After every push, recompute the stamped values from their sources and count differences (StateSerializer::CacheDivergenceCount).</summary>
+	void SetStateCacheVerificationAfterEveryPushForTests(bool verify);
+	/// <summary>
 	/// Milliseconds (at least 1) until the pending deferred summary is due; the poll
 	/// scheduler caps its next delay with this so slow idle ticks never hold it back.
 	/// </summary>
@@ -70,8 +77,18 @@ namespace uam
 	void PushCliOutput(CefRefPtr<CefBrowser> browser, const std::string& frontend_chat_id, const std::string& source_chat_id, const std::string& terminal_id, double startup_time_s, const std::string& raw_bytes);
 
 	/// <summary>
+	/// Reports how much of a large attachment has been copied; safe to call from a worker thread.
+	/// </summary>
+	void PushAttachmentProgress(CefRefPtr<CefBrowser> browser, const std::string& chat_id, const std::string& attachment_id, std::uintmax_t copied_bytes, std::uintmax_t total_bytes);
+
+	/// <summary>
 	/// Delivers one native speech-recognition event to the prompt composer.
 	/// </summary>
 	void PushDictationEvent(CefRefPtr<CefBrowser> browser, const DictationEvent& event);
+
+	/// <summary>
+	/// Replaces the desktop's list of phone requests waiting for confirmation (id, chat, description, expiry only).
+	/// </summary>
+	void PushCompanionConfirmations(CefRefPtr<CefBrowser> browser, const nlohmann::json& items);
 
 } // namespace uam

@@ -69,7 +69,7 @@ bool CodexGoalReceiptMatchesOwner(const AcpSessionState& session, const ChatSess
 		(!owner.process_id.empty() && owner.process_id != session.last_process_id) ||
 		session.session_id != owner.thread_id || chat.goal_command_revision != owner.revision ||
 		(require_active && (chat.active_goal_id != owner.goal_id || chat.imported_read_only ||
-		session.active_uam_agent_workspace_access == "read" || session.goal_review_turn || session.goal_internal_session ||
+		session.active_uam_agent_workspace_access != "write" || session.goal_review_turn || session.goal_internal_session ||
 		chat.approval_mode == uam::approval_modes::kPlanApprovalMode || session.current_mode_id == uam::approval_modes::kPlanApprovalMode)))
 		return false;
 	for (const Goal& goal : chat.goals)
@@ -237,7 +237,7 @@ bool StartCodexNativeGoal(AppState& app, AcpSessionState& session, ChatSession& 
 	if (session.provider_id != uam::provider_ids::kCodexCli || session.session_id.empty() || !session.session_ready ||
 		!session.running || chat.imported_read_only || !chat.messages_loaded || session.current_mode_id == uam::approval_modes::kPlanApprovalMode ||
 		chat.approval_mode == uam::approval_modes::kPlanApprovalMode || session.cancel_requested ||
-		session.active_uam_agent_workspace_access == "read" || session.goal_review_turn || session.goal_internal_session ||
+		session.active_uam_agent_workspace_access != "write" || session.goal_review_turn || session.goal_internal_session ||
 		!chat.goal_owner_chat_id.empty() ||
 		session.local_stop_pending || session.remote_stop_pending)
 	{
@@ -328,6 +328,7 @@ bool StartCodexNativeGoal(AppState& app, AcpSessionState& session, ChatSession& 
 	if (goal.token_budget > 0 && goal.tokens_used >= goal.token_budget)
 	{
 		if (error_out != nullptr) *error_out = "The goal token budget is exhausted.";
+		goal.last_decision_source = kDecisionSourceFilter;
 		HoldCodexGoal(app, session, chat, goal.id, "native_goal_budget_exhausted");
 		return false;
 	}
@@ -590,6 +591,7 @@ void StartPendingCodexNativeGoalTurn(AppState& app, AcpSessionState& session, Ch
 	session.turn_user_message_index = user_index;
 	session.turn_assistant_message_index = -1;
 	session.turn_serial += 1;
+	chat.last_stop_reason.clear(); // A new turn must not inherit the previous turn's stop reason.
 	session.turn_started_time_s = GetAppTimeSeconds();
 	session.last_runtime_activity_time_s = session.turn_started_time_s;
 	session.goal_command_revision = chat.goal_command_revision;
@@ -659,6 +661,8 @@ bool ApplyCodexNativeGoalReceipt(AcpSessionState& session, ChatSession& chat, co
 		if (((mode == CodexGoalReceiptMode::Preparing && status == "paused") || status == "active") && (goal.token_budget <= 0 || total_used < goal.token_budget)) return true;
 		goal.status = status == "blocked" ? GoalStatus::Blocked : GoalStatus::Paused;
 		goal.last_diagnostic = status == "complete" ? "native_goal_complete_unverified" : "native_goal_" + status;
+		// A running status only reaches here over budget, which is UAM's rule; any other status came from the provider, which UAM did not review.
+		goal.last_decision_source = status == "active" || (mode == CodexGoalReceiptMode::Preparing && status == "paused") ? kDecisionSourceFilter : kDecisionSourceFallback;
 		chat.active_goal_id.clear();
 		chat.goal_pending_continuation_id.clear();
 		session.goal_resume_suppressed = true;
@@ -1030,7 +1034,8 @@ void BeginGoalReviewUsage(AcpSessionState& session, bool fresh_session)
 void RecordGoalReviewTurnUsage(AcpSessionState& session, std::int64_t tokens, bool incremental)
 {
 	auto& receipt = session.goal_review_usage;
-	if (!session.processing || !session.goal_review_turn || receipt.turn_serial != session.turn_serial || receipt.consumed || tokens < 0) return;
+	// Worker and reviewer turns share the receipt; it only counts the turn it was opened for.
+	if (!session.processing || receipt.turn_serial != session.turn_serial || receipt.consumed || tokens < 0) return;
 	if (session.session_id.empty() || (!receipt.session_id.empty() && receipt.session_id != session.session_id))
 	{
 		receipt.tokens.reset();
@@ -1056,7 +1061,7 @@ void RecordGoalReviewCumulativeUsage(AcpSessionState& session, std::int64_t toke
 	}
 	usage.goal_cumulative_total = std::max(usage.goal_cumulative_total.value_or(0), tokens);
 	auto& receipt = session.goal_review_usage;
-	if (!session.processing || !session.goal_review_turn || receipt.turn_serial != session.turn_serial || receipt.consumed) return;
+	if (!session.processing || receipt.turn_serial != session.turn_serial || receipt.consumed) return;
 	if (receipt.fresh_session && receipt.session_id.empty()) receipt.session_id = session.session_id;
 	if (session.session_id.empty() || receipt.session_id != session.session_id ||
 	    !receipt.cumulative_baseline)
@@ -1105,6 +1110,7 @@ bool PreservesGoalPlan(const Goal& goal, const GoalService::ReviewDecision& deci
 
 void ApplyGoalProgressUpdate(Goal& goal, const GoalService::ReviewDecision& decision)
 {
+	goal.last_decision_source = decision.source;
 	if (decision.has_progress_update && PreservesGoalPlan(goal, decision))
 	{
 		goal.completed_items = decision.completed_items;

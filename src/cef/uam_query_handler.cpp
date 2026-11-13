@@ -1,8 +1,13 @@
 #include "common/config/build_features.h"
 #include "cef/uam_query_handler.h"
 #include "cef/uam_bridge_request.h"
+#include "cef/pending_operation_gate.h"
 #include "cef/uam_cef_security.h"
+#include "common/chat/attachment_payload.h"
 #include "common/companion/protocol.h"
+#include "app/chat_domain_service.h"
+#include "cef/cef_push.h"
+#include "common/utils/nlohmann_json_utils.h"
 #include "cef/uam_window_chrome.h"
 #include "common/usage/multi_host_history.h"
 #include "common/platform/app_crash_supervisor.h"
@@ -16,6 +21,7 @@
 
 #include <nlohmann/json.hpp>
 #include <algorithm>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -156,6 +162,7 @@ UamQueryHandler::UamQueryHandler(uam::AppState& app, std::string trusted_ui_inde
 UamQueryHandler::UamQueryHandler(uam::AppState& app, std::string trusted_ui_index_url, bool start_background_readers)
     : m_app(app), m_trustedUiIndexUrl(std::move(trusted_ui_index_url))
 {
+	uam::attachment_payload::ShuttingDown().store(false); // A handler exists again: copies may run (tests and reloads build more than one).
 	if (start_background_readers)
 	{
 		m_usageHistory = std::make_shared<uam::usage::MultiHostHistory>(m_app.data_root, m_app.settings.execution_hosts);
@@ -163,10 +170,26 @@ UamQueryHandler::UamQueryHandler(uam::AppState& app, std::string trusted_ui_inde
 	}
 }
 
+CefRefPtr<CefTaskRunner> UamQueryHandler::SlowQueryRunner(const std::string& key)
+{
+	CefRefPtr<CefThread>& thread = m_slowQueries[std::hash<std::string>{}(key) % m_slowQueries.size()];
+	if (!thread) thread = CefThread::CreateThread("uam-slow-query");
+	return thread ? thread->GetTaskRunner() : nullptr;
+}
+
+CefRefPtr<CefTaskRunner> UamQueryHandler::SlowQueryRunner(const ChatSession& chat)
+{
+	const bool remote = !chat.execution_host_id.empty() && chat.execution_host_id != "local";
+	return SlowQueryRunner(remote ? chat.execution_host_id : chat.id);
+}
+
 UamQueryHandler::~UamQueryHandler()
 {
 	m_asyncLifetime.reset();
+	// Before the slow-query threads are joined: a large attachment copy stops instead of holding up exit.
+	uam::attachment_payload::ShuttingDown().store(true);
 	for (const std::pair<const std::string, std::shared_ptr<std::stop_source>>& request : m_titleRequests) request.second->request_stop();
+	for (const auto& request : m_vcsRequestStops) request.second->request_stop();
 	for (const auto& request : m_nativeHistoryRequests) request.second->request_stop();
 	m_remoteRefreshReadThreads.clear(); // Joins the stopped reads; each read is also bounded by its own deadline.
 	for (const auto& install : m_remoteInstallStops)
@@ -191,6 +214,10 @@ bool UamQueryHandler::StartCompanion(CefRefPtr<CefBrowser> browser)
 		const std::string action = request.at("action").get<std::string>();
 		nlohmann::json payload = request.value("payload", nlohmann::json::object());
 		if (action == "getProviderAllowances") uam::companion::ApplyKeychainPromptPolicy(action, payload, CompanionAllowsKeychainPrompts());
+		if (action == "resolveCompanionConfirmation") { callback->Failure(403, "Phone requests are confirmed on the desktop."); return; }
+		if (HoldCompanionLoosening(browser, action, payload, callback)) return;
+		m_dispatchingCompanion = true;
+		struct CompanionDispatchReset { bool& flag; ~CompanionDispatchReset() { flag = false; } } reset{m_dispatchingCompanion};
 		if (!DispatchAction(action, browser, payload, callback))
 			callback->Failure(404, "Unknown companion action.");
 	});
@@ -200,6 +227,39 @@ bool UamQueryHandler::StartCompanion(CefRefPtr<CefBrowser> browser)
 	return false;
 #endif
 }
+
+#if UAM_ENABLE_MOBILE_COMPANION
+bool UamQueryHandler::HoldCompanionLoosening(CefRefPtr<CefBrowser> browser, std::string_view action, const nlohmann::json& payload, CefRefPtr<Callback> callback)
+{
+	const std::string chat_id = payload.is_object() && payload.contains("chatId") && payload["chatId"].is_string() ? payload["chatId"].get<std::string>() : std::string{};
+	const ChatSession* chat = chat_id.empty() ? nullptr : ChatDomainService().FindChatById(m_app, chat_id);
+	std::optional<uam::companion::ConfirmationChatState> state;
+	if (chat != nullptr) state = uam::companion::ConfirmationChatState{chat->command_safety_tier, chat->approval_mode, chat->uam_agent_id, chat->uam_control_enabled};
+	std::string description = uam::companion::LooseningRequest(action, payload, state ? &*state : nullptr);
+	if (description.empty()) return false;
+	const auto now = uam::companion::DesktopConfirmations::Clock::now();
+	if (!m_companionConfirmations.Add({"", std::string(action), chat_id, chat == nullptr ? std::string{} : chat->title, std::move(description), payload, {}}, now))
+	{
+		callback->Failure(429, "Too many phone changes are waiting for confirmation on the desktop. Answer them there first.");
+		return true;
+	}
+	uam::PushCompanionConfirmations(browser, m_companionConfirmations.ToJson());
+	callback->Failure(428, "Confirm this change on the desktop. It waits there for 5 minutes.");
+	return true;
+}
+
+void UamQueryHandler::HandleResolveCompanionConfirmation(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::optional<bool> allow = uam::nlohmann_json::BoolFieldStrict(payload, "allow");
+	if (!allow || !payload.contains("id") || !payload["id"].is_string()) { cb->Failure(400, "Confirmation requires an id and an allow boolean."); return; }
+	std::optional<uam::companion::DesktopConfirmations::Pending> pending = m_companionConfirmations.Take(payload["id"].get<std::string>(), uam::companion::DesktopConfirmations::Clock::now());
+	uam::PushCompanionConfirmations(browser, m_companionConfirmations.ToJson());
+	if (!pending) { cb->Failure(410, "This phone request expired or was already answered."); return; }
+	if (!*allow) { cb->Success(R"({"applied":false})"); return; }
+	// Runs as the desktop user's own change, not as a companion request.
+	if (!DispatchAction(pending->action, browser, pending->payload, cb)) cb->Failure(404, "Unknown action.");
+}
+#endif
 
 bool UamQueryHandler::CompanionStartupFailed() const
 {
@@ -227,26 +287,15 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		}
 		cb = new WorkspaceMutationCallback(cb, std::move(lease));
 	}
-	const bool is_runtime_stop = action == "cancelAcpTurn" || action == "stopAcpSession" || action == "cancelChatTitle";
-	const bool is_cached_history_read = action == "getChatMessages" || action == "getToolCallContent" || action == "getAttachmentImagePreview";
-	if (m_workspaceDeletionPending && is_cached_history_read && !chat_id.empty() &&
-	    m_app.worktree_operation_chat_ids.contains(chat_id))
+	if (const std::string_view refusal = uam::cef::UnfinishedDeletionRefusal(action, m_deletionAwaitsRestart); !refusal.empty())
 	{
-		cb->Failure(409, "Chat deletion is in progress.");
+		cb->Failure(409, std::string(refusal));
 		return true;
 	}
-	if ((!is_runtime_stop && !is_cached_history_read && !chat_id.empty() && m_app.worktree_operation_chat_ids.contains(chat_id)) ||
-	    (!m_app.worktree_operation_chat_ids.empty() && (action == "deleteFolder" || action == "deleteFolders" || action == "rescanFolderChats")))
+	if (const std::string_view refusal = uam::cef::PendingOperationRefusal(action, !chat_id.empty() && m_app.worktree_operation_chat_ids.contains(chat_id),
+	        !m_app.worktree_operation_chat_ids.empty(), m_workspaceDeletionPending, !chat_id.empty() && m_chatsDeletedAtRestart.contains(chat_id)); !refusal.empty())
 	{
-		cb->Failure(409, "Wait for the chat worktree operation to finish.");
-		return true;
-	}
-
-	// Read-only queries and unrelated runtime cancellation stay available during disk work.
-	if (m_workspaceDeletionPending && !action.starts_with("get") && !action.starts_with("list") &&
-	    action != "selectSession" && !is_runtime_stop)
-	{
-		cb->Failure(409, "Wait for workspace deletion to finish.");
+		cb->Failure(409, std::string(refusal));
 		return true;
 	}
 
@@ -335,6 +384,14 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"setCompanionEnabled", &UamQueryHandler::HandleSetCompanionEnabled},
 		{"setCompanionKeychainPrompts", &UamQueryHandler::HandleSetCompanionKeychainPrompts},
 		{"getCompanionToken", &UamQueryHandler::HandleGetCompanionToken},
+		{"regenerateCompanionToken", &UamQueryHandler::HandleRegenerateCompanionToken},
+		{"resolveCompanionConfirmation", &UamQueryHandler::HandleResolveCompanionConfirmation},
+		{"automationHttpRequest", &UamQueryHandler::HandleAutomationHttpRequest},
+		{"approveAutomationChat", &UamQueryHandler::HandleApproveAutomationChat},
+		{"getAutomationTokens", &UamQueryHandler::HandleGetAutomationTokens},
+		{"createAutomationToken", &UamQueryHandler::HandleCreateAutomationToken},
+		{"revokeAutomationToken", &UamQueryHandler::HandleRevokeAutomationToken},
+		{"regenerateAutomationToken", &UamQueryHandler::HandleRegenerateAutomationToken},
 #endif
 		{"setChatMemoryEnabled", &UamQueryHandler::HandleSetChatMemoryEnabled},
 		{"setChatSmallModelMode", &UamQueryHandler::HandleSetChatSmallModelMode},
@@ -355,6 +412,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 #endif
 		{"setUamAgentPreferences", &UamQueryHandler::HandleSetUamAgentPreferences},
 		{"setSidebarSettings", &UamQueryHandler::HandleSetSidebarSettings},
+		{"setSidebarChatOrder", &UamQueryHandler::HandleSetSidebarChatOrder},
 		{"setComposerSettings", &UamQueryHandler::HandleSetComposerSettings},
 		{"setNativeImportFilters", &UamQueryHandler::HandleSetNativeImportFilters},
 		{"setVcsSettings", &UamQueryHandler::HandleSetVcsSettings},
@@ -373,8 +431,10 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"getLegacyChatImports", &UamQueryHandler::HandleGetLegacyChatImports},
 		{"resolveLegacyChatImport", &UamQueryHandler::HandleResolveLegacyChatImport},
 		{"setShellActions", &UamQueryHandler::HandleSetShellActions},
+		{"setComputePools", &UamQueryHandler::HandleSetComputePools},
 		{"applyShellActions", &UamQueryHandler::HandleApplyShellActions},
 		{"dismissShellActionNotification", &UamQueryHandler::HandleDismissShellActionNotification},
+		{"managePullRequestWatch", &UamQueryHandler::HandleManagePullRequestWatch},
 		{"refreshCliProviderVersion", &UamQueryHandler::HandleRefreshCliProviderVersion},
 		{"refreshAllCliProviderVersions", &UamQueryHandler::HandleRefreshAllCliProviderVersions},
 		{"applyCliProviderVersions", &UamQueryHandler::HandleApplyCliProviderVersions},
@@ -442,6 +502,11 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"getVcsCommitStatus", &UamQueryHandler::HandleGetVcsCommitStatus},
 		{"captureChatReferenceContext", &UamQueryHandler::HandleCaptureChatReferenceContext},
 		{"getVcsFileDiff", &UamQueryHandler::HandleGetVcsFileDiff},
+		{"getVcsHistory", &UamQueryHandler::HandleGetVcsHistory},
+		{"getVcsRevisionDiff", &UamQueryHandler::HandleGetVcsRevisionDiff},
+		{"updateVcsWorkspace", &UamQueryHandler::HandleUpdateVcsWorkspace},
+		{"getVcsOrigin", &UamQueryHandler::HandleGetVcsOrigin},
+		{"cancelVcsRequest", &UamQueryHandler::HandleCancelVcsRequest},
 		{"getWorkspaceFilePreview", &UamQueryHandler::HandleGetWorkspaceFilePreview},
 		{"commitVcsChanges", &UamQueryHandler::HandleCommitVcsChanges},
 		{"generateVcsCommitMessage", &UamQueryHandler::HandleGenerateVcsCommitMessage},
@@ -460,6 +525,10 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"startDictation", &UamQueryHandler::HandleStartDictation},
 		{"stopDictation", &UamQueryHandler::HandleStopDictation},
 		{"stageChatAttachments", &UamQueryHandler::HandleStageChatAttachments},
+		{"pickChatAttachmentFiles", &UamQueryHandler::HandlePickChatAttachmentFiles},
+		{"takeDroppedAttachmentPaths", &UamQueryHandler::HandleTakeDroppedAttachmentPaths},
+		{"cancelChatAttachmentStaging", &UamQueryHandler::HandleCancelChatAttachmentStaging},
+		{"discardStagedChatAttachment", &UamQueryHandler::HandleDiscardStagedChatAttachment},
 		{"sendAcpPrompt", &UamQueryHandler::HandleSendAcpPrompt},
 		{"compactAcpSession", &UamQueryHandler::HandleCompactAcpSession},
 		{"resumeQueuedAcpPrompts", &UamQueryHandler::HandleResumeQueuedAcpPrompts},
@@ -471,7 +540,10 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"cancelAcpTurn", &UamQueryHandler::HandleCancelAcpTurn},
 		{"resolveAcpPermission", &UamQueryHandler::HandleResolveAcpPermission},
 		{"resolveAcpUserInput", &UamQueryHandler::HandleResolveAcpUserInput},
+		{"submitSecretRequest", &UamQueryHandler::HandleSubmitSecretRequest},
+		{"forgetSavedSecret", &UamQueryHandler::HandleForgetSavedSecret},
 		{"stopAcpSession", &UamQueryHandler::HandleStopAcpSession},
+		{"treatRemoteStopAsStopped", &UamQueryHandler::HandleTreatRemoteStopAsStopped},
 		{"writeClipboardText", &UamQueryHandler::HandleWriteClipboardText},
 		{"openHtmlView", &UamQueryHandler::HandleOpenHtmlView},
 		{"saveHtmlView", &UamQueryHandler::HandleSaveHtmlView},

@@ -9,6 +9,7 @@ import {
   type CustomTheme,
 } from '../../utils/themeStorage'
 import { pendingRequestIdsByKey } from '../push/pushBuffers'
+import { reportAppFailure } from '../../utils/appFailure'
 import {
   clearPendingRequest,
   isLatestPendingRequest,
@@ -16,7 +17,7 @@ import {
   rememberOptimisticFields,
   rememberPendingRequest,
 } from '../cpp/reconcile'
-import { sanitizeVcsStorageSettings, sanitizeProviderAvailability, sanitizeVoiceInputSettings } from '../cpp/sanitizers'
+import { DEFAULT_NATIVE_IMPORT_STARTUP_MAX_AGE_DAYS, sanitizeVcsStorageSettings, sanitizeProviderAvailability, sanitizeVoiceInputSettings } from '../cpp/sanitizers'
 import type { NewChatWorktreeContext, VcsSettingsRequest, StorageSettingsRequest, ProviderAvailabilityRequest, VoiceInputSettingsRequest } from '../cpp/types'
 import type { AppState, ZustandSet, ZustandGet } from '../storeTypes'
 
@@ -146,10 +147,12 @@ export function createUiSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) 
     collapsibleWorkSections: storedShellLayout.collapsibleWorkSections,
     showProviderIconsInSidebar: true,
     showWorktreePathInSidebar: true,
+    sidebarPinnedChatOrder: [] as string[],
+    sidebarActiveChatOrder: [] as string[],
     steerActiveTurnOnSend: false,
     nativeImportExcludedTitlePrefixes: [] as string[],
     nativeImportExcludedDirectories: [] as string[],
-    nativeImportStartupMaxAgeDays: 0,
+    nativeImportStartupMaxAgeDays: DEFAULT_NATIVE_IMPORT_STARTUP_MAX_AGE_DAYS,
     gitEnabled: true,
     svnEnabled: true,
     isNewChatModalOpen: false,
@@ -236,7 +239,7 @@ export function createUiSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) 
 
     setVcsSettings: async (settings: VcsSettingsRequest) => {
       if (typeof settings.gitEnabled !== 'boolean' || typeof settings.svnEnabled !== 'boolean') return false
-      const optionalKeys = ['gitAutoWorktree', 'gitSnapshotSvn', 'gitSnapshotPlainFolders', 'gitDefaultBaseBranch', 'gitPullBeforeChat', 'svnUpdateBeforeChat', 'gitPortMethod', 'worktreeCleanupEnabled', 'worktreeRetentionDays']
+      const optionalKeys = ['gitAutoWorktree', 'gitSnapshotSvn', 'gitSnapshotPlainFolders', 'gitDefaultBaseBranch', 'gitPullBeforeChat', 'svnUpdateBeforeChat', 'svnRepositoryLayouts', 'gitPortMethod', 'worktreeCleanupEnabled', 'worktreeRetentionDays']
       const parsed = sanitizeVcsStorageSettings(settings)
       const raw = settings as unknown as Record<string, unknown>
       if (Object.keys(settings).some((key) => key !== 'gitEnabled' && key !== 'svnEnabled' &&
@@ -330,6 +333,20 @@ export function createUiSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) 
       if (!isCefContext()) return true
       const response = await sendToCEF({ action: 'setSidebarSettings', payload: settings, requestId: createRequestId('setSidebarSettings') })
       if (!response.ok) set(latestOptimisticRollback(previous, optimisticRevision))
+      return response.ok
+    },
+
+    setSidebarChatOrder: async (list: 'pinned' | 'active', order: string[]) => {
+      const field = list === 'pinned' ? 'sidebarPinnedChatOrder' : 'sidebarActiveChatOrder'
+      const previous = { [field]: get()[field] }
+      const optimisticRevision = rememberOptimisticFields([field])
+      set({ [field]: order })
+      if (!isCefContext()) return true
+      const response = await sendToCEF({ action: 'setSidebarChatOrder', payload: { list, order }, requestId: createRequestId('setSidebarChatOrder') })
+      if (!response.ok) {
+        set(latestOptimisticRollback(previous, optimisticRevision))
+        reportAppFailure('Could not save the chat order.', response.error ?? 'Try again.')
+      }
       return response.ok
     },
 

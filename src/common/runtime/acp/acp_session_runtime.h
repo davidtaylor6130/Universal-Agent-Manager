@@ -69,6 +69,10 @@ bool RetryLastAcpPrompt(AppState& app, const std::string& chat_id, std::string* 
 std::vector<int> KnownUnsentAcpMessageIndices(const AppState& app, const ChatSession& chat);
 /// True while the chat has a row the user can still retry, edit or remove; a removed row or one with later output does not count.
 bool ChatHasUnsentAcpPrompt(const AppState& app, const ChatSession& chat);
+/// A saved unsent-prompt record whose message is still an unanswered, unremoved unsent row of the chat's provider. It reads
+/// saved rows only, never runtime state, so the answer does not change while a reconnect or stop retry runs. A record with
+/// no such row can be neither sent nor removed. Unloaded history counts, because its rows are unknown.
+bool ChatHasActionableUnsentRecovery(const ChatSession& chat);
 /// True while a remote turn or delivery may already have received the chat's latest input.
 bool ChatHasUncertainRemoteInput(const ChatSession& chat);
 /// Gives up a turn the user accepted may have run: settles its rows and saves stranded input as an unsent row, before a provider switch saves.
@@ -116,7 +120,7 @@ bool SetAcpSessionMode(AppState& app,
                        std::string* error_out = nullptr,
                        std::optional<std::string> previous_chat_mode_id = std::nullopt,
                        std::optional<std::string> previous_command_safety_tier = std::nullopt);
-bool SetAcpSessionModel(AppState& app, const std::string& chat_id, const std::string& model_id, std::string* error_out = nullptr, std::optional<std::string> previous_chat_model_id = std::nullopt);
+bool SetAcpSessionModel(AppState& app, const std::string& chat_id, std::string model_id, std::string* error_out = nullptr, std::optional<std::string> previous_chat_model_id = std::nullopt);
 bool SetAcpSessionConfigOption(AppState& app, const std::string& chat_id, const std::string& config_id, const std::string& value, std::string* error_out = nullptr);
 bool TryAutoApprovePendingAcpPermission(AppState& app, const std::string& chat_id, std::string* error_out = nullptr);
 bool ResolveAcpPermission(AppState& app,
@@ -131,10 +135,27 @@ bool ResolveAcpUserInput(AppState& app,
                          const std::map<std::string, std::vector<std::string>>& answers,
                          std::string* error_out = nullptr);
 
+/// <summary>True while a local stop was settled for the user at its exit deadline but its process has still not been seen to exit. AcpStopInProgress stays true too, so nothing may start another process for the chat.</summary>
+bool AcpStopExitUnobserved(const AppState& app, std::string_view chat_id);
+inline constexpr const char* kAcpProcessExitUnobservedMessage = "The previous provider process for this chat has not exited yet, so nothing new was started. UAM keeps ending it: this clears by itself once it exits, and quitting UAM also ends it.";
 bool PollCompletedAcpProcessStops(AppState& app, CefRefPtr<CefBrowser> browser);
 bool PollAllAcpSessions(AppState& app, CefRefPtr<CefBrowser> browser = nullptr);
+/// A stop that is queued or running now. AcpStopInProgress also counts a remote stop the host never confirmed.
+bool AcpStopInFlight(const AppState& app, std::string_view chat_id);
 bool AcpStopInProgress(const AppState& app, std::string_view chat_id);
 bool EnsureAcpStopProgress(AppState& app, std::string_view chat_id);
+/// <summary>
+/// The user's explicit override of a remote stop the host never confirmed: settles the chat as stopped without proof,
+/// so a process may still be running on the host. Refused until the stop has stayed unconfirmed long enough to be offered.
+/// A refusal changes nothing. When only saving the cleared records failed, the chat is already settled in memory,
+/// the save retries and this returns false with an error that says so.
+/// </summary>
+bool TreatUnconfirmedRemoteStopAsStopped(AppState& app, const std::string& chat_id, std::string* error_out = nullptr);
+/// <summary>What to tell the user when EnsureAcpStopProgress refuses: the unobserved-exit explanation when that is the reason, otherwise the caller's ordinary "stopping" text.</summary>
+inline const char* AcpStopRefusalMessage(const AppState& app, std::string_view chat_id, const char* fallback)
+{
+	return AcpStopExitUnobserved(app, chat_id) ? kAcpProcessExitUnobservedMessage : fallback;
+}
 void TransferStdioProcessFields(platform::StdioProcessPlatformFields& source, platform::StdioProcessPlatformFields& destination);
 void QueueAcpProcessStop(AppState& app, platform::StdioProcessPlatformFields& process, std::string_view chat_id = {}, AcpStopPurpose purpose = AcpStopPurpose::Interrupt, bool observe_exit = false, std::shared_ptr<IPlatformProcessService> stop_service = {});
 bool PrepareCodexThreadForRuntimeLaunch(AppState& app, const ChatSession& chat, std::string* error_out = nullptr);
@@ -189,6 +210,7 @@ bool UpdateAcpStaleWaitForTests(AcpSessionState& session, double now_seconds);
 std::string AutoApproveOptionIdForTests(const AcpPendingPermissionState& pending);
 bool ResumeStalledGoalLoopForTests(AppState& app, AcpSessionState& session, ChatSession& chat, double now_seconds);
 double AcpReconnectDelaySecondsForTests(int attempt);
+double RemoteTurnReconnectDelaySecondsForTests(int attempt);
 void ScheduleAcpReconnectForTests(AcpSessionState& session, double now_seconds);
 void RecordAcpReconnectFailureForTests(AppState& app, AcpSessionState& session, ChatSession& chat, double now_seconds, const std::string& error);
 

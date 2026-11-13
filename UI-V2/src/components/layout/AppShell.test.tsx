@@ -659,6 +659,100 @@ describe('AppShell', () => {
     }
   })
 
+  it('expands a notification row from its bar or keyboard, but not from its buttons, and labels update computers', () => {
+    const longDetail = `${'unbroken'.repeat(40)} full failure detail`
+    const codex = {
+      providerId: 'codex-cli', installedVersion: '0.125.0', selectedVersion: '0.125.0',
+      availableVersions: [], preferredVersion: '0.125.0', status: 'verified' as const, message: '',
+      running: false, lastCommand: '', lastOutput: '', lastInstallStatus: 'succeeded' as const,
+    }
+    useAppStore.setState({
+      updateChecksEnabled: false,
+      executionHosts: [
+        { id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: 'macos', architecture: 'arm64', lastSeenAt: '' },
+        { id: 'lab', label: 'Homelab', transport: 'ssh', sshAlias: 'homelab', runnerStatus: 'ready', runnerVersion: '', platform: 'linux', architecture: 'x86_64', lastSeenAt: '' },
+      ],
+      providers: [{ id: 'codex-cli', name: 'Codex CLI', shortName: 'Codex', description: '', color: '#fff' }],
+      cliVersionManager: { providers: [codex], remoteProviders: [{ ...codex, executionHostId: 'lab', executionHostName: 'Homelab' }] },
+    })
+    window.localStorage.setItem('uam-update-catalog-v1', JSON.stringify({
+      checkedAt: new Date().toISOString(), uam: { version: 'V0.0.1', url: '' }, providers: { 'codex-cli': { version: '0.130.0', url: '' } },
+    }))
+    // jsdom has no layout: a title longer than 40 characters reports itself as cut off.
+    const scrollWidth = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollWidth')
+    Object.defineProperty(HTMLElement.prototype, 'scrollWidth', { configurable: true, get(this: HTMLElement) { return this.dataset.npTitle && (this.textContent ?? '').length > 40 ? 500 : 0 } })
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<AppShell />))
+      act(() => reportAppNotice('Short notice.', 'info'))
+      act(() => reportAppNotice('A notice title that is far too long to fit on one line of the panel.', 'info'))
+      act(() => reportAppFailure('Could not save.', longDetail))
+      act(() => (host.querySelector('[data-notification-bell]') as HTMLButtonElement).click())
+      const panel = host.querySelector('[data-testid="notifications-panel"]')!
+
+      // Each completed update names its computer instead of folding it into the title.
+      const completed = Array.from(panel.querySelectorAll('.uam-np-row')).filter((row) => row.textContent?.includes('Codex update completed'))
+      expect(completed.map((row) => row.querySelector('.uam-np-row__host')?.textContent).sort()).toEqual(['Homelab', 'This computer'])
+      expect(panel.textContent).not.toContain('Codex · Homelab update completed')
+      // Copy and dismiss still name the computer, so the two rows stay distinguishable.
+      expect(completed.map((row) => row.querySelector('[aria-label^="Dismiss"]')?.getAttribute('aria-label')).sort()).toEqual(['Dismiss Codex update completed', 'Dismiss Codex · Homelab update completed'])
+
+      const rowFor = (text: string) => Array.from(panel.querySelectorAll<HTMLElement>('.uam-np-row')).find((candidate) => candidate.textContent?.includes(text))!
+      // A short notice without detail has nothing to reveal; a cut-off title does.
+      expect(rowFor('Short notice.').querySelector('[role="button"]')).toBeNull()
+      const cutOff = rowFor('far too long').querySelector<HTMLElement>('[aria-expanded]')!
+      act(() => cutOff.click())
+      expect(cutOff.getAttribute('aria-expanded')).toBe('true')
+
+      // Available updates on two computers list each update with its computer when expanded.
+      const updatesRow = rowFor('2 updates available')
+      act(() => updatesRow.querySelector<HTMLElement>('[aria-expanded]')!.click())
+      expect(Array.from(updatesRow.querySelectorAll('.uam-np-row__detail li'), (line) => line.textContent).sort()).toEqual(['HomelabCodex 0.130.0', 'This computerCodex 0.130.0'])
+
+      const row = Array.from(panel.querySelectorAll<HTMLElement>('.uam-np-row')).find((candidate) => candidate.textContent?.includes('Could not save.'))!
+      const toggle = row.querySelector<HTMLElement>('[aria-expanded]')!
+      const detail = () => row.querySelector('.uam-np-row__detail')
+      expect(toggle.getAttribute('role')).toBe('button')
+      expect(toggle.tabIndex).toBe(0)
+      expect(toggle.getAttribute('aria-expanded')).toBe('false')
+      expect(detail()).toBeNull()
+
+      // Clicking the bar outside the title expands; clicking again collapses.
+      act(() => { row.querySelector('.uam-np-row__icon')!.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
+      expect(toggle.getAttribute('aria-expanded')).toBe('true')
+      expect(detail()?.textContent).toContain(longDetail)
+      // Clicking inside the detail (to select a word) or finishing a selection does not collapse it.
+      act(() => { detail()!.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
+      expect(toggle.getAttribute('aria-expanded')).toBe('true')
+      const getSelection = vi.spyOn(window, 'getSelection').mockReturnValue({ isCollapsed: false } as Selection)
+      act(() => { row.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
+      expect(toggle.getAttribute('aria-expanded')).toBe('true')
+      getSelection.mockRestore()
+      act(() => { row.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
+      expect(toggle.getAttribute('aria-expanded')).toBe('false')
+
+      // Buttons inside the row act alone.
+      act(() => { row.querySelector<HTMLButtonElement>('[aria-label="Copy message"]')!.click() })
+      expect(toggle.getAttribute('aria-expanded')).toBe('false')
+
+      // Enter and Space toggle from the keyboard and keep focus on the control.
+      act(() => toggle.focus())
+      act(() => { toggle.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })) })
+      expect(toggle.getAttribute('aria-expanded')).toBe('true')
+      act(() => { toggle.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true })) })
+      expect(toggle.getAttribute('aria-expanded')).toBe('false')
+      expect(document.activeElement).toBe(toggle)
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      window.localStorage.removeItem('uam-update-catalog-v1')
+      if (scrollWidth) Object.defineProperty(HTMLElement.prototype, 'scrollWidth', scrollWidth)
+      else delete (HTMLElement.prototype as { scrollWidth?: number }).scrollWidth
+    }
+  })
+
   it('notifies when a remote chat disconnects and when it reconnects', async () => {
     useAppStore.setState({
       executionHosts: [
@@ -1386,12 +1480,19 @@ describe('AppShell', () => {
         return new DOMRect(0, 0, ['Dismiss alert', 'Copy message'].includes(this.getAttribute('aria-label') ?? '') ? 26 : 140, 26)
       return nativeRect.call(this)
     })
+    // jsdom cannot tell how focus arrived; .focus() here stands for keyboard focus unless a test says otherwise.
+    const focusOrigin = { keyboard: true }
+    const matches = Element.prototype.matches
+    vi.spyOn(Element.prototype, 'matches').mockImplementation(function (this: Element, selector: string) {
+      return selector === ':focus-visible' ? focusOrigin.keyboard : matches.call(this, selector)
+    })
     const host = document.createElement('div')
     document.body.append(host)
     const root = createRoot(host)
     await act(async () => root.render(<AppShell />))
     return {
       host,
+      focusOrigin,
       alertSurface: () => host.querySelector<HTMLElement>('[data-testid="transient-alert"]'),
       bell: () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => /^(?:[0-9]+ alerts?|No new alerts)$/.test(button.getAttribute('aria-label') ?? ''))!,
       layoutRects,
@@ -1603,6 +1704,113 @@ describe('AppShell', () => {
     }
   })
 
+  it('releases a notice held through Copy when the pointer leaves, and resumes with the time left', async () => {
+    vi.useFakeTimers()
+    useAppStore.setState({ updateChecksEnabled: false })
+    const { alertSurface, focusOrigin, settle, cleanup } = await mountShell()
+    // Chromium reports a button focused by a mouse click as not :focus-visible.
+    focusOrigin.keyboard = false
+    try {
+      act(() => reportAppFailure('Could not save.', 'Disk full'))
+      const item = () => alertSurface()!.querySelector<HTMLElement>('[data-testid="transient-alert-item"]')!
+      const fill = () => item().querySelector<HTMLElement>('.uam-transient-alert__countdown')!
+      settle(1000)
+      act(() => { item().dispatchEvent(new MouseEvent('mouseover', { bubbles: true })) })
+      expect(fill().style.animationPlayState).toBe('paused')
+      settle(20000)
+      const copy = item().querySelector<HTMLButtonElement>('[aria-label="Copy message"]')!
+      await act(async () => { copy.focus(); copy.click(); await Promise.resolve() })
+      expect(document.activeElement).toBe(copy)
+      expect(item().dataset.held).toBe('true')
+
+      act(() => { item().dispatchEvent(new MouseEvent('mouseout', { bubbles: true })) })
+      expect(item().dataset.held).toBeUndefined()
+      expect(fill().style.animationPlayState).toBe('running')
+      settle(3900)
+      expect(item().dataset.state).toBe('open')
+      settle(200)
+      expect(alertSurface()?.querySelector('[data-testid="transient-alert-item"]')?.getAttribute('data-state') ?? 'closed').toBe('closed')
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
+
+  it('holds a mouse-focused notice once a key is pressed inside it', async () => {
+    vi.useFakeTimers()
+    useAppStore.setState({ updateChecksEnabled: false })
+    const { alertSurface, focusOrigin, settle, cleanup } = await mountShell()
+    focusOrigin.keyboard = false
+    try {
+      act(() => reportAppFailure('Could not save.', 'Disk full'))
+      const item = () => alertSurface()!.querySelector<HTMLElement>('[data-testid="transient-alert-item"]')!
+      const copy = item().querySelector<HTMLButtonElement>('[aria-label="Copy message"]')!
+      act(() => copy.focus())
+      expect(item().dataset.held).toBeUndefined()
+      act(() => { copy.dispatchEvent(new KeyboardEvent('keydown', { key: 'c', metaKey: true, bubbles: true })) })
+      expect(item().dataset.held).toBeUndefined()
+      act(() => { copy.dispatchEvent(new KeyboardEvent('keydown', { key: 'Shift', bubbles: true })) })
+      expect(item().dataset.held).toBe('true')
+      settle(20000)
+      expect(item().dataset.state).toBe('open')
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps holding a keyboard-focused notice after the pointer leaves until focus moves away', async () => {
+    vi.useFakeTimers()
+    useAppStore.setState({ updateChecksEnabled: false })
+    const { alertSurface, settle, cleanup } = await mountShell()
+    try {
+      act(() => reportAppFailure('Could not save.', 'Disk full'))
+      const item = () => alertSurface()!.querySelector<HTMLElement>('[data-testid="transient-alert-item"]')!
+      settle(1000)
+      act(() => { item().dispatchEvent(new MouseEvent('mouseover', { bubbles: true })) })
+      const copy = item().querySelector<HTMLButtonElement>('[aria-label="Copy message"]')!
+      act(() => copy.focus())
+      act(() => { item().dispatchEvent(new MouseEvent('mouseout', { bubbles: true })) })
+      settle(20000)
+      expect(item().dataset.held).toBe('true')
+      act(() => copy.blur())
+      expect(item().dataset.held).toBeUndefined()
+      settle(3900)
+      expect(item().dataset.state).toBe('open')
+      settle(200)
+      expect(alertSurface()?.querySelector('[data-testid="transient-alert-item"]')?.getAttribute('data-state') ?? 'closed').toBe('closed')
+    } finally {
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
+
+  it('shows a revealed collapsed notice at the time already used rather than replaying its fill', async () => {
+    vi.useFakeTimers()
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 768 })
+    useAppStore.setState({ updateChecksEnabled: false })
+    const { alertSurface, settle, cleanup } = await mountShell()
+    // jsdom has no Web Animations; the first fill is the one that collapses.
+    const fills = new Map<Element, { currentTime: number | null }>()
+    Object.defineProperty(Element.prototype, 'getAnimations', { configurable: true, value(this: Element) {
+      if (!this.classList.contains('uam-transient-alert__countdown')) return []
+      if (!fills.has(this)) fills.set(this, { currentTime: 0 })
+      return [fills.get(this)]
+    } })
+    try {
+      for (const n of [1, 2, 3, 4, 5]) act(() => reportAppNotice(`Notice ${n}`))
+      const oldest = alertSurface()!.querySelector<HTMLElement>('.uam-transient-alert-slot[hidden] .uam-transient-alert__countdown')!
+      settle(2000)
+      act(() => alertSurface()!.querySelector<HTMLButtonElement>(':scope > button[aria-expanded]')!.click())
+      expect(alertSurface()!.querySelector('.uam-transient-alert-slot[hidden]')).toBeNull()
+      expect(fills.get(oldest)?.currentTime).toBe(2000)
+    } finally {
+      delete (Element.prototype as { getAnimations?: unknown }).getAnimations
+      cleanup()
+      vi.useRealTimers()
+    }
+  })
+
   it('pauses only the hovered or focused notice while the others keep counting down', async () => {
     vi.useFakeTimers()
     useAppStore.setState({ updateChecksEnabled: false })
@@ -1738,6 +1946,8 @@ describe('AppShell', () => {
       .toBe('2 updates available\nGaming AI Desktop SSH helper 5.0.0\nHomelab Main PC SSH helper 5.0.0')
     expect(updateNoticeText(['A', 'B', 'C', 'D', 'E'].map((name) => update(name, '2.0.0'))))
       .toBe('5 updates available\nA 2.0.0\nB 2.0.0\nC 2.0.0\nand 2 more')
+     expect(updateNoticeText([{ ...update('Homelab SSH helper', '5.0.0 · helper protocol 3'), latestDisplay: '5.0.0-alpha-13 · helper protocol 3' }]))
+      .toBe('Update available: Homelab SSH helper 5.0.0-alpha-13')
   })
 
   // David explicitly superseded composer-clearance on 2026-10-21: bottom edge, allow covering Send.

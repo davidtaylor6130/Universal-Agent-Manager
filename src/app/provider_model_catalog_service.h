@@ -79,7 +79,17 @@ class ProviderModelCatalogService
 	/// Read models, config and discovery state together, resolving the scope once.
 	nlohmann::json GetCatalogSnapshot(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local") const;
 
-	nlohmann::json GetCatalogScopes() const;
+	nlohmann::json GetCatalogScopes(bool recent_workspace = false) const;
+
+	/// <summary>
+	/// Advances whenever the service state may have changed. Equal values read before and after mean every
+	/// catalogue snapshot, scope, error and pending flag it would return is unchanged (workspace paths are still
+	/// resolved on disk per call).
+	/// </summary>
+	std::uint64_t Generation() const { return m_mutex.Generation(); }
+
+	/// <summary>Distinguishes this service from every other one in the process, including one later built at the same address.</summary>
+	std::uint64_t InstanceId() const { return m_instance_id; }
 	/// Start discovery only when no usable cache exists or its last successful refresh is stale.
 	bool BeginDiscoveryIfStale(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local");
 	/// Start a user-requested discovery even when the cache is fresh.
@@ -115,7 +125,59 @@ class ProviderModelCatalogService
 	// Caller holds m_mutex so cached models and local fallbacks share one snapshot.
 	nlohmann::json MergeLocalModelFallbacksLocked(const std::string& provider_id, nlohmann::json cached) const;
 
-	mutable std::mutex m_mutex;
+	/// <summary>
+	/// The service mutex. Locking it for writing advances a generation, so a reader can tell that nothing a
+	/// catalogue snapshot depends on changed since it last looked. The lock types make that hold without care at
+	/// each site: a const member function sees the mutex as const and can only take Read; any other code (a
+	/// non-const member function, a worker lambda) sees it as non-const, where Read is deleted, and must take Write.
+	/// Const member functions cannot modify the service's state, so every modification happens under a Write.
+	/// </summary>
+	class GenerationMutex
+	{
+	  public:
+		class Read
+		{
+		  public:
+			explicit Read(const GenerationMutex& mutex) : m_lock(mutex.m_mutex) {}
+			explicit Read(GenerationMutex&) = delete;
+
+		  private:
+			std::lock_guard<std::mutex> m_lock;
+		};
+		class Write
+		{
+		  public:
+			explicit Write(GenerationMutex& mutex) : m_lock(mutex.m_mutex) { mutex.m_generation.fetch_add(1, std::memory_order_release); }
+
+		  private:
+			std::lock_guard<std::mutex> m_lock;
+		};
+		/// <summary>For Poll only: a write lock whose holder may declare, before releasing it, that it changed nothing.</summary>
+		class WriteUnlessUnchanged
+		{
+		  public:
+			explicit WriteUnlessUnchanged(GenerationMutex& mutex) : m_mutex(mutex), m_lock(mutex.m_mutex) {}
+			~WriteUnlessUnchanged() { if (m_changed) m_mutex.m_generation.fetch_add(1, std::memory_order_release); }
+			void NothingChanged() const { m_changed = false; }
+
+		  private:
+			GenerationMutex& m_mutex;
+			mutable bool m_changed = true;
+			std::lock_guard<std::mutex> m_lock;
+		};
+		std::uint64_t Generation() const { return m_generation.load(std::memory_order_acquire); }
+
+	  private:
+		mutable std::mutex m_mutex;
+		std::atomic<std::uint64_t> m_generation{1};
+	};
+	GenerationMutex m_mutex;
+	static std::uint64_t NextInstanceId()
+	{
+		static std::atomic<std::uint64_t> next{0};
+		return ++next;
+	}
+	const std::uint64_t m_instance_id = NextInstanceId();
 
 	// Data root for cache files.
 	std::filesystem::path m_data_root;
@@ -186,7 +248,8 @@ class ProviderModelCatalogService
 	void WriteOpenCodeZenFreeModelsCache(const nlohmann::json& models) const;
 	std::optional<nlohmann::json> FetchOpenCodeZenModels(std::stop_token stop_token);
 	void RefreshConfiguredOpenCodeModels();
-	std::string CatalogKey(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local") const;
+	/// recent_workspace reuses a two-second-old canonical workspace; only the per-push display readers pass it.
+	std::string CatalogKey(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local", bool recent_workspace = false) const;
 	void LoadPersistentCatalogs();
 	bool WritePersistentCatalogs() const;
 

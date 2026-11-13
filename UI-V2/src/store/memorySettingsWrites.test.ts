@@ -9,7 +9,7 @@ const otherScope = '22222222-2222-4222-8222-222222222222'
 const base = (): MemorySettingsValues => ({
   memoryEnabledDefault: true, memoryLevelDefault: 'strict', memoryIdleDelaySeconds: 60,
   memoryRecallBudgetBytes: 2048, goalMaxLoopIterations: 200, acpSetupInactivityTimeoutSeconds: 600,
-  acpTurnOutputLimitMiB: 1024, activeTurnInactivityTimeoutSeconds: 1800, streamLoopRepeatLimit: 20, memoryWorkerBindings: {}, permissionReviewerProviderId: '', permissionReviewerModelId: '',
+  acpTurnOutputLimitMiB: 1024, activeTurnInactivityTimeoutSeconds: 1800, toolCallTimeoutSeconds: 7200, streamLoopRepeatLimit: 20, memoryWorkerBindings: {}, permissionReviewerProviderId: '', permissionReviewerModelId: '',
 })
 type Request = Parameters<MemorySettingsWriteDependencies['request']>[0]
 type Response = Awaited<ReturnType<MemorySettingsWriteDependencies['request']>>

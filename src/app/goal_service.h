@@ -20,6 +20,8 @@ class GoalService
 	struct ReviewDecision
 	{
 		std::string decision;
+		/// Stamped by the caller from the turn that produced the text; parsing alone proves nothing.
+		std::string source;
 		std::string reason;
 		std::string next_prompt;
 		std::string blocker_kind;
@@ -42,6 +44,8 @@ class GoalService
 	                       std::string creator_agent_id = {}, std::string creator_run_id = {},
 	                       std::string creator_request_key_hash = {});
 	static bool IsProviderManaged(const Goal& goal);
+	/// <summary>The stricter of the goal's own ceiling and the Settings cap.</summary>
+	static int IterationLimit(const Goal& goal, AppSettings settings);
 	static std::string WorkerModelId(const ChatSession& chat, const Goal& goal);
 	static std::string ReviewerModelId(const ChatSession& chat, const Goal& goal);
 	static std::size_t PauseActiveGoalsAfterRestart(AppState& app,
@@ -119,10 +123,11 @@ class GoalService
 	/// <summary>
 	/// Record a blocker for the goal. After >= 3 consecutive turns at the same
 	/// blocker, the goal is auto-marked as blocked (per Codex behavior).
+	/// Every caller states who decided: see kDecisionSource* in app_models.h.
 	/// </summary>
 	static void RecordBlocker(AppState& app, const std::string& chat_id,
 	                          const std::string& goal_id, const std::string& blocker,
-	                          const std::string& blocker_kind = {});
+	                          const std::string& decision_source, const std::string& blocker_kind = {});
 
 	/// <summary>
 	/// Build the continuation prompt text to inject before the next provider turn.

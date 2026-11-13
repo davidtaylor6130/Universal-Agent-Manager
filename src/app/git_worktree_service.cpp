@@ -19,8 +19,10 @@
 #include "common/utils/shell_escape.h"
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
+#include "common/vcs/git_command.h"
 #include "remote/runner_client.h"
 
+#include <atomic>
 #include <fstream>
 #include <functional>
 #include <chrono>
@@ -163,7 +165,7 @@ namespace uam
 
 		std::string BuildGitCommandInDirectory(const std::filesystem::path& cwd, const std::string& args)
 		{
-			return "git -C " + uam::shell::EscapeArg(uam::paths::Utf8PathString(cwd)) + " " + args;
+			return uam::vcs::HardenedGitShellCommandInDirectory(cwd, args);
 		}
 
 		bool CommandSucceeded(const ProcessExecutionResult& result)
@@ -222,7 +224,7 @@ namespace uam
 		{
 			std::string branch, tracking, dirty;
 			if (!GitOutput(repository, "symbolic-ref --quiet --short HEAD", &branch, &error, stop))
-			{ error = "Pull before chat requires a checked-out local branch."; return false; }
+			{ error = "Pull before chat requires a checked-out local branch. Check out a branch or turn off Pull before first chat in Git settings, then retry."; return false; }
 			const std::string local_ref = "refs/heads/" + branch;
 			if (!GitOutput(repository, "for-each-ref --format=" + uam::shell::EscapeArg("%(refname):%(upstream)") +
 			    " -- " + uam::shell::EscapeArg(local_ref), &tracking, &error, stop)) return false;
@@ -239,7 +241,7 @@ namespace uam
 			// Pull is optional for a local-only branch. A failed Git lookup never authorizes this bypass.
 			if (uam::strings::Trim(tracking.substr(tracking_prefix.size())).empty()) return true;
 			if (!configured_base.empty() && configured_base != branch)
-			{ error = "Pull before chat requires the default base to be the checked-out branch."; return false; }
+			{ error = "Pull before chat requires the default base to be the checked-out branch. Check out that branch or turn off Pull before first chat in Git settings, then retry."; return false; }
 			const auto checked_output = [&](const std::string& arguments, std::string& output)
 			{
 				const ProcessExecutionResult result = RunCommand(BuildGitCommandInDirectory(repository, arguments), kDefaultGitCommandTimeoutMs, stop);
@@ -322,41 +324,48 @@ namespace uam
 
 		enum class LocalSnapshotSource { Unknown, Git, Svn, Plain };
 
+		/// Stricter than the default probe: does not follow links, counts bare repositories, ignores empty .git folders,
+		/// and stops with an unknown result when a marker's status cannot be read, so such a source is never treated as plain.
+		paths::VcsMarkers ProbeSnapshotSourceMarkers(const std::filesystem::path& directory)
+		{
+			paths::VcsMarkers found;
+			bool markers[5]{};
+			std::filesystem::file_status git_status;
+			const char* names[] = {".git", "HEAD", "objects", "refs", "config"};
+			for (std::size_t index = 0; index < 5; ++index)
+			{
+				std::error_code error;
+				const std::filesystem::file_status status = std::filesystem::symlink_status(directory / names[index], error);
+				if (error && error != std::errc::no_such_file_or_directory) { found.stop = true; return found; }
+				markers[index] = std::filesystem::exists(status);
+				if (index == 0) git_status = status;
+			}
+			// An empty .git directory is not a repository to Git either, so it must not turn every folder below it
+			// into one. An unreadable one keeps strict Git validation and its metadata error.
+			if (markers[0] && std::filesystem::is_directory(git_status))
+			{
+				std::error_code error;
+				markers[0] = !std::filesystem::is_empty(directory / ".git", error) || error;
+			}
+			// Broken Git markers and bare repositories must retain normal Git validation.
+			if (markers[0] || (markers[1] && markers[2]) || ((markers[1] || markers[2]) && markers[3] && markers[4])) { found.git = true; return found; }
+			std::error_code error;
+			const std::filesystem::file_status status = std::filesystem::symlink_status(directory / ".svn", error);
+			if (error && error != std::errc::no_such_file_or_directory) { found.stop = true; return found; }
+			found.svn = std::filesystem::exists(status);
+			return found;
+		}
+
 		LocalSnapshotSource ClassifyLocalSnapshotSource(const std::filesystem::path& source)
 		{
 			std::error_code source_error;
 			const std::filesystem::path physical = std::filesystem::canonical(source, source_error);
 			if (source_error || !paths::IsDirectoryNoThrow(physical)) return LocalSnapshotSource::Unknown;
-			bool svn = false;
-			for (std::filesystem::path directory = physical; !directory.empty(); directory = directory.parent_path())
-			{
-				bool markers[5]{};
-				std::filesystem::file_status git_status;
-				const char* names[] = {".git", "HEAD", "objects", "refs", "config"};
-				for (std::size_t index = 0; index < 5; ++index)
-				{
-					std::error_code error;
-					const std::filesystem::file_status status = std::filesystem::symlink_status(directory / names[index], error);
-					if (error && error != std::errc::no_such_file_or_directory) return LocalSnapshotSource::Unknown;
-					markers[index] = std::filesystem::exists(status);
-					if (index == 0) git_status = status;
-				}
-				// An empty .git directory is not a repository to Git either, so it must not turn every folder below it
-				// into one. An unreadable one keeps strict Git validation and its metadata error.
-				if (markers[0] && std::filesystem::is_directory(git_status))
-				{
-					std::error_code error;
-					markers[0] = !std::filesystem::is_empty(directory / ".git", error) || error;
-				}
-				// Broken Git markers and bare repositories must retain normal Git validation.
-				if (markers[0] || (markers[1] && markers[2]) || ((markers[1] || markers[2]) && markers[3] && markers[4])) return LocalSnapshotSource::Git;
-				std::error_code error;
-				const std::filesystem::file_status status = std::filesystem::symlink_status(directory / ".svn", error);
-				if (error && error != std::errc::no_such_file_or_directory) return LocalSnapshotSource::Unknown;
-				svn = svn || std::filesystem::exists(status);
-				if (directory == directory.parent_path()) break;
-			}
-			return svn ? LocalSnapshotSource::Svn : LocalSnapshotSource::Plain;
+			// Any enclosing Git repository outranks an SVN marker nearer the source.
+			const paths::NearestVcsRoot nearest = paths::FindNearestVcsRoot(physical, paths::VcsRootKinds::GitOnly, &ProbeSnapshotSourceMarkers);
+			if (nearest.stop) return LocalSnapshotSource::Unknown;
+			if (nearest.git) return LocalSnapshotSource::Git;
+			return nearest.svn ? LocalSnapshotSource::Svn : LocalSnapshotSource::Plain;
 		}
 
 		std::filesystem::path WorktreeRootForChat(const AppState& app, const std::filesystem::path& source_root, const std::string& relative_name)
@@ -426,6 +435,56 @@ namespace uam
 			return true;
 		}
 
+		/// `<data root>/worktrees/<16 hex>/managed-repository-<16 hex>`: a plain-folder snapshot that UAM owns.
+		bool IsManagedSnapshotRepository(const std::filesystem::path& data_root, const std::filesystem::path& repository)
+		{
+			const auto is_key = [](const std::string& value) { return value.size() == 16 && value.find_first_not_of("0123456789abcdef") == std::string::npos; };
+			const std::string name = uam::paths::Utf8PathString(repository.filename());
+			constexpr std::string_view prefix = "managed-repository-";
+			std::error_code error;
+			return name.starts_with(prefix) && is_key(name.substr(prefix.size())) && is_key(uam::paths::Utf8PathString(repository.parent_path().filename())) &&
+			    std::filesystem::equivalent(repository.parent_path().parent_path(), data_root / "worktrees", error) && !error;
+		}
+
+		/// Every directory from `path` up to the data root is real; canonical containment alone would accept an internal link.
+		bool OwnedAncestorsAreRealDirectories(const std::filesystem::path& path, const std::filesystem::path& data_root)
+		{
+			const std::filesystem::path root = uam::paths::AbsolutePathNoThrow(data_root).lexically_normal();
+			for (std::filesystem::path current = path; ; current = current.parent_path())
+			{
+				if (!uam::paths::IsDirectoryNoThrow(current) || uam::paths::IsLinkOrReparsePointNoThrow(current)) return false;
+				if (current == root) return true;
+				if (current == current.parent_path()) return false;
+			}
+		}
+
+		/// True when `path` contains, is inside or is the same file as any protected path, or that cannot be verified.
+		bool OverlapsProtectedPath(const std::filesystem::path& path, const std::vector<std::filesystem::path>& protected_paths)
+		{
+			for (const std::filesystem::path& protected_path : protected_paths)
+			{
+				if (protected_path.empty()) continue;
+				std::error_code reference_error;
+				const std::filesystem::path reference = std::filesystem::weakly_canonical(protected_path, reference_error);
+				if (reference_error) return true;
+				const std::filesystem::path resolved = std::filesystem::canonical(path, reference_error);
+				if (reference_error || PathIsWithin(reference, resolved) || PathIsWithin(resolved, reference)) return true;
+				// File identity also protects alternate casing on case-insensitive volumes.
+				for (const std::pair<std::filesystem::path, std::filesystem::path>& pair :
+				    {std::make_pair(reference, resolved), std::make_pair(resolved, reference)})
+				{
+					for (std::filesystem::path parent = pair.first; ; parent = parent.parent_path())
+					{
+						if (std::filesystem::equivalent(parent, pair.second, reference_error)) return true;
+						if (reference_error && reference_error != std::errc::no_such_file_or_directory) return true;
+						reference_error.clear();
+						if (parent == parent.parent_path()) break;
+					}
+				}
+			}
+			return false;
+		}
+
 		bool IsExcludedSnapshotPath(const std::filesystem::path& relative)
 		{
 			for (const std::filesystem::path& part : relative)
@@ -493,7 +552,7 @@ namespace uam
 			files.clear();
 			error.clear();
 			if (!uam::paths::IsDirectoryNoThrow(source_root))
-			{ error = "Source workspace is not an available directory."; return false; }
+			{ error = "Source workspace is not an available directory. Restore the folder, then retry."; return false; }
 			if (!app.data_root.empty() && PathIsWithin(source_root, app.data_root))
 			{ error = "Source workspace cannot be inside UAM's managed data directory."; return false; }
 
@@ -582,8 +641,8 @@ namespace uam
 			if (source_is_git)
 			{
 				// Git owns ignore rules, including ignored dependency caches. Preserve staged paths too.
-				const auto listed = RunCommand("git --no-optional-locks -C " + shell::EscapeArg(paths::Utf8PathString(source_root)) +
-				    " ls-files --cached --others --exclude-standard --full-name -z -- .");
+				const auto listed = RunCommand(BuildGitCommandInDirectory(source_root,
+				    "--no-optional-locks ls-files --cached --others --exclude-standard --full-name -z -- ."));
 				if (!CommandSucceeded(listed) || listed.output_truncated || !listed.error.empty())
 				{ error = "Could not enumerate source files for the isolation baseline."; return false; }
 				std::set<std::filesystem::path> seen;
@@ -734,7 +793,19 @@ namespace uam
 			return false;
 		}
 
-		bool IsDirty(const std::filesystem::path& repo, bool* dirty_out, std::string* error_out = nullptr, std::stop_token stop_token = {})
+		/// Staged attachment copies are chat input, not work to commit. They stay visible to providers, unlike git-ignored files.
+		std::string OutsideAttachmentCopies()
+		{
+			return " -- . " + uam::shell::EscapeArg(":(exclude).UAM/attachments");
+		}
+
+		/// An exclude pathspec makes `git add` fail when the folder is itself git-ignored, so stage everything and unstage the copies.
+		bool StageOutsideAttachmentCopies(const std::filesystem::path& repo, std::string* error_out, std::stop_token stop_token = {})
+		{
+			return GitCommand(repo, "add -A", error_out, stop_token) && GitCommand(repo, "reset -q -- .UAM/attachments", error_out, stop_token);
+		}
+
+		bool IsDirty(const std::filesystem::path& repo, bool* dirty_out, std::string* error_out = nullptr, std::stop_token stop_token = {}, const std::string& pathspec = {})
 		{
 			if (dirty_out != nullptr)
 			{
@@ -742,7 +813,7 @@ namespace uam
 			}
 
 			std::string status;
-			if (!GitOutput(repo, "status --porcelain", &status, error_out, stop_token))
+			if (!GitOutput(repo, "status --porcelain" + pathspec, &status, error_out, stop_token))
 			{
 				return false;
 			}
@@ -1059,7 +1130,7 @@ namespace uam
 			}
 
 			bool worktree_dirty = false;
-			if (IsDirty(worktree_path, &worktree_dirty))
+			if (IsDirty(worktree_path, &worktree_dirty, nullptr, {}, OutsideAttachmentCopies()))
 			{
 				status.worktree_dirty = worktree_dirty;
 			}
@@ -1135,9 +1206,7 @@ namespace uam
 		    int expected_exit = 0, const std::string& operation_id = {}, int* observed_exit_out = nullptr, const std::string& retained_control_token = {}, bool* start_request_attempted_out = nullptr)
 		{
 			if (observed_exit_out) *observed_exit_out = -1;
-			std::vector<std::string> argv{"git", "--no-pager", "-c", "core.fsmonitor=false", "-c",
-			    host.platform == "windows" || host.platform == "Windows" ? "core.hooksPath=NUL" : "core.hooksPath=/dev/null"};
-			argv.insert(argv.end(), arguments.begin(), arguments.end());
+			const std::vector<std::string> argv = vcs::HardenedGitArgv(arguments, vcs::IsWindowsHostPlatform(host.platform));
 			const ProcessExecutionResult result = client.ExecuteCommand(
 			    operation_id.empty() ? "worktree-read-" + RemoteOperationToken() : operation_id,
 			    paths::PathFromUtf8(directory), argv, 120000, stop, {}, retained_control_token, start_request_attempted_out);
@@ -1221,7 +1290,16 @@ namespace uam
 			    !execution_hosts::RemotePathsMatch(host.platform, output, common) ||
 			    !RemoteGit(client, host, source, {"rev-parse", "--path-format=absolute", "--git-common-dir"}, output, error, stop) ||
 			    !execution_hosts::RemotePathsMatch(host.platform, output, common) ||
-			    !RemoteGit(client, host, directory, {"symbolic-ref", "--short", "HEAD"}, output, error, stop) || output != chat.workspace_branch_name) return false;
+			    !RemoteGit(client, host, directory, {"rev-parse", "--symbolic-full-name", "HEAD"}, output, error, stop)) return false;
+			// An agent can switch the worktree away from its own branch. That branch is the one cleanup deletes, so another
+			// branch is never adopted; the user is told exactly how to restore it instead of the chat waiting silently.
+			if (output != "refs/heads/" + chat.workspace_branch_name)
+			{
+				const std::string current = output.starts_with("refs/heads/") ? output.substr(11) : "a detached HEAD";
+				error = "This chat's worktree " + directory + " is on " + current + " instead of its own branch " + chat.workspace_branch_name +
+				    ". Switch it back with `git switch " + chat.workspace_branch_name + "` in that folder, then retry.";
+				return false;
+			}
 			std::string head, reference, admin;
 			if (!RemoteGit(client, host, directory, {"rev-parse", "HEAD"}, head, error, stop) || !IsCommitId(head) ||
 			    !RemoteGit(client, host, source, {"rev-parse", "--verify", "--end-of-options", "refs/heads/" + chat.workspace_branch_name}, reference, error, stop) || reference != head ||
@@ -1545,7 +1623,7 @@ namespace uam
 		{ error = "Choose a literal local Git branch name."; return false; }
 		// `switch -c` keeps the files as they are, so only switching to an existing branch needs a clean worktree.
 		bool dirty = false;
-		if (!create && !IsDirty(worktree, &dirty, &error)) return false;
+		if (!create && !IsDirty(worktree, &dirty, &error, {}, OutsideAttachmentCopies())) return false;
 		if (dirty) { error = "Commit or discard worktree changes before switching branches."; return false; }
 
 			const ProcessExecutionResult ref = RunCommand(BuildGitCommandInDirectory(worktree,
@@ -1573,6 +1651,7 @@ namespace uam
 	{
 		if (chat.acp_queue_held || !chat.acp_queued_prompts.empty())
 		{ error = "Finish or resolve queued input before switching branches."; return false; }
+		if (AcpStopExitUnobserved(app, chat.id)) { error = kAcpProcessExitUnobservedMessage; return false; }
 		if (AcpStopInProgress(app, chat.id) || IsWorktreeLaunchPreparationPending(app, chat.id) || app.git_port_requests.contains(chat.id) ||
 		    app.pending_chat_save_at_by_chat_id.contains(chat.id) || app.pending_chat_save_tasks.contains(chat.id))
 		{ error = "Wait for the chat runtime and history save to finish."; return false; }
@@ -1774,6 +1853,188 @@ namespace uam
 		catch (const std::exception&) { return false; }
 	}
 
+	namespace
+	{
+		// Journals written before this moment belong to an earlier process, whose `git worktree add` may still be running.
+		// Whole seconds in a 64-bit value: the clock's own representation can be 128 bits wide, which is not portably atomic.
+		long long FileTimeSeconds(std::filesystem::file_time_type time) { return static_cast<long long>(std::chrono::duration_cast<std::chrono::seconds>(time.time_since_epoch()).count()); }
+		std::atomic<long long> g_workspace_intent_epoch{FileTimeSeconds(std::filesystem::file_time_type::clock::now())};
+		constexpr std::chrono::seconds kWorkspaceIntentQuietPeriod{60};
+
+		struct LinkedWorktree
+		{
+			std::filesystem::path path;
+			std::string branch;
+			bool locked = false;
+			bool prunable = false;
+		};
+
+		bool ListLinkedWorktrees(const std::filesystem::path& repository, std::vector<LinkedWorktree>& linked, std::stop_token stop)
+		{
+			linked.clear();
+			std::string text;
+			if (!GitOutput(repository, "worktree list --porcelain", &text, nullptr, stop)) return false;
+			std::istringstream lines(text);
+			std::string line;
+			while (std::getline(lines, line))
+			{
+				if (!line.empty() && line.back() == '\r') line.pop_back();
+				if (line.starts_with("worktree ")) linked.push_back({paths::PathFromUtf8(line.substr(9)), {}, false, false});
+				else if (linked.empty()) continue;
+				else if (line.starts_with("branch ")) linked.back().branch = line.substr(7);
+				else if (line == "locked" || line.starts_with("locked ")) linked.back().locked = true;
+				else if (line == "prunable" || line.starts_with("prunable ")) linked.back().prunable = true;
+			}
+			return true;
+		}
+
+		bool SamePhysicalPath(const std::filesystem::path& left, const std::filesystem::path& right)
+		{
+			std::error_code left_error, right_error;
+			const std::filesystem::path a = std::filesystem::weakly_canonical(left, left_error);
+			const std::filesystem::path b = std::filesystem::weakly_canonical(right, right_error);
+			return !left_error && !right_error && uam::paths::NormalizedPortablePathString(a) == uam::paths::NormalizedPortablePathString(b);
+		}
+
+		/// True only when every file under the directory is byte-identical to the base commit, so removing it loses nothing.
+		/// Missing files are expected after an interrupted checkout; any changed, added or unreadable entry answers false.
+		bool DirectoryHoldsOnlyBaseFiles(const std::filesystem::path& repository, const std::filesystem::path& directory, const std::string& base, std::stop_token stop)
+		{
+			const std::string scope = "--no-optional-locks -c core.quotePath=false --work-tree=" + uam::shell::EscapeArg(uam::paths::Utf8PathString(directory)) + " ";
+			const auto read = [&](const std::string& arguments, std::string& output)
+			{
+				const ProcessExecutionResult result = RunCommand(BuildGitCommandInDirectory(repository, scope + arguments), kDefaultGitCommandTimeoutMs, stop);
+				if (stop.stop_requested() || !CommandSucceeded(result) || result.output_truncated) return false;
+				output = result.output;
+				return true;
+			};
+			std::string changed, present, tracked;
+			if (!read("diff --no-renames --name-status " + uam::shell::EscapeArg(base) + " --", changed) ||
+			    !read("ls-files --others", present) || !read("ls-tree -r --name-only " + uam::shell::EscapeArg(base), tracked)) return false;
+			const auto each = [](const std::string& text, const std::function<bool(const std::string&)>& accept)
+			{
+				std::istringstream lines(text);
+				std::string line;
+				while (std::getline(lines, line))
+				{
+					if (!line.empty() && line.back() == '\r') line.pop_back();
+					if (!line.empty() && !accept(line)) return false;
+				}
+				return true;
+			};
+			std::set<std::string> base_files;
+			(void)each(tracked, [&](const std::string& line) { base_files.insert(line); return true; });
+			return each(changed, [](const std::string& line) { return line.starts_with("D\t"); }) &&
+			    each(present, [&](const std::string& line) { return base_files.contains(line); });
+		}
+	}
+
+	std::filesystem::file_time_type SetWorkspaceIntentProcessEpochForTests(std::filesystem::file_time_type epoch)
+	{
+		return std::filesystem::file_time_type(std::chrono::duration_cast<std::filesystem::file_time_type::duration>(std::chrono::seconds(g_workspace_intent_epoch.exchange(FileTimeSeconds(epoch)))));
+	}
+
+	bool GitWorktreeService::WorkspaceCreationUnfinished(const std::filesystem::path& worktree, std::stop_token stop) const
+	{
+		// Git holds this lock from registering a new worktree until its checkout completes.
+		std::string lock;
+		return !GitOutput(worktree, "rev-parse --path-format=absolute --git-path locked", &lock, nullptr, stop) || lock.empty() ||
+		    uam::paths::PathExistsNoThrow(uam::paths::PathFromUtf8(lock));
+	}
+
+	FailedWorkspaceIntent GitWorktreeService::ClearFailedWorkspaceIntent(const std::filesystem::path& root, const std::filesystem::path& receipt, const std::string& receipt_text, const ChatSession& metadata, std::string& notice, std::stop_token stop) const
+	{
+		try
+		{
+			const nlohmann::json record = nlohmann::json::parse(receipt_text);
+			if (record.at("chatId") != metadata.id || record.at("createdAt") != metadata.created_at) return FailedWorkspaceIntent::Preserved;
+			const std::filesystem::path source = paths::PathFromUtf8(record.at("source").get<std::string>());
+			const std::filesystem::path repository = paths::PathFromUtf8(record.at("repository").get<std::string>());
+			const std::filesystem::path worktree = paths::PathFromUtf8(record.at("worktree").get<std::string>());
+			const std::string branch = record.at("branch").get<std::string>();
+			const std::string base = record.at("baseSha").get<std::string>();
+			const auto absent = [](const std::filesystem::path& path)
+			{
+				std::error_code error;
+				const auto status = std::filesystem::symlink_status(path, error);
+				return error == std::errc::no_such_file_or_directory || (!error && status.type() == std::filesystem::file_type::not_found);
+			};
+			if (worktree.empty() || !paths::IsSameOrInsideRoot(root, worktree)) return FailedWorkspaceIntent::Preserved;
+			if (record.at("managedRepository").get<bool>())
+			{
+				AppState snapshot;
+				snapshot.data_root = root;
+				// ponytail: a leftover managed repository or its worktree is never removed here, so a crash mid-snapshot stays refused; resume or remove it once the owner decides.
+				return repository == ManagedRepositoryRoot(snapshot, source, metadata.id) && absent(worktree) && absent(repository) ? FailedWorkspaceIntent::Cleared : FailedWorkspaceIntent::Preserved;
+			}
+			if (repository != source) return FailedWorkspaceIntent::Preserved;
+			const bool directory = !absent(worktree);
+			// Without a recorded branch, creation never reached `git worktree add`, so an occupied target is not this chat's.
+			if (branch.empty()) return directory ? FailedWorkspaceIntent::Preserved : FailedWorkspaceIntent::Cleared;
+			if (base.empty()) return FailedWorkspaceIntent::Preserved;
+			const std::string branch_ref = "refs/heads/" + branch;
+			std::vector<LinkedWorktree> linked;
+			if (!ListLinkedWorktrees(repository, linked, stop)) return FailedWorkspaceIntent::Preserved;
+			const auto names_intent = [&](const LinkedWorktree& candidate) { return candidate.branch == branch_ref || SamePhysicalPath(candidate.path, worktree); };
+			const auto entry = std::ranges::find_if(linked, names_intent);
+			// A registered worktree that Git finished creating, or the branch checked out elsewhere, is never a failed creation.
+			if (entry != linked.end() && (!SamePhysicalPath(entry->path, worktree) || !(entry->locked || entry->prunable))) return FailedWorkspaceIntent::Preserved;
+			const bool registered = entry != linked.end();
+
+			std::error_code time_error;
+			const std::filesystem::file_time_type written = std::filesystem::last_write_time(receipt, time_error);
+			if (time_error) return FailedWorkspaceIntent::Preserved;
+			if (FileTimeSeconds(written) < g_workspace_intent_epoch.load())
+			{
+				// ponytail: activity is judged from the journal and the first 5000 entries; a silent longer stall is treated as dead. Track the Git process itself if that ever misfires.
+				std::filesystem::file_time_type newest = written;
+				std::error_code walk_error;
+				int seen = 0;
+				if (directory)
+					for (std::filesystem::recursive_directory_iterator entries(worktree, std::filesystem::directory_options::skip_permission_denied, walk_error), end; !walk_error && entries != end && seen < 5000; entries.increment(walk_error), ++seen)
+					{
+						std::error_code entry_error;
+						const std::filesystem::file_time_type modified = entries->last_write_time(entry_error);
+						if (!entry_error && modified > newest) newest = modified;
+					}
+				if (std::filesystem::file_time_type::clock::now() - newest < kWorkspaceIntentQuietPeriod) return FailedWorkspaceIntent::InProgress;
+			}
+
+			// A branch left by a failed `git worktree add` holds no work while it still names the recorded base.
+			const ProcessExecutionResult reference = RunCommand(BuildGitCommandInDirectory(repository, "rev-parse --verify --quiet --end-of-options " + shell::EscapeArg(branch_ref)), kDefaultGitCommandTimeoutMs, stop);
+			if (stop.stop_requested() || reference.timed_out || reference.canceled || reference.output_truncated) return FailedWorkspaceIntent::Preserved;
+			const std::string head = strings::Trim(reference.output);
+			const bool branch_exists = reference.exit_code != 1;
+			if (branch_exists ? !(CommandSucceeded(reference) && head == base) : !head.empty()) return FailedWorkspaceIntent::Preserved;
+
+			if (directory)
+			{
+				const std::filesystem::path owned = paths::AbsolutePathNoThrow(root).lexically_normal();
+				for (std::filesystem::path path = paths::AbsolutePathNoThrow(worktree).lexically_normal(); path != owned; path = path.parent_path())
+					if (paths::IsLinkOrReparsePointNoThrow(path) || path.empty() || path == path.parent_path()) return FailedWorkspaceIntent::Preserved;
+				if (DirectoryHoldsOnlyBaseFiles(repository, worktree, base, stop))
+				{
+					if (registered) (void)GitCommand(repository, "worktree remove --force --force " + shell::EscapeArg(paths::Utf8PathString(worktree)));
+					else (void)paths::RemoveAllNoThrow(worktree);
+				}
+				if (!absent(worktree))
+				{
+					// Anything UAM cannot prove unchanged is kept: moved beside its planned path, never deleted.
+					const std::filesystem::path aside = paths::PathFromUtf8(paths::Utf8PathString(worktree) + ".interrupted-" + time::SteadyEpochNanosecondsTokenNow());
+					std::error_code move_error;
+					std::filesystem::rename(worktree, aside, move_error);
+					if (move_error) return FailedWorkspaceIntent::Preserved;
+					notice = "An interrupted worktree for this chat held files that differ from its base commit. It was kept at " + paths::Utf8PathString(aside) + " and a new worktree was created.";
+				}
+			}
+			// The retry picks its own branch, so one that still names the base and that no worktree uses is removed.
+			if (branch_exists && ListLinkedWorktrees(repository, linked, {}) && std::ranges::none_of(linked, [&](const LinkedWorktree& candidate) { return candidate.branch == branch_ref; }))
+				(void)GitCommand(repository, "update-ref -d " + shell::EscapeArg(branch_ref) + " " + shell::EscapeArg(base));
+			return FailedWorkspaceIntent::Cleared;
+		}
+		catch (const std::exception&) { return FailedWorkspaceIntent::Preserved; }
+	}
+
 	bool GitWorktreeService::ValidatePreparedWorkspace(const std::filesystem::path& root, const std::filesystem::path& receipt, const ChatSession& metadata, std::string& error, std::stop_token stop) const
 	{
 		try
@@ -1849,7 +2110,7 @@ namespace uam
 		    !chat.git_base_branch_override && uam::strings::Trim(app.settings.git_default_base_branch).empty() &&
 		    IsVerifiedUnbornRepository(source_root, stop);
 		if (unborn_source && !app.settings.git_snapshot_plain_folders)
-		{ result.message = "This repository has no commits and automatic plain-folder snapshots are disabled."; return result; }
+		{ result.message = "This repository has no commits and automatic plain-folder snapshots are disabled. Make a first commit or turn on plain-folder snapshots in Git settings, then retry."; return result; }
 		const bool managed_repository = !result.status.is_git_repository || unborn_source;
 		LocalSnapshotSource source_kind = LocalSnapshotSource::Unknown;
 		if (managed_repository && !unborn_source)
@@ -1857,7 +2118,7 @@ namespace uam
 			source_kind = ClassifyLocalSnapshotSource(source_root);
 			if (source_kind == LocalSnapshotSource::Git || source_kind == LocalSnapshotSource::Unknown)
 			{
-				result.message = source_kind == LocalSnapshotSource::Git ? "Source Git metadata could not be verified. No managed snapshot was created." : "Source workspace is not an available directory.";
+				result.message = source_kind == LocalSnapshotSource::Git ? "Source Git metadata could not be verified. No managed snapshot was created." : "Source workspace is not an available directory. Restore the folder, then retry.";
 				return result;
 			}
 			result.message = ManagedSnapshotDisabledReason(app, chat);
@@ -1953,7 +2214,7 @@ namespace uam
 		{
 			if (!base_branch.empty())
 			{
-				result.message = "The default Git base branch is unavailable: " + base_branch;
+				result.message = "The default Git base branch is unavailable: " + base_branch + ". Create that branch or clear the default base branch in Git settings, then retry.";
 				return result;
 			}
 			std::string head_ref;
@@ -2106,9 +2367,9 @@ namespace uam
 		}
 		if (managed_repository)
 		{
-			const ProcessExecutionResult clone = RunCommand("git clone --no-hardlinks --quiet " +
+			const ProcessExecutionResult clone = RunCommand(uam::vcs::HardenedGitShellCommand("clone --no-hardlinks --quiet " +
 			    uam::shell::EscapeArg(uam::paths::Utf8PathString(parent_repository)) + " " +
-			    uam::shell::EscapeArg(uam::paths::Utf8PathString(repository)));
+			    uam::shell::EscapeArg(uam::paths::Utf8PathString(repository))));
 			if (!CommandSucceeded(clone) ||
 			    !GitCommand(repository, "remote remove origin", &result.message) ||
 			    !GitCommand(repository, "config core.autocrlf false", &result.message))
@@ -2153,47 +2414,21 @@ namespace uam
 		{
 			const int remaining_ms = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count());
 			if (remaining_ms <= 0 || stop_token.stop_requested()) return false;
-			const ProcessExecutionResult result = RunCommand("git --no-optional-locks -C " +
-			    uam::shell::EscapeArg(uam::paths::Utf8PathString(directory)) + " " + arguments, std::min(2000, remaining_ms), stop_token);
+			const ProcessExecutionResult result = RunCommand(BuildGitCommandInDirectory(directory, "--no-optional-locks " + arguments), std::min(2000, remaining_ms), stop_token);
 			if (!CommandSucceeded(result) || result.output_truncated) return false;
 			output = uam::strings::Trim(result.output);
 			return true;
 		};
 		std::string repository_root;
 		if (!query(source_root, "rev-parse --show-toplevel", repository_root)) return false;
-		const std::filesystem::path bucket = data_root / "worktrees" /
-		    uam::hashing::Hex64(uam::hashing::Fnv1a64(uam::paths::NormalizedPortablePathString(uam::paths::PathFromUtf8(repository_root))));
+		// A plain-folder snapshot's worktrees share the bucket of the folder it copied, which holds the snapshot repository itself.
+		const std::filesystem::path repository_path = uam::paths::PathFromUtf8(repository_root);
+		const std::filesystem::path bucket = IsManagedSnapshotRepository(data_root, repository_path) ? data_root / "worktrees" / repository_path.parent_path().filename() : data_root / "worktrees" /
+		    uam::hashing::Hex64(uam::hashing::Fnv1a64(uam::paths::NormalizedPortablePathString(repository_path)));
 		const std::filesystem::path absolute = uam::paths::AbsolutePathNoThrow(worktree).lexically_normal();
 		const std::filesystem::path owned_root = uam::paths::AbsolutePathNoThrow(bucket).lexically_normal();
 		if (absolute == owned_root || !PathIsWithin(absolute, owned_root)) return false;
-		// Walk every owned ancestor: canonical containment alone would accept an internal directory link.
-		for (std::filesystem::path path = absolute; ; path = path.parent_path())
-		{
-			if (!uam::paths::IsDirectoryNoThrow(path) || uam::paths::IsLinkOrReparsePointNoThrow(path)) return false;
-			if (path == uam::paths::AbsolutePathNoThrow(data_root).lexically_normal()) break;
-			if (path == path.parent_path()) return false;
-		}
-		for (const std::filesystem::path& protected_path : protected_paths)
-		{
-			if (protected_path.empty()) continue;
-			std::error_code reference_error;
-			const std::filesystem::path reference = std::filesystem::weakly_canonical(protected_path, reference_error);
-			if (reference_error) return false;
-			const std::filesystem::path resolved = std::filesystem::canonical(absolute, reference_error);
-			if (reference_error || PathIsWithin(reference, resolved) || PathIsWithin(resolved, reference)) return false;
-			// File identity also protects alternate casing on case-insensitive volumes.
-			for (const std::pair<std::filesystem::path, std::filesystem::path>& pair :
-			    {std::make_pair(reference, resolved), std::make_pair(resolved, reference)})
-			{
-				for (std::filesystem::path parent = pair.first; ; parent = parent.parent_path())
-				{
-					if (std::filesystem::equivalent(parent, pair.second, reference_error)) return false;
-					if (reference_error && reference_error != std::errc::no_such_file_or_directory) return false;
-					reference_error.clear();
-					if (parent == parent.parent_path()) break;
-				}
-			}
-		}
+		if (!OwnedAncestorsAreRealDirectories(absolute, data_root) || OverlapsProtectedPath(absolute, protected_paths)) return false;
 		std::error_code error;
 		const std::filesystem::file_status marker_status = std::filesystem::symlink_status(absolute / ".git", error);
 		if (error || !std::filesystem::is_regular_file(marker_status) || uam::paths::IsLinkOrReparsePointNoThrow(absolute / ".git")) return false;
@@ -2260,6 +2495,86 @@ namespace uam
 		return CommandSucceeded(result);
 	}
 
+	bool GitWorktreeService::InspectManagedSnapshotRetentionCandidate(const std::filesystem::path& data_root,
+	    const std::filesystem::path& repository, const std::vector<std::filesystem::path>& protected_paths,
+	    GitWorktreeRetentionCandidate& candidate, std::stop_token stop_token, int retention_days) const
+	{
+		candidate = {};
+		if (stop_token.stop_requested() || retention_days < 1 || retention_days > 3650 || data_root.empty() || repository.empty()) return false;
+		const std::filesystem::path absolute = uam::paths::AbsolutePathNoThrow(repository).lexically_normal();
+		if (!IsManagedSnapshotRepository(data_root, absolute) || !OwnedAncestorsAreRealDirectories(absolute, data_root) ||
+		    OverlapsProtectedPath(absolute, protected_paths)) return false;
+		const std::filesystem::path git = absolute / ".git";
+		std::error_code error;
+		if (!std::filesystem::is_directory(std::filesystem::symlink_status(git, error)) || error || uam::paths::IsLinkOrReparsePointNoThrow(git)) return false;
+		// File times first: a snapshot kept for its commits costs no Git process on later scans.
+		GitWorktreeRetentionCandidate inspected;
+		const std::filesystem::file_time_type cutoff = std::filesystem::file_time_type::clock::now() - std::chrono::hours(24 * retention_days);
+		inspected.activity_at = std::filesystem::file_time_type::min();
+		for (const std::filesystem::path& path : {absolute, git, git / "HEAD", git / "index", git / "logs" / "HEAD", git / "refs" / "heads", git / "packed-refs", git / "worktrees"})
+		{
+			const std::filesystem::file_status path_status = std::filesystem::symlink_status(path, error);
+			if (error == std::errc::no_such_file_or_directory || (!error && !std::filesystem::exists(path_status))) { error.clear(); continue; }
+			if (error || uam::paths::IsLinkOrReparsePointNoThrow(path)) return false;
+			const std::filesystem::file_time_type modified = std::filesystem::last_write_time(path, error);
+			if (error || modified >= cutoff) return false;
+			inspected.activity_at = std::max(inspected.activity_at, modified);
+		}
+		// A snapshot holds a whole folder copy, so its status gets a longer budget than a linked worktree's.
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+		const auto query = [&](const std::string& arguments, std::string& output)
+		{
+			const int remaining_ms = static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now()).count());
+			if (remaining_ms <= 0 || stop_token.stop_requested()) return false;
+			const ProcessExecutionResult result = RunCommand(BuildGitCommandInDirectory(absolute, "--no-optional-locks " + arguments), std::min(10000, remaining_ms), stop_token);
+			if (!CommandSucceeded(result) || result.output_truncated) return false;
+			output = uam::strings::Trim(result.output);
+			return true;
+		};
+		std::string top, common, worktrees, unmerged, status, commits;
+		if (!query("rev-parse --show-toplevel", top) || !query("rev-parse --path-format=absolute --git-common-dir", common)) return false;
+		const std::filesystem::path canonical = std::filesystem::canonical(absolute, error);
+		if (error || std::filesystem::canonical(uam::paths::PathFromUtf8(top), error) != canonical || error ||
+		    std::filesystem::canonical(uam::paths::PathFromUtf8(common), error) != std::filesystem::canonical(git, error) || error) return false;
+		// The snapshot is the only checkout left: any linked worktree, even a stale one, keeps it until that worktree is resolved.
+		if (!query("worktree list --porcelain -z", worktrees)) return false;
+		std::size_t checkouts = 0;
+		for (std::size_t at = 0; (at = worktrees.find("worktree ", at)) != std::string::npos; at += 9)
+			if (at == 0 || worktrees[at - 1] == '\0') ++checkouts;
+		if (checkouts != 1) return false;
+		// Branches and commits are kept: the checkout must still be at its single snapshot commit, and no ref
+		// (an agent branch with checkpoints, a stash) may hold commits beyond it.
+		if (!query("rev-list --count HEAD", commits) || commits != "1") return false;
+		if (!query("for-each-ref --no-merged=HEAD", unmerged) || !unmerged.empty()) return false;
+		// Ignored files in the snapshot are copies of the source folder's own (dependencies, build output): agents work in the
+		// linked worktree, so only tracked changes and new untracked files count as unsaved work here.
+		if (!query("status --porcelain --untracked-files=normal", status) || !status.empty()) return false;
+		if (!query("rev-parse HEAD", inspected.head_sha) || !IsCommitId(inspected.head_sha) || stop_token.stop_requested()) return false;
+		inspected.directory = absolute;
+		inspected.administrative_directory = git;
+		candidate = std::move(inspected);
+		return true;
+	}
+
+	bool GitWorktreeService::RemoveManagedSnapshotRetentionCandidate(const std::filesystem::path& data_root,
+	    const GitWorktreeRetentionCandidate& candidate, const std::vector<std::filesystem::path>& protected_paths,
+	    const WorkspaceLeaseGate::Lease& lease, std::stop_token stop_token, int retention_days) const
+	{
+		if (!lease.IsExclusive() || stop_token.stop_requested()) return false;
+		GitWorktreeRetentionCandidate current;
+		if (!InspectManagedSnapshotRetentionCandidate(data_root, candidate.directory, protected_paths, current, stop_token, retention_days) ||
+		    current.directory != candidate.directory || current.head_sha != candidate.head_sha || current.activity_at != candidate.activity_at) return false;
+		// Renamed out of the snapshot name first, so a file held open mid-delete leaves a tombstone that a later scan finishes,
+		// never a half-deleted folder that still looks like a snapshot.
+		const std::filesystem::path tombstone = candidate.directory.parent_path() / (std::string(kManagedSnapshotTombstonePrefix) +
+		    uam::paths::Utf8PathString(candidate.directory.filename()).substr(std::string_view("managed-repository-").size()));
+		std::error_code error;
+		std::filesystem::rename(candidate.directory, tombstone, error);
+		if (error) return false;
+		(void)uam::paths::RemoveTreeWithoutFollowingLinksNoThrow(tombstone);
+		return true;
+	}
+
 	bool GitWorktreeService::RemoveUnusedBranchWorktree(const AppState& app, const ChatSession& branch, std::string* error_out) const
 	{
 		if (error_out != nullptr) error_out->clear();
@@ -2289,7 +2604,7 @@ namespace uam
 		bool dirty = false;
 		std::string error;
 		std::string head;
-		if (!IsDirty(worktree, &dirty, &error) || !GitOutput(worktree, "rev-parse HEAD", &head, &error))
+		if (!IsDirty(worktree, &dirty, &error, {}, OutsideAttachmentCopies()) || !GitOutput(worktree, "rev-parse HEAD", &head, &error))
 		{
 			if (error_out != nullptr) *error_out = uam::strings::NonEmptyOrFallback(error, "Could not inspect branch worktree.");
 			return false;
@@ -2546,7 +2861,7 @@ namespace uam
 			}
 		}
 
-		if (!GitCommand(worktree, "add -A", &result.message))
+		if (!StageOutsideAttachmentCopies(worktree, &result.message))
 		{
 			return result;
 		}
@@ -2639,7 +2954,7 @@ namespace uam
 		}
 		bool dirty = false;
 		std::string error;
-		if (!IsDirty(worktree, &dirty, &error, stop_token))
+		if (!IsDirty(worktree, &dirty, &error, stop_token, OutsideAttachmentCopies()))
 		{
 			if (reason_out != nullptr) *reason_out = uam::strings::NonEmptyOrFallback(error, "Failed to inspect the isolated worktree.");
 			return false;
@@ -2698,7 +3013,7 @@ namespace uam
 		}
 
 		bool dirty = false;
-		if (!IsDirty(worktree, &dirty, &result.message, stop_token)) return result;
+		if (!IsDirty(worktree, &dirty, &result.message, stop_token, OutsideAttachmentCopies())) return result;
 		if (!dirty)
 		{
 			result.ok = true;
@@ -2709,7 +3024,7 @@ namespace uam
 		{
 			return result;
 		}
-		if (!GitCommand(worktree, "add -A", &result.message, stop_token))
+		if (!StageOutsideAttachmentCopies(worktree, &result.message, stop_token))
 		{
 			(void)GitCommand(worktree, "reset --mixed " + uam::shell::EscapeArg(result.parent_sha));
 			result.message = uam::strings::NonEmptyOrFallback(result.message, "Automatic checkpoint staging was cancelled or failed.");
@@ -2777,7 +3092,7 @@ namespace uam
 			return result;
 		}
 		bool dirty = false;
-		if (!IsDirty(worktree, &dirty, &result.message)) return result;
+		if (!IsDirty(worktree, &dirty, &result.message, {}, OutsideAttachmentCopies())) return result;
 		if (dirty)
 		{
 			result.message = "The isolated worktree has uncommitted changes. Preserve or discard them before rollback.";

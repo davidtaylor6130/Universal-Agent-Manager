@@ -21,6 +21,8 @@ namespace uam::remote::native_history
 	inline constexpr std::size_t kMaxSnapshotBytes = 64 * 1024 * 1024;
 	inline constexpr std::size_t kChunkBytes = 128 * 1024;
 	inline constexpr std::size_t kMaxSnapshots = 2;
+	// Shown to the user when a read stops at kMaxSnapshotBytes.
+	inline constexpr const char* kSnapshotTooLargeError = "This native history exceeds the 64 MiB read limit, so it was not loaded. Existing saved history is unchanged.";
 	struct Snapshot
 	{
 		std::string provider;
@@ -60,9 +62,11 @@ namespace uam::remote::native_history
 			hashing::UpdateFnv1a64WithSeparator(digest, field);
 		return hashing::Hex64Padded(digest);
 	}
-	inline std::optional<std::string> Read(const std::filesystem::path& root, const std::filesystem::path& path, std::size_t limit)
+	// `error` receives the size refusal for reads that fail the whole snapshot; optional reads leave it null.
+	inline std::optional<std::string> Read(const std::filesystem::path& root, const std::filesystem::path& path, std::size_t limit, std::string* error = nullptr)
 	{
 		auto file = workspace_files::Read(root, paths::Utf8PathString(path), true, limit);
+		if (file.too_large && error) *error = kSnapshotTooLargeError;
 		if (!file.ok || file.text.find('\0') != std::string::npos) return std::nullopt;
 		return std::move(file.text);
 	}
@@ -198,7 +202,7 @@ namespace uam::remote::native_history
 		if (provider == uam::provider_ids::kCopilotCli)
 		{
 			const auto root = env::GetTrimmedPath("COPILOT_HOME").value_or(*home / ".copilot") / "session-state";
-			auto text = Read(root, std::filesystem::path(id) / "events.jsonl", kMaxSnapshotBytes);
+			auto text = Read(root, std::filesystem::path(id) / "events.jsonl", kMaxSnapshotBytes, &error);
 			if (!text || !CopilotIdentity(*text, id, workspace, result.workspace)) return false;
 			result.text = std::move(*text);
 			if (const auto yaml = Read(root, std::filesystem::path(id) / "workspace.yaml", 16 * 1024)) result.workspace_yaml = *yaml;
@@ -214,15 +218,16 @@ namespace uam::remote::native_history
 				if (!it->is_directory(scan_error) || it->is_symlink(scan_error)) continue;
 				const auto path = it->path().filename() / (id + ".jsonl");
 				if (!paths::PathExistsNoThrow(root / path)) continue;
-				auto text = Read(root, path, kMaxSnapshotBytes);
-				if (!text || text->size() > kMaxSnapshotBytes - total) return false;
+				auto text = Read(root, path, kMaxSnapshotBytes, &error);
+				if (!text) return false;
+				if (text->size() > kMaxSnapshotBytes - total) { error = kSnapshotTooLargeError; return false; }
 				total += text->size();
 				std::string recorded;
 				if (!ClaudeIdentity(*text, id, workspace, recorded)) continue;
 				if (!agent_id.empty())
 				{
 					text.reset();
-					text = Read(root, it->path().filename() / id / "subagents" / ("agent-" + agent_id + ".jsonl"), kMaxSnapshotBytes);
+					text = Read(root, it->path().filename() / id / "subagents" / ("agent-" + agent_id + ".jsonl"), kMaxSnapshotBytes, &error);
 					if (!text || !ClaudeChildIdentity(*text, id, agent_id, workspace)) return false;
 				}
 				if (!result.text.empty()) { error = "More than one native Claude transcript claims this exact identity."; return false; }
@@ -236,8 +241,9 @@ namespace uam::remote::native_history
 			const bool visited = VisitGeminiParentFiles(id, workspace, [&](const auto& root, const auto& parent_file)
 			{
 				if (!GeminiFileInsideRoot(root, parent_file)) return false;
-				auto text = Read(root, parent_file, kMaxSnapshotBytes);
-				if (!text || text->size() > kMaxSnapshotBytes - total) return false;
+				auto text = Read(root, parent_file, kMaxSnapshotBytes, &error);
+				if (!text) return false;
+				if (text->size() > kMaxSnapshotBytes - total) { error = kSnapshotTooLargeError; return false; }
 				total += text->size();
 				const auto metadata = gemini::ReadHistoryMetadata(*text);
 				if (!metadata || !metadata->is_object() || String(*metadata, "sessionId") != id) return true;
@@ -248,7 +254,7 @@ namespace uam::remote::native_history
 					std::error_code child_error;
 					if (!std::filesystem::exists(root / child, child_error)) child = parent_file.parent_path() / id / (agent_id + ".json");
 					if (child_error || !GeminiFileInsideRoot(root, child)) return false;
-					text = Read(root, child, kMaxSnapshotBytes);
+					text = Read(root, child, kMaxSnapshotBytes, &error);
 					if (!text || !GeminiChildIdentity(*text, id, agent_id, workspace)) return false;
 				}
 				if (!result.text.empty()) { error = "More than one native Gemini transcript claims this exact identity."; return false; }
@@ -258,7 +264,7 @@ namespace uam::remote::native_history
 			if (!visited || result.text.empty()) return false;
 		}
 		else { error = "This provider has no native file history reader."; return false; }
-		if (result.text.size() + result.workspace_yaml.size() > kMaxSnapshotBytes) return false;
+		if (result.text.size() + result.workspace_yaml.size() > kMaxSnapshotBytes) { error = kSnapshotTooLargeError; return false; }
 		result.fingerprint = Fingerprint(result);
 		result.ready = true;
 		error.clear();

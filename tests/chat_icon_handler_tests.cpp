@@ -104,6 +104,15 @@ struct ChatIconHandlerTestAccess
 		return handler.DispatchAction(action, nullptr, payload, callback);
 	}
 
+	/// The real cancelAcpTurn route, dispatched as the desktop window or as the phone companion.
+	static bool CancelTurnRequest(UamQueryHandler& handler, const nlohmann::json& payload, CefRefPtr<UamQueryHandler::Callback> callback, bool companion)
+	{
+		handler.m_dispatchingCompanion = companion;
+		const bool dispatched = handler.DispatchAction("cancelAcpTurn", nullptr, payload, callback);
+		handler.m_dispatchingCompanion = false;
+		return dispatched;
+	}
+
 	static void InstallRemoteHost(UamQueryHandler& handler, const nlohmann::json& payload, CefRefPtr<UamQueryHandler::Callback> callback, int64_t query)
 	{
 		handler.m_remoteInstallQueryIdentities[callback.get()] = {-1, "", query};
@@ -169,6 +178,161 @@ UAM_TEST(ChatIconHandlerLatestFailureRollsBackExactlyOnce)
 	UAM_ASSERT_EQ(callback->failures, 1); UAM_ASSERT_EQ(callback->last_failure, 500);
 	uam::ResolvePendingChatSaveResults(app, "chat", false);
 	DrainIconHandlerSaves(app); UAM_ASSERT_EQ(callback->failures, 1); UAM_ASSERT_EQ(callback->successes, 0);
+}
+
+UAM_TEST(CancelTurnRequestHoldsDesktopQueueButKeepsCompanionDiscard)
+{
+	for (const bool companion : {false, true})
+	{
+		TempDir temp("uam-cancel-turn-request");
+		uam::AppState app;
+		app.data_root = temp.root;
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		ChatSession chat;
+		chat.id = "chat-cancel";
+		chat.provider_id = "gemini-cli";
+		for (const std::string& text : {"Queued one", "Queued two"})
+		{
+			uam::AcpQueuedUserPromptState prompt;
+			prompt.id = text;
+			prompt.revision = 1;
+			prompt.text = text;
+			chat.acp_queued_prompts.push_back(prompt);
+		}
+		app.chats.push_back(chat);
+		auto owned = std::make_unique<uam::AcpSessionState>();
+		owned->chat_id = chat.id;
+		owned->provider_id = chat.provider_id;
+		owned->processing = true;
+		owned->queued_user_prompts.assign(chat.acp_queued_prompts.begin(), chat.acp_queued_prompts.end());
+		uam::AcpSessionState& session = *owned;
+		app.acp_sessions.push_back(std::move(owned));
+		auto handler_owner = UamQueryHandlerTestAccess::Create(app, "file:///private/index.html");
+		CefRefPtr<RecordingIconCallback> callback = new RecordingIconCallback;
+		UAM_ASSERT(ChatIconHandlerTestAccess::CancelTurnRequest(*handler_owner, {{"chatId", chat.id}}, callback, companion));
+		UAM_ASSERT_EQ(callback->successes, 1);
+		UAM_ASSERT_EQ(callback->failures, 0);
+		UAM_ASSERT(!session.processing);
+		if (companion)
+		{
+			// The phone has no Resume control, so its cancel keeps the earlier discard until the owner decides.
+			UAM_ASSERT(session.queued_user_prompts.empty() && app.chats.front().acp_queued_prompts.empty());
+			UAM_ASSERT(!session.queue_held && !app.chats.front().acp_queue_held);
+		}
+		else
+		{
+			UAM_ASSERT_EQ(session.queued_user_prompts.size(), std::size_t{2});
+			UAM_ASSERT_EQ(app.chats.front().acp_queued_prompts.size(), std::size_t{2});
+			UAM_ASSERT(session.queue_held && app.chats.front().acp_queue_held);
+		}
+	}
+}
+
+UAM_TEST(ChatControlRefusalsNameTheirOwnReasonWithoutPathsOrStaleStatus)
+{
+	TempDir temp("uam-control-refusals");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession chat;
+	chat.id = "chat-refusals";
+	chat.provider_id = "gemini-cli";
+	chat.title = "Stand-in";
+	chat.execution_host_id = "remote-host";
+	chat.remote_process_exists = true;
+	app.chats.push_back(chat);
+	ChatSession codex;
+	codex.id = "chat-refusals-codex";
+	codex.provider_id = "codex-cli";
+	codex.title = "Stand-in Codex";
+	codex.model_id = "gpt-5";
+	codex.reasoning_effort = "low";
+	app.chats.push_back(codex);
+	auto owned = std::make_unique<uam::AcpSessionState>();
+	owned->chat_id = chat.id;
+	owned->provider_id = chat.provider_id;
+	uam::AcpSessionState& session = *owned;
+	app.acp_sessions.push_back(std::move(owned));
+	auto handler_owner = UamQueryHandlerTestAccess::Create(app, "file:///private/index.html");
+	const std::string stale = "Unrelated status naming " + uam::paths::Utf8PathString(temp.root);
+	const auto run = [&](const char* action, const nlohmann::json& payload)
+	{
+		app.status_line = stale;
+		CefRefPtr<RecordingIconCallback> callback = new RecordingIconCallback;
+		UAM_ASSERT(ChatIconHandlerTestAccess::InstructionInvoke(*handler_owner, action, payload, callback));
+		return callback;
+	};
+
+	// A disconnected remote turn: Stop names that cause, never the earlier status line.
+	const CefRefPtr<RecordingIconCallback> stop_refused = run("stopAcpSession", {{"chatId", chat.id}});
+	UAM_ASSERT_EQ(stop_refused->failures, 1);
+	UAM_ASSERT_EQ(stop_refused->failure_message, std::string("The remote host is disconnected. Reconnect it before stopping, so UAM can confirm the turn ended."));
+
+	// A remote stop UAM is still confirming is progress for both Stop and Cancel turn.
+	session.remote_stop_pending = true;
+	CefRefPtr<RecordingIconCallback> cancel = run("cancelAcpTurn", {{"chatId", chat.id}});
+	UAM_ASSERT_EQ(cancel->failures, 0);
+	UAM_ASSERT(cancel->success_message.find("pending") != std::string::npos);
+	session.remote_stop_pending = false;
+	session.remote_stop_unconfirmed = true;
+	cancel = run("cancelAcpTurn", {{"chatId", chat.id}});
+	UAM_ASSERT_EQ(cancel->failures, 0);
+	const CefRefPtr<RecordingIconCallback> stop_pending = run("stopAcpSession", {{"chatId", chat.id}});
+	UAM_ASSERT_EQ(stop_pending->failures, 0);
+	// With the helper reattached this cancel itself did nothing, so it is a refusal, never "pending".
+	session.running = true;
+	const CefRefPtr<RecordingIconCallback> cancel_refused = run("cancelAcpTurn", {{"chatId", chat.id}});
+	session.running = false;
+	UAM_ASSERT_EQ(cancel_refused->failures, 1);
+	UAM_ASSERT_EQ(cancel_refused->failure_message, std::string("The turn could not be cancelled. Try again."));
+	session.remote_stop_unconfirmed = false;
+
+	// A rename that cannot be saved names no path.
+	UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "blocked"));
+	CefRefPtr<RecordingIconCallback> rename = run("renameSession", {{"chatId", chat.id}, {"title", "Renamed"}});
+	UAM_ASSERT_EQ(rename->failures, 1);
+	UAM_ASSERT_EQ(rename->failure_message, std::string("The chat could not be saved. Try again."));
+	UAM_ASSERT_EQ(app.chats.front().title, std::string("Stand-in"));
+	CefRefPtr<RecordingIconCallback> agent = run("setChatUamAgent", {{"chatId", chat.id}, {"agentId", "plan"}});
+	UAM_ASSERT_EQ(agent->failures, 1);
+	UAM_ASSERT_EQ(agent->failure_message, std::string("The chat could not be saved. Try again."));
+	CefRefPtr<RecordingIconCallback> small = run("setChatSmallModelMode", {{"chatId", chat.id}, {"enabled", true}});
+	UAM_ASSERT_EQ(small->failures, 1);
+	UAM_ASSERT_EQ(small->failure_message, std::string("The chat could not be saved. Try again."));
+	CefRefPtr<RecordingIconCallback> model = run("setChatModel", {{"chatId", chat.id}, {"modelId", "fixture/model-two"}});
+	UAM_ASSERT_EQ(model->failures, 1);
+	UAM_ASSERT_EQ(model->failure_message, std::string("The chat could not be saved. Try again."));
+	CefRefPtr<RecordingIconCallback> reviewer = run("setChatModel", {{"chatId", chat.id}, {"modelId", "fixture/model-two"}, {"modelRole", "reviewer"}});
+	UAM_ASSERT_EQ(reviewer->failures, 1);
+	UAM_ASSERT_EQ(reviewer->failure_message, std::string("The chat could not be saved. Try again."));
+	CefRefPtr<RecordingIconCallback> speed = run("setChatCodexOptions", {{"chatId", codex.id}, {"serviceTier", "fast"}, {"serviceTierExplicit", true}});
+	UAM_ASSERT_EQ(speed->failures, 1);
+	UAM_ASSERT_EQ(speed->failure_message, std::string("The chat could not be saved. Try again."));
+	CefRefPtr<RecordingIconCallback> reasoning = run("setChatCodexOptions", {{"chatId", codex.id}, {"reasoningEffort", "high"}});
+	UAM_ASSERT_EQ(reasoning->failures, 1);
+	UAM_ASSERT_EQ(reasoning->failure_message, std::string("The chat could not be saved. Try again."));
+
+	// A phone cancel discards a held queue; when that cannot be saved its fixed reason is passed through.
+	uam::AcpQueuedUserPromptState held;
+	held.id = "held";
+	held.revision = 1;
+	held.text = "Held prompt";
+	session.queued_user_prompts = {held};
+	session.queue_held = true;
+	app.chats.front().acp_queued_prompts = {held};
+	app.chats.front().acp_queue_held = true;
+	CefRefPtr<RecordingIconCallback> discard = new RecordingIconCallback;
+	app.status_line = stale;
+	UAM_ASSERT(ChatIconHandlerTestAccess::CancelTurnRequest(*handler_owner, {{"chatId", chat.id}}, discard, true));
+	UAM_ASSERT_EQ(discard->failures, 1);
+	UAM_ASSERT_EQ(discard->failure_message, std::string("Held prompts could not be discarded because their recovery state could not be saved."));
+	UAM_ASSERT_EQ(session.queued_user_prompts.size(), std::size_t{1});
+
+	for (const auto& callback : {stop_refused, cancel_refused, rename, agent, small, model, reviewer, speed, reasoning, discard})
+	{
+		UAM_ASSERT(callback->failure_message.find(uam::paths::Utf8PathString(temp.root)) == std::string::npos);
+		UAM_ASSERT(callback->failure_message.find("Unrelated status") == std::string::npos);
+	}
 }
 
 UAM_TEST(ChatIconHandlerSupersededCancellationCannotRollbackNewerIntent)
@@ -880,12 +1044,13 @@ UAM_TEST(HelperInstallRefusalKeepsRunningBackgroundScan)
 	ChatSession busy = HandlerChat("refusal-busy-chat");
 	busy.execution_host_id = host.id;
 	busy.remote_process_exists = true;
+	busy.remote_active_turn_id = "refusal-active-turn";
 	app.chats.push_back(busy);
 	const auto entered = std::make_shared<std::promise<std::stop_token>>();
 	std::future<std::stop_token> scan_stop = entered->get_future();
 	app.startup_native_import_service = std::make_shared<uam::StartupNativeImportService>(
 	    [](const uam::StartupNativeImportScanRequest&, std::stop_token) { return ChatHistorySyncService::LocalHistoryDiscovery{}; },
-	    [entered](const uam::StartupNativeImportRemoteScope&, const ProviderProfile*, std::stop_token stop)
+	    [entered](const uam::StartupNativeImportRemoteScope&, const ProviderProfile*, ChatHistorySyncService::RemoteHistoryScanContext&, std::stop_token stop)
 	    {
 		    entered->set_value(stop);
 		    const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
@@ -900,7 +1065,7 @@ UAM_TEST(HelperInstallRefusalKeepsRunningBackgroundScan)
 	ChatIconHandlerTestAccess::InstallRemoteHost(*handler, {{"id", host.id}, {"label", host.label}, {"sshAlias", host.ssh_alias}, {"runnerDirectory", ""}}, refused, 51);
 	UAM_ASSERT_EQ(refused->failures, 1);
 	UAM_ASSERT_EQ(refused->status, 409);
-	UAM_ASSERT(refused->body.find("chat-process") != std::string::npos);
+	UAM_ASSERT(refused->body.find("Private handler fixture") != std::string::npos);
 	UAM_ASSERT(!running.stop_requested());
 	UAM_ASSERT(app.startup_native_import_service->BackgroundScanPendingOnHost(host.id));
 	handler.reset();
@@ -1546,6 +1711,16 @@ UAM_TEST(AttachmentStagingIgnoresBlockedBackgroundQueue)
 	const uam::attachment_preview::Image decoded = uam::attachment_preview::Decode(ReadFile(preview));
 	UAM_ASSERT_EQ(decoded.width, 2u);
 	UAM_ASSERT_EQ(decoded.height, 3u);
+	// A payload the composer could not read (no data for a file with a real size) is refused and writes nothing.
+	CefRefPtr<RecordingInstructionCallback> hollow = new RecordingInstructionCallback;
+	UAM_ASSERT(ChatIconHandlerTestAccess::InstructionInvoke(handler, "stageChatAttachments",
+	    {{"chatId", chat.id}, {"items", nlohmann::json::array({
+	        {{"name", "clip.MOV"}, {"kind", "file"}, {"mimeType", "video/quicktime"}, {"size", 5u}, {"dataBase64", ""}}})}}, hollow));
+	RunCreationLoopUntil([hollow]() { return hollow->successes + hollow->failures > 0; }, std::chrono::seconds(3));
+	UAM_ASSERT_EQ(hollow->successes, 0);
+	UAM_ASSERT_EQ(hollow->failures, 1);
+	const fs::path staged_root = fs::path(chat.workspace_directory) / ".UAM" / "attachments" / chat.id;
+	UAM_ASSERT_EQ(std::distance(fs::directory_iterator(staged_root), fs::directory_iterator()), std::ptrdiff_t(2));
 	UAM_ASSERT(browser.Close());
 }
 UAM_TEST(WindowChromeRejectsUntrustedFramesAndCompanionDispatch)
@@ -3485,11 +3660,12 @@ UAM_TEST(ChatCreateDeliveredEditColdEmptySkillsRemovesReloadedMissingSnapshots)
 	const auto reloaded = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.source_id, true);
 	UAM_ASSERT(reloaded && reloaded->messages_loaded && reloaded->messages.size() == 3);
 	UAM_ASSERT_EQ(reloaded->messages[2].markdown_store_files, fixture.files);
-	UAM_ASSERT_EQ(reloaded->messages[2].markdown_store_prompt_blocks, (std::vector<std::string>{fixture.blocks[0]}));
+	// Saved history keeps the empty block in its slot so each file stays paired with its snapshot.
+	UAM_ASSERT_EQ(reloaded->messages[2].markdown_store_prompt_blocks, (std::vector<std::string>{fixture.blocks[0], ""}));
 	UAM_ASSERT_EQ(reloaded->messages[2].attachments, fixture.source_messages[2].attachments);
 	UAM_ASSERT_EQ(reloaded->messages[0], fixture.source_messages[0]);
 	UAM_ASSERT_EQ(reloaded->messages[1], fixture.source_messages[1]);
-	// Adopt the actual two-file/one-block reload without repairing or resaving it.
+	// Adopt the actual two-file reload, with its missing second snapshot, without repairing or resaving it.
 	fixture.Source() = *reloaded;
 	fixture.source_messages = reloaded->messages;
 	fixture.source_primary = source_primary;
@@ -5045,9 +5221,9 @@ namespace
 			ChatIconHandlerTestAccess::OpenNative(*fixture.handler, {{"chatId", parent_id}, {"nativeSessionId", reference}, {"selectChat", false}, {"refreshHistory", true}}, callback);
 			return callback;
 		}
-		CefRefPtr<RemoteHistoryQueryCallback> Await(CefRefPtr<RemoteHistoryQueryCallback> callback) const
+		CefRefPtr<RemoteHistoryQueryCallback> Await(CefRefPtr<RemoteHistoryQueryCallback> callback, std::chrono::seconds limit = std::chrono::seconds(15)) const
 		{
-			RunCreationLoopUntil([callback] { return callback->Completed(); }, std::chrono::seconds(15));
+			RunCreationLoopUntil([callback] { return callback->Completed(); }, limit);
 			UAM_ASSERT(callback->Completed()); UAM_ASSERT_EQ(callback->successes + callback->failures, 1);
 			return callback;
 		}
@@ -5204,6 +5380,88 @@ UAM_TEST(RemoteNativeHistoryHandlerGeminiChildMalformedJournalSavesNothing)
 	UAM_ASSERT(!fs::exists(child.Primary()));
 	UAM_ASSERT(ChatDomainService().FindChatById(fixture.app, child.reference) == nullptr);
 	fixture.Settle(refused);
+}
+
+namespace
+{
+	// One byte past the documented SSH snapshot limit, kept sparse so the test
+	// costs no disk. The asserted reason shows the size check refused it.
+	void GrowPastSnapshotLimit(const RemoteGeminiChildJournal& child)
+	{
+		fs::resize_file(child.File(), uam::remote::native_history::kMaxSnapshotBytes + 1);
+	}
+
+	void AssertOversizedRefusal(CefRefPtr<RemoteHistoryQueryCallback> refused)
+	{
+		UAM_ASSERT_EQ(refused->successes, 0); UAM_ASSERT_EQ(refused->failures, 1); UAM_ASSERT_EQ(refused->status, 502);
+		UAM_ASSERT_EQ(refused->body, std::string(uam::remote::native_history::kSnapshotTooLargeError));
+	}
+}
+
+// An SSH journal over the snapshot limit is refused with its reason, publishes
+// nothing, and leaves the helper able to serve the same child once it fits.
+UAM_TEST(RemoteNativeHistoryHandlerGeminiChildOversizedJournalRefusedAndRetryable)
+{
+	RemoteOwnedControlsFixture fixture;
+	RemoteGeminiChildJournal child(fixture); child.Write(true);
+	GrowPastSnapshotLimit(child);
+	const auto chats = fixture.app.chats.size();
+	const auto before = fixture.Launches();
+	const auto refused = child.Open();
+	fixture.AssertPrivateTransport(before); // The real helper applied the limit.
+	AssertOversizedRefusal(refused);
+	fixture.Settle(refused);
+	AwaitRemoteCandidateCapacity();
+	UAM_ASSERT(!fs::exists(child.Primary()));
+	UAM_ASSERT(!fs::exists(AppPaths::UamChatSummaryFilePath(fixture.app.data_root, child.reference)));
+	UAM_ASSERT(ChatDomainService().FindChatById(fixture.app, child.reference) == nullptr);
+	UAM_ASSERT_EQ(fixture.app.chats.size(), chats);
+	UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(fixture.app), fixture.unrelated_id);
+	UAM_ASSERT_EQ(fs::file_size(child.File()), uam::remote::native_history::kMaxSnapshotBytes + 1); // The journal is only read.
+	child.Write(true);
+	const auto retry = child.Open();
+	RequireRemoteChildOpened(child, retry); (void)child.AssertSaved(); fixture.Settle(retry);
+}
+
+// A saved child whose journal outgrows the limit keeps its saved copy and originals.
+UAM_TEST(RemoteNativeHistoryHandlerGeminiChildOversizedRefreshRetainsSaved)
+{
+	RemoteOwnedControlsFixture fixture;
+	RemoteGeminiChildJournal child(fixture); child.Write(true);
+	const auto opened = child.Open(); RequireRemoteChildOpened(child, opened); fixture.Settle(opened);
+	const auto key = child.AssertSaved();
+	AwaitRemoteCandidateCapacity();
+	const auto primary = ReadFile(child.Primary()); UAM_ASSERT(!primary.empty());
+	const auto revision = ChatRepository::ChatStorageRevision(fixture.app.data_root, child.reference);
+	GrowPastSnapshotLimit(child);
+	const auto refused = child.Open();
+	AssertOversizedRefusal(refused);
+	fixture.Settle(refused);
+	AwaitRemoteCandidateCapacity();
+	UAM_ASSERT_EQ(ReadFile(child.Primary()), primary);
+	UAM_ASSERT_EQ(ChatRepository::ChatStorageRevision(fixture.app.data_root, child.reference), revision);
+	UAM_ASSERT_EQ(child.AssertSaved(), key);
+}
+
+// The limit is inclusive: a journal of exactly 64 MiB crosses the helper and saves whole.
+UAM_TEST(RemoteNativeHistoryHandlerGeminiChildJournalAtSnapshotLimitOpens)
+{
+	RemoteOwnedControlsFixture fixture;
+	RemoteGeminiChildJournal child(fixture); child.Write(true);
+	const std::string answer = "Remote child answer";
+	const std::size_t padding = uam::remote::native_history::kMaxSnapshotBytes - child.bytes.size();
+	child.bytes.insert(child.bytes.find(answer) + answer.size(), padding, 'x');
+	UAM_ASSERT(uam::io::WriteTextFile(child.File(), child.bytes));
+	UAM_ASSERT_EQ(fs::file_size(child.File()), uam::remote::native_history::kMaxSnapshotBytes);
+	const auto opened = child.Await(child.Begin(), std::chrono::seconds(120)); // Leaves the 60-second read deadline as the only limit.
+	RequireRemoteChildOpened(child, opened);
+	const auto saved = ChatRepository::LoadLocalChat(fixture.app.data_root, child.reference, true);
+	UAM_ASSERT(saved && saved->messages_loaded); UAM_ASSERT_EQ(saved->messages.size(), std::size_t{2});
+	UAM_ASSERT_EQ(saved->messages.back().content.size(), answer.size() + padding);
+	UAM_ASSERT_EQ(saved->messages.front().attachments.size(), std::size_t{1});
+	const auto original = uam::native_assets::ReadOwned(fixture.app.data_root, child.reference, saved->messages.front().attachments.front().native_asset_key);
+	UAM_ASSERT(original.ok); UAM_ASSERT_EQ(original.bytes, fixture.original);
+	fixture.Settle(opened);
 }
 
 // A shorter readable SSH journal must not replace the fuller saved child or its originals.

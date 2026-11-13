@@ -1,12 +1,12 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
-import { ArrowRight, Pencil, Plus, RotateCcw, Unlink } from 'lucide-react'
+import { ArrowRight, LoaderCircle, Pencil, Plus, RotateCcw, Unlink } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
-import { sendToCEF } from '../../ipc/cefBridge'
+import { boundedRead, sendToCEF, type CEFResponse } from '../../ipc/cefBridge'
 import { routingConfigurationError, routingFolderRows, sanitizeRepositoryMatches, shortRepositoryIdentity, type ExecutionRoutingSettings as RoutingSettings, type RoutingFolderGroup, type RoutingHostPolicy, type RoutingWorkspaceMapping, type WorkspaceRepositoryMatches } from '../../types/executionRouting'
 import type { ExecutionHost, Folder } from '../../types/session'
 import { Button, Disclosure, IconButton, Presence, Switch, type StatusTone, Reveal } from '../ui'
 import { NumberField } from './NumberField'
-import { SaveButton, SettingRow, SettingsLoading, SettingsSection, StatusMark } from './SettingsPrimitives'
+import { SaveButton, SettingRow, SettingsSection, StatusMark } from './SettingsPrimitives'
 import { MapFolderChooser, type FolderMappingChoice } from './MapFolderChooser'
 import { UnsavedChangesDialog } from './UnsavedChangesDialog'
 import '../shared/review.css'
@@ -56,6 +56,9 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
     const [exit, setExit] = useState<(() => void) | null>(null)
     const [repositories, setRepositories] = useState<WorkspaceRepositoryMatches[] | null>(null)
     const [repositoryError, setRepositoryError] = useState('')
+    const [repositoryAttempt, setRepositoryAttempt] = useState(0)
+    // A slow native check holds a shared VCS-context slot; Retry rejoins it instead of starting another.
+    const repositoryRead = useRef<Promise<CEFResponse> | null>(null)
     const [chooser, setChooser] = useState<{ hostId: string; folderId: string } | 'all' | null>(null)
     const chooserOpener = useRef<HTMLElement | null>(null)
     const root = useRef<HTMLFieldSetElement>(null)
@@ -70,13 +73,23 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
     useEffect(() => {
       if (!matching) return
       let cancelled = false
-      void sendToCEF({ action: 'listRepositoryMatches', payload: {} }).then((response) => {
+      // A retry clears the failure so the check row shows again; earlier matches stay until replaced.
+      setRepositoryError('')
+      const rejoined = repositoryRead.current !== null
+      const reply = repositoryRead.current ?? sendToCEF({ action: 'listRepositoryMatches', payload: {} })
+      if (!repositoryRead.current) {
+        repositoryRead.current = reply
+        void reply.finally(() => { if (repositoryRead.current === reply) repositoryRead.current = null })
+      }
+      void boundedRead(reply, 'Repository matching did not answer in time.').then((response) => {
+        // A check that stays silent through a second wait is treated as lost, so the next Retry sends a new one.
+        if (!response.ok && rejoined && repositoryRead.current === reply) repositoryRead.current = null
         if (cancelled) return
         if (response.ok) { setRepositories(sanitizeRepositoryMatches(response.data)); setRepositoryError('') }
         else setRepositoryError(response.error || 'Repository matching is unavailable right now.')
       })
       return () => { cancelled = true }
-    }, [matching])
+    }, [matching, repositoryAttempt])
     useEffect(() => {
       if (variant !== 'page' || !dirty) return
       const guard = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }
@@ -242,14 +255,16 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
           })}
         </SettingsSection>
 
-        <Reveal open={sshHosts.length > 0 && checking}><SettingsLoading label="Checking repositories" rows={2} /></Reveal>
-        <Reveal open={sshHosts.length > 0 && !checking}>
+        {/* Folders stay usable while repositories are checked; manual mapping never waits for matching. */}
+        <Reveal open={sshHosts.length > 0}>
           <SettingsSection title="Folders" className="uam-rt-folders" actions={<>
-            <Reveal open={localFolders.length > 0} as="span" className="uam-rt-summary">{groups.filter((group) => group.entries.some((entry) => !entry.error)).length} of {plural(localFolders.length, 'workspace')} mapped</Reveal>
+            <Reveal open={localFolders.length > 0 && !checking} as="span" className="uam-rt-summary">{groups.filter((group) => group.entries.some((entry) => !entry.error)).length} of {plural(localFolders.length, 'workspace')} mapped</Reveal>
             <Button size="sm" leadingIcon={<Plus size={13} />} data-routing-map-folder disabled={localFolders.length === 0} onClick={() => openChooser('all')}>Map folder…</Button>
           </>}>
             <Reveal open={localFolders.length === 0}><SettingRow title={<span className="uam-rt-dialog__empty">Give a local folder a path first, then it can be mapped here.</span>} /></Reveal>
-            <Reveal open={!!repositoryError}><SettingRow title={<span className="uam-rt-dialog__empty" role="status">Repository matching is unavailable right now. Choose folders by hand.</span>} /></Reveal>
+            <Reveal open={checking}><SettingRow title={<span className="inline-flex items-center gap-1.5" role="status"><LoaderCircle size={13} aria-hidden className="animate-spin motion-reduce:animate-none" />Checking repositories… You can map folders by hand meanwhile.</span>} /></Reveal>
+            <Reveal open={matching && localFolders.length > 0 && !!repositoryError}><SettingRow title={<span className="uam-rt-dialog__empty" role="status">Repository matching is unavailable right now. Choose folders by hand.</span>}
+              control={<Button size="sm" onClick={() => { root.current?.querySelector<HTMLElement>('[data-routing-map-folder]')?.focus({ preventScroll: true }); setRepositoryAttempt((value) => value + 1) }}>Retry</Button>} /></Reveal>
             {groups.map((group, index) => {
               const problems = group.entries.filter((entry) => entry.error)
               return <Disclosure key={group.folder.id} defaultOpen={problems.length > 0 || index < 2} summary={<>
@@ -266,7 +281,7 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
             </>}>
               {unmapped.map((group) => <div key={group.folder.id} className="uam-rt-map-row uam-rt-map-row--unmapped">
                 <span className="uam-rt-map-row__host">{group.folder.name}</span>
-                <span className="uam-rt-alias uam-rt-map-row__path" title={group.folder.directory}>{group.folder.directory}{matching ? ` · ${group.repository ? shortRepositoryIdentity(group.repository.identity) : 'No repository'}` : ''}</span>
+                <span className="uam-rt-alias uam-rt-map-row__path" title={group.folder.directory}>{group.folder.directory}{matching ? ` · ${group.repository ? shortRepositoryIdentity(group.repository.identity) : checking ? 'Checking repository…' : repositoryError ? 'Repository unknown' : 'No repository'}` : ''}</span>
                 <span className="uam-rt-map-row__actions"><Button variant="ghost" size="sm" aria-label={`Map ${group.folder.name}`} onClick={() => openChooser({ hostId: sshHosts[0].id, folderId: group.folder.id })}>Map…</Button></span>
               </div>)}
             </Disclosure></Reveal>

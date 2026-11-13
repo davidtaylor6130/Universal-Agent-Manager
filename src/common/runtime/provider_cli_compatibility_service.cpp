@@ -143,7 +143,7 @@ namespace
 			return std::move(result);
 		};
 		uam::remote::DirectoryListing home;
-		if (!client.ListDirectories({}, home, &result.error)) return finish();
+		if (!client.ListDirectories({}, home, &result.error, stop_token)) return finish();
 		if (!uam::execution_hosts::IsAbsoluteRemotePath(host.platform, home.directory))
 		{
 			result.error = "The SSH helper returned an invalid home directory.";
@@ -733,7 +733,8 @@ std::string CliProviderVersionStateKey(std::string_view provider_id, std::string
 
 void ProviderCliCompatibilityService::StartVersionCheck(uam::AppState& app, bool force, bool include_remote) const
 {
-	if (app.runtime_cli_version_check_task.running) return;
+	// A check routing started in the background delays this sweep; it never cancels it.
+	if (app.runtime_cli_version_check_task.running && !app.runtime_cli_version_check_background) return;
 	app.runtime_cli_version_check_queue.clear();
 	std::vector<ExecutionHost> hosts{uam::execution_hosts::LocalHost()};
 	if (include_remote)
@@ -755,7 +756,7 @@ void ProviderCliCompatibilityService::StartVersionCheck(uam::AppState& app, bool
 			if (!uam::execution_hosts::SameConnection(state.execution_host, host)) state = {};
 			state.provider_id = provider_id;
 			state.execution_host = host;
-			state.check_error.clear();
+			// A prior failure stands while the provider waits; the check's result replaces it.
 			state.message = ProviderTitleMessage("Waiting to check installed ", ProviderTitle(app, provider_id), " version...");
 			app.runtime_cli_version_check_queue.push_back(target);
 		}
@@ -794,7 +795,9 @@ bool ProviderCliCompatibilityService::StartProviderVersionCheck(uam::AppState& a
 	const auto installation = app.runtime_cli_versions_by_provider_id.find(CliProviderVersionStateKey(normalized_provider_id, host->id));
 	const bool awaiting_verification = installation != app.runtime_cli_versions_by_provider_id.end() &&
 	    installation->second.last_install_status == "awaiting-verification";
-	if (app.runtime_cli_version_check_task.running || (!awaiting_verification && !ProviderCliLaunchBlockReason(app, normalized_provider_id, host->id).empty()))
+	// A check routing started in the background delays a requested check; every other refusal still applies to it.
+	const bool behind_background_check = app.runtime_cli_version_check_task.running && app.runtime_cli_version_check_background;
+	if ((app.runtime_cli_version_check_task.running && !behind_background_check) || (!awaiting_verification && !ProviderCliLaunchBlockReason(app, normalized_provider_id, host->id).empty()))
 		return FailProviderCliInstall(error_out, "A provider CLI command is already running.");
 	const ProviderCliPolicy* policy = FindProviderCliPolicy(normalized_provider_id);
 	if (policy == nullptr)
@@ -807,9 +810,18 @@ bool ProviderCliCompatibilityService::StartProviderVersionCheck(uam::AppState& a
 	if (!uam::execution_hosts::SameConnection(state.execution_host, *host)) state = {};
 	state.provider_id = normalized_provider_id;
 	state.execution_host = *host;
-	state.check_error.clear();
+	if (behind_background_check)
+	{
+		// Queued like a provider waiting in a sweep; the running check's completion starts it.
+		state.message = ProviderTitleMessage("Waiting to check installed ", ProviderTitle(app, normalized_provider_id), " version...");
+		const std::pair<std::string, std::string> target{normalized_provider_id, host->id};
+		if (std::ranges::find(app.runtime_cli_version_check_queue, target) == app.runtime_cli_version_check_queue.end()) app.runtime_cli_version_check_queue.push_back(target);
+		return true;
+	}
+	// A prior failure stands until this check completes; clearing it now would read as a confirmed-missing CLI.
 	state.message = ProviderTitleMessage("Checking installed ", ProviderTitle(app, normalized_provider_id), " version...");
 	app.runtime_cli_version_provider_id = normalized_provider_id;
+	app.runtime_cli_version_check_background = false;
 	StartAsyncCommandTask(app.runtime_cli_version_check_task, *host, normalized_provider_id, command, false, kProviderCliVersionProbeTimeoutMs);
 	return true;
 }
@@ -1052,6 +1064,7 @@ void ProviderCliCompatibilityService::Poll(uam::AppState& app) const
 	std::optional<bool> check_connected;
 	if (TryConsumeAsyncCommandTaskOutput(app.runtime_cli_version_check_task, output, &check_connected))
 	{
+		app.runtime_cli_version_check_background = false;
 		apply_remote_health(check_host, check_connected);
 		const std::string provider_id = uam::provider_ids::CanonicalCliProviderLookupId(app.runtime_cli_version_provider_id);
 		if (host_matches(check_host))
@@ -1122,6 +1135,9 @@ void ProviderCliCompatibilityService::Poll(uam::AppState& app) const
 				{
 					provider_state.message = ProviderTitleMessage("Installed ", ProviderTitle(app, provider_id), " version is known to be incompatible with this UAM build.");
 				}
+				const ProviderCliPolicy& policy = ResolveProviderCliPolicy(provider_id).policy;
+				if (policy.protocol_version_refusal != nullptr)
+					if (std::string refusal = policy.protocol_version_refusal(provider_state.installed_version); !refusal.empty()) provider_state.message = std::move(refusal);
 				if (minimum_verification_failed) provider_state.message = minimum_version_error;
 			}
 			else
@@ -1354,7 +1370,7 @@ std::string ProviderCliCompatibilityService::CompatibilityStatusForProvider(std:
 	{
 		return "untested";
 	}
-	if (trimmed_version == resolved.policy.fallback_version)
+	if (trimmed_version == resolved.policy.fallback_version || (resolved.policy.verified_protocol_version != nullptr && resolved.policy.verified_protocol_version(trimmed_version)))
 	{
 		return "verified";
 	}

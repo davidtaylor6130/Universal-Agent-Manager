@@ -1,5 +1,7 @@
 #include "app/vcs_commit_service.h"
 
+#include "app/vcs_provider.h"
+#include "app/svn_history.h"
 #include "app/provider_resolution_service.h"
 #include "app/chat_domain_service.h"
 #include "app/provider_worker_command.h"
@@ -17,11 +19,13 @@
 #include "common/utils/range_utils.h"
 #include "common/utils/shell_escape.h"
 #include "common/utils/string_utils.h"
+#include "common/vcs/git_command.h"
 #include "remote/runner_client.h"
 
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <array>
 #include <mutex>
 #include <thread>
 #include <cctype>
@@ -103,144 +107,152 @@ namespace uam
 			return uam::strings::NonEmptyOrFallback(CommandOutputOrError(result), fallback);
 		}
 
-		class RemoteVcsContext
+	}
+
+	class RemoteVcsContext
+	{
+	  public:
+		RemoteVcsContext(const AppState& app, const ChatSession& chat)
+		    : m_workspace(uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat)))
 		{
-		  public:
-			RemoteVcsContext(const AppState& app, const ChatSession& chat)
-			    : m_workspace(uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat)))
+			m_host = uam::execution_hosts::Find(app.settings.execution_hosts,
+			                                      chat.execution_host_id);
+			if (m_host == nullptr || m_host->id == uam::execution_hosts::kLocalHostId)
 			{
-				m_host = uam::execution_hosts::Find(app.settings.execution_hosts,
-				                                      chat.execution_host_id);
-				if (m_host == nullptr || m_host->id == uam::execution_hosts::kLocalHostId)
-				{
-					m_error = "The remote execution host no longer exists.";
-					return;
-				}
-				if (!uam::execution_hosts::IsAbsoluteRemotePath(m_host->platform, m_workspace))
-				{
-					m_error = "The remote workspace directory is unavailable.";
-					return;
-				}
-				if (!uam::remote::CanAttemptRunnerConnection(*m_host))
-				{
-					m_error = "The selected remote runner is not ready. Recheck it in Settings.";
-					return;
-				}
-				m_client = std::make_unique<uam::remote::RunnerClient>(
-				    PlatformServicesFactory::Instance().process_service,
-				    *m_host);
+				m_error = "The remote execution host no longer exists.";
+				return;
 			}
-
-			const std::string& WorkspaceDirectory() const { return m_workspace; }
-
-			std::string_view Platform() const { return m_host ? m_host->platform : std::string_view{}; }
-
-			bool Ready(std::string* error_out = nullptr)
+			if (!uam::execution_hosts::IsAbsoluteRemotePath(m_host->platform, m_workspace))
 			{
-				if (m_client != nullptr && m_client->Connect(&m_error)) return true;
-				if (error_out != nullptr)
-					*error_out = uam::strings::NonEmptyOrFallback(m_error,
-					    std::string(kRemoteVcsUnavailable));
-				return false;
+				m_error = "The remote workspace directory is unavailable.";
+				return;
 			}
-
-			ProcessExecutionResult Run(const std::string& working_directory,
-			                           const std::vector<std::string>& argv,
-			                           const std::vector<std::pair<std::string, std::string>>& environment = {},
-			                           std::string_view standard_input = {},
-			                           int timeout_ms = kDefaultCommandTimeoutMs, std::stop_token cancellation = {})
+			if (!uam::remote::CanAttemptRunnerConnection(*m_host))
 			{
-				ProcessExecutionResult result;
-				if (cancellation.stop_requested() || argv.empty() || !Ready(&result.error)) return result;
-				const std::string session_id = "vcs-" +
-				    PlatformServicesFactory::Instance().process_service.GenerateUuid();
-				if (!m_client->StartProcess(session_id, std::filesystem::path(working_directory),
-				                            argv, environment, &result.error)) return result;
-				if (!standard_input.empty() &&
-				    !m_client->WriteProcess(session_id, standard_input, &result.error))
-				{
-					(void)m_client->StopProcess(session_id);
-					(void)m_client->RemoveProcess(session_id);
-					return result;
-				}
-				if (!m_client->CloseProcessInput(session_id, &result.error))
-				{
-					(void)m_client->StopProcess(session_id);
-					(void)m_client->RemoveProcess(session_id);
-					return result;
-				}
+				m_error = "The selected remote runner is not ready. Recheck it in Settings.";
+				return;
+			}
+			m_client = std::make_unique<uam::remote::RunnerClient>(
+			    PlatformServicesFactory::Instance().process_service,
+			    *m_host);
+		}
 
-				const auto deadline = std::chrono::steady_clock::now() +
-				                      std::chrono::milliseconds(timeout_ms);
-				while (!cancellation.stop_requested() && std::chrono::steady_clock::now() < deadline)
-				{
-					uam::remote::ProcessPollResult polled;
-					if (!m_client->PollProcess(session_id, polled, &result.error)) break;
-					if (!uam::platform::AppendCapturedCommandOutput(
-					        result, polled.standard_output.data(), polled.standard_output.size()))
-					{
-						result.error = std::string(uam::platform::kCapturedCommandOutputLimitError);
-						break;
-					}
-					if (result.error.size() + polled.standard_error.size() <=
-					    uam::platform::kCapturedCommandMaxOutputBytes)
-						result.error += polled.standard_error;
-					else
-					{
-						result.output_truncated = true;
-						result.error = std::string(uam::platform::kCapturedCommandOutputLimitError);
-						break;
-					}
-					if (!m_client->AcknowledgeProcessOutput(session_id, polled, &result.error)) break;
-					if (!polled.running)
-					{
-						result.ok = true;
-						result.exit_code = polled.exit_code;
-						(void)m_client->RemoveProcess(session_id);
-						return result;
-					}
-					std::this_thread::sleep_for(std::chrono::milliseconds(10));
-				}
-				if (result.error.empty())
-				{
-					result.timed_out = true;
-					result.error = "The remote VCS command timed out.";
-				}
+		const std::string& WorkspaceDirectory() const { return m_workspace; }
+
+		std::string_view Platform() const { return m_host ? m_host->platform : std::string_view{}; }
+
+		bool Ready(std::string* error_out = nullptr)
+		{
+			if (m_client != nullptr && m_client->Connect(&m_error)) return true;
+			if (error_out != nullptr)
+				*error_out = uam::strings::NonEmptyOrFallback(m_error,
+				    std::string(kRemoteVcsUnavailable));
+			return false;
+		}
+
+		ProcessExecutionResult Run(const std::string& working_directory,
+		                           const std::vector<std::string>& argv,
+		                           const std::vector<std::pair<std::string, std::string>>& environment = {},
+		                           std::string_view standard_input = {},
+		                           int timeout_ms = kDefaultCommandTimeoutMs, std::stop_token cancellation = {})
+		{
+			ProcessExecutionResult result;
+			if (cancellation.stop_requested() || argv.empty() || !Ready(&result.error)) return result;
+			const std::string session_id = "vcs-" +
+			    PlatformServicesFactory::Instance().process_service.GenerateUuid();
+			// Every remote Git command passes through here, so it always carries the shared Git safety options.
+			const std::vector<std::string> command = argv.front() == "git"
+			    ? uam::vcs::HardenedGitArgv({argv.begin() + 1, argv.end()}, uam::vcs::IsWindowsHostPlatform(Platform()))
+			    : argv;
+			if (!m_client->StartProcess(session_id, std::filesystem::path(working_directory),
+			                            command, environment, &result.error)) return result;
+			if (!standard_input.empty() &&
+			    !m_client->WriteProcess(session_id, standard_input, &result.error))
+			{
+				(void)m_client->StopProcess(session_id);
+				(void)m_client->RemoveProcess(session_id);
+				return result;
+			}
+			if (!m_client->CloseProcessInput(session_id, &result.error))
+			{
 				(void)m_client->StopProcess(session_id);
 				(void)m_client->RemoveProcess(session_id);
 				return result;
 			}
 
-			bool CopyFile(const std::string& source, const std::string& target,
-			              const bool overwrite, std::string* error_out)
+			const auto deadline = std::chrono::steady_clock::now() +
+			                      std::chrono::milliseconds(timeout_ms);
+			while (!cancellation.stop_requested() && std::chrono::steady_clock::now() < deadline)
 			{
-				return Ready(error_out) && m_client->CopyFile(
-				    "vcs-copy-" + PlatformServicesFactory::Instance().process_service.GenerateUuid(),
-				    std::filesystem::path(source), std::filesystem::path(target), overwrite,
-				    error_out);
+				uam::remote::ProcessPollResult polled;
+				if (!m_client->PollProcess(session_id, polled, &result.error)) break;
+				if (!uam::platform::AppendCapturedCommandOutput(
+				        result, polled.standard_output.data(), polled.standard_output.size()))
+				{
+					result.error = std::string(uam::platform::kCapturedCommandOutputLimitError);
+					break;
+				}
+				if (result.error.size() + polled.standard_error.size() <=
+				    uam::platform::kCapturedCommandMaxOutputBytes)
+					result.error += polled.standard_error;
+				else
+				{
+					result.output_truncated = true;
+					result.error = std::string(uam::platform::kCapturedCommandOutputLimitError);
+					break;
+				}
+				if (!m_client->AcknowledgeProcessOutput(session_id, polled, &result.error)) break;
+				if (!polled.running)
+				{
+					result.ok = true;
+					result.exit_code = polled.exit_code;
+					(void)m_client->RemoveProcess(session_id);
+					return result;
+				}
+				std::this_thread::sleep_for(std::chrono::milliseconds(10));
 			}
-
-			bool RemoveFile(const std::string& path)
+			if (result.error.empty())
 			{
-				return Ready(nullptr) && m_client->RemoveFile(
-				    "vcs-remove-" + PlatformServicesFactory::Instance().process_service.GenerateUuid(),
-				    std::filesystem::path(path), nullptr);
+				result.timed_out = true;
+				result.error = "The remote VCS command timed out.";
 			}
+			(void)m_client->StopProcess(session_id);
+			(void)m_client->RemoveProcess(session_id);
+			return result;
+		}
 
-			std::string NullDevice() const
-			{
-				return m_host != nullptr &&
-				       (m_host->platform == "windows" || m_host->platform == "Windows")
-				    ? "NUL" : "/dev/null";
-			}
+		bool CopyFile(const std::string& source, const std::string& target,
+		              const bool overwrite, std::string* error_out)
+		{
+			return Ready(error_out) && m_client->CopyFile(
+			    "vcs-copy-" + PlatformServicesFactory::Instance().process_service.GenerateUuid(),
+			    std::filesystem::path(source), std::filesystem::path(target), overwrite,
+			    error_out);
+		}
 
-		  private:
-			std::string m_workspace;
-			const ExecutionHost* m_host = nullptr;
-			std::unique_ptr<uam::remote::RunnerClient> m_client;
-			std::string m_error;
-		};
+		bool RemoveFile(const std::string& path)
+		{
+			return Ready(nullptr) && m_client->RemoveFile(
+			    "vcs-remove-" + PlatformServicesFactory::Instance().process_service.GenerateUuid(),
+			    std::filesystem::path(path), nullptr);
+		}
 
+		std::string NullDevice() const
+		{
+			return m_host != nullptr &&
+			       (m_host->platform == "windows" || m_host->platform == "Windows")
+			    ? "NUL" : "/dev/null";
+		}
+
+	  private:
+		std::string m_workspace;
+		const ExecutionHost* m_host = nullptr;
+		std::unique_ptr<uam::remote::RunnerClient> m_client;
+		std::string m_error;
+	};
+
+	namespace
+	{
 		bool RemoteOutput(RemoteVcsContext& context, const std::string& cwd,
 		                  const std::vector<std::string>& argv, std::string* output_out,
 		                  std::string* error_out = nullptr, const bool raw = false)
@@ -260,7 +272,7 @@ namespace uam
 
 		std::string BuildGitCommandInDirectory(const std::filesystem::path& cwd, const std::string& args)
 		{
-			return "git -C " + uam::shell::EscapeArg(uam::paths::Utf8PathString(cwd)) + " " + args;
+			return uam::vcs::HardenedGitShellCommandInDirectory(cwd, args);
 		}
 
 		std::string BuildLiteralGitCommandInDirectory(const std::filesystem::path& cwd, const std::string& args)
@@ -527,10 +539,14 @@ namespace uam
 				}
 				ProviderWorkerInvocation invocation;
 				invocation.direct_process = true;
-				invocation.argv = {"git", "-C", uam::paths::Utf8PathString(m_root)};
-				invocation.argv.insert(invocation.argv.end(), args.begin(), args.end());
+				args.insert(args.begin(), {"-C", uam::paths::Utf8PathString(m_root)});
 				if (use_index) invocation.environment_overrides = {{"GIT_INDEX_FILE", m_remote ? m_remoteIndex : uam::paths::Utf8PathString(m_index)}};
-				if (m_remote) return m_remote->Run(uam::paths::Utf8PathString(m_root), invocation.argv, invocation.environment_overrides, {}, kDefaultCommandTimeoutMs, m_cancellation);
+				if (m_remote)
+				{
+					args.insert(args.begin(), "git"); // RemoteVcsContext::Run adds the safety options for the host's platform.
+					return m_remote->Run(uam::paths::Utf8PathString(m_root), args, invocation.environment_overrides, {}, kDefaultCommandTimeoutMs, m_cancellation);
+				}
+				invocation.argv = uam::vcs::HardenedGitArgv(args, uam::vcs::kLocalHostIsWindows);
 				return ExecuteProviderWorkerInvocation(invocation, m_root, kDefaultCommandTimeoutMs, m_cancellation);
 			}
 		  private:
@@ -1259,20 +1275,14 @@ namespace uam
 			result.message = CommandOutputOrFallback(commit_result, fallback_message);
 		}
 
-		void PopulateAvailableVcsTypes(VcsCommitStatus& status, const std::filesystem::path& workspace, std::filesystem::path& git_root, bool validate, const AppSettings& settings)
+		void PopulateAvailableVcsTypes(VcsCommitStatus& status, const std::filesystem::path& workspace, std::map<VcsType, std::filesystem::path>& roots, bool validate, const AppSettings& settings)
 		{
-			std::string root;
-			if (settings.git_enabled && GitAvailable(workspace, &root, validate))
+			for (const VcsProvider* provider : VcsProviders())
 			{
-				status.vcs_types.push_back(VcsType::Git);
-				if (!root.empty())
-				{
-					git_root = uam::paths::PathFromUtf8(root);
-				}
-			}
-			if (settings.svn_enabled && SvnAvailable(workspace, validate))
-			{
-				status.vcs_types.push_back(VcsType::Svn);
+				std::filesystem::path root = workspace;
+				if (!provider->Enabled(settings) || !provider->DetectLocal(workspace, validate, root)) continue;
+				status.vcs_types.push_back(provider->Type());
+				roots[provider->Type()] = std::move(root);
 			}
 			status.available = !status.vcs_types.empty();
 		}
@@ -1285,8 +1295,8 @@ namespace uam
 				return;
 			}
 
-			status.active_vcs_type = VcsType::Git;
-			if (!HasVcsType(status, VcsType::Git))
+			status.active_vcs_type = VcsProviders().front()->Type();
+			if (!HasVcsType(status, status.active_vcs_type))
 			{
 				status.active_vcs_type = status.vcs_types.front();
 			}
@@ -1703,6 +1713,360 @@ namespace uam
 			ApplyRemoteGitFingerprints(context, root, files);
 		}
 
+		std::string RemoteNoIndexDiff(RemoteVcsContext& context, const std::string& cwd, const std::string& path, const VcsChangedFile& selected, std::string* error_out)
+		{
+			const ProcessExecutionResult result = context.Run(
+			    cwd, {"git", "--literal-pathspecs", "diff", "--no-index",
+			          "--no-ext-diff", "--", context.NullDevice(), path});
+			if (result.ok && !result.timed_out && !result.canceled &&
+			    (result.exit_code == 0 || result.exit_code == 1))
+				return uam::strings::Trim(result.output);
+			if (error_out != nullptr)
+				*error_out = IsSvnUnversioned(selected)
+				    ? "This new SVN item could not be compared on the remote host; new folders and hosts without Git have no file diff."
+				    : CommandOutputOrError(result);
+			return {};
+		}
+
+		class GitVcsProvider final : public VcsProvider
+		{
+		  public:
+			VcsType Type() const override { return VcsType::Git; }
+			const vcs::VcsProviderDeclaration& Declaration() const override { return vcs::kGitProviderDeclaration; }
+			bool Enabled(const AppSettings& settings) const override { return settings.git_enabled; }
+
+			bool DetectLocal(const std::filesystem::path& workspace, const bool validate, std::filesystem::path& root) const override
+			{
+				std::string detected;
+				if (!GitAvailable(workspace, &detected, validate)) return false;
+				if (!detected.empty()) root = uam::paths::PathFromUtf8(detected);
+				return true;
+			}
+
+			bool DetectRemote(RemoteVcsContext& context, const std::string& workspace, std::string& root) const override
+			{
+				return RemoteOutput(context, workspace, {"git", "rev-parse", "--show-toplevel"}, &root);
+			}
+
+			void PopulateLocalStatus(const VcsStatusRequest& request, const std::filesystem::path& workspace, const std::filesystem::path& root, VcsCommitStatus& status) const override
+			{
+				const std::string ref = uam::strings::Trim(request.comparison_ref);
+				if (ref == "chat") PopulateChatComparisonDetails(request.app, request.chat, status, root, request.include_line_stats);
+				else if (!ref.empty() && !IsCommitId(ref)) status.error = "The saved chat comparison point is invalid.";
+				else if (!ref.empty()) PopulateGitComparisonDetails(status, workspace, root, request.include_line_stats, ref);
+				else PopulateGitStatusDetails(status, workspace, root, request.include_line_stats, request.context_only);
+			}
+
+			void PopulateRemoteStatus(RemoteVcsContext& context, const VcsStatusRequest& request, const std::string& root, VcsCommitStatus& status) const override
+			{
+				const bool include_line_stats = request.include_line_stats;
+				const bool context_only = request.context_only;
+				const std::string comparison_ref(request.comparison_ref);
+				const std::string& git_root = root.empty() ? status.workspace_directory : root;
+				if (!RemoteOutput(context, git_root, {"git", "branch", "--show-current"},
+				                  &status.branch_or_revision) && context_only) status.error = "Could not read the Git branch.";
+				if (context_only) return;
+				if (status.branch_or_revision.empty())
+					RemoteOutput(context, git_root, {"git", "rev-parse", "--short", "HEAD"},
+					             &status.branch_or_revision);
+
+				if (context_only) return;
+				std::string output;
+				if (comparison_ref.empty())
+				{
+					if (!RemoteOutput(context, git_root,
+					                  {"git", "status", "--porcelain=v1", "-z",
+					                   "--untracked-files=all"}, &output, &status.error, true))
+						return;
+					status.changed_files = ParseGitStatus(output);
+					if (include_line_stats)
+						ApplyRemoteGitLineStats(context, git_root, status.changed_files);
+					return;
+				}
+
+				if (comparison_ref == "chat")
+				{
+					PopulateChatComparisonDetails(request.app, request.chat, status, uam::paths::PathFromUtf8(git_root), include_line_stats, &context);
+					ApplyRemoteGitFingerprints(context, git_root, status.changed_files);
+					return;
+				}
+
+				if (!IsCommitId(comparison_ref))
+				{
+					status.error = "The saved chat comparison point is invalid.";
+					return;
+				}
+				if (!RemoteOutput(context, git_root,
+				                  {"git", "rev-parse", "--verify", comparison_ref + "^{commit}"},
+				                  &output, &status.error)) return;
+				if (!RemoteOutput(context, git_root,
+				                  {"git", "diff", "--name-status", "-z", comparison_ref, "--"},
+				                  &output, &status.error, true)) return;
+				status.changed_files = ParseGitNameStatus(output);
+				std::string porcelain;
+				if (RemoteOutput(context, git_root,
+				                 {"git", "status", "--porcelain=v1", "-z",
+				                  "--untracked-files=all"}, &porcelain, nullptr, true))
+				{
+					for (const VcsChangedFile& working_file : ParseGitStatus(porcelain))
+					{
+						auto existing = std::ranges::find_if(status.changed_files,
+						    [&](const VcsChangedFile& file) { return file.path == working_file.path; });
+						if (existing != status.changed_files.end()) existing->staged = working_file.staged;
+						else if (working_file.status == "??") status.changed_files.push_back(working_file);
+					}
+				}
+				if (include_line_stats)
+					ApplyRemoteGitComparisonDetails(context, git_root, comparison_ref,
+					                                status.changed_files);
+			}
+
+			std::string LocalDiff(const AppState& app, const ChatSession& chat, const std::filesystem::path& workspace, const std::string& trimmed_path, std::string_view comparison_ref, std::string* error_out) const override
+			{
+				const VcsCommitService service;
+				std::filesystem::path diff_workspace = workspace;
+				const std::string ref = uam::strings::Trim(comparison_ref);
+				if (ref == "chat")
+				{
+					std::string root;
+					if (!GitAvailable(workspace, &root))
+					{
+						if (error_out) *error_out = "No Git repository is available for this chat.";
+						return {};
+					}
+					const std::filesystem::path review_root = uam::paths::PathFromUtf8(root);
+					const VcsCommitStatus status = service.Status(app, chat, VcsType::Git, false, "chat");
+					if (!status.error.empty())
+					{
+						if (error_out) *error_out = status.error;
+						return {};
+					}
+					const auto selected = std::ranges::find(status.changed_files, trimmed_path, &VcsChangedFile::path);
+					if (selected == status.changed_files.end())
+					{
+						if (error_out) *error_out = "The selected file is no longer changed in this chat.";
+						return {};
+					}
+					const std::string saved_ref = SavedChatBaseline(app, chat, review_root, error_out);
+					GitReviewIndex index(review_root);
+					if (saved_ref.empty() || !PrepareChatReviewIndex(index, saved_ref, error_out)) return {};
+					std::vector<std::string> args = {"--literal-pathspecs", "diff", "--cached", "--no-color", "--no-ext-diff", "--no-textconv", saved_ref, "--", trimmed_path};
+					if (!selected->previous_path.empty()) args.push_back(selected->previous_path);
+					const ProcessExecutionResult patch = index.Run(std::move(args));
+					if (!CommandSucceeded(patch))
+					{
+						if (error_out) *error_out = CommandOutputOrError(patch);
+						return {};
+					}
+					return patch.output;
+				}
+				if (!ref.empty() && !IsCommitId(ref))
+				{
+					if (error_out != nullptr) *error_out = "The saved chat comparison point is invalid.";
+					return "";
+				}
+				std::string git_root;
+				if (GitAvailable(workspace, &git_root) && !git_root.empty())
+				{
+					diff_workspace = uam::paths::PathFromUtf8(git_root);
+				}
+
+				const VcsCommitStatus status = service.Status(app, chat, VcsType::Git, false, ref);
+				const auto changed_file = std::find_if(status.changed_files.begin(), status.changed_files.end(), [&trimmed_path](const VcsChangedFile& file) { return file.path == trimmed_path; });
+				if (changed_file != status.changed_files.end() && changed_file->status == "??")
+				{
+					std::string output;
+					return OutputGitUntrackedDiff(diff_workspace, trimmed_path, &output, error_out) ? output : "";
+				}
+				std::string output;
+				if (!ref.empty())
+				{
+					return OutputCommand(BuildGitCommandInDirectory(diff_workspace, "diff " + uam::shell::EscapeArg(ref) + " -- " + uam::shell::EscapeArg(trimmed_path)), &output, error_out) ? output : "";
+				}
+				return OutputCommand(BuildLiteralGitCommandInDirectory(diff_workspace, "diff HEAD -- " + uam::shell::EscapeArg(trimmed_path)), &output, error_out) ? output : "";
+			}
+
+			std::string RemoteDiff(RemoteVcsContext& context, const AppState& app, const ChatSession& chat, const std::string& path, const VcsChangedFile& selected, std::string cwd, const std::string& comparison_ref, std::string* error_out) const override
+			{
+				std::string detected_root;
+				if (RemoteOutput(context, cwd, {"git", "rev-parse", "--show-toplevel"}, &detected_root))
+					cwd = std::move(detected_root);
+				if (comparison_ref == "chat")
+				{
+					const std::filesystem::path root = uam::paths::PathFromUtf8(cwd);
+					const std::string ref = SavedChatBaseline(app, chat, root, error_out);
+					GitReviewIndex index(root, {}, &context);
+					if (ref.empty() || !PrepareChatReviewIndex(index, ref, error_out)) return {};
+					std::vector<std::string> args = {"--literal-pathspecs", "diff", "--cached", "--no-color", "--no-ext-diff", "--no-textconv", ref, "--", path};
+					if (!selected.previous_path.empty()) args.push_back(selected.previous_path);
+					const ProcessExecutionResult patch = index.Run(std::move(args));
+					if (!CommandSucceeded(patch)) { if (error_out) *error_out = CommandOutputOrError(patch); return {}; }
+					return patch.output;
+				}
+				if (selected.status == "??" || IsSvnUnversioned(selected)) return RemoteNoIndexDiff(context, cwd, path, selected, error_out);
+				std::vector<std::string> argv = {"git", "--literal-pathspecs", "diff"};
+				if (!comparison_ref.empty()) argv.push_back(comparison_ref);
+				else argv.push_back("HEAD");
+				argv.insert(argv.end(), {"--", path});
+				std::string output;
+				return RemoteOutput(context, cwd, argv, &output, error_out) ? output : "";
+			}
+
+			bool LocalCommit(const std::filesystem::path& workspace, const std::string& message, const std::vector<std::string>& files, const VcsCommitStatus&, ProcessExecutionResult& committed, std::string& error) const override
+			{
+				const std::string quoted_files = JoinQuotedFiles(files);
+				GitIndexSnapshot index_snapshot;
+				if (!CaptureGitIndex(workspace, index_snapshot, error)) return false;
+				if (!Command(BuildLiteralGitCommandInDirectory(workspace, "add -- " + quoted_files), nullptr, &error))
+				{
+					if (!RestoreGitIndex(index_snapshot)) error += " The previous Git staging area could not be restored.";
+					return false;
+				}
+				if (!Command(BuildLiteralGitCommandInDirectory(workspace, "commit -m " + uam::shell::EscapeArg(message) + " -- " + quoted_files), &committed, &error))
+				{
+					if (!RestoreGitIndex(index_snapshot)) error += " The previous Git staging area could not be restored.";
+					return false;
+				}
+				return true;
+			}
+
+			bool RemoteCommit(RemoteVcsContext& context, std::string cwd, const std::string& message, std::vector<std::string> selected_files, const VcsCommitStatus&, ProcessExecutionResult& committed, std::string& error) const override
+			{
+				std::string root;
+				if (RemoteOutput(context, cwd, {"git", "rev-parse", "--show-toplevel"}, &root))
+					cwd = std::move(root);
+				std::string index_path;
+				if (!RemoteOutput(context, cwd,
+				                  {"git", "rev-parse", "--path-format=absolute", "--git-path", "index"},
+				                  &index_path, &error)) return false;
+				const std::string backup_path = index_path + ".uam-backup-" +
+				    PlatformServicesFactory::Instance().process_service.GenerateUuid();
+				const bool had_index = context.CopyFile(index_path, backup_path, false, &error);
+				if (!had_index && error != "The source file does not exist.") return false;
+				if (!had_index) error.clear();
+				const auto restore_index = [&]
+				{
+					if (had_index)
+					{
+						if (!context.CopyFile(backup_path, index_path, true, nullptr)) return false;
+						(void)context.RemoveFile(backup_path);
+						return true;
+					}
+					return context.RemoveFile(index_path);
+				};
+				std::vector<std::string> add = {"git", "--literal-pathspecs", "add", "--"};
+				add.insert(add.end(), selected_files.begin(), selected_files.end());
+				const ProcessExecutionResult added = context.Run(cwd, add);
+				if (!CommandSucceeded(added))
+				{
+					error = CommandOutputOrError(added);
+					if (!restore_index()) error += " The previous Git staging area could not be restored.";
+					return false;
+				}
+				std::vector<std::string> commit = {"git", "--literal-pathspecs", "commit",
+				                                   "-m", message, "--"};
+				commit.insert(commit.end(), selected_files.begin(), selected_files.end());
+				committed = context.Run(cwd, commit);
+				if (!CommandSucceeded(committed))
+				{
+					error = CommandOutputOrError(committed);
+					if (!restore_index()) error += " The previous Git staging area could not be restored.";
+					return false;
+				}
+				if (had_index) (void)context.RemoveFile(backup_path);
+				return true;
+			}
+		};
+
+		class SvnVcsProvider final : public VcsProvider
+		{
+		  public:
+			VcsType Type() const override { return VcsType::Svn; }
+			const vcs::VcsProviderDeclaration& Declaration() const override { return vcs::kSvnProviderDeclaration; }
+			bool Enabled(const AppSettings& settings) const override { return settings.svn_enabled; }
+
+			bool DetectLocal(const std::filesystem::path& workspace, const bool validate, std::filesystem::path&) const override
+			{
+				return SvnAvailable(workspace, validate);
+			}
+
+			bool DetectRemote(RemoteVcsContext& context, const std::string& workspace, std::string&) const override
+			{
+				return CommandSucceeded(RemoteSvnRunner(context, workspace)({"info", "--non-interactive", "--show-item", "revision", "--", "."}));
+			}
+
+			void PopulateLocalStatus(const VcsStatusRequest& request, const std::filesystem::path& workspace, const std::filesystem::path&, VcsCommitStatus& status) const override
+			{
+				if (!PopulateSvnStatusDetails(LocalSvnRunner(workspace), status, request.include_line_stats, request.context_only) || !request.include_line_stats) return;
+				for (VcsChangedFile& file : status.changed_files)
+				{
+					if (!IsSvnUnversioned(file)) continue;
+					const std::filesystem::path path = uam::paths::LexicallyNormalPath(workspace / uam::paths::PathFromUtf8(file.path));
+					std::error_code error;
+					// Unversioned folders stay one row; only a new regular file within the diff size limit is counted.
+					if (!std::filesystem::is_regular_file(std::filesystem::symlink_status(path, error)) || error ||
+					    std::filesystem::file_size(path, error) > kMaxUnversionedDiffBytes || error) continue;
+					if (const std::optional<int> lines = CountTextFileLines(path)) file.additions = *lines;
+					else file.binary = true;
+				}
+				ApplyContentFingerprints(workspace, status.changed_files);
+			}
+
+			void PopulateRemoteStatus(RemoteVcsContext& context, const VcsStatusRequest& request, const std::string&, VcsCommitStatus& status) const override
+			{
+				if (PopulateSvnStatusDetails(RemoteSvnRunner(context, status.workspace_directory), status, request.include_line_stats, request.context_only) && request.include_line_stats)
+					for (VcsChangedFile& file : status.changed_files)
+						if (IsSvnUnversioned(file)) ApplyRemoteUntrackedLineStats(context, status.workspace_directory, file);
+			}
+
+			std::string LocalDiff(const AppState& app, const ChatSession& chat, const std::filesystem::path& workspace, const std::string& trimmed_path, std::string_view, std::string* error_out) const override
+			{
+				std::string output;
+				std::string error;
+				const VcsCommitStatus status = VcsCommitService().Status(app, chat, VcsType::Svn, false);
+				const auto selected = std::ranges::find(status.changed_files, trimmed_path, &VcsChangedFile::path);
+				const bool diffed = selected != status.changed_files.end() && IsSvnUnversioned(*selected)
+				    ? SvnUnversionedFileDiff(workspace, trimmed_path, output, error)
+				    : SvnFileDiff(LocalSvnRunner(workspace), trimmed_path, output, error);
+				if (diffed) return uam::strings::Trim(output);
+				if (error_out != nullptr) *error_out = error;
+				return {};
+			}
+
+			std::string RemoteDiff(RemoteVcsContext& context, const AppState&, const ChatSession&, const std::string& path, const VcsChangedFile& selected, std::string cwd, const std::string&, std::string* error_out) const override
+			{
+				if (IsSvnUnversioned(selected)) return RemoteNoIndexDiff(context, cwd, path, selected, error_out);
+				std::string output;
+				std::string error;
+				if (SvnFileDiff(RemoteSvnRunner(context, cwd), path, output, error)) return uam::strings::Trim(output);
+				if (error_out != nullptr) *error_out = error;
+				return {};
+			}
+
+			bool LocalCommit(const std::filesystem::path& workspace, const std::string& message, const std::vector<std::string>& files, const VcsCommitStatus& status, ProcessExecutionResult& committed, std::string& error) const override
+			{
+				return CommitSvnSelection(LocalSvnRunner(workspace), &workspace, message, files, SvnExternalRoots(status), committed, error);
+			}
+
+			VcsHistoryPage History(const VcsCommandRunner& run, const VcsHistoryRequest& request) const override { return svn_history::Log(run, request); }
+			std::string RevisionDiff(const VcsCommandRunner& run, const std::string& revision, const std::string& path, std::string& error) const override { return svn_history::RevisionDiff(run, revision, path, error); }
+			VcsUpdateResult Update(const VcsCommandRunner& run) const override { return svn_history::Update(run); }
+			VcsOriginReply Origin(const VcsCommandRunner& run, const VcsOriginRequest& request) const override { return svn_history::Origin(run, request); }
+
+			bool RemoteCommit(RemoteVcsContext& context, std::string cwd, const std::string& message, std::vector<std::string> selected_files, const VcsCommitStatus& status, ProcessExecutionResult& committed, std::string& error) const override
+			{
+				// A Windows host reports `\` separators that a POSIX controller would read as one path component;
+				// svn accepts `/`, so containment and external checks see real components.
+				VcsCommitStatus remote_status = status;
+				if (context.Platform() == "windows" || context.Platform() == "Windows")
+				{
+					for (std::string& file : selected_files) file = SlashKey(std::move(file));
+					for (VcsChangedFile& file : remote_status.changed_files) file.path = SlashKey(std::move(file.path));
+				}
+				return CommitSvnSelection(RemoteSvnRunner(context, cwd), nullptr, message, selected_files, SvnExternalRoots(remote_status), committed, error);
+			}
+		};
+
 		VcsCommitStatus RemoteStatus(RemoteVcsContext& context, const AppState& app, const ChatSession& chat,
 		                             const VcsType requested_type,
 		                             const bool include_line_stats,
@@ -1713,13 +2077,14 @@ namespace uam
 			status.workspace_directory = context.WorkspaceDirectory();
 			if (!context.Ready(&status.error)) return status;
 
-			std::string git_root;
-			if (settings.git_enabled && RemoteOutput(context, status.workspace_directory,
-			                 {"git", "rev-parse", "--show-toplevel"}, &git_root))
-				status.vcs_types.push_back(VcsType::Git);
-			if (settings.svn_enabled && CommandSucceeded(RemoteSvnRunner(context, status.workspace_directory)(
-			                 {"info", "--non-interactive", "--show-item", "revision", "--", "."})))
-				status.vcs_types.push_back(VcsType::Svn);
+			std::map<VcsType, std::string> roots;
+			for (const VcsProvider* provider : VcsProviders())
+			{
+				std::string root;
+				if (!provider->Enabled(settings) || !provider->DetectRemote(context, status.workspace_directory, root)) continue;
+				status.vcs_types.push_back(provider->Type());
+				roots[provider->Type()] = std::move(root);
+			}
 			status.available = !status.vcs_types.empty();
 			if (!status.available)
 			{
@@ -1728,71 +2093,7 @@ namespace uam
 			}
 			SelectActiveVcsType(status, requested_type);
 
-			if (status.active_vcs_type == VcsType::Svn)
-			{
-				if (PopulateSvnStatusDetails(RemoteSvnRunner(context, status.workspace_directory), status, include_line_stats, context_only) && include_line_stats)
-					for (VcsChangedFile& file : status.changed_files)
-						if (IsSvnUnversioned(file)) ApplyRemoteUntrackedLineStats(context, status.workspace_directory, file);
-				return status;
-			}
-
-			if (git_root.empty()) git_root = status.workspace_directory;
-			if (!RemoteOutput(context, git_root, {"git", "branch", "--show-current"},
-			                  &status.branch_or_revision) && context_only) status.error = "Could not read the Git branch.";
-			if (context_only) return status;
-			if (status.branch_or_revision.empty())
-				RemoteOutput(context, git_root, {"git", "rev-parse", "--short", "HEAD"},
-				             &status.branch_or_revision);
-
-			if (context_only) return status;
-			std::string output;
-			if (comparison_ref.empty())
-			{
-				if (!RemoteOutput(context, git_root,
-				                  {"git", "status", "--porcelain=v1", "-z",
-				                   "--untracked-files=all"}, &output, &status.error, true))
-					return status;
-				status.changed_files = ParseGitStatus(output);
-				if (include_line_stats)
-					ApplyRemoteGitLineStats(context, git_root, status.changed_files);
-				return status;
-			}
-
-			if (comparison_ref == "chat")
-			{
-				PopulateChatComparisonDetails(app, chat, status, uam::paths::PathFromUtf8(git_root), include_line_stats, &context);
-				ApplyRemoteGitFingerprints(context, git_root, status.changed_files);
-				return status;
-			}
-
-			if (!IsCommitId(comparison_ref))
-			{
-				status.error = "The saved chat comparison point is invalid.";
-				return status;
-			}
-			if (!RemoteOutput(context, git_root,
-			                  {"git", "rev-parse", "--verify", comparison_ref + "^{commit}"},
-			                  &output, &status.error)) return status;
-			if (!RemoteOutput(context, git_root,
-			                  {"git", "diff", "--name-status", "-z", comparison_ref, "--"},
-			                  &output, &status.error, true)) return status;
-			status.changed_files = ParseGitNameStatus(output);
-			std::string porcelain;
-			if (RemoteOutput(context, git_root,
-			                 {"git", "status", "--porcelain=v1", "-z",
-			                  "--untracked-files=all"}, &porcelain, nullptr, true))
-			{
-				for (const VcsChangedFile& working_file : ParseGitStatus(porcelain))
-				{
-					auto existing = std::ranges::find_if(status.changed_files,
-					    [&](const VcsChangedFile& file) { return file.path == working_file.path; });
-					if (existing != status.changed_files.end()) existing->staged = working_file.staged;
-					else if (working_file.status == "??") status.changed_files.push_back(working_file);
-				}
-			}
-			if (include_line_stats)
-				ApplyRemoteGitComparisonDetails(context, git_root, comparison_ref,
-				                                status.changed_files);
+			VcsProviderFor(status.active_vcs_type).PopulateRemoteStatus(context, {app, chat, include_line_stats, comparison_ref, context_only}, roots[status.active_vcs_type], status);
 			return status;
 		}
 
@@ -1819,53 +2120,7 @@ namespace uam
 				if (error_out != nullptr) *error_out = "The selected file is no longer changed.";
 				return {};
 			}
-			std::string cwd = status.workspace_directory;
-			if (type == VcsType::Git)
-			{
-				std::string root;
-				if (RemoteOutput(context, cwd, {"git", "rev-parse", "--show-toplevel"}, &root))
-					cwd = std::move(root);
-			}
-			if (type == VcsType::Svn && !IsSvnUnversioned(*selected))
-			{
-				std::string output;
-				std::string error;
-				if (SvnFileDiff(RemoteSvnRunner(context, cwd), path, output, error)) return uam::strings::Trim(output);
-				if (error_out != nullptr) *error_out = error;
-				return {};
-			}
-			if (type == VcsType::Git && comparison_ref == "chat")
-			{
-				const std::filesystem::path root = uam::paths::PathFromUtf8(cwd);
-				const std::string ref = SavedChatBaseline(app, chat, root, error_out);
-				GitReviewIndex index(root, {}, &context);
-				if (ref.empty() || !PrepareChatReviewIndex(index, ref, error_out)) return {};
-				std::vector<std::string> args = {"--literal-pathspecs", "diff", "--cached", "--no-color", "--no-ext-diff", "--no-textconv", ref, "--", path};
-				if (!selected->previous_path.empty()) args.push_back(selected->previous_path);
-				const ProcessExecutionResult patch = index.Run(std::move(args));
-				if (!CommandSucceeded(patch)) { if (error_out) *error_out = CommandOutputOrError(patch); return {}; }
-				return patch.output;
-			}
-			if (selected->status == "??" || IsSvnUnversioned(*selected))
-			{
-				const ProcessExecutionResult result = context.Run(
-				    cwd, {"git", "--literal-pathspecs", "diff", "--no-index",
-				          "--no-ext-diff", "--", context.NullDevice(), path});
-				if (result.ok && !result.timed_out && !result.canceled &&
-				    (result.exit_code == 0 || result.exit_code == 1))
-					return uam::strings::Trim(result.output);
-				if (error_out != nullptr)
-					*error_out = IsSvnUnversioned(*selected)
-					    ? "This new SVN item could not be compared on the remote host; new folders and hosts without Git have no file diff."
-					    : CommandOutputOrError(result);
-				return {};
-			}
-			std::vector<std::string> argv = {"git", "--literal-pathspecs", "diff"};
-			if (!comparison_ref.empty()) argv.push_back(comparison_ref);
-			else argv.push_back("HEAD");
-			argv.insert(argv.end(), {"--", path});
-			std::string output;
-			return RemoteOutput(context, cwd, argv, &output, error_out) ? output : "";
+			return VcsProviderFor(type).RemoteDiff(context, app, chat, path, *selected, status.workspace_directory, comparison_ref, error_out);
 		}
 
 		VcsCommitResult RemoteCommit(RemoteVcsContext& context, const AppState& app, const ChatSession& chat,
@@ -1899,89 +2154,142 @@ namespace uam
 					return result;
 				}
 
-			std::string cwd = result.status.workspace_directory;
-			std::vector<std::string> selected_files(selected.begin(), selected.end());
+			const VcsProvider& provider = VcsProviderFor(type);
 			ProcessExecutionResult committed;
-			if (type == VcsType::Svn)
-			{
-				// A Windows host reports `\` separators that a POSIX controller would read as one path component;
-				// svn accepts `/`, so containment and external checks see real components.
-				VcsCommitStatus remote_status = result.status;
-				if (context.Platform() == "windows" || context.Platform() == "Windows")
-				{
-					for (std::string& file : selected_files) file = SlashKey(std::move(file));
-					for (VcsChangedFile& file : remote_status.changed_files) file.path = SlashKey(std::move(file.path));
-				}
-				if (!CommitSvnSelection(RemoteSvnRunner(context, cwd), nullptr, message, selected_files, SvnExternalRoots(remote_status), committed, result.error)) return result;
-			}
-			else
-			{
-				std::string root;
-				if (RemoteOutput(context, cwd, {"git", "rev-parse", "--show-toplevel"}, &root))
-					cwd = std::move(root);
-				std::string index_path;
-				if (!RemoteOutput(context, cwd,
-				                  {"git", "rev-parse", "--path-format=absolute", "--git-path", "index"},
-				                  &index_path, &result.error)) return result;
-				const std::string backup_path = index_path + ".uam-backup-" +
-				    PlatformServicesFactory::Instance().process_service.GenerateUuid();
-				const bool had_index = context.CopyFile(index_path, backup_path, false,
-				                                        &result.error);
-				if (!had_index && result.error != "The source file does not exist.") return result;
-				if (!had_index) result.error.clear();
-				const auto restore_index = [&]
-				{
-					if (had_index)
-					{
-						if (!context.CopyFile(backup_path, index_path, true, nullptr)) return false;
-						(void)context.RemoveFile(backup_path);
-						return true;
-					}
-					return context.RemoveFile(index_path);
-				};
-				std::vector<std::string> add = {"git", "--literal-pathspecs", "add", "--"};
-				add.insert(add.end(), selected_files.begin(), selected_files.end());
-				const ProcessExecutionResult added = context.Run(cwd, add);
-				if (!CommandSucceeded(added))
-				{
-					result.error = CommandOutputOrError(added);
-					if (!restore_index())
-						result.error += " The previous Git staging area could not be restored.";
-					return result;
-				}
-				std::vector<std::string> commit = {"git", "--literal-pathspecs", "commit",
-				                                   "-m", message, "--"};
-				commit.insert(commit.end(), selected_files.begin(), selected_files.end());
-				committed = context.Run(cwd, commit);
-				if (!CommandSucceeded(committed))
-				{
-					result.error = CommandOutputOrError(committed);
-					if (!restore_index())
-						result.error += " The previous Git staging area could not be restored.";
-					return result;
-				}
-				if (had_index) (void)context.RemoveFile(backup_path);
-			}
+			if (!provider.RemoteCommit(context, result.status.workspace_directory, message, {selected.begin(), selected.end()}, result.status, committed, result.error)) return result;
 			if (!CommandSucceeded(committed))
 			{
 				result.error = CommandOutputOrError(committed);
 				return result;
 			}
 			CompleteSuccessfulCommit(result, RemoteStatus(context, app, chat, type, true, {}, false, settings),
-			                         committed, type == VcsType::Git
-			                             ? "Git commit created." : "SVN commit created.");
+			                         committed, std::string(provider.Declaration().display_name) + " commit created.");
 			return result;
 		}
 	} // namespace
 
+	std::span<const VcsProvider* const> VcsProviders()
+	{
+		static const GitVcsProvider git;
+		static const SvnVcsProvider svn;
+		static const std::array<const VcsProvider*, 2> providers = {&git, &svn};
+		return providers;
+	}
+
+	const VcsProvider& VcsProviderFor(const VcsType type)
+	{
+		const auto providers = VcsProviders();
+		const auto found = std::ranges::find(providers, type, &VcsProvider::Type);
+		return found == providers.end() ? *providers.front() : **found;
+	}
+
+	VcsHistoryPage VcsProvider::History(const VcsCommandRunner&, const VcsHistoryRequest&) const
+	{
+		VcsHistoryPage page;
+		page.error = std::string(Declaration().display_name) + " history is not available here yet.";
+		return page;
+	}
+
+	std::string VcsProvider::RevisionDiff(const VcsCommandRunner&, const std::string&, const std::string&, std::string& error) const
+	{
+		error = std::string(Declaration().display_name) + " history is not available here yet.";
+		return {};
+	}
+
+	VcsUpdateResult VcsProvider::Update(const VcsCommandRunner&) const
+	{
+		VcsUpdateResult update;
+		update.error = std::string(Declaration().display_name) + " update is not available here yet.";
+		return update;
+	}
+
+	VcsOriginReply VcsProvider::Origin(const VcsCommandRunner&, const VcsOriginRequest&) const
+	{
+		VcsOriginReply reply;
+		reply.error = std::string(Declaration().display_name) + " origin comparison is not available here yet.";
+		return reply;
+	}
+
+	namespace
+	{
+		/// Gate shared by History, RevisionDiff, Update and Origin: the system's switch, then its declared capability.
+		std::string HistoryGateError(const VcsProvider& provider, const AppSettings& settings, const vcs::VcsCapability capability)
+		{
+			if (!provider.Enabled(settings)) return "This version control system is disabled in Settings.";
+			if (!uam::ranges::Contains(provider.Declaration().capabilities, capability))
+				return std::string(provider.Declaration().display_name) + (capability == vcs::VcsCapability::Update ? " update" : capability == vcs::VcsCapability::OriginComparison ? " origin comparison" : " history") + " is not available here yet.";
+			return {};
+		}
+
+		/// Runs `operation` with a runner bound to the chat's workspace: the local client, or the SSH host's through its runner.
+		// ponytail: only SVN declares History and Update, so the runner is SVN's; a second system adds its own client here.
+		template <typename Operation>
+		auto WithWorkspaceRunner(const AppState& app, const ChatSession& chat, const std::stop_token stop, const Operation& operation)
+		{
+			if (uam::paths::IsControllerLocalWorkspace(chat))
+			{
+				const std::filesystem::path workspace = uam::paths::ResolveWorkspaceRootPath(app, chat);
+				return operation([&](const std::vector<std::string>& args, const int timeout_ms) { return RunSvn(workspace, args, timeout_ms, stop); });
+			}
+			RemoteVcsContext context(app, chat);
+			return operation([&](const std::vector<std::string>& args, const int timeout_ms)
+			{
+				std::vector<std::string> argv = {"svn"};
+				argv.insert(argv.end(), args.begin(), args.end());
+				ProcessExecutionResult result = context.Run(context.WorkspaceDirectory(), argv, SvnEnvironment(context.Platform()), {}, timeout_ms, stop);
+				result.canceled = result.canceled || stop.stop_requested();
+				return result;
+			});
+		}
+	} // namespace
+
+	VcsHistoryPage VcsCommitService::History(const AppState& app, const ChatSession& chat, const VcsType type, const VcsHistoryRequest& request, const std::stop_token stop) const
+	{
+		const VcsProvider& provider = VcsProviderFor(type);
+		VcsHistoryPage gated;
+		gated.error = HistoryGateError(provider, app.settings, vcs::VcsCapability::History);
+		if (!gated.error.empty()) return gated;
+		return WithWorkspaceRunner(app, chat, stop, [&](const VcsCommandRunner& run) { return provider.History(run, request); });
+	}
+
+	std::string VcsCommitService::RevisionDiff(const AppState& app, const ChatSession& chat, const VcsType type, const std::string& revision, const std::string& path, std::string* error_out, const std::stop_token stop) const
+	{
+		const VcsProvider& provider = VcsProviderFor(type);
+		std::string error = HistoryGateError(provider, app.settings, vcs::VcsCapability::History);
+		std::string patch;
+		if (error.empty()) patch = WithWorkspaceRunner(app, chat, stop, [&](const VcsCommandRunner& run) { return provider.RevisionDiff(run, revision, path, error); });
+		if (error_out != nullptr) *error_out = error;
+		return patch;
+	}
+
+	VcsOriginReply VcsCommitService::Origin(const AppState& app, const ChatSession& chat, const VcsType type, const VcsOriginRequest& request, const std::stop_token stop) const
+	{
+		const VcsProvider& provider = VcsProviderFor(type);
+		VcsOriginReply gated;
+		gated.error = HistoryGateError(provider, app.settings, vcs::VcsCapability::OriginComparison);
+		if (!gated.error.empty()) return gated;
+		return WithWorkspaceRunner(app, chat, stop, [&](const VcsCommandRunner& run) { return provider.Origin(run, request); });
+	}
+
+	VcsUpdateResult VcsCommitService::Update(const AppState& app, const ChatSession& chat, const VcsType type, const std::stop_token stop) const
+	{
+		const VcsProvider& provider = VcsProviderFor(type);
+		VcsUpdateResult gated;
+		gated.error = HistoryGateError(provider, app.settings, vcs::VcsCapability::Update);
+		if (!gated.error.empty()) return gated;
+		return WithWorkspaceRunner(app, chat, stop, [&](const VcsCommandRunner& run) { return provider.Update(run); });
+	}
+
 	std::string VcsTypeToString(const VcsType type)
 	{
-		return type == VcsType::Svn ? "svn" : "git";
+		return std::string(VcsProviderFor(type).Declaration().id);
 	}
 
 	VcsType VcsTypeFromString(std::string_view value)
 	{
-		return uam::strings::TrimmedEqualsIgnoreCase(value, "svn") ? VcsType::Svn : VcsType::Git;
+		const auto providers = VcsProviders();
+		const auto found = std::ranges::find_if(providers, [&](const VcsProvider* provider) { return uam::strings::TrimmedEqualsIgnoreCase(value, provider->Declaration().id); });
+		return (found == providers.end() ? providers.front() : *found)->Type();
 	}
 
 	ProcessExecutionResult RunSvn(const std::filesystem::path& cwd, const std::vector<std::string>& args, const int timeout_ms, std::stop_token stop)
@@ -2068,7 +2376,16 @@ namespace uam
 	void CancelChatRepositoryBaseline(AppState& app, const std::string& chat_id)
 	{
 		const auto found = app.repository_baseline_preparations.find(chat_id);
-		if (found != app.repository_baseline_preparations.end()) found->second->cancellation->request_stop();
+		if (found == app.repository_baseline_preparations.end()) return;
+		// Only a capture still running is cancelled. Stopping a finished one would make the next launch
+		// (for example a goal's fresh worker or reviewer context, started right after this stop) reload the
+		// saved baseline and see Pending, which a launch treats as not ready.
+		bool pending = false;
+		{
+			std::scoped_lock lock(found->second->mutex);
+			pending = found->second->result == ChatBaselineReadiness::Pending;
+		}
+		if (pending) found->second->cancellation->request_stop();
 	}
 
 	ChatBaselineReadiness WaitForChatRepositoryBaseline(const std::shared_ptr<ChatBaselinePreparation>& task, std::stop_token cancellation, std::string* error_out)
@@ -2111,17 +2428,9 @@ namespace uam
 			if (!host || host->runner_status != "ready" || host->runner_protocol_version < 3) return ChatBaselineReadiness::Unavailable;
 		}
 		const std::filesystem::path workspace = uam::paths::ResolveWorkspaceRootPath(app, chat);
-		if (uam::paths::IsControllerLocalWorkspace(chat))
-		{
-			std::filesystem::path ancestor = workspace;
-			while (!ancestor.empty() && !uam::paths::PathExistsNoThrow(ancestor / ".git"))
-			{
-				const std::filesystem::path parent = ancestor.parent_path();
-				if (parent == ancestor) return ChatBaselineReadiness::Unavailable;
-				ancestor = parent;
-			}
-			if (ancestor.empty()) return ChatBaselineReadiness::Unavailable;
-		}
+		// Baselines are Git-only, so an SVN checkout inside a Git repository still has one.
+		if (uam::paths::IsControllerLocalWorkspace(chat) && !uam::paths::FindNearestVcsRoot(workspace, uam::paths::VcsRootKinds::GitOnly).git)
+			return ChatBaselineReadiness::Unavailable;
 		auto found = app.repository_baseline_preparations.find(chat.id);
 		bool failed = false;
 		if (found != app.repository_baseline_preparations.end())
@@ -2251,7 +2560,7 @@ namespace uam
 
 	VcsCommitStatus VcsCommitService::Status(const AppState& app, const ChatSession& chat, VcsType requested_type, bool include_line_stats, std::string_view comparison_ref, bool context_only) const
 	{
-		if (!app.settings.git_enabled && !app.settings.svn_enabled)
+		if (std::ranges::none_of(VcsProviders(), [&](const VcsProvider* provider) { return provider->Enabled(app.settings); }))
 		{
 			VcsCommitStatus disabled;
 			disabled.warning = "Version control is disabled in Settings.";
@@ -2267,9 +2576,9 @@ namespace uam
 		status.line_stats_ready = include_line_stats;
 		const std::filesystem::path workspace = uam::paths::ResolveWorkspaceRootPath(app, chat);
 		status.workspace_directory = uam::paths::Utf8PathString(workspace);
-		std::filesystem::path git_root = workspace;
+		std::map<VcsType, std::filesystem::path> roots;
 
-		PopulateAvailableVcsTypes(status, workspace, git_root, context_only, app.settings);
+		PopulateAvailableVcsTypes(status, workspace, roots, context_only, app.settings);
 		if (!status.available)
 		{
 			status.warning = "No Git or SVN repository detected for this workspace.";
@@ -2277,38 +2586,13 @@ namespace uam
 		}
 
 		SelectActiveVcsType(status, requested_type);
-		if (status.active_vcs_type == VcsType::Git)
-		{
-			const std::string ref = uam::strings::Trim(comparison_ref);
-			if (ref == "chat") PopulateChatComparisonDetails(app, chat, status, git_root, include_line_stats);
-			else if (!ref.empty() && !IsCommitId(ref)) status.error = "The saved chat comparison point is invalid.";
-			else if (!ref.empty()) PopulateGitComparisonDetails(status, workspace, git_root, include_line_stats, ref);
-			else PopulateGitStatusDetails(status, workspace, git_root, include_line_stats, context_only);
-		}
-		else
-		{
-			if (PopulateSvnStatusDetails(LocalSvnRunner(workspace), status, include_line_stats, context_only) && include_line_stats)
-			{
-				for (VcsChangedFile& file : status.changed_files)
-				{
-					if (!IsSvnUnversioned(file)) continue;
-					const std::filesystem::path path = uam::paths::LexicallyNormalPath(workspace / uam::paths::PathFromUtf8(file.path));
-					std::error_code error;
-					// Unversioned folders stay one row; only a new regular file within the diff size limit is counted.
-					if (!std::filesystem::is_regular_file(std::filesystem::symlink_status(path, error)) || error ||
-					    std::filesystem::file_size(path, error) > kMaxUnversionedDiffBytes || error) continue;
-					if (const std::optional<int> lines = CountTextFileLines(path)) file.additions = *lines;
-					else file.binary = true;
-				}
-				ApplyContentFingerprints(workspace, status.changed_files);
-			}
-		}
+		VcsProviderFor(status.active_vcs_type).PopulateLocalStatus({app, chat, include_line_stats, comparison_ref, context_only}, workspace, roots[status.active_vcs_type], status);
 		return status;
 	}
 
 	std::string VcsCommitService::Diff(const AppState& app, const ChatSession& chat, const std::string& path, const VcsType type, std::string* error_out, std::string_view comparison_ref) const
 	{
-		if (!(type == VcsType::Git ? app.settings.git_enabled : app.settings.svn_enabled))
+		if (!VcsProviderFor(type).Enabled(app.settings))
 		{ if (error_out != nullptr) *error_out = "This version control system is disabled in Settings."; return {}; }
 		const std::string trimmed_path = uam::strings::Trim(path);
 		if (trimmed_path.empty())
@@ -2326,85 +2610,12 @@ namespace uam
 			                  uam::strings::Trim(comparison_ref), app.settings);
 		}
 		const std::filesystem::path workspace = uam::paths::ResolveWorkspaceRootPath(app, chat);
-		std::filesystem::path diff_workspace = workspace;
-		if (type == VcsType::Git)
-		{
-			const std::string ref = uam::strings::Trim(comparison_ref);
-			if (ref == "chat")
-			{
-				std::string root;
-				if (!GitAvailable(workspace, &root))
-				{
-					if (error_out) *error_out = "No Git repository is available for this chat.";
-					return {};
-				}
-				const std::filesystem::path review_root = uam::paths::PathFromUtf8(root);
-				const VcsCommitStatus status = Status(app, chat, type, false, "chat");
-				if (!status.error.empty())
-				{
-					if (error_out) *error_out = status.error;
-					return {};
-				}
-				const auto selected = std::ranges::find(status.changed_files, trimmed_path, &VcsChangedFile::path);
-				if (selected == status.changed_files.end())
-				{
-					if (error_out) *error_out = "The selected file is no longer changed in this chat.";
-					return {};
-				}
-				const std::string saved_ref = SavedChatBaseline(app, chat, review_root, error_out);
-				GitReviewIndex index(review_root);
-				if (saved_ref.empty() || !PrepareChatReviewIndex(index, saved_ref, error_out)) return {};
-				std::vector<std::string> args = {"--literal-pathspecs", "diff", "--cached", "--no-color", "--no-ext-diff", "--no-textconv", saved_ref, "--", trimmed_path};
-				if (!selected->previous_path.empty()) args.push_back(selected->previous_path);
-				const ProcessExecutionResult patch = index.Run(std::move(args));
-				if (!CommandSucceeded(patch))
-				{
-					if (error_out) *error_out = CommandOutputOrError(patch);
-					return {};
-				}
-				return patch.output;
-			}
-			if (!ref.empty() && !IsCommitId(ref))
-			{
-				if (error_out != nullptr) *error_out = "The saved chat comparison point is invalid.";
-				return "";
-			}
-			std::string git_root;
-			if (GitAvailable(workspace, &git_root) && !git_root.empty())
-			{
-				diff_workspace = uam::paths::PathFromUtf8(git_root);
-			}
-
-			const VcsCommitStatus status = Status(app, chat, type, false, ref);
-			const auto changed_file = std::find_if(status.changed_files.begin(), status.changed_files.end(), [&trimmed_path](const VcsChangedFile& file) { return file.path == trimmed_path; });
-			if (changed_file != status.changed_files.end() && changed_file->status == "??")
-			{
-				std::string output;
-				return OutputGitUntrackedDiff(diff_workspace, trimmed_path, &output, error_out) ? output : "";
-			}
-			if (!ref.empty())
-			{
-				std::string output;
-				return OutputCommand(BuildGitCommandInDirectory(diff_workspace, "diff " + uam::shell::EscapeArg(ref) + " -- " + uam::shell::EscapeArg(trimmed_path)), &output, error_out) ? output : "";
-			}
-		}
-		std::string output;
-		if (type == VcsType::Git)
-			return OutputCommand(BuildLiteralGitCommandInDirectory(diff_workspace, "diff HEAD -- " + uam::shell::EscapeArg(trimmed_path)), &output, error_out) ? output : "";
-		std::string error;
-		const VcsCommitStatus status = Status(app, chat, type, false);
-		const auto selected = std::ranges::find(status.changed_files, trimmed_path, &VcsChangedFile::path);
-		const bool diffed = selected != status.changed_files.end() && IsSvnUnversioned(*selected)
-		    ? SvnUnversionedFileDiff(workspace, trimmed_path, output, error)
-		    : SvnFileDiff(LocalSvnRunner(workspace), trimmed_path, output, error);
-		if (diffed) return uam::strings::Trim(output);
-		if (error_out != nullptr) *error_out = error;
-		return {};
+		return VcsProviderFor(type).LocalDiff(app, chat, workspace, trimmed_path, comparison_ref, error_out);
 	}
 
 	VcsCommitResult VcsCommitService::Commit(const AppState& app, const ChatSession& chat, const VcsType type, const std::string& message, const std::vector<std::string>& files) const
 	{
-		if (!(type == VcsType::Git ? app.settings.git_enabled : app.settings.svn_enabled))
+		if (!VcsProviderFor(type).Enabled(app.settings))
 		{ VcsCommitResult disabled; disabled.error = "This version control system is disabled in Settings."; return disabled; }
 		if (!uam::paths::IsControllerLocalWorkspace(chat))
 		{
@@ -2424,46 +2635,23 @@ namespace uam
 			return result;
 		}
 		const std::filesystem::path workspace = uam::paths::ResolveWorkspaceRootPath(app, chat);
-		const std::string quoted_files = JoinQuotedFiles(files);
-		if (quoted_files.empty())
+		if (TrimmedFileSet(files).empty())
 		{
 			result.error = "Select at least one changed file to commit.";
 			return result;
 		}
 
-		if (type == VcsType::Git)
-		{
-			GitIndexSnapshot index_snapshot;
-			if (!CaptureGitIndex(workspace, index_snapshot, result.error))
-			{
-				return result;
-			}
-			if (!Command(BuildLiteralGitCommandInDirectory(workspace, "add -- " + quoted_files), nullptr, &result.error))
-			{
-				if (!RestoreGitIndex(index_snapshot)) result.error += " The previous Git staging area could not be restored.";
-				return result;
-			}
-			ProcessExecutionResult commit_result;
-			if (!Command(BuildLiteralGitCommandInDirectory(workspace, "commit -m " + uam::shell::EscapeArg(message) + " -- " + quoted_files), &commit_result, &result.error))
-			{
-				if (!RestoreGitIndex(index_snapshot)) result.error += " The previous Git staging area could not be restored.";
-				return result;
-			}
-			CompleteSuccessfulCommit(result, Status(app, chat, type), commit_result, "Git commit created.");
-		}
-		else
-		{
-			ProcessExecutionResult commit_result;
-			if (!CommitSvnSelection(LocalSvnRunner(workspace), &workspace, message, files, SvnExternalRoots(result.status), commit_result, result.error)) return result;
-			CompleteSuccessfulCommit(result, Status(app, chat, type), commit_result, "SVN commit created.");
-		}
+		const VcsProvider& provider = VcsProviderFor(type);
+		ProcessExecutionResult committed;
+		if (!provider.LocalCommit(workspace, message, files, result.status, committed, result.error)) return result;
+		CompleteSuccessfulCommit(result, Status(app, chat, type), committed, std::string(provider.Declaration().display_name) + " commit created.");
 
 		return result;
 	}
 
 	VcsCommitMessageSuggestion VcsCommitService::GenerateMessage(const AppState& app, const ChatSession& chat, const VcsType type, const std::vector<std::string>& files) const
 	{
-		if (!(type == VcsType::Git ? app.settings.git_enabled : app.settings.svn_enabled))
+		if (!VcsProviderFor(type).Enabled(app.settings))
 		{ VcsCommitMessageSuggestion disabled; disabled.error = "This version control system is disabled in Settings."; return disabled; }
 		VcsCommitMessageSuggestion suggestion;
 		if (TrimmedFileSet(files).empty())

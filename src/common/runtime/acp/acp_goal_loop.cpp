@@ -95,6 +95,28 @@ namespace uam::acp_detail
 			}
 		}
 
+		/// <summary>Blocks a goal that has used its iteration allowance; every automatic continuation checks this first.</summary>
+		bool BlockGoalAtIterationCap(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& owner_chat_id,
+		                             const std::string& goal_id, Goal& goal, CefRefPtr<CefBrowser> browser)
+		{
+			if (goal.loop_count < GoalService::IterationLimit(goal, app.settings))
+			{
+				return false;
+			}
+			constexpr const char* blocker = "Maximum goal loop iterations reached";
+			goal.last_diagnostic = "goal_blocked_max_loop_iterations_reached";
+			GoalService::RecordBlocker(app, owner_chat_id, goal_id, blocker, kDecisionSourceFilter);
+			(void)GoalService::UpdateGoalStatus(app, owner_chat_id, goal_id, GoalStatus::Blocked);
+			AppendGoalLoopDiagnostic(session, "goal_blocked_max_loop_iterations_reached", goal_id, blocker);
+			if (ChatSession* owner = GoalOwnerChat(app, chat); owner != nullptr) SaveChatQuietly(app, *owner);
+			StopCompletedGoalIterationRuntime(app, chat, session);
+			if (browser)
+			{
+				uam::PushStateUpdateIfChanged(browser, app);
+			}
+			return true;
+		}
+
 		void ContinueCompletedTurn(AppState& app,
 		                           AcpSessionState& session,
 		                           ChatSession& chat,
@@ -311,6 +333,7 @@ bool ResumeGoal(AppState& app, const std::string& chat_id, const std::string& go
 			goal->last_blocker.clear();
 			goal->last_blocker_kind.clear();
 			goal->last_diagnostic.clear();
+			goal->last_decision_source.clear();
 			goal->last_verification.clear();
 			goal->completed_items.clear();
 			goal->remaining_items.clear();
@@ -482,7 +505,7 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 		if (Goal* goal = GoalService::FindGoalById(app, owner_chat_id, goal_id); goal != nullptr)
 		{
 			goal->last_diagnostic = "goal_blocked_invalid_review";
-			GoalService::RecordBlocker(app, owner_chat_id, goal_id, "Goal reviewer did not return valid JSON after one repair attempt.");
+			GoalService::RecordBlocker(app, owner_chat_id, goal_id, "Goal reviewer did not return valid JSON after one repair attempt.", kDecisionSourceFallback);
 			(void)GoalService::UpdateGoalStatus(app, owner_chat_id, goal_id, GoalStatus::Blocked);
 		}
 		AppendGoalLoopDiagnostic(session, "goal_blocked_invalid_review", goal_id, review_text);
@@ -495,7 +518,15 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 		return true;
 	}
 
-	const GoalService::ReviewDecision& decision = *parsed;
+	GoalService::ReviewDecision decision = *parsed;
+	// Only a reply that parsed as a review reaches here, so this is the sole model attribution.
+	if (const Goal* reviewed_goal = GoalService::FindGoalById(app, owner_chat_id, goal_id); reviewed_goal != nullptr)
+	{
+		const ChatSession* reviewer_chat = GoalOwnerChat(app, chat);
+		// The turn's own model outranks the chat's current selection, which can change during the turn.
+		decision.source = ModelDecisionSource(uam::strings::NonEmptyOrFallback(session.goal_turn_model_id, uam::strings::NonEmptyOrFallback(
+		    GoalService::ReviewerModelId(reviewer_chat != nullptr ? *reviewer_chat : chat, *reviewed_goal), session.current_model_id)));
+	}
 	if (decision.decision == "complete")
 	{
 		if (Goal* goal = GoalService::FindGoalById(app, owner_chat_id, goal_id); goal != nullptr)
@@ -511,26 +542,7 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 		}
 		return true;
 	}
-	const auto stop_at_loop_cap = [&](Goal& active_goal) {
-		AppSettings bounded_settings = app.settings;
-		uam::settings::ClampGoalSettings(bounded_settings);
-		if (active_goal.loop_count < bounded_settings.goal_max_loop_iterations)
-		{
-			return false;
-		}
-		constexpr const char* blocker = "Maximum goal loop iterations reached";
-		active_goal.last_diagnostic = "goal_blocked_max_loop_iterations_reached";
-		GoalService::RecordBlocker(app, owner_chat_id, goal_id, blocker);
-		(void)GoalService::UpdateGoalStatus(app, owner_chat_id, goal_id, GoalStatus::Blocked);
-		AppendGoalLoopDiagnostic(session, "goal_blocked_max_loop_iterations_reached", goal_id, blocker);
-		if (ChatSession* owner = GoalOwnerChat(app, chat); owner != nullptr) SaveChatQuietly(app, *owner);
-		StopCompletedGoalIterationRuntime(app, chat, session);
-		if (browser)
-		{
-			uam::PushStateUpdateIfChanged(browser, app);
-		}
-		return true;
-	};
+	const auto stop_at_loop_cap = [&](Goal& active_goal) { return BlockGoalAtIterationCap(app, session, chat, owner_chat_id, goal_id, active_goal, browser); };
 	if (decision.decision == "blocked")
 	{
 		if (Goal* goal = GoalService::FindGoalById(app, owner_chat_id, goal_id); goal != nullptr)
@@ -538,7 +550,7 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 			ApplyGoalProgressUpdate(*goal, decision);
 			goal->last_blocker_kind = decision.blocker_kind;
 		}
-		GoalService::RecordBlocker(app, owner_chat_id, goal_id, decision.reason);
+		GoalService::RecordBlocker(app, owner_chat_id, goal_id, decision.reason, decision.source);
 		if (GoalBlockerStopsImmediately(decision.blocker_kind))
 		{
 			(void)GoalService::UpdateGoalStatus(app, owner_chat_id, goal_id, GoalStatus::Blocked);
@@ -591,7 +603,7 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 	}
 	if (active_goal->same_next_prompt_count >= 3)
 	{
-		GoalService::RecordBlocker(app, owner_chat_id, goal_id, "Goal reviewer repeated the same next prompt.");
+		GoalService::RecordBlocker(app, owner_chat_id, goal_id, "Goal reviewer repeated the same next prompt.", kDecisionSourceFilter);
 		(void)GoalService::UpdateGoalStatus(app, owner_chat_id, goal_id, GoalStatus::Blocked);
 		AppendGoalLoopDiagnostic(session, "goal_blocked_repeated_next_prompt", goal_id, follow_up);
 		if (ChatSession* owner = GoalOwnerChat(app, chat); owner != nullptr) SaveChatQuietly(app, *owner);
@@ -693,7 +705,16 @@ void ScheduleGoalReviewAfterSuccessfulTurn(AppState& app, AcpSessionState& sessi
 	}
 
 	if (!ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpAccountsGoalUsage())
-		GoalService::RecordTurnCompletion(app, owner_chat_id, active_goal->id, EstimateGoalTurnTokens(chat, session));
+	{
+		// Count the provider-reported usage of the worker turn, as reviews do; the text estimate is only a labelled fallback.
+		auto& receipt = session.goal_review_usage;
+		const bool reported = !receipt.consumed && receipt.turn_serial == session.turn_serial && receipt.tokens &&
+		    !receipt.session_id.empty() && receipt.session_id == session.session_id;
+		const int64_t worker_tokens = reported ? *receipt.tokens : EstimateGoalTurnTokens(chat, session);
+		if (!reported) AppendGoalLoopDiagnostic(session, "goal_worker_usage_estimated", active_goal->id);
+		receipt.turn_serial = -1; // Charged once; a late usage report for this turn is ignored.
+		GoalService::RecordTurnCompletion(app, owner_chat_id, active_goal->id, worker_tokens);
+	}
 	active_goal = GoalService::FindActiveGoal(app, owner_chat_id);
 	if (ChatSession* owner = GoalOwnerChat(app, chat); owner != nullptr) SaveChatQuietly(app, *owner);
 	if (active_goal == nullptr)
@@ -734,7 +755,7 @@ void ScheduleGoalReviewAfterSuccessfulTurn(AppState& app, AcpSessionState& sessi
 		AppendGoalLoopDiagnostic(session, "queue_review_failed", goal_id, queue_error);
 		ClearGoalReviewState(session);
 		GoalService::RecordBlocker(app, owner_chat_id, goal_id,
-		                           uam::strings::NonEmptyOrFallback(queue_error, "The private goal review could not start."));
+		                           uam::strings::NonEmptyOrFallback(queue_error, "The private goal review could not start."), kDecisionSourceFallback);
 		(void)GoalService::UpdateGoalStatus(app, owner_chat_id, goal_id, GoalStatus::Blocked);
 		if (ChatSession* owner = ChatDomainService().FindChatById(app, owner_chat_id); owner != nullptr) SaveChatQuietly(app, *owner);
 	}
@@ -771,11 +792,15 @@ bool ResumeStalledGoalLoopIfNeeded(AppState& app, AcpSessionState& session, Chat
 	{
 		return false;
 	}
+	if (BlockGoalAtIterationCap(app, session, chat, chat.id, active_goal->id, *active_goal, browser))
+	{
+		return true;
+	}
 
 	if (session.goal_auto_resume_attempts >= 3)
 	{
 		const std::string goal_id = active_goal->id;
-		GoalService::RecordBlocker(app, chat.id, goal_id, "Goal loop stalled and could not be auto-resumed.");
+		GoalService::RecordBlocker(app, chat.id, goal_id, "Goal loop stalled and could not be auto-resumed.", kDecisionSourceFallback);
 		(void)GoalService::UpdateGoalStatus(app, chat.id, goal_id, GoalStatus::Blocked);
 		AppendGoalLoopDiagnostic(session, "goal_blocked_auto_resume_exhausted", goal_id);
 		SaveChatQuietly(app, chat);
@@ -866,7 +891,7 @@ namespace
 			{
 				if (!goal_id.empty())
 				{
-					GoalService::RecordBlocker(app, owner_chat_id, goal_id, "Goal reviewer turn completed but could not be consumed.");
+					GoalService::RecordBlocker(app, owner_chat_id, goal_id, "Goal reviewer turn completed but could not be consumed.", kDecisionSourceFallback);
 					if (ChatSession* owner = GoalOwnerChat(app, chat); owner != nullptr) SaveChatQuietly(app, *owner);
 					if (browser)
 					{
@@ -903,6 +928,9 @@ namespace
 		}
 	}
 }
+
+// ponytail: fixed window; a failing disk rarely recovers faster, and the turn's rollback point is all that is lost.
+constexpr double kCheckpointMetadataRetrySeconds = 10.0;
 
 bool PollTurnCheckpointTasks(AppState& app, CefRefPtr<CefBrowser> browser)
 {
@@ -946,14 +974,25 @@ bool PollTurnCheckpointTasks(AppState& app, CefRefPtr<CefBrowser> browser)
 
 		app.worktree_operation_chat_ids.erase(task.chat_id);
 		if (chat == nullptr) continue;
-		if (!ChatRepository::HydrateChatMessages(app.data_root, *chat))
+		// The commit already exists. Recording it on its message is retried for a bounded time only, so a chat
+		// that cannot be read or saved does not hold its worktree gate (and its next turn) forever.
+		const auto retry_metadata = [&](const char* status)
 		{
-			app.status_line = "Checkpoint metadata is waiting for chat history to load.";
+			const double now = GetAppTimeSeconds();
+			if (!task.metadata_retry_until_s) task.metadata_retry_until_s = now + kCheckpointMetadataRetrySeconds;
+			if (now >= *task.metadata_retry_until_s) return false;
+			app.status_line = status;
 			app.worktree_operation_chat_ids.insert(task.chat_id);
 			app.turn_checkpoint_tasks.push_back(std::move(task));
-			continue;
+			return true;
+		};
+		const bool hydrated = ChatRepository::HydrateChatMessages(app.data_root, *chat);
+		if (!hydrated)
+		{
+			if (retry_metadata("Checkpoint metadata is waiting for chat history to load.")) continue;
+			app.status_line = "Automatic turn checkpoint failed.";
 		}
-		const bool same_message = task.assistant_message_index >= 0 &&
+		const bool same_message = hydrated && task.assistant_message_index >= 0 &&
 		                          task.assistant_message_index < static_cast<int>(chat->messages.size()) &&
 		                          chat->messages[task.assistant_message_index].created_at == task.expected_message_created_at;
 		if (task.state->ok && task.state->changed && same_message)
@@ -967,10 +1006,8 @@ bool PollTurnCheckpointTasks(AppState& app, CefRefPtr<CefBrowser> browser)
 			{
 				message.checkpoint_sha = previous_sha;
 				message.checkpoint_parent_sha = previous_parent;
-				app.status_line = "Checkpoint metadata could not be saved. Waiting to retry.";
-				app.worktree_operation_chat_ids.insert(task.chat_id);
-				app.turn_checkpoint_tasks.push_back(std::move(task));
-				continue;
+				if (retry_metadata("Checkpoint metadata could not be saved. Waiting to retry.")) continue;
+				app.status_line = "Automatic turn checkpoint failed.";
 			}
 		}
 		else if (!task.state->ok)
@@ -1010,7 +1047,7 @@ bool PollPendingGoalIterations(AppState& app)
 		if (session == nullptr || session->provider_id != uam::provider_ids::kCodexCli || chat.active_goal_id.empty()) continue;
 		if ((!session->codex_goal_owner.goal_id.empty() || !session->codex_goal_pending_requests.empty()) &&
 			(chat.imported_read_only || chat.approval_mode == "plan" || session->current_mode_id == "plan" ||
-			 session->active_uam_agent_workspace_access == "read" || session->goal_review_turn))
+			 session->active_uam_agent_workspace_access != "write" || session->goal_review_turn))
 		{
 			const std::string id = chat.active_goal_id;
 			(void)GoalService::UpdateGoalStatus(app, chat.id, id, GoalStatus::Paused);
@@ -1045,7 +1082,7 @@ bool PollPendingGoalIterations(AppState& app)
 		if (!ResumeGoal(app, id, goal_id, &error))
 		{
 			(void)GoalService::UpdateGoalStatus(app, id, goal_id, GoalStatus::Blocked);
-			if (Goal* goal = GoalService::FindGoalById(app, id, goal_id)) goal->last_diagnostic = error;
+			if (Goal* goal = GoalService::FindGoalById(app, id, goal_id)) { goal->last_diagnostic = error; goal->last_decision_source = kDecisionSourceFallback; }
 			(void)SaveChatQuietly(app, *chat);
 		}
 		changed = true;

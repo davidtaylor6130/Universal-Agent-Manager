@@ -1,8 +1,8 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
-import { Button, IconButton, Overlay, Swap, Switch, useOverlayState } from '../ui'
+import { Button, IconButton, Notice, Overlay, Swap, Switch, useOverlayState } from '../ui'
 import { reportAppFailure } from '../../utils/appFailure'
 import { providerMetadataForId } from '../../utils/providerMetadata'
 import { SettingRow, SettingsLoading, SettingsSection } from './SettingsPrimitives'
@@ -10,10 +10,13 @@ import './provider-settings.css'
 
 export function MemoryScanModal() {
   const overlayState = useOverlayState()
+  const dialogRef = useRef<HTMLDivElement>(null)
   const isMemoryScanModalOpen = useAppStore((s) => s.isMemoryScanModalOpen)
   const memoryScanCandidates = useAppStore(useShallow((s) => s.memoryScanCandidates))
   const selectedMemoryScanChatIds = useAppStore(useShallow((s) => s.selectedMemoryScanChatIds))
   const memoryScanLoading = useAppStore((s) => s.memoryScanLoading)
+  const memoryScanLoadError = useAppStore((s) => s.memoryScanLoadError)
+  const openMemoryScanModal = useAppStore((s) => s.openMemoryScanModal)
   const memoryScanRunning = useAppStore((s) => s.memoryScanRunning)
   const memoryScanError = useAppStore((s) => s.memoryScanError)
   const closeMemoryScanModal = useAppStore((s) => s.closeMemoryScanModal)
@@ -49,6 +52,7 @@ export function MemoryScanModal() {
   return (
     <Overlay open zIndex={60} onBackdropMouseDown={() => { if (!memoryScanRunning) closeMemoryScanModal() }}>
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label="Scan current chats"
@@ -66,9 +70,12 @@ export function MemoryScanModal() {
         </div>
 
         <div className="uam-scan-body">
-          <Swap swapKey={memoryScanLoading ? 'loading' : memoryScanCandidates.length === 0 ? 'empty' : 'list'}>
+          <Swap swapKey={memoryScanLoading ? 'loading' : memoryScanLoadError ? 'error' : memoryScanCandidates.length === 0 ? 'empty' : 'list'}>
           {memoryScanLoading ? (
             <SettingsLoading label="Loading eligible chats" rows={3} />
+          ) : memoryScanLoadError ? (
+            <Notice tone="error" dismissible={false} title="Eligible chats could not be loaded."
+              actions={<Button size="sm" onClick={() => { dialogRef.current?.focus(); void openMemoryScanModal() }}>Try again</Button>}>{memoryScanLoadError}</Notice>
           ) : (
             <SettingsSection
               title="Chats"

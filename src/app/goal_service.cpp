@@ -1,4 +1,5 @@
 #include "app/goal_service.h"
+#include "common/config/settings_normalization.h"
 
 #include "app/agent_run_scheduler.h"
 #include "common/chat/chat_repository.h"
@@ -127,6 +128,12 @@ namespace
 	}
 
 } // namespace
+
+int GoalService::IterationLimit(const Goal& goal, AppSettings settings)
+{
+	uam::settings::ClampGoalSettings(settings);
+	return goal.max_iterations > 0 ? std::min(goal.max_iterations, settings.goal_max_loop_iterations) : settings.goal_max_loop_iterations;
+}
 
 bool GoalService::CreateGoal(AppState& app, const std::string& chat_id, const std::string& objective,
                               int64_t token_budget, std::string* created_goal_id,
@@ -290,7 +297,7 @@ bool GoalService::CancelGoalWork(AppState& app, const std::string& chat_id,
 			if (first_error.empty())
 				first_error = target_session != nullptr && target_session->remote_stop_unconfirmed
 				                  ? "Remote stop could not be confirmed."
-				                  : "The remote turn is stopping.";
+				                  : AcpStopRefusalMessage(app, target_chat_id, "The remote turn is stopping.");
 			return;
 		}
 		std::string error;
@@ -378,6 +385,8 @@ bool GoalService::UpdateGoalStatus(AppState& app, const std::string& chat_id,
 
 	goal->status = status;
 	goal->updated_at = uam::time::TimestampNow();
+	// The user replaced the last automatic verdict; do not leave it attributed to it.
+	if (user_action && status != GoalStatus::Paused) goal->last_decision_source.clear();
 	if (status == GoalStatus::Complete)
 	{
 		goal->remaining_items.clear();
@@ -829,6 +838,7 @@ void GoalService::RecordTurnCompletion(AppState& app, const std::string& chat_id
 		goal->status = GoalStatus::Blocked;
 		goal->last_blocker = "Token budget exceeded.";
 		goal->last_blocker_kind = "token_budget";
+		goal->last_decision_source = kDecisionSourceFilter;
 		if (chat->active_goal_id == goal_id)
 		{
 			ClearActiveGoal(app, chat->id);
@@ -839,7 +849,7 @@ void GoalService::RecordTurnCompletion(AppState& app, const std::string& chat_id
 
 void GoalService::RecordBlocker(AppState& app, const std::string& chat_id,
 	                            const std::string& goal_id, const std::string& blocker,
-	                            const std::string& blocker_kind)
+	                            const std::string& decision_source, const std::string& blocker_kind)
 {
 	Goal* goal = FindGoalById(app, chat_id, goal_id);
 	ChatSession* chat = FindChatMutable(app, chat_id);
@@ -851,6 +861,7 @@ void GoalService::RecordBlocker(AppState& app, const std::string& chat_id,
 	const std::string normalized_blocker = NormalizeBlocker(blocker);
 	const std::string normalized_kind = uam::strings::Trim(blocker_kind);
 	if (!normalized_kind.empty()) goal->last_blocker_kind = normalized_kind;
+	goal->last_decision_source = decision_source;
 
 	if (goal->last_blocker == normalized_blocker)
 	{

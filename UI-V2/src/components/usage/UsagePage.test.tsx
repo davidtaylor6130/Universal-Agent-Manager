@@ -259,6 +259,92 @@ describe('UsagePage', () => {
       models: Object.entries(rows).map(([providerId, row]) => ({ ...row, providerId, modelId: `${providerId}-model`, speed: 'standard' })), days: [], hours: [], providerDays: [], providerHours: [] })
   }
 
+  it('lets a collection failure be dismissed until a different failure, a Retry or a clean answer', async () => {
+    storage()
+    const held: Parameters<NonNullable<typeof window.cefQuery>>[0][] = []
+    window.cefQuery = request => { held.push(request) }
+    const reply = (collectionError: string) => { const answer = JSON.parse(basisHistory(JSON.parse(held.at(-1)!.request).payload)); return JSON.stringify({ ...answer, collecting: true, complete: false, collectionError }) }
+    const answer = async (collectionError: string) => { await act(async () => held.at(-1)!.onSuccess(reply(collectionError))) }
+    // Another period asks again; the same lingering failure must not reopen the banner.
+    const period = (label: string) => act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === label)!.click())
+    const banner = (host: HTMLElement) => host.querySelector('[role="alert"]')
+    const host = document.createElement('div'), root = createRoot(host)
+    try {
+      act(() => root.render(<UsagePage onClose={() => {}} />))
+      await answer('Could not save accounting snapshot: No space left on device')
+      expect(banner(host)?.textContent).toContain('No space left on device')
+      // The error icon is a circle alert, never the X reserved for dismissal.
+      expect(banner(host)?.querySelector('svg.lucide-circle-alert')).not.toBeNull()
+      act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Dismiss usage error"]')!.click())
+      expect(banner(host)).toBeNull()
+      period('30 days'); await answer('Could not save accounting snapshot: No space left on device')
+      expect(banner(host)).toBeNull()
+      // A clean progress answer mid-pass does not prove the failure has gone.
+      period('Past 24h'); await answer('')
+      period('30 days'); await answer('Could not save accounting snapshot: No space left on device')
+      expect(banner(host)).toBeNull()
+      period('90 days'); await answer('Could not resolve accounting aliases: database or disk is full')
+      expect(banner(host)?.textContent).toContain('database or disk is full')
+      act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Dismiss usage error"]')!.click())
+      act(() => refreshButton(host).click())
+      await answer('Could not resolve accounting aliases: database or disk is full')
+      expect(banner(host)?.textContent).toContain('database or disk is full')
+      act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Retry')!.click())
+      await answer('')
+      expect(banner(host)).toBeNull()
+    } finally { act(() => root.unmount()) }
+  })
+
+  it('asks again after a failed request', async () => {
+    storage()
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const requests: Parameters<NonNullable<typeof window.cefQuery>>[0][] = []
+    window.cefQuery = request => { requests.push(request) }
+    const host = document.createElement('div'), root = createRoot(host)
+    try {
+      act(() => root.render(<UsagePage onClose={() => {}} />))
+      await act(async () => requests[0].onFailure(500, 'Machine is offline.'))
+      expect(host.querySelector('[role="alert"]')?.textContent).toContain('Machine is offline.')
+      await act(async () => { vi.advanceTimersByTime(30000) })
+      expect(requests).toHaveLength(2)
+    } finally { act(() => root.unmount()); vi.useRealTimers() }
+  })
+
+  it('keeps a dismissal through a cached clean period and a reopened page, and returns focus to the heading', async () => {
+    storage()
+    const held: Parameters<NonNullable<typeof window.cefQuery>>[0][] = []
+    window.cefQuery = request => { held.push(request) }
+    const failure = 'Could not save accounting snapshot: No space left on device'
+    const answer = async (collectionError: string) => { await act(async () => held.at(-1)!.onSuccess(JSON.stringify({ ...JSON.parse(basisHistory(JSON.parse(held.at(-1)!.request).payload)), collectionError }))) }
+    const host = document.createElement('div'); document.body.appendChild(host)
+    let root = createRoot(host)
+    const period = (label: string) => act(() => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === label)!.click())
+    try {
+      act(() => root.render(<UsagePage onClose={() => {}} />))
+      await answer('')
+      period('30 days'); await answer(failure)
+      act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Dismiss usage error"]')!.click())
+      expect(document.activeElement?.textContent).toBe('Usage')
+      period('7 days')
+      expect(host.querySelector('[role="alert"]')).toBeNull()
+      await answer(failure)
+      expect(host.querySelector('[role="alert"]')).toBeNull()
+      act(() => root.unmount()); root = createRoot(host)
+      act(() => root.render(<UsagePage onClose={() => {}} />))
+      await answer(failure)
+      expect(host.querySelector('[role="alert"]')).toBeNull()
+      // A live clean answer ends the dismissal, so the failure returning later is a new interruption.
+      period('90 days'); await answer('')
+      period('30 days'); await answer(failure)
+      expect(host.querySelector('[role="alert"]')?.textContent).toContain('No space left on device')
+      // Figures kept from another selection do not account for this failure, so it cannot be dismissed.
+      period('All time'); await act(async () => held.at(-1)!.onFailure(500, 'Machine is offline.'))
+      expect(host.querySelector('[data-kept]')).not.toBeNull()
+      expect(host.querySelector('[role="alert"]')?.textContent).toContain('Machine is offline.')
+      expect(host.querySelector('button[aria-label="Dismiss usage error"]')).toBeNull()
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
   it('labels each provider and model cost with its basis, folds idle providers into one line and keeps a reason row for unsupported providers', async () => {
     storage()
     window.cefQuery = request => request.onSuccess(basisHistory(JSON.parse(request.request).payload))
@@ -460,6 +546,8 @@ describe('UsagePage', () => {
       await act(async () => root.render(<UsagePage onClose={() => {}} />))
       expect(host.querySelector('[role="alert"]')?.textContent).toContain('remote hosts')
       expect(host.textContent).toContain('Retry')
+      // With no figures, Retry is the only way forward, so this failure cannot be dismissed.
+      expect(host.querySelector('button[aria-label="Dismiss usage error"]')).toBeNull()
       expect(host.textContent).not.toContain('$0.00')
     } finally { act(() => root.unmount()) }
   })

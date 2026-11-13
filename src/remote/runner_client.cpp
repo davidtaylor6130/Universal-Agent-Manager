@@ -1,7 +1,7 @@
 #include <fstream>
 #include "common/platform/observed_process_stop.h"
 #include "common/utils/io_utils.h"
-#include "common/provider/provider_setup.h"
+#include "common/provider/provider_setup_location.h"
 #include "common/config/build_features.h"
 #include "remote/memory_protocol.h"
 #include "remote/runner_client.h"
@@ -21,10 +21,12 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cstdint>
 #include <limits>
+#include <mutex>
 #include <random>
 #include <ranges>
 #include <string>
@@ -60,6 +62,90 @@ namespace uam::remote
 			frame[3] = static_cast<char>(size & 0xffU);
 			frame += body;
 			return frame;
+		}
+
+		constexpr const char* kShutdownError = "The remote runner request stopped because UAM is closing.";
+		// Steady-clock nanoseconds at which waits already under way end; 0 while the app is running.
+		std::atomic<std::int64_t> g_shutdownDeadline{0};
+
+		std::int64_t SteadyNanoseconds()
+		{
+			return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+		}
+
+		bool ShuttingDown()
+		{
+			return g_shutdownDeadline.load() != 0;
+		}
+
+		bool ShutdownDeadlinePassed()
+		{
+			const std::int64_t deadline = g_shutdownDeadline.load();
+			return deadline != 0 && SteadyNanoseconds() >= deadline;
+		}
+
+		constexpr std::chrono::steady_clock::time_point kNotQueued = std::chrono::steady_clock::time_point::max();
+		thread_local std::chrono::steady_clock::time_point t_queuedAt = kNotQueued;
+		std::mutex g_connectFailuresMutex;
+		// One entry per bridge command, so it stays as small as the list of hosts and helper versions.
+		std::unordered_map<std::string, std::pair<std::chrono::steady_clock::time_point, std::string>> g_connectFailures;
+
+		std::string BridgeKey(const std::vector<std::string>& argv)
+		{
+			std::string key;
+			for (const std::string& argument : argv) key += argument + '\n';
+			return key;
+		}
+
+		/// sshd closes a connection it will not serve before either side identifies itself; a refused login is never this.
+		bool SshDroppedTheHandshake(std::string_view diagnostics)
+		{
+			return (diagnostics.find("kex_exchange_identification") != std::string_view::npos ||
+			        diagnostics.find("ssh_exchange_identification") != std::string_view::npos) &&
+			       diagnostics.find("Permission denied") == std::string_view::npos &&
+			       diagnostics.find("uthentication") == std::string_view::npos;
+		}
+
+		/// Keeps the reason SSH gave and masks what identifies the user: accounts, host names, addresses and paths.
+		std::string SanitizeBridgeDiagnostic(std::string_view line)
+		{
+			std::string sanitized;
+			bool host_follows = false;
+			while (!line.empty())
+			{
+				const std::size_t space = line.find(' ');
+				std::string_view word = line.substr(0, space);
+				line.remove_prefix(space == std::string_view::npos ? line.size() : space + 1);
+				if (word.empty()) continue;
+				std::string_view core = word;
+				const auto wraps = [](char character) { return std::string_view("\"'():,.;[]").find(character) != std::string_view::npos; };
+				while (!core.empty() && wraps(core.front())) core.remove_prefix(1);
+				while (!core.empty() && wraps(core.back())) core.remove_suffix(1);
+				const bool path = core.find('\\') != std::string_view::npos || core.starts_with('/') || core.starts_with('~') ||
+				    core.find("/Users/") != std::string_view::npos || core.find("/home/") != std::string_view::npos ||
+				    (core.size() > 2 && std::isalpha(static_cast<unsigned char>(core[0])) != 0 && core[1] == ':' && core[2] == '/');
+				const bool address = !core.empty() &&
+				    ((std::ranges::count(core, '.') == 3 && std::ranges::all_of(core, [](unsigned char character) { return std::isdigit(character) != 0 || character == '.'; })) ||
+				     (std::ranges::count(core, ':') >= 2 && std::ranges::all_of(core, [](unsigned char character) { return std::isxdigit(character) != 0 || character == ':' || character == '%'; })));
+				const char* mask = core.empty() ? nullptr : host_follows ? "<host>" : core.find('@') != std::string_view::npos ? "<account>" : path ? "<path>" : address ? "<address>" : nullptr;
+				host_follows = core == "host" || core == "hostname";
+				if (!sanitized.empty()) sanitized += ' ';
+				if (mask == nullptr) sanitized += word;
+				else
+				{
+					const std::size_t begin = static_cast<std::size_t>(core.data() - word.data());
+					sanitized.append(word.substr(0, begin)).append(mask).append(word.substr(begin + core.size()));
+				}
+			}
+			return sanitized;
+		}
+
+		const std::string* ErrorCode(const nlohmann::json& response)
+		{
+			const auto error = response.find("error");
+			if (error == response.end() || !error->is_object()) return nullptr;
+			const auto code = error->find("code");
+			return code != error->end() && code->is_string() ? &code->get_ref<const std::string&>() : nullptr;
 		}
 
 		std::string ChannelCursorKey(std::string_view channel_id, std::string_view direction)
@@ -145,6 +231,29 @@ namespace uam::remote
 		        "ServerAliveCountMax=2", ssh_alias, std::move(command)};
 	}
 
+	void BeginRunnerShutdown(std::chrono::milliseconds wait_budget)
+	{
+		std::int64_t running = 0;
+		(void)g_shutdownDeadline.compare_exchange_strong(running,
+		    SteadyNanoseconds() + std::chrono::duration_cast<std::chrono::nanoseconds>(wait_budget).count());
+	}
+
+	void ResetRunnerShutdownForTesting()
+	{
+		g_shutdownDeadline.store(0);
+	}
+
+	ScopedRunnerQueuedWork::ScopedRunnerQueuedWork(std::chrono::steady_clock::time_point queued_at)
+	    : m_previous(t_queuedAt)
+	{
+		t_queuedAt = queued_at;
+	}
+
+	ScopedRunnerQueuedWork::~ScopedRunnerQueuedWork()
+	{
+		t_queuedAt = m_previous;
+	}
+
 	bool CanAttemptRunnerConnection(const ExecutionHost& host)
 	{
 		return UAM_ENABLE_SSH && uam::execution_hosts::CanConnectRunner(host) &&
@@ -189,11 +298,40 @@ namespace uam::remote
 		if (!UAM_ENABLE_SSH) { if (error_out) *error_out = "Remote execution is not included in this build."; return false; }
 		if (!m_connectionAllowed) { if (error_out) *error_out = "Retry helper setup to reconcile the unfinished or unavailable installation first."; return false; }
 		if (m_connected) return true;
+		if (ShuttingDown())
+		{
+			if (error_out != nullptr) *error_out = kShutdownError;
+			return false;
+		}
+		const auto canceled = [&] { return stop_token.stop_requested() || m_stopToken.stop_requested() || (interrupt && interrupt()) || (m_commandInterrupt && m_commandInterrupt()); };
+		if (canceled())
+		{
+			if (error_out != nullptr) *error_out = "The remote runner request was canceled.";
+			return false;
+		}
 		if (m_bridgeArgv.empty())
 		{
 			if (error_out != nullptr) *error_out = "The remote runner bridge command is empty.";
 			return false;
 		}
+		const std::string bridge_key = BridgeKey(m_bridgeArgv);
+		// Only work that has not reached its host yet: a reconnect in the middle of a command must really try,
+		// because it is how a started command is found again.
+		if (!m_everConnected && t_queuedAt != kNotQueued)
+		{
+			const std::scoped_lock lock(g_connectFailuresMutex);
+			const auto failure = g_connectFailures.find(bridge_key);
+			if (failure != g_connectFailures.end() && failure->second.first > t_queuedAt)
+			{
+				if (error_out != nullptr) *error_out = failure->second.second;
+				return false;
+			}
+		}
+		const auto record_failure = [&](const std::string& failure)
+		{
+			const std::scoped_lock lock(g_connectFailuresMutex);
+			g_connectFailures[bridge_key] = {std::chrono::steady_clock::now(), failure};
+		};
 		std::string error;
 		std::error_code current_path_error;
 		const std::optional<std::filesystem::path> current_path =
@@ -204,34 +342,73 @@ namespace uam::remote
 				*error_out = "The remote runner bridge working directory is unavailable.";
 			return false;
 		}
-		if (!m_processService.StartStdioProcess(m_bridge, *current_path, m_bridgeArgv, &error))
+		// One deadline covers the wait for a handshake slot, every attempt and the pauses between them.
+		// One deadline covers every attempt and the pauses between them.
+		m_handshakeEndsAt = std::chrono::steady_clock::now() + m_handshakeDeadline;
+		nlohmann::json response;
+		for (int attempt = 0;; ++attempt)
 		{
-			if (error_out != nullptr)
-				*error_out = error.empty() ? "The remote runner bridge could not start." : error;
+			error.clear();
+			if (!m_processService.StartStdioProcess(m_bridge, *current_path, m_bridgeArgv, &error))
+			{
+				if (error.empty()) error = "The remote runner bridge could not start.";
+				record_failure(error);
+				if (error_out != nullptr) *error_out = error;
+				return false;
+			}
+			m_connected = true;
+			m_bridgeClosed = false;
+			m_bridgeDiagnostics.clear();
+			const std::string nonce = Nonce();
+			bool interrupted = false;
+			if (Request({{"type", "hello"}, {"protocolVersion", m_expectedProtocolVersion},
+			             {"nonce", nonce}},
+			            response, &error, canceled, &interrupted) && response.value("nonce", "") == nonce &&
+			    response.value("protocolVersion", 0) == m_expectedProtocolVersion &&
+			    (m_expectedVersion.empty() ||
+			     response.value("runnerVersion", "") == m_expectedVersion) &&
+			    response.value("capabilities", nlohmann::json::object())
+			        .value("processExecution", false) &&
+			    response.value("capabilities", nlohmann::json::object())
+			        .value("fileCopy", false) &&
+			    !response.value("capabilities", nlohmann::json::object())
+			        .value("computerUse", true))
+				break;
+			// Read before Disconnect: the diagnostics belong to the bridge that just closed.
+			const bool dropped = m_bridgeClosed && SshDroppedTheHandshake(m_bridgeDiagnostics);
+			Disconnect();
+			if (error.empty()) error = "The remote runner handshake is incompatible.";
+			// sshd drops handshakes beyond MaxStartups when many connections open at once. Only the handshake
+			// was sent, so trying again cannot repeat any work. A timeout, an unreachable host and a refused
+			// login are not retried: they would repeat their wait, and repeated logins can lock an account.
+			if (attempt < 2 && dropped && !interrupted && !ShuttingDown())
+			{
+				std::random_device random;
+				const auto retry_at = std::chrono::steady_clock::now() + std::chrono::milliseconds((attempt + 1) * (250 + random() % 500));
+				if (retry_at < m_handshakeEndsAt)
+				{
+					while (std::chrono::steady_clock::now() < retry_at && !canceled() && !ShuttingDown())
+						std::this_thread::sleep_for(std::chrono::milliseconds(10));
+					if (std::chrono::steady_clock::now() >= retry_at) continue;
+					interrupted = true;
+				}
+			}
+			// A cancel or a closing app says nothing about the host, so neither may fail other queued work.
+			if (!interrupted && !ShuttingDown()) record_failure(error);
+			if (error_out != nullptr) *error_out = error;
 			return false;
 		}
-		m_connected = true;
-		const std::string nonce = Nonce();
-		nlohmann::json response;
-		if (!Request({{"type", "hello"}, {"protocolVersion", m_expectedProtocolVersion},
-		              {"nonce", nonce}},
-		             response, &error, [&] { return stop_token.stop_requested() || (interrupt && interrupt()); }) || response.value("nonce", "") != nonce ||
-		    response.value("protocolVersion", 0) != m_expectedProtocolVersion ||
-		    (!m_expectedVersion.empty() &&
-		     response.value("runnerVersion", "") != m_expectedVersion) ||
-		    !response.value("capabilities", nlohmann::json::object())
-		         .value("processExecution", false) ||
-		    !response.value("capabilities", nlohmann::json::object())
-		         .value("fileCopy", false) ||
-		    response.value("capabilities", nlohmann::json::object())
-		        .value("computerUse", true))
+		m_everConnected = true;
+		// Later failures must not quote a line from this connection's start, such as a host-key notice.
+		DrainBridgeDiagnostics();
+		m_bridgeDiagnostics.clear();
 		{
-			Disconnect();
-			if (error_out != nullptr)
-				*error_out = error.empty() ? "The remote runner handshake is incompatible." : error;
-			return false;
+			const std::scoped_lock lock(g_connectFailuresMutex);
+			g_connectFailures.erase(bridge_key);
 		}
 		m_directoryBrowsing = response["capabilities"].value("directoryBrowsing", false);
+		const auto max_upload = response["capabilities"].find("maxUploadBytes");
+		m_maxUploadBytes = max_upload != response["capabilities"].end() && max_upload->is_number_unsigned() ? max_upload->get<std::uintmax_t>() : kLegacyMaxUploadBytes;
 		m_safePathInspection = m_expectedProtocolVersion >= 3 && response["capabilities"].value("safePathInspection", false);
 		m_contextRead = response["capabilities"].value("contextRead", false);
 		m_providerHistoryRead = response["capabilities"].value("providerHistoryRead", false);
@@ -243,12 +420,15 @@ namespace uam::remote
 		m_usageAccountingStream = response["capabilities"].value("usageAccountingStream", false);
 		m_projectMemory = response["capabilities"].value("projectMemory", false);
 		m_isolatedTextWorkers = response["capabilities"].value("isolatedTextWorkers", false);
+		m_secretDrop = response["capabilities"].value("secretDrop", false);
 		m_runnerStartup = response["capabilities"].value("runnerStartup", false);
 		m_runnerStartupObservation = response["capabilities"].value("runnerStartupObservation", false);
 		m_leasedChannelTake = response["capabilities"].value("leasedChannelTake", false);
 		m_providerNativeContext = response["capabilities"].value("providerNativeContext", false);
 		m_centralProviderConfiguration = response["capabilities"].value("centralProviderConfiguration", false);
 		m_geminiThinkingConfiguration = response["capabilities"].value("geminiThinkingConfiguration", false);
+		m_hostInstructionsOnlyConfiguration = response["capabilities"].value("hostInstructionsOnlyConfiguration", false);
+		m_providerConfigurationLocation = response["capabilities"].value("providerConfigurationLocation", false);
 		m_claudeTerminalFastConfiguration = response["capabilities"].value("claudeTerminalFastConfiguration", false);
 		m_processOutputAcknowledgement = m_expectedProtocolVersion >= 3 &&
 		    response["capabilities"].value("processOutputAcknowledgement", false);
@@ -282,7 +462,7 @@ namespace uam::remote
 			if (error_out != nullptr) *error_out = "The remote runner request is too large.";
 			return false;
 		}
-		if (interrupt && interrupt())
+		if (m_stopToken.stop_requested() || (interrupt && interrupt()))
 		{
 			if (interrupted_out != nullptr) *interrupted_out = true;
 			if (error_out != nullptr) *error_out = "The remote runner request was canceled.";
@@ -290,7 +470,9 @@ namespace uam::remote
 		}
 		std::string error;
 		if (!m_processService.WriteToStdioProcess(m_bridge, frame.data(), frame.size(), &error) ||
-		    !ReadResponse(response, &error, interrupt, interrupted_out))
+		    !(request.value("type", "") == "hello"
+		        ? ReadResponse(response, &error, interrupt, interrupted_out, m_handshakeEndsAt, m_handshakeDeadline)
+		        : ReadResponse(response, &error, interrupt, interrupted_out, std::chrono::steady_clock::now() + m_requestDeadline, m_requestDeadline)))
 		{
 			if (error_out != nullptr)
 				*error_out = error.empty() ? "The remote runner request failed." : error;
@@ -329,13 +511,17 @@ namespace uam::remote
 
 	bool RunnerClient::ReadResponse(nlohmann::json& response, std::string* error_out,
 	                                const std::function<bool()>& interrupt,
-	                                bool* interrupted_out)
+	                                bool* interrupted_out, std::chrono::steady_clock::time_point deadline_at, std::chrono::milliseconds deadline)
 	{
-		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(15);
 		std::array<char, 16 * 1024> buffer{};
-		while (std::chrono::steady_clock::now() < deadline)
+		while (std::chrono::steady_clock::now() < deadline_at)
 		{
-			if (interrupt && interrupt())
+			if (ShutdownDeadlinePassed())
+			{
+				if (error_out != nullptr) *error_out = kShutdownError;
+				return false;
+			}
+			if (m_stopToken.stop_requested() || (interrupt && interrupt()) || (m_commandInterrupt && m_commandInterrupt()))
 			{
 				if (interrupted_out != nullptr) *interrupted_out = true;
 				if (error_out != nullptr) *error_out = "The remote runner request was interrupted.";
@@ -375,17 +561,78 @@ namespace uam::remote
 				m_received.append(buffer.data(), static_cast<std::size_t>(read));
 				continue;
 			}
+			DrainBridgeDiagnostics();
 			if (read == 0 || read == -1)
 			{
+				m_bridgeClosed = true;
 				if (error_out != nullptr)
-					*error_out = read_error.empty() ? "The remote runner bridge closed." : read_error;
+					*error_out = WithBridgeDiagnostics(read_error.empty() ? "The remote runner bridge closed." : read_error);
 				return false;
 			}
-			// Stdout only: unread bridge diagnostics on stderr would otherwise wake this wait constantly.
+			// Stdout only: stderr is drained above on every pass, and waiting on it too would wake this wait constantly.
 			uam::platform::WaitForStdioProcessOutput(m_bridge, std::chrono::milliseconds(5), false);
 		}
-		if (error_out != nullptr) *error_out = "The remote runner did not respond within 15 seconds.";
+		// No bridge line here: the bridge is still open, so anything it said earlier is not this timeout's cause.
+		if (error_out != nullptr)
+			*error_out = "The remote runner did not respond within " + std::to_string((deadline.count() + 999) / 1000) + " seconds.";
 		return false;
+	}
+
+	void RunnerClient::DrainBridgeDiagnostics()
+	{
+		std::array<char, 4096> buffer{};
+		// ponytail: bounded passes, so a bridge that never stops writing cannot hold the reply loop; the next pass continues.
+		for (int pass = 0; pass < 16; ++pass)
+		{
+			const std::ptrdiff_t read = m_processService.ReadStdioProcessStderr(m_bridge, buffer.data(), buffer.size());
+			if (read <= 0) return;
+			m_bridgeDiagnostics.append(buffer.data(), static_cast<std::size_t>(read));
+			if (m_bridgeDiagnostics.size() > buffer.size())
+				m_bridgeDiagnostics.erase(0, m_bridgeDiagnostics.size() - buffer.size());
+		}
+	}
+
+	std::string RunnerClient::WithBridgeDiagnostics(std::string error)
+	{
+		std::string line = m_bridgeDiagnostics;
+		while (!line.empty() && static_cast<unsigned char>(line.back()) <= ' ') line.pop_back();
+		const std::size_t previous_line = line.find_last_of("\r\n");
+		if (previous_line != std::string::npos) line.erase(0, previous_line + 1);
+		std::erase_if(line, [](unsigned char character) { return character < 32 || character > 126; });
+		line = SanitizeBridgeDiagnostic(line);
+		if (line.size() > 300) line.resize(300);
+		return line.empty() ? error : error + " Bridge reported: " + line;
+	}
+
+	bool RunnerClient::ProviderConfigurationLocation(const std::filesystem::path& source, const std::filesystem::path& workspace, std::filesystem::path& target, std::string* error_out, std::stop_token stop_token)
+	{
+		target = workspace / ".UAM" / "provider-setup" / source.filename();
+		if (!Connect(error_out, stop_token)) return false;
+		if (!m_providerConfigurationLocation) return true;
+		std::string bytes;
+		std::string error;
+		if (!uam::provider_setup::ReadFile(source / "owner.json", bytes, error)) { if (error_out) *error_out = error; return false; }
+		// Host-only setup references no files of its own, so it never needs to live in the workspace.
+		const bool prefer_workspace = !nlohmann::json::parse(bytes, nullptr, false).contains("hostInstructionsOnly");
+		nlohmann::json response;
+		if (!Request({{"type", "configuration.location"}, {"workspace", uam::paths::Utf8PathString(workspace)}, {"digest", uam::paths::Utf8PathString(source.filename())}, {"preferWorkspace", prefer_workspace}}, response, error_out, [stop_token]() { return stop_token.stop_requested(); })) return false;
+		const std::string chosen = response.value("result", nlohmann::json::object()).value("directory", std::string{});
+		if (!uam::provider_setup::IsAbsoluteOnAnyHost(chosen)) { if (error_out) *error_out = "SSH helper returned an invalid launch setup location."; return false; }
+		target = uam::paths::PathFromUtf8(chosen);
+		return true;
+	}
+
+	bool RunnerClient::ProviderContextLocation(const std::filesystem::path& requested, std::filesystem::path& directory, std::string* error_out, std::stop_token stop_token)
+	{
+		directory = requested;
+		if (!Connect(error_out, stop_token)) return false;
+		if (!m_providerConfigurationLocation) return true;
+		nlohmann::json response;
+		if (!Request({{"type", "context.location"}, {"directory", uam::paths::Utf8PathString(requested)}}, response, error_out, [stop_token]() { return stop_token.stop_requested(); })) return false;
+		const std::string chosen = response.value("result", nlohmann::json::object()).value("directory", std::string{});
+		if (!uam::provider_setup::IsAbsoluteOnAnyHost(chosen)) { if (error_out) *error_out = "SSH helper returned an invalid context location."; return false; }
+		directory = uam::paths::PathFromUtf8(chosen);
+		return true;
 	}
 
 	bool RunnerClient::InstallProviderConfiguration(const std::filesystem::path& source, const std::filesystem::path& target, std::string* error_out, std::stop_token stop_token)
@@ -394,7 +641,10 @@ namespace uam::remote
 		std::string error;
 		if (!m_centralProviderConfiguration)
 		{
-			if (error_out) *error_out = "Update the SSH helper before using central provider configuration.";
+			// A host-only launch has no Central Setup for the message to name.
+			std::string owner;
+			const bool host_only = uam::provider_setup::ReadFile(source / "owner.json", owner, error) && nlohmann::json::parse(owner, nullptr, false).contains("hostInstructionsOnly");
+			if (error_out) *error_out = host_only ? "Update the SSH helper before launching on a host with host instructions." : "Update the SSH helper before using central provider configuration.";
 			return false;
 		}
 		std::string bytes;
@@ -405,6 +655,11 @@ namespace uam::remote
 		    (manifest.contains("claudeTerminalFastMode") && !m_claudeTerminalFastConfiguration))
 		{
 			if (error_out) *error_out = "Update the SSH helper before using the required Gemini thinking or Claude terminal speed override.";
+			return false;
+		}
+		if (manifest.contains("hostInstructionsOnly") && !m_hostInstructionsOnlyConfiguration)
+		{
+			if (error_out) *error_out = "Update the SSH helper before launching on a host with host instructions.";
 			return false;
 		}
 		nlohmann::json response;
@@ -495,7 +750,8 @@ namespace uam::remote
 	ProcessExecutionResult RunnerClient::ExecuteCommand(const std::string& session_id,
 	    const std::filesystem::path& working_directory, const std::vector<std::string>& argv,
 	    int timeout_ms, std::stop_token stop_token, std::string_view standard_input,
-	    std::string retained_control_token, bool* start_request_attempted_out)
+	    std::string retained_control_token, bool* start_request_attempted_out,
+	    const std::function<std::string(std::string_view, int&)>& output_failure)
 	{
 		if (start_request_attempted_out) *start_request_attempted_out = false;
 		ProcessExecutionResult result;
@@ -515,7 +771,18 @@ namespace uam::remote
 			result.error = "Remote command execution requires runner protocol 3 or newer.";
 			return result;
 		}
-		if (!Connect(&result.error)) return result;
+		// Every wait below, including the start, input and cleanup requests, stops for the caller's cancel or deadline.
+		struct CommandInterrupt
+		{
+			std::function<bool()>& slot;
+			~CommandInterrupt() { slot = nullptr; }
+		} command_interrupt{m_commandInterrupt};
+		m_commandInterrupt = interrupted;
+		if (!Connect(&result.error, stop_token))
+		{
+			if (interrupted()) result.error = result.canceled ? "Remote command canceled." : "Remote command timed out.";
+			return result;
+		}
 		if (!m_processOutputAcknowledgement)
 		{
 			result.error = "Remote command execution requires acknowledged process output.";
@@ -527,13 +794,18 @@ namespace uam::remote
 		if (start_request_attempted_out) *start_request_attempted_out = true;
 		bool started = StartProcess(session_id, working_directory, argv, {}, &result.error,
 		                            false, std::move(retained_control_token), false);
+		// Still connected after a failed start means the helper answered and refused it: nothing was started.
+		const bool start_refused = !started && m_connected;
 		// An uncertain start is recovered only by observing its original ID and token.
-		if (!started && !m_connected && !interrupted() && Connect(&result.error))
+		if (!started && !m_connected && !interrupted() && Connect(&result.error, stop_token))
 		{
 			have_poll = PollProcess(session_id, poll, &result.error, interrupted);
 			started = have_poll;
 		}
 		bool exited = false;
+		std::string early_failure;
+		std::string unscanned_error_output;
+		int failure_reports = 0;
 		if (started)
 		{
 			result.error.clear();
@@ -552,7 +824,7 @@ namespace uam::remote
 				{
 					if (!have_poll && !PollProcess(session_id, poll, &result.error, interrupted))
 					{
-						if (m_connected || interrupted() || !Connect(&result.error) ||
+						if (m_connected || interrupted() || !Connect(&result.error, stop_token) ||
 						    !PollProcess(session_id, poll, &result.error, interrupted)) break;
 					}
 					have_poll = false;
@@ -561,29 +833,57 @@ namespace uam::remote
 					        poll.standard_output.data(), poll.standard_output.size()) ||
 					    !uam::platform::AppendCapturedCommandOutput(result,
 					        poll.standard_error.data(), poll.standard_error.size())) break;
-					if (!AcknowledgeProcessOutput(session_id, poll, &result.error)) break;
+					const bool acknowledged = AcknowledgeProcessOutput(session_id, poll, &result.error);
 					if (!poll.running)
 					{
+						// The command finished: a cancel or deadline that lands on this last acknowledgement does not change its result.
 						result.exit_code = poll.exit_code;
+						result.error.clear();
 						exited = true;
 						break;
 					}
+					if (output_failure && !poll.standard_error.empty())
+					{
+						// Only stderr carries provider logs; scanning it alone keeps reply text from matching.
+						unscanned_error_output.append(poll.standard_error);
+						early_failure = output_failure(unscanned_error_output, failure_reports);
+						unscanned_error_output.erase(0, unscanned_error_output.rfind('\n') + 1);
+						// Still running after a reported failure: stop it below instead of waiting out the deadline.
+						if (!early_failure.empty()) break;
+					}
+					if (!acknowledged) break;
 					std::this_thread::sleep_for(std::chrono::milliseconds(10));
 				}
 			}
 		}
-		if (result.canceled) result.error = "Remote command canceled.";
+		if (exited) result.canceled = result.timed_out = false;
+		else (void)interrupted();
+		if (!early_failure.empty()) result.error = std::move(early_failure);
+		else if (result.canceled) result.error = "Remote command canceled.";
 		else if (result.timed_out) result.error = "Remote command timed out.";
 		else if (result.output_truncated)
 			result.error = std::string(uam::platform::kCapturedCommandOutputLimitError);
 		// Retained mutation records outlive interruption and are removed only after the caller saves settlement.
 		if (!retained)
 		{
-			std::string cleanup_error;
-			if (!exited && !StopProcess(session_id, &cleanup_error))
-				result.error += " Remote process stop failed: " + cleanup_error;
-			if (!RemoveProcess(session_id, &cleanup_error))
-				result.error += " Remote process cleanup failed: " + cleanup_error;
+			// An unfinished command still asks the host to stop its worker, but briefly: the helper reclaims an abandoned transient worker itself.
+			if (exited) m_commandInterrupt = nullptr;
+			else m_commandInterrupt = [cleanup_deadline = std::chrono::steady_clock::now() + m_cleanupLimit] { return std::chrono::steady_clock::now() >= cleanup_deadline; };
+			std::string stop_error;
+			const bool stopped = exited || StopProcess(session_id, &stop_error);
+			// An answer, even an error, settles what the host holds; no answer leaves it unknown.
+			const bool stop_answered = stopped || m_connected;
+			std::string remove_error;
+			const bool removed = RemoveProcess(session_id, &remove_error);
+			if (started)
+			{
+				if (!stopped) result.error += " Remote process stop failed: " + stop_error;
+				if (!removed) result.error += " Remote process cleanup failed: " + remove_error;
+			}
+			// A start the helper refused left nothing behind, so its error stands alone. A start whose reply never
+			// came may have run: unless the host then answered the stop, the command may still be running there.
+			else if (!start_refused && !stop_answered && !removed)
+				result.error += " Its start was not confirmed and the host could not be reached to stop it, so the command may still be running there.";
 		}
 		result.ok = exited && result.exit_code == 0 && result.error.empty() &&
 		    !result.canceled && !result.timed_out && !result.output_truncated;
@@ -635,8 +935,20 @@ namespace uam::remote
 		return written;
 	}
 
+	void RunnerClient::NoteChannelDesktop(const nlohmann::json& response)
+	{
+		if (!response.contains("result") || !response["result"].is_object()) return;
+		const nlohmann::json& result = response["result"];
+		if (!result.contains("desktopIdleMs") || !result["desktopIdleMs"].is_number_integer() ||
+		    !result.contains("desktopEpoch") || !result["desktopEpoch"].is_string()) return;
+		m_channelDesktopReported = true;
+		m_channelDesktopIdleMs = result["desktopIdleMs"].get<std::int64_t>();
+		m_channelDesktopEpoch = result["desktopEpoch"].get<std::string>();
+	}
+
 	bool RunnerClient::OpenChannel(const std::string& channel_id, std::string* error_out,
-	                               bool attach_if_exists, std::int64_t lease_ms, std::stop_token stop_token)
+	                               bool attach_if_exists, std::int64_t lease_ms, std::stop_token stop_token,
+	                               const std::string& desktop_epoch, bool fence_desktop)
 	{
 		if (!Connect(error_out, stop_token)) return false;
 		if (lease_ms != 0 && !m_leasedChannelTake)
@@ -645,8 +957,11 @@ namespace uam::remote
 			return false;
 		}
 		nlohmann::json response;
-		if (!Request({{"type", "channel.open"}, {"channelId", channel_id},
-		              {"attachIfExists", attach_if_exists}, {"leaseMs", lease_ms}}, response, error_out, [stop_token] { return stop_token.stop_requested(); })) return false;
+		nlohmann::json open = {{"type", "channel.open"}, {"channelId", channel_id},
+		                       {"attachIfExists", attach_if_exists}, {"leaseMs", lease_ms}};
+		if (!desktop_epoch.empty()) open["desktopEpoch"] = desktop_epoch;
+		if (fence_desktop) open["fenceDesktop"] = true;
+		if (!Request(std::move(open), response, error_out, [stop_token] { return stop_token.stop_requested(); })) return false;
 		if (m_expectedProtocolVersion >= 3)
 		{
 			const nlohmann::json& result = response["result"];
@@ -703,6 +1018,7 @@ namespace uam::remote
 		if (!written && m_expectedProtocolVersion >= 3 && !m_connected && Connect(error_out, stop_token))
 			written = Request(std::move(request), response, error_out, [stop_token] { return stop_token.stop_requested(); });
 		if (written) m_channelWriteSequences[sequence_key] = sequence;
+		if (written) NoteChannelDesktop(response);
 		return written;
 	}
 
@@ -731,6 +1047,7 @@ namespace uam::remote
 		    "cursor", m_channelCursors[cursor_key] + parsed.size());
 		if (cursor_out != nullptr) *cursor_out = cursor;
 		bytes = std::move(parsed);
+		NoteChannelDesktop(response);
 		return true;
 	}
 
@@ -804,6 +1121,102 @@ namespace uam::remote
 		{
 			abort();
 			return false;
+		}
+		// The helper checked size and digest before publishing; this confirms what the host's disk now holds.
+		// Helpers from before this field report nothing, and their commit check stands.
+		const nlohmann::json& committed = response["result"];
+		if (const auto published = committed.find("size"); published != committed.end() &&
+		    (!published->is_number_unsigned() || published->get<std::uintmax_t>() != bytes.size()))
+		{
+			(void)RemoveFile(upload_id, remote_path);
+			if (error_out != nullptr)
+				*error_out = "The uploaded file is incomplete on the host (" +
+				    (published->is_number_unsigned() ? std::to_string(published->get<std::uintmax_t>()) : std::string("unknown")) +
+				    " of " + std::to_string(bytes.size()) + " bytes), so it was removed. Check the host's free space and try again.";
+			return false;
+		}
+		return true;
+	}
+
+	bool RunnerClient::UploadFileFromPath(const std::string& upload_id,
+	                                      const std::filesystem::path& remote_path,
+	                                      const std::filesystem::path& source,
+	                                      const std::function<void(std::uintmax_t, std::uintmax_t)>& progress,
+	                                      std::string* error_out, std::stop_token stop_token)
+	{
+		const auto fail = [error_out](std::string message)
+		{
+			if (error_out != nullptr) *error_out = std::move(message);
+			return false;
+		};
+		if (!Connect(error_out, stop_token)) return false;
+		std::error_code size_error;
+		const std::uintmax_t size = std::filesystem::file_size(source, size_error);
+		std::ifstream file(source, std::ios::binary);
+		if (size_error || !file) return fail("The file could not be opened for upload.");
+		if (size > m_maxUploadBytes)
+			return fail(m_maxUploadBytes < kMaxUploadBytes && size <= kMaxUploadBytes
+			    ? "This host's UAM helper accepts files up to 25 MB. Update the helper in Settings, then attach the file again."
+			    : "The file is larger than the host accepts.");
+		const auto interrupt = [stop_token] { return stop_token.stop_requested(); };
+		std::string chunk(256 * 1024, '\0');
+		const auto read_chunk = [&file, &chunk]
+		{
+			file.read(chunk.data(), static_cast<std::streamsize>(chunk.size()));
+			return static_cast<std::size_t>(file.gcount());
+		};
+		std::uint64_t digest = uam::hashing::kFnv1a64OffsetBasis;
+		std::uintmax_t hashed = 0;
+		for (std::size_t count = read_chunk(); count > 0; count = read_chunk())
+		{
+			if (interrupt()) return fail("The upload was canceled.");
+			uam::hashing::UpdateFnv1a64(digest, reinterpret_cast<const unsigned char*>(chunk.data()), count);
+			hashed += count;
+		}
+		if (file.bad() || hashed != size) return fail("The file changed or could not be read while preparing the upload.");
+		file.clear();
+		file.seekg(0);
+		// Also after a cancel, so the helper drops the partial temporary file; bounded by the request deadline.
+		const auto abort = [&]
+		{
+			nlohmann::json ignored;
+			if (m_connected) (void)Request({{"type", "file.abort"}, {"uploadId", upload_id}}, ignored, nullptr);
+		};
+		nlohmann::json response;
+		if (!Request({{"type", "file.begin"}, {"uploadId", upload_id}, {"path", uam::paths::Utf8PathString(remote_path)},
+		              {"size", size}, {"digest", uam::hashing::Hex64Padded(digest)}}, response, error_out, interrupt))
+		{
+			abort();
+			return false;
+		}
+		std::uintmax_t sent = 0;
+		for (std::size_t count = read_chunk(); count > 0; count = read_chunk())
+		{
+			if (!Request({{"type", "file.write"}, {"uploadId", upload_id},
+			              {"dataBase64", uam::base64::Encode(std::string_view(chunk.data(), count))}}, response, error_out, interrupt))
+			{
+				abort();
+				return false;
+			}
+			sent += count;
+			if (progress) progress(sent, size);
+		}
+		if (file.bad() || sent != size)
+		{
+			abort();
+			return fail("The file changed or could not be read during the upload.");
+		}
+		if (!Request({{"type", "file.commit"}, {"uploadId", upload_id}}, response, error_out, interrupt))
+		{
+			abort();
+			return false;
+		}
+		const nlohmann::json& committed = response["result"];
+		if (const auto published = committed.find("size"); published != committed.end() &&
+		    (!published->is_number_unsigned() || published->get<std::uintmax_t>() != size))
+		{
+			(void)RemoveFile(upload_id, remote_path);
+			return fail("The uploaded file is incomplete on the host, so it was removed. Check the host's free space and try again.");
 		}
 		return true;
 	}
@@ -906,6 +1319,25 @@ namespace uam::remote
 	{
 		nlohmann::json response;
 		return Request({{"type", "worker.remove"}, {"workerId", id}}, response, error_out);
+	}
+
+	bool RunnerClient::DropSecret(std::string_view value, std::string& remote_path, std::string* error_out, std::stop_token stop_token)
+	{
+		remote_path.clear();
+		if (!m_connected && !Connect(error_out, stop_token)) return false;
+		constexpr const char* kHelperTooOld = "The UAM helper on this host is too old to receive secrets. Update it in Settings > Remote hosts.";
+		if (!m_secretDrop) { if (error_out != nullptr) *error_out = kHelperTooOld; return false; }
+		nlohmann::json response;
+		// Older helpers do not advertise secretDrop, so they never receive this request.
+		if (!Request({{"type", "secret.drop"}, {"dataBase64", uam::base64::Encode(value)}}, response, error_out, [stop_token]() { return stop_token.stop_requested(); })) return false;
+		const auto path = response["result"].find("path");
+		if (path == response["result"].end() || !path->is_string() || path->get_ref<const std::string&>().empty())
+		{
+			if (error_out != nullptr) *error_out = "The UAM helper returned an invalid secret path.";
+			return false;
+		}
+		remote_path = path->get<std::string>();
+		return true;
 	}
 
 	bool RunnerClient::ListMemoryEntries(const std::filesystem::path& workspace, std::vector<MemoryLibraryStore::Entry>& entries, std::string* error_out)
@@ -1339,7 +1771,7 @@ namespace uam::remote
 	}
 
 	bool RunnerClient::ReadTextFile(const std::filesystem::path& remote_path, std::string& text,
-	    std::string* error_out, std::stop_token stop_token)
+	    std::string* error_out, std::stop_token stop_token, bool allow_linked_ancestors)
 	{
 		text.clear();
 		if (!m_connected && !Connect(error_out, stop_token)) return false;
@@ -1349,7 +1781,7 @@ namespace uam::remote
 			return false;
 		}
 		nlohmann::json response;
-		if (!Request({{"type", "context.read"}, {"path", uam::paths::Utf8PathString(remote_path)}},
+		if (!Request({{"type", "context.read"}, {"path", uam::paths::Utf8PathString(remote_path)}, {"allowLinkedAncestors", allow_linked_ancestors}},
 		    response, error_out, [stop_token]() { return stop_token.stop_requested(); })) return false;
 		if (!response.contains("result") || !response["result"].is_object() || !response["result"].contains("text") || !response["result"]["text"].is_string() || response["result"]["text"].get_ref<const std::string&>().size() > 256 * 1024)
 		{
@@ -1362,9 +1794,9 @@ namespace uam::remote
 
 	bool RunnerClient::ListDirectories(const std::filesystem::path& remote_path,
 	                                   DirectoryListing& result,
-	                                   std::string* error_out)
+	                                   std::string* error_out, std::stop_token stop_token)
 	{
-		if (!Connect(error_out)) return false;
+		if (!Connect(error_out, stop_token)) return false;
 		if (!m_directoryBrowsing)
 		{
 			if (error_out != nullptr)
@@ -1373,7 +1805,7 @@ namespace uam::remote
 		}
 		nlohmann::json response;
 		if (!Request({{"type", "directory.list"}, {"path", uam::paths::Utf8PathString(remote_path)}},
-		             response, error_out)) return false;
+		             response, error_out, [stop_token] { return stop_token.stop_requested(); })) return false;
 		if (!response.contains("result") || !response["result"].is_object() ||
 		    !response["result"].contains("directories") ||
 		    !response["result"]["directories"].is_array() ||
@@ -1571,9 +2003,8 @@ namespace uam::remote
 		if (!removed && !m_connected && Connect(error_out))
 		{
 			removed = Request(std::move(request), response, error_out);
-			if (!removed && error_out != nullptr &&
-			    error_out->find("does not exist") != std::string::npos)
-				removed = true;
+			const std::string* code = removed || !m_connected ? nullptr : ErrorCode(response);
+			if (code != nullptr && *code == "session_not_found") removed = true;
 		}
 		if (removed)
 		{
@@ -1600,12 +2031,15 @@ namespace uam::remote
 		m_usageAccounting = false; m_usageAccountingStream = false;
 		m_projectMemory = false;
 		m_isolatedTextWorkers = false;
+		m_secretDrop = false;
 		m_runnerStartup = false;
 		m_runnerStartupObservation = false;
 		m_leasedChannelTake = false;
 		m_providerNativeContext = false;
 		m_centralProviderConfiguration = false;
 		m_geminiThinkingConfiguration = false;
+		m_hostInstructionsOnlyConfiguration = false;
+		m_providerConfigurationLocation = false;
 		m_claudeTerminalFastConfiguration = false;
 	}
 }

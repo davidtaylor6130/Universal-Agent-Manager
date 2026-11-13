@@ -1,4 +1,6 @@
 import { browserDictationAvailable } from '../../ipc/companionPlatform'
+import { AutomationStartQuestion } from '../chat/AutomationStartQuestion'
+import { LinkedPullRequests, WatchPullRequestDialog } from '../chat/LinkedPullRequests'
 import type { AcpPromptPresentationObserver } from '../../store/storeTypes'
 import { subagentParentFor, subscribeSubagentNavigation, subagentNavigationRevision } from '../../utils/subagentNavigation'
 import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
@@ -20,10 +22,10 @@ import { InitialManagedSubagentGroup, InlineSubagentProvider } from '../chat/Inl
 import { openSubagentView } from '../../utils/subagentNavigation'
 import { InlinePromptQueue, type UnsentPrompt } from '../chat/InlinePromptQueue'
 import { OutgoingRecoveryActions } from '../chat/OutgoingMessageRow'
-import type { ConversationDelivery } from '../chat/ConversationTurn'
+import { ConversationTurn, type ConversationDelivery } from '../chat/ConversationTurn'
 import { PersistedConversationMessage, TurnStartTime } from '../chat/PersistedConversationMessage'
 import { ALWAYS_OPEN_WORK_SECTION, buildVisibleWorkSections, findWorkSectionStartIndex, dayDividerLabel, hasSubstantiveOutput, previousAssistantMessage, responseFlags, reviewAssistantLabel, turnTimestampLabel } from '../chat/conversationHistoryModel'
-import { addOutgoingAttempt, nextOutgoingKey, outgoingScope, readOutgoingAttempts, subscribeOutgoingAttempts, updateOutgoingAttempts, type OutgoingAttempt } from '../../utils/outgoingMessagePresentation'
+import { addOutgoingAttempt, automationPromptRowKey, nextOutgoingKey, outgoingScope, readOutgoingAttempts, subscribeOutgoingAttempts, updateOutgoingAttempts, type OutgoingAttempt } from '../../utils/outgoingMessagePresentation'
 import { CLAUDE_ENABLED, CODEX_ENABLED, COMPUTER_USE_ENABLED, OPENCODE_ENABLED, SSH_ENABLED } from '../../config/buildFeatures'
 import { assignChatToPane, readChatGridLayout } from '../../utils/chatGridStorage'
 import { ClipboardEvent, DragEvent, FormEvent, KeyboardEvent, type ReactElement, type ReactNode, cloneElement, memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
@@ -36,11 +38,11 @@ import type { Provider } from '../../types/provider'
 import type { Goal } from '../../types/goal'
 import { RemoteDirectoryBrowser } from '../sidebar/RemoteDirectoryBrowser'
 import { GoalBanner } from '../shared/GoalBanner'
-import { CODEX_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, fallbackProviderForId, isClaudeProvider, isCodexProvider, isCopilotProvider, isOpenCodeProvider, providerCapabilities, providerDisabledOn, providerMetadataForId, providerShortName } from '../../utils/providerMetadata'
+import { CODEX_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, normalizeCliProviderIdAlias, fallbackProviderForId, isClaudeProvider, isCodexProvider, isCopilotProvider, isOpenCodeProvider, permissionTierForProvider, providerCapabilities, providerDisabledOn, providerMetadataForId, providerShortName } from '../../utils/providerMetadata'
 import { buildCodexReasoningOptions, buildCodexSpeedOptions, CODEX_SPEED_INHERIT_ID, buildModelOptions, modelOptionFor, providerRuntimeLabel, selectedRuntimeModel } from '../chat/modelOptions'
 import { CompactingScene, RefreshingScene, SleepingScene } from '../chat/StatusScenes'
 import { buildAcpErrorCopyText, ChatStatusStrip, CopyTextButton, statusColor, statusLabel } from '../chat/StatusHelpers'
-import { formatTimeoutDuration, TIMEOUT_RESTART_STEP_SECONDS, TimeoutStopNotice, type TimeoutRestartOutcome } from '../chat/TimeoutStopNotice'
+import { restartWithRaisedTimeout, TIMEOUT_RESTART_STEP_SECONDS, TimeoutStopNotice, type TimeoutRestartOutcome } from '../chat/TimeoutStopNotice'
 import { SubAgentDisclosureProvider, WorkSectionContext, ConversationWork, type WorkTraceDisclosureState } from '../chat/ConversationWork'
 import { MessageFrame, ToolCallModal, UserInputInlineCard } from '../chat/ToolCallViews'
 import { createQuestionMemory, type QuestionMemory, type QuestionSubmitState } from '../chat/QuestionInput'
@@ -51,7 +53,7 @@ import { MenuItem, Notice, ViewportMenu, type NoticeTone } from '../ui'
 import { CustomIcon } from '../shared/CustomIcon'
 import { ChatBranchPicker } from '../chat/ChatBranchPicker'
 import { composerWorkspaceName } from '../../utils/workspacePresentation'
-import { AlertTriangle, ArrowDown, AtSign, CircleAlert, FolderGit2, CornerUpLeft, GitBranch, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, FileText, LoaderCircle, MessageSquare, MessageSquareDashed, MousePointer2, Paperclip, Pencil, Shield, Square, Target, X } from 'lucide-react'
+import { AlertTriangle, ArrowDown, AtSign, CircleAlert, FolderGit2, CornerUpLeft, GitBranch, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, Eye, FileText, LoaderCircle, MessageSquare, MessageSquareDashed, MousePointer2, Paperclip, Pencil, Shield, Square, Target, X } from 'lucide-react'
 import { MEMORY_LEVEL_OPTIONS, type MemoryLevel } from '../../types/memory'
 import { Button, ConfirmDialog, IconButton, Overlay, Tooltip, motionAllowed, scaledMs, usePresence } from '../ui'
 import { messageMotionPhase, type MessageMotionPhase } from '../chat/messageMotion'
@@ -178,13 +180,33 @@ function filePathFromBrowserFile(file: File): string {
   return typeof maybeFile.path === 'string' ? maybeFile.path : ''
 }
 
+// Matches the native staging limit for inline payloads, so an oversized file is refused before it is read into memory.
+const MAX_INLINE_ATTACHMENT_BYTES = 25 * 1024 * 1024
+// A file with a path on this computer is copied from disk in chunks, up to the native streamed limit.
+const MAX_PATH_ATTACHMENT_BYTES = 4 * 1024 * 1024 * 1024
+const IMAGE_FILE_NAME = /\.(png|jpe?g|gif|webp|bmp|heic|heif|tiff?)$/i
+
+/** A file the native picker or a drop named by path; the composer never reads its bytes. */
+interface NativeFileEntry { path: string; name: string; size: number }
+
+function nativeFileEntries(data: unknown): NativeFileEntry[] {
+  const files = (data as { files?: unknown } | null | undefined)?.files
+  return Array.isArray(files)
+    ? files.filter((file): file is NativeFileEntry => Boolean(file) && typeof file.path === 'string' && Boolean(file.path) && typeof file.name === 'string' && typeof file.size === 'number')
+    : []
+}
+
 function readFileBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
+    if (file.size > MAX_INLINE_ATTACHMENT_BYTES) { reject(new Error(isCefContext() && !isCompanionContext() ? `${file.name || 'Attachment'} is larger than the 25 MB limit for dropped or pasted data. Use the attach button to add a larger file from disk.` : `${file.name || 'Attachment'} is larger than the 25 MB limit.`)); return }
     const reader = new FileReader()
     reader.onload = () => {
       const result = typeof reader.result === 'string' ? reader.result : ''
       const comma = result.indexOf(',')
-      resolve(comma >= 0 ? result.slice(comma + 1) : result)
+      const data = comma >= 0 ? result.slice(comma + 1) : ''
+      // The browser hands back an empty result, without an error, for a file too large to hold as one string.
+      if (!data && file.size > 0) { reject(new Error(`${file.name || 'Attachment'} could not be read, so it was not attached.`)); return }
+      resolve(data)
     }
     reader.onerror = () => reject(reader.error ?? new Error('Failed to read file.'))
     reader.readAsDataURL(file)
@@ -214,8 +236,9 @@ function fileUriToPath(uri: string): string {
 
 /** True when the turn has answer text and the row's content is exactly that text, in order, so the timeline can replace
  * the row without losing anything. Compaction summaries are saved in content, and the timeline shows or hides them through
- * their own events, so their text is skipped; whitespace between chunks is ignored. */
-function contentIsExactlyTurnText(content: string, events: readonly AcpTurnEvent[]) {
+ * their own events, so their text is skipped; whitespace between chunks is ignored. A streaming row gets tokens and turn
+ * events on separate channels, so either may be ahead; a row whose text agrees up to that point counts. */
+function contentIsExactlyTurnText(content: string, events: readonly AcpTurnEvent[], streamingRow = false) {
   let rest = content.trimStart()
   let hasAnswerText = false
   for (const event of events) {
@@ -224,10 +247,10 @@ function contentIsExactlyTurnText(content: string, events: readonly AcpTurnEvent
     const text = event.text.trim()
     if (!text) continue
     if (rest.startsWith(text)) rest = rest.slice(text.length).trimStart()
-    else if (answer) return false
+    else if (answer) return streamingRow && text.startsWith(rest)
     hasAnswerText ||= answer
   }
-  return hasAnswerText && !rest
+  return hasAnswerText && (!rest || streamingRow)
 }
 
 function lastMessageIndexWithRole(messages: Message[], role: Message['role']) {
@@ -273,12 +296,14 @@ export function projectUnsentPrompts(messages: Message[], historyStartIndex: num
 }
 
 const SENDING_DELIVERY: ConversationDelivery = { state: 'sending', label: 'Waiting for the provider to accept this message. It is never resent automatically.' }
+const POOL_WAIT_DELIVERY: ConversationDelivery = { state: 'sending', label: 'Waiting for a compute pool slot. It is sent automatically when one frees.' }
 const UNSENT_DELIVERY: ConversationDelivery = { state: 'unsent', label: 'This message was not delivered. Retry, edit or remove it; it is never resent automatically.' }
 const HELD_DELIVERY: ConversationDelivery = { state: 'unsent', label: 'This message was not delivered. Edit or remove it; it is never resent automatically.' }
 const ACCEPTED_DELIVERY: ConversationDelivery = { state: 'sending', label: 'UAM accepted this message and is waiting for the provider to confirm delivery. It is never resent automatically.' }
 const LOCAL_UNCONFIRMED_DELIVERY: ConversationDelivery = { state: 'unconfirmed', label: 'UAM could not confirm whether this message was sent. The submitted message is retained here and is never resent automatically.' }
 const attemptDelivery = (attempt: OutgoingAttempt) =>
   attempt.recordedManagedInput ? { state: 'unconfirmed' as const, label: 'This request was saved in the parent chat. Saving it does not confirm provider delivery; it is never resent automatically.' } : attempt.phase === 'rejected' ? LOCAL_UNCONFIRMED_DELIVERY : attempt.phase === 'accepted' ? ACCEPTED_DELIVERY : SENDING_DELIVERY
+const AUTOMATION_WAITING_DELIVERY: ConversationDelivery = { state: 'waiting', label: 'This message has not been sent. Start the chat to send it.' }
 const RECEIPT_DELIVERY: ConversationDelivery = { state: 'unconfirmed', label: 'UAM could not confirm whether this message reached the provider. Check the chat, then remove it if needed; it is never resent automatically.' }
 
 function canRetryMessageInPlace(messages: Message[], messageIndex: number) {
@@ -305,16 +330,25 @@ function ProviderHandoffDialog({
   sourceName,
   targetName,
   blockedReason,
+  versionNote,
   override = 'none',
   activeGoal = false,
+  loweredPermissionNotice,
+  targetManagesPermissions = false,
+  extraResetItem,
   onCancel,
   onConfirm,
 }: {
   sourceName: string
   targetName: string
   blockedReason?: string
+  versionNote?: string
   override?: ProviderSwitchOverride
   activeGoal?: boolean
+  /** Says why the switch lowers this chat's permission level to Default, when it does. */
+  loweredPermissionNotice?: string
+  targetManagesPermissions?: boolean
+  extraResetItem?: string
   onCancel: () => void
   /** Resolves true on success, or a refusal reason to show instead of the generic failure. */
   onConfirm: () => Promise<boolean | string>
@@ -354,17 +388,22 @@ function ProviderHandoffDialog({
             <li>Chat messages and recorded tool results</li>
             <li>Chat title and workspace</li>
             <li>Selected UAM agent and goals</li>
+            <li>{loweredPermissionNotice || targetManagesPermissions ? 'Memory setting' : 'Permission level and memory setting'}</li>
           </ul>
         </div>
         <div>
           <div className="mb-1 text-xs font-semibold uppercase tracking-wide" style={{ color: 'var(--yellow)' }}>Reset for {targetName}</div>
           <ul className="list-disc space-y-1 pl-5">
             <li>Native session and provider-specific live tool state</li>
-            <li>Model, reasoning or speed, permission, safety, and memory defaults</li>
+            <li>Model, reviewer model, reasoning, speed and small model mode, from {targetName}'s defaults</li>
+            {targetManagesPermissions && !loweredPermissionNotice && <li>Permission prompts, which {targetName} answers itself</li>}
+            {extraResetItem && <li>{extraResetItem}</li>}
           </ul>
         </div>
+        {loweredPermissionNotice && <Notice tone="warning" title="Permission level lowered" dismissible={false}>{loweredPermissionNotice}</Notice>}
         <p className="text-xs" style={{ color: 'var(--text-3)' }}>Anything the current provider did not record in UAM will not transfer.</p>
         {blockedReason && <div role="alert" className="rounded-md p-2 text-xs" style={{ border: '1px solid var(--yellow)', color: 'var(--yellow)' }}>{blockedReason}</div>}
+        {versionNote && <p className="text-xs" style={{ color: 'var(--text-2)' }}>{versionNote}</p>}
         {uncertainDelivery && <div role="alert" className="rounded-md p-2 text-xs" style={{ border: '1px solid var(--yellow)', color: 'var(--yellow)' }}>UAM cannot confirm whether the provider received this chat's latest message. If it did, switching may run that prompt twice.{override.startsWith('stranded') && ' A held message has not been sent and will not be sent; its text stays in this chat.'}{override.endsWith('disconnected') && ' The previous provider keeps running until the host can be reached. UAM then stops it, and new messages wait for that.'}{activeGoal && ' The active goal will be blocked.'} Cancel to leave this chat unchanged.</div>}
       </div>
     </ConfirmDialog>
@@ -391,7 +430,12 @@ function ComposerTab({ open, children }: { open: boolean; children: ReactElement
   return cloneElement(tab, { className: `${tab.props.className ?? ''} uam-subagent-disclosure`, 'data-state': closing ? 'closed' : 'open' })
 }
 
-export const ChatView = memo(function ChatView({ session, accentColor, navigationKey = '', showSubagentLineage = true, showComposer = true }: ChatViewProps) {
+export const ChatView = memo(function ChatView({ session, accentColor, navigationKey = '', showSubagentLineage = true, showComposer: composerAllowed = true }: ChatViewProps) {
+  // A held automation chat has only its question; Start hands it to the ordinary composer and transcript at once.
+  const [automationStartingChatId, setAutomationStartingChatId] = useState('')
+  const [automationStartError, setAutomationStartError] = useState('')
+  const automationHeld = Boolean(session.automationPendingPrompt) && automationStartingChatId !== session.id
+  const showComposer = composerAllowed && !automationHeld
   const sessionBirth = session.createdAt.getTime()
   const showComposerRef = useRef(showComposer)
   showComposerRef.current = showComposer
@@ -427,6 +471,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const [selectedToolCallRef, setSelectedToolCallRef] = useState<SelectedToolCallRef | null>(null)
   const [modelOpen, setModelOpen] = useState(false)
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false)
+  const [watchPullRequestOpen, setWatchPullRequestOpen] = useState(false)
   const [remoteMoveFolderId, setRemoteMoveFolderId] = useState('')
   const [remoteBrowseKey, setRemoteBrowseKey] = useState('')
   const [claudePlanPrompt, setClaudePlanPrompt] = useState<PendingClaudePlanPrompt | null>(null)
@@ -447,6 +492,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     readChatComposerDraft(session.id).attachments.map((attachment) => ({ ...attachment, status: 'ready' }))
   )
   const [attachmentError, setAttachmentError] = useState('')
+  const [attachmentProgress, setAttachmentProgress] = useState<Record<string, number>>({})
   const [dismissedAcpErrorKey, setDismissedAcpErrorKey] = useState('')
   const [editingMessageIndex, setEditingMessageIndex] = useState<number | null>(null)
   const [editingMessageText, setEditingMessageText] = useState('')
@@ -457,6 +503,9 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const [branchingMessageIndex, setBranchingMessageIndex] = useState<number | null>(null)
   const [messageBranchError, setMessageBranchError] = useState('')
   const [rollbackConfirmation, setRollbackConfirmation] = useState<{ messageIndex: number; diff: string } | null>(null)
+  // Holds the chat the confirmation was opened for, so it never carries over to another chat.
+  const [forceStopConfirmFor, setForceStopConfirmFor] = useState('')
+  const [forceStopBusy, setForceStopBusy] = useState(false)
   const [renderedMessageCount, setRenderedMessageCount] = useState(() => restoredViewport?.renderedCount ?? (isCompanionContext() ? COMPANION_INITIAL_RENDERED_MESSAGES : INITIAL_RENDERED_MESSAGES))
   const [olderHistoryLoading, setOlderHistoryLoading] = useState(false)
   const [selectedRepositoryFile, setSelectedRepositoryFile] = useState<VcsChangedFile | null>(null)
@@ -807,7 +856,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const stageChatAttachments = useAppStore((s) => s.stageChatAttachments)
   const sendAcpPrompt = useAppStore((s) => s.sendAcpPrompt)
   // Generated actions take already-formed input; user-authored sends explicitly supply their frozen references.
-  const sendSubmittedPrompt = useCallback(async (chatId: string, submittedText: string, attachments?: Attachment[], steerNow?: boolean) => {
+  const sendSubmittedPrompt = useCallback(async (chatId: string, submittedText: string, attachments?: Attachment[], steerNow?: boolean, submissionToken?: string) => {
     // Display only: an idle direct send occupies its transcript slot before ACK and keeps it after settling. It never enters
     // messages[] or ACP state; ACK records admission only, and a failed request stays visible as unconfirmed.
     const state = useAppStore.getState()
@@ -849,6 +898,19 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
         message: identity.message, managedOriginRunId, associated: true,
       } }]]))
     }
+    onStarted.submissionToken = submissionToken
+    // Native had already admitted this submission under an earlier attempt: that attempt's row is this message,
+    // so every earlier unconfirmed row of the submission retires and this attempt takes the admitted correlation.
+    onStarted.onDuplicateOf = (originRequestId, earlierRequestIds) => {
+      if (!attempt) return
+      const sameSubmission = new Set([originRequestId, ...earlierRequestIds])
+      const earlier = readOutgoingAttempts(scope).filter((candidate) => candidate.key !== attempt.key &&
+        candidate.actionCorrelationId !== undefined && sameSubmission.has(candidate.actionCorrelationId))
+      updateOutgoingAttempts(scope, new Map<string, Partial<OutgoingAttempt>>([
+        ...earlier.map((candidate) => [candidate.key, { retired: true }] as [string, Partial<OutgoingAttempt>]),
+        [attempt.key, { actionCorrelationId: originRequestId }],
+      ]))
+    }
     let accepted = false
     try {
       accepted = await sendAcpPrompt(chatId, submittedText, attachments, steerNow, onStarted)
@@ -858,11 +920,30 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     }
     return accepted
   }, [sendAcpPrompt])
-  const sendCapturedComposerPrompt = useCallback(async (submission: ComposerReferenceSubmission, text: string, attachments?: Attachment[], steerNow?: boolean) => {
+  const startAutomationChat = useCallback(async () => {
+    const text = session.automationPendingPrompt?.trim()
+    if (!text) return
+    setAutomationStartError('')
+    setAutomationStartingChatId(session.id)
+    const scope = outgoingScope(session.id, session.createdAt)
+    const key = automationPromptRowKey(session.id)
+    // The attempt reuses the held row's key, so the prompt stays in place as the ordinary sending row during the launch wait.
+    const requestId = createRequestId('approveAutomationChat')
+    addOutgoingAttempt(scope, { key, actionCorrelationId: requestId, text, nativeIndex: 0, attachments: [], receiptIds: new Set(), nativeInputIdsAtCapture: new Set(), createdAt: new Date(), phase: 'pending' })
+    const response = await sendToCEF({ action: 'approveAutomationChat', requestId, payload: { chatId: session.id } })
+    updateOutgoingAttempts(scope, new Map([[key, response.ok ? { phase: 'accepted' as const } : { retired: true }]]))
+    if (response.ok) return
+    setAutomationStartingChatId('')
+    const error = response.error || 'Could not start this chat.'
+    if (useAppStore.getState().sessions.find((chat) => chat.id === session.id)?.automationPendingPrompt) { setAutomationStartError(error); return }
+    // No longer held, so the question that would show this has closed.
+    reportAppFailure(error, 'Check the chat before starting the work again.')
+  }, [session.automationPendingPrompt, session.createdAt, session.id])
+  const sendCapturedComposerPrompt = useCallback(async (submission: ComposerReferenceSubmission, text: string, attachments?: Attachment[], steerNow?: boolean, submissionToken?: string) => {
     if (!composerReferenceSubmissionIsCurrent(submission)) return false
     const context = formatContextReferences(submission.references)
     const submittedText = context ? `${text}\n\n${context}` : text
-    const accepted = await sendSubmittedPrompt(submission.chatId, submittedText, attachments, steerNow)
+    const accepted = await sendSubmittedPrompt(submission.chatId, submittedText, attachments, steerNow, submissionToken)
     if (accepted) {
       acknowledgeComposerReferences(submission)
       // A newer admitted send resolves earlier not-sent guidance, but only for the chat this view still shows.
@@ -872,9 +953,9 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     }
     return accepted
   }, [sendSubmittedPrompt])
-  const sendComposerPrompt = useCallback(async (chatId: string, text: string, attachments?: Attachment[], steerNow?: boolean) => {
+  const sendComposerPrompt = useCallback(async (chatId: string, text: string, attachments?: Attachment[], steerNow?: boolean, submissionToken?: string) => {
     const submission = captureComposerReferenceSubmission(chatId)
-    return submission ? sendCapturedComposerPrompt(submission, text, attachments, steerNow) : false
+    return submission ? sendCapturedComposerPrompt(submission, text, attachments, steerNow, submissionToken) : false
   }, [sendCapturedComposerPrompt])
   const getVcsCommitStatus = useAppStore((s) => s.getVcsCommitStatus)
   const getVcsFileDiff = useAppStore((s) => s.getVcsFileDiff)
@@ -917,6 +998,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const setMemorySettings = useAppStore((s) => s.setMemorySettings)
   const cancelAcpTurn = useAppStore((s) => s.cancelAcpTurn)
   const stopAcpSession = useAppStore((s) => s.stopAcpSession)
+  const treatRemoteStopAsStopped = useAppStore((s) => s.treatRemoteStopAsStopped)
   const resolveAcpPermission = useAppStore((s) => s.resolveAcpPermission)
   const resolveAcpUserInput = useAppStore((s) => s.resolveAcpUserInput)
   const setSessionProvider = useAppStore((s) => s.setSessionProvider)
@@ -953,7 +1035,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   }, [refreshUamAgents, session.id, workspaceDirectory])
   useEffect(() => {
     if (isCompanionContext() && !session.importedReadOnly) {
-      void discoverProviderModels(session.id)
+      void discoverProviderModels(session.id, '', '', '', true)
     }
   }, [discoverProviderModels, session.id, session.modelId, session.uamAgentId, session.importedReadOnly])
 
@@ -993,6 +1075,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const showScrollToBottomRef = useRef(false)
   const [showScrollToBottom, setShowScrollToBottom] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const attachmentDialogOpenRef = useRef(false)
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null)
   const modelMenuRef = useRef<HTMLDivElement>(null)
   const workspaceMenuRef = useRef<HTMLDivElement>(null)
@@ -1006,6 +1089,10 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const dictationSubmitAfterStopRef = useRef<false | { steerOverride?: boolean }>(false)
   const submitDictatedPromptRef = useRef<(prompt: string, steerOverride?: boolean) => void>(() => {})
   const submitInFlightRef = useRef(false)
+  // The composer submission a retry belongs to; see handleSubmit. Any draft or attachment edit retires it.
+  const composerSubmissionRef = useRef<{ chatId: string; token: string } | null>(null)
+  const composerAttachmentKey = composerAttachments.map((attachment) => attachment.id).join('\n')
+  useEffect(() => { composerSubmissionRef.current = null }, [draft, composerAttachmentKey, session.id])
   const previousComposerIdentityRef = useRef({ id: session.id, birth: sessionBirth })
   const abandonedBirthSubmission = previousComposerIdentityRef.current.id === session.id &&
     previousComposerIdentityRef.current.birth !== sessionBirth && submitInFlightRef.current
@@ -1100,7 +1187,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const cancelLiveTurn = useCallback(() => { void cancelAcpTurn(session.id) }, [cancelAcpTurn, session.id])
   const stopLiveRuntime = useCallback(() => { void stopAcpSession(session.id) }, [stopAcpSession, session.id])
   const firstTurnEvent = turnEvents.find((event) => event.type === 'assistant_text' ? event.text.length > 0 : true)
-  const turnAssistantMessageIndex = acp?.turnAssistantMessageIndex === undefined || acp.turnAssistantMessageIndex < 0
+  const recordedTurnAssistantMessageIndex = acp?.turnAssistantMessageIndex === undefined || acp.turnAssistantMessageIndex < 0
     ? -1 : acp.turnAssistantMessageIndex - historyStartIndex
   const turnUserMessageIndex = acp?.turnUserMessageIndex === undefined || acp.turnUserMessageIndex < 0
     ? -1 : acp.turnUserMessageIndex - historyStartIndex
@@ -1139,31 +1226,40 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     ? workSections.get(activeWorkMessageIndex)?.firstIndex ?? findWorkSectionStartIndex(messages, activeWorkMessageIndex)
     : -1
   const activeWorkSectionId = messages[activeWorkSectionFirstIndex]?.id
+  // A streaming tail repeats the recorded row when it follows that row, or was started for it after a steer row while
+  // the turn's events still hold that row's text.
+  const streamingTail = messages[messages.length - 1]
   const redundantStreamingMessageIndex =
     turnEvents.length > 0 &&
-    messages[messages.length - 1]?.isStreaming &&
-    turnAssistantMessageIndex === messages.length - 2
+    streamingTail?.isStreaming &&
+    recordedTurnAssistantMessageIndex < messages.length - 1 &&
+    messages[recordedTurnAssistantMessageIndex]?.role === 'assistant' &&
+    (recordedTurnAssistantMessageIndex === messages.length - 2 || (streamingTail.streamMessageIndex === acp?.turnAssistantMessageIndex &&
+      contentIsExactlyTurnText(messages[recordedTurnAssistantMessageIndex].content, turnEvents, true)))
       ? messages.length - 1
       : -1
-  const completedTurnAssistantText = useMemo(() => acp?.processing
-    ? ''
-    : turnEvents.reduce(
-        (text, event) => event.type === 'assistant_text' ? text + event.text : text,
-        ''
-      ).trim(), [acp?.processing, turnEvents])
-  // A settled turn's events were synced into the backend's turn assistant row, so bind them there even when a later
-  // user row follows (#278). Native imports can replace rows without resetting the index, so a non-tail row must follow
-  // the turn's user row and hold exactly the turn's text; anything else keeps the row and the separate card.
-  // While processing, a steer can leave the index on an earlier row; require the tail.
-  const settledTurnAssistantRowValid =
-    !acp?.processing &&
-    turnUserMessageIndex >= 0 && turnUserMessageIndex < turnAssistantMessageIndex &&
+  // Turn events are synced into the backend's turn assistant row, so bind them there even when a later row follows, such
+  // as a steer published before its events reset (#278). Native imports can replace rows without resetting the index, so
+  // a non-tail row must follow the turn's user row and hold exactly the turn's text; anything else keeps the row and the
+  // separate card, and later turn output moves the index to a new row.
+  const recordedTurnAssistantRowValid =
+    turnUserMessageIndex >= 0 && turnUserMessageIndex < recordedTurnAssistantMessageIndex &&
     messages[turnUserMessageIndex]?.role === 'user' &&
-    contentIsExactlyTurnText(messages[turnAssistantMessageIndex]?.content ?? '', turnEvents)
-  const turnAssistantMessageMatches =
-    turnAssistantMessageIndex >= earliestRenderedMessageIndex &&
-    (turnAssistantMessageIndex === messages.length - 1 || redundantStreamingMessageIndex >= 0 || settledTurnAssistantRowValid) &&
-    messages[turnAssistantMessageIndex]?.role === 'assistant'
+    contentIsExactlyTurnText(messages[recordedTurnAssistantMessageIndex]?.content ?? '', turnEvents)
+  const recordedTurnAssistantMatches =
+    recordedTurnAssistantMessageIndex >= earliestRenderedMessageIndex &&
+    (recordedTurnAssistantMessageIndex === messages.length - 1 || redundantStreamingMessageIndex >= 0 || recordedTurnAssistantRowValid) &&
+    messages[recordedTurnAssistantMessageIndex]?.role === 'assistant'
+  // A live turn whose index no longer resolves still owns the latest assistant row when that row holds its text; the
+  // timeline replaces the row in place, keeping live tools and controls without a second card.
+  const liveTurnOwnsLatestAssistant =
+    !recordedTurnAssistantMatches && Boolean(acp?.processing) &&
+    historyStartIndex + messages.length >= (session.messageCount ?? 0) &&
+    latestAssistantMessageIndex >= earliestRenderedMessageIndex &&
+    latestAssistantMessageIndex > latestUserMessageIndex &&
+    contentIsExactlyTurnText(messages[latestAssistantMessageIndex].content, turnEvents, messages[latestAssistantMessageIndex].isStreaming)
+  const turnAssistantMessageIndex = liveTurnOwnsLatestAssistant ? latestAssistantMessageIndex : recordedTurnAssistantMessageIndex
+  const turnAssistantMessageMatches = recordedTurnAssistantMatches || liveTurnOwnsLatestAssistant
   const turnUserMessageMatches =
     turnUserMessageIndex >= earliestRenderedMessageIndex &&
     turnUserMessageIndex === latestUserMessageIndex &&
@@ -1172,9 +1268,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       (turnAssistantMessageMatches && turnUserMessageIndex < turnAssistantMessageIndex))
   const completedFallbackAlreadyPersisted =
     !acp?.processing &&
-    completedTurnAssistantText.length > 0 &&
     latestAssistantMessageIndex > latestUserMessageIndex &&
-    messages[latestAssistantMessageIndex]?.content.trim() === completedTurnAssistantText
+    contentIsExactlyTurnText(messages[latestAssistantMessageIndex]?.content ?? '', turnEvents)
   // Bind only a confirmed assistant; steering can put user messages between turn rows.
   const disclosureAssistant = turnAssistantMessageMatches
     ? messages[turnAssistantMessageIndex]
@@ -1428,19 +1523,28 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     }
   }, [modelOpen, workspaceMenuOpen])
 
-  const stageFiles = async (files: File[]) => {
+  const stageFiles = async (files: File[], nativeEntries: NativeFileEntry[] = []) => {
     if (!showComposerRef.current) return
     if (isCompanionContext()) { setAttachmentError('Add attachments from the desktop app.'); return }
     const stagingSessionId = session.id
-    const realFiles = files.filter((file) => file.size > 0 || file.type || file.name)
-    if (realFiles.length === 0) return
+    // A dropped File pairs with the native path of the same name and size; picked files arrive as paths only.
+    const unpaired = [...nativeEntries]
+    const sources = files.filter((file) => file.size > 0 || file.type || file.name).map((file) => {
+      const match = unpaired.findIndex((entry) => entry.name === file.name && entry.size === file.size)
+      const path = filePathFromBrowserFile(file) || (match >= 0 ? unpaired.splice(match, 1)[0].path : '')
+      return { file: file as File | null, name: file.name || 'attachment', size: file.size, mimeType: file.type, path, image: file.type.startsWith('image/') }
+    })
+    if (files.length === 0) {
+      sources.push(...nativeEntries.map((entry) => ({ file: null, name: entry.name || 'attachment', size: entry.size, mimeType: '', path: entry.path, image: IMAGE_FILE_NAME.test(entry.name) })))
+    }
+    if (sources.length === 0) return
 
-    const pending = realFiles.map<LocalAttachment>((file) => ({
-      id: `${Date.now()}-${Math.random().toString(16).slice(2)}-${file.name}`,
-      name: file.name || 'attachment',
-      type: file.type.startsWith('image/') ? 'image' : 'file',
-      size: file.size,
-      path: filePathFromBrowserFile(file),
+    const pending = sources.map<LocalAttachment>((source) => ({
+      id: `${Date.now()}-${Math.random().toString(16).slice(2)}-${source.name}`,
+      name: source.name,
+      type: source.image ? 'image' : 'file',
+      size: source.size,
+      path: source.path,
       status: 'staging',
     }))
     setAttachmentError('')
@@ -1448,18 +1552,17 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
 
     try {
       const items: ChatAttachmentInput[] = []
-      for (let index = 0; index < realFiles.length; index += 1) {
-        const file = realFiles[index]
-        const pendingItem = pending[index]
-        const path = filePathFromBrowserFile(file)
+      for (let index = 0; index < sources.length; index += 1) {
+        const source = sources[index]
+        if (source.path && source.size > MAX_PATH_ATTACHMENT_BYTES) throw new Error(`${source.name} is larger than the 4 GB limit.`)
         items.push({
-          id: pendingItem.id,
-          name: file.name || 'attachment',
-          kind: file.type.startsWith('image/') ? 'image' : 'file',
-          mimeType: file.type,
-          size: file.size,
-          path,
-          dataBase64: path ? undefined : await readFileBase64(file),
+          id: pending[index].id,
+          name: source.name,
+          kind: source.image ? 'image' : 'file',
+          mimeType: source.mimeType,
+          size: source.size,
+          path: source.path,
+          dataBase64: source.path || !source.file ? undefined : await readFileBase64(source.file),
         })
       }
 
@@ -1486,6 +1589,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       )
     } catch (err) {
       if (!mountedRef.current || currentSessionIdRef.current !== stagingSessionId) return
+      // Every chip of this request was removed while copying: the copy was canceled on purpose, so nothing to report.
+      if (pending.every((attachment) => removedAttachmentIdsRef.current.has(attachment.id))) return
       const message = err instanceof Error ? err.message : 'Failed to stage attachments.'
       setAttachmentError(message)
       const failedIds = new Set(pending.map((attachment) => attachment.id))
@@ -1565,7 +1670,21 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
         .map(fileUriToPath)
       void stageDirectoryPaths(paths)
     }
-    void stageFiles(files)
+    if (files.length === 0 || !isCefContext() || isCompanionContext()) { void stageFiles(files); return }
+    // The desktop app knows where the dropped files live, so large ones are copied from disk instead of read here.
+    void sendToCEF({ action: 'takeDroppedAttachmentPaths', payload: {} })
+      .then((response) => stageFiles(files, response.ok ? nativeFileEntries(response.data) : []), () => stageFiles(files))
+  }
+
+  const pickAttachmentFiles = () => {
+    if (!isCefContext() || isCompanionContext()) { fileInputRef.current?.click(); return }
+    if (attachmentDialogOpenRef.current) return
+    attachmentDialogOpenRef.current = true
+    void sendToCEF({ action: 'pickChatAttachmentFiles', payload: {} }).then((response) => {
+      attachmentDialogOpenRef.current = false
+      if (!response.ok) { fileInputRef.current?.click(); return }
+      void stageFiles([], nativeFileEntries(response.data))
+    }, () => { attachmentDialogOpenRef.current = false; fileInputRef.current?.click() })
   }
 
   const onComposerPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
@@ -1705,7 +1824,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const submit = async (event?: FormEvent, promptOverride?: string, steerOverride?: boolean) => {
     event?.preventDefault()
     // While a turn runs, Send follows the saved active-turn preference unless the alternate action overrides it.
-    const steerNow = steerOverride ?? (Boolean(providerAcp?.processing) && useAppStore.getState().steerActiveTurnOnSend)
+    const steerNow = steerOverride ?? (Boolean(providerAcp?.processing) && !providerAcp?.computePoolWait && useAppStore.getState().steerActiveTurnOnSend)
     if (editingMessageIndex !== null) {
       if (branchingMessageIndex === null && canChangeProvider && (editingMessageText.trim() || editingMessageAttachments.length > 0)) {
         if (editingMessageSource.kind === 'unsent') await saveEditedUnsentMessage()
@@ -1766,14 +1885,18 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     submitInFlightRef.current = true
     setSubmitting(true)
     if (steerNow) setSteering(true)
+    // Pressing Send again on the retained, unedited draft retries this submission; an edit or a new chat starts another.
+    const submission = composerSubmissionRef.current?.chatId === submittedSessionId ? composerSubmissionRef.current
+      : (composerSubmissionRef.current = { chatId: submittedSessionId, token: createRequestId('submission') })
     let ok = false
     try {
       ok = await (steerNow
-        ? sendComposerPrompt(session.id, prompt, readyAttachments, true)
-        : sendComposerPrompt(session.id, prompt, readyAttachments))
+        ? sendComposerPrompt(session.id, prompt, readyAttachments, true, submission.token)
+        : sendComposerPrompt(session.id, prompt, readyAttachments, undefined, submission.token))
     } catch {
       ok = false
     }
+    if (ok && composerSubmissionRef.current === submission) composerSubmissionRef.current = null
     const acknowledgedSession = useAppStore.getState().sessions.find((candidate) => candidate.id === submittedSessionId)
     if (ok && acknowledgedSession?.createdAt.getTime() === submittedBirth) {
       acknowledgeChatComposerDraft(submittedSessionId, submittedBirth, { text: draft, attachments: readyAttachments })
@@ -2043,20 +2166,31 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     ? providerShortName(providerHandoffTarget, providerHandoffTarget.id)
     : ''
   const providerHandoffReadiness = providerHandoffTarget
-    ? cliVersionManager.providers.find((candidate) => candidate.providerId === providerHandoffTarget.id)
+    ? [...cliVersionManager.providers, ...(cliVersionManager.remoteProviders ?? [])].find((candidate) => candidate.providerId === providerHandoffTarget.id && (candidate.executionHostId || 'local') === (session.executionHostId || 'local'))
     : undefined
+  // A failed or timed-out check says nothing about whether the CLI runs; native reports a confirmed-missing CLI with no checkError.
+  const providerHandoffCheckFailed = providerHandoffReadiness?.status === 'unavailable' && Boolean(providerHandoffReadiness.checkError)
+  const providerHandoffMissing = providerHandoffReadiness?.status === 'unavailable' && !providerHandoffCheckFailed
   const providerHandoffBlocked = providerHandoffReadiness?.status === 'checking' ||
     providerHandoffReadiness?.status === 'installing' ||
     providerHandoffReadiness?.status === 'known-incompatible' ||
-    providerHandoffReadiness?.status === 'unavailable'
-  const providerHandoffBlockedReason = providerHandoffBlocked
-    ? providerHandoffReadiness?.message || `${providerHandoffTargetName} cannot start structured chats right now.`
-    : ''
+    providerHandoffMissing
+  const providerHandoffBlockedReason = providerHandoffMissing
+    ? `${providerHandoffTargetName} is not installed or not on PATH. Check Settings > CLI Version.`
+    : providerHandoffBlocked
+      ? providerHandoffReadiness?.message || `${providerHandoffTargetName} cannot start structured chats right now.`
+      : ''
+  const providerHandoffVersionNote = providerHandoffCheckFailed ? `${providerHandoffReadiness?.checkError} Check Settings > CLI Version.` : ''
+  // Native launches a saved Gemini level as Default while the local version is unknown; the saved level stays.
+  const geminiThinkingUnverified = normalizeCliProviderIdAlias(currentProviderId) === GEMINI_CLI_PROVIDER_ID && Boolean(session.reasoningEffort) && (session.executionHostId || 'local') === 'local' &&
+    Boolean(cliVersionManager.providers.find((candidate) => candidate.providerId === GEMINI_CLI_PROVIDER_ID && (candidate.executionHostId || 'local') === 'local')?.checkError)
   const errorProviderId = acp?.providerId || currentProviderId
   const errorProvider = providers.find((candidate) => candidate.id === errorProviderId) ?? fallbackProviderForId(errorProviderId)
   const currentErrorSource = `Universal Agent Manager · ${providerShortName(errorProvider, errorProviderId)} ${providerRuntimeLabel(errorProvider, acp)}`
   const currentErrorTitle = `${currentErrorSource} error`
-  const currentAcpError = acp?.promptActionError?.message || acp?.lastError || ''
+  // Desktop only: the phone has no confirmation for an override that can leave a process running on the host.
+  const remoteStopForceAvailable = Boolean(acp?.remoteStopForceAvailable) && !isCompanionContext()
+  const currentAcpError = acp?.promptActionError?.message || acp?.lastError || (remoteStopForceAvailable ? 'Remote stop could not be confirmed.' : '')
   const currentAcpErrorKey = acp?.promptActionError ? `${session.id}:prompt:${acp.promptActionError.id}` : currentAcpError ? `${session.id}:${currentAcpError}` : ''
   const stoppedStatusLabel = acp && !acp.running && !currentAcpError && acp.lastStopReason &&
     !messages.some((message) => message.stopReason === acp.lastStopReason)
@@ -2158,13 +2292,18 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     const lastUser = lastUserMessageIndex(chatMessages)
     const queued = (acp?.queuedPrompts?.length ?? 0) > 0
     const retryable = lastUser >= 0 && canRetryMessageInPlace(chatMessages, lastUser) && !queued
-    const timeout = Math.min(MAX_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS, useAppStore.getState().activeTurnInactivityTimeoutSeconds + TIMEOUT_RESTART_STEP_SECONDS)
-    if (!await setMemorySettings({ activeTurnInactivityTimeoutSeconds: timeout })) return { tone: 'error', message: 'Could not save the new timeout. Nothing was restarted.' }
-    const raised = `Timeout raised to ${formatTimeoutDuration(timeout)}.`
-    if (queued) return { tone: 'info', message: `${raised} Queued messages are sent first, so this turn was not restarted; send a follow-up afterwards to continue it.` }
-    if (!retryable) return { tone: 'info', message: `${raised} This turn already produced output, so send a follow-up to continue it.` }
-    const result = await retryFailedMessage(session.id, lastUser + historyStartIndex)
-    return result.ok ? undefined : { tone: 'error', message: `${raised} The turn did not restart: ${result.error || 'retry was refused.'}` }
+    // A tool-call limit stop raises that limit; any other owned timeout raises the turn timeout.
+    const toolLimit = timeoutStop?.kind === 'tool'
+    const previous = useAppStore.getState()[toolLimit ? 'toolCallTimeoutSeconds' : 'activeTurnInactivityTimeoutSeconds']
+    return restartWithRaisedTimeout({
+      previous,
+      raised: Math.min(MAX_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS, previous + TIMEOUT_RESTART_STEP_SECONDS),
+      queued,
+      retryable,
+      saveTimeout: (seconds) => setMemorySettings(toolLimit ? { toolCallTimeoutSeconds: seconds } : { activeTurnInactivityTimeoutSeconds: seconds }),
+      retry: () => retryFailedMessage(session.id, lastUser + historyStartIndex),
+      limitName: toolLimit ? 'Tool call limit' : 'Timeout',
+    })
   }
   const retryUnsent = async (index: number) => {
     if (session.importedReadOnly || !canChangeProvider || branchingMessageIndex !== null || editingMessageIndex !== null) return false
@@ -2361,6 +2500,19 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     window.setTimeout(() => { if (showComposerRef.current) composerTextareaRef.current?.focus() }, 0)
   }
 
+  // Large attachments are copied from disk in chunks; the native side reports how far each copy has got.
+  useEffect(() => {
+    setAttachmentProgress({})
+    const onAttachmentProgress = (event: Event) => {
+      const detail = (event as CustomEvent<{ chatId?: string; attachmentId?: string; copiedBytes?: number; totalBytes?: number }>).detail
+      if (!detail || detail.chatId !== session.id || !detail.attachmentId || !detail.totalBytes) return
+      const percent = Math.min(100, Math.floor(((detail.copiedBytes ?? 0) / detail.totalBytes) * 100))
+      setAttachmentProgress((current) => current[detail.attachmentId!] === percent ? current : { ...current, [detail.attachmentId!]: percent })
+    }
+    window.addEventListener('uam-attachment-progress', onAttachmentProgress)
+    return () => window.removeEventListener('uam-attachment-progress', onAttachmentProgress)
+  }, [session.id])
+
   useEffect(() => {
     if (!showComposer) {
       dictationSubmitAfterStopRef.current = false
@@ -2468,6 +2620,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   )
   const selectedUamAgentId = configuredUamAgentId || session.uamAgentId || 'build'
   const permissionsManagedByUam = currentProviderCapabilities.structuredPermissionControl === 'uam'
+  const providerHandoffTargetCapabilities = providerHandoffTarget ? providerCapabilities(providerHandoffTarget.id, providerHandoffTarget) : null
+  const providerHandoffLoweredPermissionNotice = providerHandoffTargetCapabilities
+    && permissionTierForProvider(session.commandSafetyTier, currentProviderCapabilities, providerHandoffTargetCapabilities) !== (session.commandSafetyTier ?? 'off')
+    ? `${providerHandoffTargetCapabilities.structuredPermissionControl === 'provider' ? providerShortName(providerHandoffTarget!, providerHandoffTarget!.id) : currentProviderName} answers its own permission prompts, so this chat's ${PERMISSION_MODES.find((mode) => mode.id === permissionModeForTier(session.commandSafetyTier ?? 'off'))?.name} level changes to Default.`
+    : undefined
   useEffect(() => {
     if (!isClaudeProvider(currentProvider, currentProviderId) || currentModeId !== 'plan') {
       setClaudePlanPrompt(null)
@@ -2560,10 +2717,19 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       setSlashNotice(noticeFor(`Unsupported ${kind} "${rawValue}". Supported: ${options.map((option) => option.id || 'default').join(', ')}.`, 'error'))
       return
     }
+    // The slash notice names the change, so it carries the refusal reason instead of a second app-wide notice.
+    let refusal = ''
+    const onFailure = (reason: string) => { refusal = reason }
     const changed = kind === 'reasoning'
-      ? await setSessionCodexOptions(session.id, { reasoningEffort: requested.id })
-      : await setSessionCodexOptions(session.id, { serviceTier: requested.id === CODEX_SPEED_INHERIT_ID ? '' : requested.id, serviceTierExplicit: requested.id !== CODEX_SPEED_INHERIT_ID })
-    setSlashNotice(noticeFor(changed ? `${label} changed to ${requested.label}.` : `Failed to change ${kind} to ${requested.label}.`, changed ? 'success' : 'error'))
+      ? await setSessionCodexOptions(session.id, { reasoningEffort: requested.id }, onFailure)
+      : await setSessionCodexOptions(session.id, { serviceTier: requested.id === CODEX_SPEED_INHERIT_ID ? '' : requested.id, serviceTierExplicit: requested.id !== CODEX_SPEED_INHERIT_ID }, onFailure)
+    if (changed) {
+      setSlashNotice(noticeFor(`${label} changed to ${requested.label}.`, 'success'))
+      return
+    }
+    // The shared toast shows only its message, so the reason goes there rather than in a "Command" detail.
+    setSlashNotice(null)
+    reportAppFailure(`Failed to change ${kind} to ${requested.label}. ${refusal || 'Try again.'}`, '')
   }
   const runVariantCommand = async (configId: string, value: string, label: string) => {
     setSlashIndex(0)
@@ -2802,7 +2968,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
           icon: <Brain size={15} />,
           run: () => setDraft('/memory '),
         },
-        { id: 'attach', label: '/attach', hint: 'Attach files', icon: <Paperclip size={15} />, run: () => fileInputRef.current?.click() },
+        { id: 'attach', label: '/attach', hint: 'Attach files', icon: <Paperclip size={15} />, run: pickAttachmentFiles },
         { id: 'skills', label: '/skills', hint: 'Open Skills', icon: <BookOpen size={15} />, run: () => void openMarkdownStore() },
         ...groupedSkills(favorites),
       ]
@@ -3108,7 +3274,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     setSubmitting(true)
     try {
       const modeOk = nextModeId === 'plan' ? true : await setSessionApprovalMode(submittedSessionId, 'default')
-      if (!modeOk) { if (ownsFeedback()) setSlashNotice(noticeFor('Failed to change provider mode.', 'error')); return }
+      if (!modeOk) return
       if (!composerReferenceSubmissionIsCurrent(submission.context)) {
         refuseStaleSubmission()
         return
@@ -3187,7 +3353,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 if (index === redundantStreamingMessageIndex || unsentProjection.hiddenIndices.has(index)) return null
                 const shouldRenderTimelineAtAssistant = renderTimelineAtAssistant && index === turnAssistantMessageIndex
                 const shouldSkipAssistantMessage = renderTimelineAfterUser && turnAssistantMessageMatches && index === turnAssistantMessageIndex
-                const { followingResponse, hasDeliveredResponse, hasStoppedResponse } = responseFlags(messages, index)
+                const { followingResponse, hasDeliveredResponse, hasStoppedResponse, receivedByProvider } = responseFlags(messages, index)
                 const messageProviderId = message.providerId?.trim() || followingResponse?.providerId?.trim() || currentProviderId
                 const messageProviderName = providerShortName(
                   providers.find((candidate) => candidate.id === messageProviderId),
@@ -3229,7 +3395,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 const sectionProviderName = providerShortName(providers.find((candidate) => candidate.id === sectionProviderId), sectionProviderId)
                 // Brief turns with no tool or reasoning activity drop the "Worked" toggle; live turns always show it.
                 const briefTurn = !sectionActive && !section.hasTrace && section.workedSeconds < 2
-                const heading = firstVisibleInSection && (section.hasAssistant || sectionActive) && !briefTurn ? <div data-testid={sectionActive && turnEvents.length === 0 ? "turn-starting" : undefined}><ConversationWork
+                const heading = firstVisibleInSection && (section.hasAssistant || sectionActive) && !briefTurn && !(sectionActive && acp?.computePoolWait) ? <div data-testid={sectionActive && turnEvents.length === 0 ? "turn-starting" : undefined}><ConversationWork
                   sectionHeading headerOnly active={sectionActive} startedAt={sectionActive ? turnClockStart : undefined}
                   duration={formatWorkedDuration(section.workedSeconds)} events={[]} tools={[]} collapsible={collapsibleWorkSections}
                   onSelectTool={selectLiveTool}
@@ -3295,10 +3461,12 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                         message={message}
                         hasDeliveredResponse={hasDeliveredResponse}
                         hasStoppedResponse={hasStoppedResponse}
+                        // A response still streaming is output, not a completion: it hides nothing yet.
+                        receivedByProvider={receivedByProvider && !(acp?.processing && index + 1 === turnAssistantMessageIndex)}
                         pendingDirectAdmission={unsentProjection.pendingIndices.has(index) || nativeDirectReceipt?.sending === true}
                         delivery={unsentByLoadedIndex.has(index) ? (unsentByLoadedIndex.get(index)!.retryable ? UNSENT_DELIVERY : HELD_DELIVERY)
                           : nativeDirectReceipt ? (nativeDirectReceipt.sending ? SENDING_DELIVERY : RECEIPT_DELIVERY)
-                          : unsentProjection.pendingIndices.has(index) ? SENDING_DELIVERY : outgoingUnresolved ? attemptDelivery(outgoingAlias!) : undefined}
+                          : unsentProjection.pendingIndices.has(index) ? SENDING_DELIVERY : outgoingUnresolved ? attemptDelivery(outgoingAlias!) : acp?.computePoolWait && message.acpPromptNotSent ? POOL_WAIT_DELIVERY : undefined}
                         deliveryActions={unsentByLoadedIndex.has(index) && !isCompanionContext() ? <OutgoingRecoveryActions
                           onEdit={() => beginEditingUnsentMessage(index + historyStartIndex, message.content)}
                           onRetry={unsentByLoadedIndex.get(index)!.retryable ? () => unsentActionsRef.current.retryUnsent(index + historyStartIndex) : undefined}
@@ -3403,6 +3571,10 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 }
                 // Captured indices place display rows only; they never identify or confirm a native message.
                 // Keep one flat keyed list so a receipt/native alias retains the same outer row and article.
+                // Verbatim, not Markdown: a link label must not hide text from the person approving what will be sent.
+                if (automationHeld) outgoingRows.push({ attempt: undefined, node: <div key={automationPromptRowKey(session.id)} className="space-y-1" data-outgoing-message="">
+                  <ConversationTurn role="user" assistantLabel="" delivery={AUTOMATION_WAITING_DELIVERY}><p className="m-0 whitespace-pre-wrap break-words">{session.automationPendingPrompt}</p></ConversationTurn>
+                </div> })
                 const attemptOrder = new Map(outgoingAttempts.map((attempt, ordinal) => [attempt.key, ordinal]))
                 const anchoredRows = outgoingRows.flatMap(({ attempt, node }, sourceIndex) => attempt ? [{
                   boundary: attempt.nativeIndex, ordinal: attemptOrder.get(attempt.key)!, sourceIndex, node,
@@ -3422,8 +3594,9 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 })
                 // Cold receipts retain their fallback slots. Unreached local rows keep capture order in the remaining slots.
                 const trailingRows = outgoingRows.filter((_, sourceIndex) => !placed.has(sourceIndex))
-                return [...rows, ...trailingRows.map(({ attempt, node }) => attempt ? anchoredRows[nextAnchor++].node : node)]
-  }, [acp, activePlanActions, activeWorkSectionFirstIndex, beginEditingMessage, beginEditingUnsentMessage, branchSessions, branchingMessageIndex, canChangeProvider, cancelLiveTurn, collapsibleWorkSections, createMessageBranch, currentProviderId, currentProviderName, earliestRenderedMessageIndex, historyStartIndex, latestPlanMessageIndex, livePlanEntries, liveTools, liveWorkDisclosure, messages, outgoingAttempts, outgoingPresentation, outgoingReceipts, pendingPermission, pendingUserInput, providers, redundantStreamingMessageIndex, renderTimelineAfterUser, renderTimelineAtAssistant, resolveLivePermission, retryInPlaceMessageIndex, savedWorkDisclosures, searchNavigation, sectionControls, selectLiveTool, selectMessageBranch, selectPersistedTool, session, stopLiveRuntime, turnAssistantMessageIndex, turnAssistantMessageMatches, turnClockStart, turnEvents, turnSerial, turnUserMessageIndex, turnWorkedDisplaySeconds, unsentActionsDisabled, unsentByLoadedIndex, unsentProjection, unsentReceiptDeleteDisabled, visibleMessages, transcriptDay, transcriptTimezoneOffset, workSections, workingDisplayMode])
+                return [...rows, ...trailingRows.map(({ attempt, node }) => attempt ? anchoredRows[nextAnchor++].node : node),
+                  ...(session.automationTokenName ? [<AutomationStartQuestion key="automation-start-question" session={session} open={automationHeld} error={automationStartError} onStart={startAutomationChat} />] : [])]
+  }, [acp, automationHeld, automationStartError, startAutomationChat, activePlanActions, activeWorkSectionFirstIndex, beginEditingMessage, beginEditingUnsentMessage, branchSessions, branchingMessageIndex, canChangeProvider, cancelLiveTurn, collapsibleWorkSections, createMessageBranch, currentProviderId, currentProviderName, earliestRenderedMessageIndex, historyStartIndex, latestPlanMessageIndex, livePlanEntries, liveTools, liveWorkDisclosure, messages, outgoingAttempts, outgoingPresentation, outgoingReceipts, pendingPermission, pendingUserInput, providers, redundantStreamingMessageIndex, renderTimelineAfterUser, renderTimelineAtAssistant, resolveLivePermission, retryInPlaceMessageIndex, savedWorkDisclosures, searchNavigation, sectionControls, selectLiveTool, selectMessageBranch, selectPersistedTool, session, stopLiveRuntime, turnAssistantMessageIndex, turnAssistantMessageMatches, turnClockStart, turnEvents, turnSerial, turnUserMessageIndex, turnWorkedDisplaySeconds, unsentActionsDisabled, unsentByLoadedIndex, unsentProjection, unsentReceiptDeleteDisabled, visibleMessages, transcriptDay, transcriptTimezoneOffset, workSections, workingDisplayMode])
   // The fork/edited row is marked so CSS can move or dim only the rows after it (`[data-motion-anchor] ~ *`).
   useLayoutEffect(() => {
     const list = messageListRef.current
@@ -3450,8 +3623,12 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
           sourceName={currentProviderName}
           targetName={providerHandoffTargetName}
           blockedReason={providerHandoffBlockedReason}
+          versionNote={providerHandoffVersionNote}
           override={acp?.providerSwitchOverride}
           activeGoal={Boolean(activeGoal)}
+          loweredPermissionNotice={providerHandoffLoweredPermissionNotice}
+          targetManagesPermissions={providerHandoffTargetCapabilities?.structuredPermissionControl === 'provider'}
+          extraResetItem={COMPUTER_USE_ENABLED && computerUseMode ? 'Computer Use, which turns off' : undefined}
           onCancel={() => setProviderHandoffTargetId('')}
           onConfirm={async () => {
             let refusal = ''
@@ -3460,10 +3637,12 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
             if (!changed) return refusal.replace(' Accept this in the switch dialog in the desktop app.', '') || false
             // The provider has changed from here on, so a failure below must not read as a failed switch.
             if (currentSessionIdRef.current !== session.id) return true
-            const modelSet = providerHandoffModelId === null || await setSessionModel(session.id, providerHandoffModelId)
+            let modelRefusal = ''
+            const modelSet = providerHandoffModelId === null || await setSessionModel(session.id, providerHandoffModelId, (reason) => { modelRefusal = reason })
             setProviderHandoffTargetId('')
             setProviderHandoffModelId(null)
-            if (!modelSet) reportAppFailure('The model was not changed', `This chat is now on ${providerHandoffTargetName} with its default model. Choose the model again from the model picker.`)
+            // The shared toast shows only its message, so the reason and next step belong there.
+            if (!modelSet) reportAppFailure(`The model was not changed. ${modelRefusal ? `${modelRefusal} ` : ''}This chat is now on ${providerHandoffTargetName} with its default model. Choose the model again from the model picker.`, '')
             return true
           }}
         />
@@ -3501,6 +3680,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
             ? <Button type="button" size="sm" variant="ghost" leadingIcon={<CornerUpLeft size={14} aria-hidden />} onClick={() => showChatInPane(startedBy.id)}>Started by {startedBy.name}</Button>
             : <span style={{ color: 'var(--text-3)' }}>Started by a chat that is no longer available</span>}
         </nav>}
+        {!isCompanionContext() && <LinkedPullRequests chatId={session.id} />}
+        {!isCompanionContext() && <WatchPullRequestDialog chatId={session.id} open={watchPullRequestOpen} onClose={() => setWatchPullRequestOpen(false)} />}
         <div className="uam-chat-viewport relative flex-1 min-h-0" data-message-navigation={messageNavigationVisible || undefined}>
           <div ref={scrollRef} className="uam-chat-transcript relative z-0 h-full overflow-auto" data-copy-surface="chat" onScroll={handleScroll}>
             <div ref={transcriptContentRef} className="uam-chat-content w-full py-4" style={{ paddingBottom: 'calc(var(--composer-dock-h, 0px) + 16px)' }}>
@@ -3561,7 +3742,15 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 </div>
               )}
               {transcriptRows}
-              {acp?.processing && turnEvents.length === 0 && (activeWorkMessageIndex < 0 || unsentProjection.hiddenIndices.has(activeWorkMessageIndex)) && (
+              {acp?.computePoolWait && (
+                <div data-testid="compute-pool-wait" role="status" className="uam-turn-starting px-4 py-2 text-xs" style={{ color: 'var(--text-3)' }}>
+                  <span className="conversation-work__heading">
+                    <span className="conversation-work__live" aria-hidden />
+                    <span>Waiting for {acp.computePoolWait.poolName} slot ({acp.computePoolWait.inUse}/{acp.computePoolWait.limit})</span>
+                  </span>
+                </div>
+              )}
+              {acp?.processing && !acp.computePoolWait && turnEvents.length === 0 && (activeWorkMessageIndex < 0 || unsentProjection.hiddenIndices.has(activeWorkMessageIndex)) && (
                 <div
                   data-testid="turn-starting"
                   role="status"
@@ -3730,6 +3919,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               onEdit={displayedGoal.executionOwner !== 'provider' && displayedGoal.status !== 'complete' ? handleEditGoal : undefined}
               workerModelLabel={displayedGoalWorkerLabel}
               reviewerModelLabel={displayedGoalReviewerLabel}
+              attentionSource={session.attentionSource}
               editing={goalEditing}
               onEditingChange={setGoalEditing}
             />
@@ -3776,22 +3966,47 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 {unsupportedProviderMessage}
               </Notice>
             )}
+            {geminiThinkingUnverified && (
+              <Notice tone="info" title="Using Default thinking" dismissLabel="Dismiss Default thinking notice">
+                {currentProviderName}'s version could not be checked, so a launch now uses Default thinking instead of your saved level. Check Settings &gt; CLI Version.
+              </Notice>
+            )}
             {session.importedReadOnly && (
               <Notice tone="warning" title="Imported transcript" dismissLabel="Dismiss imported transcript notice">
                 This portable transcript is read-only and cannot start a provider. Create a new chat in a workspace to continue.
               </Notice>
             )}
-            {acp && currentAcpError && currentAcpErrorKey !== dismissedAcpErrorKey && !timeoutStop && (
+            {/* The notice is the only place Treat as stopped is offered, so it cannot be dismissed while it is. */}
+            {acp && currentAcpError && (currentAcpErrorKey !== dismissedAcpErrorKey || remoteStopForceAvailable) && !timeoutStop && (
               <Notice
+                key={remoteStopForceAvailable ? 'unconfirmed-stop' : 'error'}
                 tone="error"
                 title={currentErrorTitle}
+                dismissible={!remoteStopForceAvailable}
                 dismissLabel="Dismiss composer error"
                 onDismiss={() => setDismissedAcpErrorKey(currentAcpErrorKey)}
-                actions={<CopyTextButton text={buildAcpErrorCopyText({ ...acp, lastError: currentAcpError }, currentErrorTitle)} label="Copy error" title="Copy error details" />}
+                actions={<>
+                  {remoteStopForceAvailable && <Button type="button" size="sm" variant="secondary" onClick={() => setForceStopConfirmFor(session.id)}>Treat as stopped</Button>}
+                  <CopyTextButton text={buildAcpErrorCopyText({ ...acp, lastError: currentAcpError }, currentErrorTitle)} label="Copy error" title="Copy error details" />
+                </>}
               >
                 {currentErrorSource}: {currentAcpError}
               </Notice>
             )}
+            <ConfirmDialog
+              open={remoteStopForceAvailable && forceStopConfirmFor === session.id}
+              title="Treat this chat as stopped?"
+              confirmLabel="Treat as stopped"
+              tone="danger"
+              busy={forceStopBusy}
+              onCancel={() => setForceStopConfirmFor('')}
+              onConfirm={() => {
+                setForceStopBusy(true)
+                void treatRemoteStopAsStopped(session.id).finally(() => { setForceStopBusy(false); setForceStopConfirmFor('') })
+              }}
+            >
+              {recoveryHost?.label || 'The remote computer'} has not confirmed that this chat's process stopped, so it may still be running there{workspaceDirectory ? ` in ${workspaceDirectory}` : ''}. UAM will stop trying to reach it and will never reconnect to that turn. The transcript is kept, and your next message starts a new process.
+            </ConfirmDialog>
             {CLAUDE_ENABLED && <ConfirmDialog
               open={claudePlanPrompt !== null}
               title="Claude Plan mode"
@@ -3807,7 +4022,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               Claude Plan mode is read-only. Choose how to proceed with this prompt.
               {claudePlanPrompt && claudePlanPrompt.context.references.length > 0 && <> The prompt keeps the reference snapshots selected when you pressed Send; new selections belong to your next message.</>}
             </ConfirmDialog>}
-            <InlinePromptQueue key={session.id}
+            <InlinePromptQueue key={session.id} steerUnavailable={Boolean(acp?.computePoolWait)}
               held={Boolean(acp?.queueHeld && acp.queuedPrompts?.length)} onResume={(expected) => resumeQueuedAcpPrompts(session.id, expected)} prompts={acp?.queuedPrompts ?? []} disabled={steering || session.importedReadOnly}
               onEdit={(id, revision, text, retainedAttachmentIds) => editQueuedAcpPrompt(session.id, id, revision, text, retainedAttachmentIds)}
               onReorder={(expected, orderedIds) => reorderQueuedAcpPrompts(session.id, expected, orderedIds)}
@@ -3824,6 +4039,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 key={questionKey}
                 memory={questionMemory}
                 input={pendingUserInput}
+                sessionId={session.id}
                 onResolve={(requestId, answers) => resolveAcpUserInput(session.id, requestId, answers)}
                 waitIsStale={acp?.waitIsStale}
                 waitStaleReason={acp?.waitStaleReason}
@@ -3918,6 +4134,10 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                           )}
                         </>
                       )}
+                      {!isCompanionContext() && <>
+                        <div className="my-1 border-t" style={{ borderColor: 'var(--border)' }} />
+                        <MenuItem icon={<Eye size={14} aria-hidden />} label="Watch pull request…" onSelect={() => { setWorkspaceMenuOpen(false); setWatchPullRequestOpen(true) }} />
+                      </>}
                     </ViewportMenu>
                   )}
                 </div>
@@ -3995,6 +4215,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               memory={questionMemory}
               variant="composer"
               input={pendingUserInput}
+              sessionId={session.id}
               onResolve={(requestId, answers) => resolveAcpUserInput(session.id, requestId, answers)}
               submitRef={questionSubmitRef}
               onSubmitStateChange={setQuestionSubmitState}
@@ -4027,10 +4248,14 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                     name={attachment.name}
                     detail={attachment.error || attachmentLabel(attachment)}
                     path={attachment.status === 'ready' ? attachment.path : undefined}
-                    meta={attachment.status === 'staging' ? 'copying' : undefined}
+                    meta={attachment.status === 'staging' ? (attachmentProgress[attachment.id] === undefined ? 'copying' : `copying ${attachmentProgress[attachment.id]}%`) : undefined}
                     error={attachment.status === 'failed'}
                     onRemove={() => {
                       removedAttachmentIdsRef.current.add(attachment.id)
+                      // A copy still running stops between chunks and removes what it wrote.
+                      if (attachment.status === 'staging' && isCefContext()) void sendToCEF({ action: 'cancelChatAttachmentStaging', payload: { attachmentId: attachment.id } }).catch(() => undefined)
+                      // A finished copy that was never sent is deleted with its chip; the native side keeps anything a message or queue holds.
+                      if (attachment.status === 'ready' && attachment.type !== 'directory' && attachment.path && !submitInFlightRef.current && isCefContext() && !isCompanionContext()) void sendToCEF({ action: 'discardStagedChatAttachment', payload: { chatId: session.id, path: attachment.path } }, false).catch(() => undefined)
                       setComposerAttachments((current) => current.filter((item) => item.id !== attachment.id))
                     }}
                     removeLabel={`Remove ${attachment.name} attachment`}
@@ -4233,7 +4458,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               modelMenuRef={modelMenuRef}
 			  onToggleModel={() => {
 				if (!modelOpen && isOpenCodeProvider(currentProvider, currentProviderId) && !providerAcp?.modelsLoading && !providerAcp?.availableModels.length) {
-				  void discoverProviderModels('', currentProviderId, workspaceDirectory, session.executionHostId || 'local')
+				  void discoverProviderModels('', currentProviderId, workspaceDirectory, session.executionHostId || 'local', true)
 				}
                 setModelOpen((value) => !value)
                 setWorkspaceMenuOpen(false)
@@ -4275,7 +4500,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 void submit(undefined, undefined, !useAppStore.getState().steerActiveTurnOnSend)
                 composerTextareaRef.current?.focus({ preventScroll: true })
               }}
-              onAttachFile={() => fileInputRef.current?.click()}
+              onAttachFile={pickAttachmentFiles}
               onOpenMarkdownStore={() => void openMarkdownStore()}
               dictationState={dictationState}
               dictationError={dictationError}

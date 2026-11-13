@@ -5,6 +5,7 @@ import {
   UPDATE_CHECK_INTERVAL_MS,
   availableUpdates,
   availableRemoteHelperUpdates,
+  localBuildLabel,
   fetchLatestUpdateCatalog,
   readCachedUpdateCatalog,
   type LatestUpdateCatalog,
@@ -24,6 +25,8 @@ function updateCheckErrorIdentity(message: string): string {
 
 export function useUpdateMonitor() {
   const appVersion = useAppStore((state) => state.appVersion)
+  const uiBuildId = useAppStore((state) => state.uiBuildId)
+  const appBuildLabel = localBuildLabel(appVersion, uiBuildId)
   const runnerProtocolVersion = useAppStore((state) => state.runnerProtocolVersion)
   const providers = useAppStore((state) => state.providers)
   const providerAvailability = useAppStore((state) => state.providerAvailability)
@@ -110,8 +113,8 @@ export function useUpdateMonitor() {
     // Like a build-excluded provider, one disabled on a computer is neither offered nor automatically updated there.
     ...availableUpdates(catalog, appVersion, versionManager, providers, dismissedVersions)
       .filter((update) => !update.providerId || !providerDisabledOn(providerAvailability, update.providerId, update.executionHostId || 'local')),
-    ...availableRemoteHelperUpdates(appVersion, runnerProtocolVersion, executionHosts, dismissedVersions),
-  ], [appVersion, catalog, dismissedVersions, executionHosts, providerAvailability, providers, runnerProtocolVersion, versionManager])
+    ...availableRemoteHelperUpdates(appVersion, runnerProtocolVersion, executionHosts, dismissedVersions, appBuildLabel),
+  ], [appBuildLabel, appVersion, catalog, dismissedVersions, executionHosts, providerAvailability, providers, runnerProtocolVersion, versionManager])
 
   const applyRemoteHelperUpdate = useCallback(async (hostId: string): Promise<CEFResponse> => {
     const host = executionHosts.find((candidate) => candidate.id === hostId)
@@ -123,7 +126,7 @@ export function useUpdateMonitor() {
         // Native completion can race the pushed state patch; reconcile the card immediately.
         useAppStore.setState((state) => ({
           executionHosts: state.executionHosts.map((candidate) => candidate.id === hostId
-            ? { ...candidate, runnerStatus: 'ready', runnerVersion: appVersion, runnerProtocolVersion, runnerSha256: candidate.bundledRunnerSha256 }
+            ? { ...candidate, runnerStatus: 'ready', runnerVersion: appVersion, runnerProtocolVersion, runnerSha256: candidate.bundledRunnerSha256, runnerBuildLabel: appBuildLabel || undefined }
             : candidate),
         }))
       }
@@ -133,7 +136,7 @@ export function useUpdateMonitor() {
     } finally {
       setRemoteHelperUpdatingId('')
     }
-  }, [appVersion, executionHosts, remoteHelperUpdatingId, runnerProtocolVersion])
+  }, [appBuildLabel, appVersion, executionHosts, remoteHelperUpdatingId, runnerProtocolVersion])
 
   const installCliProviderVersion = useCallback((providerId: string, version: string, executionHostId: string | undefined, signal: AbortSignal) => {
     if (signal.aborted) return Promise.resolve(false)
@@ -241,6 +244,7 @@ export function useUpdateMonitor() {
       providerId: state.providerId,
       ...(state.executionHostId ? { executionHostId: state.executionHostId } : {}),
       name: `${provider?.shortName || provider?.name || state.providerId}${state.executionHostId ? ` · ${state.executionHostName || state.executionHostId}` : ''}`,
+      shortName: provider?.shortName || provider?.name || state.providerId,
       status: state.lastInstallStatus,
       message: state.lastInstallStatus === 'succeeded' ? `Installed ${state.installedVersion || 'provider update'}.` : state.message,
       output: state.lastOutput,

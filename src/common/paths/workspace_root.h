@@ -130,6 +130,18 @@ namespace uam::paths
 		return uam::paths::AbsolutePathNoThrow(workspace_root);
 	}
 
+	/// Where a worktree chat's attachments were staged before its worktree existed. The Git
+	/// source directory is only a fallback: it is the repository top level, not the workspace.
+	inline std::string PreIsolationWorkspaceDirectory(const uam::AppState& app, const ChatSession& chat)
+	{
+		if (!IsGitWorktreeIsolated(chat)) return {};
+		std::string directory = uam::strings::Trim(chat.workspace_directory);
+		if (const ChatFolder* folder = FindWorkspaceFolderById(app, chat.folder_id); directory.empty() && folder != nullptr)
+			directory = uam::strings::Trim(folder->directory);
+		if (directory.empty()) directory = uam::strings::Trim(chat.workspace_source_directory);
+		return IsControllerLocalWorkspace(chat) ? Utf8PathString(ExpandTrimmedWorkspacePath(directory)) : directory;
+	}
+
 	inline std::filesystem::path ResolveControllerWorkspaceRootPath(
 	    const uam::AppState& app, const ChatSession& chat)
 	{

@@ -1,3 +1,4 @@
+#include "common/config/approval_modes.h"
 #include "common/config/host_scoped_settings.h"
 #include "common/config/provider_availability.h"
 #include "app/uam_control_service.h"
@@ -19,6 +20,7 @@
 #include "common/runtime/terminal/terminal_debug_diagnostics.h"
 #include "common/runtime/terminal/terminal_identity.h"
 #include "common/runtime/terminal/terminal_lifecycle.h"
+#include "common/utils/range_utils.h"
 #include "common/utils/string_utils.h"
 #include "common/utils/io_utils.h"
 #include "common/utils/env_utils.h"
@@ -33,6 +35,7 @@
 #include <nlohmann/json.hpp>
 
 
+#include <algorithm>
 #include <functional>
 #include <memory>
 #include <string>
@@ -95,6 +98,12 @@ bool PrepareAcpSessionForCliTerminalLaunch(AppState& app, ChatSession& chat, std
 	{
 		error_out->clear();
 	}
+	// Not a stop that confirms shortly: say why, rather than the silent retry an empty error means.
+	if (AcpStopExitUnobserved(app, chat.id))
+	{
+		if (error_out != nullptr) *error_out = kAcpProcessExitUnobservedMessage;
+		return false;
+	}
 
 	if (AgentRunScheduler::HasUnconfirmedInitialRootPublication(app, chat))
 	{
@@ -156,6 +165,7 @@ bool PrepareAcpSessionForCliTerminalLaunch(AppState& app, ChatSession& chat, std
 	{
 		if (AcpStopInProgress(app, chat.id) && (session == nullptr || !session->remote_stop_unconfirmed))
 		{
+			if (error_out != nullptr && AcpStopExitUnobserved(app, chat.id)) *error_out = kAcpProcessExitUnobservedMessage;
 			return false;
 		}
 		if (error_out != nullptr)
@@ -166,8 +176,33 @@ bool PrepareAcpSessionForCliTerminalLaunch(AppState& app, ChatSession& chat, std
 		}
 		return false;
 	}
-	if (AcpStopInProgress(app, chat.id)) return false;
+	if (AcpStopInProgress(app, chat.id))
+	{
+		if (error_out != nullptr && AcpStopExitUnobserved(app, chat.id)) *error_out = kAcpProcessExitUnobservedMessage;
+		return false;
+	}
 	return true;
+}
+
+namespace
+{
+	/// A read-only agent always opens CLI View in Plan, whatever central configuration or UAM control says.
+	bool InteractiveChatHasReadCeiling(const AppState& app, const ChatSession& chat)
+	{
+		if (uam::approval_modes::AppApprovalModeOrEmpty(chat.approval_mode) == uam::approval_modes::kPlanApprovalMode) return true;
+		if (chat.uam_agent_id.empty()) return false;
+		const AgentDefinitionCatalog catalog = AgentDefinitionService::Load(app.data_root, uam::paths::ResolveControllerWorkspaceRootPath(app, chat));
+		const auto selected = std::ranges::find_if(catalog.definitions, [&](const AgentDefinition& agent) { return agent.id == chat.uam_agent_id; });
+		// Anything other than write access (read, or a missing or unknown value) is capped, as in structured launches.
+		return selected != catalog.definitions.end() && selected->workspace_access != "write";
+	}
+}
+
+std::string ProviderInteractiveCeilingError(const AppState& app, const ChatSession& chat)
+{
+	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
+	if (!uam::provider_ids::IsCliProviderAliasOf(provider.id, uam::provider_ids::kOpenCodeCli) || !InteractiveChatHasReadCeiling(app, chat)) return {};
+	return "OpenCode CLI View cannot be held to Plan or a read-only agent: its terminal has no Plan option UAM can enforce. Use Chat, or switch this chat to Default first.";
 }
 
 std::vector<std::string> BuildProviderInteractiveArgv(const AppState& app, const ChatSession& chat)
@@ -175,12 +210,7 @@ std::vector<std::string> BuildProviderInteractiveArgv(const AppState& app, const
 	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
 	ChatSession effective_chat = chat;
 	effective_chat.native_session_id = ResolveProviderInteractiveResumeId(app, chat, provider);
-	if (app.settings.central_provider_configuration.enabled || chat.uam_control_enabled)
-	{
-		const AgentDefinitionCatalog catalog = AgentDefinitionService::Load(app.data_root, uam::paths::ResolveControllerWorkspaceRootPath(app, chat));
-		const auto selected = std::ranges::find_if(catalog.definitions, [&](const AgentDefinition& agent) { return agent.id == chat.uam_agent_id; });
-		if (selected != catalog.definitions.end() && selected->workspace_access == "read") effective_chat.approval_mode = "plan";
-	}
+	if (InteractiveChatHasReadCeiling(app, chat)) effective_chat.approval_mode = uam::approval_modes::kPlanApprovalMode;
 
 	return ProviderRuntime::BuildInteractiveArgv(provider, effective_chat, app.settings);
 }
@@ -366,16 +396,88 @@ bool RemoveCliProviderHandoff(AppState& app, const ChatSession& chat, std::strin
 	return true;
 }
 
-bool StageCliProviderContextCleanup(AppState& app, const ChatSession& chat)
+static bool IsLocalHostId(const std::string& host_id)
 {
-	if (chat.provider_handoff_cli_contexts.empty()) return true;
-	if (AcpStopInProgress(app, chat.id)) return false;
-	if (const CliTerminalState* terminal = FindCliTerminalForChat(app, chat.id); terminal != nullptr && terminal->running) return false;
+	return host_id.empty() || host_id == uam::execution_hosts::kLocalHostId;
+}
+
+// Staged copies live at <workspace>/.UAM/attachments/<chat id>/<file>. A branch inherits its
+// parent's paths, so any such copy stays while a surviving chat still references it.
+static std::vector<std::string> AttachmentCopiesToRemove(const AppState& app, const ChatSession& chat, const std::vector<ChatSession>& survivors)
+{
+	std::vector<std::string> copies;
+	const ExecutionHost* host = uam::execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
+	if (!IsLocalHostId(chat.execution_host_id) && host == nullptr) return copies;
+	constexpr std::string_view root = ".UAM/attachments/";
+	const std::string workspace = uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat));
+	if (workspace.empty()) return copies;
+	for (const std::string& linked : chat.linked_files)
+	{
+		std::string portable = linked;
+		std::ranges::replace(portable, '\\', '/');
+		const std::size_t folder_end = portable.find('/', root.size());
+		if (!portable.starts_with(root) || folder_end == std::string::npos || portable.find('/', folder_end + 1) != std::string::npos ||
+		    portable.find("/../") != std::string::npos || portable.ends_with("/..")) continue;
+		const auto references = [&](const ChatSession& other) { return other.id != chat.id && uam::ranges::Contains(other.linked_files, linked); };
+		if (std::ranges::any_of(survivors, references) || std::ranges::any_of(app.excluded_provider_chats, references)) continue;
+		// An image attached before the first send also has its original copy in the source checkout.
+		for (const std::string& root : {workspace, uam::paths::PreIsolationWorkspaceDirectory(app, chat)})
+			if (!root.empty())
+				copies.push_back(IsLocalHostId(chat.execution_host_id)
+				    ? uam::paths::Utf8PathString(uam::paths::PathFromUtf8(root) / uam::paths::PathFromUtf8(portable))
+				    : uam::execution_hosts::JoinRemotePath(host->platform, root, portable));
+	}
+	return copies;
+}
+
+bool StageCliProviderContextCleanup(AppState& app, const ChatSession& chat, const std::vector<ChatSession>& survivors)
+{
+	std::vector<std::string> copies = AttachmentCopiesToRemove(app, chat, survivors);
+	if (chat.provider_handoff_cli_contexts.empty() && copies.empty()) return true;
+	if (!chat.provider_handoff_cli_contexts.empty())
+	{
+		if (AcpStopInProgress(app, chat.id)) return false;
+		if (const CliTerminalState* terminal = FindCliTerminalForChat(app, chat.id); terminal != nullptr && terminal->running) return false;
+	}
 	ChatSession intent;
 	intent.id = chat.id;
 	intent.provider_id = chat.provider_id;
 	intent.provider_handoff_cli_contexts = chat.provider_handoff_cli_contexts;
+	intent.execution_host_id = chat.execution_host_id;
+	intent.linked_files = std::move(copies);
 	return ChatRepository::SaveChat(app.data_root / "runtime-context-cleanup", intent);
+}
+
+static bool RemoveAttachmentCopies(const AppState& app, const ChatSession& intent, std::string& error, std::stop_token stop_token)
+{
+	if (intent.linked_files.empty()) return true;
+	if (IsLocalHostId(intent.execution_host_id))
+	{
+		for (const std::string& copy : intent.linked_files)
+		{
+			const std::filesystem::path path = uam::paths::PathFromUtf8(copy);
+			std::error_code remove_error;
+			(void)uam::paths::RemoveFileNoThrow(path, &remove_error);
+			if (remove_error)
+				LogCliDiagnosticEvent(app, "provider_context_cleanup", "attachment_copy_left", nullptr, "chat_id=" + intent.id);
+			std::error_code ignored;
+			std::filesystem::remove(path.parent_path(), ignored); // Fails while other files remain.
+		}
+		return true;
+	}
+	// ponytail: a removed host, or a removal the reached host refuses, leaves the copy without a retry.
+	const ExecutionHost* host = uam::execution_hosts::Find(app.settings.execution_hosts, intent.execution_host_id);
+	if (host == nullptr) return true;
+	uam::remote::RunnerClient client(PlatformServicesFactory::Instance().process_service, *host);
+	if (!client.Connect(&error, stop_token)) return false;
+	for (std::size_t index = 0; index < intent.linked_files.size(); ++index)
+	{
+		std::string remove_error;
+		if (client.RemoveFile("chat-delete-" + std::to_string(index), uam::paths::PathFromUtf8(intent.linked_files[index]), &remove_error)) continue;
+		if (!client.IsConnected()) { error = remove_error; return false; }
+		LogCliDiagnosticEvent(app, "provider_context_cleanup", "attachment_copy_left", nullptr, "chat_id=" + intent.id + ", " + remove_error);
+	}
+	return true;
 }
 
 void RetryCliProviderContextCleanup(AppState& app, double now_s)
@@ -405,7 +507,7 @@ void RetryCliProviderContextCleanup(AppState& app, double now_s)
 		    {
 			    if (stop.stop_requested()) break;
 			    std::string error;
-			    if (RemoveCliProviderHandoff(cleanup, intent, error, stop))
+			    if (RemoveCliProviderHandoff(cleanup, intent, error, stop) && RemoveAttachmentCopies(cleanup, intent, error, stop))
 			    {
 				    // The repository logs the delete outcome, including failure.
 				    (void)ChatRepository::DeleteChatStorageFiles(pending_root, intent.id, "context_cleanup_intent");
@@ -432,8 +534,8 @@ bool PrepareCliProviderConversation(AppState& app, ChatSession& chat, const Exec
 	    (chat.provider_id == uam::provider_ids::kCodexCli && !chat.native_session_id.empty() && chat.provider_handoff_session_id == chat.native_session_id)) return true;
 	const bool remote = host.id != uam::execution_hosts::kLocalHostId;
 	const std::filesystem::path workspace = uam::paths::ResolveWorkspaceRootPath(app, chat);
-	const std::string directory = uam::paths::Utf8PathString(CliProviderContextDirectory(app, chat, host));
-	const std::string context_path = uam::execution_hosts::JoinRemotePath(host.platform, directory, "conversation.md");
+	const std::string requested_directory = uam::paths::Utf8PathString(CliProviderContextDirectory(app, chat, host));
+	std::string directory = requested_directory;
 	const std::string snapshot = "Use the saved conversation below as context. Do not repeat its tool actions.\n\n" + chat.provider_handoff_context;
 	std::unique_ptr<uam::remote::RunnerClient> client;
 	if (remote)
@@ -446,7 +548,11 @@ bool PrepareCliProviderConversation(AppState& app, ChatSession& chat, const Exec
 			error = "Update the remote runner before carrying provider context into CLI View.";
 			return false;
 		}
+		std::filesystem::path chosen;
+		if (!client->ProviderContextLocation(uam::paths::PathFromUtf8(directory), chosen, &error, stop_token)) return false;
+		directory = uam::paths::Utf8PathString(chosen);
 	}
+	const std::string context_path = uam::execution_hosts::JoinRemotePath(host.platform, directory, "conversation.md");
 	const auto stage = [&](const std::string& path, const std::string& content)
 	{
 		if (stop_token.stop_requested()) { error = "Provider context preparation was cancelled."; return false; }
@@ -455,7 +561,8 @@ bool PrepareCliProviderConversation(AppState& app, ChatSession& chat, const Exec
 		error = "Could not save provider conversation context. Retry when storage is available.";
 		return false;
 	};
-	const ProviderHandoffCliContext location{host.id, directory, ContextConnectionIdentity(host)};
+	// Cleanup records the requested folder, which the helper maps to where the context actually went.
+	const ProviderHandoffCliContext location{host.id, requested_directory, ContextConnectionIdentity(host)};
 	if (!chat.provider_handoff_context.empty() && !uam::ranges::Contains(chat.provider_handoff_cli_contexts, location))
 	{
 		chat.provider_handoff_cli_contexts.push_back(location);
@@ -541,9 +648,9 @@ bool PrepareConfiguredCliProviderHandoff(AppState& app, ChatSession& chat, const
 	std::unique_ptr<uam::remote::RunnerClient> client;
 	if (!bundle.local_directory.empty() && host.id != uam::execution_hosts::kLocalHostId)
 	{
-		target = workspace / ".UAM" / "provider-setup" / bundle.local_directory.filename();
 		client = std::make_unique<uam::remote::RunnerClient>(PlatformServicesFactory::Instance().process_service,
 		    host);
+		if (!client->ProviderConfigurationLocation(bundle.local_directory, workspace, target, &error, stop_token)) return false;
 		if (!client->InstallProviderConfiguration(bundle.local_directory, target, &error, stop_token)) return false;
 	}
 	if (!PrepareCliProviderConversation(app, chat, host, argv, environment, launch_channel, error, stop_token, uam::paths::Utf8PathString(target), native_servers)) return false;
@@ -601,7 +708,7 @@ static bool PrepareCliProviderHandoffAsyncImpl(AppState& app, CliTerminalState& 
 	    uam::paths::Utf8PathString(CliProviderContextDirectory(app, chat, host)), ContextConnectionIdentity(host)};
 	const bool prepare_cleanup = !chat.messages_loaded && !chat.provider_handoff_context.empty() &&
 	    !uam::ranges::Contains(chat.provider_handoff_cli_contexts, location);
-	if (!launch_option_override && terminal.context_preparation == nullptr && (host.id == uam::execution_hosts::kLocalHostId || environment.empty()) && (!prepare_history || history_prepared) && !uam::central_configuration::McpEnabled(app.settings.central_provider_configuration, chat.provider_id, host.id, "shared-setup", app.settings.central_provider_configuration.enabled) && uam::mcp_server_config::SelectForWorkspace(uam::host_scoped_settings::McpServers(app.settings, host.id), uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat)), host.id).empty() && (chat.workspace_source_directory.empty() || uam::mcp_server_config::SelectForWorkspace(uam::host_scoped_settings::McpServers(app.settings, host.id), chat.workspace_source_directory, host.id).empty()) && !chat.uam_control_enabled && (chat.provider_handoff_context.empty() || (chat.provider_id == uam::provider_ids::kCodexCli && !chat.native_session_id.empty() && chat.provider_handoff_session_id == chat.native_session_id)))
+	if (!launch_option_override && !uam::execution_hosts::HasInstructions(host) && terminal.context_preparation == nullptr && (host.id == uam::execution_hosts::kLocalHostId || environment.empty()) && (!prepare_history || history_prepared) && !uam::central_configuration::McpEnabled(app.settings.central_provider_configuration, chat.provider_id, host.id, "shared-setup", app.settings.central_provider_configuration.enabled) && uam::mcp_server_config::SelectForWorkspace(uam::host_scoped_settings::McpServers(app.settings, host.id), uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat)), host.id).empty() && (chat.workspace_source_directory.empty() || uam::mcp_server_config::SelectForWorkspace(uam::host_scoped_settings::McpServers(app.settings, host.id), chat.workspace_source_directory, host.id).empty()) && !chat.uam_control_enabled && (chat.provider_handoff_context.empty() || (chat.provider_id == uam::provider_ids::kCodexCli && !chat.native_session_id.empty() && chat.provider_handoff_session_id == chat.native_session_id)))
 		return true;
 	const std::function<std::string()> capture_baseline = [&]() { return nlohmann::json::array({chat.id, chat.provider_id, uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat)), ContextConnectionIdentity(host), host.instruction_file, host.instruction_text ? nlohmann::json(*host.instruction_text) : nlohmann::json(nullptr), chat.uam_control_enabled, chat.uam_agent_id, chat.provider_handoff_context, chat.native_session_id, chat.provider_handoff_session_id, ChatRepository::ChatMetadataFingerprint(app.data_root, chat), chat.model_id, chat.reasoning_effort, chat.service_tier, chat.service_tier_explicit, CheckedProviderConfigurationVersion(app, chat.provider_id, host), argv, environment, uam::central_configuration::Serialize(app.settings.central_provider_configuration), uam::mcp_server_config::Serialize(uam::host_scoped_settings::McpServers(app.settings, host.id))}).dump(); };
 	const std::string baseline = capture_baseline();

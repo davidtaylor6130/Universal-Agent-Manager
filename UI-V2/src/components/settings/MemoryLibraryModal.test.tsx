@@ -282,6 +282,18 @@ describe('MemoryLibraryModal all memory scope', () => {
     host.remove()
   })
 
+  it('keeps the shown memories in place while a refresh is loading', () => {
+    const { host, root } = renderModal()
+    act(() => { useAppStore.setState({ memoryLibraryLoading: true }) })
+    expect(document.body.textContent).toContain('Global lesson')
+    expect(document.body.textContent).not.toContain('Loading memory library')
+    expect(document.body.querySelector('button[aria-label="Refresh memory library"]')?.getAttribute('aria-busy')).toBe('true')
+    act(() => { useAppStore.setState({ memoryLibraryEntries: [], memoryLibraryLoading: true }) })
+    expect(document.body.textContent).toContain('Loading memory library')
+    act(() => { root.unmount() })
+    host.remove()
+  })
+
   it('shows the selected memory location in the content pane', () => {
     const { host, root } = renderModal()
 

@@ -1,6 +1,7 @@
 #include "app/agent_run_scheduler.h"
 #include "app/provider_configuration_service.h"
 #include "common/runtime/acp/acp_session_internal.h"
+#include "common/security/permission_change_log.h"
 #include "common/runtime/acp/acp_goal_loop.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 
@@ -178,7 +179,7 @@ bool ReplayPersistedInteractionResponseIfMatched(
 {
 	const std::string request_id =
 	    JsonRpcIdToStableString(JsonRpcIdOrNull(request));
-	const bool captured_read = session.goal_review_turn || session.active_uam_agent_workspace_access == "read";
+	const bool captured_read = session.goal_review_turn || session.active_uam_agent_workspace_access != "write";
 	// Early request-ID matching is insufficient authority for a captured read turn.
 	// Questions and unknown/malformed requests continue through their normal decoder.
 	if (captured_read && (pending == nullptr || pending->request_id_json.empty() || pending->request_id_json != request_id)) return false;
@@ -637,6 +638,8 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 			if (RollbackAcpModeChange(session, chat))
 			{
 				SaveChatQuietly(app, chat);
+				// The chip already shows the restored level; the error says so, so the change is not silent.
+				formatted_error += " " + uam::permission_log::RollbackNotice(chat);
 			}
 		}
 		if (method == uam::acp_methods::kSessionSetModel && id == session.model_change_request_id)
@@ -801,7 +804,10 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 		const bool defer_completion = CanDeferLocalSessionReceipt(app, session, chat);
 		(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
 		if (id == session.prompt_request_id && session.prompt_request_id > 0 && JsonDiagnosticStringValue(result, "stopReason") == "end_turn")
+		{
 			RecordCompletedAcpPromptRecoveries(app, session, chat);
+			(void)ConfirmTurnInputReceived(session, chat); // This turn's own request ended normally.
+		}
 		CompletePromptTurnAndHandleGoalLoop(app, session, chat, kAcpLifecycleReady, nullptr);
 		if (defer_completion) ScheduleChatSave(app, chat, 0.0);
 		else SaveChatQuietly(app, chat);

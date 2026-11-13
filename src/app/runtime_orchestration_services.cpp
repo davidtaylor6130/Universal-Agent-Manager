@@ -9,6 +9,7 @@
 #include "app/chat_lifecycle_service.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "app/managed_subagent_control_service.h"
+#include "app/native_agent_history_service.h"
 #include "app/native_session_link_service.h"
 #include "app/persistence_coordinator.h"
 #include "app/provider_profile_migration_service.h"
@@ -49,6 +50,8 @@
 #include "common/provider/provider_ids.h"
 #include "common/provider/runtime/provider_build_config.h"
 #include "common/provider/provider_runtime.h"
+#include "common/provider/runtime/provider_runtime_internal.h"
+#include "common/runtime/cli_version_parser.h"
 #include "common/runtime/json_runtime.h"
 #include "common/runtime/native_refresh_lifetime.h"
 #include "common/runtime/acp/acp_session_internal.h"
@@ -77,6 +80,7 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <mutex>
 #include <string>
 #include <sstream>
 #include <thread>
@@ -586,6 +590,76 @@ namespace
 			}
 		}
 		return import_index;
+	}
+
+	/// The native session a child names as its parent: same provider, host and workspace, never a UAM chat ID.
+	ChatSession NativeChildParentIdentity(const ChatSession& child, const std::string& parent_native_session_id)
+	{
+		ChatSession parent;
+		parent.provider_id = child.provider_id;
+		parent.native_session_id = parent_native_session_id;
+		parent.execution_host_id = child.execution_host_id;
+		parent.workspace_directory = child.workspace_directory;
+		parent.workspace_worktree_directory = child.workspace_worktree_directory;
+		return parent;
+	}
+
+	constexpr std::size_t kMaxDiscoveredNativeChildrenPerParent = 64;
+
+	/// The one feed for children a parent transcript names: each provider's parser has already put the child's native
+	/// ID on the spawning tool call, so this turns those IDs into unloaded sub-chat candidates. Nothing is read here;
+	/// a child's own history is read and checked only when its parent is selected for import. Codex children come from
+	/// their own rollout or thread record instead, which names the parent directly.
+	void AppendNativeChildCandidates(const ChatSession& parent, const Message& message, std::vector<ChatSession>& children, std::unordered_set<std::string>& seen)
+	{
+		const std::string provider = uam::provider_ids::NormalizeCliProviderAliasOrSelf(parent.provider_id);
+		const std::string host = uam::strings::NonEmptyOrFallback(uam::strings::Trim(parent.execution_host_id), "local");
+		const bool open_code = provider == uam::provider_ids::kOpenCodeCli;
+		if (parent.imported_read_only || uam::strings::IsBlank(parent.native_session_id) || message.role != MessageRole::Assistant ||
+		    (!open_code && uam::native_agents::ReferencePrefix(provider).empty())) return;
+		for (const ToolCall& tool : message.tool_calls)
+		{
+			std::vector<std::string> ids;
+			if (tool.sub_agent_children_authoritative) for (const SubAgentChild& child : tool.sub_agent_children) ids.push_back(child.id);
+			else ids.push_back(tool.sub_agent_id);
+			for (const std::string& id : ids)
+			{
+				ChatSession child;
+				if (open_code)
+				{
+					// Only the native task tool's own metadata names an OpenCode child session.
+					if (!tool.is_sub_agent) continue;
+					if (!uam::execution_hosts::IsPortableId(id) || id.starts_with('-') || id == parent.native_session_id) continue;
+					child.native_session_id = id;
+					if (parent.opencode_v2_session_id) child.opencode_v2_session_id = id;
+				}
+				else
+				{
+					// A journal reference embeds its parent and host; one for another session or host is not this parent's child.
+					const auto reference = uam::native_agents::ParseHistoryId(id);
+					if (!reference || reference->provider_id != provider || reference->parent_session_id != parent.native_session_id ||
+					    reference->execution_host_id != host || host != "local") continue;
+					child.imported_read_only = true;
+					child.parent_chat_id = parent.native_session_id;
+				}
+				if (seen.size() >= kMaxDiscoveredNativeChildrenPerParent || !seen.insert(id).second) continue;
+				child.id = child.branch_root_chat_id = id;
+				child.provider_id = provider;
+				child.execution_host_id = parent.execution_host_id;
+				child.workspace_directory = parent.workspace_directory;
+				child.folder_id = parent.folder_id;
+				child.native_parent_session_id = parent.native_session_id;
+				child.title = uam::strings::SafeLine(uam::strings::NonEmptyOrFallback(tool.sub_agent_title, tool.name), 256, true);
+				child.messages_loaded = false;
+				children.push_back(std::move(child));
+			}
+		}
+	}
+
+	void AppendNativeChildCandidates(const ChatSession& parent, std::vector<ChatSession>& children)
+	{
+		std::unordered_set<std::string> seen;
+		for (const Message& message : parent.messages) AppendNativeChildCandidates(parent, message, children, seen);
 	}
 
 	bool StartupCandidateIsOwned(const uam::AppState& app, const NativeImportIndex& index, const ChatSession& chat)
@@ -1298,7 +1372,11 @@ namespace
 		std::string_view Turn() const { return !started.empty() && started == context ? std::string_view(context) : std::string_view{}; }
 	};
 
-	std::optional<ChatSession> LoadCodexRolloutChat(const fs::path& rollout_file, const ChatFolder& folder, bool* malformed_out = nullptr, bool include_subagents = false, std::stop_token stop_token = {}, bool metadata_only = false, const std::function<bool(const Message&)>& emit = {}, const ChatSession* input_receipt_owner = nullptr)
+	/// Which Codex subagent rollouts a read accepts: none, only agents a parent thread spawned (they import as its
+	/// sub-chats), or any (an explicit open by thread ID). Review, compaction and memory threads are never imported.
+	enum class CodexSubagentRollouts { Exclude, SpawnedChildren, All };
+
+	std::optional<ChatSession> LoadCodexRolloutChat(const fs::path& rollout_file, const ChatFolder& folder, bool* malformed_out = nullptr, CodexSubagentRollouts subagents = CodexSubagentRollouts::Exclude, std::stop_token stop_token = {}, bool metadata_only = false, const std::function<bool(const Message&)>& emit = {}, const ChatSession* input_receipt_owner = nullptr)
 	{
 		const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(uam::provider_ids::kCodexCli);
 		if (malformed_out != nullptr) *malformed_out = false;
@@ -1435,7 +1513,19 @@ namespace
 					    const bool is_subagent =
 					        uam::nlohmann_json::TrimmedStringViewOrEmpty(payload, "thread_source") == "subagent" ||
 					        (payload.contains("source") && payload["source"].is_object() && payload["source"].contains("subagent"));
-					    include = !chat.native_session_id.empty() && !cwd.empty() && (include_subagents || !is_subagent) &&
+					    // The child's own record names its parent: `parent_thread_id`, or the spawn source on older rollouts.
+					    std::string spawn_parent = uam::codex::ValidThreadIdOrEmpty(uam::nlohmann_json::StringViewOrEmpty(payload, "parent_thread_id"));
+					    if (const auto source = payload.find("source"); source != payload.end() && source->is_object())
+						    if (const auto subagent = source->find("subagent"); subagent != source->end() && subagent->is_object())
+						    {
+							    const auto spawn = subagent->find("thread_spawn");
+							    if (spawn == subagent->end() || !spawn->is_object()) spawn_parent.clear();
+							    else if (spawn_parent.empty()) spawn_parent = uam::codex::ValidThreadIdOrEmpty(uam::nlohmann_json::StringViewOrEmpty(*spawn, "parent_thread_id"));
+						    }
+					    if (!is_subagent || uam::codex::ThreadIdKey(spawn_parent) == uam::codex::ThreadIdKey(chat.native_session_id)) spawn_parent.clear();
+					    chat.native_parent_session_id = spawn_parent;
+					    include = !chat.native_session_id.empty() && !cwd.empty() &&
+					              (!is_subagent || subagents == CodexSubagentRollouts::All || (subagents == CodexSubagentRollouts::SpawnedChildren && !spawn_parent.empty())) &&
 					              (folder.directory.empty() || uam::ImportedWorkspaceMatchesFolder(uam::paths::PathFromUtf8(cwd), uam::paths::PathFromUtf8(folder.directory)));
 					    if (!include)
 					    {
@@ -1665,14 +1755,18 @@ namespace
 		{
 			ChatFolder source;
 			source.directory = identity.workspace_directory;
-			std::optional<ChatSession> loaded = LoadCodexRolloutChat(rollout, source, malformed, false, {}, false, emit);
-			if (!loaded || loaded->native_session_id != identity.native_session_id ||
+			std::optional<ChatSession> loaded = LoadCodexRolloutChat(rollout, source, malformed,
+			    identity.native_parent_session_id.empty() ? CodexSubagentRollouts::Exclude : CodexSubagentRollouts::SpawnedChildren, {}, false, emit);
+			if (!loaded || loaded->native_session_id != identity.native_session_id || loaded->native_parent_session_id != identity.native_parent_session_id ||
 			    !uam::ImportedWorkspaceMatchesFolder(uam::paths::PathFromUtf8(loaded->workspace_directory), uam::paths::PathFromUtf8(identity.workspace_directory)) ||
 			    !uam::ImportedWorkspaceMatchesFolder(uam::paths::PathFromUtf8(identity.workspace_directory), uam::paths::PathFromUtf8(loaded->workspace_directory))) return false;
 			loaded->id = identity.id;
 			loaded->folder_id = identity.folder_id;
 			loaded->branch_root_chat_id = identity.branch_root_chat_id;
 			loaded->execution_host_id = identity.execution_host_id;
+			// The display link was decided when this child was admitted under its parent.
+			loaded->subagent_parent_chat_id = identity.subagent_parent_chat_id;
+			loaded->subagent_parent_created_at = identity.subagent_parent_created_at;
 			if (!native_title.empty()) loaded->title = native_title;
 			final_metadata = std::move(*loaded);
 			return true;
@@ -1703,11 +1797,21 @@ namespace
 		    [&](const std::function<bool(const Message&)>& emit, ChatSession& metadata)
 		{
 			bool has_content = false;
+			std::string parent, first, last;
 			const bool complete = uam::opencode_import::Read(*source, metadata, [&](const Message& message)
 			{
 				has_content = has_content || uam::HasImportedConversationContent(message);
+				if (first.empty()) first = message.created_at;
+				if (!message.created_at.empty()) last = message.created_at;
 				return emit(message);
-			}, {}, error);
+			}, {}, error, &parent);
+			if (complete && !metadata.native_parent_session_id.empty())
+			{
+				// A sub-chat is known only by the ID on its parent's task call; its own export must name that parent.
+				if (parent != metadata.native_parent_session_id) { error = "OpenCode session " + metadata.native_session_id + " does not name the chat that spawned it as its parent."; return false; }
+				if (metadata.created_at.empty()) metadata.created_at = first;
+				if (metadata.updated_at.empty()) metadata.updated_at = uam::strings::NonEmptyOrFallback(last, metadata.created_at);
+			}
 			return complete && has_content;
 		});
 	}
@@ -1907,9 +2011,98 @@ namespace
 		return chat.messages_loaded ? chat.messages.size() : chat.persisted_message_count;
 	}
 
+	/// <summary>A scan shares one client per host and remembers its first connect failure; a single read keeps a private client.</summary>
+	class RemoteHistoryClient
+	{
+	  public:
+		RemoteHistoryClient(const ExecutionHost& host, ChatHistorySyncService::RemoteHistoryScanContext* scan) : m_scan(scan)
+		{
+			if (m_scan == nullptr) m_owned.emplace(PlatformServicesFactory::Instance().process_service, host);
+		}
+		uam::remote::RunnerClient& Get() { return m_scan != nullptr ? *m_scan->client : *m_owned; }
+		bool Connect(std::string* error, std::stop_token stop_token)
+		{
+			const bool connected = Get().Connect(error, stop_token);
+			if (!connected && m_scan != nullptr && !stop_token.stop_requested())
+			{
+				m_scan->connect_failed = true;
+				if (error != nullptr) m_scan->connect_error = *error;
+			}
+			return connected;
+		}
+
+	  private:
+		ChatHistorySyncService::RemoteHistoryScanContext* m_scan;
+		std::optional<uam::remote::RunnerClient> m_owned;
+	};
+
+	/// <summary>Probed OpenCode versions for this app run, shared by scans and single reads. The key holds the host
+	/// connection and helper, the command and the folder, because a version manager can pin a version per folder.
+	/// A command that fails with a cached version forgets it, so a CLI changed outside UAM is probed again.</summary>
+	std::mutex& RemoteOpenCodeVersionMutex()
+	{
+		static std::mutex mutex;
+		return mutex;
+	}
+
+	std::map<std::string, std::string>& RemoteOpenCodeVersions()
+	{
+		// ponytail: never evicted; it holds one short entry per host folder that has history.
+		static std::map<std::string, std::string> versions;
+		return versions;
+	}
+
+	void ForgetRemoteOpenCodeVersion(const std::string& key)
+	{
+		if (key.empty()) return;
+		std::lock_guard lock(RemoteOpenCodeVersionMutex());
+		RemoteOpenCodeVersions().erase(key);
+	}
+
+	/// <summary>Probes the CLI on the host through the caller's client, because 2.x has no --pure or top-level export; empty on failure.
+	/// version_key names the cached version used, for ForgetRemoteOpenCodeVersion when the command then fails.</summary>
+	std::vector<std::string> RemoteOpenCodeHistoryArgv(uam::remote::RunnerClient& client, const ExecutionHost& host,
+	    const fs::path& directory, const ProviderProfile& profile, const std::string& operation, const std::string& id, bool& open_code_v2,
+	    std::string& version_key, std::string& error, std::stop_token stop_token)
+	{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+		std::vector<std::string> command = uam::provider_runtime_internal::SplitInteractiveCommandOrDefault(profile, "opencode");
+		version_key = nlohmann::json({host.id, host.ssh_alias, host.platform, host.runner_directory, host.runner_version, command, uam::paths::Utf8PathString(directory)}).dump();
+		std::optional<std::string> version;
+		{
+			std::lock_guard lock(RemoteOpenCodeVersionMutex());
+			const auto cached = RemoteOpenCodeVersions().find(version_key);
+			if (cached != RemoteOpenCodeVersions().end()) version = cached->second;
+		}
+		if (!version)
+		{
+			std::vector<std::string> probe = command;
+			probe.push_back("--version");
+			const ProcessExecutionResult probed = client.ExecuteCommand("history-version-" + PlatformServicesFactory::Instance().process_service.GenerateUuid(), directory, probe, 10000, stop_token);
+			if (probed.ok) version = uam::cli_versions::ExtractCliReportedVersion(probed.output);
+			if (!version)
+			{
+				if (!stop_token.stop_requested())
+					error = "Remote OpenCode version check failed: " + uam::strings::NonEmptyOrFallback(probed.error,
+					    probed.ok ? std::string("the CLI did not report one clear version, so no history command was sent.") : "exit " + std::to_string(probed.exit_code) + ".");
+				return {};
+			}
+			std::lock_guard lock(RemoteOpenCodeVersionMutex());
+			RemoteOpenCodeVersions()[version_key] = *version;
+		}
+		open_code_v2 = uam::opencode_v2::IsCheckedHistoryV2(*version);
+		try { return uam::opencode_v2::RemoteHistoryArgv(*version, std::move(command), operation, id); }
+		catch (const std::exception& refusal) { error = refusal.what(); return {}; }
+#else
+		(void)client; (void)host; (void)directory; (void)profile; (void)operation; (void)id; (void)open_code_v2; (void)version_key; (void)stop_token;
+		error = "This provider is not included in this build.";
+		return {};
+#endif
+	}
+
 	/// <summary>Session-list metadata cannot establish conversation content for either remote provider.</summary>
 	bool LoadRemoteImportHistory(const ExecutionHost& host, const ProviderProfile& profile,
-	    ChatSession& chat, std::string& error, std::stop_token stop = {})
+	    ChatSession& chat, std::string& error, std::stop_token stop = {}, ChatHistorySyncService::RemoteHistoryScanContext* scan = nullptr)
 	{
 		error.clear();
 		if (stop.stop_requested()) { error = "Remote history import was canceled."; return false; }
@@ -1918,14 +2111,17 @@ namespace
 		bool verified_empty = false;
 		if (chat.provider_id == uam::provider_ids::kOpenCodeCli)
 		{
-			auto history = ChatHistorySyncService().LoadRemoteOpenCodeTranscript(host, chat, profile, stop);
+			auto history = ChatHistorySyncService().LoadRemoteOpenCodeTranscript(host, chat, profile, stop, scan);
 			if (!history.success) { error = uam::strings::NonEmptyOrFallback(std::move(history.error), "Remote OpenCode history could not be verified. Retry the import."); return false; }
+			// A sub-chat is known only by the ID on its parent's task call; its own export must name that parent.
+			if (!chat.native_parent_session_id.empty() && history.parent_session_id != chat.native_parent_session_id)
+			{ error = "OpenCode session " + chat.native_session_id + " does not name the chat that spawned it as its parent."; return false; }
 			verified_empty = history.verified_empty;
 			messages = std::move(history.messages);
 		}
 		else if (chat.provider_id == uam::provider_ids::kCodexCli)
 		{
-			auto history = ChatHistorySyncService().LoadRemoteCodexTranscript(host, chat, stop);
+			auto history = ChatHistorySyncService().LoadRemoteCodexTranscript(host, chat, stop, scan);
 			if (!history.success) { error = uam::strings::NonEmptyOrFallback(std::move(history.error), "Remote Codex history could not be verified. Retry the import."); return false; }
 			verified_empty = !uam::HasImportedConversationContent(history.messages);
 			messages = std::move(history.messages);
@@ -1940,6 +2136,9 @@ namespace
 		chat.messages = std::move(messages);
 		chat.messages_loaded = true;
 		chat.persisted_message_count = chat.messages.size();
+		// A child found through its parent has no listed times.
+		if (chat.created_at.empty()) chat.created_at = chat.messages.front().created_at;
+		if (chat.updated_at.empty()) chat.updated_at = uam::strings::NonEmptyOrFallback(chat.messages.back().created_at, chat.created_at);
 		return true;
 	}
 
@@ -2037,11 +2236,17 @@ namespace
 		native.managed_parent_input_receipts_present = local.managed_parent_input_receipts_present;
 		native.goals = local.goals;
 		native.active_goal_id = local.active_goal_id;
+		native.automation_token_id = local.automation_token_id;
+		native.automation_token_name = local.automation_token_name;
+		native.automation_pending_prompt = local.automation_pending_prompt;
+		native.automation_max_iterations = local.automation_max_iterations;
+		native.automation_git_permission = local.automation_git_permission;
 		native.interaction_at = local.interaction_at;
 		if (!uam::strings::IsBlank(local.last_opened_at))
 		{
 			native.last_opened_at = local.last_opened_at;
 			native.attention_revision = local.attention_revision;
+			native.attention_source = local.attention_source;
 			native.last_stop_reason = local.last_stop_reason;
 			native.goal_command_revision = local.goal_command_revision;
 			native.goal_pending_continuation_id = local.goal_pending_continuation_id;
@@ -2434,7 +2639,7 @@ namespace
 		auto value = nlohmann::json::parse(metadata, nullptr, false);
 		if (!value.is_object()) return {};
 		for (const char* key : {"model_id", "reasoning_effort", "service_tier", "service_tier_explicit", "updated_at",
-		                       "last_opened_at", "interaction_at", "attention_revision", "settled_at", "snoozed_until_ms",
+		                       "last_opened_at", "interaction_at", "attention_revision", "attention_source", "settled_at", "snoozed_until_ms",
 		                       "title", "pinned", "custom_icon", "folder_id"})
 			value.erase(key);
 		return value.dump();
@@ -2800,11 +3005,12 @@ bool ChatHistorySyncService::SaveNativeTranscript(uam::AppState& app, ChatSessio
 	return true;
 }
 
-bool ChatHistorySyncService::SaveChatWithStatus(uam::AppState& app, ChatSession& chat, const std::string& success, const std::string& failure) const
+bool ChatHistorySyncService::SaveChatWithStatus(uam::AppState& app, ChatSession& chat, const std::string& success, const std::string& failure, std::string* refusal_out) const
 {
 	if (uam::AgentRunScheduler::HasUnconfirmedInitialRootPublication(app, chat))
 	{
 		app.status_line = "Wait for the saved request to be confirmed before changing this chat.";
+		if (refusal_out != nullptr) *refusal_out = app.status_line;
 		return false;
 	}
 	if (TerminalMediaColdMetadataSavePending(app, chat))
@@ -2813,6 +3019,7 @@ bool ChatHistorySyncService::SaveChatWithStatus(uam::AppState& app, ChatSession&
 		// Keep the original cold primary intact until final import has its actual
 		// message witness; a later explicit retry saves against completed history.
 		app.status_line = "Final terminal history is being saved. Retry changing this chat after it finishes.";
+		if (refusal_out != nullptr) *refusal_out = app.status_line;
 		return false;
 	}
 	// The mutable cold owner must acknowledge the serializer's actual history metadata.
@@ -2827,10 +3034,11 @@ bool ChatHistorySyncService::SaveChatWithStatus(uam::AppState& app, ChatSession&
 	}
 
 	app.status_line = failure;
+	if (refusal_out != nullptr) *refusal_out = "The chat could not be saved. Try again.";
 	return false;
 }
 
-bool ChatHistorySyncService::RenameChat(uam::AppState& app, ChatSession& chat, const std::string& requested_title) const
+bool ChatHistorySyncService::RenameChat(uam::AppState& app, ChatSession& chat, const std::string& requested_title, std::string* refusal_out) const
 {
 	const std::string previous_title = chat.title;
 	const std::string previous_updated_at = chat.updated_at;
@@ -2839,6 +3047,7 @@ bool ChatHistorySyncService::RenameChat(uam::AppState& app, ChatSession& chat, c
 	if (trimmed_title.empty())
 	{
 		app.status_line = "Chat title is required.";
+		if (refusal_out != nullptr) *refusal_out = app.status_line;
 		return false;
 	}
 
@@ -2851,7 +3060,7 @@ bool ChatHistorySyncService::RenameChat(uam::AppState& app, ChatSession& chat, c
 	chat.updated_at = uam::time::TimestampNow();
 
 	const bool final_save_deferred = TerminalMediaColdMetadataSavePending(app, chat);
-	if (SaveChatWithStatus(app, chat, "Chat title updated.", "Chat title changed in UI, but failed to save."))
+	if (SaveChatWithStatus(app, chat, "Chat title updated.", "Chat title changed in UI, but failed to save.", refusal_out))
 	{
 		return true;
 	}
@@ -2937,6 +3146,10 @@ bool ChatHistorySyncService::AddNativeImportTombstones(
 			const std::string key = chat_identity::NativeIdentityKeyForHistoryImport(chat);
 			if (!retained_keys.contains(key)) candidate_keys.insert(key);
 		}
+		// A parent-owned journal (Claude Code, Gemini or Copilot sub-chat) has no native session ID; its reference ID is
+		// its identity, so a deleted one is recorded under the same key the import checks before bringing it back.
+		else if (chat.imported_read_only && uam::native_agents::ParseHistoryId(chat.id))
+			candidate_keys.insert(chat_identity::NativeChildIdentityKeyForHistoryImport(chat));
 	}
 	if (candidate_keys.empty())
 	{
@@ -3575,17 +3788,17 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportCodexRolloutC
 				continue;
 			}
 			bool malformed = false;
-			std::optional<ChatSession> chat = LoadCodexRolloutChat(it->path(), folder, &malformed, false, {}, true);
+			std::optional<ChatSession> chat = LoadCodexRolloutChat(it->path(), folder, &malformed, CodexSubagentRollouts::Exclude, {}, true);
 			if (chat)
 			{
 				if (import_index.existing_id_by_native_key.contains(chat_identity::NativeIdentityKeyForHistoryImport(*chat)))
 				{
 					const auto owner = CanonicalCodexInputReceiptOwner(app.data_root, import_index, *chat);
-					chat = LoadCodexRolloutChat(it->path(), folder, &malformed, false, {}, false, {}, owner ? &*owner : nullptr);
+					chat = LoadCodexRolloutChat(it->path(), folder, &malformed, CodexSubagentRollouts::Exclude, {}, false, {}, owner ? &*owner : nullptr);
 				}
 				else
 					// Preserve direct-import eligibility and counts without retaining the transcript.
-					chat = LoadCodexRolloutChat(it->path(), folder, &malformed, false, {}, false, [](const Message&) { return true; });
+					chat = LoadCodexRolloutChat(it->path(), folder, &malformed, CodexSubagentRollouts::Exclude, {}, false, [](const Message&) { return true; });
 			}
 			if (malformed) result.Fail("Could not parse Codex history file " + uam::paths::Utf8PathString(it->path()) + ".");
 			if (!chat)
@@ -3667,7 +3880,7 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverPr
 			if (!native_session_filter.empty() && it->path().stem().string() != native_session_filter && provider_filter == uam::provider_ids::kClaudeCli)
 				continue;
 			bool malformed = false;
-			std::optional<ChatSession> chat = LoadCodexRolloutChat(it->path(), folder, &malformed, false, stop_token, true);
+			std::optional<ChatSession> chat = LoadCodexRolloutChat(it->path(), folder, &malformed, CodexSubagentRollouts::SpawnedChildren, stop_token, true);
 			if (malformed) discovery.result.Fail("Could not parse Codex history file " + uam::paths::Utf8PathString(it->path()) + " (unreadable or invalid).");
 			if (chat) discovery.codex_rollouts.emplace_back(std::move(*chat), it->path());
 		}
@@ -3821,8 +4034,11 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverPr
 			std::size_t message_count = 0;
 			bool has_content = false;
 			std::string fallback_title;
+			std::vector<ChatSession> children;
+			std::unordered_set<std::string> seen_children;
 			if (!source || !uam::opencode_import::Read(*source, chat, [&](const Message& message)
 			{
+				AppendNativeChildCandidates(chat, message, children, seen_children);
 				has_content = has_content || uam::HasImportedConversationContent(message);
 				++message_count;
 				if (fallback_title.empty() && message.role == MessageRole::User) fallback_title = uam::BuildImportedChatTitle({message}, "");
@@ -3840,6 +4056,8 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverPr
 			chat.created_at = session.contains("created") && session["created"].is_number_integer() ? IsoTimestampFromEpochMilliseconds(session["created"].get<std::int64_t>()) : "";
 			chat.updated_at = session.contains("updated") && session["updated"].is_number_integer() ? IsoTimestampFromEpochMilliseconds(session["updated"].get<std::int64_t>()) : chat.created_at;
 			discovery.chats.push_back(std::move(chat));
+			// `session list` returns root sessions only, so a child is known only through its parent's task call.
+			for (ChatSession& child : children) discovery.chats.push_back(std::move(child));
 		}
 			}
 		}
@@ -3865,29 +4083,26 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverPr
 	{
 		const fs::path location = uam::paths::NormalizeExistingPath(uam::ResolveImportedWorkspaceFolderDirectory(uam::paths::PathFromUtf8(folder.directory)));
 		// Include registered linked checkouts without parsing unrelated Claude project histories.
-		for (fs::path root = location; !root.empty(); root = root.parent_path())
+		// Only Git registers linked checkouts, so an SVN checkout on the way up does not end the lookup.
+		if (const uam::paths::NearestVcsRoot repository = uam::paths::FindNearestVcsRoot(location, uam::paths::VcsRootKinds::GitOnly); repository.git)
 		{
-			if (uam::paths::PathExistsNoThrow(root / ".git"))
+			const fs::path& root = repository.root;
+			std::error_code error;
+			const fs::path registrations = root / ".git" / "worktrees";
+			for (fs::directory_iterator it(registrations, error), end; !error && it != end; it.increment(error))
 			{
-				std::error_code error;
-				const fs::path registrations = root / ".git" / "worktrees";
-				for (fs::directory_iterator it(registrations, error), end; !error && it != end; it.increment(error))
+				std::string pointer;
+				if (!uam::io::TryReadTextFile(it->path() / "gitdir", pointer, 16384)) continue;
+				const fs::path relative = location.lexically_relative(root);
+				const fs::path linked_root = uam::paths::PathFromUtf8(uam::strings::Trim(pointer)).parent_path();
+				const fs::path linked = relative == "." ? linked_root : linked_root / relative;
+				if (uam::ImportedWorkspaceMatchesFolder(linked, uam::paths::PathFromUtf8(folder.directory)))
 				{
-					std::string pointer;
-					if (!uam::io::TryReadTextFile(it->path() / "gitdir", pointer, 16384)) continue;
-					const fs::path relative = location.lexically_relative(root);
-					const fs::path linked_root = uam::paths::PathFromUtf8(uam::strings::Trim(pointer)).parent_path();
-					const fs::path linked = relative == "." ? linked_root : linked_root / relative;
-					if (uam::ImportedWorkspaceMatchesFolder(linked, uam::paths::PathFromUtf8(folder.directory)))
-					{
-						project_names.insert(encode_project(uam::paths::Utf8PathString(linked.lexically_normal())));
-						const fs::path alias = uam::paths::PathFromUtf8(folder.directory) / linked.lexically_relative(location);
-						project_names.insert(encode_project(uam::paths::Utf8PathString(alias.lexically_normal())));
-					}
+					project_names.insert(encode_project(uam::paths::Utf8PathString(linked.lexically_normal())));
+					const fs::path alias = uam::paths::PathFromUtf8(folder.directory) / linked.lexically_relative(location);
+					project_names.insert(encode_project(uam::paths::Utf8PathString(alias.lexically_normal())));
 				}
-				break;
 			}
-			if (root == root.parent_path()) break;
 		}
 	}
 	fs::path project;
@@ -3932,6 +4147,14 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverPr
 	}
 	}
 #endif
+	if (native_session_filter.empty() && native_history_root.empty())
+	{
+		// Claude, Gemini and Copilot parents are read in full here, so their spawn calls already name each child journal.
+		std::vector<ChatSession> children;
+		for (const ChatSession& chat : discovery.chats)
+			if (chat.messages_loaded && chat.native_parent_session_id.empty()) AppendNativeChildCandidates(chat, children);
+		for (ChatSession& child : children) discovery.chats.push_back(std::move(child));
+	}
 	if (!native_session_filter.empty())
 	{
 		std::erase_if(discovery.chats, [&](const ChatSession& chat) { return chat.native_session_id != native_session_filter; });
@@ -3967,16 +4190,18 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredPro
 		{
 			bool malformed = false;
 			rollout_file = discovery.codex_rollouts[index - discovery.chats.size()].second;
-			rollout = LoadCodexRolloutChat(rollout_file, folder, &malformed, false, {}, true);
+			rollout = LoadCodexRolloutChat(rollout_file, folder, &malformed, CodexSubagentRollouts::Exclude, {}, true);
 			if (rollout && import_index.existing_id_by_native_key.contains(chat_identity::NativeIdentityKeyForHistoryImport(*rollout)))
 			{
 				const auto owner = CanonicalCodexInputReceiptOwner(app.data_root, import_index, *rollout);
-				rollout = LoadCodexRolloutChat(rollout_file, folder, &malformed, false, {}, false, {}, owner ? &*owner : nullptr);
+				rollout = LoadCodexRolloutChat(rollout_file, folder, &malformed, CodexSubagentRollouts::Exclude, {}, false, {}, owner ? &*owner : nullptr);
 			}
 			if (malformed) result.Fail("Codex history is unreadable, invalid, or exceeds import limits.");
 			if (!rollout) continue;
 		}
 		ChatSession& chat = rollout ? *rollout : discovery.chats[index];
+		// A native child is imported only as a sub-chat through the reviewed import, never as a top-level chat here.
+		if (!chat.native_parent_session_id.empty()) continue;
 		if (uam::paths::IsControllerLocalWorkspace(chat) && chat.messages_loaded && !uam::HasImportedConversationContent(chat.messages)) continue;
 		if (const ChatFolder* owner = uam::FindImportedWorkspaceFolder(app.folders, uam::paths::PathFromUtf8(chat.workspace_directory)))
 		{
@@ -4146,12 +4371,23 @@ const ChatFolder* ChatHistorySyncService::PlanImportWorkspace(uam::AppState& pla
 	return ChatDomainService().FindFolderById(plan, ResolvePersistedImportFolderIdForSource(plan, source, false));
 }
 
+ChatHistorySyncService::RemoteHistoryScanContext::RemoteHistoryScanContext(const ExecutionHost& host)
+    : client(std::make_shared<uam::remote::RunnerClient>(PlatformServicesFactory::Instance().process_service, host))
+{
+}
+
 ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverRemoteProviderChatsForFolder(
-    const ChatFolder& folder, const ExecutionHost& host, const ProviderProfile* open_code_profile, std::stop_token stop_token) const
+    const ChatFolder& folder, const ExecutionHost& host, const ProviderProfile* open_code_profile, std::stop_token stop_token, RemoteHistoryScanContext* scan) const
 {
 	LocalHistoryDiscovery discovery;
 	if (host.transport != "ssh" || host.runner_status != "ready" || folder.execution_host_id != host.id ||
 	    !uam::execution_hosts::IsAbsoluteRemotePath(host.platform, folder.directory) || stop_token.stop_requested()) return discovery;
+	std::optional<RemoteHistoryScanContext> owned_scan;
+	RemoteHistoryScanContext& host_scan = scan != nullptr ? *scan : owned_scan.emplace(host);
+	const auto report_discovery_error = [&](const std::string& error)
+	{
+		if (!error.empty()) discovery.result.Fail(host_scan.connect_failed ? "Remote history on " + host.id + " was not scanned: " + error : error);
+	};
 	const auto append = [&](const std::string& id, const std::string& title, const std::string& directory,
 	    const std::string& provider, const std::string& created, const std::string& updated)
 	{
@@ -4173,38 +4409,55 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverRe
 	};
 	if (open_code_profile != nullptr && ProviderRuntime::IsRuntimeEnabled(*open_code_profile))
 	{
-		const RemoteOpenCodeDiscovery remote = DiscoverRemoteOpenCodeSessions(folder, host, *open_code_profile, stop_token);
-		if (!remote.error.empty()) discovery.result.Fail(remote.error);
+		const RemoteOpenCodeDiscovery remote = DiscoverRemoteOpenCodeSessions(folder, host, *open_code_profile, stop_token, &host_scan);
+		report_discovery_error(remote.error);
 		for (const RemoteOpenCodeSession& session : remote.sessions)
-			if (uam::execution_hosts::IsPortableId(session.id)) append(session.id, session.title, session.directory,
-			    uam::provider_ids::kOpenCodeCli, IsoTimestampFromEpochMilliseconds(session.created_epoch_ms), IsoTimestampFromEpochMilliseconds(session.updated_epoch_ms));
+		{
+			if (!uam::execution_hosts::IsPortableId(session.id)) continue;
+			const std::size_t before = discovery.chats.size();
+			// A list without timestamps reads as unknown age, as the local reader treats it.
+			append(session.id, session.title, session.directory, uam::provider_ids::kOpenCodeCli,
+			    session.created_epoch_ms > 0 ? IsoTimestampFromEpochMilliseconds(session.created_epoch_ms) : std::string{},
+			    session.updated_epoch_ms > 0 ? IsoTimestampFromEpochMilliseconds(session.updated_epoch_ms) : std::string{});
+			if (session.open_code_v2 && discovery.chats.size() > before) discovery.chats.back().opencode_v2_session_id = session.id;
+		}
 	}
-	if (!stop_token.stop_requested() && ProviderRuntime::IsRuntimeEnabled(uam::provider_ids::kCodexCli))
+	if (!stop_token.stop_requested() && !host_scan.connect_failed && ProviderRuntime::IsRuntimeEnabled(uam::provider_ids::kCodexCli))
 	{
-		const RemoteCodexDiscovery remote = DiscoverRemoteCodexSessions(host, folder, stop_token);
-		if (!remote.error.empty()) discovery.result.Fail(remote.error);
+		const RemoteCodexDiscovery remote = DiscoverRemoteCodexSessions(host, folder, stop_token, &host_scan);
+		report_discovery_error(remote.error);
 		for (const RemoteCodexSession& session : remote.sessions)
 		{
 			const std::string id = uam::codex::ValidThreadIdOrEmpty(session.id);
-			if (!id.empty()) append(id, session.title, session.directory, uam::provider_ids::kCodexCli,
+			if (id.empty()) continue;
+			const std::size_t before = discovery.chats.size();
+			append(id, session.title, session.directory, uam::provider_ids::kCodexCli,
 			    IsoTimestampFromEpochSeconds(session.created_epoch_seconds), IsoTimestampFromEpochSeconds(session.updated_epoch_seconds));
+			if (discovery.chats.size() > before) discovery.chats.back().native_parent_session_id = session.parent_thread_id;
 		}
 	}
 	const ProviderProfile profile = open_code_profile ? *open_code_profile : ProviderProfileStore::DefaultOpenCodeProfile();
 	std::vector<ChatSession> verified;
 	for (ChatSession& chat : discovery.chats)
 	{
-		if (stop_token.stop_requested()) break;
+		if (stop_token.stop_requested() || host_scan.connect_failed) break;
+		// A sub-chat is read only when its parent is selected for import.
+		if (!chat.native_parent_session_id.empty()) { verified.push_back(std::move(chat)); continue; }
 		std::string error;
-		if (LoadRemoteImportHistory(host, profile, chat, error, stop_token))
+		if (LoadRemoteImportHistory(host, profile, chat, error, stop_token, &host_scan))
 		{
+			// OpenCode lists root sessions only, so a child is known only through its parent's task call.
+			std::vector<ChatSession> children;
+			AppendNativeChildCandidates(chat, children);
 			UnloadPersistedTranscript(chat);
 			verified.push_back(std::move(chat));
+			for (ChatSession& child : children) verified.push_back(std::move(child));
 		}
 		// Native session and host identity make a repeating startup cohort verifiable from the log alone.
 		else if (!error.empty()) discovery.result.Fail(chat.provider_id + " session " + chat.native_session_id + " on " + host.id + ": " + error);
 	}
 	discovery.chats = std::move(verified);
+	discovery.remote_host_unreachable = host_scan.connect_failed;
 	return discovery;
 }
 
@@ -4241,6 +4494,59 @@ bool ChatHistorySyncService::FilterStartupImportCandidates(const uam::AppState& 
 	});
 	std::erase_if(discovery.codex_rollouts, [&](std::pair<ChatSession, fs::path>& record) { return reject(record.first); });
 	return true;
+}
+
+namespace
+{
+	/// Reads a controller-local sub-chat for the staged import. A journal (Claude, Gemini, Copilot) is read through the
+	/// same reader an explicit open uses, which checks that it names this parent, agent and workspace; an OpenCode child
+	/// is exported so the staged save can check its own parent ID. Codex children already carry their rollout.
+	bool LoadLocalNativeChildForImport(ChatHistorySyncService::PreparedHistoryChat& candidate, const ProviderProfile& open_code_profile, std::stop_token stop)
+	{
+		ChatSession& chat = candidate.chat;
+		const auto fail = [&](const std::string& reason)
+		{
+			candidate.error = "Sub-chat \"" + uam::strings::SafeLine(chat.title, 120, true) + "\" was not imported: " + reason;
+			return false;
+		};
+		if (!chat.imported_read_only)
+		{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+			if (chat.provider_id != uam::provider_ids::kOpenCodeCli || !candidate.codex_rollout.empty()) return true;
+			if (candidate.open_code_export) return true;
+			uam::ProviderWorkerInvocation exported;
+			exported.direct_process = true;
+			exported.argv = ProviderRuntimeRegistry::Resolve(open_code_profile).BuildLocalNativeExportArgv(open_code_profile, chat);
+			std::string error;
+			candidate.open_code_export = uam::opencode_import::Export(std::move(exported), uam::paths::PathFromUtf8(chat.workspace_directory), stop, error);
+			return candidate.open_code_export ? true : fail(error);
+#else
+			(void)open_code_profile;
+			return true;
+#endif
+		}
+		ChatSession parent = NativeChildParentIdentity(chat, chat.native_parent_session_id);
+		parent.id = chat.subagent_parent_chat_id;
+		parent.created_at = chat.subagent_parent_created_at;
+		std::string error;
+		std::optional<ChatSession> loaded = uam::native_agents::LoadHistory(parent, chat.id, std::nullopt, &error, stop);
+		if (!loaded) return fail(uam::strings::NonEmptyOrFallback(error, "its native transcript is unavailable."));
+		if (loaded->id != chat.id || !loaded->imported_read_only || !loaded->native_session_id.empty() || loaded->parent_chat_id != chat.native_parent_session_id)
+			return fail("its native transcript belongs to a different parent.");
+		// ponytail: a journal with inline images needs the passive media save; it stays openable from its parent's tool call until import shares that route.
+		if (HasLocalDiscoveredPendingOriginals(*loaded)) return fail("it contains inline images. Open it from its parent chat instead.");
+		loaded->folder_id = chat.folder_id;
+		loaded->subagent_parent_chat_id = chat.subagent_parent_chat_id;
+		loaded->subagent_parent_created_at = chat.subagent_parent_created_at;
+		loaded->native_parent_session_id = chat.native_parent_session_id;
+		// The same known-empty passive archive and derived counts an explicit open of a fresh journal saves.
+		loaded->persisted_message_count = loaded->messages.size();
+		loaded->persisted_messages_digest = loaded->updated_at + ":" + std::to_string(loaded->persisted_message_count);
+		loaded->passive_queued_prompt_archive = ChatRepository::ParsePassiveQueuedPromptArchive(nlohmann::json{{"id", loaded->id}}.dump(), loaded->id);
+		if (!loaded->passive_queued_prompt_archive) return fail("its history archive could not be prepared.");
+		chat = std::move(*loaded);
+		return true;
+	}
 }
 
 ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredProviderChatsBatch(uam::AppState& app, const ChatFolder& folder, LocalHistoryDiscovery& discovery, std::size_t max_chats, ImportPolicy policy) const
@@ -4318,7 +4624,7 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredPro
 		{
 			const ChatFolder* owner = policy == ImportPolicy::SelectedNewChatsOnly ? StartupImportWorkspaceOwner(selected_scope, candidate.chat) : nullptr;
 			const ExecutionHost* host = candidate.expected_host ? uam::execution_hosts::Find(app.settings.execution_hosts, candidate.expected_host->id) : nullptr;
-			return candidate.skipped || (!candidate.files && !candidate.native_media) || tombstones.keys.contains(chat_identity::NativeIdentityKeyForHistoryImport(candidate.chat)) || (policy == ImportPolicy::SelectedNewChatsOnly && StartupCandidateIsOwned(app, current_index, candidate.chat)) || (candidate.expected_host && (host == nullptr || host->runner_status != "ready" || !uam::execution_hosts::SameConnection(*candidate.expected_host, *host))) ||
+			return candidate.skipped || (!candidate.files && !candidate.native_media) || tombstones.keys.contains(chat_identity::NativeChildIdentityKeyForHistoryImport(candidate.chat)) || (policy == ImportPolicy::SelectedNewChatsOnly && StartupCandidateIsOwned(app, current_index, candidate.chat)) || (candidate.expected_host && (host == nullptr || host->runner_status != "ready" || !uam::execution_hosts::SameConnection(*candidate.expected_host, *host))) ||
 			       (candidate.expected_folder &&
 			        [&]()
 			        {
@@ -4348,9 +4654,15 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredPro
 		{
 			if (candidate.skipped)
 				continue;
-			if (tombstones.keys.contains(chat_identity::NativeIdentityKeyForHistoryImport(candidate.chat))) continue;
+			if (tombstones.keys.contains(chat_identity::NativeChildIdentityKeyForHistoryImport(candidate.chat))) continue;
 			const auto current_identity = current_index.existing_id_by_native_key.find(chat_identity::NativeIdentityKeyForHistoryImport(candidate.chat));
 			if (current_identity != current_index.existing_id_by_native_key.end() && current_identity->second != candidate.chat.id) continue;
+			// A new sub-chat is published only under the parent it was linked to; that parent precedes it in this batch.
+			if (!candidate.expected_live && !candidate.chat.subagent_parent_chat_id.empty())
+			{
+				const ChatSession* parent = ChatDomainService().FindChatById(app, candidate.chat.subagent_parent_chat_id);
+				if (parent == nullptr || parent->created_at != candidate.chat.subagent_parent_created_at) continue;
+			}
 			const ChatFolder* destination = ChatDomainService().FindFolderById(app, candidate.chat.folder_id);
 			if (destination == nullptr || (policy == ImportPolicy::SelectedNewChatsOnly
 			    ? StartupImportWorkspaceOwner(app, candidate.chat) != destination
@@ -4487,6 +4799,8 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredPro
 		}
 	}
 
+	// Parents admitted by this call, for the children that follow them before either is published.
+	std::unordered_map<std::string, ChatSession> admitted_parents;
 	for (std::size_t count = 0; (!discovery.chats.empty() || !discovery.codex_rollouts.empty()) && count < max_chats; ++count)
 	{
 		PreparedHistoryChat ordinary_candidate;
@@ -4549,10 +4863,14 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredPro
 			candidate.expected_host = *current;
 			candidate.expected_folder = *owner;
 		}
-		const std::string key = chat_identity::NativeIdentityKeyForHistoryImport(chat);
+		// A parent-owned agent journal has no native session ID; its reference ID is its whole identity.
+		const bool passive_child = chat.imported_read_only && uam::strings::IsBlank(chat.native_session_id);
+		const std::string key = chat_identity::NativeChildIdentityKeyForHistoryImport(chat);
 		const auto existing = index.existing_id_by_native_key.find(key);
 		if (index.tombstoned_native_keys.contains(key)) continue;
 		if (policy == ImportPolicy::SelectedNewChatsOnly && StartupCandidateIsOwned(app, index, chat)) continue;
+		// An already saved journal keeps its transcript; only an explicit refresh may replace it.
+		if (passive_child && (existing != index.existing_id_by_native_key.end() || index.existing_ids.contains(chat.id))) continue;
 		if (existing != index.existing_id_by_native_key.end())
 		{
 			chat.id = existing->second;
@@ -4560,6 +4878,17 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredPro
 			if (live != nullptr && ChatNeedsTranscriptPreserved(app, *live)) continue;
 		}
 		else if (index.existing_ids.contains(chat.id)) chat.id = MakeCollisionSafeImportedChatId(chat, index.existing_ids);
+		if (!uam::strings::IsBlank(chat.native_parent_session_id) && existing == index.existing_id_by_native_key.end())
+		{
+			// A native child is a sub-chat of its parent or it is not imported: the parent is admitted first, so a
+			// parent that is missing, deleted or declined leaves the child for a later scan.
+			const auto parent_id = index.existing_id_by_native_key.find(chat_identity::NativeParentIdentityKeyForHistoryImport(chat));
+			const ChatSession* parent = parent_id == index.existing_id_by_native_key.end() ? nullptr : ChatDomainService().FindChatById(app, parent_id->second);
+			const auto admitted = parent_id == index.existing_id_by_native_key.end() ? admitted_parents.end() : admitted_parents.find(parent_id->second);
+			if (parent == nullptr && admitted != admitted_parents.end()) parent = &admitted->second;
+			if (parent == nullptr || !ChatRepository::ApplyImportedNativeChildLineage(*parent, chat)) continue;
+			chat.folder_id = parent->folder_id;
+		}
 		if (chat.folder_id.empty())
 		{
 			if (!uam::paths::PathFromUtf8(chat.workspace_directory).is_absolute()) { result.Fail("Provider history has no absolute workspace."); continue; }
@@ -4577,6 +4906,14 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredPro
 		}
 		if (chat.parent_chat_id.empty()) chat.branch_root_chat_id = chat.id;
 		candidate.chat = std::move(chat);
+		if (!candidate.chat.imported_read_only && !candidate.chat.native_session_id.empty())
+		{
+			ChatSession identity = NativeChildParentIdentity(candidate.chat, candidate.chat.native_session_id);
+			identity.id = candidate.chat.id;
+			identity.created_at = candidate.chat.created_at;
+			identity.folder_id = candidate.chat.folder_id;
+			admitted_parents.insert_or_assign(identity.id, std::move(identity));
+		}
 		index.existing_ids.insert(candidate.chat.id);
 		index.existing_id_by_native_key[key] = candidate.chat.id;
 		index.existing_summary_by_native_key[key].id = candidate.chat.id;
@@ -4642,6 +4979,13 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredPro
 					                                   candidate.confirmed_empty = candidate.error.empty() && !stop.stop_requested();
 					                                   continue;
 				                                   }
+				                                   // A sub-chat named by its parent's spawn call is first read here, and only as that parent's child.
+				                                   if (!candidate.expected_live && !candidate.chat.native_parent_session_id.empty() && !candidate.chat.messages_loaded &&
+				                                       uam::paths::IsControllerLocalWorkspace(candidate.chat) && !LoadLocalNativeChildForImport(candidate, profile, stop))
+				                                   {
+					                                   candidate.skipped = true;
+					                                   continue;
+				                                   }
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 				                                   if (candidate.open_code_export)
 				                                   {
@@ -4682,7 +5026,7 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredPro
 					                                   bool malformed = false;
 					                                   const auto receipt_owner = candidate.expected_live
 					                                       ? ChatRepository::LoadLocalChat(root, candidate.expected_live->id, true) : std::nullopt;
-					                                   std::optional<ChatSession> loaded = LoadCodexRolloutChat(candidate.codex_rollout, source, &malformed, false, {}, false, {}, receipt_owner ? &*receipt_owner : nullptr);
+					                                   std::optional<ChatSession> loaded = LoadCodexRolloutChat(candidate.codex_rollout, source, &malformed, CodexSubagentRollouts::Exclude, {}, false, {}, receipt_owner ? &*receipt_owner : nullptr);
 					                                   if (!loaded || loaded->native_session_id != candidate.chat.native_session_id)
 					                                   {
 						                                   candidate.skipped = true;
@@ -4767,22 +5111,27 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportProviderChats
 }
 
 ChatHistorySyncService::RemoteOpenCodeDiscovery ChatHistorySyncService::DiscoverRemoteOpenCodeSessions(
-	    const ChatFolder& folder, const ExecutionHost& host, const ProviderProfile& profile, std::stop_token stop_token) const
+	    const ChatFolder& folder, const ExecutionHost& host, const ProviderProfile& profile, std::stop_token stop_token, RemoteHistoryScanContext* scan) const
 	{
 		RemoteOpenCodeDiscovery result;
-		uam::remote::RunnerClient client(
-		    PlatformServicesFactory::Instance().process_service,
-		    host);
+		RemoteHistoryClient history_client(host, scan);
+		uam::remote::RunnerClient& client = history_client.Get();
 		if (stop_token.stop_requested()) return result;
-		if (!client.Connect(&result.error)) return result;
+		if (!history_client.Connect(&result.error, stop_token)) return result;
+		const fs::path directory = uam::paths::PathFromUtf8(folder.directory);
+		bool open_code_v2 = false;
+		std::string version_key;
+		const std::vector<std::string> argv = RemoteOpenCodeHistoryArgv(client, host, directory, profile, "list", {}, open_code_v2, version_key, result.error, stop_token);
+		if (argv.empty())
+		{
+			if (stop_token.stop_requested()) result.error = "Remote OpenCode discovery cancelled.";
+			return result;
+		}
 		std::string session_id = "history-" +
 		    PlatformServicesFactory::Instance().process_service.GenerateUuid();
 		if (session_id == "history-")
 			session_id += uam::time::SteadyEpochNanosecondsTokenNow();
-		if (!client.StartProcess(
-		        session_id, uam::paths::PathFromUtf8(folder.directory),
-		        ProviderRuntimeRegistry::Resolve(profile).BuildNativeDiscoveryArgv(profile),
-		        {}, &result.error) || !client.CloseProcessInput(session_id, &result.error))
+		if (!client.StartProcess(session_id, directory, argv, {}, &result.error) || !client.CloseProcessInput(session_id, &result.error))
 		{
 			(void)client.StopProcess(session_id);
 			(void)client.RemoveProcess(session_id);
@@ -4811,35 +5160,15 @@ ChatHistorySyncService::RemoteOpenCodeDiscovery ChatHistorySyncService::Discover
 				(void)client.RemoveProcess(session_id);
 				if (polled.exit_code != 0)
 				{
+					ForgetRemoteOpenCodeVersion(version_key);
 					result.error = "Remote OpenCode session discovery failed (exit " +
 					               std::to_string(polled.exit_code) + "): " +
 					               uam::strings::NonEmptyOrFallback(
 					                   uam::strings::Trim(diagnostic), uam::strings::Trim(output));
 					return result;
 				}
-				const nlohmann::json values = nlohmann::json::parse(output, nullptr, false);
-				if (!values.is_array() || values.size() > 200)
-				{
-					result.error = "Remote OpenCode returned an invalid bounded session list.";
-					return result;
-				}
-				for (const nlohmann::json& value : values)
-				{
-					if (!value.is_object() || !value.contains("id") || !value["id"].is_string() ||
-					    !value.contains("title") || !value["title"].is_string() ||
-					    !value.contains("directory") || !value["directory"].is_string() ||
-					    !value.contains("created") || !value["created"].is_number_integer() ||
-					    !value.contains("updated") || !value["updated"].is_number_integer())
-					{
-						result.sessions.clear();
-						result.error = "Remote OpenCode returned malformed session metadata.";
-						return result;
-					}
-					result.sessions.push_back({
-					    value["id"].get<std::string>(), value["title"].get<std::string>(),
-					    value["directory"].get<std::string>(), value["created"].get<std::int64_t>(),
-					    value["updated"].get<std::int64_t>()});
-				}
+				result = ParseRemoteOpenCodeSessionList(output, open_code_v2);
+				if (!result.error.empty()) ForgetRemoteOpenCodeVersion(version_key);
 				return result;
 			}
 			std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -4849,6 +5178,43 @@ ChatHistorySyncService::RemoteOpenCodeDiscovery ChatHistorySyncService::Discover
 		(void)client.RemoveProcess(session_id);
 		return result;
 	}
+
+ChatHistorySyncService::RemoteOpenCodeDiscovery ChatHistorySyncService::ParseRemoteOpenCodeSessionList(std::string_view output, bool open_code_v2)
+{
+	RemoteOpenCodeDiscovery result;
+	nlohmann::json values = nlohmann::json::parse(output, nullptr, false);
+	if (!values.is_array() || values.size() > 200)
+	{
+		result.error = "Remote OpenCode returned an invalid bounded session list.";
+		return result;
+	}
+	const auto malformed = [&result]()
+	{
+		result.sessions.clear();
+		result.error = "Remote OpenCode returned malformed session metadata.";
+		return result;
+	};
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	if (open_code_v2)
+	{
+		try { uam::opencode_v2::NormalizeHistoryList(values); }
+		catch (const std::exception&) { return malformed(); }
+	}
+#endif
+	const auto epoch = [](const nlohmann::json& value, const char* key)
+	{
+		return value.contains(key) && value[key].is_number_integer() ? value[key].get<std::int64_t>() : std::int64_t{0};
+	};
+	for (const nlohmann::json& value : values)
+	{
+		// Only identity and workspace are required: untitled sessions are valid, and the caller names them.
+		if (!value.is_object() || !value.contains("id") || !value["id"].is_string() ||
+		    !value.contains("directory") || !value["directory"].is_string()) return malformed();
+		result.sessions.push_back({value["id"].get<std::string>(), std::string(uam::nlohmann_json::StringViewOrEmpty(value, "title")),
+		    value["directory"].get<std::string>(), epoch(value, "created"), epoch(value, "updated"), open_code_v2});
+	}
+	return result;
+}
 
 ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportRemoteOpenCodeChatsForFolder(
     uam::AppState& app, const std::string& folder_id,
@@ -4966,6 +5332,7 @@ try
 	const nlohmann::json& session_info = root["info"];
 	result.session_id = session_info.value("id", "");
 	result.directory = session_info.value("directory", "");
+	if (session_info.contains("parentID") && session_info["parentID"].is_string()) result.parent_session_id = session_info["parentID"].get<std::string>();
 	if (result.session_id.empty() || result.directory.empty())
 	{
 		result.error = "OpenCode export omitted the session identity or workspace.";
@@ -5270,7 +5637,7 @@ std::optional<ChatSession> ChatHistorySyncService::LoadLocalCodexChildChat(const
 	folder.id = chat.folder_id;
 	folder.directory = chat.workspace_directory;
 	bool malformed = false;
-	std::optional<ChatSession> loaded = LoadCodexRolloutChat(*rollout, folder, &malformed, true, {}, false, {}, &chat);
+	std::optional<ChatSession> loaded = LoadCodexRolloutChat(*rollout, folder, &malformed, CodexSubagentRollouts::All, {}, false, {}, &chat);
 	if (malformed)
 	{
 		if (error != nullptr) *error = "Codex history is incomplete or could not be read. Try again.";
@@ -5324,7 +5691,7 @@ ChatHistorySyncService::RemoteOpenCodeTranscript ChatHistorySyncService::LoadLoc
 
 ChatHistorySyncService::RemoteOpenCodeTranscript
 ChatHistorySyncService::LoadRemoteOpenCodeTranscript(
-    const ExecutionHost& host, const ChatSession& chat, const ProviderProfile& profile, std::stop_token stop_token) const
+    const ExecutionHost& host, const ChatSession& chat, const ProviderProfile& profile, std::stop_token stop_token, RemoteHistoryScanContext* scan) const
 {
 	RemoteOpenCodeTranscript result;
 	if (stop_token.stop_requested())
@@ -5339,18 +5706,21 @@ ChatHistorySyncService::LoadRemoteOpenCodeTranscript(
 		result.error = "The remote OpenCode session is not ready to load.";
 		return result;
 	}
-	uam::remote::RunnerClient client(
-	    PlatformServicesFactory::Instance().process_service,
-	    host);
-	if (!client.Connect(&result.error)) return result;
-	if (stop_token.stop_requested())
+	RemoteHistoryClient history_client(host, scan);
+	uam::remote::RunnerClient& client = history_client.Get();
+	const auto canceled = [&]()
 	{
 		result.error = "Remote OpenCode transcript loading was canceled.";
 		return result;
-	}
+	};
+	if (!history_client.Connect(&result.error, stop_token)) return stop_token.stop_requested() ? canceled() : result;
+	if (stop_token.stop_requested()) return canceled();
 	const std::string process_id = "history-export-" +
 	    PlatformServicesFactory::Instance().process_service.GenerateUuid();
-	std::vector<std::string> argv = ProviderRuntimeRegistry::Resolve(profile).BuildNativeExportArgv(profile, chat);
+	bool open_code_v2 = false;
+	std::string version_key;
+	std::vector<std::string> argv = RemoteOpenCodeHistoryArgv(client, host, uam::paths::PathFromUtf8(chat.workspace_directory), profile, "export", chat.native_session_id, open_code_v2, version_key, result.error, stop_token);
+	if (argv.empty()) return stop_token.stop_requested() ? canceled() : result;
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 	if (host.platform != "windows" && host.platform != "Windows") argv = uam::opencode_v2::FileBackedStdoutArgv(std::move(argv));
 #endif
@@ -5388,12 +5758,25 @@ ChatHistorySyncService::LoadRemoteOpenCodeTranscript(
 			(void)client.RemoveProcess(process_id);
 			if (polled.exit_code != 0)
 			{
+				ForgetRemoteOpenCodeVersion(version_key);
 				result.error = "OpenCode could not export the remote session (exit " +
 				               std::to_string(polled.exit_code) + "): " +
 				               uam::strings::NonEmptyOrFallback(
 				                   uam::strings::Trim(diagnostic), uam::strings::Trim(output));
 				return result;
 			}
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+			if (open_code_v2)
+			{
+				try { output = uam::opencode_v2::NormalizeExport(nlohmann::json::parse(output)).dump(); }
+				catch (const std::exception& refusal)
+				{
+					ForgetRemoteOpenCodeVersion(version_key);
+					result.error = std::string("OpenCode returned an unreadable remote export: ") + refusal.what();
+					return result;
+				}
+			}
+#endif
 			result = ParseRemoteOpenCodeTranscript(output);
 			if (result.success &&
 			    (result.session_id != chat.native_session_id ||
@@ -5443,17 +5826,27 @@ bool ChatHistorySyncService::AppendRemoteCodexSessions(
 			if (error != nullptr) *error = "Codex returned an invalid thread identity or workspace.";
 			return false;
 		}
-		if ((value.contains("ephemeral") && value["ephemeral"].is_boolean() &&
-		     value["ephemeral"].get<bool>()) ||
-		    (value.contains("parentThreadId") && value["parentThreadId"].is_string() &&
-		     !uam::strings::IsBlank(value["parentThreadId"].get_ref<const std::string&>())))
-			continue;
+		if (value.contains("ephemeral") && value["ephemeral"].is_boolean() && value["ephemeral"].get<bool>()) continue;
+		// A spawned subagent thread names its parent; it imports only as that thread's sub-chat. One whose parent
+		// is not a valid thread ID stays out, as every parented thread did before.
+		std::string parent;
+		if (value.contains("parentThreadId") && value["parentThreadId"].is_string() && !uam::strings::IsBlank(value["parentThreadId"].get_ref<const std::string&>()))
+		{
+			parent = uam::codex::ValidThreadIdOrEmpty(value["parentThreadId"].get<std::string>());
+			// Same rule as the rollout reader: only a thread its parent spawned, never a review, compaction or forked thread.
+			const auto source = value.find("source");
+			const auto subagent = source != value.end() && source->is_object() ? source->find("subAgent") : value.end();
+			const bool spawned = source != value.end() && source->is_object() && subagent != source->end() && subagent->is_object() &&
+			    subagent->contains("thread_spawn") && (*subagent)["thread_spawn"].is_object();
+			if (!spawned || parent.empty() || uam::codex::ThreadIdKey(parent) == uam::codex::ThreadIdKey(id)) continue;
+		}
 		if (std::ranges::any_of(sessions, [&id](const RemoteCodexSession& session)
 		    { return session.id == id; }))
 			continue;
 		RemoteCodexSession session;
 		session.id = id;
 		session.directory = directory;
+		session.parent_thread_id = std::move(parent);
 		if (value.contains("name") && value["name"].is_string())
 			session.title = value["name"].get<std::string>();
 		if (uam::strings::IsBlank(session.title))
@@ -5481,7 +5874,7 @@ bool ChatHistorySyncService::AppendRemoteCodexSessions(
 
 ChatHistorySyncService::RemoteCodexDiscovery
 ChatHistorySyncService::DiscoverRemoteCodexSessions(
-    const ExecutionHost& host, const ChatFolder& folder, std::stop_token stop_token) const
+    const ExecutionHost& host, const ChatFolder& folder, std::stop_token stop_token, RemoteHistoryScanContext* scan) const
 {
 	RemoteCodexDiscovery discovery;
 #if UAM_ENABLE_RUNTIME_CODEX_CLI
@@ -5491,10 +5884,9 @@ ChatHistorySyncService::DiscoverRemoteCodexSessions(
 		discovery.error = "The remote Codex workspace is not ready to scan.";
 		return discovery;
 	}
-	uam::remote::RunnerClient client(
-	    PlatformServicesFactory::Instance().process_service,
-	    host);
-	if (!client.Connect(&discovery.error)) return discovery;
+	RemoteHistoryClient history_client(host, scan);
+	uam::remote::RunnerClient& client = history_client.Get();
+	if (!history_client.Connect(&discovery.error, stop_token)) return discovery;
 	for (const bool archived : {false, true})
 	{
 		const std::size_t remaining = kRemoteCodexMaxSessions - discovery.sessions.size();
@@ -5509,10 +5901,31 @@ ChatHistorySyncService::DiscoverRemoteCodexSessions(
 		    !AppendRemoteCodexSessions(list_result, discovery.sessions, &discovery.error))
 			return discovery;
 	}
+	// The default listing leaves subagent threads out. Ask for spawned ones separately; a Codex that refuses the
+	// filter still imports its root threads, so this listing never fails the scan.
+	for (const bool archived : {false, true})
+	{
+		const std::size_t remaining = kRemoteCodexMaxSessions - discovery.sessions.size();
+		if (remaining == 0 || stop_token.stop_requested()) break;
+		nlohmann::json list_result;
+		nlohmann::json params{
+		    {"archived", archived}, {"cwd", folder.directory},
+		    {"limit", remaining}, {"sortKey", "updated_at"},
+		    {"sortDirection", "desc"}};
+		params["sourceKinds"] = nlohmann::json::array({"subAgentThreadSpawn"});
+		std::string ignored;
+		std::vector<RemoteCodexSession> children;
+		if (!RunRemoteCodexRpc(client, uam::paths::PathFromUtf8(folder.directory), "thread/list", params, list_result, ignored, stop_token) ||
+		    !AppendRemoteCodexSessions(list_result, children, &ignored)) break;
+		for (RemoteCodexSession& child : children)
+			if (!child.parent_thread_id.empty() && std::ranges::none_of(discovery.sessions, [&](const RemoteCodexSession& session) { return session.id == child.id; }))
+				discovery.sessions.push_back(std::move(child));
+	}
 #else
 	(void)host;
 	(void)folder;
 	(void)stop_token;
+	(void)scan;
 	discovery.error = "This provider is not included in this build.";
 #endif
 	return discovery;
@@ -5830,7 +6243,7 @@ catch (const nlohmann::json::exception&)
 
 ChatHistorySyncService::RemoteCodexTranscript
 ChatHistorySyncService::LoadRemoteCodexTranscript(
-    const ExecutionHost& host, const ChatSession& chat, std::stop_token stop_token) const
+    const ExecutionHost& host, const ChatSession& chat, std::stop_token stop_token, RemoteHistoryScanContext* scan) const
 {
 	RemoteCodexTranscript transcript;
 	if (stop_token.stop_requested())
@@ -5846,10 +6259,9 @@ ChatHistorySyncService::LoadRemoteCodexTranscript(
 		transcript.error = "The remote Codex session is not ready to load.";
 		return transcript;
 	}
-	uam::remote::RunnerClient client(
-	    PlatformServicesFactory::Instance().process_service,
-	    host);
-	if (!client.Connect(&transcript.error)) return transcript;
+	RemoteHistoryClient history_client(host, scan);
+	uam::remote::RunnerClient& client = history_client.Get();
+	if (!history_client.Connect(&transcript.error, stop_token)) return transcript;
 	nlohmann::json read_result;
 	if (!RunRemoteCodexRpc(client, uam::paths::PathFromUtf8(chat.workspace_directory),
 	                       "thread/read", {{"threadId", valid_id}, {"includeTurns", true}},
@@ -5920,8 +6332,8 @@ void ChatHistorySyncService::RetainHiddenAgentChatOwnership(uam::AppState& app, 
 		const bool terminal = run->status == "completed" || run->status == "failed" ||
 		                      run->status == "cancelled" || run->status == "interrupted";
 		const auto live_count = std::ranges::count(app.chats, chat.id, &ChatSession::id);
-		if (terminal && root && root->execution_host_id == chat.execution_host_id &&
-		    run->transcript_chat_id == chat.id && run->provider_id == chat.provider_id)
+		// The proof records the child's own host; automatic routing may run a child away from its root.
+		if (terminal && root && run->transcript_chat_id == chat.id && run->provider_id == chat.provider_id)
 		{
 			if (live_count == 1 && ChatDomainService().FindChatById(app, chat.id) == &chat && chat.metadata_incarnation)
 			{

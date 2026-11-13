@@ -590,7 +590,8 @@ UAM_TEST(NewProviderLaunchesUseTheDefaultIsolatedWorktree)
 	const bool launched = uam::StartCliTerminalForChat(app, terminal, app.chats.front(), 24, 80);
 	const std::string launch_error = terminal.last_error;
 	// Start accepts asynchronous preparation; production polling adopts its durable workspace before dispatch.
-	for (int attempt = 0; launched && !fs::exists(marker) && attempt < 100; ++attempt)
+	// Managed isolation runs about ten Git processes before launch; two seconds was too short on a loaded machine.
+	for (int attempt = 0; launched && !fs::exists(marker) && attempt < 1000; ++attempt)
 	{
 		(void)uam::PollAllCliTerminals(nullptr, app);
 		uam::FlushPendingChatSaves(app);
@@ -615,7 +616,7 @@ UAM_TEST(NewProviderLaunchesUseTheDefaultIsolatedWorktree)
 	app.chats.push_back(structured);
 	std::string error;
 	const bool sent = uam::SendAcpPrompt(app, structured.id, "Check this workspace", &error);
-	for (int attempt = 0; sent && !fs::exists(marker) && attempt < 100; ++attempt)
+	for (int attempt = 0; sent && !fs::exists(marker) && attempt < 1000; ++attempt)
 	{
 		(void)uam::PollWorktreeLaunchPreparations(app);
 		(void)uam::PollAllAcpSessions(app, nullptr);
@@ -836,6 +837,7 @@ UAM_TEST(CliSilentTurnInterruptsThenStopsWithoutReplayingPrompt)
 	TempDir temp("uam-cli-inactivity-timeout");
 	uam::AppState app;
 	app.settings.active_turn_inactivity_timeout_seconds = 60;
+	app.settings.tool_call_timeout_seconds = 600;
 	uam::CliTerminalState terminal;
 #if defined(_WIN32)
 	const std::vector<std::string> argv = {"cmd.exe", "/C", "ping -n 31 127.0.0.1 >NUL"};
@@ -853,11 +855,27 @@ UAM_TEST(CliSilentTurnInterruptsThenStopsWithoutReplayingPrompt)
 	terminal.last_user_input_time_s = 1.0;
 	terminal.last_ai_output_time_s = 1.0;
 
-	UAM_ASSERT(uam::HandleCliTerminalInactivityTimeout(app, terminal, 61.0));
+	// A terminal turn may hold one long command, so the turn timeout alone does not interrupt it.
+	UAM_ASSERT(!uam::HandleCliTerminalInactivityTimeout(app, terminal, 61.0));
+	UAM_ASSERT(!uam::HandleCliTerminalInactivityTimeout(app, terminal, 600.0));
+	UAM_ASSERT_EQ(terminal.inactivity_interrupt_requested_time_s, 0.0);
+	UAM_ASSERT(uam::HandleCliTerminalInactivityTimeout(app, terminal, 601.0));
 	UAM_ASSERT(terminal.running);
-	UAM_ASSERT_EQ(terminal.inactivity_interrupt_requested_time_s, 61.0);
+	UAM_ASSERT_EQ(terminal.inactivity_interrupt_requested_time_s, 601.0);
+	UAM_ASSERT(uam::strings::Contains(terminal.last_error, "10-minute tool call limit"));
 	UAM_ASSERT(uam::strings::Contains(terminal.last_error, "will not be replayed"));
-	UAM_ASSERT(uam::HandleCliTerminalInactivityTimeout(app, terminal, 66.0));
+	// A tool call limit set below the turn timeout does not shorten the ceiling.
+	app.settings.tool_call_timeout_seconds = 60;
+	app.settings.active_turn_inactivity_timeout_seconds = 900;
+	uam::CliTerminalState quiet = {};
+	quiet.running = true;
+	quiet.lifecycle_state = uam::CliTerminalLifecycleState::Busy;
+	quiet.last_busy_time_s = 1.0;
+	UAM_ASSERT(!uam::HandleCliTerminalInactivityTimeout(app, quiet, 800.0));
+	UAM_ASSERT_EQ(uam::CliTerminalInactivityRecovery(quiet, 901.0, 900.0), uam::CliTerminalInactivityRecoveryAction::Interrupt);
+	app.settings.tool_call_timeout_seconds = 600;
+	app.settings.active_turn_inactivity_timeout_seconds = 60;
+	UAM_ASSERT(uam::HandleCliTerminalInactivityTimeout(app, terminal, 606.0));
 	UAM_ASSERT(!terminal.running);
 	UAM_ASSERT(!terminal.should_launch);
 	UAM_ASSERT(uam::strings::Contains(terminal.last_error, "not replayed"));
@@ -2361,6 +2379,167 @@ UAM_TEST(AttachedTerminalPollingTracksWindowVisibility)
 #endif
 }
 
+UAM_TEST(TerminalPollSkipsGeminiProjectScanBetweenHistoryRefreshes)
+{
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+	TempDir temp("uam-terminal-poll-project-scan");
+	const fs::path workspace = temp.root / "workspace";
+	const fs::path gemini_home = temp.root / "gemini";
+	const fs::path source = gemini_home / ".gemini" / "tmp" / "workspace-source";
+	fs::create_directories(workspace);
+	fs::create_directories(source);
+	UAM_ASSERT(uam::io::WriteTextFile(source / ".project_root", workspace.string()));
+	for (int index = 0; index < 1000; ++index)
+	{
+		const fs::path project = gemini_home / ".gemini" / "tmp" / ("project-" + std::to_string(index));
+		fs::create_directories(project);
+		UAM_ASSERT(uam::io::WriteTextFile(project / ".project_root", (temp.root / ("other-" + std::to_string(index))).string()));
+	}
+	ScopedEnvVar gemini_env("GEMINI_CLI_HOME", gemini_home.string());
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	const ProviderProfile provider = ProviderProfileStore::DefaultGeminiProfile();
+	app.provider_profiles = {provider};
+	ChatSession chat;
+	chat.id = "local-poll-scan";
+	chat.provider_id = provider.id;
+	chat.workspace_directory = workspace.string();
+	app.chats.push_back(chat);
+
+	app.cli_terminals.push_back(std::make_unique<uam::CliTerminalState>());
+	uam::CliTerminalState& terminal = *app.cli_terminals.front();
+#if defined(_WIN32)
+	const std::vector<std::string> argv = {"cmd.exe", "/C", "ping -n 31 127.0.0.1 >NUL"};
+#else
+	const std::vector<std::string> argv = {"/bin/cat"};
+#endif
+	std::string error;
+	UAM_ASSERT(PlatformServicesFactory::Instance().terminal_runtime.StartCliTerminalProcess(terminal, workspace, argv, &error));
+	terminal.running = true;
+	terminal.frontend_chat_id = chat.id;
+	terminal.attached_chat_id = chat.id;
+	terminal.ui_attached = true;
+	terminal.lifecycle_state = uam::CliTerminalLifecycleState::Idle;
+	terminal.turn_state = uam::CliTerminalTurnState::Idle;
+
+	const auto median_ms = [](std::vector<double> values)
+	{
+		std::sort(values.begin(), values.end());
+		return values[values.size() / 2];
+	};
+	const auto timed_ms = [](const std::function<void()>& work)
+	{
+		const auto started = std::chrono::steady_clock::now();
+		work();
+		return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+	};
+	// Resolution creates the chats folder, so its absence proves a poll did not scan.
+	terminal.last_sync_time_s = uam::GetAppTimeSeconds() + 1000.0;
+	(void)uam::PollCliTerminal(nullptr, app, terminal, true);
+	const bool scanned_between_refreshes = fs::exists(source / "chats");
+	std::vector<double> scans;
+	for (int index = 0; index < 3; ++index) scans.push_back(timed_ms([&] { (void)ChatHistorySyncService().ResolveNativeHistoryChatsDirForChat(app, chat); }));
+	fs::remove_all(source / "chats");
+	std::vector<double> polls;
+	for (int index = 0; index < 15; ++index) polls.push_back(timed_ms([&] { (void)uam::PollCliTerminal(nullptr, app, terminal, true); }));
+	const bool scanned_during_timed_polls = fs::exists(source / "chats");
+	terminal.last_sync_time_s = -100.0;
+	(void)uam::PollCliTerminal(nullptr, app, terminal, true);
+	const bool scanned_at_refresh = fs::exists(source / "chats");
+	uam::StopCliTerminal(terminal);
+
+	const double scan_ms = median_ms(scans);
+	const double poll_ms = median_ms(polls);
+	std::cout << "[TIMING] terminal poll " << poll_ms << " ms; Gemini project scan " << scan_ms << " ms\n";
+	UAM_ASSERT(!scanned_between_refreshes);
+	UAM_ASSERT(!scanned_during_timed_polls);
+	UAM_ASSERT(scanned_at_refresh);
+	// Half of one scan on this machine: a poll that still performs the scan cannot pass.
+	UAM_ASSERT(poll_ms < scan_ms / 2.0);
+#endif
+}
+
+#if defined(__APPLE__) && UAM_ENABLE_RUNTIME_GEMINI_CLI
+namespace
+{
+	/// <summary>Starts argv as the only terminal, attached to a Gemini chat whose history refresh is not due.</summary>
+	uam::CliTerminalState& StartAttachedPollTerminal(uam::AppState& app, const fs::path& root, const std::vector<std::string>& argv)
+	{
+		app.data_root = root;
+		const ProviderProfile provider = ProviderProfileStore::DefaultGeminiProfile();
+		app.provider_profiles = {provider};
+		ChatSession chat;
+		chat.id = "local-poll-drain";
+		chat.provider_id = provider.id;
+		chat.workspace_directory = root.string();
+		app.chats.push_back(chat);
+		app.cli_terminals.push_back(std::make_unique<uam::CliTerminalState>());
+		uam::CliTerminalState& terminal = *app.cli_terminals.front();
+		std::string error;
+		UAM_ASSERT(PlatformServicesFactory::Instance().terminal_runtime.StartCliTerminalProcess(terminal, root, argv, &error));
+		terminal.running = true;
+		terminal.frontend_chat_id = chat.id;
+		terminal.attached_chat_id = chat.id;
+		terminal.ui_attached = true;
+		terminal.lifecycle_state = uam::CliTerminalLifecycleState::Idle;
+		terminal.turn_state = uam::CliTerminalTurnState::Idle;
+		terminal.last_sync_time_s = uam::GetAppTimeSeconds() + 1000.0;
+		return terminal;
+	}
+}
+#endif
+
+UAM_TEST(AttachedTerminalPollDrainsMoreThanOnePtyReadPerTick)
+{
+#if defined(__APPLE__) && UAM_ENABLE_RUNTIME_GEMINI_CLI
+	TempDir temp("uam-terminal-poll-drain");
+	uam::AppState app;
+	uam::CliTerminalState& terminal = StartAttachedPollTerminal(app, temp.root, {"/usr/bin/yes", std::string(70, 'x')});
+
+	constexpr int kPolls = 30;
+	std::this_thread::sleep_for(std::chrono::milliseconds(50));
+	const std::uint64_t cursor_before = terminal.output_cursor;
+	for (int index = 0; index < kPolls; ++index)
+	{
+		(void)uam::PollCliTerminal(nullptr, app, terminal, true);
+		std::this_thread::sleep_for(std::chrono::milliseconds(2));
+	}
+	const std::uint64_t delivered = terminal.output_cursor - cursor_before;
+	uam::StopCliTerminal(terminal);
+
+	std::cout << "[TIMING] attached terminal delivered " << delivered << " bytes in " << kPolls << " polls\n";
+	// A macOS PTY read returns at most 1 KB, so one read per poll stays far below this.
+	UAM_ASSERT(delivered >= kPolls * 4096);
+#endif
+}
+
+UAM_TEST(AttachedTerminalPollDrainWaitStaysBounded)
+{
+#if defined(__APPLE__) && UAM_ENABLE_RUNTIME_GEMINI_CLI
+	TempDir temp("uam-terminal-poll-wait");
+	uam::AppState app;
+	// A writer that keeps output arriving just inside each wait, so only the time limit ends the drain.
+	uam::CliTerminalState& terminal = StartAttachedPollTerminal(app, temp.root, {"/usr/bin/perl", "-e", "$|=1; while (1) { print 'x'; select(undef, undef, undef, 0.0006); }"});
+
+	std::this_thread::sleep_for(std::chrono::milliseconds(50));
+	std::vector<double> polls;
+	for (int index = 0; index < 30; ++index)
+	{
+		const auto started = std::chrono::steady_clock::now();
+		(void)uam::PollCliTerminal(nullptr, app, terminal, true);
+		polls.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count());
+		std::this_thread::sleep_for(std::chrono::milliseconds(2));
+	}
+	uam::StopCliTerminal(terminal);
+
+	std::sort(polls.begin(), polls.end());
+	const double median_ms = polls[polls.size() / 2];
+	std::cout << "[TIMING] slow-writer terminal poll median " << median_ms << " ms\n";
+	// One wait is about 5 ms; 32 chunks of unbounded waiting would take several times this.
+	UAM_ASSERT(median_ms < 12.0);
+#endif
+}
+
 UAM_TEST(NativeTerminalRefreshRetriesTheSameSnapshotAfterStorageRecovers)
 {
 #if UAM_ENABLE_RUNTIME_GEMINI_CLI
@@ -2824,7 +3003,7 @@ UAM_TEST(ProviderContextCleanupIntentSurvivesUnavailableHostWithoutBlockingChatD
 	chat.id = "deleted-remote-context";
 	chat.provider_id = "codex-cli";
 	chat.provider_handoff_cli_contexts.push_back({"removed-host", "/workspace/.UAM/context/0123456789abcdef", "original-connection"});
-	UAM_ASSERT(StageCliProviderContextCleanup(app, chat));
+	UAM_ASSERT(StageCliProviderContextCleanup(app, chat, {}));
 	UAM_ASSERT(ChatRepository::DeleteChatStorageFiles(app.data_root, chat.id).Failed() == false);
 	RetryCliProviderContextCleanup(app, 0.0);
 	app.provider_context_cleanup_worker->join();
@@ -2835,6 +3014,216 @@ UAM_TEST(ProviderContextCleanupIntentSurvivesUnavailableHostWithoutBlockingChatD
 	UAM_ASSERT_EQ(pending->provider_handoff_cli_contexts, chat.provider_handoff_cli_contexts);
 	UAM_ASSERT(pending->messages.empty());
 	UAM_ASSERT(pending->provider_handoff_context.empty());
+}
+
+UAM_TEST(ChatDeletionRemovesOnlyItsOwnUnsharedAttachmentCopies)
+{
+	TempDir temp("uam-attachment-copy-delete");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	const fs::path workspace = temp.root / "workspace";
+	fs::create_directories(workspace / ".UAM/attachments/deleted-chat");
+	const auto write = [&workspace](const std::string& relative) { UAM_ASSERT(uam::io::WriteBinaryFile(workspace / relative, "image")); return workspace / relative; };
+	const fs::path owned = write(".UAM/attachments/deleted-chat/1-0-a.png");
+	const fs::path shared = write(".UAM/attachments/deleted-chat/2-0-b.png");
+	const fs::path user_file = write("photo.png");
+	fs::create_directories(workspace / ".UAM/attachments/parent-chat");
+	const fs::path inherited = write(".UAM/attachments/parent-chat/c.png");
+	const fs::path escaped = write(".UAM/photo.png");
+	ChatSession chat;
+	chat.id = "deleted-chat";
+	chat.provider_id = "antigravity-cli";
+	chat.execution_host_id = "local";
+	chat.workspace_directory = workspace.string();
+	chat.linked_files = {".UAM/attachments/deleted-chat/1-0-a.png", ".UAM/attachments/deleted-chat/2-0-b.png", "photo.png", ".UAM/attachments/../photo.png", ".UAM/attachments/parent-chat/c.png"};
+	ChatSession branch;
+	branch.id = "surviving-branch";
+	branch.linked_files = {".UAM/attachments/deleted-chat/2-0-b.png"};
+
+	UAM_ASSERT(StageCliProviderContextCleanup(app, chat, {branch}));
+	RetryCliProviderContextCleanup(app, 0.0);
+	UAM_ASSERT(app.provider_context_cleanup_worker != nullptr);
+	app.provider_context_cleanup_worker->join();
+	app.provider_context_cleanup_worker.reset();
+
+	UAM_ASSERT(!fs::exists(owned));
+	UAM_ASSERT(fs::exists(shared));
+	UAM_ASSERT(fs::exists(user_file));
+	UAM_ASSERT(!fs::exists(inherited));
+	UAM_ASSERT(fs::exists(escaped));
+	UAM_ASSERT(!ChatRepository::LoadLocalChat(app.data_root / "runtime-context-cleanup", chat.id).has_value());
+}
+
+UAM_TEST(DeletingAParentKeepsACopyItsBranchUsesUntilTheBranchIsDeleted)
+{
+	TempDir temp("uam-attachment-copy-branch-delete");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	const fs::path workspace = temp.root / "workspace";
+	const std::string relative = ".UAM/attachments/parent/1-0-a.png";
+	fs::create_directories(workspace / ".UAM/attachments/parent");
+	UAM_ASSERT(uam::io::WriteBinaryFile(workspace / relative, "image"));
+	std::string folder_id;
+	UAM_ASSERT(CreateFolder(app, "Workspace", workspace.string(), &folder_id));
+	for (const std::string id : {"parent", "branch"})
+	{
+		ChatSession chat;
+		chat.id = id;
+		chat.provider_id = "antigravity-cli";
+		chat.execution_host_id = "local";
+		chat.folder_id = folder_id;
+		chat.linked_files = {relative};
+		chat.messages.push_back(Message{MessageRole::User, "Describe this"});
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		app.chats.push_back(std::move(chat));
+	}
+	const auto run_cleanup = [&app](double now)
+	{
+		RetryCliProviderContextCleanup(app, now);
+		if (app.provider_context_cleanup_worker == nullptr) return;
+		app.provider_context_cleanup_worker->join();
+		app.provider_context_cleanup_worker.reset();
+	};
+
+	UAM_ASSERT(RemoveChatById(app, "parent"));
+	run_cleanup(0.0);
+	UAM_ASSERT(fs::exists(workspace / relative));
+
+	UAM_ASSERT(RemoveChatById(app, "branch"));
+	run_cleanup(100.0);
+	UAM_ASSERT(!fs::exists(workspace / relative));
+}
+
+UAM_TEST(WorktreeChatDeletionAlsoRemovesItsSourceCheckoutCopyUnlessAHiddenChatUsesIt)
+{
+	for (const bool hidden_reference : {false, true})
+	{
+		TempDir temp("uam-attachment-copy-worktree-delete");
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		const std::string relative = ".UAM/attachments/chat/1-0-a.png";
+		for (const char* root : {"repo", "repo/packages/app", "worktree"})
+		{
+			fs::create_directories(temp.root / root / ".UAM/attachments/chat");
+			UAM_ASSERT(uam::io::WriteBinaryFile(temp.root / root / relative, "image"));
+		}
+		ChatSession chat;
+		chat.id = "chat";
+		chat.provider_id = "antigravity-cli";
+		chat.execution_host_id = "local";
+		chat.workspace_directory = (temp.root / "repo/packages/app").string();
+		chat.workspace_source_directory = (temp.root / "repo").string();
+		chat.workspace_isolation_kind = "gitWorktree";
+		chat.workspace_worktree_directory = (temp.root / "worktree").string();
+		chat.linked_files = {relative};
+		if (hidden_reference)
+		{
+			ChatSession hidden;
+			hidden.id = "hidden-branch";
+			hidden.linked_files = {relative};
+			app.excluded_provider_chats.push_back(hidden);
+		}
+		UAM_ASSERT(StageCliProviderContextCleanup(app, chat, {}));
+		RetryCliProviderContextCleanup(app, 0.0);
+		if (app.provider_context_cleanup_worker != nullptr)
+		{
+			app.provider_context_cleanup_worker->join();
+			app.provider_context_cleanup_worker.reset();
+		}
+		UAM_ASSERT(fs::exists(temp.root / "repo" / relative));
+		UAM_ASSERT_EQ(fs::exists(temp.root / "repo/packages/app" / relative), hidden_reference);
+		UAM_ASSERT_EQ(fs::exists(temp.root / "worktree" / relative), hidden_reference);
+	}
+}
+
+UAM_TEST(WorkspaceDeletionFindsTheStagingFolderOfAWorktreeChatWithoutAStoredDirectory)
+{
+	TempDir temp("uam-attachment-copy-folder-delete");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	const std::string relative = ".UAM/attachments/chat/1-0-a.png";
+	const fs::path staged_root = temp.root / "repo/packages/app";
+	fs::create_directories(staged_root / ".UAM/attachments/chat");
+	UAM_ASSERT(uam::io::WriteBinaryFile(staged_root / relative, "image"));
+	std::string folder_id;
+	UAM_ASSERT(CreateFolder(app, "Workspace", staged_root.string(), &folder_id));
+	ChatSession chat;
+	chat.id = "chat";
+	chat.provider_id = "antigravity-cli";
+	chat.execution_host_id = "local";
+	chat.folder_id = folder_id;
+	chat.workspace_source_directory = (temp.root / "repo").string();
+	chat.workspace_isolation_kind = "gitWorktree";
+	chat.workspace_worktree_directory = (temp.root / "worktree").string();
+	chat.linked_files = {relative};
+	chat.messages.push_back(Message{MessageRole::User, "Describe this"});
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	app.chats.push_back(chat);
+
+	UAM_ASSERT(DeleteFolderById(app, folder_id));
+	RetryCliProviderContextCleanup(app, 0.0);
+	UAM_ASSERT(app.provider_context_cleanup_worker != nullptr);
+	app.provider_context_cleanup_worker->join();
+	app.provider_context_cleanup_worker.reset();
+	UAM_ASSERT(!fs::exists(staged_root / relative));
+}
+
+UAM_TEST(AttachmentCopyCleanupIntentStaysUntilTheSshHostCanBeReached)
+{
+	TempDir temp("uam-attachment-copy-unreachable");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ExecutionHost host;
+	host.id = "ssh-host";
+	host.platform = "linux"; // No alias, so the runner connection fails without any network use.
+	app.settings.execution_hosts.push_back(host);
+	ChatSession chat;
+	chat.id = "chat";
+	chat.provider_id = "antigravity-cli";
+	chat.execution_host_id = host.id;
+	chat.workspace_directory = "/srv/project";
+	chat.linked_files = {".UAM/attachments/chat/a.png"};
+	UAM_ASSERT(StageCliProviderContextCleanup(app, chat, {}));
+	RetryCliProviderContextCleanup(app, 0.0);
+	UAM_ASSERT(app.provider_context_cleanup_worker != nullptr);
+	app.provider_context_cleanup_worker->join();
+	app.provider_context_cleanup_worker.reset();
+	const std::optional<ChatSession> pending = ChatRepository::LoadLocalChat(app.data_root / "runtime-context-cleanup", chat.id);
+	UAM_ASSERT(pending.has_value());
+	UAM_ASSERT_EQ(pending->linked_files, std::vector<std::string>{"/srv/project/.UAM/attachments/chat/a.png"});
+
+	ChatSession no_workspace = chat;
+	no_workspace.id = "imported";
+	no_workspace.imported_read_only = true;
+	UAM_ASSERT(StageCliProviderContextCleanup(app, no_workspace, {}));
+	UAM_ASSERT(!ChatRepository::LoadLocalChat(app.data_root / "runtime-context-cleanup", no_workspace.id).has_value());
+}
+
+UAM_TEST(RemoteAttachmentCopyCleanupIntentRecordsHostPaths)
+{
+	for (const auto& [platform, workspace, linked, expected] : std::vector<std::array<std::string, 4>>{
+	         {"linux", "/srv/project", ".UAM/attachments/chat/a.png", "/srv/project/.UAM/attachments/chat/a.png"},
+	         {"windows", R"(C:\proj)", R"(.UAM\attachments\chat\a.png)", R"(C:\proj\.UAM\attachments\chat\a.png)"}})
+	{
+		TempDir temp("uam-attachment-copy-remote-intent");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ExecutionHost host;
+		host.id = "ssh-host";
+		host.platform = platform;
+		app.settings.execution_hosts.push_back(host);
+		ChatSession chat;
+		chat.id = "chat";
+		chat.provider_id = "antigravity-cli";
+		chat.execution_host_id = host.id;
+		chat.workspace_directory = workspace;
+		chat.linked_files = {linked};
+		UAM_ASSERT(StageCliProviderContextCleanup(app, chat, {}));
+		const std::optional<ChatSession> pending = ChatRepository::LoadLocalChat(app.data_root / "runtime-context-cleanup", chat.id);
+		UAM_ASSERT(pending.has_value());
+		UAM_ASSERT_EQ(pending->execution_host_id, host.id);
+		UAM_ASSERT_EQ(pending->linked_files, std::vector<std::string>{expected});
+	}
 }
 
 UAM_TEST(CliContextPreparationIsAsyncRejectsStaleAndCancelsWithoutJoiningUi)

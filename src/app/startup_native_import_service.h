@@ -5,12 +5,15 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <chrono>
 #include <map>
+#include <set>
 #include <mutex>
 #include <future>
 #include <optional>
 #include <stop_token>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace uam
@@ -48,6 +51,19 @@ namespace uam
 		std::uint64_t generation = 0;
 		/// <summary>Shared by scopes admitted since the last pause; a pause stops them and installs a fresh source.</summary>
 		std::stop_source cancel;
+		/// <summary>An unreachable host's pending scopes wait until this time; the delay doubles per failed pass.</summary>
+		std::chrono::steady_clock::time_point retry_at{};
+		std::chrono::milliseconds retry_delay{0};
+		bool unreachable_reported = false;
+	};
+
+	/// <summary>How an unreachable host is retried: one reconnect after reconnect_delay in the same pass, then later passes
+	/// from first_retry, doubling up to max_retry.</summary>
+	struct StartupNativeImportRemoteRetry
+	{
+		std::chrono::milliseconds reconnect_delay{3000};
+		std::chrono::milliseconds first_retry{60000};
+		std::chrono::milliseconds max_retry{900000};
 	};
 
 	struct StartupNativeImportRemoteScope
@@ -75,8 +91,8 @@ namespace uam
 	{
 	  public:
 		using Scanner = std::function<ChatHistorySyncService::LocalHistoryDiscovery(const StartupNativeImportScanRequest&, std::stop_token)>;
-		using RemoteScanner = std::function<ChatHistorySyncService::LocalHistoryDiscovery(const StartupNativeImportRemoteScope&, const ProviderProfile*, std::stop_token)>;
-		explicit StartupNativeImportService(Scanner scanner = {}, RemoteScanner remote_scanner = {});
+		using RemoteScanner = std::function<ChatHistorySyncService::LocalHistoryDiscovery(const StartupNativeImportRemoteScope&, const ProviderProfile*, ChatHistorySyncService::RemoteHistoryScanContext&, std::stop_token)>;
+		explicit StartupNativeImportService(Scanner scanner = {}, RemoteScanner remote_scanner = {}, StartupNativeImportRemoteRetry retry = {});
 		~StartupNativeImportService();
 		void Initialize(const AppState& app);
 		/// <summary>Starts a fresh controller-local scan without changing saved chats or overlapping active discovery/import.</summary>
@@ -109,18 +125,43 @@ namespace uam
 			bool new_workspace = false;
 			std::optional<ExecutionHost> host;
 		};
+		/// <summary>A sub-chat a scan found. It is never listed for review: it follows its parent's import decision.</summary>
+		struct Child
+		{
+			ChatSession chat;
+			std::filesystem::path rollout;
+			std::string key;
+			std::string parent_key;
+		};
+		/// <summary>Links a saved child that has no parent link to its saved parent, for a parent imported after its child.</summary>
+		void LinkOwnedChildren(AppState& app);
+		/// <summary>Children (and their children) of the given parent keys, each given its parent's workspace, at most 64 per parent including those `per_parent` already counts.</summary>
+		std::vector<Child> CollectRiders(std::unordered_map<std::string, std::string>& folders, std::unordered_map<std::string, std::size_t> per_parent = {}) const;
+		void QueueRiders(std::vector<Child> riders);
+		/// <summary>After a scan the user started: imports the missing local sub-chats of chats already saved. Never runs for a startup scan.</summary>
+		bool StartSavedParentBackfill(AppState& app);
+		std::vector<Child> m_children;
+		/// <summary>Set by a scan the user started and cleared when that scan settles, so a later background remote retry cannot repeat the backfill.</summary>
+		bool m_backfill_due = false;
+		/// <summary>Saved chats a found child could be or belong to, by import key. Reads the file system only for chats whose native ID a child names.</summary>
+		std::unordered_map<std::string, ChatSession*> SavedChatsNamedByChildren(AppState& app) const;
 		bool Revalidate(AppState& app, std::string* error_out);
 		void StartScan(const AppState& app, bool include_remote);
 		void AddError(const std::string& error);
+		void AddHostUnavailableError(const std::string& host_id, const std::string& fallback_name);
 		void FinishImport(AppState& app);
 		std::vector<StartupNativeImportRemoteScope> PendingRemoteScopes(const AppState& app);
 		bool StartPendingRemoteScans(const AppState& app);
+		/// <summary>True while a remote scope still needs a scan now; scopes of an unreachable host waiting for their retry time do not count.</summary>
+		bool RemoteScansOutstanding() const;
+		bool RemoteRetryDue() const;
 		Scanner m_scanner;
 		bool m_scoped_scanner = false;
 		std::vector<StartupNativeImportRemoteScope> m_remote_scopes;
 		StartupNativeImportScanRequest m_scan_request;
 		std::map<std::string, ExecutionHost> m_remote_hosts;
 		std::map<std::string, ChatFolder> m_remote_folders;
+		std::set<std::string> m_unavailable_hosts_reported;
 		bool m_initialized = false;
 		bool m_include_unregistered_local = false;
 		std::stop_source m_stop;

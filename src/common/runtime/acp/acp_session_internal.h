@@ -38,6 +38,8 @@ WorktreeLaunchPreparationState PrepareAcpWorkspaceForLaunch(AppState& app, AcpSe
 
 /// <summary>Bounds asynchronous remote Stop confirmation: a runner RPC permits 15 seconds, followed by retained-output drain and removal.</summary>
 inline constexpr double kRemoteStopConfirmationTimeoutSeconds = 30.0;
+// How long a remote stop must stay unconfirmed before the user is offered Treat as stopped.
+inline constexpr double kRemoteStopForceOfferDelaySeconds = 120.0;
 
 // Plain data: ACP failure detail bag (used by FormatAcpFailureMessage)
 struct AcpFailureDetails
@@ -150,7 +152,6 @@ bool SendPermissionResponse(AcpSessionState& session, const std::string& request
 bool CapturedReadCeilingAllowsPermissionResponse(const AcpSessionState& session, const AcpPendingPermissionState& pending, const std::string& option_id, bool cancelled, std::string* error_out);
 bool CapturedReadCeilingAllowsSavedPermissionResponse(const AcpSessionState& session, const AcpPendingPermissionState& pending, const nlohmann::json& response);
 bool IsRejectPermissionOption(const std::string& id, const std::string& name, const std::string& kind);
-bool IsAcceptPermissionOption(const std::string& id, const std::string& name, const std::string& kind);
 std::string AutoApproveOptionId(const AcpPendingPermissionState& pending);
 std::string RejectPermissionOptionId(const AcpPendingPermissionState& pending);
 struct PermissionReviewDecision
@@ -180,6 +181,11 @@ void ApplySubAgentMetadata(AcpToolCallState& tool_call, const nlohmann::json& up
 
 // Message sync helpers
 Message& EnsureAssistantMessage(ChatSession& chat, AcpSessionState& session);
+/// A provider's proven completion of this turn's own prompt shows it received that turn's authored input: marks the
+/// turn's sent rows as written. Call it only beside that provider's completion proof (the matching request ID, the
+/// fresh native scope); output alone, a cancelled turn or an owed helper receipt confirm nothing.
+/// Display evidence only; it never authorizes or suppresses a delivery, retry or replay. Returns whether a row changed.
+bool ConfirmTurnInputReceived(const AcpSessionState& session, ChatSession& chat);
 bool AppendThoughtChunk(ChatSession& chat, AcpSessionState& session, const std::string& chunk);
 std::string AppendAssistantChunk(ChatSession& chat, AcpSessionState& session, const std::string& chunk, const std::string& identity = {});
 ToolCall PersistedToolCallFromAcpToolCall(const AcpToolCallState& tool_call);
@@ -371,6 +377,9 @@ bool StageAcpColdLaunch(AppState& app, AcpSessionState& session, ChatSession& ch
 void BindPendingAcpColdLaunch(AppState& app, AcpSessionState& session, ChatSession& chat, bool quota_settlement = false);
 bool RebindPendingAcpQuotaConfiguration(AppState& app, AcpSessionState& session, ChatSession& chat);
 bool HasPendingAcpColdLaunch(const AcpSessionState& session);
+// Drain binds its admitted head while it is still queued, then removes it; this carries that one owned step.
+void AdvancePendingAcpColdLaunchQueue(AcpSessionState& session, const ChatSession& chat,
+    const std::deque<AcpQueuedUserPromptState>& bound_raw, const std::string& bound_queue);
 bool AcpLaunchConfigurationFinished(const AcpSessionState& session);
 void PinDurableAdmissionRoot(AppState& app, const std::string& chat_id);
 bool ShouldDeferLocalAcpConfiguration(const AppState& app, const AcpSessionState& session, const ChatSession& chat);
@@ -391,6 +400,9 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 bool DecorateAcpSessionSetupRequest(AppState& app, AcpSessionState& session, std::string_view method,
     const std::string& cwd, nlohmann::json& request);
 bool SendSessionSetupIfReady(AppState& app, AcpSessionState& session, ChatSession& chat);
+/// Rebuilds the desktop side of a reattached remote session's UAM tools on the channel its provider was launched with.
+bool RestoreRemoteUamControlAfterReattach(AppState& app, AcpSessionState& session, ChatSession& chat,
+    const ExecutionHost& execution_host);
 bool RetrySessionNewAfterInvalidLoad(AppState& app, AcpSessionState& session, ChatSession& chat, const AcpResponseFailureDetails& details);
 bool SendStartupModeIfNeeded(AcpSessionState& session, const ChatSession& chat);
 bool SendStartupModelIfNeeded(AcpSessionState& session, ChatSession& chat);
@@ -500,7 +512,7 @@ DurableAdmissionState BeginOwnedChatPublicationAdmission(AppState& app, const Ch
     std::shared_ptr<const OwnedChatPublicationCancellation>* publication_cancellation = nullptr);
 void FinishPendingQueuedAdmissionSave(AppState& app, const std::string& chat_id);
 /// <summary>Revokes a background publication before a newer synchronous command can replace its storage.</summary>
-void InvalidatePendingChatSave(AppState& app, std::string_view chat_id, bool preserve_admission = false);
+void InvalidatePendingChatSave(AppState& app, std::string_view chat_id, bool preserve_admission = false, bool preserve_publication = false);
 void AbandonPendingLocalSteers(AcpSessionState& session);
 bool AgentInputPreparationReady(const AcpSessionState& session);
 // True while completed preparation admits its own input, before its marker is cleared.
@@ -513,12 +525,34 @@ bool ClearSavedAcpResumeId(AppState& app, AcpSessionState& session, ChatSession&
 void NoteChatSaveScheduled(AppState& app, const ChatSession& chat);
 // Read-only: ready but unconsumed save futures still own their publication/receipt boundary.
 bool HasActiveChatSaveWorker(const AppState& app, std::string_view chat_id);
-void ScheduleChatSave(AppState& app, const ChatSession& chat, double delay_seconds = 0.5);
+/// <summary>Arms the background save. The earliest due time wins, so a later request cannot postpone one already due.</summary>
+/// `append_only` marks a mid-turn change that only grows the transcript's last row or adds rows (stream text,
+/// tool status): it keeps a snapshot already being written, which is published as an older state while the chat
+/// stays unsaved, and it debounces no longer than the maximum wait from the first unsaved change.
+void ScheduleChatSave(AppState& app, const ChatSession& chat, double delay_seconds = 0.5, bool append_only = false);
+/// <summary>Saves a mid-turn display update in the background when no caller needs its durable receipt.</summary>
+void SaveChatSoon(AppState& app, const ChatSession& chat);
+/// <summary>Shown once per failing chat through the status line while its transcript cannot be saved.</summary>
+inline constexpr const char* kChatSaveFailedStatus = "Chat history could not be saved. UAM keeps the chat open and retries; if this continues, check disk space and folder access.";
+/// <summary>Shown instead when the chat's own content is refused before any write is attempted.</summary>
+inline constexpr const char* kChatSaveRefusedStatus = "Chat history could not be saved because this chat holds input or attachments UAM cannot store. UAM keeps the chat open and retries.";
+/// <summary>Records a failed transcript save and returns the retry delay: 1 s doubling to 60 s.</summary>
+/// The first failure of a streak sets the status line and writes one diagnostic line; later ones stay quiet.
+double NoteChatSaveFailed(AppState& app, const std::string& chat_id);
+void NoteChatSaveSucceeded(AppState& app, const std::string& chat_id);
+/// <summary>Owner-thread due time for a scheduled save; call after NoteChatSaveScheduled.</summary>
+double ArmChatSave(AppState& app, const std::string& chat_id, double delay_seconds, bool append_only);
 bool SetChatNativeSessionIdIfChanged(ChatSession& chat, std::string_view session_id);
 /// <summary>Binds provider-switch context written before a stream-JSON route reported its native identity.</summary>
 bool BindPendingProviderHandoff(AcpSessionState& session, ChatSession& chat);
 void SyncResolvedNativeSessionIdForChat(AppState& app, const ChatSession& chat, std::string_view session_id, std::string_view previous_session_id = {});
 void RestorePendingPromptDelivery(AcpSessionState& session, ChatSession& chat);
+/// A remote prompt that never reached the connection keeps reconnecting this long before it returns as unsent,
+/// so a short network loss still recovers by itself.
+inline constexpr double kUntransportedPromptReconnectBudgetSeconds = 60.0;
+/// Gives up a remote prompt that was never written to its connection, staged or not: its rows become interrupted
+/// unsent rows, no prepared copy of it stays in the queue, input queued behind it is held, and the turn ends.
+void ReturnUnwrittenRemotePromptAsUnsent(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& message);
 void CompletePromptTurn(AcpSessionState& session, std::string_view lifecycle_state);
 bool QueueGoalInternalPrompt(AppState& app, AcpSessionState& session, ChatSession& chat,
                              const std::string& prompt, bool review_turn,
@@ -545,6 +579,12 @@ inline void MarkAcpLoopStop(AcpSessionState& session, std::string channel, int c
 	session.timeout_stop_channel = std::move(channel);
 	session.timeout_stop_count = count;
 	session.timeout_stop_example = std::move(example);
+}
+/// An open tool call outlasted the tool-call limit: the same notice, raising that limit instead of the turn timeout.
+inline void MarkAcpToolCallLimitStop(AcpSessionState& session, int seconds)
+{
+	MarkAcpTimeoutStop(session, "Tool call limit", seconds);
+	session.timeout_stop_kind = "tool";
 }
 void FailAcpTurnOrSession(AcpSessionState& session, ChatSession* chat,
 	                      const std::string& message);

@@ -103,7 +103,7 @@ jobs:
 
   # A skipped matrix job shows only its unexpanded name, so say plainly why the native rows did not run.
   native-skipped:
-    name: Native flag builds not requested (add the build-flags label to run 19 full builds)
+    name: Native flag builds not requested (add the build-flags label to run 38 full builds)
     if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'build-flags') && (github.event.action != 'labeled' || github.event.label.name == 'build-flags')
     runs-on: ubuntu-latest
     steps:
@@ -112,18 +112,26 @@ jobs:
           echo "Each native row is a full application build with one feature or provider set turned off. Pull requests need the \`build-flags\` label; pushes to the V5 integration branch, release candidate tags, schedules and manual runs always run them. The UI rows above already checked the frontend bundle for every flag." >> "$GITHUB_STEP_SUMMARY"
 
   native:
-    name: Native ${{ matrix.name }}
+    name: Native ${{ matrix.os == 'windows-latest' && 'Windows ' || '' }}${{ matrix.profile.name }}
     needs: ui
-    # Full application builds are expensive and fill the account's macOS runners: pull requests run them only with the
+    # Full application builds are expensive and fill the account's macOS and Windows runners: pull requests run them only with the
     # build-flags label; pushes, release candidate tags, schedules and manual runs always do. Every row's native residue is reviewed in build_flag_native_residue.json,
     # so a new excluded name fails the row; the failure uploads the candidate strings for review.
-    # Adding an unrelated label must not restart the 19 builds.
+    # Adding an unrelated label must not restart the 38 builds.
     if: (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'build-flags')) && (github.event.action != 'labeled' || github.event.label.name == 'build-flags')
-    runs-on: macos-latest
+    runs-on: ${{ matrix.os }}
+    # Most flags have no recorded Windows residue yet, so those rows fail and upload candidates without failing the run.
+    # Remove this line once every Windows row is recorded (see docs/reference/architecture/build-test-release.md).
+    continue-on-error: ${{ matrix.os == 'windows-latest' }}
+    defaults:
+      run:
+        shell: bash
     strategy:
       fail-fast: false
       matrix:
-        include:
+        # macOS comes first so its rows keep their job indexes and artifact names.
+        os: [macos-latest, windows-latest]
+        profile:
           - { name: 'no Gemini', cmake: '-DUAM_ENABLE_RUNTIME_GEMINI_CLI=OFF' }
           - { name: 'no Codex', cmake: '-DUAM_ENABLE_RUNTIME_CODEX_CLI=OFF' }
           - { name: 'no Claude', cmake: '-DUAM_ENABLE_RUNTIME_CLAUDE_CLI=OFF' }
@@ -153,30 +161,38 @@ jobs:
           cache: npm
           cache-dependency-path: UI-V2/package-lock.json
       # Pull requests restore only; the CI workflow prunes superseded copies after base pushes.
+      # ponytail: Windows rows download their dependencies each run so they add nothing to the 10 GB cache; cache them if these rows become frequent.
       - uses: actions/cache/restore@v4
+        if: runner.os != 'Windows'
         with:
           path: Builds/flags/_deps
           key: macOS-uam-flag-deps-${{ hashFiles('CMakeLists.txt') }}
           restore-keys: macOS-uam-flag-deps-
+      - name: Prepare the Windows build
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE", "$env:RUNNER_TEMP", "$env:TEMP"
+          vcpkg install zlib:x64-windows-static
       - run: npm --prefix UI-V2 ci
-      - run: cmake -S . -B Builds/flags -DCMAKE_BUILD_TYPE=Release -DUAM_PACKAGE_REMOTE_RUNNERS=OFF ${{ matrix.cmake }}
-      - run: cmake --build Builds/flags --config Release --target ${{ matrix.target || 'universal_agent_manager' }} --parallel 4
+      - run: cmake -S . -B Builds/flags -DCMAKE_BUILD_TYPE=Release -DUAM_PACKAGE_REMOTE_RUNNERS=OFF ${{ matrix.profile.cmake }} ${{ runner.os == 'Windows' && '-DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows-static' || '' }}
+      - run: cmake --build Builds/flags --config Release --target ${{ matrix.profile.target || 'universal_agent_manager' }} --parallel 4
       - uses: actions/cache/save@v4
         # Tag pushes get their own cache scope that pruning never reaches.
-        if: github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/') && strategy.job-index == 0
+        if: runner.os != 'Windows' && github.event_name != 'pull_request' && !startsWith(github.ref, 'refs/tags/') && strategy.job-index == 0
         continue-on-error: true
         with:
           path: Builds/flags/_deps
           key: macOS-uam-flag-deps-${{ hashFiles('CMakeLists.txt') }}
       - name: Check the application, runner and bundle for excluded names
-        run: python3 scripts/check_build_flag_leaks.py --build-dir Builds/flags
+        run: ${{ runner.os == 'Windows' && 'python' || 'python3' }} scripts/check_build_flag_leaks.py --build-dir Builds/flags
       - name: Record unreviewed native strings for review
         if: failure()
         run: |
           cp scripts/build_flag_native_residue.json "$RUNNER_TEMP/build_flag_native_residue.json"
-          python3 scripts/check_build_flag_leaks.py --build-dir Builds/flags --residue "$RUNNER_TEMP/build_flag_native_residue.json" --record-residue || true
+          ${{ runner.os == 'Windows' && 'python' || 'python3' }} scripts/check_build_flag_leaks.py --build-dir Builds/flags --residue "$RUNNER_TEMP/build_flag_native_residue.json" --record-residue || true
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: native-residue-${{ strategy.job-index }}
+          name: native-residue-${{ matrix.os == 'windows-latest' && 'windows-' || '' }}${{ strategy.job-index }}
           path: ${{ runner.temp }}/build_flag_native_residue.json

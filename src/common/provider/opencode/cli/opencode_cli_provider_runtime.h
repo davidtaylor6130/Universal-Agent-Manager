@@ -37,6 +37,8 @@ class OpenCodeCliProviderRuntime final : public IProviderRuntime
 	MessageRole RoleFromNativeType(const ProviderProfile& profile, std::string_view native_type) const override;
 	void ApplyNativeToolMetadata(ToolCall& tool, const nlohmann::json& native_item) const override;
 	void ApplyAcpToolMetadata(uam::AcpToolCallState& tool, const nlohmann::json& update) const override;
+	/// The bash tool's optional `timeout` input is in milliseconds.
+	double AcpToolDeclaredTimeoutSeconds(std::string_view tool_kind, const nlohmann::json& tool_input) const override { return ShellToolMillisecondsAsSeconds(tool_kind, tool_input, "timeout"); }
 	std::vector<ChatSession> LoadHistory(const ProviderProfile& profile, const std::filesystem::path& data_root, const std::filesystem::path& native_history_chats_dir, const ProviderRuntimeHistoryLoadOptions& options) const override;
 	bool SaveHistory(const ProviderProfile& profile, const std::filesystem::path& data_root, const ChatSession& chat) const override;
 	std::vector<std::string> BuildWorkerArgv(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, std::string_view model_id) const override;

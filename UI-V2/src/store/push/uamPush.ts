@@ -1,8 +1,14 @@
 // Push message parsing and revision helpers. Extracted from useAppStore.ts (MO-1).
 // parseUamPushPayload is the sole entry point for all C++ → frontend pushes.
 
+import { MOBILE_COMPANION_ENABLED } from '../../config/buildFeatures'
 import { isRecord, isString, sanitizeCppAppState, sanitizeCppStatePatch } from '../cpp/sanitizers'
-import type { CppCliDebugState, ParsedPushResult } from '../cpp/types'
+import type { CompanionConfirmation, CppCliDebugState, ParsedPushResult } from '../cpp/types'
+
+function isCompanionConfirmation(item: unknown): item is CompanionConfirmation {
+  return isRecord(item) && isString(item.id) && isString(item.chatId) && isString(item.chatTitle) && isString(item.description) &&
+    typeof item.expiresAt === 'number' && Number.isFinite(item.expiresAt)
+}
 
 export function parseUamPushPayload(payload: unknown): ParsedPushResult {
   let raw: unknown = payload
@@ -12,23 +18,23 @@ export function parseUamPushPayload(payload: unknown): ParsedPushResult {
       raw = JSON.parse(raw)
     } catch (err) {
       const reason = err instanceof Error ? err.message : 'unknown parse failure'
-      return { ok: false, status: 'parse-error', error: `JSON parse failed: ${reason}` }
+      return { ok: false, status: 'parse-error', error: `JSON parse failed: ${reason}`, mayHaveCarriedState: true }
     }
   }
 
   if (!isRecord(raw)) {
-    return { ok: false, status: 'invalid-message', error: 'Payload is not an object.' }
+    return { ok: false, status: 'invalid-message', error: 'Payload is not an object.', mayHaveCarriedState: true }
   }
 
   const type = raw.type
   if (!isString(type) || type.trim().length === 0) {
-    return { ok: false, status: 'invalid-message', error: 'Missing message type.' }
+    return { ok: false, status: 'invalid-message', error: 'Missing message type.', mayHaveCarriedState: true }
   }
 
   if (type === 'stateUpdate') {
     const sanitized = sanitizeCppAppState(raw.data)
     if (!sanitized) {
-      return { ok: false, status: 'invalid-message', error: 'stateUpdate.data does not match CppAppState shape.' }
+      return { ok: false, status: 'invalid-message', error: 'stateUpdate.data does not match CppAppState shape.', mayHaveCarriedState: true }
     }
     return { ok: true, message: { type, data: sanitized } }
   }
@@ -36,7 +42,7 @@ export function parseUamPushPayload(payload: unknown): ParsedPushResult {
   if (type === 'statePatch') {
     const sanitized = sanitizeCppStatePatch(raw.data)
     if (!sanitized) {
-      return { ok: false, status: 'invalid-message', error: 'statePatch.data does not match CppStatePatch shape.' }
+      return { ok: false, status: 'invalid-message', error: 'statePatch.data does not match CppStatePatch shape.', mayHaveCarriedState: true }
     }
     return { ok: true, message: { type, data: sanitized } }
   }
@@ -75,6 +81,23 @@ export function parseUamPushPayload(payload: unknown): ParsedPushResult {
       return { ok: false, status: 'invalid-message', error: 'streamDone requires chatId.' }
     }
     return { ok: true, message: { type, chatId: raw.chatId } }
+  }
+
+  if (type === 'attachmentProgress') {
+    if (!isString(raw.chatId) || !isString(raw.attachmentId) || typeof raw.copiedBytes !== 'number' || typeof raw.totalBytes !== 'number' ||
+        !(raw.copiedBytes >= 0) || !(raw.totalBytes >= raw.copiedBytes)) {
+      return { ok: false, status: 'invalid-message', error: 'attachmentProgress requires a chat, an attachment and byte counts.' }
+    }
+    return { ok: true, message: { type, chatId: raw.chatId, attachmentId: raw.attachmentId, copiedBytes: raw.copiedBytes, totalBytes: raw.totalBytes } }
+  }
+
+  // Phone-access builds only: the constant lets builds without it drop this parser and its names.
+  if (MOBILE_COMPANION_ENABLED && type === 'companionConfirmations') {
+    const items: unknown = raw.items
+    if (!Array.isArray(items) || items.length > 64 || !items.every(isCompanionConfirmation)) {
+      return { ok: false, status: 'invalid-message', error: 'companionConfirmations requires a list of requests.' }
+    }
+    return { ok: true, message: { type, items: items.map(({ id, chatId, chatTitle, description, expiresAt }) => ({ id, chatId, chatTitle, description, expiresAt })) } }
   }
 
   if (type === 'dictation') {

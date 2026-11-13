@@ -1,3 +1,4 @@
+import { MOBILE_COMPANION_ENABLED } from '../config/buildFeatures'
 import { EMPTY_STARTUP_NATIVE_IMPORT_STATUS } from '../types/startupNativeImports'
 import { createExecutionRoutingSlice } from './slices/executionRoutingSlice'
 import { DEFAULT_CENTRAL_PROVIDER_CONFIGURATION, type CentralProviderConfiguration } from './cpp/types'
@@ -26,9 +27,11 @@ import {
   fallbackProviderForId,
 } from '../utils/providerMetadata'
 import {
+  isRecord,
   sanitizeCppAppState,
   sanitizeMemoryActivity,
   defaultEditorFileAssociations,
+  DEFAULT_NATIVE_IMPORT_STARTUP_MAX_AGE_DAYS,
 } from './cpp/sanitizers'
 export {
   DEFAULT_MEMORY_IDLE_DELAY_SECONDS,
@@ -110,12 +113,15 @@ function deserializeState(
     goalTokenBudget: number
     acpSetupInactivityTimeoutSeconds: number
     activeTurnInactivityTimeoutSeconds: number
+    toolCallTimeoutSeconds: number
     streamLoopRepeatLimit: number
     acpTurnOutputLimitMiB: number
     appVersion: string
     runnerProtocolVersion: number
     showProviderIconsInSidebar: boolean
     showWorktreePathInSidebar: boolean
+    sidebarPinnedChatOrder: string[]
+    sidebarActiveChatOrder: string[]
     steerActiveTurnOnSend: boolean
     gitEnabled?: boolean
     svnEnabled?: boolean
@@ -153,6 +159,9 @@ function deserializeState(
     hostScopedSettingsValues: AppState['hostScopedSettingsValues']
     uamAgentsBySessionId: AppState['uamAgentsBySessionId']
     shellActions: ShellAction[]
+    computePools: AppState['computePools']
+    computePoolUsage: AppState['computePoolUsage']
+    prWatches: AppState['prWatches']
     shellActionNotification: string
     statusLine: string
   }
@@ -282,6 +291,7 @@ function deserializeState(
         lastBlocker: cppGoal.lastBlocker,
         lastBlockerKind: cppGoal.lastBlockerKind,
         lastDiagnostic: cppGoal.lastDiagnostic,
+        lastDecisionSource: cppGoal.lastDecisionSource,
         completedItems: cppGoal.completedItems,
         remainingItems: cppGoal.remainingItems,
         pendingContinuation: cppGoal.pendingContinuation,
@@ -327,12 +337,15 @@ function deserializeState(
     goalTokenBudget: cpp.settings.goalTokenBudget ?? 0,
     acpSetupInactivityTimeoutSeconds: cpp.settings.acpSetupInactivityTimeoutSeconds ?? 600,
     activeTurnInactivityTimeoutSeconds: cpp.settings.activeTurnInactivityTimeoutSeconds ?? 1800,
+    toolCallTimeoutSeconds: cpp.settings.toolCallTimeoutSeconds ?? 7200,
     streamLoopRepeatLimit: cpp.settings.streamLoopRepeatLimit ?? 20,
     acpTurnOutputLimitMiB: cpp.settings.acpTurnOutputLimitMiB ?? 1024,
     appVersion: cpp.appVersion || existing.appVersion,
     runnerProtocolVersion: cpp.runnerProtocolVersion || existing.runnerProtocolVersion,
     showProviderIconsInSidebar: cpp.settings.showProviderIconsInSidebar ?? true,
     showWorktreePathInSidebar: cpp.settings.showWorktreePathInSidebar ?? true,
+    sidebarPinnedChatOrder: cpp.settings.sidebarPinnedChatOrder ?? [],
+    sidebarActiveChatOrder: cpp.settings.sidebarActiveChatOrder ?? [],
     steerActiveTurnOnSend: cpp.settings.steerActiveTurnOnSend ?? false,
     gitEnabled: typeof cpp.settings.gitEnabled === 'boolean' ? cpp.settings.gitEnabled : true,
     svnEnabled: typeof cpp.settings.svnEnabled === 'boolean' ? cpp.settings.svnEnabled : true,
@@ -366,6 +379,7 @@ function deserializeState(
     gitDefaultBaseBranch: cpp.settings.gitDefaultBaseBranch ?? existing.gitDefaultBaseBranch,
     gitPullBeforeChat: cpp.settings.gitPullBeforeChat ?? existing.gitPullBeforeChat,
     svnUpdateBeforeChat: cpp.settings.svnUpdateBeforeChat ?? existing.svnUpdateBeforeChat,
+    svnRepositoryLayouts: cpp.settings.svnRepositoryLayouts ?? existing.svnRepositoryLayouts,
     gitPortMethod: cpp.settings.gitPortMethod ?? existing.gitPortMethod,
     worktreeCleanupEnabled: cpp.settings.worktreeCleanupEnabled ?? existing.worktreeCleanupEnabled,
     worktreeRetentionDays: cpp.settings.worktreeRetentionDays ?? existing.worktreeRetentionDays,
@@ -378,7 +392,7 @@ function deserializeState(
     favoriteUamAgentIds: cpp.settings.favoriteUamAgentIds ?? [],
     nativeImportExcludedTitlePrefixes: cpp.settings.nativeImportExcludedTitlePrefixes ?? [],
     nativeImportExcludedDirectories: cpp.settings.nativeImportExcludedDirectories ?? [],
-    nativeImportStartupMaxAgeDays: cpp.settings.nativeImportStartupMaxAgeDays ?? 0,
+    nativeImportStartupMaxAgeDays: cpp.settings.nativeImportStartupMaxAgeDays ?? DEFAULT_NATIVE_IMPORT_STARTUP_MAX_AGE_DAYS,
     uamAgentCycleShortcut: cpp.settings.uamAgentCycleShortcut ?? 'shift+tab',
     computerUseEnabled: cpp.settings.computerUseGloballyEnabled,
     computerUseRevocationPending: cpp.settings.computerUseRevocationPending,
@@ -390,6 +404,9 @@ function deserializeState(
     hostScopedSettingsValues: cpp.settings.hostScopedSettingsValues ?? {},
     uamAgentsBySessionId: existing.uamAgentsBySessionId,
     shellActions: cpp.shellActions ?? existing.shellActions,
+    computePools: cpp.settings.computePools ?? [],
+    computePoolUsage: cpp.computePoolUsage ?? {},
+    prWatches: cpp.prWatches ?? existing.prWatches,
     shellActionNotification: cpp.shellActionNotification ?? existing.shellActionNotification,
     statusLine: cpp.statusLine ?? existing.statusLine,
     // Full-state only: absent means no deletion is running, so do not keep the previous value.
@@ -506,6 +523,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
         lastBlocker: cppGoal.lastBlocker,
         lastBlockerKind: cppGoal.lastBlockerKind,
         lastDiagnostic: cppGoal.lastDiagnostic,
+        lastDecisionSource: cppGoal.lastDecisionSource,
         completedItems: cppGoal.completedItems,
         remainingItems: cppGoal.remainingItems,
         pendingContinuation: cppGoal.pendingContinuation,
@@ -569,10 +587,13 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     goalTokenBudget: patch.settings?.goalTokenBudget ?? current.goalTokenBudget,
     acpSetupInactivityTimeoutSeconds: patch.settings?.acpSetupInactivityTimeoutSeconds ?? current.acpSetupInactivityTimeoutSeconds,
     activeTurnInactivityTimeoutSeconds: patch.settings?.activeTurnInactivityTimeoutSeconds ?? current.activeTurnInactivityTimeoutSeconds,
+    toolCallTimeoutSeconds: patch.settings?.toolCallTimeoutSeconds ?? current.toolCallTimeoutSeconds,
     streamLoopRepeatLimit: patch.settings?.streamLoopRepeatLimit ?? current.streamLoopRepeatLimit,
     acpTurnOutputLimitMiB: patch.settings?.acpTurnOutputLimitMiB ?? current.acpTurnOutputLimitMiB,
     showProviderIconsInSidebar: patch.settings?.showProviderIconsInSidebar ?? current.showProviderIconsInSidebar,
     showWorktreePathInSidebar: patch.settings?.showWorktreePathInSidebar ?? current.showWorktreePathInSidebar,
+    sidebarPinnedChatOrder: patch.settings?.sidebarPinnedChatOrder ?? current.sidebarPinnedChatOrder,
+    sidebarActiveChatOrder: patch.settings?.sidebarActiveChatOrder ?? current.sidebarActiveChatOrder,
     steerActiveTurnOnSend: patch.settings?.steerActiveTurnOnSend ?? current.steerActiveTurnOnSend,
     gitEnabled: typeof patch.settings?.gitEnabled === 'boolean' ? patch.settings.gitEnabled : current.gitEnabled,
     svnEnabled: typeof patch.settings?.svnEnabled === 'boolean' ? patch.settings.svnEnabled : current.svnEnabled,
@@ -606,6 +627,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     gitDefaultBaseBranch: patch.settings?.gitDefaultBaseBranch ?? current.gitDefaultBaseBranch,
     gitPullBeforeChat: patch.settings?.gitPullBeforeChat ?? current.gitPullBeforeChat,
     svnUpdateBeforeChat: patch.settings?.svnUpdateBeforeChat ?? current.svnUpdateBeforeChat,
+    svnRepositoryLayouts: patch.settings?.svnRepositoryLayouts ?? current.svnRepositoryLayouts,
     gitPortMethod: patch.settings?.gitPortMethod ?? current.gitPortMethod,
     worktreeCleanupEnabled: patch.settings?.worktreeCleanupEnabled ?? current.worktreeCleanupEnabled,
     worktreeRetentionDays: patch.settings?.worktreeRetentionDays ?? current.worktreeRetentionDays,
@@ -631,6 +653,9 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     hostScopedSettingsValues: patch.settings?.hostScopedSettingsValues ?? current.hostScopedSettingsValues,
     uamAgentsBySessionId: sameRecordEntries(current.uamAgentsBySessionId, uamAgentsBySessionId) ? current.uamAgentsBySessionId : uamAgentsBySessionId,
     shellActions: patch.shellActions ?? current.shellActions,
+    computePools: patch.settings?.computePools ?? current.computePools,
+    computePoolUsage: patch.computePoolUsage ?? current.computePoolUsage,
+    prWatches: patch.prWatches ?? current.prWatches,
     shellActionNotification: patch.shellActionNotification ?? current.shellActionNotification,
     statusLine: patch.statusLine ?? current.statusLine,
   }
@@ -642,6 +667,15 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
 
 const BOOTSTRAP_STATE_BACKOFF_MS = [100, 300, 900]
 const BOOTSTRAP_STATE_MAX_PULLS = 8
+// A recurring fault costs at most one full pull per spacing step. Spacing doubles from the minimum
+// to the maximum while gaps keep arriving and resets only after a quiet interval with no gap.
+const STATE_RESYNC_COALESCE_MS = 100
+const STATE_RESYNC_MIN_SPACING_MS = 1000
+const STATE_RESYNC_MAX_SPACING_MS = 30000
+const STATE_RESYNC_QUIET_RESET_MS = 60000
+const STATE_RESYNC_DEADLINE_MS = 10000
+const STATE_RESYNC_MAX_FAILURES = 5
+const STATE_RESYNC_MAX_HELD_PATCHES = 512
 
 export const useAppStore = create<AppState>((set, get) => {
   const flushPendingCliTranscriptChunks = () => {
@@ -784,6 +818,10 @@ export const useAppStore = create<AppState>((set, get) => {
     if (isCompanionContext()) return
     bootstrapPulls += 1
     sendToCEF<CppAppState>({ action: 'getInitialState', payload: { summaryOnly: true } }).then((resp) => {
+      // A reloaded or new desktop window still shows phone requests waiting for confirmation.
+      const confirmations = MOBILE_COMPANION_ENABLED && resp.ok && isRecord(resp.data) && resp.data.companionConfirmations !== undefined
+        ? parseUamPushPayload({ type: 'companionConfirmations', items: resp.data.companionConfirmations }) : null
+      if (confirmations?.ok) window.dispatchEvent(new CustomEvent('uam-companion-confirmations', { detail: confirmations.message }))
       // resp.data is the raw CppAppState object. Sanitize before deserializing.
       const sanitized = resp.ok ? sanitizeCppAppState(resp.data) : null
       if (!sanitized) {
@@ -820,12 +858,15 @@ export const useAppStore = create<AppState>((set, get) => {
           goalTokenBudget: current.goalTokenBudget,
           acpSetupInactivityTimeoutSeconds: current.acpSetupInactivityTimeoutSeconds,
           activeTurnInactivityTimeoutSeconds: current.activeTurnInactivityTimeoutSeconds,
+          toolCallTimeoutSeconds: current.toolCallTimeoutSeconds,
           streamLoopRepeatLimit: current.streamLoopRepeatLimit,
           acpTurnOutputLimitMiB: current.acpTurnOutputLimitMiB,
           appVersion: current.appVersion,
           runnerProtocolVersion: current.runnerProtocolVersion,
           showProviderIconsInSidebar: current.showProviderIconsInSidebar,
           showWorktreePathInSidebar: current.showWorktreePathInSidebar,
+          sidebarPinnedChatOrder: current.sidebarPinnedChatOrder,
+          sidebarActiveChatOrder: current.sidebarActiveChatOrder,
           steerActiveTurnOnSend: current.steerActiveTurnOnSend,
         gitEnabled: current.gitEnabled,
         svnEnabled: current.svnEnabled,
@@ -855,6 +896,7 @@ export const useAppStore = create<AppState>((set, get) => {
           gitDefaultBaseBranch: current.gitDefaultBaseBranch,
           gitPullBeforeChat: current.gitPullBeforeChat,
           svnUpdateBeforeChat: current.svnUpdateBeforeChat,
+          svnRepositoryLayouts: current.svnRepositoryLayouts,
           gitPortMethod: current.gitPortMethod,
           worktreeCleanupEnabled: current.worktreeCleanupEnabled,
           worktreeRetentionDays: current.worktreeRetentionDays,
@@ -881,12 +923,17 @@ export const useAppStore = create<AppState>((set, get) => {
           hostScopedSettingsValues: current.hostScopedSettingsValues,
           uamAgentsBySessionId: current.uamAgentsBySessionId,
           shellActions: current.shellActions,
+          computePools: current.computePools,
+          computePoolUsage: current.computePoolUsage,
+          prWatches: current.prWatches,
           shellActionNotification: current.shellActionNotification,
           statusLine: current.statusLine,
         })
         set({ ...current.reconcileMemorySettingsProjection(deserialized, sanitized.settings), bootstrapStateError: '', bootstrapStateLoading: false })
         // Only after the state applied: a throw above must still reach failBootstrap.
         bootstrapHydrated = true
+        // Native writes "[UI startup]" console lines to the diagnostic log; the packaged smoke tests wait for this one.
+        console.info('[UI startup] Initial state loaded through the native bridge.')
         if (bootstrapRetryTimer !== null) clearTimeout(bootstrapRetryTimer)
         bootstrapRetryTimer = null
         // Sync theme to DOM
@@ -920,6 +967,224 @@ export const useAppStore = create<AppState>((set, get) => {
   // Register window.uamPush SYNCHRONOUSLY at module load time (before React mounts)
   // so that C++'s OnLoadEnd push is never missed.  Using getState() avoids stale closures.
   if (isCefContext() && typeof window !== 'undefined') {
+    // Full state only hydrates the selected transcript. Keep buffered
+    // background deltas unless this update contains that chat's messages.
+    const pruneStreamTokensForFullState = (data: CppAppState) => {
+      for (const chatId of pendingStreamTokensByChatId.keys()) {
+        const chat = data.chats.find((candidate) => candidate.id === chatId)
+        if (!chat || Array.isArray(chat.messages)) {
+          pendingStreamTokensByChatId.delete(chatId)
+        }
+      }
+    }
+    const applyFullState = (data: CppAppState) => {
+      pruneStreamTokensForFullState(data)
+      get().loadFromCef(data)
+    }
+    // Buffered side effects of a patch, separate from its pure projection so a resync can replay it.
+    const discardBuffersForPatch = (patch: CppStatePatch) => {
+      // A patch that replaces a chat's messages carries the streamed text
+      // authoritatively; buffered deltas for those chats must not be
+      // re-applied on top.
+      if (patch && typeof patch === 'object' && patch.messagesByChatId && typeof patch.messagesByChatId === 'object') {
+        for (const chatId of Object.keys(patch.messagesByChatId)) {
+          pendingStreamTokensByChatId.delete(chatId)
+        }
+      }
+      discardPendingPushesForChats(patch.removedChatIds ?? [])
+    }
+
+    // Compare the visible chat before and after a state change and reload its transcript when the change requires it.
+    const reloadActiveTranscriptIfChanged = (current: AppState, activeTranscriptPatched: boolean) => {
+      const activeChatId = current.activeSessionId
+      const activeBindingBefore = activeChatId ? current.acpBindingBySessionId[activeChatId] : undefined
+      const activeBindingAfter = activeChatId ? get().acpBindingBySessionId[activeChatId] : undefined
+      const completedActiveTurn = Boolean(activeBindingBefore?.processing && !activeBindingAfter?.processing)
+      const advancedContinuousTurn = Boolean(
+        activeBindingBefore?.processing &&
+        activeBindingAfter?.processing &&
+        (activeBindingAfter.turnSerial ?? 0) > (activeBindingBefore.turnSerial ?? 0)
+      )
+      const appendedTurnMessages = Boolean(
+        activeBindingBefore?.processing && activeBindingAfter?.processing &&
+        (get().sessions.find((session) => session.id === activeChatId)?.messageCount ?? 0) >
+          (current.sessions.find((session) => session.id === activeChatId)?.messageCount ?? 0)
+      )
+      const activeSessionBefore = current.sessions.find((session) => session.id === activeChatId)
+      const activeSessionAfter = get().sessions.find((session) => session.id === activeChatId)
+      // External history imports publish summaries. Refresh an already loaded idle
+      // transcript when its count or content digest changes, just as turn completion does.
+      const refreshedIdleHistory = Boolean(
+        activeChatId && current.messages[activeChatId] !== undefined &&
+        activeSessionBefore && activeSessionAfter &&
+        !activeBindingBefore?.processing && !activeBindingAfter?.processing &&
+        !current.cliBindingBySessionId[activeChatId]?.processing &&
+        !get().cliBindingBySessionId[activeChatId]?.processing &&
+        !current.messages[activeChatId].some((message) => message.isStreaming) &&
+        !activeTranscriptPatched &&
+        ((activeSessionBefore.messageCount ?? 0) !== (activeSessionAfter.messageCount ?? 0) ||
+          (activeSessionBefore.messagesDigest ?? '') !== (activeSessionAfter.messagesDigest ?? ''))
+      )
+      const newlyHeldOutboxMismatch = Boolean(activeChatId && activeBindingAfter?.queueHeld &&
+        activeBindingAfter.queuedPrompts?.length &&
+        (!activeBindingBefore?.queueHeld || !queuedPromptsEquivalent(activeBindingBefore.queuedPrompts, activeBindingAfter.queuedPrompts)) &&
+        Number.isSafeInteger(activeSessionAfter?.messageCount) && activeSessionAfter?.messagesDigest &&
+        (get().historyStartIndexBySessionId[activeChatId] ?? 0) + (get().messages[activeChatId]?.length ?? 0) > activeSessionAfter!.messageCount!)
+      if (
+        activeChatId &&
+        activeChatId === get().activeSessionId &&
+        (completedActiveTurn || advancedContinuousTurn || appendedTurnMessages || refreshedIdleHistory || newlyHeldOutboxMismatch)
+      ) {
+        get().loadSessionMessages(activeChatId, true)
+      }
+    }
+
+    // Native never resends a diff it has already built, so a lost, rejected or failed patch is
+    // repaired by pulling one full state. This relies on two native facts: every published diff is
+    // stamped exactly last + 1 (a corrective patch is just another diff), and a snapshot at revision
+    // R contains every patch up to R because both are produced on the CEF UI thread.
+    // Patches keep applying live while the pull is in flight, so approvals and turn state never wait
+    // for it; copies are kept. A snapshot at or above the store's revision makes those copies moot.
+    // A snapshot behind it (its reply overtaken by later patches) is applied and the newer copies are
+    // replayed in order on top within the same task, unless a full stateUpdate already moved past it
+    // or the copies cannot rebuild the store's revision exactly, when it is dropped and pulled again.
+    let stateResyncTimer: ReturnType<typeof setTimeout> | null = null
+    let stateResyncDeadline: ReturnType<typeof setTimeout> | null = null
+    let stateResyncInFlight = false
+    let stateResyncGeneration = 0
+    let stateResyncFailures = 0
+    // A gap is known and no snapshot has closed it yet.
+    let stateResyncOutstanding = false
+    // A push was lost during the pull, so the snapshot may predate it.
+    let stateResyncAgain = false
+    let stateResyncReason = ''
+    let stateResyncSpacingMs = STATE_RESYNC_MIN_SPACING_MS
+    let lastStateResyncAt = Number.NEGATIVE_INFINITY
+    let lastStateGapAt = Number.NEGATIVE_INFINITY
+    let patchesDuringResync: CppStatePatch[] = []
+    let patchesDuringResyncOverflowed = false
+    let fullStateRevisionDuringResync = -1
+
+    const requestStateResync = (reason: string) => {
+      // Bootstrap owns the first pull, and companion pages poll full state through CompanionShell.
+      if (!bootstrapHydrated || isCompanionContext() || window.uamPush !== ownedUamPush) return
+      const now = Date.now()
+      if (now - lastStateGapAt >= STATE_RESYNC_QUIET_RESET_MS) stateResyncSpacingMs = STATE_RESYNC_MIN_SPACING_MS
+      lastStateGapAt = now
+      stateResyncOutstanding = true
+      if (!stateResyncReason) stateResyncReason = reason
+      if (stateResyncInFlight) {
+        stateResyncAgain = true
+        return
+      }
+      if (stateResyncTimer !== null) return
+      const delay = Math.max(STATE_RESYNC_COALESCE_MS, lastStateResyncAt + stateResyncSpacingMs - now)
+      stateResyncTimer = setTimeout(pullStateResync, delay)
+    }
+
+    const settleStateResync = (generation: number, snapshot: CppAppState | null) => {
+      if (generation !== stateResyncGeneration || !stateResyncInFlight) return
+      if (stateResyncDeadline !== null) clearTimeout(stateResyncDeadline)
+      stateResyncDeadline = null
+      stateResyncInFlight = false
+      const copies = patchesDuringResync
+      const overflowed = patchesDuringResyncOverflowed
+      const newerFullState = fullStateRevisionDuringResync
+      patchesDuringResync = []
+      patchesDuringResyncOverflowed = false
+      fullStateRevisionDuringResync = -1
+      let settled = false
+      if (snapshot) {
+        try {
+          const before = get()
+          const snapshotRevision = cppStateRevision(snapshot)
+          const storeRevision = before.lastAppliedStateRevision
+          // Copies above `base` rebuild the store exactly when they run base + 1 .. storeRevision without a hole.
+          const copiesAbove = (base: number) => copies.filter((patch) => cppPatchRevision(patch) > base)
+          const rebuilds = (base: number) => {
+            const above = copiesAbove(base)
+            return !overflowed && above.length === storeRevision - base &&
+              above.every((patch, index) => cppPatchRevision(patch) === base + index + 1)
+          }
+          if (snapshotRevision >= storeRevision || (newerFullState <= snapshotRevision && rebuilds(snapshotRevision))) {
+            // Keep this window's selection, including a deliberate none: a click whose selectSession is still
+            // unacknowledged must not jump back to the native choice.
+            const localSelection = before.activeSessionId
+            const keepSelection = localSelection === null || snapshot.chats.some((chat) => chat.id === localSelection)
+            // Snapshot and replay are composed off-store and published once, so subscribers never see the
+            // snapshot's older revision between them.
+            const replayed = copiesAbove(snapshotRevision)
+            let working = { ...before, ...fullStateProjection(keepSelection ? { ...snapshot, selectedChatId: localSelection } : snapshot, before) } as AppState
+            for (const patch of replayed) {
+              const next = applyStatePatch(patch, working)
+              if (next) working = { ...working, ...working.reconcileMemorySettingsProjection(next, patch.settings) }
+            }
+            // Buffers change only once the compose succeeded, so a throw above drops nothing.
+            pruneStreamTokensForFullState(snapshot)
+            for (const patch of replayed) discardBuffersForPatch(patch)
+            set(working)
+            if (working.theme) persistTheme(working.theme, get().customThemes)
+            reloadActiveTranscriptIfChanged(before, false)
+            settled = true
+          } else if (newerFullState > snapshotRevision && rebuilds(newerFullState)) {
+            // A newer full state arrived during the pull and, with the copies after it, already holds what the gap lost.
+            settled = true
+          }
+        } catch (error) {
+          console.error('[uamPush] State resync could not be applied:', error)
+        }
+      }
+      if (settled) {
+        stateResyncOutstanding = false
+        stateResyncFailures = 0
+        stateResyncReason = ''
+        if (stateResyncAgain) requestStateResync('state push lost during resync')
+      } else {
+        stateResyncFailures += 1
+        // After the last failure the gap stays outstanding; the next patch retries at the current spacing.
+        if (stateResyncFailures < STATE_RESYNC_MAX_FAILURES) requestStateResync('retry after failed resync')
+      }
+    }
+
+    const pullStateResync = () => {
+      stateResyncTimer = null
+      if (window.uamPush !== ownedUamPush) return
+      lastStateResyncAt = Date.now()
+      console.warn(`[uamPush] Pulling full state to repair a lost update (${stateResyncReason || 'gap'}); next pull no sooner than ${stateResyncSpacingMs} ms later.`)
+      stateResyncReason = ''
+      stateResyncSpacingMs = Math.min(STATE_RESYNC_MAX_SPACING_MS, stateResyncSpacingMs * 2)
+      stateResyncInFlight = true
+      stateResyncAgain = false
+      const generation = ++stateResyncGeneration
+      // A reply that never arrives counts as a failure; a late one is ignored.
+      stateResyncDeadline = setTimeout(() => settleStateResync(generation, null), STATE_RESYNC_DEADLINE_MS)
+      sendToCEF<CppAppState>({ action: 'getInitialState', payload: { summaryOnly: true } })
+        .then((resp) => settleStateResync(generation, resp.ok ? sanitizeCppAppState(resp.data) : null))
+        .catch(() => settleStateResync(generation, null))
+    }
+
+    const applyLivePatch = (patch: CppStatePatch) => {
+      const revision = cppPatchRevision(patch)
+      const lastRevision = get().lastAppliedStateRevision
+      if (!isNewerStateRevision(revision, lastRevision)) return
+      // The patch is still applied: its fields are current, the resync only restores what it lost.
+      // While a pull is in flight its copies are judged against the snapshot when it settles instead.
+      if (!stateResyncInFlight) {
+        if (revision !== lastRevision + 1) requestStateResync(`revision ${revision} after ${lastRevision}`)
+        else if (stateResyncOutstanding) requestStateResync('retry after failed resync')
+      }
+      discardBuffersForPatch(patch)
+      const current = get()
+      const next = applyStatePatch(patch, current)
+      if (next) {
+        set(current.reconcileMemorySettingsProjection(next, patch.settings))
+        if (next.theme) {
+          persistTheme(next.theme, get().customThemes)
+        }
+        reloadActiveTranscriptIfChanged(current, Boolean(current.activeSessionId && patch.messagesByChatId?.[current.activeSessionId]))
+      }
+    }
+
     const handlePush = (payload: unknown) => {
       const parsed = parseUamPushPayload(payload)
       if (!parsed.ok) {
@@ -929,6 +1194,7 @@ export const useAppStore = create<AppState>((set, get) => {
           lastPushAtMs: state.lastPushAtMs,
         }))
         console.error('[uamPush] Rejected payload:', parsed.error, payload)
+        if (parsed.mayHaveCarriedState) requestStateResync('rejected state push')
         return
       }
 
@@ -950,82 +1216,27 @@ export const useAppStore = create<AppState>((set, get) => {
 
       const store = get()
       const msg = parsed.message
+      // Outside the switch so builds without phone access drop the branch and its names.
+      if (MOBILE_COMPANION_ENABLED && msg.type === 'companionConfirmations') {
+        window.dispatchEvent(new CustomEvent('uam-companion-confirmations', { detail: msg }))
+        return
+      }
 
       switch (msg.type) {
         case 'stateUpdate':
           if (!isNewerStateRevision(cppStateRevision(msg.data), store.lastAppliedStateRevision)) break
-          // Full state only hydrates the selected transcript. Keep buffered
-          // background deltas unless this update contains that chat's messages.
-          for (const chatId of pendingStreamTokensByChatId.keys()) {
-            const chat = msg.data.chats.find((candidate) => candidate.id === chatId)
-            if (!chat || Array.isArray(chat.messages)) {
-              pendingStreamTokensByChatId.delete(chatId)
-            }
+          applyFullState(msg.data)
+          // Only a full state the store actually took can close the gap for the pull in flight.
+          if (stateResyncInFlight && get().lastAppliedStateRevision === cppStateRevision(msg.data)) {
+            fullStateRevisionDuringResync = Math.max(fullStateRevisionDuringResync, cppStateRevision(msg.data))
           }
-          store.loadFromCef(msg.data)
           break
         case 'statePatch':
-          {
-            if (!isNewerStateRevision(cppPatchRevision(msg.data), store.lastAppliedStateRevision)) break
-            // A patch that replaces a chat's messages carries the streamed text
-            // authoritatively; buffered deltas for those chats must not be
-            // re-applied on top.
-            if (msg.data && typeof msg.data === 'object' && msg.data.messagesByChatId && typeof msg.data.messagesByChatId === 'object') {
-              for (const chatId of Object.keys(msg.data.messagesByChatId)) {
-                pendingStreamTokensByChatId.delete(chatId)
-              }
-            }
-            discardPendingPushesForChats(msg.data.removedChatIds ?? [])
-            const current = get()
-            const activeChatId = current.activeSessionId
-            const activeBindingBefore = activeChatId ? current.acpBindingBySessionId[activeChatId] : undefined
-            const next = applyStatePatch(msg.data, current)
-            if (next) {
-              set(current.reconcileMemorySettingsProjection(next, msg.data.settings))
-              if (next.theme) {
-                persistTheme(next.theme, get().customThemes)
-              }
-              const activeBindingAfter = activeChatId ? get().acpBindingBySessionId[activeChatId] : undefined
-              const completedActiveTurn = Boolean(activeBindingBefore?.processing && !activeBindingAfter?.processing)
-              const advancedContinuousTurn = Boolean(
-                activeBindingBefore?.processing &&
-                activeBindingAfter?.processing &&
-                (activeBindingAfter.turnSerial ?? 0) > (activeBindingBefore.turnSerial ?? 0)
-              )
-              const appendedTurnMessages = Boolean(
-                activeBindingBefore?.processing && activeBindingAfter?.processing &&
-                (get().sessions.find((session) => session.id === activeChatId)?.messageCount ?? 0) >
-                  (current.sessions.find((session) => session.id === activeChatId)?.messageCount ?? 0)
-              )
-              const activeSessionBefore = current.sessions.find((session) => session.id === activeChatId)
-              const activeSessionAfter = get().sessions.find((session) => session.id === activeChatId)
-              // External history imports publish summaries. Refresh an already loaded idle
-              // transcript when its count or content digest changes, just as turn completion does.
-              const refreshedIdleHistory = Boolean(
-                activeChatId && current.messages[activeChatId] !== undefined &&
-                activeSessionBefore && activeSessionAfter &&
-                !activeBindingBefore?.processing && !activeBindingAfter?.processing &&
-                !current.cliBindingBySessionId[activeChatId]?.processing &&
-                !get().cliBindingBySessionId[activeChatId]?.processing &&
-                !current.messages[activeChatId].some((message) => message.isStreaming) &&
-                !msg.data.messagesByChatId?.[activeChatId] &&
-                ((activeSessionBefore.messageCount ?? 0) !== (activeSessionAfter.messageCount ?? 0) ||
-                  (activeSessionBefore.messagesDigest ?? '') !== (activeSessionAfter.messagesDigest ?? ''))
-              )
-              const newlyHeldOutboxMismatch = Boolean(activeChatId && activeBindingAfter?.queueHeld &&
-                activeBindingAfter.queuedPrompts?.length &&
-                (!activeBindingBefore?.queueHeld || !queuedPromptsEquivalent(activeBindingBefore.queuedPrompts, activeBindingAfter.queuedPrompts)) &&
-                Number.isSafeInteger(activeSessionAfter?.messageCount) && activeSessionAfter?.messagesDigest &&
-                (get().historyStartIndexBySessionId[activeChatId] ?? 0) + (get().messages[activeChatId]?.length ?? 0) > activeSessionAfter!.messageCount!)
-              if (
-                activeChatId &&
-                activeChatId === get().activeSessionId &&
-                (completedActiveTurn || advancedContinuousTurn || appendedTurnMessages || refreshedIdleHistory || newlyHeldOutboxMismatch)
-              ) {
-                get().loadSessionMessages(activeChatId, true)
-              }
-            }
+          if (stateResyncInFlight) {
+            if (patchesDuringResync.length < STATE_RESYNC_MAX_HELD_PATCHES) patchesDuringResync.push(msg.data)
+            else patchesDuringResyncOverflowed = true
           }
+          applyLivePatch(msg.data)
           break
         case 'cliOutput':
           {
@@ -1129,6 +1340,9 @@ export const useAppStore = create<AppState>((set, get) => {
         case 'dictation':
           window.dispatchEvent(new CustomEvent('uam-dictation', { detail: msg }))
           break
+        case 'attachmentProgress':
+          window.dispatchEvent(new CustomEvent('uam-attachment-progress', { detail: msg }))
+          break
       }
     }
     // A failing handler must not throw into native code; report it and let the next push recover the status.
@@ -1138,8 +1352,107 @@ export const useAppStore = create<AppState>((set, get) => {
       } catch (error) {
         set({ pushChannelStatus: 'invalid-message', pushChannelError: `Push handling failed: ${error instanceof Error ? error.message : String(error)}` })
         console.error('[uamPush] Handler failed:', error)
+        requestStateResync('push handler failed')
       }
     }
+  }
+
+  // Full state projected onto the current store; the caller decides when to apply it.
+  const fullStateProjection = (sanitized: CppAppState, current: AppState): Partial<AppState> => {
+    const deserialized = deserializeState(sanitized, {
+      sessions: current.sessions,
+      folders: current.folders,
+      resourceCollections: current.resourceCollections,
+      messages: current.messages,
+      historyStartIndexBySessionId: current.historyStartIndexBySessionId,
+      chatSearchNavigation: current.chatSearchNavigation,
+      providers: current.providers,
+      activeSessionId: current.activeSessionId,
+      cliTranscriptBySessionId: current.cliTranscriptBySessionId,
+      cliBindingBySessionId: current.cliBindingBySessionId,
+      acpBindingBySessionId: current.acpBindingBySessionId,
+      providerModelCatalogs: current.providerModelCatalogs,
+      cliDebugState: current.cliDebugState,
+      memoryEnabledDefault: current.memoryEnabledDefault,
+      memoryLevelDefault: current.memoryLevelDefault,
+      memoryIdleDelaySeconds: current.memoryIdleDelaySeconds,
+      memoryRecallBudgetBytes: current.memoryRecallBudgetBytes,
+      goalMaxLoopIterations: current.goalMaxLoopIterations,
+      goalTokenBudget: current.goalTokenBudget,
+      acpSetupInactivityTimeoutSeconds: current.acpSetupInactivityTimeoutSeconds,
+      activeTurnInactivityTimeoutSeconds: current.activeTurnInactivityTimeoutSeconds,
+      toolCallTimeoutSeconds: current.toolCallTimeoutSeconds,
+      streamLoopRepeatLimit: current.streamLoopRepeatLimit,
+      acpTurnOutputLimitMiB: current.acpTurnOutputLimitMiB,
+      appVersion: current.appVersion,
+      runnerProtocolVersion: current.runnerProtocolVersion,
+      showProviderIconsInSidebar: current.showProviderIconsInSidebar,
+      showWorktreePathInSidebar: current.showWorktreePathInSidebar,
+      sidebarPinnedChatOrder: current.sidebarPinnedChatOrder,
+      sidebarActiveChatOrder: current.sidebarActiveChatOrder,
+      steerActiveTurnOnSend: current.steerActiveTurnOnSend,
+      gitEnabled: current.gitEnabled,
+      svnEnabled: current.svnEnabled,
+      updateChecksEnabled: current.updateChecksEnabled,
+          automaticProviderUpdates: current.automaticProviderUpdates,
+      updateLastCheckedAt: current.updateLastCheckedAt,
+      dismissedUpdateVersions: current.dismissedUpdateVersions,
+      memoryLastStatus: current.memoryLastStatus,
+      memoryWorkerBindings: current.memoryWorkerBindings,
+      permissionReviewerProviderId: current.permissionReviewerProviderId,
+      permissionReviewerModelId: current.permissionReviewerModelId,
+      memoryActivity: current.memoryActivity,
+      cliVersionManager: current.cliVersionManager,
+      markdownStoreDirectory: current.markdownStoreDirectory,
+      defaultNewChatProviderId: current.defaultNewChatProviderId,
+      providerChatDefaults: current.providerChatDefaults,
+      voiceInputMode: current.voiceInputMode,
+      voiceInputServerBaseUrl: current.voiceInputServerBaseUrl,
+      voiceInputServerEndpoint: current.voiceInputServerEndpoint,
+      voiceInputServerModel: current.voiceInputServerModel,
+      voiceInputApiKeyEnv: current.voiceInputApiKeyEnv,
+      voiceInputCapabilities: current.voiceInputCapabilities,
+      providerAvailability: current.providerAvailability,
+      gitAutoWorktree: current.gitAutoWorktree,
+      gitSnapshotSvn: current.gitSnapshotSvn,
+      gitSnapshotPlainFolders: current.gitSnapshotPlainFolders,
+      gitDefaultBaseBranch: current.gitDefaultBaseBranch,
+      gitPullBeforeChat: current.gitPullBeforeChat,
+      svnUpdateBeforeChat: current.svnUpdateBeforeChat,
+      svnRepositoryLayouts: current.svnRepositoryLayouts,
+      gitPortMethod: current.gitPortMethod,
+      worktreeCleanupEnabled: current.worktreeCleanupEnabled,
+      worktreeRetentionDays: current.worktreeRetentionDays,
+      backupLogRetentionDays: current.backupLogRetentionDays,
+      httpCacheClearIntervalDays: current.httpCacheClearIntervalDays,
+      fileExplorerApplication: current.fileExplorerApplication,
+      windowsPowerShell: current.windowsPowerShell,
+      defaultEditorPresetId: current.defaultEditorPresetId,
+      editorFileAssociations: current.editorFileAssociations,
+      centralProviderConfiguration: current.centralProviderConfiguration,
+          mcpServers: current.mcpServers,
+      executionRouting: current.executionRouting,
+      executionHosts: current.executionHosts,
+      favoriteUamAgentIds: current.favoriteUamAgentIds,
+      nativeImportExcludedTitlePrefixes: current.nativeImportExcludedTitlePrefixes,
+      nativeImportExcludedDirectories: current.nativeImportExcludedDirectories,
+      nativeImportStartupMaxAgeDays: current.nativeImportStartupMaxAgeDays,
+      uamAgentCycleShortcut: current.uamAgentCycleShortcut,
+      computerUseEnabled: current.computerUseEnabled,
+      computerUseAllowlistEnabled: current.computerUseAllowlistEnabled,
+      computerUseAllowedApplications: current.computerUseAllowedApplications,
+      branchSwitching: current.branchSwitching,
+      hostScopedSettings: current.hostScopedSettings,
+      hostScopedSettingsValues: current.hostScopedSettingsValues,
+      uamAgentsBySessionId: current.uamAgentsBySessionId,
+      shellActions: current.shellActions,
+      computePools: current.computePools,
+      computePoolUsage: current.computePoolUsage,
+      prWatches: current.prWatches,
+      shellActionNotification: current.shellActionNotification,
+      statusLine: current.statusLine,
+    })
+    return current.reconcileMemorySettingsProjection(deserialized, sanitized.settings)
   }
 
   const inCef = isCefContext()
@@ -1173,97 +1486,11 @@ export const useAppStore = create<AppState>((set, get) => {
       const sanitized = sanitizeCppAppState(cppState)
       if (!sanitized) return
       const current = get()
-      const nextRevision = cppStateRevision(sanitized)
-      if (!isNewerStateRevision(nextRevision, current.lastAppliedStateRevision)) return
-      const deserialized = deserializeState(sanitized, {
-        sessions: current.sessions,
-        folders: current.folders,
-        resourceCollections: current.resourceCollections,
-        messages: current.messages,
-        historyStartIndexBySessionId: current.historyStartIndexBySessionId,
-        chatSearchNavigation: current.chatSearchNavigation,
-        providers: current.providers,
-        activeSessionId: current.activeSessionId,
-        cliTranscriptBySessionId: current.cliTranscriptBySessionId,
-        cliBindingBySessionId: current.cliBindingBySessionId,
-        acpBindingBySessionId: current.acpBindingBySessionId,
-        providerModelCatalogs: current.providerModelCatalogs,
-        cliDebugState: current.cliDebugState,
-        memoryEnabledDefault: current.memoryEnabledDefault,
-        memoryLevelDefault: current.memoryLevelDefault,
-        memoryIdleDelaySeconds: current.memoryIdleDelaySeconds,
-        memoryRecallBudgetBytes: current.memoryRecallBudgetBytes,
-        goalMaxLoopIterations: current.goalMaxLoopIterations,
-        goalTokenBudget: current.goalTokenBudget,
-        acpSetupInactivityTimeoutSeconds: current.acpSetupInactivityTimeoutSeconds,
-        activeTurnInactivityTimeoutSeconds: current.activeTurnInactivityTimeoutSeconds,
-        streamLoopRepeatLimit: current.streamLoopRepeatLimit,
-        acpTurnOutputLimitMiB: current.acpTurnOutputLimitMiB,
-        appVersion: current.appVersion,
-        runnerProtocolVersion: current.runnerProtocolVersion,
-        showProviderIconsInSidebar: current.showProviderIconsInSidebar,
-        showWorktreePathInSidebar: current.showWorktreePathInSidebar,
-        steerActiveTurnOnSend: current.steerActiveTurnOnSend,
-        gitEnabled: current.gitEnabled,
-        svnEnabled: current.svnEnabled,
-        updateChecksEnabled: current.updateChecksEnabled,
-            automaticProviderUpdates: current.automaticProviderUpdates,
-        updateLastCheckedAt: current.updateLastCheckedAt,
-        dismissedUpdateVersions: current.dismissedUpdateVersions,
-        memoryLastStatus: current.memoryLastStatus,
-        memoryWorkerBindings: current.memoryWorkerBindings,
-        permissionReviewerProviderId: current.permissionReviewerProviderId,
-        permissionReviewerModelId: current.permissionReviewerModelId,
-        memoryActivity: current.memoryActivity,
-        cliVersionManager: current.cliVersionManager,
-        markdownStoreDirectory: current.markdownStoreDirectory,
-        defaultNewChatProviderId: current.defaultNewChatProviderId,
-        providerChatDefaults: current.providerChatDefaults,
-        voiceInputMode: current.voiceInputMode,
-        voiceInputServerBaseUrl: current.voiceInputServerBaseUrl,
-        voiceInputServerEndpoint: current.voiceInputServerEndpoint,
-        voiceInputServerModel: current.voiceInputServerModel,
-        voiceInputApiKeyEnv: current.voiceInputApiKeyEnv,
-        voiceInputCapabilities: current.voiceInputCapabilities,
-        providerAvailability: current.providerAvailability,
-        gitAutoWorktree: current.gitAutoWorktree,
-        gitSnapshotSvn: current.gitSnapshotSvn,
-        gitSnapshotPlainFolders: current.gitSnapshotPlainFolders,
-        gitDefaultBaseBranch: current.gitDefaultBaseBranch,
-        gitPullBeforeChat: current.gitPullBeforeChat,
-        svnUpdateBeforeChat: current.svnUpdateBeforeChat,
-        gitPortMethod: current.gitPortMethod,
-        worktreeCleanupEnabled: current.worktreeCleanupEnabled,
-        worktreeRetentionDays: current.worktreeRetentionDays,
-        backupLogRetentionDays: current.backupLogRetentionDays,
-        httpCacheClearIntervalDays: current.httpCacheClearIntervalDays,
-        fileExplorerApplication: current.fileExplorerApplication,
-        windowsPowerShell: current.windowsPowerShell,
-        defaultEditorPresetId: current.defaultEditorPresetId,
-        editorFileAssociations: current.editorFileAssociations,
-        centralProviderConfiguration: current.centralProviderConfiguration,
-            mcpServers: current.mcpServers,
-        executionRouting: current.executionRouting,
-        executionHosts: current.executionHosts,
-        favoriteUamAgentIds: current.favoriteUamAgentIds,
-        nativeImportExcludedTitlePrefixes: current.nativeImportExcludedTitlePrefixes,
-        nativeImportExcludedDirectories: current.nativeImportExcludedDirectories,
-        nativeImportStartupMaxAgeDays: current.nativeImportStartupMaxAgeDays,
-        uamAgentCycleShortcut: current.uamAgentCycleShortcut,
-        computerUseEnabled: current.computerUseEnabled,
-        computerUseAllowlistEnabled: current.computerUseAllowlistEnabled,
-        computerUseAllowedApplications: current.computerUseAllowedApplications,
-        branchSwitching: current.branchSwitching,
-        hostScopedSettings: current.hostScopedSettings,
-        hostScopedSettingsValues: current.hostScopedSettingsValues,
-        uamAgentsBySessionId: current.uamAgentsBySessionId,
-        shellActions: current.shellActions,
-        shellActionNotification: current.shellActionNotification,
-        statusLine: current.statusLine,
-      })
-      set(current.reconcileMemorySettingsProjection(deserialized, sanitized.settings))
-      if (deserialized.theme) {
-        persistTheme(deserialized.theme, get().customThemes)
+      if (!isNewerStateRevision(cppStateRevision(sanitized), current.lastAppliedStateRevision)) return
+      const next = fullStateProjection(sanitized, current)
+      set(next)
+      if (next.theme) {
+        persistTheme(next.theme, get().customThemes)
       }
     },
   }

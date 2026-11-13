@@ -5,11 +5,14 @@
 #include "common/platform/platform_speech_output.h"
 #include "app/local_chat_bundle_service.h"
 #include "app/storage_retention_service.h"
+#include "app/pr_watch_service.h"
+#include "app/secret_request_service.h"
 #include "app/data_folder_settings_service.h"
 #include "app/data_folder_transition.h"
 #include "include/cef_request_context.h"
 #include "app/execution_routing_integration.h"
 #include "application.h"
+#include "remote/runner_client.h"
 #include <thread>
 #include <cstdlib>
 #include "common/utils/diagnostic_log.h"
@@ -32,6 +35,7 @@
 #include "shell_action_service.h"
 #include "theme_service.h"
 #include "uam_control_service.h"
+#include "cef/html_view_render_check.h"
 #include "memory_service.h"
 
 #include "common/constants/app_constants.h"
@@ -125,6 +129,10 @@ namespace
 
 	void ResetRuntimeCliVersionState(uam::AppState& app)
 	{
+		// Ask every worker to stop before joining the first, so the joins overlap instead of queueing.
+		if (app.runtime_cli_version_check_task.worker != nullptr) app.runtime_cli_version_check_task.worker->request_stop();
+		for (auto& [key, task] : app.runtime_cli_install_tasks)
+			if (task.worker != nullptr) task.worker->request_stop();
 		uam::ResetAsyncCommandTask(app.runtime_cli_version_check_task);
 		for (auto& [key, task] : app.runtime_cli_install_tasks) uam::ResetAsyncCommandTask(task);
 		app.runtime_cli_install_tasks.clear();
@@ -523,6 +531,7 @@ void Application::PollTick()
 	const std::chrono::steady_clock::time_point memory_finished = std::chrono::steady_clock::now();
 	const bool computer_use_changed = m_computerUseService.PollInBackground(m_app);
 	const std::chrono::steady_clock::time_point computer_use_finished = std::chrono::steady_clock::now();
+	const bool pr_watch_changed = m_app.pr_watch_service != nullptr && m_app.pr_watch_service->Poll(m_app);
 	const bool shell_actions_changed = ShellActionService::ProcessPendingRequests(m_app);
 	const std::chrono::steady_clock::time_point shell_actions_finished = std::chrono::steady_clock::now();
 	const bool folder_availability_changed = PollWorkspaceAvailability();
@@ -540,6 +549,7 @@ void Application::PollTick()
 #endif
 	}
 	ProviderCliCompatibilityService().Poll(m_app);
+	const bool remote_recovery_changed = uam::PollRemoteHostRecovery(m_app);
 	const bool remote_host_health_changed = m_app.remote_host_health_changed;
 	if (remote_host_health_changed && PersistenceCoordinator().SaveSettings(m_app))
 		m_app.remote_host_health_changed = false;
@@ -568,8 +578,8 @@ void Application::PollTick()
 	}
 	const std::chrono::steady_clock::time_point catalogs_finished = std::chrono::steady_clock::now();
 	const bool provider_compatibility_changed = IsCliCompatibilitySnapshotChanged(provider_snapshot_before, CreateCliCompatibilitySnapshot(m_app));
-	const bool runtime_state_changed = routing_changed || side_chats_changed || acp_sessions_changed || compaction_sync_changed || opencode_native_changed || uam_control_changed || agent_runs_changed || cli_terminals_changed || memory_changed || computer_use_changed || shell_actions_changed || folder_availability_changed || model_discovery_retry_changed || startup_model_discovery_changed || history_discovery_changed || remote_host_health_changed;
-	const bool ui_relevant_state_changed = runtime_state_changed || chat_saves_changed || provider_compatibility_changed || model_catalog_changed || uam::DeferredStatePushDue();
+	const bool runtime_state_changed = routing_changed || remote_recovery_changed || side_chats_changed || acp_sessions_changed || compaction_sync_changed || opencode_native_changed || uam_control_changed || pr_watch_changed || agent_runs_changed || cli_terminals_changed || memory_changed || computer_use_changed || shell_actions_changed || folder_availability_changed || model_discovery_retry_changed || startup_model_discovery_changed || history_discovery_changed || remote_host_health_changed;
+	const bool ui_relevant_state_changed = runtime_state_changed || chat_saves_changed || provider_compatibility_changed || model_catalog_changed || uam::DeferredStatePushDue() || uam::StateReconciliationDue();
 	for (const DictationEvent& event : m_platformServices->dictation_service.PollEvents())
 	{
 		uam::PushDictationEvent(m_browser, event);
@@ -800,16 +810,28 @@ bool Application::InitializeState()
 		m_exitCode = 1;
 		return false;
 	}
+	// Secret drops hold no data on disk, but a crash can leave their empty pipes or expired Windows files behind.
+	(void)uam::secrets::SweepStale(uam::SecretRequestService::LocalDropDirectory(m_app.data_root));
 	uam::AgentRunLoadResult agent_runs = uam::AgentRunLedger::LoadAll(m_app.data_root);
 #if !UAM_ALL_PROVIDERS_INCLUDED
 	{
 		// Runs under an excluded provider's chats stay on disk unchanged, so set them aside before marking interrupted runs.
 		std::vector<ChatSession> chats = ChatRepository::LoadLocalChatSummaries(m_app.data_root);
-		uam::excluded_provider_data::RemoveRunsOfHiddenChats(agent_runs.runs, uam::excluded_provider_data::TakeChats(chats));
+		const std::vector<ChatSession> hidden_chats = uam::excluded_provider_data::TakeChats(chats);
+		uam::excluded_provider_data::RemoveRunsOfHiddenChats(agent_runs.runs, hidden_chats);
+		uam::excluded_provider_data::RemoveRunsOfHiddenChats(agent_runs.inert_managed, hidden_chats);
 	}
 #endif
+	(void)uam::AgentRunLedger::PruneExpired(m_app.data_root, agent_runs, &agent_runs.errors);
+	std::vector<std::string> startup_interrupted_run_ids;
+	for (const AgentRun& run : agent_runs.runs)
+		if (run.status == "queued" || run.status == "running") startup_interrupted_run_ids.push_back(run.id);
 	(void)uam::AgentRunLedger::MarkNonterminalInterrupted(
 	    m_app.data_root, &agent_runs.runs, "manager_restarted", &agent_runs.errors);
+	// Version-2 records stay out of runtime admission. What a previous process left unfinished is closed, and a recent
+	// terminal run still owing its parent a result card is queued for one idempotent delivery by the scheduler.
+	for (AgentRun& owed : uam::AgentRunLedger::InterruptManagedRecords(m_app.data_root, std::move(agent_runs.inert_managed), "manager_restarted", &agent_runs.errors))
+		m_app.managed_result_recoveries.push_back(std::move(owed));
 	m_app.agent_runs = std::move(agent_runs.runs);
 	for (const std::string& error : agent_runs.errors)
 	{
@@ -824,6 +846,7 @@ bool Application::InitializeState()
 	}
 	m_settingsLoaded = true;
 	m_app.storage_retention_service = std::make_shared<uam::StorageRetentionService>(m_dataRootLock);
+	m_app.pr_watch_service = std::make_shared<uam::PrWatchService>(m_app.data_root);
 	bool settings_dirty = false;
 	const fs::path bundled_skills_root = MarkdownStoreService::BundledRootForExecutable(executable_path);
 	if (m_app.settings.markdown_store_directory.empty())
@@ -898,11 +921,14 @@ bool Application::InitializeState()
 #endif
 
 	ChatHistorySyncService().LoadSidebarChats(m_app);
+	// Before the remote restore below: a child a previous process left running on a remote host is attached only to be stopped.
+	(void)uam::AgentRunScheduler::RequestStartupStops(m_app, startup_interrupted_run_ids);
 	for (const ChatSession& chat : std::vector<ChatSession>(m_app.chats))
 		if (!chat.temporary_parent_chat_id.empty())
 			(void)uam::RequestTemporarySideChatCleanup(m_app, chat.id);
 	uam::MigrateWorkspaceFolderOwnership(m_app);
 
+	if (uam::MigrateExecutionRoutingIdentities(m_app)) (void)PersistenceCoordinator().SaveSettings(m_app);
 	(void)uam::RestoreExecutionRoutingReservations(m_app);
 	if (const std::size_t reconnecting = uam::RestoreRemoteAcpSessionsAfterRestart(m_app);
 	    reconnecting > 0)
@@ -953,7 +979,12 @@ bool Application::InitializeState()
 bool Application::InitializeCef(CefMainArgs main_args)
 {
 	CefSettings settings;
+#if defined(UAM_CEF_SANDBOX)
+	settings.no_sandbox = false;
+#else
+	// Known gap on Windows (CEF's bootstrap.exe client-DLL layout) and Linux; see docs/reference/security-enterprise.md.
 	settings.no_sandbox = true;
+#endif
 	const fs::path cef_cache_path = m_app.data_root / "cef";
 	CefString(&settings.root_cache_path) = uam::paths::NormalizedNativePathString(cef_cache_path);
 	CefString(&settings.cache_path) = uam::paths::NormalizedNativePathString(cef_cache_path);
@@ -1010,6 +1041,13 @@ bool Application::InitializeCef(CefMainArgs main_args)
 		uam_cef_globals::g_client = client;
 	}
 
+	if (!m_managementNode)
+	{
+		settings.windowless_rendering_enabled = true;
+		// ponytail: the hidden HTML view runtime check stays off, so agent pages run only after the user chooses Run.
+		// Turning it back on is m_app.html_view_render_checker = uam::cef::CreateHtmlViewRenderChecker().
+	}
+
 	if (!CefInitialize(main_args, settings, cef_app.get(), nullptr))
 	{
 		uam::diagnostics::Write("CefInitialize failed.");
@@ -1027,6 +1065,8 @@ bool Application::InitializeCef(CefMainArgs main_args)
 
 void Application::Shutdown()
 {
+	// Quit must not wait on a remote host: no remote connection starts from here, and the waits already under way end together
+	uam::remote::BeginRunnerShutdown();
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 	if (m_app.opencode_native_activity)
 		m_app.opencode_native_activity->Stop();
@@ -1038,6 +1078,7 @@ void Application::Shutdown()
 #endif
 	m_worktreeRetention.Stop();
 	if (m_app.storage_retention_service != nullptr) m_app.storage_retention_service->Stop();
+	if (m_app.pr_watch_service != nullptr) m_app.pr_watch_service->Stop();
 	if (m_app.startup_native_import_service != nullptr) m_app.startup_native_import_service->Cancel();
 	if (m_shutdownComplete)
 	{
@@ -1085,6 +1126,7 @@ void Application::Shutdown()
 		uam::FlushPendingChatSaves(m_app, true);
 	}
 	uam::UamControlService::Shutdown(m_app);
+	uam::secrets::StopAllDrops();
 	uam::FastStopCliTerminalsForExit(m_app);
 	// PollTick has stopped; settle authenticated final history before app/CEF teardown.
 	ChatHistorySyncService().SettleTerminalNativeMediaForExit(m_app);
@@ -1103,6 +1145,19 @@ void Application::Shutdown()
 
 	if (m_cefInitialized)
 	{
+		// UamControlService::Shutdown cancelled the checks; their hidden browsers must close before CefShutdown.
+		const auto render_check_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(8);
+		while (m_app.html_view_render_checker && !m_app.html_view_render_checker->Idle() && std::chrono::steady_clock::now() < render_check_deadline)
+		{
+			CefDoMessageLoopWork();
+			std::this_thread::sleep_for(std::chrono::milliseconds(2));
+		}
+		if (m_app.html_view_render_checker && !m_app.html_view_render_checker->Idle())
+		{
+			uam::diagnostics::Write("[HTML view check] A hidden browser did not close before shutdown.");
+			if (m_dataRootLock != nullptr) uam::diagnostics::StopFileLog(); // Writes are queued, and _Exit would drop this one.
+			std::_Exit(uam::platform::ApplicationRestartRequested() ? uam::platform::RequestedRestartExitCode() : m_exitCode);
+		}
 #if UAM_ENABLE_MOBILE_COMPANION
 		// Server destruction is asynchronous. Keep CEF alive until the owned worker
 		// has released its runtime, callback and browser references.

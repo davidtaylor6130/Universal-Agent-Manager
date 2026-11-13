@@ -62,6 +62,8 @@ namespace uam::settings
 	inline constexpr int kMinAcpTurnOutputLimitMiB = 256;
 	inline constexpr int kMaxAcpTurnOutputLimitMiB = 4096;
 	inline constexpr std::size_t kMaxFavoriteUamAgents = 64;
+	// Bounds the saved Pinned and Active orders; ids past it fall back to the default order.
+	inline constexpr std::size_t kMaxSidebarChatOrder = 2000; // MAX_SORTED_CHATS in sortableDrag.ts
 	inline constexpr auto kUamAgentCycleShortcuts = std::to_array<std::string_view>({
 	    "shift+tab",
 	    "control+shift+tab",
@@ -113,6 +115,19 @@ namespace uam::settings
 			}
 			*rules = std::move(kept);
 		}
+		for (std::vector<std::string>* order : {&settings.sidebar_pinned_chat_order, &settings.sidebar_active_chat_order})
+		{
+			std::vector<std::string> kept;
+			std::unordered_set<std::string> unique;
+			for (const std::string& raw : *order)
+			{
+				std::string id = uam::strings::Trim(raw);
+				if (id.empty() || id.size() > 256 || id.find('\0') != std::string::npos || !unique.insert(id).second) continue;
+				kept.push_back(std::move(id));
+				if (kept.size() == kMaxSidebarChatOrder) break;
+			}
+			*order = std::move(kept);
+		}
 		settings.native_import_startup_max_age_days = std::clamp(settings.native_import_startup_max_age_days, 0, 3650);
 		settings.uam_agent_cycle_shortcut = uam::strings::TrimAndLowerAscii(settings.uam_agent_cycle_shortcut);
 		if (!IsUamAgentCycleShortcut(settings.uam_agent_cycle_shortcut))
@@ -160,6 +175,7 @@ namespace uam::settings
 	{
 		settings.cli_idle_timeout_seconds = std::clamp(settings.cli_idle_timeout_seconds, kMinCliIdleTimeoutSeconds, kMaxCliIdleTimeoutSeconds);
 		settings.active_turn_inactivity_timeout_seconds = std::clamp(settings.active_turn_inactivity_timeout_seconds, kMinActiveTurnInactivityTimeoutSeconds, kMaxActiveTurnInactivityTimeoutSeconds);
+		settings.tool_call_timeout_seconds = std::clamp(settings.tool_call_timeout_seconds, kMinActiveTurnInactivityTimeoutSeconds, kMaxActiveTurnInactivityTimeoutSeconds);
 		settings.stream_loop_repeat_limit = stream_watch::NormalizeLoopRepeatLimit(settings.stream_loop_repeat_limit);
 		settings.acp_setup_inactivity_timeout_seconds = settings.acp_setup_inactivity_timeout_seconds <= 0
 		                                                    ? kDefaultAcpSetupInactivityTimeoutSeconds

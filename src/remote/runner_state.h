@@ -34,6 +34,10 @@ namespace uam::remote
 		nlohmann::json HandleProcessRequest(const nlohmann::json& request);
 		nlohmann::json HandleStartupRequest(const nlohmann::json& request, std::string_view runner_version);
 		bool HasManagedProcesses();
+		/// <summary>Removes sibling spools whose owning helper is provably gone. Call with the service endpoint lock held; failures are tolerated.</summary>
+		void RemoveOrphanedSpools();
+		/// <summary>Call after a response frame was written: a written exit report stops the exit counting as owed.</summary>
+		void ConfirmResponseDelivered(const nlohmann::json& request, const nlohmann::json& response);
 
 		// Kept public only so the translation unit's drain helpers stay small; it is
 		// never exposed by the protocol.
@@ -74,6 +78,8 @@ namespace uam::remote
 			std::atomic<bool> lease_terminating{false};
 			std::atomic<bool> ready{false};
 			std::atomic<bool> exited{false};
+			/// Set once a response carrying this process's exit was written; until then a reconnect can still need it.
+			std::atomic<bool> exit_reported{false};
 			std::atomic<int> exit_code{-1};
 			std::string spool_error;
 		};
@@ -90,6 +96,13 @@ namespace uam::remote
 			std::int64_t expires_at_ms = 0;
 			ChannelBuffer remote_to_desktop;
 			ChannelBuffer desktop_to_remote;
+			/// Which desktop tool server serves this channel and when it was last heard, so the provider-side
+			/// shim can answer a call itself instead of waiting on a desktop that is gone.
+			std::string desktop_epoch;
+			std::int64_t desktop_seen_ms = 0;
+			/// Set by the shim after it failed its waiting calls: the desktop must reopen with a new epoch.
+			bool desktop_fenced = false;
+			bool desktop_output_mid_line = false;
 		};
 		struct Upload
 		{
@@ -125,6 +138,8 @@ namespace uam::remote
 		};
 		std::unordered_map<std::string, TextWorker> m_textWorkers;
 		std::filesystem::path m_spoolDirectory;
+		/// Held for this state's life (POSIX descriptor or Windows HANDLE, -1 when absent); it is how another helper proves this spool is live.
+		std::intptr_t m_spoolLock = -1;
 		std::uintmax_t m_maxSpoolBytesPerStream;
 		std::unordered_map<std::string, std::shared_ptr<Process>> m_processes;
 		std::unordered_map<std::string, std::shared_ptr<Process>> m_retiringProcesses;

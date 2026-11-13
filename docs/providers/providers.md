@@ -18,6 +18,7 @@ Every provider checklist must account for every row. Conditional features must c
 | `editing-messages` | [Editing messages](editing-messages.md) |
 | `mcp-connections` | [MCP connections](mcp-connections.md) |
 | `html-views` | [HTML views](../chat/html-views.md) |
+| `secret-entry` | [Secure secret entry](../chat/secrets.md) |
 | `skills` | [Skills](skills.md) |
 | `attachments` | [Images and files](attachments.md) |
 | `compaction` | [Compaction](compaction.md) |
@@ -37,6 +38,8 @@ Every provider checklist must account for every row. Conditional features must c
 | `central-setup` | [Central setup](../settings/central-setup/central-setup.md) |
 | `remote-execution` | [SSH execution](../remote-environments/ssh.md) |
 | `stream-watch` | [Loop and stall stops](runtime-lifecycle.md#stream-watch) |
+| `compute-pools` | [Compute Pools](../settings/compute-pools.md) |
+| `automation-api` | [Token-scoped automation chats](../automation-api.md) |
 
 ## Provider checklists
 

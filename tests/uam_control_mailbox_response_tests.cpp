@@ -2,10 +2,23 @@
 #include "test_harness.h"
 #include "app/uam_control_service.h"
 
+#ifndef _WIN32
+#include <unistd.h>
+#endif
+
 using namespace uam_test;
 
 namespace
 {
+	/// Windows can keep a removed request listed but unopenable until every handle closes, and the
+	/// proxy retires timed-out heartbeats itself, so a listed request may be gone by read time: poll again.
+	std::optional<nlohmann::json> ReadListedRequest(const fs::path& path)
+	{
+		std::string text;
+		if (!uam::io::TryReadTextFile(path, text) || text.empty()) return std::nullopt;
+		return nlohmann::json::parse(text); // Real malformed content still fails the case.
+	}
+
 	/// <summary>Drives the real MCP subprocess with private mailbox replies and checks that its next call survives rejection.</summary>
 	void VerifyMalformedControlReplyRecovery(const nlohmann::json& malformed)
 	{
@@ -62,7 +75,9 @@ namespace
 				for (const fs::directory_entry& entry : fs::directory_iterator(capability / "requests"))
 				{
 					if (entry.path().extension() != ".json") continue;
-					const nlohmann::json request = nlohmann::json::parse(uam::io::ReadTextFile(entry.path()));
+					const auto listed = ReadListedRequest(entry.path());
+					if (!listed) continue;
+					const nlohmann::json& request = *listed;
 					UAM_ASSERT_EQ(request["method"], nlohmann::json("goal_get"));
 					UAM_ASSERT_EQ(request["arguments"], nlohmann::json::object());
 					UAM_ASSERT_EQ(request["requestId"], nlohmann::json(entry.path().stem().string()));
@@ -168,7 +183,7 @@ UAM_TEST(UamControlStdioSingleWaitReturnsOwnedChildResultAfterEightSeconds)
 	std::string error;
 	UAM_ASSERT(service.StartStdioProcess(process, temp.root,
 	    {service.ResolveCurrentExecutablePath().string(), "--uam-test-control-mcp"}, &error,
-	    {{"UAM_CONTROL_CAPABILITY_DIR", capability_directory.string()}}));
+	    {{"UAM_CONTROL_CAPABILITY_DIR", capability_directory.string()}, {"UAM_CONTROL_REQUEST_KEY", app.uam_control_capabilities.front().request_key}}));
 	struct StopProcess
 	{
 		uam::platform::StdioProcessPlatformFields& process;
@@ -245,7 +260,9 @@ UAM_TEST(UamControlStdioSingleWaitReturnsOwnedChildResultAfterEightSeconds)
 		for (const fs::directory_entry& entry : fs::directory_iterator(capability_directory / "requests"))
 		{
 			if (entry.path().extension() != ".json") continue;
-			const nlohmann::json request = nlohmann::json::parse(uam::io::ReadTextFile(entry.path()));
+			const auto listed = ReadListedRequest(entry.path());
+			if (!listed) continue;
+			const nlohmann::json& request = *listed;
 			const std::string method = request.at("method");
 			UAM_ASSERT(method == "agent_wait" || method == "_mcp_heartbeat");
 			if (method != "agent_wait") continue;
@@ -299,13 +316,34 @@ namespace
 		std::string error;
 		std::string output;
 
-		WaitProxyFixture()
+		explicit WaitProxyFixture(bool resumed = false)
 		{
 			fs::create_directories(capability / "requests");
 			fs::create_directories(capability / "responses");
+			std::vector<std::pair<std::string, std::string>> environment{{"UAM_CONTROL_CAPABILITY_DIR", capability.string()}};
+			if (resumed) environment.emplace_back("UAM_CONTROL_RESUMED", "1");
 			UAM_ASSERT(service.StartStdioProcess(process, temp.root,
-			    {service.ResolveCurrentExecutablePath().string(), "--uam-test-control-mcp"}, &error,
-			    {{"UAM_CONTROL_CAPABILITY_DIR", capability.string()}}));
+			    {service.ResolveCurrentExecutablePath().string(), "--uam-test-control-mcp"}, &error, environment));
+		}
+		/// Reads the reply to `id`, for calls that answer only after the proxy's own budget.
+		nlohmann::json NativeWithin(const nlohmann::json& id, std::chrono::seconds limit)
+		{
+			const auto end = std::chrono::steady_clock::now() + limit;
+			while (std::chrono::steady_clock::now() < end)
+			{
+				if (const auto message = Read()) { UAM_ASSERT_EQ(message->at("id"), id); return *message; }
+				std::this_thread::sleep_for(std::chrono::milliseconds(20));
+			}
+			throw std::runtime_error("Proxy fixture did not answer within its budget.");
+		}
+		void Call(const nlohmann::json& id, const char* tool, nlohmann::json arguments = nlohmann::json::object())
+		{
+			Send({{"jsonrpc", "2.0"}, {"id", id}, {"method", "tools/call"}, {"params", {{"name", tool}, {"arguments", std::move(arguments)}}}});
+		}
+		static std::string ErrorText(const nlohmann::json& response)
+		{
+			UAM_ASSERT_EQ(response.at("result").at("isError"), nlohmann::json(true));
+			return nlohmann::json::parse(response.at("result").at("content")[0].at("text").get<std::string>()).at("error").get<std::string>();
 		}
 		~WaitProxyFixture()
 		{
@@ -352,7 +390,9 @@ namespace
 				for (const auto& file : fs::directory_iterator(capability / "requests"))
 				{
 					if (file.path().extension() != ".json") continue;
-					const auto request = nlohmann::json::parse(uam::io::ReadTextFile(file.path()));
+					const auto listed = ReadListedRequest(file.path());
+					if (!listed) continue;
+					const nlohmann::json& request = *listed;
 					const std::string name = request.at("method");
 					if (name == method)
 					{
@@ -432,7 +472,9 @@ UAM_TEST(UamControlStdioWaitCancellationPreservesNextCallAndEofExits)
 		for (const auto& file : fs::directory_iterator(fixture.capability / "requests"))
 		{
 			if (file.path().extension() != ".json") continue;
-			const auto request = nlohmann::json::parse(uam::io::ReadTextFile(file.path()));
+			const auto listed = ReadListedRequest(file.path());
+			if (!listed) continue;
+			const nlohmann::json& request = *listed;
 			UAM_ASSERT_EQ(request.at("method"), nlohmann::json("_mcp_heartbeat"));
 			fs::remove(file.path());
 			fixture.Reply(request);
@@ -466,6 +508,100 @@ UAM_TEST(UamControlStdioWaitCancellationPreservesNextCallAndEofExits)
 	fixture.Reply(eof);
 	fixture.Exit(0);
 	UAM_ASSERT(!fixture.Read().has_value()); // No abandoned wait4 response on EOF.
+}
+
+UAM_TEST(UamControlStdioRereadsBrieflyUnreadableReplyInsteadOfFailingTheCall)
+{
+#ifdef _WIN32
+	return; // POSIX mode 000 stages an unreadable reply deterministically; Windows cannot rename a locked file into place.
+#else
+	if (::geteuid() == 0) return;
+	WaitProxyFixture fixture;
+	(void)fixture.Initialize();
+	fixture.Send({{"jsonrpc", "2.0"}, {"id", 5}, {"method", "tools/call"},
+	    {"params", {{"name", "goal_get"}, {"arguments", nlohmann::json::object()}}}});
+	const auto request = fixture.Take("goal_get");
+	// Publish atomically but unreadable, as a reply another handle briefly refuses to share looks to the proxy.
+	const fs::path staged = fixture.temp.root / "staged-reply.json";
+	UAM_ASSERT(uam::io::WriteTextFile(staged, nlohmann::json{{"ok", true}, {"result", {{"sentinel", "reread"}}}}.dump()));
+	fs::permissions(staged, fs::perms::none, fs::perm_options::replace);
+	const fs::path reply = fixture.capability / "responses" / (request.at("requestId").get<std::string>() + ".json");
+	fs::rename(staged, reply);
+	std::this_thread::sleep_for(std::chrono::milliseconds(300)); // The proxy polls every 25 ms.
+	UAM_ASSERT(!fixture.Read().has_value()); // No error reply while the file cannot be opened.
+	fs::permissions(reply, fs::perms::owner_read | fs::perms::owner_write, fs::perm_options::replace);
+	const auto response = fixture.Native(5);
+	UAM_ASSERT_EQ(response.at("result").at("isError"), nlohmann::json(false));
+	UAM_ASSERT_EQ(nlohmann::json::parse(response.at("result").at("content")[0].at("text").get<std::string>()),
+	    (nlohmann::json{{"sentinel", "reread"}}));
+#endif
+}
+
+UAM_TEST(UamControlStdioResumedServerRecordsItsConnectionWithoutAHandshake)
+{
+	// After a remote reattach the provider on the host is still connected and never repeats its MCP handshake.
+	WaitProxyFixture fixture(true);
+	const auto initialized = fixture.Take("_mcp_initialized");
+	fixture.Reply(initialized);
+	fixture.Call(2, "goal_get");
+	fixture.Reply(fixture.Take("goal_get"), {{"sentinel", "resumed"}});
+	UAM_ASSERT_EQ(fixture.Native(2).at("result").at("isError"), nlohmann::json(false));
+	// A server without that marker still needs the handshake before it reports a connection.
+	WaitProxyFixture plain;
+	plain.Call(2, "goal_get");
+	UAM_ASSERT_EQ(plain.Take("goal_get").at("method"), nlohmann::json("goal_get"));
+}
+
+UAM_TEST(UamControlStdioOversizedReplyBecomesAnErrorAndTheServerSurvives)
+{
+	WaitProxyFixture fixture;
+	(void)fixture.Initialize();
+	fixture.Call(2, "goal_get");
+	// 40 KiB in the mailbox, but every quote is escaped again inside the MCP text result.
+	fixture.Reply(fixture.Take("goal_get"), std::string(20000, '"'));
+	UAM_ASSERT(WaitProxyFixture::ErrorText(fixture.Native(2)).find("64 KiB") != std::string::npos);
+	fixture.Call(3, "goal_get");
+	fixture.Reply(fixture.Take("goal_get"), {{"sentinel", "still serving"}});
+	UAM_ASSERT_EQ(fixture.Native(3).at("result").at("isError"), nlohmann::json(false));
+}
+
+UAM_TEST(UamControlStdioTimedOutRequestIsWithdrawnOrWaitsForItsClaimedReply)
+{
+	WaitProxyFixture fixture;
+	(void)fixture.Initialize();
+	// Never claimed by the manager: the request file is withdrawn before the error is reported, so it cannot run later.
+	fixture.Call(2, "agent_delegate", {{"agentId", "worker"}, {"task", "Run once."}});
+	const auto asked = std::chrono::steady_clock::now();
+	UAM_ASSERT(WaitProxyFixture::ErrorText(fixture.NativeWithin(2, std::chrono::seconds(25))).find("withdrawn and did not run") != std::string::npos);
+	// The budget is 10 s on the clock however slowly this machine polls.
+	UAM_ASSERT(std::chrono::steady_clock::now() - asked >= std::chrono::milliseconds(9500));
+	UAM_ASSERT(std::chrono::steady_clock::now() - asked < std::chrono::seconds(20));
+	for (const auto& file : fs::directory_iterator(fixture.capability / "requests"))
+		if (const auto listed = ReadListedRequest(file.path())) UAM_ASSERT(listed->value("method", "") != "agent_delegate");
+	// Claimed by the manager (its file is gone) but answered late: the caller gets the real outcome, not a failure.
+	fixture.Call(3, "agent_delegate", {{"agentId", "worker"}, {"task", "Run once."}});
+	const auto claimed = fixture.Take("agent_delegate");
+	std::this_thread::sleep_for(std::chrono::milliseconds(12500)); // Past the 10 s budget, inside the 5 s claimed-reply grace.
+	UAM_ASSERT(!fixture.Read().has_value());
+	fixture.Reply(claimed, {{"runId", "late-run"}});
+	const auto late = fixture.NativeWithin(3, std::chrono::seconds(4));
+	UAM_ASSERT_EQ(late.at("result").at("isError"), nlohmann::json(false));
+}
+
+UAM_TEST(UamControlStdioQuestionCancelledByItsProviderTellsTheManager)
+{
+	WaitProxyFixture fixture;
+	const std::string connection = fixture.Initialize();
+	fixture.Call(7, "user_question", {{"question", "Which branch?"}});
+	const auto question = fixture.Take("user_question");
+	fixture.Send({{"jsonrpc", "2.0"}, {"method", "notifications/cancelled"}, {"params", {{"requestId", 7}}}});
+	const auto cancel = fixture.Take("_mcp_cancel_request");
+	UAM_ASSERT_EQ(cancel.at("arguments"), (nlohmann::json{{"connectionId", connection}, {"requestId", question.at("requestId")}}));
+	fixture.Reply(cancel);
+	// A cancelled call has no reply, and the server keeps serving.
+	fixture.Call(8, "goal_get");
+	fixture.Reply(fixture.Take("goal_get"), {{"sentinel", "after cancel"}});
+	UAM_ASSERT_EQ(fixture.Native(8).at("result").at("isError"), nlohmann::json(false));
 }
 
 UAM_TEST(UamControlStdioOversizePartialLineExitsWithInputStillOpen)

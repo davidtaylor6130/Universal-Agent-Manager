@@ -3,12 +3,14 @@ import { SnoozeMenu } from './SnoozeMenu'
 import { RowSubmenu } from './RowSubmenu'
 import { isCompanionContext, isCefContext, sendToCEF } from '../../ipc/cefBridge'
 import { useState, useRef, useEffect, useLayoutEffect, useSyncExternalStore, memo, useContext } from 'react'
-import type { MouseEvent as ReactMouseEvent, RefObject } from 'react'
+import type { FocusEvent as ReactFocusEvent, MouseEvent as ReactMouseEvent, RefObject } from 'react'
+import { ChatSortContext, type ChatSortList } from './sortableDrag'
+import { automationStartPending, subscribeOutgoingAttempts } from '../../utils/outgoingMessagePresentation'
 import {
   Pin, MoreHorizontal, Pencil, Trash2, HelpCircle, ClipboardList, Brain,
   ShieldCheck, SquareChevronRight, FileText, TriangleAlert, CircleAlert, Check,
   Folder as FolderIcon, GitBranch, Monitor, Server, CircleDashed, CircleCheck,
-  MessageCircleQuestion, ShieldQuestion, Copy, RefreshCw, MessageSquarePlus, AlarmClockOff, Clock, SmilePlus, Bot,
+  MessageCircleQuestion, ShieldQuestion, Copy, RefreshCw, MessageSquarePlus, AlarmClockOff, Clock, SmilePlus, Bot, Eye,
 } from 'lucide-react'
 import { useAppStore, type AcpAttentionKind } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
@@ -88,6 +90,10 @@ function useActivityBranch(session: Session | null | undefined, row: RefObject<H
 }
 
 type ActivityStatus = { label: string; color: string; Icon: typeof CircleCheck }
+
+const AUTOMATION_HELD_STATUS: ActivityStatus = { label: 'Waiting for approval', color: 'var(--warning)', Icon: ShieldQuestion }
+/** Shown between wakes while a pull request watch keeps the chat in Active Chats. */
+const WATCHING_STATUS: ActivityStatus = { label: 'Watching PR', color: 'var(--info)', Icon: Eye }
 
 /** T3-style at-a-glance label for a card that is not running. */
 export function activityStatusLabel(status: DisplayedChatStatus): ActivityStatus | null {
@@ -174,6 +180,8 @@ interface SessionItemProps {
   onSessionClick?: (sessionId: string, event: ReactMouseEvent<HTMLDivElement>) => boolean
   /** Verified native subagent child: same row, robot glyph instead of the provider/custom icon. */
   subagentRow?: boolean
+  /** Pinned or Active row the user can reorder by drag or Arrow Up/Down; other rows keep their time order. */
+  sortList?: ChatSortList
 }
 
 const ATTENTION_LABELS: Record<AcpAttentionKind, string> = {
@@ -213,7 +221,7 @@ const PREFETCH_INTENT_MS = 150
 
 const HOVER_FADE = 'transition-opacity duration-100 group-hover:opacity-0 group-focus-within:opacity-0'
 
-export const SessionItem = memo(function SessionItem({ sessionId, session, familySessionIds: providedFamilySessionIds, selected = false, activityLayout = false, activityFolderName, activityFolderIcon, activityHostLabel, activityHostRemote = false, onSessionClick, onSessionOpen, subagentRow = false }: SessionItemProps) {
+export const SessionItem = memo(function SessionItem({ sessionId, session, familySessionIds: providedFamilySessionIds, selected = false, activityLayout = false, activityFolderName, activityFolderIcon, activityHostLabel, activityHostRemote = false, onSessionClick, onSessionOpen, subagentRow = false, sortList }: SessionItemProps) {
   useSyncExternalStore(subscribeSubagentNavigation, subagentNavigationRevision)
   // Verified native lineage, not only the catalogue's prop, decides the robot icon on every sidebar path.
   const lineageSubagent = useAppStore(state => { const candidate = session ?? state.sessions.find(item => item.id === sessionId); return candidate ? hasNativeSubagentLineage(candidate) : false })
@@ -224,6 +232,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
       return {
         name: session.name,
         attentionRevision: session.attentionRevision,
+        automationHeld: Boolean(session.automationPendingPrompt),
         snoozedUntilMs: session.snoozedUntilMs ?? 0,
         lastOpenedAt: session.lastOpenedAt ?? session.updatedAt ?? null,
         isPinned: session.isPinned ?? false,
@@ -242,6 +251,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
     return {
       name: storeSession?.name ?? '',
       attentionRevision: storeSession?.attentionRevision,
+      automationHeld: Boolean(storeSession?.automationPendingPrompt),
       snoozedUntilMs: storeSession?.snoozedUntilMs ?? 0,
       lastOpenedAt: storeSession?.lastOpenedAt ?? storeSession?.updatedAt ?? null,
       isPinned: storeSession?.isPinned ?? false,
@@ -285,10 +295,15 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
     const selectedChild = (navigationParent?.id === activeId || activeId === sessionId) && route?.kind === 'native' && route.chatId === sessionId
     return [selectedChild, selectedChild || (activeId === sessionId && !route), Boolean(route)] as const
   }))
+  // Re-renders when the attempt changes; the selector below also follows native's pending prompts.
+  useSyncExternalStore(subscribeOutgoingAttempts, () => { const state = useAppStore.getState(); const chat = session ?? state.sessions.find((x) => x.id === sessionId); return chat ? automationStartPending(chat, state.acpBindingBySessionId[sessionId]?.pendingDirectPrompts) : false })
   const lifecycleStatus = useAppStore(useShallow((s) => {
     const acpBindings = familySessionIds.flatMap((id) => s.acpBindingBySessionId[id] ? [s.acpBindingBySessionId[id]] : [])
     const cliBindings = familySessionIds.flatMap((id) => s.cliBindingBySessionId[id] ? [s.cliBindingBySessionId[id]] : [])
-    return displayedChatStatus(cliBindings, acpBindings)
+    if (sessionSummary.automationHeld) return null
+    const status = displayedChatStatus(cliBindings, acpBindings)
+    const chat = session ?? s.sessions.find((x) => x.id === sessionId)
+    return chat && automationStartPending(chat, s.acpBindingBySessionId[sessionId]?.pendingDirectPrompts) && (!status || status.type === 'done') ? { type: 'processing' as const } : status
   }))
   const workingStartedAtMs = useAppStore((s) => {
     if (!activityLayout) return null
@@ -400,6 +415,8 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
   // Rows of the multi-selection the open menu acts on; empty while the menu targets only this row.
   const [menuSelectionIds, setMenuSelectionIds] = useState<string[]>([])
   const chatSelection = useContext(ChatSelectionContext)
+  const chatSort = useContext(ChatSortContext)
+  const sortable = Boolean(sortList && chatSort) && !editing
   const selectionIds = () => {
     const ids = selected && chatSelection ? chatSelection.selectedIds() : []
     return ids.length > 1 ? ids : []
@@ -487,12 +504,19 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
   }
   const cancelPrefetch = () => clearTimeout(prefetchTimer.current)
   useEffect(() => cancelPrefetch, [])
+  // Pointer and keyboard intent share one dwell: leaving with the pointer keeps it while the row holds focus,
+  // and focus moving between the row's own controls neither restarts nor cancels it.
+  const crossesRow = (event: ReactFocusEvent<HTMLDivElement>) =>
+    !(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)
   const menuReturnFocusRef = useRef<HTMLElement | null>(null)
   const activityDate = activityLayout ? session?.updatedAt ?? sessionLastOpenedAt : sessionLastOpenedAt
   const lastOpenedLabel = formatSidebarTime(activityDate)
   const activityBranch = useActivityBranch(activityLayout ? session : null, rowRef)
   const activityWorktree = activityLayout ? sessionSummary.worktreeDirectory.trim() : ''
-  const activityStatus = activityLayout ? activityStatusLabel(lifecycleStatus) : null
+  const watchingPullRequest = useAppStore((s) => s.prWatches.some((watch) => watch.watching && familySessionIds.includes(watch.chatId)))
+  // Attention outranks the watch; a finished turn does not, because the chat is still waiting on its pull request.
+  const activityStatus = !activityLayout ? null : sessionSummary.automationHeld ? AUTOMATION_HELD_STATUS
+    : watchingPullRequest && lifecycleStatus?.type !== 'attention' ? WATCHING_STATUS : activityStatusLabel(lifecycleStatus)
   const lastOpenedTitle = formatSidebarTimeTitle(activityDate)
   const gridLeaves = chatGridLeaves(gridLayout.root)
   const paneIndexes = gridLeaves.flatMap((leaf, index) => familySessionIds.includes(leaf.sessionId) ? [index] : [])
@@ -588,7 +612,10 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
   return (
     <div
       className="relative group"
-      draggable={!editing}
+      data-sort-id={sortList && chatSort ? sessionId : undefined}
+      // A sortable row drags by pointer (sortableDrag.ts), which also opens it in a pane; other rows keep the native drag.
+      draggable={!editing && !sortable}
+      onPointerDown={sortable ? (event) => chatSort!.start(sortList!, sessionId, event) : undefined}
       onDragStart={(event) => {
         event.dataTransfer.effectAllowed = 'copy'
         event.dataTransfer.setData('text/x-uam-chat-id', sessionId)
@@ -611,9 +638,9 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
           // Hover, active and bulk-selected backgrounds come from sidebar.css / .uam-selected-item so they share one box.
         }}
         onPointerEnter={schedulePrefetch}
-        onPointerLeave={cancelPrefetch}
-        onFocus={schedulePrefetch}
-        onBlur={cancelPrefetch}
+        onPointerLeave={(event) => { if (!event.currentTarget.contains(document.activeElement)) cancelPrefetch() }}
+        onFocus={(event) => { if (crossesRow(event)) schedulePrefetch() }}
+        onBlur={(event) => { if (crossesRow(event) && !event.currentTarget.matches(':hover')) cancelPrefetch() }}
         onClick={(event) => {
           if (editing || onSessionClick?.(sessionId, event)) return
           selectChat()
@@ -623,9 +650,13 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
           setEditing(true)
           setEditValue(sessionName)
         }}
+        aria-keyshortcuts={sortable ? 'ArrowUp ArrowDown' : undefined}
         onKeyDown={(event) => {
           if (event.target !== event.currentTarget || editing) return
-          if (event.key === 'Enter' || event.key === ' ') {
+          if (sortable && (event.key === 'ArrowUp' || event.key === 'ArrowDown') && !event.shiftKey && !event.altKey && !event.metaKey && !event.ctrlKey) {
+            event.preventDefault()
+            chatSort!.move(sortList!, sessionId, event.key === 'ArrowUp' ? -1 : 1)
+          } else if (event.key === 'Enter' || event.key === ' ') {
             event.preventDefault()
             selectChat()
           } else if (!isCompanionContext() && (event.key === 'Delete' || (event.key === 'Backspace' && (event.metaKey || event.ctrlKey)))) {
@@ -669,14 +700,14 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
                   {/* Done overlays the status/time on hover so the row never reflows. */}
                   <span className="relative flex shrink-0 items-center justify-end">
                   {activityStatus ? (
-                    <span className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium transition-opacity duration-100 group-hover:opacity-0 group-focus-within:opacity-0" style={{ color: activityStatus.color }}>
+                    <span className={`inline-flex shrink-0 items-center gap-1 text-[11px] font-medium transition-opacity duration-100${sessionSummary.automationHeld ? '' : ' group-hover:opacity-0 group-focus-within:opacity-0'}`} style={{ color: activityStatus.color }}>
                       <activityStatus.Icon size={12} className="shrink-0" aria-hidden />
                       <span role="status">{activityStatus.label}</span>
                     </span>
                   ) : (
                     <span className="shrink-0 text-[11px] tabular-nums transition-opacity duration-100 group-hover:opacity-0 group-focus-within:opacity-0" style={{ color: 'var(--text-3)' }} title={`Updated ${activityDate?.toLocaleString() ?? ''}`}>{formatActivityAge(activityDate)}</span>
                   )}
-                  {!isCompanionContext() && (
+                  {!isCompanionContext() && !sessionSummary.automationHeld && (
                     <span className="absolute right-0 top-1/2 -translate-y-1/2 inline-flex shrink-0 items-center gap-0.5 opacity-0 pointer-events-none transition-opacity duration-100 group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto">
                       {/* ui: raw button kept — inline-styled text action with its own colours; Button would restyle it */}
                       <button
@@ -1003,9 +1034,9 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
           <RowSubmenu label="Copy" ariaLabel="Copy" icon={<Copy size={13} aria-hidden />}>
             <CopyDetailItems items={copyItems} />
           </RowSubmenu>
-          <RowSubmenu label="Snooze" ariaLabel={`Snooze ${sessionName}`} icon={<Clock size={13} aria-hidden />}>
+          {!sessionSummary.automationHeld && <RowSubmenu label="Snooze" ariaLabel={`Snooze ${sessionName}`} icon={<Clock size={13} aria-hidden />}>
             <SnoozeMenu chatId={sessionId} familyIds={familySessionIds} untilMs={sessionSummary.snoozedUntilMs} onSnoozed={() => setMenuPos(null)} />
-          </RowSubmenu>
+          </RowSubmenu>}
           <CollectionMenuItems showDivider={false} type="chat" target={sessionId} label={sessionName} onAdded={() => setMenuPos(null)} />
           <MenuDivider />
           <MenuItem className="uam-sb-menu-item uam-sb-menu-item--danger" icon={<Trash2 size={13} aria-hidden />} label="Delete…" shortcut="Del"

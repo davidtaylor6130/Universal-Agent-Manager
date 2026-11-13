@@ -340,14 +340,15 @@ export function ComposerToolbar({
   const steerPreferred = useAppStore((state) => state.steerActiveTurnOnSend)
   // Saving an edit and submitting a composer question keep their own Send action.
   const alternateSendEligible = !editing && !holdSend
-  const steerByDefault = running && steerPreferred && alternateSendEligible
+  // A turn held for a compute pool slot has not reached the provider, so Send queues behind it.
+  const steerByDefault = running && steerPreferred && alternateSendEligible && !acp?.computePoolWait
   // Providers without native steering stop the running turn and send the steer first; say so before Send.
   const steerInterrupts = provider.supportsNativeSteering !== true
   const steerLabel = steerInterrupts ? 'Interrupt and steer' : 'Steer active turn'
   const steerDetail = steerInterrupts ? 'Stops the running turn, then sends this first; queued prompts keep their order.' : 'Sends this to the running turn at its next safe point; queued prompts keep their order.'
   const alternateSendLabel = steerByDefault ? 'Queue for next turn instead' : `${steerLabel} instead`
   const alternateSendTitle = steerByDefault ? 'Queue for next turn instead: runs after the current turn finishes.' : `${alternateSendLabel}: ${steerDetail}`
-  const alternateSendAvailable = running && canSend && alternateSendEligible
+  const alternateSendAvailable = running && canSend && alternateSendEligible && !acp?.computePoolWait
   const dictationVisualState = dictationError ? 'error' : dictationState
   const dictationLabel = !dictationAvailable
     ? 'Dictation requires the desktop app'

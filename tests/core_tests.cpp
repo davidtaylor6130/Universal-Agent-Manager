@@ -1,5 +1,6 @@
 #include "common/companion/protocol.h"
 #include "common/provider/copilot_native_history.h"
+#include "common/provider/provider_text_worker.h"
 #include "core/chat_import_utils.h"
 #include "cef/uam_bridge_request.h"
 #include "common/platform/platform_speech_output.h"
@@ -32,6 +33,7 @@
 #include <cstdio>
 #include <fstream>
 #include <future>
+#include <set>
 #include <type_traits>
 
 #if defined(_WIN32)
@@ -1214,6 +1216,50 @@ UAM_TEST(MacWritingToClosedStdioPipeDoesNotTerminateCaller)
 }
 #endif
 
+UAM_TEST(OpenCodeWorkerProviderErrorStopsWorkerAtOnce)
+{
+	// OpenCode 1.19.5 `run --print-logs --log-level ERROR` line, printed once per attempt of a request it retries indefinitely.
+	const std::string line = "timestamp=2026-11-12T00:27:39.580Z level=ERROR run=e97ca953 message=\"stream error\" providerID=fake modelID=m agent=uam-text-worker mode=primary error.error=\"AI_APICallError: Free usage limit reached\"\n";
+	const std::string expected = "OpenCode stopped after repeated provider errors instead of waiting for its retries: AI_APICallError: Free usage limit reached.";
+	int reports = 0;
+	// One report is tolerated: OpenCode's own retry gets past a one-off 429.
+	UAM_ASSERT(uam::provider_workers::OpenCodeWorkerProviderError("> uam-text-worker · m\n" + line, reports).empty());
+	UAM_ASSERT_EQ(reports, 1);
+	// An unfinished line is not counted; the caller rescans it once complete.
+	UAM_ASSERT(uam::provider_workers::OpenCodeWorkerProviderError(line.substr(0, 60), reports).empty());
+	UAM_ASSERT_EQ(uam::provider_workers::OpenCodeWorkerProviderError(line, reports), expected);
+	reports = 0;
+	UAM_ASSERT_EQ(uam::provider_workers::OpenCodeWorkerProviderError(line + line, reports), expected);
+	// Reply text quoting the log, or other log levels, never counts.
+	reports = 0;
+	UAM_ASSERT(uam::provider_workers::OpenCodeWorkerProviderError("The log said level=ERROR message=\"stream error\"\n{\"memories\":[]}\n" + std::string("timestamp=x level=WARN message=\"stream error\"\n"), reports).empty());
+	UAM_ASSERT_EQ(reports, 0);
+	// Completed output drops log lines so strict parsers (titles) see only the reply.
+	UAM_ASSERT_EQ(*uam::provider_workers::CompletedTextWorkerOutput(uam::provider_ids::kOpenCodeCli, line + "{\"title\":\"Fix\"}\n", 65536), std::string("{\"title\":\"Fix\"}\n"));
+
+	TempDir temp("uam-provider-worker-early-failure");
+	uam::ProviderWorkerInvocation invocation;
+	invocation.direct_process = true;
+	invocation.output_failure = uam::provider_workers::OpenCodeWorkerProviderError;
+	const std::string log_line = "timestamp=t level=ERROR message=\"stream error\" error.error=\"AI_APICallError: Free usage limit reached\"";
+#if defined(_WIN32)
+	const fs::path shim_path = temp.root / "uam-retrying-worker.cmd";
+	UAM_ASSERT(uam::io::WriteTextFile(shim_path, "@echo off\r\necho " + log_line + " 1>&2\r\nping -n 2 127.0.0.1 >NUL\r\necho " + log_line + " 1>&2\r\nping -n 30 127.0.0.1 >NUL\r\n"));
+	invocation.argv = {uam::paths::Utf8PathString(shim_path)};
+#else
+	const std::string print = "printf '%s\\n' '" + log_line + "' >&2";
+	invocation.argv = {"/bin/sh", "-c", print + "; sleep 1; " + print + "; sleep 30"};
+#endif
+	invocation.standard_input = "prompt";
+	const auto started = std::chrono::steady_clock::now();
+	const ProcessExecutionResult result = uam::ExecuteProviderWorkerInvocation(invocation, temp.root, 25000);
+	UAM_ASSERT(std::chrono::steady_clock::now() - started < std::chrono::seconds(10));
+	UAM_ASSERT(!result.ok);
+	UAM_ASSERT(!result.timed_out);
+	UAM_ASSERT(!result.canceled);
+	UAM_ASSERT_EQ(result.error, expected);
+}
+
 UAM_TEST(ProviderWorkerDirectExecutionHonorsTimeoutAndCancellation)
 {
 	TempDir temp("uam-provider-worker-direct-stop");
@@ -1542,6 +1588,8 @@ int main(int argc, char** argv)
 		std::string chunked_output;
 		if (private_chunked && !uam::base64::Decode(fixture_result.value("stdoutBase64", ""), chunked_output)) return 2;
 		std::size_t chunked_offset = 0;
+		// Remote OpenCode history probes the CLI version first; that probe gets a version, not the canned export.
+		std::set<std::string> version_probes;
 		uam::remote::RunnerState state;
 		nlohmann::json request;
 		while (uam::remote::ReadFrame(std::cin, request) == uam::remote::FrameReadResult::Ok)
@@ -1560,10 +1608,19 @@ int main(int argc, char** argv)
 			    ? uam::remote::HandleRunnerRequest(request, "test", &state)
 			    : nlohmann::json{{"id", request["id"]}, {"ok", true},
 			                     {"result", fixture_result}};
+			if (request.value("type", "") == "process.start" && request.contains("argv") && request["argv"].is_array() &&
+			    std::ranges::find(request["argv"], nlohmann::json("--version")) != request["argv"].end())
+				version_probes.insert(request.value("sessionId", ""));
 			if (private_chunked && request.value("type", "") != "hello")
 			{
 				response["result"] = nlohmann::json::object();
-				if (request.value("type", "") == "process.poll")
+				if (request.value("type", "") == "process.poll" && version_probes.contains(request.value("sessionId", "")))
+				{
+					const std::string version = "1.19.4\n";
+					response["result"] = {{"running", false}, {"exitCode", 0}, {"stdoutBase64", uam::base64::Encode(version)}, {"stderrBase64", ""},
+					    {"stdoutCursor", version.size()}, {"stderrCursor", std::uint64_t{0}}};
+				}
+				else if (request.value("type", "") == "process.poll")
 				{
 					const std::string_view chunk = std::string_view(chunked_output).substr(chunked_offset, 65536);
 					chunked_offset += chunk.size();
@@ -1571,6 +1628,10 @@ int main(int argc, char** argv)
 					    {"stdoutBase64", uam::base64::Encode(chunk)}, {"stderrBase64", ""}, {"stdoutCursor", chunked_offset}, {"stderrCursor", std::uint64_t{0}}};
 				}
 			}
+			// Every request gets a canned result here, so this fake cannot answer a launch setup location.
+			if (request.value("type", "") == "hello") response["capabilities"]["providerConfigurationLocation"] = false;
+			// A helper from before large uploads does not report its limit.
+			if (request.value("type", "") == "hello" && fixture_result.is_object() && fixture_result.value("legacyUploadLimit", false)) response["capabilities"].erase("maxUploadBytes");
 			if (argc == 5 && std::string_view(argv[4]) == "--without-central-config" && request.value("type", "") == "hello")
 				response["capabilities"]["centralProviderConfiguration"] = false;
 			if (argc == 5 && std::string_view(argv[4]).starts_with("--reject-config-start=") && request.value("type", "") == "process.start")
@@ -1638,13 +1699,25 @@ int main(int argc, char** argv)
 		const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
 		try
 		{
+			// Every state push in every case is followed by a full comparison of its stamped caches with their sources.
+			const std::size_t divergences_before = uam::StateSerializer::CacheDivergenceCount();
+			uam::SetStateCacheVerificationAfterEveryPushForTests(true);
+			const std::size_t expected_before = uam_test::g_expected_state_cache_divergences;
 			test.fn();
+			const std::size_t divergences = uam::StateSerializer::CacheDivergenceCount() - divergences_before;
+			const std::size_t expected = uam_test::g_expected_state_cache_divergences - expected_before;
+			// Keep the totals equal so one failing case does not also fail the program's exit check.
+			uam_test::g_expected_state_cache_divergences = uam::StateSerializer::CacheDivergenceCount();
+			if (divergences != expected)
+				throw uam_test::TestFailure("state pushes reused " + std::to_string(divergences) +
+				    " cached value(s) that no longer matched their source; expected " + std::to_string(expected));
 			std::cout << "[PASS] " << test.name << '\n';
 		}
 		catch (const std::exception& ex)
 		{
 			++failures;
 			std::cerr << "[FAIL] " << test.name << ": " << ex.what() << '\n';
+			uam_test::g_expected_state_cache_divergences = uam::StateSerializer::CacheDivergenceCount();
 		}
 		if (report_timing)
 		{

@@ -1819,7 +1819,7 @@ UAM_TEST(MemoryServiceFailedWorkerKeepsCachedEntryCountsWithoutRescanningRoots)
 	UAM_ASSERT_EQ(app.memory_activity.last_worker_exit_code, 1);
 }
 
-UAM_TEST(MemoryServiceFailedWorkerAppliesGlobalBackoffBeforeNextQueuedChat)
+UAM_TEST(MemoryServiceFailedWorkerBacksOffItsHostAndProviderBeforeNextQueuedChat)
 {
 	TempDir temp("uam-memory-global-backoff");
 	uam::AppState app;
@@ -1833,7 +1833,6 @@ UAM_TEST(MemoryServiceFailedWorkerAppliesGlobalBackoffBeforeNextQueuedChat)
 	failed.messages.push_back({MessageRole::User, "Remember this.", "now"});
 	ChatSession queued = failed;
 	queued.id = "chat-global-queued";
-	queued.provider_id = "missing-provider";
 	ChatSession queued_again = queued;
 	queued_again.id = "chat-global-queued-again";
 	app.chats = {failed, queued, queued_again};
@@ -1854,12 +1853,12 @@ UAM_TEST(MemoryServiceFailedWorkerAppliesGlobalBackoffBeforeNextQueuedChat)
 	app.memory_extraction_queue.push_back({queued_again.id, -1, false});
 
 	UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
-	UAM_ASSERT(app.memory_global_retry_not_before > uam::GetAppTimeSeconds());
-	UAM_ASSERT_EQ(app.memory_global_failure_count, 1);
+	UAM_ASSERT_EQ(app.memory_worker_backoff_by_key.size(), std::size_t{1});
+	UAM_ASSERT(app.memory_worker_backoff_by_key.begin()->second.retry_not_before > uam::GetAppTimeSeconds());
+	UAM_ASSERT_EQ(app.memory_worker_backoff_by_key.begin()->second.failure_count, 1);
 	UAM_ASSERT_EQ(app.memory_extraction_queue.size(), static_cast<std::size_t>(2));
 
 	app.memory_extraction_queue.clear();
-	app.memory_global_retry_not_before = uam::GetAppTimeSeconds() + 30.0;
 	uam::AsyncMemoryExtractionTask success;
 	success.data_root = app.data_root;
 	success.running = true;
@@ -1874,8 +1873,7 @@ UAM_TEST(MemoryServiceFailedWorkerAppliesGlobalBackoffBeforeNextQueuedChat)
 	success.state->completed.store(true);
 	app.memory_extraction_tasks.push_back(std::move(success));
 	UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
-	UAM_ASSERT_EQ(app.memory_global_failure_count, 0);
-	UAM_ASSERT_EQ(app.memory_global_retry_not_before, 0.0);
+	UAM_ASSERT(app.memory_worker_backoff_by_key.empty());
 
 	ChatSession fresh = queued;
 	fresh.id = "chat-global-fresh-manual";
@@ -1887,10 +1885,9 @@ UAM_TEST(MemoryServiceFailedWorkerAppliesGlobalBackoffBeforeNextQueuedChat)
 
 	app.memory_extraction_queue.push_back({queued_again.id, -1, false});
 	app.memory_extraction_queue.push_back({queued.id, -1, false});
-	app.memory_global_retry_not_before = uam::GetAppTimeSeconds() + 30.0;
+	MemoryService::SetWorkerBackoffForTests(app, queued, uam::GetAppTimeSeconds() + 30.0);
 	UAM_ASSERT(MemoryService::QueueManualScan(app, {queued.id}));
-	UAM_ASSERT_EQ(app.memory_global_failure_count, 0);
-	UAM_ASSERT_EQ(app.memory_global_retry_not_before, 0.0);
+	UAM_ASSERT(app.memory_worker_backoff_by_key.empty());
 	UAM_ASSERT_EQ(app.memory_extraction_queue.front().chat_id, queued.id);
 	UAM_ASSERT(app.memory_extraction_queue.front().manual);
 	UAM_ASSERT_EQ(app.memory_extraction_queue.front().scan_start_message_index, 0);
@@ -2012,7 +2009,7 @@ UAM_TEST(MemoryServiceColdPreparationDoesNotSkipNewMessages)
 	live.messages_loaded = true;
 	live.messages = chat.messages;
 	live.messages.push_back({MessageRole::User, "Remember this critical lesson.", "later"});
-	app.memory_global_retry_not_before = uam::GetAppTimeSeconds() + 60;
+	MemoryService::SetWorkerBackoffForTests(app, live, uam::GetAppTimeSeconds() + 60);
 	DrainMemoryWork(app);
 	UAM_ASSERT_EQ(live.memory_last_processed_message_count, 0);
 	UAM_ASSERT_EQ(live.messages.size(), static_cast<std::size_t>(2));
@@ -2126,7 +2123,7 @@ UAM_TEST(MemoryServiceManualRescansRetainRetryIntentAfterFailures)
 
 		app.data_root = temp.root / "data";
 		app.memory_retry_not_before_by_chat_id[chat.id] = 0;
-		app.memory_global_retry_not_before = 0;
+		app.memory_worker_backoff_by_key.clear();
 		// No configured provider: retry reaches startup without launching an installed CLI.
 		UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
 		DrainMemoryWork(app);
@@ -2288,7 +2285,6 @@ UAM_TEST(CodexMemoryCompletionCannotPersistReasoningWhenAssistantRefuses)
 		TempDir temp("uam-codex-memory-final-authority");
 		uam::AppState app;
 		app.data_root = temp.root / "data";
-		app.memory_global_retry_not_before = uam::GetAppTimeSeconds() + 9999.0;
 		const fs::path workspace = temp.root / "workspace";
 		fs::create_directories(workspace);
 		ChatSession chat;
@@ -2299,6 +2295,7 @@ UAM_TEST(CodexMemoryCompletionCannotPersistReasoningWhenAssistantRefuses)
 		chat.messages_loaded = true;
 		chat.messages.push_back({MessageRole::User, "Please remember that this project uses Allman braces.", "now"});
 		app.chats.push_back(chat);
+		MemoryService::SetWorkerBackoffForTests(app, app.chats.back(), uam::GetAppTimeSeconds() + 9999.0);
 		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
 		const std::string draft = R"({"memories":[{"scope":"local","category":"Lessons/User_Lessons","title":"Reasoning draft","memory":"Prefer Allman brace style in this project.","evidence":"User said: Please remember that this project uses Allman braces.","confidence":"high"}]})";
 		std::string output = R"({"type":"thread.started","thread_id":"owned-worker"})" + std::string("\n") + R"({"type":"turn.started"})" + "\n" +
@@ -2455,7 +2452,6 @@ UAM_TEST(MemoryCompletionCannotPublishIntoReplacedDataRoot)
 		TempDir temp("uam-memory-replaced-root");
 		uam::AppState app;
 		app.data_root = temp.root / "old";
-		app.memory_global_retry_not_before = uam::GetAppTimeSeconds() + 9999.0;
 		ChatSession chat;
 		chat.id = "same-chat";
 		chat.workspace_directory = temp.root.string();
@@ -2463,6 +2459,7 @@ UAM_TEST(MemoryCompletionCannotPublishIntoReplacedDataRoot)
 		chat.messages.push_back({MessageRole::User, "Remember the original root's preference."});
 		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
 		app.chats.push_back(chat);
+		MemoryService::SetWorkerBackoffForTests(app, app.chats.back(), uam::GetAppTimeSeconds() + 9999.0);
 		uam::AsyncMemoryExtractionTask task;
 		task.data_root = app.data_root;
 		task.chat_id = chat.id;
@@ -2493,7 +2490,6 @@ namespace
 	void InitializePreparedMemoryFixture(uam::AppState& app, const fs::path& root)
 	{
 		app.data_root = root / "data";
-		app.memory_global_retry_not_before = uam::GetAppTimeSeconds() + 9999.0;
 		ChatSession chat;
 		chat.id = "prepared-memory";
 		chat.memory_enabled = true;
@@ -2502,6 +2498,7 @@ namespace
 		chat.messages.push_back({MessageRole::User, "Remember Allman braces."});
 		fs::create_directories(chat.workspace_directory);
 		app.chats.push_back(chat);
+		MemoryService::SetWorkerBackoffForTests(app, app.chats.back(), uam::GetAppTimeSeconds() + 9999.0);
 		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
 	}
 
@@ -3736,7 +3733,6 @@ UAM_TEST(MemoryFailureDiagnosticsWithholdRawWorkerErrorText)
 	{
 		uam::AppState app;
 		app.data_root = temp.root / ("data-" + std::to_string(index));
-		app.memory_global_retry_not_before = uam::GetAppTimeSeconds() + 9999.0;
 		const fs::path workspace = temp.root / "workspace";
 		fs::create_directories(workspace);
 		ChatSession chat;
@@ -3747,6 +3743,7 @@ UAM_TEST(MemoryFailureDiagnosticsWithholdRawWorkerErrorText)
 		chat.messages_loaded = true;
 		chat.messages.push_back({MessageRole::User, "Please remember that this project uses Allman braces.", "now"});
 		app.chats.push_back(chat);
+		MemoryService::SetWorkerBackoffForTests(app, app.chats.back(), uam::GetAppTimeSeconds() + 9999.0);
 		uam::AsyncMemoryExtractionTask task;
 		task.data_root = app.data_root;
 		task.running = true;

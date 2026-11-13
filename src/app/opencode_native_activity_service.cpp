@@ -13,6 +13,7 @@
 #include "common/runtime/acp/acp_statuses.h"
 #include "remote/runner_client.h"
 
+#include <utility>
 #include <algorithm>
 #include <chrono>
 #include <deque>
@@ -471,7 +472,7 @@ std::optional<bool> OpenCodeNativeActivityService::TryWritePermissionResponse(Ac
 		const auto outcome = result->find("outcome");
 		if (outcome != result->end() && outcome->is_object() && String(*outcome, "outcome") == "selected" && String(*outcome, "optionId") == "allow-once") reply = "once";
 	}
-	if (reply == "once" && (state.read_only || session.current_mode_id == "plan" || session.goal_review_turn || session.active_uam_agent_workspace_access == "read") && !AllowedUnderReadCeiling(permission->second))
+	if (reply == "once" && (state.read_only || session.current_mode_id == "plan" || session.goal_review_turn || session.active_uam_agent_workspace_access != "write") && !AllowedUnderReadCeiling(permission->second))
 		return fail("Plan and read-only restrictions prohibit this native child action.");
 	if (state.replies.size() >= kMaximumPermissions && !state.replies.contains(native_id)) return fail("The native OpenCode permission reply queue is full.");
 	state.replies[native_id] = reply;
@@ -519,7 +520,7 @@ OpenCodeNativeGateState OpenCodeNativeActivityService::BeforeDispatch(AppState& 
 			state.error = "The native OpenCode execution host changed while its process was running.";
 		}
 	}
-	const bool read_only = session.goal_review_turn || session.active_uam_agent_workspace_access == "read" || approval_modes::AppApprovalModeOrEmpty(chat.approval_mode) == approval_modes::kPlanApprovalMode;
+	const bool read_only = session.goal_review_turn || session.active_uam_agent_workspace_access != "write" || approval_modes::AppApprovalModeOrEmpty(chat.approval_mode) == approval_modes::kPlanApprovalMode;
 	if (state.read_only != read_only)
 	{
 		if (read_only && state.ready && (session.prompt_request_id != 0 || session.recovering_remote_turn))
@@ -775,7 +776,8 @@ bool OpenCodeNativeActivityService::Poll(AppState& app)
 		// Native Task normally completes with its parent. Retained owned child activity keeps
 		// the relay alive when a provider emits a background task beyond the parent turn.
 		const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(session.provider_id);
-		const bool child_tool_pending = std::ranges::any_of(session.tool_calls, [&](const AcpToolCallState& tool)
+		// Const access: this runs on every poll for the session, and a non-const read would restamp its tool calls each time.
+		const bool child_tool_pending = std::ranges::any_of(std::as_const(session.tool_calls), [&](const AcpToolCallState& tool)
 		{
 			return (tool.is_sub_agent || runtime.ProviderRecognizesSubagentTool(tool.title)) &&
 			    (acp_statuses::IsActiveStatus(tool.status) || acp_statuses::IsActiveStatus(tool.child_activity));
