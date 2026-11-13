@@ -564,6 +564,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		if (route.action == action)
 		{
 			(this->*route.handler)(browser, payload, cb);
+			if (m_app.poll_after_action) m_app.poll_after_action();
 			return true;
 		}
 	}

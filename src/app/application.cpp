@@ -245,19 +245,20 @@ namespace
 	class AppPollTask : public CefTask
 	{
 	  public:
-		explicit AppPollTask(Application* app) : m_app(app)
+		AppPollTask(Application* app, std::uint64_t generation) : m_app(app), m_generation(generation)
 		{
 		}
 		void Execute() override
 		{
 			if (m_app)
 			{
-				m_app->PollTick();
+				m_app->RunScheduledPoll(m_generation);
 			}
 		}
 
 	  private:
 		Application* m_app;
+		std::uint64_t m_generation;
 		IMPLEMENT_REFCOUNTING(AppPollTask);
 	};
 
@@ -578,16 +579,36 @@ void Application::PollTick()
 		last_slow_poll_report = poll_finished;
 	}
 
-	int next_poll_delay_ms = m_app.startup_native_import_service != nullptr && m_app.startup_native_import_service->ImportPending() ? 16 : uam::NextPollDelayMs(m_app, m_platformServices->dictation_service.IsRunning(), TerminalUiVisible(m_browser));
+	ScheduleNextUpdate(NextPollDelay());
+}
+
+int Application::NextPollDelay()
+{
+	const int delay_ms = m_app.startup_native_import_service != nullptr && m_app.startup_native_import_service->ImportPending() ? 16 : uam::NextPollDelayMs(m_app, m_platformServices->dictation_service.IsRunning(), TerminalUiVisible(m_browser));
 	// A throttled summary must flush when its 100 ms window ends, not on the next idle 250/1000 ms tick.
-	ScheduleNextUpdate(uam::CapPollDelayForDeferredStatePush(next_poll_delay_ms));
+	return uam::CapPollDelayForDeferredStatePush(delay_ms);
+}
+
+void Application::RunScheduledPoll(std::uint64_t generation)
+{
+	if (generation == m_pollGeneration) PollTick();
+}
+
+void Application::PollSoonerIfWorkPending()
+{
+	// Nothing is scheduled before the browser is ready; the first poll starts the chain.
+	if (m_done || m_pollGeneration == 0) return;
+	const int delay_ms = NextPollDelay();
+	if (std::chrono::steady_clock::now() + std::chrono::milliseconds(delay_ms) < m_nextPollAt) ScheduleNextUpdate(delay_ms);
 }
 
 void Application::ScheduleNextUpdate(int delay_ms)
 {
 	if (!m_done)
 	{
-		CefPostDelayedTask(TID_UI, new AppPollTask(this), delay_ms);
+		// A newer schedule replaces the pending one: its task still runs, but finds its generation stale and returns.
+		m_nextPollAt = std::chrono::steady_clock::now() + std::chrono::milliseconds(delay_ms);
+		CefPostDelayedTask(TID_UI, new AppPollTask(this, ++m_pollGeneration), delay_ms);
 	}
 }
 
@@ -936,6 +957,7 @@ bool Application::InitializeState()
 
 	// Make AppState accessible to CEF app/client via global pointer.
 	uam_cef_globals::g_app_state = &m_app;
+	m_app.poll_after_action = [this] { PollSoonerIfWorkPending(); };
 
 	const std::chrono::steady_clock::time_point state_finished = std::chrono::steady_clock::now();
 	const auto milliseconds = [](std::chrono::steady_clock::time_point begin, std::chrono::steady_clock::time_point end)

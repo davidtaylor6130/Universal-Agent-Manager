@@ -1581,6 +1581,8 @@ namespace uam
 		/// Application-owned hooks keep native compaction queries outside runtime and transport state.
 		std::function<void(AcpSessionState&, const ChatSession&)> opencode_compaction_before_turn_reset;
 		std::function<OpenCodeCompactionGateState(AcpSessionState&, ChatSession&, std::string&)> opencode_compaction_before_dispatch;
+		/// Brings the next poll forward when a bridge action started work; unset outside the desktop app.
+		std::function<void()> poll_after_action;
 		std::vector<std::unique_ptr<PendingAcpRemoteStop>> pending_acp_remote_stops;
 		std::vector<AsyncAcpProcessStopTask> acp_process_stop_tasks;
 		std::vector<CliContextPreparationTask> cli_context_preparation_tasks;

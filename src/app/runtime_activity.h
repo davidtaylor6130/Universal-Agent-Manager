@@ -94,8 +94,9 @@ inline bool AcpSessionHasUnreadOutput(const AcpSessionState& session)
 /// `cli_idle_timeout_seconds` after each turn, and polling four times a second for that long was most of UAM's idle CPU.
 /// A running session counts once it could not enter its idle grace period (a turn, permission or question, queued
 /// prompt, stop or restart cleanup, agent run, goal review or background task), or when a poll left output unread.
-/// A stop still draining output counts after the process has ended. Bytes an idle provider writes unprompted wait for
-/// the 1 s idle poll.
+/// A stop still draining output, agent input preparation or a local launch counts whether or not the process
+/// is running. Bytes an idle provider writes unprompted wait for the 1 s idle poll; a bridge action that starts work
+/// brings the next poll forward (`AppState::poll_after_action`).
 /// </summary>
 inline bool RuntimeHasPendingWork(const AppState& app)
 {
@@ -114,7 +115,9 @@ inline bool RuntimeHasPendingWork(const AppState& app)
 	for (const std::unique_ptr<AcpSessionState>& session : app.acp_sessions)
 	{
 		if (session == nullptr) continue;
-		if (session->local_stop_pending || session->remote_stop_pending || AcpSessionHasUnreadOutput(*session)) return true;
+		if (session->local_stop_pending || session->remote_stop_pending || session->pending_agent_input != nullptr ||
+		    session->pending_local_launch != nullptr || AcpSessionHasUnreadOutput(*session))
+			return true;
 		if (!session->running) continue;
 		const ChatSession* chat = ChatDomainService().FindChatById(app, session->chat_id);
 		if (chat == nullptr || !chat->active_goal_id.empty() || !AcpSessionCanIdleShutdown(*session, *chat)) return true;

@@ -3491,6 +3491,18 @@ UAM_TEST(PollCadenceIdlesWhileAProviderIsOnlyAlive)
 	    {"unhandled line", [](IdlePollCadenceFixture& f) { f.Session().stdout_buffer = "{}\n"; }},
 	    {"worktree", [](IdlePollCadenceFixture& f) { f.app.worktree_operation_chat_ids.insert("idle-chat"); }},
 	    {"memory", [](IdlePollCadenceFixture& f) { f.app.memory_extraction_queue.emplace_back(); }},
+	    // Both types are private to their runtime files; only a non-null owner matters here, so it aliases an int.
+	    {"agent input", [](IdlePollCadenceFixture& f)
+	        {
+		        const std::shared_ptr<int> owner = std::make_shared<int>(0);
+		        f.Session().pending_agent_input = std::shared_ptr<uam::PendingAgentInputPreparation>(owner, reinterpret_cast<uam::PendingAgentInputPreparation*>(owner.get()));
+	        }},
+	    {"local launch", [](IdlePollCadenceFixture& f)
+	        {
+		        const std::shared_ptr<int> owner = std::make_shared<int>(0);
+		        f.Session().running = false;
+		        f.Session().pending_local_launch = std::shared_ptr<uam::PendingLocalAcpLaunch>(owner, reinterpret_cast<uam::PendingLocalAcpLaunch*>(owner.get()));
+	        }},
 	};
 	for (const auto& [name, apply] : busy_states)
 	{
