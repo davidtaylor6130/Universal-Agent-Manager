@@ -14,6 +14,7 @@ std::optional<int> RunEmptyNativeImportFixture(int argc, char** argv)
 	std::string output;
 	std::uint64_t cursor = 0;
 	bool rpc_process = false;
+	uam_test::UseBinaryFrameStdio();
 	while (uam::remote::ReadFrame(std::cin, request) == uam::remote::FrameReadResult::Ok)
 	{
 		const std::string type = request.value("type", "");

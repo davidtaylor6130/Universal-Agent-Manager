@@ -284,6 +284,7 @@ std::optional<int> RunNativeRemoteHistoryReleaseFixture(int argc, char** argv)
 	if (argc != 3 || std::string_view(argv[1]) != "--uam-test-native-history-release") return std::nullopt;
 	uam::remote::RunnerState state;
 	nlohmann::json request;
+	uam_test::UseBinaryFrameStdio();
 	while (uam::remote::ReadFrame(std::cin, request) == uam::remote::FrameReadResult::Ok)
 	{
 		nlohmann::json response;
