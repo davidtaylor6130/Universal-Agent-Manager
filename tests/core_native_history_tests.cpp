@@ -3034,7 +3034,9 @@ UAM_TEST(AcpLaunchArgsIncludeSelectedModel)
 	UAM_ASSERT_EQ(plan_argv[3], std::string("plan"));
 	UAM_ASSERT_EQ(plan_argv[4], std::string("--model"));
 	UAM_ASSERT_EQ(plan_argv[5], std::string("flash"));
-	UAM_ASSERT_EQ(plan_argv[6], std::string("--policy"));
+	// Plan attaches no Computer Use policy; its admin-tier Plan ceiling replaces it.
+	UAM_ASSERT_EQ(plan_argv[6], std::string("--admin-policy"));
+	UAM_ASSERT(plan_argv[7].ends_with("gemini-plan-ceiling.toml"));
 
 	chat.approval_mode = " acceptEdits ";
 	const std::vector<std::string> accept_edits_argv = uam::BuildAcpLaunchArgvForTests(chat);
@@ -3044,7 +3046,7 @@ UAM_TEST(AcpLaunchArgsIncludeSelectedModel)
 	chat.approval_mode = " plan ";
 	const std::string detail = uam::BuildAcpLaunchDetailForTests("/tmp/project", chat);
 	UAM_ASSERT(detail.find("cwd=/tmp/project") != std::string::npos);
-	UAM_ASSERT(detail.find("argv=gemini --acp --approval-mode plan --model flash --policy") != std::string::npos);
+	UAM_ASSERT(detail.find("argv=gemini --acp --approval-mode plan --model flash --admin-policy") != std::string::npos);
 	UAM_ASSERT(detail.find("nativeSessionId=native-1") != std::string::npos);
 
 	ChatSession codex_chat;
@@ -3072,7 +3074,7 @@ UAM_TEST(AcpLaunchArgsIncludeSelectedModel)
 	claude_chat.model_id = "sonnet";
 	claude_chat.approval_mode = "plan";
 	const std::vector<std::string> claude_argv = uam::BuildAcpLaunchArgvForTests(claude_chat);
-	UAM_ASSERT_EQ(claude_argv.size(), static_cast<std::size_t>(19));
+	UAM_ASSERT_EQ(claude_argv.size(), static_cast<std::size_t>(18));
 	UAM_ASSERT_EQ(claude_argv[0], std::string("claude"));
 	UAM_ASSERT_EQ(claude_argv[1], std::string("-p"));
 	UAM_ASSERT_EQ(claude_argv[2], std::string("--output-format"));
@@ -3088,10 +3090,10 @@ UAM_TEST(AcpLaunchArgsIncludeSelectedModel)
 	UAM_ASSERT_EQ(claude_argv[12], std::string("sonnet"));
 	UAM_ASSERT_EQ(claude_argv[13], std::string("--resume"));
 	UAM_ASSERT_EQ(claude_argv[14], std::string("claude-session-2"));
-	UAM_ASSERT_EQ(claude_argv[15], std::string("--mcp-config"));
-	UAM_ASSERT(nlohmann::json::parse(claude_argv[16])["mcpServers"].contains("uam-computer"));
-	UAM_ASSERT_EQ(claude_argv[17], std::string("--allowedTools"));
-	UAM_ASSERT_EQ(claude_argv[18], std::string("mcp__uam-computer__computer_observe,mcp__uam-computer__computer_action"));
+	// A Plan launch loads no settings files or unlisted MCP servers and never attaches or pre-allows Computer Use.
+	UAM_ASSERT_EQ(claude_argv[15], std::string("--setting-sources"));
+	UAM_ASSERT_EQ(claude_argv[16], std::string(""));
+	UAM_ASSERT_EQ(claude_argv[17], std::string("--strict-mcp-config"));
 	const std::string claude_detail = uam::BuildAcpLaunchDetailForTests("/tmp/project", claude_chat);
 	UAM_ASSERT(claude_detail.find("argv=claude -p --output-format stream-json --input-format stream-json --verbose --permission-prompt-tool stdio --permission-mode plan --model sonnet --resume claude-session-2") != std::string::npos);
 

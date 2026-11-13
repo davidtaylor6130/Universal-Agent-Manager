@@ -505,7 +505,7 @@ describe('SettingsModal memory settings', () => {
   it('loads phone access settings and only requests the token when copying', async () => {
     const actions: string[] = []
     window.cefQuery = ({ request, onSuccess }) => {
-      const parsed = JSON.parse(request) as { action: string; payload?: { enabled?: boolean } }
+      const parsed = JSON.parse(request) as { action: string; payload?: Record<string, unknown> }
       actions.push(parsed.action)
       if (parsed.action === 'getCompanionSettings') {
         onSuccess(JSON.stringify({ configured: true, enabled: true, state: 'ready', effectiveUrl: 'https://phone.example/companion', url: 'https://phone.example/companion', restartRequired: false }))
@@ -513,6 +513,8 @@ describe('SettingsModal memory settings', () => {
         expect(parsed.payload).toEqual({ enabled: false })
         onSuccess(JSON.stringify({ configured: true, enabled: false, state: 'disabled', effectiveUrl: '', url: 'https://phone.example/companion', restartRequired: false }))
       } else if (parsed.action === 'getCompanionToken') {
+        // Copy token reads the current token; only a pairing code or Regenerate token issues a new one.
+        expect(parsed.payload ?? {}).toEqual({})
         onSuccess(JSON.stringify({ token: 'a'.repeat(64) }))
       } else {
         onSuccess('{}')

@@ -137,7 +137,7 @@ std::vector<std::string> ClaudeCliProviderRuntime::BuildInteractiveArgv(const Pr
 	uam::provider_runtime_internal::AppendResumeArgs(argv, profile, chat.native_session_id);
 
 	AppendClaudeModeArgs(argv, chat, provider_settings);
-	uam::provider_runtime_internal::AppendArgs(argv, uam::provider_runtime_internal::BuildProviderFlagsArgv(provider_settings));
+	uam::provider_runtime_internal::AppendArgs(argv, uam::provider_runtime_internal::BuildProviderFlagsArgv(provider_settings, uam::provider_runtime_internal::LaunchHasReadCeiling(chat)));
 	AppendClaudeTerminalFastMode(argv, chat);
 	return argv;
 }
@@ -169,7 +169,7 @@ std::vector<std::string> ClaudeCliProviderRuntime::BuildWorkerArgv(const Provide
 	argv.push_back("--tools");
 	argv.push_back("");
 	// No MCP servers, skills or hooks. User settings stay loaded so auth, proxy, Bedrock/Vertex and apiKeyHelper
-	// keep working; a local launch replaces them with only those keys (PrepareLocalWorkerLaunch).
+	// keep working; a local launch replaces them with only those keys and their env (PrepareLocalWorkerLaunch).
 	uam::provider_runtime_internal::AppendArgs(argv, {"--setting-sources", "user", "--settings", R"({"disableAllHooks":true})", "--strict-mcp-config", "--disable-slash-commands"});
 
 	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--model", model_id);
@@ -179,30 +179,51 @@ std::vector<std::string> ClaudeCliProviderRuntime::BuildWorkerArgv(const Provide
 	return argv;
 }
 
-std::string ClaudeWorkerSettingsJson(std::string_view user_settings_text)
+namespace
 {
-	// Only keys that authenticate or route requests; never hooks, plugins, permissions or status lines.
-	static constexpr std::array<std::string_view, 6> kAuthKeys = {"env", "apiKeyHelper", "awsAuthRefresh", "awsCredentialExport", "forceLoginMethod", "forceLoginOrgUUID"};
-	nlohmann::json settings = {{"disableAllHooks", true}};
-	const nlohmann::json user = nlohmann::json::parse(user_settings_text, nullptr, false);
-	if (user.is_object())
+	/// <summary>The parts of the user's Claude settings.json a launch that loads no settings files may carry:
+	/// auth/routing keys for --settings and `env` for the process environment, so secrets stay off the command
+	/// line. Never allow rules, hooks, plugins, status lines or MCP.</summary>
+	struct ClaudeUserLaunchSettings
+	{
+		nlohmann::json settings = nlohmann::json::object();
+		std::vector<std::pair<std::string, std::string>> environment;
+	};
+
+	ClaudeUserLaunchSettings ReadClaudeUserLaunchSettings(bool keep_restrictive_permissions)
+	{
+		static constexpr std::array<std::string_view, 5> kAuthKeys = {"apiKeyHelper", "awsAuthRefresh", "awsCredentialExport", "forceLoginMethod", "forceLoginOrgUUID"};
+		ClaudeUserLaunchSettings out;
+		const std::filesystem::path root = uam::env::GetTrimmedPath("CLAUDE_CONFIG_DIR").value_or(uam::env::GetUserHomePath().value_or(std::filesystem::path{}) / ".claude");
+		std::string text;
+		// ponytail: missing, oversized or malformed user settings just mean no auth keys to carry.
+		if (!uam::io::TryReadTextFile(root / "settings.json", text, 1024 * 1024)) return out;
+		const nlohmann::json user = nlohmann::json::parse(text, nullptr, false);
+		if (!user.is_object()) return out;
 		for (const std::string_view key : kAuthKeys)
-			if (const auto found = user.find(std::string(key)); found != user.end()) settings[std::string(key)] = *found;
-	return settings.dump();
+			if (const auto found = user.find(std::string(key)); found != user.end()) out.settings[std::string(key)] = *found;
+		if (const auto permissions = user.find("permissions"); keep_restrictive_permissions && permissions != user.end() && permissions->is_object())
+			for (const char* key : {"deny", "ask"})
+				if (const auto rules = permissions->find(key); rules != permissions->end() && rules->is_array()) out.settings["permissions"][key] = *rules;
+		if (const auto env = user.find("env"); env != user.end() && env->is_object())
+			for (const auto& [name, value] : env->items())
+				if (value.is_string()) out.environment.emplace_back(name, value.get<std::string>());
+		return out;
+	}
 }
 
-bool ClaudeCliProviderRuntime::PrepareLocalWorkerLaunch(const uam::AppState&, const ProviderProfile&, std::vector<std::string>& argv, std::string&, bool* private_isolation) const
+bool ClaudeCliProviderRuntime::PrepareLocalWorkerLaunch(const uam::AppState&, const ProviderProfile&, std::vector<std::string>& argv, std::string&, bool* private_isolation,
+    std::vector<std::pair<std::string, std::string>>* environment) const
 {
 	if (private_isolation) *private_isolation = false;
-	const std::filesystem::path root = uam::env::GetTrimmedPath("CLAUDE_CONFIG_DIR").value_or(uam::env::GetUserHomePath().value_or(std::filesystem::path{}) / ".claude");
-	std::string text;
-	// ponytail: missing, oversized or malformed user settings just mean no auth keys to carry.
-	if (!uam::io::TryReadTextFile(root / "settings.json", text, 1024 * 1024)) text.clear();
 	const auto sources = std::ranges::find(argv, "--setting-sources");
 	const auto settings = std::ranges::find(argv, "--settings");
 	if (sources == argv.end() || std::next(sources) == argv.end() || settings == argv.end() || std::next(settings) == argv.end()) return true;
+	ClaudeUserLaunchSettings user = ReadClaudeUserLaunchSettings(false);
+	user.settings["disableAllHooks"] = true;
 	*std::next(sources) = ""; // no user/project settings files, so no global CLAUDE.md or plugins
-	*std::next(settings) = ClaudeWorkerSettingsJson(text);
+	*std::next(settings) = user.settings.dump();
+	if (environment != nullptr) environment->insert(environment->end(), user.environment.begin(), user.environment.end());
 	return true;
 }
 
@@ -216,7 +237,23 @@ std::vector<std::string> ClaudeCliProviderRuntime::BuildStructuredLaunchArgv(con
 		uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--effort", effort);
 	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--resume", chat.native_session_id);
 	uam::computer_use::AppendClaudeMcpLaunchArguments(argv, chat);
+	// User, project and local settings (allow rules, hooks, plugins) and unlisted MCP servers can pre-approve
+	// tools without asking UAM; a read ceiling loads none of them. Local auth keys return in PrepareStructuredLaunch.
+	if (uam::provider_runtime_internal::LaunchHasReadCeiling(chat))
+		uam::provider_runtime_internal::AppendLiteralArgs(argv, {"--setting-sources", "", "--strict-mcp-config"});
 	return argv;
+}
+
+bool ClaudeCliProviderRuntime::PrepareStructuredLaunch(uam::AcpSessionState&, const ProviderProfile&, std::string_view, bool remote,
+    std::vector<std::string>& argv, std::vector<std::pair<std::string, std::string>>& environment, std::string&) const
+{
+	const auto sources = std::ranges::find(argv, "--setting-sources");
+	// ponytail: SSH cannot read the remote settings first, so a remote read ceiling keeps only standard sign-in.
+	if (remote || sources == argv.end() || std::next(sources) == argv.end() || !std::next(sources)->empty()) return true;
+	const ClaudeUserLaunchSettings user = ReadClaudeUserLaunchSettings(true);
+	if (!user.settings.empty()) argv.insert(std::next(sources, 2), {"--settings", user.settings.dump()});
+	environment.insert(environment.end(), user.environment.begin(), user.environment.end());
+	return true;
 }
 
 nlohmann::json ClaudeCliProviderRuntime::OnAcpBuildInitialize(uam::AcpSessionState& session, int request_id) const

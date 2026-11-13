@@ -2792,7 +2792,8 @@ UAM_TEST(PermissionReviewDiagnosticsDistinguishFilterFallbackAndModelOutput)
 	session->provider_id = uam::provider_ids::kGeminiCli;
 	session->running = true;
 	session->pending_permission.request_id_json = "123";
-	session->pending_permission.content = "git status";
+	session->pending_permission.content = "npm test";
+	session->pending_permission.execution_command = "npm test"; // Medium risk: eligible for the reviewer.
 	session->pending_permission.kind = "execute";
 	session->pending_permission.options.push_back({"once", "Allow once", "allow_once"});
 	app.acp_sessions.push_back(std::move(session));

@@ -1,6 +1,7 @@
 import { SettingsLoading } from '../settings/SettingsPrimitives'
 import { StartupNativeImportChooser } from '../modals/StartupNativeImportChooser'
 import { LegacyChatImportPrompt } from '../modals/LegacyChatImportPrompt'
+import { CompanionConfirmationPrompt } from '../modals/CompanionConfirmationPrompt'
 import { ProviderMcpWarning } from '../shared/ProviderMcpWarning'
 import { nextAttentionSession } from '../../utils/nextAttention'
 import { useShallow } from 'zustand/react/shallow'
@@ -54,7 +55,7 @@ import { useNotificationClock, useNotificationTimes } from '../../hooks/useNotif
 import { notificationTimeGroup } from '../../utils/notificationTime'
 import { useRowLeave } from './useRowLeave'
 import { isSshHost } from '../../utils/remoteWorkspace'
-import { SSH_ENABLED } from '../../config/buildFeatures'
+import { MOBILE_COMPANION_ENABLED, SSH_ENABLED } from '../../config/buildFeatures'
 import { CustomIcon } from '../shared/CustomIcon'
 import { loadNewChatPanel, loadSettingsPanel, loadUsagePanel, warmPanelOn } from './panelModules'
 
@@ -1260,6 +1261,7 @@ export function AppShell() {
 
       <StartupNativeImportChooser />
       <LegacyChatImportPrompt />
+      {MOBILE_COMPANION_ENABLED && <CompanionConfirmationPrompt />}
       <TransientAlertSurface alerts={alertSuppressed ? [] : transientAlerts} notice={alertNotice} fallbackId={alertFallbackId} onFallbackChange={setAlertFallback} onAction={(action) => action === 'updates' ? openUpdates() : openNotifications()} onDismiss={dismissTransientAlert} />
 
       {/* Modals */}

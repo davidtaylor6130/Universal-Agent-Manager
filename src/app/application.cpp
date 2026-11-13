@@ -1041,7 +1041,8 @@ bool Application::InitializeCef(CefMainArgs main_args)
 	if (!m_managementNode)
 	{
 		settings.windowless_rendering_enabled = true;
-		m_app.html_view_render_checker = uam::cef::CreateHtmlViewRenderChecker();
+		// ponytail: the hidden HTML view runtime check stays off, so agent pages run only after the user chooses Run.
+		// Turning it back on is m_app.html_view_render_checker = uam::cef::CreateHtmlViewRenderChecker().
 	}
 
 	if (!CefInitialize(main_args, settings, cef_app.get(), nullptr))

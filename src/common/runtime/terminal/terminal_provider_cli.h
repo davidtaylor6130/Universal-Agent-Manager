@@ -24,6 +24,8 @@ std::string BuildProviderHandoffContext(std::span<const Message> messages, std::
 /// <summary>Holds saved context when quarantined history cannot prove its exact safe projection.</summary>
 bool ValidateProviderHandoffContext(const ChatSession& chat, std::size_t history_count, std::string* error = nullptr, std::stop_token stop_token = {});
 std::vector<std::string> BuildProviderInteractiveArgv(const AppState& app, const ChatSession& chat);
+/// <summary>Refuses CLI View when the provider cannot start in an enforced Plan for a Plan or read-only chat.</summary>
+std::string ProviderInteractiveCeilingError(const AppState& app, const ChatSession& chat);
 /// <summary>Stages prior conversation as provider-native context without synthetic user turns.</summary>
 bool PrepareCliProviderHandoff(AppState& app, ChatSession& chat, const ExecutionHost& host,
     std::vector<std::string>& argv, std::vector<std::pair<std::string, std::string>>& environment,

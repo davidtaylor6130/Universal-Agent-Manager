@@ -308,6 +308,11 @@
   outline-offset: var(--focus-inset);
 }
 
+/* A Pinned or Active chat dragged by pointer over a pane (sortableDrag.ts); the native drag sets the same outline inline. */
+[data-leaf-id][data-pointer-drop] {
+  outline: 2px solid var(--pane-drop-color, var(--accent)) !important;
+}
+
 .uam-chat-pane__header {
   transition: background var(--dur-base) var(--ease), box-shadow var(--dur-base) var(--ease);
 }

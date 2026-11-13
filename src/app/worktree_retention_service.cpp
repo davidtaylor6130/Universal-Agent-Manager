@@ -9,6 +9,7 @@
 #include "common/utils/diagnostic_log.h"
 #include "common/utils/hash_utils.h"
 #include "common/utils/shell_escape.h"
+#include "common/vcs/git_command.h"
 #include "common/utils/string_utils.h"
 
 #include <deque>
@@ -160,7 +161,7 @@ namespace uam
 					if (list_error || modified >= std::filesystem::file_time_type::clock::now() - std::chrono::hours(24 * snapshot.retention_days)) { list_error.clear(); continue; }
 					// Recover the original source even after its last sidebar folder was deleted. NUL records preserve quoted/Unicode paths.
 					const ProcessExecutionResult registration = PlatformServicesFactory::Instance().process_service.ExecuteCommand(
-					    "git --no-optional-locks -C " + shell::EscapeArg(paths::Utf8PathString(path)) + " worktree list --porcelain -z", 2000, stop);
+					    vcs::HardenedGitShellCommandInDirectory(path, "--no-optional-locks worktree list --porcelain -z"), 2000, stop);
 					if (!registration.ok || registration.exit_code != 0 || registration.timed_out || registration.canceled || registration.output_truncated) continue;
 					std::size_t offset = 0;
 					while (offset < registration.output.size())

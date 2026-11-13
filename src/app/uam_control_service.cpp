@@ -1920,7 +1920,7 @@ namespace uam
 					return {{"pendingRenderCheck", true}};
 				}
 				html_view::RenderCheckResult unavailable;
-				unavailable.not_run_reason = "no renderer is available.";
+				unavailable.not_run_reason = method == "html_view_publish" ? "pages run only after the user chooses Run on the card in the chat." : "pages are not run before the user chooses Run on a published card.";
 				result.result["runtimeCheck"] = html_view::RenderCheckJson(unavailable);
 			}
 			if (result.ok && method == "agent_delegate")
@@ -2001,9 +2001,9 @@ namespace uam
 			    {"title", {{"type", "string"}, {"description", "Short single-line title shown on the card (at most 120 bytes)."}}},
 			    {"html", {{"type", "string"}, {"description", "Complete self-contained HTML document (at most 131072 bytes). Inline all CSS, scripts, images (data: URLs) and data."}}}};
 			nlohmann::json html_view_preview = ToolSchema("html_view_preview", html_view_properties, {"title", "html"});
-			html_view_preview["description"] = "Check an HTML view before publishing. Returns publishable, size, validation errors, warnings about content the sandbox blocks (remote resources, network APIs, storage, frames, pop-ups) and runtimeCheck: the console errors and uncaught exceptions from rendering the page in a hidden sandbox. runtimeCheck.completed is false when the check timed out or could not run. Publishes nothing; no screenshot is produced.";
+			html_view_preview["description"] = "Check an HTML view before publishing. Returns publishable, size, validation errors and warnings about content the sandbox blocks (remote resources, network APIs, storage, frames, pop-ups). The page is not run, so runtimeCheck reports not_run. Publishes nothing; no screenshot is produced.";
 			nlohmann::json html_view_publish = ToolSchema("html_view_publish", html_view_properties, {"title", "html"});
-			html_view_publish["description"] = "Show a self-contained HTML page (chart, table, diagram, mockup, small interactive view) as a sandboxed card in this chat's current turn, above your text reply. Scripts run only inside the sandbox; network, storage, cookies, pop-ups and the UAM app are unreachable. Rejected when over 131072 bytes, empty, in CLI View or outside an active turn. The result's runtimeCheck lists console errors and uncaught exceptions from a hidden render so you can fix the page; runtimeCheck.completed is false when that check timed out or could not run, and the view is still published. Call html_view_preview first to check a page without publishing it.";
+			html_view_publish["description"] = "Show a self-contained HTML page (chart, table, diagram, mockup, small interactive view) as a sandboxed card in this chat's current turn, above your text reply. The page loads only after the user chooses Run on its card, and its scripts run only inside the sandbox; network, storage, cookies, pop-ups and the UAM app are unreachable. Rejected when over 131072 bytes, empty, in CLI View or outside an active turn. The page is not run on publish, so runtimeCheck reports not_run. Call html_view_preview first to check a page's size and blocked content without publishing it.";
 			nlohmann::json tools = nlohmann::json::array({
 			    std::move(html_view_preview),
 			    std::move(html_view_publish),

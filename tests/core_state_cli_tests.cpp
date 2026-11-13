@@ -2615,8 +2615,10 @@ UAM_TEST(ProviderTextWorkersAreIsolatedAndIgnoreUnsafeExtraFlags)
 				UAM_ASSERT(inline_settings != invocation.argv.end() && std::next(inline_settings) != invocation.argv.end());
 				const nlohmann::json worker_settings = nlohmann::json::parse(*std::next(inline_settings));
 				UAM_ASSERT(worker_settings["disableAllHooks"].get<bool>());
-				UAM_ASSERT_EQ(worker_settings["env"]["ANTHROPIC_BASE_URL"], nlohmann::json("https://proxy.example"));
-				UAM_ASSERT_EQ(worker_settings["env"]["CLAUDE_CODE_USE_BEDROCK"], nlohmann::json("1"));
+				// Settings env reaches the worker's environment, never its command line.
+				UAM_ASSERT(!worker_settings.contains("env"));
+				UAM_ASSERT(uam::ranges::Contains(invocation.environment_overrides, std::pair<std::string, std::string>{"ANTHROPIC_BASE_URL", "https://proxy.example"}));
+				UAM_ASSERT(uam::ranges::Contains(invocation.environment_overrides, std::pair<std::string, std::string>{"CLAUDE_CODE_USE_BEDROCK", "1"}));
 				UAM_ASSERT_EQ(worker_settings["apiKeyHelper"], nlohmann::json("/bin/key-helper"));
 				UAM_ASSERT(!worker_settings.contains("hooks") && !worker_settings.contains("enabledPlugins"));
 				UAM_ASSERT(uam::ranges::Contains(invocation.argv, "--strict-mcp-config"));

@@ -127,6 +127,10 @@ struct ProviderCliPolicy
 	ProviderCliVersionPolicy version_policy = ProviderCliVersionPolicy::AnySafeToken;
 	bool provider_managed = false;
 	const char* verified_at = nullptr;
+	/// Optional provider-owned protocol contract: true marks an installed version verified beyond fallback_version.
+	bool (*verified_protocol_version)(std::string_view version) = nullptr;
+	/// Optional provider-owned refusal naming why its adapter will not run an installed version; empty otherwise.
+	std::string (*protocol_version_refusal)(std::string_view version) = nullptr;
 };
 
 /// <summary>
@@ -300,7 +304,9 @@ class IProviderRuntime
 	/// <summary>Builds the argv for a provider worker command (batch mode, no terminal).</summary>
 	virtual std::vector<std::string> BuildWorkerArgv(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, std::string_view model_id) const = 0;
 	/// Selects the checked local route before writing generation-specific isolation.
-	virtual bool PrepareLocalWorkerLaunch(const uam::AppState&, const ProviderProfile&, std::vector<std::string>&, std::string&, bool* private_isolation = nullptr) const
+	/// `environment` receives extra process variables for this worker only (e.g. settings env kept off its argv).
+	virtual bool PrepareLocalWorkerLaunch(const uam::AppState&, const ProviderProfile&, std::vector<std::string>&, std::string&, bool* private_isolation = nullptr,
+	    std::vector<std::pair<std::string, std::string>>* /*environment*/ = nullptr) const
 	{
 		if (private_isolation) *private_isolation = false;
 		return true;

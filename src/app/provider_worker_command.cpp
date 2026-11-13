@@ -328,7 +328,8 @@ namespace uam
 		}
 		std::string launch_error;
 		bool private_isolation = false;
-		if (!remote_target && !runtime.PrepareLocalWorkerLaunch(app, profile, argv, launch_error, &private_isolation))
+		std::vector<std::pair<std::string, std::string>> launch_environment;
+		if (!remote_target && !runtime.PrepareLocalWorkerLaunch(app, profile, argv, launch_error, &private_isolation, &launch_environment))
 		{
 			SetError(error_out, launch_error);
 			return {};
@@ -361,6 +362,7 @@ namespace uam
 		    WorkerEnvironment(path_mode);
 		if (!remote_target) invocation.environment_overrides.insert(invocation.environment_overrides.end(),
 		                                        worker_environment.begin(), worker_environment.end());
+		invocation.environment_overrides.insert(invocation.environment_overrides.end(), launch_environment.begin(), launch_environment.end());
 		invocation.command_preview = BuildProviderWorkerShellCommand(invocation.argv, path_mode) + " <prompt via stdin>";
 		invocation.isolated_working_directory = isolation_directory;
 		if (!private_isolation && IsProvider(profile, uam::provider_ids::kOpenCodeCli))
