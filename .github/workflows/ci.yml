@@ -74,6 +74,7 @@ jobs:
       - run: python3 tests/select_native_tests_test.py
       - run: python3 tests/native_test_runner_test.py
       - run: python3 scripts/wait_for_remote_runners.py --self-test
+      - run: python3 tests/perf_suite_test.py
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -94,7 +95,14 @@ jobs:
           cache: npm
           cache-dependency-path: UI-V2/package-lock.json
       - run: npm --prefix UI-V2 ci
-      - run: npm --prefix UI-V2 run test
+      - run: npm --prefix UI-V2 run test:unit
+      # The frontend performance suite, unchanged as a gate, with its timings kept for the performance report.
+      - run: python3 scripts/perf_suite.py --out Builds/perf-ui.json ui
+      - uses: actions/upload-artifact@v4
+        with:
+          name: uam-perf-ui
+          path: Builds/perf-ui.json
+          retention-days: 7
       - run: npm --prefix UI-V2 run build
 
   # Native jobs wait for all three rows (scripts/wait_for_remote_runners.py 3); keep that count in step with this matrix.
@@ -336,6 +344,46 @@ jobs:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.archive }}
           if-no-files-found: error
+
+  # Report-only performance figures for pull requests into the V5.2 performance branch (docs/engineering/testing.md):
+  # timed native cases, the packaged app on the synthetic fixture and the frontend timings, against the committed baseline.
+  # It runs whatever its inputs allow even when an upstream job failed or was skipped, and every measuring step may fail
+  # without failing the job, so the check stays green and never blocks a merge.
+  performance:
+    name: Performance report
+    needs: [changes, core-build, test, frontend]
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && github.base_ref == 'uam/v5.2-performance' }}
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: uam-core-tests-macos-arm64
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: UAM-macOS-ARM-Release-PR
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: uam-perf-ui
+          path: Builds
+      - name: Native figures
+        continue-on-error: true
+        run: mkdir -p Builds/tests && tar -xf core-tests.tar -C Builds/tests && python3 scripts/perf_suite.py --out Builds/perf.json native Builds/tests/uam_core_tests
+      - name: Packaged app figures
+        continue-on-error: true
+        run: mkdir -p Builds/app && ditto -x -k UAM-macOS-ARM-PR.zip Builds/app && python3 scripts/perf_suite.py --out Builds/perf.json app Builds/app/universal_agent_manager.app
+      - name: Report
+        run: python3 scripts/perf_suite.py report Builds/perf.json Builds/perf-ui.json | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: uam-performance-report
+          path: |
+            Builds/perf.json
+            Builds/perf-ui.json
+          if-no-files-found: ignore
 
   # Windows runs on pushes, and on pull requests whose change scripts/select_native_tests.py marks platform-relevant.
   # It builds once; four shard jobs run the core cases.

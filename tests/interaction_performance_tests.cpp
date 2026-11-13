@@ -1,5 +1,7 @@
 #include "test_harness.h"
 #include "app/transcript_retention_service.h"
+#include "app/uam_control_service.h"
+#include "computer_use/computer_use_mcp_server.h"
 #include "common/config/custom_icon.h"
 #include "common/memory/memory_levels.h"
 #include "common/memory/memory_policy.h"
@@ -1609,4 +1611,46 @@ UAM_TEST(StatePushReconciliationRepairsABypassedToolCallStampAndCatalogueMemo)
 		    catalog["availableModels"].size() == 1 && catalog["availableModels"][0]["id"] == "fixture/second";
 	}));
 #endif
+}
+
+namespace
+{
+	/// <summary>Bytes of prompt text UAM wrapped around the typed prompt: every request string holding it, minus the prompt itself.</summary>
+	std::size_t AddedPromptText(const nlohmann::json& value, std::string_view typed)
+	{
+		if (value.is_string())
+		{
+			const std::string& text = value.get_ref<const std::string&>();
+			return text.find(typed) == std::string::npos ? 0 : text.size() - typed.size();
+		}
+		std::size_t added = 0;
+		if (value.is_structured())
+			for (const nlohmann::json& child : value) added += AddedPromptText(child, typed);
+		return added;
+	}
+}
+
+// Report-only input for the performance suite (scripts/perf_suite.py native): what UAM itself adds to a provider
+// request, deterministically. Counted: the MCP tool schemas UAM serves and prompt text built around the typed prompt in
+// the prompt request. Not counted: text sent as separate strings or at session start, memory, central instructions and
+// attached store entries, which depend on the user's content; real model token counts need a live provider and are not measured.
+UAM_TEST(PerformanceSuiteUamRequestOverhead)
+{
+	const nlohmann::json control_tools = uam::UamControlService::ToolDefinitionsForTests();
+	const nlohmann::json computer_tools = uam::computer_use::ToolDefinitionsForTests();
+	UAM_ASSERT(!control_tools.empty() && !computer_tools.empty());
+	std::cout << "[SIZE] uam-control MCP tool schemas: " << control_tools.dump().size() << " bytes, " << control_tools.size() << " tools\n";
+	std::cout << "[SIZE] computer-use MCP tool schemas: " << computer_tools.dump().size() << " bytes, " << computer_tools.size() << " tools\n";
+	for (const char* provider : {"claude-cli", "codex-cli", "gemini-cli", "opencode-cli", "copilot-cli", "antigravity-cli"})
+	{
+		if (!ProviderRuntimeRegistry::IsEnabledRuntimeId(provider)) continue;
+		uam::AcpSessionState session;
+		session.session_id = "perf-suite-session";
+		ChatSession chat;
+		chat.id = "perf-suite-chat";
+		chat.provider_id = provider;
+		std::string method;
+		const nlohmann::json request = ProviderRuntimeRegistry::ResolveById(provider).OnAcpBuildPrompt(session, 1, "hello", chat, method);
+		std::cout << "[SIZE] " << provider << " hello prompt text added: " << AddedPromptText(request, "hello") << " bytes\n";
+	}
 }

@@ -1,0 +1,37 @@
+{
+  "meta": {
+    "production_revision": "fca49ea35",
+    "suite_revisions": "01680341c (native), fbc4ff1b2 (ui)",
+    "machine": "Windows build box: 16 cores / 32 threads, Windows 11, Release (Ninja Multi-Config, MSVC)",
+    "date": "2026-11-13",
+    "commands": [
+      "python scripts\\perf_suite.py --out perf.json native Builds\\tests\\Release\\uam_core_tests.exe",
+      "python scripts\\perf_suite.py --out perf.json ui"
+    ],
+    "not_in_baseline": "Packaged-app figures (cold start, relaunch, RAM at rest, idle CPU, slow polls): the box runs the app in Windows session 0 without an interactive desktop, so they need an interactive-desktop run before they become a baseline."
+  },
+  "metrics": {
+    "push_2000_slices_ms": 24.67,
+    "push_2000_digests_ms": 83.33,
+    "push_2000_unchanged_ms": 22.26,
+    "push_2000_one_changed_ms": 23.14,
+    "push_2000_large_changed_ms": 79.41,
+    "fingerprint_5000_ms": 108.12,
+    "push_5000_unchanged_ms": 34.39,
+    "streaming_push_rebuild_ms": 14.92,
+    "streaming_push_ms_per_s": 135.34,
+    "memory_poll_2000_ms": 2.35,
+    "cold_history_10000_ms": 285.33,
+    "cold_catalogue_1000_ms": 831.6,
+    "uam_control_tools_bytes": 9694.0,
+    "computer_use_tools_bytes": 3938.0,
+    "claude_hello_prompt_added_bytes": 0.0,
+    "codex_hello_prompt_added_bytes": 0.0,
+    "ui_proxy_new_thread_ms": 21.77,
+    "ui_proxy_typing_lag_p95_ms": 3.05,
+    "ui_proxy_long_thread_ms": 54.01,
+    "ui_send_feedback_ms": 10.76,
+    "ui_stream_delta_p95_ms": 9.3,
+    "ui_sidebar_selection_ms": 42.41
+  }
+}

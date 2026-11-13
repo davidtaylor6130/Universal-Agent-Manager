@@ -30,6 +30,7 @@ These pages preserve useful source-level details from the trial base, outside th
 | [Settings history](settings-history.md) | Recorded layout choices and implementation notes |
 | [Visual Studio](visual-studio-solution.md) | Platform-specific developer setup |
 | [Duplication audit](codebase-dedup-report.md) | Prior code investigation, not product behaviour |
+| [Performance suite](performance-suite.md) | Twelve user-facing metrics from timed tests and the packaged app, the synthetic fixture, CI report and baseline |
 | [Archived performance script](history/run_performance_test.ps1) | Manual Windows 500-chat load fixture; still writes the removed `rag_enabled` field |
 
 V5 acceptance and assigned owners are recorded in the [archived V5 change log](https://github.com/davidtaylor6130/Universal-Agent-Manager/blob/1d4865fcb/V5%20Improvement%20Change%20log.md); new work is tracked in GitHub PRs and issues.

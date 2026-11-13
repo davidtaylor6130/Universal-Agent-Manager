@@ -85,11 +85,11 @@ describe('chat interaction code-path performance', () => {
     expect(input.value).toBe('')
   })
 
-  it.each([20, 50, 200, 10000])('commits the initial bounded history view for %i total messages within 1s', (count) => {
+  it.each([20, 50, 200, 2000, 10000])('commits the initial bounded history view for %i total messages within 1s', (count) => {
     const pageSize = Math.min(count, 50)
     useAppStore.setState({ sessions: [{ ...session, messageCount: count }], messages: { [session.id]: messages(pageSize) },
       historyStartIndexBySessionId: { [session.id]: count - pageSize } })
-    expectWithinBudget('history response to committed initial page', HISTORY_PAGE_BUDGET_MS, () => {
+    expectWithinBudget(`history response to committed initial page (${count} messages)`, HISTORY_PAGE_BUDGET_MS, () => {
       act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
       expect(host.textContent).toContain(`Fixture message ${pageSize - 1}`)
       expect(host.querySelector('textarea')).not.toBeNull()
