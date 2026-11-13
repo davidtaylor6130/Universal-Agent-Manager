@@ -193,7 +193,8 @@ namespace
 		if (chat.uam_agent_id.empty()) return false;
 		const AgentDefinitionCatalog catalog = AgentDefinitionService::Load(app.data_root, uam::paths::ResolveControllerWorkspaceRootPath(app, chat));
 		const auto selected = std::ranges::find_if(catalog.definitions, [&](const AgentDefinition& agent) { return agent.id == chat.uam_agent_id; });
-		return selected != catalog.definitions.end() && selected->workspace_access == "read";
+		// Anything other than write access (read, or a missing or unknown value) is capped, as in structured launches.
+		return selected != catalog.definitions.end() && selected->workspace_access != "write";
 	}
 }
 

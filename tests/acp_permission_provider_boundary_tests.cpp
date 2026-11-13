@@ -103,7 +103,7 @@ namespace
 			session->turn_user_message_index = session->turn_first_user_message_index = 0;
 			session->interaction_at = app.chats.front().interaction_at;
 			session->goal_review_turn = goal_review;
-			session->active_uam_agent_workspace_access = goal_review ? "" : "read";
+			session->active_uam_agent_workspace_access = goal_review ? "write" : "read";
 			session->active_uam_agent_id = goal_review ? "" : "private-read-agent";
 			app.acp_sessions.push_back(std::move(owned));
 			sink = std::make_unique<ProviderBoundarySink>(*session, temp.root);

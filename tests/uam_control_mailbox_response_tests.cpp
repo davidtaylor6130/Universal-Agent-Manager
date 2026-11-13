@@ -183,7 +183,7 @@ UAM_TEST(UamControlStdioSingleWaitReturnsOwnedChildResultAfterEightSeconds)
 	std::string error;
 	UAM_ASSERT(service.StartStdioProcess(process, temp.root,
 	    {service.ResolveCurrentExecutablePath().string(), "--uam-test-control-mcp"}, &error,
-	    {{"UAM_CONTROL_CAPABILITY_DIR", capability_directory.string()}}));
+	    {{"UAM_CONTROL_CAPABILITY_DIR", capability_directory.string()}, {"UAM_CONTROL_REQUEST_KEY", app.uam_control_capabilities.front().request_key}}));
 	struct StopProcess
 	{
 		uam::platform::StdioProcessPlatformFields& process;

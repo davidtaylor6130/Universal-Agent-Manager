@@ -67,7 +67,7 @@ namespace
 		    (session.provider_id == uam::provider_ids::kClaudeCli && session.current_mode_id == uam::approval_modes::kProviderAutoApprovalMode) ||
 		    (session.provider_id == uam::provider_ids::kCodexCli && session.codex_approvals_reviewer == "auto_review") ||
 		    ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpPermissionRequiresUserDecision(session.pending_permission)) return false;
-		return (!(session.goal_review_turn || session.active_uam_agent_workspace_access == "read" ||
+		return (!(session.goal_review_turn || session.active_uam_agent_workspace_access != "write" ||
 		          uam::approval_modes::AppApprovalModeOrEmpty(chat.approval_mode) == uam::approval_modes::kPlanApprovalMode) ||
 		        PermissionFitsPlanCeiling(session, session.pending_permission));
 	}
@@ -181,7 +181,7 @@ namespace
 /// <summary>Checks immutable captured restrictions before any manual or automatic response side effect.</summary>
 bool CapturedReadCeilingAllowsPermissionResponse(const AcpSessionState& session, const AcpPendingPermissionState& pending, const std::string& option_id, bool cancelled, std::string* error_out)
 {
-	if (!(session.goal_review_turn || session.active_uam_agent_workspace_access == "read") || cancelled) return true;
+	if (!(session.goal_review_turn || session.active_uam_agent_workspace_access != "write") || cancelled) return true;
 	const auto option = std::ranges::find(pending.options, option_id, &AcpPermissionOptionState::id);
 	if (option != pending.options.end())
 	{
@@ -196,7 +196,7 @@ bool CapturedReadCeilingAllowsPermissionResponse(const AcpSessionState& session,
 // Exact native encoding proves the offered decision, payload, scope and request identity together.
 bool CapturedReadCeilingAllowsSavedPermissionResponse(const AcpSessionState& session, const AcpPendingPermissionState& pending, const nlohmann::json& response)
 {
-	if (!(session.goal_review_turn || session.active_uam_agent_workspace_access == "read")) return true;
+	if (!(session.goal_review_turn || session.active_uam_agent_workspace_access != "write")) return true;
 	if (pending.request_id_json.empty()) return false;
 	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(session.provider_id);
 	if (response == runtime.OnAcpBuildPermissionResponse(session, pending, "", true)) return true;
@@ -468,7 +468,7 @@ bool TryAutoApprovePendingPermission(AppState& app, AcpSessionState& session, co
 		}
 		if ((session.goal_review_turn || uam::approval_modes::AppApprovalModeOrEmpty(chat.approval_mode) ==
 		         uam::approval_modes::kPlanApprovalMode ||
-		     session.active_uam_agent_workspace_access == "read") &&
+		     session.active_uam_agent_workspace_access != "write") &&
 		    !PermissionFitsPlanCeiling(session, session.pending_permission))
 		{
 			if (tier == uam::command_safety::Tier::AiReview)
@@ -512,7 +512,7 @@ bool TryAutoApprovePendingPermission(AppState& app, AcpSessionState& session, co
 		}
 
 		std::string option_id;
-		if (session.goal_review_turn || session.active_uam_agent_workspace_access == "read")
+		if (session.goal_review_turn || session.active_uam_agent_workspace_access != "write")
 		{
 			const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(session.provider_id);
 			for (const AcpPermissionOptionState& option : session.pending_permission.options)

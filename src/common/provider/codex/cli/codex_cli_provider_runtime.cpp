@@ -618,7 +618,7 @@ bool CodexCliProviderRuntime::OnAcpHandleError(uam::AppState& app, uam::AcpSessi
 		const int retry_id = session.next_request_id++;
 		std::string retry_method;
 		ChatSession retry_chat = chat;
-		if (session.goal_review_turn || session.active_uam_agent_workspace_access == "read") retry_chat.approval_mode = uam::approval_modes::kPlanApprovalMode;
+		if (session.goal_review_turn || session.active_uam_agent_workspace_access != "write") retry_chat.approval_mode = uam::approval_modes::kPlanApprovalMode;
 		nlohmann::json retry_request = OnAcpBuildSetupRequest(retry_id, retry_chat, cwd, false, retry_method);
 		if (!DecorateAcpSessionSetupRequest(app, session, retry_method, cwd, retry_request))
 		{
@@ -877,7 +877,7 @@ namespace
 {
 	nlohmann::json BuildCodexPrompt(const uam::AcpSessionState& session, int request_id, const std::string& prompt, const ChatSession& chat)
 	{
-		const bool read_only = uam::strings::TrimAsciiView(chat.approval_mode) == uam::approval_modes::kPlanApprovalMode || session.goal_review_turn || session.active_uam_agent_workspace_access == "read";
+		const bool read_only = uam::strings::TrimAsciiView(chat.approval_mode) == uam::approval_modes::kPlanApprovalMode || session.goal_review_turn || session.active_uam_agent_workspace_access != "write";
 		nlohmann::json sandbox_policy = {{"type", read_only ? "readOnly" : "workspaceWrite"}, {"networkAccess", false}};
 		if (!read_only && !chat.workspace_directory.empty())
 			sandbox_policy["writableRoots"] = nlohmann::json::array({chat.workspace_directory});

@@ -51,6 +51,8 @@ namespace uam
 		static nlohmann::json HandleRequestForTests(AppState& app, const std::string& capability_id,
 		                                            const nlohmann::json& request,
 		                                            int64_t now_epoch_ms);
+		/// <summary>Adds the session signature a capability's MCP server attaches to each filed request.</summary>
+		static nlohmann::json SignRequestForTests(const nlohmann::json& request, std::string_view key);
 		static bool ValidStdioToolCallForTests(const nlohmann::json& request);
 		static nlohmann::json ToolDefinitionsForTests();
 		/// <summary>Sends a chat_create first prompt; production uses the ordinary structured send.</summary>

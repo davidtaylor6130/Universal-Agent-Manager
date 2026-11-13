@@ -612,7 +612,7 @@ bool GeminiCliProviderRuntime::PrepareStructuredLaunch(uam::AcpSessionState& ses
     std::vector<std::string>& argv, std::vector<std::pair<std::string, std::string>>&, std::string& error) const
 {
 	const auto policy = std::ranges::find(argv, "--admin-policy");
-	const bool read_ceiling = session.goal_review_turn || session.active_uam_agent_workspace_access == "read" || policy != argv.end();
+	const bool read_ceiling = session.goal_review_turn || session.active_uam_agent_workspace_access != "write" || policy != argv.end();
 	if (!read_ceiling) return true;
 	std::error_code ec;
 	if (!remote && policy != argv.end() && std::next(policy) != argv.end() &&

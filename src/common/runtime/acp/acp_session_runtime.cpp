@@ -657,7 +657,7 @@ namespace uam
 			{
 				if (existing->response_json == response_json) return true;
 				bool replacement_allowed = false;
-				if (session.goal_review_turn || session.active_uam_agent_workspace_access == "read")
+				if (session.goal_review_turn || session.active_uam_agent_workspace_access != "write")
 				{
 					if (purpose == RemoteInteractionResponsePurpose::Permission && session.pending_permission.request_id_json == request_id_json)
 					{
@@ -855,7 +855,7 @@ namespace uam
 			session.active_uam_agent_definition_snapshot = first.uam_agent_definition_snapshot;
 			session.active_uam_agent_skills = first.uam_agent_skills;
 			session.active_uam_agent_delegates = first.uam_agent_delegates;
-			session.active_uam_agent_workspace_access = first.uam_agent_workspace_access;
+			session.active_uam_agent_workspace_access = first.uam_agent_workspace_access == "write" ? "write" : "read";
 			session.active_uam_agent_instructions = first.uam_agent_instructions;
 			session.active_uam_agent_execution_capability = first.uam_agent_execution_capability;
 		}
@@ -1724,6 +1724,8 @@ namespace uam
 			const bool initial_managed = managed != app.agent_runs.end() && managed->managed_continuation.has_value();
 			if (!initial_managed && uam::provider_chat_defaults::ForProvider(app.settings, chat.provider_id, chat.execution_host_id).feature_preference == "provider")
 			{
+				// Provider features replace UAM's agent instructions, never its read ceiling.
+				std::string access = chat.uam_agent_id == "plan" ? "read" : "write";
 				if (!chat.agent_run_id.empty())
 				{
 					const auto run = std::ranges::find(app.agent_runs, chat.agent_run_id, &AgentRun::id);
@@ -1734,6 +1736,7 @@ namespace uam
 					}
 					if (!ValidateCapturedAcpAgentPolicy(app, chat,
 					        run->agent_id, run->definition_snapshot, "provider-native", error_out)) return false;
+					access = run->effective_workspace_access;
 				}
 				else if (!chat.uam_agent_id.empty() && chat.uam_agent_id != "build" && chat.uam_agent_id != "plan")
 				{
@@ -1747,8 +1750,10 @@ namespace uam
 					}
 					if (!ValidateCapturedAcpAgentPolicy(app, chat, snapshot.definition.id,
 					        snapshot.definition.markdown_snapshot, "provider-native", error_out)) return false;
+					access = snapshot.definition.workspace_access;
 				}
 				queued.uam_agent_id = "build";
+				queued.uam_agent_workspace_access = access == "write" ? "write" : "read";
 				queued.uam_agent_execution_capability = "provider-native";
 				return true;
 			}
@@ -2701,7 +2706,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			    ? GoalService::ReviewerModelId(chat, *goal)
 			    : goal != nullptr ? GoalService::WorkerModelId(chat, *goal) : chat.model_id;
 			const std::string desired_mode = uam::approval_modes::EffectiveProviderMode(
-			    first.uam_agent_workspace_access == "read" ? uam::approval_modes::kPlanApprovalMode : chat.approval_mode,
+			    first.uam_agent_workspace_access != "write" ? uam::approval_modes::kPlanApprovalMode : chat.approval_mode,
 			    chat.command_safety_tier);
 			const bool must_leave_hidden_autopilot = session.current_mode_id == uam::approval_modes::kAcpAutopilotMode;
 			const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(session.provider_id);
@@ -2728,7 +2733,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			const bool turn_timeout_changed = session.launch_turn_timeout_setting_seconds > 0 &&
 			    opencode_receives(session.launch_turn_timeout_setting_seconds) != opencode_receives(app.settings.active_turn_inactivity_timeout_seconds) &&
 			    !session.processing && session.prompt_request_id == 0;
-			const bool settings_require_restart = session.running && session.session_ready && (model_requires_restart || turn_timeout_changed || (!chat.reasoning_effort.empty() && runtime.AcpLaunchOptionsNeedModelRestart(session, turn_model_id)) || (first.uam_agent_execution_capability != "opencode-native-agent-config" && (first.uam_agent_workspace_access == "read" || !uam::strings::IsBlank(chat.approval_mode) || must_leave_hidden_autopilot) && !AcpSessionMatchesPermissionMode(session, desired_mode, chat.command_safety_tier) && runtime.AcpModeChangeAction(session) == ProviderAcpSettingChangeAction::RestartSession));
+			const bool settings_require_restart = session.running && session.session_ready && (model_requires_restart || turn_timeout_changed || (!chat.reasoning_effort.empty() && runtime.AcpLaunchOptionsNeedModelRestart(session, turn_model_id)) || (first.uam_agent_execution_capability != "opencode-native-agent-config" && (first.uam_agent_workspace_access != "write" || !uam::strings::IsBlank(chat.approval_mode) || must_leave_hidden_autopilot) && !AcpSessionMatchesPermissionMode(session, desired_mode, chat.command_safety_tier) && runtime.AcpModeChangeAction(session) == ProviderAcpSettingChangeAction::RestartSession));
 			const auto provider_native = [](std::string_view capability)
 			{
 				return capability == "uam-central-native-setup" ||
@@ -2870,7 +2875,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				return false;
 			}
 			if (!runtime.IsGenericAcpSession() && session.active_uam_agent_execution_capability != "opencode-native-agent-config" &&
-			    session.session_ready && (first.uam_agent_workspace_access == "read" || !uam::strings::IsBlank(chat.approval_mode) || must_leave_hidden_autopilot) &&
+			    session.session_ready && (first.uam_agent_workspace_access != "write" || !uam::strings::IsBlank(chat.approval_mode) || must_leave_hidden_autopilot) &&
 			    !AcpSessionMatchesPermissionMode(session, desired_mode, chat.command_safety_tier))
 			{
 				if (runtime.AcpModeChangeAction(session) == ProviderAcpSettingChangeAction::ApplyLocally)
