@@ -30,11 +30,15 @@ namespace uam
 			std::vector<std::filesystem::path> protected_paths;
 			std::vector<std::string> agent_transcript_ids;
 			std::unordered_set<std::string> known_chat_ids;
+			/// `managed-repository-<id hash>` names of every known, stored or transcript chat: their snapshots are never removed.
+			std::unordered_set<std::string> protected_snapshot_names;
 		};
 		struct Candidate
 		{
 			std::filesystem::path source;
 			GitWorktreeRetentionCandidate worktree;
+			/// The candidate is a plain-folder snapshot repository itself rather than a linked worktree.
+			bool managed_snapshot = false;
 		};
 		struct Result
 		{
@@ -42,7 +46,10 @@ namespace uam
 			bool removed = false;
 		};
 		static bool Capture(const AppState& app, Snapshot& snapshot);
-		static bool ProtectStoredWorkspaces(const Snapshot& snapshot, std::vector<std::filesystem::path>& protected_paths, std::stop_token stop);
+		static bool ProtectStoredWorkspaces(const Snapshot& snapshot, std::vector<std::filesystem::path>& protected_paths,
+		    std::unordered_set<std::string>& protected_snapshot_names, std::stop_token stop);
+		/// Removes port patches older than the retention period from `worktrees/patches`; returns how many were removed.
+		static std::size_t PrunePortPatches(const Snapshot& snapshot, std::stop_token stop);
 		static bool ProtectProcessWorkspace(const std::filesystem::path& data_root, std::vector<std::filesystem::path>& protected_paths);
 		static Result Discover(const Snapshot& snapshot, std::stop_token stop);
 		std::future<Result> m_worker;
