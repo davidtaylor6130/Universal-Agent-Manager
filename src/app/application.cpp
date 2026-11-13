@@ -434,6 +434,17 @@ void Application::PollTick()
 	{
 		return;
 	}
+	if (m_startupChats.valid())
+	{
+		if (m_startupChats.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+		{
+			ScheduleNextUpdate(50);
+			return;
+		}
+		auto [chats, warning] = m_startupChats.get();
+		FinishStartupState(std::move(chats), std::move(warning));
+		if (uam_cef_globals::g_client) uam_cef_globals::g_client->ResumeStartupQueries();
+	}
 	if (m_managementNode && g_managementStopRequested)
 	{
 		m_done = true;
@@ -703,7 +714,8 @@ void Application::ApplyBundledMarkdownStoreSeed(bool seeded, std::string error, 
 	{
 		m_app.shell_actions = std::move(shell_actions);
 	}
-	if (m_browser)
+	// While the chat list loads, the waiting initial-state request carries this change instead.
+	if (m_browser && !m_app.startup_state_loading)
 	{
 		uam::PushStateUpdateIfChanged(m_browser, m_app);
 	}
@@ -902,10 +914,66 @@ bool Application::InitializeState()
 	};
 #endif
 
-	ChatHistorySyncService().LoadSidebarChats(m_app);
+	m_startupInterruptedRunIds = std::move(startup_interrupted_run_ids);
+	if (m_managementNode)
+	{
+		// No window to show early: management mode answers its first request with the full state.
+		std::string warning;
+		std::vector<ChatSession> chats = ChatRepository::LoadLocalChatSummaries(m_app.data_root, &warning);
+		FinishStartupState(std::move(chats), std::move(warning));
+	}
+	else
+	{
+		// The window opens while the saved chat list (thousands of files on a large install) loads off the app thread.
+		// Bridge requests wait for it (UamQueryHandler parks them) and PollTick finishes startup once it arrives.
+		std::packaged_task<std::pair<std::vector<ChatSession>, std::string>()> load([data_root = m_app.data_root]()
+		{
+			const std::chrono::steady_clock::time_point read_started = std::chrono::steady_clock::now();
+			std::string warning;
+			std::vector<ChatSession> chats = ChatRepository::LoadLocalChatSummaries(data_root, &warning);
+			uam::diagnostics::Write("[performance] startup chat list read off the app thread in " +
+			    std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - read_started).count()) +
+			    " ms; chats=" + std::to_string(chats.size()) + ".");
+			return std::pair{std::move(chats), std::move(warning)};
+		});
+		m_startupChats = load.get_future();
+		m_app.startup_state_loading = true;
+		// Normal priority, unlike background workers: the user is waiting for this list.
+		std::thread(std::move(load)).detach();
+	}
+
+	if (settings_dirty)
+		PersistenceCoordinator().SaveSettings(m_app);
+
+	// Make AppState accessible to CEF app/client via global pointer.
+	uam_cef_globals::g_app_state = &m_app;
+	m_app.poll_after_action = [this] { PollSoonerIfWorkPending(); };
+
+	const std::chrono::steady_clock::time_point state_finished = std::chrono::steady_clock::now();
+	const auto milliseconds = [](std::chrono::steady_clock::time_point begin, std::chrono::steady_clock::time_point end)
+	{
+		return std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count());
+	};
+	// Background work these stages start (native import, catalogue refresh, version checks) is not included. On the
+	// desktop the chat list loads after this, off the app thread; FinishStartupState logs its stages.
+	uam::diagnostics::Write("[performance] startup InitializeState took " + milliseconds(state_started, state_finished) + " ms; stages=" +
+	    "storage:" + milliseconds(state_started, storage_finished) +
+	    ",agent_runs:" + milliseconds(storage_finished, agent_runs_finished) +
+	    ",settings:" + milliseconds(agent_runs_finished, settings_finished) +
+	    ",compatibility:" + milliseconds(settings_finished, compatibility_finished) +
+	    ",folders:" + milliseconds(compatibility_finished, folders_finished) +
+	    ",model_catalogue:" + milliseconds(folders_finished, model_catalogue_finished) +
+	    ",rest:" + milliseconds(model_catalogue_finished, state_finished) + ".");
+	return true;
+}
+
+void Application::FinishStartupState(std::vector<ChatSession> chats, std::string warning)
+{
+	const std::chrono::steady_clock::time_point finish_started = std::chrono::steady_clock::now();
+	ChatHistorySyncService().LoadSidebarChats(m_app, std::move(chats), std::move(warning));
 	const std::chrono::steady_clock::time_point sidebar_chats_finished = std::chrono::steady_clock::now();
 	// Before the remote restore below: a child a previous process left running on a remote host is attached only to be stopped.
-	(void)uam::AgentRunScheduler::RequestStartupStops(m_app, startup_interrupted_run_ids);
+	(void)uam::AgentRunScheduler::RequestStartupStops(m_app, std::exchange(m_startupInterruptedRunIds, {}));
 	for (const ChatSession& chat : std::vector<ChatSession>(m_app.chats))
 		if (!chat.temporary_parent_chat_id.empty())
 			(void)uam::RequestTemporarySideChatCleanup(m_app, chat.id);
@@ -952,31 +1020,17 @@ bool Application::InitializeState()
 		    "A previous computer-use control file could not be stopped. End any orphaned provider process before using computer use.";
 	}
 
-	if (settings_dirty)
-		PersistenceCoordinator().SaveSettings(m_app);
-
-	// Make AppState accessible to CEF app/client via global pointer.
-	uam_cef_globals::g_app_state = &m_app;
-	m_app.poll_after_action = [this] { PollSoonerIfWorkPending(); };
-
-	const std::chrono::steady_clock::time_point state_finished = std::chrono::steady_clock::now();
+	const std::chrono::steady_clock::time_point finish_finished = std::chrono::steady_clock::now();
 	const auto milliseconds = [](std::chrono::steady_clock::time_point begin, std::chrono::steady_clock::time_point end)
 	{
 		return std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count());
 	};
-	// Background work these stages start (native import, catalogue refresh, version checks) is not included.
-	uam::diagnostics::Write("[performance] startup InitializeState took " + milliseconds(state_started, state_finished) + " ms; stages=" +
-	    "storage:" + milliseconds(state_started, storage_finished) +
-	    ",agent_runs:" + milliseconds(storage_finished, agent_runs_finished) +
-	    ",settings:" + milliseconds(agent_runs_finished, settings_finished) +
-	    ",compatibility:" + milliseconds(settings_finished, compatibility_finished) +
-	    ",folders:" + milliseconds(compatibility_finished, folders_finished) +
-	    ",model_catalogue:" + milliseconds(folders_finished, model_catalogue_finished) +
-	    ",sidebar_chats:" + milliseconds(model_catalogue_finished, sidebar_chats_finished) +
+	uam::diagnostics::Write("[performance] startup chat list applied in " + milliseconds(finish_started, finish_finished) + " ms; stages=" +
+	    "sidebar_chats:" + milliseconds(finish_started, sidebar_chats_finished) +
 	    ",restore:" + milliseconds(sidebar_chats_finished, restore_finished) +
 	    ",native_import:" + milliseconds(restore_finished, native_import_finished) +
-	    ",rest:" + milliseconds(native_import_finished, state_finished) + "; chats=" + std::to_string(m_app.chats.size()) + ".");
-	return true;
+	    ",rest:" + milliseconds(native_import_finished, finish_finished) + "; chats=" + std::to_string(m_app.chats.size()) + ".");
+	m_app.startup_state_loading = false;
 }
 
 bool Application::InitializeCef(CefMainArgs main_args)

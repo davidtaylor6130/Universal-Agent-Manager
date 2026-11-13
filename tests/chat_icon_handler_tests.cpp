@@ -6011,3 +6011,32 @@ UAM_TEST(NativeChildLineageHandlerGeminiRefreshAdvancesNewerNativeTimestamp)
 	CheckPassiveGeminiChildRefreshTimestampMaximum(true);
 }
 #endif
+// The window opens before the saved chat list loads; every bridge request waits and then runs in arrival order.
+UAM_TEST(BridgeRequestsWaitForStartupChatsThenRunInOrder)
+{
+	TempDir temp("uam-startup-parked-queries");
+	uam::AppState app;
+	app.data_root = temp.root;
+	auto handler_owner = UamQueryHandlerTestAccess::Create(app, "uam://app/index.html");
+	auto& handler = *handler_owner;
+	CefRefPtr<RecordingIconCallback> before = new RecordingIconCallback;
+	UAM_ASSERT(!UamQueryHandlerTestAccess::ParkDuringStartup(handler, 1, "{}", before));
+	app.startup_state_loading = true;
+	std::vector<CefRefPtr<RecordingIconCallback>> parked;
+	for (int64_t query = 1; query <= 3; ++query)
+	{
+		parked.push_back(new RecordingIconCallback);
+		UAM_ASSERT(UamQueryHandlerTestAccess::ParkDuringStartup(handler, query, nlohmann::json({{"action", "getInitialState"}, {"payload", nlohmann::json::object()}}).dump(), parked.back()));
+	}
+	handler.OnQueryCanceled(nullptr, nullptr, 2);
+	for (const CefRefPtr<RecordingIconCallback>& callback : parked) UAM_ASSERT_EQ(callback->successes + callback->failures, 0);
+	app.startup_state_loading = false;
+	handler.ResumeParkedQueries();
+	// Replay goes through the full OnQuery checks, so these frameless test queries are refused as untrusted.
+	UAM_ASSERT_EQ(parked[0]->failures, 1);
+	UAM_ASSERT_EQ(parked[0]->last_failure, 403);
+	UAM_ASSERT_EQ(parked[1]->successes + parked[1]->failures, 0);
+	UAM_ASSERT_EQ(parked[2]->failures, 1);
+	handler.ResumeParkedQueries();
+	UAM_ASSERT_EQ(parked[0]->failures, 1);
+}

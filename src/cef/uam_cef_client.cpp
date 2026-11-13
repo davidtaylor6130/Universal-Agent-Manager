@@ -111,6 +111,12 @@ void UamCefClient::OnAfterCreated(CefRefPtr<CefBrowser> browser)
 	}
 }
 
+void UamCefClient::ResumeStartupQueries()
+{
+	CEF_REQUIRE_UI_THREAD();
+	if (m_queryHandler) m_queryHandler->ResumeParkedQueries();
+}
+
 bool UamCefClient::DoClose(CefRefPtr<CefBrowser> /*browser*/)
 {
 	// Allow the OS close to proceed.

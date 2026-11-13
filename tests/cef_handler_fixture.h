@@ -26,6 +26,10 @@ struct UamQueryHandlerTestAccess
 		UAM_ASSERT(action == "readMemoryEntry");
 		return handler.DispatchAction(action, nullptr, payload, callback);
 	}
+	static bool ParkDuringStartup(UamQueryHandler& handler, int64_t query_id, const std::string& request, CefRefPtr<UamQueryHandler::Callback> callback)
+	{
+		return handler.ParkDuringStartup(nullptr, nullptr, query_id, request, callback);
+	}
 	static void MemorySettingsFaults(UamQueryHandler& handler,
 	    std::function<bool(uam::io::AtomicWriteStage)> gate = {}, std::function<void()> after_save = {})
 	{

@@ -8,6 +8,7 @@
 #include "common/chat/chat_folder_store.h"
 #include "core/chat_import_utils.h"
 #include "common/config/execution_host_config.h"
+#include "common/config/provider_availability.h"
 #include "common/paths/workspace_root.h"
 #include "common/provider/provider_ids.h"
 #include "common/utils/string_utils.h"
@@ -175,7 +176,7 @@ namespace uam
 		if (!m_scoped_scanner) return;
 		const Scanner local = m_scanner ? std::move(m_scanner) : Scanner([](const StartupNativeImportScanRequest& request, std::stop_token stop)
 		{
-			return ChatHistorySyncService().DiscoverProviderChatsForFolder({}, request.open_code_profile ? &*request.open_code_profile : nullptr,
+			return ChatHistorySyncService().DiscoverProviderChatsForFolder({}, request.open_code_profile && request.open_code_local_enabled ? &*request.open_code_profile : nullptr,
 			    stop, request.open_code_offset, request.open_code_only, request.open_code_remaining, request.open_code_list_fingerprint);
 		});
 		if (!remote_scanner) remote_scanner = [](const StartupNativeImportRemoteScope& scope, const ProviderProfile* profile, ChatHistorySyncService::RemoteHistoryScanContext& host_scan, std::stop_token stop)
@@ -197,7 +198,7 @@ namespace uam
 			std::atomic<std::size_t> next{0};
 			const auto drain = [&]()
 			{
-				for (std::size_t index = next++; index < hosts.size(); index = next++) results[index] = ScanRemoteHost(hosts[index], remote, profile, retry, stop);
+				for (std::size_t index = next++; index < hosts.size(); index = next++) results[index] = ScanRemoteHost(hosts[index], remote, hosts[index].front()->open_code_enabled ? profile : nullptr, retry, stop);
 			};
 			{
 				std::vector<std::jthread> workers;
@@ -264,6 +265,7 @@ namespace uam
 		const ProviderProfile* configured = ProviderProfileStore::FindById(app.provider_profiles, provider_ids::kOpenCodeCli);
 		StartupNativeImportScanRequest request;
 		request.open_code_profile = configured != nullptr ? std::optional<ProviderProfile>(*configured) : std::nullopt;
+		request.open_code_local_enabled = provider_availability::IsEnabled(app.settings, provider_ids::kOpenCodeCli);
 		request.open_code_offset = app.open_code_history_scan_offset;
 		for (const ChatFolder& folder : app.folders)
 		{
@@ -284,7 +286,7 @@ namespace uam
 			const auto existing = std::ranges::find_if(request.remote_scopes, [&](const StartupNativeImportRemoteScope& scope) { return scope.host.id == host->id; });
 			const std::shared_ptr<StartupNativeImportRemoteScanGate> gate = existing == request.remote_scopes.end()
 			    ? std::make_shared<StartupNativeImportRemoteScanGate>() : existing->gate;
-			request.remote_scopes.push_back({folder, *host, gate, std::make_shared<std::atomic<bool>>(false)});
+			request.remote_scopes.push_back({folder, *host, gate, std::make_shared<std::atomic<bool>>(false), 0, provider_availability::IsEnabled(app.settings, provider_ids::kOpenCodeCli, host->id)});
 		}
 		if (include_remote) m_remote_scopes = request.remote_scopes;
 		m_scan_request = request;
@@ -393,6 +395,7 @@ namespace uam
 	{
 		StartupNativeImportScanRequest request;
 		request.open_code_profile = m_scan_request.open_code_profile;
+		request.open_code_local_enabled = m_scan_request.open_code_local_enabled;
 		request.remote_only = true;
 		request.remote_scopes = PendingRemoteScopes(app);
 		if (request.remote_scopes.empty()) return false;

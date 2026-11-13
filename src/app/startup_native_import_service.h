@@ -73,11 +73,14 @@ namespace uam
 		std::shared_ptr<StartupNativeImportRemoteScanGate> gate;
 		std::shared_ptr<std::atomic<bool>> complete;
 		std::uint64_t admission_generation = 0;
+		// OpenCode history is listed by running its CLI, so a host where OpenCode is turned off is not asked.
+		bool open_code_enabled = true;
 	};
 
 	struct StartupNativeImportScanRequest
 	{
 		std::optional<ProviderProfile> open_code_profile;
+		bool open_code_local_enabled = true;
 		std::size_t open_code_offset = 0;
 		bool open_code_only = false;
 		bool remote_only = false;

@@ -5,9 +5,13 @@
 #include "common/chat/native_import_filter.h"
 #include "common/utils/diagnostic_log.h"
 #include "common/companion/protocol.h"
+#include "common/config/provider_availability.h"
+#include "common/provider/provider_profile.h"
 
 #include <atomic>
 #include <fstream>
+#include <map>
+#include <mutex>
 #include <set>
 #include <future>
 #include <thread>
@@ -2380,3 +2384,44 @@ UAM_TEST(StartupNativeOpenCodeCancellationDoesNotScheduleContinuation)
 	UAM_ASSERT(app.chats.empty());
 }
 #endif
+
+// OpenCode history is listed by running its CLI, so startup must not ask a computer where OpenCode is turned off.
+UAM_TEST(StartupNativeImportSkipsOpenCodeWhereItIsTurnedOff)
+{
+	TempDir temp("uam-native-import-opencode-off");
+	uam::AppState app;
+	StartupWorkspace(app, temp.root);
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	for (const char* id : {"off-host", "on-host"})
+	{
+		ExecutionHost host;
+		host.id = id; host.transport = "ssh"; host.platform = "linux"; host.runner_status = "ready";
+		app.settings.execution_hosts.push_back(host);
+		app.folders.push_back({std::string(id) + "-folder", id, std::string("/synthetic/") + id, false, id});
+	}
+	UAM_ASSERT(uam::provider_availability::Set(app.settings, uam::provider_ids::kOpenCodeCli, "local", false));
+	UAM_ASSERT(uam::provider_availability::Set(app.settings, uam::provider_ids::kOpenCodeCli, "off-host", false));
+	std::atomic<int> local_enabled{-1};
+	std::mutex mutex;
+	std::map<std::string, bool> remote_profiles;
+	uam::StartupNativeImportService service([&](const uam::StartupNativeImportScanRequest& request, std::stop_token)
+	{
+		local_enabled = request.open_code_profile && request.open_code_local_enabled ? 1 : 0;
+		return ChatHistorySyncService::LocalHistoryDiscovery{};
+	}, [&](const uam::StartupNativeImportRemoteScope& scope, const ProviderProfile* profile, ChatHistorySyncService::RemoteHistoryScanContext&, std::stop_token)
+	{
+		std::lock_guard lock(mutex);
+		remote_profiles[scope.host.id] = profile != nullptr;
+		return ChatHistorySyncService::LocalHistoryDiscovery{};
+	});
+	service.Initialize(app);
+	WaitForStartup(service, app);
+	UAM_ASSERT_EQ(local_enabled.load(), 0);
+	UAM_ASSERT_EQ(remote_profiles.size(), std::size_t{2});
+	UAM_ASSERT(!remote_profiles.at("off-host"));
+	UAM_ASSERT(remote_profiles.at("on-host"));
+	UAM_ASSERT(uam::provider_availability::Set(app.settings, uam::provider_ids::kOpenCodeCli, "local", true));
+	UAM_ASSERT(service.DiscoverLocalHistory(app));
+	WaitForStartup(service, app);
+	UAM_ASSERT_EQ(local_enabled.load(), 1);
+}
