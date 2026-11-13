@@ -2700,6 +2700,8 @@ describe('SettingsModal memory settings', () => {
     const editName = () => { act(() => button('Back').click()); act(() => button('Back').click()) }
     try {
       act(() => host.querySelector<HTMLButtonElement>('[aria-label="Edit theme"]')!.click())
+      // The theme editor sits in the same padded frame as other settings pages.
+      expect(host.querySelector('[aria-label="Theme name"]')!.closest('.uam-settings-scroll > .uam-settings-frame')).not.toBeNull()
       review()
       expect(button('Save theme').disabled).toBe(true)
       act(() => button('Save theme').click())
@@ -2977,6 +2979,12 @@ describe('SettingsModal memory settings', () => {
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Computer use"]')!.click())
     expect(host.textContent).toContain('UAM Computer Use')
     expect(host.textContent).toContain('Screen Recording')
+    // A Gemini chat has no provider backend: the option is disabled and says why.
+    act(() => host.querySelector<HTMLButtonElement>('[role="combobox"][aria-label="Computer Use backend"]')!.click())
+    const providerBackend = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) => option.textContent?.includes('Provider built-in'))!
+    expect(providerBackend.disabled).toBe(true)
+    expect(providerBackend.textContent).toContain('Codex chats only')
+    act(() => providerBackend.closest<HTMLElement>('[role="listbox"]')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
     const uamControlToggle = host.querySelector<HTMLInputElement>('[aria-label="Allow UAM Control requests"]')
     expect(uamControlToggle?.disabled).toBe(false)
     await act(async () => { uamControlToggle?.click() })

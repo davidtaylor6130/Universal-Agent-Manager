@@ -230,6 +230,8 @@ describe('MarkdownStoreModal', () => {
     })
     act(() => Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Preview')?.click())
     expect(host.textContent).toContain('Find regressions')
+    // The editor preview uses the reader's Markdown scope, which restores list numbers and bullets.
+    expect(host.querySelector('fieldset .uam-store-markdown')?.textContent).toContain('Find regressions')
 
     await confirmSave()
     expect(update).toHaveBeenCalledWith(expect.objectContaining({ id: 'review' }), expect.objectContaining({ title: 'Review carefully', group: 'Coding / Review' }))

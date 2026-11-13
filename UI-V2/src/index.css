@@ -1723,8 +1723,10 @@ summary,
 .uam-menu-select__option:hover,
 .uam-menu-select__option:focus-visible { background: var(--sidebar-item-hover); outline: var(--focus-ring); outline-offset: var(--focus-inset); }
 .uam-menu-select__option.is-selected { background: var(--accent-dim); }
-.uam-menu-select__option[aria-disabled="true"] { opacity: .5; cursor: default; }
-.uam-menu-select__option[aria-disabled="true"]:hover { background: transparent; }
+.uam-menu-select__option[aria-disabled="true"],
+.uam-menu-select__option:disabled { opacity: .5; cursor: default; }
+.uam-menu-select__option[aria-disabled="true"]:hover,
+.uam-menu-select__option:disabled:hover { background: transparent; outline: none; }
 
 /* ── MenuItem (same look as the shared row-menu item in sidebar.css) ── */
 .uam-menu-item {
