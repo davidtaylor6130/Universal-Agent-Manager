@@ -2209,7 +2209,8 @@ namespace uam
 			provider_json["lastCommand"] = install_running_for_provider
 			                                   ? install->second.command_preview
 			                                   : (check_running_for_provider ? app.runtime_cli_version_check_task.command_preview : provider_state.install_command);
-			provider_json["lastOutput"] = uam::strings::NonEmptyOrFallback(provider_state.install_output, provider_state.raw_output);
+			// Remote probes keep their markers for update identity checks; the UI shows only the CLI output.
+			provider_json["lastOutput"] = StripProviderCliProbeMarkers(uam::strings::NonEmptyOrFallback(provider_state.install_output, provider_state.raw_output));
 			return provider_json;
 		}
 

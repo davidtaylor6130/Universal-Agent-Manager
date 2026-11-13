@@ -547,9 +547,9 @@ namespace
 		return true;
 	}
 
-	std::string StripProbePathLine(std::string output)
+	std::string EraseMarkerLines(std::string output, std::initializer_list<std::string_view> markers)
 	{
-		for (const std::string_view marker_text : {kProviderCliPathMarker, kProviderCliRunningMarker, kProviderCliPidMarker})
+		for (const std::string_view marker_text : markers)
 		{
 			for (std::size_t marker = output.find(marker_text); marker != std::string::npos; marker = output.find(marker_text))
 			{
@@ -558,6 +558,11 @@ namespace
 			}
 		}
 		return output;
+	}
+
+	std::string StripProbePathLine(std::string output)
+	{
+		return EraseMarkerLines(std::move(output), {kProviderCliPathMarker, kProviderCliRunningMarker, kProviderCliPidMarker, uam::remote::kCliMaintenanceMarker});
 	}
 
 	std::string BuildInstallAwareProbeCommand(const ProviderCliPolicy& policy, std::string_view platform)
@@ -1432,6 +1437,12 @@ std::string ExtractCliProviderSemverVersionForTests(std::string_view output)
 {
 	const std::optional<std::string> parsed = ExtractSemverVersion(output);
 	return parsed.value_or("");
+}
+
+std::string StripProviderCliProbeMarkers(std::string output)
+{
+	// Display only: the stored install output keeps the interactive-update markers, which carry the update nonce.
+	return EraseMarkerLines(StripProbePathLine(std::move(output)), {kInteractiveInstallMarker, kInteractivePreparedMarker, kInteractiveConsentMarker});
 }
 
 std::string ExtractCliProviderInstallMethodForTests(std::string_view output)
