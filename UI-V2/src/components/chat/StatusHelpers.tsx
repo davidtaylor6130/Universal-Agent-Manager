@@ -7,6 +7,7 @@ import type { LucideIcon } from 'lucide-react'
 import type { AcpBinding, AcpToolCall, CliBinding } from '../../store/useAppStore'
 import { copyTextToClipboard } from '../../utils/copySelection'
 import { IconButton, Tooltip } from '../ui'
+import { redactSecretRequestTool } from './toolOutputFormat'
 
 /** Bar for a token quantity; callers pick the tone and keep exact numbers in text. */
 export function ContextMeter({ ratio, level = 'ok' }: { ratio: number; level?: 'ok' | 'warning' | 'error' }) {
@@ -151,7 +152,7 @@ export function toolDisplayKind(tool: AcpToolCall) {
 export function toolDisplayTitle(tool: AcpToolCall) {
   return tool.isSubAgent
     ? (tool.subAgentTitle || tool.title || tool.subAgentId || tool.id)
-    : (tool.title || tool.id)
+    : (redactSecretRequestTool(tool).title || tool.id)
 }
 
 export function roleAccent(role: string) {

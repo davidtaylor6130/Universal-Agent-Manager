@@ -196,7 +196,8 @@ namespace
 		struct RestoreTranscript
 		{
 			ChatSession& owner;
-			std::vector<Message> messages;
+			// Revisioned, so restoring the transcript keeps its stamp.
+			uam::RevisionedVector<Message> messages;
 			std::vector<AcpQueuedUserPromptState> queued;
 			std::string handoff;
 			std::vector<Goal> goals;

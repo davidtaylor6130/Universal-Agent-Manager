@@ -540,6 +540,8 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"cancelAcpTurn", &UamQueryHandler::HandleCancelAcpTurn},
 		{"resolveAcpPermission", &UamQueryHandler::HandleResolveAcpPermission},
 		{"resolveAcpUserInput", &UamQueryHandler::HandleResolveAcpUserInput},
+		{"submitSecretRequest", &UamQueryHandler::HandleSubmitSecretRequest},
+		{"forgetSavedSecret", &UamQueryHandler::HandleForgetSavedSecret},
 		{"stopAcpSession", &UamQueryHandler::HandleStopAcpSession},
 		{"treatRemoteStopAsStopped", &UamQueryHandler::HandleTreatRemoteStopAsStopped},
 		{"writeClipboardText", &UamQueryHandler::HandleWriteClipboardText},
