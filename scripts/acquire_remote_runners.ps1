@@ -11,6 +11,17 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 . "$PSScriptRoot/runner_source_contract.ps1"
 $sourceContract = Get-UamRunnerSourceContract (Join-Path $PSScriptRoot '..')
 $targets = @('linux-arm64', 'linux-x86_64', 'windows-x86_64')
+$repository = 'davidtaylor6130/Universal-Agent-Manager'
+# The .sha256 inside an archive only proves the archive agrees with itself. Downloaded or supplied archives must also
+# carry GitHub build provenance from this repository's release workflow for the exact version tag. -Offline skips this
+# for archives the operator already verified or copied from CI.
+function Assert-RunnerProvenance([string]$Zip, [string]$Name) {
+    $gh = Get-Command gh -CommandType Application,ExternalScript -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $gh) { throw "Cannot verify the provenance of $Name for v$Version. Install the GitHub CLI (gh) and sign in, or supply already verified helpers with -Offline." }
+    # gh reports progress on stderr; Windows PowerShell would turn that into a terminating error under 'Stop'.
+    $output = & { $ErrorActionPreference = 'Continue'; & $gh.Source attestation verify $Zip --repo $repository --signer-workflow "$repository/.github/workflows/release.yml" --source-ref "refs/tags/v$Version" --deny-self-hosted-runners 2>&1 }
+    if ($LASTEXITCODE -ne 0) { throw "Helper provenance verification failed for $Name v${Version}: it is not a release build of $repository. $($output -join ' ')" }
+}
 function Test-RunnerContract([string]$Root) {
     foreach ($target in $targets) {
         $binary = if ($target -eq 'windows-x86_64') { 'uam-runner.exe' } else { 'uam-runner' }
@@ -58,12 +69,13 @@ try {
             Copy-Item -LiteralPath $source -Destination $zip
         } elseif ($Offline) { throw "Offline: missing $name for v$Version." }
         else {
-            $url = "https://github.com/davidtaylor6130/Universal-Agent-Manager/releases/download/v$Version/$name"
+            $url = "https://github.com/$repository/releases/download/v$Version/$name"
             Write-Host "Downloading $name for v$Version..."
             try { Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing -TimeoutSec 120 | Out-Null }
             catch { throw "Could not obtain $name for v$Version. This version may not be released or the connection is offline. Download matching CI runner artifacts into $ArtifactRoot, or supply -ArchiveDirectory. $($_.Exception.Message)" }
         }
         if ((Get-Item -LiteralPath $zip).Length -gt 64MB) { throw "Helper archive exceeds 64 MB: $name" }
+        if (-not $Offline) { Assert-RunnerProvenance $zip $name }
         $directory = Join-Path $stage $target
         New-Item -ItemType Directory -Path $directory | Out-Null
         $binary = if ($target -eq 'windows-x86_64') { 'uam-runner.exe' } else { 'uam-runner' }

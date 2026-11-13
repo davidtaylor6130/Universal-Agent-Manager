@@ -97,6 +97,13 @@ do
     [[ "$(tr -d '[:space:]' < "$version_file")" == "$native_runner_version" ]]
 done
 codesign --verify --deep --strict "$app_root"
+# The companion transport must be the pinned, hash-checked Caddy release from CMakeLists.txt.
+pinned_caddy=$(sed -n 's/^ *set(UAM_CADDY_VERSION "\(.*\)")$/\1/p' "$(dirname "$prune_clones")/../CMakeLists.txt")
+packaged_caddy=$("$app_root/Contents/Resources/companion/caddy" version)
+if [[ -z "$pinned_caddy" || "$packaged_caddy" != "v$pinned_caddy "* ]]; then
+    echo "Packaged Caddy '$packaged_caddy' is not the pinned v$pinned_caddy." >&2
+    exit 1
+fi
 
 if [[ -n "$expected_ui_dist" ]]; then
     diff -qr "$expected_ui_dist" "$packaged_ui"
