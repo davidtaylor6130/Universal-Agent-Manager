@@ -1812,6 +1812,42 @@ UAM_TEST(UamControlUserQuestionRoutesThroughTheExistingGuiInput)
 	UAM_ASSERT(transport("question-disconnect", "_mcp_disconnected", {{"connectionId", "connection-b"}}));
 	UAM_ASSERT(!uam::UamControlService::PendingApprovalForChat(app, root_id).has_value());
 
+	// A caller that gave up without cancelling is gone once its turn ends, however it ends (#898).
+	const auto ended_with_error = [&](const char* id)
+	{
+		std::string text;
+		UAM_ASSERT(uam::io::TryReadTextFile(root_directory / "responses" / (std::string(id) + ".json"), text));
+		const nlohmann::json reply = nlohmann::json::parse(text);
+		UAM_ASSERT(!reply.value("ok", true));
+		UAM_ASSERT(reply.value("error", "").find("turn that made this request ended") != std::string::npos);
+	};
+	UAM_ASSERT(transport("question-reconnect-turn", "_mcp_initialized", {{"connectionId", "connection-c"}}));
+	raw_root_session->processing = true;
+	raw_root_session->turn_serial = 4;
+	ask("question-turn-ended");
+	raw_root_session->reconnect_pending = true; // A remote turn being reattached is the same turn.
+	raw_root_session->processing = false;
+	(void)uam::UamControlService::ProcessPendingRequests(app);
+	UAM_ASSERT(uam::UamControlService::PendingApprovalForChat(app, root_id).has_value());
+	raw_root_session->reconnect_pending = false;
+	raw_root_session->recovering_remote_turn = true;
+	(void)uam::UamControlService::ProcessPendingRequests(app);
+	UAM_ASSERT(uam::UamControlService::PendingApprovalForChat(app, root_id).has_value());
+	raw_root_session->recovering_remote_turn = false;
+	raw_root_session->claude_live_background_task_ids.insert("task-1"); // A background agent may still be waiting.
+	(void)uam::UamControlService::ProcessPendingRequests(app);
+	UAM_ASSERT(uam::UamControlService::PendingApprovalForChat(app, root_id).has_value());
+	raw_root_session->claude_live_background_task_ids.clear();
+	(void)uam::UamControlService::ProcessPendingRequests(app);
+	UAM_ASSERT(!uam::UamControlService::PendingApprovalForChat(app, root_id).has_value());
+	ended_with_error("question-turn-ended");
+	raw_root_session->processing = true;
+	ask("question-next-turn");
+	raw_root_session->turn_serial = 5;
+	(void)uam::UamControlService::ProcessPendingRequests(app);
+	UAM_ASSERT(!uam::UamControlService::PendingApprovalForChat(app, root_id).has_value());
+	ended_with_error("question-next-turn");
+
 	uam::UamControlService::Shutdown(app);
 }
 

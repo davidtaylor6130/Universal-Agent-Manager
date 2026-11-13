@@ -1715,7 +1715,10 @@ namespace uam::remote
 				{
 					// The shim reported its waiting calls as failed: nothing it sent may reach a desktop afterwards.
 					drop_undelivered();
-					state.desktop_fenced = true;
+					// Only a desktop that names its tool server can clear a fence. One that never named one (from before
+					// desktop epochs) is not fenced, or it would be refused until restarted; dropping its unread calls is
+					// enough, and any desktop that does name a server replaces it anyway.
+					state.desktop_fenced = !state.desktop_epoch.empty();
 				}
 				if (request.contains("desktopEpoch"))
 				{

@@ -4159,6 +4159,67 @@ UAM_TEST(OptInRealRemoteOpenCodeTurnRecoversAfterLocalRelayLoss)
 }
 
 #if defined(__APPLE__)
+UAM_TEST(RemoteReattachLaunchKeepsTheControlRelayItIssued)
+{
+	// #898: the real launch path on a stand-in host, not the reattach step alone. A Claude or Antigravity reattach
+	// issues its capability and starts its relay before the reattach step runs, and that step keeps both.
+	const fs::path runner = PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath().parent_path() / "uam-runner";
+	for (const std::string provider : {std::string(uam::provider_ids::kClaudeCli), std::string(uam::provider_ids::kAntigravityCli)})
+	{
+		TempDir temp("uam-remote-reattach-launch");
+		const fs::path ssh = temp.root / "ssh";
+		UAM_ASSERT(uam::io::WriteTextFile(ssh, "#!/bin/sh\nexec \"$UAM_TEST_RUNNER\" bridge-direct\n"));
+		fs::permissions(ssh, fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec);
+		ScopedEnvVar path("PATH", temp.root.string() + ":/usr/bin:/bin");
+		ScopedEnvVar home("HOME", temp.root.string());
+		ScopedEnvVar test_runner("UAM_TEST_RUNNER", runner.string());
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		ExecutionHost host;
+		host.id = "lab";
+		host.label = "Lab";
+		host.transport = "ssh";
+		host.ssh_alias = "home-lab";
+		host.runner_status = "ready";
+		host.runner_version = std::string(uam::constants::kAppVersion).substr(1);
+		host.runner_protocol_version = uam::remote::kRunnerProtocolVersion;
+		host.platform = "linux";
+		host.architecture = "arm64";
+		app.settings.execution_hosts = {host};
+		uam::execution_hosts::Normalize(app.settings.execution_hosts);
+		ChatSession chat;
+		chat.id = "remote-reattach-launch";
+		chat.provider_id = provider;
+		chat.execution_host_id = host.id;
+		chat.workspace_directory = temp.root.string();
+		chat.uam_control_enabled = true;
+		chat.remote_uam_control_channel_id = "11111111-1111-4111-8111-111111111111";
+		chat.remote_process_exists = true;
+		chat.remote_process_control_token = "reattach-launch-token";
+		app.chats.push_back(std::move(chat));
+		std::string error;
+		UAM_ASSERT(uam::UamControlService::Initialize(app, &error));
+		app.acp_sessions.push_back(std::make_unique<uam::AcpSessionState>());
+		uam::AcpSessionState& session = *app.acp_sessions.back();
+		session.chat_id = app.chats.front().id;
+		session.provider_id = provider;
+		session.process_execution_host_id = host.id;
+		session.recovering_remote_process = true;
+		UAM_ASSERT(uam::acp_detail::StartAcpProcessForChat(app, session, app.chats.front(), &error));
+		UAM_ASSERT(session.uam_control_relay != nullptr);
+		UAM_ASSERT(!session.uam_control_capability_id.empty());
+		UAM_ASSERT_EQ(app.uam_control_capabilities.size(), std::size_t{1});
+		UAM_ASSERT_EQ(app.uam_control_capabilities.front().id, session.uam_control_capability_id);
+		UAM_ASSERT_EQ(app.chats.front().remote_uam_control_channel_id, std::string("11111111-1111-4111-8111-111111111111"));
+		PlatformServicesFactory::Instance().process_service.StopStdioProcess(session, true);
+		PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(session);
+		session.running = false;
+		session.uam_control_relay.reset();
+		uam::UamControlService::Shutdown(app);
+	}
+}
+
 UAM_TEST(RemoteAcpRunsEndToEndThroughTheUamRunnerProxy)
 {
 	for (const std::string& cached_status : {"ready", "error", "offline"})
