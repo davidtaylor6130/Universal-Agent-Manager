@@ -15,6 +15,9 @@ struct ComposerView: View
     var processing = false
     var sending = false
     var readOnly = false
+    /// Set while a structured turn runs: what Send does, and onSendAlternate does the other action.
+    var activeTurn: ActiveTurnSend? = nil
+    var onSendAlternate: () -> Void = {}
     var onSend: () -> Void
     var onStop: () -> Void
     var onModels: () -> Void
@@ -51,6 +54,7 @@ struct ComposerView: View
             if expanded
             {
                 editor.padding(.horizontal, 4).padding(.top, 3)
+                if let activeTurn, canSend { activeTurnRow(activeTurn) }
                 HStack(spacing: 10)
                 {
                     attachmentButton
@@ -196,6 +200,20 @@ struct ComposerView: View
         draft.text = updated
     }
 
+    /// Names what Send will do in the running turn and keeps a labelled button for the other action.
+    private func activeTurnRow(_ activeTurn: ActiveTurnSend) -> some View
+    {
+        HStack(spacing: 8)
+        {
+            Text("Send: " + activeTurn.label).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            Spacer(minLength: 0)
+            Button(activeTurn.alternateLabel) { focused = false; onSendAlternate() }
+                .font(.caption.weight(.semibold)).frame(minHeight: 44)
+                .disabled(sending || importing || speech.isActive)
+                .accessibilityIdentifier("sendAlternate")
+        }.padding(.horizontal, 8)
+    }
+
     private var sendButton: some View
     {
         Button
@@ -210,7 +228,7 @@ struct ComposerView: View
                 else { Image(systemName: processing && !canSend ? "stop.fill" : "arrow.up").font(.system(size: 21, weight: .semibold)).foregroundStyle(processing && !canSend ? .red : canSend ? .white : .secondary) }
             }.frame(width: 36, height: 36).padding(4)
         }.buttonStyle(.plain).disabled(sending || importing || speech.isActive || (!canSend && !processing))
-            .accessibilityLabel(processing && !canSend ? "Stop response" : processing ? "Queue message" : "Send message")
+            .accessibilityLabel(processing && !canSend ? "Stop response" : activeTurn?.label ?? (processing ? "Queue message" : "Send message"))
             .accessibilityIdentifier("sendMessage")
     }
 

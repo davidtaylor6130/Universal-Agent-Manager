@@ -114,6 +114,50 @@ import UAMKit
         XCTAssertTrue(gate.seenActions.isEmpty, "Rejected targets must never reach the companion")
     }
 
+    func testRunningTurnSendFollowsTheDesktopPreferenceAndOffersTheOtherAction() async throws
+    {
+        var chat: WireObject = ["id": "a", "providerId": "codex-cli", "acpSession": ["processing": true]]
+        var settings: WireObject = [:]
+        var providers: [WireObject] = [["id": "codex-cli", "supportsNativeSteering": true], ["id": "gemini-cli"]]
+        var steers: [Bool] = []
+        let model = try model(handler: { action, payload in
+            if action == "sendAcpPrompt" { steers.append(payload["steerNow"] as? Bool ?? false) }
+            if action == "getInitialState" { return ["chats": [chat], "folders": [], "bootId": "test", "settings": settings, "providers": providers] }
+            if action == "getChatMessages" { return ["chatId": "a", "startIndex": 0, "totalCount": 0, "messages": []] }
+            return [:]
+        })
+        model.connected = true
+        func load() async { await model.refresh(force: true); model.activeChatID = "a" }
+        func send(alternate: Bool = false) async { model.draft = ComposerDraft(text: "next"); await model.sendDraft(alternate: alternate) }
+        await load()
+        _ = await model.openChat("a")
+
+        // Queue for next turn is the default; the other action steers.
+        XCTAssertEqual(model.activeTurnSend(for: try XCTUnwrap(model.chat)), ActiveTurnSend(steer: false, interrupts: false))
+        await send(); await send(alternate: true)
+        XCTAssertEqual(steers, [false, true])
+
+        // Steer active turn makes Send steer, and the other action queues.
+        settings = ["steerActiveTurnOnSend": true]; await load()
+        XCTAssertEqual(model.activeTurnSend(for: try XCTUnwrap(model.chat))?.label, "Steer active turn")
+        await send(); await send(alternate: true)
+        XCTAssertEqual(steers, [false, true, true, false])
+
+        // A provider without native steering says it interrupts the turn first.
+        chat["providerId"] = "gemini-cli"; await load()
+        XCTAssertEqual(model.activeTurnSend(for: try XCTUnwrap(model.chat))?.alternateLabel, "Queue for next turn instead")
+        XCTAssertEqual(model.activeTurnSend(for: try XCTUnwrap(model.chat))?.label, "Interrupt and steer")
+
+        // A turn waiting for a compute pool slot, or no running turn, sends ordinary input.
+        chat["acpSession"] = ["processing": true, "computePoolWait": ["poolName": "pool", "inUse": 1, "limit": 1]]; await load()
+        XCTAssertNil(model.activeTurnSend(for: try XCTUnwrap(model.chat)))
+        await send()
+        chat["acpSession"] = ["processing": false]; providers = []; await load()
+        XCTAssertNil(model.activeTurnSend(for: try XCTUnwrap(model.chat)))
+        await send(alternate: true)
+        XCTAssertEqual(steers, [false, true, true, false, false, false])
+    }
+
     func testNativeModelOptionsSendOnlyExactContractAndPreserveComposerDraft() async throws
     {
         let chat = nativeRoutingChat()
