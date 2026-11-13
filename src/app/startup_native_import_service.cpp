@@ -384,6 +384,7 @@ namespace uam
 				continue;
 			}
 			scope.host = *host;
+			scope.open_code_enabled = provider_availability::IsEnabled(app.settings, provider_ids::kOpenCodeCli, host->id);
 			scope.admission_generation = scope.gate->generation;
 			m_remote_hosts[host->id] = *host;
 			pending.push_back(scope);

@@ -2385,6 +2385,7 @@ UAM_TEST(StartupNativeOpenCodeCancellationDoesNotScheduleContinuation)
 }
 #endif
 
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 // OpenCode history is listed by running its CLI, so startup must not ask a computer where OpenCode is turned off.
 UAM_TEST(StartupNativeImportSkipsOpenCodeWhereItIsTurnedOff)
 {
@@ -2425,3 +2426,4 @@ UAM_TEST(StartupNativeImportSkipsOpenCodeWhereItIsTurnedOff)
 	WaitForStartup(service, app);
 	UAM_ASSERT_EQ(local_enabled.load(), 1);
 }
+#endif

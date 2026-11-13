@@ -14,6 +14,7 @@
 #include "application.h"
 #include "remote/runner_client.h"
 #include <thread>
+#include <system_error>
 #include <cstdlib>
 #include "common/utils/diagnostic_log.h"
 #include "common/platform/app_crash_supervisor.h"
@@ -441,6 +442,7 @@ void Application::PollTick()
 			ScheduleNextUpdate(50);
 			return;
 		}
+		m_startupChatLoader.join();
 		auto [chats, warning] = m_startupChats.get();
 		FinishStartupState(std::move(chats), std::move(warning));
 		if (uam_cef_globals::g_client) uam_cef_globals::g_client->ResumeStartupQueries();
@@ -936,10 +938,20 @@ bool Application::InitializeState()
 			    " ms; chats=" + std::to_string(chats.size()) + ".");
 			return std::pair{std::move(chats), std::move(warning)};
 		});
-		m_startupChats = load.get_future();
-		m_app.startup_state_loading = true;
-		// Normal priority, unlike background workers: the user is waiting for this list.
-		std::thread(std::move(load)).detach();
+		std::future<std::pair<std::vector<ChatSession>, std::string>> loaded = load.get_future();
+		try
+		{
+			// Normal priority, unlike background workers: the user is waiting for this list. Shutdown waits for it.
+			m_startupChatLoader = std::thread(std::move(load));
+			m_startupChats = std::move(loaded);
+			m_app.startup_state_loading = true;
+		}
+		catch (const std::system_error&)
+		{
+			std::string warning;
+			std::vector<ChatSession> chats = ChatRepository::LoadLocalChatSummaries(m_app.data_root, &warning);
+			FinishStartupState(std::move(chats), std::move(warning));
+		}
 	}
 
 	if (settings_dirty)
@@ -1123,6 +1135,20 @@ bool Application::InitializeCef(CefMainArgs main_args)
 
 void Application::Shutdown()
 {
+	if (m_startupChats.valid())
+	{
+		// Quit while the chat list loads: the loader writes summary caches under the data-folder lock released below,
+		// and runs a previous process left behind still need their stop requests, which name chats.
+		m_startupChatLoader.join();
+		try
+		{
+			auto [chats, warning] = m_startupChats.get();
+			ChatHistorySyncService().LoadSidebarChats(m_app, std::move(chats), std::move(warning));
+			(void)uam::AgentRunScheduler::RequestStartupStops(m_app, std::exchange(m_startupInterruptedRunIds, {}));
+		}
+		catch (const std::exception& error) { uam::diagnostics::Write(std::string("Startup chat list failed to load: ") + error.what()); }
+		m_app.startup_state_loading = false;
+	}
 	// Quit must not wait on a remote host: no remote connection starts from here, and the waits already under way end together
 	uam::remote::BeginRunnerShutdown();
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI

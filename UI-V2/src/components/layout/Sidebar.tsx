@@ -181,7 +181,8 @@ export function Sidebar() {
 // Large installs load the saved chat list after the window opens; an empty tree here would read as "no chats".
 function SidebarLoading() {
   return (
-    <div role="status" aria-label="Loading chats" className="flex flex-col gap-3 px-3 py-2">
+    <div role="status" aria-label="Loading chats" aria-busy="true" className="flex flex-col gap-3 px-3 py-2">
+      <span className="sr-only">Loading chats…</span>
       {[62, 78, 54, 70, 46, 66].map((width, index) => (
         <div key={index} className="flex items-center gap-2" aria-hidden>
           <span className="uam-icon-skeleton" style={{ width: 14, height: 14, flexShrink: 0 }} />

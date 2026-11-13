@@ -41,6 +41,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <system_error>
 #include <future>
 #include <vector>
 #include <chrono>
@@ -5811,8 +5812,9 @@ namespace
 		for (fs::directory_iterator it(chats_root, ec), end; !ec && it != end; it.increment(ec))
 			if (uam::paths::IsRegularFileWithExtensionNoThrow(*it, ".json")) primaries.push_back(it->path());
 
-		// Each file is read and parsed independently (a cold start also rewrites its summary cache), so a large
-		// install spends seconds in file latency; a few workers overlap it. Results are consumed in directory order.
+		// Each file is read and parsed independently, so a large install spends seconds in file latency; a few workers
+		// overlap the reads and parsing (summary-cache rewrites stay serialized where the atomic writer takes its lock).
+		// Results are consumed in directory order.
 		std::vector<LoadChatResult> parsed(primaries.size());
 		std::atomic<std::size_t> next{0};
 		const auto parse = [&]()
@@ -5852,7 +5854,10 @@ namespace
 			// ponytail: fixed at eight workers; file latency, not CPU, bounds this, so a setting waits for evidence.
 			std::vector<std::future<void>> workers;
 			for (std::size_t worker = 1; worker < std::min<std::size_t>(primaries.size() / 64 + 1, 8); ++worker)
-				workers.push_back(std::async(std::launch::async, parse));
+			{
+				try { workers.push_back(std::async(std::launch::async, parse)); }
+				catch (const std::system_error&) { break; } // This thread still reads every remaining file.
+			}
 			parse();
 			for (std::future<void>& worker : workers) worker.get();
 		}
@@ -5869,7 +5874,7 @@ namespace
 					continue;
 				}
 
-				chats.push_back(primary);
+				chats.push_back(std::move(*primary_chat.chat));
 				continue;
 			}
 

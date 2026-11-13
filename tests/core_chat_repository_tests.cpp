@@ -3041,3 +3041,48 @@ UAM_TEST(MessageBranchRetryFailureCleansUpNewIsolatedWorktree)
 	}
 	UAM_ASSERT_EQ(remaining_worktrees, static_cast<std::size_t>(1));
 }
+
+// Large catalogues are read by several workers; the result must match reading each chat on its own, including backup
+// recovery and the malformed-file warning, whether the summary caches are cold or current.
+UAM_TEST(ChatRepositoryParallelCatalogueReadMatchesPerChatReads)
+{
+	TempDir temp("uam-chat-parallel-catalogue");
+	std::vector<std::string> ids;
+	for (int index = 0; index < 130; ++index)
+	{
+		ChatSession chat;
+		chat.id = "parallel-" + std::to_string(index);
+		chat.provider_id = "codex-cli";
+		chat.title = "Parallel " + std::to_string(index);
+		chat.created_at = "2026-01-01T00:00:00.000Z";
+		chat.updated_at = "2026-01-01T00:00:" + std::string(index % 60 < 10 ? "0" : "") + std::to_string(index % 60) + ".000Z";
+		for (int message = 0; message <= index % 5; ++message) chat.messages.push_back(Message{MessageRole::User, "message " + std::to_string(message)});
+		UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+		ids.push_back(chat.id);
+	}
+	// One corrupt primary recovers from its backup; one malformed chat without a backup is skipped with a warning.
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, [] { ChatSession chat; chat.id = "parallel-0"; chat.provider_id = "codex-cli"; chat.title = "Second save"; chat.created_at = "2026-01-01T00:00:00.000Z"; chat.updated_at = "2026-01-02T00:00:00.000Z"; chat.messages.push_back(Message{MessageRole::User, "message 0"}); return chat; }()));
+	UAM_ASSERT(uam::io::WriteTextFile(AppPaths::UamChatFilePath(temp.root, "parallel-0"), "{"));
+	UAM_ASSERT(uam::io::WriteTextFile(AppPaths::UamChatFilePath(temp.root, "malformed"), "{"));
+	std::error_code removed;
+	fs::remove_all(temp.root / "chat-summaries", removed);
+	for (const char* pass : {"cold", "current"})
+	{
+		std::string warning;
+		const std::vector<ChatSession> loaded = ChatRepository::LoadLocalChatSummaries(temp.root, &warning);
+		UAM_ASSERT_EQ(loaded.size(), ids.size());
+		UAM_ASSERT(warning.find("malformed") != std::string::npos);
+		for (const ChatSession& chat : loaded)
+		{
+			const std::optional<ChatSession> single = ChatRepository::LoadLocalChat(temp.root, chat.id, false);
+			UAM_ASSERT(single.has_value());
+			UAM_ASSERT_EQ(chat.title, single->title);
+			UAM_ASSERT_EQ(chat.updated_at, single->updated_at);
+			UAM_ASSERT_EQ(chat.persisted_message_count, single->persisted_message_count);
+			UAM_ASSERT_EQ(chat.persisted_messages_digest, single->persisted_messages_digest);
+		}
+		UAM_ASSERT(std::ranges::is_sorted(loaded, [](const ChatSession& left, const ChatSession& right) { return left.updated_at > right.updated_at; }));
+		UAM_ASSERT_EQ(std::ranges::count(loaded, std::string("Parallel 0"), &ChatSession::title), 1);
+		(void)pass;
+	}
+}

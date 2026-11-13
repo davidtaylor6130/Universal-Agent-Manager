@@ -6011,8 +6011,9 @@ UAM_TEST(NativeChildLineageHandlerGeminiRefreshAdvancesNewerNativeTimestamp)
 	CheckPassiveGeminiChildRefreshTimestampMaximum(true);
 }
 #endif
-// The window opens before the saved chat list loads; every bridge request waits and then runs in arrival order.
-UAM_TEST(BridgeRequestsWaitForStartupChatsThenRunInOrder)
+// The window opens before the saved chat list loads; every bridge request waits, a cancelled one is dropped and
+// the rest are dispatched once loading ends.
+UAM_TEST(BridgeRequestsWaitForStartupChatsAndDropCancelledOnes)
 {
 	TempDir temp("uam-startup-parked-queries");
 	uam::AppState app;
