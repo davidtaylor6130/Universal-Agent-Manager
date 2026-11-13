@@ -236,7 +236,9 @@ UAM_TEST(OpenCodeTerminalNativeReceiptsCannotReplaceShutdownState)
 	TerminalObservationFixture fixture;
 	fixture.phase->store(1);
 	fixture.Poll();
-	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+	// Wait for the snapshot worker's session and status queries, not a tight wall-clock budget: a busy host can delay the
+	// worker past one second (#891). The bound only turns a worker that never queries into a failure instead of a hang.
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
 	while (fixture.queries->load() < 2 && std::chrono::steady_clock::now() < deadline) std::this_thread::sleep_for(std::chrono::milliseconds(1));
 	UAM_ASSERT_EQ(fixture.queries->load(), 2);
 	fixture.terminal.lifecycle_state = uam::CliTerminalLifecycleState::ShuttingDown;
