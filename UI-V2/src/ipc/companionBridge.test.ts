@@ -41,6 +41,17 @@ it('authenticates companion requests, preserves failures and keeps selection loc
   expect(fetch).toHaveBeenCalledTimes(3)
 })
 
+it('tells a browser whose token was rotated to pair again instead of retrying', async () => {
+  window.history.replaceState(null, '', '/companion')
+  window.localStorage.setItem('uam-companion-token', 'old-token')
+  const fetch = vi.fn().mockResolvedValueOnce({ ok: false, status: 401, json: async () => ({ error: 'Companion authentication required.' }) })
+  vi.stubGlobal('fetch', fetch)
+  const response = await sendToCEF({ action: 'getInitialState' }, false)
+  expect(response.ok).toBe(false)
+  expect(response.error).toBe('UAM no longer accepts this connection token. Log out in Settings, then connect with the current token from the computer.')
+  expect(fetch).toHaveBeenCalledTimes(1)
+})
+
 it('reassembles response chunks across UTF-8 boundaries without replaying the original action', async () => {
   window.history.replaceState(null, '', '/companion')
   window.localStorage.setItem('uam-companion-token', 'test-token')

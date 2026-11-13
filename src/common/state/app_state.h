@@ -12,6 +12,7 @@
 #include "common/provider/attached_skill_resources.h"
 #include "common/runtime/terminal/terminal_dimensions.h"
 #include "common/runtime/stream_watch.h"
+#include "common/security/read_only_command.h"
 
 #include <atomic>
 #include <array>
@@ -443,6 +444,8 @@ namespace uam
 		std::vector<AcpPermissionOptionState> options;
 		// Typed native command only; display content and reason text cannot prove execution authority.
 		std::string execution_command;
+		// Captured from the chat when the request arrives: where admitted reads and automatic edits may reach.
+		command_safety::ReadScope read_scope;
 	};
 
 	struct AcpUserInputOptionState

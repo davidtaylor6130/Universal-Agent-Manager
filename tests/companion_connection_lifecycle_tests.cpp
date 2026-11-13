@@ -1,7 +1,15 @@
 #include "common/companion/connection_lifecycle.h"
 #include "common/companion/connection_config.h"
+#include "common/platform/companion_network_platform.h"
 #include <atomic>
 #include <iostream>
+#if defined(__APPLE__)
+#include <arpa/inet.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 #include <stdexcept>
 #include <vector>
 
@@ -231,6 +239,97 @@ namespace
 		Require(environment.valid && environment.configured && environment.enabled && environment.token_file == "environment-token" && environment.proxy_config.empty(), "Explicit environment configuration remains independent of corrupt persisted configuration");
 	}
 
+	void CompanionTokenCredentialStoreConfigurationIsConfigured()
+	{
+		const auto stored = ResolveConnectionConfiguration(std::string(R"({"enabled":true,"token_store":"credential_store","port":58949})"), {});
+		Require(stored.valid && stored.configured && stored.enabled && stored.credential_store && stored.token_file.empty(), "A credential-store token is a configured connection without any token file");
+		Require(HasTokenSource(nlohmann::json::parse(R"({"enabled":false,"token_store":"credential_store"})")), "Settings must report a credential-store configuration as configured");
+		const auto unknown = ResolveConnectionConfiguration(std::string(R"({"enabled":true,"token_store":"plaintext"})"), {});
+		Require(!unknown.valid && !unknown.configured && !unknown.credential_store, "An unknown token store is not a token source");
+		Require(TokenCredentialAccount("/data/a") == TokenCredentialAccount("/data/./a") && TokenCredentialAccount("/data/a") != TokenCredentialAccount("/data/b") &&
+		    TokenCredentialAccount("/data/a").starts_with("companion-token-") && TokenCredentialAccount("/data/a").size() == 32, "Each data root has its own stable credential name");
+	}
+
+	void CompanionTokenMigrationMovesOnlyValidFileTokens()
+	{
+		const std::string token(64, 'e');
+		std::optional<std::string> stored;
+		bool writable = true;
+		int writes = 0;
+		const TokenStoreAccess store{[&] { return stored; }, [&](const std::string& value) { ++writes; if (writable) stored = value; return writable; }};
+		const nlohmann::json legacy = {{"enabled", true}, {"token_file", "/legacy/token"}, {"origin", "https://192.168.1.10:58950"}};
+
+		Require(!MigrateLegacyToken(legacy, std::string(63, 'e'), store) && !MigrateLegacyToken(legacy, std::string(64, 'g'), store) && !MigrateLegacyToken(legacy, std::nullopt, store) && writes == 0,
+		    "A missing or invalid file token is never written to the store or migrated");
+		writable = false;
+		Require(!MigrateLegacyToken(legacy, token, store) && !stored, "A store that refuses the token keeps the legacy file configuration");
+		writable = true;
+		const auto migrated = MigrateLegacyToken(legacy, token + "\n", store);
+		Require(migrated && stored == token && UsesCredentialStore(*migrated) && !migrated->contains("token_file") && (*migrated)["origin"] == legacy["origin"],
+		    "A valid token moves unchanged into the store and the configuration drops its file while keeping other settings");
+		writes = 0;
+		Require(!MigrateLegacyToken(*migrated, token, store) && writes == 0, "An already migrated configuration is left alone");
+		stored = std::string(64, 'f');
+		Require(MigrateLegacyToken(legacy, token, store) && stored == token, "The file token being paired replaces a stale stored token for the same data root");
+		const TokenStoreAccess lossy{[] { return std::optional<std::string>(); }, [](const std::string&) { return true; }};
+		Require(!MigrateLegacyToken(legacy, token, lossy), "A write that cannot be read back keeps the legacy file configuration");
+	}
+
+	void CompanionLoopbackClientAncestryStopsAtProxy()
+	{
+		using uam::platform::DescendsFrom;
+		const std::unordered_map<std::int64_t, std::int64_t> parents = {{100, 1}, {200, 100}, {300, 200}, {400, 100}, {500, 400}, {600, 1}, {700, 700}, {800, 900}, {900, 800}};
+		Require(DescendsFrom(200, 100, -1, parents) && DescendsFrom(300, 100, -1, parents), "Children and grandchildren descend from UAM");
+		Require(!DescendsFrom(500, 100, 400, parents) && !DescendsFrom(400, 100, 400, parents), "The proxy and anything it starts are excluded");
+		Require(DescendsFrom(300, 100, 400, parents), "Excluding the proxy does not exclude other children");
+		Require(!DescendsFrom(600, 100, -1, parents) && !DescendsFrom(100, 100, -1, parents) && !DescendsFrom(42, 100, -1, parents), "Unrelated, self and unknown processes are not descendants");
+		Require(!DescendsFrom(700, 100, -1, parents) && !DescendsFrom(800, 100, -1, parents), "Parent cycles end the walk");
+	}
+
+	void CompanionLoopbackClientOwnerIsFoundForChildProcesses()
+	{
+#if defined(__APPLE__)
+		const int listener = socket(AF_INET, SOCK_STREAM, 0);
+		Require(listener >= 0, "Test listener socket");
+		sockaddr_in address{};
+		address.sin_family = AF_INET;
+		address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+		socklen_t length = sizeof(address);
+		Require(bind(listener, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0 && listen(listener, 2) == 0 &&
+		    getsockname(listener, reinterpret_cast<sockaddr*>(&address), &length) == 0, "Test listener binds loopback");
+		const int server_port = ntohs(address.sin_port);
+		int release[2];
+		Require(pipe(release) == 0, "Test release pipe");
+		const pid_t child = fork();
+		if (child == 0)
+		{
+			close(release[1]);
+			const int client = socket(AF_INET, SOCK_STREAM, 0);
+			if (client < 0 || connect(client, reinterpret_cast<sockaddr*>(&address), sizeof(address)) != 0) _exit(2);
+			char byte = 0;
+			(void)read(release[0], &byte, 1);
+			_exit(0);
+		}
+		close(release[0]);
+		sockaddr_in peer{};
+		socklen_t peer_length = sizeof(peer);
+		const int accepted = accept(listener, reinterpret_cast<sockaddr*>(&peer), &peer_length);
+		const int client_port = ntohs(peer.sin_port);
+		const auto child_owned = uam::platform::LoopbackClientDescendsFromThisProcess(client_port, server_port, -1);
+		const auto proxy_owned = uam::platform::LoopbackClientDescendsFromThisProcess(client_port, server_port, child);
+		close(release[1]);
+		int status = 0;
+		(void)waitpid(child, &status, 0);
+		close(accepted);
+		close(listener);
+		Require(accepted >= 0, "Child connects to the test listener");
+		Require(child_owned == std::optional<bool>(true), "A child process holding the loopback client socket is recognized");
+		Require(proxy_owned == std::optional<bool>(false), "The excluded proxy process is never refused");
+		Require(uam::platform::LoopbackClientDescendsFromThisProcess(client_port, server_port == 65535 ? 65534 : server_port + 1, -1) == std::optional<bool>(false),
+		    "A different connection is not attributed to the child");
+#endif
+	}
+
 	void CompanionConnectionInvalidConfigurationFailsWithoutStartingRuntime()
 	{
 		Fixture fixture;
@@ -254,7 +353,11 @@ int main(int argc, char** argv)
 	    {"CompanionConnectionShutdownFenceOutlivesOwnerAndReleasesFactory", CompanionConnectionShutdownFenceOutlivesOwnerAndReleasesFactory},
 	    {"CompanionConnectionMalformedConfigurationPreservesKnownIntent", CompanionConnectionMalformedConfigurationPreservesKnownIntent},
 	    {"CompanionConnectionConfigurationEnvironmentPrecedence", CompanionConnectionConfigurationEnvironmentPrecedence},
-	    {"CompanionConnectionInvalidConfigurationFailsWithoutStartingRuntime", CompanionConnectionInvalidConfigurationFailsWithoutStartingRuntime}};
+	    {"CompanionConnectionInvalidConfigurationFailsWithoutStartingRuntime", CompanionConnectionInvalidConfigurationFailsWithoutStartingRuntime},
+	    {"CompanionTokenCredentialStoreConfigurationIsConfigured", CompanionTokenCredentialStoreConfigurationIsConfigured},
+	    {"CompanionTokenMigrationMovesOnlyValidFileTokens", CompanionTokenMigrationMovesOnlyValidFileTokens},
+	    {"CompanionLoopbackClientAncestryStopsAtProxy", CompanionLoopbackClientAncestryStopsAtProxy},
+	    {"CompanionLoopbackClientOwnerIsFoundForChildProcesses", CompanionLoopbackClientOwnerIsFoundForChildProcesses}};
 	for (const auto& [name, test] : tests)
 	{
 		if (argc > 1 && name != argv[1]) continue;

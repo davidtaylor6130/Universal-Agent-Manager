@@ -1,3 +1,4 @@
+import { MOBILE_COMPANION_ENABLED } from '../config/buildFeatures'
 import { EMPTY_STARTUP_NATIVE_IMPORT_STATUS } from '../types/startupNativeImports'
 import { createExecutionRoutingSlice } from './slices/executionRoutingSlice'
 import { DEFAULT_CENTRAL_PROVIDER_CONFIGURATION, type CentralProviderConfiguration } from './cpp/types'
@@ -26,6 +27,7 @@ import {
   fallbackProviderForId,
 } from '../utils/providerMetadata'
 import {
+  isRecord,
   sanitizeCppAppState,
   sanitizeMemoryActivity,
   defaultEditorFileAssociations,
@@ -816,6 +818,10 @@ export const useAppStore = create<AppState>((set, get) => {
     if (isCompanionContext()) return
     bootstrapPulls += 1
     sendToCEF<CppAppState>({ action: 'getInitialState', payload: { summaryOnly: true } }).then((resp) => {
+      // A reloaded or new desktop window still shows phone requests waiting for confirmation.
+      const confirmations = MOBILE_COMPANION_ENABLED && resp.ok && isRecord(resp.data) && resp.data.companionConfirmations !== undefined
+        ? parseUamPushPayload({ type: 'companionConfirmations', items: resp.data.companionConfirmations }) : null
+      if (confirmations?.ok) window.dispatchEvent(new CustomEvent('uam-companion-confirmations', { detail: confirmations.message }))
       // resp.data is the raw CppAppState object. Sanitize before deserializing.
       const sanitized = resp.ok ? sanitizeCppAppState(resp.data) : null
       if (!sanitized) {
@@ -1210,6 +1216,11 @@ export const useAppStore = create<AppState>((set, get) => {
 
       const store = get()
       const msg = parsed.message
+      // Outside the switch so builds without phone access drop the branch and its names.
+      if (MOBILE_COMPANION_ENABLED && msg.type === 'companionConfirmations') {
+        window.dispatchEvent(new CustomEvent('uam-companion-confirmations', { detail: msg }))
+        return
+      }
 
       switch (msg.type) {
         case 'stateUpdate':

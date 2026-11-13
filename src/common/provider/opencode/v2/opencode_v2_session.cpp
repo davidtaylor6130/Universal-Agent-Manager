@@ -36,8 +36,8 @@ std::string Kind(const std::string& name)
 	if (name == "shell" || name == "bash") return "execute";
 	if (name == "edit" || name == "write" || name == "patch") return "edit";
 	if (name == "read") return "read";
-	if (name == "glob" || name == "grep" || name == "websearch") return "search";
-	if (name == "webfetch") return "fetch";
+	if (name == "glob" || name == "grep") return "search";
+	if (name == "webfetch" || name == "websearch") return "fetch"; // Network access is never a read.
 	if (name == "task") return "other";
 	return "other";
 }
