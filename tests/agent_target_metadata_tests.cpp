@@ -180,10 +180,12 @@ UAM_TEST(GoalReviewerControlCannotMutateOrStartBroaderChildren)
 		UAM_ASSERT(watch.value("error", "").find("goal reviewer") != std::string::npos);
 		// The listing advertises what delegation will actually allow.
 		const nlohmann::json listed = call("reviewer-list", "agent_list", nlohmann::json::object());
-		const auto worker = std::ranges::find_if(listed["result"], [](const nlohmann::json& agent) { return agent.value("id", "") == "worker"; });
-		UAM_ASSERT(worker != listed["result"].end());
+		const nlohmann::json& agents = listed["result"]["agents"];
+		const auto worker = std::ranges::find_if(agents, [](const nlohmann::json& agent) { return agent.value("id", "") == "worker"; });
+		UAM_ASSERT(worker != agents.end());
 		UAM_ASSERT_EQ(worker->value("workspaceAccess", ""), std::string("read"));
-		for (const nlohmann::json& target : worker->at("providerTargets"))
+		// Provider targets are listed once beside the agents.
+		for (const nlohmann::json& target : listed["result"]["providerTargets"])
 			UAM_ASSERT_EQ(target.value("providerId", ""), std::string("codex-cli"));
 		// A write agent requested by the reviewer still runs under the read ceiling, on the reviewer's provider.
 		UAM_ASSERT(!call("reviewer-cross", "agent_delegate", {{"agentId", "worker"}, {"task", "Edit files."}, {"providerId", "claude-cli"}}).value("ok", true));
