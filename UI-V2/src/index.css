@@ -2658,6 +2658,6 @@ button:has(> svg.lucide-x):not(:disabled):not([aria-disabled="true"]):focus-visi
 .uam-meter__projection[data-tone="error"]::before { border-bottom-color: var(--error); }
 @keyframes uam-meter-grow { from { transform: scaleX(0); } }
 @media (forced-colors: active) {
-  .uam-usage-gauge path { stroke: CanvasText; }
+  .uam-usage-gauge path { stroke: ButtonText; }
   .uam-usage-gauge path[data-active], .uam-usage-gauge__needle line { stroke: Highlight; }
 }
