@@ -51,6 +51,13 @@ export function createRequestId(prefix = 'cef'): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
+/** A typed secret never reaches a log; every other field stays readable. */
+export function redactedEnvelope(envelope: CEFRequest): CEFRequest {
+  const payload = envelope.payload
+  if (envelope.action !== 'submitSecretRequest' || typeof payload !== 'object' || payload === null || !('value' in payload)) return envelope
+  return { ...envelope, payload: { ...payload, value: '[redacted]' } }
+}
+
 /**
  * Send a request to the C++ backend.
  * In dev: returns a mock response after a short delay.
@@ -175,7 +182,7 @@ export async function sendToCEF<T = unknown>(
   // Dev/mock path
   const isDev = (import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV === true
   if (isDev) {
-    console.debug('[CEF stub] Request:', envelope)
+    console.debug('[CEF stub] Request:', redactedEnvelope(envelope))
   }
   await new Promise((r) => setTimeout(r, 80))
   const mock: CEFResponse<T> = { ok: true, data: null as T, requestId }

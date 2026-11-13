@@ -28,6 +28,7 @@
 #include "common/chat/chat_repository.h"
 #include "common/chat/html_view.h"
 #include "common/chat/html_view_render_check.h"
+#include "app/secret_request_service.h"
 #include "common/config/approval_modes.h"
 #include "common/config/central_provider_configuration.h"
 #include "common/config/settings_normalization.h"
@@ -374,7 +375,7 @@ namespace uam
 		/// Requests that show a card and wait for the user: they are answered, declined or cancelled, never timed out.
 		bool IsCardMethod(std::string_view method)
 		{
-			return method == "user_question" || method == "goal_create" || method == "chat_create" || method == "computer_use_request";
+			return method == "user_question" || method == "goal_create" || method == "chat_create" || method == "computer_use_request" || method == "secret_request";
 		}
 
 		std::size_t RequestLimit(std::string_view method)
@@ -413,6 +414,7 @@ namespace uam
 				return HasOnlyStringArguments(arguments, {"title", "html"});
 			if (method == "computer_use_request")
 				return HasOnlyStringArguments(arguments, {"reason"});
+			if (method == "secret_request") return SecretRequestService::ValidArguments(arguments);
 			if (method == "user_question")
 			{
 				if (!arguments.is_object() || !arguments.contains("question") ||
@@ -1101,7 +1103,7 @@ namespace uam
 			    (!(*session)->pending_user_input.request_id_json.empty() ||
 			     !(*session)->pending_permission.request_id_json.empty()))
 				return {.error = "Finish the current provider question or permission request first."};
-			const std::string_view target_chat_id = pending.method == "goal_create" || pending.method == "chat_create"
+			const std::string_view target_chat_id = pending.method == "goal_create" || pending.method == "chat_create" || pending.method == "secret_request"
 			    ? std::string_view(capability.chat_id) : std::string_view(capability.session_chat_id);
 			if (std::ranges::any_of(app.uam_control_capabilities, [&](const UamControlCapability& value) {
 				    return value.pending_approval.has_value() && ApprovalChatId(value) == target_chat_id;
@@ -1257,6 +1259,18 @@ namespace uam
 			                                     .method = "user_question",
 			                                     .question = arguments.at("question").get<std::string>(),
 			                                     .question_options = std::move(options)});
+		}
+
+		/// A subagent's request shows in its root chat, so the user answers where they are; delivery still goes to the child's host.
+		ToolResult SecretRequest(AppState& app, UamControlCapability& capability, std::string_view request_id, const nlohmann::json& arguments)
+		{
+			const ChatSession* chat = ChatDomainService().FindChatById(app, capability.session_chat_id);
+			const ChatSession* root_chat = ChatDomainService().FindChatById(app, capability.chat_id);
+			if (!ControlEnabled(chat, capability, false) || !ControlEnabled(root_chat, capability, true))
+				return {.error = "UAM Control is disabled or the owning chat is unavailable."};
+			if (std::string refusal = SecretRequestService::Refusal(app, capability); !refusal.empty()) return {.error = std::move(refusal)};
+			return QueueApproval(app, capability, {.request_id = std::string(request_id), .method = "secret_request",
+			                                     .secret_request = SecretRequestService::PendingMetadata(app, capability, arguments)});
 		}
 
 		ToolResult HtmlViewPreview(const nlohmann::json& arguments)
@@ -1772,7 +1786,7 @@ namespace uam
 			if (!SafeRequestId(request_id) || method.empty() || method.size() > 64 ||
 			    !ValidToolArguments(method, arguments))
 				return reject("Control request has an unknown method or invalid arguments.");
-			if (method != "agent_delegate" && ReadOnlyAgent(app, *capability) && (IsMutation(method) || method == "computer_use_request"))
+			if (method != "agent_delegate" && ReadOnlyAgent(app, *capability) && (IsMutation(method) || method == "computer_use_request" || method == "secret_request"))
 				return reject("This UAM agent has read-only access. Mutation tools are unavailable.");
 			if (!capability->seen_request_ids.insert(request_id).second)
 				return reject("Control request replay was rejected.");
@@ -1863,6 +1877,8 @@ namespace uam
 			                        ? ComputerUseRequest(app, *capability, request_id, arguments, now_epoch_ms)
 			                        : method == "user_question"
 			                            ? UserQuestionRequest(app, *capability, request_id, arguments, now_epoch_ms)
+			                        : method == "secret_request"
+			                            ? SecretRequest(app, *capability, request_id, arguments)
 			                        : needs_approval
 			                            ? (method == "goal_create" ? GoalCreateRequest(app, *capability, request_id, arguments, now_epoch_ms)
 			                                                       : ChatCreateRequest(app, *capability, request_id, arguments, now_epoch_ms))
@@ -1967,6 +1983,14 @@ namespace uam
 			                       {"options", {{"type", "array"}, {"items", {{"type", "string"}}}, {"maxItems", 3}}} },
 			    {"question"});
 			user_question["description"] = "Ask the user one bounded question in UAM. The request is shown in the chat and waits for an explicit answer; free text is always available. Do not retry after timeout.";
+			nlohmann::json secret_request = ToolSchema(
+			    "secret_request", {{"label", {{"type", "string"}, {"description", "What the secret is, e.g. GitHub personal access token (at most 80 bytes)."}}},
+			                       {"reason", {{"type", "string"}, {"description", "Why you need it, shown to the user (at most 300 bytes)."}}},
+			                       {"placeholder", {{"type", "string"}}},
+			                       {"url", {{"type", "string"}, {"description", "Optional https page where the user can create or find the secret."}}},
+			                       {"delivery", {{"type", "string"}, {"enum", {"file"}}}}},
+			    {"label", "reason"});
+			secret_request["description"] = "Ask the user for one secret (API key, token, password, PIN, sudo password, pairing code) in a masked UAM card. Never ask for secrets in chat text. You receive only a path on this chat's computer, never the value: read it inside the one command that uses it, e.g. cmd --token \"$(cat PATH)\" or sudo -S -p '' cmd < PATH (PowerShell: $t = Get-Content -Raw PATH). Never print, echo, cat on its own or copy it. On macOS and Linux the path is a pipe that can be read once and expires after 10 minutes; on Windows it is a private file deleted after 60 seconds. Waits until the user answers; do not retry after cancellation.";
 			nlohmann::json agent_list = ToolSchema("agent_list");
 			agent_list["description"] = "List permitted agents and providerTargets on this chat's execution host. Only eligible targets have an installed compatible worker CLI; authentication remains unverified. Same-provider defaultModelId inherits the parent; an empty cross-provider default uses that provider's default.";
 			nlohmann::json agent_delegate = MutationToolSchema("agent_delegate", {{"agentId", {{"type", "string"}}}, {"task", {{"type", "string"}}},
@@ -2008,6 +2032,7 @@ namespace uam
 			    std::move(pr_watch),
 			    std::move(pr_unwatch),
 			    std::move(user_question),
+			    std::move(secret_request),
 			    { {"name", "computer_use_request"},
 			      {"description", "Ask the user in UAM to enable Computer Use for this local chat. The tool waits for an explicit Allow or Deny decision; it never approves itself. Do not retry after denial or timeout."},
 			      {"inputSchema", {{"type", "object"}, {"properties", {{"reason", {{"type", "string"}}}}},
@@ -2522,6 +2547,8 @@ namespace uam
 			    !HasAuthority(app, capability, now) || !ComputerUseApprovalCurrent(app, capability)) continue;
 			const ChatSession* chat = ChatDomainService().FindChatById(app, std::string(chat_id));
 			if (chat == nullptr) continue;
+			if (capability.pending_approval->method == "secret_request")
+				return SecretRequestService::Projection(app, capability, ApprovalRequestId(capability));
 			AcpPendingUserInputState input;
 			input.request_id_json = ApprovalRequestId(capability);
 			input.status = "pending";
@@ -2598,6 +2625,28 @@ namespace uam
 				return fail("This computer-use approval no longer belongs to the active user turn.");
 			}
 			if (!authority_current) return fail("This UAM request is no longer active in this chat.");
+			if (capability.pending_approval->method == "secret_request")
+			{
+				// Only the Plan-mode Allow once and Deny travel this generic path; the value has its own route.
+				const auto answer = answers.find("secretRequest");
+				if (answers.size() != 1 || answer == answers.end() || answer->second.size() != 1 ||
+				    (answer->second.front() != "Allow" && answer->second.front() != "Deny"))
+					return fail("Enter this secret in its card on the computer.");
+				nlohmann::json& metadata = capability.pending_approval->secret_request;
+				if (answer->second.front() == "Allow")
+				{
+					if (!metadata.value("planOptIn", false)) return fail("This secret request is already allowed.");
+					metadata["planOptIn"] = false;
+					return true;
+				}
+				if (metadata.value("delivering", false)) return fail("The secret is already being delivered.");
+				const ToolResult cancelled{.error = "The user cancelled the secret request. Do not ask again unless the user asks you to."};
+				(void)AppendAuditAndSave(app, capability, capability.pending_approval->request_id, "secret_request", cancelled);
+				if (!WriteResponse(capability.directory, capability.pending_approval->request_id, {{"ok", false}, {"error", cancelled.error}}))
+					return fail("The cancellation could not be delivered. Try again.");
+				capability.pending_approval.reset();
+				return true;
+			}
 			const bool computer_use = capability.pending_approval->method == "computer_use_request";
 			const bool user_question = capability.pending_approval->method == "user_question";
 			const bool chat_create = capability.pending_approval->method == "chat_create";
@@ -2699,6 +2748,78 @@ namespace uam
 			return true;
 		}
 		return fail("This UAM request is no longer pending.");
+	}
+
+	bool UamControlService::BeginSecretDelivery(AppState& app, std::string_view chat_id, std::string_view request_id,
+	                                            SecretDeliveryTarget& target, std::string* error_out)
+	{
+		auto fail = [&](std::string message) {
+			if (error_out != nullptr) *error_out = std::move(message);
+			return false;
+		};
+		const int64_t now = uam::time::SystemEpochMillisecondsNow();
+		for (UamControlCapability& capability : app.uam_control_capabilities)
+		{
+			if (!capability.pending_approval.has_value() || capability.pending_approval->method != "secret_request" ||
+			    ApprovalRequestId(capability) != request_id) continue;
+			if (ApprovalChatId(capability) != chat_id || !HasAuthority(app, capability, now))
+				return fail("This secret request is no longer active in this chat.");
+			nlohmann::json& metadata = capability.pending_approval->secret_request;
+			if (metadata.value("planOptIn", false)) return fail("Allow this request first.");
+			if (metadata.value("delivering", false)) return fail("The secret is already being delivered.");
+			metadata["delivering"] = true;
+			target = SecretRequestService::Target(app, capability);
+			return true;
+		}
+		return fail("This secret request is no longer pending.");
+	}
+
+	std::optional<std::string> UamControlService::SecretKeychainAccount(const AppState& app, std::string_view chat_id, std::string_view request_id)
+	{
+		for (const UamControlCapability& capability : app.uam_control_capabilities)
+			if (capability.pending_approval.has_value() && capability.pending_approval->method == "secret_request" &&
+			    ApprovalRequestId(capability) == request_id && ApprovalChatId(capability) == chat_id)
+				return SecretRequestService::Target(app, capability).keychain_account;
+		return std::nullopt;
+	}
+
+	bool UamControlService::FinishSecretDelivery(AppState& app, std::string_view chat_id, std::string_view request_id,
+	                                             const secrets::DropResult& drop, std::string* error_out)
+	{
+		auto fail = [&](std::string message) {
+			if (error_out != nullptr) *error_out = std::move(message);
+			return false;
+		};
+		for (UamControlCapability& capability : app.uam_control_capabilities)
+		{
+			if (!capability.pending_approval.has_value() || capability.pending_approval->method != "secret_request" ||
+			    ApprovalRequestId(capability) != request_id) continue;
+			capability.pending_approval->secret_request["delivering"] = false;
+			if (ApprovalChatId(capability) != chat_id || !HasAuthority(app, capability, uam::time::SystemEpochMillisecondsNow()))
+				return fail("This secret request is no longer active in this chat.");
+			if (!drop.ok) return fail(drop.error.empty() ? "The secret could not be delivered." : drop.error);
+			const SecretDeliveryTarget target = SecretRequestService::Target(app, capability);
+#ifdef _WIN32
+			const bool local_windows = true;
+#else
+			const bool local_windows = false;
+#endif
+			const bool windows = target.remote_host.has_value() ? uam::strings::ToLowerAscii(target.remote_host->platform) == "windows" : local_windows;
+			ToolResult result;
+			result.ok = true;
+			result.reason = "The user provided the secret as a read-once path.";
+			result.result = {{"status", "provided"}, {"delivery", "file"}, {"path", drop.path}, {"readOnce", !windows},
+			                 {"expiresInSeconds", windows ? secrets::kWindowsDropTtl.count() : secrets::kDropTtl.count()},
+			                 {"usage", windows ? "Read it inside the command that uses it: $t = Get-Content -Raw '" + drop.path + "'; <command> $t; Remove-Variable t. Never print it."
+			                                   : "Read it inside the command that uses it, e.g. <command> --token \"$(cat '" + drop.path + "')\" or sudo -S -p '' <command> < '" + drop.path + "'. It can be read once. Never print it."}};
+			if (!AppendAuditAndSave(app, capability, capability.pending_approval->request_id, "secret_request", result) ||
+			    !WriteResponse(capability.directory, capability.pending_approval->request_id, {{"ok", true}, {"result", result.result}}))
+				return fail("The secret was delivered but the reply to the agent could not be written. Try again.");
+			capability.pending_approval.reset();
+			return true;
+		}
+		// ponytail: a drop made for a request that ended meanwhile is never handed out and expires with its TTL.
+		return fail("This secret request ended before the secret was delivered.");
 	}
 
 	bool UamControlService::ProcessPendingRequests(AppState& app)

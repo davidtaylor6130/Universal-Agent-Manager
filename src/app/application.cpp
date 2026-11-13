@@ -6,6 +6,7 @@
 #include "app/local_chat_bundle_service.h"
 #include "app/storage_retention_service.h"
 #include "app/pr_watch_service.h"
+#include "app/secret_request_service.h"
 #include "app/data_folder_settings_service.h"
 #include "app/data_folder_transition.h"
 #include "include/cef_request_context.h"
@@ -809,6 +810,8 @@ bool Application::InitializeState()
 		m_exitCode = 1;
 		return false;
 	}
+	// Secret drops hold no data on disk, but a crash can leave their empty pipes or expired Windows files behind.
+	(void)uam::secrets::SweepStale(uam::SecretRequestService::LocalDropDirectory(m_app.data_root));
 	uam::AgentRunLoadResult agent_runs = uam::AgentRunLedger::LoadAll(m_app.data_root);
 #if !UAM_ALL_PROVIDERS_INCLUDED
 	{
@@ -1123,6 +1126,7 @@ void Application::Shutdown()
 		uam::FlushPendingChatSaves(m_app, true);
 	}
 	uam::UamControlService::Shutdown(m_app);
+	uam::secrets::StopAllDrops();
 	uam::FastStopCliTerminalsForExit(m_app);
 	// PollTick has stopped; settle authenticated final history before app/CEF teardown.
 	ChatHistorySyncService().SettleTerminalNativeMediaForExit(m_app);

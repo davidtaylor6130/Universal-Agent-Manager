@@ -18,6 +18,7 @@ Every provider checklist must account for every row. Conditional features must c
 | `editing-messages` | [Editing messages](editing-messages.md) |
 | `mcp-connections` | [MCP connections](mcp-connections.md) |
 | `html-views` | [HTML views](../chat/html-views.md) |
+| `secret-entry` | [Secure secret entry](../chat/secrets.md) |
 | `skills` | [Skills](skills.md) |
 | `attachments` | [Images and files](attachments.md) |
 | `compaction` | [Compaction](compaction.md) |

@@ -409,6 +409,8 @@ if(WIN32)
     src/common/platform/platform_services_windows_impl.cpp
     src/common/platform/platform_process_windows.cpp
     src/common/platform/credential_store_windows.cpp
+    src/common/secrets/secret_drop_windows.cpp
+    src/common/secrets/secret_keychain_windows.cpp
     src/common/platform/platform_dialogs_windows.cpp
     src/common/platform/platform_paths_windows.cpp
     src/common/platform/platform_dictation_windows.cpp
@@ -424,6 +426,8 @@ elseif(APPLE)
     src/common/platform/platform_parent_watchdog_macos.cpp
     src/common/platform/platform_services_macos_impl.cpp
     src/common/platform/platform_process_macos.cpp
+    src/common/secrets/secret_drop.cpp
+    src/common/secrets/secret_keychain.cpp
     src/common/platform/platform_dialogs_macos.cpp
     src/common/platform/platform_paths_macos.cpp
     src/common/platform/platform_dictation_macos.mm
@@ -502,6 +506,7 @@ if(APPLE)
   target_sources(uam_runner PRIVATE
     src/common/platform/platform_parent_watchdog_macos.cpp
     src/common/platform/platform_process_macos.cpp
+    src/common/secrets/secret_drop.cpp
     src/remote/runner_service_posix.cpp
   )
   target_link_libraries(uam_runner PRIVATE
@@ -517,6 +522,7 @@ if(APPLE)
 elseif(WIN32)
   target_sources(uam_runner PRIVATE
     src/common/platform/platform_process_windows.cpp
+    src/common/secrets/secret_drop_windows.cpp
     src/remote/runner_service_windows.cpp
     src/uam_long_paths.manifest
   )
@@ -525,6 +531,7 @@ elseif(UNIX)
   find_package(Threads REQUIRED)
   target_sources(uam_runner PRIVATE
     src/common/platform/platform_process_linux.cpp
+    src/common/secrets/secret_drop.cpp
     src/remote/runner_service_posix.cpp
   )
   target_link_libraries(uam_runner PRIVATE Threads::Threads)
@@ -584,8 +591,10 @@ add_library(uam_core_objects OBJECT
   src/app/managed_subagent_control_service.cpp
   src/app/managed_subagent_followup_service.cpp
   src/app/uam_control_service.cpp
+  src/app/secret_request_service.cpp
   src/app/automation_api_service.cpp
   src/common/utils/diagnostic_log.cpp
+  src/common/secrets/secret_redactor.cpp
   src/app/chat_domain_service.cpp
   src/app/chat_lifecycle_service.cpp
   src/app/computer_use_service.cpp
@@ -728,6 +737,7 @@ add_library(uam_app_objects OBJECT
   src/cef/theme_handlers.cpp
   src/cef/shell_action_handlers.cpp
   src/cef/pr_watch_handlers.cpp
+  src/cef/secret_handlers.cpp
   src/cef/markdown_handlers.cpp
   src/cef/folder_handlers.cpp
   src/cef/chat_branch_handlers.cpp
@@ -1696,10 +1706,12 @@ if(UAM_BUILD_TESTS)
     tests/attached_skill_discovery_tests.cpp
     tests/uam_control_transport_tests.cpp
     tests/uam_control_mailbox_response_tests.cpp
+    tests/secret_request_tests.cpp
     tests/attachment_preview_tests.cpp
 	    tests/computer_use_tests.cpp
     tests/computer_use_global_policy_tests.cpp
     tests/remote_runner_tests.cpp
+    tests/secret_platform_tests.cpp
     tests/process_exit_drain_tests.cpp
     tests/runner_startup_rollback_tests.cpp
     tests/remote_cli_elevation_tests.cpp

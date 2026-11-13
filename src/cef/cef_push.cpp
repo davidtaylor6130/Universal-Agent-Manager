@@ -1,4 +1,5 @@
 #include "cef/cef_push.h"
+#include "common/secrets/secret_redactor.h"
 #include "cef/state_serializer.h"
 
 #include "app/chat_domain_service.h"
@@ -17,6 +18,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <mutex>
+#include <optional>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -164,7 +167,20 @@ namespace
 		if (!frame)
 			return;
 
-		const std::string js = "window.uamPush && window.uamPush(" + json + ");";
+		// Last stop before the page: any registered secret still in the payload is replaced.
+		std::string scrubbed;
+		if (uam::secrets::Active())
+		{
+			scrubbed = json;
+			// A raw match can sit inside a number or eat an escape; then scrub the string values and serialize again.
+			if (uam::secrets::ScrubInPlace(scrubbed) && !nlohmann::json::accept(scrubbed))
+			{
+				nlohmann::json value = nlohmann::json::parse(json, nullptr, false);
+				(void)uam::secrets::ScrubJsonStrings(value);
+				scrubbed = value.is_discarded() ? std::string("null") : DumpFrontendJson(value);
+			}
+		}
+		const std::string js = "window.uamPush && window.uamPush(" + (scrubbed.empty() ? json : scrubbed) + ");";
 		frame->ExecuteJavaScript(js, frame->GetURL(), 0);
 	}
 
@@ -715,17 +731,65 @@ namespace uam
 		VerifyStateCachesForTests(app);
 	}
 
+	namespace
+	{
+		/// Streamed tokens can split a secret; each stream holds back a possible secret prefix until it resolves.
+		struct SecretStream
+		{
+			uam::secrets::StreamFilter filter;
+			int message_index = 0;
+		};
+		std::mutex g_secret_streams_mutex;
+		std::unordered_map<std::string, SecretStream> g_secret_streams;
+
+		void PostStreamToken(CefRefPtr<CefBrowser> browser, const std::string& chat_id, int message_index, const std::string& token)
+		{
+			nlohmann::json msg = PushMessage(kPushTypeStreamToken);
+			msg["chatId"] = chat_id;
+			msg["token"] = token;
+			msg["messageIndex"] = message_index;
+			PostPush(browser, DumpFrontendJson(msg));
+		}
+	}
+
 	void PushStreamToken(CefRefPtr<CefBrowser> browser, const std::string& chat_id, int message_index, const std::string& token)
 	{
-		nlohmann::json msg = PushMessage(kPushTypeStreamToken);
-		msg["chatId"] = chat_id;
-		msg["token"] = token;
-		msg["messageIndex"] = message_index;
-		PostPush(browser, DumpFrontendJson(msg));
+		if (!uam::secrets::Active())
+		{
+			PostStreamToken(browser, chat_id, message_index, token);
+			return;
+		}
+		std::string safe;
+		std::string previous;
+		int previous_index = 0;
+		{
+			std::lock_guard lock(g_secret_streams_mutex);
+			SecretStream& stream = g_secret_streams[chat_id];
+			if (stream.message_index != message_index)
+			{
+				previous = stream.filter.Flush();
+				previous_index = stream.message_index;
+			}
+			stream.message_index = message_index;
+			safe = stream.filter.Push(token);
+		}
+		if (!previous.empty()) PostStreamToken(browser, chat_id, previous_index, previous);
+		if (!safe.empty()) PostStreamToken(browser, chat_id, message_index, safe);
 	}
 
 	void PushStreamDone(CefRefPtr<CefBrowser> browser, const std::string& chat_id)
 	{
+		std::optional<SecretStream> held;
+		{
+			std::lock_guard lock(g_secret_streams_mutex);
+			if (const auto found = g_secret_streams.find(chat_id); found != g_secret_streams.end())
+			{
+				held = std::move(found->second);
+				g_secret_streams.erase(found);
+			}
+		}
+		if (held.has_value())
+			if (const std::string rest = held->filter.Flush(); !rest.empty()) PostStreamToken(browser, chat_id, held->message_index, rest);
 		nlohmann::json msg = PushMessage(kPushTypeStreamDone);
 		msg["chatId"] = chat_id;
 		PostPush(browser, DumpFrontendJson(msg));

@@ -3,6 +3,7 @@
 #include "common/utils/time_utils.h"
 #include "common/paths/path_utils.h"
 #include "common/paths/workspace_lease.h"
+#include "common/secrets/secret_redactor.h"
 #include <atomic>
 
 #include <chrono>
@@ -234,6 +235,8 @@ void StopFileLog()
 void Write(std::string_view message)
 {
 	constexpr std::string_view truncation = " [truncated]";
+	// Scrub before truncation and control-byte folding, either of which could split or alter a registered secret.
+	std::string scrubbed; if (uam::secrets::Active()) message = scrubbed = uam::secrets::Scrub(message);
 	std::string line = uam::time::IsoUtcTimestampNow() + " ";
 	const std::size_t body_limit = kMaxEntryBytes - line.size() - truncation.size() - 1;
 	line.append(message.substr(0, body_limit));

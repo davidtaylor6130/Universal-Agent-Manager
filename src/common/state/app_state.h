@@ -470,6 +470,8 @@ namespace uam
 		std::string status;
 		std::string attention_kind;
 		std::vector<AcpUserInputQuestionState> questions;
+		/// Present only for a UAM `secret_request` card: its display details, never the value.
+		nlohmann::json secret_request;
 	};
 
 	struct PendingModelDiscoveryRetry
@@ -499,6 +501,8 @@ namespace uam
 			std::shared_ptr<const std::uint8_t> computer_use_root_incarnation;
 			/// Validated chat_create arguments awaiting the user's decision.
 			nlohmann::json chat_create_arguments;
+			/// secret_request card state (label, reason, Plan opt-in, delivery in progress); never the value.
+			nlohmann::json secret_request;
 		};
 
 		std::string id;
