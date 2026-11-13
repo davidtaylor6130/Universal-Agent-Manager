@@ -1005,8 +1005,8 @@ std::string GoalService::BuildReviewPrompt(const Goal& goal, const std::string& 
 	std::ostringstream ss;
 	ss << "Read-only goal review: inspect the workspace, changed files, diff, relevant tests/build evidence, and objective. "
 	      "Do not rely on the worker summary alone; do not edit files or run mutating commands. "
-	      "Run one command per call (no ;, && or pipes). Accepted Git reads: `git status --short` and "
-	      "`git diff --no-ext-diff --no-textconv` (add --stat or a path as needed). "
+	      "Run one command per call (no ;, && or pipes). Accepted Git reads: `git status --short --ignore-submodules` and "
+	      "`git diff --no-ext-diff --no-textconv` (add --stat or a workspace path as needed). "
 	      "Your ONLY output must be a single JSON object, without prose or code fences:\n";
 	ss << R"({"decision":"continue|complete|blocked","reason":"","nextPrompt":"","evidence":[],"blockerKind":"","progressUpdate":{"completed":[],"remaining":[],"currentStep":"","lastVerification":""}})" << "\n\n";
 	if (repeated_output_count >= 3)

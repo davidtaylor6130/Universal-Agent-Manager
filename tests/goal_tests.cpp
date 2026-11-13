@@ -947,11 +947,20 @@ UAM_TEST(GoalReviewPromptCarriesCappedWorkspaceChangesAndAcceptedGitReads)
 	UAM_ASSERT(review.find("<workspaceChanges>\nM src/file_0.cpp") != std::string::npos);
 	UAM_ASSERT(uam::GoalService::BuildReviewPrompt(goal, goal.objective, "Done.").find("<workspaceChanges>") == std::string::npos);
 	// The commands the prompt names pass the reviewer's read-only ceiling; compound forms do not.
-	UAM_ASSERT(review.find("git status --short") != std::string::npos);
-	UAM_ASSERT(uam::command_safety::IsReadOnlyCommand("git status --short"));
-	UAM_ASSERT(uam::command_safety::IsReadOnlyCommand("git diff --no-ext-diff --no-textconv"));
-	UAM_ASSERT(uam::command_safety::IsReadOnlyCommand("git diff --no-ext-diff --no-textconv --stat"));
-	UAM_ASSERT(!uam::command_safety::IsReadOnlyCommand("git status; git diff"));
+	// Every command the prompt names passes the reviewer's read-only ceiling exactly as written; compound or
+	// unsafe forms do not.
+	const uam::command_safety::ReadScope scope{.workspace = fs::temp_directory_path() / "uam-goal-review-scope", .resolve_executables = false};
+	const auto read = [&](std::string_view command) { return uam::command_safety::IsReadOnlyCommand(command, scope); };
+	for (const std::string command : {"git status --short --ignore-submodules", "git diff --no-ext-diff --no-textconv"})
+	{
+		UAM_ASSERT(review.find("`" + command + "`") != std::string::npos);
+		UAM_ASSERT(read(command));
+	}
+	UAM_ASSERT(read("git diff --no-ext-diff --no-textconv --stat"));
+	UAM_ASSERT(read("git diff --no-ext-diff --no-textconv -- src/parser.cpp"));
+	for (const std::string_view refused : {"git status --short", "git diff", "git status --short --ignore-submodules; git diff --no-ext-diff --no-textconv",
+	         "git status --short --ignore-submodules && git diff --no-ext-diff --no-textconv", "git diff --no-ext-diff --no-textconv | head"})
+		UAM_ASSERT(!read(refused));
 }
 
 UAM_TEST(GoalServiceMaintainsOnlyOneActiveGoalPerChat)
