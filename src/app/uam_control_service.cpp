@@ -2095,7 +2095,7 @@ namespace uam
 		}
 
 		/// <summary>Tools this session can never use, known at launch; runtime-changeable gates (Plan mode, global switches) stay server-side.</summary>
-		std::vector<std::string> UnusableTools(const UamControlCapability& capability, const ChatSession& chat, const AcpSessionState& session)
+		std::vector<std::string> UnusableTools(const UamControlCapability& capability, const ChatSession& chat, const ChatSession& root_chat, const AcpSessionState& session)
 		{
 			std::vector<std::string> hidden;
 			// A goal reviewer only reads the workspace and answers in JSON; it gets no UAM tools at all. Its capability
@@ -2119,6 +2119,9 @@ namespace uam
 				hidden.push_back("chat_create");
 			if (read_only || !UAM_ENABLE_COMPUTER_USE || !(chat.execution_host_id.empty() || chat.execution_host_id == uam::execution_hosts::kLocalHostId))
 				hidden.push_back("computer_use_request");
+			// Mirrors SecretRequestService::Refusal and the read-only check: Plan mode keeps it (one-time Allow).
+			if (read_only || !chat.temporary_parent_chat_id.empty() || !root_chat.temporary_parent_chat_id.empty() || !root_chat.automation_token_id.empty())
+				hidden.push_back("secret_request");
 			std::ranges::sort(hidden);
 			hidden.erase(std::ranges::unique(hidden).begin(), hidden.end());
 			return hidden;
@@ -2539,7 +2542,7 @@ namespace uam
 		    {"args", nlohmann::json::array({std::string(kServerFlag)})},
 		    {"env", std::move(environment)},
 		});
-		HideTools(request["params"]["mcpServers"].back(), UnusableTools(capability, chat, session));
+		HideTools(request["params"]["mcpServers"].back(), UnusableTools(capability, chat, *root_chat, session));
 		session.uam_control_capability_id = capability.id;
 		app.uam_control_capabilities.push_back(std::move(capability));
 		return true;

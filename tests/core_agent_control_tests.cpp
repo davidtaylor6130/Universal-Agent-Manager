@@ -1626,7 +1626,7 @@ UAM_TEST(UamControlListsOnlyToolsTheSessionCanUse)
 
 	// A local root build chat keeps every tool.
 	UAM_ASSERT_EQ(hidden_for(raw), std::string(UAM_ENABLE_COMPUTER_USE ? "" : "computer_use_request"));
-	UAM_ASSERT_EQ(uam::UamControlService::ToolDefinitionsForTests("").size(), std::size_t{16});
+	UAM_ASSERT_EQ(uam::UamControlService::ToolDefinitionsForTests("").size(), std::size_t{17});
 
 	// A chat started by another chat cannot start chats, so chat_create is not offered.
 	app.chats.front().created_by_chat_id = "creator";
@@ -1638,7 +1638,7 @@ UAM_TEST(UamControlListsOnlyToolsTheSessionCanUse)
 	// A read-only agent loses mutations and Computer Use; Plan-mode switching stays a server-side check.
 	raw.active_uam_agent_workspace_access = "read";
 	hidden = hidden_for(raw);
-	for (const std::string name : {"agent_cancel", "goal_create", "chat_create", "computer_use_request"})
+	for (const std::string name : {"agent_cancel", "goal_create", "chat_create", "computer_use_request", "secret_request"})
 		UAM_ASSERT(hidden.find(name) != std::string::npos);
 	UAM_ASSERT(hidden.find("agent_delegate") == std::string::npos);
 	// A missing workspace access counts as read-only too.
@@ -1650,13 +1650,22 @@ UAM_TEST(UamControlListsOnlyToolsTheSessionCanUse)
 	raw.goal_review_turn = true;
 	UAM_ASSERT(uam::UamControlService::ToolDefinitionsForTests(hidden_for(raw)).empty());
 	raw.goal_review_turn = false;
-	UAM_ASSERT_EQ(uam::UamControlService::ToolDefinitionsForTests(hidden_for(raw)).size(), std::size_t{UAM_ENABLE_COMPUTER_USE ? 16 : 15});
+	UAM_ASSERT_EQ(uam::UamControlService::ToolDefinitionsForTests(hidden_for(raw)).size(), std::size_t{UAM_ENABLE_COMPUTER_USE ? 17 : 16});
 
 	// A temporary side chat cannot watch pull requests, so it is not offered the watch tools.
 	app.chats.front().temporary_parent_chat_id = "parent";
 	hidden = hidden_for(raw);
 	UAM_ASSERT(hidden.find("pr_watch") != std::string::npos && hidden.find("pr_unwatch") != std::string::npos);
+	UAM_ASSERT(hidden.find("secret_request") != std::string::npos);
 	app.chats.front().temporary_parent_chat_id.clear();
+
+	// Automation chats have no one to type a secret; Plan mode keeps it behind its one-time Allow.
+	app.chats.front().automation_token_id = "token";
+	UAM_ASSERT(hidden_for(raw).find("secret_request") != std::string::npos);
+	app.chats.front().automation_token_id.clear();
+	app.chats.front().approval_mode = "plan";
+	UAM_ASSERT(hidden_for(raw).find("secret_request") == std::string::npos);
+	app.chats.front().approval_mode = "default";
 
 	// CLI View cannot show HTML views or hold an agent wait.
 	app.cli_terminals.push_back(std::make_unique<uam::CliTerminalState>());
