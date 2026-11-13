@@ -373,7 +373,14 @@ const ProviderCliPolicy* OpenCodeCliProviderRuntime::CliVersionPolicy() const
 		.fallback_version = "1.18.15",
 		.minimum_version = "1.15.13",
 		.version_policy = ProviderCliVersionPolicy::MinimumSemver,
-		.verified_at = "2026-08-27",
+		.verified_at = "2026-11-12",
+		.verified_protocol_version = [](std::string_view version) { return uam::opencode_v2::IsVerifiedV2(version); },
+		.protocol_version_refusal = [](std::string_view version)
+		{
+			return CliProviderVersionAtLeast(version, "2.0.0") && !uam::opencode_v2::IsVerifiedV2(version)
+			    ? "This OpenCode V2 protocol version has not been verified. " + uam::opencode_v2::UnverifiedV2Message(version, "native API adapter")
+			    : std::string{};
+		},
 	};
 	return &policy;
 }
@@ -798,9 +805,9 @@ std::string OpenCodeCliProviderRuntime::StructuredCliVersionError(const Provider
 	    (chat->opencode_v2_session_id->empty() || *chat->opencode_v2_session_id == chat->native_session_id) && !CliProviderVersionAtLeast(checked_version, "2.0.0"))
 		return "This saved OpenCode V2 session requires the verified native V2 adapter. Its native ID and authored input are retained.";
 	if (!CliProviderVersionAtLeast(checked_version, "2.0.0")) return {};
-	if (checked_version == "2.1.2" && !remote) return {};
+	if (uam::opencode_v2::IsVerifiedV2(checked_version) && !remote) return {};
 	if (remote) return "OpenCode V2 requires the native API adapter on the executing SSH helper; this helper's V1 ACP launch remains refused. Existing owned remote recovery is preserved.";
-	return "This OpenCode V2 protocol version has not been verified. UAM supports the local native API adapter for checked V2.1.2.";
+	return "This OpenCode V2 protocol version has not been verified. " + uam::opencode_v2::UnverifiedV2Message(checked_version, "local native API adapter");
 }
 
 bool OpenCodeCliProviderRuntime::PrepareStructuredLaunch(uam::AcpSessionState& session, const ProviderProfile& profile,
@@ -808,7 +815,7 @@ bool OpenCodeCliProviderRuntime::PrepareStructuredLaunch(uam::AcpSessionState& s
 	std::vector<std::pair<std::string, std::string>>& environment, std::string& error) const
 {
 	session.opencode_v2_native = false;
-	if (!RequiresStructuredCliVersion(profile) || version != "2.1.2") return true;
+	if (!RequiresStructuredCliVersion(profile) || !uam::opencode_v2::IsVerifiedV2(version)) return true;
 	if (remote) { error = StructuredCliVersionError(profile, version, true); return false; }
 	if (session.saved_image_retry)
 	{ error = "OpenCode V2 saved-image Retry is not admitted by this adapter. The saved row and originals are retained without starting a provider process."; return false; }
