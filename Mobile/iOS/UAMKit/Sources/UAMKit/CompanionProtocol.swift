@@ -35,6 +35,8 @@ public enum CompanionError: Error, Sendable, Equatable, LocalizedError
         case .http(403): return "This action is unavailable through the companion interface."
         case .http(404): return "The companion endpoint or response transfer is unavailable. Refresh before retrying."
         case .http(413): return "UAM rejected the request size. Reduce its content."
+        case .http(428): return "Confirm this change on your computer. It waits there for 5 minutes."
+        case .http(429): return "Too many phone changes are waiting for confirmation on your computer. Answer them there first."
         case .http(let status): return "UAM returned HTTP \(status). Check the connection and chat state before retrying."
         case .serverRejected: return "UAM rejected this action. Refresh the chat and check its current permissions before retrying."
         case .network(let code): return "Connection failed (URL error \(code)). Check the host, network and certificate trust. Check the chat before retrying; the action may have reached UAM."

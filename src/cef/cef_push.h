@@ -86,4 +86,9 @@ namespace uam
 	/// </summary>
 	void PushDictationEvent(CefRefPtr<CefBrowser> browser, const DictationEvent& event);
 
+	/// <summary>
+	/// Replaces the desktop's list of phone requests waiting for confirmation (id, chat, description, expiry only).
+	/// </summary>
+	void PushCompanionConfirmations(CefRefPtr<CefBrowser> browser, const nlohmann::json& items);
+
 } // namespace uam

@@ -22,6 +22,7 @@
 #include <set>
 #include <stdexcept>
 #include <thread>
+#include <utility>
 
 namespace uam
 {
@@ -584,21 +585,21 @@ struct OpenCodeCompactionSyncService::State
 		if (!context.owner || session.turn_serial != context.owner->serial || !RetainsSummaryIdentity(app, session, chat, context)) return false;
 		const int assistant = session.turn_assistant_message_index;
 		if (context.owner->live && context.owner->assistant < 0 && !context.adopted && assistant >= 0 &&
-		    assistant < static_cast<int>(chat.messages.size()) && chat.messages[assistant].role == MessageRole::Assistant &&
+		    assistant < static_cast<int>(chat.messages.size()) && std::as_const(chat.messages)[assistant].role == MessageRole::Assistant &&
 		    (session.current_assistant_message_index == assistant || AcpSessionHasPendingCancel(session) || (!session.processing && session.prompt_request_id == 0 &&
 		        session.last_settled_turn_serial == session.turn_serial)) &&
-		    acp_detail::MessageBlocksEqual(chat.messages[assistant].blocks, acp_detail::MessageBlocksFromTurnEvents(session)))
+		    acp_detail::MessageBlocksEqual(std::as_const(chat.messages)[assistant].blocks, acp_detail::MessageBlocksFromTurnEvents(session)))
 		{
 			// The first owned chunk can be followed by Stop before the next metadata poll binds its row.
 			context.owner->assistant = assistant;
-			context.owner->created = chat.messages[assistant].created_at;
+			context.owner->created = std::as_const(chat.messages)[assistant].created_at;
 			if (context.native_marker_turn == session.turn_serial && context.native_marker_assistant < 0)
 				context.native_marker_assistant = assistant;
 		}
 		if (assistant != context.owner->assistant) return false;
 		if (assistant >= 0 && (assistant >= static_cast<int>(chat.messages.size()) ||
-		    chat.messages[assistant].role != MessageRole::Assistant || chat.messages[assistant].created_at != context.owner->created ||
-		    !acp_detail::MessageBlocksEqual(chat.messages[assistant].blocks, acp_detail::MessageBlocksFromTurnEvents(session)))) return false;
+		    std::as_const(chat.messages)[assistant].role != MessageRole::Assistant || std::as_const(chat.messages)[assistant].created_at != context.owner->created ||
+		    !acp_detail::MessageBlocksEqual(std::as_const(chat.messages)[assistant].blocks, acp_detail::MessageBlocksFromTurnEvents(session)))) return false;
 		bool changed = false;
 		std::vector<AcpTurnEventState> events;
 		events.reserve(session.turn_events.size());
@@ -998,7 +999,7 @@ struct OpenCodeCompactionSyncService::State
 			{
 				const ChatSession* chat = ChatDomainService().FindChatById(app, context.identity.chat_id);
 				if (chat && context.owner->assistant >= 0 && context.owner->assistant < static_cast<int>(chat->messages.size()))
-					for (const MessageBlock& block : chat->messages[context.owner->assistant].blocks)
+					for (const MessageBlock& block : std::as_const(chat->messages)[context.owner->assistant].blocks)
 						if (block.type == "context_compaction" && !block.text.empty())
 							published.insert(block.request_id_json.starts_with("acp-compaction:") ? block.request_id_json.substr(15) : block.request_id_json);
 			}
@@ -1353,7 +1354,7 @@ bool OpenCodeCompactionSyncService::Poll(AppState& app)
 			}
 			std::set<std::string> published;
 			if (context.owner->assistant >= 0)
-				for (const MessageBlock& block : chat->messages[context.owner->assistant].blocks)
+				for (const MessageBlock& block : std::as_const(chat->messages)[context.owner->assistant].blocks)
 					if (block.type == "context_compaction" && !block.text.empty())
 						published.insert(block.request_id_json.starts_with("acp-compaction:") ? block.request_id_json.substr(15) : block.request_id_json);
 			for (const AcpTurnEventState& event : session->turn_events)
@@ -1372,7 +1373,7 @@ bool OpenCodeCompactionSyncService::Poll(AppState& app)
 		{
 			context.next_publication_probe = std::chrono::steady_clock::now() + kStreamPublicationInterval;
 			if (context.owner->assistant >= 0 && context.owner->assistant < static_cast<int>(chat->messages.size()) &&
-			    context.owner->message != MessageOwnership(chat->messages[context.owner->assistant]))
+			    context.owner->message != MessageOwnership(std::as_const(chat->messages)[context.owner->assistant]))
 				changed = m_state->Publish(app, *session, *chat, context) || changed;
 		}
 		++current;

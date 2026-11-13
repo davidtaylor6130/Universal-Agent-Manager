@@ -5,6 +5,9 @@
 #include "cef/uam_cef_security.h"
 #include "common/chat/attachment_payload.h"
 #include "common/companion/protocol.h"
+#include "app/chat_domain_service.h"
+#include "cef/cef_push.h"
+#include "common/utils/nlohmann_json_utils.h"
 #include "cef/uam_window_chrome.h"
 #include "common/usage/multi_host_history.h"
 #include "common/platform/app_crash_supervisor.h"
@@ -18,6 +21,7 @@
 
 #include <nlohmann/json.hpp>
 #include <algorithm>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -210,6 +214,8 @@ bool UamQueryHandler::StartCompanion(CefRefPtr<CefBrowser> browser)
 		const std::string action = request.at("action").get<std::string>();
 		nlohmann::json payload = request.value("payload", nlohmann::json::object());
 		if (action == "getProviderAllowances") uam::companion::ApplyKeychainPromptPolicy(action, payload, CompanionAllowsKeychainPrompts());
+		if (action == "resolveCompanionConfirmation") { callback->Failure(403, "Phone requests are confirmed on the desktop."); return; }
+		if (HoldCompanionLoosening(browser, action, payload, callback)) return;
 		m_dispatchingCompanion = true;
 		struct CompanionDispatchReset { bool& flag; ~CompanionDispatchReset() { flag = false; } } reset{m_dispatchingCompanion};
 		if (!DispatchAction(action, browser, payload, callback))
@@ -221,6 +227,39 @@ bool UamQueryHandler::StartCompanion(CefRefPtr<CefBrowser> browser)
 	return false;
 #endif
 }
+
+#if UAM_ENABLE_MOBILE_COMPANION
+bool UamQueryHandler::HoldCompanionLoosening(CefRefPtr<CefBrowser> browser, std::string_view action, const nlohmann::json& payload, CefRefPtr<Callback> callback)
+{
+	const std::string chat_id = payload.is_object() && payload.contains("chatId") && payload["chatId"].is_string() ? payload["chatId"].get<std::string>() : std::string{};
+	const ChatSession* chat = chat_id.empty() ? nullptr : ChatDomainService().FindChatById(m_app, chat_id);
+	std::optional<uam::companion::ConfirmationChatState> state;
+	if (chat != nullptr) state = uam::companion::ConfirmationChatState{chat->command_safety_tier, chat->approval_mode, chat->uam_agent_id, chat->uam_control_enabled};
+	std::string description = uam::companion::LooseningRequest(action, payload, state ? &*state : nullptr);
+	if (description.empty()) return false;
+	const auto now = uam::companion::DesktopConfirmations::Clock::now();
+	if (!m_companionConfirmations.Add({"", std::string(action), chat_id, chat == nullptr ? std::string{} : chat->title, std::move(description), payload, {}}, now))
+	{
+		callback->Failure(429, "Too many phone changes are waiting for confirmation on the desktop. Answer them there first.");
+		return true;
+	}
+	uam::PushCompanionConfirmations(browser, m_companionConfirmations.ToJson());
+	callback->Failure(428, "Confirm this change on the desktop. It waits there for 5 minutes.");
+	return true;
+}
+
+void UamQueryHandler::HandleResolveCompanionConfirmation(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::optional<bool> allow = uam::nlohmann_json::BoolFieldStrict(payload, "allow");
+	if (!allow || !payload.contains("id") || !payload["id"].is_string()) { cb->Failure(400, "Confirmation requires an id and an allow boolean."); return; }
+	std::optional<uam::companion::DesktopConfirmations::Pending> pending = m_companionConfirmations.Take(payload["id"].get<std::string>(), uam::companion::DesktopConfirmations::Clock::now());
+	uam::PushCompanionConfirmations(browser, m_companionConfirmations.ToJson());
+	if (!pending) { cb->Failure(410, "This phone request expired or was already answered."); return; }
+	if (!*allow) { cb->Success(R"({"applied":false})"); return; }
+	// Runs as the desktop user's own change, not as a companion request.
+	if (!DispatchAction(pending->action, browser, pending->payload, cb)) cb->Failure(404, "Unknown action.");
+}
+#endif
 
 bool UamQueryHandler::CompanionStartupFailed() const
 {
@@ -345,11 +384,14 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"setCompanionEnabled", &UamQueryHandler::HandleSetCompanionEnabled},
 		{"setCompanionKeychainPrompts", &UamQueryHandler::HandleSetCompanionKeychainPrompts},
 		{"getCompanionToken", &UamQueryHandler::HandleGetCompanionToken},
+		{"regenerateCompanionToken", &UamQueryHandler::HandleRegenerateCompanionToken},
+		{"resolveCompanionConfirmation", &UamQueryHandler::HandleResolveCompanionConfirmation},
 		{"automationHttpRequest", &UamQueryHandler::HandleAutomationHttpRequest},
 		{"approveAutomationChat", &UamQueryHandler::HandleApproveAutomationChat},
 		{"getAutomationTokens", &UamQueryHandler::HandleGetAutomationTokens},
 		{"createAutomationToken", &UamQueryHandler::HandleCreateAutomationToken},
 		{"revokeAutomationToken", &UamQueryHandler::HandleRevokeAutomationToken},
+		{"regenerateAutomationToken", &UamQueryHandler::HandleRegenerateAutomationToken},
 #endif
 		{"setChatMemoryEnabled", &UamQueryHandler::HandleSetChatMemoryEnabled},
 		{"setChatSmallModelMode", &UamQueryHandler::HandleSetChatSmallModelMode},
@@ -370,6 +412,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 #endif
 		{"setUamAgentPreferences", &UamQueryHandler::HandleSetUamAgentPreferences},
 		{"setSidebarSettings", &UamQueryHandler::HandleSetSidebarSettings},
+		{"setSidebarChatOrder", &UamQueryHandler::HandleSetSidebarChatOrder},
 		{"setComposerSettings", &UamQueryHandler::HandleSetComposerSettings},
 		{"setNativeImportFilters", &UamQueryHandler::HandleSetNativeImportFilters},
 		{"setVcsSettings", &UamQueryHandler::HandleSetVcsSettings},
@@ -497,6 +540,8 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"cancelAcpTurn", &UamQueryHandler::HandleCancelAcpTurn},
 		{"resolveAcpPermission", &UamQueryHandler::HandleResolveAcpPermission},
 		{"resolveAcpUserInput", &UamQueryHandler::HandleResolveAcpUserInput},
+		{"submitSecretRequest", &UamQueryHandler::HandleSubmitSecretRequest},
+		{"forgetSavedSecret", &UamQueryHandler::HandleForgetSavedSecret},
 		{"stopAcpSession", &UamQueryHandler::HandleStopAcpSession},
 		{"treatRemoteStopAsStopped", &UamQueryHandler::HandleTreatRemoteStopAsStopped},
 		{"writeClipboardText", &UamQueryHandler::HandleWriteClipboardText},

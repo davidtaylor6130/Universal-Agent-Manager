@@ -10,9 +10,9 @@ std::string WorkerVersionError(bool checked, bool same_host, std::string_view ve
 	if (!checked || !same_host || version.empty() || !check_error.empty())
 		return "OpenCode text worker is held until the executing local host's version check succeeds. Check OpenCode in Settings, then retry; no V1 fallback was launched.";
 	if (uam::cli_versions::ExtractSemverVersion(version) != std::optional<std::string>{version} ||
-	    (!version.starts_with("1.") && version != "2.1.2"))
-		return "This OpenCode text-worker protocol has not been verified: OpenCode " + uam::strings::SafeLine(version, 32) +
-		       " is installed and UAM runs text workers on OpenCode 1.x or 2.1.2. Choose another worker provider in Settings or install a verified OpenCode version.";
+	    (!version.starts_with("1.") && !IsVerifiedV2(version)))
+		return "This OpenCode text-worker protocol has not been verified. " + UnverifiedV2Message(version, "text worker") +
+		       " OpenCode 1.x also works. Choose another worker provider in Settings or install a verified OpenCode version.";
 	return {};
 }
 
@@ -24,15 +24,14 @@ std::vector<std::string> ServeArgv(std::vector<std::string> command)
 }
 bool IsCheckedHistoryV2(std::string_view version)
 {
-	// History list/export only; the live chat adapter stays pinned to 2.1.2.
-	return version == "2.1.2" || version == "2.1.4";
+	return IsVerifiedV2(version);
 }
 std::vector<std::string> HistoryArgv(std::string_view version, std::vector<std::string> command,
 	const std::string& operation, const std::string& id)
 {
 	const bool v2 = IsCheckedHistoryV2(version);
 	if (command.empty() || (!v2 && !version.starts_with("1.")))
-		throw std::runtime_error("OpenCode " + std::string(version) + " history has not been verified; UAM imports OpenCode 1.x and checked 2.1.2 and 2.1.4.");
+		throw std::runtime_error("This OpenCode history has not been verified. " + UnverifiedV2Message(version, "history import") + " OpenCode 1.x also imports.");
 	if (operation == "list")
 	{
 		command.insert(command.end(), {"session", "list", "--format", "json", v2 ? "--standalone" : "--pure"});

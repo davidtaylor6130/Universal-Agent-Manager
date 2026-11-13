@@ -373,7 +373,14 @@ const ProviderCliPolicy* OpenCodeCliProviderRuntime::CliVersionPolicy() const
 		.fallback_version = "1.18.15",
 		.minimum_version = "1.15.13",
 		.version_policy = ProviderCliVersionPolicy::MinimumSemver,
-		.verified_at = "2026-08-27",
+		.verified_at = "2026-11-12",
+		.verified_protocol_version = [](std::string_view version) { return uam::opencode_v2::IsVerifiedV2(version); },
+		.protocol_version_refusal = [](std::string_view version)
+		{
+			return CliProviderVersionAtLeast(version, "2.0.0") && !uam::opencode_v2::IsVerifiedV2(version)
+			    ? "This OpenCode V2 protocol version has not been verified. " + uam::opencode_v2::UnverifiedV2Message(version, "native API adapter")
+			    : std::string{};
+		},
 	};
 	return &policy;
 }
@@ -398,7 +405,7 @@ std::vector<std::string> OpenCodeCliProviderRuntime::BuildInteractiveArgv(const 
 
 	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--model", chat.model_id);
 
-	uam::provider_runtime_internal::AppendArgs(argv, uam::provider_runtime_internal::BuildProviderFlagsArgv(provider_settings));
+	uam::provider_runtime_internal::AppendArgs(argv, uam::provider_runtime_internal::BuildProviderFlagsArgv(provider_settings, uam::provider_runtime_internal::LaunchHasReadCeiling(chat)));
 	return argv;
 }
 
@@ -509,9 +516,30 @@ std::vector<std::pair<std::string, std::string>> OpenCodeCliProviderRuntime::Bui
 	// OpenCode ACP does not reliably forward child-session permission requests, so
 	// disable Task until the provider can mediate those requests without hanging.
 	// UAM's own native target grant is the approval boundary for these exact tools.
-	if (!uam::computer_use::AvailableForChat(chat))
-		return {{"OPENCODE_PERMISSION", R"({"*":"ask","task":"deny","uam-computer_computer_observe":"deny","uam-computer_computer_action":"deny"})"}};
-	return {{"OPENCODE_PERMISSION", R"({"*":"ask","task":"deny","uam-computer_computer_observe":"allow","uam-computer_computer_action":"allow"})"}};
+	const char* computer = uam::computer_use::AttachableForLaunch(chat) ? "allow" : "deny";
+	nlohmann::ordered_json permission = {{"*", "ask"}, {"task", "deny"}, {"uam-computer_computer_observe", computer}, {"uam-computer_computer_action", computer}};
+	std::vector<std::pair<std::string, std::string>> environment{{"OPENCODE_PERMISSION", permission.dump()}};
+	if (!uam::provider_runtime_internal::LaunchHasReadCeiling(chat)) return environment;
+	// Agent-level permission rules are merged after OPENCODE_PERMISSION, so the inline config (merged last)
+	// replaces the plan agent's whole permission object with ask for every known tool.
+	nlohmann::ordered_json plan = {{"*", "ask"}};
+	for (const char* tool : {"read", "edit", "write", "patch", "glob", "grep", "list", "bash", "external_directory", "webfetch",
+	         "websearch", "codesearch", "lsp", "skill", "todowrite", "todoread", "question", "plan_exit", "doom_loop"})
+		plan[tool] = "ask";
+	plan["task"] = "deny";
+	plan["uam-computer_computer_observe"] = "deny";
+	plan["uam-computer_computer_action"] = "deny";
+	// A local launch keeps the user's own inline config; SSH cannot see the remote value first.
+	const bool local = chat.execution_host_id.empty() || chat.execution_host_id == uam::execution_hosts::kLocalHostId;
+	nlohmann::ordered_json config = nlohmann::ordered_json::parse(local ? uam::env::GetNonEmptyString("OPENCODE_CONFIG_CONTENT").value_or("{}") : "{}", nullptr, false, true);
+	if (!config.is_object()) config = nlohmann::ordered_json::object();
+	if (!config.contains("agent") || !config["agent"].is_object()) config["agent"] = nlohmann::ordered_json::object();
+	if (!config["agent"].contains("plan") || !config["agent"]["plan"].is_object()) config["agent"]["plan"] = nlohmann::ordered_json::object();
+	config["agent"]["plan"]["permission"] = plan;
+	environment.emplace_back("OPENCODE_CONFIG_CONTENT", config.dump());
+	// Repository opencode.json, agents and plugins can pre-approve tools; a read ceiling loads none of them.
+	environment.emplace_back("OPENCODE_DISABLE_PROJECT_CONFIG", "1");
+	return environment;
 }
 
 bool OpenCodeCliProviderRuntime::OnAcpHandleError(uam::AppState& app, uam::AcpSessionState& session,
@@ -798,9 +826,9 @@ std::string OpenCodeCliProviderRuntime::StructuredCliVersionError(const Provider
 	    (chat->opencode_v2_session_id->empty() || *chat->opencode_v2_session_id == chat->native_session_id) && !CliProviderVersionAtLeast(checked_version, "2.0.0"))
 		return "This saved OpenCode V2 session requires the verified native V2 adapter. Its native ID and authored input are retained.";
 	if (!CliProviderVersionAtLeast(checked_version, "2.0.0")) return {};
-	if (checked_version == "2.1.2" && !remote) return {};
+	if (uam::opencode_v2::IsVerifiedV2(checked_version) && !remote) return {};
 	if (remote) return "OpenCode V2 requires the native API adapter on the executing SSH helper; this helper's V1 ACP launch remains refused. Existing owned remote recovery is preserved.";
-	return "This OpenCode V2 protocol version has not been verified. UAM supports the local native API adapter for checked V2.1.2.";
+	return "This OpenCode V2 protocol version has not been verified. " + uam::opencode_v2::UnverifiedV2Message(checked_version, "local native API adapter");
 }
 
 bool OpenCodeCliProviderRuntime::PrepareStructuredLaunch(uam::AcpSessionState& session, const ProviderProfile& profile,
@@ -808,7 +836,7 @@ bool OpenCodeCliProviderRuntime::PrepareStructuredLaunch(uam::AcpSessionState& s
 	std::vector<std::pair<std::string, std::string>>& environment, std::string& error) const
 {
 	session.opencode_v2_native = false;
-	if (!RequiresStructuredCliVersion(profile) || version != "2.1.2") return true;
+	if (!RequiresStructuredCliVersion(profile) || !uam::opencode_v2::IsVerifiedV2(version)) return true;
 	if (remote) { error = StructuredCliVersionError(profile, version, true); return false; }
 	if (session.saved_image_retry)
 	{ error = "OpenCode V2 saved-image Retry is not admitted by this adapter. The saved row and originals are retained without starting a provider process."; return false; }
@@ -819,6 +847,21 @@ bool OpenCodeCliProviderRuntime::PrepareStructuredLaunch(uam::AcpSessionState& s
 	argv = {uam::paths::Utf8PathString(executable), "--uam-opencode-v2-bridge", "--", "opencode"};
 	// The V2 evaluation guard owns force-ask; V1's environment flags are not a V2 contract.
 	std::erase_if(environment, [](const auto& entry) { return entry.first == "OPENCODE_PERMISSION"; });
+	// The V1 plan-agent override is not a verified V2 config contract either; the V2 guard enforces Plan.
+	for (auto& [name, value] : environment)
+	{
+		if (name != "OPENCODE_CONFIG_CONTENT") continue;
+		nlohmann::ordered_json config = nlohmann::ordered_json::parse(value, nullptr, false, true);
+		if (!config.is_object()) continue;
+		if (config.contains("agent") && config["agent"].is_object() && config["agent"].contains("plan") && config["agent"]["plan"].is_object())
+		{
+			config["agent"]["plan"].erase("permission");
+			if (config["agent"]["plan"].empty()) config["agent"].erase("plan");
+			if (config["agent"].empty()) config.erase("agent");
+		}
+		value = config.dump();
+	}
+	std::erase_if(environment, [](const auto& entry) { return entry.first == "OPENCODE_CONFIG_CONTENT" && entry.second == "{}"; });
 	session.opencode_v2_native = true;
 	session.opencode_native_companion.reset();
 	return true;

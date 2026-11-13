@@ -328,9 +328,27 @@ std::vector<std::string> CodexCliProviderRuntime::BuildInteractiveArgv(const Pro
 	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "-c", reasoning_effort.empty() ? "" : "model_reasoning_effort=\"" + reasoning_effort + "\"");
 	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "-c", !chat.service_tier_explicit ? "" : service_tier.empty() ? "service_tier=null" : "service_tier=\"" + service_tier + "\"");
 
-	uam::provider_runtime_internal::AppendArgs(argv, uam::provider_runtime_internal::BuildProviderFlagsArgv(provider_settings));
-	if (!settings.computer_use_globally_enabled || !uam::computer_use::AvailableForChat(chat))
-		uam::provider_runtime_internal::AppendLiteralArgs(argv, {"--disable", "computer_use"});
+	const bool read_ceiling = uam::provider_runtime_internal::LaunchHasReadCeiling(chat);
+	std::vector<std::string> flags = uam::provider_runtime_internal::BuildProviderFlagsArgv(provider_settings, read_ceiling);
+	if (read_ceiling)
+	{
+		// Codex refuses a repeated --sandbox or --ask-for-approval, so UAM's own values replace any kept ones.
+		for (std::size_t index = 0; index < flags.size() && flags[index] != "--";)
+		{
+			const std::string& flag = flags[index];
+			const bool split = flag == "-s" || flag == "--sandbox" || flag == "-a" || flag == "--ask-for-approval";
+			const bool joined = flag.starts_with("--sandbox=") || flag.starts_with("--ask-for-approval=") ||
+			    ((flag.starts_with("-s") || flag.starts_with("-a")) && flag.size() > 2 && flag[1] != '-');
+			if (!split && !joined) { ++index; continue; }
+			const std::size_t count = split && index + 1 < flags.size() && !flags[index + 1].starts_with('-') ? 2 : 1;
+			flags.erase(flags.begin() + static_cast<std::ptrdiff_t>(index), flags.begin() + static_cast<std::ptrdiff_t>(index + count));
+		}
+	}
+	uam::provider_runtime_internal::AppendArgs(argv, flags);
+	// Codex CLI has no Plan flag; its read-only sandbox with on-request approval is the native read ceiling.
+	if (read_ceiling) uam::provider_runtime_internal::InsertBeforePositional(argv, {"--sandbox", "read-only", "--ask-for-approval", "on-request"});
+	if (!settings.computer_use_globally_enabled || !uam::computer_use::AttachableForLaunch(chat))
+		uam::provider_runtime_internal::InsertBeforePositional(argv, {"--disable", "computer_use"});
 	return argv;
 }
 

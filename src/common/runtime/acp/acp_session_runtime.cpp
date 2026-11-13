@@ -9828,7 +9828,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 	/// <summary>Copies metadata without temporarily duplicating any transcript bodies.</summary>
 	static ChatSession PendingSaveMetadata(ChatSession& chat)
 	{
-		std::vector<Message> messages = std::move(chat.messages);
+		// Held as the revisioned type so moving it back keeps its stamp; a plain vector took a new one on every save,
+		// and the next state push rehashed the unchanged transcript.
+		uam::RevisionedVector<Message> messages = std::move(chat.messages);
 		try
 		{
 			ChatSession result = chat;
@@ -10904,9 +10906,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 			task->append_only_since_capture = false;
 			task->admission_generation_at_capture = task->admission_generation;
 			task->admission_queue_fingerprint = ChatRepository::QueueAdmissionFingerprint(*chat);
-			task->messages.resize(chat->messages.size());
-			for (std::size_t index = 0; index < chat->messages.size(); ++index)
-				if (!task->messages[index] || *task->messages[index] != chat->messages[index]) task->messages[index] = std::make_shared<const Message>(chat->messages[index]);
+			// Read only: non-const element access would restamp the transcript.
+			const std::vector<Message>& live_messages = std::as_const(chat->messages);
+			task->messages.resize(live_messages.size());
+			for (std::size_t index = 0; index < live_messages.size(); ++index)
+				if (!task->messages[index] || *task->messages[index] != live_messages[index]) task->messages[index] = std::make_shared<const Message>(live_messages[index]);
 			if (const std::shared_ptr<WorkspaceChatSaveTicket> ticket = task->workspace_ticket.lock();
 			    ticket && !ticket->snapshot_captured && ticket->generation == task->schedule_generation)
 			{

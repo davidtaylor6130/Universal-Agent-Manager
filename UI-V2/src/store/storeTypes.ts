@@ -17,6 +17,7 @@ import type {
   AcpBinding,
   ChatFileChangeReceiptsResponse,
   AcpUserInputAnswers,
+  SecretSubmission,
   ChatAttachmentInput,
   CliBinding,
   CliTranscript,
@@ -141,6 +142,9 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   runnerProtocolVersion: number
   showProviderIconsInSidebar: boolean
   showWorktreePathInSidebar: boolean
+  /** Manual order of the Pinned and Active chat lists; ids not listed keep the default order above them. */
+  sidebarPinnedChatOrder: string[]
+  sidebarActiveChatOrder: string[]
   steerActiveTurnOnSend: boolean
   gitEnabled: boolean
   svnEnabled: boolean
@@ -419,6 +423,9 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   cancelAcpTurn: (sessionId: string) => Promise<boolean>
   resolveAcpPermission: (sessionId: string, requestId: string, optionId: string | 'cancelled') => Promise<boolean>
   resolveAcpUserInput: (sessionId: string, requestId: string, answers: AcpUserInputAnswers) => Promise<boolean>
+  /** Sends a typed secret (or the saved one) straight to native; nothing is stored here. Plan opt-in, Deny and Cancel use resolveAcpUserInput. */
+  submitSecretRequest: (sessionId: string, requestId: string, submission: SecretSubmission) => Promise<{ ok: boolean; error?: string }>
+  forgetSavedSecret: (sessionId: string, requestId: string) => Promise<{ ok: boolean; error?: string }>
   stopAcpSession: (sessionId: string, purpose?: 'interrupt' | 'timeout') => Promise<boolean>
   /** The user's override of a remote stop the host never confirmed; a process may still be running there. */
   treatRemoteStopAsStopped: (sessionId: string) => Promise<boolean>
@@ -435,6 +442,7 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   setProviderAvailability: (settings: ProviderAvailabilityRequest) => Promise<boolean>
   setVoiceInputSettings: (settings: VoiceInputSettingsRequest) => Promise<boolean>
   setStorageSettings: (settings: StorageSettingsRequest) => Promise<boolean>
+  setSidebarChatOrder: (list: 'pinned' | 'active', order: string[]) => Promise<boolean>
   setSidebarSettings: (settings: Pick<AppState, 'showProviderIconsInSidebar' | 'showWorktreePathInSidebar'>) => Promise<boolean>
   /** Saves what composer Send does while a turn runs: steer it (true) or queue for the next turn (false). */
   setSteerActiveTurnOnSend: (steer: boolean) => Promise<boolean>

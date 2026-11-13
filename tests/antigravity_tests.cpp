@@ -1107,8 +1107,9 @@ UAM_TEST(AntigravityPlanLaunchCannotBeWeakenedByExplicitExpertFlags)
 	ordinary.approval_mode = "default";
 	AppSettings expert;
 	expert.provider_extra_flags = "--dangerously-skip-permissions --mode accept-edits";
+	// Bypass flags never reach CLI View; ordinary expert mode flags still do outside Plan.
 	UAM_ASSERT_EQ(runtime.BuildInteractiveArgv(profile, ordinary, expert),
-	    (std::vector<std::string>{"agy", "--dangerously-skip-permissions", "--mode", "accept-edits"}));
+	    (std::vector<std::string>{"agy", "--mode", "accept-edits"}));
 }
 
 UAM_TEST(AntigravityCapturedNativeStreamPersistsIdentityAndAvoidsDuplicateAnswer)

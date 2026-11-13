@@ -8,6 +8,8 @@
 #include <algorithm>
 #include <array>
 #include <numeric>
+#include <set>
+#include <thread>
 
 using namespace uam_test;
 
@@ -1113,6 +1115,96 @@ UAM_TEST(PerformanceIdleInstallPushTick)
 		if (std::max({unchanged, one_changed, large_changed}) > static_cast<double>(kInteractionBudget.count()))
 			throw TestFailure(std::to_string(chat_count) + "-chat idle install push tick p50 exceeded " + std::to_string(kInteractionBudget.count()) + " ms");
 	}
+}
+
+// The memory stage visits every chat on every poll, and polls run every 16 ms while a turn streams. Each visit
+// used to ask whether the chat was busy before cheaper checks, and that question searched the whole chat list, as
+// did every lookup for a queued scan: a 2000-chat install paid chats x chats per poll (34 s polls on a loaded Mac).
+UAM_TEST(PerformanceMemoryPollOnLargeInstall)
+{
+	TempDir temp("uam-performance-memory-poll");
+	uam::AppState app;
+	BuildLargeCatalogFixture(app, temp.root, 2000);
+	const double now = uam::GetAppTimeSeconds();
+	std::set<std::string> backed_off_providers;
+	for (std::size_t index = 0; index < app.chats.size(); ++index)
+	{
+		ChatSession& chat = app.chats[index];
+		chat.memory_level = uam::memory_levels::kBalanced;
+		// Half wait out a failed scan's retry; the other half are queued behind a failing worker's backoff.
+		if (index % 2 == 0)
+			app.memory_retry_not_before_by_chat_id[chat.id] = now + 3600.0;
+		else
+		{
+			app.memory_extraction_queue.push_back({chat.id, -1, false});
+			if (backed_off_providers.insert(chat.provider_id).second) MemoryService::SetWorkerBackoffForTests(app, chat, now + 3600.0);
+		}
+	}
+	// A turn streaming in a CLI terminal keeps the busy check from answering without looking up the chat.
+	auto terminal = std::make_unique<uam::CliTerminalState>();
+	terminal->frontend_chat_id = app.chats.front().id;
+	terminal->attached_chat_id = app.chats.front().id;
+	terminal->running = true;
+	terminal->lifecycle_state = uam::CliTerminalLifecycleState::Busy;
+	terminal->turn_state = uam::CliTerminalTurnState::Busy;
+	app.cli_terminals.push_back(std::move(terminal));
+	const std::size_t queued = app.memory_extraction_queue.size();
+	const double poll = MedianMs(11, [&] { UAM_ASSERT(!MemoryService::ProcessDueMemoryWork(app)); });
+	// Nothing was due: every chat stays blocked and the queue keeps its order.
+	UAM_ASSERT_EQ(app.memory_extraction_queue.size(), queued);
+	UAM_ASSERT_EQ(app.memory_extraction_queue.front().chat_id, app.chats[1].id);
+	UAM_ASSERT(app.memory_extraction_tasks.empty());
+	std::cout << "[TIMING] memory poll, 2000 chats, " << queued << " queued: p50=" << poll << " ms\n";
+	constexpr double kMemoryPollBudgetMs = 25.0;
+	if (poll > kMemoryPollBudgetMs)
+		throw TestFailure("2000-chat memory poll p50 took " + std::to_string(poll) + " ms; limit " + std::to_string(kMemoryPollBudgetMs) + " ms");
+}
+
+// The Computer Use scan starts four times a second and used to copy every chat's controls on the GUI thread first.
+UAM_TEST(PerformanceComputerUseScanCopiesOnlySessionChats)
+{
+	TempDir temp("uam-performance-computer-use-scan");
+	uam::AppState app;
+	BuildLargeCatalogFixture(app, temp.root, 2000);
+	app.settings.computer_use_globally_enabled = true;
+	ChatSession& session_chat = app.chats[9];
+	session_chat.provider_id = "claude-cli";
+	session_chat.computer_use_backend = "uam";
+	const fs::path control = temp.root / "computer-use" / session_chat.id / "control.json";
+	UAM_ASSERT(fs::create_directories(control.parent_path()));
+	UAM_ASSERT(uam::io::WriteTextFile(control, "{\"state\":\"armed\"}\n"));
+	uam::ComputerUseService service;
+	std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+	(void)service.PollInBackground(app);
+	const double full_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+	// No session folders are known before the first scan lists them, so it copies every chat.
+	UAM_ASSERT_EQ(service.LastScanChatCountForTests(), app.chats.size());
+	double subset_ms = 0.0;
+	const double deadline = uam::GetAppTimeSeconds() + 10.0;
+	while (service.LastScanChatCountForTests() == app.chats.size() && uam::GetAppTimeSeconds() < deadline)
+	{
+		std::this_thread::sleep_for(std::chrono::milliseconds(2));
+		started = std::chrono::steady_clock::now();
+		(void)service.PollInBackground(app);
+		subset_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+	}
+	std::cout << "[TIMING] computer use scan start, 2000 chats: first scan=" << full_ms << " ms, later scan=" << subset_ms << " ms\n";
+	// Later scans copy only the chat with a session folder, and still adopt its state.
+	UAM_ASSERT_EQ(service.LastScanChatCountForTests(), std::size_t{1});
+	const double adopt_deadline = uam::GetAppTimeSeconds() + 10.0;
+	while (!app.chats[9].computer_use_enabled && uam::GetAppTimeSeconds() < adopt_deadline)
+	{
+		std::this_thread::sleep_for(std::chrono::milliseconds(2));
+		(void)service.PollInBackground(app);
+	}
+	UAM_ASSERT(app.chats[9].computer_use_enabled);
+	app.settings.computer_use_globally_enabled = false;
+	for (int attempt = 0; attempt < 5000 && service.ScanPendingForTests(); ++attempt)
+	{
+		(void)service.PollInBackground(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	UAM_ASSERT(!service.ScanPendingForTests());
 }
 
 UAM_TEST(StatePushReconciliationRepairsAWriteThatBypassedTheTranscriptStamp)

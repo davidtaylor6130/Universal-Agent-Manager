@@ -1555,6 +1555,22 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(cefStore.getState().acpBindingBySessionId['chat-1'].queuedPrompts).toEqual([expect.objectContaining({ id: 'real-outbox', revision: 1, text: 'Keep this input', attachments: [expect.objectContaining(attachment)] })])
   })
 
+  it('hands held phone confirmations from the desktop bootstrap to the confirmation prompt', async () => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    const item = { id: 'confirm-1', chatId: 'chat-1', chatTitle: 'Chat 1', description: 'Change permission mode to YOLO', expiresAt: Date.now() + 60_000 }
+    testWindow.cefQuery = ({ request, onSuccess }) => {
+      if (JSON.parse(request).action === 'getInitialState') onSuccess(JSON.stringify({ ...makeCppState(1), companionConfirmations: [item] }))
+      else onSuccess('{}')
+    }
+    const dispatched = vi.fn((_event: Event) => true)
+    testWindow.dispatchEvent = dispatched
+    await import('./useAppStore')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const event = dispatched.mock.calls.map(([sent]) => sent as CustomEvent).find((sent) => sent.type === 'uam-companion-confirmations')
+    expect(event?.detail).toEqual({ type: 'companionConfirmations', items: [item] })
+  })
+
   it('hydrates the bootstrap full state even when a same-revision patch arrived first (#622)', async () => {
     const testWindow = ensureTestWindow()
     vi.resetModules()
@@ -6985,6 +7001,29 @@ describe('useAppStore Gemini CLI slice', () => {
     // A refused save restores the previous choice instead of claiming it persisted.
     await expect(useAppStore.getState().setSteerActiveTurnOnSend(true)).resolves.toBe(false)
     expect(useAppStore.getState().steerActiveTurnOnSend).toBe(false)
+  })
+
+  it('hydrates and saves the manual Pinned and Active chat order through native settings', async () => {
+    // Until a list is saved the sidebar keeps its default order.
+    expect(useAppStore.getState().sidebarPinnedChatOrder).toEqual([])
+    expect(useAppStore.getState().sidebarActiveChatOrder).toEqual([])
+    const restarted = makeCppState(1)
+    restarted.settings.sidebarPinnedChatOrder = ['chat-b', 'chat-a']
+    useAppStore.getState().loadFromCef(restarted)
+    expect(useAppStore.getState().sidebarPinnedChatOrder).toEqual(['chat-b', 'chat-a'])
+
+    const requests: Array<{ action: string; payload?: unknown }> = []
+    window.cefQuery = ({ request, onSuccess, onFailure }) => {
+      requests.push(JSON.parse(request))
+      if (requests.length === 1) onSuccess('{}')
+      else onFailure(500, 'Failed to save the sidebar order.')
+    }
+    await expect(useAppStore.getState().setSidebarChatOrder('active', ['chat-c', 'chat-a'])).resolves.toBe(true)
+    expect(requests[0]).toMatchObject({ action: 'setSidebarChatOrder', payload: { list: 'active', order: ['chat-c', 'chat-a'] } })
+    expect(useAppStore.getState().sidebarActiveChatOrder).toEqual(['chat-c', 'chat-a'])
+    // A refused save restores the confirmed order.
+    await expect(useAppStore.getState().setSidebarChatOrder('active', ['chat-a', 'chat-c'])).resolves.toBe(false)
+    expect(useAppStore.getState().sidebarActiveChatOrder).toEqual(['chat-c', 'chat-a'])
   })
 
   it('projects native Computer Use cleanup and retains it across unrelated sparse patches', async () => {

@@ -12,6 +12,7 @@
 #include "common/provider/attached_skill_resources.h"
 #include "common/runtime/terminal/terminal_dimensions.h"
 #include "common/runtime/stream_watch.h"
+#include "common/security/read_only_command.h"
 
 #include <atomic>
 #include <array>
@@ -443,6 +444,8 @@ namespace uam
 		std::vector<AcpPermissionOptionState> options;
 		// Typed native command only; display content and reason text cannot prove execution authority.
 		std::string execution_command;
+		// Captured from the chat when the request arrives: where admitted reads and automatic edits may reach.
+		command_safety::ReadScope read_scope;
 	};
 
 	struct AcpUserInputOptionState
@@ -470,6 +473,8 @@ namespace uam
 		std::string status;
 		std::string attention_kind;
 		std::vector<AcpUserInputQuestionState> questions;
+		/// Present only for a UAM `secret_request` card: its display details, never the value.
+		nlohmann::json secret_request;
 	};
 
 	struct PendingModelDiscoveryRetry
@@ -499,6 +504,8 @@ namespace uam
 			std::shared_ptr<const std::uint8_t> computer_use_root_incarnation;
 			/// Validated chat_create arguments awaiting the user's decision.
 			nlohmann::json chat_create_arguments;
+			/// secret_request card state (label, reason, Plan opt-in, delivery in progress); never the value.
+			nlohmann::json secret_request;
 		};
 
 		std::string id;

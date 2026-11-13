@@ -22,6 +22,7 @@ import type {
   AcpModel,
   AcpPendingPermission,
   AcpPendingUserInput,
+  AcpSecretRequest,
   AcpPermissionOption,
   AcpPlanEntry,
   AcpProviderUsage,
@@ -672,12 +673,33 @@ export function sanitizeUserInputQuestion(value: unknown): AcpUserInputQuestion 
   }
 }
 
+/** Every field must be present and well typed; anything else drops the whole request. */
+export function sanitizeSecretRequest(value: unknown): AcpSecretRequest | undefined {
+  if (!isRecord(value)) return undefined
+  const { label, reason, placeholder, url, provider, host, planOptIn, keychain, localPlatform } = value
+  if (!isString(label) || !label.trim() || !isString(reason) || !isString(placeholder) || !isString(provider) || !provider.trim()
+    || !isString(url) || typeof planOptIn !== 'boolean') return undefined
+  if (url) {
+    try { if (new URL(url).protocol !== 'https:') return undefined } catch { return undefined }
+  }
+  if (host !== null && !(isRecord(host) && isString(host.name) && host.name.trim() && isString(host.platform))) return undefined
+  if (!isRecord(keychain) || typeof keychain.available !== 'boolean' || typeof keychain.saved !== 'boolean') return undefined
+  return {
+    label, reason, placeholder, url, provider, planOptIn,
+    localPlatform: localPlatform === 'windows' ? 'windows' : 'macos',
+    host: host === null ? null : { name: host.name as string, platform: host.platform as string },
+    keychain: { available: keychain.available, saved: keychain.saved },
+  }
+}
+
 export function sanitizePendingUserInput(value: unknown): AcpPendingUserInput | null {
   if (value == null) return null
   if (!isRecord(value)) return null
   const requestId = stringOr(value.requestId)
   if (!requestId) return null
+  const secretRequest = sanitizeSecretRequest(value.secretRequest)
   return {
+    ...(secretRequest ? { secretRequest } : {}),
     requestId,
     itemId: stringOr(value.itemId),
     status: stringOr(value.status),
@@ -1863,6 +1885,8 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
       theme: 'focus',
       showProviderIconsInSidebar: true,
       showWorktreePathInSidebar: true,
+      sidebarPinnedChatOrder: [],
+      sidebarActiveChatOrder: [],
       steerActiveTurnOnSend: false,
       gitEnabled: true,
       svnEnabled: true,
@@ -1960,6 +1984,10 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
         .filter((id) => id !== 'build' && id !== 'plan' && /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/.test(id))))
         .slice(0, 64)
     : []
+  // Native keeps at most 2,000 ids per list (settings_normalization.h).
+  const sidebarChatOrder = (raw: unknown) => Array.isArray(raw)
+    ? Array.from(new Set(raw.filter((id): id is string => typeof id === 'string').map((id) => id.trim()).filter((id) => id && id.length <= 256))).slice(0, 2000)
+    : []
   const importRules = (raw: unknown) => Array.isArray(raw)
     ? Array.from(new Set(raw.filter((rule): rule is string => typeof rule === 'string').map((rule) => rule.trim())
         .filter((rule) => rule && rule.length <= 4096))).slice(0, 100)
@@ -2031,6 +2059,8 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
     theme,
     showProviderIconsInSidebar: booleanOr(value.showProviderIconsInSidebar, true),
     showWorktreePathInSidebar: booleanOr(value.showWorktreePathInSidebar, true),
+    sidebarPinnedChatOrder: sidebarChatOrder(value.sidebarPinnedChatOrder),
+    sidebarActiveChatOrder: sidebarChatOrder(value.sidebarActiveChatOrder),
     steerActiveTurnOnSend: booleanOr(value.steerActiveTurnOnSend, false),
     gitEnabled: booleanOr(value.gitEnabled, true),
     svnEnabled: booleanOr(value.svnEnabled, true),

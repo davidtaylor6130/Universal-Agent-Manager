@@ -54,6 +54,7 @@ import type {
   AcpBinding,
   AcpLifecycleState,
   AcpUserInputAnswers,
+  SecretSubmission,
   ChatAttachmentInput,
   ChatMessagesResponse,
   CliBinding,
@@ -3537,6 +3538,17 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         },
       }))
       return true
+    },
+
+    // Always through the bridge: its dev stub redacts the value. The value is never written to state.
+    submitSecretRequest: async (sessionId: string, requestId: string, submission: SecretSubmission) => {
+      const response = await sendToCEF({ action: 'submitSecretRequest', payload: { chatId: sessionId, requestId, ...submission } }, false)
+      return response.ok ? { ok: true } : { ok: false, error: response.error || 'The secret was not delivered.' }
+    },
+
+    forgetSavedSecret: async (sessionId: string, requestId: string) => {
+      const response = await sendToCEF({ action: 'forgetSavedSecret', payload: { chatId: sessionId, requestId } }, false)
+      return response.ok ? { ok: true } : { ok: false, error: response.error || 'The saved secret was not forgotten.' }
     },
 
     treatRemoteStopAsStopped: async (sessionId: string): Promise<boolean> => {

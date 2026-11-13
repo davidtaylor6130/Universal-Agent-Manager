@@ -10,8 +10,9 @@ const send = vi.hoisted(() => vi.fn())
 vi.mock('../../ipc/cefBridge', async importOriginal => ({ ...await importOriginal<typeof import('../../ipc/cefBridge')>(), isCompanionContext: () => false, sendToCEF: send }))
 vi.mock('../../utils/appFailure', () => ({ reportAppFailure: vi.fn() }))
 
-const token = { id: 'at_1', name: 'n8n homelab', trusted: false, workspaces: ['folder-a'], maxGitPermission: 'commit', createdAt: '2026-11-09' }
+const token = { id: 'at_1', name: 'n8n homelab', trusted: false, workspaces: ['folder-a'], maxGitPermission: 'commit', createdAt: '2026-11-09', lifetimeDays: 90, expiresAt: Math.floor(Date.now() / 1000) + 86400 }
 const secret = `uamat_${'a'.repeat(64)}`
+const fresh = `uamat_${'b'.repeat(64)}`
 let host: HTMLDivElement, root: Root, previous: ReturnType<typeof useAppStore.getState>
 
 const flush = () => act(async () => { await Promise.resolve(); await Promise.resolve() })
@@ -28,6 +29,7 @@ beforeEach(async () => {
     if (action === 'getAutomationTokens') return { ok: true, data: { tokens: [token] } }
     if (action === 'getCompanionSettings') return { ok: true, data: { effectiveUrl: 'https://uam.local:58950/companion' } }
     if (action === 'createAutomationToken') return { ok: true, data: { secret, token: { ...token, id: 'at_2', name: 'New one' } } }
+    if (action === 'regenerateAutomationToken') return { ok: true, data: { secret: fresh, token: { ...token, expiresAt: token.expiresAt + 86400 * 90 } } }
     return { ok: true, data: {} }
   })
   host = document.createElement('div'); document.body.append(host); root = createRoot(host)
@@ -61,7 +63,7 @@ describe('Automation settings', () => {
     act(() => document.querySelector<HTMLElement>('[aria-label="Allow Parser"]')!.click())
     await act(async () => { button('Create token').click(); await Promise.resolve() })
     await flush()
-    expect(send).toHaveBeenCalledWith({ action: 'createAutomationToken', payload: { name: 'New one', trusted: false, maxGitPermission: 'commit', workspaces: ['folder-a'] } })
+    expect(send).toHaveBeenCalledWith({ action: 'createAutomationToken', payload: { name: 'New one', trusted: false, maxGitPermission: 'commit', workspaces: ['folder-a'], lifetimeDays: 90 } })
     expect(document.querySelector<HTMLInputElement>('[aria-label="Automation token"]')?.value).toBe(secret)
     act(() => button('Done').click())
     await flush()
@@ -69,6 +71,32 @@ describe('Automation settings', () => {
     expect(host.textContent).toContain('New one')
     act(() => button('New token').click())
     expect(document.querySelector('[aria-label="Automation token"]')).toBeNull()
+  })
+
+  it('shows when a token expires, and marks an expired one', async () => {
+    expect(host.textContent).toContain('Expires ')
+    act(() => root.unmount())
+    send.mockImplementation(async ({ action }: { action: string }) => action === 'getAutomationTokens'
+      ? { ok: true, data: { tokens: [{ ...token, expiresAt: Math.floor(Date.now() / 1000) - 1 }] } }
+      : { ok: true, data: {} })
+    root = createRoot(host)
+    act(() => root.render(<AutomationSettings />))
+    await flush()
+    expect(host.textContent).toContain('Expired, regenerate to use')
+  })
+
+  it('regenerates only after confirmation and shows the new secret once', async () => {
+    act(() => button('Regenerate n8n homelab').click())
+    expect(send).not.toHaveBeenCalledWith(expect.objectContaining({ action: 'regenerateAutomationToken' }))
+    expect(document.body.textContent).toContain('stops working immediately')
+    await act(async () => { button('Regenerate token').click(); await Promise.resolve() })
+    await flush()
+    expect(send).toHaveBeenCalledWith({ action: 'regenerateAutomationToken', payload: { id: 'at_1' } })
+    expect(document.querySelector<HTMLInputElement>('[aria-label="Automation token"]')?.value).toBe(fresh)
+    act(() => button('Done').click())
+    await flush()
+    expect(document.body.innerHTML).not.toContain(fresh)
+    expect(host.textContent).toContain('n8n homelab')
   })
 
   it('revokes only after confirmation', async () => {
