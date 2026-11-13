@@ -12,6 +12,7 @@
 #include "common/platform/platform_services.h"
 #include "common/runtime/app_time.h"
 #include "common/utils/shell_escape.h"
+#include "common/vcs/git_command.h"
 #include "remote/runner_client.h"
 
 namespace uam
@@ -204,11 +205,19 @@ namespace uam
 						if (remaining <= 0 || stop.stop_requested()) { inconclusive = true; return false; }
 						const int timeout = static_cast<int>(std::min(remaining, 2000LL));
 						ProcessExecutionResult result;
-						if (runner) result = runner->ExecuteCommand(process.GenerateUuid(), paths::PathFromUtf8(workspace->directory), argv, timeout, stop);
+						const bool git = argv.front() == "git";
+						const std::vector<std::string> git_arguments(argv.begin() + (git ? 1 : 0), argv.end());
+						if (runner) result = runner->ExecuteCommand(process.GenerateUuid(), paths::PathFromUtf8(workspace->directory),
+						    git ? vcs::HardenedGitArgv(git_arguments, vcs::IsWindowsHostPlatform(host->platform)) : argv, timeout, stop);
 						else
 						{
 							std::vector<std::string> local_argv = argv;
-							if (argv.front() == "git") local_argv.insert(local_argv.begin() + 2, {"-C", workspace->directory});
+							if (git)
+							{
+								std::vector<std::string> in_directory{"-C", workspace->directory};
+								in_directory.insert(in_directory.end(), git_arguments.begin(), git_arguments.end());
+								local_argv = vcs::HardenedGitArgv(in_directory, vcs::kLocalHostIsWindows);
+							}
 							else local_argv.back() = workspace->directory;
 							std::string command;
 							for (const std::string& argument : local_argv) command += shell::EscapeArg(argument) + " ";

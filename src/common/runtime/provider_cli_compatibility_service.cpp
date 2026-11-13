@@ -1135,6 +1135,9 @@ void ProviderCliCompatibilityService::Poll(uam::AppState& app) const
 				{
 					provider_state.message = ProviderTitleMessage("Installed ", ProviderTitle(app, provider_id), " version is known to be incompatible with this UAM build.");
 				}
+				const ProviderCliPolicy& policy = ResolveProviderCliPolicy(provider_id).policy;
+				if (policy.protocol_version_refusal != nullptr)
+					if (std::string refusal = policy.protocol_version_refusal(provider_state.installed_version); !refusal.empty()) provider_state.message = std::move(refusal);
 				if (minimum_verification_failed) provider_state.message = minimum_version_error;
 			}
 			else
@@ -1367,7 +1370,7 @@ std::string ProviderCliCompatibilityService::CompatibilityStatusForProvider(std:
 	{
 		return "untested";
 	}
-	if (trimmed_version == resolved.policy.fallback_version)
+	if (trimmed_version == resolved.policy.fallback_version || (resolved.policy.verified_protocol_version != nullptr && resolved.policy.verified_protocol_version(trimmed_version)))
 	{
 		return "verified";
 	}

@@ -277,6 +277,7 @@ The [stream watch](providers/runtime-lifecycle.md#stream-watch) ships with loop 
 - Both tools report static validation and blocked-content warnings plus a runtime-error check from a hidden render. This error-only preview is the agreed V5.1 slice, and the screenshot in the original issue is deferred past V5.1. The check's own limits remain interim: five second limit, one second wait, three hidden browsers, 2,000 console messages and 20 reported errors of up to 512 bytes each.
 - Save as HTML file uses the existing folder picker and writes a unique title-based name, because no native Save As dialog exists. Open in browser writes a content-addressed copy under the system temporary folder with the restrictive policy prepended. The copy folder is refused if it is a link, not a folder or (outside Windows) owned by another user, and each new copy deletes view copies older than 24 hours.
 - Reduced motion and Motion Off stop the page's CSS animations and transitions; script-driven animation is not controlled.
+- Hardening on 2026-11-12: an agent page loads only after the user chooses Run on its card, remembered per view and exact page, and the hidden runtime check is off, so `runtimeCheck` returns `not_run`. This supersedes the runtime check item above. Since the macOS renderer now runs in the Chromium process sandbox, re-enabling the check on macOS can be reconsidered later; it stays off on every platform for now, and Windows and Linux remain a known sandbox gap. Acceptance of the Run control is pending.
 
 ## Active-turn Send in CLI View
 

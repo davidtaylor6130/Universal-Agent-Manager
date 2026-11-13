@@ -19,6 +19,7 @@
 #include "common/utils/range_utils.h"
 #include "common/utils/shell_escape.h"
 #include "common/utils/string_utils.h"
+#include "common/vcs/git_command.h"
 #include "remote/runner_client.h"
 
 #include <nlohmann/json.hpp>
@@ -159,8 +160,12 @@ namespace uam
 			if (cancellation.stop_requested() || argv.empty() || !Ready(&result.error)) return result;
 			const std::string session_id = "vcs-" +
 			    PlatformServicesFactory::Instance().process_service.GenerateUuid();
+			// Every remote Git command passes through here, so it always carries the shared Git safety options.
+			const std::vector<std::string> command = argv.front() == "git"
+			    ? uam::vcs::HardenedGitArgv({argv.begin() + 1, argv.end()}, uam::vcs::IsWindowsHostPlatform(Platform()))
+			    : argv;
 			if (!m_client->StartProcess(session_id, std::filesystem::path(working_directory),
-			                            argv, environment, &result.error)) return result;
+			                            command, environment, &result.error)) return result;
 			if (!standard_input.empty() &&
 			    !m_client->WriteProcess(session_id, standard_input, &result.error))
 			{
@@ -267,7 +272,7 @@ namespace uam
 
 		std::string BuildGitCommandInDirectory(const std::filesystem::path& cwd, const std::string& args)
 		{
-			return "git -C " + uam::shell::EscapeArg(uam::paths::Utf8PathString(cwd)) + " " + args;
+			return uam::vcs::HardenedGitShellCommandInDirectory(cwd, args);
 		}
 
 		std::string BuildLiteralGitCommandInDirectory(const std::filesystem::path& cwd, const std::string& args)
@@ -534,10 +539,14 @@ namespace uam
 				}
 				ProviderWorkerInvocation invocation;
 				invocation.direct_process = true;
-				invocation.argv = {"git", "-C", uam::paths::Utf8PathString(m_root)};
-				invocation.argv.insert(invocation.argv.end(), args.begin(), args.end());
+				args.insert(args.begin(), {"-C", uam::paths::Utf8PathString(m_root)});
 				if (use_index) invocation.environment_overrides = {{"GIT_INDEX_FILE", m_remote ? m_remoteIndex : uam::paths::Utf8PathString(m_index)}};
-				if (m_remote) return m_remote->Run(uam::paths::Utf8PathString(m_root), invocation.argv, invocation.environment_overrides, {}, kDefaultCommandTimeoutMs, m_cancellation);
+				if (m_remote)
+				{
+					args.insert(args.begin(), "git"); // RemoteVcsContext::Run adds the safety options for the host's platform.
+					return m_remote->Run(uam::paths::Utf8PathString(m_root), args, invocation.environment_overrides, {}, kDefaultCommandTimeoutMs, m_cancellation);
+				}
+				invocation.argv = uam::vcs::HardenedGitArgv(args, uam::vcs::kLocalHostIsWindows);
 				return ExecuteProviderWorkerInvocation(invocation, m_root, kDefaultCommandTimeoutMs, m_cancellation);
 			}
 		  private:

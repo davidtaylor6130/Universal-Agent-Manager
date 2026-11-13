@@ -6987,6 +6987,29 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(useAppStore.getState().steerActiveTurnOnSend).toBe(false)
   })
 
+  it('hydrates and saves the manual Pinned and Active chat order through native settings', async () => {
+    // Until a list is saved the sidebar keeps its default order.
+    expect(useAppStore.getState().sidebarPinnedChatOrder).toEqual([])
+    expect(useAppStore.getState().sidebarActiveChatOrder).toEqual([])
+    const restarted = makeCppState(1)
+    restarted.settings.sidebarPinnedChatOrder = ['chat-b', 'chat-a']
+    useAppStore.getState().loadFromCef(restarted)
+    expect(useAppStore.getState().sidebarPinnedChatOrder).toEqual(['chat-b', 'chat-a'])
+
+    const requests: Array<{ action: string; payload?: unknown }> = []
+    window.cefQuery = ({ request, onSuccess, onFailure }) => {
+      requests.push(JSON.parse(request))
+      if (requests.length === 1) onSuccess('{}')
+      else onFailure(500, 'Failed to save the sidebar order.')
+    }
+    await expect(useAppStore.getState().setSidebarChatOrder('active', ['chat-c', 'chat-a'])).resolves.toBe(true)
+    expect(requests[0]).toMatchObject({ action: 'setSidebarChatOrder', payload: { list: 'active', order: ['chat-c', 'chat-a'] } })
+    expect(useAppStore.getState().sidebarActiveChatOrder).toEqual(['chat-c', 'chat-a'])
+    // A refused save restores the confirmed order.
+    await expect(useAppStore.getState().setSidebarChatOrder('active', ['chat-a', 'chat-c'])).resolves.toBe(false)
+    expect(useAppStore.getState().sidebarActiveChatOrder).toEqual(['chat-c', 'chat-a'])
+  })
+
   it('projects native Computer Use cleanup and retains it across unrelated sparse patches', async () => {
     const testWindow = ensureTestWindow()
     vi.resetModules()

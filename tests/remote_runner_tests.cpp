@@ -43,6 +43,7 @@
 #include "remote/runner_service_windows.h"
 #include <fcntl.h>
 #include <io.h>
+#include <sddl.h>
 #endif
 
 using namespace uam_test;
@@ -3143,13 +3144,31 @@ UAM_TEST(WindowsRunnerBridgeEndsWhenItsClientLeavesDuringAStalledServiceReply)
 	UAM_ASSERT(fs::exists(runner));
 	const std::wstring pipe = uam::remote::RunnerServicePipeName(std::string(uam::constants::kAppVersion).substr(1));
 	UAM_ASSERT(!pipe.empty());
+	// Owned by this user like the real service: clients refuse a pipe owned by anyone else, and an elevated
+	// session's default owner is the Administrators group.
+	HANDLE token = nullptr;
+	UAM_ASSERT(OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token));
+	DWORD user_bytes = 0;
+	(void)GetTokenInformation(token, TokenUser, nullptr, 0, &user_bytes);
+	std::vector<unsigned char> user(user_bytes);
+	const bool read_user = GetTokenInformation(token, TokenUser, user.data(), user_bytes, &user_bytes) != FALSE;
+	CloseHandle(token);
+	UAM_ASSERT(read_user);
+	LPWSTR sid = nullptr;
+	UAM_ASSERT(ConvertSidToStringSidW(reinterpret_cast<TOKEN_USER*>(user.data())->User.Sid, &sid));
+	const std::wstring sddl = std::wstring(L"O:") + sid + L"D:P(A;;GA;;;" + sid + L")";
+	LocalFree(sid);
+	PSECURITY_DESCRIPTOR descriptor = nullptr;
+	UAM_ASSERT(ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1, &descriptor, nullptr));
+	SECURITY_ATTRIBUTES security{sizeof(security), descriptor, FALSE};
 	// A listening instance the bridge can connect to, which accepts its request and never replies.
 	struct SilentService
 	{
 		HANDLE pipe;
 		~SilentService() { if (pipe != INVALID_HANDLE_VALUE) CloseHandle(pipe); }
 	} service{CreateNamedPipeW(pipe.c_str(), PIPE_ACCESS_DUPLEX, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
-	                           1, 64 * 1024, 64 * 1024, 0, nullptr)};
+	                           1, 64 * 1024, 64 * 1024, 0, &security)};
+	LocalFree(descriptor);
 	const HANDLE silent = service.pipe;
 	UAM_ASSERT(silent != INVALID_HANDLE_VALUE);
 	struct Bridge

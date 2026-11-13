@@ -127,6 +127,10 @@ struct ProviderCliPolicy
 	ProviderCliVersionPolicy version_policy = ProviderCliVersionPolicy::AnySafeToken;
 	bool provider_managed = false;
 	const char* verified_at = nullptr;
+	/// Optional provider-owned protocol contract: true marks an installed version verified beyond fallback_version.
+	bool (*verified_protocol_version)(std::string_view version) = nullptr;
+	/// Optional provider-owned refusal naming why its adapter will not run an installed version; empty otherwise.
+	std::string (*protocol_version_refusal)(std::string_view version) = nullptr;
 };
 
 /// <summary>

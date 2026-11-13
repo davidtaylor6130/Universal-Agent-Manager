@@ -20,6 +20,13 @@ Json Data(const Json& response)
 	if (!response.is_object() || !response.contains("data")) throw std::runtime_error("OpenCode V2 returned an invalid native response.");
 	return response.at("data");
 }
+// OpenCode projects a session model without a variant as variant "default" and its
+// resolver treats that ID as none (core session/info.ts, model-resolver.ts; live on 2.2.6/2.2.7).
+Json ModelRef(Json model)
+{
+	if (model.is_object() && model.contains("variant") && model.at("variant") == "default") model.erase("variant");
+	return model;
+}
 bool Id(const std::string& id)
 {
 	return !id.empty() && id.size() <= 512 && id.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-") == std::string::npos;
@@ -52,8 +59,8 @@ std::string ToolKey(std::string_view message_id, std::string_view tool_id)
 	return "v2:" + Encode(message_id) + ":" + Encode(tool_id);
 }
 
-Session::Session(Query query, PublishPolicy publish_policy, Emit emit)
-	: query_(std::move(query)), publish_policy_(std::move(publish_policy)), emit_(std::move(emit)) {}
+Session::Session(Query query, PublishPolicy publish_policy, Emit emit, std::string native_version)
+	: query_(std::move(query)), publish_policy_(std::move(publish_policy)), emit_(std::move(emit)), native_version_(std::move(native_version)) {}
 
 void Session::Reply(const Json& id, const Json& result)
 {
@@ -124,7 +131,7 @@ Json Session::Options()
 		if (output.is_number_integer() && output.get<double>() > 0 && output.get<double>() <= 9007199254740991.0) models.back()["maxOutputTokens"] = output;
 		const Json base_advertisement = models.back();
 		for (const auto& variant : model.value("variants", Json::array()))
-			if (variant.is_object() && !variant.value("id", "").empty())
+			if (variant.is_object() && !variant.value("id", "").empty() && variant.at("id") != "default")
 			{
 				const auto key = provider + "/" + id + "/" + variant.at("id").get<std::string>();
 				Json advertised = base_advertisement; advertised["modelId"] = key; advertised["name"] = model.value("name", id) + " / " + variant.at("id").get<std::string>();
@@ -188,7 +195,7 @@ Json Session::Setup(const Json& params, bool load)
 	else info = Data(query_("POST", "/api/session", {{"location", {{"directory", cwd_}}}, {"agent", read_only_ ? "plan" : "build"}, {"permissions", Rules(read_only_)}}));
 	session_id_ = info.at("id").get<std::string>();
 	if (!Id(session_id_) || info.value("location", Json::object()).value("directory", "") != cwd_) throw std::runtime_error("OpenCode V2 returned an invalid session binding.");
-	const auto native_model = info.value("model", Json::object());
+	const auto native_model = ModelRef(info.value("model", Json::object()));
 	if (native_model.is_object() && native_model.contains("id")) model_ = native_model.value("providerID", "") + "/" + native_model.value("id", "");
 	if (native_model.is_object() && native_model.contains("variant")) model_ += "/" + native_model.at("variant").get<std::string>();
 	mode_ = info.value("agent", "build");
@@ -208,7 +215,7 @@ void Session::SelectModel(const std::string& id)
 	const Json model = found->second;
 	query_("POST", Route("/model"), {{"model", model}});
 	const Json info = Data(query_("GET", Route(), nullptr));
-	if (info.value("model", Json{}) != model) throw std::runtime_error("OpenCode V2 did not confirm the selected model.");
+	if (ModelRef(info.value("model", Json{})) != model) throw std::runtime_error("OpenCode V2 did not confirm the selected model.");
 	model_ = model.at("providerID").get<std::string>() + "/" + model.at("id").get<std::string>() + (model.contains("variant") ? "/" + model.at("variant").get<std::string>() : "");
 }
 
@@ -258,7 +265,7 @@ void Session::Handle(const Json& message)
 		const Json params = message.value("params", Json::object());
 		if (method == "initialize")
 		{
-			Reply(id, {{"protocolVersion", 1}, {"agentInfo", {{"name", "OpenCode V2 native API"}, {"version", "2.1.2"}}}, {"agentCapabilities", {{"loadSession", true}, {"mcpCapabilities", {{"http", true}, {"sse", true}}}}}});
+			Reply(id, {{"protocolVersion", 1}, {"agentInfo", {{"name", "OpenCode V2 native API"}, {"version", native_version_}}}, {"agentCapabilities", {{"loadSession", true}, {"mcpCapabilities", {{"http", true}, {"sse", true}}}}}});
 			return;
 		}
 		if (method == "session/new" || method == "session/load" || method == "session/resume") { Reply(id, Setup(params, method != "session/new")); return; }

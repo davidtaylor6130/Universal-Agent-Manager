@@ -309,8 +309,9 @@ public:
 void RunOpenCodeV2TransportFixtures()
 {
 	InlineConfiguration configuration;
+	for (const std::string version : {"2.1.2", "2.2.7"}) // Both ends of the verified V2 range run the same bridge contract.
 	{
-		SimulatedProcesses native; std::string output;
+		SimulatedProcesses native; native.version = version; std::string output;
 		{
 			OutputCapture capture;
 			Require(RunCommand({"uam-fixture", "--uam-opencode-v2-bridge", "--", "opencode"}, native) == std::optional<int>{0}, "Simulated bridge failed");
@@ -327,11 +328,12 @@ void RunOpenCodeV2TransportFixtures()
 			if (value.value("method", "") == "session/request_permission") approval = value.at("params").at("toolCall").at("toolCallId") == ToolKey("msg_assistant", "read");
 			if (value.value("id", Json{}) == 4) completed = value.at("result").at("stopReason") == "end_turn" && value.at("result").at("usage").at("totalTokens") == 16;
 			if (value.value("id", Json{}) == 5) cancelled = value.at("result").at("stopReason") == "cancelled";
+			if (value.value("id", Json{}) == 1) Require(value.at("result").at("agentInfo").at("version") == version, "Bridge did not report the running native version");
 		}
 		Require(completed && cancelled && approval, "Bridge did not preserve streamed turn/approval/cancel identity");
 	}
 	{
-		SimulatedProcesses native; native.version = "2.2.0";
+		SimulatedProcesses native; native.version = "2.3.0";
 		OutputCapture capture;
 		Require(RunCommand({"uam-fixture", "--uam-opencode-v2-bridge", "--", "opencode"}, native) == std::optional<int>{1}, "Unverified running service was accepted");
 		Require(native.creates == 0 && native.prompts == 0 && native.server_stops == 1, "Version refusal leaked a session/process");
@@ -364,7 +366,7 @@ void RunOpenCodeV2TransportFixtures()
 		Require(listed.at(0).at("opencode_v2_session_id") == "ses_v2", "V2 imported session lost its exact-ID downgrade refusal hint");
 		Require(native.commands.back() == HistoryArgv("2.1.2", {"opencode"}, "list", {}), "V2 list used legacy argv");
 	}
-	for (const std::string version : {"2.1.2", "2.1.4"})
+	for (const std::string version : {"2.1.2", "2.1.4", "2.2.6", "2.2.7"})
 	{
 		SimulatedProcesses native; native.version = version;
 		native.history = Json{{"info", {{"id", "ses_v2"}, {"location", {{"directory", native.cwd}}}}}, {"messages", Json::array({{{"id", "msg_user"}, {"type", "user"}, {"text", "Retained input"}}})}}.dump();

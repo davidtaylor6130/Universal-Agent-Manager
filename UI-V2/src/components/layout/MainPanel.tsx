@@ -708,7 +708,8 @@ export function MainPanel() {
       data-testid={`pane-drop-target-${index + 1}`}
       data-leaf-id={leafId}
       data-drop-target={dropTargetPane === leafId}
-      style={{ outline: dropTargetPane === leafId ? `2px solid ${chatPaneColors[index]}` : 'none', outlineOffset: -2 }}
+      // --pane-drop-color lets a pointer drag from Pinned or Active (sortableDrag.ts) outline the pane the same way.
+      style={{ outline: dropTargetPane === leafId ? `2px solid ${chatPaneColors[index]}` : 'none', outlineOffset: -2, '--pane-drop-color': chatPaneColors[index] } as React.CSSProperties}
       onDragOver={(event) => {
         if (!Array.from(event.dataTransfer.types).includes('text/x-uam-chat-id')) return
         event.preventDefault()

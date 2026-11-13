@@ -4,6 +4,7 @@ import { RowSubmenu } from './RowSubmenu'
 import { isCompanionContext, isCefContext, sendToCEF } from '../../ipc/cefBridge'
 import { useState, useRef, useEffect, useLayoutEffect, useSyncExternalStore, memo, useContext } from 'react'
 import type { FocusEvent as ReactFocusEvent, MouseEvent as ReactMouseEvent, RefObject } from 'react'
+import { ChatSortContext, type ChatSortList } from './sortableDrag'
 import { automationStartPending, subscribeOutgoingAttempts } from '../../utils/outgoingMessagePresentation'
 import {
   Pin, MoreHorizontal, Pencil, Trash2, HelpCircle, ClipboardList, Brain,
@@ -179,6 +180,8 @@ interface SessionItemProps {
   onSessionClick?: (sessionId: string, event: ReactMouseEvent<HTMLDivElement>) => boolean
   /** Verified native subagent child: same row, robot glyph instead of the provider/custom icon. */
   subagentRow?: boolean
+  /** Pinned or Active row the user can reorder by drag or Arrow Up/Down; other rows keep their time order. */
+  sortList?: ChatSortList
 }
 
 const ATTENTION_LABELS: Record<AcpAttentionKind, string> = {
@@ -218,7 +221,7 @@ const PREFETCH_INTENT_MS = 150
 
 const HOVER_FADE = 'transition-opacity duration-100 group-hover:opacity-0 group-focus-within:opacity-0'
 
-export const SessionItem = memo(function SessionItem({ sessionId, session, familySessionIds: providedFamilySessionIds, selected = false, activityLayout = false, activityFolderName, activityFolderIcon, activityHostLabel, activityHostRemote = false, onSessionClick, onSessionOpen, subagentRow = false }: SessionItemProps) {
+export const SessionItem = memo(function SessionItem({ sessionId, session, familySessionIds: providedFamilySessionIds, selected = false, activityLayout = false, activityFolderName, activityFolderIcon, activityHostLabel, activityHostRemote = false, onSessionClick, onSessionOpen, subagentRow = false, sortList }: SessionItemProps) {
   useSyncExternalStore(subscribeSubagentNavigation, subagentNavigationRevision)
   // Verified native lineage, not only the catalogue's prop, decides the robot icon on every sidebar path.
   const lineageSubagent = useAppStore(state => { const candidate = session ?? state.sessions.find(item => item.id === sessionId); return candidate ? hasNativeSubagentLineage(candidate) : false })
@@ -412,6 +415,8 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
   // Rows of the multi-selection the open menu acts on; empty while the menu targets only this row.
   const [menuSelectionIds, setMenuSelectionIds] = useState<string[]>([])
   const chatSelection = useContext(ChatSelectionContext)
+  const chatSort = useContext(ChatSortContext)
+  const sortable = Boolean(sortList && chatSort) && !editing
   const selectionIds = () => {
     const ids = selected && chatSelection ? chatSelection.selectedIds() : []
     return ids.length > 1 ? ids : []
@@ -607,7 +612,10 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
   return (
     <div
       className="relative group"
-      draggable={!editing}
+      data-sort-id={sortList && chatSort ? sessionId : undefined}
+      // A sortable row drags by pointer (sortableDrag.ts), which also opens it in a pane; other rows keep the native drag.
+      draggable={!editing && !sortable}
+      onPointerDown={sortable ? (event) => chatSort!.start(sortList!, sessionId, event) : undefined}
       onDragStart={(event) => {
         event.dataTransfer.effectAllowed = 'copy'
         event.dataTransfer.setData('text/x-uam-chat-id', sessionId)
@@ -642,9 +650,13 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
           setEditing(true)
           setEditValue(sessionName)
         }}
+        aria-keyshortcuts={sortable ? 'ArrowUp ArrowDown' : undefined}
         onKeyDown={(event) => {
           if (event.target !== event.currentTarget || editing) return
-          if (event.key === 'Enter' || event.key === ' ') {
+          if (sortable && (event.key === 'ArrowUp' || event.key === 'ArrowDown') && !event.shiftKey && !event.altKey && !event.metaKey && !event.ctrlKey) {
+            event.preventDefault()
+            chatSort!.move(sortList!, sessionId, event.key === 'ArrowUp' ? -1 : 1)
+          } else if (event.key === 'Enter' || event.key === ' ') {
             event.preventDefault()
             selectChat()
           } else if (!isCompanionContext() && (event.key === 'Delete' || (event.key === 'Backspace' && (event.metaKey || event.ctrlKey)))) {
