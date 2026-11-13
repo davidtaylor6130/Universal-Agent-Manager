@@ -206,3 +206,88 @@ UAM_TEST(ColdMemoryPreparationCannotMarkANewWorkspaceProcessedFromAnOldLowSignal
 	}
 
 }
+
+UAM_TEST(MemoryWorkerOutputWaitsForAStartingProviderTurn)
+{
+	// #883: a scan that finishes while the chat's turn has not started its provider process publishes nothing and
+	// writes no progress, because the launch owns the saved queue record that carries memory progress.
+	for (const std::string after : {"running", "ended"})
+	{
+		TempDir temp("uam-memory-starting-turn");
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		app.settings.memory_idle_delay_seconds = -1;
+		app.provider_profiles = {ProviderProfileStore::DefaultCodexProfile()};
+		app.settings.execution_hosts = {uam::execution_hosts::LocalHost()};
+		const fs::path workspace = temp.root / "workspace";
+		fs::create_directories(workspace);
+		ChatSession chat;
+		chat.id = "starting-memory";
+		chat.provider_id = "codex-cli";
+		chat.workspace_directory = workspace.string();
+		chat.memory_enabled = true;
+		chat.memory_level = "open";
+		chat.messages.push_back({MessageRole::User, "Remember our project coding preference.", "now"});
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		app.chats.push_back(chat);
+		app.acp_sessions.push_back(std::make_unique<uam::AcpSessionState>());
+		uam::AcpSessionState& session = *app.acp_sessions.back();
+		session.chat_id = chat.id;
+		session.provider_id = chat.provider_id;
+		session.processing = true; // The turn has begun; its provider process has not started.
+		const auto complete_manual_scan = [&]
+		{
+			uam::AsyncMemoryExtractionTask task;
+			task.data_root = app.data_root;
+			task.running = true;
+			task.chat_id = chat.id;
+			task.scan_start_message_index = 0;
+			task.memory_level = uam::memory_policy::Resolve(app.settings, app.chats.front());
+			task.message_count = 1;
+			task.workspace_root = uam::paths::ResolveControllerWorkspaceRootPath(app, app.chats.front());
+			task.state = std::make_shared<AsyncProcessTaskState>();
+			task.state->result.ok = true;
+			task.state->result.output = R"({"memories":[{"scope":"local","category":"Lessons/User_Lessons","title":"Brace preference","memory":"Prefer Allman brace style in this project.","evidence":"User said: Please remember that this project uses Allman braces.","confidence":"high"}]})";
+			task.state->completed.store(true);
+			app.memory_extraction_tasks.push_back(std::move(task));
+			// Keeps the requeued scan from starting a real worker in the same pass.
+			MemoryService::SetWorkerBackoffForTests(app, app.chats.front(), uam::GetAppTimeSeconds() + 3600.0);
+			UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+			UAM_ASSERT(app.memory_extraction_tasks.empty());
+		};
+		// Prepared entries wait as temporary files; only a published entry is a .md file.
+		const auto published_entries = [&]
+		{
+			std::size_t count = 0;
+			const fs::path root = MemoryService::LocalMemoryRoot(workspace);
+			if (fs::exists(root))
+				for (const fs::directory_entry& entry : fs::recursive_directory_iterator(root))
+					count += entry.is_regular_file() && entry.path().extension() == ".md";
+			return count;
+		};
+		const auto saved_progress = [&]
+		{
+			const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+			UAM_ASSERT(saved.has_value());
+			return saved->memory_last_processed_message_count;
+		};
+
+		complete_manual_scan();
+		UAM_ASSERT_EQ(published_entries(), std::size_t{0});
+		UAM_ASSERT_EQ(app.chats.front().memory_last_processed_message_count, 0);
+		UAM_ASSERT_EQ(saved_progress(), 0);
+		UAM_ASSERT_EQ(app.memory_extraction_queue.size(), std::size_t{1});
+		UAM_ASSERT_EQ(app.memory_extraction_queue.front().chat_id, chat.id);
+		UAM_ASSERT(app.memory_extraction_queue.front().manual);
+
+		// The requeued scan applies its output once the provider is running or the turn is over.
+		app.memory_extraction_queue.clear();
+		if (after == "running") session.running = true;
+		else session.processing = false;
+		complete_manual_scan();
+		UAM_ASSERT_EQ(published_entries(), std::size_t{1});
+		UAM_ASSERT_EQ(app.chats.front().memory_last_processed_message_count, 1);
+		UAM_ASSERT_EQ(saved_progress(), 1);
+		UAM_ASSERT(app.memory_extraction_queue.empty());
+	}
+}
