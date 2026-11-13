@@ -10,5 +10,7 @@ export function expectWithinBudget(label: string, budgetMs: number, operation: (
   const start = performance.now()
   operation()
   const elapsed = performance.now() - start
+  // scripts/perf_suite.py ui reads these lines; ordinary test runs stay quiet.
+  if (import.meta.env.VITE_UAM_PERF_TIMINGS) console.log(`[TIMING] ${label}: ${elapsed.toFixed(2)} ms`)
   expect(elapsed, `${label}: ${elapsed.toFixed(2)}ms exceeded ${budgetMs}ms`).toBeLessThanOrEqual(budgetMs)
 }
