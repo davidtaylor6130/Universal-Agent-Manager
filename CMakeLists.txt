@@ -577,6 +577,7 @@ add_library(uam_core_objects OBJECT
   ${UAM_PLATFORM_IMPL_SOURCES}
   ${UAM_COMPUTER_USE_PLATFORM_SOURCES}
   src/computer_use/computer_use_mcp_config.cpp
+  src/computer_use/computer_use_install_staging.cpp
   src/app/agent_definition_service.cpp
   src/app/agent_run_ledger.cpp
   src/app/agent_run_scheduler.cpp

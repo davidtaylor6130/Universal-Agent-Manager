@@ -5,6 +5,7 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+import time
 import os
 
 # macOS keeps a ~0.5 GB code_sign_clone copy of each launched bundle (#684).
@@ -36,4 +37,33 @@ with tempfile.TemporaryDirectory(prefix='uam-cu-test-') as root:
     by_id = {reply['id']: reply for reply in replies}
     assert 'result' in by_id[1]
     assert {tool['name'] for tool in by_id[2]['result']['tools']} == {'computer_observe', 'computer_action'}
-print('PASS: independent settings check, MCP round trip, large input and EOF drain')
+
+    # The helper is copied once; later starts reuse it and leave no staging copies.
+    install = pathlib.Path(root) / 'Computer Use'
+    staged = lambda: sorted(path.name for path in install.glob('.staging-*'))
+    installed = install / 'UAM Computer Use.app'
+    assert staged() == [], staged()
+    assert (install / '.receipt').is_file()
+    identity = installed.stat().st_ino
+    run(['--settings-action', 'check'])
+    assert installed.stat().st_ino == identity, 'an unchanged helper was copied again'
+
+    # A copy left by a dead installer is removed by the next start; a live owner's copy is kept.
+    (install / '.staging-999999999' / 'Contents').mkdir(parents=True)
+    (install / '.staging-1' / 'Contents').mkdir(parents=True)
+    run(['--settings-action', 'check'])
+    assert staged() == ['.staging-1'], staged()
+    (install / '.staging-1' / 'Contents').rmdir()
+    (install / '.staging-1').rmdir()
+
+    # A caller killed mid-install (a provider's MCP startup timeout) neither leaks a copy nor makes the next start copy again.
+    (install / '.receipt').unlink()
+    killed = subprocess.Popen([str(executable), '--uam-computer-use-mcp', '--settings-action', 'check'],
+                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
+    time.sleep(0.3)
+    killed.kill()
+    killed.wait()
+    run(['--settings-action', 'check'])
+    assert staged() == [], staged()
+    assert (install / '.receipt').is_file()
+print('PASS: independent settings check, MCP round trip, large input, EOF drain and single helper install')

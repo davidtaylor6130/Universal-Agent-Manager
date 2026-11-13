@@ -263,6 +263,30 @@ For a distributable build:
 The repository's local ad-hoc signature is suitable for development only. It is
 not an enterprise distribution identity.
 
+#### Per-user helper install
+
+Each MCP start runs the nested companion from a per-user copy at
+`<data folder>/Computer Use/UAM Computer Use.app`. That folder holds only the
+app, `.receipt` (hashes of the embedded executable and `Info.plist`) and
+`.install.lock`. The lock is an `flock` on an empty file, so the kernel releases it
+when its owner exits and a leftover file is never a stale lock. Under the lock,
+every start removes `.staging-<pid>` copies whose process has exited (never
+following links) and reuses the installed app when the receipt matches. Only a
+changed embedded helper is copied. The copy, ad-hoc signing and swap run in a
+detached installer process (`--uam-computer-use-install`, its own session) that
+installs only the bundle it runs from. A provider CLI that kills its MCP server
+on a startup timeout therefore cannot interrupt the copy and make later starts
+copy again. The installer removes its staging copy on every failure, and refuses
+to stage while two or more copies still belong to running processes.
+
+Every UAM build embeds its own executable, so builds that share one data folder
+(for example, an installed release and a development build) replace each
+other's copy when they alternate. Each copy is an APFS clone, so Finder and
+`du` count the full ~300 MB bundle for every copy while the real disk use is far
+smaller. Deleting leftover copies frees only the unshared blocks.
+`tests/computer_use_launch_macos.py` checks the single install, reuse, the
+dead-installer sweep and a caller killed mid-install against a packaged app.
+
 ### Windows
 
 Windows does not use the macOS Screen Recording and Accessibility permission
