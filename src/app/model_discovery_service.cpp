@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <unordered_set>
 
 namespace uam
 {
@@ -65,10 +66,14 @@ namespace uam
 	std::vector<ModelDiscoveryScope> StartupModelDiscoveryService::CollectScopes(const AppState& app)
 	{
 		std::vector<ModelDiscoveryScope> scopes;
+		// Thousands of chats share a few workspaces, and resolving each one costs filesystem calls on every launch.
+		std::unordered_set<std::string> seen;
 		const std::function<void(const std::string&, const std::string&, const std::string&)> add = [&](const std::string& provider_id, const std::string& directory, const std::string& host_id)
 		{
-			if (strings::IsBlank(directory)) return;
+			if (strings::IsBlank(directory) || !seen.insert(provider_id + '\n' + host_id + '\n' + directory).second) return;
 			ModelDiscoveryScope scope{provider_ids::NormalizeCliProviderAliasOrSelf(provider_id), {}, HostId(host_id)};
+			// Poll drops a turned-off provider's scope anyway; skipping it here saves resolving its workspace.
+			if (!provider_availability::IsEnabled(app.settings, scope.provider_id, scope.execution_host_id)) return;
 			scope.workspace_directory = Workspace(app, directory, scope.execution_host_id);
 			const ProviderProfile* provider = ProviderProfileStore::FindById(app.provider_profiles, scope.provider_id);
 			if (provider == nullptr || !provider->supports_structured || !RegisteredWorkspace(app, scope)) return;

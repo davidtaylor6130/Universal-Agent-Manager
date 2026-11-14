@@ -31,7 +31,21 @@ describe('Sidebar', () => {
       providers: [],
       providerAvailability: [],
       chatSearchNavigation: null,
+      bootstrapPending: false,
     })
+  })
+
+  it('shows a loading list, not an empty tree, until the startup state arrives', () => {
+    useAppStore.setState({ bootstrapPending: true })
+    const host = document.createElement('div'), root = createRoot(host)
+    act(() => root.render(<Sidebar />))
+    try {
+      expect(host.querySelector('[role="status"][aria-label="Loading chats"]')).not.toBeNull()
+      expect(host.querySelector('[data-testid="folder-tree"]')).toBeNull()
+      act(() => useAppStore.setState({ bootstrapPending: false }))
+      expect(host.querySelector('[aria-label="Loading chats"]')).toBeNull()
+      expect(host.querySelector('[data-testid="folder-tree"]')).not.toBeNull()
+    } finally { act(() => root.unmount()) }
   })
 
   it('offers a provider disabled on this computer as a chat filter only while chats use it', () => {

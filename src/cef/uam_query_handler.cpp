@@ -211,6 +211,7 @@ bool UamQueryHandler::StartCompanion(CefRefPtr<CefBrowser> browser)
 		if (request.value("action", std::string{}) == "getLegacyChatImports" || request.value("action", std::string{}) == "resolveLegacyChatImport")
 		{ callback->Failure(403, "Previous-version chat history is decided on the desktop."); return; }
 		if (lifetime.expired()) { callback->Failure(503, "UAM is shutting down."); return; }
+		if (m_app.startup_state_loading) { callback->Failure(503, "UAM is still loading its chats. Try again in a moment."); return; }
 		const std::string action = request.at("action").get<std::string>();
 		nlohmann::json payload = request.value("payload", nlohmann::json::object());
 		if (action == "getProviderAllowances") uam::companion::ApplyKeychainPromptPolicy(action, payload, CompanionAllowsKeychainPrompts());
@@ -609,6 +610,8 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 		return true;
 	}
 
+	if (ParkDuringStartup(browser, frame, query_id, request, callback)) return true;
+
 	const std::string port_chat_id = action == "portChatWorktreeChanges" && payload.contains("chatId") && payload["chatId"].is_string() ? payload["chatId"].get<std::string>() : std::string();
 	const std::unordered_map<std::string, std::shared_ptr<uam::AppState::GitPortRequest>>::const_iterator previous_port = m_app.git_port_requests.find(port_chat_id);
 	const std::shared_ptr<uam::AppState::GitPortRequest> prior_port = previous_port == m_app.git_port_requests.end() ? nullptr : previous_port->second;
@@ -756,8 +759,29 @@ void UamQueryHandler::CancelChatIconQuery(int browser_id, const std::string& fra
 	}
 }
 
+bool UamQueryHandler::ParkDuringStartup(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, int64_t query_id, const CefString& request, CefRefPtr<Callback> callback)
+{
+	if (!m_app.startup_state_loading) return false;
+	// ponytail: one gate for every action instead of per-handler checks; the wait is the chat-list load, seconds at most.
+	m_parkedQueries.push_back({browser, frame, query_id, request, callback});
+	return true;
+}
+
+void UamQueryHandler::ResumeParkedQueries()
+{
+	CEF_REQUIRE_UI_THREAD();
+	std::vector<ParkedQuery> parked = std::exchange(m_parkedQueries, {});
+	for (ParkedQuery& query : parked)
+		(void)OnQuery(query.browser, query.frame, query.query_id, query.request, false, query.callback);
+}
+
 void UamQueryHandler::OnQueryCanceled(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, int64_t query_id)
 {
+	std::erase_if(m_parkedQueries, [&](const ParkedQuery& parked)
+	{
+		return parked.query_id == query_id && (!browser || !parked.browser || parked.browser->GetIdentifier() == browser->GetIdentifier()) &&
+		    (!frame || !parked.frame || parked.frame->GetIdentifier() == frame->GetIdentifier());
+	});
 	const ChatIconQueryIdentity goal_identity{browser ? browser->GetIdentifier() : -1, frame ? frame->GetIdentifier().ToString() : "", query_id};
 	const auto followup = m_managedFollowupQueryOperations.find(goal_identity);
 	if (followup != m_managedFollowupQueryOperations.end())

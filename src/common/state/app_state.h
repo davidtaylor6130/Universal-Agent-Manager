@@ -1449,6 +1449,9 @@ namespace uam
 
 	struct AppState
 	{
+		/// True while the desktop window is open but the saved chat list is still loading off the app thread.
+		/// Bridge requests wait for it, so no action can see or change the not-yet-loaded chats.
+		bool startup_state_loading = false;
 		WorkspaceLeaseGate worktree_retention_gate;
 		std::shared_ptr<StorageRetentionService> storage_retention_service;
 		/// Pull request watches for every chat; null in tools and tests that do not create it.

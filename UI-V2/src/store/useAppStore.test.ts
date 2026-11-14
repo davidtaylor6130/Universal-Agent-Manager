@@ -1618,9 +1618,12 @@ describe('useAppStore Gemini CLI slice', () => {
       const fresh = makeCppState(2)
       fresh.resourceCollections = [{ id: 'col-1', name: 'Docs', resources: [] } as unknown as CppAppState['resourceCollections'][number]]
       const { useAppStore: cefStore } = await import('./useAppStore')
+      // The sidebar shows its loading list until a full state hydrates, including while a stale snapshot is re-pulled.
+      expect(cefStore.getState().bootstrapPending).toBe(true)
       testWindow.uamPush?.({ type: 'statePatch', data: { stateRevision: 2, settings: fresh.settings } })
       pending.shift()?.(makeCppState(1))
       await flush()
+      expect(cefStore.getState().bootstrapPending).toBe(true)
       expect(cefStore.getState().resourceCollections).toEqual([])
       expect(pending).toHaveLength(0)
       await vi.advanceTimersByTimeAsync(100)
@@ -1630,6 +1633,7 @@ describe('useAppStore Gemini CLI slice', () => {
       expect(cefStore.getState().resourceCollections.map((collection) => collection.id)).toEqual(['col-1'])
       expect(cefStore.getState().lastAppliedStateRevision).toBe(2)
       expect(cefStore.getState().bootstrapStateError).toBe('')
+      expect(cefStore.getState().bootstrapPending).toBe(false)
     })
 
     it('never applies a stale snapshot over newer patch fields', async () => {
@@ -1649,6 +1653,7 @@ describe('useAppStore Gemini CLI slice', () => {
         expect(cefStore.getState().resourceCollections.map((collection) => collection.id)).toEqual(['patched'])
       }
       expect(cefStore.getState().bootstrapStateError).toContain('behind live updates')
+      expect(cefStore.getState().bootstrapPending).toBe(false)
     })
 
     it('backs off 100/300/900 ms, resets on progress, then shows a retryable error', async () => {

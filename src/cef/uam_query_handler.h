@@ -58,8 +58,20 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	bool OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, int64_t query_id, const CefString& request, bool persistent, CefRefPtr<Callback> callback) override;
 
 	void OnQueryCanceled(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, int64_t query_id) override;
+	/// Dispatches, in arrival order, the requests that arrived while AppState::startup_state_loading was set.
+	void ResumeParkedQueries();
 
   private:
+	struct ParkedQuery
+	{
+		CefRefPtr<CefBrowser> browser;
+		CefRefPtr<CefFrame> frame;
+		int64_t query_id = 0;
+		CefString request;
+		CefRefPtr<Callback> callback;
+	};
+	std::vector<ParkedQuery> m_parkedQueries;
+	bool ParkDuringStartup(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, int64_t query_id, const CefString& request, CefRefPtr<Callback> callback);
 	// Unrelated handler fixtures opt out before any usage/account worker can start.
 	friend struct UamQueryHandlerTestAccess;
 	UamQueryHandler(uam::AppState& app, std::string trusted_ui_index_url, bool start_background_readers);

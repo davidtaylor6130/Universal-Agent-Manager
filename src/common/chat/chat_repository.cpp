@@ -40,6 +40,10 @@
 #include "core/chat_import_utils.h"
 
 #include <algorithm>
+#include <atomic>
+#include <system_error>
+#include <future>
+#include <vector>
 #include <chrono>
 #include <array>
 #include <fstream>
@@ -5804,42 +5808,64 @@ namespace
 		}
 
 		std::error_code ec;
-
+		std::vector<fs::path> primaries;
 		for (fs::directory_iterator it(chats_root, ec), end; !ec && it != end; it.increment(ec))
-		{
-			const fs::directory_entry& entry = *it;
-			if (!uam::paths::IsRegularFileWithExtensionNoThrow(entry, ".json"))
-			{
-				continue;
-			}
+			if (uam::paths::IsRegularFileWithExtensionNoThrow(*it, ".json")) primaries.push_back(it->path());
 
-			LoadChatResult primary_chat;
-			if (!include_messages)
+		// Each file is read and parsed independently, so a large install spends seconds in file latency; a few workers
+		// overlap the reads and parsing (summary-cache rewrites stay serialized where the atomic writer takes its lock).
+		// Results are consumed in directory order.
+		std::vector<LoadChatResult> parsed(primaries.size());
+		std::atomic<std::size_t> next{0};
+		const auto parse = [&]()
+		{
+			for (std::size_t index = next++; index < primaries.size(); index = next++)
 			{
-				const fs::path summary_path = AppPaths::UamChatSummaryFilePath(data_root, entry.path().stem().string());
-				std::error_code size_error;
-				const std::uintmax_t source_size = fs::file_size(entry.path(), size_error);
-				if (!size_error && SummaryCacheIsCurrent(entry.path(), summary_path))
+				const fs::path& path = primaries[index];
+				LoadChatResult& primary_chat = parsed[index];
+				if (!include_messages)
 				{
-					primary_chat = ParseLocalChatFile(summary_path, false, source_size);
+					const fs::path summary_path = AppPaths::UamChatSummaryFilePath(data_root, path.stem().string());
+					std::error_code size_error;
+					const std::uintmax_t source_size = fs::file_size(path, size_error);
+					if (!size_error && SummaryCacheIsCurrent(path, summary_path))
+						primary_chat = ParseLocalChatFile(summary_path, false, source_size);
 				}
-			}
-			if (primary_chat.legacy_opencode_native_secret)
-			{
-				ScrubLegacyOpenCodeNativeSecret(data_root, entry.path().stem().string());
-				primary_chat = {};
-			}
-			if (!primary_chat.chat)
-			{
-				primary_chat = ParseLocalChatFile(entry.path(), include_messages);
+				// The scrub takes the chat save lock and rewrites only this chat's own files, so workers may run it.
 				if (primary_chat.legacy_opencode_native_secret)
 				{
-					ScrubLegacyOpenCodeNativeSecret(data_root, entry.path().stem().string());
-					primary_chat = ParseLocalChatFile(entry.path(), include_messages);
+					ScrubLegacyOpenCodeNativeSecret(data_root, path.stem().string());
+					primary_chat = {};
 				}
-				if (include_messages && primary_chat.chat)
-					ApplySummaryOpenedAtToFullChat(entry.path(), *primary_chat.chat);
+				if (!primary_chat.chat)
+				{
+					primary_chat = ParseLocalChatFile(path, include_messages);
+					if (primary_chat.legacy_opencode_native_secret)
+					{
+						ScrubLegacyOpenCodeNativeSecret(data_root, path.stem().string());
+						primary_chat = ParseLocalChatFile(path, include_messages);
+					}
+					if (include_messages && primary_chat.chat)
+						ApplySummaryOpenedAtToFullChat(path, *primary_chat.chat);
+				}
 			}
+		};
+		{
+			// ponytail: fixed at eight workers; file latency, not CPU, bounds this, so a setting waits for evidence.
+			std::vector<std::future<void>> workers;
+			for (std::size_t worker = 1; worker < std::min<std::size_t>(primaries.size() / 64 + 1, 8); ++worker)
+			{
+				try { workers.push_back(std::async(std::launch::async, parse)); }
+				catch (const std::system_error&) { break; } // This thread still reads every remaining file.
+			}
+			parse();
+			for (std::future<void>& worker : workers) worker.get();
+		}
+
+		for (std::size_t index = 0; index < primaries.size(); ++index)
+		{
+			const fs::path& path = primaries[index];
+			LoadChatResult& primary_chat = parsed[index];
 			if (primary_chat.chat)
 			{
 				const ChatSession& primary = *primary_chat.chat;
@@ -5848,23 +5874,23 @@ namespace
 					continue;
 				}
 
-				chats.push_back(primary);
+				chats.push_back(std::move(*primary_chat.chat));
 				continue;
 			}
 
 			if (primary_chat.managed_followup_input_unavailable)
 			{
-				AppendWarning(warning_out, "Skipped unsupported managed input without backup adoption: " + entry.path().string() + ".");
+				AppendWarning(warning_out, "Skipped unsupported managed input without backup adoption: " + path.string() + ".");
 				continue;
 			}
-			const fs::path backup_path = uam::io::MakeBackupPath(entry.path());
+			const fs::path backup_path = uam::io::MakeBackupPath(path);
 			if (uam::paths::PathExistsNoThrow(backup_path))
 			{
-				RecoverChatFromBackup(data_root, backup_path, entry.path(), include_messages, migrated_chat_ids, chats, warning_out);
+				RecoverChatFromBackup(data_root, backup_path, path, include_messages, migrated_chat_ids, chats, warning_out);
 			}
 			else if (!primary_chat.error.empty())
 			{
-				AppendWarning(warning_out, "Skipped malformed chat file " + entry.path().string() + ": " + primary_chat.error + ".");
+				AppendWarning(warning_out, "Skipped malformed chat file " + path.string() + ": " + primary_chat.error + ".");
 			}
 		}
 

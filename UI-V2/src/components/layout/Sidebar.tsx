@@ -26,6 +26,7 @@ export function Sidebar() {
   const latestDeepSearchRequestRef = useRef('')
   const setNewChatModalOpen = useAppStore((s) => s.setNewChatModalOpen)
   const sessions = useAppStore((s) => s.sessions)
+  const bootstrapPending = useAppStore((s) => s.bootstrapPending)
   const providers = useAppStore((s) => s.providers)
   const providerAvailability = useAppStore((s) => s.providerAvailability)
   const jumpToChatSearchHit = useAppStore((s) => s.jumpToChatSearchHit)
@@ -151,7 +152,7 @@ export function Sidebar() {
         className="flex-1 overflow-y-auto overflow-x-hidden py-1"
         style={{ borderTop: '1px solid var(--border)' }}
       >
-        <FolderTree searchQuery={searchQuery} deepSearchSessionIds={deepSearch ? deepSearchSessionIds : undefined} filters={filters} />
+        {bootstrapPending ? <SidebarLoading /> : <FolderTree searchQuery={searchQuery} deepSearchSessionIds={deepSearch ? deepSearchSessionIds : undefined} filters={filters} />}
       </div>
       <div
         className="flex-shrink-0 p-3"
@@ -173,6 +174,21 @@ export function Sidebar() {
           <kbd className="uam-btn__kbd" aria-hidden>{shortcutLabel('newChat')}</kbd>
         </Button>
       </div>
+    </div>
+  )
+}
+
+// Large installs load the saved chat list after the window opens; an empty tree here would read as "no chats".
+function SidebarLoading() {
+  return (
+    <div role="status" aria-label="Loading chats" aria-busy="true" className="flex flex-col gap-3 px-3 py-2">
+      <span className="sr-only">Loading chats…</span>
+      {[62, 78, 54, 70, 46, 66].map((width, index) => (
+        <div key={index} className="flex items-center gap-2" aria-hidden>
+          <span className="uam-icon-skeleton" style={{ width: 14, height: 14, flexShrink: 0 }} />
+          <span className="uam-icon-skeleton" style={{ width: `${width}%`, height: 10 }} />
+        </div>
+      ))}
     </div>
   )
 }

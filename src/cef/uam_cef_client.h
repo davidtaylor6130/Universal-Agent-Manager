@@ -151,6 +151,9 @@ class UamCefClient : public CefClient, public CefLifeSpanHandler, public CefLoad
 		return m_browser;
 	}
 
+	/// Answers the bridge requests that waited while startup loaded the saved chats.
+	void ResumeStartupQueries();
+
   private:
 	std::vector<CefDraggableRegion> m_windowDragRegions;
 	bool m_windowRecoveryVisible = false;

@@ -807,7 +807,7 @@ export const useAppStore = create<AppState>((set, get) => {
   // A newer store instance (module reload) owns window.uamPush; this one must stop re-pulling.
   let ownedUamPush: unknown = null
   const failBootstrap = (bootstrapStateError: string) => {
-    if (!bootstrapHydrated) set({ bootstrapStateError, bootstrapStateLoading: false })
+    if (!bootstrapHydrated) set({ bootstrapStateError, bootstrapStateLoading: false, bootstrapPending: false })
   }
   // A stale reply newer than the previous stale one resets the backoff step, but every chain is
   // capped at BOOTSTRAP_STATE_MAX_PULLS so a steady patch stream cannot re-serialise forever.
@@ -929,7 +929,7 @@ export const useAppStore = create<AppState>((set, get) => {
           shellActionNotification: current.shellActionNotification,
           statusLine: current.statusLine,
         })
-        set({ ...current.reconcileMemorySettingsProjection(deserialized, sanitized.settings), bootstrapStateError: '', bootstrapStateLoading: false })
+        set({ ...current.reconcileMemorySettingsProjection(deserialized, sanitized.settings), bootstrapStateError: '', bootstrapStateLoading: false, bootstrapPending: false })
         // Only after the state applied: a throw above must still reach failBootstrap.
         bootstrapHydrated = true
         // Native writes "[UI startup]" console lines to the diagnostic log; the packaged smoke tests wait for this one.
@@ -1460,6 +1460,7 @@ export const useAppStore = create<AppState>((set, get) => {
   return {
     bootstrapStateError: '',
     bootstrapStateLoading: false,
+    bootstrapPending: inCef && !isCompanionContext(),
     retryBootstrapState: () => {
       if (bootstrapRetryTimer !== null) clearTimeout(bootstrapRetryTimer)
       // Keep the error (and its Notice) mounted while the retry runs so focus stays on Retry.
