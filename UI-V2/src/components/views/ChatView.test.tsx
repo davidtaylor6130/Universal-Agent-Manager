@@ -5320,7 +5320,7 @@ describe('ChatView', () => {
     expect(setSessionApprovalMode).toHaveBeenCalledWith('chat-1', 'plan')
 
     const permission = document.body.querySelector('button[aria-label="Permissions"]') as HTMLButtonElement
-    expect(permission.textContent).toContain('AI Review')
+    expect(permission.textContent).toContain('AI review')
     act(() => permission.click())
     const yolo = Array.from(document.body.querySelectorAll('[role="option"]')).find((option) => option.textContent?.includes('YOLO')) as HTMLButtonElement
     await act(async () => { yolo.click(); await Promise.resolve() })
@@ -5390,13 +5390,13 @@ describe('ChatView', () => {
     expect(permissionMenu?.textContent).toContain('Default')
     expect(permissionMenu?.textContent).not.toContain('Plan')
     expect(permissionMenu?.textContent).toContain('YOLO')
-    expect(permissionMenu?.textContent).toContain('AI Review')
-    expect(permissionMenu?.textContent).toContain('Accept Edits')
+    expect(permissionMenu?.textContent).toContain('AI review')
+    expect(permissionMenu?.textContent).toContain('Accept edits')
     expect(permissionMenu?.querySelector('svg')).not.toBeNull()
     expect(textarea.parentElement?.querySelector('[role="status"]')).toBeNull()
     expect(setSessionApprovalMode).not.toHaveBeenCalled()
 
-    const slashAiReview = Array.from(permissionMenu?.querySelectorAll('[role="option"]') ?? []).find((option) => option.textContent?.includes('AI Review')) as HTMLButtonElement
+    const slashAiReview = Array.from(permissionMenu?.querySelectorAll('[role="option"]') ?? []).find((option) => option.textContent?.includes('AI review')) as HTMLButtonElement
     await act(async () => { slashAiReview.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })) })
     expect(setSessionCommandSafetyTier).toHaveBeenCalledWith('chat-1', 'aiReview')
     expect(host.textContent).not.toContain('Permission mode changed')
@@ -6204,6 +6204,23 @@ describe('ChatView', () => {
       .find((option) => option.textContent?.startsWith('High')) as HTMLButtonElement
     await act(async () => { high.click(); await Promise.resolve() })
     expect(setSessionCodexOptions).toHaveBeenCalledWith('chat-1', { reasoningEffort: 'high' })
+
+    // The /reasoning hint names no provider in a non-Codex chat, and the command changes this chat's reasoning.
+    const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+    const setDraft = (value: string) => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, value)
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+    act(() => setDraft('/rea'))
+    const slashReasoning = Array.from(document.body.querySelectorAll('[aria-label="Slash commands"] [role="option"]')).find((option) => option.textContent?.includes('/reasoning')) as HTMLElement
+    expect(slashReasoning.textContent).toContain('Choose reasoning')
+    expect(slashReasoning.textContent).not.toContain('Codex')
+    await act(async () => {
+      setDraft('/reasoning low')
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+      await Promise.resolve()
+    })
+    expect(setSessionCodexOptions).toHaveBeenLastCalledWith('chat-1', { reasoningEffort: 'low' }, expect.any(Function))
 
     act(() => root.unmount())
     host.remove()
@@ -7374,9 +7391,9 @@ describe('ChatView', () => {
     expect(permissionButton.textContent).toContain('Default')
     expect(permissionButton.disabled).toBe(false)
     act(() => permissionButton.click())
-    const reviewOption = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) => option.textContent?.startsWith('AI Review'))!
+    const reviewOption = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) => option.textContent?.startsWith('AI review'))!
     act(() => reviewOption.click())
-    expect(document.body.textContent).not.toContain('Accept Edits')
+    expect(document.body.textContent).not.toMatch(/accept edits/i)
     expect(setSessionCommandSafetyTier).toHaveBeenCalledWith('chat-1', 'aiReview')
     expect(setSessionApprovalMode).not.toHaveBeenCalled()
 

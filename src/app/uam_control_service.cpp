@@ -1111,6 +1111,8 @@ namespace uam
 				    return value.pending_approval.has_value() && ApprovalChatId(value) == target_chat_id;
 			    }))
 				return {.error = "Another UAM request is already waiting for approval in this chat."};
+			if (session != app.acp_sessions.end() && (*session)->processing && (*session)->turn_serial > 0)
+				pending.turn_serial = (*session)->turn_serial;
 			capability.pending_approval = std::move(pending);
 			if (ChatSession* chat = ChatDomainService().FindChatById(app, std::string(target_chat_id)))
 			{
@@ -2943,6 +2945,31 @@ namespace uam
 				                    {{"ok", false}, {"error", expired.error}});
 				capability.pending_approval.reset();
 				changed = true;
+			}
+			// A provider can give up on a call without cancelling it; once its turn has ended, however it ended, the
+			// card is removed so an answer can never create a goal or chat for a caller that is gone.
+			if (capability.pending_approval.has_value() && capability.pending_approval->turn_serial > 0)
+			{
+				const auto session = std::ranges::find_if(app.acp_sessions, [&](const auto& value) {
+					return value != nullptr && value->chat_id == capability.session_chat_id &&
+					       value->uam_control_capability_id == capability.id;
+				});
+				// A remote turn being reattached is still the same turn, and background agents that outlive the turn
+				// (Claude tasks, Codex child threads) share its tool connection and may still be waiting.
+				if (session != app.acp_sessions.end() && !(*session)->reconnect_pending && !(*session)->recovering_remote_turn &&
+				    !(*session)->recovering_remote_process && (*session)->claude_live_background_task_ids.empty() &&
+				    (*session)->codex_live_background_thread_ids.empty() &&
+				    ProviderRuntimeRegistry::ResolveById((*session)->provider_id).AcpBackgroundTaskCount(**session) == 0 &&
+				    (!(*session)->processing || (*session)->turn_serial != capability.pending_approval->turn_serial))
+				{
+					const ToolResult ended{.error = "The turn that made this request ended before it was answered."};
+					(void)AppendAuditAndSave(app, capability, capability.pending_approval->request_id,
+					                         capability.pending_approval->method, ended);
+					(void)WriteResponse(capability.directory, capability.pending_approval->request_id,
+					                    {{"ok", false}, {"error", ended.error}});
+					capability.pending_approval.reset();
+					changed = true;
+				}
 			}
 			std::vector<std::filesystem::path> files;
 			std::error_code list_error;

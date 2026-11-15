@@ -12,6 +12,8 @@
 .uam-skills-library[data-away] { position: absolute; inset: 0; transform: translateX(-100%); opacity: 0; }
 /* The step fills the library pane, so it never leaves an empty gap above or below its content. */
 .uam-skills-step { position: absolute; inset: 0; display: flex; flex-direction: column; animation: uam-skills-step-in var(--dur-base) var(--ease) backwards; }
+/* MCP setup replaces the server list in the page flow rather than covering a positioned library. */
+.uam-skills-step--inline { position: relative; inset: auto; }
 @keyframes uam-skills-step-in { from { transform: translateX(100%); opacity: 0; } }
 .uam-skills-step[data-closing] { animation: uam-skills-step-out var(--dur-exit) var(--ease) forwards; pointer-events: none; }
 @keyframes uam-skills-step-out { to { transform: translateX(100%); opacity: 0; } }

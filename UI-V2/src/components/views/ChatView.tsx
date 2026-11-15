@@ -2955,8 +2955,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
         ] : []),
         ...(manualCompactionAvailable ? [{ id: 'compact', label: '/compact', hint: 'Request native context compaction', icon: <FileText size={15} />, run: () => void runCompact() }] : []),
         { id: 'model', label: '/model', hint: 'Change the model', icon: <Cpu size={15} />, run: () => setModelOpen(true) },
-        ...(reasoningOptions.length > 0 ? [{ id: 'reasoning', label: '/reasoning', hint: CODEX_ENABLED ? 'Choose Codex reasoning' : 'Choose reasoning', icon: <Cpu size={15} />, run: () => void runCodexOptionCommand('reasoning') }] : []),
-        ...(speedOptions.length > 0 ? [{ id: 'speed', label: '/speed', hint: CODEX_ENABLED ? 'Choose Codex speed' : 'Choose speed', icon: <Cpu size={15} />, run: () => void runCodexOptionCommand('speed') }] : []),
+        ...(reasoningOptions.length > 0 ? [{ id: 'reasoning', label: '/reasoning', hint: 'Choose reasoning', icon: <Cpu size={15} />, run: () => void runCodexOptionCommand('reasoning') }] : []),
+        ...(speedOptions.length > 0 ? [{ id: 'speed', label: '/speed', hint: 'Choose speed', icon: <Cpu size={15} />, run: () => void runCodexOptionCommand('speed') }] : []),
         ...(OPENCODE_ENABLED && providerVariants.length > 0 ? [{ id: 'variants', label: '/variants', hint: 'Choose OpenCode model variants', icon: <Cpu size={15} />, run: () => setDraft('/variants ') }] : []),
         { id: 'permission', label: '/permission', hint: 'Choose the permission mode', icon: <Shield size={15} />, run: () => void runPermissionCommand() },
         { id: 'goal', label: '/goal', hint: 'Use the next message as a goal', icon: <Target size={15} />, run: handleToggleGoal },
@@ -3283,7 +3283,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
         ? normalizePermissionChangeResult(await setSessionCommandSafetyTier(submittedSessionId, 'acceptEdits'))
         : { ok: true }
       if (!permissionResult.ok) {
-        if (ownsFeedback() && !permissionResult.cancelled) setSlashNotice(noticeFor(permissionResult.error || 'Failed to change permission mode to Accept Edits.', 'error'))
+        if (ownsFeedback() && !permissionResult.cancelled) setSlashNotice(noticeFor(permissionResult.error || 'Failed to change permission mode to Accept edits.', 'error'))
         return
       }
       if (!composerReferenceSubmissionIsCurrent(submission.context)) {

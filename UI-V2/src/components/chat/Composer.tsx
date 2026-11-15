@@ -36,9 +36,9 @@ export type DictationState = 'idle' | 'starting' | 'listening' | 'stopping'
 
 export const PERMISSION_MODES = [
   { id: 'default', name: 'Default', description: 'Ask before commands and file changes.' },
-  { id: 'acceptEdits', name: 'Accept Edits', description: 'Automatically approve workspace file edits.' },
+  { id: 'acceptEdits', name: 'Accept edits', description: 'Automatically approve workspace file edits.' },
   { id: 'yolo', name: 'YOLO', description: 'Automatically approve every permission request.' },
-  { id: 'aiReview', name: 'AI Review', description: 'Ask a configured isolated reviewer; failures and uncertainty come back to you.' },
+  { id: 'aiReview', name: 'AI review', description: 'Ask a configured isolated reviewer; failures and uncertainty come back to you.' },
 ] as const
 
 export type CommandSafetyTier = 'off' | 'acceptEdits' | 'aiReview' | 'yolo'
