@@ -1739,3 +1739,36 @@ UAM_TEST(ManagedExplicitEffortRefusesRoutingAndNativeSupportChanges)
 	UAM_ASSERT(!uam::AgentRunScheduler::ValidateRequestedReasoningEffort(app, child, &observed, &error));
 	UAM_ASSERT_EQ(*app.agent_runs.back().reasoning_effort_override, std::string("high"));
 }
+
+UAM_TEST(ManagedCopilotExplicitDefaultSurvivesLateNativeModelMetadata)
+{
+	TargetMetadataFixture fixture;
+	auto& app = fixture.app;
+	app.provider_profiles.push_back(ProviderProfileStore::DefaultCopilotProfile());
+	app.chats.front().provider_id = "copilot-cli";
+	app.acp_sessions.front()->provider_id = "copilot-cli";
+	app.chats.front().reasoning_effort = "high";
+	std::string run_id, error;
+	UAM_ASSERT(uam::AgentRunScheduler::Enqueue(app, "root", {}, "worker", "Bounded task.", &run_id, &error,
+	    "copilot-cli", "parent-model", false, std::string{}));
+	auto& child = app.chats.back();
+	uam::AcpSessionState session;
+	session.chat_id = child.id; session.provider_id = child.provider_id;
+	session.protocol_kind = uam::provider_profile_constants::kProtocolCopilotSdk;
+	session.session_id = "native-default-effort"; session.session_ready = true;
+	session.current_model_id = child.model_id;
+	const auto& runtime = ProviderRuntimeRegistry::ResolveById(child.provider_id);
+	const nlohmann::json model = {{"id", child.model_id}, {"name", "Default effort model"},
+	    {"supportedReasoningEfforts", {"low", "medium", "high"}}, {"defaultReasoningEffort", "medium"}};
+	UAM_ASSERT(runtime.OnAcpHandleResult(app, session, child, "models.list", "8", {{"models", {model}}}));
+	(void)runtime.OnAcpReconcileModelOptions(app, session, child);
+	UAM_ASSERT(child.reasoning_effort.empty());
+	UAM_ASSERT(app.agent_runs.back().reasoning_effort_override.has_value());
+	UAM_ASSERT(app.agent_runs.back().reasoning_effort_override->empty());
+	UAM_ASSERT(uam::AgentRunScheduler::ValidateRequestedReasoningEffort(app, child, &session, &error));
+	std::string method;
+	const auto packet = runtime.OnAcpBuildPrompt(session, 9, "Inert synthetic input.", child, method);
+	UAM_ASSERT(!packet.is_null() && !method.empty());
+	const auto saved = ChatRepository::LoadLocalChat(app.data_root, child.id);
+	UAM_ASSERT(saved && saved->reasoning_effort.empty());
+}
