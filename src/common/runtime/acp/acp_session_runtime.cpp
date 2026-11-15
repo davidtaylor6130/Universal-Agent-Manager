@@ -2856,9 +2856,10 @@ For desktop observation and input, use only the provider's built-in controller; 
 			const std::string previous_reasoning_effort = chat.reasoning_effort;
 			const std::string previous_service_tier = chat.service_tier;
 			const bool previous_service_tier_explicit = chat.service_tier_explicit;
+			const bool explicit_managed_effort = std::ranges::any_of(app.agent_runs, [&](const AgentRun& run) { return run.id == chat.agent_run_id && run.reasoning_effort_override.has_value(); });
 			const std::string selected_model_id = uam::strings::NonEmptyOrFallback(session.goal_turn_model_id, session.current_model_id);
 			const auto selected_model = std::ranges::find_if(session.available_models, [&selected_model_id](const AcpModelState& model) { return model.id == selected_model_id; });
-			if (!runtime.ModelOptionsRequireRestart() && selected_model != session.available_models.end() && !chat.reasoning_effort.empty() && !selected_model->supported_reasoning_efforts.empty() && !uam::ranges::Contains(selected_model->supported_reasoning_efforts, chat.reasoning_effort))
+			if (!explicit_managed_effort && !runtime.ModelOptionsRequireRestart() && selected_model != session.available_models.end() && !chat.reasoning_effort.empty() && !selected_model->supported_reasoning_efforts.empty() && !uam::ranges::Contains(selected_model->supported_reasoning_efforts, chat.reasoning_effort))
 			{
 				chat.reasoning_effort = uam::ranges::Contains(selected_model->supported_reasoning_efforts, selected_model->default_reasoning_effort)
 				                            ? selected_model->default_reasoning_effort

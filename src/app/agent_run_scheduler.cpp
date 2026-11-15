@@ -3266,7 +3266,7 @@ namespace uam
 		if (valid && !requested.empty())
 		{
 			const auto& runtime = ProviderRuntimeRegistry::ResolveById(chat.provider_id);
-			if (session && !runtime.ModelOptionsRequireRestart())
+			if (session && session->session_ready && !runtime.ModelOptionsRequireRestart())
 			{
 				const auto model = std::ranges::find(session->available_models, chat.model_id, &AcpModelState::id);
 				valid = model != session->available_models.end() && ranges::Contains(model->supported_reasoning_efforts, requested);

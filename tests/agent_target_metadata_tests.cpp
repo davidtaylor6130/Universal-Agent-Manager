@@ -1697,6 +1697,9 @@ UAM_TEST(ManagedExplicitEffortRefusesRoutingAndNativeSupportChanges)
 	UAM_ASSERT(!uam::AgentRunScheduler::ValidateRequestedReasoningEffort(app, child, nullptr, &error));
 	child.execution_host_id = "local";
 	uam::AcpSessionState observed;
+	// Before discovery, cached scope permits the fresh process to start.
+	UAM_ASSERT(uam::AgentRunScheduler::ValidateRequestedReasoningEffort(app, child, &observed, &error));
+	observed.session_ready = true;
 	uam::AcpModelState model;
 	model.id = "parent-model";
 	model.supported_reasoning_efforts = {"low"};
