@@ -4034,7 +4034,7 @@ namespace uam
 				continue;
 			}
 			std::string effort_error;
-			if (!ValidateRequestedReasoningEffort(app, *transcript, nullptr, &effort_error))
+			if (!AgentRunScheduler::ValidateRequestedReasoningEffort(app, *transcript, nullptr, &effort_error))
 			{
 				FinishRun(app, *run, "failed", "reasoning_effort_unsupported", effort_error);
 				if (run->status == "queued") app.queued_agent_run_ids.push_back(id);

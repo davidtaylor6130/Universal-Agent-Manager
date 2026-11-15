@@ -801,7 +801,7 @@ namespace
 		const std::string model = "private/managed-selected";
 		const std::string task = "Private managed SSH diagnostic task.";
 
-		ManagedOpenCodeSshFixture(bool duplicate)
+		ManagedOpenCodeSshFixture(bool duplicate, bool explicit_effort = false, bool support_effort = true)
 		{
 			using Json = nlohmann::json;
 			const auto bin = temp.root / "bin", home = temp.root / "home";
@@ -948,6 +948,8 @@ for line in sys.stdin:
         assert request['id'] == 2 and request['params']['cwd'] == os.getcwd() and not current_native
         current_native = config['native']
         result = dict(sessionId=current_native, configOptions=[dict(id='model', category='model', type='select', currentValue='private/baseline', options=[dict(value='private/baseline', name='Baseline'), dict(value=config['model'], name='Selected')]), dict(id='mode', category='mode', type='select', currentValue='build', options=[dict(value='build', name='Build'), dict(value='plan', name='Plan')])])
+        if config['explicitEffort']:
+            result['models'] = dict(currentModelId='private/baseline', availableModels=[dict(modelId=config['model'], name='Selected', supportedReasoningEfforts=['high'] if config['supportEffort'] else ['low'])])
         emit(request, result)
         if config['duplicate']: emit(request, result)
         store('native-created.json', dict(pid=os.getpid(), native=current_native))
@@ -965,6 +967,7 @@ for line in sys.stdin:
         emit(request, {})
     elif method == 'session/prompt':
         prompt_count += 1
+        if config['explicitEffort']: assert request['params'].get('reasoningEffort') == 'high', request
         assert prompt_count == 1 and mode_selected and model_selected and request['params']['sessionId'] == current_native
         blocks = request['params']['prompt']; assert any(config['task'] in part.get('text', '') for part in blocks)
         assert permission == [dict(permission='task', pattern='*', action='ask')]
@@ -1003,14 +1006,22 @@ store('native-exit.json', dict(pid=os.getpid(), eof=True))
 			root.uam_control_enabled = root.memory_enabled = root.computer_use_enabled = false;
 			UAM_ASSERT(ChatRepository::SaveChat(app.data_root, root)); app.chats.push_back(root);
 			std::string error;
-			UAM_ASSERT(uam::AgentRunScheduler::Enqueue(app, root.id, {}, "build", task, &run_id, &error, "opencode-cli", model));
+			if (explicit_effort)
+			{
+				app.provider_model_catalog = std::make_unique<uam::ProviderModelCatalogService>();
+				app.provider_model_catalog->Initialize(app.data_root, app.provider_profiles);
+				UAM_ASSERT(app.provider_model_catalog->RememberSuccessfulModels("opencode-cli",
+				    Json::array({{{"id", model}, {"supportedReasoningEfforts", {"high"}}}}), workspace.string(), Json::array(), host.id));
+			}
+			UAM_ASSERT(uam::AgentRunScheduler::Enqueue(app, root.id, {}, "build", task, &run_id, &error, "opencode-cli", model, false,
+			    explicit_effort ? std::optional<std::string>{"high"} : std::nullopt));
 			UAM_ASSERT_EQ(app.agent_runs.size(), std::size_t{1});
 			const auto& run = app.agent_runs.front(); transcript_id = run.transcript_chat_id;
 			UAM_ASSERT_EQ(run.status, std::string("queued")); UAM_ASSERT_EQ(run.definition_hash, std::string("builtin-build-v2"));
 			const auto fresh = ChatRepository::LoadLocalChat(app.data_root, transcript_id, true);
 			UAM_ASSERT(fresh && fresh->native_session_id.empty() && fresh->execution_host_id == host.id && fresh->workspace_directory == workspace.string());
 			UAM_ASSERT(uam::FindAcpSessionForChat(app, transcript_id) == nullptr);
-			UAM_ASSERT(uam::io::WriteTextFile(temp.root / "case.json", Json{{"transcript", transcript_id}, {"native", native}, {"model", model}, {"task", task}, {"duplicate", duplicate}}.dump()));
+			UAM_ASSERT(uam::io::WriteTextFile(temp.root / "case.json", Json{{"transcript", transcript_id}, {"native", native}, {"model", model}, {"task", task}, {"duplicate", duplicate}, {"explicitEffort", explicit_effort}, {"supportEffort", support_effort}}.dump()));
 			runner_service.Start(runner, temp.root / "s", temp.root);
 		}
 
@@ -1126,10 +1137,10 @@ store('native-exit.json', dict(pid=os.getpid(), eof=True))
 		}
 	};
 
-	void CheckManagedOpenCodeSshStartup(bool duplicate)
+	void CheckManagedOpenCodeSshStartup(bool duplicate, bool explicit_effort = false)
 	{
 		using Json = nlohmann::json;
-		ManagedOpenCodeSshFixture fixture(duplicate);
+		ManagedOpenCodeSshFixture fixture(duplicate, explicit_effort);
 		UAM_ASSERT(fixture.Await([&] { return fs::exists(fixture.temp.root / "native-created.json"); }));
 		UAM_ASSERT(fixture.Await([&]
 		{
@@ -1209,6 +1220,18 @@ store('native-exit.json', dict(pid=os.getpid(), eof=True))
 UAM_TEST(ManagedOpenCodeSshFreshNativeSetupReachesFirstPromptThroughActualHelper)
 {
 	CheckManagedOpenCodeSshStartup(false);
+}
+UAM_TEST(ManagedExplicitEffortFreshChildReachesProviderInput)
+{
+	CheckManagedOpenCodeSshStartup(false, true);
+}
+UAM_TEST(ManagedExplicitEffortNativeContradictionSendsNoChildInput)
+{
+	ManagedOpenCodeSshFixture fixture(false, true, false);
+	UAM_ASSERT(fixture.Await([&] { return fixture.app.agent_runs.front().status == "failed"; }));
+	UAM_ASSERT(fs::exists(fixture.temp.root / "native-created.json"));
+	UAM_ASSERT(!fs::exists(fixture.temp.root / "prompt-input.json"));
+	fixture.Stop();
 }
 UAM_TEST(ManagedOpenCodeSshDuplicateCreationReplyCannotFalseExitBeforeFirstPrompt)
 {
