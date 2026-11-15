@@ -1,5 +1,7 @@
 # Subagents
 
+Managed delegation waits while its parent has a workspace operation in progress. A port or discard must not race admission of a new child into the workspace being changed; the existing parent permission policy and delegation limits still apply.
+
 ## Experience reference
 
 David specified T3 alpha 0.1.0’s subagent experience on 2026-10-16 as the interaction reference for UAM. UAM should retain its own design language while providing the same parent/child workflow: a collapsible group in the parent turn shows the child count and aggregate progress, with a named row for every child showing its status and elapsed time. Opening a row displays that child’s full conversation and ongoing activity; a clear parent breadcrumb or “Subagent of” link returns to the originating chat. Related-chat lineage remains available in both directions, and each running child has an individual Stop control. Several children from one native tool must all be reachable rather than silently selecting the first.
