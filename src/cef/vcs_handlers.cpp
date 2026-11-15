@@ -313,7 +313,6 @@ namespace
 				        result = AsyncFailure(409, "Workspace cleanup completion no longer belongs to this chat. Inspect its saved state before retrying.");
 				    family_request->gui_settled = true;
 				    family_request->lease.reset();
-				    const auto owner = live_app->git_port_requests.find(chat_id);
 				    if (owner != live_app->git_port_requests.end() && owner->second == family_request) live_app->git_port_requests.erase(owner);
 			    }
 			    if (owns_completion) for (const auto& id : fenced_ids) live_app->worktree_operation_chat_ids.erase(id);
