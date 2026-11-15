@@ -554,3 +554,55 @@ UAM_TEST(GitWorktreeCleanupRefusesSameSizeSameMtimeStorageReplacement)
 		fixture.AssertRetained();
 	}
 }
+
+UAM_TEST(GitWorktreeCleanupInterruptedGitStagesRetainRetryAuthority)
+{
+	if (!GitAvailableForTests()) return;
+	for (const auto stage : {uam::GitWorktreeCleanupStage::AfterWorktreeRemoval, uam::GitWorktreeCleanupStage::AfterBranchRemoval})
+	{
+		PortFixture fixture("patch");
+		AddFinishedWorktreeChild(fixture);
+		AdmitWorktreeFamily(fixture);
+		auto request = std::make_shared<uam::AppState::GitPortRequest>();
+		uam::ManagedSubagentControlService::BindWorktreeFamilyOperation(*fixture.app.worktree_cleanup_family, request);
+		auto& parent = fixture.app.chats.front();
+		const auto revision = ChatRepository::ChatStorageRevision(fixture.app.data_root, parent.id);
+		const uam::GitWorktreeService service([&](auto observed) { if (observed == stage) request->cancellation->request_stop(); });
+		UAM_ASSERT(!service.DiscardChatChanges(fixture.app, parent).ok);
+		UAM_ASSERT(!fs::exists(fixture.worktree));
+		UAM_ASSERT_EQ(ChatRepository::ChatStorageRevision(fixture.app.data_root, parent.id), revision);
+		UAM_ASSERT_EQ(ChatRepository::LoadLocalChatPrimaryReadOnly(fixture.app.data_root, parent.id, true)->workspace_worktree_directory, fixture.worktree.string());
+		UAM_ASSERT_EQ(parent.workspace_worktree_directory, fixture.worktree.string());
+		UAM_ASSERT_EQ(uam::io::ReadTextFile(fixture.source / "survivor.txt"), "source survivor\n");
+		// A fresh, explicitly admitted Discard finishes cleanup even after Git removal already succeeded.
+		fixture.app.worktree_operation_chat_ids.clear();
+		fixture.app.worktree_cleanup_family.reset();
+		AdmitWorktreeFamily(fixture);
+		UAM_ASSERT(uam::GitWorktreeService().DiscardChatChanges(fixture.app, parent).ok);
+		UAM_ASSERT(parent.workspace_worktree_directory.empty());
+		UAM_ASSERT(!RunGitForTest(fixture.source, "show-ref --verify refs/heads/" + fixture.chat_branch));
+	}
+}
+
+UAM_TEST(GitWorktreeCleanupRemovalFailureCannotSaveOlderMetadata)
+{
+	if (!GitAvailableForTests()) return;
+	PortFixture fixture("patch");
+	AdmitWorktreeFamily(fixture);
+	auto& parent = fixture.app.chats.front();
+	auto replacement = parent;
+	replacement.messages.push_back({MessageRole::User, "newer saved input survives failed Git", "now"});
+	std::optional<std::string> replacement_revision;
+	const uam::GitWorktreeService service([&](auto stage)
+	{
+		if (stage != uam::GitWorktreeCleanupStage::BeforeWorktreeRemoval) return;
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, replacement));
+		replacement_revision = ChatRepository::ChatStorageRevision(fixture.app.data_root, parent.id);
+		UAM_ASSERT(RunGitForTest(fixture.source, "worktree lock " + ShellQuoteForTest(fixture.worktree.string())));
+	});
+	UAM_ASSERT(!service.DiscardChatChanges(fixture.app, parent).ok);
+	UAM_ASSERT(replacement_revision);
+	UAM_ASSERT_EQ(ChatRepository::ChatStorageRevision(fixture.app.data_root, parent.id), replacement_revision);
+	UAM_ASSERT_EQ(ChatRepository::LoadLocalChatPrimaryReadOnly(fixture.app.data_root, parent.id, true)->messages.back().content, replacement.messages.back().content);
+	fixture.AssertRetained();
+}
