@@ -1143,7 +1143,7 @@ namespace uam
 				// An already absent owned branch is an idempotent retry, not a reason to hide a
 				// different Git error (including a branch checked out by another worktree).
 				const auto branch = RunCommand(BuildGitCommandInDirectory(repository, "show-ref --verify --quiet " + uam::shell::EscapeArg("refs/heads/" + branch_name)));
-				if (!CommandSucceeded(branch) && (!branch.ok || branch.exit_code != 1))
+				if (!CommandSucceeded(branch) && (branch.timed_out || branch.canceled || branch.exit_code != 1))
 				{
 					if (error_out) *error_out = CommandOutputOrError(branch);
 					return interrupted();
