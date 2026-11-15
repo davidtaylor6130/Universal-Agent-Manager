@@ -263,9 +263,14 @@ namespace
 				        return AsyncFailure(409, "Workspace cleanup was cancelled before admission.");
 			    }
 			    uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(snapshot_inputs));
+			    const auto candidate_revision = ChatRepository::ChatStorageRevision(snapshot.data_root, chat_id);
+			    std::string revision_error;
+			    if (family && (!candidate_revision || !uam::ManagedSubagentControlService::BindWorktreeFamilyParentRevision(*family, *candidate_revision, &revision_error)))
+				    return AsyncFailure(409, revision_error.empty() ? "Parent storage could not be witnessed before cleanup." : revision_error);
 			    std::string load_warning;
-			    std::optional<ChatSession> chat = ChatRepository::LoadLocalChat(
-			        snapshot.data_root, chat_id, true, &load_warning);
+			    std::optional<ChatSession> chat = family
+			        ? ChatRepository::LoadLocalChatPrimaryReadOnly(snapshot.data_root, chat_id, true)
+			        : ChatRepository::LoadLocalChat(snapshot.data_root, chat_id, true, &load_warning);
 			    if (!chat)
 			    {
 				    return AsyncFailure(
@@ -273,6 +278,8 @@ namespace
 				        FailureDetailOrFallback(
 				            load_warning, "Failed to load chat before its worktree operation."));
 			    }
+			    if (family && candidate_revision != ChatRepository::ChatStorageRevision(snapshot.data_root, chat_id))
+				    return AsyncFailure(409, "Parent history changed while loading cleanup input. Its worktree was retained.");
 			    snapshot.chats.push_back(std::move(*chat));
 			    snapshot.worktree_cleanup_family = family;
 			    const uam::GitWorktreeService service;

@@ -125,6 +125,7 @@ namespace uam
 	  public:
 		static std::shared_ptr<const ManagedWorktreeFamily> CaptureWorktreeFamily(const AppState&, const std::string&, std::string*);
 		/// Worker-only validation, repeated immediately before cleanup publication/removal.
+		static bool BindWorktreeFamilyParentRevision(const ManagedWorktreeFamily&, const std::string&, std::string*);
 		static bool ValidateWorktreeFamily(const ManagedWorktreeFamily&, std::string*);
 		static bool PublishWorktreeCleanup(const ManagedWorktreeFamily&, const ChatSession&, std::string*);
 		static bool WorktreeFamilyContains(const ManagedWorktreeFamily&, const ChatSession&);

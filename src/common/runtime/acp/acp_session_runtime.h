@@ -37,6 +37,7 @@ namespace uam
 		std::optional<RowCoordinate> recorded_row;
 	};
 
+	bool HasPendingAgentInputForWorkspace(const AppState&, const ChatSession&);
 	AcpSessionState* FindAcpSessionForChat(AppState& app, const std::string& chat_id);
 	const AcpSessionState* FindAcpSessionForChat(const AppState& app, const std::string& chat_id);
 

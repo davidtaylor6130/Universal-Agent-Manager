@@ -2,6 +2,7 @@
 
 #include "app/agent_run_ledger.h"
 #include "app/agent_run_scheduler.h"
+#include "common/runtime/acp/acp_session_runtime.h"
 #include "app/transcript_retention_service.h"
 #include "common/platform/platform_incremental_sha256.h"
 #include "common/chat/chat_ids.h"
@@ -942,10 +943,6 @@ namespace uam
 		Index index;
 		if (!BuildIndex(app, root_id, index, error) || !Capture(app, root_id, &family->ownership, error)) return {};
 		family->data_root = app.data_root;
-		// Pending creation/follow-up owners have private worker claims. Do not infer settlement from a terminal ledger row.
-		if (!app.managed_initial_mentions.empty() || !app.managed_followups.empty() || !app.managed_initial_runtime_owners.empty() ||
-		    !app.pending_acp_remote_stops.empty() || !app.acp_process_stop_tasks.empty() || !app.managed_result_recoveries.empty() || !app.agent_input_preparation_tasks.empty() || app.deletion_progress)
-		{ Fail(error, "Wait for managed creation, follow-up, stop and deletion work to settle before cleanup."); return {}; }
 		std::vector<const ChatSession*> members{index.root};
 		for (const auto& [id, run] : index.runs)
 		{
@@ -965,11 +962,24 @@ namespace uam
 			{ Fail(error, "A managed child is active or its workspace ownership is uncertain. Stop it and resolve its workspace before cleanup."); return {}; }
 			members.push_back(chat);
 		}
+		const auto family_run = [&](const auto& entry)
+		{
+			const auto run = index.runs.find(entry.first);
+			return run != index.runs.end() && run->second->root_chat_id == root_id;
+		};
+		if (app.deletion_progress || app.managed_initial_mentions.contains(root_id) ||
+		    std::ranges::any_of(app.managed_followups, family_run) ||
+		    std::ranges::any_of(app.managed_initial_runtime_owners, family_run) ||
+		    std::ranges::any_of(app.managed_result_recoveries, [&](const auto& run) { return run.root_chat_id == root_id; }))
+		{ Fail(error, "Wait for this family's managed creation, follow-up and recovery work to settle before cleanup."); return {}; }
 		for (const auto* member : members)
 		{
 			const auto& chat = *member;
 			const auto branch = app.branch_preparations.find(chat.id);
-			if (!CleanupSettled(chat) || app.worktree_operation_chat_ids.contains(chat.id) || app.worktree_launch_preparations.contains(chat.id) ||
+			if (HasPendingAgentInputForWorkspace(app, chat) ||
+			    std::ranges::any_of(app.pending_acp_remote_stops, [&](const auto& stop) { return stop && stop->chat_id == chat.id; }) ||
+			    std::ranges::any_of(app.acp_process_stop_tasks, [&](const auto& stop) { return stop.chat_id == chat.id; }) ||
+			    !CleanupSettled(chat) || app.worktree_operation_chat_ids.contains(chat.id) || app.worktree_launch_preparations.contains(chat.id) ||
 			    app.pending_chat_save_at_by_chat_id.contains(chat.id) || app.pending_chat_save_tasks.contains(chat.id) ||
 			    app.chat_save_failures_by_chat_id.contains(chat.id) || app.pending_chat_save_retry_owners.contains(chat.id) ||
 			    app.pending_acp_completed_prompt_recoveries.contains(chat.id) || app.execution_routing_restored_unresolved_chat_ids.contains(chat.id) ||
@@ -1003,8 +1013,17 @@ namespace uam
 		return std::ranges::any_of(family.identities, [&](const auto& expected) { return expected.first == chat.id && CleanupSettled(chat) && expected.second == CleanupIdentity(chat); });
 	}
 
+	bool ManagedSubagentControlService::BindWorktreeFamilyParentRevision(const ManagedWorktreeFamily& family, const std::string& revision, std::string* error)
+	{
+		if (family.identities.empty() || revision.empty()) return Fail(error, "Cleanup requires a saved parent revision before loading its candidate.");
+		const auto [entry, inserted] = family.revisions.emplace(family.identities.front().first, revision);
+		return inserted || entry->second == revision ? true : Fail(error, "Cleanup parent revision changed before candidate loading.");
+	}
+
 	bool ManagedSubagentControlService::ValidateWorktreeFamily(const ManagedWorktreeFamily& family, std::string* error)
 	{
+		if (family.identities.empty() || !family.revisions.contains(family.identities.front().first))
+			return Fail(error, "Cleanup parent candidate has no original saved revision.");
 		const auto ledger = AgentRunLedger::LoadAllReadOnly(family.data_root);
 		std::unordered_set<std::string> expected_runs;
 		for (const auto& run : family.ownership.records) expected_runs.insert(run.id);
@@ -1018,7 +1037,7 @@ namespace uam
 		for (const auto& [id, identity] : family.identities)
 		{
 			const auto before = ChatRepository::ChatStorageRevision(family.data_root, id);
-			const auto chat = ReadHistoryPrimary(family.data_root, id);
+			const auto chat = ChatRepository::LoadLocalChatPrimaryReadOnly(family.data_root, id);
 			const auto after = ChatRepository::ChatStorageRevision(family.data_root, id);
 			if (!before || before != after || !chat || !WorktreeFamilyContains(family, *chat))
 				return Fail(error, "Managed family saved identity or input changed; the worktree and branch were retained.");

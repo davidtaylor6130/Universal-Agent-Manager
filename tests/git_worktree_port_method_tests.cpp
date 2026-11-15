@@ -284,6 +284,9 @@ namespace
 		std::string error;
 		fixture.app.worktree_cleanup_family = uam::ManagedSubagentControlService::CaptureWorktreeFamily(fixture.app, fixture.app.chats.front().id, &error);
 		UAM_ASSERT(fixture.app.worktree_cleanup_family);
+		const auto revision = ChatRepository::ChatStorageRevision(fixture.app.data_root, fixture.app.chats.front().id);
+		UAM_ASSERT(revision);
+		UAM_ASSERT(uam::ManagedSubagentControlService::BindWorktreeFamilyParentRevision(*fixture.app.worktree_cleanup_family, *revision, &error));
 		for (const auto& id : fixture.app.worktree_cleanup_family->ChatIds()) fixture.app.worktree_operation_chat_ids.insert(id);
 	}
 }
@@ -406,4 +409,61 @@ UAM_TEST(GitWorktreeManagedFamilyFencesRetireAfterExpiredWorkerSettles)
 	UAM_ASSERT(fixture.app.git_port_requests.empty());
 	UAM_ASSERT(fixture.app.worktree_retention_gate.TryAcquireCleanup());
 	fixture.AssertRetained();
+}
+
+UAM_TEST(GitWorktreeCleanupRefusesReplacedParentContentBeforeFirstValidation)
+{
+	if (!GitAvailableForTests()) return;
+	PortFixture fixture("patch");
+	AddFinishedWorktreeChild(fixture);
+	auto& parent = fixture.app.chats.front();
+	parent.messages.push_back({MessageRole::User, "original parent input", "now"});
+	UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, parent));
+	AdmitWorktreeFamily(fixture); // Captures the physical revision before the worker candidate can be used.
+	auto replacement = parent;
+	replacement.messages.front().content = "newer parent input";
+	UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, replacement));
+	const auto replacement_revision = ChatRepository::ChatStorageRevision(fixture.app.data_root, parent.id);
+	UAM_ASSERT(!uam::GitWorktreeService().DiscardChatChanges(fixture.app, parent).ok);
+	UAM_ASSERT_EQ(ChatRepository::ChatStorageRevision(fixture.app.data_root, parent.id), replacement_revision);
+	UAM_ASSERT_EQ(ChatRepository::LoadLocalChatPrimaryReadOnly(fixture.app.data_root, parent.id, true)->messages.front().content, std::string("newer parent input"));
+	fixture.AssertRetained();
+}
+
+UAM_TEST(GitWorktreeOrdinaryLargeParentCleanupPreservesHistory)
+{
+	if (!GitAvailableForTests()) return;
+	for (const bool discard : {false, true})
+	{
+		PortFixture fixture("patch");
+		auto& parent = fixture.app.chats.front();
+		parent.messages.push_back({MessageRole::User, std::string(5U * 1024U * 1024U, 'x'), "now"});
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, parent));
+		AdmitWorktreeFamily(fixture);
+		const auto result = discard ? uam::GitWorktreeService().DiscardChatChanges(fixture.app, parent) : uam::GitWorktreeService().PortChatChanges(fixture.app, parent);
+		UAM_ASSERT(result.ok);
+		const auto saved = ChatRepository::LoadLocalChatPrimaryReadOnly(fixture.app.data_root, parent.id, true);
+		UAM_ASSERT(saved && saved->messages.size() == 1);
+		UAM_ASSERT_EQ(saved->messages.front().content, std::string(5U * 1024U * 1024U, 'x'));
+	}
+}
+
+UAM_TEST(GitWorktreeCleanupScopesOutstandingClaimsToItsFamily)
+{
+	if (!GitAvailableForTests()) return;
+	for (const bool related : {false, true})
+	{
+		PortFixture fixture("patch");
+		AddFinishedWorktreeChild(fixture);
+		auto stop = std::make_unique<uam::PendingAcpRemoteStop>();
+		stop->chat_id = related ? fixture.app.hidden_agent_chat_ownership.chats.front().id : "unrelated-root";
+		fixture.app.pending_acp_remote_stops.push_back(std::move(stop));
+		fixture.app.managed_initial_mentions.emplace("unrelated-root", nullptr);
+		fixture.app.managed_followups.emplace("unrelated-run", nullptr);
+		fixture.app.managed_initial_runtime_owners.emplace("unrelated-run", nullptr);
+		std::string error;
+		const auto family = uam::ManagedSubagentControlService::CaptureWorktreeFamily(fixture.app, fixture.app.chats.front().id, &error);
+		UAM_ASSERT(static_cast<bool>(family) == !related);
+		fixture.AssertRetained();
+	}
 }

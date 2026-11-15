@@ -168,6 +168,16 @@ namespace uam
 		std::unique_ptr<std::jthread> worker;
 	};
 
+	bool HasPendingAgentInputForWorkspace(const AppState& app, const ChatSession& chat)
+	{
+		const auto workspace = paths::ResolveWorkspaceRootPath(app, chat).lexically_normal();
+		return std::ranges::any_of(app.agent_input_preparation_tasks, [&](const auto& task)
+		{
+			return task && task->root == app.data_root && (task->incarnation == chat.metadata_incarnation ||
+			    (task->host.id == chat.execution_host_id && task->workspace.lexically_normal() == workspace));
+		});
+	}
+
 	/** Keeps restored raw-row queues held while an owned worker reads detached history. */
 	struct PendingQueuedHistoryPreparation
 	{
