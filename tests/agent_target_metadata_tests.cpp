@@ -1010,6 +1010,7 @@ store('native-exit.json', dict(pid=os.getpid(), eof=True))
 			{
 				app.provider_model_catalog = std::make_unique<uam::ProviderModelCatalogService>();
 				app.provider_model_catalog->Initialize(app.data_root, app.provider_profiles);
+				app.provider_model_catalog->SetExecutionHostContext(app.settings.execution_hosts);
 				UAM_ASSERT(app.provider_model_catalog->RememberSuccessfulModels("opencode-cli",
 				    Json::array({{{"id", model}, {"supportedReasoningEfforts", {"high"}}}}), workspace.string(), Json::array(), host.id));
 			}
@@ -1651,6 +1652,8 @@ UAM_TEST(ManagedDelegationSelectsAndPersistsExplicitReasoningEffort)
 		TargetMetadataFixture fixture;
 		auto& app = fixture.app;
 		app.chats.front().reasoning_effort = "medium";
+		// Effort selection must preserve the parent's read-only permission ceiling.
+		app.chats.front().approval_mode = "plan";
 		UAM_ASSERT(app.provider_model_catalog->RememberSuccessfulModels("codex-cli",
 		    nlohmann::json::array({{{"id", "parent-model"}, {"supportedReasoningEfforts", {"low", "medium", "high"}}, {"defaultReasoningEffort", "medium"}}}),
 		    app.chats.front().workspace_directory));
