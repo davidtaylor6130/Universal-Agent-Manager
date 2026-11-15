@@ -986,7 +986,12 @@ namespace uam
 		{
 			if (worktree.empty()) return false;
 			const auto family = family_cleanup ? app.worktree_cleanup_family : nullptr;
-			if (family && !ManagedSubagentControlService::ValidateWorktreeFamily(*family, error_out)) return true;
+			if (family && (!ManagedSubagentControlService::WorktreeFamilyContains(*family, chat) ||
+			    !ManagedSubagentControlService::ValidateWorktreeFamily(*family, error_out)))
+			{
+				if (error_out && error_out->empty()) *error_out = "Cleanup candidate no longer matches its admitted family.";
+				return true;
+			}
 
 			std::error_code physical_error;
 			const std::filesystem::path physical = std::filesystem::weakly_canonical(worktree, physical_error);
