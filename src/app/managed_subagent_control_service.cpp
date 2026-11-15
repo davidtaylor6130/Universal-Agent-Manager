@@ -1126,9 +1126,18 @@ namespace uam
 		if (revision == family.revisions.end()) return Fail(error, "Cleanup publication has no saved parent witness.");
 		const auto prepared = ChatRepository::PrepareChatPublication(family.data_root, candidate, ChatPublicationMode::UpdateExisting, revision->second, error);
 		if (!prepared) return false;
+		auto committed_fields = AppState::GitPortRequest::CleanupCommit{
+		    candidate.workspace_isolation_kind, candidate.workspace_source_directory,
+		    candidate.workspace_worktree_directory, candidate.workspace_branch_name,
+		    candidate.workspace_base_ref, candidate.updated_at};
+		const auto request = family.operation.lock();
 		const auto result = ChatRepository::PublishPreparedChatPublication(prepared, [&] { return ValidateWorktreeFamily(family, error); });
 		if (result.state != ChatPublicationState::Committed)
-			return Fail(error, "Cleanup metadata publication failed or is uncertain; the worktree and branch were retained.");
+			return Fail(error, "Cleanup metadata publication failed or is uncertain. Inspect saved isolation and Git state before retrying.");
+		// Cancellation after this acknowledgement cannot make the publication disappear.
+		// Retain only the committed workspace projection so the serialized owner can reconcile
+		// it even when a canceled query has no completion callback.
+		if (request) request->cleanup_commit.emplace(std::move(committed_fields));
 		return true;
 	}
 

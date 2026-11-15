@@ -1654,6 +1654,13 @@ namespace uam
 		std::vector<std::shared_ptr<ChatBaselinePreparation>> retired_repository_baseline_preparations;
 		struct GitPortRequest
 		{
+			struct CleanupCommit
+			{
+				std::string isolation_kind, source, worktree, branch, base, updated_at;
+			};
+			// Worker-written only after acknowledged publication; read only after Finished.
+			std::optional<CleanupCommit> cleanup_commit;
+			bool cleanup_completion_owned = false; // Serialized GUI settlement, not worker authority.
 			std::vector<std::string> family_fenced_ids;
 			enum class WorkerState { Queued, Running, Finished };
 			std::atomic<WorkerState> worker_state{WorkerState::Queued};

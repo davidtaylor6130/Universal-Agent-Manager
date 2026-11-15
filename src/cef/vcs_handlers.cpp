@@ -303,17 +303,13 @@ namespace
 			    bool owns_completion = true;
 			    if (family_request)
 			    {
-				    const auto owner = live_app->git_port_requests.find(chat_id);
-				    const auto* current = ChatDomainService().FindChatById(*live_app, chat_id);
-				    owns_completion = owner != live_app->git_port_requests.end() && owner->second == family_request;
-				    const bool identity_current = current && live_app->data_root == family_request->root && current->metadata_incarnation == family_request->incarnation &&
-				        current->workspace_directory == family_request->workspace && current->workspace_source_directory == family_request->source &&
-				        current->workspace_worktree_directory == family_request->worktree && current->workspace_branch_name == family_request->branch && current->workspace_base_ref == family_request->base;
-				    if (!owns_completion || !identity_current || family_request->cancellation->stop_requested() || (family_request->lifetime_bound && family_request->handler_lifetime.expired()))
-				        result = AsyncFailure(409, "Workspace cleanup completion no longer belongs to this chat. Inspect its saved state before retrying.");
-				    family_request->gui_settled = true;
-				    family_request->lease.reset();
-				    if (owner != live_app->git_port_requests.end() && owner->second == family_request) live_app->git_port_requests.erase(owner);
+				    owns_completion = uam::SettleGitWorktreeCleanupRequest(*live_app, chat_id, family_request);
+				    // A committed publication is reconciled independently of whether its query
+				    // can still receive success. Never apply the worker snapshot a second time.
+				    if (owns_completion && family_request->cleanup_commit) uam::PushStateUpdateIfChanged(browser, *live_app);
+				    if (!owns_completion || family_request->cancellation->stop_requested() || (family_request->lifetime_bound && family_request->handler_lifetime.expired()))
+				        result = AsyncFailure(409, "Workspace cleanup query ended or changed owner. Inspect its current saved state before retrying.");
+				    return;
 			    }
 			    if (owns_completion) for (const auto& id : fenced_ids) live_app->worktree_operation_chat_ids.erase(id);
 			    if (!result.ok)

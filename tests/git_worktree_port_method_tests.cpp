@@ -606,3 +606,104 @@ UAM_TEST(GitWorktreeCleanupRemovalFailureCannotSaveOlderMetadata)
 	UAM_ASSERT_EQ(ChatRepository::LoadLocalChatPrimaryReadOnly(fixture.app.data_root, parent.id, true)->messages.back().content, replacement.messages.back().content);
 	fixture.AssertRetained();
 }
+
+UAM_TEST(GitWorktreeCleanupAcknowledgedCommitReconcilesAfterQueryWithdrawal)
+{
+	if (!GitAvailableForTests()) return;
+	for (const int withdrawal : {0, 1, 2})
+	{
+		PortFixture fixture("patch");
+		AddFinishedWorktreeChild(fixture);
+		AdmitWorktreeFamily(fixture);
+		auto& parent = fixture.app.chats.front();
+		const auto id = parent.id;
+		auto request = std::make_shared<uam::AppState::GitPortRequest>();
+		auto lifetime = std::make_shared<int>(1);
+		request->family_fenced_ids = fixture.app.worktree_cleanup_family->ChatIds();
+		request->handler_lifetime = lifetime; request->lifetime_bound = true;
+		request->root = fixture.app.data_root; request->incarnation = parent.metadata_incarnation;
+		request->workspace = parent.workspace_directory; request->source = parent.workspace_source_directory;
+		request->worktree = parent.workspace_worktree_directory; request->branch = parent.workspace_branch_name; request->base = parent.workspace_base_ref;
+		request->lease = fixture.app.worktree_retention_gate.TryAcquireMutation();
+		request->worker_state.store(uam::AppState::GitPortRequest::WorkerState::Running);
+		fixture.app.git_port_requests[id] = request;
+		uam::ManagedSubagentControlService::BindWorktreeFamilyOperation(*fixture.app.worktree_cleanup_family, request);
+		uam::AppState worker;
+		worker.data_root = fixture.app.data_root;
+		worker.settings = fixture.app.settings;
+		worker.provider_profiles = fixture.app.provider_profiles;
+		worker.chats.push_back(parent);
+		worker.worktree_cleanup_family = fixture.app.worktree_cleanup_family;
+		const uam::GitWorktreeService service([&](auto stage)
+		{
+			if (stage != uam::GitWorktreeCleanupStage::AfterMetadataPublication) return;
+			if (withdrawal == 0) request->cancellation->request_stop();
+			if (withdrawal == 1) lifetime.reset();
+			if (withdrawal == 2) parent.metadata_incarnation = std::make_shared<const uint8_t>(0);
+		});
+		UAM_ASSERT(service.DiscardChatChanges(worker, worker.chats.front()).ok);
+		UAM_ASSERT(request->cleanup_commit);
+		UAM_ASSERT_EQ(parent.workspace_worktree_directory, fixture.worktree.string());
+		request->worker_state.store(uam::AppState::GitPortRequest::WorkerState::Finished);
+		uam::PollGitPortRequests(fixture.app);
+		UAM_ASSERT_EQ(parent.workspace_worktree_directory.empty(), withdrawal != 2);
+		UAM_ASSERT_EQ(request->cleanup_completion_owned, withdrawal != 2);
+		UAM_ASSERT(fixture.app.git_port_requests.empty());
+		UAM_ASSERT(fixture.app.worktree_operation_chat_ids.empty());
+		UAM_ASSERT(fixture.app.worktree_retention_gate.TryAcquireCleanup());
+		// A late callback cannot apply the receipt to a subsequently replaced conversation.
+		parent.metadata_incarnation = std::make_shared<const uint8_t>(0);
+		parent.workspace_branch_name = "replacement branch";
+		(void)uam::SettleGitWorktreeCleanupRequest(fixture.app, id, request);
+		UAM_ASSERT_EQ(parent.workspace_branch_name, "replacement branch");
+	}
+}
+
+UAM_TEST(GitWorktreeManagedSnapshotInterruptedCleanupRetainsRepositoryForRetry)
+{
+	if (!GitAvailableForTests()) return;
+	for (const bool unborn : {false, true})
+	{
+		TempDir temporary("uam-snapshot-cleanup-retry");
+		const auto source = temporary.root / "source";
+		fs::create_directories(source);
+		UAM_ASSERT(uam::io::WriteTextFile(source / "keep.txt", "source stays intact\n"));
+		if (unborn) UAM_ASSERT(RunGitForTest(source, "init --template="));
+		uam::AppState app;
+		app.data_root = temporary.root / "data";
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		app.settings.git_snapshot_plain_folders = true;
+		app.chats.push_back(ChatDomainService().CreateNewChat("", "codex-cli"));
+		auto& chat = app.chats.front(); chat.workspace_directory = source.string();
+		UAM_ASSERT(uam::GitWorktreeService().CreateForChat(app, chat).ok);
+		const auto worktree = fs::path(chat.workspace_worktree_directory);
+		const auto repository = fs::path(PortGitOutput(worktree, "rev-parse --path-format=absolute --git-common-dir")).parent_path();
+		const auto admit = [&]
+		{
+			app.worktree_operation_chat_ids.clear();
+			app.worktree_cleanup_family.reset();
+			std::string error;
+			app.worktree_cleanup_family = uam::ManagedSubagentControlService::CaptureWorktreeFamily(app, chat.id, &error);
+			UAM_ASSERT(app.worktree_cleanup_family);
+			UAM_ASSERT(uam::ManagedSubagentControlService::BindWorktreeFamilyParentRevision(*app.worktree_cleanup_family,
+			    *ChatRepository::ChatStorageRevision(app.data_root, chat.id), *ChatRepository::ChatSummaryStorageRevision(app.data_root, chat.id), &error));
+		};
+		admit();
+		auto request = std::make_shared<uam::AppState::GitPortRequest>();
+		uam::ManagedSubagentControlService::BindWorktreeFamilyOperation(*app.worktree_cleanup_family, request);
+		const uam::GitWorktreeService interrupted([&](auto stage)
+		{
+			if (stage == uam::GitWorktreeCleanupStage::AfterBranchRemoval) request->cancellation->request_stop();
+		});
+		UAM_ASSERT(!interrupted.DiscardChatChanges(app, chat).ok);
+		UAM_ASSERT(!fs::exists(worktree) && fs::exists(repository));
+		UAM_ASSERT(!chat.workspace_worktree_directory.empty());
+		admit();
+		UAM_ASSERT(uam::GitWorktreeService().Status(app, chat).managed_repository);
+		UAM_ASSERT(uam::GitWorktreeService().DiscardChatChanges(app, chat).ok);
+		UAM_ASSERT(chat.workspace_worktree_directory.empty());
+		UAM_ASSERT(!fs::exists(repository));
+		UAM_ASSERT_EQ(uam::io::ReadTextFile(source / "keep.txt"), "source stays intact\n");
+		UAM_ASSERT_EQ(fs::exists(source / ".git"), unborn);
+	}
+}
