@@ -1018,6 +1018,7 @@ namespace uam
 		run.delegates_snapshot = definition->delegates;
 		run.provider_id = provider;
 		run.model_id = transcript.model_id;
+		run.reasoning_effort_override = reasoning_effort ? std::optional<std::string>{transcript.reasoning_effort} : std::nullopt;
 		run.execution_capability = AgentDefinitionService::ExecutionCapabilityForProvider(provider);
 		run.task = strings::Trim(text.substr(end));
 		run.effective_workspace_access = read_only ? "read" : "write";
@@ -3256,6 +3257,27 @@ namespace uam
 		return settled; // False is quiesced/uncertain, never a persisted terminal claim.
 	}
 
+	bool AgentRunScheduler::ValidateRequestedReasoningEffort(const AppState& app, const ChatSession& chat,
+	    const AcpSessionState* session, std::string* error_out)
+	{
+		const auto* run = FindRun(app, chat.agent_run_id);
+		if (!run || !run->reasoning_effort_override) return true;
+		const std::string& requested = *run->reasoning_effort_override;
+		bool valid = chat.provider_id == run->provider_id && chat.model_id == run->model_id && chat.reasoning_effort == requested;
+		if (valid && !requested.empty())
+		{
+			const auto& runtime = ProviderRuntimeRegistry::ResolveById(chat.provider_id);
+			if (session && !runtime.ModelOptionsRequireRestart())
+			{
+				const auto model = std::ranges::find(session->available_models, chat.model_id, &AcpModelState::id);
+				valid = model != session->available_models.end() && ranges::Contains(model->supported_reasoning_efforts, requested);
+			}
+			else valid = ranges::Contains(ManagedAgentModelOptions(app, chat, chat.provider_id, chat.model_id).supported_reasoning_efforts, requested);
+		}
+		if (!valid && error_out) *error_out = "The child execution model or host no longer supports the requested reasoning effort. No child input was sent; inspect agent_list before delegating again.";
+		return valid;
+	}
+
 	bool AgentRunScheduler::Enqueue(AppState& app, const std::string& root_chat_id,
 	                                const std::string& parent_run_id, const std::string& agent_id,
 	                                const std::string& task, std::string* run_id_out,
@@ -3413,7 +3435,7 @@ namespace uam
 			if (!requested.empty())
 			{
 				const auto options = ManagedAgentModelOptions(app, transcript, selected_provider, transcript.model_id);
-				if (normalized.empty() || !ranges::Contains(options.supported_reasoning_efforts, normalized))
+				if (transcript.model_id.empty() || normalized.empty() || !ranges::Contains(options.supported_reasoning_efforts, normalized))
 				{
 					if (error_out) *error_out = "The selected child model on its execution host does not support that reasoning effort. Check agent_list before delegating again.";
 					return false;
@@ -4009,6 +4031,14 @@ namespace uam
 				}
 				app.queued_agent_run_ids.push_back(id);
 				changed = began || changed; // Only the start of a wait is a state change.
+				continue;
+			}
+			std::string effort_error;
+			if (!ValidateRequestedReasoningEffort(app, *transcript, nullptr, &effort_error))
+			{
+				FinishRun(app, *run, "failed", "reasoning_effort_unsupported", effort_error);
+				if (run->status == "queued") app.queued_agent_run_ids.push_back(id);
+				changed = true;
 				continue;
 			}
 			run->status = "running";

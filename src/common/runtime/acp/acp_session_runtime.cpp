@@ -2852,6 +2852,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				session.goal_turn_model_id = previous_turn_model;
 				return false;
 			}
+			if (!AgentRunScheduler::ValidateRequestedReasoningEffort(app, chat, &session, error_out)) return false;
 			const std::string previous_reasoning_effort = chat.reasoning_effort;
 			const std::string previous_service_tier = chat.service_tier;
 			const bool previous_service_tier_explicit = chat.service_tier_explicit;

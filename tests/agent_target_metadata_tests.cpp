@@ -1,6 +1,7 @@
 #include "test_harness.h"
 #include "app/agent_definition_service.h"
 #include "app/agent_run_scheduler.h"
+#include "app/agent_run_ledger.h"
 #include "app/uam_control_service.h"
 #include "common/chat/acp_prompt_recovery.h"
 #include "common/chat/chat_message_page_index.h"
@@ -1643,6 +1644,11 @@ UAM_TEST(ManagedDelegationSelectsAndPersistsExplicitReasoningEffort)
 		const auto saved = ChatRepository::LoadLocalChat(app.data_root, app.chats.back().id);
 		UAM_ASSERT(saved.has_value());
 		UAM_ASSERT_EQ(saved->reasoning_effort, effort);
+		UAM_ASSERT(app.agent_runs.back().reasoning_effort_override.has_value());
+		UAM_ASSERT_EQ(*app.agent_runs.back().reasoning_effort_override, effort);
+		const auto ledger = uam::AgentRunLedger::LoadAllReadOnly(app.data_root);
+		UAM_ASSERT_EQ(ledger.runs.size(), std::size_t{1});
+		UAM_ASSERT_EQ(ledger.runs.front().reasoning_effort_override, app.agent_runs.back().reasoning_effort_override);
 		UAM_ASSERT_EQ(app.agent_runs.back().effective_workspace_access, std::string("read"));
 	}
 }
@@ -1667,4 +1673,38 @@ UAM_TEST(ManagedDelegationRejectsUnknownUnsupportedAndForeignScopeEffortBeforeAd
 		UAM_ASSERT(app.agent_runs.empty() && app.queued_agent_run_ids.empty());
 		UAM_ASSERT_EQ(app.chats.size(), std::size_t{1});
 	}
+}
+
+UAM_TEST(ManagedExplicitEffortRefusesRoutingAndNativeSupportChanges)
+{
+	TargetMetadataFixture fixture;
+	auto& app = fixture.app;
+	UAM_ASSERT(app.provider_model_catalog->RememberSuccessfulModels("codex-cli",
+	    nlohmann::json::array({{{"id", "parent-model"}, {"supportedReasoningEfforts", {"high"}}}}),
+	    app.chats.front().workspace_directory));
+	std::string id, error;
+	UAM_ASSERT(uam::AgentRunScheduler::Enqueue(app, "root", {}, "worker", "Bounded task.", &id, &error,
+	    "codex-cli", "parent-model", false, std::string("high")));
+	auto& child = app.chats.back();
+	UAM_ASSERT(uam::AgentRunScheduler::ValidateRequestedReasoningEffort(app, child, nullptr, &error));
+	const auto workspace = child.workspace_directory;
+	child.workspace_directory = workspace + "-destination";
+	UAM_ASSERT(app.provider_model_catalog->RememberSuccessfulModels("codex-cli",
+	    nlohmann::json::array({{{"id", "parent-model"}, {"supportedReasoningEfforts", {"low"}}}}), child.workspace_directory));
+	UAM_ASSERT(!uam::AgentRunScheduler::ValidateRequestedReasoningEffort(app, child, nullptr, &error));
+	child.workspace_directory = workspace;
+	child.execution_host_id = "other-host";
+	UAM_ASSERT(!uam::AgentRunScheduler::ValidateRequestedReasoningEffort(app, child, nullptr, &error));
+	child.execution_host_id = "local";
+	uam::AcpSessionState observed;
+	uam::AcpModelState model;
+	model.id = "parent-model";
+	model.supported_reasoning_efforts = {"low"};
+	observed.available_models = {model};
+	UAM_ASSERT(!uam::AgentRunScheduler::ValidateRequestedReasoningEffort(app, child, &observed, &error));
+	observed.available_models.front().supported_reasoning_efforts = {"high"};
+	UAM_ASSERT(uam::AgentRunScheduler::ValidateRequestedReasoningEffort(app, child, &observed, &error));
+	child.reasoning_effort = "low";
+	UAM_ASSERT(!uam::AgentRunScheduler::ValidateRequestedReasoningEffort(app, child, &observed, &error));
+	UAM_ASSERT_EQ(*app.agent_runs.back().reasoning_effort_override, std::string("high"));
 }
