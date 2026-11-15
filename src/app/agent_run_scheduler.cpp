@@ -1018,7 +1018,6 @@ namespace uam
 		run.delegates_snapshot = definition->delegates;
 		run.provider_id = provider;
 		run.model_id = transcript.model_id;
-		run.reasoning_effort_override = reasoning_effort ? std::optional<std::string>{transcript.reasoning_effort} : std::nullopt;
 		run.execution_capability = AgentDefinitionService::ExecutionCapabilityForProvider(provider);
 		run.task = strings::Trim(text.substr(end));
 		run.effective_workspace_access = read_only ? "read" : "write";
@@ -3462,6 +3461,7 @@ namespace uam
 		run.delegates_snapshot = definition->delegates;
 		run.provider_id = selected_provider;
 		run.model_id = transcript.model_id;
+		run.reasoning_effort_override = reasoning_effort ? std::optional<std::string>{transcript.reasoning_effort} : std::nullopt;
 		run.execution_capability =
 		    AgentDefinitionService::ExecutionCapabilityForProvider(selected_provider);
 		run.task = requested_task;
