@@ -16,6 +16,7 @@
 namespace uam
 {
 	struct ManagedAgentTranscriptReadIdentity;
+	struct ManagedWorktreeFileWitness;
 	/// Immutable server-held authority. Never accept its contents from the renderer.
 	class ManagedSubagentControlScope
 	{
@@ -114,6 +115,7 @@ namespace uam
 		std::filesystem::path data_root;
 		std::vector<std::pair<std::string, std::string>> identities;
 		mutable std::unordered_map<std::string, std::string> revisions;
+		mutable std::unordered_map<std::string, std::shared_ptr<const ManagedWorktreeFileWitness>> files;
 		mutable std::optional<std::string> parent_summary_revision;
 		mutable std::weak_ptr<AppState::GitPortRequest> operation;
 		mutable bool operation_bound = false;

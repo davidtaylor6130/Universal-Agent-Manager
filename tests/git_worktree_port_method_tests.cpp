@@ -526,3 +526,31 @@ UAM_TEST(GitWorktreeCleanupRefusesWithdrawnOperationAndChangedSummary)
 		fixture.AssertRetained();
 	}
 }
+
+UAM_TEST(GitWorktreeCleanupRefusesSameSizeSameMtimeStorageReplacement)
+{
+	if (!GitAvailableForTests()) return;
+	for (const bool summary : {false, true})
+	{
+		PortFixture fixture("patch");
+		auto& parent = fixture.app.chats.front();
+		parent.messages.push_back({MessageRole::User, "UNIQUE_CLEANUP_AAAA", "now"});
+		parent.attention_revision = "UNIQUE_OVERLAY_AAAA";
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, parent));
+		AdmitWorktreeFamily(fixture);
+		const auto path = summary ? AppPaths::UamChatSummaryFilePath(fixture.app.data_root, parent.id) : AppPaths::UamChatFilePath(fixture.app.data_root, parent.id);
+		const auto modified = fs::last_write_time(path);
+		const auto before = summary ? ChatRepository::ChatSummaryStorageRevision(fixture.app.data_root, parent.id) : ChatRepository::ChatStorageRevision(fixture.app.data_root, parent.id);
+		auto replacement = uam::io::ReadTextFile(path);
+		const std::string needle = summary ? "UNIQUE_OVERLAY_AAAA" : "UNIQUE_CLEANUP_AAAA";
+		const auto position = replacement.find(needle);
+		UAM_ASSERT(position != std::string::npos);
+		replacement.replace(position + needle.size() - 4, 4, "BBBB");
+		UAM_ASSERT(uam::io::WriteTextFile(path, replacement));
+		fs::last_write_time(path, modified);
+		UAM_ASSERT_EQ(summary ? ChatRepository::ChatSummaryStorageRevision(fixture.app.data_root, parent.id) : ChatRepository::ChatStorageRevision(fixture.app.data_root, parent.id), before);
+		UAM_ASSERT(!uam::GitWorktreeService().DiscardChatChanges(fixture.app, parent).ok);
+		UAM_ASSERT_EQ(uam::io::ReadTextFile(path), replacement);
+		fixture.AssertRetained();
+	}
+}

@@ -5,6 +5,7 @@
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "app/transcript_retention_service.h"
 #include "common/platform/platform_incremental_sha256.h"
+#include "common/platform/published_file_change_witness.h"
 #include "common/chat/chat_ids.h"
 #include "common/paths/app_paths.h"
 #include "common/paths/path_utils.h"
@@ -19,6 +20,36 @@
 
 namespace uam
 {
+	struct ManagedWorktreeFileWitness
+	{
+		std::filesystem::path path;
+		std::shared_ptr<const platform::PublishedFileChangeWitness> physical;
+		std::string digest;
+		std::uint64_t size = 0;
+		bool Current() const
+		{
+			if (physical) return physical->MatchesContent(size, digest);
+			std::error_code error;
+			const auto status = std::filesystem::symlink_status(path, error);
+			return error == std::errc::no_such_file_or_directory || (!error && !std::filesystem::exists(status));
+		}
+		static std::shared_ptr<const ManagedWorktreeFileWitness> Capture(const std::filesystem::path& path, bool may_be_absent)
+		{
+			auto result = std::make_shared<ManagedWorktreeFileWitness>();
+			result->path = path;
+			std::error_code error;
+			const auto status = std::filesystem::symlink_status(path, error);
+			if (may_be_absent && (error == std::errc::no_such_file_or_directory || (!error && !std::filesystem::exists(status)))) return result;
+			result->physical = platform::PublishedFileChangeWitness::Capture(path);
+			const auto bytes = result->physical ? result->physical->ReadBounded(256U * 1024U * 1024U) : std::nullopt;
+			if (!bytes) return {};
+			platform::IncrementalSha256 hash;
+			if (!hash.Add(*bytes)) return {};
+			result->digest = hash.Finish(); result->size = bytes->size();
+			return result->digest.size() == 64 && result->Current() ? result : nullptr;
+		}
+	};
+
 	struct ManagedInitialHistoryCatalogue
 	{
 		struct Entry
@@ -1018,6 +1049,17 @@ namespace uam
 		if (family.identities.empty() || revision.empty() || summary_revision.empty()) return Fail(error, "Cleanup requires a saved parent revision before loading its candidate.");
 		if (family.parent_summary_revision && *family.parent_summary_revision != summary_revision) return Fail(error, "Cleanup summary changed before loading.");
 		family.parent_summary_revision = summary_revision;
+		const auto& id = family.identities.front().first;
+		for (const auto& item : std::vector<std::pair<std::string, std::filesystem::path>>{{id, AppPaths::UamChatFilePath(family.data_root, id)}, {id + ":summary", AppPaths::UamChatSummaryFilePath(family.data_root, id)}})
+		{
+			if (!family.files.contains(item.first))
+			{
+				const auto witness = ManagedWorktreeFileWitness::Capture(item.second, item.first != id);
+				if (!witness) return Fail(error, "Cleanup storage could not be retained before loading.");
+				family.files.emplace(item.first, witness);
+			}
+			if (!family.files.at(item.first)->Current()) return Fail(error, "Cleanup held storage changed before loading.");
+		}
 		const auto [entry, inserted] = family.revisions.emplace(family.identities.front().first, revision);
 		return inserted || entry->second == revision ? true : Fail(error, "Cleanup parent revision changed before candidate loading.");
 	}
@@ -1044,6 +1086,8 @@ namespace uam
 			return Fail(error, "Cleanup parent candidate has no original saved revision.");
 		if (!family.parent_summary_revision || ChatRepository::ChatSummaryStorageRevision(family.data_root, family.identities.front().first) != family.parent_summary_revision)
 			return Fail(error, "Cleanup summary overlay changed; history and worktree were retained.");
+		for (const auto& [key, file] : family.files)
+			if (!file || !file->Current()) return Fail(error, "Cleanup physical file or authored bytes changed; storage was retained.");
 		const auto ledger = AgentRunLedger::LoadAllReadOnly(family.data_root);
 		std::unordered_set<std::string> expected_runs;
 		for (const auto& run : family.ownership.records) expected_runs.insert(run.id);
@@ -1056,6 +1100,13 @@ namespace uam
 			return Fail(error, "Managed family ledger changed; the worktree and branch were retained.");
 		for (const auto& [id, identity] : family.identities)
 		{
+			if (!family.files.contains(id))
+			{
+				const auto witness = ManagedWorktreeFileWitness::Capture(AppPaths::UamChatFilePath(family.data_root, id), false);
+				if (!witness) return Fail(error, "Cleanup child storage could not be retained.");
+				family.files.emplace(id, witness);
+			}
+			if (!family.files.at(id)->Current()) return Fail(error, "Cleanup child physical identity changed.");
 			const auto before = ChatRepository::ChatStorageRevision(family.data_root, id);
 			const auto chat = ChatRepository::LoadLocalChatPrimaryReadOnly(family.data_root, id);
 			const auto after = ChatRepository::ChatStorageRevision(family.data_root, id);
