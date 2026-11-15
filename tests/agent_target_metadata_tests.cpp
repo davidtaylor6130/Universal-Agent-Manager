@@ -1232,6 +1232,8 @@ UAM_TEST(ManagedExplicitEffortNativeContradictionSendsNoChildInput)
 	UAM_ASSERT(fixture.Await([&] { return fixture.app.agent_runs.front().status == "failed"; }));
 	UAM_ASSERT(fs::exists(fixture.temp.root / "native-created.json"));
 	UAM_ASSERT(!fs::exists(fixture.temp.root / "prompt-input.json"));
+	UAM_ASSERT_EQ(fixture.app.agent_runs.front().diagnostic_code, std::string("reasoning_effort_unsupported"));
+	UAM_ASSERT(!uam::AcpStopInProgress(fixture.app, fixture.transcript_id));
 	fixture.Stop();
 }
 UAM_TEST(ManagedOpenCodeSshDuplicateCreationReplyCannotFalseExitBeforeFirstPrompt)

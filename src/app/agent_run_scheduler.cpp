@@ -3936,6 +3936,22 @@ namespace uam
 				continue;
 			}
 
+
+			// Retain the refusal through asynchronous Stop, which may clear native model metadata.
+			std::string effort_error;
+			const auto* effort_chat = ChatDomainService().FindChatById(app, run.transcript_chat_id);
+			if (run.diagnostic_code == "reasoning_effort_unsupported" ||
+			    (effort_chat && !AgentRunScheduler::ValidateRequestedReasoningEffort(app, *effort_chat, session, &effort_error)))
+			{
+				if (run.diagnostic_code != "reasoning_effort_unsupported" &&
+				    !PersistStatus(app, run, "running", "reasoning_effort_unsupported", effort_error)) continue;
+				if (!StopAcpSession(app, run.transcript_chat_id) || AcpStopInProgress(app, run.transcript_chat_id) ||
+				    app.pending_chat_save_at_by_chat_id.contains(run.transcript_chat_id)) continue;
+				FinishRun(app, run, "failed", "reasoning_effort_unsupported", run.diagnostic, true);
+				changed = true;
+				continue;
+			}
+
 			if (session != nullptr && session->managed_cancellation_pending)
 			{
 				if (app.pending_chat_save_at_by_chat_id.contains(run.transcript_chat_id)) continue;
