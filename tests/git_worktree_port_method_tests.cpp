@@ -286,7 +286,7 @@ namespace
 		UAM_ASSERT(fixture.app.worktree_cleanup_family);
 		const auto revision = ChatRepository::ChatStorageRevision(fixture.app.data_root, fixture.app.chats.front().id);
 		UAM_ASSERT(revision);
-		UAM_ASSERT(uam::ManagedSubagentControlService::BindWorktreeFamilyParentRevision(*fixture.app.worktree_cleanup_family, *revision, &error));
+		UAM_ASSERT(uam::ManagedSubagentControlService::BindWorktreeFamilyParentRevision(*fixture.app.worktree_cleanup_family, *revision, *ChatRepository::ChatSummaryStorageRevision(fixture.app.data_root, fixture.app.chats.front().id), &error));
 		for (const auto& id : fixture.app.worktree_cleanup_family->ChatIds()) fixture.app.worktree_operation_chat_ids.insert(id);
 	}
 }
@@ -464,6 +464,65 @@ UAM_TEST(GitWorktreeCleanupScopesOutstandingClaimsToItsFamily)
 		std::string error;
 		const auto family = uam::ManagedSubagentControlService::CaptureWorktreeFamily(fixture.app, fixture.app.chats.front().id, &error);
 		UAM_ASSERT(static_cast<bool>(family) == !related);
+		fixture.AssertRetained();
+	}
+}
+
+UAM_TEST(GitWorktreeCleanupPreservesBoundSummaryOverlays)
+{
+	if (!GitAvailableForTests()) return;
+	for (const bool discard : {false, true})
+	{
+		PortFixture fixture("patch");
+		auto& parent = fixture.app.chats.front();
+		auto overlay = parent;
+		overlay.last_opened_at = "2026-11-16T12:00:00.000Z";
+		overlay.interaction_at = "2026-11-16T11:59:59.000Z";
+		overlay.attention_revision = "newer-summary-attention";
+		overlay.attention_source = "completion";
+		overlay.settled_at = "2026-11-16T11:00:00.000Z";
+		overlay.snoozed_until_ms = 1800000000123;
+		UAM_ASSERT(ChatRepository::SaveLastOpenedAt(fixture.app.data_root, overlay));
+		AdmitWorktreeFamily(fixture);
+		const auto candidate = ChatRepository::LoadLocalChatPrimaryReadOnly(fixture.app.data_root, parent.id, true);
+		UAM_ASSERT(candidate);
+		parent = *candidate; // Production worker load keeps primary transcript and validated summary overlays.
+		const auto result = discard ? uam::GitWorktreeService().DiscardChatChanges(fixture.app, parent) : uam::GitWorktreeService().PortChatChanges(fixture.app, parent);
+		UAM_ASSERT(result.ok);
+		const auto saved = ChatRepository::LoadLocalChat(fixture.app.data_root, parent.id, true);
+		UAM_ASSERT(saved);
+		UAM_ASSERT_EQ(saved->last_opened_at, overlay.last_opened_at);
+		UAM_ASSERT_EQ(saved->interaction_at, overlay.interaction_at);
+		UAM_ASSERT_EQ(saved->attention_revision, overlay.attention_revision);
+		UAM_ASSERT_EQ(saved->settled_at, overlay.settled_at);
+		UAM_ASSERT_EQ(saved->snoozed_until_ms, overlay.snoozed_until_ms);
+	}
+}
+
+UAM_TEST(GitWorktreeCleanupRefusesWithdrawnOperationAndChangedSummary)
+{
+	if (!GitAvailableForTests()) return;
+	for (int withdrawal = 0; withdrawal != 3; ++withdrawal)
+	{
+		PortFixture fixture("patch");
+		AdmitWorktreeFamily(fixture);
+		auto request = std::make_shared<uam::AppState::GitPortRequest>();
+		auto lifetime = std::make_shared<int>(1);
+		request->handler_lifetime = lifetime;
+		request->lifetime_bound = true;
+		uam::ManagedSubagentControlService::BindWorktreeFamilyOperation(*fixture.app.worktree_cleanup_family, request);
+		std::string error;
+		UAM_ASSERT(uam::ManagedSubagentControlService::ValidateWorktreeFamily(*fixture.app.worktree_cleanup_family, &error));
+		if (withdrawal == 0) request->cancellation->request_stop();
+		if (withdrawal == 1) lifetime.reset();
+		if (withdrawal == 2)
+		{
+			auto overlay = fixture.app.chats.front(); overlay.attention_revision = "later summary";
+			UAM_ASSERT(ChatRepository::SaveLastOpenedAt(fixture.app.data_root, overlay));
+		}
+		const auto original = ChatRepository::ChatStorageRevision(fixture.app.data_root, fixture.app.chats.front().id);
+		UAM_ASSERT(!uam::GitWorktreeService().DiscardChatChanges(fixture.app, fixture.app.chats.front()).ok);
+		UAM_ASSERT_EQ(ChatRepository::ChatStorageRevision(fixture.app.data_root, fixture.app.chats.front().id), original);
 		fixture.AssertRetained();
 	}
 }

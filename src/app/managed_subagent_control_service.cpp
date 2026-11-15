@@ -1013,17 +1013,37 @@ namespace uam
 		return std::ranges::any_of(family.identities, [&](const auto& expected) { return expected.first == chat.id && CleanupSettled(chat) && expected.second == CleanupIdentity(chat); });
 	}
 
-	bool ManagedSubagentControlService::BindWorktreeFamilyParentRevision(const ManagedWorktreeFamily& family, const std::string& revision, std::string* error)
+	bool ManagedSubagentControlService::BindWorktreeFamilyParentRevision(const ManagedWorktreeFamily& family, const std::string& revision, const std::string& summary_revision, std::string* error)
 	{
-		if (family.identities.empty() || revision.empty()) return Fail(error, "Cleanup requires a saved parent revision before loading its candidate.");
+		if (family.identities.empty() || revision.empty() || summary_revision.empty()) return Fail(error, "Cleanup requires a saved parent revision before loading its candidate.");
+		if (family.parent_summary_revision && *family.parent_summary_revision != summary_revision) return Fail(error, "Cleanup summary changed before loading.");
+		family.parent_summary_revision = summary_revision;
 		const auto [entry, inserted] = family.revisions.emplace(family.identities.front().first, revision);
 		return inserted || entry->second == revision ? true : Fail(error, "Cleanup parent revision changed before candidate loading.");
 	}
 
+	void ManagedSubagentControlService::BindWorktreeFamilyOperation(const ManagedWorktreeFamily& family, const std::shared_ptr<AppState::GitPortRequest>& request)
+	{
+		family.operation = request;
+		family.operation_bound = true;
+	}
+
+	bool ManagedSubagentControlService::WorktreeFamilyOperationCurrent(const ManagedWorktreeFamily& family, std::string* error)
+	{
+		if (!family.operation_bound) return true;
+		const auto request = family.operation.lock();
+		if (!request || request->cancellation->stop_requested() || (request->lifetime_bound && request->handler_lifetime.expired()))
+			return Fail(error, "Workspace cleanup ownership was withdrawn; remaining files were retained.");
+		return true;
+	}
+
 	bool ManagedSubagentControlService::ValidateWorktreeFamily(const ManagedWorktreeFamily& family, std::string* error)
 	{
+		if (!WorktreeFamilyOperationCurrent(family, error)) return false;
 		if (family.identities.empty() || !family.revisions.contains(family.identities.front().first))
 			return Fail(error, "Cleanup parent candidate has no original saved revision.");
+		if (!family.parent_summary_revision || ChatRepository::ChatSummaryStorageRevision(family.data_root, family.identities.front().first) != family.parent_summary_revision)
+			return Fail(error, "Cleanup summary overlay changed; history and worktree were retained.");
 		const auto ledger = AgentRunLedger::LoadAllReadOnly(family.data_root);
 		std::unordered_set<std::string> expected_runs;
 		for (const auto& run : family.ownership.records) expected_runs.insert(run.id);

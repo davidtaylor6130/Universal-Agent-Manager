@@ -1117,6 +1117,7 @@ namespace uam
 				return false;
 			}
 
+			if (app.worktree_cleanup_family && !ManagedSubagentControlService::WorktreeFamilyOperationCurrent(*app.worktree_cleanup_family, error_out)) return false;
 			if (!worktree.empty())
 			{
 				if (uam::paths::PathExistsNoThrow(worktree))
@@ -1129,6 +1130,7 @@ namespace uam
 				}
 			}
 
+			if (app.worktree_cleanup_family && !ManagedSubagentControlService::WorktreeFamilyOperationCurrent(*app.worktree_cleanup_family, error_out)) return false;
 			const std::string branch_name = BranchNameFromStatusOrChat(status, chat);
 			if (!branch_name.empty() && OriginalWorktreeBranchPath(app, source, worktree, branch_name, chat.id))
 			{
@@ -2971,6 +2973,7 @@ namespace uam
 				return result;
 			}
 		}
+		if (app.worktree_cleanup_family && !ManagedSubagentControlService::ValidateWorktreeFamily(*app.worktree_cleanup_family, &result.message)) return result;
 		ProcessExecutionResult apply_result = RunCommand(BuildGitCommandInDirectory(source, std::string(result.status.managed_repository ? "-c core.autocrlf=false apply " : "apply --3way ") + uam::shell::EscapeArg(uam::paths::Utf8PathString(patch_path))));
 		if (!CommandSucceeded(apply_result))
 		{

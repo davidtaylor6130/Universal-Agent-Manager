@@ -5973,6 +5973,7 @@ std::optional<ChatSession> ChatRepository::LoadLocalChatPrimaryReadOnly(const fs
 	if (uam::paths::IsLinkOrReparsePointNoThrow(path) || uam::paths::IsLinkOrReparsePointNoThrow(path.parent_path())) return std::nullopt;
 	auto loaded = ParseLocalChatFile(path, include_messages, 0, false, kMaxChatJsonBytes);
 	if (!loaded.chat || loaded.chat->id != chat_id) return std::nullopt;
+	if (include_messages) ApplySummaryOpenedAtToFullChat(path, *loaded.chat, kMaxChatJsonBytes);
 	return std::move(loaded.chat);
 }
 

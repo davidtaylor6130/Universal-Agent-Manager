@@ -240,6 +240,7 @@ namespace
 			family_request->worktree = chat->workspace_worktree_directory; family_request->branch = chat->workspace_branch_name;
 			family_request->base = chat->workspace_base_ref;
 			app.git_port_requests[chat_id] = family_request;
+			uam::ManagedSubagentControlService::BindWorktreeFamilyOperation(*family, family_request);
 		}
 		auto state = std::make_shared<WorktreeAsyncState>();
 		ReadOnlyAppSnapshotInputs snapshot_inputs = CaptureReadOnlyAppSnapshotInputs(app);
@@ -264,8 +265,9 @@ namespace
 			    }
 			    uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(snapshot_inputs));
 			    const auto candidate_revision = ChatRepository::ChatStorageRevision(snapshot.data_root, chat_id);
+			    const auto summary_revision = ChatRepository::ChatSummaryStorageRevision(snapshot.data_root, chat_id);
 			    std::string revision_error;
-			    if (family && (!candidate_revision || !uam::ManagedSubagentControlService::BindWorktreeFamilyParentRevision(*family, *candidate_revision, &revision_error)))
+			    if (family && (!candidate_revision || !summary_revision || !uam::ManagedSubagentControlService::BindWorktreeFamilyParentRevision(*family, *candidate_revision, *summary_revision, &revision_error)))
 				    return AsyncFailure(409, revision_error.empty() ? "Parent storage could not be witnessed before cleanup." : revision_error);
 			    std::string load_warning;
 			    std::optional<ChatSession> chat = family
@@ -278,7 +280,7 @@ namespace
 				        FailureDetailOrFallback(
 				            load_warning, "Failed to load chat before its worktree operation."));
 			    }
-			    if (family && candidate_revision != ChatRepository::ChatStorageRevision(snapshot.data_root, chat_id))
+			    if (family && (candidate_revision != ChatRepository::ChatStorageRevision(snapshot.data_root, chat_id) || summary_revision != ChatRepository::ChatSummaryStorageRevision(snapshot.data_root, chat_id)))
 				    return AsyncFailure(409, "Parent history changed while loading cleanup input. Its worktree was retained.");
 			    snapshot.chats.push_back(std::move(*chat));
 			    snapshot.worktree_cleanup_family = family;
@@ -298,14 +300,23 @@ namespace
 		    },
 		    [live_app, browser, state, chat_id, fenced_ids, family_request](AsyncCefResult& result)
 		    {
+			    bool owns_completion = true;
 			    if (family_request)
 			    {
+				    const auto owner = live_app->git_port_requests.find(chat_id);
+				    const auto* current = ChatDomainService().FindChatById(*live_app, chat_id);
+				    owns_completion = owner != live_app->git_port_requests.end() && owner->second == family_request;
+				    const bool identity_current = current && live_app->data_root == family_request->root && current->metadata_incarnation == family_request->incarnation &&
+				        current->workspace_directory == family_request->workspace && current->workspace_source_directory == family_request->source &&
+				        current->workspace_worktree_directory == family_request->worktree && current->workspace_branch_name == family_request->branch && current->workspace_base_ref == family_request->base;
+				    if (!owns_completion || !identity_current || family_request->cancellation->stop_requested() || (family_request->lifetime_bound && family_request->handler_lifetime.expired()))
+				        result = AsyncFailure(409, "Workspace cleanup completion no longer belongs to this chat. Inspect its saved state before retrying.");
 				    family_request->gui_settled = true;
 				    family_request->lease.reset();
 				    const auto owner = live_app->git_port_requests.find(chat_id);
 				    if (owner != live_app->git_port_requests.end() && owner->second == family_request) live_app->git_port_requests.erase(owner);
 			    }
-			    for (const auto& id : fenced_ids) live_app->worktree_operation_chat_ids.erase(id);
+			    if (owns_completion) for (const auto& id : fenced_ids) live_app->worktree_operation_chat_ids.erase(id);
 			    if (!result.ok)
 			    {
 				    return;
