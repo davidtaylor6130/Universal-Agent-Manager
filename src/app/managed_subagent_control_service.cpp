@@ -905,6 +905,143 @@ namespace uam
 		return result;
 	}
 
+	namespace
+	{
+		bool CleanupSettled(const ChatSession& chat)
+		{
+			return !chat.imported_read_only && !chat.side_cleanup_requested && !chat.managed_followup_input_unavailable &&
+			    !chat.routing_reservation_pending && !chat.native_session_reset_pending && !chat.acp_queue_storage_error &&
+			    !chat.acp_queue_held && chat.acp_queued_prompts.empty() && chat.acp_unsent_prompt_recoveries.empty() &&
+			    !chat.passive_queued_prompt_archive && chat.acp_dispatched_queued_prompt_count == 0 && !chat.AwaitsAutomationApproval() &&
+			    !chat.remote_turn_reconnect_pending && !chat.remote_process_exists && !chat.remote_manual_compaction_pending &&
+			    !chat.remote_stop_cleanup_pending && !chat.remote_restart_pending && !chat.remote_recovery_enabled &&
+			    chat.remote_recovery_state.empty() && !chat.remote_source_exit_pending && chat.remote_interaction_responses.empty() &&
+			    chat.remote_process_control_token.empty() && chat.remote_prompt_delivery_session_id.empty() &&
+			    chat.remote_prompt_delivery_id.empty() && chat.remote_prompt_delivery_payload.empty() &&
+			    chat.remote_prompt_delivery_input_ids.empty() && chat.remote_pending_requests.empty() && chat.remote_active_turn_id.empty();
+		}
+		std::string CleanupIdentity(const ChatSession& chat)
+		{
+			return nlohmann::json::array({TranscriptKey(chat), chat.model_id, chat.native_session_id, chat.updated_at,
+			    chat.workspace_isolation_kind, chat.workspace_source_directory, chat.workspace_worktree_directory,
+			    chat.workspace_branch_name, chat.workspace_base_ref, chat.managed_followup_incarnation,
+			    chat.messages_loaded ? chat.messages.size() : chat.persisted_message_count}).dump();
+		}
+	}
+
+	std::vector<std::string> ManagedWorktreeFamily::ChatIds() const
+	{
+		std::vector<std::string> ids;
+		for (const auto& [id, identity] : identities) ids.push_back(id);
+		return ids;
+	}
+
+	std::shared_ptr<const ManagedWorktreeFamily> ManagedSubagentControlService::CaptureWorktreeFamily(const AppState& app, const std::string& root_id, std::string* error)
+	{
+		auto family = std::make_shared<ManagedWorktreeFamily>();
+		Index index;
+		if (!BuildIndex(app, root_id, index, error) || !Capture(app, root_id, &family->ownership, error)) return {};
+		family->data_root = app.data_root;
+		// Pending creation/follow-up owners have private worker claims. Do not infer settlement from a terminal ledger row.
+		if (!app.managed_initial_mentions.empty() || !app.managed_followups.empty() || !app.managed_initial_runtime_owners.empty() ||
+		    !app.pending_acp_remote_stops.empty() || !app.acp_process_stop_tasks.empty() || !app.managed_result_recoveries.empty() || !app.agent_input_preparation_tasks.empty() || app.deletion_progress)
+		{ Fail(error, "Wait for managed creation, follow-up, stop and deletion work to settle before cleanup."); return {}; }
+		std::vector<const ChatSession*> members{index.root};
+		for (const auto& [id, run] : index.runs)
+		{
+			if (run->root_chat_id != root_id) continue;
+			// V2 needs retirement of its same-live native follow-up authority as a separate transaction.
+			if (run->managed_continuation)
+			{ Fail(error, "Native follow-up capable subagents still retain this workspace; cleanup is not yet supported for this family."); return {}; }
+			const auto live = index.chats.find(run->transcript_chat_id);
+			const auto archived = index.archived.find(run->transcript_chat_id);
+			const ChatSession* chat = live != index.chats.end() ? live->second : archived != index.archived.end() ? archived->second : nullptr;
+			if (app.pending_agent_run_cancellation_ids.contains(id) || app.agent_result_retry_steady_ms.contains(id) ||
+			    std::ranges::find(app.queued_agent_run_ids, id) != app.queued_agent_run_ids.end() ||
+			    !Terminal(*run) || !Owned(index, *run) || index.transcript_uses[run->transcript_chat_id] != 1 ||
+			    !chat || !TranscriptMatches(index, *chat, *run) || chat->execution_host_id != index.root->execution_host_id ||
+			    chat->workspace_directory != index.root->workspace_worktree_directory ||
+			    !chat->workspace_worktree_directory.empty() || chat->workspace_source_directory != index.root->workspace_source_directory)
+			{ Fail(error, "A managed child is active or its workspace ownership is uncertain. Stop it and resolve its workspace before cleanup."); return {}; }
+			members.push_back(chat);
+		}
+		for (const auto* member : members)
+		{
+			const auto& chat = *member;
+			const auto branch = app.branch_preparations.find(chat.id);
+			if (!CleanupSettled(chat) || app.worktree_operation_chat_ids.contains(chat.id) || app.worktree_launch_preparations.contains(chat.id) ||
+			    app.pending_chat_save_at_by_chat_id.contains(chat.id) || app.pending_chat_save_tasks.contains(chat.id) ||
+			    app.chat_save_failures_by_chat_id.contains(chat.id) || app.pending_chat_save_retry_owners.contains(chat.id) ||
+			    app.pending_acp_completed_prompt_recoveries.contains(chat.id) || app.execution_routing_restored_unresolved_chat_ids.contains(chat.id) ||
+			    app.execution_routing_reserved_chat_ids.contains(chat.id) || app.execution_routing_waits.contains(chat.id) ||
+			    app.agent_startup_stop_deadline_steady_ms.contains(chat.id) || (branch != app.branch_preparations.end() && !branch->second.expired()) ||
+			    AgentRunScheduler::HasPendingInitialMention(app, chat.id) ||
+			    (chat.id != root_id && std::ranges::any_of(app.acp_sessions, [&](const auto& session) { return session && session->chat_id == chat.id; })) ||
+			    std::ranges::any_of(app.cli_terminals, [&](const auto& terminal) { return terminal && (terminal->running || terminal->should_launch || terminal->worktree_launch_pending) && (terminal->attached_chat_id == chat.id || terminal->frontend_chat_id == chat.id); }))
+			{ Fail(error, "Stop the parent and managed child runtimes and wait for input, recovery and saves to settle before cleanup."); return {}; }
+			family->identities.emplace_back(chat.id, CleanupIdentity(chat));
+		}
+		const auto retain = [&](const auto& chats)
+		{
+			for (const auto& chat : chats)
+			{
+				if (WorktreeFamilyContains(*family, chat)) continue;
+				auto& reference = family->unrelated_references.emplace_back();
+				reference.id = chat.id; reference.execution_host_id = chat.execution_host_id;
+				reference.workspace_directory = chat.workspace_directory;
+				reference.workspace_source_directory = chat.workspace_source_directory;
+				reference.workspace_worktree_directory = chat.workspace_worktree_directory;
+			}
+		};
+		retain(app.chats); retain(app.excluded_provider_chats);
+		if (app.hidden_agent_chat_ownership.data_root == app.data_root) retain(app.hidden_agent_chat_ownership.chats);
+		return family;
+	}
+
+	bool ManagedSubagentControlService::WorktreeFamilyContains(const ManagedWorktreeFamily& family, const ChatSession& chat)
+	{
+		return std::ranges::any_of(family.identities, [&](const auto& expected) { return expected.first == chat.id && CleanupSettled(chat) && expected.second == CleanupIdentity(chat); });
+	}
+
+	bool ManagedSubagentControlService::ValidateWorktreeFamily(const ManagedWorktreeFamily& family, std::string* error)
+	{
+		const auto ledger = AgentRunLedger::LoadAllReadOnly(family.data_root);
+		std::unordered_set<std::string> expected_runs;
+		for (const auto& run : family.ownership.records) expected_runs.insert(run.id);
+		if (!ledger.errors.empty()) return Fail(error, "Managed ledger could not be verified; cleanup refused.");
+		for (const auto& run : ledger.runs)
+			if (run.root_chat_id == family.identities.front().first && !expected_runs.erase(run.id))
+				return Fail(error, "Managed family membership changed; cleanup refused.");
+		if (!expected_runs.empty()) return Fail(error, "Managed family membership changed; cleanup refused.");
+		if (!ReadDetached(family.ownership, false).ready)
+			return Fail(error, "Managed family ledger changed; the worktree and branch were retained.");
+		for (const auto& [id, identity] : family.identities)
+		{
+			const auto before = ChatRepository::ChatStorageRevision(family.data_root, id);
+			const auto chat = ReadHistoryPrimary(family.data_root, id);
+			const auto after = ChatRepository::ChatStorageRevision(family.data_root, id);
+			if (!before || before != after || !chat || !WorktreeFamilyContains(family, *chat))
+				return Fail(error, "Managed family saved identity or input changed; the worktree and branch were retained.");
+			const auto [entry, inserted] = family.revisions.emplace(id, *before);
+			if (!inserted && entry->second != *before)
+				return Fail(error, "Managed family saved revision changed; the worktree and branch were retained.");
+		}
+		return true;
+	}
+
+	bool ManagedSubagentControlService::PublishWorktreeCleanup(const ManagedWorktreeFamily& family, const ChatSession& candidate, std::string* error)
+	{
+		if (family.identities.empty() || candidate.id != family.identities.front().first || !ValidateWorktreeFamily(family, error)) return false;
+		const auto revision = family.revisions.find(candidate.id);
+		if (revision == family.revisions.end()) return Fail(error, "Cleanup publication has no saved parent witness.");
+		const auto prepared = ChatRepository::PrepareChatPublication(family.data_root, candidate, ChatPublicationMode::UpdateExisting, revision->second, error);
+		if (!prepared) return false;
+		const auto result = ChatRepository::PublishPreparedChatPublication(prepared, [&] { return ValidateWorktreeFamily(family, error); });
+		if (result.state != ChatPublicationState::Committed)
+			return Fail(error, "Cleanup metadata publication failed or is uncertain; the worktree and branch were retained.");
+		return true;
+	}
+
 	bool ManagedSubagentControlService::MatchesSnapshot(const AppState& app, const ManagedSubagentSnapshot& snapshot)
 	{
 		ManagedSubagentSnapshot current;

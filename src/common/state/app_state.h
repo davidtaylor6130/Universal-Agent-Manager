@@ -48,6 +48,7 @@ namespace uam
 	class DataFolderSettingsService;
 	class OpenCodeNativeActivityService;
 	class ManagedSubagentCancellationReceipt;
+	class ManagedWorktreeFamily;
 	struct ManagedInitialHistoryCatalogue;
 	struct OpenCodeNativeCompanion;
 	struct OpenCodeTerminalActivityObserver;
@@ -1648,10 +1649,12 @@ namespace uam
 		std::unordered_map<std::string, double> remote_recovery_hydration_retry_not_before_by_chat_id;
 		std::optional<DeletionProgress> deletion_progress;
 		std::unordered_set<std::string> worktree_operation_chat_ids;
+		std::shared_ptr<const ManagedWorktreeFamily> worktree_cleanup_family;
 		std::unordered_map<std::string, std::shared_ptr<ChatBaselinePreparation>> repository_baseline_preparations;
 		std::vector<std::shared_ptr<ChatBaselinePreparation>> retired_repository_baseline_preparations;
 		struct GitPortRequest
 		{
+			std::vector<std::string> family_fenced_ids;
 			enum class WorkerState { Queued, Running, Finished };
 			std::atomic<WorkerState> worker_state{WorkerState::Queued};
 			std::shared_ptr<WorkspaceLeaseGate::Lease> lease;

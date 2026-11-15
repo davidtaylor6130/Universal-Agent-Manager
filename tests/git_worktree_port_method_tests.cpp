@@ -1,4 +1,5 @@
 #include "test_harness.h"
+#include "app/managed_subagent_control_service.h"
 
 using namespace uam_test;
 
@@ -240,5 +241,169 @@ UAM_TEST(GitWorktreeUnsavedSharedChatRefusesDiscard)
 	alias.id += "-unsaved-alias";
 	fixture.app.chats.push_back(alias);
 	UAM_ASSERT(!uam::GitWorktreeService().DiscardChatChanges(fixture.app, fixture.app.chats.front()).ok);
+	fixture.AssertRetained();
+}
+
+namespace
+{
+	std::string AddFinishedWorktreeChild(PortFixture& fixture, const std::string& parent = {})
+	{
+		AgentRun run;
+		run.id = uam::AgentRunLedger::NewRunId();
+		run.root_chat_id = fixture.app.chats.front().id;
+		run.parent_run_id = parent;
+		run.depth = parent.empty() ? 1 : 2;
+		run.transcript_chat_id = "child-" + run.id;
+		run.agent_id = "worker";
+		run.provider_id = fixture.app.chats.front().provider_id;
+		run.model_id = fixture.app.chats.front().model_id;
+		run.execution_capability = "uam-prompt-injected";
+		run.effective_workspace_access = "write";
+		run.status = "completed";
+		run.created_at = fixture.app.chats.front().created_at;
+		run.updated_at = run.created_at;
+		run.finished_at = run.created_at;
+		ChatSession child = ChatDomainService().CreateNewChat("", run.provider_id);
+		child.id = run.transcript_chat_id;
+		child.agent_run_id = run.id;
+		child.model_id = run.model_id;
+		child.execution_host_id = fixture.app.chats.front().execution_host_id;
+		child.workspace_directory = fixture.worktree.string();
+		child.workspace_source_directory = fixture.app.chats.front().workspace_source_directory;
+		child.native_session_id = "retained-native-history";
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, child));
+		fixture.app.hidden_agent_chat_ownership.data_root = fixture.app.data_root;
+		fixture.app.hidden_agent_chat_ownership.chats.push_back(child);
+		fixture.app.agent_runs.push_back(run);
+		UAM_ASSERT(uam::AgentRunLedger::Save(fixture.app.data_root, run));
+		return run.id;
+	}
+
+	void AdmitWorktreeFamily(PortFixture& fixture)
+	{
+		std::string error;
+		fixture.app.worktree_cleanup_family = uam::ManagedSubagentControlService::CaptureWorktreeFamily(fixture.app, fixture.app.chats.front().id, &error);
+		UAM_ASSERT(fixture.app.worktree_cleanup_family);
+		for (const auto& id : fixture.app.worktree_cleanup_family->ChatIds()) fixture.app.worktree_operation_chat_ids.insert(id);
+	}
+}
+
+UAM_TEST(GitWorktreeFinishedManagedFamilyPermitsPortAndDiscardPreservingHistory)
+{
+	if (!GitAvailableForTests()) return;
+	for (const bool discard : {false, true})
+	{
+		PortFixture fixture("patch");
+		const auto parent = AddFinishedWorktreeChild(fixture);
+		AddFinishedWorktreeChild(fixture, parent);
+		const auto child_id = fixture.app.hidden_agent_chat_ownership.chats.front().id;
+		const auto before = ChatRepository::ChatStorageRevision(fixture.app.data_root, child_id);
+		AdmitWorktreeFamily(fixture);
+		const auto result = discard ? uam::GitWorktreeService().DiscardChatChanges(fixture.app, fixture.app.chats.front()) : uam::GitWorktreeService().PortChatChanges(fixture.app, fixture.app.chats.front());
+		UAM_ASSERT(result.ok);
+		UAM_ASSERT(!fs::exists(fixture.worktree));
+		UAM_ASSERT(!RunGitForTest(fixture.source, "show-ref --verify refs/heads/" + fixture.chat_branch));
+		UAM_ASSERT(before == ChatRepository::ChatStorageRevision(fixture.app.data_root, child_id));
+		const auto history = ChatRepository::LoadLocalChat(fixture.app.data_root, child_id, true);
+		UAM_ASSERT(history && history->native_session_id == "retained-native-history");
+		UAM_ASSERT_EQ(history->workspace_directory, fixture.worktree.string());
+	}
+}
+
+UAM_TEST(GitWorktreeManagedFamilyRefusesActiveQueuedStoppingAndHeldClaims)
+{
+	if (!GitAvailableForTests()) return;
+	for (int claim = 0; claim < 8; ++claim)
+	{
+		PortFixture fixture("patch");
+		const auto run_id = AddFinishedWorktreeChild(fixture);
+		auto& child = fixture.app.hidden_agent_chat_ownership.chats.front();
+		if (claim == 0) fixture.app.agent_runs.front().status = "running";
+		if (claim == 1) fixture.app.queued_agent_run_ids.push_back(run_id);
+		if (claim == 2) fixture.app.pending_agent_run_cancellation_ids.insert(run_id);
+		if (claim == 3) child.acp_queue_held = true;
+		if (claim == 4) child.remote_stop_cleanup_pending = true;
+		if (claim == 5) fixture.app.pending_chat_save_at_by_chat_id[child.id] = 1;
+		if (claim == 6) fixture.app.execution_routing_restored_unresolved_chat_ids.insert(child.id);
+		if (claim == 7)
+		{
+			auto session = std::make_unique<uam::AcpSessionState>();
+			session->chat_id = child.id; // Even idle live runtimes must complete ordinary Stop.
+			fixture.app.acp_sessions.push_back(std::move(session));
+		}
+		std::string error;
+		UAM_ASSERT(!uam::ManagedSubagentControlService::CaptureWorktreeFamily(fixture.app, fixture.app.chats.front().id, &error));
+		UAM_ASSERT(!error.empty());
+		fixture.AssertRetained();
+	}
+}
+
+UAM_TEST(GitWorktreeManagedFamilyRefusesReboundAndForgedLineage)
+{
+	if (!GitAvailableForTests()) return;
+	for (int kind = 0; kind < 3; ++kind)
+	{
+		PortFixture fixture("patch");
+		AddFinishedWorktreeChild(fixture);
+		if (kind == 0) fixture.app.hidden_agent_chat_ownership.chats.front().agent_run_id = "forged";
+		if (kind == 1) fixture.app.agent_runs.front().parent_run_id = uam::AgentRunLedger::NewRunId();
+		if (kind == 2) fixture.app.hidden_agent_chat_ownership.chats.front().workspace_directory = fixture.source.string();
+		std::string error;
+		UAM_ASSERT(!uam::ManagedSubagentControlService::CaptureWorktreeFamily(fixture.app, fixture.app.chats.front().id, &error));
+		fixture.AssertRetained();
+	}
+}
+
+UAM_TEST(GitWorktreeManagedFamilyChangedSavedRevisionRetainsFilesAndBranch)
+{
+	if (!GitAvailableForTests()) return;
+	PortFixture fixture("patch");
+	AddFinishedWorktreeChild(fixture);
+	AdmitWorktreeFamily(fixture);
+	std::string error;
+	UAM_ASSERT(uam::ManagedSubagentControlService::ValidateWorktreeFamily(*fixture.app.worktree_cleanup_family, &error));
+	auto child = fixture.app.hidden_agent_chat_ownership.chats.front();
+	child.title = "Changed after worker admission";
+	UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, child));
+	UAM_ASSERT(!uam::GitWorktreeService().DiscardChatChanges(fixture.app, fixture.app.chats.front()).ok);
+	fixture.AssertRetained();
+}
+
+UAM_TEST(GitWorktreeManagedFamilyDoesNotExemptUnrelatedLiveReferencesOrBranchRemoval)
+{
+	if (!GitAvailableForTests()) return;
+	PortFixture fixture("patch");
+	AddFinishedWorktreeChild(fixture);
+	ChatSession alias = fixture.app.chats.front();
+	alias.id += "-unsaved-independent";
+	fixture.app.chats.push_back(alias);
+	AdmitWorktreeFamily(fixture);
+	// Match the bridge worker: the unrelated reference exists only in the immutable captured admission.
+	fixture.app.chats.pop_back();
+	UAM_ASSERT(!uam::GitWorktreeService().DiscardChatChanges(fixture.app, fixture.app.chats.front()).ok);
+	std::string error;
+	UAM_ASSERT(!uam::GitWorktreeService().RemoveUnusedBranchWorktree(fixture.app, fixture.app.chats.front(), &error));
+	fixture.AssertRetained();
+}
+
+UAM_TEST(GitWorktreeManagedFamilyFencesRetireAfterExpiredWorkerSettles)
+{
+	PortFixture fixture("patch");
+	AddFinishedWorktreeChild(fixture);
+	AdmitWorktreeFamily(fixture);
+	const auto ids = fixture.app.worktree_cleanup_family->ChatIds();
+	auto request = std::make_shared<uam::AppState::GitPortRequest>();
+	request->family_fenced_ids = ids;
+	request->lifetime_bound = true;
+	request->worker_state.store(uam::AppState::GitPortRequest::WorkerState::Running);
+	request->lease = fixture.app.worktree_retention_gate.TryAcquireMutation();
+	fixture.app.git_port_requests[fixture.app.chats.front().id] = request;
+	uam::PollGitPortRequests(fixture.app);
+	for (const auto& id : ids) UAM_ASSERT(fixture.app.worktree_operation_chat_ids.contains(id));
+	request->worker_state.store(uam::AppState::GitPortRequest::WorkerState::Finished);
+	uam::PollGitPortRequests(fixture.app);
+	for (const auto& id : ids) UAM_ASSERT(!fixture.app.worktree_operation_chat_ids.contains(id));
+	UAM_ASSERT(fixture.app.git_port_requests.empty());
+	UAM_ASSERT(fixture.app.worktree_retention_gate.TryAcquireCleanup());
 	fixture.AssertRetained();
 }
