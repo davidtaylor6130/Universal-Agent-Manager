@@ -120,7 +120,8 @@ namespace uam
 		                    const std::string& parent_run_id, const std::string& agent_id,
 		                    const std::string& task, std::string* run_id_out = nullptr,
 		                    std::string* error_out = nullptr, const std::string& provider_id = {},
-		                    const std::string& model_id = {}, bool additional_read_only_ceiling = false);
+		                    const std::string& model_id = {}, bool additional_read_only_ceiling = false,
+		                    const std::optional<std::string>& reasoning_effort = std::nullopt);
 		static bool TryEnqueueMention(AppState& app, const std::string& root_chat_id,
 		                              const std::string& text, bool* handled_out,
 		                              std::string* run_id_out = nullptr,

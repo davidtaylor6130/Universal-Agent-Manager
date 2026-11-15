@@ -1619,3 +1619,52 @@ UAM_TEST(AgentListConfigModelChoicesRespectNativePrecedenceAndBounds)
 			UAM_ASSERT(changed != rebound.end()); UAM_ASSERT(changed->at("models").empty());
 		}
 }
+
+UAM_TEST(ManagedDelegationSelectsAndPersistsExplicitReasoningEffort)
+{
+	for (const std::string effort : {"high", ""})
+	{
+		TargetMetadataFixture fixture;
+		auto& app = fixture.app;
+		app.chats.front().reasoning_effort = "medium";
+		UAM_ASSERT(app.provider_model_catalog->RememberSuccessfulModels("codex-cli",
+		    nlohmann::json::array({{{"id", "parent-model"}, {"supportedReasoningEfforts", {"low", "medium", "high"}}, {"defaultReasoningEffort", "medium"}}}),
+		    app.chats.front().workspace_directory));
+		const auto targets = fixture.Targets();
+		const auto target = std::ranges::find_if(targets, [](const auto& value) { return value.value("providerId", "") == "codex-cli"; });
+		UAM_ASSERT(target != targets.end());
+		UAM_ASSERT_EQ(target->at("models")[0].at("supportedReasoningEfforts"), nlohmann::json::array({"low", "medium", "high"}));
+		const auto result = uam::UamControlService::HandleRequestForTests(app, "target-capability",
+		    {{"requestId", "explicit-effort"}, {"method", "agent_delegate"},
+		     {"arguments", {{"agentId", "worker"}, {"task", "Do bounded work."}, {"reasoningEffort", effort}}}}, 1001);
+		UAM_ASSERT(result.value("ok", false));
+		UAM_ASSERT_EQ(app.chats.back().reasoning_effort, effort);
+		UAM_ASSERT_EQ(app.chats.front().reasoning_effort, std::string("medium"));
+		const auto saved = ChatRepository::LoadLocalChat(app.data_root, app.chats.back().id);
+		UAM_ASSERT(saved.has_value());
+		UAM_ASSERT_EQ(saved->reasoning_effort, effort);
+		UAM_ASSERT_EQ(app.agent_runs.back().effective_workspace_access, std::string("read"));
+	}
+}
+
+UAM_TEST(ManagedDelegationRejectsUnknownUnsupportedAndForeignScopeEffortBeforeAdmission)
+{
+	for (const auto effort : {nlohmann::json("ultra"), nlohmann::json("bogus"), nlohmann::json(4)})
+	{
+		TargetMetadataFixture fixture;
+		auto& app = fixture.app;
+		UAM_ASSERT(app.provider_model_catalog->RememberSuccessfulModels("codex-cli",
+		    nlohmann::json::array({{{"id", "parent-model"}, {"supportedReasoningEfforts", {"medium"}}}}),
+		    app.chats.front().workspace_directory));
+		// A different workspace advertising the requested level grants no authority here.
+		UAM_ASSERT(app.provider_model_catalog->RememberSuccessfulModels("codex-cli",
+		    nlohmann::json::array({{{"id", "parent-model"}, {"supportedReasoningEfforts", {"ultra"}}}}),
+		    app.chats.front().workspace_directory + "-other"));
+		const auto result = uam::UamControlService::HandleRequestForTests(app, "target-capability",
+		    {{"requestId", "unsupported-effort"}, {"method", "agent_delegate"},
+		     {"arguments", {{"agentId", "worker"}, {"task", "Do bounded work."}, {"reasoningEffort", effort}}}}, 1001);
+		UAM_ASSERT(!result.value("ok", false));
+		UAM_ASSERT(app.agent_runs.empty() && app.queued_agent_run_ids.empty());
+		UAM_ASSERT_EQ(app.chats.size(), std::size_t{1});
+	}
+}

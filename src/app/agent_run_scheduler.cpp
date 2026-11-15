@@ -2,6 +2,7 @@
 #include "app/managed_parent_continuation_service.h"
 #include "app/execution_routing_integration.h"
 #include "app/agent_run_scheduler.h"
+#include "app/managed_agent_model_options.h"
 #include "app/managed_subagent_followup_service.h"
 
 #include "app/agent_definition_service.h"
@@ -3259,7 +3260,8 @@ namespace uam
 	                                const std::string& parent_run_id, const std::string& agent_id,
 	                                const std::string& task, std::string* run_id_out,
 	                                std::string* error_out, const std::string& provider_id,
-	                                const std::string& model_id, bool additional_read_only_ceiling)
+	                                const std::string& model_id, bool additional_read_only_ceiling,
+	                                const std::optional<std::string>& reasoning_effort)
 	{
 		ChatSession* root_chat = ChatDomainService().FindChatById(app, uam::strings::Trim(root_chat_id));
 		if (root_chat && HasPendingInitialMention(app, root_chat->id))
@@ -3403,6 +3405,21 @@ namespace uam
 				transcript.reasoning_effort = root_chat->reasoning_effort;
 			transcript.service_tier = root_chat->service_tier;
 			transcript.service_tier_explicit = root_chat->service_tier_explicit;
+		}
+		if (reasoning_effort)
+		{
+			const std::string requested = strings::Trim(*reasoning_effort);
+			const std::string normalized = provider_chat_defaults::NormalizeReasoningEffort(selected_provider, requested);
+			if (!requested.empty())
+			{
+				const auto options = ManagedAgentModelOptions(app, transcript, selected_provider, transcript.model_id);
+				if (normalized.empty() || !ranges::Contains(options.supported_reasoning_efforts, normalized))
+				{
+					if (error_out) *error_out = "The selected child model on its execution host does not support that reasoning effort. Check agent_list before delegating again.";
+					return false;
+				}
+			}
+			transcript.reasoning_effort = normalized;
 		}
 		transcript.command_safety_tier = root_chat->command_safety_tier;
 		transcript.approval_mode = read_only ? approval_modes::kPlanApprovalMode : root_chat->approval_mode;
