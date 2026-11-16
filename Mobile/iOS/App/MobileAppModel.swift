@@ -567,13 +567,24 @@ final class MobileAppModel
         return messages + [stream]
     }
 
-    func sendDraft() async
+    /// What Send does in this chat's running turn, from the desktop's Send during a running turn preference; nil when no structured turn can take a steer.
+    func activeTurnSend(for chat: MobileChat) -> ActiveTurnSend?
+    {
+        // A turn held for a compute pool slot has not reached the provider, so Send queues behind it.
+        guard chat.runtime.flag("processing"), chat.runtime.object("computePoolWait").isEmpty else { return nil }
+        let native = providers.first { $0.text("id") == chat.providerID }?.flag("supportsNativeSteering") == true
+        return ActiveTurnSend(steer: settings.flag("steerActiveTurnOnSend"), interrupts: !native)
+    }
+
+    /// `alternate` sends with the other running-turn action than the preference, like the desktop's button beside Send.
+    func sendDraft(alternate: Bool = false) async
     {
         guard let context = draftContext, canWriteDraft(context) else { return }
         let sendingClient = client
         guard let id = activeChatID, let origin = draftContext, sendingClient != nil || requestHandler != nil, !isSending,
               !draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !draft.attachments.isEmpty else { return }
         let sentDraft = draft
+        let steerNow = chat.flatMap { activeTurnSend(for: $0) }.map { $0.steer != alternate } ?? false
         let stamp = generation
         busyActions.insert("send")
         defer { if generation == stamp { busyActions.remove("send") } }
@@ -589,7 +600,7 @@ final class MobileAppModel
                 guard generation == stamp else { return }
             }
             guard canWriteDraft(origin) else { return }
-            _ = try await request("sendAcpPrompt", ["chatId": id, "text": sentDraft.text, "attachments": staged, "markdownStoreFiles": [], "steerNow": false], using: sendingClient)
+            _ = try await request("sendAcpPrompt", ["chatId": id, "text": sentDraft.text, "attachments": staged, "markdownStoreFiles": [], "steerNow": steerNow], using: sendingClient)
             // A failed reload while sending must not replace the preserved disk draft.
             guard canWriteDraft(origin) else { return }
             // Acknowledgement belongs to the captured origin, even after chat navigation.

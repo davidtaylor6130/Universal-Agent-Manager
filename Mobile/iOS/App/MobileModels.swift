@@ -242,3 +242,13 @@ func shortModelName(_ string: String) -> String
 {
     string.split(separator: "/").last.map(String.init) ?? string
 }
+
+/// What composer Send does while a structured turn runs. Providers without native steering stop the turn and send the steer first.
+struct ActiveTurnSend: Equatable
+{
+    var steer: Bool
+    var interrupts: Bool
+    var steerLabel: String { interrupts ? "Interrupt and steer" : "Steer active turn" }
+    var label: String { steer ? steerLabel : "Queue for next turn" }
+    var alternateLabel: String { (steer ? "Queue for next turn" : steerLabel) + " instead" }
+}

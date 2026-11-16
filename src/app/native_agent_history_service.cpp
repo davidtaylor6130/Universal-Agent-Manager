@@ -10,8 +10,10 @@
 #include "common/utils/history_timestamp_order.h"
 #include "remote/native_history_snapshot.h"
 #include "remote/runner_client.h"
+#include "common/utils/uuid.h"
 
 #include <algorithm>
+#include <set>
 #include <utility>
 #include <vector>
 
@@ -192,6 +194,78 @@ std::optional<ChatSession> ParseHistorySnapshot(const ExecutionHost& host, const
 	if (!loaded && error && error->empty()) *error = "This provider's exact native agent transcript is unavailable.";
 	return loaded;
 }
+
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+std::optional<NativeChildListing> ParseGeminiChildListing(const ExecutionHost& host, const ChatSession& source, const nlohmann::json& listing, std::string* error)
+{
+	const auto fail = [&](const char* message) -> std::optional<NativeChildListing> { if (error) *error = message; return std::nullopt; };
+	if (host.id.empty() || host.id == "local" || host.id != source.execution_host_id || host.transport != "ssh" || !listing.is_object() ||
+		remote::native_history::String(listing, "providerId") != provider_ids::kGeminiCli ||
+		remote::native_history::String(listing, "sessionId") != source.native_session_id ||
+		!execution_hosts::RemotePathsMatch(host.platform, remote::native_history::String(listing, "workspace"), source.workspace_directory))
+		return fail("The child conversation list does not attest its provider, parent, host and workspace.");
+	const auto children = listing.find("children");
+	const auto unreadable = listing.find("unreadable");
+	const auto truncated = listing.find("truncated");
+	if (children == listing.end() || !children->is_array() || children->size() > remote::native_history::kMaxGeminiChildren ||
+		unreadable == listing.end() || !unreadable->is_number_unsigned() || truncated == listing.end() || !truncated->is_boolean())
+		return fail("The child conversation list is invalid.");
+	NativeChildListing parsed;
+	parsed.unreadable = unreadable->get<std::size_t>();
+	parsed.truncated = truncated->get<bool>();
+	std::set<std::string> seen;
+	for (const auto& row : *children)
+	{
+		const auto messages = row.is_object() ? row.find("messages") : row.end();
+		if (!row.is_object() || messages == row.end() || !messages->is_number_unsigned() || *messages == 0) return fail("The child conversation list is invalid.");
+		const std::string agent = remote::native_history::String(row, "agentId");
+		if (!remote::native_history::SafeId(agent) || !seen.insert(agent).second) return fail("The child conversation list is invalid.");
+		std::string reference = BuildHistoryId(provider_ids::kGeminiCli, source.native_session_id, agent, host.id);
+		if (reference.empty()) { ++parsed.unreadable; continue; } // A longer id than a history reference can hold.
+		parsed.children.push_back({std::move(reference), std::string(strings::Utf8Prefix(remote::native_history::String(row, "preview"), remote::native_history::kMaxGeminiChildPreviewBytes)),
+			std::string(strings::Utf8Prefix(remote::native_history::String(row, "startedAt"), 64)), std::string(strings::Utf8Prefix(remote::native_history::String(row, "updatedAt"), 64)), messages->get<std::size_t>()});
+	}
+	return parsed;
+}
+
+std::optional<NativeChildListing> ListGeminiChildren(const ChatSession& source, const std::optional<ExecutionHost>& host, std::string* error, std::stop_token stop_token)
+{
+	if (error) error->clear();
+	const auto fail = [&](const std::string& message) -> std::optional<NativeChildListing> { if (error) *error = message; return std::nullopt; };
+	if (provider_ids::NormalizeCliProviderAliasOrSelf(source.provider_id) != provider_ids::kGeminiCli || source.imported_read_only || !uuid::IsCanonicalUuid(source.native_session_id))
+		return fail("This chat has no exact Gemini parent session.");
+	std::optional<NativeChildListing> listing;
+	if (!host)
+	{
+		if (!paths::IsControllerLocalWorkspace(source) || !paths::PathFromUtf8(source.workspace_directory).is_absolute())
+			return fail("The exact local Gemini parent workspace is unavailable.");
+		remote::native_history::GeminiChildListing local;
+		std::string read_error;
+		if (!remote::native_history::ListGeminiChildren(source.native_session_id, source.workspace_directory, local, read_error, stop_token))
+			return fail(read_error);
+		listing.emplace();
+		listing->unreadable = local.unreadable;
+		listing->truncated = local.truncated;
+		for (auto& child : local.children)
+		{
+			std::string reference = BuildHistoryId(provider_ids::kGeminiCli, source.native_session_id, child.agent_id, "local");
+			if (reference.empty()) { ++listing->unreadable; continue; } // A longer id than a history reference can hold.
+			listing->children.push_back({std::move(reference), std::move(child.preview), std::move(child.started_at), std::move(child.updated_at), child.messages});
+		}
+	}
+	else
+	{
+		if (host->id != source.execution_host_id || host->transport != "ssh" || host->runner_status != "ready")
+			return fail("The exact remote native parent helper is unavailable.");
+		remote::RunnerClient client(PlatformServicesFactory::Instance().process_service, *host);
+		nlohmann::json snapshot;
+		if (!client.ListGeminiChildren(source.native_session_id, source.workspace_directory, snapshot, error, stop_token)) return std::nullopt;
+		listing = ParseGeminiChildListing(*host, source, snapshot, error);
+		if (!listing) return std::nullopt;
+	}
+	return listing;
+}
+#endif
 
 std::optional<ChatSession> LoadHistory(const ChatSession& source, std::string_view reference,
 	const std::optional<ExecutionHost>& host, std::string* error, std::stop_token stop_token)

@@ -2,11 +2,6 @@
 #include "app/startup_native_import_service.h"
 #include "common/runtime/cli_version_parser.h"
 
-#if defined(_WIN32)
-#include <fcntl.h>
-#include <io.h>
-#endif
-
 using namespace uam_test;
 
 // A private runner fixture: no provider CLI or real SSH connection is launched.
@@ -19,11 +14,7 @@ std::optional<int> RunEmptyNativeImportFixture(int argc, char** argv)
 	std::string output;
 	std::uint64_t cursor = 0;
 	bool rpc_process = false;
-#if defined(_WIN32)
-	// Text mode would turn a 0x0A byte in a frame's binary length into CR LF.
-	(void)_setmode(_fileno(stdin), _O_BINARY);
-	(void)_setmode(_fileno(stdout), _O_BINARY);
-#endif
+	uam_test::UseBinaryFrameStdio();
 	while (uam::remote::ReadFrame(std::cin, request) == uam::remote::FrameReadResult::Ok)
 	{
 		const std::string type = request.value("type", "");

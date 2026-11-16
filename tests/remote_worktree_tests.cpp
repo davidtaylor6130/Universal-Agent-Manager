@@ -22,6 +22,7 @@ std::optional<int> RunRemoteWorktreeReceiptFixture(int argc, char** argv)
 	const std::string target = uam::env::GetNonEmptyString("UAM_PRIVATE_WORKTREE_TARGET").value_or("");
 	int removal_attempts = 0;
 	nlohmann::json request;
+	uam_test::UseBinaryFrameStdio();
 	while (uam::remote::ReadFrame(std::cin, request) == uam::remote::FrameReadResult::Ok)
 	{
 		const std::string type = request.value("type", "");

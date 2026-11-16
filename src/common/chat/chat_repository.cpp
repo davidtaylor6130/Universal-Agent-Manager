@@ -4893,30 +4893,34 @@ std::string ChatRepository::ChatMetadataFingerprint(const fs::path& data_root, c
 namespace
 {
 	/// One identity rule for both links: `declared_parent` is the parent a provider's own child record names (native
-	/// import); without it the parent's loaded spawn tool calls must name the child (explicit open).
-	bool ApplyNativeChildLineage(const ChatSession& source, ChatSession& child, std::string_view native_child_id, std::string_view declared_parent);
+	/// import); without it the parent's loaded spawn tool calls must name the child (explicit open), or, for Gemini,
+	/// the attested listing of the parent's child directory.
+	bool ApplyNativeChildLineage(const ChatSession& source, ChatSession& child, std::string_view native_child_id, std::string_view declared_parent, bool attested_gemini_listing);
 }
 
-bool ChatRepository::ApplyNativeChildDisplayLineage(const ChatSession& source, ChatSession& child, std::string_view native_child_id)
+bool ChatRepository::ApplyNativeChildDisplayLineage(const ChatSession& source, ChatSession& child, std::string_view native_child_id, bool attested_gemini_listing)
 {
-	return ApplyNativeChildLineage(source, child, native_child_id, {});
+	return ApplyNativeChildLineage(source, child, native_child_id, {}, attested_gemini_listing);
 }
 
 bool ChatRepository::ApplyImportedNativeChildLineage(const ChatSession& source, ChatSession& child)
 {
 	const std::string declared = uam::strings::Trim(child.native_parent_session_id);
-	return !declared.empty() && ApplyNativeChildLineage(source, child, child.imported_read_only ? child.id : child.native_session_id, declared);
+	return !declared.empty() && ApplyNativeChildLineage(source, child, child.imported_read_only ? child.id : child.native_session_id, declared, false);
 }
 
 namespace
 {
-bool ApplyNativeChildLineage(const ChatSession& source, ChatSession& child, std::string_view native_child_id, std::string_view declared_parent)
+bool ApplyNativeChildLineage(const ChatSession& source, ChatSession& child, std::string_view native_child_id, std::string_view declared_parent, bool attested_gemini_listing)
 {
 	// This is a display receipt of a validated open, not evidence that a native
 	// session can be resumed or controlled. Titles and tool arguments are not IDs.
 	const std::string native_id = uam::strings::Trim(native_child_id);
 	const std::string provider = uam::provider_ids::NormalizeCliProviderAliasOrSelf(source.provider_id);
-	if (source.imported_read_only || (declared_parent.empty() && !source.messages_loaded) || source.id.empty() || child.id.empty() || source.id == child.id ||
+	// Gemini ACP reports no child IDs, so tool evidence cannot exist. A reference this app just listed
+	// from the attested parent directory is that evidence instead, and needs no loaded parent messages.
+	const bool listed = attested_gemini_listing && provider == uam::provider_ids::kGeminiCli && uam::native_agents::ParseHistoryId(native_id).has_value();
+	if (source.imported_read_only || (declared_parent.empty() && !source.messages_loaded && !listed) || source.id.empty() || child.id.empty() || source.id == child.id ||
 	    uam::strings::IsBlank(source.created_at) || uam::strings::IsBlank(source.native_session_id) || native_id.empty() ||
 	    provider != uam::provider_ids::NormalizeCliProviderAliasOrSelf(child.provider_id)) return false;
 	if (uam::strings::NonEmptyOrFallback(uam::strings::Trim(source.execution_host_id), "local") !=
@@ -4958,8 +4962,8 @@ bool ApplyNativeChildLineage(const ChatSession& source, ChatSession& child, std:
 		return codex ? uam::codex::ThreadIdKey(id) == uam::codex::ThreadIdKey(native_id) : id == native_id;
 	};
 	// A child's own record naming this exact parent session is evidence by itself; a passive reference already carries it.
-	bool evidence = !declared_parent.empty() &&
-	    (codex ? uam::codex::ThreadIdKey(declared_parent) == uam::codex::ThreadIdKey(source.native_session_id) : declared_parent == uam::strings::Trim(source.native_session_id));
+	bool evidence = listed || (!declared_parent.empty() &&
+	    (codex ? uam::codex::ThreadIdKey(declared_parent) == uam::codex::ThreadIdKey(source.native_session_id) : declared_parent == uam::strings::Trim(source.native_session_id)));
 	if (!declared_parent.empty() && !evidence) return false;
 	for (const Message& message : source.messages)
 	{
