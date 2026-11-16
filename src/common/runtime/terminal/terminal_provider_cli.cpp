@@ -1,4 +1,6 @@
 #include "common/config/approval_modes.h"
+#include "common/chat/staged_attachment_discard.h"
+#include "common/chat/staged_attachment_folder.h"
 #include "common/config/host_scoped_settings.h"
 #include "common/config/provider_availability.h"
 #include "app/uam_control_service.h"
@@ -38,6 +40,8 @@
 #include <algorithm>
 #include <functional>
 #include <memory>
+#include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -430,9 +434,67 @@ static std::vector<std::string> AttachmentCopiesToRemove(const AppState& app, co
 	return copies;
 }
 
+// The chat's own staging folder is swept whole, unsent copies included, except names a surviving chat still references.
+// A sweep is one intent entry, {"sweep": absolute folder, "keep": [names]}, beside the listed copies.
+static void AppendAttachmentFolderSweeps(const AppState& app, const ChatSession& chat, const std::vector<ChatSession>& survivors, std::vector<std::string>& entries)
+{
+	namespace discard = uam::staged_attachment_discard;
+	const bool local = IsLocalHostId(chat.execution_host_id);
+	const ExecutionHost* host = uam::execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
+	if (chat.id.empty() || (!local && host == nullptr)) return;
+	const std::string prefix = ".UAM/attachments/" + chat.id + "/";
+	std::set<std::string> keep;
+	bool named = discard::ExchangeUnsent(chat.id, discard::Unsent::AnyForChat);
+	const auto note = [&](const std::string& path, bool survivor)
+	{
+		const std::string portable = discard::Portable(path);
+		if (!discard::IsStagedCopyPath(portable, chat.id)) return;
+		if (survivor) keep.insert(portable.substr(prefix.size()));
+		else named = true;
+	};
+	const auto visit = [&](const ChatSession& other, bool survivor)
+	{
+		for (const std::string& linked : other.linked_files) note(linked, survivor);
+		for (const Message& message : other.messages)
+			for (const MessageAttachment& attachment : message.attachments) note(attachment.path, survivor);
+		for (const auto& prompt : other.acp_queued_prompts)
+			for (const MessageAttachment& attachment : prompt.attachments) note(attachment.path, survivor);
+	};
+	visit(chat, false);
+	for (const ChatSession& other : survivors) if (other.id != chat.id) visit(other, true);
+	for (const ChatSession& other : app.excluded_provider_chats) if (other.id != chat.id) visit(other, true);
+	// Input still queued in another running session counts, as it does when a chip is removed.
+	for (const auto& session : app.acp_sessions)
+		if (session != nullptr && session->chat_id != chat.id)
+			for (const auto& prompt : session->queued_user_prompts)
+				for (const MessageAttachment& attachment : prompt.attachments) note(attachment.path, true);
+	for (const std::string& root : {uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat)), uam::paths::PreIsolationWorkspaceDirectory(app, chat)})
+	{
+		if (root.empty()) continue;
+		const std::string folder = local ? uam::paths::Utf8PathString(uam::paths::PathFromUtf8(root) / ".UAM" / "attachments" / uam::paths::PathFromUtf8(chat.id))
+		                                 : uam::execution_hosts::JoinRemotePath(host->platform, root, prefix.substr(0, prefix.size() - 1));
+		std::error_code ignored;
+		// ponytail: an SSH host is reached only for a chat that staged a copy this run or named one; a copy staged in an
+		// earlier run and never sent stays on that host. Contacting every deleted SSH chat's host is the upgrade.
+		if (local ? !std::filesystem::is_directory(uam::paths::PathFromUtf8(folder), ignored) : !named) continue;
+		entries.push_back(nlohmann::json{{"sweep", folder}, {"keep", keep}}.dump());
+	}
+}
+
+static std::optional<std::pair<std::string, std::set<std::string>>> FolderSweep(const std::string& entry)
+{
+	if (!entry.starts_with('{')) return std::nullopt;
+	const nlohmann::json sweep = nlohmann::json::parse(entry, nullptr, false);
+	if (!sweep.is_object() || !sweep.contains("sweep") || !sweep["sweep"].is_string() || !sweep.contains("keep") || !sweep["keep"].is_array()) return std::nullopt;
+	std::set<std::string> keep;
+	for (const nlohmann::json& name : sweep["keep"]) if (name.is_string()) keep.insert(name.get<std::string>());
+	return std::pair{sweep["sweep"].get<std::string>(), std::move(keep)};
+}
+
 bool StageCliProviderContextCleanup(AppState& app, const ChatSession& chat, const std::vector<ChatSession>& survivors)
 {
 	std::vector<std::string> copies = AttachmentCopiesToRemove(app, chat, survivors);
+	AppendAttachmentFolderSweeps(app, chat, survivors, copies);
 	if (chat.provider_handoff_cli_contexts.empty() && copies.empty()) return true;
 	if (!chat.provider_handoff_cli_contexts.empty())
 	{
@@ -455,6 +517,13 @@ static bool RemoveAttachmentCopies(const AppState& app, const ChatSession& inten
 	{
 		for (const std::string& copy : intent.linked_files)
 		{
+			if (const auto sweep = FolderSweep(copy))
+			{
+				std::size_t left = 0;
+				if (!uam::staged_attachment_folder::Sweep(uam::paths::PathFromUtf8(sweep->first), sweep->second, left) || left != 0)
+					LogCliDiagnosticEvent(app, "provider_context_cleanup", "attachment_copy_left", nullptr, "chat_id=" + intent.id);
+				continue;
+			}
 			const std::filesystem::path path = uam::paths::PathFromUtf8(copy);
 			std::error_code remove_error;
 			(void)uam::paths::RemoveFileNoThrow(path, &remove_error);
@@ -473,6 +542,15 @@ static bool RemoveAttachmentCopies(const AppState& app, const ChatSession& inten
 	for (std::size_t index = 0; index < intent.linked_files.size(); ++index)
 	{
 		std::string remove_error;
+		if (const auto sweep = FolderSweep(intent.linked_files[index]))
+		{
+			std::size_t left = 0;
+			// A helper from before the sweep refuses the request; its listed copies above are still removed.
+			if (client.SweepChatAttachments("chat-delete-" + std::to_string(index), uam::paths::PathFromUtf8(sweep->first), sweep->second, left, &remove_error) && left == 0) continue;
+			if (!client.IsConnected()) { error = remove_error; return false; }
+			LogCliDiagnosticEvent(app, "provider_context_cleanup", "attachment_copy_left", nullptr, "chat_id=" + intent.id + ", " + (remove_error.empty() ? "entries left: " + std::to_string(left) : remove_error));
+			continue;
+		}
 		if (client.RemoveFile("chat-delete-" + std::to_string(index), uam::paths::PathFromUtf8(intent.linked_files[index]), &remove_error)) continue;
 		if (!client.IsConnected()) { error = remove_error; return false; }
 		LogCliDiagnosticEvent(app, "provider_context_cleanup", "attachment_copy_left", nullptr, "chat_id=" + intent.id + ", " + remove_error);

@@ -1,3 +1,4 @@
+#include "common/chat/staged_attachment_folder.h"
 #include "common/provider/provider_setup_location.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_text_worker.h"
@@ -1523,6 +1524,27 @@ namespace uam::remote
 				    !std::filesystem::remove(path, error) || error)
 					return ProcessError(request, "remove_failed", "The staged file could not be removed.");
 				return ProcessSuccess(request, nlohmann::json::object());
+			}
+			if (type == "file.sweepChatAttachments")
+			{
+				// Only `<workspace>/.UAM/attachments/<chat id>`: its regular files except `keep`, then the folder once empty.
+				if (!request.contains("path") || !request["path"].is_string() || !request.contains("keep") || !request["keep"].is_array() || request["keep"].size() > 4096)
+					return ProcessError(request, "invalid_request", "A chat attachment folder and its kept names are required.");
+				const std::string path_text = request["path"].get<std::string>();
+				const std::filesystem::path folder = uam::paths::PathFromUtf8(path_text);
+				std::set<std::string> keep;
+				for (const nlohmann::json& name : request["keep"])
+				{
+					if (!name.is_string() || !IsBoundedText(name.get_ref<const std::string&>(), 1024)) return ProcessError(request, "invalid_request", "A kept attachment name is invalid.");
+					keep.insert(name.get<std::string>());
+				}
+				if (!IsBoundedText(path_text, kMaxWorkingDirectoryBytes) || !uam::staged_attachment_folder::IsChatFolder(folder))
+					return ProcessError(request, "invalid_request", "Only a chat's own attachment folder can be swept.");
+				state_lock.unlock();
+				std::size_t left = 0;
+				if (!uam::staged_attachment_folder::Sweep(folder, keep, left))
+					return ProcessError(request, "sweep_failed", "The chat's attachment folder could not be read.");
+				return ProcessSuccess(request, {{"left", left}});
 			}
 			if (type == "file.begin")
 			{
