@@ -412,6 +412,9 @@ namespace uam::remote
 		m_safePathInspection = m_expectedProtocolVersion >= 3 && response["capabilities"].value("safePathInspection", false);
 		m_contextRead = response["capabilities"].value("contextRead", false);
 		m_providerHistoryRead = response["capabilities"].value("providerHistoryRead", false);
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+		m_providerHistoryChildren = response["capabilities"].value("providerHistoryChildren", false);
+#endif
 		m_workspaceFileRead = response["capabilities"].value("workspaceFileRead", false);
 		m_workspaceAttachmentRead = response["capabilities"].value("workspaceAttachmentRead", false);
 		m_openCodeNativeControl = response["capabilities"].value("openCodeNativeControl", false);
@@ -1699,6 +1702,31 @@ namespace uam::remote
 		return true;
 	}
 
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+	bool RunnerClient::ListGeminiChildren(const std::string& session, const std::string& workspace, nlohmann::json& listing, std::string* error_out, std::stop_token stop_token)
+	{
+		listing = nullptr;
+		if (!Connect(error_out, stop_token)) return false;
+		if (!m_providerHistoryChildren)
+		{
+			if (error_out) *error_out = "Update this host's UAM runner to browse Gemini subagent conversations.";
+			return false;
+		}
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+		nlohmann::json response;
+		if (!Request({{"type", "provider.history.children"}, {"providerId", provider_ids::kGeminiCli}, {"sessionId", session}, {"workspace", workspace}}, response, error_out,
+		    [&]() { return stop_token.stop_requested() || std::chrono::steady_clock::now() >= deadline; })) return false;
+		const auto result = response.find("result");
+		if (result == response.end() || !result->is_object())
+		{
+			if (error_out) *error_out = "The runner returned an invalid child conversation list.";
+			return false;
+		}
+		listing = *result;
+		return true;
+	}
+#endif
+
 	bool RunnerClient::ReadNativeHistory(const std::string& provider, const std::string& session, const std::string& workspace,
 	    nlohmann::json& output, std::string* error_out, std::stop_token stop_token, const std::string& agent_id)
 	{
@@ -2024,6 +2052,9 @@ namespace uam::remote
 		m_safePathInspection = false;
 		m_contextRead = false;
 		m_providerHistoryRead = false;
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+		m_providerHistoryChildren = false;
+#endif
 		m_workspaceFileRead = false;
 		m_workspaceAttachmentRead = false;
 		m_openCodeNativeControl = false;

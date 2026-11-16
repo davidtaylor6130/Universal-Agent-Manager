@@ -343,6 +343,9 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"branchFromMessage", &UamQueryHandler::HandleBranchFromMessage},
 		{"retryFailedMessage", &UamQueryHandler::HandleRetryFailedMessage},
 		{"openNativeSessionChat", &UamQueryHandler::HandleOpenNativeSessionChat},
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+		{"listGeminiChildConversations", &UamQueryHandler::HandleListGeminiChildConversations},
+#endif
 		{"renameSession", &UamQueryHandler::HandleRenameSession},
 		{"regenerateChatTitle", &UamQueryHandler::HandleRegenerateChatTitle},
 		{"cancelChatTitle", &UamQueryHandler::HandleCancelChatTitle},

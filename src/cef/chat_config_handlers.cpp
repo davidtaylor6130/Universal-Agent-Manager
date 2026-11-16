@@ -231,6 +231,68 @@ namespace
 
 using namespace uam::query_handler_internal;
 
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+void UamQueryHandler::HandleListGeminiChildConversations(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	using namespace uam::query_handler_async;
+	const std::string source_id = payload.value("chatId", "");
+	const ChatSession* source = ChatDomainService().FindChatById(m_app, source_id);
+	if (source == nullptr) { cb->Failure(404, "Chat not found."); return; }
+	if (uam::provider_ids::NormalizeCliProviderAliasOrSelf(ProviderResolutionService().ProviderForChatOrDefault(m_app, *source).id) != uam::provider_ids::kGeminiCli || source->imported_read_only)
+	{ cb->Failure(400, "Only a writable Gemini chat owns subagent conversations."); return; }
+	if (source->native_session_id.empty())
+	{
+		cb->Success(nlohmann::json{{"chatId", source_id}, {"children", nlohmann::json::array()}, {"unreadable", 0}, {"truncated", false}}.dump());
+		return;
+	}
+	std::optional<ExecutionHost> host;
+	if (!uam::paths::IsControllerLocalWorkspace(*source))
+	{
+		const ExecutionHost* found = uam::execution_hosts::Find(m_app.settings.execution_hosts, source->execution_host_id);
+		if (found == nullptr || !uam::remote::CanAttemptRunnerConnection(*found)) { cb->Failure(409, "The remote execution host is not ready to list subagent conversations."); return; }
+		host = *found;
+	}
+	struct Listed { std::vector<std::string> references; };
+	// A stalled host must not take unbounded threads and helper connections, the same slot as an SSH child open.
+	const auto listed = host ? uam::native_history::TryCreateWorkerOwnedNativeRefresh<Listed, uam::native_history::NativeRefreshWorkerPool::RemoteRefresh>(host->id) : std::make_shared<Listed>();
+	if (!listed) { cb->Failure(503, "Native history reading is busy. Retry shortly."); return; }
+	const std::string request_key = "gemini-children/" + source_id;
+	if (AwaitNativeHistoryRead(request_key, cb, [this, browser, payload, cb]() { HandleListGeminiChildConversations(browser, payload, cb); })) return;
+	const auto request = BeginNativeHistoryRead(request_key, cb);
+	if (host) request->execution_host_id = host->id; // A helper reinstall stops this read.
+	// Only the fields the listing reads: a long parent's messages stay on the UI thread's chat.
+	ChatSession identity;
+	identity.id = source->id; identity.provider_id = source->provider_id; identity.native_session_id = source->native_session_id;
+	identity.workspace_directory = uam::paths::RemoteWorkspaceDirectory(*source); // Gemini records the worktree it ran in.
+	identity.execution_host_id = source->execution_host_id;
+	ManagedSubagentWorker read = [identity = std::move(identity), host, source_id, request, listed]()
+	{
+		std::string error;
+		const auto listing = uam::native_agents::ListGeminiChildren(identity, host, &error, request->get_token());
+		if (!listing) return AsyncFailure(409, uam::strings::NonEmptyOrFallback(error, "Subagent conversations could not be read."));
+		nlohmann::json children = nlohmann::json::array();
+		for (const auto& child : listing->children)
+			listed->references.push_back(child.reference), children.push_back({{"reference", child.reference}, {"preview", child.preview}, {"startedAt", child.started_at}, {"updatedAt", child.updated_at}, {"messages", child.messages}});
+		return AsyncSuccess({{"chatId", source_id}, {"children", std::move(children)}, {"unreadable", listing->unreadable}, {"truncated", listing->truncated}});
+	};
+	ManagedSubagentCompletion completion = [this, request_key, request, listed](AsyncCefResult&)
+	{
+		if (m_attestedGeminiChildren.size() + listed->references.size() > 4096) m_attestedGeminiChildren.clear();
+		m_attestedGeminiChildren.insert(listed->references.begin(), listed->references.end());
+		FinishNativeHistoryRead(request_key, request);
+	};
+	// An SSH read has its own thread and slot, like an SSH child open; a local read avoids the foreground chat-load lane.
+	bool queued = false;
+	try
+	{
+		queued = host ? DispatchRemoteRefreshRead(cb, std::move(read), std::move(completion))
+		    : CefPostTask(TID_FILE_USER_VISIBLE, new CefQueryWorkerTask(m_asyncLifetime, cb, std::move(read), std::move(completion)));
+	}
+	catch (...) { queued = false; }
+	if (!queued) { FinishNativeHistoryRead(request_key, request); cb->Failure(503, "Could not start reading subagent conversations."); }
+}
+#endif
+
 void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	using namespace uam::query_handler_async;
@@ -321,7 +383,8 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 		auto& identity = work->source_identity;
 		identity.id = source_id; identity.created_at = source->created_at; identity.metadata_incarnation = source->metadata_incarnation;
 		identity.provider_id = source->provider_id; identity.native_session_id = source->native_session_id;
-		identity.workspace_directory = source->workspace_directory; identity.execution_host_id = source->execution_host_id;
+		identity.workspace_directory = uam::paths::RemoteWorkspaceDirectory(*source); // The directory the native child actually recorded.
+		identity.execution_host_id = source->execution_host_id;
 		identity.folder_id = source->folder_id; identity.workspace_isolation_kind = source->workspace_isolation_kind;
 		identity.workspace_source_directory = source->workspace_source_directory; identity.workspace_base_ref = source->workspace_base_ref;
 		identity.workspace_branch_name = source->workspace_branch_name; identity.workspace_worktree_directory = source->workspace_worktree_directory;
@@ -447,7 +510,7 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 				    lineage.subagent_parent_chat_id = candidate.subagent_parent_chat_id;
 				    lineage.subagent_parent_created_at = candidate.subagent_parent_created_at;
 				    if (const auto* parent = ChatDomainService().FindChatById(m_app, work->source_identity.id))
-					    (void)ChatRepository::ApplyNativeChildDisplayLineage(*parent, lineage, native_id);
+					    (void)ChatRepository::ApplyNativeChildDisplayLineage(*parent, lineage, native_id, m_attestedGeminiChildren.contains(native_id));
 				    work->metadata.incarnation = work->target_present ? work->target_incarnation : candidate.metadata_incarnation;
 				    work->metadata.display_parent_chat_id = lineage.subagent_parent_chat_id;
 				    work->metadata.display_parent_created_at = lineage.subagent_parent_created_at;
@@ -978,7 +1041,7 @@ uam::query_handler_async::AsyncCefResult UamQueryHandler::FinishOpenNativeSessio
 	// the chat save succeeds. Ordinary native-session opens gain no lineage.
 	const ChatSession* lineage_source = ChatDomainService().FindChatById(m_app, source_chat_id);
 	if (lineage_source != nullptr && lineage_source->created_at == source_created_at && lineage_source->metadata_incarnation == source_incarnation)
-		(void)ChatRepository::ApplyNativeChildDisplayLineage(*lineage_source, *target_chat, native_session_id);
+		(void)ChatRepository::ApplyNativeChildDisplayLineage(*lineage_source, *target_chat, native_session_id, m_attestedGeminiChildren.contains(native_session_id));
 	if (select_chat)
 	{
 		ChatDomainService().SelectChatById(m_app, target_chat_id);

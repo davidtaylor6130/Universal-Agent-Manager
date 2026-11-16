@@ -11,6 +11,7 @@ std::optional<int> RunRemoteAttachmentFixture(int argc, char** argv)
 	const std::string content(512 * 1024 + 7, '\0');
 	uam::remote::RunnerState state;
 	nlohmann::json request;
+	uam_test::UseBinaryFrameStdio();
 	while (uam::remote::ReadFrame(std::cin, request) == uam::remote::FrameReadResult::Ok)
 	{
 		nlohmann::json response;
