@@ -486,6 +486,8 @@ namespace uam
 	};
 
 	struct UamAgentWait;
+	struct ControlAuditSaveTicket;
+	struct RemoteOutputAckSaveTicket;
 
 	struct UamControlCapability
 	{
@@ -548,6 +550,15 @@ namespace uam
 		int last_delegate_turn_serial = -1;
 		std::optional<PendingApproval> pending_approval;
 		std::string render_check_request_id; // Latest render-checked request; its reply is written asynchronously.
+		// Read-only tool replies, sealed when the request ran and written once their audit record is durable.
+		struct PendingAuditedReply
+		{
+			std::string request_id;
+			nlohmann::json response;
+			UamControlAuditRecord audit;
+			std::shared_ptr<ControlAuditSaveTicket> ticket;
+		};
+		std::vector<PendingAuditedReply> pending_audited_replies;
 		std::shared_ptr<UamAgentWait> pending_agent_wait;
 		// Captured by real setup; wait admission cannot adopt a changed host/workspace selection.
 		std::optional<ExecutionHost> wait_host_at_launch;
@@ -965,6 +976,9 @@ namespace uam
 		// Authored rows of the in-flight remote prompt; the helper receipt for that delivery is their write fact.
 		std::vector<std::string> pending_remote_delivery_input_ids;
 		std::string pending_remote_output_ack_line;
+		// Background save that must make this acknowledgement's delivered cursors durable before it is sent.
+		std::shared_ptr<RemoteOutputAckSaveTicket> remote_output_ack_save;
+		std::string remote_output_ack_save_line;
 		std::uintmax_t pending_remote_stdout_cursor = 0;
 		std::uintmax_t pending_remote_stderr_cursor = 0;
 		std::uintmax_t remote_consumed_stderr_cursor = 0;

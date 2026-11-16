@@ -1,8 +1,18 @@
 #include "test_harness.h"
 #include <set>
 #include "common/chat/chat_repository.h"
+#include "common/runtime/acp/acp_polling.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/app_time.h"
+
+#include <cstdio>
+#include <mutex>
+#if defined(_WIN32)
+#include <io.h>
+#else
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 using namespace uam_test;
 
@@ -85,6 +95,150 @@ namespace
 			UAM_ASSERT(app.pending_chat_save_at_by_chat_id.empty());
 		}
 	};
+}
+
+namespace
+{
+	// Stands in for a remote helper's stdin: records each write and what the chat file held at that moment.
+	class RemoteHelperInput
+	{
+	public:
+		RemoteHelperInput(uam::AcpSessionState& session, fs::path data_root, std::string chat_id)
+		    : m_session(session), m_file(std::tmpfile()), m_root(std::move(data_root)), m_chat_id(std::move(chat_id))
+		{
+			UAM_ASSERT(m_file != nullptr);
+#if defined(_WIN32)
+			m_session.stdin_write = reinterpret_cast<HANDLE>(_get_osfhandle(_fileno(m_file)));
+			UAM_ASSERT(CreatePipe(&m_session.stdout_read, &m_stdout_write, nullptr, 0));
+#else
+			m_session.stdin_write_fd = fileno(m_file);
+			int descriptors[2];
+			UAM_ASSERT_EQ(pipe(descriptors), 0);
+			m_session.stdout_read_fd = descriptors[0];
+			m_stdout_write = descriptors[1];
+			UAM_ASSERT(fcntl(descriptors[0], F_SETFL, O_NONBLOCK) >= 0);
+#endif
+			m_session.stdin_writer = std::make_shared<uam::platform::AsyncByteWriter>(
+			    [this](const char* bytes, std::size_t count, std::string&) -> std::ptrdiff_t
+			    {
+				    const std::optional<ChatSession> saved = record_saved_cursor ? ChatRepository::LoadLocalChat(m_root, m_chat_id, true, nullptr, false) : std::nullopt;
+				    const std::lock_guard lock(m_mutex);
+				    m_writes.push_back({std::string(bytes, count), saved ? saved->remote_delivered_stdout_cursor : 0});
+				    return static_cast<std::ptrdiff_t>(count);
+			    }, [] {});
+		}
+		~RemoteHelperInput()
+		{
+			m_session.stdin_writer.reset();
+#if defined(_WIN32)
+			m_session.stdin_write = INVALID_HANDLE_VALUE;
+			CloseHandle(m_session.stdout_read);
+			CloseHandle(m_stdout_write);
+			m_session.stdout_read = INVALID_HANDLE_VALUE;
+#else
+			m_session.stdin_write_fd = -1;
+			close(m_session.stdout_read_fd);
+			close(m_stdout_write);
+			m_session.stdout_read_fd = -1;
+#endif
+			std::fclose(m_file);
+		}
+		struct Write { std::string bytes; std::uintmax_t saved_cursor = 0; };
+		std::vector<Write> Writes() { const std::lock_guard lock(m_mutex); return m_writes; }
+		// The session's input writer is asynchronous: an accepted acknowledgement reaches this sink shortly after.
+		Write AwaitWrite(const std::string& bytes)
+		{
+			const Clock::time_point deadline = Clock::now() + std::chrono::seconds(10);
+			for (;;)
+			{
+				for (const Write& write : Writes()) if (write.bytes == bytes) return write;
+				UAM_ASSERT(Clock::now() < deadline);
+				std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			}
+		}
+		bool record_saved_cursor = false;
+	private:
+		uam::AcpSessionState& m_session;
+		std::FILE* m_file;
+		fs::path m_root;
+		std::string m_chat_id;
+		std::mutex m_mutex;
+		std::vector<Write> m_writes;
+#if defined(_WIN32)
+		HANDLE m_stdout_write = INVALID_HANDLE_VALUE;
+#else
+		int m_stdout_write = -1;
+#endif
+	};
+
+	// A chat running on an SSH host, mid-turn, whose helper delivers output in acknowledged batches.
+	struct RemoteStallFixture : SaveStallFixture
+	{
+		explicit RemoteStallFixture(int messages = 2000, std::size_t bytes_each = 6 * 1024) : SaveStallFixture(messages, bytes_each)
+		{
+			Chat().execution_host_id = "remote-host";
+			Chat().remote_process_exists = true;
+			session->running = session->initialized = session->session_ready = true;
+			UAM_ASSERT(ChatRepository::SaveChat(app.data_root, Chat()));
+		}
+		// One output batch: the provider's rows are applied, then the helper's marker asks for its acknowledgement.
+		std::string DeliverBatch(int batch)
+		{
+			Chat().messages.back().content += " remote output " + std::to_string(batch);
+			const std::string ack = "ack " + std::to_string(batch) + "\n";
+			session->pending_remote_output_ack_line = ack;
+			session->pending_remote_stdout_cursor = 100 * static_cast<std::uintmax_t>(batch + 1);
+			return ack;
+		}
+		// Runs the poll-loop work (stdout drain, then the save flush) and returns the longest single poll.
+		// With `durable_cursor`, checks the chat file the moment the drain decides to acknowledge.
+		double PollUntilAcknowledged(double& waited_ms, std::optional<std::uintmax_t> durable_cursor = std::nullopt)
+		{
+			double longest = 0.0;
+			const Clock::time_point start = Clock::now();
+			while (!session->pending_remote_output_ack_line.empty() && Clock::now() - start < std::chrono::seconds(120))
+			{
+				const Clock::time_point poll = Clock::now();
+				(void)uam::acp_detail::DrainStdout(app, *session, Chat(), nullptr);
+				if (durable_cursor && session->pending_remote_output_ack_line.empty())
+				{
+					const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, "stall-chat", true, nullptr, false);
+					UAM_ASSERT(saved && saved->remote_delivered_stdout_cursor == *durable_cursor);
+				}
+				uam::FlushPendingChatSaves(app);
+				longest = std::max(longest, MsSince(poll));
+				std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			}
+			UAM_ASSERT(session->pending_remote_output_ack_line.empty());
+			waited_ms = MsSince(start);
+			return longest;
+		}
+	};
+}
+
+// Remote (SSH) chats: tool/plan events and acknowledged output batches on a 2,000-message transcript.
+UAM_TEST(RemoteChatSaveStallMeasurements)
+{
+	RemoteStallFixture fixture;
+	Clock::time_point start = Clock::now();
+	for (int update = 0; update < 20; ++update)
+	{
+		fixture.Chat().messages.back().content += " tool status";
+		uam::acp_detail::SaveChatSoon(fixture.app, fixture.Chat());
+	}
+	std::fprintf(stderr, "[measure] remote chat, 2000 messages (12 MB): 20 tool/plan events held the calling thread %.1f ms (%.2f ms per event)\n", MsSince(start), MsSince(start) / 20.0);
+	fixture.Drain();
+	RemoteHelperInput helper(*fixture.session, fixture.app.data_root, "stall-chat");
+	double longest = 0.0, waited = 0.0, waited_total = 0.0;
+	for (int batch = 0; batch < 10; ++batch)
+	{
+		(void)fixture.DeliverBatch(batch);
+		longest = std::max(longest, fixture.PollUntilAcknowledged(waited));
+		waited_total += waited;
+	}
+	std::fprintf(stderr, "[measure] remote chat, 10 acknowledged output batches: longest single poll %.1f ms; mean marker-to-acknowledgement %.1f ms\n", longest, waited_total / 10.0);
+	fixture.Drain();
+	UAM_ASSERT_EQ(fixture.SavedTail(), fixture.Chat().messages.back().content);
 }
 
 // Prints the workload figures quoted in the change log; the budget cases below hold the limits.
@@ -469,5 +623,111 @@ UAM_TEST(FinishedSaveResultDoesNotOccupyTranscriptWorkerBound)
 	while (uam::PendingChatSavePreparationForTests(fixture.app, "stall-chat", ready) && !ready && Clock::now() < deadline) std::this_thread::sleep_for(std::chrono::milliseconds(2));
 	UAM_ASSERT(ready);
 	UAM_ASSERT(!uam::TranscriptWorkerBoundBusyForTests(fixture.app));
+	fixture.Drain();
+}
+
+UAM_TEST(RemoteToolUpdatesDoNotWriteTranscriptOnCallingThread)
+{
+	RemoteStallFixture fixture;
+	fixture.session->next_request_id = 41;
+	Clock::time_point start = Clock::now();
+	for (int update = 0; update < 20; ++update)
+	{
+		fixture.Chat().messages.back().content += " tool status";
+		uam::acp_detail::SaveChatSoon(fixture.app, fixture.Chat());
+	}
+	const double calling_thread = MsSince(start);
+	std::fprintf(stderr, "[measure] 20 tool-call updates on a remote 2000-message (12 MB) chat held the calling thread %.2f ms\n", calling_thread);
+	// The same fixed budget as the local case: scheduling is independent of transcript size.
+	UAM_ASSERT(calling_thread <= 100.0);
+	UAM_ASSERT(fixture.app.pending_chat_save_at_by_chat_id.contains("stall-chat"));
+	// A crash now loses nothing the helper cannot replay: none of this output has been acknowledged.
+	UAM_ASSERT(fixture.SavedTail() != fixture.Chat().messages.back().content);
+	fixture.Drain();
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(fixture.app.data_root, "stall-chat", true, nullptr, false);
+	UAM_ASSERT(saved.has_value());
+	UAM_ASSERT_EQ(saved->messages.back().content, fixture.Chat().messages.back().content);
+	// The background write carries the runtime state the synchronous save records for a remote chat.
+	UAM_ASSERT_EQ(saved->remote_next_request_id, 41);
+	UAM_ASSERT(saved->remote_process_exists);
+}
+
+// A remote helper's output batch is acknowledged only after a background save holding its delivered cursor is
+// on disk; the poll that handles the batch never writes the transcript itself.
+UAM_TEST(RemoteOutputAckFollowsDurableSaveOffPoll)
+{
+	RemoteStallFixture fixture;
+	// Calibration: the blocking work this guards against, a synchronous save of the fixture chat (median of three).
+	std::vector<double> saves;
+	for (int run = 0; run < 3; ++run)
+	{
+		const Clock::time_point start = Clock::now();
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, fixture.Chat()));
+		saves.push_back(MsSince(start));
+	}
+	std::ranges::sort(saves);
+	RemoteHelperInput helper(*fixture.session, fixture.app.data_root, "stall-chat");
+	helper.record_saved_cursor = true;
+	std::uintmax_t acknowledged_cursor = 0;
+	for (int batch = 0; batch < 3; ++batch)
+	{
+		const std::string ack = fixture.DeliverBatch(batch);
+		const std::uintmax_t cursor = fixture.session->pending_remote_stdout_cursor;
+		const Clock::time_point start = Clock::now();
+		(void)uam::acp_detail::DrainStdout(fixture.app, *fixture.session, fixture.Chat(), nullptr);
+		const double poll = MsSince(start);
+		std::fprintf(stderr, "[measure] remote output batch poll %.2f ms; synchronous save median %.1f ms\n", poll, saves[1]);
+		// Per-poll budget below one unit of the guarded work (half the cheapest calibration save), so a synchronous save fails it.
+		UAM_ASSERT(poll < saves.front() / 2.0);
+		// Simulated crash point: the batch is applied in memory but not durable and not acknowledged, so a
+		// restart reads the previous cursor and the helper replays this batch.
+		UAM_ASSERT_EQ(fixture.session->pending_remote_output_ack_line, ack);
+		const std::optional<ChatSession> restarted = ChatRepository::LoadLocalChat(fixture.app.data_root, "stall-chat", true, nullptr, false);
+		UAM_ASSERT(restarted && restarted->remote_delivered_stdout_cursor == acknowledged_cursor);
+		if (batch == 1)
+		{
+			// A durable barrier takes over the pending save; the acknowledgement still waits for its own certified write.
+			uam::FlushPendingChatSaves(fixture.app, true);
+			(void)uam::acp_detail::DrainStdout(fixture.app, *fixture.session, fixture.Chat(), nullptr);
+			UAM_ASSERT_EQ(fixture.session->pending_remote_output_ack_line, ack);
+		}
+		double waited = 0.0;
+		(void)fixture.PollUntilAcknowledged(waited, cursor);
+		// The chat file already held this batch's cursor when the acknowledgement reached the helper.
+		UAM_ASSERT_EQ(helper.AwaitWrite(ack).saved_cursor, cursor);
+		acknowledged_cursor = cursor;
+	}
+	UAM_ASSERT_EQ(helper.Writes().size(), std::size_t{3});
+	fixture.Drain();
+	UAM_ASSERT_EQ(fixture.SavedTail(), fixture.Chat().messages.back().content);
+	// Outside an active turn the synchronous save and acknowledgement still happen in the same poll.
+	fixture.session->processing = false;
+	const std::string settled = fixture.DeliverBatch(3);
+	(void)uam::acp_detail::DrainStdout(fixture.app, *fixture.session, fixture.Chat(), nullptr);
+	UAM_ASSERT(fixture.session->pending_remote_output_ack_line.empty());
+	UAM_ASSERT_EQ(helper.AwaitWrite(settled).saved_cursor, std::uintmax_t{400});
+	UAM_ASSERT_EQ(helper.Writes().size(), std::size_t{4});
+}
+
+// A snapshot taken after the acknowledgement's save was scheduled but without its cursors (a reset moved them)
+// can never certify it: the ticket is lost, the drain decides again, and the chat does not keep rewriting.
+UAM_TEST(RemoteOutputAckSaveWhoseCursorsMovedIsDecidedAgain)
+{
+	RemoteStallFixture fixture(200, 512);
+	RemoteHelperInput helper(*fixture.session, fixture.app.data_root, "stall-chat");
+	const std::string ack = fixture.DeliverBatch(0);
+	(void)uam::acp_detail::DrainStdout(fixture.app, *fixture.session, fixture.Chat(), nullptr);
+	UAM_ASSERT(fixture.session->remote_output_ack_save != nullptr);
+	fixture.Chat().remote_delivered_stdout_cursor = 0;
+	const Clock::time_point deadline = Clock::now() + std::chrono::seconds(60);
+	while (uam::PollRemoteOutputAckSave(fixture.session->remote_output_ack_save) == std::nullopt && Clock::now() < deadline)
+	{
+		uam::FlushPendingChatSaves(fixture.app); std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	UAM_ASSERT(uam::PollRemoteOutputAckSave(fixture.session->remote_output_ack_save) == std::optional<bool>(false));
+	UAM_ASSERT(fixture.session->pending_remote_output_ack_line == ack);
+	double waited = 0.0;
+	(void)fixture.PollUntilAcknowledged(waited, std::uintmax_t{100});
+	UAM_ASSERT_EQ(helper.AwaitWrite(ack).bytes, ack);
 	fixture.Drain();
 }

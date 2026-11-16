@@ -7286,6 +7286,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 		// Revoke the old process authority: a new send gets a new token, and the helper refuses the old process to it.
 		session->remote_output_delivery_token.clear();
 		session->pending_remote_output_ack_line.clear();
+		session->remote_output_ack_save.reset();
+		session->remote_output_ack_save_line.clear();
 		session->pending_remote_source_exit_ack_line.clear();
 		session->remote_source_exit_reported = false;
 		chat->remote_active_turn_id.clear();
@@ -9199,6 +9201,17 @@ For desktop observation and input, use only the provider's built-in controller; 
 		ControlAuditSaveResult result;
 	};
 
+	struct RemoteOutputAckSaveTicket
+	{
+		std::filesystem::path data_root;
+		std::shared_ptr<const std::uint8_t> incarnation;
+		std::pair<std::uintmax_t, std::uintmax_t> cursors;
+		std::weak_ptr<PendingChatSaveTask> task;
+		std::uint64_t arm_count = 0; // The task's arm count once this save was scheduled.
+		bool published = false;
+		bool lost = false;
+	};
+
 	static bool SameControlAuditRecord(const UamControlAuditRecord& left, const UamControlAuditRecord& right)
 	{
 		return left.request_id == right.request_id && left.method == right.method &&
@@ -9255,6 +9268,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 		// Exact last-64 projection used by the canonical full serializer, captured with metadata.
 		std::vector<UamControlAuditRecord> control_audit_at_capture;
 		std::shared_ptr<const std::uint8_t> control_audit_incarnation_at_capture;
+		std::vector<std::weak_ptr<RemoteOutputAckSaveTicket>> remote_ack_receipts;
+		std::pair<std::uintmax_t, std::uintmax_t> remote_cursors_at_capture;
+		std::shared_ptr<const std::uint8_t> remote_incarnation_at_capture;
 		std::string workspace_at_capture;
 		std::optional<double> failed_backoff_at;
 		double due_at = 0.0;
@@ -9633,6 +9649,17 @@ For desktop observation and input, use only the provider's built-in controller; 
 		{
 			const auto ticket = weak.lock();
 			if (!ticket || ticket->result.finished || ticket->result.published) continue;
+			const ChatSession* current = ChatDomainService().FindChatById(app, ticket->chat_id);
+			if (!current || app.data_root.native() != ticket->data_root.native() ||
+			    current->metadata_incarnation != ticket->incarnation ||
+			    !ContainsControlAuditRecord(current->uam_control_audit, ticket->record) ||
+			    !ticket->still_owned || !ticket->still_owned())
+			{
+				// A bounded audit may evict this record before capture. No future snapshot can certify it;
+				// finish the receipt so its owner refuses the reply instead of scheduling writes forever.
+				ticket->result = {true, false, false, {}};
+				continue;
+			}
 			const bool exact = published && task->publishing && !task->publishing->primary_revision.empty() &&
 			    task->data_root.native() == ticket->data_root.native() && task->control_audit_incarnation_at_capture == ticket->incarnation &&
 			    ContainsControlAuditRecord(task->control_audit_at_capture, ticket->record);
@@ -9650,6 +9677,54 @@ For desktop observation and input, use only the provider's built-in controller; 
 				ticket->result = {true, true, eligible, revision};
 			});
 		}
+	}
+
+	static bool HasPendingRemoteAck(const std::shared_ptr<PendingChatSaveTask>& task)
+	{
+		return task && std::ranges::any_of(task->remote_ack_receipts, [](const auto& weak)
+		{ const auto ticket = weak.lock(); return ticket && !ticket->published && !ticket->lost; });
+	}
+
+	// Called only from the full publisher harvest: a queue journal or an older snapshot never certifies delivery.
+	static void CollectRemoteAckSaveResults(const std::shared_ptr<PendingChatSaveTask>& task, bool published)
+	{
+		if (!task) return;
+		for (const auto& weak : task->remote_ack_receipts)
+		{
+			const auto ticket = weak.lock();
+			if (!ticket || !published || !task->publishing || task->publishing->primary_revision.empty()) continue;
+			if (task->data_root.native() == ticket->data_root.native() && task->remote_incarnation_at_capture == ticket->incarnation &&
+			    task->remote_cursors_at_capture == ticket->cursors)
+				ticket->published = true;
+			// A snapshot captured after this save was scheduled no longer carries its cursors (a stop or reset
+			// moved them, or the root changed): it can never be certified, so its owner must decide again.
+			else if (task->arm_count_at_capture >= ticket->arm_count)
+				ticket->lost = true;
+		}
+		std::erase_if(task->remote_ack_receipts, [](const auto& weak) { const auto ticket = weak.lock(); return !ticket || ticket->published || ticket->lost; });
+	}
+
+	std::shared_ptr<RemoteOutputAckSaveTicket> ScheduleRemoteOutputAckSave(AppState& app, const ChatSession& chat)
+	{
+		const auto existing = app.pending_chat_save_tasks.find(chat.id);
+		// Like an audit, this cannot take over an exclusive binding/initial/empty-held publication.
+		if (existing != app.pending_chat_save_tasks.end() && existing->second &&
+		    (existing->second->binding_receipt || existing->second->owned_publication || existing->second->empty_held_send)) return {};
+		acp_detail::ScheduleChatSave(app, chat, 0.0);
+		const auto task = app.pending_chat_save_tasks.at(chat.id);
+		auto ticket = std::make_shared<RemoteOutputAckSaveTicket>();
+		ticket->data_root = app.data_root; ticket->incarnation = chat.metadata_incarnation; ticket->task = task;
+		ticket->cursors = {chat.remote_delivered_stdout_cursor, chat.remote_delivered_stderr_cursor};
+		ticket->arm_count = task->arm_count;
+		task->remote_ack_receipts.push_back(ticket);
+		return ticket;
+	}
+
+	std::optional<bool> PollRemoteOutputAckSave(const std::shared_ptr<RemoteOutputAckSaveTicket>& ticket)
+	{
+		if (!ticket || ticket->published) return ticket != nullptr;
+		if (ticket->lost || ticket->task.expired()) return false; // Lost (barrier, deletion, reset cursors, root change): decide again.
+		return std::nullopt;
 	}
 
 	std::shared_ptr<ControlAuditSaveTicket> ScheduleControlAuditSave(AppState& app, const ChatSession& chat,
@@ -10565,7 +10640,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 		{
 			CollectChatIconResults(app, entry.second, std::nullopt, {}, false, acknowledgements);
 			CollectWorkspaceSaveResults(app, entry.second, std::nullopt, {}, false, acknowledgements);
-			if (HasPendingControlAudit(entry.second) && !app.pending_chat_save_at_by_chat_id.contains(entry.first))
+			// Invalid audit owners must retire even when preparation keeps failing and no publisher exists.
+			CollectControlAuditSaveResults(app, entry.second, false, acknowledgements);
+			if ((HasPendingControlAudit(entry.second) || HasPendingRemoteAck(entry.second)) && !app.pending_chat_save_at_by_chat_id.contains(entry.first))
 				app.pending_chat_save_at_by_chat_id[entry.first] = now;
 		}
 		std::vector<std::string> due_chat_ids;
@@ -10644,6 +10721,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 					{
 						const bool published = task->published.get();
 						CollectControlAuditSaveResults(app, task, published, acknowledgements);
+						CollectRemoteAckSaveResults(task, published);
 						// A finished retirement worker may have advanced the full generation
 						// before this barrier revoked it. Adopt only that still-current receipt,
 						// then publish the latest live queue/carrier in the force transaction.
@@ -10707,6 +10785,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				try { published = task->published.get(); }
 				catch (const std::exception& error) { diagnostics::Write(std::string("Background chat publication failed: ") + error.what()); }
 				CollectControlAuditSaveResults(app, task, published, acknowledgements);
+				CollectRemoteAckSaveResults(task, published);
 				if (published)
 				{
 					// ponytail: two transcripts, a second in-memory copy of each; widen if more chats stream at once.
@@ -10762,7 +10841,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 				CollectChatIconResults(app, task, icon_published ? std::optional<CustomIcon>(task->icon_at_capture) : std::nullopt,
 				    task->icon_incarnation_at_capture, false, acknowledgements);
 				if (!task->icon_receipts.empty()) app.pending_chat_save_at_by_chat_id[chat_id] = now;
-				if (HasPendingControlAudit(task)) app.pending_chat_save_at_by_chat_id[chat_id] = now;
+				if (HasPendingControlAudit(task) && (published || !task->publication_owned->load(std::memory_order_acquire)))
+					app.pending_chat_save_at_by_chat_id[chat_id] = now;
+				// A waiting acknowledgement is owed a new snapshot at once, but a failing write keeps its backoff.
+				if (HasPendingRemoteAck(task) && (published || !task->publication_owned->load(std::memory_order_acquire)))
+					app.pending_chat_save_at_by_chat_id[chat_id] = now;
 				task->publishing.reset();
 				task->completed_recovery_save = {};
 			}
@@ -10820,6 +10903,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 						defer_results(task, false);
 					}
 					app.pending_chat_save_at_by_chat_id[chat_id] = now + (failed ? acp_detail::NoteChatSaveFailed(app, chat_id) : 1.0);
+					// A revoked snapshot owes a waiting receipt (control audit, remote acknowledgement) a new one at once.
+					if (!failed && (HasPendingControlAudit(task) || HasPendingRemoteAck(task))) app.pending_chat_save_at_by_chat_id[chat_id] = now;
 				}
 			}
 			if (task && task->binding_terminal)
@@ -10840,7 +10925,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				else if (current && receipt.full_save_required) task->queue_full_save_required = true;
 				else if (current && !receipt.saved) { defer_results(task, false); app.pending_chat_save_at_by_chat_id[chat_id] = now + 1.0; }
 			}
-			if (task && task->queued_admission && !task->queue_full_save_required && !HasPendingControlAudit(task))
+			if (task && task->queued_admission && !task->queue_full_save_required && !HasPendingControlAudit(task) && !HasPendingRemoteAck(task))
 			{
 				task->data_root = app.data_root;
 				ChatSession snapshot = PendingSaveMetadata(*chat);
@@ -10902,6 +10987,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 			if (task->control_audit_at_capture.size() > 64)
 				task->control_audit_at_capture.erase(task->control_audit_at_capture.begin(), task->control_audit_at_capture.end() - 64);
 			task->control_audit_incarnation_at_capture = chat->metadata_incarnation;
+			task->remote_cursors_at_capture = {chat->remote_delivered_stdout_cursor, chat->remote_delivered_stderr_cursor};
+			task->remote_incarnation_at_capture = chat->metadata_incarnation;
 			task->workspace_at_capture = task->workspace_receipts.empty() ? std::string{} : WorkspaceReceiptFingerprint(*chat);
 			task->icon_at_capture = chat->custom_icon;
 			task->icon_incarnation_at_capture = chat->metadata_incarnation;

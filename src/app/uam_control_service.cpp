@@ -493,7 +493,8 @@ namespace uam
 		{
 			return (capability.pending_agent_wait && capability.pending_agent_wait->request_id == request_id) ||
 			       (capability.pending_approval && capability.pending_approval->request_id == request_id) ||
-			       capability.render_check_request_id == request_id;
+			       capability.render_check_request_id == request_id ||
+			       std::ranges::any_of(capability.pending_audited_replies, [&](const auto& reply) { return reply.request_id == request_id; });
 		}
 
 		UamControlCapability* FindCapability(AppState& app, std::string_view id)
@@ -583,13 +584,10 @@ namespace uam
 			return value;
 		}
 
-		bool AppendAuditAndSave(AppState& app, const UamControlCapability& capability,
-		                        std::string_view request_id, std::string_view method,
-		                        const ToolResult& result)
+		UamControlAuditRecord AppendAudit(ChatSession& chat, const UamControlCapability& capability,
+		                                  std::string_view request_id, std::string_view method, const ToolResult& result)
 		{
-			ChatSession* chat = ChatDomainService().FindChatById(app, capability.chat_id);
-			if (chat == nullptr) return false;
-			chat->uam_control_audit.push_back({
+			chat.uam_control_audit.push_back({
 			    .request_id = AuditText(std::string(request_id)),
 			    .method = AuditText(std::string(method)),
 			    .result = result.ok ? "ok" : "rejected",
@@ -599,12 +597,79 @@ namespace uam
 			    .run_id = capability.agent_run_id,
 			    .created_at = uam::time::TimestampNow(),
 			});
-			if (chat->uam_control_audit.size() > kMaxAuditRecords)
+			UamControlAuditRecord record = chat.uam_control_audit.back();
+			if (chat.uam_control_audit.size() > kMaxAuditRecords)
 			{
-				chat->uam_control_audit.erase(chat->uam_control_audit.begin(),
-				                              chat->uam_control_audit.end() - kMaxAuditRecords);
+				chat.uam_control_audit.erase(chat.uam_control_audit.begin(),
+				                             chat.uam_control_audit.end() - kMaxAuditRecords);
 			}
+			return record;
+		}
+
+		bool AppendAuditAndSave(AppState& app, const UamControlCapability& capability,
+		                        std::string_view request_id, std::string_view method,
+		                        const ToolResult& result)
+		{
+			ChatSession* chat = ChatDomainService().FindChatById(app, capability.chat_id);
+			if (chat == nullptr) return false;
+			(void)AppendAudit(*chat, capability, request_id, method, result);
 			return ChatRepository::SaveChat(app.data_root, *chat);
+		}
+
+		void RemoveAudit(ChatSession& chat, const UamControlAuditRecord& record)
+		{
+			std::erase_if(chat.uam_control_audit, [&](const UamControlAuditRecord& entry)
+			{
+				return entry.request_id == record.request_id && entry.method == record.method && entry.created_at == record.created_at &&
+				    entry.provider_id == record.provider_id && entry.agent_id == record.agent_id && entry.run_id == record.run_id;
+			});
+		}
+
+		bool ReadOnlyTool(std::string_view method)
+		{
+			return method == "agent_status" || method == "agent_list" || method == "goal_get" || method == "skill_list" || method == "skill_read";
+		}
+
+		std::shared_ptr<ControlAuditSaveTicket> ScheduleAuditedReplySave(AppState& app, const std::string& capability_id, const ChatSession& chat,
+		                                                                 const UamControlAuditRecord& record, const std::string& request_id)
+		{
+			return ScheduleControlAuditSave(app, chat, record, [&app, capability_id, request_id]()
+			{
+				const UamControlCapability* owner = FindCapability(app, capability_id);
+				return owner != nullptr && std::ranges::any_of(owner->pending_audited_replies, [&](const auto& reply) { return reply.request_id == request_id; });
+			});
+		}
+
+		// A read-only tool changes nothing but its own audit record, so it needs no whole-chat rollback copy. From the
+		// poll loop its reply is sealed now and written by WriteAuditedReplies once a background save has made that
+		// record durable; otherwise (and when an exclusive publication owns the chat's save) the save is synchronous.
+		nlohmann::json ReadOnlyToolReply(AppState& app, const std::string& capability_id, const std::string& request_id,
+		                                 std::string_view method, ToolResult result, bool defer_audit)
+		{
+			const nlohmann::json unrecorded{{"ok", false}, {"error", "Control result could not be durably recorded."}};
+			UamControlCapability* capability = FindCapability(app, capability_id);
+			ChatSession* chat = capability != nullptr ? ChatDomainService().FindChatById(app, capability->chat_id) : nullptr;
+			if (chat == nullptr) return unrecorded;
+			// Only the bounded audit changes: preserve records AppendAudit may evict at its 64-record ceiling,
+			// without copying the transcript, if the synchronous fallback cannot publish the new audit.
+			std::vector<UamControlAuditRecord> previous_audit = chat->uam_control_audit;
+			const UamControlAuditRecord record = AppendAudit(*chat, *capability, request_id, method, result);
+			nlohmann::json response = result.ok ? nlohmann::json{{"ok", true}, {"result", std::move(result.result)}}
+			                                    : nlohmann::json{{"ok", false}, {"error", std::move(result.error)}};
+			// Same bound as the synchronous path: the stdio server sends the reply as an escaped string in its own envelope.
+			if (nlohmann::json(response.dump()).dump().size() + 256 > kMaxResponseBytes)
+				response = {{"ok", false}, {"error", "Control response exceeds the 64 KiB ceiling."}};
+			if (defer_audit)
+			{
+				// The reply is listed first: the save's ownership check asks whether it is still waiting.
+				capability->pending_audited_replies.push_back({request_id, response, record, {}});
+				if ((capability->pending_audited_replies.back().ticket = ScheduleAuditedReplySave(app, capability_id, *chat, record, request_id)))
+					return {{"pendingAuditSave", true}};
+				capability->pending_audited_replies.pop_back();
+			}
+			if (ChatRepository::SaveChat(app.data_root, *chat)) return response;
+			chat->uam_control_audit = std::move(previous_audit);
+			return unrecorded;
 		}
 
 		bool WriteResponse(const std::filesystem::path& directory, std::string_view request_id,
@@ -617,6 +682,43 @@ namespace uam
 			                                   (std::string(request_id) + ".json");
 			return !uam::paths::IsLinkOrReparsePointNoThrow(path) &&
 			       uam::io::WriteTextFile(path, text);
+		}
+
+		// Writes each sealed read-only reply once its audit record is durable. A save that is still failing keeps
+		// retrying and the reply waits for it. A save lost with its task (a durable barrier, a root change) is
+		// scheduled again while the record is still on the chat; only a record that is gone is refused.
+		bool WriteAuditedReplies(AppState& app)
+		{
+			if (std::ranges::none_of(app.uam_control_capabilities, [](const UamControlCapability& capability) { return !capability.pending_audited_replies.empty(); }))
+				return false;
+			(void)FlushPendingChatSaves(app, false);
+			bool changed = false;
+			for (UamControlCapability& capability : app.uam_control_capabilities)
+			{
+				std::vector<std::pair<UamControlCapability::PendingAuditedReply, bool>> finished; // Reply, and whether its audit was lost.
+				for (std::size_t index = 0; index < capability.pending_audited_replies.size();)
+				{
+					UamControlCapability::PendingAuditedReply& reply = capability.pending_audited_replies[index];
+					const ControlAuditSaveResult receipt = PollControlAuditSave(reply.ticket);
+					if (!receipt.finished) { ++index; continue; }
+					if (!receipt.published)
+					{
+						const ChatSession* chat = ChatDomainService().FindChatById(app, capability.chat_id);
+						if (chat != nullptr && (reply.ticket = ScheduleAuditedReplySave(app, capability.id, *chat, reply.audit, reply.request_id))) { ++index; continue; }
+						reply.response = {{"ok", false}, {"error", "Control result could not be durably recorded."}};
+					}
+					finished.emplace_back(std::move(reply), !receipt.published);
+					capability.pending_audited_replies.erase(capability.pending_audited_replies.begin() + static_cast<std::ptrdiff_t>(index));
+				}
+				for (const auto& [reply, unrecorded] : finished)
+				{
+					if (unrecorded)
+						if (ChatSession* chat = ChatDomainService().FindChatById(app, capability.chat_id)) RemoveAudit(*chat, reply.audit);
+					(void)WriteResponse(capability.directory, reply.request_id, reply.response);
+					changed = true;
+				}
+			}
+			return changed;
 		}
 
 		std::string ApprovalRequestId(const UamControlCapability& capability)
@@ -1766,7 +1868,7 @@ namespace uam
 		}
 
 		nlohmann::json HandleRequest(AppState& app, const std::string& capability_id,
-		                             const nlohmann::json& request, int64_t now_epoch_ms)
+		                             const nlohmann::json& request, int64_t now_epoch_ms, bool defer_audit = false)
 		{
 			auto reject = [](std::string error) {
 				return nlohmann::json{{"ok", false}, {"error", std::move(error)}};
@@ -1866,7 +1968,7 @@ namespace uam
 			}
 
 			const ChatSession* before_chat = ChatDomainService().FindChatById(app, capability->chat_id);
-			const std::optional<ChatSession> rollback = before_chat == nullptr || method == "agent_wait" ? std::nullopt : std::optional<ChatSession>{*before_chat};
+			const std::optional<ChatSession> rollback = before_chat == nullptr || method == "agent_wait" || ReadOnlyTool(method) ? std::nullopt : std::optional<ChatSession>{*before_chat};
 			const bool needs_approval = (method == "goal_create" || method == "chat_create") && before_chat != nullptr &&
 			    !MutationsAllowed(*before_chat);
 			ToolResult result = method == "html_view_preview"
@@ -1889,6 +1991,7 @@ namespace uam
 			                            : ExecuteTool(app, *capability, method, arguments);
 			if (result.deferred) return method == "agent_wait" ? nlohmann::json{{"pendingAgentWait", true}} :
 			    method == "chat_create" && result.ok ? nlohmann::json{{"pendingChatCreate", true}} : nlohmann::json{{"pendingApproval", true}};
+			if (ReadOnlyTool(method)) return ReadOnlyToolReply(app, capability_id, request_id, method, std::move(result), defer_audit);
 			const UamControlCapability capability_snapshot = *capability;
 			const bool published_view = result.ok && method == "html_view_publish";
 			ChatSession* view_chat = published_view ? ChatDomainService().FindChatById(app, capability_snapshot.session_chat_id) : nullptr;
@@ -3014,7 +3117,7 @@ namespace uam
 							if (owner == nullptr || !VerifyRequest(request, owner->request_key))
 								response = {{"ok", false}, {"error", "Control request is not signed by this chat session's tool connection."}};
 							else
-								response = HandleRequest(app, capability_id, request, now);
+								response = HandleRequest(app, capability_id, request, now, true);
 						}
 					}
 					else unreadable = true;
@@ -3036,12 +3139,14 @@ namespace uam
 				++processed;
 				(void)uam::paths::RemoveFileNoThrow(file);
 				if (!response.value("pendingApproval", false) && !response.value("pendingAgentWait", false) &&
-				    !response.value("pendingChatCreate", false) && !response.value("pendingRenderCheck", false))
+				    !response.value("pendingChatCreate", false) && !response.value("pendingRenderCheck", false) &&
+				    !response.value("pendingAuditSave", false))
 					(void)WriteResponse(capability_directory, request_id, response);
 				changed = true;
 			}
 			++capability_index;
 		}
+		changed = WriteAuditedReplies(app) || changed;
 		ProcessAgentWaits(app, response_write_hook);
 		// Sent after every capability borrow ends: a provider launch may issue new capabilities.
 		if (!app.uam_chat_create_launches.empty())
