@@ -8,6 +8,8 @@
 #include "common/paths/workspace_root.h"
 #include "test_harness.h"
 
+#include <system_error>
+
 using namespace uam_test;
 
 namespace
@@ -732,4 +734,43 @@ UAM_TEST(OpenCodeExplicitConfigurationRefreshRetainsCacheOnFailureAndRetries)
 	UAM_ASSERT(uam::io::WriteTextFile(second, "malformed new owner"));
 	catalog.Initialize(temp.root / "third-data");
 	UAM_ASSERT(catalog.GetConfiguredOpenCodeDefaultModel().empty());
+}
+
+UAM_TEST(StartupModelDiscoveryPassesNonAsciiWorkspaceAsUtf8)
+{
+	// Issue #980: a code-page workspace string reached the UTF-8 launch path and aborted the app on Windows.
+	StartupDiscoveryFixture fixture;
+	fixture.app.folders.resize(1);
+	const fs::path workspace = fixture.temp.root / uam::paths::PathFromUtf8("Test Folder ü");
+	fs::create_directories(workspace);
+	fixture.app.folders.front().directory = uam::paths::Utf8PathString(workspace);
+	ChatSession chat;
+	chat.id = "chat-unicode-workspace";
+	chat.provider_id = "codex-cli";
+	chat.folder_id = fixture.app.folders.front().id;
+	fixture.app.chats.push_back(chat);
+	uam::StartupModelDiscoveryService discovery(fixture.Launcher());
+	discovery.Initialize(fixture.app);
+	UAM_ASSERT(discovery.Poll(fixture.app));
+	UAM_ASSERT_EQ(fixture.launched.size(), std::size_t{1});
+	UAM_ASSERT_EQ(fixture.launched.front().workspace_directory, uam::paths::PortablePathString(fs::weakly_canonical(workspace)));
+	UAM_ASSERT(fs::is_directory(uam::paths::PathFromUtf8(fixture.launched.front().workspace_directory)));
+	UAM_ASSERT(fixture.app.provider_model_catalog->IsDiscoveryPending("codex-cli", fixture.launched.front().workspace_directory));
+}
+
+UAM_TEST(StartupModelDiscoveryContainsALaunchExceptionToItsScope)
+{
+	StartupDiscoveryFixture fixture;
+	fixture.app.folders.resize(1);
+	const std::string workspace = fixture.app.folders.front().directory;
+	uam::StartupModelDiscoveryService discovery([](uam::AppState&, const std::string&, const std::string&, const std::string&, std::string*) -> bool
+	{
+		throw std::system_error(std::make_error_code(std::errc::illegal_byte_sequence));
+	});
+	discovery.Initialize(fixture.app);
+	UAM_ASSERT(discovery.Poll(fixture.app));
+	UAM_ASSERT(!fixture.app.provider_model_catalog->IsDiscoveryPending("codex-cli", workspace));
+	const nlohmann::json snapshot = fixture.app.provider_model_catalog->GetCatalogSnapshot("codex-cli", workspace, "local");
+	UAM_ASSERT(snapshot.value("modelRefreshError", std::string{}).starts_with("unexpected error: "));
+	UAM_ASSERT(!discovery.Poll(fixture.app));
 }
