@@ -1834,22 +1834,14 @@ namespace uam
 			Retry,
 			OwnedMutation
 		};
-		bool ResolveCapturedRetryPolicy(const AppState& app, const ChatSession& chat, int message_index, std::optional<AcpUnsentPromptRecovery>& captured, std::string* error_out, CapturedUnsentPolicyUse use = CapturedUnsentPolicyUse::Retry)
+		bool CapturedRetryPolicyValid(const AppState& app, const ChatSession& chat, int message_index, const AcpUnsentPromptRecovery* captured, std::string* error_out, CapturedUnsentPolicyUse use)
 		{
-			captured.reset();
+			if (!captured) return true;
 			const auto reject = [&]
 			{
-				if (error_out)
-					*error_out = "The original unsent agent capture is invalid or no longer matches this chat, provider, or message. The input is retained.";
+				if (error_out) *error_out = "The original unsent agent capture is invalid or no longer matches this chat, provider, or message. The input is retained.";
 				return false;
 			};
-			if (!prompt_recovery::BindingsMatch(chat))
-				return reject();
-			for (const auto& value : chat.acp_unsent_prompt_recoveries)
-				if (value.user_message_index == message_index)
-					captured = value;
-			if (!captured)
-				return true;
 			const Message& row = chat.messages[static_cast<std::size_t>(message_index)];
 			if (!row.acp_prompt_not_sent || row.acp_prompt_discarded)
 				return reject();
@@ -1864,6 +1856,19 @@ namespace uam
 			// Editing/removing a validated owned capture does not authorize execution and
 			// must remain possible when current environment policy disallows dispatch.
 			return use == CapturedUnsentPolicyUse::OwnedMutation || ValidateCapturedAcpAgentPolicy(app, chat, captured->uam_agent_id, captured->uam_agent_definition_snapshot, capability, error_out);
+		}
+
+		bool ResolveCapturedRetryPolicy(const AppState& app, const ChatSession& chat, int message_index, std::optional<AcpUnsentPromptRecovery>& captured, std::string* error_out, CapturedUnsentPolicyUse use = CapturedUnsentPolicyUse::Retry)
+		{
+			captured.reset();
+			if (!prompt_recovery::BindingsMatch(chat))
+			{
+				if (error_out) *error_out = "The original unsent agent capture is invalid or no longer matches this chat, provider, or message. The input is retained.";
+				return false;
+			}
+			for (const auto& value : chat.acp_unsent_prompt_recoveries)
+				if (value.user_message_index == message_index) captured = value;
+			return CapturedRetryPolicyValid(app, chat, message_index, captured ? &*captured : nullptr, error_out, use);
 		}
 
 		bool ResolveOwnedQueuedCapture(const AppState& app, const ChatSession& chat, const AcpQueuedUserPromptState& prompt, std::optional<AcpUnsentPromptRecovery>& captured, std::string* error_out)
@@ -5661,6 +5666,71 @@ For desktop observation and input, use only the provider's built-in controller; 
 		return reject("The unsent prompt could not be removed because its saved state could not be updated.");
 	}
 
+	static const char* UnsentEditScopeError(const AppState& app, const ChatSession& chat)
+	{
+		if (!chat.messages_loaded || chat.imported_read_only || chat.acp_queue_storage_error || chat.side_cleanup_requested || app.pending_chat_save_at_by_chat_id.contains(chat.id) || app.pending_chat_save_tasks.contains(chat.id) || app.worktree_operation_chat_ids.contains(chat.id) || AcpStopInProgress(app, chat.id))
+			return "The unsent input changed or is being saved. Refresh before editing it.";
+		const AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
+		if (!chat.acp_queued_prompts.empty() || chat.acp_dispatched_queued_prompt_count != 0 || chat.remote_turn_reconnect_pending || chat.remote_stop_cleanup_pending || chat.remote_restart_pending || chat.remote_source_exit_pending || !chat.remote_active_turn_id.empty() || !chat.remote_prompt_delivery_session_id.empty() || !chat.remote_prompt_delivery_id.empty() || !chat.remote_prompt_delivery_payload.empty() || !chat.remote_pending_requests.empty() || !chat.remote_interaction_responses.empty() || (session && (session->provider_id != chat.provider_id || !session->queued_user_prompts.empty() || AcpRetryHasPendingWork(app, chat, *session, false))) || ChatHasBusyCliTerminal(app, chat.id))
+			return "This input has pending delivery or is part of provider history. It cannot be edited locally.";
+		return nullptr;
+	}
+
+	static int LatestDependentUnsentEditIndex(const AppState& app, const ChatSession& chat)
+	{
+		int latest = -1;
+		for (const ChatSession& child : app.chats)
+			if (child.id != chat.id && (child.parent_chat_id == chat.id || child.branch_root_chat_id == chat.id)) latest = std::max(latest, child.branch_from_message_index);
+		return latest;
+	}
+
+	static const char* UnsentEditRowError(const ChatSession& chat, int message_index, bool known, int latest_dependent)
+	{
+		if (message_index < 0 || static_cast<std::size_t>(message_index) >= chat.messages.size())
+			return "The unsent input changed or is being saved. Refresh before editing it.";
+		const Message& original = chat.messages[static_cast<std::size_t>(message_index)];
+		if (original.role != MessageRole::User || !original.acp_prompt_not_sent || original.acp_prompt_discarded || (!original.provider.empty() && original.provider != chat.provider_id) || !known)
+			return "This input has pending delivery or is part of provider history. It cannot be edited locally.";
+		if (latest_dependent >= message_index) return "A conversation branch uses this input. Its original text must be kept.";
+		return nullptr;
+	}
+
+	static bool CanEditUnsentAcpMessage(const AppState& app, const ChatSession& chat, int message_index, const std::vector<int>& known, std::optional<AcpUnsentPromptRecovery>& captured, std::string* error_out)
+	{
+		const char* reason = UnsentEditScopeError(app, chat);
+		if (!reason) reason = UnsentEditRowError(chat, message_index, std::ranges::find(known, message_index) != known.end(), LatestDependentUnsentEditIndex(app, chat));
+		if (reason) { if (error_out) *error_out = reason; return false; }
+		// Mutation independently validates the complete carrier set and the selected capture.
+		if (!ResolveCapturedRetryPolicy(app, chat, message_index, captured, error_out, CapturedUnsentPolicyUse::OwnedMutation)) return false;
+		const Message& original = chat.messages[static_cast<std::size_t>(message_index)];
+		if (!SkillSnapshotsComplete(original.markdown_store_files, original.markdown_store_prompt_blocks))
+		{
+			if (error_out) *error_out = "The saved skill context is incomplete. The original input is unchanged.";
+			return false;
+		}
+		return true;
+	}
+
+	std::vector<int> EditableUnsentAcpMessageIndices(const AppState& app, const ChatSession& chat)
+	{
+		std::vector<int> result;
+		if (UnsentEditScopeError(app, chat)) return result;
+		const auto known = KnownUnsentAcpMessageIndices(app, chat);
+		if (known.empty() || !prompt_recovery::BindingsMatch(chat)) return result;
+		const int latest_dependent = LatestDependentUnsentEditIndex(app, chat);
+		std::map<int, const AcpUnsentPromptRecovery*> captures;
+		for (const auto& capture : chat.acp_unsent_prompt_recoveries) captures.emplace(capture.user_message_index, &capture);
+		for (const int index : known)
+		{
+			if (UnsentEditRowError(chat, index, true, latest_dependent)) continue;
+			const auto found = captures.find(index);
+			if (!CapturedRetryPolicyValid(app, chat, index, found == captures.end() ? nullptr : found->second, nullptr, CapturedUnsentPolicyUse::OwnedMutation)) continue;
+			const Message& row = chat.messages[static_cast<std::size_t>(index)];
+			if (SkillSnapshotsComplete(row.markdown_store_files, row.markdown_store_prompt_blocks)) result.push_back(index);
+		}
+		return result;
+	}
+
 	bool EditUnsentAcpMessage(AppState& app, const std::string& chat_id, int message_index, const std::string& expected_messages_digest, const std::string& text, std::string* error_out, const std::optional<std::vector<std::string>>& retained_attachment_ids, const std::optional<std::vector<std::string>>& retained_markdown_store_files)
 	{
 		const auto reject = [&](const std::string& reason)
@@ -5677,18 +5747,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 			chat_pages::AppendMessageDigest(hash, row);
 		if (chat_pages::FinishMessageDigest(hash, chat->messages.size()) != expected_messages_digest)
 			return reject("Chat history changed. Refresh before editing the unsent input.");
-		const Message& original = chat->messages[static_cast<std::size_t>(message_index)];
-		const auto known = KnownUnsentAcpMessageIndices(app, *chat);
-		const AcpSessionState* session = FindAcpSessionForChat(app, chat_id);
-		if (original.role != MessageRole::User || !original.acp_prompt_not_sent || original.acp_prompt_discarded || (!original.provider.empty() && original.provider != chat->provider_id) || std::ranges::find(known, message_index) == known.end() || !chat->acp_queued_prompts.empty() || chat->acp_dispatched_queued_prompt_count != 0 || chat->remote_turn_reconnect_pending || chat->remote_stop_cleanup_pending || chat->remote_restart_pending || chat->remote_source_exit_pending || !chat->remote_active_turn_id.empty() || !chat->remote_prompt_delivery_session_id.empty() || !chat->remote_prompt_delivery_id.empty() || !chat->remote_prompt_delivery_payload.empty() || !chat->remote_pending_requests.empty() || !chat->remote_interaction_responses.empty() || (session && (session->provider_id != chat->provider_id || !session->queued_user_prompts.empty() || AcpRetryHasPendingWork(app, *chat, *session, false))) || ChatHasBusyCliTerminal(app, chat_id))
-			return reject("This input has pending delivery or is part of provider history. It cannot be edited locally.");
-		if (std::ranges::any_of(app.chats, [&chat, message_index](const ChatSession& child) { return child.id != chat->id && (child.parent_chat_id == chat->id || child.branch_root_chat_id == chat->id) && child.branch_from_message_index >= message_index; }))
-			return reject("A conversation branch uses this input. Its original text must be kept.");
 		std::optional<AcpUnsentPromptRecovery> captured;
-		if (!ResolveCapturedRetryPolicy(app, *chat, message_index, captured, error_out, CapturedUnsentPolicyUse::OwnedMutation))
-			return false;
-		if (!SkillSnapshotsComplete(original.markdown_store_files, original.markdown_store_prompt_blocks))
-			return reject("The saved skill context is incomplete. The original input is unchanged.");
+		if (!CanEditUnsentAcpMessage(app, *chat, message_index, KnownUnsentAcpMessageIndices(app, *chat), captured, error_out)) return false;
+		const Message& original = chat->messages[static_cast<std::size_t>(message_index)];
 		std::vector<MessageAttachment> attachments = original.attachments;
 		if (retained_attachment_ids)
 		{
