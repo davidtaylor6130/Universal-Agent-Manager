@@ -17,11 +17,42 @@ for case, _, _ in perf_suite.NATIVE:
 lines = {
     'PerformanceIdleInstallPushTick': '[TIMING] idle install 2000 chats: slices=1.5 ms digests=2 ms; push tick p50 unchanged=3.25 ms, one chat changed=4 ms, large loaded chat changed=5 ms',
     'PerformanceStreamingStatePushTick': '[TIMING] streaming push fixture: fingerprint p50=1 ms; ticks=62 calls=35 rebuilds=9 pushes=9 per-rebuild p50=2.5 ms; UI-thread push cost=40.1 ms/s, cheapest of 3 windows',
-    'PerformanceSuiteUamRequestOverhead': '[SIZE] uam-control MCP tool schemas: 4000 bytes, 20 tools',
+    'PerformanceSuiteUamRequestOverhead': '[SIZE] uam-control full catalogue: 4000 bytes, 20 tools',
 }
 lines['PerformanceMemoryPollOnLargeInstall'] = '[TIMING] memory poll, 2000 chats, 1000 queued: p50=5e-05 ms'
 for case, line in lines.items():
     assert any(name == case and re.search(pattern.replace(r'[\d.]+', perf_suite.NUMBER), line) for name, pattern, _ in perf_suite.NATIVE), case
+
+# All providers and contexts survive parsing, including zero-tool reviewers and explicit CLI exclusions.
+exposure_lines = ['[SIZE] uam-control full catalogue: 9694 bytes, 17 tools',
+                  '[SIZE] computer-use full catalogue: 4000 bytes, 5 tools']
+for index, provider in enumerate(perf_suite.PROVIDERS):
+    exposure_lines.append(f'[SIZE] {provider}-cli hello prompt text added: {index} bytes')
+    for view in ('structured', 'cli'):
+        for context in perf_suite.EXPOSURE_CONTEXTS:
+            if view == 'cli' and context == 'goal_reviewer':
+                exposure_lines.append(f'[SIZE] {provider}-cli {view} {context} status: unsupported (structured-only reviewer)')
+            else:
+                size, tools = (2, 0) if context == 'goal_reviewer' else (4000 + index, 10)
+                exposure_lines.append(f'[SIZE] {provider}-cli {view} {context} uam-control exposure: {size} bytes, {tools} tools')
+exposure = perf_suite.parse_native_output('PerformanceSuiteUamRequestOverhead', exposure_lines)
+assert exposure['uam_control_catalog_bytes'] == 9694 and exposure['uam_control_catalog_tools'] == 17
+assert exposure['computer_use_catalog_bytes'] == 4000
+for index, provider in enumerate(perf_suite.PROVIDERS):
+    assert exposure[f'{provider}_hello_prompt_added_bytes'] == index
+    for view in ('structured', 'cli'):
+        for context in perf_suite.EXPOSURE_CONTEXTS:
+            prefix = f'uam_control_{provider}_{view}_{context}'
+            if view == 'cli' and context == 'goal_reviewer':
+                assert exposure[f'{prefix}_status'] == 'unsupported (structured-only reviewer)'
+                assert f'{prefix}_schema_bytes' not in exposure
+            else:
+                assert exposure[f'{prefix}_schema_bytes_div4_estimate'] == exposure[f'{prefix}_schema_bytes'] / 4
+    assert exposure[f'uam_control_{provider}_structured_goal_reviewer_tools'] == 0
+    assert exposure[f'uam_control_{provider}_structured_goal_reviewer_schema_bytes'] == 2  # serialized []
+# Missing provider output is missing evidence, never fabricated zero exposure.
+assert 'codex_hello_prompt_added_bytes' not in perf_suite.parse_native_output(
+    'PerformanceSuiteUamRequestOverhead', ['[SIZE] claude-cli hello prompt text added: 0 bytes'])
 
 summary = perf_suite.summarize_ui(['\x1b[22m\x1b[39m[TIMING] input 3 to committed draft: 2 ms\r\n', '[TIMING] input 4 to committed draft: 4 ms',
                                    '[TIMING] history response to committed initial page (2000 messages): 9 ms', 'noise'])
@@ -42,8 +73,19 @@ with tempfile.TemporaryDirectory() as folder:
     baseline.write_text(json.dumps({'metrics': {'cold_start_ms': 2000, 'push_2000_unchanged_ms': 24}}))
     table = perf_suite.report([run], baseline)
     assert '| Cold start | ms | 3,000 | 2,000 | +50% | 2,740 | 1,800 |' in table, table
-    assert '| New thread * (empty chat to usable composer) | ms | 20 |' in table and '| "hello" tokens † | tokens | 1,000 |' in table, table
+    assert '| New thread * (empty chat to usable composer) | ms | 20 |' in table and '| "hello" tokens | tokens | — |' in table, table
     assert '| `push_2000_unchanged_ms` | 12 | 24 | -50% |' in table, table
+    # Context schemas never inherit the old ungated catalogue baseline, nor fill billable-token rows.
+    run.write_text(json.dumps({'metrics': exposure}))
+    baseline.write_text(json.dumps({'metrics': {'uam_control_tools_bytes': 9694, 'claude_hello_prompt_added_bytes': 2}}))
+    table = perf_suite.report([run], baseline)
+    assert 'legacy baseline measured the ungated tool catalogue' in table
+    assert '| "hello" tokens | tokens | — | — |' in table and 'tokens †' not in table
+    assert '| `uam_control_claude_structured_local_root_schema_bytes` | 4,000 | — |  |' in table
+    assert '| `uam_control_claude_cli_goal_reviewer_status` | unsupported (structured-only reviewer) | — |  |' in table
+    assert 'not billable tokens' in table and 'prompt caching' in table
+    for provider in perf_suite.PROVIDERS:
+        assert f'`{provider}_hello_prompt_added_bytes`' in table
     run.write_text(json.dumps({'metrics': {'windows_session': 0}}))
     assert 'session 0' in perf_suite.report([run], baseline)
     # The fixture turns every provider off and the app environment carries no credentials or real home.

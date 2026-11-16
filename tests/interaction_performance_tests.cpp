@@ -1632,27 +1632,101 @@ namespace
 	}
 }
 
-// Report-only input for the performance suite (scripts/perf_suite.py native): what UAM itself adds to a provider
-// request, deterministically. Counted: the MCP tool schemas UAM serves and prompt text built around the typed prompt in
-// the prompt request. Not counted: text sent as separate strings or at session start, memory, central instructions and
-// attached store entries, which depend on the user's content; real model token counts need a live provider and are not measured.
+// Report-only schema exposure through production session setup. Bytes / 4 is only a schema-size
+// estimate: provider discovery, caching, tokenization and billing are not measured here.
 UAM_TEST(PerformanceSuiteUamRequestOverhead)
 {
 	const nlohmann::json control_tools = uam::UamControlService::ToolDefinitionsForTests();
 	const nlohmann::json computer_tools = uam::computer_use::ToolDefinitionsForTests();
 	UAM_ASSERT(!control_tools.empty() && !computer_tools.empty());
-	std::cout << "[SIZE] uam-control MCP tool schemas: " << control_tools.dump().size() << " bytes, " << control_tools.size() << " tools\n";
-	std::cout << "[SIZE] computer-use MCP tool schemas: " << computer_tools.dump().size() << " bytes, " << computer_tools.size() << " tools\n";
+	std::cout << "[SIZE] uam-control full catalogue: " << control_tools.dump().size() << " bytes, " << control_tools.size() << " tools\n";
+	std::cout << "[SIZE] computer-use full catalogue: " << computer_tools.dump().size() << " bytes, " << computer_tools.size() << " tools\n";
 	for (const char* provider : {"claude-cli", "codex-cli", "gemini-cli", "opencode-cli", "copilot-cli", "antigravity-cli"})
 	{
 		if (!ProviderRuntimeRegistry::IsEnabledRuntimeId(provider)) continue;
-		uam::AcpSessionState session;
-		session.session_id = "perf-suite-session";
-		ChatSession chat;
-		chat.id = "perf-suite-chat";
-		chat.provider_id = provider;
+		uam::AcpSessionState prompt_session;
+		prompt_session.session_id = "perf-suite-session";
+		ChatSession prompt_chat;
+		prompt_chat.id = "perf-suite-chat";
+		prompt_chat.provider_id = provider;
 		std::string method;
-		const nlohmann::json request = ProviderRuntimeRegistry::ResolveById(provider).OnAcpBuildPrompt(session, 1, "hello", chat, method);
+		const nlohmann::json request = ProviderRuntimeRegistry::ResolveById(provider).OnAcpBuildPrompt(prompt_session, 1, "hello", prompt_chat, method);
 		std::cout << "[SIZE] " << provider << " hello prompt text added: " << AddedPromptText(request, "hello") << " bytes\n";
+		for (const std::string context : {"local_root", "ssh_root", "read_only_agent", "child_without_delegates", "temporary_side_chat", "goal_reviewer"})
+		{
+			TempDir temp("uam-performance-tool-exposure");
+			uam::AppState app;
+			app.data_root = temp.root;
+			// A real selected agent with no delegates also lets CLI View exercise the child gate.
+			fs::create_directories(temp.root / "agents");
+			UAM_ASSERT(uam::io::WriteTextFile(temp.root / "agents" / "worker.md",
+			    "---\nversion: 1\nname: worker\ndescription: Fixture worker\nmode: subagent\nworkspaceAccess: write\nskills: []\ndelegates: []\n---\nInspect.\n"));
+			ChatSession root = ChatDomainService().CreateNewChat("", provider);
+			root.id = "exposure-root";
+			root.uam_control_enabled = true;
+			root.execution_host_id = context == "ssh_root" ? "fixture-ssh" : "local";
+			app.chats.push_back(root);
+			if (context == "child_without_delegates")
+			{
+				ChatSession child = root;
+				child.id = "exposure-child";
+				child.agent_run_id = "exposure-run";
+				child.uam_agent_id = "worker";
+				app.chats.push_back(std::move(child));
+				AgentRun run;
+				run.id = "exposure-run";
+				run.root_chat_id = root.id;
+				run.transcript_chat_id = app.chats.back().id;
+				run.status = "running";
+				app.agent_runs.push_back(std::move(run));
+			}
+			ChatSession& chat = app.chats.back();
+			if (context == "temporary_side_chat") chat.temporary_parent_chat_id = "fixture-parent";
+			if (context == "read_only_agent") chat.uam_agent_id = "plan";
+			auto session = std::make_unique<uam::AcpSessionState>();
+			session->chat_id = chat.id;
+			session->provider_id = provider;
+			session->running = true;
+			session->active_uam_agent_id = chat.uam_agent_id;
+			session->active_uam_agent_workspace_access = context == "read_only_agent" ? "read" : "write";
+			session->goal_review_turn = context == "goal_reviewer";
+			app.acp_sessions.push_back(std::move(session));
+			std::string error;
+			UAM_ASSERT(uam::UamControlService::Initialize(app, &error));
+			struct Shutdown
+			{
+				uam::AppState& app;
+				~Shutdown() { uam::UamControlService::Shutdown(app); }
+			} shutdown{app};
+			nlohmann::json setup{{"params", {{"mcpServers", nlohmann::json::array()}}}};
+			UAM_ASSERT(uam::UamControlService::AppendSessionMcpServer(app, *app.acp_sessions.back(), chat, "session/new", setup, &error));
+			UAM_ASSERT_EQ(setup["params"]["mcpServers"].size(), std::size_t{1});
+			const auto measure = [&](std::string_view view, const nlohmann::json& server)
+			{
+				const auto tools = uam::UamControlService::ToolDefinitionsForTests(uam::UamControlService::HiddenToolsForTests(server));
+				const auto has = [&](std::string_view name) {
+					return std::ranges::any_of(tools, [&](const nlohmann::json& tool) { return tool.value("name", "") == name; });
+				};
+				if (context == "goal_reviewer") UAM_ASSERT(tools.empty());
+				if (context == "ssh_root" || context == "read_only_agent" || !UAM_ENABLE_COMPUTER_USE) UAM_ASSERT(!has("computer_use_request"));
+				if (context == "read_only_agent") UAM_ASSERT(!has("goal_create") && !has("agent_cancel") && !has("chat_create"));
+				if (context == "child_without_delegates") UAM_ASSERT(!has("agent_list") && !has("agent_delegate") && !has("agent_wait"));
+				if (context == "temporary_side_chat") UAM_ASSERT(!has("pr_watch") && !has("pr_unwatch") && !has("secret_request"));
+				if (view == "cli") UAM_ASSERT(!has("agent_wait") && !has("html_view_preview") && !has("html_view_publish"));
+				std::cout << "[SIZE] " << provider << " " << view << " " << context << " uam-control exposure: " << tools.dump().size() << " bytes, " << tools.size() << " tools\n";
+			};
+			measure("structured", setup["params"]["mcpServers"].back());
+			if (context == "goal_reviewer")
+			{
+				// Goal-review turns have no terminal counterpart; do not fabricate a zero-schema CLI measurement.
+				std::cout << "[SIZE] " << provider << " cli " << context << " status: unsupported (structured-only reviewer)\n";
+				continue;
+			}
+			app.cli_terminals.push_back(std::make_unique<uam::CliTerminalState>());
+			nlohmann::json server;
+			UAM_ASSERT(uam::UamControlService::PrepareTerminalMcpServer(app, *app.cli_terminals.back(), chat, server, error));
+			UAM_ASSERT(server.is_object());
+			measure("cli", server);
+		}
 	}
 }
