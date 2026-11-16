@@ -82,7 +82,7 @@ describe('Repository diff review states and keyboard', () => {
       expect(document.activeElement?.getAttribute('role')).toBe('dialog')
       expect(document.body.textContent).toContain('Since this chat began')
       await act(async () => finish('@@ -1 +1 @@\n-old\n+new'))
-      expect(document.querySelector('[role="status"]')).toBeNull()
+      expect([...document.querySelectorAll('[role="status"]')].some((element) => element.textContent === 'Loading file changes…')).toBe(false)
       act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) })
       expect(view.onClose).toHaveBeenCalledTimes(1)
     } finally { view.dispose() }

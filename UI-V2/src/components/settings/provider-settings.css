@@ -124,7 +124,7 @@
 .uam-prov-sticky { position: sticky; left: 0; z-index: 1; background: var(--surface); }
 .uam-prov-card tbody tr:hover .uam-prov-sticky { background: var(--surface-up); }
 .uam-prov-detail--clip { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; overflow-wrap: normal; }
-.uam-prov-spin { animation: uam-prov-spin 900ms linear infinite; }
+.uam-prov-spin { animation: uam-prov-spin calc(900ms * var(--motion-scale, 1)) linear infinite; }
 @keyframes uam-prov-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .uam-prov-spin { animation: none; } }
 

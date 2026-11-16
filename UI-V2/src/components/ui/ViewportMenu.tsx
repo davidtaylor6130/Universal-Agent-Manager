@@ -211,7 +211,7 @@ const ViewportMenuPanel = forwardRef<HTMLDivElement, ViewportMenuProps & { closi
 })
 
 export const ViewportMenu = forwardRef<HTMLDivElement, ViewportMenuProps>(function ViewportMenu({ open = true, ...props }, forwardedRef) {
-  const { mounted, closing } = usePresence(open)
+  const { mounted, closing } = usePresence(open, 120)
   // Keep the last open props on screen while the exit plays.
   const lastProps = useRef(props)
   if (open) lastProps.current = props

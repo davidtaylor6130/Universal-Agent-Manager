@@ -125,7 +125,7 @@ export function SettingsField({ label, hint, children, htmlFor }: { label: React
 export function SettingsLoading({ label = 'Loading settings', rows = 3 }: { label?: string; rows?: number }) {
   return (
     <div role="status" aria-busy="true" aria-label={label} className="uam-set-section">
-      <div className="uam-set-skeleton uam-set-skeleton--label" />
+      <div className="uam-set-section__head"><span className="uam-set-section__title">{label}…</span></div>
       <div className="uam-set-card">
         {Array.from({ length: rows }, (_, index) => (
           <div key={index} className="uam-set-row" aria-hidden>
@@ -139,7 +139,6 @@ export function SettingsLoading({ label = 'Loading settings', rows = 3 }: { labe
           </div>
         ))}
       </div>
-      <span className="sr-only">{label}…</span>
     </div>
   )
 }
