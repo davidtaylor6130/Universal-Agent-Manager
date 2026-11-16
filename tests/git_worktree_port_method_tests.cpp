@@ -272,7 +272,7 @@ namespace
 		child.execution_host_id = fixture.app.chats.front().execution_host_id;
 		child.workspace_directory = fixture.worktree.string();
 		child.workspace_source_directory = fixture.app.chats.front().workspace_source_directory;
-		child.native_session_id = "retained-native-history";
+		child.native_session_id = PlatformServicesFactory::Instance().process_service.GenerateUuid();
 		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, child));
 		fixture.app.hidden_agent_chat_ownership.data_root = fixture.app.data_root;
 		fixture.app.hidden_agent_chat_ownership.chats.push_back(child);
@@ -302,6 +302,8 @@ UAM_TEST(GitWorktreeFinishedManagedFamilyPermitsPortAndDiscardPreservingHistory)
 		const auto parent = AddFinishedWorktreeChild(fixture);
 		AddFinishedWorktreeChild(fixture, parent);
 		const auto child_id = fixture.app.hidden_agent_chat_ownership.chats.front().id;
+		const auto native_session_id = fixture.app.hidden_agent_chat_ownership.chats.front().native_session_id;
+		UAM_ASSERT(!native_session_id.empty());
 		const auto before = ChatRepository::ChatStorageRevision(fixture.app.data_root, child_id);
 		AdmitWorktreeFamily(fixture);
 		const auto result = discard ? uam::GitWorktreeService().DiscardChatChanges(fixture.app, fixture.app.chats.front()) : uam::GitWorktreeService().PortChatChanges(fixture.app, fixture.app.chats.front());
@@ -310,7 +312,7 @@ UAM_TEST(GitWorktreeFinishedManagedFamilyPermitsPortAndDiscardPreservingHistory)
 		UAM_ASSERT(!RunGitForTest(fixture.source, "show-ref --verify refs/heads/" + fixture.chat_branch));
 		UAM_ASSERT(before == ChatRepository::ChatStorageRevision(fixture.app.data_root, child_id));
 		const auto history = ChatRepository::LoadLocalChat(fixture.app.data_root, child_id, true);
-		UAM_ASSERT(history && history->native_session_id == "retained-native-history");
+		UAM_ASSERT(history && history->native_session_id == native_session_id);
 		UAM_ASSERT_EQ(history->workspace_directory, fixture.worktree.string());
 	}
 }
