@@ -5012,10 +5012,13 @@ bool BackgroundChatSaveCovers(const AppState& app, const ChatSession& chat)
 	// Only a loaded chat in an active turn: every state the synchronous save settles or refuses (a failed or
 	// finished turn, a remote reconnect marker, a managed continuation's primary witness, a pending rollback,
 	// an unconfirmed initial publication, a discovery chat) keeps the synchronous path. The remote stamping
-	// it does on the way is StampChatSaveState, which callers apply before scheduling.
+	// it does on the way is StampChatSaveState, which callers apply before scheduling. A reported remote source
+	// exit ends the turn while processing is still set, so it also keeps the synchronous save and its rollback:
+	// the interruption (settled wait, failed tools) is durable before the exit or any later output is acknowledged.
 	const ChatSession* live = ChatDomainService().FindChatById(app, chat.id);
 	const AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
-	return live != nullptr && session != nullptr && session->processing && session->lifecycle_state != kAcpLifecycleError &&
+	return live != nullptr && session != nullptr && session->processing && !session->remote_source_exit_reported &&
+	    session->lifecycle_state != kAcpLifecycleError &&
 	    !session->managed_parent_continuation && !session->queued_rollback_save_pending && live->messages_loaded && !live->imported_read_only &&
 	    !AgentRunScheduler::HasUnconfirmedInitialRootPublication(app, *live) &&
 	    std::ranges::none_of(app.model_discovery_chats, [&chat](const ChatSession& discovery) { return discovery.id == chat.id; });
