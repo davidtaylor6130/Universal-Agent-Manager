@@ -125,8 +125,32 @@ namespace uam::companion
 		return SettingsProjection(settings);
 	}
 
+	/// <summary>
+	/// Puts each chat's referenced model catalogue (acpSession.modelCatalogId into the top-level modelCatalogs table
+	/// that StateSerializer::Serialize writes) back inline as availableModels and configOptions, and drops the table.
+	/// </summary>
+	inline void InlineModelCatalogs(nlohmann::json& state)
+	{
+		if (!state.is_object() || !state.contains("modelCatalogs")) return;
+		const nlohmann::json catalogs = std::move(state["modelCatalogs"]);
+		state.erase("modelCatalogs");
+		if (!state.contains("chats") || !state["chats"].is_array() || !catalogs.is_object()) return;
+		for (nlohmann::json& chat : state["chats"])
+		{
+			const auto acp = chat.is_object() ? chat.find("acpSession") : chat.end();
+			if (acp == chat.end() || !acp->is_object() || !acp->contains("modelCatalogId") || !(*acp)["modelCatalogId"].is_string()) continue;
+			const auto catalog = catalogs.find((*acp)["modelCatalogId"].get<std::string>());
+			acp->erase("modelCatalogId");
+			if (catalog == catalogs.end()) continue;
+			(*acp)["availableModels"] = catalog->value("availableModels", nlohmann::json::array());
+			(*acp)["configOptions"] = catalog->value("configOptions", nlohmann::json::array());
+		}
+	}
+
 	inline nlohmann::json MobileState(nlohmann::json state)
 	{
+		// Phone clients read each chat's catalogue inline; only the desktop page receives catalogues by reference.
+		InlineModelCatalogs(state);
 		if (state.contains("settings"))
 			state["settings"] = MobileSettings(state["settings"]);
 		if (state.contains("providers") && state["providers"].is_array())

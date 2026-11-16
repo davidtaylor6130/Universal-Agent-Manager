@@ -93,6 +93,7 @@
 #include "cef/cef_push.h"
 #endif
 #include "cef/state_serializer.h"
+#include "common/companion/protocol.h"
 #include "core/chat_import_utils.h"
 #include "core/gemini_cli_compat.h"
 #include "remote/runner_protocol.h"
@@ -414,6 +415,17 @@ namespace uam_test
 		if (output.empty()) return {"/bin/cat"};
 		return {"/bin/sh", "-c", "cat > \"$1\"", "uam-test-stdio-cat", output.string()};
 #endif
+	}
+
+	/// <summary>
+	/// StateSerializer::Serialize with each chat's modelCatalogId expanded back into availableModels and configOptions,
+	/// as the frontend store and the phone projection do, for cases that check catalogue content rather than the wire shape.
+	/// </summary>
+	inline nlohmann::json SerializeStateInline(const uam::AppState& app, bool summary_only = false)
+	{
+		nlohmann::json state = uam::StateSerializer::Serialize(app, summary_only);
+		uam::companion::InlineModelCatalogs(state);
+		return state;
 	}
 } // namespace uam_test
 

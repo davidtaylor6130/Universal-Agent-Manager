@@ -6,7 +6,7 @@ import type { Attachment, Message } from '../types/message'
 import { CppAppState, useAppStore } from './useAppStore'
 import { createUiSlice } from './slices/uiSlice'
 import { parseUamPushPayload } from './push/uamPush'
-import { sanitizeCppAppState, sanitizeCppStatePatch } from './cpp/sanitizers'
+import { resetModelCatalogsForTests, sanitizeCppAppState, sanitizeCppStatePatch } from './cpp/sanitizers'
 import { preferredFamilyChat, setPreferredFamilyChat } from '../utils/branchPreferenceStorage'
 import { APP_FAILURE_EVENT, type AppFailure } from '../utils/appFailure'
 
@@ -8471,6 +8471,69 @@ describe('provider model catalogue transport capacity', () => {
     const patch = sanitizeCppStatePatch({ stateRevision: 2, providerModelCatalogs: catalogs })
     expect(patch?.providerModelCatalogs).toHaveLength(513)
     expect(patch?.providerModelCatalogs?.[512]).toMatchObject(catalogs[512])
+  })
+})
+
+
+describe('model catalogues by reference', () => {
+  const catalogue = (id: string) => ({ availableModels: [{ id, name: id, description: '' }], configOptions: [] })
+  const referencing = (revision: number, catalogId: string, title = 'Gemini Session') => {
+    const chat = makeCppState(revision).chats[0]
+    return { ...chat, title, acpSession: { sessionId: '', providerId: 'gemini-cli', modelCatalogId: catalogId, modelsLoading: false, modelRefreshError: '' } }
+  }
+
+  it('resolves chats against catalogues sent once and rejects a patch naming one the page lacks', () => {
+    resetModelCatalogsForTests()
+    const state = sanitizeCppAppState({ ...makeCppState(1), modelCatalogs: { first: catalogue('vendor/first') },
+      chats: [referencing(1, 'first'), { ...referencing(1, 'first'), id: 'chat-2' }] })
+    expect(state?.chats[0].acpSession?.availableModels).toEqual([expect.objectContaining({ id: 'vendor/first' })])
+    // Sanitized once and shared by every chat that references it.
+    expect(state?.chats[1].acpSession?.availableModels).toBe(state?.chats[0].acpSession?.availableModels)
+
+    const renamed = sanitizeCppStatePatch({ stateRevision: 2, chats: [referencing(2, 'first', 'Renamed')] })
+    expect(renamed?.chats?.[0].acpSession?.availableModels).toBe(state?.chats[0].acpSession?.availableModels)
+
+    const changed = sanitizeCppStatePatch({ stateRevision: 3, modelCatalogs: { second: catalogue('vendor/second') }, chats: [referencing(3, 'second')] })
+    expect(changed?.chats?.[0].acpSession?.availableModels).toEqual([expect.objectContaining({ id: 'vendor/second' })])
+
+    expect(sanitizeCppStatePatch({ stateRevision: 4, chats: [referencing(4, 'never-sent')] })).toBeNull()
+    expect(parseUamPushPayload({ type: 'statePatch', data: { stateRevision: 4, chats: [referencing(4, 'never-sent')] } }))
+      .toMatchObject({ ok: false, mayHaveCarriedState: true })
+    // Native clears what it believes the page holds and says so; the page clears too, so an older id is gone.
+    const reset = sanitizeCppStatePatch({ stateRevision: 4, modelCatalogsReset: true, modelCatalogs: { third: catalogue('vendor/third') }, chats: [referencing(4, 'third')] })
+    expect(reset?.chats?.[0].acpSession?.availableModels).toEqual([expect.objectContaining({ id: 'vendor/third' })])
+    expect(sanitizeCppStatePatch({ stateRevision: 5, chats: [referencing(5, 'first')] })).toBeNull()
+    // A native build that still inlines catalogues keeps working.
+    const inline = sanitizeCppStatePatch({ stateRevision: 5, chats: [{ ...referencing(5, ''), acpSession: { availableModels: catalogue('vendor/inline').availableModels } }] })
+    expect(inline?.chats?.[0].acpSession?.availableModels).toEqual([expect.objectContaining({ id: 'vendor/inline' })])
+  })
+
+  it('applies referenced catalogues to the chat binding through real pushes', async () => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.dispatchEvent = vi.fn(() => true)
+    const initial = { ...makeCppState(1), modelCatalogs: { first: catalogue('vendor/first') }, chats: [referencing(1, 'first')] }
+    const actions: string[] = []
+    testWindow.cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request) as { action: string }
+      actions.push(parsed.action)
+      if (parsed.action === 'getInitialState') onSuccess(JSON.stringify(initial))
+    }
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const models = () => cefStore.getState().acpBindingBySessionId['chat-1']?.availableModels.map((model) => model.id)
+    expect(models()).toEqual(['vendor/first'])
+
+    testWindow.uamPush!({ type: 'statePatch', data: { stateRevision: 2, modelCatalogs: { second: catalogue('vendor/second') }, chats: [referencing(2, 'second')] } })
+    expect(cefStore.getState().lastAppliedStateRevision).toBe(2)
+    expect(models()).toEqual(['vendor/second'])
+
+    // A patch naming a catalogue this page never received is not applied; the store pulls the full state instead.
+    const pulls = actions.filter((action) => action === 'getInitialState').length
+    testWindow.uamPush!({ type: 'statePatch', data: { stateRevision: 3, chats: [referencing(3, 'never-sent', 'Lost')] } })
+    expect(cefStore.getState().lastAppliedStateRevision).toBe(2)
+    expect(models()).toEqual(['vendor/second'])
+    await vi.waitFor(() => expect(actions.filter((action) => action === 'getInitialState').length).toBeGreaterThan(pulls), { timeout: 3000 })
   })
 })
 

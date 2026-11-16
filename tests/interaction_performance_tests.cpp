@@ -822,7 +822,7 @@ UAM_TEST(StatePushPublishesEverySummaryInputChange)
 	        [](const nlohmann::json& summary)
 	        {
 	            // Catalog hydration rebuilds the summary; the scan's count must survive it.
-	            UAM_ASSERT(summary["acpSession"].contains("availableModels"));
+	            UAM_ASSERT(summary["acpSession"].contains("modelCatalogId"));
 	            UAM_ASSERT_EQ(summary["managedSubagentCount"].get<std::size_t>(), std::size_t{1});
 	            UAM_ASSERT_EQ(summary["acpSession"]["backgroundTaskCount"].get<std::size_t>(), std::size_t{1});
 	        }},
@@ -882,7 +882,15 @@ UAM_TEST(StatePushPublishesEverySummaryInputChange)
 	{
 		clock.Advance(std::chrono::milliseconds(200));
 		if (!uam::PushStateUpdateIfChanged(nullptr, app)) throw TestFailure(label + " change did not publish");
-		const nlohmann::json patch = nlohmann::json::parse(g_observed_state_patch)["data"];
+		nlohmann::json patch = nlohmann::json::parse(g_observed_state_patch)["data"];
+		// Checks read a catalogue the patch carries (a changed one) on the chat, keeping its modelCatalogId.
+		if (patch.contains("chats") && patch.contains("modelCatalogs"))
+			for (nlohmann::json& summary : patch["chats"])
+			{
+				nlohmann::json& acp = summary["acpSession"];
+				if (acp.contains("modelCatalogId") && patch["modelCatalogs"].contains(acp["modelCatalogId"].get<std::string>()))
+					acp.update(patch["modelCatalogs"][acp["modelCatalogId"].get<std::string>()]);
+			}
 		clock.Advance(std::chrono::milliseconds(200));
 		if (uam::PushStateUpdateIfChanged(nullptr, app)) throw TestFailure(label + " published again without a change");
 		return patch;
@@ -1119,6 +1127,283 @@ UAM_TEST(PerformanceIdleInstallPushTick)
 		if (std::max({unchanged, one_changed, large_changed}) > static_cast<double>(kInteractionBudget.count()))
 			throw TestFailure(std::to_string(chat_count) + "-chat idle install push tick p50 exceeded " + std::to_string(kInteractionBudget.count()) + " ms");
 	}
+}
+
+// Issue #947: what the model catalogues add to state pushes on a 2,000-chat install whose OpenCode catalogue is large
+// (400 models in every folder): the full state, an unchanged tick, and steady-state patches for one stopped and one
+// live OpenCode chat. The printed figures are the measurement; the budgets only catch gross regressions.
+UAM_TEST(PerformanceStatePushModelCatalogueCost)
+{
+	const WithoutStateCacheVerification unverified;
+	FakeStatePushClock clock;
+	FakePathProbeClock probe_clock;
+	StatePatchObserver observer;
+	TempDir temp("uam-performance-catalogue-cost");
+	uam::AppState app;
+	BuildIdleInstallFixture(app, temp.root, 2000);
+	nlohmann::json models = nlohmann::json::array();
+	for (int index = 0; index < 400; ++index)
+		models.push_back({{"id", "vendor-" + std::to_string(index % 40) + "/model-" + std::to_string(index)},
+		    {"name", "Fixture model " + std::to_string(index)}, {"description", std::string(100, 'd')}});
+	for (const ChatFolder& folder : app.folders)
+		UAM_ASSERT(app.provider_model_catalog->RememberSuccessfulModels("opencode-cli", models, folder.directory));
+	const std::size_t live = 3, stopped = 1995; // Both OpenCode; chat 3 has the fixture's third streaming session.
+	UAM_ASSERT(app.chats[live].provider_id == "opencode-cli" && app.chats[stopped].provider_id == "opencode-cli");
+	UAM_ASSERT(app.acp_sessions[2]->chat_id == app.chats[live].id);
+
+	std::size_t full_bytes = 0;
+	const double full_ms = MedianMs(5, [&] { full_bytes = uam::StateUpdateForTests(app).size(); });
+	uam::PushStateUpdate(nullptr, app);
+	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+	const double unchanged_ms = MedianMs(21, [&] { UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app)); });
+	int revision = 0;
+	const auto patch_bytes = [&](const std::function<void()>& change, std::size_t& bytes)
+	{
+		return MedianMs(21, [&]
+		{
+			clock.Advance(std::chrono::milliseconds(120));
+			change();
+			g_observed_state_patch.clear();
+			UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
+			bytes = g_observed_state_patch.size();
+		});
+	};
+	std::size_t stopped_bytes = 0, live_bytes = 0;
+	const double stopped_ms = patch_bytes([&] { app.chats[stopped].title = "Renamed " + std::to_string(++revision); }, stopped_bytes);
+	const double live_ms = patch_bytes([&] { app.acp_sessions[2]->turn_events.back().text += " token"; }, live_bytes);
+	// A stopped chat's patch must not carry its catalogue again.
+	if (stopped_bytes >= models.dump().size()) throw TestFailure("a one-chat patch carried " + std::to_string(stopped_bytes) + " bytes, at least one catalogue");
+	std::cout << "[SIZE] catalogue push 2000 chats: full state=" << full_bytes << " bytes, stopped chat patch=" << stopped_bytes
+	          << " bytes, live chat patch=" << live_bytes << " bytes\n";
+	std::cout << "[TIMING] catalogue push 2000 chats: full state=" << full_ms << " ms, unchanged tick p50=" << unchanged_ms
+	          << " ms, stopped chat patch p50=" << stopped_ms << " ms, live chat patch p50=" << live_ms << " ms\n";
+	if (full_ms > static_cast<double>(kStartupBudget.count())) throw TestFailure("2000-chat full state exceeded " + std::to_string(kStartupBudget.count()) + " ms");
+	if (std::max({unchanged_ms, stopped_ms, live_ms}) > static_cast<double>(kInteractionBudget.count()))
+		throw TestFailure("2000-chat catalogue push tick p50 exceeded " + std::to_string(kInteractionBudget.count()) + " ms");
+}
+
+UAM_TEST(LiveModelCatalogueProjectionPreservesChoiceAuthorityAndScopeStatus)
+{
+	for (const char* provider : {"claude-cli", "codex-cli", "gemini-cli", "opencode-cli", "copilot-cli", "antigravity-cli"})
+	{
+		TempDir temp("uam-live-catalogue-authority");
+		uam::AppState app;
+		BuildLargeCatalogFixture(app, temp.root, 0);
+		fs::create_directories(app.folders[0].directory);
+		const nlohmann::json scoped_options = nlohmann::json::array({{{"id", "scope-mode"}, {"name", "Scope mode"}, {"category", "mode"},
+		    {"currentValue", "scope"}, {"options", nlohmann::json::array({{{"value", "scope"}, {"name", "Scope"}}})}}});
+		UAM_ASSERT(app.provider_model_catalog->RememberSuccessfulModels(provider,
+		    nlohmann::json::array({{{"id", "scope/model"}, {"name", "Scope model"}}}), app.folders[0].directory, scoped_options));
+		app.provider_model_catalog->RememberDiscoveryCompatibilityBlocked(provider, "Fixture refresh pending", app.folders[0].directory);
+		ChatSession chat;
+		chat.id = "live-catalogue-authority";
+		chat.provider_id = provider;
+		chat.folder_id = app.folders[0].id;
+		app.chats.push_back(std::move(chat));
+		app.selected_chat_index = 0;
+		app.acp_sessions.push_back(StreamingSession(app.chats[0], 0, 0));
+		uam::AcpSessionState& session = *app.acp_sessions[0];
+		const auto projection = [&]
+		{
+			nlohmann::json table = nlohmann::json::object();
+			const nlohmann::json referenced = uam::StateSerializer::SerializeChatSummary(app, app.chats[0], &table)["acpSession"];
+			nlohmann::json inlined = uam::StateSerializer::SerializeChatSummary(app, app.chats[0])["acpSession"];
+			const nlohmann::json& choices = table[referenced["modelCatalogId"].get<std::string>()];
+			UAM_ASSERT_EQ(choices["availableModels"], inlined["availableModels"]);
+			UAM_ASSERT_EQ(choices["configOptions"], inlined["configOptions"]);
+			UAM_ASSERT(inlined["modelsLoading"].get<bool>());
+			UAM_ASSERT_EQ(inlined["modelRefreshError"], "Fixture refresh pending");
+			UAM_ASSERT_EQ(referenced["modelsLoading"], inlined["modelsLoading"]);
+			UAM_ASSERT_EQ(referenced["modelRefreshError"], inlined["modelRefreshError"]);
+			return inlined;
+		};
+		const auto has_model = [](const nlohmann::json& acp, std::string_view id)
+		{
+			return std::ranges::any_of(acp["availableModels"], [id](const nlohmann::json& model) { return model.value("id", "") == id; });
+		};
+		nlohmann::json acp = projection();
+		UAM_ASSERT(has_model(acp, "scope/model"));
+		UAM_ASSERT_EQ(acp["configOptions"], scoped_options);
+
+		session.session_ready = true;
+		session.available_models.push_back(uam::AcpModelState{"runtime/model", "Runtime model", ""});
+		acp = projection();
+		UAM_ASSERT_EQ(acp["availableModels"].size(), std::size_t{1});
+		UAM_ASSERT(has_model(acp, "runtime/model"));
+		UAM_ASSERT(acp["configOptions"].empty()); // A ready session's empty options replace retained options too.
+
+		session.available_models.clear();
+		session.available_config_options.push_back(uam::AcpConfigOptionState{"runtime-mode", "Runtime mode", "", "mode", "runtime", {{"runtime", "Runtime", ""}}});
+		acp = projection();
+		UAM_ASSERT(has_model(acp, "scope/model")); // An empty ready model list still falls back.
+		UAM_ASSERT_EQ(acp["configOptions"][0]["id"], "runtime-mode");
+
+		session.session_ready = false;
+		session.available_models.push_back(uam::AcpModelState{"runtime/model", "Runtime model", ""});
+		acp = projection();
+		UAM_ASSERT(has_model(acp, "scope/model") && has_model(acp, "runtime/model"));
+		UAM_ASSERT_EQ(acp["configOptions"][0]["currentValue"], "runtime");
+	}
+}
+
+// Isolate catalogue construction from retained transcripts and tool output. These are native service timings,
+// not first-word or rendered-frame timings; every measured sample remains in the printed distribution.
+UAM_TEST(PerformanceLiveModelCatalogueConstruction)
+{
+	const WithoutStateCacheVerification unverified;
+	FakeStatePushClock clock;
+	FakePathProbeClock probe_clock;
+	StatePatchObserver observer;
+	struct Workload
+	{
+		const char* name;
+		int scoped_models;
+		int session_models;
+		bool session_ready;
+	};
+	const Workload workloads[] = {
+	    {"empty-fallback", 0, 0, false}, {"large-fallback", 400, 0, false},
+	    {"small-ready-empty-scope", 0, 5, true}, {"small-ready-large-scope", 400, 5, true},
+	    {"large-ready-large-scope", 400, 400, true}, {"small-unready-large-scope", 400, 5, false}};
+	for (const Workload& workload : workloads)
+	{
+		TempDir temp("uam-performance-live-catalogue");
+		uam::AppState app;
+		BuildLargeCatalogFixture(app, temp.root, 0);
+		fs::create_directories(app.folders[0].directory);
+		nlohmann::json models = nlohmann::json::array();
+		for (int index = 0; index < workload.scoped_models; ++index)
+			models.push_back({{"id", "scope/model-" + std::to_string(index)}, {"name", "Scope model " + std::to_string(index)}, {"description", std::string(100, 's')}});
+		if (!models.empty()) UAM_ASSERT(app.provider_model_catalog->RememberSuccessfulModels("opencode-cli", models, app.folders[0].directory));
+		ChatSession chat;
+		chat.id = "live-catalogue";
+		chat.provider_id = "opencode-cli";
+		chat.folder_id = app.folders[0].id;
+		chat.messages_loaded = false;
+		app.chats.push_back(std::move(chat));
+		app.selected_chat_index = 0;
+		app.acp_sessions.push_back(StreamingSession(app.chats[0], 0, 0));
+		uam::AcpSessionState& session = *app.acp_sessions[0];
+		session.session_ready = workload.session_ready;
+		for (int index = 0; index < workload.session_models; ++index)
+			session.available_models.push_back(uam::AcpModelState{"runtime/model-" + std::to_string(index), "Runtime model " + std::to_string(index), std::string(100, 'r')});
+
+		const nlohmann::json inline_summary = uam::StateSerializer::SerializeChatSummary(app, app.chats[0]);
+		nlohmann::json table = nlohmann::json::object();
+		const nlohmann::json referenced = uam::StateSerializer::SerializeChatSummary(app, app.chats[0], &table);
+		const std::string catalog_id = referenced["acpSession"]["modelCatalogId"].get<std::string>();
+		UAM_ASSERT_EQ(table[catalog_id]["availableModels"], inline_summary["acpSession"]["availableModels"]);
+		UAM_ASSERT_EQ(table[catalog_id]["configOptions"], inline_summary["acpSession"]["configOptions"]);
+		if (workload.session_ready && workload.session_models > 0)
+			UAM_ASSERT_EQ(table[catalog_id]["availableModels"].size(), static_cast<std::size_t>(workload.session_models));
+		else
+			UAM_ASSERT_EQ(table[catalog_id]["availableModels"].size(), static_cast<std::size_t>(workload.scoped_models + workload.session_models));
+
+		uam::PushStateUpdate(nullptr, app);
+		std::vector<double> summaries, unchanged_ticks, token_ticks;
+		for (int iteration = 0; iteration < 51; ++iteration)
+		{
+			table = nlohmann::json::object();
+			auto started = std::chrono::steady_clock::now();
+			const nlohmann::json summary = uam::StateSerializer::SerializeChatSummary(app, app.chats[0], &table);
+			summaries.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count());
+			UAM_ASSERT(table.contains(summary["acpSession"]["modelCatalogId"].get<std::string>()));
+			started = std::chrono::steady_clock::now();
+			UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+			unchanged_ticks.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count());
+			clock.Advance(std::chrono::milliseconds(120));
+			session.turn_events.back().text += "x";
+			started = std::chrono::steady_clock::now();
+			UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
+			token_ticks.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count());
+		}
+		std::cout << "[TIMING] live catalogue " << workload.name << ": summary p50=" << Median(summaries) << " ms p95=" << Percentile95(summaries)
+		          << " ms; unchanged tick p50=" << Median(unchanged_ticks) << " ms p95=" << Percentile95(unchanged_ticks)
+		          << " ms; token tick p50=" << Median(token_ticks) << " ms p95=" << Percentile95(token_ticks) << " ms; samples=51\n";
+		std::cout << "[SAMPLES] live catalogue " << workload.name << ' '
+		          << nlohmann::json{{"summaryMs", summaries}, {"unchangedTickMs", unchanged_ticks}, {"tokenTickMs", token_ticks}}.dump() << '\n';
+	}
+}
+
+// Chats reference their model catalogue by id. The full state carries each referenced catalogue once; a patch carries
+// a catalogue only when it changed or the page may not have it, and an unchanged tick publishes nothing.
+UAM_TEST(StatePushSendsEachModelCatalogueOnlyWhenThePageLacksIt)
+{
+	FakeStatePushClock clock;
+	StatePatchObserver observer;
+	TempDir temp("uam-state-push-catalogue-references");
+	uam::AppState app;
+	BuildLargeCatalogFixture(app, temp.root, 12);
+	app.chats[6].folder_id = app.chats[0].folder_id; // Chats 0 and 6 are Claude chats in the same folder.
+	fs::create_directories(app.folders[0].directory);
+	nlohmann::json models = nlohmann::json::array({{{"id", "first/model"}, {"name", "First"}}});
+	UAM_ASSERT(app.provider_model_catalog->RememberSuccessfulModels("claude-cli", models, app.folders[0].directory));
+	const auto acp = [](const nlohmann::json& chats, const std::string& id) -> const nlohmann::json&
+	{
+		for (const nlohmann::json& chat : chats)
+			if (chat.value("id", "") == id) return chat.at("acpSession");
+		throw TestFailure("chat " + id + " is missing");
+	};
+
+	const nlohmann::json full = nlohmann::json::parse(uam::StateUpdateForTests(app))["data"];
+	for (const nlohmann::json& chat : full["chats"])
+	{
+		UAM_ASSERT(!chat["acpSession"].contains("availableModels") && !chat["acpSession"].contains("configOptions"));
+		UAM_ASSERT(full["modelCatalogs"].contains(chat["acpSession"]["modelCatalogId"].get<std::string>()));
+	}
+	const std::string first_id = acp(full["chats"], app.chats[0].id)["modelCatalogId"].get<std::string>();
+	UAM_ASSERT_EQ(acp(full["chats"], app.chats[6].id)["modelCatalogId"], first_id);
+	UAM_ASSERT_EQ(full["modelCatalogs"][first_id]["availableModels"], models);
+
+	uam::PushStateUpdate(nullptr, app);
+	g_observed_state_patch.clear();
+	UAM_ASSERT(!uam::PushStateUpdateIfChanged(nullptr, app));
+	UAM_ASSERT(g_observed_state_patch.find("\"chats\"") == std::string::npos);
+	const auto publish = [&](const std::function<void()>& change)
+	{
+		clock.Advance(std::chrono::milliseconds(200));
+		change();
+		g_observed_state_patch.clear();
+		UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
+		return nlohmann::json::parse(g_observed_state_patch)["data"];
+	};
+
+	// The page already has this catalogue from the full state.
+	nlohmann::json patch = publish([&] { app.chats[0].title = "Renamed"; });
+	UAM_ASSERT_EQ(acp(patch["chats"], app.chats[0].id)["modelCatalogId"], first_id);
+	UAM_ASSERT(!patch.contains("modelCatalogs"));
+
+	// A changed catalogue travels once, with the chats that use it, and is not resent by later patches.
+	models.push_back({{"id", "second/model"}, {"name", "Second"}});
+	patch = publish([&] { UAM_ASSERT(app.provider_model_catalog->RememberSuccessfulModels("claude-cli", models, app.folders[0].directory)); });
+	const std::string second_id = acp(patch["chats"], app.chats[0].id)["modelCatalogId"].get<std::string>();
+	UAM_ASSERT(second_id != first_id);
+	UAM_ASSERT_EQ(acp(patch["chats"], app.chats[6].id)["modelCatalogId"], second_id);
+	UAM_ASSERT_EQ(patch["modelCatalogs"].size(), std::size_t{1});
+	UAM_ASSERT_EQ(patch["modelCatalogs"][second_id]["availableModels"], models);
+	patch = publish([&] { app.chats[6].title = "Renamed again"; });
+	UAM_ASSERT_EQ(acp(patch["chats"], app.chats[6].id)["modelCatalogId"], second_id);
+	UAM_ASSERT(!patch.contains("modelCatalogs"));
+
+	UAM_ASSERT(!patch.contains("modelCatalogsReset"));
+	// A desktop page that pulled its state may have reloaded: the next patch tells it to clear its table and resends
+	// what it references, and the one after that relies on it again.
+	uam::ForgetSentModelCatalogs();
+	patch = publish([&] { app.chats[6].title = "After a reload"; });
+	UAM_ASSERT(patch.value("modelCatalogsReset", false));
+	UAM_ASSERT(patch["modelCatalogs"].contains(second_id));
+	patch = publish([&] { app.chats[6].title = "After a reload, again"; });
+	UAM_ASSERT(!patch.contains("modelCatalogsReset") && !patch.contains("modelCatalogs"));
+
+	// A live session's catalogue (here the scope's, with launch metadata) is referenced the same way.
+	patch = publish([&] { app.acp_sessions.push_back(StreamingSession(app.chats[0], 1, 16)); });
+	const nlohmann::json& live = acp(patch["chats"], app.chats[0].id);
+	UAM_ASSERT(!live.contains("availableModels") && !live.contains("configOptions"));
+	const std::string live_id = live["modelCatalogId"].get<std::string>();
+	UAM_ASSERT(live_id == second_id || patch["modelCatalogs"].contains(live_id));
+	patch = publish([&] { app.acp_sessions.back()->turn_events.back().text += " token"; });
+	UAM_ASSERT_EQ(acp(patch["chats"], app.chats[0].id)["modelCatalogId"], live_id);
+	UAM_ASSERT(!patch.contains("modelCatalogs"));
 }
 
 // The memory stage visits every chat on every poll, and polls run every 16 ms while a turn streams. Each visit

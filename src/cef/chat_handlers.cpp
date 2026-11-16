@@ -203,6 +203,8 @@ void UamQueryHandler::HandleGetInitialState(CefRefPtr<CefBrowser> /*browser*/, c
 		return;
 	}
 	nlohmann::json state = uam::StateSerializer::Serialize(m_app, payload.value("summaryOnly", true));
+	// A desktop pull may come from a reloaded page with no catalogues yet; later patches resend those they reference.
+	if (!m_dispatchingCompanion) uam::ForgetSentModelCatalogs();
 	state["bootId"] = CompanionBootId();
 #if UAM_ENABLE_MOBILE_COMPANION
 	// Desktop only: a reloaded or new desktop window still shows phone requests waiting for confirmation.

@@ -105,14 +105,15 @@ UAM_TEST(StateFingerprintLargeCatalogPerformance)
 	UAM_ASSERT_EQ(changed_patch["data"]["chats"].size(), static_cast<std::size_t>(1));
 	const nlohmann::json& hydrated = changed_patch["data"]["chats"][0];
 	UAM_ASSERT_EQ(hydrated["id"], app.chats[1].id);
-	UAM_ASSERT(hydrated["acpSession"]["availableModels"].size() == models.size());
-	UAM_ASSERT(!hydrated["acpSession"].contains("catalogDigest"));
+	// The hydrated chat references its catalogue, which travels once in the patch's modelCatalogs table.
+	UAM_ASSERT(!hydrated["acpSession"].contains("availableModels") && !hydrated["acpSession"].contains("catalogDigest"));
+	UAM_ASSERT(changed_patch["data"]["modelCatalogs"][hydrated["acpSession"]["modelCatalogId"].get<std::string>()]["availableModels"].size() == models.size());
 	before.chats = app.chats;
 	app.selected_chat_index = 1;
 	const nlohmann::json selected_patch = nlohmann::json::parse(uam::StatePatchForTests(before, app));
 	UAM_ASSERT_EQ(selected_patch["data"]["selectedChatId"], app.chats[1].id);
 	UAM_ASSERT(!selected_patch["data"].contains("chats"));
-	UAM_ASSERT(uam::StateSerializer::Serialize(app)["chats"][1]["acpSession"]["availableModels"].size() == models.size());
+	UAM_ASSERT(uam_test::SerializeStateInline(app)["chats"][1]["acpSession"]["availableModels"].size() == models.size());
 	app.chats[2].messages_loaded = true;
 	app.chats[2].messages.push_back(Message{MessageRole::Assistant, "before"});
 	before.chats = app.chats;
@@ -142,7 +143,7 @@ UAM_TEST(StateSerializerIncludesChatModelId)
 	app.selected_chat_index = 0;
 	app.settings.markdown_store_directory = " /tmp/serializer-markdown ";
 
-	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	const nlohmann::json serialized = uam_test::SerializeStateInline(app);
 	UAM_ASSERT_EQ(serialized["settings"].value("markdownStoreDirectory", ""), std::string("/tmp/serializer-markdown"));
 	UAM_ASSERT(serialized["chats"][0].value("pinned", false));
 	UAM_ASSERT_EQ(serialized["chats"][0].value("modelId", ""), std::string("auto-gemini-3"));
@@ -178,8 +179,8 @@ UAM_TEST(StateSerializerSummaryOnlyOmitsSelectedMessagesPreservingRuntimeMetadat
 	app.chats.push_back(chat);
 	app.selected_chat_index = 0;
 
-	const nlohmann::json full = uam::StateSerializer::Serialize(app);
-	const nlohmann::json summary = uam::StateSerializer::Serialize(app, true);
+	const nlohmann::json full = uam_test::SerializeStateInline(app);
+	const nlohmann::json summary = uam_test::SerializeStateInline(app, true);
 	const nlohmann::json& full_chat = full["chats"][0];
 	const nlohmann::json& summary_chat = summary["chats"][0];
 
@@ -265,7 +266,7 @@ UAM_TEST(InternalAgentChatsStayInRuntimeStateButNeverEnterTheSidebarPayload)
 	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(3));
 	app.selected_chat_index = ChatDomainService().FindChatIndexById(app, legacy_goal_iteration.id);
 
-	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	const nlohmann::json serialized = uam_test::SerializeStateInline(app);
 	const nlohmann::json fingerprint = uam::StateSerializer::SerializeFingerprint(app);
 	UAM_ASSERT_EQ(serialized["chats"].size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(serialized["chats"][0].value("id", ""), visible.id);
@@ -309,7 +310,7 @@ UAM_TEST(StateSerializerIncludesShellActionConfigurationAndNotification)
 	app.shell_actions.push_back(action);
 	app.shell_action_notification = "Shell actions applied successfully.";
 	app.status_line = "Failed to save settings.";
-	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	const nlohmann::json serialized = uam_test::SerializeStateInline(app);
 	UAM_ASSERT_EQ(serialized["shellActions"].size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(serialized["shellActions"][0].value("label", ""), action.label);
 	UAM_ASSERT_EQ(serialized["shellActions"][0].value("providerId", ""), action.provider_id);
@@ -332,7 +333,7 @@ UAM_TEST(StateSerializerUsesResolvedOpenCodeSessionIdForStoppedAcpSummary)
 	app.resolved_native_sessions_by_chat_id[chat.id] = "resolved-session";
 	app.chats.push_back(std::move(chat));
 
-	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	const nlohmann::json serialized = uam_test::SerializeStateInline(app);
 	const nlohmann::json acp = serialized["chats"][0]["acpSession"];
 	UAM_ASSERT_EQ(acp.value("sessionId", ""), std::string("resolved-session"));
 	UAM_ASSERT_EQ(acp.value("threadId", ""), std::string("resolved-session"));
@@ -357,7 +358,7 @@ UAM_TEST(StateSerializerUsesResolvedOpenCodeSessionIdForCliDiagnostics)
 	terminal->attached_session_id = "resolved-session";
 	app.cli_terminals.push_back(std::move(terminal));
 
-	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	const nlohmann::json serialized = uam_test::SerializeStateInline(app);
 	const nlohmann::json cli_debug = serialized["cliDebug"];
 	UAM_ASSERT_EQ(cli_debug.value("runningTerminalCount", -1), 0);
 	UAM_ASSERT_EQ(cli_debug["terminals"][0].value("attachedSessionId", ""), std::string("resolved-session"));
@@ -396,7 +397,7 @@ UAM_TEST(StateSerializerChatTerminalSummaryPrefersLiveOpenCodeTerminalOverStaleD
 	live_terminal->startup_time_s = 12.5;
 	app.cli_terminals.push_back(std::move(live_terminal));
 
-	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	const nlohmann::json serialized = uam_test::SerializeStateInline(app);
 	const nlohmann::json terminal = serialized["chats"][0]["cliTerminal"];
 	UAM_ASSERT_EQ(terminal.value("terminalId", ""), std::string("term-live"));
 	UAM_ASSERT_EQ(terminal.value("startupTime", 0.0), 12.5);
@@ -779,7 +780,7 @@ UAM_TEST(SelectedHistoryFingerprintSwitchColdReleaseAndReopenInvalidateCache)
 	(void)uam::StateSerializer::SerializeFingerprint(app);
 	UAM_ASSERT_EQ(uam::StateSerializer::SelectedHistoryRehashedMessageCount(), static_cast<std::size_t>(0));
 	ChatDomainService().SelectChatById(app, second.id);
-	(void)uam::StateSerializer::Serialize(app, true);
+	(void)uam_test::SerializeStateInline(app, true);
 	UAM_ASSERT_EQ(uam::StateSerializer::SelectedHistoryRehashedMessageCount(), static_cast<std::size_t>(1));
 	ChatSession& current = app.chats[1];
 	current.persisted_message_count = 1;
@@ -1079,7 +1080,7 @@ UAM_TEST(ToolOutputIsDeferredOnlyAfterTheInlinePayloadLimit)
 	live_tool.child_activity = std::string(1000, 'z');
 	live_session->tool_calls.push_back(std::move(live_tool));
 	app.acp_sessions.push_back(std::move(live_session));
-	const nlohmann::json live_serialized = uam::StateSerializer::Serialize(app);
+	const nlohmann::json live_serialized = uam_test::SerializeStateInline(app);
 	const nlohmann::json& serialized_live =
 	    live_serialized["chats"][0]["acpSession"]["toolCalls"][0];
 	UAM_ASSERT(serialized_live.value("contentDeferred", false));
@@ -1088,10 +1089,10 @@ UAM_TEST(ToolOutputIsDeferredOnlyAfterTheInlinePayloadLimit)
 	const std::string live_digest = serialized_live.value("contentDigest", "");
 	UAM_ASSERT(!live_digest.empty());
 	app.acp_sessions[0]->tool_calls[0].content.back() = 'z';
-	const std::string changed_digest = uam::StateSerializer::Serialize(app)["chats"][0]["acpSession"]["toolCalls"][0].value("contentDigest", "");
+	const std::string changed_digest = uam_test::SerializeStateInline(app)["chats"][0]["acpSession"]["toolCalls"][0].value("contentDigest", "");
 	UAM_ASSERT(live_digest != changed_digest);
 	app.acp_sessions[0]->tool_calls[0].permission_review_reason = "Reviewed";
-	UAM_ASSERT(changed_digest != uam::StateSerializer::Serialize(app)["chats"][0]["acpSession"]["toolCalls"][0].value("contentDigest", ""));
+	UAM_ASSERT(changed_digest != uam_test::SerializeStateInline(app)["chats"][0]["acpSession"]["toolCalls"][0].value("contentDigest", ""));
 
 }
 
@@ -1179,7 +1180,7 @@ UAM_TEST(StateSerializerIncludesAllCliVersionManagers)
 	app.runtime_cli_versions_by_provider_id["codex-cli"].supported = true;
 	app.runtime_cli_versions_by_provider_id["codex-cli"].message = "Codex CLI version is supported.";
 
-	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	const nlohmann::json serialized = uam_test::SerializeStateInline(app);
 	const nlohmann::json manager = serialized["cliVersionManager"];
 	const nlohmann::json& providers = manager["providers"];
 	UAM_ASSERT(providers.is_array());
@@ -1204,7 +1205,7 @@ UAM_TEST(StateSerializerIncludesAllCliVersionManagers)
 	app.runtime_cli_install_tasks[uam::provider_ids::kCodexCli].running = true;
 
 	app.runtime_cli_install_tasks[uam::provider_ids::kCodexCli].command_preview = "npm install -g @openai/codex@0.124.0";
-	const nlohmann::json running_manager = uam::StateSerializer::Serialize(app)["cliVersionManager"];
+	const nlohmann::json running_manager = uam_test::SerializeStateInline(app)["cliVersionManager"];
 	const nlohmann::json& running_providers = running_manager["providers"];
 	const auto running_codex_it = std::ranges::find_if(running_providers, [](const nlohmann::json& provider) { return provider.value("providerId", "") == "codex-cli"; });
 	UAM_ASSERT(running_codex_it != running_providers.end());
@@ -1220,7 +1221,7 @@ UAM_TEST(StateSerializerProviderJsonIncludesNpmPackageAndShortName)
 	uam::AppState app;
 	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
 
-	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	const nlohmann::json serialized = uam_test::SerializeStateInline(app);
 	const nlohmann::json& providers = serialized["providers"];
 	UAM_ASSERT(providers.is_array());
 	UAM_ASSERT(!providers.empty());
@@ -1478,7 +1479,7 @@ UAM_TEST(StateSerializerProjectsBundledHelperChecksumForSshHostsOnly)
 	linux_host.ssh_alias = "uam-lab";
 	linux_host.platform = "linux";
 	app.settings.execution_hosts = {local, windows, linux_host};
-	const nlohmann::json hosts = uam::StateSerializer::Serialize(app)["settings"]["executionHosts"];
+	const nlohmann::json hosts = uam_test::SerializeStateInline(app)["settings"]["executionHosts"];
 	UAM_ASSERT_EQ(hosts.size(), 3u);
 	for (const nlohmann::json& host : hosts)
 	{
@@ -1509,7 +1510,7 @@ UAM_TEST(ConfiguredRemoteCliRowsExposeUnknownScopedPoliciesBeforeAnyProbe)
 	uam::CliProviderVersionState& local = app.runtime_cli_versions_by_provider_id[uam::provider_ids::kGeminiCli];
 	local.checked = true;
 	local.installed_version = "private-local-only";
-	const nlohmann::json state = uam::StateSerializer::Serialize(app);
+	const nlohmann::json state = uam_test::SerializeStateInline(app);
 	const nlohmann::json& manager = state["cliVersionManager"];
 	std::set<std::string> expected;
 	for (const nlohmann::json& provider : manager["providers"])
@@ -1567,7 +1568,7 @@ UAM_TEST(RemoteCliRowsRejectOldConnectionsAndForeignMaintenanceObservations)
 	app.pending_cli_updates[key] = {uam::provider_ids::kCodexCli, "private old target", old};
 	const auto codex_row = [&app]() -> nlohmann::json
 	{
-		const nlohmann::json rows = uam::StateSerializer::Serialize(app)["cliVersionManager"]["remoteProviders"];
+		const nlohmann::json rows = uam_test::SerializeStateInline(app)["cliVersionManager"]["remoteProviders"];
 		for (const nlohmann::json& row : rows)
 			if (row["providerId"] == uam::provider_ids::kCodexCli) return row;
 		return nlohmann::json{};
@@ -1590,7 +1591,7 @@ UAM_TEST(RemoteCliRowsRejectOldConnectionsAndForeignMaintenanceObservations)
 	row = codex_row();
 	UAM_ASSERT(row["installedVersion"].get<std::string>().empty());
 	app.settings.execution_hosts = {uam::execution_hosts::LocalHost()};
-	UAM_ASSERT(uam::StateSerializer::Serialize(app)["cliVersionManager"]["remoteProviders"].empty());
+	UAM_ASSERT(uam_test::SerializeStateInline(app)["cliVersionManager"]["remoteProviders"].empty());
 }
 
 UAM_TEST(CliProviderVersionCommandsUseCuratedPackages)
@@ -2277,7 +2278,7 @@ UAM_TEST(StateSerializerIncludesMessageToolCalls)
 	app.chats.push_back(std::move(chat));
 	app.selected_chat_index = 0;
 
-	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	const nlohmann::json serialized = uam_test::SerializeStateInline(app);
 	const nlohmann::json tool_json = serialized["chats"][0]["messages"][0]["toolCalls"][0];
 	UAM_ASSERT_EQ(serialized["chats"][0]["messages"][0].value("providerId", ""), std::string("codex-cli"));
 	UAM_ASSERT_EQ(tool_json.value("id", ""), std::string("tool-1"));
@@ -3055,7 +3056,7 @@ UAM_TEST(OpenCodeAcpSubAgentToolCallsAreVisibleAndPersistent)
 	UAM_ASSERT_EQ(persisted_tool.sub_agent_id, std::string("agent-session-1"));
 	UAM_ASSERT_EQ(persisted_tool.sub_agent_title, std::string("Planner"));
 
-	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	const nlohmann::json serialized = uam_test::SerializeStateInline(app);
 	const nlohmann::json frontend_tool = serialized["chats"][0]["messages"][1]["toolCalls"][0];
 	UAM_ASSERT(frontend_tool.value("isSubAgent", false));
 	UAM_ASSERT_EQ(frontend_tool.value("subAgentId", ""), std::string("agent-session-1"));

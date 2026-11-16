@@ -78,7 +78,7 @@ UAM_TEST(ModelMetadataSurvivesNativeFrontendProjection)
 	session->available_models.push_back(*model);
 	session->available_models.push_back(uam::AcpModelState{"unknown-model", "Unknown", ""});
 	app.acp_sessions.push_back(std::move(session));
-	const nlohmann::json models = uam::StateSerializer::Serialize(app)["chats"][0]["acpSession"]["availableModels"];
+	const nlohmann::json models = uam_test::SerializeStateInline(app)["chats"][0]["acpSession"]["availableModels"];
 	UAM_ASSERT_EQ(models[0].value("contextWindowTokens", -1LL), 200000LL);
 	UAM_ASSERT_EQ(models[0].value("maxOutputTokens", -1LL), 8192LL);
 	UAM_ASSERT(models[1]["contextWindowTokens"].is_null());

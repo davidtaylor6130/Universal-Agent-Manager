@@ -357,7 +357,7 @@ namespace
 		uam::AcpSessionState& Session() { return *app.acp_sessions.front(); }
 		std::size_t Count()
 		{
-			return uam::StateSerializer::Serialize(app)["chats"][0]["acpSession"]["backgroundTaskCount"].get<std::size_t>();
+			return uam_test::SerializeStateInline(app)["chats"][0]["acpSession"]["backgroundTaskCount"].get<std::size_t>();
 		}
 		void Event(const std::string& method, const nlohmann::json& params)
 		{
@@ -2471,7 +2471,7 @@ UAM_TEST(AcpColdUnsentCacheRequiresRetainedNativeHistoryForAuthoritativeProjecti
 	UAM_ASSERT(app.chats.front().messages_loaded && app.chats.front().messages.size() == 2);
 	UAM_ASSERT_EQ(uam::KnownUnsentAcpMessageIndices(app, app.chats.front()), std::vector<int>({0, 1}));
 	UAM_ASSERT_EQ(uam::RecoverableUnsentAcpMessageIndices(app, app.chats.front()), std::vector<int>({1}));
-	const nlohmann::json state = uam::StateSerializer::Serialize(app);
+	const nlohmann::json state = uam_test::SerializeStateInline(app);
 	UAM_ASSERT(state.at("chats").at(0).at("acpSession").at("unsentMessageIndices") == nlohmann::json::array({0, 1}));
 	UAM_ASSERT(state.at("chats").at(0).at("acpSession").at("recoverableUnsentMessageIndices") == nlohmann::json::array({1}));
 }
@@ -3110,11 +3110,11 @@ UAM_TEST(AcpOpenCodeRequestTimeoutIsLabelledOnlyAfterItsLaunchLimit)
 		UAM_ASSERT_EQ(raw->timeout_stop_error, raw->last_error);
 		UAM_ASSERT_EQ(raw->timeout_stop_label, std::string(past_limit ? "OpenCode request timeout" : "An OpenCode provider timeout"));
 		UAM_ASSERT_EQ(raw->timeout_stop_seconds, past_limit ? 1800 : 0);
-		nlohmann::json acp = uam::StateSerializer::Serialize(app)["chats"][0]["acpSession"];
+		nlohmann::json acp = uam_test::SerializeStateInline(app)["chats"][0]["acpSession"];
 		UAM_ASSERT_EQ(acp["timeoutStop"], (nlohmann::json{{"label", raw->timeout_stop_label}, {"seconds", raw->timeout_stop_seconds}}));
 		// Any later error retires the timeout presentation.
 		raw->last_error = "A different later failure.";
-		acp = uam::StateSerializer::Serialize(app)["chats"][0]["acpSession"];
+		acp = uam_test::SerializeStateInline(app)["chats"][0]["acpSession"];
 		UAM_ASSERT(acp["timeoutStop"].is_null());
 	}
 }
@@ -3835,7 +3835,7 @@ UAM_TEST(AcpStreamLoopStopsTheTurnThroughTheCancelPath)
 	UAM_ASSERT_EQ(fixture.Chat().messages.size(), messages);
 	UAM_ASSERT_EQ(fixture.Chat().messages[1].tool_calls.size(), std::size_t{11});
 	UAM_ASSERT_EQ(fixture.session->queued_user_prompts.size(), std::size_t{1});
-	const nlohmann::json stop = uam::StateSerializer::Serialize(fixture.app)["chats"][0]["acpSession"]["timeoutStop"];
+	const nlohmann::json stop = uam_test::SerializeStateInline(fixture.app)["chats"][0]["acpSession"]["timeoutStop"];
 	UAM_ASSERT_EQ(stop.value("kind", ""), std::string("loop"));
 	UAM_ASSERT_EQ(stop.value("count", 0), 10);
 	UAM_ASSERT_EQ(stop.value("seconds", -1), 0);
@@ -3911,7 +3911,7 @@ UAM_TEST(AcpStreamStallStopsOnlyAfterSilenceAndReportsItsDuration)
 	UAM_ASSERT_EQ(fixture.session->timeout_stop_seconds, 60);
 	UAM_ASSERT_EQ(fixture.session->timeout_stop_error, fixture.session->last_error);
 	UAM_ASSERT_EQ(fixture.session->queued_user_prompts.size(), std::size_t{1});
-	const nlohmann::json stop = uam::StateSerializer::Serialize(fixture.app)["chats"][0]["acpSession"]["timeoutStop"];
+	const nlohmann::json stop = uam_test::SerializeStateInline(fixture.app)["chats"][0]["acpSession"]["timeoutStop"];
 	UAM_ASSERT(!stop.contains("kind"));
 	UAM_ASSERT_EQ(stop.value("seconds", 0), 60);
 }
@@ -3993,7 +3993,7 @@ UAM_TEST(AcpQuietToolCallHoldsTheTurnUntilItsOwnDeadline)
 	UAM_ASSERT_EQ(fixture.session->timeout_stop_seconds, 600);
 	UAM_ASSERT(uam::strings::Contains(fixture.session->last_error, "a tool call exceeded its 10-minute limit"));
 	UAM_ASSERT_EQ(fixture.session->queued_user_prompts.size(), std::size_t{1});
-	const nlohmann::json stop = uam::StateSerializer::Serialize(fixture.app)["chats"][0]["acpSession"]["timeoutStop"];
+	const nlohmann::json stop = uam_test::SerializeStateInline(fixture.app)["chats"][0]["acpSession"]["timeoutStop"];
 	UAM_ASSERT_EQ(stop.value("kind", ""), std::string("tool"));
 	UAM_ASSERT_EQ(stop.value("seconds", 0), 600);
 }
@@ -5353,7 +5353,7 @@ UAM_TEST(ProviderAcpRetriesPendingCompatibilityAndPreservesUndeliveredPrompt)
 
 		const auto visible_queue = [&]() -> nlohmann::json
 		{
-			return uam::StateSerializer::Serialize(app)["chats"][0]["acpSession"]["queuedPrompts"];
+			return uam_test::SerializeStateInline(app)["chats"][0]["acpSession"]["queuedPrompts"];
 		};
 		UAM_ASSERT(uam::SendAcpPrompt(app, pending_chat.id, "Remove before the check.", {}, {}, false, &error));
 		UAM_ASSERT_EQ(pending_session->queued_user_prompts.size(), std::size_t{1});
@@ -5643,7 +5643,7 @@ UAM_TEST(AcpTurnTimelinePreservesStreamOrder)
 	UAM_ASSERT_EQ(raw_session->turn_events[4].text, std::string("After"));
 	UAM_ASSERT_EQ(app.chats.front().messages[1].content, std::string("Before After"));
 
-	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	const nlohmann::json serialized = uam_test::SerializeStateInline(app);
 	const nlohmann::json acp = serialized["chats"][0]["acpSession"];
 	UAM_ASSERT_EQ(acp["turnEvents"].size(), static_cast<std::size_t>(5));
 	UAM_ASSERT_EQ(acp.value("turnUserMessageIndex", -2), 0);
@@ -5879,7 +5879,7 @@ UAM_TEST(AcpJsonRpcErrorsIncludeRequestDiagnostics)
 
 	raw_session->has_last_exit_code = true;
 	raw_session->last_exit_code = 137;
-	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	const nlohmann::json serialized = uam_test::SerializeStateInline(app);
 	const nlohmann::json acp = serialized["chats"][0]["acpSession"];
 	UAM_ASSERT_EQ(acp.value("lastExitCode", 0), 137);
 	UAM_ASSERT(!acp["diagnostics"].empty());
@@ -6028,7 +6028,7 @@ UAM_TEST(CodexUsageNotificationsSurviveStateSerialization)
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":16,"result":{"rateLimits":{"limitId":"codex","limitName":"Codex","primary":{"usedPercent":42,"resetsAt":1786118400,"windowDurationMins":300},"secondary":{"usedPercent":20,"resetsAt":1786723200,"windowDurationMins":10080},"credits":{"hasCredits":true,"unlimited":false,"balance":"12.50"},"individualLimit":{"limit":"100.00","used":"75.00","remainingPercent":25,"resetsAt":1786723200},"spendControlReached":true,"planType":"pro","rateLimitReachedType":"workspace_member_usage_limit_reached"}}})"));
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"account/rateLimits/updated","params":{"rateLimits":{"primary":{"usedPercent":43}}}})"));
 
-	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	const nlohmann::json serialized = uam_test::SerializeStateInline(app);
 	const nlohmann::json acp = serialized["chats"][0]["acpSession"];
 	UAM_ASSERT(acp.contains("providerUsage"));
 	UAM_ASSERT(acp["providerUsage"].is_object());
@@ -6047,7 +6047,7 @@ UAM_TEST(CodexUsageNotificationsSurviveStateSerialization)
 	UAM_ASSERT_EQ(acp["providerUsage"]["rateLimits"].value("rateLimitReachedType", ""), std::string("workspace_member_usage_limit_reached"));
 
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"account/rateLimits/updated","params":{"rateLimits":{"limitName":null,"primary":{"usedPercent":44,"resetsAt":null,"windowDurationMins":null},"secondary":null,"credits":null,"individualLimit":null,"spendControlReached":null,"planType":null,"rateLimitReachedType":null}}})"));
-	const nlohmann::json cleared_notification_limits = uam::StateSerializer::Serialize(app)["chats"][0]["acpSession"]["providerUsage"]["rateLimits"];
+	const nlohmann::json cleared_notification_limits = uam_test::SerializeStateInline(app)["chats"][0]["acpSession"]["providerUsage"]["rateLimits"];
 	UAM_ASSERT_EQ(cleared_notification_limits.value("limitId", ""), std::string("codex"));
 	UAM_ASSERT_EQ(cleared_notification_limits.value("limitName", ""), std::string{});
 	UAM_ASSERT_EQ(cleared_notification_limits["primary"].value("usedPercent", 0), 44);
@@ -6060,11 +6060,11 @@ UAM_TEST(CodexUsageNotificationsSurviveStateSerialization)
 	UAM_ASSERT(cleared_notification_limits["planType"].is_null());
 	UAM_ASSERT(cleared_notification_limits["rateLimitReachedType"].is_null());
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"thread/tokenUsage/updated","params":{"threadId":"thread-codex-usage","turnId":"turn-2","tokenUsage":{"total":{"totalTokens":12346},"last":{"totalTokens":1},"modelContextWindow":null}}})"));
-	UAM_ASSERT(uam::StateSerializer::Serialize(app)["chats"][0]["acpSession"]["providerUsage"]["tokenUsage"]["modelContextWindow"].is_null());
+	UAM_ASSERT(uam_test::SerializeStateInline(app)["chats"][0]["acpSession"]["providerUsage"]["tokenUsage"]["modelContextWindow"].is_null());
 
 	raw_session->pending_request_methods[18] = uam::acp_methods::kAccountRateLimitsRead;
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":18,"result":{"rateLimits":{"limitId":"codex","limitName":null,"primary":{"usedPercent":10,"resetsAt":null,"windowDurationMins":null},"secondary":null,"credits":null,"individualLimit":null,"spendControlReached":null,"planType":null,"rateLimitReachedType":null}}})"));
-	const nlohmann::json refreshed_limits = uam::StateSerializer::Serialize(app)["chats"][0]["acpSession"]["providerUsage"]["rateLimits"];
+	const nlohmann::json refreshed_limits = uam_test::SerializeStateInline(app)["chats"][0]["acpSession"]["providerUsage"]["rateLimits"];
 	UAM_ASSERT_EQ(refreshed_limits["primary"].value("usedPercent", 0), 10);
 	UAM_ASSERT(refreshed_limits["secondary"].is_null());
 	UAM_ASSERT(refreshed_limits["credits"].is_null());
@@ -6073,7 +6073,7 @@ UAM_TEST(CodexUsageNotificationsSurviveStateSerialization)
 	raw_session->session_setup_request_id = 17;
 	raw_session->pending_request_methods[17] = uam::acp_methods::kThreadStart;
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":17,"result":{"thread":{"id":"6a6f0f3b-1a0b-4a9c-8a01-222222222222"}}})"));
-	const nlohmann::json replaced_usage = uam::StateSerializer::Serialize(app)["chats"][0]["acpSession"]["providerUsage"];
+	const nlohmann::json replaced_usage = uam_test::SerializeStateInline(app)["chats"][0]["acpSession"]["providerUsage"];
 	UAM_ASSERT(replaced_usage["tokenUsage"].is_null());
 	UAM_ASSERT(replaced_usage["rateLimits"].is_object());
 }
@@ -6672,7 +6672,7 @@ UAM_TEST(CodexAppServerReasoningAndPlansPersistToAssistantMessage)
 	const bool has_plan_event = std::ranges::any_of(raw_session->turn_events, [](const uam::AcpTurnEventState& event) { return event.type == "plan"; });
 	UAM_ASSERT(has_plan_event);
 
-	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	const nlohmann::json serialized = uam_test::SerializeStateInline(app);
 	UAM_ASSERT_EQ(serialized["chats"][0]["acpSession"].value("planSummary", ""), std::string("Plan summary"));
 	UAM_ASSERT_EQ(serialized["chats"][0]["acpSession"]["planEntries"][0].value("content", ""), std::string("Inspect files"));
 	UAM_ASSERT_EQ(serialized["chats"][0]["messages"][0].value("planSummary", ""), std::string("Plan summary"));
@@ -6804,7 +6804,7 @@ UAM_TEST(CodexAppServerPersistsOrderedBlocksAcrossReload)
 	UAM_ASSERT_EQ(loaded.front().messages[0].blocks[2].tool_call_id, std::string("cmd-1"));
 	UAM_ASSERT_EQ(loaded.front().messages[0].blocks[4].type, std::string("plan"));
 
-	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	const nlohmann::json serialized = uam_test::SerializeStateInline(app);
 	UAM_ASSERT_EQ(serialized["chats"][0]["messages"][0]["blocks"][0].value("type", ""), std::string("thought"));
 	UAM_ASSERT_EQ(serialized["chats"][0]["messages"][0]["blocks"][1].value("text", ""), std::string("First visible text."));
 	UAM_ASSERT_EQ(serialized["chats"][0]["messages"][0]["blocks"][2].value("toolCallId", ""), std::string("cmd-1"));
@@ -6991,7 +6991,7 @@ UAM_TEST(AcpSessionNewParsesModesModelsAndModeUpdates)
 	UAM_ASSERT(app.provider_model_catalog->RememberSuccessfulModels(app.chats.front().provider_id,
 	    nlohmann::json::array({{{"id", "stale-model"}, {"name", "Stale"}}}), model_workspace));
 
-	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	const nlohmann::json serialized = uam_test::SerializeStateInline(app);
 	const nlohmann::json acp = serialized["chats"][0]["acpSession"];
 	UAM_ASSERT_EQ(acp["availableModes"].size(), static_cast<std::size_t>(2));
 	UAM_ASSERT_EQ(acp.value("currentModeId", ""), std::string("plan"));
@@ -7085,7 +7085,7 @@ UAM_TEST(CopilotAvailableCommandsUpdateIsStoredOutsideATurnAndSerialized)
 	UAM_ASSERT_EQ(raw_session->available_commands[1].name, std::string("context"));
 	UAM_ASSERT(raw_session->available_commands[1].input_hint.empty());
 
-	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	const nlohmann::json serialized = uam_test::SerializeStateInline(app);
 	const nlohmann::json available_commands = serialized["chats"][0]["acpSession"]["availableCommands"];
 	UAM_ASSERT_EQ(available_commands.size(), static_cast<std::size_t>(2));
 	UAM_ASSERT_EQ(available_commands[0].value("name", ""), std::string("security-review"));
@@ -7210,7 +7210,7 @@ UAM_TEST(OpenCodeConfigModelProjectionUsesFirstAuthoritativeOption)
 		    nlohmann::json({{"jsonrpc", "2.0"}, {"id", 1}, {"result", {{"sessionId", "ses_model_precedence"}, {"configOptions", options}}}}).dump()));
 		const std::string expected_current = first_current_empty ? "retained/prior" : "provider/A";
 		UAM_ASSERT_EQ(runtime.current_model_id, expected_current);
-		const auto state = uam::StateSerializer::Serialize(app)["chats"][0]["acpSession"];
+		const auto state = uam_test::SerializeStateInline(app)["chats"][0]["acpSession"];
 		UAM_ASSERT_EQ(state.value("currentModelId", ""), expected_current);
 		UAM_ASSERT_EQ(runtime.current_mode_id, std::string("plan"));
 		UAM_ASSERT_EQ(app.chats.front().model_id, std::string("provider/A"));
@@ -7260,7 +7260,7 @@ UAM_TEST(OpenCodeConfigOnlySetupReportsTheCurrentModelAndMode)
 		    nlohmann::json({{"jsonrpc", "2.0"}, {"id", 1}, {"result", {{"sessionId", "opencode-session"}, {"configOptions", options}}}}).dump()));
 		UAM_ASSERT_EQ(runtime.current_model_id, std::string("provider/current"));
 		UAM_ASSERT_EQ(runtime.current_mode_id, std::string("build"));
-		const nlohmann::json state = uam::StateSerializer::Serialize(app)["chats"][0]["acpSession"];
+		const nlohmann::json state = uam_test::SerializeStateInline(app)["chats"][0]["acpSession"];
 		UAM_ASSERT_EQ(state.value("currentModelId", ""), std::string("provider/current"));
 		UAM_ASSERT_EQ(state.value("currentModeId", ""), std::string("build"));
 	}
@@ -7321,7 +7321,7 @@ UAM_TEST(OpenCodeAcpPreservesAndConfirmsProviderModelVariants)
 	UAM_ASSERT_EQ(raw_session->available_config_options.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(raw_session->available_config_options[0].category, std::string("custom/provider-category"));
 	UAM_ASSERT_EQ(raw_session->available_config_options[0].choices[1].value, std::string("deep/custom"));
-	const nlohmann::json serialized = uam::StateSerializer::Serialize(app)["chats"][0]["acpSession"]["configOptions"][0];
+	const nlohmann::json serialized = uam_test::SerializeStateInline(app)["chats"][0]["acpSession"]["configOptions"][0];
 	UAM_ASSERT_EQ(serialized.value("name", ""), std::string("Thinking Style"));
 	UAM_ASSERT_EQ(serialized["options"][1].value("name", ""), std::string("Deep + Custom"));
 
@@ -7602,7 +7602,7 @@ UAM_TEST(CodexCachedModelsPopulateSelectorBeforeAppServerStarts)
 	app.provider_model_catalog = std::make_unique<uam::ProviderModelCatalogService>();
 	app.provider_model_catalog->Initialize(app.data_root);
 
-	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	const nlohmann::json serialized = uam_test::SerializeStateInline(app);
 	const nlohmann::json acp = serialized["chats"][0]["acpSession"];
 	UAM_ASSERT_EQ(acp["availableModels"].size(), static_cast<std::size_t>(2));
 	UAM_ASSERT_EQ(acp["availableModels"][0].value("id", ""), std::string("gpt-5.4"));
@@ -7669,7 +7669,7 @@ UAM_TEST(OpenCodeConfigModelsPopulateSelectorBeforeAcpStarts)
 	app.provider_model_catalog = std::make_unique<uam::ProviderModelCatalogService>();
 	app.provider_model_catalog->Initialize(app.data_root);
 
-	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	const nlohmann::json serialized = uam_test::SerializeStateInline(app);
 	const nlohmann::json acp = serialized["chats"][0]["acpSession"];
 	auto model_by_id = [&](const std::string& id) -> nlohmann::json
 	{
@@ -7803,7 +7803,7 @@ UAM_TEST(ProviderModelCatalogPersistsSuccessfulRefreshAndIsolatesConfigurations)
 		app.provider_model_catalog = std::make_unique<uam::ProviderModelCatalogService>();
 		app.provider_model_catalog->Initialize(app.data_root, app.provider_profiles);
 		UAM_ASSERT(app.provider_model_catalog->RememberSuccessfulModels(first.id, models, temp.root.string(), config_options));
-		const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+		const nlohmann::json serialized = uam_test::SerializeStateInline(app);
 		UAM_ASSERT_EQ(serialized["chats"][0]["acpSession"]["configOptions"], config_options);
 	}
 
@@ -8001,7 +8001,7 @@ UAM_TEST(OpenCodeZenFreeModelsRefreshFromFixtureAndCache)
 	}
 	UAM_ASSERT(refreshed);
 
-	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	const nlohmann::json serialized = uam_test::SerializeStateInline(app);
 	const nlohmann::json acp = serialized["chats"][0]["acpSession"];
 	// The Zen refresh remains cached for diagnostics, but unconfirmed IDs must
 	// not become selectable OpenCode models.
@@ -8059,7 +8059,7 @@ UAM_TEST(OpenCodeRuntimeModelsMergeWithConfiguredModels)
 	app.provider_model_catalog = std::make_unique<uam::ProviderModelCatalogService>();
 	app.provider_model_catalog->Initialize(app.data_root);
 
-	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	const nlohmann::json serialized = uam_test::SerializeStateInline(app);
 	const nlohmann::json acp = serialized["chats"][0]["acpSession"];
 	UAM_ASSERT_EQ(acp["availableModels"].size(), static_cast<std::size_t>(2));
 	UAM_ASSERT_EQ(acp["availableModels"][0].value("id", ""), std::string("ollama-r9700/qwen3-coder:30b"));
@@ -8124,7 +8124,7 @@ UAM_TEST(LiveModelCapabilitiesSurviveCatalogPersistenceFailure)
 			model.supported_reasoning_efforts = {"high"};
 			session->available_models.push_back(model);
 			app.acp_sessions.push_back(std::move(session));
-			const nlohmann::json acp = uam::StateSerializer::Serialize(app)["chats"][0]["acpSession"];
+			const nlohmann::json acp = uam_test::SerializeStateInline(app)["chats"][0]["acpSession"];
 			UAM_ASSERT_EQ(acp["availableModels"][0]["supportedReasoningEfforts"], nlohmann::json::array({"high"}));
 			UAM_ASSERT(acp["availableModels"][0]["additionalSpeedTiers"].empty());
 			UAM_ASSERT_EQ(acp["availableModels"][0]["name"], nlohmann::json("Current"));
@@ -8432,7 +8432,7 @@ UAM_TEST(ProviderModelCatalogSerializesForAWorkspaceWithZeroChats)
 	UAM_ASSERT(app.provider_model_catalog->RememberSuccessfulModels("codex-cli",
 	    remote_models, "/srv/project", remote_options, "ssh-lab"));
 
-	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	const nlohmann::json serialized = uam_test::SerializeStateInline(app);
 	UAM_ASSERT(serialized["chats"].empty());
 	UAM_ASSERT_EQ(serialized["providerModelCatalogs"].size(), static_cast<std::size_t>(3));
 	UAM_ASSERT_EQ(serialized["providerModelCatalogs"][0]["availableModels"][0].value("id", ""), std::string("gpt-zero-chat"));
@@ -9004,7 +9004,7 @@ UAM_TEST(CodexAppServerUserInputRequestsSurfaceAndSerialize)
 	UAM_ASSERT_EQ(raw_session->turn_events[0].request_id_json, std::string("11"));
 	UAM_ASSERT_EQ(raw_session->turn_events[0].tool_call_id, std::string("input-1"));
 
-	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	const nlohmann::json serialized = uam_test::SerializeStateInline(app);
 	const nlohmann::json pending = serialized["chats"][0]["acpSession"]["pendingUserInput"];
 	UAM_ASSERT_EQ(serialized["chats"][0]["acpSession"].value("lifecycleState", ""), std::string("waitingUserInput"));
 	UAM_ASSERT_EQ(pending.value("requestId", ""), std::string("11"));
@@ -9403,7 +9403,7 @@ UAM_TEST(AcpThoughtsPersistOnAssistantMessage)
 	UAM_ASSERT_EQ(app.chats.front().messages[1].thoughts, std::string("Need to inspect the file first."));
 	UAM_ASSERT_EQ(app.chats.front().messages[1].content, std::string("Done."));
 
-	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	const nlohmann::json serialized = uam_test::SerializeStateInline(app);
 	UAM_ASSERT_EQ(serialized["chats"][0]["messages"][1].value("thoughts", ""), std::string("Need to inspect the file first."));
 }
 
@@ -9604,7 +9604,7 @@ UAM_TEST(AcpToolCallsPersistOnAssistantMessage)
 	UAM_ASSERT_EQ(assistant.tool_calls[0].status, std::string("completed"));
 	UAM_ASSERT_EQ(assistant.tool_calls[0].result_text, std::string("file contents"));
 
-	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	const nlohmann::json serialized = uam_test::SerializeStateInline(app);
 	UAM_ASSERT_EQ(serialized["chats"][0]["messages"][1]["toolCalls"][0].value("title", ""), std::string("Read file"));
 }
 
@@ -9652,7 +9652,7 @@ UAM_TEST(AcpCancellationFinalizesActiveToolCallsAndIgnoresLateUpdates)
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"item/started","params":{"item":{"id":"late","type":"commandExecution","status":"in_progress"}}})"));
 	UAM_ASSERT_EQ(raw_session->tool_calls.size(), static_cast<std::size_t>(4));
 
-	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	const nlohmann::json serialized = uam_test::SerializeStateInline(app);
 	UAM_ASSERT_EQ(serialized["chats"][0]["messages"][0]["toolCalls"][0].value("status", ""), std::string("cancelled"));
 }
 
@@ -11017,7 +11017,7 @@ UAM_TEST(AcpQueuedPromptsKeepTheAgentSnapshotTheyWereCreatedWith)
 	UAM_ASSERT_EQ(queued[0].uam_agent_workspace_access, std::string("write"));
 	UAM_ASSERT_EQ(queued[1].uam_agent_id, std::string("plan"));
 	UAM_ASSERT_EQ(queued[1].uam_agent_workspace_access, std::string("read"));
-	UAM_ASSERT_EQ(uam::StateSerializer::Serialize(app)["chats"][0]["acpSession"]["queuedPrompts"][1].value("uamAgentId", ""), std::string("plan"));
+	UAM_ASSERT_EQ(uam_test::SerializeStateInline(app)["chats"][0]["acpSession"]["queuedPrompts"][1].value("uamAgentId", ""), std::string("plan"));
 }
 
 UAM_TEST(ManagedAgentSessionsNeverScheduleAnAutomaticRelaunch)
@@ -11436,7 +11436,7 @@ UAM_TEST(AcpQueuedUserPromptsPreserveFifoPayloadAndBeatGoalReview)
 	UAM_ASSERT_EQ(uam::SwitchChatProvider(app, "chat-queue", app.provider_profiles[1].id), uam::ChatProviderSwitchResult::ActiveRuntime);
 	raw_session->processing = true;
 
-	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	const nlohmann::json serialized = uam_test::SerializeStateInline(app);
 	const nlohmann::json queued = serialized["chats"][0]["acpSession"]["queuedPrompts"];
 	UAM_ASSERT_EQ(queued.size(), static_cast<std::size_t>(2));
 	UAM_ASSERT_EQ(queued[0].value("text", ""), std::string("First queued prompt"));
@@ -11565,7 +11565,7 @@ UAM_TEST(AcpCancelTurnHoldsQueuedInputIncludingDispatchedFrontAndGoalTurns)
 		UAM_ASSERT_EQ(stored.acp_queued_prompts.front().text, std::string("Queued one"));
 		UAM_ASSERT_EQ(stored.acp_queued_prompts.back().text, std::string("Queued two"));
 
-		const nlohmann::json acp = uam::StateSerializer::Serialize(app)["chats"][0]["acpSession"];
+		const nlohmann::json acp = uam_test::SerializeStateInline(app)["chats"][0]["acpSession"];
 		UAM_ASSERT(acp.value("queueHeld", false));
 		UAM_ASSERT_EQ(acp["queuedPrompts"].size(), std::size_t{2});
 		UAM_ASSERT_EQ(acp["queuedPrompts"][0].value("text", ""), std::string("Queued one"));
@@ -13500,7 +13500,7 @@ UAM_TEST(TreatAsStoppedIsOfferedOnlyAfterTheDelayAndNeverForAConfirmedStop)
 	uam::AcpSessionState* session = AddUnconfirmedRemoteStop(app, chat_id);
 	const auto offered_to_ui = [&app]
 	{
-		return uam::StateSerializer::Serialize(app).at("chats").at(0).at("acpSession").contains("remoteStopForceAvailable");
+		return uam_test::SerializeStateInline(app).at("chats").at(0).at("acpSession").contains("remoteStopForceAvailable");
 	};
 	// A stop that only just went unconfirmed is not offered, and the override is refused however it is asked for.
 	(void)uam::PollAllAcpSessions(app);
@@ -14903,7 +14903,7 @@ UAM_TEST(AcpRejectedModelChangeRestoresPersistedAndRuntimeModel)
 	UAM_ASSERT_EQ(raw_session->model_change_request_id, 0);
 	UAM_ASSERT(app.chats.front().model_id.empty());
 
-	const nlohmann::json serialized = uam::StateSerializer::Serialize(app);
+	const nlohmann::json serialized = uam_test::SerializeStateInline(app);
 	UAM_ASSERT(serialized["chats"][0].value("modelId", "missing").empty());
 	UAM_ASSERT_EQ(serialized["chats"][0]["acpSession"].value("currentModelId", ""), std::string("model-old"));
 
@@ -15126,7 +15126,7 @@ UAM_TEST(AcpModeChangeFailuresRestorePersistedAndRuntimeMode)
 	UAM_ASSERT_EQ(raw_session->current_mode_id, std::string("default"));
 	UAM_ASSERT_EQ(app.chats.front().approval_mode, std::string("default"));
 
-	const nlohmann::json rejected_state = uam::StateSerializer::Serialize(app);
+	const nlohmann::json rejected_state = uam_test::SerializeStateInline(app);
 	UAM_ASSERT_EQ(rejected_state["chats"][0].value("approvalMode", ""), std::string("default"));
 	UAM_ASSERT_EQ(rejected_state["chats"][0]["acpSession"].value("currentModeId", ""), std::string("default"));
 
@@ -15268,7 +15268,7 @@ UAM_TEST(CodexNativeSteerKeepsTurnAndTranscriptOrder)
 		UAM_ASSERT_EQ(app.chats.front().messages.back().role, MessageRole::User);
 		UAM_ASSERT(app.chats.front().messages.back().priority_steer);
 		UAM_ASSERT(app.chats.front().messages.back().continues_turn);
-		const nlohmann::json serialized_steer = uam::StateSerializer::Serialize(app);
+		const nlohmann::json serialized_steer = uam_test::SerializeStateInline(app);
 		UAM_ASSERT(serialized_steer["chats"][0]["messages"].back().value("continuesTurn", false));
 		UAM_ASSERT(!app.chats.front().messages.front().interrupted);
 		UAM_ASSERT_EQ(session.tool_calls.front().status, std::string("in_progress"));
@@ -23673,7 +23673,7 @@ namespace
 		chat.acp_queued_prompts = {prompt};
 		chat.acp_queue_held = true;
 		app.chats.push_back(chat);
-		auto projection = uam::StateSerializer::Serialize(app)["chats"][0]["acpSession"];
+		auto projection = uam_test::SerializeStateInline(app)["chats"][0]["acpSession"];
 		UAM_ASSERT(projection.at("queueHeld").get<bool>());
 		UAM_ASSERT_EQ(projection.at("queuedPrompts").size(), std::size_t{1});
 		UAM_ASSERT_EQ(projection.at("queuedPrompts")[0].at("id"), nlohmann::json("held-direct"));
@@ -23681,14 +23681,14 @@ namespace
 
 		// Possibly delivered input must never gain Resume, which could replay it.
 		app.chats.front().remote_prompt_delivery_id = "maybe-delivered";
-		projection = uam::StateSerializer::Serialize(app)["chats"][0]["acpSession"];
+		projection = uam_test::SerializeStateInline(app)["chats"][0]["acpSession"];
 		UAM_ASSERT(!projection.at("queueHeld").get<bool>() && projection.at("queuedPrompts").empty());
 		UAM_ASSERT_EQ(projection.at("pendingDirectPrompts").size(), std::size_t{1});
 		app.chats.front().remote_prompt_delivery_id.clear();
 
 		// Unheld direct receipts keep their existing receipt presentation.
 		app.chats.front().acp_queue_held = false;
-		projection = uam::StateSerializer::Serialize(app)["chats"][0]["acpSession"];
+		projection = uam_test::SerializeStateInline(app)["chats"][0]["acpSession"];
 		UAM_ASSERT(!projection.at("queueHeld").get<bool>() && projection.at("queuedPrompts").empty());
 	}
 
@@ -23767,7 +23767,7 @@ namespace
 			UAM_ASSERT(!captured.prepared_for_delivery && captured.append_user_message && captured.text == input);
 			UAM_ASSERT_EQ(Chat().acp_queued_prompts, (std::vector<uam::AcpQueuedUserPromptState>{captured}));
 			UAM_ASSERT(Chat().messages == rows_before && Chat().native_session_id.empty());
-			const auto projection = uam::StateSerializer::Serialize(app)["chats"][0]["acpSession"];
+			const auto projection = uam_test::SerializeStateInline(app)["chats"][0]["acpSession"];
 			UAM_ASSERT(projection.at("queuedPrompts").empty());
 			UAM_ASSERT(projection.at("unsentDirectPrompts").empty());
 			UAM_ASSERT_EQ(projection.at("pendingDirectPrompts").size(), std::size_t{1});
@@ -23923,7 +23923,7 @@ UAM_TEST(AcpPublicPendingWorkspaceAdmissionStopAndCancelNeverDispatch)
 		UAM_ASSERT(fixture.receipt->saved); // Actual durable post-action state; no native input occurred.
 		const auto saved = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.Chat().id);
 		UAM_ASSERT(saved && saved->messages == fixture.Chat().messages && saved->acp_queued_prompts.empty());
-		const auto state = uam::StateSerializer::Serialize(fixture.app)["chats"][0]["acpSession"];
+		const auto state = uam_test::SerializeStateInline(fixture.app)["chats"][0]["acpSession"];
 		UAM_ASSERT(state.at("queuedPrompts").empty() && state.at("pendingDirectPrompts").empty());
 		UAM_ASSERT(state.at("unsentDirectPrompts").empty()); // Stop's Unsent is the exact raw row above, not another receipt.
 		UAM_ASSERT(!fixture.Session().reconnect_pending);
@@ -24049,7 +24049,7 @@ for raw in sys.stdin.buffer:
 			UAM_ASSERT_EQ(std::ranges::count_if(frames, [](const auto& frame) { return frame.value("method", "") == "initialize"; }), 1);
 			UAM_ASSERT_EQ(std::ranges::count_if(frames, [](const auto& frame) { return frame.value("method", "") == "thread/start"; }), 1);
 			UAM_ASSERT_EQ(std::ranges::count(Chat().messages, input, &Message::content), 1);
-			const auto state = uam::StateSerializer::Serialize(app)["chats"][0]["acpSession"];
+			const auto state = uam_test::SerializeStateInline(app)["chats"][0]["acpSession"];
 			UAM_ASSERT(state.at("queuedPrompts").empty());
 		}
 		void AssertReadySaveBarrier()
@@ -24425,7 +24425,7 @@ UAM_TEST(AcpManagedInitialPublicProducerRetainsMetadataPendingDirectAdmission)
 	UAM_ASSERT_EQ(child->acp_queued_prompts, (std::vector<uam::AcpQueuedUserPromptState>{direct}));
 	UAM_ASSERT(child->messages.empty() && child->native_session_id.empty());
 	UAM_ASSERT(fixture.app.pending_chat_save_at_by_chat_id.contains(child->id));
-	const auto state = uam::StateSerializer::Serialize(fixture.app);
+	const auto state = uam_test::SerializeStateInline(fixture.app);
 	const auto projected = std::ranges::find_if(state.at("chats"), [&](const auto& row) { return row.value("id", "") == child->id; });
 	// Managed transcripts intentionally stay out of the ordinary chat list.
 	UAM_ASSERT(projected == state.at("chats").end());

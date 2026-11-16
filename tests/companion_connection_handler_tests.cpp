@@ -2,6 +2,7 @@
 #include "cef_handler_fixture.h"
 #include "cef/uam_query_handler.h"
 #include "cef/companion_server.h"
+#include "cef/cef_push.h"
 #include "common/platform/companion_network_platform.h"
 #include "common/companion/token_store.h"
 #include "include/cef_app.h"
@@ -43,6 +44,13 @@ struct CompanionConnectionHandlerTestAccess
 	}
 	static void InitialState(UamQueryHandler& handler, CefRefPtr<UamQueryHandler::Callback> callback)
 	{
+		handler.HandleGetInitialState(nullptr, {{"summaryOnly", true}}, callback);
+	}
+	/// The same pull as the phone companion dispatches it.
+	static void PhoneInitialState(UamQueryHandler& handler, CefRefPtr<UamQueryHandler::Callback> callback)
+	{
+		handler.m_dispatchingCompanion = true;
+		struct Reset { bool& flag; ~Reset() { flag = false; } } reset{handler.m_dispatchingCompanion};
 		handler.HandleGetInitialState(nullptr, {{"summaryOnly", true}}, callback);
 	}
 	static void Stop(UamQueryHandler& handler)
@@ -234,6 +242,52 @@ UAM_TEST(InitialStateLoadsWhenStateTextEndsMidCharacter)
 	UAM_ASSERT_EQ(callback->failure, 0);
 	UAM_ASSERT(callback->response.contains("bootId"));
 	UAM_ASSERT(callback->response.dump().find("Cut \xEF\xBF\xBD") != std::string::npos);
+}
+
+namespace
+{
+	std::string g_catalogue_reset_patch;
+	std::chrono::steady_clock::time_point g_catalogue_reset_now;
+}
+
+// A desktop state pull may come from a reloaded page with no model catalogues, so the next patch tells the page to
+// clear its table and resends what it references. A phone pull must not, or every phone poll would resend catalogues.
+UAM_TEST(DesktopStatePullResetsSentModelCataloguesAndPhonePullDoesNot)
+{
+	TempDir temporary("uam-initial-state-catalogue-reset");
+	uam::AppState app;
+	app.data_root = temporary.root;
+	ChatSession chat;
+	chat.id = "chat-catalogue-reset";
+	chat.provider_id = "codex-cli";
+	chat.title = "Catalogue";
+	chat.created_at = chat.updated_at = "2026-11-13T00:00:00Z";
+	app.chats.push_back(chat);
+	auto handler_owner = UamQueryHandlerTestAccess::Create(app, "file:///fixture/index.html");
+	g_catalogue_reset_now = std::chrono::steady_clock::now();
+	uam::SetStatePushClockForTests([] { return g_catalogue_reset_now; });
+	uam::SetStatePatchObserverForTests([](const std::string& message) { g_catalogue_reset_patch = message; });
+	struct Restore { ~Restore() { uam::SetStatePushClockForTests(nullptr); uam::SetStatePatchObserverForTests(nullptr); } } restore;
+	uam::PushStateUpdate(nullptr, app);
+	const auto patch_after = [&](void (*pull)(UamQueryHandler&, CefRefPtr<UamQueryHandler::Callback>), const std::string& title)
+	{
+		CefRefPtr<ConnectionCallback> callback = new ConnectionCallback;
+		pull(*handler_owner, callback);
+		UAM_ASSERT_EQ(callback->failure, 0);
+		g_catalogue_reset_now += std::chrono::milliseconds(200);
+		app.chats[0].title = title;
+		g_catalogue_reset_patch.clear();
+		UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
+		return nlohmann::json::parse(g_catalogue_reset_patch)["data"];
+	};
+
+	nlohmann::json patch = patch_after(&CompanionConnectionHandlerTestAccess::PhoneInitialState, "After a phone pull");
+	UAM_ASSERT(!patch.contains("modelCatalogsReset") && !patch.contains("modelCatalogs"));
+	patch = patch_after(&CompanionConnectionHandlerTestAccess::InitialState, "After a desktop pull");
+	UAM_ASSERT(patch.value("modelCatalogsReset", false));
+	UAM_ASSERT(patch["modelCatalogs"].contains(patch["chats"][0]["acpSession"]["modelCatalogId"].get<std::string>()));
+	patch = patch_after(&CompanionConnectionHandlerTestAccess::PhoneInitialState, "After another phone pull");
+	UAM_ASSERT(!patch.contains("modelCatalogsReset") && !patch.contains("modelCatalogs"));
 }
 
 UAM_TEST(CompanionPairingTokenNeverPublishesAnUnreadySavedAddress)

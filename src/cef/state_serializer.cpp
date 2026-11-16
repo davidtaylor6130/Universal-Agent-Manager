@@ -149,6 +149,10 @@ namespace uam
 			std::unordered_map<std::string, nlohmann::json> catalogs;
 			std::unordered_map<std::string, nlohmann::json> fingerprints;
 			bool compact_catalogs = false;
+			// Set while serializing for the frontend: chats carry a modelCatalogId into this table instead of the catalogue.
+			nlohmann::json* catalog_table = nullptr;
+			// A scope's modelCatalogId by its entry in catalogs, hashed once per serialization or push.
+			std::unordered_map<const nlohmann::json*, std::string> catalog_ids;
 			// Transparent comparison: a chat is looked up through views of its own strings, without copying them.
 			using WorkspaceKeyView = std::tuple<bool, bool, std::string_view, std::string_view, std::string_view, std::string_view>;
 			std::map<WorkspaceKey, std::filesystem::path, std::less<>> workspaces;
@@ -236,16 +240,23 @@ namespace uam
 
 		  public:
 			CatalogSnapshotCache& cache;
-			explicit ScopedCatalogCache(bool compact_catalogs) : cache(g_stable_pass != nullptr ? g_stable_pass->cache : m_local), m_previous_compact(cache.compact_catalogs)
+			explicit ScopedCatalogCache(bool compact_catalogs, nlohmann::json* catalog_table = nullptr)
+			    : cache(g_stable_pass != nullptr ? g_stable_pass->cache : m_local), m_previous_compact(cache.compact_catalogs), m_previous_table(cache.catalog_table)
 			{
 				cache.compact_catalogs = compact_catalogs;
+				cache.catalog_table = catalog_table;
 			}
-			~ScopedCatalogCache() { cache.compact_catalogs = m_previous_compact; }
+			~ScopedCatalogCache()
+			{
+				cache.compact_catalogs = m_previous_compact;
+				cache.catalog_table = m_previous_table;
+			}
 			ScopedCatalogCache(const ScopedCatalogCache&) = delete;
 			ScopedCatalogCache& operator=(const ScopedCatalogCache&) = delete;
 
 		  private:
 			bool m_previous_compact;
+			nlohmann::json* m_previous_table;
 		};
 
 		/// <summary>Reuse identical workspace scopes only within this serialization.</summary>
@@ -280,8 +291,8 @@ namespace uam
 			return uam::strings::IsBlank(chat.model_id) ? std::string{} : chat.model_id;
 		}
 
-		nlohmann::json CatalogSnapshotForChat(const AppState& app, const ChatSession& chat,
-		                                     CatalogSnapshotCache& cache)
+		const nlohmann::json& CatalogSnapshotForChat(const AppState& app, const ChatSession& chat,
+		                                             CatalogSnapshotCache& cache)
 		{
 			const std::string workspace = WorkspaceSnapshotForChat(app, chat, cache).generic_string();
 			const std::string key = CatalogSnapshotKey(chat.provider_id, workspace, chat.execution_host_id);
@@ -293,8 +304,8 @@ namespace uam
 				ProviderModelCatalogService::ApplyLaunchOptionMetadata(snapshot["availableModels"], chat.provider_id, host != nullptr ? CheckedProviderConfigurationVersion(app, chat.provider_id, *host) : std::string{});
 				return cache.catalogs.emplace(key, std::move(snapshot)).first->second;
 			}
-			return {{"availableModels", nlohmann::json::array()}, {"configOptions", nlohmann::json::array()},
-			        {"modelsLoading", false}, {"modelRefreshError", ""}};
+			return cache.catalogs.emplace(key, nlohmann::json{{"availableModels", nlohmann::json::array()}, {"configOptions", nlohmann::json::array()},
+			        {"modelsLoading", false}, {"modelRefreshError", ""}}).first->second;
 		}
 
 		std::uint64_t JsonDigest(const nlohmann::json& value);
@@ -391,7 +402,7 @@ namespace uam
 				++g_trusted_cache_reads;
 				return cache.fingerprints.emplace(key, remembered->second).first->second;
 			}
-			const nlohmann::json snapshot = CatalogSnapshotForChat(app, chat, cache);
+			const nlohmann::json& snapshot = CatalogSnapshotForChat(app, chat, cache);
 			// The token never leaves this process (patches hydrate the full catalog), so it is hashed without dumping the catalog to text.
 			nlohmann::json fingerprint{
 			    {"catalogDigest", std::to_string(JsonDigest(snapshot))},
@@ -404,6 +415,27 @@ namespace uam
 				memo->fingerprints[key] = fingerprint;
 			}
 			return cache.fingerprints.emplace(key, std::move(fingerprint)).first->second;
+		}
+
+		/// <summary>Adds a catalogue to the table under its content digest and returns that id.</summary>
+		std::string AddModelCatalog(nlohmann::json& table, nlohmann::json models, nlohmann::json options)
+		{
+			nlohmann::json entry{{"availableModels", std::move(models)}, {"configOptions", std::move(options)}};
+			std::string id = std::to_string(JsonDigest(entry));
+			if (!table.contains(id)) table[id] = std::move(entry);
+			return id;
+		}
+
+		/// <summary>A stopped chat's catalogue fields with the catalogue itself replaced by its id in cache.catalog_table.</summary>
+		nlohmann::json CatalogReferenceForChat(const AppState& app, const ChatSession& chat, CatalogSnapshotCache& cache)
+		{
+			const nlohmann::json& snapshot = CatalogSnapshotForChat(app, chat, cache);
+			std::unordered_map<const nlohmann::json*, std::string>::iterator id = cache.catalog_ids.find(&snapshot);
+			if (id == cache.catalog_ids.end() || !cache.catalog_table->contains(id->second))
+				id = cache.catalog_ids.insert_or_assign(&snapshot, AddModelCatalog(*cache.catalog_table, snapshot.value("availableModels", nlohmann::json::array()),
+				    snapshot.value("configOptions", nlohmann::json::array()))).first;
+			return {{"modelCatalogId", id->second}, {"modelsLoading", snapshot.value("modelsLoading", false)},
+			    {"modelRefreshError", snapshot.value("modelRefreshError", "")}};
 		}
 
 		thread_local std::size_t g_catalog_slice_builds = 0;
@@ -1780,6 +1812,7 @@ namespace uam
 		                                   bool ready_since_last_select, CatalogSnapshotCache& cache)
 		{
 			if (cache.compact_catalogs) w.Merge(CatalogFingerprintForChat(app, chat, cache));
+			else if (cache.catalog_table != nullptr) w.Merge(CatalogReferenceForChat(app, chat, cache));
 			else w.Merge(CatalogSnapshotForChat(app, chat, cache));
 			const std::string session_id = ResolvedAcpSessionIdForChat(app, chat);
 			w.Set("sessionId", session_id);
@@ -1857,7 +1890,15 @@ namespace uam
 				return SerializeStoppedAcpSessionSummary(app, chat, ready_since_last_select, cache);
 			}
 
-			nlohmann::json acp_json = CatalogSnapshotForChat(app, chat, cache);
+			const bool session_owns_models = session->session_ready && !session->available_models.empty();
+			const bool session_owns_config = session->session_ready || !session->available_config_options.empty();
+			nlohmann::json acp_json = nlohmann::json::object();
+			for (const auto& field : CatalogSnapshotForChat(app, chat, cache).items())
+			{
+				// These arrays are replaced below; retain every other scoped field without copying discarded choices.
+				if ((field.key() == "availableModels" && session_owns_models) || (field.key() == "configOptions" && session_owns_config)) continue;
+				acp_json[field.key()] = field.value();
+			}
 			acp_json["sessionId"] = session->session_id;
 			acp_json["providerId"] = session->provider_id;
 			acp_json["manualCompaction"] = SerializeManualCompactionAvailability(app, chat, session);
@@ -1907,13 +1948,13 @@ namespace uam
 			acp_json["availableCommands"] = SerializeAcpCommands(session->available_commands);
 			acp_json["availableModes"] = SerializeAcpModes(session->available_modes);
 			acp_json["currentModeId"] = uam::strings::NonEmptyOrFallback(session->current_mode_id, chat.approval_mode);
-			if (session->session_ready && !session->available_models.empty())
+			if (session_owns_models)
 				acp_json["availableModels"] = SerializeAcpModels(session->available_models);
 			else
 				acp_json["availableModels"] = ProviderModelCatalogService::MergeAcpModelArrays(std::move(acp_json["availableModels"]), SerializeAcpModels(session->available_models), true);
 			const auto* model_host = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id.empty() ? "local" : chat.execution_host_id);
 			ProviderModelCatalogService::ApplyLaunchOptionMetadata(acp_json["availableModels"], chat.provider_id, model_host != nullptr ? CheckedProviderConfigurationVersion(app, chat.provider_id, *model_host) : std::string{});
-			if (session->session_ready || !session->available_config_options.empty()) acp_json["configOptions"] = SerializeAcpConfigOptions(session->available_config_options);
+			if (session_owns_config) acp_json["configOptions"] = SerializeAcpConfigOptions(session->available_config_options);
 			acp_json["nativeModelOptions"] = ProviderRuntimeRegistry::ResolveById(session->provider_id).OnAcpNativeModelOptionsForFrontend(*session);
 			acp_json["currentModelId"] = uam::strings::NonEmptyOrFallback(session->current_model_id, FallbackAcpCurrentModelForChat(app, chat));
 			acp_json["turnEvents"] = SerializeAcpTurnEvents(session->turn_events);
@@ -1940,6 +1981,7 @@ namespace uam
 				acp_json["pendingUserInput"] = SerializePendingAcpUserInput(session->pending_user_input);
 			}
 			acp_json["providerUsage"] = SerializeAcpProviderUsage(session->provider_usage);
+			if (cache.catalog_table != nullptr) StateSerializer::ReferenceModelCatalog(acp_json, *cache.catalog_table);
 
 			return acp_json;
 		}
@@ -2488,9 +2530,20 @@ namespace uam
 		g_unreported_divergence_count = 0;
 	}
 
+	void StateSerializer::ReferenceModelCatalog(nlohmann::json& acp_session, nlohmann::json& catalogs)
+	{
+		if (!acp_session.is_object() || !acp_session.contains("availableModels")) return;
+		nlohmann::json models = std::move(acp_session["availableModels"]);
+		nlohmann::json options = acp_session.contains("configOptions") ? std::move(acp_session["configOptions"]) : nlohmann::json::array();
+		acp_session.erase("availableModels");
+		acp_session.erase("configOptions");
+		acp_session["modelCatalogId"] = AddModelCatalog(catalogs, std::move(models), std::move(options));
+	}
+
 	nlohmann::json StateSerializer::Serialize(const AppState& app, bool summary_only)
 	{
-		ScopedCatalogCache scoped_cache(false);
+		nlohmann::json model_catalogs = nlohmann::json::object();
+		ScopedCatalogCache scoped_cache(false, &model_catalogs);
 		CatalogSnapshotCache& catalog_cache = scoped_cache.cache;
 		nlohmann::json j;
 		j["stateRevision"] = app.state_revision;
@@ -2558,6 +2611,7 @@ namespace uam
 
 		j["providers"] = SerializeProvidersForFrontend(app.provider_profiles);
 		j["providerModelCatalogs"] = SerializeProviderModelCatalogs(app, catalog_cache);
+		j["modelCatalogs"] = std::move(model_catalogs);
 
 		// Settings slice that the UI cares about
 		{
@@ -2577,9 +2631,9 @@ namespace uam
 		return j;
 	}
 
-	nlohmann::json StateSerializer::SerializeChatSummary(const AppState& app, const ChatSession& chat)
+	nlohmann::json StateSerializer::SerializeChatSummary(const AppState& app, const ChatSession& chat, nlohmann::json* model_catalogs)
 	{
-		ScopedCatalogCache scoped_cache(false);
+		ScopedCatalogCache scoped_cache(false, model_catalogs);
 		CatalogSnapshotCache& catalog_cache = scoped_cache.cache;
 		return SerializeFingerprintSession(app, chat, catalog_cache);
 	}

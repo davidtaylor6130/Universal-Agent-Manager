@@ -1609,10 +1609,12 @@ UAM_TEST(UamControlListsOnlyToolsTheSessionCanUse)
 	app.acp_sessions.push_back(std::move(session));
 	std::string error;
 	UAM_ASSERT(uam::UamControlService::Initialize(app, &error));
+	nlohmann::json last_server;
 	const auto hidden_for = [&](uam::AcpSessionState& target) {
 		nlohmann::json setup{{"params", {{"mcpServers", nlohmann::json::array()}}}};
 		UAM_ASSERT(uam::UamControlService::AppendSessionMcpServer(app, target, app.chats.front(), "session/new", setup, &error));
-		return uam::UamControlService::HiddenToolsForTests(setup["params"]["mcpServers"].back());
+		last_server = setup["params"]["mcpServers"].back();
+		return uam::UamControlService::HiddenToolsForTests(last_server);
 	};
 	const auto names = [](const nlohmann::json& tools) {
 		std::vector<std::string> out;
@@ -1649,6 +1651,54 @@ UAM_TEST(UamControlListsOnlyToolsTheSessionCanUse)
 	// A goal reviewer gets no UAM tools; the worker that follows keeps them.
 	raw.goal_review_turn = true;
 	UAM_ASSERT(uam::UamControlService::ToolDefinitionsForTests(hidden_for(raw)).empty());
+	// The real stdio server must refuse even a read-only call hidden by the reviewer's launch setup.
+	// No initialized notification is sent, so this probes list/call filtering without starting manager work.
+	std::vector<std::pair<std::string, std::string>> environment;
+	for (const auto& entry : last_server["env"])
+		environment.emplace_back(entry.value("name", ""), entry.value("value", ""));
+	auto& process_service = PlatformServicesFactory::Instance().process_service;
+	uam::platform::StdioProcessPlatformFields process;
+	const std::string input = nlohmann::json{{"jsonrpc", "2.0"}, {"id", 1}, {"method", "tools/list"}}.dump() + "\n" +
+	    nlohmann::json{{"jsonrpc", "2.0"}, {"id", 2}, {"method", "tools/call"},
+	                   {"params", {{"name", "goal_get"}, {"arguments", nlohmann::json::object()}}}}.dump() + "\n";
+	UAM_ASSERT(process_service.StartStdioProcess(process, temp.root,
+	    {process_service.ResolveCurrentExecutablePath().string(), "--uam-test-control-mcp"}, &error, environment));
+	struct StopServer
+	{
+		uam::platform::StdioProcessPlatformFields& process;
+		~StopServer()
+		{
+			auto& service = PlatformServicesFactory::Instance().process_service;
+			service.StopStdioProcess(process, true);
+			service.CloseStdioProcessHandles(process);
+		}
+	} stop_server{process};
+	UAM_ASSERT(process_service.WriteToStdioProcess(process, input.data(), input.size(), &error));
+	process_service.CloseStdioProcessInput(process);
+	std::string output;
+	bool server_exited = false;
+	int server_exit_code = -1;
+	char buffer[4096];
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+	while (std::chrono::steady_clock::now() < deadline)
+	{
+		const auto read = process_service.ReadStdioProcessStdout(process, buffer, sizeof(buffer), &error);
+		if (read > 0) output.append(buffer, static_cast<std::size_t>(read));
+		server_exited = process_service.PollStdioProcessExited(process, &server_exit_code);
+		if (server_exited && read <= 0) break;
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	}
+	UAM_ASSERT(server_exited);
+	UAM_ASSERT_EQ(server_exit_code, 0);
+	std::istringstream replies(output);
+	std::string line;
+	UAM_ASSERT(static_cast<bool>(std::getline(replies, line)));
+	UAM_ASSERT(nlohmann::json::parse(line)["result"]["tools"].empty());
+	UAM_ASSERT(static_cast<bool>(std::getline(replies, line)));
+	const auto refused = nlohmann::json::parse(line);
+	UAM_ASSERT_EQ(refused["error"]["code"].get<int>(), -32602);
+	UAM_ASSERT_EQ(refused["error"]["message"].get<std::string>(), std::string("This UAM tool is not available in this session."));
+	UAM_ASSERT(fs::is_empty(app.uam_control_capabilities.back().directory / "requests"));
 	raw.goal_review_turn = false;
 	UAM_ASSERT_EQ(uam::UamControlService::ToolDefinitionsForTests(hidden_for(raw)).size(), std::size_t{UAM_ENABLE_COMPUTER_USE ? 17 : 16});
 

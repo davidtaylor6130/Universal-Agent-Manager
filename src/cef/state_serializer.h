@@ -102,7 +102,8 @@ class StateSerializer
 	/// </summary>
 	static void CaptureCatalogInputs(const AppState& app);
 
-	/// Serialise the application state, optionally omitting loaded chat messages.
+	/// Serialise the application state, optionally omitting loaded chat messages. Chats reference their model
+	/// catalogue by acpSession.modelCatalogId; "modelCatalogs" holds each referenced catalogue once.
 	static nlohmann::json Serialize(const AppState& app, bool summary_only = false);
 
 	/// Inside a Trust push whose catalogue inputs are unchanged the "providerModelCatalogs" slice is omitted too:
@@ -129,8 +130,15 @@ class StateSerializer
 	/// <summary>Builds the compact fingerprint summaries SerializeFingerprint(app, true) would list for these chats.</summary>
 	static std::vector<nlohmann::json> SerializeChatFingerprints(const AppState& app, const std::vector<const ChatSession*>& chats);
 
-	/// Hydrate a changed chat summary with full model options for frontend patches.
-	static nlohmann::json SerializeChatSummary(const AppState& app, const ChatSession& chat);
+	/// Hydrate a changed chat summary for frontend patches. With model_catalogs, its acpSession carries a
+	/// modelCatalogId into that table instead of availableModels and configOptions.
+	static nlohmann::json SerializeChatSummary(const AppState& app, const ChatSession& chat, nlohmann::json* model_catalogs = nullptr);
+
+	/// <summary>
+	/// Moves an acpSession's availableModels and configOptions into catalogs under their content digest and leaves
+	/// a modelCatalogId in their place, as Serialize does for every chat ("modelCatalogs" maps id to catalogue).
+	/// </summary>
+	static void ReferenceModelCatalog(nlohmann::json& acp_session, nlohmann::json& catalogs);
 
 	/// <summary>Serializes bounded startup discovery metadata without private transcript payloads.</summary>
 	static nlohmann::json SerializeStartupNativeImports(const StartupNativeImportSnapshot& snapshot);

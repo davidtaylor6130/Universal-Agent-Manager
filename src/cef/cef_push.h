@@ -24,6 +24,12 @@ namespace uam
 	bool PushRuntimeStateUpdateIfChanged(CefRefPtr<CefBrowser> browser, AppState& app, bool urgent = false);
 	std::size_t RuntimeStateRebuildCountForTests();
 	void PushStateUpdate(CefRefPtr<CefBrowser> browser, AppState& app);
+	/// <summary>
+	/// Patches send a model catalogue only when the page has not been sent its id yet. Call when the desktop page
+	/// pulls its state (a reload starts with an empty catalogue table): the next patch with chats carries
+	/// modelCatalogsReset, the page clears its table, and later patches resend what they reference.
+	/// </summary>
+	void ForgetSentModelCatalogs();
 
 	/// <summary>
 	/// True when a throttled chat summary is still waiting to be flushed by a
