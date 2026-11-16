@@ -1111,6 +1111,13 @@ namespace uam
 				return false;
 			}
 
+			// Ordinary callers need a durable retry association before removing files.
+			// Family workers already retain a validated primary and summary revision.
+			if (!app.worktree_cleanup_family && !SaveChat(app, chat, error_out))
+			{
+				return false;
+			}
+
 			ChatSession cleared_chat = chat;
 			cleared_chat.workspace_isolation_kind.clear();
 			cleared_chat.workspace_source_directory.clear();
