@@ -1126,7 +1126,7 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 	if ((is_claude || is_antigravity) && (selected_model == nullptr || is_antigravity) && m_app.provider_model_catalog != nullptr)
 	{
 		const std::string selected_id = model_id.empty() ? "default" : model_id;
-		for (const auto& model : m_app.provider_model_catalog->GetCachedProviderModels(chat->provider_id, uam::paths::ResolveWorkspaceRootPath(m_app, *chat).generic_string(), chat->execution_host_id))
+		for (const auto& model : m_app.provider_model_catalog->GetCachedProviderModels(chat->provider_id, uam::paths::PortablePathString(uam::paths::ResolveWorkspaceRootPath(m_app, *chat)), chat->execution_host_id))
 		{
 			if (!(is_antigravity && model_id.empty() && model.value("isDefault", false)) && uam::nlohmann_json::TrimmedStringValue(model, {"id"}) != selected_id)
 				continue;
@@ -1138,7 +1138,7 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 	}
 	if (is_antigravity && m_app.provider_model_catalog != nullptr)
 	{
-		const std::string scope_workspace = uam::paths::ResolveWorkspaceRootPath(m_app, *chat).generic_string();
+		const std::string scope_workspace = uam::paths::PortablePathString(uam::paths::ResolveWorkspaceRootPath(m_app, *chat));
 		const std::string native_model = model_id.empty() && selected_model != nullptr ? selected_model->id : model_id;
 		const auto* host = uam::execution_hosts::Find(m_app.settings.execution_hosts, chat->execution_host_id.empty() ? "local" : chat->execution_host_id);
 		std::string discovery_error;
@@ -1312,7 +1312,7 @@ void UamQueryHandler::HandleSetChatCodexOptions(CefRefPtr<CefBrowser> browser, c
 	if ((is_claude || is_antigravity) && (selected_model == nullptr || is_antigravity) && m_app.provider_model_catalog != nullptr)
 	{
 		const std::string selected_id = chat->model_id.empty() ? "default" : chat->model_id;
-		for (const auto& model : m_app.provider_model_catalog->GetCachedProviderModels(chat->provider_id, uam::paths::ResolveWorkspaceRootPath(m_app, *chat).generic_string(), chat->execution_host_id))
+		for (const auto& model : m_app.provider_model_catalog->GetCachedProviderModels(chat->provider_id, uam::paths::PortablePathString(uam::paths::ResolveWorkspaceRootPath(m_app, *chat)), chat->execution_host_id))
 		{
 			if (!(is_antigravity && chat->model_id.empty() && model.value("isDefault", false)) && uam::nlohmann_json::TrimmedStringValue(model, {"id"}) != selected_id)
 				continue;

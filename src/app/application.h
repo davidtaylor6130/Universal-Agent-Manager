@@ -55,6 +55,9 @@ class Application
 	void ApplyBundledMarkdownStoreSeed(bool seeded, std::string error, std::vector<ShellAction> shell_actions, const std::string& destination_directory);
 
   private:
+	/// Runs every runtime stage of one poll; PollTick contains its failures so the next poll still runs.
+	void PollTickStages(std::chrono::steady_clock::time_point poll_started);
+	void ReportPollTickFailure(const std::string& reason);
 	std::unique_ptr<UamQueryHandler> m_managementHandler;
 	std::unique_ptr<uam::discovery::ManagementAnnouncement> m_managementAnnouncement;
 	bool m_managementNode = false;

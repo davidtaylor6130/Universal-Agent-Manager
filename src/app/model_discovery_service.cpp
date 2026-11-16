@@ -14,6 +14,7 @@
 #include "common/utils/string_utils.h"
 
 #include <algorithm>
+#include <exception>
 #include <filesystem>
 
 namespace uam
@@ -30,7 +31,7 @@ namespace uam
 		std::string Workspace(const AppState& app, const std::string& path, const std::string& host)
 		{
 			if (host == execution_hosts::kLocalHostId)
-				return paths::NormalizeExistingPath(paths::AbsolutePathNoThrow(path)).generic_string();
+				return paths::PortablePathString(paths::NormalizeExistingPath(paths::AbsolutePathNoThrow(paths::PathFromUtf8(path))));
 			std::string normalized = strings::Trim(path);
 			const ExecutionHost* execution_host = execution_hosts::Find(app.settings.execution_hosts, host);
 			if (execution_host != nullptr && strings::ToLowerAscii(execution_host->platform) == "windows")
@@ -52,7 +53,7 @@ namespace uam
 			for (const ChatFolder& folder : app.folders)
 				if (HostId(folder.execution_host_id) == scope.execution_host_id && !strings::IsBlank(folder.directory) && WorkspaceIdentity(app, folder.directory, scope.execution_host_id) == WorkspaceIdentity(app, scope.workspace_directory, scope.execution_host_id)) return true;
 			for (const ChatSession& chat : app.chats)
-				if (!chat.imported_read_only && chat.temporary_parent_chat_id.empty() && HostId(chat.execution_host_id) == scope.execution_host_id && WorkspaceIdentity(app, paths::ResolveWorkspaceRootPath(app, chat).generic_string(), scope.execution_host_id) == WorkspaceIdentity(app, scope.workspace_directory, scope.execution_host_id)) return true;
+				if (!chat.imported_read_only && chat.temporary_parent_chat_id.empty() && HostId(chat.execution_host_id) == scope.execution_host_id && WorkspaceIdentity(app, paths::PortablePathString(paths::ResolveWorkspaceRootPath(app, chat)), scope.execution_host_id) == WorkspaceIdentity(app, scope.workspace_directory, scope.execution_host_id)) return true;
 			return false;
 		}
 	}
@@ -82,7 +83,7 @@ namespace uam
 				add(scope.value("providerId", ""), scope.value("workspaceDirectory", ""), scope.value("executionHostId", "local"));
 		for (const ChatSession& chat : app.chats)
 			if (!chat.imported_read_only && chat.temporary_parent_chat_id.empty())
-				add(chat.provider_id, paths::ResolveWorkspaceRootPath(app, chat).generic_string(), chat.execution_host_id);
+				add(chat.provider_id, paths::PortablePathString(paths::ResolveWorkspaceRootPath(app, chat)), chat.execution_host_id);
 		for (const ChatFolder& folder : app.folders)
 			add(app.settings.default_new_chat_provider_id, folder.directory, folder.execution_host_id);
 		const ChatDomainService domain;
@@ -128,7 +129,7 @@ namespace uam
 			if (host->transport == "ssh" && host->runner_status != "ready") { ++item; continue; }
 			std::error_code path_error;
 			if ((host->transport == "ssh" && !execution_hosts::IsAbsoluteRemotePath(host->platform, scope.workspace_directory)) ||
-			    (host->transport == "local" && !std::filesystem::is_directory(scope.workspace_directory, path_error)))
+			    (host->transport == "local" && !std::filesystem::is_directory(paths::PathFromUtf8(scope.workspace_directory), path_error)))
 			{
 				item = m_pending_scopes.erase(item);
 				continue;
@@ -157,7 +158,12 @@ namespace uam
 			// startup scope is attempted once; an already pending explicit refresh owns it.
 			if (!app.provider_model_catalog->BeginDiscovery(scope.provider_id, scope.workspace_directory, scope.execution_host_id)) continue;
 			std::string error;
-			if (m_launch(app, scope.provider_id, scope.workspace_directory, scope.execution_host_id, &error))
+			bool launched = false;
+			// One unusable saved workspace fails its own scope, never the whole startup poll.
+			try { launched = m_launch(app, scope.provider_id, scope.workspace_directory, scope.execution_host_id, &error); }
+			catch (const std::exception& exception) { error = std::string("unexpected error: ") + exception.what(); }
+			catch (...) { error = "unexpected error."; }
+			if (launched)
 			{
 				app.provider_model_catalog->MarkDiscoveryLaunchStarted(scope.provider_id, scope.workspace_directory, scope.execution_host_id);
 				++active;
@@ -178,7 +184,7 @@ namespace uam
 			const std::string host_id = HostId(selected->execution_host_id);
 			const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, host_id);
 			const ProviderProfile* provider = ProviderProfileStore::FindById(app.provider_profiles, provider_ids::kAntigravityCli);
-			const std::string workspace = paths::ResolveWorkspaceRootPath(app, *selected).generic_string();
+			const std::string workspace = paths::PortablePathString(paths::ResolveWorkspaceRootPath(app, *selected));
 			std::string model = selected->model_id;
 			if (model.empty())
 				for (const auto& entry : app.provider_model_catalog->GetCachedProviderModels(selected->provider_id, workspace, host_id))
