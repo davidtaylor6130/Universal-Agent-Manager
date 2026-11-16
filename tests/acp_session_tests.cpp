@@ -4643,6 +4643,56 @@ UAM_TEST(FailedRemoteStopPreservesTheRecoverableTurn)
 	UAM_ASSERT(persisted->remote_stop_cleanup_pending);
 }
 
+UAM_TEST(IdleRemoteReattachWithMissingProcessStartsFreshInsteadOfExhausting)
+{
+	// A box reboot: two reattaches fail on transport (broken pipe, SSH timeout), then the helper answers that the
+	// process is gone. The idle chat must relaunch fresh, not report reconnect exhausted and hold its input.
+	TempDir temp("uam-acp-idle-missing-remote");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ChatSession chat;
+	chat.id = "idle-missing-remote";
+	chat.execution_host_id = "ssh-test";
+	chat.remote_process_exists = true;
+	app.chats.push_back(chat);
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = chat.id;
+	session->running = true;
+	session->initialized = true;
+	session->session_ready = true;
+	session->lifecycle_state = "ready";
+	session->recovering_remote_process = true;
+	session->reconnect_attempts = 2;
+	session->last_runtime_activity_time_s = uam::GetAppTimeSeconds();
+	std::string error;
+#if defined(_WIN32)
+	const std::vector<std::string> argv = {"cmd.exe", "/d", "/s", "/c", "echo The remote process does not exist. 1>&2 & exit /b 70"};
+#else
+	const std::vector<std::string> argv = {"/bin/sh", "-c", "printf 'The remote process does not exist.\\n' >&2; exit 70"};
+#endif
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*session, temp.root, argv, &error));
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	for (int attempt = 0; attempt < 300 && raw_session->running; ++attempt)
+	{
+		(void)uam::PollAllAcpSessions(app);
+		if (raw_session->running) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT(!raw_session->running);
+	UAM_ASSERT(!std::ranges::any_of(raw_session->diagnostics, [](const uam::AcpDiagnosticEntryState& diagnostic)
+	{
+		return diagnostic.reason == "exhausted";
+	}));
+	UAM_ASSERT(raw_session->lifecycle_state != "error");
+	UAM_ASSERT(raw_session->reconnect_pending);
+	UAM_ASSERT_EQ(raw_session->reconnect_attempts, 0);
+	UAM_ASSERT(!raw_session->recovering_remote_process);
+	UAM_ASSERT(!raw_session->queue_held);
+	UAM_ASSERT(!app.chats.front().remote_process_exists);
+}
+
 UAM_TEST(RemoteStopReportsARecoveryPersistenceFailureAndSchedulesARetry)
 {
 	TempDir temp("uam-acp-stop-save-failure");
