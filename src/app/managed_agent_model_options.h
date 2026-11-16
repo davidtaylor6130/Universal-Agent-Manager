@@ -18,7 +18,7 @@ namespace uam
 		if (app.provider_model_catalog)
 		{
 			for (const auto& entry : app.provider_model_catalog->GetCachedProviderModels(provider_id,
-			         paths::ResolveWorkspaceRootPath(app, child).generic_string(), child.execution_host_id))
+			         paths::PortablePathString(paths::ResolveWorkspaceRootPath(app, child)), child.execution_host_id))
 			{
 				const auto model = acp_models::ParseAcpModelState(entry);
 				if (!model || (model_id.empty() ? !entry.value("isDefault", false) : model->id != model_id)) continue;

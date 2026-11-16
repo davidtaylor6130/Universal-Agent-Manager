@@ -720,7 +720,7 @@ namespace uam
 
 		std::string AcpWorkspaceDirectory(const AppState& app, const ChatSession& chat)
 		{
-			return uam::paths::ResolveWorkspaceRootPath(app, chat).generic_string();
+			return uam::paths::PortablePathString(uam::paths::ResolveWorkspaceRootPath(app, chat));
 		}
 
 		bool IsLocalCliCompatibilityCheckPending(const AppState& app, std::string_view provider_id)
@@ -5067,7 +5067,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		    execution_host_id != uam::execution_hosts::kLocalHostId) return false;
 		if (!IsLocalCliCompatibilityCheckPending(app, provider_id) || app.provider_model_catalog == nullptr) return false;
 		const std::string normalized_provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(provider_id);
-		const std::string workspace = uam::paths::NormalizeExistingPath(uam::paths::AbsolutePathNoThrow(workspace_directory)).generic_string();
+		const std::string workspace = uam::paths::PortablePathString(uam::paths::NormalizeExistingPath(uam::paths::AbsolutePathNoThrow(uam::paths::PathFromUtf8(workspace_directory))));
 		const std::string host = uam::strings::NonEmptyOrFallback(
 		    uam::strings::Trim(execution_host_id), std::string(uam::execution_hosts::kLocalHostId));
 		const auto existing = std::ranges::find_if(app.pending_model_discovery_retries, [&normalized_provider_id, &workspace, &host](const PendingModelDiscoveryRetry& retry) {

@@ -408,7 +408,7 @@ nlohmann::json ConfigOptionsForPersistentCache(const std::vector<AcpConfigOption
 
 std::string DiscoveryWorkspace(const AppState& app, const ChatSession& chat)
 {
-	return uam::paths::ResolveWorkspaceRootPath(app, chat).generic_string();
+	return uam::paths::PortablePathString(uam::paths::ResolveWorkspaceRootPath(app, chat));
 }
 
 void RememberDiscoveredModels(AppState& app, AcpSessionState& session, const ChatSession& chat)

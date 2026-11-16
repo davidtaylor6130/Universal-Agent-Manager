@@ -2655,7 +2655,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	{
 		session.model_catalog_scope_key = app.provider_model_catalog == nullptr ? std::string{} :
 		    app.provider_model_catalog->CaptureScopeKey(session.provider_id,
-		        uam::paths::ResolveWorkspaceRootPath(app, chat).generic_string(), chat.execution_host_id);
+		        uam::paths::PortablePathString(uam::paths::ResolveWorkspaceRootPath(app, chat)), chat.execution_host_id);
 	}
 	session.protocol_kind = ProviderStructuredProtocolOrDefault(provider);
 	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(session.provider_id);

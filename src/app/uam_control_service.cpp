@@ -729,7 +729,7 @@ namespace uam
 			nlohmann::json targets = nlohmann::json::array();
 			const std::string host_id = strings::NonEmptyOrFallback(chat.execution_host_id, "local");
 			const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, host_id);
-			const std::string workspace = paths::ResolveWorkspaceRootPath(app, chat).generic_string();
+			const std::string workspace = paths::PortablePathString(paths::ResolveWorkspaceRootPath(app, chat));
 			const std::string parent_provider = provider_ids::NormalizeCliProviderAliasOrSelf(chat.provider_id);
 			std::set<std::string> seen;
 			for (const ProviderProfile& profile : app.provider_profiles)
@@ -1197,7 +1197,7 @@ namespace uam
 			if (user.role != MessageRole::User || user.acp_prompt_not_sent || user.created_at.empty() ||
 			    user.content.empty() || !SafeText(user.content, 1024U * 1024U)) return false;
 			task = user.content;
-			origin = nlohmann::json::array({app.data_root.generic_string(), chat->id, chat->created_at,
+			origin = nlohmann::json::array({paths::PortablePathString(app.data_root), chat->id, chat->created_at,
 			    root->id, root->created_at, root->provider_id, root->execution_host_id, root->workspace_directory,
 			    root->approval_mode, root->uam_control_enabled, root->uam_control_explicitly_disabled,
 			    chat->provider_id, chat->execution_host_id, chat->workspace_directory, chat->native_session_id,
