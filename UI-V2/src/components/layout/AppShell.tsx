@@ -49,7 +49,7 @@ import type { ButtonVariant } from '../ui'
 import { useUpdateMonitor, type UpdateMonitor } from '../../hooks/useUpdateMonitor'
 import { FILE_MANAGER_NAME, matchShortcut, shortcutLabel } from '../../utils/shortcuts'
 import { focusActiveInput } from '../../utils/activeInputFocus'
-import { APP_FAILURE_EVENT, reportAppFailure, type AppFailure } from '../../utils/appFailure'
+import { APP_FAILURE_EVENT, APP_NOTICE_RESOLVED_EVENT, reportAppFailure, type AppFailure } from '../../utils/appFailure'
 import { reportPullRequestWatchNotices } from '../../utils/prWatchNotices'
 import { useNotificationClock, useNotificationTimes } from '../../hooks/useNotificationTimes'
 import { notificationTimeGroup } from '../../utils/notificationTime'
@@ -71,7 +71,7 @@ const MemoryScanModal = lazy(() => import('../settings/MemoryScanModal').then(({
 const MarkdownStoreModal = lazy(() => import('../settings/MarkdownStoreModal').then(({ MarkdownStoreModal }) => ({ default: MarkdownStoreModal })))
 
 /** `detail` is not shown in the toast; it joins the message in the Copy message text. */
-type TransientAlert = { id: string; tone: 'error' | 'info' | 'success'; message: string; detail?: string; actionLabel: string; action: 'notifications' | 'updates' }
+type TransientAlert = { id: string; tone: 'error' | 'info' | 'success' | 'warning'; message: string; detail?: string; actionLabel: string; action: 'notifications' | 'updates' }
 /** A stacked alert; identical repeats raise `count` instead of adding a second toast, and `leaving` plays its exit. */
 type StackedAlert = TransientAlert & { count: number; leaving?: boolean }
 
@@ -150,7 +150,7 @@ function TransientAlertItem({ alert, visible, collapsed, hovered, onHover, onAct
         {alert.message}
         {alert.count > 1 && <span data-testid="transient-alert-count" className="ml-1.5 tabular-nums" style={{ color: 'var(--text-muted)' }} aria-label={`repeated ${alert.count} times`}>×{alert.count}</span>}
       </span>
-      {(alert.tone === 'error' || alert.detail) && <CopyTextButton text={copyText} label="Copy message" title="Copy message" />}
+      {(alert.tone === 'error' || alert.tone === 'warning' || alert.detail) && <CopyTextButton text={copyText} label="Copy message" title="Copy message" />}
       <Button className="shrink-0" variant="ghost" size="sm" onClick={() => finish(() => { onAction(alert.action); onDismiss(alert.id) })}>{alert.actionLabel}</Button>
       <IconButton className="shrink-0" icon={<X size={13} />} size="sm" label="Dismiss alert" onClick={() => finish(() => onDismiss(alert.id))} />
       {!alert.leaving && <span key={`${alert.id}:${alert.count}`} aria-hidden className="uam-transient-alert__countdown" style={{ animationDuration: `${ALERT_EXPIRY_MS}ms`, animationPlayState: held ? 'paused' : 'running' }} />}
@@ -555,7 +555,7 @@ function NotificationsPanel({
       detail: shellActionNotification,
     }] : []),
     ...failures.map((failure): Notification => failure.tone
-      ? { id: failure.id, title: failure.message, detail: '', notice: failure.tone }
+      ? { id: failure.id, title: failure.message, detail: failure.detail, warning: failure.tone === 'warning', notice: failure.tone === 'warning' ? undefined : failure.tone, actions: failure.actions }
       : { id: failure.id, title: 'Change not saved', detail: failure.detail, failure }),
     ...remoteNotifications,
     ...(updates.length > 0 ? [{
@@ -884,13 +884,33 @@ export function AppShell() {
   }, [])
 
   useEffect(() => {
+    const retainedNoticeIds = new Set<string>()
+    const onResolved = (event: Event) => {
+      const id = (event as CustomEvent<string>).detail
+      const active = document.activeElement
+      const row = active instanceof HTMLElement ? active.closest('.uam-np-row') : null
+      if (row?.querySelector('[data-np-title]')?.getAttribute('data-np-title') === id) {
+        document.querySelector<HTMLElement>('[data-notifications-heading]')?.focus()
+      } else if (active instanceof HTMLElement && active.closest('[data-alert-id]')?.getAttribute('data-alert-id') === id) {
+        document.querySelector<HTMLElement>('[data-notification-bell]')?.focus()
+      }
+      retainedNoticeIds.delete(id)
+      setAppFailures(history => history.filter(item => item.id !== id))
+      setTransientAlerts(stack => stack.filter(item => item.id !== id))
+    }
     const onFailure = (event: Event) => {
       const failure = (event as CustomEvent<AppFailure>).detail
-      setAppFailures((history) => [...history, failure])
-      showTransientAlert({ id: failure.id, tone: failure.tone ?? 'error', message: failure.message, detail: failure.detail, actionLabel: 'View in notifications', action: 'notifications' })
+      const existing = retainedNoticeIds.has(failure.id)
+      retainedNoticeIds.add(failure.id)
+      setAppFailures((history) => {
+        const previous = history.find(item => item.id === failure.id)
+        return previous ? history.map(item => item.id === failure.id ? { ...failure, time: previous.time } : item) : [...history, failure]
+      })
+      if (!existing) showTransientAlert({ id: failure.id, tone: failure.tone ?? 'error', message: failure.message, detail: failure.detail, actionLabel: 'View in notifications', action: 'notifications' })
     }
     window.addEventListener(APP_FAILURE_EVENT, onFailure)
-    return () => window.removeEventListener(APP_FAILURE_EVENT, onFailure)
+    window.addEventListener(APP_NOTICE_RESOLVED_EVENT, onResolved)
+    return () => { window.removeEventListener(APP_FAILURE_EVENT, onFailure); window.removeEventListener(APP_NOTICE_RESOLVED_EVENT, onResolved) }
   }, [showTransientAlert])
 
   // Pull request watch news goes to the same panel; declared after the listener above so the first notices are heard.

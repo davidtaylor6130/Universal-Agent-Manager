@@ -3,7 +3,7 @@ import { AutomationStartQuestion } from '../chat/AutomationStartQuestion'
 import { LinkedPullRequests, WatchPullRequestDialog } from '../chat/LinkedPullRequests'
 import type { AcpPromptPresentationObserver } from '../../store/storeTypes'
 import { subagentParentFor, subscribeSubagentNavigation, subagentNavigationRevision } from '../../utils/subagentNavigation'
-import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
+import { reportAppFailure, reportAppNotice, resolveAppNotice } from '../../utils/appFailure'
 import type { AcpBinding, AcpQueuedPrompt, AcpTurnEvent, ManualCompactionAvailability, ProviderSwitchOverride } from '../../store/cpp/types'
 import { attachmentsEquivalent } from '../../store/cpp/reconcile'
 import { MAX_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS, messageAttachments, sanitizeManualCompaction, sanitizeNativeInputId, sanitizeOriginRequestId, sanitizeManagedOriginRunId } from '../../store/cpp/sanitizers'
@@ -33,7 +33,7 @@ import { createPortal } from 'react-dom'
 import { useShallow } from 'zustand/react/shallow'
 import type { ComputerUseActionResult, Session } from '../../types/session'
 import { useAppStore, type ChatAttachmentInput, type DictationPushMessage, type VcsChangedFile, type VcsCommitStatus, type UamAgentCycleShortcut, type UamAgentSummary } from '../../store/useAppStore'
-import type { Attachment, Message } from '../../types/message'
+import type { Attachment, Message, MessageBranchWitness } from '../../types/message'
 import type { Provider } from '../../types/provider'
 import type { Goal } from '../../types/goal'
 import { RemoteDirectoryBrowser } from '../sidebar/RemoteDirectoryBrowser'
@@ -55,7 +55,7 @@ import { ChatBranchPicker } from '../chat/ChatBranchPicker'
 import { composerWorkspaceName } from '../../utils/workspacePresentation'
 import { AlertTriangle, ArrowDown, AtSign, CircleAlert, FolderGit2, CornerUpLeft, GitBranch, Brain, BookOpen, ChevronRight, CornerUpRight, Cpu, Eye, FileText, LoaderCircle, MessageSquare, MessageSquareDashed, MousePointer2, Paperclip, Pencil, Shield, Square, Target, X } from 'lucide-react'
 import { MEMORY_LEVEL_OPTIONS, type MemoryLevel } from '../../types/memory'
-import { Button, ConfirmDialog, IconButton, Overlay, Tooltip, motionAllowed, scaledMs, usePresence } from '../ui'
+import { Button, ConfirmDialog, IconButton, Overlay, Reveal, Tooltip, motionAllowed, scaledMs, usePresence } from '../ui'
 import { messageMotionPhase, type MessageMotionPhase } from '../chat/messageMotion'
 import '../chat/SubagentDisclosure.css'
 import { isCompanionContext, isCefContext, sendToCEF, createRequestId } from '../../ipc/cefBridge'
@@ -497,7 +497,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const [editingMessageIndex, setEditingMessageIndex] = useState<number | null>(null)
   const [editingMessageText, setEditingMessageText] = useState('')
   const [editingMessageAttachments, setEditingMessageAttachments] = useState<Attachment[]>([])
-  const [editingMessageSource, setEditingMessageSource] = useState<{ kind: 'branch'; hadMarkdownStoreAttachments?: boolean } | { kind: 'unsent'; message: Message }>({ kind: 'branch' })
+  const [editingMessageSource, setEditingMessageSource] = useState<{ kind: 'branch'; hadMarkdownStoreAttachments?: boolean; recovered?: { message: Message; owner: Session; witness: MessageBranchWitness } } | { kind: 'unsent'; message: Message; owner: Session }>({ kind: 'branch' })
   const unsentEditInFlightRef = useRef<number | null>(null)
   const messageBranchGenerationRef = useRef(0)
   const [branchingMessageIndex, setBranchingMessageIndex] = useState<number | null>(null)
@@ -1826,13 +1826,14 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     // While a turn runs, Send follows the saved active-turn preference unless the alternate action overrides it.
     const steerNow = steerOverride ?? (Boolean(providerAcp?.processing) && !providerAcp?.computePoolWait && useAppStore.getState().steerActiveTurnOnSend)
     if (editingMessageIndex !== null) {
+      if (staleUnsentEditor) return
       if (branchingMessageIndex === null && canChangeProvider && (editingMessageText.trim() || editingMessageAttachments.length > 0)) {
         if (editingMessageSource.kind === 'unsent') await saveEditedUnsentMessage()
         else {
           const nativeIds = editingMessageAttachments.filter((attachment) => attachment.type !== 'markdown-store').map((attachment) => attachment.id)
           const skillFiles = editingMessageAttachments.filter((attachment) => attachment.type === 'markdown-store').map((attachment) => attachment.id)
           await createMessageBranch(editingMessageIndex, editingMessageText, nativeIds,
-            editingMessageSource.hadMarkdownStoreAttachments || skillFiles.length > 0 ? skillFiles : undefined)
+            editingMessageSource.hadMarkdownStoreAttachments || skillFiles.length > 0 ? skillFiles : undefined, editingMessageSource.recovered?.witness)
         }
       }
       return
@@ -2219,7 +2220,48 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const canManageUnsent = !acp?.processing && !(acp?.queuedPrompts?.length) && !(acp?.pendingDirectPrompts?.length) && !acp?.pendingPermission && !acp?.pendingUserInput && !cli?.processing && cli?.turnState !== 'busy'
   const canChangeProvider = canManageUnsent && !(acp?.unsentDirectPrompts?.length)
   const providerLockReason = providerSwitchLockReason(acp, cli)
-  const canSaveEdit = branchingMessageIndex === null && canChangeProvider && (editingMessageText.trim().length > 0 || editingMessageAttachments.length > 0)
+  const editedRow = editingMessageIndex === null ? undefined : messages[editingMessageIndex - historyStartIndex]
+  const anchoredEdit = editingMessageSource.kind === 'unsent' ? editingMessageSource : editingMessageSource.recovered
+  const editOwnerMatches = !anchoredEdit || (anchoredEdit.owner.id === session.id &&
+    anchoredEdit.owner.providerId === session.providerId && anchoredEdit.owner.executionHostId === session.executionHostId &&
+    anchoredEdit.owner.createdAt.getTime() === session.createdAt.getTime())
+  const staleRecoveredBranch = editingMessageSource.kind === 'branch' && editingMessageSource.recovered &&
+    (!editOwnerMatches || editedRow !== editingMessageSource.recovered.message || session.messagesDigest !== editingMessageSource.recovered.witness.messagesDigest)
+  const staleUnsentEditor = editingMessageIndex !== null && (Boolean(staleRecoveredBranch) || (editingMessageSource.kind === 'unsent' &&
+    (!editOwnerMatches || editedRow !== editingMessageSource.message || !acp?.editableUnsentMessageIndices?.includes(editingMessageIndex) ||
+      !acp?.unsentMessageIndices?.includes(editingMessageIndex))))
+  // Rebinding requires the original authored identity and context, never matching text/position alone.
+  const refreshedEditMatches = editOwnerMatches && anchoredEdit && editedRow?.role === 'user' &&
+    Boolean(editedRow.nativeInputId) && editedRow.nativeInputId === anchoredEdit.message.nativeInputId &&
+    editedRow.nativeMessageIndex === editingMessageIndex && editedRow.content === anchoredEdit.message.content &&
+    editedRow.providerId === anchoredEdit.message.providerId && !editedRow.acpPromptDiscarded &&
+    attachmentsEquivalent(editedRow.attachments ?? [], anchoredEdit.message.attachments ?? [])
+  const canRebindUnsentEdit = staleUnsentEditor && refreshedEditMatches && canChangeProvider && !session.importedReadOnly &&
+    editingMessageIndex !== null && acp?.editableUnsentMessageIndices?.includes(editingMessageIndex) &&
+    acp?.unsentMessageIndices?.includes(editingMessageIndex) && editedRow?.acpPromptNotSent
+  const canBranchRefreshedEdit = staleUnsentEditor && refreshedEditMatches && canChangeProvider && !session.importedReadOnly &&
+    editingMessageIndex !== null && session.messagesDigest?.length === 16 && !editedRow?.acpPromptNotSent && !acp?.unsentMessageIndices?.includes(editingMessageIndex)
+  const editNoticeId = useRef(`message-edit-paused-${session.id}-${Math.random().toString(36).slice(2)}`).current
+  const editRecoveryAction = useRef<(() => void) | null>(null)
+  editRecoveryAction.current = canRebindUnsentEdit ? () => {
+    if (editedRow) { setEditingMessageSource({ kind: 'unsent', message: editedRow, owner: session }); setMessageBranchError('') }
+  } : canBranchRefreshedEdit ? () => {
+    if (!editedRow?.nativeInputId || !session.messagesDigest || !session.providerId) return
+    setEditingMessageSource({ kind: 'branch', hadMarkdownStoreAttachments: Boolean(editedRow.attachments?.some(attachment => attachment.type === 'markdown-store')),
+      recovered: { message: editedRow, owner: session, witness: { messagesDigest: session.messagesDigest,
+        nativeInputId: editedRow.nativeInputId, providerId: session.providerId, executionHostId: session.executionHostId ?? 'local' } } })
+    setMessageBranchError('')
+  } : null
+  useEffect(() => {
+    if (!staleUnsentEditor || branchingMessageIndex !== null) { resolveAppNotice(editNoticeId); return }
+    reportAppNotice('Message changed. Editing paused. Your edit and selected context are kept.', 'warning', {
+      id: editNoticeId,
+      detail: canBranchRefreshedEdit ? 'Saving in a new branch preserves the original chat.' : 'Wait for recovery, or cancel to return to your follow-up draft.',
+      actions: canRebindUnsentEdit || canBranchRefreshedEdit ? [{ label: canRebindUnsentEdit ? 'Use refreshed message' : 'Edit in a new branch', run: () => { editRecoveryAction.current?.() } }] : [],
+    })
+  }, [staleUnsentEditor, branchingMessageIndex, canRebindUnsentEdit, canBranchRefreshedEdit, editNoticeId])
+  useEffect(() => () => { editRecoveryAction.current = null; resolveAppNotice(editNoticeId) }, [editNoticeId])
+  const canSaveEdit = !staleUnsentEditor && branchingMessageIndex === null && canChangeProvider && (editingMessageText.trim().length > 0 || editingMessageAttachments.length > 0)
   const unsentActionsDisabled = session.importedReadOnly || !canManageUnsent || branchingMessageIndex !== null || editingMessageIndex !== null
   const unsentReceiptDeleteDisabled = session.importedReadOnly || !canDeleteUnsentReceipt || branchingMessageIndex !== null || editingMessageIndex !== null
   const removeUnsent = async (index: number, receipt?: { id: string; revision: number }) => {
@@ -2349,7 +2391,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       }
     }
   }
-  const createMessageBranch = useCallback(async (messageIndex: number, content?: string, retainedAttachmentIds?: string[], retainedMarkdownStoreFiles?: string[]) => {
+  const createMessageBranch = useCallback(async (messageIndex: number, content?: string, retainedAttachmentIds?: string[], retainedMarkdownStoreFiles?: string[], sourceWitness?: MessageBranchWitness) => {
     const generation = ++messageBranchGenerationRef.current
     const ownsFeedback = () => mountedRef.current && currentSessionIdRef.current === session.id && messageBranchGenerationRef.current === generation
     setBranchingMessageIndex(messageIndex)
@@ -2369,7 +2411,9 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     let branchId: string | null = null
     let branchError = 'Could not create the message branch.'
     try {
-      branchId = retainedMarkdownStoreFiles !== undefined
+      branchId = sourceWitness !== undefined
+        ? await branchFromMessage(session.id, messageIndex, content, retainedAttachmentIds, retainedMarkdownStoreFiles, sourceWitness)
+        : retainedMarkdownStoreFiles !== undefined
         ? await branchFromMessage(session.id, messageIndex, content, retainedAttachmentIds, retainedMarkdownStoreFiles)
         : retainedAttachmentIds === undefined
           ? await branchFromMessage(session.id, messageIndex, content)
@@ -2404,7 +2448,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     messageBranchGenerationRef.current += 1
     setBranchingMessageIndex(null)
     setEditingMessageIndex(messageIndex)
-    setEditingMessageSource({ kind: 'unsent', message })
+    setEditingMessageSource({ kind: 'unsent', message, owner: session })
     setEditingMessageText(content)
     setEditingMessageAttachments([...(message.attachments ?? [])])
     setMessageBranchError('')
@@ -3471,7 +3515,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                           onEdit={() => beginEditingUnsentMessage(index + historyStartIndex, message.content)}
                           onRetry={unsentByLoadedIndex.get(index)!.retryable ? () => unsentActionsRef.current.retryUnsent(index + historyStartIndex) : undefined}
                           onRemove={() => unsentActionsRef.current.removeUnsent(index + historyStartIndex)}
-                          editDisabled={unsentActionsDisabled} retryDisabled={unsentActionsDisabled} removeDisabled={unsentActionsDisabled} />
+                          editDisabled={unsentActionsDisabled || !acp?.editableUnsentMessageIndices?.includes(index + historyStartIndex)}
+                          editDisabledReason={!acp?.editableUnsentMessageIndices?.includes(index + historyStartIndex) ? "This input cannot currently be edited locally. Check the latest chat history before editing." : undefined} retryDisabled={unsentActionsDisabled} removeDisabled={unsentActionsDisabled} />
                           : nativeDirectReceipt && !nativeDirectReceipt.sending && !isCompanionContext() ? <OutgoingRecoveryActions
                             retryUnavailable={!receiptRetryAvailable(nativeDirectReceipt.prompt)}
                             onRetry={receiptRetryAvailable(nativeDirectReceipt.prompt) ? () => unsentActionsRef.current.retryUnsentReceipt({ id: nativeDirectReceipt.prompt.id!, revision: nativeDirectReceipt.prompt.revision! }) : undefined}
@@ -4431,6 +4476,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               canSend={questionInComposer ? questionSubmitState === 'ready' : editingMessageIndex !== null ? canSaveEdit : canSend}
               editing={editingMessageIndex !== null}
               sendLabel={questionInComposer ? 'Submit answers' : undefined}
+              sendTitle={staleUnsentEditor ? 'Save edit paused: open Notifications for recovery, or cancel the edit.' : undefined}
               holdSend={questionInComposer}
               runtimeStatusLabel={statusLabel(providerRuntime)}
               runtimeStatusColor={statusColor(providerRuntime)}
