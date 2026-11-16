@@ -3303,6 +3303,11 @@ namespace uam
 			if (error_out != nullptr) *error_out = "Imported transcripts are read-only. Create a new chat in a workspace to delegate work.";
 			return false;
 		}
+		if (app.worktree_operation_chat_ids.contains(root_chat->id))
+		{
+			if (error_out) *error_out = "Wait for the parent chat's workspace operation to finish before delegating work.";
+			return false;
+		}
 		const std::size_t queued_count = std::ranges::count(app.agent_runs, std::string("queued"), &AgentRun::status);
 		if (queued_count >= kMaxQueuedAgents)
 		{
