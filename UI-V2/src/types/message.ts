@@ -1,3 +1,11 @@
+/** Native admission fence for an explicitly recovered input branch. */
+export interface MessageBranchWitness {
+  messagesDigest: string
+  nativeInputId: string
+  providerId: string
+  executionHostId: string
+}
+
 export type Role = 'user' | 'assistant' | 'system'
 
 export type AttachmentSource = 'legacy_path' | 'native_inline_pending' | 'owned_native_asset' | 'provider_uri'

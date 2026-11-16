@@ -16,6 +16,7 @@
 namespace uam
 {
 	struct ManagedAgentTranscriptReadIdentity;
+	struct ManagedWorktreeFileWitness;
 	/// Immutable server-held authority. Never accept its contents from the renderer.
 	class ManagedSubagentControlScope
 	{
@@ -106,9 +107,35 @@ namespace uam
 		std::optional<ChatSession> history_transcript;
 	};
 
+	/// Server-only cleanup authority; never serialized to or supplied by the renderer.
+	class ManagedWorktreeFamily
+	{
+		friend class ManagedSubagentControlService;
+		ManagedSubagentSnapshot ownership;
+		std::filesystem::path data_root;
+		std::vector<std::pair<std::string, std::string>> identities;
+		mutable std::unordered_map<std::string, std::string> revisions;
+		mutable std::unordered_map<std::string, std::shared_ptr<const ManagedWorktreeFileWitness>> files;
+		mutable std::optional<std::string> parent_summary_revision;
+		mutable std::weak_ptr<AppState::GitPortRequest> operation;
+		mutable bool operation_bound = false;
+		std::vector<ChatSession> unrelated_references;
+	  public:
+		std::vector<std::string> ChatIds() const;
+		const std::vector<ChatSession>& UnrelatedReferences() const { return unrelated_references; }
+	};
+
 	class ManagedSubagentControlService
 	{
 	  public:
+		static std::shared_ptr<const ManagedWorktreeFamily> CaptureWorktreeFamily(const AppState&, const std::string&, std::string*);
+		/// Worker-only validation, repeated immediately before cleanup publication/removal.
+		static bool BindWorktreeFamilyParentRevision(const ManagedWorktreeFamily&, const std::string&, const std::string&, std::string*);
+		static void BindWorktreeFamilyOperation(const ManagedWorktreeFamily&, const std::shared_ptr<AppState::GitPortRequest>&);
+		static bool WorktreeFamilyOperationCurrent(const ManagedWorktreeFamily&, std::string*);
+		static bool ValidateWorktreeFamily(const ManagedWorktreeFamily&, std::string*);
+		static bool PublishWorktreeCleanup(const ManagedWorktreeFamily&, const ChatSession&, std::string*);
+		static bool WorktreeFamilyContains(const ManagedWorktreeFamily&, const ChatSession&);
 		/// Once per data root in existing startup/sidebar loading, including empty/error results.
 		static void LoadRestartInspection(AppState& app);
 		/// Pure display hints; does not inspect disk or create controls/owners.

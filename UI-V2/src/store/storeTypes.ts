@@ -6,7 +6,7 @@ import type { ChatSearchHit, ChatSearchNavigation } from '../types/chatSearch'
 import type { OrganizationChange } from '../types/organization'
 import type { CustomIconInput, CustomIconTarget } from '../types/customIcon'
 import type { ComputerUseActionResult, ComputerUseBackend, ComputerUseControlState, ExecutionHost, RemoteDirectoryBrowseResult, Session, Folder, ViewMode, WorkspaceFolderRecoveryPreview } from '../types/session'
-import type { Message, Attachment } from '../types/message'
+import type { Message, Attachment, MessageBranchWitness } from '../types/message'
 import type { Provider } from '../types/provider'
 import type { MemoryEntry, MemoryEntryDraft, MemoryLevel, MemoryScope, MemoryScanCandidate } from '../types/memory'
 import type { MarkdownStoreConflictAction, MarkdownStoreDraft, MarkdownStoreEntry, MarkdownStoreImportCandidate, MarkdownStoreImportResult } from '../types/markdownStore'
@@ -263,7 +263,7 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   evictWarmChats: () => void
   unloadSessionMessages: (id: string) => void
   addSession: (name: string, folderId: string | null, providerId?: string, modelId?: string, reasoningEffort?: string, viewMode?: ViewMode, executionHostId?: string, workspaceDirectory?: string, routingMode?: 'explicit' | 'automatic', options?: CreateSessionOptions) => Promise<boolean>
-  branchFromMessage: (id: string, messageIndex: number, content?: string, retainedAttachmentIds?: string[], retainedMarkdownStoreFiles?: string[]) => Promise<string | null>
+  branchFromMessage: (id: string, messageIndex: number, content?: string, retainedAttachmentIds?: string[], retainedMarkdownStoreFiles?: string[], sourceWitness?: MessageBranchWitness) => Promise<string | null>
   retryFailedMessage: (id: string, messageIndex: number) => Promise<{ ok: boolean; error?: string }>
   discardUnsentMessage: (id: string, messageIndex: number, expectedMessageId: string) => Promise<boolean>
   editUnsentMessage: (id: string, messageIndex: number, expectedMessage: Message, text: string, retainedAttachments: Attachment[]) => Promise<{ ok: boolean; error?: string }>

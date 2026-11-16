@@ -5970,6 +5970,17 @@ std::optional<ChatSession> ChatRepository::LoadLocalChat(const std::filesystem::
 	return std::move(loaded.chat);
 }
 
+std::optional<ChatSession> ChatRepository::LoadLocalChatPrimaryReadOnly(const fs::path& data_root, std::string_view chat_id, bool include_messages)
+{
+	if (!uam::chat_ids::IsSafeStorageChatId(chat_id)) return std::nullopt;
+	const auto path = AppPaths::UamChatFilePath(data_root, chat_id);
+	if (uam::paths::IsLinkOrReparsePointNoThrow(path) || uam::paths::IsLinkOrReparsePointNoThrow(path.parent_path())) return std::nullopt;
+	auto loaded = ParseLocalChatFile(path, include_messages, 0, false, kMaxChatJsonBytes);
+	if (!loaded.chat || loaded.chat->id != chat_id) return std::nullopt;
+	if (include_messages) ApplySummaryOpenedAtToFullChat(path, *loaded.chat, kMaxChatJsonBytes);
+	return std::move(loaded.chat);
+}
+
 std::optional<ChatSession> ChatRepository::LoadLocalChatBounded(const fs::path& data_root,
     std::string_view chat_id, std::size_t max_bytes)
 {

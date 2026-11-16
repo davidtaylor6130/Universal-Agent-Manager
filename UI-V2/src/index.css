@@ -384,7 +384,7 @@
 }
 .uam-overlay:not([data-state="closed"]) { animation: uam-backdrop-in var(--dur-enter) var(--ease-out-soft); }
 .uam-overlay[data-state="closed"] { animation: uam-backdrop-out var(--dur-exit) var(--ease) forwards; pointer-events: none; }
-.uam-overlay:not([data-state="closed"]) > * { animation: uam-dialog-in var(--dur-enter) var(--ease-spring) backwards; }
+.uam-overlay:not([data-state="closed"]) > * { animation: uam-dialog-in var(--dur-enter) var(--ease-out-soft) backwards; }
 .uam-overlay[data-state="closed"] > * { animation: uam-dialog-out var(--dur-exit) var(--ease) forwards; }
 
 @keyframes uam-backdrop-in { from { opacity: 0; } }
@@ -394,22 +394,6 @@
 }
 @keyframes uam-dialog-out {
   to { opacity: 0; transform: translateY(6px) scale(0.98); }
-}
-
-/* Menus grow out of whatever opened them. */
-[data-viewport-menu] { animation: uam-menu-in var(--dur-base) var(--ease-out-soft) backwards; }
-/* ViewportMenu leaves an inert copy behind on close so every menu shrinks back faster than it opened. */
-[data-viewport-menu][data-state="closed"] { animation: uam-menu-out var(--dur-fast) var(--ease) forwards; pointer-events: none; }
-[data-viewport-menu][data-menu-side="bottom"] { transform-origin: top center; }
-[data-viewport-menu][data-menu-side="top"] { transform-origin: bottom center; }
-[data-viewport-menu][data-menu-side="point"] { transform-origin: top left; }
-[data-viewport-menu][data-menu-side="left"] { transform-origin: center right; }
-[data-viewport-menu][data-menu-side="right"] { transform-origin: center left; }
-@keyframes uam-menu-in {
-  from { opacity: 0; transform: scale(0.95) translateY(-2px); }
-}
-@keyframes uam-menu-out {
-  to { opacity: 0; transform: scale(0.97); }
 }
 
 /* Native <details> open and close smoothly instead of snapping. */
@@ -1214,7 +1198,7 @@ summary,
 /* ── Resize Handle ────────────────────────────────────────── */
 [data-panel-resize-handle-id] {
   background: var(--border);
-  transition: background 0.15s;
+  transition: background var(--dur-fast) var(--ease);
   position: relative;
 }
 [data-panel-resize-handle-id]:hover,
@@ -1344,11 +1328,11 @@ summary,
   border-radius: 999px;
   border: 1.5px solid color-mix(in srgb, var(--text-3) 45%, transparent);
   border-top-color: var(--text);
-  animation: uam-status-spin 1s linear infinite;
+  animation: uam-status-spin calc(1000ms * var(--motion-scale, 1)) linear infinite;
 }
 
 .uam-working-ring {
-  animation: uam-status-spin 1s linear infinite;
+  animation: uam-status-spin calc(1000ms * var(--motion-scale, 1)) linear infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1356,7 +1340,7 @@ summary,
 }
 
 /* Reference capture in progress: the spinner turns while reading; the text alone carries the state without motion. */
-.uam-reference-pending__spinner { flex-shrink: 0; color: var(--text-3); animation: uam-status-spin 1s linear infinite; }
+.uam-reference-pending__spinner { flex-shrink: 0; color: var(--text-3); animation: uam-status-spin calc(1000ms * var(--motion-scale, 1)) linear infinite; }
 [data-motion="off"] .uam-reference-pending__spinner { animation: none; }
 @media (prefers-reduced-motion: reduce) {
   .uam-reference-pending__spinner { animation: none; }
@@ -1614,7 +1598,9 @@ summary,
 }
 .uam-btn--danger:hover:not(:disabled):not([aria-disabled="true"]) { background: color-mix(in srgb, var(--error) 18%, var(--surface)); }
 
-.uam-btn__spinner { opacity: 0.85; }
+.uam-btn__spinner { opacity: 0.85; animation: uam-status-spin calc(1000ms * var(--motion-scale, 1)) linear infinite; }
+/* Tailwind's loading spinners follow the same animation-speed preference as shared buttons. */
+.animate-spin { animation-duration: calc(1000ms * var(--motion-scale, 1)); }
 /* asLink: inline text link (same look as .uam-add-link) */
 .uam-btn--link {
   height: 26px;
@@ -1899,8 +1885,10 @@ summary,
   font-size: var(--fs-sm);
   line-height: 1.35;
   z-index: 2000;
-  animation: uam-tooltip-in var(--dur-fast) var(--ease);
+  transform-origin: var(--radix-tooltip-content-transform-origin);
+  animation: uam-tooltip-in var(--dur-base) var(--ease-out-soft);
 }
+.uam-tooltip[data-state="closed"] { animation: uam-tooltip-out var(--dur-fast) var(--ease) forwards; pointer-events: none; }
 .uam-tooltip__kbd {
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
@@ -1915,6 +1903,7 @@ summary,
   from { opacity: 0; transform: scale(0.96); }
   to   { opacity: 1; transform: scale(1); }
 }
+@keyframes uam-tooltip-out { to { opacity: 0; transform: scale(0.96); } }
 
 /* ── Card ───────────────────────────────────────────────────── */
 .uam-card {
@@ -2077,7 +2066,7 @@ summary,
   border: 1.5px solid var(--border-bright);
   background: transparent;
   color: var(--on-accent);
-  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease-spring);
+  transition: background var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease-out-soft);
 }
 button.uam-commit-check { cursor: pointer; }
 .uam-commit-check[aria-checked="true"],
@@ -2086,7 +2075,7 @@ button.uam-commit-check { cursor: pointer; }
   background: var(--accent);
   border-color: var(--accent);
 }
-.uam-commit-check svg { animation: uam-check-pop 180ms var(--ease-spring); }
+.uam-commit-check svg { animation: uam-check-pop var(--dur-base) var(--ease-out-soft); }
 @keyframes uam-check-pop { from { transform: scale(0.4); opacity: 0; } }
 .uam-commit-file {
   display: flex;
@@ -2256,7 +2245,7 @@ button.uam-commit-check { cursor: pointer; }
 .uam-form-dialog label { color: var(--text-2); font-weight: var(--fw-medium); }
 
 /* ── Composer "+" menu ──────────────────────────────────────── */
-.uam-composer-plus svg { transition: transform var(--dur-base) var(--ease-spring); }
+.uam-composer-plus svg { transition: transform var(--dur-base) var(--ease-out-soft); }
 .uam-composer-plus[aria-expanded="true"] svg { transform: rotate(45deg); }
 .uam-cmenu {
   display: flex;
@@ -2522,7 +2511,7 @@ button.uam-commit-check { cursor: pointer; }
 .uam-composer-goal-tab__objective { min-width: 0; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 @keyframes uam-copy-pop { 0% { transform: scale(.6); opacity: 0; } 60% { transform: scale(1.18); opacity: 1; } 100% { transform: scale(1); } }
-.uam-copy-pop { animation: uam-copy-pop 260ms var(--ease) both; }
+.uam-copy-pop { animation: uam-copy-pop var(--dur-enter) var(--ease) both; }
 @media (prefers-reduced-motion: reduce) { .uam-copy-pop { animation: none; } }
 /* UAM checkbox: one style for every native checkbox instead of the OS default. */
 input[type="checkbox"] {
@@ -2558,7 +2547,7 @@ input[type="checkbox"]:disabled { opacity: .45; cursor: not-allowed; }
 .uam-icon-cell { display: grid; place-items: center; width: 32px; height: 32px; border-radius: var(--r-md); transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease); }
 .uam-icon-cell:hover { background: var(--surface-high); }
 .uam-icon-cell:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
-.uam-icon-skeleton { border-radius: var(--r-md); background: linear-gradient(90deg, var(--surface-up) 0%, var(--surface-high) 50%, var(--surface-up) 100%); background-size: 200% 100%; animation: uam-icon-shimmer 1.2s ease-in-out infinite; }
+.uam-icon-skeleton { border-radius: var(--r-md); background: linear-gradient(90deg, var(--surface-up) 0%, var(--surface-high) 50%, var(--surface-up) 100%); background-size: 200% 100%; animation: uam-icon-shimmer calc(1200ms * var(--motion-scale, 1)) ease-in-out infinite; }
 @keyframes uam-icon-shimmer { to { background-position: -200% 0; } }
 @media (prefers-reduced-motion: reduce) { .uam-icon-skeleton { animation: none; } .uam-icon-cell { transition: none; } }
 
@@ -2594,7 +2583,7 @@ button:has(> svg.lucide-x):not(:disabled):not([aria-disabled="true"]):focus-visi
   background: linear-gradient(90deg, transparent 0%, color-mix(in srgb, var(--accent-dim) 12%, transparent) 20%, color-mix(in srgb, var(--accent-dim) 55%, transparent) 36%, var(--accent-dim) 50%, color-mix(in srgb, var(--accent-dim) 55%, transparent) 64%, color-mix(in srgb, var(--accent-dim) 12%, transparent) 80%, transparent 100%) 0 0 / 40% 100% no-repeat;
   -webkit-mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
   mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
-  animation: uam-progress-band 1.4s ease-in-out infinite;
+  animation: uam-progress-band calc(1400ms * var(--motion-scale, 1)) ease-in-out infinite;
 }
 @keyframes uam-progress-band {
   /* The band is 40% of the track, so -66.67% and 166.67% park it fully outside the left and right edges. */
@@ -2630,7 +2619,7 @@ button:has(> svg.lucide-x):not(:disabled):not([aria-disabled="true"]):focus-visi
   background: linear-gradient(90deg, transparent 0%, color-mix(in srgb, var(--text-3) 12%, transparent) 20%, color-mix(in srgb, var(--text-3) 25%, transparent) 36%, color-mix(in srgb, var(--text-3) 45%, transparent) 50%, color-mix(in srgb, var(--text-3) 25%, transparent) 64%, color-mix(in srgb, var(--text-3) 12%, transparent) 80%, transparent 100%) 0 0 / 40% 100% no-repeat;
   -webkit-mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
   mask-image: linear-gradient(90deg, transparent, #000 12%, #000 88%, transparent);
-  animation: uam-progress-band 1.4s ease-in-out infinite;
+  animation: uam-progress-band calc(1400ms * var(--motion-scale, 1)) ease-in-out infinite;
 }
 .uam-meter--lg { height: 10px; }
 .uam-meter__marker {

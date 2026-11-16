@@ -2,6 +2,7 @@
 #include "app/managed_parent_continuation_service.h"
 #include "app/execution_routing_integration.h"
 #include "app/agent_run_scheduler.h"
+#include "app/managed_agent_model_options.h"
 #include "app/managed_subagent_followup_service.h"
 
 #include "app/agent_definition_service.h"
@@ -3255,11 +3256,33 @@ namespace uam
 		return settled; // False is quiesced/uncertain, never a persisted terminal claim.
 	}
 
+	bool AgentRunScheduler::ValidateRequestedReasoningEffort(const AppState& app, const ChatSession& chat,
+	    const AcpSessionState* session, std::string* error_out)
+	{
+		const auto* run = FindRun(app, chat.agent_run_id);
+		if (!run || !run->reasoning_effort_override) return true;
+		const std::string& requested = *run->reasoning_effort_override;
+		bool valid = chat.provider_id == run->provider_id && chat.model_id == run->model_id && chat.reasoning_effort == requested;
+		if (valid && !requested.empty())
+		{
+			const auto& runtime = ProviderRuntimeRegistry::ResolveById(chat.provider_id);
+			if (session && session->session_ready && !runtime.ModelOptionsRequireRestart())
+			{
+				const auto model = std::ranges::find(session->available_models, chat.model_id, &AcpModelState::id);
+				valid = model != session->available_models.end() && ranges::Contains(model->supported_reasoning_efforts, requested);
+			}
+			else valid = ranges::Contains(ManagedAgentModelOptions(app, chat, chat.provider_id, chat.model_id).supported_reasoning_efforts, requested);
+		}
+		if (!valid && error_out) *error_out = "The child execution model or host no longer supports the requested reasoning effort. No child input was sent; inspect agent_list before delegating again.";
+		return valid;
+	}
+
 	bool AgentRunScheduler::Enqueue(AppState& app, const std::string& root_chat_id,
 	                                const std::string& parent_run_id, const std::string& agent_id,
 	                                const std::string& task, std::string* run_id_out,
 	                                std::string* error_out, const std::string& provider_id,
-	                                const std::string& model_id, bool additional_read_only_ceiling)
+	                                const std::string& model_id, bool additional_read_only_ceiling,
+	                                const std::optional<std::string>& reasoning_effort)
 	{
 		ChatSession* root_chat = ChatDomainService().FindChatById(app, uam::strings::Trim(root_chat_id));
 		if (root_chat && HasPendingInitialMention(app, root_chat->id))
@@ -3278,6 +3301,11 @@ namespace uam
 		if (root_chat->imported_read_only)
 		{
 			if (error_out != nullptr) *error_out = "Imported transcripts are read-only. Create a new chat in a workspace to delegate work.";
+			return false;
+		}
+		if (app.worktree_operation_chat_ids.contains(root_chat->id))
+		{
+			if (error_out) *error_out = "Wait for the parent chat's workspace operation to finish before delegating work.";
 			return false;
 		}
 		const std::size_t queued_count = std::ranges::count(app.agent_runs, std::string("queued"), &AgentRun::status);
@@ -3404,6 +3432,21 @@ namespace uam
 			transcript.service_tier = root_chat->service_tier;
 			transcript.service_tier_explicit = root_chat->service_tier_explicit;
 		}
+		if (reasoning_effort)
+		{
+			const std::string requested = strings::Trim(*reasoning_effort);
+			const std::string normalized = provider_chat_defaults::NormalizeReasoningEffort(selected_provider, requested);
+			if (!requested.empty())
+			{
+				const auto options = ManagedAgentModelOptions(app, transcript, selected_provider, transcript.model_id);
+				if (transcript.model_id.empty() || normalized.empty() || !ranges::Contains(options.supported_reasoning_efforts, normalized))
+				{
+					if (error_out) *error_out = "The selected child model on its execution host does not support that reasoning effort. Check agent_list before delegating again.";
+					return false;
+				}
+			}
+			transcript.reasoning_effort = normalized;
+		}
 		transcript.command_safety_tier = root_chat->command_safety_tier;
 		transcript.approval_mode = read_only ? approval_modes::kPlanApprovalMode : root_chat->approval_mode;
 		transcript.uam_agent_id = requested_agent;
@@ -3423,6 +3466,7 @@ namespace uam
 		run.delegates_snapshot = definition->delegates;
 		run.provider_id = selected_provider;
 		run.model_id = transcript.model_id;
+		run.reasoning_effort_override = reasoning_effort ? std::optional<std::string>{transcript.reasoning_effort} : std::nullopt;
 		run.execution_capability =
 		    AgentDefinitionService::ExecutionCapabilityForProvider(selected_provider);
 		run.task = requested_task;
@@ -3897,6 +3941,22 @@ namespace uam
 				continue;
 			}
 
+
+			// Retain the refusal through asynchronous Stop, which may clear native model metadata.
+			std::string effort_error;
+			const auto* effort_chat = ChatDomainService().FindChatById(app, run.transcript_chat_id);
+			if (run.diagnostic_code == "reasoning_effort_unsupported" ||
+			    (effort_chat && !AgentRunScheduler::ValidateRequestedReasoningEffort(app, *effort_chat, session, &effort_error)))
+			{
+				if (run.diagnostic_code != "reasoning_effort_unsupported" &&
+				    !PersistStatus(app, run, "running", "reasoning_effort_unsupported", effort_error)) continue;
+				if (!StopAcpSession(app, run.transcript_chat_id) || AcpStopInProgress(app, run.transcript_chat_id) ||
+				    app.pending_chat_save_at_by_chat_id.contains(run.transcript_chat_id)) continue;
+				FinishRun(app, run, "failed", "reasoning_effort_unsupported", run.diagnostic, true);
+				changed = true;
+				continue;
+			}
+
 			if (session != nullptr && session->managed_cancellation_pending)
 			{
 				if (app.pending_chat_save_at_by_chat_id.contains(run.transcript_chat_id)) continue;
@@ -3992,6 +4052,14 @@ namespace uam
 				}
 				app.queued_agent_run_ids.push_back(id);
 				changed = began || changed; // Only the start of a wait is a state change.
+				continue;
+			}
+			std::string effort_error;
+			if (!AgentRunScheduler::ValidateRequestedReasoningEffort(app, *transcript, nullptr, &effort_error))
+			{
+				FinishRun(app, *run, "failed", "reasoning_effort_unsupported", effort_error);
+				if (run->status == "queued") app.queued_agent_run_ids.push_back(id);
+				changed = true;
 				continue;
 			}
 			run->status = "running";

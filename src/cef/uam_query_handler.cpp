@@ -612,7 +612,7 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 		return true;
 	}
 
-	const std::string port_chat_id = action == "portChatWorktreeChanges" && payload.contains("chatId") && payload["chatId"].is_string() ? payload["chatId"].get<std::string>() : std::string();
+	const std::string port_chat_id = (action == "portChatWorktreeChanges" || action == "discardChatWorktreeChanges") && payload.contains("chatId") && payload["chatId"].is_string() ? payload["chatId"].get<std::string>() : std::string();
 	const std::unordered_map<std::string, std::shared_ptr<uam::AppState::GitPortRequest>>::const_iterator previous_port = m_app.git_port_requests.find(port_chat_id);
 	const std::shared_ptr<uam::AppState::GitPortRequest> prior_port = previous_port == m_app.git_port_requests.end() ? nullptr : previous_port->second;
 	try
