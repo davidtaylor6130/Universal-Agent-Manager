@@ -1,6 +1,6 @@
 # Provider settings
 
-Provider pages configure CLI availability, launch preferences and supported provider-specific choices for the selected execution environment. Installed/running/version state is observed status, not a saved preference. Refresh and installation target the chosen computer and should not switch an existing conversation’s model merely because discovery finishes. Build-excluded providers must not appear as configurable choices.
+Provider pages configure CLI availability, launch preferences and supported provider-specific choices for the selected execution environment. Installed/running/version state is observed status, not a saved preference. Refresh and installation target the chosen computer and should not switch an existing conversation’s model merely because discovery finishes. Build-excluded providers must not appear as configurable choices. The CLI manager's Last output shows only the CLI's own output: UAM's internal probe marker lines (CLI path, running state, process IDs, npm maintenance status and interactive-update markers) are removed when it is sent to the UI, while the stored remote probe keeps them for update identity checks.
 
 On Windows, provider CLI checks and launches on the desktop and through the SSH helper also search user and machine PATH entries added since that process started, so a CLI, Node.js or PowerShell 7 installed while UAM is open is found without signing out. npm `.cmd` shims run through `cmd.exe`.
 

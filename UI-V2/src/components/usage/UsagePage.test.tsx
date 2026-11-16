@@ -1,4 +1,4 @@
-import { act } from 'react'
+import { act, useLayoutEffect } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { sumProviderUsage, USAGE_PROVIDERS, type UsageTotals } from '../../services/usageHistory'
@@ -29,6 +29,31 @@ const refreshButton = (host: HTMLElement) => Array.from(host.querySelectorAll<HT
 const fact = (host: HTMLElement, label: string) => [...host.querySelectorAll('.uam-limits-facts dt')].find(dt => dt.textContent === label)?.nextElementSibling?.textContent
 
 describe('UsagePage', () => {
+  it('labels the initial loading skeleton while the history read is pending', async () => {
+    storage()
+    window.cefQuery = () => {}
+    const host = document.createElement('div'), root = createRoot(host)
+    let initialStatus: string | null | undefined
+    function FirstCommit() {
+      useLayoutEffect(() => { initialStatus = host.querySelector('header [role="status"]')?.textContent }, [])
+      return <UsagePage onClose={() => {}} />
+    }
+    try {
+      await act(async () => root.render(<FirstCommit />))
+      expect(initialStatus).toBe('')
+      expect(host.querySelector('.uam-usage-skel-label')?.textContent).toBe('Loading usage…')
+      expect(host.querySelector('.uam-usage-skeleton')?.getAttribute('aria-hidden')).toBe('true')
+      const status = host.querySelector('header [role="status"]')!
+      expect(status.textContent).toBe('Updating usage')
+      const metric = host.querySelector('[aria-label="Usage metric"]')!
+      act(() => [...metric.querySelectorAll('button')].find(button => button.textContent === 'Limits')!.click())
+      expect(host.querySelector('header [role="status"]')).toBe(status)
+      expect(status.textContent).toBe('')
+      act(() => [...metric.querySelectorAll('button')].find(button => button.textContent === 'Cost')!.click())
+      expect(host.querySelector('header [role="status"]')).toBe(status)
+      expect(status.textContent).toBe('Updating usage')
+    } finally { act(() => root.unmount()) }
+  })
   it.each([0, 0.05])('discloses unpriced tokens beside a partial reported cost of %s', async reportedCostUsd => {
     storage()
     const mixed = { ...total, reportedCostUsd, reportedCostTokens: 10, unpricedTokens: 7 }
@@ -745,6 +770,24 @@ describe('UsagePage Tokens', () => {
       // Refresh sits in the History row on Cost and Tokens alike.
       expect(host.querySelector('header [aria-label="Refresh usage"]')).toBeNull()
       expect(host.querySelector('.uam-tokens-group')?.textContent).toContain('Refresh usage')
+    } finally { done() }
+  })
+
+  it('lets keyboard users inspect chart columns and reach either end', async () => {
+    const { host, done } = await openTokens()
+    try {
+      const columns = Array.from(host.querySelectorAll<HTMLElement>('.uam-tokens-plot .uam-usage-col'))
+      expect(columns).toHaveLength(7)
+      expect(columns.filter(column => column.tabIndex === 0)).toEqual([columns[6]])
+      columns[6].focus()
+      const move = (key: string) => act(() => document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true })))
+      move('ArrowLeft')
+      expect(document.activeElement).toBe(columns[5])
+      expect(columns[5].getAttribute('aria-label')).toBeTruthy()
+      move('Home')
+      expect(document.activeElement).toBe(columns[0])
+      move('End')
+      expect(document.activeElement).toBe(columns[6])
     } finally { done() }
   })
 

@@ -100,11 +100,11 @@ it('copies only fenced code from its keyboard-focusable control and exposes clip
     expect(document.activeElement).toBe(button)
     await act(async () => { button.click() })
     expect(writeText).toHaveBeenCalledExactlyOnceWith('const value = 1')
-    expect(button.textContent).toContain('Copied')
+    expect(host.querySelector('[role="status"]')?.textContent).toBe('Copied')
     writeText.mockRejectedValue(new Error('Denied'))
     document.execCommand = vi.fn().mockReturnValue(false)
     await act(async () => { button.click() })
-    expect(button.textContent).toContain('Copy failed')
+    expect(host.querySelector('[role="status"]')?.textContent).toBe('Copy failed')
     expect(host.querySelector('pre code')?.textContent).toBe('const value = 1')
     expect(host.querySelector('button[aria-label="Copy message"]')).toBeNull()
   } finally {

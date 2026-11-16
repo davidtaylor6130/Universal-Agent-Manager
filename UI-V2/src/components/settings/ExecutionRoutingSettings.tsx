@@ -63,6 +63,8 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
     const chooserOpener = useRef<HTMLElement | null>(null)
     const root = useRef<HTMLFieldSetElement>(null)
     const matching = saved.repositoryMatching === true
+    // With no local workspace path there is nothing to match, so no check holds a shared VCS-context slot.
+    const hasLocalFolders = folders.some((folder) => folder.directory && (!folder.executionHostId || folder.executionHostId === 'local'))
     const dirty = JSON.stringify(savePayload(draft)) !== JSON.stringify(savePayload(baseline))
     const validationError = routingConfigurationError(draft, hosts, folders)
     useEffect(() => {
@@ -71,7 +73,7 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
       if (!busyRef.current) { setBaseline(saved); if (!dirty) setDraft(structuredClone(saved)) }
     }, [saved])
     useEffect(() => {
-      if (!matching) return
+      if (!matching || !hasLocalFolders) return
       let cancelled = false
       // A retry clears the failure so the check row shows again; earlier matches stay until replaced.
       setRepositoryError('')
@@ -89,7 +91,7 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
         else setRepositoryError(response.error || 'Repository matching is unavailable right now.')
       })
       return () => { cancelled = true }
-    }, [matching, repositoryAttempt])
+    }, [matching, hasLocalFolders, repositoryAttempt])
     useEffect(() => {
       if (variant !== 'page' || !dirty) return
       const guard = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }
@@ -174,6 +176,14 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
     const stepOpen = variant === 'dialog' && chooser !== null
     const hostLabel = (hostId: string) => sshHosts.find((host) => host.id === hostId)?.label ?? hostId
     const checking = matching && localFolders.length > 0 && repositories === null && !repositoryError
+    const matchingUnavailable = matching && localFolders.length > 0 && !!repositoryError
+    // The live region stays mounted and starts empty, so the check's status is announced when its text changes.
+    const repositoryStatus = checking ? 'Checking repositories…' : matchingUnavailable ? 'Repository matching is unavailable right now.' : ''
+    const [announced, setAnnounced] = useState('')
+    useEffect(() => setAnnounced(repositoryStatus), [repositoryStatus])
+    // A group's default open state is fixed once the repository check settles, so late matches cannot leave it open or closed for the wrong reason; the user's toggle wins.
+    const settledOpen = useRef(new Map<string, boolean>())
+    const [toggledOpen, setToggledOpen] = useState<Record<string, boolean>>({})
     const errorText = <Reveal open={!!validationError}><p role="alert" className="uam-rt-dialog__error">{validationError}</p></Reveal>
     const footer = variant === 'dialog'
       ? <div className="uam-rt-dialog__foot">
@@ -216,6 +226,8 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
     })
 
     return <>
+      {/* Outside the chooser step's inert wrapper, so the check's status is announced while the chooser is open. */}
+      <span className="sr-only" role="status" aria-live="polite">{announced}</span>
       {/* The dialog's chooser step hides the list without unmounting it, so disclosures keep their open state and focus returns to the opener. */}
       <Reveal open={!(variant === 'dialog' && exit)} className="grid min-w-0 gap-0"><div className={stepOpen ? 'hidden' : 'contents'} {...(stepOpen ? { inert: '' } : {})}><fieldset ref={root} disabled={busy} className={variant === 'dialog' ? 'uam-rt-dialog__body' : 'grid min-w-0 gap-0 m-0 p-0 border-0'}>
         <SettingsSection title="Automatic routing" actions={variant === 'page' ? footer : undefined}>
@@ -262,12 +274,15 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
             <Button size="sm" leadingIcon={<Plus size={13} />} data-routing-map-folder disabled={localFolders.length === 0} onClick={() => openChooser('all')}>Map folder…</Button>
           </>}>
             <Reveal open={localFolders.length === 0}><SettingRow title={<span className="uam-rt-dialog__empty">Give a local folder a path first, then it can be mapped here.</span>} /></Reveal>
-            <Reveal open={checking}><SettingRow title={<span className="inline-flex items-center gap-1.5" role="status"><LoaderCircle size={13} aria-hidden className="animate-spin motion-reduce:animate-none" />Checking repositories… You can map folders by hand meanwhile.</span>} /></Reveal>
-            <Reveal open={matching && localFolders.length > 0 && !!repositoryError}><SettingRow title={<span className="uam-rt-dialog__empty" role="status">Repository matching is unavailable right now. Choose folders by hand.</span>}
+            <Reveal open={checking}><SettingRow title={<span className="inline-flex items-center gap-1.5"><LoaderCircle size={13} aria-hidden className="animate-spin motion-reduce:animate-none" />Checking repositories… You can map folders by hand meanwhile.</span>} /></Reveal>
+            <Reveal open={matchingUnavailable}><SettingRow title={<span className="uam-rt-dialog__empty">Repository matching is unavailable right now. Choose folders by hand.</span>}
               control={<Button size="sm" onClick={() => { root.current?.querySelector<HTMLElement>('[data-routing-map-folder]')?.focus({ preventScroll: true }); setRepositoryAttempt((value) => value + 1) }}>Retry</Button>} /></Reveal>
             {groups.map((group, index) => {
               const problems = group.entries.filter((entry) => entry.error)
-              return <Disclosure key={group.folder.id} defaultOpen={problems.length > 0 || index < 2} summary={<>
+              const id = group.folder.id
+              const byDefault = problems.length > 0 || index < 2
+              if (!checking && !settledOpen.current.has(id)) settledOpen.current.set(id, byDefault)
+              return <Disclosure key={id} open={toggledOpen[id] ?? settledOpen.current.get(id) ?? byDefault} onOpenChange={(open) => setToggledOpen((current) => ({ ...current, [id]: open }))} summary={<>
                 <span className="uam-set-row__title">{group.folder.name}</span>
                 {group.repository && <span className="uam-rt-alias" title={group.repository.identity}>{shortRepositoryIdentity(group.repository.identity)}</span>}
                 {problems.length

@@ -510,7 +510,7 @@ const SETTINGS_SEARCH_TERMS: Partial<Record<SettingsSectionId, string>> = {
   ...(SSH_ENABLED ? { 'remote-hosts': 'computers ssh connections hosts runners servers install', routing: 'routing ssh automatic remote folders mapping' } : {}),
   ...(MOBILE_COMPANION_ENABLED ? { phone: 'phone mobile companion token url remote access', automation: 'automation api token n8n workflow webhook revoke' } : {}),
   'voice-input': 'microphone dictation transcription speech whisper',
-  'memory-settings': 'memory workers recall budgets idle models tokens processing',
+  'memory-settings': 'memory workers recall budgets idle models tokens processing scan backfill',
   'memory-store': 'memory library lessons entries search delete',
   'markdown-store': 'skills markdown library import folder file create pin',
   'goal-loops': 'goals loops tokens budgets auto continue review',
@@ -823,6 +823,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const computerUseAllowedApplications = useAppStore(useShallow((s) => s.computerUseAllowedApplications))
   const activeUamAgents = useAppStore(useShallow((s) => activeSessionId ? s.uamAgentsBySessionId[activeSessionId] ?? [] : []))
   const setMemorySettings = useAppStore((s) => s.setMemorySettings)
+  const openMemoryScanModal = useAppStore((s) => s.openMemoryScanModal)
   const setProviderChatDefaults = useAppStore((s) => s.setProviderChatDefaults)
   const setEditorSettings = useAppStore((s) => s.setEditorSettings)
   const setSessionComputerUseBackend = useAppStore((s) => s.setSessionComputerUseBackend)
@@ -1760,7 +1761,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 disabled={!activeSession || activeSession.computerUseEnabled || computerUseBusy}
                 options={[
                   { value: 'auto', label: 'Automatic (recommended)' },
-                  { value: 'provider', label: 'Provider built-in', disabled: !activeComputerUseProviderAvailable },
+                  { value: 'provider', label: 'Provider built-in', disabled: !activeComputerUseProviderAvailable, description: activeComputerUseProviderAvailable ? undefined : CODEX_ENABLED ? 'Codex chats only' : 'Not in this build' },
                   { value: 'uam', label: 'UAM controlled' },
                 ]}
                 onChange={(value) => {
@@ -2048,7 +2049,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                     permissionReviewerProviderId,
                     'AI permission reviewer provider',
                     [
-                      { id: '', label: 'Not configured', detail: 'AI Review always falls back to you.' },
+                      { id: '', label: 'Not configured', detail: 'AI review always falls back to you.' },
                       ...providers.filter((provider) => providerSupportsTextWorkers(provider.id)).map((provider) => ({ id: provider.id, label: providerDisplayName(provider, provider.id), detail: provider.name ?? provider.id })),
                     ],
                     (providerId) => void setMemorySettings({ permissionReviewerProviderId: providerId, permissionReviewerModelId: '' }),
@@ -2737,6 +2738,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   onCommit={(value) => void setMemorySettings({ memoryRecallBudgetBytes: value })} />
               }
             />
+            <SettingRow
+              title="Scan current chats"
+              description="Choose chats to extract memories from older history."
+              control={<Button size="sm" variant="secondary" leadingIcon={<Search size={14} />} onClick={() => void openMemoryScanModal()}>Scan chats</Button>}
+            />
           </SettingsSection>
 
           <SettingsSection title="Memory workers">
@@ -3087,10 +3093,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               </Notice>
             </div></Reveal>
             <div className="w-full min-h-0 flex-1 flex flex-col">
-              <Swap swapKey={themeDraft ? 'theme' : 'page'} className="flex-1 min-h-0 flex flex-col">{themeDraft ? <div className="overflow-y-auto">
+              <Swap swapKey={themeDraft ? 'theme' : 'page'} className="flex-1 min-h-0 flex flex-col">{themeDraft ? <div className="uam-settings-scroll"><div className="uam-settings-frame">
                 <div className="shrink-0 flex items-center justify-between gap-3 mb-5"><h2 tabIndex={-1} data-theme-step className="text-lg font-semibold">{['Theme name and base','Theme palette','Review theme'][themeStep]}</h2><IconButton icon={<X size={16}/>} label="Close theme editor" disabled={themeSaving} onClick={() => requestThemeExit(() => setThemeDraft(null))}/></div>
                 {renderThemeEditor()}
-              </div> : <>
+              </div></div> : <>
                 {(() => {
                   const fullHeight = selectedSection === 'memory-store' || selectedSection === 'markdown-store'
                   const header = <div className="uam-settings-page-header w-full">

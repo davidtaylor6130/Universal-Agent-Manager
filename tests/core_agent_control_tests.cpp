@@ -1812,6 +1812,42 @@ UAM_TEST(UamControlUserQuestionRoutesThroughTheExistingGuiInput)
 	UAM_ASSERT(transport("question-disconnect", "_mcp_disconnected", {{"connectionId", "connection-b"}}));
 	UAM_ASSERT(!uam::UamControlService::PendingApprovalForChat(app, root_id).has_value());
 
+	// A caller that gave up without cancelling is gone once its turn ends, however it ends (#898).
+	const auto ended_with_error = [&](const char* id)
+	{
+		std::string text;
+		UAM_ASSERT(uam::io::TryReadTextFile(root_directory / "responses" / (std::string(id) + ".json"), text));
+		const nlohmann::json reply = nlohmann::json::parse(text);
+		UAM_ASSERT(!reply.value("ok", true));
+		UAM_ASSERT(reply.value("error", "").find("turn that made this request ended") != std::string::npos);
+	};
+	UAM_ASSERT(transport("question-reconnect-turn", "_mcp_initialized", {{"connectionId", "connection-c"}}));
+	raw_root_session->processing = true;
+	raw_root_session->turn_serial = 4;
+	ask("question-turn-ended");
+	raw_root_session->reconnect_pending = true; // A remote turn being reattached is the same turn.
+	raw_root_session->processing = false;
+	(void)uam::UamControlService::ProcessPendingRequests(app);
+	UAM_ASSERT(uam::UamControlService::PendingApprovalForChat(app, root_id).has_value());
+	raw_root_session->reconnect_pending = false;
+	raw_root_session->recovering_remote_turn = true;
+	(void)uam::UamControlService::ProcessPendingRequests(app);
+	UAM_ASSERT(uam::UamControlService::PendingApprovalForChat(app, root_id).has_value());
+	raw_root_session->recovering_remote_turn = false;
+	raw_root_session->claude_live_background_task_ids.insert("task-1"); // A background agent may still be waiting.
+	(void)uam::UamControlService::ProcessPendingRequests(app);
+	UAM_ASSERT(uam::UamControlService::PendingApprovalForChat(app, root_id).has_value());
+	raw_root_session->claude_live_background_task_ids.clear();
+	(void)uam::UamControlService::ProcessPendingRequests(app);
+	UAM_ASSERT(!uam::UamControlService::PendingApprovalForChat(app, root_id).has_value());
+	ended_with_error("question-turn-ended");
+	raw_root_session->processing = true;
+	ask("question-next-turn");
+	raw_root_session->turn_serial = 5;
+	(void)uam::UamControlService::ProcessPendingRequests(app);
+	UAM_ASSERT(!uam::UamControlService::PendingApprovalForChat(app, root_id).has_value());
+	ended_with_error("question-next-turn");
+
 	uam::UamControlService::Shutdown(app);
 }
 
@@ -3759,6 +3795,54 @@ UAM_TEST(HtmlViewFrameHostIsIsolatedFromTheUiBridge)
 	UAM_ASSERT(!uam::cef::ShouldBindUiBridge(false, index, index));
 	UAM_ASSERT(!uam::cef::ShouldBindUiBridge(true, "uam://app/html-view-frame.html", index));
 	UAM_ASSERT(!uam::cef::ShouldBindUiBridge(false, "about:srcdoc", index));
+}
+
+UAM_TEST(HtmlViewToolsReachEveryProviderLocallyAndOverSsh)
+{
+	// Every structured provider gets the same UAM tool connection, so each can publish a view on this computer and over SSH.
+	for (const char* provider_id : uam::provider_ids::kAllCliProviderIds)
+		for (const std::string host_id : {"local", "ssh-build"})
+		{
+			TempDir temp("uam-control-html-view-provider");
+			uam::AppState app;
+			app.data_root = temp.root;
+			ExecutionHost remote;
+			remote.id = "ssh-build";
+			remote.transport = "ssh";
+			remote.ssh_alias = "build";
+			app.settings.execution_hosts.push_back(remote);
+			ChatSession chat = ChatDomainService().CreateNewChat("", provider_id);
+			chat.id = "chat-html-view-provider";
+			chat.uam_control_enabled = true;
+			chat.execution_host_id = host_id;
+			Message user;
+			user.role = MessageRole::User;
+			user.content = "Chart the results.";
+			chat.messages.push_back(user);
+			app.chats.push_back(std::move(chat));
+			auto owned_session = std::make_unique<uam::AcpSessionState>();
+			owned_session->chat_id = "chat-html-view-provider";
+			owned_session->provider_id = provider_id;
+			owned_session->running = true;
+			owned_session->processing = true;
+			owned_session->turn_user_message_index = 0;
+			uam::AcpSessionState* session = owned_session.get();
+			app.acp_sessions.push_back(std::move(owned_session));
+			std::string error;
+			UAM_ASSERT(uam::UamControlService::Initialize(app, &error));
+			nlohmann::json setup{{"params", {{"mcpServers", nlohmann::json::array()}}}};
+			UAM_ASSERT(uam::UamControlService::AppendSessionMcpServer(app, *session, app.chats.front(), "session/new", setup, &error));
+			UAM_ASSERT(std::ranges::any_of(setup["params"]["mcpServers"], [](const nlohmann::json& server) { return server.value("name", "") == "uam-control"; }));
+			for (const std::string tool : {"html_view_preview", "html_view_publish"})
+				UAM_ASSERT(uam::UamControlService::HiddenToolsForTests(setup["params"]["mcpServers"].back()).find(tool) == std::string::npos);
+			const std::string capability = app.uam_control_capabilities.front().id;
+			const nlohmann::json published = uam::UamControlService::HandleRequestForTests(app, capability,
+			    {{"requestId", "publish"}, {"method", "html_view_publish"}, {"arguments", {{"title", "Results"}, {"html", "<!doctype html><p>ok</p>"}}}},
+			    uam::time::SystemEpochMillisecondsNow());
+			UAM_ASSERT(published.value("ok", false));
+			UAM_ASSERT_EQ(app.chats.front().messages.back().blocks.front().type, std::string("html_view"));
+			uam::UamControlService::Shutdown(app);
+		}
 }
 
 UAM_TEST(HtmlViewPublishAddsAPersistentBlockToTheLiveTurn)
