@@ -3450,11 +3450,39 @@ namespace
 	};
 }
 
+UAM_TEST(MemoryPushThrottleCapsABacklogButPublishesALoneChange)
+{
+	using namespace std::chrono_literals;
+	const std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+	uam::MemoryPushThrottle throttle;
+	UAM_ASSERT(!throttle.Due(false, t0));
+	// A lone change publishes on its own tick.
+	UAM_ASSERT(throttle.Due(true, t0));
+	throttle.Pushed(t0);
+	// A backlog finishing a chat every 250 ms tick waits out the 2 s interval, then publishes once.
+	UAM_ASSERT(!throttle.Due(true, t0 + 250ms));
+	UAM_ASSERT(!throttle.Due(false, t0 + 1750ms));
+	UAM_ASSERT(throttle.Due(false, t0 + 2s));
+	throttle.Pushed(t0 + 2s);
+	// A push for another reason carries a pending change, so nothing is left owing.
+	UAM_ASSERT(!throttle.Due(true, t0 + 3s));
+	throttle.Pushed(t0 + 3s);
+	UAM_ASSERT(!throttle.Due(false, t0 + 6s));
+	// A push with nothing pending does not restart the interval.
+	throttle.Pushed(t0 + 6s);
+	UAM_ASSERT(throttle.Due(true, t0 + 6500ms));
+}
+
 UAM_TEST(PollCadenceIdlesWhileAProviderIsOnlyAlive)
 {
 	uam::AppState empty;
 	UAM_ASSERT_EQ(uam::NextPollDelayMs(empty, false, true), 1000);
 	UAM_ASSERT_EQ(uam::NextPollDelayMs(empty, true, true), 50);
+	// An automatic memory backlog only waiting in the queue (worker slot, idle delay or retry) keeps the idle cadence;
+	// a running memory task or a queued manual scan keeps 250 ms (the busy_states table below).
+	uam::AppState memory;
+	memory.memory_extraction_queue.push_back(uam::QueuedMemoryExtractionTask{});
+	UAM_ASSERT_EQ(uam::NextPollDelayMs(memory, false, true), 1000);
 
 	// The regression: an idle provider kept the poll at 250 ms for the whole idle timeout after every turn.
 	IdlePollCadenceFixture idle;
@@ -3490,7 +3518,8 @@ UAM_TEST(PollCadenceIdlesWhileAProviderIsOnlyAlive)
 	    {"unread stderr", [](IdlePollCadenceFixture& f) { f.Session().stderr_poll_pending = true; }},
 	    {"unhandled line", [](IdlePollCadenceFixture& f) { f.Session().stdout_buffer = "{}\n"; }},
 	    {"worktree", [](IdlePollCadenceFixture& f) { f.app.worktree_operation_chat_ids.insert("idle-chat"); }},
-	    {"memory", [](IdlePollCadenceFixture& f) { f.app.memory_extraction_queue.emplace_back(); }},
+	    {"memory task", [](IdlePollCadenceFixture& f) { f.app.memory_extraction_tasks.emplace_back(); }},
+	    {"queued manual memory scan", [](IdlePollCadenceFixture& f) { f.app.memory_extraction_queue.push_back(uam::QueuedMemoryExtractionTask{.manual = true}); }},
 	    // Both types are private to their runtime files; only a non-null owner matters here, so it aliases an int.
 	    {"agent input", [](IdlePollCadenceFixture& f)
 	        {

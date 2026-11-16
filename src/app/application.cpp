@@ -543,7 +543,9 @@ void Application::PollTick()
 	}
 	const std::chrono::steady_clock::time_point catalogs_finished = std::chrono::steady_clock::now();
 	const bool provider_compatibility_changed = IsCliCompatibilitySnapshotChanged(provider_snapshot_before, CreateCliCompatibilitySnapshot(m_app));
-	const bool runtime_state_changed = routing_changed || remote_recovery_changed || side_chats_changed || acp_sessions_changed || compaction_sync_changed || opencode_native_changed || uam_control_changed || pr_watch_changed || agent_runs_changed || cli_terminals_changed || memory_changed || computer_use_changed || shell_actions_changed || folder_availability_changed || model_discovery_retry_changed || startup_model_discovery_changed || history_discovery_changed || remote_host_health_changed;
+	// A memory backlog finishes a chat on almost every poll; publishing each rebuilt the whole state four times a second.
+	const bool memory_push_due = m_memoryPush.Due(memory_changed, catalogs_finished);
+	const bool runtime_state_changed = routing_changed || remote_recovery_changed || side_chats_changed || acp_sessions_changed || compaction_sync_changed || opencode_native_changed || uam_control_changed || pr_watch_changed || agent_runs_changed || cli_terminals_changed || memory_push_due || computer_use_changed || shell_actions_changed || folder_availability_changed || model_discovery_retry_changed || startup_model_discovery_changed || history_discovery_changed || remote_host_health_changed;
 	const bool ui_relevant_state_changed = runtime_state_changed || chat_saves_changed || provider_compatibility_changed || model_catalog_changed || uam::DeferredStatePushDue() || uam::StateReconciliationDue();
 	for (const DictationEvent& event : m_platformServices->dictation_service.PollEvents())
 	{
@@ -557,6 +559,8 @@ void Application::PollTick()
 		const bool urgent = provider_compatibility_changed || model_catalog_changed || folder_availability_changed ||
 		    remote_host_health_changed || model_discovery_retry_changed || startup_model_discovery_changed;
 		uam::PushRuntimeStateUpdateIfChanged(m_browser, m_app, urgent);
+		// The push (or the deferred one it schedules) serializes current memory state too.
+		m_memoryPush.Pushed(catalogs_finished);
 	}
 
 	const std::chrono::steady_clock::time_point push_finished = std::chrono::steady_clock::now();

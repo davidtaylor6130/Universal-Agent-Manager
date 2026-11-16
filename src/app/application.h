@@ -12,6 +12,7 @@
 #include "app/opencode_native_activity_service.h"
 #include "app/computer_use_service.h"
 #include "app/worktree_retention_service.h"
+#include "app/runtime_activity.h"
 
 #include <future>
 #include <thread>
@@ -101,6 +102,7 @@ class Application
 	void PollSoonerIfWorkPending();
 	std::uint64_t m_pollGeneration = 0;
 	std::chrono::steady_clock::time_point m_nextPollAt{};
+	uam::MemoryPushThrottle m_memoryPush;
 
 	// ---- CEF ready callback -----------------------------------------------
 	void OnRuntimeReady(CefRefPtr<CefBrowser> browser);
