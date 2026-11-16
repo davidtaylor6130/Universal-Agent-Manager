@@ -282,7 +282,7 @@ The [stream watch](providers/runtime-lifecycle.md#stream-watch) ships with loop 
 
 ## Active-turn Send in CLI View
 
-Issue #688 asks for the Send during a running turn preference to apply in both Chat and CLI View. CLI View is the provider's own terminal interface ([CLI terminal view](providers/terminal-view/terminal-view.md)) and has no UAM composer or Send action: keystrokes go straight to the native CLI, which decides itself whether input queues or steers. The preference therefore applies to the Chat composer only. Decide whether CLI View needs a UAM-owned input control or provider-specific key mapping; no terminal input change is made until decided.
+**Resolved, 2026-11-16.** Issue #688 asks for the Send during a running turn preference to apply in both Chat and CLI View. CLI View is the provider's own terminal interface ([CLI terminal view](providers/terminal-view/terminal-view.md)) and has no UAM composer: on the desktop keystrokes go straight to the native CLI, and the iPhone terminal's input field and Send button write raw input to it, so the native CLI decides whether input queues or steers. The preference therefore applies to the UAM composers only (desktop Chat, the phone browser companion and the native iPhone client). David decided that the Send during a running turn preference applies to the Chat composer only, on the desktop and iPhone, and that CLI View keeps the provider's own input behaviour, matching every other keystroke there. No UAM-owned input control, provider-specific key mapping or iPhone terminal Send change is planned for CLI View.
 
 ## Startup import untitled sessions
 
