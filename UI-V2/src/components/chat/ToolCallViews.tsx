@@ -176,7 +176,8 @@ export function PermissionInlineCard({
   onStopRuntime,
 }: {
   permission: AcpPendingPermission
-  onResolve: (requestId: string, optionId: string) => Promise<boolean>
+  /** True when accepted; otherwise false, or the backend's reason for refusing it. */
+  onResolve: (requestId: string, optionId: string) => Promise<boolean | string>
   waitIsStale?: boolean
   waitStaleReason?: string
   waitSeconds?: number
@@ -201,10 +202,11 @@ export function PermissionInlineCard({
     setSubmitError('')
     let accepted = false
     try {
-      accepted = await onResolve(permission.requestId, optionId)
+      const outcome = await onResolve(permission.requestId, optionId)
+      accepted = outcome === true
       if (submittingRef.current !== permission.requestId) return
       if (!accepted) {
-        setSubmitError('The provider did not accept that response. Try again.')
+        setSubmitError(typeof outcome === 'string' && outcome.trim() ? outcome.trim() : 'The provider did not accept that response. Try again.')
       }
     } catch {
       if (submittingRef.current !== permission.requestId) return

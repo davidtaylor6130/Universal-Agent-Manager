@@ -421,7 +421,8 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   discoverProviderModels: (sessionId: string, providerId?: string, workspaceDirectory?: string, executionHostId?: string, automatic?: boolean) => Promise<boolean>
   setAcpConfigOption: (sessionId: string, configId: string, value: string) => Promise<boolean>
   cancelAcpTurn: (sessionId: string) => Promise<boolean>
-  resolveAcpPermission: (sessionId: string, requestId: string, optionId: string | 'cancelled') => Promise<boolean>
+  /** True when accepted; otherwise false, or the backend's reason for refusing it. */
+  resolveAcpPermission: (sessionId: string, requestId: string, optionId: string | 'cancelled') => Promise<boolean | string>
   resolveAcpUserInput: (sessionId: string, requestId: string, answers: AcpUserInputAnswers) => Promise<boolean>
   /** Sends a typed secret (or the saved one) straight to native; nothing is stored here. Plan opt-in, Deny and Cancel use resolveAcpUserInput. */
   submitSecretRequest: (sessionId: string, requestId: string, submission: SecretSubmission) => Promise<{ ok: boolean; error?: string }>

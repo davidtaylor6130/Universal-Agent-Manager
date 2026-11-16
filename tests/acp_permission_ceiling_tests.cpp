@@ -425,3 +425,56 @@ UAM_TEST(AcpPersistedPermissionReplayCannotOverrideCurrentCapturedReadCeiling)
 	UAM_ASSERT(std::ranges::all_of(safe_replay, [](bool value) { return value; }));
 }
 #endif
+
+
+#if UAM_ENABLE_RUNTIME_COPILOT_CLI
+// Issue #515: on SSH chats a failed send leaves the saved answer for recovery; a different answer says so instead of blaming the provider.
+UAM_TEST(SshPermissionReanswerAfterFailedSendExplainsTheSavedAnswer)
+{
+	PermissionCeilingFixture fixture(false, true);
+	fixture.app.chats.front().execution_host_id = "private-ssh-permission-host";
+	fixture.Request(7, "write");
+	// Close the provider pipe so the first answer is saved for recovery but cannot be written.
+	fixture.sink.reset();
+	std::string error;
+	UAM_ASSERT(!fixture.Resolve(7, "allow_once", false, error));
+	UAM_ASSERT_EQ(fixture.session->pending_permission.request_id_json, std::string("7"));
+	UAM_ASSERT_EQ(fixture.app.chats.front().remote_interaction_responses.size(), std::size_t(1));
+	error.clear();
+	UAM_ASSERT(!fixture.Resolve(7, "reject_once", false, error));
+	UAM_ASSERT(error.starts_with("An earlier answer to this permission request is saved for delivery to the remote computer"));
+	UAM_ASSERT(error.find("reused") == std::string::npos);
+	UAM_ASSERT_EQ(fixture.session->pending_permission.request_id_json, std::string("7"));
+}
+#endif
+
+
+#if UAM_ENABLE_RUNTIME_COPILOT_CLI
+// Issue #515: a late request that waits for the user keeps the goal review's read-only limit until the next turn starts.
+UAM_TEST(LateUserDecisionAfterGoalReviewKeepsTheReadOnlyLimitUntilTheNextTurn)
+{
+	PermissionCeilingFixture fixture(true);
+	fixture.session->active_uam_agent_workspace_access = "write";
+	fixture.session->active_uam_agent_id.clear();
+	// The review turn ends: its state clears and no turn is running.
+	uam::acp_detail::ClearGoalReviewState(*fixture.session);
+	fixture.session->processing = false;
+	UAM_ASSERT(!fixture.session->goal_review_turn);
+	fixture.Request(7, "write");
+	// mustPrompt leaves the request for the user, which marks the session as waiting.
+	UAM_ASSERT_EQ(fixture.session->pending_permission.request_id_json, std::string("7"));
+	std::string error;
+	UAM_ASSERT(!fixture.Resolve(7, "allow_once", false, error));
+	UAM_ASSERT(error.find("captured read-only access ceiling") != std::string::npos);
+	UAM_ASSERT_EQ(fixture.session->pending_permission.request_id_json, std::string("7"));
+	UAM_ASSERT(fixture.Resolve(7, "reject_once", false, error));
+	AssertDecision(fixture.sink->ReadThroughResponse(7, "reject").back(), 7, "reject");
+
+	// A new turn has its own ordinary access.
+	fixture.session->turn_serial += 1;
+	fixture.session->processing = true;
+	fixture.Request(8, "write");
+	UAM_ASSERT(fixture.Resolve(8, "allow_once", false, error));
+	AssertDecision(fixture.sink->ReadThroughResponse(8, "approve-once").back(), 8, "approve-once");
+}
+#endif

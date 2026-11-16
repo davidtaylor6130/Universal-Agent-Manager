@@ -4548,6 +4548,28 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('shows the backend reason when a permission response is refused', async () => {
+    const reason = 'An earlier answer to this permission request is saved for delivery to the remote computer, so a different answer cannot be sent. Choose the same answer to send it again, or stop the turn.'
+    const resolveAcpPermission = vi.fn(() => Promise.resolve(reason))
+    useAppStore.setState({ resolveAcpPermission })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    const allowButton = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent?.includes('Allow once'))
+    await act(async () => {
+      allowButton?.click()
+      await Promise.resolve()
+    })
+    const alerts = Array.from(host.querySelectorAll('[role="alert"]')).map((alert) => alert.textContent)
+    expect(alerts).toContain(reason)
+    expect(alerts.some((text) => text?.includes('did not accept'))).toBe(false)
+    // The card stays answerable after the refusal.
+    expect(allowButton?.disabled).toBe(false)
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('submits one permission response at a time and retries a rejected response', async () => {
     let finishResponse: ((accepted: boolean) => void) | undefined
     const resolveAcpPermission = vi.fn(() => new Promise<boolean>((resolve) => { finishResponse = resolve }))

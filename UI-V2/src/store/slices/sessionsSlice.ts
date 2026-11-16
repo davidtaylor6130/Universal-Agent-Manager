@@ -3436,7 +3436,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return true
     },
 
-    resolveAcpPermission: async (sessionId: string, requestId: string, optionId: string | 'cancelled'): Promise<boolean> => {
+    resolveAcpPermission: async (sessionId: string, requestId: string, optionId: string | 'cancelled'): Promise<boolean | string> => {
       if (isCefContext()) {
         const response = await sendToCEF({
           action: 'resolveAcpPermission',
@@ -3447,7 +3447,8 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
             cancelled: optionId === 'cancelled',
           },
         })
-        return response.ok
+        // A refusal carries the backend's reason so the card can show what happened.
+        return response.ok || response.error || false
       }
 
       set((state) => ({
