@@ -4695,6 +4695,7 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredPro
 				continue;
 			}
 			const std::string imported_id = candidate.chat.id;
+			if (!candidate.chat.subagent_parent_chat_id.empty()) ++result.imported_subchat_count;
 			const std::string resolved = NativeSessionLinkService().RealNativeSessionId(candidate.chat);
 			if (!resolved.empty()) app.resolved_native_sessions_by_chat_id[imported_id] = resolved;
 			if (ChatSession* mutable_live = ChatDomainService().FindChatById(app, imported_id))

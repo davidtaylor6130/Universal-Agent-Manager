@@ -18,7 +18,7 @@
 Details that affect import:
 
 - **Codex** marks every non-interactive thread as a subagent. Only `thread_spawn` children are conversations a user started work in; `review`, `compact` and `memory_consolidation` threads are not imported. The `collab_agent_spawn_end` event that names the new thread is not persisted in current rollouts, and the multi-agent v2 spawn output carries no thread ID, so the child's own record is the dependable link.
-- **OpenCode** `session list` returns root sessions only and prints no parent field, so a child can only be found through its parent's task call.
+- **OpenCode** `session list` returns root sessions only and prints no parent field, so a child can only be found through its parent's task call. A tool named `subagent` counts as a sub-agent call only in an export that UAM's OpenCode 2 adapter normalized (`NormalizeExport` marks the native tool); in an OpenCode 1 export that name can belong to a custom or MCP tool and stays an ordinary tool.
 - **Gemini** always records the root session as the parent, so nested agents sit flat beneath the root. Claude Code journals name the root session in the same way.
 - **Copilot** events also carry `parentId`, which is the previous event in the chain, not an agent parent.
 
@@ -50,18 +50,22 @@ One path serves every provider. Each provider's reader marks a discovered child 
 
 A parent-owned journal has no native session ID, so its reference ID is its import identity: deleting a journal sub-chat records `passive|<reference>` in the native-import tombstones, and admission and publication check that key (`NativeChildIdentityKeyForHistoryImport`).
 
+The scan's imported count (`StartupNativeImportSnapshot::imported_count`) counts the histories the user selected. Sub-chats published behind them, or by a manual-scan backfill, are counted separately in `ImportResult::imported_subchat_count` and left out of it, so selecting one history reports one import however many sub-chats follow it.
+
+A parent that fails staging publishes nothing, and its queued children are dropped with it: none is saved under a missing parent or as an ordinary chat, and none is marked deleted, so a later scan imports the family once the parent can be read.
+
 ## Known limits
 
 - **Parents already in UAM.** Only a scan the user starts imports the missing children of a saved chat (`StartSavedParentBackfill`), per the [recorded decision](../documentation-review.md#native-sub-chat-import). It covers controller-local chats, and skips a parent filed outside the workspace that owns its directory.
 - **SSH.** Remote scans read OpenCode and Codex only, so Claude Code, Gemini and Copilot children on SSH hosts are not imported. The helper can read one named child journal but has no call that lists a session's children.
 - **Antigravity.** UAM's history reader does not read the invoke-subagent step, so no parent link is available. Linking needs that step decoded from a format with no public specification; nothing is guessed.
 - **Claude Code.** A sub-agent whose tool result recorded no `agentId` (an interrupted run, for example) is not found.
-- **OpenCode.** A task call that recorded no session ID gives no child. The 2.x export's parent field is unverified; a child whose export omits it is reported and skipped.
+- **OpenCode.** A task call that recorded no session ID gives no child. The 2.x export's parent field is unverified; a child whose export omits it is reported and skipped. A `subagent` tool call gives a child only in an OpenCode 2 export, so an OpenCode 1 custom or MCP tool of that name never does.
 - **OpenCode nesting.** Only a root session's task calls are read for children, so a child's own sub-agent sessions are not imported.
 - **No start time.** The link stores the parent's creation time. A parent whose listing gives none, such as some OpenCode listings, cannot be linked, and its children are left out without a report.
-- **Codex over SSH.** The `sourceKinds` listing is unverified against a live Codex; a Codex that rejects it still imports its root threads.
+- **Codex over SSH.** The `sourceKinds` listing is unverified against a live Codex; a Codex that rejects it still imports its root threads. The SSH child routes for Codex and OpenCode are covered by a fixture runner only.
 - **Gemini.** A child with inline images needs the passive media save and is reported and skipped; it opens from the parent's tool call.
 - **Different directory.** A child that ran in another directory, such as its own worktree, is not linked and so not imported.
 - **Bounds.** At most 64 children per parent are taken from its tool calls, a parent has at most 64 sub-chats counting those already saved, and each child history keeps the per-history size limits.
 
-Checks: `tests/native_subchat_import_tests.cpp` (shared path and one fixture per provider) and `tests/native_child_lineage_tests.cpp` (the explicit-open rule, unchanged).
+Checks: `tests/native_subchat_import_tests.cpp` (shared path, one fixture per provider, the selected-history count, a parent that fails staging while its child is queued, and the OpenCode 2 `subagent` marker), `tests/empty_native_import_tests.cpp` (remote Codex and OpenCode children discovered, staged and published through a fixture runner) and `tests/native_child_lineage_tests.cpp` (the explicit-open rule, unchanged).
