@@ -49,7 +49,8 @@ METRICS = [
 REFERENCE_NOTE = ('References: published ADEmark figures for T3 Code 2.74 and the leading apps; token references are the bare Claude Code CLI. '
                   'The RAM-at-rest references have five threads open: compare them with `ram_rest_5_threads_mb`. '
                   'Rows marked * are in-process component figures (no CEF, IPC or paint), not the end-to-end measurement; '
-                  '† is only what UAM adds to the request (UAM-Control tool schemas and prompt text, bytes / 4), not the provider total.')
+                  'Live token rows stay unmeasured. Schema bytes / 4 estimates appear only as named session components; they are not billable tokens. '
+                  'Provider discovery, prompt caching and tokenization are unmeasured; prompt wrappers exclude separate/session-start text.')
 
 # Native cases and how their existing [TIMING]/[SIZE] lines map to metrics.
 NATIVE = [
@@ -63,11 +64,23 @@ NATIVE = [
     ('PerformanceMemoryPollOnLargeInstall', r'memory poll, 2000 chats, \d+ queued: p50=([\d.]+) ms', ['memory_poll_2000_ms']),
     ('PerformanceColdHistoryPage10000Messages', r'cold initial history page, 10000 messages: ([\d.]+) ms', ['cold_history_10000_ms']),
     ('PerformanceColdLocalSummaryCatalogue', r'cold 1000-chat summary catalogue with cache regeneration: ([\d.]+) ms', ['cold_catalogue_1000_ms']),
-    ('PerformanceSuiteUamRequestOverhead', r'uam-control MCP tool schemas: (\d+) bytes', ['uam_control_tools_bytes']),
-    ('PerformanceSuiteUamRequestOverhead', r'computer-use MCP tool schemas: (\d+) bytes', ['computer_use_tools_bytes']),
-    ('PerformanceSuiteUamRequestOverhead', r'claude-cli hello prompt text added: (\d+) bytes', ['claude_hello_prompt_added_bytes']),
-    ('PerformanceSuiteUamRequestOverhead', r'codex-cli hello prompt text added: (\d+) bytes', ['codex_hello_prompt_added_bytes']),
+    ('PerformanceSuiteUamRequestOverhead', r'uam-control full catalogue: (\d+) bytes, (\d+) tools', ['uam_control_catalog_bytes', 'uam_control_catalog_tools']),
+    ('PerformanceSuiteUamRequestOverhead', r'computer-use full catalogue: (\d+) bytes, (\d+) tools', ['computer_use_catalog_bytes', 'computer_use_catalog_tools']),
 ]
+PROVIDERS = ('claude', 'codex', 'gemini', 'opencode', 'copilot', 'antigravity')
+EXPOSURE_CONTEXTS = ('local_root', 'ssh_root', 'read_only_agent', 'child_without_delegates', 'temporary_side_chat', 'goal_reviewer')
+for provider in PROVIDERS:
+    NATIVE.append(('PerformanceSuiteUamRequestOverhead', rf'{provider}-cli hello prompt text added: (\d+) bytes',
+                   [f'{provider}_hello_prompt_added_bytes']))
+    for view in ('structured', 'cli'):
+        for context in EXPOSURE_CONTEXTS:
+            prefix = f'uam_control_{provider}_{view}_{context}'
+            if view == 'cli' and context == 'goal_reviewer':
+                NATIVE.append(('PerformanceSuiteUamRequestOverhead', rf'{provider}-cli {view} {context} status: (.+)', [f'{prefix}_status']))
+            else:
+                NATIVE.append(('PerformanceSuiteUamRequestOverhead', rf'{provider}-cli {view} {context} uam-control exposure: (\d+) bytes, (\d+) tools',
+                               [f'{prefix}_schema_bytes', f'{prefix}_tools']))
+
 # Frontend labels (digits folded to N) that stand in for end-to-end rows until the packaged app is driven.
 UI_PROXIES = {'new_thread_ms': ('empty chat to usable composer', 'empty chat to usable composer', 'p50'),
               'typing_lag_p95_ms': ('input N to committed draft', 'input to committed draft, one chat streaming at most', 'p95'),
@@ -131,6 +144,20 @@ def write_fixture(root, chats=2000, long_messages=2000):
 
 # ---------------------------------------------------------------------------- native
 
+def parse_native_output(case, lines):
+    """Keep catalogue, per-session exposure and every provider's prompt wrapper as separate components."""
+    metrics = {}
+    for name, pattern, keys in NATIVE:
+        if name != case:
+            continue
+        match = next((m for m in (re.search(pattern.replace(r'[\d.]+', NUMBER), line) for line in lines) if m), None)
+        for key, value in zip(keys, match.groups() if match else []):
+            metrics[key] = value if key.endswith('_status') else float(value)
+            if key.endswith('_schema_bytes'):
+                metrics[f'{key}_div4_estimate'] = float(value) / 4
+    return metrics
+
+
 def run_native(binary, out):
     binary = Path(binary).resolve()
     environment = os.environ.copy()
@@ -150,12 +177,7 @@ def run_native(binary, out):
         raw[case] = lines
         if result.returncode or f'[PASS] {case}' not in result.stdout:
             failed.append(case)
-        for name, pattern, keys in NATIVE:
-            if name != case:
-                continue
-            match = next((m for m in (re.search(pattern.replace(r'[\d.]+', NUMBER), line) for line in lines) if m), None)
-            for key, value in zip(keys, match.groups() if match else []):
-                metrics[key] = float(value)
+        metrics.update(parse_native_output(case, lines))
     if failed:
         print(f'Native cases failed (figures kept where printed): {" ".join(failed)}', file=sys.stderr)
     merge_out(out, metrics, raw={'native': raw})
@@ -459,20 +481,15 @@ def run_app(app, out, settle, idle, relaunches, timeout, keep):
 def fmt(value):
     if value is None:
         return '—'
+    if isinstance(value, str):
+        return value
     return f'{value:,.0f}' if abs(value) >= 100 else f'{value:,.2f}'.rstrip('0').rstrip('.')
 
 
 def delta(value, base):
-    if value is None or base in (None, 0):
+    if not isinstance(value, (int, float)) or not isinstance(base, (int, float)) or base == 0:
         return ''
     return f'{(value - base) / base * 100:+.0f}%'
-
-
-def uam_added_tokens(metrics):
-    """UAM's own fixed additions to a Claude "hello" request: UAM-Control tool schemas plus prompt text, at ~4 bytes per token."""
-    if 'uam_control_tools_bytes' not in metrics:
-        return None
-    return round((metrics['uam_control_tools_bytes'] + metrics.get('claude_hello_prompt_added_bytes', 0)) / 4)
 
 
 def report(files, baseline_path):
@@ -501,6 +518,9 @@ def report(files, baseline_path):
     if metrics.get('windows_session') == 0:
         notes.append('The packaged app ran in Windows session 0 (no interactive desktop); its startup, memory and CPU figures '
                      'do not represent a user\'s machine.')
+    if 'uam_control_tools_bytes' in base:
+        notes.append('The legacy baseline measured the ungated tool catalogue. New session schema components have no comparable baseline; '
+                     'they are not token or runtime savings.')
     if not base:
         notes.append(f'No baseline at `{baseline_path}`; the Baseline and Δ columns are empty.')
     lines = [f'### UAM performance suite ({meta.get("revision", "?")}, {meta.get("platform", "?")})', '', *notes, *([''] if notes else []),
@@ -509,14 +529,12 @@ def report(files, baseline_path):
         value, base_value, mark = metrics.get(key), base.get(key), ''
         if value is None and f'ui_proxy_{key}' in metrics:
             value, base_value, mark = metrics[f'ui_proxy_{key}'], base.get(f'ui_proxy_{key}'), f' * ({UI_PROXIES[key][1]})'
-        if value is None and key == 'hello_tokens' and 'uam_control_tools_bytes' in metrics:
-            value, base_value, mark = uam_added_tokens(metrics), uam_added_tokens(base), ' †'
         lines.append(f'| {label}{mark} | {unit} | {fmt(value)} | {fmt(base_value)} | {delta(value, base_value)} | {fmt(t3)} | {fmt(leaders)} |')
     lines += ['', REFERENCE_NOTE, '', '| Component metric | This run | Baseline | Δ |', '|---|---:|---:|---:|']
     row_keys = {key for key, *_ in METRICS} | {f'ui_proxy_{key}' for key in UI_PROXIES}
     for key in sorted(key for key in set(metrics) - row_keys if metrics[key] is not None):
         lines.append(f'| `{key}` | {fmt(metrics[key])} | {fmt(base.get(key))} | {delta(metrics[key], base.get(key))} |')
-    lines += ['', 'Units: `_ms` milliseconds, `_mb` MiB, `_bytes` bytes (~4 bytes per token), `_ms_per_s` UI-thread ms per second. '
+    lines += ['', 'Units: `_ms` milliseconds, `_mb` MiB, `_bytes` serialized bytes, `_tools` listed tools, `_schema_bytes_div4_estimate` schema bytes / 4 (not billable tokens), `_ms_per_s` UI-thread ms per second. '
               'Report-only: shared runners vary by tens of percent between runs, so compare repeated runs on one machine.']
     return '\n'.join(lines) + '\n'
 
