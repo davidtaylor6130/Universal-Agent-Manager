@@ -8082,7 +8082,17 @@ For desktop observation and input, use only the provider's built-in controller; 
 				if (!workspace_chat) continue;
 				// A held queue pauses new input, not recovery of an already-admitted remote turn (#682):
 				// skipping its workspace left restart recovery waiting forever with no Resume control.
-				if (session.queue_held && !session.recovering_remote_turn && !session.recovering_remote_process) continue;
+				if (session.queue_held && !session.recovering_remote_turn && !session.recovering_remote_process)
+				{
+					// Held input never launches here, but a finished preparation still settles the wait: its failure or
+					// cancellation is reported and readiness returns the chat to Resume, instead of "waiting" forever.
+					if (IsWorktreeLaunchPreparationRunning(app, session.chat_id)) continue;
+					const WorktreeLaunchPreparationState held = PrepareAcpWorkspaceForLaunch(app, session, *workspace_chat);
+					if (held == WorktreeLaunchPreparationState::Pending) continue;
+					changed = true;
+					if (held == WorktreeLaunchPreparationState::Ready && !session.running) session.lifecycle_state = kAcpLifecycleStopped;
+					continue;
+				}
 				if (!ValidateQueuedReplayBeforeLaunch(app, session, *workspace_chat))
 				{
 					changed = true;
