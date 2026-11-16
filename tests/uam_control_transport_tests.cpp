@@ -31,6 +31,18 @@ namespace
 		return nlohmann::json::parse(text);
 	}
 
+	/// A read-only tool replies once a background save has made its audit record durable, so keep polling for it.
+	nlohmann::json AwaitPublishedReply(uam::AppState& app, const fs::path& path)
+	{
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+		while (!fs::exists(path) && std::chrono::steady_clock::now() < deadline)
+		{
+			(void)uam::UamControlService::ProcessPendingRequests(app);
+			std::this_thread::sleep_for(std::chrono::milliseconds(2));
+		}
+		return ReadPublishedReply(path);
+	}
+
 	nlohmann::json InspectCurrentGoal(uam::AppState& app)
 	{
 		UAM_ASSERT(uam::UamControlService::Initialize(app));
@@ -1674,8 +1686,7 @@ UAM_TEST(UamControlRequestsMustProveTheirSession)
 	const auto write = [&](const std::string& id, const nlohmann::json& request)
 	{
 		UAM_ASSERT(uam::io::WriteTextFile(fixture.capability_directory / "requests" / (id + ".json"), request.dump()));
-		(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
-		return ReadPublishedReply(responses / (id + ".json"));
+		return AwaitPublishedReply(fixture.app, responses / (id + ".json"));
 	};
 	const auto body = [](const std::string& id) { return nlohmann::json{{"requestId", id}, {"method", "goal_get"}, {"arguments", nlohmann::json::object()}}; };
 	const nlohmann::json refusal{{"ok", false}, {"error", "Control request is not signed by this chat session's tool connection."}};
@@ -1726,9 +1737,8 @@ UAM_TEST(UamControlListedButUnreadableRequestRetriesInsteadOfAnsweringMalformed)
 			UAM_ASSERT(fs::exists(held.path));
 		}
 		held.Release();
-		(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
 	}
-	UAM_ASSERT(ReadPublishedReply(ready_reply).value("ok", false));
+	UAM_ASSERT(AwaitPublishedReply(fixture.app, ready_reply).value("ok", false));
 	// A file that never becomes readable is rejected after the wall-clock grace, whatever the poll rate.
 	UnreadableFile stuck(PublishRequest(fixture.app, fixture.capability_directory, "never-readable"));
 	const fs::path stuck_reply = responses / "never-readable.json";
@@ -1751,8 +1761,7 @@ UAM_TEST(UamControlLeftoverRequestNeverOverwritesAnsweredOrWaitingReply)
 	const fs::path capability = fixture.capability_directory;
 	const fs::path reply = capability / "responses" / "answered.json";
 	PublishRequest(fixture.app, capability, "answered");
-	(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
-	const nlohmann::json delivered = ReadPublishedReply(reply);
+	const nlohmann::json delivered = AwaitPublishedReply(fixture.app, reply);
 	UAM_ASSERT(delivered.value("ok", false));
 	const auto settle = [&] { for (int poll = 0; poll < 5; ++poll) (void)uam::UamControlService::ProcessPendingRequests(fixture.app); };
 	// (a) Removal failed but the file stays readable: a replay must not answer over the delivered reply.
@@ -1824,11 +1833,13 @@ UAM_TEST(UamControlBadRequestFilesNeverDelayAnotherCapability)
 	PublishRequest(fixture.app, noisy, "9-noisy-valid");
 	PublishRequest(fixture.app, quiet, "9-quiet-valid");
 	(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
-	// The other capability is answered on the first tick; links are rejected and removed at once.
-	UAM_ASSERT(fs::exists(quiet / "responses" / "9-quiet-valid.json"));
+	// The other capability's request runs on the first tick (its reply follows its durable audit); links are rejected and removed at once.
+	UAM_ASSERT(!fs::exists(quiet / "requests" / "9-quiet-valid.json"));
 	// Rejections spend only the noisy capability's own budget, and locked files spend none of it.
 	(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
-	UAM_ASSERT(fs::exists(noisy / "responses" / "9-noisy-valid.json"));
+	UAM_ASSERT(!fs::exists(noisy / "requests" / "9-noisy-valid.json"));
+	UAM_ASSERT(AwaitPublishedReply(fixture.app, quiet / "responses" / "9-quiet-valid.json").value("ok", false));
+	UAM_ASSERT(AwaitPublishedReply(fixture.app, noisy / "responses" / "9-noisy-valid.json").value("ok", false));
 	for (const auto& link : links)
 	{
 		UAM_ASSERT(!fs::exists(fs::symlink_status(link)));
@@ -1910,4 +1921,193 @@ UAM_TEST(UamControlRequestSwappedForFifoNeverBlocksThePoll)
 	watchdog.join();
 	UAM_ASSERT(!unblocked_by_watchdog);
 #endif
+}
+
+namespace
+{
+	// The parent of a delegation: a 2,000-message root chat whose agent polls one child's status.
+	struct StatusPollingFixture : ControlAgentWaitFixture
+	{
+		std::string child_id;
+		StatusPollingFixture(int messages = 2000, std::size_t bytes_each = 6 * 1024)
+		{
+			child_id = Delegate("plan");
+			ChatSession& root = *ChatDomainService().FindChatById(app, root_id);
+			for (int index = 0; index < messages; ++index)
+				root.messages.push_back({.role = index % 2 == 0 ? MessageRole::User : MessageRole::Assistant,
+				    .content = std::string(bytes_each, static_cast<char>('a' + index % 26))});
+			UAM_ASSERT(ChatRepository::SaveChat(app.data_root, root));
+		}
+		ChatSession& Root() { return *ChatDomainService().FindChatById(app, root_id); }
+		fs::path Reply(const std::string& id) const { return capability_directory / "responses" / (id + ".json"); }
+		// Runs the poll-loop work (control requests, then the save flush) until the reply is published.
+		double PollUntilReply(const std::string& id, double& waited_ms)
+		{
+			double longest = 0.0;
+			const auto start = std::chrono::steady_clock::now();
+			const auto ms = [](std::chrono::steady_clock::time_point from) { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - from).count(); };
+			while (!fs::exists(Reply(id)) && std::chrono::steady_clock::now() - start < std::chrono::seconds(120))
+			{
+				const auto poll = std::chrono::steady_clock::now();
+				(void)uam::UamControlService::ProcessPendingRequests(app);
+				(void)uam::FlushPendingChatSaves(app);
+				longest = std::max(longest, ms(poll));
+				std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			}
+			UAM_ASSERT(fs::exists(Reply(id)));
+			waited_ms = ms(start);
+			return longest;
+		}
+	};
+}
+
+// An agent polling agent_status on a 2,000-message root chat, measured through the production request path.
+UAM_TEST(UamControlStatusPollingMeasurements)
+{
+	StatusPollingFixture fixture;
+	double longest = 0.0, waited = 0.0, waited_total = 0.0;
+	for (int call = 0; call < 10; ++call)
+	{
+		const std::string id = "status-poll-" + std::to_string(call);
+		(void)PublishRequest(fixture.app, fixture.capability_directory, id, "agent_status", {{"runId", fixture.child_id}});
+		longest = std::max(longest, fixture.PollUntilReply(id, waited));
+		waited_total += waited;
+		UAM_ASSERT(ReadPublishedReply(fixture.Reply(id)).value("ok", false));
+	}
+	std::fprintf(stderr, "[measure] agent_status polling on a 2000-message (12 MB) root chat: longest single poll %.1f ms; mean request-to-reply %.1f ms\n", longest, waited_total / 10.0);
+}
+
+// The reply to a read-only tool is evidence its audit record is on disk: a crash before the background save leaves
+// no reply, and the poll that ran the tool never wrote the transcript itself.
+UAM_TEST(UamControlReadOnlyReplyFollowsDurableAuditOffPoll)
+{
+	StatusPollingFixture fixture;
+	// Calibration: the blocking work this guards against, a synchronous save of the fixture root chat (median of three).
+	std::vector<double> saves;
+	for (int run = 0; run < 3; ++run)
+	{
+		const auto start = std::chrono::steady_clock::now();
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, fixture.Root()));
+		saves.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+	}
+	std::ranges::sort(saves);
+	const auto on_disk = [&](const std::string& id)
+	{
+		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.root_id, true, nullptr, false);
+		UAM_ASSERT(saved.has_value());
+		return std::ranges::any_of(saved->uam_control_audit, [&](const UamControlAuditRecord& record) { return record.request_id == id; });
+	};
+	for (const std::string id : {"durable-status-1", "durable-status-2"})
+	{
+		(void)PublishRequest(fixture.app, fixture.capability_directory, id, "agent_status", {{"runId", fixture.child_id}});
+		const auto start = std::chrono::steady_clock::now();
+		(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+		const double poll = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+		std::fprintf(stderr, "[measure] agent_status request poll %.2f ms; synchronous root save median %.1f ms\n", poll, saves[1]);
+		// Per-poll budget below one unit of the guarded work (half the cheapest calibration save), so a synchronous save fails it.
+		UAM_ASSERT(poll < saves.front() / 2.0);
+		// Simulated crash point: the tool ran and its record is in memory, but nothing durable yet and no reply.
+		UAM_ASSERT(std::ranges::any_of(fixture.Root().uam_control_audit, [&](const UamControlAuditRecord& record) { return record.request_id == id; }));
+		UAM_ASSERT(!on_disk(id));
+		UAM_ASSERT(!fs::exists(fixture.Reply(id)));
+		const nlohmann::json reply = AwaitPublishedReply(fixture.app, fixture.Reply(id));
+		UAM_ASSERT(reply.value("ok", false));
+		UAM_ASSERT_EQ(reply["result"]["runId"], nlohmann::json(fixture.child_id));
+		UAM_ASSERT(on_disk(id));
+	}
+	// A leftover copy of an answered request is never run or answered again.
+	const fs::path replay = PublishRequest(fixture.app, fixture.capability_directory, "durable-status-1", "agent_status", {{"runId", fixture.child_id}});
+	(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+	UAM_ASSERT(!fs::exists(replay));
+	UAM_ASSERT(fixture.app.uam_control_capabilities.front().pending_audited_replies.empty());
+}
+
+// While the audit cannot be written, no reply is given; once the folder is writable again the save is retried and the reply follows.
+UAM_TEST(UamControlReadOnlySaveFailurePreservesFullAuditWindow)
+{
+	ControlAgentWaitFixture fixture;
+	ChatSession& root = *ChatDomainService().FindChatById(fixture.app, fixture.root_id);
+	root.uam_control_audit.clear();
+	for (int index = 0; index < 64; ++index)
+		root.uam_control_audit.push_back({.request_id = "retained-" + std::to_string(index), .method = "agent_list", .result = "ok"});
+	const fs::path data_root = fixture.app.data_root;
+	UAM_ASSERT(ChatRepository::SaveChat(data_root, root));
+	const fs::path blocked = fixture.temp.root / "blocked-audit-root";
+	UAM_ASSERT(uam::io::WriteTextFile(blocked, "not a directory"));
+	fixture.app.data_root = blocked;
+	const nlohmann::json refused = fixture.Call("failed-audit", "agent_list", nlohmann::json::object());
+	UAM_ASSERT(!refused.value("ok", true));
+	UAM_ASSERT_EQ(refused.value("error", std::string()), std::string("Control result could not be durably recorded."));
+	UAM_ASSERT_EQ(root.uam_control_audit.size(), std::size_t{64});
+	for (int index = 0; index < 64; ++index)
+		UAM_ASSERT_EQ(root.uam_control_audit[index].request_id, "retained-" + std::to_string(index));
+	fixture.app.data_root = data_root;
+	// A later successful save must retain the complete old window too, including the oldest record.
+	UAM_ASSERT(ChatRepository::SaveChat(data_root, root));
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(data_root, fixture.root_id, true, nullptr, false);
+	UAM_ASSERT(saved && saved->uam_control_audit.size() == 64);
+	UAM_ASSERT_EQ(saved->uam_control_audit.front().request_id, std::string("retained-0"));
+	UAM_ASSERT_EQ(saved->uam_control_audit.back().request_id, std::string("retained-63"));
+}
+
+UAM_TEST(UamControlReadOnlyEvictedAuditRetiresItsPendingReply)
+{
+	StatusPollingFixture fixture(20, 256);
+	const fs::path data_root = fixture.app.data_root;
+	const fs::path blocked = fixture.temp.root / "blocked-evicted-audit-root";
+	UAM_ASSERT(uam::io::WriteTextFile(blocked, "not a directory"));
+	fixture.app.data_root = blocked;
+	(void)PublishRequest(fixture.app, fixture.capability_directory, "evicted-status", "agent_status", {{"runId", fixture.child_id}});
+	(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+	UAM_ASSERT(!fs::exists(fixture.Reply("evicted-status")));
+	UAM_ASSERT(!fixture.app.uam_control_capabilities.front().pending_audited_replies.empty());
+	// Reach an actual preparation failure: no successful publisher can harvest this receipt.
+	const auto failed_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+	while (!fixture.app.chat_save_failures_by_chat_id.contains(fixture.root_id) && std::chrono::steady_clock::now() < failed_deadline)
+	{
+		(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	UAM_ASSERT(fixture.app.chat_save_failures_by_chat_id.contains(fixture.root_id));
+	UAM_ASSERT(!fs::exists(fixture.Reply("evicted-status")));
+	// Model the last-64 audit window advancing while storage remains unwritable.
+	fixture.Root().uam_control_audit.clear();
+	for (int index = 0; index < 64; ++index)
+		fixture.Root().uam_control_audit.push_back({.request_id = "newer-" + std::to_string(index), .method = "agent_list", .result = "ok"});
+	const nlohmann::json reply = AwaitPublishedReply(fixture.app, fixture.Reply("evicted-status"));
+	UAM_ASSERT(!reply.value("ok", true));
+	UAM_ASSERT_EQ(reply.value("error", std::string()), std::string("Control result could not be durably recorded."));
+	UAM_ASSERT(fixture.app.uam_control_capabilities.front().pending_audited_replies.empty());
+	UAM_ASSERT_EQ(fixture.app.data_root, blocked);
+	// Only after refusal may unrelated owed transcript saves recover and drain.
+	fixture.app.data_root = data_root;
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+	while (!fixture.app.pending_chat_save_at_by_chat_id.empty() && std::chrono::steady_clock::now() < deadline)
+	{
+		(void)uam::FlushPendingChatSaves(fixture.app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	UAM_ASSERT(fixture.app.pending_chat_save_at_by_chat_id.empty());
+}
+
+UAM_TEST(UamControlReadOnlyReplyWaitsWhileAuditCannotBeSaved)
+{
+	StatusPollingFixture fixture(20, 256);
+	const fs::path data_root = fixture.app.data_root;
+	const fs::path blocked = fixture.temp.root / "blocked-data-root";
+	UAM_ASSERT(uam::io::WriteTextFile(blocked, "not a directory"));
+	(void)PublishRequest(fixture.app, fixture.capability_directory, "blocked-status", "agent_status", {{"runId", fixture.child_id}});
+	(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+	fixture.app.data_root = blocked;
+	const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+	while (std::chrono::steady_clock::now() < until)
+	{
+		(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+		UAM_ASSERT(!fs::exists(fixture.Reply("blocked-status")));
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	}
+	fixture.app.data_root = data_root;
+	UAM_ASSERT(AwaitPublishedReply(fixture.app, fixture.Reply("blocked-status")).value("ok", false));
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(data_root, fixture.root_id, true, nullptr, false);
+	UAM_ASSERT(saved && std::ranges::any_of(saved->uam_control_audit, [](const UamControlAuditRecord& record) { return record.request_id == "blocked-status"; }));
 }

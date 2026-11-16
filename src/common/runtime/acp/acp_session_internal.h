@@ -530,6 +530,10 @@ bool HasActiveChatSaveWorker(const AppState& app, std::string_view chat_id);
 /// tool status): it keeps a snapshot already being written, which is published as an older state while the chat
 /// stays unsaved, and it debounces no longer than the maximum wait from the first unsaved change.
 void ScheduleChatSave(AppState& app, const ChatSession& chat, double delay_seconds = 0.5, bool append_only = false);
+/// <summary>True when a coalesced background save may stand in for SaveChatQuietly on this chat.</summary>
+bool BackgroundChatSaveCovers(const AppState& app, const ChatSession& chat);
+/// <summary>Applies the live runtime state every whole-chat save records; returns prior remote delivery authority.</summary>
+bool StampChatSaveState(AppState& app, ChatSession& chat);
 /// <summary>Saves a mid-turn display update in the background when no caller needs its durable receipt.</summary>
 void SaveChatSoon(AppState& app, const ChatSession& chat);
 /// <summary>Shown once per failing chat through the status line while its transcript cannot be saved.</summary>

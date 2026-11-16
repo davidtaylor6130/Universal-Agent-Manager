@@ -3018,6 +3018,8 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	std::vector<std::pair<std::string, std::string>> process_environment = launch_environment;
 	session.remote_output_delivery_token.clear();
 	session.pending_remote_output_ack_line.clear();
+	session.remote_output_ack_save.reset();
+	session.remote_output_ack_save_line.clear();
 	session.pending_remote_stdout_cursor = 0;
 	session.pending_remote_stderr_cursor = 0;
 	session.remote_consumed_stderr_cursor = 0;
@@ -4848,6 +4850,64 @@ static std::optional<ChatSession> FailedDirectPromptRecovery(
 	return recovered;
 }
 
+// Records the live runtime's interaction time and, for a remote chat, its request, turn and delivered-output
+// state on the chat, as every whole-chat save must before it serializes. Returns whether the chat held remote
+// delivery authority beforehand.
+bool StampChatSaveState(AppState& app, ChatSession& chat)
+{
+	const bool had_remote_delivery_authority =
+	    (chat.remote_turn_reconnect_pending || !chat.remote_active_turn_id.empty() ||
+	     !chat.remote_prompt_delivery_session_id.empty() || !chat.remote_prompt_delivery_id.empty() ||
+	     !chat.remote_prompt_delivery_payload.empty() || !chat.remote_pending_requests.empty());
+	const AcpSessionState* original_session = FindAcpSessionForChat(app, chat.id);
+	const bool preserve_remote_delivery_authority = had_remote_delivery_authority && original_session &&
+	    original_session->lifecycle_state == kAcpLifecycleError &&
+	    (!chat.messages_loaded || std::ranges::any_of(std::as_const(chat.messages), [](const Message& row)
+	    { return row.role == MessageRole::User && row.acp_prompt_not_sent; }));
+	if (original_session != nullptr)
+		chat.interaction_at = uam::time::LatestInteractionTimestamp(chat.interaction_at, original_session->interaction_at);
+	if (chat.execution_host_id != uam::execution_hosts::kLocalHostId)
+	{
+		if (const AcpSessionState* active = FindAcpSessionForChat(app, chat.id))
+		{
+			chat.remote_next_request_id = std::max(chat.remote_next_request_id, active->next_request_id);
+			chat.remote_turn_serial = std::max(chat.remote_turn_serial, active->turn_serial);
+			// Only an explicit runtime settlement may clear an uncertain failed prompt's authority.
+			if (!preserve_remote_delivery_authority)
+			{
+				chat.remote_turn_user_message_index = uam::AcpSessionHasActiveTurn(*active)
+				    ? active->turn_user_message_index : -1;
+				chat.remote_active_turn_id = ProviderRuntimeRegistry::ResolveById(active->provider_id).AcpTurnIdentity(*active);
+			}
+		}
+	}
+	if (chat.remote_turn_reconnect_pending && !preserve_remote_delivery_authority && !chat.remote_manual_compaction_pending)
+	{
+		const AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
+		// Raw FIFO input has not reached the provider, so it cannot keep a settled turn's marker (#682):
+		// queue drain waits for this marker to clear, which deadlocked every input queued behind a remote turn.
+		if (session == nullptr ||
+		    (!session->processing && !AcpSessionIsWaitingForInput(*session) && session->queued_prompt.empty() &&
+		     session->prompt_request_id == 0 && !session->reconnect_pending && !session->pending_prompt_delivery &&
+		     chat.remote_prompt_delivery_id.empty() && chat.remote_prompt_delivery_payload.empty() &&
+		     std::ranges::none_of(session->queued_user_prompts, [](const AcpQueuedUserPromptState& prompt) { return prompt.prepared_for_delivery; })))
+		{
+			chat.remote_turn_reconnect_pending = false;
+			if (!chat.remote_process_exists)
+			{
+				chat.remote_delivered_stdout_cursor = 0;
+				chat.remote_delivered_stderr_cursor = 0;
+			}
+		}
+	}
+	if (!chat.remote_turn_reconnect_pending && !chat.remote_process_exists)
+	{
+		chat.remote_delivered_stdout_cursor = 0;
+		chat.remote_delivered_stderr_cursor = 0;
+	}
+	return had_remote_delivery_authority;
+}
+
 bool SaveChatQuietly(AppState& app, const ChatSession& chat, AcpChatSavePurpose purpose, SavedChatPrimaryWitness* own_primary)
 {
 	AcpSessionState* continuation_owner = FindAcpSessionForChat(app, chat.id);
@@ -4868,59 +4928,7 @@ bool SaveChatQuietly(AppState& app, const ChatSession& chat, AcpChatSavePurpose 
 	if (std::any_of(app.model_discovery_chats.begin(), app.model_discovery_chats.end(),
 	        [&chat](const ChatSession& discovery) { return discovery.id == chat.id; })) return true;
 	ChatSession* persisted = ChatDomainService().FindChatById(app, chat.id);
-	const bool had_remote_delivery_authority = persisted &&
-	    (persisted->remote_turn_reconnect_pending || !persisted->remote_active_turn_id.empty() ||
-	     !persisted->remote_prompt_delivery_session_id.empty() || !persisted->remote_prompt_delivery_id.empty() ||
-	     !persisted->remote_prompt_delivery_payload.empty() || !persisted->remote_pending_requests.empty());
-	const AcpSessionState* original_session = persisted ? FindAcpSessionForChat(app, chat.id) : nullptr;
-	const bool preserve_remote_delivery_authority = had_remote_delivery_authority && original_session &&
-	    original_session->lifecycle_state == kAcpLifecycleError &&
-	    (!persisted->messages_loaded || std::ranges::any_of(persisted->messages, [](const Message& row)
-	    { return row.role == MessageRole::User && row.acp_prompt_not_sent; }));
-	if (persisted != nullptr)
-	{
-		if (const AcpSessionState* active = FindAcpSessionForChat(app, chat.id))
-			persisted->interaction_at = uam::time::LatestInteractionTimestamp(persisted->interaction_at, active->interaction_at);
-	}
-	if (persisted != nullptr && persisted->execution_host_id != uam::execution_hosts::kLocalHostId)
-	{
-		if (const AcpSessionState* active = FindAcpSessionForChat(app, chat.id))
-		{
-			persisted->remote_next_request_id = std::max(persisted->remote_next_request_id, active->next_request_id);
-			persisted->remote_turn_serial = std::max(persisted->remote_turn_serial, active->turn_serial);
-			// Only an explicit runtime settlement may clear an uncertain failed prompt's authority.
-			if (!preserve_remote_delivery_authority)
-			{
-				persisted->remote_turn_user_message_index = uam::AcpSessionHasActiveTurn(*active)
-				    ? active->turn_user_message_index : -1;
-				persisted->remote_active_turn_id = ProviderRuntimeRegistry::ResolveById(active->provider_id).AcpTurnIdentity(*active);
-			}
-		}
-	}
-	if (persisted != nullptr && persisted->remote_turn_reconnect_pending && !preserve_remote_delivery_authority && !persisted->remote_manual_compaction_pending)
-	{
-		const AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
-		// Raw FIFO input has not reached the provider, so it cannot keep a settled turn's marker (#682):
-		// queue drain waits for this marker to clear, which deadlocked every input queued behind a remote turn.
-		if (session == nullptr ||
-		    (!session->processing && !AcpSessionIsWaitingForInput(*session) && session->queued_prompt.empty() &&
-		     session->prompt_request_id == 0 && !session->reconnect_pending && !session->pending_prompt_delivery &&
-		     persisted->remote_prompt_delivery_id.empty() && persisted->remote_prompt_delivery_payload.empty() &&
-		     std::ranges::none_of(session->queued_user_prompts, [](const AcpQueuedUserPromptState& prompt) { return prompt.prepared_for_delivery; })))
-		{
-			persisted->remote_turn_reconnect_pending = false;
-			if (!persisted->remote_process_exists)
-			{
-				persisted->remote_delivered_stdout_cursor = 0;
-				persisted->remote_delivered_stderr_cursor = 0;
-			}
-		}
-	}
-	if (persisted != nullptr && !persisted->remote_turn_reconnect_pending && !persisted->remote_process_exists)
-	{
-		persisted->remote_delivered_stdout_cursor = 0;
-		persisted->remote_delivered_stderr_cursor = 0;
-	}
+	const bool had_remote_delivery_authority = persisted && StampChatSaveState(app, *persisted);
 	FinishPendingQueuedAdmissionSave(app, chat.id);
 	InvalidatePendingChatSave(app, chat.id);
 	AcpSessionState* active = persisted ? FindAcpSessionForChat(app, chat.id) : nullptr;
@@ -4999,21 +5007,34 @@ void ScheduleChatSave(AppState& app, const ChatSession& chat, double delay_secon
 	app.pending_chat_save_at_by_chat_id[chat.id] = ArmChatSave(app, chat.id, delay_seconds, append_only);
 }
 
-void SaveChatSoon(AppState& app, const ChatSession& chat)
+bool BackgroundChatSaveCovers(const AppState& app, const ChatSession& chat)
 {
-	// A tool status or plan row gates nothing, so it must not hold the UI thread for a whole-transcript
-	// write. Every state the synchronous save settles, stamps or refuses keeps the synchronous path.
+	// Only a loaded chat in an active turn: every state the synchronous save settles or refuses (a failed or
+	// finished turn, a remote reconnect marker, a managed continuation's primary witness, a pending rollback,
+	// an unconfirmed initial publication, a discovery chat) keeps the synchronous path. The remote stamping
+	// it does on the way is StampChatSaveState, which callers apply before scheduling. A reported remote source
+	// exit ends the turn while processing is still set, so it also keeps the synchronous save and its rollback:
+	// the interruption (settled wait, failed tools) is durable before the exit or any later output is acknowledged.
 	const ChatSession* live = ChatDomainService().FindChatById(app, chat.id);
 	const AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
-	const bool local = live != nullptr && (live->execution_host_id.empty() || live->execution_host_id == uam::execution_hosts::kLocalHostId);
-	if (!local || session == nullptr || !session->processing || session->lifecycle_state == kAcpLifecycleError ||
-	    session->managed_parent_continuation || session->queued_rollback_save_pending || !live->messages_loaded || live->imported_read_only ||
-	    AgentRunScheduler::HasUnconfirmedInitialRootPublication(app, *live) ||
-	    std::ranges::any_of(app.model_discovery_chats, [&chat](const ChatSession& discovery) { return discovery.id == chat.id; }))
+	return live != nullptr && session != nullptr && session->processing && !session->remote_source_exit_reported &&
+	    session->lifecycle_state != kAcpLifecycleError &&
+	    !session->managed_parent_continuation && !session->queued_rollback_save_pending && live->messages_loaded && !live->imported_read_only &&
+	    !AgentRunScheduler::HasUnconfirmedInitialRootPublication(app, *live) &&
+	    std::ranges::none_of(app.model_discovery_chats, [&chat](const ChatSession& discovery) { return discovery.id == chat.id; });
+}
+
+void SaveChatSoon(AppState& app, const ChatSession& chat)
+{
+	// A tool status or plan row gates nothing, so it must not hold the UI thread for a whole-transcript write.
+	// On a remote chat the row also stays unacknowledged until a durable save, so the helper replays it after a crash.
+	ChatSession* live = ChatDomainService().FindChatById(app, chat.id);
+	if (live == nullptr || !BackgroundChatSaveCovers(app, *live))
 	{
 		(void)SaveChatQuietly(app, chat);
 		return;
 	}
+	(void)StampChatSaveState(app, *live);
 	ScheduleChatSave(app, *live, 0.0, true);
 }
 

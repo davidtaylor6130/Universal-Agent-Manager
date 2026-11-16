@@ -820,31 +820,60 @@ bool DrainStdout(AppState& app, AcpSessionState& session, ChatSession& chat, Cef
 			session.stderr_poll_pending = true;
 			return changed;
 		}
-		const std::uintmax_t old_stdout_cursor = chat.remote_delivered_stdout_cursor;
-		const std::uintmax_t old_stderr_cursor = chat.remote_delivered_stderr_cursor;
-		const std::vector<uam::AcpRemoteInteractionResponseState> old_responses =
-		    chat.remote_interaction_responses;
-		const std::vector<AcpRemotePendingRequestState> old_requests = chat.remote_pending_requests;
-		std::erase_if(chat.remote_pending_requests, [](const AcpRemotePendingRequestState& request)
-		    { return request.response_consumed; });
-		chat.remote_delivered_stdout_cursor = session.pending_remote_stdout_cursor;
-		chat.remote_delivered_stderr_cursor = session.pending_remote_stderr_cursor;
-		std::erase_if(chat.remote_interaction_responses,
-			          [](const AcpRemoteInteractionResponseState& response)
-			          {
-				          // Native HTTP decisions are retired only by their own confirmed HTTP
-				          // receipt; an unrelated ACP stdout acknowledgment does not deliver them.
-				          const auto id = nlohmann::json::parse(response.request_id_json, nullptr, false);
-				          return !id.is_string() || !id.get_ref<const std::string&>().starts_with("opencode-native:");
-			          });
-		if (!SaveChatQuietly(app, chat))
+		// A background save made this batch durable; acknowledge it now. The helper sends nothing more until then.
+		bool durable = false;
+		if (session.remote_output_ack_save)
 		{
-			chat.remote_delivered_stdout_cursor = old_stdout_cursor;
-			chat.remote_delivered_stderr_cursor = old_stderr_cursor;
-			chat.remote_interaction_responses = old_responses;
-			chat.remote_pending_requests = old_requests;
-			app.status_line = "Remote output is waiting for a successful local save.";
-			return true;
+			const std::optional<bool> saved = PollRemoteOutputAckSave(session.remote_output_ack_save);
+			if (!saved && session.remote_output_ack_save_line == session.pending_remote_output_ack_line)
+				return changed;
+			durable = saved.value_or(false) && session.remote_output_ack_save_line == session.pending_remote_output_ack_line &&
+			    chat.remote_delivered_stdout_cursor == session.pending_remote_stdout_cursor &&
+			    chat.remote_delivered_stderr_cursor == session.pending_remote_stderr_cursor;
+			session.remote_output_ack_save.reset();
+			session.remote_output_ack_save_line.clear();
+		}
+		if (!durable)
+		{
+			const std::uintmax_t old_stdout_cursor = chat.remote_delivered_stdout_cursor;
+			const std::uintmax_t old_stderr_cursor = chat.remote_delivered_stderr_cursor;
+			const std::vector<uam::AcpRemoteInteractionResponseState> old_responses =
+			    chat.remote_interaction_responses;
+			const std::vector<AcpRemotePendingRequestState> old_requests = chat.remote_pending_requests;
+			std::erase_if(chat.remote_pending_requests, [](const AcpRemotePendingRequestState& request)
+			    { return request.response_consumed; });
+			chat.remote_delivered_stdout_cursor = session.pending_remote_stdout_cursor;
+			chat.remote_delivered_stderr_cursor = session.pending_remote_stderr_cursor;
+			std::erase_if(chat.remote_interaction_responses,
+				          [](const AcpRemoteInteractionResponseState& response)
+				          {
+					          // Native HTTP decisions are retired only by their own confirmed HTTP
+					          // receipt; an unrelated ACP stdout acknowledgment does not deliver them.
+					          const auto id = nlohmann::json::parse(response.request_id_json, nullptr, false);
+					          return !id.is_string() || !id.get_ref<const std::string&>().starts_with("opencode-native:");
+				          });
+			// Mid-turn, the whole-transcript write runs on the background saver and the acknowledgement waits for it.
+			// A crash before then leaves the batch unacknowledged, so the helper replays it, as it would after a failed save.
+			if (BackgroundChatSaveCovers(app, chat))
+			{
+				(void)StampChatSaveState(app, chat);
+				if (chat.remote_delivered_stdout_cursor == session.pending_remote_stdout_cursor &&
+				    chat.remote_delivered_stderr_cursor == session.pending_remote_stderr_cursor &&
+				    (session.remote_output_ack_save = ScheduleRemoteOutputAckSave(app, chat)))
+				{
+					session.remote_output_ack_save_line = session.pending_remote_output_ack_line;
+					return true;
+				}
+			}
+			if (!SaveChatQuietly(app, chat))
+			{
+				chat.remote_delivered_stdout_cursor = old_stdout_cursor;
+				chat.remote_delivered_stderr_cursor = old_stderr_cursor;
+				chat.remote_interaction_responses = old_responses;
+				chat.remote_pending_requests = old_requests;
+				app.status_line = "Remote output is waiting for a successful local save.";
+				return true;
+			}
 		}
 		std::string write_error;
 		if (!PlatformServicesFactory::Instance().process_service.WriteToStdioProcess(

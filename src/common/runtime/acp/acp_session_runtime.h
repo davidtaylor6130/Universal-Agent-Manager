@@ -177,6 +177,13 @@ struct ControlAuditSaveTicket;
 std::shared_ptr<ControlAuditSaveTicket> ScheduleControlAuditSave(AppState& app,
     const ChatSession& chat, const UamControlAuditRecord& record, std::function<bool()> still_owned);
 ControlAuditSaveResult PollControlAuditSave(const std::shared_ptr<ControlAuditSaveTicket>& ticket);
+struct RemoteOutputAckSaveTicket;
+/// Background save of a remote chat whose current delivered output cursors must be durable before the helper
+/// is acknowledged; only a full primary publication carrying exactly those cursors certifies it.
+/// Returns null when an exclusive publication owns the chat's save (the caller saves synchronously instead).
+std::shared_ptr<RemoteOutputAckSaveTicket> ScheduleRemoteOutputAckSave(AppState& app, const ChatSession& chat);
+/// Empty while the save is pending; true once certified; false when its save task was lost and must be scheduled again.
+std::optional<bool> PollRemoteOutputAckSave(const std::shared_ptr<RemoteOutputAckSaveTicket>& ticket);
 
 struct WorkspaceChatSaveTicket;
 enum class WorkspaceChatSaveRevocation
