@@ -3551,6 +3551,32 @@ UAM_TEST(PollCadenceIdlesWhileAProviderIsOnlyAlive)
 	UAM_ASSERT_EQ(partial.Delay(), 250);
 }
 
+UAM_TEST(PollCadenceAdvancesSelectedColdLaunchAtInteractiveCadence)
+{
+	IdlePollCadenceFixture fixture;
+	fixture.Session().running = false;
+	fixture.Session().processing = true;
+	const std::shared_ptr<int> owner = std::make_shared<int>(0);
+	fixture.Session().pending_local_launch = std::shared_ptr<uam::PendingLocalAcpLaunch>(owner, reinterpret_cast<uam::PendingLocalAcpLaunch*>(owner.get()));
+	// A background launch keeps its bounded cadence. Selecting the turn removes the repeated startup waits.
+	UAM_ASSERT_EQ(fixture.Delay(), 250);
+	fixture.app.selected_chat_index = 0;
+	UAM_ASSERT_EQ(fixture.Delay(), 16);
+	UAM_ASSERT(fixture.Session().pending_local_launch != nullptr);
+	UAM_ASSERT(!fixture.Session().running);
+	// Cancellation/ownership loss revokes the launch. Retained input alone must not force rapid polling.
+	fixture.Session().pending_local_launch.reset();
+	UAM_ASSERT_EQ(fixture.Delay(), 1000);
+	fixture.Session().processing = false;
+	fixture.Session().queued_prompt = "held input";
+	UAM_ASSERT_EQ(fixture.Delay(), 1000);
+	// Successful startup stays interactive for the turn and returns to idle after it completes.
+	fixture.Session().running = true;
+	UAM_ASSERT_EQ(fixture.Delay(), 16);
+	fixture.Session().queued_prompt.clear();
+	UAM_ASSERT_EQ(fixture.Delay(), 1000);
+}
+
 UAM_TEST(PollCadenceIdlesWhileATerminalWaitsAtItsPrompt)
 {
 	const double now = uam::GetAppTimeSeconds();
