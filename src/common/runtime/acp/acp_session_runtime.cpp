@@ -1280,7 +1280,9 @@ namespace uam
 			}
 			if (initial_restore && !chat.imported_read_only)
 			{
-				// A launch given up before it started left this marker in an earlier run; its unsent row carries Retry.
+				// A launch given up before it started, or (before #1010) a remote receipt that could not be saved, left this
+				// held marker in an earlier run. Nothing was written: no process, no delivery marker and the row still unsent.
+				// Its unsent row carries Retry, so the marker is retired and the row returned as #1010 returns it.
 				if (chat.execution_host_id != uam::execution_hosts::kLocalHostId && chat.acp_queue_held &&
 				    chat.acp_dispatched_queued_prompt_count == 1 && !chat.acp_queued_prompts.empty() &&
 				    chat.acp_queued_prompts.front().prepared_for_delivery && !chat.acp_queued_prompts.front().append_user_message &&
@@ -1288,8 +1290,12 @@ namespace uam
 				    !ChatHasUncertainRemoteInput(chat) && ChatRepository::HydrateChatMessages(app.data_root, chat))
 				{
 					const auto latest_user = std::ranges::find(chat.messages.rbegin(), chat.messages.rend(), MessageRole::User, &Message::role);
-					if (latest_user != chat.messages.rend() && latest_user->acp_prompt_not_sent && latest_user->interrupted && !latest_user->acp_prompt_discarded)
+					// Without the give-up's interrupted mark, only a head that owns authored rows is retired; a goal turn's
+					// head has none and stays held as before.
+					if (latest_user != chat.messages.rend() && latest_user->acp_prompt_not_sent && !latest_user->acp_prompt_discarded &&
+					    (latest_user->interrupted || chat.acp_queued_prompts.front().prepared_user_message_count > 0))
 					{
+						latest_user->interrupted = true;
 						chat.acp_queued_prompts.erase(chat.acp_queued_prompts.begin());
 						chat.acp_dispatched_queued_prompt_count = 0;
 						acp_detail::ScheduleChatSave(app, chat, 0.0);
