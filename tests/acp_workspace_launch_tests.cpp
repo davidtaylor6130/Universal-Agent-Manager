@@ -787,8 +787,15 @@ UAM_TEST(RemoteWorkspacePreparationDeadlineCancelsUnansweredWorker)
 	std::promise<uam::PreparedLaunchWorktree> worker;
 	task->worker = worker.get_future();
 	fixture.app.worktree_operation_chat_ids.insert(chat.id);
+	uam::AcpQueuedUserPromptState prompt;
+	prompt.id = "private-held-remote-input";
+	prompt.text = "Held input across an unanswered helper";
+	session.queued_user_prompts.push_back(prompt);
+	chat.acp_queued_prompts = {prompt};
+	session.queue_held = chat.acp_queue_held = true;
 	session.worktree_launch_pending = true;
 	session.worktree_launch_cancellation = task->cancellation;
+	session.lifecycle_state = "waiting_workspace";
 	task->worker_deadline = std::chrono::steady_clock::now() + std::chrono::hours(1);
 	(void)uam::PollWorktreeLaunchPreparations(fixture.app);
 	UAM_ASSERT(!task->cancellation->stop_requested());
@@ -796,9 +803,12 @@ UAM_TEST(RemoteWorkspacePreparationDeadlineCancelsUnansweredWorker)
 	task->worker_deadline = std::chrono::steady_clock::now() - std::chrono::seconds(1);
 	UAM_ASSERT(uam::PollWorktreeLaunchPreparations(fixture.app));
 	UAM_ASSERT(task->cancellation->stop_requested());
-	UAM_ASSERT_EQ(uam::acp_detail::PrepareAcpWorkspaceForLaunch(fixture.app, session, chat), uam::WorktreeLaunchPreparationState::Failed);
+	// The held session reports at once, while the unanswered worker is still running.
+	(void)uam::PollAllAcpSessions(fixture.app);
+	UAM_ASSERT_EQ(session.lifecycle_state, std::string("error"));
 	UAM_ASSERT(session.last_error.find("timed out") != std::string::npos);
-	UAM_ASSERT(session.queue_held && !session.worktree_launch_pending);
+	UAM_ASSERT(session.queue_held && !session.worktree_launch_pending && !session.running);
+	UAM_ASSERT_EQ(session.queued_user_prompts.size(), std::size_t{1});
 	// The worker keeps its operation fence until it really exits; then everything is released.
 	UAM_ASSERT(fixture.app.worktree_operation_chat_ids.contains(chat.id));
 	worker.set_value({{.message = "Remote command canceled."}, task->original});
@@ -810,8 +820,9 @@ UAM_TEST(RemoteWorkspacePreparationDeadlineCancelsUnansweredWorker)
 
 UAM_TEST(RemoteWorkspaceReferenceAdmissionSkipsOnlySettledFamilyChildren)
 {
-	enum class Blocker { None, ActiveRun, QueuedInput, Unrelated, ForeignRoot, MissingRun, PersistedOnly };
-	for (const Blocker blocker : {Blocker::None, Blocker::ActiveRun, Blocker::QueuedInput, Blocker::Unrelated, Blocker::ForeignRoot, Blocker::MissingRun, Blocker::PersistedOnly})
+	enum class Blocker { None, ActiveRun, QueuedInput, Unrelated, ForeignRoot, MissingRun, PersistedOnly, SavedDelivery, SavedInteraction };
+	for (const Blocker blocker : {Blocker::None, Blocker::ActiveRun, Blocker::QueuedInput, Blocker::Unrelated, Blocker::ForeignRoot, Blocker::MissingRun,
+	         Blocker::PersistedOnly, Blocker::SavedDelivery, Blocker::SavedInteraction})
 	{
 		WorkspacePromptFixture fixture;
 		const std::shared_ptr<uam::WorktreeLaunchPreparationTask> task = SeedRemoteWorkspaceTask(fixture);
@@ -851,6 +862,8 @@ UAM_TEST(RemoteWorkspaceReferenceAdmissionSkipsOnlySettledFamilyChildren)
 		prepared.reference_runs.push_back(run("run-settled-v2", "private-settled-v2", "failed", parent.id));
 		app.chats.push_back(child("private-settled-v1", "run-settled-v1"));
 		app.agent_runs.push_back(run("run-settled-v1", "private-settled-v1", "completed", parent.id));
+		prepared.references.push_back(child("private-settled-saved", "run-settled-saved"));
+		prepared.reference_runs.push_back(run("run-settled-saved", "private-settled-saved", "cancelled", parent.id));
 		std::string expected;
 		switch (blocker)
 		{
@@ -878,6 +891,14 @@ UAM_TEST(RemoteWorkspaceReferenceAdmissionSkipsOnlySettledFamilyChildren)
 			break;
 		case Blocker::PersistedOnly:
 			prepared.references.push_back(child(expected = "private-persisted-chat", ""));
+			break;
+		case Blocker::SavedDelivery:
+		case Blocker::SavedInteraction:
+			// A saved-only finished child still holding delivery or interaction authority is not settled.
+			prepared.references.push_back(child(expected = "private-saved-authority-child", "run-saved-authority"));
+			if (blocker == Blocker::SavedDelivery) prepared.references.back().remote_prompt_delivery_id = "private-delivery";
+			else prepared.references.back().remote_interaction_responses.emplace_back();
+			prepared.reference_runs.push_back(run("run-saved-authority", expected, "failed", parent.id));
 			break;
 		}
 		task->prepared = std::move(prepared);

@@ -8086,7 +8086,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 				{
 					// Held input never launches here, but a finished preparation still settles the wait: its failure or
 					// cancellation is reported and readiness returns the chat to Resume, instead of "waiting" forever.
-					if (IsWorktreeLaunchPreparationRunning(app, session.chat_id)) continue;
+					// A canceled or timed-out wait reports at once; the worker keeps its fence and leases until it exits.
+					const bool canceled = session.worktree_launch_cancellation && session.worktree_launch_cancellation->stop_requested();
+					if (!canceled && IsWorktreeLaunchPreparationRunning(app, session.chat_id)) continue;
 					const WorktreeLaunchPreparationState held = PrepareAcpWorkspaceForLaunch(app, session, *workspace_chat);
 					if (held == WorktreeLaunchPreparationState::Pending) continue;
 					changed = true;

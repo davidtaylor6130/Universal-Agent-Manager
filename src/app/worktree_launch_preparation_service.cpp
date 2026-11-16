@@ -257,7 +257,10 @@ namespace uam
 			const ChatSession& chat = live_chat ? *live_chat : reference;
 			if (!chat.acp_queued_prompts.empty() || !chat.acp_unsent_prompt_recoveries.empty() || chat.acp_queue_storage_error ||
 			    chat.remote_process_exists || chat.remote_turn_reconnect_pending || chat.remote_stop_cleanup_pending || chat.remote_restart_pending ||
-			    !chat.remote_pending_requests.empty() || !chat.remote_active_turn_id.empty() || app.worktree_operation_chat_ids.contains(chat.id) ||
+			    !chat.remote_pending_requests.empty() || !chat.remote_active_turn_id.empty() || chat.remote_source_exit_pending ||
+			    chat.remote_manual_compaction_pending || !chat.remote_process_control_token.empty() || !chat.remote_interaction_responses.empty() ||
+			    !chat.remote_prompt_delivery_session_id.empty() || !chat.remote_prompt_delivery_id.empty() ||
+			    !chat.remote_prompt_delivery_payload.empty() || !chat.remote_prompt_delivery_input_ids.empty() || app.worktree_operation_chat_ids.contains(chat.id) ||
 			    app.pending_chat_save_at_by_chat_id.contains(chat.id) || app.pending_chat_save_tasks.contains(chat.id)) return false;
 			if (const AcpSessionState* session = FindAcpSessionForChat(app, chat.id); session && !AcpSessionCanIdleShutdown(*session, chat)) return false;
 			return std::ranges::none_of(app.cli_terminals, [&chat](const auto& terminal)
