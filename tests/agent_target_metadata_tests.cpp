@@ -1,6 +1,7 @@
 #include "test_harness.h"
 #include "app/agent_definition_service.h"
 #include "app/agent_run_scheduler.h"
+#include "app/agent_run_ledger.h"
 #include "app/uam_control_service.h"
 #include "common/chat/acp_prompt_recovery.h"
 #include "common/chat/chat_message_page_index.h"
@@ -800,7 +801,7 @@ namespace
 		const std::string model = "private/managed-selected";
 		const std::string task = "Private managed SSH diagnostic task.";
 
-		ManagedOpenCodeSshFixture(bool duplicate)
+		ManagedOpenCodeSshFixture(bool duplicate, bool explicit_effort = false, bool support_effort = true)
 		{
 			using Json = nlohmann::json;
 			const auto bin = temp.root / "bin", home = temp.root / "home";
@@ -947,6 +948,8 @@ for line in sys.stdin:
         assert request['id'] == 2 and request['params']['cwd'] == os.getcwd() and not current_native
         current_native = config['native']
         result = dict(sessionId=current_native, configOptions=[dict(id='model', category='model', type='select', currentValue='private/baseline', options=[dict(value='private/baseline', name='Baseline'), dict(value=config['model'], name='Selected')]), dict(id='mode', category='mode', type='select', currentValue='build', options=[dict(value='build', name='Build'), dict(value='plan', name='Plan')])])
+        if config['explicitEffort']:
+            result['models'] = dict(currentModelId='private/baseline', availableModels=[dict(modelId=config['model'], name='Selected', supportedReasoningEfforts=['high'] if config['supportEffort'] else ['low'])])
         emit(request, result)
         if config['duplicate']: emit(request, result)
         store('native-created.json', dict(pid=os.getpid(), native=current_native))
@@ -964,6 +967,7 @@ for line in sys.stdin:
         emit(request, {})
     elif method == 'session/prompt':
         prompt_count += 1
+        if config['explicitEffort']: assert request['params'].get('reasoningEffort') == 'high', request
         assert prompt_count == 1 and mode_selected and model_selected and request['params']['sessionId'] == current_native
         blocks = request['params']['prompt']; assert any(config['task'] in part.get('text', '') for part in blocks)
         assert permission == [dict(permission='task', pattern='*', action='ask')]
@@ -1002,14 +1006,23 @@ store('native-exit.json', dict(pid=os.getpid(), eof=True))
 			root.uam_control_enabled = root.memory_enabled = root.computer_use_enabled = false;
 			UAM_ASSERT(ChatRepository::SaveChat(app.data_root, root)); app.chats.push_back(root);
 			std::string error;
-			UAM_ASSERT(uam::AgentRunScheduler::Enqueue(app, root.id, {}, "build", task, &run_id, &error, "opencode-cli", model));
+			if (explicit_effort)
+			{
+				app.provider_model_catalog = std::make_unique<uam::ProviderModelCatalogService>();
+				app.provider_model_catalog->Initialize(app.data_root, app.provider_profiles);
+				app.provider_model_catalog->SetExecutionHostContext(app.settings.execution_hosts);
+				UAM_ASSERT(app.provider_model_catalog->RememberSuccessfulModels("opencode-cli",
+				    Json::array({{{"id", model}, {"supportedReasoningEfforts", {"high"}}}}), workspace.string(), Json::array(), host.id));
+			}
+			UAM_ASSERT(uam::AgentRunScheduler::Enqueue(app, root.id, {}, "build", task, &run_id, &error, "opencode-cli", model, false,
+			    explicit_effort ? std::optional<std::string>{"high"} : std::nullopt));
 			UAM_ASSERT_EQ(app.agent_runs.size(), std::size_t{1});
 			const auto& run = app.agent_runs.front(); transcript_id = run.transcript_chat_id;
 			UAM_ASSERT_EQ(run.status, std::string("queued")); UAM_ASSERT_EQ(run.definition_hash, std::string("builtin-build-v2"));
 			const auto fresh = ChatRepository::LoadLocalChat(app.data_root, transcript_id, true);
 			UAM_ASSERT(fresh && fresh->native_session_id.empty() && fresh->execution_host_id == host.id && fresh->workspace_directory == workspace.string());
 			UAM_ASSERT(uam::FindAcpSessionForChat(app, transcript_id) == nullptr);
-			UAM_ASSERT(uam::io::WriteTextFile(temp.root / "case.json", Json{{"transcript", transcript_id}, {"native", native}, {"model", model}, {"task", task}, {"duplicate", duplicate}}.dump()));
+			UAM_ASSERT(uam::io::WriteTextFile(temp.root / "case.json", Json{{"transcript", transcript_id}, {"native", native}, {"model", model}, {"task", task}, {"duplicate", duplicate}, {"explicitEffort", explicit_effort}, {"supportEffort", support_effort}}.dump()));
 			runner_service.Start(runner, temp.root / "s", temp.root);
 		}
 
@@ -1125,10 +1138,10 @@ store('native-exit.json', dict(pid=os.getpid(), eof=True))
 		}
 	};
 
-	void CheckManagedOpenCodeSshStartup(bool duplicate)
+	void CheckManagedOpenCodeSshStartup(bool duplicate, bool explicit_effort = false)
 	{
 		using Json = nlohmann::json;
-		ManagedOpenCodeSshFixture fixture(duplicate);
+		ManagedOpenCodeSshFixture fixture(duplicate, explicit_effort);
 		UAM_ASSERT(fixture.Await([&] { return fs::exists(fixture.temp.root / "native-created.json"); }));
 		UAM_ASSERT(fixture.Await([&]
 		{
@@ -1208,6 +1221,20 @@ store('native-exit.json', dict(pid=os.getpid(), eof=True))
 UAM_TEST(ManagedOpenCodeSshFreshNativeSetupReachesFirstPromptThroughActualHelper)
 {
 	CheckManagedOpenCodeSshStartup(false);
+}
+UAM_TEST(ManagedExplicitEffortFreshChildReachesProviderInput)
+{
+	CheckManagedOpenCodeSshStartup(false, true);
+}
+UAM_TEST(ManagedExplicitEffortNativeContradictionSendsNoChildInput)
+{
+	ManagedOpenCodeSshFixture fixture(false, true, false);
+	UAM_ASSERT(fixture.Await([&] { return fixture.app.agent_runs.front().status == "failed"; }));
+	UAM_ASSERT(fs::exists(fixture.temp.root / "native-created.json"));
+	UAM_ASSERT(!fs::exists(fixture.temp.root / "prompt-input.json"));
+	UAM_ASSERT_EQ(fixture.app.agent_runs.front().diagnostic_code, std::string("reasoning_effort_unsupported"));
+	UAM_ASSERT(!uam::AcpStopInProgress(fixture.app, fixture.transcript_id));
+	fixture.Stop();
 }
 UAM_TEST(ManagedOpenCodeSshDuplicateCreationReplyCannotFalseExitBeforeFirstPrompt)
 {
@@ -1618,4 +1645,130 @@ UAM_TEST(AgentListConfigModelChoicesRespectNativePrecedenceAndBounds)
 			const auto rebound = fixture.Targets(); const auto changed = std::ranges::find_if(rebound, [&](const auto& item) { return item.value("providerId", "") == provider.id; });
 			UAM_ASSERT(changed != rebound.end()); UAM_ASSERT(changed->at("models").empty());
 		}
+}
+
+UAM_TEST(ManagedDelegationSelectsAndPersistsExplicitReasoningEffort)
+{
+	for (const std::string effort : {"high", ""})
+	{
+		TargetMetadataFixture fixture;
+		auto& app = fixture.app;
+		app.chats.front().reasoning_effort = "medium";
+		// Effort selection must preserve the parent's read-only permission ceiling.
+		app.chats.front().approval_mode = "plan";
+		UAM_ASSERT(app.provider_model_catalog->RememberSuccessfulModels("codex-cli",
+		    nlohmann::json::array({{{"id", "parent-model"}, {"supportedReasoningEfforts", {"low", "medium", "high"}}, {"defaultReasoningEffort", "medium"}}}),
+		    app.chats.front().workspace_directory));
+		const auto targets = fixture.Targets();
+		const auto target = std::ranges::find_if(targets, [](const auto& value) { return value.value("providerId", "") == "codex-cli"; });
+		UAM_ASSERT(target != targets.end());
+		UAM_ASSERT_EQ(target->at("models")[0].at("supportedReasoningEfforts"), nlohmann::json::array({"low", "medium", "high"}));
+		const auto result = uam::UamControlService::HandleRequestForTests(app, "target-capability",
+		    {{"requestId", "explicit-effort"}, {"method", "agent_delegate"},
+		     {"arguments", {{"agentId", "worker"}, {"task", "Do bounded work."}, {"reasoningEffort", effort}}}}, 1001);
+		UAM_ASSERT(result.value("ok", false));
+		UAM_ASSERT_EQ(app.chats.back().reasoning_effort, effort);
+		UAM_ASSERT_EQ(app.chats.front().reasoning_effort, std::string("medium"));
+		const auto saved = ChatRepository::LoadLocalChat(app.data_root, app.chats.back().id);
+		UAM_ASSERT(saved.has_value());
+		UAM_ASSERT_EQ(saved->reasoning_effort, effort);
+		UAM_ASSERT(app.agent_runs.back().reasoning_effort_override.has_value());
+		UAM_ASSERT_EQ(*app.agent_runs.back().reasoning_effort_override, effort);
+		const auto ledger = uam::AgentRunLedger::LoadAllReadOnly(app.data_root);
+		UAM_ASSERT_EQ(ledger.runs.size(), std::size_t{1});
+		UAM_ASSERT_EQ(ledger.runs.front().reasoning_effort_override, app.agent_runs.back().reasoning_effort_override);
+		UAM_ASSERT_EQ(app.agent_runs.back().effective_workspace_access, std::string("read"));
+	}
+}
+
+UAM_TEST(ManagedDelegationRejectsUnknownUnsupportedAndForeignScopeEffortBeforeAdmission)
+{
+	for (const auto effort : {nlohmann::json("ultra"), nlohmann::json("bogus"), nlohmann::json(4)})
+	{
+		TargetMetadataFixture fixture;
+		auto& app = fixture.app;
+		UAM_ASSERT(app.provider_model_catalog->RememberSuccessfulModels("codex-cli",
+		    nlohmann::json::array({{{"id", "parent-model"}, {"supportedReasoningEfforts", {"medium"}}}}),
+		    app.chats.front().workspace_directory));
+		// A different workspace advertising the requested level grants no authority here.
+		UAM_ASSERT(app.provider_model_catalog->RememberSuccessfulModels("codex-cli",
+		    nlohmann::json::array({{{"id", "parent-model"}, {"supportedReasoningEfforts", {"ultra"}}}}),
+		    app.chats.front().workspace_directory + "-other"));
+		const auto result = uam::UamControlService::HandleRequestForTests(app, "target-capability",
+		    {{"requestId", "unsupported-effort"}, {"method", "agent_delegate"},
+		     {"arguments", {{"agentId", "worker"}, {"task", "Do bounded work."}, {"reasoningEffort", effort}}}}, 1001);
+		UAM_ASSERT(!result.value("ok", false));
+		UAM_ASSERT(app.agent_runs.empty() && app.queued_agent_run_ids.empty());
+		UAM_ASSERT_EQ(app.chats.size(), std::size_t{1});
+	}
+}
+
+UAM_TEST(ManagedExplicitEffortRefusesRoutingAndNativeSupportChanges)
+{
+	TargetMetadataFixture fixture;
+	auto& app = fixture.app;
+	UAM_ASSERT(app.provider_model_catalog->RememberSuccessfulModels("codex-cli",
+	    nlohmann::json::array({{{"id", "parent-model"}, {"supportedReasoningEfforts", {"high"}}}}),
+	    app.chats.front().workspace_directory));
+	std::string id, error;
+	UAM_ASSERT(uam::AgentRunScheduler::Enqueue(app, "root", {}, "worker", "Bounded task.", &id, &error,
+	    "codex-cli", "parent-model", false, std::string("high")));
+	auto& child = app.chats.back();
+	UAM_ASSERT(uam::AgentRunScheduler::ValidateRequestedReasoningEffort(app, child, nullptr, &error));
+	const auto workspace = child.workspace_directory;
+	child.workspace_directory = workspace + "-destination";
+	UAM_ASSERT(app.provider_model_catalog->RememberSuccessfulModels("codex-cli",
+	    nlohmann::json::array({{{"id", "parent-model"}, {"supportedReasoningEfforts", {"low"}}}}), child.workspace_directory));
+	UAM_ASSERT(!uam::AgentRunScheduler::ValidateRequestedReasoningEffort(app, child, nullptr, &error));
+	child.workspace_directory = workspace;
+	child.execution_host_id = "other-host";
+	UAM_ASSERT(!uam::AgentRunScheduler::ValidateRequestedReasoningEffort(app, child, nullptr, &error));
+	child.execution_host_id = "local";
+	uam::AcpSessionState observed;
+	// Before discovery, cached scope permits the fresh process to start.
+	UAM_ASSERT(uam::AgentRunScheduler::ValidateRequestedReasoningEffort(app, child, &observed, &error));
+	observed.session_ready = true;
+	uam::AcpModelState model;
+	model.id = "parent-model";
+	model.supported_reasoning_efforts = {"low"};
+	observed.available_models = {model};
+	UAM_ASSERT(!uam::AgentRunScheduler::ValidateRequestedReasoningEffort(app, child, &observed, &error));
+	observed.available_models.front().supported_reasoning_efforts = {"high"};
+	UAM_ASSERT(uam::AgentRunScheduler::ValidateRequestedReasoningEffort(app, child, &observed, &error));
+	child.reasoning_effort = "low";
+	UAM_ASSERT(!uam::AgentRunScheduler::ValidateRequestedReasoningEffort(app, child, &observed, &error));
+	UAM_ASSERT_EQ(*app.agent_runs.back().reasoning_effort_override, std::string("high"));
+}
+
+UAM_TEST(ManagedCopilotExplicitDefaultSurvivesLateNativeModelMetadata)
+{
+	TargetMetadataFixture fixture;
+	auto& app = fixture.app;
+	app.provider_profiles.push_back(ProviderProfileStore::DefaultCopilotProfile());
+	app.chats.front().provider_id = "copilot-cli";
+	app.acp_sessions.front()->provider_id = "copilot-cli";
+	app.chats.front().reasoning_effort = "high";
+	std::string run_id, error;
+	UAM_ASSERT(uam::AgentRunScheduler::Enqueue(app, "root", {}, "worker", "Bounded task.", &run_id, &error,
+	    "copilot-cli", "parent-model", false, std::string{}));
+	auto& child = app.chats.back();
+	uam::AcpSessionState session;
+	session.chat_id = child.id; session.provider_id = child.provider_id;
+	session.protocol_kind = uam::provider_profile_constants::kProtocolCopilotSdk;
+	session.session_id = "native-default-effort"; session.session_ready = true;
+	session.current_model_id = child.model_id;
+	const auto& runtime = ProviderRuntimeRegistry::ResolveById(child.provider_id);
+	const nlohmann::json model = {{"id", child.model_id}, {"name", "Default effort model"},
+	    {"supportedReasoningEfforts", {"low", "medium", "high"}}, {"defaultReasoningEffort", "medium"}};
+	UAM_ASSERT(runtime.OnAcpHandleResult(app, session, child, "models.list", "8", {{"models", {model}}}));
+	(void)runtime.OnAcpReconcileModelOptions(app, session, child);
+	UAM_ASSERT(child.reasoning_effort.empty());
+	UAM_ASSERT(app.agent_runs.back().reasoning_effort_override.has_value());
+	UAM_ASSERT(app.agent_runs.back().reasoning_effort_override->empty());
+	UAM_ASSERT(uam::AgentRunScheduler::ValidateRequestedReasoningEffort(app, child, &session, &error));
+	std::string method;
+	const auto packet = runtime.OnAcpBuildPrompt(session, 9, "Inert synthetic input.", child, method);
+	UAM_ASSERT(!packet.is_null() && !method.empty());
+	const auto saved = ChatRepository::LoadLocalChat(app.data_root, child.id);
+	UAM_ASSERT(saved && saved->reasoning_effort.empty());
 }

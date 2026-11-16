@@ -4352,6 +4352,13 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 		SaveChatQuietly(app, chat);
 		return true;
 	}
+	std::string requested_effort_error;
+	if (!AgentRunScheduler::ValidateRequestedReasoningEffort(app, chat, &session, &requested_effort_error))
+	{
+		FailAcpTurnOrSession(session, &chat, requested_effort_error);
+		ScheduleChatSave(app, chat, 0.0);
+		return true;
+	}
 	if (SendStartupModeIfNeeded(session, chat))
 	{
 		return false;

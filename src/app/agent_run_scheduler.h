@@ -116,11 +116,13 @@ namespace uam
 		static bool InitialForceSaveAllowed(const AppState& app, std::string_view chat_id);
 		static bool InitialSessionOwned(const AppState& app, const AcpSessionState& session, const ChatSession& chat);
 
+		static bool ValidateRequestedReasoningEffort(const AppState&, const ChatSession&, const AcpSessionState* session, std::string* error_out = nullptr);
 		static bool Enqueue(AppState& app, const std::string& root_chat_id,
 		                    const std::string& parent_run_id, const std::string& agent_id,
 		                    const std::string& task, std::string* run_id_out = nullptr,
 		                    std::string* error_out = nullptr, const std::string& provider_id = {},
-		                    const std::string& model_id = {}, bool additional_read_only_ceiling = false);
+		                    const std::string& model_id = {}, bool additional_read_only_ceiling = false,
+		                    const std::optional<std::string>& reasoning_effort = std::nullopt);
 		static bool TryEnqueueMention(AppState& app, const std::string& root_chat_id,
 		                              const std::string& text, bool* handled_out,
 		                              std::string* run_id_out = nullptr,

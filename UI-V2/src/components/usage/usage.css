@@ -259,7 +259,7 @@
 .uam-usage-basis:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 
 /* Background refresh: the button stays usable and its icon turns; reduced motion relies on the status text. */
-.uam-usage-refresh.is-busy svg { animation: uam-status-spin 1s linear infinite; }
+.uam-usage-refresh.is-busy svg { animation: uam-status-spin calc(1000ms * var(--motion-scale, 1)) linear infinite; }
 [data-motion="off"] .uam-usage-refresh.is-busy svg { animation: none; }
 
 /* Previous answer while a new period loads: dim only if the wait is noticeable, so quick answers never flash. */
@@ -274,6 +274,9 @@
   gap: var(--sp-3);
   animation: uam-usage-fade var(--dur-base) var(--ease-out-soft) 250ms both; /* stays hidden for quick answers */
 }
+/* The delay is a loading threshold, not motion: keep it when animation is disabled. */
+[data-motion="off"] .uam-usage-skeleton { animation-delay: 250ms !important; }
+[data-motion="off"] .uam-usage-body[data-kept] { transition-delay: 250ms !important; }
 .uam-usage-skel-tile,
 .uam-usage-skel-chart {
   border: 1px solid var(--border);
@@ -281,7 +284,13 @@
   background: var(--surface);
 }
 .uam-usage-skel-tile { height: 4.5rem; }
+.uam-usage-skel-label { display: flex; align-items: center; padding: var(--sp-4); color: var(--text-2); }
 .uam-usage-skel-chart { grid-column: 1 / -1; height: 15rem; }
+@keyframes uam-usage-skeleton-pulse { 50% { opacity: 0.55; } }
+.uam-usage-skel-tile:not(.uam-usage-skel-label),
+.uam-usage-skel-chart { animation: uam-usage-skeleton-pulse calc(1500ms * var(--motion-scale, 1)) ease-in-out infinite; }
+[data-motion="off"] .uam-usage-skel-tile:not(.uam-usage-skel-label),
+[data-motion="off"] .uam-usage-skel-chart { animation: none; }
 
 @media (prefers-reduced-motion: reduce) {
   .uam-tokens-plot .uam-usage-col,
@@ -297,9 +306,11 @@
     transition: none;
   }
   .uam-usage-meter > span { animation: none; }
+  .uam-usage-skel-tile:not(.uam-usage-skel-label),
+  .uam-usage-skel-chart { animation: none; }
   /* Keep the delays (no movement) so a quick answer still never flashes a skeleton or a dimmed page. */
-  .uam-usage-skeleton { animation-duration: 0s; }
-  .uam-usage-body { transition-duration: 0s; }
+  .uam-usage-skeleton { animation-delay: 250ms !important; }
+  .uam-usage-body[data-kept] { transition-delay: 250ms !important; }
 }
 
 /* Allowance and context meters: threshold colour set inline; fill grows in on mount. */

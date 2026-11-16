@@ -5,6 +5,7 @@ import { UpdatesPanel } from './UpdatesPanel'
 import type { UpdateMonitor } from '../../hooks/useUpdateMonitor'
 import { availableUpdates } from '../../services/updateCatalog'
 import { APP_FAILURE_EVENT, type AppFailure } from '../../utils/appFailure'
+import * as copySelection from '../../utils/copySelection'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -54,6 +55,47 @@ function monitor(overrides: Partial<UpdateMonitor> = {}): UpdateMonitor {
 }
 
 describe('UpdatesPanel', () => {
+  it.each([
+    ['gemini-cli', 'Gemini CLI', true], ['gemini-cli', 'Gemini CLI', false],
+    ['codex-cli', 'Codex CLI', true], ['codex-cli', 'Codex CLI', false],
+  ])('announces %s / %s update-log copy outcome (success: %s)', async (providerId, name, success) => {
+    const copy = vi.spyOn(copySelection, 'copyTextToClipboard').mockResolvedValue(success)
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    const state = monitor({ providerUpdateResults: [{
+      providerId, name, status: 'failed', message: 'Update failed',
+      output: 'diagnostic output', installedVersion: '1.0.0',
+    }] })
+    try {
+      await act(async () => root.render(<UpdatesPanel monitor={state} onClose={vi.fn()} />))
+      const button = host.querySelector<HTMLButtonElement>(`[aria-label="Copy ${name} update logs"]`)!
+      expect(button.classList.contains('uam-iconbtn--sm')).toBe(true)
+      await act(async () => button.click())
+      expect(copy).toHaveBeenCalledWith('diagnostic output', document)
+      expect([...host.querySelectorAll('[role="status"]')].some(node => node.textContent === (success ? 'Copied' : 'Copy failed'))).toBe(true)
+    } finally {
+      act(() => root.unmount())
+      copy.mockRestore()
+    }
+  })
+
+  it('copies the failure message when an orphan update has no output', async () => {
+    const copy = vi.spyOn(copySelection, 'copyTextToClipboard').mockResolvedValue(true)
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    const state = monitor({ providerUpdateResults: [{
+      providerId: 'gemini-cli', name: 'Gemini CLI', status: 'failed', message: 'Failure detail',
+      output: '', installedVersion: '1.0.0',
+    }] })
+    try {
+      await act(async () => root.render(<UpdatesPanel monitor={state} onClose={vi.fn()} />))
+      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Copy Gemini CLI update logs"]')!.click())
+      expect(copy).toHaveBeenCalledWith('Failure detail', document)
+    } finally {
+      act(() => root.unmount())
+      copy.mockRestore()
+    }
+  })
   it('renders version-matched UAM, npm and Homebrew excerpts from the update projection', async () => {
     const host = document.createElement('div')
     const root = createRoot(host)
