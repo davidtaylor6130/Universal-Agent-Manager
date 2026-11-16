@@ -2787,6 +2787,16 @@ UAM_TEST(RemoteRunnerChannelFencesAReplacedDesktopToolServer)
 	UAM_ASSERT(request({{"type", "channel.open"}, {"attachIfExists", true}, {"desktopEpoch", "server-3"}}).value("ok", false));
 	UAM_ASSERT_EQ(polled(desktop_poll()), std::string());
 	UAM_ASSERT(request({{"type", "channel.poll"}, {"direction", "desktopToRemote"}})["result"].value("desktopIdleMs", std::int64_t{-1}) >= 0);
+
+	// A desktop that never names a tool server (from before epochs) could never clear a fence, so it is not fenced;
+	// the calls the shim failed are still dropped unread (#898).
+	UAM_ASSERT(request({{"type", "channel.close"}}).value("ok", false));
+	UAM_ASSERT(request({{"type", "channel.open"}, {"attachIfExists", true}}).value("ok", false));
+	(void)shim_write("call-for-unnamed-desktop\n");
+	UAM_ASSERT(request({{"type", "channel.open"}, {"attachIfExists", true}, {"fenceDesktop", true}}).value("ok", false));
+	UAM_ASSERT_EQ(polled(desktop_poll()), std::string());
+	UAM_ASSERT(request({{"type", "channel.write"}, {"direction", "desktopToRemote"}, {"dataBase64", uam::base64::Encode("reply\n")}}).value("ok", false));
+	UAM_ASSERT(request({{"type", "channel.poll"}, {"direction", "desktopToRemote"}})["result"].value("desktopIdleMs", std::int64_t{-1}) >= 0);
 }
 
 UAM_TEST(RemoteMcpShimAnswersForADesktopThatIsNotConnected)
@@ -2829,7 +2839,19 @@ UAM_TEST(RemoteMcpShimAnswersForADesktopThatIsNotConnected)
 		UAM_ASSERT(filter.Observe(false, "server-1", replies));
 		UAM_ASSERT_EQ(lines(replies)[0]["id"], nlohmann::json(3));
 		replies.clear();
+		// A fence request that failed stays owed, without failing the call twice, until the helper accepts it.
+		UAM_ASSERT(filter.FenceOwed() && filter.Observe(false, "server-1", replies) && replies.empty());
+		UAM_ASSERT(filter.Observe(true, "server-1", replies) && replies.empty());
+		filter.Fenced();
+		UAM_ASSERT(!filter.FenceOwed());
 		UAM_ASSERT(!filter.Observe(false, "server-1", replies) && replies.empty());
+		// An owed fence is dropped once the tool server is replaced: the helper discarded its unread calls itself.
+		const std::string again = call(8, "agent_delegate");
+		UAM_ASSERT_EQ(filter.FromProvider(again, true, replies), again);
+		filter.Sent("server-1");
+		UAM_ASSERT(filter.Observe(false, "server-1", replies));
+		replies.clear();
+		UAM_ASSERT(!filter.Observe(true, "server-2", replies) && !filter.FenceOwed() && replies.empty());
 		const std::string other = R"({"jsonrpc":"2.0","id":9,"result":{}})" "\n";
 		UAM_ASSERT_EQ(filter.FromDesktop(R"({"jsonrpc":"2.0","id":3,"result":{}})" "\n" + other + "{\"half\n\n"), other);
 	}

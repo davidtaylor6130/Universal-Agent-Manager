@@ -37,6 +37,7 @@ namespace uam
 		std::optional<RowCoordinate> recorded_row;
 	};
 
+	bool HasPendingAgentInputForWorkspace(const AppState&, const ChatSession&);
 	AcpSessionState* FindAcpSessionForChat(AppState& app, const std::string& chat_id);
 	const AcpSessionState* FindAcpSessionForChat(const AppState& app, const std::string& chat_id);
 
@@ -65,6 +66,8 @@ bool StartEphemeralAcpModelDiscovery(AppState& app, const std::string& provider_
 bool QueueAcpModelDiscoveryCompatibilityRetry(AppState& app, const std::string& chat_id, const std::string& provider_id, const std::string& workspace_directory, const std::string& execution_host_id, const std::string& blocked_reason);
 bool RetryCompatibilityBlockedAcpModelDiscoveries(AppState& app);
 bool RetryLastAcpPrompt(AppState& app, const std::string& chat_id, std::string* error_out = nullptr);
+/// Current local-mutation eligibility, distinct from delivery classification; rechecked when saving.
+std::vector<int> EditableUnsentAcpMessageIndices(const AppState& app, const ChatSession& chat);
 /// <summary>Raw authored indices excluded from delivered history only when their own interval has no output.</summary>
 std::vector<int> KnownUnsentAcpMessageIndices(const AppState& app, const ChatSession& chat);
 /// True while the chat has a row the user can still retry, edit or remove; a removed row or one with later output does not count.

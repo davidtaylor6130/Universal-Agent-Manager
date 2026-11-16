@@ -59,12 +59,14 @@ it('requests only after visibility, scopes by native index and revokes on unmoun
   render()
   expect(request).not.toHaveBeenCalled()
   expect(host.textContent).toBe('original-file-entry')
+  expect(host.querySelector('.conversation-image-preview-slot')).not.toBeNull()
   await reveal()
   expect(request).toHaveBeenCalledExactlyOnceWith({
     action: 'getAttachmentImagePreview',
     payload: { chatId: 'source-chat', messageIndex: 7, attachmentId: 'owned-image' },
   }, false)
   expect(host.querySelector('img')?.getAttribute('src')).toBe('blob:private-preview')
+  expect(host.querySelector('.conversation-image-preview-slot')).not.toBeNull()
   expect(host.querySelector('img')?.className).toBe('conversation-image-preview h-20 w-20 object-contain')
   act(() => root.unmount())
   expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:private-preview')
@@ -145,6 +147,7 @@ it.each([
   render()
   await reveal()
   expect(host.textContent).toBe('original-file-entry')
+  expect(host.querySelector('.conversation-image-preview-slot')).toBeNull()
   expect(URL.createObjectURL).not.toHaveBeenCalled()
 })
 

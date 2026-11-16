@@ -2088,7 +2088,7 @@ WorktreeLaunchPreparationState PrepareAcpWorkspaceForLaunch(AppState& app, AcpSe
 			session.worktree_launch_cancellation.reset();
 			session.reconnect_pending = false;
 			session.queue_held = chat.acp_queue_held = true;
-			session.last_error = "Workspace preparation was canceled or changed. Retry the held input.";
+			session.last_error = "Workspace preparation was canceled, timed out or changed. Retry the held input.";
 			session.lifecycle_state = kAcpLifecycleError;
 			ScheduleChatSave(app, chat, 0.0);
 			if (error_out) *error_out = session.last_error;
@@ -4350,6 +4350,13 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 		(void)CancelClaudeQuotaWait(app, chat);
 		FailAcpTurnOrSession(session, &chat, "Native continuation ownership changed before delivery.");
 		SaveChatQuietly(app, chat);
+		return true;
+	}
+	std::string requested_effort_error;
+	if (!AgentRunScheduler::ValidateRequestedReasoningEffort(app, chat, &session, &requested_effort_error))
+	{
+		FailAcpTurnOrSession(session, &chat, requested_effort_error);
+		ScheduleChatSave(app, chat, 0.0);
 		return true;
 	}
 	if (SendStartupModeIfNeeded(session, chat))

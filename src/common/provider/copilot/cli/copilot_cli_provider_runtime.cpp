@@ -690,6 +690,14 @@ bool CopilotCliProviderRuntime::OnAcpReconcileModelOptions(uam::AppState& app, u
 		return false;
 	}
 
+	// An explicit managed Default is an instruction to leave native effort selection alone.
+	// Native model metadata may report its effective default without changing that instruction.
+	if (chat.reasoning_effort.empty() && std::ranges::any_of(app.agent_runs, [&](const AgentRun& run)
+	{
+		return run.id == chat.agent_run_id && run.transcript_chat_id == chat.id &&
+		    run.reasoning_effort_override && run.reasoning_effort_override->empty();
+	})) return false;
+
 	uam::AcpModelState* selected_model = nullptr;
 	for (uam::AcpModelState& model : session.available_models)
 	{

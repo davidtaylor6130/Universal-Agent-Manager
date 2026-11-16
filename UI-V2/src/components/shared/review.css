@@ -459,7 +459,7 @@
   font-size: var(--fs-sm);
 }
 
-.uam-rv-spin { flex-shrink: 0; animation: uam-rv-spin 900ms linear infinite; }
+.uam-rv-spin { flex-shrink: 0; animation: uam-rv-spin calc(900ms * var(--motion-scale, 1)) linear infinite; }
 
 .uam-rv-alert__count {
   margin-left: var(--sp-2);

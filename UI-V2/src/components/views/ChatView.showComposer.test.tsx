@@ -161,7 +161,7 @@ describe('showComposer presentation contract, authored UNRUN', () => {
         const retry = vi.fn().mockResolvedValue({ ok: false, error: 'Delivery remains unconfirmed.' })
         useAppStore.setState({ sessions: [parent, recoveryChild], activeSessionId: child.id, retryFailedMessage: retry,
             messages: { [parent.id]: history(parent), [child.id]: [row] },
-            acpBindingBySessionId: { [child.id]: binding(child, { unsentMessageIndices: [0], recoverableUnsentMessageIndices: [0] }) } })
+            acpBindingBySessionId: { [child.id]: binding(child, { unsentMessageIndices: [0], editableUnsentMessageIndices: readOnly ? [] : [0], recoverableUnsentMessageIndices: [0] }) } })
         writeChatComposerDraft(child.id, { text: 'Independent hidden child draft', attachments: [] })
         await act(async () => root.render(<ChatView session={recoveryChild} showComposer={false} />))
         expect(host.textContent).toContain('Unconfirmed child input')

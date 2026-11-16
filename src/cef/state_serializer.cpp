@@ -1822,6 +1822,7 @@ namespace uam
 			SerializePromptAdmissionQueues(queues, app, chat, nullptr, prompts);
 			w.Merge(std::move(queues));
 			w.Set("unsentMessageIndices", KnownUnsentAcpMessageIndices(app, chat));
+			w.Set("editableUnsentMessageIndices", EditableUnsentAcpMessageIndices(app, chat));
 			w.Set("recoverableUnsentMessageIndices", RecoverableUnsentAcpMessageIndices(app, chat));
 			w.Set("waitIsStale", false);
 			w.Set("waitStaleReason", "");
@@ -1924,6 +1925,7 @@ namespace uam
 			for (const AcpQueuedUserPromptState& prompt : session->queued_user_prompts) prompts.push_back(&prompt);
 			SerializePromptAdmissionQueues(acp_json, app, chat, session, prompts);
 			acp_json["unsentMessageIndices"] = KnownUnsentAcpMessageIndices(app, chat);
+			acp_json["editableUnsentMessageIndices"] = EditableUnsentAcpMessageIndices(app, chat);
 			acp_json["recoverableUnsentMessageIndices"] = RecoverableUnsentAcpMessageIndices(app, chat);
 			acp_json["goalTurnKind"] = session->goal_turn_kind;
 			acp_json["waitIsStale"] = session->wait_is_stale;
@@ -2209,7 +2211,8 @@ namespace uam
 			provider_json["lastCommand"] = install_running_for_provider
 			                                   ? install->second.command_preview
 			                                   : (check_running_for_provider ? app.runtime_cli_version_check_task.command_preview : provider_state.install_command);
-			provider_json["lastOutput"] = uam::strings::NonEmptyOrFallback(provider_state.install_output, provider_state.raw_output);
+			// Remote probes keep their markers for update identity checks; the UI shows only the CLI output.
+			provider_json["lastOutput"] = StripProviderCliProbeMarkers(uam::strings::NonEmptyOrFallback(provider_state.install_output, provider_state.raw_output));
 			return provider_json;
 		}
 

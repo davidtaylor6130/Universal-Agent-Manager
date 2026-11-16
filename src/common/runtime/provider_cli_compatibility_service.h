@@ -57,6 +57,9 @@ std::string GetNpmPackageNameForProvider(std::string_view provider_id);
 /// <summary>Identifies one provider installation; local keys remain canonical provider IDs.</summary>
 std::string CliProviderVersionStateKey(std::string_view provider_id, std::string_view execution_host_id = {});
 
+/// <summary>Removes UAM's internal marker lines (probe CLI path, running state, PIDs, npm maintenance status and interactive-update markers) for display.</summary>
+std::string StripProviderCliProbeMarkers(std::string output);
+
 /// <summary>Tests the same remote installation identity check used before mutation.</summary>
 bool ValidateRemoteCliInstallProbeForTests(std::string_view previous, std::string_view current, std::string_view platform, std::string* error);
 std::string BuildInstallAwareCliProbeForTests(std::string_view provider_id, std::string_view platform);

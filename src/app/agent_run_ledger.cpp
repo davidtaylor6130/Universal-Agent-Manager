@@ -483,6 +483,7 @@ namespace uam
 			                   (run.resumed_from_run_id.empty() || uam::uuid::IsCanonicalUuid(run.resumed_from_run_id)) &&
 			                   SafeReference(run.agent_id, false) && SafeReference(run.provider_id, false) &&
 			                   SafeText(run.model_id, kMaxIdBytes) && SafeText(run.definition_hash, kMaxIdBytes) &&
+		                   (!run.reasoning_effort_override || SafeText(*run.reasoning_effort_override, 32)) &&
 			                   SafeText(run.definition_snapshot, kMaxSnapshotBytes) && !run.definition_snapshot.empty() &&
 			                   SafeText(run.definition_instructions, kMaxSnapshotBytes) &&
 			                   run.skills_snapshot.size() <= 16 && run.delegates_snapshot.size() <= 16 &&
@@ -576,6 +577,11 @@ namespace uam
 			}
 			run.provider_id = JsonString(value, "providerId");
 			run.model_id = JsonString(value, "modelId");
+			if (value.contains("reasoningEffortOverride"))
+			{
+				if (!value["reasoningEffortOverride"].is_string()) throw std::invalid_argument("reasoning effort override type");
+				run.reasoning_effort_override = value["reasoningEffortOverride"].get<std::string>();
+			}
 			run.execution_capability = JsonString(value, "executionCapability");
 			run.task = JsonString(value, "task");
 			run.effective_workspace_access = JsonString(value, "effectiveWorkspaceAccess");
@@ -638,6 +644,7 @@ namespace uam
 			        {"rootResultDeliveryAttempts", run.root_result_delivery_attempts},
 			        {"resultExcerpt", run.result_excerpt}, {"diagnosticCode", run.diagnostic_code},
 			        {"diagnostic", run.diagnostic}};
+			if (run.reasoning_effort_override) value["reasoningEffortOverride"] = *run.reasoning_effort_override;
 			if (run.managed_continuation) value["managedContinuation"] = ManagedRunContinuationToJson(*run.managed_continuation);
 			return value;
 		}

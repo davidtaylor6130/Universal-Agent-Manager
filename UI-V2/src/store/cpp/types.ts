@@ -579,6 +579,7 @@ export interface CppAcpSession {
   queueHeld?: boolean
   providerSwitchOverride?: ProviderSwitchOverride
   unsentMessageIndices?: number[]
+  editableUnsentMessageIndices?: number[]
   recoverableUnsentMessageIndices?: number[]
   queuedPrompts?: AcpQueuedPrompt[]
   pendingDirectPrompts?: AcpQueuedPrompt[]
@@ -1076,6 +1077,7 @@ export interface OpenWorkspaceEditorResponse {
 
 export interface ChatMessagesResponse {
   unsentMessageIndices?: number[]
+  editableUnsentMessageIndices?: number[]
   recoverableUnsentMessageIndices?: number[]
   userMessageIndices?: number[] | null
   chatId?: string
@@ -1227,6 +1229,7 @@ export interface AcpBinding {
   queueHeld?: boolean
   providerSwitchOverride?: ProviderSwitchOverride
   unsentMessageIndices?: number[]
+  editableUnsentMessageIndices?: number[]
   recoverableUnsentMessageIndices?: number[]
   queuedPrompts?: AcpQueuedPrompt[]
   pendingDirectPrompts?: AcpQueuedPrompt[]
