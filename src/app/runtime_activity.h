@@ -125,7 +125,7 @@ inline bool RuntimeHasPendingWork(const AppState& app)
 	return false;
 }
 
-/// Keep terminal input responsive while a visible provider is waiting at its prompt.
+/// Keep terminal input and the selected structured turn responsive, including its staged process launch.
 inline bool NeedsInteractiveRuntimePolling(const AppState& app, bool terminal_ui_visible)
 {
 	for (const std::unique_ptr<CliTerminalState>& terminal : app.cli_terminals)
@@ -139,7 +139,11 @@ inline bool NeedsInteractiveRuntimePolling(const AppState& app, bool terminal_ui
 	}
 
 	const AcpSessionState* acp = FindAcpSessionForChat(app, selected_chat->id);
-	return acp != nullptr && acp->running && AcpSessionHasBlockingRuntimeWork(*acp);
+	// A cold launch advances through saved-input receipts and a background process worker before `running`.
+	// Waiting 250 ms for every stage delays the first reply; observe those same ownership gates at the
+	// interactive cadence while this selected chat has an active turn. An abandoned launch or held input
+	// without a launch keeps the existing idle/background cadence.
+	return acp != nullptr && (acp->running || acp->pending_local_launch != nullptr) && AcpSessionHasBlockingRuntimeWork(*acp);
 }
 
 inline int NextPollDelayMs(const AppState& app, bool dictation_running, bool terminal_ui_visible)
