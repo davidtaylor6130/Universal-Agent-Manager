@@ -8554,7 +8554,14 @@ For desktop observation and input, use only the provider's built-in controller; 
 					chat.remote_opencode_native_token.clear();
 					chat.remote_manual_compaction_pending = false;
 					chat.remote_manual_compaction_boundary_json.clear();
-					if (!remote_turn_recovery) session.recovering_remote_process = false;
+					if (!remote_turn_recovery)
+					{
+						// The helper confirmed no process is left to reattach, so an idle chat starts fresh with the
+						// fresh-launch budget. Failed reattaches (a broken pipe or SSH timeout before a reboot) were
+						// counted toward a different recovery and must not exhaust it before its first try.
+						if (session.recovering_remote_process) session.reconnect_attempts = 0;
+						session.recovering_remote_process = false;
+					}
 				}
 				if (remote_process_duplicate)
 				{
@@ -8694,7 +8701,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 						// The relaunch above is waiting for routing, which reconnect does not count as a failed attempt.
 						ScheduleAcpReconnect(session, GetAppTimeSeconds());
 					}
-					else if (recovering_remote_process || remote_turn_recovery)
+					else if (session.recovering_remote_process || remote_turn_recovery)
 					{
 						// Counted so a proxy that keeps exiting backs off. Only a never-sent prompt is ever given up.
 						RecordAcpReconnectFailure(app, session, chat, GetAppTimeSeconds(),
