@@ -677,7 +677,11 @@ UAM_TEST(GitWorktreeManagedSnapshotInterruptedCleanupRetainsRepositoryForRetry)
 		app.settings.git_snapshot_plain_folders = true;
 		app.chats.push_back(ChatDomainService().CreateNewChat("", "codex-cli"));
 		auto& chat = app.chats.front(); chat.workspace_directory = source.string();
-		UAM_ASSERT(uam::GitWorktreeService().CreateForChat(app, chat).ok);
+		// Unborn repositories use automatic snapshot preparation, then publish the fixture association.
+		const auto created = uam::GitWorktreeService().PrepareForChat(app, chat,
+		    [](const uam::GitWorktreeCreationIntent&, std::string&) { return true; }, {});
+		if (!created.ok) uam_test::Fail(created.message.c_str(), __FILE__, __LINE__);
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
 		const auto worktree = fs::path(chat.workspace_worktree_directory);
 		const auto repository = fs::path(PortGitOutput(worktree, "rev-parse --path-format=absolute --git-common-dir")).parent_path();
 		const auto admit = [&]
