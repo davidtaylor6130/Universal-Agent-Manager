@@ -1,11 +1,16 @@
 #pragma once
 
 #include <nlohmann/json.hpp>
+#include <algorithm>
+#include <array>
+#include <atomic>
 #include <filesystem>
 #include <fstream>
+#include <future>
 #include <map>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace uam::cef
 {
@@ -19,6 +24,14 @@ namespace uam::cef
 
 		explicit UiAssetSnapshot(const std::filesystem::path& root)
 		{
+			struct PendingFile
+			{
+				std::filesystem::directory_entry entry;
+				std::filesystem::file_time_type modified;
+				std::uintmax_t size;
+				std::string bytes;
+			};
+			std::vector<PendingFile> files;
 			std::size_t total = 0;
 			for (const std::filesystem::directory_entry& entry : std::filesystem::recursive_directory_iterator(root))
 			{
@@ -27,15 +40,55 @@ namespace uam::cef
 				if (!entry.is_regular_file()) throw std::runtime_error("UI snapshot contains a non-file resource.");
 				const std::filesystem::file_time_type modified = entry.last_write_time();
 				const std::uintmax_t size = entry.file_size();
-				if (size > kMaxFileBytes || size > kMaxBytes - total || m_files.size() >= kMaxFiles)
+				if (size > kMaxFileBytes || size > kMaxBytes - total || files.size() >= kMaxFiles)
 					throw std::runtime_error("UI snapshot exceeds its resource limit.");
-				std::ifstream input(entry.path(), std::ios::binary);
-				std::string bytes(static_cast<std::size_t>(size), '\0');
-				if (!input || !input.read(bytes.data(), static_cast<std::streamsize>(size)) || input.peek() != std::char_traits<char>::eof() || entry.last_write_time() != modified)
-					throw std::runtime_error("UI resource changed or could not be read during startup.");
-				total += bytes.size();
-				m_files.emplace(entry.path().lexically_relative(root).generic_string(), std::move(bytes));
+				total += static_cast<std::size_t>(size);
+				files.push_back({entry, modified, size, {}});
 			}
+			// Admit the complete bounded inventory before allocating file bytes. Each worker owns disjoint buffers;
+			// the map and manifest become visible only after all readers have joined successfully.
+			std::atomic<bool> cancelled = false;
+			std::array<std::future<void>, 4> readers;
+			const std::size_t reader_count = std::min(files.size(), readers.size());
+			try
+			{
+				for (std::size_t reader = 0; reader < reader_count; ++reader)
+				{
+					readers[reader] = std::async(std::launch::async, [&files, &cancelled, reader, reader_count]
+					{
+						try
+						{
+							for (std::size_t index = reader; index < files.size() && !cancelled.load(); index += reader_count)
+							{
+								PendingFile& file = files[index];
+								const std::filesystem::path& path = file.entry.path();
+								// Enumeration may precede this read: recheck the path before opening it.
+								const auto status = std::filesystem::symlink_status(path);
+								if (std::filesystem::is_symlink(status)) throw std::runtime_error("UI snapshot contains a symbolic link.");
+								if (!std::filesystem::is_regular_file(status)) throw std::runtime_error("UI snapshot contains a non-file resource.");
+								std::ifstream input(path, std::ios::binary);
+								file.bytes.resize(static_cast<std::size_t>(file.size));
+								if (!input || !input.read(file.bytes.data(), static_cast<std::streamsize>(file.size)) || input.peek() != std::char_traits<char>::eof() || std::filesystem::last_write_time(path) != file.modified)
+									throw std::runtime_error("UI resource changed or could not be read during startup.");
+							}
+						}
+						catch (...)
+						{
+							cancelled.store(true);
+							throw;
+						}
+					});
+				}
+				for (std::size_t reader = 0; reader < reader_count; ++reader) readers[reader].get();
+			}
+			catch (...)
+			{
+				cancelled.store(true);
+				// Async futures drain before cancelled/files are destroyed, including a partial launch failure.
+				throw;
+			}
+			for (PendingFile& file : files)
+				m_files.emplace(file.entry.path().lexically_relative(root).generic_string(), std::move(file.bytes));
 			if (!m_files.contains("index.html")) throw std::runtime_error("UI snapshot has no index.html.");
 			const std::string* manifest_bytes = Find(".vite/manifest.json");
 			if (!manifest_bytes) throw std::runtime_error("UI snapshot has no build manifest.");

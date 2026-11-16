@@ -30,6 +30,14 @@ namespace uam
 	/// modelCatalogsReset, the page clears its table, and later patches resend what they reference.
 	/// </summary>
 	void ForgetSentModelCatalogs();
+	/// <summary>
+	/// Records the first prepared desktop full reply and reuses its exact summary as the initial patch baseline.
+	/// Keep the same StateSerializer::StablePass alive across snapshot creation and this call, after serializing
+	/// the reply and before dispatching it. A non-summary call only releases the hold, without seeding a baseline.
+	/// This does not acknowledge browser receipt;
+	/// loading and non-summary replies also release the initial desktop poll hold, while phone pulls do neither.
+	/// </summary>
+	void PrepareInitialDesktopStatePushBaseline(const AppState& app, nlohmann::json snapshot, bool summary_only);
 
 	/// <summary>
 	/// True when a throttled chat summary is still waiting to be flushed by a

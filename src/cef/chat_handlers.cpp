@@ -199,32 +199,42 @@ void UamQueryHandler::HandleGetInitialState(CefRefPtr<CefBrowser> /*browser*/, c
 	const std::uint64_t known_revision = payload.value("knownStateRevision", std::numeric_limits<std::uint64_t>::max());
 	if (payload.value("summaryOnly", true) && known_boot_id == CompanionBootId() && known_revision == m_app.state_revision)
 	{
+		// The caller already has this revision; release the startup hold without inventing a full baseline.
+		if (!m_dispatchingCompanion) uam::PrepareInitialDesktopStatePushBaseline(m_app, nlohmann::json{}, false);
 		cb->Success(nlohmann::json{{"unchanged", true}, {"bootId", CompanionBootId()}, {"stateRevision", m_app.state_revision}}.dump());
 		return;
 	}
-	nlohmann::json state = uam::StateSerializer::Serialize(m_app, payload.value("summaryOnly", true));
-	// A desktop pull may come from a reloaded page with no catalogues yet; later patches resend those they reference.
-	if (!m_dispatchingCompanion) uam::ForgetSentModelCatalogs();
-	state["bootId"] = CompanionBootId();
-#if UAM_ENABLE_MOBILE_COMPANION
-	// Desktop only: a reloaded or new desktop window still shows phone requests waiting for confirmation.
-	if (!m_dispatchingCompanion)
-	{
-		m_companionConfirmations.Expire(uam::companion::DesktopConfirmations::Clock::now());
-		state["companionConfirmations"] = m_companionConfirmations.ToJson();
-	}
-#endif
 	std::string body;
-	try
 	{
-		body = state.dump();
-	}
-	catch (const nlohmann::json::type_error&)
-	{
-		// Clipped native text must not stop the UI or phone companion loading. Log once per run: companion reloads repeat it.
-		static bool logged = false;
-		if (!std::exchange(logged, true)) uam::diagnostics::Write("[getInitialState] State contained invalid UTF-8; replaced it with U+FFFD.");
-		body = state.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+		// The reply and initial push baseline share one catalogue snapshot, including background discovery.
+		// Release the temporary cache before converting and sending the completed body through CEF.
+		const uam::StateSerializer::ScopedStampedCacheMode exact(uam::StateSerializer::StampedCacheMode::Exact);
+		const uam::StateSerializer::StablePass stable_pass;
+		uam::StateSerializer::CaptureCatalogInputs(m_app);
+		nlohmann::json state = uam::StateSerializer::Serialize(m_app, payload.value("summaryOnly", true));
+		// A desktop pull may come from a reloaded page with no catalogues yet; later patches resend those they reference.
+		if (!m_dispatchingCompanion) uam::ForgetSentModelCatalogs();
+		state["bootId"] = CompanionBootId();
+#if UAM_ENABLE_MOBILE_COMPANION
+		// Desktop only: a reloaded or new desktop window still shows phone requests waiting for confirmation.
+		if (!m_dispatchingCompanion)
+		{
+			m_companionConfirmations.Expire(uam::companion::DesktopConfirmations::Clock::now());
+			state["companionConfirmations"] = m_companionConfirmations.ToJson();
+		}
+#endif
+		try
+		{
+			body = state.dump();
+		}
+		catch (const nlohmann::json::type_error&)
+		{
+			// Clipped native text must not stop the UI or phone companion loading. Log once per run: companion reloads repeat it.
+			static bool logged = false;
+			if (!std::exchange(logged, true)) uam::diagnostics::Write("[getInitialState] State contained invalid UTF-8; replaced it with U+FFFD.");
+			body = state.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+		}
+		if (!m_dispatchingCompanion) uam::PrepareInitialDesktopStatePushBaseline(m_app, std::move(state), payload.value("summaryOnly", true));
 	}
 	// Once per launch: the desktop's first full state, the UI's bootstrap pull.
 	static bool first_state_logged = false;

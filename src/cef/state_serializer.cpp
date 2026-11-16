@@ -292,16 +292,21 @@ namespace uam
 		}
 
 		const nlohmann::json& CatalogSnapshotForChat(const AppState& app, const ChatSession& chat,
-		                                             CatalogSnapshotCache& cache)
+		                                             CatalogSnapshotCache& cache, bool include_models = true, bool include_config_options = true)
 		{
 			const std::string workspace = WorkspaceSnapshotForChat(app, chat, cache).generic_string();
-			const std::string key = CatalogSnapshotKey(chat.provider_id, workspace, chat.execution_host_id);
+			// A partial snapshot must never satisfy a full scope/fingerprint read or another session's fallback.
+			const std::string key = std::string(include_models ? "1" : "0") + (include_config_options ? "1\n" : "0\n") +
+			    CatalogSnapshotKey(chat.provider_id, workspace, chat.execution_host_id);
 			if (const auto found = cache.catalogs.find(key); found != cache.catalogs.end()) return found->second;
 			if (app.provider_model_catalog != nullptr)
 			{
-				auto snapshot = app.provider_model_catalog->GetCatalogSnapshot(chat.provider_id, workspace, chat.execution_host_id);
-				const auto* host = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id.empty() ? "local" : chat.execution_host_id);
-				ProviderModelCatalogService::ApplyLaunchOptionMetadata(snapshot["availableModels"], chat.provider_id, host != nullptr ? CheckedProviderConfigurationVersion(app, chat.provider_id, *host) : std::string{});
+				auto snapshot = app.provider_model_catalog->GetCatalogSnapshot(chat.provider_id, workspace, chat.execution_host_id, include_models, include_config_options);
+				if (include_models)
+				{
+					const auto* host = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id.empty() ? "local" : chat.execution_host_id);
+					ProviderModelCatalogService::ApplyLaunchOptionMetadata(snapshot["availableModels"], chat.provider_id, host != nullptr ? CheckedProviderConfigurationVersion(app, chat.provider_id, *host) : std::string{});
+				}
 				return cache.catalogs.emplace(key, std::move(snapshot)).first->second;
 			}
 			return cache.catalogs.emplace(key, nlohmann::json{{"availableModels", nlohmann::json::array()}, {"configOptions", nlohmann::json::array()},
@@ -1892,13 +1897,7 @@ namespace uam
 
 			const bool session_owns_models = session->session_ready && !session->available_models.empty();
 			const bool session_owns_config = session->session_ready || !session->available_config_options.empty();
-			nlohmann::json acp_json = nlohmann::json::object();
-			for (const auto& field : CatalogSnapshotForChat(app, chat, cache).items())
-			{
-				// These arrays are replaced below; retain every other scoped field without copying discarded choices.
-				if ((field.key() == "availableModels" && session_owns_models) || (field.key() == "configOptions" && session_owns_config)) continue;
-				acp_json[field.key()] = field.value();
-			}
+			nlohmann::json acp_json = CatalogSnapshotForChat(app, chat, cache, !session_owns_models, !session_owns_config);
 			acp_json["sessionId"] = session->session_id;
 			acp_json["providerId"] = session->provider_id;
 			acp_json["manualCompaction"] = SerializeManualCompactionAvailability(app, chat, session);

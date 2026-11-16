@@ -26,6 +26,7 @@
 #include "include/wrapper/cef_stream_resource_handler.h"
 
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <vector>
 
@@ -36,11 +37,15 @@ namespace
 	  public:
 		explicit UamUiSchemeHandlerFactory(const std::filesystem::path& root)
 		{
+			const auto started = std::chrono::steady_clock::now();
 			try { m_assets.emplace(root); }
 			catch (const std::exception& error)
 			{
 				uam::diagnostics::Write(std::string("[UI recovery] Asset snapshot failed: ") + error.what());
 			}
+			uam::diagnostics::Write("[performance] startup UI asset snapshot took " +
+			    std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count()) +
+			    " ms; ready=" + (m_assets.has_value() ? "yes" : "no") + ".");
 		}
 
 		CefRefPtr<CefResourceHandler> Create(CefRefPtr<CefBrowser>, CefRefPtr<CefFrame>,

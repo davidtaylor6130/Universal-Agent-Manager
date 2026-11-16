@@ -76,8 +76,9 @@ class ProviderModelCatalogService
 	nlohmann::json GetCachedProviderModelChoices(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local") const;
 	nlohmann::json GetCachedProviderConfigOptions(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local") const;
 	std::string GetProviderRefreshError(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local") const;
-	/// Read models, config and discovery state together, resolving the scope once.
-	nlohmann::json GetCatalogSnapshot(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local") const;
+	/// Read models, config and discovery state together, resolving the scope once. Omitted choices are empty arrays;
+	/// discovery state is always included. Callers may omit choices only when replacing them with runtime authority.
+	nlohmann::json GetCatalogSnapshot(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local", bool include_models = true, bool include_config_options = true) const;
 
 	nlohmann::json GetCatalogScopes(bool recent_workspace = false) const;
 
