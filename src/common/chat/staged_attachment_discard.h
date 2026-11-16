@@ -30,13 +30,15 @@ namespace uam::staged_attachment_discard
 	/// Copies staged in this run that no send has named yet. Only these may be discarded with their chip: a path
 	/// leaves the set the moment any send request names it (even one later refused or still preparing), and after a
 	/// restart the set is empty, so a doubtful copy is always kept rather than deleted.
-	enum class Unsent { Stage, Submit, TakeForDiscard };
+	enum class Unsent { Stage, Submit, TakeForDiscard, AnyForChat };
+	/// For AnyForChat, `path` is a chat ID and the result says whether this run staged a copy for it that no send named.
 	inline bool ExchangeUnsent(const std::string& path, const Unsent change)
 	{
 		static std::mutex mutex;
 		static std::set<std::string> unsent;
 		const std::scoped_lock lock(mutex);
 		if (change == Unsent::Stage) return unsent.insert(Portable(path)).second;
+		if (change == Unsent::AnyForChat) return std::ranges::any_of(unsent, [&](const std::string& copy) { return IsStagedCopyPath(copy, path); });
 		return unsent.erase(Portable(path)) > 0;
 	}
 

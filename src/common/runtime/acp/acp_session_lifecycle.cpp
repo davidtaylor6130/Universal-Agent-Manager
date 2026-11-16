@@ -1757,6 +1757,7 @@ void ResetAcpRuntimeState(AppState& app, AcpSessionState& session, ChatSession& 
 	session.launch_model_options_captured = false;
 	session.goal_internal_session = false;
 	session.goal_review_turn = false;
+	session.goal_review_ceiling_turn_serial = -1; // turn_serial restarts with the runtime.
 	session.goal_review_scheduled = false;
 	session.goal_review_goal_id.clear();
 	session.goal_review_user_prompt.clear();
@@ -2088,7 +2089,7 @@ WorktreeLaunchPreparationState PrepareAcpWorkspaceForLaunch(AppState& app, AcpSe
 			session.worktree_launch_cancellation.reset();
 			session.reconnect_pending = false;
 			session.queue_held = chat.acp_queue_held = true;
-			session.last_error = "Workspace preparation was canceled or changed. Retry the held input.";
+			session.last_error = "Workspace preparation was canceled, timed out or changed. Retry the held input.";
 			session.lifecycle_state = kAcpLifecycleError;
 			ScheduleChatSave(app, chat, 0.0);
 			if (error_out) *error_out = session.last_error;
@@ -2654,7 +2655,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	{
 		session.model_catalog_scope_key = app.provider_model_catalog == nullptr ? std::string{} :
 		    app.provider_model_catalog->CaptureScopeKey(session.provider_id,
-		        uam::paths::ResolveWorkspaceRootPath(app, chat).generic_string(), chat.execution_host_id);
+		        uam::paths::PortablePathString(uam::paths::ResolveWorkspaceRootPath(app, chat)), chat.execution_host_id);
 	}
 	session.protocol_kind = ProviderStructuredProtocolOrDefault(provider);
 	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(session.provider_id);
@@ -4290,6 +4291,7 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 			session.memory_recall_preparation.reset();
 			session.claude_input_preparation.reset();
 			session.goal_turn_kind.clear();
+			if (session.goal_review_turn) session.goal_review_ceiling_turn_serial = session.turn_serial;
 			session.goal_review_turn = false;
 			session.processing = false;
 			session.manual_compaction_pending = false;
@@ -4348,6 +4350,13 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 		(void)CancelClaudeQuotaWait(app, chat);
 		FailAcpTurnOrSession(session, &chat, "Native continuation ownership changed before delivery.");
 		SaveChatQuietly(app, chat);
+		return true;
+	}
+	std::string requested_effort_error;
+	if (!AgentRunScheduler::ValidateRequestedReasoningEffort(app, chat, &session, &requested_effort_error))
+	{
+		FailAcpTurnOrSession(session, &chat, requested_effort_error);
+		ScheduleChatSave(app, chat, 0.0);
 		return true;
 	}
 	if (SendStartupModeIfNeeded(session, chat))
@@ -5305,6 +5314,7 @@ bool QueueGoalInternalPrompt(AppState& app, AcpSessionState& session, ChatSessio
 
 void ClearGoalReviewState(AcpSessionState& session)
 {
+	if (session.goal_review_turn) session.goal_review_ceiling_turn_serial = session.turn_serial;
 	session.goal_review_turn = false;
 	session.goal_review_scheduled = false;
 	session.goal_review_goal_id.clear();

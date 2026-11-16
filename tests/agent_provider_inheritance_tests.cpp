@@ -127,3 +127,19 @@ UAM_TEST(AgentChildKeepsResolvedParentWorktreeAndWorkspaceAgentSource)
 	UAM_ASSERT_EQ(fixture.app.agent_runs.back().effective_workspace_access, std::string("read"));
 	UAM_ASSERT_EQ(child.approval_mode, std::string("plan"));
 }
+
+UAM_TEST(AgentDelegationCannotRaceParentWorktreeMutation)
+{
+	AgentProviderFixture fixture;
+	fixture.app.worktree_operation_chat_ids.insert("root");
+	std::string id, error;
+	UAM_ASSERT(!uam::AgentRunScheduler::Enqueue(fixture.app, "root", {}, "worker", "Bounded task.", &id, &error));
+	UAM_ASSERT(error.find("workspace operation") != std::string::npos);
+	UAM_ASSERT(id.empty());
+	UAM_ASSERT(fixture.app.agent_runs.empty() && fixture.app.queued_agent_run_ids.empty());
+	UAM_ASSERT_EQ(fixture.app.chats.size(), std::size_t{1});
+	UAM_ASSERT(!fs::exists(fixture.app.data_root / "agent-runs"));
+	fixture.app.worktree_operation_chat_ids.erase("root");
+	UAM_ASSERT(uam::AgentRunScheduler::Enqueue(fixture.app, "root", {}, "worker", "Bounded task.", &id, &error));
+	UAM_ASSERT(!id.empty());
+}

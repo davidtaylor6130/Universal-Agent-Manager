@@ -2,7 +2,7 @@ import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, expect, it } from 'vitest'
 import { Switch } from '../ui'
-import { SaveButton, SettingRow } from './SettingsPrimitives'
+import { SaveButton, SettingRow, SettingsLoading } from './SettingsPrimitives'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -12,6 +12,18 @@ document.body.appendChild(host)
 afterEach(() => act(() => root.render(null)))
 
 const describedText = (element: Element) => (element.getAttribute('aria-describedby') ?? '').split(' ').map((id) => document.getElementById(id)?.textContent).join(' | ')
+
+it('shows a loading label alongside the named settings skeleton', () => {
+  act(() => root.render(<SettingsLoading label="Loading memory library" rows={2} />))
+  const status = host.querySelector<HTMLElement>('[role="status"]')!
+  expect(status.getAttribute('aria-label')).toBe('Loading memory library')
+  expect(status.getAttribute('aria-busy')).toBe('true')
+  const label = status.querySelector<HTMLElement>('.uam-set-section__title')!
+  expect(label.textContent).toBe('Loading memory library…')
+  expect(label.closest('.sr-only')).toBeNull()
+  expect(label.closest('[aria-hidden="true"]')).toBeNull()
+  expect(status.querySelectorAll('.uam-set-row')).toHaveLength(2)
+})
 
 it('associates row descriptions and status with each control or control group', () => {
   act(() => root.render(<>

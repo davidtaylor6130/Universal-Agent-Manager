@@ -221,6 +221,10 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
     }
   }, [hosts, hostId])
   const data = history.data
+  const historyStatus = metric === 'limits' ? '' : history.loading ? 'Updating usage' : history.error ? '' : data ? 'Usage updated' : ''
+  const [announcedHistoryStatus, setAnnouncedHistoryStatus] = useState('')
+  // Populate an existing live region after mount so the initial read can be announced.
+  useEffect(() => { setAnnouncedHistoryStatus(historyStatus) }, [historyStatus])
   const totals = useMemo(() => sumProviderUsage((data?.providers ?? []).filter(provider => !hiddenProviders.has(provider.providerId))), [data, hiddenProviders])
   const models = useMemo(() => (data?.models ?? []).filter(model => !hiddenProviders.has(model.providerId)).sort((a, b) => cost ? (usageCost(b) ?? -1) - (usageCost(a) ?? -1) : b.totalTokens - a.totalTokens), [data, cost, hiddenProviders])
   const hourly = data ? data.endMs - data.startMs <= 86400000 : days === 1
@@ -535,13 +539,13 @@ export function UsagePage({ onClose }: { onClose: () => void }) {
       {remoteHosts && <div className="max-w-48"><MenuSelect label="Usage host" value={hostId} options={[{ value: ALL_MACHINES_HOST_ID, label: 'All machines' }, ...(!hosts.some(host => host.id === 'local') ? [{ value: 'local', label: 'This computer' }] : []), ...hosts.map(host => ({ value: host.id, label: host.label }))]} onChange={value => { setHostId(value); setSelectedModel(null); setEditingPrice(false) }} /></div>}
       <SegmentedControl aria-label="Usage metric" value={metric} options={(['cost', 'tokens', 'limits'] as const).map(value => ({ value, label: value[0].toUpperCase() + value.slice(1) }))} onChange={setMetric} />
       <SegmentedControl aria-label="Usage period" value={days} options={USAGE_WINDOWS.map(option => ({ value: option.days, label: option.label }))} onChange={value => { setDays(value); setRange(usageWindow(value)); setSelectedModel(null); setEditingPrice(false) }} />
-      {metric !== 'limits' && <span role="status" className="sr-only">{history.loading ? 'Updating usage' : history.error ? '' : data ? 'Usage updated' : ''}</span>}
+      <span role="status" className="sr-only">{announcedHistoryStatus}</span>
     </header>
     <div className="min-h-0 flex-1 overflow-y-auto p-4 md:p-6">
       <Reveal open={metric === 'limits'}><UsageLimits executionHostId={hostId} usage={{ providers: history.data?.providers ?? null, loading: history.loading, collecting: Boolean(history.data?.collecting), error: history.error, days }} /></Reveal>
       <Reveal open={metric !== 'limits'}><div className="mx-auto grid max-w-6xl gap-6" aria-busy={history.loading && !data}>
         {errorNote.mounted && <div className="uam-presence" data-state={errorNote.closing ? 'closed' : 'open'}><Notice key={shownError.current} tone="error" title={shownError.current} dismissLabel="Dismiss usage error" dismissible={canDismissError} onDismiss={() => { history.dismissError(shownError.current); headingRef.current?.focus() }} actions={<Button size="sm" onClick={refresh}>Retry</Button>}>{shownAt && !history.kept ? `Showing figures from ${shownAt}.` : null}</Notice></div>}
-        {!data && history.loading && !history.error && <div className="uam-usage-skeleton" aria-hidden><span className="uam-usage-skel-tile" /><span className="uam-usage-skel-tile" /><span className="uam-usage-skel-tile" /><span className="uam-usage-skel-chart" /></div>}
+        {!data && history.loading && !history.error && <div className="uam-usage-skeleton" aria-hidden><span className="uam-usage-skel-tile uam-usage-skel-label">Loading usage…</span><span className="uam-usage-skel-tile" /><span className="uam-usage-skel-tile" /><span className="uam-usage-skel-chart" /></div>}
         <Reveal open={!!data}>{data ? <div className="uam-usage-body grid gap-6" data-kept={history.kept || undefined}>
           <ul className="sr-only" aria-label="Usage status details">{notes.map((line, index) => <li key={index}>{line}</li>)}</ul>
           {coverage.length > 0 && <ul aria-label="Usage machine coverage" className="sr-only">{coverage.map((line, index) => <li key={index}>{line}</li>)}</ul>}

@@ -5,6 +5,7 @@
 #include "common/chat/native_chat_identity.h"
 #include "common/provider/copilot_native_history.h"
 #include "common/provider/native_agent_history.h"
+#include "common/provider/opencode_v2_session.h"
 
 #include <thread>
 
@@ -137,7 +138,8 @@ UAM_TEST(NativeSubchatImportFollowsParentLinksNestedChildrenAndIsIdempotent)
 		UAM_ASSERT(service.Decide(fixture.app, ready.generation, {parent_row->candidate_id}, {}, &error));
 		fixture.Wait(service);
 		UAM_ASSERT_EQ(Joined(service.Snapshot().errors), std::string{});
-		UAM_ASSERT_EQ(service.Snapshot().imported_count, 3);
+		// The count names the one history selected; its two sub-chats follow it uncounted.
+		UAM_ASSERT_EQ(service.Snapshot().imported_count, 1);
 	}
 	UAM_ASSERT_EQ(fixture.app.chats.size(), std::size_t{3});
 	UAM_ASSERT(fixture.Chat("ses_other") == nullptr);
@@ -268,7 +270,8 @@ UAM_TEST(NativeSubchatManualScanBackfillsChildrenOfSavedParentsButStartupDoesNot
 		const auto done = manual.Snapshot();
 		UAM_ASSERT_EQ(Joined(done.errors), std::string{});
 		UAM_ASSERT_EQ(done.total_count, std::size_t{0});
-		UAM_ASSERT_EQ(done.imported_count, pass == 0 ? 2 : 0);
+		// Backfilled sub-chats are not selected histories, so the scan reports none imported.
+		UAM_ASSERT_EQ(done.imported_count, 0);
 		UAM_ASSERT_EQ(fixture.app.chats.size(), std::size_t{3});
 		UAM_ASSERT(fixture.Chat("ses_deleted") == nullptr && fixture.Chat("ses_orphan") == nullptr);
 		fixture.AssertLinked("ses_child", "chat-saved-parent");
@@ -382,6 +385,55 @@ UAM_TEST(NativeSubchatImportCodexRolloutsNameTheirParentThread)
 	for (const Message& row : parent->messages)
 		for (const ToolCall& tool : row.tool_calls) spawn_names_child = spawn_names_child || (tool.id == "call_spawn" && tool.sub_agent_id == child->native_session_id);
 	UAM_ASSERT(spawn_names_child);
+}
+
+UAM_TEST(NativeSubchatImportParentThatFailsStagingLeavesItsQueuedChildForALaterScan)
+{
+	SubchatFixture fixture;
+	const fs::path codex = fixture.temp.root / "codex";
+	ScopedEnvVar codex_home{"CODEX_HOME", codex.string()};
+	const std::string workspace = uam::paths::Utf8PathString(fixture.workspace);
+	const auto rollout = [&](const std::string& id, nlohmann::json extra, const std::string& text)
+	{
+		nlohmann::json meta{{"id", id}, {"timestamp", "2026-11-01T10:00:00Z"}, {"cwd", workspace}, {"originator", "codex_cli_rs"}, {"cli_version", "0.60.0"}};
+		meta.update(extra);
+		return JsonLines({{{"timestamp", "2026-11-01T10:00:00Z"}, {"type", "session_meta"}, {"payload", meta}},
+		    {{"timestamp", "2026-11-01T10:00:01Z"}, {"type", "response_item"}, {"payload", {{"type", "message"}, {"role", "user"}, {"content", nlohmann::json::array({{{"type", "input_text"}, {"text", text}}})}}}}});
+	};
+	const fs::path day = codex / "sessions" / "2026" / "11" / "01";
+	const fs::path parent_file = day / ("rollout-2026-11-01T10-00-00-" + kParentId + ".jsonl");
+	const std::string parent_text = rollout(kParentId, {{"source", "cli"}}, "Parent request");
+	UAM_ASSERT(uam::io::WriteTextFile(parent_file, parent_text));
+	UAM_ASSERT(uam::io::WriteTextFile(day / ("rollout-2026-11-01T10-00-05-" + kChildId + ".jsonl"), rollout(kChildId,
+	    {{"parent_thread_id", kParentId}, {"thread_source", "subagent"}, {"source", {{"subagent", {{"thread_spawn", {{"parent_thread_id", kParentId}, {"depth", 1}}}}}}}}, "Child request")));
+	const auto scanner = [](const uam::StartupNativeImportScanRequest&, std::stop_token stop)
+	{
+		return ChatHistorySyncService().DiscoverProviderChatsForFolder({}, nullptr, stop, 0, false, {}, {}, "codex-cli");
+	};
+	{
+		uam::StartupNativeImportService service(scanner);
+		const auto ready = fixture.Scan(service);
+		UAM_ASSERT_EQ(ready.total_count, std::size_t{1});
+		// The parent's rollout disappears after the review, so staging it fails while its child is queued behind it.
+		fs::remove(parent_file);
+		std::string error;
+		UAM_ASSERT(service.Decide(fixture.app, ready.generation, {}, {}, &error, {}, true));
+		fixture.Wait(service);
+		UAM_ASSERT(!service.Snapshot().errors.empty());
+		UAM_ASSERT_EQ(service.Snapshot().imported_count, 0);
+		// The child is neither published under a missing parent nor saved as an ordinary chat, and nothing is marked deleted.
+		UAM_ASSERT(fixture.app.chats.empty());
+		UAM_ASSERT(ChatRepository::LoadLocalChats(fixture.app.data_root).empty());
+		const auto tombstones = ChatHistorySyncService().NativeImportTombstoneKeys(fixture.app.data_root);
+		UAM_ASSERT(tombstones && tombstones->empty());
+	}
+	// Once the parent is readable again, a later scan imports both, linked.
+	UAM_ASSERT(uam::io::WriteTextFile(parent_file, parent_text));
+	uam::StartupNativeImportService again(scanner);
+	const auto imported = fixture.Import(again);
+	UAM_ASSERT_EQ(Joined(imported.errors), std::string{});
+	UAM_ASSERT_EQ(fixture.app.chats.size(), std::size_t{2});
+	fixture.AssertLinked(kChildId, kParentId);
 }
 
 UAM_TEST(NativeSubchatImportRemoteCodexListKeepsSpawnedThreadsWithTheirParent)
@@ -695,6 +747,34 @@ UAM_TEST(NativeSubchatImportOpenCodeTaskCallsNameChildSessions)
 	UAM_ASSERT_EQ(child->native_session_id, std::string("ses_child"));
 	UAM_ASSERT_EQ(child->messages.back().content, std::string("Child answer"));
 	UAM_ASSERT(!child->created_at.empty());
+}
+
+UAM_TEST(NativeSubchatImportTreatsOnlyOpenCodeV2SubagentToolsAsSubAgents)
+{
+	const auto tool = [](const nlohmann::json& export_json)
+	{
+		const auto parsed = ChatHistorySyncService::ParseRemoteOpenCodeTranscript(export_json.dump());
+		UAM_ASSERT(parsed.success);
+		for (const Message& message : parsed.messages)
+			for (const ToolCall& call : message.tool_calls) return call;
+		UAM_ASSERT(false);
+		return ToolCall{};
+	};
+	const nlohmann::json state{{"status", "completed"}, {"input", {{"prompt", "Inspect"}}}, {"output", "Done"}, {"metadata", {{"sessionID", "ses_child"}}}};
+	// OpenCode 1: a custom or MCP tool can be named `subagent`; it stays an ordinary tool, even with a session-like field.
+	const ToolCall v1 = tool({{"info", {{"id", "ses_v1"}, {"directory", "/work"}}}, {"messages", nlohmann::json::array({{{"info", {{"role", "assistant"}}},
+	    {"parts", nlohmann::json::array({{{"type", "tool"}, {"callID", "call_1"}, {"tool", "subagent"}, {"state", state}}})}}})}});
+	UAM_ASSERT(!v1.is_sub_agent && v1.sub_agent_id.empty());
+	// OpenCode 2: UAM's V2 adapter normalizes the native export and marks its `subagent` tool.
+	const nlohmann::json v2 = uam::opencode_v2::NormalizeExport({{"info", {{"id", "ses_v2"}, {"location", {{"directory", "/work"}}}}}, {"messages", nlohmann::json::array({
+	    {{"id", "msg_a"}, {"type", "assistant"}, {"model", {{"providerID", "mock"}, {"id", "model"}}}, {"content", nlohmann::json::array({{{"type", "tool"}, {"id", "call_2"}, {"name", "subagent"}, {"state", state}}})}}})}});
+	const ToolCall native = tool(v2);
+	UAM_ASSERT(native.is_sub_agent);
+	UAM_ASSERT_EQ(native.sub_agent_id, std::string("ses_child"));
+	// The V1 `task` tool is unchanged.
+	const ToolCall task = tool({{"info", {{"id", "ses_v1"}, {"directory", "/work"}}}, {"messages", nlohmann::json::array({{{"info", {{"role", "assistant"}}},
+	    {"parts", nlohmann::json::array({{{"type", "tool"}, {"callID", "call_3"}, {"tool", "task"}, {"state", state}}})}}})}});
+	UAM_ASSERT(task.is_sub_agent && task.sub_agent_id == "ses_child");
 }
 
 UAM_TEST(NativeSubchatImportOpenCodeExportsReportTheirParent)

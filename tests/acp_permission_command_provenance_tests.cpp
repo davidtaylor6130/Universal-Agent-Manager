@@ -227,3 +227,53 @@ UAM_TEST(CodexCapturedReadAutoApprovalSelectsOfferedOneTimeDecision)
 	UAM_ASSERT(std::ranges::all_of(selected_once, [](bool value) { return value; }));
 #endif
 }
+
+// Issue #515: a provider request arriving after a goal-review turn has ended must not be allowed
+// without the review's read-only limit, whether by YOLO auto-approval, a manual allow or a saved SSH response.
+UAM_TEST(LatePermissionAfterGoalReviewTurnKeepsTheReadOnlyLimit)
+{
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+	const auto late_edit_refused = [](const std::string& route)
+	{
+		CommandProvenanceFixture fixture(false, true, route == "auto");
+		uam::AcpSessionState& session = *fixture.session;
+		ChatSession& chat = fixture.app.chats.front();
+		session.prompt_request_id = 9;
+		session.pending_request_methods[9] = uam::acp_methods::kSessionPrompt;
+		// The provider's own prompt reply ends the review turn through the normal completion path.
+		UAM_ASSERT(uam::ProcessAcpLineForTests(fixture.app, session, chat, R"({"jsonrpc":"2.0","id":9,"result":{}})"));
+		UAM_ASSERT(session.running);
+		UAM_ASSERT(!session.processing);
+		UAM_ASSERT(!session.goal_review_turn);
+		UAM_ASSERT(session.pending_permission.request_id_json.empty());
+
+		if (route == "saved")
+			chat.remote_interaction_responses.push_back({"71", nlohmann::json{{"jsonrpc", "2.0"}, {"id", 71},
+			    {"result", {{"outcome", {{"outcome", "selected"}, {"optionId", "once"}}}}}}.dump()});
+		const std::string target = (fixture.temp.root / "review-notes.txt").string();
+		const nlohmann::json tool = {{"toolCallId", "late-edit"}, {"title", "Edit review-notes.txt"}, {"kind", "edit"}, {"status", "pending"},
+		    {"locations", {{{"path", target}}}}, {"rawInput", {{"file_path", target}, {"content", "late write"}}}};
+		UAM_ASSERT(uam::ProcessAcpLineForTests(fixture.app, session, chat,
+		    nlohmann::json{{"jsonrpc", "2.0"}, {"id", 71}, {"method", "session/request_permission"}, {"params", {{"sessionId", fixture.thread}, {"toolCall", tool},
+		        {"options", {{{"optionId", "once"}, {"name", "Allow once"}, {"kind", "allow_once"}},
+		            {{"optionId", "reject"}, {"name", "Reject"}, {"kind", "reject_once"}}}}}}}.dump()));
+		const bool manual_granted = route == "manual" && fixture.Resolve("once");
+		fixture.DenyIfPending(false);
+		const auto responses = fixture.wire->ReadSettled();
+		const bool wire_grant = std::ranges::any_of(responses, [](const nlohmann::json& response)
+		{
+			if (!response.contains("id") || response.at("id") != nlohmann::json(71) || !response.contains("result") || !response.at("result").is_object()) return false;
+			const nlohmann::json& result = response.at("result");
+			return result.contains("outcome") && result.at("outcome").is_object() && result.at("outcome").value("optionId", std::string()) == "once";
+		});
+		std::cout << "late goal-review permission: route=" << route << " manualGrant=" << manual_granted
+		          << " wire=" << nlohmann::json(responses).dump() << '\n';
+		return !manual_granted && !wire_grant;
+	};
+	std::vector<bool> refused;
+	for (const std::string route : {"auto", "manual", "saved"})
+		refused.push_back(late_edit_refused(route));
+	UAM_ASSERT_EQ(refused.size(), std::size_t(3));
+	UAM_ASSERT(std::ranges::all_of(refused, [](bool value) { return value; }));
+#endif
+}

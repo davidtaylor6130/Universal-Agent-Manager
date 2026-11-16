@@ -13,6 +13,7 @@
 
 #include "app/agent_definition_service.h"
 #include "app/agent_run_scheduler.h"
+#include "app/managed_agent_model_options.h"
 #include "app/provider_model_catalog_service.h"
 #include "app/provider_mcp_settings_service.h"
 #include "common/config/execution_host_config.h"
@@ -398,7 +399,7 @@ namespace uam
 			if (method == "agent_status" || method == "agent_cancel" || method == "agent_wait")
 				return HasOnlyStringArguments(arguments, {"runId"});
 			if (method == "agent_delegate")
-				return HasOnlyStringArguments(arguments, {"agentId", "task"}, {"providerId", "modelId"});
+				return HasOnlyStringArguments(arguments, {"agentId", "task"}, {"providerId", "modelId", "reasoningEffort"});
 			if (method == "goal_create")
 				return HasOnlyStringArguments(arguments, {"objective", "idempotencyKey"});
 			if (method == "chat_create")
@@ -728,7 +729,7 @@ namespace uam
 			nlohmann::json targets = nlohmann::json::array();
 			const std::string host_id = strings::NonEmptyOrFallback(chat.execution_host_id, "local");
 			const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, host_id);
-			const std::string workspace = paths::ResolveWorkspaceRootPath(app, chat).generic_string();
+			const std::string workspace = paths::PortablePathString(paths::ResolveWorkspaceRootPath(app, chat));
 			const std::string parent_provider = provider_ids::NormalizeCliProviderAliasOrSelf(chat.provider_id);
 			std::set<std::string> seen;
 			for (const ProviderProfile& profile : app.provider_profiles)
@@ -751,6 +752,15 @@ namespace uam
 				else reason = ProviderCliLaunchBlockReason(app, id, host_id);
 				nlohmann::json choices = app.provider_model_catalog != nullptr
 				    ? app.provider_model_catalog->GetCachedProviderModelChoices(id, workspace, host_id) : nlohmann::json::array();
+				for (auto& choice : choices)
+				{
+					const auto options = ManagedAgentModelOptions(app, chat, id, choice.value("id", ""));
+					if (!options.supported_reasoning_efforts.empty())
+					{
+						choice["supportedReasoningEfforts"] = options.supported_reasoning_efforts;
+						choice["defaultReasoningEffort"] = options.default_reasoning_effort;
+					}
+				}
 				const std::string default_model = id == parent_provider ? chat.model_id : std::string{};
 				targets.push_back({{"providerId", id}, {"title", profile.title}, {"executionHostId", host_id},
 				    {"eligible", reason.empty()}, {"availability", !reason.empty() ? "unavailable" : local_check_failed ? "unverified" : "installed-compatible"},
@@ -807,7 +817,8 @@ namespace uam
 			std::string run_id;
 			std::string error;
 			if (!AgentRunScheduler::Enqueue(app, capability.chat_id, capability.agent_run_id,
-			                                agent_id, task, &run_id, &error, provider_id, model_id, ReadOnlyAgent(app, capability)))
+			                                agent_id, task, &run_id, &error, provider_id, model_id, ReadOnlyAgent(app, capability),
+		                                arguments.contains("reasoningEffort") ? std::optional<std::string>{arguments["reasoningEffort"].get<std::string>()} : std::nullopt))
 				return {.error = std::move(error)};
 			capability.owned_agent_run_ids.insert(run_id);
 			const auto child = std::ranges::find(app.agent_runs, run_id, &AgentRun::id);
@@ -1186,7 +1197,7 @@ namespace uam
 			if (user.role != MessageRole::User || user.acp_prompt_not_sent || user.created_at.empty() ||
 			    user.content.empty() || !SafeText(user.content, 1024U * 1024U)) return false;
 			task = user.content;
-			origin = nlohmann::json::array({app.data_root.generic_string(), chat->id, chat->created_at,
+			origin = nlohmann::json::array({paths::PortablePathString(app.data_root), chat->id, chat->created_at,
 			    root->id, root->created_at, root->provider_id, root->execution_host_id, root->workspace_directory,
 			    root->approval_mode, root->uam_control_enabled, root->uam_control_explicitly_disabled,
 			    chat->provider_id, chat->execution_host_id, chat->workspace_directory, chat->native_session_id,
@@ -2008,8 +2019,8 @@ namespace uam
 			nlohmann::json goal_get = ToolSchema("goal_get");
 			goal_get["description"] = "Read this chat's current goal: objective, status, progress, budget, and whether goal creation is allowed.";
 			nlohmann::json agent_delegate = MutationToolSchema("agent_delegate", {{"agentId", {{"type", "string"}}}, {"task", {{"type", "string"}}},
-			    {"providerId", {{"type", "string"}}}, {"modelId", {{"type", "string"}}}}, {"agentId", "task"});
-			agent_delegate["description"] = "Start one permitted agent using optional providerId and modelId from agent_list providerTargets. Omitting providerId inherits the parent provider; switching provider without modelId uses the target provider's default. CLI availability does not verify login. resultDelivery reports cooperative-only, automatic-pending or held. An accepted direct-root delegation may deliver bounded child results after a normal turn end on the SAME still-live local Codex session; it never restarts a parent or replays uncertain input.";
+			    {"providerId", {{"type", "string"}}}, {"modelId", {{"type", "string"}}}, {"reasoningEffort", {{"type", "string"}, {"maxLength", 32}, {"description", "Supported effort from the selected model in agent_list; omit to inherit, or use an empty string for provider Default."}}}}, {"agentId", "task"});
+			agent_delegate["description"] = "Start one permitted agent using optional providerId, modelId and reasoningEffort from agent_list providerTargets. Omit reasoningEffort to keep normal inheritance, or use an empty string for provider Default. Unsupported explicit efforts are refused. Omitting providerId inherits the parent provider; switching provider without modelId uses the target provider's default. CLI availability does not verify login. resultDelivery reports cooperative-only, automatic-pending or held. An accepted direct-root delegation may deliver bounded child results after a normal turn end on the SAME still-live local Codex session; it never restarts a parent or replays uncertain input.";
 			nlohmann::json chat_create = MutationToolSchema("chat_create", {{"task", {{"type", "string"}, {"description", "First prompt for the new chat."}}},
 			    {"providerId", {{"type", "string"}}}, {"modelId", {{"type", "string"}}}, {"title", {{"type", "string"}}}}, {"task"});
 			chat_create["description"] = "Start one separate top-level UAM chat in this chat's workspace and execution host and send task as its first prompt. Optional providerId and modelId come from agent_list providerTargets; omitted values inherit this chat's provider and model. The new chat copies this chat's permission modes, so it is never more permissive, and always gets its own Git worktree; UAM refuses when Git automatic worktrees are off or the workspace cannot be isolated. In YOLO it starts immediately; otherwise it waits for the user's approval in UAM. Unavailable in Plan mode, to read-only agents and to subagents. At most 2 per turn and 8 per chat; a chat started this way cannot start others. Retrying identical arguments returns the same chat. The reply arrives after the first prompt is sent; if it cannot be sent the empty chat is removed and an error is returned.";

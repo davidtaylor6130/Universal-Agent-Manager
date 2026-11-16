@@ -88,6 +88,12 @@ struct ChatIconHandlerTestAccess
 	{
 		handler.HandleImportProviderAgent(nullptr, payload, callback);
 	}
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+	static void ListGeminiChildren(UamQueryHandler& handler, const nlohmann::json& payload, CefRefPtr<UamQueryHandler::Callback> callback)
+	{
+		handler.HandleListGeminiChildConversations(nullptr, payload, callback);
+	}
+#endif
 	static void OpenNative(UamQueryHandler& handler, const nlohmann::json& payload, CefRefPtr<UamQueryHandler::Callback> callback)
 	{
 		handler.HandleOpenNativeSessionChat(nullptr, payload, callback);
@@ -2789,6 +2795,47 @@ namespace
 	};
 } // namespace
 
+UAM_TEST(ChatCreateRecoveredBranchWitnessRejectsChangedSourceBeforeCreation)
+{
+	for (const std::string mode : {"matching", "input", "history", "provider", "host", "malformed", "cold"})
+	{
+		HandlerBranchOriginalFixture fixture(false);
+		auto* source = ChatDomainService().FindChatById(fixture.app, fixture.source_id);
+		UAM_ASSERT(source);
+		source->messages[2].native_input_id = "11111111-1111-4111-8111-111111111111";
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, *source));
+		fixture.source_messages = source->messages;
+		fixture.source_primary = ReadFile(AppPaths::UamChatFilePath(fixture.app.data_root, fixture.source_id));
+		fixture.source_revision = ChatRepository::ChatStorageRevision(fixture.app.data_root, fixture.source_id);
+		auto payload = fixture.Payload("recovered-witness-" + mode);
+		payload["regenerate"] = false;
+		payload["selectChat"] = false;
+		payload["sourceWitness"] = {{"messagesDigest", uam::StateSerializer::MessageDigest(*source)},
+		    {"nativeInputId", *source->messages[2].native_input_id}, {"providerId", source->provider_id}, {"executionHostId", "local"}};
+		if (mode == "input") payload["sourceWitness"]["nativeInputId"] = "22222222-2222-4222-8222-222222222222";
+		if (mode == "history") payload["sourceWitness"]["messagesDigest"] = "0000000000000000";
+		if (mode == "provider") payload["sourceWitness"]["providerId"] = "codex-cli";
+		if (mode == "host") payload["sourceWitness"]["executionHostId"] = "other-host";
+		if (mode == "malformed") payload["sourceWitness"].erase("nativeInputId");
+		if (mode == "cold") fixture.MakeCold(fixture.source_id);
+		auto handler = UamQueryHandlerTestAccess::Create(fixture.app, "file:///private/index.html");
+		const auto callback = fixture.Start(*handler, payload);
+		RunCreationLoopUntil([callback]() { return callback->successes + callback->failures != 0; }, std::chrono::seconds(10));
+		UAM_ASSERT_EQ(callback->successes + callback->failures, 1);
+		const bool matches = mode == "matching" || mode == "cold";
+		if (callback->successes != (matches ? 1 : 0))
+		{
+			throw std::runtime_error("Recovered witness mode " + mode + " returned: " + callback->body);
+		}
+		UAM_ASSERT_EQ(callback->successes, matches ? 1 : 0);
+		UAM_ASSERT_EQ(callback->failures, matches ? 0 : 1);
+		UAM_ASSERT_EQ(fixture.app.chats.size(), matches ? std::size_t{2} : std::size_t{1});
+		if (!matches) UAM_ASSERT_EQ(callback->status, mode == "malformed" ? 400 : 409);
+		UAM_ASSERT_EQ(ReadFile(AppPaths::UamChatFilePath(fixture.app.data_root, fixture.source_id)), fixture.source_primary);
+		fixture.AssertNoProviderProcess();
+	}
+}
+
 UAM_TEST(ChatCreateBranchOriginalLoadedWaitsForWorkerAndRetainsBytes)
 {
 	HandlerBranchOriginalFixture fixture;
@@ -5274,6 +5321,60 @@ UAM_TEST(RemoteNativeHistoryHandlerGeminiChildInlineOriginalsOpenAndSave)
 	UAM_ASSERT_EQ(ReadFile(child.File()), child.bytes);
 	fixture.Settle(callback);
 }
+
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+// The browser lists an SSH child through the actual helper; the listed reference opens through the existing guarded route.
+UAM_TEST(RemoteNativeHistoryHandlerGeminiChildBrowserListsThroughHelperThenOpensExactReference)
+{
+	RemoteOwnedControlsFixture fixture;
+	RemoteGeminiChildJournal child(fixture); child.Write(true);
+	const auto before = fixture.Launches();
+	CefRefPtr<RemoteHistoryQueryCallback> callback = new RemoteHistoryQueryCallback;
+	fixture.pending_callbacks.push_back(callback);
+	ChatIconHandlerTestAccess::ListGeminiChildren(*fixture.handler, {{"chatId", child.parent_id}}, callback);
+	(void)child.Await(callback);
+	UAM_ASSERT_EQ(callback->successes, 1);
+	fixture.AssertPrivateTransport(before);
+	const auto listing = nlohmann::json::parse(callback->body);
+	UAM_ASSERT_EQ(listing["children"].size(), std::size_t{1});
+	UAM_ASSERT_EQ(listing["children"][0].value("reference", ""), child.reference);
+	UAM_ASSERT_EQ(listing["children"][0].value("preview", ""), std::string("Remote child question"));
+	fixture.Settle(callback);
+	const auto opened = child.Open();
+	RequireRemoteChildOpened(child, opened);
+	(void)child.AssertSaved();
+	const auto saved = ChatRepository::LoadLocalChat(fixture.app.data_root, child.reference, true);
+	UAM_ASSERT(saved.has_value());
+	UAM_ASSERT_EQ(saved->subagent_parent_chat_id, child.parent_id); // Listed under this parent; no tool call names the child.
+	fixture.Settle(opened);
+}
+
+// Gemini records the worktree it ran in, so listing and opening resolve that, not the source checkout.
+UAM_TEST(RemoteNativeHistoryHandlerGeminiChildBrowserUsesWorktreeWorkspace)
+{
+	RemoteOwnedControlsFixture fixture;
+	auto* parent = ChatDomainService().FindChatById(fixture.app, fixture.owner_id);
+	UAM_ASSERT(parent != nullptr);
+	parent->workspace_worktree_directory = parent->workspace_directory;
+	parent->workspace_directory = "/srv/source-checkout";
+	parent->workspace_isolation_kind = "gitWorktree";
+	RemoteGeminiChildJournal child(fixture); child.Write(true);
+	CefRefPtr<RemoteHistoryQueryCallback> callback = new RemoteHistoryQueryCallback;
+	fixture.pending_callbacks.push_back(callback);
+	ChatIconHandlerTestAccess::ListGeminiChildren(*fixture.handler, {{"chatId", child.parent_id}}, callback);
+	(void)child.Await(callback);
+	UAM_ASSERT_EQ(callback->successes, 1);
+	UAM_ASSERT_EQ(nlohmann::json::parse(callback->body)["children"][0].value("reference", ""), child.reference);
+	fixture.Settle(callback);
+	const auto opened = child.Open();
+	RequireRemoteChildOpened(child, opened);
+	const auto saved = ChatRepository::LoadLocalChat(fixture.app.data_root, child.reference, true);
+	UAM_ASSERT(saved.has_value());
+	UAM_ASSERT_EQ(saved->workspace_directory, fixture.workspace);
+	UAM_ASSERT_EQ(saved->subagent_parent_chat_id, child.parent_id);
+	fixture.Settle(opened);
+}
+#endif
 
 // A slow SSH child read takes no shared preparation slot and does not wait behind background file work.
 UAM_TEST(RemoteNativeHistoryHandlerGeminiChildReadLeavesSharedCapacityAndFileLaneFree)

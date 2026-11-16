@@ -330,14 +330,14 @@ namespace
 	// model context, not a user turn; every marker is required so typed text stays visible.
 	bool IsSessionContextRow(const JsonValue& row, std::size_t ordinal)
 	{
-		if (ordinal != 0 || JsonStringOrEmpty(row.Find("id")) != "d04923d38bb0f6017037e74183378ef4" || JsonStringOrEmpty(row.Find("type")) != "user") return false;
+		if (ordinal != 0 || JsonStringOrEmpty(row.Find("id")) != uam::gemini::kSessionContextRowId || JsonStringOrEmpty(row.Find("type")) != "user") return false;
 		const JsonValue* content = row.Find("content");
 		if (!content || content->type != JsonValue::Type::Array || content->array_value.size() != 1) return false;
 		const JsonValue& part = content->array_value.front();
 		const JsonValue* text = part.Find("text");
 		if (part.object_value.size() != 1 || !text || text->type != JsonValue::Type::String) return false;
 		const std::string_view value = text->string_value;
-		return value.starts_with("<session_context>\nThis is the Gemini CLI. We are setting up the context for our chat.\n") && value.ends_with("\n</session_context>");
+		return value.starts_with(uam::gemini::kSessionContextOpening) && value.ends_with(uam::gemini::kSessionContextClosing);
 	}
 
 	std::optional<ChatSession> MapGeminiDocument(JsonValue& root, const ProviderProfile& provider, const GeminiJsonHistoryStoreOptions& options, MappingState& state)

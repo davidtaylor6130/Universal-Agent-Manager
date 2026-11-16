@@ -151,6 +151,8 @@ Json NormalizeExport(const Json& native)
 				if (content.at("type") == "tool")
 				{
 					part["callID"] = ToolKey(entry.at("id").get<std::string>(), content.at("id").get<std::string>()); part["tool"] = content.at("name");
+					// V2's native sub-agent tool is named `subagent`; on V1 that name can be a custom or MCP tool.
+					if (content.at("name") == "subagent") part["uamOpenCodeV2SubagentTool"] = true;
 					Json state = content.at("state");
 					if (state.value("status", "") == "streaming") state["status"] = "pending";
 					if (state.value("status", "") == "error")

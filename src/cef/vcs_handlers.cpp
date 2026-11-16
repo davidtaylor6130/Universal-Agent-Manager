@@ -5,6 +5,7 @@
 #include "app/chat_domain_service.h"
 #include "app/chat_reference_context.h"
 #include "app/git_worktree_service.h"
+#include "app/managed_subagent_control_service.h"
 #include "app/runtime_orchestration_services.h"
 #include "app/vcs_commit_service.h"
 #include "app/vcs_provider.h"
@@ -216,20 +217,62 @@ namespace
 	                               WorktreeOperation operation,
 	                               std::string failure_fallback)
 	{
+		std::shared_ptr<const uam::ManagedWorktreeFamily> family;
+		std::vector<std::string> fenced_ids{chat_id};
+		if (operation == &uam::GitWorktreeService::DiscardChatChanges || operation == &uam::GitWorktreeService::PortChatChanges)
+		{
+			std::string error;
+			family = uam::ManagedSubagentControlService::CaptureWorktreeFamily(app, chat_id, &error);
+			if (!family) { callback->Failure(409, error); return; }
+			fenced_ids = family->ChatIds();
+		}
+		std::shared_ptr<uam::AppState::GitPortRequest> family_request;
+		if (family)
+		{
+			const ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
+			family_request = std::make_shared<uam::AppState::GitPortRequest>();
+			family_request->lease = app.worktree_retention_gate.TryAcquireMutation();
+			if (!family_request->lease) { callback->Failure(409, "Workspace cleanup is finishing. Retry the operation."); return; }
+			family_request->family_fenced_ids = fenced_ids;
+			family_request->handler_lifetime = lifetime; family_request->lifetime_bound = true;
+			family_request->root = app.data_root; family_request->incarnation = chat->metadata_incarnation;
+			family_request->workspace = chat->workspace_directory; family_request->source = chat->workspace_source_directory;
+			family_request->worktree = chat->workspace_worktree_directory; family_request->branch = chat->workspace_branch_name;
+			family_request->base = chat->workspace_base_ref;
+			app.git_port_requests[chat_id] = family_request;
+			uam::ManagedSubagentControlService::BindWorktreeFamilyOperation(*family, family_request);
+		}
 		auto state = std::make_shared<WorktreeAsyncState>();
 		ReadOnlyAppSnapshotInputs snapshot_inputs = CaptureReadOnlyAppSnapshotInputs(app);
 		uam::AppState* live_app = &app;
-		app.worktree_operation_chat_ids.insert(chat_id);
+		app.worktree_operation_chat_ids.insert(fenced_ids.begin(), fenced_ids.end());
 
 		// A query that could not be queued never runs its completion, so its gate entry is released here.
 		const bool queued = RunAsyncCefQuery(std::move(lifetime),
 		    callback,
-		    [snapshot_inputs = std::move(snapshot_inputs), state, chat_id, operation, failure_fallback = std::move(failure_fallback)]() mutable
+		    [snapshot_inputs = std::move(snapshot_inputs), state, family, family_request, chat_id, operation, failure_fallback = std::move(failure_fallback)]() mutable
 		    {
+			    struct FinishFamilyWorker
+			    {
+				    std::shared_ptr<uam::AppState::GitPortRequest> request;
+				    ~FinishFamilyWorker() { if (request) request->worker_state.store(uam::AppState::GitPortRequest::WorkerState::Finished); }
+			    } finished{family_request};
+			    if (family_request)
+			    {
+				    auto queued = uam::AppState::GitPortRequest::WorkerState::Queued;
+				    if (!family_request->worker_state.compare_exchange_strong(queued, uam::AppState::GitPortRequest::WorkerState::Running) || family_request->cancellation->stop_requested())
+				        return AsyncFailure(409, "Workspace cleanup was cancelled before admission.");
+			    }
 			    uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(snapshot_inputs));
+			    const auto candidate_revision = ChatRepository::ChatStorageRevision(snapshot.data_root, chat_id);
+			    const auto summary_revision = ChatRepository::ChatSummaryStorageRevision(snapshot.data_root, chat_id);
+			    std::string revision_error;
+			    if (family && (!candidate_revision || !summary_revision || !uam::ManagedSubagentControlService::BindWorktreeFamilyParentRevision(*family, *candidate_revision, *summary_revision, &revision_error)))
+				    return AsyncFailure(409, revision_error.empty() ? "Parent storage could not be witnessed before cleanup." : revision_error);
 			    std::string load_warning;
-			    std::optional<ChatSession> chat = ChatRepository::LoadLocalChat(
-			        snapshot.data_root, chat_id, true, &load_warning);
+			    std::optional<ChatSession> chat = family
+			        ? ChatRepository::LoadLocalChatPrimaryReadOnly(snapshot.data_root, chat_id, true)
+			        : ChatRepository::LoadLocalChat(snapshot.data_root, chat_id, true, &load_warning);
 			    if (!chat)
 			    {
 				    return AsyncFailure(
@@ -237,7 +280,10 @@ namespace
 				        FailureDetailOrFallback(
 				            load_warning, "Failed to load chat before its worktree operation."));
 			    }
+			    if (family && (candidate_revision != ChatRepository::ChatStorageRevision(snapshot.data_root, chat_id) || summary_revision != ChatRepository::ChatSummaryStorageRevision(snapshot.data_root, chat_id)))
+				    return AsyncFailure(409, "Parent history changed while loading cleanup input. Its worktree was retained.");
 			    snapshot.chats.push_back(std::move(*chat));
+			    snapshot.worktree_cleanup_family = family;
 			    const uam::GitWorktreeService service;
 			    state->result = (service.*operation)(snapshot, snapshot.chats.front());
 			    CaptureWorktreeFields(*state, snapshot.chats.front());
@@ -252,9 +298,20 @@ namespace
 			    }
 			    return AsyncSuccess(SerializeGitWorktreeResult(state->result));
 		    },
-		    [live_app, browser, state, chat_id](AsyncCefResult& result)
+		    [live_app, browser, state, chat_id, fenced_ids, family_request](AsyncCefResult& result)
 		    {
-			    live_app->worktree_operation_chat_ids.erase(chat_id);
+			    bool owns_completion = true;
+			    if (family_request)
+			    {
+				    owns_completion = uam::SettleGitWorktreeCleanupRequest(*live_app, chat_id, family_request);
+				    // A committed publication is reconciled independently of whether its query
+				    // can still receive success. Never apply the worker snapshot a second time.
+				    if (owns_completion && family_request->cleanup_commit) uam::PushStateUpdateIfChanged(browser, *live_app);
+				    if (!owns_completion || family_request->cancellation->stop_requested() || (family_request->lifetime_bound && family_request->handler_lifetime.expired()))
+				        result = AsyncFailure(409, "Workspace cleanup query ended or changed owner. Inspect its current saved state before retrying.");
+				    return;
+			    }
+			    if (owns_completion) for (const auto& id : fenced_ids) live_app->worktree_operation_chat_ids.erase(id);
 			    if (!result.ok)
 			    {
 				    return;
@@ -270,7 +327,11 @@ namespace
 			    ApplyWorktreeFields(*live_chat, *state);
 			    uam::PushStateUpdateIfChanged(browser, *live_app);
 		    });
-		if (!queued) app.worktree_operation_chat_ids.erase(chat_id);
+		if (!queued)
+		{
+			if (family_request) app.git_port_requests.erase(chat_id);
+			for (const auto& id : fenced_ids) app.worktree_operation_chat_ids.erase(id);
+		}
 	}
 
 	nlohmann::json SerializeVcsCommitStatus(const uam::VcsCommitStatus& status)

@@ -2,8 +2,10 @@ import { createRequestId } from '../ipc/cefBridge'
 
 /** App-wide failures and notices. AppShell routes them to the notifications panel and the shared transient alert. */
 export const APP_FAILURE_EVENT = 'uam-app-failure'
+export const APP_NOTICE_RESOLVED_EVENT = 'uam-app-notice-resolved'
+export type AppNoticeAction = { label: string; run: () => void | Promise<void> }
 /** Absent tone means a failure; info and success notices reuse the same channel. */
-export type AppFailure = { id: string; time: string; message: string; detail: string; tone?: 'info' | 'success' }
+export type AppFailure = { id: string; time: string; message: string; detail: string; tone?: 'info' | 'success' | 'warning'; actions?: AppNoticeAction[] }
 
 export function reportAppFailure(message: string, detail: string) {
   window.dispatchEvent(new CustomEvent<AppFailure>(APP_FAILURE_EVENT, {
@@ -12,10 +14,17 @@ export function reportAppFailure(message: string, detail: string) {
 }
 
 /** Completed or informational app-wide messages; same panel and alert as failures. */
-export function reportAppNotice(message: string, tone: 'info' | 'success' = 'info') {
+export function reportAppNotice(message: string, tone: 'info' | 'success' | 'warning' = 'info', options: { id?: string; detail?: string; actions?: AppNoticeAction[] } = {}) {
+  const id = options.id ?? createRequestId('app-notice')
   window.dispatchEvent(new CustomEvent<AppFailure>(APP_FAILURE_EVENT, {
-    detail: { id: createRequestId('app-notice'), time: new Date().toISOString(), message, detail: '', tone },
+    detail: { id, time: new Date().toISOString(), message, detail: options.detail ?? '', tone, actions: options.actions },
   }))
+  return id
+}
+
+/** Ends a retained source notice, including its transient alert. */
+export function resolveAppNotice(id: string) {
+  window.dispatchEvent(new CustomEvent(APP_NOTICE_RESOLVED_EVENT, { detail: id }))
 }
 
 export type DeletionRejection = { id: string; error: string }

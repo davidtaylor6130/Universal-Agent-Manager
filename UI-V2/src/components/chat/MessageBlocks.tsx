@@ -987,7 +987,7 @@ export const TurnTimelineContent = memo(function TurnTimelineContent({
   waitStaleReason?: string
   waitSeconds?: number
   onSelectTool: (toolId: string) => void
-  onResolvePermission: (requestId: string, optionId: string) => Promise<boolean>
+  onResolvePermission: (requestId: string, optionId: string) => Promise<boolean | string>
   onCancelTurn: () => void
   onStopRuntime: () => void
   sourceChatId?: string

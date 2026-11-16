@@ -20,6 +20,27 @@ std::optional<AdmittedPassiveNativeHistory> LoadPassiveHistoryForMedia(
 
 std::optional<ChatSession> ParseHistorySnapshot(const ExecutionHost& host, const ChatSession& source,
 	std::string_view reference, const nlohmann::json& snapshot, std::string* error, std::stop_token stop_token = {});
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+struct NativeChildConversation
+{
+	std::string reference;
+	std::string preview;
+	std::string started_at;
+	std::string updated_at;
+	std::size_t messages = 0;
+};
+struct NativeChildListing
+{
+	std::vector<NativeChildConversation> children;
+	std::size_t unreadable = 0;
+	bool truncated = false;
+};
+/// Validates one helper listing against its exact provider, parent, workspace and host.
+std::optional<NativeChildListing> ParseGeminiChildListing(const ExecutionHost& host, const ChatSession& source, const nlohmann::json& listing, std::string* error);
+/// Lists journals stored under this Gemini parent, without any title or time correlation.
+std::optional<NativeChildListing> ListGeminiChildren(const ChatSession& source, const std::optional<ExecutionHost>& host, std::string* error, std::stop_token stop_token = {});
+#endif
+
 std::optional<ChatSession> LoadHistory(const ChatSession& source, std::string_view reference,
 	const std::optional<ExecutionHost>& host, std::string* error, std::stop_token stop_token = {});
 }

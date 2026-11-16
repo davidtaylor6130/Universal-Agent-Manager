@@ -27,7 +27,7 @@ vi.mock('./MainPanel', () => ({
 import { AppShell, pushStackedAlert, updateNoticeText } from './AppShell'
 import { moveResourceToCollection } from '../sidebar/CollectionMenuItems'
 import { FILE_MANAGER_NAME } from '../../utils/shortcuts'
-import { APP_FAILURE_EVENT, reportAppFailure, reportAppNotice } from '../../utils/appFailure'
+import { APP_FAILURE_EVENT, reportAppFailure, reportAppNotice, resolveAppNotice } from '../../utils/appFailure'
 import { retainUnconfirmedFolderChoice, retainUnconfirmedFolderRestart } from '../settings/dataFolderSettings'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -659,7 +659,7 @@ describe('AppShell', () => {
     }
   })
 
-  it('expands a notification row from its bar or keyboard, but not from its buttons, and labels update computers', () => {
+  it('expands a notification row from its bar or keyboard, but not from its buttons, and labels update computers', async () => {
     const longDetail = `${'unbroken'.repeat(40)} full failure detail`
     const codex = {
       providerId: 'codex-cli', installedVersion: '0.125.0', selectedVersion: '0.125.0',
@@ -691,6 +691,18 @@ describe('AppShell', () => {
       act(() => reportAppFailure('Could not save.', longDetail))
       act(() => (host.querySelector('[data-notification-bell]') as HTMLButtonElement).click())
       const panel = host.querySelector('[data-testid="notifications-panel"]')!
+
+      const recovery = vi.fn()
+      act(() => reportAppNotice('Message changed. Editing paused.', 'warning', { id: 'edit-warning', detail: 'Retained context', actions: [{ label: 'Recover edit', run: recovery }] }))
+      act(() => reportAppNotice('Message changed. Editing paused.', 'warning', { id: 'edit-warning', detail: 'Retained context', actions: [{ label: 'Recover edit', run: recovery }] }))
+      expect(Array.from(panel.querySelectorAll('.uam-np-row')).filter(row => row.textContent?.includes('Message changed'))).toHaveLength(1)
+      const recoveryButton = Array.from(panel.querySelectorAll('button')).find(button => button.getAttribute('aria-label') === 'Recover edit')!
+      await act(async () => recoveryButton.click())
+      expect(recovery).toHaveBeenCalledTimes(1)
+      recoveryButton.focus()
+      act(() => resolveAppNotice('edit-warning'))
+      expect(document.activeElement).toBe(panel.querySelector('[data-notifications-heading]'))
+      expect(panel.textContent).not.toContain('Message changed')
 
       // Each completed update names its computer instead of folding it into the title.
       const completed = Array.from(panel.querySelectorAll('.uam-np-row')).filter((row) => row.textContent?.includes('Codex update completed'))

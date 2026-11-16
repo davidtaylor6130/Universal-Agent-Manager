@@ -175,6 +175,7 @@ std::optional<int> RunBridgeFixture(int argc, char** argv)
 	}
 	uam::remote::RunnerState state;
 	nlohmann::json request;
+	uam_test::UseBinaryFrameStdio();
 	while (uam::remote::ReadFrame(std::cin, request) == uam::remote::FrameReadResult::Ok)
 	{
 		const std::string type = request.value("type", "");
@@ -239,6 +240,7 @@ std::optional<int> RunRemoteOpenCodeCreateFixture(int argc, char** argv)
 	std::uint64_t input_sequence = 0;
 	int command_poll_count = 0;
 	nlohmann::json request;
+	uam_test::UseBinaryFrameStdio();
 	while (uam::remote::ReadFrame(std::cin, request) == uam::remote::FrameReadResult::Ok)
 	{
 		{
@@ -578,6 +580,7 @@ std::optional<int> RunRemoteMcpLostAckFixture(int argc, char** argv)
 	if (std::string_view(argv[1]) != "bridge") return std::nullopt;
 	uam::remote::RunnerState state;
 	nlohmann::json request;
+	uam_test::UseBinaryFrameStdio();
 	while (uam::remote::ReadFrame(std::cin, request) == uam::remote::FrameReadResult::Ok)
 	{
 		const std::string type = request.value("type", "");

@@ -283,7 +283,7 @@ namespace uam
 		nlohmann::json CatalogSnapshotForChat(const AppState& app, const ChatSession& chat,
 		                                     CatalogSnapshotCache& cache)
 		{
-			const std::string workspace = WorkspaceSnapshotForChat(app, chat, cache).generic_string();
+			const std::string workspace = uam::paths::PortablePathString(WorkspaceSnapshotForChat(app, chat, cache));
 			const std::string key = CatalogSnapshotKey(chat.provider_id, workspace, chat.execution_host_id);
 			if (const auto found = cache.catalogs.find(key); found != cache.catalogs.end()) return found->second;
 			if (app.provider_model_catalog != nullptr)
@@ -375,7 +375,7 @@ namespace uam
 			const std::filesystem::path& workspace_root = WorkspaceSnapshotForChat(app, chat, cache);
 			const std::tuple<std::string_view, const std::filesystem::path*, std::string_view> chat_key{chat.provider_id, &workspace_root, chat.execution_host_id};
 			if (const auto known = cache.chat_fingerprints.find(chat_key); known != cache.chat_fingerprints.end()) return *known->second;
-			const nlohmann::json& fingerprint = CatalogFingerprintForScope(app, chat, cache, workspace_root.generic_string());
+			const nlohmann::json& fingerprint = CatalogFingerprintForScope(app, chat, cache, uam::paths::PortablePathString(workspace_root));
 			cache.chat_fingerprints.emplace(chat_key, &fingerprint);
 			return fingerprint;
 		}
@@ -452,7 +452,7 @@ namespace uam
 					ChatSession scope;
 					scope.workspace_directory = folder.directory;
 					scope.execution_host_id = folder.execution_host_id;
-					const std::string workspace = WorkspaceSnapshotForChat(app, scope, cache).generic_string();
+					const std::string workspace = uam::paths::PortablePathString(WorkspaceSnapshotForChat(app, scope, cache));
 					append_catalog(provider.id, workspace, folder.execution_host_id);
 				}
 			}
@@ -1822,6 +1822,7 @@ namespace uam
 			SerializePromptAdmissionQueues(queues, app, chat, nullptr, prompts);
 			w.Merge(std::move(queues));
 			w.Set("unsentMessageIndices", KnownUnsentAcpMessageIndices(app, chat));
+			w.Set("editableUnsentMessageIndices", EditableUnsentAcpMessageIndices(app, chat));
 			w.Set("recoverableUnsentMessageIndices", RecoverableUnsentAcpMessageIndices(app, chat));
 			w.Set("waitIsStale", false);
 			w.Set("waitStaleReason", "");
@@ -1924,6 +1925,7 @@ namespace uam
 			for (const AcpQueuedUserPromptState& prompt : session->queued_user_prompts) prompts.push_back(&prompt);
 			SerializePromptAdmissionQueues(acp_json, app, chat, session, prompts);
 			acp_json["unsentMessageIndices"] = KnownUnsentAcpMessageIndices(app, chat);
+			acp_json["editableUnsentMessageIndices"] = EditableUnsentAcpMessageIndices(app, chat);
 			acp_json["recoverableUnsentMessageIndices"] = RecoverableUnsentAcpMessageIndices(app, chat);
 			acp_json["goalTurnKind"] = session->goal_turn_kind;
 			acp_json["waitIsStale"] = session->wait_is_stale;

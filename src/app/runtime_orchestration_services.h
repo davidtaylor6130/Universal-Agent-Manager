@@ -93,6 +93,8 @@ class ChatHistorySyncService
 	struct ImportResult
 	{
 		int imported_count = 0;
+		/// Sub-chats published behind a selected parent; included in imported_count.
+		int imported_subchat_count = 0;
 		int total_count = 0;
 		bool success = true;
 		std::vector<std::string> errors;
@@ -110,6 +112,7 @@ class ChatHistorySyncService
 		void Merge(const ImportResult& other)
 		{
 			imported_count += other.imported_count;
+			imported_subchat_count += other.imported_subchat_count;
 			total_count += other.total_count;
 			omitted_error_count += other.omitted_error_count;
 			if (!other.success) success = false;

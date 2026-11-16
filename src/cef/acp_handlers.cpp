@@ -1012,7 +1012,7 @@ void UamQueryHandler::HandleDiscoverProviderModels(CefRefPtr<CefBrowser> browser
 	if (chat != nullptr)
 	{
 		provider_id = chat->provider_id;
-		workspace_directory = uam::paths::ResolveWorkspaceRootPath(m_app, *chat).generic_string();
+		workspace_directory = uam::paths::PortablePathString(uam::paths::ResolveWorkspaceRootPath(m_app, *chat));
 		execution_host_id = uam::strings::NonEmptyOrFallback(
 		    uam::strings::Trim(chat->execution_host_id),
 		    std::string(uam::execution_hosts::kLocalHostId));
@@ -1077,7 +1077,7 @@ void UamQueryHandler::HandleDiscoverProviderModels(CefRefPtr<CefBrowser> browser
 				cb->Failure(400, "Model discovery requires a configured workspace folder.");
 				return;
 			}
-			workspace_directory = requested_workspace.generic_string();
+			workspace_directory = uam::paths::PortablePathString(requested_workspace);
 		}
 	}
 	if (m_app.provider_model_catalog == nullptr)
