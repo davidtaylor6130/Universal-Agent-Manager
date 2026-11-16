@@ -479,6 +479,9 @@ UAM_TEST(GitWorktreeCleanupPreservesBoundSummaryOverlays)
 	{
 		PortFixture fixture("patch");
 		auto& parent = fixture.app.chats.front();
+		// Keep the primary older than the overlay regardless of the wall clock.
+		parent.last_opened_at = "2026-11-16T10:00:00.000Z";
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, parent));
 		auto overlay = parent;
 		overlay.last_opened_at = "2026-11-16T12:00:00.000Z";
 		overlay.interaction_at = "2026-11-16T11:59:59.000Z";
@@ -486,10 +489,11 @@ UAM_TEST(GitWorktreeCleanupPreservesBoundSummaryOverlays)
 		overlay.attention_source = "completion";
 		overlay.settled_at = "2026-11-16T11:00:00.000Z";
 		overlay.snoozed_until_ms = 1800000000123;
-		UAM_ASSERT(ChatRepository::SaveLastOpenedAt(fixture.app.data_root, overlay));
+		UAM_ASSERT(ChatRepository::SaveLastOpenedAt(fixture.app.data_root, overlay, false));
 		AdmitWorktreeFamily(fixture);
 		const auto candidate = ChatRepository::LoadLocalChatPrimaryReadOnly(fixture.app.data_root, parent.id, true);
 		UAM_ASSERT(candidate);
+		UAM_ASSERT_EQ(candidate->last_opened_at, overlay.last_opened_at);
 		parent = *candidate; // Production worker load keeps primary transcript and validated summary overlays.
 		const auto result = discard ? uam::GitWorktreeService().DiscardChatChanges(fixture.app, parent) : uam::GitWorktreeService().PortChatChanges(fixture.app, parent);
 		UAM_ASSERT(result.ok);
