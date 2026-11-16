@@ -617,3 +617,11 @@ describe('held outbox history admission', () => {
     ]) expect(reconcileHeldOutboxHistory(chat, suffix)).toBe(suffix)
   })
 })
+
+
+it('keeps local edit authority separate from known-unsent delivery classification', () => {
+  const blocked = sanitizeCppAcpSession({ unsentMessageIndices: [0, 7], editableUnsentMessageIndices: [7, -1, '0', 1.5] })!
+  expect(blocked.unsentMessageIndices).toEqual([0, 7])
+  expect(blocked.editableUnsentMessageIndices).toEqual([7])
+  expect(sanitizeCppAcpSession({ unsentMessageIndices: [7] })!.editableUnsentMessageIndices).toEqual([])
+})

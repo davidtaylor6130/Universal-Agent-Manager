@@ -16,6 +16,11 @@ namespace uam
 	std::string ManagedSnapshotBypassError(const AppState& app, const ChatSession& chat);
 	void CancelGitPortRequest(AppState& app, const std::string& chat_id);
 	void PollGitPortRequests(AppState& app);
+	/// Settles only this request's acknowledged workspace fields, including after query withdrawal.
+	bool SettleGitWorktreeCleanupRequest(AppState& app, const std::string& chat_id,
+	    const std::shared_ptr<AppState::GitPortRequest>& request);
+
+	enum class GitWorktreeCleanupStage { BeforeWorktreeRemoval, AfterWorktreeRemoval, AfterBranchRemoval, AfterMetadataPublication };
 
 	struct GitChatBranch
 	{
@@ -124,6 +129,8 @@ namespace uam
 	class GitWorktreeService
 	{
 	  public:
+		explicit GitWorktreeService(std::function<void(GitWorktreeCleanupStage)> cleanup_hook_for_tests = {})
+		    : m_cleanup_hook_for_tests(std::move(cleanup_hook_for_tests)) {}
 		/// Background-only inspection. Removal requires a separate exclusive workspace lease and fresh reference validation.
 		bool InspectRetentionCandidate(const std::filesystem::path& data_root, const std::filesystem::path& source_root,
 		    const std::filesystem::path& worktree, const std::vector<std::filesystem::path>& protected_paths,
@@ -175,6 +182,7 @@ namespace uam
 		GitTurnCheckpointResult PreviewTurnRollback(const AppState& app, const ChatSession& chat, int assistant_message_index) const;
 		GitTurnCheckpointResult RollbackTurn(AppState& app, ChatSession& chat, int assistant_message_index) const;
 	  private:
+		std::function<void(GitWorktreeCleanupStage)> m_cleanup_hook_for_tests;
 		GitWorktreeOperationResult CreateForChatCore(AppState& app, ChatSession& chat, bool persist, const GitWorktreeIntentRecorder& record, std::stop_token stop, bool automatic_unborn_snapshot = false) const;
 	};
 } // namespace uam

@@ -537,6 +537,8 @@ struct AgentRun
 	std::vector<std::string> delegates_snapshot;
 	std::string provider_id;
 	std::string model_id;
+	/// Omitted keeps inheritance; empty explicitly requests provider Default.
+	std::optional<std::string> reasoning_effort_override;
 	std::string execution_capability;
 	std::string task;
 	std::string effective_workspace_access;

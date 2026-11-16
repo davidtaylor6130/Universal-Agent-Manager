@@ -14,6 +14,7 @@
 #include "app/runtime_orchestration_internal.h"
 #include "cef/cef_push.h"
 #include "common/chat/chat_repository.h"
+#include "common/chat/chat_message_page_index.h"
 #include "common/chat/branch_native_assets.h"
 #include "common/chat/chat_branching.h"
 #include "common/chat/chat_ids.h"
@@ -71,6 +72,11 @@ namespace
 		std::string error;
 	};
 
+	struct BranchSourceWitness
+	{
+		std::string messages_digest, native_input_id, provider_id, execution_host_id;
+	};
+
 	struct BranchFromMessageRequest
 	{
 		std::string chat_id;
@@ -81,10 +87,25 @@ namespace
 		bool select_chat = true;
 		bool regenerate = true;
 		std::optional<std::vector<std::string>> retained_markdown_store_files;
+		std::optional<BranchSourceWitness> source_witness;
 	};
 
 	uam::query_handler_async::AsyncCefResult ExecuteBranchFromMessageRequest(uam::AppState& app, CefRefPtr<CefBrowser> browser, const BranchFromMessageRequest& request, const ChatSession* prepared_source = nullptr, const ChatSession* prepared_existing_branch = nullptr, uam::PreparedBranchOriginals* prepared_originals = nullptr)
 	{
+		if (request.source_witness)
+		{
+			const ChatSession* source = prepared_source ? prepared_source : ChatDomainService().FindChatById(app, request.chat_id);
+			const auto& expected = *request.source_witness;
+			if (!source || !source->messages_loaded || source->provider_id != expected.provider_id ||
+			    uam::strings::NonEmptyOrFallback(source->execution_host_id, "local") != expected.execution_host_id ||
+			    request.message_index < 0 || static_cast<std::size_t>(request.message_index) >= source->messages.size() ||
+			    source->messages[static_cast<std::size_t>(request.message_index)].native_input_id != std::optional<std::string>(expected.native_input_id))
+				return uam::query_handler_async::AsyncFailure(409, "The message selected for branching changed. Your edit is kept; refresh before saving.");
+			std::uint64_t hash = uam::hashing::kFnv1a64OffsetBasis;
+			for (const Message& row : source->messages) uam::chat_pages::AppendMessageDigest(hash, row);
+			if (uam::chat_pages::FinishMessageDigest(hash, source->messages.size()) != expected.messages_digest)
+				return uam::query_handler_async::AsyncFailure(409, "The message selected for branching changed. Your edit is kept; refresh before saving.");
+		}
 		std::string branch_id;
 		std::string branch_error;
 		std::string branch_warning;
@@ -653,6 +674,7 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 					    nlohmann::json body = nlohmann::json::parse(response.body);
 					    body["unsentMessageIndices"] = uam::KnownUnsentAcpMessageIndices(m_app, *current);
 					    body["recoverableUnsentMessageIndices"] = uam::RecoverableUnsentAcpMessageIndices(m_app, *current);
+					    body["editableUnsentMessageIndices"] = uam::EditableUnsentAcpMessageIndices(m_app, *current);
 					    body["totalCount"] = current->messages.size();
 					    response.body = body.dump();
 				    }
@@ -2148,6 +2170,20 @@ void UamQueryHandler::HandleBranchFromMessage(CefRefPtr<CefBrowser> browser, con
 			retained_markdown_store_files->push_back(file.get<std::string>());
 		}
 	}
+	std::optional<BranchSourceWitness> source_witness;
+	if (payload.contains("sourceWitness"))
+	{
+		const auto& witness = payload["sourceWitness"];
+		if (!witness.is_object()) { cb->Failure(400, "sourceWitness must describe the selected input and history."); return; }
+		for (const char* field : {"messagesDigest", "nativeInputId", "providerId", "executionHostId"})
+		{
+			if (!witness.contains(field) || !witness[field].is_string() || witness[field].get_ref<const std::string&>().empty() || witness[field].get_ref<const std::string&>().size() > 256)
+			{ cb->Failure(400, "sourceWitness must contain bounded nonempty identity strings."); return; }
+		}
+		if (witness["messagesDigest"].get_ref<const std::string&>().size() != 16)
+		{ cb->Failure(400, "sourceWitness requires the displayed history digest."); return; }
+		source_witness = BranchSourceWitness{witness["messagesDigest"].get<std::string>(), witness["nativeInputId"].get<std::string>(), witness["providerId"].get<std::string>(), witness["executionHostId"].get<std::string>()};
+	}
 	const BranchFromMessageRequest request{
 	    .chat_id = chat_id,
 	    .message_index = *message_index,
@@ -2157,6 +2193,7 @@ void UamQueryHandler::HandleBranchFromMessage(CefRefPtr<CefBrowser> browser, con
 	    .select_chat = payload.value("selectChat", true),
 	    .regenerate = payload.value("regenerate", true),
 	    .retained_markdown_store_files = retained_markdown_store_files,
+	    .source_witness = source_witness,
 	};
 	const ChatDomainService domain_service;
 	ChatSession* source = domain_service.FindChatById(m_app, chat_id);

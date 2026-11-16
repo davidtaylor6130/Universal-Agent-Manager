@@ -1758,3 +1758,91 @@ UAM_TEST(CapturedStopSharedConversionRejectsInvalidBindingsBeforeAnyMutation)
 		UAM_ASSERT_EQ(chat.messages, rows);
 	}
 }
+
+UAM_TEST(RestartCompletedNativeTurnSeparatesDeliveryFromLocalEditAuthority)
+{
+	// No provider process, transcript or real account: round-trip the crash snapshot,
+	// then adopt a completed native turn under the existing canonical-prefix rules.
+	for (const std::string provider : {"gemini-cli", "codex-cli", "opencode-cli", "claude-cli", "copilot-cli", "antigravity-cli"})
+	for (const std::string host : {"local", "fixture-ssh"})
+	{
+		HeldQueueFixture fixture;
+		ChatSession& chat = fixture.app.chats.front();
+		chat.provider_id = provider;
+		chat.execution_host_id = host;
+		chat.native_session_id = "synthetic-native-turn";
+		chat.acp_queued_prompts.clear();
+		chat.messages = {
+		    {.role = MessageRole::User, .content = "Removed earlier input", .created_at = "2026-11-01T00:00:00Z", .acp_prompt_not_sent = true, .acp_prompt_discarded = true},
+		    {.role = MessageRole::User, .content = "Submitted turn", .created_at = "2026-11-01T00:01:00Z"},
+		    {.role = MessageRole::User, .content = "Retained author input", .created_at = "2026-11-01T00:02:00Z", .interrupted = true, .acp_prompt_not_sent = true}};
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, chat));
+		auto restored = ChatRepository::LoadLocalChat(fixture.app.data_root, chat.id);
+		UAM_ASSERT(restored.has_value());
+		chat = *restored;
+		UAM_ASSERT_EQ(uam::EditableUnsentAcpMessageIndices(fixture.app, chat), std::vector<int>{2});
+		const Message retained = chat.messages.back();
+		auto completed = chat.messages;
+		completed.push_back({.role = MessageRole::Assistant, .content = "Completed native answer", .created_at = "2026-11-01T00:03:00Z"});
+		UAM_ASSERT(ChatHistorySyncService().BuildNativeTranscriptCandidate(chat, completed));
+		UAM_ASSERT(chat.messages[2] == retained); // output never fabricates a write fact
+		UAM_ASSERT_EQ(uam::KnownUnsentAcpMessageIndices(fixture.app, chat), std::vector<int>{0});
+		UAM_ASSERT(uam::EditableUnsentAcpMessageIndices(fixture.app, chat).empty());
+		const auto before = chat.messages;
+		std::string error;
+		UAM_ASSERT(!uam::EditUnsentAcpMessage(fixture.app, chat.id, 2, uam::StateSerializer::MessageDigest(chat), "Revised input", &error));
+		UAM_ASSERT_EQ(chat.messages, before);
+		UAM_ASSERT(fixture.app.acp_sessions.empty()); // checking history neither resumes nor replays
+		// An independent definitely-unsent follow-up remains locally editable.
+		chat.messages.push_back({.role = MessageRole::User, .content = "New follow-up", .created_at = "2026-11-01T00:04:00Z", .acp_prompt_not_sent = true});
+		UAM_ASSERT_EQ(uam::EditableUnsentAcpMessageIndices(fixture.app, chat), std::vector<int>{4});
+		chat.remote_source_exit_pending = true;
+		const auto snapshot = uam::StateSerializer::Serialize(fixture.app)["chats"][0]["acpSession"];
+		UAM_ASSERT(snapshot["editableUnsentMessageIndices"] == nlohmann::json::array());
+		UAM_ASSERT_EQ(uam::KnownUnsentAcpMessageIndices(fixture.app, chat), (std::vector<int>{0, 4}));
+		UAM_ASSERT(uam::EditableUnsentAcpMessageIndices(fixture.app, chat).empty());
+		chat.remote_source_exit_pending = false;
+		ChatSession child;
+		child.id = "synthetic-dependent-branch";
+		child.parent_chat_id = chat.id;
+		child.branch_from_message_index = 4;
+		fixture.app.chats.push_back(child);
+		UAM_ASSERT(uam::EditableUnsentAcpMessageIndices(fixture.app, fixture.app.chats.front()).empty());
+	}
+}
+
+UAM_TEST(UnsentEditFingerprintRetainsBatchedCapturedAuthority)
+{
+	CapturedStopCarrierFixture fixture;
+	auto& chat = fixture.app.chats.front();
+	chat.messages.clear();
+	chat.acp_unsent_prompt_recoveries.clear();
+	std::vector<int> expected;
+	const std::size_t count = std::min<std::size_t>(64, uam::prompt_recovery::kMaxRecords);
+	for (std::size_t i = 0; i < count; ++i)
+	{
+		auto prompt = fixture.plan;
+		prompt.id = "retained-projection-" + std::to_string(i);
+		prompt.text = "Retained authored input " + std::to_string(i);
+		prompt.markdown_store_prompt_blocks = {std::string(64U * 1024U, 's')};
+		fixture.AddRecord(prompt);
+		expected.push_back(static_cast<int>(i));
+	}
+	const auto rows = chat.messages;
+	const auto captures = chat.acp_unsent_prompt_recoveries;
+	const auto fingerprint = uam::StateSerializer::SerializeFingerprint(fixture.app);
+	UAM_ASSERT(fingerprint["chats"][0]["acpSession"]["editableUnsentMessageIndices"] == expected);
+	UAM_ASSERT_EQ(uam::EditableUnsentAcpMessageIndices(fixture.app, chat), expected);
+	UAM_ASSERT_EQ(uam::StateSerializer::SerializeFingerprint(fixture.app), fingerprint);
+	UAM_ASSERT_EQ(chat.messages, rows);
+	UAM_ASSERT_EQ(chat.acp_unsent_prompt_recoveries, captures);
+	// One invalid carrier must refuse the whole projection even for other valid rows.
+	chat.acp_unsent_prompt_recoveries.back().row_witness = "stale-carrier";
+	UAM_ASSERT(uam::EditableUnsentAcpMessageIndices(fixture.app, chat).empty());
+	std::string error;
+	UAM_ASSERT(!uam::EditUnsentAcpMessage(fixture.app, chat.id, 0,
+	    uam::StateSerializer::MessageDigest(chat), "Revised retained input", &error));
+	UAM_ASSERT_EQ(chat.messages, rows);
+	chat.acp_unsent_prompt_recoveries = captures;
+	UAM_ASSERT_EQ(uam::EditableUnsentAcpMessageIndices(fixture.app, chat), expected);
+}
