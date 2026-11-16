@@ -763,7 +763,7 @@ void ProviderModelCatalogService::ApplyLaunchOptionMetadata(nlohmann::json& mode
 }
 
 nlohmann::json ProviderModelCatalogService::GetCatalogSnapshot(const std::string& provider_id,
-	std::string_view workspace_directory, std::string_view execution_host_id) const
+	std::string_view workspace_directory, std::string_view execution_host_id, bool include_models, bool include_config_options) const
 {
 	const GenerationMutex::Read lock(m_mutex);
 	const std::string host = uam::strings::NonEmptyOrFallback(uam::strings::Trim(std::string(execution_host_id)), "local");
@@ -775,12 +775,17 @@ nlohmann::json ProviderModelCatalogService::GetCatalogSnapshot(const std::string
 	nlohmann::json options = nlohmann::json::array();
 	if (const nlohmann::json* catalog = uam::nlohmann_json::FindObjectField(m_persistent_catalogs, key))
 	{
-		if (const nlohmann::json* value = uam::nlohmann_json::FindArrayField(*catalog, "models")) models = *value;
-		if (const nlohmann::json* value = uam::nlohmann_json::FindArrayField(*catalog, "configOptions")) options = *value;
+		if (include_models)
+			if (const nlohmann::json* value = uam::nlohmann_json::FindArrayField(*catalog, "models")) models = *value;
+		if (include_config_options)
+			if (const nlohmann::json* value = uam::nlohmann_json::FindArrayField(*catalog, "configOptions")) options = *value;
 	}
-	if (host == "local") models = MergeLocalModelFallbacksLocked(provider_id, std::move(models));
-	// Persistent metadata is not evidence for the current installation; the app decorates checked host snapshots.
-	ApplyLaunchOptionMetadata(models, provider_id, {});
+	if (include_models)
+	{
+		if (host == "local") models = MergeLocalModelFallbacksLocked(provider_id, std::move(models));
+		// Persistent metadata is not evidence for the current installation; the app decorates checked host snapshots.
+		ApplyLaunchOptionMetadata(models, provider_id, {});
+	}
 	const std::map<std::string, std::string>::const_iterator error = m_refresh_error_by_provider_id.find(key);
 	return {
 	    {"availableModels", std::move(models)},

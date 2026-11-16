@@ -22,6 +22,7 @@
 #include <optional>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 // ---------------------------------------------------------------------------
@@ -46,6 +47,7 @@ namespace
 	// progress. Summaries that introduce a pending permission or user-input
 	// request, or a new CLI launch, bypass the throttle so prompts are never delayed.
 	constexpr std::chrono::milliseconds kChatSummaryMinPushInterval{100};
+	constexpr std::chrono::seconds kInitialDesktopSnapshotHold{1};
 
 	std::unordered_map<std::string, std::chrono::steady_clock::time_point> g_last_summary_push_time_by_chat_id;
 	bool g_state_push_deferred = false;
@@ -79,6 +81,10 @@ namespace
 	std::unordered_set<std::string> g_sent_model_catalog_ids;
 	// After the set is cleared, the next patch with chats tells the page to clear its table too, so both stay equal.
 	bool g_model_catalogs_reset_pending = false;
+	// The first desktop full reply supplies the initial state; a prior poll must not duplicate that catalogue.
+	// Preparation is not a browser acknowledgement. Reloads and IPC recovery keep using full state pulls.
+	bool g_initial_desktop_snapshot_prepared = false;
+	std::optional<std::chrono::steady_clock::time_point> g_initial_desktop_snapshot_hold_started_at;
 	// ponytail: a cap instead of tracking which ids the page still references; a reset only resends catalogues.
 	constexpr std::size_t kMaxSentModelCatalogIds = 256;
 	// Digest of each chat's compact summary at its last push; a poll tick builds JSON only for chats whose digest moved.
@@ -211,19 +217,19 @@ namespace
 	void ResetPatchBaselines(const uam::AppState& app, nlohmann::json fingerprint_state)
 	{
 		StripVolatileAcpWaitTelemetry(fingerprint_state);
-		g_last_pushed_folders_fingerprint = fingerprint_state.at("folders");
-		g_last_pushed_resource_collections_fingerprint = fingerprint_state.at("resourceCollections");
-		g_last_pushed_providers_fingerprint = fingerprint_state.at("providers");
-		g_last_pushed_provider_model_catalogs_fingerprint = fingerprint_state.at("providerModelCatalogs");
+		g_last_pushed_folders_fingerprint = std::move(fingerprint_state.at("folders"));
+		g_last_pushed_resource_collections_fingerprint = std::move(fingerprint_state.at("resourceCollections"));
+		g_last_pushed_providers_fingerprint = std::move(fingerprint_state.at("providers"));
+		g_last_pushed_provider_model_catalogs_fingerprint = std::move(fingerprint_state.at("providerModelCatalogs"));
 		// The serializer may omit the slice only relative to a baseline it saw compared; this one came from elsewhere.
 		uam::StateSerializer::ForgetCatalogMemo();
-		g_last_pushed_startup_native_imports_fingerprint = fingerprint_state.at("startupNativeImports");
+		g_last_pushed_startup_native_imports_fingerprint = std::move(fingerprint_state.at("startupNativeImports"));
 		g_last_pushed_settings_fingerprint = SerializeSettingsForPatch(app);
-		g_last_pushed_memory_fingerprint = fingerprint_state.at("memoryActivity");
-		g_last_pushed_cli_version_manager_fingerprint = fingerprint_state.at("cliVersionManager");
-		g_last_pushed_shell_actions_fingerprint = fingerprint_state.at("shellActions");
-		g_last_pushed_compute_pool_usage_fingerprint = fingerprint_state.at("computePoolUsage");
-		g_last_pushed_pr_watches_fingerprint = fingerprint_state.at("prWatches");
+		g_last_pushed_memory_fingerprint = std::move(fingerprint_state.at("memoryActivity"));
+		g_last_pushed_cli_version_manager_fingerprint = std::move(fingerprint_state.at("cliVersionManager"));
+		g_last_pushed_shell_actions_fingerprint = std::move(fingerprint_state.at("shellActions"));
+		g_last_pushed_compute_pool_usage_fingerprint = std::move(fingerprint_state.at("computePoolUsage"));
+		g_last_pushed_pr_watches_fingerprint = std::move(fingerprint_state.at("prWatches"));
 		g_last_pushed_shell_action_notification = uam::nlohmann_json::TrimmedStringValue(fingerprint_state, {"shellActionNotification"});
 		g_last_pushed_status_line = fingerprint_state.value("statusLine", std::string{});
 		g_last_pushed_selected_chat_id = ChatDomainService().SelectedChatId(app);
@@ -238,9 +244,10 @@ namespace
 		g_last_runtime_urgent_signature.clear();
 		g_state_push_deferred = false;
 
-		const nlohmann::json& chats = fingerprint_state.at("chats");
+		// This snapshot is owned here and discarded after baseline extraction; transfer its summaries.
+		nlohmann::json& chats = fingerprint_state.at("chats");
 
-		for (const nlohmann::json& chat : chats)
+		for (nlohmann::json& chat : chats)
 		{
 			if (!chat.is_object())
 			{
@@ -253,7 +260,7 @@ namespace
 				continue;
 			}
 
-			g_last_pushed_chat_summaries_by_chat_id[chat_id] = chat;
+			g_last_pushed_chat_summaries_by_chat_id[chat_id] = std::move(chat);
 		}
 
 		// The pushed state covers every compact summary field, so its digests are the next tick's baseline.
@@ -407,7 +414,7 @@ namespace
 				}
 				else
 				{
-					diff.changed_chats.push_back(chat);
+					diff.changed_chats.push_back(std::move(chat));
 					diff.changed_digests.push_back(digest);
 					g_last_summary_push_time_by_chat_id[chat_id] = now;
 				}
@@ -612,6 +619,20 @@ namespace uam
 		g_model_catalogs_reset_pending = true;
 	}
 
+	void PrepareInitialDesktopStatePushBaseline(const AppState& app, nlohmann::json snapshot, bool summary_only)
+	{
+		const bool first_snapshot = !std::exchange(g_initial_desktop_snapshot_prepared, true);
+		// Even a loading or non-summary reply releases the initial poll hold. A loading summary is an exact
+		// baseline too: the later loaded chat catalogue must still publish its ordinary changed-chat patch.
+		if (!first_snapshot || !summary_only || app.state_revision != 0) return;
+		const StateSerializer::ScopedStampedCacheMode exact(StateSerializer::StampedCacheMode::Exact);
+		const StateSerializer::StablePass stable_pass;
+		StateSerializer::CaptureCatalogInputs(app);
+		ResetPatchBaselines(app, std::move(snapshot));
+		// Desktop pulls retain the existing reset/resend contract for the next patch that carries chats.
+		ForgetSentModelCatalogs();
+	}
+
 	bool HasDeferredStatePush()
 	{
 		return g_state_push_deferred;
@@ -726,6 +747,22 @@ namespace uam
 	{
 		const auto now = g_state_push_clock();
 		std::string urgent_signature = RuntimeUrgentSignature(app);
+		// A real desktop has not received any full state yet. Its first bridge snapshot covers these changes;
+		// sending a diff now duplicates all chats and can overtake that snapshot on the separate push channel.
+		// Headless polling and explicit request-handler pushes retain their ordinary revision/publication path.
+		if (browser && !g_initial_desktop_snapshot_prepared && app.state_revision == 0 && urgent_signature.empty())
+		{
+			if (!g_initial_desktop_snapshot_hold_started_at) g_initial_desktop_snapshot_hold_started_at = now;
+			const auto due = *g_initial_desktop_snapshot_hold_started_at + kInitialDesktopSnapshotHold;
+			// A failed frontend must not stop revisions advancing for phone clients. Schedule the existing
+			// deferred-push wakeup too, so even a single held change publishes when this bounded hold ends.
+			if (now >= *g_initial_desktop_snapshot_hold_started_at && now < due)
+			{
+				if (!g_state_push_deferred || due < g_deferred_state_push_due_at || g_deferred_state_push_due_at <= now) g_deferred_state_push_due_at = due;
+				g_state_push_deferred = true;
+				return false;
+			}
+		}
 		if (urgent_signature != g_last_runtime_urgent_signature) urgent = true;
 		if (!urgent && g_last_runtime_state_rebuild_at != std::chrono::steady_clock::time_point{} &&
 		    now - g_last_runtime_state_rebuild_at < kChatSummaryMinPushInterval)
