@@ -75,6 +75,12 @@ namespace
 	std::string g_last_pushed_status_line;
 	std::string g_last_pushed_selected_chat_id;
 	nlohmann::json g_last_pushed_chat_order_fingerprint;
+	// Model catalogue ids the page holds from patches; patches send only catalogues missing here.
+	std::unordered_set<std::string> g_sent_model_catalog_ids;
+	// After the set is cleared, the next patch with chats tells the page to clear its table too, so both stay equal.
+	bool g_model_catalogs_reset_pending = false;
+	// ponytail: a cap instead of tracking which ids the page still references; a reset only resends catalogues.
+	constexpr std::size_t kMaxSentModelCatalogIds = 256;
 	// Digest of each chat's compact summary at its last push; a poll tick builds JSON only for chats whose digest moved.
 	std::unordered_map<std::string, std::uint64_t> g_last_pushed_chat_digests_by_chat_id;
 	// Pushes reuse values by revision stamp (see StateSerializer::StampedCacheMode). A push that starts at least
@@ -224,6 +230,10 @@ namespace
 		g_last_pushed_chat_order_fingerprint = ChatOrderForPatch(app);
 		g_last_pushed_chat_summaries_by_chat_id.clear();
 		g_last_summary_push_time_by_chat_id.clear();
+		g_sent_model_catalog_ids.clear();
+		g_model_catalogs_reset_pending = false;
+		if (const nlohmann::json::const_iterator catalogs = fingerprint_state.find("modelCatalogs"); catalogs != fingerprint_state.end() && catalogs->is_object())
+			for (const auto& entry : catalogs->items()) g_sent_model_catalog_ids.insert(entry.key());
 		g_last_runtime_state_rebuild_at = {};
 		g_last_runtime_urgent_signature.clear();
 		g_state_push_deferred = false;
@@ -492,21 +502,35 @@ namespace
 		ApplyChatPatchDiff(data, BuildChatPatchDiff(app));
 		if (nlohmann::json::iterator chats = data.find("chats"); chats != data.end())
 		{
+			// Chats reference their catalogue by id; only catalogues the page has not been sent yet travel with them.
+			nlohmann::json catalogs = nlohmann::json::object();
 			for (nlohmann::json& chat : *chats)
 			{
 				const ChatSession* source = ChatDomainService().FindChatById(app, chat.value("id", ""));
 				if (source == nullptr) continue;
-				const nlohmann::json::const_iterator acp = chat.find("acpSession");
+				const nlohmann::json::iterator acp = chat.find("acpSession");
 				if (acp != chat.end() && acp->contains("catalogDigest"))
 				{
 					// Hydration rebuilds the session summary only; keep the scan's managed subagent count.
 					const nlohmann::json managed_subagent_count = chat.value("managedSubagentCount", nlohmann::json(0));
-					chat = uam::StateSerializer::SerializeChatSummary(app, *source);
+					chat = uam::StateSerializer::SerializeChatSummary(app, *source, &catalogs);
 					chat["managedSubagentCount"] = managed_subagent_count;
 				}
+				else if (acp != chat.end())
+					uam::StateSerializer::ReferenceModelCatalog(*acp, catalogs);
 				// The frontend replaces the whole chat, so a patched PNG icon needs its data URL as in stateUpdate.
 				uam::icons::AddFrontendAsset(chat, app.data_root, source->custom_icon);
 			}
+			nlohmann::json unsent = nlohmann::json::object();
+			if (g_model_catalogs_reset_pending || g_sent_model_catalog_ids.size() > kMaxSentModelCatalogIds)
+			{
+				g_sent_model_catalog_ids.clear();
+				g_model_catalogs_reset_pending = false;
+				data["modelCatalogsReset"] = true;
+			}
+			for (auto& entry : catalogs.items())
+				if (g_sent_model_catalog_ids.insert(entry.key()).second) unsent[entry.key()] = std::move(entry.value());
+			if (!unsent.empty()) data["modelCatalogs"] = std::move(unsent);
 		}
 		AddChangedJsonField(data, "chatOrder", ChatOrderForPatch(app), g_last_pushed_chat_order_fingerprint);
 		if (has_payload != nullptr)
@@ -580,6 +604,12 @@ namespace uam
 	void SetStatePatchObserverForTests(void (*observer)(const std::string& message))
 	{
 		g_state_patch_observer = observer;
+	}
+
+	void ForgetSentModelCatalogs()
+	{
+		g_sent_model_catalog_ids.clear();
+		g_model_catalogs_reset_pending = true;
 	}
 
 	bool HasDeferredStatePush()

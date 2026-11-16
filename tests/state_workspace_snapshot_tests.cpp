@@ -37,7 +37,7 @@ UAM_TEST(StateSerializerWorkspaceSnapshotsKeepScopeIdentitiesSeparate)
 	app.selected_chat_index = 0;
 	for (bool summary_only : {false, true})
 	{
-		const nlohmann::json serialized = uam::StateSerializer::Serialize(app, summary_only);
+		const nlohmann::json serialized = uam_test::SerializeStateInline(app, summary_only);
 		const nlohmann::json fingerprint = uam::StateSerializer::SerializeFingerprint(app);
 		for (const nlohmann::json* result : {&serialized, &fingerprint})
 		{
@@ -80,7 +80,7 @@ UAM_TEST(StateSerializerWorkspaceSnapshotsRefreshFolderAndCatalogTogether)
 	UAM_ASSERT_EQ(first["chats"][0]["workspaceDirectory"], folder.directory);
 	UAM_ASSERT_EQ(first["chats"][0]["acpSession"]["availableModels"], app.provider_model_catalog->GetCatalogSnapshot(provider, first_root.generic_string())["availableModels"]);
 	app.folders.front().directory = uam::paths::Utf8PathString(second_root);
-	for (const nlohmann::json result : {uam::StateSerializer::SerializeFingerprint(app), uam::StateSerializer::Serialize(app, false)})
+	for (const nlohmann::json result : {uam::StateSerializer::SerializeFingerprint(app), uam_test::SerializeStateInline(app, false)})
 	{
 		UAM_ASSERT_EQ(result["chats"][0]["workspaceDirectory"], app.folders.front().directory);
 		UAM_ASSERT_EQ(result["chats"][0]["acpSession"]["availableModels"], app.provider_model_catalog->GetCatalogSnapshot(provider, second_root.generic_string())["availableModels"]);
@@ -115,7 +115,7 @@ UAM_TEST(StateSerializerPublishesPersistedLocalWorktreeCatalog)
 	UAM_ASSERT(app.provider_model_catalog->RememberSuccessfulModels("opencode-cli", models, chat.workspace_worktree_directory));
 	app.provider_model_catalog->Initialize(app.data_root, app.provider_profiles);
 
-	const nlohmann::json serialized = uam::StateSerializer::Serialize(app, false);
+	const nlohmann::json serialized = uam_test::SerializeStateInline(app, false);
 	bool found_worktree_catalog = false;
 	for (const nlohmann::json& catalog : serialized["providerModelCatalogs"])
 	{
@@ -154,7 +154,7 @@ UAM_TEST(StateSerializerWorkspaceSnapshotsDoNotRetainPriorCurrentDirectory)
 	UAM_ASSERT_EQ(uam::StateSerializer::SerializeFingerprint(app)["chats"][0]["workspaceDirectory"], uam::paths::Utf8PathString(first));
 	fs::current_path(second);
 	UAM_ASSERT_EQ(uam::StateSerializer::SerializeFingerprint(app)["chats"][0]["workspaceDirectory"], uam::paths::Utf8PathString(second));
-	UAM_ASSERT_EQ(uam::StateSerializer::Serialize(app, false)["chats"][0]["workspaceDirectory"], uam::paths::Utf8PathString(second));
+	UAM_ASSERT_EQ(uam_test::SerializeStateInline(app, false)["chats"][0]["workspaceDirectory"], uam::paths::Utf8PathString(second));
 }
 
 
@@ -181,7 +181,7 @@ UAM_TEST(StateSerializerPublishesPersistedWorktreeCatalogAfterLargeFolderProject
 	const nlohmann::json models = nlohmann::json::array({{{"id", "cached/worktree-model"}}});
 	UAM_ASSERT(app.provider_model_catalog->RememberSuccessfulModels("claude-cli", models, worktree));
 	app.provider_model_catalog->Initialize(app.data_root, app.provider_profiles);
-	for (const nlohmann::json result : {uam::StateSerializer::Serialize(app, false), uam::StateSerializer::SerializeFingerprint(app)})
+	for (const nlohmann::json result : {uam_test::SerializeStateInline(app, false), uam::StateSerializer::SerializeFingerprint(app)})
 	{
 		const nlohmann::json& catalogs = result["providerModelCatalogs"];
 		UAM_ASSERT(catalogs.size() > std::size_t{512});

@@ -1520,7 +1520,7 @@ UAM_TEST(CentralNativeUamControlAuthorityEndsWithTerminalAndKeepsChatCapability)
 	structured.chat_id = "other-chat";
 	const nlohmann::json question = {{"requestId", "native-question"}, {"method", "user_question"}, {"arguments", {{"question", "Proceed?"}, {"options", {"Yes", "No"}}}}};
 	UAM_ASSERT(uam::UamControlService::HandleRequestForTests(app, capability_id, question, uam::time::SystemEpochMillisecondsNow()).value("pendingApproval", false));
-	const nlohmann::json state = uam::StateSerializer::Serialize(app, true);
+	const nlohmann::json state = uam_test::SerializeStateInline(app, true);
 	UAM_ASSERT_EQ(state["chats"][0]["acpSession"]["pendingUserInput"]["questions"][0]["question"], nlohmann::json("Proceed?"));
 	const auto pending = uam::UamControlService::PendingApprovalForChat(app, chat.id);
 	UAM_ASSERT(pending.has_value());
@@ -2788,10 +2788,10 @@ UAM_TEST(GeminiSerializedLiveModelEffortsRequireCurrentCheckedConnection)
 	session->available_models = {concrete}; app.acp_sessions.push_back(std::move(session));
 	auto& version = app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey(chat.provider_id, host.id)];
 	version.execution_host = host; version.checked = version.supported = true; version.installed_version = "0.55.1";
-	auto state = uam::StateSerializer::Serialize(app, true);
+	auto state = uam_test::SerializeStateInline(app, true);
 	UAM_ASSERT_EQ(state["chats"][0]["acpSession"]["availableModels"][0]["supportedReasoningEfforts"], nlohmann::json::array({"low", "medium", "high"}));
 	version.execution_host.ssh_alias = "foreign-host";
-	state = uam::StateSerializer::Serialize(app, true);
+	state = uam_test::SerializeStateInline(app, true);
 	UAM_ASSERT(state["chats"][0]["acpSession"]["availableModels"][0]["supportedReasoningEfforts"].empty());
 }
 

@@ -296,9 +296,9 @@ UAM_TEST(ChatControlRefusalsNameTheirOwnReasonWithoutPathsOrStaleStatus)
 	CefRefPtr<RecordingIconCallback> agent = run("setChatUamAgent", {{"chatId", chat.id}, {"agentId", "plan"}});
 	UAM_ASSERT_EQ(agent->failures, 1);
 	UAM_ASSERT_EQ(agent->failure_message, std::string("The chat could not be saved. Try again."));
-	CefRefPtr<RecordingIconCallback> small = run("setChatSmallModelMode", {{"chatId", chat.id}, {"enabled", true}});
-	UAM_ASSERT_EQ(small->failures, 1);
-	UAM_ASSERT_EQ(small->failure_message, std::string("The chat could not be saved. Try again."));
+	CefRefPtr<RecordingIconCallback> small_model = run("setChatSmallModelMode", {{"chatId", chat.id}, {"enabled", true}});
+	UAM_ASSERT_EQ(small_model->failures, 1);
+	UAM_ASSERT_EQ(small_model->failure_message, std::string("The chat could not be saved. Try again."));
 	CefRefPtr<RecordingIconCallback> model = run("setChatModel", {{"chatId", chat.id}, {"modelId", "fixture/model-two"}});
 	UAM_ASSERT_EQ(model->failures, 1);
 	UAM_ASSERT_EQ(model->failure_message, std::string("The chat could not be saved. Try again."));
@@ -328,7 +328,7 @@ UAM_TEST(ChatControlRefusalsNameTheirOwnReasonWithoutPathsOrStaleStatus)
 	UAM_ASSERT_EQ(discard->failure_message, std::string("Held prompts could not be discarded because their recovery state could not be saved."));
 	UAM_ASSERT_EQ(session.queued_user_prompts.size(), std::size_t{1});
 
-	for (const auto& callback : {stop_refused, cancel_refused, rename, agent, small, model, reviewer, speed, reasoning, discard})
+	for (const auto& callback : {stop_refused, cancel_refused, rename, agent, small_model, model, reviewer, speed, reasoning, discard})
 	{
 		UAM_ASSERT(callback->failure_message.find(uam::paths::Utf8PathString(temp.root)) == std::string::npos);
 		UAM_ASSERT(callback->failure_message.find("Unrelated status") == std::string::npos);

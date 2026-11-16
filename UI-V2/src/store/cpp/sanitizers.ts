@@ -957,8 +957,50 @@ export function sanitizeManualCompaction(value: unknown): ManualCompactionAvaila
   return { available: value.available, providerId: value.providerId, modelId: value.modelId, nativeSessionId: value.nativeSessionId }
 }
 
+// Native sends each model catalogue once under a content id (top-level modelCatalogs) and chats reference it by
+// acpSession.modelCatalogId. Each entry is sanitized once and shared by every chat that references it.
+type ModelCatalogEntry = { availableModels: AcpModel[]; configOptions: AcpConfigOption[] }
+// Native bounds it: a patch with modelCatalogsReset clears it first, keeping it equal to what native believes was sent.
+const modelCatalogsById = new Map<string, ModelCatalogEntry>()
+let missingModelCatalog = false
+
+function sanitizeAcpModels(value: unknown): AcpModel[] {
+  return Array.isArray(value)
+    ? value.flatMap((model) => {
+        const sanitized = sanitizeAcpModel(model)
+        return sanitized ? [sanitized] : []
+      })
+    : []
+}
+
+function sanitizeAcpConfigOptions(value: unknown): AcpConfigOption[] {
+  return Array.isArray(value)
+    ? value.slice(0, 64).flatMap((option) => {
+        const sanitized = sanitizeAcpConfigOption(option)
+        return sanitized ? [sanitized] : []
+      })
+    : []
+}
+
+function rememberModelCatalogs(value: unknown, reset: boolean): void {
+  missingModelCatalog = false
+  if (reset) modelCatalogsById.clear()
+  if (!isRecord(value)) return
+  for (const [id, entry] of Object.entries(value)) {
+    // Ids are content digests, so a known id already holds this content.
+    if (!isRecord(entry) || modelCatalogsById.has(id)) continue
+    modelCatalogsById.set(id, { availableModels: sanitizeAcpModels(entry.availableModels), configOptions: sanitizeAcpConfigOptions(entry.configOptions) })
+  }
+}
+
+export function resetModelCatalogsForTests(): void {
+  modelCatalogsById.clear()
+}
+
 export function sanitizeCppAcpSession(value: unknown): CppAcpSession | undefined {
   if (!isRecord(value)) return undefined
+  const catalog = isString(value.modelCatalogId) ? modelCatalogsById.get(value.modelCatalogId) : undefined
+  if (isString(value.modelCatalogId) && !catalog) missingModelCatalog = true
 
   return {
     sessionId: isString(value.sessionId) ? value.sessionId : undefined,
@@ -1031,19 +1073,9 @@ export function sanitizeCppAcpSession(value: unknown): CppAcpSession | undefined
         })
       : [],
     currentModeId: normalizeAcpApprovalMode(value.currentModeId),
-    availableModels: Array.isArray(value.availableModels)
-      ? value.availableModels.flatMap((model) => {
-          const sanitized = sanitizeAcpModel(model)
-          return sanitized ? [sanitized] : []
-        })
-      : [],
+    availableModels: catalog?.availableModels ?? sanitizeAcpModels(value.availableModels),
     nativeModelOptions: sanitizeNativeModelOptions(value.nativeModelOptions),
-    configOptions: Array.isArray(value.configOptions)
-      ? value.configOptions.slice(0, 64).flatMap((option) => {
-          const sanitized = sanitizeAcpConfigOption(option)
-          return sanitized ? [sanitized] : []
-        })
-      : [],
+    configOptions: catalog?.configOptions ?? sanitizeAcpConfigOptions(value.configOptions),
     modelsLoading: booleanOr(value.modelsLoading),
     modelRefreshError: stringOr(value.modelRefreshError),
     currentModelId: normalizeAcpModelId(value.currentModelId),
@@ -2135,6 +2167,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
 
 export function sanitizeCppAppState(value: unknown): CppAppState | null {
   if (!isRecord(value)) return null
+  rememberModelCatalogs(value.modelCatalogs, false)
 
   const folders = Array.isArray(value.folders)
     ? value.folders.flatMap((folder) => {
@@ -2148,6 +2181,7 @@ export function sanitizeCppAppState(value: unknown): CppAppState | null {
         return sanitized ? [sanitized] : []
       })
     : []
+  if (missingModelCatalog) return null
   const providers = Array.isArray(value.providers)
     ? value.providers.flatMap((provider) => {
         const sanitized = sanitizeCppProvider(provider)
@@ -2353,6 +2387,15 @@ function sanitizeResourceCollections(value: unknown): ResourceCollection[] {
 
 export function sanitizeCppStatePatch(value: unknown): CppStatePatch | null {
   if (!isRecord(value)) return null
+  rememberModelCatalogs(value.modelCatalogs, value.modelCatalogsReset === true)
+  const chats = Array.isArray(value.chats)
+    ? value.chats.flatMap((chat) => {
+        const sanitized = sanitizeCppChat(chat)
+        return sanitized ? [sanitized] : []
+      })
+    : undefined
+  // A catalogue this page never received (a lost patch, say): reject so the store pulls full state.
+  if (missingModelCatalog) return null
 
   return {
     stateRevision: finiteNumberOr(value.stateRevision, 0),
@@ -2365,12 +2408,7 @@ export function sanitizeCppStatePatch(value: unknown): CppStatePatch | null {
     resourceCollections: value.resourceCollections !== undefined
       ? sanitizeResourceCollections(value.resourceCollections)
       : undefined,
-    chats: Array.isArray(value.chats)
-      ? value.chats.flatMap((chat) => {
-          const sanitized = sanitizeCppChat(chat)
-          return sanitized ? [sanitized] : []
-        })
-      : undefined,
+    chats,
     removedChatIds: Array.isArray(value.removedChatIds)
       ? value.removedChatIds.filter(isString)
       : undefined,

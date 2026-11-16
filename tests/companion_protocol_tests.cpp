@@ -388,6 +388,11 @@ namespace
 		Json raw_state = {{"memoryActivity", {{"entryCount", 3}, {"runningCount", 0}, {"lastWorkerHasExitCode", true}, {"lastWorkerExitCode", 0}, {"lastStatus", "secret status"}, {"lastWorkerStatus", "secret status"}, {"lastWorkerOutput", "secret memory"}, {"lastWorkerError", "secret error"}}}};
 		const auto projected_state = MobileState(raw_state);
 		Require(projected_state.dump().find("secret") == std::string::npos && projected_state["memoryActivity"]["entryCount"] == 3 && projected_state["memoryActivity"]["status"] == "completed", "Initial-state memory activity must retain structured facts without raw extraction logs");
+		const Json catalogue = {{"availableModels", Json::array({{{"id", "vendor/model"}}})}, {"configOptions", Json::array({{{"id", "effort"}}})}};
+		const auto phone = MobileState({{"modelCatalogs", {{"c1", catalogue}}}, {"chats", Json::array({{{"id", "chat-1"}, {"acpSession", {{"modelCatalogId", "c1"}, {"modelsLoading", false}}}}})}});
+		Require(!phone.contains("modelCatalogs") && !phone["chats"][0]["acpSession"].contains("modelCatalogId") &&
+		        phone["chats"][0]["acpSession"]["availableModels"] == catalogue["availableModels"] && phone["chats"][0]["acpSession"]["configOptions"] == catalogue["configOptions"],
+		        "Phone clients must receive each chat's model catalogue inline, not by reference");
 		const auto safe = MobileSettings(settings);
 		Require(safe["theme"] == "dark" && safe["executionHosts"][0]["id"] == "remote", "Mobile must retain display settings and host identity");
 		Require(safe.dump().find("secret") == std::string::npos && safe.dump().find("private") == std::string::npos, "Mobile settings must not expose credentials, instructions or unknown configuration");
