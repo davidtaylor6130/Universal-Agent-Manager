@@ -124,7 +124,7 @@
 .uam-subagent-toggle { display: flex; align-items: center; gap: 4px; width: calc(100% - 8px); min-height: 22px; margin-inline: 4px; padding: 2px 10px; border: 0; border-radius: 6px; background: transparent; color: var(--text-3); font-size: var(--fs-xs); text-align: left; cursor: pointer; }
 .uam-subagent-toggle:hover { background: var(--sidebar-item-hover); color: var(--text-2); }
 .uam-subagent-toggle:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-inset); }
-.uam-subagent-toggle__chevron { transition: transform .12s; }
+.uam-subagent-toggle__chevron { transition: transform var(--dur-fast) var(--ease); }
 .uam-subagent-toggle[aria-expanded="true"] .uam-subagent-toggle__chevron { transform: rotate(90deg); }
 @media (prefers-reduced-motion: reduce) { .uam-subagent-toggle__chevron { transition: none; } }
 .uam-managed-panel--catalogue { margin: 0; padding: 0; border: 0; }

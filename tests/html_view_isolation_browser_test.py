@@ -193,7 +193,8 @@ def main():
             self.wfile.write(body)
 
     app = serve(App)
-    with tempfile.TemporaryDirectory(prefix='uam-html-view-isolation-') as profile:
+    # Chrome's helper processes can outlive the killed browser and keep writing the profile; a cleanup race must not fail the checks.
+    with tempfile.TemporaryDirectory(prefix='uam-html-view-isolation-', ignore_cleanup_errors=True) as profile:
         command = [browser, '--headless', '--disable-gpu', '--no-first-run', '--no-default-browser-check', f'--user-data-dir={profile}',
                    '--remote-debugging-port=0', f'http://127.0.0.1:{app.server_address[1]}/index.html']
         if sys.platform.startswith('linux'):

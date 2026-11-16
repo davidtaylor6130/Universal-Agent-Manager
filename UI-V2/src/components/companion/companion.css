@@ -25,7 +25,7 @@
 .uam-companion-error { padding: 8px 16px; color: var(--red); font-size: var(--fs-sm); overflow-wrap: anywhere; }
 .uam-companion-main { flex: 1; min-height: 0; overflow: hidden; }
 .uam-companion-page-viewport { height: 100%; overflow: hidden; }
-.uam-companion-page-track { display: flex; width: 200%; height: 100%; transform: translateX(0); transition: transform 200ms ease-out; }
+.uam-companion-page-track { display: flex; width: 200%; height: 100%; transform: translateX(0); transition: transform var(--dur-base) var(--ease-out-soft); }
 .uam-companion-page-viewport--chats .uam-companion-page-track { transform: translateX(-50%); }
 .uam-companion-page { flex: 0 0 50%; width: 50%; height: 100%; overflow-y: auto; padding: 12px 16px; overscroll-behavior: contain; pointer-events: auto; }
 .uam-companion-page[aria-hidden="true"] { pointer-events: none; }
@@ -96,7 +96,7 @@
   cursor: pointer;
 }
 .uam-companion-refresh:hover { color: var(--accent); }
-.uam-companion-refresh:focus-visible { color: var(--accent); outline: none; border-radius: 8px; outline: var(--focus-ring); outline-offset: var(--focus-offset); }
+.uam-companion-refresh:focus-visible { color: var(--accent); outline: none; border-radius: var(--r-md); outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 .uam-companion-refresh:disabled { cursor: wait; opacity: .55; }
 
 .uam-companion-section { margin-top: 16px; }
@@ -126,8 +126,9 @@
 .uam-companion-nav button:hover { color: var(--text); }
 .uam-companion-nav button:focus-visible { color: var(--text); outline: none; border-radius: 10px; outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 .uam-companion-nav button[aria-current="page"] { color: var(--accent); }
-.uam-companion-nav-indicator { position: absolute; bottom: 4px; left: calc(16.6667% - 12px); width: 24px; height: 2px; background: var(--accent); transition: left 180ms ease; }
-.uam-companion-nav-indicator--chats { left: calc(83.3333% - 12px); }
+.uam-companion-nav-indicator { position: absolute; bottom: 4px; left: 0; width: 33.3333%; height: 2px; transform: translateX(0); transition: transform var(--dur-base) var(--ease-out-soft); pointer-events: none; }
+.uam-companion-nav-indicator::after { content: ''; display: block; width: 24px; height: 100%; margin: 0 auto; background: var(--accent); }
+.uam-companion-nav-indicator--chats { transform: translateX(200%); }
 .uam-companion-nav .uam-companion-new-chat { position: absolute; left: 50%; top: -29px; transform: translateX(-50%); width: 58px; height: 58px; border: 5px solid var(--bg); border-radius: 50%; background: var(--accent); color: var(--on-accent); }
 .uam-companion-new-chat:hover,
 .uam-companion-new-chat:focus-visible { filter: brightness(1.1); outline: var(--focus-ring); outline-offset: var(--focus-offset); }
