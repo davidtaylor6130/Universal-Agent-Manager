@@ -2088,7 +2088,7 @@ WorktreeLaunchPreparationState PrepareAcpWorkspaceForLaunch(AppState& app, AcpSe
 			session.worktree_launch_cancellation.reset();
 			session.reconnect_pending = false;
 			session.queue_held = chat.acp_queue_held = true;
-			session.last_error = "Workspace preparation was canceled or changed. Retry the held input.";
+			session.last_error = "Workspace preparation was canceled, timed out or changed. Retry the held input.";
 			session.lifecycle_state = kAcpLifecycleError;
 			ScheduleChatSave(app, chat, 0.0);
 			if (error_out) *error_out = session.last_error;

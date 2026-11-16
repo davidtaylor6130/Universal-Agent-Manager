@@ -7,6 +7,8 @@
 #include "app/agent_run_scheduler.h"
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
+#include "common/constants/app_constants.h"
+#include "remote/runner_client.h"
 #include <algorithm>
 
 using namespace uam_test;
@@ -715,5 +717,203 @@ UAM_TEST(AcpWorkspaceRemoteValidationStopPreservesUnsentPolicyOnce)
 	UAM_ASSERT_EQ(fixture.Chat().workspace_worktree_directory, isolated_directory);
 	UAM_ASSERT(fs::is_directory(uam::paths::PathFromUtf8(isolated_directory)));
 	UAM_ASSERT_EQ(ReadFile(fixture.repository / "source.txt"), std::string("Private source survivor\n"));
+}
+#endif
+
+UAM_TEST(AcpHeldWorkspaceWaitSettlesFinishedPreparation)
+{
+	// A held queue must not leave a finished preparation parked on "waiting for workspace" with no error (beafe2).
+	for (const bool failed : {true, false})
+	{
+		WorkspacePromptFixture fixture;
+		const std::shared_ptr<uam::WorktreeLaunchPreparationTask> task = SeedOwnedAcpWorkspaceTask(fixture);
+		uam::AcpSessionState& session = *fixture.session;
+		ChatSession& chat = fixture.app.chats.front();
+		uam::AcpQueuedUserPromptState prompt;
+		prompt.id = "private-held-finished-workspace";
+		prompt.text = "Held input across preparation";
+		session.queued_user_prompts.push_back(prompt);
+		chat.acp_queued_prompts = {prompt};
+		session.queue_held = chat.acp_queue_held = true;
+		session.worktree_launch_pending = true;
+		session.worktree_launch_cancellation = task->cancellation;
+		session.lifecycle_state = "waiting_workspace";
+		if (failed) task->error = "Private preparation failure";
+		else task->saved = true;
+		for (int poll = 0; poll < 3; ++poll) (void)uam::PollAllAcpSessions(fixture.app);
+		UAM_ASSERT(!session.worktree_launch_pending && !session.running && !session.reconnect_pending);
+		UAM_ASSERT(session.queue_held && chat.acp_queue_held);
+		UAM_ASSERT_EQ(session.queued_user_prompts.size(), std::size_t{1});
+		UAM_ASSERT_EQ(session.lifecycle_state, std::string(failed ? "error" : "stopped"));
+		UAM_ASSERT_EQ(session.last_error.empty(), !failed);
+	}
+}
+
+#if UAM_ENABLE_SSH
+namespace
+{
+	ExecutionHost ReadyPrivateRemoteHost()
+	{
+		ExecutionHost host;
+		host.id = "private-remote-preparation";
+		host.transport = "ssh";
+		host.ssh_alias = "private-preparation";
+		host.platform = "windows";
+		host.runner_version = std::string(uam::constants::kAppVersion).substr(1);
+		host.runner_protocol_version = 3;
+		host.runner_status = "ready";
+		UAM_ASSERT(uam::remote::CanAttemptRunnerConnection(host));
+		return host;
+	}
+
+	std::shared_ptr<uam::WorktreeLaunchPreparationTask> SeedRemoteWorkspaceTask(WorkspacePromptFixture& fixture)
+	{
+		const ExecutionHost host = ReadyPrivateRemoteHost();
+		fixture.app.settings.execution_hosts.push_back(host);
+		fixture.app.chats.front().execution_host_id = host.id;
+		fixture.app.chats.front().workspace_directory = "C:/Users/private/Source";
+		const std::shared_ptr<uam::WorktreeLaunchPreparationTask> task = SeedOwnedAcpWorkspaceTask(fixture);
+		task->remote_host = host;
+		return task;
+	}
+}
+
+UAM_TEST(RemoteWorkspacePreparationDeadlineCancelsUnansweredWorker)
+{
+	WorkspacePromptFixture fixture;
+	const std::shared_ptr<uam::WorktreeLaunchPreparationTask> task = SeedRemoteWorkspaceTask(fixture);
+	uam::AcpSessionState& session = *fixture.session;
+	ChatSession& chat = fixture.app.chats.front();
+	std::promise<uam::PreparedLaunchWorktree> worker;
+	task->worker = worker.get_future();
+	fixture.app.worktree_operation_chat_ids.insert(chat.id);
+	uam::AcpQueuedUserPromptState prompt;
+	prompt.id = "private-held-remote-input";
+	prompt.text = "Held input across an unanswered helper";
+	session.queued_user_prompts.push_back(prompt);
+	chat.acp_queued_prompts = {prompt};
+	session.queue_held = chat.acp_queue_held = true;
+	session.worktree_launch_pending = true;
+	session.worktree_launch_cancellation = task->cancellation;
+	session.lifecycle_state = "waiting_workspace";
+	task->worker_deadline = std::chrono::steady_clock::now() + std::chrono::hours(1);
+	(void)uam::PollWorktreeLaunchPreparations(fixture.app);
+	UAM_ASSERT(!task->cancellation->stop_requested());
+	// An unanswered helper (the host rebooted) is canceled at the deadline and reported, never awaited forever.
+	task->worker_deadline = std::chrono::steady_clock::now() - std::chrono::seconds(1);
+	UAM_ASSERT(uam::PollWorktreeLaunchPreparations(fixture.app));
+	UAM_ASSERT(task->cancellation->stop_requested());
+	// The held session reports at once, while the unanswered worker is still running.
+	(void)uam::PollAllAcpSessions(fixture.app);
+	UAM_ASSERT_EQ(session.lifecycle_state, std::string("error"));
+	UAM_ASSERT(session.last_error.find("timed out") != std::string::npos);
+	UAM_ASSERT(session.queue_held && !session.worktree_launch_pending && !session.running);
+	UAM_ASSERT_EQ(session.queued_user_prompts.size(), std::size_t{1});
+	// The worker keeps its operation fence until it really exits; then everything is released.
+	UAM_ASSERT(fixture.app.worktree_operation_chat_ids.contains(chat.id));
+	worker.set_value({{.message = "Remote command canceled."}, task->original});
+	(void)uam::PollWorktreeLaunchPreparations(fixture.app);
+	UAM_ASSERT(!fixture.app.worktree_operation_chat_ids.contains(chat.id));
+	UAM_ASSERT(!fixture.app.worktree_launch_preparations.contains(chat.id));
+	UAM_ASSERT(!task->lease && !task->remote_host_lease);
+}
+
+UAM_TEST(RemoteWorkspaceReferenceAdmissionSkipsOnlySettledFamilyChildren)
+{
+	enum class Blocker { None, ActiveRun, QueuedInput, Unrelated, ForeignRoot, MissingRun, PersistedOnly, SavedDelivery, SavedInteraction };
+	for (const Blocker blocker : {Blocker::None, Blocker::ActiveRun, Blocker::QueuedInput, Blocker::Unrelated, Blocker::ForeignRoot, Blocker::MissingRun,
+	         Blocker::PersistedOnly, Blocker::SavedDelivery, Blocker::SavedInteraction})
+	{
+		WorkspacePromptFixture fixture;
+		const std::shared_ptr<uam::WorktreeLaunchPreparationTask> task = SeedRemoteWorkspaceTask(fixture);
+		uam::AppState& app = fixture.app;
+		const ChatSession parent = app.chats.front();
+		uam::PreparedLaunchWorktree prepared{{.ok = true}, task->original};
+		prepared.metadata.workspace_isolation_kind = uam::paths::kGitWorktreeIsolationKind;
+		prepared.metadata.workspace_source_directory = "C:/Users/private/Source";
+		prepared.metadata.workspace_worktree_directory = "C:/Users/private/uam-worktree-0123456789abcdef";
+		prepared.metadata.workspace_branch_name = "uam/0123456789abcdef";
+		prepared.metadata.workspace_base_ref = std::string(40, 'a');
+		const auto child = [&](const std::string& id, const std::string& run_id)
+		{
+			ChatSession value;
+			value.id = id;
+			value.provider_id = "claude-cli";
+			value.execution_host_id = parent.execution_host_id;
+			value.agent_run_id = run_id;
+			value.workspace_isolation_kind = uam::paths::kPendingGitWorktreeIsolationKind;
+			// The saved child names the parent's worktree, spelled as Windows wrote it.
+			value.workspace_directory = "C:/Users/private\\uam-worktree-0123456789abcdef";
+			value.workspace_source_directory = "C:/Users/private/Source";
+			return value;
+		};
+		const auto run = [&](const std::string& id, const std::string& transcript, const std::string& status, const std::string& root)
+		{
+			AgentRun value;
+			value.id = id;
+			value.root_chat_id = root;
+			value.transcript_chat_id = transcript;
+			value.provider_id = "claude-cli";
+			value.status = status;
+			return value;
+		};
+		// A finished v2 child is inert after restart: only the worker's read-only ledger observation still names it.
+		app.chats.push_back(child("private-settled-v2", "run-settled-v2"));
+		prepared.reference_runs.push_back(run("run-settled-v2", "private-settled-v2", "failed", parent.id));
+		app.chats.push_back(child("private-settled-v1", "run-settled-v1"));
+		app.agent_runs.push_back(run("run-settled-v1", "private-settled-v1", "completed", parent.id));
+		prepared.references.push_back(child("private-settled-saved", "run-settled-saved"));
+		prepared.reference_runs.push_back(run("run-settled-saved", "private-settled-saved", "cancelled", parent.id));
+		std::string expected;
+		switch (blocker)
+		{
+		case Blocker::None: break;
+		case Blocker::ActiveRun:
+			app.chats.push_back(child(expected = "private-active-child", "run-active"));
+			app.agent_runs.push_back(run("run-active", expected, "running", parent.id));
+			// A stale finished observation never overrides the live ledger.
+			prepared.reference_runs.push_back(run("run-active", expected, "completed", parent.id));
+			break;
+		case Blocker::QueuedInput:
+			app.chats.push_back(child(expected = "private-queued-child", "run-queued"));
+			app.chats.back().acp_queued_prompts.emplace_back().id = "private-queued-input";
+			app.agent_runs.push_back(run("run-queued", expected, "completed", parent.id));
+			break;
+		case Blocker::Unrelated:
+			app.chats.push_back(child(expected = "private-unrelated-chat", ""));
+			break;
+		case Blocker::ForeignRoot:
+			app.chats.push_back(child(expected = "private-foreign-child", "run-foreign"));
+			prepared.reference_runs.push_back(run("run-foreign", expected, "failed", "private-other-parent"));
+			break;
+		case Blocker::MissingRun:
+			app.chats.push_back(child(expected = "private-unknown-child", "run-pruned"));
+			break;
+		case Blocker::PersistedOnly:
+			prepared.references.push_back(child(expected = "private-persisted-chat", ""));
+			break;
+		case Blocker::SavedDelivery:
+		case Blocker::SavedInteraction:
+			// A saved-only finished child still holding delivery or interaction authority is not settled.
+			prepared.references.push_back(child(expected = "private-saved-authority-child", "run-saved-authority"));
+			if (blocker == Blocker::SavedDelivery) prepared.references.back().remote_prompt_delivery_id = "private-delivery";
+			else prepared.references.back().remote_interaction_responses.emplace_back();
+			prepared.reference_runs.push_back(run("run-saved-authority", expected, "failed", parent.id));
+			break;
+		}
+		task->prepared = std::move(prepared);
+		(void)uam::PollWorktreeLaunchPreparations(app);
+		if (blocker == Blocker::None)
+		{
+			UAM_ASSERT(task->error.empty());
+			UAM_ASSERT(task->merged);
+			UAM_ASSERT_EQ(app.chats.front().workspace_worktree_directory, std::string("C:/Users/private/uam-worktree-0123456789abcdef"));
+			continue;
+		}
+		UAM_ASSERT(!task->merged);
+		UAM_ASSERT(task->error.find(expected) != std::string::npos);
+		UAM_ASSERT(task->error.find("private-settled") == std::string::npos);
+		UAM_ASSERT(app.chats.front().workspace_worktree_directory.empty());
+	}
 }
 #endif
