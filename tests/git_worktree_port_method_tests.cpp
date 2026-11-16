@@ -255,6 +255,8 @@ namespace
 		run.depth = parent.empty() ? 1 : 2;
 		run.transcript_chat_id = "child-" + run.id;
 		run.agent_id = "worker";
+		run.definition_snapshot = "PRIVATE-DEFINITION";
+		run.task = "Bounded worktree fixture task.";
 		run.provider_id = fixture.app.chats.front().provider_id;
 		run.model_id = fixture.app.chats.front().model_id;
 		run.execution_capability = "uam-prompt-injected";
