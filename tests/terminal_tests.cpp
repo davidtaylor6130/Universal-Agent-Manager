@@ -12,6 +12,7 @@
 #include "common/runtime/terminal/terminal_launch.h"
 #include "common/provider/provider_runtime.h"
 #include "common/provider/provider_native_context.h"
+#include "common/chat/staged_attachment_discard.h"
 #include "remote/runner_client.h"
 #include "remote/runner_service_posix.h"
 
@@ -3054,6 +3055,87 @@ UAM_TEST(ChatDeletionRemovesOnlyItsOwnUnsharedAttachmentCopies)
 	UAM_ASSERT(!ChatRepository::LoadLocalChat(app.data_root / "runtime-context-cleanup", chat.id).has_value());
 }
 
+UAM_TEST(ChatDeletionSweepsItsUnsentCopiesAndEmptyAttachmentFolder)
+{
+	for (const int reference : {0, 1, 2})
+	{
+		// 0: no survivor names the shared copy; 1: a branch message does; 2: a branch's queued prompt does.
+		const bool branch_keeps_one = reference != 0;
+		TempDir temp("uam-attachment-folder-sweep");
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		const fs::path workspace = temp.root / "workspace";
+		const fs::path folder = workspace / ".UAM/attachments/deleted-chat";
+		fs::create_directories(folder);
+		// Staged in an earlier run and never sent, so no message, link or in-run record names them.
+		for (const char* name : {"1-0-unsent.png", "2-0-unsent.txt", "3-0-shared.png"}) UAM_ASSERT(uam::io::WriteBinaryFile(folder / name, "copy"));
+		UAM_ASSERT(uam::io::WriteBinaryFile(workspace / ".UAM/attachments/other-chat.png", "not this chat's"));
+		ChatSession chat;
+		chat.id = "deleted-chat";
+		chat.provider_id = "antigravity-cli";
+		chat.execution_host_id = "local";
+		chat.workspace_directory = workspace.string();
+		ChatSession branch;
+		branch.id = "surviving-branch";
+		Message message{MessageRole::User, "Describe this"};
+		MessageAttachment shared;
+		shared.kind = "image";
+		shared.path = ".UAM/attachments/deleted-chat/3-0-shared.png";
+		message.attachments.push_back(shared);
+		if (reference == 1) branch.messages.push_back(message);
+		if (reference == 2)
+		{
+			branch.acp_queued_prompts.emplace_back();
+			branch.acp_queued_prompts.back().attachments = message.attachments;
+		}
+		UAM_ASSERT(StageCliProviderContextCleanup(app, chat, {branch}));
+		RetryCliProviderContextCleanup(app, 0.0);
+		UAM_ASSERT(app.provider_context_cleanup_worker != nullptr);
+		app.provider_context_cleanup_worker->join();
+		app.provider_context_cleanup_worker.reset();
+		UAM_ASSERT(!fs::exists(folder / "1-0-unsent.png") && !fs::exists(folder / "2-0-unsent.txt"));
+		UAM_ASSERT_EQ(fs::exists(folder / "3-0-shared.png"), branch_keeps_one);
+		UAM_ASSERT_EQ(fs::exists(folder), branch_keeps_one);
+		UAM_ASSERT(fs::exists(workspace / ".UAM/attachments/other-chat.png"));
+		UAM_ASSERT(!ChatRepository::LoadLocalChat(app.data_root / "runtime-context-cleanup", chat.id).has_value());
+	}
+}
+
+UAM_TEST(SshChatDeletionRecordsAFolderSweepForACopyStagedThisRun)
+{
+	TempDir temp("uam-attachment-folder-sweep-ssh");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ExecutionHost host;
+	host.id = "ssh-host";
+	host.platform = "linux";
+	host.transport = "ssh";
+	app.settings.execution_hosts.push_back(host);
+	ChatSession chat;
+	chat.id = "ssh-chat";
+	chat.provider_id = "antigravity-cli";
+	chat.execution_host_id = host.id;
+	chat.workspace_directory = "/srv/project";
+	// A copy staged on the host this run that no send named: the desktop cannot list the host's folder, so it remembers it.
+	const std::string unsent = ".UAM/attachments/ssh-chat/1-0-unsent.png";
+	UAM_ASSERT(uam::staged_attachment_discard::ExchangeUnsent(unsent, uam::staged_attachment_discard::Unsent::Stage));
+	UAM_ASSERT(StageCliProviderContextCleanup(app, chat, {}));
+	(void)uam::staged_attachment_discard::ExchangeUnsent(unsent, uam::staged_attachment_discard::Unsent::TakeForDiscard);
+	const auto intent = ChatRepository::LoadLocalChat(app.data_root / "runtime-context-cleanup", chat.id);
+	UAM_ASSERT(intent.has_value());
+	const auto sweep = std::ranges::find_if(intent->linked_files, [](const std::string& entry) { return entry.starts_with('{'); });
+	UAM_ASSERT(sweep != intent->linked_files.end());
+	const nlohmann::json parsed = nlohmann::json::parse(*sweep);
+	UAM_ASSERT_EQ(parsed.at("sweep").get<std::string>(), std::string("/srv/project/.UAM/attachments/ssh-chat"));
+	UAM_ASSERT(parsed.at("keep").empty());
+
+	// A chat that never staged or named a copy does not reach its host for a sweep.
+	ChatSession quiet = chat;
+	quiet.id = "quiet-ssh-chat";
+	UAM_ASSERT(StageCliProviderContextCleanup(app, quiet, {}));
+	UAM_ASSERT(!ChatRepository::LoadLocalChat(app.data_root / "runtime-context-cleanup", quiet.id).has_value());
+}
+
 UAM_TEST(DeletingAParentKeepsACopyItsBranchUsesUntilTheBranchIsDeleted)
 {
 	TempDir temp("uam-attachment-copy-branch-delete");
@@ -3190,7 +3272,9 @@ UAM_TEST(AttachmentCopyCleanupIntentStaysUntilTheSshHostCanBeReached)
 	app.provider_context_cleanup_worker.reset();
 	const std::optional<ChatSession> pending = ChatRepository::LoadLocalChat(app.data_root / "runtime-context-cleanup", chat.id);
 	UAM_ASSERT(pending.has_value());
-	UAM_ASSERT_EQ(pending->linked_files, std::vector<std::string>{"/srv/project/.UAM/attachments/chat/a.png"});
+	// The named copy, then the sweep of the chat's own folder that the host must also run.
+	UAM_ASSERT_EQ(pending->linked_files, (std::vector<std::string>{"/srv/project/.UAM/attachments/chat/a.png",
+	    nlohmann::json{{"sweep", "/srv/project/.UAM/attachments/chat"}, {"keep", nlohmann::json::array()}}.dump()}));
 
 	ChatSession no_workspace = chat;
 	no_workspace.id = "imported";
@@ -3201,9 +3285,9 @@ UAM_TEST(AttachmentCopyCleanupIntentStaysUntilTheSshHostCanBeReached)
 
 UAM_TEST(RemoteAttachmentCopyCleanupIntentRecordsHostPaths)
 {
-	for (const auto& [platform, workspace, linked, expected] : std::vector<std::array<std::string, 4>>{
-	         {"linux", "/srv/project", ".UAM/attachments/chat/a.png", "/srv/project/.UAM/attachments/chat/a.png"},
-	         {"windows", R"(C:\proj)", R"(.UAM\attachments\chat\a.png)", R"(C:\proj\.UAM\attachments\chat\a.png)"}})
+	for (const auto& [platform, workspace, linked, expected, folder] : std::vector<std::array<std::string, 5>>{
+	         {"linux", "/srv/project", ".UAM/attachments/chat/a.png", "/srv/project/.UAM/attachments/chat/a.png", "/srv/project/.UAM/attachments/chat"},
+	         {"windows", R"(C:\proj)", R"(.UAM\attachments\chat\a.png)", R"(C:\proj\.UAM\attachments\chat\a.png)", R"(C:\proj\.UAM\attachments\chat)"}})
 	{
 		TempDir temp("uam-attachment-copy-remote-intent");
 		uam::AppState app;
@@ -3222,7 +3306,7 @@ UAM_TEST(RemoteAttachmentCopyCleanupIntentRecordsHostPaths)
 		const std::optional<ChatSession> pending = ChatRepository::LoadLocalChat(app.data_root / "runtime-context-cleanup", chat.id);
 		UAM_ASSERT(pending.has_value());
 		UAM_ASSERT_EQ(pending->execution_host_id, host.id);
-		UAM_ASSERT_EQ(pending->linked_files, std::vector<std::string>{expected});
+		UAM_ASSERT_EQ(pending->linked_files, (std::vector<std::string>{expected, nlohmann::json{{"sweep", folder}, {"keep", nlohmann::json::array()}}.dump()}));
 	}
 }
 

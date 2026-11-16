@@ -1245,6 +1245,17 @@ namespace uam::remote
 		                {"path", uam::paths::Utf8PathString(remote_path)}}, response, error_out);
 	}
 
+	bool RunnerClient::SweepChatAttachments(const std::string& request_id, const std::filesystem::path& folder, const std::set<std::string>& keep,
+	                                        std::size_t& left, std::string* error_out)
+	{
+		left = 0;
+		nlohmann::json response;
+		if (!Request({{"type", "file.sweepChatAttachments"}, {"uploadId", request_id}, {"path", uam::paths::Utf8PathString(folder)}, {"keep", keep}}, response, error_out)) return false;
+		const auto result = response.find("result");
+		if (result != response.end() && result->is_object() && result->contains("left") && (*result)["left"].is_number_unsigned()) left = (*result)["left"].get<std::size_t>();
+		return true;
+	}
+
 	bool RunnerClient::CopyFile(const std::string& request_id,
 	                            const std::filesystem::path& source_path,
 	                            const std::filesystem::path& target_path,
