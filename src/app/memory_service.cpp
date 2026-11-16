@@ -1117,12 +1117,13 @@ namespace
 	}
 
 	// Pure checks, cheapest first: a chat waiting out a failed scan's retry must not pay for the busy check.
-	// Every poll asks this for each chat, so queued ids come from a set built once per sweep, not a queue scan.
+	// Every poll asks this for each chat, so queued ids come from a set built once per sweep, not a queue scan, and a
+	// queued or running chat is skipped before policy resolution, which allocates (a backlog queues every chat).
 	bool AutomaticMemoryScanBlocked(const uam::AppState& app, const ChatSession& chat, double now, const std::unordered_set<std::string_view>& queued_ids)
 	{
-		return !HasUnprocessedMessages(chat) || app.pending_chat_save_at_by_chat_id.contains(chat.id) ||
-		       !MemoryRetryDue(app, chat.id, now) || !MemoryScanEligible(app, chat) || !MemoryHostAvailable(app, chat) ||
-		       HasRunningTaskForChat(app, chat.id) || queued_ids.contains(chat.id) || ChatIsBusy(app, chat);
+		return !HasUnprocessedMessages(chat) || queued_ids.contains(chat.id) || HasRunningTaskForChat(app, chat.id) ||
+		       app.pending_chat_save_at_by_chat_id.contains(chat.id) || !MemoryRetryDue(app, chat.id, now) ||
+		       !MemoryScanEligible(app, chat) || !MemoryHostAvailable(app, chat) || ChatIsBusy(app, chat);
 	}
 
 	bool QueuedMemoryWorkTemporarilyBlocked(const uam::AppState& app, const ChatSession& chat)

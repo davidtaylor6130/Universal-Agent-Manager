@@ -8,6 +8,9 @@
 #include "common/runtime/app_time.h"
 #include "common/state/app_state.h"
 
+#include <algorithm>
+#include <chrono>
+
 namespace uam
 {
 
@@ -100,7 +103,10 @@ inline bool AcpSessionHasUnreadOutput(const AcpSessionState& session)
 /// </summary>
 inline bool RuntimeHasPendingWork(const AppState& app)
 {
-	if (!app.memory_extraction_tasks.empty() || !app.memory_extraction_queue.empty() || !app.worktree_operation_chat_ids.empty() ||
+	// Chats only queued for automatic memory (waiting for the worker slot, an idle delay or a retry) wait for the 1 s
+	// poll; a queued manual scan was asked for by the user and starts promptly.
+	if (!app.memory_extraction_tasks.empty() || !app.worktree_operation_chat_ids.empty() ||
+	    std::ranges::any_of(app.memory_extraction_queue, [](const QueuedMemoryExtractionTask& task) { return task.manual; }) ||
 	    !app.queued_agent_run_ids.empty() || !app.pending_agent_run_cancellation_ids.empty())
 	{
 		return true;
@@ -141,6 +147,31 @@ inline bool NeedsInteractiveRuntimePolling(const AppState& app, bool terminal_ui
 	const AcpSessionState* acp = FindAcpSessionForChat(app, selected_chat->id);
 	return acp != nullptr && acp->running && AcpSessionHasBlockingRuntimeWork(*acp);
 }
+
+/// <summary>
+/// Memory-only changes (scan progress, activity counts, status) publish at most once every 2 s. A lone change goes out
+/// on its own tick; a backlog that finishes a chat on most polls is capped instead of rebuilding the whole state each time.
+/// </summary>
+struct MemoryPushThrottle
+{
+	static constexpr std::chrono::seconds kInterval{2};
+	std::chrono::steady_clock::time_point last_push{};
+	bool pending = false;
+
+	/// <summary>Records this tick's memory change and returns whether a push is due for memory.</summary>
+	bool Due(bool changed, std::chrono::steady_clock::time_point now)
+	{
+		pending = pending || changed;
+		return pending && (last_push == std::chrono::steady_clock::time_point{} || now - last_push >= kInterval);
+	}
+
+	/// <summary>Any push serializes current memory state, so a pending change is published with it.</summary>
+	void Pushed(std::chrono::steady_clock::time_point now)
+	{
+		if (pending) last_push = now;
+		pending = false;
+	}
+};
 
 inline int NextPollDelayMs(const AppState& app, bool dictation_running, bool terminal_ui_visible)
 {
