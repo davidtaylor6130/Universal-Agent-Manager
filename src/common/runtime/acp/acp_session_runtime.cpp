@@ -2585,8 +2585,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 					if (error_out) *error_out = "Managed input no longer owns its initial workspace preparation.";
 					return false;
 				}
+				// A prepared agent Send bound to its own unsent row (checked above) waits here too: refusing it marked the
+				// row unsent while a reconnect still launched the provider with nothing to send. Its own pending save is
+				// enough to report a worktree chat Pending.
 				if (workspace == WorktreeLaunchPreparationState::Pending && !queued_dispatch &&
-				    batch.size() == 1 && first.direct_admission && first.append_user_message && first.existing_user_message_index < 0 &&
+				    batch.size() == 1 && first.direct_admission && (first.append_user_message || first.existing_user_message_index >= 0) &&
 				    session.queued_user_prompts.empty() && chat.acp_queued_prompts.empty() &&
 				    !session.running && !session.processing && !AcpSessionHasPendingCancel(session) &&
 				    chat.goal_owner_chat_id.empty() && !chat.small_model_mode &&
@@ -5956,6 +5959,14 @@ For desktop observation and input, use only the provider's built-in controller; 
 		    IsWorktreeLaunchPreparationPending(app, chat.id);
 	}
 
+	// An idle worktree chat's launch also waits for any pending chat save, often the Retry's own. Retry then waits in
+	// the queue like other workspace preparation, instead of being refused as "Workspace preparation is still pending."
+	static bool RetryWaitsForWorkspace(const AppState& app, const ChatSession& chat, const AcpSessionState* session)
+	{
+		return RetryNeedsWorkspacePreparation(app, chat) ||
+		    ((session == nullptr || !session->running) && WorktreeLaunchWaitsForChatSave(app, chat));
+	}
+
 	static std::shared_ptr<SavedImageRetryPermission> CaptureSavedImageRetry(const AppState& app, const AcpSessionState* existing, const ChatSession& chat, int index, std::string* error_out)
 	{
 		if (!existing)
@@ -6330,7 +6341,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		session->saved_image_retry = std::move(image_permission);
 		session->saved_image_retry_turn_serial = -1;
 		session->turn_user_message_index = message_index;
-		const bool started = RetryNeedsWorkspacePreparation(app, *chat)
+		const bool started = RetryWaitsForWorkspace(app, *chat, session)
 		    ? RetainAcpRetryBeforeWorkspace(app, *session, *chat, queued, message_index, error_out)
 		    : StartAcpUserPrompt(app, *session, *chat, queued, error_out, local_async);
 		if (!started)
@@ -6423,7 +6434,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		if (owned_images && !paths::IsControllerLocalWorkspace(*chat) &&
 		    !CaptureSavedImageRetry(app, FindAcpSessionForChat(app, chat_id), *chat, message_index, error_out))
 			return false;
-		const bool needs_workspace = RetryNeedsWorkspacePreparation(app, *chat);
+		const bool needs_workspace = RetryWaitsForWorkspace(app, *chat, FindAcpSessionForChat(app, chat_id));
 		if (const AcpSessionState* existing = FindAcpSessionForChat(app, chat_id); existing && ((needs_workspace && AcpRetryHasPendingWork(app, *chat, *existing, false)) || (!needs_workspace && !existing->model_discovery_only && (existing->processing || AcpSessionIsWaitingForInput(*existing) || !existing->queued_prompt.empty() || existing->prompt_request_id != 0))))
 		{
 			if (error_out) *error_out = "Wait for pending runtime work or delivery recovery before retrying.";

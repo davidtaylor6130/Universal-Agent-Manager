@@ -759,6 +759,12 @@ namespace uam
 		return changed;
 	}
 
+	bool WorktreeLaunchWaitsForChatSave(const AppState& app, const ChatSession& chat)
+	{
+		return app.pending_chat_save_at_by_chat_id.contains(chat.id) &&
+		    (chat.workspace_isolation_kind == paths::kPendingGitWorktreeIsolationKind || paths::IsGitWorktreeIsolated(chat));
+	}
+
 	WorktreeLaunchPreparationResult PrepareWorktreeForLaunch(AppState& app, ChatSession& chat, bool explicit_create)
 	{
 		(void)PollWorktreeLaunchPreparations(app);
@@ -824,8 +830,7 @@ namespace uam
 			}
 			return {WorktreeLaunchPreparationState::Pending, {}, task->cancellation};
 		}
-		if (app.pending_chat_save_at_by_chat_id.contains(chat.id) &&
-		    (chat.workspace_isolation_kind == paths::kPendingGitWorktreeIsolationKind || paths::IsGitWorktreeIsolated(chat)))
+		if (WorktreeLaunchWaitsForChatSave(app, chat))
 			return {WorktreeLaunchPreparationState::Pending, {}, {}};
 		const bool remote_workspace = !paths::IsControllerLocalWorkspace(chat);
 		if (remote_workspace && explicit_create && !app.settings.git_enabled)
