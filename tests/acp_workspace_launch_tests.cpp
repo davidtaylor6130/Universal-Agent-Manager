@@ -156,6 +156,140 @@ UAM_TEST(AcpReconnectParkedOnWorkspaceLogsWaitingNotStarted)
 	UAM_ASSERT(task->cancellation && !task->cancellation->stop_requested());
 }
 
+UAM_TEST(AcpPreparedSendToIdleWorktreeChatWaitsForItsOwnSave)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	// A Send to an idle local worktree chat with central provider setup prepares its agent, then resumes bound to its
+	// own unsent row. That resume schedules a save, which reports the worktree Pending. The row-bound input was refused
+	// and marked unsent, and the finished workspace check then launched the provider with nothing to send.
+	TempDir temp("uam-prepared-worktree-send");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	const ExecutionHost host = uam::execution_hosts::LocalHost();
+	app.settings.execution_hosts = {host};
+	app.settings.central_provider_configuration.enabled = true;
+	app.settings.provider_chat_defaults["claude-cli"].feature_preference = "uam";
+	auto& version = app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("claude-cli", host.id)];
+	version.checked = version.supported = true;
+	version.installed_version = "2.1.31";
+	version.execution_host = host;
+	fs::create_directories(temp.root / "source");
+	fs::create_directories(temp.root / "worktree");
+	ChatSession initial;
+	initial.id = "private-prepared-worktree-send";
+	initial.provider_id = "claude-cli";
+	initial.native_session_id = "0b6a0d63-6a8e-4d4c-9d43-2f0c8f2a51e7";
+	initial.uam_agent_id = "build";
+	initial.approval_mode.clear();
+	initial.memory_enabled = false;
+	initial.workspace_directory = initial.workspace_source_directory = (temp.root / "source").string();
+	initial.workspace_worktree_directory = (temp.root / "worktree").string();
+	initial.workspace_isolation_kind = uam::paths::kGitWorktreeIsolationKind;
+	initial.workspace_branch_name = "build/private-prepared-send";
+	initial.messages.push_back({.role = MessageRole::User, .content = "Saved private history"});
+	app.chats.push_back(std::move(initial));
+	ChatSession& chat = app.chats.front();
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	struct Cleanup
+	{
+		uam::AppState& app;
+		~Cleanup() { uam::FastStopAcpSessionsForExit(app); }
+	} cleanup{app};
+	std::string error;
+	const std::string text = "Continue with the prepared input";
+	UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, text, &error));
+	uam::AcpSessionState* session = uam::FindAcpSessionForChat(app, chat.id);
+	UAM_ASSERT(session != nullptr && session->pending_agent_input && !session->running);
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+	while (session->pending_agent_input && std::chrono::steady_clock::now() < deadline)
+	{
+		(void)uam::PollAllAcpSessions(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	}
+	UAM_ASSERT(!session->pending_agent_input && !session->running);
+	UAM_ASSERT_EQ(chat.messages.size(), std::size_t{2});
+	UAM_ASSERT_EQ(chat.messages.back().content, text);
+	// The input waits for its workspace instead of settling as unsent.
+	UAM_ASSERT(chat.messages.back().acp_prompt_not_sent && !chat.messages.back().interrupted);
+	UAM_ASSERT_EQ(session->queued_user_prompts.size(), std::size_t{1});
+	UAM_ASSERT_EQ(session->queued_user_prompts.front().existing_user_message_index, 1);
+	UAM_ASSERT(!session->queue_held && session->lifecycle_state != uam::acp_detail::kAcpLifecycleError);
+	UAM_ASSERT(session->worktree_launch_pending);
+	// Its owned save keeps the input queued for the launch that follows.
+	const auto save_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+	while ((app.pending_chat_save_at_by_chat_id.contains(chat.id) || app.pending_chat_save_tasks.contains(chat.id)) &&
+	       std::chrono::steady_clock::now() < save_deadline)
+	{
+		(void)uam::FlushPendingChatSaves(app, true);
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	}
+	UAM_ASSERT(!app.pending_chat_save_at_by_chat_id.contains(chat.id) && !app.pending_chat_save_tasks.contains(chat.id));
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(saved && saved->acp_queued_prompts.size() == 1 && !saved->acp_queue_held);
+	UAM_ASSERT(!saved->messages.back().interrupted);
+#endif
+}
+
+
+UAM_TEST(AcpRetryInIdleWorktreeChatWaitsForPendingSave)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	// Retry of an unsent message in an idle local worktree chat while a chat save is pending, such as the one a refused
+	// Send schedules. The worktree reports Pending until that save lands, and the row-bound Retry was refused with
+	// "Workspace preparation is still pending."; it now waits for the workspace like other workspace preparation.
+	TempDir temp("uam-retry-worktree-save");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	const ExecutionHost host = uam::execution_hosts::LocalHost();
+	app.settings.execution_hosts = {host};
+	app.settings.central_provider_configuration.enabled = true;
+	app.settings.provider_chat_defaults["claude-cli"].feature_preference = "uam";
+	auto& version = app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("claude-cli", host.id)];
+	version.checked = version.supported = true;
+	version.installed_version = "2.1.31";
+	version.execution_host = host;
+	fs::create_directories(temp.root / "source");
+	fs::create_directories(temp.root / "worktree");
+	ChatSession initial;
+	initial.id = "private-retry-worktree-save";
+	initial.provider_id = "claude-cli";
+	initial.uam_agent_id = "build";
+	initial.approval_mode.clear();
+	initial.memory_enabled = false;
+	initial.created_at = initial.updated_at = "2026-11-17 12:32:00";
+	initial.workspace_directory = initial.workspace_source_directory = (temp.root / "source").string();
+	initial.workspace_worktree_directory = (temp.root / "worktree").string();
+	initial.workspace_isolation_kind = uam::paths::kGitWorktreeIsolationKind;
+	initial.workspace_branch_name = "build/private-retry";
+	Message unsent{.role = MessageRole::User, .content = "Retry this unsent input"};
+	unsent.created_at = "2026-11-17 12:32:40";
+	unsent.acp_prompt_not_sent = unsent.interrupted = true;
+	initial.messages.push_back(unsent);
+	app.chats.push_back(std::move(initial));
+	ChatSession& chat = app.chats.front();
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	struct Cleanup
+	{
+		uam::AppState& app;
+		~Cleanup() { uam::FastStopAcpSessionsForExit(app); }
+	} cleanup{app};
+	uam::acp_detail::ScheduleChatSave(app, chat, 0.0);
+	UAM_ASSERT(app.pending_chat_save_at_by_chat_id.contains(chat.id));
+	std::string error;
+	const bool retried = uam::RetryFailedAcpMessage(app, chat.id, 0, &error);
+	UAM_ASSERT_EQ(error, std::string());
+	UAM_ASSERT(retried);
+	const uam::AcpSessionState* session = uam::FindAcpSessionForChat(app, chat.id);
+	UAM_ASSERT(session != nullptr && !session->running && !session->queue_held);
+	UAM_ASSERT_EQ(chat.messages.size(), std::size_t{1});
+	UAM_ASSERT(chat.messages.front().acp_prompt_not_sent && !chat.messages.front().interrupted);
+	UAM_ASSERT_EQ(session->queued_user_prompts.size(), std::size_t{1});
+	UAM_ASSERT_EQ(session->queued_user_prompts.front().existing_user_message_index, 0);
+	UAM_ASSERT(session->lifecycle_state != uam::acp_detail::kAcpLifecycleError);
+#endif
+}
 
 namespace
 {
