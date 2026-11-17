@@ -1362,12 +1362,20 @@ namespace uam
 			    (chat.acp_queued_prompts.empty() ||
 			     !chat.acp_queued_prompts.front().prepared_for_delivery))
 			{
+				const bool never_dispatched = chat.acp_dispatched_queued_prompt_count == 0;
 				AcpSessionState& session = acp_detail::EnsureAcpSessionForChat(app, chat);
 				session.queued_user_prompts.assign(
 				    chat.acp_queued_prompts.begin(), chat.acp_queued_prompts.end());
 				chat.acp_dispatched_queued_prompt_count = 0;
 				session.reconnect_pending = !session.queue_held;
 				session.reconnect_not_before_time_s = 0.0;
+				// A held Send that never left UAM settles here as it would when its chat is opened: an unsent row the user
+				// can Retry or Remove, never a send. Goal-loop prompts and anything that may have reached the host stay held.
+				if (initial_restore && session.queue_held && never_dispatched && !ChatHasUncertainRemoteInput(chat) &&
+				    std::ranges::none_of(chat.acp_queued_prompts, [](const AcpQueuedUserPromptState& prompt) { return prompt.goal_mode || !prompt.goal_id.empty(); }) &&
+				    ChatRepository::HydrateChatMessages(app.data_root, chat) &&
+				    SettleStoppedDirectAcpAdmissions(app, chat) && session.queued_user_prompts.empty())
+					continue; // Nothing is left to reconnect for.
 				++restored;
 				continue;
 			}
