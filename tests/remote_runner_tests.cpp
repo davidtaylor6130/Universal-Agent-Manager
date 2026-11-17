@@ -7111,6 +7111,106 @@ UAM_TEST(AcpRemoteUnconfirmedReceiptReturnsThePromptUnsentWithoutAHeldQueue)
 	(void)uam::FlushPendingChatSaves(app, true);
 }
 
+UAM_TEST(RestartReturnsAHeldUnwrittenRemotePromptAsUnsentWithoutAHeldQueue)
+{
+	// The shape a failed receipt saved before #1010: a held prepared head and an unsent row never marked interrupted.
+	// With nothing that could have reached the host it restarts as an unsent row; uncertain input stays held untouched.
+	for (const bool uncertain : {false, true})
+	{
+		decltype(uam::AppState::acp_sessions) restarted_without; // Outlives the fixture, whose teardown still closes this session.
+		InjectedRemoteAdmissionFixture fixture;
+		auto& app = fixture.app;
+		auto& chat = app.chats.front();
+		restarted_without.swap(app.acp_sessions);
+		chat.remote_process_exists = false;
+		chat.remote_process_control_token.clear();
+		if (uncertain) chat.remote_prompt_delivery_id = "saved-delivery-marker";
+		chat.messages.push_back({.role = MessageRole::User, .content = "Remote input whose receipt was never saved."});
+		chat.messages.back().acp_prompt_not_sent = true;
+		chat.messages.back().created_at = "2026-11-16 00:30:00"; // Saved rows carry it; a native-session Retry needs it.
+		uam::AcpQueuedUserPromptState head;
+		head.text = chat.messages.back().content;
+		head.append_user_message = false;
+		head.direct_admission = head.prepared_for_delivery = true;
+		head.prepared_user_message_count = 1;
+		chat.acp_queued_prompts = {head};
+		chat.acp_dispatched_queued_prompt_count = 1;
+		chat.acp_queue_held = true;
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		(void)uam::RestoreRemoteAcpSessionsAfterRestart(app, true);
+		UAM_ASSERT(fixture.input.Bytes().empty());
+		UAM_ASSERT_EQ(chat.messages.back().content, head.text);
+		UAM_ASSERT(chat.messages.back().acp_prompt_not_sent && !chat.messages.back().acp_prompt_discarded);
+		UAM_ASSERT_EQ(chat.acp_queued_prompts.empty(), !uncertain);
+		UAM_ASSERT_EQ(chat.acp_queue_held, uncertain);
+		if (uncertain)
+		{
+			UAM_ASSERT(chat.acp_queued_prompts.front().prepared_for_delivery && chat.acp_dispatched_queued_prompt_count == 1);
+			UAM_ASSERT_EQ(chat.remote_prompt_delivery_id, std::string("saved-delivery-marker"));
+			continue;
+		}
+		UAM_ASSERT(chat.messages.back().interrupted && chat.acp_dispatched_queued_prompt_count == 0);
+		UAM_ASSERT(uam::FindAcpSessionForChat(app, chat.id) == nullptr);
+		const int row = static_cast<int>(chat.messages.size()) - 1;
+		UAM_ASSERT(uam::RecoverableUnsentAcpMessageIndices(app, chat) == std::vector<int>{row});
+		fixture.AwaitSave();
+		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat.id, true);
+		UAM_ASSERT(saved.has_value() && saved->acp_queued_prompts.empty() && !saved->acp_queue_held);
+		UAM_ASSERT(saved->messages.back().acp_prompt_not_sent && saved->messages.back().interrupted);
+	}
+}
+
+UAM_TEST(RestartSettlesAHeldNeverDispatchedRemoteSendAsUnsent)
+{
+	// A Send held at a restart before it was ever dispatched: no row yet, nothing on the host. Restart settles it as
+	// opening the chat would, into an unsent row with Retry and no held queue. Goal prompts and uncertain input stay held.
+	enum class Variant { Ordinary, Goal, Uncertain };
+	for (const Variant variant : {Variant::Ordinary, Variant::Goal, Variant::Uncertain})
+	{
+		decltype(uam::AppState::acp_sessions) restarted_without; // Outlives the fixture, whose teardown still closes this session.
+		InjectedRemoteAdmissionFixture fixture;
+		auto& app = fixture.app;
+		auto& chat = app.chats.front();
+		restarted_without.swap(app.acp_sessions);
+		chat.remote_process_exists = false;
+		if (variant == Variant::Uncertain) chat.remote_prompt_delivery_id = "saved-delivery-marker";
+		uam::AcpQueuedUserPromptState prompt;
+		prompt.id = "held-never-dispatched";
+		prompt.text = "Authored remote input held before it was dispatched.";
+		prompt.append_user_message = prompt.direct_admission = true;
+		prompt.uam_agent_definition_hash = "builtin-build-v2";
+		prompt.uam_agent_definition_snapshot = "builtin:build:v2";
+		prompt.uam_agent_instructions = "Implement and verify within the chat policy.";
+		if (variant == Variant::Goal) { prompt.goal_mode = true; prompt.goal_id = "goal-held"; }
+		chat.acp_queued_prompts = {prompt};
+		chat.acp_dispatched_queued_prompt_count = 0;
+		chat.acp_queue_held = true;
+		const std::size_t rows = chat.messages.size();
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		(void)uam::RestoreRemoteAcpSessionsAfterRestart(app, true);
+		UAM_ASSERT(fixture.input.Bytes().empty());
+		const uam::AcpSessionState* session = uam::FindAcpSessionForChat(app, chat.id);
+		UAM_ASSERT(session != nullptr && !session->running && !session->reconnect_pending && !session->processing);
+		if (variant != Variant::Ordinary)
+		{
+			UAM_ASSERT(chat.acp_queue_held && session->queue_held);
+			UAM_ASSERT(chat.acp_queued_prompts.size() == 1 && chat.acp_queued_prompts.front() == prompt);
+			UAM_ASSERT_EQ(chat.messages.size(), rows);
+			continue;
+		}
+		UAM_ASSERT(!chat.acp_queue_held && !session->queue_held && chat.acp_queued_prompts.empty() && session->queued_user_prompts.empty());
+		UAM_ASSERT_EQ(chat.messages.size(), rows + 1);
+		const auto& row = chat.messages.back();
+		UAM_ASSERT(row.role == MessageRole::User && row.content == prompt.text);
+		UAM_ASSERT(row.acp_prompt_not_sent && row.interrupted && !row.acp_prompt_discarded);
+		UAM_ASSERT(uam::RecoverableUnsentAcpMessageIndices(app, chat) == std::vector<int>{static_cast<int>(rows)});
+		fixture.AwaitSave();
+		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat.id, true);
+		UAM_ASSERT(saved.has_value() && saved->acp_queued_prompts.empty() && !saved->acp_queue_held);
+		UAM_ASSERT(saved->messages.back().content == prompt.text && saved->messages.back().acp_prompt_not_sent);
+	}
+}
+
 #if defined(__APPLE__) || defined(__linux__)
 namespace
 {
