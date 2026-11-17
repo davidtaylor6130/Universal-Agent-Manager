@@ -7279,7 +7279,10 @@ UAM_TEST(AcpRemoteManualQuotaMarkerRejectsChangedSavedProcessAuthority)
 		(void)uam::acp_detail::SendQueuedPromptIfReady(app, *fixture.session, chat);
 		UAM_ASSERT(fixture.input.Bytes().empty());
 		UAM_ASSERT(!fixture.session->pending_prompt_delivery && fixture.session->queued_prompt.empty());
-		UAM_ASSERT(chat.messages.back().acp_prompt_not_sent && chat.acp_queue_held);
+		// Changed authority sends nothing: the prompt returns as unsent for the user's Retry or Remove, with no hidden
+		// prepared head holding the queue and no automatic goal resume.
+		UAM_ASSERT(chat.messages.back().acp_prompt_not_sent && chat.messages.back().interrupted);
+		UAM_ASSERT(chat.acp_queued_prompts.empty() && !chat.acp_queue_held && fixture.session->goal_resume_suppressed);
 		UAM_ASSERT_EQ(chat.claude_quota_continuation.state, std::string("cancelled"));
 		UAM_ASSERT_EQ(fixture.session->prompt_request_id, 0);
 	}
@@ -8524,7 +8527,9 @@ UAM_TEST(AcpRemoteSmallModelMarkerRejectsChangedExternalGoalBeforeOrAfterReceipt
 		(void)uam::acp_detail::SendQueuedPromptIfReady(app, *fixture.session, chat);
 		UAM_ASSERT(fixture.input.Bytes().empty());
 		UAM_ASSERT(!fixture.session->pending_prompt_delivery && fixture.session->queued_prompt.empty());
-		UAM_ASSERT(chat.messages.back().acp_prompt_not_sent && chat.acp_queue_held);
+		// A changed goal sends nothing and the goal loop must not resend it; the prompt returns as unsent.
+		UAM_ASSERT(chat.messages.back().acp_prompt_not_sent && chat.messages.back().interrupted);
+		UAM_ASSERT(chat.acp_queued_prompts.empty() && !chat.acp_queue_held && fixture.session->goal_resume_suppressed);
 		UAM_ASSERT_EQ(fixture.session->prompt_request_id, 0);
 	}
 }
@@ -8814,7 +8819,7 @@ UAM_TEST(AcpRemoteCanceledMarkerNeverReleasesRunnerInput)
 	UAM_ASSERT(!fs::exists(fixture.input_log));
 }
 
-UAM_TEST(AcpRemoteMarkerFailureRetainsPreparedHeadAndUnsentUser)
+UAM_TEST(AcpRemoteMarkerFailureReturnsUnsentUserWithoutPreparedHead)
 {
 	RemoteAdmissionFixture fixture;
 	std::string error;
@@ -8834,9 +8839,9 @@ UAM_TEST(AcpRemoteMarkerFailureRetainsPreparedHeadAndUnsentUser)
 	}
 	UAM_ASSERT(fixture.session->pending_prompt_delivery == nullptr);
 	UAM_ASSERT_EQ(fixture.session->prompt_request_id, 0);
-	UAM_ASSERT(fixture.app.chats.front().messages.back().acp_prompt_not_sent);
-	UAM_ASSERT_EQ(fixture.app.chats.front().acp_queued_prompts.size(), std::size_t{1});
-	UAM_ASSERT(fixture.app.chats.front().acp_queued_prompts.front().prepared_for_delivery);
+	UAM_ASSERT(fixture.app.chats.front().messages.back().acp_prompt_not_sent && fixture.app.chats.front().messages.back().interrupted);
+	UAM_ASSERT(fixture.app.chats.front().acp_queued_prompts.empty() && fixture.app.chats.front().acp_dispatched_queued_prompt_count == 0);
+	UAM_ASSERT(!fixture.app.chats.front().acp_queue_held && !fixture.session->queue_held);
 	UAM_ASSERT(fixture.app.chats.front().remote_prompt_delivery_id.empty());
 	UAM_ASSERT_EQ(ReadFile(primary), first_receipt);
 	UAM_ASSERT(!fs::exists(fixture.input_log));
