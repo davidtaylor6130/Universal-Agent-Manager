@@ -6975,7 +6975,9 @@ namespace
 		}
 	};
 }
+#endif
 
+// The injected fixture runs in-process on every platform, so the receipt-failure regression below also runs on Windows.
 namespace
 {
 	struct InjectedRemoteAdmissionFixture
@@ -7071,7 +7073,47 @@ namespace
 			UAM_ASSERT(std::ranges::find(recoverable, row) == recoverable.end());
 		}
 	};
+}
 
+UAM_TEST(AcpRemoteUnconfirmedReceiptReturnsThePromptUnsentWithoutAHeldQueue)
+{
+	// A remote prompt whose owned receipt save fails was never written. It must come back as an unsent message the user
+	// can Retry or Remove, not as a hidden prepared head that keeps the queue held across restarts.
+	InjectedRemoteAdmissionFixture fixture;
+	auto& app = fixture.app;
+	auto& session = *fixture.session;
+	auto& chat = app.chats.front();
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, "Remote input whose receipt cannot be saved.", &error));
+	fixture.AwaitSave();
+	UAM_ASSERT(error.empty() && uam::acp_detail::CanDeferRemotePromptAdmission(app, session, chat));
+	const auto real_root = app.data_root;
+	app.data_root = fixture.temp.root / "blocked-receipt-storage";
+	UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "This private storage root is a regular file."));
+	UAM_ASSERT(uam::acp_detail::SendQueuedPromptIfReady(app, session, chat));
+	UAM_ASSERT(session.pending_prompt_delivery);
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	while (session.pending_prompt_delivery && std::chrono::steady_clock::now() < deadline)
+	{
+		uam::FlushPendingChatSaves(app);
+		(void)uam::acp_detail::SendQueuedPromptIfReady(app, session, chat);
+		std::this_thread::yield();
+	}
+	UAM_ASSERT(!session.pending_prompt_delivery);
+	UAM_ASSERT_EQ(session.last_error, std::string("Remote prompt was not sent because its owned durable receipt was not confirmed."));
+	UAM_ASSERT(fixture.input.Bytes().empty());
+	UAM_ASSERT(chat.messages.back().acp_prompt_not_sent && chat.messages.back().interrupted);
+	UAM_ASSERT(chat.acp_queued_prompts.empty() && chat.acp_dispatched_queued_prompt_count == 0);
+	UAM_ASSERT(!session.queue_held && !chat.acp_queue_held);
+	UAM_ASSERT(!session.processing && session.prompt_request_id == 0);
+	UAM_ASSERT(chat.remote_prompt_delivery_id.empty() && !chat.remote_turn_reconnect_pending);
+	app.data_root = real_root;
+	(void)uam::FlushPendingChatSaves(app, true);
+}
+
+#if defined(__APPLE__) || defined(__linux__)
+namespace
+{
 	void PrepareRemoteQuotaManual(InjectedRemoteAdmissionFixture& fixture, bool small_model = false)
 	{
 		auto& chat = fixture.app.chats.front();
@@ -7237,7 +7279,10 @@ UAM_TEST(AcpRemoteManualQuotaMarkerRejectsChangedSavedProcessAuthority)
 		(void)uam::acp_detail::SendQueuedPromptIfReady(app, *fixture.session, chat);
 		UAM_ASSERT(fixture.input.Bytes().empty());
 		UAM_ASSERT(!fixture.session->pending_prompt_delivery && fixture.session->queued_prompt.empty());
-		UAM_ASSERT(chat.messages.back().acp_prompt_not_sent && chat.acp_queue_held);
+		// Changed authority sends nothing: the prompt returns as unsent for the user's Retry or Remove, with no hidden
+		// prepared head holding the queue and no automatic goal resume.
+		UAM_ASSERT(chat.messages.back().acp_prompt_not_sent && chat.messages.back().interrupted);
+		UAM_ASSERT(chat.acp_queued_prompts.empty() && !chat.acp_queue_held && fixture.session->goal_resume_suppressed);
 		UAM_ASSERT_EQ(chat.claude_quota_continuation.state, std::string("cancelled"));
 		UAM_ASSERT_EQ(fixture.session->prompt_request_id, 0);
 	}
@@ -8482,7 +8527,9 @@ UAM_TEST(AcpRemoteSmallModelMarkerRejectsChangedExternalGoalBeforeOrAfterReceipt
 		(void)uam::acp_detail::SendQueuedPromptIfReady(app, *fixture.session, chat);
 		UAM_ASSERT(fixture.input.Bytes().empty());
 		UAM_ASSERT(!fixture.session->pending_prompt_delivery && fixture.session->queued_prompt.empty());
-		UAM_ASSERT(chat.messages.back().acp_prompt_not_sent && chat.acp_queue_held);
+		// A changed goal sends nothing and the goal loop must not resend it; the prompt returns as unsent.
+		UAM_ASSERT(chat.messages.back().acp_prompt_not_sent && chat.messages.back().interrupted);
+		UAM_ASSERT(chat.acp_queued_prompts.empty() && !chat.acp_queue_held && fixture.session->goal_resume_suppressed);
 		UAM_ASSERT_EQ(fixture.session->prompt_request_id, 0);
 	}
 }
@@ -8772,7 +8819,7 @@ UAM_TEST(AcpRemoteCanceledMarkerNeverReleasesRunnerInput)
 	UAM_ASSERT(!fs::exists(fixture.input_log));
 }
 
-UAM_TEST(AcpRemoteMarkerFailureRetainsPreparedHeadAndUnsentUser)
+UAM_TEST(AcpRemoteMarkerFailureReturnsUnsentUserWithoutPreparedHead)
 {
 	RemoteAdmissionFixture fixture;
 	std::string error;
@@ -8792,9 +8839,9 @@ UAM_TEST(AcpRemoteMarkerFailureRetainsPreparedHeadAndUnsentUser)
 	}
 	UAM_ASSERT(fixture.session->pending_prompt_delivery == nullptr);
 	UAM_ASSERT_EQ(fixture.session->prompt_request_id, 0);
-	UAM_ASSERT(fixture.app.chats.front().messages.back().acp_prompt_not_sent);
-	UAM_ASSERT_EQ(fixture.app.chats.front().acp_queued_prompts.size(), std::size_t{1});
-	UAM_ASSERT(fixture.app.chats.front().acp_queued_prompts.front().prepared_for_delivery);
+	UAM_ASSERT(fixture.app.chats.front().messages.back().acp_prompt_not_sent && fixture.app.chats.front().messages.back().interrupted);
+	UAM_ASSERT(fixture.app.chats.front().acp_queued_prompts.empty() && fixture.app.chats.front().acp_dispatched_queued_prompt_count == 0);
+	UAM_ASSERT(!fixture.app.chats.front().acp_queue_held && !fixture.session->queue_held);
 	UAM_ASSERT(fixture.app.chats.front().remote_prompt_delivery_id.empty());
 	UAM_ASSERT_EQ(ReadFile(primary), first_receipt);
 	UAM_ASSERT(!fs::exists(fixture.input_log));
@@ -10188,8 +10235,9 @@ UAM_TEST(AcpRemoteNativeMarkerFailurePreservesUnrelatedRpcRequest)
 			UAM_ASSERT_EQ(chat.messages[index].content, prior_messages[index].content);
 			UAM_ASSERT_EQ(chat.messages[index].attachments, prior_messages[index].attachments);
 		}
-		UAM_ASSERT_EQ(chat.acp_queued_prompts.size(), std::size_t{1});
-		UAM_ASSERT(chat.acp_queued_prompts.front().prepared_for_delivery);
+		// The unwritten prompt returns as unsent; no hidden prepared head keeps the queue held.
+		UAM_ASSERT(chat.acp_queued_prompts.empty() && chat.acp_dispatched_queued_prompt_count == 0);
+		UAM_ASSERT(chat.messages.back().interrupted && !chat.acp_queue_held && !session.queue_held);
 		// Drain the real failed publication before returning the private root to
 		// normal storage. No Send/dispatch is repeated to manufacture success.
 		app.data_root = real_root;

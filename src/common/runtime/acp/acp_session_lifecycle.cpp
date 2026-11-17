@@ -4212,13 +4212,11 @@ bool SendQueuedPromptIfReady(AppState& app, AcpSessionState& session, ChatSessio
 		    "; receipt=" + (session.pending_prompt_delivery->admission == DurableAdmissionState::Failed ? "failed" :
 		        session.pending_prompt_delivery->admission == DurableAdmissionState::Committed ? "committed" : "pending"));
 		RestorePendingPromptDelivery(session, chat);
+		// Nothing was written, so the prompt returns as unsent with its prepared head retired, exactly as the reconnect
+		// budget and cold-launch give-up return theirs. Holding the restored head instead left a hidden prepared prompt
+		// that Resume, Retry and Remove all refused, so the chat stayed held across restarts.
 		if (same_turn && remote)
-		{
-			session.last_error = "Remote prompt was not sent because its owned durable receipt was not confirmed.";
-			session.queue_held = chat.acp_queue_held = true;
-			session.goal_resume_suppressed = true;
-			CompletePromptTurn(session, kAcpLifecycleError);
-		}
+			ReturnUnwrittenRemotePromptAsUnsent(app, session, chat, "Remote prompt was not sent because its owned durable receipt was not confirmed.");
 		else if (same_turn) FailAcpTurnOrSession(session, &chat, pending_owned
 		    ? "Prompt is waiting for its delivery intent to be saved."
 		    : "Prompt ownership changed before delivery.");
