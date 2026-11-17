@@ -64,6 +64,8 @@ namespace uam
 	/// <summary>Starts owned SVN update and optional Git preparation, then admits launch only after live workspace metadata is saved.</summary>
 	WorktreeLaunchPreparationResult PrepareWorktreeForLaunch(AppState& app, ChatSession& chat, bool explicit_create = false);
 	bool IsWorktreeLaunchPreparationPending(const AppState& app, const std::string& chat_id);
+	/// A worktree chat launches only after its pending save, which may publish its workspace fields, reaches disk.
+	bool WorktreeLaunchWaitsForChatSave(const AppState& app, const ChatSession& chat);
 	/// <summary>True while this chat's preparation worker or its admission save is still running; a finished result is not running.</summary>
 	bool IsWorktreeLaunchPreparationRunning(const AppState& app, const std::string& chat_id);
 	bool PollWorktreeLaunchPreparations(AppState& app);
