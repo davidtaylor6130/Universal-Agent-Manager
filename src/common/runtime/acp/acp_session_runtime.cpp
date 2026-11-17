@@ -441,6 +441,9 @@ namespace uam
 			return false;
 		}
 
+		/// How long quit keeps draining pending remote stops before leaving the rest to next start's recovery.
+		constexpr auto kRemoteStopExitDrainBudget = std::chrono::seconds(2);
+
 		// Bounded, nonblocking reads keep the proxy's exit diagnostic after handle transfer.
 		bool DrainRemoteStopStderr(platform::StdioProcessPlatformFields& process, std::string& stderr_tail, bool* made_progress = nullptr)
 		{
@@ -475,8 +478,11 @@ namespace uam
 			{
 				const std::size_t buffered_bytes = session->stdout_buffer.size();
 				(void)acp_detail::ProcessBufferedAcpStdoutAfterStop(app, *session, *chat, browser, 256);
-				if (made_progress != nullptr && session->stdout_buffer.size() < buffered_bytes) *made_progress = true;
-				more = more || session->stdout_buffer.find('\n') != std::string::npos;
+				const bool consumed = session->stdout_buffer.size() < buffered_bytes;
+				if (made_progress != nullptr && consumed) *made_progress = true;
+				// A pass that consumed nothing (ownership latch, unfinished native frame) never will: reporting its
+				// buffered lines as more output made every drain-until-done loop spin forever.
+				more = more || (consumed && session->stdout_buffer.find('\n') != std::string::npos);
 			}
 			return more;
 		}
@@ -8901,6 +8907,10 @@ For desktop observation and input, use only the provider's built-in controller; 
 
 	void FinalizePendingAcpRemoteStopsForExit(AppState& app)
 	{
+		// Quit must end even while a proxy keeps writing. A stop still draining at the deadline stays unconfirmed:
+		// its saved cleanup marker hands it to the next start's recovery instead of settling a turn with output unread.
+		const auto drain_deadline = std::chrono::steady_clock::now() + kRemoteStopExitDrainBudget;
+		const auto draining = [&drain_deadline] { return std::chrono::steady_clock::now() < drain_deadline; };
 		for (auto& stop : app.pending_acp_remote_stops)
 		{
 			if (stop == nullptr) continue;
@@ -8909,8 +8919,12 @@ For desktop observation and input, use only the provider's built-in controller; 
 			    *stop, &exit_code);
 			bool stderr_pending = DrainRemoteStopStderr(*stop, stop->stderr_tail);
 			// An exited proxy's final diagnostic must be read before confirming its Stop.
-			while (exited && stderr_pending) stderr_pending = DrainRemoteStopStderr(*stop, stop->stderr_tail);
-			while (DrainPendingRemoteStopStdout(app, *stop, nullptr)) {}
+			while (exited && stderr_pending && draining()) stderr_pending = DrainRemoteStopStderr(*stop, stop->stderr_tail);
+			// Every stop gets one pass, even after the deadline: an exited, quiet proxy still confirms.
+			bool stdout_pending = false;
+			do stdout_pending = DrainPendingRemoteStopStdout(app, *stop, nullptr);
+			while (stdout_pending && draining());
+			const bool drained = !stdout_pending && !(exited && stderr_pending);
 			if (!exited)
 				PlatformServicesFactory::Instance().process_service.StopStdioProcess(*stop, true);
 			PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(*stop);
@@ -8918,7 +8932,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			if (session == nullptr || !session->remote_stop_pending) continue;
 			ChatSession* chat = FindAcpRuntimeChatById(app, stop->chat_id);
 			if (!AcpStopProjectionStillOwned(app, session, chat, stop->projection_owner)) continue;
-			if (RemoteStopExitConfirmed(exited, exit_code, stop->stderr_tail))
+			if (drained && RemoteStopExitConfirmed(exited, exit_code, stop->stderr_tail))
 			{
 				ApplyConfirmedRemoteStopOutcome(app, *session, chat, stop->stderr_tail);
 				bool interrupted = false;
@@ -9007,6 +9021,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 		}
 		const auto idle_stop_deadline = std::chrono::steady_clock::now() +
 		                                std::chrono::milliseconds(500);
+		// An answered proxy's output is finite and drains well inside this; only a proxy that never stops writing reaches it.
+		const auto idle_drain_deadline = idle_stop_deadline + kRemoteStopExitDrainBudget;
 		while (!idle_remote_stops.empty() &&
 		       std::chrono::steady_clock::now() < idle_stop_deadline)
 		{
@@ -9024,12 +9040,14 @@ For desktop observation and input, use only the provider's built-in controller; 
 				// also waiting for the proxy to tear down its runner bridges; exit teardown stops it below.
 				const bool outcome_reported = RemoteStopOutcomeReported(stop.session->remote_output_delivery_token, stop.stderr_tail);
 				// Both pipes must drain so the proxy can flush its final output and exit.
-				while ((exited || outcome_reported) && (stderr_pending || stdout_pending))
+				while ((exited || outcome_reported) && (stderr_pending || stdout_pending) && std::chrono::steady_clock::now() < idle_drain_deadline)
 				{
 					stderr_pending = DrainRemoteStopStderr(*stop.session, stop.stderr_tail);
 					stdout_pending = DrainRemoteStopStdout(app, *stop.session, stop.session, stop.chat, nullptr);
 				}
-				stop.confirmed = outcome_reported || RemoteStopExitConfirmed(exited, exit_code, stop.stderr_tail);
+				// Output still flowing at the deadline stays unconfirmed, so next start recovers it rather than losing it.
+				stop.confirmed = !((exited || outcome_reported) && (stderr_pending || stdout_pending)) &&
+				    (outcome_reported || RemoteStopExitConfirmed(exited, exit_code, stop.stderr_tail));
 				all_settled = all_settled && stop.confirmed;
 			}
 			if (all_settled) break;
