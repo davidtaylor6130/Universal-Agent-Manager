@@ -317,7 +317,9 @@ namespace uam::acp_detail
 			// A line that ends the process stops this batch. Output drained after a stop starts with the process already
 			// ended, so it keeps going to the line and time limits instead of handling one line per poll.
 			const bool was_running = session.running;
-			while (session.transport_ownership_error.empty() && result.lines < max_lines && PollClock::now() < deadline)
+			// The first line ignores the time budget: a pass that consumed nothing must mean no line can be consumed,
+			// which remote-stop drains rely on to end instead of retrying it forever.
+			while (session.transport_ownership_error.empty() && result.lines < max_lines && (result.lines == 0 || PollClock::now() < deadline))
 			{
 				if (session.protocol_kind == uam::provider_profile_constants::kProtocolCopilotSdk && consumed < session.stdout_buffer.size() && session.stdout_buffer[consumed] != '\x1e')
 				{

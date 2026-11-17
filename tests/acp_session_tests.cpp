@@ -4801,6 +4801,73 @@ UAM_TEST(ShutdownFinalizesOrClosesEveryPendingRemoteStop)
 	UAM_ASSERT(!app.chats.front().remote_turn_reconnect_pending);
 }
 
+UAM_TEST(ShutdownRemoteStopFinalizationEndsWhenBufferedOutputCannotBeProcessed)
+{
+	// Quit once spun forever here: a buffered line the latched session can never consume kept reporting more output.
+	TempDir temp("uam-acp-stop-shutdown-stuck-line");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ChatSession chat;
+	chat.id = "remote-stop-shutdown-stuck-line";
+	chat.execution_host_id = "ssh-test";
+	app.chats.push_back(chat);
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = chat.id;
+	session->running = true;
+	std::string error;
+#if defined(_WIN32)
+	const std::vector<std::string> argv = {
+	    "cmd.exe", "/d", "/s", "/c", "set /p line= & exit /b 0"};
+#else
+	const std::vector<std::string> argv = {"/bin/sh", "-c", "IFS= read -r line; exit 0"};
+#endif
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(
+	    *session, temp.root, argv, &error));
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+	UAM_ASSERT(!uam::StopAcpSession(app, chat.id));
+	UAM_ASSERT_EQ(app.pending_acp_remote_stops.size(), std::size_t{1});
+	// A provider hold during the drain latches ownership; the line behind it stays buffered.
+	raw_session->transport_ownership_error = "Rejected replacement ownership.";
+	raw_session->stdout_buffer = "{}\n";
+	std::this_thread::sleep_for(std::chrono::milliseconds(30));
+	uam::FinalizePendingAcpRemoteStopsForExit(app);
+	UAM_ASSERT(app.pending_acp_remote_stops.empty());
+	UAM_ASSERT(!raw_session->remote_stop_pending);
+}
+
+UAM_TEST(ShutdownRemoteStopFinalizationLeavesEndlessOutputForRecoveryAtItsDeadline)
+{
+#if !defined(_WIN32)
+	// ponytail: POSIX only; Windows has no stock writer fast enough to keep a nonblocking pipe full.
+	TempDir temp("uam-acp-stop-shutdown-endless");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ChatSession chat;
+	chat.id = "remote-stop-shutdown-endless";
+	chat.execution_host_id = "ssh-test";
+	app.chats.push_back(chat);
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = chat.id;
+	session->running = true;
+	std::string error;
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(
+	    *session, temp.root, {"/bin/sh", "-c", "exec yes"}, &error));
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+	UAM_ASSERT(!uam::StopAcpSession(app, chat.id));
+	UAM_ASSERT_EQ(app.pending_acp_remote_stops.size(), std::size_t{1});
+	std::this_thread::sleep_for(std::chrono::milliseconds(30));
+	const auto started = std::chrono::steady_clock::now();
+	uam::FinalizePendingAcpRemoteStopsForExit(app);
+	UAM_ASSERT(std::chrono::steady_clock::now() - started < std::chrono::seconds(10));
+	UAM_ASSERT(app.pending_acp_remote_stops.empty());
+	// Output was still unread, so the stop is not confirmed: the saved cleanup marker lets the next start recover it.
+	UAM_ASSERT(raw_session->remote_stop_unconfirmed);
+	UAM_ASSERT(app.chats.front().remote_stop_cleanup_pending);
+#endif
+}
+
 UAM_TEST(ShutdownSettlesConfirmedRemoteRestartPromptAsInterrupted)
 {
 	TempDir temp("uam-acp-restart-stop-shutdown");
