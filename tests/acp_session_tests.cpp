@@ -19895,6 +19895,93 @@ UAM_TEST(AcpClaudeIdleInputWithLiveBackgroundTaskAdmitsWithoutRestart)
 #endif
 
 #if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+// Claude starts a turn of its own when a background task reports back. Stream-json results carry no prompt ID, so
+// input sent meanwhile waits for that turn's result: it is never settled by it, nor merged into its answer.
+UAM_TEST(AcpClaudeSelfStartedTurnHoldsUserInputUntilItsResult)
+{
+	if (!ProviderRuntimeRegistry::ResolveById("claude-cli").IsEnabled()) return;
+	for (const std::string_view route : {"send", "steer"})
+	{
+		RestartQueuedSettingsFixture fixture("claude-cli");
+		auto& chat = fixture.app.chats.front();
+		auto& session = *fixture.session;
+		chat.execution_host_id = session.process_execution_host_id = "local";
+		chat.workspace_directory = fixture.temp.root.string();
+		chat.remote_process_exists = false;
+		chat.remote_process_control_token.clear();
+		session.remote_runner_protocol_version = 0;
+		session.current_model_id = chat.model_id;
+		session.queued_user_prompts.clear();
+		chat.acp_queued_prompts.clear();
+		session.lifecycle_state = "ready";
+		session.claude_live_background_task_ids = {"private-finished-bash", "private-still-running-bash"};
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, chat));
+		const std::size_t before = chat.messages.size();
+		const std::string sid = session.session_id;
+		const auto feed = [&](const nlohmann::json& line) { UAM_ASSERT(uam::ProcessAcpLineForTests(fixture.app, session, chat, line.dump())); };
+		const auto pump = [&]()
+		{
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+			while ((!session.queued_prompt.empty() || session.pending_prompt_delivery) && std::chrono::steady_clock::now() < deadline)
+			{
+				uam::FlushPendingChatSaves(fixture.app);
+				(void)uam::acp_detail::SendQueuedPromptIfReady(fixture.app, session, chat);
+				std::this_thread::yield();
+			}
+			UAM_ASSERT(session.queued_prompt.empty() && !session.pending_prompt_delivery);
+		};
+
+		// The finished task's notification opens Claude's own turn, which then streams its answer.
+		feed({{"type", "user"}, {"uuid", "6c7e3b52-0d7f-4c55-9a51-000000000001"}, {"session_id", sid},
+		    {"message", {{"role", "user"}, {"content", "<task-notification><task-id>private-finished-bash</task-id><tool-use-id>private-bash-tool</tool-use-id><status>completed</status><summary>Private wait finished</summary></task-notification>"}}}});
+		feed({{"type", "assistant"}, {"uuid", "6c7e3b52-0d7f-4c55-9a51-000000000002"}, {"session_id", sid},
+		    {"message", {{"content", nlohmann::json::array({{{"type", "text"}, {"text", "Private self-started answer."}}})}}}});
+		UAM_ASSERT(!session.processing);
+		UAM_ASSERT_EQ(chat.messages.size(), before + 1);
+
+		std::string error;
+		const bool admitted = route == "steer"
+		    ? uam::SteerAcpPrompt(fixture.app, chat.id, "Private user follow-up.", {}, {}, false, &error)
+		    : uam::SendAcpPrompt(fixture.app, chat.id, "Private user follow-up.", &error);
+		UAM_ASSERT(admitted);
+		UAM_ASSERT(error.empty());
+		// Held: nothing reaches Claude while its own turn is unsettled.
+		UAM_ASSERT(!session.processing && session.queued_prompt.empty());
+		UAM_ASSERT_EQ(session.queued_user_prompts.size(), std::size_t{1});
+		UAM_ASSERT_EQ(session.queued_user_prompts.front().text, std::string("Private user follow-up."));
+		UAM_ASSERT_EQ(chat.messages.size(), before + 1);
+		AwaitChatSave(fixture.app, chat);
+		UAM_ASSERT(!uam::DrainNextQueuedAcpUserPrompt(fixture.app, session, chat));
+		UAM_ASSERT(!session.processing && session.queued_user_prompts.size() == 1);
+
+		// That turn's result settles only that turn; the held input then starts its own turn beside the live task.
+		feed({{"type", "result"}, {"subtype", "success"}, {"uuid", "6c7e3b52-0d7f-4c55-9a51-000000000003"}, {"session_id", sid},
+		    {"result", "Private self-started answer."}});
+		pump();
+		UAM_ASSERT(session.processing);
+		UAM_ASSERT(session.claude_live_background_task_ids.contains("private-still-running-bash"));
+		UAM_ASSERT(session.queued_user_prompts.empty());
+		UAM_ASSERT_EQ(chat.messages.size(), before + 2);
+		UAM_ASSERT(chat.messages[before].role == MessageRole::Assistant);
+		UAM_ASSERT_EQ(chat.messages[before].content, std::string("Private self-started answer."));
+		UAM_ASSERT(chat.messages[before + 1].role == MessageRole::User);
+		UAM_ASSERT_EQ(chat.messages[before + 1].content, std::string("Private user follow-up."));
+
+		// The user turn's own answer gets its own row and result.
+		feed({{"type", "assistant"}, {"uuid", "6c7e3b52-0d7f-4c55-9a51-000000000004"}, {"session_id", sid},
+		    {"message", {{"content", nlohmann::json::array({{{"type", "text"}, {"text", "Private user answer."}}})}}}});
+		feed({{"type", "result"}, {"subtype", "success"}, {"uuid", "6c7e3b52-0d7f-4c55-9a51-000000000005"}, {"session_id", sid},
+		    {"result", "Private user answer."}});
+		UAM_ASSERT(!session.processing);
+		UAM_ASSERT_EQ(chat.messages.size(), before + 3);
+		UAM_ASSERT_EQ(chat.messages[before].content, std::string("Private self-started answer."));
+		UAM_ASSERT(chat.messages.back().role == MessageRole::Assistant);
+		UAM_ASSERT_EQ(chat.messages.back().content, std::string("Private user answer."));
+	}
+}
+#endif
+
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
 UAM_TEST(AcpClaudeAliasLaunchWithResolvedModelReportAdmitsWithoutRestart)
 {
 	if (!ProviderRuntimeRegistry::ResolveById("claude-cli").IsEnabled()) return;
