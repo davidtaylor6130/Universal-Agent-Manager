@@ -1690,6 +1690,8 @@ void ResetAcpRuntimeState(AppState& app, AcpSessionState& session, ChatSession& 
 	InterruptUnconfirmedAcpSteers(app, session, chat);
 	if (!session.remote_stop_pending && !session.remote_stop_unconfirmed) session.stop_purpose = AcpStopPurpose::Interrupt;
 	session.claude_live_background_task_ids.clear();
+	// A reattached remote helper dedupes the replayed opening of Claude's own turn, so keep its marker until its result.
+	if (!preserve_native_recovery) session.claude_self_started_turn = false;
 	if ((!session.recovering_remote_process && !session.recovering_remote_turn) || session.remote_source_exit_reported)
 	{
 		session.codex_known_child_thread_ids.clear();

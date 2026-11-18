@@ -2414,13 +2414,20 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return false;
 		}
 
+		constexpr const char* kBackgroundTaskRestartWait = "Wait for the provider's background tasks to finish before applying this chat's changed model or settings.";
+		constexpr const char* kClaudeSelfStartedTurnWait = "Wait for Claude to finish the turn it started after a background task.";
+
 		// Only this admission stack may disregard its own raw FIFO when preparing native settings.
 		// Public setting changes continue to treat queued input as busy.
-		// Live native background tasks block only a settings restart, which would end them; idle direct input
-		// that applies without restarting reaches the provider beside them.
+		// Live native background tasks block a settings restart, which would end them. Without a restart, idle direct
+		// input reaches the provider beside them, and so does queued input beside Claude's own background tasks; other
+		// providers' live children still hold the raw queue.
+		// ponytail: Codex/Copilot keep the conservative queue hold until their mid-child turn start is verified.
 		bool CanPrepareNongenericPromptSettings(const AppState& app, const AcpSessionState& session,
 		    const ChatSession& chat, const std::deque<AcpQueuedUserPromptState>& batch, bool queued_dispatch, bool restart = true)
 		{
+			const std::size_t background = ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpBackgroundTaskCount(session);
+			const std::size_t blocking_background = restart ? background : queued_dispatch ? background - std::min(background, session.claude_live_background_task_ids.size()) : 0;
 			if (session.chat_id != chat.id || session.provider_id != chat.provider_id ||
 			    FindAcpSessionForChat(app, chat.id) != &session || ChatDomainService().FindChatById(app, chat.id) != &chat ||
 			    !ValidateAcpRestartOwnership(app, session, chat, nullptr) ||
@@ -2431,7 +2438,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			    !session.pending_user_input.request_id_json.empty() || session.pending_prompt_delivery ||
 			    session.manual_compaction_pending || session.pending_compaction || session.local_stop_pending ||
 			    session.remote_stop_pending || session.remote_stop_unconfirmed || session.recovering_remote_turn || session.recovering_remote_process ||
-			    (restart && ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpBackgroundTaskCount(session) > 0) ||
+			    blocking_background > 0 || session.claude_self_started_turn ||
 			    (session.turn_serial > session.last_settled_turn_serial &&
 			     !ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpTurnIdentity(session).empty())) return false;
 			if (!queued_dispatch && session.queued_user_prompts.empty() && chat.acp_queued_prompts.empty()) return true;
@@ -2792,11 +2799,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 			     session.active_uam_agent_definition_hash != first.uam_agent_definition_hash ||
 			     session.active_uam_agent_execution_capability != first.uam_agent_execution_capability);
 			if (!runtime.IsGenericAcpSession() && session.running && session.session_ready &&
-			    !CanPrepareNongenericPromptSettings(app, session, chat, batch, queued_dispatch, queued_dispatch || native_adapter_changed || settings_require_restart))
+			    !CanPrepareNongenericPromptSettings(app, session, chat, batch, queued_dispatch, native_adapter_changed || settings_require_restart))
 			{
-				if (error_out) *error_out = runtime.AcpBackgroundTaskCount(session) > 0 && CanPrepareNongenericPromptSettings(app, session, chat, batch, queued_dispatch, false)
-				    ? "Wait for the provider's background tasks to finish before applying this chat's changed model or settings."
-				    : "Native session settings are waiting for the owning input and idle runtime.";
+				if (error_out) *error_out = session.claude_self_started_turn ? kClaudeSelfStartedTurnWait
+				    : runtime.AcpBackgroundTaskCount(session) > 0 && CanPrepareNongenericPromptSettings(app, session, chat, batch, queued_dispatch, false)
+				    ? kBackgroundTaskRestartWait : "Native session settings are waiting for the owning input and idle runtime.";
 				return false;
 			}
 			if (saved_retry && saved_retry->remote_scope && (native_adapter_changed || settings_require_restart))
@@ -3698,7 +3705,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		if (AcpStopInProgress(app, chat_id) || (session && (session->local_stop_pending || session->remote_stop_pending ||
 		    session->remote_stop_unconfirmed || AcpSessionHasPendingCancel(*session))))
 			return fail("Wait for the provider to finish stopping before compacting.");
-		if (!chat->acp_queued_prompts.empty() || chat->acp_queue_held || (session && (AcpSessionHasActiveTurn(*session) || AcpSessionIsWaitingForInput(*session) || !session->queued_prompt.empty() || !session->queued_user_prompts.empty() || session->queue_held || session->manual_compaction_pending || session->context_compaction_in_progress || session->pending_agent_input || session->pending_prompt_delivery || session->pending_queued_history || session->turn_checkpoint_preflight_pending || session->turn_checkpoint_commit_pending)))
+		if (!chat->acp_queued_prompts.empty() || chat->acp_queue_held || (session && (AcpSessionHasActiveTurn(*session) || session->claude_self_started_turn || AcpSessionIsWaitingForInput(*session) || !session->queued_prompt.empty() || !session->queued_user_prompts.empty() || session->queue_held || session->manual_compaction_pending || session->context_compaction_in_progress || session->pending_agent_input || session->pending_prompt_delivery || session->pending_queued_history || session->turn_checkpoint_preflight_pending || session->turn_checkpoint_commit_pending)))
 			return fail("Wait for the current turn, queued messages and pending controls before compacting.");
 		const std::unordered_map<std::string, std::shared_ptr<WorktreeLaunchPreparationTask>>::const_iterator workspace = app.worktree_launch_preparations.find(chat_id);
 		const auto branch_preparation = app.branch_preparations.find(chat_id);
@@ -4114,7 +4121,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			BindQueuedAgentForLaunch(session, queued);
 		const bool owned_direct_wait = !session.queue_held && std::ranges::any_of(session.queued_user_prompts,
 		    [](const AcpQueuedUserPromptState& prompt) { return prompt.direct_admission; });
-		const bool active_provider_turn = session.prompt_request_id != 0 || session.processing ||
+		const bool active_provider_turn = session.prompt_request_id != 0 || session.processing || session.claude_self_started_turn ||
 		    !session.queued_prompt.empty() || AcpSessionIsWaitingForInput(session) || session.pending_agent_input ||
 		    session.pending_prompt_delivery || session.pending_local_session_receipt ||
 		    (owned_direct_wait && (session.pending_local_launch || session.worktree_launch_pending || session.reconnect_pending ||
@@ -4200,7 +4207,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		}
 		const ChatBaselineReadiness baseline = PrepareChatRepositoryBaseline(app, chat, error_out, nullptr, true);
 		if (baseline == ChatBaselineReadiness::Failed) return false;
-		if (baseline == ChatBaselineReadiness::Pending || session.processing || session.queue_held || session.turn_checkpoint_commit_pending || !session.queued_user_prompts.empty() || restart_remote_cancellation || chat.routing_mode == "automatic" || chat.svn_update_pending || chat.workspace_isolation_kind == paths::kPendingGitWorktreeIsolationKind)
+		if (baseline == ChatBaselineReadiness::Pending || session.processing || session.claude_self_started_turn || session.queue_held || session.turn_checkpoint_commit_pending || !session.queued_user_prompts.empty() || restart_remote_cancellation || chat.routing_mode == "automatic" || chat.svn_update_pending || chat.workspace_isolation_kind == paths::kPendingGitWorktreeIsolationKind)
 		{
 			const std::deque<AcpQueuedUserPromptState> previous_queue =
 			    session.queued_user_prompts;
@@ -4344,7 +4351,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 			if (error_out != nullptr) *error_out = "Resume the held queue before steering.";
 			return false;
 		}
-		if (uam::AcpSessionHasDeferredUserQueueOnly(session))
+		// A turn Claude started itself has no UAM prompt to interrupt or steer; the steer goes first once it settles.
+		if (uam::AcpSessionHasDeferredUserQueueOnly(session) || session.claude_self_started_turn)
 		{
 			const std::deque<AcpQueuedUserPromptState> previous_queue =
 			    session.queued_user_prompts;
@@ -4798,7 +4806,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return false;
 		}
 		if (!ValidateQueuedPromptAction(session->queued_user_prompts[index], expected, error_out)) return false;
-		const bool deferred_queue = uam::AcpSessionHasDeferredUserQueueOnly(*session);
+		const bool deferred_queue = uam::AcpSessionHasDeferredUserQueueOnly(*session) || session->claude_self_started_turn;
 		if (!deferred_queue && AcpSessionHasActiveTurn(*session) &&
 		    ProviderRuntimeRegistry::ResolveById(session->provider_id).SupportsAcpSteering())
 			return SendNativeAcpSteer(app, *session, *chat, session->queued_user_prompts[index], error_out, static_cast<int>(index));
@@ -5177,7 +5185,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 				ScheduleChatSave(app, chat, 0.0);
 				return false;
 			}
-			if (!CanPrepareNongenericPromptSettings(app, session, chat, {session.queued_user_prompts.front()}, true)) return false;
+			if (!CanPrepareNongenericPromptSettings(app, session, chat, {session.queued_user_prompts.front()}, true, false)) return false;
+			const AcpQueuedUserPromptState& head = session.queued_user_prompts.front();
+			if (!session.claude_live_background_task_ids.empty() && session.claude_restart_wait_head == head.id + ":" + std::to_string(head.revision)) return false;
 		}
 		if (chat.routing_mode == "automatic")
 		{
@@ -5224,6 +5234,15 @@ For desktop observation and input, use only the provider's built-in controller; 
 			    session.restart_after_remote_stop_cleanup) return false;
 			if (session.worktree_launch_pending || session.queue_held) return false;
 			chat.acp_dispatched_queued_prompt_count = 0;
+			if (error == kBackgroundTaskRestartWait && !session.queued_user_prompts.empty() && session.queued_user_prompts.front() == batch.front())
+			{
+				// The head keeps waiting, unchanged, for the background tasks its restart would end.
+				session.claude_restart_wait_head = original_prompt.id + ":" + std::to_string(original_prompt.revision);
+				session.queued_user_prompts.front() = original_prompt;
+				chat.acp_queued_prompts.assign(session.queued_user_prompts.begin(), session.queued_user_prompts.end());
+				session.lifecycle_state = previous_lifecycle;
+				return false;
+			}
 			session.last_error = uam::strings::NonEmptyOrFallback(error, "Failed to deliver queued prompt.");
 			session.lifecycle_state = kAcpLifecycleError;
 			(void)RestoreRejectedQueuedAdmission(session, chat, original_prompt, batch.front(), failure_purpose);
@@ -5893,7 +5912,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 
 	static bool AcpRetryHasPendingWork(const AppState& app, const ChatSession& chat, const AcpSessionState& session, bool held_prepared = false)
 	{
-		return session.pending_compaction || session.processing || AcpSessionIsWaitingForInput(session) ||
+		return session.pending_compaction || session.processing || session.claude_self_started_turn || AcpSessionIsWaitingForInput(session) ||
 		    !session.queued_prompt.empty() || (!held_prepared && !session.queued_user_prompts.empty()) ||
 		    AcpSessionHasPendingRuntimeRequest(session) ||
 		    ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpBackgroundTaskCount(session) > 0 ||
@@ -7185,6 +7204,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		session.restart_after_remote_stop_cleanup = false;
 		session.initialized = false;
 		session.session_ready = false;
+		session.claude_self_started_turn = false;
 		session.model_discovery_only = false;
 		session.processing = false;
 		session.manual_compaction_pending = false;
