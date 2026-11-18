@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.20)
 if(POLICY CMP0091)
   cmake_policy(SET CMP0091 NEW)
 endif()
-project(universal_agent_manager VERSION 5.0.0 LANGUAGES C CXX)
+project(universal_agent_manager VERSION 5.1.0 LANGUAGES C CXX)
 # Make and Ninja ignore `cmake --build --config Release`: with no build type they compile without optimisation
 # and without NDEBUG, which shipped a local app whose state pushes ran several times slower than a release build.
 get_property(_uam_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
@@ -14,7 +14,7 @@ if(MSVC)
   # Sources and narrow literals are UTF-8; without this MSVC encodes "\u00e9" in the ANSI code page.
   add_compile_options(/utf-8)
 endif()
-set(UAM_PRODUCT_VERSION "5.0.0")
+set(UAM_PRODUCT_VERSION "5.1.0")
 include("${CMAKE_SOURCE_DIR}/cmake/runner_source_contract.cmake")
 include("${CMAKE_SOURCE_DIR}/cmake/local_build_version.cmake")
 set(UAM_LOCAL_BUILD_VERSION "" CACHE STRING "Optional local X.Y.Z-alpha-Q presentation version; release and runner versions remain unchanged.")
