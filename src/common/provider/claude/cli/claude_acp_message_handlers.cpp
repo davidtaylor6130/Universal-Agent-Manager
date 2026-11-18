@@ -510,12 +510,24 @@ namespace uam::acp_detail
 		}
 	} // namespace
 
+// Parent output while UAM has no input in flight is a turn Claude started itself, typically after a background
+// task reported back. Its result must never settle, or be merged into, a user turn admitted meanwhile.
+static void ObserveClaudeSelfStartedTurn(AcpSessionState& session, const nlohmann::json& message)
+{
+	if (session.claude_self_started_turn || session.processing || session.prompt_request_id != 0 || !session.queued_prompt.empty() ||
+	    session.pending_prompt_delivery || session.manual_compaction_pending || uam::AcpSessionHasPendingCancel(session) ||
+	    !JsonDiagnosticStringValue(message, "parent_tool_use_id").empty()) return;
+	session.claude_self_started_turn = true;
+	AppendAcpDiagnostic(session, "turn", "claude_self_started", "", "", false, 0, "Claude started a turn of its own; new input waits for its result.");
+}
+
 void HandleClaudeAssistantMessage(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message, CefRefPtr<CefBrowser> browser)
 {
 	if (claude_preinput::Consume(app, session, chat, message)) return;
 	const std::string identity = JsonDiagnosticStringValue(message, "uuid");
 	if (JsonDiagnosticStringValue(message, "parent_tool_use_id").empty() && !identity.empty() &&
 	    !session.claude_seen_parent_messages.Insert(identity)) return;
+	ObserveClaudeSelfStartedTurn(session, message);
 	const nlohmann::json assistant_message = JsonObjectValue(message, "message");
 	const nlohmann::json content = uam::nlohmann_json::ValueOrNull(uam::nlohmann_json::FindField(assistant_message, "content"));
 	const bool child_message = !JsonDiagnosticStringValue(message, "parent_tool_use_id").empty();
@@ -902,6 +914,10 @@ void HandleClaudeMessage(AppState& app, AcpSessionState& session, ChatSession& c
 	if (type == "user")
 	{
 		const nlohmann::json notification = uam::claude::TaskNotification(ClaudeContentTextFromMessage(JsonObjectValue(message, "message")));
+		// Claude echoes the notification it injects as the user message that opens its own turn.
+		const std::string identity = JsonDiagnosticStringValue(message, "uuid");
+		if (notification.is_object() && (identity.empty() || session.claude_seen_parent_messages.Insert("notification:" + identity)))
+			ObserveClaudeSelfStartedTurn(session, message);
 		if (notification.is_object() && HandleClaudeTaskEvent(app, session, chat, notification)) return;
 	}
 	if (type == "system" && JsonDiagnosticStringValue(message, "subtype") == "status")
@@ -1095,6 +1111,9 @@ void HandleClaudeMessage(AppState& app, AcpSessionState& session, ChatSession& c
 	if (type == uam::acp_claude_stream::kMessageTypeResult)
 	{
 		session.context_compaction_in_progress = false;
+		// The self-started turn's own result; held user input drains when this completion settles.
+		if (session.claude_self_started_turn && !session.processing && JsonDiagnosticStringValue(message, "parent_tool_use_id").empty())
+			session.claude_self_started_turn = false;
 		HandleClaudeResult(app, session, chat, message, browser);
 		return;
 	}

@@ -1079,7 +1079,7 @@ void RecordGoalReviewCumulativeUsage(AcpSessionState& session, std::int64_t toke
 
 bool CanQueueGoalInternalPrompt(const AcpSessionState& session)
 {
-	return !session.remote_source_exit_reported && session.session_ready && !session.processing && !session.waiting_for_permission && !session.waiting_for_user_input && !session.cancel_requested && session.prompt_request_id == 0 && session.cancel_request_id == 0 && session.queued_prompt.empty() && session.queued_user_prompts.empty();
+	return !session.remote_source_exit_reported && session.session_ready && !session.processing && !session.claude_self_started_turn && !session.waiting_for_permission && !session.waiting_for_user_input && !session.cancel_requested && session.prompt_request_id == 0 && session.cancel_request_id == 0 && session.queued_prompt.empty() && session.queued_user_prompts.empty();
 }
 
 std::string NormalizeGoalNextPrompt(const std::string& prompt)

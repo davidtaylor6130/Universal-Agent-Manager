@@ -1035,6 +1035,7 @@ void MarkAcpProcessExited(AcpSessionState& session, ChatSession* chat,
 	session.running = false;
 	session.initialized = false;
 	session.session_ready = false;
+	if (!remote_process || session.remote_source_exit_reported) session.claude_self_started_turn = false;
 	if (active_turn && !preserve_active_turn)
 	{
 		const std::string message = uam::strings::NonEmptyOrFallback(session.last_error, std::string(RuntimeDisplayName(session)) + " process exited during an active turn.");

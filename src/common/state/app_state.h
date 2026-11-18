@@ -1013,6 +1013,11 @@ namespace uam
 		RecentIdentitySet claude_seen_parent_messages;
 		/// <summary>Observed tasks owned by this native process, retained across parent turns but never persisted.</summary>
 		std::unordered_set<std::string> claude_live_background_task_ids;
+		/// <summary>Claude started a parent turn of its own (a background task reported back) and its result has not arrived.
+		/// Stream-json results carry no prompt ID, so user input waits for that result instead of sharing its turn.</summary>
+		bool claude_self_started_turn = false;
+		/// <summary>Queued head ("id:revision") whose settings restart waits for Claude's background tasks; not retried until they end.</summary>
+		std::string claude_restart_wait_head;
 		std::vector<AcpPlanEntryState> plan_entries;
 		std::string plan_summary;
 		std::unordered_map<std::string, std::string> codex_agent_message_text_by_item_id;
