@@ -2416,8 +2416,10 @@ For desktop observation and input, use only the provider's built-in controller; 
 
 		// Only this admission stack may disregard its own raw FIFO when preparing native settings.
 		// Public setting changes continue to treat queued input as busy.
+		// Live native background tasks block only a settings restart, which would end them; idle direct input
+		// that applies without restarting reaches the provider beside them.
 		bool CanPrepareNongenericPromptSettings(const AppState& app, const AcpSessionState& session,
-		    const ChatSession& chat, const std::deque<AcpQueuedUserPromptState>& batch, bool queued_dispatch)
+		    const ChatSession& chat, const std::deque<AcpQueuedUserPromptState>& batch, bool queued_dispatch, bool restart = true)
 		{
 			if (session.chat_id != chat.id || session.provider_id != chat.provider_id ||
 			    FindAcpSessionForChat(app, chat.id) != &session || ChatDomainService().FindChatById(app, chat.id) != &chat ||
@@ -2429,7 +2431,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			    !session.pending_user_input.request_id_json.empty() || session.pending_prompt_delivery ||
 			    session.manual_compaction_pending || session.pending_compaction || session.local_stop_pending ||
 			    session.remote_stop_pending || session.remote_stop_unconfirmed || session.recovering_remote_turn || session.recovering_remote_process ||
-			    ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpBackgroundTaskCount(session) > 0 ||
+			    (restart && ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpBackgroundTaskCount(session) > 0) ||
 			    (session.turn_serial > session.last_settled_turn_serial &&
 			     !ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpTurnIdentity(session).empty())) return false;
 			if (!queued_dispatch && session.queued_user_prompts.empty() && chat.acp_queued_prompts.empty()) return true;
@@ -2759,12 +2761,6 @@ For desktop observation and input, use only the provider's built-in controller; 
 			    chat.command_safety_tier);
 			const bool must_leave_hidden_autopilot = session.current_mode_id == uam::approval_modes::kAcpAutopilotMode;
 			const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(session.provider_id);
-			if (!runtime.IsGenericAcpSession() && session.running && session.session_ready &&
-			    !CanPrepareNongenericPromptSettings(app, session, chat, batch, queued_dispatch))
-			{
-				if (error_out) *error_out = "Native session settings are waiting for the owning input and idle runtime.";
-				return false;
-			}
 			// Compare the captured launch option, not the provider-reported model: Claude reports a resolved
 			// name (claude-opus-5-5) for an alias launch (opus), which would otherwise restart every turn.
 			// The option is sufficient for restart selection, never native execution/model attestation.
@@ -2795,6 +2791,14 @@ For desktop observation and input, use only the provider's built-in controller; 
 			    (session.active_uam_agent_id != first.uam_agent_id ||
 			     session.active_uam_agent_definition_hash != first.uam_agent_definition_hash ||
 			     session.active_uam_agent_execution_capability != first.uam_agent_execution_capability);
+			if (!runtime.IsGenericAcpSession() && session.running && session.session_ready &&
+			    !CanPrepareNongenericPromptSettings(app, session, chat, batch, queued_dispatch, queued_dispatch || native_adapter_changed || settings_require_restart))
+			{
+				if (error_out) *error_out = runtime.AcpBackgroundTaskCount(session) > 0 && CanPrepareNongenericPromptSettings(app, session, chat, batch, queued_dispatch, false)
+				    ? "Wait for the provider's background tasks to finish before applying this chat's changed model or settings."
+				    : "Native session settings are waiting for the owning input and idle runtime.";
+				return false;
+			}
 			if (saved_retry && saved_retry->remote_scope && (native_adapter_changed || settings_require_restart))
 			{
 				RevokeSavedImageRetry(session);
