@@ -19835,6 +19835,66 @@ UAM_TEST(AcpNongenericDefaultConfiguredAndIdlessStreamsAdmitWithoutRestart)
 }
 
 #if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+// A finished Claude turn whose background Bash task is still live: idle Send and Steer reach the provider
+// beside the task; only a settings restart, which would end the task, waits for it.
+UAM_TEST(AcpClaudeIdleInputWithLiveBackgroundTaskAdmitsWithoutRestart)
+{
+	if (!ProviderRuntimeRegistry::ResolveById("claude-cli").IsEnabled()) return;
+	for (const std::string_view route : {"send", "steer", "restart"})
+	{
+		RestartQueuedSettingsFixture fixture("claude-cli");
+		auto& chat = fixture.app.chats.front();
+		auto& session = *fixture.session;
+		chat.execution_host_id = session.process_execution_host_id = "local";
+		chat.workspace_directory = fixture.temp.root.string();
+		chat.remote_process_exists = false;
+		chat.remote_process_control_token.clear();
+		session.remote_runner_protocol_version = 0;
+		session.current_model_id = chat.model_id;
+		session.queued_user_prompts.clear();
+		chat.acp_queued_prompts.clear();
+		session.lifecycle_state = "ready";
+		session.claude_live_background_task_ids.insert("private-background-bash");
+		if (route == "restart") chat.model_id = "private-next-model";
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, chat));
+		const auto messages = chat.messages;
+		std::string error;
+		const bool admitted = route == "steer"
+		    ? uam::SteerAcpPrompt(fixture.app, chat.id, "Private follow-up beside the task.", {}, {}, false, &error)
+		    : uam::SendAcpPrompt(fixture.app, chat.id, "Private follow-up beside the task.", &error);
+		UAM_ASSERT(session.claude_live_background_task_ids.contains("private-background-bash"));
+		UAM_ASSERT(fixture.app.acp_process_stop_tasks.empty());
+		UAM_ASSERT(session.running && !session.local_stop_pending && !session.remote_stop_pending);
+		if (route == "restart")
+		{
+			UAM_ASSERT(!admitted);
+			UAM_ASSERT(error.find("background tasks") != std::string::npos);
+			UAM_ASSERT_EQ(chat.messages, messages);
+			UAM_ASSERT(session.queued_user_prompts.empty());
+			continue;
+		}
+		UAM_ASSERT(admitted);
+		UAM_ASSERT(error.empty());
+		// Stream-json has no prompt request ID; pump the owned admission save until the input is written.
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while ((!session.queued_prompt.empty() || session.pending_prompt_delivery) && std::chrono::steady_clock::now() < deadline)
+		{
+			uam::FlushPendingChatSaves(fixture.app);
+			(void)uam::acp_detail::SendQueuedPromptIfReady(fixture.app, session, chat);
+			std::this_thread::yield();
+		}
+		UAM_ASSERT(session.queued_prompt.empty() && !session.pending_prompt_delivery);
+		UAM_ASSERT(session.last_error.empty());
+		UAM_ASSERT(session.processing);
+		UAM_ASSERT_EQ(session.turn_serial, 1);
+		UAM_ASSERT(session.queued_user_prompts.empty());
+		UAM_ASSERT_EQ(chat.messages.size(), messages.size() + 1);
+		UAM_ASSERT_EQ(chat.messages.back().content, std::string("Private follow-up beside the task."));
+	}
+}
+#endif
+
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
 UAM_TEST(AcpClaudeAliasLaunchWithResolvedModelReportAdmitsWithoutRestart)
 {
 	if (!ProviderRuntimeRegistry::ResolveById("claude-cli").IsEnabled()) return;
