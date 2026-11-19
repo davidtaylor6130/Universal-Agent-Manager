@@ -1767,7 +1767,8 @@
         "openCodeTerminalObservation": 1,
         "openCodeUamControlDeadline": 1,
         "opencode.json": 1,
-        "opencode.native": 1
+        "opencode.native": 1,
+        "opencodeH": 1
       },
       "COPILOT": {
         ".?AV<lambda_1>@?1??CopilotRecords@usage@uam@@YA?AV?$vector@URecord@usage@uam@@V?$alloc": 1,
