@@ -23,6 +23,7 @@ class CodexCliProviderRuntime final : public IProviderRuntime
 	std::vector<ChatSession> LoadHistory(const ProviderProfile& profile, const std::filesystem::path& data_root, const std::filesystem::path& native_history_chats_dir, const ProviderRuntimeHistoryLoadOptions& options) const override;
 	void NormalizeLoadedNativeSessionId(ChatSession& chat) const override;
 	bool SaveHistory(const ProviderProfile& profile, const std::filesystem::path& data_root, const ChatSession& chat) const override;
+	std::string_view DefaultTextWorkerModel() const override { return "gpt-5.4-mini"; }
 	std::vector<std::string> BuildWorkerArgv(const ProviderProfile& profile, const AppSettings& settings, std::string_view prompt, std::string_view model_id) const override;
 	std::vector<std::string> BuildStructuredLaunchArgv(const ProviderProfile& profile, const ChatSession& chat) const override;
 

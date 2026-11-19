@@ -6,8 +6,11 @@ import { TypographySettings } from './TypographySettings'
 import { AppearanceDisplaySettings } from './AppearanceDisplaySettings'
 import { PermissionsSettings } from './PermissionsSettings'
 import { SaveButton, SettingRow, SettingsField, SettingsSection, StatusMark } from './SettingsPrimitives'
+import { localBuildLabel } from '../../services/updateCatalog'
 import { SettingsScopeBar } from './SettingsScopeBar'
 import { PhonePairingPanel } from './PhonePairingPanel'
+import { PhoneTokenRegenerateRow } from './PhoneTokenRegenerateRow'
+import { AutomationSettings } from './AutomationSettings'
 import { SETTINGS_ALL_ENVIRONMENTS } from '../../utils/settingsScope'
 import { ProviderConnections } from './ProviderConnections'
 import { CentralProviderSettings, type CentralProviderSettingsHandle } from './CentralProviderSettings'
@@ -36,7 +39,7 @@ import {
   type WindowsPowerShellPreference,
 } from '../../store/useAppStore'
 import { useTheme } from '../../hooks/useTheme'
-import { sendToCEF } from '../../ipc/cefBridge'
+import { isCompanionContext, sendToCEF } from '../../ipc/cefBridge'
 import {
   applyDocumentTheme,
   BUILT_IN_THEMES,
@@ -56,9 +59,10 @@ import { formatTimeoutDuration, TIMEOUT_RESTART_STEP_SECONDS } from '../chat/Tim
 import type { VoiceInputSettingsRequest } from '../../store/cpp/types'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { useShallow } from 'zustand/react/shallow'
-import { Search, ArrowDown, ArrowLeft, ArrowUp, BookOpen, Brain, Check, ChevronRight, ClipboardList, Copy, Download, GripVertical, Upload, FolderOpen, Info, MemoryStick, MessageSquare, Mic, Minus, MousePointerClick, Palette, Pencil, Plus, RefreshCw, Route, Save, Server, Smartphone, Target, TerminalSquare, Trash2, TriangleAlert, X, type LucideIcon } from 'lucide-react'
+import { Cpu, Search, ArrowDown, ArrowLeft, ArrowUp, BookOpen, Brain, Check, ChevronRight, ClipboardList, Copy, Download, GripVertical, Upload, FolderOpen, Info, MemoryStick, MessageSquare, Mic, Minus, MousePointerClick, Palette, Pencil, Plus, RefreshCw, Route, Save, Server, Smartphone, Target, TerminalSquare, Trash2, TriangleAlert, Workflow, X, type LucideIcon } from 'lucide-react'
 import { Button, Card, ConfirmDialog, Disclosure, EXIT_MS, IconButton, MenuItem, MenuSelect, Notice, Overlay, Presence, ProgressFill, RowButton, SegmentedControl, StatusDot, Swap, Switch, ViewportMenu, cx, motionAllowed, scaledMs, Reveal } from '../ui'
 import { ShellActionsSettings, type ShellActionsHandle } from './ShellActionsSettings'
+import { ComputePoolsSettings } from './ComputePoolsSettings'
 import { MemoryLibraryModal, type MemoryLibraryHandle } from './MemoryLibraryModal'
 import { MarkdownStoreModal } from './MarkdownStoreModal'
 import { StatusIndicator } from '../shared/StatusIndicator'
@@ -82,6 +86,18 @@ import './settings-shell.css'
 import { isSshHost } from '../../utils/remoteWorkspace'
 import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
 
+/** The 15-minute stepper shared by the provider turn timeout and the tool call limit. */
+function TimeoutStepper({ name, value, onChange }: { name: string; value: number; onChange: (seconds: number) => void }) {
+  const lower = name.toLowerCase()
+  return (
+    <div className="flex w-fit items-center overflow-hidden rounded-lg" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
+      <IconButton icon={<Minus size={14} />} label={`Decrease ${lower} by 15 minutes`} size="sm" disabled={value <= TIMEOUT_RESTART_STEP_SECONDS} onClick={() => onChange(Math.max(TIMEOUT_RESTART_STEP_SECONDS, value - TIMEOUT_RESTART_STEP_SECONDS))} />
+      <output aria-label={name} className="min-w-20 px-3 text-center tabular-nums" style={{ color: 'var(--text)' }}>{formatTimeoutDuration(value)}</output>
+      <IconButton icon={<Plus size={14} />} label={`Increase ${lower} by 15 minutes`} size="sm" disabled={value >= MAX_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS} onClick={() => onChange(Math.min(MAX_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS, value + TIMEOUT_RESTART_STEP_SECONDS))} />
+    </div>
+  )
+}
+
 const MEMORY_SETTINGS_FIELD_LABELS: Record<string, string> = {
   memoryEnabledDefault: 'Default memory enabled',
   memoryLevelDefault: 'Default memory policy',
@@ -90,6 +106,7 @@ const MEMORY_SETTINGS_FIELD_LABELS: Record<string, string> = {
   goalMaxLoopIterations: 'Goal loop limit',
   acpSetupInactivityTimeoutSeconds: 'Provider setup timeout',
   activeTurnInactivityTimeoutSeconds: 'Provider turn timeout',
+  toolCallTimeoutSeconds: 'Tool call limit',
   streamLoopRepeatLimit: 'Repeated output limit',
   acpTurnOutputLimitMiB: 'Provider output limit',
   memoryWorkerBindings: 'Memory worker selections',
@@ -284,7 +301,7 @@ const HOST_INSTRUCTION_TEXT_MAX_BYTES = 256 * 1024
 
 type RemoteHostOptionsDraft = { instructionFile: string; instructionText?: string | null; startupEnabled: boolean; cliUpdatesAsAdmin: boolean }
 
-function RemoteHostOptionsForm({ host, busy, onSave, onCheck }: { host: ExecutionHost; busy: boolean; onSave: (draft: RemoteHostOptionsDraft) => void; onCheck: (instructionFile: string) => void }) {
+function RemoteHostOptionsForm({ host, busy, onDirtyChange, onSave, onCheck }: { host: ExecutionHost; busy: boolean; onDirtyChange: (dirty: boolean) => void; onSave: (draft: RemoteHostOptionsDraft) => void; onCheck: (instructionFile: string) => void }) {
   const [instructionFile, setInstructionFile] = useState(host.instructionFile || '')
   // null = no inline text (the legacy instruction file applies); a string is inline text, where '' suppresses the host fragment.
   const [inlineText, setInlineText] = useState<string | null>(host.instructionText ?? null)
@@ -300,6 +317,10 @@ function RemoteHostOptionsForm({ host, busy, onSave, onCheck }: { host: Executio
     || textDirty
     || startupEnabled !== Boolean(host.startupEnabled)
     || cliUpdatesAsAdmin !== Boolean(host.cliUpdatesAsAdmin)
+  useEffect(() => {
+    onDirtyChange(dirty)
+    return () => onDirtyChange(false)
+  }, [dirty, onDirtyChange])
   const saveReason = textError || instructionError ? 'Fix the errors above first.' : dirty ? undefined : 'No changes to save.'
   // Switch = saved preference; status = applied state on the host. Without runnerStartupApplied, keep the legacy line.
   const applied = host.runnerStartupApplied
@@ -321,7 +342,7 @@ function RemoteHostOptionsForm({ host, busy, onSave, onCheck }: { host: Executio
       ? 'Empty. No host instructions are sent, and the instruction file is skipped.'
       : 'Sent to this host. The instruction file below is skipped.'
   return (
-    <form className="mt-2 grid gap-2" onSubmit={(event) => {
+    <form className="grid" onSubmit={(event) => {
       event.preventDefault()
       if (!busy && dirty && !instructionError && !textError) onSave({ instructionFile, instructionText: textDirty ? inlineText : undefined, startupEnabled, cliUpdatesAsAdmin })
     }}>
@@ -346,7 +367,7 @@ function RemoteHostOptionsForm({ host, busy, onSave, onCheck }: { host: Executio
         <input id={`remote-host-instruction-${host.id}`} name="instructionFile" aria-label={`Instruction file on ${host.label}`} aria-invalid={Boolean(instructionError) || undefined} value={instructionFile} onChange={(event) => setInstructionFile(event.currentTarget.value)} disabled={busy} placeholder={host.platform === 'windows' ? 'C:\\Users\\you\\AGENTS.md' : '/home/you/AGENTS.md'} maxLength={4096} spellCheck={false} className="uam-field w-full font-mono" />
         <Reveal open={Boolean(instructionError)}><span role="alert" className="uam-set-field__hint" style={{ color: 'var(--error)' }}>{instructionError}</span></Reveal>
       </SettingsField>
-      <div className="flex items-center justify-end gap-2">
+      <div className="uam-set-actions pt-3">
         <Reveal as="span" open={Boolean(textError || instructionError)} className="mr-auto"><span id={`remote-host-save-reason-${host.id}`} className="text-xs" style={{ color: 'var(--text-3)' }}>{saveReason}</span></Reveal>
         <Button size="sm" variant="secondary" type="button" disabled={busy || !instructionFile.trim() || Boolean(instructionError)} onClick={() => onCheck(instructionFile)}>Check file</Button>
         <Button size="sm" variant="primary" type="submit" disabled={busy || !dirty || Boolean(instructionError) || Boolean(textError)} aria-describedby={textError || instructionError ? `remote-host-save-reason-${host.id}` : undefined}>Save host options</Button>
@@ -400,7 +421,7 @@ function memoryModelOptions(provider?: Provider, providerId = '', selectedModelI
   ]
 }
 
-type SettingsSectionId = `provider:${string}` | 'provider-summary' | 'permissions' | 'central-configuration' | 'appearance' | 'typography' | 'defaults' | 'agents' | 'cli-version' | 'remote-hosts' | 'routing' | 'phone' | 'voice-input' | 'memory-settings' | 'memory-store' | 'markdown-store' | 'goal-loops' | 'mcp-servers' | 'vcs' | 'editors' | 'shell-actions' | 'chat-data' | 'storage-cleanup' | 'computer-use' | 'about'
+type SettingsSectionId = `provider:${string}` | 'provider-summary' | 'permissions' | 'central-configuration' | 'appearance' | 'typography' | 'defaults' | 'agents' | 'cli-version' | 'remote-hosts' | 'routing' | 'phone' | 'automation' | 'voice-input' | 'memory-settings' | 'memory-store' | 'markdown-store' | 'goal-loops' | 'mcp-servers' | 'vcs' | 'editors' | 'shell-actions' | 'compute-pools' | 'chat-data' | 'storage-cleanup' | 'computer-use' | 'about'
 
 interface LocalChatBundleResult {
   cancelled: boolean
@@ -421,6 +442,9 @@ interface SettingsSection {
   icon: LucideIcon
 }
 
+/** Token management is desktop-only; the phone shares this page but has no route to it. */
+const AUTOMATION_SETTINGS_ENABLED = MOBILE_COMPANION_ENABLED && !isCompanionContext()
+
 const SETTINGS_SECTIONS: SettingsSection[] = [
   { id: 'permissions', label: 'Permissions', icon: Check },
   { id: 'appearance', label: 'Appearance', icon: Palette },
@@ -430,6 +454,7 @@ const SETTINGS_SECTIONS: SettingsSection[] = [
   ...SUPPORTED_CLI_PROVIDER_IDS.map(id => ({ id: `provider:${id}` as SettingsSectionId, label: providerMetadataForId(id).shortName, icon: TerminalSquare })),
   ...(SSH_ENABLED ? [{ id: 'remote-hosts', label: 'Remote hosts', icon: Server }, { id: 'routing', label: 'SSH routing', icon: Route }] as SettingsSection[] : []),
   ...(MOBILE_COMPANION_ENABLED ? [{ id: 'phone', label: 'Phone', icon: Smartphone }] as SettingsSection[] : []),
+  ...(AUTOMATION_SETTINGS_ENABLED ? [{ id: 'automation', label: 'Automation', icon: Workflow }] as SettingsSection[] : []),
   { id: 'voice-input', label: 'Voice input', icon: Mic },
   { id: 'memory-settings', label: 'Memory settings', icon: Brain },
   { id: 'memory-store', label: 'Memory store', icon: MemoryStick },
@@ -441,6 +466,7 @@ const SETTINGS_SECTIONS: SettingsSection[] = [
   { id: 'vcs', label: 'Version control', icon: FolderOpen },
   { id: 'editors', label: 'Editors', icon: Pencil },
   { id: 'shell-actions', label: 'Shell actions', icon: MousePointerClick },
+  { id: 'compute-pools', label: 'Compute pools', icon: Cpu },
   { id: 'chat-data', label: 'Chat data', icon: Download },
   { id: 'storage-cleanup', label: 'Storage', icon: Trash2 },
   { id: 'about', label: 'About', icon: Info },
@@ -450,10 +476,10 @@ const SETTINGS_SECTIONS: SettingsSection[] = [
 const SETTINGS_SECTION_ALIASES: Partial<Record<string, SettingsSectionId>> = { typography: 'appearance' }
 
 const SETTINGS_GROUPS: { label: string; sections: SettingsSectionId[] }[] = [
-  { label: 'General', sections: ['appearance', 'defaults', ...(MOBILE_COMPANION_ENABLED ? ['phone' as const] : []), 'voice-input'] },
+  { label: 'General', sections: ['appearance', 'defaults', ...(MOBILE_COMPANION_ENABLED ? ['phone' as const] : []), ...(AUTOMATION_SETTINGS_ENABLED ? ['automation' as const] : []), 'voice-input'] },
   { label: 'Providers', sections: ['provider-summary', ...SUPPORTED_CLI_PROVIDER_IDS.map(id => `provider:${id}` as SettingsSectionId)] },
   { label: 'Connections', sections: [...(SSH_ENABLED ? ['remote-hosts' as const, 'routing' as const] : []), 'mcp-servers'] },
-  { label: 'Agent preferences', sections: ['central-configuration', 'agents', 'markdown-store', 'memory-settings', 'memory-store', 'shell-actions', 'goal-loops'] },
+  { label: 'Agent preferences', sections: ['central-configuration', 'agents', 'markdown-store', 'memory-settings', 'memory-store', 'shell-actions', 'goal-loops', 'compute-pools'] },
   { label: 'Security', sections: ['permissions', ...(COMPUTER_USE_ENABLED ? ['computer-use' as const] : [])] },
   { label: 'Workspace', sections: ['vcs', 'editors'] },
   { label: 'App', sections: ['chat-data', 'storage-cleanup', 'about'] },
@@ -482,9 +508,9 @@ const SETTINGS_SEARCH_TERMS: Partial<Record<SettingsSectionId, string>> = {
   agents: `agents agent store create edit delete helpers subagents instructions import providers ${PROVIDER_SEARCH_TERMS}`,
   'cli-version': `installed recommended latest download update version ${PROVIDER_SEARCH_TERMS}`,
   ...(SSH_ENABLED ? { 'remote-hosts': 'computers ssh connections hosts runners servers install', routing: 'routing ssh automatic remote folders mapping' } : {}),
-  ...(MOBILE_COMPANION_ENABLED ? { phone: 'phone mobile companion token url remote access' } : {}),
+  ...(MOBILE_COMPANION_ENABLED ? { phone: 'phone mobile companion token url remote access', automation: 'automation api token n8n workflow webhook revoke' } : {}),
   'voice-input': 'microphone dictation transcription speech whisper',
-  'memory-settings': 'memory workers recall budgets idle models tokens processing',
+  'memory-settings': 'memory workers recall budgets idle models tokens processing scan backfill',
   'memory-store': 'memory library lessons entries search delete',
   'markdown-store': 'skills markdown library import folder file create pin',
   'goal-loops': 'goals loops tokens budgets auto continue review',
@@ -493,6 +519,7 @@ const SETTINGS_SEARCH_TERMS: Partial<Record<SettingsSectionId, string>> = {
   ...(COMPUTER_USE_ENABLED ? { 'computer-use': 'computer use screen recording accessibility permissions allowed targets applications recovery macos' } : {}),
   editors: 'editors extensions associations groups default vscode clion file types file explorer finder open powershell pwsh terminal shell',
   'shell-actions': 'finder explorer context menus shell actions groups save',
+  'compute-pools': 'compute pools limit concurrency slots queue gpu models local inference',
   'chat-data': 'chat data native provider history discovery storage import export backup',
   about: 'version build release updates app information',
 }
@@ -748,12 +775,14 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const goalTokenBudget = useAppStore((s) => s.goalTokenBudget)
   const acpSetupInactivityTimeoutSeconds = useAppStore((s) => s.acpSetupInactivityTimeoutSeconds)
   const activeTurnInactivityTimeoutSeconds = useAppStore((s) => s.activeTurnInactivityTimeoutSeconds)
+  const toolCallTimeoutSeconds = useAppStore((s) => s.toolCallTimeoutSeconds)
   const streamLoopRepeatLimit = useAppStore((s) => s.streamLoopRepeatLimit)
   const acpTurnOutputLimitMiB = useAppStore((s) => s.acpTurnOutputLimitMiB)
   const appVersion = useAppStore((s) => s.appVersion)
   const uiBuildId = useAppStore((s) => s.uiBuildId)
-  const localVersion = uiBuildId.match(/^(\d+\.\d+\.\d+-alpha-[1-9]\d*)-/)?.[1]
-  const displayedVersion = localVersion?.startsWith(`${appVersion.replace(/^v/i, '')}-alpha-`) ? `V${localVersion}` : appVersion
+  const localVersion = localBuildLabel(appVersion, uiBuildId)
+  const displayedVersion = localVersion ? `V${localVersion}` : appVersion
+  const appBuildLabel = displayedVersion.replace(/^v/i, '')
   const expandWorkTraces = useAppStore((s) => s.expandWorkTraces)
   const setExpandWorkTraces = useAppStore((s) => s.setExpandWorkTraces)
   const collapsibleWorkSections = useAppStore((s) => s.collapsibleWorkSections)
@@ -794,6 +823,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const computerUseAllowedApplications = useAppStore(useShallow((s) => s.computerUseAllowedApplications))
   const activeUamAgents = useAppStore(useShallow((s) => activeSessionId ? s.uamAgentsBySessionId[activeSessionId] ?? [] : []))
   const setMemorySettings = useAppStore((s) => s.setMemorySettings)
+  const openMemoryScanModal = useAppStore((s) => s.openMemoryScanModal)
   const setProviderChatDefaults = useAppStore((s) => s.setProviderChatDefaults)
   const setEditorSettings = useAppStore((s) => s.setEditorSettings)
   const setSessionComputerUseBackend = useAppStore((s) => s.setSessionComputerUseBackend)
@@ -873,6 +903,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   useEffect(() => () => { agentImportRequest.current += 1 }, [])
   const [chatDataBusy, setChatDataBusy] = useState<'export' | 'import' | null>(null)
   const [chatDataFolder, setChatDataFolder] = useState('')
+  const steerActiveTurnOnSend = useAppStore((state) => state.steerActiveTurnOnSend)
+  const setSteerActiveTurnOnSend = useAppStore((state) => state.setSteerActiveTurnOnSend)
   const [selectedSection, setSelectedSection] = useState<SettingsSectionId>('appearance')
   // Measure the active nav item so one indicator (tint + line) can glide between items.
   useLayoutEffect(() => {
@@ -909,6 +941,32 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const [themeExit, setThemeExit] = useState<(() => void) | null>(null)
   const [discardExit, setDiscardExit] = useState<(() => void) | null>(null)
   const [pendingHostRemoval, setPendingHostRemoval] = useState<ExecutionHost | null>(null)
+  const [openRemoteHostId, setOpenRemoteHostId] = useState<string | null>(null)
+  const [remoteHostOptionsDirty, setRemoteHostOptionsDirty] = useState(false)
+  const remoteHostBackRef = useRef<HTMLButtonElement>(null)
+  const lastOpenRemoteHostId = useRef<string | null>(null)
+  const installFocusHostId = useRef<string | null>(null)
+  const failedInstallHostId = useRef<string | null>(null)
+  // After Connect and install, focus lands on the installing host's Open button (list) or its status (host page).
+  // A callback ref, because a new host's row mounts a commit after the state push that adds it.
+  const installFocusRef = (hostId: string) => (element: HTMLElement | null) => {
+    if (!element || installFocusHostId.current !== hostId) return
+    installFocusHostId.current = null
+    element.focus()
+  }
+  // A failed new host loses its row (before or after the response), so focus returns to the alias that is still filled in.
+  const settleFailedInstallFocus = () => {
+    // SSH host setup exists only in SSH builds, so no-SSH bundles drop this fallback entirely.
+    if (!__UAM_FEATURE_SSH__) return
+    const hostId = failedInstallHostId.current
+    if (!hostId) return
+    const host = useAppStore.getState().executionHosts.find((entry) => entry.id === hostId)
+    if (host && host.runnerStatus === 'installing') return
+    failedInstallHostId.current = null
+    const active = document.activeElement
+    // The removed row may still be leaving the DOM, so focus on its Open button counts as lost too.
+    if (!host && (!active || active === document.body || !active.isConnected || (active as HTMLElement).dataset?.hostOpen === hostId)) dialogRef.current?.querySelector<HTMLElement>('#remote-host-alias')?.focus()
+  }
   const [themeDraft, setThemeDraft] = useState<CustomTheme | null>(null)
   const [pendingDelete, setPendingDelete] = useState<{ kind: 'theme' | 'editor'; id: string; name: string } | null>(null)
   const memoryMenuRef = useRef<HTMLDivElement>(null)
@@ -941,7 +999,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     else if (selectedSection === 'memory-store' && memoryRef.current) memoryRef.current.requestLeave(next)
     else if (selectedSection === 'shell-actions' && shellRef.current) shellRef.current.requestLeave(next)
     else if ((selectedSection === 'central-configuration' || selectedSection === 'agents') && centralRef.current) centralRef.current.requestLeave(next)
-    else if ((selectedSection === 'mcp-servers' && mcpDraftDirty) || (selectedSection === 'chat-data' && importFiltersDirty)) { setDiscardExit(() => next); setConfirmDiscard(true) }
+    else if ((selectedSection === 'mcp-servers' && mcpDraftDirty) || (selectedSection === 'chat-data' && importFiltersDirty) || (SSH_ENABLED && selectedSection === 'remote-hosts' && remoteHostOptionsDirty)) { setDiscardExit(() => next); setConfirmDiscard(true) }
     else next()
   }
   const editorDirty = editorAssociationsDraft.some(item => {
@@ -950,11 +1008,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       || (rawExtensions[item.id] !== undefined && JSON.stringify(parseExtensions(rawExtensions[item.id])) !== JSON.stringify(saved?.extensions))
   })
   useEffect(() => {
-    if (!themeDirty && !mcpDraftDirty && !editorDirty && !importFiltersDirty) return
+    if (!themeDirty && !mcpDraftDirty && !editorDirty && !importFiltersDirty && !remoteHostOptionsDirty) return
     const guard = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }
     window.addEventListener('beforeunload', guard)
     return () => window.removeEventListener('beforeunload', guard)
-  }, [themeDirty, mcpDraftDirty, editorDirty, importFiltersDirty])
+  }, [themeDirty, mcpDraftDirty, editorDirty, importFiltersDirty, remoteHostOptionsDirty])
   const requestClose = () => {
     if (mcpSaving || editorSavePending.current || remoteBusy) return
     requestThemeExit(() => requestSectionExit(() => {
@@ -971,6 +1029,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     requestThemeExit(() => requestSectionExit(() => {
       setThemeDraft(null)
       setSelectedSection(section)
+      setOpenRemoteHostId(null)
+      lastOpenRemoteHostId.current = null
       setOpenMemoryMenu(null)
       setOpenCliVersionMenu(null)
     }))
@@ -1043,17 +1103,24 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     if (!remotePreview || isRemoteHostBusy(remotePreview.host.id)) return
     const runnerDirectory = remoteCustomDirectory ? remoteDirectory.trim() : ''
     if (remoteCustomDirectory && runnerDirectoryError(remoteDirectory)) return
-    setRemoteHostBusy(remotePreview.host.id, true)
-    const response = await sendToCEF({ action: 'installRemoteHost', payload: { ...remotePreview.host, runnerDirectory } })
-    setRemoteHostBusy(remotePreview.host.id, false)
+    const { host } = remotePreview
+    // The dialog closes on confirm; the host row carries the progress and focus moves to it once it renders.
+    setRemotePreview(null)
+    installFocusHostId.current = host.id
+    setRemoteHostBusy(host.id, true)
+    const response = await sendToCEF({ action: 'installRemoteHost', payload: { ...host, runnerDirectory } })
+    setRemoteHostBusy(host.id, false)
     setRemoteMessage(null)
+    if (installFocusHostId.current === host.id) installFocusHostId.current = null
     if (!response.ok) {
-      setRemotePreview(null)
-      reportAppFailure(response.error || 'Remote helper setup failed.', 'Check the SSH connection and try again.')
+      failedInstallHostId.current = host.id
+      settleFailedInstallFocus()
+      // Only an SSH-stage failure (502) or a lost request without a code is a connection problem; refusals name their own fix.
+      const connectionHint = response.code === undefined || response.code === 502 ? 'Check the SSH connection and try again.' : ''
+      reportAppFailure(response.error || 'Remote helper setup failed.', connectionHint)
       return
     }
-    reportAppNotice(`${remotePreview.host.label} is ready.`, 'success')
-    setRemotePreview(null)
+    reportAppNotice(`${host.label} is ready.`, 'success')
     setRemoteAlias('')
     setRemoteLabel('')
   }
@@ -1128,7 +1195,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         return
       }
       if (remotePreview) {
-        if (!remoteBusy) setRemotePreview(null)
+        setRemotePreview(null)
         return
       }
       if (themeDraft) { requestThemeExit(() => setThemeDraft(null)); return }
@@ -1136,7 +1203,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [isMarkdownStoreOpen, mcpDraftDirty, openCliVersionMenu, openMemoryMenu, remotePreview, remoteBusy, selectedSection, themeDraft, themeDirty, themeSaving, themeExit, pendingDelete, editorSaving, editorExit, editorDirty, confirmDiscard, setSettingsOpen])
+  }, [isMarkdownStoreOpen, mcpDraftDirty, openCliVersionMenu, openMemoryMenu, remotePreview, selectedSection, themeDraft, themeDirty, themeSaving, themeExit, pendingDelete, editorSaving, editorExit, editorDirty, confirmDiscard, setSettingsOpen])
 
   useEffect(() => {
     const handler = (event: MouseEvent) => {
@@ -1651,8 +1718,9 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           control={<Switch hideLabel label="Allow Keychain prompts from phone" checked={companionSettings?.allowKeychainPrompts === true}
             disabled={!companionSettings?.configured || companionBusy} onChange={(event) => void changeCompanion('setCompanionKeychainPrompts', { allowed: event.target.checked })} />}
         /></Reveal>
-        <SettingRow title="Access token" description="For manual entry in the iPhone app. QR pairing also sets up certificate trust."
+        <SettingRow title="Access token" description="For manual entry in the iPhone app or browser. Copying keeps the current token, so paired devices stay connected. QR pairing also sets up certificate trust."
           control={<Button size="sm" variant="secondary" leadingIcon={copyIcon('token')} aria-label="Copy token" disabled={!companionSettings?.configured || companionBusy} onClick={() => void copyCompanion('token')}>{copyLabel('token', 'Copy token')}</Button>} />
+        <PhoneTokenRegenerateRow configured={Boolean(companionSettings?.configured)} disabled={companionBusy} />
         <Reveal open={Boolean(address)}><PhonePairingPanel url={companionSettings?.effectiveUrl || address} enabled={Boolean(ready)} /></Reveal>
       </div>
     </div>
@@ -1693,7 +1761,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 disabled={!activeSession || activeSession.computerUseEnabled || computerUseBusy}
                 options={[
                   { value: 'auto', label: 'Automatic (recommended)' },
-                  { value: 'provider', label: 'Provider built-in', disabled: !activeComputerUseProviderAvailable },
+                  { value: 'provider', label: 'Provider built-in', disabled: !activeComputerUseProviderAvailable, description: activeComputerUseProviderAvailable ? undefined : CODEX_ENABLED ? 'Codex chats only' : 'Not in this build' },
                   { value: 'uam', label: 'UAM controlled' },
                 ]}
                 onChange={(value) => {
@@ -1775,6 +1843,18 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const setSettingsScopeHostId = useAppStore((s) => s.setSettingsScopeHostId)
   const hostScopedSettings = useAppStore((s) => s.hostScopedSettings === true)
   const hasSshHosts = SSH_ENABLED && executionHosts.some((host) => isSshHost(host))
+  // A host removed while its page is open falls back to the list.
+  const openRemoteHost = openRemoteHostId ? executionHosts.find((host) => host.id === openRemoteHostId && host.id !== 'local') ?? null : null
+  // Opening a host moves focus to Back; Back returns focus to that host's Open button, or to Add a host once it was removed.
+  useEffect(() => {
+    if (openRemoteHost) remoteHostBackRef.current?.focus()
+    else if (lastOpenRemoteHostId.current) {
+      const open = [...(dialogRef.current?.querySelectorAll<HTMLElement>('.uam-settings-page:not(.uam-settings-page--leaving) [data-host-open]') ?? [])].find((button) => button.dataset.hostOpen === lastOpenRemoteHostId.current)
+      ;(open ?? (SSH_ENABLED ? dialogRef.current?.querySelector<HTMLElement>('.uam-settings-page:not(.uam-settings-page--leaving) #remote-host-name') : null))?.focus()
+    }
+    lastOpenRemoteHostId.current = openRemoteHost?.id ?? null
+  }, [openRemoteHost?.id])
+  useEffect(settleFailedInstallFocus, [executionHosts])
   const storedScopeHostId = executionHosts.some((host) => isSshHost(host) && host.id === settingsScopeHostId) ? settingsScopeHostId : SETTINGS_ALL_ENVIRONMENTS
   const onProviderPage = selectedSection === 'provider-summary' || selectedSection.startsWith('provider:')
   const scopeBarVisible = hasSshHosts && (onProviderPage || selectedSection === 'defaults' || selectedSection === 'mcp-servers')
@@ -1954,12 +2034,22 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   (option) => <ProviderLogo providerId={option.id} />
                 )} />
             <Reveal open={settingsScope === SETTINGS_ALL_ENVIRONMENTS}>
+              <SettingRow title="Send during a running turn" description="The composer offers the other action beside Send." control={renderDefaultsMenu(
+                    'active-turn-send',
+                    steerActiveTurnOnSend ? 'steer' : 'queue',
+                    'Send during a running turn',
+                    [
+                      { id: 'queue', label: 'Queue for next turn', detail: 'Runs after the current turn finishes.' },
+                      { id: 'steer', label: 'Steer active turn', detail: 'Sent at its next safe point; providers without native steering stop the turn first.' },
+                    ],
+                    (mode) => void setSteerActiveTurnOnSend(mode === 'steer')
+                  )} />
               <SettingRow title="Reviewer provider" description="AI approves routine requests; unsure ones come to you." control={renderDefaultsMenu(
                     'permission-reviewer-provider',
                     permissionReviewerProviderId,
                     'AI permission reviewer provider',
                     [
-                      { id: '', label: 'Not configured', detail: 'AI Review always falls back to you.' },
+                      { id: '', label: 'Not configured', detail: 'AI review always falls back to you.' },
                       ...providers.filter((provider) => providerSupportsTextWorkers(provider.id)).map((provider) => ({ id: provider.id, label: providerDisplayName(provider, provider.id), detail: provider.name ?? provider.id })),
                     ],
                     (providerId) => void setMemorySettings({ permissionReviewerProviderId: providerId, permissionReviewerModelId: '' }),
@@ -2116,7 +2206,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                               ],
                               (featurePreference) => updateProviderDefaults(provider.id, { ...defaults, featurePreference: featurePreference === 'provider' ? 'provider' : 'uam' })
                             )} />
-                            <SettingRow title="Goal reviewer model" description="Used for architecture and read-only review." control={renderDefaultsMenu(
+                            <SettingRow title="Goal reviewer model" description="Reviews every goal and plans Architect + worker goals." control={renderDefaultsMenu(
                               `${provider.id}:goal-reviewer`,
                               defaults.reviewerModelId || defaults.modelId,
                               `${providerName} goal reviewer model`,
@@ -2158,6 +2248,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     }
 
     if (MOBILE_COMPANION_ENABLED && selectedSection === 'phone') return <div className="grid gap-0">{renderPhoneAccess()}</div>
+    if (MOBILE_COMPANION_ENABLED && selectedSection === 'automation' && AUTOMATION_SETTINGS_ENABLED) return <AutomationSettings />
 
     if (selectedSection === 'agents') {
       const selectableCustomAgents = activeUamAgents
@@ -2500,6 +2591,47 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
 
     if (SSH_ENABLED && selectedSection === 'remote-hosts') {
       const remoteHosts = executionHosts.filter((host) => host.id !== 'local')
+      const remoteHostStatus = (host: ExecutionHost) => (
+        <span className="inline-flex flex-wrap items-center gap-1.5">
+          <StatusMark tone={host.runnerStatus === 'ready' ? 'success' : host.runnerStatus === 'error' ? 'error' : 'neutral'} label={host.runnerStatus === 'ready' ? 'Ready' : host.runnerStatus === 'error' ? 'Error' : host.runnerStatus} />
+          <Reveal as="span" open={Boolean(host.runnerVersion || host.platform)}><span style={{ color: 'var(--text-3)' }}>· {[host.runnerVersion ? `helper ${host.runnerBuildLabel || host.runnerVersion}` : '', host.platform ? `${host.platform} ${host.architecture}` : ''].filter(Boolean).join(' · ')}</span></Reveal>
+          {/* Only a recorded label can differ (older records and release installs have none), and only a different helper binary matters. */}
+          {host.runnerBuildLabel && host.runnerBuildLabel !== appBuildLabel && host.runnerSha256 !== host.bundledRunnerSha256 && <StatusMark tone="warning" label={`App is ${appBuildLabel}`} />}
+        </span>
+      )
+      const remoteHostActions = (host: ExecutionHost) => <>
+        <IconButton icon={<RefreshCw size={14} />} label={`Reinstall helper on ${host.label}`} disabled={isRemoteHostBusy(host.id)} onClick={() => void previewRemoteHost(host)} />
+        <IconButton icon={<Trash2 size={14} />} label={`Remove ${host.label}`} variant="danger" disabled={isRemoteHostBusy(host.id)} onClick={() => setPendingHostRemoval(host)} />
+      </>
+      // Per-host sub-page, like provider pages: the list stays scannable and each host's options get a full page.
+      if (openRemoteHost) return (
+        <div className="grid gap-0">
+          <Button ref={remoteHostBackRef} size="sm" variant="ghost" className="justify-self-start mb-5" style={{ paddingInline: 'var(--sp-2)' }} leadingIcon={<ArrowLeft size={15} aria-hidden />} disabled={isRemoteHostBusy(openRemoteHost.id)} onClick={() => requestSectionExit(() => setOpenRemoteHostId(null))}>Back to hosts</Button>
+          <SettingsSection title={openRemoteHost.label}>
+            <SettingRow
+              title="SSH config alias"
+              description={<span className="font-mono">{openRemoteHost.sshAlias}</span>}
+              status={remoteHostStatus(openRemoteHost)}
+              control={<div className="flex items-center gap-1">{remoteHostActions(openRemoteHost)}</div>}
+            />
+            <div ref={installFocusRef(openRemoteHost.id)} tabIndex={-1} role="group" aria-label={`${openRemoteHost.label} helper`}>
+              <ProgressFill label={`Remote host task running on ${openRemoteHost.label}`} indeterminate active={isRemoteHostBusy(openRemoteHost.id)}>
+                <SettingRow title="Helper location" description={<span className="font-mono">home / {openRemoteHost.runnerDirectory || (openRemoteHost.platform === 'windows' ? '.uam/runner' : '.local/share/uam/runner')}</span>} />
+              </ProgressFill>
+            </div>
+          </SettingsSection>
+          <SettingsSection title="Host options">
+            <RemoteHostOptionsForm
+              key={openRemoteHost.id}
+              host={openRemoteHost}
+              busy={isRemoteHostBusy(openRemoteHost.id)}
+              onDirtyChange={setRemoteHostOptionsDirty}
+              onSave={(draft) => void saveRemoteHostOptions(openRemoteHost, draft)}
+              onCheck={(instructionFile) => checkRemoteHostInstruction(openRemoteHost, instructionFile)}
+            />
+          </SettingsSection>
+        </div>
+      )
       const addHostSection = (
             <SettingsSection
               title="Add a host"
@@ -2544,40 +2676,21 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           <SettingsSection title="Configured hosts">
             <Reveal open={remoteHosts.length === 0}><SettingRow title="No remote hosts yet" /></Reveal>
             <AnimatedRows items={remoteHosts} keyOf={(host) => host.id} render={(host) => (
-              <SettingRow
-                icon={<Server size={15} aria-hidden />}
-                title={host.label}
-                description={<span className="font-mono">{host.sshAlias}</span>}
-                status={(
-                  <span className="inline-flex flex-wrap items-center gap-1.5">
-                    <StatusMark tone={host.runnerStatus === 'ready' ? 'success' : host.runnerStatus === 'error' ? 'error' : 'neutral'} label={host.runnerStatus === 'ready' ? 'Ready' : host.runnerStatus === 'error' ? 'Error' : host.runnerStatus} />
-                    <Reveal as="span" open={Boolean(host.runnerVersion || host.platform)}><span style={{ color: 'var(--text-3)' }}>· {[host.runnerVersion ? `helper ${host.runnerVersion}` : '', host.platform ? `${host.platform} ${host.architecture}` : ''].filter(Boolean).join(' · ')}</span></Reveal>
-                  </span>
-                )}
-                control={(
-                  <div className="flex items-center gap-1">
-                    <IconButton icon={<RefreshCw size={14} />} label={`Reinstall helper on ${host.label}`} disabled={isRemoteHostBusy(host.id)} onClick={() => void previewRemoteHost(host)} />
-                    <IconButton icon={<Trash2 size={14} />} label={`Remove ${host.label}`} variant="danger" disabled={isRemoteHostBusy(host.id)} onClick={() => setPendingHostRemoval(host)} />
-                  </div>
-                )}
-              >
-                {(() => {
-                  const options = (
-                    <Disclosure summary="Host options">
-                      <div className="grid gap-3">
-                        <div className="font-mono text-xs" style={{ color: 'var(--text-3)' }}>Helper: home / {host.runnerDirectory || (host.platform === 'windows' ? '.uam/runner' : '.local/share/uam/runner')}</div>
-                        <RemoteHostOptionsForm
-                          host={host}
-                          busy={isRemoteHostBusy(host.id)}
-                          onSave={(draft) => void saveRemoteHostOptions(host, draft)}
-                          onCheck={(instructionFile) => checkRemoteHostInstruction(host, instructionFile)}
-                        />
-                      </div>
-                    </Disclosure>
-                  )
-                  return <ProgressFill label={`Remote host task running on ${host.label}`} indeterminate active={isRemoteHostBusy(host.id)}>{options}</ProgressFill>
-                })()}
-              </SettingRow>
+              // A row holding controls cannot be a progressbar, so it takes the fill class as a busy group.
+              <div className={isRemoteHostBusy(host.id) ? 'uam-progress-fill' : undefined} data-indeterminate={isRemoteHostBusy(host.id) || undefined} role={isRemoteHostBusy(host.id) ? 'group' : undefined} aria-busy={isRemoteHostBusy(host.id) || undefined} aria-label={isRemoteHostBusy(host.id) ? `Remote host task running on ${host.label}` : undefined}>
+                <SettingRow
+                  icon={<Server size={15} aria-hidden />}
+                  title={host.label}
+                  description={<span className="font-mono">{host.sshAlias}</span>}
+                  status={remoteHostStatus(host)}
+                  control={(
+                    <div className="flex items-center gap-1">
+                      {remoteHostActions(host)}
+                      <IconButton ref={installFocusRef(host.id)} data-host-open={host.id} icon={<ChevronRight size={14} />} label={`Open ${host.label}`} onClick={() => setOpenRemoteHostId(host.id)} />
+                    </div>
+                  )}
+                />
+              </div>
             )} />
           </SettingsSection>
         </div>
@@ -2624,6 +2737,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                 <NumberField label="Recall budget (bytes)" value={memoryRecallBudgetBytes} min={MIN_MEMORY_RECALL_BUDGET_BYTES} max={MAX_MEMORY_RECALL_BUDGET_BYTES} step={256} unit="bytes"
                   onCommit={(value) => void setMemorySettings({ memoryRecallBudgetBytes: value })} />
               }
+            />
+            <SettingRow
+              title="Scan current chats"
+              description="Choose chats to extract memories from older history."
+              control={<Button size="sm" variant="secondary" leadingIcon={<Search size={14} />} onClick={() => void openMemoryScanModal()}>Scan chats</Button>}
             />
           </SettingsSection>
 
@@ -2734,13 +2852,12 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           <SettingRow
             title="Provider turn timeout"
             description="Stops a turn after this long with no output of any kind (text, thinking or tool activity)."
-            control={
-              <div className="flex w-fit items-center overflow-hidden rounded-lg" style={{ background: 'var(--surface)', border: '1px solid var(--border)' }}>
-                <IconButton icon={<Minus size={14} />} label="Decrease provider turn timeout by 15 minutes" size="sm" disabled={activeTurnInactivityTimeoutSeconds <= TIMEOUT_RESTART_STEP_SECONDS} onClick={() => void setMemorySettings({ activeTurnInactivityTimeoutSeconds: Math.max(TIMEOUT_RESTART_STEP_SECONDS, activeTurnInactivityTimeoutSeconds - TIMEOUT_RESTART_STEP_SECONDS) })} />
-                <output aria-label="Provider turn timeout" className="min-w-20 px-3 text-center tabular-nums" style={{ color: 'var(--text)' }}>{formatTimeoutDuration(activeTurnInactivityTimeoutSeconds)}</output>
-                <IconButton icon={<Plus size={14} />} label="Increase provider turn timeout by 15 minutes" size="sm" disabled={activeTurnInactivityTimeoutSeconds >= MAX_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS} onClick={() => void setMemorySettings({ activeTurnInactivityTimeoutSeconds: Math.min(MAX_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS, activeTurnInactivityTimeoutSeconds + TIMEOUT_RESTART_STEP_SECONDS) })} />
-              </div>
-            }
+            control={<TimeoutStepper name="Provider turn timeout" value={activeTurnInactivityTimeoutSeconds} onChange={(seconds) => void setMemorySettings({ activeTurnInactivityTimeoutSeconds: seconds })} />}
+          />
+          <SettingRow
+            title="Tool call limit"
+            description="Stops a silent tool call that sets no timeout of its own."
+            control={<TimeoutStepper name="Tool call limit" value={toolCallTimeoutSeconds} onChange={(seconds) => void setMemorySettings({ toolCallTimeoutSeconds: seconds })} />}
           />
           <SettingRow
             title="Repeated output limit"
@@ -2876,6 +2993,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       )
     }
 
+    if (selectedSection === 'compute-pools') return <ComputePoolsSettings />
     if (selectedSection === 'shell-actions') {
       return <ShellActionsSettings ref={shellRef}/>
     }
@@ -2952,7 +3070,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               <Reveal open={Boolean(settingsSearch)}><IconButton size="sm" icon={<X size={12}/>} label="Clear settings search" onClick={() => setSettingsSearch('')}/></Reveal>
             </div>
             <nav ref={navRef} aria-label="Settings pages" className="uam-settings-nav min-h-0 overflow-y-auto flex-1">
-              {navIndicator && <span aria-hidden className="uam-settings-nav__indicator" style={{ transform: `translateY(${navIndicator.top}px)`, height: navIndicator.height }} />}
+              {navIndicator && <span aria-hidden className="uam-settings-nav__indicator uam-selected-item" style={{ transform: `translateY(${navIndicator.top}px)`, height: navIndicator.height }} />}
               <Reveal open={visibleSettingsGroups.length === 0}><p role="status" className="px-2 text-xs" style={{color:'var(--text-3)'}}>No settings found.</p></Reveal>
               {visibleSettingsGroups.map(group => <div key={group.label} className="mb-5 last:mb-0">
                 <h2 className="px-2 mb-1 text-[length:var(--fs-xs)] font-semibold uppercase tracking-[0.08em]" style={{color:'var(--text-3)'}}>{group.label}</h2>
@@ -2975,10 +3093,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
               </Notice>
             </div></Reveal>
             <div className="w-full min-h-0 flex-1 flex flex-col">
-              <Swap swapKey={themeDraft ? 'theme' : 'page'} className="flex-1 min-h-0 flex flex-col">{themeDraft ? <div className="overflow-y-auto">
+              <Swap swapKey={themeDraft ? 'theme' : 'page'} className="flex-1 min-h-0 flex flex-col">{themeDraft ? <div className="uam-settings-scroll"><div className="uam-settings-frame">
                 <div className="shrink-0 flex items-center justify-between gap-3 mb-5"><h2 tabIndex={-1} data-theme-step className="text-lg font-semibold">{['Theme name and base','Theme palette','Review theme'][themeStep]}</h2><IconButton icon={<X size={16}/>} label="Close theme editor" disabled={themeSaving} onClick={() => requestThemeExit(() => setThemeDraft(null))}/></div>
                 {renderThemeEditor()}
-              </div> : <>
+              </div></div> : <>
                 {(() => {
                   const fullHeight = selectedSection === 'memory-store' || selectedSection === 'markdown-store'
                   const header = <div className="uam-settings-page-header w-full">
@@ -2987,7 +3105,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   </div>
                 </div>
                   if (fullHeight) return <div className="flex-1 min-h-0 flex flex-col p-3"><div className="uam-settings-frame uam-settings-frame--full flex-1 min-h-0 flex flex-col">{header}{scopeBar}<SettingsPageSwap pageKey={selectedSection} className="uam-settings-page flex-1 min-h-0 overflow-hidden">{renderSectionContent()}</SettingsPageSwap></div></div>
-                  return <div className="uam-settings-scroll"><div className="uam-settings-frame" style={selectedSection === 'phone' ? { margin: '0 auto' } : undefined}>{header}{scopeBar}<SettingsPageSwap pageKey={selectedSection} className="uam-settings-page uam-settings-page--narrow">{renderSectionContent()}</SettingsPageSwap></div></div>
+                  return <div className="uam-settings-scroll"><div className="uam-settings-frame" style={selectedSection === 'phone' ? { margin: '0 auto' } : undefined}>{header}{scopeBar}<SettingsPageSwap pageKey={SSH_ENABLED && openRemoteHost && selectedSection === 'remote-hosts' ? `remote-hosts:${openRemoteHost.id}` : selectedSection} className="uam-settings-page uam-settings-page--narrow">{renderSectionContent()}</SettingsPageSwap></div></div>
                 })()}
               </>}</Swap>
             </div>
@@ -3014,7 +3132,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       </ConfirmDialog>
       {SSH_ENABLED && <Presence open={Boolean(remotePreview)}>
         {/* ponytail: accepted exception (audit 3071). This dialog keeps its own panel: the SSH helper preview needs a wider body and a scrollable pre block that the shared ConfirmDialog surface does not provide. */}
-        {remotePreview && <Overlay open zIndex={70} onBackdropMouseDown={() => { if (!remoteBusy) setRemotePreview(null) }}>
+        {remotePreview && <Overlay open zIndex={70} onBackdropMouseDown={() => setRemotePreview(null)}>
           <div role="dialog" aria-modal="true" data-settings-owned-overlay aria-label="Remote helper setup" className="w-full max-w-lg rounded-xl" style={SETTINGS_DIALOG_STYLE}>
             <div className="px-5 pt-5">
               <div className="text-sm font-semibold" style={{ color: 'var(--text)' }}>Install helper on {remotePreview.host.label}?</div>
@@ -3027,7 +3145,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   				<SegmentedControl
   				  aria-label="Install location"
   				  value={remoteCustomDirectory ? 'custom' : 'private'}
-  				  disabled={remoteBusy}
+  				  disabled={isRemoteHostBusy(remotePreview.host.id)}
   				  onChange={(value) => setRemoteCustomDirectory(value === 'custom')}
   				  options={[{ value: 'private', label: 'Recommended location' }, { value: 'custom', label: 'Custom folder' }]}
   				/>
@@ -3042,17 +3160,17 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   			  <pre className="max-h-32 overflow-auto whitespace-pre-wrap rounded p-2 text-[length:var(--fs-xs)]" style={{ background: 'var(--bg)', color: 'var(--text-3)', border: '1px solid var(--border)' }}>{remotePreview.preview.split('\n').filter((line) => !line.startsWith('Install UAM runner')).join('\n')}</pre>
             </div>
             <div className="flex justify-end gap-2 px-5 pb-5">
-              <Button size="sm" disabled={remoteBusy} onClick={() => setRemotePreview(null)}>Cancel</Button>
-              <Button size="sm" variant="primary" aria-busy={remoteBusy || undefined} disabled={remoteBusy || Boolean(remoteDirectoryValidation)} onClick={() => void installRemoteHost()}>Connect and install</Button>
+              <Button size="sm" onClick={() => setRemotePreview(null)}>Cancel</Button>
+              <Button size="sm" variant="primary" aria-busy={isRemoteHostBusy(remotePreview.host.id) || undefined} disabled={isRemoteHostBusy(remotePreview.host.id) || Boolean(remoteDirectoryValidation)} onClick={() => void installRemoteHost()}>Connect and install</Button>
             </div>
           </div>
         </Overlay>}
       </Presence>}
-      <ConfirmDialog open={confirmDiscard} tone="danger" title={selectedSection === 'chat-data' ? 'Discard import filter changes?' : 'Discard MCP changes?'} label={selectedSection === 'chat-data' ? 'Discard unsaved import filters' : 'Discard unsaved MCP changes'}
+      <ConfirmDialog open={confirmDiscard} tone="danger" title={selectedSection === 'chat-data' ? 'Discard import filter changes?' : SSH_ENABLED && selectedSection === 'remote-hosts' ? 'Discard host option changes?' : 'Discard MCP changes?'} label={selectedSection === 'chat-data' ? 'Discard unsaved import filters' : SSH_ENABLED && selectedSection === 'remote-hosts' ? 'Discard unsaved host options' : 'Discard unsaved MCP changes'}
         cancelLabel="Keep editing" confirmLabel="Discard changes"
         onCancel={() => { setConfirmDiscard(false); dialogRef.current?.focus() }}
         onConfirm={() => { setMcpDraftDirty(false); setImportFiltersDirty(false); setConfirmDiscard(false); discardExit?.(); setDiscardExit(null) }}>
-        <p>{selectedSection === 'chat-data' ? 'The import filters have unsaved changes.' : 'The MCP server configuration has unsaved changes.'}</p>
+        <p>{selectedSection === 'chat-data' ? 'The import filters have unsaved changes.' : SSH_ENABLED && selectedSection === 'remote-hosts' ? 'The host options have unsaved changes.' : 'The MCP server configuration has unsaved changes.'}</p>
       </ConfirmDialog>
       <ConfirmDialog open={Boolean(pendingDelete)} title={`Delete ${pendingDelete?.kind === 'theme' ? 'theme' : 'editor group'}?`} label={pendingDelete ? `Delete ${pendingDelete.name}` : undefined}
         confirmLabel="Delete permanently" busy={themeSaving || editorSaving}
@@ -3069,7 +3187,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         New {pendingDefaultYolo.providerName} chats will automatically approve {COMPUTER_USE_ENABLED ? 'computer use, commands' : 'commands'}, file changes, and every other permission request.
       </ConfirmDialog>}</Presence>
       {SSH_ENABLED && <ConfirmDialog open={pendingHostRemoval !== null} title={`Remove ${pendingHostRemoval?.label ?? 'host'}?`} confirmLabel="Remove host" busy={isRemoteHostBusy(pendingHostRemoval?.id ?? '')}
-        onCancel={() => setPendingHostRemoval(null)} onConfirm={() => { const host = pendingHostRemoval; if (host) void removeRemoteHost(host).then(() => setPendingHostRemoval(null)) }}>
+        onCancel={() => setPendingHostRemoval(null)} onConfirm={() => { const host = pendingHostRemoval; if (host) void removeRemoteHost(host).then(() => { setPendingHostRemoval(null); if (openRemoteHostId === host.id) setOpenRemoteHostId(null) }) }}>
         This removes the saved host configuration. Any helper files on that machine are left untouched.
       </ConfirmDialog>}
     </div>

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "common/companion/token_store.h"
+
 #include <nlohmann/json.hpp>
 #include <charconv>
 #include <optional>
@@ -14,6 +16,8 @@ namespace uam::companion
 	struct ConnectionConfiguration
 	{
 		bool valid = true, configured = false, enabled = false;
+		// The token is in the OS credential store; token_file is then empty.
+		bool credential_store = false;
 		std::string token_file, origin, proxy_executable, proxy_config;
 		int port = 58948;
 		std::string Url() const
@@ -40,7 +44,8 @@ namespace uam::companion
 			if (!config.is_object()) { result.valid = false; return result; }
 			if (config.contains("enabled") && config["enabled"].is_boolean()) result.enabled = config["enabled"].get<bool>();
 			else result.valid = false;
-			if (config.contains("token_file") && config["token_file"].is_string())
+			if (UsesCredentialStore(config)) result.configured = result.credential_store = true;
+			else if (config.contains("token_file") && config["token_file"].is_string())
 			{
 				result.token_file = config["token_file"].get<std::string>();
 				result.configured = !result.token_file.empty();

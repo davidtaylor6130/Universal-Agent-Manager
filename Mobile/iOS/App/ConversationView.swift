@@ -79,6 +79,8 @@ struct ConversationView: View
                                  modelName: chat.runtime.text("currentModelId", chat.modelID),
                                  contextID: model.draftContextID, isContextCurrent: { $0 == model.draftContextID },
                                  processing: chat.processing, sending: model.isSending, readOnly: chat.readOnly || model.draftUnavailable,
+                                 activeTurn: model.activeTurnSend(for: chat),
+                                 onSendAlternate: { Task { if model.draftContextID == composerContext { await model.sendDraft(alternate: true) } } },
                                  onSend: { Task { if model.draftContextID == composerContext { await model.sendDraft() } } },
                                  onStop: { Task { if model.draftContextID == composerContext { await model.perform("cancelAcpTurn", ["chatId": chat.id]) } } },
                                  onModels: { settingsOpen = true }, onDraftChanged: { model.draftChanged() },
@@ -406,6 +408,16 @@ struct MessageContent: View
             DisclosureGroup("Thinking") { Text(segment.text).font(.subheadline).textSelection(.enabled) }.font(.footnote).foregroundStyle(.secondary)
         case .compaction:
             Label(segment.text, systemImage: "arrow.trianglehead.2.clockwise").font(.caption).foregroundStyle(.secondary)
+        case .htmlView:
+            VStack(alignment: .leading, spacing: 2)
+            {
+                Label(segment.text, systemImage: "macwindow").font(.subheadline)
+                Text("HTML view. Open this chat on the desktop to see it.").font(.caption).foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(10)
+            .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
+            .accessibilityElement(children: .combine)
         case .plan:
             DisclosureGroup("Plan")
             {

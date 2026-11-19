@@ -2266,6 +2266,88 @@ UAM_TEST(CopilotCliBuildsCommandsAndInteractiveArgv)
 #endif
 }
 
+UAM_TEST(CliViewSessionSetupCompletesNativeResetForOpenCodeAndCopilot)
+{
+	TempDir temp("uam-cli-setup-after-reset");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	struct Case { ProviderProfile profile; std::string resume_id; };
+	std::vector<Case> cases;
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	cases.push_back({ProviderProfileStore::DefaultOpenCodeProfile(), "ses_after_reset"});
+#endif
+#if UAM_ENABLE_RUNTIME_COPILOT_CLI
+	cases.push_back({ProviderProfileStore::DefaultCopilotProfile(), ""});
+#endif
+	for (const Case& test_case : cases)
+	{
+		ChatSession chat;
+		chat.id = "chat-reset-" + test_case.profile.id;
+		chat.provider_id = test_case.profile.id;
+		chat.native_session_reset_pending = true;
+		std::string error;
+		UAM_ASSERT(ProviderRuntimeRegistry::Resolve(test_case.profile).PrepareInteractiveSession(app, chat, test_case.profile, test_case.resume_id, ExecutionHost{}, &error));
+		UAM_ASSERT(!chat.native_session_id.empty());
+		UAM_ASSERT(!chat.native_session_reset_pending);
+		const std::optional<ChatSession> persisted = ChatRepository::LoadLocalChat(temp.root, chat.id);
+		UAM_ASSERT(persisted.has_value() && !persisted->native_session_reset_pending);
+	}
+}
+
+UAM_TEST(LocalDraftInfersNativeLinkOnlyWithoutPendingReset)
+{
+	for (const bool reset_pending : {true, false})
+	{
+		TempDir temp("uam-draft-infer-after-reset");
+		uam::AppState app;
+		app.data_root = temp.root;
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		ChatSession draft;
+		draft.id = "chat-infer-after-reset";
+		draft.provider_id = uam::provider_ids::kGeminiCli;
+		draft.workspace_directory = temp.root.string();
+		draft.native_session_reset_pending = reset_pending;
+		draft.created_at = draft.updated_at = "2026-01-01T00:00:00.000Z";
+		draft.messages = {Message{MessageRole::User, "Match this request"}};
+		UAM_ASSERT(ChatRepository::SaveChat(temp.root, draft));
+		ChatSession native = draft;
+		native.id = "11111111-1111-4111-8111-111111111111";
+		native.native_session_id = native.id;
+		native.native_session_reset_pending = false;
+		UAM_ASSERT(NativeSessionLinkService().MatchNativeSessionIdForLocalDraft(draft, {native}).has_value());
+		std::vector<ChatSession> native_chats{native};
+		ChatHistorySyncService().ApplyLocalOverrides(app, native_chats);
+		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(temp.root, draft.id);
+		UAM_ASSERT(saved.has_value());
+		UAM_ASSERT_EQ(saved->native_session_id, reset_pending ? std::string() : native.id);
+		UAM_ASSERT_EQ(saved->native_session_reset_pending, reset_pending);
+	}
+}
+
+// The terminal poll calls this with an identity the running terminal really reported.
+UAM_TEST(TerminalDiscoveredDraftLinkCompletesNativeReset)
+{
+	TempDir temp("uam-draft-link-after-reset");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "chat-link-after-reset";
+	chat.provider_id = uam::provider_ids::kGeminiCli;
+	chat.native_session_reset_pending = true;
+	UAM_ASSERT(uam::chat_ids::IsLocalDraftChatId(chat.id));
+	UAM_ASSERT(ChatHistorySyncService().PersistLocalDraftNativeSessionLink(app, chat, "native-after-reset"));
+	UAM_ASSERT_EQ(chat.native_session_id, std::string("native-after-reset"));
+	UAM_ASSERT(!chat.native_session_reset_pending);
+	const std::optional<ChatSession> persisted = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(persisted.has_value() && !persisted->native_session_reset_pending);
+
+	// A record already holding this identity with the flag set also completes.
+	chat.native_session_reset_pending = true;
+	UAM_ASSERT(ChatHistorySyncService().PersistLocalDraftNativeSessionLink(app, chat, "native-after-reset"));
+	UAM_ASSERT(!chat.native_session_reset_pending);
+}
+
 UAM_TEST(CopilotTerminalLaunchIdentityIsPersistedAndReused)
 {
 #if UAM_ENABLE_RUNTIME_COPILOT_CLI
@@ -2952,7 +3034,9 @@ UAM_TEST(AcpLaunchArgsIncludeSelectedModel)
 	UAM_ASSERT_EQ(plan_argv[3], std::string("plan"));
 	UAM_ASSERT_EQ(plan_argv[4], std::string("--model"));
 	UAM_ASSERT_EQ(plan_argv[5], std::string("flash"));
-	UAM_ASSERT_EQ(plan_argv[6], std::string("--policy"));
+	// Plan attaches no Computer Use policy; its admin-tier Plan ceiling replaces it.
+	UAM_ASSERT_EQ(plan_argv[6], std::string("--admin-policy"));
+	UAM_ASSERT(plan_argv[7].ends_with("gemini-plan-ceiling.toml"));
 
 	chat.approval_mode = " acceptEdits ";
 	const std::vector<std::string> accept_edits_argv = uam::BuildAcpLaunchArgvForTests(chat);
@@ -2962,7 +3046,7 @@ UAM_TEST(AcpLaunchArgsIncludeSelectedModel)
 	chat.approval_mode = " plan ";
 	const std::string detail = uam::BuildAcpLaunchDetailForTests("/tmp/project", chat);
 	UAM_ASSERT(detail.find("cwd=/tmp/project") != std::string::npos);
-	UAM_ASSERT(detail.find("argv=gemini --acp --approval-mode plan --model flash --policy") != std::string::npos);
+	UAM_ASSERT(detail.find("argv=gemini --acp --approval-mode plan --model flash --admin-policy") != std::string::npos);
 	UAM_ASSERT(detail.find("nativeSessionId=native-1") != std::string::npos);
 
 	ChatSession codex_chat;
@@ -2990,7 +3074,7 @@ UAM_TEST(AcpLaunchArgsIncludeSelectedModel)
 	claude_chat.model_id = "sonnet";
 	claude_chat.approval_mode = "plan";
 	const std::vector<std::string> claude_argv = uam::BuildAcpLaunchArgvForTests(claude_chat);
-	UAM_ASSERT_EQ(claude_argv.size(), static_cast<std::size_t>(19));
+	UAM_ASSERT_EQ(claude_argv.size(), static_cast<std::size_t>(18));
 	UAM_ASSERT_EQ(claude_argv[0], std::string("claude"));
 	UAM_ASSERT_EQ(claude_argv[1], std::string("-p"));
 	UAM_ASSERT_EQ(claude_argv[2], std::string("--output-format"));
@@ -3006,10 +3090,10 @@ UAM_TEST(AcpLaunchArgsIncludeSelectedModel)
 	UAM_ASSERT_EQ(claude_argv[12], std::string("sonnet"));
 	UAM_ASSERT_EQ(claude_argv[13], std::string("--resume"));
 	UAM_ASSERT_EQ(claude_argv[14], std::string("claude-session-2"));
-	UAM_ASSERT_EQ(claude_argv[15], std::string("--mcp-config"));
-	UAM_ASSERT(nlohmann::json::parse(claude_argv[16])["mcpServers"].contains("uam-computer"));
-	UAM_ASSERT_EQ(claude_argv[17], std::string("--allowedTools"));
-	UAM_ASSERT_EQ(claude_argv[18], std::string("mcp__uam-computer__computer_observe,mcp__uam-computer__computer_action"));
+	// A Plan launch loads no settings files or unlisted MCP servers and never attaches or pre-allows Computer Use.
+	UAM_ASSERT_EQ(claude_argv[15], std::string("--setting-sources"));
+	UAM_ASSERT_EQ(claude_argv[16], std::string(""));
+	UAM_ASSERT_EQ(claude_argv[17], std::string("--strict-mcp-config"));
 	const std::string claude_detail = uam::BuildAcpLaunchDetailForTests("/tmp/project", claude_chat);
 	UAM_ASSERT(claude_detail.find("argv=claude -p --output-format stream-json --input-format stream-json --verbose --permission-prompt-tool stdio --permission-mode plan --model sonnet --resume claude-session-2") != std::string::npos);
 

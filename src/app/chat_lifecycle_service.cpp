@@ -23,6 +23,7 @@
 #include "common/paths/workspace_root.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_runtime.h"
+#include "app/execution_routing_integration.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/runtime/terminal_common.h"
@@ -30,6 +31,7 @@
 #include "common/runtime/terminal/terminal_chat_sync.h"
 #include "common/runtime/terminal/terminal_identity.h"
 #include "common/runtime/terminal/terminal_provider_cli.h"
+#include "common/security/permission_change_log.h"
 #include "common/utils/io_utils.h"
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
@@ -78,7 +80,7 @@ namespace
 		{
 			if (!chat->side_cleanup_stop_finished->load()) return true;
 			for (const uam::AsyncAcpProcessStopTask& task : app.acp_process_stop_tasks)
-				if (task.finished == chat->side_cleanup_stop_finished && task.observe_exit && !task.result->exit_confirmed) return true;
+				if (task.finished == chat->side_cleanup_stop_finished && task.observe_exit && (!task.finished->load() || !task.result->exit_confirmed)) return true;
 		}
 		if (chat != nullptr &&
 		    (chat->remote_turn_reconnect_pending || chat->remote_stop_cleanup_pending ||
@@ -223,9 +225,8 @@ namespace
 	{
 		const std::string resolved = uam::ResolvedNativeSessionIdForChat(app, snapshot);
 		if (!resolved.empty()) snapshot.native_session_id = resolved;
-		if (uam::paths::IsControllerLocalWorkspace(snapshot) &&
-		    uam::strings::IsBlank(snapshot.workspace_directory) && uam::strings::IsBlank(snapshot.workspace_worktree_directory))
-			snapshot.workspace_directory = uam::paths::Utf8PathString(uam::paths::ResolveControllerWorkspaceRootPath(app, snapshot));
+		if (uam::strings::IsBlank(snapshot.workspace_directory) && uam::strings::IsBlank(snapshot.workspace_worktree_directory))
+			snapshot.workspace_directory = uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, snapshot));
 	}
 
 	DeletedChatsSelection CollectChatsInFolder(const uam::AppState& app,
@@ -681,7 +682,7 @@ namespace
 		}
 
 		for (const ChatSession& chat : deleted_chats)
-			if (!uam::StageCliProviderContextCleanup(app, chat)) return false;
+			if (!uam::StageCliProviderContextCleanup(app, chat, next_chats)) return false;
 		return true;
 	}
 
@@ -727,11 +728,12 @@ namespace
 			const std::unordered_set<std::string> folder_ids(intent.folder_ids.begin(), intent.folder_ids.end());
 			std::erase_if(next_folders, [&folder_ids](const ChatFolder& folder) { return folder_ids.contains(uam::strings::Trim(folder.id)); });
 			if (!ChatFolderStore::Save(app.data_root, next_folders)) saved = false;
-			app.folders = next_folders;
 		}
+		// Cleanup staging can resolve a chat's workspace through its folder.
 		if (tombstones_saved && saved)
 			for (const ChatSession& chat : deleted_chats)
-				saved = uam::StageCliProviderContextCleanup(app, chat) && saved;
+				saved = uam::StageCliProviderContextCleanup(app, chat, app.chats) && saved;
+		app.folders = next_folders;
 		return saved;
 	}
 
@@ -1258,7 +1260,7 @@ bool uam::PollTemporarySideChatCleanup(AppState& app)
 		{
 			if (!chat->side_cleanup_stop_finished->load()) continue;
 			std::vector<AsyncAcpProcessStopTask>::iterator pending_stop = std::ranges::find_if(app.acp_process_stop_tasks, [&](const AsyncAcpProcessStopTask& task) { return task.finished == chat->side_cleanup_stop_finished; });
-			if (pending_stop != app.acp_process_stop_tasks.end() && pending_stop->observe_exit && !pending_stop->result->exit_confirmed)
+			if (pending_stop != app.acp_process_stop_tasks.end() && pending_stop->observe_exit && pending_stop->finished->load() && !pending_stop->result->exit_confirmed)
 			{
 				const std::shared_ptr<platform::StdioProcessPlatformFields> owned = pending_stop->owned_process;
 				const std::shared_ptr<platform::ObservedProcessStopResult> result = pending_stop->result;
@@ -1611,7 +1613,119 @@ bool uam::RebuildUnsortedWorkspaceFolders(AppState& app, WorkspaceFolderRecovery
 	return true;
 }
 
-uam::ChatProviderSwitchResult uam::SwitchChatProvider(AppState& app, std::string_view chat_id, std::string_view provider_id)
+bool uam::QueueHoldHasNoInput(const AppState& app, const ChatSession& chat)
+{
+	const AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
+	// A storage-problem hold may own journal input that never loaded, so its empty queue proves nothing.
+	// Delivery clears a row's not-sent marker first, so an uncertain remote turn can leave no row to see.
+	return !ChatHasUncertainRemoteInput(chat) && !chat.acp_queue_storage_error && !chat.managed_followup_input_unavailable && chat.acp_queued_prompts.empty() && chat.acp_dispatched_queued_prompt_count == 0 && !ChatHasActionableUnsentRecovery(chat) &&
+	    (session == nullptr || session->queued_user_prompts.empty()) &&
+	    // A removed row keeps its not-sent marker for history but no longer holds input.
+	    std::ranges::none_of(chat.messages, &Message::AcpPromptAwaitsDecision);
+}
+
+namespace
+{
+	constexpr const char* kQueueStorageRefusal = "This chat's saved queue could not be read, and UAM has no control to repair it here. Restart UAM to read it again.";
+	constexpr const char* kHeldQueueRefusal = "Resume or discard the held queued input first.";
+	constexpr const char* kUnsentRefusal = "Remove or retry the unsent message first.";
+
+	struct ProviderSwitchQueueScan
+	{
+		bool clearable = false; // Has Resume, Retry or Remove.
+		bool stranded = false;  // Has no control the user can reach.
+	};
+
+	ProviderSwitchQueueScan ScanProviderSwitchQueue(const uam::AppState& app, const ChatSession& chat)
+	{
+		const uam::AcpSessionState* session = uam::FindAcpSessionForChat(app, chat.id);
+		const bool uncertain = uam::ChatHasUncertainRemoteInput(chat) || uam::AcpRemoteRecoveryIsDisconnected(app, chat);
+		ProviderSwitchQueueScan scan;
+		scan.stranded = chat.acp_dispatched_queued_prompt_count != 0;
+		const auto classify = [&](const uam::AcpQueuedUserPromptState& prompt, const bool dispatched)
+		{
+			// A direct receipt only has its controls while delivery is settled; see SerializePromptAdmissionQueues.
+			const bool clearable = !prompt.claude_quota_continuation_id.empty() ||
+			    (!dispatched && !prompt.prepared_for_delivery && (!prompt.direct_admission || !uncertain));
+			(clearable ? scan.clearable : scan.stranded) = true;
+		};
+		for (std::size_t index = 0; index < chat.acp_queued_prompts.size(); ++index)
+			classify(chat.acp_queued_prompts[index], index < chat.acp_dispatched_queued_prompt_count);
+		if (session != nullptr)
+			for (const uam::AcpQueuedUserPromptState& prompt : session->queued_user_prompts) classify(prompt, false);
+		return scan;
+	}
+}
+
+bool uam::AcpRemoteRecoveryIsDisconnected(const AppState& app, const ChatSession& chat)
+{
+	const AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
+	return session != nullptr && chat.execution_host_id != execution_hosts::kLocalHostId && !session->running &&
+	    !session->remote_stop_pending && !session->local_stop_pending && !session->pending_local_launch &&
+	    (session->recovering_remote_turn || session->recovering_remote_process || session->remote_stop_unconfirmed);
+}
+
+const char* uam::ProviderSwitchRefusalReason(const AppState& app, const ChatSession& chat)
+{
+	// A storage-problem hold may own journal input that never loaded; releasing it would overwrite that journal.
+	if (chat.acp_queue_storage_error || chat.managed_followup_input_unavailable) return kQueueStorageRefusal;
+	const AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
+	const bool held = chat.acp_queue_held || (session != nullptr && session->queue_held);
+	const bool disconnected = AcpRemoteRecoveryIsDisconnected(app, chat);
+	const ProviderSwitchQueueScan scan = ScanProviderSwitchQueue(app, chat);
+	if ((held || disconnected) && scan.clearable) return kHeldQueueRefusal;
+	// Remove is unavailable while a recovery runs, the old helper is stopping or a dispatched prompt is unresolved, so that row must not trap the chat.
+	if (!disconnected && !ChatIsRetiringRemoteHelper(chat) && !scan.stranded && ChatHasUnsentAcpPrompt(app, chat)) return kUnsentRefusal;
+	return nullptr;
+}
+
+bool uam::ProviderSwitchQueueHasClearableInput(const AppState& app, const ChatSession& chat)
+{
+	return ScanProviderSwitchQueue(app, chat).clearable;
+}
+
+uam::ProviderSwitchOverride uam::ProviderSwitchOverrideNeeded(const AppState& app, const ChatSession& chat)
+{
+	// Ordinary active work is refused first and can be stopped, so it must not unlock the rail; dispatched counts are normal then.
+	const AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
+	if (session != nullptr && AcpSessionHasActiveTurn(*session) && !AcpRemoteRecoveryIsDisconnected(app, chat)) return ProviderSwitchOverride::None;
+	if (ChatHasBusyCliTerminal(app, chat.id) || AcpEmptyHeldSendPending(app, chat.id)) return ProviderSwitchOverride::None;
+	if (ScanProviderSwitchQueue(app, chat).stranded) return ProviderSwitchOverride::StrandedInput;
+	// The earlier switch already gave that turn up, so there is nothing left to warn about.
+	if (ChatIsRetiringRemoteHelper(chat)) return ProviderSwitchOverride::None;
+	// A helper with no turn and no delivery markers ran no prompt, so there is nothing that could run twice.
+	if (AcpRemoteRecoveryIsDisconnected(app, chat) && (ChatHasUncertainRemoteInput(chat) || AcpSessionHasActiveTurn(*session))) return ProviderSwitchOverride::Disconnected;
+	// An unacknowledged interaction answer is uncertain for a switch, though it does not change which rows Remove may touch.
+	return ChatHasUncertainRemoteInput(chat) || !chat.remote_interaction_responses.empty() ? ProviderSwitchOverride::Warn : ProviderSwitchOverride::None;
+}
+
+const char* uam::NativeResetRefusalReason(const AppState& app, const ChatSession& chat)
+{
+	const AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
+	if (!chat.acp_queue_held && (session == nullptr || !session->queue_held)) return nullptr;
+	if (chat.acp_queue_storage_error || chat.managed_followup_input_unavailable) return kQueueStorageRefusal;
+	if (!chat.acp_queued_prompts.empty() || chat.acp_dispatched_queued_prompt_count != 0 || (session != nullptr && !session->queued_user_prompts.empty()))
+		return ScanProviderSwitchQueue(app, chat).clearable ? kHeldQueueRefusal : "This chat has held input with no control. Change the chat's provider and accept the warning, then try again.";
+	if (ChatHasUnsentAcpPrompt(app, chat) || ChatHasActionableUnsentRecovery(chat)) return kUnsentRefusal;
+	// The old turn may already have run this row; a handoff would send it again.
+	if (ChatHasUncertainRemoteInput(chat) && std::ranges::any_of(chat.messages, &Message::AcpPromptAwaitsDecision))
+		return "UAM cannot confirm whether this chat's latest message reached the provider. Wait for that turn to settle, or change the chat's provider and accept the warning, then try again.";
+	return nullptr;
+}
+
+bool uam::QueueHoldBlocksNativeReset(const AppState& app, const ChatSession& chat)
+{
+	return NativeResetRefusalReason(app, chat) != nullptr;
+}
+
+void uam::ReleaseQueueHoldAfterNativeReset(AppState& app, ChatSession& chat)
+{
+	if (ChatHasUncertainRemoteInput(chat)) return; // The hold still protects a delivery nobody has settled.
+	chat.acp_queue_held = false;
+	if (AcpSessionState* session = FindAcpSessionForChat(app, chat.id)) session->queue_held = false;
+}
+
+uam::ChatProviderSwitchResult uam::SwitchChatProvider(AppState& app, std::string_view chat_id, std::string_view provider_id, const bool allow_uncertain_delivery)
 {
 	const ProviderProfile* provider = ProviderProfileStore::FindById(app.provider_profiles, provider_id);
 	if (provider == nullptr || !ProviderRuntime::IsRuntimeEnabled(*provider))
@@ -1629,11 +1743,18 @@ uam::ChatProviderSwitchResult uam::SwitchChatProvider(AppState& app, std::string
 		return ChatProviderSwitchResult::Unchanged;
 	}
 	AcpSessionState* session = FindAcpSessionForChat(app, chat->id);
-	if (session != nullptr && AcpSessionHasActiveTurn(*session))
+	// A disconnected recovery retries forever and Stop refuses it, so only the uncertainty decision below can end it.
+	const bool disconnected_recovery = AcpRemoteRecoveryIsDisconnected(app, *chat);
+	if (session != nullptr && AcpSessionHasActiveTurn(*session) && !disconnected_recovery)
 	{
+		if (session->queue_held && ScanProviderSwitchQueue(app, *chat).clearable)
+		{
+			app.status_line = kHeldQueueRefusal;
+			return ChatProviderSwitchResult::QueueHeld;
+		}
 		return ChatProviderSwitchResult::ActiveRuntime;
 	}
-	if (ChatHasBusyCliTerminal(app, chat->id))
+	if (ChatHasBusyCliTerminal(app, chat->id) || AcpEmptyHeldSendPending(app, chat->id))
 	{
 		return ChatProviderSwitchResult::ActiveRuntime;
 	}
@@ -1655,7 +1776,18 @@ uam::ChatProviderSwitchResult uam::SwitchChatProvider(AppState& app, std::string
 		app.status_line = handoff_error;
 		return ChatProviderSwitchResult::SaveFailed;
 	}
-	if (!EnsureAcpStopProgress(app, chat->id)) return ChatProviderSwitchResult::RuntimeStopping;
+	if (const char* refusal = ProviderSwitchRefusalReason(app, *chat))
+	{
+		app.status_line = refusal;
+		return ChatProviderSwitchResult::QueueHeld;
+	}
+	const bool uncertain_delivery = ProviderSwitchOverrideNeeded(app, *chat) != ProviderSwitchOverride::None;
+	if (uncertain_delivery && !allow_uncertain_delivery)
+	{
+		app.status_line = "UAM cannot confirm whether the provider received this chat's latest message. Switching may run that prompt twice. Accept this in the switch dialog in the desktop app.";
+		return ChatProviderSwitchResult::UncertainDelivery;
+	}
+	if (!disconnected_recovery && !EnsureAcpStopProgress(app, chat->id)) return ChatProviderSwitchResult::RuntimeStopping;
 	const bool remote_session = chat->execution_host_id != uam::execution_hosts::kLocalHostId;
 	if (session != nullptr && session->running && remote_session && !StopAcpSession(app, chat->id))
 		return ChatProviderSwitchResult::RuntimeStopping;
@@ -1676,6 +1808,8 @@ uam::ChatProviderSwitchResult uam::SwitchChatProvider(AppState& app, std::string
 	chat->provider_handoff_session_id.clear();
 	chat->provider_id = provider->id;
 	uam::provider_chat_defaults::ApplyToChat(app.settings, *chat);
+	// The chat keeps its own permission level and memory; only model, reasoning and speed come from the new provider's defaults.
+	uam::provider_chat_defaults::KeepPermissionLevel(*chat, previous_chat);
 	chat->memory_level = previous_chat.memory_level;
 	chat->memory_enabled = previous_chat.memory_enabled;
 	for (Goal& goal : chat->goals)
@@ -1695,6 +1829,19 @@ uam::ChatProviderSwitchResult uam::SwitchChatProvider(AppState& app, std::string
 		}
 	}
 	chat->native_session_id.clear();
+	// Stops legacy-ID load normalization from resuming the previous provider's session as this one's.
+	chat->native_session_reset_pending = true;
+	chat->acp_queue_held = false; // Refused above if it held input; the runtime and its hold are erased after the save.
+	if (uncertain_delivery) AbandonUncertainRemoteTurn(app, *chat, previous_chat.provider_id);
+	// An automatic assignment records the provider's identity, so an old one would refuse every later admission as changed ownership.
+	if (!chat->routing_assigned_provider_configuration_identity.empty())
+		chat->routing_assigned_provider_configuration_identity = ExecutionRoutingProviderIdentity(app, *provider, chat->execution_host_id);
+	// The old helper owns the runner slot for this chat, so it needs a confirmed stop before any new launch.
+	const bool retire_remote_helper = remote_session && chat->remote_process_exists;
+	if (retire_remote_helper) chat->remote_stop_cleanup_pending = true;
+	else if (remote_session) ForgetStoppedRemoteProcess(*chat);
+	// The confirmed stop clears any queue it does not hold, so input still queued behind that helper stays held for Resume or Remove.
+	if (retire_remote_helper && !chat->acp_queued_prompts.empty()) chat->acp_queue_held = true;
 	chat->computer_use_enabled = false;
 	chat->computer_use_target_kind = "window";
 	chat->computer_use_target_id.clear();
@@ -1717,11 +1864,15 @@ uam::ChatProviderSwitchResult uam::SwitchChatProvider(AppState& app, std::string
 		}
 		return ChatProviderSwitchResult::SaveFailed;
 	}
+	uam::permission_log::RecordChange(previous_chat, *chat, uam::permission_log::kSourceSwitch);
 
 	(void)ComputerUseService::SetControlState(app, chat->id, "stopped");
 	if (session != nullptr && session->running) (void)StopAcpSession(app, chat->id);
 	std::erase_if(app.acp_sessions, [&](const auto& session) { return session != nullptr && session->chat_id == chat->id; });
 	StopAndEraseCliTerminalForChat(app, chat->id, false);
+	if (app.execution_routing_service) (void)app.execution_routing_service->Release(chat->id, true); // Admission records it again with the new identity.
+	if (uncertain_delivery) BlockActiveGoalForAbandonedTurn(app, *chat);
+	if (retire_remote_helper) RetireRemoteHelper(app, *chat);
 	return ChatProviderSwitchResult::Changed;
 }
 
@@ -2000,8 +2151,8 @@ bool uam::PrepareWorkspaceDeletion(AppState& app, const std::vector<std::string>
 	for (const ChatSession& chat : deleted.chats)
 	{
 		const std::string host_id = uam::strings::NonEmptyOrFallback(uam::strings::Trim(chat.execution_host_id), "local");
-		const std::unordered_map<std::string, std::weak_ptr<void>>::const_iterator lease = app.remote_vcs_operation_leases_by_host_id.find(host_id);
-		if (lease != app.remote_vcs_operation_leases_by_host_id.end() && !lease->second.expired())
+		const auto lease = app.remote_vcs_operation_leases_by_host_id.find(host_id);
+		if (lease != app.remote_vcs_operation_leases_by_host_id.end() && !lease->second.idle())
 		{
 			app.status_line = "Wait for the workspace operation to finish.";
 			return false;
@@ -2100,8 +2251,8 @@ bool uam::PrepareChatDeletion(AppState& app, const std::vector<std::string>& cha
 			return false;
 		}
 		const std::string host_id = uam::strings::NonEmptyOrFallback(uam::strings::Trim(chat->execution_host_id), "local");
-		const std::unordered_map<std::string, std::weak_ptr<void>>::const_iterator lease = app.remote_vcs_operation_leases_by_host_id.find(host_id);
-		if (lease != app.remote_vcs_operation_leases_by_host_id.end() && !lease->second.expired())
+		const auto lease = app.remote_vcs_operation_leases_by_host_id.find(host_id);
+		if (lease != app.remote_vcs_operation_leases_by_host_id.end() && !lease->second.idle())
 		{
 			app.status_line = "Wait for the workspace operation to finish.";
 			return false;
@@ -2413,6 +2564,7 @@ bool RenameFolderById(uam::AppState& app, const std::string& folder_id, const st
 		return false;
 	}
 
+	std::vector<std::string> reset_chat_ids;
 	if (directory_changed)
 	{
 		for (ChatSession& chat : app.chats)
@@ -2433,9 +2585,18 @@ bool RenameFolderById(uam::AppState& app, const std::string& folder_id, const st
 						app.status_line = "The workspace was kept because its chat context could not be prepared. " + warning;
 						return false;
 					}
+					if (const char* refusal = uam::NativeResetRefusalReason(app, chat))
+					{
+						const std::string blocking_title = chat.title;
+						app.chats = original_chats;
+						app.status_line = "The workspace was kept because of the chat \"" + blocking_title + "\". " + refusal;
+						return false;
+					}
 					chat.native_session_id.clear();
 					chat.native_session_reset_pending = true;
 					chat.provider_handoff_session_id.clear();
+					if (!uam::ChatHasUncertainRemoteInput(chat)) chat.acp_queue_held = false; // Saved with the reset.
+					reset_chat_ids.push_back(chat.id);
 				}
 				chat.workspace_directory = input.directory;
 			}
@@ -2443,6 +2604,15 @@ bool RenameFolderById(uam::AppState& app, const std::string& folder_id, const st
 			{
 				chat.workspace_source_directory = input.directory;
 			}
+		}
+		// An idle terminal still belongs to the old directory's session; one that survives could relink it after the reset.
+		// A refusal or failed save below keeps the folder and chats, but terminals already stopped stay closed.
+		for (const std::string& chat_id : reset_chat_ids)
+		{
+			if (StopAndEraseCliTerminalForChat(app, chat_id, false)) continue;
+			app.chats = original_chats;
+			app.status_line = "The workspace was kept because a chat's CLI terminal could not be stopped. Try again.";
+			return false;
 		}
 		if (!SaveChatHistories(app, app.chats))
 		{
@@ -2470,11 +2640,13 @@ bool RenameFolderById(uam::AppState& app, const std::string& folder_id, const st
 		return false;
 	}
 
-	if (directory_changed && original.execution_host_id != uam::execution_hosts::kLocalHostId)
+	// Only chats reset above passed the hydrated hold check; other folder chats keep their holds and terminals.
+	for (const std::string& chat_id : reset_chat_ids)
 	{
-		for (const ChatSession& chat : app.chats)
-			if (ChatBelongsToFolder(chat, target_folder_id) && chat.native_session_reset_pending)
-				app.resolved_native_sessions_by_chat_id.erase(chat.id);
+		ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
+		if (chat == nullptr) continue;
+		app.resolved_native_sessions_by_chat_id.erase(chat_id);
+		ReleaseQueueHoldAfterNativeReset(app, *chat);
 	}
 
 	app.status_line = "Folder settings saved.";

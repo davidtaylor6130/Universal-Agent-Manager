@@ -106,12 +106,40 @@ UAM_TEST(OpenCodeTextWorkerSelectsCheckedLocalV2WithoutLegacyFlags)
 	UAM_ASSERT_EQ(argv.size(), std::size_t(5));
 	UAM_ASSERT_EQ(argv[1], std::string("--uam-opencode-v2-text-worker"));
 	UAM_ASSERT_EQ(argv[2], std::string("mock/demo/high"));
-	argv = original; version.installed_version = "2.2.0";
+	argv = original; version.installed_version = "2.3.0";
 	UAM_ASSERT(!runtime.PrepareLocalWorkerLaunch(app, profile, argv, error)); UAM_ASSERT_EQ(argv, original);
 	version.installed_version = "2.1.2"; version.execution_host.transport = "ssh";
 	UAM_ASSERT(!runtime.PrepareLocalWorkerLaunch(app, profile, argv, error)); UAM_ASSERT_EQ(argv, original);
 	version.execution_host = {}; version.check_error = "probe failed";
 	UAM_ASSERT(!runtime.PrepareLocalWorkerLaunch(app, profile, argv, error)); UAM_ASSERT_EQ(argv, original);
+}
+
+UAM_TEST(OpenCodeFailedVersionCheckKeepsPermissionMinimumFromRunningProcess)
+{
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById("opencode-cli");
+	uam::AppState app;
+	uam::AcpSessionState session;
+	ChatSession chat;
+	chat.provider_id = "opencode-cli";
+	std::string error;
+	app.runtime_cli_versions_by_provider_id["opencode-cli"].check_error = "Could not check OpenCode version.";
+	for (const char* below_minimum : {"", "1.15.12"})
+	{
+		session.agent_version = below_minimum;
+		UAM_ASSERT(runtime.OnAcpPrepareSetup(app, session, chat, "/workspace", error) == AcpRequestPreflight::Rejected);
+		UAM_ASSERT(error.find("1.15.13") != std::string::npos);
+	}
+	error.clear();
+	session.agent_version = "1.15.13";
+	UAM_ASSERT(runtime.OnAcpPrepareSetup(app, session, chat, "/workspace", error) == AcpRequestPreflight::Ready);
+	session.agent_version.clear();
+	chat.execution_host_id = "remote-host"; // Remote recovery keeps its own owner; this local check does not apply.
+	UAM_ASSERT(runtime.OnAcpPrepareSetup(app, session, chat, "/workspace", error) == AcpRequestPreflight::Ready);
+	chat.execution_host_id.clear();
+	app.runtime_cli_versions_by_provider_id["opencode-cli"].check_error.clear(); // A later result cleared the error before this process initialized.
+	UAM_ASSERT(runtime.OnAcpPrepareSetup(app, session, chat, "/workspace", error) == AcpRequestPreflight::Rejected);
+	app.runtime_cli_versions_by_provider_id["opencode-cli"].installed_version = "1.19.4";
+	UAM_ASSERT(runtime.OnAcpPrepareSetup(app, session, chat, "/workspace", error) == AcpRequestPreflight::Ready);
 }
 
 UAM_TEST(OpenCodeStructuredCompatibilitySeparatesV1FromUnverifiedNewMajors)
@@ -127,13 +155,25 @@ UAM_TEST(OpenCodeStructuredCompatibilitySeparatesV1FromUnverifiedNewMajors)
 		UAM_ASSERT(runtime.StructuredCliVersionError(profile, installed).empty());
 		UAM_ASSERT(runtime.LocalCliCompatibilityError(app).empty());
 	}
-	for (const std::string installed : {"2.0.0", "2.2.0", "v2.1.2", "2.0.0-beta.1", "3.0.0"})
+	for (const std::string installed : {"2.0.0", "2.1.1", "2.2.8", "2.2.10", "2.3.0", "v2.1.2", "2.2.6-beta.1", "2.2.6+build", "3.0.0"})
 	{
 		version.installed_version = installed;
-		UAM_ASSERT(!runtime.StructuredCliVersionError(profile, installed).empty());
-		UAM_ASSERT(runtime.StructuredCliVersionError(profile, installed).find("protocol version") != std::string::npos);
+		const std::string refusal = runtime.StructuredCliVersionError(profile, installed);
+		UAM_ASSERT(refusal.find("protocol version") != std::string::npos);
+		// The refusal names the installed version and the verified range.
+		UAM_ASSERT(refusal.find("OpenCode " + installed + " is installed") != std::string::npos);
+		UAM_ASSERT(refusal.find("2.1.2 through 2.2.7") != std::string::npos);
 		UAM_ASSERT(runtime.LocalCliCompatibilityError(app).empty());
 	}
+	// One verified V2 contract from 2.1.2 through 2.2.7, including the patch releases between.
+	for (const std::string installed : {"2.1.2", "2.1.4", "2.2.0", "2.2.6", "2.2.7"})
+	{
+		UAM_ASSERT(runtime.StructuredCliVersionError(profile, installed).empty());
+		UAM_ASSERT(!runtime.StructuredCliVersionError(profile, installed, true).empty()); // SSH helpers still lack the native adapter.
+		UAM_ASSERT_EQ(ProviderCliCompatibilityService().CompatibilityStatusForProvider("opencode-cli", installed), std::string("verified"));
+	}
+	UAM_ASSERT_EQ(ProviderCliCompatibilityService().CompatibilityStatusForProvider("opencode-cli", "2.2.8"), std::string("untested-newer"));
+	UAM_ASSERT_EQ(ProviderCliCompatibilityService().CompatibilityStatusForProvider("opencode-cli", "1.18.15"), std::string("verified"));
 	for (const std::string command : {"/opt/other/bin/opencode", "C:\\other\\opencode.exe", "opencode-wrapper", "/bin/sh wrapper.sh"})
 	{
 		auto custom = profile; custom.interactive_command = command;
@@ -177,7 +217,7 @@ UAM_TEST(OpenCodeUnverifiedV2RefusesLegacyAcpBeforeLaunchingOrChangingSession)
 	app.chats.push_back(chat);
 	auto& version = app.runtime_cli_versions_by_provider_id[provider.id];
 	version.execution_host = uam::execution_hosts::LocalHost();
-	version.checked = true; version.supported = true; version.installed_version = "2.2.0";
+	version.checked = true; version.supported = true; version.installed_version = "2.3.0";
 	uam::AcpSessionState session;
 	session.queued_prompt = "retain authored input";
 	std::string error;

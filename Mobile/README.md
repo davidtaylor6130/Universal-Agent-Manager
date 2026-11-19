@@ -6,7 +6,7 @@ The companion reuses `UI-V2`: the desktop theme, chat transcript, composer and w
 
 Configured installations start phone access with the normal desktop app. Settings → Defaults → Phone Access contains the enable switch, connection URL and Copy token button. Restart UAM after changing the switch. The phone uses the same data root and chats as the desktop.
 
-Startup reads `<data-root>/companion.json` with `enabled`, `token_file`, `port`, `origin`, and optional `proxy_config`. Token files must contain 64 hexadecimal characters. Invalid configuration disables the listener. The listener binds to loopback; the bundled Caddy process provides LAN HTTPS and is stopped with UAM. Its JSON configuration and certificate storage must use persistent paths outside the app bundle so alpha replacements preserve pairing. The Mac build bundles Caddy when available at configure time, including its license. A configured proxy requires that bundled executable or an explicit `proxy_executable` path.
+Startup reads `<data-root>/companion.json` with `enabled`, `token_store` (`credential_store`) or a legacy `token_file`, `port`, `origin`, and optional `proxy_config`. Tokens are 64 hexadecimal characters. The token lives in the system credential store (service `Universal Agent Manager Companion`, one account per data root); a legacy `token_file` is moved there on start and then deleted, keeping the same token. Invalid configuration disables the listener. The listener binds to loopback; the bundled Caddy process provides LAN HTTPS and is stopped with UAM. Its JSON configuration and certificate storage must use persistent paths outside the app bundle so alpha replacements preserve pairing. The Mac build bundles Caddy when available at configure time, including its license. A configured proxy requires that bundled executable or an explicit `proxy_executable` path.
 
 Phone transport cannot read the connection token or change phone settings. Those actions are restricted to the local desktop bridge. Initial LAN address and certificate trust setup are still machine-specific; the app does not automatically grant iPhone certificate trust.
 
@@ -16,7 +16,7 @@ For isolated development previews, environment configuration still overrides the
 python3 Mobile/start-desktop.py --desktop Builds/audit-gui/universal_agent_manager.app
 ```
 
-Open http://127.0.0.1:58948/companion on the Mac. Paste the token from `~/Library/Application Support/UAM Companion/token`. The token stays in browser local storage until Logout. The launcher refuses to start alongside another desktop instance and does not replace the installed app.
+Open http://127.0.0.1:58948/companion on the Mac from a browser that UAM did not start (the server refuses programs UAM launched). Paste the token from `~/Library/Application Support/UAM Companion/token`; this development override stays a file and is not migrated. The token stays in browser local storage until Logout. The launcher refuses to start alongside another desktop instance and does not replace the installed app.
 
 The server currently listens on loopback only. iPhone access still requires a secure connection to the Mac; this is not an installed iPhone app. No Apple membership is needed for this Mac browser preview.
 

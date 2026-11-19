@@ -63,7 +63,7 @@ UAM_TEST(ComputerUseGlobalOffSuppressesEveryMcpInjection)
 	const auto copilot = ProviderRuntimeRegistry::ResolveById("copilot-cli").BuildStructuredLaunchArgv(profile, chat);
 	UAM_ASSERT(std::ranges::none_of(copilot, [](const std::string& argument) { return argument.find("uam-computer") != std::string::npos; }));
 	const auto opencode = ProviderRuntimeRegistry::ResolveById("opencode-cli").BuildStructuredLaunchEnvironment(profile, chat);
-	UAM_ASSERT_EQ(opencode.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(opencode.front().first, std::string("OPENCODE_PERMISSION"));
 	const nlohmann::json permissions = nlohmann::json::parse(opencode.front().second);
 	UAM_ASSERT_EQ(permissions["uam-computer_computer_action"].get<std::string>(), std::string("deny"));
 }

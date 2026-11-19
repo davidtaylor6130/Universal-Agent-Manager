@@ -78,6 +78,7 @@ std::optional<int> RunRemoteOldStartupEchoFixture(int argc, char** argv)
 {
 	if (argc != 2 || std::string_view(argv[1]) != "--uam-test-old-startup-echo") return std::nullopt;
 	nlohmann::json request;
+	uam_test::UseBinaryFrameStdio();
 	while (uam::remote::ReadFrame(std::cin, request) == uam::remote::FrameReadResult::Ok)
 	{
 		nlohmann::json response;

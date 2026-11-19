@@ -15,6 +15,8 @@ export interface ProviderAllowance {
   primaryLabel?: string
   secondaryLabel?: string
   windows?: ProviderAllowanceWindow[]
+  /** The last read's outcome. Native reports loading and clears the error on each retry, so only this side can remember it. */
+  lastSettledStatus?: ProviderAllowance['status']
 }
 export interface ProviderAllowanceSnapshot {
   executionHostId: string
@@ -133,7 +135,9 @@ export function preloadProviderAllowances(host = 'local', refresh = false): Prom
       if (generation !== value.generation) return
       // Native owns retention and auth invalidation; an authoritative null must clear old account data.
       const cooldownUntil = next.refreshAfterMs ? Date.now() + next.refreshAfterMs : 0
-      publish(value, { data: next, loading: false, refreshing: next.refreshing, requestingRefresh: value.queuedRefresh && cooldownUntil <= Date.now(), cooldownUntil, error: '' })
+      const previous = value.state.data?.providers
+      const providers = next.providers.map(row => ({ ...row, lastSettledStatus: row.status === 'loading' ? previous?.find(old => old.providerId === row.providerId)?.lastSettledStatus : row.status }))
+      publish(value, { data: { ...next, providers }, loading: false, refreshing: next.refreshing, requestingRefresh: value.queuedRefresh && cooldownUntil <= Date.now(), cooldownUntil, error: '' })
     } catch (error) {
       if (generation === value.generation) publish(value, { ...value.state, loading: false, refreshing: false, requestingRefresh: value.queuedRefresh, error: error instanceof Error ? error.message : 'Could not read account allowances.' })
     } finally {

@@ -2,6 +2,7 @@
 
 #include "app/git_worktree_service.h"
 
+#include <array>
 #include <chrono>
 #include <future>
 #include <stop_token>
@@ -29,11 +30,15 @@ namespace uam
 			std::vector<std::filesystem::path> protected_paths;
 			std::vector<std::string> agent_transcript_ids;
 			std::unordered_set<std::string> known_chat_ids;
+			/// `managed-repository-<id hash>` names of every known, stored or transcript chat: their snapshots are never removed.
+			std::unordered_set<std::string> protected_snapshot_names;
 		};
 		struct Candidate
 		{
 			std::filesystem::path source;
 			GitWorktreeRetentionCandidate worktree;
+			/// The candidate is a plain-folder snapshot repository itself rather than a linked worktree.
+			bool managed_snapshot = false;
 		};
 		struct Result
 		{
@@ -41,7 +46,10 @@ namespace uam
 			bool removed = false;
 		};
 		static bool Capture(const AppState& app, Snapshot& snapshot);
-		static bool ProtectStoredWorkspaces(const Snapshot& snapshot, std::vector<std::filesystem::path>& protected_paths, std::stop_token stop);
+		static bool ProtectStoredWorkspaces(const Snapshot& snapshot, std::vector<std::filesystem::path>& protected_paths,
+		    std::unordered_set<std::string>& protected_snapshot_names, std::stop_token stop);
+		/// Removes port patches older than the retention period from `worktrees/patches`; returns how many were removed.
+		static std::size_t PrunePortPatches(const Snapshot& snapshot, std::stop_token stop);
 		static bool ProtectProcessWorkspace(const std::filesystem::path& data_root, std::vector<std::filesystem::path>& protected_paths);
 		static Result Discover(const Snapshot& snapshot, std::stop_token stop);
 		std::future<Result> m_worker;
@@ -56,5 +64,9 @@ namespace uam
 		std::uint64_t m_workerRevision = 0;
 		bool m_removing = false;
 		std::chrono::steady_clock::time_point m_nextScan = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+		// Capture walks every chat on the UI thread. A refused one (an orphaned session, a live import) is not
+		// repeated on every poll: it waits until the counts it checks change or the retry interval ends.
+		std::chrono::steady_clock::time_point m_nextCapture{};
+		std::array<std::size_t, 5> m_refusedCaptureShape{};
 	};
 }

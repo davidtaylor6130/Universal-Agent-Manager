@@ -477,13 +477,15 @@ bool CopilotCliProviderRuntime::PrepareInteractiveSession(uam::AppState& app, Ch
 	const std::string previous_resolved_session_id = previous_resolved_session == app.resolved_native_sessions_by_chat_id.end() ? std::string() : previous_resolved_session->second;
 	const bool had_resolved_session = previous_resolved_session != app.resolved_native_sessions_by_chat_id.end();
 	app.resolved_native_sessions_by_chat_id.erase(chat.id);
-	chat.native_session_id = session_id;
+	const bool previous_reset_pending = chat.native_session_reset_pending;
+	chat.LinkNativeSessionId(session_id);
 	if (ProviderRuntime::SaveHistory(provider, app.data_root, chat))
 	{
 		return true;
 	}
 
 	chat.native_session_id = previous_session_id;
+	chat.native_session_reset_pending = previous_reset_pending;
 	if (had_resolved_session)
 	{
 		app.resolved_native_sessions_by_chat_id[chat.id] = previous_resolved_session_id;
@@ -507,7 +509,7 @@ std::vector<std::string> CopilotCliProviderRuntime::BuildInteractiveArgv(const P
 	uam::provider_runtime_internal::AppendResumeArgs(argv, profile, chat.native_session_id);
 
 	AppendCopilotModeArgs(argv, chat);
-	uam::provider_runtime_internal::AppendArgs(argv, uam::provider_runtime_internal::BuildProviderFlagsArgv(provider_settings));
+	uam::provider_runtime_internal::AppendArgs(argv, uam::provider_runtime_internal::BuildProviderFlagsArgv(provider_settings, uam::provider_runtime_internal::LaunchHasReadCeiling(chat)));
 	return argv;
 }
 
@@ -551,11 +553,21 @@ std::vector<std::string> CopilotCliProviderRuntime::BuildStructuredLaunchArgv(co
 {
 	std::vector<std::string> argv = {"copilot", "--headless", "--stdio", "--no-auto-update"};
 	uam::provider_runtime_internal::AppendTrimmedOptionValue(argv, "--effort", NormalizeCopilotReasoningEffort(chat.reasoning_effort));
-	if (uam::computer_use::AvailableForChat(chat) && uam::computer_use::UsesUamBackend(chat) && uam::computer_use::IsPortableMcpChatId(chat.id))
+	if (uam::computer_use::AttachableForLaunch(chat) && uam::computer_use::UsesUamBackend(chat) && uam::computer_use::IsPortableMcpChatId(chat.id))
 	{
 		argv.push_back("--allow-tool=uam-computer(computer_observe),uam-computer(computer_action)");
 	}
+	// Deny rules win over saved approvals, repository or user allow rules and --allow-tool, so a read
+	// ceiling cannot run commands, change files or store memories without Plan's own native refusal.
+	if (uam::provider_runtime_internal::LaunchHasReadCeiling(chat))
+		uam::provider_runtime_internal::AppendLiteralArgs(argv, {"--deny-tool=shell", "--deny-tool=write", "--deny-tool=memory"});
 	return argv;
+}
+
+std::vector<std::pair<std::string, std::string>> CopilotCliProviderRuntime::BuildStructuredLaunchEnvironment(const ProviderProfile&, const ChatSession&) const
+{
+	// An inherited COPILOT_ALLOW_ALL would approve every tool before UAM is asked.
+	return {{"COPILOT_ALLOW_ALL", "false"}};
 }
 
 std::string CopilotCliProviderRuntime::OnAcpMapApprovalModeId(const std::string& mode_id) const
@@ -678,6 +690,14 @@ bool CopilotCliProviderRuntime::OnAcpReconcileModelOptions(uam::AppState& app, u
 		return false;
 	}
 
+	// An explicit managed Default is an instruction to leave native effort selection alone.
+	// Native model metadata may report its effective default without changing that instruction.
+	if (chat.reasoning_effort.empty() && std::ranges::any_of(app.agent_runs, [&](const AgentRun& run)
+	{
+		return run.id == chat.agent_run_id && run.transcript_chat_id == chat.id &&
+		    run.reasoning_effort_override && run.reasoning_effort_override->empty();
+	})) return false;
+
 	uam::AcpModelState* selected_model = nullptr;
 	for (uam::AcpModelState& model : session.available_models)
 	{
@@ -741,7 +761,8 @@ std::string CopilotCliProviderRuntime::LocalCliCompatibilityError(const uam::App
 	{
 		return "Checking GitHub Copilot CLI compatibility. Try again in a moment.";
 	}
-	if (state.supported)
+	// A failed or timed-out check says nothing about the installation; only a confirmed result blocks.
+	if (state.supported || !state.check_error.empty())
 	{
 		return "";
 	}

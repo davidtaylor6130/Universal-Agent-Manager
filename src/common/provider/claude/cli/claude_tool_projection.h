@@ -27,7 +27,8 @@ namespace uam::claude
 	{
 		if (name == "Bash") return "execute";
 		if (name == "Read") return "read";
-		if (name == "Grep" || name == "Glob" || name == "WebSearch" || name == "WebFetch") return "search";
+		if (name == "Grep" || name == "Glob") return "search";
+		if (name == "WebSearch" || name == "WebFetch") return "fetch"; // Network access is never a read.
 		if (name == "Edit" || name == "Write" || name == "MultiEdit" || name == "NotebookEdit") return "edit";
 		if (name == "Agent" || name == "Task") return "sub-agent";
 		return std::string(name);

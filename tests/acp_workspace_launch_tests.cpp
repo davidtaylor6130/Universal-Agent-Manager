@@ -1,11 +1,14 @@
 #include "test_harness.h"
 #include "app/worktree_launch_preparation_service.h"
 #include "common/runtime/acp/acp_session_internal.h"
+#include "common/runtime/acp/acp_session_runtime.h"
 #include "common/paths/app_paths.h"
 #include "app/agent_run_ledger.h"
 #include "app/agent_run_scheduler.h"
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
+#include "common/constants/app_constants.h"
+#include "remote/runner_client.h"
 #include <algorithm>
 
 using namespace uam_test;
@@ -121,9 +124,172 @@ UAM_TEST(AcpWorkspaceFailureOrRevocationHoldsInputWithoutReplacement)
 		UAM_ASSERT_EQ(session.queued_user_prompts.size(), std::size_t{1});
 		UAM_ASSERT(!session.last_error.empty());
 		UAM_ASSERT(fixture.app.worktree_launch_preparations.empty());
+		// The failure settles: later polls neither restart preparation nor log reconnect attempts.
+		for (int poll = 0; poll < 3; ++poll) (void)uam::PollAllAcpSessions(fixture.app);
+		UAM_ASSERT(session.queue_held && !session.reconnect_pending && !session.worktree_launch_pending && !session.running);
+		UAM_ASSERT(fixture.app.worktree_launch_preparations.empty());
+		UAM_ASSERT(std::ranges::none_of(session.diagnostics, [](const uam::AcpDiagnosticEntryState& entry) { return entry.event == "reconnect"; }));
 	}
 }
 
+
+UAM_TEST(AcpReconnectParkedOnWorkspaceLogsWaitingNotStarted)
+{
+	// A reconnect that only parks on workspace preparation started nothing; its diagnostic must not claim a reconnect.
+	WorkspacePromptFixture fixture;
+	const std::shared_ptr<uam::WorktreeLaunchPreparationTask> task = SeedOwnedAcpWorkspaceTask(fixture);
+	uam::AcpSessionState& session = *fixture.session;
+	ChatSession& chat = fixture.app.chats.front();
+	uam::AcpQueuedUserPromptState prompt;
+	prompt.id = "private-parked-workspace";
+	prompt.text = "Input waiting for its workspace";
+	session.queued_user_prompts.push_back(prompt);
+	chat.acp_queued_prompts = {prompt};
+	UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, chat));
+	session.reconnect_pending = true;
+	session.reconnect_not_before_time_s = 0.0;
+	for (int poll = 0; poll < 5 && !session.worktree_launch_pending; ++poll) (void)uam::PollAllAcpSessions(fixture.app);
+	UAM_ASSERT(session.worktree_launch_pending && !session.running);
+	const auto logged = [&session](const char* reason) { return std::ranges::any_of(session.diagnostics, [reason](const uam::AcpDiagnosticEntryState& entry) { return entry.event == "reconnect" && entry.reason == reason; }); };
+	UAM_ASSERT(logged("waiting_workspace"));
+	UAM_ASSERT(!logged("started"));
+	UAM_ASSERT(task->cancellation && !task->cancellation->stop_requested());
+}
+
+UAM_TEST(AcpPreparedSendToIdleWorktreeChatWaitsForItsOwnSave)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	// A Send to an idle local worktree chat with central provider setup prepares its agent, then resumes bound to its
+	// own unsent row. That resume schedules a save, which reports the worktree Pending. The row-bound input was refused
+	// and marked unsent, and the finished workspace check then launched the provider with nothing to send.
+	TempDir temp("uam-prepared-worktree-send");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	const ExecutionHost host = uam::execution_hosts::LocalHost();
+	app.settings.execution_hosts = {host};
+	app.settings.central_provider_configuration.enabled = true;
+	app.settings.provider_chat_defaults["claude-cli"].feature_preference = "uam";
+	auto& version = app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("claude-cli", host.id)];
+	version.checked = version.supported = true;
+	version.installed_version = "2.1.31";
+	version.execution_host = host;
+	fs::create_directories(temp.root / "source");
+	fs::create_directories(temp.root / "worktree");
+	ChatSession initial;
+	initial.id = "private-prepared-worktree-send";
+	initial.provider_id = "claude-cli";
+	initial.native_session_id = "0b6a0d63-6a8e-4d4c-9d43-2f0c8f2a51e7";
+	initial.uam_agent_id = "build";
+	initial.approval_mode.clear();
+	initial.memory_enabled = false;
+	initial.workspace_directory = initial.workspace_source_directory = (temp.root / "source").string();
+	initial.workspace_worktree_directory = (temp.root / "worktree").string();
+	initial.workspace_isolation_kind = uam::paths::kGitWorktreeIsolationKind;
+	initial.workspace_branch_name = "build/private-prepared-send";
+	initial.messages.push_back({.role = MessageRole::User, .content = "Saved private history"});
+	app.chats.push_back(std::move(initial));
+	ChatSession& chat = app.chats.front();
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	struct Cleanup
+	{
+		uam::AppState& app;
+		~Cleanup() { uam::FastStopAcpSessionsForExit(app); }
+	} cleanup{app};
+	std::string error;
+	const std::string text = "Continue with the prepared input";
+	UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, text, &error));
+	uam::AcpSessionState* session = uam::FindAcpSessionForChat(app, chat.id);
+	UAM_ASSERT(session != nullptr && session->pending_agent_input && !session->running);
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+	while (session->pending_agent_input && std::chrono::steady_clock::now() < deadline)
+	{
+		(void)uam::PollAllAcpSessions(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	}
+	UAM_ASSERT(!session->pending_agent_input && !session->running);
+	UAM_ASSERT_EQ(chat.messages.size(), std::size_t{2});
+	UAM_ASSERT_EQ(chat.messages.back().content, text);
+	// The input waits for its workspace instead of settling as unsent.
+	UAM_ASSERT(chat.messages.back().acp_prompt_not_sent && !chat.messages.back().interrupted);
+	UAM_ASSERT_EQ(session->queued_user_prompts.size(), std::size_t{1});
+	UAM_ASSERT_EQ(session->queued_user_prompts.front().existing_user_message_index, 1);
+	UAM_ASSERT(!session->queue_held && session->lifecycle_state != uam::acp_detail::kAcpLifecycleError);
+	UAM_ASSERT(session->worktree_launch_pending);
+	// Its owned save keeps the input queued for the launch that follows.
+	const auto save_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+	while ((app.pending_chat_save_at_by_chat_id.contains(chat.id) || app.pending_chat_save_tasks.contains(chat.id)) &&
+	       std::chrono::steady_clock::now() < save_deadline)
+	{
+		(void)uam::FlushPendingChatSaves(app, true);
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	}
+	UAM_ASSERT(!app.pending_chat_save_at_by_chat_id.contains(chat.id) && !app.pending_chat_save_tasks.contains(chat.id));
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(saved && saved->acp_queued_prompts.size() == 1 && !saved->acp_queue_held);
+	UAM_ASSERT(!saved->messages.back().interrupted);
+#endif
+}
+
+
+UAM_TEST(AcpRetryInIdleWorktreeChatWaitsForPendingSave)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	// Retry of an unsent message in an idle local worktree chat while a chat save is pending, such as the one a refused
+	// Send schedules. The worktree reports Pending until that save lands, and the row-bound Retry was refused with
+	// "Workspace preparation is still pending."; it now waits for the workspace like other workspace preparation.
+	TempDir temp("uam-retry-worktree-save");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	const ExecutionHost host = uam::execution_hosts::LocalHost();
+	app.settings.execution_hosts = {host};
+	app.settings.central_provider_configuration.enabled = true;
+	app.settings.provider_chat_defaults["claude-cli"].feature_preference = "uam";
+	auto& version = app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("claude-cli", host.id)];
+	version.checked = version.supported = true;
+	version.installed_version = "2.1.31";
+	version.execution_host = host;
+	fs::create_directories(temp.root / "source");
+	fs::create_directories(temp.root / "worktree");
+	ChatSession initial;
+	initial.id = "private-retry-worktree-save";
+	initial.provider_id = "claude-cli";
+	initial.uam_agent_id = "build";
+	initial.approval_mode.clear();
+	initial.memory_enabled = false;
+	initial.created_at = initial.updated_at = "2026-11-17 12:32:00";
+	initial.workspace_directory = initial.workspace_source_directory = (temp.root / "source").string();
+	initial.workspace_worktree_directory = (temp.root / "worktree").string();
+	initial.workspace_isolation_kind = uam::paths::kGitWorktreeIsolationKind;
+	initial.workspace_branch_name = "build/private-retry";
+	Message unsent{.role = MessageRole::User, .content = "Retry this unsent input"};
+	unsent.created_at = "2026-11-17 12:32:40";
+	unsent.acp_prompt_not_sent = unsent.interrupted = true;
+	initial.messages.push_back(unsent);
+	app.chats.push_back(std::move(initial));
+	ChatSession& chat = app.chats.front();
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	struct Cleanup
+	{
+		uam::AppState& app;
+		~Cleanup() { uam::FastStopAcpSessionsForExit(app); }
+	} cleanup{app};
+	uam::acp_detail::ScheduleChatSave(app, chat, 0.0);
+	UAM_ASSERT(app.pending_chat_save_at_by_chat_id.contains(chat.id));
+	std::string error;
+	const bool retried = uam::RetryFailedAcpMessage(app, chat.id, 0, &error);
+	UAM_ASSERT_EQ(error, std::string());
+	UAM_ASSERT(retried);
+	const uam::AcpSessionState* session = uam::FindAcpSessionForChat(app, chat.id);
+	UAM_ASSERT(session != nullptr && !session->running && !session->queue_held);
+	UAM_ASSERT_EQ(chat.messages.size(), std::size_t{1});
+	UAM_ASSERT(chat.messages.front().acp_prompt_not_sent && !chat.messages.front().interrupted);
+	UAM_ASSERT_EQ(session->queued_user_prompts.size(), std::size_t{1});
+	UAM_ASSERT_EQ(session->queued_user_prompts.front().existing_user_message_index, 0);
+	UAM_ASSERT(session->lifecycle_state != uam::acp_detail::kAcpLifecycleError);
+#endif
+}
 
 namespace
 {
@@ -170,6 +336,45 @@ UAM_TEST(AcpWorkspaceFailureFailsManagedRunInsteadOfHolding)
 	UAM_ASSERT_EQ(uam::acp_detail::PrepareAcpWorkspaceForLaunch(fixture.app, session, chat), uam::WorktreeLaunchPreparationState::Failed);
 	UAM_ASSERT(session.queue_held && !session.managed_launch_attempted);
 	AssertManagedLaunchFailed(fixture.app);
+}
+
+UAM_TEST(AcpRemoteStopAttachSkipsAFailingWorkspace)
+{
+	// Stop always works: a restored remote turn whose worktree no longer validates (its branch was switched) must still
+	// reach the host to stop, and only a real launch reports the workspace error.
+	WorkspacePromptFixture fixture;
+	const std::shared_ptr<uam::WorktreeLaunchPreparationTask> task = SeedOwnedAcpWorkspaceTask(fixture);
+	uam::AcpSessionState& session = *fixture.session;
+	ChatSession& chat = fixture.app.chats.front();
+	chat.execution_host_id = "ssh-unconfigured";
+	task->error = "This chat's worktree is on another branch.";
+	session.processing = session.recovering_remote_turn = session.remote_stop_unconfirmed = true;
+	chat.remote_turn_reconnect_pending = chat.remote_stop_cleanup_pending = true;
+	std::string error;
+	(void)uam::acp_detail::StartAcpProcessForChat(fixture.app, session, chat, &error);
+	// A launch that runs a provider still reports this error (AcpWorkspaceFailureFailsManagedRunInsteadOfHolding).
+	UAM_ASSERT(!task->error_reported);
+	UAM_ASSERT(error != task->error && session.last_error != task->error);
+}
+
+UAM_TEST(AcpRemoteStopDuringAWorkspaceCheckKeepsItsReconnect)
+{
+	// Stop pressed while a restored turn's worktree check still runs: that check must not hold back or cancel the stop.
+	WorkspacePromptFixture fixture;
+	const std::shared_ptr<uam::WorktreeLaunchPreparationTask> task = SeedOwnedAcpWorkspaceTask(fixture);
+	uam::AcpSessionState& session = *fixture.session;
+	ChatSession& chat = fixture.app.chats.front();
+	chat.execution_host_id = "ssh-unconfigured";
+	chat.remote_turn_reconnect_pending = true;
+	session.processing = session.recovering_remote_turn = true;
+	session.worktree_launch_pending = true;
+	session.worktree_launch_cancellation = task->cancellation;
+	std::string error;
+	(void)uam::CancelAcpTurn(fixture.app, chat.id, &error);
+	UAM_ASSERT(session.remote_stop_unconfirmed && chat.remote_stop_cleanup_pending);
+	UAM_ASSERT(session.reconnect_pending);
+	UAM_ASSERT(!session.worktree_launch_pending);
+	UAM_ASSERT(task->cancellation->stop_requested());
 }
 
 #if UAM_ENABLE_RUNTIME_GEMINI_CLI && UAM_ENABLE_SSH && defined(__APPLE__)
@@ -646,5 +851,203 @@ UAM_TEST(AcpWorkspaceRemoteValidationStopPreservesUnsentPolicyOnce)
 	UAM_ASSERT_EQ(fixture.Chat().workspace_worktree_directory, isolated_directory);
 	UAM_ASSERT(fs::is_directory(uam::paths::PathFromUtf8(isolated_directory)));
 	UAM_ASSERT_EQ(ReadFile(fixture.repository / "source.txt"), std::string("Private source survivor\n"));
+}
+#endif
+
+UAM_TEST(AcpHeldWorkspaceWaitSettlesFinishedPreparation)
+{
+	// A held queue must not leave a finished preparation parked on "waiting for workspace" with no error (beafe2).
+	for (const bool failed : {true, false})
+	{
+		WorkspacePromptFixture fixture;
+		const std::shared_ptr<uam::WorktreeLaunchPreparationTask> task = SeedOwnedAcpWorkspaceTask(fixture);
+		uam::AcpSessionState& session = *fixture.session;
+		ChatSession& chat = fixture.app.chats.front();
+		uam::AcpQueuedUserPromptState prompt;
+		prompt.id = "private-held-finished-workspace";
+		prompt.text = "Held input across preparation";
+		session.queued_user_prompts.push_back(prompt);
+		chat.acp_queued_prompts = {prompt};
+		session.queue_held = chat.acp_queue_held = true;
+		session.worktree_launch_pending = true;
+		session.worktree_launch_cancellation = task->cancellation;
+		session.lifecycle_state = "waiting_workspace";
+		if (failed) task->error = "Private preparation failure";
+		else task->saved = true;
+		for (int poll = 0; poll < 3; ++poll) (void)uam::PollAllAcpSessions(fixture.app);
+		UAM_ASSERT(!session.worktree_launch_pending && !session.running && !session.reconnect_pending);
+		UAM_ASSERT(session.queue_held && chat.acp_queue_held);
+		UAM_ASSERT_EQ(session.queued_user_prompts.size(), std::size_t{1});
+		UAM_ASSERT_EQ(session.lifecycle_state, std::string(failed ? "error" : "stopped"));
+		UAM_ASSERT_EQ(session.last_error.empty(), !failed);
+	}
+}
+
+#if UAM_ENABLE_SSH
+namespace
+{
+	ExecutionHost ReadyPrivateRemoteHost()
+	{
+		ExecutionHost host;
+		host.id = "private-remote-preparation";
+		host.transport = "ssh";
+		host.ssh_alias = "private-preparation";
+		host.platform = "windows";
+		host.runner_version = std::string(uam::constants::kAppVersion).substr(1);
+		host.runner_protocol_version = 3;
+		host.runner_status = "ready";
+		UAM_ASSERT(uam::remote::CanAttemptRunnerConnection(host));
+		return host;
+	}
+
+	std::shared_ptr<uam::WorktreeLaunchPreparationTask> SeedRemoteWorkspaceTask(WorkspacePromptFixture& fixture)
+	{
+		const ExecutionHost host = ReadyPrivateRemoteHost();
+		fixture.app.settings.execution_hosts.push_back(host);
+		fixture.app.chats.front().execution_host_id = host.id;
+		fixture.app.chats.front().workspace_directory = "C:/Users/private/Source";
+		const std::shared_ptr<uam::WorktreeLaunchPreparationTask> task = SeedOwnedAcpWorkspaceTask(fixture);
+		task->remote_host = host;
+		return task;
+	}
+}
+
+UAM_TEST(RemoteWorkspacePreparationDeadlineCancelsUnansweredWorker)
+{
+	WorkspacePromptFixture fixture;
+	const std::shared_ptr<uam::WorktreeLaunchPreparationTask> task = SeedRemoteWorkspaceTask(fixture);
+	uam::AcpSessionState& session = *fixture.session;
+	ChatSession& chat = fixture.app.chats.front();
+	std::promise<uam::PreparedLaunchWorktree> worker;
+	task->worker = worker.get_future();
+	fixture.app.worktree_operation_chat_ids.insert(chat.id);
+	uam::AcpQueuedUserPromptState prompt;
+	prompt.id = "private-held-remote-input";
+	prompt.text = "Held input across an unanswered helper";
+	session.queued_user_prompts.push_back(prompt);
+	chat.acp_queued_prompts = {prompt};
+	session.queue_held = chat.acp_queue_held = true;
+	session.worktree_launch_pending = true;
+	session.worktree_launch_cancellation = task->cancellation;
+	session.lifecycle_state = "waiting_workspace";
+	task->worker_deadline = std::chrono::steady_clock::now() + std::chrono::hours(1);
+	(void)uam::PollWorktreeLaunchPreparations(fixture.app);
+	UAM_ASSERT(!task->cancellation->stop_requested());
+	// An unanswered helper (the host rebooted) is canceled at the deadline and reported, never awaited forever.
+	task->worker_deadline = std::chrono::steady_clock::now() - std::chrono::seconds(1);
+	UAM_ASSERT(uam::PollWorktreeLaunchPreparations(fixture.app));
+	UAM_ASSERT(task->cancellation->stop_requested());
+	// The held session reports at once, while the unanswered worker is still running.
+	(void)uam::PollAllAcpSessions(fixture.app);
+	UAM_ASSERT_EQ(session.lifecycle_state, std::string("error"));
+	UAM_ASSERT(session.last_error.find("timed out") != std::string::npos);
+	UAM_ASSERT(session.queue_held && !session.worktree_launch_pending && !session.running);
+	UAM_ASSERT_EQ(session.queued_user_prompts.size(), std::size_t{1});
+	// The worker keeps its operation fence until it really exits; then everything is released.
+	UAM_ASSERT(fixture.app.worktree_operation_chat_ids.contains(chat.id));
+	worker.set_value({{.message = "Remote command canceled."}, task->original});
+	(void)uam::PollWorktreeLaunchPreparations(fixture.app);
+	UAM_ASSERT(!fixture.app.worktree_operation_chat_ids.contains(chat.id));
+	UAM_ASSERT(!fixture.app.worktree_launch_preparations.contains(chat.id));
+	UAM_ASSERT(!task->lease && !task->remote_host_lease);
+}
+
+UAM_TEST(RemoteWorkspaceReferenceAdmissionSkipsOnlySettledFamilyChildren)
+{
+	enum class Blocker { None, ActiveRun, QueuedInput, Unrelated, ForeignRoot, MissingRun, PersistedOnly, SavedDelivery, SavedInteraction };
+	for (const Blocker blocker : {Blocker::None, Blocker::ActiveRun, Blocker::QueuedInput, Blocker::Unrelated, Blocker::ForeignRoot, Blocker::MissingRun,
+	         Blocker::PersistedOnly, Blocker::SavedDelivery, Blocker::SavedInteraction})
+	{
+		WorkspacePromptFixture fixture;
+		const std::shared_ptr<uam::WorktreeLaunchPreparationTask> task = SeedRemoteWorkspaceTask(fixture);
+		uam::AppState& app = fixture.app;
+		const ChatSession parent = app.chats.front();
+		uam::PreparedLaunchWorktree prepared{{.ok = true}, task->original};
+		prepared.metadata.workspace_isolation_kind = uam::paths::kGitWorktreeIsolationKind;
+		prepared.metadata.workspace_source_directory = "C:/Users/private/Source";
+		prepared.metadata.workspace_worktree_directory = "C:/Users/private/uam-worktree-0123456789abcdef";
+		prepared.metadata.workspace_branch_name = "uam/0123456789abcdef";
+		prepared.metadata.workspace_base_ref = std::string(40, 'a');
+		const auto child = [&](const std::string& id, const std::string& run_id)
+		{
+			ChatSession value;
+			value.id = id;
+			value.provider_id = "claude-cli";
+			value.execution_host_id = parent.execution_host_id;
+			value.agent_run_id = run_id;
+			value.workspace_isolation_kind = uam::paths::kPendingGitWorktreeIsolationKind;
+			// The saved child names the parent's worktree, spelled as Windows wrote it.
+			value.workspace_directory = "C:/Users/private\\uam-worktree-0123456789abcdef";
+			value.workspace_source_directory = "C:/Users/private/Source";
+			return value;
+		};
+		const auto run = [&](const std::string& id, const std::string& transcript, const std::string& status, const std::string& root)
+		{
+			AgentRun value;
+			value.id = id;
+			value.root_chat_id = root;
+			value.transcript_chat_id = transcript;
+			value.provider_id = "claude-cli";
+			value.status = status;
+			return value;
+		};
+		// A finished v2 child is inert after restart: only the worker's read-only ledger observation still names it.
+		app.chats.push_back(child("private-settled-v2", "run-settled-v2"));
+		prepared.reference_runs.push_back(run("run-settled-v2", "private-settled-v2", "failed", parent.id));
+		app.chats.push_back(child("private-settled-v1", "run-settled-v1"));
+		app.agent_runs.push_back(run("run-settled-v1", "private-settled-v1", "completed", parent.id));
+		prepared.references.push_back(child("private-settled-saved", "run-settled-saved"));
+		prepared.reference_runs.push_back(run("run-settled-saved", "private-settled-saved", "cancelled", parent.id));
+		std::string expected;
+		switch (blocker)
+		{
+		case Blocker::None: break;
+		case Blocker::ActiveRun:
+			app.chats.push_back(child(expected = "private-active-child", "run-active"));
+			app.agent_runs.push_back(run("run-active", expected, "running", parent.id));
+			// A stale finished observation never overrides the live ledger.
+			prepared.reference_runs.push_back(run("run-active", expected, "completed", parent.id));
+			break;
+		case Blocker::QueuedInput:
+			app.chats.push_back(child(expected = "private-queued-child", "run-queued"));
+			app.chats.back().acp_queued_prompts.emplace_back().id = "private-queued-input";
+			app.agent_runs.push_back(run("run-queued", expected, "completed", parent.id));
+			break;
+		case Blocker::Unrelated:
+			app.chats.push_back(child(expected = "private-unrelated-chat", ""));
+			break;
+		case Blocker::ForeignRoot:
+			app.chats.push_back(child(expected = "private-foreign-child", "run-foreign"));
+			prepared.reference_runs.push_back(run("run-foreign", expected, "failed", "private-other-parent"));
+			break;
+		case Blocker::MissingRun:
+			app.chats.push_back(child(expected = "private-unknown-child", "run-pruned"));
+			break;
+		case Blocker::PersistedOnly:
+			prepared.references.push_back(child(expected = "private-persisted-chat", ""));
+			break;
+		case Blocker::SavedDelivery:
+		case Blocker::SavedInteraction:
+			// A saved-only finished child still holding delivery or interaction authority is not settled.
+			prepared.references.push_back(child(expected = "private-saved-authority-child", "run-saved-authority"));
+			if (blocker == Blocker::SavedDelivery) prepared.references.back().remote_prompt_delivery_id = "private-delivery";
+			else prepared.references.back().remote_interaction_responses.emplace_back();
+			prepared.reference_runs.push_back(run("run-saved-authority", expected, "failed", parent.id));
+			break;
+		}
+		task->prepared = std::move(prepared);
+		(void)uam::PollWorktreeLaunchPreparations(app);
+		if (blocker == Blocker::None)
+		{
+			UAM_ASSERT(task->error.empty());
+			UAM_ASSERT(task->merged);
+			UAM_ASSERT_EQ(app.chats.front().workspace_worktree_directory, std::string("C:/Users/private/uam-worktree-0123456789abcdef"));
+			continue;
+		}
+		UAM_ASSERT(!task->merged);
+		UAM_ASSERT(task->error.find(expected) != std::string::npos);
+		UAM_ASSERT(task->error.find("private-settled") == std::string::npos);
+		UAM_ASSERT(app.chats.front().workspace_worktree_directory.empty());
+	}
 }
 #endif

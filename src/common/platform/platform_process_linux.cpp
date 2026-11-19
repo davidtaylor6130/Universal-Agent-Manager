@@ -1,5 +1,6 @@
 #include "common/platform/platform_services.h"
 #include "common/platform/platform_state_fields.h"
+#include "common/utils/uuid.h"
 
 #include <array>
 #include <cerrno>
@@ -8,7 +9,8 @@
 #include <cstring>
 #include <fcntl.h>
 #include <poll.h>
-#include <random>
+#include <sys/resource.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <thread>
 #include <unistd.h>
@@ -30,6 +32,20 @@ namespace uam::platform_linux_impl
 			return -1;
 		}
 
+		/// A started process keeps only its three standard streams. Anything else it inherited outlives the helper inside it:
+		/// a service socket then still accepts connections nobody answers, and another session's input pipe never reports its end.
+		/// Runs between fork and exec, so only async-signal-safe calls.
+		void CloseInheritedDescriptors()
+		{
+#if defined(SYS_close_range)
+			if (syscall(SYS_close_range, 3U, ~0U, 0U) == 0) return;
+#endif
+			// ponytail: kernels before 5.9 close up to the descriptor limit one by one; the cap bounds a host with a huge limit.
+			rlimit limit{};
+			const rlim_t end = getrlimit(RLIMIT_NOFILE, &limit) == 0 && limit.rlim_cur < 65536 ? limit.rlim_cur : 65536;
+			for (rlim_t descriptor = 3; descriptor < end; ++descriptor) (void)close(static_cast<int>(descriptor));
+		}
+
 		std::ptrdiff_t ReadNonBlocking(int descriptor, char* buffer,
 		                              std::size_t size, std::string* error_out)
 		{
@@ -48,7 +64,7 @@ namespace uam::platform_linux_impl
 		std::shared_ptr<uam::platform::AsyncByteWriter> CreateWriter(
 		    int descriptor, std::string* error_out)
 		{
-			const int writer = dup(descriptor);
+			const int writer = fcntl(descriptor, F_DUPFD_CLOEXEC, 0); // dup() would hand this session's input pipe to every process started later.
 			if (writer < 0)
 			{
 				if (error_out != nullptr) *error_out = std::strerror(errno);
@@ -174,16 +190,13 @@ namespace uam::platform_linux_impl
 				if (child == 0)
 				{
 					(void)setpgid(0, 0);
+					(void)std::signal(SIGPIPE, SIG_DFL); // The runner service ignores SIGPIPE; an ignored signal would survive exec.
 					if ((!working_directory.empty() && chdir(working_directory.c_str()) != 0) ||
 					    dup2(input[0], STDIN_FILENO) < 0 ||
 					    dup2(output[1], STDOUT_FILENO) < 0 ||
 					    dup2(diagnostic[1], STDERR_FILENO) < 0)
 						_exit(126);
-					for (int* pair : {input, output, diagnostic})
-					{
-						CloseFd(pair[0]);
-						CloseFd(pair[1]);
-					}
+					CloseInheritedDescriptors();
 					for (const auto& [name, value] : environment)
 						if (setenv(name.c_str(), value.c_str(), 1) != 0) _exit(126);
 					std::vector<char*> arguments;
@@ -370,9 +383,33 @@ namespace uam::platform_linux_impl
 			std::size_t NativeGeminiSessionMaxMessages() const override { return 0; }
 			std::string GenerateUuid() const override
 			{
-				std::random_device random;
-				return std::to_string(static_cast<unsigned long long>(random())) + "-" +
-				       std::to_string(static_cast<unsigned long long>(random()));
+				// Raw syscall: the runner must still load on remote hosts whose glibc predates getrandom().
+				std::array<std::uint8_t, 16> bytes{};
+				std::size_t filled = 0;
+				while (filled < bytes.size())
+				{
+					const long read = syscall(SYS_getrandom, bytes.data() + filled, bytes.size() - filled, 0);
+					if (read > 0) filled += static_cast<std::size_t>(read);
+					else if (read < 0 && errno == EINTR) continue;
+					else break;
+				}
+				if (filled < bytes.size())
+				{
+					// Kernels before 3.17 lack getrandom; /dev/urandom is the equivalent source there.
+					const int fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+					filled = 0;
+					while (fd >= 0 && filled < bytes.size())
+					{
+						const ssize_t read = ::read(fd, bytes.data() + filled, bytes.size() - filled);
+						if (read > 0) filled += static_cast<std::size_t>(read);
+						else if (read < 0 && errno == EINTR) continue;
+						else break;
+					}
+					if (fd >= 0) close(fd);
+					// Same failure contract as macOS and Windows: no identifier rather than a weak one.
+					if (filled < bytes.size()) return {};
+				}
+				return uam::uuid::FormatUuidV4(bytes);
 			}
 			bool LaunchShellAt(const std::filesystem::path&, std::string* error_out) const override
 			{

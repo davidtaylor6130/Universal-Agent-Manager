@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Check saved companion startup, restart and proxy cleanup with an isolated data root."""
+"""Check saved companion startup, restart and proxy cleanup with an isolated data root.
+
+The saved legacy token file is migrated into the OS credential store on first start, so each
+run leaves one "Universal Agent Manager Companion" item for its temporary data root in the
+login keychain. Remove those items in Keychain Access after manual runs."""
 import argparse
 import atexit
 import base64

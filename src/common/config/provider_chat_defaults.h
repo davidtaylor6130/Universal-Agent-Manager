@@ -111,4 +111,22 @@ namespace uam::provider_chat_defaults
 	{
 		ApplyToChat(chat, ForProvider(settings, chat.provider_id, chat.execution_host_id));
 	}
+
+	/// <summary>True when the provider answers its own permission prompts, so UAM's command safety tiers do not apply (matches the serialized structuredPermissionControl).</summary>
+	inline bool ProviderManagesOwnPermissions(std::string_view provider_id)
+	{
+		return uam::provider_ids::IsCliProviderAliasOf(provider_id, uam::provider_ids::kAntigravityCli);
+	}
+
+	/// <summary>
+	/// Gives the chat the permission level it had before a provider switch. A provider that answers its own
+	/// prompts cannot show or change UAM's levels, so any level above Default becomes Default (off) when that
+	/// provider is the target, or the source, whose chat may hold a level its user could not see.
+	/// </summary>
+	inline void KeepPermissionLevel(ChatSession& chat, const ChatSession& previous)
+	{
+		const std::string mode = uam::approval_modes::NormalizeIncomingApprovalModeId(previous.approval_mode);
+		chat.approval_mode = uam::approval_modes::IsAgentMode(mode) ? mode : std::string(uam::approval_modes::kDefaultApprovalMode);
+		chat.command_safety_tier = ProviderManagesOwnPermissions(chat.provider_id) || ProviderManagesOwnPermissions(previous.provider_id) ? "off" : uam::command_safety::NormalizeTier(previous.command_safety_tier);
+	}
 } // namespace uam::provider_chat_defaults

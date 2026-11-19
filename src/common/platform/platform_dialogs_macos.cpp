@@ -183,6 +183,16 @@ class MacFileDialogService final : public IPlatformFileDialogService
 		return true;
 	}
 
+	bool OpenFileWithDefaultApplication(const std::filesystem::path& file_path, std::string* error_out = nullptr) const override
+	{
+		if (file_path.empty() || !uam::paths::IsRegularFileNoThrow(file_path))
+		{
+			if (error_out != nullptr) *error_out = "File is unavailable.";
+			return false;
+		}
+		return uam::platform::OpenPath(file_path, error_out);
+	}
+
 	bool OpenFileInTextEditor(const std::filesystem::path& file_path, std::string* error_out = nullptr) const override
 	{
 		if (file_path.empty() || !uam::paths::IsRegularFileNoThrow(file_path))

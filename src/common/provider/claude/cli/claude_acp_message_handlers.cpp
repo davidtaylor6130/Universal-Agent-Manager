@@ -447,6 +447,7 @@ namespace uam::acp_detail
 					if (const nlohmann::json* command = uam::nlohmann_json::FindStringField(input, "command"))
 						permission.execution_command = command->get_ref<const std::string&>();
 				permission.options = {{"allow", "Allow", "allow_once"}, {"deny", "Deny", "reject_once"}};
+				ApplyCommandSafetyDecision(app, chat, permission); // Before replay: saved responses are checked against the captured scope.
 				if (ReplayPersistedInteractionResponseIfMatched(app, session, chat, {{"id", id}}, &permission)) return;
 			}
 			AcpToolCallState& tool = UpsertToolCall(session, tool_id);
@@ -454,6 +455,7 @@ namespace uam::acp_detail
 			tool.kind = uam::claude::ToolKind(tool_name);
 			tool.is_sub_agent = tool.kind == "sub-agent";
 			tool.args_json = input.dump();
+			tool.declared_timeout_s = ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpToolDeclaredTimeoutSeconds(tool.kind, input);
 			tool.status = uam::acp_statuses::kPending;
 			AppendToolTurnEventIfNeeded(session, tool_id);
 			if (tool_name == "AskUserQuestion")
@@ -500,7 +502,6 @@ namespace uam::acp_detail
 			}
 			else
 			{
-				ApplyCommandSafetyDecision(app, chat, permission);
 				QueueAcpPermission(app, session, chat, std::move(permission));
 			}
 			(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
@@ -509,12 +510,24 @@ namespace uam::acp_detail
 		}
 	} // namespace
 
+// Parent output while UAM has no input in flight is a turn Claude started itself, typically after a background
+// task reported back. Its result must never settle, or be merged into, a user turn admitted meanwhile.
+static void ObserveClaudeSelfStartedTurn(AcpSessionState& session, const nlohmann::json& message)
+{
+	if (session.claude_self_started_turn || session.processing || session.prompt_request_id != 0 || !session.queued_prompt.empty() ||
+	    session.pending_prompt_delivery || session.manual_compaction_pending || uam::AcpSessionHasPendingCancel(session) ||
+	    !JsonDiagnosticStringValue(message, "parent_tool_use_id").empty()) return;
+	session.claude_self_started_turn = true;
+	AppendAcpDiagnostic(session, "turn", "claude_self_started", "", "", false, 0, "Claude started a turn of its own; new input waits for its result.");
+}
+
 void HandleClaudeAssistantMessage(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message, CefRefPtr<CefBrowser> browser)
 {
 	if (claude_preinput::Consume(app, session, chat, message)) return;
 	const std::string identity = JsonDiagnosticStringValue(message, "uuid");
 	if (JsonDiagnosticStringValue(message, "parent_tool_use_id").empty() && !identity.empty() &&
 	    !session.claude_seen_parent_messages.Insert(identity)) return;
+	ObserveClaudeSelfStartedTurn(session, message);
 	const nlohmann::json assistant_message = JsonObjectValue(message, "message");
 	const nlohmann::json content = uam::nlohmann_json::ValueOrNull(uam::nlohmann_json::FindField(assistant_message, "content"));
 	const bool child_message = !JsonDiagnosticStringValue(message, "parent_tool_use_id").empty();
@@ -529,7 +542,7 @@ void HandleClaudeAssistantMessage(AppState& app, AcpSessionState& session, ChatS
 			{
 				uam::PushStreamToken(browser, chat.id, session.current_assistant_message_index, appended);
 			}
-			ScheduleChatSave(app, chat, 0.5);
+			ScheduleChatSave(app, chat, 0.5, true);
 		}
 		return;
 	}
@@ -589,6 +602,7 @@ void HandleClaudeAssistantMessage(AppState& app, AcpSessionState& session, ChatS
 			if (const nlohmann::json* input = uam::nlohmann_json::FindField(item, "input"); input != nullptr)
 			{
 				tool_call.args_json = input->dump();
+				tool_call.declared_timeout_s = ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpToolDeclaredTimeoutSeconds(tool_call.kind, *input);
 			}
 			ApplySubAgentMetadata(tool_call, item, ProviderRuntimeRegistry::ResolveById(session.provider_id));
 			AppendToolTurnEventIfNeeded(session, tool_id);
@@ -598,7 +612,7 @@ void HandleClaudeAssistantMessage(AppState& app, AcpSessionState& session, ChatS
 
 	if (changed)
 	{
-		SaveChatQuietly(app, chat);
+		SaveChatSoon(app, chat);
 		MarkAcpChatUnseenIfBackground(app, chat);
 	}
 }
@@ -652,7 +666,7 @@ void HandleClaudeUserMessage(AppState& app, AcpSessionState& session, ChatSessio
 
 	if (changed)
 	{
-		SaveChatQuietly(app, chat);
+		SaveChatSoon(app, chat);
 	}
 }
 
@@ -792,6 +806,7 @@ void HandleClaudeResult(AppState& app, AcpSessionState& session, ChatSession& ch
 		{
 			const std::string previous_native_session_id = chat.native_session_id;
 			SetChatNativeSessionIdIfChanged(chat, session_id);
+			(void)BindPendingProviderHandoff(session, chat);
 			SyncResolvedNativeSessionIdForChat(app, chat, session_id, previous_native_session_id);
 		}
 	}
@@ -852,7 +867,10 @@ void HandleClaudeResult(AppState& app, AcpSessionState& session, ChatSession& ch
 	{
 		(void)SyncAcpToolCallsToAssistantMessage(chat, session, true);
 		if (completed_native_scope && completion_result_fresh && !cancelled && !is_error && !quota_wait && subtype == "success")
+		{
 			RecordCompletedAcpPromptRecoveries(app, session, chat);
+			(void)ConfirmTurnInputReceived(session, chat);
+		}
 		CompletePromptTurnAndHandleGoalLoop(app, session, chat, kAcpLifecycleReady, browser, !cancelled);
 	}
 
@@ -896,6 +914,10 @@ void HandleClaudeMessage(AppState& app, AcpSessionState& session, ChatSession& c
 	if (type == "user")
 	{
 		const nlohmann::json notification = uam::claude::TaskNotification(ClaudeContentTextFromMessage(JsonObjectValue(message, "message")));
+		// Claude echoes the notification it injects as the user message that opens its own turn.
+		const std::string identity = JsonDiagnosticStringValue(message, "uuid");
+		if (notification.is_object() && (identity.empty() || session.claude_seen_parent_messages.Insert("notification:" + identity)))
+			ObserveClaudeSelfStartedTurn(session, message);
 		if (notification.is_object() && HandleClaudeTaskEvent(app, session, chat, notification)) return;
 	}
 	if (type == "system" && JsonDiagnosticStringValue(message, "subtype") == "status")
@@ -1040,11 +1062,10 @@ void HandleClaudeMessage(AppState& app, AcpSessionState& session, ChatSession& c
 			if (session.session_id != session_id) session.provider_usage.rate_limits = {};
 			session.session_id = session_id;
 			const std::string previous_native_session_id = chat.native_session_id;
-			if (!session.goal_internal_session && SetChatNativeSessionIdIfChanged(chat, session_id))
-			{
-				SyncResolvedNativeSessionIdForChat(app, chat, session_id, previous_native_session_id);
-				SaveChatQuietly(app, chat);
-			}
+			const bool identity_changed = !session.goal_internal_session && SetChatNativeSessionIdIfChanged(chat, session_id);
+			const bool handoff_bound = BindPendingProviderHandoff(session, chat);
+			if (identity_changed) SyncResolvedNativeSessionIdForChat(app, chat, session_id, previous_native_session_id);
+			if (identity_changed || handoff_bound) SaveChatQuietly(app, chat);
 		}
 
 		// A native reset must not expose the previous conversation's cumulative tokens.
@@ -1090,6 +1111,9 @@ void HandleClaudeMessage(AppState& app, AcpSessionState& session, ChatSession& c
 	if (type == uam::acp_claude_stream::kMessageTypeResult)
 	{
 		session.context_compaction_in_progress = false;
+		// The self-started turn's own result; held user input drains when this completion settles.
+		if (session.claude_self_started_turn && !session.processing && JsonDiagnosticStringValue(message, "parent_tool_use_id").empty())
+			session.claude_self_started_turn = false;
 		HandleClaudeResult(app, session, chat, message, browser);
 		return;
 	}

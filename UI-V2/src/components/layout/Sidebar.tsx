@@ -9,6 +9,7 @@ import type { ChatSearchFilters, ChatStatusFilterId } from '../sidebar/chatSearc
 import { DEFAULT_PROVIDER_ID, providerDisabledOn } from '../../utils/providerMetadata'
 import './SidebarGlide.css'
 import { shortcutLabel } from '../../utils/shortcuts'
+import { loadNewChatPanel, warmPanelOn } from './panelModules'
 import type { ChatSearchHit, SearchChatMessagesResponse } from '../../types/chatSearch'
 import { sanitizeChatSearchHits } from '../../utils/chatSearchResults'
 
@@ -166,6 +167,7 @@ export function Sidebar() {
           leadingIcon={<Plus size={16} />}
           title={`New chat (${shortcutLabel('newChat')})`}
           onClick={() => setNewChatModalOpen(true)}
+          {...warmPanelOn(loadNewChatPanel)}
         >
           New chat
           <kbd className="uam-btn__kbd" aria-hidden>{shortcutLabel('newChat')}</kbd>

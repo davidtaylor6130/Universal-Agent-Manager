@@ -129,6 +129,12 @@
 
 namespace fs = std::filesystem;
 
+#if defined(_WIN32)
+#include <cstdio>
+#include <fcntl.h>
+#include <io.h>
+#endif
+
 namespace uam_test
 {
 	struct TestCase
@@ -154,6 +160,34 @@ namespace uam_test
 	struct TestFailure : std::runtime_error
 	{
 		using std::runtime_error::runtime_error;
+	};
+
+	/// <summary>
+	/// Stale cached values cases have provoked on purpose so far; a case adds to it. Every test program verifies the
+	/// state caches after every push: the core runner fails a case whose divergences differ from what it added,
+	/// and every program exits with a failure if its total differs at exit.
+	/// </summary>
+	inline std::size_t g_expected_state_cache_divergences = 0;
+
+	struct StateCacheVerificationForEveryTestProgram
+	{
+		StateCacheVerificationForEveryTestProgram() { uam::SetStateCacheVerificationAfterEveryPushForTests(true); }
+		~StateCacheVerificationForEveryTestProgram()
+		{
+			const std::size_t divergences = uam::StateSerializer::CacheDivergenceCount();
+			if (divergences == g_expected_state_cache_divergences) return;
+			std::fprintf(stderr, "[FAIL] state pushes reused %zu cached value(s) that no longer matched their source; expected %zu\n", divergences, g_expected_state_cache_divergences);
+			std::fflush(stderr);
+			std::_Exit(1);
+		}
+	};
+	inline StateCacheVerificationForEveryTestProgram g_state_cache_verification_for_every_test_program;
+
+	/// <summary>Turns the after-every-push cache verification off for cases that count or time a push's own work.</summary>
+	struct WithoutStateCacheVerification
+	{
+		WithoutStateCacheVerification() { uam::SetStateCacheVerificationAfterEveryPushForTests(false); }
+		~WithoutStateCacheVerification() { uam::SetStateCacheVerificationAfterEveryPushForTests(true); }
 	};
 
 	inline void Fail(const char* expr, const char* file, int line)
@@ -196,6 +230,16 @@ namespace uam_test
 		fs::path native;
 		std::string error;
 		return uam::io::NativeFilePath(path, native, error) ? native : path;
+	}
+
+	/// A fixture that answers runner frames over stdio. Windows text mode would turn a 0x0A byte in a frame's binary
+	/// length into CR LF, so the client waits for a frame that never parses; the real helper switches to binary too.
+	inline void UseBinaryFrameStdio()
+	{
+#if defined(_WIN32)
+		(void)_setmode(_fileno(stdin), _O_BINARY);
+		(void)_setmode(_fileno(stdout), _O_BINARY);
+#endif
 	}
 
 	inline std::string ReadFile(const fs::path& path)

@@ -2,11 +2,14 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent
 import { Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, MessageSquare } from 'lucide-react'
 import { Button, IconButton, usePresence } from '../ui'
 import type { AcpPendingUserInput, AcpUserInputAnswers } from '../../store/useAppStore'
+import { SecretRequestCard } from './SecretRequestCard'
 import './QuestionInput.css'
 
 type Props = {
     input: AcpPendingUserInput
     onResolve: (requestId: string, answers: AcpUserInputAnswers) => Promise<boolean>
+    /** The chat the request belongs to; a secret request submits its value through it. */
+    sessionId?: string
     autoOpen?: boolean
     waitIsStale?: boolean
     waitStaleReason?: string
@@ -48,11 +51,14 @@ function answerFor(question: Question, draft?: Draft)
 /** Keep question drafts scoped to this chat and request while the panel is collapsed. */
 export function UserInputInlineCard(props: Props)
 {
+    // A secret request is never a free-text question, even when its details failed validation.
+    if (props.input.secretRequest || props.input.questions[0]?.id === 'secretRequest')
+        return <SecretRequestCard key={props.input.requestId} input={props.input} sessionId={props.sessionId} onResolve={props.onResolve} />
     return <QuestionRequest key={`${props.input.requestId}:${props.input.itemId}`} {...props} />
 }
 
 /** Grid-rows collapse: the panel stays mounted for its exit, then unmounts (reduced motion and Motion Off unmount at once). */
-function QuestionCollapse({ open, children }: { open: boolean; children: ReactNode }) {
+export function QuestionCollapse({ open, children }: { open: boolean; children: ReactNode }) {
     const { mounted, closing } = usePresence(open)
     const lastChildren = useRef(children)
     if (open) lastChildren.current = children
@@ -64,7 +70,7 @@ function QuestionCollapse({ open, children }: { open: boolean; children: ReactNo
 
 const choiceInputs = (root: Element) => Array.from(root.querySelectorAll<HTMLInputElement>('input[type="radio"], input[type="checkbox"]'))
 
-function QuestionRequest({ input, onResolve, autoOpen = true, variant = 'float', submitRef, onSubmitStateChange, onAnswered, memory, ...wait }: Props)
+function QuestionRequest({ input, onResolve, sessionId: _sessionId, autoOpen = true, variant = 'float', submitRef, onSubmitStateChange, onAnswered, memory, ...wait }: Props)
 {
     const [open, setOpen] = useState(autoOpen)
     const [drafts, setDrafts] = useState<Record<string, Draft>>(() => memory?.drafts ?? {})

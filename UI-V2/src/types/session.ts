@@ -24,6 +24,8 @@ export interface ExecutionHost {
   runnerSha256?: string
   /** SHA-256 of this app's packaged helper for the host's platform; absent when none is packaged. */
   bundledRunnerSha256?: string
+  /** Display only: local build label (X.Y.Z-alpha-Q) of the app that installed the helper; absent shows runnerVersion. */
+  runnerBuildLabel?: string
   instructionFile?: string
   /** Inline host instructions. Absent or null keeps the legacy instruction file; an explicit empty string suppresses it. */
   instructionText?: string | null
@@ -136,6 +138,11 @@ export interface Session {
   subagentParentCreatedAt?: string
   /** Display-only chat_create provenance; never lineage, resume or control authority. */
   createdByChatId?: string
+  /** Automation API origin and approval hold; the prompt is held until the user starts the chat. */
+  automationTokenName?: string
+  automationGitPermission?: string
+  automationMaxIterations?: number
+  automationPendingPrompt?: string
   managedSubagentCount?: number
   managedSubagentRevision?: number
   messagesDigest?: string
@@ -145,6 +152,7 @@ export interface Session {
   interactionAt?: Date | null
   lastOpenedAt?: Date
   attentionRevision?: string
+  attentionSource?: string
   /** ISO time the user marked this chat done in Active chats. */
   settledAt?: string
   snoozedUntilMs?: number

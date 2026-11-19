@@ -1,3 +1,4 @@
+#include "remote/runner_client.h"
 #include "cef/uam_query_handler.h"
 #include "app/vcs_commit_service.h"
 #include "cef/uam_query_handler_internal.h"
@@ -402,7 +403,7 @@ void UamQueryHandler::HandleStartCli(CefRefPtr<CefBrowser> browser, const nlohma
 		if (!uam::paths::IsControllerLocalWorkspace(*chat))
 		{
 			const ExecutionHost* host = uam::execution_hosts::Find(m_app.settings.execution_hosts, chat->execution_host_id);
-			if (host == nullptr || host->transport != "ssh" || host->runner_status != "ready" ||
+			if (host == nullptr || !uam::remote::CanAttemptRunnerConnection(*host) ||
 			    host->runner_protocol_version < 3)
 			{
 				terminal.last_error = "Native session creation needs a ready, current remote runner. Recheck it in Settings.";
@@ -479,7 +480,7 @@ void UamQueryHandler::HandleStartCli(CefRefPtr<CefBrowser> browser, const nlohma
 			    if (response.ok)
 			    {
 				    const std::string native_id = nlohmann::json::parse(response.body).at("nativeSessionId").get<std::string>();
-				    current->native_session_id = native_id;
+				    current->LinkNativeSessionId(native_id);
 				    m_app.resolved_native_sessions_by_chat_id[chat_id] = native_id;
 				    // Preserve the ID even after detachment, and retry this same save after storage failure.
 				    if (!ChatRepository::SaveChat(m_app.data_root, *current))

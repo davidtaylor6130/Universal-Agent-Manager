@@ -1,5 +1,6 @@
 #include "test_harness.h"
 #include "cef/uam_bridge_request.h"
+#include "cef/send_idempotency_window.h"
 
 UAM_TEST(SendAdmissionOriginUsesEnvelopeAndRemovesPayloadSpoof)
 {
@@ -8,6 +9,13 @@ UAM_TEST(SendAdmissionOriginUsesEnvelopeAndRemovesPayloadSpoof)
 	UAM_ASSERT_EQ(parsed.request.payload.at("_uamOriginRequestId").get<std::string>(), std::string("envelope-1"));
 	UAM_ASSERT_EQ(parsed.request.payload.at("requestId").get<std::string>(), std::string("payload-1"));
 	UAM_ASSERT_EQ(parsed.request.payload.at("text").get<std::string>(), std::string("same text"));
+}
+
+UAM_TEST(AutomationStartCarriesItsEnvelopeOriginToTheSend)
+{
+	const auto parsed = uam::cef::ParseBridgeRequest(R"({"action":"approveAutomationChat","requestId":"envelope-1","payload":{"chatId":"chat-1","_uamOriginRequestId":"spoof-1"}})");
+	UAM_ASSERT(parsed.ok);
+	UAM_ASSERT_EQ(parsed.request.payload.at("_uamOriginRequestId").get<std::string>(), std::string("envelope-1"));
 }
 
 UAM_TEST(SendAdmissionOriginMissingOrMalformedDoesNotRejectSend)
@@ -50,4 +58,64 @@ UAM_TEST(SendAdmissionOriginLeavesOtherActionsAndExistingPayloadValidationUnchan
 	const auto invalid_payload = uam::cef::ParseBridgeRequest(R"({"action":"sendAcpPrompt","requestId":"envelope-1","payload":[]})");
 	UAM_ASSERT(!invalid_payload.ok);
 	UAM_ASSERT_EQ(invalid_payload.status, 400);
+}
+
+UAM_TEST(SendIdempotencyWindowTracksEachSubmissionPerChat)
+{
+	using Claim = uam::cef::SendIdempotencyWindow::Claim;
+	uam::cef::SendIdempotencyWindow window;
+	UAM_ASSERT(window.Begin("chat-1", "id-1", "request-a").claim == Claim::New);
+	const auto in_progress = window.Begin("chat-1", "id-1", "request-b");
+	UAM_ASSERT(in_progress.claim == Claim::InProgress);
+	UAM_ASSERT_EQ(in_progress.origin_request_id, std::string("request-a"));
+	UAM_ASSERT(window.Begin("chat-2", "id-1", "request-c").claim == Claim::New);
+	window.Settle("chat-1", "id-1", true);
+	const auto admitted = window.Begin("chat-1", "id-1", "request-d");
+	UAM_ASSERT(admitted.claim == Claim::Admitted);
+	UAM_ASSERT_EQ(admitted.origin_request_id, std::string("request-a"));
+	window.Settle("chat-2", "id-1", false);
+	UAM_ASSERT(window.Begin("chat-2", "id-1", "").claim == Claim::New);
+}
+
+UAM_TEST(SendIdempotencyWindowEvictsOldestBeyondCapacity)
+{
+	using Claim = uam::cef::SendIdempotencyWindow::Claim;
+	uam::cef::SendIdempotencyWindow window;
+	UAM_ASSERT(window.Begin("chat-1", "oldest", "").claim == Claim::New);
+	window.Settle("chat-1", "oldest", true);
+	for (int index = 0; index < 256; ++index)
+		UAM_ASSERT(window.Begin("chat-1", "id-" + std::to_string(index), "").claim == Claim::New);
+	UAM_ASSERT(window.Begin("chat-1", "oldest", "").claim == Claim::New);
+}
+
+UAM_TEST(SendIdempotencySettlementReleasesAnUnsettledClaimAndIgnoresAGoneOwner)
+{
+	using Claim = uam::cef::SendIdempotencyWindow::Claim;
+	uam::cef::SendIdempotencyWindow window;
+	auto owner = std::make_shared<char>();
+	UAM_ASSERT(window.Begin("chat-1", "dropped", "").claim == Claim::New);
+	{
+		// An exception or a completion that never runs drops the settlement without an outcome.
+		uam::cef::SendIdempotencySettlement settlement(window, owner, "chat-1", "dropped");
+	}
+	UAM_ASSERT(window.Begin("chat-1", "dropped", "").claim == Claim::New);
+
+	UAM_ASSERT(window.Begin("chat-1", "admitted", "").claim == Claim::New);
+	{
+		uam::cef::SendIdempotencySettlement settlement(window, owner, "chat-1", "admitted");
+		settlement.Settle(true);
+		settlement.Settle(false);
+	}
+	UAM_ASSERT(window.Begin("chat-1", "admitted", "").claim == Claim::Admitted);
+
+	UAM_ASSERT(window.Begin("chat-1", "late", "").claim == Claim::New);
+	std::weak_ptr<void> gone;
+	{
+		auto expired = std::make_shared<char>();
+		gone = expired;
+	}
+	{
+		uam::cef::SendIdempotencySettlement settlement(window, gone, "chat-1", "late");
+	}
+	UAM_ASSERT(window.Begin("chat-1", "late", "").claim == Claim::InProgress);
 }

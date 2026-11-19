@@ -62,7 +62,7 @@ namespace uam::cef
 			payload = *payload_value;
 		}
 
-		if (action == "sendAcpPrompt")
+		if (action == "sendAcpPrompt" || action == "approveAutomationChat")
 		{
 			// Only the current envelope can supply this optional correlation hint.
 			payload.erase("_uamOriginRequestId");

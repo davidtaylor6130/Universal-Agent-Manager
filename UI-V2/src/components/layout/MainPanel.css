@@ -22,9 +22,10 @@
 }
 .uam-runtime-pill[data-phase="live"] .uam-runtime-stop-icon,
 .uam-runtime-pill[data-phase="idle"] .uam-runtime-stop-icon { color: var(--success); }
-.uam-runtime-pill[data-phase="ending"] { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 40%, var(--border)); }
+.uam-runtime-pill[data-phase="ending"] { color: var(--warning-text); border-color: color-mix(in srgb, var(--warning) 40%, var(--border)); }
 .uam-runtime-pill[data-phase="busy"] { cursor: default; opacity: 0.75; }
 .uam-runtime-pill[data-phase="busy"] .uam-runtime-stop-icon { color: var(--blue); }
+.uam-runtime-pill[data-phase="failed"] { color: var(--error-text); border-color: color-mix(in srgb, var(--error) 40%, var(--border)); }
 .uam-runtime-pill:hover:not(:disabled),
 .uam-runtime-pill:focus-visible {
   background: var(--error-dim);

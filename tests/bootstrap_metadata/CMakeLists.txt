@@ -28,7 +28,7 @@ if(NOT TARGET nlohmann_json::nlohmann_json)
 endif()
 add_executable(uam_bootstrap_metadata_tests native_fixture.cpp "${UAM_SOURCE_ROOT}/src/remote/runner_bootstrap.cpp" "${UAM_SOURCE_ROOT}/src/remote/runner_client.cpp"
   "${UAM_SOURCE_ROOT}/src/app/memory_library_service.cpp" "${UAM_SOURCE_ROOT}/src/common/memory/memory_library_store.cpp"
-  "${UAM_SOURCE_ROOT}/src/common/utils/diagnostic_log.cpp")
+  "${UAM_SOURCE_ROOT}/src/common/utils/diagnostic_log.cpp" "${UAM_SOURCE_ROOT}/src/common/secrets/secret_redactor.cpp")
 target_compile_features(uam_bootstrap_metadata_tests PRIVATE cxx_std_20)
 target_include_directories(uam_bootstrap_metadata_tests PRIVATE "${UAM_SOURCE_ROOT}/src")
 target_link_libraries(uam_bootstrap_metadata_tests PRIVATE nlohmann_json::nlohmann_json)

@@ -27,7 +27,9 @@ std::string JoinAcpArgvForDiagnostics(const std::vector<std::string>& argv)
 		{
 			out << ' ';
 		}
-		if (argv[i].starts_with("developer_instructions=") || argv[i].find(".env.") != std::string::npos || argv[i].find("http_headers.") != std::string::npos)
+		// Claude --settings can carry auth keys (env, apiKeyHelper) copied from the user's settings.
+		if (argv[i].starts_with("developer_instructions=") || argv[i].find(".env.") != std::string::npos || argv[i].find("http_headers.") != std::string::npos ||
+		    argv[i].starts_with("--settings=") || (i > 0 && argv[i - 1] == "--settings"))
 			out << "[private configuration]";
 		else out << argv[i];
 	}

@@ -31,4 +31,39 @@ namespace uam::cli_versions
 		}
 		return std::nullopt;
 	}
+
+	/// <summary>Reads the version a CLI printed for --version. Wrappers such as bun or node can print their own
+	/// version first, so only the last non-empty line counts, after removing ANSI colour codes; that line must hold
+	/// exactly one x.y.z, and anything else is treated as unknown.</summary>
+	inline std::optional<std::string> ExtractCliReportedVersion(std::string_view text)
+	{
+		std::string plain;
+		plain.reserve(text.size());
+		for (std::size_t index = 0; index < text.size(); ++index)
+		{
+			if (text[index] == '\x1b' && index + 1 < text.size() && text[index + 1] == '[')
+			{
+				// CSI sequence: parameters and intermediates, ended by a byte in @..~.
+				index += 2;
+				while (index < text.size() && !(text[index] >= '@' && text[index] <= '~')) ++index;
+				continue;
+			}
+			plain.push_back(text[index]);
+		}
+		std::string_view line;
+		for (std::string_view rest = plain; !rest.empty();)
+		{
+			const std::size_t end = rest.find('\n');
+			std::string_view candidate = rest.substr(0, end);
+			while (!candidate.empty() && (candidate.back() == '\r' || candidate.back() == ' ' || candidate.back() == '\t')) candidate.remove_suffix(1);
+			if (candidate.find_first_not_of(" \t") != std::string_view::npos) line = candidate;
+			if (end == std::string_view::npos) break;
+			rest.remove_prefix(end + 1);
+		}
+		const std::optional<std::string> version = ExtractSemverVersion(line);
+		if (!version) return std::nullopt;
+		// A second x.y.z on the same line ("opencode 2.1.4 (bun 1.1.38)") leaves the CLI's own version ambiguous.
+		const std::size_t after = line.find(*version) + version->size();
+		return ExtractSemverVersion(line.substr(after)) ? std::nullopt : version;
+	}
 }

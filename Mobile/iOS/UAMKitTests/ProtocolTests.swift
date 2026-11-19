@@ -41,6 +41,12 @@ final class ProtocolTests: XCTestCase
         XCTAssertThrowsError(try CompanionProtocol.decode(Data("<html>".utf8)))
     }
 
+    func testDesktopConfirmationStatusesExplainTheWait()
+    {
+        XCTAssertTrue(CompanionError.http(status: 428).localizedDescription.contains("Confirm this change on your computer"))
+        XCTAssertTrue(CompanionError.http(status: 429).localizedDescription.contains("waiting for confirmation"))
+    }
+
     func testDescriptorBounds() throws
     {
         for json: JSONValue in [

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { AcpBinding, CliBinding } from '../store/cpp/types'
 import type { Goal } from '../types/goal'
-import { chatHasUnfinishedWork } from './chatWork'
+import { chatHasUnfinishedWork, providerSwitchLockReason } from './chatWork'
 
 describe('finished-chat review gating', () => {
   const acp = { processing: false, lifecycleState: 'ready', backgroundTaskCount: 0 } as AcpBinding
@@ -29,5 +29,21 @@ describe('finished-chat review gating', () => {
     for (const status of ['paused', 'blocked', 'complete'] as const) {
       expect(chatHasUnfinishedWork(acp, undefined, { ...goal, status, pendingContinuation: true })).toBe(false)
     }
+  })
+})
+
+describe('providerSwitchLockReason', () => {
+  const binding = (values: Partial<AcpBinding>) => values as AcpBinding
+
+  it('names the real reason for each lock', () => {
+    expect(providerSwitchLockReason(binding({ processing: true }))).toContain('Stop the current turn')
+    expect(providerSwitchLockReason(binding({ queuedPrompts: [{ id: 'q' }] as AcpBinding['queuedPrompts'] }))).toContain('Resume or remove')
+    expect(providerSwitchLockReason()).toBe('')
+  })
+
+  it('stays open only for states the user cannot clear, not for a plain warning', () => {
+    expect(providerSwitchLockReason(binding({ processing: true, providerSwitchOverride: 'disconnected' }))).toBe('')
+    expect(providerSwitchLockReason(binding({ pendingDirectPrompts: [{ id: 'r' }] as AcpBinding['pendingDirectPrompts'], providerSwitchOverride: 'stranded' }))).toBe('')
+    expect(providerSwitchLockReason(binding({ processing: true, providerSwitchOverride: 'warn' }))).toContain('Stop the current turn')
   })
 })

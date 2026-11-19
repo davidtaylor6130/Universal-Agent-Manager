@@ -51,6 +51,13 @@ export function createRequestId(prefix = 'cef'): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
+/** A typed secret never reaches a log; every other field stays readable. */
+export function redactedEnvelope(envelope: CEFRequest): CEFRequest {
+  const payload = envelope.payload
+  if (envelope.action !== 'submitSecretRequest' || typeof payload !== 'object' || payload === null || !('value' in payload)) return envelope
+  return { ...envelope, payload: { ...payload, value: '[redacted]' } }
+}
+
 /**
  * Send a request to the C++ backend.
  * In dev: returns a mock response after a short delay.
@@ -81,7 +88,10 @@ export async function sendToCEF<T = unknown>(
         cache: 'no-store',
       })
       if (!response.ok) {
-        const error = (await response.json().catch(() => null))?.error ?? `Request failed (${response.status}).`
+        // A rotated token (new pairing code or Regenerate token on the computer) ends this browser's pairing.
+        const error = response.status === 401
+          ? 'UAM no longer accepts this connection token. Log out in Settings, then connect with the current token from the computer.'
+          : (await response.json().catch(() => null))?.error ?? `Request failed (${response.status}).`
         if (logFailures) console.error(`[CEF] ${request.action}: ${error}`)
         return { ok: false, error, requestId }
       }
@@ -175,7 +185,7 @@ export async function sendToCEF<T = unknown>(
   // Dev/mock path
   const isDev = (import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV === true
   if (isDev) {
-    console.debug('[CEF stub] Request:', envelope)
+    console.debug('[CEF stub] Request:', redactedEnvelope(envelope))
   }
   await new Promise((r) => setTimeout(r, 80))
   const mock: CEFResponse<T> = { ok: true, data: null as T, requestId }
@@ -183,6 +193,27 @@ export async function sendToCEF<T = unknown>(
     console.debug('[CEF stub] Response:', mock)
   }
   return mock
+}
+
+/**
+ * Bounds the UI wait for a read that is safe to repeat. The native request is not cancelled; a reply
+ * arriving after the deadline is ignored. Never use it for actions whose lost acknowledgement would
+ * make a retry duplicate work (chat creation, scan start).
+ */
+export async function boundedRead<T = unknown>(reply: Promise<CEFResponse<T>>, timeoutError: string, timeoutMs = 30_000): Promise<CEFResponse<T>> {
+  let deadline: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      reply,
+      new Promise<CEFResponse<T>>((resolve) => { deadline = setTimeout(() => resolve({ ok: false, error: timeoutError }), timeoutMs) }),
+    ])
+  } catch (error) {
+    // Only the deadline reports the timeout; a rejected reply keeps its own reason, or none so the caller's fallback shows.
+    const reason = error instanceof Error ? error.message : typeof error === 'string' ? error : ''
+    return reason ? { ok: false, error: reason } : { ok: false }
+  } finally {
+    clearTimeout(deadline)
+  }
 }
 
 export async function sendWhenRemoteStopSettles<T = unknown>(request: CEFRequest): Promise<CEFResponse<T>> {

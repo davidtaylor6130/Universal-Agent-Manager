@@ -5,6 +5,7 @@ import type { ResourceCollection } from '../../types/resourceCollection'
 import type { CustomIcon as Icon } from '../../types/customIcon'
 import { ViewportMenu } from '../ui'
 import { CustomIcon } from '../shared/CustomIcon'
+import { collectionPath } from '../../utils/collectionTree'
 
 export interface WorkspacePickerProps {
   folders: readonly Folder[]
@@ -63,7 +64,7 @@ export function WorkspacePicker({ folders, collections, executionHostId, value, 
     for (const collection of collections) {
       for (const reference of collection.references) {
         const folder = reference.type === 'workspace-folder' ? compatible.get(reference.target) : undefined
-        if (folder && !assigned.has(folder.id)) add(folder, collection.name, collection.id)
+        if (folder && !assigned.has(folder.id)) add(folder, collectionPath(collections, collection.id), collection.id)
       }
     }
     for (const folder of compatible.values()) if (!assigned.has(folder.id)) add(folder, '', '')

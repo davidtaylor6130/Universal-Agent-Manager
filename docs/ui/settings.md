@@ -14,7 +14,7 @@ Every item in a settings card (row, Disclosure trigger, Notice, empty-state row,
 
 ## Copy and lists
 
-Use sentence case and plain consequences. A row description is roughly one short line, about 60 characters, and does not repeat its title; a trivially obvious row can omit it. Merge one- or two-row sections with a related neighbour. Hosts, servers, agents, skills and editors use identity/detail/status rows with labelled icon actions and an Add section action; multi-field add/edit flows use the shared Overlay/Presence modal. MCP summaries omit endpoints, executable paths, arguments and workspace directories, which remain in the editor. Empty states have one muted sentence and the add action.
+Use sentence case and plain consequences. A row description is roughly one short line, about 60 characters, and does not repeat its title; a trivially obvious row can omit it. Merge one- or two-row sections with a related neighbour. Hosts, servers, agents, skills and editors use identity/detail/status rows with labelled icon actions and an Add section action; multi-field add/edit flows use the shared Overlay/Presence modal. Configured hosts open their own sub-page: Back to hosts returns to the list and restores focus to that host's Open button (or to Add a host once it is removed), and host options sit in a section rather than a disclosure. MCP summaries omit endpoints, executable paths, arguments and workspace directories, which remain in the editor. Empty states have one muted sentence and the add action.
 
 ## State and drafts
 
@@ -24,7 +24,7 @@ Safety controls with incomplete native cleanup keep a pending status and truthfu
 
 ## Navigation and motion
 
-The active settings item has its tinted `--accent-dim` background and one straight 3 px vertical accent line at the left edge. The tint and line form one indicator that glides between items using transform only; hover and active backgrounds share the same item box. Reduced motion and Motion Off move it without the glide. Sections use the existing fade/rise and disclosure presence patterns, with shared [motion tokens](motion.md), not flashing lists.
+The active settings item has its tinted `--accent-dim` background and one straight 3 px vertical accent line at the left edge. The tint and line come from the shared `.uam-selected-item` style, which sidebar chat multi-selection reuses, and form one indicator that glides between items using transform only; hover and active backgrounds share the same item box. Reduced motion and Motion Off move it without the glide. Sections use the existing fade/rise and disclosure presence patterns, with shared [motion tokens](motion.md), not flashing lists.
 
 ## Environment control
 

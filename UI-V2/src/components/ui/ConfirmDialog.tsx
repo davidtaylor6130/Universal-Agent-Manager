@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useId, useRef } from 'react'
 import type { ReactNode } from 'react'
 import { TriangleAlert, X } from 'lucide-react'
 import { Button } from './Button'
@@ -12,6 +12,8 @@ export interface ConfirmDialogProps {
   confirmLabel: string
   onConfirm: () => void
   onCancel: () => void
+  /** Answers Escape and backdrop clicks when the cancel button is itself a choice; defaults to onCancel. */
+  onDismiss?: () => void
   /** Accessible name; defaults to the title. */
   label?: string
   tone?: 'danger' | 'primary'
@@ -27,22 +29,29 @@ export interface ConfirmDialogProps {
   confirmDisabled?: boolean
   /** Marks the dialog so the Settings modal's keyboard owner lets it handle Escape and Tab. */
   settingsOwned?: boolean
+  /** Focus target on close when nothing usable was focused at open (e.g. a menu item that has since closed). */
+  returnFocusTo?: () => HTMLElement | null | undefined
 }
 
 /** Small alert dialog for confirming a (usually destructive) action. Escape cancels while idle unless dismissible is false. */
-export function ConfirmDialog({ open, title, children, confirmLabel, onConfirm, onCancel, label, tone = 'danger', busy = false, error, cancelLabel = 'Cancel', secondaryAction, dismissible = true, confirmDisabled = false, settingsOwned = false }: ConfirmDialogProps) {
+export function ConfirmDialog({ open, title, children, confirmLabel, onConfirm, onCancel, onDismiss, label, tone = 'danger', busy = false, error, cancelLabel = 'Cancel', secondaryAction, dismissible = true, confirmDisabled = false, settingsOwned = false, returnFocusTo }: ConfirmDialogProps) {
+  const descriptionId = useId()
+  const returnFocusToRef = useRef(returnFocusTo)
+  returnFocusToRef.current = returnFocusTo
   const dialogRef = useRef<HTMLDivElement>(null)
   const cancelRef = useRef<HTMLButtonElement>(null)
   const busyRef = useRef(busy)
   busyRef.current = busy
-  const onCancelRef = useRef(onCancel)
-  onCancelRef.current = onCancel
+  const onCancelRef = useRef(onDismiss ?? onCancel)
+  onCancelRef.current = onDismiss ?? onCancel
   const dismissibleRef = useRef(dismissible)
   dismissibleRef.current = dismissible
 
   useEffect(() => {
     if (!open) return
-    const returnFocus = document.activeElement as HTMLElement | null
+    const opener = document.activeElement as HTMLElement | null
+    // Resolved at open: the fallback's inputs (e.g. the pending row id) are cleared by the time the dialog closes.
+    const returnFocus = opener?.isConnected && opener !== document.body ? opener : returnFocusToRef.current?.()
     const dialog = dialogRef.current
     if (getTopmostModal() === dialog) {
       if (busyRef.current) dialog?.focus()
@@ -79,7 +88,7 @@ export function ConfirmDialog({ open, title, children, confirmLabel, onConfirm, 
   }, [open, busy])
 
   return (
-    <Overlay open={open} zIndex={70} onBackdropMouseDown={() => { if (!busy && dismissible) onCancel() }}>
+    <Overlay open={open} zIndex={70} onBackdropMouseDown={() => { if (!busy && dismissible) (onDismiss ?? onCancel)() }}>
       <div
         ref={dialogRef}
         tabIndex={-1}
@@ -87,6 +96,7 @@ export function ConfirmDialog({ open, title, children, confirmLabel, onConfirm, 
         role="alertdialog"
         aria-modal="true"
         aria-label={label ?? title}
+        aria-describedby={descriptionId}
         data-settings-owned-overlay={settingsOwned || undefined}
         className="uam-confirm-dialog w-full max-w-sm rounded-xl"
       >
@@ -98,7 +108,7 @@ export function ConfirmDialog({ open, title, children, confirmLabel, onConfirm, 
           )}
           <div className="min-w-0 flex-1">
             <div className="text-sm font-semibold" style={{ color: 'var(--text)' }}>{title}</div>
-            <div className="mt-1.5 text-sm leading-5" style={{ color: 'var(--text-2)', overflowWrap: 'anywhere' }}>{children}</div>
+            <div id={descriptionId} className="mt-1.5 text-sm leading-5" style={{ color: 'var(--text-2)', overflowWrap: 'anywhere' }}>{children}</div>
             {error && <p role="alert" className="mt-3 flex items-start gap-1.5 text-sm" style={{ color: 'var(--error)' }}><X size={13} className="mt-0.5 shrink-0" aria-hidden />{error}</p>}
           </div>
         </div>

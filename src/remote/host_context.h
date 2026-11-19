@@ -10,10 +10,16 @@
 
 namespace uam::remote
 {
-	/// <summary>Reads only the selected target. Host instructions precede project memories.</summary>
+	inline std::string WrapHostInstructions(const std::string& text)
+	{
+		return "--- BEGIN HOST INSTRUCTIONS ---\n" + text + "\n--- END HOST INSTRUCTIONS ---\n\n";
+	}
+
+	/// <summary>Reads only the selected target. Host instructions reach the provider through launch configuration, so
+	/// a turn only checks that a legacy file is still readable; the returned context is recalled project memories, and host_text receives the host text for providers that need it in a prompt.</summary>
 	inline bool ResolveHostContext(IPlatformProcessService& service, const ExecutionHost& host,
 	    const std::string& workspace, int memory_budget, std::string& context,
-	    std::string& error, std::stop_token stop_token = {})
+	    std::string& error, std::stop_token stop_token = {}, std::string* host_text = nullptr)
 	{
 		context.clear();
 		if (host.id == execution_hosts::kLocalHostId) return true;
@@ -27,8 +33,7 @@ namespace uam::remote
 			error = "Host instruction text exceeds 256 KiB.";
 			return false;
 		}
-		if (host.instruction_text && !host.instruction_text->empty())
-			context = "--- BEGIN HOST INSTRUCTIONS ---\n" + *host.instruction_text + "\n--- END HOST INSTRUCTIONS ---\n\n";
+		if (host_text != nullptr) *host_text = host.instruction_text.value_or(std::string{});
 		const bool read_instruction_file = !host.instruction_text && !host.instruction_file.empty();
 		if (!read_instruction_file && memory_budget <= 0) return true;
 		RunnerClient client(service, host);
@@ -41,12 +46,12 @@ namespace uam::remote
 				error = "Host instruction file: select an absolute path on this host.";
 				return false;
 			}
-			if (!client.ReadTextFile(paths::PathFromUtf8(host.instruction_file), text, &error, stop_token))
+			if (!client.ReadTextFile(paths::PathFromUtf8(host.instruction_file), text, &error, stop_token, true))
 			{
 				error = "Host instruction file: " + error;
 				return false;
 			}
-			context = "--- BEGIN HOST INSTRUCTIONS ---\n" + text + "\n--- END HOST INSTRUCTIONS ---\n\n";
+			if (host_text != nullptr) *host_text = text;
 		}
 		if (memory_budget > 0)
 		{

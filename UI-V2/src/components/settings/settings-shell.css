@@ -1,4 +1,4 @@
-/* Settings shell: the active item's tint and its straight accent line glide together between items. */
+/* Settings shell: the active item's tint and straight accent line (shared .uam-selected-item in index.css) glide together between items. */
 .uam-settings-nav { position: relative; }
 .uam-settings-nav__indicator {
   position: absolute;
@@ -6,20 +6,9 @@
   right: 0;
   top: 0;
   border-radius: var(--r-md);
-  background: var(--accent-dim);
   pointer-events: none;
   /* Transform only: the height is set once per item size and never animates. */
   transition: transform var(--dur-enter) var(--ease-out-soft);
-}
-/* Straight 3px line inset 8px from the item's top and bottom, so it sits inside the rounded edges. */
-.uam-settings-nav__indicator::before {
-  content: '';
-  position: absolute;
-  left: 3px;
-  top: 8px;
-  bottom: 8px;
-  width: 3px;
-  background: var(--accent);
 }
 .uam-settings-page-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .uam-settings-page-header__title { font-size: var(--fs-lg); font-weight: var(--fw-semibold); }
@@ -57,7 +46,7 @@
 .uam-set-section__actions { display: flex; align-items: center; gap: var(--sp-1); flex-shrink: 0; }
 .uam-set-card { border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--surface); padding: 2px var(--sp-4); }
 .uam-set-card--flush { padding: 0; overflow: hidden; }
-.uam-set-card > .uam-set-field { padding-block: var(--sp-3); }
+.uam-set-card > .uam-set-field, .uam-set-card > form > .uam-set-field { padding-block: var(--sp-3); }
 .uam-set-card > .uam-set-field + .uam-set-field, .uam-set-card > .uam-set-row + .uam-set-field, .uam-set-card > .uam-set-field + .uam-set-row { border-top: 1px solid var(--border); }
 .uam-set-row { padding-block: var(--sp-3); }
 .uam-set-row + .uam-set-row { border-top: 1px solid var(--border); }
@@ -76,9 +65,8 @@
 .uam-set-field__hint { font-size: var(--fs-xs); color: var(--text-3); }
 @container (max-width: 560px) { .uam-set-row__main { flex-wrap: wrap; } .uam-set-row__control { max-width: none; width: 100%; } }
 @keyframes uam-set-in { from { opacity: 0; transform: translateY(4px); } }
-.uam-set-skeleton { height: 10px; border-radius: 5px; background: linear-gradient(90deg, var(--surface-up) 0%, var(--surface-high) 50%, var(--surface-up) 100%); background-size: 200% 100%; animation: uam-set-shimmer 1.2s ease-in-out infinite; }
+.uam-set-skeleton { height: 10px; border-radius: 5px; background: linear-gradient(90deg, var(--surface-up) 0%, var(--surface-high) 50%, var(--surface-up) 100%); background-size: 200% 100%; animation: uam-set-shimmer calc(1200ms * var(--motion-scale, 1)) ease-in-out infinite; }
 .uam-set-skeleton--thin { height: 8px; opacity: .7; }
-.uam-set-skeleton--label { width: 120px; height: 8px; margin: 0 2px 2px; }
 .uam-set-skeleton--control { width: 34px; height: 19px; border-radius: 999px; }
 @keyframes uam-set-shimmer { to { background-position: -200% 0; } }
 @media (prefers-reduced-motion: reduce) { .uam-set-section, .uam-set-skeleton { animation: none; } }

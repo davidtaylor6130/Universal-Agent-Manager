@@ -29,7 +29,7 @@ vi.mock('@xterm/addon-fit', () => ({
   },
 }))
 
-import { MainPanel } from './MainPanel'
+import { BootstrapStateNotice, MainPanel } from './MainPanel'
 import { useAppStore } from '../../store/useAppStore'
 import { APP_FAILURE_EVENT, type AppFailure } from '../../utils/appFailure'
 import { assignChatToPane, chatGridLeaves, defaultChatGridLayout, readChatGridLayout, readChatViewMode, setChatInLeaf, splitChatLeaf, writeChatGridLayout, writeChatViewMode } from '../../utils/chatGridStorage'
@@ -110,6 +110,36 @@ describe('MainPanel', () => {
       },
       cliBindingBySessionId: {},
     })
+  })
+
+  it('shows the startup state error with an accessible, focus-keeping Retry (#622)', () => {
+    const retry = vi.fn(() => useAppStore.setState({ bootstrapStateLoading: true }))
+    useAppStore.setState({ bootstrapStateError: 'Startup state stayed behind', bootstrapStateLoading: false, retryBootstrapState: retry })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => { root.render(<BootstrapStateNotice />) })
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Startup state stayed behind')
+    const button = () => host.querySelector('button[aria-label="Retry loading startup state"]') as HTMLButtonElement
+    button().focus()
+    act(() => { button().click() })
+    expect(retry).toHaveBeenCalledTimes(1)
+    expect(button().getAttribute('aria-busy')).toBe('true')
+    expect(button().getAttribute('aria-disabled')).toBe('true')
+    expect(button().disabled).toBe(false)
+    expect(document.activeElement).toBe(button())
+    act(() => { button().click() })
+    expect(retry).toHaveBeenCalledTimes(1)
+    // A Retry that fails the same way still changes the alert text so it is announced.
+    act(() => { useAppStore.setState({ bootstrapStateLoading: false }) })
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Retry failed (attempt 1).')
+    act(() => { button().click() })
+    act(() => { useAppStore.setState({ bootstrapStateLoading: false }) })
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Retry failed (attempt 2).')
+    act(() => { useAppStore.setState({ bootstrapStateError: '', bootstrapStateLoading: false }) })
+    expect(host.querySelector('[role="alert"]')).toBeNull()
+    act(() => root.unmount())
+    host.remove()
   })
 
   it('locks view switching while ACP or CLI output is active', () => {
@@ -215,7 +245,7 @@ describe('MainPanel', () => {
     act(() => root.render(<MainPanel />))
 
     const stopButton = () => host.querySelector<HTMLButtonElement>('.uam-chat-pane__header button[aria-label="Stop runtime"]')
-    expect(stopButton()?.querySelector('.lucide-power-off')).toBeTruthy()
+    expect(stopButton()?.querySelector('.uam-working-ring')).toBeTruthy()
     expect(stopButton()?.disabled).toBe(true)
     stopButton()?.click()
     expect(stopAcpSession).not.toHaveBeenCalled()
@@ -246,6 +276,51 @@ describe('MainPanel', () => {
       },
     })))
     expect(stopButton()).toBeNull()
+    act(() => root.unmount())
+    host.remove()
+    useAppStore.setState({ stopAcpSession: originalStop })
+  })
+
+  it('gives running, idle timeout and failed runtime states distinct icons and accessible text', async () => {
+    const originalStop = useAppStore.getState().stopAcpSession
+    const stopAcpSession = vi.fn(() => Promise.resolve(true))
+    useAppStore.setState({ stopAcpSession })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<MainPanel />))
+    const pill = () => host.querySelector<HTMLButtonElement>('.uam-chat-pane__header button[aria-label="Stop runtime"]')!
+    const description = () => host.ownerDocument.getElementById(pill().getAttribute('aria-describedby') ?? '')?.textContent ?? ''
+    const setBinding = (patch: object) => act(() => useAppStore.setState((state) => ({ acpBindingBySessionId: {
+      ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'], ...patch },
+    } })))
+
+    expect(pill().dataset.phase).toBe('busy')
+    expect(pill().querySelector('.uam-working-ring')).toBeTruthy()
+    expect(description()).toMatch(/^Running/)
+
+    setBinding({ lifecycleState: 'ready', processing: false, idleCountdownStartsAtMs: Date.now() - 1000, idleShutdownAtMs: Date.now() + 599_000, idleShutdownTimeoutSeconds: 600 })
+    expect(pill().dataset.phase).toBe('idle')
+    expect(pill().querySelector('.lucide-timer')).toBeTruthy()
+    expect(pill().querySelector('.uam-runtime-stop-timer')).toBeTruthy()
+    expect(description()).toMatch(/^Idle timeout · stops in 9:59/)
+
+    setBinding({ idleShutdownAtMs: Date.now() + 30_000 })
+    expect(pill().dataset.phase).toBe('ending')
+    expect(pill().querySelector('.lucide-timer')).toBeTruthy()
+
+    setBinding({ lifecycleState: 'error', idleCountdownStartsAtMs: undefined, idleShutdownAtMs: undefined })
+    expect(pill().dataset.phase).toBe('failed')
+    expect(pill().querySelector('.uam-status-box--error')).toBeTruthy()
+    expect(pill().textContent).toContain('Failed')
+    expect(description()).toBe('Runtime failed · click to stop it')
+    setBinding({ queueHeld: true, queuedPrompts: ['q1', 'q2'].map((id) => ({ id, revision: 1, text: id, uamAgentId: 'build', markdownStoreFiles: [], attachments: [] })) })
+    expect(description()).toBe('Runtime failed · click to stop it. Stopping will not send 2 held messages; the text stays in this chat.')
+    setBinding({ queueHeld: false, queuedPrompts: [] })
+    expect(pill().disabled).toBe(false)
+    await act(async () => { pill().click(); await Promise.resolve() })
+    expect(stopAcpSession).toHaveBeenCalledWith('chat-1', 'timeout')
+
     act(() => root.unmount())
     host.remove()
     useAppStore.setState({ stopAcpSession: originalStop })

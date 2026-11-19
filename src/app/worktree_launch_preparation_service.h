@@ -2,6 +2,7 @@
 
 #include "app/git_worktree_service.h"
 
+#include <chrono>
 #include <future>
 #include <memory>
 #include <optional>
@@ -21,6 +22,10 @@ namespace uam
 	{
 		GitWorktreeOperationResult operation;
 		ChatSession metadata;
+		/// Remote only: saved chat summaries and the read-only run ledger (including restart-inert v2 runs) observed by
+		/// the worker. The owner admits references against them with live runtime state; they grant no authority.
+		std::vector<ChatSession> references;
+		std::vector<AgentRun> reference_runs;
 	};
 	struct WorktreeLaunchPreparationTask
 	{
@@ -43,6 +48,8 @@ namespace uam
 		std::shared_ptr<std::stop_source> cancellation = std::make_shared<std::stop_source>();
 		std::shared_ptr<WorkspaceLeaseGate::Lease> lease;
 		std::future<PreparedLaunchWorktree> worker;
+		/// Remote only: past this point the owner cancels the worker, so an unanswered helper cannot hold the chat's workspace operation forever.
+		std::chrono::steady_clock::time_point worker_deadline = std::chrono::steady_clock::time_point::max();
 		std::optional<PreparedLaunchWorktree> prepared;
 		std::optional<bool> saved;
 		bool merged = false;
@@ -57,6 +64,10 @@ namespace uam
 	/// <summary>Starts owned SVN update and optional Git preparation, then admits launch only after live workspace metadata is saved.</summary>
 	WorktreeLaunchPreparationResult PrepareWorktreeForLaunch(AppState& app, ChatSession& chat, bool explicit_create = false);
 	bool IsWorktreeLaunchPreparationPending(const AppState& app, const std::string& chat_id);
+	/// A worktree chat launches only after its pending save, which may publish its workspace fields, reaches disk.
+	bool WorktreeLaunchWaitsForChatSave(const AppState& app, const ChatSession& chat);
+	/// <summary>True while this chat's preparation worker or its admission save is still running; a finished result is not running.</summary>
+	bool IsWorktreeLaunchPreparationRunning(const AppState& app, const std::string& chat_id);
 	bool PollWorktreeLaunchPreparations(AppState& app);
 	void CancelWorktreeLaunchPreparation(AppState& app, const std::string& chat_id, const std::shared_ptr<std::stop_source>& expected = {});
 }

@@ -1,7 +1,8 @@
-import { ArrowUpCircle, ArrowUpRight, Check, CheckCircle2, Copy, Download, Loader2, RefreshCw, RotateCcw, TriangleAlert, X } from 'lucide-react'
+import { ArrowUpCircle, ArrowUpRight, Check, CheckCircle2, CircleAlert, Download, Loader2, RefreshCw, RotateCcw, TriangleAlert, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import type { UpdateMonitor } from '../../hooks/useUpdateMonitor'
 import { ProviderLogo } from '../shared/ProviderLogo'
+import { CopyTextButton } from '../chat/StatusHelpers'
 import { Button, ConfirmDialog, IconButton, ProgressFill, cx } from '../ui'
 import { reportAppFailure } from '../../utils/appFailure'
 import { Notice } from '../ui/Notice'
@@ -208,9 +209,9 @@ export function UpdatesPanel({ monitor, onClose, closing = false }: { monitor: U
               const helper = Boolean(__UAM_FEATURE_SSH__ && target?.remoteHostId)
               return (
                 <article key={key} className="uam-update-row uam-update-row--error flex min-w-0 max-w-full items-center gap-1.5 rounded-lg px-2 py-1.5">
-                  <X size={14} aria-hidden className="shrink-0" style={{ color: 'var(--error)' }} />
+                  <CircleAlert size={14} aria-hidden className="shrink-0" style={{ color: 'var(--error)' }} />
                   <span className="min-w-0 flex-1 truncate text-sm font-medium" style={{ color: 'var(--error)' }}>{`${result.name} update failed`}</span>
-                  <IconButton size="sm" icon={<Copy size={14} />} label={`Copy ${result.name} update logs`} onClick={() => { void navigator.clipboard?.writeText(result.output || result.message) }} />
+                  <CopyTextButton size="sm" text={result.output || result.message} label={`Copy ${result.name} update logs`} title="Copy update logs" />
                   {target && (
                     <IconButton size="sm" icon={<RotateCcw size={14} />} label={`Retry ${result.name} update to ${target.latestVersion}`} onClick={() => (helper ? installHelper(target) : installProvider(target))} />
                   )}
@@ -260,10 +261,10 @@ export function UpdatesPanel({ monitor, onClose, closing = false }: { monitor: U
               const rowClass = cx('uam-update-row flex min-w-0 max-w-full items-center gap-1.5 rounded-lg px-2 py-1.5', failed && 'uam-update-row--error')
               const content = failed ? (
                 <>
-                  <X size={14} aria-hidden className="shrink-0" style={{ color: 'var(--error)' }} />
+                  <CircleAlert size={14} aria-hidden className="shrink-0" style={{ color: 'var(--error)' }} />
                   <span className="min-w-0 flex-1 truncate text-sm font-medium" style={{ color: 'var(--error)' }}>{`${update.name} update failed`}</span>
                   {outcome.output && (
-                    <IconButton size="sm" icon={<Copy size={14} />} label={`Copy ${update.name} update logs`} onClick={() => { void navigator.clipboard?.writeText(outcome.output ?? '') }} />
+                    <CopyTextButton size="sm" text={outcome.output ?? ''} label={`Copy ${update.name} update logs`} title="Copy update logs" />
                   )}
                   <IconButton size="sm" icon={<RotateCcw size={14} />} label={`Retry ${update.name} update to ${update.latestVersion}`} onClick={install} />
                   <IconButton size="sm" icon={<X size={14} />} label={`Dismiss ${update.name} ${update.latestVersion}`} onClick={dismiss} />
@@ -274,7 +275,7 @@ export function UpdatesPanel({ monitor, onClose, closing = false }: { monitor: U
                     : update.providerId ? <ProviderLogo providerId={update.providerId} size={14} className="shrink-0" /> : <ArrowUpCircle size={14} aria-hidden className="shrink-0" style={{ color: 'var(--text-3)' }} />}
                   <span className="min-w-0 flex-1 truncate text-sm font-medium" style={{ color: 'var(--text)' }}>{update.name}</span>
                   {!succeeded && <span className="shrink-0 font-mono text-xs" style={{ color: 'var(--text-3)' }}>
-                    {update.currentVersion} <span aria-hidden>→</span> <span data-kind="next" style={{ color: 'var(--accent)' }}>{update.latestVersion}</span>
+                    {update.currentVersion} <span aria-hidden>→</span> <span data-kind="next" style={{ color: 'var(--accent)' }}>{update.latestDisplay ?? update.latestVersion}</span>
                   </span>}
                   {update.url && !succeeded && (
                     <IconButton

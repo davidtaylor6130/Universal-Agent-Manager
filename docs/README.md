@@ -20,6 +20,7 @@ These docs describe what UAM’s features mean and how they are expected to beha
 | Execution environments | [Local and SSH execution](remote-environments/remote-environments.md) |
 | Computer use | [Shared controller and native-provider routing](computer-use.md) |
 | Phone access | [Shared main-device connection](phone-access.md), [native iPhone client](phone-native.md) and [browser companion](phone-browser.md) |
+| Automation | [Token-scoped API for other apps and workflows](automation-api.md) |
 | Usage | [Tokens, context, account allowances and history](usage/usage.md) |
 | Changes and diffs | [Workspace review, recorded edits and commits](changes/changes.md) |
 | File inspection | [Current file content and host identity](files/inspection.md) |

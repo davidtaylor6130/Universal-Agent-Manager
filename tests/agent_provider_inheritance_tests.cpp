@@ -67,7 +67,7 @@ UAM_TEST(AgentCrossProviderDefaultsDoNotInheritParentModelOptionsOrWeakenSafety)
 	{
 		AgentProviderFixture fixture;
 		fixture.app.chats.front().command_safety_tier = "yolo";
-		fixture.app.chats.front().approval_mode = "plan";
+		fixture.app.chats.front().approval_mode = "acceptEdits";
 		const ChatSession& child = fixture.Enqueue("claude-cli", model);
 		UAM_ASSERT_EQ(child.provider_id, std::string("claude-cli"));
 		UAM_ASSERT_EQ(child.model_id, model);
@@ -75,13 +75,20 @@ UAM_TEST(AgentCrossProviderDefaultsDoNotInheritParentModelOptionsOrWeakenSafety)
 		UAM_ASSERT(child.service_tier.empty());
 		UAM_ASSERT(!child.service_tier_explicit);
 		UAM_ASSERT_EQ(child.command_safety_tier, std::string("yolo"));
-		UAM_ASSERT_EQ(child.approval_mode, std::string("plan"));
-		UAM_ASSERT_EQ(fixture.app.agent_runs.back().effective_workspace_access, std::string("read"));
+		UAM_ASSERT_EQ(child.approval_mode, std::string("acceptEdits"));
+		UAM_ASSERT_EQ(fixture.app.agent_runs.back().effective_workspace_access, std::string("write"));
 		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(fixture.app.data_root, child.id);
 		UAM_ASSERT(saved.has_value());
 		UAM_ASSERT_EQ(saved->model_id, model);
 		UAM_ASSERT(saved->reasoning_effort.empty() && saved->service_tier.empty() && !saved->service_tier_explicit);
 	}
+	// A Plan parent keeps its own provider's enforcement: another provider is refused without a run or transcript.
+	AgentProviderFixture fixture;
+	fixture.app.chats.front().approval_mode = "plan";
+	std::string run_id, error;
+	UAM_ASSERT(!uam::AgentRunScheduler::Enqueue(fixture.app, "root", {}, "worker", "Bounded task.", &run_id, &error, "claude-cli"));
+	UAM_ASSERT(error.find("own provider") != std::string::npos);
+	UAM_ASSERT(fixture.app.agent_runs.empty() && fixture.app.chats.size() == 1);
 }
 
 UAM_TEST(AgentUnavailableProviderRejectsWithoutCreatingRunOrTranscript)
@@ -119,4 +126,20 @@ UAM_TEST(AgentChildKeepsResolvedParentWorktreeAndWorkspaceAgentSource)
 	UAM_ASSERT(fixture.app.agent_runs.back().definition_snapshot.find("name: worker") != std::string::npos);
 	UAM_ASSERT_EQ(fixture.app.agent_runs.back().effective_workspace_access, std::string("read"));
 	UAM_ASSERT_EQ(child.approval_mode, std::string("plan"));
+}
+
+UAM_TEST(AgentDelegationCannotRaceParentWorktreeMutation)
+{
+	AgentProviderFixture fixture;
+	fixture.app.worktree_operation_chat_ids.insert("root");
+	std::string id, error;
+	UAM_ASSERT(!uam::AgentRunScheduler::Enqueue(fixture.app, "root", {}, "worker", "Bounded task.", &id, &error));
+	UAM_ASSERT(error.find("workspace operation") != std::string::npos);
+	UAM_ASSERT(id.empty());
+	UAM_ASSERT(fixture.app.agent_runs.empty() && fixture.app.queued_agent_run_ids.empty());
+	UAM_ASSERT_EQ(fixture.app.chats.size(), std::size_t{1});
+	UAM_ASSERT(!fs::exists(fixture.app.data_root / "agent-runs"));
+	fixture.app.worktree_operation_chat_ids.erase("root");
+	UAM_ASSERT(uam::AgentRunScheduler::Enqueue(fixture.app, "root", {}, "worker", "Bounded task.", &id, &error));
+	UAM_ASSERT(!id.empty());
 }

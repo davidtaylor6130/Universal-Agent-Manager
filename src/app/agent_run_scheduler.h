@@ -78,6 +78,8 @@ namespace uam
 		static bool OwnsInitialRoutingPreparation(const AppState&, const ChatSession&);
 		static void CancelPendingInitialMention(AppState&, std::string_view chat_id);
 		static bool HasPendingInitialMention(const AppState&, std::string_view chat_id);
+		/// <summary>Same answer for a chat already in hand, without searching the chat catalogue for it.</summary>
+		static bool HasPendingInitialMention(const AppState&, const ChatSession& chat);
 		/// A possible committed private ROOT prefix, not ordinary preparation or a confirmed live ACK.
 		static bool HasUnconfirmedInitialRootPublication(const AppState&, const ChatSession&);
 		static bool InitialSendAllowed(const AppState&, const ChatSession&, const std::string& text);
@@ -114,11 +116,13 @@ namespace uam
 		static bool InitialForceSaveAllowed(const AppState& app, std::string_view chat_id);
 		static bool InitialSessionOwned(const AppState& app, const AcpSessionState& session, const ChatSession& chat);
 
+		static bool ValidateRequestedReasoningEffort(const AppState&, const ChatSession&, const AcpSessionState* session, std::string* error_out = nullptr);
 		static bool Enqueue(AppState& app, const std::string& root_chat_id,
 		                    const std::string& parent_run_id, const std::string& agent_id,
 		                    const std::string& task, std::string* run_id_out = nullptr,
 		                    std::string* error_out = nullptr, const std::string& provider_id = {},
-		                    const std::string& model_id = {}, bool additional_read_only_ceiling = false);
+		                    const std::string& model_id = {}, bool additional_read_only_ceiling = false,
+		                    const std::optional<std::string>& reasoning_effort = std::nullopt);
 		static bool TryEnqueueMention(AppState& app, const std::string& root_chat_id,
 		                              const std::string& text, bool* handled_out,
 		                              std::string* run_id_out = nullptr,
@@ -126,6 +130,10 @@ namespace uam
 		static bool ResumeInterrupted(AppState& app, const std::string& run_id,
 		                              std::string* new_run_id_out = nullptr,
 		                              std::string* error_out = nullptr);
+		/// Startup only, best effort: asks the ordinary remote Stop path to end the helper process of each run this
+		/// start marked interrupted, where the saved child chat proves ownership (its remote host and process control
+		/// token). Never relaunches, replays input or kills a local process. Returns the number of stops requested.
+		static std::size_t RequestStartupStops(AppState& app, const std::vector<std::string>& interrupted_run_ids);
 		static bool Poll(AppState& app);
 		static bool GetResultForParent(const AppState& app, const std::string& run_id,
 		                               const std::string& root_chat_id,

@@ -18,8 +18,10 @@ struct HomeCatalogue
     {
         let raw: WireObject
         let workspaces: [Workspace]
+        /// Nested collections are flattened; the name carries the parent path, for example "Homelab / Services".
+        var path = ""
         var id: String { raw.text("id") }
-        var name: String { raw.text("name") }
+        var name: String { path.isEmpty ? raw.text("name") : path }
         var collapsed: Bool { raw.flag("collapsed") }
         var chatCount: Int { workspaces.reduce(0) { $0 + $1.chatCount } }
     }
@@ -95,6 +97,20 @@ struct HomeCatalogue
         let rowsByID = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
         var claimed = Set<String>()
         var seenCollectionIDs = Set<String>()
+        let collectionsByID = Dictionary(collections.map { ($0.text("id"), $0) }, uniquingKeysWith: { first, _ in first })
+        func path(_ collection: WireObject) -> String
+        {
+            // Bounded like the desktop depth limit and by visited ids, so a damaged parent chain cannot loop.
+            var names = [collection.text("name")]
+            var seen: Set<String> = [collection.text("id")]
+            var parentID = collection.text("parentId")
+            while names.count < 5, seen.insert(parentID).inserted, let parent = collectionsByID[parentID]
+            {
+                names.insert(parent.text("name"), at: 0)
+                parentID = parent.text("parentId")
+            }
+            return names.joined(separator: " / ")
+        }
         let collectionRows = collections.compactMap { collection -> Collection? in
             let id = collection.text("id")
             guard !id.isEmpty, seenCollectionIDs.insert(id).inserted else { return nil }
@@ -106,7 +122,7 @@ struct HomeCatalogue
             let unfiltered = matchingIDs == nil && projectID.isEmpty
             guard unfiltered || !workspaces.isEmpty else { return nil }
             // Keep raw references for passive resource labels; never invent native launch actions.
-            return Collection(raw: collection, workspaces: workspaces)
+            return Collection(raw: collection, workspaces: workspaces, path: path(collection))
         }
         // Desktop keeps unfiled roots first, then missing-folder buckets in encounter order.
         var unknownFolderIDs: [String] = []

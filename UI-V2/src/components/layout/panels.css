@@ -325,3 +325,30 @@
 @media (prefers-reduced-motion: reduce) {
   .uam-shell-workspace[data-state="closed"] { animation: none; }
 }
+
+/* Expandable notification rows: the bar toggles the full message; buttons and links inside act alone. */
+.uam-np-row__body { display: grid; gap: 2px; min-width: 0; }
+.uam-np-row[data-expandable] { cursor: pointer; }
+.uam-np-row[data-expanded] { align-items: start; }
+.uam-np-row__title[role="button"] { border-radius: var(--r-sm); }
+.uam-np-row__title[role="button"]:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
+.uam-np-row__chevron { flex: none; color: var(--text-3); transition: transform var(--dur-base) var(--ease); }
+.uam-np-row[data-expanded] .uam-np-row__chevron { transform: rotate(90deg); }
+.uam-np-row[data-expanded] .uam-np-row__title { align-items: flex-start; }
+.uam-np-row[data-expanded] .uam-np-row__title > span:first-child { white-space: normal; overflow-wrap: anywhere; }
+.uam-np-row[data-expanded] .uam-np-row__chevron { margin-top: 3px; }
+.uam-np-row__detail {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 2px;
+  font-size: var(--fs-xs);
+  color: var(--text-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  cursor: text;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.uam-np-row__host { display: inline-flex; align-items: center; gap: var(--sp-1); min-width: 0; max-width: 100%; font-size: var(--fs-xs); color: var(--text-3); }

@@ -34,6 +34,17 @@ namespace
 		IMPLEMENT_REFCOUNTING(GoalTimingCallback);
 	};
 
+	/// Background saves have no fixed duration on hosted CI runners; callers assert the saved result.
+	void WaitForGoalHandlerSaves(uam::AppState& app)
+	{
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+		while (!app.pending_chat_save_at_by_chat_id.empty() && std::chrono::steady_clock::now() < deadline)
+		{
+			uam::FlushPendingChatSaves(app);
+			std::this_thread::sleep_for(std::chrono::milliseconds(2));
+		}
+	}
+
 	/// Private stdin sink exercises actual native request writes without a provider call.
 	struct GoalHandlerTransport
 	{
@@ -123,11 +134,7 @@ namespace
 		UAM_ASSERT_EQ(successes_before_full_release, 0);
 		UAM_ASSERT_EQ(session.codex_goal_initial_turn_request_id, 0);
 		UAM_ASSERT_EQ(app.chats.front().metadata_incarnation, chat.metadata_incarnation);
-		for (int attempt = 0; attempt < 500 && !app.pending_chat_save_at_by_chat_id.empty(); ++attempt)
-		{
-			uam::FlushPendingChatSaves(app);
-			std::this_thread::sleep_for(std::chrono::milliseconds(2));
-		}
+		WaitForGoalHandlerSaves(app);
 		UAM_ASSERT(app.pending_chat_save_at_by_chat_id.empty());
 		UAM_ASSERT_EQ(callback->failures, 0);
 		UAM_ASSERT_EQ(callback->successes, 1);
@@ -213,11 +220,8 @@ UAM_TEST(AntigravityGoalHandlerPauseWaitsForDurableReceiptBeforeCancelling)
 	holder.join();
 	UAM_ASSERT(processing_before_receipt);
 	UAM_ASSERT_EQ(callbacks_before_receipt, 0);
-	for (int attempt = 0; attempt < 500 && !app.pending_chat_save_at_by_chat_id.empty(); ++attempt)
-	{
-		uam::FlushPendingChatSaves(app);
-		std::this_thread::sleep_for(std::chrono::milliseconds(2));
-	}
+	WaitForGoalHandlerSaves(app);
+	UAM_ASSERT(app.pending_chat_save_at_by_chat_id.empty());
 	UAM_ASSERT_EQ(callback->successes, 1);
 	UAM_ASSERT_EQ(callback->failures, 0);
 	UAM_ASSERT(!session.processing);

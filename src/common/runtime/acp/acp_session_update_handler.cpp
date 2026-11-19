@@ -318,7 +318,7 @@ void HandleSessionUpdate(AppState& app, AcpSessionState& session, ChatSession& c
 
 		if (AppendThoughtChunk(chat, session, live_text))
 		{
-			ScheduleChatSave(app, chat, 0.5);
+			ScheduleChatSave(app, chat, 0.5, true);
 		}
 		return;
 	}
@@ -350,7 +350,7 @@ void HandleSessionUpdate(AppState& app, AcpSessionState& session, ChatSession& c
 		{
 			uam::PushStreamToken(browser, chat.id, session.current_assistant_message_index, appended);
 		}
-		ScheduleChatSave(app, chat, 0.5);
+		ScheduleChatSave(app, chat, 0.5, true);
 		return;
 	}
 
@@ -390,7 +390,7 @@ void HandleSessionUpdate(AppState& app, AcpSessionState& session, ChatSession& c
 			AppendToolTurnEventIfNeeded(session, id);
 			if (SyncAcpToolCallsToAssistantMessage(chat, session, false))
 			{
-				SaveChatQuietly(app, chat);
+				SaveChatSoon(app, chat);
 			}
 		}
 		return;
@@ -416,7 +416,7 @@ void HandleSessionUpdate(AppState& app, AcpSessionState& session, ChatSession& c
 		AppendPlanTurnEventIfNeeded(session);
 		if (SyncAcpPlanToAssistantMessage(chat, session, true))
 		{
-			SaveChatQuietly(app, chat);
+			SaveChatSoon(app, chat);
 		}
 	}
 }

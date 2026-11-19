@@ -189,6 +189,87 @@ UAM_TEST(TranscriptPageLoadingLeavesNativeHistoryColdAndPreservesDurableContext)
 	}
 }
 
+UAM_TEST(UnloadedChatOpensFromSavedPrimaryWhenPageReadIsRefused)
+{
+	uam_test::TempDir temp("uam-open-after-page-refusal");
+	ChatSession original = RetentionChat();
+	for (int index = 0; index < 5; ++index) original.messages.push_back(Message{MessageRole::Assistant, "saved history " + std::to_string(index)});
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, original));
+	std::optional<ChatSession> summary = ChatRepository::LoadLocalChat(temp.root, original.id, false);
+	UAM_ASSERT(summary.has_value() && !summary->messages_loaded);
+	uam::TranscriptRetentionService::SavedPageRead paged = uam::TranscriptRetentionService::ReadSavedPage(temp.root, *summary, 50, std::nullopt);
+	UAM_ASSERT(paged.page.has_value() && !paged.refused);
+
+	// Memory metadata ahead of the file (an unsaved recency change) refuses the paged read. That is reported as a
+	// refusal to fall back from, not as a failed open; a cancelled read is neither.
+	summary->updated_at = "2099-01-01T00:00:00.000Z";
+	paged = uam::TranscriptRetentionService::ReadSavedPage(temp.root, *summary, 50, std::nullopt);
+	UAM_ASSERT(!paged.page.has_value() && paged.refused);
+	UAM_ASSERT_EQ(paged.warning, std::string("Could not read chat history. Retry to refresh it."));
+	UAM_ASSERT(!uam::TranscriptRetentionService::ReadSavedPage(temp.root, *summary, 50, std::nullopt, []() { return true; }).refused);
+	// The fallback is one full read whose copy stays loaded, so later pages are served from memory.
+	std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(temp.root, original.id, true);
+	UAM_ASSERT(loaded.has_value());
+	UAM_ASSERT(uam::TranscriptRetentionService::CompleteHistoryLoad(*summary, std::move(*loaded), summary->persisted_message_count, summary->persisted_messages_digest, paged.refused));
+	UAM_ASSERT(summary->messages_loaded);
+	UAM_ASSERT_EQ(summary->messages.size(), original.messages.size());
+	UAM_ASSERT(uam::TranscriptRetentionService::ReadSavedPage(temp.root, *summary, 50, std::nullopt).refused);
+
+	// A stale in-memory count is refused unless the caller proved the saved primary is the authority; then it is corrected.
+	summary = ChatRepository::LoadLocalChat(temp.root, original.id, false);
+	UAM_ASSERT(summary.has_value());
+	const std::size_t saved_count = summary->persisted_message_count;
+	const std::string saved_digest = summary->persisted_messages_digest;
+	summary->persisted_message_count = saved_count - 1;
+	summary->persisted_messages_digest = "stale:" + std::to_string(saved_count - 1);
+	loaded = ChatRepository::LoadLocalChat(temp.root, original.id, true);
+	UAM_ASSERT(loaded.has_value());
+	UAM_ASSERT(!uam::TranscriptRetentionService::CompleteHistoryLoad(*summary, std::move(*loaded), summary->persisted_message_count, summary->persisted_messages_digest, false));
+	UAM_ASSERT_EQ(summary->persisted_message_count, saved_count - 1);
+	loaded = ChatRepository::LoadLocalChat(temp.root, original.id, true);
+	UAM_ASSERT(loaded.has_value());
+	UAM_ASSERT(uam::TranscriptRetentionService::CompleteHistoryLoad(*summary, std::move(*loaded), summary->persisted_message_count, summary->persisted_messages_digest, false, true));
+	UAM_ASSERT_EQ(summary->persisted_message_count, saved_count);
+	UAM_ASSERT_EQ(summary->persisted_messages_digest, saved_digest);
+	UAM_ASSERT(!summary->messages_loaded && summary->messages.empty());
+
+	// The correction never replaces a loaded transcript or another chat's history.
+	loaded = ChatRepository::LoadLocalChat(temp.root, original.id, true);
+	UAM_ASSERT(loaded.has_value());
+	summary->persisted_message_count = 1;
+	summary->messages_loaded = true;
+	UAM_ASSERT(!uam::TranscriptRetentionService::CompleteHistoryLoad(*summary, std::move(*loaded), 1, summary->persisted_messages_digest, true, true));
+	UAM_ASSERT_EQ(summary->persisted_message_count, std::size_t{1});
+	summary->messages_loaded = false;
+	loaded = ChatRepository::LoadLocalChat(temp.root, original.id, true);
+	UAM_ASSERT(loaded.has_value());
+	loaded->id = "another-chat";
+	UAM_ASSERT(!uam::TranscriptRetentionService::CompleteHistoryLoad(*summary, std::move(*loaded), 1, summary->persisted_messages_digest, true, true));
+	UAM_ASSERT_EQ(summary->persisted_message_count, std::size_t{1});
+}
+
+UAM_TEST(OpeningAChatNeverRewritesItsTranscript)
+{
+	uam_test::TempDir temp("uam-open-no-rewrite");
+	ChatSession original = RetentionChat();
+	original.messages.push_back(Message{MessageRole::Assistant, "saved history"});
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, original));
+	const std::filesystem::path summary_path = AppPaths::UamChatSummaryFilePath(temp.root, original.id);
+	const std::optional<std::string> revision = ChatRepository::ChatStorageRevision(temp.root, original.id);
+	ChatSession metadata;
+	metadata.id = original.id;
+	metadata.last_opened_at = "2026-11-10T09:00:00.000Z";
+	// A current summary takes the recency overlay without touching the primary.
+	const std::shared_ptr<PreparedChatSave> prepared = ChatRepository::PrepareLastOpenedAt(temp.root, metadata, false);
+	UAM_ASSERT(prepared != nullptr);
+	UAM_ASSERT(ChatRepository::PublishPreparedChatSave(prepared));
+	UAM_ASSERT_EQ(ChatRepository::ChatStorageRevision(temp.root, original.id), revision);
+	// A missing summary is the stale-cache case: the selection path prepares nothing rather than a full save.
+	std::filesystem::remove(summary_path);
+	UAM_ASSERT(ChatRepository::PrepareLastOpenedAt(temp.root, metadata, false) == nullptr);
+	UAM_ASSERT_EQ(ChatRepository::ChatStorageRevision(temp.root, original.id), revision);
+}
+
 UAM_TEST(TranscriptRetentionProtectsEveryVisiblePaneAndReopenedHydration)
 {
 	uam::AppState app;

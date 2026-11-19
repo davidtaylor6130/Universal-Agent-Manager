@@ -130,6 +130,20 @@ describe('active chat settlement', () => {
   })
 })
 
+describe('active chats with a pull request watch', () => {
+  it('keeps a watched chat in Active Chats whatever its age or earlier Done, and releases it when the watch ends', () => {
+    const old = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000)
+    const sessions = [
+      { ...makeSession('watched', 'Watched', null, old, old), settledAt: now.toISOString() },
+      { ...makeSession('idle', 'Idle', null, old, old), settledAt: now.toISOString() },
+    ]
+    const groups = (watchingSessionIds: Set<string>) =>
+      buildChatSearchModel([], sessions, buildChatSearchIndex(sessions), [], undefined, undefined, { nowMs: now.getTime(), watchingSessionIds }).activeSessionIds
+    expect(groups(new Set(['watched']))).toEqual(['watched'])
+    expect(groups(new Set())).toEqual([])
+  })
+})
+
 describe('chatSearch', () => {
   it('keeps all chats and current folder expansion state with an empty query', () => {
     const folders = [makeFolder('alpha', true), makeFolder('beta', false)]

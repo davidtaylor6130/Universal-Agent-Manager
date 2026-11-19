@@ -13,6 +13,15 @@ final class TranscriptTests: XCTestCase
         XCTAssertEqual(segments[1].toolIDs, ["one", "two"])
     }
 
+    func testHtmlViewShowsADesktopPlaceholderInItsPosition()
+    {
+        let message = MobileMessage(index: 3, raw: ["role": "assistant", "content": "Done",
+            "blocks": [["type": "html_view", "text": "<p>chart</p>", "title": "Sales chart", "requestId": "html-view:one"], ["type": "assistant_text", "text": "Done"]]])
+        let segments = TranscriptSegments.build(message)
+        XCTAssertEqual(segments.map(\.kind), [.htmlView, .text])
+        XCTAssertEqual(segments.first?.text, "Sales chart")
+    }
+
     func testLegacyContentAndUnreferencedToolsRemainVisible()
     {
         let message = MobileMessage(index: 0, raw: ["role": "assistant", "content": "Kept", "toolCalls": [["id": "orphan"]]])

@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <fstream>
+#include <set>
 #include <future>
 #include <thread>
 
@@ -426,7 +427,7 @@ UAM_TEST(SettingsNativeExplicitRescanPreservesSettledRemoteCandidatesWithoutRemo
 	app.settings.execution_hosts.push_back(host);
 	app.folders.push_back({"remote", "Remote", "/synthetic/remote", false, host.id});
 	unsigned remote_calls = 0;
-	uam::StartupNativeImportService service(FixtureScanner({StartupHistory(temp.root / "workspace", "local-native")}), [&](const uam::StartupNativeImportRemoteScope&, const ProviderProfile*, std::stop_token)
+	uam::StartupNativeImportService service(FixtureScanner({StartupHistory(temp.root / "workspace", "local-native")}), [&](const uam::StartupNativeImportRemoteScope&, const ProviderProfile*, ChatHistorySyncService::RemoteHistoryScanContext&, std::stop_token)
 	{
 		++remote_calls;
 		ChatHistorySyncService::LocalHistoryDiscovery result;
@@ -742,6 +743,195 @@ UAM_TEST(NativeImportFiltersDropMatchingTitlesAndFoldersBeforeOffering)
 	discovery.chats = {kept, scripted, scratch};
 	UAM_ASSERT(ChatHistorySyncService().FilterStartupImportCandidates(app, discovery));
 	UAM_ASSERT_EQ(discovery.chats.size(), std::size_t{3});
+}
+
+UAM_TEST(StartupImportLeavesOldSessionsForExplicitDiscovery)
+{
+	TempDir temp("uam-native-import-startup-age");
+	uam::AppState app;
+	StartupWorkspace(app, temp.root);
+	ExecutionHost host;
+	host.id = "synthetic-host"; host.transport = "ssh"; host.platform = "linux"; host.runner_status = "ready";
+	app.settings.execution_hosts.push_back(host);
+	app.folders.push_back({"remote", "Remote", "/synthetic/remote", false, host.id});
+	const std::string now = uam::time::IsoUtcTimestampNow();
+	const std::string old_time = "2020-01-01T00:00:00.000Z";
+	const auto history = [&](const std::string& id, const std::string& updated_at)
+	{
+		ChatSession chat = StartupHistory(temp.root / "workspace", id);
+		chat.updated_at = updated_at;
+		return chat;
+	};
+	const std::vector<ChatSession> local = {history("recent", now), history("old", old_time), history("untimed", ""), history("garbled", "not-a-time")};
+	const auto remote = [&](const uam::StartupNativeImportRemoteScope&, const ProviderProfile*, ChatHistorySyncService::RemoteHistoryScanContext&, std::stop_token)
+	{
+		ChatHistorySyncService::LocalHistoryDiscovery result;
+		for (const auto& [id, updated_at] : {std::pair<std::string, std::string>{"remote-old", old_time}, {"remote-recent", now}})
+		{
+			auto chat = StartupHistory("/synthetic/remote", id);
+			chat.execution_host_id = host.id; chat.folder_id = "remote"; chat.updated_at = updated_at;
+			result.chats.push_back(std::move(chat));
+		}
+		return result;
+	};
+	const auto offered_ids = [](const uam::StartupNativeImportService& service)
+	{
+		std::set<std::string> ids;
+		for (const auto& candidate : service.Snapshot().candidates) ids.insert(candidate.native_session_id);
+		return ids;
+	};
+	{
+		// An explicit 0 turns the limit off: startup offers every session.
+		app.settings.native_import_startup_max_age_days = 0;
+		uam::StartupNativeImportService service(FixtureScanner(local), remote);
+		service.Initialize(app); WaitForStartup(service, app);
+		UAM_ASSERT_EQ(offered_ids(service), (std::set<std::string>{"recent", "old", "untimed", "garbled", "remote-old", "remote-recent"}));
+	}
+	// The rest of this case runs on the default limit, with no value chosen.
+	app.settings.native_import_startup_max_age_days = AppSettings{}.native_import_startup_max_age_days;
+	uam::StartupNativeImportService service(FixtureScanner(local), remote);
+	service.Initialize(app); WaitForStartup(service, app);
+	// Startup offers recent sessions and sessions without a readable time; nothing is saved.
+	UAM_ASSERT_EQ(offered_ids(service), (std::set<std::string>{"recent", "untimed", "garbled", "remote-recent"}));
+	UAM_ASSERT(!fs::exists(app.data_root));
+	// Declining everything startup offered leaves the held-back sessions untouched.
+	const uam::StartupNativeImportSnapshot ready = service.Snapshot();
+	std::vector<std::string> declined;
+	for (const auto& candidate : ready.candidates) declined.push_back(candidate.candidate_id);
+	std::string error;
+	UAM_ASSERT(service.Decide(app, ready.generation, {}, declined, &error));
+	UAM_ASSERT_EQ(service.Snapshot().total_count, std::size_t{0});
+	// The explicit Chat Data scan lists the old local session and the remote one startup held back.
+	UAM_ASSERT(service.DiscoverLocalHistory(app)); WaitForStartup(service, app);
+	UAM_ASSERT_EQ(offered_ids(service), (std::set<std::string>{"old", "remote-old"}));
+}
+
+// A folder filter saved after startup also covers the remote sessions startup staged or held back.
+UAM_TEST(StartupImportDiscoveryFiltersStagedRemoteSessionsAgain)
+{
+	TempDir temp("uam-native-import-startup-refilter");
+	uam::AppState app;
+	StartupWorkspace(app, temp.root);
+	ExecutionHost host;
+	host.id = "synthetic-host"; host.transport = "ssh"; host.platform = "linux"; host.runner_status = "ready";
+	app.settings.execution_hosts.push_back(host);
+	app.folders.push_back({"remote", "Remote", "/synthetic/remote", false, host.id});
+	app.settings.native_import_startup_max_age_days = 30;
+	const auto remote = [&](const uam::StartupNativeImportRemoteScope&, const ProviderProfile*, ChatHistorySyncService::RemoteHistoryScanContext&, std::stop_token)
+	{
+		ChatHistorySyncService::LocalHistoryDiscovery result;
+		for (const auto& [id, updated_at] : {std::pair<std::string, std::string>{"remote-old", "2020-01-01T00:00:00.000Z"}, {"remote-recent", uam::time::IsoUtcTimestampNow()}})
+		{
+			auto chat = StartupHistory("/synthetic/remote", id);
+			chat.execution_host_id = host.id; chat.folder_id = "remote"; chat.updated_at = updated_at;
+			result.chats.push_back(std::move(chat));
+		}
+		return result;
+	};
+	uam::StartupNativeImportService service(FixtureScanner({}), remote);
+	service.Initialize(app); WaitForStartup(service, app);
+	UAM_ASSERT_EQ(service.Snapshot().candidates.size(), std::size_t{1});
+	app.settings.native_import_excluded_directories = {"/synthetic/remote"};
+	UAM_ASSERT(service.DiscoverLocalHistory(app)); WaitForStartup(service, app);
+	UAM_ASSERT(service.Snapshot().candidates.empty());
+	// Local discovery never rescans remote hosts, so removing the rule must bring both back.
+	app.settings.native_import_excluded_directories.clear();
+	UAM_ASSERT(service.DiscoverLocalHistory(app)); WaitForStartup(service, app);
+	UAM_ASSERT_EQ(service.Snapshot().candidates.size(), std::size_t{2});
+	// A rule saved during review refuses the selection and also keeps the sessions for later.
+	const uam::StartupNativeImportSnapshot ready = service.Snapshot();
+	std::vector<std::string> all;
+	for (const auto& candidate : ready.candidates) all.push_back(candidate.candidate_id);
+	app.settings.native_import_excluded_directories = {"/synthetic/remote"};
+	std::string error;
+	UAM_ASSERT(!service.Decide(app, ready.generation, all, {}, &error));
+	UAM_ASSERT(service.Snapshot().candidates.empty());
+	app.settings.native_import_excluded_directories.clear();
+	UAM_ASSERT(service.DiscoverLocalHistory(app)); WaitForStartup(service, app);
+	UAM_ASSERT_EQ(service.Snapshot().candidates.size(), std::size_t{2});
+	// A removed remote workspace's sessions are not listed, and return if the workspace does.
+	const std::vector<ChatFolder> folders = app.folders;
+	std::erase_if(app.folders, [](const ChatFolder& folder) { return folder.id == "remote"; });
+	UAM_ASSERT(service.DiscoverLocalHistory(app)); WaitForStartup(service, app);
+	UAM_ASSERT(service.Snapshot().candidates.empty());
+	app.folders = folders;
+	UAM_ASSERT(service.DiscoverLocalHistory(app)); WaitForStartup(service, app);
+	UAM_ASSERT_EQ(service.Snapshot().candidates.size(), std::size_t{2});
+}
+
+// Default-named OpenCode sessions wait for explicit discovery; anything a user could have named stays offered.
+UAM_TEST(StartupImportLeavesProviderDefaultTitledSessionsForDiscovery)
+{
+	TempDir temp("uam-native-import-startup-default-title");
+	uam::AppState app;
+	StartupWorkspace(app, temp.root);
+	ExecutionHost host;
+	host.id = "synthetic-host"; host.transport = "ssh"; host.platform = "linux"; host.runner_status = "ready";
+	app.settings.execution_hosts.push_back(host);
+	app.folders.push_back({"remote", "Remote", "/synthetic/remote", false, host.id});
+	const std::string generated = "New session - 2026-10-01T12:30:45.123Z";
+	const auto history = [&](const fs::path& directory, const std::string& id, const std::string& provider, const std::string& title)
+	{
+		ChatSession chat = StartupHistory(directory, id);
+		chat.provider_id = provider; chat.title = title; chat.updated_at = uam::time::IsoUtcTimestampNow();
+		return chat;
+	};
+	const fs::path workspace = temp.root / "workspace";
+	const std::vector<ChatSession> local = {
+	    history(workspace, "generated", "opencode-cli", generated),
+	    history(workspace, "generated-child", "opencode-cli", "Child session - 2026-10-01T12:30:45.123Z"),
+	    history(workspace, "named", "opencode-cli", "Fix login"),
+	    history(workspace, "bare", "opencode-cli", "New session"),
+	    history(workspace, "suffixed", "opencode-cli", "New session - tidy imports"),
+	    history(workspace, "trailing", "opencode-cli", generated + " notes"),
+	    history(workspace, "lowercase", "opencode-cli", "new session - 2026-10-01T12:30:45.123Z"),
+	    history(workspace, "other-provider", "gemini-cli", generated),
+	    history(workspace, "no-milliseconds", "opencode-cli", "New session - 2026-10-01T12:30:45Z"),
+	    history(workspace, "ends-in-z", "opencode-cli", "New session - fix bug Z"),
+	};
+	const auto remote = [&](const uam::StartupNativeImportRemoteScope&, const ProviderProfile*, ChatHistorySyncService::RemoteHistoryScanContext&, std::stop_token)
+	{
+		ChatHistorySyncService::LocalHistoryDiscovery result;
+		for (const auto& [id, title] : {std::pair<std::string, std::string>{"remote-generated", generated}, {"remote-named", "Deploy notes"}})
+		{
+			ChatSession chat = history("/synthetic/remote", id, "opencode-cli", title);
+			chat.execution_host_id = host.id; chat.folder_id = "remote";
+			result.chats.push_back(std::move(chat));
+		}
+		return result;
+	};
+	const auto offered_ids = [](const uam::StartupNativeImportService& service)
+	{
+		std::set<std::string> ids;
+		for (const auto& candidate : service.Snapshot().candidates) ids.insert(candidate.native_session_id);
+		return ids;
+	};
+	const std::set<std::string> kept = {"named", "bare", "suffixed", "trailing", "lowercase", "other-provider", "no-milliseconds", "ends-in-z", "remote-named"};
+	uam::StartupNativeImportService service(FixtureScanner(local), remote);
+	service.Initialize(app); WaitForStartup(service, app);
+	UAM_ASSERT_EQ(offered_ids(service), kept);
+	// The explicit Chat Data scan still reaches the left-out sessions, locally and on the remote host.
+	UAM_ASSERT(service.DiscoverLocalHistory(app)); WaitForStartup(service, app);
+	UAM_ASSERT(offered_ids(service).contains("generated"));
+	UAM_ASSERT(offered_ids(service).contains("generated-child"));
+	UAM_ASSERT(offered_ids(service).contains("remote-generated"));
+}
+
+UAM_TEST(StartupImportAgeLimitKeepsSessionsActiveExactlyAtTheLimit)
+{
+	AppSettings settings;
+	settings.native_import_startup_max_age_days = 30;
+	const std::time_t now = 1'800'000'000;
+	const auto at = [](std::time_t value)
+	{
+		ChatSession chat;
+		chat.updated_at = uam::time::detail::FormatTimestamp(uam::time::detail::UtcTimeSnapshot(value), uam::time::kIsoUtcTimestampFormat);
+		return chat;
+	};
+	UAM_ASSERT(!uam::chat_import::NativeImportOlderThanStartupLimit(settings, at(now - 30 * 86400), now));
+	UAM_ASSERT(uam::chat_import::NativeImportOlderThanStartupLimit(settings, at(now - 30 * 86400 - 1), now));
+	settings.native_import_startup_max_age_days = 0;
+	UAM_ASSERT(!uam::chat_import::NativeImportOlderThanStartupLimit(settings, at(0), now));
 }
 
 UAM_TEST(NativeImportFiltersSavedDuringReviewStopSelectedPublication)
@@ -1279,6 +1469,182 @@ namespace
 		chat.messages.push_back(Message{MessageRole::User, "Verified fixture transcript"});
 		return chat;
 	}
+}
+
+UAM_TEST(StartupRemoteScanReconnectsOnceThenDefersAnUnreachableHostAndKeepsOtherHosts)
+{
+	TempDir temp("uam-startup-remote-dead-host");
+	uam::AppState app;
+	StartupWorkspace(app, temp.root);
+	app.settings.execution_hosts.push_back(StartupRemoteHost("dead"));
+	app.settings.execution_hosts.push_back(StartupRemoteHost("healthy"));
+	app.folders.push_back({"dead-a", "Dead A", "C:\\work\\a", false, "dead"});
+	app.folders.push_back({"dead-b", "Dead B", "C:\\work\\b", false, "dead"});
+	app.folders.push_back({"live", "Live", "C:\\work\\live", false, "healthy"});
+	std::atomic<int> dead_calls{0};
+	std::atomic<int> healthy_calls{0};
+	std::atomic<bool> dead_reachable{false};
+	uam::StartupNativeImportService service(
+	    [](const uam::StartupNativeImportScanRequest&, std::stop_token) { return ChatHistorySyncService::LocalHistoryDiscovery{}; },
+	    [&](const uam::StartupNativeImportRemoteScope& scope, const ProviderProfile*, ChatHistorySyncService::RemoteHistoryScanContext&, std::stop_token)
+	    {
+		    ChatHistorySyncService::LocalHistoryDiscovery result;
+		    if (scope.host.id == "dead" && !dead_reachable)
+		    {
+			    ++dead_calls;
+			    result.remote_host_unreachable = true;
+			    result.result.Fail("The remote runner bridge closed.");
+			    return result;
+		    }
+		    if (scope.host.id == "healthy") ++healthy_calls;
+		    result.chats.push_back(StartupRemoteHistory(scope.host.id, scope.folder.id, scope.folder.directory, "ses_" + scope.folder.id));
+		    return result;
+	    },
+	    uam::StartupNativeImportRemoteRetry{std::chrono::milliseconds(10), std::chrono::milliseconds(200), std::chrono::milliseconds(200)});
+	service.Initialize(app);
+	WaitForStartup(service, app);
+	// The first folder gets one reconnect; the host's other folder is not tried again in the same pass.
+	UAM_ASSERT_EQ(dead_calls.load(), 2);
+	UAM_ASSERT_EQ(healthy_calls.load(), 1);
+	const uam::StartupNativeImportSnapshot snapshot = service.Snapshot();
+	UAM_ASSERT_EQ(snapshot.phase, std::string("ready"));
+	UAM_ASSERT_EQ(snapshot.total_count, std::size_t{1});
+	const auto notices = std::ranges::count_if(snapshot.errors, [](const std::string& error)
+	{
+		return error.find("Remote history on dead could not be reached (The remote runner bridge closed.)") != std::string::npos &&
+		    error.find("retry automatically") != std::string::npos && error.find("Dead A, Dead B") != std::string::npos;
+	});
+	UAM_ASSERT_EQ(notices, std::ptrdiff_t{1});
+	// The deferred workspaces are retried automatically once the host answers, without a new startup scan.
+	dead_reachable = true;
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+	while (service.Snapshot().total_count < 3)
+	{
+		UAM_ASSERT(std::chrono::steady_clock::now() < deadline);
+		service.Poll(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	}
+	UAM_ASSERT_EQ(healthy_calls.load(), 1);
+	UAM_ASSERT_EQ(dead_calls.load(), 2);
+}
+
+UAM_TEST(SettingsNativeSubchatBackfillRunsForTheManualScanNotALaterRemoteRetry)
+{
+	TempDir temp("uam-settings-native-backfill-once");
+	uam::AppState app;
+	StartupWorkspace(app, temp.root);
+	app.settings.native_import_startup_max_age_days = 0;
+	app.settings.execution_hosts.push_back(StartupRemoteHost("dead"));
+	app.folders.push_back({"dead-a", "Dead A", "C:\\work\\a", false, "dead"});
+	const auto history = [&](const std::string& id, const std::string& parent)
+	{
+		ChatSession chat = StartupHistory(temp.root / "workspace", id);
+		chat.provider_id = "opencode-cli";
+		chat.created_at = chat.updated_at = "2026-11-01T10:00:00Z";
+		chat.native_parent_session_id = parent;
+		return chat;
+	};
+	const auto save_parent = [&](const std::string& native_id)
+	{
+		ChatSession parent = history(native_id, {});
+		parent.id = "chat-" + native_id;
+		parent.folder_id = "known";
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, parent));
+		ChatHistorySyncService().LoadSidebarChats(app);
+	};
+	const auto has_native = [&](const std::string& id) { return std::ranges::any_of(app.chats, [&](const ChatSession& chat) { return chat.native_session_id == id; }); };
+	save_parent("ses_first_parent");
+	std::atomic<bool> dead_reachable{false};
+	std::atomic<int> reached{0};
+	uam::StartupNativeImportService service(
+	    [&](const uam::StartupNativeImportScanRequest&, std::stop_token)
+	    {
+		    ChatHistorySyncService::LocalHistoryDiscovery discovery;
+		    discovery.chats = {history("ses_first_child", "ses_first_parent"), history("ses_later_child", "ses_later_parent")};
+		    return discovery;
+	    },
+	    [&](const uam::StartupNativeImportRemoteScope&, const ProviderProfile*, ChatHistorySyncService::RemoteHistoryScanContext&, std::stop_token)
+	    {
+		    ChatHistorySyncService::LocalHistoryDiscovery result;
+		    if (dead_reachable) { ++reached; return result; }
+		    result.remote_host_unreachable = true;
+		    result.result.Fail("The remote runner bridge closed.");
+		    return result;
+	    },
+	    uam::StartupNativeImportRemoteRetry{std::chrono::milliseconds(10), std::chrono::milliseconds(100), std::chrono::milliseconds(100)});
+	// Startup finds the children and leaves an unreachable host waiting for its retry; it imports nothing.
+	service.Initialize(app);
+	WaitForStartup(service, app);
+	UAM_ASSERT_EQ(app.chats.size(), std::size_t{1});
+	// The scan the user starts imports the missing sub-chat of the saved parent.
+	std::string error;
+	UAM_ASSERT(service.DiscoverLocalHistory(app, &error));
+	WaitForStartup(service, app);
+	UAM_ASSERT(has_native("ses_first_child"));
+	UAM_ASSERT_EQ(app.chats.size(), std::size_t{2});
+	// Another parent arrives afterwards. The background retry for the remote host must not repeat the backfill for it.
+	save_parent("ses_later_parent");
+	dead_reachable = true;
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+	while (reached.load() == 0)
+	{
+		UAM_ASSERT(std::chrono::steady_clock::now() < deadline);
+		service.Poll(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	}
+	WaitForStartup(service, app);
+	for (int settle = 0; settle < 40; ++settle)
+	{
+		service.Poll(app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	}
+	UAM_ASSERT(!has_native("ses_later_child"));
+	UAM_ASSERT_EQ(app.chats.size(), std::size_t{3});
+}
+
+UAM_TEST(StartupRemoteScanReportsAnUnavailableHostOncePerHost)
+{
+	TempDir temp("uam-startup-remote-unavailable");
+	uam::AppState app;
+	StartupWorkspace(app, temp.root);
+	ExecutionHost offline = StartupRemoteHost("offline");
+	offline.runner_status = "offline";
+	app.settings.execution_hosts.push_back(offline);
+	for (int folder = 0; folder < 3; ++folder) app.folders.push_back({"offline-" + std::to_string(folder), "Offline " + std::to_string(folder), "C:\\work\\" + std::to_string(folder), false, "offline"});
+	uam::StartupNativeImportService service(
+	    [](const uam::StartupNativeImportScanRequest&, std::stop_token) { return ChatHistorySyncService::LocalHistoryDiscovery{}; },
+	    [](const uam::StartupNativeImportRemoteScope&, const ProviderProfile*, ChatHistorySyncService::RemoteHistoryScanContext&, std::stop_token) { return ChatHistorySyncService::LocalHistoryDiscovery{}; });
+	service.Initialize(app);
+	WaitForStartup(service, app);
+	const auto errors = service.Snapshot().errors;
+	UAM_ASSERT_EQ(std::ranges::count_if(errors, [](const std::string& error) { return error.find("workspace host was unavailable") != std::string::npos; }), std::ptrdiff_t{1});
+}
+
+UAM_TEST(StartupRemoteScanDoesNotLetAStalledHostDelayAnother)
+{
+	TempDir temp("uam-startup-remote-parallel");
+	uam::AppState app;
+	StartupWorkspace(app, temp.root);
+	app.settings.execution_hosts.push_back(StartupRemoteHost("stalled"));
+	app.settings.execution_hosts.push_back(StartupRemoteHost("fast"));
+	app.folders.push_back({"stalled", "Stalled", "C:\\work\\stalled", false, "stalled"});
+	app.folders.push_back({"fast", "Fast", "C:\\work\\fast", false, "fast"});
+	std::promise<void> fast_done;
+	std::future<void> fast_finished = fast_done.get_future();
+	std::atomic<bool> fast_ran_during_stall{false};
+	uam::StartupNativeImportService service(
+	    [](const uam::StartupNativeImportScanRequest&, std::stop_token) { return ChatHistorySyncService::LocalHistoryDiscovery{}; },
+	    [&](const uam::StartupNativeImportRemoteScope& scope, const ProviderProfile*, ChatHistorySyncService::RemoteHistoryScanContext&, std::stop_token)
+	    {
+		    ChatHistorySyncService::LocalHistoryDiscovery result;
+		    if (scope.host.id == "fast") fast_done.set_value();
+		    // Hang guard: a serial scan reaches the fast host only after this wait expires.
+		    else fast_ran_during_stall = fast_finished.wait_for(std::chrono::seconds(3)) == std::future_status::ready;
+		    return result;
+	    });
+	service.Initialize(app);
+	WaitForStartup(service, app);
+	UAM_ASSERT(fast_ran_during_stall.load());
 }
 
 UAM_TEST(StartupNativeRemoteCandidatesUseCapturedReadyHostAndWindowsWorkspaceOwnership)

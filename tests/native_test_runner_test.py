@@ -1,8 +1,12 @@
 import contextlib
 import importlib.util
 import io
+import json
+import os
 from pathlib import Path
 import subprocess
+import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -14,6 +18,13 @@ spec.loader.exec_module(runner)
 
 
 class NativeRunnerTests(unittest.TestCase):
+    def setUp(self):
+        # Keep the fake flaky cases out of the real job summary and annotations when this runs in CI.
+        kept = {key: value for key, value in os.environ.items() if key not in ('GITHUB_ACTIONS', 'GITHUB_STEP_SUMMARY')}
+        environment = patch.dict(os.environ, kept, clear=True)
+        environment.start()
+        self.addCleanup(environment.stop)
+
     def exercise(self, mode='pass', requested=()):
         names = [f'Case{index}' for index in range(75)]
         calls = []
@@ -131,6 +142,59 @@ class NativeRunnerTests(unittest.TestCase):
                     contextlib.redirect_stdout(io.StringIO()) as output, contextlib.redirect_stderr(io.StringIO()):
                 self.assertEqual(runner.run_tests(Path('/fixture'), 1, requested, True, {'Known': '#1'}), expected)
                 self.assertIn('QUARANTINED: Known (#1)', output.getvalue())
+
+    def run_flaky_fixture(self, inventory, first_output, returncode=1):
+        attempted = set()
+        def execute(command, **kwargs):
+            if command[1] == '--list-tests':
+                return subprocess.CompletedProcess(command, 0, inventory)
+            if len(command) > 2 and not attempted.intersection(command[1:]):
+                attempted.update(command[1:])
+                return subprocess.CompletedProcess(command, returncode, first_output)
+            passes = [name for name in command[1:] if name != 'Broken']
+            return subprocess.CompletedProcess(command, 0 if passes else 1, ''.join(f'[PASS] {name}\n' for name in passes))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'binary').touch()
+            (root / 'quarantine.txt').write_text('Known #12\n')
+            environment = {'GITHUB_ACTIONS': 'true', 'GITHUB_STEP_SUMMARY': str(root / 'summary.md')}
+            argv = ['run_native_tests.py', str(root / 'binary'), '--retry-failed-once', '--quarantine', str(root / 'quarantine.txt'),
+                    '--flaky-report', str(root / 'nested/flaky.json')]
+            with patch.object(runner.subprocess, 'run', side_effect=execute), patch.object(sys, 'argv', argv), patch.dict(os.environ, environment), \
+                    contextlib.redirect_stdout(io.StringIO()) as output, contextlib.redirect_stderr(io.StringIO()):
+                result = runner.main()
+            report = root / 'nested/flaky.json'
+            summary = root / 'summary.md'
+            return (result, output.getvalue(), json.loads(report.read_text()) if report.exists() else None,
+                    summary.read_text() if summary.exists() else None)
+
+    def test_pass_on_retry_stays_green_and_is_reported(self):
+        first = '[PASS] Steady\n[FAIL] Flaky: budget missed\n[FAIL] Flaky2: other\n[FAIL] Known: lease\n'
+        result, output, report, summary = self.run_flaky_fixture('Flaky\nFlaky2\nKnown\nCrashed\nSteady', first)
+        self.assertEqual(result, 0)
+        self.assertEqual(report, [
+            {'case': 'Flaky', 'firstFailure': ['[FAIL] Flaky: budget missed'], 'quarantine': None},
+            {'case': 'Flaky2', 'firstFailure': ['[FAIL] Flaky2: other'], 'quarantine': None},
+            {'case': 'Known', 'firstFailure': ['[FAIL] Known: lease'], 'quarantine': '#12'},
+            {'case': 'Crashed', 'firstFailure': ['No [FAIL] line for this case; its batch exited with code 1.'], 'quarantine': None}])
+        block = output[output.index('FLAKY NATIVE TESTS: 4 failed, then passed on retry'):]
+        self.assertIn('Known (quarantined #12)\n    [FAIL] Known: lease', block)
+        self.assertIn('::warning title=Flaky native test::Crashed\n', block)
+        self.assertNotIn('Steady', block)
+        self.assertIn('- `Known` (quarantined #12)', summary)
+        self.assertIn('  [FAIL] Flaky: budget missed', summary)
+
+    def test_flaky_case_is_still_reported_when_another_case_fails(self):
+        result, output, report, _ = self.run_flaky_fixture('Flaky\nBroken', '[FAIL] Flaky: first\n[FAIL] Broken: always\n')
+        self.assertEqual(result, 1)
+        self.assertEqual([entry['case'] for entry in report], ['Flaky'])
+        self.assertIn('::warning title=Flaky native test::Flaky', output)
+
+    def test_no_flaky_output_when_nothing_flakes(self):
+        result, output, report, summary = self.run_flaky_fixture('One\nTwo', '[PASS] One\n[PASS] Two\n', returncode=0)
+        self.assertEqual((result, report, summary), (0, None, None))
+        self.assertNotIn('FLAKY', output)
+        self.assertNotIn('::warning', output)
 
     def test_empty_and_duplicate_inventory_are_rejected(self):
         for inventory in ['', 'Case1\nCase1', '[PASS] Case1']:

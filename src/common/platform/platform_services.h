@@ -78,6 +78,8 @@ class IPlatformTerminalRuntime
 	// Returns: >0 bytes read, 0 process exited, -2 no data available, -1 read failure.
 	virtual std::ptrdiff_t ReadCliTerminalOutput(uam::CliTerminalState& terminal, char* buffer, std::size_t buffer_size) const = 0;
 	virtual bool HasReadableTerminalOutputHandle(const uam::CliTerminalState& terminal) const = 0;
+	/// <summary>Blocks for at most timeout_ms until the terminal has output to read. Platforms that need no wait return false.</summary>
+	virtual bool WaitForCliTerminalOutput(const uam::CliTerminalState&, int) const { return false; }
 	virtual bool PollCliTerminalProcessExited(uam::CliTerminalState& terminal) const = 0;
 	virtual bool SupportsAsyncNativeGeminiHistoryRefresh() const = 0;
 };
@@ -167,6 +169,13 @@ class IPlatformFileDialogService
 	virtual bool OpenFolderInEditorPreset(const std::filesystem::path& folder_path, const std::string& editor_preset_id, std::string* error_out = nullptr) const = 0;
 	virtual bool RevealPathInFileManager(const std::filesystem::path& file_path, std::string* error_out = nullptr) const = 0;
 	virtual bool OpenFileInTextEditor(const std::filesystem::path& file_path, std::string* error_out = nullptr) const = 0;
+	/// <summary>Opens one existing file with the OS default application (a browser for .html).</summary>
+	virtual bool OpenFileWithDefaultApplication(const std::filesystem::path& file_path, std::string* error_out = nullptr) const
+	{
+		(void)file_path;
+		if (error_out != nullptr) *error_out = "Opening files is unavailable on this platform.";
+		return false;
+	}
 };
 
 /// <summary>

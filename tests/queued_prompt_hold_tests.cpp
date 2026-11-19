@@ -1,4 +1,6 @@
 #include "test_harness.h"
+#include "common/chat/chat_message_page_index.h"
+#include "common/utils/hash_utils.h"
 #include "cef/state_serializer.h"
 #include "common/chat/conversation_handoff.h"
 #include "common/runtime/terminal/terminal_provider_cli.h"
@@ -386,6 +388,16 @@ UAM_TEST(HeldQueueAllowsEditsAndRemovalButSteeringAndFailedLastRemovalStayHeld)
 	UAM_ASSERT(!fixture.Session().reconnect_pending);
 	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(good_root, "held-queue");
 	UAM_ASSERT(saved.has_value() && !saved->acp_queue_held && saved->acp_queued_prompts.empty());
+	{
+		// The user's Cancel turn keeps a held queue held; only internal cancellation discards it.
+		HeldQueueFixture kept;
+		(void)uam::RestoreRemoteAcpSessionsAfterRestart(kept.app);
+		UAM_ASSERT(uam::CancelAcpTurn(kept.app, "held-queue", &error, true, true, true));
+		UAM_ASSERT(kept.Session().queue_held && kept.app.chats.front().acp_queue_held);
+		UAM_ASSERT_EQ(kept.Session().queued_user_prompts.size(), std::size_t{2});
+		UAM_ASSERT_EQ(kept.app.chats.front().acp_queued_prompts.size(), std::size_t{2});
+		UAM_ASSERT_EQ(kept.app.chats.front().acp_queued_prompts.front().attachments.size(), std::size_t{1});
+	}
 	for (const bool stop : {false, true})
 	{
 		HeldQueueFixture discard;
@@ -852,7 +864,14 @@ UAM_TEST(ExplicitFreshSendPreservesNonemptyUncertainMalformedAndUnsavedQueueHold
 				if (arm == 17) primary["acp_unsent_prompt_recoveries"] = nlohmann::json::array({false});
 				UAM_ASSERT(uam::io::WriteTextFile(fixture.Primary(), primary.dump()));
 			}
-			if (arm == 18) chat.native_session_reset_pending = true;
+			if (arm == 18)
+			{
+				// A pending reset alone no longer blocks Send, so held input is what this arm protects.
+				chat.native_session_reset_pending = true;
+				Message unsent{MessageRole::User, "Not delivered."};
+				unsent.acp_prompt_not_sent = true;
+				chat.messages.push_back(unsent);
+			}
 			if (arm == 19)
 			{
 				ChatSession raw = chat;
@@ -888,6 +907,201 @@ UAM_TEST(ExplicitFreshSendPreservesNonemptyUncertainMalformedAndUnsavedQueueHold
 			throw std::runtime_error("Empty-held refusal arm " + std::to_string(arm) + ": " + error.what());
 		}
 	}
+}
+
+UAM_TEST(RemovingOnlyUnsentRowEndsHoldDuringNativeReset)
+{
+	{
+		EmptyHeldFreshSendFixture fixture(true);
+		fixture.app.provider_profiles.push_back(ProviderProfileStore::DefaultClaudeProfile());
+		Message unsent{MessageRole::User, "Not delivered."};
+		unsent.acp_prompt_not_sent = true;
+		fixture.Chat().messages.push_back(unsent);
+		fixture.Chat().native_session_reset_pending = true;
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, fixture.Chat()));
+		UAM_ASSERT(fixture.Chat().native_session_reset_pending);
+		std::string error;
+		UAM_ASSERT(!uam::SendAcpPrompt(fixture.app, fixture.id, fixture.fresh, &error));
+		UAM_ASSERT(fixture.Chat().acp_queue_held && fixture.Session().queue_held);
+
+		std::uint64_t hash = uam::hashing::kFnv1a64OffsetBasis;
+		for (const auto& row : fixture.Chat().messages) uam::chat_pages::AppendMessageDigest(hash, row);
+		UAM_ASSERT(uam::DiscardUnsentAcpMessage(fixture.app, fixture.id, static_cast<int>(fixture.Chat().messages.size() - 1),
+		    uam::chat_pages::FinishMessageDigest(hash, fixture.Chat().messages.size()), &error));
+		UAM_ASSERT(fixture.Chat().messages.back().acp_prompt_discarded);
+		UAM_ASSERT(!fixture.Chat().acp_queue_held && !fixture.Session().queue_held);
+		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.id);
+		UAM_ASSERT(saved.has_value() && !saved->acp_queue_held);
+
+		error.clear();
+		UAM_ASSERT(uam::SendAcpPrompt(fixture.app, fixture.id, fixture.fresh, &error));
+		UAM_ASSERT(error.empty());
+		fixture.Drain();
+	}
+}
+
+UAM_TEST(UncertainRemoteDeliverySwitchNeedsExplicitOverride)
+{
+	for (const bool active_turn : {true, false})
+	{
+		EmptyHeldFreshSendFixture fixture(true);
+		fixture.app.provider_profiles.push_back(ProviderProfileStore::DefaultClaudeProfile());
+		// U1 is still unsent; U2 went out, so delivery cleared its marker while the outcome is unknown.
+		Message older{MessageRole::User, "Older unsent."};
+		older.acp_prompt_not_sent = true;
+		fixture.Chat().messages.push_back(older);
+		fixture.Chat().messages.push_back(Message{MessageRole::User, "Sent, outcome unknown."});
+		fixture.Chat().remote_turn_user_message_index = static_cast<int>(fixture.Chat().messages.size() - 1);
+		if (active_turn) fixture.Chat().remote_active_turn_id = "uncertain-remote-turn";
+		else fixture.Chat().remote_prompt_delivery_id = "uncertain-delivery";
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, fixture.Chat()));
+		const std::string original_provider = fixture.Chat().provider_id;
+
+		// A refusal wins over the override: U1 still has a Remove control.
+		UAM_ASSERT_EQ(uam::SwitchChatProvider(fixture.app, fixture.id, "claude-cli", true), uam::ChatProviderSwitchResult::QueueHeld);
+		UAM_ASSERT_EQ(fixture.Chat().provider_id, original_provider);
+
+		std::uint64_t hash = uam::hashing::kFnv1a64OffsetBasis;
+		for (const auto& row : fixture.Chat().messages) uam::chat_pages::AppendMessageDigest(hash, row);
+		std::string error;
+		UAM_ASSERT(uam::DiscardUnsentAcpMessage(fixture.app, fixture.id, static_cast<int>(fixture.Chat().messages.size() - 2),
+		    uam::chat_pages::FinishMessageDigest(hash, fixture.Chat().messages.size()), &error));
+		UAM_ASSERT(fixture.Chat().acp_queue_held && fixture.Session().queue_held);
+		UAM_ASSERT(!uam::SendAcpPrompt(fixture.app, fixture.id, fixture.fresh, &error));
+		UAM_ASSERT(error.find("may run twice") != std::string::npos);
+
+		// Without the override nothing changes.
+		UAM_ASSERT_EQ(uam::SwitchChatProvider(fixture.app, fixture.id, "claude-cli"), uam::ChatProviderSwitchResult::UncertainDelivery);
+		UAM_ASSERT_EQ(fixture.Chat().provider_id, original_provider);
+		UAM_ASSERT(fixture.Chat().acp_queue_held && !fixture.Chat().native_session_reset_pending && uam::ChatHasUncertainRemoteInput(fixture.Chat()));
+
+		UAM_ASSERT_EQ(uam::SwitchChatProvider(fixture.app, fixture.id, "claude-cli", true), uam::ChatProviderSwitchResult::Changed);
+		UAM_ASSERT_EQ(fixture.Chat().provider_id, std::string("claude-cli"));
+		UAM_ASSERT(!fixture.Chat().acp_queue_held && !uam::ChatHasUncertainRemoteInput(fixture.Chat()));
+		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.id);
+		UAM_ASSERT(saved.has_value() && !saved->acp_queue_held && !uam::ChatHasUncertainRemoteInput(*saved));
+		// The way out must really be one: the next Send is admitted.
+		error.clear();
+		UAM_ASSERT(uam::SendAcpPrompt(fixture.app, fixture.id, fixture.fresh, &error));
+		fixture.Drain();
+	}
+}
+
+UAM_TEST(ProviderSwitchOverrideDoesNotPassHeldInputOrStorageProblem)
+{
+	for (const bool storage_error : {true, false})
+	{
+		EmptyHeldFreshSendFixture fixture(true);
+		fixture.app.provider_profiles.push_back(ProviderProfileStore::DefaultClaudeProfile());
+		fixture.Chat().remote_active_turn_id = "uncertain-remote-turn";
+		if (storage_error) fixture.Chat().acp_queue_storage_error = true;
+		else
+		{
+			uam::AcpQueuedUserPromptState queued;
+			queued.text = "Held follow-up.";
+			fixture.Chat().acp_queued_prompts.push_back(queued);
+		}
+		UAM_ASSERT_EQ(uam::SwitchChatProvider(fixture.app, fixture.id, "claude-cli", true), uam::ChatProviderSwitchResult::QueueHeld);
+		UAM_ASSERT(fixture.Chat().acp_queue_held && !fixture.Chat().native_session_reset_pending);
+		UAM_ASSERT_EQ(fixture.Chat().remote_active_turn_id, std::string("uncertain-remote-turn"));
+		fixture.Chat().remote_active_turn_id.clear();
+		fixture.Chat().acp_queue_storage_error = false;
+		fixture.Chat().acp_queued_prompts.clear();
+	}
+}
+
+UAM_TEST(EmptyHeldSendSurvivesAnEarlierRemovedRow)
+{
+	EmptyHeldFreshSendFixture fixture(true);
+	Message removed{MessageRole::User, "Removed earlier."};
+	removed.acp_prompt_not_sent = true;
+	removed.acp_prompt_discarded = true;
+	fixture.Chat().messages.push_back(removed);
+	UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, fixture.Chat()));
+	std::string error;
+	UAM_ASSERT(uam::SendAcpPrompt(fixture.app, fixture.id, fixture.fresh, &error));
+	UAM_ASSERT(error.empty());
+	fixture.Drain();
+	UAM_ASSERT(!fixture.Chat().acp_queue_held && !fixture.Session().queue_held);
+}
+
+UAM_TEST(SendRefusalNamesProviderSwitchOnlyWhenItWouldSucceed)
+{
+	const auto refusal = [](EmptyHeldFreshSendFixture& fixture)
+	{
+		std::string error;
+		UAM_ASSERT(!uam::SendAcpPrompt(fixture.app, fixture.id, fixture.fresh, &error));
+		return error;
+	};
+	const auto add_unsent = [](EmptyHeldFreshSendFixture& fixture)
+	{
+		Message unsent{MessageRole::User, "Not delivered."};
+		unsent.acp_prompt_not_sent = true;
+		fixture.Chat().messages.push_back(unsent);
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, fixture.Chat()));
+	};
+	{
+		EmptyHeldFreshSendFixture fixture(true);
+		fixture.app.provider_profiles.push_back(ProviderProfileStore::DefaultClaudeProfile());
+		UAM_ASSERT_EQ(uam::SwitchChatProvider(fixture.app, fixture.id, "claude-cli"), uam::ChatProviderSwitchResult::Changed);
+		UAM_ASSERT(!fixture.Chat().acp_queue_held);
+	}
+	{
+		EmptyHeldFreshSendFixture fixture(true);
+		fixture.app.provider_profiles.push_back(ProviderProfileStore::DefaultClaudeProfile());
+		fixture.Chat().native_session_reset_pending = true;
+		add_unsent(fixture);
+		UAM_ASSERT(refusal(fixture).find("unsent message") != std::string::npos);
+		UAM_ASSERT_EQ(uam::SwitchChatProvider(fixture.app, fixture.id, "claude-cli"), uam::ChatProviderSwitchResult::QueueHeld);
+	}
+	for (const bool reset_pending : {true, false})
+	{
+		// A not-sent row with later output has no Remove control, so the way out is the provider switch.
+		EmptyHeldFreshSendFixture fixture(true);
+		fixture.app.provider_profiles.push_back(ProviderProfileStore::DefaultClaudeProfile());
+		fixture.Chat().native_session_reset_pending = reset_pending;
+		add_unsent(fixture);
+		fixture.Chat().messages.push_back(Message{MessageRole::Assistant, "Replied anyway."});
+		UAM_ASSERT(uam::KnownUnsentAcpMessageIndices(fixture.app, fixture.Chat()).empty());
+		const std::string error = refusal(fixture);
+		UAM_ASSERT(error.find("Change the chat's provider") != std::string::npos);
+		UAM_ASSERT(error.find("Remove") == std::string::npos);
+		UAM_ASSERT_EQ(uam::SwitchChatProvider(fixture.app, fixture.id, "claude-cli"), uam::ChatProviderSwitchResult::Changed);
+		UAM_ASSERT(!fixture.Chat().acp_queue_held);
+	}
+	for (const bool reconnect : {true, false})
+	{
+		// The remote turn may already have run this row, so a handoff could run it twice.
+		EmptyHeldFreshSendFixture fixture(true);
+		fixture.app.provider_profiles.push_back(ProviderProfileStore::DefaultClaudeProfile());
+		fixture.Session().lifecycle_state = "error";
+		add_unsent(fixture);
+		if (reconnect) fixture.Chat().remote_turn_reconnect_pending = true;
+		else fixture.Chat().remote_active_turn_id = "uncertain-remote-turn";
+		UAM_ASSERT(uam::QueueHoldBlocksNativeReset(fixture.app, fixture.Chat()));
+		UAM_ASSERT(refusal(fixture).find("may run twice") != std::string::npos);
+		UAM_ASSERT_EQ(uam::SwitchChatProvider(fixture.app, fixture.id, "claude-cli"), uam::ChatProviderSwitchResult::UncertainDelivery);
+		UAM_ASSERT(fixture.Chat().acp_queue_held);
+		fixture.Chat().remote_turn_reconnect_pending = false;
+		fixture.Chat().remote_active_turn_id.clear();
+	}
+}
+
+UAM_TEST(ProviderSwitchRefusesLoadedHeldQueueWithItsReason)
+{
+	EmptyHeldFreshSendFixture fixture(true);
+	fixture.app.provider_profiles.push_back(ProviderProfileStore::DefaultClaudeProfile());
+	uam::AcpQueuedUserPromptState queued;
+	queued.id = "held-follow-up";
+	queued.revision = 1;
+	queued.text = "Held follow-up.";
+	fixture.Chat().acp_queued_prompts.push_back(queued);
+	fixture.Session().queued_user_prompts.push_back(queued);
+	UAM_ASSERT_EQ(uam::SwitchChatProvider(fixture.app, fixture.id, "claude-cli"), uam::ChatProviderSwitchResult::QueueHeld);
+	UAM_ASSERT_EQ(fixture.Chat().provider_id, std::string("codex-cli"));
+	UAM_ASSERT(fixture.Chat().acp_queue_held && !fixture.Chat().native_session_reset_pending);
+	fixture.Chat().acp_queued_prompts.clear();
+	fixture.Session().queued_user_prompts.clear();
 }
 
 UAM_TEST(ExplicitFreshSendDoesNotReplaceThePendingEmptyHoldInvocation)
@@ -1543,4 +1757,92 @@ UAM_TEST(CapturedStopSharedConversionRejectsInvalidBindingsBeforeAnyMutation)
 		UAM_ASSERT(!uam::PersistQueuedAcpUserPromptsAsInterrupted(session, chat)); // No second mutation.
 		UAM_ASSERT_EQ(chat.messages, rows);
 	}
+}
+
+UAM_TEST(RestartCompletedNativeTurnSeparatesDeliveryFromLocalEditAuthority)
+{
+	// No provider process, transcript or real account: round-trip the crash snapshot,
+	// then adopt a completed native turn under the existing canonical-prefix rules.
+	for (const std::string provider : {"gemini-cli", "codex-cli", "opencode-cli", "claude-cli", "copilot-cli", "antigravity-cli"})
+	for (const std::string host : {"local", "fixture-ssh"})
+	{
+		HeldQueueFixture fixture;
+		ChatSession& chat = fixture.app.chats.front();
+		chat.provider_id = provider;
+		chat.execution_host_id = host;
+		chat.native_session_id = "synthetic-native-turn";
+		chat.acp_queued_prompts.clear();
+		chat.messages = {
+		    {.role = MessageRole::User, .content = "Removed earlier input", .created_at = "2026-11-01T00:00:00Z", .acp_prompt_not_sent = true, .acp_prompt_discarded = true},
+		    {.role = MessageRole::User, .content = "Submitted turn", .created_at = "2026-11-01T00:01:00Z"},
+		    {.role = MessageRole::User, .content = "Retained author input", .created_at = "2026-11-01T00:02:00Z", .interrupted = true, .acp_prompt_not_sent = true}};
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, chat));
+		auto restored = ChatRepository::LoadLocalChat(fixture.app.data_root, chat.id);
+		UAM_ASSERT(restored.has_value());
+		chat = *restored;
+		UAM_ASSERT_EQ(uam::EditableUnsentAcpMessageIndices(fixture.app, chat), std::vector<int>{2});
+		const Message retained = chat.messages.back();
+		auto completed = chat.messages;
+		completed.push_back({.role = MessageRole::Assistant, .content = "Completed native answer", .created_at = "2026-11-01T00:03:00Z"});
+		UAM_ASSERT(ChatHistorySyncService().BuildNativeTranscriptCandidate(chat, completed));
+		UAM_ASSERT(chat.messages[2] == retained); // output never fabricates a write fact
+		UAM_ASSERT_EQ(uam::KnownUnsentAcpMessageIndices(fixture.app, chat), std::vector<int>{0});
+		UAM_ASSERT(uam::EditableUnsentAcpMessageIndices(fixture.app, chat).empty());
+		const auto before = chat.messages;
+		std::string error;
+		UAM_ASSERT(!uam::EditUnsentAcpMessage(fixture.app, chat.id, 2, uam::StateSerializer::MessageDigest(chat), "Revised input", &error));
+		UAM_ASSERT_EQ(chat.messages, before);
+		UAM_ASSERT(fixture.app.acp_sessions.empty()); // checking history neither resumes nor replays
+		// An independent definitely-unsent follow-up remains locally editable.
+		chat.messages.push_back({.role = MessageRole::User, .content = "New follow-up", .created_at = "2026-11-01T00:04:00Z", .acp_prompt_not_sent = true});
+		UAM_ASSERT_EQ(uam::EditableUnsentAcpMessageIndices(fixture.app, chat), std::vector<int>{4});
+		chat.remote_source_exit_pending = true;
+		const auto snapshot = uam::StateSerializer::Serialize(fixture.app)["chats"][0]["acpSession"];
+		UAM_ASSERT(snapshot["editableUnsentMessageIndices"] == nlohmann::json::array());
+		UAM_ASSERT_EQ(uam::KnownUnsentAcpMessageIndices(fixture.app, chat), (std::vector<int>{0, 4}));
+		UAM_ASSERT(uam::EditableUnsentAcpMessageIndices(fixture.app, chat).empty());
+		chat.remote_source_exit_pending = false;
+		ChatSession child;
+		child.id = "synthetic-dependent-branch";
+		child.parent_chat_id = chat.id;
+		child.branch_from_message_index = 4;
+		fixture.app.chats.push_back(child);
+		UAM_ASSERT(uam::EditableUnsentAcpMessageIndices(fixture.app, fixture.app.chats.front()).empty());
+	}
+}
+
+UAM_TEST(UnsentEditFingerprintRetainsBatchedCapturedAuthority)
+{
+	CapturedStopCarrierFixture fixture;
+	auto& chat = fixture.app.chats.front();
+	chat.messages.clear();
+	chat.acp_unsent_prompt_recoveries.clear();
+	std::vector<int> expected;
+	const std::size_t count = std::min<std::size_t>(64, uam::prompt_recovery::kMaxRecords);
+	for (std::size_t i = 0; i < count; ++i)
+	{
+		auto prompt = fixture.plan;
+		prompt.id = "retained-projection-" + std::to_string(i);
+		prompt.text = "Retained authored input " + std::to_string(i);
+		prompt.markdown_store_prompt_blocks = {std::string(64U * 1024U, 's')};
+		fixture.AddRecord(prompt);
+		expected.push_back(static_cast<int>(i));
+	}
+	const auto rows = chat.messages;
+	const auto captures = chat.acp_unsent_prompt_recoveries;
+	const auto fingerprint = uam::StateSerializer::SerializeFingerprint(fixture.app);
+	UAM_ASSERT(fingerprint["chats"][0]["acpSession"]["editableUnsentMessageIndices"] == expected);
+	UAM_ASSERT_EQ(uam::EditableUnsentAcpMessageIndices(fixture.app, chat), expected);
+	UAM_ASSERT_EQ(uam::StateSerializer::SerializeFingerprint(fixture.app), fingerprint);
+	UAM_ASSERT_EQ(chat.messages, rows);
+	UAM_ASSERT_EQ(chat.acp_unsent_prompt_recoveries, captures);
+	// One invalid carrier must refuse the whole projection even for other valid rows.
+	chat.acp_unsent_prompt_recoveries.back().row_witness = "stale-carrier";
+	UAM_ASSERT(uam::EditableUnsentAcpMessageIndices(fixture.app, chat).empty());
+	std::string error;
+	UAM_ASSERT(!uam::EditUnsentAcpMessage(fixture.app, chat.id, 0,
+	    uam::StateSerializer::MessageDigest(chat), "Revised retained input", &error));
+	UAM_ASSERT_EQ(chat.messages, rows);
+	chat.acp_unsent_prompt_recoveries = captures;
+	UAM_ASSERT_EQ(uam::EditableUnsentAcpMessageIndices(fixture.app, chat), expected);
 }

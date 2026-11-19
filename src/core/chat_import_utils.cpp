@@ -156,35 +156,31 @@ namespace uam
 		namespace fs = std::filesystem;
 		const fs::path location = uam::paths::NormalizeExistingOrAbsolutePath(workspace);
 		if (workspace.empty() || !uam::paths::IsDirectoryNoThrow(location)) return workspace;
-		for (fs::path root = location; !root.empty(); root = root.parent_path())
-		{
-			const fs::path marker = root / ".git";
-			if (uam::paths::PathExistsNoThrow(marker))
-			{
-				// Stop at the nearest repository boundary, including submodules and ordinary checkouts.
-				std::string git_file;
-				if (!uam::paths::IsRegularFileNoThrow(marker) || !uam::io::TryReadTextFile(marker, git_file, 16384)) return workspace;
-				const std::string_view pointer = uam::strings::TrimAsciiView(git_file);
-				if (!pointer.starts_with("gitdir: ")) return workspace;
-				const fs::path git_directory = uam::paths::NormalizeExistingOrAbsolutePath(
-				    root / uam::paths::PathFromUtf8(uam::strings::TrimAsciiView(pointer.substr(8))));
-				std::string common_file;
-				std::string backlink;
-				if (!uam::paths::IsRegularFileNoThrow(git_directory / "commondir") ||
-				    !uam::paths::IsRegularFileNoThrow(git_directory / "gitdir") ||
-				    !uam::io::TryReadTextFile(git_directory / "commondir", common_file, 16384) ||
-				    !uam::io::TryReadTextFile(git_directory / "gitdir", backlink, 16384) ||
-				    !FolderDirectoryMatches(git_directory / uam::paths::PathFromUtf8(uam::strings::Trim(backlink)), marker)) return workspace;
-				const fs::path common = uam::paths::NormalizeExistingOrAbsolutePath(
-				    git_directory / uam::paths::PathFromUtf8(uam::strings::Trim(common_file)));
-				// A standard main checkout owns the common .git directory. Do not infer bare repositories.
-				if (common.filename() != ".git" || !uam::paths::IsDirectoryNoThrow(common)) return workspace;
-				const fs::path resolved = common.parent_path() / location.lexically_relative(root);
-				return uam::paths::NormalizeExistingOrAbsolutePath(resolved);
-			}
-			if (root == root.parent_path()) break;
-		}
-		return workspace;
+		// Only Git links a checkout to its main repository, so an SVN checkout on the way up does not end the lookup.
+		const uam::paths::NearestVcsRoot repository = uam::paths::FindNearestVcsRoot(location, uam::paths::VcsRootKinds::GitOnly);
+		if (!repository.git) return workspace;
+		const fs::path& root = repository.root;
+		const fs::path marker = root / ".git";
+		// Stop at the nearest repository boundary, including submodules and ordinary checkouts.
+		std::string git_file;
+		if (!uam::paths::IsRegularFileNoThrow(marker) || !uam::io::TryReadTextFile(marker, git_file, 16384)) return workspace;
+		const std::string_view pointer = uam::strings::TrimAsciiView(git_file);
+		if (!pointer.starts_with("gitdir: ")) return workspace;
+		const fs::path git_directory = uam::paths::NormalizeExistingOrAbsolutePath(
+		    root / uam::paths::PathFromUtf8(uam::strings::TrimAsciiView(pointer.substr(8))));
+		std::string common_file;
+		std::string backlink;
+		if (!uam::paths::IsRegularFileNoThrow(git_directory / "commondir") ||
+		    !uam::paths::IsRegularFileNoThrow(git_directory / "gitdir") ||
+		    !uam::io::TryReadTextFile(git_directory / "commondir", common_file, 16384) ||
+		    !uam::io::TryReadTextFile(git_directory / "gitdir", backlink, 16384) ||
+		    !FolderDirectoryMatches(git_directory / uam::paths::PathFromUtf8(uam::strings::Trim(backlink)), marker)) return workspace;
+		const fs::path common = uam::paths::NormalizeExistingOrAbsolutePath(
+		    git_directory / uam::paths::PathFromUtf8(uam::strings::Trim(common_file)));
+		// A standard main checkout owns the common .git directory. Do not infer bare repositories.
+		if (common.filename() != ".git" || !uam::paths::IsDirectoryNoThrow(common)) return workspace;
+		const fs::path resolved = common.parent_path() / location.lexically_relative(root);
+		return uam::paths::NormalizeExistingOrAbsolutePath(resolved);
 	}
 
 	/// <summary>Containment stops before a distinct nested repository or worktree.</summary>
@@ -192,25 +188,27 @@ namespace uam
 	{
 		// Resolve the owner once rather than at every ancestor.
 		const std::filesystem::path owner_key = FolderDirectoryCompareKey(owner);
-		for (std::filesystem::path current = location; !current.empty(); current = current.parent_path())
+		bool matched = false;
+		uam::paths::FindNearestVcsRoot(location, uam::paths::VcsRootKinds::GitOrSvn, [&](const std::filesystem::path& current)
 		{
-			if (FolderDirectoryKeysMatch(FolderDirectoryCompareKey(current), owner_key)) return true;
-			if (uam::paths::PathExistsNoThrow(current / ".git") || uam::paths::PathExistsNoThrow(current / ".svn")) break;
-			if (current == current.parent_path()) break;
-		}
-		return false;
+			uam::paths::VcsMarkers markers;
+			matched = FolderDirectoryKeysMatch(FolderDirectoryCompareKey(current), owner_key);
+			if (matched) markers.stop = true;
+			else markers = uam::paths::ProbeVcsMarkers(current);
+			return markers;
+		});
+		return matched;
 	}
 
 	/// <summary>Resolved ancestors MatchesRegisteredParent would visit, up to and including the first repository boundary.</summary>
 	static std::vector<std::filesystem::path> RegisteredParentKeys(const std::filesystem::path& location)
 	{
 		std::vector<std::filesystem::path> keys;
-		for (std::filesystem::path current = location; !current.empty(); current = current.parent_path())
+		uam::paths::FindNearestVcsRoot(location, uam::paths::VcsRootKinds::GitOrSvn, [&](const std::filesystem::path& current)
 		{
 			keys.push_back(FolderDirectoryCompareKey(current));
-			if (uam::paths::PathExistsNoThrow(current / ".git") || uam::paths::PathExistsNoThrow(current / ".svn")) break;
-			if (current == current.parent_path()) break;
-		}
+			return uam::paths::ProbeVcsMarkers(current);
+		});
 		return keys;
 	}
 

@@ -6,6 +6,7 @@
 #include <functional>
 #include <stop_token>
 #include <string>
+#include <string_view>
 
 namespace uam
 {
@@ -15,6 +16,11 @@ namespace uam
 	std::string ManagedSnapshotBypassError(const AppState& app, const ChatSession& chat);
 	void CancelGitPortRequest(AppState& app, const std::string& chat_id);
 	void PollGitPortRequests(AppState& app);
+	/// Settles only this request's acknowledged workspace fields, including after query withdrawal.
+	bool SettleGitWorktreeCleanupRequest(AppState& app, const std::string& chat_id,
+	    const std::shared_ptr<AppState::GitPortRequest>& request);
+
+	enum class GitWorktreeCleanupStage { BeforeWorktreeRemoval, AfterWorktreeRemoval, AfterBranchRemoval, AfterMetadataPublication };
 
 	struct GitChatBranch
 	{
@@ -58,6 +64,9 @@ namespace uam
 		std::string diff;
 		std::string message;
 	};
+
+	/// A plain-folder snapshot being deleted is first renamed to `<bucket>/<prefix><id hash>`; retention finishes any it finds.
+	inline constexpr std::string_view kManagedSnapshotTombstonePrefix = "removing-managed-repository-";
 
 	struct GitWorktreeRetentionCandidate
 	{
@@ -112,9 +121,16 @@ namespace uam
 	/// <summary>Pending explicit-base creation never silently falls back to an unisolated launch.</summary>
 	bool ValidatePendingGitBaseOverrideScope(const AppState& app, const ChatSession& chat, std::string& error);
 
+	/// InProgress: an earlier process may still be running `git worktree add` for this intent.
+	enum class FailedWorkspaceIntent { Preserved, InProgress, Cleared };
+	/// Journals older than the epoch are treated as an earlier process's; returns the previous epoch.
+	std::filesystem::file_time_type SetWorkspaceIntentProcessEpochForTests(std::filesystem::file_time_type epoch);
+
 	class GitWorktreeService
 	{
 	  public:
+		explicit GitWorktreeService(std::function<void(GitWorktreeCleanupStage)> cleanup_hook_for_tests = {})
+		    : m_cleanup_hook_for_tests(std::move(cleanup_hook_for_tests)) {}
 		/// Background-only inspection. Removal requires a separate exclusive workspace lease and fresh reference validation.
 		bool InspectRetentionCandidate(const std::filesystem::path& data_root, const std::filesystem::path& source_root,
 		    const std::filesystem::path& worktree, const std::vector<std::filesystem::path>& protected_paths,
@@ -123,6 +139,16 @@ namespace uam
 		bool RemoveRetentionCandidate(const std::filesystem::path& data_root, const std::filesystem::path& source_root,
 		    const GitWorktreeRetentionCandidate& candidate, const std::vector<std::filesystem::path>& protected_paths,
 		    const WorkspaceLeaseGate::Lease& lease, std::stop_token stop_token = {}, int retention_days = 14) const;
+		/// Background-only inspection of a plain-folder snapshot repository (`worktrees/<key>/managed-repository-<id>`) that has no
+		/// linked worktree, no uncommitted or ignored files, no ref with commits beyond its snapshot and no activity within the retention period.
+		/// The caller also refuses snapshots that belong to a known chat.
+		bool InspectManagedSnapshotRetentionCandidate(const std::filesystem::path& data_root, const std::filesystem::path& repository,
+		    const std::vector<std::filesystem::path>& protected_paths, GitWorktreeRetentionCandidate& candidate,
+		    std::stop_token stop_token = {}, int retention_days = 14) const;
+		/// Requires the exclusive lease; re-inspects and removes the snapshot repository only when nothing changed.
+		bool RemoveManagedSnapshotRetentionCandidate(const std::filesystem::path& data_root, const GitWorktreeRetentionCandidate& candidate,
+		    const std::vector<std::filesystem::path>& protected_paths, const WorkspaceLeaseGate::Lease& lease,
+		    std::stop_token stop_token = {}, int retention_days = 14) const;
 		/// Selects only a settled, clean, unshared local linked worktree and preserves its cwd and history.
 		bool ListChatBranches(const AppState& app, const ChatSession& chat, std::vector<GitChatBranch>& branches, bool& svn, std::string& error) const;
 		bool ValidateChatBranchSelection(const AppState& app, const ChatSession& chat, const std::string& branch, bool create, std::string& error) const;
@@ -138,6 +164,12 @@ namespace uam
 		bool ValidateRemotePreparedWorkspace(const ExecutionHost& host, const std::filesystem::path& root, const std::filesystem::path& receipt, const ChatSession& metadata, std::string& error, std::stop_token stop = {}, bool* definite_failure_out = nullptr) const;
 		/// Validates only an owned journal whose planned artifacts have not been created; never accepts it as a ready workspace.
 		bool ValidateUncreatedWorkspaceIntent(const std::filesystem::path& root, const std::filesystem::path& receipt, const ChatSession& metadata, std::string& error, std::stop_token stop = {}) const;
+		/// Settles this chat's recorded intent after a failed creation. Cleared means nothing of it remains: an absent or
+		/// interrupted worktree is removed only when every file matches the base commit, anything else is moved aside and named
+		/// in notice, and a branch still at the base is deleted. A finished worktree, branch work or a managed repository stays Preserved.
+		FailedWorkspaceIntent ClearFailedWorkspaceIntent(const std::filesystem::path& root, const std::filesystem::path& receipt, const std::string& receipt_text, const ChatSession& metadata, std::string& notice, std::stop_token stop = {}) const;
+		/// True while Git's creation lock is present, so a worktree interrupted mid-checkout is never accepted as ready.
+		bool WorkspaceCreationUnfinished(const std::filesystem::path& worktree, std::stop_token stop = {}) const;
 		bool ValidatePreparedWorkspace(const std::filesystem::path& root, const std::filesystem::path& receipt, const ChatSession& metadata, std::string& error, std::stop_token stop = {}) const;
 		GitWorktreeOperationResult CreateBranchForChat(const AppState& app, const ChatSession& source, ChatSession& branch, const std::string& checkpoint_sha) const;
 		bool RemoveUnusedBranchWorktree(const AppState& app, const ChatSession& branch, std::string* error_out = nullptr) const;
@@ -150,6 +182,7 @@ namespace uam
 		GitTurnCheckpointResult PreviewTurnRollback(const AppState& app, const ChatSession& chat, int assistant_message_index) const;
 		GitTurnCheckpointResult RollbackTurn(AppState& app, ChatSession& chat, int assistant_message_index) const;
 	  private:
+		std::function<void(GitWorktreeCleanupStage)> m_cleanup_hook_for_tests;
 		GitWorktreeOperationResult CreateForChatCore(AppState& app, ChatSession& chat, bool persist, const GitWorktreeIntentRecorder& record, std::stop_token stop, bool automatic_unborn_snapshot = false) const;
 	};
 } // namespace uam

@@ -11,6 +11,7 @@ room for a new one.
   check_build_flag_leaks.py --build-dir Builds/flags-off            # flags read from CMakeCache.txt
   check_build_flag_leaks.py --dist Builds/ui-off/dist --disabled CODEX SSH
   check_build_flag_leaks.py --build-dir Builds/flags-off --record-residue   # add new native matches for review
+  check_build_flag_leaks.py --merge-residue candidates/*/build_flag_native_residue.json   # combine CI candidate files
 """
 import argparse
 import fnmatch
@@ -54,6 +55,26 @@ PRINTABLE = re.compile(rb'[\x20-\x7e]{4,}')
 PRINTABLE_UTF16 = re.compile(rb'(?:[\x20-\x7e]\x00){4,}')
 # macOS and Linux wide literals are UTF-32LE.
 PRINTABLE_UTF32 = re.compile(rb'(?:[\x20-\x7e]\x00\x00\x00){4,}')
+# MSVC names anonymous namespaces in RTTI and decorated names ?A0x<8 hex digits>, a value that depends on the build
+# machine and source, not on the product. The text around a match is cut from the raw string first and then read with
+# the tag (or a tag the cut ended inside) as ?A0x<hash>, so recorded residue stays valid wherever it was built.
+# ponytail: a cut that starts inside a tag keeps its hex tail; strings are 60 characters either side, so that is rare.
+MSVC_ANONYMOUS_NAMESPACE = re.compile(r'\?A0x[0-9a-f]{1,8}')
+
+
+def stable_text(text):
+    return MSVC_ANONYMOUS_NAMESPACE.sub('?A0x<hash>', text)
+
+
+def stable_residue(residue):
+    """Residue with every recorded string in its stable spelling; strings that differed only in a machine hash add up."""
+    for per_flag in residue.get('artifacts', {}).values():
+        for flag, strings in per_flag.items():
+            stable = {}
+            for text, count in strings.items():
+                stable[stable_text(text)] = stable.get(stable_text(text), 0) + count
+            per_flag[flag] = stable
+    return residue
 
 
 def cmake_bool(value):
@@ -141,8 +162,8 @@ def find_leaks(disabled, artifacts, local_folders=(), foreign_folders=()):
                     token_start -= 1
                 while token_end < min(len(text), match.end() + TOKEN_REACH) and text[token_end] not in TOKEN_BREAKS:
                     token_end += 1
-                leaks.append({'flag': name, 'scope': scope, 'path': path, 'match': match.group(0), 'token': text[token_start:token_end],
-                              'text': text[start:match.end() + 60]})
+                leaks.append({'flag': name, 'scope': scope, 'path': path, 'match': match.group(0), 'token': stable_text(text[token_start:token_end]),
+                              'text': stable_text(text[start:match.end() + 60])})
     return leaks
 
 
@@ -187,7 +208,11 @@ def native_artifacts(build_dir, values):
         found.append(('resources', bundle / 'Contents' / 'Info.plist'))
         frameworks = bundle / 'Contents' / 'Frameworks'
         if frameworks.is_dir():
-            # Nested apps (CEF helpers, UAM Computer Use) run copies of the main executable, which is scanned once as 'native'.
+            # The CEF helpers run copies of one separate helper executable, scanned once as 'native'.
+            helper = frameworks / 'universal_agent_manager Helper.app' / 'Contents' / 'MacOS' / 'universal_agent_manager Helper'
+            if helper.is_file():
+                found.append(('native', helper))
+            # UAM Computer Use runs a copy of the main executable, which is scanned once as 'native'.
             for app in frameworks.iterdir():
                 if app.name in SKIP_NAMES or app.name.startswith('universal_agent_manager Helper'):
                     continue
@@ -242,13 +267,34 @@ def record_residue(path, residue, leaks):
     artifacts = residue.setdefault('artifacts', {})
     for (artifact, flag, text), count in counts.items():
         strings = artifacts.setdefault(artifact, {}).setdefault(flag, {})
-        strings[text] = max(strings.get(text, 0), count)
+        # Only matches beyond the recorded count reach this point, so they add to it.
+        strings[text] = strings.get(text, 0) + count
         residue.setdefault('reasons', {}).setdefault(flag, 'TODO: review these strings and explain why they remain.')
-    for per_flag in artifacts.values():
+    write_residue(path, residue)
+    print(f'Recorded {sum(counts.values())} native matches ({len(counts)} distinct) in {path}.')
+
+
+def write_residue(path, residue):
+    for per_flag in residue.get('artifacts', {}).values():
         for flag, strings in per_flag.items():
             per_flag[flag] = dict(sorted(strings.items()))
     path.write_text(json.dumps(residue, indent=2, ensure_ascii=False) + '\n')
-    print(f'Recorded {sum(counts.values())} native matches ({len(counts)} distinct) in {path}.')
+
+
+def merge_residue(path, residue, candidates):
+    """Combine the candidate files uploaded by failing native CI rows, keeping the highest count for each string.
+    Reviewed reasons are never replaced, so a flag that only has a TODO reason still fails the gate."""
+    for candidate in candidates:
+        other = stable_residue(json.loads(candidate.read_text()))
+        for flag, reason in other.get('reasons', {}).items():
+            residue.setdefault('reasons', {}).setdefault(flag, reason)
+        for artifact, per_flag in other.get('artifacts', {}).items():
+            for flag, strings in per_flag.items():
+                merged = residue.setdefault('artifacts', {}).setdefault(artifact, {}).setdefault(flag, {})
+                for text, count in strings.items():
+                    merged[text] = max(merged.get(text, 0), count)
+    write_residue(path, residue)
+    print(f'Merged {len(candidates)} candidate files into {path}.')
 
 
 def structural_failures(build_dir, values):
@@ -274,6 +320,7 @@ def main(argv=None):
     parser.add_argument('--allowlist', type=Path, default=DEFAULT_ALLOWLIST)
     parser.add_argument('--residue', type=Path, default=DEFAULT_RESIDUE, help='Reviewed exact native strings per executable')
     parser.add_argument('--record-residue', action='store_true', help='Add unexcused native matches to the residue file for review')
+    parser.add_argument('--merge-residue', nargs='+', type=Path, metavar='CANDIDATE', help='Combine candidate residue files uploaded by failing native CI rows into the residue file, then exit')
     parser.add_argument('--local-path', action='append', default=[], help='Extra machine-local folder whose spelling in __FILE__ paths is ignored (for outputs copied from another machine)')
     parser.add_argument('--ui-only', action='store_true', help='Scan only the UI dist even when a build folder is given')
     args = parser.parse_args(argv)
@@ -281,6 +328,9 @@ def main(argv=None):
         form = PureWindowsPath(folder) if '\\' in folder or ':' in folder else PurePosixPath(folder)
         if not form.is_absolute() or len(form.parts) < 3:
             parser.error(f'--local-path {folder} must be an absolute folder at least two levels deep, or it could hide real matches.')
+    if args.merge_residue:
+        merge_residue(args.residue, stable_residue(json.loads(args.residue.read_text())) if args.residue.exists() else {}, args.merge_residue)
+        return 0
     if not args.build_dir and not args.dist:
         parser.error('Pass --build-dir or --dist.')
 
@@ -327,7 +377,7 @@ def main(argv=None):
             failures.append(f'Allowlist entry without a justification: {entry}')
         if 'max' not in entry and ('pattern' in entry or 'match' in entry or 'path' not in entry):
             failures.append(f'Allowlist entry without a budget: {entry}')
-    residue = json.loads(args.residue.read_text()) if args.residue.exists() else {}
+    residue = stable_residue(json.loads(args.residue.read_text())) if args.residue.exists() else {}
     leaks = find_leaks(disabled, artifacts, [ROOT] + ([args.build_dir] if args.build_dir else []), args.local_path)
     leak_failures, notes = apply_allowlist(apply_residue(leaks, residue), entries, disabled)
     if args.record_residue:

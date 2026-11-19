@@ -54,20 +54,23 @@ namespace uam
 	}
 
 	std::unique_ptr<PreparedNativeMediaChatSave> PreparedNativeMediaChatSave::PreparePassive(
-	    const std::filesystem::path& root, AdmittedLocalPassiveNativeHistory admitted,
+	    const std::filesystem::path& root, AdmittedPassiveNativeHistory admitted,
 	    const PassiveNativeOpenMetadata& metadata, std::string_view revision,
 	    std::string& error, std::stop_token cancel)
 	{
 		const auto reference = native_agents::ParseHistoryId(admitted.m_reference);
 		auto& chat = admitted.m_chat;
-		if (!reference || reference->execution_host_id != "local" ||
+		// The sealed reader already attested an SSH workspace on its own host.
+		const bool local = admitted.m_host == "local";
+		if (!reference || admitted.m_host.empty() || reference->execution_host_id != admitted.m_host ||
 		    !metadata.incarnation || admitted.m_source_id.empty() || admitted.m_source_birth.empty() ||
 		    root != admitted.m_root || revision != admitted.m_primary ||
 		    ChatRepository::ChatSummaryStorageRevision(root, admitted.m_reference) != admitted.m_summary ||
 		    chat.id != admitted.m_reference || chat.provider_id != reference->provider_id ||
 		    chat.parent_chat_id != reference->parent_session_id || chat.parent_chat_id != admitted.m_parent_native_id ||
-		    !chat.imported_read_only || !chat.native_session_id.empty() || chat.execution_host_id != "local" ||
-		    chat.workspace_directory != admitted.m_workspace || !paths::PathFromUtf8(chat.workspace_directory).is_absolute() ||
+		    !chat.imported_read_only || !chat.native_session_id.empty() || chat.execution_host_id != admitted.m_host ||
+		    chat.workspace_directory != admitted.m_workspace || chat.workspace_directory.empty() ||
+		    (local && !paths::PathFromUtf8(chat.workspace_directory).is_absolute()) ||
 		    (metadata.display_parent_chat_id.empty() != metadata.display_parent_created_at.empty()) ||
 		    ((!chat.subagent_parent_chat_id.empty() || !chat.subagent_parent_created_at.empty()) &&
 		     (metadata.display_parent_chat_id != chat.subagent_parent_chat_id || metadata.display_parent_created_at != chat.subagent_parent_created_at)) ||

@@ -103,7 +103,7 @@ namespace
 			session->turn_user_message_index = session->turn_first_user_message_index = 0;
 			session->interaction_at = app.chats.front().interaction_at;
 			session->goal_review_turn = goal_review;
-			session->active_uam_agent_workspace_access = goal_review ? "" : "read";
+			session->active_uam_agent_workspace_access = goal_review ? "write" : "read";
 			session->active_uam_agent_id = goal_review ? "" : "private-read-agent";
 			app.acp_sessions.push_back(std::move(owned));
 			sink = std::make_unique<ProviderBoundarySink>(*session, temp.root);
@@ -259,8 +259,13 @@ UAM_TEST(ClaudeCapturedReadRecognizesNativeReadToolsAndRejectsMutationOrUnknownT
 	    {"Read", {{"file_path", "private-fixture.txt"}, {"offset", 1}}},
 	    {"Grep", {{"pattern", "needle"}, {"path", "private-fixture.txt"}}},
 	    {"Glob", {{"pattern", "*.txt"}}},
+	    // Network access is never a read, and reads stay inside the workspace and out of UAM's data root.
 	    {"WebFetch", {{"url", "https://example.invalid/private-fixture"}, {"prompt", "Inspect fixture"}}},
 	    {"WebSearch", {{"query", "private fixture"}}},
+	    {"Read", {{"file_path", "data/companion.json"}}},
+	    {"Read", {{"offset", 1}}}, // A read must name what it reads.
+	    {"Read", {{"file_path", "../private-outside.txt"}}},
+	    {"Grep", {{"pattern", "token"}, {"path", "/"}}},
 	    {"Write", {{"file_path", "private-output.txt"}, {"content", "Do not execute"}}},
 	    {"UnknownPrivateTool", {{"opaque", "private fixture"}}}};
 	std::vector<bool> read_allowed, mutations_denied;
@@ -269,7 +274,7 @@ UAM_TEST(ClaudeCapturedReadRecognizesNativeReadToolsAndRejectsMutationOrUnknownT
 		for (std::size_t index = 0; index < tools.size(); ++index)
 		{
 			const auto& [tool, input] = tools[index];
-			const bool read = index < 5;
+			const bool read = index < 3;
 			const std::string id = "native-private-" + std::to_string(index);
 			ProviderPermissionFixture fixture("claude-cli", goal_review);
 			fixture.ClaudeRequest(id, tool, input);
@@ -293,8 +298,8 @@ UAM_TEST(ClaudeCapturedReadRecognizesNativeReadToolsAndRejectsMutationOrUnknownT
 			UAM_ASSERT(!fs::exists(fixture.temp.root / "private-output.txt"));
 		}
 	}
-	UAM_ASSERT_EQ(read_allowed.size(), std::size_t(10));
-	UAM_ASSERT_EQ(mutations_denied.size(), std::size_t(4));
+	UAM_ASSERT_EQ(read_allowed.size(), std::size_t(6));
+	UAM_ASSERT_EQ(mutations_denied.size(), std::size_t(16));
 	UAM_ASSERT(std::ranges::all_of(read_allowed, [](bool allowed) { return allowed; }));
 	UAM_ASSERT(std::ranges::all_of(mutations_denied, [](bool denied) { return denied; }));
 #endif

@@ -45,6 +45,7 @@ class MemoryService
 	static std::string BuildWorkerPromptForTests(const ChatSession& chat, int start_message_index = -1);
 	/// <summary>Test-only fault injection called inside memory worker threads at "history" (saved-history read) and "output" (after the worker process returns); nullptr disables it.</summary>
 	static void SetWorkerFaultForTests(void (*fault)(std::string_view stage));
+	static void SetWorkerBackoffForTests(uam::AppState& app, const ChatSession& chat, double retry_not_before);
 	/// <summary>Captures extraction text from the requested scan start while retaining message positions and excluding unused payloads. Zero captures all text; negative uses the automatic overlap.</summary>
 	static ChatSession CaptureWorkerInput(const ChatSession& chat, int start_message_index = 0);
 	static std::vector<ManualScanCandidate> ListManualScanCandidates(const uam::AppState& app);

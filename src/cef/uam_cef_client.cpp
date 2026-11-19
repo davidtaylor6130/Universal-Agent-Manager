@@ -1,10 +1,12 @@
 #include "cef/uam_cef_client.h"
 #include "cef/cef_push.h"
+#include "cef/dropped_attachment_paths.h"
 #include "cef/state_serializer.h"
 #include "cef/uam_cef_security.h"
 #include "cef/uam_window_chrome.h"
 #include "include/views/cef_browser_view.h"
 #include "include/views/cef_window.h"
+#include "common/runtime/app_time.h"
 #include "common/utils/diagnostic_log.h"
 #include "include/cef_task.h"
 
@@ -57,19 +59,14 @@ bool UamCefClient::IsTrustedMainFrame(CefRefPtr<CefFrame> frame) const
 	return uam::cef::IsTrustedMainFrame(frame, m_trustedUiIndexUrl);
 }
 
-bool UamCefClient::ShouldCancelNavigationToUrl(const std::string& target_url) const
+bool UamCefClient::ShouldCancelNavigationToUrl(bool is_main_frame, const std::string& target_url) const
 {
-	if (uam::cef::IsTrustedUiUrl(target_url, m_trustedUiIndexUrl))
-	{
-		return false;
-	}
-
-	if (uam::cef::ShouldOpenExternally(target_url))
+	const uam::cef::NavigationDecision decision = uam::cef::DecideNavigation(is_main_frame, target_url, m_trustedUiIndexUrl);
+	if (decision == uam::cef::NavigationDecision::CancelAndOpenExternally)
 	{
 		(void)uam::cef::OpenUrlExternally(target_url);
 	}
-
-	return true;
+	return decision != uam::cef::NavigationDecision::Allow;
 }
 
 // ---------------------------------------------------------------------------
@@ -77,7 +74,7 @@ bool UamCefClient::ShouldCancelNavigationToUrl(const std::string& target_url) co
 // ---------------------------------------------------------------------------
 
 bool UamCefClient::OnBeforePopup(CefRefPtr<CefBrowser> /*browser*/,
-                                  CefRefPtr<CefFrame> /*frame*/,
+                                  CefRefPtr<CefFrame> frame,
                                   int /*popup_id*/,
                                   const CefString& target_url,
                                   const CefString& /*target_frame_name*/,
@@ -91,6 +88,9 @@ bool UamCefClient::OnBeforePopup(CefRefPtr<CefBrowser> /*browser*/,
                                   bool* /*no_javascript_access*/)
 {
 	CEF_REQUIRE_UI_THREAD();
+	// Subframes (HTML views) never open the system browser, even if their sandbox is later loosened.
+	if (frame && !frame->IsMain())
+		return true;
 	return uam::cef::CancelPopupAndOpenExternally(target_url.ToString(), [](const std::string& url) {
 		return uam::cef::OpenUrlExternally(url);
 	});
@@ -325,6 +325,23 @@ bool UamCefClient::OnProcessMessageReceived(CefRefPtr<CefBrowser>        browser
 // CefDragHandler
 // ---------------------------------------------------------------------------
 
+bool UamCefClient::OnDragEnter(CefRefPtr<CefBrowser> browser, CefRefPtr<CefDragData> dragData, DragOperationsMask mask)
+{
+	CEF_REQUIRE_UI_THREAD();
+	(void)mask;
+	std::vector<std::string> paths;
+	std::vector<CefString> dragged;
+	if (browser != nullptr && m_browser != nullptr && browser->IsSame(m_browser) && dragData != nullptr && dragData->GetFilePaths(dragged))
+	{
+		for (const CefString& path : dragged)
+		{
+			paths.push_back(path.ToString());
+		}
+	}
+	uam::cef::ExchangeDroppedAttachmentPaths(std::move(paths));
+	return false;
+}
+
 void UamCefClient::OnDraggableRegionsChanged(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, const std::vector<CefDraggableRegion>& regions)
 {
 	CEF_REQUIRE_UI_THREAD();
@@ -368,14 +385,13 @@ bool UamCefClient::OnBeforeBrowse(CefRefPtr<CefBrowser> browser,
 {
 	CEF_REQUIRE_UI_THREAD();
 	(void)browser;
-	(void)frame;
 
 	if (request == nullptr)
 	{
 		return true;
 	}
 
-	const bool cancel = ShouldCancelNavigationToUrl(request->GetURL());
+	const bool cancel = ShouldCancelNavigationToUrl(frame && frame->IsMain(), request->GetURL());
 	if (!cancel && frame && frame->IsMain()) ++m_recoveryGeneration;
 	if (!cancel && m_router) m_router->OnBeforeBrowse(browser, frame);
 	return cancel;
@@ -389,9 +405,8 @@ bool UamCefClient::OnOpenURLFromTab(CefRefPtr<CefBrowser> browser,
 {
 	CEF_REQUIRE_UI_THREAD();
 	(void)browser;
-	(void)frame;
 
-	return ShouldCancelNavigationToUrl(target_url.ToString());
+	return ShouldCancelNavigationToUrl(frame && frame->IsMain(), target_url.ToString());
 }
 
 void UamCefClient::ReloadInterface()
@@ -465,5 +480,8 @@ bool UamCefClient::OnConsoleMessage(CefRefPtr<CefBrowser> browser, cef_log_sever
 	const std::string text = message.ToString();
 	if (level >= LOGSEVERITY_ERROR || text.starts_with("[UI recovery]") || text.starts_with("[UI startup]"))
 		uam::diagnostics::Write("[frontend] " + text);
+	static bool ui_ready_logged = false;
+	if (text.starts_with("[UI startup] Initial state loaded") && !std::exchange(ui_ready_logged, true))
+		uam::diagnostics::Write("[performance] startup UI ready at " + std::to_string(static_cast<long long>(uam::GetAppTimeSeconds() * 1000.0)) + " ms since launch.");
 	return false;
 }

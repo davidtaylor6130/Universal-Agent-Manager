@@ -46,7 +46,7 @@ describe('desktop native-phone pairing', () => {
     const host = render()
     expect(send).not.toHaveBeenCalled()
     await act(async () => host.querySelector('button')!.click())
-    expect(send).toHaveBeenCalledExactlyOnceWith({ action: 'getCompanionToken' })
+    expect(send).toHaveBeenCalledExactlyOnceWith({ action: 'getCompanionToken', payload: { rotate: true } })
     expect(JSON.parse(host.querySelector('svg[data-pairing]')!.getAttribute('data-pairing')!)).toEqual({
       type: 'uam-companion', version: 1, url: 'https://uam.local:58950/companion', token: 'a'.repeat(64), name: 'Main Universal Agent Manager computer',
     })
@@ -99,7 +99,7 @@ describe('desktop native-phone pairing', () => {
     const host = render()
     await act(async () => host.querySelector('button')!.click())
     expect(host.querySelector('svg[data-pairing]')).not.toBeNull()
-    expect(host.textContent).toContain('hiding does not revoke existing connections')
+    expect(host.textContent).toContain('Showing it issued a new token; other paired phones and browsers must pair again.')
     act(() => vi.advanceTimersByTime(120000))
     expect(host.querySelector('svg[data-pairing]')).toBeNull()
   })

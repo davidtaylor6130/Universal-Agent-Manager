@@ -46,7 +46,7 @@ export function SnoozeMenu({ chatId, familyIds, untilMs = 0, onSnoozed, targets 
   const bulk = targets && targets.length > 1 ? targets : null
   // A row is blocked while any chat in its branch family is waiting for the user.
   const blockedIds = useAppStore(useShallow((state) => bulk
-    ? bulk.filter(({ id }) => state.sessions.some((chat) => (chat.id === id || (chat.branchRootChatId || chat.parentChatId || chat.id) === id) && awaitsUser(state.acpBindingBySessionId[chat.id]))).map(({ id }) => id)
+    ? bulk.filter(({ id }) => state.sessions.some((chat) => (chat.id === id || (chat.branchRootChatId || chat.parentChatId || chat.id) === id) && (chat.automationPendingPrompt || awaitsUser(state.acpBindingBySessionId[chat.id])))).map(({ id }) => id)
     : familyIds.some((id) => awaitsUser(state.acpBindingBySessionId[id])) ? [chatId] : []))
   const untilByRow = useAppStore(useShallow((state) => bulk ? bulk.map(({ id }) => state.sessions.find((chat) => chat.id === id)?.snoozedUntilMs ?? 0) : [untilMs]))
   const blocked = blockedIds.length === (bulk?.length ?? 1)

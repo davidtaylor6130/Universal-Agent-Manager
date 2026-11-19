@@ -9,6 +9,7 @@ namespace uam::opencode_import
 	/// <summary>Owns a private complete export; failed workers and checked writes discard it.</summary>
 	Spool Export(ProviderWorkerInvocation invocation, const std::filesystem::path& workspace, std::stop_token stop, std::string& error);
 	/// <summary>Maps one complete message at a time; memory follows the largest message, without an aggregate quota.</summary>
+	/// <summary>`parent_session_id` receives the export's own `parentID`, empty for a root session.</summary>
 	bool Read(const std::filesystem::path& source, const ChatSession& identity,
-	    const std::function<bool(const Message&)>& emit, std::stop_token stop, std::string& error);
+	    const std::function<bool(const Message&)>& emit, std::stop_token stop, std::string& error, std::string* parent_session_id = nullptr);
 }

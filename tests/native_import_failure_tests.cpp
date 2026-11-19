@@ -1,5 +1,6 @@
 #include "test_harness.h"
 #include "app/runtime_orchestration_services.h"
+#include "common/chat/native_import_filter.h"
 
 #include <nlohmann/json.hpp>
 
@@ -38,6 +39,39 @@ UAM_TEST(OpenCodeImportReportsInvalidRootAndMessagesSeparately)
 	        R"({"info":{"id":"ses_invalid_messages","directory":"/workspace"},"messages":{}})");
 	UAM_ASSERT(!invalid_messages.success);
 	UAM_ASSERT_EQ(invalid_messages.error, std::string("OpenCode export is missing a valid messages array."));
+}
+
+UAM_TEST(CodexDiscoveryAgesSessionsByRolloutLastWrite)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	TempDir temp("uam-codex-discovery-age");
+	ScopedEnvVar codex_home("CODEX_HOME", (temp.root / "codex").string());
+	ScopedEnvVar gemini_home("GEMINI_CLI_HOME", (temp.root / "gemini").string());
+	ScopedEnvVar copilot_home("COPILOT_HOME", (temp.root / "copilot").string());
+	ScopedEnvVar claude_home("CLAUDE_CONFIG_DIR", (temp.root / "claude").string());
+	const fs::path workspace = temp.root / "workspace";
+	fs::create_directories(workspace);
+	const ChatFolder folder{"known", "Known", workspace.string(), false, "local"};
+	const fs::path sessions = temp.root / "codex" / "sessions";
+	fs::create_directories(sessions);
+	const std::string id = "55555555-5555-4555-8555-555555555555";
+	const fs::path rollout = sessions / ("rollout-" + id + ".jsonl");
+	// Started long ago, still written to now.
+	UAM_ASSERT(uam::io::WriteTextFile(rollout, nlohmann::json{{"type", "session_meta"}, {"payload", {{"id", id}, {"cwd", workspace.string()},
+	    {"timestamp", "2020-01-01T00:00:00Z"}}}}.dump() + "\n" + nlohmann::json{{"type", "response_item"}, {"payload", {{"type", "message"},
+	    {"role", "user"}, {"content", nlohmann::json::array({{{"type", "input_text"}, {"text", "Authored request"}}})}}}}.dump() + "\n"));
+	AppSettings settings;
+	settings.native_import_startup_max_age_days = 30;
+	const auto discovered = [&]
+	{
+		const ChatHistorySyncService::LocalHistoryDiscovery discovery = ChatHistorySyncService().DiscoverProviderChatsForFolder(folder);
+		UAM_ASSERT_EQ(discovery.codex_rollouts.size(), std::size_t{1});
+		return discovery.codex_rollouts.front().first;
+	};
+	UAM_ASSERT(!uam::chat_import::NativeImportOlderThanStartupLimit(settings, discovered(), std::time(nullptr)));
+	fs::last_write_time(rollout, fs::last_write_time(rollout) - std::chrono::hours(24 * 400));
+	UAM_ASSERT(uam::chat_import::NativeImportOlderThanStartupLimit(settings, discovered(), std::time(nullptr)));
+#endif
 }
 
 UAM_TEST(CodexDiscoveryExcludesSessionsWithoutAuthoredUsers)

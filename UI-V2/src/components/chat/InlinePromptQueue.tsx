@@ -31,6 +31,8 @@ interface InlinePromptQueueProps {
   onEdit: (id: string, revision: number, text: string, retainedAttachmentIds?: string[]) => Promise<boolean>
   onReorder: (expected: { id: string; revision: number }[], orderedIds: string[]) => Promise<boolean>
   onSteer: (index: number, expected?: { id: string; revision: number }) => Promise<boolean>
+  /** The active turn has not reached the provider, so a queued prompt has nothing to steer. */
+  steerUnavailable?: boolean
   onRemove: (index: number, expected?: { id: string; revision: number }) => Promise<boolean>
 }
 
@@ -45,7 +47,7 @@ function FileChip({ name, title, trailing }: { name: string; title?: string; tra
 /** Removed rows stay visible for the exit animation; reduced motion or no matchMedia (jsdom) drops them at once. */
 
 /** Edits queue snapshots separately from the composer; native ID/revision guards own admission. */
-export function InlinePromptQueue({ prompts, unsentPrompts = [], unsentActionsDisabled = false, unsentReceiptDeleteDisabled = unsentActionsDisabled, onRetryUnsent, onRemoveUnsent, onEditUnsent, held = false, onResume, disabled = false, onEdit, onReorder, onSteer, onRemove }: InlinePromptQueueProps) {
+export function InlinePromptQueue({ steerUnavailable = false, prompts, unsentPrompts = [], unsentActionsDisabled = false, unsentReceiptDeleteDisabled = unsentActionsDisabled, onRetryUnsent, onRemoveUnsent, onEditUnsent, held = false, onResume, disabled = false, onEdit, onReorder, onSteer, onRemove }: InlinePromptQueueProps) {
   const [editing, setEditing] = useState<{ id: string; revision: number; text: string; retainedAttachmentIds?: string[] } | null>(null)
   const [pending, setPending] = useState(false)
   const pendingRef = useRef(false)
@@ -190,7 +192,7 @@ export function InlinePromptQueue({ prompts, unsentPrompts = [], unsentActionsDi
           <IconButton size="sm" icon={<Pencil size={13} />} label="Edit queued prompt" disabled={blocked || !prompt.id || !prompt.revision || prompt.prepared || Boolean(editing)} onClick={() => { setEditing({ id: prompt.id!, revision: prompt.revision!, text: prompt.text }) }} />
           <IconButton size="sm" icon={<ArrowUp size={13} />} label="Move queued prompt up" disabled={blocked || !reorderable || index === 0 || Boolean(editing)} onClick={() => move(index, -1)} />
           <IconButton size="sm" icon={<ArrowDown size={13} />} label="Move queued prompt down" disabled={blocked || !reorderable || index === prompts.length - 1 || Boolean(editing)} onClick={() => move(index, 1)} />
-          <IconButton size="sm" icon={<CornerUpRight size={14} />} label="Steer with this prompt now" disabled={held || blocked || prompt.prepared || Boolean(editing)} onClick={() => void run(() => onSteer(index, prompt.id && prompt.revision ? { id: prompt.id, revision: prompt.revision } : undefined), 'Queued prompt could not be sent. Try again.')} />
+          <IconButton size="sm" icon={<CornerUpRight size={14} />} label="Steer with this prompt now" disabled={held || steerUnavailable || blocked || prompt.prepared || Boolean(editing)} onClick={() => void run(() => onSteer(index, prompt.id && prompt.revision ? { id: prompt.id, revision: prompt.revision } : undefined), 'Queued prompt could not be sent. Try again.')} />
           <IconButton size="sm" icon={<X size={14} />} label="Remove queued prompt" disabled={blocked || prompt.prepared || Boolean(editing)} onClick={() => void run(() => onRemove(index, prompt.id && prompt.revision ? { id: prompt.id, revision: prompt.revision } : undefined), 'Queued prompt could not be removed. Try again.')} />
         </div>
       </div>

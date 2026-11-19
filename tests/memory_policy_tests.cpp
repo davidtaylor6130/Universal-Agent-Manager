@@ -94,11 +94,11 @@ UAM_TEST(InheritedMemoryPolicyRejectsStaleCreationAndKeepsReadOnly)
 	UAM_ASSERT(MemoryService::ListManualScanCandidates(app).empty());
 	app.settings.memory_level_default = "strict";
 	UAM_ASSERT(MemoryService::ApplyWorkerOutput(app, app.chats.front(), chat.workspace_directory, output, -1, &error));
-	const std::string recall = MemoryService::BuildRecallPreface(app, app.chats.front(), "Continue");
+	const std::string recall = MemoryService::BuildRecallPreface(app, app.chats.front(), "Do fixes need tests?");
 	app.settings.memory_level_default = "readOnly";
-	UAM_ASSERT_EQ(MemoryService::BuildRecallPreface(app, app.chats.front(), "Continue"), recall);
+	UAM_ASSERT_EQ(MemoryService::BuildRecallPreface(app, app.chats.front(), "Do fixes need tests?"), recall);
 	app.settings.memory_level_default = "off";
-	UAM_ASSERT(MemoryService::BuildRecallPreface(app, app.chats.front(), "Continue").empty());
+	UAM_ASSERT(MemoryService::BuildRecallPreface(app, app.chats.front(), "Do fixes need tests?").empty());
 }
 
 UAM_TEST(InheritedMemoryPolicyCancelsPendingRecallBeforeStartupWait)

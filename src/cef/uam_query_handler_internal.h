@@ -57,6 +57,12 @@ inline std::string ProviderSwitchProviderIdFromPayload(const nlohmann::json& pay
 	return uam::nlohmann_json::TrimmedStringValue(payload, {"providerId"});
 }
 
+/// Only an explicit true overrides; anything else keeps the refusal.
+inline bool ProviderSwitchAllowsUncertainDelivery(const nlohmann::json& payload)
+{
+	return uam::nlohmann_json::BoolFieldStrict(payload, "allowUncertainDelivery").value_or(false);
+}
+
 inline std::string AcpPromptGoalIdFromPayload(const nlohmann::json& payload)
 {
 	return uam::nlohmann_json::TrimmedStringValue(payload, {"goalId"});

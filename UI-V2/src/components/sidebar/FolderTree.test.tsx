@@ -1,10 +1,19 @@
+import { addOutgoingAttempt, automationPromptRowKey, outgoingScope, resetOutgoingPresentation } from '../../utils/outgoingMessagePresentation'
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { useAppStore } from '../../store/useAppStore'
+import { APP_FAILURE_EVENT } from '../../utils/appFailure'
 import type { Folder, Session } from '../../types/session'
 import { FolderTree } from './FolderTree'
-import { chatGridLeaves, defaultChatGridLayout, setChatInLeaf, splitChatLeaf, writeChatGridLayout } from '../../utils/chatGridStorage'
+
+const stubRect = (element: HTMLElement, top: number, height: number) =>
+  vi.spyOn(element, 'getBoundingClientRect').mockReturnValue({ top, bottom: top + height, height, left: 0, right: 100, width: 100, x: 0, y: top, toJSON: () => ({}) })
+const pointer = (target: EventTarget, type: string, clientX: number, clientY: number) =>
+  target.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, clientX, clientY, button: 0, buttons: type === 'pointerup' ? 0 : 1 }))
+/** A drag swallows the click that follows its release until the next task; let that pass before later clicks. */
+const releaseClickGuard = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+import { chatGridLeaves, defaultChatGridLayout, readChatGridLayout, setChatInLeaf, splitChatLeaf, subscribeChatGridLayout, writeChatGridLayout, type ChatGridLayout } from '../../utils/chatGridStorage'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -19,6 +28,7 @@ const now = new Date('2026-01-01T12:00:00.000Z')
 const originalAddFolder = useAppStore.getState().addFolder
 const originalListRemoteDirectories = useAppStore.getState().listRemoteDirectories
 const originalSetActiveSession = useAppStore.getState().setActiveSession
+const originalSetSidebarChatOrder = useAppStore.getState().setSidebarChatOrder
 const originalDeleteFolder = useAppStore.getState().deleteFolder
 const originalDeleteFolders = useAppStore.getState().deleteFolders
 
@@ -60,6 +70,8 @@ describe('FolderTree', () => {
       acpBindingBySessionId: {},
       cliTranscriptBySessionId: {},
       resourceCollections: [],
+      sidebarPinnedChatOrder: [],
+      sidebarActiveChatOrder: [],
 	  executionHosts: [
 		{ id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: 'macos', architecture: 'arm64', lastSeenAt: '' },
 	  ],
@@ -455,29 +467,25 @@ describe('FolderTree', () => {
     expect(host.querySelector('[data-testid="collection-children-work"]')?.parentElement?.parentElement?.getAttribute('aria-hidden')).toBe('true')
     expect(host.querySelector('[data-testid="folder-row-second"]')).toBeTruthy()
 
-    const data = new Map<string, string>()
-    const transfer = {
-      effectAllowed: '',
-      get types() { return [...data.keys()] },
-      getData: (type: string) => data.get(type) ?? '',
-      setData: (type: string, value: string) => { data.set(type, value) },
+    // Dragging a workspace over a collection highlights the collection; releasing moves it in.
+    const collectionHeaderTarget = host.querySelector<HTMLElement>('[data-testid="collection-header-work"]')!
+    const elementFromPoint = vi.fn(() => collectionHeaderTarget)
+    Object.defineProperty(document, 'elementFromPoint', { configurable: true, value: elementFromPoint })
+    try {
+      const secondHeader = host.querySelector<HTMLElement>('[data-testid="folder-header-second"]')!
+      act(() => pointer(secondHeader, 'pointerdown', 10, 50))
+      act(() => pointer(document, 'pointermove', 10, 20))
+      expect(collection?.classList.contains('uam-sb-drop-target')).toBe(true)
+      await act(async () => { pointer(document, 'pointerup', 10, 20); await Promise.resolve() })
+      expect(collection?.classList.contains('uam-sb-drop-target')).toBe(false)
+    } finally {
+      delete (document as { elementFromPoint?: unknown }).elementFromPoint
     }
-    const dragStart = new Event('dragstart', { bubbles: true })
-    Object.defineProperty(dragStart, 'dataTransfer', { value: transfer })
-    const dragOver = new Event('dragover', { bubbles: true, cancelable: true })
-    Object.defineProperty(dragOver, 'dataTransfer', { value: transfer })
-    const drop = new Event('drop', { bubbles: true, cancelable: true })
-    Object.defineProperty(drop, 'dataTransfer', { value: transfer })
-
-    await act(async () => {
-      host.querySelector('[data-testid="folder-row-second"]')?.dispatchEvent(dragStart)
-      collection?.dispatchEvent(dragOver)
-      collection?.dispatchEvent(drop)
-    })
 
     expect(useAppStore.getState().resourceCollections[0].references.map((reference) => reference.target)).toEqual(['project', 'second'])
     expect(collection?.querySelector('[data-testid="folder-row-second"]')).toBeTruthy()
 
+    await releaseClickGuard()
     act(() => root.unmount())
     host.remove()
   })
@@ -507,7 +515,7 @@ describe('FolderTree', () => {
     expect(collectionHeader?.className).toContain('px-2.5')
     expect(collectionHeader?.className).toContain('py-0.5')
     expect(folder?.className).toContain('mb-0')
-    expect(folder?.style.boxShadow).toBe('none')
+    expect(folder?.style.boxShadow).toBe('')
     expect(folderHeader?.className).toContain('gap-1.5')
     expect(folderHeader?.className).toContain('px-2.5')
     expect(folderHeader?.className).toContain('py-0.5')
@@ -550,6 +558,311 @@ describe('FolderTree', () => {
     act(() => root.unmount())
     host.remove()
     vi.unstubAllGlobals()
+  })
+
+  it('shows nested collections as a tree with nesting actions and a child-aware delete', async () => {
+    vi.stubGlobal('ResizeObserver', class { observe() {}; unobserve() {}; disconnect() {} })
+    useAppStore.setState({
+      resourceCollections: [
+        { id: 'homelab', name: 'Homelab', collapsed: false, references: [] },
+        { id: 'services', name: 'Services', parentId: 'homelab', collapsed: false, references: [{ id: 'project-ref', type: 'workspace-folder', target: 'project', label: 'Project' }] },
+        { id: 'other', name: 'Other', collapsed: false, references: [] },
+      ],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<FolderTree searchQuery="" />))
+      const parentChildren = host.querySelector('[data-testid="collection-children-homelab"]') as HTMLElement
+      expect(parentChildren.querySelector('[data-testid="folder-collection-services"] [data-testid="folder-row-project"]')).toBeTruthy()
+      const toggle = host.querySelector('[data-testid="collection-header-homelab"] button[aria-label="Collapse Homelab"]') as HTMLButtonElement
+      expect(toggle.getAttribute('aria-controls')).toBe(parentChildren.id)
+
+      // Nested collection menu: keyboard-reachable actions for nesting and leaving the parent.
+      const trigger = host.querySelector('button[aria-label="Actions for Services"]') as HTMLButtonElement
+      act(() => trigger.click())
+      let menu = document.body.querySelector('[role="menu"][aria-label="Services actions"]') as HTMLElement
+      expect(menu.textContent).toContain('New collection inside')
+      const top = Array.from(menu.querySelectorAll('button')).find((button) => button.textContent?.includes('Move to top level')) as HTMLButtonElement
+      await act(async () => { top.click(); await Promise.resolve() })
+      expect(useAppStore.getState().resourceCollections.find((collection) => collection.id === 'services')?.parentId).toBeUndefined()
+
+      // Move to collection lists only valid targets with their path.
+      act(() => (host.querySelector('button[aria-label="Actions for Homelab"]') as HTMLButtonElement).click())
+      menu = document.body.querySelector('[role="menu"][aria-label="Homelab actions"]') as HTMLElement
+      expect(menu.textContent).not.toContain('Move to top level')
+      act(() => (Array.from(menu.querySelectorAll('button')).find((button) => button.textContent?.includes('Move to collection')) as HTMLButtonElement).click())
+      const submenu = document.body.querySelector('[role="menu"][aria-label="Move Homelab to collection"]') as HTMLElement
+      const labels = Array.from(submenu.querySelectorAll('button')).map((button) => button.textContent)
+      expect(labels).toEqual(['Other', 'Services'])
+      await act(async () => { (Array.from(submenu.querySelectorAll('button')).find((button) => button.textContent === 'Services') as HTMLButtonElement).click(); await Promise.resolve() })
+      expect(useAppStore.getState().resourceCollections.find((collection) => collection.id === 'homelab')?.parentId).toBe('services')
+
+      // Deleting a parent offers to move children up a level.
+      act(() => (host.querySelector('button[aria-label="Actions for Services"]') as HTMLButtonElement).click())
+      menu = document.body.querySelector('[role="menu"][aria-label="Services actions"]') as HTMLElement
+      act(() => (Array.from(menu.querySelectorAll('button')).find((button) => button.textContent === 'Delete') as HTMLButtonElement).click())
+      const dialog = document.body.querySelector('[role="alertdialog"]') as HTMLElement
+      expect(dialog.textContent).toContain('1 collection inside')
+      const keep = Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === 'Move contents up') as HTMLButtonElement
+      await act(async () => { keep.click(); await Promise.resolve() })
+      expect(useAppStore.getState().resourceCollections.map((collection) => [collection.id, collection.parentId])).toEqual([['other', undefined], ['homelab', undefined]])
+      expect(useAppStore.getState().folders.map((folder) => folder.id)).toContain('project')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      vi.unstubAllGlobals()
+    }
+  })
+
+  describe('nested collection delete prompt', () => {
+    const openPrompt = (host: HTMLElement, name: string) => {
+      act(() => (host.querySelector(`button[aria-label="Actions for ${name}"]`) as HTMLButtonElement).click())
+      const menu = document.body.querySelector(`[role="menu"][aria-label="${name} actions"]`) as HTMLElement
+      act(() => (Array.from(menu.querySelectorAll('button')).find((button) => button.textContent === 'Delete') as HTMLButtonElement).click())
+      return document.body.querySelector('[role="alertdialog"]') as HTMLElement
+    }
+    const withTree = async (run: (host: HTMLElement) => Promise<void> | void) => {
+      vi.stubGlobal('ResizeObserver', class { observe() {}; unobserve() {}; disconnect() {} })
+      const host = document.createElement('div')
+      document.body.appendChild(host)
+      const root = createRoot(host)
+      try {
+        act(() => root.render(<FolderTree searchQuery="" />))
+        await run(host)
+      } finally {
+        act(() => root.unmount())
+        host.remove()
+        vi.unstubAllGlobals()
+      }
+    }
+    const buttons = (dialog: HTMLElement) => Array.from(dialog.querySelectorAll('button')).map((button) => button.textContent)
+    const workspace = { id: 'project-ref', type: 'workspace-folder' as const, target: 'project', label: 'Project' }
+    const app = { id: 'app-ref', type: 'desktop-app' as const, target: '/Applications/App.app', label: 'App' }
+
+    it('keeps the warning and counts every level', () => withTree((host) => {
+      act(() => useAppStore.setState({ resourceCollections: [
+        { id: 'a', name: 'A', collapsed: false, references: [] },
+        { id: 'b', name: 'B', parentId: 'a', collapsed: false, references: [] },
+        { id: 'c', name: 'C', parentId: 'b', collapsed: false, references: [] },
+      ] }))
+      const dialog = openPrompt(host, 'A')
+      expect(dialog.getAttribute('aria-label')).toBe('Delete collection A')
+      expect(dialog.textContent).toContain('The collection “A” will be permanently deleted. This cannot be undone.')
+      expect(dialog.textContent).toContain('It has 2 collections inside, counting nested ones.')
+      expect(dialog.textContent).toContain('Move contents up moves its child collections to the top level and leaves its workspaces ungrouped.')
+      expect(buttons(dialog)).toEqual(['Cancel', 'Move contents up', 'Delete all'])
+    }))
+
+    it('moves a nested collection\'s workspaces, references and children to its parent', () => withTree(async (host) => {
+      act(() => useAppStore.setState({ resourceCollections: [
+        { id: 'homelab', name: 'Homelab', collapsed: false, references: [] },
+        { id: 'services', name: 'Services', parentId: 'homelab', collapsed: false, references: [workspace, app] },
+        { id: 'sub', name: 'Sub', parentId: 'services', collapsed: false, references: [] },
+      ] }))
+      const dialog = openPrompt(host, 'Services')
+      expect(dialog.textContent).toContain('Move contents up moves everything inside to “Homelab”.')
+      await act(async () => { (Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === 'Move contents up') as HTMLButtonElement).click(); await Promise.resolve() })
+      expect(useAppStore.getState().resourceCollections).toEqual([
+        { id: 'homelab', name: 'Homelab', collapsed: false, references: [workspace, app] },
+        { id: 'sub', name: 'Sub', parentId: 'homelab', collapsed: false, references: [] },
+      ])
+    }))
+
+    it('offers the choice for a nested collection holding only references', () => withTree((host) => {
+      act(() => useAppStore.setState({ resourceCollections: [
+        { id: 'homelab', name: 'Homelab', collapsed: false, references: [] },
+        { id: 'services', name: 'Services', parentId: 'homelab', collapsed: false, references: [workspace] },
+      ] }))
+      expect(buttons(openPrompt(host, 'Services'))).toEqual(['Cancel', 'Move contents up', 'Delete all'])
+    }))
+
+    it('says what a top-level collection loses when there is nowhere to move it', () => withTree((host) => {
+      act(() => useAppStore.setState({ resourceCollections: [
+        { id: 'solo', name: 'Solo', collapsed: false, references: [workspace, app] },
+        { id: 'top', name: 'Top', collapsed: false, references: [app] },
+        { id: 'kid', name: 'Kid', parentId: 'top', collapsed: false, references: [] },
+      ] }))
+      const solo = openPrompt(host, 'Solo')
+      expect(buttons(solo)).toEqual(['Cancel', 'Delete collection'])
+      expect(solo.textContent).toContain('cannot be restored. Its other links are removed.')
+      expect(solo.getAttribute('aria-label')).toBe('Delete collection Solo')
+      expect(solo.textContent).toContain('The collection “Solo” will be permanently deleted. This cannot be undone.')
+      act(() => (Array.from(solo.querySelectorAll('button')).find((button) => button.textContent === 'Cancel') as HTMLButtonElement).click())
+      expect(openPrompt(host, 'Top').textContent).toContain('leaves its workspaces ungrouped; its other links are removed.')
+    }))
+
+    it('names the parent limit only when moving references up can hit it', () => withTree(async (host) => {
+      const failures: { detail?: string }[] = []
+      const collect = (event: Event) => failures.push((event as CustomEvent).detail)
+      window.addEventListener(APP_FAILURE_EVENT, collect)
+      const original = useAppStore.getState().deleteResourceCollection
+      const deleteResourceCollection = vi.fn(async () => false)
+      const press = async (dialog: HTMLElement, label: string) => { await act(async () => { (Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === label) as HTMLButtonElement).click(); await Promise.resolve() }) }
+      act(() => useAppStore.setState({ deleteResourceCollection, resourceCollections: [
+        { id: 'solo', name: 'Solo', collapsed: false, references: [workspace] },
+        { id: 'homelab', name: 'Homelab', collapsed: false, references: [] },
+        { id: 'services', name: 'Services', parentId: 'homelab', collapsed: false, references: [app] },
+      ] }))
+      await press(openPrompt(host, 'Solo'), 'Delete collection')
+      await press(openPrompt(host, 'Services'), 'Delete all')
+      await press(openPrompt(host, 'Services'), 'Move contents up')
+      window.removeEventListener(APP_FAILURE_EVENT, collect)
+      act(() => useAppStore.setState({ deleteResourceCollection: original }))
+      expect(deleteResourceCollection.mock.calls).toEqual([['solo', false], ['services', true], ['services', false]])
+      expect(failures.map((failure) => failure.detail?.includes('500'))).toEqual([false, false, true])
+      expect(failures[2].detail).toContain('“Homelab” may be full')
+    }))
+
+    it('uses the same prompt for a one-item selection as for the menu', () => withTree(async (host) => {
+      act(() => useAppStore.setState({ resourceCollections: [
+        { id: 'a', name: 'A', collapsed: false, references: [] },
+        { id: 'b', name: 'B', parentId: 'a', collapsed: false, references: [] },
+        { id: 'c', name: 'C', parentId: 'b', collapsed: false, references: [] },
+      ] }))
+      const fromMenu = openPrompt(host, 'A')
+      const menuText = fromMenu.textContent
+      expect(menuText).toContain('its workspaces and theirs become ungrouped')
+      act(() => (Array.from(fromMenu.querySelectorAll('button')).find((button) => button.textContent === 'Cancel') as HTMLButtonElement).click())
+      act(() => host.querySelector('[data-collection-id="a"] button[aria-label="A"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
+      act(() => (host.querySelector('[aria-label="Delete 1 selected collection"]') as HTMLButtonElement).click())
+      const fromSelection = document.body.querySelector('[role="alertdialog"]') as HTMLElement
+      expect(fromSelection.textContent).toBe(menuText)
+      expect(fromSelection.textContent).toContain('It has 2 collections inside, counting nested ones.')
+      await act(async () => { (Array.from(fromSelection.querySelectorAll('button')).find((button) => button.textContent === 'Delete all') as HTMLButtonElement).click(); await Promise.resolve() })
+      expect(useAppStore.getState().resourceCollections).toEqual([])
+      expect(document.body.querySelector('[role="alertdialog"]')).toBeNull()
+      expect(host.querySelector('[aria-label="Delete 1 selected collection"]')).toBeNull()
+    }))
+  })
+
+  it('leaves collection drags to the collection or list, never to a workspace row', async () => {
+    useAppStore.setState({
+      resourceCollections: [
+        { id: 'homelab', name: 'Homelab', collapsed: false, references: [{ id: 'project-ref', type: 'workspace-folder', target: 'project', label: 'Project' }] },
+        { id: 'other', name: 'Other', collapsed: false, references: [] },
+      ],
+    })
+    const failures: unknown[] = []
+    const collect = (event: Event) => failures.push((event as CustomEvent).detail)
+    window.addEventListener(APP_FAILURE_EVENT, collect)
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<FolderTree searchQuery="" />))
+      const dragged = (id: string, kind: string) => {
+        const data = new Map<string, string>()
+        const transfer = { effectAllowed: '', get types() { return [...data.keys()] }, getData: (type: string) => data.get(type) ?? '', setData: (type: string, value: string) => { data.set(type, value) } }
+        const start = new Event('dragstart', { bubbles: true })
+        Object.defineProperty(start, 'dataTransfer', { value: transfer })
+        act(() => { host.querySelector(`[data-testid="collection-header-${id}"]`)!.dispatchEvent(start) })
+        const event = new Event(kind, { bubbles: true, cancelable: true })
+        Object.defineProperty(event, 'dataTransfer', { value: transfer })
+        Object.defineProperty(event, 'clientY', { value: 1 })
+        return event
+      }
+      const row = () => host.querySelector('[data-testid="folder-row-project"]') as HTMLElement
+
+      // Homelab cannot nest in itself: nothing accepts the drop and the row shows no insert line.
+      const self = dragged('homelab', 'dragover')
+      act(() => { row().dispatchEvent(self) })
+      expect(self.defaultPrevented).toBe(false)
+      expect(row().style.boxShadow).toBe('')
+      const selfDrop = dragged('homelab', 'drop')
+      await act(async () => { row().dispatchEvent(selfDrop); await Promise.resolve() })
+      expect(failures).toEqual([])
+      expect(useAppStore.getState().resourceCollections.map((collection) => collection.id)).toEqual(['homelab', 'other'])
+
+      // Other can nest in Homelab: the enclosing collection accepts, the row still shows nothing.
+      const valid = dragged('other', 'dragover')
+      act(() => { row().dispatchEvent(valid) })
+      expect(valid.defaultPrevented).toBe(true)
+      expect(row().style.boxShadow).toBe('')
+      const validDrop = dragged('other', 'drop')
+      await act(async () => { row().dispatchEvent(validDrop); await Promise.resolve() })
+      expect(useAppStore.getState().resourceCollections.find((collection) => collection.id === 'other')?.parentId).toBe('homelab')
+      expect(failures).toEqual([])
+    } finally {
+      window.removeEventListener(APP_FAILURE_EVENT, collect)
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  it('counts nested collections and workspaces directly inside a collection in its header badge', () => {
+    useAppStore.setState({
+      resourceCollections: [
+        { id: 'homelab', name: 'Homelab', collapsed: false, references: [{ id: 'project-ref', type: 'workspace-folder', target: 'project', label: 'Project' }] },
+        { id: 'services', name: 'Services', parentId: 'homelab', collapsed: false, references: [] },
+        { id: 'deep', name: 'Deep', parentId: 'services', collapsed: false, references: [] },
+      ],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<FolderTree searchQuery="" />))
+      const badge = (id: string) => host.querySelector(`[data-testid="collection-count-${id}"]`)?.textContent
+      expect(badge('homelab')).toBe('2')
+      expect(badge('services')).toBe('1')
+      expect(badge('deep')).toBe('0')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  it('moves a collection when its submenu target gets a full press and release', async () => {
+    vi.stubGlobal('ResizeObserver', class { observe() {}; unobserve() {}; disconnect() {} })
+    useAppStore.setState({
+      resourceCollections: [
+        { id: 'homelab', name: 'Homelab', collapsed: false, references: [] },
+        { id: 'services', name: 'Services', collapsed: false, references: [] },
+      ],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<FolderTree searchQuery="" />))
+      act(() => (host.querySelector('button[aria-label="Actions for Services"]') as HTMLButtonElement).click())
+      const menu = document.body.querySelector('[role="menu"][aria-label="Services actions"]') as HTMLElement
+      act(() => (Array.from(menu.querySelectorAll('button')).find((button) => button.textContent?.includes('Move to collection')) as HTMLButtonElement).click())
+      const target = document.body.querySelector('[role="menu"][aria-label="Move Services to collection"] button') as HTMLButtonElement
+      // A real press reaches the document first; the submenu is portaled outside the parent menu and must survive it.
+      act(() => { target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true })) })
+      expect(target.isConnected).toBe(true)
+      act(() => { target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true })) })
+      await act(async () => { target.click(); await Promise.resolve() })
+      expect(useAppStore.getState().resourceCollections.find((collection) => collection.id === 'services')?.parentId).toBe('homelab')
+      expect(document.body.querySelector('[role="menu"][aria-label="Services actions"]')).toBeNull()
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('search still reaches workspaces referenced by nested collections', () => {
+    useAppStore.setState({
+      resourceCollections: [
+        { id: 'homelab', name: 'Homelab', collapsed: true, references: [] },
+        { id: 'services', name: 'Services', parentId: 'homelab', collapsed: true, references: [{ id: 'project-ref', type: 'workspace-folder', target: 'project', label: 'Project' }] },
+      ],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<FolderTree searchQuery="Chat 1" />))
+      expect(host.querySelector('[data-testid="folder-row-project"]')).toBeTruthy()
+      expect(host.querySelector('[data-testid="folder-collection-homelab"]')).toBeNull()
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
   })
 
   it('opens collection actions from the collection context menu', () => {
@@ -712,9 +1025,12 @@ describe('FolderTree', () => {
     host.remove()
   })
 
-  it('shows a drop indicator and persists drag reordering', () => {
+  it('moves siblings aside while dragging and persists the dropped order', async () => {
     const second = { ...makeFolder(), id: 'second', name: 'Second', directory: '/tmp/second' }
-    const reorderFolders = vi.fn(async () => true)
+    const reorderFolders = vi.fn(async (ids: string[]) => {
+      useAppStore.setState((state) => ({ folders: ids.flatMap((id) => state.folders.filter((folder) => folder.id === id)) }))
+      return true
+    })
     useAppStore.setState({ folders: [makeFolder(), second], sessions: [], reorderFolders })
     const host = document.createElement('div')
     document.body.appendChild(host)
@@ -723,31 +1039,377 @@ describe('FolderTree', () => {
 
     const source = host.querySelector('[data-testid="folder-row-project"]') as HTMLElement
     const target = host.querySelector('[data-testid="folder-row-second"]') as HTMLElement
-    vi.spyOn(target, 'getBoundingClientRect').mockReturnValue({ top: 0, bottom: 40, height: 40, left: 0, right: 100, width: 100, x: 0, y: 0, toJSON: () => ({}) })
-    const transfer = { effectAllowed: '', setData: vi.fn() }
-    const dragStart = new Event('dragstart', { bubbles: true })
-    Object.defineProperty(dragStart, 'dataTransfer', { value: transfer })
-    const dragOver = new Event('dragover', { bubbles: true, cancelable: true })
-    Object.defineProperty(dragOver, 'clientY', { value: 35 })
-    const drop = new Event('drop', { bubbles: true, cancelable: true })
-    Object.defineProperty(drop, 'clientY', { value: 35 })
+    stubRect(source, 0, 40)
+    stubRect(target, 40, 40)
+    const header = host.querySelector<HTMLElement>('[data-testid="folder-header-project"]')!
 
-    act(() => {
-      source.dispatchEvent(dragStart)
-      target.dispatchEvent(dragOver)
+    // A press that moves less than the threshold stays a click.
+    act(() => pointer(header, 'pointerdown', 10, 10))
+    act(() => pointer(document, 'pointermove', 11, 12))
+    expect(source.style.transform).toBe('')
+    act(() => pointer(document, 'pointermove', 10, 65))
+    expect(source.style.transform).toBe('translate3d(0, 55px, 0) scale(1.02)')
+    expect(target.style.transform).toBe('translate3d(0, -40px, 0)')
+    expect(host.querySelector('[data-testid="sidebar-move-status"]')?.textContent).toBe('Moving Project. Press Escape to cancel.')
+    const expanded = header.getAttribute('aria-expanded')
+    await act(async () => {
+      pointer(document, 'pointerup', 10, 65)
+      // The click that follows the release ends the drag; it does not toggle the workspace.
+      header.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
     })
-    expect(target.style.boxShadow).toContain('inset 0 -2px var(--accent)')
-    act(() => target.dispatchEvent(drop))
+    expect(header.getAttribute('aria-expanded')).toBe(expanded)
     expect(reorderFolders).toHaveBeenCalledWith(['second', 'project'])
+    expect(host.querySelector('[data-testid="sidebar-move-status"]')?.textContent).toBe('Project moved to position 2 of 2')
+    // Held transforms drop once the saved order is on screen.
+    expect([...host.querySelectorAll('[data-sort-id]')].map((row) => (row as HTMLElement).dataset.sortId)).toEqual(['second', 'project'])
+    expect(source.style.transform).toBe('')
+    expect(target.style.transform).toBe('')
+
+    await releaseClickGuard()
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('drags a workspace out of its collection to the top level', async () => {
+    const second = { ...makeFolder(), id: 'second', name: 'Second', directory: '/tmp/second' }
+    useAppStore.setState({
+      folders: [makeFolder(), second],
+      sessions: [],
+      resourceCollections: [{ id: 'work', name: 'Work', collapsed: false, references: [{ id: 'project-ref', type: 'workspace-folder', target: 'project', label: 'Project' }] }],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+    const outside = host.querySelector<HTMLElement>('[data-testid="folder-header-second"]')!
+    Object.defineProperty(document, 'elementFromPoint', { configurable: true, value: () => outside })
+    try {
+      const header = host.querySelector<HTMLElement>('[data-testid="folder-header-project"]')!
+      act(() => pointer(header, 'pointerdown', 10, 10))
+      act(() => pointer(document, 'pointermove', 10, 80))
+      await act(async () => { pointer(document, 'pointerup', 10, 80); await Promise.resolve() })
+    } finally {
+      delete (document as { elementFromPoint?: unknown }).elementFromPoint
+    }
+    expect(useAppStore.getState().resourceCollections[0].references).toEqual([])
+    expect(host.querySelector('[data-testid="sidebar-move-status"]')?.textContent).toBe('Project removed from its collection')
+
+    await releaseClickGuard()
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('reorders Pinned chats by drag and keeps the saved order', async () => {
+    const settled = new Date(now).toISOString()
+    useAppStore.setState({
+      sessions: [1, 2, 3].map((index) => ({ ...makeSession(index), isPinned: true, settledAt: settled })),
+      // chat-snoozed is a pin hidden by its snooze; reordering the visible pins keeps its place.
+      sidebarPinnedChatOrder: ['chat-1', 'chat-2', 'chat-3', 'chat-snoozed'],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+    const pinned = () => [...host.querySelectorAll<HTMLElement>('#pinned-chat-list [data-sort-id]')]
+    // No saved order yet: the default, most recent first.
+    expect(pinned().map((row) => row.dataset.sortId)).toEqual(['chat-1', 'chat-2', 'chat-3'])
+    pinned().forEach((row, index) => stubRect(row, index * 30, 30))
+    const [first, second, third] = pinned()
+    // Pinned rows drag by pointer, not by the native split-pane drag.
+    expect(first.draggable).toBe(false)
+
+    act(() => pointer(first.querySelector('[data-session-id]')!, 'pointerdown', 10, 10))
+    act(() => pointer(document, 'pointermove', 10, 85))
+    expect(second.style.transform).toBe('translate3d(0, -30px, 0)')
+    expect(third.style.transform).toBe('translate3d(0, -30px, 0)')
+    await act(async () => { pointer(document, 'pointerup', 10, 85); await Promise.resolve() })
+
+    expect(useAppStore.getState().sidebarPinnedChatOrder).toEqual(['chat-2', 'chat-3', 'chat-1', 'chat-snoozed'])
+    expect(pinned().map((row) => row.dataset.sortId)).toEqual(['chat-2', 'chat-3', 'chat-1'])
+    expect(first.style.transform).toBe('')
+    expect(host.querySelector('[data-testid="sidebar-move-status"]')?.textContent).toBe('Chat 1 moved to position 3 of 3')
+    // A press inside the row's portalled menu bubbles through React to the row but never drags it.
+    const menuRow = pinned()[0]
+    act(() => { menuRow.querySelector('[data-session-id]')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 20, clientY: 20 })) })
+    const menu = document.querySelector<HTMLElement>('[role="menu"]')!
+    expect(menuRow.contains(menu)).toBe(false)
+    act(() => pointer(menu, 'pointerdown', 20, 20))
+    act(() => pointer(document, 'pointermove', 20, 80))
+    expect(menuRow.hasAttribute('data-sort-dragging')).toBe(false)
+    act(() => pointer(document, 'pointerup', 20, 80))
+    act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) })
+    // Workspace chats keep their time order and native drag.
+    expect((host.querySelector('[data-testid="folder-row-project"] [data-session-id="chat-1"]')?.parentElement as HTMLElement).draggable).toBe(true)
+    await releaseClickGuard()
 
     act(() => root.unmount())
     host.remove()
   })
 
-  it('persists dragged workspace order inside a collection', () => {
+  it('moves an Active chat with Arrow keys, announces it and keeps focus', async () => {
+    // Recent unsettled work puts both chats in Active.
+    const recent = (index: number) => { const at = new Date(Date.now() - index * 60_000); return { ...makeSession(index), createdAt: at, updatedAt: at, lastOpenedAt: at } }
+    useAppStore.setState({ sessions: [recent(1), recent(2)], sidebarActiveChatOrder: [] })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+    const active = () => [...host.querySelectorAll<HTMLElement>('#active-chat-list [data-sort-id]')].map((row) => row.dataset.sortId)
+    expect(active()).toEqual(['chat-1', 'chat-2'])
+    const row = host.querySelector<HTMLElement>('#active-chat-list [data-session-id="chat-1"]')!
+    expect(row.getAttribute('aria-keyshortcuts')).toBe('ArrowUp ArrowDown')
+    row.focus()
+
+    await act(async () => { row.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })); await Promise.resolve() })
+    expect(useAppStore.getState().sidebarActiveChatOrder).toEqual(['chat-2', 'chat-1'])
+    expect(active()).toEqual(['chat-2', 'chat-1'])
+    expect(host.querySelector('[data-testid="sidebar-move-status"]')?.textContent).toBe('Chat 1 moved to position 2 of 2')
+    expect((document.activeElement as HTMLElement | null)?.dataset.sessionId).toBe('chat-1')
+
+    // The last row has nowhere further down to go.
+    await act(async () => { document.activeElement!.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })); await Promise.resolve() })
+    expect(active()).toEqual(['chat-2', 'chat-1'])
+    expect(host.querySelector('[data-testid="sidebar-move-status"]')?.textContent).toBe('Chat 1 is already last')
+
+    // Search shows a filtered view, so rows are not sortable there.
+    act(() => root.render(<FolderTree searchQuery="Chat" />))
+    expect(host.querySelector('#active-chat-list [data-sort-id]')).toBeNull()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('brings an Active chat that left and came back to the top, and keeps chats that stayed in place', () => {
+    const base = Date.now() - 60 * 60_000
+    const at = (minutes: number) => new Date(base + minutes * 60_000)
+    const chat = (index: number, updated: number, extra: Partial<Session> = {}) => ({ ...makeSession(index), createdAt: at(0), updatedAt: at(updated), lastOpenedAt: at(0), ...extra })
+    // The user placed chat-2 above chat-1 and chat-3.
+    useAppStore.setState({ sessions: [chat(1, 30), chat(2, 20), chat(3, 10)], sidebarActiveChatOrder: ['chat-2', 'chat-1', 'chat-3'] })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+    const active = () => [...host.querySelectorAll<HTMLElement>('#active-chat-list [data-sort-id]')].map((row) => row.dataset.sortId)
+    expect(active()).toEqual(['chat-2', 'chat-1', 'chat-3'])
+
+    // chat-1 is marked Done and leaves Active: it drops out of the saved order; the others keep theirs.
+    act(() => useAppStore.setState({ sessions: [chat(1, 30, { settledAt: at(40).toISOString() }), chat(2, 20), chat(3, 10)] }))
+    expect(active()).toEqual(['chat-2', 'chat-3'])
+    expect(useAppStore.getState().sidebarActiveChatOrder).toEqual(['chat-2', 'chat-3'])
+
+    // New work brings it back, on top like a new arrival.
+    act(() => useAppStore.setState({ sessions: [chat(1, 50, { settledAt: at(40).toISOString() }), chat(2, 20), chat(3, 10)] }))
+    expect(active()).toEqual(['chat-1', 'chat-2', 'chat-3'])
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('drops an unpinned chat from the saved Pinned order', () => {
+    const settled = new Date(now).toISOString()
+    useAppStore.setState({ sessions: [1, 2].map((index) => ({ ...makeSession(index), isPinned: true, settledAt: settled })), sidebarPinnedChatOrder: ['chat-2', 'chat-1'] })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+    act(() => useAppStore.setState((state) => ({ sessions: state.sessions.map((session) => session.id === 'chat-2' ? { ...session, isPinned: false } : session) })))
+    expect(useAppStore.getState().sidebarPinnedChatOrder).toEqual(['chat-1'])
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('drops the held offsets as soon as an optimistic save shows the new order', async () => {
+    const settled = new Date(now).toISOString()
+    // The order shows at once but native has not answered yet.
+    const setSidebarChatOrder = vi.fn((list: 'pinned' | 'active', order: string[]) => {
+      if (list === 'pinned') useAppStore.setState({ sidebarPinnedChatOrder: order })
+      return new Promise<boolean>(() => {})
+    })
+    useAppStore.setState({ sessions: [1, 2, 3].map((index) => ({ ...makeSession(index), isPinned: true, settledAt: settled })), setSidebarChatOrder })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+    const pinned = () => [...host.querySelectorAll<HTMLElement>('#pinned-chat-list [data-sort-id]')]
+    pinned().forEach((row, index) => stubRect(row, index * 30, 30))
+    const [first, second, third] = pinned()
+    act(() => pointer(first.querySelector('[data-session-id]')!, 'pointerdown', 10, 10))
+    act(() => pointer(document, 'pointermove', 10, 85))
+    await act(async () => { pointer(document, 'pointerup', 10, 85); await Promise.resolve() })
+    expect(pinned().map((row) => row.dataset.sortId)).toEqual(['chat-2', 'chat-3', 'chat-1'])
+    expect([first, second, third].map((row) => row.style.transform)).toEqual(['', '', ''])
+    expect(host.querySelector('#pinned-chat-list')?.hasAttribute('data-sorting')).toBe(false)
+    await releaseClickGuard()
+    useAppStore.setState({ setSidebarChatOrder: originalSetSidebarChatOrder })
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('opens a dragged Pinned chat in the pane it is dropped on', async () => {
+    const settled = new Date(now).toISOString()
+    const setActiveSession = vi.fn()
+    useAppStore.setState({ sessions: [1, 2].map((index) => ({ ...makeSession(index), isPinned: true, settledAt: settled })), setActiveSession })
+    const layouts: ChatGridLayout[] = []
+    const unsubscribe = subscribeChatGridLayout((layout) => layouts.push(layout))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+    const leafId = chatGridLeaves(readChatGridLayout().root)[0].id
+    const pane = document.createElement('div')
+    pane.dataset.leafId = leafId
+    document.body.appendChild(pane)
+    Object.defineProperty(document, 'elementFromPoint', { configurable: true, value: () => pane })
+    try {
+      const row = host.querySelector<HTMLElement>('#pinned-chat-list [data-sort-id="chat-2"]')!
+      act(() => pointer(row.querySelector('[data-session-id]')!, 'pointerdown', 10, 10))
+      act(() => pointer(document, 'pointermove', 400, 10))
+      expect(pane.hasAttribute('data-pointer-drop')).toBe(true)
+      await act(async () => { pointer(document, 'pointerup', 400, 10); await Promise.resolve() })
+      expect(pane.hasAttribute('data-pointer-drop')).toBe(false)
+    } finally {
+      delete (document as { elementFromPoint?: unknown }).elementFromPoint
+      pane.remove()
+    }
+    unsubscribe()
+    expect(chatGridLeaves(layouts.at(-1)!.root)[0].sessionId).toBe('chat-2')
+    expect(setActiveSession).toHaveBeenCalledWith('chat-2')
+    expect(useAppStore.getState().sidebarPinnedChatOrder).toEqual([])
+    await releaseClickGuard()
+    useAppStore.setState({ setActiveSession: originalSetActiveSession })
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('keeps a short press a click and glides back when a dropped order fails to save', async () => {
+    const second = { ...makeFolder(), id: 'second', name: 'Second', directory: '/tmp/second' }
+    const reorderFolders = vi.fn(async () => false)
+    useAppStore.setState({ folders: [makeFolder(), second], sessions: [], reorderFolders })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+    const source = host.querySelector('[data-testid="folder-row-project"]') as HTMLElement
+    const target = host.querySelector('[data-testid="folder-row-second"]') as HTMLElement
+    stubRect(source, 0, 40)
+    stubRect(target, 40, 40)
+    const header = host.querySelector<HTMLElement>('[data-testid="folder-header-project"]')!
+
+    // Under the threshold the press stays a click and toggles the workspace.
+    const expanded = header.getAttribute('aria-expanded')
+    act(() => {
+      pointer(header, 'pointerdown', 10, 10)
+      pointer(document, 'pointermove', 12, 11)
+      pointer(document, 'pointerup', 12, 11)
+      header.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(header.getAttribute('aria-expanded')).not.toBe(expanded)
+
+    act(() => pointer(header, 'pointerdown', 10, 10))
+    act(() => pointer(document, 'pointermove', 10, 65))
+    await act(async () => { pointer(document, 'pointerup', 10, 65); await Promise.resolve() })
+    expect(reorderFolders).toHaveBeenCalledWith(['second', 'project'])
+    // The refused save leaves the order alone and hands the rows back to React.
+    expect([...host.querySelectorAll('[data-sort-id]')].map((row) => (row as HTMLElement).dataset.sortId)).toEqual(['project', 'second'])
+    expect(source.style.transform).toBe('')
+    expect(source.hasAttribute('data-sort-dragging')).toBe(false)
+    expect(target.style.transform).toBe('')
+    await releaseClickGuard()
+
+    // A later drag still starts.
+    act(() => pointer(header, 'pointerdown', 10, 10))
+    act(() => pointer(document, 'pointermove', 10, 65))
+    expect(source.hasAttribute('data-sort-dragging')).toBe(true)
+    act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) })
+    act(() => pointer(document, 'pointerup', 10, 65))
+    await releaseClickGuard()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('drags a workspace from one collection into another', async () => {
+    useAppStore.setState({
+      sessions: [],
+      resourceCollections: [
+        { id: 'work', name: 'Work', collapsed: false, references: [{ id: 'project-ref', type: 'workspace-folder', target: 'project', label: 'Project' }] },
+        { id: 'home', name: 'Home', collapsed: false, references: [] },
+      ],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+    const home = host.querySelector<HTMLElement>('[data-testid="collection-header-home"]')!
+    Object.defineProperty(document, 'elementFromPoint', { configurable: true, value: () => home })
+    try {
+      const header = host.querySelector<HTMLElement>('[data-testid="folder-header-project"]')!
+      act(() => pointer(header, 'pointerdown', 10, 10))
+      act(() => pointer(document, 'pointermove', 10, 80))
+      expect(host.querySelector('[data-testid="folder-collection-home"]')?.classList.contains('uam-sb-drop-target')).toBe(true)
+      expect(host.querySelector('[data-testid="folder-collection-work"]')?.classList.contains('uam-sb-drop-target')).toBe(false)
+      await act(async () => { pointer(document, 'pointerup', 10, 80); await Promise.resolve() })
+    } finally {
+      delete (document as { elementFromPoint?: unknown }).elementFromPoint
+    }
+    const collections = useAppStore.getState().resourceCollections
+    expect(collections.find((collection) => collection.id === 'work')?.references).toEqual([])
+    expect(collections.find((collection) => collection.id === 'home')?.references.map((reference) => reference.target)).toEqual(['project'])
+    expect(host.querySelector('[data-testid="sidebar-move-status"]')?.textContent).toBe('Project moved into Home')
+    // The row left its list, but the list's glide is still switched off.
+    expect(document.querySelector('[data-sorting]')).toBeNull()
+    await releaseClickGuard()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('cancels a workspace drag with Escape and saves nothing', async () => {
     const second = { ...makeFolder(), id: 'second', name: 'Second', directory: '/tmp/second' }
     const reorderFolders = vi.fn(async () => true)
-    const reorderResourceReferences = vi.fn(async () => true)
+    useAppStore.setState({ folders: [makeFolder(), second], sessions: [], reorderFolders })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+    const source = host.querySelector('[data-testid="folder-row-project"]') as HTMLElement
+    const target = host.querySelector('[data-testid="folder-row-second"]') as HTMLElement
+    stubRect(source, 0, 40)
+    stubRect(target, 40, 40)
+    const header = host.querySelector<HTMLElement>('[data-testid="folder-header-project"]')!
+
+    act(() => pointer(header, 'pointerdown', 10, 10))
+    act(() => pointer(document, 'pointermove', 10, 65))
+    expect(target.style.transform).toBe('translate3d(0, -40px, 0)')
+    act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) })
+    const expanded = header.getAttribute('aria-expanded')
+    act(() => {
+      pointer(document, 'pointerup', 10, 65)
+      header.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+    expect(header.getAttribute('aria-expanded')).toBe(expanded)
+    expect(source.style.transform).toBe('')
+    expect(target.style.transform).toBe('')
+    expect(reorderFolders).not.toHaveBeenCalled()
+    expect(host.querySelector('[data-testid="sidebar-move-status"]')?.textContent).toBe('Move of Project cancelled')
+
+    await releaseClickGuard()
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('persists dragged workspace order inside a collection', async () => {
+    const second = { ...makeFolder(), id: 'second', name: 'Second', directory: '/tmp/second' }
+    const reorderFolders = vi.fn(async () => true)
+    // Saves apply like the native acknowledgement does, so the drop settles and the keyboard path can follow.
+    const reorderResourceReferences = vi.fn(async (collectionId: string, ids: string[]) => {
+      useAppStore.setState((state) => ({ resourceCollections: state.resourceCollections.map((collection) => collection.id === collectionId
+        ? { ...collection, references: ids.flatMap((id) => collection.references.filter((reference) => reference.id === id)) }
+        : collection) }))
+      return true
+    })
     useAppStore.setState({
       folders: [makeFolder(), second],
       sessions: [],
@@ -772,31 +1434,24 @@ describe('FolderTree', () => {
     const source = host.querySelector('[data-testid="folder-row-project"]') as HTMLElement
     const keyboardSource = host.querySelector('[data-testid="folder-header-project"]') as HTMLElement
     const target = host.querySelector('[data-testid="folder-row-second"]') as HTMLElement
-    vi.spyOn(target, 'getBoundingClientRect').mockReturnValue({ top: 0, bottom: 40, height: 40, left: 0, right: 100, width: 100, x: 0, y: 0, toJSON: () => ({}) })
-    const data = new Map<string, string>()
-    const transfer = {
-      effectAllowed: '',
-      get types() { return [...data.keys()] },
-      getData: (type: string) => data.get(type) ?? '',
-      setData: (type: string, value: string) => { data.set(type, value) },
-    }
-    const dragStart = new Event('dragstart', { bubbles: true })
-    Object.defineProperty(dragStart, 'dataTransfer', { value: transfer })
-    const drop = new Event('drop', { bubbles: true, cancelable: true })
-    Object.defineProperty(drop, 'dataTransfer', { value: transfer })
-    Object.defineProperty(drop, 'clientY', { value: 35 })
+    stubRect(source, 0, 40)
+    stubRect(target, 40, 40)
 
-    act(() => source.dispatchEvent(dragStart))
-    act(() => target.dispatchEvent(drop))
+    act(() => pointer(keyboardSource, 'pointerdown', 10, 10))
+    act(() => pointer(document, 'pointermove', 10, 65))
+    await act(async () => { pointer(document, 'pointerup', 10, 65); await Promise.resolve() })
 
     expect(host.querySelector('[data-testid="folder-drag-handle-project"]')).toBeNull()
     expect(reorderResourceReferences).toHaveBeenCalledWith('work', ['second-ref', 'website-ref', 'project-ref'])
     expect(reorderFolders).not.toHaveBeenCalled()
 
     reorderResourceReferences.mockClear()
-    act(() => keyboardSource.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })))
-    expect(reorderResourceReferences).toHaveBeenCalledWith('work', ['second-ref', 'website-ref', 'project-ref'])
+    const header = () => host.querySelector('[data-testid="folder-header-project"]') as HTMLElement
+    await act(async () => { header().dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true })); await Promise.resolve() })
+    expect(reorderResourceReferences).toHaveBeenCalledWith('work', ['project-ref', 'website-ref', 'second-ref'])
+    expect(host.querySelector('[data-testid="sidebar-move-status"]')?.textContent).toBe('Project moved to position 1 of 2')
 
+    await releaseClickGuard()
     act(() => root.unmount())
     host.remove()
   })
@@ -1025,6 +1680,43 @@ describe('FolderTree', () => {
 
     act(() => root.unmount())
     host.remove()
+  })
+
+  it('labels a held automation chat as waiting and offers no Done or Snooze', () => {
+    act(() => useAppStore.setState((state) => ({ sessions: state.sessions.map((session) => session.id === 'chat-2' ? { ...session, updatedAt: new Date(), attentionRevision: 'held', automationPendingPrompt: 'Fix the parser' } : session) })))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+    expect(host.textContent).toContain('Waiting for approval')
+    expect(host.querySelector('[aria-label^="Mark "][aria-label$=" done"]')).toBeNull()
+    expect(host.querySelector('[aria-label^="Snooze "]')).toBeNull()
+    expect(host.querySelector('[aria-label="Active chat status counts"]')?.textContent).toContain('1 attention')
+    // Clear all, bulk Done and ageing only touch settledAt or time; none may hide an unapproved prompt.
+    act(() => useAppStore.setState((state) => ({ sessions: state.sessions.map((session) => session.id === 'chat-2' ? { ...session, updatedAt: new Date(0), settledAt: new Date().toISOString(), snoozedUntilMs: Date.now() + 3_600_000 } : session) })))
+    expect(host.textContent).toContain('Waiting for approval')
+    expect(host.textContent).not.toContain('Snoozed')
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('shows a started automation chat as Working through the worktree wait even if it was settled', () => {
+    const chat = useAppStore.getState().sessions.find((session) => session.id === 'chat-2')!
+    const started = { ...chat, automationTokenName: 'n8n', updatedAt: new Date(0), settledAt: new Date().toISOString() }
+    addOutgoingAttempt(outgoingScope(chat.id, chat.createdAt), { key: automationPromptRowKey(chat.id), actionCorrelationId: 'start-1', text: 'Fix', nativeIndex: 0, attachments: [], receiptIds: new Set(), createdAt: new Date(), phase: 'accepted' })
+    act(() => useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) => session.id === chat.id ? started : session),
+      acpBindingBySessionId: { ...state.acpBindingBySessionId, [chat.id]: { running: false, processing: false, pendingDirectPrompts: [{ originRequestId: 'start-1' }] } as never },
+    })))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+    expect(host.textContent).toContain('Working')
+    expect(host.querySelector('[aria-label="Active chat status counts"]')?.textContent).toContain('1 running')
+    act(() => root.unmount())
+    host.remove()
+    resetOutgoingPresentation()
   })
 
   it('collapses Active chats and keeps an attention strip that expands the section', () => {
@@ -1276,6 +1968,63 @@ describe('FolderTree', () => {
     Object.defineProperty(globalThis, 'ResizeObserver', { configurable: true, value: previousResizeObserver })
   })
 
+  it('confirms a single workspace delete with the shared sidebar delete confirmation', async () => {
+    const deleteFolder = vi.fn(async () => true)
+    useAppStore.setState({ deleteFolder })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+    const openDelete = () => {
+      act(() => (host.querySelector('button[aria-label="Folder actions"]') as HTMLButtonElement).click())
+      act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')).find((button) => button.textContent?.includes('Delete folder'))!.click())
+      return document.body.querySelector<HTMLElement>('[role="alertdialog"][aria-label^="Delete workspace Project"]')!
+    }
+    const dialog = openDelete()
+    expect(dialog).toBeTruthy()
+    expect(dialog.textContent).toContain('Delete workspace and chats?')
+    expect(dialog.textContent).toMatch(/The workspace “Project” and \d+ chats? will be permanently deleted\. This cannot be undone\./)
+    expect(dialog.textContent).toContain('The folder on disk is kept.')
+    expect(dialog.textContent).toContain('Deleted chats cannot be restored from this app.')
+    expect(dialog.textContent).toContain('/tmp/project')
+    expect(Array.from(dialog.querySelectorAll('button')).map((button) => button.textContent)).toEqual(['Cancel', 'Delete workspace'])
+    expect(document.activeElement?.textContent).toBe('Cancel')
+    act(() => document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+    expect(document.body.querySelector('[role="alertdialog"]')).toBeNull()
+    expect(deleteFolder).not.toHaveBeenCalled()
+    const again = openDelete()
+    await act(async () => Array.from(again.querySelectorAll('button')).find((button) => button.textContent === 'Delete workspace')!.click())
+    expect(deleteFolder).toHaveBeenCalledExactlyOnceWith('project')
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('reads a one-workspace selection delete like the menu delete, omits zero chats and returns focus to the row', () => {
+    useAppStore.setState({ folders: [makeFolder(), { ...makeFolder(), id: 'empty', name: 'Empty', directory: '/tmp/empty' }] })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<FolderTree searchQuery="" />))
+    const row = host.querySelector<HTMLElement>('[data-workspace-id="project"]')!
+    act(() => row.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Delete 1 selected workspace"]')!.click())
+    const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"][aria-label="Delete workspace Project and 7 chats"]')!
+    expect(dialog.textContent).toContain('The workspace “Project” and 7 chats will be permanently deleted.')
+    expect(dialog.textContent).toContain('/tmp/project')
+    act(() => document.activeElement?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+    expect(document.activeElement).toBe(row)
+
+    act(() => host.querySelector<HTMLElement>('[data-workspace-id="empty"]')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })))
+    act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')).find((button) => button.textContent?.includes('Delete folder'))!.click())
+    const empty = document.body.querySelector<HTMLElement>('[role="alertdialog"][aria-label="Delete workspace Empty"]')!
+    expect(empty.textContent).toContain('The workspace “Empty” will be permanently deleted.')
+    expect(empty.textContent).not.toContain('0 chats')
+    act(() => Array.from(empty.querySelectorAll('button')).find((button) => button.textContent === 'Cancel')!.click())
+    expect(document.activeElement).toBe(host.querySelector('[data-workspace-id="empty"]'))
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('keeps folder rename and delete failures visible', async () => {
     const renameFolder = vi.fn(async () => false)
     const deleteFolder = vi.fn(async () => false)
@@ -1300,8 +2049,8 @@ describe('FolderTree', () => {
     act(() => (host.querySelector('button[aria-label="Folder actions"]') as HTMLButtonElement).click())
     const remove = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')).find((button) => button.textContent?.includes('Delete folder'))!
     act(() => remove.click())
-    await act(async () => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Delete folder')!.click())
-    expect(document.body.querySelector('[aria-label="Delete folder and chats"]')?.textContent).toContain('workspace could not be deleted')
+    await act(async () => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Delete workspace')!.click())
+    expect(document.body.querySelector('[role="alertdialog"][aria-label^="Delete workspace "]')?.textContent).toContain('workspace could not be deleted')
 
     act(() => root.unmount())
     host.remove()
@@ -1677,9 +2426,9 @@ describe('FolderTree', () => {
       act(() => menuItem.click())
       expect(deleteFolders).not.toHaveBeenCalled()
       expect(deleteFolder).not.toHaveBeenCalled()
-      const dialog = document.body.querySelector(selectedTarget ? '[role="alertdialog"]' : '[role="alertdialog"][aria-label="Delete folder and chats"]')!
-      expect(dialog.textContent).toContain(selectedTarget ? '3 workspaces and 3 chats' : 'd')
-      const confirm = Array.from(dialog.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === (selectedTarget ? 'Delete workspaces' : 'Delete folder'))!
+      const dialog = document.body.querySelector(selectedTarget ? '[role="alertdialog"][aria-label="Delete 3 selected workspaces"]' : '[role="alertdialog"][aria-label="Delete workspace d and 1 chat"]')!
+      expect(dialog.textContent).toContain(selectedTarget ? '3 workspaces and 3 chats' : 'The workspace “d” and 1 chat')
+      const confirm = Array.from(dialog.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === (selectedTarget ? 'Delete workspaces' : 'Delete workspace'))!
       await act(async () => confirm.click())
       if (selectedTarget) {
         expect(deleteFolders).toHaveBeenCalledExactlyOnceWith(['a', 'b', 'c'])
@@ -1712,6 +2461,8 @@ describe('FolderTree', () => {
     act(() => host.querySelector<HTMLElement>('[data-testid="folder-header-a"]')!.click())
     act(() => host.querySelector<HTMLElement>('[data-testid="folder-header-c"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
     expect(host.querySelectorAll('[data-workspace-id][aria-label$="selected for bulk actions"]')).toHaveLength(3)
+    // Selected workspace headers share the Settings selected-item style with selected chats.
+    expect(Array.from(host.querySelectorAll<HTMLElement>('[data-workspace-id][aria-label$="selected for bulk actions"]')).every((row) => row.classList.contains('uam-selected-item') && row.style.background === '')).toBe(true)
     const openDelete = () => host.querySelector<HTMLButtonElement>('[aria-label="Delete 3 selected workspaces"]')!.click()
     const dialogButton = (label: string) => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')).find((button) => button.textContent === label)!
     act(openDelete)
@@ -1767,8 +2518,8 @@ describe('FolderTree', () => {
     const root = createRoot(host)
     act(() => root.render(<FolderTree searchQuery="" />))
     act(() => host.querySelector<HTMLElement>('[data-testid="folder-header-project"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
-    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Delete 1 selected workspaces"]')!.click())
-    const confirm = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')).find((button) => button.textContent === 'Delete workspaces')!
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Delete 1 selected workspace"]')!.click())
+    const confirm = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')).find((button) => button.textContent === 'Delete workspace')!
     await act(async () => { confirm.click(); await Promise.resolve() })
     expect(document.body.querySelector('[role="alertdialog"] [role="progressbar"]')?.hasAttribute('aria-valuenow')).toBe(false)
     await act(async () => {
@@ -1797,8 +2548,8 @@ describe('FolderTree', () => {
     const root = createRoot(host)
     act(() => root.render(<FolderTree searchQuery="" />))
     act(() => host.querySelector<HTMLElement>('[data-testid="folder-header-project"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
-    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Delete 1 selected workspaces"]')!.click())
-    const confirm = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')).find((button) => button.textContent === 'Delete workspaces')!
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Delete 1 selected workspace"]')!.click())
+    const confirm = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')).find((button) => button.textContent === 'Delete workspace')!
     const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"]')!
     confirm.focus()
     await act(async () => { confirm.click(); await Promise.resolve() })

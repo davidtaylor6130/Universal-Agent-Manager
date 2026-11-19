@@ -16,6 +16,7 @@ interface GoalBannerProps {
   onEdit?: (objective: string) => Promise<boolean>
   workerModelLabel?: string
   reviewerModelLabel?: string
+  attentionSource?: string
   /** Controlled edit mode, so the owning window can let Escape cancel the edit first. */
   editing?: boolean
   onEditingChange?: (editing: boolean) => void
@@ -67,12 +68,20 @@ function readableDiagnostic(diagnostic: string): string {
 	return diagnostic
 }
 
+/** Names a model only for an explicit `model:` source; anything unrecognized stays unknown. */
+function decisionSourceLabel(source: string): string {
+  if (source.startsWith('model:')) return `Model review · ${source.slice('model:'.length).trim() || 'model not reported'}`
+  if (source === 'filter') return 'UAM rule · not a model decision'
+  if (source === 'fallback') return 'Fallback · no model decision'
+  return 'Unknown · source not recorded'
+}
+
 function readablePlanItem(item: string): string {
   const trimmed = item.trim()
   return trimmed.replace(/^T\d+\s*(?:[:.)\]_\-–—]\s*)?/i, '').trim() || trimmed
 }
 
-export function GoalBanner({ goal, onComplete, onPause, onResume, onRestart, turnRunning = false, resumePending = false, onRemove, onEdit, workerModelLabel, reviewerModelLabel, editing: editingProp, onEditingChange }: GoalBannerProps) {
+export function GoalBanner({ goal, onComplete, onPause, onResume, onRestart, turnRunning = false, resumePending = false, onRemove, onEdit, workerModelLabel, reviewerModelLabel, attentionSource, editing: editingProp, onEditingChange }: GoalBannerProps) {
   const [menuOpen, setMenuOpen] = useState(false)
   const [localEditing, setLocalEditing] = useState(false)
   const editing = Boolean(onEdit) && (editingProp ?? localEditing)
@@ -205,7 +214,7 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, onRestart, tur
         </>)}
       </div>
 
-      {(currentStep || completedItems.length > 0 || remainingItems.length > 0 || goal.lastDiagnostic || (goal.executionOwner === 'uam' && workerModelLabel && reviewerModelLabel)) && (
+      {(currentStep || completedItems.length > 0 || remainingItems.length > 0 || goal.lastDiagnostic || goal.lastDecisionSource || attentionSource || (goal.executionOwner === 'uam' && workerModelLabel && reviewerModelLabel)) && (
         <div
           data-goal-details-scroll
           role="region"
@@ -216,6 +225,8 @@ export function GoalBanner({ goal, onComplete, onPause, onResume, onRestart, tur
         >
           {goal.executionOwner === 'uam' && workerModelLabel && reviewerModelLabel && <div><strong style={{ color: 'var(--text)' }}>Models:</strong> <span style={{ color: 'var(--text-2)' }}>Worker: {workerModelLabel} · Reviewer: {reviewerModelLabel} · locked</span></div>}
           {goal.lastDiagnostic && <div><strong style={{ color: 'var(--text)' }}>Last check:</strong> <span style={{ color: 'var(--text-2)' }}>{readableDiagnostic(goal.lastDiagnostic)}</span></div>}
+          {goal.lastDecisionSource && <div><strong style={{ color: 'var(--text)' }}>Last decision:</strong> <span style={{ color: 'var(--text-2)' }}>{decisionSourceLabel(goal.lastDecisionSource)}</span></div>}
+          {attentionSource && <div><strong style={{ color: 'var(--text)' }}>Last attention flag:</strong> <span style={{ color: 'var(--text-2)' }}>{decisionSourceLabel(attentionSource)}</span></div>}
           {currentStep && <div><strong style={{ color: 'var(--text)' }}>Current step:</strong> <span style={{ color: 'var(--text-2)' }}>{currentStep}</span></div>}
           {completedItems.length > 0 && <div><strong style={{ color: 'var(--text)' }}>Completed steps</strong><ul className="mt-1 list-disc pl-5" style={{ color: 'var(--text-2)' }}>{completedItems.map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}</ul></div>}
           {remainingItems.length > 0 && <div><strong style={{ color: 'var(--text)' }}>Remaining steps</strong><ul className="mt-1 list-disc pl-5" style={{ color: 'var(--text-2)' }}>{remainingItems.map((item, index) => <li key={`${index}-${item}`}>{item}</li>)}</ul></div>}

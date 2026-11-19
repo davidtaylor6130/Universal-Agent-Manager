@@ -5,6 +5,7 @@ import { createRequestId, isCefContext, sendToCEF } from '../../ipc/cefBridge'
 import type { ResourceCollection, ResourceReference, ResourceReferenceType } from '../../types/resourceCollection'
 import type { ZustandGet, ZustandSet } from '../storeTypes'
 import { clearPendingRequest, isLatestPendingRequest, rememberPendingRequest } from '../cpp/reconcile'
+import { canNestCollection, collectionSubtreeIds } from '../../utils/collectionTree'
 
 let localId = 0
 const ORDER_FAILURE_MESSAGE: Record<Exclude<OrganizationChange['kind'], 'memberships'>, string> = {
@@ -122,13 +123,13 @@ export function createResourceCollectionsSlice(set: ZustandSet, get: ZustandGet)
       return applyLocally()
     },
 
-    createResourceCollection: async (name: string): Promise<ResourceCollection | null> => {
+    createResourceCollection: async (name: string, parentId: string | null = null): Promise<ResourceCollection | null> => {
       const normalized = name.trim()
-      if (!normalized) return null
+      if (!normalized || !canNestCollection(get().resourceCollections, null, parentId)) return null
       if (isCefContext()) {
         const response = await sendToCEF<ResourceCollection>({
           action: 'createResourceCollection',
-          payload: { name: normalized },
+          payload: parentId ? { name: normalized, parentId } : { name: normalized },
           requestId: createRequestId('createResourceCollection'),
         })
         if (!response.ok || !response.data?.id) return null
@@ -137,7 +138,7 @@ export function createResourceCollectionsSlice(set: ZustandSet, get: ZustandGet)
           : { resourceCollections: [...state.resourceCollections, response.data!] })
         return response.data
       }
-      const collection = { id: nextLocalId('collection'), name: normalized, collapsed: false, references: [] }
+      const collection: ResourceCollection = { id: nextLocalId('collection'), name: normalized, ...(parentId ? { parentId } : {}), collapsed: false, references: [] }
       set((state) => ({ resourceCollections: [...state.resourceCollections, collection] }))
       return collection
     },
@@ -168,14 +169,52 @@ export function createResourceCollectionsSlice(set: ZustandSet, get: ZustandGet)
       return true
     },
 
-    deleteResourceCollection: async (collectionId: string): Promise<boolean> => {
+    deleteResourceCollection: async (collectionId: string, deleteChildren = false): Promise<boolean> => {
       if (isCefContext()) {
         const response = await sendToCEF({
-          action: 'deleteResourceCollection', payload: { collectionId }, requestId: createRequestId('deleteResourceCollection'),
+          action: 'deleteResourceCollection', payload: deleteChildren ? { collectionId, deleteChildren } : { collectionId }, requestId: createRequestId('deleteResourceCollection'),
         })
         if (!response.ok) return false
       }
-      set((state) => ({ resourceCollections: state.resourceCollections.filter((item) => item.id !== collectionId) }))
+      // Mirrors native: children and references move to the parent or go with it; referenced targets are never touched.
+      set((state) => {
+        const deleted = state.resourceCollections.find((item) => item.id === collectionId)
+        if (!deleted) return {}
+        const removed = new Set(deleteChildren ? collectionSubtreeIds(state.resourceCollections, collectionId) : [collectionId])
+        return {
+          resourceCollections: state.resourceCollections.flatMap((item) => {
+            if (removed.has(item.id)) return []
+            if (!deleteChildren && item.id === deleted.parentId) {
+              const moved = deleted.references.filter((reference) => !item.references.some((existing) => existing.type === reference.type && existing.target === reference.target))
+              return [{ ...item, references: [...item.references, ...moved] }]
+            }
+            if (item.parentId !== collectionId) return [item]
+            const { parentId: _parent, ...rest } = item
+            return [deleted.parentId ? { ...rest, parentId: deleted.parentId } : rest]
+          }),
+        }
+      })
+      return true
+    },
+
+    moveResourceCollection: async (collectionId: string, parentId: string | null): Promise<boolean> => {
+      const collections = get().resourceCollections
+      const moving = collections.find((item) => item.id === collectionId)
+      if (!moving || !canNestCollection(collections, collectionId, parentId)) return false
+      if ((moving.parentId ?? null) === parentId) return true
+      if (isCefContext()) {
+        const response = await sendToCEF({
+          action: 'moveResourceCollection', payload: { collectionId, parentId: parentId ?? '' }, requestId: createRequestId('moveResourceCollection'),
+        })
+        if (!response.ok) return false
+      }
+      // Native appends the moved collection after its new siblings; references and children travel with it.
+      set((state) => {
+        const current = state.resourceCollections.find((item) => item.id === collectionId)
+        if (!current) return {}
+        const { parentId: _parent, ...rest } = current
+        return { resourceCollections: [...state.resourceCollections.filter((item) => item.id !== collectionId), parentId ? { ...rest, parentId } : rest] }
+      })
       return true
     },
 

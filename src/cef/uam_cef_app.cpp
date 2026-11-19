@@ -1,6 +1,7 @@
 #include "cef/uam_cef_app.h"
 #include "cef/uam_cef_client.h"
 #include "cef/uam_cef_command_line_config.h"
+#include "cef/uam_cef_renderer_app.h"
 #include "cef/uam_cef_security.h"
 #include "cef/uam_window_chrome.h"
 #include "cef/ui_asset_snapshot.h"
@@ -65,7 +66,7 @@ namespace
 			CefString mime = CefGetMimeType(extension);
 			if (mime.empty()) mime = "application/octet-stream";
 			CefResponse::HeaderMap headers;
-			headers.emplace("Content-Security-Policy", std::string(uam::cef::kContentSecurityPolicy));
+			headers.emplace("Content-Security-Policy", uam::cef::ContentSecurityPolicyForUiResource(key));
 			headers.emplace("X-Content-Type-Options", "nosniff");
 			headers.emplace("Cache-Control", "no-cache");
 			return new CefStreamResourceHandler(200, "OK", mime, headers, stream);
@@ -322,12 +323,13 @@ namespace
 		IMPLEMENT_REFCOUNTING(UamRootWindowDelegate);
 	};
 
-	bool IsTrustedRendererFrame(CefRefPtr<CefFrame> frame, const std::string& trusted_ui_index_url)
-	{
-		return frame != nullptr && uam::cef::IsTrustedUiUrl(frame->GetURL().ToString(), trusted_ui_index_url);
-	}
-
+	CefRefPtr<CefSchemeHandlerFactory> g_uiSchemeHandlerFactory;
 } // namespace
+
+CefRefPtr<CefSchemeHandlerFactory> uam::cef::UiSchemeHandlerFactory()
+{
+	return g_uiSchemeHandlerFactory;
+}
 
 // Forward declaration — Application owns AppState and provides access to the browser ref.
 // We use a global pointer set by Application::InitializeCef().
@@ -388,11 +390,7 @@ void UamCefApp::OnBeforeCommandLineProcessing(const CefString& process_type, Cef
 
 void UamCefApp::OnRegisterCustomSchemes(CefRawPtr<CefSchemeRegistrar> registrar)
 {
-	if (registrar == nullptr) return;
-	registrar->AddCustomScheme(
-	    "uam", CEF_SCHEME_OPTION_STANDARD | CEF_SCHEME_OPTION_SECURE |
-	               CEF_SCHEME_OPTION_CORS_ENABLED | CEF_SCHEME_OPTION_FETCH_ENABLED |
-	               CEF_SCHEME_OPTION_DISPLAY_ISOLATED);
+	uam::cef::RegisterUiScheme(registrar);
 }
 
 void UamCefApp::OnContextInitialized()
@@ -404,12 +402,19 @@ void UamCefApp::OnContextInitialized()
 		return;
 	}
 	m_trustedUiIndexUrl = uam::cef::ResolveTrustedUiIndexUrl();
+	CefRefPtr<CefValue> network_prediction = CefValue::Create();
+	network_prediction->SetInt(uam::cef::kNetworkPredictionNever);
+	CefString network_prediction_error;
+	if (!CefRequestContext::GetGlobalContext()->SetPreference(uam::cef::kNetworkPredictionPreference, network_prediction, network_prediction_error))
+	{
+		uam::diagnostics::Write("[CEF] Could not disable network prediction: " + network_prediction_error.ToString());
+	}
 	CefString exe_dir_string;
 	const std::filesystem::path exe_dir = CefGetPath(PK_DIR_EXE, exe_dir_string)
 	                                          ? uam::paths::PathFromUtf8(exe_dir_string.ToString())
 	                                          : std::filesystem::path(".");
-	if (!CefRegisterSchemeHandlerFactory(
-	        "uam", "app", new UamUiSchemeHandlerFactory(uam::cef::ResolveTrustedUiRoot(exe_dir))))
+	g_uiSchemeHandlerFactory = new UamUiSchemeHandlerFactory(uam::cef::ResolveTrustedUiRoot(exe_dir));
+	if (!CefRegisterSchemeHandlerFactory("uam", "app", g_uiSchemeHandlerFactory))
 	{
 		FailStartup("Failed to register the bundled UAM UI scheme.");
 		return;
@@ -461,45 +466,4 @@ void UamCefApp::OnBeforeChildProcessLaunch(CefRefPtr<CefCommandLine> /*command_l
 {
 	// Called before each subprocess is launched (renderer, GPU, etc.)
 	// No modifications needed for UAM.
-}
-
-// ---------------------------------------------------------------------------
-// CefRenderProcessHandler — runs in the renderer subprocess
-// ---------------------------------------------------------------------------
-
-void UamCefApp::OnWebKitInitialized()
-{
-	m_trustedUiIndexUrl = uam::cef::ResolveTrustedUiIndexUrl();
-
-	// Create the renderer-side message router. This injects window.cefQuery
-	// into every page loaded by the renderer. Must use the same config as the
-	// browser-side router in UamCefClient.
-	CefMessageRouterConfig config;
-	m_renderer_router = CefMessageRouterRendererSide::Create(config);
-}
-
-void UamCefApp::OnContextCreated(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, CefRefPtr<CefV8Context> context)
-{
-	if (m_renderer_router != nullptr && IsTrustedRendererFrame(frame, m_trustedUiIndexUrl))
-	{
-		m_renderer_router->OnContextCreated(browser, frame, context);
-	}
-}
-
-void UamCefApp::OnContextReleased(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, CefRefPtr<CefV8Context> context)
-{
-	if (m_renderer_router != nullptr && IsTrustedRendererFrame(frame, m_trustedUiIndexUrl))
-	{
-		m_renderer_router->OnContextReleased(browser, frame, context);
-	}
-}
-
-bool UamCefApp::OnProcessMessageReceived(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame> frame, CefProcessId source_process, CefRefPtr<CefProcessMessage> message)
-{
-	if (m_renderer_router == nullptr || !IsTrustedRendererFrame(frame, m_trustedUiIndexUrl))
-	{
-		return false;
-	}
-
-	return m_renderer_router->OnProcessMessageReceived(browser, frame, source_process, message);
 }

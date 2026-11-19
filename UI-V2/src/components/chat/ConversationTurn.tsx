@@ -5,8 +5,8 @@ import './conversation.css'
 
 /** Outgoing input not yet confirmed as delivered; `label` explains the state and its recovery.
  * `unconfirmed` is native uncertainty and is never presented as a definite failure. */
-export type ConversationDelivery = { state: 'sending' | 'unsent' | 'unconfirmed'; label: string }
-const DELIVERY_TEXT = { sending: 'Sending', unsent: 'Not sent', unconfirmed: 'Delivery not confirmed' } as const
+export type ConversationDelivery = { state: 'sending' | 'unsent' | 'unconfirmed' | 'waiting'; label: string }
+const DELIVERY_TEXT = { sending: 'Sending', unsent: 'Not sent', unconfirmed: 'Delivery not confirmed', waiting: 'Not sent yet' } as const
 
 /** A conversation turn using the chat's existing message and branch actions. */
 export function ConversationTurn({

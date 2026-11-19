@@ -172,7 +172,7 @@ void UamQueryHandler::HandleListChatBranches(CefRefPtr<CefBrowser>, const nlohma
 	const std::shared_ptr<BranchRequest> request = CaptureBranchRequest(m_app, *chat);
 	const bool svn_requested = payload.value("vcsType", std::string{}) == "svn";
 	const std::string parent = payload.value("svnParent", std::string{});
-	uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb, [request, svn_requested, parent]()
+	uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner(request->chat), m_asyncLifetime, cb, [request, svn_requested, parent]()
 	{
 		if (svn_requested)
 		{
@@ -222,7 +222,7 @@ void UamQueryHandler::HandleSwitchChatBranch(CefRefPtr<CefBrowser> browser, cons
 		return;
 	}
 	const std::shared_ptr<BranchRequest> request = CaptureBranchRequest(m_app, *chat);
-	uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb, [request, branch, create, svn, svn_context]()
+	uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner(request->chat), m_asyncLifetime, cb, [request, branch, create, svn, svn_context]()
 	{
 		if (svn)
 		{
@@ -314,7 +314,7 @@ void UamQueryHandler::ContinueSwitchChatBranch(CefRefPtr<CefBrowser> browser, co
 		    [this, browser, payload, cb, waiting](bool expired)
 		    {
 			if (expired || !BranchRequestCurrent(m_app, *waiting))
-			{ cb->Failure(409, expired ? "The idle runtime is still stopping. Retry after it exits." : "The chat changed while its idle runtime was stopping. Open the branch picker again."); return true; }
+			{ cb->Failure(409, expired ? uam::AcpStopRefusalMessage(m_app, waiting->chat.id, "The idle runtime is still stopping. Retry after it exits.") : "The chat changed while its idle runtime was stopping. Open the branch picker again."); return true; }
 			if (!BranchRuntimeSettled(m_app, waiting->chat.id)) return false;
 			ContinueSwitchChatBranch(browser, payload, cb);
 			return true;
@@ -323,7 +323,7 @@ void UamQueryHandler::ContinueSwitchChatBranch(CefRefPtr<CefBrowser> browser, co
 		return;
 	}
 	if (!BranchRuntimeSettled(m_app, chat->id) || m_workspaceDeletionPending)
-	{ cb->Failure(409, "Stop the chat runtime and wait for history to save before switching branches."); return; }
+	{ cb->Failure(409, uam::AcpStopRefusalMessage(m_app, chat->id, "Stop the chat runtime and wait for history to save before switching branches.")); return; }
 	const std::string branch = payload["branch"].get<std::string>();
 	const bool create = payload.value("create", false);
 	const bool svn = payload.value("vcsType", std::string{}) == "svn";
@@ -336,7 +336,7 @@ void UamQueryHandler::ContinueSwitchChatBranch(CefRefPtr<CefBrowser> browser, co
 	m_app.worktree_operation_chat_ids.insert(chat->id);
 	uam::query_handler_async::DispatchBranchOperation(m_app.worktree_operation_chat_ids, request->chat.id, [&]()
 	{
-		return uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb, [request, svn, svn_context]()
+		return uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner(request->chat), m_asyncLifetime, cb, [request, svn, svn_context]()
 		{
 			if (svn)
 			{
@@ -362,7 +362,7 @@ void UamQueryHandler::ContinueSwitchChatBranch(CefRefPtr<CefBrowser> browser, co
 			}
 			uam::query_handler_async::DispatchBranchOperation(m_app.worktree_operation_chat_ids, request->chat.id, [&]()
 			{
-				return uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb, [request, branch, create, svn, svn_context]()
+				return uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner(request->chat), m_asyncLifetime, cb, [request, branch, create, svn, svn_context]()
 				{
 					if (svn)
 					{

@@ -6,7 +6,8 @@ import type { ReactNode } from 'react'
 import type { LucideIcon } from 'lucide-react'
 import type { AcpBinding, AcpToolCall, CliBinding } from '../../store/useAppStore'
 import { copyTextToClipboard } from '../../utils/copySelection'
-import { IconButton, Tooltip } from '../ui'
+import { IconButton, Tooltip, usePresence } from '../ui'
+import { redactSecretRequestTool } from './toolOutputFormat'
 
 /** Bar for a token quantity; callers pick the tone and keep exact numbers in text. */
 export function ContextMeter({ ratio, level = 'ok' }: { ratio: number; level?: 'ok' | 'warning' | 'error' }) {
@@ -14,8 +15,6 @@ export function ContextMeter({ ratio, level = 'ok' }: { ratio: number; level?: '
     <span style={{ transform: `scaleX(${Math.min(1, Math.max(0, ratio))})` }} />
   </span>
 }
-
-const STATUS_STRIP_EXIT_MS = 200
 
 function formatElapsed(seconds: number) {
   if (seconds < 60) return `${seconds}s`
@@ -54,8 +53,7 @@ export function ChatStatusStrip({ open, tone, scene, title, detail, timeMode = '
   /** 'elapsed' ticks while work runs; 'since' shows the clock time the state began (e.g. when it stopped). */
   timeMode?: 'elapsed' | 'since'
 }) {
-  const [present, setPresent] = useState(open)
-  if (open && !present) setPresent(true)
+  const { mounted: present } = usePresence(open)
   const lastShown = useRef<{ tone: ChatStatusTone; scene: ReactNode; title: string; detail?: ReactNode } | null>(null)
   if (open) lastShown.current = { tone, scene, title, detail }
   const elapsed = useElapsedSeconds(open && timeMode === 'elapsed')
@@ -65,11 +63,6 @@ export function ChatStatusStrip({ open, tone, scene, title, detail, timeMode = '
   if (!open && !present) since.current = null
   const frozenElapsed = useRef(0)
   if (open) frozenElapsed.current = elapsed
-  useEffect(() => {
-    if (open || !present) return
-    const timer = window.setTimeout(() => setPresent(false), STATUS_STRIP_EXIT_MS)
-    return () => window.clearTimeout(timer)
-  }, [open, present])
   if (!present || !lastShown.current) return null
   const shown = lastShown.current
   return (
@@ -151,7 +144,7 @@ export function toolDisplayKind(tool: AcpToolCall) {
 export function toolDisplayTitle(tool: AcpToolCall) {
   return tool.isSubAgent
     ? (tool.subAgentTitle || tool.title || tool.subAgentId || tool.id)
-    : (tool.title || tool.id)
+    : (redactSecretRequestTool(tool).title || tool.id)
 }
 
 export function roleAccent(role: string) {
@@ -207,10 +200,12 @@ export function CopyTextButton({
   text,
   label = 'Copy',
   title = 'Copy text',
+  size = 'md',
 }: {
   text: string
   label?: string
   title?: string
+  size?: 'sm' | 'md'
 }) {
   const [status, setStatus] = useState<'idle' | 'copied' | 'failed'>('idle')
   const resetTimerRef = useRef<number | null>(null)
@@ -230,20 +225,25 @@ export function CopyTextButton({
     resetTimerRef.current = window.setTimeout(() => setStatus('idle'), 1600)
   }
 
-  return (
+  return (<>
     <IconButton
+      size={size}
       label={label}
       tooltip={status === 'copied' ? 'Copied' : status === 'failed' ? 'Copy failed' : title}
       onClick={onCopy}
       className="inline-flex h-6 w-6 items-center justify-center"
       style={{
-        borderRadius: 5,
+        borderRadius: 'var(--r-sm)',
         border: 0,
-        background: 'transparent',
         color: status === 'copied' ? 'var(--success)' : status === 'failed' ? 'var(--error)' : 'var(--text-2)',
         transition: 'color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease)',
       }}
-      icon={<>{status === 'copied' ? <Check size={13} aria-hidden /> : status === 'failed' ? <CircleX size={13} aria-hidden /> : <Copy size={13} aria-hidden />}<span className="sr-only">{status === 'copied' ? 'Copied' : status === 'failed' ? 'Copy failed' : label}</span></>}
+      icon={<><span className="uam-copy-feedback" aria-hidden>
+        <Copy size={13} data-visible={status === 'idle'} />
+        <Check size={13} data-visible={status === 'copied'} />
+        <CircleX size={13} data-visible={status === 'failed'} />
+      </span></>}
     />
-  )
+    <span className="sr-only" role="status">{status === 'copied' ? 'Copied' : status === 'failed' ? 'Copy failed' : ''}</span>
+  </>)
 }

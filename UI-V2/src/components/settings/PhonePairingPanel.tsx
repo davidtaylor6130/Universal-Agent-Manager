@@ -11,7 +11,7 @@ interface PhonePairingPanelProps {
   enabled: boolean
 }
 
-/** The desktop reveals its existing companion credential only after a deliberate action. */
+/** The desktop issues and reveals a new companion credential only after a deliberate action. */
 export function PhonePairingPanel({ url, enabled }: PhonePairingPanelProps) {
   const [payload, setPayload] = useState('')
   const [busy, setBusy] = useState(false)
@@ -58,7 +58,7 @@ export function PhonePairingPanel({ url, enabled }: PhonePairingPanelProps) {
     const request = ++generation.current
     setBusy(true)
     try {
-      const response = await sendToCEF<{ token?: string; url?: string; certificate?: string }>({ action: 'getCompanionToken' })
+      const response = await sendToCEF<{ token?: string; url?: string; certificate?: string }>({ action: 'getCompanionToken', payload: { rotate: true } })
       if (generation.current !== request) return
       if (!response.ok || !/^[a-fA-F0-9]{64}$/.test(response.data?.token ?? '')) {
         reportAppFailure('Pairing code unavailable.', 'Check Phone Access configuration.')
@@ -78,7 +78,7 @@ export function PhonePairingPanel({ url, enabled }: PhonePairingPanelProps) {
   if (isCompanionContext()) return null
   return <SettingRow
     title="Pair iPhone"
-    description={!enabled ? 'Available when phone access is ready.' : !nativePhoneUrl ? 'A secure phone address is required for pairing.' : 'Scan this in the Universal Agent Manager iPhone app.'}
+    description={!enabled ? 'Available when phone access is ready.' : !nativePhoneUrl ? 'A secure phone address is required for pairing.' : 'Scan this in the Universal Agent Manager iPhone app. Each code uses a new token, so other paired devices must pair again.'}
     control={<Button size="sm" variant="secondary" leadingIcon={<QrCode size={14} aria-hidden />} disabled={!enabled || !nativePhoneUrl || busy}
       onClick={() => { if (payload) { generation.current += 1; setPayload('') } else void show() }}>
       {busy ? 'Loading…' : payload ? 'Hide pairing code' : 'Show pairing code'}
@@ -86,7 +86,7 @@ export function PhonePairingPanel({ url, enabled }: PhonePairingPanelProps) {
   >
     {qrPresence.mounted && <div className="flex flex-col items-start gap-2 py-2 uam-presence" data-state={qrPresence.closing ? 'closed' : 'open'}>
       <QRCodeSVG value={shownPayload.current} size={232} level="M" marginSize={4} title="Universal Agent Manager iPhone pairing code" style={{ maxWidth: '100%', height: 'auto' }} />
-      <p className="text-xs" style={{ color: 'var(--text-2)' }}>This code grants access to Universal Agent Manager. It hides after two minutes; hiding does not revoke existing connections.</p>
+      <p className="text-xs" style={{ color: 'var(--text-2)' }}>This code grants access to Universal Agent Manager. It hides after two minutes. Showing it issued a new token; other paired phones and browsers must pair again.</p>
     </div>}
   </SettingRow>
 }

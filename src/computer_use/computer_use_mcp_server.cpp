@@ -4,6 +4,7 @@
 #include "app/data_folder_transition.h"
 #include "common/platform/data_folder_writer_lease.h"
 #if defined(__APPLE__)
+#include "computer_use/computer_use_install_macos.h"
 #include "computer_use/computer_use_launch_macos.h"
 #endif
 #include "computer_use/computer_use_platform.h"
@@ -1185,6 +1186,7 @@ namespace uam::computer_use
 	int RunMcpServer(const std::vector<std::string>& arguments)
 	{
 #if defined(__APPLE__)
+		if (IsComputerUseInstallInvocation(arguments)) return RunComputerUseInstall();
 		if (std::ranges::find(arguments, "--uam-computer-use-socket") != arguments.end())
 		{
 			std::string error;

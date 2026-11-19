@@ -1,3 +1,11 @@
+/** Native admission fence for an explicitly recovered input branch. */
+export interface MessageBranchWitness {
+  messagesDigest: string
+  nativeInputId: string
+  providerId: string
+  executionHostId: string
+}
+
 export type Role = 'user' | 'assistant' | 'system'
 
 export type AttachmentSource = 'legacy_path' | 'native_inline_pending' | 'owned_native_asset' | 'provider_uri'
@@ -58,6 +66,7 @@ export type MessageBlock =
   | { type: 'thought'; text: string; toolCallId?: string; requestId?: string }
   | { type: 'context_compaction' | 'context_compaction_interrupted'; text: string; toolCallId?: string; requestId?: string; tokensBefore?: number; tokensAfter?: number }
   | { type: 'plan'; text?: string; toolCallId?: string; requestId?: string }
+  | { type: 'html_view'; text: string; title: string; requestId: string; toolCallId?: string }
   | { type: 'tool_call'; toolCallId: string; text?: string; requestId?: string }
   | { type: 'permission_request'; requestId: string; toolCallId?: string; text?: string }
   | { type: 'user_input_request'; requestId: string; toolCallId?: string; text?: string }
@@ -65,6 +74,8 @@ export type MessageBlock =
 export interface Message {
   /** Positive historical local OS-sink write fact only; absent/false is unknown, never retry authority. */
   inputWriteCompleted?: boolean
+  /** Dispatched by a build that records delivery: only a backend write fact clears its marker, never a following answer. */
+  inputDeliveryTracked?: boolean
   /** Inert per-input provenance; never admission/delivery/control proof. */
   nativeInputId?: string
   originRequestId?: string

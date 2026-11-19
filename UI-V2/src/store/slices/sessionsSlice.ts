@@ -10,10 +10,11 @@ import type { ChatSearchHit, ChatSearchNavigation } from '../../types/chatSearch
 import { chatSearchPageRequest, sanitizeChatSearchHits } from '../../utils/chatSearchResults'
 import { setPreferredFamilyChat } from '../../utils/branchPreferenceStorage'
 import { DEFAULT_CENTRAL_PROVIDER_CONFIGURATION, type CentralProviderConfiguration } from '../cpp/types'
+import { providerSwitchLockReason } from '../../utils/chatWork'
 import type { ComputerUseActionResult, ComputerUseBackend, ComputerUseControlState, Session, ViewMode } from '../../types/session'
 import { version as packageVersion } from '../../../package.json'
 import { defaultsForExecutionHost, withSettingsScope } from '../../utils/settingsScope'
-import type { Attachment, Message } from '../../types/message'
+import type { Attachment, Message, MessageBranchWitness } from '../../types/message'
 import type { Provider } from '../../types/provider'
 import type { MemoryLevel } from '../../types/memory'
 import type { WindowsPowerShellPreference, CreateSessionOptions, VoiceInputMode, VcsStorageSettings, ChatFileChangeReceiptsResponse, McpServerConfiguration } from '../cpp/types'
@@ -30,10 +31,11 @@ import {
   SUPPORTED_CLI_PROVIDER_IDS,
   fallbackProviderForId,
   normalizeCliProviderIdAlias,
+  permissionTierForProvider,
   providerCapabilities,
   providerMetadataForId,
 } from '../../utils/providerMetadata'
-import { AGENT_MODE_IDS, cefPayloadOrRawResponse, clampedFiniteNumberOr, DEFAULT_GOAL_MAX_LOOP_ITERATIONS, DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS, DEFAULT_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS, DEFAULT_STREAM_LOOP_REPEAT_LIMIT, DEFAULT_ACP_TURN_OUTPUT_LIMIT_MIB, DEFAULT_MEMORY_IDLE_DELAY_SECONDS, DEFAULT_MEMORY_RECALL_BUDGET_BYTES, defaultEditorFileAssociations, emptyCliVersionManager, emptyMemoryActivity, failedGitWorktreeResult, isAllowedAcpModelId, isRecord, messageAttachments, MAX_MEMORY_IDLE_DELAY_SECONDS, MAX_MEMORY_RECALL_BUDGET_BYTES, MIN_MEMORY_IDLE_DELAY_SECONDS, MIN_MEMORY_RECALL_BUDGET_BYTES, normalizeAcpApprovalMode, normalizeCodexReasoningEffort, normalizeCodexServiceTier, normalizeMemoryLevel, normalizeGoalMaxLoopIterations, normalizeAcpSetupInactivityTimeoutSeconds, normalizeAcpTurnOutputLimitMiB, providerChatDefaultsForNewChat, sanitizeAttachment, sanitizeCppMessage, sanitizeManagedOriginRunId, sanitizeEditorFileAssociations, sanitizeEditorPresetId, sanitizeWindowsPowerShell, sanitizeGitBaseBranch, sanitizeGitWorktreeResult, sanitizeGitWorktreeStatus, sanitizeProviderChatDefaults, sanitizeProviderChatDefaultsMap, sanitizeVcsCommitResult, sanitizeVcsCommitStatus, stringOr } from '../cpp/sanitizers'
+import { AGENT_MODE_IDS, cefPayloadOrRawResponse, clampedFiniteNumberOr, DEFAULT_GOAL_MAX_LOOP_ITERATIONS, DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS, DEFAULT_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS, DEFAULT_TOOL_CALL_TIMEOUT_SECONDS, DEFAULT_STREAM_LOOP_REPEAT_LIMIT, DEFAULT_ACP_TURN_OUTPUT_LIMIT_MIB, DEFAULT_MEMORY_IDLE_DELAY_SECONDS, DEFAULT_MEMORY_RECALL_BUDGET_BYTES, defaultEditorFileAssociations, emptyCliVersionManager, emptyMemoryActivity, failedGitWorktreeResult, isAllowedAcpModelId, isRecord, messageAttachments, MAX_MEMORY_IDLE_DELAY_SECONDS, MAX_MEMORY_RECALL_BUDGET_BYTES, MIN_MEMORY_IDLE_DELAY_SECONDS, MIN_MEMORY_RECALL_BUDGET_BYTES, normalizeAcpApprovalMode, normalizeCodexReasoningEffort, normalizeCodexServiceTier, normalizeMemoryLevel, normalizeGoalMaxLoopIterations, normalizeAcpSetupInactivityTimeoutSeconds, normalizeAcpTurnOutputLimitMiB, providerChatDefaultsForNewChat, sanitizeAttachment, sanitizeCppMessage, sanitizeManagedOriginRunId, sanitizeEditorFileAssociations, sanitizeEditorPresetId, sanitizeWindowsPowerShell, sanitizeGitBaseBranch, sanitizeGitWorktreeResult, sanitizeGitWorktreeStatus, sanitizeProviderChatDefaults, sanitizeProviderChatDefaultsMap, sanitizeVcsCommitResult, sanitizeVcsCommitStatus, sanitizeVcsHistoryPage, sanitizeVcsOriginReply, stringOr } from '../cpp/sanitizers'
 import {
   acpBindingsEquivalent,
   attachmentsEquivalent,
@@ -52,6 +54,7 @@ import type {
   AcpBinding,
   AcpLifecycleState,
   AcpUserInputAnswers,
+  SecretSubmission,
   ChatAttachmentInput,
   ChatMessagesResponse,
   CliBinding,
@@ -75,6 +78,10 @@ import type {
   VcsCommitResult,
   VcsCommitStatus,
   VcsFileDiffResponse,
+  VcsHistoryPage,
+  VcsOriginReply,
+  VcsOriginView,
+  VcsUpdateResult,
   VcsType,
 } from '../cpp/types'
 import type { AppState, AcceptedHistoryPage, AcpPromptPresentationObserver, ZustandSet, ZustandGet } from '../storeTypes'
@@ -118,6 +125,27 @@ const initialProviders: Provider[] = [
 
 let sessionCounter = 10
 
+function codexOptionsTitle(options: { reasoningEffort?: string; serviceTier?: string }) {
+  if (options.reasoningEffort !== undefined && options.serviceTier !== undefined) return 'Reasoning and speed were not changed'
+  return options.reasoningEffort !== undefined ? 'Reasoning was not changed' : 'Speed was not changed'
+}
+
+/**
+ * A refused chat control: one message names the control, then the backend's reason, or a generic next step when it
+ * sent none. The toast shows only the message (its detail is never displayed), so the reason belongs in it.
+ * A caller that already names the change takes the raw reason for its own notice.
+ */
+function reportRefusal(title: string, reason: string | undefined, onFailure?: (reason: string) => void) {
+  // The bridge's own failures carry raw exception text; that stays in the console, never in a notice.
+  const shown = reason && !reason.startsWith('Bridge request failed:') && !reason.startsWith('Invalid bridge payload:') ? reason : ''
+  if (onFailure) onFailure(shown)
+  else reportAppFailure(`${title}. ${shown || 'Try again.'}`, '')
+}
+
+type AcceptedModel = Pick<Session, 'modelId' | 'reasoningEffort' | 'serviceTier' | 'serviceTierExplicit' | 'updatedAt'>
+/** Per chat, the model state the backend last accepted while model changes are in flight; a refusal rolls back to it. */
+const acceptedModelByChatId = new Map<string, AcceptedModel>()
+
 function makeId(prefix: string, counter: number) {
   return `${prefix}-${counter}`
 }
@@ -145,7 +173,8 @@ function unsentIndicesFromPage(data: ChatMessagesResponse) {
   const valid = (indices: unknown): indices is number[] => Array.isArray(indices) && Number.isSafeInteger(data.totalCount) && indices.every((index, position) =>
     Number.isSafeInteger(index) && index >= 0 && index < data.totalCount! && (position === 0 || index > indices[position - 1]))
   return valid(data.unsentMessageIndices) && valid(data.recoverableUnsentMessageIndices)
-    ? { unsentMessageIndices: data.unsentMessageIndices, recoverableUnsentMessageIndices: data.recoverableUnsentMessageIndices }
+    ? { unsentMessageIndices: data.unsentMessageIndices, recoverableUnsentMessageIndices: data.recoverableUnsentMessageIndices,
+        editableUnsentMessageIndices: valid(data.editableUnsentMessageIndices) ? data.editableUnsentMessageIndices : [] }
     : undefined
 }
 
@@ -248,9 +277,38 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
   const boundedTailReloads = new Map<string, number>()
   const loadedMessagesDigestByChatId = new Map<string, string>()
   const messageHydrationGenerationByChatId = new Map<string, number>()
+  // Per chat, the last composer submission whose reply never confirmed admission. Its idempotency ID belongs to that
+  // submission (the caller's token), never to its text: a new submission always gets a new ID, identical words or not.
+  // `payloadKey` holds everything the request carries besides its IDs; a retry must match it exactly.
+  type UnconfirmedSubmission = { token: string; id: string; payloadKey: string; requestIds: string[]; turnSerial: number }
+  const unconfirmedSubmissionBySessionId = new Map<string, UnconfirmedSubmission>()
+  // Native state already shows the attempt (a row or receipt carries one of its request IDs) or a later turn started,
+  // so pressing Send again is a new message. Over-retiring can deliver twice; it never swallows a new message.
+  const submissionLanded = (sessionId: string, submission: UnconfirmedSubmission) => {
+    const state = get()
+    const binding = state.acpBindingBySessionId[sessionId]
+    if ((binding?.turnSerial ?? 0) > submission.turnSerial) return true
+    return [...(state.messages[sessionId] ?? []), ...(binding?.pendingDirectPrompts ?? []), ...(binding?.unsentDirectPrompts ?? []), ...(binding?.queuedPrompts ?? [])]
+      .some((record) => typeof record.originRequestId === 'string' && submission.requestIds.includes(record.originRequestId))
+  }
+  // ponytail: fixed caps for hover prefetch; tune when profiling shows memory or bridge pressure.
+  const PREFETCH_MAX_IN_FLIGHT = 2
+  const PREFETCH_MAX_RETAINED = 4
+  type PrefetchEntry = { requestId: string; promise: Promise<void | false | AcceptedHistoryPage>; birth: number; digest?: string; count?: number; claimed: boolean }
+  const prefetchInFlight = new Map<string, PrefetchEntry>()
+  const prefetchedIds: string[] = []
+  // Any other ordinary load or selection of the chat owns its history from then on; the prefetch must not evict or release it.
+  // A forced reload is not an open: it refreshes a chat that stays warm (turn completion reloads loaded chats), so it does not claim.
+  const claimPrefetch = (chatId: string) => {
+    const entry = prefetchInFlight.get(chatId)
+    if (entry) entry.claimed = true
+    const index = prefetchedIds.indexOf(chatId)
+    if (index >= 0) prefetchedIds.splice(index, 1)
+  }
 
-  const requestChatMessagesFromCef = (chatId: string, force = false, refreshNative = false, presentationRetry = 0): Promise<void | false | AcceptedHistoryPage> | undefined => {
+  const requestChatMessagesFromCef = (chatId: string, force = false, refreshNative = false, presentationRetry = 0, background = false): Promise<void | false | AcceptedHistoryPage> | undefined => {
     if (!isCefContext() || !chatId) return
+    if (!background && !force) claimPrefetch(chatId)
     if (get().chatSearchNavigation?.chatId === chatId || boundedTailReloads.has(chatId)) return
     const current = get()
     const historyStartAtRequestStart = current.historyStartIndexBySessionId[chatId] ?? 0
@@ -266,6 +324,17 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       Number.isSafeInteger(sessionAtRequestStart?.messageCount) && sessionAtRequestStart?.messagesDigest &&
       historyStartAtRequestStart + (messagesAtRequestStart?.length ?? 0) > sessionAtRequestStart!.messageCount!)
     const requestKey = `getChatMessages:${chatId}`
+    // An ordinary open joins a hover prefetch instead of superseding it and restarting the native read.
+    // It only joins while the chat's identity and saved summary still match the prefetch's, and keeps the read marker
+    // on the prefetch so the open shows loading (and any failure) rather than an unavailable state.
+    const prefetch = prefetchInFlight.get(chatId)
+    if (prefetch && !background && !force && !refreshNative && presentationRetry === 0 && isLatestPendingRequest(requestKey, prefetch.requestId) &&
+        prefetch.birth === chatBirthAtRequestStart && prefetch.digest === sessionAtRequestStart.messagesDigest && prefetch.count === sessionAtRequestStart.messageCount) {
+      set(state => ({ chatHistoryReadBySessionId: { ...state.chatHistoryReadBySessionId, [chatId]: { requestId: prefetch.requestId, birth: prefetch.birth } } }))
+      // The warm-up may still be queued on the lower-priority lane; an explicit open must not wait behind that lane.
+      void sendToCEF({ action: 'promoteChatHistoryRead', payload: { chatId } })
+      return prefetch.promise
+    }
     const requestId = createRequestId('getChatMessages')
     const hydrationGeneration = messageHydrationGenerationByChatId.get(chatId) ?? 0
     rememberPendingRequest(requestKey, requestId)
@@ -291,6 +360,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         limit: 50,
         deferToolCallContent: true,
         ...(refreshNative ? { refreshNative: true } : {}),
+        ...(background ? { background: true } : {}),
         messagesDigest: requestedDigest,
       },
       requestId,
@@ -323,7 +393,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       if (!response.ok || !response.data) {
         if (!response.ok && response.error === 'Chat history changed while loading. Retry to refresh it.' && mayReadColdHistoryOnce) {
           // A refusal contains no page to adopt. Share the presentation reread's single budget.
-          const fresh = requestChatMessagesFromCef(chatId, true, false, presentationRetry + 1)
+          const fresh = requestChatMessagesFromCef(chatId, true, false, presentationRetry + 1, background)
           if (fresh) return fresh
         }
         const chatName = current.sessions.find((session) => session.id === chatId)?.name?.trim() || chatId
@@ -357,7 +427,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
             idleShutdownAtMs: bindingAtRequestStart.idleShutdownAtMs,
             diagnostics: bindingAtRequestStart.diagnostics })) {
         // Discard this page; presentation changes only permit one new read, never stale unsent adoption.
-        const fresh = requestChatMessagesFromCef(chatId, true, false, presentationRetry + 1)
+        const fresh = requestChatMessagesFromCef(chatId, true, false, presentationRetry + 1, background)
         if (fresh) return fresh
       }
       if (data.unchanged) {
@@ -502,6 +572,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     goalTokenBudget: 0,
     acpSetupInactivityTimeoutSeconds: DEFAULT_ACP_SETUP_INACTIVITY_TIMEOUT_SECONDS,
     activeTurnInactivityTimeoutSeconds: DEFAULT_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS,
+    toolCallTimeoutSeconds: DEFAULT_TOOL_CALL_TIMEOUT_SECONDS,
     streamLoopRepeatLimit: DEFAULT_STREAM_LOOP_REPEAT_LIMIT,
     acpTurnOutputLimitMiB: DEFAULT_ACP_TURN_OUTPUT_LIMIT_MIB,
     appVersion: `V${packageVersion}`,
@@ -531,6 +602,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     gitDefaultBaseBranch: '',
     gitPullBeforeChat: false,
     svnUpdateBeforeChat: false,
+    svnRepositoryLayouts: [],
     gitPortMethod: 'patch' as VcsStorageSettings['gitPortMethod'],
     worktreeCleanupEnabled: true,
     worktreeRetentionDays: 14,
@@ -564,6 +636,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     },
 
     setActiveSession: (id: string | null, navigation?: { preserveSubagentRoute?: boolean; leafId?: string }) => {
+      if (id) claimPrefetch(id)
       const selected = get().sessions.find(candidate => candidate.id === id)
       const parent = selected && subagentParentFor(selected, get().sessions)
       if (parent && id) {
@@ -764,6 +837,48 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
     },
 
     loadSessionMessages: requestChatMessagesFromCef,
+
+    prefetchSessionMessages: (id: string) => {
+      const state = get()
+      const session = state.sessions.find((candidate) => candidate.id === id)
+      const binding = state.acpBindingBySessionId[id]
+      // Remote reads can start a provider history read, and a chat with queued, held or running input can have its
+      // admissions settled by the read, so only idle local chats are warmed.
+      if (!session || isCompanionContext() || (session.executionHostId || 'local') !== 'local' || id === state.activeSessionId ||
+          state.messages[id] !== undefined || state.chatHistoryReadBySessionId[id] || state.chatHistoryErrorBySessionId[id] ||
+          binding?.processing || binding?.queueHeld || binding?.queuedPrompts?.length || binding?.pendingDirectPrompts?.length ||
+          binding?.unsentDirectPrompts?.length || state.cliBindingBySessionId[id]?.processing ||
+          pendingRequestIdsByKey.has(`getChatMessages:${id}`) || prefetchInFlight.size >= PREFETCH_MAX_IN_FLIGHT) return
+      const promise = requestChatMessagesFromCef(id, false, false, 0, true)
+      const requestId = pendingRequestIdsByKey.get(`getChatMessages:${id}`)
+      if (!promise || !requestId) return
+      const entry: PrefetchEntry = { requestId, promise, birth: session.createdAt.getTime(), digest: session.messagesDigest, count: session.messageCount, claimed: false }
+      prefetchInFlight.set(id, entry)
+      void promise.then(() => {
+        if (prefetchInFlight.get(id) === entry) prefetchInFlight.delete(id)
+        const settled = get()
+        if (entry.claimed || settled.activeSessionId === id || prefetchedIds.includes(id)) return
+        // Nothing was adopted and no forced reload took over (failed), so drop the native copy the read may have loaded.
+        if (settled.messages[id] === undefined && !pendingRequestIdsByKey.has(`getChatMessages:${id}`)) {
+          if (isCefContext()) void sendToCEF({ action: 'releaseChatMessages', payload: { chatId: id } })
+          return
+        }
+        prefetchedIds.push(id)
+        get().evictWarmChats()
+      })
+    },
+
+    // Unopened warm pages are evicted oldest first; an ordinary load or selection removes a chat from this list. Unload
+    // refuses a processing chat, so it stays listed and the store's subscriber retries this after every update.
+    evictWarmChats: () => {
+      while (prefetchedIds.length > PREFETCH_MAX_RETAINED) {
+        const state = get()
+        const index = prefetchedIds.findIndex(id => !state.acpBindingBySessionId[id]?.processing && !state.cliBindingBySessionId[id]?.processing)
+        if (index < 0) return
+        const [oldest] = prefetchedIds.splice(index, 1)
+        if (state.activeSessionId !== oldest) state.unloadSessionMessages(oldest)
+      }
+    },
 
     loadOlderSessionMessages: async (id: string) => {
       if (!isCefContext()) return false
@@ -997,7 +1112,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
             chat.createdAt.getTime() !== initialChat.createdAt.getTime() || chat.executionHostId !== initialChat.executionHostId || !Number.isSafeInteger(messageIndex) || messageIndex < 0 ||
             rows[index] !== message || message.nativeMessageIndex !== messageIndex ||
             message.role !== 'user' || !message.acpPromptNotSent || message.acpPromptDiscarded ||
-            !binding?.unsentMessageIndices?.includes(messageIndex) || binding.processing || binding.pendingPermission || binding.pendingUserInput ||
+            !binding?.unsentMessageIndices?.includes(messageIndex) || !binding.editableUnsentMessageIndices?.includes(messageIndex) || binding.processing || binding.pendingPermission || binding.pendingUserInput ||
             binding.queuedPrompts?.length || binding.pendingDirectPrompts?.length || binding.unsentDirectPrompts?.length ||
             cli?.processing || cli?.turnState === 'busy') return false
         const providerId = normalizeCliProviderIdAlias(chat.providerId || binding.providerId)
@@ -1081,7 +1196,17 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return { ok: response.ok, error: response.error }
     },
 
-    branchFromMessage: async (id: string, messageIndex: number, content?: string, retainedAttachmentIds?: string[], retainedMarkdownStoreFiles?: string[]): Promise<string | null> => {
+    branchFromMessage: async (id: string, messageIndex: number, content?: string, retainedAttachmentIds?: string[], retainedMarkdownStoreFiles?: string[], sourceWitness?: MessageBranchWitness): Promise<string | null> => {
+      const witness = sourceWitness === undefined ? undefined : Object.freeze({ ...sourceWitness })
+      if (witness) {
+        const state = get()
+        const source = state.sessions.find(session => session.id === id)
+        const row = state.messages[id]?.[messageIndex - (state.historyStartIndexBySessionId[id] ?? 0)]
+        if (!source || source.messagesDigest !== witness.messagesDigest || source.providerId !== witness.providerId ||
+            (source.executionHostId ?? 'local') !== witness.executionHostId || row?.nativeInputId !== witness.nativeInputId) {
+          throw new Error('The message selected for branching changed. Your edit is kept; refresh before saving.')
+        }
+      }
       const nativeSelection = retainedAttachmentIds === undefined ? undefined : Object.freeze([...retainedAttachmentIds])
       const skillSelection = retainedMarkdownStoreFiles === undefined ? undefined : Object.freeze([...retainedMarkdownStoreFiles])
       if (isCefContext()) {
@@ -1092,6 +1217,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           ...(content === undefined ? {} : { content }),
           ...(nativeSelection === undefined ? {} : { retainedAttachmentIds: nativeSelection }),
           ...(skillSelection === undefined ? {} : { retainedMarkdownStoreFiles: skillSelection }),
+          ...(witness === undefined ? {} : { sourceWitness: witness }),
           ...(operationId ? { operationId } : {}),
         })
         let response = await sendToCEF<{ chatId?: string; warning?: string }>({
@@ -1233,7 +1359,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return Boolean(session?.workspaceDirectory?.trim() || folderDirectory.trim())
     },
 
-    openSubAgentSession: async (sourceChatId: string, nativeSessionId: string, title = '', selectChat = true, onFailure?: (message: string) => void) => {
+    openSubAgentSession: async (sourceChatId: string, nativeSessionId: string, title = '', selectChat = true, onFailure?: (message: string) => void, stillWanted?: () => boolean) => {
       if (isCefContext()) {
         const stateAtRequest = get()
         const source = stateAtRequest.sessions.find(candidate => candidate.id === sourceChatId)
@@ -1263,7 +1389,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           onFailure?.('The native conversation could not be read. Refresh to try again.')
           return null
         }
-        if (selectChat && intentionalSelectionRevision !== selectionRevision) return null
+        if (selectChat && (intentionalSelectionRevision !== selectionRevision || stillWanted?.() === false)) return null
         const currentSource = get().sessions.find(candidate => candidate.id === sourceChatId)
         if (!source || !currentSource || source.createdAt.getTime() !== currentSource.createdAt.getTime() ||
             source.providerId !== currentSource.providerId || source.executionHostId !== currentSource.executionHostId ||
@@ -1471,6 +1597,55 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return `diff -- ${path}\n`
     },
 
+    getVcsHistory: async (id: string, vcsType: VcsType, options?: { before?: string; limit?: number; search?: string; requestId?: string }): Promise<VcsHistoryPage> => {
+      if (!isCefContext()) {
+        // Browser preview only: a short sample so the view can be developed without the desktop app.
+        const newest = options?.before ? Number(options.before) : 42
+        const entries = Array.from({ length: Math.max(0, Math.min(options?.limit ?? 50, newest, 6)) }, (_, index) => ({
+          revision: String(newest - index), author: 'sample', date: new Date(Date.UTC(2026, 0, 20 - index)).toISOString(), message: `Sample revision ${newest - index}`,
+          paths: [{ action: 'M', path: '/trunk/src/example.ts', kind: 'file', copyFromPath: '', copyFromRevision: '' }], pathsOmitted: 0,
+        }))
+        return { entries, next: newest - entries.length > 0 ? String(newest - entries.length) : '', workingRevision: options?.before ? '' : '41', location: options?.before ? '' : '^/trunk', repositoryRoot: '', repositoryUuid: '' }
+      }
+      // A stopped request fails by design, so failures are reported by the caller instead of the console.
+      const response = await sendToCEF({ action: 'getVcsHistory', payload: { chatId: id, vcsType, ...options } }, false)
+      if (!response.ok) throw new Error(response.error || 'Failed to load history.')
+      const page = sanitizeVcsHistoryPage(cefPayloadOrRawResponse(response))
+      if (!page) throw new Error('The history reply was not understood.')
+      return page
+    },
+
+    getVcsRevisionDiff: async (id: string, vcsType: VcsType, revision: string, path: string, requestId?: string): Promise<string> => {
+      if (!isCefContext()) return `Index: ${path}\n--- ${path}\t(revision ${Number(revision) - 1})\n+++ ${path}\t(revision ${revision})\n@@ -1 +1,2 @@\n sample\n+changed in r${revision}\n`
+      const response = await sendToCEF<VcsFileDiffResponse>({ action: 'getVcsRevisionDiff', payload: { chatId: id, vcsType, revision, path, requestId } }, false)
+      if (!response.ok) throw new Error(response.error || 'Failed to load this change.')
+      return typeof response.data?.diff === 'string' ? response.data.diff : ''
+    },
+
+    getVcsOrigin: async (id: string, vcsType: VcsType, view: VcsOriginView, options?: { before?: string; limit?: number; revisions?: string[]; requestId?: string }): Promise<VcsOriginReply> => {
+      // Browser preview only: a main line, which has no origin to compare with.
+      if (!isCefContext()) return sanitizeVcsOriginReply({})!
+      const response = await sendToCEF({ action: 'getVcsOrigin', payload: { chatId: id, vcsType, view, ...options } }, false)
+      if (!response.ok) throw new Error(response.error || 'Failed to read where this line was copied from.')
+      const reply = sanitizeVcsOriginReply(cefPayloadOrRawResponse(response))
+      if (!reply) throw new Error('The branch origin reply was not understood.')
+      return reply
+    },
+
+    updateVcsWorkspace: async (id: string, vcsType: VcsType, requestId?: string): Promise<VcsUpdateResult> => {
+      if (!isCefContext()) return { ok: true, conflicts: false, revision: '42', output: '', error: '' }
+      const response = await sendToCEF({ action: 'updateVcsWorkspace', payload: { chatId: id, vcsType, requestId } }, false)
+      if (!response.ok) return { ok: false, conflicts: false, revision: '', output: '', error: response.error || 'Failed to update the working copy.' }
+      const data = cefPayloadOrRawResponse(response)
+      return isRecord(data)
+        ? { ok: true, conflicts: data.conflicts === true, revision: stringOr(data.revision), output: stringOr(data.output), error: '' }
+        : { ok: true, conflicts: false, revision: '', output: '', error: '' }
+    },
+
+    cancelVcsRequest: (requestId: string) => {
+      if (isCefContext() && requestId) void sendToCEF({ action: 'cancelVcsRequest', payload: { requestId } }).catch(() => undefined)
+    },
+
     commitVcsChanges: async (id: string, vcsType: VcsType, message: string, files: string[]): Promise<VcsCommitResult> => {
       if (isCefContext()) {
         const response = await sendToCEF<VcsCommitResult>({
@@ -1554,6 +1729,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
               } : s)),
             }))
             pendingRequestIdsByKey.delete(requestKey)
+            reportRefusal('The chat was not renamed', resp.error)
           }
         )
         return
@@ -1640,7 +1816,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return true
     },
 
-    setSessionProvider: async (id: string, providerId: string): Promise<boolean> => {
+    setSessionProvider: async (id: string, providerId: string, onFailure?: (reason: string) => void, allowUncertainDelivery = false): Promise<boolean> => {
       const requestedProviderId = normalizeCliProviderIdAlias(providerId)
       const current = get()
       if (!requestedProviderId || !current.providers.some((provider) => provider.id === requestedProviderId)) {
@@ -1658,10 +1834,15 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 
       const acp = current.acpBindingBySessionId[id]
       const cli = current.cliBindingBySessionId[id]
-      if (acp?.processing || (acp?.queuedPrompts?.length ?? 0) > 0 || acp?.pendingPermission || acp?.pendingUserInput || cli?.processing || cli?.turnState === 'busy') {
+      const lockReason = providerSwitchLockReason(acp, cli)
+      if (lockReason) {
+        onFailure?.(lockReason)
         return false
       }
       const defaults = sanitizeProviderChatDefaults(current.providerChatDefaults[requestedProviderId] ?? null)
+      const targetCapabilities = providerCapabilities(requestedProviderId, current.providers.find((provider) => provider.id === requestedProviderId))
+      const sourceProviderId = previousSession.providerId ?? DEFAULT_PROVIDER_ID
+      const sourceCapabilities = providerCapabilities(sourceProviderId, current.providers.find((provider) => provider.id === sourceProviderId))
       const optimisticUpdatedAt = new Date()
 
       const applyProvider = () => {
@@ -1675,8 +1856,8 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
               reasoningEffort: defaults.reasoningEffort,
               serviceTier: providerCapabilities(requestedProviderId).hasServiceTier ? defaults.serviceTier : '',
               serviceTierExplicit: providerCapabilities(requestedProviderId).hasServiceTier && defaults.serviceTier !== '',
-              approvalMode: defaults.approvalMode,
-              commandSafetyTier: defaults.commandSafetyTier,
+              // The chat keeps its own permission level (#754); only a level the provider cannot apply drops to Default.
+              commandSafetyTier: permissionTierForProvider(previousSession.commandSafetyTier, sourceCapabilities, targetCapabilities),
               smallModelMode: defaults.smallModelMode,
               updatedAt: optimisticUpdatedAt,
             } : s
@@ -1691,7 +1872,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         applyProvider()
         const response = await sendToCEF({
           action: 'setChatProvider',
-          payload: { chatId: id, providerId: requestedProviderId },
+          payload: { chatId: id, providerId: requestedProviderId, ...(allowUncertainDelivery ? { allowUncertainDelivery: true } : {}) },
           requestId,
         })
 
@@ -1719,6 +1900,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
             } : s),
           }))
           pendingRequestIdsByKey.delete(requestKey)
+          if (response.error) onFailure?.(response.error)
         }
 
         return false
@@ -1728,7 +1910,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return true
     },
 
-    setSessionModel: async (id: string, modelId: string): Promise<boolean> => {
+    setSessionModel: async (id: string, modelId: string, onFailure?: (reason: string) => void): Promise<boolean> => {
       const requestedModelId = modelId.trim()
       if (!isAllowedAcpModelId(requestedModelId)) {
         return false
@@ -1777,6 +1959,15 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         const requestKey = `setSessionModel:${id}`
         const requestId = createRequestId('setSessionModel')
         rememberPendingRequest(requestKey, requestId)
+        if (!acceptedModelByChatId.has(id)) {
+          acceptedModelByChatId.set(id, {
+            modelId: previousSession.modelId,
+            reasoningEffort: previousSession.reasoningEffort,
+            serviceTier: previousSession.serviceTier,
+            serviceTierExplicit: previousSession.serviceTierExplicit,
+            updatedAt: previousSession.updatedAt,
+          })
+        }
         pendingModelByChatId.set(id, {
           requestId,
           modelId: requestedModelId,
@@ -1806,23 +1997,36 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
               pendingModelByChatId.delete(id)
             }
             clearPendingRequest(requestKey, response.requestId)
+            acceptedModelByChatId.delete(id)
+          } else if (acceptedModelByChatId.has(id)) {
+            // A superseded change the backend accepted is the state a later refusal returns to.
+            acceptedModelByChatId.set(id, {
+              modelId: typeof response.data?.modelId === 'string' ? response.data.modelId : requestedModelId,
+              reasoningEffort: typeof response.data?.reasoningEffort === 'string' ? response.data.reasoningEffort : requestedReasoningEffort,
+              serviceTier: typeof response.data?.serviceTier === 'string' ? response.data.serviceTier : requestedServiceTier,
+              serviceTierExplicit: typeof response.data?.serviceTierExplicit === 'boolean' ? response.data.serviceTierExplicit : requestedServiceTierExplicit,
+              updatedAt: optimisticUpdatedAt,
+            })
           }
           return true
         }
 
         if (isLatestPendingRequest(requestKey, response.requestId)) {
+          const accepted = acceptedModelByChatId.get(id) ?? previousSession
+          acceptedModelByChatId.delete(id)
           set((state) => ({
             sessions: state.sessions.map((s) => s.id === id ? {
               ...s,
-              modelId: previousSession.modelId,
-              reasoningEffort: previousSession.reasoningEffort,
-              serviceTier: previousSession.serviceTier,
-              serviceTierExplicit: previousSession.serviceTierExplicit,
-              updatedAt: s.updatedAt === optimisticUpdatedAt ? previousSession.updatedAt : s.updatedAt,
+              modelId: accepted.modelId,
+              reasoningEffort: accepted.reasoningEffort,
+              serviceTier: accepted.serviceTier,
+              serviceTierExplicit: accepted.serviceTierExplicit,
+              updatedAt: s.updatedAt === optimisticUpdatedAt ? accepted.updatedAt : s.updatedAt,
             } : s),
           }))
           pendingRequestIdsByKey.delete(requestKey)
           if (pendingModelByChatId.get(id)?.requestId === response.requestId) pendingModelByChatId.delete(id)
+          reportRefusal('The model was not changed', response.error, onFailure)
         }
 
         return false
@@ -1850,18 +2054,22 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       })
       if (!isLatestPendingRequest(requestKey, response.requestId)) return response.ok
       clearPendingRequest(requestKey, response.requestId)
+      if (!response.ok) reportRefusal('The reviewer model was not changed', response.error)
       if (!response.ok || typeof response.data?.reviewerModelId !== 'string') return false
       set((state) => ({ sessions: state.sessions.map((session) => session.id === id ? { ...session, reviewerModelId: response.data!.reviewerModelId } : session) }))
       return true
     },
 
-    setSessionCodexOptions: async (id: string, options: { reasoningEffort?: string; serviceTier?: string; serviceTierExplicit?: boolean }): Promise<boolean> => {
+    setSessionCodexOptions: async (id: string, options: { reasoningEffort?: string; serviceTier?: string; serviceTierExplicit?: boolean }, onFailure?: (reason: string) => void): Promise<boolean> => {
       const previousSession = get().sessions.find((s) => s.id === id)
 	  if (!previousSession) {
         return false
       }
 	  const acp = get().acpBindingBySessionId[id]
-	  if (acp?.processing || acp?.lifecycleState === 'waitingPermission' || acp?.lifecycleState === 'waitingUserInput') return false
+	  if (acp?.processing || acp?.lifecycleState === 'waitingPermission' || acp?.lifecycleState === 'waitingUserInput') {
+	    reportRefusal(codexOptionsTitle(options), 'Reasoning and speed can change once the current turn finishes.', onFailure)
+	    return false
+	  }
 	  const providerId = previousSession.providerId ?? DEFAULT_PROVIDER_ID
 	  const codexProvider = providerId === CODEX_CLI_PROVIDER_ID
 	  const copilotProvider = providerId === COPILOT_CLI_PROVIDER_ID
@@ -1915,7 +2123,10 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           return true
         }
 
-        if (isLatestPendingRequest(requestKey, response.requestId)) pendingRequestIdsByKey.delete(requestKey)
+        if (isLatestPendingRequest(requestKey, response.requestId)) {
+          pendingRequestIdsByKey.delete(requestKey)
+          reportRefusal(codexOptionsTitle(options), response.error, onFailure)
+        }
         return false
       }
 
@@ -1980,6 +2191,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 
 		if (isLatestPendingRequest(requestKey, response.requestId)) {
 		  pendingRequestIdsByKey.delete(requestKey)
+		  if (response.error) reportAppFailure(response.error, '')
         }
 
         return false
@@ -2018,7 +2230,10 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 		clearPendingRequest(requestKey, response.requestId)
 		return true
 	  }
-	  if (isLatestPendingRequest(requestKey, response.requestId)) pendingRequestIdsByKey.delete(requestKey)
+	  if (isLatestPendingRequest(requestKey, response.requestId)) {
+		pendingRequestIdsByKey.delete(requestKey)
+		reportRefusal('The UAM agent was not changed', response.error)
+	  }
 	  return false
     },
 
@@ -2229,10 +2444,11 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         return Boolean(previousSession)
       }
 
+      const optimisticUpdatedAt = new Date()
       const applyMode = () => {
         set((state) => ({
           sessions: state.sessions.map((s) =>
-            s.id === id ? { ...s, smallModelMode: enabled, updatedAt: new Date() } : s
+            s.id === id ? { ...s, smallModelMode: enabled, updatedAt: optimisticUpdatedAt } : s
           ),
         }))
       }
@@ -2252,10 +2468,16 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           return true
         }
         if (isLatestPendingRequest(requestKey, response.requestId)) {
+          // Only this control's field rolls back; newer state from pushes or other controls stays.
           set((state) => ({
-            sessions: state.sessions.map((s) => (s.id === id ? previousSession : s)),
+            sessions: state.sessions.map((s) => (s.id === id ? {
+              ...s,
+              smallModelMode: previousSession.smallModelMode,
+              updatedAt: s.updatedAt === optimisticUpdatedAt ? previousSession.updatedAt : s.updatedAt,
+            } : s)),
           }))
           pendingRequestIdsByKey.delete(requestKey)
+          reportRefusal('Small-model mode was not changed', response.error)
         }
         return false
       }
@@ -2764,20 +2986,41 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       if (isCefContext()) {
         const requestKey = `sendAcpPrompt:${sessionId}`
         rememberPendingRequest(requestKey, actionErrorId)
+        const sendPayload = {
+          chatId: sessionId,
+          text: prompt,
+          markdownStoreFiles,
+          attachments,
+          goalMode: goalId != null,
+          goalId,
+          computerUseMode: Boolean(state.sessions.find((session) => session.id === sessionId)?.computerUseEnabled),
+          steerNow,
+        }
+        // A retry of the same unconfirmed submission keeps its ID, so native admits it once. Any change to what it
+        // carries (text including quoted references, skills, attachments, mode) makes it a new submission.
+        const payloadKey = JSON.stringify({ ...sendPayload, attachments: attachments.map((attachment) => attachment.id) })
+        const submissionToken = onStarted?.submissionToken
+        const unconfirmed = submissionToken ? unconfirmedSubmissionBySessionId.get(sessionId) : undefined
+        const retrying = unconfirmed !== undefined && unconfirmed.token === submissionToken && unconfirmed.payloadKey === payloadKey &&
+          !submissionLanded(sessionId, unconfirmed)
+        const sendIdempotencyId = retrying ? unconfirmed.id : createRequestId('send')
+        const turnSerialAtSend = retrying ? unconfirmed.turnSerial : (state.acpBindingBySessionId[sessionId]?.turnSerial ?? 0)
+        const earlierRequestIds = retrying ? unconfirmed.requestIds : []
         const response = await sendToCEF({
           action: 'sendAcpPrompt',
           requestId: actionErrorId,
-          payload: {
-            chatId: sessionId,
-            text: prompt,
-            markdownStoreFiles,
-            attachments,
-            goalMode: goalId != null,
-            goalId,
-            computerUseMode: Boolean(state.sessions.find((session) => session.id === sessionId)?.computerUseEnabled),
-            steerNow,
-          },
+          payload: { ...sendPayload, sendIdempotencyId },
         })
+        if (response.ok || !submissionToken) unconfirmedSubmissionBySessionId.delete(sessionId)
+        else unconfirmedSubmissionBySessionId.set(sessionId, { token: submissionToken, id: sendIdempotencyId, payloadKey,
+          requestIds: [...earlierRequestIds, actionErrorId], turnSerial: turnSerialAtSend })
+        // Native already admitted this submission under an earlier attempt: that attempt's row is this message.
+        const admittedOrigin = response.ok && isRecord(response.data) && response.data.duplicateSend === true &&
+          typeof response.data.originRequestId === 'string' ? response.data.originRequestId : undefined
+        if (admittedOrigin) {
+          try { onStarted?.onDuplicateOf?.(admittedOrigin, earlierRequestIds) }
+          catch { /* Presentation is optional and cannot change the native send outcome. */ }
+        }
         const ownsAttempt = isLatestPendingRequest(requestKey, actionErrorId)
         clearPendingRequest(requestKey, actionErrorId)
 		if (!get().sessions.some((session) => session.id === sessionId)) return false
@@ -3022,6 +3265,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
             queue[index].id !== entry.id || queue[index].revision !== entry.revision || queue[index].prepared)) return false
       if (isCefContext()) {
         const response = await sendToCEF({ action: 'resumeQueuedAcpPrompts', payload: { chatId: sessionId, expected } })
+        if (!response.ok && response.error) throw new Error(response.error)
         return response.ok
       }
       set((state) => ({ acpBindingBySessionId: { ...state.acpBindingBySessionId, [sessionId]: { ...state.acpBindingBySessionId[sessionId], queueHeld: false } } }))
@@ -3065,7 +3309,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return true
     },
 
-    discoverProviderModels: async (sessionId: string, providerId = '', workspaceDirectory = '', executionHostId = ''): Promise<boolean> => {
+    discoverProviderModels: async (sessionId: string, providerId = '', workspaceDirectory = '', executionHostId = '', automatic = false): Promise<boolean> => {
       if (!isCefContext()) return false
       const initial = get()
       const session = sessionId ? initial.sessions.find((entry) => entry.id === sessionId) : undefined
@@ -3104,9 +3348,9 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       const mayProjectReply = (state: AppState) => Boolean(preparedBinding && stillOwnsSelector(state) &&
         // A binding-only or identity-less selector must remain the exact object prepared by this call.
         ((owner && (native.sessionId || native.threadId)) || state.acpBindingBySessionId[sessionId] === preparedBinding))
-      const response = await sendToCEF<{ started?: boolean; pending?: boolean }>({
+      const response = await sendToCEF<{ started?: boolean; pending?: boolean; current?: boolean }>({
         action: 'discoverProviderModels',
-        payload: { chatId: sessionId, ...(providerId ? { providerId } : {}), ...(workspaceDirectory ? { workspaceDirectory } : {}), ...(executionHostId ? { executionHostId } : {}) },
+        payload: { chatId: sessionId, ...(providerId ? { providerId } : {}), ...(workspaceDirectory ? { workspaceDirectory } : {}), ...(executionHostId ? { executionHostId } : {}), ...(automatic ? { automatic: true } : {}) },
       })
       if (!response.ok) {
         if (sessionId) set((state) => mayProjectReply(state) ? ({
@@ -3123,7 +3367,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           [sessionId]: { ...state.acpBindingBySessionId[sessionId], modelsLoading: true },
         },
       }) : state)
-      return Boolean(response.data?.started || response.data?.pending)
+      return Boolean(response.data?.started || response.data?.pending || response.data?.current)
     },
 
     setAcpConfigOption: async (sessionId: string, configId: string, value: string): Promise<boolean> => {
@@ -3143,6 +3387,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           action: 'cancelAcpTurn',
           payload: { chatId: sessionId },
         })
+        if (!response.ok) reportRefusal('The turn was not cancelled', response.error)
         return response.ok
       }
 
@@ -3191,7 +3436,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return true
     },
 
-    resolveAcpPermission: async (sessionId: string, requestId: string, optionId: string | 'cancelled'): Promise<boolean> => {
+    resolveAcpPermission: async (sessionId: string, requestId: string, optionId: string | 'cancelled'): Promise<boolean | string> => {
       if (isCefContext()) {
         const response = await sendToCEF({
           action: 'resolveAcpPermission',
@@ -3202,7 +3447,8 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
             cancelled: optionId === 'cancelled',
           },
         })
-        return response.ok
+        // A refusal carries the backend's reason so the card can show what happened.
+        return response.ok || response.error || false
       }
 
       set((state) => ({
@@ -3307,12 +3553,31 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return true
     },
 
+    // Always through the bridge: its dev stub redacts the value. The value is never written to state.
+    submitSecretRequest: async (sessionId: string, requestId: string, submission: SecretSubmission) => {
+      const response = await sendToCEF({ action: 'submitSecretRequest', payload: { chatId: sessionId, requestId, ...submission } }, false)
+      return response.ok ? { ok: true } : { ok: false, error: response.error || 'The secret was not delivered.' }
+    },
+
+    forgetSavedSecret: async (sessionId: string, requestId: string) => {
+      const response = await sendToCEF({ action: 'forgetSavedSecret', payload: { chatId: sessionId, requestId } }, false)
+      return response.ok ? { ok: true } : { ok: false, error: response.error || 'The saved secret was not forgotten.' }
+    },
+
+    treatRemoteStopAsStopped: async (sessionId: string): Promise<boolean> => {
+      if (!isCefContext()) return false
+      const response = await sendToCEF({ action: 'treatRemoteStopAsStopped', payload: { chatId: sessionId } })
+      if (!response.ok) reportRefusal('Treat as stopped did not finish', response.error)
+      return response.ok
+    },
+
     stopAcpSession: async (sessionId: string, purpose: 'interrupt' | 'timeout' = 'interrupt'): Promise<boolean> => {
       if (isCefContext()) {
         const response = await sendToCEF({
           action: 'stopAcpSession',
           payload: purpose === 'timeout' ? { chatId: sessionId, purpose } : { chatId: sessionId },
         })
+        if (!response.ok) reportRefusal('The runtime was not stopped', response.error)
         return response.ok
       }
 

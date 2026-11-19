@@ -716,3 +716,122 @@ UAM_TEST(NativeRefreshEmptyMetadataCandidateBootstrapsOnlyValidObservedTime)
 		UAM_ASSERT_EQ(candidate.updated_at, valid ? observed : std::string{});
 	}
 }
+
+UAM_TEST(NativeTranscriptSyncKeepsPublishedHtmlViewsOnTheirTurn)
+{
+	const MessageBlock view{"html_view", "<p>chart</p>", "", "html-view:a", "Sales"};
+	const MessageBlock answer{"assistant_text", "Done", "", "", ""};
+	const auto views_in = [](const Message& message) { return std::ranges::count(message.blocks, std::string("html_view"), &MessageBlock::type); };
+	ChatSession local;
+	local.id = "html-view-sync";
+	local.provider_id = "copilot-cli";
+	local.messages_loaded = true;
+	Message question{MessageRole::User, "Show sales"};
+	question.created_at = "2026-11-02T00:00:00Z";
+	Message reply{MessageRole::Assistant, "Done"};
+	reply.created_at = "2026-11-02T00:00:05Z";
+	reply.blocks = {view, answer};
+	local.messages = {question, reply};
+	Message follow_up{MessageRole::User, "Thanks"};
+	follow_up.created_at = "2026-11-02T00:01:00Z";
+	Message later{MessageRole::Assistant, "Welcome"};
+	later.created_at = "2026-11-02T00:01:05Z";
+
+	{
+		// The same reply with native blocks, and native found more messages: the view stays in place above the text.
+		ChatSession candidate = local;
+		Message native_reply = reply;
+		native_reply.blocks = {MessageBlock{"thought", "thinking", "", "", ""}, answer};
+		UAM_ASSERT(ChatHistorySyncService().BuildNativeTranscriptCandidate(candidate, {question, native_reply, follow_up, later}));
+		UAM_ASSERT_EQ(candidate.messages.size(), std::size_t{4});
+		UAM_ASSERT_EQ(candidate.messages[1].blocks.size(), std::size_t{3});
+		UAM_ASSERT(candidate.messages[1].blocks[0] == view);
+		UAM_ASSERT_EQ(candidate.messages[1].blocks[1].type, std::string("thought"));
+		UAM_ASSERT_EQ(views_in(candidate.messages[3]), 0);
+
+		// A second sync of the same transcript neither duplicates nor drops it.
+		ChatSession again = candidate;
+		UAM_ASSERT(ChatHistorySyncService().BuildNativeTranscriptCandidate(again, {question, native_reply, follow_up, later}));
+		UAM_ASSERT_EQ(views_in(again.messages[1]), 1);
+		UAM_ASSERT_EQ(again.messages.size(), std::size_t{4});
+	}
+	{
+		// The export split and reworded the reply, so no row matches: the view moves to the first reply of its turn.
+		ChatSession candidate = local;
+		Message first{MessageRole::Assistant, "Working"};
+		first.created_at = "2026-11-02T00:00:04Z";
+		Message second{MessageRole::Assistant, "Done, with detail"};
+		second.created_at = "2026-11-02T00:00:06Z";
+		UAM_ASSERT(ChatHistorySyncService().BuildNativeTranscriptCandidate(candidate, {question, first, second, follow_up, later}));
+		UAM_ASSERT_EQ(views_in(candidate.messages[1]), 1);
+		UAM_ASSERT_EQ(views_in(candidate.messages[2]), 0);
+		UAM_ASSERT_EQ(views_in(candidate.messages[4]), 0);
+	}
+	{
+		// The export has no reply for that turn: the view takes the next reply and adds no row, so the chat stays in step.
+		ChatSession candidate = local;
+		const std::vector<Message> export_rows = {question, follow_up, later};
+		UAM_ASSERT(ChatHistorySyncService().BuildNativeTranscriptCandidate(candidate, export_rows));
+		UAM_ASSERT_EQ(candidate.messages.size(), std::size_t{3});
+		UAM_ASSERT_EQ(candidate.persisted_message_count, std::size_t{3});
+		UAM_ASSERT_EQ(views_in(candidate.messages[2]), 1);
+
+		// The same export syncs again without refusal, duplication or a moved card.
+		UAM_ASSERT(ChatHistorySyncService().BuildNativeTranscriptCandidate(candidate, export_rows));
+		UAM_ASSERT_EQ(candidate.messages.size(), std::size_t{3});
+		UAM_ASSERT_EQ(views_in(candidate.messages[2]), 1);
+
+		// A later UAM turn is local first; the export that catches up still merges, with its native details.
+		Message next_question{MessageRole::User, "Again"};
+		next_question.created_at = "2026-11-02T00:02:00Z";
+		next_question.origin_request_id = "origin-next";
+		Message next_reply{MessageRole::Assistant, "Again done"};
+		next_reply.created_at = "2026-11-02T00:02:05Z";
+		candidate.messages.push_back(next_question);
+		candidate.messages.push_back(next_reply);
+		Message native_question = next_question;
+		native_question.origin_request_id.reset();
+		Message native_reply = next_reply;
+		native_reply.thoughts = "native thought";
+		ToolCall native_tool;
+		native_tool.id = "native-tool";
+		native_reply.tool_calls = {native_tool};
+		UAM_ASSERT(ChatHistorySyncService().BuildNativeTranscriptCandidate(candidate, {question, follow_up, later, native_question, native_reply}));
+		UAM_ASSERT_EQ(candidate.messages.size(), std::size_t{5});
+		UAM_ASSERT_EQ(views_in(candidate.messages[2]), 1);
+		UAM_ASSERT(candidate.messages[3].origin_request_id == next_question.origin_request_id);
+		UAM_ASSERT_EQ(candidate.messages[4].thoughts, std::string("native thought"));
+		UAM_ASSERT_EQ(candidate.messages[4].tool_calls.size(), std::size_t{1});
+	}
+	{
+		// Known limit: a card moved to a later reply stays there when its own reply appears, once and without a new row.
+		ChatSession candidate = local;
+		UAM_ASSERT(ChatHistorySyncService().BuildNativeTranscriptCandidate(candidate, {question, follow_up, later}));
+		Message arrived{MessageRole::Assistant, "Done, from native"};
+		arrived.created_at = "2026-11-02T00:00:06Z";
+		UAM_ASSERT(ChatHistorySyncService().BuildNativeTranscriptCandidate(candidate, {question, arrived, follow_up, later}));
+		UAM_ASSERT_EQ(candidate.messages.size(), std::size_t{4});
+		UAM_ASSERT_EQ(views_in(candidate.messages[1]), 0);
+		UAM_ASSERT_EQ(views_in(candidate.messages[3]), 1);
+	}
+	{
+		// Native has no reply anywhere yet: local history and its metadata stay, native rows are withheld, and the view
+		// returns to its turn once a reply exists.
+		ChatSession candidate = local;
+		candidate.updated_at = "2026-11-02T00:09:00Z";
+		candidate.persisted_message_count = 2;
+		candidate.persisted_messages_digest = "saved-digest";
+		UAM_ASSERT(ChatHistorySyncService().BuildNativeTranscriptCandidate(candidate, {question, follow_up}));
+		UAM_ASSERT_EQ(candidate.messages.size(), std::size_t{2});
+		UAM_ASSERT_EQ(candidate.messages[1].content, std::string("Done"));
+		UAM_ASSERT_EQ(views_in(candidate.messages[1]), 1);
+		UAM_ASSERT_EQ(candidate.updated_at, std::string("2026-11-02T00:09:00Z"));
+		UAM_ASSERT_EQ(candidate.persisted_messages_digest, std::string("saved-digest"));
+		Message arrived{MessageRole::Assistant, "Done, from native"};
+		arrived.created_at = "2026-11-02T00:00:06Z";
+		UAM_ASSERT(ChatHistorySyncService().BuildNativeTranscriptCandidate(candidate, {question, arrived, follow_up, later}));
+		UAM_ASSERT_EQ(candidate.messages.size(), std::size_t{4});
+		UAM_ASSERT_EQ(views_in(candidate.messages[1]), 1);
+		UAM_ASSERT_EQ(views_in(candidate.messages[3]), 0);
+	}
+}

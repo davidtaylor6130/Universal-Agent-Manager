@@ -46,6 +46,12 @@ remote_root="$app_root/Contents/Resources/remote"
 [[ -f "$packaged_ui/index.html" ]]
 [[ -x "$cef_framework" ]]
 [[ -x "$cef_helper" ]]
+# The sandboxed helpers load the framework at runtime; a linked framework would load before the sandbox.
+helper_links=$(otool -L "$cef_helper")
+if [[ "$helper_links" == *"Chromium Embedded Framework"* ]]; then
+    echo "CEF helper links the CEF framework instead of loading it after entering the sandbox." >&2
+    exit 1
+fi
 for remote_file in \
     "$remote_root/uam-runner" \
     "$remote_root/uam-runner.sha256" \
@@ -62,6 +68,12 @@ for remote_file in \
 do
     [[ -f "$remote_file" ]]
 done
+# Gemini Plan and goal-review launches refuse to start without UAM's policy beside the app resources.
+gemini_policy="$app_root/Contents/Resources/gemini-plan-ceiling.toml"
+if ! cmp -s "$gemini_policy" "$(cd "$(dirname "$0")/.." && pwd -P)/assets/providers/gemini-plan-ceiling.toml"; then
+    echo "Packaged macOS app is missing the current Gemini Plan policy: $gemini_policy" >&2
+    exit 1
+fi
 for remote_runner in \
     "$remote_root/uam-runner" \
     "$remote_root/linux-arm64/uam-runner" \
@@ -85,6 +97,13 @@ do
     [[ "$(tr -d '[:space:]' < "$version_file")" == "$native_runner_version" ]]
 done
 codesign --verify --deep --strict "$app_root"
+# The companion transport must be the pinned, hash-checked Caddy release from CMakeLists.txt.
+pinned_caddy=$(sed -n 's/^ *set(UAM_CADDY_VERSION "\(.*\)")$/\1/p' "$(dirname "$prune_clones")/../CMakeLists.txt")
+packaged_caddy=$("$app_root/Contents/Resources/companion/caddy" version)
+if [[ -z "$pinned_caddy" || "$packaged_caddy" != "v$pinned_caddy "* ]]; then
+    echo "Packaged Caddy '$packaged_caddy' is not the pinned v$pinned_caddy." >&2
+    exit 1
+fi
 
 if [[ -n "$expected_ui_dist" ]]; then
     diff -qr "$expected_ui_dist" "$packaged_ui"
@@ -110,10 +129,24 @@ if ! [[ "$gui_pid" =~ ^[0-9]+$ ]]; then
     echo "Packaged macOS app supervisor did not launch the GUI." >&2
     exit 1
 fi
-sleep 8
-
+# The UI logs this after its first native bridge reply, so it proves the renderer ran and the bridge answered.
+bridge_marker="[frontend] [UI startup] Initial state loaded through the native bridge."
+for _ in {1..60}; do
+    grep -qF "$bridge_marker" "$data_root/uam.log" 2>/dev/null && break
+    kill -0 "$gui_pid" 2>/dev/null || break
+    sleep 1
+done
 if ! kill -0 "$app_pid" 2>/dev/null || ! kill -0 "$gui_pid" 2>/dev/null; then
     echo "Packaged macOS app or GUI exited during startup." >&2
+    exit 1
+fi
+if ! grep -qF "$bridge_marker" "$data_root/uam.log" 2>/dev/null; then
+    echo "Packaged macOS UI did not complete a native bridge round-trip." >&2
+    exit 1
+fi
+renderer_args=$(/bin/ps -axww -o args= | grep -F "$app_root/Contents/Frameworks/" | grep -F -- "--type=renderer" || true)
+if [[ -z "$renderer_args" || "$renderer_args" != *"--seatbelt-client="* || "$renderer_args" == *"--no-sandbox"* ]]; then
+    echo "Packaged macOS renderer is not running inside the Chromium sandbox." >&2
     exit 1
 fi
 

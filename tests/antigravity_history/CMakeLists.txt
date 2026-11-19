@@ -71,10 +71,10 @@ enable_testing()
 add_test(NAME antigravity_native_history_fixtures COMMAND uam_antigravity_history_tests)
 
 # Header-only CEF dependency at the exact commit used by the desktop's pinned
-# 146.0.10+g8219561 package. SOURCE_SUBDIR deliberately has no CMake project:
+# 156.0.28+g57389f0 package. SOURCE_SUBDIR deliberately has no CMake project:
 # no CEF binary, wrapper, desktop or helper target is configured or compiled.
 FetchContent_Declare(uam_cef_headers
-  URL https://codeload.github.com/chromiumembedded/cef/tar.gz/82195616d8405e6081a0d90924707b82aa9e4141
+  URL https://codeload.github.com/chromiumembedded/cef/tar.gz/57389f04a61ab0e9603d9f96602843d0e08bb11c
   SOURCE_SUBDIR uam_headers_only_no_project
   DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 FetchContent_MakeAvailable(uam_cef_headers)
@@ -109,9 +109,9 @@ endif()
 # compatibility tag declared by this CEF commit, without fetching Chromium.
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/chromium-headers/net/base")
 file(DOWNLOAD
-  "https://raw.githubusercontent.com/chromium/chromium/refs/tags/146.0.7680.179/net/base/net_error_list.h"
+  "https://raw.githubusercontent.com/chromium/chromium/refs/tags/156.0.8078.88/net/base/net_error_list.h"
   "${CMAKE_CURRENT_BINARY_DIR}/chromium-headers/net/base/net_error_list.h"
-  EXPECTED_HASH SHA256=8d849fe28be03bfdb9345204ad06c6371f561d93b3e00f902b1f31126f5017e5
+  EXPECTED_HASH SHA256=8647b49488fbd0856ff03056c459ddfd115a89533637ddb8037637e9c7def243
   TLS_VERIFY ON
   STATUS UAM_CEF_NET_ERROR_DOWNLOAD)
 list(GET UAM_CEF_NET_ERROR_DOWNLOAD 0 UAM_CEF_NET_ERROR_DOWNLOAD_RESULT)

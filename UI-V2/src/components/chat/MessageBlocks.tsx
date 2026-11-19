@@ -1,4 +1,5 @@
 import { InlineSubagentGroup } from './InlineSubagentGroup'
+import { HtmlViewCard } from './HtmlViewCard'
 import { groupInlineSubagents, isInlineSubagentLaunch, managedLaunchRunId } from './inlineSubagents'
 // Message block renderers: thinking blocks, plan blocks, goal review,
 // persisted message content, attachment list, and turn timeline.
@@ -668,6 +669,7 @@ export function PersistedMessageBlocksContent({
             onSelectTool={id => onSelectTool(message.id, id)} />} />
         if (launchesOnly) return null
         const block = entry.entry
+        if (block.type === 'html_view') return <HtmlViewCard key={`html-view-${block.requestId}`} viewId={block.requestId} title={block.title} html={block.text} />
         if (block.type === 'context_compaction_summary') return null
         if (block.type === 'context_compaction' || block.type === 'context_compaction_interrupted') return <CompactionSeparator key={`compaction-${index}`} summary={block.text} tokensBefore={block.tokensBefore} tokensAfter={block.tokensAfter} interrupted={block.type === 'context_compaction_interrupted'} />
         if (block.type === 'assistant_text') {
@@ -716,6 +718,8 @@ export function PersistedMessageBlocksContent({
         if (block.type === 'permission_request' || block.type === 'user_input_request') {
           // Recorded (already resolved) requests are work-trace evidence; pending ones render live elsewhere.
           if (!expanded) return null
+          // Permission events store no text of their own; the linked tool row already shows the action.
+          if (block.type === 'permission_request' && !block.text && block.toolCallId && toolById.has(block.toolCallId)) return null
           return <div key={`recorded-request-${block.requestId}-${index}`} role="note" className="conversation-trace__text">
             <strong>{block.type === 'permission_request' ? 'Recorded permission request' : 'Recorded question'}</strong>
             <MarkdownContent content={block.text || 'Details are unavailable in this stored history.'} />
@@ -983,7 +987,7 @@ export const TurnTimelineContent = memo(function TurnTimelineContent({
   waitStaleReason?: string
   waitSeconds?: number
   onSelectTool: (toolId: string) => void
-  onResolvePermission: (requestId: string, optionId: string) => Promise<boolean>
+  onResolvePermission: (requestId: string, optionId: string) => Promise<boolean | string>
   onCancelTurn: () => void
   onStopRuntime: () => void
   sourceChatId?: string
@@ -1036,6 +1040,7 @@ export const TurnTimelineContent = memo(function TurnTimelineContent({
           onSelectTool={onSelectTool} renderNative={tools => <NativeSubagentTools active={active} tools={tools} sourceChatId={sourceChatId}
             onSelectTool={onSelectTool} />} />
         const event = entry.entry
+        if (event.type === 'html_view') return <HtmlViewCard key={`html-view-${event.requestId}`} viewId={event.requestId} title={event.title} html={event.text} />
         if (event.type === 'context_compaction_summary') return null
         if (event.type === 'context_compaction' || event.type === 'context_compaction_interrupted') return <CompactionSeparator key={`compaction-${index}`} summary={event.text} tokensBefore={event.tokensBefore} tokensAfter={event.tokensAfter} interrupted={event.type === 'context_compaction_interrupted'} />
         if (event.type === 'assistant_text') {

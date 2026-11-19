@@ -263,6 +263,43 @@ For a distributable build:
 The repository's local ad-hoc signature is suitable for development only. It is
 not an enterprise distribution identity.
 
+#### Per-user helper install
+
+Each MCP start runs the nested companion from a per-user copy at
+`<data folder>/Computer Use/UAM Computer Use.app`. Beside the app, the folder
+holds `.receipt` (hashes of the embedded executable and `Info.plist`) and
+`.install.lock`; `.previous`, `.receipt.tmp` and one `.staging-<pid>` copy exist
+only while an install runs. The lock is an `flock` on an empty file, so the kernel
+releases it when its owner exits and a leftover file is never a stale lock.
+
+A start reuses the installed app whenever the receipt matches, so an unchanged
+helper is never copied again. Only a changed embedded helper is copied, signed
+and swapped in, by a detached installer process (`--uam-computer-use-install`,
+in its own session) that installs only the bundle it runs from. The MCP start
+waits for it, but a provider CLI that kills its MCP server on a startup timeout
+cannot interrupt the copy and make later starts copy again. The installer
+removes its own copy on every failure. Copies are only made under the lock, so
+while holding it the installer removes every `.staging-<digits>` directory
+(never following links) before it checks the receipt. A start that sees such
+leftovers beside a matching receipt starts the installer just to remove them,
+without waiting; the CLI-owned MCP process never deletes anything itself.
+
+Known limits:
+
+- Every UAM build embeds its own executable, and the folder has one install
+  slot. Builds that share one data folder (an installed release and a
+  development build) replace each other's copy when they alternate.
+- On an APFS data folder, each copy is a clone of the embedded bundle. Finder,
+  `du` and macOS Storage settings count the full ~300 MB for every copy, while
+  the real disk use is far smaller and deleting a copy frees only its unshared
+  blocks. On another volume, each copy is a full copy.
+- Builds from before this change still copy inside the MCP process; their
+  abandoned copies are removed by the next start of a current build.
+
+`tests/computer_use_launch_macos.py` exercises a single install, reuse, the
+leftover sweep, link safety and a caller killed mid-install against a
+packaged app.
+
 ### Windows
 
 Windows does not use the macOS Screen Recording and Accessibility permission

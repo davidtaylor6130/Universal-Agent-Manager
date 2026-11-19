@@ -6,6 +6,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { EMPTY_STARTUP_NATIVE_IMPORT_STATUS, type StartupNativeImportPage } from '../../types/startupNativeImports'
 import { SUPPORTED_CLI_PROVIDER_IDS, fallbackProviderForId } from '../../utils/providerMetadata'
 import { APP_FAILURE_EVENT, type AppFailure } from '../../utils/appFailure'
+import { sanitizeCppSettings } from '../../store/cpp/sanitizers'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 const page = (phase: StartupNativeImportPage['phase'] = 'scanning', generation = 'explicit-1'): StartupNativeImportPage => ({
@@ -25,7 +26,7 @@ afterEach(() => window.removeEventListener(APP_FAILURE_EVENT, collectFailure))
 describe('Chat Data import filters', () => {
   it('saves cleaned rules, enables Save only when changed and keeps the draft when saving fails', async () => {
     const save = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true)
-    useAppStore.setState({ nativeImportExcludedTitlePrefixes: ['[automation]'], nativeImportExcludedDirectories: [], setNativeImportFilters: save })
+    useAppStore.setState({ nativeImportExcludedTitlePrefixes: ['[automation]'], nativeImportExcludedDirectories: [], nativeImportStartupMaxAgeDays: 0, setNativeImportFilters: save })
     const filterHost = document.createElement('div'); document.body.append(filterHost)
     const filterRoot = createRoot(filterHost)
     try {
@@ -43,11 +44,40 @@ describe('Chat Data import filters', () => {
       type('native-import-directories', ' C:\\scratch \n\nC:\\scratch\n/home/you/tmp')
       expect(saveButton().disabled).toBe(false)
       await act(async () => saveButton().click())
-      expect(save).toHaveBeenLastCalledWith({ titlePrefixes: ['[automation]'], directories: ['C:\\scratch', '/home/you/tmp'] })
+      expect(save).toHaveBeenLastCalledWith({ titlePrefixes: ['[automation]'], directories: ['C:\\scratch', '/home/you/tmp'], startupMaxAgeDays: 0 })
       expect(failures.at(-1)).toMatchObject({ message: 'Import filters could not be saved.', detail: expect.stringContaining('Your changes are kept') })
       expect(filterHost.querySelector<HTMLTextAreaElement>('#native-import-directories')!.value).toContain('/home/you/tmp')
       await act(async () => saveButton().click())
       expect(save).toHaveBeenCalledTimes(2)
+    } finally { act(() => filterRoot.unmount()); filterHost.remove() }
+  })
+
+  it('saves the startup age limit and blocks an invalid one', async () => {
+    const save = vi.fn().mockResolvedValue(true)
+    useAppStore.setState({ nativeImportExcludedTitlePrefixes: [], nativeImportExcludedDirectories: [], nativeImportStartupMaxAgeDays: 30, setNativeImportFilters: save })
+    const filterHost = document.createElement('div'); document.body.append(filterHost)
+    const filterRoot = createRoot(filterHost)
+    try {
+      act(() => filterRoot.render(<NativeImportFilters />))
+      const saveButton = () => Array.from(filterHost.querySelectorAll<HTMLButtonElement>('button')).find((item) => item.textContent === 'Save filters')!
+      const field = filterHost.querySelector<HTMLInputElement>('#native-import-startup-age')!
+      const type = (value: string) => act(() => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(field, value)
+        field.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+      expect(field.value).toBe('30')
+      expect(saveButton().disabled).toBe(true)
+      type('4000')
+      expect(saveButton().disabled).toBe(true)
+      expect(filterHost.textContent).toContain('from 0 to 3650')
+      expect(field.getAttribute('aria-describedby')).toBe('native-import-startup-age-hint native-import-startup-age-error')
+      expect(filterHost.querySelector('#native-import-startup-age-error')?.textContent).toContain('from 0 to 3650')
+      type('0')
+      expect(field.getAttribute('aria-describedby')).toBe('native-import-startup-age-hint')
+      expect(filterHost.querySelector('#native-import-startup-age-hint')?.textContent).toBe('Older sessions stay in Discover histories. 0 = no limit.')
+      expect(saveButton().disabled).toBe(false)
+      await act(async () => saveButton().click())
+      expect(save).toHaveBeenLastCalledWith({ titlePrefixes: [], directories: [], startupMaxAgeDays: 0 })
     } finally { act(() => filterRoot.unmount()); filterHost.remove() }
   })
 
@@ -70,6 +100,15 @@ describe('Chat Data import filters', () => {
       expect(field.value).toBe('/srv/draft')
     } finally { act(() => filterRoot.unmount()); filterHost.remove() }
     expect(dirty).toHaveBeenLastCalledWith(false)
+  })
+})
+
+describe('Startup import age limit default', () => {
+  it('uses 30 days when the app sent no usable value and keeps a chosen 0', () => {
+    expect(sanitizeCppSettings(null).nativeImportStartupMaxAgeDays).toBe(30)
+    expect(sanitizeCppSettings({}).nativeImportStartupMaxAgeDays).toBe(30)
+    expect(sanitizeCppSettings({ nativeImportStartupMaxAgeDays: 'soon' }).nativeImportStartupMaxAgeDays).toBe(30)
+    expect(sanitizeCppSettings({ nativeImportStartupMaxAgeDays: 0 }).nativeImportStartupMaxAgeDays).toBe(0)
   })
 })
 

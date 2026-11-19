@@ -2,6 +2,7 @@
 #include "common/provider/codex/cli/codex_acp_message_handlers.h"
 #include "app/agent_run_scheduler.h"
 #include "common/runtime/acp/acp_goal_loop.h"
+#include "common/paths/path_utils.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 
@@ -618,6 +619,8 @@ void HandleCodexPendingPermission(AppState& app, AcpSessionState& session, ChatS
 		pending.content = JsonDiagnosticStringValueOr(params, "command", JsonDiagnosticStringValue(params, "reason"));
 		if (const nlohmann::json* command = uam::nlohmann_json::FindStringField(params, "command"))
 			pending.execution_command = command->get_ref<const std::string&>();
+		if (const nlohmann::json* cwd = uam::nlohmann_json::FindStringField(params, "cwd"))
+			pending.read_scope.cwd = uam::paths::PathFromUtf8(cwd->get_ref<const std::string&>());
 		const nlohmann::json decisions = JsonArrayValue(params, "availableDecisions");
 		if (decisions.is_array())
 		{
@@ -637,6 +640,13 @@ void HandleCodexPendingPermission(AppState& app, AcpSessionState& session, ChatS
 		pending.title = "File change approval";
 		pending.kind = uam::acp_tool_items::kFileChange;
 		pending.content = JsonDiagnosticStringValueOr(params, "reason", JsonDiagnosticStringValue(params, "grantRoot"));
+		// The approval names only the item; its observed changes say which files it writes.
+		const auto item = std::ranges::find(session.tool_calls, pending.tool_call_id, &AcpToolCallState::id);
+		if (item != session.tool_calls.end())
+		{
+			const nlohmann::json observed = nlohmann::json::parse(item->content, nullptr, false);
+			if (observed.is_object() && observed.contains("changes")) pending.provider_input_json = nlohmann::json{{"changes", observed["changes"]}}.dump();
+		}
 	}
 	else
 	{
@@ -652,6 +662,7 @@ void HandleCodexPendingPermission(AppState& app, AcpSessionState& session, ChatS
 	}
 	pending.options.push_back(AcpPermissionOptionState{uam::acp_permissions::kCancelledOptionId, "Cancel", uam::acp_permissions::kCancelOptionKind});
 
+	ApplyCommandSafetyDecision(app, chat, pending); // Before replay: saved responses are checked against the captured scope.
 	if (ReplayPersistedInteractionResponseIfMatched(app, session, chat, message, &pending)) return;
 
 	if (!pending.tool_call_id.empty())
@@ -663,7 +674,6 @@ void HandleCodexPendingPermission(AppState& app, AcpSessionState& session, ChatS
 		tracked_tool_call.content = pending.content;
 	}
 	AppendPermissionTurnEventIfNeeded(session, pending.request_id_json, pending.tool_call_id);
-	ApplyCommandSafetyDecision(app, chat, pending);
 	QueueAcpPermission(app, session, chat, std::move(pending));
 }
 
@@ -911,6 +921,7 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 			{
 				goal->native_binding.reset();
 				goal->last_diagnostic = "native_goal_binding_replaced";
+				goal->last_decision_source = kDecisionSourceFallback;
 			}
 			session.goal_resume_suppressed = true;
 			SaveChatQuietly(app, chat);
@@ -939,6 +950,7 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 			{
 				goal->native_binding.reset();
 				goal->last_diagnostic = "native_goal_cleared";
+				goal->last_decision_source = kDecisionSourceFallback;
 			}
 			session.codex_goal_owner = {};
 			SaveChatQuietly(app, chat);
@@ -1026,6 +1038,7 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 			session.turn_user_message_index = -1;
 			session.turn_assistant_message_index = -1;
 			session.turn_serial += 1;
+			chat.last_stop_reason.clear(); // A new turn must not inherit the previous turn's stop reason.
 			session.goal_command_revision = chat.goal_command_revision;
 			session.turn_started_time_s = GetAppTimeSeconds();
 			session.last_runtime_activity_time_s = session.turn_started_time_s;
@@ -1131,6 +1144,10 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 			if (turn.contains("id") && turn["id"].is_string())
 				ManagedParentContinuationService::ObserveNormalCompletion(app, session, chat, turn["id"].get<std::string>());
 			RecordCompletedAcpPromptRecoveries(app, session, chat);
+			// codex_turn_id follows every turn/started, including a native goal's own turn. Only the turn that this
+			// prompt's turn/start reply named, in this UAM turn, is the prompt's completion.
+			if (!session.codex_origin_rpc_turn_id.empty() && JsonDiagnosticStringValue(turn, "id") == session.codex_origin_rpc_turn_id &&
+			    session.codex_origin_rpc_turn_serial == session.turn_serial) (void)ConfirmTurnInputReceived(session, chat);
 		}
 		CompletePromptTurnAndHandleGoalLoop(app, session, chat, kAcpLifecycleReady, browser, !completed_cancelled_turn);
 		StartPendingCodexNativeGoalTurn(app, session, chat);
@@ -1156,7 +1173,7 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 		{
 			uam::PushStreamToken(browser, chat.id, session.current_assistant_message_index, appended);
 		}
-		ScheduleChatSave(app, chat, 0.5);
+		ScheduleChatSave(app, chat, 0.5, true);
 		return;
 	}
 	if (method == uam::acp_methods::kItemReasoningTextDelta)
@@ -1164,7 +1181,7 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 		const std::string delta = JsonDiagnosticStringValue(params, "delta");
 		if (AppendCodexReasoningThought(chat, session, JsonDiagnosticStringValue(params, "itemId"), "Reasoning", delta, JsonIntValueOr(params, "contentIndex", -1), true))
 		{
-			ScheduleChatSave(app, chat, 0.5);
+			ScheduleChatSave(app, chat, 0.5, true);
 		}
 		return;
 	}
@@ -1173,7 +1190,7 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 		const std::string delta = JsonDiagnosticStringValue(params, "delta");
 		if (AppendCodexReasoningThought(chat, session, JsonDiagnosticStringValue(params, "itemId"), "Summary", delta, JsonIntValueOr(params, "summaryIndex", -1), true))
 		{
-			ScheduleChatSave(app, chat, 0.5);
+			ScheduleChatSave(app, chat, 0.5, true);
 		}
 		return;
 	}
@@ -1289,7 +1306,7 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 			tool_call.content += JsonDiagnosticStringValue(params, "delta");
 			AppendToolTurnEventIfNeeded(session, item_id);
 			(void)SyncAcpToolCallsToAssistantMessage(chat, session, false);
-			ScheduleChatSave(app, chat, 0.5);
+			ScheduleChatSave(app, chat, 0.5, true);
 		}
 		return;
 	}

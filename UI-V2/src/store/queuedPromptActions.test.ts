@@ -22,6 +22,88 @@ beforeEach(() => {
 })
 
 describe('queued prompt identity', () => {
+  const sentIdempotencyId = () => ((bridge.send.mock.lastCall as unknown as [{ payload: { sendIdempotencyId: string } }])[0]).payload.sendIdempotencyId
+  const sentRequestId = () => ((bridge.send.mock.lastCall as unknown as [{ requestId: string }])[0]).requestId
+  const as = (submissionToken: string) => Object.assign(vi.fn(), { submissionToken })
+  const lost = { ok: false, error: 'Connection lost. Check the chat before retrying; the action may have reached UAM.' }
+
+  it('keeps one idempotency ID for retries of one unconfirmed submission and reports the admitted attempt', async () => {
+    bridge.cef = true
+    useAppStore.setState({ sessions: [{ id: 'chat' } as never] })
+    bridge.send.mockResolvedValue(lost)
+    await useAppStore.getState().sendAcpPrompt('chat', 'continue', [], false, as('submission-1'))
+    const first = sentIdempotencyId()
+    const firstRequest = sentRequestId()
+    await useAppStore.getState().sendAcpPrompt('chat', 'continue', [], false, as('submission-1'))
+    expect(sentIdempotencyId()).toBe(first)
+    const secondRequest = sentRequestId()
+    bridge.send.mockResolvedValue({ ok: true, data: { duplicateSend: true, originRequestId: firstRequest } })
+    const observer = Object.assign(vi.fn(), { onDuplicateOf: vi.fn(), submissionToken: 'submission-1' })
+    await expect(useAppStore.getState().sendAcpPrompt('chat', 'continue', [], false, observer)).resolves.toBe(true)
+    expect(sentIdempotencyId()).toBe(first)
+    expect(observer.onDuplicateOf).toHaveBeenCalledWith(firstRequest, [firstRequest, secondRequest])
+  })
+
+  it('gives identical words in a new submission a new idempotency ID', async () => {
+    bridge.cef = true
+    useAppStore.setState({ sessions: [{ id: 'chat' } as never] })
+    bridge.send.mockResolvedValue({ ok: true })
+    await useAppStore.getState().sendAcpPrompt('chat', 'continue', [], false, as('submission-1'))
+    const first = sentIdempotencyId()
+    await useAppStore.getState().sendAcpPrompt('chat', 'continue', [], false, as('submission-2'))
+    expect(sentIdempotencyId()).not.toBe(first)
+    // Even an unconfirmed submission does not lend its ID to a different submission with the same words.
+    bridge.send.mockResolvedValue(lost)
+    await useAppStore.getState().sendAcpPrompt('chat', 'continue', [], false, as('submission-3'))
+    const unconfirmed = sentIdempotencyId()
+    await useAppStore.getState().sendAcpPrompt('chat', 'continue', [], false, as('submission-4'))
+    expect(sentIdempotencyId()).not.toBe(unconfirmed)
+    // Callers without a submission token (generated actions) never share an ID.
+    await useAppStore.getState().sendAcpPrompt('chat', 'continue')
+    const generated = sentIdempotencyId()
+    await useAppStore.getState().sendAcpPrompt('chat', 'continue')
+    expect(sentIdempotencyId()).not.toBe(generated)
+  })
+
+  it.each(['text', 'references', 'skills', 'attachments', 'steer'] as const)('starts a new submission when a retry carries different %s', async (change) => {
+    bridge.cef = true
+    const skill = (filePath: string) => ({ id: filePath, title: filePath, maker: '', review: '', dateCreated: '', dateUpdated: '', preview: '', filePath })
+    const file = (id: string) => ({ id, name: `${id}.txt`, type: 'file', size: 1, path: `/fixture/${id}.txt` })
+    useAppStore.setState({ sessions: [{ id: 'chat' } as never], markdownStoreAttachedBySessionId: { chat: [skill('/skills/a.md')] } })
+    bridge.send.mockResolvedValue(lost)
+    await useAppStore.getState().sendAcpPrompt('chat', 'explain this\n\n> reference A', [file('one')], false, as('submission-1'))
+    const first = sentIdempotencyId()
+    // Unchanged retry keeps the ID.
+    useAppStore.setState({ markdownStoreAttachedBySessionId: { chat: [skill('/skills/a.md')] } })
+    await useAppStore.getState().sendAcpPrompt('chat', 'explain this\n\n> reference A', [file('one')], false, as('submission-1'))
+    expect(sentIdempotencyId()).toBe(first)
+    let text = 'explain this\n\n> reference A'
+    let attachments = [file('one')]
+    let steer = false
+    if (change === 'text') text = 'explain that\n\n> reference A'
+    if (change === 'references') text = 'explain this\n\n> reference B'
+    if (change === 'skills') useAppStore.setState({ markdownStoreAttachedBySessionId: { chat: [skill('/skills/b.md')] } })
+    else useAppStore.setState({ markdownStoreAttachedBySessionId: { chat: [skill('/skills/a.md')] } })
+    if (change === 'attachments') attachments = [file('two')]
+    if (change === 'steer') steer = true
+    await useAppStore.getState().sendAcpPrompt('chat', text, attachments, steer, as('submission-1'))
+    expect(sentIdempotencyId()).not.toBe(first)
+  })
+
+  it.each(['row', 'receipt', 'turn'] as const)('retires the ID once the unconfirmed attempt visibly landed (%s)', async (evidence) => {
+    bridge.cef = true
+    useAppStore.setState({ sessions: [{ id: 'chat' } as never], messages: { chat: [] }, acpBindingBySessionId: { chat: { turnSerial: 4, queuedPrompts: [] } as never } })
+    bridge.send.mockResolvedValue(lost)
+    await useAppStore.getState().sendAcpPrompt('chat', 'continue', [], false, as('submission-1'))
+    const first = sentIdempotencyId()
+    const originRequestId = sentRequestId()
+    if (evidence === 'row') useAppStore.setState({ messages: { chat: [{ id: 'row', sessionId: 'chat', role: 'user', content: 'continue', createdAt: new Date(0), originRequestId }] } })
+    else if (evidence === 'receipt') useAppStore.setState({ acpBindingBySessionId: { chat: { turnSerial: 4, queuedPrompts: [{ ...prompt('queued', 'continue'), originRequestId }] } as never } })
+    else useAppStore.setState({ acpBindingBySessionId: { chat: { turnSerial: 5, queuedPrompts: [] } as never } })
+    await useAppStore.getState().sendAcpPrompt('chat', 'continue', [], false, as('submission-1'))
+    expect(sentIdempotencyId()).not.toBe(first)
+  })
+
   it.each(['error', 'offline'] as const)('lets an explicit bound-chat send and Retry reach native SSH recovery with cached %s status', async (runnerStatus) => {
     bridge.cef = true
     bridge.send.mockResolvedValue({ ok: false })
@@ -185,7 +267,7 @@ describe('definitely-unsent local editing', () => {
     removeComposerDrafts(['chat']); writeChatComposerDraft('chat', draft)
     useAppStore.setState({ sessions: [session as never], activeSessionId: 'another-pane', messages: { chat: [row, later] },
       historyStartIndexBySessionId: { chat: 7 }, chatSearchNavigation: { chatId: 'chat', phase: 'ready' } as never,
-      acpBindingBySessionId: { chat: { providerId: 'gemini-cli', processing: false, unsentMessageIndices: [7],
+      acpBindingBySessionId: { chat: { providerId: 'gemini-cli', processing: false, unsentMessageIndices: [7], editableUnsentMessageIndices: [7],
         queuedPrompts: [], pendingDirectPrompts: [], unsentDirectPrompts: [], pendingPermission: null, pendingUserInput: null } }, cliBindingBySessionId: {} })
     const retained = row.attachments!.filter(attachment => attachment.id !== 'drop')
     const page = { chatId: 'chat', messagesDigest: originalDigest, startIndex: 7, totalCount: 200, unchanged: false, messages: [native] }
@@ -222,6 +304,14 @@ describe('definitely-unsent local editing', () => {
     expect(readChatComposerDraft('chat')).toEqual(f.draft)
     expect(bridge.send).toHaveBeenCalledTimes(2)
   })
+  it.each([undefined, []])('refuses a local edit without current native eligibility and keeps author input', async editable => {
+    const f = fixture()
+    useAppStore.setState(state => ({ acpBindingBySessionId: { chat: { ...state.acpBindingBySessionId.chat, editableUnsentMessageIndices: editable } } }))
+    expect(await useAppStore.getState().editUnsentMessage('chat', 7, f.row, 'Revised author input', f.retained)).toMatchObject({ ok: false })
+    expect(bridge.send).not.toHaveBeenCalled()
+    expect(useAppStore.getState().messages.chat[0]).toBe(f.row)
+    expect(readChatComposerDraft('chat')).toEqual(f.draft)
+  })
   it('confirms native ASCII trimming without removing authored non-ASCII edge characters', async () => {
     const f = fixture()
     const text = '\u00a0Edited unsent\u00a0'
@@ -250,7 +340,7 @@ describe('definitely-unsent local editing', () => {
       expect(f.row.content).toBe('Original unsent')
       expect(readChatComposerDraft('chat')).toEqual(f.draft)
     })
-  it.each(['row-replaced', 'chat-reborn'] as const)('rejects %s while the body probe is pending', async change => {
+  it.each(['row-replaced', 'chat-reborn', 'authority-revoked', 'remote-completed'] as const)('rejects %s while the body probe is pending', async change => {
     const f = fixture()
     let finish!: (value: unknown) => void
     bridge.send.mockImplementation(() => new Promise(resolve => { finish = resolve }))
@@ -258,6 +348,10 @@ describe('definitely-unsent local editing', () => {
     const pushed = change === 'row-replaced' ? { ...f.row } : f.row
     useAppStore.setState({ messages: { chat: [pushed, f.later] },
       sessions: [{ ...f.session, createdAt: new Date(change === 'chat-reborn' ? 1 : 0) } as never] })
+    if (change === 'authority-revoked' || change === 'remote-completed') useAppStore.setState(state => ({
+      acpBindingBySessionId: { chat: { ...state.acpBindingBySessionId.chat, editableUnsentMessageIndices: [],
+        ...(change === 'remote-completed' ? { unsentMessageIndices: [] } : {}) } },
+    }))
     finish({ ok: true, data: f.page })
     expect(await saving).toMatchObject({ ok: false })
     expect(bridge.send).toHaveBeenCalledTimes(1)

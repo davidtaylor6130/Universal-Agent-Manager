@@ -3,7 +3,7 @@ import { isCompanionContext } from '../../ipc/cefBridge'
 // ComposerToolbar: message input toolbar with model/mode pickers and
 // ComposerIcon SVG sprite. Extracted from ChatView.tsx (MO-3).
 import { KeyboardEvent as ReactKeyboardEvent, RefObject, type ReactNode, type CSSProperties, useEffect, useLayoutEffect, useId, useRef, useState } from 'react'
-import { Folder, Pencil, SquarePen, GitBranch, ArrowUp, SquareTerminal, Plus, Target, ClipboardList, Cpu, Brain, ShieldAlert, ShieldCheck, Sparkles, Mic, MousePointer2, Square, Paperclip, ChevronRight } from 'lucide-react'
+import { Folder, Pencil, SquarePen, GitBranch, ArrowUp, SquareTerminal, Plus, Target, ClipboardList, Cpu, Brain, ShieldAlert, ShieldCheck, Sparkles, Mic, MousePointer2, Square, Paperclip, ChevronRight, CornerUpRight, ListPlus } from 'lucide-react'
 import { useAppStore, type AcpBinding, type AcpConfigOption } from '../../store/useAppStore'
 import type { Provider } from '../../types/provider'
 import {
@@ -36,9 +36,9 @@ export type DictationState = 'idle' | 'starting' | 'listening' | 'stopping'
 
 export const PERMISSION_MODES = [
   { id: 'default', name: 'Default', description: 'Ask before commands and file changes.' },
-  { id: 'acceptEdits', name: 'Accept Edits', description: 'Automatically approve workspace file edits.' },
+  { id: 'acceptEdits', name: 'Accept edits', description: 'Automatically approve workspace file edits.' },
   { id: 'yolo', name: 'YOLO', description: 'Automatically approve every permission request.' },
-  { id: 'aiReview', name: 'AI Review', description: 'Ask a configured isolated reviewer; failures and uncertainty come back to you.' },
+  { id: 'aiReview', name: 'AI review', description: 'Ask a configured isolated reviewer; failures and uncertainty come back to you.' },
 ] as const
 
 export type CommandSafetyTier = 'off' | 'acceptEdits' | 'aiReview' | 'yolo'
@@ -171,9 +171,12 @@ export function ComposerToolbar({
   providers,
   providerId,
   canChangeProvider,
+  providerLockReason,
+  providerSwitchUnlocked,
   canSend,
   editing = false,
   sendLabel,
+  sendTitle,
   holdSend = false,
   runtimeStatusLabel,
   runtimeStatusColor,
@@ -220,6 +223,7 @@ export function ComposerToolbar({
   goalPaused,
   onToggleGoal,
   onCancelTurn,
+  onSendAlternate,
   onAttachFile,
   onOpenMarkdownStore,
   dictationState,
@@ -235,11 +239,15 @@ export function ComposerToolbar({
   providers: Provider[]
   providerId: string
   canChangeProvider: boolean
+  providerLockReason?: string
+  /** A disconnected recovery blocks model changes but must still reach the provider-switch warning. */
+  providerSwitchUnlocked?: boolean
   canSend: boolean
   /** Composer is editing a sent message: the send button saves the edit. */
   editing?: boolean
   /** Overrides the send button's label, e.g. while it submits question answers. */
   sendLabel?: string
+  sendTitle?: string
   /** Always show the (possibly disabled) send button, with Cancel turn beside it while the turn runs, e.g. while a question fills the composer. */
   holdSend?: boolean
   runtimeStatusLabel: string
@@ -287,6 +295,8 @@ export function ComposerToolbar({
   goalPaused: boolean
   onToggleGoal: () => void
   onCancelTurn: () => void
+  /** Sends with the action the active-turn preference did not choose (Queue or Steer). */
+  onSendAlternate?: () => void
   onAttachFile: () => void
   onOpenMarkdownStore: () => void
   dictationState: DictationState
@@ -329,6 +339,18 @@ export function ComposerToolbar({
     ? PERMISSION_MODES.filter((mode) => mode.id !== 'acceptEdits' || caps.hasAcceptEditsMode)
     : [{ id: 'provider', name: 'Ask in provider', description: 'Respond to permission prompts in the provider interface.' }]
   const running = Boolean(acp?.processing)
+  const steerPreferred = useAppStore((state) => state.steerActiveTurnOnSend)
+  // Saving an edit and submitting a composer question keep their own Send action.
+  const alternateSendEligible = !editing && !holdSend
+  // A turn held for a compute pool slot has not reached the provider, so Send queues behind it.
+  const steerByDefault = running && steerPreferred && alternateSendEligible && !acp?.computePoolWait
+  // Providers without native steering stop the running turn and send the steer first; say so before Send.
+  const steerInterrupts = provider.supportsNativeSteering !== true
+  const steerLabel = steerInterrupts ? 'Interrupt and steer' : 'Steer active turn'
+  const steerDetail = steerInterrupts ? 'Stops the running turn, then sends this first; queued prompts keep their order.' : 'Sends this to the running turn at its next safe point; queued prompts keep their order.'
+  const alternateSendLabel = steerByDefault ? 'Queue for next turn instead' : `${steerLabel} instead`
+  const alternateSendTitle = steerByDefault ? 'Queue for next turn instead: runs after the current turn finishes.' : `${alternateSendLabel}: ${steerDetail}`
+  const alternateSendAvailable = running && canSend && alternateSendEligible && !acp?.computePoolWait
   const dictationVisualState = dictationError ? 'error' : dictationState
   const dictationLabel = !dictationAvailable
     ? 'Dictation requires the desktop app'
@@ -709,7 +731,7 @@ export function ComposerToolbar({
                 providers={providers.some((candidate) => candidate.id === providerId) ? providers : [...providers, provider]} providerId={providerId} currentModelId={currentModel.id}
                 activeOptions={modelOptions} activeLoading={acp?.modelsLoading} activeError={acp?.modelRefreshError}
                 onRefreshActive={onRefreshModels}
-                modelDisabled={modelDisabled} canChangeProvider={canChangeProvider}
+                modelDisabled={modelDisabled} canChangeProvider={canChangeProvider} providerLockReason={providerLockReason} providerSwitchUnlocked={providerSwitchUnlocked}
                 workspaceDirectory={workspaceDirectory} executionHostId={executionHostId}
                 onClose={() => { onToggleModel(); modelTriggerRef.current?.focus() }}
                 onSelect={(selectedProviderId, selectedModelId) => {
@@ -741,22 +763,37 @@ export function ComposerToolbar({
         />
       </div>
       </>}
+        {/* Space stays reserved in every state, ahead of Cancel and Send, so swapping them does not shift the toolbar; the closed state fades out and leaves the tab order. */}
+        {onSendAlternate && !holdSend && <IconButton
+          icon={steerByDefault ? <ListPlus size={15} aria-hidden /> : <CornerUpRight size={15} aria-hidden />}
+          label={alternateSendLabel}
+          title={alternateSendAvailable ? alternateSendTitle : undefined}
+          tooltip={false}
+          size="sm"
+          aria-hidden={alternateSendAvailable ? undefined : true}
+          tabIndex={alternateSendAvailable ? undefined : -1}
+          disabled={!alternateSendAvailable}
+          data-state={alternateSendAvailable ? 'open' : 'closed'}
+          onClick={onSendAlternate}
+          className="uam-composer-action uam-composer-secondary-control uam-composer-alternate-send h-[26px] w-[26px] shrink-0 inline-flex items-center justify-center p-0"
+          style={{ borderRadius: 6 }}
+        />}
         {running && !editing && (holdSend || !canSend) && (
           <IconButton title="Cancel turn" icon={<Square size={11} fill="currentColor" aria-hidden />} label="Cancel turn" tooltip={false} onClick={onCancelTurn} className="uam-composer-action h-8 w-8 shrink-0 text-xs font-semibold inline-flex items-center justify-center" style={{ width: 32, height: 32, borderRadius: 8, border: '1px solid color-mix(in srgb, var(--red) 46%, var(--border-bright))', background: 'color-mix(in srgb, var(--red) 14%, var(--surface))', color: 'var(--red)' }} />
         )}
-        {(holdSend || editing || !running || canSend) && <ComposerSendButton canSend={canSend} running={running} editing={editing} label={sendLabel} />}
+        {(holdSend || editing || !running || canSend) && <ComposerSendButton canSend={canSend} running={running} editing={editing} steer={steerByDefault} label={sendLabel ?? (steerByDefault ? steerLabel : undefined)} title={sendTitle ?? (steerByDefault ? `${steerLabel}: ${steerDetail}` : undefined)} />}
     </div>
   )
 }
 
-/** Composer send button; while editing a message it saves the edit with a pencil icon. */
-export function ComposerSendButton({ canSend, running = false, editing = false, label: labelOverride }: { canSend: boolean; running?: boolean; editing?: boolean; label?: string }) {
+/** Composer send button; while editing a message it saves the edit with a pencil icon, and a preferred steer shows the steer icon. */
+export function ComposerSendButton({ canSend, running = false, editing = false, steer = false, label: labelOverride, title }: { canSend: boolean; running?: boolean; editing?: boolean; steer?: boolean; label?: string; title?: string }) {
   const label = labelOverride ?? (editing ? 'Save edit' : running ? 'Queue prompt' : 'Send prompt')
   return (
     <IconButton
       type="submit"
-      title={label}
-      icon={editing ? <Pencil size={15} aria-hidden /> : <ComposerIcon name="send" size={15} />}
+      title={title ?? label}
+      icon={editing ? <Pencil size={15} aria-hidden /> : steer ? <CornerUpRight size={15} aria-hidden /> : <ComposerIcon name="send" size={15} />}
       label={label}
       tooltip={false}
       disabled={!canSend}

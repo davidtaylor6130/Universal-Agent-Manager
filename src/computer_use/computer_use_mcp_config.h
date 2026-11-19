@@ -20,6 +20,8 @@ namespace uam::computer_use
 	std::string BackendPreference(std::string_view value);
 	bool ProviderBackendAvailable(std::string_view provider_id);
 	bool AvailableForChat(const ChatSession& chat);
+	/// <summary>Launch-time attachment: also never on Plan, read-only or goal-review launches, which are mapped to Plan.</summary>
+	bool AttachableForLaunch(const ChatSession& chat);
 	std::string EffectiveBackend(const ChatSession& chat);
 	bool UsesUamBackend(const ChatSession& chat);
 	bool IsPortableMcpChatId(std::string_view value);

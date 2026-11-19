@@ -167,6 +167,17 @@ describe('reconcileCppMessages deferred tool content', () => {
 })
 
 describe('unsent prompt native authority', () => {
+  it('restarts the turn clock when a held turn is admitted and keeps it otherwise', () => {
+    const held = sanitizeCppAcpSession({ processing: true, turnSerial: 4, computePoolWait: { poolName: 'Local GPU', inUse: 2, limit: 2 } })!
+    const chat = { id: 'chat', providerId: 'codex-cli', acpSession: held } as CppChat
+    const waiting = { ...acpBindingFromCppChat(chat, undefined), processingStartedAtMs: 1000 }
+    expect(waiting.computePoolWait?.poolName).toBe('Local GPU')
+    expect(acpBindingFromCppChat(chat, waiting).processingStartedAtMs).toBe(1000)
+    const admitted = acpBindingFromCppChat({ ...chat, acpSession: { ...held, computePoolWait: undefined } }, waiting)
+    expect(admitted.computePoolWait).toBeUndefined()
+    expect(admitted.processingStartedAtMs).toBeGreaterThan(1000)
+  })
+
   it('keeps valid real queue references and invalidates binding reuse when their raw index changes', () => {
     const queued = { id: 'held', revision: 1, text: 'Original', existingUserMessageIndex: 23 }
     const session = sanitizeCppAcpSession({ queuedPrompts: [queued] })!
@@ -533,6 +544,12 @@ describe('remote host startup applied state sanitization', () => {
     expect(entry).not.toHaveProperty('bundledRunnerSha256')
   })
 
+  it('keeps only a well-formed helper build label', () => {
+    const [labelled, malformed] = sanitizeCppSettings({ executionHosts: [{ ...host, runnerBuildLabel: '5.1.0-alpha-13' }, { ...host, id: 'other', sshAlias: 'other', runnerBuildLabel: '5.1.0; rm' }] }).executionHosts!.slice(1)
+    expect(labelled.runnerBuildLabel).toBe('5.1.0-alpha-13')
+    expect(malformed).not.toHaveProperty('runnerBuildLabel')
+  })
+
   it('drops unknown applied states', () => {
     const [entry] = sanitizeCppSettings({ executionHosts: [{ ...host, runnerStartupApplied: 'exploded' }] }).executionHosts!.slice(1)
     expect(entry).not.toHaveProperty('runnerStartupApplied')
@@ -599,4 +616,12 @@ describe('held outbox history admission', () => {
       [...existing, { ...existing[0], content: 'Newer attempt', nativeMessageIndex: 1 }],
     ]) expect(reconcileHeldOutboxHistory(chat, suffix)).toBe(suffix)
   })
+})
+
+
+it('keeps local edit authority separate from known-unsent delivery classification', () => {
+  const blocked = sanitizeCppAcpSession({ unsentMessageIndices: [0, 7], editableUnsentMessageIndices: [7, -1, '0', 1.5] })!
+  expect(blocked.unsentMessageIndices).toEqual([0, 7])
+  expect(blocked.editableUnsentMessageIndices).toEqual([7])
+  expect(sanitizeCppAcpSession({ unsentMessageIndices: [7] })!.editableUnsentMessageIndices).toEqual([])
 })

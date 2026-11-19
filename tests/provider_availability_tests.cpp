@@ -197,6 +197,28 @@ UAM_TEST(DisabledProviderRegeneratingBranchIsRefusedBeforeSaving)
 	UAM_ASSERT_EQ(fixture.app.chats.size(), std::size_t{1});
 }
 
+UAM_TEST(ForcedVersionSweepKeepsFailedCheckWhileProviderIsQueued)
+{
+	AvailabilityFixture fixture;
+	for (const ProviderProfile& profile : fixture.app.provider_profiles)
+	{
+		const std::string id = uam::provider_ids::CanonicalCliProviderLookupId(profile.id);
+		uam::CliProviderVersionState& state = fixture.app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey(id, "local")];
+		state.provider_id = id;
+		state.execution_host = uam::execution_hosts::LocalHost();
+		state.checked = true;
+		state.check_error = "Could not check this CLI's version.";
+	}
+	ProviderCliCompatibilityService().StartVersionCheck(fixture.app, true);
+	UAM_ASSERT(fixture.app.runtime_cli_version_check_task.running);
+	UAM_ASSERT(!fixture.app.runtime_cli_version_check_queue.empty());
+	// Clearing this while queued would present a failed check as a confirmed-missing CLI.
+	for (const auto& [provider_id, host_id] : fixture.app.runtime_cli_version_check_queue)
+		UAM_ASSERT_EQ(fixture.app.runtime_cli_versions_by_provider_id.at(CliProviderVersionStateKey(provider_id, host_id)).check_error, std::string("Could not check this CLI's version."));
+	UAM_ASSERT(!fixture.app.runtime_cli_versions_by_provider_id.at(CliProviderVersionStateKey(fixture.app.runtime_cli_version_provider_id, "local")).check_error.empty());
+	uam::ResetAsyncCommandTask(fixture.app.runtime_cli_version_check_task);
+}
+
 UAM_TEST(DisabledProviderIsNeitherVersionCheckedNorAutomaticallyUpdated)
 {
 	AvailabilityFixture fixture;

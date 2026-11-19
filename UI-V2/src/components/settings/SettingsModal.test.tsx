@@ -198,7 +198,7 @@ describe('SettingsModal memory settings', () => {
   it('shows exact unconfirmed settings fields as persistent warning drafts without a save or dismiss action', () => {
     useAppStore.setState({ memorySettingsUnconfirmedFields: [
       'memoryEnabledDefault', 'memoryLevelDefault', 'memoryIdleDelaySeconds', 'memoryRecallBudgetBytes',
-      'goalMaxLoopIterations', 'acpSetupInactivityTimeoutSeconds', 'acpTurnOutputLimitMiB', 'activeTurnInactivityTimeoutSeconds', 'streamLoopRepeatLimit',
+      'goalMaxLoopIterations', 'acpSetupInactivityTimeoutSeconds', 'acpTurnOutputLimitMiB', 'activeTurnInactivityTimeoutSeconds', 'toolCallTimeoutSeconds', 'streamLoopRepeatLimit',
       'memoryWorkerBindings', 'permissionReviewerProviderId', 'permissionReviewerModelId',
     ] })
     const { host, root } = renderModal()
@@ -210,7 +210,7 @@ describe('SettingsModal memory settings', () => {
       const fields = notice.querySelector<HTMLUListElement>('ul[aria-label="Unconfirmed settings fields"]')!
       expect(Array.from(fields.querySelectorAll('li'), (item) => item.textContent)).toEqual([
         'Default memory enabled', 'Default memory policy', 'Memory idle delay', 'Memory recall budget',
-        'Goal loop limit', 'Provider setup timeout', 'Provider output limit', 'Provider turn timeout', 'Repeated output limit', 'Memory worker selections',
+        'Goal loop limit', 'Provider setup timeout', 'Provider output limit', 'Provider turn timeout', 'Tool call limit', 'Repeated output limit', 'Memory worker selections',
         'Permission reviewer provider', 'Permission reviewer model',
       ])
       // Notice is a single bar now: the title is text, not a collapse header, so no buttons remain.
@@ -505,7 +505,7 @@ describe('SettingsModal memory settings', () => {
   it('loads phone access settings and only requests the token when copying', async () => {
     const actions: string[] = []
     window.cefQuery = ({ request, onSuccess }) => {
-      const parsed = JSON.parse(request) as { action: string; payload?: { enabled?: boolean } }
+      const parsed = JSON.parse(request) as { action: string; payload?: Record<string, unknown> }
       actions.push(parsed.action)
       if (parsed.action === 'getCompanionSettings') {
         onSuccess(JSON.stringify({ configured: true, enabled: true, state: 'ready', effectiveUrl: 'https://phone.example/companion', url: 'https://phone.example/companion', restartRequired: false }))
@@ -513,6 +513,8 @@ describe('SettingsModal memory settings', () => {
         expect(parsed.payload).toEqual({ enabled: false })
         onSuccess(JSON.stringify({ configured: true, enabled: false, state: 'disabled', effectiveUrl: '', url: 'https://phone.example/companion', restartRequired: false }))
       } else if (parsed.action === 'getCompanionToken') {
+        // Copy token reads the current token; only a pairing code or Regenerate token issues a new one.
+        expect(parsed.payload ?? {}).toEqual({})
         onSuccess(JSON.stringify({ token: 'a'.repeat(64) }))
       } else {
         onSuccess('{}')
@@ -568,6 +570,19 @@ describe('SettingsModal memory settings', () => {
     act(() => root.unmount()); host.remove()
   })
 
+
+  it('chooses what Send does while a turn is running in Chat Defaults', () => {
+    const setSteerActiveTurnOnSend = vi.fn(() => Promise.resolve(true))
+    useAppStore.setState({ steerActiveTurnOnSend: false, setSteerActiveTurnOnSend })
+    const { host, root } = renderModal()
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Chat defaults"]')?.click())
+    const control = host.querySelector<HTMLButtonElement>('[role="combobox"][aria-label="Send during a running turn"]')
+    expect(control?.textContent).toContain('Queue for next turn')
+    act(() => control!.click())
+    act(() => [...document.querySelectorAll<HTMLElement>('[role="option"]')].find((option) => option.textContent?.includes('Steer active turn'))!.click())
+    expect(setSteerActiveTurnOnSend).toHaveBeenCalledWith(true)
+    act(() => root.unmount()); host.remove()
+  })
 
   it('lists SSH routing under Connections and opens its settings page', () => {
     const { host, root } = renderModal()
@@ -667,13 +682,175 @@ describe('SettingsModal memory settings', () => {
     act(() => host.querySelector<HTMLButtonElement>(`nav [aria-label="${name}"]`)?.click())
   }
 
-  function openRemoteHostsSection(host: HTMLElement) {
+  function openRemoteHostsSection(host: HTMLElement, hostLabel?: string) {
     const button = Array.from(host.querySelectorAll('button')).find(
       (candidate) => candidate.textContent?.includes('Remote hosts')
     )
     expect(button).toBeTruthy()
     act(() => button?.click())
+    if (hostLabel) act(() => host.querySelector<HTMLButtonElement>(`button[aria-label="Open ${hostLabel}"]`)!.click())
   }
+
+  const subPageHost = (id: string, label: string) => ({ id, label, transport: 'ssh', sshAlias: id, runnerStatus: 'ready', runnerVersion: '', platform: 'linux', architecture: 'arm64', lastSeenAt: '' })
+
+  it('moves focus to Add a host after removing the host shown on its sub-page', async () => {
+    useAppStore.setState({ executionHosts: [subPageHost('host-a', 'Host A')] as never })
+    window.cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request) as { action: string }
+      if (parsed.action === 'removeRemoteHost') useAppStore.setState({ executionHosts: [] })
+      onSuccess(JSON.stringify({ hosts: [] }))
+    }
+    const { host, root } = renderModal()
+    try {
+      openRemoteHostsSection(host, 'Host A')
+      act(() => host.querySelector<HTMLButtonElement>('section[aria-label="Host A"] button[aria-label="Remove Host A"]')!.click())
+      await act(async () => { Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Remove host')!.click(); await Promise.resolve(); await Promise.resolve() })
+      expect(host.querySelector('section[aria-label="Host A"]')).toBeNull()
+      expect(document.activeElement?.id).toBe('remote-host-name')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  it('shows each helper build label and flags only a recorded label that differs from the app build', () => {
+    const { appVersion, uiBuildId } = useAppStore.getState()
+    useAppStore.setState({
+      appVersion: 'V5.1.0',
+      uiBuildId: '5.1.0-alpha-13-Darwin-20261111T000000Z',
+      executionHosts: [
+        { ...subPageHost('old', 'Old build'), runnerVersion: '5.1.0', runnerBuildLabel: '5.1.0-alpha-11', runnerSha256: 'a'.repeat(64), bundledRunnerSha256: 'b'.repeat(64) },
+        // An identical helper binary from an older counter needs no hint.
+        { ...subPageHost('rebuilt', 'Same binary'), runnerVersion: '5.1.0', runnerBuildLabel: '5.1.0-alpha-12', runnerSha256: 'b'.repeat(64), bundledRunnerSha256: 'b'.repeat(64) },
+        { ...subPageHost('same', 'Same build'), runnerVersion: '5.1.0', runnerBuildLabel: '5.1.0-alpha-13' },
+        { ...subPageHost('release', 'Release'), runnerVersion: '5.1.0' },
+      ] as never,
+    })
+    const { host, root } = renderModal()
+    try {
+      openRemoteHostsSection(host)
+      expect(host.textContent).toContain('helper 5.1.0-alpha-11')
+      expect(host.textContent).toContain('helper 5.1.0-alpha-12')
+      expect(host.textContent).toContain('helper 5.1.0-alpha-13')
+      // Records without a label (older apps, release installs) keep the plain version and no hint.
+      expect(host.textContent).toMatch(/helper 5\.1\.0(?!-)/)
+      expect(host.textContent!.match(/App is 5\.1\.0-alpha-13/g)).toHaveLength(1)
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      useAppStore.setState({ appVersion, uiBuildId })
+    }
+  })
+
+  it('opens each configured host on its own sub-page and returns focus on Back', () => {
+    useAppStore.setState({ executionHosts: [subPageHost('host-a', 'Host A'), subPageHost('host-b', 'Host B')] as never })
+    const { host, root } = renderModal()
+    try {
+      openRemoteHostsSection(host)
+      // The list shows identity rows only: no inline options or disclosure.
+      expect(host.textContent).not.toContain('Host options')
+      expect(host.querySelector('[aria-label="Instruction file on Host A"]')).toBeNull()
+      const openB = host.querySelector<HTMLButtonElement>('button[aria-label="Open Host B"]')!
+      act(() => openB.click())
+      const back = Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Back to hosts')!
+      expect(document.activeElement).toBe(back)
+      expect(host.querySelector('section[aria-label="Host B"]')).toBeTruthy()
+      expect(host.querySelector('[aria-label="Instruction file on Host B"]')).toBeTruthy()
+      expect(host.querySelector('[aria-label="Instruction file on Host A"]')).toBeNull()
+      expect(host.querySelector('section[aria-label="Add a host"]')).toBeNull()
+      act(() => back.click())
+      expect(host.querySelector('[aria-label="Instruction file on Host B"]')).toBeNull()
+      expect(document.activeElement).toBe(host.querySelector('button[aria-label="Open Host B"]'))
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  it('asks before Back discards an unsaved host options draft', () => {
+    useAppStore.setState({ executionHosts: [subPageHost('host-a', 'Host A')] as never })
+    const { host, root } = renderModal()
+    try {
+      openRemoteHostsSection(host, 'Host A')
+      const back = () => Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Back to hosts')!
+      setNativeInputValue(host.querySelector<HTMLInputElement>('[aria-label="Instruction file on Host A"]')!, '/tmp/draft-AGENTS.md')
+      act(() => back().click())
+      expect(document.body.textContent).toContain('Discard host option changes?')
+      act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Keep editing')!.click())
+      expect(host.querySelector<HTMLInputElement>('[aria-label="Instruction file on Host A"]')?.value).toBe('/tmp/draft-AGENTS.md')
+      act(() => back().click())
+      act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Discard changes')!.click())
+      expect(host.querySelector('[aria-label="Instruction file on Host A"]')).toBeNull()
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  it('blocks Back during a host task and keeps the unsaved options guard after one', async () => {
+    useAppStore.setState({ executionHosts: [subPageHost('host-a', 'Host A')] as never })
+    const pending: Array<{ action: string; onSuccess: (value: string) => void; onFailure: (code: number, message: string) => void }> = []
+    window.cefQuery = ({ request, onSuccess, onFailure }) => {
+      pending.push({ action: (JSON.parse(request) as { action: string }).action, onSuccess, onFailure })
+    }
+    const { host, root } = renderModal()
+    const back = () => Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Back to hosts')!
+    const keep = () => act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Keep editing')!.click())
+    const input = () => host.querySelector<HTMLInputElement>('[aria-label="Instruction file on Host A"]')!
+    try {
+      openRemoteHostsSection(host, 'Host A')
+      setNativeInputValue(input(), '/tmp/draft-AGENTS.md')
+      await act(async () => { Array.from(input().form!.querySelectorAll('button')).find(button => button.textContent === 'Check file')!.click() })
+      expect(pending.map((request) => request.action)).toContain('checkRemoteHostInstruction')
+      expect(back().disabled).toBe(true)
+      for (const request of pending.splice(0)) await act(async () => { request.onSuccess('{}') })
+      expect(back().disabled).toBe(false)
+      act(() => back().click())
+      expect(document.body.textContent).toContain('Discard host option changes?')
+      keep()
+      // A save in flight cannot land after Discard, and a failed save keeps the guard and the draft.
+      await act(async () => { (Array.from(input().form!.querySelectorAll('button')).find(button => button.type === 'submit') as HTMLButtonElement).click() })
+      expect(back().disabled).toBe(true)
+      for (const request of pending.splice(0)) await act(async () => { request.onFailure(500, 'Save failed') })
+      expect(input().value).toBe('/tmp/draft-AGENTS.md')
+      act(() => back().click())
+      expect(document.body.textContent).toContain('Discard host option changes?')
+      keep()
+      expect(input().value).toBe('/tmp/draft-AGENTS.md')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  it('warns before the window closes with unsaved host options', () => {
+    useAppStore.setState({ executionHosts: [subPageHost('host-a', 'Host A')] as never })
+    const { host, root } = renderModal()
+    const unload = () => { const event = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(event); return event.defaultPrevented }
+    try {
+      openRemoteHostsSection(host, 'Host A')
+      expect(unload()).toBe(false)
+      setNativeInputValue(host.querySelector<HTMLInputElement>('[aria-label="Instruction file on Host A"]')!, '/tmp/draft-AGENTS.md')
+      expect(unload()).toBe(true)
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  it('falls back to the list when the host on its sub-page disappears', () => {
+    useAppStore.setState({ executionHosts: [subPageHost('host-a', 'Host A')] as never })
+    const { host, root } = renderModal()
+    try {
+      openRemoteHostsSection(host, 'Host A')
+      act(() => useAppStore.setState({ executionHosts: [] }))
+      expect(host.querySelector('section[aria-label="Add a host"]')).toBeTruthy()
+      expect(document.activeElement?.id).toBe('remote-host-name')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
 
   it('previews the exact SSH setup before explicitly installing the helper', async () => {
     const actions: string[] = []
@@ -745,6 +922,131 @@ describe('SettingsModal memory settings', () => {
     await act(async () => {})
     expect(document.body.textContent).not.toContain('Install helper on colima?')
     expect(failures.at(-1)?.message).toContain('This UAM build does not contain a runner for linux/s390x.')
+    expect(failures.at(-1)?.detail).toBe('')
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('closes the setup dialog on install, shows progress on the host row and still reports a later refusal', async () => {
+    useAppStore.setState({
+      executionHosts: [
+        { id: 'local', label: 'This computer', transport: 'local', sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: '', architecture: '', lastSeenAt: '' },
+        { id: 'ssh-homelab', label: 'Homelab', transport: 'ssh', sshAlias: 'homelab', runnerStatus: 'ready', runnerVersion: '5.0.0', platform: 'linux', architecture: 'x64', lastSeenAt: '' },
+      ],
+    })
+    const refusal = 'Remote CLI verification failed. (cli-verification)'
+    let failInstall: (() => void) | null = null
+    window.cefQuery = ({ request, onSuccess, onFailure }) => {
+      const parsed = JSON.parse(request) as { action: string; payload: Record<string, unknown> }
+      if (parsed.action === 'previewRemoteHost') {
+        onSuccess(JSON.stringify({ host: { ...parsed.payload, transport: 'ssh', runnerStatus: 'ready', runnerVersion: '5.0.0', platform: 'linux', architecture: 'x64', lastSeenAt: '' }, preview: '1. Check remote platform' }))
+        return
+      }
+      if (parsed.action === 'installRemoteHost') { failInstall = () => onFailure(409, refusal); return }
+      onSuccess('{}')
+    }
+    const { host, root } = renderModal()
+    openRemoteHostsSection(host)
+    await act(async () => { (host.querySelector('button[aria-label="Reinstall helper on Homelab"]') as HTMLButtonElement).click() })
+    expect(document.body.textContent).toContain('Install helper on Homelab?')
+    await act(async () => {
+      Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Connect and install'))?.click()
+    })
+
+    expect(document.body.textContent).not.toContain('Install helper on Homelab?')
+    const row = host.querySelector('[aria-label="Remote host task running on Homelab"]')
+    expect(row?.getAttribute('aria-busy')).toBe('true')
+    expect(row?.classList.contains('uam-progress-fill')).toBe(true)
+    expect(document.activeElement).toBe(host.querySelector('[data-host-open="ssh-homelab"]'))
+
+    await act(async () => { failInstall?.() })
+    expect(failures.at(-1)?.message).toBe(refusal)
+    expect(host.querySelector('[aria-label="Remote host task running on Homelab"]')).toBeNull()
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('returns focus to the SSH alias when a new host fails after its installing row appeared', async () => {
+    const local = { id: 'local', label: 'This computer', transport: 'local' as const, sshAlias: '', runnerStatus: 'ready', runnerVersion: '', platform: '', architecture: '', lastSeenAt: '' }
+    useAppStore.setState({ executionHosts: [local] })
+    let failInstall: (() => void) | null = null
+    window.cefQuery = ({ request, onSuccess, onFailure }) => {
+      const parsed = JSON.parse(request) as { action: string; payload: Record<string, unknown> }
+      if (parsed.action === 'previewRemoteHost') {
+        onSuccess(JSON.stringify({ host: { ...parsed.payload, transport: 'ssh', runnerStatus: 'uninstalled', runnerVersion: '', platform: '', architecture: '', lastSeenAt: '' }, preview: '1. Check remote platform' }))
+        return
+      }
+      if (parsed.action === 'installRemoteHost') { failInstall = () => onFailure(502, 'ssh: connect to host homelab port 22: Connection refused'); return }
+      onSuccess('{}')
+    }
+    const { host, root } = renderModal()
+    openRemoteHostsSection(host)
+    const alias = host.querySelector('input[aria-label="SSH config alias"]') as HTMLInputElement
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(alias, 'homelab')
+      alias.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => { Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Preview setup'))?.click() })
+    await act(async () => { Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Connect and install'))?.click() })
+    expect(document.body.textContent).not.toContain('Install helper on homelab?')
+
+    // The backend pushes the reserved row; focus follows it.
+    act(() => useAppStore.setState({ executionHosts: [local, { id: 'ssh-homelab', label: 'homelab', transport: 'ssh', sshAlias: 'homelab', runnerStatus: 'installing', runnerVersion: '', platform: '', architecture: '', lastSeenAt: '' }] }))
+    expect(document.activeElement).toBe(host.querySelector('[data-host-open="ssh-homelab"]'))
+
+    // The failure arrives first, then the restore push removes the row.
+    await act(async () => { failInstall?.() })
+    expect(failures.at(-1)?.detail).toBe('Check the SSH connection and try again.')
+    act(() => useAppStore.setState({ executionHosts: [local] }))
+    expect(document.activeElement).toBe(host.querySelector('input[aria-label="SSH config alias"]'))
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('adds the SSH connection hint only to SSH-stage failures', async () => {
+    const refusal = '“Homelab notes” has a turn in progress on this host. Stop it or let it finish, then update the helper. (chat-process)'
+    let failureCode = 409
+    window.cefQuery = ({ request, onSuccess, onFailure }) => {
+      const parsed = JSON.parse(request) as { action: string; payload: { id: string; label: string; sshAlias: string } }
+      if (parsed.action === 'previewRemoteHost') {
+        onSuccess(JSON.stringify({
+          host: { id: parsed.payload.id, label: parsed.payload.label, transport: 'ssh', sshAlias: parsed.payload.sshAlias, runnerStatus: 'ready', runnerVersion: '5.0.0', platform: 'linux', architecture: 'x64', lastSeenAt: '' },
+          preview: '1. Check remote platform',
+        }))
+        return
+      }
+      onFailure(failureCode, failureCode === 409 ? refusal : 'ssh: connect to host homelab port 22: Connection refused')
+    }
+    const { host, root } = renderModal()
+    openRemoteHostsSection(host)
+    const alias = host.querySelector('input[aria-label="SSH config alias"]') as HTMLInputElement
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(alias, 'homelab')
+      alias.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => {
+      Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Preview setup'))?.click()
+    })
+    await act(async () => {
+      Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Connect and install'))?.click()
+    })
+
+    await act(async () => {})
+    expect(failures.at(-1)?.message).toBe(refusal)
+    expect(failures.at(-1)?.detail).toBe('')
+
+    failureCode = 502
+    await act(async () => {
+      Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Preview setup'))?.click()
+    })
+    await act(async () => {
+      Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Connect and install'))?.click()
+    })
+    await act(async () => {})
+    expect(failures.at(-1)?.detail).toBe('Check the SSH connection and try again.')
 
     act(() => root.unmount())
     host.remove()
@@ -865,7 +1167,7 @@ describe('SettingsModal memory settings', () => {
     }
     const { host, root } = renderModal()
     try {
-      openRemoteHostsSection(host)
+      openRemoteHostsSection(host, 'Fixture host')
       const checkbox = host.querySelector<HTMLInputElement>('[name="cliUpdatesAsAdmin"]')!
       expect(checkbox.checked).toBe(!enabled)
       await act(async () => { checkbox.click() })
@@ -890,7 +1192,7 @@ describe('SettingsModal memory settings', () => {
     }
     const { host, root } = renderModal()
     try {
-      openRemoteHostsSection(host)
+      openRemoteHostsSection(host, 'Fixture host')
       const input = host.querySelector<HTMLInputElement>('[aria-label="Instruction file on Fixture host"]')!
       setNativeInputValue(input, '/tmp/new-instructions.md')
       const form = input.form!
@@ -930,7 +1232,7 @@ describe('SettingsModal memory settings', () => {
     }
     const { host: container, root } = renderModal()
     try {
-      openRemoteHostsSection(container)
+      openRemoteHostsSection(container, 'Fixture host')
       const area = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Host instructions on Fixture host"]')!
       const saveButton = () => area.form!.querySelector<HTMLButtonElement>('button[type="submit"]')!
       expect(saveButton().disabled).toBe(true)
@@ -962,7 +1264,7 @@ describe('SettingsModal memory settings', () => {
     }
     const { host: container, root } = renderModal()
     try {
-      openRemoteHostsSection(container)
+      openRemoteHostsSection(container, 'Fixture host')
       const area = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Host instructions on Fixture host"]')!
       expect(area.value).toBe('Be terse.')
       await act(async () => Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Use instruction file instead')!.click())
@@ -987,7 +1289,7 @@ describe('SettingsModal memory settings', () => {
     })
     const { host, root } = renderModal()
     try {
-      openRemoteHostsSection(host)
+      openRemoteHostsSection(host, 'Fixture host')
       expect(host.textContent).toContain(expected)
       expect(host.querySelector<HTMLInputElement>('[name="startupEnabled"]')?.checked).toBe(true)
       // Saved is on, so only states that are not "enabled" differ from it.
@@ -1019,7 +1321,7 @@ describe('SettingsModal memory settings', () => {
     }
     const { host, root } = renderModal()
     try {
-      openRemoteHostsSection(host)
+      openRemoteHostsSection(host, 'Host A')
       const saveA = () => Array.from(host.querySelector<HTMLInputElement>('[aria-label="Instruction file on Host A"]')!.form!.querySelectorAll('button')).find(b => b.type === 'submit') as HTMLButtonElement
       const inputA = host.querySelector<HTMLInputElement>('[aria-label="Instruction file on Host A"]')!
       expect(saveA().disabled).toBe(true)
@@ -1037,6 +1339,13 @@ describe('SettingsModal memory settings', () => {
       expect(host.querySelector('[role="progressbar"][aria-label="Remote host task running on Host A"][aria-busy="true"]')).toBeTruthy()
       expect(host.querySelector('[role="progressbar"][aria-label="Remote host task running on Host B"]')).toBeNull()
       expect(saveA().disabled).toBe(true)
+      // Back waits for the save; the list then shows a task on one host without blocking the other.
+      expect(Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Back to hosts')!.disabled).toBe(true)
+      await act(async () => { requests.find(r => r.action === 'saveRemoteHostOptions')!.respond() })
+      act(() => Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Back to hosts')!.click())
+      act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Discard changes')!.click())
+      await act(async () => { host.querySelector<HTMLButtonElement>('button[aria-label="Reinstall helper on Host A"]')!.click() })
+      expect(host.querySelector('[role="group"][aria-label="Remote host task running on Host A"][aria-busy="true"]')).toBeTruthy()
       const reinstallB = host.querySelector<HTMLButtonElement>('button[aria-label="Reinstall helper on Host B"]')!
       expect(reinstallB.disabled).toBe(false)
       expect(host.querySelector<HTMLButtonElement>('button[aria-label="Reinstall helper on Host A"]')!.disabled).toBe(true)
@@ -1046,7 +1355,7 @@ describe('SettingsModal memory settings', () => {
     }
   })
 
-  it('keeps an unsaved host option draft and its disclosure open through a busy toggle', async () => {
+  it('keeps an unsaved host option draft open through a busy toggle', async () => {
     const hosts = [
       { id: 'host-a', label: 'Host A', transport: 'ssh', sshAlias: 'host-a', runnerStatus: 'ready', runnerVersion: '', platform: 'linux', architecture: 'arm64', lastSeenAt: '', instructionFile: '/tmp/AGENTS.md' },
     ]
@@ -1058,7 +1367,7 @@ describe('SettingsModal memory settings', () => {
     }
     const { host, root } = renderModal()
     try {
-      openRemoteHostsSection(host)
+      openRemoteHostsSection(host, 'Host A')
       const inputA = () => host.querySelector<HTMLInputElement>('[aria-label="Instruction file on Host A"]')!
       const saveA = () => Array.from(inputA().form!.querySelectorAll('button')).find(b => b.type === 'submit') as HTMLButtonElement
       setNativeInputValue(inputA(), '/tmp/draft-AGENTS.md')
@@ -1340,6 +1649,20 @@ describe('SettingsModal memory settings', () => {
     host.remove()
   })
 
+  it('opens the manual memory scan chooser from Memory settings', () => {
+    const openMemoryScanModal = vi.fn(async () => true)
+    const original = useAppStore.getState().openMemoryScanModal
+    useAppStore.setState({ openMemoryScanModal })
+    const { host, root } = renderModal()
+    try {
+      openMemorySettingsSection(host)
+      const scan = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Scan chats')
+      expect(scan?.disabled).toBe(false)
+      act(() => scan!.click())
+      expect(openMemoryScanModal).toHaveBeenCalledTimes(1)
+    } finally { useAppStore.setState({ openMemoryScanModal: original }); act(() => root.unmount()); host.remove() }
+  })
+
   it('shows a matching local alpha version in About without changing the release version', () => {
     const previous = useAppStore.getState()
     useAppStore.setState({ appVersion: 'V4.11.0', uiBuildId: '4.11.0-alpha-1-Darwin-20261002T220000Z' })
@@ -1477,6 +1800,10 @@ describe('SettingsModal memory settings', () => {
     expect(useAppStore.getState().setMemorySettings).toHaveBeenCalledWith({ streamLoopRepeatLimit: 0 })
     act(() => (host.querySelector('button[aria-label="Increase provider turn timeout by 15 minutes"]') as HTMLButtonElement).click())
     expect(useAppStore.getState().setMemorySettings).toHaveBeenCalledWith({ activeTurnInactivityTimeoutSeconds: 2700 })
+    // The tool call limit is its own row with the same 15-minute stepper and a two-hour default.
+    expect(host.querySelector('output[aria-label="Tool call limit"]')?.textContent).toBe('2 h')
+    act(() => (host.querySelector('button[aria-label="Decrease tool call limit by 15 minutes"]') as HTMLButtonElement).click())
+    expect(useAppStore.getState().setMemorySettings).toHaveBeenCalledWith({ toolCallTimeoutSeconds: 6300 })
 
     act(() => root.unmount())
     host.remove()
@@ -2373,6 +2700,8 @@ describe('SettingsModal memory settings', () => {
     const editName = () => { act(() => button('Back').click()); act(() => button('Back').click()) }
     try {
       act(() => host.querySelector<HTMLButtonElement>('[aria-label="Edit theme"]')!.click())
+      // The theme editor sits in the same padded frame as other settings pages.
+      expect(host.querySelector('[aria-label="Theme name"]')!.closest('.uam-settings-scroll > .uam-settings-frame')).not.toBeNull()
       review()
       expect(button('Save theme').disabled).toBe(true)
       act(() => button('Save theme').click())
@@ -2650,6 +2979,12 @@ describe('SettingsModal memory settings', () => {
     act(() => host.querySelector<HTMLButtonElement>('[aria-label="Computer use"]')!.click())
     expect(host.textContent).toContain('UAM Computer Use')
     expect(host.textContent).toContain('Screen Recording')
+    // A Gemini chat has no provider backend: the option is disabled and says why.
+    act(() => host.querySelector<HTMLButtonElement>('[role="combobox"][aria-label="Computer Use backend"]')!.click())
+    const providerBackend = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) => option.textContent?.includes('Provider built-in'))!
+    expect(providerBackend.disabled).toBe(true)
+    expect(providerBackend.textContent).toContain('Codex chats only')
+    act(() => providerBackend.closest<HTMLElement>('[role="listbox"]')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
     const uamControlToggle = host.querySelector<HTMLInputElement>('[aria-label="Allow UAM Control requests"]')
     expect(uamControlToggle?.disabled).toBe(false)
     await act(async () => { uamControlToggle?.click() })

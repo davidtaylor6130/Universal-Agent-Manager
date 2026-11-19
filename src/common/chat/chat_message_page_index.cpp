@@ -35,6 +35,11 @@ namespace uam::chat_pages
 			FingerprintHashString(hash, "input_write_completed");
 			FingerprintHashBool(hash, true);
 		}
+		if (message.role == MessageRole::User && message.input_delivery_tracked)
+		{
+			FingerprintHashString(hash, "input_delivery_tracked");
+			FingerprintHashBool(hash, true);
+		}
 		if (message.origin_request_id && input_provenance::ValidOriginRequestId(*message.origin_request_id))
 		{
 			FingerprintHashString(hash, "origin_request_id");
@@ -102,6 +107,8 @@ namespace uam::chat_pages
 			FingerprintHashString(hash, block.text);
 			FingerprintHashString(hash, block.tool_call_id);
 			FingerprintHashString(hash, block.request_id_json);
+			// Only html_view blocks carry a title; keep every existing fingerprint unchanged.
+			if (!block.title.empty()) FingerprintHashString(hash, block.title);
 			FingerprintHashString(hash, std::to_string(block.compaction_tokens_before));
 			FingerprintHashString(hash, std::to_string(block.compaction_tokens_after));
 		}

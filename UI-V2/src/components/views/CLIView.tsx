@@ -531,6 +531,7 @@ export function CLIView({ session }: CLIViewProps) {
       </div>}
       {pendingUserInput?.requestId.startsWith('uam-control:') && <UserInputInlineCard
         input={pendingUserInput}
+        sessionId={session.id}
         autoOpen={false}
         onResolve={(requestId, answers) => resolveAcpUserInput(session.id, requestId, answers)}
       />}

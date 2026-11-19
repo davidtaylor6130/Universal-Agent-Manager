@@ -4,6 +4,8 @@
 
 Background work captures the intended chat, host, workspace and operation identity; results must be revalidated before publication. Cancellation, UI closure and process exit are different events. Keep blocking I/O and expensive parsing off the UI thread and bound work, output and retries. Existing exceptions do not authorize new cross-layer shortcuts or an unrelated wholesale refactor.
 
+Paths stored, compared, parsed or written to JSON as text are UTF-8: convert with `PortablePathString`, `Utf8PathString` and `PathFromUtf8` in [`path_utils.h`](../../src/common/paths/path_utils.h). `std::filesystem::path(std::string)`, `.string()` and `.generic_string()` use the Windows code page, so a folder such as `Test Folder ü` would reach UTF-8 consumers as invalid bytes and throw.
+
 Startup bundled Markdown seeding uses an application-owned CEF thread instead of a shared file worker; shutdown revokes publication and joins that thread before CEF/data-root teardown, without interrupting filesystem I/O, so blocked I/O can still delay exit.
 
 [Platform](platform-boundaries.md) · [Providers](provider-boundaries.md) · [VCS](vcs-boundaries.md) · [Data authority](source-of-truth.md) · [Source map](../reference/source-map.md).

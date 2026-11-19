@@ -38,6 +38,8 @@ export interface ChatSearchFilterContext {
   nowMs?: number
   cliBindingBySessionId?: Record<string, ChatSearchCliBinding>
   acpBindingBySessionId?: Record<string, ChatSearchAcpBinding>
+  /** Chats with an active pull request watch; they stay in Active Chats between wakes. */
+  watchingSessionIds?: ReadonlySet<string>
 }
 
 export interface ChatSearchFolderRow {
@@ -283,6 +285,8 @@ export function buildChatSearchSessionGroups(
   }
   const nowMs = filterContext.nowMs ?? Date.now()
   const returnedAtMs = new Map<string, number>()
+  // A watch on any chat of a branch family keeps the family's row.
+  const watchingRootIds = new Set(sortedSessions.filter((candidate) => filterContext.watchingSessionIds?.has(candidate.id)).map(branchRootId))
 
   for (const session of sortedSessions) {
     const rootId = branchRootId(session)
@@ -296,10 +300,13 @@ export function buildChatSearchSessionGroups(
       : familyUpdatedMs.get(rootId) ?? 0
     // Marking done clears a stale "ready" too; only running turns and questions outrank it.
     const unsettled = isUnsettledChat(updatedMs, session.settledAt, nowMs)
-    const snoozed = (session.snoozedUntilMs ?? 0) > nowMs && (status?.type !== 'attention' || status.kind === 'error')
+    const snoozed = !session.automationPendingPrompt && (session.snoozedUntilMs ?? 0) > nowMs && (status?.type !== 'attention' || status.kind === 'error')
     const wokeAt = (session.snoozedUntilMs ?? 0) > 0 && !snoozed ? session.snoozedUntilMs! : 0
     if (snoozed) snoozedSessionIds.push(session.id)
-    if (!snoozed && (status?.type === 'processing' || status?.type === 'attention' || unsettled || isUnsettledChat(wokeAt, session.settledAt, nowMs) || (status?.type === 'done' && !session.settledAt))) {
+    // A watched chat is waiting on its pull request, so it stays between wakes whatever its age or earlier Done; ending the watch releases it.
+    const watching = isSearching ? filterContext.watchingSessionIds?.has(session.id) === true : watchingRootIds.has(rootId)
+    // A held chat stays until answered: Clear all, bulk Done, snooze and ageing never hide an unapproved prompt.
+    if (session.automationPendingPrompt || !snoozed && (watching || status?.type === 'processing' || status?.type === 'attention' || unsettled || isUnsettledChat(wokeAt, session.settledAt, nowMs) || (status?.type === 'done' && !session.settledAt))) {
       activeSessionIds.push(session.id)
       returnedAtMs.set(session.id, Math.max(updatedMs, wokeAt))
     }

@@ -20,9 +20,34 @@ export function formatTimeoutDuration(seconds: number) {
 }
 
 /**
+ * Raises the turn timeout, then restarts the turn in place. A refused restart puts the previous timeout back,
+ * so Restart never leaves a changed setting behind a turn that did not run.
+ */
+export async function restartWithRaisedTimeout({ previous, raised, queued, retryable, saveTimeout, retry, limitName = 'Timeout' }: {
+  previous: number
+  raised: number
+  queued: boolean
+  retryable: boolean
+  saveTimeout: (seconds: number) => Promise<boolean>
+  retry: () => Promise<{ ok: boolean; error?: string }>
+  /** Which limit Restart raises, as it reads at the start of a sentence. */
+  limitName?: string
+}): Promise<TimeoutRestartOutcome | undefined> {
+  if (!await saveTimeout(raised)) return { tone: 'error', message: `Could not save the new ${limitName.toLowerCase()}. Nothing was restarted.` }
+  const raisedText = `${limitName} raised to ${formatTimeoutDuration(raised)}.`
+  if (queued) return { tone: 'info', message: `${raisedText} Queued messages are sent first, so this turn was not restarted; send a follow-up afterwards to continue it.` }
+  if (!retryable) return { tone: 'info', message: `${raisedText} This turn already produced output, so send a follow-up to continue it.` }
+  const result = await retry()
+  if (result.ok) return undefined
+  const refused = `The turn did not restart: ${result.error || 'retry was refused.'}`
+  return { tone: 'error', message: await saveTimeout(previous) ? refused : `${raisedText} ${refused}` }
+}
+
+/**
  * A timeout stop explained in plain words, replacing the raw provider error banner. Restart is offered
  * only for a limit UAM owns (a known value); another provider limit is explained without it. A stream-watch
  * loop stop (#636) uses the same notice with the repeated content and a plain restart instead of +15 min.
+ * A tool-call limit stop names the tool call, and its restart raises that limit instead of the turn timeout.
  */
 export function TimeoutStopNotice({ timeoutStop, onRestart, onDismiss, copyAction, restartLabel = 'Restart' }: {
   timeoutStop: AcpTimeoutStop
@@ -36,6 +61,7 @@ export function TimeoutStopNotice({ timeoutStop, onRestart, onDismiss, copyActio
   const [restarting, setRestarting] = useState(false)
   const [outcome, setOutcome] = useState<TimeoutRestartOutcome>()
   const loop = timeoutStop.kind === 'loop'
+  const tool = timeoutStop.kind === 'tool'
   const owned = loop || timeoutStop.seconds > 0
   const value = !loop && owned ? ` (${formatTimeoutDuration(timeoutStop.seconds)})` : ''
   return (
@@ -77,12 +103,12 @@ export function TimeoutStopNotice({ timeoutStop, onRestart, onDismiss, copyActio
             )}
           </>
         ) : (
-          <p>{timeoutStop.label}{value} expired, so this turn was stopped. Nothing was lost: your messages and any output so far are saved.</p>
+          <p>{tool ? `A tool call exceeded its ${formatTimeoutDuration(timeoutStop.seconds)} limit with no result` : `${timeoutStop.label}${value} expired`}, so this turn was stopped. Nothing was lost: your messages and any output so far are saved.</p>
         )}
         <p className="mt-1" style={{ color: 'var(--text-3)' }}>
           {loop
             ? `${restartLabel === 'Restart' ? '' : 'Continue in new chat re-runs your message in a branch chat; queued messages stay in this chat. '}You can change or turn off this limit in Settings, Goal Loops, Repeated output limit.`
-            : owned ? 'You can also change this limit in Settings, Goal Loops, Provider turn timeout.' : 'This limit is set in the provider’s own configuration, not by UAM.'}
+            : owned ? `You can also change this limit in Settings, Goal Loops, ${tool ? 'Tool call limit' : 'Provider turn timeout'}.` : 'This limit is set in the provider’s own configuration, not by UAM.'}
         </p>
         {outcome?.tone === 'info' && <p className="mt-1">{outcome.message}</p>}
       </Notice>

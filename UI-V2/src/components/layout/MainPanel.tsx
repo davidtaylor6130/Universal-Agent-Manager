@@ -3,14 +3,14 @@ import { SubagentHeader } from '../chat/SubagentTranscript'
 import { SubagentRouteStage, subagentStageKey } from './SubagentRouteStage'
 import { activateSubagentLeaf, canExecuteNativeSubagent, hasNativeSubagentLineage, clearSubagentView, subagentRouteFor, type SubagentRoute, subagentParentFor, subscribeSubagentNavigation, subagentNavigationRevision } from '../../utils/subagentNavigation'
 import { ExecutionRoutingWaitNotice } from '../modals/ExecutionRoutingDialog'
-import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
-import { AlertTriangle, CheckCircle2, Columns2, MessageSquare, Plus, PowerOff, Rows2, SquareTerminal, X, XCircle } from 'lucide-react'
+import { lazy, memo, Suspense, useCallback, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { AlertTriangle, CheckCircle2, CircleDashed, Columns2, Loader2, MessageSquare, Plus, PowerOff, Rows2, SquareTerminal, Timer, X, XCircle } from 'lucide-react'
 import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { ChatView } from '../views/ChatView'
 import { isCefContext, isCompanionContext, sendToCEF } from '../../ipc/cefBridge'
-import { Button, IconButton, SegmentedControl, Tooltip } from '../ui'
+import { Button, IconButton, Notice, SegmentedControl, StatusDot, Tooltip } from '../ui'
 import { shortcutLabel } from '../../utils/shortcuts'
 import { reportAppFailure } from '../../utils/appFailure'
 import type { Session } from '../../types/session'
@@ -21,7 +21,7 @@ import { useCountdownClock } from '../../hooks/useCountdownClock'
 import './MainPanel.css'
 
 const CLIView = lazy(() => import('../views/CLIView').then(({ CLIView }) => ({ default: CLIView })))
-const HIDDEN_RUNTIME_STOP = { visible: false, disabled: true, deadline: undefined, timeout: undefined, countdownStarts: undefined }
+const HIDDEN_RUNTIME_STOP = { visible: false, disabled: true, failed: false, heldCount: 0, deadline: undefined, timeout: undefined, countdownStarts: undefined }
 import {
   chatGridLeaves,
   chatPaneColors,
@@ -65,6 +65,35 @@ const PushStatusDot = memo(function PushStatusDot() {
     </Tooltip>
   )
 })
+
+export function BootstrapStateNotice() {
+  const error = useAppStore((s) => s.bootstrapStateError)
+  const loading = useAppStore((s) => s.bootstrapStateLoading)
+  const retry = useAppStore((s) => s.retryBootstrapState)
+  // Count Retries that ended in an error so the alert text changes and is announced again.
+  const [failedRetries, setFailedRetries] = useState(0)
+  const wasLoading = useRef(false)
+  useEffect(() => {
+    if (wasLoading.current && !loading) setFailedRetries((count) => (error ? count + 1 : 0))
+    wasLoading.current = loading
+  }, [loading, error])
+  if (!error) return null
+  return (
+    <div className="px-2 pt-2">
+      <Notice tone="error" title="Startup state not loaded" dismissible={false} actions={<Button
+        size="sm"
+        aria-label="Retry loading startup state"
+        // aria-disabled, not disabled: a disabled button drops focus to body mid-retry.
+        aria-disabled={loading || undefined}
+        aria-busy={loading || undefined}
+        leadingIcon={loading ? <Loader2 className="uam-btn__spinner" size={13} aria-hidden /> : undefined}
+        onClick={() => { if (!loading) retry() }}
+      >Retry</Button>}>
+        {error}{failedRetries > 0 && ` Retry failed (attempt ${failedRetries}).`}
+      </Notice>
+    </div>
+  )
+}
 
 function hasNonBlankChatContent(messages: Message[] | undefined) {
   return Boolean(messages?.some((message) =>
@@ -117,7 +146,10 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
     const acp = s.acpBindingBySessionId[session.id]
     return {
       visible: Boolean(acp?.running),
-      disabled: acp?.lifecycleState !== 'ready' || Boolean(acp?.processing || acp?.pendingPermission || acp?.pendingUserInput),
+      // A failed runtime stays stoppable so the Failed state is not a dead end.
+      disabled: (acp?.lifecycleState !== 'ready' && acp?.lifecycleState !== 'error') || Boolean(acp?.processing || acp?.pendingPermission || acp?.pendingUserInput),
+      failed: acp?.lifecycleState === 'error',
+      heldCount: acp?.queueHeld ? (acp.queuedPrompts?.length ?? 0) : 0,
       deadline: acp?.idleShutdownAtMs,
       countdownStarts: acp?.idleCountdownStartsAtMs,
       timeout: acp?.idleShutdownTimeoutSeconds,
@@ -131,14 +163,8 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
     ? Math.min(1, idleSecondsLeft / runtimeStopState.timeout)
     : null
   const recordActivity = useRuntimeActivity(session.id)
+  const runtimeDescriptionId = useId()
   const stopAcpSession = useAppStore((s) => s.stopAcpSession)
-  const [stopRuntimeError, setStopRuntimeError] = useState('')
-  useEffect(() => setStopRuntimeError(''), [session.id])
-  useEffect(() => {
-    if (!stopRuntimeError) return
-    reportAppFailure('Runtime stop failed', stopRuntimeError)
-    setStopRuntimeError('')
-  }, [stopRuntimeError])
   const refreshFor = useRef({ key: nativeFollowupOwnerKey })
   if (refreshFor.current.key !== nativeFollowupOwnerKey) refreshFor.current = { key: nativeFollowupOwnerKey }
   const refreshOwner = refreshFor.current
@@ -188,33 +214,37 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
     const countdown = idleSecondsLeft !== null
       ? `${Math.floor(idleSecondsLeft / 60)}:${String(idleSecondsLeft % 60).padStart(2, '0')}`
       : ''
-    const phase = runtimeStopState.disabled ? 'busy' : idleSecondsLeft !== null && idleSecondsLeft <= 60 ? 'ending' : countdown ? 'idle' : 'live'
+    const phase = runtimeStopState.failed && !runtimeStopState.disabled ? 'failed' : runtimeStopState.disabled ? 'busy'
+      : idleSecondsLeft !== null && idleSecondsLeft <= 60 ? 'ending' : countdown ? 'idle' : 'live'
+    const idleDescription = `Idle timeout · stops in ${countdown}. Activity restarts the one-minute grace period. Click to stop now.`
+    // Each phase has its own icon so running, timing out and failed read apart without colour.
+    const { icon, state, description } = {
+      failed: { icon: <StatusDot tone="error" />, state: 'Failed', description: 'Runtime failed · click to stop it' },
+      busy: { icon: <CircleDashed size={12} className="uam-working-ring" aria-hidden />, state: 'Busy', description: 'Running · stop is available when this turn finishes' },
+      ending: { icon: <Timer size={12} aria-hidden />, state: countdown, description: idleDescription },
+      idle: { icon: <Timer size={12} aria-hidden />, state: countdown, description: idleDescription },
+      live: { icon: <PowerOff size={12} aria-hidden />, state: 'Live', description: 'Runtime running · click to stop it' },
+    }[phase]
+    // Stopping ends a held queue (or leaves it held if it cannot be recorded), so say so before the click.
+    const fullDescription = runtimeStopState.heldCount > 0 && !runtimeStopState.disabled
+      ? `${description}. Stopping will not send ${runtimeStopState.heldCount} held message${runtimeStopState.heldCount === 1 ? '' : 's'}; the text stays in this chat.`
+      : description
     return (
-      <Tooltip
-        label={runtimeStopState.disabled
-          ? 'Runtime busy · stop is available when this turn finishes'
-          : countdown
-            ? `Runtime idle · shuts down automatically in ${countdown}. Click to stop now.`
-            : 'Runtime running · click to stop it'}
-        side="bottom"
-      >
+      <Tooltip label={fullDescription} side="bottom">
         {/* ui: raw button kept — runtime pill has its own chrome (uam-runtime-pill); Button would restyle it */}
         <button
           type="button"
           className="uam-runtime-pill"
           data-phase={phase}
           aria-label="Stop runtime"
+          aria-describedby={runtimeDescriptionId}
           disabled={runtimeStopState.disabled}
-          onClick={() => {
-            setStopRuntimeError('')
-            void stopAcpSession(session.id, 'timeout').then((ok) => {
-              if (!ok) setStopRuntimeError('The runtime did not stop. Try again.')
-            }).catch(() => setStopRuntimeError('The runtime did not stop. Try again.'))
-          }}
+          // The store reports a refused stop with its reason; sendToCEF resolves rather than rejects.
+          onClick={() => { void stopAcpSession(session.id, 'timeout') }}
         >
           <span className="uam-runtime-stop-icon">
-            <PowerOff size={12} aria-hidden />
-            {!runtimeStopState.disabled && idleFraction !== null && (
+            {icon}
+            {(phase === 'idle' || phase === 'ending') && idleFraction !== null && (
               <svg className="uam-runtime-stop-timer" viewBox="0 0 28 28" aria-hidden="true">
                 <circle className="uam-runtime-stop-track" cx="14" cy="14" r="12" fill="none" strokeWidth="2.5" />
                 <circle cx="14" cy="14" r="12" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"
@@ -222,8 +252,9 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
               </svg>
             )}
           </span>
+          <span id={runtimeDescriptionId} className="sr-only">{fullDescription}</span>
           <span className="uam-runtime-pill__label" aria-hidden>
-            <span className="uam-runtime-pill__state">{phase === 'busy' ? 'Busy' : countdown || 'Live'}</span>
+            <span className="uam-runtime-pill__state">{state}</span>
             <span className="uam-runtime-pill__stop">Stop</span>
           </span>
         </button>
@@ -677,7 +708,8 @@ export function MainPanel() {
       data-testid={`pane-drop-target-${index + 1}`}
       data-leaf-id={leafId}
       data-drop-target={dropTargetPane === leafId}
-      style={{ outline: dropTargetPane === leafId ? `2px solid ${chatPaneColors[index]}` : 'none', outlineOffset: -2 }}
+      // --pane-drop-color lets a pointer drag from Pinned or Active (sortableDrag.ts) outline the pane the same way.
+      style={{ outline: dropTargetPane === leafId ? `2px solid ${chatPaneColors[index]}` : 'none', outlineOffset: -2, '--pane-drop-color': chatPaneColors[index] } as React.CSSProperties}
       onDragOver={(event) => {
         if (!Array.from(event.dataTransfer.types).includes('text/x-uam-chat-id')) return
         event.preventDefault()
@@ -762,6 +794,7 @@ export function MainPanel() {
         {isCefContext() && <PushStatusDot />}
       </div>
 
+      {isCefContext() && <BootstrapStateNotice />}
       <div className="min-h-0 flex-1" data-testid={`chat-grid-${leaves.length}`}>
         {renderNode(layout.root)}
       </div>

@@ -56,6 +56,17 @@ final class HomeCatalogueTests: XCTestCase
         XCTAssertTrue(result.unsorted.isEmpty)
     }
 
+    func testNestedCollectionsFlattenWithTheirParentPath()
+    {
+        var child = collection("child", ["a"])
+        child["parentId"] = "parent"
+        var loop = collection("loop", [])
+        loop["parentId"] = "loop"
+        let result = build([chat("a", ["folderId": "a"])], folders: [folder("a")], collections: [collection("parent", []), child, loop])
+        XCTAssertEqual(result.collections.map(\.name), ["Collection parent", "Collection parent / Collection child", "Collection loop"])
+        XCTAssertEqual(result.collections[1].workspaces.map(\.id), ["a"])
+    }
+
     func testPassiveResourcesAndOrganisationMetadataRemainAvailable()
     {
         var workspace = folder("a")

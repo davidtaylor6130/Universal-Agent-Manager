@@ -131,7 +131,7 @@ namespace uam::companion
 			state["settings"] = MobileSettings(state["settings"]);
 		if (state.contains("providers") && state["providers"].is_array())
 			for (auto& provider : state["providers"])
-				provider = Pick(provider, {"id", "name", "shortName", "outputMode", "supportsStructured", "supportsCli", "structuredProtocol", "structuredPermissionControl", "terminalPermissionControl", "nativeGoalCommand", "npmPackageName"});
+				provider = Pick(provider, {"id", "name", "shortName", "outputMode", "supportsStructured", "supportsCli", "structuredProtocol", "structuredPermissionControl", "terminalPermissionControl", "nativeGoalCommand", "supportsNativeSteering", "npmPackageName"});
 		if (state.contains("memoryActivity"))
 		{
 			const auto& activity = state["memoryActivity"];
@@ -146,6 +146,7 @@ namespace uam::companion
 		if (state.contains("shellActions"))
 			state["shellActions"] = nlohmann::json::array();
 		state.erase("shellActionNotification");
+		state.erase("companionConfirmations"); // Desktop-only; the phone never sees or answers its own held requests.
 		return state;
 	}
 
@@ -230,7 +231,7 @@ namespace uam::companion
 		const auto session = chat.find("acpSession");
 		if (session == chat.end() || !session->is_object() || !session->contains("queuedPrompts") || !(*session)["queuedPrompts"].is_array())
 			return {409, "Queued prompt is no longer visible. Refresh the queue."};
-		if (operation == "steer" && session->value("queueHeld", false)) return {409, "Resume the restored queue before steering."};
+		if (operation == "steer" && session->value("queueHeld", false)) return {409, "Resume the held queue before steering."};
 		const auto& queue = (*session)["queuedPrompts"];
 		const auto current_identity = [&](const nlohmann::json& identity)
 		{

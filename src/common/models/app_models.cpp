@@ -46,6 +46,18 @@ std::string GoalStatusToString(GoalStatus status)
 	return "active";
 }
 
+std::string ModelDecisionSource(std::string_view model_id)
+{
+	return std::string(kDecisionSourceModelPrefix).append(model_id);
+}
+
+std::string NormalizeDecisionSource(std::string_view source)
+{
+	const bool known = source.empty() || source == kDecisionSourceFilter || source == kDecisionSourceFallback ||
+	                   source == kDecisionSourceUnknown || source.starts_with(kDecisionSourceModelPrefix);
+	return known ? std::string(source) : std::string(kDecisionSourceUnknown);
+}
+
 GoalStatus GoalStatusFromString(std::string_view value)
 {
 	if (value == "complete")

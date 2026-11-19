@@ -657,6 +657,332 @@ UAM_TEST(MoveChatToFolderRejectsCrossMachineAndAllowsSafeSameHostMoves)
 	UAM_ASSERT(ChatHistorySyncService().MoveChatToFolder(app, app.chats.front(), "homelab-other"));
 }
 
+UAM_TEST(MoveRemoteChatWorkspaceReleasesEmptyHoldAndRefusesHeldInput)
+{
+	TempDir temp("uam-move-chat-queue-hold");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.folders = {
+	    {"homelab", "Homelab", "/srv/homelab", false, "ssh-homelab"},
+	    {"homelab-other", "Homelab other", "/srv/other", false, "ssh-homelab"},
+	};
+	ExecutionHost host;
+	host.id = "ssh-homelab"; host.ssh_alias = "homelab"; host.platform = "linux";
+	app.settings.execution_hosts.push_back(host);
+	ChatSession chat;
+	chat.id = "remote-held-chat";
+	chat.folder_id = "homelab";
+	chat.execution_host_id = "ssh-homelab";
+	chat.workspace_directory = "/srv/homelab";
+	chat.native_session_id = "previous-native";
+	chat.acp_queue_held = true;
+	chat.messages.push_back({MessageRole::User, "Keep this conversation", "now"});
+	uam::AcpQueuedUserPromptState queued;
+	queued.text = "Held follow-up.";
+	chat.acp_queued_prompts.push_back(queued);
+	app.chats.push_back(chat);
+
+	UAM_ASSERT(!ChatHistorySyncService().MoveChatToFolder(app, app.chats.front(), "homelab-other"));
+	UAM_ASSERT(app.status_line.find("held queued input") != std::string::npos);
+	UAM_ASSERT_EQ(app.chats.front().folder_id, std::string("homelab"));
+	UAM_ASSERT_EQ(app.chats.front().native_session_id, std::string("previous-native"));
+	UAM_ASSERT(app.chats.front().acp_queue_held && !app.chats.front().native_session_reset_pending);
+
+	app.chats.front().acp_queued_prompts.clear();
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = chat.id;
+	session->queue_held = true;
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+	UAM_ASSERT(ChatHistorySyncService().MoveChatToFolder(app, app.chats.front(), "homelab-other"));
+	UAM_ASSERT_EQ(app.chats.front().folder_id, std::string("homelab-other"));
+	UAM_ASSERT(app.chats.front().native_session_reset_pending);
+	UAM_ASSERT(!app.chats.front().acp_queue_held && !raw_session->queue_held);
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(saved.has_value() && !saved->acp_queue_held && saved->native_session_reset_pending);
+}
+
+UAM_TEST(RenameRemoteFolderDirectoryReleasesEmptyHoldAndRefusesHeldInput)
+{
+	TempDir temp("uam-rename-remote-folder-hold");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.folders = {{"homelab", "Homelab", "/srv/homelab", false, "ssh-homelab"}};
+	ExecutionHost host;
+	host.id = "ssh-homelab"; host.ssh_alias = "homelab"; host.platform = "linux";
+	app.settings.execution_hosts.push_back(host);
+	ChatSession chat;
+	chat.id = "remote-folder-held-chat";
+	chat.folder_id = "homelab";
+	chat.execution_host_id = "ssh-homelab";
+	chat.workspace_directory = "/srv/homelab";
+	chat.native_session_id = "previous-native";
+	chat.acp_queue_held = true;
+	chat.messages.push_back({MessageRole::User, "Keep this conversation", "now"});
+	uam::AcpQueuedUserPromptState queued;
+	queued.text = "Held follow-up.";
+	chat.acp_queued_prompts.push_back(queued);
+	app.chats.push_back(chat);
+
+	UAM_ASSERT(!RenameFolderById(app, "homelab", "Homelab", "/srv/moved"));
+	UAM_ASSERT(app.status_line.find("held queued input") != std::string::npos);
+	UAM_ASSERT_EQ(app.folders.front().directory, std::string("/srv/homelab"));
+	UAM_ASSERT_EQ(app.chats.front().native_session_id, std::string("previous-native"));
+	UAM_ASSERT(app.chats.front().acp_queue_held && !app.chats.front().native_session_reset_pending);
+
+	app.chats.front().acp_queued_prompts.clear();
+	UAM_ASSERT(RenameFolderById(app, "homelab", "Homelab", "/srv/moved"));
+	UAM_ASSERT_EQ(app.chats.front().workspace_directory, std::string("/srv/moved"));
+	UAM_ASSERT(app.chats.front().native_session_reset_pending && !app.chats.front().acp_queue_held);
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(saved.has_value() && !saved->acp_queue_held && saved->native_session_reset_pending);
+}
+
+UAM_TEST(RenameRemoteFolderDirectoryKeepsHoldOfWorktreeChatWithPendingReset)
+{
+	TempDir temp("uam-rename-remote-folder-worktree-hold");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.folders = {{"homelab", "Homelab", "/srv/homelab", false, "ssh-homelab"}};
+	ExecutionHost host;
+	host.id = "ssh-homelab"; host.ssh_alias = "homelab"; host.platform = "linux";
+	app.settings.execution_hosts.push_back(host);
+	ChatSession chat;
+	chat.id = "remote-worktree-held-chat";
+	chat.folder_id = "homelab";
+	chat.execution_host_id = "ssh-homelab";
+	chat.workspace_directory = "/srv/worktrees/feature";
+	chat.native_session_reset_pending = true;
+	chat.acp_queue_held = true;
+	uam::AcpQueuedUserPromptState queued;
+	queued.text = "Held follow-up.";
+	chat.acp_queued_prompts.push_back(queued);
+	app.chats.push_back(chat);
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = chat.id;
+	session->queue_held = true;
+	session->queued_user_prompts.push_back(queued);
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	UAM_ASSERT(RenameFolderById(app, "homelab", "Homelab", "/srv/moved"));
+	UAM_ASSERT_EQ(app.chats.front().workspace_directory, std::string("/srv/worktrees/feature"));
+	UAM_ASSERT(app.chats.front().acp_queue_held && raw_session->queue_held);
+	UAM_ASSERT_EQ(app.chats.front().acp_queued_prompts.size(), std::size_t{1});
+}
+
+UAM_TEST(RenameRemoteFolderDirectoryKeepsHoldOfUnhydratedWorktreeChat)
+{
+	TempDir temp("uam-rename-remote-folder-unhydrated-hold");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.folders = {{"homelab", "Homelab", "/srv/homelab", false, "ssh-homelab"}};
+	ExecutionHost host;
+	host.id = "ssh-homelab"; host.ssh_alias = "homelab"; host.platform = "linux";
+	app.settings.execution_hosts.push_back(host);
+	ChatSession chat;
+	chat.id = "remote-worktree-unhydrated-chat";
+	chat.folder_id = "homelab";
+	chat.execution_host_id = "ssh-homelab";
+	chat.workspace_directory = "/srv/worktrees/feature";
+	chat.native_session_reset_pending = true;
+	chat.acp_queue_held = true;
+	Message unsent{MessageRole::User, "Unsent prompt", "now"};
+	unsent.acp_prompt_not_sent = true;
+	chat.messages.push_back(unsent);
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	const std::optional<ChatSession> summary = ChatRepository::LoadLocalChat(temp.root, chat.id, false);
+	UAM_ASSERT(summary.has_value() && !summary->messages_loaded && summary->messages.empty());
+	app.chats.push_back(*summary);
+
+	UAM_ASSERT(RenameFolderById(app, "homelab", "Homelab", "/srv/moved"));
+	UAM_ASSERT(app.chats.front().acp_queue_held);
+	UAM_ASSERT(app.chats.front().native_session_reset_pending);
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(saved.has_value() && saved->acp_queue_held);
+	UAM_ASSERT_EQ(saved->messages.size(), std::size_t{1});
+}
+
+UAM_TEST(RenameRemoteFolderDirectoryRetiresIdleTerminalOfResetChat)
+{
+	TempDir temp("uam-rename-remote-folder-idle-terminal");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.folders = {{"homelab", "Homelab", "/srv/homelab", false, "ssh-homelab"}};
+	ExecutionHost host;
+	host.id = "ssh-homelab"; host.ssh_alias = "homelab"; host.platform = "linux";
+	app.settings.execution_hosts.push_back(host);
+	ChatSession chat;
+	chat.id = "remote-idle-terminal-chat";
+	chat.folder_id = "homelab";
+	chat.execution_host_id = "ssh-homelab";
+	chat.workspace_directory = "/srv/homelab";
+	chat.native_session_id = "old-directory-session";
+	chat.messages.push_back({MessageRole::User, "Keep this conversation", "now"});
+	app.chats.push_back(chat);
+	auto terminal = std::make_unique<uam::CliTerminalState>();
+	terminal->frontend_chat_id = chat.id;
+	terminal->attached_chat_id = chat.id;
+	terminal->attached_session_id = "old-directory-session";
+	terminal->running = true;
+	terminal->lifecycle_state = uam::CliTerminalLifecycleState::Idle;
+	app.cli_terminals.push_back(std::move(terminal));
+
+	UAM_ASSERT(RenameFolderById(app, "homelab", "Homelab", "/srv/moved"));
+	UAM_ASSERT(app.cli_terminals.empty());
+	UAM_ASSERT(app.chats.front().native_session_id.empty());
+	UAM_ASSERT(app.chats.front().native_session_reset_pending);
+	std::string error;
+	UAM_ASSERT(uam::PrepareCliTerminalForAcpLaunch(app, chat.id, &error));
+	UAM_ASSERT(app.chats.front().native_session_id.empty());
+	UAM_ASSERT(app.chats.front().native_session_reset_pending);
+}
+
+UAM_TEST(RenameRemoteFolderDirectoryIsRefusedByBusyTerminal)
+{
+	TempDir temp("uam-rename-remote-folder-busy-terminal");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.folders = {{"homelab", "Homelab", "/srv/homelab", false, "ssh-homelab"}};
+	ExecutionHost host;
+	host.id = "ssh-homelab"; host.ssh_alias = "homelab"; host.platform = "linux";
+	app.settings.execution_hosts.push_back(host);
+	ChatSession chat;
+	chat.id = "remote-busy-terminal-chat";
+	chat.folder_id = "homelab";
+	chat.execution_host_id = "ssh-homelab";
+	chat.workspace_directory = "/srv/homelab";
+	chat.native_session_id = "current-session";
+	chat.messages.push_back({MessageRole::User, "Keep this conversation", "now"});
+	app.chats.push_back(chat);
+	auto terminal = std::make_unique<uam::CliTerminalState>();
+	terminal->frontend_chat_id = chat.id;
+	terminal->attached_chat_id = chat.id;
+	terminal->attached_session_id = "current-session";
+	terminal->running = true;
+	terminal->lifecycle_state = uam::CliTerminalLifecycleState::Busy;
+	app.cli_terminals.push_back(std::move(terminal));
+
+	UAM_ASSERT(!RenameFolderById(app, "homelab", "Homelab", "/srv/moved"));
+	UAM_ASSERT_EQ(app.folders.front().directory, std::string("/srv/homelab"));
+	UAM_ASSERT_EQ(app.chats.front().native_session_id, std::string("current-session"));
+	UAM_ASSERT(!app.chats.front().native_session_reset_pending);
+	UAM_ASSERT_EQ(app.cli_terminals.size(), std::size_t{1});
+	app.cli_terminals.front()->running = false;
+}
+
+UAM_TEST(RemoteWorkspaceChangesNameTheRealReasonAndBlockingChat)
+{
+	TempDir temp("uam-remote-reset-refusal-reason");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.folders = {{"homelab", "Homelab", "/srv/homelab", false, "ssh-homelab"}, {"homelab-other", "Other", "/srv/other", false, "ssh-homelab"}};
+	ExecutionHost host;
+	host.id = "ssh-homelab"; host.ssh_alias = "homelab"; host.platform = "linux";
+	app.settings.execution_hosts.push_back(host);
+	ChatSession chat;
+	chat.id = "remote-reason-chat";
+	chat.title = "Release notes";
+	chat.folder_id = "homelab";
+	chat.execution_host_id = "ssh-homelab";
+	chat.workspace_directory = "/srv/homelab";
+	chat.acp_queue_held = true;
+	chat.remote_active_turn_id = "uncertain-turn";
+	Message row{MessageRole::User, "Maybe delivered.", "now"};
+	row.acp_prompt_not_sent = true;
+	chat.messages.push_back(row);
+	chat.remote_turn_user_message_index = 0;
+	app.chats.push_back(chat);
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	// An uncertain row has no Resume or Discard, so the refusal names the real way out.
+	UAM_ASSERT(!ChatHistorySyncService().MoveChatToFolder(app, app.chats.front(), "homelab-other"));
+	UAM_ASSERT(app.status_line.find("change the chat's provider") != std::string::npos);
+	UAM_ASSERT(app.status_line.find("Resume") == std::string::npos);
+	UAM_ASSERT(!RenameFolderById(app, "homelab", "Homelab", "/srv/moved"));
+	UAM_ASSERT(app.status_line.find("Release notes") != std::string::npos);
+	UAM_ASSERT(app.status_line.find("change the chat's provider") != std::string::npos);
+	// A dispatched prompt has no Resume or Discard either.
+	uam::AcpQueuedUserPromptState dispatched;
+	dispatched.text = "Dispatched.";
+	app.chats.front().acp_queued_prompts = {dispatched};
+	app.chats.front().acp_dispatched_queued_prompt_count = 1;
+	UAM_ASSERT(!ChatHistorySyncService().MoveChatToFolder(app, app.chats.front(), "homelab-other"));
+	UAM_ASSERT(app.status_line.find("Change the chat's provider") != std::string::npos);
+	UAM_ASSERT(app.status_line.find("Resume") == std::string::npos);
+}
+
+UAM_TEST(ChatMoveKeepsHoldWhileDeliveryIsUncertainAndSendEndsItOnceSettled)
+{
+	TempDir temp("uam-move-keeps-uncertain-hold");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.folders = {{"homelab", "Homelab", "/srv/homelab", false, "ssh-homelab"}, {"homelab-other", "Other", "/srv/other", false, "ssh-homelab"}};
+	ExecutionHost host;
+	host.id = "ssh-homelab"; host.ssh_alias = "homelab"; host.platform = "linux";
+	app.settings.execution_hosts.push_back(host);
+	ChatSession chat;
+	chat.id = "remote-uncertain-move";
+	chat.folder_id = "homelab";
+	chat.execution_host_id = "ssh-homelab";
+	chat.workspace_directory = "/srv/homelab";
+	chat.native_session_id = "previous-native";
+	chat.acp_queue_held = true;
+	chat.remote_active_turn_id = "uncertain-turn";
+	chat.messages.push_back({MessageRole::User, "Sent, outcome unknown.", "now"});
+	app.chats.push_back(chat);
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	UAM_ASSERT(ChatHistorySyncService().MoveChatToFolder(app, app.chats.front(), "homelab-other"));
+	UAM_ASSERT_EQ(app.chats.front().folder_id, std::string("homelab-other"));
+	UAM_ASSERT(app.chats.front().native_session_reset_pending && app.chats.front().acp_queue_held);
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, chat.id);
+	UAM_ASSERT(saved.has_value() && saved->acp_queue_held);
+	// Once settled nothing protects the hold, so the reset's Send route may end it.
+	app.chats.front().remote_active_turn_id.clear();
+	UAM_ASSERT(uam::QueueHoldHasNoInput(app, app.chats.front()));
+}
+
+UAM_TEST(RemoteWorkspaceChangesRefuseStorageProblemQueueHold)
+{
+	for (const bool rename : {false, true})
+	{
+		TempDir temp("uam-remote-workspace-storage-hold");
+		uam::AppState app;
+		app.data_root = temp.root;
+		app.folders = {
+		    {"homelab", "Homelab", "/srv/homelab", false, "ssh-homelab"},
+		    {"homelab-other", "Homelab other", "/srv/other", false, "ssh-homelab"},
+		};
+		ExecutionHost host;
+		host.id = "ssh-homelab"; host.ssh_alias = "homelab"; host.platform = "linux";
+		app.settings.execution_hosts.push_back(host);
+		ChatSession chat;
+		chat.id = "remote-storage-held-chat";
+		chat.folder_id = "homelab";
+		chat.execution_host_id = "ssh-homelab";
+		chat.workspace_directory = "/srv/homelab";
+		chat.native_session_id = "previous-native";
+		chat.acp_queue_held = true;
+		chat.acp_queue_storage_error = true;
+		chat.messages.push_back({MessageRole::User, "Keep this conversation", "now"});
+		app.chats.push_back(chat);
+		const fs::path journal = temp.root / "queue-outboxes" / (chat.id + ".json");
+		fs::create_directories(journal.parent_path());
+		const std::string journal_bytes = R"({"unreadable-journal-input":"retain me"})";
+		{
+			std::ofstream out(journal, std::ios::binary);
+			out << journal_bytes;
+		}
+		if (rename) UAM_ASSERT(!RenameFolderById(app, "homelab", "Homelab", "/srv/moved"));
+		else UAM_ASSERT(!ChatHistorySyncService().MoveChatToFolder(app, app.chats.front(), "homelab-other"));
+		UAM_ASSERT(app.status_line.find("saved queue could not be read") != std::string::npos);
+		UAM_ASSERT_EQ(app.chats.front().folder_id, std::string("homelab"));
+		UAM_ASSERT_EQ(app.chats.front().workspace_directory, std::string("/srv/homelab"));
+		UAM_ASSERT(app.chats.front().acp_queue_held && !app.chats.front().native_session_reset_pending);
+		UAM_ASSERT_EQ(ReadFile(journal), journal_bytes);
+		UAM_ASSERT(!ChatRepository::LoadLocalChat(temp.root, chat.id).has_value());
+	}
+}
+
 UAM_TEST(MoveOpenCodeChatToDifferentWorkspaceStartsFreshNativeSession)
 {
 	TempDir temp("uam-move-opencode-workspace");
@@ -2122,6 +2448,80 @@ UAM_TEST(ImportedWorktreeFoldersPreserveProviderWorkingDirectories)
 	UAM_ASSERT(uam::io::WriteTextFile(worktree / ".git", "gitdir: missing\n"));
 	UAM_ASSERT(FolderDirectoryMatches(uam::ResolveImportedWorkspaceFolderDirectory(worktree), worktree));
 }
+
+namespace
+{
+	void WriteLinkedWorktreeFixture(const fs::path& main, const fs::path& linked)
+	{
+		const fs::path registration = main / ".git" / "worktrees" / "fixture";
+		fs::create_directories(registration);
+		fs::create_directories(linked);
+		UAM_ASSERT(uam::io::WriteTextFile(linked / ".git", "gitdir: " + registration.string() + "\n"));
+		UAM_ASSERT(uam::io::WriteTextFile(registration / "gitdir", (linked / ".git").string() + "\n"));
+		UAM_ASSERT(uam::io::WriteTextFile(registration / "commondir", "../..\n"));
+	}
+}
+
+UAM_TEST(ImportedWorktreeLookupPassesThroughSvnCheckoutToGit)
+{
+	TempDir temp("uam-wt-svn");
+	const fs::path main = temp.root / "main", linked = temp.root / "linked";
+	WriteLinkedWorktreeFixture(main, linked);
+	fs::create_directories(main / "vendor");
+	fs::create_directories(linked / "vendor" / ".svn");
+	// A lookup ending at either marker would stop at vendor/.svn and keep the linked path.
+	UAM_ASSERT(FolderDirectoryMatches(uam::ResolveImportedWorkspaceFolderDirectory(linked / "vendor"), main / "vendor"));
+}
+
+UAM_TEST(ImportedWorkspaceContainmentStopsAtNearestGitOrSvnRootInclusively)
+{
+	TempDir temp("uam-import-vcs-boundary");
+	for (const std::string marker : {".git", ".svn"})
+	{
+		const fs::path outer = temp.root / ("outer" + marker);
+		const fs::path checkout = outer / "checkout";
+		const fs::path workspace = checkout / "src";
+		fs::create_directories(workspace);
+		fs::create_directories(checkout / marker);
+		fs::create_directories(outer / "plain" / "child");
+		const std::vector<ChatFolder> at_root{{"root", "Root", checkout.string(), false, "local"}};
+		const std::vector<ChatFolder> above_root{{"outer", "Outer", outer.string(), false, "local"}};
+		UAM_ASSERT(uam::ImportedWorkspaceMatchesFolder(workspace, checkout));
+		UAM_ASSERT(!uam::ImportedWorkspaceMatchesFolder(workspace, outer));
+		UAM_ASSERT(uam::FindImportedWorkspaceFolder(at_root, workspace) != nullptr);
+		UAM_ASSERT(uam::FindImportedWorkspaceFolder(above_root, workspace) == nullptr);
+		// Containment continues to any registered ancestor when no marker intervenes.
+		UAM_ASSERT(uam::ImportedWorkspaceMatchesFolder(outer / "plain" / "child", outer));
+		UAM_ASSERT(uam::FindImportedWorkspaceFolder(above_root, outer / "plain" / "child") != nullptr);
+	}
+}
+
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+UAM_TEST(ClaudeWorktreeDiscoveryPassesThroughSvnCheckoutToGitRegistrations)
+{
+	TempDir temp("uam-wt-svn-claude");
+	const fs::path main = temp.root / "main", linked = temp.root / "linked";
+	WriteLinkedWorktreeFixture(main, linked);
+	fs::create_directories(main / "vendor" / ".svn");
+	fs::create_directories(linked / "vendor" / ".svn");
+	ScopedEnvVar claude_env("CLAUDE_CONFIG_DIR", (temp.root / "claude").string());
+	std::string encoded = (linked / "vendor").string();
+	for (char& character : encoded)
+		if (!std::isalnum(static_cast<unsigned char>(character))) character = '-';
+	const fs::path project = temp.root / "claude" / "projects" / encoded;
+	fs::create_directories(project);
+	const nlohmann::json user = {{"uuid", "user-1"}, {"type", "user"}, {"cwd", (linked / "vendor").string()}, {"message", {{"role", "user"}, {"content", "Linked SVN child"}}}};
+	UAM_ASSERT(uam::io::WriteTextFile(project / "claude-session.jsonl", user.dump() + "\n"));
+	ChatFolder folder;
+	folder.id = "vendor-folder";
+	folder.title = "Vendor";
+	folder.directory = (main / "vendor").string();
+	const auto discovery = ChatHistorySyncService().DiscoverProviderChatsForFolder(folder, nullptr, {}, 0, false, {}, {}, uam::provider_ids::kClaudeCli);
+	if (!discovery.result.success) throw TestFailure(uam::strings::Join(discovery.result.errors, " "));
+	// A lookup ending at vendor/.svn would never read the Git registrations that name the linked project.
+	UAM_ASSERT_EQ(discovery.chats.size(), static_cast<std::size_t>(1));
+}
+#endif
 
 UAM_TEST(ImportCodexRolloutsForFolderIsWorkspaceScopedAndIdempotent)
 {

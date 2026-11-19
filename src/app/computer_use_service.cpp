@@ -173,6 +173,7 @@ namespace uam
 		std::vector<ChatSession> baseline;
 		std::vector<std::size_t> changed_indices;
 		std::unordered_map<std::string, std::string> signatures;
+		std::optional<std::unordered_set<std::string>> session_ids;
 	};
 
 	namespace
@@ -248,20 +249,32 @@ namespace uam
 					}
 				}
 			}
+			if (scan)
+			{
+				m_sessionIds = std::move(scan->session_ids);
+				m_sessionIdsRoot = scan->state.data_root;
+			}
 			m_retiredScan = std::move(scan);
 		}
 		const std::chrono::steady_clock::time_point publication_finished = std::chrono::steady_clock::now();
-		if (!m_scan.valid() && GetAppTimeSeconds() >= m_nextScanTime)
+		// A scan's result is published only while Computer Use is globally enabled, so a disabled install copies no catalog.
+		// Its last snapshot is released on a worker as usual instead of being held until Computer Use is enabled again.
+		if (!m_scan.valid() && !app.settings.computer_use_globally_enabled && m_retiredScan)
+			uam::platform::StartBackgroundThread([retired = std::move(m_retiredScan)]() mutable { retired.reset(); }).detach();
+		if (!m_scan.valid() && app.settings.computer_use_globally_enabled && GetAppTimeSeconds() >= m_nextScanTime)
 		{
 			std::shared_ptr<Scan> scan = std::make_shared<Scan>();
 			scan->state.data_root = app.data_root;
 			scan->state.settings.computer_use_globally_enabled = app.settings.computer_use_globally_enabled;
 			scan->state.computer_use_by_chat_id = app.computer_use_by_chat_id;
 			scan->state.computer_use_revocation_pending_chat_ids = app.computer_use_revocation_pending_chat_ids;
-			scan->baseline.reserve(app.chats.size());
-			scan->signatures.reserve(app.chats.size());
+			// Poll leaves a chat alone unless it is enabled, has state or has a session folder, so only those are
+			// copied: snapshotting every chat four times a second cost the GUI thread milliseconds on large installs.
+			// A folder created since the last listing is picked up by the scan after it.
+			const bool listed = m_sessionIds.has_value() && m_sessionIdsRoot == app.data_root;
 			for (const ChatSession& chat : app.chats)
 			{
+				if (listed && !chat.computer_use_enabled && !app.computer_use_by_chat_id.contains(chat.id) && !m_sessionIds->contains(chat.id)) continue;
 				scan->baseline.push_back(ControlSnapshot(chat));
 				const auto prior = app.computer_use_by_chat_id.find(chat.id);
 				scan->signatures[chat.id] = prior == app.computer_use_by_chat_id.end() ? "" : prior->second.source_signature;
@@ -276,6 +289,7 @@ namespace uam
 					prior_states.emplace(entry.first, std::make_pair(entry.second.fingerprint, entry.second.source_signature));
 				scan->state.chats = scan->baseline;
 				(void)Poll(scan->state);
+				scan->session_ids = ExistingSessionIds(scan->state);
 				// Unchanged scans need no catalog lookup or runtime-state copying on the GUI thread.
 				for (std::size_t index = 0; index < scan->baseline.size(); ++index)
 				{
@@ -290,6 +304,7 @@ namespace uam
 				}
 				return scan;
 			});
+			m_lastScanChatCount = scan->baseline.size();
 			m_scan = task.get_future();
 			uam::platform::StartBackgroundThread(std::move(task)).detach();
 			m_nextScanTime = GetAppTimeSeconds() + 0.25;

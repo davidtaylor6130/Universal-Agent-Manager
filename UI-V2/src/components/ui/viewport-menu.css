@@ -3,10 +3,10 @@
 .uam-viewport-menu[data-viewport-menu] {
   --vmenu-x: 0px;
   --vmenu-y: calc(var(--sp-1) * -1);
-  animation: uam-vmenu-in var(--dur-fast) var(--ease-out-soft) backwards;
+  animation: uam-vmenu-in var(--dur-base) var(--ease-out-soft) backwards;
 }
 .uam-viewport-menu[data-viewport-menu][data-state="closed"] {
-  animation: uam-vmenu-out var(--dur-exit) var(--ease) forwards;
+  animation: uam-vmenu-out var(--dur-fast) var(--ease) forwards;
   pointer-events: none;
 }
 .uam-viewport-menu[data-viewport-menu][data-menu-side="top"] { --vmenu-y: var(--sp-1); }

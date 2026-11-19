@@ -39,6 +39,12 @@ int main(int argc, char** argv)
 		std::cout << UAM_RUNNER_SOURCE_FINGERPRINT << '\n';
 		return 0;
 	}
+	// Helpers answering this refuse stop only while a client is still owed work; older ones exit 2 with usage, which is how retirement tells their refusals apart.
+	if (argc == 2 && std::string(argv[1]) == "--stop-contract")
+	{
+		std::cout << "1\n";
+		return 0;
+	}
 	if (argc == 2 && std::string(argv[1]) == "--protocol-version")
 	{
 		std::cout << uam::remote::kRunnerProtocolVersion << '\n';
@@ -112,7 +118,7 @@ int main(int argc, char** argv)
 #endif
 	if (argc != 2 || std::string(argv[1]) != "bridge-direct")
 	{
-		std::cerr << "Usage: uam-runner start|serve|stop|bridge --socket PATH | proxy --alias SSH_ALIAS --platform OS --version VERSION [--directory HOME_RELATIVE_PATH] | terminal SPEC | mcp --channel ID --socket PATH | --version | --protocol-version | --source-fingerprint\n";
+		std::cerr << "Usage: uam-runner start|serve|stop|bridge --socket PATH | proxy --alias SSH_ALIAS --platform OS --version VERSION [--directory HOME_RELATIVE_PATH] | terminal SPEC | mcp --channel ID --socket PATH | --version | --protocol-version | --source-fingerprint | --stop-contract\n";
 		return 2;
 	}
 

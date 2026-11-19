@@ -12,4 +12,6 @@ export interface Provider {
   terminalPermissionControl?: 'provider'
   npmPackageName?: string
 	nativeGoalCommand?: string
+  /** Steer reaches the running turn in place; otherwise UAM stops the turn and sends the steer first. */
+  supportsNativeSteering?: boolean
 }

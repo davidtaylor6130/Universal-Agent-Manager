@@ -225,6 +225,93 @@ UAM_TEST(ManagedSnapshotIgnoresEmptyAncestorGitDirectory)
 	UAM_ASSERT(blocked.message.find("Source Git metadata could not be verified") != std::string::npos);
 }
 
+UAM_TEST(ManagedSnapshotClassificationKeepsGitPrecedenceAndStrictMarkers)
+{
+	TempDir temp("uam-snapshot-classification");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.settings.git_snapshot_svn = false;
+	app.settings.git_snapshot_plain_folders = false;
+	const auto reason = [&](const fs::path& source)
+	{
+		fs::create_directories(source);
+		ChatSession chat = ChatDomainService().CreateNewChat("", "codex-cli");
+		chat.workspace_directory = source.string();
+		return uam::ManagedSnapshotDisabledReason(app, chat);
+	};
+	const std::string svn = "Managed Git snapshots for SVN workspaces are disabled in VCS settings.";
+	const std::string plain = "Managed Git snapshots for plain folders are disabled in VCS settings.";
+
+	// Git classification returns no reason. A nearer .svn must not hide an enclosing Git repository.
+	fs::create_directories(temp.root / "git" / ".git");
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "git" / ".git" / "HEAD", "ref: refs/heads/main\n"));
+	fs::create_directories(temp.root / "git" / "checkout" / ".svn");
+	UAM_ASSERT_EQ(reason(temp.root / "git" / "checkout"), std::string{});
+
+	// Bare repositories count as Git through each accepted marker combination.
+	fs::create_directories(temp.root / "bare" / "objects");
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "bare" / "HEAD", "ref: refs/heads/main\n"));
+	UAM_ASSERT_EQ(reason(temp.root / "bare" / "src"), std::string{});
+	fs::create_directories(temp.root / "bare-refs" / "refs");
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "bare-refs" / "HEAD", "ref: refs/heads/main\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "bare-refs" / "config", "[core]\n"));
+	UAM_ASSERT_EQ(reason(temp.root / "bare-refs" / "src"), std::string{});
+	fs::create_directories(temp.root / "bare-objects" / "objects");
+	fs::create_directories(temp.root / "bare-objects" / "refs");
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "bare-objects" / "config", "[core]\n"));
+	UAM_ASSERT_EQ(reason(temp.root / "bare-objects" / "src"), std::string{});
+	fs::create_directories(temp.root / "head-only");
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "head-only" / "HEAD", "not a repository\n"));
+	UAM_ASSERT_EQ(reason(temp.root / "head-only" / "src"), plain);
+
+	// An empty .git is ignored, so the walk keeps looking and reports what lies above it.
+	fs::create_directories(temp.root / "empty-git" / ".git");
+	UAM_ASSERT_EQ(reason(temp.root / "empty-git" / "src"), plain);
+	fs::create_directories(temp.root / "svn-above-empty" / ".svn");
+	fs::create_directories(temp.root / "svn-above-empty" / "checkout" / ".git");
+	UAM_ASSERT_EQ(reason(temp.root / "svn-above-empty" / "checkout"), svn);
+
+	fs::create_directories(temp.root / "svn" / ".svn");
+	UAM_ASSERT_EQ(reason(temp.root / "svn" / "deep" / "child"), svn);
+	UAM_ASSERT_EQ(reason(temp.root / "plain" / "child"), plain);
+
+#if !defined(_WIN32)
+	// Markers are not followed, so a dangling link still counts rather than falling through to a plain folder.
+	fs::create_directories(temp.root / "dangling-git");
+	fs::create_symlink(temp.root / "missing-git-target", temp.root / "dangling-git" / ".git");
+	UAM_ASSERT_EQ(reason(temp.root / "dangling-git" / "src"), std::string{});
+	fs::create_directories(temp.root / "dangling-svn");
+	fs::create_symlink(temp.root / "missing-svn-target", temp.root / "dangling-svn" / ".svn");
+	UAM_ASSERT_EQ(reason(temp.root / "dangling-svn" / "src"), svn);
+	if (::geteuid() != 0)
+	{
+		// An unreadable marker stays Unknown, so it is neither a plain folder nor reported as Git metadata.
+		const fs::path locked = temp.root / "locked";
+		fs::create_directories(locked);
+		fs::permissions(locked, fs::perms::none);
+		const std::string locked_reason = reason(locked);
+		ChatSession locked_chat = ChatDomainService().CreateNewChat("", "codex-cli");
+		locked_chat.workspace_directory = locked.string();
+		const std::string locked_message = uam::GitWorktreeService().CreateForChat(app, locked_chat).message;
+		fs::permissions(locked, fs::perms::owner_all);
+		UAM_ASSERT_EQ(locked_reason, std::string{});
+		UAM_ASSERT(locked_message.find("Source workspace is not an available directory") != std::string::npos);
+
+		// An existing .git that cannot be listed still counts as Git and keeps strict validation.
+		const fs::path unreadable_git = temp.root / "unreadable-git";
+		fs::create_directories(unreadable_git / ".git");
+		fs::permissions(unreadable_git / ".git", fs::perms::none);
+		const std::string unreadable_reason = reason(unreadable_git);
+		ChatSession unreadable_chat = ChatDomainService().CreateNewChat("", "codex-cli");
+		unreadable_chat.workspace_directory = unreadable_git.string();
+		const std::string unreadable_message = uam::GitWorktreeService().CreateForChat(app, unreadable_chat).message;
+		fs::permissions(unreadable_git / ".git", fs::perms::owner_all);
+		UAM_ASSERT_EQ(unreadable_reason, std::string{});
+		UAM_ASSERT(unreadable_message.find("Source Git metadata could not be verified") != std::string::npos);
+	}
+#endif
+}
+
 UAM_TEST(ManagedSnapshotIndependentOptInAndRealGitRemainAvailable)
 {
 	const ScopedCleanSvnStatus clean_svn;
@@ -371,7 +458,7 @@ UAM_TEST(ManagedSnapshotPreservesBrokenInternalSymlink)
 	UAM_ASSERT(fs::is_symlink(fs::symlink_status(source / "future.swift")));
 }
 
-UAM_TEST(ManagedSnapshotRejectsEscapingSymlinkNodes)
+UAM_TEST(ManagedSnapshotSkipsEscapingSymlinkNodesWithWarning)
 {
 	UAM_ASSERT(GitAvailableForTests());
 	for (const int kind : {0, 1, 2})
@@ -380,17 +467,68 @@ UAM_TEST(ManagedSnapshotRejectsEscapingSymlinkNodes)
 		const fs::path source = temp.root / "source"; fs::create_directories(source);
 		fs::create_directories(temp.root / "outside");
 		UAM_ASSERT(uam::io::WriteTextFile(temp.root / "outside/keep.txt", "external survivor"));
+		UAM_ASSERT(uam::io::WriteTextFile(source / "app.txt", "authored source"));
 		if (kind == 0) fs::create_directory_symlink("../outside", source / "escape");
 		if (kind == 1) fs::create_directory_symlink(temp.root / "outside", source / "escape");
 		if (kind == 2) { fs::create_directory_symlink("../outside", source / "indirect"); fs::create_directory_symlink("indirect", source / "escape"); }
 		uam::AppState app; app.data_root = temp.root / "data";
 		ChatSession chat = ChatDomainService().CreateNewChat("", "codex-cli"); chat.workspace_directory = source.string();
 		const auto result = uam::GitWorktreeService().CreateForChat(app, chat);
-		UAM_ASSERT(!result.ok && !result.message.empty());
-		UAM_ASSERT(chat.workspace_worktree_directory.empty());
+		if (!result.ok) throw std::runtime_error(result.message);
+		// The link is left out of the copy, never recreated pointing outside it, and the chat is told.
+		const fs::path isolated = chat.workspace_worktree_directory;
+		UAM_ASSERT_EQ(ReadFile(isolated / "app.txt"), std::string("authored source"));
+		UAM_ASSERT(!fs::exists(fs::symlink_status(isolated / "escape")));
+		UAM_ASSERT(!fs::exists(fs::symlink_status(isolated / "indirect")));
+		UAM_ASSERT(result.status.warning.find("escape") != std::string::npos);
 		UAM_ASSERT_EQ(ReadFile(temp.root / "outside/keep.txt"), std::string("external survivor"));
 		UAM_ASSERT(fs::is_symlink(fs::symlink_status(source / "escape")));
 	}
+}
+
+UAM_TEST(ManagedSnapshotPlainFolderSkipsNestedRepositoryIgnoredContent)
+{
+	// A plain folder of client sites, one of which is its own repository with an ignored virtualenv whose
+	// interpreter links outside the workspace: the ignored environment is left out and the snapshot succeeds.
+	UAM_ASSERT(GitAvailableForTests());
+	TempDir temp("uam-plain-nested-ignored");
+	const fs::path source = temp.root / "source";
+	const fs::path site = source / "site";
+	const fs::path tool = site / "tools/export";
+	fs::create_directories(tool / ".venv/bin");
+	fs::create_directories(temp.root / "python");
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "python/python3.12", "external interpreter"));
+	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(site.string())));
+	UAM_ASSERT(uam::io::WriteTextFile(tool / ".gitignore", ".venv/\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(tool / "export.py", "print('export')\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(source / "notes.txt", "plain folder file\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(tool / ".venv/pyvenv.cfg", "home = outside\n"));
+	fs::create_symlink(temp.root / "python/python3.12", tool / ".venv/bin/python3.12");
+	fs::create_symlink("python3.12", tool / ".venv/bin/python3");
+	// A nested folder Git cannot read as a repository is still copied whole, with a warning.
+	fs::create_directories(source / "broken");
+	UAM_ASSERT(uam::io::WriteTextFile(source / "broken/.git", "gitdir: missing-administrative-folder\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(source / "broken/kept.txt", "broken nested repository file\n"));
+	// Git ignores an empty .git folder, and so does the snapshot.
+	fs::create_directories(source / "empty/.git");
+	UAM_ASSERT(uam::io::WriteTextFile(source / "empty/kept.txt", "empty marker file\n"));
+	uam::AppState app; app.data_root = temp.root / "data";
+	ChatSession chat = ChatDomainService().CreateNewChat("", "claude-cli"); chat.workspace_directory = source.string();
+	const auto result = uam::GitWorktreeService().CreateForChat(app, chat);
+	if (!result.ok) throw std::runtime_error(result.message);
+	const fs::path isolated = chat.workspace_worktree_directory;
+	UAM_ASSERT_EQ(ReadFile(isolated / "notes.txt"), std::string("plain folder file\n"));
+	UAM_ASSERT_EQ(ReadFile(isolated / "site/tools/export/export.py"), std::string("print('export')\n"));
+	UAM_ASSERT(fs::exists(isolated / "site/tools/export/.gitignore"));
+	UAM_ASSERT(!fs::exists(isolated / "site/tools/export/.venv/pyvenv.cfg"));
+	UAM_ASSERT(!fs::exists(fs::symlink_status(isolated / "site/tools/export/.venv")));
+	UAM_ASSERT(!fs::exists(isolated / "site/.git"));
+	UAM_ASSERT_EQ(ReadFile(isolated / "broken/kept.txt"), std::string("broken nested repository file\n"));
+	UAM_ASSERT_EQ(ReadFile(isolated / "empty/kept.txt"), std::string("empty marker file\n"));
+	UAM_ASSERT(result.status.warning.find("broken") != std::string::npos);
+	UAM_ASSERT(result.status.warning.find("empty") == std::string::npos);
+	UAM_ASSERT(result.status.warning.find("symbolic") == std::string::npos);
+	UAM_ASSERT(fs::is_symlink(fs::symlink_status(tool / ".venv/bin/python3")));
 }
 
 

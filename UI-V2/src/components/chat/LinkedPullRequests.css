@@ -1,0 +1,13 @@
+/* Linked pull request rows under the chat header. Colours come from theme tokens; state is never colour alone. */
+.uam-linked-prs { border-bottom: 1px solid var(--border); padding: 4px 12px; }
+.uam-linked-prs__list { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.uam-linked-pr { display: flex; align-items: center; gap: 8px; min-height: 28px; font-size: 12px; color: var(--text-2); }
+.uam-linked-pr__state { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; color: var(--text-2); }
+.uam-linked-pr__title { min-width: 0; flex: 1 1 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-3); }
+.uam-linked-pr__facts { display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.uam-linked-pr__fact { display: inline-flex; align-items: center; gap: 3px; font-variant-numeric: tabular-nums; }
+.uam-linked-pr__fact[data-tone='success'] svg { color: var(--success); }
+.uam-linked-pr__fact[data-tone='error'] svg { color: var(--error); }
+.uam-linked-pr__fact[data-tone='warning'] svg { color: var(--warning); }
+.uam-linked-pr__actions { display: inline-flex; align-items: center; gap: 2px; flex-shrink: 0; }
+.uam-linked-pr-field { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }

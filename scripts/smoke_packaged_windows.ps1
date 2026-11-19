@@ -33,6 +33,12 @@ foreach ($required in @(
 )) {
     if (-not (Test-Path -LiteralPath $required)) { throw "Packaged Windows artifact is missing $required." }
 }
+# Gemini Plan and goal-review launches refuse to start without UAM's policy beside the executable.
+$geminiPolicy = Join-Path $packageRoot 'gemini-plan-ceiling.toml'
+$sourcePolicy = Join-Path $PSScriptRoot '../assets/providers/gemini-plan-ceiling.toml'
+if (-not (Test-Path -LiteralPath $geminiPolicy) -or (Get-FileHash -LiteralPath $geminiPolicy).Hash -ne (Get-FileHash -LiteralPath $sourcePolicy).Hash) {
+    throw "Packaged Windows artifact is missing the current Gemini Plan policy: $geminiPolicy."
+}
 foreach ($remoteRunner in @(
     $nativeRunner,
     (Join-Path $packageRoot 'remote/linux-arm64/uam-runner'),
@@ -76,8 +82,16 @@ $env:UAM_DATA_DIR = $dataRoot
 $process = $null
 try {
     $process = Start-Process $executable -PassThru
-    Start-Sleep -Seconds 5
+    # The UI logs this after its first native bridge reply, so it proves the renderer ran and the bridge answered.
+    $bridgeMarker = '[frontend] [UI startup] Initial state loaded through the native bridge.'
+    $log = Join-Path $dataRoot 'uam.log'
+    $bridged = $false
+    for ($i = 0; $i -lt 60 -and -not $process.HasExited; $i++) {
+        if ((Test-Path -LiteralPath $log) -and (Select-String -LiteralPath $log -SimpleMatch $bridgeMarker -Quiet)) { $bridged = $true; break }
+        Start-Sleep -Seconds 1
+    }
     if ($process.HasExited) { throw "Packaged Windows app exited during startup with code $($process.ExitCode)." }
+    if (-not $bridged) { throw 'Packaged Windows UI did not complete a native bridge round-trip.' }
     Stop-Process -Id $process.Id -Force
     if (-not $process.WaitForExit(10000)) { throw 'Packaged Windows app did not stop.' }
 } finally {

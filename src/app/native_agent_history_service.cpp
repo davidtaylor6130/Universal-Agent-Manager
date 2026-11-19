@@ -10,8 +10,10 @@
 #include "common/utils/history_timestamp_order.h"
 #include "remote/native_history_snapshot.h"
 #include "remote/runner_client.h"
+#include "common/utils/uuid.h"
 
 #include <algorithm>
+#include <set>
 #include <utility>
 #include <vector>
 
@@ -35,40 +37,47 @@ std::optional<HistoryReference> Validate(const ChatSession& source, std::string_
 }
 
 
-class LocalPassiveHistoryLoader final
+class PassiveHistoryLoader final
 {
 public:
-	static std::optional<AdmittedLocalPassiveNativeHistory> Load(
+	static std::optional<AdmittedPassiveNativeHistory> Load(
 	    const std::filesystem::path& root, const ChatSession& source, const ProviderProfile& profile,
-	    std::string_view reference, std::string_view primary, std::string_view summary, std::string* error, std::stop_token stop)
+	    std::string_view reference, std::string_view primary, std::string_view summary,
+	    const std::optional<ExecutionHost>& host, std::string* error, std::stop_token stop)
 	{
-		const auto fail = [&](const char* message) -> std::optional<AdmittedLocalPassiveNativeHistory>
+		// One reader for both: a local child reads its journal, an SSH child the
+		// parent's exact helper snapshot. Every identity check binds this host.
+		const std::string host_id = host ? host->id : "local";
+		const bool workspace_absolute = host
+		    ? execution_hosts::IsAbsoluteRemotePath(host->platform, source.workspace_directory)
+		    : paths::IsControllerLocalWorkspace(source) && paths::PathFromUtf8(source.workspace_directory).is_absolute();
+		const auto fail = [&](const char* message) -> std::optional<AdmittedPassiveNativeHistory>
 		{ if (error) *error = message; return std::nullopt; };
 		const auto decoded = Validate(source, reference, error);
 		if (!decoded || decoded->provider_id != provider_ids::NormalizeCliProviderAliasOrSelf(profile.id) ||
-		    !ProviderRuntimeRegistry::Resolve(profile).SupportsLocalPassiveNativeMedia(profile) || decoded->execution_host_id != "local" ||
+		    !ProviderRuntimeRegistry::Resolve(profile).SupportsPassiveNativeMedia(profile) || decoded->execution_host_id != host_id ||
+		    (host && (host->id.empty() || host->id == "local" || source.execution_host_id != host->id)) ||
 		    source.imported_read_only || source.id.empty() || source.created_at.empty() || !source.metadata_incarnation ||
-		    !root.is_absolute() || !paths::IsControllerLocalWorkspace(source) ||
-		    !paths::PathFromUtf8(source.workspace_directory).is_absolute() || primary.empty() || summary.empty() || (primary == "missing" && summary != "missing"))
-			return fail("This local child history no longer matches the selected parent or provider. Reopen it and try again.");
+		    !root.is_absolute() || !workspace_absolute || primary.empty() || summary.empty() || (primary == "missing" && summary != "missing"))
+			return fail("This child history no longer matches the selected parent or provider. Reopen it and try again.");
 		if (ChatRepository::ChatStorageRevision(root, reference) != primary ||
 		    ChatRepository::ChatSummaryStorageRevision(root, reference) != summary)
 			return fail("Saved passive history changed before loading.");
-		auto loaded = LoadHistory(source, reference, std::nullopt, error, stop);
+		auto loaded = LoadHistory(source, reference, host, error, stop);
 		if (!loaded || stop.stop_requested()) return std::nullopt;
 		// Validate the actual reader before saved metadata can replace any field.
 		if (loaded->id != reference || loaded->provider_id != decoded->provider_id || !loaded->imported_read_only ||
 		    !loaded->native_session_id.empty() || loaded->parent_chat_id != decoded->parent_session_id ||
-		    loaded->execution_host_id != "local" || loaded->workspace_directory != source.workspace_directory || !loaded->messages_loaded)
+		    loaded->execution_host_id != host_id || loaded->workspace_directory != source.workspace_directory || !loaded->messages_loaded)
 			return fail("The actual passive reader returned a different native identity.");
-		AdmittedLocalPassiveNativeHistory result;
+		AdmittedPassiveNativeHistory result;
 		if (primary != "missing")
 		{
 			result.m_previous = ChatRepository::LoadLocalChat(root, std::string(reference), true, nullptr, false);
 			const auto& old = result.m_previous;
 			if (!old || !old->messages_loaded || old->id != reference || !old->imported_read_only || !old->native_session_id.empty() ||
 			    old->provider_id != decoded->provider_id || old->parent_chat_id != decoded->parent_session_id ||
-			    old->execution_host_id != "local" || chat_identity::NativeWorkspaceForHistoryImport(*old) != chat_identity::NativeWorkspaceForHistoryImport(source))
+			    old->execution_host_id != host_id || chat_identity::NativeWorkspaceForHistoryImport(*old) != chat_identity::NativeWorkspaceForHistoryImport(source))
 				return fail("Saved passive history belongs to a different owner.");
 			// A readable partial journal does not authorize discarding saved history.
 			// Compare the actual full graphs, independently of metadata/cache timestamps.
@@ -125,11 +134,11 @@ public:
 			return fail("Saved passive history changed while loading.");
 		if (loaded->id != reference || loaded->provider_id != decoded->provider_id || !loaded->imported_read_only ||
 		    !loaded->native_session_id.empty() || loaded->parent_chat_id != decoded->parent_session_id ||
-		    loaded->execution_host_id != "local" || loaded->workspace_directory != source.workspace_directory)
+		    loaded->execution_host_id != host_id || loaded->workspace_directory != source.workspace_directory)
 			return fail("The actual passive reader returned a different native identity.");
 		std::vector<ChatSession> checked;
 		ChatSession key;
-		key.id = loaded->id; key.provider_id = loaded->provider_id; key.execution_host_id = "local";
+		key.id = loaded->id; key.provider_id = loaded->provider_id; key.execution_host_id = host_id;
 		key.workspace_directory = loaded->workspace_directory;
 		checked.push_back(std::move(key));
 		if (!ChatHistorySyncService().FilterDeletedNativeHistory(root, checked, error) || checked.empty())
@@ -140,18 +149,20 @@ public:
 		result.m_reference = std::string(reference);
 		result.m_parent_native_id = decoded->parent_session_id;
 		result.m_workspace = source.workspace_directory;
+		result.m_host = host_id;
 		result.m_source_id = source.id;
 		result.m_source_birth = source.created_at;
 		result.m_chat = std::move(*loaded);
-		return std::optional<AdmittedLocalPassiveNativeHistory>(std::move(result));
+		return std::optional<AdmittedPassiveNativeHistory>(std::move(result));
 	}
 };
 
-std::optional<AdmittedLocalPassiveNativeHistory> LoadLocalPassiveHistoryForMedia(
+std::optional<AdmittedPassiveNativeHistory> LoadPassiveHistoryForMedia(
 	const std::filesystem::path& root, const ChatSession& source, const ProviderProfile& profile,
-	std::string_view reference, std::string_view primary, std::string_view summary, std::string* error, std::stop_token stop)
+	std::string_view reference, std::string_view primary, std::string_view summary,
+	const std::optional<ExecutionHost>& host, std::string* error, std::stop_token stop)
 {
-	return LocalPassiveHistoryLoader::Load(root, source, profile, reference, primary, summary, error, stop);
+	return PassiveHistoryLoader::Load(root, source, profile, reference, primary, summary, host, error, stop);
 }
 
 std::optional<ChatSession> ParseHistorySnapshot(const ExecutionHost& host, const ChatSession& source,
@@ -183,6 +194,78 @@ std::optional<ChatSession> ParseHistorySnapshot(const ExecutionHost& host, const
 	if (!loaded && error && error->empty()) *error = "This provider's exact native agent transcript is unavailable.";
 	return loaded;
 }
+
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+std::optional<NativeChildListing> ParseGeminiChildListing(const ExecutionHost& host, const ChatSession& source, const nlohmann::json& listing, std::string* error)
+{
+	const auto fail = [&](const char* message) -> std::optional<NativeChildListing> { if (error) *error = message; return std::nullopt; };
+	if (host.id.empty() || host.id == "local" || host.id != source.execution_host_id || host.transport != "ssh" || !listing.is_object() ||
+		remote::native_history::String(listing, "providerId") != provider_ids::kGeminiCli ||
+		remote::native_history::String(listing, "sessionId") != source.native_session_id ||
+		!execution_hosts::RemotePathsMatch(host.platform, remote::native_history::String(listing, "workspace"), source.workspace_directory))
+		return fail("The child conversation list does not attest its provider, parent, host and workspace.");
+	const auto children = listing.find("children");
+	const auto unreadable = listing.find("unreadable");
+	const auto truncated = listing.find("truncated");
+	if (children == listing.end() || !children->is_array() || children->size() > remote::native_history::kMaxGeminiChildren ||
+		unreadable == listing.end() || !unreadable->is_number_unsigned() || truncated == listing.end() || !truncated->is_boolean())
+		return fail("The child conversation list is invalid.");
+	NativeChildListing parsed;
+	parsed.unreadable = unreadable->get<std::size_t>();
+	parsed.truncated = truncated->get<bool>();
+	std::set<std::string> seen;
+	for (const auto& row : *children)
+	{
+		const auto messages = row.is_object() ? row.find("messages") : row.end();
+		if (!row.is_object() || messages == row.end() || !messages->is_number_unsigned() || *messages == 0) return fail("The child conversation list is invalid.");
+		const std::string agent = remote::native_history::String(row, "agentId");
+		if (!remote::native_history::SafeId(agent) || !seen.insert(agent).second) return fail("The child conversation list is invalid.");
+		std::string reference = BuildHistoryId(provider_ids::kGeminiCli, source.native_session_id, agent, host.id);
+		if (reference.empty()) { ++parsed.unreadable; continue; } // A longer id than a history reference can hold.
+		parsed.children.push_back({std::move(reference), std::string(strings::Utf8Prefix(remote::native_history::String(row, "preview"), remote::native_history::kMaxGeminiChildPreviewBytes)),
+			std::string(strings::Utf8Prefix(remote::native_history::String(row, "startedAt"), 64)), std::string(strings::Utf8Prefix(remote::native_history::String(row, "updatedAt"), 64)), messages->get<std::size_t>()});
+	}
+	return parsed;
+}
+
+std::optional<NativeChildListing> ListGeminiChildren(const ChatSession& source, const std::optional<ExecutionHost>& host, std::string* error, std::stop_token stop_token)
+{
+	if (error) error->clear();
+	const auto fail = [&](const std::string& message) -> std::optional<NativeChildListing> { if (error) *error = message; return std::nullopt; };
+	if (provider_ids::NormalizeCliProviderAliasOrSelf(source.provider_id) != provider_ids::kGeminiCli || source.imported_read_only || !uuid::IsCanonicalUuid(source.native_session_id))
+		return fail("This chat has no exact Gemini parent session.");
+	std::optional<NativeChildListing> listing;
+	if (!host)
+	{
+		if (!paths::IsControllerLocalWorkspace(source) || !paths::PathFromUtf8(source.workspace_directory).is_absolute())
+			return fail("The exact local Gemini parent workspace is unavailable.");
+		remote::native_history::GeminiChildListing local;
+		std::string read_error;
+		if (!remote::native_history::ListGeminiChildren(source.native_session_id, source.workspace_directory, local, read_error, stop_token))
+			return fail(read_error);
+		listing.emplace();
+		listing->unreadable = local.unreadable;
+		listing->truncated = local.truncated;
+		for (auto& child : local.children)
+		{
+			std::string reference = BuildHistoryId(provider_ids::kGeminiCli, source.native_session_id, child.agent_id, "local");
+			if (reference.empty()) { ++listing->unreadable; continue; } // A longer id than a history reference can hold.
+			listing->children.push_back({std::move(reference), std::move(child.preview), std::move(child.started_at), std::move(child.updated_at), child.messages});
+		}
+	}
+	else
+	{
+		if (host->id != source.execution_host_id || host->transport != "ssh" || host->runner_status != "ready")
+			return fail("The exact remote native parent helper is unavailable.");
+		remote::RunnerClient client(PlatformServicesFactory::Instance().process_service, *host);
+		nlohmann::json snapshot;
+		if (!client.ListGeminiChildren(source.native_session_id, source.workspace_directory, snapshot, error, stop_token)) return std::nullopt;
+		listing = ParseGeminiChildListing(*host, source, snapshot, error);
+		if (!listing) return std::nullopt;
+	}
+	return listing;
+}
+#endif
 
 std::optional<ChatSession> LoadHistory(const ChatSession& source, std::string_view reference,
 	const std::optional<ExecutionHost>& host, std::string* error, std::stop_token stop_token)

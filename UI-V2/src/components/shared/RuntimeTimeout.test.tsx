@@ -20,21 +20,25 @@ it('hides during grace, counts the shared deadline, and restarts grace on delibe
   const root = createRoot(host)
   const rendered = vi.fn()
   act(() => root.render(<Profiler id="timeout" onRender={rendered}><Pane /></Profiler>))
-  expect(host.querySelector('[aria-label="Runtime idle timeout"]')).toBeNull()
+  expect(host.querySelector('[role="timer"]')).toBeNull()
   rendered.mockClear()
   act(() => vi.advanceTimersByTime(59_999))
   expect(rendered).not.toHaveBeenCalled()
   act(() => vi.advanceTimersByTime(1))
   expect(host.textContent).toContain('Stops in 10:00')
+  const timer = host.querySelector('[role="timer"]')!
+  expect(timer.getAttribute('aria-label')).toBe('Runtime idle timeout · stops in 10:00. Activity restarts the one-minute grace period.')
+  expect(timer.querySelector('.lucide-timer')).toBeTruthy()
+  expect(timer.getAttribute('data-phase')).toBe('idle')
   act(() => vi.advanceTimersByTime(1000))
   expect(host.textContent).toContain('Stops in 9:59')
   vi.setSystemTime(1_031_000)
   act(() => window.dispatchEvent(new Event('focus')))
-  expect(host.querySelector('[aria-label="Runtime idle timeout"]')).toBeNull()
+  expect(host.querySelector('[role="timer"]')).toBeNull()
   act(() => vi.advanceTimersByTime(29_000))
   expect(host.textContent).toContain('Stops in 10:00')
   act(() => host.querySelector('button')!.click())
-  expect(host.querySelector('[aria-label="Runtime idle timeout"]')).toBeNull()
+  expect(host.querySelector('[role="timer"]')).toBeNull()
   expect(vi.getTimerCount()).toBe(1)
   const scheduled = useAppStore.getState().cliBindingBySessionId.chat
   act(() => useAppStore.setState({ cliBindingBySessionId: { chat: { ...scheduled, running: false } } }))
@@ -43,7 +47,9 @@ it('hides during grace, counts the shared deadline, and restarts grace on delibe
   expect(vi.getTimerCount()).toBe(1)
   act(() => vi.advanceTimersByTime(60_000))
   expect(host.textContent).toContain('Stops in 10:00')
-  act(() => vi.advanceTimersByTime(600_000))
+  act(() => vi.advanceTimersByTime(570_000))
+  expect(host.querySelector('[role="timer"]')?.getAttribute('data-phase')).toBe('ending')
+  act(() => vi.advanceTimersByTime(30_000))
   expect(host.textContent).toContain('Stops in 0:00')
   rendered.mockClear()
   act(() => vi.advanceTimersByTime(5000))
@@ -51,7 +57,7 @@ it('hides during grace, counts the shared deadline, and restarts grace on delibe
   act(() => useAppStore.setState(state => ({ cliBindingBySessionId: {
     ...state.cliBindingBySessionId, chat: { ...state.cliBindingBySessionId.chat, running: false },
   } })))
-  expect(host.querySelector('[aria-label="Runtime idle timeout"]')).toBeNull()
+  expect(host.querySelector('[role="timer"]')).toBeNull()
   expect(vi.getTimerCount()).toBe(0)
   act(() => useAppStore.setState({ cliBindingBySessionId: { chat: {
     ...scheduled, running: true, idleCountdownStartsAtMs: Date.now() + 60_000, idleShutdownAtMs: Date.now() + 660_000,

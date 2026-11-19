@@ -29,7 +29,7 @@ All 26 required capabilities remain in scope. The following records the actual a
 | `editing-messages` | Shared retained-input and branch delivery | Shared continuation/acceptance limits remain Partial. |
 | `mcp-connections` | Private provider setup via `--add-dir` | Discovery is not invocation permission or native approval RPC. |
 | `skills` | `attached_skill_resources` and immutable setup | Existing captured resource route; provider compliance is separate. |
-| `attachments` | `structured_attachments` host references | Headless text-only blocks do not implement native images. |
+| `attachments` | `structured_attachments` host references | Headless input has no image block; images go as workspace paths `agy` opens itself, and model vision decides understanding. |
 | `compaction` | Default unsupported manual compaction hook | A structured compaction control or UAM equivalent remains missing. |
 | `computer-use` | Private MCP setup and UAM controller | Existing gated structured route; CLI View/SSH/platform limits remain. |
 | `side-chats` | Shared related-chat services | Existing UAM route; no automatic worktree request. |

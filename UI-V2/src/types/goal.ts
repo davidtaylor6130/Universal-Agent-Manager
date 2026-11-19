@@ -11,6 +11,8 @@ export interface Goal {
   lastBlocker?: string
 	lastBlockerKind?: string
   lastDiagnostic?: string
+  /** `model:<id>`, `filter`, `fallback` or `unknown`; absent until an automatic decision exists. */
+  lastDecisionSource?: string
   pendingContinuation?: boolean
   completedItems?: string[]
   remainingItems?: string[]

@@ -93,7 +93,7 @@ namespace
 	{
 		const auto decoded = uam::native_agents::ParseHistoryId(reference);
 		if (!decoded || decoded->provider_id != uam::provider_ids::NormalizeCliProviderAliasOrSelf(source.provider_id) ||
-		    decoded->parent_session_id != source.native_session_id || decoded->execution_host_id != "local" ||
+		    decoded->parent_session_id != source.native_session_id ||
 		    decoded->execution_host_id != uam::strings::NonEmptyOrFallback(source.execution_host_id, "local")) return false;
 		ChatSession key;
 		key.id = reference; key.provider_id = decoded->provider_id; key.execution_host_id = decoded->execution_host_id;
@@ -101,6 +101,15 @@ namespace
 		std::vector<ChatSession> checked;
 		checked.push_back(std::move(key));
 		return ChatHistorySyncService().FilterDeletedNativeHistory(root, checked) && !checked.empty();
+	}
+
+	/// A child read on a remote host publishes only while that host's helper identity is unchanged.
+	bool NativeChildOpenHostUnchanged(const std::vector<ExecutionHost>& hosts, const ExecutionHost& expected)
+	{
+		const ExecutionHost* host = uam::execution_hosts::Find(hosts, expected.id);
+		return host != nullptr && host->transport == expected.transport && host->ssh_alias == expected.ssh_alias &&
+		    host->platform == expected.platform && host->runner_directory == expected.runner_directory &&
+		    host->runner_version == expected.runner_version && host->runner_protocol_version == expected.runner_protocol_version;
 	}
 
 	bool NativeChildOpenProfileMatches(const ProviderProfile& left, const ProviderProfile& right)
@@ -222,6 +231,68 @@ namespace
 
 using namespace uam::query_handler_internal;
 
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+void UamQueryHandler::HandleListGeminiChildConversations(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	using namespace uam::query_handler_async;
+	const std::string source_id = payload.value("chatId", "");
+	const ChatSession* source = ChatDomainService().FindChatById(m_app, source_id);
+	if (source == nullptr) { cb->Failure(404, "Chat not found."); return; }
+	if (uam::provider_ids::NormalizeCliProviderAliasOrSelf(ProviderResolutionService().ProviderForChatOrDefault(m_app, *source).id) != uam::provider_ids::kGeminiCli || source->imported_read_only)
+	{ cb->Failure(400, "Only a writable Gemini chat owns subagent conversations."); return; }
+	if (source->native_session_id.empty())
+	{
+		cb->Success(nlohmann::json{{"chatId", source_id}, {"children", nlohmann::json::array()}, {"unreadable", 0}, {"truncated", false}}.dump());
+		return;
+	}
+	std::optional<ExecutionHost> host;
+	if (!uam::paths::IsControllerLocalWorkspace(*source))
+	{
+		const ExecutionHost* found = uam::execution_hosts::Find(m_app.settings.execution_hosts, source->execution_host_id);
+		if (found == nullptr || !uam::remote::CanAttemptRunnerConnection(*found)) { cb->Failure(409, "The remote execution host is not ready to list subagent conversations."); return; }
+		host = *found;
+	}
+	struct Listed { std::vector<std::string> references; };
+	// A stalled host must not take unbounded threads and helper connections, the same slot as an SSH child open.
+	const auto listed = host ? uam::native_history::TryCreateWorkerOwnedNativeRefresh<Listed, uam::native_history::NativeRefreshWorkerPool::RemoteRefresh>(host->id) : std::make_shared<Listed>();
+	if (!listed) { cb->Failure(503, "Native history reading is busy. Retry shortly."); return; }
+	const std::string request_key = "gemini-children/" + source_id;
+	if (AwaitNativeHistoryRead(request_key, cb, [this, browser, payload, cb]() { HandleListGeminiChildConversations(browser, payload, cb); })) return;
+	const auto request = BeginNativeHistoryRead(request_key, cb);
+	if (host) request->execution_host_id = host->id; // A helper reinstall stops this read.
+	// Only the fields the listing reads: a long parent's messages stay on the UI thread's chat.
+	ChatSession identity;
+	identity.id = source->id; identity.provider_id = source->provider_id; identity.native_session_id = source->native_session_id;
+	identity.workspace_directory = uam::paths::RemoteWorkspaceDirectory(*source); // Gemini records the worktree it ran in.
+	identity.execution_host_id = source->execution_host_id;
+	ManagedSubagentWorker read = [identity = std::move(identity), host, source_id, request, listed]()
+	{
+		std::string error;
+		const auto listing = uam::native_agents::ListGeminiChildren(identity, host, &error, request->get_token());
+		if (!listing) return AsyncFailure(409, uam::strings::NonEmptyOrFallback(error, "Subagent conversations could not be read."));
+		nlohmann::json children = nlohmann::json::array();
+		for (const auto& child : listing->children)
+			listed->references.push_back(child.reference), children.push_back({{"reference", child.reference}, {"preview", child.preview}, {"startedAt", child.started_at}, {"updatedAt", child.updated_at}, {"messages", child.messages}});
+		return AsyncSuccess({{"chatId", source_id}, {"children", std::move(children)}, {"unreadable", listing->unreadable}, {"truncated", listing->truncated}});
+	};
+	ManagedSubagentCompletion completion = [this, request_key, request, listed](AsyncCefResult&)
+	{
+		if (m_attestedGeminiChildren.size() + listed->references.size() > 4096) m_attestedGeminiChildren.clear();
+		m_attestedGeminiChildren.insert(listed->references.begin(), listed->references.end());
+		FinishNativeHistoryRead(request_key, request);
+	};
+	// An SSH read has its own thread and slot, like an SSH child open; a local read avoids the foreground chat-load lane.
+	bool queued = false;
+	try
+	{
+		queued = host ? DispatchRemoteRefreshRead(cb, std::move(read), std::move(completion))
+		    : CefPostTask(TID_FILE_USER_VISIBLE, new CefQueryWorkerTask(m_asyncLifetime, cb, std::move(read), std::move(completion)));
+	}
+	catch (...) { queued = false; }
+	if (!queued) { FinishNativeHistoryRead(request_key, request); cb->Failure(503, "Could not start reading subagent conversations."); }
+}
+#endif
+
 void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	using namespace uam::query_handler_async;
@@ -248,19 +319,25 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 	const bool needs_export = source != nullptr && supports_history && supported_host && !native_id.empty() && !reuse_saved_read &&
 	    (payload.value("refreshHistory", !payload.value("selectChat", true)) || target == nullptr);
 	const bool needs_preparation = needs_export || (supports_history && supported_host && target != nullptr && !target->messages_loaded);
-	const bool supports_local_passive_media = provider != nullptr &&
-	    ProviderRuntimeRegistry::Resolve(*provider).SupportsLocalPassiveNativeMedia(*provider);
+	const bool supports_passive_media = provider != nullptr &&
+	    ProviderRuntimeRegistry::Resolve(*provider).SupportsPassiveNativeMedia(*provider);
+	// A remote passive child needs its parent's ready helper; otherwise the
+	// generic path below reports that the host is not ready.
+	const ExecutionHost* passive_host = source == nullptr || uam::paths::IsControllerLocalWorkspace(*source) ? nullptr
+	    : uam::execution_hosts::Find(m_app.settings.execution_hosts, source->execution_host_id);
+	const bool passive_host_ready = source != nullptr &&
+	    (uam::paths::IsControllerLocalWorkspace(*source) || (passive_host != nullptr && uam::remote::CanAttemptRunnerConnection(*passive_host)));
 
-	// This opt-in route is only the existing local passive journal Open. Remote
-	// snapshots and resumable native-session opens retain their current path.
-	if (needs_export && native_agent && supports_local_passive_media &&
-	    source != nullptr && uam::paths::IsControllerLocalWorkspace(*source))
+	// Passive journal Open (local or SSH) publishes inline originals through the
+	// sealed media save; resumable native-session opens retain their current path.
+	if (needs_export && native_agent && supports_passive_media && passive_host_ready)
 	{
 		struct Work
 		{
 			std::filesystem::path root;
 			ChatSession source_identity;
-			std::optional<uam::AdmittedLocalPassiveNativeHistory> loaded;
+			std::optional<ExecutionHost> host;
+			std::optional<uam::AdmittedPassiveNativeHistory> loaded;
 			std::unique_ptr<uam::PreparedNativeMediaChatSave> prepared;
 			std::optional<ChatSession> retired;
 			uam::PassiveNativeOpenMetadata metadata;
@@ -287,9 +364,13 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 			}
 			~Work() noexcept { Acknowledge(); } // Armed cleanup worker, never app/CEF ownership.
 		};
-		auto work = uam::native_history::TryCreateWorkerOwnedNativeRefresh<Work>();
+		// A slow SSH read must not occupy the capacity local branch, managed-run and metadata preparation share.
+		auto work = passive_host
+		    ? uam::native_history::TryCreateWorkerOwnedNativeRefresh<Work, uam::native_history::NativeRefreshWorkerPool::RemoteRefresh>(passive_host->id)
+		    : uam::native_history::TryCreateWorkerOwnedNativeRefresh<Work>();
 		if (!work) { cb->Failure(503, "Native history preparation is busy. Retry shortly."); return; }
 		work->root = m_app.data_root;
+		if (passive_host) work->host = *passive_host;
 		work->target_present = target != nullptr;
 		work->target_loaded = target != nullptr && target->messages_loaded;
 		if (target)
@@ -302,7 +383,8 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 		auto& identity = work->source_identity;
 		identity.id = source_id; identity.created_at = source->created_at; identity.metadata_incarnation = source->metadata_incarnation;
 		identity.provider_id = source->provider_id; identity.native_session_id = source->native_session_id;
-		identity.workspace_directory = source->workspace_directory; identity.execution_host_id = source->execution_host_id;
+		identity.workspace_directory = uam::paths::RemoteWorkspaceDirectory(*source); // The directory the native child actually recorded.
+		identity.execution_host_id = source->execution_host_id;
 		identity.folder_id = source->folder_id; identity.workspace_isolation_kind = source->workspace_isolation_kind;
 		identity.workspace_source_directory = source->workspace_source_directory; identity.workspace_base_ref = source->workspace_base_ref;
 		identity.workspace_branch_name = source->workspace_branch_name; identity.workspace_worktree_directory = source->workspace_worktree_directory;
@@ -330,6 +412,7 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 		const auto ownership = ChatDomainService().BeginBranchPreparation(m_app, source_id, native_id);
 		if (!ownership) { cb->Failure(409, "Chat preparation is still running. Retry after it settles."); return; }
 		const auto request = BeginNativeHistoryRead(request_key, cb, std::make_shared<NativeHistoryRequest>(ownership->cancellation));
+		if (passive_host) request->execution_host_id = passive_host->id; // A helper reinstall stops this read.
 		const auto finish = [this, source_id, request_key, request, ownership]()
 		{
 			(void)ChatDomainService().ConsumeBranchPreparation(m_app, source_id, ownership);
@@ -345,6 +428,7 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 			    pending == m_nativeHistoryRequests.end() || pending->second != request ||
 			    preparation == m_app.branch_preparations.end() || preparation->second.lock() != ownership ||
 			    m_workspaceDeletionPending || m_app.deletion_progress || !parent ||
+			    (work->host && !NativeChildOpenHostUnchanged(m_app.settings.execution_hosts, *work->host)) ||
 			    parent->metadata_incarnation != work->source_identity.metadata_incarnation || parent->created_at != work->source_identity.created_at ||
 			    parent->native_session_id != work->source_identity.native_session_id || parent->folder_id != work->source_identity.folder_id ||
 			    parent->imported_read_only || parent->messages_loaded != source_loaded ||
@@ -353,7 +437,7 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 			    (source_loaded && uam::StateSerializer::MessageDigest(*parent, false) != source_digest) ||
 			    uam::paths::ResolveWorkspaceRootPath(m_app, *parent) != workspace || m_app.native_history_chats_dir != native_directory ||
 			    !NativeChildOpenProfileMatches(ProviderResolutionService().ProviderForChatOrDefault(m_app, *parent), profile) ||
-			    !ProviderRuntimeRegistry::Resolve(profile).SupportsLocalPassiveNativeMedia(profile) ||
+			    !ProviderRuntimeRegistry::Resolve(profile).SupportsPassiveNativeMedia(profile) ||
 			    m_app.pending_chat_save_at_by_chat_id.contains(source_id) || m_app.pending_chat_save_tasks.contains(source_id) ||
 			    m_app.pending_chat_save_at_by_chat_id.contains(native_id) || m_app.pending_chat_save_tasks.contains(native_id) ||
 			    m_app.worktree_operation_chat_ids.contains(source_id) || m_app.worktree_operation_chat_ids.contains(native_id) ||
@@ -387,15 +471,21 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 		bool queued = false;
 		try
 		{
-			queued = CefPostTask(TID_FILE_BACKGROUND, new CefQueryWorkerTask(m_asyncLifetime, cb,
+			// An SSH read has its own thread and slot, like an explicit remote refresh; a local read stays on the file lane.
+			const auto dispatch_read = [&](ManagedSubagentWorker read, ManagedSubagentCompletion completion)
+			{
+				return passive_host ? DispatchRemoteRefreshRead(cb, std::move(read), std::move(completion))
+				    : CefPostTask(TID_FILE_BACKGROUND, new CefQueryWorkerTask(m_asyncLifetime, cb, std::move(read), std::move(completion)));
+			};
+			queued = dispatch_read(
 			    [work, native_id, primary, summary, source_primary, source_summary, profile, request]()
 			    {
 				    if (request->stop_requested() || !NativeChildOpenReferenceAvailable(work->root, work->source_identity, native_id) ||
 				        ChatRepository::ChatStorageRevision(work->root, work->source_identity.id) != source_primary ||
 				        ChatRepository::ChatSummaryStorageRevision(work->root, work->source_identity.id) != source_summary)
 					    return AsyncFailure(409, "Source history changed before passive loading.");
-				    auto loaded = uam::native_agents::LoadLocalPassiveHistoryForMedia(work->root, work->source_identity, profile, native_id,
-				        *primary, *summary, &work->error, request->get_token());
+				    auto loaded = uam::native_agents::LoadPassiveHistoryForMedia(work->root, work->source_identity, profile, native_id,
+				        *primary, *summary, work->host, &work->error, request->get_token());
 				    if (!loaded) return AsyncFailure(502, uam::strings::NonEmptyOrFallback(work->error, "Actual native child history is unavailable."));
 				    if (work->target_present)
 				    {
@@ -420,7 +510,7 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 				    lineage.subagent_parent_chat_id = candidate.subagent_parent_chat_id;
 				    lineage.subagent_parent_created_at = candidate.subagent_parent_created_at;
 				    if (const auto* parent = ChatDomainService().FindChatById(m_app, work->source_identity.id))
-					    (void)ChatRepository::ApplyNativeChildDisplayLineage(*parent, lineage, native_id);
+					    (void)ChatRepository::ApplyNativeChildDisplayLineage(*parent, lineage, native_id, m_attestedGeminiChildren.contains(native_id));
 				    work->metadata.incarnation = work->target_present ? work->target_incarnation : candidate.metadata_incarnation;
 				    work->metadata.display_parent_chat_id = lineage.subagent_parent_chat_id;
 				    work->metadata.display_parent_created_at = lineage.subagent_parent_created_at;
@@ -546,7 +636,7 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 				    if (!preparation_queued) { result = AsyncFailure(503, "Passive original preparation could not be queued."); return; }
 				    result.callback_deferred = true;
 				    deferred = true;
-			    }));
+			    });
 		}
 		catch (...) { finish(); cb->Failure(503, "Passive history loading could not be queued."); return; }
 		if (!queued) { finish(); cb->Failure(503, "Passive history loading could not be queued."); }
@@ -582,7 +672,7 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 		std::string revision;
 	};
 	std::shared_ptr<CachedPassiveHistoryWork> cached_passive;
-	if (!needs_export && native_agent && supports_local_passive_media &&
+	if (!needs_export && native_agent && supports_passive_media &&
 	    source != nullptr && uam::paths::IsControllerLocalWorkspace(*source))
 	{
 		// Cached reopen hydrates canonical already-owned history, never issues a
@@ -620,6 +710,7 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 		return;
 	}
 	const auto request = BeginNativeHistoryRead(request_key, cb, std::make_shared<NativeHistoryRequest>(ownership->cancellation));
+	if (remote_host) request->execution_host_id = remote_host->id; // A helper reinstall stops this read.
 
 	ChatSession identity;
 	identity.id = source_id;
@@ -793,12 +884,7 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 		    }
 		    if (remote_host)
 		    {
-			    const ExecutionHost* host = uam::execution_hosts::Find(m_app.settings.execution_hosts, remote_host->id);
-			    if (host == nullptr || host->transport != remote_host->transport ||
-			        host->ssh_alias != remote_host->ssh_alias || host->platform != remote_host->platform ||
-			        host->runner_directory != remote_host->runner_directory ||
-			        host->runner_version != remote_host->runner_version ||
-			        host->runner_protocol_version != remote_host->runner_protocol_version)
+			    if (!NativeChildOpenHostUnchanged(m_app.settings.execution_hosts, *remote_host))
 			    {
 				    result = AsyncFailure(409, "Remote host changed while its child history was loading.");
 				    return;
@@ -955,7 +1041,7 @@ uam::query_handler_async::AsyncCefResult UamQueryHandler::FinishOpenNativeSessio
 	// the chat save succeeds. Ordinary native-session opens gain no lineage.
 	const ChatSession* lineage_source = ChatDomainService().FindChatById(m_app, source_chat_id);
 	if (lineage_source != nullptr && lineage_source->created_at == source_created_at && lineage_source->metadata_incarnation == source_incarnation)
-		(void)ChatRepository::ApplyNativeChildDisplayLineage(*lineage_source, *target_chat, native_session_id);
+		(void)ChatRepository::ApplyNativeChildDisplayLineage(*lineage_source, *target_chat, native_session_id, m_attestedGeminiChildren.contains(native_session_id));
 	if (select_chat)
 	{
 		ChatDomainService().SelectChatById(m_app, target_chat_id);
@@ -1030,6 +1116,14 @@ uam::query_handler_async::AsyncCefResult UamQueryHandler::FinishOpenNativeSessio
 	return AsyncSuccess(nlohmann::json{{"chatId", target_chat_id}});
 }
 
+/// A user notice never forwards transport or status-line text: live model refusals keep only their fixed wording.
+static std::string LiveModelRefusal(const std::string& error)
+{
+	if (error.starts_with("Cannot change structured runtime model while ")) return error;
+	if (error == "ACP session is not ready.") return "The provider is still starting. Try again when it is ready.";
+	return "The running provider did not accept the model change. Try again.";
+}
+
 void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = uam::nlohmann_json::TrimmedStringValueOr(payload, "chatId", "");
@@ -1064,11 +1158,12 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 		const std::string previous_updated_at = chat->updated_at;
 		chat->reviewer_model_id = model_id;
 		chat->updated_at = uam::time::TimestampNow();
-		if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat reviewer model updated.", "Chat reviewer model changed in UI, but failed to save."))
+		std::string refusal;
+		if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat reviewer model updated.", "Chat reviewer model changed in UI, but failed to save.", &refusal))
 		{
 			chat->reviewer_model_id = previous_model_id;
 			chat->updated_at = previous_updated_at;
-			cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist chat reviewer model."));
+			cb->Failure(500, refusal);
 			return;
 		}
 		uam::PushStateUpdateIfChanged(browser, m_app);
@@ -1094,7 +1189,7 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 	if ((is_claude || is_antigravity) && (selected_model == nullptr || is_antigravity) && m_app.provider_model_catalog != nullptr)
 	{
 		const std::string selected_id = model_id.empty() ? "default" : model_id;
-		for (const auto& model : m_app.provider_model_catalog->GetCachedProviderModels(chat->provider_id, uam::paths::ResolveWorkspaceRootPath(m_app, *chat).generic_string(), chat->execution_host_id))
+		for (const auto& model : m_app.provider_model_catalog->GetCachedProviderModels(chat->provider_id, uam::paths::PortablePathString(uam::paths::ResolveWorkspaceRootPath(m_app, *chat)), chat->execution_host_id))
 		{
 			if (!(is_antigravity && model_id.empty() && model.value("isDefault", false)) && uam::nlohmann_json::TrimmedStringValue(model, {"id"}) != selected_id)
 				continue;
@@ -1106,7 +1201,7 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 	}
 	if (is_antigravity && m_app.provider_model_catalog != nullptr)
 	{
-		const std::string scope_workspace = uam::paths::ResolveWorkspaceRootPath(m_app, *chat).generic_string();
+		const std::string scope_workspace = uam::paths::PortablePathString(uam::paths::ResolveWorkspaceRootPath(m_app, *chat));
 		const std::string native_model = model_id.empty() && selected_model != nullptr ? selected_model->id : model_id;
 		const auto* host = uam::execution_hosts::Find(m_app.settings.execution_hosts, chat->execution_host_id.empty() ? "local" : chat->execution_host_id);
 		std::string discovery_error;
@@ -1160,7 +1255,7 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 			std::string acp_error;
 			if (!uam::SetAcpSessionModel(m_app, chat->id, model_id, &acp_error))
 			{
-				cb->Failure(409, FailureDetailOrFallback(acp_error, "Failed to update live ACP model."));
+				cb->Failure(409, LiveModelRefusal(acp_error));
 				return;
 			}
 		}
@@ -1168,20 +1263,21 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 		cb->Success(nlohmann::json{{"modelId", model_id}, {"reasoningEffort", reasoning_effort}, {"serviceTier", service_tier}, {"serviceTierExplicit", service_tier_explicit}}.dump());
 		return;
 	}
-	if (!uam::EnsureAcpStopProgress(m_app, chat->id))
+	// A retiring helper belongs to the previous provider, and this chat's new provider has no process to wait for.
+	if (!uam::ChatIsRetiringRemoteHelper(*chat) && !uam::EnsureAcpStopProgress(m_app, chat->id))
 	{
-		cb->Failure(409, "The runtime is stopping; retry shortly.");
+		cb->Failure(409, uam::AcpStopRefusalMessage(m_app, chat->id, "The runtime is stopping; retry shortly."));
 		return;
 	}
 	if (launch_model_restart && !StopLaunchOptionTerminal(m_app, chat->id))
 	{
-		cb->Failure(409, FailureDetailOrFallback(m_app.status_line, "The native terminal is stopping; retry shortly."));
+		cb->Failure(409, "The native terminal is stopping; retry shortly.");
 		return;
 	}
 	if (!defer_live_update && session != nullptr && session->running && (model_id.empty() || copilot_effort_changed || launch_model_restart) && !uam::StopAcpSession(m_app, chat->id))
 	{
 		uam::PushStateUpdateIfChanged(browser, m_app);
-		cb->Failure(409, FailureDetailOrFallback(m_app.status_line, "The runtime is stopping; retry shortly."));
+		cb->Failure(409, "The runtime is stopping; retry shortly.");
 		return;
 	}
 
@@ -1196,14 +1292,15 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 	chat->service_tier_explicit = service_tier_explicit;
 	chat->updated_at = uam::time::TimestampNow();
 
-	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat model updated.", "Chat model changed in UI, but failed to save."))
+	std::string save_refusal;
+	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat model updated.", "Chat model changed in UI, but failed to save.", &save_refusal))
 	{
 		chat->model_id = previous_model_id;
 		chat->reasoning_effort = previous_reasoning_effort;
 		chat->service_tier = previous_service_tier;
 		chat->service_tier_explicit = previous_service_tier_explicit;
 		chat->updated_at = previous_updated_at;
-		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist chat model."));
+		cb->Failure(500, save_refusal);
 		return;
 	}
 
@@ -1219,7 +1316,7 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 			chat->service_tier_explicit = previous_service_tier_explicit;
 			chat->updated_at = previous_updated_at;
 			(void)ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat model reverted.", "Chat model changed in UI, but failed to revert.");
-			cb->Failure(409, FailureDetailOrFallback(acp_error, "Failed to update live ACP model."));
+			cb->Failure(409, LiveModelRefusal(acp_error));
 			return;
 		}
 	}
@@ -1278,7 +1375,7 @@ void UamQueryHandler::HandleSetChatCodexOptions(CefRefPtr<CefBrowser> browser, c
 	if ((is_claude || is_antigravity) && (selected_model == nullptr || is_antigravity) && m_app.provider_model_catalog != nullptr)
 	{
 		const std::string selected_id = chat->model_id.empty() ? "default" : chat->model_id;
-		for (const auto& model : m_app.provider_model_catalog->GetCachedProviderModels(chat->provider_id, uam::paths::ResolveWorkspaceRootPath(m_app, *chat).generic_string(), chat->execution_host_id))
+		for (const auto& model : m_app.provider_model_catalog->GetCachedProviderModels(chat->provider_id, uam::paths::PortablePathString(uam::paths::ResolveWorkspaceRootPath(m_app, *chat)), chat->execution_host_id))
 		{
 			if (!(is_antigravity && chat->model_id.empty() && model.value("isDefault", false)) && uam::nlohmann_json::TrimmedStringValue(model, {"id"}) != selected_id)
 				continue;
@@ -1336,21 +1433,21 @@ void UamQueryHandler::HandleSetChatCodexOptions(CefRefPtr<CefBrowser> browser, c
 		cb->Success(nlohmann::json{{"reasoningEffort", reasoning_effort}, {"serviceTier", service_tier}, {"serviceTierExplicit", service_tier_explicit}}.dump());
 		return;
 	}
-	if (!uam::EnsureAcpStopProgress(m_app, chat->id))
+	if (!uam::ChatIsRetiringRemoteHelper(*chat) && !uam::EnsureAcpStopProgress(m_app, chat->id))
 	{
-		cb->Failure(409, "The runtime is stopping; retry shortly.");
+		cb->Failure(409, uam::AcpStopRefusalMessage(m_app, chat->id, "The runtime is stopping; retry shortly."));
 		return;
 	}
 	if (launch_only_options && !StopLaunchOptionTerminal(m_app, chat->id))
 	{
-		cb->Failure(409, FailureDetailOrFallback(m_app.status_line, "The native terminal is stopping; retry shortly."));
+		cb->Failure(409, "The native terminal is stopping; retry shortly.");
 		return;
 	}
 	const bool needs_effort_restart = is_copilot || is_claude || is_antigravity || launch_only_options;
 	if (needs_effort_restart && session != nullptr && session->running && !uam::StopAcpSession(m_app, chat->id))
 	{
 		uam::PushStateUpdateIfChanged(browser, m_app);
-		cb->Failure(409, FailureDetailOrFallback(m_app.status_line, "The runtime is stopping; retry shortly."));
+		cb->Failure(409, "The runtime is stopping; retry shortly.");
 		return;
 	}
 
@@ -1363,13 +1460,14 @@ void UamQueryHandler::HandleSetChatCodexOptions(CefRefPtr<CefBrowser> browser, c
 	chat->service_tier_explicit = service_tier_explicit;
 	chat->updated_at = uam::time::TimestampNow();
 
-	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat model options updated.", "Chat model options changed in UI, but failed to save."))
+	std::string save_refusal;
+	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat model options updated.", "Chat model options changed in UI, but failed to save.", &save_refusal))
 	{
 		chat->reasoning_effort = previous_reasoning_effort;
 		chat->service_tier = previous_service_tier;
 		chat->service_tier_explicit = previous_service_tier_explicit;
 		chat->updated_at = previous_updated_at;
-		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist Codex chat options."));
+		cb->Failure(500, save_refusal);
 		return;
 	}
 	uam::PushStateUpdateIfChanged(browser, m_app);
@@ -1381,7 +1479,7 @@ void UamQueryHandler::HandleSetChatProvider(CefRefPtr<CefBrowser> browser, const
 	const std::string chat_id = ProviderSwitchChatIdFromPayload(payload);
 	const std::string provider_id = ProviderSwitchProviderIdFromPayload(payload);
 
-	switch (uam::SwitchChatProvider(m_app, chat_id, provider_id))
+	switch (uam::SwitchChatProvider(m_app, chat_id, provider_id, uam::query_handler_internal::ProviderSwitchAllowsUncertainDelivery(payload)))
 	{
 	case uam::ChatProviderSwitchResult::UnsupportedProvider:
 		cb->Failure(400, "Unsupported provider: " + provider_id);
@@ -1393,10 +1491,15 @@ void UamQueryHandler::HandleSetChatProvider(CefRefPtr<CefBrowser> browser, const
 		cb->Failure(409, "Cannot change provider while a runtime turn or input request is active.");
 		return;
 	case uam::ChatProviderSwitchResult::RuntimeStopping:
-		cb->Failure(409, FailureDetailOrFallback(m_app.status_line, "The previous runtime is stopping; retry shortly."));
+		cb->Failure(409, uam::AcpStopExitUnobserved(m_app, chat_id) ? std::string(uam::kAcpProcessExitUnobservedMessage)
+		    : FailureDetailOrFallback(m_app.status_line, "The previous runtime is stopping; retry shortly."));
 		return;
 	case uam::ChatProviderSwitchResult::SaveFailed:
 		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist chat provider."));
+		return;
+	case uam::ChatProviderSwitchResult::QueueHeld:
+	case uam::ChatProviderSwitchResult::UncertainDelivery:
+		cb->Failure(409, FailureDetailOrFallback(m_app.status_line, "Resume or discard the held queued input before changing provider."));
 		return;
 	case uam::ChatProviderSwitchResult::Changed:
 	case uam::ChatProviderSwitchResult::Unchanged:
@@ -1461,16 +1564,19 @@ void UamQueryHandler::HandleSetChatApprovalMode(CefRefPtr<CefBrowser> browser, c
 		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist chat mode."));
 		return;
 	}
+	uam::permission_log::RecordChange(chat->id, PermissionChangeSource(), previous_mode_id, chat->approval_mode, chat->command_safety_tier, chat->command_safety_tier);
 
 	if (!defer_live_update && session != nullptr && session->running)
 	{
 		std::string acp_error;
 		if (!uam::SetAcpSessionMode(m_app, chat->id, effective_mode_id, &acp_error, previous_mode_id))
 		{
+			const std::string rejected = chat->approval_mode;
 			chat->approval_mode = previous_mode_id;
 			chat->updated_at = previous_updated_at;
 			(void)ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat mode reverted.", "Chat mode changed in UI, but failed to revert.");
-			cb->Failure(409, FailureDetailOrFallback(acp_error, "Failed to update live ACP mode."));
+			uam::permission_log::RecordChange(chat->id, uam::permission_log::kSourceRollback, rejected, chat->approval_mode, chat->command_safety_tier, chat->command_safety_tier);
+			cb->Failure(409, FailureDetailOrFallback(acp_error, "Failed to update live ACP mode.") + (uam::provider_chat_defaults::ProviderManagesOwnPermissions(chat->provider_id) ? "" : " " + uam::permission_log::RollbackNotice(*chat)));
 			return;
 		}
 	}
@@ -1507,11 +1613,12 @@ void UamQueryHandler::HandleSetChatUamAgent(CefRefPtr<CefBrowser> browser, const
 	const std::string previous_updated_at = chat->updated_at;
 	chat->uam_agent_id = agent_id;
 	chat->updated_at = uam::time::TimestampNow();
-	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "UAM agent updated.", "UAM agent changed in UI, but failed to save."))
+	std::string save_refusal;
+	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "UAM agent updated.", "UAM agent changed in UI, but failed to save.", &save_refusal))
 	{
 		chat->uam_agent_id = previous_agent_id;
 		chat->updated_at = previous_updated_at;
-		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist the UAM agent."));
+		cb->Failure(500, save_refusal);
 		return;
 	}
 	uam::PushStateUpdateIfChanged(browser, m_app);
@@ -1955,6 +2062,7 @@ void UamQueryHandler::HandleSetChatCommandSafetyTier(CefRefPtr<CefBrowser> brows
 		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist command safety tier."));
 		return;
 	}
+	uam::permission_log::RecordChange(previous_chat, *chat, PermissionChangeSource());
 	uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat->id);
 	if (session != nullptr && session->running && !AcpSessionBlocksModelChange(*session) &&
 	    CommandSafetyTierNeedsLiveUpdate(previous_chat, *chat))
@@ -1962,10 +2070,13 @@ void UamQueryHandler::HandleSetChatCommandSafetyTier(CefRefPtr<CefBrowser> brows
 		std::string acp_error;
 		if (!uam::SetAcpSessionMode(m_app, chat->id, requested_effective_mode, &acp_error, std::nullopt, previous))
 		{
+			// The send failed synchronously; the session may already have restored the tier.
+			const std::string rejected = chat->command_safety_tier;
 			chat->command_safety_tier = previous;
 			chat->updated_at = previous_updated_at;
 			(void)ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat permissions reverted.", "Chat permissions changed in UI, but failed to revert.");
-			cb->Failure(409, FailureDetailOrFallback(acp_error, "Failed to update live ACP permissions."));
+			uam::permission_log::RecordChange(chat->id, uam::permission_log::kSourceRollback, chat->approval_mode, chat->approval_mode, rejected, chat->command_safety_tier);
+			cb->Failure(409, FailureDetailOrFallback(acp_error, "Failed to update live ACP permissions.") + " " + uam::permission_log::RollbackNotice(*chat));
 			return;
 		}
 	}
@@ -2027,7 +2138,7 @@ void UamQueryHandler::HandleSetChatComputerUseEnabled(CefRefPtr<CefBrowser> brow
 	uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat_id);
 	if (!uam::EnsureAcpStopProgress(m_app, chat_id))
 	{
-		cb->Failure(409, "The runtime is stopping; retry shortly.");
+		cb->Failure(409, uam::AcpStopRefusalMessage(m_app, chat_id, "The runtime is stopping; retry shortly."));
 		return;
 	}
 	if (enabled && !uses_uam_backend && session != nullptr && uam::AcpSessionHasActiveTurn(*session))
@@ -2087,7 +2198,7 @@ void UamQueryHandler::HandleSetChatComputerUseBackend(CefRefPtr<CefBrowser> brow
 	uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat_id);
 	if (!uam::EnsureAcpStopProgress(m_app, chat_id))
 	{
-		cb->Failure(409, "The runtime is stopping; retry shortly.");
+		cb->Failure(409, uam::AcpStopRefusalMessage(m_app, chat_id, "The runtime is stopping; retry shortly."));
 		return;
 	}
 	if (session != nullptr && uam::AcpSessionHasActiveTurn(*session))
@@ -2359,11 +2470,12 @@ void UamQueryHandler::HandleSetChatSmallModelMode(CefRefPtr<CefBrowser> browser,
 	const std::string previous_updated_at = chat->updated_at;
 	chat->small_model_mode = *enabled;
 	chat->updated_at = uam::time::TimestampNow();
-	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Small-model workflow updated.", "Small-model workflow changed in UI, but failed to save."))
+	std::string save_refusal;
+	if (!ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Small-model workflow updated.", "Small-model workflow changed in UI, but failed to save.", &save_refusal))
 	{
 		chat->small_model_mode = previous;
 		chat->updated_at = previous_updated_at;
-		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to persist small-model workflow."));
+		cb->Failure(500, save_refusal);
 		return;
 	}
 

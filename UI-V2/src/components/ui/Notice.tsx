@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react'
-import { Check, ChevronRight, TriangleAlert, X } from 'lucide-react'
+import { Check, ChevronRight, CircleAlert, TriangleAlert, X } from 'lucide-react'
 import { Button } from './Button'
 import { IconButton } from './IconButton'
 import { usePresence } from './Overlay'
@@ -20,7 +20,8 @@ export function Notice({
 }: {
   tone?: NoticeTone
   title?: string
-  dismissLabel: string
+  /** Required when dismissible. */
+  dismissLabel?: string
   dismissible?: boolean
   onDismiss?: () => void
   actions?: ReactNode
@@ -33,7 +34,8 @@ export function Notice({
   if (!mounted) return null
   const color = tone === 'success' ? 'success' : tone === 'warning' ? 'warning' : tone === 'error' ? 'error' : 'accent'
   const heading = title ?? (tone === 'error' ? 'Error' : tone === 'warning' ? 'Warning' : tone === 'success' ? 'Completed' : 'Notice')
-  const StatusIcon = tone === 'success' ? Check : tone === 'warning' ? TriangleAlert : tone === 'error' ? X : null
+  // X is reserved for the dismiss control, so the error tone never uses it as its status icon.
+  const StatusIcon = tone === 'success' ? Check : tone === 'warning' ? TriangleAlert : tone === 'error' ? CircleAlert : null
   return (
     <div
       role={tone === 'error' ? 'alert' : 'status'}
@@ -53,12 +55,12 @@ export function Notice({
         </div>
         {details != null && (
           <Button type="button" asLink size="sm" aria-expanded={showDetails} onClick={() => setShowDetails((current) => !current)}>
-            <ChevronRight size={12} className="inline-block transition-transform duration-150" style={{ transform: showDetails ? 'rotate(90deg)' : 'none' }} aria-hidden />
+            <ChevronRight size={12} className="uam-notice__chevron inline-block" style={{ transform: showDetails ? 'rotate(90deg)' : 'none' }} aria-hidden />
             Details
           </Button>
         )}
         {actions && <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">{actions}</div>}
-        {dismissible && <IconButton
+        {dismissible && dismissLabel && <IconButton
           icon={<X size={13} />}
           label={dismissLabel}
           size="sm"

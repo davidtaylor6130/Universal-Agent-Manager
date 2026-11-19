@@ -98,5 +98,36 @@ file(WRITE "$canonicalResult" "`${UAM_RUNNER_SOURCE_FINGERPRINT}")
     Assert-Failure { & $script -Version 4.9.0 -ArtifactRoot $output -ArchiveDirectory $archives -Offline } 'unrelated files'
     if ([IO.File]::ReadAllText((Join-Path $output 'keep-user-file.txt')) -ne 'preserve me') { throw 'Acquisition removed an unrelated file.' }
     $count++
+    # Supplied archives without -Offline must pass GitHub provenance verification for the exact release tag; fail closed.
+    $ghRoot = Join-Path $root 'fake-gh'
+    New-Item -ItemType Directory -Path $ghRoot | Out-Null
+    [IO.File]::WriteAllText((Join-Path $ghRoot 'gh.ps1'), 'Set-Content -LiteralPath $env:UAM_TEST_GH_LOG -Value ($args -join " "); exit [int]$env:UAM_TEST_GH_EXIT')
+    $savedPath = $env:PATH
+    $env:UAM_TEST_GH_LOG = Join-Path $root 'gh-args.txt'
+    foreach ($target in @('linux-arm64','linux-x86_64','windows-x86_64')) {
+        Remove-Item -LiteralPath (Join-Path $archives "UAM-runner-$target.zip") -Force -ErrorAction SilentlyContinue
+        [IO.Compression.ZipFile]::CreateFromDirectory((Join-Path $root $target), (Join-Path $archives "UAM-runner-$target.zip"))
+    }
+    $attested = Join-Path $root 'attested'
+    try {
+        $env:PATH = $ghRoot
+        $env:UAM_TEST_GH_EXIT = '1'
+        Assert-Failure { & $script -Version 4.9.0 -ArtifactRoot $attested -ArchiveDirectory $archives } 'provenance verification failed'
+        if (Test-Path -LiteralPath $attested) { throw 'Unverified helpers reached the artifact root.' }
+        $count++
+        $env:UAM_TEST_GH_EXIT = '0'
+        & $script -Version 4.9.0 -ArtifactRoot $attested -ArchiveDirectory $archives
+        $ghArgs = Get-Content -LiteralPath $env:UAM_TEST_GH_LOG -Raw
+        foreach ($expected in @('attestation verify', '--repo davidtaylor6130/Universal-Agent-Manager', '--signer-workflow davidtaylor6130/Universal-Agent-Manager/.github/workflows/release.yml', '--source-ref refs/tags/v4.9.0', '--deny-self-hosted-runners')) {
+            if ($ghArgs -notlike "*$expected*") { throw "Provenance check omitted $expected." }
+        }
+        $count++
+        $env:PATH = Join-Path $root 'no-tools'
+        Assert-Failure { & $script -Version 4.9.0 -ArtifactRoot (Join-Path $root 'no-gh') -ArchiveDirectory $archives } 'Install the GitHub CLI'
+        $count++
+    } finally {
+        $env:PATH = $savedPath
+        Remove-Item Env:UAM_TEST_GH_LOG, Env:UAM_TEST_GH_EXIT -ErrorAction SilentlyContinue
+    }
     Write-Host "Remote helper acquisition: $count tests passed."
 } finally { Remove-Item -LiteralPath $root -Recurse -Force }

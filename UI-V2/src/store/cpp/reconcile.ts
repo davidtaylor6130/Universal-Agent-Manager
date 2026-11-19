@@ -123,7 +123,8 @@ export function providersEquivalent(previous: Provider, next: Provider): boolean
 	previous.structuredPermissionControl === next.structuredPermissionControl &&
 	previous.terminalPermissionControl === next.terminalPermissionControl &&
 	previous.npmPackageName === next.npmPackageName &&
-	previous.nativeGoalCommand === next.nativeGoalCommand
+	previous.nativeGoalCommand === next.nativeGoalCommand &&
+	previous.supportsNativeSteering === next.supportsNativeSteering
 }
 
 export function providerFromCppProvider(provider: CppProvider, previous: Provider | undefined): Provider {
@@ -141,6 +142,7 @@ export function providerFromCppProvider(provider: CppProvider, previous: Provide
 	terminalPermissionControl: provider.terminalPermissionControl,
     npmPackageName: provider.npmPackageName,
 	  nativeGoalCommand: provider.nativeGoalCommand,
+    supportsNativeSteering: provider.supportsNativeSteering,
   }
 
   if (previous) {
@@ -209,6 +211,10 @@ export function sessionsEquivalent(previous: Session, next: Session): boolean {
     (previous.subagentParentChatId ?? '') === (next.subagentParentChatId ?? '') &&
     (previous.subagentParentCreatedAt ?? '') === (next.subagentParentCreatedAt ?? '') &&
     (previous.createdByChatId ?? '') === (next.createdByChatId ?? '') &&
+    previous.automationTokenName === next.automationTokenName &&
+    previous.automationGitPermission === next.automationGitPermission &&
+    previous.automationMaxIterations === next.automationMaxIterations &&
+    previous.automationPendingPrompt === next.automationPendingPrompt &&
     (previous.managedSubagentCount ?? 0) === (next.managedSubagentCount ?? 0) &&
     (previous.managedSubagentRevision ?? 0) === (next.managedSubagentRevision ?? 0) &&
     (previous.messagesDigest ?? '') === (next.messagesDigest ?? '') &&
@@ -217,6 +223,7 @@ export function sessionsEquivalent(previous: Session, next: Session): boolean {
     previous.updatedAt.getTime() === next.updatedAt.getTime() &&
     (previous.lastOpenedAt ?? previous.updatedAt).getTime() === next.lastOpenedAt?.getTime() &&
     previous.attentionRevision === next.attentionRevision &&
+    previous.attentionSource === next.attentionSource &&
     previous.interactionAt?.getTime() === next.interactionAt?.getTime() &&
     (previous.interactionAt === null) === (next.interactionAt === null) &&
     previous.settledAt === next.settledAt &&
@@ -296,6 +303,10 @@ export function sessionFromCppChat(
     subagentParentChatId: chat.subagentParentChatId ?? '',
     subagentParentCreatedAt: chat.subagentParentCreatedAt ?? '',
     createdByChatId: chat.createdByChatId ?? '',
+    automationTokenName: chat.automationTokenName,
+    automationGitPermission: chat.automationGitPermission,
+    automationMaxIterations: chat.automationMaxIterations,
+    automationPendingPrompt: chat.automationPendingPrompt,
     managedSubagentCount: chat.managedSubagentCount ?? 0,
     managedSubagentRevision: chat.managedSubagentRevision ?? 0,
     messagesDigest: chat.messagesDigest ?? '',
@@ -306,6 +317,7 @@ export function sessionFromCppChat(
       : chat.interactionAt ? new Date(chat.interactionAt) : null,
     lastOpenedAt,
     attentionRevision: chat.attentionRevision,
+    attentionSource: chat.attentionSource,
     settledAt: chat.settledAt,
     snoozedUntilMs: chat.snoozedUntilMs ?? 0,
     userMessageIndices: previous?.messagesDigest === chat.messagesDigest ? previous?.userMessageIndices : undefined,
@@ -540,6 +552,7 @@ function pendingUserInputEquivalent(existing: AcpPendingUserInput | null, next: 
     existing.itemId === next.itemId &&
     existing.status === next.status &&
     existing.attentionKind === next.attentionKind &&
+    JSON.stringify(existing.secretRequest) === JSON.stringify(next.secretRequest) &&
     existing.questions.length === next.questions.length &&
     existing.questions.every((question, index) => {
       const other = next.questions[index]
@@ -589,6 +602,8 @@ export function acpBindingsEquivalent(existing: AcpBinding | undefined, next: Ac
     existing.recentStderr === next.recentStderr &&
     existing.lastExitCode === next.lastExitCode &&
     existing.lastStopReason === next.lastStopReason &&
+    existing.remoteStopForceAvailable === next.remoteStopForceAvailable &&
+    existing.computePoolWait?.poolName === next.computePoolWait?.poolName && existing.computePoolWait?.inUse === next.computePoolWait?.inUse && existing.computePoolWait?.limit === next.computePoolWait?.limit &&
     existing.timeoutStop?.label === next.timeoutStop?.label && existing.timeoutStop?.seconds === next.timeoutStop?.seconds &&
     existing.timeoutStop?.kind === next.timeoutStop?.kind && existing.timeoutStop?.count === next.timeoutStop?.count && existing.timeoutStop?.example === next.timeoutStop?.example &&
     diagnosticsEquivalent(existing.diagnostics, next.diagnostics) &&
@@ -609,7 +624,9 @@ export function acpBindingsEquivalent(existing: AcpBinding | undefined, next: Ac
     existing.turnAssistantMessageIndex === next.turnAssistantMessageIndex &&
     existing.turnSerial === next.turnSerial &&
     (existing.queueHeld ?? false) === (next.queueHeld ?? false) &&
+    (existing.providerSwitchOverride ?? 'none') === (next.providerSwitchOverride ?? 'none') &&
     sameArrayEntries(existing.unsentMessageIndices ?? [], next.unsentMessageIndices ?? []) &&
+    sameArrayEntries(existing.editableUnsentMessageIndices ?? [], next.editableUnsentMessageIndices ?? []) &&
     sameArrayEntries(existing.recoverableUnsentMessageIndices ?? [], next.recoverableUnsentMessageIndices ?? []) &&
     queuedPromptsEquivalent(existing.queuedPrompts ?? [], next.queuedPrompts ?? []) &&
     queuedPromptsEquivalent(existing.pendingDirectPrompts ?? [], next.pendingDirectPrompts ?? []) &&
@@ -717,7 +734,8 @@ export function acpBindingFromCppChat(chat: CppChat, previous: AcpBinding | unde
     readySinceLastSelect: Boolean(acp?.readySinceLastSelect),
     attentionKind: acp?.attentionKind ?? null,
     processingStartedAtMs: effectiveProcessing
-      ? previous?.processing && previous.turnSerial === (acp?.turnSerial ?? 0)
+      // Time spent waiting for a compute pool slot is not work: the clock starts when the turn is admitted.
+      ? previous?.processing && previous.turnSerial === (acp?.turnSerial ?? 0) && !(previous.computePoolWait && !acp?.computePoolWait)
         ? previous.processingStartedAtMs ?? Date.now()
         : Date.now()
       : null,
@@ -727,6 +745,8 @@ export function acpBindingFromCppChat(chat: CppChat, previous: AcpBinding | unde
     lastExitCode: typeof acp?.lastExitCode === 'number' ? acp.lastExitCode : null,
     lastStopReason: acp?.lastStopReason,
     timeoutStop: acp?.timeoutStop ?? undefined,
+    computePoolWait: acp?.computePoolWait ?? undefined,
+    remoteStopForceAvailable: acp?.remoteStopForceAvailable || undefined,
     diagnostics: Array.isArray(acp?.diagnostics) ? acp!.diagnostics : [],
     toolCalls: Array.isArray(acp?.toolCalls) ? acp!.toolCalls : [],
     planSummary: acp?.planSummary ?? '',
@@ -745,7 +765,9 @@ export function acpBindingFromCppChat(chat: CppChat, previous: AcpBinding | unde
     turnAssistantMessageIndex: typeof acp?.turnAssistantMessageIndex === 'number' ? acp.turnAssistantMessageIndex : -1,
     turnSerial: typeof acp?.turnSerial === 'number' ? acp.turnSerial : 0,
     queueHeld: acp?.queueHeld ?? false,
+    providerSwitchOverride: acp?.providerSwitchOverride ?? 'none',
     unsentMessageIndices: acp?.unsentMessageIndices ?? [],
+    editableUnsentMessageIndices: acp?.editableUnsentMessageIndices ?? [],
     recoverableUnsentMessageIndices: acp?.recoverableUnsentMessageIndices ?? [],
     queuedPrompts: acp?.queuedPrompts ?? [],
     pendingDirectPrompts: acp?.pendingDirectPrompts ?? [],
@@ -872,6 +894,7 @@ function cppMessagesEquivalent(existing: Message, next: CppMessage, index: numbe
     existing.nativeInputId === sanitizeNativeInputId(next.nativeInputId) &&
     existing.originRequestId === sanitizeOriginRequestId(next.originRequestId) &&
     existing.inputWriteCompleted === (next.role === 'user' && sanitizeNativeInputId(next.nativeInputId) && next.inputWriteCompleted === true ? true : undefined) &&
+    existing.inputDeliveryTracked === (next.role === 'user' && next.inputDeliveryTracked === true ? true : undefined) &&
     existing.role === next.role &&
     existing.content === next.content &&
     (existing.providerId ?? '') === (next.providerId ?? '') &&
@@ -911,6 +934,7 @@ export function buildMessageFromCpp(chatId: string, message: CppMessage, index: 
     nativeInputId: sanitizeNativeInputId(message.nativeInputId),
     originRequestId: sanitizeOriginRequestId(message.originRequestId),
     inputWriteCompleted: message.role === 'user' && sanitizeNativeInputId(message.nativeInputId) && message.inputWriteCompleted === true ? true : undefined,
+    inputDeliveryTracked: message.role === 'user' && message.inputDeliveryTracked === true ? true : undefined,
     role: message.role,
     content: message.content,
     providerId: message.providerId,

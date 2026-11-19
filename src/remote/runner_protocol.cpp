@@ -170,6 +170,9 @@ namespace uam::remote
 			                          {"safePathInspection", state != nullptr},
 			                          {"contextRead", state != nullptr},
 			                          {"providerHistoryRead", state != nullptr},
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+			                          {"providerHistoryChildren", state != nullptr},
+#endif
 			                          {"workspaceFileRead", state != nullptr},
 			                          {"workspaceAttachmentRead", state != nullptr},
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI
@@ -180,9 +183,11 @@ namespace uam::remote
 			                          {"usageAccountingStream", state != nullptr},
 		                          {"projectMemory", state != nullptr},
 		                          {"isolatedTextWorkers", state != nullptr},
+		                          {"secretDrop", state != nullptr},
 			                          {"runnerStartup", state != nullptr && (PlatformName() == "linux" || PlatformName() == "windows")},
 			                          {"runnerStartupObservation", state != nullptr && (PlatformName() == "linux" || PlatformName() == "windows")},
 			                          {"fileCopy", state != nullptr},
+			                          {"maxUploadBytes", state != nullptr ? kMaxUploadBytes : std::uintmax_t{0}},
 			                          {"processInputAcknowledgement", state != nullptr},
 			                          {"processOutputAcknowledgement", state != nullptr},
 			                          {"channelOutputAcknowledgement", state != nullptr},
@@ -190,6 +195,8 @@ namespace uam::remote
 		                          {"providerNativeContext", state != nullptr},
 		                          {"centralProviderConfiguration", state != nullptr},
 		                          {"geminiThinkingConfiguration", state != nullptr},
+		                          {"hostInstructionsOnlyConfiguration", state != nullptr},
+		                          {"providerConfigurationLocation", state != nullptr},
 		                          {"claudeTerminalFastConfiguration", state != nullptr},
 		                          {"processExecution", state != nullptr}}}};
 	}

@@ -6,6 +6,7 @@
 
 #include "include/cef_task.h"
 
+#include <atomic>
 #include <functional>
 #include <nlohmann/json.hpp>
 #include <string>
@@ -133,6 +134,25 @@ class CefQueryWorkerTask : public CefTask
 	IMPLEMENT_REFCOUNTING(CefQueryWorkerTask);
 };
 
+/// <summary>Runs its task once however many lanes it was posted to, so posting it again promotes a task still queued.</summary>
+class CefRunOnceTask : public CefTask
+{
+  public:
+	explicit CefRunOnceTask(CefRefPtr<CefTask> task) : m_task(std::move(task)) {}
+
+	void Execute() override
+	{
+		if (m_started.exchange(true)) return;
+		m_task->Execute();
+		m_task = nullptr;
+	}
+
+  private:
+	std::atomic<bool> m_started{false};
+	CefRefPtr<CefTask> m_task;
+	IMPLEMENT_REFCOUNTING(CefRunOnceTask);
+};
+
 /// User requests require immediate results, including when no BrowserView exists.
 /// CEF may indefinitely defer BACKGROUND work while the application is idle.
 template <typename Worker>
@@ -146,15 +166,29 @@ bool RunAsyncCefQuery(std::weak_ptr<void> lifetime, CefRefPtr<CefMessageRouterBr
 	return true;
 }
 
-template <typename Worker, typename Completion>
-bool RunAsyncCefQuery(std::weak_ptr<void> lifetime, CefRefPtr<CefMessageRouterBrowserSide::Callback> callback, Worker worker, Completion completion, CefThreadId thread_id = TID_FILE_USER_BLOCKING)
+/// Subprocess and network workers pass a handler-owned runner: CEF runs each shared file lane one task at a
+/// time, so a slow host or repository there holds up saved-history reads in every other chat. Completion
+/// still runs on the UI thread. A missing runner falls back to the lane.
+template <typename Worker, typename Completion = std::function<void(AsyncCefResult&)>>
+bool RunAsyncCefQuery(CefRefPtr<CefTaskRunner> runner, std::weak_ptr<void> lifetime, CefRefPtr<CefMessageRouterBrowserSide::Callback> callback, Worker worker, Completion completion = {}, CefThreadId fallback = TID_FILE_USER_BLOCKING)
 {
-	if (!CefPostTask(thread_id,
-	                 new CefQueryWorkerTask(std::move(lifetime), callback, std::move(worker), std::move(completion))))
+	CefRefPtr<CefTask> task = new CefQueryWorkerTask(std::move(lifetime), callback, std::move(worker), std::move(completion));
+	if (runner ? runner->PostTask(task) : CefPostTask(fallback, task)) return true;
+	if (callback) callback->Failure(503, "The background task queue is unavailable.");
+	return false;
+}
+
+template <typename Worker, typename Completion>
+bool RunAsyncCefQuery(std::weak_ptr<void> lifetime, CefRefPtr<CefMessageRouterBrowserSide::Callback> callback, Worker worker, Completion completion, CefThreadId thread_id = TID_FILE_USER_BLOCKING, CefRefPtr<CefTask>* promotable = nullptr)
+{
+	CefRefPtr<CefTask> task = new CefQueryWorkerTask(std::move(lifetime), callback, std::move(worker), std::move(completion));
+	if (promotable != nullptr) task = new CefRunOnceTask(task);
+	if (!CefPostTask(thread_id, task))
 	{
 		if (callback) callback->Failure(503, "The background task queue is unavailable.");
 		return false;
 	}
+	if (promotable != nullptr) *promotable = task;
 	return true;
 }
 

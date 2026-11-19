@@ -17,10 +17,30 @@ namespace uam::provider_workers
 		return uam::provider_ids::IsCliProviderAliasOf(profile.id, provider_id);
 	}
 
+	/// <summary>True for an OpenCode `--print-logs` line, e.g. `timestamp=... level=ERROR run=... message="..."`.</summary>
+	inline bool IsOpenCodeLogLine(std::string_view line)
+	{
+		return line.starts_with("timestamp=") && line.find(" level=") != std::string_view::npos;
+	}
+
 	/// <summary>Extracts the sole completed Codex assistant response; rejects incomplete or tool-bearing streams before domain parsing.</summary>
 	inline std::optional<std::string> CompletedTextWorkerOutput(std::string_view provider_id, std::string_view output, std::size_t max_output_bytes)
 	{
 		if (output.size() > max_output_bytes) return std::nullopt;
+		if (uam::provider_ids::IsCliProviderAliasOf(provider_id, uam::provider_ids::kOpenCodeCli))
+		{
+			// Worker runs request error-level logs (merged into output) to detect retry loops; they are not the reply.
+			std::string text;
+			for (std::size_t at = 0; at < output.size();)
+			{
+				const std::size_t end = std::min(output.find('\n', at), output.size());
+				std::string_view line = output.substr(at, end - at);
+				if (line.ends_with('\r')) line.remove_suffix(1);
+				if (!IsOpenCodeLogLine(line)) text.append(output.substr(at, std::min(end + 1, output.size()) - at));
+				at = end + 1;
+			}
+			return text;
+		}
 		if (!uam::provider_ids::IsCliProviderAliasOf(provider_id, uam::provider_ids::kCodexCli)) return std::string(output);
 		const nlohmann::json direct = nlohmann::json::parse(output, nullptr, false);
 		// Legacy plain domain JSON is supported, but a single protocol event is not a completed response.
@@ -74,6 +94,34 @@ namespace uam::provider_workers
 		return phase == Phase::Complete ? std::optional<std::string>(std::move(final_text)) : std::nullopt;
 	}
 
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	/// <summary>Counts OpenCode failed-model-request log lines in the complete lines of `output` into
+	/// `reports`; returns a stop reason from the second report on, else empty.</summary>
+	/// <remarks>OpenCode 1.x `run` retries retryable provider errors (usage or rate limits) without
+	/// exiting or printing anything, so a worker would otherwise wait out its whole timeout. Its
+	/// `--print-logs --log-level ERROR` output carries one `message="stream error"` line per attempt.
+	/// One report is tolerated because OpenCode's own retry gets past a one-off 429 or overload.</remarks>
+	inline std::string OpenCodeWorkerProviderError(std::string_view output, int& reports)
+	{
+		std::string reason;
+		for (std::size_t at = 0, end; (end = output.find('\n', at)) != std::string_view::npos; at = end + 1)
+		{
+			std::string_view line = output.substr(at, end - at);
+			if (line.ends_with('\r')) line.remove_suffix(1);
+			if (!IsOpenCodeLogLine(line) || line.find(" level=ERROR ") == std::string_view::npos ||
+			    line.find(" message=\"stream error\"") == std::string_view::npos || ++reports < 2) continue;
+			reason = "OpenCode stopped after repeated provider errors instead of waiting for its retries";
+			constexpr std::string_view kDetail = " error.error=\"";
+			const std::size_t detail = line.find(kDetail);
+			if (detail == std::string_view::npos) { reason += "."; continue; }
+			const std::string_view value = line.substr(detail + kDetail.size());
+			const std::string text = uam::strings::SafeLine(value.substr(0, value.find('"')), 200);
+			reason += text.empty() ? "." : ": " + text + ".";
+		}
+		return reason;
+	}
+#endif
+
 	/// <summary>Maps owned worker paths to the selected host without changing adjacent directory names.</summary>
 	inline void RemapWorkerPaths(std::vector<std::string>& argv, const std::filesystem::path& original_directory,
 	    const std::filesystem::path& target_directory, std::string_view platform)
@@ -99,7 +147,11 @@ namespace uam::provider_workers
 	{
 		// The checked V2 bridge owns a proof-verified deny-all lease. Never leave
 		// a V1 opencode.json or V1 argv flags in that worker's empty workspace.
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 		if (private_isolation) return IsProvider(profile, uam::provider_ids::kOpenCodeCli) && argv.size() == 5 && argv[1] == "--uam-opencode-v2-text-worker";
+#else
+		if (private_isolation) return false;
+#endif
 		if (IsProvider(profile, uam::provider_ids::kOpenCodeCli))
 		{
 			if (!uam::io::WriteTextFile(workspace / "opencode.json", R"({"permission":{"*":"deny","external_directory":"deny"},"agent":{"uam-text-worker":{"mode":"primary","prompt":"Complete the supplied text-only task directly. Do not delegate or compact. Tools are denied.","permission":{"*":"deny"}}},"share":"disabled","autoupdate":false})"))

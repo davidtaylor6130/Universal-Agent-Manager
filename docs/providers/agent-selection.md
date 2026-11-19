@@ -4,6 +4,6 @@ An agent selects the instructions, approved skills and execution constraints for
 
 [Agents](../settings/central-setup/agents.md).
 
-Build/Plan/native provider modes and custom UAM agents retain their distinct restrictions. Selecting a next-turn agent while work is active must bind that choice to the queued/authored request rather than mutate an already running turn.
+Build/Plan/native provider modes and custom UAM agents retain their distinct restrictions. Choosing provider-native features for a provider keeps a Plan or read-only agent's read ceiling. Selecting a next-turn agent while work is active must bind that choice to the queued/authored request rather than mutate an already running turn.
 
 Built-in Build and Plan support shared UAM delegation under the [agent definition agreement](../settings/central-setup/agents.md#built-in-delegation); native execution and environment restrictions still apply.

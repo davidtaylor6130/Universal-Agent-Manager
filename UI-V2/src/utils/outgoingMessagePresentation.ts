@@ -43,6 +43,16 @@ let serial = 0
 /** Exact chat identity: a recreated chat with the same ID never inherits another chat's rows. */
 export const outgoingScope = (chatId: string, createdAt: Date) => JSON.stringify([chatId, createdAt.getTime()])
 
+export const automationPromptRowKey = (chatId: string) => `automation-prompt-${chatId}`
+
+/** True only while Start chat is in flight or native still lists its prompt as being delivered: nothing is running yet (worktree and provider start). */
+export function automationStartPending(session: { id: string; createdAt: Date; automationTokenName?: string }, pendingDirectPrompts?: readonly { originRequestId?: string }[]): boolean {
+  if (!session.automationTokenName) return false
+  const key = automationPromptRowKey(session.id)
+  const attempt = readOutgoingAttempts(outgoingScope(session.id, session.createdAt)).find((candidate) => candidate.key === key && !candidate.retired)
+  return Boolean(attempt && (attempt.phase === 'pending' || pendingDirectPrompts?.some((prompt) => prompt.originRequestId === attempt.actionCorrelationId)))
+}
+
 export const nextOutgoingKey = () => `outgoing-attempt-${++serial}`
 
 export function readOutgoingAttempts(scope: string): readonly OutgoingAttempt[] {

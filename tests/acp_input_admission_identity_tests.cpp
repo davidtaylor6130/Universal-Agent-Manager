@@ -257,4 +257,22 @@ UAM_TEST(AcpInputAdmissionManagedMentionKeepsSpecializedReceiptAndClearsOrdinary
 	UAM_ASSERT(fixture.app.agent_runs.front().deliver_result_to_root_chat);
 	fixture.AssertNoLaunchOrWorker();
 }
+UAM_TEST(AcpProviderFeaturePreferenceKeepsPlanAgentReadCeiling)
+{
+	for (const std::string agent : {"plan", "build"})
+	{
+		AcpInputIdentityQueueFixture fixture;
+		fixture.Chat().uam_agent_id = agent;
+		std::optional<uam::AcpInputAdmission> admission;
+		std::string error;
+		UAM_ASSERT(fixture.Send("Inspect the parser.", std::nullopt, admission, error));
+		UAM_ASSERT(error.empty());
+		UAM_ASSERT_EQ(fixture.session->queued_user_prompts.size(), std::size_t{1});
+		const auto& queued = fixture.session->queued_user_prompts.front();
+		// Provider features replace the agent's instructions, never its read ceiling.
+		UAM_ASSERT_EQ(queued.uam_agent_execution_capability, std::string("provider-native"));
+		UAM_ASSERT_EQ(queued.uam_agent_workspace_access, std::string(agent == "plan" ? "read" : "write"));
+		fixture.AssertNoLaunchOrWorker();
+	}
+}
 #endif

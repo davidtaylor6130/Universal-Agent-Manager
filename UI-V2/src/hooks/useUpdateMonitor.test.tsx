@@ -15,6 +15,21 @@ function Probe() {
   return null
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000
+
+/** Serves a full npm document whose versions were published the given number of days ago. */
+function stubNpmRegistry(versions: Record<string, { daysAgo: number; deprecated?: string }>) {
+  const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+    if (!String(input).startsWith('https://registry.npmjs.org/')) return { ok: false, json: async () => ({}) }
+    return { ok: true, json: async () => ({
+      versions: Object.fromEntries(Object.entries(versions).map(([version, entry]) => [version, { version, ...(entry.deprecated ? { deprecated: entry.deprecated } : {}) }])),
+      time: Object.fromEntries(Object.entries(versions).map(([version, entry]) => [version, new Date(Date.now() - entry.daysAgo * DAY_MS).toISOString()])),
+    }) }
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  return fetchMock
+}
+
 describe('useUpdateMonitor', () => {
   afterEach(() => {
     vi.useRealTimers()
@@ -473,6 +488,7 @@ it('automatically installs only opted-in idle providers and defers running sessi
   useAppStore.setState({ appVersion: '4.9.0', updateChecksEnabled: false, automaticProviderUpdates: false, lastAppliedStateRevision: 0, dismissedUpdateVersions: {}, cliVersionManager: { providers: [provider] } })
   const requests: { action: string; payload: unknown }[] = []
   window.cefQuery = ({ request, onSuccess }) => { requests.push(JSON.parse(request)); onSuccess('{}') }
+  const registry = stubNpmRegistry({ '1.0.0': { daysAgo: 90 }, '2.0.0': { daysAgo: 30 } })
   const root = createRoot(document.createElement('div'))
   try {
     await act(async () => root.render(<Probe />))
@@ -483,7 +499,10 @@ it('automatically installs only opted-in idle providers and defers running sessi
     expect(requests).toEqual([expect.objectContaining({ action: 'applyCliProviderVersions', payload: { targets: [{ providerId: 'codex-cli', version: '2.0.0' }] } })])
     await act(async () => useAppStore.setState({ cliVersionManager: { providers: [{ ...provider, blockingChatIds: [], lastInstallStatus: 'failed' }] } }))
     expect(requests).toHaveLength(1)
+    // Effect reruns within one update check reuse a single registry read.
+    expect(registry).toHaveBeenCalledTimes(1)
   } finally {
+    vi.unstubAllGlobals()
     await act(async () => root.unmount())
     useAppStore.setState(previous, true)
     if (cache) window.localStorage.setItem('uam-update-catalog-v1', cache)
@@ -503,6 +522,7 @@ it('neither offers nor automatically installs an update for a provider disabled 
   useAppStore.setState({ appVersion: '4.9.0', updateChecksEnabled: false, automaticProviderUpdates: true, lastAppliedStateRevision: 0, dismissedUpdateVersions: {}, cliVersionManager: { providers: [provider] }, providerAvailability: [{ providerId: 'codex-cli', executionHostId: 'local', enabled: false }] })
   const requests: { action: string }[] = []
   window.cefQuery = ({ request, onSuccess }) => { requests.push(JSON.parse(request)); onSuccess('{}') }
+  stubNpmRegistry({ '1.0.0': { daysAgo: 90 } })
   let result: ReturnType<typeof useUpdateMonitor> | undefined
   function Results() { result = useUpdateMonitor(); return null }
   const root = createRoot(document.createElement('div'))
@@ -513,9 +533,62 @@ it('neither offers nor automatically installs an update for a provider disabled 
     await act(async () => useAppStore.setState({ providerAvailability: [] }))
     expect(result!.updates.map((update) => update.providerId)).toContain('codex-cli')
   } finally {
+    vi.unstubAllGlobals()
     await act(async () => root.unmount())
     useAppStore.setState(previous, true)
     if (originalStorage) Object.defineProperty(window, 'localStorage', originalStorage)
     delete window.cefQuery
   }
+})
+
+describe('automatic provider update release age', () => {
+  async function autoInstallRequests(versions: Record<string, { daysAgo: number; deprecated?: string }> | null, provider: Partial<CliVersionProviderState> = {}, latest = '2.0.0') {
+    const previous = useAppStore.getState()
+    const originalStorage = Object.getOwnPropertyDescriptor(window, 'localStorage')
+    const entries = new Map<string, string>()
+    Object.defineProperty(window, 'localStorage', { configurable: true, value: { getItem: (key: string) => entries.get(key) ?? null, setItem: (key: string, value: string) => entries.set(key, value), removeItem: (key: string) => entries.delete(key) } })
+    window.localStorage.setItem('uam-update-catalog-v1', JSON.stringify({ checkedAt: new Date().toISOString(), uam: { version: '4.9.0', url: '' }, providers: { 'codex-cli': { version: latest, url: '', homebrew: { version: latest, url: '' } } } }))
+    const state = { providerId: 'codex-cli', installedVersion: '1.0.0', selectedVersion: '', availableVersions: [], preferredVersion: 'latest', status: 'verified' as const, message: '', running: false, blockingChatIds: [], lastCommand: '', lastOutput: '', ...provider }
+    useAppStore.setState({ appVersion: '4.9.0', updateChecksEnabled: false, automaticProviderUpdates: true, lastAppliedStateRevision: 0, dismissedUpdateVersions: {}, cliVersionManager: { providers: [state] }, providerAvailability: [] })
+    const requests: { action: string; payload: unknown }[] = []
+    window.cefQuery = ({ request, onSuccess }) => { requests.push(JSON.parse(request)); onSuccess('{}') }
+    if (versions) stubNpmRegistry(versions)
+    else vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline') }))
+    const root = createRoot(document.createElement('div'))
+    try {
+      await act(async () => root.render(<Probe />))
+      await act(async () => {})
+      return requests.filter((request) => request.action === 'applyCliProviderVersions')
+    } finally {
+      vi.unstubAllGlobals()
+      await act(async () => root.unmount())
+      useAppStore.setState(previous, true)
+      if (originalStorage) Object.defineProperty(window, 'localStorage', originalStorage)
+      delete window.cefQuery
+    }
+  }
+  const target = (version: string) => [expect.objectContaining({ payload: { targets: [{ providerId: 'codex-cli', version }] } })]
+
+  it('installs the newest release that is at least seven days old instead of a newer one', async () => {
+    expect(await autoInstallRequests({ '1.0.0': { daysAgo: 90 }, '1.5.0': { daysAgo: 8 }, '2.0.0': { daysAgo: 2 } })).toEqual(target('1.5.0'))
+  })
+
+  it('waits when every newer release is younger than seven days', async () => {
+    expect(await autoInstallRequests({ '1.0.0': { daysAgo: 90 }, '1.5.0': { daysAgo: 6 }, '2.0.0': { daysAgo: 1 } })).toEqual([])
+  })
+
+  it('never auto-installs a deprecated, unpublished or prerelease version', async () => {
+    expect(await autoInstallRequests({ '1.0.0': { daysAgo: 90 }, '1.5.0-beta.1': { daysAgo: 20 }, '2.0.0': { daysAgo: 30, deprecated: 'Pulled' } })).toEqual([])
+    expect(await autoInstallRequests({ '1.0.0': { daysAgo: 90 } })).toEqual([])
+  })
+
+  it('does not auto-install when the publish time cannot be read', async () => {
+    expect(await autoInstallRequests(null)).toEqual([])
+  })
+
+  it('lets Homebrew move only to its current release once that release is old enough', async () => {
+    const aged = { '1.0.0': { daysAgo: 90 }, '1.5.0': { daysAgo: 30 } }
+    expect(await autoInstallRequests({ ...aged, '2.0.0': { daysAgo: 2 } }, { installMethod: 'homebrew-cask' })).toEqual([])
+    expect(await autoInstallRequests({ ...aged, '2.0.0': { daysAgo: 9 } }, { installMethod: 'homebrew-cask' })).toEqual(target('2.0.0'))
+  })
 })

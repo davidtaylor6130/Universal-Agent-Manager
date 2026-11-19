@@ -105,7 +105,7 @@ export const CODEX_SPEED_OPTIONS = !CODEX_ENABLED ? [] : [
 
 const GEMINI_MEMORY_MODEL_IDS = ['', 'auto-gemini-3', 'pro', 'flash', 'flash-lite']
 const GEMINI_MEMORY_MODEL_LABELS: Record<string, { label: string; detail: string }> = {
-  '': { label: 'Default', detail: 'Use Gemini settings' },
+  '': { label: 'Default', detail: 'Flash Lite, low cost' },
   'auto-gemini-3': { label: 'Auto 3', detail: 'Gemini 3 routing' },
   pro: { label: 'Pro', detail: 'Prioritize capability' },
   flash: { label: 'Flash', detail: 'Prioritize speed' },
@@ -113,14 +113,14 @@ const GEMINI_MEMORY_MODEL_LABELS: Record<string, { label: string; detail: string
 }
 const CODEX_MEMORY_MODEL_IDS = ['', 'gpt-5.6', 'gpt-5.4', 'gpt-5.3', 'gpt-5.2', 'gpt-5.1']
 const CODEX_MEMORY_MODEL_LABELS: Record<string, { label: string; detail: string }> = {
-  '': { label: 'Default', detail: 'Use Codex settings' },
+  '': { label: 'Default', detail: 'GPT-5.4 Mini, low cost' },
   'gpt-5.6': { label: 'GPT-5.6', detail: 'Latest frontier coding model' },
   'gpt-5.4': { label: 'GPT-5.4', detail: 'Frontier coding model' },
   'gpt-5.4-mini': { label: 'GPT-5.4 Mini', detail: 'Smaller fast model' },
   'gpt-5.2': { label: 'GPT-5.2', detail: 'Balanced coding model' },
 }
 const CLAUDE_MEMORY_MODEL_LABELS: Record<string, { label: string; detail: string }> = {
-  '': { label: 'Default', detail: 'Use Claude Code settings' },
+  '': { label: 'Default', detail: 'Haiku, low cost' },
   sonnet: { label: 'Sonnet', detail: 'Latest Sonnet alias' },
   opus: { label: 'Opus', detail: 'Latest Opus alias' },
 }
@@ -147,7 +147,7 @@ const PROVIDER_METADATA_BY_ID: Record<string, ProviderMetadata> = {
         usesFriendlyModelLabels: true,
         showPlanActionButtons: false,
         autoLabel: 'Yolo',
-        acceptEditsLabel: 'Accept Edits',
+        acceptEditsLabel: 'Accept edits',
         defaultModelLabels: GEMINI_DEFAULT_MODEL_LABELS,
         memoryModelIds: GEMINI_MEMORY_MODEL_IDS,
         memoryModelLabels: GEMINI_MEMORY_MODEL_LABELS,
@@ -175,7 +175,7 @@ const PROVIDER_METADATA_BY_ID: Record<string, ProviderMetadata> = {
         usesFriendlyModelLabels: false,
         showPlanActionButtons: true,
         autoLabel: 'Yolo',
-        acceptEditsLabel: 'Accept Edits',
+        acceptEditsLabel: 'Accept edits',
         defaultModelLabels: GEMINI_DEFAULT_MODEL_LABELS,
         memoryModelIds: CODEX_MEMORY_MODEL_IDS,
         memoryModelLabels: CODEX_MEMORY_MODEL_LABELS,
@@ -203,7 +203,7 @@ const PROVIDER_METADATA_BY_ID: Record<string, ProviderMetadata> = {
         usesFriendlyModelLabels: false,
         showPlanActionButtons: false,
         autoLabel: 'Auto',
-        acceptEditsLabel: 'Accept Edits',
+        acceptEditsLabel: 'Accept edits',
         defaultModelLabels: GEMINI_DEFAULT_MODEL_LABELS,
         memoryModelIds: ['', 'sonnet', 'opus'],
         memoryModelLabels: CLAUDE_MEMORY_MODEL_LABELS,
@@ -231,7 +231,7 @@ const PROVIDER_METADATA_BY_ID: Record<string, ProviderMetadata> = {
         usesFriendlyModelLabels: false,
         showPlanActionButtons: false,
         autoLabel: 'Yolo',
-        acceptEditsLabel: 'Accept Edits',
+        acceptEditsLabel: 'Accept edits',
         defaultModelLabels: GEMINI_DEFAULT_MODEL_LABELS,
         memoryModelIds: [''],
         memoryModelLabels: GENERIC_MEMORY_MODEL_LABELS,
@@ -259,7 +259,7 @@ const PROVIDER_METADATA_BY_ID: Record<string, ProviderMetadata> = {
         usesFriendlyModelLabels: false,
         showPlanActionButtons: false,
         autoLabel: 'Yolo',
-        acceptEditsLabel: 'Accept Edits',
+        acceptEditsLabel: 'Accept edits',
         defaultModelLabels: GEMINI_DEFAULT_MODEL_LABELS,
         memoryModelIds: [''],
         memoryModelLabels: GENERIC_MEMORY_MODEL_LABELS,
@@ -346,6 +346,15 @@ export function providerCapabilities(providerId: string, provider?: Provider): P
     structuredPermissionControl: provider.structuredPermissionControl ?? metadata.capabilities.structuredPermissionControl,
     terminalPermissionControl: 'provider',
   } : metadata.capabilities
+}
+
+/**
+ * The permission tier a chat keeps across a provider switch. A provider that answers its own prompts cannot show
+ * or change UAM's levels, so any level above Default becomes Default ('off') when that provider is the target, or
+ * the source, whose chat may hold a level its user could not see. Mirrors the native KeepPermissionLevel.
+ */
+export function permissionTierForProvider<Tier extends 'off' | 'acceptEdits' | 'aiReview' | 'yolo'>(tier: Tier | undefined, source: Pick<ProviderCapabilities, 'structuredPermissionControl'>, target: Pick<ProviderCapabilities, 'structuredPermissionControl'>): Tier | 'off' {
+  return !tier || source.structuredPermissionControl === 'provider' || target.structuredPermissionControl === 'provider' ? 'off' : tier
 }
 
 export function fallbackProviderForId(providerId: string): Provider {

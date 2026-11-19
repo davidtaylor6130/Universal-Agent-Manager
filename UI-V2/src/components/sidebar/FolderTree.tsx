@@ -5,13 +5,16 @@ import { CustomIcon, useCustomIconPicker } from '../shared/CustomIcon'
 import { isCompanionContext } from '../../ipc/cefBridge'
 import { reportAppFailure } from '../../utils/appFailure'
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, useMemo, useSyncExternalStore } from 'react'
-import type { MouseEvent as ReactMouseEvent, ReactNode, RefObject } from 'react'
+import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, ReactNode, RefObject } from 'react'
+import { automationStartPending, subscribeOutgoingAttempts } from '../../utils/outgoingMessagePresentation'
 import { Check, Plus, Folder as FolderIcon, FolderOpen as FolderOpenIcon, FolderSync, X, MoreHorizontal, MessageSquarePlus, Pencil, Trash2, TriangleAlert, ChevronRight, Library, SearchX, RefreshCw, Monitor, Server } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useAppStore, type AcpAttentionKind } from '../../store/useAppStore'
+import type { AppState } from '../../store/storeTypes'
 import { useShallow } from 'zustand/react/shallow'
 import { shallow } from 'zustand/shallow'
 import { SessionItem } from './SessionItem'
+import { DeleteConfirmDialog, chatDeleteFailure, countLabel, relatedBranchContents } from './DeleteConfirmDialog'
 import './sidebar.css'
 import { Button, ConfirmDialog, IconButton, MenuItem, MenuSelect, Notice, ProgressFill, RowButton, Tooltip, ViewportMenu } from '../ui'
 import {
@@ -22,11 +25,15 @@ import {
   tokenizeChatSearchQuery,
 } from './chatSearch'
 import type { Folder, Session, WorkspaceFolderRecoveryPreview } from '../../types/session'
-import { chatGridLeaves, chatPaneColors, readChatGridLayout, subscribeChatGridLayout } from '../../utils/chatGridStorage'
+import { chatGridLeaves, chatPaneColors, readChatGridLayout, setChatInLeaf, subscribeChatGridLayout, writeChatGridLayout } from '../../utils/chatGridStorage'
 import { CollectionMenuItems, moveFolderToCollection } from './CollectionMenuItems'
+import { RowSubmenu } from './RowSubmenu'
+import { applyManualOrder, ChatSortContext, glideAfter, isSorting, MAX_SORTED_CHATS, startSortableDrag, type ChatSortList } from './sortableDrag'
 import { ChatSelectionContext, MenuDivider, SingleOnlyMenuItem, type ChatSelection } from './bulkActions'
 import { runForEach, type BulkTarget } from '../../utils/runForEach'
 import type { ResourceCollection } from '../../types/resourceCollection'
+import { canNestCollection, collectionPath, collectionSubtreeIds } from '../../utils/collectionTree'
+import { fromViewportMenu } from '../../utils/modalFocus'
 import { isAbsoluteRemoteWorkspace, isRemoteDirectoryBrowseAvailable, isSshHost } from '../../utils/remoteWorkspace'
 import { RemoteDirectoryBrowser } from './RemoteDirectoryBrowser'
 import { Overlay, usePresence } from '../ui/Overlay'
@@ -151,6 +158,8 @@ function SidebarSectionHeader({ label, listId, expanded, onToggle, trailing, act
   return action ? <div className="group/section relative flex items-center">{toggle}<div className="absolute right-2 hidden group-hover/section:flex group-focus-within/section:flex">{action}</div></div> : toggle
 }
 
+const countAutomationStarts = (state: AppState) => state.sessions.filter((chat) => automationStartPending(chat, state.acpBindingBySessionId[chat.id]?.pendingDirectPrompts)).length
+
 export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessionOpen }: FolderTreeProps) {
   const navigationRevision = useSyncExternalStore(subscribeSubagentNavigation, subagentNavigationRevision)
   const companionContext = isCompanionContext()
@@ -158,15 +167,19 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
   const sessions = useAppStore(useShallow((s) => s.sessions))
   const executionHosts = useAppStore(useShallow((s) => s.executionHosts))
   const resourceCollections = useAppStore(useShallow((s) => s.resourceCollections))
-  const runtimeStatuses = useAppStore(useShallow((s) => sessions.map(({ id }) => combinedRuntimeStatus(
-    s.cliBindingBySessionId[id],
-    s.acpBindingBySessionId[id],
-  ))))
+  // Attempts live outside the app store, so their changes need their own re-render; the selector then reads them.
+  useSyncExternalStore(subscribeOutgoingAttempts, () => countAutomationStarts(useAppStore.getState()))
+  const runtimeStatuses = useAppStore(useShallow((s) => sessions.map((chat) => {
+    const status = combinedRuntimeStatus(s.cliBindingBySessionId[chat.id], s.acpBindingBySessionId[chat.id])
+    return (!status || status === 'done') && automationStartPending(chat, s.acpBindingBySessionId[chat.id]?.pendingDirectPrompts) ? 'processing' : status
+  })))
   const runtimeStatusBySessionId = useMemo(
     () => new Map(sessions.map((session, index) => [session.id, runtimeStatuses[index]])),
     [runtimeStatuses, sessions],
   )
   const snoozeNowMs = useSnoozeClock(sessions)
+  const prWatches = useAppStore((s) => s.prWatches)
+  const watchingSessionIds = useMemo(() => new Set(prWatches.filter((watch) => watch.watching).map((watch) => watch.chatId)), [prWatches])
   const runtimeBindings = useMemo<ChatSearchFilterContext>(() => {
     const acpBindingBySessionId: NonNullable<ChatSearchFilterContext['acpBindingBySessionId']> = {}
     sessions.forEach((session, index) => {
@@ -175,8 +188,8 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
       else if (status === 'done') acpBindingBySessionId[session.id] = { readySinceLastSelect: true }
       else if (status) acpBindingBySessionId[session.id] = { attentionKind: status.slice('attention:'.length) as AcpAttentionKind }
     })
-    return { acpBindingBySessionId, nowMs: snoozeNowMs }
-  }, [runtimeStatuses, sessions, snoozeNowMs])
+    return { acpBindingBySessionId, nowMs: snoozeNowMs, watchingSessionIds }
+  }, [runtimeStatuses, sessions, snoozeNowMs, watchingSessionIds])
   const toggleFolder        = useAppStore((s) => s.toggleFolder)
   const addFolder           = useAppStore((s) => s.addFolder)
   const renameFolder        = useAppStore((s) => s.renameFolder)
@@ -233,8 +246,23 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
   const [recoveryLoading, setRecoveryLoading] = useState(false)
   const [recoveryApplying, setRecoveryApplying] = useState(false)
   const [gridLayout, setGridLayout] = useState(readChatGridLayout)
-  const [draggedFolderId, setDraggedFolderId] = useState<string | null>(null)
-  const [folderDropTarget, setFolderDropTarget] = useState<{ id: string; edge: FolderDropEdge } | null>(null)
+  // Outlines the collection a dragged workspace would join, straight on the DOM so the tree never re-renders mid-drag.
+  const showFolderDropTarget = (collectionId: string | null) => {
+    for (const element of treeRef.current?.querySelectorAll<HTMLElement>('[data-drop-collection-id]') ?? []) {
+      element.classList.toggle('uam-sb-drop-target', element.dataset.dropCollectionId === collectionId)
+    }
+  }
+  const pinnedChatOrder = useAppStore((s) => s.sidebarPinnedChatOrder)
+  const activeChatOrder = useAppStore((s) => s.sidebarActiveChatOrder)
+  // Pinned and Active rows reach the latest drag and keyboard handlers through a stable context value.
+  const chatSortRef = useRef<{ start: (list: ChatSortList, sessionId: string, event: ReactPointerEvent<HTMLElement>) => void; move: (list: ChatSortList, sessionId: string, direction: -1 | 1) => void } | null>(null)
+  const chatSort = useMemo(() => ({
+    start: (list: ChatSortList, sessionId: string, event: ReactPointerEvent<HTMLElement>) => chatSortRef.current?.start(list, sessionId, event),
+    move: (list: ChatSortList, sessionId: string, direction: -1 | 1) => chatSortRef.current?.move(list, sessionId, direction),
+  }), [])
+  // Written directly so announcing a drag never re-renders the whole tree.
+  const moveStatusRef = useRef<HTMLDivElement>(null)
+  const setMoveAnnouncement = (text: string) => { if (moveStatusRef.current) moveStatusRef.current.textContent = text }
   const addControlsRef = useRef<HTMLDivElement>(null)
   const treeRef = useRef<HTMLDivElement>(null)
   const unsortedMenuTriggerRef = useRef<HTMLButtonElement>(null)
@@ -329,13 +357,13 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
   const activeStatusCounts = useMemo(() => {
     const counts = { running: 0, attention: 0, done: 0 }
     for (const sessionId of searchModel.activeSessionIds) {
-      const status = runtimeStatusBySessionId.get(sessionId)
+      const status = sessionsById.get(sessionId)?.automationPendingPrompt ? 'attention:automation' : runtimeStatusBySessionId.get(sessionId)
       if (status === 'processing') counts.running += 1
       else if (status?.startsWith('attention:')) counts.attention += 1
       else if (status === 'done') counts.done += 1
     }
     return counts
-  }, [runtimeStatusBySessionId, searchModel.activeSessionIds])
+  }, [runtimeStatusBySessionId, searchModel.activeSessionIds, sessionsById])
   const activeStatusSummary = [
     activeStatusCounts.running ? `${activeStatusCounts.running} running` : '',
     activeStatusCounts.attention ? `${activeStatusCounts.attention} attention` : '',
@@ -392,6 +420,12 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
     () => sessions.filter((session) => session.folderId && pendingDeleteFolderIds?.includes(session.folderId)).length,
     [sessions, pendingDeleteFolderIds]
   )
+  // One confirmation for menu and selection deletes, so a single workspace reads the same either way.
+  const workspaceDeleteCount = pendingDeleteFolderIds ? pendingDeleteFolderIds.length : pendingDeleteFolder ? 1 : 0
+  const singleWorkspaceDelete = pendingDeleteFolderIds
+    ? (pendingDeleteFolderIds.length === 1 ? folders.find((folder) => folder.id === pendingDeleteFolderIds[0]) : undefined)
+    : pendingDeleteFolder ?? undefined
+  const workspaceDeleteChatCount = pendingDeleteFolderIds ? pendingDeleteWorkspaceChatCount : pendingDeleteChatCount
   const unsortedExpanded = searchModel.isSearching || !unsortedCollapsed
 
   const visibleSessionRows = useCallback(() => Array.from(
@@ -497,7 +531,8 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
     event.preventDefault()
     clearBulkSelection()
     clearWorkspaceSelection()
-    const rows = Array.from(treeRef.current?.querySelectorAll<HTMLElement>('[data-collection-id]') ?? [])
+    // Headers inside a collapsed (inert) parent are hidden, so a range never selects them for bulk actions.
+    const rows = Array.from(treeRef.current?.querySelectorAll<HTMLElement>('[data-collection-id]') ?? []).filter((row) => !row.closest('[inert]'))
     const anchor = collectionSelectionAnchorRef.current ? rows.indexOf(collectionSelectionAnchorRef.current) : -1
     const target = rows.indexOf(header)
     if (anchor < 0 || target < 0) {
@@ -562,14 +597,15 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
     workspaceDeleteInFlightRef.current = true
     setDeletingFolder(true)
     setDeleteFolderError('')
+    const failure = pendingDeleteFolderIds.length === 1 ? 'The workspace could not be deleted. Try again.' : 'The workspaces could not be deleted. Try again.'
     try {
       const ids = pendingDeleteFolderIds
       if (await deleteFolders(ids)) clearWorkspaceSelection()
       // Partial deletion: refused workspaces were reported by name and stay selected for another try.
       else if (ids.some((id) => !useAppStore.getState().folders.some((folder) => folder.id === id))) setPendingDeleteFolderIds(null)
-      else setDeleteFolderError(useAppStore.getState().workspaceDeletionError || 'The workspaces could not be deleted. Try again.')
+      else setDeleteFolderError(useAppStore.getState().workspaceDeletionError || failure)
     } catch (error) {
-      setDeleteFolderError(error instanceof Error && error.message.trim() ? error.message : 'The workspaces could not be deleted. Try again.')
+      setDeleteFolderError(error instanceof Error && error.message.trim() ? error.message : failure)
     } finally {
       workspaceDeleteInFlightRef.current = false
       setDeletingFolder(false)
@@ -765,9 +801,30 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
     }),
   }))
   const ungroupedFolderRows = searchModel.folderRows.filter(({ folder }) => !groupedFolderIds.has(folder.id))
+  const collectionIds = new Set(resourceCollections.map((collection) => collection.id))
+  // Native sanitizes parents; an unknown parent still renders at the top level rather than disappearing.
+  const parentOf = (collection: ResourceCollection) => collection.parentId && collectionIds.has(collection.parentId) ? collection.parentId : ''
+  const renderCollection = ({ collection, folderRows }: (typeof collectionGroups)[number]): ReactNode => {
+    const subtree = new Set(collectionSubtreeIds(resourceCollections, collection.id))
+    return (
+      <FolderCollection
+        key={collection.id}
+        collection={collection}
+        folderCount={folderRows.length}
+        hiddenPaneColors={paneColorsForFolders(new Set(collectionGroups.flatMap((group) => subtree.has(group.collection.id) ? group.folderRows.map(({ folder }) => folder.id) : [])))}
+        selected={!companionContext && selectedCollectionIds.has(collection.id)}
+        selectionTargets={!companionContext && selectedCollectionIds.has(collection.id) ? selectedCollectionTargets : null}
+        onHeaderClick={(event) => handleCollectionClick(collection.id, event)}
+        onDeleteSelected={requestCollectionDelete}
+      >
+        {collectionGroups.filter((group) => parentOf(group.collection) === collection.id).map(renderCollection)}
+        {folderRows.map(renderFolderRow)}
+      </FolderCollection>
+    )
+  }
 
-  const commitFolderMove = (sourceId: string, targetId: string, edge: FolderDropEdge) => {
-    if (sourceId === targetId) return
+  const commitFolderMove = async (sourceId: string, targetId: string, edge: FolderDropEdge): Promise<boolean> => {
+    if (sourceId === targetId) return false
     const sourceCollectionId = folderCollectionIds.get(sourceId)
     const targetCollectionId = folderCollectionIds.get(targetId)
     if (sourceCollectionId && sourceCollectionId === targetCollectionId) {
@@ -775,23 +832,142 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
       const referenceIds = collection
         ? reorderCollectionFolderReferences(collection, sourceId, targetId, edge)
         : null
-      if (referenceIds) void reorderResourceReferences(sourceCollectionId, referenceIds)
-      return
+      return referenceIds ? reorderResourceReferences(sourceCollectionId, referenceIds) : false
     }
     if (!sourceCollectionId && !targetCollectionId) {
-      void reorderFolders(moveId(folders.map((folder) => folder.id), sourceId, targetId, edge))
+      return reorderFolders(moveId(folders.map((folder) => folder.id), sourceId, targetId, edge))
     }
+    return false
+  }
+
+  const folderListOf = (folderId: string) => {
+    const collectionId = folderCollectionIds.get(folderId)
+    return collectionId
+      ? collectionGroups.find(({ collection }) => collection.id === collectionId)?.folderRows ?? []
+      : ungroupedFolderRows
+  }
+  const announcePosition = (folderId: string, ids: readonly string[]) => {
+    const name = folders.find((folder) => folder.id === folderId)?.name ?? 'Workspace'
+    setMoveAnnouncement(`${name} moved to position ${ids.indexOf(folderId) + 1} of ${ids.length}`)
   }
 
   const moveFolderWithKeyboard = (sourceId: string, direction: -1 | 1) => {
-    const collectionId = folderCollectionIds.get(sourceId)
-    const rows = collectionId
-      ? collectionGroups.find(({ collection }) => collection.id === collectionId)?.folderRows ?? []
-      : ungroupedFolderRows
+    if (isSorting()) return
+    const rows = folderListOf(sourceId)
     const sourceIndex = rows.findIndex(({ folder }) => folder.id === sourceId)
     const target = rows[sourceIndex + direction]
-    if (target) commitFolderMove(sourceId, target.folder.id, direction < 0 ? 'before' : 'after')
+    if (!target) return
+    const ids = rows.map(({ folder }) => folder.id)
+    ids.splice(sourceIndex + direction, 0, ...ids.splice(sourceIndex, 1))
+    const row = () => sortRow(treeRef.current, sourceId)
+    const header = () => row()?.querySelector<HTMLElement>('[data-workspace-id]')
+    void glideAfter(row(), () => commitFolderMove(sourceId, target.folder.id, direction < 0 ? 'before' : 'after')).then((moved) => {
+      if (!moved) return
+      announcePosition(sourceId, ids)
+      // Reordering moves DOM nodes, which can drop focus; keep it on the moved workspace.
+      if (document.activeElement !== header()) header()?.focus()
+    })
   }
+
+  const startFolderDrag = (folder: Folder, event: ReactPointerEvent<HTMLElement>) => {
+    const ownCollectionId = folderCollectionIds.get(folder.id) ?? ''
+    startSortableDrag(event, {
+      targetAt: (x, y) => {
+        const under = document.elementFromPoint?.(x, y)
+        if (!under?.closest('#all-chat-list')) return null
+        // The innermost collection under the pointer, or '' outside every collection; the row's own list sorts.
+        const collectionId = under.closest<HTMLElement>('[data-drop-collection-id]')?.dataset.dropCollectionId ?? ''
+        return collectionId === ownCollectionId ? null : collectionId
+      },
+      onTargetChange: showFolderDropTarget,
+      onStart: () => setMoveAnnouncement(`Moving ${folder.name}. Press Escape to cancel.`),
+      onCancel: () => setMoveAnnouncement(`Move of ${folder.name} cancelled`),
+      onDrop: async ({ order, target }) => {
+        if (target !== null) {
+          const moved = await moveFolderToCollection(target || null, folder.id, folder.name)
+          const collectionName = resourceCollections.find((collection) => collection.id === target)?.name
+          if (moved) setMoveAnnouncement(collectionName ? `${folder.name} moved into ${collectionName}` : `${folder.name} removed from its collection`)
+          return moved
+        }
+        const index = order.indexOf(folder.id)
+        const neighbour = order[index - 1] ?? order[index + 1]
+        const moved = neighbour ? await commitFolderMove(folder.id, neighbour, index > 0 ? 'after' : 'before') : false
+        if (moved) announcePosition(folder.id, order)
+        return moved
+      },
+    })
+  }
+
+  const chatSortIds = { pinned: applyManualOrder(searchModel.pinnedSessionIds, pinnedChatOrder), active: applyManualOrder(searchModel.activeSessionIds, activeChatOrder) }
+  // A placed chat that leaves Active (Done, Clear all, snooze, inactivity) or is unpinned drops out of the saved order,
+  // so when it comes back it arrives on top like any new arrival. Chats that stay keep their place.
+  // ponytail: a refused prune is not retried in this session; the next reorder saves the visible list anyway.
+  const triedPrunesRef = useRef(new Set<string>())
+  useEffect(() => {
+    if (searchModel.isSearching || companionContext) return
+    const active = new Set(searchModel.activeSessionIds)
+    const prune = (list: ChatSortList, saved: readonly string[], gone: (id: string) => boolean) => {
+      const kept = saved.filter((id) => !gone(id))
+      const key = `${list}:${kept.join('\n')}`
+      if (kept.length === saved.length || triedPrunesRef.current.has(key)) return
+      triedPrunesRef.current.add(key)
+      void useAppStore.getState().setSidebarChatOrder(list, kept)
+    }
+    // Only chats that still exist are judged, so a chat list that has not loaded yet prunes nothing.
+    prune('active', activeChatOrder, (id) => sessionsById.has(id) && !active.has(id))
+    prune('pinned', pinnedChatOrder, (id) => sessionsById.get(id)?.isPinned === false)
+  }, [activeChatOrder, companionContext, pinnedChatOrder, searchModel.activeSessionIds, searchModel.isSearching, sessionsById])
+  const chatListElement = (list: ChatSortList) => document.getElementById(list === 'pinned' ? 'pinned-chat-list' : 'active-chat-list')
+  const chatName = (sessionId: string) => sessionsById.get(sessionId)?.name || 'Chat'
+  const announceChatPosition = (sessionId: string, ids: readonly string[]) =>
+    setMoveAnnouncement(`${chatName(sessionId)} moved to position ${ids.indexOf(sessionId) + 1} of ${ids.length}`)
+  const showPaneDropTarget = (leafId: string | null) => {
+    for (const element of document.querySelectorAll<HTMLElement>('[data-leaf-id]')) element.toggleAttribute('data-pointer-drop', element.dataset.leafId === leafId)
+  }
+  // Active saves exactly what it shows, so a chat that left drops its old place. A snoozed pin is hidden from
+  // Pinned for a while, so it keeps its saved place after the visible ones.
+  const saveChatOrder = (list: ChatSortList, ids: string[]) => useAppStore.getState().setSidebarChatOrder(list,
+    list === 'pinned' ? [...ids, ...pinnedChatOrder.filter((id) => !ids.includes(id))] : ids)
+  chatSortRef.current = {
+    start: (list, sessionId, event) => startSortableDrag(event, {
+      // Dragging a Pinned or Active chat onto a chat pane still opens it there, as dragging any chat row does.
+      targetAt: (x, y) => {
+        const leafId = document.elementFromPoint?.(x, y)?.closest<HTMLElement>('[data-leaf-id]')?.dataset.leafId
+        return leafId ? `pane:${leafId}` : null
+      },
+      onTargetChange: (target) => showPaneDropTarget(target?.slice('pane:'.length) ?? null),
+      onStart: () => setMoveAnnouncement(`Moving ${chatName(sessionId)}. Press Escape to cancel.`),
+      onCancel: () => setMoveAnnouncement(`Move of ${chatName(sessionId)} cancelled`),
+      onDrop: async ({ order, target }) => {
+        if (target !== null) {
+          writeChatGridLayout(setChatInLeaf(readChatGridLayout(), sessionId, target.slice('pane:'.length)))
+          useAppStore.getState().setActiveSession(sessionId)
+          setMoveAnnouncement(`${chatName(sessionId)} opened in the pane`)
+          return true
+        }
+        const saved = await saveChatOrder(list, order)
+        if (saved) announceChatPosition(sessionId, order)
+        return saved
+      },
+    }),
+    move: (list, sessionId, direction) => {
+      if (isSorting()) return
+      const ids = [...chatSortIds[list]]
+      const index = ids.indexOf(sessionId)
+      if (index < 0) return
+      if (!ids[index + direction]) { setMoveAnnouncement(`${chatName(sessionId)} is already ${direction < 0 ? 'first' : 'last'}`); return }
+      ids.splice(index + direction, 0, ...ids.splice(index, 1))
+      const row = () => sortRow(chatListElement(list), sessionId)
+      void glideAfter(row(), () => saveChatOrder(list, ids)).then((moved) => {
+        if (!moved) return
+        announceChatPosition(sessionId, ids)
+        const focusTarget = row()?.querySelector<HTMLElement>('[data-session-id]')
+        if (focusTarget && document.activeElement !== focusTarget) focusTarget.focus()
+      })
+    },
+  }
+  // Sorting is for the plain lists: search shows a filtered view, and the phone companion only browses.
+  const chatSortList = (list: ChatSortList) => searchModel.isSearching || companionContext || chatSortIds[list].length > MAX_SORTED_CHATS ? undefined : list
 
   const renderActivitySessionItem = (id: string) => {
     const activitySession = sessionsById.get(id)
@@ -811,6 +987,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
         activityHostLabel={`Runs on ${host?.label || hostId}`}
         activityHostRemote={SSH_ENABLED && hostId !== 'local'}
         onSessionClick={handleSessionClick} onSessionOpen={onSessionOpen}
+        sortList={chatSortList('active')}
       />
     )
   }
@@ -862,22 +1039,15 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
       selectedSessionIds={companionContext ? EMPTY_SELECTION_IDS : selectedSessionIds}
       onSessionClick={handleSessionClick} onSessionOpen={onSessionOpen}
       draggable={!searchModel.isSearching && !isCompanionContext()}
-      dropEdge={folderDropTarget?.id === folder.id ? folderDropTarget.edge : null}
-      onDragStart={() => setDraggedFolderId(folder.id)}
-      onDragOver={(edge) => setFolderDropTarget({ id: folder.id, edge })}
-      onDragEnd={() => { setDraggedFolderId(null); setFolderDropTarget(null) }}
+      onDragPointerDown={(event) => startFolderDrag(folder, event)}
       onMove={(direction) => moveFolderWithKeyboard(folder.id, direction)}
-      onDrop={(edge) => {
-        if (draggedFolderId) commitFolderMove(draggedFolderId, folder.id, edge)
-        setDraggedFolderId(null)
-        setFolderDropTarget(null)
-      }}
     />
   }
 
   return (
     <SubagentSearchMatches.Provider value={searchModel.matchedSubagentChildIds}>
     <ChatSelectionContext.Provider value={chatSelection}>
+    <ChatSortContext.Provider value={chatSort}>
     <div ref={treeRef} className="select-none"
       onContextMenuCapture={(event) => { if (isCompanionContext()) { event.preventDefault(); event.stopPropagation() } }}
       onDragStartCapture={(event) => { if (isCompanionContext()) { event.preventDefault(); event.stopPropagation() } }}
@@ -887,7 +1057,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
         <div className="mx-1 mb-1 flex items-center gap-2 px-2.5 py-1" style={{ background: 'var(--surface-up)', borderBottom: '1px solid var(--border)' }}>
           <span className="min-w-0 flex-1 text-xs font-medium">{selectedFolderIds.size} {selectedFolderIds.size === 1 ? 'workspace' : 'workspaces'} selected</span>
           <Button size="sm" variant="ghost" disabled={deletingFolder} onClick={clearWorkspaceSelection}>Clear</Button>
-          <Button size="sm" variant="danger" disabled={deletingFolder} aria-label={`Delete ${selectedFolderIds.size} selected workspaces`} onClick={() => {
+          <Button size="sm" variant="danger" disabled={deletingFolder} aria-label={`Delete ${countLabel(selectedFolderIds.size, 'selected workspace')}`} onClick={() => {
             const visible = new Set(visibleFolderRows().map((row) => row.dataset.workspaceId))
             const ids = [...selectedFolderIds].filter((id) => visible.has(id))
             if (ids.length > 0) {
@@ -901,7 +1071,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
         <div className="mx-1 mb-1 flex items-center gap-2 px-2.5 py-1" style={{ background: 'var(--surface-up)', borderBottom: '1px solid var(--border)' }}>
           <span className="min-w-0 flex-1 text-xs font-medium">{selectedCollectionIds.size} {selectedCollectionIds.size === 1 ? 'collection' : 'collections'} selected</span>
           <Button size="sm" variant="ghost" onClick={() => setSelectedCollectionIds(new Set())}>Clear</Button>
-          <Button size="sm" variant="danger" aria-label={`Delete ${selectedCollectionIds.size} selected collections`} onClick={requestCollectionDelete}>Delete</Button>
+          <Button size="sm" variant="danger" aria-label={`Delete ${countLabel(selectedCollectionIds.size, 'selected collection')}`} onClick={requestCollectionDelete}>Delete</Button>
         </div>
       )}
       {!companionContext && selectedSessionIds.size > 0 && (
@@ -911,7 +1081,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
           <Button
             size="sm"
             variant="danger"
-            aria-label={`Delete ${selectedSessionIds.size} selected chats`}
+            aria-label={`Delete ${countLabel(selectedSessionIds.size, 'selected chat')}`}
             onClick={requestBulkDelete}
           >
             Delete
@@ -959,7 +1129,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
             {...(!activeExpanded ? { inert: '' } : {})}
           >
             <div className="uam-sb-collapse__inner">
-              {activeList.mounted && searchModel.activeSessionIds.map(renderActivitySessionItem)}
+              {activeList.mounted && chatSortIds.active.map(renderActivitySessionItem)}
             </div>
           </div>
           {!activeExpanded && activeStatusCounts.attention > 0 && (
@@ -1010,8 +1180,8 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
             {...(!pinnedExpanded ? { inert: '' } : {})}
           >
             <div className="uam-sb-collapse__inner">
-              {pinnedList.mounted && searchModel.pinnedSessionIds.map((id) => (
-                <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} familySessionIds={familySessionIdsByRootId.get(id)} selected={rowSelection(id)} onSessionClick={handleSessionClick} onSessionOpen={onSessionOpen} />
+              {pinnedList.mounted && chatSortIds.pinned.map((id) => (
+                <SessionItem key={id} sessionId={id} session={sessionsById.get(id)} familySessionIds={familySessionIdsByRootId.get(id)} selected={rowSelection(id)} onSessionClick={handleSessionClick} onSessionOpen={onSessionOpen} sortList={chatSortList('pinned')} />
               ))}
             </div>
           </div>
@@ -1036,27 +1206,21 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
         hidden={!allChatsList.mounted}
         aria-hidden={!allChatsExpanded}
         {...(!allChatsExpanded ? { inert: '' } : {})}
+        onDragOver={(event) => {
+          // Dropping a nested collection outside every collection moves it to the top level.
+          if (!event.dataTransfer?.types.includes(COLLECTION_DRAG_TYPE) || !resourceCollections.find((entry) => entry.id === draggedCollectionId)?.parentId) return
+          event.preventDefault()
+        }}
+        onDrop={(event) => {
+          const id = event.dataTransfer?.getData(COLLECTION_DRAG_TYPE)
+          if (!id) return
+          event.preventDefault()
+          void moveCollection(id, null)
+        }}
       >
       <div className="uam-sb-collapse__inner">
       {allChatsList.mounted && <>
-      {!searchModel.isSearching && collectionGroups.map(({ collection, folderRows }) => (
-        <FolderCollection
-          key={collection.id}
-          collection={collection}
-          folderCount={folderRows.length}
-          hiddenPaneColors={paneColorsForFolders(new Set(folderRows.map(({ folder }) => folder.id)))}
-          selected={!companionContext && selectedCollectionIds.has(collection.id)}
-          selectionTargets={!companionContext && selectedCollectionIds.has(collection.id) ? selectedCollectionTargets : null}
-          onHeaderClick={(event) => handleCollectionClick(collection.id, event)}
-          onDeleteSelected={requestCollectionDelete}
-          onFolderDrop={(folderId) => {
-            const folder = folders.find((item) => item.id === folderId)
-            if (folder) void moveFolderToCollection(collection.id, folder.id, folder.name)
-          }}
-        >
-          {folderRows.map(renderFolderRow)}
-        </FolderCollection>
-      ))}
+      {!searchModel.isSearching && collectionGroups.filter((group) => !parentOf(group.collection)).map(renderCollection)}
 
       {(searchModel.isSearching ? searchModel.folderRows : ungroupedFolderRows).map(renderFolderRow)}
 
@@ -1166,12 +1330,14 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
         </div>
       )}
 
-      <ConfirmDialog
+      <DeleteConfirmDialog
         open={Boolean(pendingBulkDeleteIds)}
-        title="Delete selected chats?"
-        label={`Delete ${pendingBulkDeleteIds?.length ?? 0} selected chats`}
-        confirmLabel="Delete chats"
-        error={bulkDeleteFailed ? 'The chats could not be deleted. A chat may still be running.' : ''}
+        kind="chat"
+        count={pendingBulkDeleteIds?.length ?? 0}
+        name={pendingBulkDeleteIds?.length === 1 ? sessions.find((session) => session.id === pendingBulkDeleteIds[0])?.name : undefined}
+        contents={relatedBranchContents(pendingBulkDeleteIds?.length ?? 0, pendingBulkDeleteFamilyIds?.length ?? 0)}
+        returnFocusTo={() => rowFocusTarget('data-session-id', pendingBulkDeleteIds?.[0])}
+        error={bulkDeleteFailed ? chatDeleteFailure(pendingBulkDeleteIds?.length ?? 0) : ''}
         busy={bulkDeleting}
         onCancel={() => { if (!bulkDeleteInFlightRef.current) setPendingBulkDeleteIds(null) }}
         onConfirm={() => {
@@ -1195,15 +1361,15 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
             }
           })()
         }}
-      >
-        {pendingBulkDeleteIds?.length ?? 0} chats{(pendingBulkDeleteFamilyIds?.length ?? 0) > (pendingBulkDeleteIds?.length ?? 0) ? ` and ${(pendingBulkDeleteFamilyIds?.length ?? 0) - (pendingBulkDeleteIds?.length ?? 0)} related branches` : ''} will be permanently deleted. This cannot be undone.
-      </ConfirmDialog>
+      />
 
-      <ConfirmDialog
-        open={Boolean(pendingDeleteCollections)}
-        title="Delete selected collections?"
-        label={`Delete ${pendingDeleteCollections?.length ?? 0} selected collections`}
-        confirmLabel="Delete collections"
+      {pendingDeleteCollections?.length === 1 && resourceCollections.filter((collection) => collection.id === pendingDeleteCollections[0].id).map((collection) => (
+        <CollectionDeleteDialog key={collection.id} open collection={collection} onClose={() => setPendingDeleteCollections(null)} />
+      ))}
+      <DeleteConfirmDialog
+        open={(pendingDeleteCollections?.length ?? 0) > 1}
+        kind="collection"
+        count={pendingDeleteCollections?.length ?? 0}
         onCancel={() => setPendingDeleteCollections(null)}
         onConfirm={() => {
           const targets = pendingDeleteCollections ?? []
@@ -1212,8 +1378,8 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
             .then((deleted) => setSelectedCollectionIds((current) => new Set([...current].filter((id) => !deleted.includes(id)))))
         }}
       >
-        {pendingDeleteCollections?.length ?? 0} collections will be permanently deleted. Workspaces remain, but these collections cannot be restored.
-      </ConfirmDialog>
+        <p className="mt-2">What is inside a nested one moves to its parent; a top-level one's child collections become top level, its workspaces become ungrouped and its other links are removed. Workspaces remain, but these collections cannot be restored.</p>
+      </DeleteConfirmDialog>
 
       {recoveryDialogOpen && (
         <WorkspaceFolderRecoveryModal
@@ -1366,53 +1532,128 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
         />
       )}
 
-      <ConfirmDialog
-        open={!companionContext && Boolean(pendingDeleteFolderIds)}
-        title="Delete selected workspaces?"
-        label="Delete selected workspaces"
-        confirmLabel="Delete workspaces"
+      <DeleteConfirmDialog
+        open={!companionContext && workspaceDeleteCount > 0}
+        kind="workspace"
+        count={workspaceDeleteCount}
+        name={singleWorkspaceDelete?.name}
+        title={singleWorkspaceDelete && workspaceDeleteChatCount > 0 ? 'Delete workspace and chats?' : undefined}
+        contents={workspaceDeleteChatCount > 0 ? countLabel(workspaceDeleteChatCount, 'chat') : undefined}
         busy={deletingFolder}
         error={deleteFolderError || undefined}
-        onCancel={() => { setPendingDeleteFolderIds(null); setDeleteFolderError('') }}
-        onConfirm={() => { void confirmDeleteWorkspaces() }}
+        returnFocusTo={() => rowFocusTarget('data-workspace-id', pendingDeleteFolderIds?.[0] ?? pendingDeleteFolderId)}
+        onCancel={() => {
+          if (deletingFolder) return
+          setPendingDeleteFolderIds(null)
+          setPendingDeleteFolderId(null)
+          setDeleteFolderError('')
+        }}
+        onConfirm={() => { void (pendingDeleteFolderIds ? confirmDeleteWorkspaces() : confirmDeleteFolder()) }}
       >
-        <p>Delete {pendingDeleteFolderIds?.length ?? 0} {(pendingDeleteFolderIds?.length ?? 0) === 1 ? 'workspace' : 'workspaces'} and {pendingDeleteWorkspaceChatCount} {pendingDeleteWorkspaceChatCount === 1 ? 'chat' : 'chats'}? This cannot be undone. Workspace directories stay on disk.</p>
-        {deletingFolder && <>
-          <p role="status" aria-live="polite" className="mt-2">Deleting {pendingDeleteFolderIds?.length ?? 0} {(pendingDeleteFolderIds?.length ?? 0) === 1 ? 'workspace' : 'workspaces'} and {pendingDeleteWorkspaceChatCount} {pendingDeleteWorkspaceChatCount === 1 ? 'chat' : 'chats'}…</p>
-          <DeletionProgressBar label="Deleting workspaces" className="mt-2" />
-        </>}
-      </ConfirmDialog>
-      <ConfirmDialog
-        open={!companionContext && Boolean(pendingDeleteFolder)}
-        title="Delete folder and chats?"
-        label="Delete folder and chats"
-        confirmLabel="Delete folder"
-        busy={deletingFolder}
-        error={deleteFolderError || undefined}
-        onCancel={() => { if (deletingFolder) return; setPendingDeleteFolderId(null); setDeleteFolderError('') }}
-        onConfirm={() => { void confirmDeleteFolder() }}
-      >
-        <p>Delete "{pendingDeleteFolder?.name}" and {pendingDeleteChatCount === 1 ? '1 chat' : `${pendingDeleteChatCount} chats`}? The folder on disk is kept.</p>
-        {pendingDeleteChatCount > 0 && <p className="mt-2 text-xs" style={{ color: 'var(--error)' }}>Deleted chats cannot be restored from this app.</p>}
-        {deletingFolder && <DeletionProgressBar label="Deleting workspace" className="mt-2" />}
-      </ConfirmDialog>
+        <p className="mt-2">{singleWorkspaceDelete ? 'The folder on disk is kept.' : 'Workspace directories stay on disk.'}</p>
+        {singleWorkspaceDelete?.directory && <p className="mt-1 text-xs" style={{ color: 'var(--text-3)' }}>{singleWorkspaceDelete.directory}</p>}
+        {workspaceDeleteChatCount > 0 && <p className="mt-2 text-xs" style={{ color: 'var(--error)' }}>Deleted chats cannot be restored from this app.</p>}
+        {deletingFolder && <DeletionProgressBar label={workspaceDeleteCount === 1 ? 'Deleting workspace' : 'Deleting workspaces'} className="mt-2" />}
+      </DeleteConfirmDialog>
+      <div ref={moveStatusRef} className="sr-only" role="status" aria-live="polite" data-testid="sidebar-move-status" />
     </div>
+    </ChatSortContext.Provider>
     </ChatSelectionContext.Provider>
     </SubagentSearchMatches.Provider>
   )
 }
 
-function FolderCollection({ collection, folderCount, hiddenPaneColors, selected, selectionTargets, onHeaderClick, onDeleteSelected, onFolderDrop, children }: {
+/** The sortable row with `id` inside `scope`; chat ids can appear in both Pinned and Active, so callers scope the lookup. */
+const sortRow = (scope: ParentNode | null | undefined, id: string) =>
+  Array.from(scope?.querySelectorAll<HTMLElement>('[data-sort-id]') ?? []).find((row) => row.dataset.sortId === id)
+
+const COLLECTION_DRAG_TYPE = 'text/x-uam-collection-id'
+// dataTransfer values are unreadable during dragover, so valid drop targets read the dragged id from here.
+let draggedCollectionId: string | null = null
+
+/** A reference with no home of its own once its collection goes, unlike a workspace or chat, which stays in the sidebar. */
+const hasOtherLinks = (collection: ResourceCollection) => collection.references.some((reference) => reference.type !== 'workspace-folder' && reference.type !== 'chat')
+
+/** Move contents up is a real choice only when it keeps something Delete all would not. */
+function canMoveContentsUp(collections: readonly ResourceCollection[], collection: ResourceCollection) {
+  return collections.some((entry) => entry.parentId === collection.id) || (collections.some((entry) => entry.id === collection.parentId) && collection.references.length > 0)
+}
+
+function collectionDeleteMessage(collections: readonly ResourceCollection[], collection: ResourceCollection): string[] {
+  const subtree = collectionSubtreeIds(collections, collection.id)
+  const inside = subtree.length - 1
+  const parent = collections.find((entry) => entry.id === collection.parentId)
+  const ownLinks = hasOtherLinks(collection)
+  const direct = collections.filter((entry) => entry.parentId === collection.id).length
+  const anyLinks = collections.some((entry) => subtree.includes(entry.id) && hasOtherLinks(entry))
+  return [
+    `The collection “${collection.name}” will be permanently deleted. This cannot be undone.${inside > 0 ? ` It has ${inside} ${inside === 1 ? 'collection' : 'collections'} inside${inside > direct ? ', counting nested ones' : ''}.` : ''}`,
+    parent
+      ? `Move contents up moves everything inside to “${parent.name}”.`
+      : `Move contents up moves its child collections to the top level and leaves its workspaces ungrouped${ownLinks ? '; its other links are removed' : ''}.`,
+    `Delete all ${inside > 0 ? 'permanently deletes the collections inside too, and its workspaces and theirs become ungrouped' : 'leaves its workspaces ungrouped'}${anyLinks ? '; other links inside are removed' : ''}. Workspaces and chats remain.`,
+  ]
+}
+
+/** One collection's delete prompt, from its menu or as a one-item selection. */
+function CollectionDeleteDialog({ collection, open, onClose }: { collection: ResourceCollection; open: boolean; onClose: () => void }) {
+  const collections = useAppStore((state) => state.resourceCollections)
+  const remove = useAppStore((state) => state.deleteResourceCollection)
+  const offerMoveUp = canMoveContentsUp(collections, collection)
+  const removeCollection = (deleteContents: boolean) => {
+    const parent = collections.find((entry) => entry.id === collection.parentId)
+    // Only moving references up can hit the parent's limit.
+    const mayBeFull = !deleteContents && parent && collection.references.length > 0
+    onClose()
+    void remove(collection.id, deleteContents).then((removed) => {
+      if (!removed) reportAppFailure(`Could not delete "${collection.name}".`, mayBeFull ? `A collection holds at most 500 items, so “${parent.name}” may be full. Refresh and try again.` : 'Could not save the change. Refresh and try again.')
+    })
+  }
+  if (!offerMoveUp) {
+    return (
+      <DeleteConfirmDialog open={open} kind="collection" count={1} name={collection.name} onCancel={onClose} onConfirm={() => removeCollection(false)}>
+        <p className="mt-2">Workspaces remain, but this collection cannot be restored.{hasOtherLinks(collection) ? ' Its other links are removed.' : ''}</p>
+      </DeleteConfirmDialog>
+    )
+  }
+  // ConfirmDialog directly: the shared delete confirmation has no middle action or custom confirm label.
+  return (
+    <ConfirmDialog
+      open={open}
+      title="Delete collection?"
+      label={`Delete collection ${collection.name}`}
+      confirmLabel="Delete all"
+      secondaryAction={{ label: 'Move contents up', onClick: () => removeCollection(false) }}
+      onCancel={onClose}
+      onConfirm={() => removeCollection(true)}
+    >
+      {collectionDeleteMessage(collections, collection).map((line, index) => <p key={index} className={index > 0 ? 'mt-2' : undefined}>{line}</p>)}
+    </ConfirmDialog>
+  )
+}
+
+async function moveCollection(collectionId: string, parentId: string | null) {
+  if (await useAppStore.getState().moveResourceCollection(collectionId, parentId)) return true
+  reportAppFailure('Could not move the collection.', 'Collections can nest at most 5 levels deep and never inside themselves. Refresh and try again.')
+  return false
+}
+
+function FolderCollection({ collection, folderCount, hiddenPaneColors, selected, selectionTargets, onHeaderClick, onDeleteSelected, children }: {
   collection: ResourceCollection; folderCount: number; hiddenPaneColors: string[]; selected: boolean
   /** Selected collections the menu acts on when this header is part of a multi-selection. */
   selectionTargets: BulkTarget[] | null
   onHeaderClick: (event: ReactMouseEvent<HTMLElement>) => void; onDeleteSelected: () => void
-  onFolderDrop: (folderId: string) => void; children: ReactNode
+  children: ReactNode
 }) {
   const iconPicker = useCustomIconPicker()
   const toggle = useAppStore((state) => state.toggleResourceCollection)
   const rename = useAppStore((state) => state.renameResourceCollection)
-  const remove = useAppStore((state) => state.deleteResourceCollection)
+  const collections = useAppStore((state) => state.resourceCollections)
+  const childCount = collections.filter((entry) => entry.parentId === collection.id).length
+  const moveTargets = collections.filter((entry) => entry.id !== collection.parentId && canNestCollection(collections, collection.id, entry.id))
+  const canNestInside = canNestCollection(collections, null, collection.id)
+  const [addingChild, setAddingChild] = useState(false)
+  const [childName, setChildName] = useState('')
   const [editing, setEditing] = useState(false)
   const [name, setName] = useState(collection.name)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -1429,6 +1670,8 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
     if (!menuOpen) return
     menuRef.current?.querySelector<HTMLButtonElement>('button:not([aria-disabled="true"])')?.focus()
     const onDown = (event: MouseEvent) => {
+      // Submenus are portaled outside menuRef; pressing one must not unmount it before its click lands.
+      if (fromViewportMenu(event)) return
       const target = event.target as Node
       if (!menuRef.current?.contains(target) && !menuTriggerRef.current?.contains(target)) { setMenuOpen(false); setMenuPoint(null) }
     }
@@ -1452,32 +1695,62 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
     else setName(collection.name)
     setEditing(false)
   }
+  const cancelChild = () => { setChildName(''); setAddingChild(false) }
+  const commitChild = () => {
+    const trimmed = childName.trim()
+    if (!trimmed) return
+    void useAppStore.getState().createResourceCollection(trimmed, collection.id).then((created) => {
+      if (created) cancelChild()
+      else reportAppFailure('Could not create the collection.', 'Collections can nest at most 5 levels deep. Try again.')
+    })
+  }
+  const startChild = () => {
+    setMenuOpen(false)
+    if (collection.collapsed) void toggle(collection.id)
+    setAddingChild(true)
+  }
+  const isCollectionDrag = (event: { dataTransfer: DataTransfer }) => event.dataTransfer.types.includes(COLLECTION_DRAG_TYPE)
 
   return (
     <div
-      className="mb-0"
       data-testid={`folder-collection-${collection.id}`}
+      // Workspace rows drag by pointer (sortableDrag) and find their target collection through this attribute.
+      data-drop-collection-id={collection.id}
+      // The lifted workspace covers the header, so a workspace drop outlines the whole collection (uam-sb-drop-target).
+      className="mb-0 rounded-md"
       onDragOver={(event) => {
-        if (!event.dataTransfer.types.includes('text/x-uam-folder-resource-id')) return
+        if (!isCollectionDrag(event)) return
+        // Only the innermost collection is a target; invalid nesting targets do not accept the drop.
+        event.stopPropagation()
+        if (!draggedCollectionId || !canNestCollection(collections, draggedCollectionId, collection.id)) return
         event.preventDefault()
         setDropTarget(true)
       }}
       onDragLeave={() => setDropTarget(false)}
       onDrop={(event) => {
-        const folderId = event.dataTransfer.getData('text/x-uam-folder-resource-id')
-        if (!folderId) return
+        const nestedId = event.dataTransfer.getData(COLLECTION_DRAG_TYPE)
+        if (!nestedId) return
         event.preventDefault()
         event.stopPropagation()
         setDropTarget(false)
-        onFolderDrop(folderId)
+        if (canNestCollection(collections, nestedId, collection.id)) void moveCollection(nestedId, collection.id)
       }}
     >
       <Tooltip label={isCompanionContext() ? undefined : 'Shift-click to select collections'}>
       <div
         data-testid={`collection-header-${collection.id}`}
         data-collection-id={collection.id}
-        className="group relative mx-1 flex items-center gap-1.5 rounded-md px-2.5 py-0.5 transition-colors duration-150"
-        style={{ color: selected ? 'var(--text)' : 'var(--text-2)', background: dropTarget ? 'var(--sidebar-item-hover)' : selected ? 'var(--accent-dim)' : 'transparent', border: '1px solid transparent', outline: dropTarget ? '1px solid var(--accent)' : 'none' }}
+        draggable={!isCompanionContext() && !editing}
+        onDragStart={(event) => {
+          event.stopPropagation()
+          draggedCollectionId = collection.id
+          event.dataTransfer.setData(COLLECTION_DRAG_TYPE, collection.id)
+          event.dataTransfer.effectAllowed = 'move'
+        }}
+        onDragEnd={() => { draggedCollectionId = null }}
+        className={`group relative mx-1 flex items-center gap-1.5 rounded-md px-2.5 py-0.5 transition-colors duration-150${selected && !dropTarget ? ' uam-selected-item' : ''}`}
+        // Selected tint and line come from the shared .uam-selected-item; inline paint only for drop targets and rest.
+        style={{ color: selected ? 'var(--text)' : 'var(--text-2)', background: dropTarget ? 'var(--sidebar-item-hover)' : selected ? undefined : 'transparent', border: '1px solid transparent', outline: dropTarget ? '1px solid var(--accent)' : undefined }}
         onContextMenu={(event) => {
           event.preventDefault()
           event.stopPropagation()
@@ -1490,6 +1763,7 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
             type="button"
             aria-label={collection.collapsed ? `Expand ${collection.name}` : `Collapse ${collection.name}`}
             aria-expanded={!collection.collapsed}
+            aria-controls={`collection-children-${collection.id}`}
             onClick={() => { void toggle(collection.id) }}
             style={{ display: 'flex', background: 'transparent', border: 'none', color: 'var(--text-3)', cursor: 'pointer', padding: 0 }}
           >
@@ -1513,12 +1787,12 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
           />
         ) : (
           <Tooltip label={collection.name}>
-            <RowButton type="button" aria-expanded={!collection.collapsed} aria-label={`${collection.name}${selected ? ', selected for bulk actions' : ''}`} className="min-w-0 flex-1 truncate text-left text-[13px] font-semibold" onClick={onHeaderClick} style={{ background: 'transparent', border: 'none', color: 'inherit', cursor: 'pointer' }}>
+            <RowButton type="button" aria-expanded={!collection.collapsed} aria-controls={`collection-children-${collection.id}`} aria-label={`${collection.name}${selected ? ', selected for bulk actions' : ''}`} className="min-w-0 flex-1 truncate text-left text-[13px] font-semibold" onClick={onHeaderClick} style={{ background: 'transparent', border: 'none', color: 'inherit', cursor: 'pointer' }}>
               {collection.name}
             </RowButton>
           </Tooltip>
         )}
-        <span className="text-[10px]" style={{ color: 'var(--text-3)' }}>{folderCount}</span>
+        <span data-testid={`collection-count-${collection.id}`} className="text-[10px]" style={{ color: 'var(--text-3)' }}>{folderCount + childCount}</span>
         {!isCompanionContext() && <Tooltip label="Collection actions">
           {/* ui: raw button kept — unsized inline trigger that must keep its layout; IconButton imposes 26px */}<button ref={menuTriggerRef} type="button" aria-label={`Actions for ${collection.name}`} aria-haspopup="menu" aria-expanded={menuOpen} onClick={() => { setMenuPoint(null); setMenuOpen((open) => !open) }} style={{ background: 'transparent', border: 'none', color: 'var(--text-3)', cursor: 'pointer', padding: 0 }}>
             <MoreHorizontal size={14} />
@@ -1531,11 +1805,23 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
           {selectionTargets ? <>
             <SingleOnlyMenuItem noun="collection" icon={<Pencil size={14} aria-hidden />} label="Rename" />
             <FolderMenuItem icon={<Library size={14} aria-hidden />} label={`Change icon for ${selectionTargets.length} collections`} onClick={() => { setMenuOpen(false); iconPicker.open('collection', selectionTargets, `${selectionTargets.length} collections`) }} />
+            <SingleOnlyMenuItem noun="collection" icon={<Plus size={14} aria-hidden />} label="New collection inside" />
+            <SingleOnlyMenuItem noun="collection" icon={<Library size={14} aria-hidden />} label="Move to collection" />
+            <SingleOnlyMenuItem noun="collection" icon={<Library size={14} aria-hidden />} label="Move to top level" />
             <MenuDivider />
             <FolderMenuItem icon={<Trash2 size={14} aria-hidden />} label={`Delete ${selectionTargets.length} collections…`} danger onClick={() => { setMenuOpen(false); onDeleteSelected() }} />
           </> : <>
           <FolderMenuItem icon={<Pencil size={14} aria-hidden />} label="Rename" onClick={() => { setMenuOpen(false); setEditing(true) }} />
           <FolderMenuItem icon={<Library size={14} aria-hidden />} label="Change icon" onClick={() => { setMenuOpen(false); iconPicker.open('collection', collection.id, collection.name) }} />
+          {canNestInside && <FolderMenuItem icon={<Plus size={14} aria-hidden />} label="New collection inside" onClick={startChild} />}
+          {moveTargets.length > 0 && (
+            <RowSubmenu label="Move to collection" ariaLabel={`Move ${collection.name} to collection`} icon={<Library size={14} aria-hidden />}>
+              {moveTargets.map((target) => (
+                <MenuItem key={target.id} className="uam-sb-menu-item" icon={<Library size={13} aria-hidden />} label={collectionPath(collections, target.id)} onSelect={() => { setMenuOpen(false); void moveCollection(collection.id, target.id) }} />
+              ))}
+            </RowSubmenu>
+          )}
+          {collection.parentId && <FolderMenuItem icon={<Library size={14} aria-hidden />} label="Move to top level" onClick={() => { setMenuOpen(false); void moveCollection(collection.id, null) }} />}
           <MenuDivider />
           <FolderMenuItem icon={<Trash2 size={14} aria-hidden />} label="Delete" danger onClick={() => { setMenuOpen(false); setConfirmingDelete(true) }} />
           </>}
@@ -1548,30 +1834,45 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
       >
         <div className="min-h-0 overflow-hidden">
           <div
+            id={`collection-children-${collection.id}`}
             data-testid={`collection-children-${collection.id}`}
+            role="group"
+            aria-label={`${collection.name} contents`}
             className="ml-3 mr-1 mt-0 py-0 pl-1"
             style={{
               background: 'transparent',
               boxShadow: 'none',
             }}
           >
+            {addingChild && (
+              <div className="uam-inline-form uam-reveal" role="group" aria-label={`New collection inside ${collection.name}`}>
+                <div className="uam-inline-form__title">New collection</div>
+                <input
+                  autoFocus
+                  aria-label="Collection name"
+                  value={childName}
+                  onChange={(event) => setChildName(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') commitChild()
+                    if (event.key === 'Escape') cancelChild()
+                  }}
+                  placeholder="Collection name"
+                  className="uam-field w-full"
+                />
+                <div className="uam-inline-form__actions">
+                  <Button variant="ghost" size="sm" aria-label="Cancel new collection" onClick={cancelChild}>Cancel</Button>
+                  <Button variant="primary" size="sm" aria-label="Create collection" disabled={!childName.trim()} onClick={commitChild}>Create</Button>
+                </div>
+              </div>
+            )}
             {children}
             {collection.references.filter((reference) => reference.type === 'desktop-app').map((reference) => <div key={reference.id} className="flex items-center gap-2 px-3 py-1 text-xs" onContextMenu={(event) => { event.preventDefault(); iconPicker.open('desktop-app', reference.id, reference.label) }}><CustomIcon icon={reference.customIcon} fallback={<Monitor size={14} aria-hidden />} /><span className="min-w-0 flex-1 truncate" title={reference.target}>{reference.label}</span><Tooltip label={`Change icon for ${reference.label}`}>{/* ui: raw button kept — nested inside its own Tooltip; inline icon chip */}<button type="button" aria-label={`Change icon for ${reference.label}`} className="uam-icon-button" onClick={() => iconPicker.open('desktop-app', reference.id, reference.label)}><Pencil size={12} /></button></Tooltip></div>)}
-            {folderCount === 0 && <div className="px-3 py-2 text-xs" style={{ color: 'var(--text-3)' }}>Drag a workspace here</div>}
+            {folderCount === 0 && childCount === 0 && <div className="px-3 py-2 text-xs" style={{ color: 'var(--text-3)' }}>Drag a workspace here</div>}
           </div>
         </div>
       </div>
       {iconPicker.dialog}
-      <ConfirmDialog
-        open={confirmingDelete}
-        title="Delete collection?"
-        label={`Delete ${collection.name} collection`}
-        confirmLabel="Delete collection"
-        onCancel={() => setConfirmingDelete(false)}
-        onConfirm={() => { setConfirmingDelete(false); void remove(collection.id) }}
-      >
-        “{collection.name}” will be permanently deleted. Workspaces remain, but this collection cannot be restored.
-      </ConfirmDialog>
+      <CollectionDeleteDialog collection={collection} open={confirmingDelete} onClose={() => setConfirmingDelete(false)} />
     </div>
   )
 }
@@ -1606,6 +1907,12 @@ function PaneColorIcon({ Icon, colors, testId }: { Icon: LucideIcon; colors: str
       ))}
     </span>
   )
+}
+
+/** The sidebar row a delete confirmation returns focus to when its opening menu item has gone. */
+function rowFocusTarget(attribute: 'data-session-id' | 'data-workspace-id', id: string | null | undefined): HTMLElement | null {
+  if (!id) return null
+  return Array.from(document.querySelectorAll<HTMLElement>(`[${attribute}]`)).find((row) => row.getAttribute(attribute) === id) ?? null
 }
 
 // Determinate only when the backend reports per-item progress; otherwise the indeterminate sweep (no fake percentage).
@@ -1798,12 +2105,8 @@ interface FolderRowProps {
   onSessionOpen?: (sessionId: string) => void
   onSessionClick: (sessionId: string, event: ReactMouseEvent<HTMLDivElement>) => boolean
   draggable: boolean
-  dropEdge: FolderDropEdge | null
-  onDragStart: () => void
-  onDragOver: (edge: FolderDropEdge) => void
-  onDragEnd: () => void
+  onDragPointerDown: (event: ReactPointerEvent<HTMLElement>) => void
   onMove: (direction: -1 | 1) => void
-  onDrop: (edge: FolderDropEdge) => void
 }
 
 const FolderRow = memo(function FolderRow({
@@ -1835,12 +2138,8 @@ const FolderRow = memo(function FolderRow({
   onSessionClick,
   onSessionOpen,
   draggable,
-  dropEdge,
-  onDragStart,
-  onDragOver,
-  onDragEnd,
+  onDragPointerDown,
   onMove,
-  onDrop,
 }: FolderRowProps) {
   const iconPicker = useCustomIconPicker()
   const host = useAppStore((state) => state.executionHosts.find((candidate) => candidate.id === (folder.executionHostId || 'local')))
@@ -1880,33 +2179,7 @@ const FolderRow = memo(function FolderRow({
     <div
       className="mb-0"
       data-testid={`folder-row-${folder.id}`}
-      draggable={draggable}
-      onDragStart={(event) => {
-        event.dataTransfer.effectAllowed = 'move'
-        event.dataTransfer.setData('text/x-uam-folder-id', folder.id)
-        event.dataTransfer.setData('text/x-uam-folder-resource-id', folder.id)
-        onDragStart()
-      }}
-      onDragOver={(event) => {
-        if (!draggable) return
-        event.preventDefault()
-        const rect = event.currentTarget.getBoundingClientRect()
-        onDragOver(event.clientY < rect.top + rect.height / 2 ? 'before' : 'after')
-      }}
-      onDrop={(event) => {
-        event.preventDefault()
-        const rect = event.currentTarget.getBoundingClientRect()
-        onDrop(event.clientY < rect.top + rect.height / 2 ? 'before' : 'after')
-      }}
-      onDragEnd={onDragEnd}
-      style={{
-        boxShadow:
-          dropEdge === 'before'
-            ? 'inset 0 2px var(--accent)'
-            : dropEdge === 'after'
-              ? 'inset 0 -2px var(--accent)'
-              : 'none',
-      }}
+      data-sort-id={folder.id}
     >
       {/* Folder header; its actions button is a sibling, not nested inside the role=button header. */}
       <div
@@ -1928,12 +2201,14 @@ const FolderRow = memo(function FolderRow({
         aria-expanded={shouldShowSessions}
         aria-controls={`folder-sessions-${folder.id}`}
         aria-keyshortcuts={draggable ? "ArrowUp ArrowDown Enter Space Shift+Enter Shift+Space" : "Enter Space Shift+Enter Shift+Space"}
-        className="flex items-center gap-1.5 px-2.5 py-0.5 cursor-pointer rounded-md mx-1 focus-visible:[outline-offset:var(--focus-inset)]"
+        className={`relative flex items-center gap-1.5 px-2.5 py-0.5 cursor-pointer rounded-md mx-1 focus-visible:[outline-offset:var(--focus-inset)]${selected ? ' uam-selected-item' : ''}`}
         style={{
-          background: selected ? 'var(--accent-dim)' : 'transparent',
+          // Selected tint and line come from the shared .uam-selected-item.
+          background: selected ? undefined : 'transparent',
           color: selected ? 'var(--text)' : 'var(--text-2)',
         }}
         onClick={onToggle}
+        onPointerDown={draggable && !isEditing ? onDragPointerDown : undefined}
         onKeyDown={(event) => {
           if (event.currentTarget !== event.target) return
           if (event.key === 'Enter' || event.key === ' ') {
@@ -2040,7 +2315,7 @@ const FolderRow = memo(function FolderRow({
           <FolderMenuItem icon={<Pencil size={14} aria-hidden />} label="Change workspace icon" onClick={() => { setMenuPos(null); iconPicker.open('workspace', folder.id, folder.name) }} />
           <FolderMenuItem icon={<Monitor size={14} aria-hidden />} label="Change host icon" onClick={() => { setMenuPos(null); iconPicker.open('host', host?.id || 'local', host?.label || 'This computer') }} />
           {!isCompanionContext() && <FolderMenuItem icon={<Pencil size={14} aria-hidden />} label="Rename folder" onClick={() => { setMenuPos(null); onStartRename() }} />}
-          {!isCompanionContext() && <FolderMenuItem icon={<Trash2 size={14} aria-hidden />} label={selected ? 'Delete selected workspaces' : 'Delete folder'} danger onClick={() => { setMenuPos(null); onDelete() }} />}
+          {!isCompanionContext() && <FolderMenuItem icon={<Trash2 size={14} aria-hidden />} label={selected ? 'Delete selected workspace' : 'Delete folder'} danger onClick={() => { setMenuPos(null); onDelete() }} />}
           </>}
         </ViewportMenu>
       )}

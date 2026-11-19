@@ -22,6 +22,8 @@ std::string NormalizeChatSyncTargetId(std::string_view chat_id);
 bool ChatHasActiveAcpSession(const AppState& app, std::string_view chat_id);
 bool CliTerminalHasActiveTurn(const CliTerminalState& terminal);
 bool ChatHasBusyCliTerminal(const AppState& app, std::string_view chat_id);
+/// <summary>Same answer for a chat already in hand, without searching the chat catalogue for it.</summary>
+bool ChatHasBusyCliTerminal(const AppState& app, const ChatSession& chat);
 bool ChatHasRunningRuntime(const AppState& app, std::string_view chat_id);
 bool ChatHasActiveCliTerminal(const AppState& app, std::string_view chat_id);
 bool HasAnyActiveCliTerminal(const AppState& app);

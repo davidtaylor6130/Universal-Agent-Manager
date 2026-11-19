@@ -13,6 +13,17 @@
   transition-timing-function: var(--ease);
 }
 .uam-sb-collapse__inner { min-height: 0; overflow: hidden; }
+/* A lifted row may follow the pointer past its list's end; the clip exists only for the collapse animation. */
+.uam-sb-collapse__inner:has([data-sort-dragging]) { overflow: visible; }
+/* Siblings of a dragged row glide aside (sortableDrag.ts). */
+[data-sorting] > [data-sort-id]:not([data-sort-dragging]) { transition: transform var(--dur-base) var(--ease); }
+[data-drop-collection-id] { transition: background var(--dur-fast) var(--ease); }
+.uam-sb-drop-target { background: var(--sidebar-item-hover); outline: 1px solid var(--accent); outline-offset: -1px; }
+@media (forced-colors: active) {
+  /* Forced colours drop the lift shadow; an outline keeps the dragged row distinct. */
+  [data-sort-dragging] { outline: 1px solid Highlight; }
+  .uam-sb-drop-target { outline-color: Highlight; }
+}
 /* The collapse clips during its animation, so everything inside draws the focus ring inside its own shape. */
 .uam-sb-collapse__inner :focus-visible { outline-offset: var(--focus-inset); }
 .uam-sb-collapse[hidden] {
@@ -43,6 +54,9 @@
 /* One light accent tint for selected or active rows; a selected row keeps its tint while hovered. */
 .uam-sb-row--selected,
 .uam-sb-row--selected:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+/* Bulk (Shift-click) selection uses the shared Settings selected-item style; it wins over the active tint and hover. */
+.uam-sb-row.uam-selected-item,
+.uam-sb-row.uam-selected-item:hover { background: var(--accent-dim); }
 @keyframes uam-sb-row-in {
   from { opacity: 0; transform: translateY(-3px); }
 }
@@ -110,7 +124,7 @@
 .uam-subagent-toggle { display: flex; align-items: center; gap: 4px; width: calc(100% - 8px); min-height: 22px; margin-inline: 4px; padding: 2px 10px; border: 0; border-radius: 6px; background: transparent; color: var(--text-3); font-size: var(--fs-xs); text-align: left; cursor: pointer; }
 .uam-subagent-toggle:hover { background: var(--sidebar-item-hover); color: var(--text-2); }
 .uam-subagent-toggle:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-inset); }
-.uam-subagent-toggle__chevron { transition: transform .12s; }
+.uam-subagent-toggle__chevron { transition: transform var(--dur-fast) var(--ease); }
 .uam-subagent-toggle[aria-expanded="true"] .uam-subagent-toggle__chevron { transform: rotate(90deg); }
 @media (prefers-reduced-motion: reduce) { .uam-subagent-toggle__chevron { transition: none; } }
 .uam-managed-panel--catalogue { margin: 0; padding: 0; border: 0; }

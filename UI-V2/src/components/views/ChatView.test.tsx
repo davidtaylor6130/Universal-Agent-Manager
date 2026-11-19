@@ -10,7 +10,7 @@ import { buildUamAgentCycle, buildVisibleWorkSections, ChatView, matchesUamAgent
 import { useAppStore, type VcsCommitStatus } from '../../store/useAppStore'
 import type { Message } from '../../types/message'
 import { acpBindingFromCppChat, reconcileCppMessages } from '../../store/cpp/reconcile'
-import type { CppChat } from '../../store/cpp/types'
+import type { AcpBinding, AcpToolCall, AcpTurnEvent, CppChat } from '../../store/cpp/types'
 import { sanitizeCppAcpSession, sanitizeCppSettings } from '../../store/cpp/sanitizers'
 import { readChatComposerDraft, removeComposerDrafts, writeChatComposerDraft } from '../../utils/composerDraftStorage'
 import { resetOutgoingPresentation } from '../../utils/outgoingMessagePresentation'
@@ -1205,6 +1205,39 @@ describe('ChatView', () => {
     }
   })
 
+  it.each([
+    ['yolo', "Codex answers its own permission prompts, so this chat's YOLO level changes to Default.", 'Permission prompts, which Codex answers itself'],
+    ['off', 'Permission prompts, which Codex answers itself', 'Permission level lowered'],
+  ] as const)('tells the truth about a %s chat switching to a provider that answers its own prompts', (tier, shown, hidden) => {
+    const previousProviders = useAppStore.getState().providers
+    useAppStore.setState((state) => ({
+      providers: state.providers.map((provider) => provider.id === 'codex-cli' ? { ...provider, structuredPermissionControl: 'provider' as const } : provider),
+      sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, commandSafetyTier: tier } : session),
+      acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState: 'ready', processing: false, pendingPermission: null, pendingUserInput: null, queuedPrompts: [] } },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      act(() => { (host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement).click() })
+      act(() => document.body.querySelector<HTMLButtonElement>('[data-model-picker-sidebar] button[aria-label="Codex"]')!.click())
+      act(() => document.body.querySelector<HTMLButtonElement>('[data-testid="model-options"] [role="menuitemradio"]')!.click())
+      const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"][aria-label="Switch from Gemini to Codex"]')
+      expect(dialog?.textContent).toContain(shown)
+      expect(dialog?.textContent).not.toContain(hidden)
+      expect(dialog?.textContent).toContain('Memory setting')
+      expect(dialog?.textContent).not.toContain('Permission level and memory setting')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      useAppStore.setState((state) => ({
+        providers: previousProviders,
+        sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, commandSafetyTier: undefined } : session),
+      }))
+    }
+  })
+
   it('confirms provider handoff before changing anything', async () => {
     const originalSetSessionModel = useAppStore.getState().setSessionModel
     const setSessionModel = vi.fn().mockResolvedValue(true)
@@ -1249,6 +1282,11 @@ describe('ChatView', () => {
     expect(dialog?.textContent).toContain('Selected UAM agent and goals')
     expect(dialog?.textContent).toContain('Native session and provider-specific live tool state')
     expect(dialog?.textContent).not.toContain('agent defaults')
+    // #754: the chat keeps its permission level and memory; only model, reasoning and speed reset.
+    expect(dialog?.textContent).toContain('Permission level and memory setting')
+    expect(dialog?.textContent).toContain("Model, reviewer model, reasoning, speed and small model mode, from Codex's defaults")
+    expect(dialog?.textContent).not.toContain('memory defaults')
+    expect(dialog?.textContent).not.toContain('Permission level lowered')
     expect(dialog?.textContent).toContain('Anything the current provider did not record in UAM will not transfer.')
     expect(setSessionProvider).not.toHaveBeenCalled()
 
@@ -1265,13 +1303,236 @@ describe('ChatView', () => {
       await Promise.resolve()
     })
     expect(setSessionProvider).toHaveBeenCalledOnce()
-    expect(setSessionProvider).toHaveBeenCalledWith('chat-1', 'codex-cli')
-    expect(setSessionModel).toHaveBeenCalledWith('chat-1', '')
+    expect(setSessionProvider).toHaveBeenCalledWith('chat-1', 'codex-cli', expect.any(Function), false)
+    expect(setSessionModel).toHaveBeenCalledWith('chat-1', '', expect.any(Function))
     expect(document.body.querySelector('[role="alertdialog"]')).toBeNull()
 
     act(() => root.unmount())
     host.remove()
     useAppStore.setState({ setSessionProvider: originalSetSessionProvider, setSessionModel: originalSetSessionModel })
+  })
+
+  it('shows the native refusal reason when a provider switch is rejected', async () => {
+    const originalSetSessionProvider = useAppStore.getState().setSessionProvider
+    const reason = 'Resume or discard the held queued input first.'
+    const setSessionProvider = vi.fn((_id: string, _providerId: string, onFailure?: (reason: string) => void) => {
+      onFailure?.(reason)
+      return Promise.resolve(false)
+    })
+    useAppStore.setState((state) => ({
+      setSessionProvider,
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState: 'ready', processing: false, pendingPermission: null, pendingUserInput: null, queuedPrompts: [] },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    act(() => (host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement).click())
+    act(() => document.body.querySelector<HTMLButtonElement>('[data-model-picker-sidebar] button[aria-label="Codex"]')!.click())
+    act(() => document.body.querySelector<HTMLButtonElement>('[data-testid="model-options"] [role="menuitemradio"]')!.click())
+    const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"][aria-label="Switch from Gemini to Codex"]')
+    await act(async () => {
+      (Array.from(dialog?.querySelectorAll('button') ?? []).find((button) => button.textContent === 'Switch to Codex') as HTMLButtonElement).click()
+      await Promise.resolve()
+    })
+    expect(setSessionProvider).toHaveBeenCalledOnce()
+    expect(document.body.querySelector('[role="alertdialog"]')?.textContent).toContain(reason)
+    expect(document.body.querySelector('[role="alertdialog"]')?.textContent).not.toContain('The provider or model could not be changed.')
+
+    act(() => root.unmount())
+    host.remove()
+    useAppStore.setState({ setSessionProvider: originalSetSessionProvider })
+  })
+
+  it('warns before an uncertain-delivery switch, sends the override only on Switch anyway, and Cancel changes nothing', async () => {
+    const originalSetSessionProvider = useAppStore.getState().setSessionProvider
+    const setSessionProvider = vi.fn((_id: string, _providerId: string) => Promise.resolve(true))
+    const bind = (override: 'none' | 'warn') => useAppStore.setState((state) => ({
+      setSessionProvider,
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState: 'ready', processing: false, pendingPermission: null, pendingUserInput: null, queuedPrompts: [], providerSwitchOverride: override },
+      },
+    }))
+    bind('warn')
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    const openDialog = () => {
+      act(() => (host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement).click())
+      act(() => document.body.querySelector<HTMLButtonElement>('[data-model-picker-sidebar] button[aria-label="Codex"]')!.click())
+      act(() => document.body.querySelector<HTMLButtonElement>('[data-testid="model-options"] [role="menuitemradio"]')!.click())
+      return document.body.querySelector<HTMLElement>('[role="alertdialog"][aria-label="Switch from Gemini to Codex"]')!
+    }
+    const button = (dialog: HTMLElement, label: string) => Array.from(dialog.querySelectorAll('button')).find((candidate) => candidate.textContent === label) as HTMLButtonElement | undefined
+
+    let dialog = openDialog()
+    expect(dialog.textContent).toContain('may run that prompt twice')
+    expect(button(dialog, 'Switch to Codex')).toBeUndefined()
+    act(() => button(dialog, 'Cancel')!.click())
+    expect(setSessionProvider).not.toHaveBeenCalled()
+    expect(document.body.querySelector('[role="alertdialog"]')).toBeNull()
+
+    dialog = openDialog()
+    await act(async () => {
+      button(dialog, 'Switch anyway')!.click()
+      await Promise.resolve()
+    })
+    expect(setSessionProvider).toHaveBeenCalledWith('chat-1', 'codex-cli', expect.any(Function), true)
+
+    setSessionProvider.mockClear()
+    bind('none')
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    dialog = openDialog()
+    expect(dialog.textContent).not.toContain('may run that prompt twice')
+    await act(async () => {
+      button(dialog, 'Switch to Codex')!.click()
+      await Promise.resolve()
+    })
+    expect(setSessionProvider).toHaveBeenCalledWith('chat-1', 'codex-cli', expect.any(Function), false)
+
+    act(() => root.unmount())
+    host.remove()
+    useAppStore.setState({ setSessionProvider: originalSetSessionProvider })
+  })
+
+  it.each([
+    ['disconnected', 'keeps running until the host can be reached', true],
+    ['stranded', 'will not be sent; its text stays in this chat', false],
+    ['stranded-disconnected', 'keeps running until the host can be reached', true],
+    ['stranded-disconnected', 'will not be sent; its text stays in this chat', true],
+  ] as const)('reaches Switch anyway from a locked %s state and sends the override', async (override, text, processing) => {
+    const originalSetSessionProvider = useAppStore.getState().setSessionProvider
+    const setSessionProvider = vi.fn((_id: string, _providerId: string) => Promise.resolve(true))
+    useAppStore.setState((state) => ({
+      setSessionProvider,
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState: processing ? 'processing' : 'ready', processing, pendingPermission: null, pendingUserInput: null, queuedPrompts: [], pendingDirectPrompts: [{ id: 'receipt', text: 'Held', revision: 1 }], providerSwitchOverride: override },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    act(() => (host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement).click())
+    act(() => document.body.querySelector<HTMLButtonElement>('[data-model-picker-sidebar] button[aria-label="Codex"]')!.click())
+    const model = document.body.querySelector<HTMLButtonElement>('[data-testid="model-options"] [role="menuitemradio"]')!
+    expect(model.disabled).toBe(false)
+    act(() => model.click())
+    const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"]')!
+    expect(dialog.textContent).toContain(text)
+    const confirm = Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === 'Switch anyway') as HTMLButtonElement
+    expect(confirm.className).not.toContain('primary')
+    await act(async () => {
+      confirm.click()
+      await Promise.resolve()
+    })
+    expect(setSessionProvider).toHaveBeenCalledWith('chat-1', 'codex-cli', expect.any(Function), true)
+    act(() => root.unmount())
+    host.remove()
+    useAppStore.setState({ setSessionProvider: originalSetSessionProvider })
+  })
+
+  it('hides the direction meant for clients with no dialog from the dialog itself', async () => {
+    const originalSetSessionProvider = useAppStore.getState().setSessionProvider
+    const reason = 'UAM cannot confirm whether the provider received this chat\'s latest message. Switching may run that prompt twice.'
+    const setSessionProvider = vi.fn((_id: string, _providerId: string, onFailure?: (reason: string) => void) => {
+      onFailure?.(`${reason} Accept this in the switch dialog in the desktop app.`)
+      return Promise.resolve(false)
+    })
+    useAppStore.setState((state) => ({
+      setSessionProvider,
+      acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState: 'ready', processing: false, pendingPermission: null, pendingUserInput: null, queuedPrompts: [], providerSwitchOverride: 'none' } },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    act(() => (host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement).click())
+    act(() => document.body.querySelector<HTMLButtonElement>('[data-model-picker-sidebar] button[aria-label="Codex"]')!.click())
+    act(() => document.body.querySelector<HTMLButtonElement>('[data-testid="model-options"] [role="menuitemradio"]')!.click())
+    const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"]')!
+    await act(async () => {
+      (Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === 'Switch to Codex') as HTMLButtonElement).click()
+      await Promise.resolve()
+    })
+    const text = document.body.querySelector('[role="alertdialog"]')?.textContent ?? ''
+    expect(text).toContain(reason)
+    expect(text).not.toContain('desktop app')
+    act(() => root.unmount())
+    host.remove()
+    useAppStore.setState({ setSessionProvider: originalSetSessionProvider })
+  })
+
+  it('closes the dialog and reports only the model when the provider changed but the model did not', async () => {
+    const original = { setSessionProvider: useAppStore.getState().setSessionProvider, setSessionModel: useAppStore.getState().setSessionModel }
+    const setSessionProvider = vi.fn((_id: string, _providerId: string) => Promise.resolve(true))
+    const setSessionModel = vi.fn((_id: string, _modelId: string) => Promise.resolve(false))
+    useAppStore.setState((state) => ({
+      setSessionProvider,
+      setSessionModel,
+      acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState: 'ready', processing: false, pendingPermission: null, pendingUserInput: null, queuedPrompts: [], providerSwitchOverride: 'warn' } },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    act(() => (host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement).click())
+    act(() => document.body.querySelector<HTMLButtonElement>('[data-model-picker-sidebar] button[aria-label="Codex"]')!.click())
+    act(() => document.body.querySelector<HTMLButtonElement>('[data-testid="model-options"] [role="menuitemradio"]')!.click())
+    const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"]')!
+    await act(async () => {
+      (Array.from(dialog.querySelectorAll('button')).find((button) => button.textContent === 'Switch anyway') as HTMLButtonElement).click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(setSessionModel).toHaveBeenCalledOnce()
+    expect(document.body.querySelector('[role="alertdialog"]')).toBeNull()
+    act(() => root.unmount())
+    host.remove()
+    useAppStore.setState(original)
+  })
+
+  it('keeps the provider rail locked during an ordinary running turn with a queued dispatch', () => {
+    useAppStore.setState((state) => ({
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState: 'processing', processing: true, pendingPermission: null, pendingUserInput: null, queuedPrompts: [], providerSwitchOverride: 'none' },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    act(() => (host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement).click())
+    // The whole selector stays closed, so no provider-switch dialog can open during ordinary work.
+    expect(document.body.querySelector('[data-model-picker-sidebar]')).toBeNull()
+    expect(document.body.querySelector('[role="alertdialog"]')).toBeNull()
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('locks the provider rail with the real reason while visible queued input remains', () => {
+    useAppStore.setState((state) => ({
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState: 'ready', processing: false, pendingPermission: null, pendingUserInput: null, queueHeld: true, queuedPrompts: [{ id: 'queued', revision: 1, text: 'Held', attachments: [], uamAgentId: '', markdownStoreFiles: [], goalMode: false, goalId: '' }], providerSwitchOverride: 'none' },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    act(() => (host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement).click())
+    const locked = document.body.querySelector<HTMLButtonElement>('[data-model-picker-sidebar] button[aria-label="Codex"]')!
+    expect(document.getElementById(locked.getAttribute('aria-describedby') ?? '')?.textContent).toContain('Resume or remove the queued messages')
+    act(() => root.unmount())
+    host.remove()
   })
 
   it('blocks handoff to a provider that cannot start structured chats', async () => {
@@ -1297,13 +1558,92 @@ describe('ChatView', () => {
     const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"]')
     const confirm = Array.from(dialog?.querySelectorAll<HTMLButtonElement>('button') ?? []).find((button) => button.textContent === 'Switch to Codex')
 
-    expect(dialog?.textContent).toContain('Codex CLI is unavailable.')
+    expect(dialog?.textContent).toContain('Codex is not installed or not on PATH.')
+    expect(dialog?.querySelector('[role="alert"]')).not.toBeNull()
     expect(confirm?.disabled).toBe(true)
     expect(setSessionProvider).not.toHaveBeenCalled()
 
     act(() => root.unmount())
     host.remove()
     useAppStore.setState({ setSessionProvider: originalSetSessionProvider, cliVersionManager: originalCliVersionManager })
+  })
+
+  it('notes that a saved Gemini thinking level launches as Default after a failed version check', () => {
+    const originalCliVersionManager = useAppStore.getState().cliVersionManager
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) => ({ ...session, providerId: 'gemini', reasoningEffort: 'high' })),
+      cliVersionManager: { ...state.cliVersionManager, providers: [{ providerId: 'gemini-cli', installedVersion: '', selectedVersion: '', availableVersions: [], preferredVersion: '', status: 'unavailable', message: 'Could not check Gemini CLI version.', checkError: 'Could not check Gemini CLI version.', running: false, lastCommand: '', lastOutput: '' }] },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    expect(document.body.textContent).toContain('Using Default thinking')
+
+    act(() => root.unmount())
+    host.remove()
+    useAppStore.setState({ cliVersionManager: originalCliVersionManager })
+  })
+
+  it('uses the version state of the chat\'s own computer for handoff', () => {
+    const originalCliVersionManager = useAppStore.getState().cliVersionManager
+    const local = { providerId: 'codex-cli', installedVersion: '1.0.0', selectedVersion: '', availableVersions: [], preferredVersion: '', status: 'verified' as const, message: '', running: false, lastCommand: '', lastOutput: '' }
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) => ({ ...session, executionHostId: 'ssh-lab' })),
+      cliVersionManager: { ...state.cliVersionManager, providers: [local], remoteProviders: [{ ...local, executionHostId: 'ssh-lab', installedVersion: '', status: 'unavailable' as const, message: 'Could not check Codex CLI version.' }] },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState: 'ready', processing: false, pendingPermission: null, pendingUserInput: null, queuedPrompts: [] },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    act(() => (host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement).click())
+    act(() => document.body.querySelector<HTMLButtonElement>('[data-model-picker-sidebar] button[aria-label="Codex"]')!.click())
+    act(() => document.body.querySelector<HTMLButtonElement>('[data-testid="model-options"] [role="menuitemradio"]')!.click())
+    const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"]')
+    const confirm = Array.from(dialog?.querySelectorAll<HTMLButtonElement>('button') ?? []).find((button) => button.textContent === 'Switch to Codex')
+
+    expect(dialog?.textContent).toContain('Codex is not installed or not on PATH.')
+    expect(confirm?.disabled).toBe(true)
+
+    act(() => root.unmount())
+    host.remove()
+    useAppStore.setState({ cliVersionManager: originalCliVersionManager })
+  })
+
+  it('allows handoff after a failed version check and notes it neutrally', async () => {
+    const originalCliVersionManager = useAppStore.getState().cliVersionManager
+    useAppStore.setState((state) => ({
+      cliVersionManager: { ...state.cliVersionManager, providers: [{ providerId: 'codex-cli', installedVersion: '', selectedVersion: '', availableVersions: [], preferredVersion: '', status: 'unavailable', message: 'Could not check Codex CLI version.', checkError: 'Could not check Codex CLI version.', running: false, lastCommand: '', lastOutput: '' }] },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState: 'ready', processing: false, pendingPermission: null, pendingUserInput: null, queuedPrompts: [] },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+
+    act(() => (host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement).click())
+    act(() => document.body.querySelector<HTMLButtonElement>('[data-model-picker-sidebar] button[aria-label="Codex"]')!.click())
+    act(() => document.body.querySelector<HTMLButtonElement>('[data-testid="model-options"] [role="menuitemradio"]')!.click())
+    const dialog = document.body.querySelector<HTMLElement>('[role="alertdialog"]')
+    const confirm = Array.from(dialog?.querySelectorAll<HTMLButtonElement>('button') ?? []).find((button) => button.textContent === 'Switch to Codex')
+
+    expect(dialog?.textContent).toContain('Could not check Codex CLI version. Check Settings > CLI Version.')
+    expect(dialog?.textContent).not.toContain('not installed')
+    expect(dialog?.querySelector('[role="alert"]')).toBeNull()
+    expect(confirm?.disabled).toBe(false)
+
+    act(() => root.unmount())
+    host.remove()
+    useAppStore.setState({ cliVersionManager: originalCliVersionManager })
   })
 
   it('restores a separate unsent draft for each chat across navigation and remount', () => {
@@ -1409,7 +1749,11 @@ describe('ChatView', () => {
     const status = {
       available: true, vcsTypes: ['git' as const], activeVcsType: 'git' as const,
       workspaceDirectory: '/tmp/project', branchOrRevision: 'main',
-      changedFiles: [{ path: 'src/chat.ts', status: 'M', staged: false, additions: 1, deletions: 0, binary: false }],
+      changedFiles: [
+        { path: 'src/chat.ts', status: 'M', staged: false, additions: 1, deletions: 0, binary: false },
+        // Touched by the chat without a net line delta (for example a permission-only change).
+        { path: 'scripts/run.sh', status: 'M', staged: false, additions: 0, deletions: 0, binary: false },
+      ],
       lineStatsReady: true, warning: '', error: '',
     }
     const getVcsCommitStatus = vi.fn(() => Promise.resolve(status))
@@ -1425,8 +1769,13 @@ describe('ChatView', () => {
     try {
     await act(async () => { root.render(<ChatView session={useAppStore.getState().sessions[0]} />); await Promise.resolve() })
     expect(getVcsCommitStatus).toHaveBeenCalledWith('chat-1', 'git', expect.objectContaining({ comparisonRef: 'chat' }))
+    const summary = host.querySelector('[aria-label="Review changes"]') as HTMLElement
+    expect(summary.textContent).toContain('Changes from this chat')
+    expect(summary.textContent).toContain('2 changed files · +1 / -0')
+    expect(summary.querySelector('[aria-label="Review changes to scripts/run.sh"]')).not.toBeNull()
     await act(async () => { (host.querySelector('[aria-label="Review changes to src/chat.ts"]') as HTMLButtonElement).click(); await Promise.resolve() })
     expect(getVcsFileDiff).toHaveBeenCalledWith('chat-1', 'src/chat.ts', 'git', 'chat')
+    expect(document.body.querySelector('[aria-label="Changes in src/chat.ts"]')?.textContent).toContain('Since this chat began')
     if (surface === 'companion') expect((host.querySelector('[aria-label="Open commit panel"]') as HTMLElement).style.display).toBe('none')
     } finally {
       act(() => root.unmount())
@@ -1435,8 +1784,78 @@ describe('ChatView', () => {
     }
   })
 
-  it('clears stale review counts when the original chat baseline is unavailable', async () => {
-    const status = { available: true, vcsTypes: ['git' as const], activeVcsType: 'git' as const, workspaceDirectory: '/tmp/project', branchOrRevision: 'main', changedFiles: [{ path: 'prior.ts', status: 'M', staged: false, additions: 9, deletions: 0, binary: false }], lineStatsReady: true, warning: '', error: 'The original chat baseline is unavailable.' }
+  it.each(['svn', 'git-error', 'git-error-naming-baseline', 'ssh-failure'] as const)('labels SVN review honestly and offers Retry for other read failures (%s)', async (kind) => {
+    const errors = {
+      svn: '',
+      'git-error': 'fatal: Unable to create index.lock: File exists.',
+      // A path in a raw Git error can contain the word; only the native flag means the baseline is gone.
+      'git-error-naming-baseline': 'error: open("tests/baseline.json"): Permission denied',
+      'ssh-failure': 'ssh: connect to host build-box port 22: Connection refused',
+    }
+    const status = {
+      available: kind !== 'ssh-failure', vcsTypes: [kind === 'svn' ? 'svn' as const : 'git' as const], activeVcsType: kind === 'svn' ? 'svn' as const : 'git' as const,
+      workspaceDirectory: '/tmp/project', branchOrRevision: 'main',
+      changedFiles: [{ path: 'src/wc.ts', status: 'M', staged: false, additions: 1, deletions: 0, binary: false }],
+      lineStatsReady: true, warning: '', error: errors[kind],
+    }
+    const getVcsCommitStatus = vi.fn(() => Promise.resolve(status))
+    const getVcsFileDiff = vi.fn(() => Promise.resolve('@@ -0,0 +1 @@\n+wc'))
+    useAppStore.setState((state) => ({
+      repositoryReviewBySessionId: {}, getVcsCommitStatus, getVcsFileDiff,
+      sessions: state.sessions.map((session) => ({ ...session, workspaceDirectory: '/tmp/project', workspaceIsolationKind: undefined })),
+      acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false, lifecycleState: 'ready', pendingPermission: null, pendingUserInput: null, processingStartedAtMs: null, turnSerial: 2 } },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => { root.render(<ChatView session={useAppStore.getState().sessions[0]} />); await Promise.resolve() })
+      const summary = host.querySelector('[aria-label="Review changes"]') as HTMLElement
+      if (kind === 'svn') {
+        expect(summary.textContent).toContain('Working copy changes')
+        expect(summary.textContent).not.toContain('Changes from this chat')
+        await act(async () => { (summary.querySelector('[aria-label="Review changes to src/wc.ts"]') as HTMLElement).click(); await Promise.resolve() })
+        const dialog = document.body.querySelector('[aria-label="Changes in src/wc.ts"]') as HTMLElement
+        expect(dialog.textContent).toContain('Working copy')
+        expect(dialog.textContent).not.toContain('Since this chat began')
+      } else {
+        expect(summary.textContent).not.toContain('Unavailable for this chat')
+        expect(summary.querySelector('[role="alert"]')?.textContent).toContain(errors[kind])
+        expect(summary.querySelector('[role="tree"]')).toBeNull()
+        const retry = [...summary.querySelectorAll('button')].find((button) => button.textContent === 'Retry') as HTMLButtonElement
+        const summaryReads = () => (getVcsCommitStatus.mock.calls as unknown as [string, string, { requestId?: string }][]).filter(([, , options]) => options?.requestId?.startsWith('chat-summary:')).length
+        expect(summaryReads()).toBe(1)
+        await act(async () => { retry.click(); await Promise.resolve() })
+        expect(summaryReads()).toBe(2)
+      }
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  it('shows no summary for a workspace that simply has no repository', async () => {
+    const status = { available: false, vcsTypes: [], activeVcsType: 'git' as const, workspaceDirectory: '/tmp/project', branchOrRevision: '', changedFiles: [], lineStatsReady: true, warning: 'No Git or SVN repository detected for this workspace.', error: '' }
+    useAppStore.setState((state) => ({
+      repositoryReviewBySessionId: {},
+      getVcsCommitStatus: vi.fn(() => Promise.resolve(status)),
+      sessions: state.sessions.map((session) => ({ ...session, workspaceDirectory: '/tmp/project', workspaceIsolationKind: undefined })),
+      acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false, lifecycleState: 'ready', pendingPermission: null, pendingUserInput: null, processingStartedAtMs: null, turnSerial: 2 } },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => { root.render(<ChatView session={useAppStore.getState().sessions[0]} />); await Promise.resolve() })
+      expect(host.querySelector('[aria-label="Review changes"]')).toBeNull()
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  it('replaces stale review counts with a clear state when the original chat baseline is unavailable', async () => {
+    const status = { available: true, vcsTypes: ['git' as const], activeVcsType: 'git' as const, workspaceDirectory: '/tmp/project', branchOrRevision: 'main', changedFiles: [{ path: 'prior.ts', status: 'M', staged: false, additions: 9, deletions: 0, binary: false }], lineStatsReady: true, warning: '', error: 'The original chat baseline is unavailable.', baselineUnavailable: true }
     useAppStore.setState((state) => ({
       repositoryReviewBySessionId: { 'chat-1': { ...status, error: '' } },
       getVcsCommitStatus: vi.fn(() => Promise.resolve(status)),
@@ -1448,8 +1867,13 @@ describe('ChatView', () => {
     const root = createRoot(host)
     try {
     await act(async () => { root.render(<ChatView session={useAppStore.getState().sessions[0]} />); await Promise.resolve() })
-    expect(host.querySelector('[aria-label="Review changes"]')).toBeNull()
-    expect(useAppStore.getState().repositoryReviewBySessionId['chat-1']).toBeUndefined()
+    const summary = host.querySelector('[aria-label="Review changes"]') as HTMLElement
+    expect(summary.textContent).toContain('Unavailable for this chat.')
+    expect(summary.textContent).toContain('The original chat baseline is unavailable.')
+    expect(summary.textContent).not.toContain('prior.ts')
+    expect(summary.querySelector('[role="tree"]')).toBeNull()
+    expect([...summary.querySelectorAll('button')].some((button) => button.textContent === 'Retry')).toBe(false)
+    expect(useAppStore.getState().repositoryReviewBySessionId['chat-1']?.changedFiles).toEqual([])
     } finally {
       act(() => root.unmount())
       host.remove()
@@ -1547,7 +1971,7 @@ describe('ChatView', () => {
     expect(host.querySelector('[aria-label="Review changes"]')).toBeNull()
     await act(async () => useAppStore.setState({ goalsByChatId: { 'chat-1': [{ ...providerGoal, status: 'complete' }] } }))
     const summary = host.querySelector('[aria-label="Review changes"]') as HTMLElement
-    expect(summary.textContent).toContain('Chat changes')
+    expect(summary.textContent).toContain('Changes from this chat')
     expect(summary.querySelector('[aria-label="Review changes to src/exact.ts"]')?.textContent).toContain('exact.ts')
     expect(summary.textContent).toContain('isolated Git checkpoint')
     expect(host.querySelector('[aria-label="Turn checkpoint"]')).toBeNull()
@@ -2004,6 +2428,32 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('shows the pool wait while a turn is held for a compute slot', () => {
+    useAppStore.setState((state) => ({
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          lifecycleState: 'processing',
+          processing: true,
+          turnEvents: [],
+          turnAssistantMessageIndex: -1,
+          computePoolWait: { poolName: 'InferDeck', inUse: 2, limit: 2 },
+        },
+      },
+      messages: { ...state.messages, 'chat-1': [{ id: 'held', role: 'user', content: 'Held question', createdAt: new Date(), acpPromptNotSent: true }] },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    expect(host.querySelector('[data-testid="compute-pool-wait"]')?.textContent).toBe('Waiting for InferDeck slot (2/2)')
+    expect(host.textContent).not.toContain('Delivery not confirmed')
+    expect(host.querySelector('[data-testid="turn-starting"]')).toBeNull()
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('starts one working clock immediately and keeps time when the first turn event arrives', async () => {
     vi.useFakeTimers()
     useAppStore.setState((state) => ({
@@ -2201,6 +2651,359 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  describe('active-turn Send preference (#688)', () => {
+    const queued = (id: string, text: string) => ({ id, revision: 1, text, uamAgentId: '', attachments: [], markdownStoreFiles: [], goalMode: false, goalId: '' })
+    const typeDraft = (host: HTMLElement, text: string) => {
+      const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+      act(() => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, text)
+        textarea.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+      return textarea
+    }
+    const mount = () => {
+      const host = document.createElement('div')
+      document.body.appendChild(host)
+      const root = createRoot(host)
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      return { host, done: () => { act(() => root.unmount()); host.remove() } }
+    }
+    const enter = (textarea: HTMLTextAreaElement) => textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    afterEach(() => useAppStore.setState({ steerActiveTurnOnSend: false }))
+
+    it('queues by default and offers an interrupting Steer as an accessible alternative that sends exactly once', async () => {
+      const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
+      useAppStore.setState({ sendAcpPrompt })
+      const { host, done } = mount()
+      try {
+        const textarea = typeDraft(host, 'Use the other file')
+        expect(host.querySelector('button[aria-label="Queue prompt"]')).toBeTruthy()
+        // Gemini has no native steering, so the alternative names the interruption.
+        const alternate = host.querySelector('button[aria-label="Interrupt and steer instead"]') as HTMLButtonElement
+        expect(alternate.dataset.state).toBe('open')
+        expect(alternate.title).toContain('Stops the running turn')
+        alternate.focus()
+        await act(async () => { alternate.click(); alternate.click(); await Promise.resolve() })
+        expect(sendAcpPrompt).toHaveBeenCalledTimes(1)
+        expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'Use the other file', [], true, expect.any(Function))
+        expect(document.activeElement).toBe(textarea)
+      } finally { done() }
+    })
+
+    it('names in-place steering for a provider with native steering', () => {
+      useAppStore.setState((state) => ({ steerActiveTurnOnSend: true, providers: state.providers.map((provider) => provider.id === 'gemini-cli' ? { ...provider, supportsNativeSteering: true } : provider) }))
+      const { host, done } = mount()
+      try {
+        typeDraft(host, 'Adjust course')
+        const send = host.querySelector('button[aria-label="Steer active turn"]') as HTMLButtonElement
+        expect(send.title).toContain('next safe point')
+        expect(host.querySelector('button[aria-label="Queue for next turn instead"]')).toBeTruthy()
+      } finally { done() }
+    })
+
+    it('steers with Send and Enter when Steer is selected, and keeps Queue available', async () => {
+      useAppStore.setState({ steerActiveTurnOnSend: true })
+      const sendAcpPrompt = vi.fn(() => Promise.resolve(false))
+      useAppStore.setState({ sendAcpPrompt })
+      const { host, done } = mount()
+      try {
+        const textarea = typeDraft(host, 'Stop and use Postgres')
+        const send = host.querySelector('button[aria-label="Interrupt and steer"]') as HTMLButtonElement
+        expect(send).toBeTruthy()
+        expect(host.querySelector('button[aria-label="Queue prompt"]')).toBeNull()
+        await act(async () => { send.click(); await Promise.resolve() })
+        expect(sendAcpPrompt).toHaveBeenLastCalledWith('chat-1', 'Stop and use Postgres', [], true, expect.any(Function))
+        // A failed steer keeps the authored draft.
+        expect(textarea.value).toBe('Stop and use Postgres')
+
+        await act(async () => { enter(textarea); await Promise.resolve() })
+        expect(sendAcpPrompt).toHaveBeenCalledTimes(2)
+        expect(sendAcpPrompt).toHaveBeenLastCalledWith('chat-1', 'Stop and use Postgres', [], true, expect.any(Function))
+
+        const queue = host.querySelector('button[aria-label="Queue for next turn instead"]') as HTMLButtonElement
+        await act(async () => { queue.click(); await Promise.resolve() })
+        expect(sendAcpPrompt).toHaveBeenCalledTimes(3)
+        expect(sendAcpPrompt).toHaveBeenLastCalledWith('chat-1', 'Stop and use Postgres', [], undefined, expect.any(Function))
+      } finally { done() }
+    })
+
+    it('queues instead of steering while the turn is held for a compute slot', async () => {
+      useAppStore.setState((state) => ({
+        steerActiveTurnOnSend: true,
+        acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'], computePoolWait: { poolName: 'InferDeck', inUse: 2, limit: 2 } } },
+      }))
+      const sendAcpPrompt = vi.fn(() => Promise.resolve(false))
+      useAppStore.setState({ sendAcpPrompt })
+      const { host, done } = mount()
+      try {
+        const textarea = typeDraft(host, 'Wait your turn')
+        expect(host.querySelector('button[aria-label="Interrupt and steer"]')).toBeNull()
+        expect((host.querySelector('button[aria-label="Interrupt and steer instead"]') as HTMLButtonElement).disabled).toBe(true)
+        await act(async () => { enter(textarea); await Promise.resolve() })
+        expect(sendAcpPrompt).toHaveBeenLastCalledWith('chat-1', 'Wait your turn', [], undefined, expect.any(Function))
+      } finally { done() }
+    })
+
+    it('steers exactly once for a double Enter before the send settles', async () => {
+      useAppStore.setState({ steerActiveTurnOnSend: true })
+      const finishes: Array<(ok: boolean) => void> = []
+      const sendAcpPrompt = vi.fn(() => new Promise<boolean>((resolve) => finishes.push(resolve)))
+      useAppStore.setState({ sendAcpPrompt })
+      const { host, done } = mount()
+      try {
+        const textarea = typeDraft(host, 'Only once')
+        act(() => { enter(textarea); enter(textarea) })
+        await act(async () => { await Promise.resolve() })
+        expect(sendAcpPrompt).toHaveBeenCalledTimes(1)
+        expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'Only once', [], true, expect.any(Function))
+        await act(async () => { finishes.forEach((finish) => finish(true)); await Promise.resolve() })
+      } finally { done() }
+    })
+
+    it('sends an idle prompt directly whatever the preference and keeps the alternate slot reserved but hidden', async () => {
+      useAppStore.setState({ steerActiveTurnOnSend: true })
+      const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
+      useAppStore.setState((state) => ({ sendAcpPrompt, acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false, pendingPermission: null } } }))
+      const { host, done } = mount()
+      try {
+        typeDraft(host, 'Idle prompt')
+        const reserved = host.querySelector('.uam-composer-alternate-send') as HTMLButtonElement
+        expect(reserved.dataset.state).toBe('closed')
+        expect(reserved.disabled).toBe(true)
+        expect(reserved.tabIndex).toBe(-1)
+        expect(reserved.getAttribute('aria-hidden')).toBe('true')
+        await act(async () => { host.querySelector<HTMLButtonElement>('button[aria-label="Send prompt"]')!.click(); await Promise.resolve() })
+        expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'Idle prompt', [], undefined, expect.any(Function))
+      } finally { done() }
+    })
+
+    it('steers with attachments and keeps them in the draft when steering fails', async () => {
+      useAppStore.setState({ steerActiveTurnOnSend: true })
+      const sendAcpPrompt = vi.fn(() => Promise.resolve(false))
+      useAppStore.setState({ sendAcpPrompt })
+      writeChatComposerDraft('chat-1', { text: 'See screenshot', attachments: [{ id: 'shot', name: 'shot.png', type: 'image', size: 4, path: '/tmp/shot.png' }] })
+      const { host, done } = mount()
+      try {
+        await act(async () => { host.querySelector<HTMLButtonElement>('button[aria-label="Interrupt and steer"]')!.click(); await Promise.resolve() })
+        expect(sendAcpPrompt).toHaveBeenCalledTimes(1)
+        const call = sendAcpPrompt.mock.calls[0] as unknown as [string, string, Array<{ id: string }>, boolean]
+        expect(call[2].map((item) => item.id)).toEqual(['shot'])
+        expect(call[3]).toBe(true)
+        expect(host.textContent).toContain('shot.png')
+        expect((host.querySelector('textarea') as HTMLTextAreaElement).value).toBe('See screenshot')
+      } finally { done() }
+    })
+
+    it('leaves already queued prompts in their order after a steer', async () => {
+      useAppStore.setState({ steerActiveTurnOnSend: true })
+      const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
+      const reorderQueuedAcpPrompts = vi.fn(() => Promise.resolve(true))
+      const steerQueuedAcpPrompt = vi.fn(() => Promise.resolve(true))
+      useAppStore.setState((state) => ({ sendAcpPrompt, reorderQueuedAcpPrompts, steerQueuedAcpPrompt,
+        acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], queuedPrompts: [queued('q-1', 'First queued'), queued('q-2', 'Second queued')] } } }))
+      const { host, done } = mount()
+      try {
+        typeDraft(host, 'Steer now')
+        await act(async () => { host.querySelector<HTMLButtonElement>('button[aria-label="Interrupt and steer"]')!.click(); await Promise.resolve() })
+        expect(sendAcpPrompt).toHaveBeenCalledTimes(1)
+        expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'Steer now', [], true, expect.any(Function))
+        expect(reorderQueuedAcpPrompts).not.toHaveBeenCalled()
+        expect(steerQueuedAcpPrompt).not.toHaveBeenCalled()
+        const text = host.textContent ?? ''
+        expect(text.indexOf('First queued')).toBeGreaterThanOrEqual(0)
+        expect(text.indexOf('First queued')).toBeLessThan(text.indexOf('Second queued'))
+      } finally { done() }
+    })
+
+    it('keeps the Claude Plan mode step for a steer and steers once after it is resolved', async () => {
+      useAppStore.setState({ steerActiveTurnOnSend: true })
+      const setSessionApprovalMode = vi.fn(() => Promise.resolve(true))
+      const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
+      useAppStore.setState((state) => ({
+        sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, providerId: 'claude-cli', approvalMode: 'plan' } : session),
+        acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], providerId: 'claude-cli', protocolKind: 'claude-code-stream-json',
+          processing: true, pendingPermission: null, currentModeId: 'plan',
+          availableModes: [{ id: 'default', name: 'Default', description: '' }, { id: 'plan', name: 'Plan', description: '' }] } },
+        setSessionApprovalMode, sendAcpPrompt,
+      }))
+      const { host, done } = mount()
+      try {
+        typeDraft(host, 'Plan the steer')
+        await act(async () => { host.querySelector<HTMLButtonElement>('button[aria-label="Interrupt and steer"]')!.click(); await Promise.resolve() })
+        expect(sendAcpPrompt).not.toHaveBeenCalled()
+        expect(document.body.textContent).toContain('Claude Plan mode is read-only')
+        await act(async () => { [...document.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Review each edit')!.click() })
+        expect(setSessionApprovalMode).toHaveBeenCalledWith('chat-1', 'default')
+        expect(sendAcpPrompt).toHaveBeenCalledTimes(1)
+        expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'Plan the steer', [], true, expect.any(Function))
+      } finally { done() }
+    })
+
+    it.each([
+      { preference: true, alternateLabel: 'Queue for next turn instead', expected: undefined },
+      { preference: false, alternateLabel: 'Interrupt and steer instead', expected: true },
+    ])('keeps the alternate action chosen while dictating (preference steer=$preference)', async ({ preference, alternateLabel, expected }) => {
+      useAppStore.setState({ steerActiveTurnOnSend: preference })
+      const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
+      const requests: Array<{ action: string; payload?: { dictationId?: string } }> = []
+      window.cefQuery = vi.fn(({ request, onSuccess }) => { requests.push(JSON.parse(request)); onSuccess('{}') })
+      useAppStore.setState({ sendAcpPrompt })
+      const { host, done } = mount()
+      try {
+        typeDraft(host, 'Spoken draft')
+        await act(async () => { host.querySelector<HTMLButtonElement>('button[aria-label="Start dictation"]')!.click(); await Promise.resolve() })
+        await act(async () => { host.querySelector<HTMLButtonElement>(`button[aria-label="${alternateLabel}"]`)!.click(); await Promise.resolve() })
+        expect(requests.some((request) => request.action === 'stopDictation')).toBe(true)
+        expect(sendAcpPrompt).not.toHaveBeenCalled()
+        const dictationId = requests.find((request) => request.action === 'startDictation')?.payload?.dictationId
+        await act(async () => { window.dispatchEvent(new CustomEvent('uam-dictation', { detail: { type: 'dictation', dictationId, event: 'end' } })); await Promise.resolve() })
+        expect(sendAcpPrompt).toHaveBeenCalledTimes(1)
+        expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'Spoken draft', [], expected, expect.any(Function))
+      } finally { done() }
+    })
+
+    it('keeps the toolbar width stable when the first character replaces Cancel', () => {
+      const { host, done } = mount()
+      try {
+        const actions = () => Array.from(host.querySelectorAll<HTMLButtonElement>('.uam-composer-action')).slice(-2)
+        const [slot, cancel] = actions()
+        expect(slot.classList.contains('uam-composer-alternate-send')).toBe(true)
+        expect(slot.dataset.state).toBe('closed')
+        expect(cancel.getAttribute('aria-label')).toBe('Cancel turn')
+        typeDraft(host, 'x')
+        const [openSlot, send] = actions()
+        expect(openSlot.classList.contains('uam-composer-alternate-send')).toBe(true)
+        expect(openSlot.dataset.state).toBe('open')
+        expect(send.getAttribute('aria-label')).toBe('Queue prompt')
+        expect(host.querySelector('button[aria-label="Cancel turn"]')).toBeNull()
+      } finally { done() }
+    })
+
+    it.each([
+      { kind: 'slash', draft: '/goal Ship it', sent: 'Ship it' },
+      { kind: 'native', draft: '/ralph Ship it', sent: '/ralph Ship it' },
+      { kind: 'armed', draft: 'Ship it', sent: 'Ship it' },
+    ])('asks in Claude Plan mode before a $kind goal steer creates its goal', async ({ kind, draft, sent }) => {
+      const setSessionApprovalMode = vi.fn(() => Promise.resolve(true))
+      const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
+      const setGoal = vi.fn(() => Promise.resolve({ ok: true, goalId: 'goal-1' }))
+      useAppStore.setState((state) => ({ steerActiveTurnOnSend: true, goalTokenBudget: 0,
+        providers: state.providers.map((provider) => provider.id === 'claude-cli' ? { ...provider, nativeGoalCommand: '/ralph' } : provider),
+        sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, providerId: 'claude-cli', approvalMode: 'plan' } : session),
+        acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], providerId: 'claude-cli', protocolKind: 'claude-code-stream-json',
+          processing: true, pendingPermission: null, currentModeId: 'plan',
+          availableModes: [{ id: 'default', name: 'Default', description: '' }, { id: 'plan', name: 'Plan', description: '' }] } },
+        setSessionApprovalMode, sendAcpPrompt, setGoal,
+      }))
+      const { host, done } = mount()
+      try {
+        if (kind === 'armed') {
+          // Goal can only be armed between turns, so the turn starts after it is armed.
+          const setProcessing = (processing: boolean) => act(() => useAppStore.setState((state) => ({ acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState: 'ready', processing } } })))
+          setProcessing(false)
+          openComposerOptions(host)
+          act(() => goalMenuItem()!.click())
+          setProcessing(true)
+        }
+        const textarea = typeDraft(host, draft)
+        await act(async () => { host.querySelector<HTMLButtonElement>('button[aria-label="Interrupt and steer"]')!.click(); await Promise.resolve() })
+        expect(setGoal).not.toHaveBeenCalled()
+        expect(sendAcpPrompt).not.toHaveBeenCalled()
+        expect(document.body.textContent).toContain('Claude Plan mode is read-only')
+        await act(async () => { [...document.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Review each edit')!.click() })
+        expect(setSessionApprovalMode).toHaveBeenCalledWith('chat-1', 'default')
+        expect(setGoal).toHaveBeenCalledTimes(1)
+        expect(sendAcpPrompt).toHaveBeenCalledTimes(1)
+        expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', sent, [], true, expect.any(Function))
+        expect(document.body.textContent).not.toContain('Claude Plan mode is read-only')
+        expect(textarea.value).toBe('')
+      } finally { done() }
+    })
+
+    describe('Claude Plan dialog choices for a goal steer', () => {
+      const openDialog = async () => {
+        const setSessionApprovalMode = vi.fn(() => Promise.resolve(true))
+        const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
+        const setGoal = vi.fn(() => Promise.resolve({ ok: true, goalId: 'goal-1' }))
+        useAppStore.setState((state) => ({ steerActiveTurnOnSend: true, goalTokenBudget: 0,
+          sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, providerId: 'claude-cli', approvalMode: 'plan' } : session),
+          acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], providerId: 'claude-cli', protocolKind: 'claude-code-stream-json',
+            processing: true, pendingPermission: null, currentModeId: 'plan',
+            availableModes: [{ id: 'default', name: 'Default', description: '' }, { id: 'plan', name: 'Plan', description: '' }] } },
+          setSessionApprovalMode, sendAcpPrompt, setGoal,
+        }))
+        const mounted = mount()
+        const textarea = typeDraft(mounted.host, '/goal Ship it')
+        await act(async () => { mounted.host.querySelector<HTMLButtonElement>('button[aria-label="Interrupt and steer"]')!.click(); await Promise.resolve() })
+        expect(document.body.textContent).toContain('Claude Plan mode is read-only')
+        return { ...mounted, textarea, setSessionApprovalMode, sendAcpPrompt, setGoal }
+      }
+
+      it('cancels on Escape: no goal, no interrupt, draft kept', async () => {
+        const { textarea, setGoal, sendAcpPrompt, setSessionApprovalMode, done } = await openDialog()
+        try {
+          await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); await Promise.resolve() })
+          expect(document.body.textContent).not.toContain('Claude Plan mode is read-only')
+          expect(setGoal).not.toHaveBeenCalled()
+          expect(sendAcpPrompt).not.toHaveBeenCalled()
+          expect(setSessionApprovalMode).not.toHaveBeenCalled()
+          expect(textarea.value).toBe('/goal Ship it')
+        } finally { done() }
+      })
+
+      it('sends in Plan mode on Keep planning, as for any Plan prompt', async () => {
+        const { textarea, setGoal, sendAcpPrompt, setSessionApprovalMode, done } = await openDialog()
+        try {
+          await act(async () => { [...document.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Keep planning')!.click() })
+          expect(setSessionApprovalMode).not.toHaveBeenCalled()
+          expect(setGoal).toHaveBeenCalledTimes(1)
+          expect(sendAcpPrompt).toHaveBeenCalledTimes(1)
+          expect(sendAcpPrompt).toHaveBeenCalledWith('chat-1', 'Ship it', [], true, expect.any(Function))
+          expect(textarea.value).toBe('')
+        } finally { done() }
+      })
+    })
+
+    it('cancels an ordinary Claude Plan prompt on Escape and keeps the draft', async () => {
+      const sendAcpPrompt = vi.fn(() => Promise.resolve(true))
+      useAppStore.setState((state) => ({
+        sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, providerId: 'claude-cli', approvalMode: 'plan' } : session),
+        acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], providerId: 'claude-cli', protocolKind: 'claude-code-stream-json', processing: false, lifecycleState: 'ready', pendingPermission: null, currentModeId: 'plan',
+          availableModes: [{ id: 'default', name: 'Default', description: '' }, { id: 'plan', name: 'Plan', description: '' }] } },
+        sendAcpPrompt,
+      }))
+      const { host, done } = mount()
+      try {
+        const textarea = typeDraft(host, 'Plan this')
+        await act(async () => { host.querySelector<HTMLButtonElement>('button[aria-label="Send prompt"]')!.click(); await Promise.resolve() })
+        expect(document.body.textContent).toContain('Claude Plan mode is read-only')
+        await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); await Promise.resolve() })
+        expect(document.body.textContent).not.toContain('Claude Plan mode is read-only')
+        expect(sendAcpPrompt).not.toHaveBeenCalled()
+        expect(textarea.value).toBe('Plan this')
+      } finally { done() }
+    })
+
+    it.each([
+      { draft: '/ralph Ship it', sent: '/ralph Ship it' },
+      { draft: '/goal Ship it', sent: 'Ship it' },
+    ])('applies the labelled action to goal command $draft', async ({ draft, sent }) => {
+      useAppStore.setState((state) => ({ steerActiveTurnOnSend: true, goalTokenBudget: 0,
+        setGoal: vi.fn(() => Promise.resolve({ ok: true, goalId: 'goal-1' })),
+        providers: state.providers.map((provider) => provider.id === 'gemini-cli' ? { ...provider, nativeGoalCommand: '/ralph' } : provider) }))
+      const sendAcpPrompt = vi.fn(() => Promise.resolve(false))
+      useAppStore.setState({ sendAcpPrompt })
+      const { host, done } = mount()
+      try {
+        typeDraft(host, draft)
+        await act(async () => { host.querySelector<HTMLButtonElement>('button[aria-label="Interrupt and steer"]')!.click(); await Promise.resolve() })
+        expect(sendAcpPrompt).toHaveBeenLastCalledWith('chat-1', sent, [], true, expect.any(Function))
+        await act(async () => { host.querySelector<HTMLButtonElement>('button[aria-label="Queue for next turn instead"]')!.click(); await Promise.resolve() })
+        expect(sendAcpPrompt).toHaveBeenLastCalledWith('chat-1', sent, [], undefined, expect.any(Function))
+      } finally { done() }
+    })
+  })
+
   it.each([true, false])('preserves new text and attachments during prompt admission acceptance=%s', async (accepted) => {
     let finishSend!: (ok: boolean) => void
     const send = vi.fn(() => new Promise<boolean>((resolve) => { finishSend = resolve }))
@@ -2383,7 +3186,7 @@ describe('ChatView', () => {
       ] },
       acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], sessionId: nativeSession, running: Boolean(nativeSession), processing: false,
         lifecycleState: nativeSession ? 'ready' : 'error', turnEvents: [], toolCalls: [], turnUserMessageIndex: -1, turnAssistantMessageIndex: -1,
-        pendingPermission: null, pendingUserInput: null, unsentMessageIndices: [7, 8], recoverableUnsentMessageIndices: [8] } },
+        pendingPermission: null, pendingUserInput: null, unsentMessageIndices: [7, 8], editableUnsentMessageIndices: readOnly ? [] : [7, 8], recoverableUnsentMessageIndices: [8] } },
     }))
     writeChatComposerDraft('chat-1', { text: 'Independent draft', attachments: [] })
     const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
@@ -2412,7 +3215,7 @@ describe('ChatView', () => {
         expect(host.querySelectorAll('[role="alert"]')).toHaveLength(1)
       }
       const editor = recovery.querySelector<HTMLButtonElement>('[aria-label="Edit unsent message"]')!
-      expect(editor.disabled).toBe(readOnly)
+      expect(editor.disabled || editor.getAttribute('aria-disabled') === 'true').toBe(readOnly)
       act(() => editor.click())
       if (readOnly) expect(host.querySelector('[aria-label="Edit message"]')).toBeNull()
       else {
@@ -3116,6 +3919,74 @@ describe('ChatView', () => {
     } finally { act(() => root.unmount()); host.remove() }
   })
 
+  it('refuses a file the browser reads back empty or over the limit instead of staging a hollow copy', async () => {
+    const stageChatAttachments = vi.fn(() => Promise.resolve([]))
+    useAppStore.setState({ stageChatAttachments })
+    // Chromium returns an empty result, with no error, for a file too large to hold as one string.
+    class EmptyResultReader { result = ''; onload: (() => void) | null = null; onerror: (() => void) | null = null; readAsDataURL() { queueMicrotask(() => this.onload?.()) } }
+    vi.stubGlobal('FileReader', EmptyResultReader)
+    writeChatComposerDraft('chat-1', { text: 'Keep my text', attachments: [] })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      const input = host.querySelector<HTMLInputElement>('input[type="file"]')!
+      const attach = async (file: File) => {
+        Object.defineProperty(input, 'files', { value: [file], configurable: true })
+        await act(async () => { input.dispatchEvent(new Event('change', { bubbles: true })); await Promise.resolve(); await Promise.resolve() })
+      }
+      await attach(new File(['video'], 'clip.MOV', { type: 'video/quicktime' }))
+      expect(reportedText()).toContain('clip.MOV could not be read, so it was not attached.')
+      const oversized = new File(['video'], 'huge.MOV', { type: 'video/quicktime' })
+      Object.defineProperty(oversized, 'size', { value: 25 * 1024 * 1024 + 1 })
+      await attach(oversized)
+      expect(reportedText()).toContain('huge.MOV is larger than the 25 MB limit') // The desktop app adds a hint after this.
+      expect(stageChatAttachments).not.toHaveBeenCalled()
+      // The failed chips and the draft stay; nothing can be sent until they are removed.
+      expect(host.querySelector<HTMLTextAreaElement>('textarea')?.value).toBe('Keep my text')
+      expect(host.textContent).toContain('clip.MOV')
+      expect(host.querySelector('button[type="submit"]:not([disabled])')).toBeNull()
+    } finally { vi.unstubAllGlobals(); act(() => root.unmount()); host.remove() }
+  })
+
+  it('stages a large file by path without reading it, shows copy progress and refuses one over 4 GB', async () => {
+    let finish!: (staged: Array<{ id: string; name: string; type: string; size: number; path: string }>) => void
+    const stageChatAttachments = vi.fn((_chatId: string, _items: Array<{ id: string }>) => new Promise<Array<{ id: string; name: string; type: string; size: number; path: string }>>((resolve) => { finish = resolve }))
+    useAppStore.setState({ stageChatAttachments })
+    const readAsDataURL = vi.fn()
+    vi.stubGlobal('FileReader', class { readAsDataURL = readAsDataURL })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      const input = host.querySelector<HTMLInputElement>('input[type="file"]')!
+      const attach = async (name: string, size: number) => {
+        const file = new File(['video'], name, { type: 'video/quicktime' })
+        Object.defineProperty(file, 'size', { value: size })
+        Object.defineProperty(file, 'path', { value: `/Users/me/${name}` })
+        Object.defineProperty(input, 'files', { value: [file], configurable: true })
+        await act(async () => { input.dispatchEvent(new Event('change', { bubbles: true })); await Promise.resolve(); await Promise.resolve() })
+      }
+      await attach('clip.MOV', 2 * 1024 * 1024 * 1024)
+      expect(readAsDataURL).not.toHaveBeenCalled()
+      const item = stageChatAttachments.mock.calls[0][1][0]
+      expect(item).toMatchObject({ name: 'clip.MOV', path: '/Users/me/clip.MOV', size: 2 * 1024 * 1024 * 1024, dataBase64: undefined })
+      expect(host.textContent).toContain('copying')
+      act(() => { window.dispatchEvent(new CustomEvent('uam-attachment-progress', { detail: { type: 'attachmentProgress', chatId: 'chat-1', attachmentId: item.id, copiedBytes: 4, totalBytes: 10 } })) })
+      expect(host.textContent).toContain('copying 40%')
+      // Progress for another chat's copy is ignored.
+      act(() => { window.dispatchEvent(new CustomEvent('uam-attachment-progress', { detail: { type: 'attachmentProgress', chatId: 'other', attachmentId: item.id, copiedBytes: 9, totalBytes: 10 } })) })
+      expect(host.textContent).toContain('copying 40%')
+      await act(async () => { finish([{ id: item.id, name: 'clip.MOV', type: 'file', size: 2 * 1024 * 1024 * 1024, path: '.UAM/attachments/chat-1/clip.MOV' }]); await Promise.resolve() })
+      expect(host.textContent).not.toContain('copying')
+      await attach('huge.MOV', 4 * 1024 * 1024 * 1024 + 1)
+      expect(reportedText()).toContain('huge.MOV is larger than the 4 GB limit.')
+      expect(stageChatAttachments).toHaveBeenCalledTimes(1)
+    } finally { vi.unstubAllGlobals(); act(() => root.unmount()); host.remove() }
+  })
+
   it('keeps newer staging errors and the draft when an older attachment send fails', async () => {
     let settle!: (ok: boolean) => void
     useAppStore.setState({
@@ -3169,6 +4040,39 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('restarts a tool call limit stop by raising the tool call limit, not the turn timeout', async () => {
+    const setMemorySettings = vi.fn(async () => true)
+    const retryFailedMessage = vi.fn(async () => ({ ok: true }))
+    const user = { ...useAppStore.getState().messages['chat-1'][0] }
+    useAppStore.setState((state) => ({
+      setMemorySettings,
+      retryFailedMessage,
+      activeTurnInactivityTimeoutSeconds: 1800,
+      toolCallTimeoutSeconds: 7200,
+      messages: { ...state.messages, 'chat-1': [user] },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], lifecycleState: 'error', processing: false, running: true,
+          lastError: 'Gemini ACP turn stopped because a tool call exceeded its 120-minute limit without a result.', timeoutStop: { label: 'Tool call limit', seconds: 7200, kind: 'tool' },
+          pendingPermission: null, pendingUserInput: null, turnEvents: [] },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      expect(host.textContent).toContain('A tool call exceeded its 2 h limit with no result')
+      const restart = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Restart with +15 min')!
+      await act(async () => { restart.click() })
+      expect(setMemorySettings).toHaveBeenCalledWith({ toolCallTimeoutSeconds: 8100 })
+      expect(retryFailedMessage).toHaveBeenCalledWith('chat-1', 0)
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
   it.each(['restart', 'output', 'refused'] as const)('presents a timeout stop as a notice and restarts it after saving the raised limit (%s)', async (branch) => {
     const order: string[] = []
     const setMemorySettings = vi.fn(async () => { order.push('save'); return true })
@@ -3200,10 +4104,14 @@ describe('ChatView', () => {
         expect(retryFailedMessage).not.toHaveBeenCalled()
         expect(host.textContent).toContain('This turn already produced output')
       } else {
-        expect(order).toEqual(['save', 'retry'])
+        // A refused restart saves the previous limit back, so the setting is not left raised.
+        expect(order).toEqual(branch === 'refused' ? ['save', 'retry', 'save'] : ['save', 'retry'])
         expect(retryFailedMessage).toHaveBeenCalledWith('chat-1', 0)
       }
-      if (branch === 'refused') expect(host.querySelector('[role="alert"]')?.textContent).toContain('Wait for pending runtime work.')
+      if (branch === 'refused') {
+        expect(setMemorySettings).toHaveBeenLastCalledWith({ activeTurnInactivityTimeoutSeconds: 1800 })
+        expect(host.querySelector('[role="alert"]')?.textContent).toContain('Wait for pending runtime work.')
+      }
     } finally {
       act(() => root.unmount())
       host.remove()
@@ -3637,6 +4545,28 @@ describe('ChatView', () => {
     act(() => {
       root.unmount()
     })
+    host.remove()
+  })
+
+  it('shows the backend reason when a permission response is refused', async () => {
+    const reason = 'An earlier answer to this permission request is saved for delivery to the remote computer, so a different answer cannot be sent. Choose the same answer to send it again, or stop the turn.'
+    const resolveAcpPermission = vi.fn(() => Promise.resolve(reason))
+    useAppStore.setState({ resolveAcpPermission })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    const allowButton = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent?.includes('Allow once'))
+    await act(async () => {
+      allowButton?.click()
+      await Promise.resolve()
+    })
+    const alerts = Array.from(host.querySelectorAll('[role="alert"]')).map((alert) => alert.textContent)
+    expect(alerts).toContain(reason)
+    expect(alerts.some((text) => text?.includes('did not accept'))).toBe(false)
+    // The card stays answerable after the refusal.
+    expect(allowButton?.disabled).toBe(false)
+    act(() => root.unmount())
     host.remove()
   })
 
@@ -4412,7 +5342,7 @@ describe('ChatView', () => {
     expect(setSessionApprovalMode).toHaveBeenCalledWith('chat-1', 'plan')
 
     const permission = document.body.querySelector('button[aria-label="Permissions"]') as HTMLButtonElement
-    expect(permission.textContent).toContain('AI Review')
+    expect(permission.textContent).toContain('AI review')
     act(() => permission.click())
     const yolo = Array.from(document.body.querySelectorAll('[role="option"]')).find((option) => option.textContent?.includes('YOLO')) as HTMLButtonElement
     await act(async () => { yolo.click(); await Promise.resolve() })
@@ -4482,13 +5412,13 @@ describe('ChatView', () => {
     expect(permissionMenu?.textContent).toContain('Default')
     expect(permissionMenu?.textContent).not.toContain('Plan')
     expect(permissionMenu?.textContent).toContain('YOLO')
-    expect(permissionMenu?.textContent).toContain('AI Review')
-    expect(permissionMenu?.textContent).toContain('Accept Edits')
+    expect(permissionMenu?.textContent).toContain('AI review')
+    expect(permissionMenu?.textContent).toContain('Accept edits')
     expect(permissionMenu?.querySelector('svg')).not.toBeNull()
     expect(textarea.parentElement?.querySelector('[role="status"]')).toBeNull()
     expect(setSessionApprovalMode).not.toHaveBeenCalled()
 
-    const slashAiReview = Array.from(permissionMenu?.querySelectorAll('[role="option"]') ?? []).find((option) => option.textContent?.includes('AI Review')) as HTMLButtonElement
+    const slashAiReview = Array.from(permissionMenu?.querySelectorAll('[role="option"]') ?? []).find((option) => option.textContent?.includes('AI review')) as HTMLButtonElement
     await act(async () => { slashAiReview.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })) })
     expect(setSessionCommandSafetyTier).toHaveBeenCalledWith('chat-1', 'aiReview')
     expect(host.textContent).not.toContain('Permission mode changed')
@@ -5224,7 +6154,7 @@ describe('ChatView', () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
       await Promise.resolve()
     })
-    expect(setSessionCodexOptions).toHaveBeenNthCalledWith(3, 'chat-1', { reasoningEffort: 'xhigh' })
+    expect(setSessionCodexOptions).toHaveBeenNthCalledWith(3, 'chat-1', { reasoningEffort: 'xhigh' }, expect.any(Function))
     expect(appNotices.join('\n')).toContain('Reasoning changed to Extra High.')
 
     await act(async () => {
@@ -5232,8 +6162,22 @@ describe('ChatView', () => {
       textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
       await Promise.resolve()
     })
-    expect(setSessionCodexOptions).toHaveBeenNthCalledWith(4, 'chat-1', { serviceTier: 'flex', serviceTierExplicit: true })
+    expect(setSessionCodexOptions).toHaveBeenNthCalledWith(4, 'chat-1', { serviceTier: 'flex', serviceTierExplicit: true }, expect.any(Function))
     expect(appNotices.join('\n')).toContain('Speed changed to Flex.')
+
+    // A refused slash change names the backend reason in its one notice; the store reports nothing else.
+    setSessionCodexOptions.mockImplementationOnce(((_id: string, _options: unknown, onFailure?: (reason: string) => void) => {
+      onFailure?.('Reasoning is locked by the provider.')
+      return Promise.resolve(false)
+    }) as never)
+    appNotices.length = 0
+    appFailures.length = 0
+    await act(async () => {
+      setDraft('/reasoning high')
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+      await Promise.resolve()
+    })
+    expect(appFailures.map(({ message, detail }) => ({ message, detail }))).toEqual([{ message: 'Failed to change reasoning to High. Reasoning is locked by the provider.', detail: '' }])
 
     act(() => root.unmount())
     host.remove()
@@ -5282,6 +6226,23 @@ describe('ChatView', () => {
       .find((option) => option.textContent?.startsWith('High')) as HTMLButtonElement
     await act(async () => { high.click(); await Promise.resolve() })
     expect(setSessionCodexOptions).toHaveBeenCalledWith('chat-1', { reasoningEffort: 'high' })
+
+    // The /reasoning hint names no provider in a non-Codex chat, and the command changes this chat's reasoning.
+    const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+    const setDraft = (value: string) => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, value)
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+    act(() => setDraft('/rea'))
+    const slashReasoning = Array.from(document.body.querySelectorAll('[aria-label="Slash commands"] [role="option"]')).find((option) => option.textContent?.includes('/reasoning')) as HTMLElement
+    expect(slashReasoning.textContent).toContain('Choose reasoning')
+    expect(slashReasoning.textContent).not.toContain('Codex')
+    await act(async () => {
+      setDraft('/reasoning low')
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+      await Promise.resolve()
+    })
+    expect(setSessionCodexOptions).toHaveBeenLastCalledWith('chat-1', { reasoningEffort: 'low' }, expect.any(Function))
 
     act(() => root.unmount())
     host.remove()
@@ -6452,9 +7413,9 @@ describe('ChatView', () => {
     expect(permissionButton.textContent).toContain('Default')
     expect(permissionButton.disabled).toBe(false)
     act(() => permissionButton.click())
-    const reviewOption = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) => option.textContent?.startsWith('AI Review'))!
+    const reviewOption = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) => option.textContent?.startsWith('AI review'))!
     act(() => reviewOption.click())
-    expect(document.body.textContent).not.toContain('Accept Edits')
+    expect(document.body.textContent).not.toMatch(/accept edits/i)
     expect(setSessionCommandSafetyTier).toHaveBeenCalledWith('chat-1', 'aiReview')
     expect(setSessionApprovalMode).not.toHaveBeenCalled()
 
@@ -8338,7 +9299,222 @@ describe('ChatView', () => {
     host.remove()
   })
 
-  it('keeps the fallback visible while processing even when persisted text matches', () => {
+  // #278: a settled turn keeps its events while a later user row (failed-reconnect queue, prepared input) is appended.
+  const renderTurnAfterFollowUp = (overrides: { processing?: boolean; turnUserMessageIndex?: number; turnAssistantMessageIndex?: number; assistantContent?: string; assistantStreaming?: boolean; leadingAssistant?: boolean; followUp?: boolean; trailingRows?: Message[]; historyStart?: number; messageCount?: number; turnEvents?: AcpTurnEvent[]; toolCalls?: AcpToolCall[]; pendingPermission?: AcpBinding['pendingPermission'] }) => {
+    useAppStore.setState((state) => ({
+      historyStartIndexBySessionId: overrides.historyStart ? { 'chat-1': overrides.historyStart } : {},
+      sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, messageCount: overrides.messageCount } : session),
+      messages: {
+        ...state.messages,
+        'chat-1': [
+          ...(overrides.leadingAssistant ? [{ id: 'm-0', sessionId: 'chat-1', role: 'assistant' as const, content: 'Earlier answer', createdAt: new Date(0) }] : []),
+          { id: 'm-1', sessionId: 'chat-1', role: 'user', content: 'Please inspect the workspace', createdAt: new Date(0) },
+          { id: 'm-2', sessionId: 'chat-1', role: 'assistant', content: overrides.assistantContent ?? 'Status update.\n\nSettled answer.', isStreaming: overrides.assistantStreaming, createdAt: new Date(1) },
+          ...(overrides.followUp === false ? [] : [{ id: 'm-3', sessionId: 'chat-1', role: 'user' as const, content: 'Follow-up row', createdAt: new Date(2) }]),
+          ...(overrides.trailingRows ?? []),
+        ],
+      },
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          lifecycleState: overrides.processing ? 'processing' : 'error',
+          processing: overrides.processing ?? false,
+          pendingPermission: overrides.pendingPermission ?? null,
+          toolCalls: overrides.toolCalls ?? [],
+          turnEvents: overrides.turnEvents ?? [{ type: 'assistant_text', text: 'Status update.' }, { type: 'assistant_text', text: '\n\nSettled answer.' }],
+          turnUserMessageIndex: overrides.turnUserMessageIndex ?? (overrides.historyStart ?? 0),
+          turnAssistantMessageIndex: overrides.turnAssistantMessageIndex ?? ((overrides.historyStart ?? 0) + 1),
+          turnSerial: 2,
+        },
+      },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    const text = host.textContent ?? ''
+    act(() => root.unmount())
+    host.remove()
+    return text
+  }
+
+  it('renders a settled turn once at its owning assistant row when a later user row follows it', () => {
+    const text = renderTurnAfterFollowUp({})
+    expect(text.match(/Settled answer\./g)).toHaveLength(1)
+    expect(text.indexOf('Settled answer.')).toBeLessThan(text.indexOf('Follow-up row'))
+  })
+
+  const liveAnswerWithTool = {
+    processing: true,
+    turnEvents: [{ type: 'assistant_text' as const, text: 'Status update.\n\nSettled answer.' }, { type: 'tool_call' as const, toolCallId: 'tool-1' }],
+    toolCalls: [{ id: 'tool-1', title: 'Inspect workspace files', kind: 'read', status: 'in_progress', content: '' }],
+  }
+
+  it('renders a processing answer once at its recorded row while a steer row follows it', () => {
+    const text = renderTurnAfterFollowUp(liveAnswerWithTool)
+    expect(text.match(/Settled answer\./g)).toHaveLength(1)
+    expect(text.indexOf('Settled answer.')).toBeLessThan(text.indexOf('Follow-up row'))
+    expect(text.match(/Inspect workspace files/g)).toHaveLength(1)
+  })
+
+  it.each([
+    { name: 'no recorded row', overrides: { turnUserMessageIndex: -1, turnAssistantMessageIndex: -1 } },
+    { name: 'a recorded row past the end', overrides: { turnUserMessageIndex: 0, turnAssistantMessageIndex: 5 } },
+    { name: 'indices left on replaced rows', overrides: { turnUserMessageIndex: 1, turnAssistantMessageIndex: 0 } },
+  ])('renders a processing answer once at the latest assistant row with $name', ({ overrides }) => {
+    const text = renderTurnAfterFollowUp({ ...liveAnswerWithTool, ...overrides, followUp: false })
+    expect(text.match(/Settled answer\./g)).toHaveLength(1)
+    expect(text.match(/Inspect workspace files/g)).toHaveLength(1)
+    expect(text.indexOf('Settled answer.')).toBeLessThan(text.indexOf('Inspect workspace files'))
+  })
+
+  it('renders a stale-anchored streaming row once while its tokens are ahead of the turn events', () => {
+    const text = renderTurnAfterFollowUp({
+      processing: true, followUp: false, assistantStreaming: true, turnUserMessageIndex: -1, turnAssistantMessageIndex: -1,
+      assistantContent: 'Status update.\n\nSettled answer. More tokens',
+    })
+    expect(text.match(/Settled answer\./g)).toHaveLength(1)
+  })
+
+  it('shows a stale-anchored streaming row once when the recorded index is on a user row', () => {
+    const text = renderTurnAfterFollowUp({ ...liveAnswerWithTool, followUp: false, assistantStreaming: true, turnUserMessageIndex: 1, turnAssistantMessageIndex: 0 })
+    expect(text.match(/Settled answer\./g)).toHaveLength(1)
+    expect(text.match(/Inspect workspace files/g)).toHaveLength(1)
+  })
+
+  it('renders a stale-anchored streaming row once while the turn events are ahead of its tokens', () => {
+    const text = renderTurnAfterFollowUp({
+      processing: true, followUp: false, assistantStreaming: true, turnUserMessageIndex: -1, turnAssistantMessageIndex: -1, assistantContent: 'Status upd',
+    })
+    expect(text.match(/Settled answer\./g)).toHaveLength(1)
+    expect(text).not.toContain('Status updStatus')
+  })
+
+  it('keeps a streaming row and the live card when the row holds unrelated text', () => {
+    const text = renderTurnAfterFollowUp({
+      processing: true, followUp: false, assistantStreaming: true, turnUserMessageIndex: -1, turnAssistantMessageIndex: -1, assistantContent: 'Unrelated streaming row.',
+    })
+    expect(text).toContain('Unrelated streaming row.')
+    expect(text.match(/Settled answer\./g)).toHaveLength(1)
+  })
+
+  it('keeps a placeholder started for a new row visible after a steer row', () => {
+    const text = renderTurnAfterFollowUp({
+      processing: true,
+      trailingRows: [{ id: 'stream-chat-1-0-3', sessionId: 'chat-1', role: 'assistant', content: 'New streaming answer', isStreaming: true, streamMessageIndex: 3, createdAt: new Date(3) }],
+    })
+    expect(text.match(/Settled answer\./g)).toHaveLength(1)
+    expect(text.match(/New streaming answer/g)).toHaveLength(1)
+    expect(text.indexOf('Follow-up row')).toBeLessThan(text.indexOf('New streaming answer'))
+  })
+
+  it('keeps a stale-anchored completed row holding more than the live turn text', () => {
+    const text = renderTurnAfterFollowUp({
+      processing: true, followUp: false, turnUserMessageIndex: -1, turnAssistantMessageIndex: -1,
+      assistantContent: 'OK, here is the longer imported answer.', turnEvents: [{ type: 'assistant_text', text: 'OK' }],
+    })
+    expect(text).toContain('OK, here is the longer imported answer.')
+  })
+
+  it('keeps the recorded row and placeholder when the turn events no longer hold the row text', () => {
+    const text = renderTurnAfterFollowUp({
+      processing: true, assistantContent: 'Status update.',
+      turnEvents: [{ type: 'tool_call', toolCallId: 'tool-1' }], toolCalls: liveAnswerWithTool.toolCalls,
+      trailingRows: [{ id: 'stream-chat-1-0-3', sessionId: 'chat-1', role: 'assistant', content: ' More tokens', isStreaming: true, streamMessageIndex: 1, createdAt: new Date(3) }],
+    })
+    expect(text).toContain('Status update.')
+    expect(text).toContain('More tokens')
+  })
+
+  it('keeps a matching row on an older history page separate from the live answer', () => {
+    const text = renderTurnAfterFollowUp({
+      ...liveAnswerWithTool, followUp: false, historyStart: 100, messageCount: 500, turnUserMessageIndex: 500, turnAssistantMessageIndex: 501,
+    })
+    expect(text.match(/Settled answer\./g)).toHaveLength(2)
+  })
+
+  it('renders a settled answer once when its stale row keeps a compaction summary in its text', () => {
+    const text = renderTurnAfterFollowUp({
+      followUp: false, turnUserMessageIndex: -1, turnAssistantMessageIndex: -1, assistantContent: 'Status update.\n\nCompacted context summary.\n\nSettled answer.',
+      turnEvents: [
+        { type: 'assistant_text', text: 'Status update.' },
+        { type: 'context_compaction_summary', text: '\n\nCompacted context summary.', requestId: 'opencode-message:summary' },
+        { type: 'assistant_text', text: '\n\nSettled answer.' },
+      ],
+    })
+    expect(text.match(/Settled answer\./g)).toHaveLength(1)
+  })
+
+  it.each([0, 100])('renders tokens once when a placeholder for the recorded row follows a steer row at history start %i', (historyStart) => {
+    const text = renderTurnAfterFollowUp({
+      processing: true, assistantContent: 'Status update.', historyStart,
+      turnEvents: [{ type: 'assistant_text', text: 'Status update.' }, { type: 'assistant_text', text: ' More tokens' }],
+      trailingRows: [{ id: 'stream-chat-1-0-3', sessionId: 'chat-1', role: 'assistant', content: ' More tokens', isStreaming: true, streamMessageIndex: historyStart + 1, createdAt: new Date(3) }],
+    })
+    expect(text.match(/Status update\./g)).toHaveLength(1)
+    expect(text.match(/More tokens/g)).toHaveLength(1)
+    expect(text.indexOf('More tokens')).toBeLessThan(text.indexOf('Follow-up row'))
+  })
+
+  it('keeps a pending permission in the one card of a stale-anchored live answer', () => {
+    const text = renderTurnAfterFollowUp({
+      ...liveAnswerWithTool, followUp: false, turnUserMessageIndex: -1, turnAssistantMessageIndex: -1,
+      pendingPermission: { requestId: '5', toolCallId: 'tool-1', title: 'Read file', kind: 'read', status: 'pending', content: 'Read /tmp/project/file.txt', options: [{ id: 'allow-once', name: 'Allow once', kind: 'allow_once' }] },
+    })
+    expect(text.match(/Settled answer\./g)).toHaveLength(1)
+    expect(text.match(/Allow once/g)).toHaveLength(1)
+  })
+
+  it('binds a settled row whose content has a compaction summary between turn text chunks', () => {
+    const text = renderTurnAfterFollowUp({ assistantContent: 'Status update.\n\nCompacted context summary.\n\nSettled answer.', turnEvents: [
+      { type: 'assistant_text', text: 'Status update.' },
+      { type: 'context_compaction_summary', text: '\n\nCompacted context summary.', requestId: 'opencode-message:summary' },
+      { type: 'assistant_text', text: '\n\nSettled answer.' },
+    ] })
+    expect(text.match(/Settled answer\./g)).toHaveLength(1)
+    expect(text.indexOf('Settled answer.')).toBeLessThan(text.indexOf('Follow-up row'))
+  })
+
+  it.each([
+    { name: 'stale index on a user row', overrides: { turnAssistantMessageIndex: 2 } },
+    { name: 'stale index past the end', overrides: { turnAssistantMessageIndex: 5 } },
+    { name: 'stale index without a preceding turn user row', overrides: { turnUserMessageIndex: -1 } },
+    { name: 'assistant row content that does not contain the turn text', overrides: { assistantContent: 'Unrelated imported row.' } },
+    { name: 'turn user index that points at a non-user row', overrides: { leadingAssistant: true, turnUserMessageIndex: 0, turnAssistantMessageIndex: 2 } },
+  ])('keeps the trailing fallback card for a $name', ({ overrides }) => {
+    const text = renderTurnAfterFollowUp(overrides)
+    // The fallback renders the turn text after the follow-up row; the persisted row keeps its own content.
+    expect(text.lastIndexOf('Settled answer.')).toBeGreaterThan(text.indexOf('Follow-up row'))
+    if (overrides.assistantContent) expect(text).toContain(overrides.assistantContent)
+  })
+
+  it('binds a settled row whose finished compaction summary stays in its content', () => {
+    // RetypeSummaries turns a finished summary into context_compaction while message.content keeps the text.
+    const text = renderTurnAfterFollowUp({ assistantContent: 'Status update.\n\nFinished summary.\n\nSettled answer.', turnEvents: [
+      { type: 'assistant_text', text: 'Status update.' },
+      { type: 'context_compaction', text: 'Finished summary.', requestId: 'acp-compaction:summary' },
+      { type: 'assistant_text', text: '\n\nSettled answer.' },
+    ] })
+    expect(text.match(/Settled answer\./g)).toHaveLength(1)
+    expect(text.indexOf('Settled answer.')).toBeLessThan(text.indexOf('Follow-up row'))
+    expect(text).toContain('Finished summary.')
+  })
+
+  it.each([
+    { name: 'a turn with no answer text', assistantContent: 'Imported answer', turnEvents: [{ type: 'tool_call' as const, toolCallId: 'tool-1' }] },
+    { name: 'a short chunk at the start of a longer row', assistantContent: 'OK, here is the longer imported answer.', turnEvents: [{ type: 'assistant_text' as const, text: 'OK' }] },
+    { name: 'a short chunk at the end of a longer row', assistantContent: 'The longer imported answer is OK', turnEvents: [{ type: 'assistant_text' as const, text: 'OK' }] },
+    { name: 'text no turn event accounts for between chunks', assistantContent: 'Status update.\n\nImported middle.\n\nSettled answer.', turnEvents: undefined },
+    { name: 'a processing turn with no answer text', processing: true, assistantContent: 'Imported answer', turnEvents: [{ type: 'tool_call' as const, toolCallId: 'tool-1' }] },
+    { name: 'a processing turn whose short chunk starts a longer row', processing: true, assistantContent: 'OK, here is the longer imported answer.', turnEvents: [{ type: 'assistant_text' as const, text: 'OK' }] },
+  ])('never hides a stale row holding more than the turn text: $name', ({ assistantContent, turnEvents, processing }) => {
+    const text = renderTurnAfterFollowUp({ assistantContent, turnEvents, processing })
+    expect(text).toContain(assistantContent.replaceAll('\n\n', ''))
+    expect(text.indexOf(assistantContent.slice(0, 15))).toBeLessThan(text.indexOf('Follow-up row'))
+  })
+
+  it('renders a processing answer once when persisted text matches a stale anchor', () => {
     useAppStore.setState((state) => ({
       messages: {
         ...state.messages,
@@ -8366,7 +9542,7 @@ describe('ChatView', () => {
 
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
 
-    expect(host.textContent?.match(/In-flight response\./g)).toHaveLength(2)
+    expect(host.textContent?.match(/In-flight response\./g)).toHaveLength(1)
 
     act(() => root.unmount())
     host.remove()
@@ -9506,7 +10682,7 @@ describe('ChatView', () => {
       root.render(<ChatView session={useAppStore.getState().sessions[0]} />)
     })
 
-    if (path === '/companion') expect(discover).toHaveBeenCalledWith('chat-1')
+    if (path === '/companion') expect(discover).toHaveBeenCalledWith('chat-1', '', '', '', true)
     else expect(discover).not.toHaveBeenCalled()
 
     const selector = host.querySelector('button[aria-label="Select provider and model"]') as HTMLButtonElement
@@ -9567,7 +10743,7 @@ describe('ChatView', () => {
       expect(textarea.value).toBe(savedDraft.text)
       await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Select provider and model"]')!.click())
       expect(discover).toHaveBeenCalledTimes(1)
-      expect(discover).toHaveBeenCalledWith('', 'opencode-cli', workspaceDirectory, expectedHost)
+      expect(discover).toHaveBeenCalledWith('', 'opencode-cli', workspaceDirectory, expectedHost, true)
       expect(host.querySelector('.uam-composer-textarea')).toBe(textarea)
       expect(textarea.value).toBe(savedDraft.text)
       expect(readChatComposerDraft(session.id)).toEqual(savedDraft)
@@ -11063,17 +12239,18 @@ describe('ChatView', () => {
 
 
   it.each([
-    { label: 'identified unknown', fields: { nativeInputId: '44444444-4444-4444-8444-444444444444', originRequestId: 'historical-action' }, expected: 'unconfirmed' },
-    { label: 'positive write', fields: { nativeInputId: '44444444-4444-4444-8444-444444444444', originRequestId: 'historical-action', inputWriteCompleted: true }, expected: null },
-    { label: 'malformed boolean', fields: { nativeInputId: '44444444-4444-4444-8444-444444444444', inputWriteCompleted: 'true' }, expected: 'unconfirmed' },
-    { label: 'malformed input ID', fields: { nativeInputId: 'bad-id', inputWriteCompleted: true }, expected: null },
-    { label: 'legacy absent fields', fields: {}, expected: null },
-  ])('shares historical input presentation across main, managed and passive native routes: $label', async ({ fields, expected }) => {
+    // answered: the provider's output directly follows the input, which is proof it was received.
+    { label: 'identified unknown', fields: { nativeInputId: '44444444-4444-4444-8444-444444444444', originRequestId: 'historical-action' }, answered: false, expected: 'unconfirmed' },
+    { label: 'identified unknown but answered', fields: { nativeInputId: '44444444-4444-4444-8444-444444444444', originRequestId: 'historical-action' }, answered: true, expected: null },
+    { label: 'positive write', fields: { nativeInputId: '44444444-4444-4444-8444-444444444444', originRequestId: 'historical-action', inputWriteCompleted: true }, answered: true, expected: null },
+    { label: 'malformed boolean', fields: { nativeInputId: '44444444-4444-4444-8444-444444444444', inputWriteCompleted: 'true' }, answered: false, expected: 'unconfirmed' },
+    { label: 'malformed input ID', fields: { nativeInputId: 'bad-id', inputWriteCompleted: true }, answered: true, expected: null },
+    { label: 'legacy absent fields', fields: {}, answered: true, expected: null },
+  ])('shares historical input presentation across main, managed and passive native routes: $label', async ({ label, fields, answered, expected }) => {
     const previous = useAppStore.getState()
-    const rows = [
-      { role: 'user', content: 'Historical **input** remains readable', createdAt: '2026-10-16T16:00:00Z', ...fields },
-      { role: 'assistant', content: 'Recorded answer\n\n```ts\nconst kept = true\n```', createdAt: '2026-10-16T16:00:01Z' },
-    ] as unknown as Parameters<typeof reconcileCppMessages>[2]
+    const input = { role: 'user', content: 'Historical **input** remains readable', createdAt: '2026-10-16T16:00:00Z', providerId: 'codex-cli', ...fields }
+    const output = { role: 'assistant', content: 'Recorded answer\n\n```ts\nconst kept = true\n```', createdAt: '2026-10-16T16:00:01Z', providerId: 'codex-cli' }
+    const rows = (answered ? [input, output] : [output, input]) as unknown as Parameters<typeof reconcileCppMessages>[2]
     const child = { ...previous.sessions[0], id: 'input-child', name: 'Input child', providerId: 'codex-cli', importedReadOnly: true,
       subagentParentChatId: 'absent-parent', subagentParentCreatedAt: '2026-01-01T00:00:00.000Z' }
     const native = vi.fn(async () => ''); const load = vi.fn(async () => true)
@@ -11105,6 +12282,9 @@ describe('ChatView', () => {
       expect(same.delivery).toBe(expected)
       expect(same.body).toContain('Historical'); expect(same.answer).toContain('kept')
       expect(capture(managed)).toEqual(same); expect(capture(passive)).toEqual(same)
+      // Hiding the marker for an answered row is display only: without a write fact it still offers no actions.
+      if (label === 'identified unknown but answered') for (const host of [main, managed, passive])
+        expect(host.querySelector('article.conversation-turn--user')!.querySelector('[aria-label="Retry message"],[aria-label="Edit message in new branch"],[aria-label="Revert to message in new branch"]')).toBeNull()
       if (expected === 'unconfirmed') for (const host of [main, managed, passive]) {
         const user = host.querySelector('article.conversation-turn--user')!
         expect(user.querySelector('[aria-label="Retry message"],[aria-label="Edit message in new branch"],[aria-label="Revert to message in new branch"]')).toBeNull()
@@ -11213,7 +12393,7 @@ describe('ChatView definite unsent local editing', () => {
       acpSession: { sessionId: 'native-ready', providerId: 'gemini-cli', protocolKind: 'gemini-acp',
         running: true, lifecycleState: 'ready', processing: false, readySinceLastSelect: true,
         turnUserMessageIndex: -1, turnAssistantMessageIndex: -1, turnEvents: [], toolCalls: [], planEntries: [],
-        pendingPermission: null, pendingUserInput: null, unsentMessageIndices: [7], recoverableUnsentMessageIndices: [7],
+        pendingPermission: null, pendingUserInput: null, unsentMessageIndices: [7], editableUnsentMessageIndices: [7], recoverableUnsentMessageIndices: [7],
         queuedPrompts: [], pendingDirectPrompts: [], unsentDirectPrompts: [] },
     }
     const rows = reconcileCppMessages('chat-1', undefined, chat.messages!, true, 7)
@@ -11338,7 +12518,7 @@ describe('ChatView committed unsent editing', () => {
     const branch = vi.fn(async () => null)
     const retry = vi.fn(async () => ({ ok: false }))
     const send = vi.fn(async () => false)
-    const native = { role: 'user' as const, providerId: 'gemini-cli', content: 'Original unsent input',
+    const native = { role: 'user' as const, providerId: 'gemini-cli', content: 'Original unsent input', nativeInputId: '11111111-1111-4111-8111-111111111111',
       createdAt: '2026-01-01T00:00:07.000Z', acpPromptNotSent: true, acpPromptDiscarded: false, interrupted: true,
       attachments: [
         { id: 'keep', name: 'keep.txt', type: 'file', size: 4, path: '/tmp/keep.txt' },
@@ -11365,7 +12545,7 @@ describe('ChatView committed unsent editing', () => {
     }
     const binding = acpBindingFromCppChat({ id: 'chat-1', title: 'Gemini', folderId: 'default', providerId: 'gemini-cli', createdAt: '', updatedAt: '',
       acpSession: { sessionId: 'native-ready', providerId: 'gemini-cli', protocolKind: 'gemini-acp', running: true,
-        lifecycleState: 'ready', processing: false, unsentMessageIndices: [7], recoverableUnsentMessageIndices: [7],
+        lifecycleState: 'ready', processing: false, unsentMessageIndices: [7], editableUnsentMessageIndices: [7], recoverableUnsentMessageIndices: [7],
         queuedPrompts: [], pendingDirectPrompts: [], unsentDirectPrompts: [] } }, undefined)
     const session = { id: 'chat-1', name: 'Gemini', providerId: 'gemini-cli', viewMode: 'chat' as const, folderId: 'default',
       executionHostId: 'local', workspaceDirectory: '/tmp/project', importedReadOnly: false, uamAgentId: 'current-agent',
@@ -11421,6 +12601,124 @@ describe('ChatView committed unsent editing', () => {
     return { host, root, row, session, second, committed, draft, requests, open, editor, changeText, enter, noExecution, unmount, cleanup,
       reply: async (data: unknown) => { expect(reply).toBeTypeOf('function'); await act(async () => reply(data)) } }
   }
+  it('keeps a known-unsent row and follow-up draft while native authority denies local editing', async () => {
+    const f = fixture()
+    try {
+      act(() => useAppStore.setState(state => ({ acpBindingBySessionId: { ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], editableUnsentMessageIndices: [] } } })))
+      await act(async () => f.root.render(<ChatView key="chat-1" session={useAppStore.getState().sessions[0]} />))
+      const edit = f.host.querySelector<HTMLButtonElement>('button[aria-label="Edit unsent message"]')!
+      expect(edit.getAttribute('aria-disabled')).toBe('true')
+      expect(edit.getAttribute('aria-describedby')).toBeTruthy()
+      act(() => edit.click())
+      expect(f.host.querySelector('textarea[aria-label="Edit message"]')).toBeNull()
+      expect(useAppStore.getState().messages['chat-1'][0]).toBe(f.row)
+      expect(readChatComposerDraft('chat-1')).toEqual(f.draft)
+      expect(f.requests).toEqual([])
+      f.noExecution()
+    } finally { f.cleanup() }
+  })
+  it.each(['revoked', 'refreshed', 'completed', 'foreign'] as const)('preserves an open Save edit draft when asynchronous native history is %s', async transition => {
+    const f = fixture()
+    try {
+      await f.open()
+      const replacement = { ...f.row, ...(transition === 'completed' ? { acpPromptNotSent: false } : {}),
+        ...(transition === 'foreign' ? { nativeInputId: 'different-input' } : {}) }
+      act(() => useAppStore.setState(state => ({
+        messages: { ...state.messages, 'chat-1': transition === 'revoked' ? [f.row] : [replacement] },
+        acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'],
+          editableUnsentMessageIndices: transition === 'refreshed' ? [7] : [],
+          unsentMessageIndices: transition === 'completed' ? [] : [7] } },
+      })))
+      expect(f.host.textContent).not.toContain('Message changed')
+      expect(reportedText()).toContain('Your edit and selected context are kept')
+      expect(f.host.querySelector('[aria-label="Save edit"]')?.getAttribute('title')).toContain('paused')
+      expect(f.host.querySelector<HTMLButtonElement>('button[aria-label="Save edit"]')!.disabled).toBe(true)
+      await f.enter()
+      expect(f.requests).toEqual([])
+      expect(f.editor().value).toBe('Edited local input')
+      expect(f.host.querySelector('[aria-label="Remove keep.txt from edited message"]')).not.toBeNull()
+      expect(f.host.querySelector('[aria-label="Remove original.md from edited message"]')).not.toBeNull()
+      expect(f.host.querySelector('[aria-label="Remove drop.txt from edited message"]')).toBeNull()
+      expect(readChatComposerDraft('chat-1')).toEqual(f.draft)
+      f.noExecution()
+      const action = appFailures.at(-1)?.actions?.find(action => action.label === (transition === 'completed' ? 'Edit in a new branch' : 'Use refreshed message'))
+      if (transition === 'refreshed' || transition === 'completed') {
+        expect(action).toBeTruthy()
+        await act(async () => action!.run())
+        expect(f.editor().value).toBe('Edited local input')
+        f.noExecution()
+        await f.enter()
+        if (transition === 'completed') {
+          expect(useAppStore.getState().branchFromMessage).toHaveBeenCalledWith('chat-1', 7, 'Edited local input', ['keep'], ['/skills/original.md'], { messagesDigest: '0123456789abcdef', nativeInputId: f.row.nativeInputId, providerId: f.session.providerId, executionHostId: 'local' })
+          expect(f.requests).toEqual([])
+        } else {
+          expect(f.requests.map(request => request.action)).toEqual(['getChatMessages', 'manageQueuedAcpPrompt'])
+          await f.reply(f.committed)
+        }
+      } else expect(action).toBeUndefined()
+    } finally { f.cleanup() }
+  })
+  it.each(['input', 'history', 'owner'] as const)('keeps a recovered branch edit fenced after a later %s change', async change => {
+    const f = fixture()
+    try {
+      await f.open()
+      const completed = { ...f.row, acpPromptNotSent: false }
+      act(() => useAppStore.setState(state => ({
+        messages: { ...state.messages, 'chat-1': [completed] },
+        acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'], editableUnsentMessageIndices: [], unsentMessageIndices: [] } },
+      })))
+      const action = appFailures.at(-1)?.actions?.find(action => action.label === 'Edit in a new branch')
+      expect(action).toBeTruthy()
+      await act(async () => action!.run())
+      act(() => useAppStore.setState(state => ({
+        messages: { ...state.messages, 'chat-1': change === 'input' ? [{ ...completed, nativeInputId: 'different-input', content: 'Foreign input' }] : [completed] },
+        sessions: state.sessions.map(session => session.id === 'chat-1' ? { ...session,
+          ...(change === 'history' ? { messagesDigest: 'aaaaaaaaaaaaaaaa' } : {}),
+          ...(change === 'owner' ? { executionHostId: 'other-host' } : {}),
+        } : session),
+      })))
+      await act(async () => f.root.render(<ChatView key="chat-1" session={useAppStore.getState().sessions[0]} />))
+      expect(f.host.querySelector<HTMLButtonElement>('button[aria-label="Save edit"]')!.disabled).toBe(true)
+      await f.enter()
+      expect(useAppStore.getState().branchFromMessage).not.toHaveBeenCalled()
+      expect(f.editor().value).toBe('Edited local input')
+      expect(f.host.querySelector('[aria-label="Remove keep.txt from edited message"]')).not.toBeNull()
+      expect(f.host.querySelector('[aria-label="Remove original.md from edited message"]')).not.toBeNull()
+      expect(readChatComposerDraft('chat-1')).toEqual(f.draft)
+      expect(f.requests).toEqual([])
+      f.noExecution()
+    } finally { f.cleanup() }
+  })
+  it('requires explicit recovery selection again when a recovered branch history changes', async () => {
+    const f = fixture()
+    try {
+      await f.open()
+      const completed = { ...f.row, acpPromptNotSent: false }
+      act(() => useAppStore.setState(state => ({ messages: { ...state.messages, 'chat-1': [completed] },
+        acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'], editableUnsentMessageIndices: [], unsentMessageIndices: [] } } })))
+      const recover = () => appFailures.at(-1)?.actions?.find(action => action.label === 'Edit in a new branch')
+      await act(async () => recover()!.run())
+      act(() => useAppStore.setState(state => ({ sessions: state.sessions.map(session => session.id === 'chat-1'
+        ? { ...session, messagesDigest: 'aaaaaaaaaaaaaaaa' } : session) })))
+      await act(async () => f.root.render(<ChatView key="chat-1" session={useAppStore.getState().sessions[0]} />))
+      expect(f.host.querySelector<HTMLButtonElement>('button[aria-label="Save edit"]')!.disabled).toBe(true)
+      await f.enter()
+      expect(useAppStore.getState().branchFromMessage).not.toHaveBeenCalled()
+      expect(recover()).toBeTruthy()
+      await act(async () => recover()!.run())
+      expect(f.editor().value).toBe('Edited local input')
+      expect(readChatComposerDraft('chat-1')).toEqual(f.draft)
+      await f.enter()
+      expect(useAppStore.getState().branchFromMessage).toHaveBeenCalledWith('chat-1', 7, 'Edited local input', ['keep'], ['/skills/original.md'],
+        { messagesDigest: 'aaaaaaaaaaaaaaaa', nativeInputId: f.row.nativeInputId, providerId: f.session.providerId, executionHostId: 'local' })
+      expect(useAppStore.getState().branchFromMessage).toHaveBeenCalledTimes(1)
+      expect(useAppStore.getState().retryFailedMessage).not.toHaveBeenCalled()
+      expect(useAppStore.getState().sendAcpPrompt).not.toHaveBeenCalled()
+    } finally { f.cleanup() }
+  })
   it.each(['ack-only', 'commit-push-first'] as const)('saves the local row and retained file/skill context after %s while preserving the independent draft', async order => {
     const f = fixture()
     try {
@@ -11435,10 +12733,12 @@ describe('ChatView committed unsent editing', () => {
       expect(useAppStore.getState().messages['chat-1'][0]).toBe(f.row)
       expect(f.editor().value).toBe('Edited local input')
       expect(f.editor().disabled).toBe(true)
+      const warningCount = appFailures.filter(item => item.tone === 'warning').length
       if (order === 'commit-push-first') act(() => useAppStore.setState(state => ({
         messages: { ...state.messages, 'chat-1': reconcileCppMessages('chat-1', state.messages['chat-1'], f.committed.messages, true, 7) },
         sessions: state.sessions.map(session => session.id === 'chat-1' ? { ...session, messagesDigest: f.committed.messagesDigest } : session),
       })))
+      expect(appFailures.filter(item => item.tone === 'warning')).toHaveLength(warningCount)
       await f.reply(f.committed)
       f.noExecution()
       const saved = useAppStore.getState().messages['chat-1'][0]
@@ -11490,7 +12790,7 @@ describe('ChatView committed unsent editing', () => {
       await f.enter()
       expect(f.requests).toHaveLength(0)
       expect(f.editor().value).toBe('Edited local input')
-      expect(reportedText()).toContain('unsent message changed')
+      expect((f.host.textContent ?? '') + reportedText()).toContain('Message changed. Editing paused.')
       expect(useAppStore.getState().messages['chat-1'][0]).toBe(replacement)
       expect(readChatComposerDraft('chat-1')).toEqual(f.draft)
       f.noExecution()
@@ -11508,7 +12808,7 @@ describe('ChatView committed unsent editing', () => {
       expect(useAppStore.getState().sessions[0].messagesDigest).toBe('aaaaaaaaaaaaaaaa')
       expect(f.editor().value).toBe('Edited local input')
       expect(f.editor().disabled).toBe(false)
-      expect(reportedText()).toContain('unsent message changed')
+      expect((f.host.textContent ?? '') + reportedText()).toContain('unsent message changed')
       expect(readChatComposerDraft('chat-1')).toEqual(f.draft)
       f.noExecution()
     } finally { f.cleanup() }

@@ -1,4 +1,5 @@
 #include "test_harness.h"
+#include "common/config/svn_repository_layout.h"
 #include "app/git_worktree_service.h"
 #include "app/vcs_commit_service.h"
 #include "common/config/settings_frontend_json.h"
@@ -88,6 +89,54 @@ UAM_TEST(SvnUpdateBeforeChatSettingsDefaultOffAndPersistThroughJson)
 	AppSettings legacy;
 	UAM_ASSERT(SettingsStore::Load(temp.root / "legacy.txt", legacy).loaded);
 	UAM_ASSERT_EQ(uam::settings_frontend_json::SerializeCommonSettingsFields(legacy).at("svnUpdateBeforeChat").get<bool>(), false);
+}
+
+UAM_TEST(SvnRepositoryLayoutsDefaultToStandardAndPersistPerRepository)
+{
+	TempDir temp("uam-svn-layout-settings");
+	AppSettings settings;
+	UAM_ASSERT(uam::settings_frontend_json::SerializeCommonSettingsFields(settings).at("svnRepositoryLayouts").empty());
+	const SvnRepositoryLayout standard;
+	UAM_ASSERT(standard.trunk == "trunk" && standard.branches == "branches" && standard.tags == "tags");
+
+	std::vector<SvnRepositoryLayout> parsed;
+	UAM_ASSERT(uam::svn_layout::Parse(nlohmann::json::parse(R"([
+	    {"repository":" https://svn.example.test/repo/ ","trunk":"main","branches":"lines/dev","tags":"releases"},
+	    {"repository":"d7397596-24e3-4444-990a-c95097028d41","trunk":"trunk","branches":"branches","tags":"tags"}])"), parsed));
+	UAM_ASSERT_EQ(parsed.size(), std::size_t{2});
+	// The key is trimmed and loses its trailing slash so it matches what svn reports.
+	UAM_ASSERT_EQ(parsed[0].repository, std::string("https://svn.example.test/repo"));
+	UAM_ASSERT_EQ(parsed[0].branches, std::string("lines/dev"));
+
+	settings.svn_repository_layouts = parsed;
+	UAM_ASSERT(SettingsStore::Save(temp.root / "settings.txt", settings));
+	AppSettings restored;
+	UAM_ASSERT(SettingsStore::Load(temp.root / "settings.txt", restored).loaded);
+	UAM_ASSERT(restored.svn_repository_layouts == parsed);
+	const nlohmann::json json = uam::settings_frontend_json::SerializeCommonSettingsFields(restored).at("svnRepositoryLayouts");
+	UAM_ASSERT_EQ(json.at(0).at("trunk").get<std::string>(), std::string("main"));
+	UAM_ASSERT_EQ(json.at(1).at("repository").get<std::string>(), std::string("d7397596-24e3-4444-990a-c95097028d41"));
+
+	// One bad entry rejects the whole list and leaves the saved one alone.
+	for (const char* bad : {
+	         R"([{"repository":"","trunk":"trunk","branches":"branches","tags":"tags"}])",
+	         R"([{"repository":"r","trunk":"/trunk","branches":"branches","tags":"tags"}])",
+	         R"([{"repository":"r","trunk":"trunk","branches":"a/../b","tags":"tags"}])",
+	         R"([{"repository":"r","trunk":"trunk","branches":"branches","tags":""}])",
+	         R"([{"repository":"r","trunk":"trunk","branches":"branches"}])",
+	         R"([{"repository":"r","trunk":"t","branches":"b","tags":"g"},{"repository":"r/","trunk":"t","branches":"b","tags":"g"}])",
+	         R"([{"repository":"ABC","trunk":"t","branches":"b","tags":"g"},{"repository":"abc","trunk":"t","branches":"b","tags":"g"}])",
+	         R"({"repository":"r"})"})
+	{
+		UAM_ASSERT(!uam::svn_layout::Parse(nlohmann::json::parse(bad), parsed));
+		UAM_ASSERT_EQ(parsed.size(), std::size_t{2});
+	}
+
+	// A damaged saved value falls back to the standard layout instead of failing the load.
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "damaged.txt", "svn_enabled=true\nsvn_repository_layouts=not json\n"));
+	AppSettings damaged;
+	UAM_ASSERT(SettingsStore::Load(temp.root / "damaged.txt", damaged).loaded);
+	UAM_ASSERT(damaged.svn_repository_layouts.empty());
 }
 
 UAM_TEST(VcsSettingsDisabledTypedOperationsStopBeforeLocalOrRemoteAccess)

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from 'react'
 import { useAppStore } from '../../store/useAppStore'
 import { ALL_MACHINES_HOST_ID, USAGE_PROVIDERS, formatUsageCount, type UsageProvider, type UsageProviderId, type UsageWindowDays } from '../../services/usageHistory'
-import type { AcpContextUsage, AcpRateLimitWindow, AcpTokenUsage } from '../../store/cpp/types'
+import type { AcpContextUsage, AcpRateLimits, AcpRateLimitWindow, AcpTokenUsage } from '../../store/cpp/types'
 import { CODEX_ENABLED } from '../../config/buildFeatures'
 import { ANTIGRAVITY_CLI_PROVIDER_ID, CODEX_CLI_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID, providerDisabledOn, providerShortName } from '../../utils/providerMetadata'
 import { useProviderAllowances } from '../../hooks/useProviderAllowances'
@@ -55,14 +55,14 @@ const line = (parts: (string | null | undefined)[]) => {
 /** The plain-words pace verdict, spoken in full. */
 function verdictText(pace: AllowancePace, now: number) {
   if (pace.verdict === 'out') return 'used up'
-  if (pace.verdict === 'ahead') return `ahead of pace · runs out ${approx(pace.runsOutAt!, now)}`
+  if (pace.verdict === 'ahead') return `ahead of pace · would run out ${approx(pace.runsOutAt!, now)}`
   return pace.verdict === 'on' ? 'on pace' : pace.verdict === 'under' ? 'plenty left' : null
 }
-/** The verdict beside the percent: a later run-out names only its weekday, the caret under the bar gives the time. */
+/** The verdict beside the percent: a later run-out names only its weekday or date, the caret under the bar gives the time. */
 function verdictShort(pace: AllowancePace, now: number) {
   if (pace.verdict !== 'ahead') return line([verdictText(pace, now)])
   const at = pace.runsOutAt!
-  return `Ahead · runs out ${at - now < DAY ? `in ~${span(at - now)}` : `~${weekday.format(at)}`}`
+  return `Ahead · would run out ${at - now < DAY ? `in ~${roughSpan(at - now)}` : `~${(at - now < WEEK ? weekday : date).format(at)}`}`
 }
 
 /**
@@ -70,7 +70,7 @@ function verdictShort(pace: AllowancePace, now: number) {
  * of the window's time passed, day notches on weekly windows and, when ahead, a caret where a straight-line burn runs out.
  * An unknown share keeps the same row: an empty bar with no tick, ??% (… while reading), and why in text.
  */
-function AllowanceRow({ row, now, awaitingUpdate = false, pending = false, off = false }: { row: WindowRow; now: number; awaitingUpdate?: boolean; pending?: boolean; off?: boolean }) {
+function AllowanceRow({ row, now, awaitingUpdate = false, pending = false, off = false, useFirst = false }: { row: WindowRow; now: number; awaitingUpdate?: boolean; pending?: boolean; off?: boolean; useFirst?: boolean }) {
   if (row.unlimited) return <div className="uam-limit-row">
     <div className="uam-limit-row__label"><span className="uam-limit-row__name">{row.label}</span></div>
     <span />
@@ -92,10 +92,10 @@ function AllowanceRow({ row, now, awaitingUpdate = false, pending = false, off =
   const runsOut = pace.verdict === 'ahead' && pace.elapsedPercent !== null && percent > 0 ? pace.runsOutAt! : null
   // Share of the window at the run-out: the elapsed share scaled up to 100% used.
   const projection = runsOut === null ? null : { at: pace.elapsedPercent! * 100 / percent, tone: tone === 'error' ? 'error' as const : 'warning' as const,
-    label: `~${(runsOut - now < DAY ? clock : dayTime).format(runsOut)} · ${span(window.resetsAt! * 1000 - runsOut)} before reset` }
+    label: `~${runsOut - now < DAY ? clock.format(runsOut) : later(runsOut, now)} at this pace` }
   const Icon = VERDICT_ICON[pace.verdict]
   return <div className="uam-limit-row">
-    <div className="uam-limit-row__label"><span className="uam-limit-row__name">{row.label}</span>
+    <div className="uam-limit-row__label"><span className="uam-limit-row__title"><span className="uam-limit-row__name">{row.label}</span>{useFirst && <span className="uam-limits-chip uam-limit-row__marker">Use first</span>}</span>
       {reset && <Tooltip label={window.resetsAt !== null ? new Date(window.resetsAt * 1000).toLocaleString() : undefined}><small className="uam-limit-row__reset">{line([reset])}</small></Tooltip>}</div>
     <div className={cx('uam-limit-row__bar', projection && 'is-projected')}>
       <Tooltip label={passed ? `Tick: ${passed}` : undefined}><span className="uam-limit-bar">
@@ -110,14 +110,14 @@ function AllowanceRow({ row, now, awaitingUpdate = false, pending = false, off =
   </div>
 }
 
-type WindowRow = { id: string; label: string; meterLabel: string; window: AcpRateLimitWindow | null; pace?: AllowancePace; unknownReset?: boolean; missingLabel?: string; unlimited?: boolean; period?: boolean }
+type WindowRow = { id: string; label: string; meterLabel: string; window: AcpRateLimitWindow | null; pace?: AllowancePace; unknownReset?: boolean; missingLabel?: string; unlimited?: boolean; period?: boolean; bucket?: boolean }
 
 /** Provider windows in display order, each with its pace. Model allowances replace primary/secondary when the provider reports them. */
 function windowRows(provider: UsageProviderId, name: string, allowance: ProviderAllowance | undefined, now: number): WindowRow[] {
   const limits = allowance?.limits ?? undefined
   const modelWindows = allowance?.windows ?? []
   const paced = (row: WindowRow): WindowRow => row.window && isValidPercent(row.window.usedPercent) ? { ...row, pace: allowancePace(row.window, now) } : row
-  if (modelWindows.length) return modelWindows.map(window => paced({ id: window.id, label: window.label, meterLabel: `${name} ${window.label} usage`, window, unknownReset: true }))
+  if (modelWindows.length) return modelWindows.map(window => paced({ id: window.id, label: window.label, meterLabel: `${name} ${window.label} usage`, window, unknownReset: true, bucket: true }))
   // ponytail: plan-name match is an inference; drop it once Codex reports a real secondary window for Pro.
   const noFiveHourCap = CODEX_ENABLED && provider === CODEX_CLI_PROVIDER_ID && !limits?.secondary && /pro/i.test(limits?.planType ?? '')
   const rows: WindowRow[] = (['primary', 'secondary'] as const).map(key => {
@@ -131,9 +131,23 @@ function windowRows(provider: UsageProviderId, name: string, allowance: Provider
   return rows.every(row => !row.window && !row.unlimited && row.label === 'Allowance') ? rows.slice(0, 1) : rows
 }
 
-/** Most pressing first: used up, then the earliest projected run-out, then the most used. Readable windows only. */
-const urgency = (row: WindowRow) => row.pace!.verdict === 'out' ? 0 : row.pace!.verdict === 'ahead' ? 1 : 2
-const pressing = (a: WindowRow, b: WindowRow) => urgency(a) - urgency(b) || (a.pace!.runsOutAt ?? 0) - (b.pace!.runsOutAt ?? 0) || b.window!.usedPercent - a.window!.usedPercent
+/** The share left to use per millisecond before the window resets. Only for a future reset. */
+const neededRate = (row: WindowRow, now: number) => (100 - row.window!.usedPercent) / (row.window!.resetsAt! * 1000 - now)
+/** Least share left, in percent, for a window to be worth using first; with less there is little to lose at its reset. */
+const MIN_LEFT_TO_USE_FIRST = 10
+/** A window whose provider reports its length. These nest: a 5-hour allowance is spent from the weekly one. Quotas with no length (model buckets, Copilot's chat and completions) stand alone. */
+const isTimeWindow = (row: WindowRow) => !!row.pace && !!row.window!.windowDurationMinutes
+/** The provider's own stop, which holds whatever its windows say. */
+const reportedStop = (limits: AcpRateLimits | null | undefined) => limits?.spendControlReached ? 'spend limit' : limits?.rateLimitReachedType ? 'usage limit' : null
+const validUpdateTime = (limits: AcpRateLimits | null | undefined, now: number) => Boolean(limits && limits.updatedAt > 0 && limits.updatedAt <= now && Number.isFinite(new Date(limits.updatedAt).getTime()))
+const CACHED_AFTER_MS = 300000
+/** A cached rather than current snapshot: a failed refresh, a read not settled as ready, no valid time, or 5 minutes old. */
+const snapshotStale = (allowance: ProviderAllowance | undefined, refreshFailed: boolean, now: number) => refreshFailed || allowance?.status !== 'ready' || !validUpdateTime(allowance?.limits, now) || now - allowance!.limits!.updatedAt >= CACHED_AFTER_MS
+/** How long past the cached age a recommendation holds, to cover the 30-second poll and the read it starts. */
+const RE_READ_GRACE_MS = 60000
+/** Current enough to recommend from: read successfully, even if being read again, and within the grace period. A failed read stays out until one succeeds. */
+const canRecommendFrom = (allowance: ProviderAllowance | undefined, refreshFailed: boolean, now: number) => !refreshFailed && validUpdateTime(allowance?.limits, now) && now - allowance!.limits!.updatedAt < CACHED_AFTER_MS + RE_READ_GRACE_MS
+  && (allowance?.status === 'ready' || (allowance?.status === 'loading' && allowance.lastSettledStatus === 'ready'))
 
 /** A short reason for an unreadable allowance. The native message stays whole in the card footer. */
 function shortReason(allowance: ProviderAllowance | undefined, name: string): string {
@@ -175,13 +189,13 @@ function periodTokens(usage: LimitsUsage | undefined, provider: UsageProviderId)
   return usage.collecting ? { short: 'Reading…', detail: 'Still reading history.' } : { short: 'No usage', detail: `No usage ${phrase}.` }
 }
 
-/** A window's name inside a sentence: generated period names read "its weekly window"; provider names keep their case. */
-const inSentence = (row: WindowRow) => row.period ? `${row.label.toLowerCase()} window` : row.label
+/** A window's name inside a sentence: "its weekly window", "its weekly allowance"; provider names such as gemini-2.5-pro · REQUESTS keep their case. */
+const inSentence = (row: WindowRow) => row.period ? `${row.label.toLowerCase()} window` : / allowance$/.test(row.label) ? row.label.toLowerCase() : row.label
 
 /**
  * Account allowances with each provider's token use beside them. Allowances belong to accounts and are read on this
  * computer, so the page has no machine headings whatever machine is selected; tokens follow the selected machine and period.
- * A callout names the soonest projected run-out, then one always-open card per provider shows every window.
+ * A callout says which allowance to use first, then one always-open card per provider shows every window.
  */
 export function UsageLimits({ executionHostId, usage }: { executionHostId: string; usage?: LimitsUsage }) {
   const allMachines = executionHostId === ALL_MACHINES_HOST_ID
@@ -230,10 +244,27 @@ export function UsageLimits({ executionHostId, usage }: { executionHostId: strin
     return { provider, name, allowance, rows: windowRows(provider, name, allowance, now), off }
   })
 
-  // Every readable window across providers, most pressing first: the callout's headline, then up to two more.
-  const ranked = entries.flatMap(entry => entry.rows.filter(row => row.pace).map(row => ({ entry, row }))).sort((a, b) => pressing(a.row, b.row))
-  const top = ranked[0]
-  const others = ranked.slice(1).filter(({ row }) => row.pace!.verdict === 'ahead' || row.pace!.verdict === 'out').slice(0, 2)
+  // Use it or lose it: the most you need to use in the shortest time, among current windows with allowance left that can still be spent. A time window
+  // is capped by any other time window on its provider that has run low, unless that one's reset has passed. On a tie, the most left.
+  const readable = entries.flatMap(entry => entry.rows.filter(row => row.pace).map(row => ({ entry, row })))
+  const resetLive = (row: WindowRow) => row.window!.resetsAt === null || row.window!.resetsAt * 1000 > now
+  const capped = (entry: typeof entries[number], row: WindowRow) => isTimeWindow(row) && entry.rows.some(other => other !== row && isTimeWindow(other) && resetLive(other) && 100 - other.window!.usedPercent < MIN_LEFT_TO_USE_FIRST)
+  // A stop needs the same proof as a recommendation: native keeps these fields through failed reads. It has no reset of its own, so it lapses with its provider's windows.
+  const stopRunning = (entry: typeof entries[number]) => !entry.rows.some(row => row.pace) || entry.rows.some(row => row.pace && resetLive(row))
+  const currentStop = (entry: typeof entries[number]) => canRecommendFrom(entry.allowance, Boolean(account.error), now) && stopRunning(entry) ? reportedStop(entry.allowance?.limits) : null
+  // A stop on data too old to confirm is not repeated as fact, but the page must not claim room over it either.
+  const unconfirmed = entries.find(entry => reportedStop(entry.allowance?.limits) && stopRunning(entry) && !currentStop(entry))
+  const lastReported = unconfirmed && `${unconfirmed.name} last reported its ${reportedStop(unconfirmed.allowance?.limits)}`
+  const useFirst = readable.filter(({ entry, row }) => canRecommendFrom(entry.allowance, Boolean(account.error), now) && !currentStop(entry) && !capped(entry, row) && (row.window!.resetsAt ?? 0) * 1000 > now && 100 - row.window!.usedPercent >= MIN_LEFT_TO_USE_FIRST)
+    .sort((a, b) => neededRate(b.row, now) - neededRate(a.row, now) || a.row.window!.usedPercent - b.row.window!.usedPercent)[0]
+  const stoppedEntry = useFirst ? undefined : entries.find(currentStop)
+  // A reset that has passed says nothing about now, so its window cannot be called used up or close to its limit.
+  const top = useFirst ?? readable.filter(({ row }) => resetLive(row)).sort((a, b) => b.row.window!.usedPercent - a.row.window!.usedPercent)[0]
+  // What cannot be spent stays in view under the headline; ahead-of-pace windows speak on their own rows.
+  const others = [
+    ...entries.filter(currentStop).map(entry => ({ entry, row: null })),
+    ...readable.filter(({ row }) => resetLive(row) && row.pace!.verdict === 'out'),
+  ].filter(item => stoppedEntry ? item.row || item.entry !== stoppedEntry : item.row !== top?.row).slice(0, 2)
   const resetIn = (window: AcpRateLimitWindow) => window.resetsAt !== null && window.resetsAt * 1000 > now ? moment(window.resetsAt * 1000, now) : null
   const shownUsage = usage?.providers?.filter(row => providers.includes(row.providerId))
   const periodTotal = shownUsage?.reduce((sum, row) => sum + row.totalTokens, 0)
@@ -241,22 +272,32 @@ export function UsageLimits({ executionHostId, usage }: { executionHostId: strin
   const showTotal = periodTotal !== undefined && (periodTotal > 0 || !usage!.collecting)
 
   let title: string, body: ReactNode = null, tone: 'neutral' | 'warning' | 'error' = 'neutral'
-  if (top) {
+  if (stoppedEntry) {
+    title = `${stoppedEntry.name} has reached its ${reportedStop(stoppedEntry.allowance?.limits)}`
+    tone = 'error'
+  } else if (top) {
     const { entry, row } = top
     const window = row.window!, pace = row.pace!, reset = resetIn(window), percent = formatPercent(window.usedPercent)
-    tone = barTone(window.usedPercent, pace)
-    if (pace.verdict === 'ahead') {
-      title = `${entry.name} runs out first`
-      body = <>Its {inSentence(row)} is at <b style={{ color: TONE_TEXT[tone] }}>{percent}%</b> and will run out <b>{approx(pace.runsOutAt!, now)}</b>, {span(window.resetsAt! * 1000 - pace.runsOutAt!)} before it resets {reset}.</>
+    // A model bucket speaks for itself, not for the provider's other buckets.
+    const bucket = row.bucket ? ` on ${row.label}` : ''
+    if (useFirst) {
+      title = `Use ${entry.name} first`
+      if (others.length) tone = 'error'
+      body = <>It has <b>{formatPercent(100 - window.usedPercent)}%</b> of its {inSentence(row)} left, resetting <b>{resetWhen(window.resetsAt! * 1000, now)}</b>.</>
     } else if (window.usedPercent >= 80) {
-      title = pace.verdict === 'out' ? `${entry.name} is used up` : `${entry.name} is close to its limit`
+      title = pace.verdict === 'out' ? `${entry.name} is used up${bucket}` : `${entry.name} is close to its limit${bucket}`
+      tone = barTone(window.usedPercent, pace)
       tone = tone === 'neutral' ? 'warning' : tone
       body = `${percent}% of its ${inSentence(row)} used${reset ? `, resets ${reset}` : ''}.`
     } else {
-      title = 'Allowances have room'
+      title = lastReported || 'Allowances have room'
       body = `Highest is ${entry.name} at ${percent}% of its ${inSentence(row)}${reset ? `, resets ${reset}` : ''}.`
     }
-  } else if (entries.some(entry => entry.rows.some(row => row.unlimited))) title = 'Allowances have room'
+  } else if (readable.length) {
+    title = 'Allowances are awaiting an update'
+    body = 'Their reset times have passed.'
+  } else if (lastReported) title = lastReported
+  else if (entries.some(entry => entry.rows.some(row => row.unlimited))) title = 'Allowances have room'
   else if (account.loading && !account.data) title = 'Reading account allowances…'
   else if (remote) title = 'Allowances are read on this computer only'
   else {
@@ -264,21 +305,21 @@ export function UsageLimits({ executionHostId, usage }: { executionHostId: strin
     body = `${providers.length === 1 ? entries[0].name : 'Providers'} didn’t share account limits on this computer; each card says why.`
   }
   const newest = Math.max(0, ...entries.map(entry => entry.allowance?.limits?.updatedAt ?? 0).filter(at => at <= now))
-  const card = (entry: typeof entries[number]) => <ProviderLimitCard key={entry.provider} {...entry} loading={account.loading} refreshFailed={Boolean(account.error)} remote={remote}
+  const card = (entry: typeof entries[number]) => <ProviderLimitCard key={entry.provider} {...entry} useFirstRow={useFirst?.entry === entry ? useFirst.row.id : undefined} loading={account.loading} refreshFailed={Boolean(account.error)} remote={remote}
     context={latest.contexts.get(entry.provider)} consumption={latest.tokens.get(entry.provider)} tokens={periodTokens(usage, entry.provider)} now={now} />
   const live = entries.filter(entry => !entry.off), off = entries.filter(entry => entry.off)
 
   return <div className={column}>
     <Card className="uam-limits-lede" data-tone={tone === 'neutral' ? undefined : tone}>
-      <span className="uam-limits-lede__icon" aria-hidden>{top?.row.pace!.verdict === 'ahead' ? <Timer size={17} /> : <Gauge size={17} />}</span>
+      <span className="uam-limits-lede__icon" aria-hidden>{useFirst ? <Timer size={17} /> : <Gauge size={17} />}</span>
       <div className="min-w-0">
         <h2 className="uam-limits-lede__title">{title}</h2>
         {body && <p className="uam-limits-lede__body">{body}</p>}
         {others.length > 0 && <ul className="uam-limits-lede__more">{others.map(({ entry, row }) => {
-          const reset = resetIn(row.window!), pace = row.pace!
-          return <li key={`${entry.provider}:${row.id}`}><ProviderLogo providerId={entry.provider} size={14} /><span><b>{entry.name} · {row.label}</b> {pace.verdict === 'out'
-            ? <>is used up{reset ? `, resets ${reset}` : ''}</>
-            : <>runs out <span className="uam-limits-lede__when">{approx(pace.runsOutAt!, now)}</span>, {span(row.window!.resetsAt! * 1000 - pace.runsOutAt!)} before it resets {reset}</>}</span></li>
+          const reset = row && resetIn(row.window!)
+          return <li key={`${entry.provider}:${row?.id ?? 'stop'}`}><ProviderLogo providerId={entry.provider} size={14} /><span>{row
+            ? <><b>{entry.name} · {row.label}</b> is used up{reset ? `, resets ${reset}` : ''}</>
+            : <><b>{entry.name}</b> has reached its {reportedStop(entry.allowance?.limits)}</>}</span></li>
         })}</ul>}
       </div>
       {showTotal && <p className="uam-limits-lede__aside"><strong>{formatUsageCount(periodTotal!)}</strong>tokens {usage ? PERIOD_PHRASE[usage.days] : ''}{where}</p>}
@@ -292,7 +333,7 @@ export function UsageLimits({ executionHostId, usage }: { executionHostId: strin
       </>}
     </div>
     {entries.some(entry => entry.rows.some(row => row.pace)) && <ul className="uam-limits-key" aria-hidden>
-      <li><b />Used</li><li><i />Time passed in the window</li><li><u />Projected run-out</li>
+      <li><b />Used</li><li><i />Time passed in the window</li><li><u />Run-out at this pace</li>
     </ul>}
     <Reveal open={!!account.error}><Notice tone="warning" title={account.error} dismissLabel="Dismiss allowance error" dismissible={false}>{account.data ? 'Showing the last snapshot.' : null}</Notice></Reveal>
     <div className="uam-limits-cards">
@@ -304,12 +345,13 @@ export function UsageLimits({ executionHostId, usage }: { executionHostId: strin
 }
 
 /** One always-open card per provider: header, every window, then credits, spend and the collapsed context and tokens. */
-function ProviderLimitCard({ provider, name, allowance, rows, off, loading, refreshFailed, remote, context, consumption, tokens, now }: {
+function ProviderLimitCard({ provider, name, allowance, rows, off, useFirstRow, loading, refreshFailed, remote, context, consumption, tokens, now }: {
   provider: UsageProviderId
   name: string
   allowance: ProviderAllowance | undefined
   rows: WindowRow[]
   off: boolean
+  useFirstRow: string | undefined
   loading: boolean
   refreshFailed: boolean
   remote: boolean
@@ -324,14 +366,16 @@ function ProviderLimitCard({ provider, name, allowance, rows, off, loading, refr
   const reading = loading || allowance?.status === 'loading'
   const plan = limits?.planType || limits?.limitName
   const consumptionTimeValid = Boolean(consumption && consumption.usage.updatedAt > 0 && consumption.usage.updatedAt <= now && Number.isFinite(new Date(consumption.usage.updatedAt).getTime()))
-  const timestampValid = Boolean(limits && limits.updatedAt > 0 && limits.updatedAt <= now && Number.isFinite(new Date(limits.updatedAt).getTime()))
-  const stale = Boolean(hasAllowance && (refreshFailed || allowance?.status !== 'ready' || !timestampValid || (limits && now - limits.updatedAt >= 300000)))
+  const timestampValid = validUpdateTime(limits, now)
+  const stale = hasAllowance && snapshotStale(allowance, refreshFailed, now)
   const contextPercent = context ? Math.min(100, Math.max(0, context.usage.usedTokens / context.usage.windowTokens * 100 || 0)) : 0
   const reason = shortReason(allowance, name)
   // A remote computer's unsupported feed is explained once in the callout, so its card names no reason.
   const remoteUnsupported = remote && (!allowance || allowance.status === 'unavailable')
   const shown = off ? [{ ...rows[0], window: null, pace: undefined, missingLabel: remoteUnsupported ? 'read on this computer only' : reason }] : rows
-  const renderRow = (row: WindowRow) => <AllowanceRow key={row.id} row={row} now={now} awaitingUpdate={stale || loading} pending={reading} off={off} />
+  const renderRow = (row: WindowRow) => <AllowanceRow key={row.id} row={row} now={now} awaitingUpdate={stale || loading} pending={reading} off={off} useFirst={row.id === useFirstRow} />
+  // The recommended bucket stays in view even when it sorts past the first two.
+  const collapsed = modelWindows.length ? shown.filter((row, index) => index >= 2 && row.id !== useFirstRow) : []
   const spend = limits?.individualLimit
   const spendUsed = spend ? 100 - spend.remainingPercent : 0
   return <Card role="group" aria-label={name} elevation={off ? 0 : 1} className={cx('uam-limit-card', off && 'uam-limit-card--off')}>
@@ -345,8 +389,8 @@ function ProviderLimitCard({ provider, name, allowance, rows, off, loading, refr
           : off && !remoteUnsupported ? <span className="uam-limit-card__reason">{reason}</span> : null}
       </span>
     </header>
-    {(modelWindows.length ? shown.slice(0, 2) : shown).map(renderRow)}
-    {modelWindows.length > 2 && <Disclosure className="uam-limits-more" summary={`${modelWindows.length - 2} more model allowance${modelWindows.length > 3 ? 's' : ''}`}>{shown.slice(2).map(renderRow)}</Disclosure>}
+    {shown.filter(row => !collapsed.includes(row)).map(renderRow)}
+    {collapsed.length > 0 && <Disclosure className="uam-limits-more" summary={`${collapsed.length} more model allowance${collapsed.length > 1 ? 's' : ''}`}>{collapsed.map(renderRow)}</Disclosure>}
     {spend && <div className="uam-limit-row">
       <div className="uam-limit-row__label"><span className="uam-limit-row__name">Spend limit</span><small className="uam-limit-row__reset">{spend.used} of {spend.limit}</small></div>
       <div className="uam-limit-row__bar"><ProgressFill variant="meter" size="lg" label={`${name} spend limit usage`} value={spendUsed} tone={spendUsed >= 95 ? 'error' : spendUsed >= 80 ? 'warning' : 'neutral'} /></div>
@@ -399,13 +443,27 @@ function span(ms: number) {
   if (hours < 48) return minutes % 60 ? `${hours}h ${minutes % 60}m` : `${hours}h`
   return `${Math.round(hours / 24)}d`
 }
+/** How far off an exact moment is, without rounding the last seconds up to a minute. */
+const inSpan = (ms: number) => ms < 60000 ? 'in under 1m' : `in ${span(ms)}`
 const DAY = 86400000
+const WEEK = 7 * DAY
 const dayTime = new Intl.DateTimeFormat(undefined, { weekday: 'short', hour: 'numeric', minute: '2-digit' })
 const weekday = new Intl.DateTimeFormat(undefined, { weekday: 'short' })
 const clock = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' })
-/** A future moment in words: relative within a day, otherwise its weekday and time. */
-const moment = (at: number, now: number) => at - now < DAY ? `in ${span(at - now)}` : dayTime.format(at)
-/** A projected moment, marked as approximate. */
-const approx = (at: number, now: number) => at - now < DAY ? `in ~${span(at - now)}` : `~${dayTime.format(at)}`
+const date = new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short' })
+const dateTime = new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })
+/** A weekday can only mean the next one within a week; past that, a 30-day reset needs its date. */
+const later = (at: number, now: number) => (at - now < WEEK ? dayTime : dateTime).format(at)
+/** A future moment in words: relative within a day, otherwise its weekday or date and time. */
+const moment = (at: number, now: number) => at - now < DAY ? inSpan(at - now) : later(at, now)
+/** How far off a projected moment is: minutes only under 3 hours, and days rounded down so 60h beside a weekday reads ~2d. */
+function roughSpan(ms: number) {
+  const hours = Math.floor(ms / 3600000)
+  return hours < 3 ? span(ms) : hours < 48 ? `${hours}h` : `${Math.floor(hours / 24)}d`
+}
+/** A known reset that the reader may lose allowance to, always saying how far off it is. */
+const resetWhen = (at: number, now: number) => at - now < DAY ? inSpan(at - now) : `${later(at, now)} (in ~${roughSpan(at - now)})`
+/** A projected moment, marked as approximate, always saying how far off it is. */
+const approx = (at: number, now: number) => at - now < DAY ? `in ~${roughSpan(at - now)}` : `~${later(at, now)} (in ~${roughSpan(at - now)})`
 const relativeAgo = (at: number, now: number) => now - at < 60000 ? 'just now' : `${span(now - at)} ago`
 const compactTokens = (value: number) => value >= 1e6 ? `${+(value / 1e6).toFixed(1)}M` : value >= 1e3 ? `${+(value / 1e3).toFixed(1)}k` : `${value}`

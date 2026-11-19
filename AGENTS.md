@@ -31,7 +31,7 @@ Questions and unresolved contradictions belong in [Documentation review](docs/do
 
 This repository supports Gemini CLI, Codex CLI, OpenCode CLI, Claude Code CLI, GitHub Copilot CLI, and Antigravity CLI, including structured Chat and native CLI View for all six providers. Keep the app focused on React/CEF, structured chat through ACP or native provider protocols, xterm.js terminal sessions, provider save/resume, chat rename/delete/select/create/pin/branch, one-level workspace folders, durable memory files, and multiple concurrent CLI instances on macOS and Windows.
 
-Do not remove any of these six provider implementations. Provider removal requires explicit user direction. RAG engines, templates, VCS panels, local model engines, Dear ImGui, and checked-in frontend build output remain outside this release slice.
+Do not remove any of these six provider implementations. Provider removal requires explicit user direction. RAG engines, templates, local model engines, Dear ImGui, and checked-in frontend build output remain outside this release slice. VCS panels are outside it too, with two exceptions David approved: the existing Git/SVN commit panel (kept in V5, 2026-10-25), and for V5.1 the SVN work he requested on 2026-11-11 (history and update in that panel now; revert, blame, branch or tag switching and merge tracking as later slices). Other VCS panel features still need his approval; see the [recorded scope](docs/architecture/decisions.md#existing-vcs-panel).
 
 ## Build Commands
 
@@ -117,7 +117,7 @@ npm --prefix UI-V2 ci
 npm --prefix UI-V2 run test
 npm --prefix UI-V2 run build
 
-cmake -S . -B Builds/tests -DUAM_BUILD_TESTS=ON -DUAM_PACKAGE_REMOTE_RUNNERS=OFF
+cmake -S . -B Builds/tests -DCMAKE_BUILD_TYPE=Debug -DUAM_BUILD_TESTS=ON -DUAM_PACKAGE_REMOTE_RUNNERS=OFF
 cmake --build Builds/tests --config Debug
 ctest --test-dir Builds/tests -C Debug --output-on-failure
 ```

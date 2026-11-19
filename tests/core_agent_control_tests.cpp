@@ -24,6 +24,9 @@
 #include "cef/uam_query_handler_async.h"
 #include "common/config/mcp_server_config.h"
 #include "common/chat/chat_repository.h"
+#include "common/chat/html_view.h"
+#include "common/chat/html_view_render_check.h"
+#include "common/runtime/acp/acp_session_runtime.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_goal_loop.h"
 #include "common/utils/diagnostic_log.h"
@@ -1103,8 +1106,12 @@ UAM_TEST(UamControlCapabilityBoundsGoalAuthorityReplayRateCancellationAndRestart
 		UAM_ASSERT_EQ(server.value("name", ""), std::string("uam-control"));
 		UAM_ASSERT_EQ(server["args"].size(), static_cast<std::size_t>(1));
 		UAM_ASSERT_EQ(server["args"][0].get<std::string>(), std::string("--uam-control-mcp"));
-		UAM_ASSERT_EQ(server["env"].size(), static_cast<std::size_t>(1));
-		UAM_ASSERT(server["args"].dump().find(server["env"][0].value("value", "")) == std::string::npos);
+		// The capability directory and the session's request key travel only in the environment; a hidden-tool
+		// list may follow (e.g. builds without Computer Use).
+		UAM_ASSERT(server["env"].size() >= static_cast<std::size_t>(2) && server["env"].size() <= static_cast<std::size_t>(3));
+		UAM_ASSERT_EQ(server["env"][1].value("name", ""), std::string("UAM_CONTROL_REQUEST_KEY"));
+		for (const nlohmann::json& entry : server["env"])
+			UAM_ASSERT(server["args"].dump().find(entry.value("value", "")) == std::string::npos);
 		return raw_session->uam_control_capability_id;
 	};
 	auto call = [&](const std::string& capability, std::string request_id,
@@ -1172,11 +1179,12 @@ UAM_TEST(UamControlCapabilityBoundsGoalAuthorityReplayRateCancellationAndRestart
 	{
 		const std::string name = tool.value("name", "");
 		const bool read_only = name == "agent_list" || name == "agent_status" || name == "agent_wait" || name == "skill_list" ||
-		    name == "skill_read" || name == "goal_get" || name == "user_question";
+		    name == "skill_read" || name == "goal_get" || name == "user_question" ||
+		    name == "html_view_preview" || name == "html_view_publish";
 		UAM_ASSERT_EQ(tool.contains("annotations") && tool["annotations"].value("readOnlyHint", false), read_only);
 		hinted += read_only ? 1 : 0;
 	}
-	UAM_ASSERT_EQ(hinted, std::size_t{7});
+	UAM_ASSERT_EQ(hinted, std::size_t{9});
 	const nlohmann::json read_only_goal = call(capability, "policy-read", "goal_get");
 	UAM_ASSERT(read_only_goal.value("ok", false));
 	UAM_ASSERT(!read_only_goal["result"].value("mutationToolsEnabled", true));
@@ -1383,7 +1391,8 @@ UAM_TEST(UamControlComputerUseRequiresVisibleGuiApproval)
 	nlohmann::json allow_request = request;
 	allow_request["requestId"] = "computer-use-allow";
 	UAM_ASSERT(uam::io::WriteTextFile(
-	    allow_directory / "requests" / "computer-use-allow.json", allow_request.dump()));
+	    allow_directory / "requests" / "computer-use-allow.json",
+	    uam::UamControlService::SignRequestForTests(allow_request, app.uam_control_capabilities.front().request_key).dump()));
 	UAM_ASSERT(uam::UamControlService::ProcessPendingRequests(app));
 	UAM_ASSERT(!app.chats.front().computer_use_enabled);
 	const std::optional<uam::AcpPendingUserInputState> allow_question =
@@ -1411,20 +1420,24 @@ UAM_TEST(UamControlComputerUseRequiresVisibleGuiApproval)
 	              std::string("computer_use_request"));
 	UAM_ASSERT_EQ(persisted_chat->uam_control_audit.back().result, std::string("ok"));
 
-	const nlohmann::json expired_request = {
-	    {"requestId", "computer-use-expired"}, {"method", "computer_use_request"},
-	    {"arguments", {{"reason", "This request should expire without a user answer."}}},
+	// An approval waits until it is answered: one asked long ago is still pending and still answerable.
+	const nlohmann::json old_request = {
+	    {"requestId", "computer-use-old"}, {"method", "computer_use_request"},
+	    {"arguments", {{"reason", "This request waits for the user for as long as it takes."}}},
 	};
 	app.chats.front().computer_use_enabled = false;
 	UAM_ASSERT(uam::UamControlService::HandleRequestForTests(
-	    app, app.uam_control_capabilities.front().id, expired_request, now - 91000)
+	    app, app.uam_control_capabilities.front().id, old_request, now - 3600000)
 	               .value("pendingApproval", false));
-	UAM_ASSERT(uam::UamControlService::ProcessPendingRequests(app));
-	UAM_ASSERT(!uam::UamControlService::PendingApprovalForChat(app, chat_id).has_value());
-	std::string expired_text;
-	UAM_ASSERT(uam::io::TryReadTextFile(
-	    allow_directory / "responses" / "computer-use-expired.json", expired_text));
-	UAM_ASSERT(nlohmann::json::parse(expired_text).value("error", "").find("timed out") != std::string::npos);
+	(void)uam::UamControlService::ProcessPendingRequests(app);
+	const auto old_question = uam::UamControlService::PendingApprovalForChat(app, chat_id);
+	UAM_ASSERT(old_question.has_value());
+	UAM_ASSERT(!fs::exists(allow_directory / "responses" / "computer-use-old.json"));
+	UAM_ASSERT(uam::UamControlService::ResolveApproval(
+	    app, chat_id, old_question->request_id_json, {{"computerUse", {"Deny"}}}, &error));
+	std::string old_text;
+	UAM_ASSERT(uam::io::TryReadTextFile(allow_directory / "responses" / "computer-use-old.json", old_text));
+	UAM_ASSERT(nlohmann::json::parse(old_text).value("error", "").find("denied") != std::string::npos);
 
 	uam::AppState remote_app;
 	remote_app.data_root = temp.root / "remote";
@@ -1578,6 +1591,93 @@ UAM_TEST(UamControlGoalApprovalAndChildComputerUseScope)
 	uam::UamControlService::Shutdown(app);
 }
 
+UAM_TEST(UamControlListsOnlyToolsTheSessionCanUse)
+{
+	TempDir temp("uam-control-tool-gating");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession root = ChatDomainService().CreateNewChat("", "opencode-cli");
+	root.id = "chat-tool-gating";
+	root.uam_control_enabled = true;
+	root.execution_host_id = "local";
+	app.chats.push_back(std::move(root));
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = app.chats.front().id;
+	session->provider_id = "opencode-cli";
+	session->running = true;
+	uam::AcpSessionState& raw = *session;
+	app.acp_sessions.push_back(std::move(session));
+	std::string error;
+	UAM_ASSERT(uam::UamControlService::Initialize(app, &error));
+	const auto hidden_for = [&](uam::AcpSessionState& target) {
+		nlohmann::json setup{{"params", {{"mcpServers", nlohmann::json::array()}}}};
+		UAM_ASSERT(uam::UamControlService::AppendSessionMcpServer(app, target, app.chats.front(), "session/new", setup, &error));
+		return uam::UamControlService::HiddenToolsForTests(setup["params"]["mcpServers"].back());
+	};
+	const auto names = [](const nlohmann::json& tools) {
+		std::vector<std::string> out;
+		for (const nlohmann::json& tool : tools) out.push_back(tool.value("name", ""));
+		return out;
+	};
+
+	// Every listed tool explains itself; the old placeholder is gone.
+	for (const nlohmann::json& tool : uam::UamControlService::ToolDefinitionsForTests())
+		UAM_ASSERT(!tool.value("description", "").empty() && tool.value("description", "") != "Bounded UAM control operation.");
+
+	// A local root build chat keeps every tool.
+	UAM_ASSERT_EQ(hidden_for(raw), std::string(UAM_ENABLE_COMPUTER_USE ? "" : "computer_use_request"));
+	UAM_ASSERT_EQ(uam::UamControlService::ToolDefinitionsForTests("").size(), std::size_t{17});
+
+	// A chat started by another chat cannot start chats, so chat_create is not offered.
+	app.chats.front().created_by_chat_id = "creator";
+	std::string hidden = hidden_for(raw);
+	UAM_ASSERT(hidden.find("chat_create") != std::string::npos && hidden.find("agent_") == std::string::npos);
+	UAM_ASSERT(!uam::ranges::Contains(names(uam::UamControlService::ToolDefinitionsForTests(hidden)), "chat_create"));
+	app.chats.front().created_by_chat_id.clear();
+
+	// A read-only agent loses mutations and Computer Use; Plan-mode switching stays a server-side check.
+	raw.active_uam_agent_workspace_access = "read";
+	hidden = hidden_for(raw);
+	for (const std::string name : {"agent_cancel", "goal_create", "chat_create", "computer_use_request", "secret_request"})
+		UAM_ASSERT(hidden.find(name) != std::string::npos);
+	UAM_ASSERT(hidden.find("agent_delegate") == std::string::npos);
+	// A missing workspace access counts as read-only too.
+	raw.active_uam_agent_workspace_access.clear();
+	UAM_ASSERT(hidden_for(raw).find("goal_create") != std::string::npos);
+	raw.active_uam_agent_workspace_access = "write";
+
+	// A goal reviewer gets no UAM tools; the worker that follows keeps them.
+	raw.goal_review_turn = true;
+	UAM_ASSERT(uam::UamControlService::ToolDefinitionsForTests(hidden_for(raw)).empty());
+	raw.goal_review_turn = false;
+	UAM_ASSERT_EQ(uam::UamControlService::ToolDefinitionsForTests(hidden_for(raw)).size(), std::size_t{UAM_ENABLE_COMPUTER_USE ? 17 : 16});
+
+	// A temporary side chat cannot watch pull requests, so it is not offered the watch tools.
+	app.chats.front().temporary_parent_chat_id = "parent";
+	hidden = hidden_for(raw);
+	UAM_ASSERT(hidden.find("pr_watch") != std::string::npos && hidden.find("pr_unwatch") != std::string::npos);
+	UAM_ASSERT(hidden.find("secret_request") != std::string::npos);
+	app.chats.front().temporary_parent_chat_id.clear();
+
+	// Automation chats have no one to type a secret; Plan mode keeps it behind its one-time Allow.
+	app.chats.front().automation_token_id = "token";
+	UAM_ASSERT(hidden_for(raw).find("secret_request") != std::string::npos);
+	app.chats.front().automation_token_id.clear();
+	app.chats.front().approval_mode = "plan";
+	UAM_ASSERT(hidden_for(raw).find("secret_request") == std::string::npos);
+	app.chats.front().approval_mode = "default";
+
+	// CLI View cannot show HTML views or hold an agent wait.
+	app.cli_terminals.push_back(std::make_unique<uam::CliTerminalState>());
+	nlohmann::json server;
+	UAM_ASSERT(uam::UamControlService::PrepareTerminalMcpServer(app, *app.cli_terminals.back(), app.chats.front(), server, error));
+	const std::vector<std::string> cli_tools = names(uam::UamControlService::ToolDefinitionsForTests(uam::UamControlService::HiddenToolsForTests(server)));
+	for (const std::string name : {"agent_wait", "html_view_preview", "html_view_publish"})
+		UAM_ASSERT(!uam::ranges::Contains(cli_tools, name));
+	UAM_ASSERT(uam::ranges::Contains(cli_tools, "user_question"));
+	uam::UamControlService::Shutdown(app);
+}
+
 UAM_TEST(UamControlUserQuestionRoutesThroughTheExistingGuiInput)
 {
 	TempDir temp("uam-control-user-question");
@@ -1686,20 +1786,167 @@ UAM_TEST(UamControlUserQuestionRoutesThroughTheExistingGuiInput)
 	    app, child_id, child_pending->request_id_json,
 	    {{"userQuestion", {"Review the SSH runtime"}}}, &error));
 
-	const nlohmann::json expired_request = {
-	    {"requestId", "question-expired"}, {"method", "user_question"},
-	    {"arguments", {{"question", "This should expire."}}},
+	// A question has no deadline. Only its caller leaving ends it: the provider cancelling the call, or its tool
+	// connection closing or being replaced.
+	const auto ask = [&](const char* id)
+	{
+		UAM_ASSERT(uam::UamControlService::HandleRequestForTests(app, capability_id,
+		    {{"requestId", id}, {"method", "user_question"}, {"arguments", {{"question", "This waits for the user."}}}}, now).value("pendingApproval", false));
+		(void)uam::UamControlService::ProcessPendingRequests(app);
+		UAM_ASSERT(uam::UamControlService::PendingApprovalForChat(app, root_id).has_value());
 	};
-	UAM_ASSERT(uam::UamControlService::HandleRequestForTests(
-	    app, capability_id, expired_request, now).value("pendingApproval", false));
-	const auto root_capability = std::ranges::find(app.uam_control_capabilities, capability_id,
-	                                                &uam::UamControlCapability::id);
-	UAM_ASSERT(root_capability != app.uam_control_capabilities.end());
-	root_capability->pending_approval->expires_at_epoch_ms = now - 1;
-	UAM_ASSERT(uam::UamControlService::ProcessPendingRequests(app));
+	const auto transport = [&](const char* id, const char* method, nlohmann::json arguments)
+	{
+		return uam::UamControlService::HandleRequestForTests(app, capability_id, {{"requestId", id}, {"method", method}, {"arguments", std::move(arguments)}}, now).value("ok", false);
+	};
+	UAM_ASSERT(transport("question-connect", "_mcp_initialized", {{"connectionId", "connection-a"}}));
+	ask("question-cancelled");
+	UAM_ASSERT(transport("question-cancel-other", "_mcp_cancel_request", {{"connectionId", "connection-a"}, {"requestId", "another-call"}}));
+	UAM_ASSERT(uam::UamControlService::PendingApprovalForChat(app, root_id).has_value());
+	UAM_ASSERT(transport("question-cancel", "_mcp_cancel_request", {{"connectionId", "connection-a"}, {"requestId", "question-cancelled"}}));
+	UAM_ASSERT(!uam::UamControlService::PendingApprovalForChat(app, root_id).has_value());
+	ask("question-replaced");
+	UAM_ASSERT(transport("question-reconnect", "_mcp_initialized", {{"connectionId", "connection-b"}}));
+	UAM_ASSERT(!uam::UamControlService::PendingApprovalForChat(app, root_id).has_value());
+	ask("question-closed");
+	UAM_ASSERT(transport("question-disconnect", "_mcp_disconnected", {{"connectionId", "connection-b"}}));
 	UAM_ASSERT(!uam::UamControlService::PendingApprovalForChat(app, root_id).has_value());
 
+	// A caller that gave up without cancelling is gone once its turn ends, however it ends (#898).
+	const auto ended_with_error = [&](const char* id)
+	{
+		std::string text;
+		UAM_ASSERT(uam::io::TryReadTextFile(root_directory / "responses" / (std::string(id) + ".json"), text));
+		const nlohmann::json reply = nlohmann::json::parse(text);
+		UAM_ASSERT(!reply.value("ok", true));
+		UAM_ASSERT(reply.value("error", "").find("turn that made this request ended") != std::string::npos);
+	};
+	UAM_ASSERT(transport("question-reconnect-turn", "_mcp_initialized", {{"connectionId", "connection-c"}}));
+	raw_root_session->processing = true;
+	raw_root_session->turn_serial = 4;
+	ask("question-turn-ended");
+	raw_root_session->reconnect_pending = true; // A remote turn being reattached is the same turn.
+	raw_root_session->processing = false;
+	(void)uam::UamControlService::ProcessPendingRequests(app);
+	UAM_ASSERT(uam::UamControlService::PendingApprovalForChat(app, root_id).has_value());
+	raw_root_session->reconnect_pending = false;
+	raw_root_session->recovering_remote_turn = true;
+	(void)uam::UamControlService::ProcessPendingRequests(app);
+	UAM_ASSERT(uam::UamControlService::PendingApprovalForChat(app, root_id).has_value());
+	raw_root_session->recovering_remote_turn = false;
+	raw_root_session->claude_live_background_task_ids.insert("task-1"); // A background agent may still be waiting.
+	(void)uam::UamControlService::ProcessPendingRequests(app);
+	UAM_ASSERT(uam::UamControlService::PendingApprovalForChat(app, root_id).has_value());
+	raw_root_session->claude_live_background_task_ids.clear();
+	(void)uam::UamControlService::ProcessPendingRequests(app);
+	UAM_ASSERT(!uam::UamControlService::PendingApprovalForChat(app, root_id).has_value());
+	ended_with_error("question-turn-ended");
+	raw_root_session->processing = true;
+	ask("question-next-turn");
+	raw_root_session->turn_serial = 5;
+	(void)uam::UamControlService::ProcessPendingRequests(app);
+	UAM_ASSERT(!uam::UamControlService::PendingApprovalForChat(app, root_id).has_value());
+	ended_with_error("question-next-turn");
+
 	uam::UamControlService::Shutdown(app);
+}
+
+UAM_TEST(CodexTurnCancelDeclinesPendingUamQuestion)
+{
+	struct Case { const char* method; nlohmann::json arguments; const char* question_id; std::string answer; bool timeout; bool loop = false; };
+	const std::vector<Case> cases = {
+	    {"user_question", {{"question", "Which branch?"}, {"options", {"main", "dev"}}}, "userQuestion", "main", false},
+	    {"computer_use_request", {{"reason", "The task needs a visible browser."}}, "computerUse", "Allow", false},
+	    {"goal_create", {{"objective", "Finish the bounded task."}, {"idempotencyKey", "cancel-goal"}}, "goalCreate", "Allow", false},
+	    {"user_question", {{"question", "Which branch?"}}, "userQuestion", "main", true},
+	    {"user_question", {{"question", "Which branch?"}}, "userQuestion", "main", false, true},
+	};
+	for (const Case& test_case : cases)
+	{
+		TempDir temp("uam-control-codex-question-cancel");
+		uam::AppState app;
+		app.data_root = temp.root;
+		auto add_chat = [&](const std::string& id, const std::string& provider) -> uam::AcpSessionState& {
+			ChatSession chat = ChatDomainService().CreateNewChat("", provider);
+			chat.id = id;
+			chat.uam_control_enabled = true;
+			chat.execution_host_id = "local";
+			chat.messages.push_back(Message{MessageRole::User, "Open Safari for my task."});
+			chat.messages.back().created_at = "owned-user-turn";
+			app.chats.push_back(std::move(chat));
+			auto session = std::make_unique<uam::AcpSessionState>();
+			session->chat_id = id;
+			session->provider_id = provider;
+			session->running = session->processing = true;
+			session->turn_serial = 1;
+			session->turn_first_user_message_index = session->turn_user_message_index = 0;
+			app.acp_sessions.push_back(std::move(session));
+			return *app.acp_sessions.back();
+		};
+		uam::AcpSessionState& codex = add_chat("chat-codex-question-cancel", "codex-cli");
+		codex.protocol_kind = uam::provider_profile_constants::kProtocolCodexAppServer;
+		codex.codex_thread_id = codex.session_id = "thread";
+		codex.codex_turn_id = "turn";
+		codex.session_ready = true;
+		uam::AcpSessionState& other = add_chat("chat-other-question", "opencode-cli");
+		ManualCompactionWriter transport(codex);
+		std::string error;
+		UAM_ASSERT(uam::UamControlService::Initialize(app, &error));
+		auto issue = [&](uam::AcpSessionState& session, std::size_t chat_index) {
+			nlohmann::json setup{{"params", {{"mcpServers", nlohmann::json::array()}}}};
+			UAM_ASSERT(uam::UamControlService::AppendSessionMcpServer(app, session, app.chats[chat_index], "session/new", setup, &error));
+			return app.uam_control_capabilities.back();
+		};
+		const uam::UamControlCapability codex_capability = issue(codex, 0);
+		const uam::UamControlCapability other_capability = issue(other, 1);
+		const int64_t now = uam::time::SystemEpochMillisecondsNow();
+		UAM_ASSERT(uam::UamControlService::HandleRequestForTests(app, codex_capability.id,
+		    {{"requestId", "codex-request"}, {"method", test_case.method}, {"arguments", test_case.arguments}}, now)
+		               .value("pendingApproval", false));
+		UAM_ASSERT(uam::UamControlService::HandleRequestForTests(app, other_capability.id,
+		    {{"requestId", "other-request"}, {"method", "user_question"}, {"arguments", {{"question", "Still needed?"}}}}, now)
+		               .value("pendingApproval", false));
+		const auto pending = uam::UamControlService::PendingApprovalForChat(app, codex.chat_id);
+		UAM_ASSERT(pending.has_value());
+		UAM_ASSERT_EQ(pending->questions.front().id, std::string(test_case.question_id));
+
+		// A stop abandons the provider's tool call; its request must not stay answerable afterwards.
+		if (test_case.loop)
+		{
+			codex.turn_started_time_s = codex.last_runtime_activity_time_s = 1.0;
+			for (int i = 0; i < app.settings.stream_loop_repeat_limit; ++i) codex.stream_watch.ObserveTool("Read src/app.cpp", R"({"path":"src/app.cpp"})", "same contents", 0.1, 1.0 + i * 0.001);
+			UAM_ASSERT(uam::HandleAcpTurnInactivityTimeout(app, codex, app.chats.front(), 2.0));
+		}
+		else if (test_case.timeout)
+		{
+			app.settings.active_turn_inactivity_timeout_seconds = 1;
+			codex.turn_started_time_s = codex.last_runtime_activity_time_s = 1.0;
+			UAM_ASSERT(uam::HandleAcpTurnInactivityTimeout(app, codex, app.chats.front(), 600.0));
+		}
+		else UAM_ASSERT(uam::CancelAcpTurn(app, codex.chat_id, &error));
+		UAM_ASSERT(codex.stdin_writer->Flush(std::chrono::seconds(1)));
+		UAM_ASSERT(transport.captured.find("turn/interrupt") != std::string::npos);
+		UAM_ASSERT(std::ranges::find(app.uam_control_capabilities, codex_capability.id, &uam::UamControlCapability::id) !=
+		           app.uam_control_capabilities.end()); // The capability survives; only the request is declined.
+		UAM_ASSERT(!uam::UamControlService::PendingApprovalForChat(app, codex.chat_id).has_value());
+		std::string response_text;
+		UAM_ASSERT(uam::io::TryReadTextFile(codex_capability.directory / "responses" / "codex-request.json", response_text));
+		const nlohmann::json response = nlohmann::json::parse(response_text);
+		UAM_ASSERT(!response.value("ok", true));
+		UAM_ASSERT_EQ(response.value("error", ""), test_case.loop ? "The turn stopped after the same tool call repeated " + std::to_string(app.settings.stream_loop_repeat_limit) + " times before this request was answered." : std::string(test_case.timeout ? uam::kAcpTimeoutDeclineReason : uam::kAcpUserStopDeclineReason));
+		UAM_ASSERT(!uam::UamControlService::ResolveApproval(app, codex.chat_id, pending->request_id_json,
+		                                                    {{test_case.question_id, {test_case.answer}}}, &error));
+		UAM_ASSERT_EQ(app.chats.front().uam_control_audit.back().result, std::string("rejected"));
+		UAM_ASSERT_EQ(app.chats.front().uam_control_audit.back().method, std::string(test_case.method));
+		UAM_ASSERT(!app.chats.front().computer_use_enabled);
+		UAM_ASSERT(uam::GoalService::FindActiveGoal(app, codex.chat_id) == nullptr);
+		// Another session's pending request is untouched.
+		UAM_ASSERT(uam::UamControlService::PendingApprovalForChat(app, other.chat_id).has_value());
+		UAM_ASSERT(!std::filesystem::exists(other_capability.directory / "responses" / "other-request.json"));
+
+		transport.Detach();
+		uam::UamControlService::Shutdown(app);
+	}
 }
 
 UAM_TEST(CefEditShortcutsReachFocusedFrameCommands)
@@ -2605,6 +2852,15 @@ UAM_TEST(AgentRunSchedulerKeepsMixedProviderChildrenInsideTheParentAccessCeiling
 
 			std::string run_id;
 			std::string error;
+			// A read-only parent keeps its own provider's enforcement; another provider is refused.
+			if (child_provider != parent_provider)
+			{
+				UAM_ASSERT(!uam::AgentRunScheduler::Enqueue(
+				    app, root.id, parent.id, "worker", "Do the child task.", &run_id, &error, child_provider));
+				UAM_ASSERT(error.find("own provider") != std::string::npos);
+				UAM_ASSERT_EQ(app.agent_runs.size(), std::size_t{1});
+				continue;
+			}
 			UAM_ASSERT(uam::AgentRunScheduler::Enqueue(
 			    app, root.id, parent.id, "worker", "Do the child task.", &run_id, &error, child_provider));
 			const AgentRun& child = app.agent_runs.back();
@@ -3043,10 +3299,17 @@ UAM_TEST(UamControlDelegationUsesCapabilityAndRunSnapshotsAcrossProviders)
 	const nlohmann::json listed = uam::UamControlService::HandleRequestForTests(
 	    app, capability.id, {{"requestId", "list-1"}, {"method", "agent_list"}, {"arguments", nlohmann::json::object()}}, 1000);
 	UAM_ASSERT(listed.value("ok", false));
-	UAM_ASSERT_EQ(listed["result"].size(), static_cast<std::size_t>(1));
-	UAM_ASSERT_EQ(listed["result"][0].value("id", ""), std::string("worker"));
+	UAM_ASSERT_EQ(listed["result"]["agents"].size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(listed["result"]["agents"][0].value("id", ""), std::string("worker"));
 
-	const std::string child_provider = app.provider_profiles.back().id;
+	// The read-only parent may not hand its child to another provider's enforcement.
+	const nlohmann::json cross_provider = uam::UamControlService::HandleRequestForTests(
+	    app, capability.id,
+	    {{"requestId", "delegate-cross"}, {"method", "agent_delegate"},
+	     {"arguments", {{"agentId", "worker"}, {"task", "Must not start."}, {"providerId", app.provider_profiles.back().id}}}}, 1001);
+	UAM_ASSERT(app.provider_profiles.back().id != root.provider_id);
+	UAM_ASSERT(cross_provider.value("error", "").find("own provider") != std::string::npos);
+	const std::string child_provider = root.provider_id;
 	const nlohmann::json rejected_delegate = uam::UamControlService::HandleRequestForTests(
 	    app, capability.id,
 	    {{"requestId", "delegate-rejected"}, {"method", "agent_delegate"},
@@ -3241,4 +3504,461 @@ UAM_TEST(AgentRunSchedulerReusedSessionStartsNewRunUnlaunched)
 	UAM_ASSERT(&uam::acp_detail::EnsureAcpSessionForChat(app, app.chats.front()) == &session);
 	UAM_ASSERT_EQ(session.managed_agent_run_id, std::string("next-run"));
 	UAM_ASSERT(!session.managed_launch_attempted);
+}
+UAM_TEST(HtmlViewValidationRejectsOversizedEmptyAndMultilineInput)
+{
+	UAM_ASSERT(uam::html_view::ValidationError("Chart", "<!doctype html><p>ok</p>").empty());
+	UAM_ASSERT_EQ(uam::html_view::ValidationError("", "<p>x</p>"), std::string("HTML view title is required."));
+	UAM_ASSERT(!uam::html_view::ValidationError("Two\nlines", "<p>x</p>").empty());
+	UAM_ASSERT(!uam::html_view::ValidationError(std::string(121, 't'), "<p>x</p>").empty());
+	UAM_ASSERT_EQ(uam::html_view::ValidationError("Chart", "   "), std::string("HTML view document is empty."));
+	UAM_ASSERT(!uam::html_view::ValidationError("Chart", std::string("<p>\0</p>", 8)).empty());
+	UAM_ASSERT(uam::html_view::ValidationError("Chart", std::string(uam::html_view::kMaxHtmlBytes, 'a')).empty());
+	const std::string too_large = uam::html_view::ValidationError("Chart", std::string(uam::html_view::kMaxHtmlBytes + 1, 'a'));
+	UAM_ASSERT(too_large.find("the limit is 131072 bytes") != std::string::npos);
+	const auto warnings = uam::html_view::Diagnostics("<html><script src=\"https://cdn.example/x.js\"></script><script>fetch('/x')</script></html>");
+	UAM_ASSERT_EQ(warnings.size(), std::size_t{2});
+	UAM_ASSERT(uam::html_view::Diagnostics("<!doctype html><body><svg></svg></body>").empty());
+	const auto webrtc_warnings = uam::html_view::Diagnostics("<!doctype html><script>new RTCPeerConnection({})</script>");
+	UAM_ASSERT_EQ(webrtc_warnings.size(), std::size_t{1});
+	UAM_ASSERT(webrtc_warnings[0].find("RTCPeerConnection") != std::string::npos);
+	const auto frame_warnings = uam::html_view::Diagnostics("<!doctype html><iframe srcdoc=\"<p>x</p>\"></iframe>");
+	UAM_ASSERT_EQ(frame_warnings.size(), std::size_t{1});
+	UAM_ASSERT(frame_warnings[0].find("only an inline <iframe srcdoc> works") != std::string::npos);
+	// Copies opened outside UAM keep network off, with the policy after any doctype.
+	const std::string opened = uam::html_view::DocumentWithPolicy("<!DOCTYPE html><p>x</p>");
+	UAM_ASSERT(opened.starts_with("<!DOCTYPE html><meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\""));
+	UAM_ASSERT(opened.find("connect-src 'none'") != std::string::npos);
+	UAM_ASSERT_EQ(uam::html_view::FileName(" Q3: sales/costs? "), std::string("Q3- sales-costs-.html"));
+	// A doctype later in the document, or hidden in a comment, must not let earlier script run before the policy.
+	for (const std::string payload : {"<script>fetch('https://x')</script><!doctype html>", "<!--<!doctype html>--><script>fetch('https://x')</script>"})
+		UAM_ASSERT(uam::html_view::DocumentWithPolicy(payload).starts_with("<meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\""));
+	UAM_ASSERT(uam::html_view::DocumentWithPolicy("  \n<!doctype html><p>x</p>").starts_with("  \n<!doctype html><meta charset=\"utf-8\"><meta http-equiv="));
+	// A leading UTF-8 byte order mark does not stop the doctype staying first.
+	UAM_ASSERT(uam::html_view::DocumentWithPolicy("\xEF\xBB\xBF<!doctype html><p>x</p>").starts_with("\xEF\xBB\xBF<!doctype html><meta charset="));
+	UAM_ASSERT(uam::html_view::DocumentWithPolicy("<!doctype html").starts_with("<meta charset=\"utf-8\"><meta http-equiv="));
+	// Titles stay on one line; saved names avoid Windows device names.
+	for (const std::string title : {"A\x7F" "B", "A\xE2\x80\xA8" "B", "A\xE2\x80\xA9" "B"})
+		UAM_ASSERT_EQ(uam::html_view::ValidationError(title, "<p>x</p>"), std::string("HTML view title must be a single line of text."));
+	UAM_ASSERT(uam::html_view::ValidationError("Caf\xC3\xA9 \xE2\x80\x94 chart", "<p>x</p>").empty());
+	for (const std::string reserved : {"NUL", "con", "Aux.txt", "prn.tar.gz", "COM1", "lpt9", "Con .x"})
+		UAM_ASSERT(uam::html_view::FileName(reserved).starts_with("_"));
+	for (const std::string ordinary : {"Console", "COM0", "COM10", "nullable", "LPT"})
+		UAM_ASSERT(!uam::html_view::FileName(ordinary).starts_with("_"));
+	UAM_ASSERT_EQ(uam::html_view::FileName("nul"), std::string("_nul.html"));
+}
+
+UAM_TEST(HtmlViewOpenedCopyFolderRefusesLinksAndExpiresOldCopies)
+{
+	TempDir temp("uam-html-view-copies");
+	const std::filesystem::path folder = temp.root / "uam-html-views";
+	UAM_ASSERT(uam::html_view::PrepareOpenedCopyFolder(folder));
+	UAM_ASSERT(uam::io::WriteTextFile(folder / "view-old.html", "old"));
+	UAM_ASSERT(uam::io::WriteTextFile(folder / "view-new.html", "new"));
+	UAM_ASSERT(uam::io::WriteTextFile(folder / "notes.html", "keep"));
+	const auto now = std::filesystem::file_time_type::clock::now();
+	std::filesystem::last_write_time(folder / "view-old.html", now - std::chrono::hours(25));
+	std::filesystem::last_write_time(folder / "notes.html", now - std::chrono::hours(25));
+	UAM_ASSERT(uam::html_view::PrepareOpenedCopyFolder(folder, now));
+	UAM_ASSERT(!std::filesystem::exists(folder / "view-old.html"));
+	UAM_ASSERT(std::filesystem::exists(folder / "view-new.html"));
+	UAM_ASSERT(std::filesystem::exists(folder / "notes.html"));
+	// A planted link or file in place of the folder is refused.
+	const std::filesystem::path elsewhere = temp.root / "elsewhere";
+	std::filesystem::create_directories(elsewhere);
+	const std::filesystem::path linked = temp.root / "linked-views";
+	std::error_code link_error;
+	std::filesystem::create_directory_symlink(elsewhere, linked, link_error);
+	if (!link_error) UAM_ASSERT(!uam::html_view::PrepareOpenedCopyFolder(linked));
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "plain-file", "x"));
+	UAM_ASSERT(!uam::html_view::PrepareOpenedCopyFolder(temp.root / "plain-file"));
+}
+
+UAM_TEST(UiNavigationAllowsTheFrameHostOnlyInSubframesAndNeverOpensSubframeUrls)
+{
+	using uam::cef::NavigationDecision;
+	const std::string index(uam::cef::kUamUiIndexUrl);
+	const std::string frame_host(uam::cef::kHtmlViewFrameUrl);
+	const auto decide = [&](bool main, const std::string& url) { return uam::cef::DecideNavigation(main, url, index); };
+	UAM_ASSERT(decide(true, index) == NavigationDecision::Allow);
+	UAM_ASSERT(decide(true, index + "#/chat") == NavigationDecision::Allow);
+	UAM_ASSERT(decide(true, frame_host) == NavigationDecision::Cancel);
+	UAM_ASSERT(decide(false, frame_host) == NavigationDecision::Allow);
+	UAM_ASSERT(decide(false, frame_host + "?x#y") == NavigationDecision::Allow);
+	UAM_ASSERT(decide(false, index) == NavigationDecision::Cancel);
+	for (const std::string other : {"uam://app/assets/index.js", "uam://app/", "uam://app/html-view-frame.html/x", "uam://app/HTML-VIEW-FRAME.html", "about:blank", "file:///tmp/x.html"})
+	{
+		UAM_ASSERT(decide(true, other) == NavigationDecision::Cancel);
+		UAM_ASSERT(decide(false, other) == NavigationDecision::Cancel);
+	}
+	for (const std::string external : {"https://example.test/", "http://example.test/", "mailto:a@example.test", "tel:123"})
+	{
+		UAM_ASSERT(decide(true, external) == NavigationDecision::CancelAndOpenExternally);
+		UAM_ASSERT(decide(false, external) == NavigationDecision::Cancel);
+	}
+}
+
+UAM_TEST(HtmlViewProbeNavigationAllowsOnlyThePageHostInTheHiddenBrowser)
+{
+	using uam::cef::NavigationDecision;
+	const std::string probe(uam::cef::kHtmlViewProbeUrl);
+	const std::string frame_host(uam::cef::kHtmlViewFrameUrl);
+	const auto decide = [&](bool main, const std::string& url) { return uam::cef::DecideNavigation(main, url, probe); };
+	UAM_ASSERT(decide(true, probe) == NavigationDecision::Allow);
+	UAM_ASSERT(decide(false, frame_host) == NavigationDecision::Allow);
+	UAM_ASSERT(decide(true, frame_host) != NavigationDecision::Allow);
+	for (const std::string blocked : {std::string(uam::cef::kUamUiIndexUrl), probe + "/x", std::string("https://example.test/"), std::string("file:///etc/hosts"), std::string("about:blank"), std::string("data:text/html,x")})
+	{
+		UAM_ASSERT(decide(true, blocked) != NavigationDecision::Allow);
+		UAM_ASSERT(decide(false, blocked) != NavigationDecision::Allow);
+	}
+}
+
+namespace
+{
+	/// Stands in for the hidden browser: the test ends each check by hand.
+	struct RecordingRenderChecker final : uam::html_view::RenderChecker
+	{
+		struct Check { std::string owner; std::string html; uam::html_view::RenderCheckDone done; };
+		std::vector<Check> started;
+		std::vector<std::string> cancelled;
+		void Start(std::string owner, std::string html, uam::html_view::RenderCheckDone done) override { started.push_back({std::move(owner), std::move(html), std::move(done)}); }
+		void Cancel(std::string_view owner) override { cancelled.emplace_back(owner); }
+		bool Idle() const override { return started.empty(); }
+	};
+
+	struct HtmlViewControlFixture
+	{
+		TempDir temp{"uam-control-html-runtime"};
+		uam::AppState app;
+		uam::AcpSessionState* session = nullptr;
+		std::shared_ptr<RecordingRenderChecker> checker = std::make_shared<RecordingRenderChecker>();
+		std::string capability;
+		std::filesystem::path directory;
+
+		HtmlViewControlFixture()
+		{
+			app.data_root = temp.root;
+			ChatSession chat = ChatDomainService().CreateNewChat("", "claude-cli");
+			chat.id = "chat-html-runtime";
+			chat.uam_control_enabled = true;
+			chat.execution_host_id = "local";
+			Message user;
+			user.role = MessageRole::User;
+			user.content = "Chart the results.";
+			chat.messages.push_back(user);
+			app.chats.push_back(std::move(chat));
+			auto owned_session = std::make_unique<uam::AcpSessionState>();
+			owned_session->chat_id = "chat-html-runtime";
+			owned_session->provider_id = "claude-cli";
+			owned_session->running = true;
+			owned_session->processing = true;
+			owned_session->turn_user_message_index = 0;
+			session = owned_session.get();
+			app.acp_sessions.push_back(std::move(owned_session));
+			std::string error;
+			UAM_ASSERT(uam::UamControlService::Initialize(app, &error));
+			nlohmann::json setup{{"params", {{"mcpServers", nlohmann::json::array()}}}};
+			UAM_ASSERT(uam::UamControlService::AppendSessionMcpServer(app, *session, app.chats.front(), "session/new", setup, &error));
+			capability = app.uam_control_capabilities.front().id;
+			directory = app.uam_control_capabilities.front().directory;
+			app.html_view_render_checker = checker;
+		}
+
+		nlohmann::json Call(const std::string& id, const std::string& method, const std::string& html)
+		{
+			return uam::UamControlService::HandleRequestForTests(app, capability, {{"requestId", id}, {"method", method}, {"arguments", {{"title", "Results"}, {"html", html}}}}, uam::time::SystemEpochMillisecondsNow());
+		}
+
+		nlohmann::json Reply(const std::string& id) const
+		{
+			std::string text;
+			UAM_ASSERT(uam::io::TryReadTextFile(directory / "responses" / (id + ".json"), text));
+			return nlohmann::json::parse(text);
+		}
+	};
+}
+
+UAM_TEST(HtmlViewPublishReturnsThrownPageErrorsThroughTheToolResult)
+{
+	HtmlViewControlFixture fixture;
+	const std::string html = "<!doctype html><script>throw new Error('boom')</script>";
+	const nlohmann::json pending = fixture.Call("publish-error", "html_view_publish", html);
+	UAM_ASSERT(pending.value("pendingRenderCheck", false));
+	UAM_ASSERT_EQ(fixture.checker->started.size(), std::size_t{1});
+	UAM_ASSERT_EQ(fixture.checker->started.front().owner, fixture.capability);
+	UAM_ASSERT_EQ(fixture.checker->started.front().html, html);
+	// The card is already saved while the check runs.
+	UAM_ASSERT_EQ(fixture.app.chats.front().messages.back().blocks.front().type, std::string("html_view"));
+	uam::html_view::RenderCheckResult check;
+	check.status = uam::html_view::RenderCheckStatus::Completed;
+	uam::html_view::AddRenderCheckError(check, "Uncaught Error: boom", 3);
+	fixture.checker->started.front().done(std::move(check));
+	const nlohmann::json reply = fixture.Reply("publish-error");
+	UAM_ASSERT(reply.value("ok", false));
+	UAM_ASSERT(reply["result"].value("published", false));
+	const nlohmann::json runtime = reply["result"]["runtimeCheck"];
+	UAM_ASSERT(runtime.value("completed", false));
+	UAM_ASSERT_EQ(runtime["errors"].size(), std::size_t{1});
+	UAM_ASSERT_EQ(runtime["errors"][0].value("message", ""), std::string("Uncaught Error: boom"));
+	UAM_ASSERT_EQ(runtime["errors"][0].value("line", 0), 3);
+	UAM_ASSERT(runtime.value("summary", "").find("1 runtime error.") != std::string::npos);
+}
+
+UAM_TEST(HtmlViewPublishReportsNoErrorsForACleanPage)
+{
+	HtmlViewControlFixture fixture;
+	UAM_ASSERT(fixture.Call("publish-clean", "html_view_publish", "<!doctype html><p>ok</p>").value("pendingRenderCheck", false));
+	uam::html_view::RenderCheckResult check;
+	check.status = uam::html_view::RenderCheckStatus::Completed;
+	fixture.checker->started.front().done(std::move(check));
+	const nlohmann::json runtime = fixture.Reply("publish-clean")["result"]["runtimeCheck"];
+	UAM_ASSERT(runtime.value("completed", false));
+	UAM_ASSERT(runtime["errors"].empty());
+	UAM_ASSERT(runtime.value("summary", "").find("no runtime errors") != std::string::npos);
+}
+
+UAM_TEST(HtmlViewPublishSurvivesATimeoutAndSaysTheCheckDidNotComplete)
+{
+	HtmlViewControlFixture fixture;
+	UAM_ASSERT(fixture.Call("publish-hung", "html_view_publish", "<script>while(true){}</script>").value("pendingRenderCheck", false));
+	uam::html_view::RenderCheckResult check;
+	check.status = uam::html_view::RenderCheckStatus::TimedOut;
+	fixture.checker->started.front().done(std::move(check));
+	const nlohmann::json reply = fixture.Reply("publish-hung");
+	UAM_ASSERT(reply.value("ok", false));
+	UAM_ASSERT(reply["result"].value("published", false));
+	UAM_ASSERT_EQ(reply["result"]["runtimeCheck"].value("status", ""), std::string("timed_out"));
+	UAM_ASSERT(!reply["result"]["runtimeCheck"].value("completed", true));
+	UAM_ASSERT(reply["result"]["runtimeCheck"].value("summary", "").starts_with("The runtime check did not complete: the page did not finish within 5 seconds"));
+}
+
+UAM_TEST(HtmlViewPreviewChecksPublishablePagesAndSkipsRejectedOnes)
+{
+	HtmlViewControlFixture fixture;
+	UAM_ASSERT(fixture.Call("preview-good", "html_view_preview", "<p>x</p>").value("pendingRenderCheck", false));
+	const nlohmann::json rejected = fixture.Call("preview-bad", "html_view_preview", "   ");
+	UAM_ASSERT(rejected.value("ok", false));
+	UAM_ASSERT(!rejected["result"].value("publishable", true));
+	UAM_ASSERT(!rejected["result"].contains("runtimeCheck"));
+	UAM_ASSERT_EQ(fixture.checker->started.size(), std::size_t{1}); // A page that cannot be published is never rendered.
+	UAM_ASSERT_EQ(fixture.app.chats.front().messages.size(), std::size_t{1}); // Preview publishes nothing.
+}
+
+UAM_TEST(HtmlViewRenderChecksEndWithTheirTurnCapabilityAndTheApp)
+{
+	HtmlViewControlFixture fixture;
+	UAM_ASSERT(uam::UamControlService::DeclinePendingApprovalForSession(fixture.app, *fixture.session, "cancelled") == false);
+	UAM_ASSERT_EQ(fixture.checker->cancelled, std::vector<std::string>({fixture.capability}));
+	fixture.checker->cancelled.clear();
+	uam::UamControlService::RevokeForSession(fixture.app, *fixture.session);
+	UAM_ASSERT_EQ(fixture.checker->cancelled, std::vector<std::string>({fixture.capability}));
+	fixture.checker->cancelled.clear();
+	uam::UamControlService::Shutdown(fixture.app);
+	UAM_ASSERT_EQ(fixture.checker->cancelled, std::vector<std::string>({std::string()}));
+}
+
+UAM_TEST(HtmlViewRenderCheckReplyStaysInsideTheResponseLimit)
+{
+	uam::html_view::RenderCheckResult check;
+	check.status = uam::html_view::RenderCheckStatus::Completed;
+	// Worst case for JSON growth: quotes and control bytes, cut inside a multi-byte character.
+	const std::string hostile = std::string(uam::html_view::kMaxRenderCheckErrorBytes - 1, '"') + "\xE2\x82\xAC" + std::string(4096, '\x01');
+	for (int index = 0; index < 25; ++index) uam::html_view::AddRenderCheckError(check, hostile, index);
+	const nlohmann::json json = uam::html_view::RenderCheckJson(check);
+	UAM_ASSERT_EQ(json["errors"].size(), uam::html_view::kMaxRenderCheckErrors);
+	UAM_ASSERT_EQ(json.value("omittedErrors", std::size_t{0}), std::size_t{5});
+	UAM_ASSERT_EQ(json["errors"][0].value("message", "").size(), uam::html_view::kMaxRenderCheckErrorBytes - 1); // Never a partial character.
+	UAM_ASSERT(json.value("summary", "").find("25 runtime errors.") != std::string::npos);
+	UAM_ASSERT(json.dump().size() < 64U * 1024U); // A strict dump also throws on invalid UTF-8.
+	uam::html_view::RenderCheckResult controls;
+	uam::html_view::AddRenderCheckError(controls, std::string(100, '\x01') + "x\ny", 0);
+	UAM_ASSERT(uam::html_view::RenderCheckJson(controls)["errors"][0].value("message", "").find('\x01') == std::string::npos);
+}
+
+UAM_TEST(HtmlViewFrameHostIsIsolatedFromTheUiBridge)
+{
+	// The frame host gets a no-network policy; the app may frame only that host page.
+	const std::string frame_policy = uam::cef::ContentSecurityPolicyForUiResource(uam::cef::kHtmlViewFrameResource);
+	UAM_ASSERT_EQ(frame_policy, std::string(uam::html_view::kContentSecurityPolicy));
+	for (const std::string_view directive : {"default-src 'none'", "connect-src 'none'", "img-src data: blob:", "frame-src 'none'", "form-action 'none'"})
+		UAM_ASSERT(frame_policy.find(directive) != std::string::npos);
+	UAM_ASSERT(frame_policy.find("'self'") == std::string::npos);
+	UAM_ASSERT(frame_policy.find("http") == std::string::npos);
+	UAM_ASSERT_EQ(uam::cef::ContentSecurityPolicyForUiResource("index.html"), std::string(uam::cef::kContentSecurityPolicy));
+	UAM_ASSERT(std::string_view(uam::cef::kContentSecurityPolicy).find("frame-src uam://app/html-view-frame.html") != std::string_view::npos);
+	UAM_ASSERT(std::string_view(uam::cef::kContentSecurityPolicy).find("'unsafe-inline'; img") != std::string_view::npos); // style only
+	UAM_ASSERT(std::string_view(uam::cef::kContentSecurityPolicy).find("script-src 'self';") != std::string_view::npos);
+	// The renderer bridge never binds in a subframe, even one that navigated to the UI index.
+	const std::string index(uam::cef::kUamUiIndexUrl);
+	UAM_ASSERT(uam::cef::ShouldBindUiBridge(true, index, index));
+	UAM_ASSERT(!uam::cef::ShouldBindUiBridge(false, index, index));
+	UAM_ASSERT(!uam::cef::ShouldBindUiBridge(true, "uam://app/html-view-frame.html", index));
+	UAM_ASSERT(!uam::cef::ShouldBindUiBridge(false, "about:srcdoc", index));
+}
+
+UAM_TEST(HtmlViewToolsReachEveryProviderLocallyAndOverSsh)
+{
+	// Every structured provider gets the same UAM tool connection, so each can publish a view on this computer and over SSH.
+	for (const char* provider_id : uam::provider_ids::kAllCliProviderIds)
+		for (const std::string host_id : {"local", "ssh-build"})
+		{
+			TempDir temp("uam-control-html-view-provider");
+			uam::AppState app;
+			app.data_root = temp.root;
+			ExecutionHost remote;
+			remote.id = "ssh-build";
+			remote.transport = "ssh";
+			remote.ssh_alias = "build";
+			app.settings.execution_hosts.push_back(remote);
+			ChatSession chat = ChatDomainService().CreateNewChat("", provider_id);
+			chat.id = "chat-html-view-provider";
+			chat.uam_control_enabled = true;
+			chat.execution_host_id = host_id;
+			Message user;
+			user.role = MessageRole::User;
+			user.content = "Chart the results.";
+			chat.messages.push_back(user);
+			app.chats.push_back(std::move(chat));
+			auto owned_session = std::make_unique<uam::AcpSessionState>();
+			owned_session->chat_id = "chat-html-view-provider";
+			owned_session->provider_id = provider_id;
+			owned_session->running = true;
+			owned_session->processing = true;
+			owned_session->turn_user_message_index = 0;
+			uam::AcpSessionState* session = owned_session.get();
+			app.acp_sessions.push_back(std::move(owned_session));
+			std::string error;
+			UAM_ASSERT(uam::UamControlService::Initialize(app, &error));
+			nlohmann::json setup{{"params", {{"mcpServers", nlohmann::json::array()}}}};
+			UAM_ASSERT(uam::UamControlService::AppendSessionMcpServer(app, *session, app.chats.front(), "session/new", setup, &error));
+			UAM_ASSERT(std::ranges::any_of(setup["params"]["mcpServers"], [](const nlohmann::json& server) { return server.value("name", "") == "uam-control"; }));
+			for (const std::string tool : {"html_view_preview", "html_view_publish"})
+				UAM_ASSERT(uam::UamControlService::HiddenToolsForTests(setup["params"]["mcpServers"].back()).find(tool) == std::string::npos);
+			const std::string capability = app.uam_control_capabilities.front().id;
+			const nlohmann::json published = uam::UamControlService::HandleRequestForTests(app, capability,
+			    {{"requestId", "publish"}, {"method", "html_view_publish"}, {"arguments", {{"title", "Results"}, {"html", "<!doctype html><p>ok</p>"}}}},
+			    uam::time::SystemEpochMillisecondsNow());
+			UAM_ASSERT(published.value("ok", false));
+			UAM_ASSERT_EQ(app.chats.front().messages.back().blocks.front().type, std::string("html_view"));
+			uam::UamControlService::Shutdown(app);
+		}
+}
+
+UAM_TEST(HtmlViewPublishAddsAPersistentBlockToTheLiveTurn)
+{
+	TempDir temp("uam-control-html-view");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat = ChatDomainService().CreateNewChat("", "claude-cli");
+	chat.id = "chat-html-view";
+	chat.uam_control_enabled = true;
+	chat.execution_host_id = "local";
+	Message user;
+	user.role = MessageRole::User;
+	user.content = "Chart the results.";
+	chat.messages.push_back(user);
+	app.chats.push_back(std::move(chat));
+	auto owned_session = std::make_unique<uam::AcpSessionState>();
+	owned_session->chat_id = "chat-html-view";
+	owned_session->provider_id = "claude-cli";
+	owned_session->running = true;
+	owned_session->turn_user_message_index = 0;
+	uam::AcpSessionState* session = owned_session.get();
+	app.acp_sessions.push_back(std::move(owned_session));
+	std::string error;
+	UAM_ASSERT(uam::UamControlService::Initialize(app, &error));
+	nlohmann::json setup{{"params", {{"mcpServers", nlohmann::json::array()}}}};
+	UAM_ASSERT(uam::UamControlService::AppendSessionMcpServer(app, *session, app.chats.front(), "session/new", setup, &error));
+	const std::string capability = app.uam_control_capabilities.front().id;
+	const int64_t now = uam::time::SystemEpochMillisecondsNow();
+	const auto call = [&](const std::string& id, const std::string& method, nlohmann::json arguments) {
+		return uam::UamControlService::HandleRequestForTests(app, capability, {{"requestId", id}, {"method", method}, {"arguments", std::move(arguments)}}, now);
+	};
+	const nlohmann::json tools = uam::UamControlService::ToolDefinitionsForTests();
+	for (const std::string name : {"html_view_preview", "html_view_publish"})
+	{
+		const auto tool = std::ranges::find(tools, name, [](const nlohmann::json& value) { return value.value("name", ""); });
+		UAM_ASSERT(tool != tools.end());
+		UAM_ASSERT((*tool)["inputSchema"]["required"] == nlohmann::json::array({"title", "html"}));
+		UAM_ASSERT(!(*tool)["inputSchema"].value("additionalProperties", true));
+	}
+	const std::string html = "<!doctype html><body><h1>Results</h1><script>document.body.dataset.ready = '1'</script></body>";
+
+	// Preview reports problems without publishing anything.
+	const nlohmann::json preview = call("preview-1", "html_view_preview", {{"title", "Results"}, {"html", "<img src=\"https://x/y.png\">"}});
+	UAM_ASSERT(preview.value("ok", false));
+	UAM_ASSERT(preview["result"].value("publishable", false));
+	UAM_ASSERT_EQ(preview["result"]["warnings"].size(), std::size_t{2});
+	const nlohmann::json preview_large = call("preview-2", "html_view_preview", {{"title", "Results"}, {"html", std::string(uam::html_view::kMaxHtmlBytes + 1, 'a')}});
+	UAM_ASSERT(!preview_large["result"].value("publishable", true));
+	UAM_ASSERT_EQ(preview_large["result"]["errors"].size(), std::size_t{1});
+
+	// Outside a turn and with bad input the request is rejected with a clear reason and no block.
+	UAM_ASSERT_EQ(call("idle", "html_view_publish", {{"title", "Results"}, {"html", html}}).value("error", ""),
+	              std::string("HTML views can only be published during an active turn."));
+	session->processing = true;
+	const nlohmann::json oversized = call("oversized", "html_view_publish", {{"title", "Results"}, {"html", std::string(uam::html_view::kMaxHtmlBytes + 1, 'a')}});
+	UAM_ASSERT(!oversized.value("ok", true));
+	UAM_ASSERT(oversized.value("error", "").find("the limit is 131072 bytes") != std::string::npos);
+	UAM_ASSERT(!call("extra", "html_view_publish", {{"title", "Results"}, {"html", html}, {"height", "900"}}).value("ok", true));
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), std::size_t{1});
+
+	const nlohmann::json published = call("publish-1", "html_view_publish", {{"title", " Results "}, {"html", html}});
+	UAM_ASSERT(published.value("ok", false));
+	UAM_ASSERT(!published["result"]["runtimeCheck"].value("completed", true)); // No renderer here, and the publish still succeeds.
+	UAM_ASSERT(published["result"]["runtimeCheck"].value("summary", "").starts_with("The runtime check did not complete"));
+	const std::string view_id = published["result"].value("viewId", "");
+	UAM_ASSERT(view_id.starts_with("html-view:"));
+	UAM_ASSERT_EQ(app.chats.front().messages.size(), std::size_t{2});
+	const Message& assistant = app.chats.front().messages.back();
+	UAM_ASSERT(assistant.role == MessageRole::Assistant);
+	UAM_ASSERT_EQ(assistant.blocks.size(), std::size_t{1});
+	UAM_ASSERT_EQ(assistant.blocks.front().type, std::string("html_view"));
+	UAM_ASSERT_EQ(assistant.blocks.front().title, std::string("Results"));
+	UAM_ASSERT_EQ(assistant.blocks.front().text, html);
+	UAM_ASSERT_EQ(assistant.blocks.front().request_id_json, view_id);
+
+	// Later streamed text re-syncs blocks from turn events without dropping the view.
+	uam::acp_detail::AppendAssistantChunk(app.chats.front(), *session, "Here is the chart.");
+	UAM_ASSERT_EQ(app.chats.front().messages.back().blocks.size(), std::size_t{2});
+	UAM_ASSERT_EQ(app.chats.front().messages.back().blocks.front().type, std::string("html_view"));
+	UAM_ASSERT_EQ(app.chats.front().messages.back().blocks.back().type, std::string("assistant_text"));
+
+	// The block persists and reloads with its title, and restores into a resumed turn.
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+	const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(app.data_root, "chat-html-view");
+	UAM_ASSERT(loaded.has_value());
+	const MessageBlock& saved = loaded->messages.back().blocks.front();
+	UAM_ASSERT_EQ(saved.type, std::string("html_view"));
+	UAM_ASSERT_EQ(saved.title, std::string("Results"));
+	UAM_ASSERT_EQ(saved.text, html);
+	UAM_ASSERT_EQ(saved.request_id_json, view_id);
+	uam::AcpSessionState restored;
+	uam::acp_detail::RestoreTurnEventsFromMessageBlocks(restored, loaded->messages.back());
+	const std::vector<MessageBlock> round_trip = uam::acp_detail::MessageBlocksFromTurnEvents(restored);
+	UAM_ASSERT(round_trip == loaded->messages.back().blocks);
+
+	// One turn may publish at most kMaxViewsPerTurn views; a rejected request changes nothing.
+	for (std::size_t index = 2; index <= uam::html_view::kMaxViewsPerTurn; ++index)
+		UAM_ASSERT(call("publish-" + std::to_string(index), "html_view_publish", {{"title", "Results"}, {"html", html}}).value("ok", false));
+	const std::vector<MessageBlock> capped_blocks = app.chats.front().messages.back().blocks;
+	const std::size_t capped_events = session->turn_events.size();
+	const nlohmann::json over_cap = call("publish-over", "html_view_publish", {{"title", "Results"}, {"html", html}});
+	UAM_ASSERT(!over_cap.value("ok", true));
+	UAM_ASSERT(over_cap.value("error", "").find("already has 8 HTML views, the limit per turn") != std::string::npos);
+	UAM_ASSERT(app.chats.front().messages.back().blocks == capped_blocks);
+	UAM_ASSERT_EQ(session->turn_events.size(), capped_events);
+
+	// A CLI View session has no structured transcript: the request is refused.
+	auto terminal = std::make_unique<uam::CliTerminalState>();
+	terminal->running = true;
+	terminal->uam_control_session = std::make_shared<uam::AcpSessionState>();
+	terminal->uam_control_session->chat_id = "chat-html-view";
+	terminal->uam_control_session->provider_id = "claude-cli";
+	terminal->uam_control_session->uam_control_capability_id = capability;
+	app.cli_terminals.push_back(std::move(terminal));
+	app.acp_sessions.front()->uam_control_capability_id = "other";
+	UAM_ASSERT(call("terminal", "html_view_publish", {{"title", "Results"}, {"html", html}}).value("error", "").find("CLI View") != std::string::npos);
+	uam::UamControlService::Shutdown(app);
 }

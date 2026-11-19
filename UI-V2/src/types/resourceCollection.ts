@@ -18,6 +18,8 @@ export interface ResourceCollection {
   customIcon?: CustomIcon
   id: string
   name: string
+  /** Containing collection; absent for top-level collections. */
+  parentId?: string
   collapsed: boolean
   references: ResourceReference[]
 }

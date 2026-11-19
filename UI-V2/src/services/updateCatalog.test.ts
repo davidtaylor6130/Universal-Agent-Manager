@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { UPDATE_REQUEST_TIMEOUT_MS, availableRemoteHelperUpdates, availableUpdates, compareVersions, fetchLatestUpdateCatalog, readCachedUpdateCatalog } from './updateCatalog'
+import { UPDATE_REQUEST_TIMEOUT_MS, availableRemoteHelperUpdates, availableUpdates, localBuildLabel, compareVersions, fetchLatestUpdateCatalog, readCachedUpdateCatalog } from './updateCatalog'
 
 describe('update catalog', () => {
   beforeEach(() => {
@@ -162,6 +162,26 @@ describe('update catalog', () => {
     expect(availableRemoteHelperUpdates('5.0.0', 3, hosts, dismissed)).toEqual([])
     const nextBuild = hosts.map((entry) => ({ ...entry, bundledRunnerSha256: 'c'.repeat(64) }))
     expect(availableRemoteHelperUpdates('5.0.0', 3, nextBuild, dismissed)).toHaveLength(5)
+  })
+
+  it('names the installed helper by its build label without changing the dismissal key', () => {
+    const host = { id: 'lab', label: 'Lab', transport: 'ssh' as const, sshAlias: 'lab', runnerStatus: 'ready' as const, runnerVersion: '5.0.0', runnerProtocolVersion: 3, platform: 'linux', architecture: 'x86_64', lastSeenAt: '', runnerSha256: 'a'.repeat(64), bundledRunnerSha256: 'b'.repeat(64) }
+    const [labelled] = availableRemoteHelperUpdates('5.0.0', 3, [{ ...host, runnerBuildLabel: '5.0.0-alpha-11' }], {})
+    const [plain] = availableRemoteHelperUpdates('5.0.0', 3, [host], {})
+    expect(labelled.currentVersion).toBe('5.0.0-alpha-11 · build aaaaaaaaaaaa')
+    expect(plain.currentVersion).toBe('5.0.0 · build aaaaaaaaaaaa')
+    expect(labelled.latestVersion).toBe(plain.latestVersion)
+    expect(plain).not.toHaveProperty('latestDisplay')
+    const [fromLocalBuild] = availableRemoteHelperUpdates('5.0.0', 3, [{ ...host, runnerBuildLabel: '5.0.0-alpha-11' }], {}, '5.0.0-alpha-13')
+    expect(fromLocalBuild.latestDisplay).toBe('5.0.0-alpha-13 · helper protocol 3 · build bbbbbbbbbbbb')
+    expect(fromLocalBuild.latestVersion).toBe(plain.latestVersion)
+  })
+
+  it('reads the local build label only when it matches the app release', () => {
+    expect(localBuildLabel('V5.1.0', '5.1.0-alpha-13-Darwin-20261111T000000Z')).toBe('5.1.0-alpha-13')
+    expect(localBuildLabel('V5.1.0', '5.1.0-Darwin-20261111T000000Z')).toBe('')
+    expect(localBuildLabel('V5.1.0', '5.0.0-alpha-9-Darwin-20261111T000000Z')).toBe('')
+    expect(localBuildLabel('V5.1.0', 'index-abc.js')).toBe('')
   })
 
   it('keeps an earlier version offer dismissal when the bundled checksum also differs', () => {

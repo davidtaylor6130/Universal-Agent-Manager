@@ -45,3 +45,48 @@ export function formatReadableToolOutput(text: string): string | null {
   render(parsed, '', lines)
   return lines.join('\n')
 }
+
+// UAM-control secret_request, as each provider names it (Codex, Claude, OpenCode, bare).
+const SECRET_REQUEST_TOOL = /^(?:secret_request|uam-control[._]secret_request|mcp__uam[-_]control__secret_request)$/
+type SummarisableTool = { title: string; status: string; content: string; contentDeferred?: boolean }
+
+function parsedObject(text: string): Record<string, unknown> | undefined {
+  try {
+    const value: unknown = JSON.parse(text)
+    return isNested(value) && !Array.isArray(value) ? value as Record<string, unknown> : undefined
+  } catch { return undefined }
+}
+
+/**
+ * A secret_request row shows only "Secret: <label>", the reason and the outcome; its other arguments and the
+ * delivered path never reach the transcript. Any other tool is returned unchanged.
+ */
+export function redactSecretRequestTool<T extends SummarisableTool>(tool: T): T {
+  if (!SECRET_REQUEST_TOOL.test(tool.title)) return tool
+  let text = tool.contentDeferred ? '' : tool.content.trim().replace(/^Approval: [^\n]*\n\n/, '')
+  let result = ''
+  if (text.startsWith('Arguments:\n')) {
+    const at = text.lastIndexOf('\n\nResult:')
+    result = at < 0 ? '' : text.slice(at + '\n\nResult:'.length).trim()
+    text = text.slice('Arguments:\n'.length, at < 0 ? undefined : at)
+  }
+  const args = parsedObject(text.trim())
+  const label = typeof args?.label === 'string' ? args.label.trim() : ''
+  const reason = typeof args?.reason === 'string' ? args.reason.trim() : ''
+  const status = tool.status.trim().toLowerCase()
+  const outcomeRow = parsedObject(result)
+  const firstBlock = Array.isArray(outcomeRow?.content) && isNested(outcomeRow.content[0]) ? outcomeRow.content[0] as Record<string, unknown> : undefined
+  const resultText = typeof outcomeRow?.error === 'string' ? outcomeRow.error : typeof firstBlock?.text === 'string' ? firstBlock.text : outcomeRow ? '' : result
+  const cancelled = ['cancelled', 'canceled'].includes(status) || /\bcancel/i.test(resultText)
+  const outcome = ['pending', 'running', 'in_progress', 'inprogress', ''].includes(status) ? ''
+    : cancelled ? 'cancelled'
+    : ['failed', 'error'].includes(status) || outcomeRow?.isError === true ? (resultText.trim().slice(0, 200) || 'failed')
+    : 'provided as a one-read path'
+  const title = label ? `Secret: ${label}` : 'Secret'
+  return {
+    ...tool,
+    title: outcome ? `${title} · ${outcome}` : title,
+    content: [label && `Label: ${label}`, reason && `Reason: ${reason}`, `Outcome: ${outcome || 'waiting for you'}`].filter(Boolean).join('\n'),
+    contentDeferred: false,
+  }
+}

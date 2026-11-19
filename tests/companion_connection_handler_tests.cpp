@@ -3,6 +3,7 @@
 #include "cef/uam_query_handler.h"
 #include "cef/companion_server.h"
 #include "common/platform/companion_network_platform.h"
+#include "common/companion/token_store.h"
 #include "include/cef_app.h"
 
 #if defined(__APPLE__)
@@ -19,9 +20,18 @@ struct CompanionConnectionHandlerTestAccess
 	{
 		handler.HandleSetCompanionEnabled(nullptr, {{"enabled", enabled}}, callback);
 	}
-	static void Token(UamQueryHandler& handler, CefRefPtr<UamQueryHandler::Callback> callback)
+	/// Copy token reads the current credential; a pairing code asks for a fresh one.
+	static void Token(UamQueryHandler& handler, CefRefPtr<UamQueryHandler::Callback> callback, bool rotate = false)
 	{
-		handler.HandleGetCompanionToken(nullptr, nlohmann::json::object(), callback);
+		handler.HandleGetCompanionToken(nullptr, rotate ? nlohmann::json{{"rotate", true}} : nlohmann::json::object(), callback);
+	}
+	static void TokenWith(UamQueryHandler& handler, const nlohmann::json& payload, CefRefPtr<UamQueryHandler::Callback> callback)
+	{
+		handler.HandleGetCompanionToken(nullptr, payload, callback);
+	}
+	static void Regenerate(UamQueryHandler& handler, CefRefPtr<UamQueryHandler::Callback> callback)
+	{
+		handler.HandleRegenerateCompanionToken(nullptr, nlohmann::json::object(), callback);
 	}
 	static void Get(UamQueryHandler& handler, CefRefPtr<UamQueryHandler::Callback> callback)
 	{
@@ -43,6 +53,14 @@ struct CompanionConnectionHandlerTestAccess
 
 namespace
 {
+	// These fixtures must never read or write the developer's real credential store; a refusing store keeps legacy files in use.
+	const bool kNoUserCredentialStore = []
+	{
+		uam::companion::TokenStoreOverrideForTests() = [](const fs::path&)
+		{ return uam::companion::TokenStoreAccess{[] { return std::optional<std::string>(); }, [](const std::string&) { return false; }}; };
+		return true;
+	}();
+
 	class ConnectionCallback final : public UamQueryHandler::Callback
 	{
 	public:
@@ -229,12 +247,79 @@ UAM_TEST(CompanionPairingTokenNeverPublishesAnUnreadySavedAddress)
 	UAM_ASSERT(uam::io::WriteTextFile(temporary.root / "companion.json", config.dump()));
 	auto handler_owner = UamQueryHandlerTestAccess::Create(app, "file:///fixture/index.html");
 	auto& handler = *handler_owner;
-	CefRefPtr<ConnectionCallback> callback = new ConnectionCallback;
-	CompanionConnectionHandlerTestAccess::Token(handler, callback);
-	UAM_ASSERT_EQ(callback->failure, 0);
-	UAM_ASSERT_EQ(callback->response["token"], std::string(64, 'b'));
-	UAM_ASSERT_EQ(callback->response["url"], "");
+	// Copy token returns the current credential and leaves it in place, so paired devices stay connected.
+	CefRefPtr<ConnectionCallback> copied = new ConnectionCallback;
+	CompanionConnectionHandlerTestAccess::Token(handler, copied);
+	UAM_ASSERT_EQ(copied->failure, 0);
+	UAM_ASSERT_EQ(copied->response["token"], std::string(64, 'b'));
 	UAM_ASSERT_EQ(ReadFile(token_file), std::string(64, 'b'));
+	for (const nlohmann::json& invalid : {nlohmann::json{{"rotate", "yes"}}, nlohmann::json{{"rotate", true}, {"extra", 1}}, nlohmann::json::array()})
+	{
+		CefRefPtr<ConnectionCallback> refused = new ConnectionCallback;
+		CompanionConnectionHandlerTestAccess::TokenWith(handler, invalid, refused);
+		UAM_ASSERT_EQ(refused->failure, 400);
+	}
+	UAM_ASSERT_EQ(ReadFile(token_file), std::string(64, 'b'));
+	CefRefPtr<ConnectionCallback> callback = new ConnectionCallback;
+	CompanionConnectionHandlerTestAccess::Token(handler, callback, true);
+	UAM_ASSERT_EQ(callback->failure, 0);
+	const std::string issued = callback->response["token"].get<std::string>();
+	UAM_ASSERT(uam::companion::IsValidToken(issued) && issued != std::string(64, 'b'));
+	UAM_ASSERT_EQ(callback->response["url"], "");
+	// With no credential store, rotation keeps the legacy file as the token's home.
+	UAM_ASSERT_EQ(ReadFile(token_file), issued);
+}
+
+UAM_TEST(CompanionLegacyTokenFileMovesToCredentialStore)
+{
+	TempDir temporary("uam-companion-token-migration");
+	ScopedEnvVar token_override("UAM_COMPANION_TOKEN_FILE", "");
+	auto stored = std::make_shared<std::map<std::string, std::string>>();
+	auto& factory = uam::companion::TokenStoreOverrideForTests();
+	const auto previous = factory;
+	struct Restore { std::function<uam::companion::TokenStoreAccess(const fs::path&)>& target; std::function<uam::companion::TokenStoreAccess(const fs::path&)> value; ~Restore() { target = value; } } restore{factory, previous};
+	factory = [stored](const fs::path& root)
+	{
+		const std::string account = uam::companion::TokenCredentialAccount(root);
+		return uam::companion::TokenStoreAccess{
+		    [stored, account]() -> std::optional<std::string> { const auto found = stored->find(account); return found == stored->end() ? std::nullopt : std::optional<std::string>(found->second); },
+		    [stored, account](const std::string& token) { (*stored)[account] = token; return true; }};
+	};
+	uam::AppState app;
+	app.data_root = temporary.root;
+	const auto token_file = temporary.root / "token.txt";
+	const std::string token(64, 'c');
+	UAM_ASSERT(uam::io::WriteTextFile(token_file, token + "\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(temporary.root / "companion.json", nlohmann::json{{"enabled", false}, {"token_file", token_file.string()}}.dump()));
+	auto handler_owner = UamQueryHandlerTestAccess::Create(app, "file:///fixture/index.html");
+	CefRefPtr<ConnectionCallback> callback = new ConnectionCallback;
+	CefRefPtr<ConnectionCallback> settings_before = new ConnectionCallback;
+	CompanionConnectionHandlerTestAccess::Get(*handler_owner, settings_before);
+	UAM_ASSERT(!fs::exists(token_file));
+	const nlohmann::json saved = nlohmann::json::parse(ReadFile(temporary.root / "companion.json"));
+	UAM_ASSERT(!saved.contains("token_file"));
+	UAM_ASSERT_EQ(saved["token_store"], "credential_store");
+	const std::string account = uam::companion::TokenCredentialAccount(temporary.root);
+	UAM_ASSERT_EQ(stored->at(account), token);
+	// Copying keeps the migrated credential; revealing a pairing code replaces it with a fresh one.
+	CefRefPtr<ConnectionCallback> copied = new ConnectionCallback;
+	CompanionConnectionHandlerTestAccess::Token(*handler_owner, copied);
+	UAM_ASSERT_EQ(copied->failure, 0);
+	UAM_ASSERT_EQ(copied->response["token"], token);
+	UAM_ASSERT_EQ(stored->at(account), token);
+	CompanionConnectionHandlerTestAccess::Token(*handler_owner, callback, true);
+	UAM_ASSERT_EQ(callback->failure, 0);
+	const std::string issued = callback->response["token"].get<std::string>();
+	UAM_ASSERT(uam::companion::IsValidToken(issued) && issued != token);
+	UAM_ASSERT_EQ(stored->at(account), issued);
+	CefRefPtr<ConnectionCallback> regenerated = new ConnectionCallback;
+	CompanionConnectionHandlerTestAccess::Regenerate(*handler_owner, regenerated);
+	UAM_ASSERT_EQ(regenerated->failure, 0);
+	UAM_ASSERT(uam::companion::IsValidToken(stored->at(account)) && stored->at(account) != issued);
+	CefRefPtr<ConnectionCallback> settings = new ConnectionCallback;
+	CompanionConnectionHandlerTestAccess::Get(*handler_owner, settings);
+	UAM_ASSERT_EQ(settings->failure, 0);
+	UAM_ASSERT_EQ(settings->response["configured"], true);
 }
 
 UAM_TEST(CompanionCorruptSettingsReportFailureWithoutInventedEnablement)
@@ -466,12 +551,26 @@ UAM_TEST(CompanionLiveRuntimeToggleRepairAndOriginReplacement)
 	UAM_ASSERT_EQ(ReadConnectionApi(temporary.root, certificate_file, origin_b, origin_a, fake_token).status, 401);
 	UAM_ASSERT_EQ(ReadFile(token_file), fake_token);
 	UAM_ASSERT_EQ(ReadFile(certificate_file), public_certificate);
+	CefRefPtr<ConnectionCallback> copied = new ConnectionCallback;
+	CompanionConnectionHandlerTestAccess::Token(handler, copied);
+	UAM_ASSERT_EQ(copied->failure, 0);
+	UAM_ASSERT_EQ(copied->response["token"], fake_token);
+	UAM_ASSERT_EQ(ReadConnectionApi(temporary.root, certificate_file, origin_b, origin_b, fake_token).status, 200);
 	CefRefPtr<ConnectionCallback> pairing = new ConnectionCallback;
-	CompanionConnectionHandlerTestAccess::Token(handler, pairing);
+	CompanionConnectionHandlerTestAccess::Token(handler, pairing, true);
 	UAM_ASSERT_EQ(pairing->failure, 0);
-	UAM_ASSERT_EQ(pairing->response["token"], fake_token);
+	const std::string paired_token = pairing->response["token"].get<std::string>();
+	UAM_ASSERT(uam::companion::IsValidToken(paired_token) && paired_token != fake_token);
 	UAM_ASSERT_EQ(pairing->response["url"], origin_b + "/companion");
 	UAM_ASSERT(!pairing->response.value("certificate", std::string{}).empty());
+	// Revealing a pairing code rotates the shared credential: the running server refuses the old one at once.
+	UAM_ASSERT_EQ(ReadConnectionApi(temporary.root, certificate_file, origin_b, origin_b, fake_token).status, 401);
+	UAM_ASSERT_EQ(ReadConnectionApi(temporary.root, certificate_file, origin_b, origin_b, paired_token).status, 200);
+	CefRefPtr<ConnectionCallback> regenerated = new ConnectionCallback;
+	CompanionConnectionHandlerTestAccess::Regenerate(handler, regenerated);
+	UAM_ASSERT_EQ(regenerated->failure, 0);
+	UAM_ASSERT_EQ(ReadConnectionApi(temporary.root, certificate_file, origin_b, origin_b, paired_token).status, 401);
+	UAM_ASSERT_EQ(ReadConnectionApi(temporary.root, certificate_file, origin_b, origin_b, ReadFile(token_file)).status, 200);
 	set_enabled(false);
 	await_disabled();
 #else

@@ -1,4 +1,8 @@
 #include "common/companion/protocol.h"
+#include <sstream>
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 #include "common/provider/copilot_native_history.h"
 #include "core/chat_import_utils.h"
 #include "cef/uam_bridge_request.h"
@@ -28,6 +32,7 @@
 #include "common/utils/diagnostic_log.h"
 #include "common/utils/time_utils.h"
 #include "common/utils/uuid.h"
+#include "common/vcs/git_command.h"
 
 #include <cstdio>
 #include <fstream>
@@ -1782,11 +1787,15 @@ UAM_TEST(GitWorktreeServiceCreatesDiscardsAndPortsChanges)
 	const fs::path second_worktree = app.chats.front().workspace_worktree_directory;
 	UAM_ASSERT(uam::io::WriteTextFile(second_worktree / "app.txt", "two\n"));
 	UAM_ASSERT(uam::io::WriteTextFile(second_worktree / "new.txt", "new\n"));
+	const std::string attachment_copy = ".UAM/attachments/chat/1-0-notes.txt";
+	fs::create_directories((second_worktree / attachment_copy).parent_path());
+	UAM_ASSERT(uam::io::WriteTextFile(second_worktree / attachment_copy, "private notes\n"));
 	uam::GitWorktreeOperationResult ported = service.PortChatChanges(app, app.chats.front());
 	UAM_ASSERT(ported.ok);
 	UAM_ASSERT(fs::exists(ported.patch_path));
 	UAM_ASSERT_EQ(ReadFile(repo / "app.txt"), std::string("two\n"));
 	UAM_ASSERT_EQ(ReadFile(repo / "new.txt"), std::string("new\n"));
+	UAM_ASSERT(!fs::exists(repo / attachment_copy));
 	UAM_ASSERT_EQ(app.chats.front().workspace_isolation_kind, std::string(""));
 	UAM_ASSERT_EQ(app.chats.front().workspace_worktree_directory, std::string(""));
 	UAM_ASSERT_EQ(uam::paths::ResolveWorkspaceRootPath(app, app.chats.front()), uam::paths::AbsolutePathNoThrow(repo));
@@ -2033,7 +2042,7 @@ UAM_TEST(GitWorktreeDefaultLaunchPersistsRetriesAndLeavesExistingWorkspacesAlone
 		std::this_thread::sleep_for(std::chrono::milliseconds(2));
 	} while (std::chrono::steady_clock::now() < deadline);
 	UAM_ASSERT(failed_session != nullptr && failed_session->queue_held);
-	UAM_ASSERT_EQ(failed_session->last_error, std::string("Source workspace is not an available directory."));
+	UAM_ASSERT_EQ(failed_session->last_error, std::string("Source workspace is not an available directory. Restore the folder, then retry."));
 	UAM_ASSERT(!failed_session->running && !failed_session->processing && !failed_session->reconnect_pending);
 	UAM_ASSERT(app.chats.front().messages.empty());
 	UAM_ASSERT_EQ(failed_session->queued_user_prompts.size(), std::size_t{1});
@@ -2482,6 +2491,178 @@ UAM_TEST(VcsChatBaselinePersistsAllContentWithoutChangingSourceIndexOrBranch)
 	UAM_ASSERT(!service.CaptureChatBaseline(app, chat, &error));
 }
 
+UAM_TEST(VcsChatBaselineLookupPassesThroughSvnCheckoutToGit)
+{
+	UAM_ASSERT(GitAvailableForTests());
+	TempDir temp("uam-baseline-svn-in-git");
+	const fs::path repo = temp.root / "repo";
+	const fs::path svn_child = repo / "vendor";
+	fs::create_directories(svn_child / ".svn");
+	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(repo.string())));
+	UAM_ASSERT(RunGitForTest(repo, "-c user.email=uam@example.test -c user.name=UAM commit --allow-empty -m initial"));
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ChatSession chat;
+	chat.id = "baseline-svn-child";
+	chat.workspace_directory = svn_child.string();
+	std::string error;
+	// A lookup ending at either marker would stop at vendor/.svn and report no repository.
+	const uam::ChatBaselineReadiness readiness = uam::PrepareChatRepositoryBaseline(app, chat, &error);
+	UAM_ASSERT(readiness != uam::ChatBaselineReadiness::Unavailable);
+	if (readiness == uam::ChatBaselineReadiness::Pending)
+		UAM_ASSERT(uam::WaitForChatRepositoryBaseline(app.repository_baseline_preparations.at(chat.id), {}, &error) != uam::ChatBaselineReadiness::Failed);
+	ChatSession svn_only = chat;
+	svn_only.id = "baseline-svn-only";
+	svn_only.workspace_directory = (temp.root / "svn-only").string();
+	fs::create_directories(temp.root / "svn-only" / ".svn");
+	UAM_ASSERT(uam::PrepareChatRepositoryBaseline(app, svn_only, &error) == uam::ChatBaselineReadiness::Unavailable);
+}
+
+UAM_TEST(VcsChatBaselineScopesEveryFileKindToTheChat)
+{
+	if (!GitAvailableForTests()) return;
+	TempDir temp("uam-chat-baseline-file-kinds");
+	const fs::path repo = temp.root / "repo";
+	fs::create_directories(repo);
+	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(repo.string())));
+	UAM_ASSERT(RunGitForTest(repo, "config user.email uam@example.test"));
+	UAM_ASSERT(RunGitForTest(repo, "config user.name UAM"));
+	UAM_ASSERT(uam::io::WriteTextFile(repo / "delete.txt", "gone\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(repo / "swap.txt", "one\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(repo / "mode.sh", "echo hi\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(repo / "stage.txt", "before\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(repo / "prior.txt", "base\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(repo / "move.txt", "moved content line\nsecond line\n"));
+	UAM_ASSERT(RunGitForTest(repo, "add -A"));
+	UAM_ASSERT(RunGitForTest(repo, "commit -m initial"));
+	// Pre-existing dirty work that the chat never touches must stay out of its summary.
+	UAM_ASSERT(uam::io::WriteTextFile(repo / "prior.txt", "dirty before chat\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(repo / "prior-untracked.txt", "dirty before chat\n"));
+	const auto git_output = [&](const std::string& args)
+	{
+		const ProcessExecutionResult result = PlatformServicesFactory::Instance().process_service.ExecuteCommand("git -C " + ShellQuoteForTest(repo.string()) + " " + args, 120000);
+		UAM_ASSERT(result.ok && result.exit_code == 0);
+		return result.output;
+	};
+	const std::string initial_index = git_output("ls-files -s");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ChatSession chat;
+	chat.id = "file-kinds-chat";
+	chat.workspace_directory = repo.string();
+	const uam::VcsCommitService service;
+	std::string error;
+	UAM_ASSERT(service.CaptureChatBaseline(app, chat, &error));
+	UAM_ASSERT_EQ(git_output("ls-files -s"), initial_index);
+	fs::remove(repo / "delete.txt");
+	UAM_ASSERT(uam::io::WriteTextFile(repo / "swap.txt", "two\n"));
+	fs::permissions(repo / "mode.sh", fs::perms::owner_exec, fs::perm_options::add);
+	UAM_ASSERT(uam::io::WriteTextFile(repo / "stage.txt", "after\n"));
+	UAM_ASSERT(RunGitForTest(repo, "add stage.txt"));
+	UAM_ASSERT(RunGitForTest(repo, "mv move.txt moved.txt"));
+	const std::string binary("\x89PNG\r\n\x1a\n\0\0\0binary", 18);
+	UAM_ASSERT(uam::io::WriteTextFile(repo / "image.png", binary));
+	const uam::VcsCommitStatus status = service.Status(app, chat, uam::VcsType::Git, true, "chat");
+	UAM_ASSERT(status.error.empty());
+	const auto find = [&](const std::string& path) { return std::ranges::find(status.changed_files, path, &uam::VcsChangedFile::path); };
+	UAM_ASSERT(find("prior.txt") == status.changed_files.end());
+	UAM_ASSERT(find("prior-untracked.txt") == status.changed_files.end());
+	UAM_ASSERT(find("delete.txt") != status.changed_files.end() && find("delete.txt")->status == " D");
+	UAM_ASSERT(find("swap.txt") != status.changed_files.end() && find("swap.txt")->additions == 1 && find("swap.txt")->deletions == 1);
+#ifndef _WIN32
+	// A permission-only change has no line delta but is still a chat change.
+	UAM_ASSERT(find("mode.sh") != status.changed_files.end() && find("mode.sh")->additions == 0 && find("mode.sh")->deletions == 0);
+#endif
+	UAM_ASSERT(find("stage.txt") != status.changed_files.end() && find("stage.txt")->staged);
+	UAM_ASSERT(find("image.png") != status.changed_files.end() && find("image.png")->binary && find("image.png")->status == " A");
+	UAM_ASSERT(find("move.txt") == status.changed_files.end());
+	UAM_ASSERT(find("moved.txt") != status.changed_files.end() && find("moved.txt")->status == " R" && find("moved.txt")->previous_path == "move.txt" && find("moved.txt")->staged);
+	const std::string move_patch = service.Diff(app, chat, "moved.txt", uam::VcsType::Git, &error, "chat");
+	UAM_ASSERT(move_patch.find("rename from move.txt") != std::string::npos && move_patch.find("rename to moved.txt") != std::string::npos);
+	UAM_ASSERT(service.Diff(app, chat, "delete.txt", uam::VcsType::Git, &error, "chat").find("-gone") != std::string::npos);
+	UAM_ASSERT(service.Diff(app, chat, "stage.txt", uam::VcsType::Git, &error, "chat").find("+after") != std::string::npos);
+	UAM_ASSERT(service.Diff(app, chat, "prior.txt", uam::VcsType::Git, &error, "chat").empty());
+	UAM_ASSERT(error.find("no longer changed") != std::string::npos);
+	// Reading the comparison leaves the user's staged selection exactly as they left it.
+	UAM_ASSERT(git_output("diff --cached --name-only").find("stage.txt") != std::string::npos);
+	UAM_ASSERT(git_output("diff --cached --name-only").find("image.png") == std::string::npos);
+}
+
+UAM_TEST(VcsChatBaselineReportsARemovedRefAsUnavailableBeforeAndAfterGc)
+{
+	if (!GitAvailableForTests()) return;
+	TempDir temp("uam-chat-baseline-removed-ref");
+	const fs::path repo = temp.root / "repo";
+	fs::create_directories(repo);
+	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(repo.string())));
+	UAM_ASSERT(RunGitForTest(repo, "config user.email uam@example.test"));
+	UAM_ASSERT(RunGitForTest(repo, "config user.name UAM"));
+	UAM_ASSERT(uam::io::WriteTextFile(repo / "app.txt", "base\n"));
+	UAM_ASSERT(RunGitForTest(repo, "add -A"));
+	UAM_ASSERT(RunGitForTest(repo, "commit -m initial"));
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ChatSession chat;
+	chat.id = "removed-ref-chat";
+	chat.workspace_directory = repo.string();
+	const uam::VcsCommitService service;
+	std::string error;
+	UAM_ASSERT(service.CaptureChatBaseline(app, chat, &error));
+	UAM_ASSERT(uam::io::WriteTextFile(repo / "app.txt", "changed\n"));
+	const uam::VcsCommitStatus intact = service.Status(app, chat, uam::VcsType::Git, true, "chat");
+	UAM_ASSERT(intact.error.empty() && !intact.baseline_unavailable && intact.changed_files.size() == 1);
+
+	// What the removal command in the Changes documentation does, before and after the objects are pruned.
+	const ProcessExecutionResult refs = PlatformServicesFactory::Instance().process_service.ExecuteCommand("git -C " + ShellQuoteForTest(repo.string()) + " for-each-ref " + ShellQuoteForTest("--format=%(refname)") + " refs/uam/chat-baselines/", 120000);
+	UAM_ASSERT(refs.ok && refs.exit_code == 0 && !uam::strings::IsBlank(refs.output));
+	std::istringstream ref_lines(refs.output);
+	for (std::string ref; std::getline(ref_lines, ref);)
+		if (!uam::strings::IsBlank(ref)) UAM_ASSERT(RunGitForTest(repo, "update-ref -d " + ShellQuoteForTest(uam::strings::Trim(ref))));
+	for (const bool pruned : {false, true})
+	{
+		if (pruned) UAM_ASSERT(RunGitForTest(repo, "-c gc.reflogExpire=now -c gc.pruneExpire=now gc --prune=now"));
+		const uam::VcsCommitStatus removed = service.Status(app, chat, uam::VcsType::Git, true, "chat");
+		UAM_ASSERT(removed.baseline_unavailable);
+		UAM_ASSERT(removed.changed_files.empty());
+		UAM_ASSERT(removed.error.find("baseline was removed") != std::string::npos);
+	}
+	// A chat that never had a baseline reports the same structured state.
+	ChatSession unrecorded = chat;
+	unrecorded.id = "never-captured-chat";
+	UAM_ASSERT(service.Status(app, unrecorded, uam::VcsType::Git, true, "chat").baseline_unavailable);
+}
+
+#ifndef _WIN32
+UAM_TEST(VcsChatBaselineKeepsARawGitFailureNamingABaselineFileRetryable)
+{
+	if (!GitAvailableForTests() || ::geteuid() == 0) return; // Root reads the unreadable file.
+	TempDir temp("uam-chat-baseline-raw-error");
+	const fs::path repo = temp.root / "repo";
+	fs::create_directories(repo / "tests");
+	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(repo.string())));
+	UAM_ASSERT(RunGitForTest(repo, "config user.email uam@example.test"));
+	UAM_ASSERT(RunGitForTest(repo, "config user.name UAM"));
+	UAM_ASSERT(uam::io::WriteTextFile(repo / "app.txt", "base\n"));
+	UAM_ASSERT(RunGitForTest(repo, "add -A"));
+	UAM_ASSERT(RunGitForTest(repo, "commit -m initial"));
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ChatSession chat;
+	chat.id = "raw-error-chat";
+	chat.workspace_directory = repo.string();
+	const uam::VcsCommitService service;
+	std::string error;
+	UAM_ASSERT(service.CaptureChatBaseline(app, chat, &error));
+	const fs::path unreadable = repo / "tests" / "baseline.json";
+	UAM_ASSERT(uam::io::WriteTextFile(unreadable, "{}\n"));
+	fs::permissions(unreadable, fs::perms::none);
+	const uam::VcsCommitStatus status = service.Status(app, chat, uam::VcsType::Git, true, "chat");
+	fs::permissions(unreadable, fs::perms::owner_all);
+	UAM_ASSERT(status.error.find("baseline.json") != std::string::npos);
+	UAM_ASSERT(!status.baseline_unavailable);
+}
+#endif
+
 UAM_TEST(AcpInitialRepositoryBaselineQueuesDurablyBeforeProviderLaunch)
 {
 	if (!GitAvailableForTests()) return;
@@ -2527,6 +2708,32 @@ UAM_TEST(AcpInitialRepositoryBaselineQueuesDurablyBeforeProviderLaunch)
 	UAM_ASSERT(uam::WaitForChatRepositoryBaseline(restarted.repository_baseline_preparations.at(chat.id), {}, &error) == uam::ChatBaselineReadiness::Unavailable);
 	UAM_ASSERT(!vcs.Status(restarted, changed_scope, uam::VcsType::Git, true, "chat").error.empty());
 	UAM_ASSERT_EQ(vcs.Status(restarted, *saved, uam::VcsType::Git, true, "chat").changed_files.size(), static_cast<std::size_t>(1));
+}
+
+UAM_TEST(AcpStopKeepsAFinishedRepositoryBaselineReadyForTheImmediateRestart)
+{
+	// A goal's fresh worker or reviewer context stops the chat and relaunches at once; the launch
+	// refuses a Pending baseline, so stopping must not discard a capture that already finished.
+	if (!GitAvailableForTests()) return;
+	TempDir temp("uam-acp-stop-keeps-baseline");
+	const fs::path repo = temp.root / "repo";
+	fs::create_directories(repo);
+	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(repo.string())));
+	UAM_ASSERT(uam::io::WriteTextFile(repo / "prior.txt", "preexisting\n"));
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ChatSession chat;
+	chat.id = "goal-restart-baseline";
+	chat.workspace_directory = repo.string();
+	app.chats.push_back(chat);
+	std::string error;
+	UAM_ASSERT(uam::PrepareChatRepositoryBaseline(app, chat, &error) == uam::ChatBaselineReadiness::Pending);
+	UAM_ASSERT(uam::WaitForChatRepositoryBaseline(app.repository_baseline_preparations.at(chat.id), {}, &error) == uam::ChatBaselineReadiness::Ready);
+	app.chats.front().persisted_message_count = 2; // The first worker turn has run.
+	UAM_ASSERT(uam::StopAcpSession(app, chat.id));
+	UAM_ASSERT(uam::PrepareChatRepositoryBaseline(app, app.chats.front(), &error) == uam::ChatBaselineReadiness::Ready);
+	UAM_ASSERT(uam::StopAcpSession(app, chat.id));
+	UAM_ASSERT(uam::PrepareChatRepositoryBaseline(app, app.chats.front(), &error, nullptr, true) == uam::ChatBaselineReadiness::Ready);
 }
 
 UAM_TEST(AcpRepositoryBaselineFailureRetriesTheExistingDurableQueueOnce)
@@ -3155,3 +3362,101 @@ UAM_TEST(ChatRepositoryDoesNotSynthesizeInvalidCodexNativeIds)
 		UAM_ASSERT_EQ(found->native_session_id, std::string(value.expected));
 	}
 }
+
+UAM_TEST(GitCommandBuildersNeutraliseRepositoryConfiguredPrograms)
+{
+	const std::vector<std::string> safety{"-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "diff.external=", "-c", "core.pager=cat"};
+	std::vector<std::string> expected{"git"};
+	expected.insert(expected.end(), safety.begin(), safety.end());
+	auto with = [&](std::vector<std::string> tail)
+	{
+		std::vector<std::string> argv = expected;
+		argv.insert(argv.end(), tail.begin(), tail.end());
+		return argv;
+	};
+	UAM_ASSERT(uam::vcs::HardenedGitArgv({"--literal-pathspecs", "-C", "/w s", "diff", "--numstat", "--", "show"}, false) ==
+	           with({"--literal-pathspecs", "-C", "/w s", "diff", "--no-ext-diff", "--no-textconv", "--numstat", "--", "show"}));
+	UAM_ASSERT(uam::vcs::HardenedGitArgv({"show", "HEAD"}, false) == with({"show", "--no-ext-diff", "--no-textconv", "HEAD"}));
+	UAM_ASSERT(uam::vcs::HardenedGitArgv({"-c", "user.name=UAM", "show-ref", "diff"}, false) == with({"-c", "user.name=UAM", "show-ref", "diff"}));
+	UAM_ASSERT(uam::vcs::HardenedGitArgv({"status"}, true)[4] == std::string("core.hooksPath=NUL"));
+	UAM_ASSERT(uam::vcs::IsWindowsHostPlatform("Windows") && !uam::vcs::IsWindowsHostPlatform("linux"));
+
+	const std::string null_device = uam::vcs::kLocalHostIsWindows ? "NUL" : "/dev/null";
+	const std::string prefix = "git -c core.fsmonitor=false -c core.hooksPath=" + null_device + " -c diff.external= -c core.pager=cat";
+	const fs::path workspace = uam::paths::PathFromUtf8("/repo dir");
+	const std::string cwd = " -C " + uam::shell::EscapeArg(uam::paths::Utf8PathString(workspace)) + " ";
+	UAM_ASSERT_EQ(uam::vcs::HardenedGitShellCommandInDirectory(workspace, "--literal-pathspecs diff HEAD -- 'a b'"),
+	              prefix + cwd + "--literal-pathspecs diff --no-ext-diff --no-textconv HEAD -- 'a b'");
+	UAM_ASSERT_EQ(uam::vcs::HardenedGitShellCommandInDirectory(workspace, "-c core.autocrlf=false apply --check p"),
+	              prefix + cwd + "-c core.autocrlf=false apply --check p");
+	UAM_ASSERT_EQ(uam::vcs::HardenedGitShellCommand("clone --quiet a b"), prefix + " clone --quiet a b");
+	// A quoted option value before the subcommand is one word, even when it contains spaces or the word diff.
+	UAM_ASSERT_EQ(uam::vcs::HardenedGitShellCommand("--work-tree='/a diff b' diff --name-status"),
+	              prefix + " --work-tree='/a diff b' diff --no-ext-diff --no-textconv --name-status");
+	UAM_ASSERT_EQ(uam::vcs::HardenedGitShellCommand("--work-tree=\"C:\\a diff\\\\\" diff -z"),
+	              prefix + " --work-tree=\"C:\\a diff\\\\\" diff --no-ext-diff --no-textconv -z");
+	UAM_ASSERT_EQ(uam::vcs::HardenedGitShellCommandInDirectory(workspace, "status --porcelain=v1 -z"), prefix + cwd + "status --porcelain=v1 -z");
+}
+
+UAM_TEST(GitCommandsAreOnlyBuiltThroughTheHardenedBuilders)
+{
+	// A raw `git -C ...` or `git clone ...` command string would skip the safety options; build every one through git_command.h.
+	const fs::path source_root = fs::path(__FILE__).parent_path().parent_path() / "src";
+	std::vector<std::string> offenders;
+	for (const fs::directory_entry& entry : fs::recursive_directory_iterator(source_root))
+	{
+		const std::string extension = entry.path().extension().string();
+		if (!entry.is_regular_file() || (extension != ".cpp" && extension != ".h" && extension != ".mm") || entry.path().filename() == "git_command.h") continue;
+		std::string text;
+		UAM_ASSERT(uam::io::TryReadTextFile(entry.path(), text, 16 * 1024 * 1024));
+		for (const std::string_view needle : {"\"git -", "\"git clone", "{\"git\", \"-C\""})
+			if (text.find(needle) != std::string::npos) offenders.push_back(entry.path().filename().string() + ": " + std::string(needle));
+	}
+	if (!offenders.empty()) uam_test::Fail(("raw git command: " + offenders.front()).c_str(), __FILE__, __LINE__);
+}
+
+#ifndef _WIN32
+UAM_TEST(VcsCommitServiceIgnoresRepositoryConfiguredProgramsDuringStatusDiffAndCommit)
+{
+	if (!GitAvailableForTests()) return;
+
+	TempDir temp("uam-vcs-repo-config");
+	const fs::path workspace = temp.root / "repo";
+	const fs::path marker = temp.root / "ran";
+	if (uam::paths::Utf8PathString(temp.root).find_first_of(" '\"\\") != std::string::npos) return; // The config below is unquoted.
+	fs::create_directories(workspace / "hooks");
+	UAM_ASSERT(RunTestCommand("git init -q " + ShellQuoteForTest(uam::paths::Utf8PathString(workspace))));
+	UAM_ASSERT(RunGitForTest(workspace, "config user.email uam@example.test"));
+	UAM_ASSERT(RunGitForTest(workspace, "config user.name UAM"));
+	UAM_ASSERT(uam::io::WriteTextFile(workspace / "app.txt", "initial\n"));
+	UAM_ASSERT(RunGitForTest(workspace, "add app.txt"));
+	UAM_ASSERT(RunGitForTest(workspace, "commit -q -m initial"));
+
+	const std::string touch = "touch " + uam::paths::Utf8PathString(marker);
+	UAM_ASSERT(uam::io::WriteTextFile(workspace / "hooks" / "pre-commit", "#!/bin/sh\n" + touch + "-hook\n"));
+	fs::permissions(workspace / "hooks" / "pre-commit", fs::perms::owner_all);
+	UAM_ASSERT(uam::io::WriteTextFile(workspace / ".gitattributes", "*.txt diff=probe\n"));
+	std::string config;
+	UAM_ASSERT(uam::io::TryReadTextFile(workspace / ".git" / "config", config));
+	config += "[core]\n\tfsmonitor = " + touch + "-fsmonitor;:\n\thooksPath = " + uam::paths::Utf8PathString(workspace / "hooks") +
+	          "\n[diff]\n\texternal = " + touch + "-external;:\n[diff \"probe\"]\n\ttextconv = " + touch + "-textconv;cat\n";
+	UAM_ASSERT(uam::io::WriteTextFile(workspace / ".git" / "config", config));
+	UAM_ASSERT(uam::io::WriteTextFile(workspace / "app.txt", "changed\n"));
+
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ChatSession chat;
+	chat.id = "chat-repo-config";
+	chat.workspace_directory = uam::paths::Utf8PathString(workspace);
+	uam::VcsCommitService service;
+	UAM_ASSERT(service.Status(app, chat).available);
+	std::string error;
+	UAM_ASSERT(service.Diff(app, chat, "app.txt", uam::VcsType::Git, &error).find("+changed") != std::string::npos);
+	UAM_ASSERT(service.Commit(app, chat, uam::VcsType::Git, "change", {"app.txt"}).ok);
+	for (const char* program : {"-hook", "-fsmonitor", "-external", "-textconv"})
+		UAM_ASSERT(!fs::exists(uam::paths::PathFromUtf8(uam::paths::Utf8PathString(marker) + program)));
+	// The same configuration does run through plain Git, so the absent markers prove UAM's options worked.
+	UAM_ASSERT(RunGitForTest(workspace, "diff HEAD~1 -- app.txt > " + ShellQuoteForTest(uam::paths::Utf8PathString(temp.root / "plain.diff"))));
+	UAM_ASSERT(fs::exists(uam::paths::PathFromUtf8(uam::paths::Utf8PathString(marker) + "-external")));
+}
+#endif

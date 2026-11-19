@@ -40,8 +40,12 @@ export interface AvailableUpdate {
   remoteHostId?: string
   executionHostId?: string
   name: string
+  /** `name` without the computer suffix, for surfaces that show the computer separately. */
+  shortName?: string
   currentVersion: string
   latestVersion: string
+  /** Display text for latestVersion when it differs; latestVersion stays the dismissal and install key. */
+  latestDisplay?: string
   url: string
   installable: boolean
   releaseNotesExcerpt?: string
@@ -96,11 +100,18 @@ export function compareVersions(left: string, right: string): number {
   return 0
 }
 
+/** This app's local build label (X.Y.Z-alpha-Q) from its UI build ID; empty for release builds. */
+export function localBuildLabel(appVersion: string, uiBuildId: string): string {
+  const local = uiBuildId.match(/^(\d+\.\d+\.\d+-alpha-[1-9]\d*)-/)?.[1]
+  return local?.startsWith(`${cleanVersion(appVersion)}-alpha-`) ? local : ''
+}
+
 export function availableRemoteHelperUpdates(
   appVersion: string,
   expectedProtocolVersion: number,
   executionHosts: ExecutionHost[],
   dismissedVersions: Record<string, string>,
+  appBuildLabel = '',
 ): AvailableUpdate[] {
   const latestVersion = cleanVersion(appVersion)
   if (!latestVersion || expectedProtocolVersion <= 0) return []
@@ -114,14 +125,17 @@ export function availableRemoteHelperUpdates(
     const protocolOutdated = (host.runnerProtocolVersion ?? 0) < expectedProtocolVersion
     // Only a build-only offer carries the build in its dismissal key, so earlier version/protocol dismissals still hold.
     const buildOnly = buildOutdated && !versionOutdated && !protocolOutdated
-    const updateVersion = `${latestVersion} · helper protocol ${expectedProtocolVersion}${buildOnly ? ` · build ${bundledBuild.slice(0, 12)}` : ''}`
+    const updateDetail = ` · helper protocol ${expectedProtocolVersion}${buildOnly ? ` · build ${bundledBuild.slice(0, 12)}` : ''}`
+    const updateVersion = `${latestVersion}${updateDetail}`
     if (!isSshHost(host) || (!versionOutdated && !protocolOutdated && !buildOutdated) || dismissedVersions[id] === updateVersion) return []
     return [{
       id,
       remoteHostId: host.id,
       name: `${host.label} SSH helper`,
-      currentVersion: `${currentVersion || 'Not detected'}${buildOutdated ? ` · build ${host.runnerSha256?.slice(0, 12) || 'unknown'}` : ''}`,
+      shortName: 'SSH helper',
+      currentVersion: `${host.runnerBuildLabel || currentVersion || 'Not detected'}${buildOutdated ? ` · build ${host.runnerSha256?.slice(0, 12) || 'unknown'}` : ''}`,
       latestVersion: updateVersion,
+      ...(appBuildLabel ? { latestDisplay: `${appBuildLabel}${updateDetail}` } : {}),
       url: '',
       installable: true,
     }]
@@ -290,6 +304,64 @@ export async function fetchLatestUpdateCatalog(): Promise<LatestUpdateCatalog> {
   }
 }
 
+/** Automatic provider updates install only npm releases at least this old, leaving time for a bad publish to be pulled. */
+export const AUTOMATIC_UPDATE_MIN_AGE_DAYS = 7
+const DAY_MS = 24 * 60 * 60 * 1000
+
+/** Publish times (ms) of a provider package's versions that npm still lists and has not deprecated. */
+export type NpmReleaseHistory = Record<string, number>
+
+/** Reads publish times from the full npm document; abbreviated metadata omits them. Null when unavailable. */
+export async function fetchNpmReleaseHistory(providerId: string, signal?: AbortSignal): Promise<NpmReleaseHistory | null> {
+  const npmPackage = providerPackages[providerId]?.npmPackage
+  if (!npmPackage) return null
+  try {
+    const response = await fetch(`https://registry.npmjs.org/${encodeURIComponent(npmPackage)}`, { signal })
+    if (!response.ok) return null
+    const payload: unknown = await response.json()
+    if (!payload || typeof payload !== 'object') return null
+    const { versions, time } = payload as { versions?: unknown; time?: unknown }
+    if (!versions || typeof versions !== 'object' || !time || typeof time !== 'object') return null
+    const times = time as Record<string, unknown>
+    // A fully unpublished package keeps only `time.unpublished`; nothing in it is installable.
+    if (times.unpublished) return {}
+    const history: NpmReleaseHistory = {}
+    for (const [version, manifest] of Object.entries(versions as Record<string, unknown>)) {
+      if (!manifest || typeof manifest !== 'object' || (manifest as { deprecated?: unknown }).deprecated) continue
+      const published = typeof times[version] === 'string' ? Date.parse(times[version] as string) : Number.NaN
+      if (Number.isFinite(published)) history[version] = published
+    }
+    return history
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Picks the version an automatic update may install: the newest stable, listed, non-deprecated release newer than
+ * the installed one and no newer than the offered one, published at least the minimum age ago. With `exactOnly`
+ * (installers that can only move to their current release, such as Homebrew) only the offered version qualifies.
+ * Empty when nothing qualifies yet.
+ */
+export function automaticUpdateVersion(
+  history: NpmReleaseHistory,
+  currentVersion: string,
+  offeredVersion: string,
+  exactOnly: boolean,
+  now = Date.now(),
+  minAgeDays = AUTOMATIC_UPDATE_MIN_AGE_DAYS,
+): string {
+  const cutoff = now - minAgeDays * DAY_MS
+  let chosen = ''
+  for (const [version, published] of Object.entries(history)) {
+    const clean = cleanVersion(version)
+    if (published > cutoff || clean.includes('-') || compareVersions(clean, currentVersion) <= 0 || compareVersions(clean, offeredVersion) > 0) continue
+    if (exactOnly && compareVersions(clean, offeredVersion) !== 0) continue
+    if (!chosen || compareVersions(clean, chosen) > 0) chosen = clean
+  }
+  return chosen
+}
+
 export function availableUpdates(
   catalog: LatestUpdateCatalog | null,
   appVersion: string,
@@ -330,6 +402,7 @@ export function availableUpdates(
       providerId: state.providerId,
       ...(state.executionHostId ? { executionHostId: state.executionHostId } : {}),
       name: `${provider?.shortName || provider?.name || state.providerId}${state.executionHostId ? ` · ${state.executionHostName || state.executionHostId}` : ''}`,
+      shortName: provider?.shortName || provider?.name || state.providerId,
       currentVersion,
       latestVersion,
       url: latest?.url || `https://www.npmjs.com/package/${providerPackages[state.providerId]?.npmPackage ?? ''}`,

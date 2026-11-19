@@ -6,6 +6,7 @@
 #include "common/chat/native_attachment_assets.h"
 #include "common/runtime/native_refresh_lifetime.h"
 #include "app/transcript_retention_service.h"
+#include "app/persistence_coordinator.h"
 #include "remote/native_history_snapshot.h"
 #include "include/cef_api_hash.h"
 
@@ -28,6 +29,15 @@ struct RemoteRefreshFeedbackTestAccess
 	{
 		handler.HandleSelectSession(nullptr, {{"chatId", id}}, cb);
 	}
+	static void SavedHistory(UamQueryHandler& handler, std::function<bool(CefRefPtr<UamQueryHandler::Callback>, std::function<AsyncCefResult()>, std::function<void(AsyncCefResult&)>)> dispatch)
+	{
+		handler.m_savedHistoryDispatcherForTests = std::move(dispatch);
+	}
+	static void ReadOlder(UamQueryHandler& handler, const std::string& id, CefRefPtr<UamQueryHandler::Callback> cb, std::size_t limit, std::size_t before)
+	{
+		handler.HandleGetChatMessages(nullptr, {{"chatId", id}, {"limit", limit}, {"before", before}, {"deferToolCallContent", true}, {"messagesDigest", ""}}, cb);
+	}
+	static bool RecencyDeferred(const UamQueryHandler& handler, const std::string& id) { return handler.m_recencySaveAfterRead.contains(id); }
 	static void ObserveDispatchThreads(UamQueryHandler& handler, std::function<void(CefThreadId)> observer)
 	{
 		handler.m_nativeMediaDispatchThreadObserverForTests = std::move(observer);
@@ -44,6 +54,13 @@ struct RemoteRefreshFeedbackTestAccess
 		handler.m_attachmentPreviewDispatcherForTests = dispatch;
 		handler.m_nativeMediaRefreshDispatcherForTests = std::move(dispatch);
 		handler.m_remoteNativeHistoryReaderForTests = std::move(reader);
+	}
+	static void StopHost(UamQueryHandler& handler, const std::string& host_id) { handler.StopNativeHistoryReadsOnHost(host_id); }
+	static bool Pending(UamQueryHandler& handler, const std::string& id) { return handler.m_nativeHistoryRequests.contains(id); }
+	static bool Stopped(UamQueryHandler& handler, const std::string& id)
+	{
+		const auto found = handler.m_nativeHistoryRequests.find(id);
+		return found != handler.m_nativeHistoryRequests.end() && found->second->stop_requested();
 	}
 	static void Query(UamQueryHandler& handler, int64_t query_id) { handler.m_dispatchingQuery = {-1, "", query_id}; }
 	static void Cancel(UamQueryHandler& handler, int64_t query_id) { handler.OnQueryCanceled(nullptr, nullptr, query_id); }
@@ -418,6 +435,118 @@ UAM_TEST(RemoteRefreshFeedbackRecoverySurvivesActualReopening)
 	UAM_ASSERT_EQ(fixture.reads->load(), 1); UAM_ASSERT_EQ(fixture.app.composer_text, selection_draft);
 }
 
+namespace
+{
+	/// A local chat saved to disk and present in memory as an unloaded summary, with saved-history reads captured.
+	std::string AddColdLocalChat(FeedbackFixture& fixture, const std::string& id, int rows)
+	{
+		RemoteRefreshFeedbackTestAccess::SavedHistory(*fixture.handler, [&fixture](auto cb, auto worker, auto completion)
+		{
+			fixture.pending.push_back({cb, std::move(worker), std::move(completion)});
+			return true;
+		});
+		ChatSession chat;
+		chat.id = id; chat.provider_id = "gemini-cli";
+		chat.created_at = chat.updated_at = "2026-10-18T08:00:00Z";
+		for (int row = 0; row < rows; ++row)
+			chat.messages.push_back(Message{row % 2 ? MessageRole::Assistant : MessageRole::User, "Saved row " + std::to_string(row)});
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, chat));
+		const auto summary = ChatRepository::LoadLocalChat(fixture.app.data_root, id, false);
+		UAM_ASSERT(summary && !summary->messages_loaded);
+		fixture.app.chats.push_back(*summary);
+		return id;
+	}
+}
+
+UAM_TEST(RefusedSavedPageFallsBackOnceAndThenPagesFromTheLoadedCopy)
+{
+	FeedbackFixture fixture;
+	const std::string id = AddColdLocalChat(fixture, "cold-page-refused", 6);
+	// Memory metadata ahead of the file refuses the paged read: this used to answer "Could not read chat history".
+	ChatDomainService().FindChatById(fixture.app, id)->updated_at = "2099-01-01T00:00:00Z";
+	const auto revision = ChatRepository::ChatStorageRevision(fixture.app.data_root, id);
+	CefRefPtr<FeedbackCallback> first = new FeedbackCallback;
+	const std::size_t queued = fixture.pending.size();
+	RemoteRefreshFeedbackTestAccess::ReadSaved(*fixture.handler, id, first);
+	UAM_ASSERT_EQ(fixture.pending.size(), queued + 1);
+	fixture.Complete(queued);
+	if (first->failures) throw uam_test::TestFailure("Opening after a refused page read failed: " + first->error);
+	UAM_ASSERT_EQ(first->successes, 1);
+	UAM_ASSERT_EQ(first->body.at("messages").size(), std::size_t{6});
+	UAM_ASSERT_EQ(ChatRepository::ChatStorageRevision(fixture.app.data_root, id), revision);
+	// The fallback copy stays loaded, so an older page is answered from memory with no second full read.
+	const ChatSession* current = ChatDomainService().FindChatById(fixture.app, id);
+	UAM_ASSERT(current && current->messages_loaded && current->messages.size() == 6);
+	CefRefPtr<FeedbackCallback> older = new FeedbackCallback;
+	const std::size_t before_older = fixture.pending.size();
+	RemoteRefreshFeedbackTestAccess::ReadOlder(*fixture.handler, id, older, 2, 4);
+	UAM_ASSERT_EQ(fixture.pending.size(), before_older);
+	UAM_ASSERT_EQ(older->successes, 1);
+	UAM_ASSERT_EQ(older->body.at("messages").size(), std::size_t{2});
+}
+
+UAM_TEST(SelectingAChatWithAStaleSummarySavesItsRecencyAfterTheHistoryRead)
+{
+	FeedbackFixture fixture;
+	const std::string id = AddColdLocalChat(fixture, "stale-summary-recency", 4);
+	fs::remove(AppPaths::UamChatSummaryFilePath(fixture.app.data_root, id));
+	const auto revision = ChatRepository::ChatStorageRevision(fixture.app.data_root, id);
+	// A history read is reading the file: the recency save waits for it instead of changing the file under it.
+	CefRefPtr<FeedbackCallback> read = new FeedbackCallback;
+	const std::size_t queued = fixture.pending.size();
+	RemoteRefreshFeedbackTestAccess::ReadSaved(*fixture.handler, id, read);
+	UAM_ASSERT_EQ(fixture.pending.size(), queued + 1);
+	CefRefPtr<FeedbackCallback> selected = new FeedbackCallback;
+	RemoteRefreshFeedbackTestAccess::Select(*fixture.handler, id, selected);
+	UAM_ASSERT_EQ(selected->successes, 1);
+	UAM_ASSERT(!ChatDomainService().FindChatById(fixture.app, id)->last_opened_at.empty());
+	UAM_ASSERT(!fixture.app.pending_chat_save_at_by_chat_id.contains(id));
+	UAM_ASSERT(RemoteRefreshFeedbackTestAccess::RecencyDeferred(*fixture.handler, id));
+	UAM_ASSERT_EQ(ChatRepository::ChatStorageRevision(fixture.app.data_root, id), revision);
+	fixture.Complete(queued);
+	if (read->failures) throw uam_test::TestFailure("History read beside a deferred recency save failed: " + read->error);
+	UAM_ASSERT_EQ(read->successes, 1);
+	// Once the read has finished, the value is queued for an ordinary background save, so it is not lost at restart.
+	UAM_ASSERT(fixture.app.pending_chat_save_at_by_chat_id.contains(id));
+	UAM_ASSERT(!RemoteRefreshFeedbackTestAccess::RecencyDeferred(*fixture.handler, id));
+	// A selection whose read has not been requested yet still waits for that read instead of saving under it.
+	fixture.app.pending_chat_save_at_by_chat_id.erase(id);
+	CefRefPtr<FeedbackCallback> again = new FeedbackCallback;
+	RemoteRefreshFeedbackTestAccess::Select(*fixture.handler, id, again);
+	UAM_ASSERT_EQ(again->successes, 1);
+	UAM_ASSERT(!fixture.app.pending_chat_save_at_by_chat_id.contains(id));
+	UAM_ASSERT(RemoteRefreshFeedbackTestAccess::RecencyDeferred(*fixture.handler, id));
+	CefRefPtr<FeedbackCallback> later = new FeedbackCallback;
+	const std::size_t next = fixture.pending.size();
+	RemoteRefreshFeedbackTestAccess::ReadSaved(*fixture.handler, id, later);
+	if (!later->successes && !later->failures) fixture.Complete(next);
+	UAM_ASSERT_EQ(later->successes, 1);
+	UAM_ASSERT(fixture.app.pending_chat_save_at_by_chat_id.contains(id));
+	fixture.app.pending_chat_save_at_by_chat_id.erase(id);
+}
+
+UAM_TEST(SelectingAChatSucceedsWhenSettingsCannotBeSaved)
+{
+	FeedbackFixture fixture;
+	ChatSession other;
+	other.id = "select-despite-settings-failure"; other.provider_id = "gemini-cli";
+	other.created_at = other.updated_at = "2020-01-01T00:00:00Z";
+	fixture.app.chats.push_back(std::move(other));
+	const fs::path settings = AppPaths::SettingsFilePath(fixture.app.data_root);
+	std::error_code ignored;
+	fs::remove_all(settings, ignored);
+	fs::create_directories(settings / "blocks-the-settings-write");
+	bool saved = true;
+	try { saved = PersistenceCoordinator().SaveSettings(fixture.app); } catch (...) { saved = false; }
+	UAM_ASSERT(!saved);
+	CefRefPtr<FeedbackCallback> selected = new FeedbackCallback;
+	RemoteRefreshFeedbackTestAccess::Select(*fixture.handler, "select-despite-settings-failure", selected);
+	UAM_ASSERT_EQ(selected->failures, 0);
+	UAM_ASSERT_EQ(selected->successes, 1);
+	UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(fixture.app), std::string("select-despite-settings-failure"));
+	UAM_ASSERT(fixture.app.status_line.empty());
+}
+
 UAM_TEST(RemoteRefreshFeedbackRecoverySurvivesNormalTranscriptEviction)
 {
 	FeedbackFixture fixture;
@@ -649,11 +778,11 @@ UAM_TEST(RemoteRefreshFeedbackSlowRemoteReadsLeaveSharedCapacityAvailable)
 	FeedbackFixture fixture;
 	UAM_ASSERT_EQ(owners::refresh_owners.load(), 0u);
 	{
-		// Other chats' held remote reads fill the global remote budget: this chat's
+		// Other chats' held remote reads fill this host's slots: this chat's
 		// refresh is refused and shared capacity stays untouched. (A repeat refresh
 		// of one chat waits on its existing read and reserves nothing.)
-		auto other = TryCreateWorkerOwnedNativeRefresh<int, NativeRefreshWorkerPool::RemoteRefresh>();
-		auto another = TryCreateWorkerOwnedNativeRefresh<int, NativeRefreshWorkerPool::RemoteRefresh>();
+		auto other = TryCreateWorkerOwnedNativeRefresh<int, NativeRefreshWorkerPool::RemoteRefresh>("isolated-remote");
+		auto another = TryCreateWorkerOwnedNativeRefresh<int, NativeRefreshWorkerPool::RemoteRefresh>("isolated-remote");
 		UAM_ASSERT(other && another);
 		const auto busy = fixture.Start();
 		UAM_ASSERT_EQ(busy->status, 503); UAM_ASSERT(fixture.pending.empty());
@@ -677,6 +806,108 @@ UAM_TEST(RemoteRefreshFeedbackSlowRemoteReadsLeaveSharedCapacityAvailable)
 	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{3});
 	fixture.pending.clear();
 	fixture.AwaitRetirement();
+}
+
+UAM_TEST(RemoteRefreshFeedbackSlowHostDoesNotBlockAnotherHostsRefresh)
+{
+	using uam::native_history::NativeRefreshWorkerPool;
+	using uam::native_history::TryCreateWorkerOwnedNativeRefresh;
+	FeedbackFixture fixture;
+	// Two hung reads on another host hold all of that host's slots.
+	auto slow = TryCreateWorkerOwnedNativeRefresh<int, NativeRefreshWorkerPool::RemoteRefresh>("slow-host");
+	auto slower = TryCreateWorkerOwnedNativeRefresh<int, NativeRefreshWorkerPool::RemoteRefresh>("slow-host");
+	UAM_ASSERT(slow && slower);
+	const auto cb = fixture.Start();
+	UAM_ASSERT_EQ(cb->failures, 0);
+	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{1});
+	UAM_ASSERT_EQ(uam::native_history::detail::RemoteRefreshOwnersOnHost("isolated-remote"), 1u);
+	fixture.Complete(0); fixture.Complete(1); fixture.Complete(2);
+	fixture.AssertPublished(cb);
+	slow.reset(); slower.reset();
+	fixture.pending.clear();
+	fixture.AwaitRetirement();
+}
+
+UAM_TEST(RemoteRefreshFeedbackHelperReplacementStopsOnlyThatHostsReadAndFreesItsSlot)
+{
+	FeedbackFixture fixture;
+	// Another host's helper replacement leaves this host's read running to publication.
+	const auto cb = fixture.Start();
+	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{1});
+	RemoteRefreshFeedbackTestAccess::StopHost(*fixture.handler, "other-host");
+	fixture.Complete(0);
+	UAM_ASSERT_EQ(*fixture.reads, 1); UAM_ASSERT_EQ(cb->failures, 0);
+	fixture.Complete(1); fixture.Complete(2);
+	fixture.AssertPublished(cb);
+	fixture.pending.clear();
+	fixture.AwaitRetirement();
+	// This host's helper replacement stops its next read before any SSH read begins.
+	const auto stopped = fixture.Start();
+	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{1});
+	UAM_ASSERT_EQ(uam::native_history::detail::RemoteRefreshOwnersOnHost("isolated-remote"), 1u);
+	RemoteRefreshFeedbackTestAccess::StopHost(*fixture.handler, "isolated-remote");
+	const auto primary = ReadFile(fixture.Primary());
+	fixture.Complete(0);
+	UAM_ASSERT_EQ(*fixture.reads, 1);
+	UAM_ASSERT_EQ(stopped->successes, 0); UAM_ASSERT_EQ(stopped->failures, 1); UAM_ASSERT_EQ(stopped->status, 409);
+	UAM_ASSERT_EQ(ReadFile(fixture.Primary()), primary); fixture.AssertDraft();
+	fixture.pending.clear();
+	fixture.AwaitRetirement();
+	UAM_ASSERT_EQ(uam::native_history::detail::RemoteRefreshOwnersOnHost("isolated-remote"), 0u);
+}
+
+UAM_TEST(RemoteRefreshFeedbackHelperReplacementInterruptsInProgressReadAndFreesItsSlot)
+{
+	FeedbackFixture fixture;
+	auto entered = std::make_shared<std::promise<void>>();
+	auto entering = entered->get_future();
+	RemoteRefreshFeedbackTestAccess::Configure(*fixture.handler,
+	    [&fixture](auto cb, auto worker, auto completion)
+	    {
+		    fixture.pending.push_back({cb, std::move(worker), std::move(completion)});
+		    return true;
+	    },
+	    [entered](const ExecutionHost&, const ChatSession&, std::string* error, std::stop_token stop) -> std::optional<ChatSession>
+	    {
+		    // A hung SSH read that ends only through its stop token (bounded for test safety).
+		    entered->set_value();
+		    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		    while (!stop.stop_requested() && std::chrono::steady_clock::now() < deadline) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		    if (error) *error = "Remote read stopped.";
+		    return std::nullopt;
+	    });
+	const auto cb = fixture.Start();
+	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{1});
+	auto query = fixture.Take(0);
+	auto running = std::async(std::launch::async, query.worker);
+	UAM_ASSERT(entering.wait_for(std::chrono::seconds(3)) == std::future_status::ready);
+	UAM_ASSERT_EQ(uam::native_history::detail::RemoteRefreshOwnersOnHost("isolated-remote"), 1u);
+	const auto started = std::chrono::steady_clock::now();
+	RemoteRefreshFeedbackTestAccess::StopHost(*fixture.handler, "isolated-remote");
+	UAM_ASSERT(running.wait_for(std::chrono::seconds(3)) == std::future_status::ready);
+	UAM_ASSERT(std::chrono::steady_clock::now() - started < std::chrono::seconds(3));
+	query.Finish(running.get());
+	UAM_ASSERT_EQ(cb->successes, 0); UAM_ASSERT_EQ(cb->failures, 1); UAM_ASSERT_EQ(cb->status, 409);
+	query = {}; fixture.pending.clear();
+	fixture.AwaitRetirement();
+	UAM_ASSERT_EQ(uam::native_history::detail::RemoteRefreshOwnersOnHost("isolated-remote"), 0u);
+}
+
+UAM_TEST(RemoteRefreshFeedbackHelperReplacementStopsOtherProvidersRemoteRead)
+{
+	FeedbackFixture fixture;
+	// Non-Gemini remote refreshes take no remote slot, but a helper install still stops them.
+	fixture.Chat().provider_id = "claude-cli";
+	const auto cb = fixture.Start();
+	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{1});
+	UAM_ASSERT(RemoteRefreshFeedbackTestAccess::Pending(*fixture.handler, fixture.Chat().id));
+	RemoteRefreshFeedbackTestAccess::StopHost(*fixture.handler, "other-host");
+	UAM_ASSERT(!RemoteRefreshFeedbackTestAccess::Stopped(*fixture.handler, fixture.Chat().id));
+	RemoteRefreshFeedbackTestAccess::StopHost(*fixture.handler, "isolated-remote");
+	UAM_ASSERT(RemoteRefreshFeedbackTestAccess::Stopped(*fixture.handler, fixture.Chat().id));
+	// Never run the queued real-SSH worker; discard it unexecuted.
+	fixture.pending.clear();
+	UAM_ASSERT_EQ(cb->successes, 0);
 }
 
 UAM_TEST(RemoteRefreshFeedbackCommittedAckFailureKeepsOriginalWarningAndHistory)
@@ -718,7 +949,12 @@ UAM_TEST(RemoteRefreshFeedbackChangedPostcommitOwnerNeverRedrawsOldHistory)
 UAM_TEST(RemoteRefreshFeedbackCancelledQuerySavesWithoutDeliveryAndNextRequestReusesIt)
 {
 	FeedbackFixture fixture;
-	fixture.app.selected_chat_index = -1; // Selected-chat summaries are throttled; observe pushes on an unthrottled row.
+	fixture.app.selected_chat_index = -1;
+	// Every chat summary is throttled for 100 ms after a push, so the clock steps past that window below.
+	static std::chrono::steady_clock::time_point push_now;
+	push_now = std::chrono::steady_clock::now();
+	uam::SetStatePushClockForTests([] { return push_now; });
+	struct RestorePushClock { ~RestorePushClock() { uam::SetStatePushClockForTests(nullptr); } } restore_push_clock;
 	(void)uam::PushStateUpdateIfChanged(nullptr, fixture.app); // Baseline before the refresh.
 	RemoteRefreshFeedbackTestAccess::Query(*fixture.handler, 41);
 	const auto cancelled = fixture.Start();
@@ -728,6 +964,7 @@ UAM_TEST(RemoteRefreshFeedbackCancelledQuerySavesWithoutDeliveryAndNextRequestRe
 	// Delivery only: no history reaches the cancelled callback or the state push.
 	UAM_ASSERT_EQ(cancelled->successes, 0); UAM_ASSERT_EQ(cancelled->failures, 1); UAM_ASSERT_EQ(cancelled->status, 409);
 	UAM_ASSERT(cancelled->error.find("New native answer") == std::string::npos);
+	push_now += std::chrono::milliseconds(100);
 	UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, fixture.app));
 	// The read and its save still finished.
 	const auto saved = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.Chat().id, true, nullptr, false);

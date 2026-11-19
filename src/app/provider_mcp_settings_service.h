@@ -133,12 +133,11 @@ namespace uam::provider_mcp_settings
 		return result;
 	}
 
-	/// Read at most 2 MiB from a regular open handle; a final symlink or FIFO cannot redirect/block the worker.
-	inline bool ReadConfigFile(const std::filesystem::path& path, std::string& bytes)
+	/// Read at most `cap` bytes from a regular open handle; a final symlink or FIFO cannot redirect/block the worker.
+	inline bool ReadConfigFile(const std::filesystem::path& path, std::string& bytes, std::size_t cap = provider_setup::kMaxFileBytes)
 	{
 		bytes.clear();
 		if (path.empty() || path.native().find(std::filesystem::path::value_type{}) != std::filesystem::path::string_type::npos) return false;
-		constexpr std::size_t cap = provider_setup::kMaxFileBytes;
 #if defined(_WIN32)
 		std::filesystem::path native; std::string error;
 		if (!io::NativeFilePath(path, native, error)) return false;

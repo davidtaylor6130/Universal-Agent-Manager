@@ -37,8 +37,8 @@ struct PermissionProjectionFixture
 		session->waiting_for_permission = true;
 		session->lifecycle_state = "waitingPermission";
 		session->goal_review_turn = !unrestricted && goal_review;
-		session->active_uam_agent_workspace_access = !unrestricted && !goal_review ? "read" : "";
-		session->active_uam_agent_id = session->active_uam_agent_workspace_access.empty() ? "" : "private-read-agent";
+		session->active_uam_agent_workspace_access = !unrestricted && !goal_review ? "read" : "write";
+		session->active_uam_agent_id = session->active_uam_agent_workspace_access == "write" ? "" : "private-read-agent";
 		app.acp_sessions.push_back(std::move(owned));
 	}
 
@@ -59,6 +59,8 @@ struct PermissionProjectionFixture
 		    {"persistent", "Allow always", "allow_always"},
 		    {"allow-looking-rejection", "Deny", "reject_once"},
 		    {"cancelled", "Cancel", "reject_once"}};
+		// As on arrival: capture the read scope the ceiling checks paths against.
+		uam::acp_detail::ApplyCommandSafetyDecision(app, app.chats.front(), pending);
 	}
 };
 
