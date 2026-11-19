@@ -2301,6 +2301,15 @@ namespace uam
 			{
 				nlohmann::json object = StateSerializer::SerializeFolder(folder, false);
 				uam::icons::AddFrontendAsset(object, data_root, folder.custom_icon);
+				const bool local = folder.execution_host_id.empty() || folder.execution_host_id == uam::execution_hosts::kLocalHostId;
+				if (folder.custom_icon.type.empty() && local && !folder.directory.empty() && !object.value("missing", false))
+				{
+					const std::filesystem::path directory = uam::paths::PathFromUtf8(folder.directory);
+					// Never trigger a privacy prompt just to decorate the sidebar.
+					if (PlatformServicesFactory::Instance().path_service.CanProbeDirectoryWithoutPrompt(directory))
+						if (std::string icon = uam::icons::ProjectIconDataUrl(directory); !icon.empty())
+							object["projectIcon"] = std::move(icon);
+				}
 				folders_json.push_back(std::move(object));
 			}
 			return folders_json;

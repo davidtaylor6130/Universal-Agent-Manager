@@ -105,5 +105,45 @@ namespace uam::icons
 		if (icon.type == "png" && !object["customIcon"].is_null())
 			object["customIcon"]["dataUrl"] = PngDataUrl(data_root, icon);
 	}
+
+	/// <summary>Finds a website or app PNG icon in a local workspace, or returns empty when none fits the custom-icon bounds.</summary>
+	inline std::string ProjectIconDataUrl(const std::filesystem::path& workspace)
+	{
+		// Common favicon, web-app, desktop and mobile launcher locations; the first bounded PNG wins.
+		static constexpr std::string_view kCandidates[] = {
+		    "public/favicon.png", "public/apple-touch-icon.png", "public/icon.png", "public/logo192.png",
+		    "static/favicon.png", "static/apple-touch-icon.png", "app/icon.png", "app/apple-icon.png",
+		    "src/app/icon.png", "src/app/apple-icon.png", "web/favicon.png", "web/icons/Icon-192.png",
+		    "favicon.png", "apple-touch-icon.png", "icon.png", "assets/icon.png", "src-tauri/icons/128x128.png",
+		    "build/icon.png", "resources/icon.png", "android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png",
+		    "app/src/main/res/mipmap-xxxhdpi/ic_launcher.png"};
+		if (workspace.empty()) return {};
+		// Folder state serializes on many pushes; probe each workspace once per run.
+		// ponytail: icons added or changed mid-run show after restart; add an mtime check if that matters.
+		static std::mutex cache_mutex;
+		static std::unordered_map<std::string, std::string> cache;
+		const std::string key = workspace.string();
+		{
+			const std::lock_guard<std::mutex> lock(cache_mutex);
+			if (const auto found = cache.find(key); found != cache.end()) return found->second;
+		}
+		std::string data_url;
+		for (const std::string_view candidate : kCandidates)
+		{
+			std::error_code error;
+			const std::filesystem::path file = workspace / std::filesystem::path(candidate);
+			if (!std::filesystem::is_regular_file(std::filesystem::symlink_status(file, error)) || error) continue;
+			std::string bytes;
+			if (uam::io::TryReadTextFile(file, bytes, kMaximumPngBytes) && HasBoundedPngHeader(bytes))
+			{
+				data_url = "data:image/png;base64," + uam::base64::Encode(bytes);
+				break;
+			}
+		}
+		const std::lock_guard<std::mutex> lock(cache_mutex);
+		if (cache.size() >= 256) cache.clear();
+		cache[key] = data_url;
+		return data_url;
+	}
 #endif
 }

@@ -1241,6 +1241,12 @@ UAM_TEST(CustomIconsKeepPortableReferencesBoundedAssetsAndLocalHostMetadata)
 	fs::create_directories(temp.root / "icons");
 	UAM_ASSERT(uam::io::WriteBinaryFile(temp.root / "icons" / png.value, bytes));
 	UAM_ASSERT(uam::icons::PngDataUrl(temp.root, png).starts_with("data:image/png;base64,"));
+	const fs::path project = temp.root / "project";
+	UAM_ASSERT(uam::icons::ProjectIconDataUrl(project).empty());
+	const fs::path website = temp.root / "website";
+	fs::create_directories(website / "public");
+	UAM_ASSERT(uam::io::WriteBinaryFile(website / "public" / "favicon.png", bytes));
+	UAM_ASSERT(uam::icons::ProjectIconDataUrl(website).starts_with("data:image/png;base64,"));
 	bytes[18] = 1;
 	bytes[19] = 1;
 	UAM_ASSERT(!uam::icons::HasBoundedPngHeader(bytes));
