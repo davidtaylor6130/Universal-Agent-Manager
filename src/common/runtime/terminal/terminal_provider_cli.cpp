@@ -204,9 +204,15 @@ namespace
 
 std::string ProviderInteractiveCeilingError(const AppState& app, const ChatSession& chat)
 {
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
 	if (!uam::provider_ids::IsCliProviderAliasOf(provider.id, uam::provider_ids::kOpenCodeCli) || !InteractiveChatHasReadCeiling(app, chat)) return {};
 	return "OpenCode CLI View cannot be held to Plan or a read-only agent: its terminal has no Plan option UAM can enforce. Use Chat, or switch this chat to Default first.";
+#else
+	(void)app;
+	(void)chat;
+	return {};
+#endif
 }
 
 std::vector<std::string> BuildProviderInteractiveArgv(const AppState& app, const ChatSession& chat)

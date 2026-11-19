@@ -185,6 +185,39 @@ class BuildFlagLeakGateTests(unittest.TestCase):
             self.assertEqual(json.loads(residue.read_text())['artifacts']['universal_agent_manager.exe']['GEMINI']['geminiKey'], 3)
             self.assertEqual(run(*gate)[0], 0, 'A recorded row passes on its own build')
 
+    def test_msvc_anonymous_namespace_hashes_do_not_make_residue_machine_specific(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            build = Path(temporary) / 'windows-off'
+            (build / 'Release').mkdir(parents=True)
+            (build / 'UI-V2/dist').mkdir(parents=True)
+            (build / 'CMakeCache.txt').write_text('UAM_ENABLE_RUNTIME_GEMINI_CLI:BOOL=OFF\nUAM_ENABLE_SSH:BOOL=OFF\n')
+            exe = build / 'Release/universal_agent_manager.exe'
+            exe.write_bytes(b'\x00.?AVGeminiProjection@?A0x0badf00d@usage@uam@@\x00')
+            empty = Path(temporary) / 'empty.json'
+            empty.write_text('{"entries": []}')
+            candidate = Path(temporary) / 'candidate.json'
+            candidate.write_text(json.dumps({'reasons': {'GEMINI': 'shared usage scanner'},
+                                             'artifacts': {'universal_agent_manager.exe': {'GEMINI': {'.?AVGeminiProjection@?A0x41c2f6d9@usage@uam@@': 1}}}}))
+            residue = Path(temporary) / 'residue.json'
+            residue.write_text('{}')
+            self.assertEqual(run('--merge-residue', candidate, '--residue', residue)[0], 0)
+            self.assertEqual(json.loads(residue.read_text())['artifacts']['universal_agent_manager.exe']['GEMINI'], {'.?AVGeminiProjection@?A0x<hash>@usage@uam@@': 1})
+            gate = ('--build-dir', build, '--allowlist', empty, '--residue', residue)
+            code, output = run(*gate)
+            self.assertEqual(code, 0, f'A string recorded on another machine matches: {output}')
+            exe.write_bytes(b'\x00.?AVGeminiProjection@?A0x0badf00d@usage@uam@@\x00.?AVGeminiProjection@?A0x12345678@usage@uam@@\x00')
+            self.assertEqual(run(*gate)[0], 1, 'The recorded count still applies to the stable spelling')
+            # A hash inside the 60 characters after the match: the window is cut from the raw string, as hosted rows recorded it.
+            tail = '@?A0x{}@usage@uam@@YA?AV?$vector@URecord@usage@uam@@V?$allocator@URecord@usage@uam@@@std@@@std@@'
+            exe.write_bytes(b'\x00.?AV<lambda_1>@?1??GeminiRecords' + tail.format('0badf00d').encode() + b'\x00')
+            raw = '.?AV<lambda_1>@?1??GeminiRecords' + tail.format('41c2f6d9')
+            candidate.write_text(json.dumps({'reasons': {'GEMINI': 'shared usage scanner'},
+                                             'artifacts': {'universal_agent_manager.exe': {'GEMINI': {raw[:raw.index('Gemini') + 6 + 60]: 1}}}}))
+            residue.write_text('{}')
+            self.assertEqual(run('--merge-residue', candidate, '--residue', residue)[0], 0)
+            code, output = run(*gate)
+            self.assertEqual(code, 0, f'A hash inside a cut window matches its recording: {output}')
+
     def test_native_rows_cover_windows_only_when_requested(self):
         workflow = WORKFLOW.read_text()
         native = workflow[workflow.index('\n  native:\n'):]
