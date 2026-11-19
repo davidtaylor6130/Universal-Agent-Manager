@@ -2415,7 +2415,12 @@ For desktop observation and input, use only the provider's built-in controller; 
 		}
 
 		constexpr const char* kBackgroundTaskRestartWait = "Wait for the provider's background tasks to finish before applying this chat's changed model or settings.";
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
 		constexpr const char* kClaudeSelfStartedTurnWait = "Wait for Claude to finish the turn it started after a background task.";
+#else
+		// Only Claude's handlers mark a self-started turn.
+		constexpr const char* kClaudeSelfStartedTurnWait = kBackgroundTaskRestartWait;
+#endif
 
 		// Only this admission stack may disregard its own raw FIFO when preparing native settings.
 		// Public setting changes continue to treat queued input as busy.

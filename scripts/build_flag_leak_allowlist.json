@@ -58,6 +58,27 @@
       "scope": "resources",
       "path": "markdown-store/*",
       "reason": "Markdown Store skill text copied into the bundle (CMake copies the whole markdown-store folder, including personal skills, which is audit finding D2). Skill prose naming providers is user content, not an entry point; shipping only reviewed bundled skills is tracked separately."
+    },
+    {
+      "flag": "GEMINI",
+      "scope": "resources",
+      "path": "companion/caddy",
+      "max": 3,
+      "reason": "Caddy 2.11.9 (companion/caddy), the pinned upstream HTTPS transport that phone access bundles, is a third-party Go executable UAM does not author. Its syntax-highlighter lexer tables list the Gemini markup format ('gemini', '*.gmni', 'text/gemini'). None of it names or reaches a UAM provider or feature; the budget is the count in that exact release, so a Caddy update is reviewed again."
+    },
+    {
+      "flag": "OPENCODE",
+      "scope": "resources",
+      "path": "companion/caddy",
+      "max": 2,
+      "reason": "Caddy 2.11.9 (companion/caddy), the pinned upstream HTTPS transport that phone access bundles, is a third-party Go executable UAM does not author. Its Go runtime contains the function runtime.(*_panic).initOpenCodedDefers (open-coded defers), which the OpenCode pattern matches. None of it names or reaches a UAM provider or feature; the budget is the count in that exact release, so a Caddy update is reviewed again."
+    },
+    {
+      "flag": "SSH",
+      "scope": "resources",
+      "path": "companion/caddy",
+      "max": 510,
+      "reason": "Caddy 2.11.9 (companion/caddy), the pinned upstream HTTPS transport that phone access bundles, is a third-party Go executable UAM does not author. Its bundled smallstep certificate authority and golang.org/x/crypto/ssh packages carry SSH certificate, key and template symbols and text, and its HTTP placeholders include {remote_host}. None of it names or reaches a UAM provider or feature; the budget is the count in that exact release, so a Caddy update is reviewed again."
     }
   ]
 }

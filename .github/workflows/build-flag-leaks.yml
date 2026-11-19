@@ -120,8 +120,8 @@ jobs:
     # Adding an unrelated label must not restart the 38 builds.
     if: (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'build-flags')) && (github.event.action != 'labeled' || github.event.label.name == 'build-flags')
     runs-on: ${{ matrix.os }}
-    # Most flags have no recorded Windows residue yet, so those rows fail and upload candidates without failing the run.
-    # Remove this line once every Windows row is recorded (see docs/reference/architecture/build-test-release.md).
+    # Windows residue is recorded for every flag, but a row that still fails uploads candidates without failing the run.
+    # Remove this line once one run shows every Windows row passing (see docs/reference/architecture/build-test-release.md).
     continue-on-error: ${{ matrix.os == 'windows-latest' }}
     defaults:
       run:

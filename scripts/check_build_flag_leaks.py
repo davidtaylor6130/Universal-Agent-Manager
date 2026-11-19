@@ -55,6 +55,26 @@ PRINTABLE = re.compile(rb'[\x20-\x7e]{4,}')
 PRINTABLE_UTF16 = re.compile(rb'(?:[\x20-\x7e]\x00){4,}')
 # macOS and Linux wide literals are UTF-32LE.
 PRINTABLE_UTF32 = re.compile(rb'(?:[\x20-\x7e]\x00\x00\x00){4,}')
+# MSVC names anonymous namespaces in RTTI and decorated names ?A0x<8 hex digits>, a value that depends on the build
+# machine and source, not on the product. The text around a match is cut from the raw string first and then read with
+# the tag (or a tag the cut ended inside) as ?A0x<hash>, so recorded residue stays valid wherever it was built.
+# ponytail: a cut that starts inside a tag keeps its hex tail; strings are 60 characters either side, so that is rare.
+MSVC_ANONYMOUS_NAMESPACE = re.compile(r'\?A0x[0-9a-f]{1,8}')
+
+
+def stable_text(text):
+    return MSVC_ANONYMOUS_NAMESPACE.sub('?A0x<hash>', text)
+
+
+def stable_residue(residue):
+    """Residue with every recorded string in its stable spelling; strings that differed only in a machine hash add up."""
+    for per_flag in residue.get('artifacts', {}).values():
+        for flag, strings in per_flag.items():
+            stable = {}
+            for text, count in strings.items():
+                stable[stable_text(text)] = stable.get(stable_text(text), 0) + count
+            per_flag[flag] = stable
+    return residue
 
 
 def cmake_bool(value):
@@ -142,8 +162,8 @@ def find_leaks(disabled, artifacts, local_folders=(), foreign_folders=()):
                     token_start -= 1
                 while token_end < min(len(text), match.end() + TOKEN_REACH) and text[token_end] not in TOKEN_BREAKS:
                     token_end += 1
-                leaks.append({'flag': name, 'scope': scope, 'path': path, 'match': match.group(0), 'token': text[token_start:token_end],
-                              'text': text[start:match.end() + 60]})
+                leaks.append({'flag': name, 'scope': scope, 'path': path, 'match': match.group(0), 'token': stable_text(text[token_start:token_end]),
+                              'text': stable_text(text[start:match.end() + 60])})
     return leaks
 
 
@@ -265,7 +285,7 @@ def merge_residue(path, residue, candidates):
     """Combine the candidate files uploaded by failing native CI rows, keeping the highest count for each string.
     Reviewed reasons are never replaced, so a flag that only has a TODO reason still fails the gate."""
     for candidate in candidates:
-        other = json.loads(candidate.read_text())
+        other = stable_residue(json.loads(candidate.read_text()))
         for flag, reason in other.get('reasons', {}).items():
             residue.setdefault('reasons', {}).setdefault(flag, reason)
         for artifact, per_flag in other.get('artifacts', {}).items():
@@ -309,7 +329,7 @@ def main(argv=None):
         if not form.is_absolute() or len(form.parts) < 3:
             parser.error(f'--local-path {folder} must be an absolute folder at least two levels deep, or it could hide real matches.')
     if args.merge_residue:
-        merge_residue(args.residue, json.loads(args.residue.read_text()) if args.residue.exists() else {}, args.merge_residue)
+        merge_residue(args.residue, stable_residue(json.loads(args.residue.read_text())) if args.residue.exists() else {}, args.merge_residue)
         return 0
     if not args.build_dir and not args.dist:
         parser.error('Pass --build-dir or --dist.')
@@ -357,7 +377,7 @@ def main(argv=None):
             failures.append(f'Allowlist entry without a justification: {entry}')
         if 'max' not in entry and ('pattern' in entry or 'match' in entry or 'path' not in entry):
             failures.append(f'Allowlist entry without a budget: {entry}')
-    residue = json.loads(args.residue.read_text()) if args.residue.exists() else {}
+    residue = stable_residue(json.loads(args.residue.read_text())) if args.residue.exists() else {}
     leaks = find_leaks(disabled, artifacts, [ROOT] + ([args.build_dir] if args.build_dir else []), args.local_path)
     leak_failures, notes = apply_allowlist(apply_residue(leaks, residue), entries, disabled)
     if args.record_residue:
