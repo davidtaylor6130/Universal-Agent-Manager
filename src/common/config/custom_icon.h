@@ -125,9 +125,9 @@ namespace uam::icons
 			const std::size_t size = read(entry + 8, 4);
 			const std::size_t offset = read(entry + 12, 4);
 			if (offset < directory_end || offset > bytes.size() || size > bytes.size() - offset) return false;
-			// Chromium decodes the largest image, so an embedded PNG needs the same pixel bound as a plain one.
-			const std::string_view image = bytes.substr(offset, size);
-			if (image.starts_with("\x89PNG") && !HasBoundedPngHeader(image)) return false;
+			// Chromium picks PNG from the bytes at the offset, whatever the declared size, and decodes the largest image,
+			// so an embedded PNG needs the same pixel bound as a plain one.
+			if (bytes.substr(offset).starts_with("\x89PNG") && !HasBoundedPngHeader(bytes.substr(offset, size))) return false;
 		}
 		return true;
 	}
