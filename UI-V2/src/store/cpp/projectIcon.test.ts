@@ -9,8 +9,13 @@ describe('detected workspace project icon', () => {
     expect(sanitizeCppFolder({ id: 'f1', projectIcon: png, customIcon: { type: 'text', value: 'A' } })?.customIcon).toEqual({ type: 'text', value: 'A' })
   })
 
-  it('rejects anything that is not PNG data', () => {
-    expect(sanitizeCppFolder({ id: 'f1', projectIcon: 'data:image/svg+xml;base64,PHN2Zz4=' })?.customIcon).toBeUndefined()
+  it('accepts SVG and ICO favicons', () => {
+    for (const icon of ['data:image/svg+xml;base64,PHN2Zz4=', 'data:image/x-icon;base64,AAABAA=='])
+      expect(sanitizeCppFolder({ id: 'f1', projectIcon: icon })?.customIcon).toEqual({ type: 'png', value: 'project-icon:f1', dataUrl: icon })
+  })
+
+  it('rejects anything that is not image data', () => {
+    expect(sanitizeCppFolder({ id: 'f1', projectIcon: 'data:text/html;base64,PHN2Zz4=' })?.customIcon).toBeUndefined()
     expect(sanitizeCppFolder({ id: 'f1', projectIcon: 'file:///etc/passwd' })?.customIcon).toBeUndefined()
   })
 })

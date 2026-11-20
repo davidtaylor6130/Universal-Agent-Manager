@@ -1159,7 +1159,7 @@ export function sanitizeCppGoal(value: unknown): CppGoal | null {
 
 /** Detected workspace icons are display-only PNG data; the value only keys failed-image fallback. */
 function sanitizeProjectIcon(value: unknown, folderId: string): CustomIcon | undefined {
-  return typeof value === 'string' && value.length <= 350000 && /^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(value)
+  return typeof value === 'string' && value.length <= 350000 && /^data:image\/(?:png|svg\+xml|x-icon);base64,[A-Za-z0-9+/]+={0,2}$/.test(value)
     ? { type: 'png', value: `project-icon:${folderId}`, dataUrl: value }
     : undefined
 }
@@ -1171,7 +1171,7 @@ export function sanitizeCppFolder(value: unknown): CppFolder | null {
   return {
     id,
     title: stringOr(value.title, 'Untitled'),
-    // A chosen icon wins; otherwise the workspace's own website or app PNG icon, when native found one.
+    // A chosen icon wins; otherwise the workspace's own website or app icon (PNG, SVG or ICO), when native found one.
     customIcon: sanitizeCustomIcon(value.customIcon) ?? sanitizeProjectIcon(value.projectIcon, id),
     directory: stringOr(value.directory),
     collapsed: booleanOr(value.collapsed),

@@ -106,17 +106,33 @@ namespace uam::icons
 			object["customIcon"]["dataUrl"] = PngDataUrl(data_root, icon);
 	}
 
-	/// <summary>Finds a website or app PNG icon in a local workspace, or returns empty when none fits the custom-icon bounds.</summary>
+	/// <summary>Bounds an ICO directory: 1-64 images whose entries fit inside the file.</summary>
+	inline bool HasBoundedIcoHeader(std::string_view bytes)
+	{
+		if (bytes.size() < 22 || bytes.size() > kMaximumPngBytes || bytes.substr(0, 4) != std::string_view("\0\0\1\0", 4)) return false;
+		const std::size_t count = static_cast<unsigned char>(bytes[4]) | (static_cast<std::size_t>(static_cast<unsigned char>(bytes[5])) << 8);
+		return count > 0 && count <= 64 && bytes.size() >= 6 + count * 16;
+	}
+
+	/// <summary>Accepts a bounded SVG document; it is only shown through an image element, where scripts never run.</summary>
+	inline bool IsBoundedSvg(std::string_view bytes)
+	{
+		return !bytes.empty() && bytes.size() <= kMaximumPngBytes && bytes.substr(0, 1024).find("<svg") != std::string_view::npos;
+	}
+
+	/// <summary>Finds a website or app icon (PNG, SVG or ICO) in a local workspace, or returns empty when none fits the custom-icon bounds.</summary>
 	inline std::string ProjectIconDataUrl(const std::filesystem::path& workspace)
 	{
-		// Common favicon, web-app, desktop and mobile launcher locations; the first bounded PNG wins.
+		// Common favicon, web-app, desktop and mobile launcher locations, sharpest formats first; the first bounded icon wins.
 		static constexpr std::string_view kCandidates[] = {
-		    "public/favicon.png", "public/apple-touch-icon.png", "public/icon.png", "public/logo192.png",
-		    "static/favicon.png", "static/apple-touch-icon.png", "app/icon.png", "app/apple-icon.png",
-		    "src/app/icon.png", "src/app/apple-icon.png", "web/favicon.png", "web/icons/Icon-192.png",
-		    "favicon.png", "apple-touch-icon.png", "icon.png", "assets/icon.png", "src-tauri/icons/128x128.png",
-		    "build/icon.png", "resources/icon.png", "android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png",
-		    "app/src/main/res/mipmap-xxxhdpi/ic_launcher.png"};
+		    "public/apple-touch-icon.png", "public/favicon.svg", "public/favicon.png", "public/icon.png",
+		    "public/icon.svg", "public/logo192.png", "public/favicon-96x96.png", "public/favicon-32x32.png",
+		    "static/apple-touch-icon.png", "static/favicon.svg", "static/favicon.png", "app/apple-icon.png",
+		    "app/icon.svg", "app/icon.png", "src/app/apple-icon.png", "src/app/icon.svg", "src/app/icon.png",
+		    "web/favicon.png", "web/icons/Icon-192.png", "apple-touch-icon.png", "favicon.svg", "favicon.png",
+		    "icon.png", "assets/icon.png", "src-tauri/icons/128x128.png", "build/icon.png", "resources/icon.png",
+		    "android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png", "app/src/main/res/mipmap-xxxhdpi/ic_launcher.png",
+		    "public/favicon.ico", "static/favicon.ico", "app/favicon.ico", "src/app/favicon.ico", "favicon.ico"};
 		if (workspace.empty()) return {};
 		// Folder state serializes on many pushes; probe each workspace once per run.
 		// ponytail: icons added or changed mid-run show after restart; add an mtime check if that matters.
@@ -134,9 +150,13 @@ namespace uam::icons
 			const std::filesystem::path file = workspace / std::filesystem::path(candidate);
 			if (!std::filesystem::is_regular_file(std::filesystem::symlink_status(file, error)) || error) continue;
 			std::string bytes;
-			if (uam::io::TryReadTextFile(file, bytes, kMaximumPngBytes) && HasBoundedPngHeader(bytes))
+			if (!uam::io::TryReadTextFile(file, bytes, kMaximumPngBytes)) continue;
+			const char* mime = candidate.ends_with(".svg") ? (IsBoundedSvg(bytes) ? "image/svg+xml" : nullptr)
+			    : candidate.ends_with(".ico") ? (HasBoundedIcoHeader(bytes) ? "image/x-icon" : nullptr)
+			    : (HasBoundedPngHeader(bytes) ? "image/png" : nullptr);
+			if (mime)
 			{
-				data_url = "data:image/png;base64," + uam::base64::Encode(bytes);
+				data_url = std::string("data:") + mime + ";base64," + uam::base64::Encode(bytes);
 				break;
 			}
 		}

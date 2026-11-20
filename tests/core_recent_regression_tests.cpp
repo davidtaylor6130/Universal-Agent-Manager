@@ -1247,6 +1247,18 @@ UAM_TEST(CustomIconsKeepPortableReferencesBoundedAssetsAndLocalHostMetadata)
 	fs::create_directories(website / "public");
 	UAM_ASSERT(uam::io::WriteBinaryFile(website / "public" / "favicon.png", bytes));
 	UAM_ASSERT(uam::icons::ProjectIconDataUrl(website).starts_with("data:image/png;base64,"));
+	const fs::path svg_site = temp.root / "svg-site";
+	fs::create_directories(svg_site / "public");
+	UAM_ASSERT(uam::io::WriteBinaryFile(svg_site / "public" / "favicon.svg", std::string("<?xml version=\"1.0\"?><svg xmlns=\"http://www.w3.org/2000/svg\"/>")));
+	UAM_ASSERT(uam::icons::ProjectIconDataUrl(svg_site).starts_with("data:image/svg+xml;base64,"));
+	const fs::path ico_site = temp.root / "ico-site";
+	fs::create_directories(ico_site / "src" / "app");
+	std::string ico("\0\0\1\0\1\0", 6);
+	ico.append(16, '\0');
+	UAM_ASSERT(uam::io::WriteBinaryFile(ico_site / "src" / "app" / "favicon.ico", ico));
+	UAM_ASSERT(uam::icons::ProjectIconDataUrl(ico_site).starts_with("data:image/x-icon;base64,"));
+	UAM_ASSERT(!uam::icons::HasBoundedIcoHeader(std::string("\0\0\1\0\5\0", 6) + std::string(16, '\0')));
+	UAM_ASSERT(!uam::icons::IsBoundedSvg("<html><script></script></html>"));
 	bytes[18] = 1;
 	bytes[19] = 1;
 	UAM_ASSERT(!uam::icons::HasBoundedPngHeader(bytes));
