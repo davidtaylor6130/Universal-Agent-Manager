@@ -1253,12 +1253,34 @@ UAM_TEST(CustomIconsKeepPortableReferencesBoundedAssetsAndLocalHostMetadata)
 	UAM_ASSERT(uam::icons::ProjectIconDataUrl(svg_site).starts_with("data:image/svg+xml;base64,"));
 	const fs::path ico_site = temp.root / "ico-site";
 	fs::create_directories(ico_site / "src" / "app");
-	std::string ico("\0\0\1\0\1\0", 6);
-	ico.append(16, '\0');
-	UAM_ASSERT(uam::io::WriteBinaryFile(ico_site / "src" / "app" / "favicon.ico", ico));
+	// One directory entry (size at byte 14, offset at byte 18) pointing at the image after the 22-byte header.
+	const auto make_ico = [](const std::string& image) {
+		std::string ico("\0\0\1\0\1\0", 6);
+		ico.append(16, '\0');
+		ico[14] = static_cast<char>(image.size() & 0xff);
+		ico[15] = static_cast<char>((image.size() >> 8) & 0xff);
+		ico[18] = 22;
+		return ico + image;
+	};
+	UAM_ASSERT(uam::io::WriteBinaryFile(ico_site / "src" / "app" / "favicon.ico", make_ico(std::string(40, 'b'))));
 	UAM_ASSERT(uam::icons::ProjectIconDataUrl(ico_site).starts_with("data:image/x-icon;base64,"));
 	UAM_ASSERT(!uam::icons::HasBoundedIcoHeader(std::string("\0\0\1\0\5\0", 6) + std::string(16, '\0')));
+	std::string past_end = make_ico(std::string(40, 'b'));
+	past_end[14] = 41;
+	UAM_ASSERT(!uam::icons::HasBoundedIcoHeader(past_end));
+	std::string huge_png = bytes;
+	huge_png[18] = 0x3e; // 16000 pixels wide
+	UAM_ASSERT(uam::icons::HasBoundedIcoHeader(make_ico(bytes)));
+	UAM_ASSERT(!uam::icons::HasBoundedIcoHeader(make_ico(huge_png)));
 	UAM_ASSERT(!uam::icons::IsBoundedSvg("<html><script></script></html>"));
+	UAM_ASSERT(!uam::icons::IsBoundedSvg(std::string(1100, ' ') + "<svg/>"));
+	// The sharper SVG wins over an ICO in the same project.
+	const fs::path both_site = temp.root / "both-site";
+	fs::create_directories(both_site / "public");
+	fs::create_directories(both_site / "src" / "app");
+	UAM_ASSERT(uam::io::WriteBinaryFile(both_site / "src" / "app" / "favicon.ico", make_ico(std::string(40, 'b'))));
+	UAM_ASSERT(uam::io::WriteBinaryFile(both_site / "public" / "favicon.svg", std::string("<svg/>")));
+	UAM_ASSERT(uam::icons::ProjectIconDataUrl(both_site).starts_with("data:image/svg+xml;base64,"));
 	bytes[18] = 1;
 	bytes[19] = 1;
 	UAM_ASSERT(!uam::icons::HasBoundedPngHeader(bytes));

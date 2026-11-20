@@ -1157,7 +1157,7 @@ export function sanitizeCppGoal(value: unknown): CppGoal | null {
   }
 }
 
-/** Detected workspace icons are display-only PNG data; the value only keys failed-image fallback. */
+/** Detected workspace icons are display-only PNG, SVG or ICO data shown through <img>; the value only keys failed-image fallback. */
 function sanitizeProjectIcon(value: unknown, folderId: string): CustomIcon | undefined {
   return typeof value === 'string' && value.length <= 350000 && /^data:image\/(?:png|svg\+xml|x-icon);base64,[A-Za-z0-9+/]+={0,2}$/.test(value)
     ? { type: 'png', value: `project-icon:${folderId}`, dataUrl: value }

@@ -106,12 +106,30 @@ namespace uam::icons
 			object["customIcon"]["dataUrl"] = PngDataUrl(data_root, icon);
 	}
 
-	/// <summary>Bounds an ICO directory: 1-64 images whose entries fit inside the file.</summary>
+	/// <summary>Bounds an ICO: 1-64 images, each inside the file, and embedded PNGs within the PNG pixel bounds.</summary>
 	inline bool HasBoundedIcoHeader(std::string_view bytes)
 	{
 		if (bytes.size() < 22 || bytes.size() > kMaximumPngBytes || bytes.substr(0, 4) != std::string_view("\0\0\1\0", 4)) return false;
-		const std::size_t count = static_cast<unsigned char>(bytes[4]) | (static_cast<std::size_t>(static_cast<unsigned char>(bytes[5])) << 8);
-		return count > 0 && count <= 64 && bytes.size() >= 6 + count * 16;
+		const auto read = [&bytes](std::size_t offset, std::size_t width) -> std::size_t
+		{
+			std::size_t value = 0;
+			for (std::size_t i = width; i-- > 0;)
+				value = (value << 8) | static_cast<unsigned char>(bytes[offset + i]);
+			return value;
+		};
+		const std::size_t count = read(4, 2);
+		const std::size_t directory_end = 6 + count * 16;
+		if (count == 0 || count > 64 || bytes.size() < directory_end) return false;
+		for (std::size_t entry = 6; entry < directory_end; entry += 16)
+		{
+			const std::size_t size = read(entry + 8, 4);
+			const std::size_t offset = read(entry + 12, 4);
+			if (offset < directory_end || offset > bytes.size() || size > bytes.size() - offset) return false;
+			// Chromium decodes the largest image, so an embedded PNG needs the same pixel bound as a plain one.
+			const std::string_view image = bytes.substr(offset, size);
+			if (image.starts_with("\x89PNG") && !HasBoundedPngHeader(image)) return false;
+		}
+		return true;
 	}
 
 	/// <summary>Accepts a bounded SVG document; it is only shown through an image element, where scripts never run.</summary>
@@ -125,9 +143,9 @@ namespace uam::icons
 	{
 		// Common favicon, web-app, desktop and mobile launcher locations, sharpest formats first; the first bounded icon wins.
 		static constexpr std::string_view kCandidates[] = {
-		    "public/apple-touch-icon.png", "public/favicon.svg", "public/favicon.png", "public/icon.png",
+		    "public/favicon.svg", "public/apple-touch-icon.png", "public/favicon.png", "public/icon.png",
 		    "public/icon.svg", "public/logo192.png", "public/favicon-96x96.png", "public/favicon-32x32.png",
-		    "static/apple-touch-icon.png", "static/favicon.svg", "static/favicon.png", "app/apple-icon.png",
+		    "static/favicon.svg", "static/apple-touch-icon.png", "static/favicon.png", "app/apple-icon.png",
 		    "app/icon.svg", "app/icon.png", "src/app/apple-icon.png", "src/app/icon.svg", "src/app/icon.png",
 		    "web/favicon.png", "web/icons/Icon-192.png", "apple-touch-icon.png", "favicon.svg", "favicon.png",
 		    "icon.png", "assets/icon.png", "src-tauri/icons/128x128.png", "build/icon.png", "resources/icon.png",
