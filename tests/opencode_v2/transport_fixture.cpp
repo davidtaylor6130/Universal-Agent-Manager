@@ -94,12 +94,16 @@ public:
 	bool publish_proof = true;
 	bool text_worker = false;
 	bool malformed_sse = false;
+	bool wrong_workspace = false, wrong_running_version = false, wrong_readback = false;
+	std::string probe_effect = "deny";
+	enum class ProbeReceipt { Exact, Missing, WrongNonce, WrongWorkspace, WrongSession };
+	ProbeReceipt probe_receipt = ProbeReceipt::Exact;
 	bool early_cancel = false, failed_delete = false, lost_interrupt = false;
 	std::string version_output;
 	std::string cwd = std::filesystem::current_path().generic_string();
 	mutable Json info, plugin_options;
 	mutable std::string password, private_directory;
-	mutable int server_starts = 0, server_stops = 0, stream_stops = 0, lease_closes = 0, creates = 0, prompts = 0, replies = 0, interrupts = 0;
+	mutable int server_starts = 0, server_stops = 0, stream_stops = 0, lease_closes = 0, creates = 0, prompts = 0, replies = 0, interrupts = 0, probes = 0;
 	mutable std::uint64_t uuid = 0, event = 0;
 	mutable std::vector<Json> requests;
 	mutable std::vector<std::vector<std::string>> commands;
@@ -128,8 +132,8 @@ public:
 	Json Native(const std::string& method, const std::string& route, const Json& body) const
 	{
 		requests.push_back({{"method", method}, {"route", route}, {"body", body}});
-		if (route == "/api/info") return {{"version", version}};
-		if (route.starts_with("/api/location?")) return {{"directory", cwd}};
+		if (route == "/api/info") return {{"version", wrong_running_version ? "2.3.1" : version}};
+		if (route.starts_with("/api/location?")) return {{"directory", wrong_workspace ? cwd + "/other" : cwd}};
 		if (route.starts_with("/api/plugin?"))
 		{
 			if (publish_proof)
@@ -148,8 +152,26 @@ public:
 		}
 		if (route == "/api/session/ses_transport")
 		{
-			if (method == "PATCH") { info["permissions"] = body.at("permissions"); return nullptr; }
+			if (method == "PATCH") { if (!wrong_readback) info["permissions"] = body.at("permissions"); else info["permissions"] = Json::array(); return nullptr; }
 			return {{"data", info}};
+		}
+		if (method == "POST" && route == "/api/session/ses_transport/permission")
+		{
+			++probes;
+			const auto nonce = plugin_options.at("nonce");
+			Require(body.at("action") == plugin_options.at("probeAction") && body.at("resources") == Json::array({nonce}) &&
+			    body.at("save") == Json::array() && !body.contains("source"), "Probe could execute a tool or create a saved grant");
+			std::ifstream policy(plugin_options.at("policyPath").get<std::string>());
+			Json captured; policy >> captured;
+			Require(captured.at("active") == false, "Candidate policy was active before permission verification");
+			if (probe_receipt != ProbeReceipt::Missing)
+			{
+				std::ofstream receipt(plugin_options.at("probePath").get<std::string>());
+				receipt << Json{{"nonce", probe_receipt == ProbeReceipt::WrongNonce ? Json("wrong") : nonce},
+				    {"directory", probe_receipt == ProbeReceipt::WrongWorkspace ? cwd + "/other" : cwd},
+				    {"sessionID", probe_receipt == ProbeReceipt::WrongSession ? "ses_other" : "ses_transport"}}.dump();
+			}
+			return {{"data", {{"id", "per_probe"}, {"effect", probe_effect}}}};
 		}
 		if (route.ends_with("/inbox")) return {{"data", Json::array()}};
 		if (route.ends_with("/model")) { info["model"] = body.at("model"); return nullptr; }
@@ -331,6 +353,55 @@ void RunOpenCodeV2TransportFixtures()
 			if (value.value("id", Json{}) == 1) Require(value.at("result").at("agentInfo").at("version") == version, "Bridge did not report the running native version");
 		}
 		Require(completed && cancelled && approval, "Bridge did not preserve streamed turn/approval/cancel identity");
+	}
+	const std::vector<std::string> candidate{"uam-fixture", "--uam-opencode-v2-bridge", "2.3.2", "--", "opencode"};
+	{
+		SimulatedProcesses native; native.version = "2.3.2"; native.version_output = "opencode v2.3.2 (Homebrew)\n";
+		OutputCapture capture;
+		Require(RunCommand(candidate, native) == std::optional<int>{0}, "Proven candidate did not complete the bridge lifecycle");
+		Require(native.probes == 1 && native.creates == 1 && native.prompts == 2 && native.replies == 1 &&
+		    native.interrupts == 1 && capture.Read().find("\"error\"") == std::string::npos, "Candidate changed normal session behavior");
+	}
+	for (const auto receipt : {SimulatedProcesses::ProbeReceipt::Missing, SimulatedProcesses::ProbeReceipt::WrongNonce,
+	    SimulatedProcesses::ProbeReceipt::WrongWorkspace, SimulatedProcesses::ProbeReceipt::WrongSession, SimulatedProcesses::ProbeReceipt::Exact})
+	{
+		SimulatedProcesses native; native.version = "2.3.2"; native.probe_receipt = receipt;
+		if (receipt == SimulatedProcesses::ProbeReceipt::Exact) native.probe_effect = "allow";
+		// Deliberately coalesce setup and prompt to prove that no buffered prompt
+		// survives the failing setup.
+		native.input[1] += native.input[3];
+		OutputCapture capture;
+		Require(RunCommand(candidate, native) == std::optional<int>{1}, "Failed probe retained its service lease");
+		const auto output = capture.Read();
+		Require(native.probes == 1 && native.prompts == 0 && native.server_stops == 1 &&
+		    output.find("permission hook denied the probe") != std::string::npos &&
+		    output.find(std::to_string(kRuntimeVerificationError)) != std::string::npos,
+		    "Failed probe did not report a held setup before prompt delivery");
+	}
+	{
+		SimulatedProcesses native; native.version = "2.3.2"; native.wrong_workspace = true;
+		OutputCapture capture;
+		Require(RunCommand(candidate, native) == std::optional<int>{1} && native.creates == 0 && native.prompts == 0 &&
+		    capture.Read().find("captured workspace") != std::string::npos, "Candidate with wrong workspace admitted input");
+	}
+	{
+		SimulatedProcesses native; native.version = "2.3.2"; native.wrong_readback = true;
+		OutputCapture capture;
+		Require(RunCommand(candidate, native) == std::optional<int>{1} && native.probes == 1 && native.prompts == 0 &&
+		    capture.Read().find("UAM permission rules") != std::string::npos, "Probe success bypassed the rules readback");
+	}
+	{
+		SimulatedProcesses native; native.version = "2.3.2"; native.wrong_running_version = true;
+		OutputCapture capture;
+		Require(RunCommand(candidate, native) == std::optional<int>{1} && native.creates == 0 &&
+		    capture.Read().find("protocol version differs") != std::string::npos, "Candidate with a mismatched running version did not report the failure");
+	}
+	for (const std::string suffix : {"-beta.1", "+build"})
+	{
+		SimulatedProcesses native; native.version_output = "opencode v2.3.2" + suffix + "\n";
+		OutputCapture capture;
+		Require(RunCommand(candidate, native) == std::optional<int>{1} && native.server_starts == 0 &&
+		    capture.Read().find("unsuffixed CLI version") != std::string::npos, "Suffixed CLI started the native service");
 	}
 	{
 		SimulatedProcesses native; native.version = "2.3.0";

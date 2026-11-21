@@ -89,7 +89,7 @@ std::string PermissionPluginSource()
 export default {
   id: 'uam.v2.permission-boundary',
   async setup(ctx) {
-    const { policyPath, proofPath, nonce } = ctx.options;
+    const { policyPath, proofPath, nonce, probePath, probeAction } = ctx.options;
     if (typeof policyPath !== 'string' || typeof proofPath !== 'string' || typeof nonce !== 'string')
       throw new Error('UAM V2 permission lease is missing');
     await ctx.permission.hook('evaluate', async event => {
@@ -115,6 +115,12 @@ export default {
         get: () => effect,
         set: value => { if (value === 'deny') effect = 'deny'; }
       });
+      if (typeof probePath === 'string' && event.action === probeAction &&
+          event.resources.length === 1 && event.resources[0] === nonce && event.effect === 'deny') {
+        writeFileSync(probePath, JSON.stringify({
+          nonce, directory: ctx.location.directory, sessionID: event.sessionID
+        }), { mode: 0o600 });
+      }
     });
     writeFileSync(proofPath, JSON.stringify({ nonce, directory: ctx.location.directory }), { mode: 0o600 });
   }

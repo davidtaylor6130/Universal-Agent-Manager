@@ -22,6 +22,7 @@ namespace
 {
 using Clock = std::chrono::steady_clock;
 constexpr std::size_t kMaxPacket = 16 * 1024 * 1024;
+constexpr std::string_view kPermissionProbeAction = "uam.permission.probe";
 struct Process
 {
 	platform::StdioProcessPlatformFields fields;
@@ -109,12 +110,38 @@ std::string Curl()
 	return "/usr/bin/curl";
 #endif
 }
+// The newer-version bridge knows the initialize request identity before it runs
+// checks that can fail. Report failure through the same owned startup response.
+Json ReadInitialize(IPlatformProcessService& process, std::string& input)
+{
+	const auto deadline = Clock::now() + std::chrono::seconds(15);
+	std::array<char, 8192> bytes{};
+	while (Clock::now() < deadline)
+	{
+		const auto read = process.ReadStandardInput(bytes.data(), bytes.size());
+		if (read.status == platform::StandardInputReadStatus::EndOfStream || read.status == platform::StandardInputReadStatus::Error) break;
+		if (read.status == platform::StandardInputReadStatus::Data) input.append(bytes.data(), read.size);
+		const auto end = input.find('\n');
+		if (input.size() > kMaxPacket) break;
+		if (end != std::string::npos)
+		{
+			const auto request = Json::parse(input.substr(0, end), nullptr, false);
+			if (request.is_object() && request.contains("id") && request.at("id").is_number_integer() && request.value("method", Json{}) == "initialize")
+				return request.at("id");
+			break;
+		}
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	}
+	throw std::runtime_error("OpenCode V2 did not receive an owned initialize request. Input remains held.");
+}
+
 class Service
 {
 public:
 	Process server, events;
 	std::string url, password, nonce, captured_directory, version;
-	std::filesystem::path directory, policy_path, proof_path;
+	std::filesystem::path directory, policy_path, proof_path, probe_path;
+	Clock::time_point startup_deadline = Clock::time_point::max();
 	bool connected = false;
 	explicit Service(IPlatformProcessService& process_service) : server(process_service), events(process_service)
 	{
@@ -122,7 +149,7 @@ public:
 		directory = std::filesystem::temp_directory_path() / ("uam-opencode-v2-" + nonce);
 		if (!std::filesystem::create_directory(directory)) throw std::runtime_error("Could not allocate private OpenCode V2 configuration.");
 		std::filesystem::permissions(directory, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace);
-		policy_path = directory / "policy.json"; proof_path = directory / "proof.json";
+		policy_path = directory / "policy.json"; proof_path = directory / "proof.json"; probe_path = directory / "probe.json";
 	}
 	~Service()
 	{
@@ -151,6 +178,7 @@ public:
 	}
 	Json Query(const std::string& method, const std::string& route, const Json& body)
 	{
+		if (Clock::now() >= startup_deadline) throw std::runtime_error("OpenCode V2 exceeded the startup verification deadline.");
 		if (!route.starts_with("/api/") || route.find_first_of("\r\n") != std::string::npos) throw std::runtime_error("Invalid OpenCode V2 native route.");
 		Process process(server.service);
 		std::string config = Config(body);
@@ -161,7 +189,7 @@ public:
 		if (!process.service.StartStdioProcessWithInput(process.fields, {}, argv, config, nullptr)) throw std::runtime_error("OpenCode V2 HTTP request could not start.");
 		std::fill(config.begin(), config.end(), '\0');
 		std::string output; std::array<char, 8192> bytes{}; int exit = -1;
-		const auto deadline = Clock::now() + std::chrono::seconds(cancel_control ? 2 : 16);
+		const auto deadline = std::min(startup_deadline, Clock::now() + std::chrono::seconds(cancel_control ? 2 : 16));
 		while (Clock::now() < deadline)
 		{
 			DrainNativeLogs();
@@ -185,22 +213,47 @@ public:
 		}
 		throw std::runtime_error("The owned OpenCode V2 service did not confirm the native request; input is not automatically replayed.");
 	}
+	Json ReadProof(const std::filesystem::path& path) const
+	{
+		std::ifstream file(path);
+		std::array<char, 16385> bytes{};
+		file.read(bytes.data(), bytes.size());
+		const auto size = static_cast<std::size_t>(file.gcount());
+		return size < bytes.size() ? Json::parse(std::string_view(bytes.data(), size), nullptr, false) : Json{};
+	}
 	void Proof(const std::string& cwd)
 	{
-		const auto deadline = Clock::now() + std::chrono::seconds(10);
+		const auto deadline = std::min(startup_deadline, Clock::now() + std::chrono::seconds(10));
 		while (Clock::now() < deadline)
 		{
 			DrainNativeLogs();
-			std::ifstream file(proof_path); std::array<char, 16385> bytes{};
-			file.read(bytes.data(), bytes.size());
-			const std::string contents(bytes.data(), static_cast<std::size_t>(file.gcount()));
-			const auto proof = contents.size() <= 16384 ? Json::parse(contents, nullptr, false) : Json{};
-			if (proof.is_object() && proof.value("nonce", "") == nonce && proof.value("directory", "") == cwd) return;
+			const auto proof = ReadProof(proof_path);
+			if (proof.is_object() && proof.value("nonce", Json{}) == nonce && proof.value("directory", Json{}) == cwd) return;
 			std::this_thread::sleep_for(std::chrono::milliseconds(10));
 		}
 		throw std::runtime_error("OpenCode V2 did not load UAM's process-local permission guard. Input remains held.");
 	}
-	void Start(const std::vector<std::string>& command)
+	void VerifyDenied(const std::string& id, const std::string& cwd)
+	{
+		// The permission API evaluates a synthetic resource with no tool source,
+		// model request or tool call. Even a failed guard cannot execute a tool.
+		const std::string route = "/api/session/" + Encode(id) + "/permission";
+		Json result;
+		try
+		{
+			result = Query("POST", route, {{"action", kPermissionProbeAction}, {"resources", Json::array({nonce})}, {"save", Json::array()}});
+		}
+		catch (...)
+		{
+			throw std::runtime_error("OpenCode V2 permission evaluation endpoint did not confirm the deny probe. Input remains held.");
+		}
+		const auto data = result.is_object() ? result.value("data", Json{}) : Json{};
+		const auto proof = ReadProof(probe_path);
+		if (!data.is_object() || data.value("effect", Json{}) != "deny" ||
+		    !proof.is_object() || proof != Json{{"nonce", nonce}, {"directory", cwd}, {"sessionID", id}})
+			throw std::runtime_error("OpenCode V2 did not prove that UAM's permission hook denied the probe. Input remains held.");
+	}
+	void Start(const std::vector<std::string>& command, const std::string& expected_version)
 	{
 		WritePolicy({}, {}, true);
 		const auto plugin = directory / "permission-plugin";
@@ -211,11 +264,17 @@ public:
 		if (!config.is_object()) throw std::runtime_error("OpenCode inline configuration is invalid.");
 		if (!config.contains("plugins")) config["plugins"] = Json::array();
 		if (!config["plugins"].is_array()) throw std::runtime_error("OpenCode V2 plugins must be a list.");
-		config["plugins"].push_back({{"package", paths::Utf8PathString(plugin)}, {"options", {{"policyPath", paths::Utf8PathString(policy_path)}, {"proofPath", paths::Utf8PathString(proof_path)}, {"nonce", nonce}}}});
+		Json options{{"policyPath", paths::Utf8PathString(policy_path)}, {"proofPath", paths::Utf8PathString(proof_path)}, {"nonce", nonce}};
+		if (!expected_version.empty())
+		{
+			options["probePath"] = paths::Utf8PathString(probe_path);
+			options["probeAction"] = kPermissionProbeAction;
+		}
+		config["plugins"].push_back({{"package", paths::Utf8PathString(plugin)}, {"options", std::move(options)}});
 		const auto argv = ServeArgv(command);
 		if (!server.service.StartStdioProcess(server.fields, {}, argv, nullptr, {{"OPENCODE_PASSWORD", password}, {"OPENCODE_CONFIG_CONTENT", config.dump()}})) throw std::runtime_error("The private OpenCode V2 service could not start.");
 		std::array<char, 8192> bytes{}; std::string ready;
-		const auto deadline = Clock::now() + std::chrono::seconds(30);
+		const auto deadline = std::min(startup_deadline, Clock::now() + std::chrono::seconds(30));
 		while (Clock::now() < deadline)
 		{
 			const auto count = server.service.ReadStdioProcessStdout(server.fields, bytes.data(), bytes.size());
@@ -236,11 +295,23 @@ public:
 				if (parsed.ec != std::errc{} || parsed.ptr != port_text.data() + port_text.size() || port == 0 || port > 65535) break;
 				url = std::string(prefix) + std::to_string(port);
 				// The running service, not the PATH check, is the protocol witness.
-				const Json info = Query("GET", "/api/info", nullptr);
+				Json info;
+				try { info = Query("GET", "/api/info", nullptr); }
+				catch (...)
+				{
+					if (expected_version.empty()) throw;
+					throw std::runtime_error("OpenCode V2 did not answer the authenticated protocol check (/api/info). Input remains held.");
+				}
 				version = info.contains("version") && info.at("version").is_string() ? info.at("version").get<std::string>() : std::string{};
-				if (!IsVerifiedV2(version)) throw std::runtime_error("The running OpenCode service is not a verified V2 protocol version. " + UnverifiedV2Message(version, "native API adapter"));
+				if (!expected_version.empty() && version != expected_version)
+					throw std::runtime_error("The running OpenCode V2 protocol version differs from the checked CLI version. Input remains held.");
+				if (expected_version.empty() && !IsVerifiedV2(version)) throw std::runtime_error("The running OpenCode service is not a verified V2 protocol version. " + UnverifiedV2Message(version, "native API adapter"));
 				std::string config = Config();
-				if (!events.service.StartStdioProcessWithInput(events.fields, {}, {Curl(), "-q", "--silent", "--fail", "--no-buffer", "--noproxy", "*", "--proto", "=http", "--connect-timeout", "2", "--config", "-", url + "/api/event"}, config, nullptr)) break;
+				if (!events.service.StartStdioProcessWithInput(events.fields, {}, {Curl(), "-q", "--silent", "--fail", "--no-buffer", "--noproxy", "*", "--proto", "=http", "--connect-timeout", "2", "--config", "-", url + "/api/event"}, config, nullptr))
+				{
+					if (!expected_version.empty()) throw std::runtime_error("OpenCode V2 event subscription could not start. Input remains held.");
+					break;
+				}
 				std::fill(config.begin(), config.end(), '\0');
 				return;
 			}
@@ -251,7 +322,7 @@ public:
 	}
 };
 
-int Bridge(const std::vector<std::string>& command, IPlatformProcessService& process_service, const std::optional<std::string>& worker_model = {})
+int Bridge(const std::vector<std::string>& command, IPlatformProcessService& process_service, const std::optional<std::string>& worker_model = {}, const std::string& expected_version = {})
 {
 	std::string worker_prompt, worker_text;
 	if (worker_model)
@@ -271,7 +342,44 @@ int Bridge(const std::vector<std::string>& command, IPlatformProcessService& pro
 	}
 	bool worker_setup = false, worker_done = false, worker_failed = false;
 	std::vector<Json> worker_replies;
-	Service service(process_service); service.Start(command);
+	std::string input;
+	Json initialize_id;
+	const bool runtime_verification = !expected_version.empty();
+	if (runtime_verification) initialize_id = ReadInitialize(process_service, input);
+	const auto report_initialize_failure = [&](std::string_view reason)
+	{
+		Output({{"jsonrpc", "2.0"}, {"id", initialize_id}, {"error", {{"code", kRuntimeVerificationError}, {"message", reason}}}});
+	};
+	Service service(process_service);
+	if (runtime_verification)
+	{
+		service.startup_deadline = Clock::now() + std::chrono::seconds(90);
+		auto probe = command;
+		probe.push_back("--version");
+		try
+		{
+			if (cli_versions::ExtractCliReportedVersion(Capture(probe, process_service, 10), true) != expected_version)
+				throw std::runtime_error("Unexpected CLI version");
+		}
+		catch (...)
+		{
+			report_initialize_failure("OpenCode V2 could not confirm the checked release with an exact, unsuffixed CLI version. Input remains held.");
+			return 1;
+		}
+	}
+	try { service.Start(command, expected_version); }
+	catch (const std::exception& error)
+	{
+		if (!runtime_verification) throw;
+		report_initialize_failure(error.what());
+		return 1;
+	}
+	VerifyPermission verify;
+	if (runtime_verification) verify = [&](const auto& id, const auto& cwd)
+	{
+		service.Proof(cwd);
+		service.VerifyDenied(id, cwd);
+	};
 	Session session([&](const auto& method, const auto& route, const auto& body)
 	{
 		if ((method == "POST" && (route == "/api/session" || route.ends_with("/prompt"))) || (method == "PATCH" && route.starts_with("/api/session/")))
@@ -280,7 +388,17 @@ int Bridge(const std::vector<std::string>& command, IPlatformProcessService& pro
 			if (service.captured_directory.empty()) throw std::runtime_error("OpenCode V2 has no captured workspace for its permission proof.");
 			service.Proof(service.captured_directory);
 		}
-		return service.Query(method, route, body);
+		try { return service.Query(method, route, body); }
+		catch (...)
+		{
+			if (!runtime_verification || service.startup_deadline == Clock::time_point::max()) throw;
+			if (route.starts_with("/api/location?")) throw std::runtime_error("OpenCode V2 workspace lookup failed. Input remains held.");
+			if (route.starts_with("/api/plugin?")) throw std::runtime_error("OpenCode V2 permission plugin lookup failed. Input remains held.");
+			if (method == "PATCH") throw std::runtime_error("OpenCode V2 permission rules could not be replaced. Input remains held.");
+			if (route.starts_with("/api/session")) throw std::runtime_error("OpenCode V2 could not confirm the native session or read back its workspace and permission rules. Input remains held.");
+			if (route.starts_with("/api/model")) throw std::runtime_error("OpenCode V2 could not read the startup model catalogue. Input remains held.");
+			throw std::runtime_error("OpenCode V2 could not confirm the captured MCP configuration. Input remains held.");
+		}
 	}, [&](const auto& id, const auto& cwd, bool read_only)
 	{
 		// Text-only workers keep this policy inactive: every native permission
@@ -304,8 +422,8 @@ int Bridge(const std::vector<std::string>& command, IPlatformProcessService& pro
 			worker_done = true;
 			worker_failed = value.at("result").value("stopReason", "") != "end_turn";
 		}
-	}, service.version);
-	std::string input, sse, frame;
+	}, service.version, std::move(verify));
+	std::string sse, frame;
 	std::array<char, 8192> bytes{};
 	const auto initial_deadline = Clock::now() + std::chrono::seconds(15);
 	try
@@ -315,7 +433,12 @@ int Bridge(const std::vector<std::string>& command, IPlatformProcessService& pro
 			session.CheckDeadlines();
 			if (session.Broken()) return 1;
 			const auto count = service.events.service.ReadStdioProcessStdout(service.events.fields, bytes.data(), bytes.size());
-			if (count == 0 || (count < 0 && count != -2)) { session.Disconnected(); return 1; }
+			if (count == 0 || (count < 0 && count != -2))
+			{
+				if (!initialize_id.is_null()) throw std::runtime_error("OpenCode V2 event subscription closed before the protocol check completed. Input remains held.");
+				session.Disconnected();
+				return 1;
+			}
 			if (count > 0) sse.append(bytes.data(), static_cast<std::size_t>(count));
 			if (sse.size() + frame.size() > kMaxPacket) throw std::runtime_error("OpenCode V2 event exceeds the bounded packet size.");
 			while (sse.find('\n') != std::string::npos)
@@ -329,6 +452,7 @@ int Bridge(const std::vector<std::string>& command, IPlatformProcessService& pro
 					if (!event.is_object()) throw std::runtime_error("Invalid OpenCode V2 event frame.");
 					if (event.value("type", "") == "location.shutdown")
 					{
+						if (!initialize_id.is_null()) throw std::runtime_error("OpenCode V2 reloaded its native policy during startup.");
 						session.Disconnected("OpenCode V2 reloaded its native policy. This process lease must be restarted explicitly."); return 1;
 					}
 					if (event.value("type", "") == "server.connected") service.connected = true;
@@ -336,10 +460,15 @@ int Bridge(const std::vector<std::string>& command, IPlatformProcessService& pro
 					if (session.Broken()) return 1;
 				}
 			}
-			if (service.events.service.PollStdioProcessExited(service.events.fields) || service.server.service.PollStdioProcessExited(service.server.fields)) { session.Disconnected(); return 1; }
+			if (service.events.service.PollStdioProcessExited(service.events.fields) || service.server.service.PollStdioProcessExited(service.server.fields))
+			{
+				if (!initialize_id.is_null()) throw std::runtime_error("OpenCode V2 service or event subscription exited during the protocol check. Input remains held.");
+				session.Disconnected();
+				return 1;
+			}
 			// Native log drainage stays bounded and private.
 			service.DrainNativeLogs();
-			if (!service.connected && Clock::now() > initial_deadline) throw std::runtime_error("OpenCode V2 event subscription did not become ready.");
+			if (!service.connected && Clock::now() > std::min(initial_deadline, service.startup_deadline)) throw std::runtime_error("OpenCode V2 event subscription did not become ready.");
 			if (worker_model)
 			{
 				if (worker_failed) return 1;
@@ -361,17 +490,22 @@ int Bridge(const std::vector<std::string>& command, IPlatformProcessService& pro
 			// command. During an active turn, cancellation must remain responsive.
 			if (service.connected && (session.HasTurn() || (count == -2 && sse.empty() && frame.empty())))
 			{
-				const auto read = service.server.service.ReadStandardInput(bytes.data(), bytes.size());
-				if (read.status == platform::StandardInputReadStatus::EndOfStream) return 0;
-				if (read.status == platform::StandardInputReadStatus::Error) return 1;
-				if (read.status == platform::StandardInputReadStatus::Data) input.append(bytes.data(), read.size);
+				if (initialize_id.is_null())
+				{
+					const auto read = service.server.service.ReadStandardInput(bytes.data(), bytes.size());
+					if (read.status == platform::StandardInputReadStatus::EndOfStream) return 0;
+					if (read.status == platform::StandardInputReadStatus::Error) return 1;
+					if (read.status == platform::StandardInputReadStatus::Data) input.append(bytes.data(), read.size);
+				}
 				if (input.size() > kMaxPacket) throw std::runtime_error("UAM V2 input exceeds the bounded packet size.");
 				while (input.find('\n') != std::string::npos)
 				{
 					const auto end = input.find('\n'); auto message = Json::parse(input.substr(0, end), nullptr, false); input.erase(0, end + 1);
 					if (!message.is_object()) throw std::runtime_error("Invalid UAM V2 input frame.");
 					session.Handle(message);
+					initialize_id = nullptr;
 					if (session.Broken()) return 1;
+					if (session.Ready()) service.startup_deadline = Clock::time_point::max();
 				}
 			}
 			std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -379,6 +513,11 @@ int Bridge(const std::vector<std::string>& command, IPlatformProcessService& pro
 	}
 	catch (const std::exception&)
 	{
+		if (!initialize_id.is_null())
+		{
+			report_initialize_failure("OpenCode V2 event subscription did not confirm the startup protocol. Input remains held.");
+			return 1;
+		}
 		session.Disconnected("OpenCode V2 returned an unverified event or transport response. Input is held and is never replayed automatically.");
 		return 1;
 	}
@@ -421,7 +560,13 @@ std::optional<int> RunCommand(const std::vector<std::string>& arguments, IPlatfo
 		const auto separator = std::find(arguments.begin() + 2, arguments.end(), "--");
 		if (separator == arguments.end() || std::next(separator) == arguments.end()) throw std::runtime_error("Missing OpenCode executable.");
 		std::vector<std::string> command(std::next(separator), arguments.end());
-		if (arguments[1] == "--uam-opencode-v2-bridge") return Bridge(command, service);
+		if (arguments[1] == "--uam-opencode-v2-bridge")
+		{
+			if (separator == arguments.begin() + 2) return Bridge(command, service);
+			if (separator == arguments.begin() + 3 && NeedsLocalChatRuntimeVerification(arguments[2]))
+				return Bridge(command, service, {}, arguments[2]);
+			throw std::runtime_error("Invalid OpenCode V2 bridge compatibility version.");
+		}
 		if (arguments[1] == "--uam-opencode-v2-text-worker")
 		{
 			if (separator != arguments.begin() + 3) throw std::runtime_error("Invalid OpenCode V2 text-worker model.");

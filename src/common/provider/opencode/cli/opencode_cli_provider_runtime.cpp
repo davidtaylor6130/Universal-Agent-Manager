@@ -543,11 +543,40 @@ std::vector<std::pair<std::string, std::string>> OpenCodeCliProviderRuntime::Bui
 	return environment;
 }
 
+namespace
+{
+// A final owned response can be drained after the platform has reaped the
+// bridge. Validate its chat/host/session before retiring without a live PID.
+bool MarkObservedOpenCodeExit(uam::AppState& app, uam::AcpSessionState& session,
+	ChatSession& chat, int exit_code, const std::string& reason)
+{
+	std::string ownership_error;
+	if (!uam::acp_detail::ValidateAcpRestartOwnership(app, session, chat, &ownership_error, true))
+	{
+		session.transport_ownership_error = std::move(ownership_error);
+		session.last_error = reason;
+		session.lifecycle_state = uam::acp_detail::kAcpLifecycleError;
+		return false;
+	}
+	uam::acp_detail::MarkAcpProcessExited(session, &chat, true, exit_code, true);
+	return true;
+}
+}
+
 bool OpenCodeCliProviderRuntime::OnAcpHandleError(uam::AppState& app, uam::AcpSessionState& session,
 	ChatSession& chat, const uam::acp_detail::AcpResponseFailureDetails& details) const
 {
 	if (session.opencode_v2_native)
 	{
+		if (details.failure.has_code && details.failure.code == uam::opencode_v2::kRuntimeVerificationError &&
+		    (details.failure.method == uam::acp_methods::kInitialize || details.failure.method == uam::acp_methods::kSessionNew ||
+		     details.failure.method == uam::acp_methods::kSessionLoad || details.failure.method == uam::acp_methods::kSessionResume))
+		{
+			if (!session.process_exit_observed ||
+			    MarkObservedOpenCodeExit(app, session, chat, session.observed_process_exit_code, details.formatted_error))
+				uam::acp_detail::HoldAcpTransportForExplicitRecovery(app, session, chat, details.formatted_error);
+			return true;
+		}
 		const auto data = nlohmann::json::parse(details.error_data, nullptr, false);
 		if (details.failure.method == uam::acp_methods::kSessionPrompt && data.is_object() && data.contains("usage"))
 			(void)OnAcpHandleResult(app, session, chat, details.failure.method, "", data);
@@ -565,21 +594,8 @@ bool OpenCodeCliProviderRuntime::OnAcpHoldUnconfirmedInput(uam::AppState& app,
 {
 	// A turn still waiting for a compute pool slot was never written, so its input outcome is known.
 	if (!session.opencode_v2_native || uam::compute_pools::HeldBeforeDelivery(session)) return false;
-	// The shared poller has drained and observed this owned process exit. Mark
-	// that observation before retirement: its reaped PID is no longer a live
-	// restart/stop target, while the unresolved input still needs to be held.
-	if (observed_exit_code)
-	{
-		std::string ownership_error;
-		if (!uam::acp_detail::ValidateAcpRestartOwnership(app, session, chat, &ownership_error, true))
-		{
-			session.transport_ownership_error = std::move(ownership_error);
-			session.last_error = reason;
-			session.lifecycle_state = uam::acp_detail::kAcpLifecycleError;
-			return true;
-		}
-		uam::acp_detail::MarkAcpProcessExited(session, &chat, true, *observed_exit_code, true);
-	}
+	if (observed_exit_code && !MarkObservedOpenCodeExit(app, session, chat, *observed_exit_code, reason))
+		return true;
 	uam::acp_detail::HoldAcpTransportForExplicitRecovery(app, session, chat,
 	    reason + " Input and queued follow-ups are held; nothing is replayed automatically. Inspect native history before explicitly resuming queued input.");
 	return true;
@@ -827,7 +843,8 @@ std::string OpenCodeCliProviderRuntime::StructuredCliVersionError(const Provider
 	    (chat->opencode_v2_session_id->empty() || *chat->opencode_v2_session_id == chat->native_session_id) && !CliProviderVersionAtLeast(checked_version, "2.0.0"))
 		return "This saved OpenCode V2 session requires the verified native V2 adapter. Its native ID and authored input are retained.";
 	if (!CliProviderVersionAtLeast(checked_version, "2.0.0")) return {};
-	if (uam::opencode_v2::IsVerifiedV2(checked_version) && !remote) return {};
+	if (!remote && (uam::opencode_v2::IsVerifiedV2(checked_version) ||
+	    (chat && uam::opencode_v2::NeedsLocalChatRuntimeVerification(checked_version)))) return {};
 	if (remote) return "OpenCode V2 requires the native API adapter on the executing SSH helper; this helper's V1 ACP launch remains refused. Existing owned remote recovery is preserved.";
 	return "This OpenCode V2 protocol version has not been verified. " + uam::opencode_v2::UnverifiedV2Message(checked_version, "local native API adapter");
 }
@@ -837,7 +854,8 @@ bool OpenCodeCliProviderRuntime::PrepareStructuredLaunch(uam::AcpSessionState& s
 	std::vector<std::pair<std::string, std::string>>& environment, std::string& error) const
 {
 	session.opencode_v2_native = false;
-	if (!RequiresStructuredCliVersion(profile) || !uam::opencode_v2::IsVerifiedV2(version)) return true;
+	const bool runtime_verification = !remote && !session.model_discovery_only && uam::opencode_v2::NeedsLocalChatRuntimeVerification(version);
+	if (!RequiresStructuredCliVersion(profile) || (!runtime_verification && !uam::opencode_v2::IsVerifiedV2(version))) return true;
 	if (remote) { error = StructuredCliVersionError(profile, version, true); return false; }
 	if (session.saved_image_retry)
 	{ error = "OpenCode V2 saved-image Retry is not admitted by this adapter. The saved row and originals are retained without starting a provider process."; return false; }
@@ -845,7 +863,9 @@ bool OpenCodeCliProviderRuntime::PrepareStructuredLaunch(uam::AcpSessionState& s
 	{ error = "Imported V1 OpenCode agent policies require separate V2 policy translation before input."; return false; }
 	const auto executable = PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath();
 	if (executable.empty()) { error = "UAM cannot resolve its private OpenCode V2 bridge executable."; return false; }
-	argv = {uam::paths::Utf8PathString(executable), "--uam-opencode-v2-bridge", "--", "opencode"};
+	argv = {uam::paths::Utf8PathString(executable), "--uam-opencode-v2-bridge"};
+	if (runtime_verification) argv.emplace_back(version);
+	argv.insert(argv.end(), {"--", "opencode"});
 	// The V2 evaluation guard owns force-ask; V1's environment flags are not a V2 contract.
 	std::erase_if(environment, [](const auto& entry) { return entry.first == "OPENCODE_PERMISSION"; });
 	// The V1 plan-agent override is not a verified V2 config contract either; the V2 guard enforces Plan.

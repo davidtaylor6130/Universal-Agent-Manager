@@ -28,34 +28,43 @@ namespace uam::opencode_v2
 using Json = nlohmann::json;
 using Query = std::function<Json(const std::string&, const std::string&, const Json&)>;
 using PublishPolicy = std::function<void(const std::string&, const std::string&, bool)>;
+using VerifyPermission = std::function<void(const std::string&, const std::string&)>;
 using Emit = std::function<void(const Json&)>;
+inline constexpr int kRuntimeVerificationError = -32041;
 
 // The one OpenCode V2 native-protocol contract UAM has verified, for chat, model
 // refresh, text workers and history. See docs/reference/opencode-v2-protocol-assessment.md
 // for how each bound was verified before widening it.
 inline constexpr std::string_view kVerifiedV2Minimum = "2.1.2";
 inline constexpr std::string_view kVerifiedV2Maximum = "2.2.7";
-/// <summary>True only for an exact x.y.z inside the verified V2 range; pre-release, build and decorated text are unverified.</summary>
+inline auto ParseExactVersion(std::string_view version) -> std::optional<std::array<unsigned long long, 3>>
+{
+	std::array<unsigned long long, 3> parts{};
+	for (std::size_t index = 0; index < parts.size(); ++index)
+	{
+		const auto dot = version.find('.');
+		const auto component = version.substr(0, dot);
+		if (component.empty() || (component.size() > 1 && component.front() == '0') ||
+		    (dot == std::string_view::npos) != (index == parts.size() - 1)) return std::nullopt;
+		const auto end = component.data() + component.size();
+		const auto parsed = std::from_chars(component.data(), end, parts[index]);
+		if (parsed.ec != std::errc{} || parsed.ptr != end) return std::nullopt;
+		if (dot != std::string_view::npos) version.remove_prefix(dot + 1);
+	}
+	return parts;
+}
+/// <summary>True only for an exact x.y.z inside the verified V2 range.</summary>
 inline bool IsVerifiedV2(std::string_view version)
 {
-	if (cli_versions::ExtractSemverVersion(version) != std::optional<std::string>{std::string(version)}) return false;
-	const auto parse = [](std::string_view text)
-	{
-		std::array<unsigned long long, 3> parts{};
-		const char* cursor = text.data();
-		const char* const end = text.data() + text.size();
-		for (auto& part : parts)
-		{
-			// Leading zeros ("2.02.6") are not a version OpenCode prints.
-			if (cursor != end && *cursor == '0' && cursor + 1 != end && *(cursor + 1) != '.') return std::optional<std::array<unsigned long long, 3>>{};
-			const auto parsed = std::from_chars(cursor, end, part);
-			if (parsed.ec != std::errc{}) return std::optional<std::array<unsigned long long, 3>>{};
-			cursor = parsed.ptr == end ? end : parsed.ptr + 1;
-		}
-		return std::optional{parts};
-	};
-	const auto value = parse(version);
-	return value && *value >= *parse(kVerifiedV2Minimum) && *value <= *parse(kVerifiedV2Maximum);
+	const auto value = ParseExactVersion(version);
+	return value && *value >= *ParseExactVersion(kVerifiedV2Minimum) && *value <= *ParseExactVersion(kVerifiedV2Maximum);
+}
+/// <summary>These releases can attempt local Chat startup with a process-specific permission proof.</summary>
+inline bool NeedsLocalChatRuntimeVerification(std::string_view version)
+{
+	const auto value = ParseExactVersion(version);
+	const auto maximum = ParseExactVersion(kVerifiedV2Maximum);
+	return value && value->front() == maximum->front() && *value > *maximum;
 }
 /// <summary>Names the installed and supported versions for a refused V2 installation.</summary>
 inline std::string UnverifiedV2Message(std::string_view installed, std::string_view use)
@@ -106,11 +115,12 @@ std::vector<std::string> FileBackedStdoutArgv(std::vector<std::string> command);
 class Session
 {
 public:
-	Session(Query query, PublishPolicy publish_policy, Emit emit, std::string native_version = std::string(kVerifiedV2Minimum));
+	Session(Query query, PublishPolicy publish_policy, Emit emit, std::string native_version = std::string(kVerifiedV2Minimum), VerifyPermission verify_permission = {});
 	void Handle(const Json& message);
 	void Event(const Json& event);
 	void CheckDeadlines(std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
 	void Disconnected(std::string reason = "OpenCode V2 connection closed; delivery may have occurred. Input is held and is never replayed automatically.");
+	bool Ready() const { return ready_; }
 	bool Broken() const { return disconnected_; }
 	bool HasTurn() const { return !prompt_id_.is_null(); }
 	const std::string& NativeId() const { return session_id_; }
@@ -128,6 +138,7 @@ private:
 	void InterruptCancelledTurn();
 	Query query_;
 	PublishPolicy publish_policy_;
+	VerifyPermission verify_permission_;
 	Emit emit_;
 	std::string native_version_, cwd_, session_id_, mode_ = "build", model_, prompt_inbox_;
 	bool read_only_ = false, prompt_started_ = false, disconnected_ = false, ready_ = false;
