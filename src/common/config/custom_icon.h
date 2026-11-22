@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/models/app_models.h"
+#include "common/paths/path_utils.h"
 #include "common/utils/base64.h"
 #if defined(_WIN32) || defined(__APPLE__)
 #include "common/utils/io_utils.h"
@@ -151,12 +152,13 @@ namespace uam::icons
 		    "icon.png", "assets/icon.png", "src-tauri/icons/128x128.png", "build/icon.png", "resources/icon.png",
 		    "android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png", "app/src/main/res/mipmap-xxxhdpi/ic_launcher.png",
 		    "public/favicon.ico", "static/favicon.ico", "app/favicon.ico", "src/app/favicon.ico", "favicon.ico"};
-		if (workspace.empty()) return {};
-		// Folder state serializes on many pushes; probe each workspace once per run.
+		// An unreachable folder (unmounted volume) is not cached, so its icon appears once it comes back.
+		if (workspace.empty() || !uam::paths::IsDirectoryNoThrow(workspace)) return {};
+		// The availability scan runs every 2 s; probe each workspace once per run.
 		// ponytail: icons added or changed mid-run show after restart; add an mtime check if that matters.
 		static std::mutex cache_mutex;
 		static std::unordered_map<std::string, std::string> cache;
-		const std::string key = workspace.string();
+		const std::string key = uam::paths::Utf8PathString(workspace);
 		{
 			const std::lock_guard<std::mutex> lock(cache_mutex);
 			if (const auto found = cache.find(key); found != cache.end()) return found->second;

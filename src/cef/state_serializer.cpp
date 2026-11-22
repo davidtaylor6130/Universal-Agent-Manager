@@ -2301,14 +2301,10 @@ namespace uam
 			{
 				nlohmann::json object = StateSerializer::SerializeFolder(folder, false);
 				uam::icons::AddFrontendAsset(object, data_root, folder.custom_icon);
-				const bool local = folder.execution_host_id.empty() || folder.execution_host_id == uam::execution_hosts::kLocalHostId;
-				if (folder.custom_icon.type.empty() && local && !folder.directory.empty() && !object.value("missing", false))
-				{
-					// Read even under Documents/Desktop/Downloads: agents already run in these user-chosen folders,
-					// so macOS asks for that access once anyway.
-					if (std::string icon = uam::icons::ProjectIconDataUrl(uam::paths::PathFromUtf8(folder.directory)); !icon.empty())
-						object["projectIcon"] = std::move(icon);
-				}
+				// The worker availability scan finds the icon; use it only while it matches this folder's location.
+				if (folder.custom_icon.type.empty() && !folder.project_icon.empty() && folder.availability_directory == folder.directory &&
+				    folder.availability_host_id == folder.execution_host_id)
+					object["projectIcon"] = folder.project_icon;
 				folders_json.push_back(std::move(object));
 			}
 			return folders_json;

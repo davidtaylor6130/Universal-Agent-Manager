@@ -44,6 +44,7 @@
 #include "common/paths/app_paths.h"
 #include "common/paths/path_utils.h"
 #include "common/paths/workspace_root.h"
+#include "common/config/custom_icon.h"
 #include "common/chat/chat_branching.h"
 #include "common/chat/chat_folder_store.h"
 #include "common/chat/chat_repository.h"
@@ -393,12 +394,13 @@ bool Application::PollWorkspaceAvailability()
 	{
 		try
 		{
-			for (const ChatFolder& result : m_workspaceAvailabilityScan.get())
+			for (ChatFolder& result : m_workspaceAvailabilityScan.get())
 			{
 				const std::vector<ChatFolder>::iterator current = std::ranges::find(m_app.folders, result.id, &ChatFolder::id);
 				if (current == m_app.folders.end() || current->directory != result.directory || current->execution_host_id != result.execution_host_id) continue;
-				changed = changed || current->directory_missing != result.directory_missing;
+				changed = changed || current->directory_missing != result.directory_missing || current->project_icon != result.project_icon;
 				current->directory_missing = result.directory_missing;
+				current->project_icon = std::move(result.project_icon);
 				current->availability_directory = result.directory;
 				current->availability_host_id = result.execution_host_id;
 			}
@@ -412,10 +414,18 @@ bool Application::PollWorkspaceAvailability()
 			for (ChatFolder& folder : folders)
 			{
 				folder.directory_missing = false;
+				folder.project_icon.clear();
 				if (!folder.directory.empty() && uam::paths::IsControllerLocalWorkspace(folder))
 				{
 					const fs::path directory = uam::paths::PathFromUtf8(folder.directory);
 					folder.directory_missing = PlatformServicesFactory::Instance().path_service.CanProbeDirectoryWithoutPrompt(directory) && !uam::paths::IsDirectoryNoThrow(directory);
+#if defined(_WIN32) || defined(__APPLE__)
+					// Read even under Documents/Desktop/Downloads: agents already run in these user-chosen folders,
+					// so macOS asks for that access once anyway. Kept off the UI thread because slow mounts can block.
+					// Probed even with a custom icon, so removing it shows the project icon at once; the serializer hides it meanwhile.
+					if (!folder.directory_missing)
+						folder.project_icon = uam::icons::ProjectIconDataUrl(directory);
+#endif
 				}
 			}
 			return folders;

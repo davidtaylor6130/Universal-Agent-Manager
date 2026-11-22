@@ -917,6 +917,9 @@ struct ChatFolder
 	std::string availability_directory;
 	std::string availability_host_id;
 	bool directory_missing = false;
+	// Detected project icon data URL from the same worker probe; empty when none.
+	// ponytail: copied with the folder list on each 2 s scan; move to a side map if icon bytes grow.
+	std::string project_icon;
 };
 
 struct ResourceReference
