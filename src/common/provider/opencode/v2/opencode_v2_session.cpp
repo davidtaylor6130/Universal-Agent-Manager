@@ -200,14 +200,16 @@ Json Session::Setup(const Json& params, bool load)
 	else info = Data(query_("POST", "/api/session", {{"location", {{"directory", cwd_}}}, {"agent", read_only_ ? "plan" : "build"}, {"permissions", Rules(read_only_)}}));
 	session_id_ = info.at("id").get<std::string>();
 	if (!Id(session_id_) || info.value("location", Json::object()).value("directory", "") != cwd_) throw std::runtime_error("OpenCode V2 returned an invalid session binding.");
+	startup_created_ = verify_permission_ && !load;
 	const auto native_model = ModelRef(info.value("model", Json::object()));
 	if (native_model.is_object() && native_model.contains("id")) model_ = native_model.value("providerID", "") + "/" + native_model.value("id", "");
 	if (native_model.is_object() && native_model.contains("variant")) model_ += "/" + native_model.at("variant").get<std::string>();
 	mode_ = info.value("agent", "build");
 	if (mode_ != "build" && mode_ != "plan") throw std::runtime_error("OpenCode V2 resume uses an unverified native agent policy.");
 	if (load) RequireEmptyInbox(); // never rewrite policy for pre-existing queued work
-	if (verify_permission_) verify_permission_(session_id_, cwd_); // still inactive, so the guard must deny
+	if (verify_permission_) verify_permission_(session_id_, cwd_, PermissionProbe::Deny);
 	Policy(params); // replace/read back old session grants before readiness
+	if (verify_permission_) verify_permission_(session_id_, cwd_, PermissionProbe::Ask);
 	Json result = Options();
 	result["sessionId"] = session_id_;
 	ready_ = true;
@@ -366,8 +368,19 @@ void Session::Handle(const Json& message)
 			return;
 		}
 		const bool startup_failed = verify_permission_ && !ready_;
-		if (!id.is_null()) emit_({{"jsonrpc", "2.0"}, {"id", id}, {"error", {{"code", startup_failed ? kRuntimeVerificationError : -32603}, {"message", error.what()}}}});
-		if (startup_failed) disconnected_ = true;
+		Json failure{{"code", startup_failed ? kRuntimeVerificationError : -32603}, {"message", error.what()}};
+		if (startup_failed)
+		{
+			try { publish_policy_({}, cwd_, true); } catch (...) {}
+			if (startup_created_)
+			{
+				try { query_("DELETE", Route(), nullptr); session_id_.clear(); } catch (...) {}
+			}
+			if (message.value("method", "") == "session/new" && Id(session_id_))
+				failure["data"] = {{"nativeSessionId", session_id_}};
+			disconnected_ = true;
+		}
+		if (!id.is_null()) emit_({{"jsonrpc", "2.0"}, {"id", id}, {"error", std::move(failure)}});
 	}
 }
 

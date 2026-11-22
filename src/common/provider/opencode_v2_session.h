@@ -28,9 +28,12 @@ namespace uam::opencode_v2
 using Json = nlohmann::json;
 using Query = std::function<Json(const std::string&, const std::string&, const Json&)>;
 using PublishPolicy = std::function<void(const std::string&, const std::string&, bool)>;
-using VerifyPermission = std::function<void(const std::string&, const std::string&)>;
+enum class PermissionProbe { Deny, Ask };
+using VerifyPermission = std::function<void(const std::string&, const std::string&, PermissionProbe)>;
+using StartupClock = std::function<std::chrono::steady_clock::time_point()>;
 using Emit = std::function<void(const Json&)>;
 inline constexpr int kRuntimeVerificationError = -32041;
+inline constexpr std::string_view kStartupFailureMethod = "uam/opencode/startupFailure";
 
 // The one OpenCode V2 native-protocol contract UAM has verified, for chat, model
 // refresh, text workers and history. See docs/reference/opencode-v2-protocol-assessment.md
@@ -142,7 +145,7 @@ private:
 	Emit emit_;
 	std::string native_version_, cwd_, session_id_, mode_ = "build", model_, prompt_inbox_;
 	bool read_only_ = false, prompt_started_ = false, disconnected_ = false, ready_ = false;
-	bool usage_invalid_ = false;
+	bool usage_invalid_ = false, startup_created_ = false;
 	bool cancel_requested_ = false, cancel_interrupt_sent_ = false;
 	std::chrono::steady_clock::time_point cancel_deadline_{};
 	std::string finish_;
@@ -161,6 +164,6 @@ private:
 // Early headless command, before CEF/app startup. No installed native accounts
 // are modified; the process owns its private service, config and policy lease.
 bool IsCommand(const std::vector<std::string>& arguments);
-std::optional<int> RunCommand(const std::vector<std::string>& arguments, IPlatformProcessService& process_service);
+std::optional<int> RunCommand(const std::vector<std::string>& arguments, IPlatformProcessService& process_service, StartupClock startup_now = std::chrono::steady_clock::now);
 #endif
 }

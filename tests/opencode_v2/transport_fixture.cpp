@@ -96,14 +96,19 @@ public:
 	bool malformed_sse = false;
 	bool wrong_workspace = false, wrong_running_version = false, wrong_readback = false;
 	std::string probe_effect = "deny";
-	enum class ProbeReceipt { Exact, Missing, WrongNonce, WrongWorkspace, WrongSession };
+	enum class StartupFault { None, Closed, Reload, StreamExited, ServerExited, Malformed, Info, Subscription, Deadline, ClosedAfterInitialize };
+	StartupFault startup_fault = StartupFault::None;
+	bool omit_ask_event = false, wrong_ask_event = false, allow_ask_probe = false, reject_fails = false;
+	bool delete_fails = false, catalogue_fails = false;
+	enum class ProbeReceipt { Exact, Missing, WrongNonce, WrongWorkspace, WrongSession, NativeDeny };
 	ProbeReceipt probe_receipt = ProbeReceipt::Exact;
 	bool early_cancel = false, failed_delete = false, lost_interrupt = false;
 	std::string version_output;
 	std::string cwd = std::filesystem::current_path().generic_string();
-	mutable Json info, plugin_options;
+	mutable Json info, plugin_options, pending_probe;
 	mutable std::string password, private_directory;
-	mutable int server_starts = 0, server_stops = 0, stream_stops = 0, lease_closes = 0, creates = 0, prompts = 0, replies = 0, interrupts = 0, probes = 0;
+	mutable int server_starts = 0, server_stops = 0, stream_stops = 0, lease_closes = 0, creates = 0, prompts = 0, replies = 0, interrupts = 0, probes = 0, probe_rejects = 0, deletions = 0, stream_reads = 0;
+	mutable bool advance_clock = false;
 	mutable std::uint64_t uuid = 0, event = 0;
 	mutable std::vector<Json> requests;
 	mutable std::vector<std::vector<std::string>> commands;
@@ -152,26 +157,51 @@ public:
 		}
 		if (route == "/api/session/ses_transport")
 		{
+			if (method == "DELETE") { ++deletions; return nullptr; }
 			if (method == "PATCH") { if (!wrong_readback) info["permissions"] = body.at("permissions"); else info["permissions"] = Json::array(); return nullptr; }
 			return {{"data", info}};
 		}
-		if (method == "POST" && route == "/api/session/ses_transport/permission")
+		if (route == "/api/session/ses_transport/permission")
 		{
-			++probes;
-			const auto nonce = plugin_options.at("nonce");
-			Require(body.at("action") == plugin_options.at("probeAction") && body.at("resources") == Json::array({nonce}) &&
+			if (method == "GET")
+				return {{"data", pending_probe.is_null() ? Json::array() : Json::array({pending_probe})}};
+			const bool ask = ++probes == 2;
+			const auto nonce = plugin_options.at("nonce").get<std::string>();
+			const auto resource = nonce + (ask ? ":ask" : ":deny");
+			Require(body.at("action") == plugin_options.at("probeAction") && body.at("resources") == Json::array({resource}) &&
 			    body.at("save") == Json::array() && !body.contains("source"), "Probe could execute a tool or create a saved grant");
 			std::ifstream policy(plugin_options.at("policyPath").get<std::string>());
 			Json captured; policy >> captured;
-			Require(captured.at("active") == false, "Candidate policy was active before permission verification");
+			Require(captured.at("active") == ask, "Probe did not use the captured policy phase");
+			const std::string effect = ask ? (allow_ask_probe ? "allow" : "ask") : probe_effect;
 			if (probe_receipt != ProbeReceipt::Missing)
 			{
 				std::ofstream receipt(plugin_options.at("probePath").get<std::string>());
-				receipt << Json{{"nonce", probe_receipt == ProbeReceipt::WrongNonce ? Json("wrong") : nonce},
+				receipt << Json{{"nonce", probe_receipt == ProbeReceipt::WrongNonce ? "wrong" : nonce},
 				    {"directory", probe_receipt == ProbeReceipt::WrongWorkspace ? cwd + "/other" : cwd},
-				    {"sessionID", probe_receipt == ProbeReceipt::WrongSession ? "ses_other" : "ses_transport"}}.dump();
+				    {"sessionID", probe_receipt == ProbeReceipt::WrongSession ? "ses_other" : "ses_transport"},
+				    {"nativeEffect", probe_receipt == ProbeReceipt::NativeDeny ? "deny" : "allow"},
+				    {"resource", resource}, {"effect", effect}}.dump();
 			}
-			return {{"data", {{"id", "per_probe"}, {"effect", probe_effect}}}};
+			if (effect == "ask")
+			{
+				pending_probe = {{"id", "per_probe"}, {"sessionID", "ses_transport"}, {"action", body.at("action")},
+				    {"resources", body.at("resources")}, {"save", Json::array()}};
+				if (!omit_ask_event)
+				{
+					Json event = pending_probe;
+					if (wrong_ask_event) event["id"] = "per_other";
+					Event("permission.asked", event);
+				}
+			}
+			return {{"data", {{"id", "per_probe"}, {"effect", effect}}}};
+		}
+		if (route.ends_with("/permission/per_probe/reply"))
+		{
+			Require(body == Json{{"decision", "reject"}}, "Probe granted a native permission");
+			++probe_rejects;
+			pending_probe = nullptr;
+			return nullptr;
 		}
 		if (route.ends_with("/inbox")) return {{"data", Json::array()}};
 		if (route.ends_with("/model")) { info["model"] = body.at("model"); return nullptr; }
@@ -248,7 +278,16 @@ public:
 		Require(argv.back().starts_with("http://127.0.0.1:49152/api/"), "HTTP escaped its private loopback endpoint");
 		for (const auto& arg : argv) Require(arg.find(password) == std::string::npos, "Credential leaked into argv");
 		Require(input_bytes.find(uam::base64::Encode("opencode:" + password)) != std::string::npos, "Authentication was not piped privately");
-		if (argv.back().ends_with("/api/event")) { stream = &fields; processes[&fields] = {"stream", {}}; Event("server.connected", Json::object()); return true; }
+		if (argv.back().ends_with("/api/event"))
+		{
+			if (startup_fault == StartupFault::Subscription) return false;
+			stream = &fields;
+			processes[&fields] = {"stream", {}};
+			Event("server.connected", Json::object());
+			if (startup_fault == StartupFault::Reload) Event("location.shutdown", Json::object());
+			if (startup_fault == StartupFault::Malformed) processes[&fields].output += "data: {malformed\n\n";
+			return true;
+		}
 		const auto flag = std::find(argv.begin(), argv.end(), "--request"); Require(flag != argv.end() && std::next(flag) != argv.end(), "HTTP method missing");
 		Json body;
 		std::istringstream lines{std::string(input_bytes)}; std::string line;
@@ -260,7 +299,11 @@ public:
 			const auto maximum = std::find(argv.begin(), argv.end(), "--max-time");
 			Require(maximum != argv.end() && std::next(maximum) != argv.end() && *std::next(maximum) == "1", "Cancel HTTP call could consume the whole shared cancel budget");
 		}
-		const bool failed = (failed_delete && route.find("/inbox/") != std::string::npos) || (lost_interrupt && route.ends_with("/interrupt"));
+		const bool failed = (failed_delete && route.find("/inbox/") != std::string::npos) || (lost_interrupt && route.ends_with("/interrupt")) ||
+		    (startup_fault == StartupFault::Info && route == "/api/info") ||
+		    (delete_fails && *std::next(flag) == "DELETE" && route == "/api/session/ses_transport") ||
+		    (reject_fails && route.ends_with("/permission/per_probe/reply")) ||
+		    (catalogue_fails && route.starts_with("/api/model?"));
 		processes[&fields] = {"http", failed ? "{}\n500" : result.is_null() ? "\n204" : result.dump() + "\n200"}; return true;
 	}
 	mutable int finite_input_reads = 0;
@@ -279,6 +322,11 @@ public:
 	uam::platform::StandardInputReadResult ReadFixtureInput(char* bytes, std::size_t size) const
 	{
 		using Status = uam::platform::StandardInputReadStatus;
+		if (startup_fault == StartupFault::Deadline && input_index == 1)
+		{
+			advance_clock = true;
+			return {Status::Pending, 0};
+		}
 		if (!publish_proof && input_index >= 2) return {Status::EndOfStream, 0};
 		if (input_index == input.size())
 		{
@@ -290,6 +338,13 @@ public:
 	}
 	std::ptrdiff_t ReadStdioProcessStdout(Fields& fields, char* bytes, std::size_t size, std::string*) const override
 	{
+		if (&fields == stream)
+		{
+			++stream_reads;
+			if (startup_fault == StartupFault::Closed ||
+			    (startup_fault == StartupFault::ClosedAfterInitialize && stream_reads >= 3)) return 0;
+			if ((omit_ask_event || wrong_ask_event) && probes == 2) advance_clock = true;
+		}
 		auto& state = processes.at(&fields); const auto count = std::min(size, state.output.size() - state.offset);
 		if (count) { std::memcpy(bytes, state.output.data() + state.offset, count); state.offset += count; return static_cast<std::ptrdiff_t>(count); }
 		return state.kind == "stream" || state.kind == "server" ? -2 : 0;
@@ -298,7 +353,8 @@ public:
 	bool PollStdioProcessExited(Fields& fields, int* exit) const override
 	{
 		const auto& state = processes.at(&fields); if (exit) *exit = 0;
-		return state.stopped || ((state.kind == "http" || state.kind == "capture" || state.kind == "history") && state.offset == state.output.size());
+		return (startup_fault == StartupFault::StreamExited && &fields == stream) ||
+		    (startup_fault == StartupFault::ServerExited && &fields == server) || state.stopped || ((state.kind == "http" || state.kind == "capture" || state.kind == "history") && state.offset == state.output.size());
 	}
 	void StopStdioProcess(Fields& fields, bool) const override
 	{
@@ -359,11 +415,12 @@ void RunOpenCodeV2TransportFixtures()
 		SimulatedProcesses native; native.version = "2.3.2"; native.version_output = "opencode v2.3.2 (Homebrew)\n";
 		OutputCapture capture;
 		Require(RunCommand(candidate, native) == std::optional<int>{0}, "Proven candidate did not complete the bridge lifecycle");
-		Require(native.probes == 1 && native.creates == 1 && native.prompts == 2 && native.replies == 1 &&
+		Require(native.probes == 2 && native.probe_rejects == 1 && native.creates == 1 && native.prompts == 2 && native.replies == 1 &&
 		    native.interrupts == 1 && capture.Read().find("\"error\"") == std::string::npos, "Candidate changed normal session behavior");
 	}
 	for (const auto receipt : {SimulatedProcesses::ProbeReceipt::Missing, SimulatedProcesses::ProbeReceipt::WrongNonce,
-	    SimulatedProcesses::ProbeReceipt::WrongWorkspace, SimulatedProcesses::ProbeReceipt::WrongSession, SimulatedProcesses::ProbeReceipt::Exact})
+	    SimulatedProcesses::ProbeReceipt::WrongWorkspace, SimulatedProcesses::ProbeReceipt::WrongSession,
+	    SimulatedProcesses::ProbeReceipt::NativeDeny, SimulatedProcesses::ProbeReceipt::Exact})
 	{
 		SimulatedProcesses native; native.version = "2.3.2"; native.probe_receipt = receipt;
 		if (receipt == SimulatedProcesses::ProbeReceipt::Exact) native.probe_effect = "allow";
@@ -373,10 +430,59 @@ void RunOpenCodeV2TransportFixtures()
 		OutputCapture capture;
 		Require(RunCommand(candidate, native) == std::optional<int>{1}, "Failed probe retained its service lease");
 		const auto output = capture.Read();
-		Require(native.probes == 1 && native.prompts == 0 && native.server_stops == 1 &&
+		Require(native.probes == 1 && native.prompts == 0 && native.server_stops == 1 && native.deletions == 1 &&
 		    output.find("permission hook denied the probe") != std::string::npos &&
 		    output.find(std::to_string(kRuntimeVerificationError)) != std::string::npos,
 		    "Failed probe did not report a held setup before prompt delivery");
+	}
+	using Fault = SimulatedProcesses::StartupFault;
+	for (const auto [fault, reason] : {std::pair{Fault::Closed, "event subscription closed"}, {Fault::Reload, "reloaded its native policy"},
+	    {Fault::StreamExited, "subscription exited"}, {Fault::ServerExited, "subscription exited"},
+	    {Fault::Malformed, "Invalid OpenCode V2 event frame"},
+	    {Fault::Info, "protocol check (/api/info) failed"}, {Fault::Subscription, "event subscription could not start"},
+	    {Fault::Deadline, "startup verification deadline"}, {Fault::ClosedAfterInitialize, "event subscription closed"}})
+	{
+		SimulatedProcesses native;
+		native.version = "2.3.2";
+		native.startup_fault = fault;
+		OutputCapture capture;
+		const auto start = std::chrono::steady_clock::now();
+		const auto clock = [&] { return start + std::chrono::seconds(native.advance_clock ? 91 : 0); };
+		Require(RunCommand(candidate, native, clock) == std::optional<int>{1}, reason);
+		const auto output = capture.Read();
+		Require(native.prompts == 0 && native.server_stops == 1 && output.find(reason) != std::string::npos &&
+		    output.find(std::to_string(kRuntimeVerificationError)) != std::string::npos, reason);
+		if (fault == Fault::Deadline || fault == Fault::ClosedAfterInitialize)
+			Require(output.find(kStartupFailureMethod) != std::string::npos, "Uncorrelated startup failure lost its controller notification");
+	}
+	for (const std::string fault : {"missing event", "wrong event", "ask allowed", "reject failed", "catalogue failed", "cleanup failed", "load failed"})
+	{
+		SimulatedProcesses native;
+		native.version = "2.3.2";
+		native.reject_fails = fault == "reject failed";
+		native.catalogue_fails = fault == "catalogue failed";
+		native.allow_ask_probe = fault == "ask allowed";
+		native.omit_ask_event = fault == "missing event" || fault == "cleanup failed" || fault == "load failed";
+		native.wrong_ask_event = fault == "wrong event";
+		native.delete_fails = fault == "cleanup failed";
+		if (fault == "load failed")
+		{
+			auto setup = Json::parse(native.input.at(1));
+			setup["method"] = "session/load";
+			setup["params"]["sessionId"] = "ses_transport";
+			native.input[1] = setup.dump() + '\n';
+		}
+		OutputCapture capture;
+		const auto start = std::chrono::steady_clock::now();
+		const auto clock = [&] { return start + std::chrono::seconds(native.advance_clock ? 91 : 0); };
+		Require(RunCommand(candidate, native, clock) == std::optional<int>{1}, "Ask failure retained the service lease");
+		const auto output = capture.Read();
+		Require(native.probes == 2 && native.prompts == 0 && native.server_stops == 1 &&
+		    native.probe_rejects == (native.reject_fails || native.catalogue_fails ? 1 : 0) &&
+		    output.find(native.catalogue_fails ? "model catalogue failed" : "ask probe failed") != std::string::npos &&
+		    output.find(std::to_string(kRuntimeVerificationError)) != std::string::npos, "Ask verification failed open");
+		Require(native.deletions == (fault == "load failed" ? 0 : 1), "Cleanup targeted the wrong session");
+		Require((output.find("nativeSessionId") != std::string::npos) == native.delete_fails, "Cleanup failure lost the unbound native ID");
 	}
 	{
 		SimulatedProcesses native; native.version = "2.3.2"; native.wrong_workspace = true;

@@ -165,7 +165,7 @@ class IProviderRuntime
 	/// <summary>Returns a local CLI compatibility error, or empty when this runtime permits launch.</summary>
 	virtual std::string LocalCliCompatibilityError(const uam::AppState&) const { return {}; }
 	/// <summary>Checks structured protocol compatibility for a checked executing-host CLI version, separately from installation policy.</summary>
-	virtual std::string StructuredCliVersionError(const ProviderProfile&, std::string_view, bool = false, const ChatSession* = nullptr) const { return {}; }
+	virtual std::string StructuredCliVersionError(const ProviderProfile&, std::string_view, bool = false, const ChatSession* = nullptr, bool = false) const { return {}; }
 	virtual bool RequiresStructuredCliVersion(const ProviderProfile&) const { return false; }
 	/// Provider-owned generation selection after captured setup, before process creation.
 	virtual bool PrepareStructuredLaunch(uam::AcpSessionState&, const ProviderProfile&, std::string_view, bool,

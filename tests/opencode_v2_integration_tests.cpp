@@ -187,25 +187,34 @@ UAM_TEST(OpenCodeV2HistoryOverlayPreservesOriginOnlyForSameNativeOwner)
 
 UAM_TEST(OpenCodeV2RuntimeVerificationFailureDurablyHoldsUndeliveredQueue)
 {
-	for (const std::string method : {"initialize", "session/new", "session/load"})
+	for (const std::string method : {"initialize", "session/new", "session/load", "startup-notification"})
 	{
 		HeldV2Turn fixture;
 		auto& session = fixture.Session();
 		const auto expected = fixture.Chat().acp_queued_prompts;
 		session.session_ready = session.processing = false;
 		session.prompt_request_id = 0;
-		// Load can fail just before the shared poller drains the final error.
-		// A reaped PID must not lose the refusal or trigger a restart.
-		session.running = method == "session/load";
+		// The shared poller can reap the bridge before draining its final error.
+		session.running = true;
 		session.process_exit_observed = session.running;
 		session.observed_process_exit_code = 1;
 		if (session.running) session.last_process_id = "reaped fixture";
 		fixture.Chat().messages.front().content = "Unsent authored input";
 		fixture.Chat().messages.front().acp_prompt_not_sent = true;
-		session.pending_request_methods[7] = method;
-		uam::acp_detail::HandleAcpResponse(fixture.app, session, fixture.Chat(),
-		    {{"jsonrpc", "2.0"}, {"id", 7}, {"error", {{"code", uam::opencode_v2::kRuntimeVerificationError},
-		        {"message", "OpenCode V2 did not prove that UAM's permission hook denied the probe. Input remains held."}}}});
+		const Json error{{"code", uam::opencode_v2::kRuntimeVerificationError},
+		    {"message", "OpenCode V2 did not prove that UAM's permission hook denied the probe. Input remains held."}};
+		if (method == "startup-notification")
+		{
+			const auto& runtime = ProviderRuntimeRegistry::ResolveById("opencode-cli");
+			UAM_ASSERT(runtime.OnAcpHandleMessage(fixture.app, session, fixture.Chat(),
+			    {{"jsonrpc", "2.0"}, {"method", uam::opencode_v2::kStartupFailureMethod}, {"params", error}}, nullptr));
+		}
+		else
+		{
+			session.pending_request_methods[7] = method;
+			uam::acp_detail::HandleAcpResponse(fixture.app, session, fixture.Chat(),
+			    {{"jsonrpc", "2.0"}, {"id", 7}, {"error", error}});
+		}
 		UAM_ASSERT(!session.running && !session.session_ready && !session.reconnect_pending);
 		UAM_ASSERT(session.queue_held && fixture.Chat().acp_queue_held);
 		UAM_ASSERT(session.transport_ownership_error.empty() && fixture.app.acp_process_stop_tasks.empty());

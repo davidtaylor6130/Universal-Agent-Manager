@@ -175,12 +175,16 @@ UAM_TEST(OpenCodeStructuredCompatibilitySeparatesV1FromUnverifiedNewMajors)
 	ChatSession local_chat;
 	for (const std::string installed : {"2.2.8", "2.2.10", "2.3.2", "2.10.0"})
 	{
-		UAM_ASSERT(runtime.StructuredCliVersionError(profile, installed, false, &local_chat).empty());
-		UAM_ASSERT(!runtime.StructuredCliVersionError(profile, installed, true, &local_chat).empty());
-		UAM_ASSERT(!runtime.StructuredCliVersionError(profile, installed).empty()); // model refresh
+		UAM_ASSERT(runtime.StructuredCliVersionError(profile, installed, false, &local_chat, true).empty());
+		UAM_ASSERT(!runtime.StructuredCliVersionError(profile, installed, true, &local_chat, true).empty());
+		UAM_ASSERT(!runtime.StructuredCliVersionError(profile, installed, false, &local_chat, false).empty()); // model refresh
 	}
 	for (const std::string installed : {"2.1.1", "2.3.2-beta.1", "2.3.2+build", "3.0.0"})
-		UAM_ASSERT(!runtime.StructuredCliVersionError(profile, installed, false, &local_chat).empty());
+		UAM_ASSERT(!runtime.StructuredCliVersionError(profile, installed, false, &local_chat, true).empty());
+	local_chat.native_session_id = "ses_saved_v2";
+	local_chat.opencode_v2_session_id = local_chat.native_session_id;
+	UAM_ASSERT(!runtime.StructuredCliVersionError(profile, "1.19.4", false, &local_chat, false).empty());
+	UAM_ASSERT(runtime.CliVersionPolicy()->protocol_version_refusal("2.3.2").find("Local Chat verifies this release at startup") != std::string::npos);
 	UAM_ASSERT_EQ(ProviderCliCompatibilityService().CompatibilityStatusForProvider("opencode-cli", "2.2.8"), std::string("untested-newer"));
 	UAM_ASSERT_EQ(ProviderCliCompatibilityService().CompatibilityStatusForProvider("opencode-cli", "1.18.15"), std::string("verified"));
 	for (const std::string command : {"/opt/other/bin/opencode", "C:\\other\\opencode.exe", "opencode-wrapper", "/bin/sh wrapper.sh"})
@@ -265,8 +269,11 @@ UAM_TEST(OpenCodeV2SelectsOwnedLocalBridgeAndCapturesInputRestrictions)
 	UAM_ASSERT_EQ(argv.back(), std::string("opencode"));
 	UAM_ASSERT(std::ranges::none_of(environment, [](const auto& entry) { return entry.first == "OPENCODE_PERMISSION"; }));
 	session.model_discovery_only = true;
-	UAM_ASSERT(runtime.PrepareStructuredLaunch(session, profile, "2.3.2", false, argv, environment, error));
+	argv = {"opencode", "acp"};
+	UAM_ASSERT(!runtime.PrepareStructuredLaunch(session, profile, "2.3.2", false, argv, environment, error));
+	UAM_ASSERT(error.find("2.1.2 through 2.2.7") != std::string::npos);
 	UAM_ASSERT(!session.opencode_v2_native);
+	UAM_ASSERT(!runtime.PrepareStructuredLaunch(session, profile, "2.1.1", false, argv, environment, error));
 	session.model_discovery_only = false;
 	UAM_ASSERT(runtime.PrepareStructuredLaunch(session, profile, "2.3.2", false, argv, environment, error));
 	UAM_ASSERT(session.opencode_v2_native);

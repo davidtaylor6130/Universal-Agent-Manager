@@ -2561,7 +2561,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 		if (compatibility_error.empty() && !session.recovering_remote_turn && !session.recovering_remote_process &&
 		    version != app.runtime_cli_versions_by_provider_id.end() && version->second.checked && version->second.check_error.empty() &&
 		    execution_hosts::SameConnection(version->second.execution_host, *execution_host))
-			compatibility_error = runtime.StructuredCliVersionError(provider, version->second.installed_version, remote, session.model_discovery_only ? nullptr : &chat);
+			compatibility_error = runtime.StructuredCliVersionError(provider, version->second.installed_version, remote, &chat, !session.model_discovery_only);
 		if (!compatibility_error.empty())
 		{
 			session.provider_usage.context_usage = {};
