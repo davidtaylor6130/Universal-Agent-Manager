@@ -1948,7 +1948,7 @@ if(UAM_BUILD_TESTS)
     set(UAM_CONNECTED_HANDLER_TEST_SCOPE "")
   endif()
   get_target_property(UAM_ICON_HANDLER_TEST_SOURCES universal_agent_manager SOURCES)
-  list(REMOVE_ITEM UAM_ICON_HANDLER_TEST_SOURCES src/main.cpp "${CMAKE_BINARY_DIR}/uam-package-inputs-$<CONFIG>.cpp")
+  list(REMOVE_ITEM UAM_ICON_HANDLER_TEST_SOURCES src/main.cpp "${UAM_PACKAGE_INPUTS_SOURCE}")
   set(UAM_CONNECTED_HANDLER_TEST_SOURCES ${UAM_ICON_HANDLER_TEST_SOURCES})
   list(REMOVE_ITEM UAM_CONNECTED_HANDLER_TEST_SOURCES
     src/common/platform/platform_pty_macos.cpp src/common/platform/platform_pty_windows.cpp)
