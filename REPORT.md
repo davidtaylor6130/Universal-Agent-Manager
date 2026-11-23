@@ -3,7 +3,7 @@
 SVN branch creation from the composer branch picker is built and pushed. It went through two independent Opus review rounds and was not checked again after the second round's fixes. I opened no PR, issue or comment.
 
 - **Branch:** `v5/feat-520-svn-branch-create` (the `v5/` prefix was accepted).
-- **Final SHA:** `4d219350ec7f8ec22d1d6ef5d79d6f97ba2b80d5`, one commit.
+- **Final SHA:** `4d219350641912c06f95f931e528033da1e337df`, one commit.
 - **Base:** `origin/v5/refactor-519-vcs-interface` (`da59643e`), which sits on `origin/uam/v5.2-sync-main`. That branch already routes the chat branch picker through `VcsProvider`, including the create flag, so this work extends it. The PR therefore depends on the #519 branch landing first.
 
 ## What was built
