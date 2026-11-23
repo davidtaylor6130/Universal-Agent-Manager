@@ -34,6 +34,9 @@ namespace uam::svn_history
 	/// <summary>Whether an `svn update` run finished updating the working copy. svn exits 1 with only E205011 when an
 	/// external could not be updated, after the working copy itself was; any other error, a timeout or a stop is unfinished.</summary>
 	bool UpdateFinished(const ProcessExecutionResult& result);
+	/// <summary>True when svn refused the target because it is not under version control (W155010, E155007, E155010).</summary>
+	bool NotVersioned(const ProcessExecutionResult& result);
+	inline constexpr std::string_view kNotVersionedFolder = "This folder is not under version control, so SVN has nothing to update here. Add it to SVN, or update the folder that holds it.";
 	/// <summary>One "External 'x' could not be updated." line per external svn reported (W205011), in order.</summary>
 	std::vector<std::string> ExternalUpdateWarnings(std::string_view output);
 
@@ -59,3 +62,14 @@ namespace uam::svn_history
 	/// <summary>Relates the working copy's branch or tag to the path it was copied from, for the history graph. Reads committed state at HEAD only.</summary>
 	VcsOriginReply Origin(const VcsCommandRunner& svn, const VcsOriginRequest& request);
 } // namespace uam::svn_history
+
+namespace uam
+{
+	/// <summary>Bounded failure detail: the missing-client notice, svn's first "E<code>: ..." line, or else its first
+	/// "W<code>: ..." line, without a trailing colon or full stop; empty when neither exists.</summary>
+	std::string SvnFailureSummary(const ProcessExecutionResult& result);
+	/// <summary>Strict `svn status` text parser. Rows need seven valid status columns and a separator; headers and
+	/// tree-conflict details are skipped. Codes keep their column positions (right-trimmed). Absolute paths under
+	/// `workspace` become workspace-relative.</summary>
+	std::vector<VcsChangedFile> ParseSvnStatusOutput(std::string_view output, std::string_view workspace = {});
+} // namespace uam

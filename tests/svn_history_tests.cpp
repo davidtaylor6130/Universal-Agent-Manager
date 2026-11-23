@@ -305,6 +305,21 @@ UAM_TEST(SvnUpdateTreatsABrokenExternalAsAWarningAndStillReportsConflicts)
 	UAM_ASSERT_EQ(update.revision, std::string("2"));
 	UAM_ASSERT(update.warnings == std::vector<std::string>({"External 'ext' could not be updated.", "External 'vendor/lib' could not be updated."}));
 
+	// Over SSH the runner keeps svn's stderr apart in `error`; the outcome and the externals are read from both.
+	ProcessExecutionResult remote = Exit(1, "Updating '.':\nC    a.txt\nUpdated to revision 2.\n");
+	remote.error = "svn: warning: W205011: Error handling externals definition for 'ext':\r\nsvn: warning: W170013: Unable to connect\r\nsvn: E205011: Failure occurred processing one or more externals definitions\r\n";
+	const uam::VcsCommandRunner over_ssh = [&](const std::vector<std::string>& args, int) { return args.front() == "info" ? Exit(0, InfoXml("2", "^/trunk")) : remote; };
+	const uam::VcsUpdateResult remote_update = uam::svn_history::Update(over_ssh);
+	if (!remote_update.ok) throw TestFailure(remote_update.error);
+	UAM_ASSERT(remote_update.conflicts);
+	UAM_ASSERT(remote_update.warnings == std::vector<std::string>({"External 'ext' could not be updated."}));
+	ProcessExecutionResult transport = remote;
+	transport.error += " Remote process cleanup failed: lost connection";
+	UAM_ASSERT(!uam::svn_history::UpdateFinished(transport));
+	ProcessExecutionResult remote_locked = remote;
+	remote_locked.error += "svn: E155004: Working copy '/x' locked.\n";
+	UAM_ASSERT(!uam::svn_history::UpdateFinished(remote_locked));
+
 	// Any other error, a stop or a timeout leaves the update unfinished, even next to E205011.
 	ProcessExecutionResult locked = Exit(1, externals_output + "svn: E155004: Working copy '/x' locked.\n");
 	UAM_ASSERT(!uam::svn_history::UpdateFinished(locked));
@@ -591,6 +606,29 @@ UAM_TEST(SvnUpdatePastABrokenExternalHidesConflictLeftoversAndResolves)
 	}
 	UAM_ASSERT(!status.conflict_leftovers_unknown);
 
+#if !defined(_WIN32)
+	{
+		// When svn cannot say which files are leftovers, they stay listed but no new file can be committed.
+		const fs::path tools = temp.root / "tools";
+		fs::create_directories(tools);
+		const std::string real = uam::strings::Trim(PlatformServicesFactory::Instance().process_service.ExecuteCommand("command -v svn").output);
+		UAM_ASSERT(!real.empty());
+		UAM_ASSERT(uam::io::WriteTextFile(tools / "svn", "#!/bin/sh\nif [ \"$1\" = info ] && [ \"$2\" = --xml ]; then echo 'svn: E170013: scripted failure' >&2; exit 1; fi\nexec \"" + real + "\" \"$@\"\n"));
+		fs::permissions(tools / "svn", fs::perms::owner_all);
+		const std::string inherited = uam::env::GetNonEmptyString("PATH").value_or("/usr/bin:/bin");
+		ScopedEnvVar path("PATH", tools.string() + ":" + inherited);
+		const uam::VcsCommitStatus unknown = vcs.Status(app, chat, uam::VcsType::Svn, false);
+		UAM_ASSERT(unknown.conflict_leftovers_unknown);
+		UAM_ASSERT(unknown.warning.find("E170013") != std::string::npos);
+		UAM_ASSERT(std::ranges::find(unknown.changed_files, std::string("a.txt.mine"), &uam::VcsChangedFile::path) != unknown.changed_files.end());
+		UAM_ASSERT(uam::io::WriteTextFile(mine / "other.txt", "other\n"));
+		const uam::VcsCommitResult refused = vcs.Commit(app, chat, uam::VcsType::Svn, "unknown", {"other.txt"});
+		UAM_ASSERT(!refused.ok);
+		UAM_ASSERT(refused.error.find("could not read its conflict details") != std::string::npos);
+		fs::remove(mine / "other.txt");
+	}
+#endif
+
 	// A scripted or stale selection of a leftover is refused before anything is scheduled; a real new file still commits.
 	const uam::VcsCommitResult leaked = vcs.Commit(app, chat, uam::VcsType::Svn, "leak", {"a.txt.r2"});
 	UAM_ASSERT(!leaked.ok);
@@ -605,6 +643,12 @@ UAM_TEST(SvnUpdatePastABrokenExternalHidesConflictLeftoversAndResolves)
 	status = vcs.Status(app, chat, uam::VcsType::Svn, false);
 	UAM_ASSERT_EQ(status.branch_or_revision, std::string("2:3"));
 
+#if !defined(_WIN32)
+	// A path that leads out of the workspace through a link is refused before svn runs, whatever it points at.
+	fs::create_directory_symlink(theirs, mine / "elsewhere");
+	UAM_ASSERT_EQ(vcs.Resolve(app, chat, uam::VcsType::Svn, "elsewhere/a.txt", "working").error, std::string("Select a conflicted path in this workspace."));
+	fs::remove(mine / "elsewhere");
+#endif
 	// Whole-file choices apply to the text conflict; the tree conflict accepts only the working copy as it is.
 	UAM_ASSERT(vcs.Resolve(app, chat, uam::VcsType::Svn, "d/x.txt", "theirs-full").error.find("tree conflict") != std::string::npos);
 	const uam::VcsResolveResult tree = vcs.Resolve(app, chat, uam::VcsType::Svn, "d/x.txt", "working");
@@ -617,6 +661,12 @@ UAM_TEST(SvnUpdatePastABrokenExternalHidesConflictLeftoversAndResolves)
 	status = vcs.Status(app, chat, uam::VcsType::Svn, false);
 	UAM_ASSERT(std::ranges::none_of(status.changed_files, [](const uam::VcsChangedFile& file) { return uam::svn_history::IsConflicted(file); }));
 	UAM_ASSERT(status.conflict_leftovers.empty());
+
+	// Update in a folder SVN does not track would report "At revision N." and change nothing; it is refused.
+	fs::create_directories(mine / "scratch");
+	ChatSession untracked;
+	untracked.workspace_directory = (mine / "scratch").string();
+	UAM_ASSERT_EQ(vcs.Update(app, untracked, uam::VcsType::Svn).error, std::string(uam::svn_history::kNotVersionedFolder));
 }
 
 namespace

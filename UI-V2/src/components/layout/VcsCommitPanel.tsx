@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ArrowDownToLine, CheckCircle2, ChevronRight, Circle, FileCheck2, FolderGit2, GitBranch, GitCommitHorizontal, GitMerge, History, LoaderCircle, MessageSquareDiff, PanelRightClose, RotateCw, Sparkles, TriangleAlert, Undo2, Download } from 'lucide-react'
 import { useAppStore, type VcsChangedFile, type VcsCommitStatus, type VcsType } from '../../store/useAppStore'
 import type { VcsResolveChoice, VcsUpdateResult } from '../../store/cpp/types'
@@ -48,28 +48,60 @@ export function svnConflict(vcsType: VcsType, status: string): { content: boolea
 
 const CONFLICT_TOOLTIP = 'SVN could not merge the update into your changes here. Resolve the conflict before committing; the copies SVN left beside it (.mine, .rN, .prej) are hidden and cannot be committed.'
 
-/** What each `svn resolve --accept` choice does to the file, worded for the confirmation. A tree conflict accepts only `working`. */
-const RESOLVE_CHOICES: { accept: VcsResolveChoice; label: string; detail: string; confirm: string; tone: 'primary' | 'danger'; icon: ReactNode }[] = [
-  { accept: 'working', label: 'Mark resolved', detail: 'Keep the file as it is now', confirm: 'Keeps the file exactly as it is now and marks the conflict resolved. Remove any conflict markers (<<<<<<<) first, or they will be committed.', tone: 'primary', icon: <FileCheck2 size={14} aria-hidden /> },
-  { accept: 'theirs-full', label: 'Use the repository version', detail: 'Discards your local changes to this file', confirm: 'Replaces the whole file with the version from the repository. Your local changes to this file are lost.', tone: 'danger', icon: <Download size={14} aria-hidden /> },
-  { accept: 'mine-full', label: 'Keep my version', detail: 'Discards the incoming changes to this file', confirm: 'Keeps your local version of the whole file and discards the incoming changes to it. Committing this file afterwards undoes them in the repository.', tone: 'danger', icon: <Undo2 size={14} aria-hidden /> },
+type ConflictKind = 'text' | 'property' | 'tree'
+
+/** A text conflict (first column) takes whole-file wording; a property-only one (second) and a tree conflict (seventh) their own. */
+function conflictKind(conflict: { content: boolean; tree: boolean }, status: string): ConflictKind {
+  return status.charAt(0) === 'C' ? 'text' : conflict.content ? 'property' : 'tree'
+}
+
+/** What each `svn resolve --accept` choice does, worded per conflict kind for its menu line and confirmation. A tree conflict accepts only `working`. */
+const RESOLVE_CHOICES: { accept: VcsResolveChoice; label: string; tone: 'primary' | 'danger'; icon: ReactNode; detail: Record<ConflictKind, string>; confirm: Record<ConflictKind, string> }[] = [
+  {
+    accept: 'working', label: 'Mark resolved', tone: 'primary', icon: <FileCheck2 size={14} aria-hidden />,
+    detail: { text: 'Keep the file as it is now', property: 'Keep the properties as they are now', tree: 'Keep the working copy as it is now' },
+    confirm: {
+      text: 'Keeps the file exactly as it is now and marks the conflict resolved. Remove any conflict markers (<<<<<<<) first, or they will be committed.',
+      property: 'Keeps the properties exactly as they are now and marks the conflict resolved. Check the rejected changes in the .prej file first.',
+      tree: 'Keeps the working copy exactly as it is now and marks the tree conflict resolved. Check that the files are where you want them first.',
+    },
+  },
+  {
+    accept: 'theirs-full', label: 'Use the repository version', tone: 'danger', icon: <Download size={14} aria-hidden />,
+    detail: { text: 'Discards your local changes to this file', property: 'Discards your local property changes', tree: '' },
+    confirm: {
+      text: 'Replaces the whole file with the version from the repository. Your local changes to this file are lost.',
+      property: 'Takes the properties from the repository. Your local property changes are lost.',
+      tree: '',
+    },
+  },
+  {
+    accept: 'mine-full', label: 'Keep my version', tone: 'danger', icon: <Undo2 size={14} aria-hidden />,
+    detail: { text: 'Discards the incoming changes to this file', property: 'Discards the incoming property changes', tree: '' },
+    confirm: {
+      text: 'Keeps your local version of the whole file and discards the incoming changes to it. Committing this file afterwards undoes them in the repository.',
+      property: 'Keeps your local properties and discards the incoming property changes. Committing afterwards undoes them in the repository.',
+      tree: '',
+    },
+  },
 ]
 
 /** Resolve menu for one conflicted row; the panel owns the confirmation so it outlives the menu. */
-function ConflictActions({ file, tree, disabled, onChoose }: { file: VcsChangedFile; tree: boolean; disabled: boolean; onChoose: (accept: VcsResolveChoice) => void }) {
+function ConflictActions({ file, kind, disabledReason, onChoose }: { file: VcsChangedFile; kind: ConflictKind; disabledReason: string; onChoose: (accept: VcsResolveChoice) => void }) {
   const [open, setOpen] = useState(false)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const presence = usePresence(open)
   const name = file.path.split(/[\\/]/).pop() || file.path
-  const menuId = `vcs-resolve-${file.path.replace(/[^A-Za-z0-9_-]/g, '-')}`
-  const choices = tree ? RESOLVE_CHOICES.filter((choice) => choice.accept === 'working') : RESOLVE_CHOICES
+  const menuId = useId()
+  const choices = kind === 'tree' ? RESOLVE_CHOICES.filter((choice) => choice.accept === 'working') : RESOLVE_CHOICES
   return <>
     <IconButton
       ref={triggerRef}
       icon={<GitMerge size={14} aria-hidden />}
       label={`Resolve conflict in ${name}`}
       size="sm"
-      disabled={disabled}
+      disabled={Boolean(disabledReason)}
+      disabledReason={disabledReason || undefined}
       aria-haspopup="menu"
       aria-expanded={open}
       aria-controls={open ? menuId : undefined}
@@ -90,10 +122,11 @@ function ConflictActions({ file, tree, disabled, onChoose }: { file: VcsChangedF
             key={choice.accept}
             icon={choice.icon}
             label={choice.label}
-            detail={tree ? 'Keep the working copy as it is now' : choice.detail}
+            detail={choice.detail[kind]}
             detailLayout="stacked"
             danger={choice.tone === 'danger'}
-            onSelect={() => { setOpen(false); onChoose(choice.accept) }}
+            // Focus goes back to the trigger first, so the confirmation returns there rather than to the closed menu.
+            onSelect={() => { setOpen(false); triggerRef.current?.focus(); onChoose(choice.accept) }}
           />
         ))}
       </ViewportMenu>
@@ -131,7 +164,8 @@ export function VcsCommitPanel() {
   const [noticeTone, setNoticeTone] = useState<'success' | 'warning' | 'error'>('error')
   // Extra lines under the notice, one each, such as externals an update could not reach.
   const [noticeLines, setNoticeLines] = useState<string[]>([])
-  const [resolving, setResolving] = useState<{ chatId: string; path: string; accept: VcsResolveChoice; busy: boolean; error: string } | null>(null)
+  const [resolving, setResolving] = useState<{ chatId: string; path: string; kind: ConflictKind; accept: VcsResolveChoice; busy: boolean; error: string } | null>(null)
+  const latestResolveRequestRef = useRef(0)
   const [updating, setUpdating] = useState(false)
   // Bumped after an update so History reloads against the new working-copy revision.
   const [historyEpoch, setHistoryEpoch] = useState(0)
@@ -158,6 +192,7 @@ export function VcsCommitPanel() {
     setDescription('')
     setNotice('')
     setNoticeLines([])
+    latestResolveRequestRef.current += 1
     setResolving(null)
     setCommitOutput('')
     setLoading(false)
@@ -334,12 +369,15 @@ export function VcsCommitPanel() {
   }
 
   const resolveChoice = resolving ? RESOLVE_CHOICES.find((choice) => choice.accept === resolving.accept) : undefined
+  const findRow = (path: string) => [...document.querySelectorAll<HTMLElement>('[data-vcs-row]')].find((row) => row.dataset.vcsRow === path)
   const confirmResolve = async () => {
     if (!resolving || resolving.busy || resolving.chatId !== activeSessionId) return
     const target = resolving
+    const request = ++latestResolveRequestRef.current
     setResolving({ ...target, busy: true, error: '' })
     const result = await resolveVcsConflict(target.chatId, selectedVcsType, target.path, target.accept)
-    if (useAppStore.getState().activeSessionId !== target.chatId) return
+    // A result for a chat left behind, or for a dialog since replaced, must not close or fill the current one.
+    if (latestResolveRequestRef.current !== request || useAppStore.getState().activeSessionId !== target.chatId) return
     if (!result.ok) {
       setResolving({ ...target, busy: false, error: result.error || 'Failed to resolve the conflict.' })
       return
@@ -350,6 +388,8 @@ export function VcsCommitPanel() {
     setNoticeLines([])
     setCommitOutput(result.output)
     await refresh(selectedVcsType, true)
+    // The row's resolve button is gone once the conflict is; keep the user's place on the row itself.
+    if (!document.activeElement || document.activeElement === document.body) findRow(target.path)?.focus()
   }
 
   const shownTone = notice ? noticeTone : status.error ? 'error' : 'warning'
@@ -468,6 +508,7 @@ export function VcsCommitPanel() {
                   aria-label={conflict ? `Review conflict in ${file.path}` : `Review changes to ${file.path}`}
                   onClick={() => { if (activeSessionId) setDiffSelection({ file, chatId: activeSessionId, workspaceDirectory: session?.workspaceDirectory, workspaceWorktreeDirectory: session?.workspaceWorktreeDirectory, executionHostId: session?.executionHostId }) }}
                   className="uam-rv-file__open"
+                  data-vcs-row={file.path}
                   data-conflict={conflict ? '' : undefined}
                   style={{ color: 'inherit' }}
                 >
@@ -500,8 +541,9 @@ export function VcsCommitPanel() {
                   role="checkbox"
                   aria-checked={selected}
                   aria-label={conflict ? `Resolve the conflict in ${file.path} before selecting it` : `${selected ? 'Deselect' : 'Select'} ${file.path}`}
-                  disabled={Boolean(conflict)}
-                  onClick={() => toggleFile(file.path)}
+                  // Focusable while unavailable, so keyboard users still hear why it cannot be selected.
+                  aria-disabled={conflict ? true : undefined}
+                  onClick={() => { if (!conflict) toggleFile(file.path) }}
                   className="uam-rv-check-btn"
                 >
                   {selected ? <CheckCircle2 size={15} aria-hidden style={{ color: 'var(--accent)' }} /> : <Circle size={15} aria-hidden style={{ color: 'var(--text-3)' }} />}
@@ -510,9 +552,9 @@ export function VcsCommitPanel() {
                 {conflict && resolveAvailable && activeSessionId && (
                   <ConflictActions
                     file={file}
-                    tree={!conflict.content}
-                    disabled={updating || committing || Boolean(resolving)}
-                    onChoose={(accept) => setResolving({ chatId: activeSessionId, path: file.path, accept, busy: false, error: '' })}
+                    kind={conflictKind(conflict, file.status)}
+                    disabledReason={updating ? 'Wait for the update to finish.' : committing ? 'Wait for the commit to finish.' : resolving ? 'Finish the open resolve first.' : ''}
+                    onChoose={(accept) => { latestResolveRequestRef.current += 1; setResolving({ chatId: activeSessionId, path: file.path, kind: conflictKind(conflict, file.status), accept, busy: false, error: '' }) }}
                   />
                 )}
               </div>
@@ -570,9 +612,10 @@ export function VcsCommitPanel() {
         error={resolving?.error || undefined}
         onConfirm={() => { void confirmResolve() }}
         onCancel={() => { if (!resolving?.busy) setResolving(null) }}
+        returnFocusTo={() => (resolving ? findRow(resolving.path) : undefined)}
       >
         <span className="block font-mono text-xs" style={{ color: 'var(--text)' }}>{resolving?.path}</span>
-        <span className="mt-2 block">{resolveChoice?.confirm}</span>
+        <span className="mt-2 block">{resolving && resolveChoice ? resolveChoice.confirm[resolving.kind] : ''}</span>
       </ConfirmDialog>
     </aside>
   )

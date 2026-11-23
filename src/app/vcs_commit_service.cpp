@@ -2324,6 +2324,23 @@ namespace uam
 		VcsResolveResult resolved;
 		resolved.error = HistoryGateError(provider, app.settings, vcs::VcsCapability::Resolve);
 		if (!resolved.error.empty()) return resolved;
+		// As a commit does, a local path must stay inside the workspace once links are followed: svn would otherwise
+		// resolve a conflict in whichever working copy a linked folder leads to.
+		if (uam::paths::IsControllerLocalWorkspace(chat))
+		{
+			const std::filesystem::path workspace = uam::paths::ResolveWorkspaceRootPath(app, chat);
+			std::error_code root_error;
+			std::error_code path_error;
+			const std::filesystem::path root = std::filesystem::weakly_canonical(workspace, root_error);
+			const std::filesystem::path relative = uam::paths::PathFromUtf8(path);
+			const std::filesystem::path contained = relative.is_absolute() || relative.has_root_name() ? std::filesystem::path("..")
+			    : std::filesystem::weakly_canonical(workspace / relative, path_error).lexically_relative(root);
+			if (root_error || path_error || contained.empty() || *contained.begin() == "..")
+			{
+				resolved.error = "Select a conflicted path in this workspace.";
+				return resolved;
+			}
+		}
 		resolved.error = WithWorkspaceRunner(app, chat, stop, [&](const VcsCommandRunner& run) { return provider.Resolve(run, path, accept, resolved.output); });
 		resolved.ok = resolved.error.empty();
 		return resolved;

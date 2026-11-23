@@ -581,6 +581,12 @@ info)
     wc-root) printf '%s\n' "$UAM_TEST_SVN_ROOT" ;;
     url) printf '%s\n' 'file:///private-fixture/trunk' ;;
     repos-uuid) printf '%s\n' 'private-fixture-uuid' ;;
+    kind)
+        if [ "$UAM_TEST_SVN_MODE" = unversioned ]; then
+            printf '%s\n' "svn: warning: W155010: The node '$PWD' was not found." "svn: E200009: Could not display info for all targets because some targets don't exist" >&2
+            exit 1
+        fi
+        printf '%s\n' dir ;;
     *) exit 2 ;;
     esac ;;
 status)
@@ -739,6 +745,15 @@ UAM_TEST(SvnUpdateBeforeChatPassesABrokenExternalAndNamesTheStepThatFailed)
 		UAM_ASSERT(task->error.starts_with("SVN status failed (E155037: Previous operation has not finished)"));
 		UAM_ASSERT(!fs::exists(fixture.log));
 	}
+	{
+		// A folder SVN does not track would report "At revision N." and change nothing; the chat is told instead.
+		FakeSvnLaunchFixture fixture("unversioned");
+		const auto task = fixture.Start();
+		fixture.Wait(task);
+		UAM_ASSERT(!task->merged);
+		UAM_ASSERT(task->error.find("not under version control") != std::string::npos);
+		UAM_ASSERT(!fs::exists(fixture.log));
+	}
 #endif
 }
 
@@ -785,6 +800,15 @@ UAM_TEST(SvnUpdateBeforeChatUpdatesOnlyTheChatsFolderPastABrokenExternal)
 	UAM_ASSERT_EQ(uam::io::ReadTextFile(checkout / "top.txt"), "top\n");
 	const ProcessExecutionResult version = uam::RunSvnVersion(checkout, {"-n", "."});
 	UAM_ASSERT_EQ(uam::svn_history::ParseSvnVersion(version.output), std::string("1:2"));
+
+	// A folder inside the checkout that SVN does not track is refused rather than reported updated.
+	fs::create_directories(checkout / "scratch");
+	fixture.app.chats.front().workspace_directory = (checkout / "scratch").string();
+	fixture.app.chats.front().svn_update_pending = true;
+	const auto untracked = fixture.Start();
+	fixture.Wait(untracked);
+	UAM_ASSERT(!untracked->merged);
+	UAM_ASSERT(untracked->error.find("not under version control") != std::string::npos);
 #endif
 }
 

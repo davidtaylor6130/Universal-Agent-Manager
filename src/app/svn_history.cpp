@@ -359,19 +359,51 @@ namespace uam::svn_history
 		return {};
 	}
 
+	namespace
+	{
+		/// Local runs merge svn's stderr into `output`; the SSH runner keeps it in `error`, so both are read.
+		std::string UpdateText(const ProcessExecutionResult& result)
+		{
+			return result.error.empty() ? result.output : result.output + "\n" + result.error;
+		}
+
+		/// `error` may hold svn's own stderr (SSH), but nothing else: a transport or runner message makes the outcome unknown.
+		bool OnlySvnDiagnostics(std::string_view text)
+		{
+			for (std::size_t start = 0; start < text.size();)
+			{
+				std::size_t end = text.find('\n', start);
+				if (end == std::string_view::npos) end = text.size();
+				std::string_view line = text.substr(start, end - start);
+				start = end + 1;
+				if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
+				if (!line.empty() && !line.starts_with("svn: ")) return false;
+			}
+			return true;
+		}
+	} // namespace
+
 	bool UpdateFinished(const ProcessExecutionResult& result)
 	{
 		if (Succeeded(result)) return true;
-		if (result.timed_out || result.canceled || OutputLimited(result) || !result.error.empty() || result.exit_code != 1) return false;
+		if (result.timed_out || result.canceled || OutputLimited(result) || !OnlySvnDiagnostics(result.error) || result.exit_code != 1) return false;
 		// Externals are processed after the working copy itself, so an E205011 alone means only externals were left behind.
 		bool externals = false;
-		const std::string_view output = result.output;
-		for (std::size_t at = output.find("svn: E"); at != std::string_view::npos; at = output.find("svn: E", at + 1))
+		const std::string text = UpdateText(result);
+		const std::string_view all = text;
+		for (std::size_t at = all.find("svn: E"); at != std::string_view::npos; at = all.find("svn: E", at + 1))
 		{
-			if (output.substr(at + 5, 7) != "E205011") return false;
+			if (all.substr(at + 5, 7) != "E205011") return false;
 			externals = true;
 		}
 		return externals;
+	}
+
+	bool NotVersioned(const ProcessExecutionResult& result)
+	{
+		// W155010: node not found; E155007 / E155010: not a working copy or not under version control.
+		const std::string text = UpdateText(result);
+		return text.find("W155010") != std::string::npos || text.find("E155007") != std::string::npos || text.find("E155010") != std::string::npos;
 	}
 
 	std::vector<std::string> ExternalUpdateWarnings(const std::string_view output)
@@ -400,6 +432,13 @@ namespace uam::svn_history
 	VcsUpdateResult Update(const VcsCommandRunner& svn)
 	{
 		VcsUpdateResult update;
+		// svn reports "At revision N." for a folder it does not track and changes nothing, so that is refused instead.
+		const ProcessExecutionResult kind = svn({"info", "--non-interactive", "--show-item", "kind", "--", "."}, kReadTimeoutMs);
+		if (!Succeeded(kind))
+		{
+			update.error = kind.canceled ? "Canceled." : NotVersioned(kind) ? std::string(kNotVersionedFolder) : Failure(kind, "SVN could not read this working copy.");
+			return update;
+		}
 		const ProcessExecutionResult result = svn({"update", "--non-interactive", "--accept", "postpone", "--", "."}, kUpdateTimeoutMs);
 		update.output = uam::strings::Trim(result.output);
 		if (!UpdateFinished(result))
@@ -410,7 +449,7 @@ namespace uam::svn_history
 		}
 		update.ok = true;
 		update.conflicts = ReportsConflict(result.output);
-		update.warnings = ExternalUpdateWarnings(result.output);
+		update.warnings = ExternalUpdateWarnings(UpdateText(result));
 		update.revision = ReadWorkingCopy(svn).revision;
 		return update;
 	}

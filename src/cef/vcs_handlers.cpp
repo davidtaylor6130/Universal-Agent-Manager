@@ -449,6 +449,23 @@ namespace
 		}
 		return false;
 	}
+	/// The chat and every other chat whose workspace is or overlaps its working copy, for an operation that rewrites files
+	/// there; a refusal when one of them is working or already inside another operation.
+	std::string FenceWorkingCopySharers(const uam::AppState& app, const ChatSession& chat, std::string_view action, std::vector<std::string>& fenced)
+	{
+		const std::filesystem::path workspace = uam::paths::ResolveWorkspaceRootPath(app, chat);
+		const bool local = uam::paths::IsControllerLocalWorkspace(chat);
+		fenced = {chat.id};
+		for (const ChatSession& other : app.chats)
+		{
+			if (other.id == chat.id || uam::paths::IsControllerLocalWorkspace(other) != local || (!local && other.execution_host_id != chat.execution_host_id)) continue;
+			if (!WorkspacesOverlap(app, chat, workspace, uam::paths::ResolveWorkspaceRootPath(app, other))) continue;
+			if (ChatRuntimeBusy(app, other.id)) return "Another chat is working in this working copy. Stop it before " + std::string(action) + ".";
+			if (app.worktree_operation_chat_ids.contains(other.id)) return "Another chat sharing this working copy has an operation in progress. Try again shortly.";
+			fenced.push_back(other.id);
+		}
+		return {};
+	}
 } // namespace
 
 void UamQueryHandler::HandleGetChatWorktreeStatus(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -1153,27 +1170,10 @@ void UamQueryHandler::HandleUpdateVcsWorkspace(CefRefPtr<CefBrowser> browser, co
 	if (chat == nullptr) return;
 	if (chat->imported_read_only) { cb->Failure(409, "This chat's workspace is read-only."); return; }
 	if (ChatRuntimeBusy(m_app, chat->id)) { cb->Failure(409, "Stop the active chat runtime before updating the working copy."); return; }
-	// An update rewrites files under every chat that shares this working copy, so none of them may be working in it.
-	const std::filesystem::path workspace = uam::paths::ResolveWorkspaceRootPath(m_app, *chat);
-	const bool local = uam::paths::IsControllerLocalWorkspace(*chat);
-	// Every chat sharing the working copy is fenced for the whole update, so none can start working in it meanwhile.
-	std::vector<std::string> fenced = {chat->id};
-	for (const ChatSession& other : m_app.chats)
-	{
-		if (other.id == chat->id || uam::paths::IsControllerLocalWorkspace(other) != local || (!local && other.execution_host_id != chat->execution_host_id)) continue;
-		if (!WorkspacesOverlap(m_app, *chat, workspace, uam::paths::ResolveWorkspaceRootPath(m_app, other))) continue;
-		if (ChatRuntimeBusy(m_app, other.id))
-		{
-			cb->Failure(409, "Another chat is working in this working copy. Stop it before updating.");
-			return;
-		}
-		if (m_app.worktree_operation_chat_ids.contains(other.id))
-		{
-			cb->Failure(409, "Another chat sharing this working copy has an operation in progress. Try again shortly.");
-			return;
-		}
-		fenced.push_back(other.id);
-	}
+	// An update rewrites files under every chat that shares this working copy, so none of them may be working in it,
+	// and every one is fenced for the whole update so none can start working in it meanwhile.
+	std::vector<std::string> fenced;
+	if (const std::string refusal = FenceWorkingCopySharers(m_app, *chat, "updating", fenced); !refusal.empty()) { cb->Failure(409, refusal); return; }
 	// The stop is always registered so quitting ends the client; an update without a request id gets its own key.
 	std::string request_id = payload.value("requestId", "");
 	if (request_id.empty()) request_id = "update:" + chat->id;
@@ -1278,7 +1278,10 @@ void UamQueryHandler::HandleResolveVcsConflict(CefRefPtr<CefBrowser> browser, co
 	if (chat == nullptr) return;
 	if (chat->imported_read_only) { cb->Failure(409, "This chat's workspace is read-only."); return; }
 	if (ChatRuntimeBusy(m_app, chat->id)) { cb->Failure(409, "Stop the active chat runtime before resolving a conflict."); return; }
-	// Resolving rewrites or removes working-copy files, so it holds the same retention lease and operation guard as a commit.
+	// Keeping one side rewrites the file, so chats sharing the working copy are refused or fenced as for an update.
+	std::vector<std::string> fenced;
+	if (const std::string refusal = FenceWorkingCopySharers(m_app, *chat, "resolving a conflict", fenced); !refusal.empty()) { cb->Failure(409, refusal); return; }
+	// It holds the same retention lease as a commit.
 	std::shared_ptr<uam::WorkspaceLeaseGate::Lease> lease = m_app.worktree_retention_gate.TryAcquireMutation();
 	if (!lease) { cb->Failure(409, "Workspace cleanup is finishing. Try again shortly."); return; }
 	const std::string path = payload.value("path", "");
@@ -1290,8 +1293,7 @@ void UamQueryHandler::HandleResolveVcsConflict(CefRefPtr<CefBrowser> browser, co
 	std::shared_ptr<void> remote_vcs_lease;
 	if (!remote_vcs.Hold(remote_vcs_lease)) { cb->Failure(409, kRemoteHelperSetupRunning); return; }
 	uam::AppState* live_app = &m_app;
-	const std::string chat_id = chat->id;
-	m_app.worktree_operation_chat_ids.insert(chat_id);
+	for (const std::string& id : fenced) m_app.worktree_operation_chat_ids.insert(id);
 	if (!RunAsyncCefQuery(SlowQueryRunner(*chat), m_asyncLifetime, cb,
 	                 [snapshot_inputs = std::move(snapshot_inputs), chat = std::move(chat_snapshot), type, path, accept, remote_vcs, lease, remote_vcs_lease]() mutable
 	                 {
@@ -1301,12 +1303,12 @@ void UamQueryHandler::HandleResolveVcsConflict(CefRefPtr<CefBrowser> browser, co
 		                 if (!result.ok) return AsyncFailure(400, FailureDetailOrFallback(result.error, "Failed to resolve the conflict."));
 		                 return AsyncSuccess(nlohmann::json{{"ok", true}, {"output", result.output}});
 	                 },
-	                 [live_app, browser, chat_id](AsyncCefResult& result)
+	                 [live_app, browser, fenced](AsyncCefResult& result)
 	                 {
-		                 live_app->worktree_operation_chat_ids.erase(chat_id);
+		                 for (const std::string& id : fenced) live_app->worktree_operation_chat_ids.erase(id);
 		                 if (result.ok) uam::PushStateUpdateIfChanged(browser, *live_app);
 	                 }))
-		m_app.worktree_operation_chat_ids.erase(chat_id);
+		for (const std::string& id : fenced) m_app.worktree_operation_chat_ids.erase(id);
 }
 
 void UamQueryHandler::HandleGenerateVcsCommitMessage(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)

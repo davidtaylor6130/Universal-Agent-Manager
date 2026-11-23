@@ -1,4 +1,5 @@
 #include "test_harness.h"
+#include "app/svn_history.h"
 #include "common/security/command_safety.h"
 #include "common/security/read_only_command.h"
 

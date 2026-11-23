@@ -100,12 +100,13 @@ namespace uam
 			if (!paths::IsDirectoryNoThrow(source) || paths::IsLinkOrReparsePointNoThrow(checkout / ".svn"))
 			{ error = "The SVN workspace is unavailable or unsafe."; return false; }
 			bool command_uncertain = false;
+			ProcessExecutionResult last;
 			// Reads get the same two-minute bound as the commit panel: ten seconds was too short for a large working copy.
 			// `step` names the command in the message, so a slow status is not reported as a slow update.
 			const auto command = [&](const char* step, const std::filesystem::path& cwd, std::vector<std::string> arguments, std::string& output, const int timeout = svn_history::kReadTimeoutMs)
 			{
 				arguments.insert(arguments.end(), {"--non-interactive", "--", "."});
-				const ProcessExecutionResult result = RunSvn(cwd, arguments, timeout, stop);
+				const ProcessExecutionResult& result = last = RunSvn(cwd, arguments, timeout, stop);
 				command_uncertain = stop.stop_requested() || result.canceled || result.timed_out || result.output_truncated;
 				if (stop.stop_requested() || result.canceled) { error = std::string(step) + " was canceled. Retry opening the chat."; return false; }
 				if (result.timed_out) { error = std::string(step) + " timed out. Retry after checking the working copy and the connection to the repository."; return false; }
@@ -137,6 +138,14 @@ namespace uam
 			{ error = "SVN update ownership storage is unsafe."; return false; }
 			// Status and update cover the chat's folder, as the commit panel's Update does, not the whole checkout around it:
 			// other chats may be working elsewhere in the same checkout.
+			// svn reports an untracked folder as updated ("At revision N.") without changing anything, so it is refused.
+			std::string kind;
+			if (!command("SVN info", source, {"info", "--show-item", "kind"}, kind))
+			{
+				if (svn_history::NotVersioned(last))
+					error = "The chat's folder is not under version control in this SVN checkout, so it cannot be updated. Add it to SVN or turn off Update before new chat.";
+				return false;
+			}
 			std::string status;
 			const auto conflicts = [](const std::string& value)
 			{

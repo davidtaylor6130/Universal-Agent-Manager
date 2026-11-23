@@ -180,13 +180,6 @@ namespace uam
 	ProcessExecutionResult RunSvn(const std::filesystem::path& cwd, const std::vector<std::string>& args, int timeout_ms = 120000, std::stop_token stop = {});
 	/// <summary>Runs `svnversion args...` the same way; it reports the working copy's revision range (`3:5` when mixed).</summary>
 	ProcessExecutionResult RunSvnVersion(const std::filesystem::path& cwd, const std::vector<std::string>& args, int timeout_ms = 120000, std::stop_token stop = {});
-	/// <summary>Bounded failure detail: the missing-client notice or svn's first "E<code>: ..." or "W<code>: ..." line; empty when neither exists.</summary>
-	std::string SvnFailureSummary(const ProcessExecutionResult& result);
-	/// <summary>Strict `svn status` text parser. Rows need seven valid status columns and a separator; headers and
-	/// tree-conflict details are skipped. Codes keep their column positions (right-trimmed). Absolute paths under
-	/// `workspace` become workspace-relative.</summary>
-	std::vector<VcsChangedFile> ParseSvnStatusOutput(std::string_view output, std::string_view workspace = {});
-
 	class VcsCommitService
 	{
 	  public:

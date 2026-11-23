@@ -5,6 +5,7 @@
 #include "app/worktree_launch_preparation_service.h"
 
 #include "app/provider_resolution_service.h"
+#include "app/svn_history.h"
 #include "app/vcs_commit_service.h"
 #include "common/chat/chat_repository.h"
 #include "common/chat/native_chat_identity.h"

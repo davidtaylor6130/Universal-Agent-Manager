@@ -466,7 +466,10 @@ describe('commit panel SVN actions', () => {
       await act(async () => root.render(<VcsCommitPanel />))
       const labels = [...host.querySelectorAll('.uam-rv-file__status')].map((node) => node.textContent)
       expect(labels).toEqual(['Conflict', 'Conflict', 'M'])
-      expect(button('Resolve the conflict in a.txt before selecting it').disabled).toBe(true)
+      // Still focusable, so keyboard users hear why it cannot be selected; clicking it selects nothing.
+      expect(button('Resolve the conflict in a.txt before selecting it').getAttribute('aria-disabled')).toBe('true')
+      await act(async () => button('Resolve the conflict in a.txt before selecting it').click())
+      expect(host.textContent).toContain('0 selected')
       await act(async () => button('Select all changed files').click())
       expect(host.textContent).toContain('1 selected')
       expect(button('Deselect b.txt')).toBeTruthy()
@@ -495,6 +498,41 @@ describe('commit panel SVN actions', () => {
       expect(useAppStore.getState().resolveVcsConflict).toHaveBeenCalledWith('chat-a', 'svn', 'a.txt', 'theirs-full')
       expect(host.querySelector('[role="status"]')!.textContent).toContain('Marked a.txt resolved.')
       expect((useAppStore.getState().getVcsCommitStatus as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(refreshes)
+    })
+
+    it('words a property-only conflict for properties and returns focus to the resolve button on cancel', async () => {
+      useAppStore.setState({ getVcsCommitStatus: vi.fn(async () => ({ ...conflicted, changedFiles: [{ path: 'dir', status: ' C', staged: false, additions: 0, deletions: 0, binary: false }] })) })
+      await act(async () => root.render(<VcsCommitPanel />))
+      await act(async () => button('Resolve conflict in dir').click())
+      const items = [...document.body.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')]
+      expect(items.map((item) => item.textContent)).toEqual(['Mark resolvedKeep the properties as they are now', 'Use the repository versionDiscards your local property changes', 'Keep my versionDiscards the incoming property changes'])
+      await act(async () => items[1].click())
+      const dialog = document.body.querySelector('[role="dialog"], [role="alertdialog"]')!
+      expect(dialog.textContent).toContain('Takes the properties from the repository.')
+      await act(async () => [...dialog.querySelectorAll<HTMLButtonElement>('button')].find((candidate) => candidate.textContent === 'Cancel')!.click())
+      await act(async () => new Promise((resolve) => setTimeout(resolve, 400)))
+      expect(document.activeElement).toBe(button('Resolve conflict in dir'))
+    })
+
+    it('ignores a resolve result once its dialog was replaced', async () => {
+      const first = deferred<{ ok: boolean; output: string; error: string }>()
+      const resolveVcsConflict = vi.fn().mockReturnValueOnce(first.promise).mockResolvedValue({ ok: false, output: '', error: 'second failed' })
+      useAppStore.setState({ resolveVcsConflict })
+      await act(async () => root.render(<VcsCommitPanel />))
+      const choose = async (file: string, label: string) => {
+        await act(async () => button(`Resolve conflict in ${file}`).click())
+        await act(async () => [...document.body.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find((item) => item.textContent?.startsWith(label))!.click())
+      }
+      const dialog = () => document.body.querySelector('[role="dialog"], [role="alertdialog"]')
+      await choose('a.txt', 'Mark resolved')
+      await act(async () => [...dialog()!.querySelectorAll<HTMLButtonElement>('button')].find((candidate) => candidate.textContent === 'Mark resolved')!.click())
+      // Leaving and returning to the chat abandons the first request; a new one then opens.
+      await act(async () => { useAppStore.setState({ activeSessionId: 'chat-b' }) })
+      await act(async () => { useAppStore.setState({ activeSessionId: 'chat-a' }) })
+      await choose('x.txt', 'Mark resolved')
+      await act(async () => first.resolve({ ok: true, output: '', error: '' }))
+      expect(dialog()!.textContent).toContain('d/x.txt')
+      expect(host.querySelector('[role="status"]')?.textContent ?? '').not.toContain('Marked a.txt resolved.')
     })
 
     it('keeps the confirmation open with svn\'s reason when resolving fails', async () => {
