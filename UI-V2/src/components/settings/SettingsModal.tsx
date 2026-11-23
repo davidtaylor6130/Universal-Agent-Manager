@@ -13,7 +13,7 @@ import { PhoneTokenRegenerateRow } from './PhoneTokenRegenerateRow'
 import { AutomationSettings } from './AutomationSettings'
 import { SETTINGS_ALL_ENVIRONMENTS } from '../../utils/settingsScope'
 import { ProviderConnections } from './ProviderConnections'
-import { CustomAcpAgentSettings } from './CustomAcpAgentSettings'
+import { CustomAcpAgentSettings, type CustomAcpAgentSettingsHandle } from './CustomAcpAgentSettings'
 import { CentralProviderSettings, type CentralProviderSettingsHandle } from './CentralProviderSettings'
 import { McpServerSetup } from './McpServerSetup'
 import { ComputerUseSettingRow } from './ComputerUseSettingRow'
@@ -931,6 +931,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const cleanupRef = useRef<SettingsDraftHandle>(null)
   const dataFolderRef = useRef<DataFolderSettingsHandle>(null)
   const providerAvailabilityRef = useRef<SettingsDraftHandle>(null)
+  const customAcpRef = useRef<CustomAcpAgentSettingsHandle>(null)
   const [rawEditorNames, setRawEditorNames] = useState<Record<string, string>>({})
   const [rawExtensions, setRawExtensions] = useState<Record<string, string>>({})
   const [editorExit, setEditorExit] = useState<(() => void) | null>(null)
@@ -997,6 +998,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     }
     else if (selectedSection === 'routing' && routingRef.current) routingRef.current.requestLeave(next)
     else if (selectedSection === 'voice-input' && voiceRef.current) voiceRef.current.requestLeave(next)
+    else if (CUSTOM_ACP_ENABLED && selectedSection === `provider:${CUSTOM_ACP_PROVIDER_ID}` && customAcpRef.current) {
+      const leaveAvailability = () => providerAvailabilityRef.current ? providerAvailabilityRef.current.requestLeave(next) : next()
+      customAcpRef.current.requestLeave(leaveAvailability)
+    }
     else if ((selectedSection === 'provider-summary' || selectedSection.startsWith('provider:')) && providerAvailabilityRef.current) providerAvailabilityRef.current.requestLeave(next)
     else if (selectedSection === 'memory-store' && memoryRef.current) memoryRef.current.requestLeave(next)
     else if (selectedSection === 'shell-actions' && shellRef.current) shellRef.current.requestLeave(next)
@@ -1877,7 +1882,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     if (selectedSection.startsWith('provider:')) {
       const providerId = selectedSection.slice('provider:'.length)
       // The Custom ACP agent has no CLI to version and no central launch setup; its page is its launch configuration.
-      if (CUSTOM_ACP_ENABLED && providerId === CUSTOM_ACP_PROVIDER_ID) return <div className="grid">{availability('Availability', [providerId])}<CustomAcpAgentSettings />{renderSectionContent('defaults', providerId)}</div>
+      if (CUSTOM_ACP_ENABLED && providerId === CUSTOM_ACP_PROVIDER_ID) return <div className="grid">{availability('Availability', [providerId])}<CustomAcpAgentSettings ref={customAcpRef} />{renderSectionContent('defaults', providerId)}</div>
       return <div className="grid">{availability('Availability', [providerId])}{renderSectionContent('cli-version', providerId)}{renderSectionContent('defaults', providerId)}<ProviderConnections providerId={providerId} selectedHostId={effectiveProviderSettingsHostId} onMcpSelect={() => changeSection('mcp-servers')} onPreferencesSelect={() => changeSection('central-configuration')} /></div>
     }
     if (selectedSection === 'permissions') return <PermissionsSettings />

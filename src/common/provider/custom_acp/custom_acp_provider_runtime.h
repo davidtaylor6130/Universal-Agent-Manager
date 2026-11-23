@@ -16,6 +16,8 @@ class CustomAcpProviderRuntime final : public IProviderRuntime
 	bool SupportsTextWorkers() const override { return false; }
 	bool UsesCentralLaunchConfiguration() const override { return false; }
 	bool LaunchArgumentsArePrivate() const override { return true; }
+	// An arbitrary user-chosen program is not given UAM's own tools (child runs, secrets, HTML views) in this slice.
+	bool SupportsUamControl() const override { return false; }
 	const char* AcpProtocolKind() const override;
 	const char* GetAcpDisplayName() const override { return "Custom ACP agent"; }
 	bool IsGenericAcpSession() const override { return true; }
@@ -33,6 +35,9 @@ class CustomAcpProviderRuntime final : public IProviderRuntime
 };
 
 const IProviderRuntime& GetCustomAcpProviderRuntime();
+
+/// <summary>Where the agent's command is looked up: the same folders the platform's own process launcher searches.</summary>
+uam::custom_acp::ExecutableSearch CustomAcpExecutableSearch();
 
 /// <summary>Makes `config` the one launches use and shows its name in the provider lists.</summary>
 void ApplyCustomAcpConfiguration(std::vector<ProviderProfile>& profiles, uam::custom_acp::AgentConfig config);

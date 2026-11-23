@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react'
-import { Button, Reveal } from '../ui'
+import { forwardRef, useEffect, useImperativeHandle, useState } from 'react'
+import { Button, Presence, Reveal } from '../ui'
 import { sendToCEF } from '../../ipc/cefBridge'
 import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
 import { SaveButton, SettingRow, SettingsField, SettingsLoading, SettingsSection, StatusMark } from './SettingsPrimitives'
+import { UnsavedChangesDialog } from './UnsavedChangesDialog'
 
 /** The saved Custom ACP agent as the desktop app reports it (#523). */
 export interface CustomAcpAgentView {
@@ -15,8 +16,15 @@ export interface CustomAcpAgentView {
   /** The exact command, quoted for reading only; UAM launches the argument array, never this text. */
   displayCommand: string
   fingerprint: string
+  /** The program file the command finds now, or empty with `programError`. */
+  program: string
+  programError: string
   allowed: boolean
+  /** Why the saved file could not be read at startup, until a save replaces it. */
+  loadError: string
 }
+
+export interface CustomAcpAgentSettingsHandle { requestLeave: (next: () => void) => void }
 
 interface Draft { displayName: string; command: string; argumentsText: string; environmentText: string }
 
@@ -52,18 +60,22 @@ export function parseEnvironment(text: string): { name: string; value: string }[
 function isCustomAcpAgentView(value: unknown): value is CustomAcpAgentView {
   const view = value as CustomAcpAgentView
   return Boolean(view) && typeof view.displayCommand === 'string' && typeof view.fingerprint === 'string' && typeof view.allowed === 'boolean' &&
-    Array.isArray(view.arguments) && Array.isArray(view.environment)
+    typeof view.program === 'string' && Array.isArray(view.arguments) && Array.isArray(view.environment)
 }
 
 /**
  * Settings for the one Custom ACP agent: name, command, arguments and environment. The configuration lives only in
  * these settings, and a changed command must be allowed here, after reading it, before its first launch.
  */
-export function CustomAcpAgentSettings() {
+export const CustomAcpAgentSettings = forwardRef<CustomAcpAgentSettingsHandle>(function CustomAcpAgentSettings(_props, ref) {
   const [saved, setSaved] = useState<CustomAcpAgentView | null>(null)
   const [draft, setDraft] = useState<Draft | null>(null)
   const [saving, setSaving] = useState(false)
   const [allowing, setAllowing] = useState(false)
+  const [exit, setExit] = useState<(() => void) | null>(null)
+  const dirty = Boolean(saved && draft && JSON.stringify(draft) !== JSON.stringify(draftFrom(saved)))
+  const environment = draft ? parseEnvironment(draft.environmentText) : []
+  const environmentError = typeof environment === 'string' ? environment : ''
 
   useEffect(() => {
     let active = true
@@ -72,44 +84,50 @@ export function CustomAcpAgentSettings() {
       if (response.ok && isCustomAcpAgentView(response.data)) {
         setSaved(response.data)
         setDraft(draftFrom(response.data))
+        if (response.data.loadError) reportAppFailure(response.data.loadError, 'The form shows an empty agent until you save one.')
       } else reportAppFailure(response.error || 'The custom ACP agent settings could not be loaded.', 'Reopen Settings to try again.')
     })
     return () => { active = false }
   }, [])
 
-  if (!saved || !draft) return <SettingsLoading label="Loading custom ACP agent" rows={4} />
-  const changed = JSON.stringify(draft) !== JSON.stringify(draftFrom(saved))
+  useEffect(() => {
+    if (!dirty) return
+    const guard = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }
+    window.addEventListener('beforeunload', guard)
+    return () => window.removeEventListener('beforeunload', guard)
+  }, [dirty])
 
   const accept = (view: unknown, message: string) => {
     if (!isCustomAcpAgentView(view)) {
       reportAppFailure('The custom ACP agent settings could not be read back.', 'Reopen Settings to check them.')
-      return
+      return false
     }
     setSaved(view)
     setDraft(draftFrom(view))
     reportAppNotice(message, 'success')
+    return true
   }
 
-  const save = async () => {
-    const environment = parseEnvironment(draft.environmentText)
-    if (typeof environment === 'string') {
-      reportAppFailure(environment, 'Your changes are kept.')
-      return
-    }
+  const save = async (next?: () => void) => {
+    if (!draft || saving || typeof environment === 'string') return
     setSaving(true)
     try {
       const response = await sendToCEF<CustomAcpAgentView>({ action: 'setCustomAcpAgent', payload: {
         displayName: draft.displayName, command: draft.command, arguments: parseArguments(draft.argumentsText), environment,
       } })
-      if (response.ok) accept(response.data, 'Custom ACP agent saved.')
-      else reportAppFailure(response.error || 'The custom ACP agent could not be saved.', 'Your changes are kept.')
+      if (!response.ok) reportAppFailure(response.error || 'The custom ACP agent could not be saved.', 'Your changes are kept.')
+      else if (accept(response.data, 'Custom ACP agent saved.') && next) { setExit(null); next() }
     } finally { setSaving(false) }
   }
+
+  useImperativeHandle(ref, () => ({ requestLeave: (next) => { if (saving) return; if (dirty) setExit(() => next); else next() } }))
+
+  if (!saved || !draft) return <SettingsLoading label="Loading custom ACP agent" rows={4} />
 
   const allow = async () => {
     setAllowing(true)
     try {
-      const response = await sendToCEF<CustomAcpAgentView>({ action: 'allowCustomAcpAgent', payload: { fingerprint: saved.fingerprint } })
+      const response = await sendToCEF<CustomAcpAgentView>({ action: 'allowCustomAcpAgent', payload: { fingerprint: saved.fingerprint, program: saved.program } })
       if (response.ok) accept(response.data, 'Custom ACP agent command allowed.')
       else reportAppFailure(response.error || 'The custom ACP agent command could not be allowed.', 'Review the command and try again.')
     } finally { setAllowing(false) }
@@ -134,30 +152,33 @@ export function CustomAcpAgentSettings() {
           <textarea id="custom-acp-arguments" className={field} rows={4} style={monoArea} value={draft.argumentsText} spellCheck={false} disabled={saving}
             onChange={(event) => set({ argumentsText: event.currentTarget.value })} />
         </SettingsField>
-        <SettingsField label="Environment" htmlFor="custom-acp-environment" hint="One NAME=value per line, added to the agent's environment.">
+        <SettingsField label="Environment" htmlFor="custom-acp-environment" hint={environmentError || "One NAME=value per line, added to the agent's environment."}>
           <textarea id="custom-acp-environment" className={field} rows={3} style={monoArea} value={draft.environmentText} spellCheck={false} disabled={saving}
-            onChange={(event) => set({ environmentText: event.currentTarget.value })} />
+            aria-invalid={environmentError ? true : undefined} onChange={(event) => set({ environmentText: event.currentTarget.value })} />
         </SettingsField>
         <div className="uam-set-actions flex gap-2">
-          <SaveButton saving={saving} disabled={!changed || saving} onClick={() => void save()}>Save</SaveButton>
-          <Button size="sm" variant="ghost" disabled={!changed || saving} onClick={() => setDraft(draftFrom(saved))}>Discard</Button>
+          <SaveButton saving={saving} disabled={!dirty || saving || Boolean(environmentError)} onClick={() => void save()}>Save</SaveButton>
+          <Button size="sm" variant="ghost" disabled={!dirty || saving} onClick={() => setDraft(draftFrom(saved))}>Discard</Button>
         </div>
       </SettingsSection>
       <Reveal open={saved.configured}>
         <SettingsSection title="Command to run">
           <SettingRow
-            title={saved.allowed ? 'Allowed' : 'Not allowed yet'}
-            description={saved.allowed ? 'Changing the command, arguments or environment needs a new approval.' : 'Read the command below, then allow it before the first launch.'}
+            title="Approval"
+            description={saved.allowed ? 'A new command, argument, variable or program needs a new approval.' : 'Read the command below, then allow it before the first launch.'}
             control={saved.allowed
               ? <StatusMark tone="success" label="Allowed" />
-              : <Button size="sm" variant="secondary" disabled={allowing || changed} aria-busy={allowing || undefined} onClick={() => void allow()}>Allow this command</Button>}
-            status={changed ? 'Save your changes to review the new command.' : undefined}
+              : <Button size="sm" variant="secondary" disabled={allowing || dirty || !saved.program} aria-busy={allowing || undefined} onClick={() => void allow()}>Allow this command</Button>}
+            status={dirty ? 'Save your changes to review the new command.' : saved.programError || undefined}
           >
-            <pre aria-label="Exact command" className="uam-set-field__hint" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontFamily: 'var(--font-mono)' }}>{saved.displayCommand}</pre>
+            <pre role="group" aria-label="Exact command" className="uam-set-field__hint" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontFamily: 'var(--font-mono)' }}>{saved.displayCommand}</pre>
+            {saved.program && <p className="uam-set-field__hint">Runs <code>{saved.program}</code>.</p>}
             {environmentNames.length > 0 && <p className="uam-set-field__hint">Also sets {environmentNames.join(', ')}.</p>}
           </SettingRow>
         </SettingsSection>
       </Reveal>
+      <Presence open={Boolean(exit)}>{exit && <UnsavedChangesDialog title="Unsaved custom ACP agent" busy={saving} saveDisabled={Boolean(environmentError)}
+        onStay={() => setExit(null)} onDiscard={() => { const next = exit; setExit(null); setDraft(draftFrom(saved)); next() }} onSave={() => void save(exit)} />}</Presence>
     </div>
   )
-}
+})

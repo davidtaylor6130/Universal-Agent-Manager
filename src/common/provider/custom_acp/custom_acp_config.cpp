@@ -13,7 +13,9 @@
 #include <set>
 #include <system_error>
 
-#if !defined(_WIN32)
+#if defined(_WIN32)
+#include <windows.h>
+#else
 #include <unistd.h>
 #endif
 
@@ -33,12 +35,30 @@ namespace uam::custom_acp
 			return std::ranges::any_of(value, [](char c) { return static_cast<unsigned char>(c) < 0x20 || c == 0x7f; });
 		}
 
+		/// Invisible or reordering characters (zero-width, bidirectional controls, no-break space) would make the
+		/// shown command differ from what runs, so they are refused rather than displayed.
+		bool HasMisleadingCharacter(std::string_view value)
+		{
+			for (std::size_t index = 0; index + 1 < value.size(); ++index)
+			{
+				const unsigned char first = static_cast<unsigned char>(value[index]);
+				const unsigned char second = static_cast<unsigned char>(value[index + 1]);
+				if (first == 0xC2 && second == 0xA0) return true; // U+00A0
+				if (index + 2 >= value.size()) continue;
+				const unsigned char third = static_cast<unsigned char>(value[index + 2]);
+				if (first == 0xE2 && second == 0x80 && ((third >= 0x8B && third <= 0x8F) || (third >= 0xAA && third <= 0xAE) || third == 0xAF)) return true; // U+200B-200F, U+202A-202F
+				if (first == 0xE2 && second == 0x81 && (third == 0xA0 || (third >= 0xA6 && third <= 0xA9))) return true; // U+2060, U+2066-2069
+				if (first == 0xEF && second == 0xBB && third == 0xBF) return true; // U+FEFF
+			}
+			return false;
+		}
+
 		bool DisplaySafe(std::string_view value)
 		{
 			return !value.empty() && std::ranges::all_of(value, [](char c)
 			{
 				const unsigned char byte = static_cast<unsigned char>(c);
-				return std::isalnum(byte) || std::string_view("_@%+=:,./-\\").find(c) != std::string_view::npos || byte >= 0x80;
+				return std::isalnum(byte) || std::string_view("_@%+=:,./-\\").find(c) != std::string_view::npos;
 			});
 		}
 
@@ -122,6 +142,12 @@ namespace uam::custom_acp
 			static AgentConfig config;
 			return config;
 		}
+
+		std::string& ActiveLoadErrorStorage()
+		{
+			static std::string error;
+			return error;
+		}
 	} // namespace
 
 	std::string DisplayName(const AgentConfig& config)
@@ -145,15 +171,18 @@ namespace uam::custom_acp
 
 	std::string ValidationError(const AgentConfig& config)
 	{
-		if (config.display_name.size() > kMaxDisplayNameBytes) return "The custom ACP agent name must be 80 characters or fewer.";
+		if (config.display_name.size() > kMaxDisplayNameBytes) return "The custom ACP agent name is too long.";
 		if (HasControlCharacter(config.display_name)) return "The custom ACP agent name cannot contain line breaks or control characters.";
 		if (config.command.size() > kMaxCommandBytes) return "The custom ACP agent command is too long.";
 		if (HasControlCharacter(config.command)) return "The custom ACP agent command cannot contain line breaks or control characters.";
+		if (HasMisleadingCharacter(config.command)) return "The custom ACP agent command cannot contain invisible or direction-changing characters.";
 		if (config.arguments.size() > kMaxArgumentCount) return "A custom ACP agent can have at most 64 arguments.";
 		for (const std::string& argument : config.arguments)
 		{
 			if (argument.size() > kMaxArgumentBytes) return "A custom ACP agent argument is too long.";
 			if (HasLineBreakOrNul(argument)) return "Each custom ACP agent argument must be on its own line.";
+			if (HasControlCharacter(argument)) return "Custom ACP agent arguments cannot contain tabs or control characters.";
+			if (HasMisleadingCharacter(argument)) return "Custom ACP agent arguments cannot contain invisible or direction-changing characters.";
 		}
 		if (config.environment.size() > kMaxEnvironmentCount) return "A custom ACP agent can set at most 64 environment variables.";
 		std::set<std::string> names;
@@ -166,8 +195,9 @@ namespace uam::custom_acp
 			if (variable.value.size() > kMaxEnvironmentValueBytes) return "The value of environment variable " + variable.name + " is too long.";
 			if (HasLineBreakOrNul(variable.value)) return "The value of environment variable " + variable.name + " cannot contain line breaks.";
 		}
-		if (!config.approved_fingerprint.empty() && (config.approved_fingerprint.size() != 16 ||
-		    config.approved_fingerprint.find_first_not_of("0123456789abcdef") != std::string::npos))
+		if ((!config.approved_fingerprint.empty() && (config.approved_fingerprint.size() != 16 ||
+		    config.approved_fingerprint.find_first_not_of("0123456789abcdef") != std::string::npos)) ||
+		    config.approved_fingerprint.empty() != config.approved_executable.empty() || HasControlCharacter(config.approved_executable))
 			return "The saved custom ACP agent approval is not valid.";
 		return "";
 	}
@@ -228,7 +258,9 @@ namespace uam::custom_acp
 
 	AgentConfig WithApprovalCarriedOver(AgentConfig next, const AgentConfig& previous)
 	{
-		next.approved_fingerprint = IsApproved(previous) && LaunchFingerprint(previous) == LaunchFingerprint(next) ? previous.approved_fingerprint : std::string{};
+		const bool keep = IsApproved(previous) && LaunchFingerprint(previous) == LaunchFingerprint(next);
+		next.approved_fingerprint = keep ? previous.approved_fingerprint : std::string{};
+		next.approved_executable = keep ? previous.approved_executable : std::string{};
 		return next;
 	}
 
@@ -243,6 +275,7 @@ namespace uam::custom_acp
 		    {"arguments", config.arguments},
 		    {"environment", std::move(environment)},
 		    {"approvedFingerprint", config.approved_fingerprint},
+		    {"approvedExecutable", config.approved_executable},
 		};
 	}
 
@@ -265,7 +298,7 @@ namespace uam::custom_acp
 			return fail("The custom ACP agent settings file is not in a format this version of UAM can read.");
 		AgentConfig parsed;
 		if (!string_field("displayName", parsed.display_name) || !string_field("command", parsed.command) ||
-		    !string_field("approvedFingerprint", parsed.approved_fingerprint))
+		    !string_field("approvedFingerprint", parsed.approved_fingerprint) || !string_field("approvedExecutable", parsed.approved_executable))
 			return fail("The custom ACP agent settings file is damaged.");
 		if (const auto arguments = value.find("arguments"); arguments != value.end())
 		{
@@ -352,7 +385,23 @@ namespace uam::custom_acp
 #else
 		constexpr char kSeparator = ':';
 #endif
-		if (const std::optional<std::string> path = uam::env::GetNonEmptyString("PATH"))
+#if defined(_WIN32)
+		// The Win32 block, which the platform refreshes from the registry before launches, not the CRT's ANSI copy.
+		std::optional<std::string> path;
+		if (const DWORD length = ::GetEnvironmentVariableW(L"PATH", nullptr, 0); length > 0)
+		{
+			std::wstring wide(length, L'\0');
+			const DWORD written = ::GetEnvironmentVariableW(L"PATH", wide.data(), length);
+			if (written > 0 && written < length)
+			{
+				wide.resize(written);
+				path = uam::paths::Utf8PathString(std::filesystem::path(wide));
+			}
+		}
+#else
+		const std::optional<std::string> path = uam::env::GetNonEmptyString("PATH");
+#endif
+		if (path)
 		{
 			std::size_t start = 0;
 			while (start <= path->size())
@@ -364,10 +413,6 @@ namespace uam::custom_acp
 				start = end + 1;
 			}
 		}
-#if defined(__APPLE__)
-		// Apps started from Finder get a short PATH; these are where package managers put programs.
-		for (const char* directory : {"/opt/homebrew/bin", "/usr/local/bin"}) search.directories.emplace_back(directory);
-#endif
 		return search;
 	}
 
@@ -396,6 +441,13 @@ namespace uam::custom_acp
 			if (!given.is_absolute())
 			{
 				error = "Custom ACP agent command " + std::string(command) + " must be a program name or a full path.";
+				return {};
+			}
+			// Windows would look for name.exe, name.cmd and so on next to an extensionless path and run a .cmd through
+			// cmd.exe, so a full path must name the program file itself.
+			if (search.windows && !IsWindowsProgramExtension(extension))
+			{
+				error = "Custom ACP agent command " + std::string(command) + " is not a program UAM can start directly. Use the full path of its .exe file.";
 				return {};
 			}
 			if (!IsRegularFile(given))
@@ -443,6 +495,8 @@ namespace uam::custom_acp
 		std::string error;
 		const std::filesystem::path executable = ResolveExecutable(config.command, search, error);
 		if (executable.empty()) return error;
+		if (uam::paths::Utf8PathString(executable) != config.approved_executable)
+			return "The custom ACP agent command now starts a different program (" + uam::paths::Utf8PathString(executable) + "). Review and allow it again in Settings.";
 		argv = LaunchArgv(config);
 		argv.front() = uam::paths::Utf8PathString(executable);
 		const std::vector<std::pair<std::string, std::string>> configured = LaunchEnvironment(config);
@@ -460,5 +514,16 @@ namespace uam::custom_acp
 	{
 		const std::lock_guard lock(ActiveMutex());
 		ActiveStorage() = std::move(config);
+	}
+	std::string ActiveLoadError()
+	{
+		const std::lock_guard lock(ActiveMutex());
+		return ActiveLoadErrorStorage();
+	}
+
+	void SetActiveLoadError(std::string error)
+	{
+		const std::lock_guard lock(ActiveMutex());
+		ActiveLoadErrorStorage() = std::move(error);
 	}
 } // namespace uam::custom_acp

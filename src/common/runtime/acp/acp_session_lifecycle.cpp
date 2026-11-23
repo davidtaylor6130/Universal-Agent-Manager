@@ -3107,7 +3107,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	const bool start_off_poll = (defer_cold_launch || prepared) && !cold_binding;
 	auto process_started = [remote, recovering_remote_turn, recovering_remote_process, defer_cold_launch, cold_binding,
 	    migrate_copilot_wire, host = *execution_host, process_working_directory, process_argv, process_environment,
-	    launch_detail, launch_model_id = launch_chat.model_id, start_control_relay]
+	    launch_detail, launch_model_id = launch_chat.model_id, start_control_relay, private_arguments = runtime.LaunchArgumentsArePrivate()]
 	    (AppState& app, AcpSessionState& session, ChatSession& chat, bool created, std::string startup_error, std::string* error_out) mutable -> bool
 	{
 		const ExecutionHost* execution_host = &host;
@@ -3125,7 +3125,9 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 				else (void)SaveChatQuietly(app, chat);
 			}
 			session.lifecycle_state = kAcpLifecycleError;
-			session.last_error = startup_error.empty() ? ("Failed to start " + std::string(RuntimeDisplayName(session)) + " process.") : startup_error;
+			// Platform start errors can quote the whole command line, which for a user-typed launch may hold private values.
+			session.last_error = private_arguments ? std::string("The custom ACP agent could not start. Check its command in Settings.")
+			    : startup_error.empty() ? ("Failed to start " + std::string(RuntimeDisplayName(session)) + " process.") : startup_error;
 			AppendAcpDiagnostic(session, "process_launch", "start_failed", "", "", false, 0, session.last_error, launch_detail);
 			if (error_out != nullptr)
 			{

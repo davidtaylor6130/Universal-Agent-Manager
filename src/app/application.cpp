@@ -902,6 +902,7 @@ bool Application::InitializeState()
 		{
 			custom_acp = {};
 			m_app.status_line = custom_acp_error;
+			uam::custom_acp::SetActiveLoadError(custom_acp_error + " Saving it in Settings replaces the file.");
 		}
 		ApplyCustomAcpConfiguration(m_app.provider_profiles, std::move(custom_acp));
 	}

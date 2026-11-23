@@ -1,7 +1,8 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { CustomAcpAgentSettings, parseArguments, parseEnvironment, type CustomAcpAgentView } from './CustomAcpAgentSettings'
+import { createRef } from 'react'
+import { CustomAcpAgentSettings, type CustomAcpAgentSettingsHandle, parseArguments, parseEnvironment, type CustomAcpAgentView } from './CustomAcpAgentSettings'
 
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -14,10 +15,12 @@ vi.mock('../../utils/appFailure', () => ({ reportAppFailure: failure, reportAppN
 const view = (patch: Partial<CustomAcpAgentView> = {}): CustomAcpAgentView => ({
   configured: true, name: 'Fixture', displayName: 'Fixture', command: 'python3',
   arguments: ['-I', 'agent.py', 'two words'], environment: [{ name: 'AGENT_TOKEN', value: 'a=b' }],
-  displayCommand: 'python3 -I agent.py "two words"', fingerprint: '0123456789abcdef', allowed: false, ...patch,
+  displayCommand: 'python3 -I agent.py "two words"', fingerprint: '0123456789abcdef', program: '/usr/bin/python3', programError: '',
+  allowed: false, loadError: '', ...patch,
 })
 
 let host: HTMLDivElement, root: Root
+const handle = createRef<CustomAcpAgentSettingsHandle>()
 const flush = () => act(async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve() })
 const button = (text: string) => [...document.querySelectorAll('button')].find(item => item.textContent?.trim() === text)!
 const setValue = (element: HTMLInputElement | HTMLTextAreaElement, value: string) => act(() => {
@@ -35,7 +38,7 @@ beforeEach(async () => {
     return { ok: false, error: 'unexpected' }
   })
   host = document.createElement('div'); document.body.append(host); root = createRoot(host)
-  act(() => root.render(<CustomAcpAgentSettings />))
+  act(() => root.render(<CustomAcpAgentSettings ref={handle} />))
   await flush()
 })
 
@@ -52,26 +55,27 @@ describe('Custom ACP agent settings', () => {
     expect(host.textContent).toContain('Best effort')
     expect(host.querySelector('[aria-label="Exact command"]')?.textContent).toBe('python3 -I agent.py "two words"')
     expect(host.textContent).toContain('Also sets AGENT_TOKEN.')
+    expect(host.textContent).toContain('Runs /usr/bin/python3.')
     expect(button('Allow this command').disabled).toBe(false)
   })
 
   it('allows only the command it showed, by fingerprint', async () => {
     await act(async () => { button('Allow this command').click() })
     await flush()
-    expect(send).toHaveBeenCalledWith({ action: 'allowCustomAcpAgent', payload: { fingerprint: '0123456789abcdef' } })
+    expect(send).toHaveBeenCalledWith({ action: 'allowCustomAcpAgent', payload: { fingerprint: '0123456789abcdef', program: '/usr/bin/python3' } })
     expect(notice).toHaveBeenCalledWith('Custom ACP agent command allowed.', 'success')
     expect(host.textContent).not.toContain('Allow this command')
   })
 
-  it('saves arguments as an array, keeps allowing blocked until saved, and reports bad environment lines', async () => {
+  it('saves arguments as an array, keeps allowing blocked until saved, and blocks bad environment lines', async () => {
     setValue(host.querySelector<HTMLInputElement>('#custom-acp-command')!, 'agent')
     setValue(host.querySelector<HTMLTextAreaElement>('#custom-acp-arguments')!, '--acp')
     expect(button('Allow this command').disabled).toBe(true)
     expect(host.textContent).toContain('Save your changes to review the new command.')
     setValue(host.querySelector<HTMLTextAreaElement>('#custom-acp-environment')!, 'BROKEN')
-    await act(async () => { button('Save').click() })
-    expect(failure).toHaveBeenCalledWith('Write each environment variable on its own line as NAME=value.', 'Your changes are kept.')
-    expect(send).not.toHaveBeenCalledWith(expect.objectContaining({ action: 'setCustomAcpAgent' }))
+    expect(button('Save').disabled).toBe(true)
+    expect(host.querySelector('#custom-acp-environment')!.getAttribute('aria-invalid')).toBe('true')
+    expect(host.textContent).toContain('Write each environment variable on its own line as NAME=value.')
     setValue(host.querySelector<HTMLTextAreaElement>('#custom-acp-environment')!, 'AGENT_TOKEN=x')
     await act(async () => { button('Save').click() })
     await flush()
@@ -88,5 +92,27 @@ describe('Custom ACP agent settings', () => {
     await flush()
     expect(failure).toHaveBeenCalledWith('Environment variable names must start with a letter or underscore and use only letters, digits and underscores.', 'Your changes are kept.')
     expect(host.querySelector<HTMLInputElement>('#custom-acp-name')!.value).toBe('Renamed')
+  })
+
+  it('asks before leaving with unsaved edits and keeps the draft on Keep editing', async () => {
+    const next = vi.fn()
+    act(() => handle.current!.requestLeave(next))
+    expect(next).toHaveBeenCalledTimes(1)
+    setValue(host.querySelector<HTMLInputElement>('#custom-acp-name')!, 'Renamed')
+    act(() => handle.current!.requestLeave(next))
+    await flush()
+    expect(next).toHaveBeenCalledTimes(1)
+    expect(document.body.textContent).toContain('Unsaved custom ACP agent')
+    await act(async () => { button('Keep editing').click() })
+    expect(host.querySelector<HTMLInputElement>('#custom-acp-name')!.value).toBe('Renamed')
+  })
+
+  it('reports a settings file that could not be read at startup', async () => {
+    act(() => root.unmount())
+    send.mockImplementation(async () => ({ ok: true, data: view({ configured: false, command: '', arguments: [], environment: [], loadError: 'The custom ACP agent settings file is damaged. Saving it in Settings replaces the file.' }) }))
+    root = createRoot(host)
+    act(() => root.render(<CustomAcpAgentSettings />))
+    await flush()
+    expect(failure).toHaveBeenCalledWith('The custom ACP agent settings file is damaged. Saving it in Settings replaces the file.', 'The form shows an empty agent until you save one.')
   })
 })

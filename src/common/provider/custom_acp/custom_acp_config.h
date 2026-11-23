@@ -17,7 +17,7 @@ namespace uam::custom_acp
 {
 	inline constexpr std::string_view kDefaultDisplayName = "Custom ACP agent";
 	inline constexpr std::string_view kConfigFileName = "custom-acp-agent.json";
-	inline constexpr std::size_t kMaxDisplayNameBytes = 80;
+	inline constexpr std::size_t kMaxDisplayNameBytes = 320; // 80 characters of up to four UTF-8 bytes each.
 	inline constexpr std::size_t kMaxCommandBytes = 4096;
 	inline constexpr std::size_t kMaxArgumentCount = 64;
 	inline constexpr std::size_t kMaxArgumentBytes = 4096;
@@ -40,6 +40,9 @@ namespace uam::custom_acp
 		std::vector<EnvironmentVariable> environment;
 		/// The launch fingerprint the user allowed in Settings after seeing the exact command; empty until then.
 		std::string approved_fingerprint;
+		/// The full path the command resolved to when it was allowed. A launch that would start another program,
+		/// for example after PATH changed, needs a new approval.
+		std::string approved_executable;
 		bool operator==(const AgentConfig&) const = default;
 	};
 
@@ -61,7 +64,8 @@ namespace uam::custom_acp
 	std::string DisplayCommand(const AgentConfig& config);
 	/// <summary>Identifies the command, arguments and environment, so any change needs a new approval.</summary>
 	std::string LaunchFingerprint(const AgentConfig& config);
-	/// <summary>True when the current launch is the one the user allowed.</summary>
+	/// <summary>True when the current command, arguments and environment are the ones the user allowed. The program
+	/// they resolve to is checked again at launch against `approved_executable`.</summary>
 	bool IsApproved(const AgentConfig& config);
 	/// <summary>Keeps an earlier approval only when the launch it covered is unchanged.</summary>
 	AgentConfig WithApprovalCarriedOver(AgentConfig next, const AgentConfig& previous);
@@ -82,7 +86,7 @@ namespace uam::custom_acp
 		bool windows = false;
 	};
 
-	/// <summary>PATH from this process's environment, plus the usual package manager folders on macOS.</summary>
+	/// <summary>PATH from this process's environment. The app adds the platform's own extra folders (see the runtime).</summary>
 	ExecutableSearch DefaultExecutableSearch();
 	/// <summary>Resolves the command to an executable file. On failure returns an empty path and one plain line.
 	/// Windows batch scripts (.cmd, .bat) are refused, because starting them runs a shell.</summary>
@@ -95,4 +99,7 @@ namespace uam::custom_acp
 	/// <summary>The configuration the app last loaded or saved, shared with the provider runtime.</summary>
 	AgentConfig ActiveConfig();
 	void SetActiveConfig(AgentConfig config);
+	/// <summary>Why the saved file could not be loaded at startup, until a save replaces it; empty otherwise.</summary>
+	std::string ActiveLoadError();
+	void SetActiveLoadError(std::string error);
 } // namespace uam::custom_acp

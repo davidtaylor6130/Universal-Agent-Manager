@@ -105,7 +105,12 @@ namespace
 		invalid([](AgentConfig& c) { c.environment[0].value = "a\nb"; }, "environment values are one line");
 		invalid([](AgentConfig& c) { c.arguments.push_back("a\nb"); }, "each argument is one line");
 		invalid([](AgentConfig& c) { c.arguments.push_back(std::string("a\0b", 3)); }, "arguments cannot hold NUL");
-		invalid([](AgentConfig& c) { c.display_name = std::string(81, 'n'); }, "names are short");
+		invalid([](AgentConfig& c) { c.display_name = std::string(321, 'n'); }, "names are short");
+		invalid([](AgentConfig& c) { c.arguments.push_back("a\tb"); }, "arguments cannot hold tabs or control characters");
+		invalid([](AgentConfig& c) { c.arguments.push_back("safe\xE2\x80\xAEtxt.exe"); }, "arguments cannot hold direction-changing characters");
+		invalid([](AgentConfig& c) { c.arguments.push_back("two\xC2\xA0words"); }, "arguments cannot hold a no-break space that looks like a separator");
+		invalid([](AgentConfig& c) { c.command = "agent\xE2\x80\x8B"; }, "commands cannot hold zero-width characters");
+		invalid([](AgentConfig& c) { c.approved_fingerprint = "0123456789abcdef"; }, "an approval names the program it allowed");
 		invalid([](AgentConfig& c) { c.command = "agent\n--flag"; }, "commands are one line");
 		invalid([](AgentConfig& c) { c.arguments.assign(65, "x"); }, "argument count is bounded");
 
@@ -145,12 +150,15 @@ namespace
 		AgentConfig approved = config;
 		Check(!uam::custom_acp::IsApproved(approved), "a new configuration is not allowed yet");
 		approved.approved_fingerprint = fingerprint;
+		approved.approved_executable = "/usr/bin/my-agent";
 		Check(uam::custom_acp::IsApproved(approved), "the shown launch is allowed");
 		Check(uam::custom_acp::IsApproved(uam::custom_acp::WithApprovalCarriedOver(renamed, approved)), "renaming keeps the approval");
 		AgentConfig changed = config;
 		changed.arguments.push_back("--extra");
 		Check(!uam::custom_acp::IsApproved(uam::custom_acp::WithApprovalCarriedOver(changed, approved)), "changing the launch drops the approval");
-		Check(uam::custom_acp::WithApprovalCarriedOver(changed, approved).approved_fingerprint.empty(), "a dropped approval is cleared");
+		Check(uam::custom_acp::WithApprovalCarriedOver(changed, approved).approved_fingerprint.empty() &&
+		    uam::custom_acp::WithApprovalCarriedOver(changed, approved).approved_executable.empty(), "a dropped approval is cleared");
+		Check(uam::custom_acp::WithApprovalCarriedOver(renamed, approved).approved_executable == "/usr/bin/my-agent", "a kept approval keeps its program");
 
 		Check(uam::custom_acp::DisplayCommand(config) == "my-agent --acp \"two words\" \"semi;colon \\$HOME \\`id\\`\"",
 		    "the displayed command shows each argument's boundaries: " + uam::custom_acp::DisplayCommand(config));
@@ -164,6 +172,7 @@ namespace
 		Check(uam::custom_acp::Load(root.path, loaded, &error) && loaded == AgentConfig{}, "a missing file is an unconfigured agent");
 		AgentConfig config = uam::custom_acp::Normalized(SampleConfig());
 		config.approved_fingerprint = uam::custom_acp::LaunchFingerprint(config);
+		config.approved_executable = "/usr/local/bin/my-agent";
 		Check(uam::custom_acp::Save(root.path, config, &error), "the configuration saves: " + error);
 		Check(uam::custom_acp::Load(root.path, loaded, &error) && loaded == config && uam::custom_acp::IsApproved(loaded), "the saved configuration and approval load back");
 		WriteFile(uam::custom_acp::ConfigPath(root.path), "{not json", false);
@@ -214,6 +223,14 @@ namespace
 		Check(uam::custom_acp::ResolveExecutable("tool", windows, error) == win / "tool.exe", "a program name finds its .exe: " + error);
 		Check(uam::custom_acp::ResolveExecutable("agent.ps1", windows, error).empty(), "a script that needs another program is refused");
 		CheckOneLine(error, "powershell script");
+#if defined(_WIN32)
+		// An extensionless full path (an npm shim) would make Windows try name.cmd next to it, so it is refused.
+		WriteFile(win / "npm-agent", "#!/bin/sh\n", false);
+		WriteFile(win / "npm-agent.cmd", "@echo off\n", false);
+		Check(uam::custom_acp::ResolveExecutable(uam::paths::Utf8PathString(win / "npm-agent"), windows, error).empty(), "an extensionless full path is refused on Windows");
+		Check(error.find(".exe") != std::string::npos, "the error asks for the .exe file: " + error);
+		Check(uam::custom_acp::ResolveExecutable(uam::paths::Utf8PathString(win / "tool.exe"), windows, error) == win / "tool.exe", "a full .exe path is used as given");
+#endif
 	}
 
 	void LaunchCheckCases(const std::filesystem::path& python)
@@ -230,6 +247,7 @@ namespace
 		CheckOneLine(unapproved, "unapproved launch");
 		Check(unapproved.find("allow") != std::string::npos && argv.empty(), "an unapproved command never starts: " + unapproved);
 		config.approved_fingerprint = uam::custom_acp::LaunchFingerprint(config);
+		config.approved_executable = uam::paths::Utf8PathString(python);
 		const std::string remote = uam::custom_acp::PrepareLaunch(config, search, true, argv, environment);
 		CheckOneLine(remote, "remote launch");
 		Check(argv.empty(), "SSH launches are refused in this slice");
@@ -237,13 +255,29 @@ namespace
 		Check(argv == std::vector<std::string>{uam::paths::Utf8PathString(python), "-I", "fixture.py"}, "the launch is the configured argument array");
 		Check(environment.size() == 1 && environment[0].first == "UAM_FIXTURE_ECHO", "configured environment pairs are added");
 
+		// The approval covers the program the command resolved to: another file on the search path needs a new one.
+		AgentConfig moved = config;
+		moved.command = "agent-copy";
+		moved.approved_fingerprint = uam::custom_acp::LaunchFingerprint(moved);
+		TempDirectory first, second;
+		WriteFile(first.path / "agent-copy", "#!/bin/sh\n", true);
+		WriteFile(second.path / "agent-copy", "#!/bin/sh\n", true);
+		moved.approved_executable = uam::paths::Utf8PathString(second.path / "agent-copy");
+		argv.clear();
+		const std::string shadowed = uam::custom_acp::PrepareLaunch(moved, {{first.path, second.path}, false}, false, argv, environment);
+		CheckOneLine(shadowed, "shadowed program");
+		Check(shadowed.find("different program") != std::string::npos && argv.empty(), "a different program on the search path needs a new approval: " + shadowed);
+
 		AgentConfig bad = config;
-		bad.command = "/nonexistent/uam-custom-acp-agent";
+		TempDirectory missing_root;
+		const std::string missing_path = uam::paths::Utf8PathString(missing_root.path / "uam-custom-acp-agent");
+		bad.command = missing_path;
 		bad.approved_fingerprint = uam::custom_acp::LaunchFingerprint(bad);
+		bad.approved_executable = missing_path;
 		argv.clear();
 		const std::string missing = uam::custom_acp::PrepareLaunch(bad, search, false, argv, environment);
 		CheckOneLine(missing, "bad command");
-		Check(missing == "Custom ACP agent command not found: /nonexistent/uam-custom-acp-agent. Use the program's full path in Settings." && argv.empty(),
+		Check(missing.rfind("Custom ACP agent command not found: ", 0) == 0 && missing.find("uam-custom-acp-agent") != std::string::npos && argv.empty(),
 		    "a bad command gives one clear launch error: " + missing);
 	}
 
@@ -408,6 +442,7 @@ namespace
 		config.arguments = {"-I", uam::paths::Utf8PathString(fixture), "--name", tricky_name, "--models"};
 		config.environment = {{"UAM_FIXTURE_ECHO", "value with spaces; $NOT_EXPANDED"}};
 		config.approved_fingerprint = uam::custom_acp::LaunchFingerprint(config);
+		config.approved_executable = uam::paths::Utf8PathString(python.parent_path() / python.filename());
 		std::vector<std::string> argv;
 		std::vector<std::pair<std::string, std::string>> environment;
 		const std::string error = uam::custom_acp::PrepareLaunch(config, {{python.parent_path()}, false}, false, argv, environment);
