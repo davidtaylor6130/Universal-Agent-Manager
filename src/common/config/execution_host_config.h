@@ -45,6 +45,20 @@ namespace uam::execution_hosts
 		}
 	}
 
+	/// <summary>Copies the options a user set on a saved host onto a reinstall or update request built from the install form.
+	/// The form owns the connection fields and install bookkeeping owns the rest; the startup confirmation is cleared because the new helper has not applied it yet.</summary>
+	inline void CarryUserOwnedHostFields(ExecutionHost& request, const ExecutionHost& saved)
+	{
+		request.instruction_file = saved.instruction_file;
+		request.instruction_text = saved.instruction_text;
+		request.startup_enabled = saved.startup_enabled;
+		request.startup_status = saved.startup_status;
+		request.custom_icon = saved.custom_icon;
+		request.cli_updates_as_admin = saved.cli_updates_as_admin;
+		request.runner_startup_applied.reset();
+		request.runner_startup_error.clear();
+	}
+
 	inline bool HasInstallFence(const ExecutionHost& host)
 	{
 		return host.runner_install_unresolved || !host.runner_install_nonce.empty() || !host.runner_install_identity.empty();
