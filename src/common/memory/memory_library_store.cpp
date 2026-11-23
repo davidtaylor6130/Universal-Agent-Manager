@@ -1,6 +1,7 @@
 #include "common/memory/extraction_receipts.h"
 #include "common/memory/memory_storage_guard.h"
 #include "common/memory/memory_library_store.h"
+#include "common/memory/memory_entry_format.h"
 
 #include "common/memory/memory_categories.h"
 #include "common/paths/path_utils.h"
@@ -10,9 +11,7 @@
 #endif
 #include "common/utils/io_utils.h"
 #include "common/utils/parse_utils.h"
-#include "common/utils/sensitive_text.h"
 #include "common/utils/string_utils.h"
-#include "common/utils/time_utils.h"
 
 #include <algorithm>
 #include <map>
@@ -26,11 +25,6 @@ namespace fs = std::filesystem;
 
 namespace
 {
-	constexpr std::size_t kTitleMaxChars = 160;
-	constexpr std::size_t kMemoryMaxChars = 1400;
-	constexpr std::size_t kEvidenceMaxChars = 900;
-	constexpr std::size_t kConfidenceMaxChars = 80;
-	constexpr std::size_t kSourceChatIdMaxChars = 120;
 	constexpr std::size_t kPreviewMaxChars = 320;
 
 	enum class MemoryEntrySection
@@ -227,88 +221,9 @@ namespace
 		return uam::memory::IsSupportedCategory(out_entry.category);
 	}
 
-	fs::path FindExistingMemoryFile(const fs::path& category_path, std::string_view title)
-	{
-		const std::string wanted = uam::strings::NormalizeComparableKey(title);
-		if (wanted.empty() || !uam::paths::IsDirectoryNoThrow(category_path))
-		{
-			return {};
-		}
-
-		std::error_code ec;
-		for (fs::directory_iterator it(category_path, ec), end; !ec && it != end; it.increment(ec))
-		{
-			const fs::directory_entry& item = *it;
-			if (!uam::paths::IsRegularFileWithExtensionNoThrow(item, ".md"))
-			{
-				continue;
-			}
-
-			MemoryLibraryStore::Entry existing;
-			if (ParseEntryFile(item.path(), existing) && uam::strings::NormalizeComparableKey(existing.title) == wanted)
-			{
-				return item.path();
-			}
-		}
-		return {};
-	}
-
-	struct MemoryEntryTarget
-	{
-		fs::path path;
-		int occurrence_count = 1;
-	};
-
-	MemoryEntryTarget ResolveMemoryEntryTarget(const fs::path& category_path, std::string_view title)
-	{
-		MemoryEntryTarget target;
-		target.path = FindExistingMemoryFile(category_path, title);
-		if (!target.path.empty())
-		{
-			MemoryLibraryStore::Entry existing;
-			if (ParseEntryFile(target.path, existing))
-			{
-				target.occurrence_count = existing.occurrence_count + 1;
-			}
-			return target;
-		}
-
-		const std::string slug = uam::strings::AsciiSlug(title, 72, "memory");
-		target.path = category_path / (slug + ".md");
-		for (int i = 2; uam::paths::PathExistsNoThrow(target.path); ++i)
-		{
-			target.path = category_path / (slug + "-" + std::to_string(i) + ".md");
-		}
-		return target;
-	}
-
 	std::string PersistedScopeFor(const MemoryLibraryStore::Scope& scope)
 	{
 		return scope.scope_type == "global" ? "global" : "local";
-	}
-
-	std::string BuildMemoryMarkdown(const MemoryLibraryStore::Draft& draft, std::string_view scope, int occurrence_count, const std::vector<std::string>& extraction_keys)
-	{
-		std::string markdown;
-		markdown.reserve(draft.title.size() + draft.category.size() + draft.confidence.size() + draft.source_chat_id.size() + draft.memory.size() + draft.evidence.size() + 180);
-		markdown = "# " + draft.title + "\n\n";
-		markdown += "Scope: ";
-		markdown.append(scope);
-		markdown += "\n";
-		markdown += "Category: " + draft.category + "\n";
-		markdown += "Confidence: " + draft.confidence + "\n";
-		markdown += "Source chat: " + draft.source_chat_id + "\n";
-		markdown += "Last observed: " + uam::time::TimestampNow() + "\n";
-		markdown += "Occurrence count: " + std::to_string(std::max(1, occurrence_count)) + "\n\n";
-		for (const std::string& key : extraction_keys) markdown += "Extraction key: " + key + "\n";
-		markdown += "\n## Memory\n";
-		markdown += draft.memory + "\n\n";
-		if (!draft.evidence.empty())
-		{
-			markdown += "## Evidence\n";
-			markdown += draft.evidence + "\n";
-		}
-		return markdown;
 	}
 
 	std::string EntryIdForPath(const fs::path& root_path, const fs::path& entry_path)
@@ -414,32 +329,6 @@ namespace
 			return lhs.title < rhs.title;
 		}
 		return lhs.file_path.filename() < rhs.file_path.filename();
-	}
-
-	bool SanitizeDraft(MemoryLibraryStore::Draft input, MemoryLibraryStore::Draft& draft, std::string* error_out)
-	{
-		input.category = uam::strings::Trim(input.category);
-		input.title = uam::strings::SafeLine(input.title, kTitleMaxChars);
-		input.memory = uam::strings::SafeLine(input.memory, kMemoryMaxChars);
-		input.evidence = uam::strings::SafeLine(input.evidence, kEvidenceMaxChars);
-		input.confidence = uam::strings::SafeLine(uam::strings::NonEmptyOrFallback(input.confidence, "medium"), kConfidenceMaxChars);
-		input.source_chat_id = uam::strings::SafeLine(input.source_chat_id, kSourceChatIdMaxChars);
-		input.extraction_key = uam::strings::SafeLine(input.extraction_key, 256);
-
-		if (!uam::memory::IsSupportedCategory(input.category) || input.title.empty() || input.memory.empty())
-		{
-			SetError(error_out, "Memory entry is missing a valid category, title, or body.");
-			return false;
-		}
-
-		if (uam::sensitive::LooksSensitiveText(input.title + "\n" + input.memory + "\n" + input.evidence))
-		{
-			SetError(error_out, "Memory entry appears to contain sensitive content.");
-			return false;
-		}
-
-		draft = std::move(input);
-		return true;
 	}
 
 	bool DeleteAggregateEntry(const MemoryLibraryStore::Scope& scope, std::string_view entry_id, std::string* error_out)
@@ -551,7 +440,7 @@ bool MemoryLibraryStore::CreateEntry(const Scope& scope, const Draft& input, Ent
 	}
 
 	Draft draft;
-	if (!SanitizeDraft(input, draft, error_out))
+	if (!uam::memory::SanitizeEntryDraft(input, draft, error_out))
 	{
 		return false;
 	}
@@ -563,16 +452,42 @@ bool MemoryLibraryStore::CreateEntry(const Scope& scope, const Draft& input, Ent
 	}
 
 	const fs::path category_path = scope.root_path / draft.category;
-	const MemoryEntryTarget target = ResolveMemoryEntryTarget(category_path, draft.title);
-	std::vector<std::string> extraction_keys = uam::memory::ExistingExtractionKeys(uam::io::ReadTextFile(target.path));
-	if (!draft.extraction_key.empty() && std::ranges::find(extraction_keys, draft.extraction_key) != extraction_keys.end())
+	// Only entries the Library can list: a same-title file it cannot show is never overwritten from here.
+	const auto listable = [](const fs::path& path) { Entry entry; return ParseEntryFile(path, entry); };
+	fs::path target = uam::memory::FindEntryFile(uam::memory::IndexEntryTitles(category_path, listable), draft.title);
+	int occurrence_count = 1;
+	std::vector<std::string> extraction_keys;
+	if (!target.empty())
 	{
-		if (created_entry != nullptr) { if (!ParseEntryFile(target.path, *created_entry)) return false; PopulateEntryScope(*created_entry, scope); }
-		return true;
+		const std::string existing = uam::io::ReadTextFile(target);
+		extraction_keys = uam::memory::ExistingExtractionKeys(existing);
+		if (!draft.extraction_key.empty() && std::ranges::find(extraction_keys, draft.extraction_key) != extraction_keys.end())
+		{
+			if (created_entry != nullptr)
+			{
+				if (!ParseEntryFile(target, *created_entry))
+				{
+					SetError(error_out, "The saved memory entry for this title could not be read.");
+					return false;
+				}
+				PopulateEntryScope(*created_entry, scope);
+			}
+			return true;
+		}
+		const std::optional<int> next = uam::memory::NextOccurrenceCount(existing);
+		if (!next)
+		{
+			SetError(error_out, "Memory occurrence count is too large.");
+			return false;
+		}
+		occurrence_count = *next;
 	}
-	if (!draft.extraction_key.empty()) extraction_keys.push_back(draft.extraction_key);
-	if (extraction_keys.size() > 32) extraction_keys.erase(extraction_keys.begin(), extraction_keys.end() - 32);
-	if (!uam::io::WriteTextFile(target.path, BuildMemoryMarkdown(draft, PersistedScopeFor(scope), target.occurrence_count, extraction_keys)))
+	else
+	{
+		target = uam::memory::NewEntryPath(category_path, draft.title, [](const fs::path& path) { return uam::paths::PathExistsNoThrow(path); });
+	}
+	uam::memory::AppendExtractionKey(extraction_keys, draft.extraction_key);
+	if (!uam::io::WriteTextFile(target, uam::memory::BuildEntryMarkdown(draft, PersistedScopeFor(scope), occurrence_count, extraction_keys)))
 	{
 		SetError(error_out, "Failed to write memory file.");
 		return false;
@@ -581,7 +496,7 @@ bool MemoryLibraryStore::CreateEntry(const Scope& scope, const Draft& input, Ent
 	if (created_entry != nullptr)
 	{
 		Entry created;
-		if (!ParseEntryFile(target.path, created))
+		if (!ParseEntryFile(target, created))
 		{
 			SetError(error_out, "Memory file was written but could not be reloaded.");
 			return false;
