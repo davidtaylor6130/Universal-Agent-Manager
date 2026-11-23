@@ -183,10 +183,17 @@ namespace uam
 			const std::unordered_map<std::string, CliProviderVersionState>::const_iterator version = app.runtime_cli_versions_by_provider_id.find(version_key);
 			if (version == app.runtime_cli_versions_by_provider_id.end())
 			{
-				if (!registered.Contains(scope))
+				// A version check covers the provider on that host, not the workspace, and the launch path tests
+				// registration again, so a scope found registered once need not repeat the test while checks are refused.
+				const std::string scope_key = scope.provider_id + '\n' + scope.execution_host_id + '\n' + scope.workspace_directory;
+				if (!m_registered_before_version_check.contains(scope_key))
 				{
-					item = m_pending_scopes.erase(item);
-					continue;
+					if (!registered.Contains(scope))
+					{
+						item = m_pending_scopes.erase(item);
+						continue;
+					}
+					m_registered_before_version_check.insert(scope_key);
 				}
 				std::string check_error;
 				changed = ProviderCliCompatibilityService().StartProviderVersionCheck(app, scope.provider_id, false, scope.execution_host_id, &check_error) || changed;

@@ -857,9 +857,14 @@ UAM_TEST(PerformanceStartupModelDiscoveryOnLargeInstall)
 	}
 	UAM_ASSERT(std::ranges::none_of(scopes, [](const uam::ModelDiscoveryScope& scope) { return scope.workspace_directory.find("removed-") != std::string::npos; }));
 
-	// Scopes waiting for a version check are revalidated on every poll.
+	// Scopes waiting for a version check skip the registration test, so a worktree chat missing while its scope waits
+	// does not drop the scope; the test runs again before launch.
 	uam::StartupModelDiscoveryService discovery(fixture.Launcher());
 	discovery.Initialize(fixture.app);
+	std::vector<ChatSession> saved_chats = std::move(fixture.app.chats);
+	fixture.app.chats.clear();
+	(void)discovery.Poll(fixture.app);
+	fixture.app.chats = std::move(saved_chats);
 	const double poll_ms = median_ms([&] { (void)discovery.Poll(fixture.app); });
 	UAM_ASSERT(fixture.launched.empty());
 	std::cout << "[TIMING] startup model discovery, " << kChats << " chats, " << kWorktrees << " worktrees: collect p50=" << collect_ms << " ms, waiting poll p50=" << poll_ms << " ms\n";
@@ -877,4 +882,9 @@ UAM_TEST(PerformanceStartupModelDiscoveryOnLargeInstall)
 	UAM_ASSERT_EQ(fixture.launched.size(), std::size_t{2});
 	for (const uam::ModelDiscoveryScope& launched : fixture.launched)
 		UAM_ASSERT_EQ(launched.provider_id, std::string("codex-cli"));
+	// The next pair after the three folder scopes reaches the first worktree scope, which the waiting polls kept.
+	for (const std::unique_ptr<uam::AcpSessionState>& session : fixture.app.acp_sessions) session->running = false;
+	UAM_ASSERT(discovery.Poll(fixture.app));
+	UAM_ASSERT_EQ(fixture.launched.size(), std::size_t{4});
+	UAM_ASSERT_EQ(fixture.launched[3].workspace_directory, uam::paths::PortablePathString(fs::weakly_canonical(fixture.temp.root / "worktrees" / "worktree-0")));
 }
