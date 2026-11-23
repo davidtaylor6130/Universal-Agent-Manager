@@ -184,7 +184,7 @@ namespace
 			f.sparse_inventory_read = f.inventory_reads + changed_read;
 			const auto result = uam::SwitchSvnBranch(f.scope, found.context, "^/lines/feature & fix", f.Runner());
 			Check(!result.ok && f.switches == (changed_read == 2 ? 0 : 1), "inventory rechecked before mutation and before confirmed success");
-			if (changed_read == 3) Check(result.error.find("inspection") != std::string::npos, "post-switch sparsity remains uncertain and requires inspection");
+			if (changed_read == 3) Check(result.error.find("inspect") != std::string::npos, "post-switch sparsity remains uncertain and requires inspection");
 		}
 	}
 	void InjectedCases()

@@ -489,7 +489,7 @@ namespace
 		service.Reset("linux"); service.fail_phase="activate"; service.refuse_rollback=true; service.stale_rollback_reply=true;
 		auto result=ExecuteFixtureBootstrap(plan);
 		Require(!result.rollback_confirmed && !result.PreviousInstallationConfirmed(), "Delayed activation success falsely confirmed refused rollback");
-		Require(result.error.find("uncorrelated")!=std::string::npos, "Stale reply was not rejected by operation identity"); result.install_lease.reset();
+		Require(result.error.find("could not be rolled back")!=std::string::npos, "Stale reply was not rejected by operation identity"); result.install_lease.reset();
 		service.Reset("linux"); service.disconnect_activation_reply=true; service.refuse_rollback=true;
 		result=ExecuteFixtureBootstrap(plan);
 		Require(!result.rollback_confirmed && !result.PreviousInstallationConfirmed() && !service.commands.contains("rollback"), "Uncertain stream was reused for rollback"); result.install_lease.reset();
