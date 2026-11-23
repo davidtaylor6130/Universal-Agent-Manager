@@ -1,4 +1,4 @@
-import { act, createElement, useEffect } from 'react'
+import { act, createElement, StrictMode, useEffect } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Overlay, scaledMs, usePresence } from './Overlay'
@@ -131,6 +131,16 @@ describe('Overlay dialog semantics and focus', () => {
     expect(document.activeElement).toBe(trigger)
     expect(document.activeElement).not.toBe(opener)
     trigger.remove()
+    await act(async () => root.unmount())
+    cleanup()
+  })
+
+  it('keeps focus in the dialog through StrictMode\'s mount check', async () => {
+    const { opener, root, cleanup } = setup()
+    await act(async () => root.render(createElement(StrictMode, null, createElement(Overlay, { open: true, label: 'Strict' }, field('name', true)))))
+    expect(document.activeElement?.id).toBe('name')
+    await act(async () => root.render(createElement(StrictMode, null, createElement(Overlay, { open: false, label: 'Strict' }, null))))
+    expect(document.activeElement).toBe(opener)
     await act(async () => root.unmount())
     cleanup()
   })

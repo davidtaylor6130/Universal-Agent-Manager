@@ -96,6 +96,9 @@ export function Overlay({ open, children, onBackdropMouseDown, className, style,
   // Read during render, before the content's effects (or autoFocus) move focus into the dialog.
   const openerRef = useRef<HTMLElement | null>(null)
   const wasOpenRef = useRef(false)
+  // Counts open-effect runs: StrictMode's mount check runs effect, cleanup, effect while still open, and the
+  // restore queued by that cleanup must not pull focus back out of the dialog.
+  const openRunRef = useRef(0)
   if (open !== wasOpenRef.current) {
     if (open) openerRef.current = focusedElement()
     wasOpenRef.current = open
@@ -103,6 +106,7 @@ export function Overlay({ open, children, onBackdropMouseDown, className, style,
 
   useEffect(() => {
     if (!open) return
+    const run = ++openRunRef.current
     const layer = layerRef.current
     if (ownsDialogRef.current && layer && !layer.contains(document.activeElement) && getTopmostModal() === layer) layer.focus()
     const opener = openerRef.current
@@ -110,6 +114,7 @@ export function Overlay({ open, children, onBackdropMouseDown, className, style,
       // A fallback: queued so an owner's own restore (its cleanup runs after this child's, such as a chat's Goals
       // trigger or a row it names) and any dialog mounted in the same commit (the next step) are already in place.
       queueMicrotask(() => {
+        if (openRunRef.current !== run) return
         const active = focusedElement()
         if (active && !layer?.contains(active)) return
         const target = [opener, returnFocusToRef.current?.()].find((element): element is HTMLElement =>

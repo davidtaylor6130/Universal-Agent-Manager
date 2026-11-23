@@ -33,6 +33,11 @@ describe('forced colours', () => {
     expect(declares(index, /input:checked \+ \.uam-switch__track$/, /background:\s*Highlight/)).toHaveLength(1)
   })
 
+  it('greys out a disabled Switch, on or off and inside Settings', () => {
+    expect(declares(index, /input:disabled:checked \+ \.uam-switch__track$/m, /background:\s*ButtonFace/)).toHaveLength(1)
+    expect(declares(index, /\.uam-settings-scope \.uam-switch input:disabled:checked \+ \.uam-switch__track \.uam-switch__thumb/, /background:\s*GrayText/)).toHaveLength(1)
+  })
+
   it('draws the Tabs indicator in Highlight for both variants', () => {
     expect(declares(index, /^\.uam-tabs__indicator$/, /forced-color-adjust:\s*none/)).toHaveLength(1)
     expect(declares(index, /data-variant="underline"\] \.uam-tabs__indicator/, /background:\s*Highlight/)).toHaveLength(1)

@@ -1682,8 +1682,13 @@ summary,
   .uam-settings-scope .uam-switch__thumb,
   .uam-settings-scope .uam-switch input:checked + .uam-switch__track .uam-switch__thumb { background: ButtonFace; box-shadow: 0 0 0 1px ButtonText; }
   .uam-settings-scope .uam-switch__icon--on, .uam-settings-scope .uam-switch__icon--off { color: ButtonText; }
-  .uam-switch input:disabled + .uam-switch__track { border-color: GrayText; }
-  .uam-switch input:disabled + .uam-switch__track .uam-switch__thumb { background: GrayText; }
+  .uam-switch input:disabled + .uam-switch__track,
+  .uam-switch input:disabled:checked + .uam-switch__track { background: ButtonFace; border-color: GrayText; }
+  .uam-switch input:disabled + .uam-switch__track .uam-switch__thumb,
+  .uam-switch input:disabled:checked + .uam-switch__track .uam-switch__thumb,
+  .uam-settings-scope .uam-switch input:disabled + .uam-switch__track .uam-switch__thumb,
+  .uam-settings-scope .uam-switch input:disabled:checked + .uam-switch__track .uam-switch__thumb { background: GrayText; box-shadow: none; }
+  .uam-settings-scope .uam-switch input:disabled + .uam-switch__track .uam-switch__icon { color: ButtonFace; }
   .uam-switch input:focus-visible + .uam-switch__track { outline-color: Highlight; }
 }
 
@@ -1989,7 +1994,7 @@ summary,
 .uam-selection-option:hover { background:var(--surface-up); }
 .uam-selection-option[aria-pressed="true"] { background:color-mix(in srgb, var(--accent) 8%, var(--surface)); border-color:color-mix(in srgb, var(--accent) 70%, transparent); color:var(--text); }
 .uam-selection-option:is(:disabled, [aria-disabled="true"]) { opacity:.5; cursor:not-allowed; }
-.uam-selection-option[aria-disabled="true"]:hover { background:var(--surface); }
+.uam-selection-option[aria-disabled="true"]:not([aria-pressed="true"]):hover { background:var(--surface); }
 /* Forced colours turn every card border CanvasText; the chosen card keeps a Highlight border and outline. */
 @media (forced-colors: active) { .uam-selection-option[aria-pressed="true"] { border-color: Highlight; outline: 1px solid Highlight; outline-offset: -2px; } }
 .uam-selection-icon { display:flex; height:24px; align-items:center; justify-content:center; }

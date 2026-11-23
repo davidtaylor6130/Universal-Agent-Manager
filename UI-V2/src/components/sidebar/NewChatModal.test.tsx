@@ -1135,7 +1135,7 @@ describe('NewChatModal', () => {
       window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
       ;(document.body.querySelector('button[aria-label="Close new chat"]') as HTMLButtonElement).click()
       expect(Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Cancel')?.disabled).toBe(true)
-      host.firstElementChild?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      document.body.querySelector('.uam-overlay')!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
     })
 
     expect(setNewChatModalOpen).not.toHaveBeenCalled()
@@ -1571,6 +1571,41 @@ describe('NewChatModal', () => {
       expect(browser.contains(document.activeElement)).toBe(true)
       await act(async () => button('Cancel').click())
       expect(document.activeElement).toBe(button('Browse'))
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it('closes on a backdrop press while idle, returning focus to the workspace when its row menu item has gone', async () => {
+    function Harness() { return useAppStore((state) => state.isNewChatModalOpen) ? <NewChatModal /> : null }
+    // Opened from a chat row's "New chat in this workspace": the menu item is focused, then closes with its menu.
+    const header = document.createElement('div')
+    header.setAttribute('data-workspace-id', 'project'); header.setAttribute('role', 'button'); header.tabIndex = 0
+    const menuItem = document.createElement('button')
+    menuItem.setAttribute('role', 'menuitem')
+    const host = document.createElement('div')
+    document.body.append(header, menuItem, host)
+    const root = createRoot(host)
+    menuItem.focus()
+    try {
+      useAppStore.setState({ isNewChatModalOpen: true, newChatFolderId: 'project', setNewChatModalOpen: originalSetNewChatModalOpen })
+      await act(async () => root.render(<Harness />))
+      menuItem.remove()
+      await act(async () => document.body.querySelector('.uam-overlay')!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })))
+      expect(useAppStore.getState().isNewChatModalOpen).toBe(false)
+      expect(document.activeElement).toBe(header)
+    } finally { act(() => root.unmount()); host.remove(); header.remove() }
+  })
+
+  it('names an unavailable remote computer in words on its card and in the footer', async () => {
+    useAppStore.setState({
+      executionHosts: [...useAppStore.getState().executionHosts, { id: 'lab', label: 'Home lab', transport: 'ssh', sshAlias: 'lab', runnerStatus: 'uninstalled', runnerVersion: '', platform: 'linux', architecture: 'x64', lastSeenAt: '' }],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => root.render(<NewChatModal />))
+      const card = document.body.querySelector<HTMLButtonElement>('button[aria-label="Home lab"]')!
+      expect(document.getElementById(card.getAttribute('aria-describedby')!)?.textContent).toBe('lab. The remote runner is not set up. Open Settings to configure this computer.')
     } finally { act(() => root.unmount()); host.remove() }
   })
 })

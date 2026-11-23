@@ -27,7 +27,8 @@ const lines = (count: number, verb: string) => `${count} ${count === 1 ? 'line' 
 
 /** What a screen reader hears after a row's name: the change type for files, then the line counts (or binary). */
 export function changedRowDescription(node: ChangedTreeNode<VcsChangedFile>): string {
-  if (node.kind === 'folder') return `${lines(node.additions, 'added')}, ${lines(node.deletions, 'removed')}.`
+  // Folders are named by their own name, so the description starts with the full path the tooltip shows.
+  if (node.kind === 'folder') return `${node.path !== node.name ? `${node.path}, ` : ''}${lines(node.additions, 'added')}, ${lines(node.deletions, 'removed')}.`
   const status = (node.file.status.trim().charAt(0) || 'M').toUpperCase()
   const change = STATUS_LABEL[status] ?? 'Changed'
   return node.file.binary ? `${change}, binary file.` : `${change}, ${lines(node.file.additions, 'added')}, ${lines(node.file.deletions, 'removed')}.`

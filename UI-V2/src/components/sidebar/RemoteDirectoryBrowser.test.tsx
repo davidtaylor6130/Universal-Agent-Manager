@@ -149,4 +149,14 @@ describe('RemoteDirectoryBrowser', () => {
     expect(document.activeElement).toBe(opener)
     opener.remove()
   })
+
+  it('cancels on a backdrop press but not on a press inside the panel', async () => {
+    useAppStore.setState({ listRemoteDirectories: vi.fn(async (_id: string, path: string) => listing(path)) })
+    const onCancel = vi.fn()
+    await act(async () => { root.render(<RemoteDirectoryBrowser host={remoteHost} initialPath="/work" onCancel={onCancel} onSelect={() => {}} />) })
+    act(() => { document.body.querySelector('.uam-overlay > *')!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })) })
+    expect(onCancel).not.toHaveBeenCalled()
+    act(() => { document.body.querySelector('.uam-overlay')!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })) })
+    expect(onCancel).toHaveBeenCalledTimes(1)
+  })
 })

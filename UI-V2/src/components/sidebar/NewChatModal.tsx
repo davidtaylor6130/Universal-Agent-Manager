@@ -22,9 +22,30 @@ import { NewChatBranchPicker } from './NewChatBranchPicker'
 
 const AUTOMATIC_HOST_OPTION = 'uam:auto-routing'
 
+/** Why a remote computer cannot take a new chat, in words rather than its raw runner status. */
+const RUNNER_UNAVAILABLE: Record<Exclude<keyof typeof RUNNER_STATUS, 'ready'>, string> = {
+  installing: 'The remote runner is still setting up.',
+  uninstalled: 'The remote runner is not set up.',
+  offline: 'The computer is offline.',
+  error: 'The remote runner reported an error.',
+}
+const runnerIssue = (status: keyof typeof RUNNER_STATUS) =>
+  status === 'ready' ? '' : `${RUNNER_UNAVAILABLE[status]} Open Settings to configure this computer.`
+
+const rowWithAttribute = (attribute: 'data-session-id' | 'data-workspace-id', id: string | null | undefined) =>
+  id ? Array.from(document.querySelectorAll<HTMLElement>(`[${attribute}]`)).find((row) => row.getAttribute(attribute) === id) ?? null : null
+
 export function NewChatModal({ companion = false, onCreated }: { companion?: boolean; onCreated?: () => void }) {
   // Focus on open (the New chat button, a menu item or the composer), restored on close even after a replaced step.
-  const [opener] = useState(() => typeof document !== 'undefined' && document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null)
+  // A row menu item closes with its menu, so the dialog then returns to the workspace it was opened for (its sidebar
+  // header) or the open chat's row.
+  const [returnTarget] = useState(() => {
+    const opener = typeof document !== 'undefined' && document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null
+    const state = useAppStore.getState()
+    return { opener, folderId: state.newChatFolderId, sessionId: state.activeSessionId }
+  })
+  const returnFocus = useCallback(() => returnTarget.opener?.isConnected ? returnTarget.opener
+    : rowWithAttribute('data-workspace-id', returnTarget.folderId) ?? rowWithAttribute('data-session-id', returnTarget.sessionId), [returnTarget])
   const fieldId = useId()
   const addSession = useAppStore((s) => s.addSession)
   const setNewChatModalOpen = useAppStore((s) => s.setNewChatModalOpen)
@@ -201,7 +222,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
   const isRemote = executionHostId !== 'local'
   const hostIssue = !selectedExecutionHost ? 'This computer is no longer available. Choose another computer.'
     : routingMode !== 'automatic' && isRemote && selectedExecutionHost.runnerStatus !== 'ready'
-      ? `Remote runner is ${selectedExecutionHost.runnerStatus}. Open Settings to configure this computer.` : ''
+      ? runnerIssue(selectedExecutionHost.runnerStatus) : ''
 
   // Use the same availability rules for the picker and the Create action.
   const providerAvailability = (provider: Provider | undefined) => {
@@ -380,13 +401,13 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
         setStepReturn('browse')
         setRemoteBrowserOpen(false)
       }}
-      returnFocusTo={() => opener}
+      returnFocusTo={returnFocus}
     />
   }
   if (SSH_ENABLED && routingOpen) return <ExecutionRoutingDialog onClose={() => { setStepReturn('routing'); setRoutingOpen(false) }} />
 
   return (
-    <Overlay open zIndex={50} labelledBy={`${fieldId}-title`} onBackdropMouseDown={requestClose} returnFocusTo={() => opener}>
+    <Overlay open zIndex={50} label="New chat" labelledBy={`${fieldId}-title`} onBackdropMouseDown={requestClose} returnFocusTo={returnFocus}>
       <Card
         elevation={2}
         flush
@@ -442,10 +463,11 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
               icon: <Monitor size={18} aria-hidden />,
               detail: isSshHost(host) ? host.sshAlias : undefined,
               tone: isSshHost(host) ? RUNNER_STATUS[host.runnerStatus].tone : undefined,
-              status: isSshHost(host) ? RUNNER_STATUS[host.runnerStatus].label : undefined,
+              // The status words for a ready computer; an unavailable one is described by its issue instead.
+              status: isSshHost(host) && host.runnerStatus === 'ready' ? RUNNER_STATUS.ready.label : undefined,
               disabled: creatingChat || (isSshHost(host) && host.runnerStatus !== 'ready'),
               issues: isSshHost(host) && host.runnerStatus !== 'ready'
-                ? [`Remote runner is ${host.runnerStatus}. Open Settings to configure this computer.`] : [],
+                ? [runnerIssue(host.runnerStatus)] : [],
             }))]}
             onChange={(hostId) => { if (hostId === AUTOMATIC_HOST_OPTION) { if (newChatWorktreeContext) setNewChatModalOpen(true, folderId, null); setSourceContextInvalid(false); setChatError(''); setRoutingMode('automatic') } else { setRoutingMode('explicit'); chooseHost(hostId) } }}
           />
