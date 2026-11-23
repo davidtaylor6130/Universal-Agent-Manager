@@ -485,6 +485,10 @@ class IProviderRuntime
 	virtual nlohmann::json OnAcpBuildCompact(const uam::AcpSessionState&, int, std::string&) const { return nullptr; }
 	virtual bool SupportsSameLiveParentResultContinuation() const { return false; }
 	virtual bool SupportsAcpCompaction() const { return false; }
+	/// True when OnAcpBuildCompact sends AcpSessionState::manual_compaction_instructions to the provider.
+	virtual bool SupportsAcpCompactionInstructions() const { return false; }
+	/// False when manual compaction is offered only for chats that run on this computer.
+	virtual bool SupportsRemoteAcpCompaction() const { return true; }
 
 	/// <summary>True when input can be appended to an active turn without interrupting it.</summary>
 	virtual bool SupportsAcpSteering() const

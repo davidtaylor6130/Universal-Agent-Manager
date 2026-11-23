@@ -21,6 +21,9 @@ class AntigravityCliProviderRuntime final : public IProviderRuntime
 	nlohmann::json OnAcpBuildSetupRequest(int, const ChatSession&, const std::string&, bool, std::string&) const override;
 	nlohmann::json OnAcpBuildPrompt(uam::AcpSessionState&, int, const std::string&, const ChatSession&, std::string&) const override;
 	nlohmann::json OnAcpBuildCancel(const uam::AcpSessionState&, int, std::string&) const override;
+	nlohmann::json OnAcpBuildCompact(const uam::AcpSessionState&, int, std::string&) const override;
+	bool SupportsAcpCompaction() const override { return true; }
+	bool SupportsRemoteAcpCompaction() const override { return false; }
 	bool OnAcpHandleMessage(uam::AppState&, uam::AcpSessionState&, ChatSession&, const nlohmann::json&, const CefRefPtr<CefBrowser>&) const override;
 	std::string OnAcpValidateResumeId(const ChatSession&) const override;
 	bool OnAcpValidateGoalResume(const ChatSession&, const Goal&, const AppSettings&, bool, std::string&) const override;

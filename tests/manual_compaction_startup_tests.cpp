@@ -221,6 +221,76 @@ UAM_TEST(ManualCompactionStartingIntentDispatchesOnceAfterReady)
 #endif
 }
 
+UAM_TEST(ManualCompactionRoutesTypedInstructionsOnlyToProvidersThatAcceptThem)
+{
+	struct Case { const char* provider; const char* protocol; const char* expected; bool used; };
+	std::vector<Case> cases;
+#if UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
+	cases.push_back({"antigravity-cli", "antigravity-stream-json", "/compact", false});
+#endif
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	cases.push_back({"claude-cli", "claude-code-stream-json", "/compact keep the API notes", true});
+#endif
+	for (const Case& item : cases)
+	{
+		TempDir temp("uam-compact-instructions");
+		uam::AppState app;
+		app.data_root = temp.root;
+		ChatSession chat;
+		chat.id = std::string("compact-instructions-") + item.provider;
+		chat.provider_id = item.provider;
+		chat.execution_host_id = "local";
+		chat.native_session_id = "11111111-2222-4333-8444-555555555555";
+		app.chats.push_back(chat);
+		app.acp_sessions.push_back(std::make_unique<uam::AcpSessionState>());
+		uam::AcpSessionState& session = *app.acp_sessions.back();
+		session.chat_id = chat.id;
+		session.provider_id = chat.provider_id;
+		session.protocol_kind = item.protocol;
+		session.session_id = chat.native_session_id;
+		session.claude_manual_compaction_supported = true;
+		session.running = true;
+		session.session_ready = true;
+		CompactionTransport transport(session);
+		std::string error;
+		bool used = !item.used;
+		UAM_ASSERT(uam::CompactAcpSession(app, chat.id, &error, "  keep the API notes  ", &used));
+		UAM_ASSERT_EQ(used, item.used);
+		UAM_ASSERT(session.manual_compaction_pending);
+		UAM_ASSERT(session.manual_compaction_instructions.empty());
+		UAM_ASSERT(session.stdin_writer->Flush(std::chrono::seconds(1)));
+		const nlohmann::json request = nlohmann::json::parse(transport.captured);
+		UAM_ASSERT_EQ(request["message"]["content"].get<std::string>(), std::string(item.expected));
+		UAM_ASSERT(app.chats.front().messages.empty());
+		UAM_ASSERT(session.queued_prompt.empty());
+	}
+}
+
+UAM_TEST(ManualCompactionRefusesOverlongInstructionsAndRemoteLocalOnlyProviders)
+{
+#if UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
+	uam::AppState app;
+	ChatSession chat;
+	chat.id = "compact-antigravity-remote";
+	chat.provider_id = "antigravity-cli";
+	chat.execution_host_id = "remote-fixture";
+	chat.native_session_id = "11111111-2222-4333-8444-555555555555";
+	app.chats.push_back(chat);
+	std::string error;
+	bool used = true;
+	UAM_ASSERT(!uam::CompactAcpSession(app, chat.id, &error, "keep notes", &used));
+	UAM_ASSERT(!used);
+	UAM_ASSERT(error.find("only chats that run on this computer") != std::string::npos);
+	UAM_ASSERT(app.acp_sessions.empty());
+	app.chats.front().execution_host_id = "local";
+	error.clear();
+	UAM_ASSERT(!uam::CompactAcpSession(app, chat.id, &error, std::string(4001, 'x')));
+	UAM_ASSERT(error.find("too long") != std::string::npos);
+	UAM_ASSERT(app.acp_sessions.empty());
+	UAM_ASSERT(app.chats.front().messages.empty());
+#endif
+}
+
 UAM_TEST(ManualCompactionPendingIntentBlocksNewPromptAdmission)
 {
 #if UAM_ENABLE_RUNTIME_CODEX_CLI

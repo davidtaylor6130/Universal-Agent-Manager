@@ -781,6 +781,9 @@ namespace uam
 		bool antigravity_turn_has_usage = false;
 		int64_t antigravity_completed_turns = 0;
 		std::unordered_set<int64_t> antigravity_completed_steps;
+		// Owned manual compaction: the native checkpoint step that completed it, or a checkpoint that failed.
+		std::optional<int64_t> antigravity_compaction_checkpoint_step;
+		bool antigravity_compaction_checkpoint_failed = false;
 		struct AntigravityGoalTurn
 		{
 			std::string owner_chat_id;
@@ -812,6 +815,8 @@ namespace uam
 		std::shared_ptr<PendingAcpCompaction> pending_compaction;
 		bool manual_compaction_pending = false;
 		bool context_compaction_in_progress = false;
+		// Instructions for the compaction request being built; set only while a runtime that accepts them builds it.
+		std::string manual_compaction_instructions;
 		bool recovering_remote_turn = false;
 		bool recovering_remote_process = false;
 		bool waiting_for_permission = false;

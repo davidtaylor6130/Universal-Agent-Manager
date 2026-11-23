@@ -13352,6 +13352,34 @@ describe('ChatView conditional manual compaction offer', () => {
     } finally { f.cleanup() }
   })
 
+  it.each([false, true] as const)('routes typed /compact instructions through the compact action, saying in one line when they are unused (used %s)', async used => {
+    const f = await unsupportedCompactionFixture('/compact keep the API notes')
+    try {
+      await act(async () => { publishCompactionChat(supportedCompactionChat(f.chat)); f.render() })
+      window.cefQuery = ({ request, onSuccess }) => { f.requests.push(JSON.parse(request)); onSuccess(JSON.stringify({ accepted: true, instructionsUsed: used })) }
+      await act(async () => f.host.querySelector<HTMLButtonElement>('button[aria-label="Send prompt"]')!.click())
+      expect(f.requests.filter(request => request.action === 'compactAcpSession')).toEqual([
+        { action: 'compactAcpSession', payload: { chatId: f.chat.id, instructions: 'keep the API notes' }, requestId: expect.any(String) },
+      ])
+      expect(f.sendAcpPrompt).not.toHaveBeenCalled()
+      expect(f.requests.filter(request => request.action === 'sendAcpPrompt')).toEqual([])
+      expect(f.textarea.value).toBe('')
+      expect(appNotices.filter(message => message === 'This provider compacts without instructions, so yours were not used.')).toHaveLength(used ? 0 : 1)
+    } finally { f.cleanup() }
+  })
+
+  it('keeps a typed /compact with instructions out of ordinary send when compaction is unavailable', async () => {
+    const f = await unsupportedCompactionFixture('/compact keep the API notes')
+    try {
+      await act(async () => f.host.querySelector<HTMLButtonElement>('button[aria-label="Send prompt"]')!.click())
+      expect(f.requests.filter(request => request.action === 'compactAcpSession')).toEqual([])
+      expect(f.sendAcpPrompt).not.toHaveBeenCalled()
+      expect(f.requests.filter(request => request.action === 'sendAcpPrompt')).toEqual([])
+      expect(f.textarea.value).toBe('/compact keep the API notes')
+      expect(reportedText()).toContain('Manual compaction is unavailable for this chat.')
+    } finally { f.cleanup() }
+  })
+
   it.each(['provider', 'model', 'native'] as const)('revalidates a connected stale compact option and typed submit against a native push (%s)', async drift => {
     for (const route of ['palette', 'submit'] as const) {
       const f = await unsupportedCompactionFixture('/compact')

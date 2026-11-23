@@ -30,7 +30,7 @@ All 26 required capabilities remain in scope. The following records the actual a
 | `mcp-connections` | Private provider setup via `--add-dir` | Discovery is not invocation permission or native approval RPC. |
 | `skills` | `attached_skill_resources` and immutable setup | Existing captured resource route; provider compliance is separate. |
 | `attachments` | `structured_attachments` host references | Headless input has no image block; images go as workspace paths `agy` opens itself, and model vision decides understanding. |
-| `compaction` | Default unsupported manual compaction hook; checkpoint steps neither displayed nor recorded | No native summary source; see the [manual compaction check](architecture/provider-sessions.md#gemini-and-antigravity-manual-compaction-checks). |
+| `compaction` | `OnAcpBuildCompact` sends native `/compact`; owned checkpoint steps settle maintenance | Local only, summary-less marker; automatic compaction during a turn is not shown ([details](architecture/provider-sessions.md#gemini-and-antigravity-manual-compaction-checks)). |
 | `computer-use` | Private MCP setup and UAM controller | Existing gated structured route; CLI View/SSH/platform limits remain. |
 | `side-chats` | Shared related-chat services | Existing UAM route; no automatic worktree request. |
 | `models` | `StartAntigravityModelDiscovery` and parser | Scoped native catalogue; live selection remains separate. |

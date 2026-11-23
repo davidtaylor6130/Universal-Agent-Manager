@@ -113,12 +113,16 @@
 
 namespace uam
 {
+	// Bounds typed /compact instructions; providers receive them inside one stream input line.
+	constexpr std::size_t kMaxManualCompactionInstructionBytes = 4000;
+
 	struct PendingAcpCompaction
 	{
 		std::filesystem::path root;
 		std::shared_ptr<const std::uint8_t> incarnation;
 		nlohmann::json ownership;
 		std::shared_ptr<WorktreeLaunchPreparationTask> workspace_task;
+		std::string instructions;
 	};
 
 	// Inert correlation carried only by an independently owned input continuation.
@@ -3684,12 +3688,13 @@ For desktop observation and input, use only the provider's built-in controller; 
 		}
 	}
 
-	bool CompactAcpSession(AppState& app, const std::string& chat_id, std::string* error_out)
+	bool CompactAcpSession(AppState& app, const std::string& chat_id, std::string* error_out, const std::string& instructions, bool* instructions_used)
 	{
 		ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
 		AcpSessionState* session = FindAcpSessionForChat(app, chat_id);
 		const std::shared_ptr<PendingAcpCompaction> pending = session ? session->pending_compaction : nullptr;
 		const bool queued = pending != nullptr;
+		if (instructions_used != nullptr) *instructions_used = false;
 		const std::function<bool(const std::string&)> fail = [&](const std::string& error)
 		{
 			if (session) session->pending_compaction.reset();
@@ -3697,12 +3702,20 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return false;
 		};
 		if (!chat) return fail("Chat not found: " + chat_id);
+		// A deferred request keeps the instructions it was admitted with; a poll passes none.
+		const std::string requested_instructions = queued ? pending->instructions : uam::strings::Trim(instructions);
+		if (requested_instructions.size() > kMaxManualCompactionInstructionBytes)
+			return fail("Compaction instructions are too long. Shorten them and try again.");
 		const std::string provider_id = !chat->provider_id.empty() ? chat->provider_id : session ? session->provider_id :
 		    ProviderResolutionService().ProviderForChatOrDefault(app, *chat).id;
 		const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(provider_id);
 		if (!runtime.SupportsAcpCompaction())
 			return fail("This provider does not support manual compaction in structured chat. Use its native CLI if available.");
 		const bool remote_compaction = !chat->execution_host_id.empty() && chat->execution_host_id != "local";
+		if (remote_compaction && !runtime.SupportsRemoteAcpCompaction())
+			return fail("This provider can compact only chats that run on this computer.");
+		const bool use_instructions = !requested_instructions.empty() && runtime.SupportsAcpCompactionInstructions();
+		if (instructions_used != nullptr) *instructions_used = use_instructions;
 		if (session && !chat->provider_id.empty() && session->provider_id != chat->provider_id)
 			return fail("The provider runtime no longer belongs to this chat. Restart the chat before compacting.");
 		if (chat->imported_read_only || chat->side_cleanup_requested)
@@ -3735,6 +3748,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			session->pending_compaction->root = app.data_root;
 			session->pending_compaction->incarnation = chat->metadata_incarnation;
 			session->pending_compaction->ownership = CompactOwnership(app, *session, *chat);
+			session->pending_compaction->instructions = requested_instructions;
 		}
 		if (!session->running)
 		{
@@ -3767,7 +3781,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return fail("Remote compaction requires a ready owned protocol 3 provider process.");
 		const int request_id = session->next_request_id;
 		std::string method;
+		session->manual_compaction_instructions = use_instructions ? requested_instructions : std::string{};
 		const nlohmann::json request = runtime.OnAcpBuildCompact(*session, request_id, method);
+		session->manual_compaction_instructions.clear();
 		if (request.is_null() || method.empty()) return fail("The provider context is not ready for manual compaction.");
 		session->pending_compaction.reset();
 		++session->next_request_id;

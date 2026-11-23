@@ -133,7 +133,6 @@ The provider implementation work preserves all six providers and excludes accoun
 |---|---|
 | Antigravity stream input lacks interactive permission callbacks (images now use [workspace paths](providers/attachments.md#antigravity-images)) | Keep explicit CLI limits or investigate the separate SDK while proving native authentication, session and Terminal View continuity. |
 | Antigravity legacy Accept Edits approval with an Off tier differs from common effective-mode checks | Retain the explicit legacy launch behavior while checking native reported-mode and resume matching; decide a canonical migration without widening captured Plan/read-only restrictions. |
-| Gemini and Antigravity structured manual compaction lack a safe exposed control | Retain native automatic/TUI controls or design an agreed UAM equivalent without sending command text as an ordinary model prompt. Evidence: [manual compaction check](reference/architecture/provider-sessions.md#gemini-and-antigravity-manual-compaction-checks). For David: is Antigravity's native completion step without summary text enough, sending `/compact` as Claude's action does? Should a `/compact <message>` draft be refused or routed through the compact action? Rows stay Partial until decided. |
 | Native media delivery and portable acceptance remain incomplete | Guarded local Gemini import/refresh, owned previews and portable originals have local routes, and selected-row Retry supports local Claude/Codex originals, conditional Copilot vision blobs and conditional ordinary OpenCode ACP images; remaining callers/providers, pre-batch cleanup and live/platform acceptance stay open without granting path or fetch authority from metadata. |
 | Gemini current JSONL journals have source-integrated readers with connected ownership and acceptance work remaining | Retain exact attested workspace identity through every import caller and complete native/platform verification without weakening the complete-history agreement. |
 | Gemini ACP drops native child IDs | Keep exact known-reference readers or add an explicit parent-owned child browser; avoid matching tasks by title or time. |
@@ -155,6 +154,17 @@ The provider implementation work preserves all six providers and excludes accoun
 | Providers expose no verified universal Fast tier | Keep unsupported speed controls hidden and add a route only after native provider, model and authentication metadata prove it. |
 
 Actual Claude source review is recorded in the [archived V5 change log](https://github.com/davidtaylor6130/Universal-Agent-Manager/blob/1d4865fcb/V5%20Improvement%20Change%20log.md); authenticated model turns, live SSH/platform combinations and David’s item-specific acceptance remain separate gates, and no source review or automated check grants Complete.
+
+## Gemini and Antigravity manual compaction
+
+**Resolved by David, 2026-11-23 ([#512](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues/512)).** Two answers close the open provider-parity question:
+
+1. **Antigravity.** A compaction marker without summary text meets the "records the summary" criterion. The Compact action sends native `/compact`, the adapter maps the checkpoint step to compacting and then completed, and the chat records a marker stating that the provider gave no summary.
+2. **Typed instructions.** `/compact <message>` drafts are routed through the compact action for every provider. The message is passed as compaction instructions where the provider supports it (Claude Code natively). Elsewhere the plain compaction runs and Chat says in one line that the instructions were not used.
+
+Gemini still exposes no structured control, so its row stays Partial; no UAM fallback for it was agreed.
+
+**Implementation:** source-integrated for local Antigravity chats and for typed instructions on every provider; SSH Antigravity chats are not offered the action. The native tests compile only on macOS and Windows and have not been run, and live provider verification, Claude review and David's acceptance remain pending. See the [compaction agreement](providers/compaction.md) and the [reference detail](reference/architecture/provider-sessions.md#gemini-and-antigravity-manual-compaction-checks).
 
 ## T3 subagent experience reference
 
