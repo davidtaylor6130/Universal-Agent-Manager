@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """A stop must not write output the app already received again.
 
+Runs on macOS only, by hand: the desktop-side proxy is built for macOS and Windows, a Linux runner refuses it (the
+script then reports SKIPPED), and this harness uses Unix sockets and a shell stand-in for ssh, so it does not run on
+Windows.
+
 The proxy writes each provider batch with a delivery marker and keeps it until the app acknowledges it. Model
 discovery stops as soon as it reads its answer, before acknowledging that batch, and a chat can be stopped while a
 streamed batch waits for its acknowledgement. The stop's final drain must start after the delivered batch, not at the
@@ -83,8 +87,13 @@ def run_case(runner, version, root, name, provider_script, lines_before_stop, ac
                 marker = data.find(MARKER)
                 return all(line in data for line in lines_before_stop) and marker >= 0 and data.find(b"\n", marker) >= 0
 
-            if not read_until(proxy, output, first_batch_marked, time.monotonic() + 30) and proxy.poll() is not None:
-                if UNAVAILABLE in proxy.stderr.read():
+            if not read_until(proxy, output, first_batch_marked, time.monotonic() + 30):
+                # Stdout can reach its end a moment before the process can be reaped.
+                try:
+                    proxy.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    pass
+                if proxy.poll() is not None and UNAVAILABLE in proxy.stderr.read():
                     raise ProxyUnavailable()
             assert first_batch_marked(output), \
                 f"{name}: the first batch was not delivered: {bytes(output)!r}"

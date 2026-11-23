@@ -734,7 +734,12 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 				StopBackgroundModelDiscovery(app, session);
 				return;
 			}
-			InvalidateAcpTransport(app, session, chat, refusal);
+			// Input waiting to be sent would otherwise schedule a fresh launch (on SSH, after the confirmed stop of
+			// this process), which meets the same refusal. Hold it for Resume or Remove once the provider is fixed.
+			const bool undelivered_input = (session.prompt_request_id == 0 && !session.queued_prompt.empty()) ||
+			    !session.queued_user_prompts.empty();
+			if (undelivered_input) HoldAcpTransportForExplicitRecovery(app, session, chat, refusal);
+			else InvalidateAcpTransport(app, session, chat, refusal);
 		}
 		return;
 	}

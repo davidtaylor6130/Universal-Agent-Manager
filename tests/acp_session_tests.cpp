@@ -22603,8 +22603,11 @@ UAM_TEST(CopilotRejectedEmptyMigrationRefusesDirectInputUntilExplicitStop)
 UAM_TEST(AcpRemoteInitializeRefusalIsFinalWithoutRemoteRecovery)
 {
 #if UAM_ENABLE_RUNTIME_COPILOT_CLI
-	for (const bool discovery : {false, true})
+	// 0: idle chat; 1: chat whose first prompt waits for the session; 2: background model discovery.
+	for (const int scenario : {0, 1, 2})
 	{
+		const bool discovery = scenario == 2;
+		const bool undelivered_prompt = scenario == 1;
 		HostCallerPrivateSink fixture(true);
 		auto& session = *fixture.session;
 		ChatSession& chat = fixture.app.chats.front();
@@ -22618,6 +22621,12 @@ UAM_TEST(AcpRemoteInitializeRefusalIsFinalWithoutRemoteRecovery)
 		session.pending_request_methods[1] = uam::acp_methods::kInitialize;
 		fixture.app.provider_model_catalog = std::make_unique<uam::ProviderModelCatalogService>();
 		fixture.app.provider_model_catalog->Initialize(fixture.app.data_root);
+		fixture.app.provider_model_catalog->SetExecutionHostContext(fixture.app.settings.execution_hosts);
+		if (undelivered_prompt)
+		{
+			session.processing = true;
+			session.queued_prompt = "Send once the session is ready.";
+		}
 		if (discovery)
 		{
 			session.model_discovery_only = true;
@@ -22653,6 +22662,27 @@ UAM_TEST(AcpRemoteInitializeRefusalIsFinalWithoutRemoteRecovery)
 		{
 			UAM_ASSERT_EQ(session.last_error, refusal);
 			UAM_ASSERT_EQ(session.lifecycle_state, std::string("error"));
+		}
+		if (undelivered_prompt)
+		{
+			// The waiting prompt is held for Resume or Remove: a launch would only meet the same refusal.
+			UAM_ASSERT(session.queue_held && chat.acp_queue_held);
+			UAM_ASSERT_EQ(fixture.app.pending_acp_remote_stops.size(), std::size_t{1});
+			// The helper confirms the stop (the stand-in exits cleanly); nothing relaunches afterwards either.
+			PlatformServicesFactory::Instance().process_service.CloseStdioProcessInput(*fixture.app.pending_acp_remote_stops.front());
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+			while (!fixture.app.pending_acp_remote_stops.empty() && std::chrono::steady_clock::now() < deadline)
+			{
+				(void)uam::PollAllAcpSessions(fixture.app);
+				std::this_thread::sleep_for(std::chrono::milliseconds(5));
+			}
+			UAM_ASSERT(fixture.app.pending_acp_remote_stops.empty());
+			(void)uam::PollAllAcpSessions(fixture.app);
+			UAM_ASSERT(!session.running && !session.remote_stop_pending);
+			UAM_ASSERT(!session.reconnect_pending && !session.recovering_remote_process);
+			UAM_ASSERT(session.queue_held);
+			UAM_ASSERT(std::ranges::none_of(session.diagnostics, [](const uam::AcpDiagnosticEntryState& entry)
+			    { return entry.reason == "remote_transport_recovery_scheduled"; }));
 		}
 	}
 #endif
