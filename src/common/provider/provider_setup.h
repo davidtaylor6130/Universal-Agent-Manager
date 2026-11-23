@@ -181,6 +181,23 @@ namespace uam::provider_setup
 
 	inline std::string Digest(std::string_view bytes) { return uam::hashing::Hex64Padded(uam::hashing::Fnv1a64(bytes)); }
 
+	/// <summary>A TOML basic string for a Codex -c value; JSON escapes are valid TOML except a raw DEL, which TOML requires escaped.</summary>
+	inline std::string TomlString(const std::string& text)
+	{
+		std::string quoted = nlohmann::json(text).dump();
+		for (std::size_t at = quoted.find('\x7f'); at != std::string::npos; at = quoted.find('\x7f', at + 6)) quoted.replace(at, 1, "\\u007F");
+		return quoted;
+	}
+
+	/// <summary>A TOML inline table of string values; quoted keys keep any name intact, unlike a dotted -c path.</summary>
+	inline std::string TomlInlineTable(const nlohmann::json& entries)
+	{
+		std::string table = "{";
+		for (const auto& [key, text] : entries.items())
+			table += (table.size() > 1 ? ", " : "") + TomlString(key) + " = " + TomlString(text.get<std::string>());
+		return table + "}";
+	}
+
 	/// OpenCode's built-in provider request timeout; UAM never configures a value at or below it.
 	inline constexpr std::int64_t kOpenCodeDefaultRequestTimeoutMilliseconds = 300000;
 
@@ -758,13 +775,9 @@ namespace uam::provider_setup
 					}
 					if (key == "env")
 					{
-						std::vector<std::string> names;
-						for (const auto& [variable, text] : value.items())
-						{
-							SetEnvironment(environment, variable, text.get<std::string>());
-							names.push_back(variable);
-						}
-						argv.insert(argv.begin() + 1, {"-c", prefix + "env_vars=" + nlohmann::json(names).dump()});
+						// The server's own env table: values never enter Codex's environment, so two servers' API_KEY
+						// cannot collide and a server's PATH or NODE_OPTIONS cannot change Codex or its shell commands.
+						if (!value.empty()) argv.insert(argv.begin() + 1, {"-c", prefix + "env=" + TomlInlineTable(value)});
 						continue;
 					}
 					if (key == "headers")

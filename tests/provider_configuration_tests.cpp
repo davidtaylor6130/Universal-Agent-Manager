@@ -1648,6 +1648,40 @@ UAM_TEST(SavedMcpSettingsReachAllFiveRuntimesWithoutEnablingCentralInstructions)
 	}
 }
 
+UAM_TEST(CodexStdioMcpEnvironmentStaysInEachServersOwnTable)
+{
+	TempDir temp("uam-codex-mcp-env");
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "server", "#!/bin/sh\n"));
+	const std::string command = uam::paths::Utf8PathString(temp.root / "server");
+	AppSettings settings;
+	McpServerConfiguration alpha;
+	alpha.id = "alpha"; alpha.name = "alpha"; alpha.command = command;
+	alpha.environment = {{"API_KEY", "", "alpha-key"}, {"PATH", "", "/alpha/bin"}};
+	McpServerConfiguration beta = alpha;
+	beta.id = "beta"; beta.name = "beta";
+	beta.environment = {{"API_KEY", "", "beta \"key\"\x7f"}, {"NODE_OPTIONS", "", "--inspect"}};
+	settings.mcp_servers = {alpha, beta};
+	ChatSession chat;
+	chat.id = "codex-mcp-env";
+	ExecutionHost host;
+	uam::ProviderConfigurationBundle bundle;
+	std::string error;
+	UAM_ASSERT(uam::PrepareProviderConfiguration(temp.root / "data", settings, chat, host, temp.root, bundle, error));
+	std::vector<std::string> argv{"codex"};
+	uam::provider_setup::Environment environment;
+	UAM_ASSERT(uam::provider_setup::Apply("codex-cli", bundle.local_directory, temp.root, argv, environment, error));
+	// Nothing reaches Codex's own environment, so its shell commands and the other server are unaffected.
+	UAM_ASSERT(environment.empty());
+	UAM_ASSERT(std::ranges::none_of(argv, [](const std::string& arg) { return arg.find("env_vars") != std::string::npos; }));
+	const auto table = [&](const std::string& server) {
+		const auto found = std::ranges::find_if(argv, [&](const std::string& arg) { return arg.starts_with("mcp_servers.") && arg.find(server) != std::string::npos && arg.find(".env=") != std::string::npos; });
+		UAM_ASSERT(found != argv.end());
+		return found->substr(found->find(".env=") + 5);
+	};
+	UAM_ASSERT_EQ(table("alpha"), std::string(R"({"API_KEY" = "alpha-key", "PATH" = "/alpha/bin"})"));
+	UAM_ASSERT_EQ(table("beta"), std::string(R"({"API_KEY" = "beta \"key\"\u007F", "NODE_OPTIONS" = "--inspect"})"));
+}
+
 UAM_TEST(SharedMcpFollowsSourceWorkspaceIntoAnIsolatedWorktree)
 {
 	TempDir temp("uam-mcp-worktree-scope");
