@@ -88,16 +88,11 @@ std::optional<int> DiscoveryCommand(const std::vector<std::string>& arguments)
 #include <windows.h>
 #include <shellapi.h>
 
-#include <cwchar>
 #include <string>
 #include <vector>
 
 #include "common/platform/cef_sandbox_folder_access.h"
 #include "include/cef_sandbox_win.h"
-
-#if !defined(CEF_USE_BOOTSTRAP)
-#error "Windows builds use CEF's bootstrap.exe sandbox layout; CEF's USE_SANDBOX option must stay ON."
-#endif
 
 namespace
 {
@@ -125,39 +120,6 @@ namespace
 	}
 
 	/// <summary>
-	/// True when Chromium started this process as a CEF subprocess (an unquoted --type= switch before any "--").
-	/// Reads the raw command line with kernel32 only: a sandboxed subprocess must reach CefExecuteProcess before
-	/// UAM loads shell32, user32 or the other delay-loaded libraries.
-	/// </summary>
-	bool IsCefSubprocessCommandLine()
-	{
-		const wchar_t* cursor = GetCommandLineW();
-		bool quoted = false;
-		bool token_start = true;
-		for (; cursor != nullptr && *cursor != L'\0'; ++cursor)
-		{
-			if (*cursor == L'"')
-			{
-				quoted = !quoted;
-				token_start = false;
-				continue;
-			}
-			if (!quoted && (*cursor == L' ' || *cursor == L'\t'))
-			{
-				token_start = true;
-				continue;
-			}
-			if (token_start && !quoted)
-			{
-				if (std::wcsncmp(cursor, L"--type=", 7) == 0) return true;
-				if (cursor[0] == L'-' && cursor[1] == L'-' && (cursor[2] == L'\0' || cursor[2] == L' ' || cursor[2] == L'\t')) return false;
-			}
-			token_start = false;
-		}
-		return false;
-	}
-
-	/// <summary>
 	/// CEF's bootstrap.exe moves every process without --type into the executable's folder. UAM's own helper
 	/// launches pass the directory they chose; return to it and keep the variable from reaching grandchildren.
 	/// </summary>
@@ -176,8 +138,9 @@ namespace
 	{
 		CefMainArgs main_args(instance);
 		CefRefPtr<UamCefRendererApp> cef_app;
-		// Renderer, GPU and utility processes go straight to CEF, which enters the sandbox.
-		const bool cef_subprocess = IsCefSubprocessCommandLine();
+		// Renderer, GPU and utility processes go straight to CEF, which enters the sandbox, before UAM loads
+		// shell32, user32 or any other delay-loaded library.
+		const bool cef_subprocess = uam::platform::IsCefSubprocessCommandLine(GetCommandLineW());
 		if (cef_subprocess)
 		{
 			cef_app = new UamCefRendererApp();

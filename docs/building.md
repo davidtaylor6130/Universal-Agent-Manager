@@ -58,7 +58,7 @@ cmake -S . -B Builds\dev -A x64 -DUAM_BUILD_TESTS=OFF -DUAM_PACKAGE_REMOTE_RUNNE
 cmake --build Builds\dev --config Release --parallel 4
 ```
 
-The Windows app runs inside the Chromium sandbox through CEF's `bootstrap.exe` layout: UAM builds as `universal_agent_manager.dll`, and `universal_agent_manager.exe` beside it is CEF's bootstrap, renamed, which loads that DLL. Run the `.exe` as before. The build needs `mt.exe` from the Windows SDK; CMake takes it from the MSVC developer environment or finds it in the installed SDK. Sign the `.exe`, the `.dll` and `chrome_elf.dll` with one certificate or leave all three unsigned; see [security](reference/security-enterprise.md#security-controls-present).
+The Windows app runs inside the Chromium sandbox through CEF's `bootstrap.exe` layout: UAM builds as `universal_agent_manager.dll`, and `universal_agent_manager.exe` beside it is CEF's bootstrap, renamed, which loads that DLL. Run the `.exe` as before. The build needs `mt.exe` from the Windows SDK; CMake takes it from the MSVC developer environment or finds it in the installed SDK. Sign the `.exe`, the `.dll` and `chrome_elf.dll` with one certificate or leave all three unsigned; see [security](reference/security-enterprise.md#known-gaps).
 
 ### Complete macOS package
 

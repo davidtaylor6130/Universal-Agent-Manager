@@ -273,8 +273,9 @@ set(BUILD_SHARED_LIBS ${_saved_bsl} CACHE BOOL "" FORCE)
 set(CMAKE_FOLDER "")
 if(WIN32)
   # Every target that includes CEF headers must use the CEF API version and sandbox defines the wrapper was built
-  # with, or CEF structures and entry points would not match it. Directory scope covers the app, its shared objects
-  # and the test programs; CEF's other defines (for example _HAS_EXCEPTIONS=0) stay private to the wrapper.
+  # with, or CEF structures and entry points would not match it. They become the wrapper's usage requirements, so
+  # exactly the targets that link it (the app, its shared objects and the CEF test programs) receive them; CEF's
+  # other defines (for example _HAS_EXCEPTIONS=0) stay private to the wrapper.
   get_target_property(_uam_cef_wrapper_definitions libcef_dll_wrapper COMPILE_DEFINITIONS)
   set(UAM_CEF_API_DEFINITIONS)
   foreach(_uam_cef_definition IN LISTS _uam_cef_wrapper_definitions)
@@ -285,7 +286,7 @@ if(WIN32)
   if(NOT "CEF_USE_BOOTSTRAP" IN_LIST UAM_CEF_API_DEFINITIONS)
     message(FATAL_ERROR "The CEF wrapper was not built for the bootstrap.exe sandbox layout (USE_SANDBOX must stay ON on Windows).")
   endif()
-  add_compile_definitions(${UAM_CEF_API_DEFINITIONS})
+  target_compile_definitions(libcef_dll_wrapper INTERFACE ${UAM_CEF_API_DEFINITIONS})
   # The client DLL delay-loads the same system libraries as CEF's own clients, so sandboxed subprocesses that load it
   # do not map user32, gdi32 or similar libraries before CEF locks them down.
   get_directory_property(UAM_CEF_DELAYLOAD_FLAGS DIRECTORY "${cef_binary_SOURCE_DIR}" DEFINITION CEF_DELAYLOAD_FLAGS)
@@ -442,6 +443,7 @@ if(WIN32)
     src/common/platform/platform_dictation_windows.cpp
     src/common/platform/platform_speech_output_windows.cpp
     src/common/platform/cef_sandbox_folder_access_windows.cpp
+    src/common/platform/cef_bootstrap_launch_windows.cpp
   )
   list(APPEND UAM_COMPUTER_USE_PLATFORM_SOURCES
     src/computer_use/computer_use_platform_windows.cpp
@@ -551,6 +553,7 @@ if(APPLE)
 elseif(WIN32)
   target_sources(uam_runner PRIVATE
     src/common/platform/platform_process_windows.cpp
+    src/common/platform/cef_bootstrap_launch_windows.cpp
     src/common/secrets/secret_drop_windows.cpp
     src/remote/runner_service_windows.cpp
     src/uam_long_paths.manifest
@@ -888,7 +891,6 @@ elseif(WIN32)
     delayimp
     advapi32
     shell32
-    windowsapp
     dnsapi
     gdi32
     ole32
@@ -898,6 +900,9 @@ elseif(WIN32)
     uiautomationcore
     windowscodecs
     ws2_32
+    # Last, so the classic libraries above resolve first: the umbrella would otherwise bind user32 and similar
+    # functions to load-time api-ms/ext-ms imports, which sandboxed CEF subprocesses cannot load.
+    windowsapp
   )
 endif()
 
@@ -1277,6 +1282,27 @@ if(WIN32)
     set_property(TARGET uam_windows_exe_resources PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
   endif()
   add_dependencies(universal_agent_manager uam_windows_exe_resources)
+  # dumpbin ships beside cl.exe and link.exe; "link /dump" is the same tool.
+  get_filename_component(_uam_msvc_bin_directory "${CMAKE_CXX_COMPILER}" DIRECTORY)
+  find_program(UAM_DUMPBIN_EXECUTABLE NAMES dumpbin HINTS "${_uam_msvc_bin_directory}")
+  if(UAM_DUMPBIN_EXECUTABLE)
+    set(_uam_dump_tool "${UAM_DUMPBIN_EXECUTABLE}")
+    set(_uam_dump_mode "")
+  elseif(CMAKE_LINKER)
+    set(_uam_dump_tool "${CMAKE_LINKER}")
+    set(_uam_dump_mode "/dump")
+  else()
+    message(FATAL_ERROR "dumpbin.exe (MSVC) is required to check universal_agent_manager.dll's load-time imports.")
+  endif()
+  add_custom_command(TARGET universal_agent_manager POST_BUILD
+    COMMAND ${CMAKE_COMMAND}
+      "-DDLL=$<TARGET_FILE:universal_agent_manager>"
+      "-DDUMP_TOOL=${_uam_dump_tool}"
+      "-DDUMP_MODE=${_uam_dump_mode}"
+      -P "${CMAKE_SOURCE_DIR}/cmake/check_windows_dll_imports.cmake"
+    COMMENT "Checking that universal_agent_manager.dll delay-loads everything sandboxed CEF processes must not load"
+    VERBATIM
+  )
   add_custom_command(TARGET universal_agent_manager POST_BUILD
     COMMAND ${CMAKE_COMMAND}
       "-DBOOTSTRAP=${cef_binary_SOURCE_DIR}/Release/bootstrap.exe"
@@ -1703,6 +1729,7 @@ if(UAM_BUILD_TESTS)
     tests/core_bridge_deletion_tests.cpp
     tests/core_folder_import_tests.cpp
     tests/core_recent_regression_tests.cpp
+    tests/core_windows_cef_bootstrap_tests.cpp
     tests/input_provenance_native_refresh_tests.cpp
     tests/acp_input_admission_identity_tests.cpp
     tests/async_byte_writer_receipt_tests.cpp

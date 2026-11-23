@@ -1082,6 +1082,13 @@ bool Application::InitializeCef(CefMainArgs main_args, void* windows_sandbox_inf
 #if defined(UAM_CEF_SANDBOX)
 	// macOS helper bundles and Windows bootstrap.exe processes; see docs/reference/security-enterprise.md.
 	settings.no_sandbox = false;
+	// Without bootstrap.exe's sandbox information CEF would silently start unsandboxed on Windows; refuse instead.
+	if (uam::platform::kCefSandboxInfoRequired && windows_sandbox_info == nullptr)
+	{
+		uam::diagnostics::Write("[CEF] The Windows sandbox information is missing; refusing to start CEF without the Chromium sandbox. Start universal_agent_manager.exe, not the DLL.");
+		m_exitCode = 1;
+		return false;
+	}
 #else
 	// Known gap on Linux; see docs/reference/security-enterprise.md.
 	settings.no_sandbox = true;

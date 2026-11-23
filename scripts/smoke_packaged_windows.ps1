@@ -130,7 +130,7 @@ try {
     # Every CEF process is a copy of the bootstrap executable. Renderers must run sandboxed: below medium integrity
     # (Chromium lowers them to untrusted) and never with --no-sandbox.
     $cefProcesses = @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq $executable -and $_.CommandLine -match '--type=' })
-    $unsandboxed = @($cefProcesses | Where-Object { $_.CommandLine -match '--no-sandbox' })
+    $unsandboxed = @($cefProcesses | Where-Object { $_.CommandLine -match '--no-sandbox|--disable-gpu-sandbox' })
     if ($unsandboxed.Count -gt 0) { throw "Packaged Windows CEF processes run with --no-sandbox: $(($unsandboxed | ForEach-Object { ($_.CommandLine -split ' ' | Where-Object { $_ -like '--type=*' }) }) -join ', ')." }
     $renderers = @($cefProcesses | Where-Object { $_.CommandLine -match '--type=renderer' })
     if ($renderers.Count -eq 0) { throw 'Packaged Windows app has no CEF renderer process to check.' }
@@ -138,9 +138,19 @@ try {
         $level = [UamProcessIntegrity]::Level([int]$renderer.ProcessId)
         if ($level -lt 0 -or $level -ge 0x2000) { throw "Packaged Windows renderer $($renderer.ProcessId) is not inside the Chromium sandbox (integrity 0x$('{0:X}' -f $level))." }
     }
-    foreach ($process in $cefProcesses) {
-        $type = ($process.CommandLine -split ' ' | Where-Object { $_ -like '--type=*' } | Select-Object -First 1)
-        Write-Host ("CEF {0} integrity 0x{1:X}" -f $type, [UamProcessIntegrity]::Level([int]$process.ProcessId))
+    # The network service runs in Chromium's restricted (LPAC) sandbox, which needs the app folder grant.
+    $network = @($cefProcesses | Where-Object { $_.CommandLine -match '--utility-sub-type=network\.mojom\.NetworkService' })
+    if ($network.Count -eq 0) { throw 'Packaged Windows app has no CEF network service process to check.' }
+    foreach ($service in $network) {
+        $level = [UamProcessIntegrity]::Level([int]$service.ProcessId)
+        if ($service.CommandLine -notmatch '--service-sandbox-type=network' -or $level -lt 0 -or $level -ge 0x2000) {
+            throw "Packaged Windows network service $($service.ProcessId) is not inside its Chromium sandbox (integrity 0x$('{0:X}' -f $level))."
+        }
+    }
+    # A separate name: $process still holds the launched app, which the cleanup below stops.
+    foreach ($cefProcess in $cefProcesses) {
+        $type = ($cefProcess.CommandLine -split ' ' | Where-Object { $_ -like '--type=*' } | Select-Object -First 1)
+        Write-Host ("CEF {0} integrity 0x{1:X}" -f $type, [UamProcessIntegrity]::Level([int]$cefProcess.ProcessId))
     }
     Stop-Process -Id $process.Id -Force
     if (-not $process.WaitForExit(10000)) { throw 'Packaged Windows app did not stop.' }

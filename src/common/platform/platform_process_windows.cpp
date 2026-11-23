@@ -582,10 +582,7 @@ class WindowsProcessService final : public IPlatformProcessService
 		// CEF's bootstrap.exe moves UAM's own helper processes into the app folder before UAM's code runs, so name
 		// the chosen directory for the helper's entry point to restore (see cef_sandbox_folder_access.h).
 		std::vector<std::pair<std::string, std::string>> launch_environment = environment_overrides;
-		const std::filesystem::path current_executable = ResolveCurrentExecutablePath();
-		if (!working_directory.empty() && !current_executable.empty() &&
-		    _wcsicmp(uam::paths::PathFromUtf8(argv.front()).lexically_normal().c_str(), current_executable.lexically_normal().c_str()) == 0)
-			launch_environment.emplace_back(uam::platform::kLaunchWorkingDirectoryVariable, uam::paths::Utf8PathString(working_directory));
+		uam::platform::AddLaunchWorkingDirectory(launch_environment, argv.front(), working_directory, ResolveCurrentExecutablePath());
 		std::vector<wchar_t> environment_block;
 		if (!BuildEnvironmentBlock(launch_environment, environment_block, error_out, true))
 		{

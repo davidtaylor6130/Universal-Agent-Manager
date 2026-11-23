@@ -1,4 +1,5 @@
 #include "platform_services_windows_impl_internal.h"
+#include "common/platform/cef_sandbox_folder_access.h"
 
 using namespace uam::platform_windows_impl;
 
@@ -119,7 +120,10 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 		std::vector<wchar_t> command_line(command_w.begin(), command_w.end());
 		command_line.push_back(L'\0');
 		std::vector<wchar_t> environment_block;
-		if (!BuildEnvironmentBlock(environment_overrides, environment_block, error_out, true))
+		// CEF's bootstrap.exe would otherwise move a UAM helper started here into the app folder.
+		std::vector<std::pair<std::string, std::string>> launch_environment = environment_overrides;
+		uam::platform::AddLaunchWorkingDirectory(launch_environment, argv.front(), working_directory);
+		if (!BuildEnvironmentBlock(launch_environment, environment_block, error_out, true))
 		{
 			DeleteProcThreadAttributeList(terminal.attr_list);
 			HeapFree(GetProcessHeap(), 0, terminal.attr_list);
