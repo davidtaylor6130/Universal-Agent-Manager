@@ -567,6 +567,21 @@ UAM_TEST(ManualScanBackfillsRemoteSubchatsOfSavedParentsThroughTheRunner)
 	UAM_ASSERT_EQ(fixture.app.chats.size(), std::size_t{2});
 	fixture.app.settings.execution_hosts.front() = host;
 
+	// The same connection whose helper is no longer ready is not read either; runner status is not part of the connection.
+	fixture.app.settings.execution_hosts.front().runner_status = "error";
+	UAM_ASSERT(service.DiscoverLocalHistory(fixture.app, &error));
+	wait();
+	UAM_ASSERT_EQ(fixture.app.chats.size(), std::size_t{2});
+	fixture.app.settings.execution_hosts.front() = host;
+
+	// A workspace folder whose directory changed since that scan still owns the parents (a trailing slash matches the
+	// same remote path), but it is not the folder the scan read, so its children wait for a fresh scan of the host.
+	fixture.app.folders.front().directory = directory + "/";
+	UAM_ASSERT(service.DiscoverLocalHistory(fixture.app, &error));
+	wait();
+	UAM_ASSERT_EQ(fixture.app.chats.size(), std::size_t{2});
+	fixture.app.folders.front().directory = directory;
+
 	for (int pass = 0; pass < 2; ++pass)
 	{
 		// A scan the user starts brings in the saved parents' missing children from that host; a second one changes nothing.
