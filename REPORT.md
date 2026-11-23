@@ -1,6 +1,10 @@
 The review loop on `v5/fix-svn-update-conflicts` is finished and pushed. Two fresh-context Opus agents reviewed the branch over two rounds: 14 suggestions, 13 implemented, 1 declined.
 
-**New SHA:** `56df5e05ed636ffa5bc1f9df4765a02695977cb5`. The branch holds `2ae9fe5b` (the fix), `94402320` (round-1 fixes) and `56df5e05` (round-2 fix).
+**Final SHA:** `762d1a408f6fe511fb02320f515014fca8cc5ab0`. The branch holds `2ae9fe5b` (the fix), `94402320` (round-1 fixes), `56df5e05` (round-2 fix) and `762d1a40` (finish-up).
+
+**Finish-up (`762d1a40`):**
+- Removed six `node_modules/.vitest-cache` files (about 2,400 lines, including sandbox paths) that `56df5e05` had committed by mistake. `node_modules/` is now ignored at any depth. The branch no longer tracks any `node_modules`, cache, dist or build files.
+- Recorded in `docs/architecture/decisions.md#existing-vcs-panel` that David approved the scope change to "history, update and conflict resolution" on 2026-11-23. That approves the scope only; acceptance of the implementation is still pending.
 
 ## Review rounds
 
@@ -89,7 +93,7 @@ Update before new chat gives info and status reads only 10 s. Its timeout messag
 ## PR preview
 
 **Title:** `fix(svn): finish updates past broken externals and keep conflict leftovers out of commits`
-**Base / head:** `uam/v5.2-sync-main` ← `v5/fix-svn-update-conflicts` (`56df5e05`)
+**Base / head:** `uam/v5.2-sync-main` ← `v5/fix-svn-update-conflicts` (`762d1a40`)
 
 A broken `svn:externals` definition no longer fails Update, locally or over SSH. svn exits 1 with E205011 after updating the working copy, so UAM now treats that as finished. It still reports the conflicts and the revision, and names each skipped external on its own line in the panel; before a new chat they are only logged. Update before new chat starts when the status check afterwards shows no conflicts.
 
@@ -122,7 +126,7 @@ Closes #<issue 1>, #<issue 2>, #<issue 3>
   - CI
   - svn 1.15
 
-**Review:** 2 independent reviewers, 2 iterations. David's acceptance pending.
+**Review:** 2 independent reviewers, 2 iterations. David approved the scope on 2026-11-23; his acceptance of the implementation is pending.
 
 - Independent claude-opus-5-5 (review): 13 suggested, 12 implemented. Declined: skipping `svnversion` on the line-stats pass, which would revert `r3:5` to a single revision.
 - Independent claude-opus-5-5 (re-check): 1 suggested, 1 implemented.
