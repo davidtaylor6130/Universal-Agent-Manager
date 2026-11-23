@@ -329,3 +329,7 @@ Recorded limits that are not decisions: Claude Code, Gemini and Copilot children
 - Only the turn Stop control ends a chat's watches; stopping the provider session does not.
 - GitHub Enterprise hosts, GitLab and Azure DevOps are not supported.
 - The phone clients show no linked pull request row and cannot start or stop a watch.
+
+## Custom ACP agent
+
+**Decided by David, 2026-11-23 (#523).** The first slice is one custom ACP agent, run locally only. It is configured by a form in Settings with a command, arguments, environment and a name, and is never read from a repository or chat. UAM shows the exact command before the first launch. The agent is labelled Best effort and sits behind a build flag that is off by default. SSH comes in a later slice. The first slice implements this as recorded on the [Custom ACP agent checklist](providers/custom-acp/custom-acp.md): a changed launch must be allowed again, the launch is an argument array with no shell, and Windows batch scripts are refused. Still open: several agents, an icon, SSH, the real third-party reference agent, leak-gate coverage of the new flag, and hiding the agent's saved chats in full builds without it.

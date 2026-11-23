@@ -30,6 +30,8 @@ Do not open `UI-V2/dist/index.html` directly. The frontend expects the native CE
 
 For the isolated SVN composer service fixtures, configure the same root project with `-DUAM_BUILD_TESTS=ON -DUAM_SVN_BRANCH_TESTS_ONLY=ON -DUAM_PACKAGE_REMOTE_RUNNERS=OFF`, then build `uam_svn_branch_tests` and run CTest. This avoids CEF downloads and provider/runner processes; CTest also registers `uam_svn_branch_integration` (`tests/svn_branch_integration.py`), which uses disposable `file://` repositories and a private SVN configuration, when `svn` and `svnadmin` are installed. Set `UAM_SVN_BRANCH_TESTS_ONLY=OFF` before using that build folder for normal native targets.
 
+The opt-in Custom ACP agent's tests build the same way with `-DUAM_BUILD_TESTS=ON -DUAM_CUSTOM_ACP_TESTS_ONLY=ON -DUAM_PACKAGE_REMOTE_RUNNERS=OFF`, also on Linux: build `uam_custom_acp_agent_tests` and run CTest, which starts `tests/fixtures/custom_acp_agent.py` with the found Python 3 as a real stdio agent. No CEF, app or provider CLI is involved. Full test builds run the same case through `tests/custom_acp`. Configure the app with `-DUAM_ENABLE_RUNTIME_CUSTOM_ACP=ON` to include the agent itself.
+
 ### Local development build
 
 Disable remote-helper packaging when you only need a local development build:

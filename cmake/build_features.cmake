@@ -54,6 +54,18 @@ foreach(_uam_feature_value IN LISTS UAM_FEATURE_DEFINITIONS UAM_PROVIDER_DEFINIT
   endif()
 endforeach()
 
+# Opt-in, best-effort generic ACP agent (#523). It is off by default, so leaving it off does not make a build
+# restricted and it never counts as the one provider a build must include. Targets that do not receive this
+# definition compile it as off (see build_features.h).
+option(UAM_ENABLE_RUNTIME_CUSTOM_ACP "Enable the best-effort Custom ACP agent provider." OFF)
+if(UAM_ENABLE_RUNTIME_CUSTOM_ACP)
+  set(UAM_FEATURE_CUSTOM_ACP 1)
+else()
+  set(UAM_FEATURE_CUSTOM_ACP 0)
+endif()
+list(APPEND UAM_PROVIDER_DEFINITIONS "UAM_ENABLE_RUNTIME_CUSTOM_ACP=${UAM_FEATURE_CUSTOM_ACP}")
+list(APPEND UAM_UI_FEATURE_ENV "UAM_FEATURE_CUSTOM_ACP=${UAM_FEATURE_CUSTOM_ACP}")
+
 if(UAM_ENABLED_PROVIDER_COUNT EQUAL 0)
   message(FATAL_ERROR "At least one provider runtime must be enabled.")
 endif()

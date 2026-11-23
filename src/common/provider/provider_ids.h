@@ -20,6 +20,10 @@ namespace uam::provider_ids
 	inline constexpr const char* kOpenCodeCli = UAM_ENABLE_RUNTIME_OPENCODE_CLI ? "opencode-cli" : kExcludedCliProviderId;
 	inline constexpr const char* kCopilotCli = UAM_ENABLE_RUNTIME_COPILOT_CLI ? "copilot-cli" : kExcludedCliProviderId;
 	inline constexpr const char* kAntigravityCli = UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI ? "antigravity-cli" : kExcludedCliProviderId;
+	/// <summary>The saved id of the opt-in, best-effort Custom ACP agent (#523), named even in builds without it so its
+	/// saved chats and settings stay inert there instead of being treated as unknown data.</summary>
+	inline constexpr std::string_view kCustomAcpSavedId = "custom-acp";
+	inline constexpr const char* kCustomAcp = UAM_ENABLE_RUNTIME_CUSTOM_ACP ? "custom-acp" : kExcludedCliProviderId;
 
 	/// <summary>Included providers in canonical order; the first is the default provider.</summary>
 	inline constexpr auto kAllCliProviderIds = std::to_array<const char*>({
@@ -40,6 +44,9 @@ namespace uam::provider_ids
 #endif
 #if UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
 	    kAntigravityCli,
+#endif
+#if UAM_ENABLE_RUNTIME_CUSTOM_ACP
+	    kCustomAcp, // Opt-in and last, so it is never the default provider.
 #endif
 	});
 	static_assert(!kAllCliProviderIds.empty(), "At least one provider runtime must be enabled.");
@@ -101,6 +108,9 @@ namespace uam::provider_ids
 	    ProviderAlias{"github-copilot", kCopilotCli},
 	    ProviderAlias{kCopilotCli, kCopilotCli},
 #endif
+#if UAM_ENABLE_RUNTIME_CUSTOM_ACP
+	    ProviderAlias{kCustomAcp, kCustomAcp},
+#endif
 	});
 
 	template <std::size_t N> inline bool ContainsProviderId(const std::array<const char*, N>& provider_ids, std::string_view provider_id)
@@ -119,8 +129,8 @@ namespace uam::provider_ids
 	inline bool IsRetainedExcludedProviderId(std::string_view provider_id)
 	{
 #if UAM_ALL_PROVIDERS_INCLUDED
-		(void)provider_id;
-		return false;
+		// A full build without the opt-in Custom ACP agent keeps that agent's saved data inert, like any excluded provider.
+		return !UAM_ENABLE_RUNTIME_CUSTOM_ACP && provider_id == kCustomAcpSavedId;
 #else
 		return !provider_id.empty() && provider_id.size() <= 128 && provider_id.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789-_") == std::string_view::npos &&
 		    !IsKnownCliProviderId(provider_id);

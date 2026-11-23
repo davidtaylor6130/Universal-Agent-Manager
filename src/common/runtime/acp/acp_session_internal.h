@@ -331,7 +331,8 @@ std::string ProviderApprovalModeId(const AcpSessionState& session, const std::st
 
 // Launch argv + request id helpers
 std::vector<std::string> BuildAcpLaunchArgv(const ProviderProfile& provider, const ChatSession& chat);
-std::string JoinAcpArgvForDiagnostics(const std::vector<std::string>& argv);
+/// `private_arguments` keeps only the program and an argument count, for launches whose arguments the user typed.
+std::string JoinAcpArgvForDiagnostics(const std::vector<std::string>& argv, bool private_arguments = false);
 std::string AcpWorkingDirectoryString(const std::filesystem::path& workspace_root);
 std::string BuildAcpLaunchDetail(const ProviderProfile& provider, const AppState& app, const std::filesystem::path& workspace_root, const ChatSession& chat);
 std::string BuildAcpLaunchDetail(const AppState& app, const std::filesystem::path& workspace_root, const ChatSession& chat);

@@ -10,7 +10,7 @@ These docs describe what UAM’s features mean and how they are expected to beha
 
 | Area | Start here |
 |---|---|
-| Providers and runtimes | [Shared requirements and six provider checklists](providers/providers.md) |
+| Providers and runtimes | [Shared requirements, six provider checklists and the opt-in Custom ACP agent](providers/providers.md) |
 | Chat | [Lifecycle, messages, sending, goals, imports and panes](chat/chat.md) |
 | Composer | [Input, attachments, voice and workspace actions](chat/composer/composer.md) |
 | Sidebar | [Active, Snoozed, Pinned and All Chats](sidebar/sidebar.md) |

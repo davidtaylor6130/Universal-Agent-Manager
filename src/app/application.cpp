@@ -1,4 +1,8 @@
 #include <charconv>
+#include "common/config/build_features.h"
+#if UAM_ENABLE_RUNTIME_CUSTOM_ACP
+#include "common/provider/custom_acp/custom_acp_provider_runtime.h"
+#endif
 #include "common/platform/background_thread_priority.h"
 #include "include/cef_parser.h"
 #include "common/discovery/management_discovery.h"
@@ -889,6 +893,19 @@ bool Application::InitializeState()
 	// built-in set on every startup and never persisted, so any per-profile "store" plumbing
 	// (e.g. EnsureDefaultProfile) is belt-and-suspenders unless profiles later become editable.
 	m_app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+#if UAM_ENABLE_RUNTIME_CUSTOM_ACP
+	{
+		// The custom agent's launch comes only from the file its Settings form writes in this data folder.
+		uam::custom_acp::AgentConfig custom_acp;
+		std::string custom_acp_error;
+		if (!uam::custom_acp::Load(m_app.data_root, custom_acp, &custom_acp_error))
+		{
+			custom_acp = {};
+			m_app.status_line = custom_acp_error;
+		}
+		ApplyCustomAcpConfiguration(m_app.provider_profiles, std::move(custom_acp));
+	}
+#endif
 	if (!uam::RecoverPendingDeletionTransaction(m_app))
 	{
 		uam::diagnostics::Write(m_app.status_line);

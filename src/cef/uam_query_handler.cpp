@@ -414,6 +414,11 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 		{"previewOpenCodeMcpImport", &UamQueryHandler::HandlePreviewOpenCodeMcpImport},
 #endif
+#if UAM_ENABLE_RUNTIME_CUSTOM_ACP
+		{"getCustomAcpAgent", &UamQueryHandler::HandleGetCustomAcpAgent},
+		{"setCustomAcpAgent", &UamQueryHandler::HandleSetCustomAcpAgent},
+		{"allowCustomAcpAgent", &UamQueryHandler::HandleAllowCustomAcpAgent},
+#endif
 		{"setUamAgentPreferences", &UamQueryHandler::HandleSetUamAgentPreferences},
 		{"setSidebarSettings", &UamQueryHandler::HandleSetSidebarSettings},
 		{"setSidebarChatOrder", &UamQueryHandler::HandleSetSidebarChatOrder},

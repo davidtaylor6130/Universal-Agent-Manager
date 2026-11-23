@@ -300,6 +300,7 @@ bool ShouldDeferLocalAcpConfiguration(const AppState& app, const AcpSessionState
 	if (host == nullptr || host->id != execution_hosts::kLocalHostId || session.model_discovery_only ||
 	    session.recovering_remote_turn || session.recovering_remote_process) return false;
 	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
+	if (!ProviderRuntimeRegistry::Resolve(provider).UsesCentralLaunchConfiguration()) return false;
 	return central_configuration::McpEnabled(app.settings.central_provider_configuration, provider.id, host->id, "shared-setup", app.settings.central_provider_configuration.enabled) || ((provider.id == provider_ids::kClaudeCli || provider.id == provider_ids::kAntigravityCli) && UamControlService::EnabledForChat(app.settings, chat)) ||
 		   (provider.id == provider_ids::kAntigravityCli &&
 		    [&]
@@ -2920,7 +2921,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 			*error_out = session.last_error;
 		return false;
 	}
-	if (!prepared && !session.model_discovery_only && !session.recovering_remote_turn && !session.recovering_remote_process && (!PrepareProviderConfiguration(app.data_root, configuration_settings, launch_chat, *execution_host, workspace_root, configuration_bundle, startup_error, session.active_uam_agent_execution_capability == "uam-central-native-setup" ? &session.active_uam_agent_instructions : nullptr, configuration_provider_version, !launch_control_servers.empty(), ProviderRuntimeRegistry::ResolveById(provider.id).DeliversHostInstructionsInFirstPrompt()) || (!remote && !configuration_bundle.local_directory.empty() && !uam::provider_setup::Apply(provider.id, configuration_bundle.local_directory, workspace_root, launch_argv, launch_environment, startup_error, launch_control_servers, &session.provider_protocol_instructions))))
+	if (!prepared && !session.model_discovery_only && !session.recovering_remote_turn && !session.recovering_remote_process && runtime.UsesCentralLaunchConfiguration() && (!PrepareProviderConfiguration(app.data_root, configuration_settings, launch_chat, *execution_host, workspace_root, configuration_bundle, startup_error, session.active_uam_agent_execution_capability == "uam-central-native-setup" ? &session.active_uam_agent_instructions : nullptr, configuration_provider_version, !launch_control_servers.empty(), ProviderRuntimeRegistry::ResolveById(provider.id).DeliversHostInstructionsInFirstPrompt()) || (!remote && !configuration_bundle.local_directory.empty() && !uam::provider_setup::Apply(provider.id, configuration_bundle.local_directory, workspace_root, launch_argv, launch_environment, startup_error, launch_control_servers, &session.provider_protocol_instructions))))
 	{
 		session.lifecycle_state = kAcpLifecycleError;
 		session.last_error = startup_error;
@@ -3008,7 +3009,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	}
 	const std::string launch_detail = "host=" + execution_host->id +
 	                                  ", cwd=" + AcpWorkingDirectoryString(workspace_root) +
-	                                  ", argv=" + JoinAcpArgvForDiagnostics(launch_argv) +
+	                                  ", argv=" + JoinAcpArgvForDiagnostics(launch_argv, runtime.LaunchArgumentsArePrivate()) +
 	                                  ", nativeSessionId=" + session.session_id;
 	AppendAcpDiagnostic(session, "process_launch", "starting", "", "", false, 0, "", launch_detail);
 	if (!defer_cold_launch && !session.managed_agent_run_id.empty()) session.managed_launch_attempted = true;
@@ -3633,7 +3634,7 @@ static std::string WirePromptText(const AcpSessionState& session)
 
 static bool UsesBoundedImagePreparation(const AcpSessionState& session)
 {
-	const bool acp = session.protocol_kind == provider_profile_constants::kProtocolGeminiAcp || session.protocol_kind == provider_profile_constants::kProtocolOpenCodeAcp || session.protocol_kind == provider_profile_constants::kProtocolCopilotAcp;
+	const bool acp = provider_profile_constants::IsStandardAcpProtocol(session.protocol_kind);
 	return session.protocol_kind == provider_profile_constants::kProtocolClaudeCodeStreamJson || session.protocol_kind == provider_profile_constants::kProtocolAntigravityStreamJson || (acp && session.prompt_image_supported) || (session.saved_image_retry && ProviderRuntimeRegistry::ResolveById(session.provider_id).SupportsSavedImageRetry(session));
 }
 

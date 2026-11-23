@@ -12,6 +12,13 @@
   color: var(--text-3);
 }
 
+/* A qualifier after a provider label, such as Best effort for the Custom ACP agent. */
+.uam-np-group__note {
+  font-weight: 400;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
 /* Notification rows */
 .uam-np-row {
   position: relative;
