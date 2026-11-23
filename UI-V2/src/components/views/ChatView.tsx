@@ -1523,7 +1523,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     }
   }, [modelOpen, workspaceMenuOpen])
 
-  // Both staging paths share this prefix: the browser companion stages no attachments here (no paths or bytes); see attachments.md.
+  // Both staging paths share this prefix: the browser companion stages no attachments here (no paths or bytes);
+  // see "Browser companion attachments" in docs/documentation-review.md.
   const canStageAttachments = () => {
     if (!showComposerRef.current) return false
     if (isCompanionContext()) { setAttachmentError('Add attachments from the desktop app.'); return false }

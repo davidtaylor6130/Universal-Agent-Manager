@@ -10534,7 +10534,7 @@ describe('ChatView', () => {
     } finally { act(() => root.unmount()); host.remove() }
   })
 
-  it('does not send folder paths dropped on the phone companion to the desktop app', async () => {
+  it('does not send folder paths dropped on the browser companion to the desktop app', async () => {
     const previousPath = window.location.pathname
     window.history.pushState({}, '', '/companion')
     const stageChatAttachments = vi.fn(async () => [])

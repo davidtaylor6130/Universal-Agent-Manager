@@ -78,4 +78,17 @@ it('never commits a stale time when timing data arrives as the clock starts', ()
   act(() => { vi.advanceTimersByTime(400) })
   act(() => root!.render(<Row startedAtEpochMs={Date.now() - 100} />))
   expect(committed).not.toContain('Timing unavailable')
+  expect(committed.at(-1)).toBe('0s')
+})
+
+it('clears its timer and visibility listener on unmount', () => {
+  mount(<Clock active />)
+  expect(vi.getTimerCount()).toBe(1)
+  act(() => root!.unmount())
+  root = null
+  expect(vi.getTimerCount()).toBe(0)
+  const before = renders
+  setVisibility('visible')
+  expect(renders).toBe(before)
+  expect(vi.getTimerCount()).toBe(0)
 })
