@@ -23,6 +23,23 @@ AcpToolCallState& UpsertToolCall(AcpSessionState& session, const std::string& id
 	return session.tool_calls.back();
 }
 
+AcpToolCallState& RestoreToolCallFromHistory(AcpSessionState& session, const ChatSession& chat, const std::string& id)
+{
+	for (AcpToolCallState& tool : session.tool_calls) if (tool.id == id) return tool;
+	AcpToolCallState& tool = UpsertToolCall(session, id);
+	for (std::size_t index = 0; index < chat.messages.size(); ++index)
+	{
+		for (const ToolCall& saved : chat.messages[index].tool_calls)
+		{
+			if (saved.id != id) continue;
+			ApplyPersistedToolCall(tool, saved);
+			session.tool_call_message_indices[id] = static_cast<int>(index);
+			return tool;
+		}
+	}
+	return tool;
+}
+
 bool LooksLikeSubAgentTool(const nlohmann::json& update, const AcpToolCallState& tool_call, const IProviderRuntime& runtime)
 {
 	if (JsonBooleanValueOr(update, "isSubAgent", false) || JsonBooleanValueOr(update, "subAgent", false))

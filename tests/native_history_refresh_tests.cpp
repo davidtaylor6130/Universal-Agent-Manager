@@ -835,3 +835,42 @@ UAM_TEST(NativeTranscriptSyncKeepsPublishedHtmlViewsOnTheirTurn)
 		UAM_ASSERT_EQ(views_in(candidate.messages[3]), 0);
 	}
 }
+
+UAM_TEST(SavedToolCallRestoresEveryPersistedField)
+{
+	// Claude and Copilot restore a saved tool for late child events; a field missing from the restore would reset on save.
+	ToolCall saved;
+	saved.id = "tool-restore";
+	saved.name = "Explore the repository";
+	saved.args_json = R"({"prompt":"Map the sources"})";
+	saved.result_text = "Mapped 12 files.";
+	saved.status = "completed";
+	saved.is_sub_agent = true;
+	saved.sub_agent_id = "agent-restore";
+	saved.sub_agent_title = "Explorer";
+	saved.kind = "task";
+	saved.approval_status = "approved";
+	saved.task_id = "task-restore";
+	saved.child_activity = "Reading files";
+	saved.sub_agent_children = {SubAgentChild{"child-1", "Reader", "completed", 1000, 4000, 3000}};
+	saved.sub_agent_children_authoritative = true;
+	ChatSession chat;
+	chat.messages.push_back({MessageRole::User, "Map the sources", "now"});
+	Message assistant;
+	assistant.role = MessageRole::Assistant;
+	assistant.tool_calls = {ToolCall{.id = "other-tool", .name = "Read"}, saved};
+	chat.messages.push_back(assistant);
+
+	uam::AcpSessionState session;
+	uam::AcpToolCallState& restored = uam::acp_detail::RestoreToolCallFromHistory(session, chat, saved.id);
+	UAM_ASSERT(uam::acp_detail::PersistedToolCallFromAcpToolCall(restored) == saved);
+	UAM_ASSERT_EQ(session.tool_call_message_indices.at(saved.id), 1);
+
+	// A live tool wins over its saved copy, and an unknown id starts empty without claiming a message.
+	restored.status = "in_progress";
+	UAM_ASSERT(&uam::acp_detail::RestoreToolCallFromHistory(session, chat, saved.id) == &restored);
+	UAM_ASSERT_EQ(session.tool_calls.front().status, std::string("in_progress"));
+	const uam::AcpToolCallState& unknown = uam::acp_detail::RestoreToolCallFromHistory(session, chat, "missing-tool");
+	UAM_ASSERT(unknown.title.empty() && unknown.status.empty());
+	UAM_ASSERT(!session.tool_call_message_indices.contains("missing-tool"));
+}

@@ -183,6 +183,9 @@ void HandlePermissionRequest(AppState& app, AcpSessionState& session, ChatSessio
 
 // Tool call state helpers
 AcpToolCallState& UpsertToolCall(AcpSessionState& session, const std::string& id);
+/// Late task/child events update their original message even after the next turn starts: returns the live tool, or one
+/// restored from the saved message that owns `id` (recording that message index), or a new empty one.
+AcpToolCallState& RestoreToolCallFromHistory(AcpSessionState& session, const ChatSession& chat, const std::string& id);
 bool LooksLikeSubAgentTool(const nlohmann::json& update, const AcpToolCallState& tool_call, const IProviderRuntime& runtime);
 void ApplySubAgentMetadata(AcpToolCallState& tool_call, const nlohmann::json& update, const IProviderRuntime& runtime);
 
@@ -196,6 +199,8 @@ bool ConfirmTurnInputReceived(const AcpSessionState& session, ChatSession& chat)
 bool AppendThoughtChunk(ChatSession& chat, AcpSessionState& session, const std::string& chunk);
 std::string AppendAssistantChunk(ChatSession& chat, AcpSessionState& session, const std::string& chunk, const std::string& identity = {});
 ToolCall PersistedToolCallFromAcpToolCall(const AcpToolCallState& tool_call);
+/// The reverse of PersistedToolCallFromAcpToolCall for every saved field; keep the two next to each other.
+void ApplyPersistedToolCall(AcpToolCallState& tool_call, const ToolCall& persisted);
 bool UpsertPersistedToolCall(std::vector<ToolCall>& tool_calls, const AcpToolCallState& tool_call);
 bool SyncAcpToolCallsToAssistantMessage(ChatSession& chat, AcpSessionState& session, bool create_if_missing);
 bool FinalizeActiveAcpToolCallsAsCancelled(ChatSession& chat, AcpSessionState& session);
