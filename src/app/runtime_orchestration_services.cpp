@@ -5618,7 +5618,12 @@ std::optional<ChatSession> ChatHistorySyncService::LoadLocalNativeTranscript(con
 	if (found != discovered.chats.end())
 		return std::move(*found);
 	if (error != nullptr)
-		*error = "The exact native transcript is unavailable or contains no readable conversation.";
+	{
+		// Antigravity's reader names why it refused this exact conversation (for example
+		// a nested child's inherited parent context); keep that reason instead of a generic one.
+		const bool reader_refusal = provider == uam::provider_ids::kAntigravityCli && !discovered.result.errors.empty();
+		*error = reader_refusal ? discovered.result.errors.front() : "The exact native transcript is unavailable or contains no readable conversation.";
+	}
 	return std::nullopt;
 }
 

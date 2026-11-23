@@ -227,7 +227,7 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	void HandleSetVisibleChatIds(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleReleaseChatMessages(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandlePromoteChatHistoryRead(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
-	void HandleRefreshLocalGeminiMedia(CefRefPtr<CefBrowser> browser, const ChatSession& chat,
+	void HandleRefreshLocalNativeMedia(CefRefPtr<CefBrowser> browser, const ChatSession& chat,
 	    const std::string& known_digest, const std::optional<std::pair<std::size_t, std::optional<std::size_t>>>& page,
 	    bool defer_tool_call_content, CefRefPtr<Callback> cb);
 	void HandleRefreshRemoteGeminiMedia(CefRefPtr<CefBrowser> browser, const ChatSession& chat,

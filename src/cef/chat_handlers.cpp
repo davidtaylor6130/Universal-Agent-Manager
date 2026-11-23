@@ -720,6 +720,13 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 	    uam::strings::Trim(chat->execution_host_id), uam::execution_hosts::kLocalHostId);
 	const std::string provider_id =
 	    uam::provider_ids::NormalizeCliProviderAliasOrSelf(chat->provider_id);
+#if UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
+	// Antigravity's settled SQLite/legacy reader is controller-local only; no SSH helper reads it.
+	const bool local_antigravity_history = provider_id == uam::provider_ids::kAntigravityCli &&
+	    execution_host_id == uam::execution_hosts::kLocalHostId;
+#else
+	const bool local_antigravity_history = false;
+#endif
 	const bool hydrate_native_chat =
 	    (refresh_native ||
 	     (chat->messages.empty() && execution_host_id != uam::execution_hosts::kLocalHostId && !reuse_saved_read)) &&
@@ -728,7 +735,8 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 	    !uam::strings::IsBlank(chat->native_session_id) &&
 	    (provider_id == uam::provider_ids::kOpenCodeCli ||
 	     provider_id == uam::provider_ids::kCodexCli ||
-	     provider_id == uam::provider_ids::kClaudeCli || provider_id == uam::provider_ids::kCopilotCli || provider_id == uam::provider_ids::kGeminiCli);
+	     provider_id == uam::provider_ids::kClaudeCli || provider_id == uam::provider_ids::kCopilotCli || provider_id == uam::provider_ids::kGeminiCli ||
+	     local_antigravity_history);
 	if (!hydrate_native_chat)
 	{
 		ScheduleDeferredRecencySave(chat_id); // This read was served from memory, so nothing is reading the file.
@@ -753,9 +761,10 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 		host_snapshot = *host;
 	}
 
-	if (provider_id == uam::provider_ids::kGeminiCli && !host_snapshot)
+	// Both readers can return pending inline originals, so they share the guarded media publication route.
+	if ((provider_id == uam::provider_ids::kGeminiCli || local_antigravity_history) && !host_snapshot)
 	{
-		HandleRefreshLocalGeminiMedia(browser, *chat, known_digest, page, defer_tool_call_content, cb);
+		HandleRefreshLocalNativeMedia(browser, *chat, known_digest, page, defer_tool_call_content, cb);
 		return;
 	}
 
@@ -993,7 +1002,7 @@ bool UamQueryHandler::DispatchRemoteRefreshRead(CefRefPtr<Callback> cb, ManagedS
 	return true;
 }
 
-void UamQueryHandler::HandleRefreshLocalGeminiMedia(CefRefPtr<CefBrowser> browser, const ChatSession& chat,
+void UamQueryHandler::HandleRefreshLocalNativeMedia(CefRefPtr<CefBrowser> browser, const ChatSession& chat,
     const std::string& known_digest, const std::optional<std::pair<std::size_t, std::optional<std::size_t>>>& page,
     bool defer_tool_call_content, CefRefPtr<Callback> cb)
 {
