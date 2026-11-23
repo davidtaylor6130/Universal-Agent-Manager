@@ -336,20 +336,6 @@ UAM_TEST(ExecutionRoutingWaiterThatStopsAskingAgesOutOfTheQueue)
 	UAM_ASSERT(service.QueuedChatIds().empty());
 }
 
-UAM_TEST(ExecutionRoutingPollWithdrawsTheQueuePlaceOfADeletedChat)
-{
-	uam::AppState app;
-	app.execution_routing_service = std::make_shared<uam::ExecutionRoutingService>();
-	ChatSession kept;
-	kept.id = "kept";
-	app.chats.push_back(kept);
-	UAM_ASSERT_EQ(app.execution_routing_service->Admit(RoutingRequest("deleted"), {RoutingHost("a")}, {{"busy", "a"}}).status, uam::ExecutionRoutingStatus::Waiting);
-	UAM_ASSERT_EQ(app.execution_routing_service->Admit(RoutingRequest("kept"), {RoutingHost("a")}, {{"busy", "a"}}).status, uam::ExecutionRoutingStatus::Waiting);
-	(void)uam::PollExecutionRouting(app);
-	// The deleted chat's place goes at once; an existing chat keeps its own.
-	UAM_ASSERT_EQ(app.execution_routing_service->QueuedChatIds(), (std::vector<std::string>{"kept"}));
-}
-
 UAM_TEST(ExecutionRoutingOnlyOwnedRecoveryBypassesChangedOptInAndFullCapacity)
 {
 	uam::ExecutionRoutingService original;
@@ -378,6 +364,20 @@ UAM_TEST(ExecutionRoutingOnlyOwnedRecoveryBypassesChangedOptInAndFullCapacity)
 #include "common/utils/hash_utils.h"
 #include "remote/runner_protocol.h"
 #include "common/runtime/provider_cli_compatibility_service.h"
+
+UAM_TEST(ExecutionRoutingPollWithdrawsTheQueuePlaceOfADeletedChat)
+{
+	uam::AppState app;
+	app.execution_routing_service = std::make_shared<uam::ExecutionRoutingService>();
+	ChatSession kept;
+	kept.id = "kept";
+	app.chats.push_back(kept);
+	UAM_ASSERT_EQ(app.execution_routing_service->Admit(RoutingRequest("deleted"), {RoutingHost("a")}, {{"busy", "a"}}).status, uam::ExecutionRoutingStatus::Waiting);
+	UAM_ASSERT_EQ(app.execution_routing_service->Admit(RoutingRequest("kept"), {RoutingHost("a")}, {{"busy", "a"}}).status, uam::ExecutionRoutingStatus::Waiting);
+	(void)uam::PollExecutionRouting(app);
+	// The deleted chat's place goes at once; an existing chat keeps its own.
+	UAM_ASSERT_EQ(app.execution_routing_service->QueuedChatIds(), (std::vector<std::string>{"kept"}));
+}
 
 namespace
 {

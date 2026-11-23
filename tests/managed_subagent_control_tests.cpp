@@ -2133,7 +2133,23 @@ UAM_TEST(AgentRunSchedulerCapsOneParentAtHalfTheRunningSlotsAndKeepsItsQueueOrde
 	// A running agent's own child counts against that agent's share, not the chat's.
 	const auto child = fixture.Add("root", first_running);
 	const auto other_parent = fixture.Add("other-root");
+	// The held agent had earlier waited in the routing queue; held back by its parent's share, it gives that place up.
+	fixture.app.execution_routing_service = std::make_shared<uam::ExecutionRoutingService>();
+	uam::ExecutionRoutingCandidate host;
+	host.host_id = "a";
+	host.connection_identity = host.confirmed_connection_identity = "connection-a";
+	host.provider_configuration_identity = host.confirmed_provider_configuration_identity = "provider-config";
+	host.pool_enabled = host.provider_confirmed = host.runner_ready = host.runner_compatible = host.provider_supported = true;
+	host.max_active_turns = 1;
+	host.mappings.push_back({"local:/repo", "folder-a", "/mapped/repo"});
+	uam::ExecutionRoutingRequest earlier;
+	earlier.chat_id = std::ranges::find(fixture.app.agent_runs, held_first, &AgentRun::id)->transcript_chat_id;
+	earlier.automatic_enabled = true;
+	earlier.source_workspace_identity = "local:/repo";
+	UAM_ASSERT_EQ(fixture.app.execution_routing_service->Admit(earlier, {host}, {{"busy", "a"}}).status, uam::ExecutionRoutingStatus::Waiting);
+	UAM_ASSERT_EQ(fixture.app.execution_routing_service->QueuedChatIds(), std::vector<std::string>{earlier.chat_id});
 	(void)uam::AgentRunScheduler::PollAtForTests(fixture.app, 1000);
+	UAM_ASSERT(fixture.app.execution_routing_service->QueuedChatIds().empty());
 	const auto status = [&](const std::string& id) { return std::ranges::find(fixture.app.agent_runs, id, &AgentRun::id)->status; };
 	// Two free slots, but the chat's third and fourth agents wait; the slots go to agents of other parents.
 	UAM_ASSERT_EQ(status(held_first), std::string("queued"));

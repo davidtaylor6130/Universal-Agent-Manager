@@ -4155,12 +4155,17 @@ namespace uam
 		// its place in the routing queue at once, so it never holds a computer it cannot use yet.
 		if (app.execution_routing_service)
 		{
+			// The retry gate goes too, so the next offer of a slot asks routing at once and takes a fresh ticket.
+			const auto withdraw = [&app](const std::string& transcript_id)
+			{
+				if (app.execution_routing_service->Withdraw(transcript_id)) app.execution_routing_retry_at_by_chat_id.erase(transcript_id);
+			};
 			for (const AgentRun& queued : app.agent_runs)
 				if (queued.status == "queued" && !app.agent_routing_held_this_poll.contains(queued.id))
-					(void)app.execution_routing_service->Withdraw(queued.transcript_chat_id);
+					withdraw(queued.transcript_chat_id);
 			for (const auto& [id, owner] : app.managed_initial_runtime_owners)
 				if (owner && owner->phase == ManagedInitialRuntimeOwner::Phase::Queued && !app.agent_routing_held_this_poll.contains(id))
-					(void)app.execution_routing_service->Withdraw(owner->transcript_id);
+					withdraw(owner->transcript_id);
 		}
 		// A run that routing did not refuse on this poll is no longer waiting for routing.
 		std::erase_if(app.agent_routing_wait_since_steady_ms, [&](const auto& entry) { return !app.agent_routing_held_this_poll.contains(entry.first); });
