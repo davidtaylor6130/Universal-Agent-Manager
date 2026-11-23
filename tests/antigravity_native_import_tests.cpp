@@ -713,6 +713,16 @@ UAM_TEST(AntigravityNativeHistoryRecordsPlainRefusalReasonAndUnsettledSource)
 	UAM_ASSERT_EQ(unsettled.refusals.size(), std::size_t(1));
 	UAM_ASSERT(unsettled.refusals[0].unsettled);
 	UAM_ASSERT_EQ(unsettled.refusals[0].reason, std::string("Antigravity is still working on this conversation. Retry after it finishes."));
+
+	// INTERRUPTED (12) is not an in-progress state: refused with a reason, never silent.
+	AgFixture interrupted;
+	interrupted.User();
+	interrupted.Step(1, 15, 20, AgBytes(1, "Stopped"), 2, {}, 12);
+	const auto unknown = interrupted.Read();
+	UAM_ASSERT(unknown.chats.empty());
+	UAM_ASSERT_EQ(unknown.refusals.size(), std::size_t(1));
+	UAM_ASSERT(!unknown.refusals[0].unsettled);
+	UAM_ASSERT_EQ(unknown.refusals[0].reason, std::string("This conversation has an Antigravity step state that UAM cannot read yet."));
 }
 
 #if !defined(UAM_ANTIGRAVITY_HISTORY_STANDALONE) && UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI

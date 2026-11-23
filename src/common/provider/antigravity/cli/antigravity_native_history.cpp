@@ -652,8 +652,12 @@ namespace uam::antigravity::history
 				const auto native_type = sqlite3_column_int64(rows.get(), 1), native_status = sqlite3_column_int64(rows.get(), 2);
 				Require(native_type >= 0 && native_type <= 2147483647 && native_status >= 0 && native_status <= 2147483647, "Antigravity native step enums exceed their bounds.");
 				const int type = static_cast<int>(native_type), status = static_cast<int>(native_status);
-				RequireSettled(status == 3 || status == 6 || status == 7);
 				Require(sqlite3_column_int64(rows.get(), 3) == 0 && sqlite3_column_int64(rows.get(), 7) == 0, "This conversation has nested or unsupported Antigravity steps that UAM cannot read yet.");
+				// Pinned agy 1.4.4 CortexStepStatus: PENDING 1, RUNNING 2, GENERATING 8, WAITING 9 and
+				// QUEUED 11 are in progress; DONE 3, CANCELED 6 and ERROR 7 are readable terminal states.
+				// Any other value stays an explicit refusal rather than a silent "still running".
+				RequireSettled(status != 1 && status != 2 && status != 8 && status != 9 && status != 11);
+				Require(status == 3 || status == 6 || status == 7, "This conversation has an Antigravity step state that UAM cannot read yet.");
 				const std::string step_meta = Column(rows.get(), 4, true), error = Column(rows.get(), 5, true), payload = Column(rows.get(), 6, true);
 				const std::string permissions = Column(rows.get(), 8, true), task = Column(rows.get(), 9, true), render = Column(rows.get(), 10, true);
 				const bool render_present = sqlite3_column_type(rows.get(), 10) != SQLITE_NULL;
@@ -974,7 +978,8 @@ namespace uam::antigravity::history
 				// unexecuted call; retain it without fabricating output or success.
 				if (call.status == "pending" && response.interrupted)
 					call.status = "cancelled";
-				RequireSettled(call.status != "pending");
+				// Every step is terminal here, so an unanswered call is incomplete history, not a running turn.
+				Require(call.status != "pending", "This conversation has an Antigravity tool call with no recorded result, so UAM cannot read it completely.");
 			}
 			Require(Revision(path) == revision, "Antigravity native history changed during discovery; retry the scan.");
 			Require(!legacy || !DatabaseSiblingExists(path), "Antigravity legacy history was superseded during discovery; retry the scan.");
