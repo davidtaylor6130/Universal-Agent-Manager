@@ -302,8 +302,8 @@ public:
 		const auto data = result.is_object() ? result.value("data", Json{}) : Json{};
 		const auto proof = ReadProof(probe_path);
 		const auto native_effect = proof.is_object() ? proof.value("nativeEffect", Json{}) : Json{};
-		if (!data.is_object() || data.value("effect", Json{}) != effect || !proof.is_object() ||
-		    (native_effect != "ask" && native_effect != "allow") || proof.value("effect", Json{}) != effect ||
+		if (!data.is_object() || data.value("effect", Json{}) != std::string(effect) || !proof.is_object() ||
+		    (native_effect != "ask" && native_effect != "allow") || proof.value("effect", Json{}) != std::string(effect) ||
 		    proof.value("nonce", Json{}) != nonce || proof.value("directory", Json{}) != cwd ||
 		    proof.value("sessionID", Json{}) != id || proof.value("resource", Json{}) != resource)
 			throw std::runtime_error(ask ? "OpenCode V2 did not prove that UAM's permission hook asked for the probe."
@@ -316,7 +316,7 @@ public:
 		const auto match = [&](const Json& request)
 		{
 			return request.is_object() && request.value("id", Json{}) == request_id &&
-			    request.value("sessionID", Json{}) == id && request.value("action", Json{}) == kPermissionProbeAction &&
+			    request.value("sessionID", Json{}) == id && request.value("action", Json{}) == std::string(kPermissionProbeAction) &&
 			    request.value("resources", Json{}) == resources && request.value("source", Json{}).is_null() &&
 			    request.value("save", Json::array()) == Json::array();
 		};
