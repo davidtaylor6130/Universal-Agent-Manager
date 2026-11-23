@@ -325,6 +325,7 @@ The [UAM tools](providers/uam-tools.md) `usage_report`, `worktree_status` and `m
 - `usage_report` leaves out account money figures (credit balance, spend limit and amount used) and reports only shares, resets and limit flags. Whether agents may see those amounts is undecided.
 - Goal reviewers do not get `worktree_status`, so their prompt still tells them to run shell `git`. Giving a reviewer this one read-only tool is a deliberate change to the reviewer's no-tools rule and waits for a decision.
 - `worktree_status` reports only uncommitted changes against the current commit or checked-out revision; changes since the chat started (the commit panel's chat comparison) are not offered yet.
+- `worktree_status` lists the whole Git repository, as the commit panel does, so a chat whose workspace is a subfolder sees changes made elsewhere in that repository. Limiting it to the workspace folder would also change the panel's shared read and waits for a decision.
 - `memory_search` follows memory's Off setting but not the recall budget: a recall budget of zero stops automatic recall in prompts, while an agent can still search. It refuses chats on SSH hosts, as recall does.
 - `memory_save`, `skill_create`/`skill_update` and `agent_define` from #963, and `commit_propose` and the pull request tools from #964, wait for the decisions recorded on those issues.
 

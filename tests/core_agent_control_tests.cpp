@@ -2005,6 +2005,15 @@ UAM_TEST(UamControlWorktreeStatusReadsTheCallingChatsGitWorkspaceOffTheAppThread
 	UAM_ASSERT(moved.value("error", "").find("changed") != std::string::npos);
 	ChatDomainService().FindChatById(fixture.app, "worktree-caller")->workspace_directory = uam::paths::Utf8PathString(repo);
 
+	// A cancelled read frees the chat at once, and its late result is never written.
+	const fs::path responses = std::ranges::find(fixture.app.uam_control_capabilities, capability, &uam::UamControlCapability::id)->directory / "responses";
+	UAM_ASSERT(fixture.Call(capability, "status-connect", "_mcp_initialized", {{"connectionId", "connection-a"}}).value("ok", false));
+	UAM_ASSERT(fixture.Call(capability, "status-cancelled", "worktree_status").value("pendingBackgroundRead", false));
+	UAM_ASSERT(fixture.Call(capability, "status-cancel", "_mcp_cancel_request", {{"connectionId", "connection-a"}, {"requestId", "status-cancelled"}}).value("ok", false));
+	UAM_ASSERT(fixture.Call(capability, "status-after-cancel", "worktree_status").value("pendingBackgroundRead", false));
+	UAM_ASSERT(fixture.AwaitReply(capability, "status-after-cancel").value("ok", false));
+	UAM_ASSERT(!fs::exists(responses / "status-cancelled.json"));
+
 	// A long change list stays under the 64 KiB transport with an explicit marker, and skips line counts.
 	for (int index = 0; index < 1500; ++index)
 		UAM_ASSERT(uam::io::WriteTextFile(repo / ("generated-file-with-a-deliberately-long-name-for-the-budget-" + std::to_string(index) + ".txt"), "x\n"));
