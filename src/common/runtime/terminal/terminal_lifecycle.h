@@ -12,7 +12,6 @@ namespace uam
 inline constexpr double kCliTerminalPromptSettleSeconds = 0.2;
 inline constexpr double kCliTerminalSteerRestartTimeoutSeconds = 3.0;
 inline constexpr double kCliTerminalSteerFailureTimeoutSeconds = 10.0;
-inline constexpr std::string_view kCliTerminalQuitCommand = "/quit\r\n";
 
 enum class CliTerminalSteerRecoveryAction
 {
@@ -39,6 +38,17 @@ bool DetachCliTerminalUi(CliTerminalState& terminal, std::string_view attachment
 void CloseCliTerminalHandles(CliTerminalState& terminal);
 void FailCliTerminalTransport(CliTerminalState& terminal, std::string_view message);
 bool WriteToCliTerminal(CliTerminalState& terminal, const char* bytes, std::size_t len);
+/// <summary>Records whether delivered input leaves text in the provider composer. Only a final Enter clears the draft;
+/// an interrupt, a lone Escape, focus and mouse reports and terminal replies add no text and leave it unchanged.</summary>
+void NoteCliTerminalComposerInput(CliTerminalState& terminal, std::string_view bytes);
+/// <summary>Best-effort: true while the provider composer may hold text nobody submitted, such as the user's draft, input
+/// deferred behind UAM's status query, or that unsubmitted query itself. Enter does not always submit (a file picker or an
+/// approval overlay), so this only keeps a terminal open; no safety rule may depend on it being false.</summary>
+inline bool CliTerminalComposerMayHoldDraft(const CliTerminalState& terminal)
+{
+	return terminal.composer_may_hold_draft || terminal.native_identity_query_phase == 2 ||
+	       (terminal.native_identity_query_phase == 3 && !terminal.native_identity_deferred_input.empty());
+}
 std::string BuildCliTerminalPromptInput(std::string_view prompt);
 bool RequestCliTerminalSteer(CliTerminalState& terminal, std::string_view prompt, bool retry, std::string* error_out = nullptr);
 bool TryDeliverPendingCliTerminalSteer(CliTerminalState& terminal);
@@ -56,6 +66,8 @@ void MarkCliTerminalShuttingDown(CliTerminalState& terminal);
 void MarkCliTerminalStopped(CliTerminalState& terminal);
 void MarkCliTerminalDisabled(CliTerminalState& terminal);
 void ClearCliReadyForChat(AppState& app, std::string_view chat_id);
+/// <summary>Asks the process to end through the platform (a hangup on macOS, process-tree termination on Windows).
+/// UAM never types a quit command: the composer may hold an unsent draft that its Enter would submit.</summary>
 void RequestCliTerminalQuit(CliTerminalState& terminal);
 void BeginCliTerminalIdleShutdown(CliTerminalState& terminal);
 bool PendingCallMatchesCliTerminalIdentity(const AppState& app, std::string_view identity);

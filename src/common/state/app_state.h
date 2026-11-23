@@ -178,6 +178,10 @@ namespace uam
 		double last_busy_time_s = 0.0;
 		double shutdown_requested_time_s = 0.0;
 		double inactivity_interrupt_requested_time_s = 0.0;
+		// Input reached the provider composer after the last submitted line, so it may hold an unsent draft.
+		bool composer_may_hold_draft = false;
+		// Last byte of the previous composer input, to recognise a backslash-then-Enter line break.
+		char composer_last_input_byte = 0;
 		bool input_ready = false;
 		double startup_time_s = 0.0;
 		bool generation_in_progress = false;

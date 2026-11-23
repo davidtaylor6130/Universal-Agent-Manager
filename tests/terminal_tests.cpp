@@ -1295,7 +1295,6 @@ UAM_TEST(CliLifecycleTransitionsDriveBackgroundShutdownEligibility)
 
 	uam::MarkCliTerminalTurnBusy(terminal);
 	UAM_ASSERT_EQ(uam::kCliTerminalProcessingLifecycleStates.size(), static_cast<std::size_t>(2));
-	UAM_ASSERT_EQ(uam::kCliTerminalQuitCommand, std::string_view("/quit\r\n"));
 	UAM_ASSERT_EQ(uam::kCliTerminalDefaultRows, 24);
 	UAM_ASSERT_EQ(uam::kCliTerminalDefaultCols, 80);
 	UAM_ASSERT_EQ(uam::ClampCliTerminalResizeRows(0), 1);
@@ -1345,6 +1344,137 @@ UAM_TEST(CliLifecycleTransitionsDriveBackgroundShutdownEligibility)
 	app.chats_with_unseen_updates.insert("chat-1");
 	uam::ClearCliReadyForChat(app, std::string_view("xx chat-1 yy").substr(2, 8));
 	UAM_ASSERT(app.chats_with_unseen_updates.empty());
+}
+
+UAM_TEST(CliTerminalComposerDraftClearsOnlyOnSubmittedLine)
+{
+	uam::CliTerminalState terminal;
+	const auto note = [&terminal](std::string_view bytes)
+	{
+		uam::NoteCliTerminalComposerInput(terminal, bytes);
+		return uam::CliTerminalComposerMayHoldDraft(terminal);
+	};
+	UAM_ASSERT(!uam::CliTerminalComposerMayHoldDraft(terminal));
+	UAM_ASSERT(note("delete the build folder and redeploy"));
+	// Interrupts, a lone Escape, focus and mouse reports and terminal replies add no text and clear none.
+	UAM_ASSERT(note("\x03"));
+	UAM_ASSERT(note("\x1b"));
+	UAM_ASSERT(note("\x1b[I"));
+	UAM_ASSERT(!note("\r"));
+	UAM_ASSERT(!note("\x03"));
+	UAM_ASSERT(!note("\x1b"));
+	UAM_ASSERT(!note("\x1b[O"));
+	UAM_ASSERT(!note("\x1b[<0;12;5M"));
+	UAM_ASSERT(!note("\x1b[12;40R"));
+	// History recall and single-key answers can leave text in the composer.
+	UAM_ASSERT(note("\x1b[A"));
+	UAM_ASSERT(!note("ask\r"));
+	UAM_ASSERT(note("y"));
+	UAM_ASSERT(!note("\r\n"));
+	// Line breaks inside a draft are not submissions.
+	UAM_ASSERT(note("first line\x1b\r"));
+	UAM_ASSERT(!note("second line\r"));
+	UAM_ASSERT(note("\n"));
+	UAM_ASSERT(!note("\r"));
+	UAM_ASSERT(note("line\\"));
+	UAM_ASSERT(note("\r"));
+	UAM_ASSERT(!note("\r"));
+	UAM_ASSERT(note("\x1b[200~pasted\r"));
+	UAM_ASSERT(!note("\x1b[201~\r"));
+	UAM_ASSERT(!note("\x1b[200~one\ntwo\x1b[201~\r"));
+	// UAM's own status command sits unsubmitted in the composer until its Enter.
+	terminal.native_identity_query_phase = 2;
+	UAM_ASSERT(uam::CliTerminalComposerMayHoldDraft(terminal));
+	terminal.native_identity_query_phase = 3;
+	UAM_ASSERT(!uam::CliTerminalComposerMayHoldDraft(terminal));
+	// Input typed while the status reply is pending reaches the composer once the query finishes.
+	terminal.native_identity_deferred_input = "draft";
+	UAM_ASSERT(uam::CliTerminalComposerMayHoldDraft(terminal));
+	terminal.native_identity_deferred_input.clear();
+
+	uam::AppState app;
+	app.settings.cli_idle_timeout_seconds = 60;
+	terminal.running = true;
+	terminal.frontend_chat_id = "chat-1";
+	terminal.attached_chat_id = "chat-1";
+	uam::MarkCliTerminalTurnIdle(terminal);
+	terminal.idle_interaction_started_time_s = 1.0;
+	UAM_ASSERT(uam::IsCliTerminalEligibleForBackgroundIdleShutdown(app, terminal, "", 1000.0));
+	UAM_ASSERT(note("draft"));
+	UAM_ASSERT(!uam::IsCliTerminalEligibleForBackgroundIdleShutdown(app, terminal, "", 1000.0));
+	terminal.native_identity_query_phase = 2;
+	UAM_ASSERT(note("\r"));
+	UAM_ASSERT(!terminal.composer_may_hold_draft);
+	UAM_ASSERT(!uam::IsCliTerminalEligibleForBackgroundIdleShutdown(app, terminal, "", 1000.0));
+	terminal.native_identity_query_phase = 0;
+	UAM_ASSERT(uam::IsCliTerminalEligibleForBackgroundIdleShutdown(app, terminal, "", 1000.0));
+}
+
+UAM_TEST(CliTerminalShutdownNeverSubmitsAnUnsentDraft)
+{
+	TempDir temp("uam-cli-quit-draft");
+	uam::AppState app;
+	app.settings.cli_idle_timeout_seconds = 60;
+	const fs::path submitted = temp.root / "submitted.txt";
+	// The child records a line only once one is submitted; typed text without Enter stays in its input buffer.
+#if defined(_WIN32)
+	const std::vector<std::string> argv = {"cmd.exe", "/C", "set /p line=&& echo submitted>submitted.txt& ping -n 31 127.0.0.1 >NUL"};
+#else
+	const std::vector<std::string> argv = {"/bin/sh", "-c", "IFS= read -r line && echo submitted > submitted.txt; sleep 30"};
+#endif
+	uam::CliTerminalState quitting;
+	uam::CliTerminalState stopping;
+	struct StopBoth
+	{
+		uam::CliTerminalState& first;
+		uam::CliTerminalState& second;
+		~StopBoth()
+		{
+			uam::StopCliTerminal(first, false, uam::CliTerminalStopMode::FastExit);
+			uam::StopCliTerminal(second, false, uam::CliTerminalStopMode::FastExit);
+		}
+	} cleanup{quitting, stopping};
+	const auto start_with_draft = [&](uam::CliTerminalState& terminal)
+	{
+		std::string error;
+		UAM_ASSERT(PlatformServicesFactory::Instance().terminal_runtime.StartCliTerminalProcess(terminal, temp.root, argv, &error));
+		terminal.running = true;
+		terminal.frontend_chat_id = "chat-1";
+		terminal.attached_chat_id = "chat-1";
+		uam::MarkCliTerminalTurnIdle(terminal);
+		UAM_ASSERT(uam::WriteToCliTerminal(terminal, "draft", 5));
+		UAM_ASSERT(uam::CliTerminalComposerMayHoldDraft(terminal));
+	};
+
+	start_with_draft(quitting);
+	UAM_ASSERT(!uam::IsCliTerminalEligibleForBackgroundIdleShutdown(app, quitting, "", uam::GetAppTimeSeconds() + 3600.0));
+	// Safety must not rest on the draft heuristic: Enter in a file picker or an approval overlay leaves text unsubmitted.
+	quitting.composer_may_hold_draft = false;
+	uam::BeginCliTerminalIdleShutdown(quitting);
+	UAM_ASSERT_EQ(quitting.lifecycle_state, uam::CliTerminalLifecycleState::ShuttingDown);
+	// The platform exit request ends the child without typing anything into it.
+	// Drain the output while waiting: Windows reports a ConPTY exit only once its output pipe reads as broken.
+	IPlatformTerminalRuntime& runtime = PlatformServicesFactory::Instance().terminal_runtime;
+	bool exited = false;
+	const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	while (std::chrono::steady_clock::now() < deadline && !fs::exists(submitted) && !exited)
+	{
+		char buffer[1024];
+		while (runtime.ReadCliTerminalOutput(quitting, buffer, sizeof(buffer)) > 0) {}
+		exited = runtime.PollCliTerminalProcessExited(quitting);
+		if (!exited) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+	}
+	UAM_ASSERT(!fs::exists(submitted));
+	UAM_ASSERT(exited);
+	uam::StopCliTerminal(quitting, false, uam::CliTerminalStopMode::FastExit);
+	UAM_ASSERT(!quitting.running);
+	UAM_ASSERT(!uam::CliTerminalComposerMayHoldDraft(quitting));
+
+	// The default graceful stop (StopAllCliTerminals, relaunch) typed the quit command on Windows before terminating.
+	start_with_draft(stopping);
+	stopping.composer_may_hold_draft = false;
+	uam::StopCliTerminal(stopping);
+	UAM_ASSERT(!fs::exists(submitted));
 }
 
 UAM_TEST(UnknownNativeActivityDoesNotReportReadyOrAllowAutomaticInterruption)
