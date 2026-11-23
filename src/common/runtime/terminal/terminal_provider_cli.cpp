@@ -241,13 +241,6 @@ namespace
 		if (agent.instructions.empty() || CentralSetupCarriesAgent(settings, chat, host.id, control_only_launch)) return true;
 		return ProviderRuntimeRegistry::ResolveById(chat.provider_id).StageInteractiveAgentInstructions(host, agent.instructions, argv, staged_context, error);
 	}
-
-	/// Launch options go before a positional `--` that extra flags may carry, so prompt text cannot swallow them.
-	void InsertLaunchOptions(std::vector<std::string>& argv, const std::vector<std::string>& options)
-	{
-		const auto positional = std::find(argv.begin() + static_cast<std::ptrdiff_t>(std::min<std::size_t>(1, argv.size())), argv.end(), "--");
-		argv.insert(positional, options.begin(), options.end());
-	}
 }
 
 bool ResolveCliViewAgent(const AppState& app, const ChatSession& chat, CliViewAgent& agent, std::string& error)
@@ -302,7 +295,7 @@ std::vector<std::string> BuildProviderInteractiveArgv(const AppState& app, const
 	// A custom agent's skill allowlist covers UAM's skills; the provider's own skill tool is removed where it can be.
 	if (!argv.empty() && AgentDefinitionService::IsCustomAgentId(CliViewAgentId(app, chat)))
 	{
-		InsertLaunchOptions(argv, ProviderRuntimeRegistry::Resolve(provider).CustomAgentNativeSkillArgv());
+		uam::provider_setup::InsertLaunchOptions(argv, ProviderRuntimeRegistry::Resolve(provider).CustomAgentNativeSkillArgv());
 	}
 	return argv;
 }
@@ -757,7 +750,7 @@ bool PrepareCliProviderConversation(AppState& app, ChatSession& chat, const Exec
 	}
 	else if (chat.provider_id == uam::provider_ids::kClaudeCli)
 	{
-		InsertLaunchOptions(argv, {"--append-system-prompt-file", context_path});
+		uam::provider_setup::InsertLaunchOptions(argv, {"--append-system-prompt-file", context_path});
 	}
 	else if (chat.provider_id == uam::provider_ids::kCopilotCli)
 	{
@@ -767,13 +760,13 @@ bool PrepareCliProviderConversation(AppState& app, ChatSession& chat, const Exec
 	else if (chat.provider_id == uam::provider_ids::kGeminiCli)
 	{
 		if (!stage(uam::execution_hosts::JoinRemotePath(host.platform, directory, "GEMINI.md"), snapshot)) return false;
-		InsertLaunchOptions(argv, {"--include-directories", directory});
+		uam::provider_setup::InsertLaunchOptions(argv, {"--include-directories", directory});
 	}
 	else if (chat.provider_id == uam::provider_ids::kAntigravityCli)
 	{
 		// The private additional directory Central Setup also uses; handoff text never reaches Antigravity.
 		if (!stage(uam::execution_hosts::JoinRemotePath(host.platform, directory, "AGENTS.md"), snapshot)) return false;
-		InsertLaunchOptions(argv, {"--add-dir", directory});
+		uam::provider_setup::InsertLaunchOptions(argv, {"--add-dir", directory});
 	}
 	else if (chat.provider_id != uam::provider_ids::kOpenCodeCli) { error = "The selected provider does not support conversation context files."; return false; }
 	if (!remote) return uam::provider_native_context::ConfigureEnvironment(chat.provider_id, uam::paths::PathFromUtf8(directory), environment, error, workspace, false, &PlatformServicesFactory::Instance().process_service, &argv, stop_token);

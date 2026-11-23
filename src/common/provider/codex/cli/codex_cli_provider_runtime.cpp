@@ -357,20 +357,22 @@ std::vector<std::string> CodexCliProviderRuntime::BuildInteractiveArgv(const Pro
 bool CodexCliProviderRuntime::StageInteractiveAgentInstructions(const ExecutionHost& host, std::string_view instructions, std::vector<std::string>& argv, std::string& staged_context, std::string& error) const
 {
 	staged_context.clear();
-	// Codex has no extra instruction directory, so the agent's role goes in as developer instructions, within
-	// the executing host's OS argument limit. The marker lets setup fold this value, and only this one, into its own.
+	// Codex has no extra instruction directory, so the agent's role goes in as developer instructions. The marker
+	// lets setup fold this value, and only this one, into its own. An SSH launch without a context channel carries
+	// argv on the controller's own ssh command line, so both the controller's and the executing host's limits apply.
 #if defined(_WIN32)
-	const bool windows = host.id == uam::execution_hosts::kLocalHostId || host.platform == "windows" || host.platform == "Windows";
+	constexpr bool controller_windows = true;
 #else
-	const bool windows = host.id != uam::execution_hosts::kLocalHostId && (host.platform == "windows" || host.platform == "Windows");
+	constexpr bool controller_windows = false;
 #endif
-	const std::string value = std::string(uam::provider_setup::kAgentInstructionsIntro) + "\n\n" + std::string(instructions);
-	if (value.size() > (windows ? 12U : 64U) * 1024U)
+	const bool windows = controller_windows || host.platform == "windows" || host.platform == "Windows";
+	const std::string argument = "developer_instructions=" + nlohmann::json(std::string(uam::provider_setup::kAgentInstructionsIntro) + "\n\n" + std::string(instructions)).dump();
+	if (argument.size() > (windows ? 12U : 64U) * 1024U)
 	{
 		error = "This agent's instructions are too long for Codex CLI View's launch arguments. Use Chat for this agent.";
 		return false;
 	}
-	uam::provider_runtime_internal::InsertBeforePositional(argv, {"-c", "developer_instructions=" + nlohmann::json(value).dump()});
+	uam::provider_setup::InsertLaunchOptions(argv, {"-c", argument});
 	error.clear();
 	return true;
 }

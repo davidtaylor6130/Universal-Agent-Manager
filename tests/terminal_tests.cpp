@@ -3098,6 +3098,16 @@ UAM_TEST(CliViewStagesCustomAgentInstructionsForEachProviderOrRefuses)
 	UAM_ASSERT(uam::ProviderInteractiveAgentError(app, central, host).empty());
 	app.settings.central_provider_configuration.enabled = false;
 
+	// The SSH helper does not admit Antigravity context, so a remote Antigravity agent is refused rather than failing silently.
+	ChatSession remote = central;
+	remote.provider_id = "antigravity-cli";
+	remote.uam_agent_id = "reviewer";
+	ExecutionHost ssh;
+	ssh.id = "ssh-fixture";
+	ssh.platform = "linux";
+	UAM_ASSERT_EQ(uam::ProviderInteractiveAgentError(app, remote, ssh), std::string("Antigravity CLI View over SSH cannot carry a custom agent's instructions yet. Use Chat for this agent."));
+	UAM_ASSERT(uam::ProviderInteractiveAgentError(app, remote, host).empty());
+
 	// Build and Plan carry no custom role; an unknown agent is refused instead of launching without it.
 	central.uam_agent_id = "build";
 	UAM_ASSERT(uam::ProviderInteractiveAgentError(app, central, host).empty());

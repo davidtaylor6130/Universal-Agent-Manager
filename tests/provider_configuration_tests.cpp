@@ -1117,7 +1117,11 @@ UAM_TEST(CodexSetupFoldsCliViewAgentDeveloperInstructionsInsteadOfReplacingThem)
 	const std::size_t central = text.find("Shared central preference");
 	const std::size_t agent_role = text.find("Agent role marker");
 	UAM_ASSERT(central != std::string::npos && agent_role != std::string::npos && central < agent_role);
-	// A user's own value, TOML or raw text, is left as written rather than folded or refused.
+	// A user's own value after the agent's would replace the combined text, dropping the agent's role: refused.
+	argv = {"codex", "-c", "developer_instructions=" + nlohmann::json(agent_value).dump(), "-c", "developer_instructions='Be terse'"};
+	UAM_ASSERT(!uam::provider_setup::Apply(chat.provider_id, bundle.local_directory, temp.root, argv, environment, error));
+	UAM_ASSERT(error.find("would replace the selected agent's instructions") != std::string::npos);
+	// Without an agent, a user's own value, TOML or raw text, is left as written rather than folded or refused.
 	for (const std::string& user_value : std::vector<std::string>{"developer_instructions='Be terse'", "developer_instructions=" + nlohmann::json("Be terse").dump()})
 	{
 		argv = {"codex", "-c", user_value};

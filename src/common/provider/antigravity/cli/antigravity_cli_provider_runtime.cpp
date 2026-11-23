@@ -3,6 +3,7 @@
 #include "app/chat_domain_service.h"
 #include "common/config/approval_modes.h"
 #include "common/provider/provider_ids.h"
+#include "common/config/execution_host_config.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
 
 #include "common/runtime/acp/acp_session_internal.h"
@@ -100,8 +101,15 @@ std::vector<std::string> AntigravityCliProviderRuntime::BuildInteractiveArgv(con
 	return argv;
 }
 
-bool AntigravityCliProviderRuntime::StageInteractiveAgentInstructions(const ExecutionHost&, std::string_view instructions, std::vector<std::string>&, std::string& staged_context, std::string& error) const
+bool AntigravityCliProviderRuntime::StageInteractiveAgentInstructions(const ExecutionHost& host, std::string_view instructions, std::vector<std::string>&, std::string& staged_context, std::string& error) const
 {
+	staged_context.clear();
+	// The SSH helper does not admit Antigravity provider context, so a remote launch would fail without a reason.
+	if (host.id != uam::execution_hosts::kLocalHostId)
+	{
+		error = "Antigravity CLI View over SSH cannot carry a custom agent's instructions yet. Use Chat for this agent.";
+		return false;
+	}
 	// Written as AGENTS.md in a private --add-dir directory, the route Central Setup uses for its instructions.
 	staged_context.assign(instructions);
 	error.clear();
