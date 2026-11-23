@@ -20,7 +20,7 @@ type Reply = { ok: boolean; status: number; json: () => Promise<unknown> }
 const reply = (body: unknown, status = 200): Reply => ({ ok: status >= 200 && status < 300, status, json: async () => body })
 
 /** Mirrors the companion listener: a 64 KiB wire cap, exact-offset appends and a single-use commit. */
-function mockCompanionServer(options: { requestChunks?: boolean; failAppendAt?: number } = {}) {
+function mockCompanionServer(options: { requestChunks?: boolean; failAppendAt?: number; failAppendStatus?: number; requestChunkBytes?: number } = {}) {
   const uploads = new Map<string, { total: number; bytes: number[] }>()
   const dispatched: Array<{ action: string; payload: unknown }> = []
   const fetch = vi.fn(async (_url: string, init: RequestInit) => {
@@ -33,7 +33,7 @@ function mockCompanionServer(options: { requestChunks?: boolean; failAppendAt?: 
     }
     switch (request.action) {
       case 'getCompanionCapabilities':
-        return reply({ protocolVersion: 1, features: { requestChunks: options.requestChunks ?? true }, limits: { maxRequestBytes: 32 * 1024 * 1024, requestChunkBytes: CHUNK_BYTES } })
+        return reply({ protocolVersion: 1, features: { requestChunks: options.requestChunks ?? true }, limits: { maxRequestBytes: 32 * 1024 * 1024, requestChunkBytes: options.requestChunkBytes ?? CHUNK_BYTES } })
       case 'beginCompanionRequestTransfer': {
         const id = `upload-${uploads.size + 1}`
         uploads.set(id, { total: request.payload.totalBytes, bytes: [] })
@@ -42,7 +42,7 @@ function mockCompanionServer(options: { requestChunks?: boolean; failAppendAt?: 
       case 'appendCompanionRequestChunk': {
         const upload = uploads.get(request.payload.id)
         if (!upload || request.payload.offset !== upload.bytes.length) return reply({ error: 'Offset mismatch.' }, 409)
-        if (request.payload.offset === options.failAppendAt) return reply({ error: 'Upload capacity exhausted.' }, 503)
+        if (request.payload.offset === options.failAppendAt) return reply({ error: 'Upload capacity exhausted.' }, options.failAppendStatus ?? 503)
         const decoded = Array.from(atob(request.payload.base64), (character) => character.charCodeAt(0))
         if (decoded.length > CHUNK_BYTES) return reply({ error: 'Chunk too large.' }, 413)
         upload.bytes.push(...decoded)
@@ -140,4 +140,53 @@ it('treats a lost commit reply as an unknown outcome without committing again', 
   expect(server.actions().filter((action) => action === 'commitCompanionRequestTransfer')).toHaveLength(1)
   expect(server.actions().filter((action) => action === 'beginCompanionRequestTransfer')).toHaveLength(1)
   expect(server.dispatched).toHaveLength(1)
+})
+
+it('stops before commit when the browser disconnects or switches token mid-upload', async () => {
+  const server = mockCompanionServer()
+  const respond = server.fetch.getMockImplementation()!
+  server.fetch.mockImplementation(async (url: string, init: RequestInit) => {
+    const result = await respond(url, init)
+    if (JSON.parse(String(init.body)).action === 'appendCompanionRequestChunk') window.localStorage.setItem('uam-companion-token', 'other-token')
+    return result
+  })
+  const result = await sendToCEF(promptOfEnvelopeBytes(100 * 1024, 'disconnect'), false)
+  expect(result).toMatchObject({ ok: false, error: 'Disconnected. The request was not sent.' })
+  expect(server.actions()).toEqual(['getCompanionCapabilities', 'beginCompanionRequestTransfer', 'appendCompanionRequestChunk'])
+  expect(server.dispatched).toEqual([])
+})
+
+it('tells the browser to pair again when its token is rejected during an upload, without committing', async () => {
+  const server = mockCompanionServer({ failAppendAt: 0, failAppendStatus: 401 })
+  const result = await sendToCEF(promptOfEnvelopeBytes(70 * 1024, 'rotated'), false)
+  expect(result).toMatchObject({ ok: false, error: 'UAM no longer accepts this connection token. Log out in Settings, then connect with the current token from the computer.' })
+  expect(server.actions()).not.toContain('commitCompanionRequestTransfer')
+})
+
+it('reports an older UAM without request uploads instead of beginning one', async () => {
+  const server = mockCompanionServer()
+  server.fetch.mockImplementationOnce(async () => reply({ error: 'Unknown companion action.' }, 403))
+  const result = await sendToCEF(promptOfEnvelopeBytes(70 * 1024, 'older-uam'), false)
+  expect(result.error).toContain('too large to send without chunked uploads')
+  expect(server.actions()).toEqual(['getCompanionCapabilities'])
+})
+
+it('refuses an upload that would need more than 4,096 chunks, as the iPhone client does', async () => {
+  const server = mockCompanionServer({ requestChunkBytes: 16 })
+  const result = await sendToCEF(promptOfEnvelopeBytes(70 * 1024, 'tiny-chunks'), false)
+  expect(result.error).toContain('too large to send without chunked uploads')
+  expect(server.actions()).toEqual(['getCompanionCapabilities'])
+})
+
+it('does not commit after an acknowledgement for the wrong offset', async () => {
+  const server = mockCompanionServer()
+  const respond = server.fetch.getMockImplementation()!
+  server.fetch.mockImplementation(async (url: string, init: RequestInit) => {
+    const request = JSON.parse(String(init.body))
+    if (request.action === 'appendCompanionRequestChunk') return reply({ id: request.payload.id, nextOffset: request.payload.offset + 1 })
+    return respond(url, init)
+  })
+  const result = await sendToCEF(promptOfEnvelopeBytes(70 * 1024, 'bad-ack'), false)
+  expect(result).toMatchObject({ ok: false, error: 'UAM returned an invalid upload acknowledgement. The request was not sent.' })
+  expect(server.actions()).toEqual(['getCompanionCapabilities', 'beginCompanionRequestTransfer', 'appendCompanionRequestChunk'])
 })

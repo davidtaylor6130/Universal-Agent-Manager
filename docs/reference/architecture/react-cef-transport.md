@@ -26,7 +26,7 @@ Sidebar hover/focus warm-up (`prefetchSessionMessages`, #624) reuses the ordinar
 
 - Frontend transport and state: `UI-V2/src/ipc/cefBridge.ts`, `UI-V2/src/store/useAppStore.ts`, `UI-V2/src/store/push/`.
 - Native dispatch and replies: `src/cef/uam_query_handler.*`, `src/cef/*_handlers.cpp`, `src/cef/state_serializer.*`, `src/cef/cef_push.*`.
-- Focused checks: `UI-V2/src/store/cpp/`, `UI-V2/src/ipc/companionBridge.test.ts`, `tests/uam_control_transport_tests.cpp`, `tests/state_workspace_snapshot_tests.cpp`.
+- Focused checks: `UI-V2/src/store/cpp/`, `UI-V2/src/ipc/companionBridge.test.ts`, `UI-V2/src/ipc/companionRequestUpload.test.ts`, `tests/uam_control_transport_tests.cpp`, `tests/state_workspace_snapshot_tests.cpp`.
 
 ## State push cost
 

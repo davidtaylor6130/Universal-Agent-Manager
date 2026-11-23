@@ -62,6 +62,8 @@ export function redactedEnvelope(envelope: CEFRequest): CEFRequest {
 export const COMPANION_DIRECT_REQUEST_BYTES = 60 * 1024
 const COMPANION_MAX_REQUEST_BYTES = 32 * 1024 * 1024
 const COMPANION_MAX_REQUEST_CHUNK_BYTES = 32 * 1024
+/** Matches the iPhone client: a server advertising tiny chunks cannot drive an unbounded number of appends. */
+const COMPANION_MAX_REQUEST_CHUNKS = 4096
 const COMPANION_TRANSFER_ACTIONS = ['beginCompanionRequestTransfer', 'appendCompanionRequestChunk', 'commitCompanionRequestTransfer']
 const COMPANION_TOKEN_REJECTED = 'UAM no longer accepts this connection token. Log out in Settings, then connect with the current token from the computer.'
 const COMPANION_UPLOAD_UNAVAILABLE = 'This request is too large to send without chunked uploads. Update UAM on the computer or shorten the request.'
@@ -114,7 +116,8 @@ async function uploadCompanionRequest(token: string, action: string, bytes: Uint
   const { maxRequestBytes, requestChunkBytes: chunkBytes } = capabilities.data.limits ?? {}
   if (capabilities.data.protocolVersion !== 1 || capabilities.data.features?.requestChunks !== true
     || !Number.isSafeInteger(maxRequestBytes) || (maxRequestBytes as number) <= 0
-    || !Number.isSafeInteger(chunkBytes) || (chunkBytes as number) <= 0 || (chunkBytes as number) > COMPANION_MAX_REQUEST_CHUNK_BYTES) return { error: COMPANION_UPLOAD_UNAVAILABLE }
+    || !Number.isSafeInteger(chunkBytes) || (chunkBytes as number) <= 0 || (chunkBytes as number) > COMPANION_MAX_REQUEST_CHUNK_BYTES
+    || Math.ceil(bytes.length / (chunkBytes as number)) > COMPANION_MAX_REQUEST_CHUNKS) return { error: COMPANION_UPLOAD_UNAVAILABLE }
   if (bytes.length > (maxRequestBytes as number)) return { error: COMPANION_REQUEST_TOO_LARGE }
   const transfer = await step<{ id?: unknown; totalBytes?: unknown; chunkBytes?: unknown; nextOffset?: unknown }>('beginCompanionRequestTransfer', { totalBytes: bytes.length })
   if ('error' in transfer) return transfer
