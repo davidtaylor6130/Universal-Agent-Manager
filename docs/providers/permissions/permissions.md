@@ -10,6 +10,12 @@ A chat's permission level changes only when someone changes it: the composer chi
 
 **Implementation: Implemented for the shared switch, rollback and logging routes**; live-provider, Windows, SSH and user acceptance remain pending.
 
+## Remote commits
+
+**Decided by David, 2026-11-23.** By default, every action that permanently commits somewhere other than the person's computer needs the person's explicit approval, in every permission mode, YOLO and other full-auto modes included, whether the person or an agent started it: an SVN commit or publish, an `svn copy` to a repository URL, `git push`, creating a remote branch or tag, and merging a pull request. Only a hidden advanced setting may turn this off.
+
+**Implementation note:** not built. UAM does not yet single these actions out, so YOLO approves them like any other request, and a provider's own full-auto mode can run commands such as `git push` without asking UAM at all ([recorded gap](../../documentation-review.md#approval-for-remote-commits)).
+
 ## Captured read restrictions
 
 For a captured read-only agent or goal-review turn, manual decisions, automatic approvals, saved-response recovery and displayed choices share the same runtime ceiling. A goal review's ceiling also covers a permission request that arrives after the review turn ended, including one left waiting for the user, until the next turn starts. Provider permission requests carry no turn identity, so a review request that arrives only after the next turn has started (such as an immediate goal-loop worker turn) is judged under that turn's access; this is a known limit. Native launch settings must retain that ceiling, so the working chat’s edit permission cannot broaden its goal reviewer. Only an explicit write access grants write: a missing, unknown or unreadable saved access value is treated as read-only. The provider-native feature preference changes which instructions an agent uses, never its read ceiling. Only supported one-time read actions and explicit denial or cancellation are available; persistent and session-wide grants cannot widen the restriction, even under YOLO. UI filtering preserves the original native request and offers, and the backend validates every response again. Recognized non-action questions remain answerable; ordinary native Plan exit retains its separate current-request decision and confirmation flow. Unknown action or reply shapes must not acquire approval from their labels; retain a supported denial or Cancel, with Cancel as the safe default.

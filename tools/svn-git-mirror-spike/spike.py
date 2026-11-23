@@ -414,10 +414,18 @@ class Mirror:
             return f"{path} has Unix line endings, but SVN stores it with Windows ones; convert it before publishing."
         return None
 
+    def require_no_journal(self) -> None:
+        """One journal per mirror: while it exists, nothing is written to SVN on any path."""
+        if not self.journal_path.exists():
+            return
+        journal = json.loads(self.journal_path.read_text(encoding="utf-8"))
+        if journal.get("state") == "awaiting-pull":
+            raise SpikeError(f"SVN has newer revisions on {journal['path']}; pull {journal['path']}, rebase and publish again.")
+        raise SpikeError("A publish was interrupted; UAM settles it before anything else is published.")
+
     def preflight(self, svn_path: str, branch: str) -> list[str]:
         self.reconcile(svn_path)
-        if self.journal_path.exists():
-            raise SpikeError("SVN has revisions the mirror has not pulled yet; pull them and rebase before publishing.")
+        self.require_no_journal()
         tip = self.tip(svn_path)
         base = self.t.git("merge-base", tip, branch, git_dir=self.git_dir, check=False).stdout.strip()
         if base != tip:
@@ -573,7 +581,7 @@ class Mirror:
             # stop and ask for a Pull; the journal keeps the commit's revision so that Pull settles it.
             others = [r for r in self.revisions_on_path(svn_path, base_rev + 1, rev) if r != rev]
             if others:
-                journal.update({"state": "awaiting-pull", "rev": rev})
+                journal.update({"state": "awaiting-pull", "rev": rev, "svn_pid": None})  # That svn has finished.
                 self.write_journal(journal)
                 raise SpikeError(f"\"{self.subject(commit)}\" is in SVN, but SVN also has newer revisions from someone else; "
                                  "pull them, rebase and publish the rest.")
@@ -598,10 +606,21 @@ class Mirror:
         svn_path = entry["path"]
         if entry.get("state") == "awaiting-pull":
             return "awaiting pull"  # The commit landed and nothing is in doubt; the person's Pull settles it.
+        # Find the commit's own revision from SVN's record; recovery, like Publish, never imports anyone else's.
+        head = int(self.t.svn("info", "--show-item", "revision", self.repo_root_url).stdout.strip())
+        candidates = self.revisions_on_path(svn_path, entry["base_rev"] + 1, head)
+        own = next((r for r in candidates if self.revision_info(svn_path, r)["props"].get(REVPROP_COMMIT) == entry["commit"]), None)
         self.reset_bridge(svn_path, entry["parent"], base_rev=entry["base_rev"])
+        if own is None:
+            self.write_journal(None)
+            return "not committed"
+        if any(r < own for r in candidates):
+            entry.update({"state": "awaiting-pull", "rev": own, "svn_pid": None})
+            self.write_journal(entry)
+            return "awaiting pull"
         self.publishing = True  # Recovery's own pull settles the journal.
         try:
-            self.pull(svn_path)
+            self.pull(svn_path, up_to=own)
         finally:
             self.publishing = False
         # The stop may have come after the pull had already recorded the revision; the pull above then finds nothing
@@ -627,6 +646,7 @@ class Mirror:
 
     def publish_branch(self, from_path: str, new_path: str, git_branch: str, message: str) -> tuple[int, int]:
         """Server-side copy (#520 default: from the revision the branch starts from), then mirror the new path."""
+        self.require_no_journal()
         from_rev, origin = self.branch_base_revision(from_path, git_branch)
         res = self.t.svn("copy", "-m", message, "--with-revprop", f"{REVPROP_BRANCH}={git_branch}",
                          f"{self.url(from_path)}@{from_rev}", self.url(new_path))
@@ -943,6 +963,33 @@ class Run:
         self.check("S7 crash after commit: recovery maps the revision, nothing published twice",
                    outcome == "landed" and restarted.tip("trunk") == c7c and again == [] and head_before == head_after,
                    f"recovery: {outcome}")
+        mirror = restarted
+
+        # S7c: someone else's revision lands before the commit, and UAM stops right after it: recovery maps nothing of theirs.
+        def c7r():
+            (agent / "src" / "util.c").write_text("int util(void) { return 70; }\n", encoding="utf-8")
+        agent_commit("Agent sets util to 70", c7r)
+        mirror.before_commit = lambda: self.other_user_commit("src/race.c", "int race;\n", "Bob adds race.c")
+        mirror.crash_after_commit = True
+        try:
+            mirror.publish("trunk", "chat/feature")
+        except KeyboardInterrupt:
+            pass
+        mirror.crash_after_commit = False
+        restarted = Mirror(t, mirror.home, self.root)
+        tip_before = restarted.tip("trunk")
+        outcome = restarted.recover()
+        untouched = restarted.tip("trunk") == tip_before
+        try:
+            restarted.publish("trunk", "chat/feature")
+            message = "published"
+        except SpikeError as e:
+            message = str(e)
+        pulled = restarted.pull("trunk")
+        self.check("S7c stop after a raced commit: recovery imports nothing, asks for a Pull of trunk, and the Pull settles it",
+                   outcome == "awaiting pull" and untouched and "pull trunk" in message and len(pulled) == 2
+                   and not restarted.journal_path.exists(), message)
+        t.git("rebase", "-q", restarted.ref("trunk"), cwd=agent)
         mirror = restarted
 
         # S7b: a stop after the publish recorded its revision but before the journal was cleared.
