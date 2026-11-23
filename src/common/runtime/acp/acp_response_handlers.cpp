@@ -721,7 +721,20 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 		}
 		if (session.lifecycle_state == kAcpLifecycleError)
 		{
-			RecoverDisconnectedRemoteAcpTransport(app, session, chat, session.last_error);
+			// The provider answered and refused (Copilot without SDK protocol 3): the transport is healthy, so this is
+			// final, as an initialize error response is. Remote recovery relaunched the same refusal and then read
+			// the replacement's reply as a broken frame, hiding the real message.
+			const std::string refusal = session.last_error;
+			AppendAcpDiagnostic(session, "response", "initialize_refused", method, request_id, false, 0, refusal);
+			if (session.model_discovery_only)
+			{
+				if (app.provider_model_catalog != nullptr)
+					app.provider_model_catalog->RememberRefreshFailure(session.provider_id, refusal,
+					    DiscoveryWorkspace(app, chat), chat.execution_host_id, session.model_catalog_scope_key);
+				StopBackgroundModelDiscovery(app, session);
+				return;
+			}
+			InvalidateAcpTransport(app, session, chat, refusal);
 		}
 		return;
 	}

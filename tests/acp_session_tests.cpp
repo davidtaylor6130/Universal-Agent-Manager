@@ -22597,6 +22597,67 @@ UAM_TEST(CopilotRejectedEmptyMigrationRefusesDirectInputUntilExplicitStop)
 }
 
 
+// A provider that answers initialize and refuses (Copilot without SDK protocol 3) has a healthy transport. On SSH
+// that refusal was treated as a disconnect: UAM relaunched the remote process, logged a reconnect, then read the
+// replacement's reply as an invalid native frame and lost the refusal. It must be final, with its own message.
+UAM_TEST(AcpRemoteInitializeRefusalIsFinalWithoutRemoteRecovery)
+{
+#if UAM_ENABLE_RUNTIME_COPILOT_CLI
+	for (const bool discovery : {false, true})
+	{
+		HostCallerPrivateSink fixture(true);
+		auto& session = *fixture.session;
+		ChatSession& chat = fixture.app.chats.front();
+		chat.provider_id = session.provider_id = uam::provider_ids::kCopilotCli;
+		chat.native_session_id.clear();
+		session.session_id.clear();
+		session.protocol_kind = uam::provider_profile_constants::kProtocolCopilotSdk;
+		session.initialized = session.session_ready = false;
+		session.lifecycle_state = "starting";
+		session.initialize_request_id = 1;
+		session.pending_request_methods[1] = uam::acp_methods::kInitialize;
+		fixture.app.provider_model_catalog = std::make_unique<uam::ProviderModelCatalogService>();
+		fixture.app.provider_model_catalog->Initialize(fixture.app.data_root);
+		if (discovery)
+		{
+			session.model_discovery_only = true;
+			session.model_catalog_scope_key = fixture.app.provider_model_catalog->CaptureScopeKey(
+			    chat.provider_id, chat.workspace_directory, chat.execution_host_id);
+			UAM_ASSERT(fixture.app.provider_model_catalog->BeginDiscovery(chat.provider_id,
+			    chat.workspace_directory, chat.execution_host_id));
+			fixture.app.provider_model_catalog->MarkDiscoveryLaunchStarted(chat.provider_id,
+			    chat.workspace_directory, chat.execution_host_id);
+		}
+		const std::string refusal = "Copilot SDK server protocol 3 is required; update the CLI or UAM before retrying.";
+		(void)uam::ProcessAcpLineForTests(fixture.app, session, chat,
+		    nlohmann::json{{"jsonrpc", "2.0"}, {"id", 1}, {"result", {{"protocolVersion", 2}}}}.dump());
+		fixture.FlushWire();
+		// No remote recovery: nothing relaunches the provider that just refused.
+		UAM_ASSERT(!session.recovering_remote_process && !session.recovering_remote_turn);
+		UAM_ASSERT(!session.reconnect_pending);
+		UAM_ASSERT(std::ranges::none_of(session.diagnostics, [](const uam::AcpDiagnosticEntryState& entry)
+		    { return entry.reason == "remote_transport_recovery_scheduled"; }));
+		UAM_ASSERT(std::ranges::any_of(session.diagnostics, [&](const uam::AcpDiagnosticEntryState& entry)
+		    { return entry.reason == "initialize_refused" && entry.message == refusal; }));
+		// The refused process is stopped through the helper, with the exact stop line.
+		UAM_ASSERT(!session.running && session.remote_stop_pending);
+		UAM_ASSERT_EQ(*fixture.wire, std::string(uam::remote::kRemoteStopControlLine));
+		if (discovery)
+		{
+			UAM_ASSERT_EQ(fixture.app.provider_model_catalog->GetProviderRefreshError(chat.provider_id,
+			    chat.workspace_directory, chat.execution_host_id), refusal);
+			UAM_ASSERT(!fixture.app.provider_model_catalog->IsDiscoveryPending(chat.provider_id,
+			    chat.workspace_directory, chat.execution_host_id));
+		}
+		else
+		{
+			UAM_ASSERT_EQ(session.last_error, refusal);
+			UAM_ASSERT_EQ(session.lifecycle_state, std::string("error"));
+		}
+	}
+#endif
+}
+
 UAM_TEST(AcpCapturedRecoveryCompletedRetryRetirementSaveFailureRetainsExactPolicy)
 {
 #if UAM_ENABLE_RUNTIME_CODEX_CLI
