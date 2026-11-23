@@ -1,6 +1,6 @@
 # #524 compute pools, first slice — report
 
-**Final SHA:** `4d330d456a8b257fdc07e9f80c07e7e89045c403` on `v5/feat-524-compute-pool-slice` (one commit on `origin/uam/v5.2-sync-main`, pushed). No PR, issue or comment was created.
+**Final SHA:** `e277253eee6569d2faa38cac72172cc31f14691e` on `v5/feat-524-compute-pool-slice` (two commits on `origin/uam/v5.2-sync-main`, pushed: `4d330d45` the slice, `e277253e` David's restart decision). No PR, issue or comment was created.
 
 ## What changed
 - **Status text:** a held turn now reads "Waiting for <pool> slot (2/2 in use)" (`ChatView.tsx` and its test).
@@ -39,6 +39,12 @@
   - The restart sentence is qualified for input queued behind the held turn.
   - Declined: driving the relaunch through `PollAllAcpSessions`. That launch path is already covered by `AcpTimeoutStoppedTurnRestartsItsOutputLessDeliveredPrompt`, and this test's claim starts at session setup.
 
+## Product decision recorded (2026-11-23)
+David kept today's restart behaviour: a turn waiting for a pool slot stays in its chat with Retry after an app restart. Today's SSH behaviour is kept too: a held SSH turn is restarted or reconnected, checked at the pool again and sent by itself. Automatic rejoin is recorded as a later slice in `docs/documentation-review.md` ("Compute pool wait after a restart", dated 2026-11-23), and `docs/settings/compute-pools.md` links to it. The restart test for this behaviour is `ComputePoolTurnHeldAtRestartStaysInItsChatAndIsCheckedAgainOnRetry` (already in `4d330d45`).
+- **Round 3 (fresh-context claude-opus-5-5, decision docs only): 3 suggested (0 blocker, 0 should-fix, 3 nits), 2 implemented.**
+  - Implemented: the SSH sentence is now worded as "likewise kept" rather than presented as a separate ruling, and it says "restarted or reconnected" instead of "relaunched".
+  - Declined: adding an SSH restart test. David asked for the local Retry behaviour test, and the SSH relaunch is existing, unchanged behaviour.
+
 ## Overlap with parallel branches
 Some overlap was unavoidable:
 - `UI-V2/src/components/views/ChatView.tsx:3794`: `v5/feat-host-admission-policy` rewrites the same status line, adding an optional `message` and Run anyway. The merge is a one-line conflict; keep their `message ??` fallback and use `(n/m in use)` in the template.
@@ -50,7 +56,7 @@ Some overlap was unavoidable:
   - No `src/` file changed.
 
 ## Open questions for David
-1. After an app restart, should a turn that was waiting for a pool slot rejoin the line by itself, or stay in its chat for Retry as it does now? If it should rejoin, does it go behind or ahead of turns sent since? Today local chats wait for Retry, while SSH chats already rejoin by themselves; should those two match? Rejoining for local chats would be a separate, medium-sized slice.
+1. Answered 2026-11-23: keep Retry after a restart; automatic rejoin is a later slice.
 2. "(n/m in use)" counts slots promised to older waiters as in use, so a chat can show 2/2 while the Settings page shows 1 in use. Keep the label, or show only running turns?
 
 ## New issue previews
@@ -60,7 +66,7 @@ None. The open questions belong to #524 and are recorded in `docs/documentation-
 **Title:** `test(compute-pools): show "in use" and cover continuations and restart`
 
 ```markdown
-A turn held for a compute pool slot now shows "Waiting for <pool> slot (2/2 in use)". New native tests show that manual compaction, a delivered sub-agent result and a native steer start on a full pool without waiting and count towards use (a steer keeps its turn's slot). A turn held across an app restart stays unsent in its chat; Retry checks it at the gate again as a new turn and sends it once. Automatic rejoin after a restart is not built; it is recorded as an open decision. Docs, the six provider capability rows and the source map are updated.
+A turn held for a compute pool slot now shows "Waiting for <pool> slot (2/2 in use)". New native tests show that manual compaction, a delivered sub-agent result and a native steer start on a full pool without waiting and count towards use (a steer keeps its turn's slot). A turn held across an app restart stays unsent in its chat; Retry checks it at the gate again as a new turn and sends it once. Automatic rejoin after a restart is not built: David decided on 2026-11-23 to keep Retry, and rejoin is recorded as a later slice. Docs, the six provider capability rows and the source map are updated.
 
 <Before/After: chat with a turn held for a compute pool slot>
 
@@ -72,15 +78,17 @@ A turn held for a compute pool slot now shows "Waiting for <pool> slot (2/2 in u
 - New native tests: syntax and type check only (g++ `-fsyntax-only` against the real headers with stub CEF headers). They were not built or run: the desktop and test build refuses Linux, and no macOS or Windows machine was available.
 - Runner build: not needed (no `src/common` or `src/remote` change); an attempted configure failed on a blocked dependency download.
 
-**Review:** 1 independent reviewer, 2 iterations (fresh context each).
+**Review:** 1 independent reviewer, 3 iterations (fresh context each).
 
 - Independent claude-opus-5-5 (round 1): 8 suggested; 6 implemented.
 - Independent claude-opus-5-5 (re-check): 7 suggested; 6 implemented.
+- Independent claude-opus-5-5 (decision docs): 3 suggested; 2 implemented.
 
 Declined:
 - Rewording a comment in `app_state.h`: parallel branches edit beside it.
 - Updating the V5.1 change log: it is a historical record.
 - Driving the relaunch through a poll: existing tests cover that path.
+- An SSH restart test: David asked for the local Retry test, and SSH behaviour is unchanged.
 
 UI change: still needs Claude review and David's approval under AGENTS.md.
 
