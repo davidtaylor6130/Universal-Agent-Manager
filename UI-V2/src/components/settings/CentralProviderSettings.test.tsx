@@ -61,7 +61,7 @@ it('keeps a rejected save guarded and leaves only after successful retry', async
   act(() => handle.current!.requestLeave(leave))
   await click('Save and leave')
   expect(leave).not.toHaveBeenCalled()
-  expect(vi.mocked(reportAppFailure)).toHaveBeenCalledWith('Private save rejection', expect.any(String))
+  expect(vi.mocked(reportAppFailure)).toHaveBeenCalledWith(expect.stringMatching(/not saved\.$/), expect.stringContaining('Private save rejection'))
   expect(host.textContent).toContain('private-AGENTS.md')
   await click('Save and leave')
   expect(save).toHaveBeenCalledTimes(2)
@@ -174,7 +174,7 @@ it('focuses Retry after a read failure and shows the defaults error when leaving
   act(() => handle.current!.requestLeave(leave))
   await click('Save and leave')
   const dialog = document.querySelector('[role="alertdialog"]')!
-  expect(vi.mocked(reportAppFailure)).toHaveBeenCalledWith('Defaults could not be saved', expect.any(String))
+  expect(vi.mocked(reportAppFailure)).toHaveBeenCalledWith('Provider defaults were not saved.', expect.stringContaining('Defaults could not be saved'))
   expect(leave).not.toHaveBeenCalled()
 })
 
