@@ -286,6 +286,22 @@ UAM_TEST(DelegationLimitsLiveAgentsPerChatAndPerTurn)
 	// The next turn starts a fresh allowance.
 	++app.acp_sessions.front()->turn_serial;
 	UAM_ASSERT(delegate().value("ok", false));
+
+	// Children can outlive a finished parent, so every live run in the chat counts toward its total of 20.
+	settle_root_runs();
+	for (int index = 0; index < 20; ++index)
+	{
+		AgentRun orphan = app.agent_runs.front();
+		orphan.id = "orphan-" + std::to_string(index);
+		orphan.parent_run_id = "finished-parent";
+		orphan.depth = 2;
+		orphan.status = "queued";
+		app.agent_runs.push_back(std::move(orphan));
+	}
+	UAM_ASSERT(!uam::AgentRunScheduler::Enqueue(app, "root", "", "worker", "Over the chat total.", &run_id, &error));
+	UAM_ASSERT_EQ(error, std::string("This chat already has 20 agents queued or running; wait for some to finish."));
+	// The other chat keeps its own allowance.
+	UAM_ASSERT(uam::AgentRunScheduler::Enqueue(app, "other-root", "", "worker", "Other chat again.", &run_id, &error));
 }
 
 UAM_TEST(BuiltinCapturedDefinitionsRoundTripWithoutPromotingLegacySnapshots)
