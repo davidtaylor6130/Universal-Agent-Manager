@@ -1664,7 +1664,7 @@ namespace uam
 		struct ChatSavePace { double finished_at = 0.0; double cost_seconds = 0.0; };
 		std::unordered_map<std::string, ChatSavePace> chat_save_pace_by_chat_id;
 		// Consecutive failed transcript saves per chat: told to the user once, then retried with backoff.
-		struct ChatSaveFailure { int attempts = 0; double retry_at = 0.0; };
+		struct ChatSaveFailure { int attempts = 0; double retry_at = 0.0; bool barrier_logged = false; };
 		std::unordered_map<std::string, ChatSaveFailure> chat_save_failures_by_chat_id;
 		double chat_save_records_pruned_at = 0.0;
 		// Rows of the most recently saved transcripts, reused as the next save's unchanged prefix so each

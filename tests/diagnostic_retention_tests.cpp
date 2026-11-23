@@ -31,6 +31,7 @@ UAM_TEST(DiagnosticAuditLogExpiresByAgeAndKeepsDeletionLines)
 	    "torn fragment without a stamp"));
 	std::string error;
 	UAM_ASSERT(uam::diagnostics::StartFileLog(temp.root / "uam.log", error, 0));
+	struct StopLog { ~StopLog() { uam::diagnostics::StopFileLog(); } } stop_log; // A failed assertion must not leak the global log.
 	UAM_ASSERT(uam::diagnostics::StartAuditLog(audit, error, 90));
 	UAM_ASSERT(!uam::diagnostics::StartAuditLog(audit, error, 90)); // One audit owner per file log.
 	uam::diagnostics::WriteAudit("Chat storage delete: reason=create_rollback, chat_id=new-chat, primary=removed, backup=absent, result=ok");
@@ -59,6 +60,7 @@ UAM_TEST(DiagnosticAuditLogRefusesUnsafePathsAndNeedsFileLog)
 	UAM_ASSERT(!error.empty());
 	uam::diagnostics::WriteAudit("Chat storage delete: reason=user_deletion, chat_id=no-audit-file"); // stderr only, no crash.
 	UAM_ASSERT(uam::diagnostics::StartFileLog(temp.root / "uam.log", error, 0));
+	struct StopLog { ~StopLog() { uam::diagnostics::StopFileLog(); } } stop_log;
 	fs::create_directories(temp.root / "audit-dir");
 	UAM_ASSERT(!uam::diagnostics::StartAuditLog(temp.root / "audit-dir", error));
 	UAM_ASSERT(!uam::diagnostics::StartAuditLog(temp.root / "uam-audit.log", error, 0));
@@ -87,7 +89,9 @@ UAM_TEST(DiagnosticAuditTextCompactionDropsOldestToFitCap)
 UAM_TEST(PollTimingSummaryReplacesPerTickLinesWithWindowPercentiles)
 {
 	using Clock = uam::diagnostics::StageTimingSummary::Clock;
-	uam::diagnostics::StageTimingSummary summary("PollTick", {"runtimes", "push"});
+	uam::diagnostics::StageTimingSummaryOptions options;
+	options.window = std::chrono::seconds(300);
+	uam::diagnostics::StageTimingSummary summary("PollTick", {"runtimes", "push"}, options);
 	Clock::time_point now = Clock::now();
 	std::vector<std::string> lines;
 	const auto record = [&](int runtimes, int push)

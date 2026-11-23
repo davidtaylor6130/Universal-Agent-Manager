@@ -50,6 +50,7 @@
 #include <cmath>
 #include <limits>
 #include <mutex>
+#include <utility>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -2913,7 +2914,8 @@ namespace
 		return mutex;
 	}
 
-	// The failure record of the SaveChat call running on this thread; a nested save without one hides it.
+	// The failure record of the outermost SaveChat/Prepare call on this thread that asked for one; a nested
+	// call without its own record reports into it, so the first cause of the outer failure is kept.
 	thread_local ChatSaveFailure* t_saveFailure = nullptr;
 
 	// Records the first cause of a failing save for a caller that asked for it; always returns false.
@@ -2928,9 +2930,11 @@ namespace
 	class ScopedSaveFailure
 	{
 	public:
-		explicit ScopedSaveFailure(ChatSaveFailure* failure) : m_failure(failure), m_previous(std::exchange(t_saveFailure, failure))
+		explicit ScopedSaveFailure(ChatSaveFailure* failure) : m_failure(failure), m_previous(t_saveFailure)
 		{
-			if (failure != nullptr) *failure = {};
+			if (failure == nullptr) return;
+			*failure = {};
+			t_saveFailure = failure;
 		}
 		~ScopedSaveFailure() { t_saveFailure = m_previous; }
 		bool Finish(bool saved) const
@@ -4768,17 +4772,25 @@ std::optional<std::string> ChatRepository::ChatSummaryStorageRevision(const fs::
 	return StorageRevision(AppPaths::UamChatSummaryFilePath(data_root, chat_id));
 }
 
-std::shared_ptr<PreparedChatSave> ChatRepository::PrepareChatSave(const fs::path& data_root, const ChatSession& chat, std::string_view expected_storage_revision)
+std::shared_ptr<PreparedChatSave> ChatRepository::PrepareChatSave(const fs::path& data_root, const ChatSession& chat, std::string_view expected_storage_revision, ChatSaveFailure* failure)
 {
-	if (!expected_storage_revision.empty() && ChatStorageRevision(data_root, chat.id) != expected_storage_revision) return nullptr;
+	const ScopedSaveFailure scope(failure);
+	std::shared_ptr<PreparedChatSave> prepared = PrepareChatSaveRecorded(data_root, chat, expected_storage_revision);
+	(void)scope.Finish(prepared != nullptr);
+	return prepared;
+}
+
+std::shared_ptr<PreparedChatSave> ChatRepository::PrepareChatSaveRecorded(const fs::path& data_root, const ChatSession& chat, std::string_view expected_storage_revision)
+{
+	if (!expected_storage_revision.empty() && ChatStorageRevision(data_root, chat.id) != expected_storage_revision) return SaveRefused("primary_changed_since_capture"), nullptr;
 	std::shared_ptr<PreparedChatSave> prepared = std::make_shared<PreparedChatSave>();
 	prepared->passive_archive_worker_migration = chat.imported_read_only;
 	prepared->expected_storage_revision = expected_storage_revision.empty() ? ChatStorageRevision(data_root, chat.id).value_or("unreadable") : std::string(expected_storage_revision);
-	if (!SaveChatImpl(data_root, chat, false, false, prepared.get())) return nullptr;
+	if (!SaveChatImpl(data_root, chat, false, false, prepared.get())) return SaveFailed("preparation_write"), nullptr;
 	const std::optional<std::string> revision = StorageRevision(prepared->primary_temp);
-	if (!revision) return nullptr;
+	if (!revision) return SaveFailed("prepared_file_unreadable"), nullptr;
 	prepared->primary_revision = *revision;
-	if (!expected_storage_revision.empty() && ChatStorageRevision(data_root, chat.id) != expected_storage_revision) return nullptr;
+	if (!expected_storage_revision.empty() && ChatStorageRevision(data_root, chat.id) != expected_storage_revision) return SaveRefused("primary_changed_since_capture"), nullptr;
 	return prepared;
 }
 
@@ -5093,17 +5105,25 @@ bool ChatRepository::MatchesSavedChatPrimaryWitness(const fs::path& data_root, s
 	    StorageRevision(path) == std::optional<std::string>(witness.revision);
 }
 
-std::shared_ptr<PreparedChatSave> ChatRepository::PrepareLoadedChatBindingSave(const fs::path& data_root, const ChatSession& chat, const SavedChatPrimaryWitness& expected)
+std::shared_ptr<PreparedChatSave> ChatRepository::PrepareLoadedChatBindingSave(const fs::path& data_root, const ChatSession& chat, const SavedChatPrimaryWitness& expected, ChatSaveFailure* failure)
+{
+	const ScopedSaveFailure scope(failure);
+	std::shared_ptr<PreparedChatSave> prepared = PrepareLoadedChatBindingSaveRecorded(data_root, chat, expected);
+	(void)scope.Finish(prepared != nullptr);
+	return prepared;
+}
+
+std::shared_ptr<PreparedChatSave> ChatRepository::PrepareLoadedChatBindingSaveRecorded(const fs::path& data_root, const ChatSession& chat, const SavedChatPrimaryWitness& expected)
 {
 	if (!chat.messages_loaded || chat.messages.empty() || chat.imported_read_only ||
-	    !MatchesSavedChatPrimaryWitness(data_root, chat.id, expected)) return {};
+	    !MatchesSavedChatPrimaryWitness(data_root, chat.id, expected)) return SaveRefused("primary_changed_since_capture"), nullptr;
 	auto prepared = std::make_shared<PreparedChatSave>();
 	prepared->expected_storage_revision = expected.revision;
 	prepared->binding_expected_primary = expected;
 	prepared->binding_data_root = data_root;
 	SavedChatPrimaryWitness emitted;
-	if (!SaveChatImpl(data_root, chat, false, false, prepared.get(), nullptr, nullptr, nullptr, &emitted) ||
-	    !MatchesSavedChatPrimaryWitness(data_root, chat.id, expected)) return {};
+	if (!SaveChatImpl(data_root, chat, false, false, prepared.get(), nullptr, nullptr, nullptr, &emitted)) return SaveFailed("preparation_write"), nullptr;
+	if (!MatchesSavedChatPrimaryWitness(data_root, chat.id, expected)) return SaveRefused("primary_changed_since_capture"), nullptr;
 	prepared->binding_emitted_primary = std::move(emitted);
 	return prepared;
 }

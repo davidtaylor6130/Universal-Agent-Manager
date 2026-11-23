@@ -116,6 +116,20 @@ namespace uam_cef_globals
 
 namespace
 {
+	// One p50/p95/max summary per minute that had a tick of 50 ms or more, plus single lines only from 250 ms;
+	// a line per slow tick filled almost half of the retained log. UI-thread only, like the poll itself.
+	uam::diagnostics::StageTimingSummary& PollTiming()
+	{
+		static uam::diagnostics::StageTimingSummary timing("PollTick", {"runtimes", "terminals", "memory", "controls", "computer_use", "shell_actions",
+		    "workspace_availability", "providers", "history", "retention", "catalogs", "push", "awake"});
+		return timing;
+	}
+
+	void FlushPollTiming()
+	{
+		if (std::optional<std::string> summary = PollTiming().Flush(std::chrono::steady_clock::now())) uam::diagnostics::Write(*summary);
+	}
+
 	volatile std::sig_atomic_t g_managementStopRequested = 0;
 	void RequestManagementStop(int) { g_managementStopRequested = 1; }
 
@@ -602,11 +616,7 @@ void Application::PollTickStages(std::chrono::steady_clock::time_point poll_star
 	{
 		return std::chrono::duration_cast<std::chrono::milliseconds>(end - begin);
 	};
-	// One p50/p95/max summary per five minutes that had a tick of 50 ms or more, plus single lines only from 250 ms;
-	// a line per slow tick filled almost half of the retained log. ponytail: UI-thread only, like the poll itself.
-	static uam::diagnostics::StageTimingSummary poll_timing("PollTick", {"runtimes", "terminals", "memory", "controls", "computer_use", "shell_actions",
-	    "workspace_availability", "providers", "history", "retention", "catalogs", "push", "awake"});
-	for (const std::string& line : poll_timing.Record(poll_finished, poll_duration, {
+	for (const std::string& line : PollTiming().Record(poll_finished, poll_duration, {
 	         milliseconds(poll_started, runtimes_finished),
 	         milliseconds(runtimes_finished, terminals_finished),
 	         milliseconds(terminals_finished, memory_finished),
@@ -1271,6 +1281,7 @@ void Application::Shutdown()
 		if (m_app.html_view_render_checker && !m_app.html_view_render_checker->Idle())
 		{
 			uam::diagnostics::Write("[HTML view check] A hidden browser did not close before shutdown.");
+			FlushPollTiming();
 			if (m_dataRootLock != nullptr) uam::diagnostics::StopFileLog(); // Writes are queued, and _Exit would drop this one.
 			std::_Exit(uam::platform::ApplicationRestartRequested() ? uam::platform::RequestedRestartExitCode() : m_exitCode);
 		}
@@ -1296,6 +1307,7 @@ void Application::Shutdown()
 	}
 	// Join the cache writer while this instance still owns the data-root lock.
 	m_app.provider_model_catalog.reset();
+	FlushPollTiming(); // The last partial window would otherwise be lost at every quit.
 	if (m_dataRootLock != nullptr) uam::diagnostics::StopFileLog();
 	for (const auto& session : m_app.acp_sessions)
 		if (session && session->running)

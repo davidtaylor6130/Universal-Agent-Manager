@@ -569,6 +569,23 @@ UAM_TEST(ChatSaveReturnsItsRefusalOrWriteErrorCause)
 #endif
 }
 
+UAM_TEST(BackgroundChatSavePreparationReturnsItsCause)
+{
+	// The streaming save prepares on a worker; its refusal must reach the log as a refusal, not a storage failure.
+	SaveStallFixture fixture(4, 64);
+	const fs::path journal = fixture.app.data_root / "queue-outboxes" / "stall-chat.json";
+	fs::create_directories(journal.parent_path());
+	UAM_ASSERT(uam::io::WriteTextFile(journal, "{broken"));
+	ChatSaveFailure failure;
+	UAM_ASSERT(ChatRepository::PrepareChatSave(fixture.app.data_root, fixture.Chat(), {}, &failure) == nullptr);
+	UAM_ASSERT(failure.refused && failure.reason == "queue_journal_unreadable");
+	fs::remove(journal);
+	UAM_ASSERT(ChatRepository::PrepareChatSave(fixture.app.data_root, fixture.Chat(), "not-the-revision", &failure) == nullptr);
+	UAM_ASSERT(failure.refused && failure.reason == "primary_changed_since_capture");
+	UAM_ASSERT(ChatRepository::PrepareChatSave(fixture.app.data_root, fixture.Chat(), {}, &failure) != nullptr);
+	UAM_ASSERT(failure.reason.empty());
+}
+
 UAM_TEST(ChatSaveFailureLogsOneLineWithItsCauseAtDurableBarrier)
 {
 	SaveStallFixture fixture(4, 64);
@@ -581,12 +598,13 @@ UAM_TEST(ChatSaveFailureLogsOneLineWithItsCauseAtDurableBarrier)
 	// Not yet due, so only the quit barrier attempts it: the case that logged two reasonless lines per chat.
 	uam::acp_detail::ScheduleChatSave(fixture.app, fixture.Chat(), 100.0);
 	uam::FlushPendingChatSaves(fixture.app, true);
+	uam::FlushPendingChatSaves(fixture.app, true); // Quit runs two forced barriers; the second must stay quiet.
 	uam::diagnostics::FlushFileLog();
 	const std::string text = uam::io::ReadTextFile(fixture.temporary.root / "uam.log");
 	std::size_t lines = 0;
 	for (std::size_t at = text.find("chat_id=stall-chat"); at != std::string::npos; at = text.find("chat_id=stall-chat", at + 1)) ++lines;
 	UAM_ASSERT_EQ(lines, std::size_t{1});
-	UAM_ASSERT(uam::strings::Contains(text, "Chat save failed at the durable barrier: chat_id=stall-chat, reason=primary_unreadable; retrying"));
+	UAM_ASSERT(uam::strings::Contains(text, "Chat save failed at the durable barrier: chat_id=stall-chat, reason=primary_unreadable; the chat stays unsaved until a later save succeeds."));
 	UAM_ASSERT(!uam::strings::Contains(text, "Chat history was not saved"));
 	UAM_ASSERT(fixture.app.pending_chat_save_at_by_chat_id.contains("stall-chat"));
 	fs::remove(primary); fs::rename(fixture.temporary.root / "preserved.json", primary);
@@ -595,6 +613,7 @@ UAM_TEST(ChatSaveFailureLogsOneLineWithItsCauseAtDurableBarrier)
 	UAM_ASSERT_EQ(refused, std::string("Chat save refused before writing: chat_id=held-chat, reason=queue_journal_revision_changed; retrying with backoff up to 60 s while UAM runs."));
 	UAM_ASSERT(uam::strings::Contains(uam::acp_detail::ChatSaveFailureLogLine("chat", {}, false), "Chat save failed: chat_id=chat, reason=unclassified;"));
 	UAM_ASSERT(uam::acp_detail::ChatSaveFailureLogLine("chat", {std::string(5000, 'x'), false}, false).size() < 400);
+	UAM_ASSERT(uam::strings::Contains(uam::acp_detail::ChatSaveFailureLogLine("../outside", {"content_not_storable", true}, false), "chat_id=unsafe chat id,"));
 }
 
 UAM_TEST(ZeroDelayUpdatesRewriteTranscriptAtMostTwiceASecond)

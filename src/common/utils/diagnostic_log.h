@@ -31,7 +31,8 @@ void Write(std::string_view message);
 /// Writes an "Audit log opened" marker; StopFileLog writes the matching "closed" marker.</summary>
 bool StartAuditLog(const std::filesystem::path& path, std::string& error, int retention_days = kAuditRetentionDays);
 /// <summary>Queues one storage or deletion audit entry to both the audit log and the ordinary log.
-/// Audit entries are never dropped for queue pressure. Without an audit log it behaves like Write.</summary>
+/// Ordinary-log queue pressure never drops the audit copy; past 4096 pending audit entries (a stalled
+/// worker) the audit copy is dropped with a counted line in the audit log. Without an audit log it behaves like Write.</summary>
 void WriteAudit(std::string_view message);
 /// <summary>Returns retained audit text: lines whose leading UTC timestamp is older than retention_days
 /// before now are dropped, then the oldest lines until the text fits within max_bytes.</summary>

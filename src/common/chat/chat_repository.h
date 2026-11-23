@@ -232,7 +232,7 @@ class ChatRepository
 	    const std::function<bool()>& still_owned, ChatSession* committed_chat,
 	    const std::function<bool(ChatPublicationFile, uam::io::AtomicWriteStage)>& stage_hook_for_tests);
 	/// <summary>Serializes and syncs temporary files on a worker without changing saved chat files.</summary>
-	static std::shared_ptr<PreparedChatSave> PrepareChatSave(const std::filesystem::path& data_root, const ChatSession& chat, std::string_view expected_storage_revision = {});
+	static std::shared_ptr<PreparedChatSave> PrepareChatSave(const std::filesystem::path& data_root, const ChatSession& chat, std::string_view expected_storage_revision = {}, ChatSaveFailure* failure = nullptr);
 	using ImportMessageProducer = std::function<bool(const std::function<bool(const Message&)>&, ChatSession&)>;
 	/// <summary>Stages complete imported messages one at a time without a whole-transcript JSON allocation.</summary>
 	static std::shared_ptr<PreparedChatSave> PrepareImportedChatSave(const std::filesystem::path& data_root,
@@ -280,7 +280,7 @@ class ChatRepository
 	/// Worker-only bounded streaming verification; caller must still use exact-revision publication CAS.
 	static bool MatchesSavedChatPrimaryWitness(const std::filesystem::path& data_root, std::string_view chat_id, const SavedChatPrimaryWitness& witness);
 	/// Worker-only opt-in full save; neither a later disk baseline nor a queue-only receipt can replace expected.
-	static std::shared_ptr<PreparedChatSave> PrepareLoadedChatBindingSave(const std::filesystem::path& data_root, const ChatSession& chat, const SavedChatPrimaryWitness& expected);
+	static std::shared_ptr<PreparedChatSave> PrepareLoadedChatBindingSave(const std::filesystem::path& data_root, const ChatSession& chat, const SavedChatPrimaryWitness& expected, ChatSaveFailure* failure = nullptr);
 	/// Attribute-only current check of the actual worker-verified, retained published object.
 	static bool BindingPublicationStillCurrent(const std::shared_ptr<PreparedChatSave>& prepared);
 	/// <summary>Durably saves future queued inputs without rewriting an already persisted transcript.</summary>
@@ -348,5 +348,7 @@ class ChatRepository
 
   private:
 	static bool SaveChatRecorded(const std::filesystem::path& data_root, const ChatSession& chat, bool skip_unchanged);
+	static std::shared_ptr<PreparedChatSave> PrepareChatSaveRecorded(const std::filesystem::path& data_root, const ChatSession& chat, std::string_view expected_storage_revision);
+	static std::shared_ptr<PreparedChatSave> PrepareLoadedChatBindingSaveRecorded(const std::filesystem::path& data_root, const ChatSession& chat, const SavedChatPrimaryWitness& expected);
 	static bool SaveChatImpl(const std::filesystem::path& data_root, const ChatSession& chat, bool fail_if_exists, bool skip_unchanged = false, PreparedChatSave* prepared = nullptr, std::string* fingerprint = nullptr, std::string* saved_revision = nullptr, PreparedChatPublication* publication = nullptr, SavedChatPrimaryWitness* primary_witness = nullptr);
 };

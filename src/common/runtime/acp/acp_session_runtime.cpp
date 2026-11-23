@@ -39,6 +39,7 @@
 #include "app/transcript_retention_service.h"
 #include "app/provider_resolution_service.h"
 #include "common/chat/chat_repository.h"
+#include "common/chat/chat_ids.h"
 #include "common/chat/empty_held_queue_recovery.h"
 #include "common/platform/published_file_change_witness.h"
 #include "common/chat/chat_message_page_index.h"
@@ -9401,6 +9402,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 		std::string metadata;
 		std::vector<std::shared_ptr<const Message>> messages;
 		std::future<std::shared_ptr<PreparedChatSave>> prepared;
+		// Written by the preparation worker before its future is ready; read only after get().
+		std::shared_ptr<ChatSaveFailure> prepare_failure = std::make_shared<ChatSaveFailure>();
 		std::future<bool> published;
 		std::shared_ptr<PreparedChatSave> publishing;
 		std::shared_ptr<std::atomic<bool>> publication_owned = std::make_shared<std::atomic<bool>>(true);
@@ -10314,10 +10317,19 @@ For desktop observation and input, use only the provider's built-in controller; 
 	std::string acp_detail::ChatSaveFailureLogLine(const std::string& chat_id, const ChatSaveFailure& cause, bool at_durable_barrier)
 	{
 		constexpr std::size_t kMaxReasonBytes = 200;
-		std::string reason = cause.reason.empty() ? std::string("unclassified") : cause.reason.substr(0, kMaxReasonBytes);
+		std::string reason = cause.reason.empty() ? std::string("unclassified") : cause.reason;
+		if (reason.size() > kMaxReasonBytes)
+		{
+			std::size_t end = kMaxReasonBytes;
+			// OS error text can be localized; never split a UTF-8 sequence.
+			while (end > 0 && (static_cast<unsigned char>(reason[end]) & 0xC0) == 0x80) --end;
+			reason.resize(end);
+		}
+		// An unsafe ID can carry path text, so it is named only as unsafe, like the storage delete line.
+		const std::string identity = uam::chat_ids::IsSafeStorageChatId(chat_id) ? chat_id : std::string("unsafe chat id");
 		return std::string(cause.refused ? "Chat save refused before writing" : "Chat save failed") +
-		    (at_durable_barrier ? " at the durable barrier" : "") + ": chat_id=" + chat_id + ", reason=" + reason +
-		    "; retrying with backoff up to 60 s while UAM runs.";
+		    (at_durable_barrier ? " at the durable barrier" : "") + ": chat_id=" + identity + ", reason=" + reason +
+		    (at_durable_barrier ? "; the chat stays unsaved until a later save succeeds." : "; retrying with backoff up to 60 s while UAM runs.");
 	}
 
 	double acp_detail::NoteChatSaveFailed(AppState& app, const std::string& chat_id, const ChatSaveFailure* cause, bool at_durable_barrier)
@@ -10334,7 +10346,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 			failure.retry_at = now + delay;
 			first = ++failure.attempts == 1;
 		}
-		if (!first && !at_durable_barrier) return delay;
+		// Quit runs two forced barriers; one line per streak is enough, the second adds nothing.
+		if (!first && (!at_durable_barrier || failure.barrier_logged)) return delay;
+		if (at_durable_barrier) failure.barrier_logged = true;
 		// A held queue journal or unavailable managed input refuses the save and already states its own reason.
 		const ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
 		const bool content_refused = chat != nullptr && ChatRepository::ChatContentRefusesSave(*chat);
@@ -11084,8 +11098,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 						CollectWorkspaceSaveResults(app, task, std::nullopt, {}, true, acknowledgements);
 						defer_results(task, false);
 					}
-					// The worker's SaveChatImpl records no cause; a refused preparation and a storage error look alike here.
-					const ChatSaveFailure cause{"background_preparation_rejected", false};
+					// The preparation worker recorded its cause (refusal or storage error) before its future became ready.
+					const ChatSaveFailure cause = task->prepare_failure && !task->prepare_failure->reason.empty()
+					    ? *task->prepare_failure : ChatSaveFailure{"background_preparation_rejected", false};
 					app.pending_chat_save_at_by_chat_id[chat_id] = now + (failed ? acp_detail::NoteChatSaveFailed(app, chat_id, &cause) : 1.0);
 					// A revoked snapshot owes a waiting receipt (control audit, remote acknowledgement) a new one at once.
 					if (!failed && (HasPendingControlAudit(task) || HasPendingRemoteAck(task))) app.pending_chat_save_at_by_chat_id[chat_id] = now;
@@ -11203,11 +11218,12 @@ For desktop observation and input, use only the provider's built-in controller; 
 			acp_detail::ApplyCompletedAcpPromptRecoverySave(snapshot, task->completed_recovery_save);
 			const std::optional<std::string> revision = ChatRepository::ChatStorageRevision(app.data_root, chat_id);
 			if (!revision) { const ChatSaveFailure cause{"primary_revision_unreadable", false}; CollectWorkspaceSaveResults(app, task, std::nullopt, {}, true, acknowledgements); defer_results(task, false); app.pending_chat_save_at_by_chat_id[chat_id] = now + acp_detail::NoteChatSaveFailed(app, chat_id, &cause); continue; }
-			std::packaged_task<std::shared_ptr<PreparedChatSave>()> worker([root = app.data_root, snapshot = std::move(snapshot), messages = task->messages, revision = *revision, binding = task->binding_expected_primary]() mutable
+			task->prepare_failure = std::make_shared<ChatSaveFailure>();
+			std::packaged_task<std::shared_ptr<PreparedChatSave>()> worker([root = app.data_root, snapshot = std::move(snapshot), messages = task->messages, revision = *revision, binding = task->binding_expected_primary, failure = task->prepare_failure]() mutable
 			{
 				for (const std::shared_ptr<const Message>& message : messages) snapshot.messages.push_back(*message);
-				std::shared_ptr<PreparedChatSave> result = binding ? ChatRepository::PrepareLoadedChatBindingSave(root, snapshot, *binding)
-				    : ChatRepository::PrepareChatSave(root, snapshot, revision);
+				std::shared_ptr<PreparedChatSave> result = binding ? ChatRepository::PrepareLoadedChatBindingSave(root, snapshot, *binding, failure.get())
+				    : ChatRepository::PrepareChatSave(root, snapshot, revision, failure.get());
 				(void)MessageTailCache::Attach(root, snapshot, result);
 				return result;
 			});

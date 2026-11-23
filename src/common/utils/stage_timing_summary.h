@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -20,7 +21,7 @@ struct StageTimingSummaryOptions
 	/// Samples at or above this are also written individually, at most once per individual_interval.
 	std::chrono::milliseconds individual_threshold{250};
 	std::chrono::seconds individual_interval{5};
-	std::chrono::seconds window{300};
+	std::chrono::seconds window{60};
 };
 
 /// <summary>Aggregates repeated timings of a staged loop (for example PollTick) into one periodic
@@ -94,7 +95,7 @@ private:
 		std::int64_t Percentile(double fraction) const
 		{
 			if (samples == 0) return 0;
-			const std::uint64_t rank = std::max<std::uint64_t>(1, static_cast<std::uint64_t>(fraction * static_cast<double>(samples) + 0.999999));
+			const std::uint64_t rank = std::max<std::uint64_t>(1, static_cast<std::uint64_t>(std::ceil(fraction * static_cast<double>(samples) - 1e-9)));
 			std::uint64_t seen = 0;
 			for (std::size_t index = 0; index < counts.size(); ++index)
 			{

@@ -42,6 +42,7 @@ namespace
 	// the file itself belongs to the worker (and to StopFileLog after the worker joins).
 	constexpr std::size_t kMaxAuditQueuedEntries = 4096;
 	std::deque<std::string> g_auditQueue;
+	std::size_t g_auditDropped = 0;
 	std::filesystem::path g_auditPath;
 	int g_auditRetentionDays = kAuditRetentionDays;
 	bool g_auditCompactPending = false;
@@ -152,6 +153,16 @@ namespace
 		std::cerr << "Storage audit log " << what << "; audit lines remain in the diagnostic log only.\n";
 	}
 
+	// A held or locked file (antivirus, an editor) must not stop audit lines: keep appending, retry compaction later.
+	void ReopenAfterFailedCompaction(const std::filesystem::path& path)
+	{
+		std::error_code error;
+		if (!OpenRegular(path, g_auditFile, std::ios::app)) { AuditUnavailable("could not be compacted or reopened"); return; }
+		const std::uintmax_t size = std::filesystem::file_size(path, error);
+		g_auditBytes = error ? 0 : size;
+		std::cerr << "Storage audit log could not be compacted; appending and retrying later.\n";
+	}
+
 	// Rewrites the audit file without expired or excess lines, then reopens it for appending.
 	void CompactAudit(const std::filesystem::path& path, int retention_days, std::size_t max_bytes)
 	{
@@ -188,7 +199,7 @@ namespace
 			std::filesystem::path temp = path;
 			temp += ".tmp";
 			std::ofstream output;
-			if (!OpenRegular(temp, output, std::ios::trunc)) { AuditUnavailable("could not be compacted"); return; }
+			if (!OpenRegular(temp, output, std::ios::trunc)) { ReopenAfterFailedCompaction(path); return; }
 			output.write(kept.data(), static_cast<std::streamsize>(kept.size()));
 			output.close();
 			std::error_code error;
@@ -197,7 +208,7 @@ namespace
 			if (error)
 			{
 				std::filesystem::remove(temp, error);
-				AuditUnavailable("could not be compacted");
+				ReopenAfterFailedCompaction(path);
 				return;
 			}
 		}
@@ -243,6 +254,8 @@ namespace
 				audit_path = g_auditPath;
 				audit_retention_days = g_auditRetentionDays;
 				compact_audit = std::exchange(g_auditCompactPending, false);
+				if (const std::size_t audit_dropped = std::exchange(g_auditDropped, 0); audit_dropped != 0)
+					audit_batch.push_back(FormatLine("Audit log dropped " + std::to_string(audit_dropped) + " entries because its queue was full; they remain in uam.log."));
 				g_queuedBytes = 0;
 				dropped = g_droppedEntries;
 				g_droppedEntries = 0;
@@ -423,7 +436,7 @@ void WriteAudit(std::string_view message)
 		{
 			// Bounded only against a stalled worker; ordinary audit volume is a few lines per user action.
 			if (g_auditQueue.size() < kMaxAuditQueuedEntries) g_auditQueue.push_back(line);
-			else ++g_droppedEntries;
+			else ++g_auditDropped; // Still written to uam.log below; only the audit copy is lost.
 		}
 	}
 	Write(message);
