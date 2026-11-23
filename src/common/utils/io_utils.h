@@ -358,8 +358,8 @@ namespace uam::io
 	/// <summary>Guards only the throttled sweep's cached directory listings, never directory reads, removals or writes.</summary>
 	inline std::mutex& AtomicTempListingsMutex()
 	{
-		static std::mutex listings_mutex;
-		return listings_mutex;
+		static std::mutex* listings_mutex = new std::mutex(); // Leaked: a detached writer may still sweep during exit.
+		return *listings_mutex;
 	}
 
 	/// <summary>Removes the abandoned temporaries of one destination, reading its directory at most once per interval.</summary>
@@ -375,7 +375,7 @@ namespace uam::io
 			std::chrono::steady_clock::time_point read_at;
 			std::vector<std::string> temp_names;
 		};
-		static std::unordered_map<std::string, Listing> listings;
+		static auto& listings = *new std::unordered_map<std::string, Listing>(); // Leaked, like its mutex.
 		std::filesystem::path native_parent;
 		std::string normalization_error;
 		if (path.parent_path().empty() || !NativeFilePath(path.parent_path(), native_parent, normalization_error, true)) return;
@@ -386,7 +386,8 @@ namespace uam::io
 			std::lock_guard<std::mutex> lock(AtomicTempListingsMutex());
 			const auto [found, inserted] = listings.try_emplace(key);
 			Listing& listing = found->second;
-			// Claim the refresh before listing, so concurrent writers to this directory do not all read it.
+			// Claim the refresh before listing, so concurrent writers to this directory do not all read it. A writer
+			// that arrives while the first listing is being read sees no names and leaves its temporaries for a later write.
 			refresh = inserted || now - listing.read_at >= std::chrono::minutes(10);
 			if (refresh) listing.read_at = now;
 			else if (listing.temp_names.empty()) return;
@@ -1116,7 +1117,9 @@ namespace uam::io
 	/// <summary>Normalised identity of a durable write destination: one lock per key.</summary>
 	/// Absolute and lexically normal, so "a/./b.json" and "a/b.json" share a lock. Windows and macOS default to
 	/// case-insensitive volumes, so ASCII case is folded there; folding a case-sensitive volume only serialises two
-	/// distinct files, which is safe. Links are not resolved: every write is still a temp + rename publication.
+	/// distinct files, which is safe. Links, non-ASCII case, Unicode normalisation forms and Windows extended-length
+	/// prefixes are not unified: such aliases of one file are not serialised, but every write is still a complete
+	/// temp + rename publication.
 	inline std::string DurableWriteLockKey(const std::filesystem::path& path)
 	{
 		std::error_code error;
@@ -1133,8 +1136,10 @@ namespace uam::io
 	/// The table mutex is held only to find or retire an entry, never while waiting for or holding a
 	/// destination lock, so it is never held across disk I/O, fsync or a caller's stage hook. Entries are
 	/// reference counted and removed when their last user leaves, so the table stays as small as the set of
-	/// destinations being written at once. A stage hook must not durably write its own destination: the
-	/// destination lock is not recursive.
+	/// destinations being written at once. Destination locks are not recursive and have no ordering, so a stage
+	/// hook must not perform durable writes: writing its own destination self-deadlocks, and two hooks writing
+	/// each other's destinations deadlock. Only AtomicWriteFileDetailed and its wrappers take this lock; prepared
+	/// publications through CommitSyncedAtomicTemp rely on their callers' own ordering.
 	class DurableWriteDestinationLock
 	{
 	public:
@@ -1187,16 +1192,17 @@ namespace uam::io
 			if (--m_entry->users == 0) Table().erase(m_key);
 		}
 
+		// Both leaked on purpose: a detached publisher thread may still be writing while statics are destroyed at exit.
 		static std::mutex& TableMutex()
 		{
-			static std::mutex table_mutex;
-			return table_mutex;
+			static std::mutex* table_mutex = new std::mutex();
+			return *table_mutex;
 		}
 
 		static std::unordered_map<std::string, Entry>& Table()
 		{
-			static std::unordered_map<std::string, Entry> table;
-			return table;
+			static auto* table = new std::unordered_map<std::string, Entry>();
+			return *table;
 		}
 
 		std::string m_key;

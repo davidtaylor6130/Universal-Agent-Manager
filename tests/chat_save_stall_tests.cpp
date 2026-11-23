@@ -345,7 +345,7 @@ UAM_TEST(AtomicWriteRemovesOnlyAbandonedTempsOfItsDestination)
 
 namespace
 {
-	/// <summary>One-shot gate a stage hook can wait on; opening it in the destructor keeps a failed case from hanging.</summary>
+	/// <summary>One-shot gate a stage hook can wait on.</summary>
 	struct StageGate
 	{
 		std::promise<void> entered;
@@ -358,14 +358,22 @@ namespace
 			if (!opened.exchange(true)) release.set_value();
 		}
 
-		~StageGate() { Open(); }
+	};
+
+	/// <summary>Opens a gate on scope exit. Declare it after the futures whose threads wait on the gate: a failed
+	/// assertion then opens the gate before those futures' destructors wait for their threads, so the case fails
+	/// instead of hanging.</summary>
+	struct OpenGateOnExit
+	{
+		StageGate& gate;
+		~OpenGateOnExit() { gate.Open(); }
 	};
 }
 
 UAM_TEST(DurableWriteBlockedInStageHookDoesNotBlockOtherDestination)
 {
 	TempDir temporary{"uam-durable-write-independent"};
-	const fs::path held = temporary.root / "held.json", other = temporary.root / "nested" / "other.json";
+	const fs::path held = temporary.root / "held.json", other = temporary.root / "other.json";
 	StageGate gate;
 	// The holder stops after its temporary is synced: the point where the old process-wide lock was held across F_FULLFSYNC.
 	auto holder = std::async(std::launch::async, [&]
@@ -380,7 +388,9 @@ UAM_TEST(DurableWriteBlockedInStageHookDoesNotBlockOtherDestination)
 			return true;
 		}, true);
 	});
+	const OpenGateOnExit open_holder{gate};
 	UAM_ASSERT(gate.entered.get_future().wait_for(std::chrono::seconds(10)) == std::future_status::ready);
+	// Same directory as the held write, so the shared temp-sweep listing is also used under contention.
 	auto unrelated = std::async(std::launch::async, [&] { return uam::io::WriteTextFileWithBackup(other, "other"); });
 	// Before the fix this waited for the held write's hook for as long as it chose to block.
 	const bool completed_while_held = unrelated.wait_for(std::chrono::seconds(10)) == std::future_status::ready;
@@ -414,6 +424,7 @@ UAM_TEST(DurableWritesToOneDestinationStaySerialisedAndIntact)
 			return true;
 		}, true);
 	});
+	const OpenGateOnExit open_first{gate};
 	UAM_ASSERT(gate.entered.get_future().wait_for(std::chrono::seconds(10)) == std::future_status::ready);
 	auto second = std::async(std::launch::async, [&]
 	{
