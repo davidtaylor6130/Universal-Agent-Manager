@@ -993,6 +993,25 @@ namespace uam
 			{ Fail(error, "A managed child is active or its workspace ownership is uncertain. Stop it and resolve its workspace before cleanup."); return {}; }
 			members.push_back(chat);
 		}
+		// A finished child whose run record has expired keeps its saved root link. It joins on the same workspace terms;
+		// any run record, owner or queued work still naming it leaves it to the ordinary reference check instead.
+		const auto expired_run_child = [&](const ChatSession& chat)
+		{
+			const auto names_chat = [&](const auto& entry) { return entry.first == chat.agent_run_id; };
+			return ManagedSubagentControlService::SavedRootLinkMatches(*index.root, chat) && !index.root->workspace_worktree_directory.empty() &&
+			    !index.runs.contains(chat.agent_run_id) && !index.transcript_uses.contains(chat.id) &&
+			    std::ranges::none_of(index.runs, [&](const auto& entry) { return entry.second->transcript_chat_id == chat.id; }) &&
+			    !app.pending_agent_run_cancellation_ids.contains(chat.agent_run_id) && !app.agent_result_retry_steady_ms.contains(chat.agent_run_id) &&
+			    std::ranges::find(app.queued_agent_run_ids, chat.agent_run_id) == app.queued_agent_run_ids.end() &&
+			    std::ranges::none_of(app.managed_followups, names_chat) && std::ranges::none_of(app.managed_initial_runtime_owners, names_chat) &&
+			    std::ranges::none_of(app.managed_result_recoveries, [&](const auto& run) { return run.id == chat.agent_run_id || run.transcript_chat_id == chat.id; }) &&
+			    chat.execution_host_id == index.root->execution_host_id && chat.workspace_directory == index.root->workspace_worktree_directory &&
+			    chat.workspace_worktree_directory.empty() && chat.workspace_source_directory == index.root->workspace_source_directory;
+		};
+		for (const auto* chats : {&index.chats, &index.archived})
+			for (const auto& [id, chat] : *chats)
+				if (expired_run_child(*chat) && std::ranges::none_of(members, [&](const ChatSession* member) { return member->id == chat->id; }))
+					members.push_back(chat);
 		const auto family_run = [&](const auto& entry)
 		{
 			const auto run = index.runs.find(entry.first);
@@ -1037,6 +1056,12 @@ namespace uam
 		retain(app.chats); retain(app.excluded_provider_chats);
 		if (app.hidden_agent_chat_ownership.data_root == app.data_root) retain(app.hidden_agent_chat_ownership.chats);
 		return family;
+	}
+
+	bool ManagedSubagentControlService::SavedRootLinkMatches(const ChatSession& root, const ChatSession& child)
+	{
+		return !child.agent_run_id.empty() && child.id != root.id && root.agent_run_id.empty() && !root.id.empty() && !root.created_at.empty() &&
+		    child.managed_root_chat_id == root.id && child.managed_root_created_at == root.created_at;
 	}
 
 	bool ManagedSubagentControlService::WorktreeFamilyContains(const ManagedWorktreeFamily& family, const ChatSession& chat)

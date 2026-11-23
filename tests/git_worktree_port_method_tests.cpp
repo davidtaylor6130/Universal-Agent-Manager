@@ -317,6 +317,84 @@ UAM_TEST(GitWorktreeFinishedManagedFamilyPermitsPortAndDiscardPreservingHistory)
 	}
 }
 
+namespace
+{
+	/// A finished child whose run record has expired: only its saved chat remains, optionally with the birth root link.
+	std::string AddExpiredRunWorktreeChild(PortFixture& fixture, bool linked, bool v2 = false)
+	{
+		const ChatSession& root = fixture.app.chats.front();
+		ChatSession child = ChatDomainService().CreateNewChat("", root.provider_id);
+		child.id = "child-expired-" + uam::AgentRunLedger::NewRunId();
+		child.agent_run_id = uam::AgentRunLedger::NewRunId();
+		child.model_id = root.model_id;
+		child.execution_host_id = root.execution_host_id;
+		child.workspace_directory = fixture.worktree.string();
+		child.workspace_source_directory = root.workspace_source_directory;
+		child.native_session_id = PlatformServicesFactory::Instance().process_service.GenerateUuid();
+		if (v2) child.managed_followup_incarnation = PlatformServicesFactory::Instance().process_service.GenerateUuid();
+		if (linked)
+		{
+			child.managed_root_chat_id = root.id;
+			child.managed_root_created_at = root.created_at;
+		}
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, child));
+		fixture.app.hidden_agent_chat_ownership.data_root = fixture.app.data_root;
+		fixture.app.hidden_agent_chat_ownership.chats.push_back(child);
+		return child.id;
+	}
+}
+
+UAM_TEST(GitWorktreeExpiredRunChildWithSavedRootLinkPermitsPortAndDiscard)
+{
+	// Issue #998: once its run record expires, a finished child is recognised by the root link saved at its birth.
+	if (!GitAvailableForTests()) return;
+	for (const bool discard : {false, true})
+		for (const bool v2 : {false, true})
+		{
+			PortFixture fixture("patch");
+			AddFinishedWorktreeChild(fixture);
+			const auto child_id = AddExpiredRunWorktreeChild(fixture, true, v2);
+			const auto before = ChatRepository::ChatStorageRevision(fixture.app.data_root, child_id);
+			AdmitWorktreeFamily(fixture);
+			const auto ids = fixture.app.worktree_cleanup_family->ChatIds();
+			UAM_ASSERT(std::ranges::find(ids, child_id) != ids.end());
+			const auto result = discard ? uam::GitWorktreeService().DiscardChatChanges(fixture.app, fixture.app.chats.front()) : uam::GitWorktreeService().PortChatChanges(fixture.app, fixture.app.chats.front());
+			UAM_ASSERT(result.ok);
+			UAM_ASSERT(!fs::exists(fixture.worktree));
+			UAM_ASSERT(before == ChatRepository::ChatStorageRevision(fixture.app.data_root, child_id));
+			const auto history = ChatRepository::LoadLocalChat(fixture.app.data_root, child_id, true);
+			UAM_ASSERT(history && history->managed_root_chat_id == fixture.app.chats.front().id);
+			UAM_ASSERT_EQ(history->workspace_directory, fixture.worktree.string());
+		}
+}
+
+UAM_TEST(GitWorktreeExpiredRunChildWithoutMatchingRootLinkStillBlocksCleanup)
+{
+	if (!GitAvailableForTests()) return;
+	for (int kind = 0; kind < 4; ++kind)
+	{
+		PortFixture fixture("patch");
+		AddExpiredRunWorktreeChild(fixture, kind != 0);
+		auto& child = fixture.app.hidden_agent_chat_ownership.chats.front();
+		if (kind == 1) child.managed_root_created_at = "1999-01-01 00:00:00"; // A reused root ID with another birth.
+		if (kind == 2) child.acp_queue_held = true; // Held input still protects the worktree.
+		if (kind == 3) fixture.app.managed_followups.emplace(child.agent_run_id, nullptr); // Follow-up owner remains.
+		std::string error;
+		const auto family = uam::ManagedSubagentControlService::CaptureWorktreeFamily(fixture.app, fixture.app.chats.front().id, &error);
+		UAM_ASSERT(static_cast<bool>(family) == (kind != 2));
+		if (family)
+		{
+			// Admitted without the child, it stays an unrelated reference and cleanup is refused.
+			const auto ids = family->ChatIds();
+			UAM_ASSERT(std::ranges::find(ids, child.id) == ids.end());
+			if (kind == 3) continue; // The fixture's placeholder follow-up owner is not a runnable owner.
+			AdmitWorktreeFamily(fixture);
+		}
+		UAM_ASSERT(!uam::GitWorktreeService().DiscardChatChanges(fixture.app, fixture.app.chats.front()).ok);
+		fixture.AssertRetained();
+	}
+}
+
 UAM_TEST(GitWorktreeManagedFamilyRefusesActiveQueuedStoppingAndHeldClaims)
 {
 	if (!GitAvailableForTests()) return;

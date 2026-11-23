@@ -887,6 +887,8 @@ namespace uam
 			chat.approval_mode = "default";
 			chat.uam_agent_id = "build";
 			chat.agent_run_id.clear();
+			chat.managed_root_chat_id.clear();
+			chat.managed_root_created_at.clear();
 			chat.goal_owner_chat_id.clear();
 			chat.goal_iteration_goal_id.clear();
 			chat.goal_iteration_turn_kind.clear();

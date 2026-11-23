@@ -136,6 +136,10 @@ namespace uam
 		static bool ValidateWorktreeFamily(const ManagedWorktreeFamily&, std::string*);
 		static bool PublishWorktreeCleanup(const ManagedWorktreeFamily&, const ChatSession&, std::string*);
 		static bool WorktreeFamilyContains(const ManagedWorktreeFamily&, const ChatSession&);
+		/// Workspace-cleanup lineage of a managed child whose run record has expired: the link saved at the child's birth
+		/// names this exact root by ID and creation time. Callers must first establish that no run record names the child;
+		/// children saved without the link keep run-ledger lineage only. Grants no display, follow-up or execution authority.
+		static bool SavedRootLinkMatches(const ChatSession& root, const ChatSession& child);
 		/// Once per data root in existing startup/sidebar loading, including empty/error results.
 		static void LoadRestartInspection(AppState& app);
 		/// Pure display hints; does not inspect disk or create controls/owners.

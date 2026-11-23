@@ -1050,4 +1050,66 @@ UAM_TEST(RemoteWorkspaceReferenceAdmissionSkipsOnlySettledFamilyChildren)
 		UAM_ASSERT(app.chats.front().workspace_worktree_directory.empty());
 	}
 }
+UAM_TEST(RemoteWorkspaceReferenceAdmissionSkipsExpiredRunChildBySavedRootLink)
+{
+	// Issue #998: a finished child whose run record expired is recognised only by the root link saved at its birth.
+	enum class Case { Linked, LinkedSavedOnly, Legacy, OtherBirth, OtherRoot, UnreadableLedger, QueuedInput, RecordNamesChat };
+	for (const Case kind : {Case::Linked, Case::LinkedSavedOnly, Case::Legacy, Case::OtherBirth, Case::OtherRoot, Case::UnreadableLedger, Case::QueuedInput, Case::RecordNamesChat})
+	{
+		WorkspacePromptFixture fixture;
+		const std::shared_ptr<uam::WorktreeLaunchPreparationTask> task = SeedRemoteWorkspaceTask(fixture);
+		uam::AppState& app = fixture.app;
+		app.chats.front().created_at = "2026-01-02 03:04:05";
+		const ChatSession parent = app.chats.front();
+		uam::PreparedLaunchWorktree prepared{{.ok = true}, task->original};
+		prepared.metadata.workspace_isolation_kind = uam::paths::kGitWorktreeIsolationKind;
+		prepared.metadata.workspace_source_directory = "C:/Users/private/Source";
+		prepared.metadata.workspace_worktree_directory = "C:/Users/private/uam-worktree-0123456789abcdef";
+		prepared.metadata.workspace_branch_name = "uam/0123456789abcdef";
+		prepared.metadata.workspace_base_ref = std::string(40, 'a');
+		prepared.reference_runs_complete = kind != Case::UnreadableLedger;
+		ChatSession child;
+		child.id = "private-expired-child";
+		child.provider_id = "claude-cli";
+		child.execution_host_id = parent.execution_host_id;
+		child.agent_run_id = "run-expired";
+		child.workspace_isolation_kind = uam::paths::kPendingGitWorktreeIsolationKind;
+		child.workspace_directory = "C:/Users/private\\uam-worktree-0123456789abcdef";
+		child.workspace_source_directory = "C:/Users/private/Source";
+		if (kind != Case::Legacy)
+		{
+			child.managed_root_chat_id = kind == Case::OtherRoot ? "private-other-root" : parent.id;
+			child.managed_root_created_at = kind == Case::OtherBirth ? "2026-01-02 03:04:06" : parent.created_at;
+		}
+		if (kind == Case::QueuedInput) child.acp_queued_prompts.emplace_back().id = "private-queued-input";
+		if (kind == Case::RecordNamesChat)
+		{
+			AgentRun other;
+			other.id = "run-other";
+			other.root_chat_id = parent.id;
+			other.transcript_chat_id = child.id;
+			other.status = "running";
+			prepared.reference_runs.push_back(other);
+		}
+		// The link survives the saved round trip that remote admission reads.
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, child));
+		const auto saved = ChatRepository::LoadLocalChatSummaryReadOnly(app.data_root, child.id);
+		UAM_ASSERT(saved && saved->managed_root_chat_id == child.managed_root_chat_id && saved->managed_root_created_at == child.managed_root_created_at);
+		UAM_ASSERT(saved->subagent_parent_chat_id.empty() && saved->subagent_parent_created_at.empty());
+		if (kind == Case::LinkedSavedOnly) prepared.references.push_back(*saved);
+		else app.chats.push_back(child);
+		task->prepared = std::move(prepared);
+		(void)uam::PollWorktreeLaunchPreparations(app);
+		if (kind == Case::Linked || kind == Case::LinkedSavedOnly)
+		{
+			UAM_ASSERT(task->error.empty());
+			UAM_ASSERT(task->merged);
+			UAM_ASSERT_EQ(app.chats.front().workspace_worktree_directory, std::string("C:/Users/private/uam-worktree-0123456789abcdef"));
+			continue;
+		}
+		UAM_ASSERT(!task->merged);
+		UAM_ASSERT(task->error.find("private-expired-child") != std::string::npos);
+		UAM_ASSERT(app.chats.front().workspace_worktree_directory.empty());
+	}
+}
 #endif

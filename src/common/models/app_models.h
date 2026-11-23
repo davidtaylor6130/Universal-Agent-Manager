@@ -836,6 +836,11 @@ struct ChatSession
 	/// <summary>Owned native context locations retained until chat deletion succeeds.</summary>
 	std::vector<ProviderHandoffCliContext> provider_handoff_cli_contexts;
 	std::string agent_run_id;
+	/// Managed child only: the run's root chat and its exact creation time, saved at birth so a finished child stays
+	/// recognisable as that root's after its run record expires. Workspace-cleanup lineage only; never display
+	/// lineage (see subagent_parent_chat_id), native import, resume, permission or execution authority.
+	std::string managed_root_chat_id;
+	std::string managed_root_created_at;
 	// Fresh, bounded transcript owned by a goal on another visible chat.
 	// Empty on ordinary chats and on all legacy data.
 	std::string goal_owner_chat_id;

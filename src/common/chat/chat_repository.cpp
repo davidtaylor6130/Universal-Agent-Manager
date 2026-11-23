@@ -195,6 +195,8 @@ namespace
 	constexpr std::string_view kChatUamAgentIdField = "uam_agent_id";
 	constexpr std::string_view kChatLastPromptAgentDefinitionHashField = "last_prompt_agent_definition_hash";
 	constexpr std::string_view kChatAgentRunIdField = "agent_run_id";
+	constexpr std::string_view kChatManagedRootChatIdField = "managed_root_chat_id";
+	constexpr std::string_view kChatManagedRootCreatedAtField = "managed_root_created_at";
 	constexpr std::string_view kChatManagedFollowupBirthField = "managed_followup_incarnation";
 	constexpr std::string_view kChatGoalOwnerChatIdField = "goal_owner_chat_id";
 	constexpr std::string_view kChatCreatedByChatIdField = "created_by_chat_id";
@@ -1604,7 +1606,8 @@ namespace
 	    lhs.provider_handoff_session_id != rhs.provider_handoff_session_id ||
 	    lhs.host_instructions_delivery != rhs.host_instructions_delivery ||
 	    lhs.provider_handoff_cli_contexts != rhs.provider_handoff_cli_contexts ||
-		    lhs.agent_run_id != rhs.agent_run_id || lhs.command_safety_tier != rhs.command_safety_tier ||
+		    lhs.agent_run_id != rhs.agent_run_id || lhs.managed_root_chat_id != rhs.managed_root_chat_id ||
+		    lhs.managed_root_created_at != rhs.managed_root_created_at || lhs.command_safety_tier != rhs.command_safety_tier ||
 		    lhs.computer_use_backend != rhs.computer_use_backend ||
 		    lhs.goal_owner_chat_id != rhs.goal_owner_chat_id ||
 		    lhs.created_by_chat_id != rhs.created_by_chat_id || lhs.created_by_request_key != rhs.created_by_request_key ||
@@ -2359,6 +2362,8 @@ namespace
 		}
 	}
 		chat.agent_run_id = JsonStringOrEmpty(root.Find(kChatAgentRunIdField));
+		chat.managed_root_chat_id = JsonStringOrEmpty(root.Find(kChatManagedRootChatIdField));
+		chat.managed_root_created_at = JsonStringOrEmpty(root.Find(kChatManagedRootCreatedAtField));
 		if (const auto* birth = root.Find(kChatManagedFollowupBirthField))
 		{
 			if (birth->type == JsonValue::Type::String &&
@@ -4281,6 +4286,11 @@ try
 	}
 	uam::json::SetValue(root, "provider_handoff_cli_contexts", std::move(contexts));
 	uam::json::SetString(root, kChatAgentRunIdField, chat.agent_run_id);
+	if (!chat.managed_root_chat_id.empty())
+	{
+		uam::json::SetString(root, kChatManagedRootChatIdField, chat.managed_root_chat_id);
+		uam::json::SetString(root, kChatManagedRootCreatedAtField, chat.managed_root_created_at);
+	}
 	if (!chat.managed_followup_incarnation.empty()) uam::json::SetString(root, kChatManagedFollowupBirthField, chat.managed_followup_incarnation);
 	uam::json::SetString(root, kChatGoalOwnerChatIdField, chat.goal_owner_chat_id);
 	if (!chat.created_by_chat_id.empty())
@@ -5567,6 +5577,8 @@ namespace
 		hydrated.host_instructions_delivery = summary.host_instructions_delivery;
 		hydrated.provider_handoff_cli_contexts = summary.provider_handoff_cli_contexts;
 		hydrated.agent_run_id = summary.agent_run_id;
+		hydrated.managed_root_chat_id = summary.managed_root_chat_id;
+		hydrated.managed_root_created_at = summary.managed_root_created_at;
 		hydrated.managed_followup_incarnation = summary.managed_followup_incarnation;
 		hydrated.managed_followup_input_unavailable = hydrated.managed_followup_input_unavailable || summary.managed_followup_input_unavailable;
 		hydrated.temporary_parent_chat_id = summary.temporary_parent_chat_id;
@@ -6589,7 +6601,8 @@ try
 	    candidate.workspace_worktree_directory != previous.workspace_worktree_directory ||
 	    candidate.parent_chat_id != previous.parent_chat_id || candidate.branch_root_chat_id != previous.branch_root_chat_id ||
 	    candidate.subagent_parent_chat_id != previous.subagent_parent_chat_id || candidate.subagent_parent_created_at != previous.subagent_parent_created_at ||
-	    candidate.agent_run_id != previous.agent_run_id || candidate.goal_owner_chat_id != previous.goal_owner_chat_id ||
+	    candidate.agent_run_id != previous.agent_run_id || candidate.managed_root_chat_id != previous.managed_root_chat_id ||
+	    candidate.managed_root_created_at != previous.managed_root_created_at || candidate.goal_owner_chat_id != previous.goal_owner_chat_id ||
 	    !candidate.managed_followup_incarnation.empty() || candidate.managed_followup_input_unavailable ||
 	    !candidate.temporary_storage_owner_token.empty() || candidate.temporary_parent_chat_id != previous.temporary_parent_chat_id ||
 	    candidate.remote_process_control_token != previous.remote_process_control_token ||
