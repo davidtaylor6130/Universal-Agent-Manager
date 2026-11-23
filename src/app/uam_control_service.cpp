@@ -1360,7 +1360,9 @@ namespace uam
 				if (chat == nullptr || chat->metadata_incarnation != read->chat_incarnation || chat->workspace_directory != read->workspace ||
 				    chat->workspace_worktree_directory != read->worktree || chat->execution_host_id != read->host_id || !same_host ||
 				    BackgroundReadScope(app, *chat, read->method) != read->scope)
-					result = {.error = "This chat's workspace changed while it was being read. Ask again."};
+					result = {.error = read->method == "memory_search"
+					                       ? "This chat's memory scope changed while it was being searched, or memory was turned off. Ask again."
+					                       : "This chat's workspace changed while it was being read. Ask again."};
 				const nlohmann::json response = ReadOnlyToolReply(app, read->capability_id, read->request_id, read->method, std::move(result), true);
 				if (!response.value("pendingAuditSave", false)) (void)WriteResponse(read->directory, read->request_id, response);
 			}
@@ -2635,9 +2637,8 @@ namespace uam
 				hidden.push_back("chat_create");
 			if (read_only || !UAM_ENABLE_COMPUTER_USE || !(chat.execution_host_id.empty() || chat.execution_host_id == uam::execution_hosts::kLocalHostId))
 				hidden.push_back("computer_use_request");
-			// Recall reads nothing for a chat on an SSH host, so memory_search could never answer there.
-			if (!(chat.execution_host_id.empty() || chat.execution_host_id == uam::execution_hosts::kLocalHostId))
-				hidden.push_back("memory_search");
+			// Recall reads nothing for a chat not on this computer (MemoryService::RecallRoots), so memory_search could never answer there.
+			if (chat.execution_host_id != uam::execution_hosts::kLocalHostId) hidden.push_back("memory_search");
 			// Mirrors SecretRequestService::Refusal and the read-only check: Plan mode keeps it (one-time Allow).
 			if (read_only || !chat.temporary_parent_chat_id.empty() || !root_chat.temporary_parent_chat_id.empty() || !root_chat.automation_token_id.empty())
 				hidden.push_back("secret_request");
