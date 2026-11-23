@@ -156,5 +156,5 @@ std::string uam::DataFolderVolumeWarning(const fs::path& folder)
 {
 	if (folder.empty() || uam::platform::QueryVolumeCapabilities(folder).rename_swap != false)
 		return {};
-	return "This drive cannot swap files atomically, so saves there are less safe if the computer loses power.";
+	return "This drive cannot replace files in a single step, so a power loss during a save there is riskier.";
 }

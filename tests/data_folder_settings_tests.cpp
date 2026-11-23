@@ -261,9 +261,9 @@ UAM_TEST(DataFolderSettingsRefusesNetworkFolderAndWarnsForNoSwapDrive)
 	uam::platform::t_volume_capabilities_for_tests = uam::platform::VolumeCapabilities{true, false, "exfat"};
 	const auto saved = fixture.service->Choose(fixture.destination, fixture.service->Read().revision, "exfat-choice");
 	UAM_ASSERT(saved.committed && saved.settings.pending_folder == fs::canonical(fixture.destination));
-	UAM_ASSERT(saved.settings.message.find("cannot swap files atomically") != std::string::npos);
+	UAM_ASSERT(saved.settings.message.find("cannot replace files in a single step") != std::string::npos);
 	UAM_ASSERT(saved.settings.message.find('\n') == std::string::npos);
 	uam::platform::t_volume_capabilities_for_tests.reset();
 	UAM_ASSERT(fixture.service->Cancel(fixture.service->Read().revision).committed);
-	UAM_ASSERT(fixture.service->Read().message.find("cannot swap") == std::string::npos);
+	UAM_ASSERT(fixture.service->Read().message.find("single step") == std::string::npos);
 }

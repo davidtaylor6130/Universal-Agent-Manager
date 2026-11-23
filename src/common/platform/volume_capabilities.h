@@ -8,9 +8,9 @@
 #if defined(_WIN32)
 #include <windows.h>
 #elif defined(__APPLE__)
+#include <sys/param.h>
 #include <sys/attr.h>
 #include <sys/mount.h>
-#include <sys/param.h>
 #include <unistd.h>
 #elif defined(__linux__)
 #include <sys/vfs.h>
