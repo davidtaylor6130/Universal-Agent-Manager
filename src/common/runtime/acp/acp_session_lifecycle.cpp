@@ -585,11 +585,7 @@ namespace
 		task.control_root_chat_id = root->id;
 		task.control_root_incarnation = root->metadata_incarnation;
 		task.control_capability_expiry_epoch_ms = control->expires_at_epoch_ms;
-		const int timeout = app.settings.acp_setup_inactivity_timeout_seconds <= 0
-		    ? settings::kDefaultAcpSetupInactivityTimeoutSeconds
-		    : std::clamp(app.settings.acp_setup_inactivity_timeout_seconds,
-		        settings::kMinAcpSetupInactivityTimeoutSeconds, settings::kMaxAcpSetupInactivityTimeoutSeconds);
-		task.control_retention_deadline_s = GetAppTimeSeconds() + timeout;
+		task.control_retention_deadline_s = GetAppTimeSeconds() + settings::NormalizedAcpSetupInactivityTimeoutSeconds(app.settings.acp_setup_inactivity_timeout_seconds);
 	}
 
 	// Creates the provider process on the launch worker. The session keeps this task as its pending
@@ -2840,22 +2836,8 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 		task->host = *execution_host;
 		task->ownership = LocalLaunchOwnership(app, session, chat);
 		if (!app.claude_quota_dispatch_id.empty()) task->cold_quota = chat.claude_quota_continuation;
-		const auto control = std::ranges::find(app.uam_control_capabilities, session.uam_control_capability_id, &UamControlCapability::id);
-		if (control != app.uam_control_capabilities.end())
-			if (const ChatSession* root = ChatDomainService().FindChatById(app, control->chat_id))
-			{
-				task->control_session = &session;
-				task->control_capability_id = control->id;
-				task->control_manager_id = app.uam_control_manager_id;
-				task->control_root_chat_id = root->id;
-				task->control_root_incarnation = root->metadata_incarnation;
-				task->control_capability_expiry_epoch_ms = control->expires_at_epoch_ms;
-				const int timeout = app.settings.acp_setup_inactivity_timeout_seconds <= 0
-				    ? settings::kDefaultAcpSetupInactivityTimeoutSeconds
-				    : std::clamp(app.settings.acp_setup_inactivity_timeout_seconds,
-				        settings::kMinAcpSetupInactivityTimeoutSeconds, settings::kMaxAcpSetupInactivityTimeoutSeconds);
-				task->control_retention_deadline_s = GetAppTimeSeconds() + timeout;
-			}
+		task->control_session = &session;
+		CaptureLaunchControlReservation(app, session, *task);
 		const bool central_native = session.active_uam_agent_execution_capability == "uam-central-native-setup";
 		const std::string central_instructions = session.active_uam_agent_instructions;
 		session.pending_local_launch = task;
