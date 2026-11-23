@@ -1608,4 +1608,29 @@ describe('NewChatModal', () => {
       expect(document.getElementById(card.getAttribute('aria-describedby')!)?.textContent).toBe('lab. The remote runner is not set up. Open Settings to configure this computer.')
     } finally { act(() => root.unmount()); host.remove() }
   })
+
+  it('names an unavailable selected computer in words in the footer', async () => {
+    useAppStore.setState({
+      folders: [{ id: 'remote', name: 'Remote', parentId: null, directory: '/srv/remote', executionHostId: 'lab', isExpanded: true, createdAt: new Date() }],
+      newChatFolderId: 'remote',
+      executionHosts: [...useAppStore.getState().executionHosts, { id: 'lab', label: 'Home lab', transport: 'ssh', sshAlias: 'lab', runnerStatus: 'offline', runnerVersion: '1', platform: 'linux', architecture: 'x64', lastSeenAt: '' }],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => root.render(<NewChatModal />))
+      expect(document.getElementById('new-chat-create-blocked')?.textContent).toBe('The computer is offline. Open Settings to configure this computer.')
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it.each([true, false])('marks its portalled dialog for the phone browser field styling only in the companion (%s)', async (companion) => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => root.render(<NewChatModal companion={companion} />))
+      expect(document.body.querySelector('.uam-overlay')!.classList.contains('uam-companion-overlay')).toBe(companion)
+    } finally { act(() => root.unmount()); host.remove() }
+  })
 })

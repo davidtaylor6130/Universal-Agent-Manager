@@ -384,6 +384,9 @@
 }
 .uam-overlay:not([data-state="closed"]) { animation: uam-backdrop-in var(--dur-enter) var(--ease-out-soft); }
 .uam-overlay[data-state="closed"] { animation: uam-backdrop-out var(--dur-exit) var(--ease) forwards; pointer-events: none; }
+/* Phone browser dialogs are portalled out of .uam-companion, so they repeat its field rule (companion.css): 16px text
+   keeps iOS Safari from zooming when a field takes focus. */
+.uam-companion-overlay input { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 10px; font-size: var(--fs-lg); }
 /* An Overlay that is itself the dialog takes programmatic focus on open; the layer is not a control, so it draws no ring. */
 .uam-overlay[role]:focus { outline: none; }
 .uam-overlay:not([data-state="closed"]) > * { animation: uam-dialog-in var(--dur-enter) var(--ease-out-soft) backwards; }

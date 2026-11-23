@@ -53,7 +53,7 @@ export interface OverlayProps {
    * carry its own `role="dialog"` and `aria-modal` (existing panels do).
    */
   label?: string
-  /** Id of the visible title that names the dialog. */
+  /** Id of the visible title that names the dialog; it takes precedence over `label` when both are set. */
   labelledBy?: string
   /** Id of the text that describes the dialog. */
   describedBy?: string

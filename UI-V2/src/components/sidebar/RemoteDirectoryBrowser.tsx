@@ -13,9 +13,11 @@ interface RemoteDirectoryBrowserProps {
   onSelect: (path: string) => void
   /** Focus target on close when the control that opened the browser is gone (for example a replaced form step). */
   returnFocusTo?: () => HTMLElement | null | undefined
+  /** Extra overlay class, such as the phone browser's `uam-companion-overlay`. */
+  className?: string
 }
 
-export function RemoteDirectoryBrowser({ host, initialPath, onCancel, onSelect, returnFocusTo }: RemoteDirectoryBrowserProps) {
+export function RemoteDirectoryBrowser({ host, initialPath, onCancel, onSelect, returnFocusTo, className }: RemoteDirectoryBrowserProps) {
   const fieldId = useId()
   const listRemoteDirectories = useAppStore((state) => state.listRemoteDirectories)
   const [path, setPath] = useState(initialPath.trim() || defaultRemoteBrowsePath(host.platform))
@@ -81,7 +83,7 @@ export function RemoteDirectoryBrowser({ host, initialPath, onCancel, onSelect, 
   }, [onCancel])
 
   return (
-    <Overlay open zIndex={70} label={`Choose directory on ${host.label}`} describedBy={`${fieldId}-scope`} onBackdropMouseDown={onCancel} returnFocusTo={returnFocusTo}>
+    <Overlay open zIndex={70} className={className} label={`Choose directory on ${host.label}`} describedBy={`${fieldId}-scope`} onBackdropMouseDown={onCancel} returnFocusTo={returnFocusTo}>
       <Card
         elevation={2}
         flush

@@ -56,3 +56,11 @@ describe('forced colours', () => {
     expect(declares(conversation, /^\.conversation-rail-track > span$/, /forced-color-adjust:\s*none/)).toHaveLength(1)
   })
 })
+
+describe('phone browser dialogs', () => {
+  it('keep 16px fields after the Overlay portals them out of the companion shell', () => {
+    const rule = css('src/index.css').match(/\.uam-companion-overlay input \{([^}]*)\}/)?.[1] ?? ''
+    expect(rule).toMatch(/font-size:\s*var\(--fs-lg\)/)
+    expect(css('src/index.css')).toMatch(/--fs-lg:\s*16px/)
+  })
+})

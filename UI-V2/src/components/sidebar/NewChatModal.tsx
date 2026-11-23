@@ -18,6 +18,7 @@ import { buildCodexReasoningOptions, buildModelOptions, modelCatalogForDefaults,
 import { ModelPickerContent } from '../chat/ModelPickerContent'
 import { isAbsoluteRemoteWorkspace, isSshHost } from '../../utils/remoteWorkspace'
 import { RemoteDirectoryBrowser } from './RemoteDirectoryBrowser'
+import { focusableRowWith } from '../../utils/modalFocus'
 import { NewChatBranchPicker } from './NewChatBranchPicker'
 
 const AUTOMATIC_HOST_OPTION = 'uam:auto-routing'
@@ -32,9 +33,6 @@ const RUNNER_UNAVAILABLE: Record<Exclude<keyof typeof RUNNER_STATUS, 'ready'>, s
 const runnerIssue = (status: keyof typeof RUNNER_STATUS) =>
   status === 'ready' ? '' : `${RUNNER_UNAVAILABLE[status]} Open Settings to configure this computer.`
 
-const rowWithAttribute = (attribute: 'data-session-id' | 'data-workspace-id', id: string | null | undefined) =>
-  id ? Array.from(document.querySelectorAll<HTMLElement>(`[${attribute}]`)).find((row) => row.getAttribute(attribute) === id) ?? null : null
-
 export function NewChatModal({ companion = false, onCreated }: { companion?: boolean; onCreated?: () => void }) {
   // Focus on open (the New chat button, a menu item or the composer), restored on close even after a replaced step.
   // A row menu item closes with its menu, so the dialog then returns to the workspace it was opened for (its sidebar
@@ -45,7 +43,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
     return { opener, folderId: state.newChatFolderId, sessionId: state.activeSessionId }
   })
   const returnFocus = useCallback(() => returnTarget.opener?.isConnected ? returnTarget.opener
-    : rowWithAttribute('data-workspace-id', returnTarget.folderId) ?? rowWithAttribute('data-session-id', returnTarget.sessionId), [returnTarget])
+    : focusableRowWith('data-workspace-id', returnTarget.folderId) ?? focusableRowWith('data-session-id', returnTarget.sessionId), [returnTarget])
   const fieldId = useId()
   const addSession = useAppStore((s) => s.addSession)
   const setNewChatModalOpen = useAppStore((s) => s.setNewChatModalOpen)
@@ -402,12 +400,15 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
         setRemoteBrowserOpen(false)
       }}
       returnFocusTo={returnFocus}
+      className={companion ? 'uam-companion-overlay' : undefined}
     />
   }
   if (SSH_ENABLED && routingOpen) return <ExecutionRoutingDialog onClose={() => { setStepReturn('routing'); setRoutingOpen(false) }} />
 
   return (
-    <Overlay open zIndex={50} label="New chat" labelledBy={`${fieldId}-title`} onBackdropMouseDown={requestClose} returnFocusTo={returnFocus}>
+    // label as well as the visible title: scripts/perf_driven.py finds this dialog by [aria-label="New chat"].
+    // The phone browser's overlay class keeps its 16px fields once the dialog is portalled out of the companion shell.
+    <Overlay open zIndex={50} label="New chat" labelledBy={`${fieldId}-title`} className={companion ? 'uam-companion-overlay' : undefined} onBackdropMouseDown={requestClose} returnFocusTo={returnFocus}>
       <Card
         elevation={2}
         flush
