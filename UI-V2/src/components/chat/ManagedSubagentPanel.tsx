@@ -8,6 +8,7 @@ import { subagentRouteFor, subscribeSubagentNavigation, subagentNavigationRevisi
 import { cancelManagedSubagent, isManagedSubagentTool, listManagedSubagents, managedRunActive, managedRunLabel, managedElapsed, managedTaskTitle, retryManagedRead, type ManagedSubagentPage, type ManagedSubagentRun } from './managedSubagents'
 import './ManagedSubagentPanel.css'
 import { SubagentCard } from './SubagentCard'
+import { useNow } from '../../hooks/useNow'
 
 /** `viewportVisible=false` (sidebar rows scrolled out of view) pauses polling and the clock; rows and the last read stay. */
 export type ManagedSubagentPanelProps = { sourceChatId: string; runId?: string; catalogue?: boolean; viewportVisible?: boolean; collapsed?: boolean }
@@ -61,7 +62,6 @@ function ManagedPanelContent({ sourceChatId, runId = '', catalogue = false, view
   const [stopMessage, setStopMessage] = useState('')
   const [stopFailed, setStopFailed] = useState(false)
   const [failures, setFailures] = useState(0)
-  const [now, setNow] = useState(Date.now)
   const [stale, setStale] = useState(false)
   const [open, setOpen] = useState(true)
   const parentActive = useAppStore(state => Boolean(state.acpBindingBySessionId[sourceChatId]?.processing || state.cliBindingBySessionId[sourceChatId]?.processing))
@@ -110,7 +110,6 @@ function ManagedPanelContent({ sourceChatId, runId = '', catalogue = false, view
       setPage(result)
       setStale(false)
       result.runs.forEach(run => names.current.set(run.runId, managedTaskTitle(run)))
-      setNow(Date.now())
     }).catch(cause => {
       if (!disposed && serial.current === request && !controller.signal.aborted) {
         setFailures(value => value + 1)
@@ -169,11 +168,7 @@ function ManagedPanelContent({ sourceChatId, runId = '', catalogue = false, view
     return () => { window.clearTimeout(timer); document.removeEventListener('visibilitychange', onVisible) }
   }, [error, failures, readPending, stopping, open, viewportVisible, attempt])
 
-  useEffect(() => {
-    if (!listedActive || !open || error || !viewportVisible) return
-    const timer = window.setInterval(() => { if (document.visibilityState !== 'hidden') setNow(Date.now()) }, 1000)
-    return () => window.clearInterval(timer)
-  }, [listedActive, open, error, viewportVisible])
+  const now = useNow(listedActive && open && !error && viewportVisible)
 
   // Back in view: read once if polling, a retry or an event read was held back while off-screen.
   // Reopening a collapsed parent always reads once, because nothing observed the ledger meanwhile.

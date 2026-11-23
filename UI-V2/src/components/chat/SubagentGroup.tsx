@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import { ChevronRight, Users } from 'lucide-react'
 import { Button } from '../ui'
 import { useAppStore, type AcpToolCall } from '../../store/useAppStore'
@@ -6,6 +6,8 @@ import { useSubAgentDisclosure } from './ConversationWork'
 import { ToolStatusIcon } from './StatusHelpers'
 import './SubagentGroup.css'
 import './SubagentDisclosure.css'
+import { formatElapsed } from '../../utils/elapsed'
+import { useNow } from '../../hooks/useNow'
 import { openSubagentView } from '../../utils/subagentNavigation'
 import { boundedSubagentSummary, isManagedSubagentTool, managedResultCard, managedElapsed, managedRunActive, managedRunLabel } from './managedSubagents'
 import { SubagentCard, SubagentOutcomeIcon } from './SubagentCard'
@@ -35,8 +37,7 @@ function nativeElapsed(child: Child, live: boolean, now: number): string | undef
     else if (valid(child.startedAtEpochMs) && valid(child.finishedAtEpochMs) && child.finishedAtEpochMs >= child.startedAtEpochMs) duration = child.finishedAtEpochMs - child.startedAtEpochMs
   }
   if (duration === undefined) return undefined
-  const seconds = Math.floor(duration / 1000)
-  return seconds < 60 ? `${seconds}s` : seconds < 3600 ? `${Math.floor(seconds / 60)}m ${seconds % 60}s` : `${Math.floor(seconds / 3600)}h ${Math.floor(seconds % 3600 / 60)}m`
+  return formatElapsed(duration)
 }
 
 export function subagentRows(tools: ChildTool[]) {
@@ -80,13 +81,7 @@ function SubagentGroupContent({ tools, sourceChatId, renderHistory, onSelectTool
   const knownRunning = active ? rows.filter(row => row.child.id && (isManagedSubagentTool(row.tool) ? managedRunActive(row.child.status || '') : subagentState(row.child.status).active)).length : 0
   const childCount = rows.filter(row => row.child.id).length
   const eventCount = rows.length - childCount
-  const [now, setNow] = useState(Date.now)
-  useEffect(() => {
-    if (!open || !active || !rows.some(row => row.presentation?.timing ? managedRunActive(row.child.status || '') : row.child.startedAtEpochMs !== undefined && subagentState(row.child.status).active)) return
-    setNow(Date.now())
-    const timer = window.setInterval(() => { if (document.visibilityState !== 'hidden') setNow(Date.now()) }, 1000)
-    return () => window.clearInterval(timer)
-  }, [open, active, rows])
+  const now = useNow(open && active && rows.some(row => row.presentation?.timing ? managedRunActive(row.child.status || '') : row.child.startedAtEpochMs !== undefined && subagentState(row.child.status).active))
   if (!rows.length) return null
 
   const openChild = async (child: Child, key: string, tool: AcpToolCall) => {

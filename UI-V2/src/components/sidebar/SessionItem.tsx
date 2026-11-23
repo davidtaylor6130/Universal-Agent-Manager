@@ -39,22 +39,13 @@ import { resolveCustomIcon } from '../../types/customIcon'
 import { reportAppFailure } from '../../utils/appFailure'
 import type { CustomIcon as CustomIconValue } from '../../types/customIcon'
 import { SSH_ENABLED } from '../../config/buildFeatures'
+import { formatElapsed } from '../../utils/elapsed'
+import { useNow } from '../../hooks/useNow'
 
-export function formatWorkingDuration(elapsedMs: number): string {
-  const seconds = Math.max(0, Math.floor(elapsedMs / 1000))
-  if (seconds < 60) return `${seconds}s`
-  const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${minutes}m`
-  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`
-}
-
+/** Sidebar rows are one dense line, so they drop seconds from the first minute; the chat shows the same time with seconds. */
 function WorkingDuration({ startedAtMs }: { startedAtMs: number }) {
-  const [now, setNow] = useState(() => Date.now())
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 1000)
-    return () => window.clearInterval(timer)
-  }, [])
-  return <span className="tabular-nums">{formatWorkingDuration(now - startedAtMs)}</span>
+  const now = useNow(true)
+  return <span className="tabular-nums">{formatElapsed(now - startedAtMs, { seconds: 'under-minute' })}</span>
 }
 
 const branchCache = new Map<string, string>()

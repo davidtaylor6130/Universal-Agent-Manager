@@ -8,6 +8,8 @@ import type { AcpBinding, AcpToolCall, CliBinding } from '../../store/useAppStor
 import { copyTextToClipboard } from '../../utils/copySelection'
 import { IconButton, Tooltip, usePresence } from '../ui'
 import { redactSecretRequestTool } from './toolOutputFormat'
+import { formatElapsed } from '../../utils/elapsed'
+import { useNow } from '../../hooks/useNow'
 
 /** Bar for a token quantity; callers pick the tone and keep exact numbers in text. */
 export function ContextMeter({ ratio, level = 'ok' }: { ratio: number; level?: 'ok' | 'warning' | 'error' }) {
@@ -16,25 +18,13 @@ export function ContextMeter({ ratio, level = 'ok' }: { ratio: number; level?: '
   </span>
 }
 
-function formatElapsed(seconds: number) {
-  if (seconds < 60) return `${seconds}s`
-  const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${minutes}m ${String(seconds % 60).padStart(2, '0')}s`
-  return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, '0')}m`
-}
-
-/** Seconds since the strip opened, ticking once a second only while it is visible. */
-function useElapsedSeconds(open: boolean) {
+/** Milliseconds since the strip opened, ticking once a second only while it is open and the window is visible. */
+function useElapsedMs(open: boolean) {
   const startedAt = useRef<number | null>(null)
-  const [, setTick] = useState(0)
+  const now = useNow(open)
   if (open && startedAt.current === null) startedAt.current = Date.now()
   if (!open) startedAt.current = null
-  useEffect(() => {
-    if (!open) return
-    const timer = window.setInterval(() => setTick((value) => value + 1), 1000)
-    return () => window.clearInterval(timer)
-  }, [open])
-  return startedAt.current === null ? 0 : Math.max(0, Math.floor((Date.now() - startedAt.current) / 1000))
+  return startedAt.current === null ? 0 : Math.max(0, now - startedAt.current)
 }
 
 export type ChatStatusTone = 'info' | 'agents' | 'warning'
@@ -56,7 +46,7 @@ export function ChatStatusStrip({ open, tone, scene, title, detail, timeMode = '
   const { mounted: present } = usePresence(open)
   const lastShown = useRef<{ tone: ChatStatusTone; scene: ReactNode; title: string; detail?: ReactNode } | null>(null)
   if (open) lastShown.current = { tone, scene, title, detail }
-  const elapsed = useElapsedSeconds(open && timeMode === 'elapsed')
+  const elapsed = useElapsedMs(open && timeMode === 'elapsed')
   // The provider reports no stop time, so 'since' records the moment the strip first appeared.
   const since = useRef<number | null>(null)
   if (open && since.current === null) since.current = Date.now()

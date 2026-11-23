@@ -50,6 +50,10 @@ Usage Cost and Tokens bars use the gapped split bar (token types on Tokens, cost
 
 Fixed-height model picker rows keep the name and identity above compact neutral Context and Output badges with token units. Rows up to 440px use Ctx/Out and tok labels so descriptions remain readable at the default 360px picker width; descriptions hide only at 340px and below, with full labels and exact capacities in accessible row text. Enabled rows disclose descriptions and visible exact capacities through the shared Tooltip, with capacity text announced through the row rather than repeated in its tooltip description; disabled rows use their full accessible label and native hover label without also opening the shared Tooltip; unknown limits render nothing, the **Model token limits** display setting can hide all badges, and these capacity badges do not imply consumed usage or physical parameter size. [Models](../providers/models.md) owns their data and scope.
 
+## Elapsed time
+
+Every running or finished duration uses one text: seconds under a minute (`45s`), minutes and seconds under an hour (`1m 5s`, with the zero kept in `2m 0s`), then hours and minutes (`1h 2m`), unpadded and rounded to the nearest second, so a live "Working" clock and the finished "Worked" time of the same turn read the same. This covers turn headers, the status strip above the composer, subagent and managed-subagent rows and the sidebar. The sidebar's one-line working rows are the one shorter form: they drop seconds from the first minute (`1m`), keeping the same units and hour format. Format through `formatElapsed` (`utils/elapsed.ts`) and drive live clocks with `useNow` (`hooks/useNow.ts`), which ticks once a second only while the work runs and the window is visible, and catches up as soon as it is shown again. Countdowns, reset times and ages such as "2 minutes ago" are not elapsed times and keep their own wording.
+
 ## Usage
 
 Usage charts include reported charges and estimates; incomplete pricing must disclose excluded unpriced tokens and label the Known cost. [Allowances](../usage/allowances.md) retain unknown values and provider-reported periods rather than inventing a limit.
