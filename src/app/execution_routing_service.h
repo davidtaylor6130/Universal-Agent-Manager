@@ -29,6 +29,8 @@ namespace uam
 		bool runner_compatible = false;
 		bool provider_supported = false;
 		std::size_t max_active_turns = 0;
+		/// Host admission reports it over its hard load limit: no new automatic work is placed there.
+		bool overloaded = false;
 		std::vector<ExecutionRoutingMapping> mappings;
 	};
 
@@ -55,6 +57,10 @@ namespace uam
 		std::string explicit_folder_id;
 		std::string explicit_directory;
 		ExecutionRoutingAssignment assigned;
+		/// The assigned chat has not started: no provider session, process, delivered input or unsettled
+		/// reservation. Such work may move to another eligible remote computer when its own is full, down or
+		/// overloaded; it never moves to the local computer. Started work stays on its computer.
+		bool movable = false;
 	};
 
 	struct ExecutionRoutingOccupancy
@@ -71,6 +77,8 @@ namespace uam
 		ExecutionRoutingStatus status = ExecutionRoutingStatus::Waiting;
 		ExecutionRoutingReason reason = ExecutionRoutingReason::NoEligibleHost;
 		ExecutionRoutingAssignment assignment;
+		/// Set when an unstarted chat was given another computer; the caller must save the new destination.
+		bool moved = false;
 	};
 
 	/// Serializes admission only. The caller must persist assignment before launch and

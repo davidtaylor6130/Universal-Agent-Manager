@@ -234,6 +234,81 @@ UAM_TEST(ExecutionRoutingAssignedIdleAutomaticChatWaitsForItsOwnHostCapacity)
 	UAM_ASSERT_EQ(available.assignment, initial.assignment);
 }
 
+UAM_TEST(ExecutionRoutingMovesUnstartedWorkToAnotherRemoteHostWhenItsHostIsDownFullOrOverloaded)
+{
+	for (int cause = 0; cause < 3; ++cause)
+	{
+		uam::ExecutionRoutingService service;
+		const uam::ExecutionRoutingDecision initial = service.Admit(RoutingRequest("queued"), {RoutingHost("a"), RoutingHost("b")}, {});
+		UAM_ASSERT_EQ(initial.assignment.host_id, std::string("a"));
+		UAM_ASSERT(service.Release("queued", true));
+		uam::ExecutionRoutingCandidate a = RoutingHost("a");
+		std::vector<uam::ExecutionRoutingOccupancy> occupancy;
+		if (cause == 0) a.runner_ready = false;
+		if (cause == 1) occupancy.push_back({"busy-chat", "a"});
+		if (cause == 2) a.overloaded = true;
+		uam::ExecutionRoutingRequest request = RoutingRequest("queued");
+		request.assigned = initial.assignment;
+		// Started work stays pinned: without the unstarted flag the chat waits for its own computer.
+		const uam::ExecutionRoutingDecision pinned = service.Admit(request, {a, RoutingHost("b")}, occupancy);
+		UAM_ASSERT_EQ(pinned.status, uam::ExecutionRoutingStatus::Waiting);
+		UAM_ASSERT_EQ(pinned.assignment.host_id, std::string("a"));
+		UAM_ASSERT(!pinned.moved);
+		request.movable = true;
+		const uam::ExecutionRoutingDecision moved = service.Admit(request, {a, RoutingHost("b")}, occupancy);
+		UAM_ASSERT_EQ(moved.status, uam::ExecutionRoutingStatus::Assigned);
+		UAM_ASSERT(moved.moved);
+		UAM_ASSERT_EQ(moved.assignment.host_id, std::string("b"));
+		UAM_ASSERT_EQ(moved.assignment.destination_folder_id, std::string("folder-b"));
+		UAM_ASSERT_EQ(moved.assignment.connection_identity, std::string("connection-b"));
+		UAM_ASSERT(moved.assignment.automatic);
+		// The reservation follows the move, so the old computer's slot is free again.
+		request.assigned = moved.assignment;
+		request.movable = false;
+		UAM_ASSERT_EQ(service.Admit(request, {a, RoutingHost("b")}, occupancy).assignment.host_id, std::string("b"));
+	}
+}
+
+UAM_TEST(ExecutionRoutingNeverMovesUnstartedWorkToTheLocalComputerOrAnUnmappedHost)
+{
+	uam::ExecutionRoutingService service;
+	const uam::ExecutionRoutingDecision initial = service.Admit(RoutingRequest("queued"), {RoutingHost("a")}, {});
+	UAM_ASSERT(service.Release("queued", true));
+	uam::ExecutionRoutingCandidate down = RoutingHost("a");
+	down.runner_ready = false;
+	// A local candidate fully confirmed and mapped is still never chosen automatically.
+	uam::ExecutionRoutingCandidate local = RoutingHost("local", 8);
+	uam::ExecutionRoutingCandidate unmapped = RoutingHost("c", 8);
+	unmapped.mappings.front().source_workspace_identity = "local:/other";
+	uam::ExecutionRoutingCandidate overloaded = RoutingHost("d", 8);
+	overloaded.overloaded = true;
+	uam::ExecutionRoutingRequest request = RoutingRequest("queued");
+	request.assigned = initial.assignment;
+	request.movable = true;
+	const uam::ExecutionRoutingDecision waiting = service.Admit(request, {down, local, unmapped, overloaded}, {});
+	UAM_ASSERT_EQ(waiting.status, uam::ExecutionRoutingStatus::Waiting);
+	UAM_ASSERT_EQ(waiting.reason, uam::ExecutionRoutingReason::HostUnavailable);
+	UAM_ASSERT_EQ(waiting.assignment.host_id, std::string("a"));
+	// Work the caller reports as running is started work, whatever the flag says.
+	const uam::ExecutionRoutingDecision running = service.Admit(request, {down, RoutingHost("b")}, {{"queued", "a"}});
+	UAM_ASSERT_EQ(running.status, uam::ExecutionRoutingStatus::Waiting);
+	UAM_ASSERT_EQ(running.assignment.host_id, std::string("a"));
+	// Recovery of owned work never moves either.
+	request.recovery_of_owned_work = true;
+	UAM_ASSERT_EQ(service.Admit(request, {down, RoutingHost("b")}, {}).assignment.host_id, std::string("a"));
+}
+
+UAM_TEST(ExecutionRoutingPlacesNewWorkOnlyOnHostsThatAreNotOverloaded)
+{
+	uam::ExecutionRoutingService service;
+	uam::ExecutionRoutingCandidate busy = RoutingHost("a", 4);
+	busy.overloaded = true;
+	const uam::ExecutionRoutingDecision placed = service.Admit(RoutingRequest("new"), {busy, RoutingHost("b", 4)}, {{"x", "b"}, {"y", "b"}});
+	UAM_ASSERT_EQ(placed.assignment.host_id, std::string("b"));
+	UAM_ASSERT(!placed.moved);
+	UAM_ASSERT_EQ(service.Admit(RoutingRequest("only-overloaded"), {busy}, {}).status, uam::ExecutionRoutingStatus::Waiting);
+}
+
 UAM_TEST(ExecutionRoutingOnlyOwnedRecoveryBypassesChangedOptInAndFullCapacity)
 {
 	uam::ExecutionRoutingService original;

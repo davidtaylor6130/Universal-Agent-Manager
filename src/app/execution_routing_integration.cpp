@@ -1,3 +1,5 @@
+#include "app/host_admission_integration.h"
+#include "common/utils/diagnostic_log.h"
 #include "app/agent_run_scheduler.h"
 #include "execution_routing_integration.h"
 #include "app/repository_route_match_service.h"
@@ -100,6 +102,7 @@ namespace uam
 			if (now < retry.first) return;
 			// A background check shows no "Checking..." status; its result still replaces the message.
 			const std::string message = known_here ? known->second.message : std::string();
+			if (!AdmitBackgroundStart(app, "version-check:" + provider.id + "@" + host.id, host.id, false).admitted) return;
 			if (!ProviderCliCompatibilityService().StartProviderVersionCheck(app, provider.id, true, host.id)) return;
 			app.runtime_cli_version_check_background = true;
 			app.runtime_cli_versions_by_provider_id[key].message = message;
@@ -280,6 +283,19 @@ namespace uam
 		return false;
 	}
 
+	bool ExecutionRoutingWorkUnstarted(const AppState& app, const ChatSession& chat)
+	{
+		if (chat.routing_mode != "automatic" || chat.routing_assigned_connection_identity.empty()) return false;
+		// Anything the provider may have seen or still holds pins the chat: a provider session, a remote process, a
+		// delivery in flight, work this app owns, or a reservation restored without its work.
+		if (!chat.native_session_id.empty() || chat.remote_process_exists || ExecutionRoutingOwnsWork(app, chat) ||
+		    app.execution_routing_restored_unresolved_chat_ids.contains(chat.id)) return false;
+		if (std::ranges::any_of(app.acp_sessions, [&chat](const std::unique_ptr<AcpSessionState>& session)
+		    { return session && session->chat_id == chat.id && (session->running || session->remote_stop_unconfirmed || !session->session_id.empty()); })) return false;
+		return std::ranges::none_of(app.cli_terminals, [&chat](const std::unique_ptr<CliTerminalState>& terminal)
+		    { return terminal && (terminal->attached_chat_id == chat.id || terminal->frontend_chat_id == chat.id) && (terminal->running || terminal->context_preparation); });
+	}
+
 	ExecutionRoutingDecision AdmitExecutionRouting(AppState& app, ChatSession& chat, bool terminal)
 	{
 		const bool automatic = chat.routing_mode == "automatic";
@@ -324,6 +340,8 @@ namespace uam
 				else if (automatic && host.id != "local" && policy.enabled && provider_enabled) RetryRoutingVersionCheck(app, *provider, host, now);
 				candidate.pool_enabled = policy.enabled;
 				candidate.max_active_turns = policy.max_active_turns;
+				// Over its hard load limit, a computer takes no new automatic work and unstarted work may leave it.
+				candidate.overloaded = app.host_admission && app.host_admission->HealthOf(host.id) == host_admission::Health::Overloaded;
 				for (const ExecutionRoutingProviderConfirmation& confirmation : policy.provider_confirmations)
 					if (confirmation.provider_id == provider->id)
 					{
@@ -372,6 +390,7 @@ namespace uam
 		request.automatic_enabled = app.settings.execution_routing.enabled;
 		request.recovery_of_owned_work = ExecutionRoutingOwnsWork(app, chat);
 		if (!chat.routing_assigned_connection_identity.empty()) request.assigned = AssignmentForChat(chat);
+		request.movable = automatic && ExecutionRoutingWorkUnstarted(app, chat);
 		if (!request.assigned.host_id.empty())
 		{
 			const ChatFolder* destination = ChatDomainService().FindFolderById(app, request.assigned.destination_folder_id);
@@ -451,6 +470,13 @@ namespace uam
 		app.execution_routing_retry_at_by_chat_id.erase(chat.id);
 		if (decision.status == ExecutionRoutingStatus::Assigned) app.execution_routing_reserved_chat_ids.insert(chat.id);
 		if (!automatic || decision.status != ExecutionRoutingStatus::Assigned) return decision;
+		// A new assignment and a move of unstarted work both take the destination's workspace; a pinned chat keeps its own.
+		const bool placing = request.assigned.host_id.empty() || decision.moved;
+		if (decision.moved)
+		{
+			app.repository_route_assignments.erase(chat.id);
+			diagnostics::Write("Routing moved an unstarted chat to another remote computer because its own was full, down or overloaded.");
+		}
 		const std::string previous_model_id = chat.model_id;
 		const std::string previous_reviewer_model_id = chat.reviewer_model_id;
 		const std::string previous_reasoning_effort = chat.reasoning_effort;
@@ -470,7 +496,7 @@ namespace uam
 			host_scoped_settings::ApplyInheritedRoutingDefaults(app.settings, chat);
 			chat.routing_inherited_default_fields.clear();
 		}
-		if (request.assigned.host_id.empty())
+		if (placing)
 		{
 			chat.workspace_directory = decision.assignment.destination_directory;
 			if (!chat.workspace_worktree_directory.empty()) chat.workspace_worktree_directory = decision.assignment.destination_directory;
@@ -508,7 +534,7 @@ namespace uam
 			app.execution_routing_retry_at_by_chat_id[chat.id] = now + 1.0;
 			return {ExecutionRoutingStatus::Waiting, ExecutionRoutingReason::InconsistentSnapshot, {}};
 		}
-		if (request.assigned.host_id.empty()) RememberRepositoryRouteAssignment(app, chat);
+		if (placing) RememberRepositoryRouteAssignment(app, chat);
 		return decision;
 	}
 

@@ -17,6 +17,9 @@ namespace uam
 	/// Persist assignment and its reservation before the caller starts any provider operation.
 	ExecutionRoutingDecision AdmitExecutionRouting(AppState& app, ChatSession& chat, bool terminal = false);
 	bool ExecutionRoutingOwnsWork(const AppState& app, const ChatSession& chat);
+	/// An automatic chat with a saved assignment that has not started: no provider session, process, terminal,
+	/// delivery or unresolved reservation. Only such work may move to another remote computer.
+	bool ExecutionRoutingWorkUnstarted(const AppState& app, const ChatSession& chat);
 	bool RestoreExecutionRoutingReservations(AppState& app);
 	bool PollExecutionRouting(AppState& app);
 	/// Contacts hosts whose last health check failed and hosts holding a reservation restored without its
