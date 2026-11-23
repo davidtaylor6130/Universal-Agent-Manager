@@ -500,6 +500,9 @@ UAM_TEST(StartupModelDiscoveryPreservesRemoteLinuxLiteralBackslashesInScopeAndLa
 	fixture.app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("codex-cli", host.id)].supported = true;
 	fixture.app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("claude-cli", host.id)].checked = true;
 	fixture.app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("claude-cli", host.id)].supported = false;
+	// With Codex grouped the poll reaches Antigravity too; a recorded check keeps the fixture from probing a real CLI.
+	fixture.app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("antigravity-cli", host.id)].checked = true;
+	fixture.app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("antigravity-cli", host.id)].supported = false;
 	uam::StartupModelDiscoveryService service(fixture.Launcher());
 	service.Initialize(fixture.app);
 	UAM_ASSERT(service.Poll(fixture.app));
