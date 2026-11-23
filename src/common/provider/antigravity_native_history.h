@@ -9,9 +9,8 @@
 
 namespace uam::antigravity::history
 {
-	/// Version of the reader's protobuf field tables. Raise it whenever a table
-	/// accepts a field it used to refuse, so earlier unknown-format refusals are
-	/// re-reported and the affected conversations are read again.
+	/// Version of the reader's protobuf field tables. Raise it whenever a field
+	/// table changes, so earlier unknown-format refusals are reported again.
 	inline constexpr int kReaderVersion = 2;
 
 	/// A conversation refused because it uses a field this reader version does

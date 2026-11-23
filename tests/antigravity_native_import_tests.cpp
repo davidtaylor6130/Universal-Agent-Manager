@@ -915,6 +915,31 @@ UAM_TEST(AntigravityNativeHistorySnapshotsSummaryOnceAcrossFiftyConversationsAnd
 	UAM_ASSERT_EQ(refused.omitted_error_count, std::size_t{30});
 }
 
+UAM_TEST(AntigravityNativeHistoryUnknownFieldRefusalsDoNotUseTheDetailCap)
+{
+	AgFixture fixture;
+	fixture.db.reset();
+	fs::remove(fixture.file);
+	for (unsigned i = 0; i < 25; ++i)
+	{
+		std::ostringstream id;
+		id << "3dc412af-b91a-4d9d-82f0-" << std::setfill('0') << std::setw(12) << i;
+		if (i < 13)
+		{
+			AgFixture refused(id.str());
+			refused.User("Read the synthetic fixture", AgNumber(99, 1));
+			refused.db.reset();
+			fs::copy_file(refused.file, fixture.file.parent_path() / (id.str() + ".db"));
+		}
+		else
+			std::ofstream(fixture.file.parent_path() / (id.str() + ".db")) << "Synthetic refused database";
+	}
+	const auto result = uam::antigravity::history::Discover(fixture.temp.root);
+	UAM_ASSERT_EQ(result.format_refusals.size(), std::size_t{13});
+	UAM_ASSERT_EQ(result.errors.size(), std::size_t{25});
+	UAM_ASSERT_EQ(result.omitted_error_count, std::size_t{0});
+}
+
 #if !defined(UAM_ANTIGRAVITY_HISTORY_STANDALONE) && UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
 namespace
 {
@@ -1156,7 +1181,7 @@ UAM_TEST(SettingsAntigravityNativeHiddenOwnerAndLateTombstonePreventPublication)
 	UAM_ASSERT_EQ(ReadFile(AppPaths::UamChatFilePath(other.data_root, hidden.id)), before);
 }
 
-UAM_TEST(SettingsAntigravityUnknownFieldRefusalIsReportedOnceUntilTheFileChanges)
+UAM_TEST(SettingsAntigravityUnknownFieldRefusalIsReportedOnceAtStartupUntilTheFileChanges)
 {
 	AgFixture fixture;
 	fixture.User();
@@ -1164,15 +1189,23 @@ UAM_TEST(SettingsAntigravityUnknownFieldRefusalIsReportedOnceUntilTheFileChanges
 	uam::AppState app;
 	app.data_root = fixture.temp.root / "uam-data";
 	fs::create_directories(app.data_root);
-	uam::StartupNativeImportService service([&](const auto&, std::stop_token) { return AgApplicationDiscovery(fixture); });
 	const std::vector<std::string> reported{"Antigravity conversation " + std::string(kSession) + ": Antigravity added a history field UAM can't read yet."};
-	const auto scan = [&]
+	// Each automatic startup scan runs in a fresh service, as after an app restart.
+	const auto startup = [&]
 	{
-		UAM_ASSERT(service.DiscoverLocalHistory(app));
+		uam::StartupNativeImportService service([&](const auto&, std::stop_token) { return AgApplicationDiscovery(fixture); });
+		service.Initialize(app);
 		AgWait(service, app);
 		return service.Snapshot();
 	};
-	const auto first = scan();
+	uam::StartupNativeImportService explicit_service([&](const auto&, std::stop_token) { return AgApplicationDiscovery(fixture); });
+	const auto discover = [&]
+	{
+		UAM_ASSERT(explicit_service.DiscoverLocalHistory(app));
+		AgWait(explicit_service, app);
+		return explicit_service.Snapshot();
+	};
+	const auto first = startup();
 	UAM_ASSERT_EQ(first.errors, reported);
 	UAM_ASSERT_EQ(first.total_count, std::size_t{0});
 	const fs::path record = app.data_root / "native-import-tombstones.json";
@@ -1182,20 +1215,23 @@ UAM_TEST(SettingsAntigravityUnknownFieldRefusalIsReportedOnceUntilTheFileChanges
 	// The note never acts as a deletion tombstone.
 	const auto deleted = ChatHistorySyncService().NativeImportTombstoneKeys(app.data_root);
 	UAM_ASSERT(deleted && deleted->empty());
-	// Later scans still read the conversation but do not report it again.
-	UAM_ASSERT(scan().errors.empty());
-	UAM_ASSERT(scan().errors.empty());
+	// Later startup scans still read the conversation but do not report it again.
+	UAM_ASSERT(startup().errors.empty());
+	UAM_ASSERT(startup().errors.empty());
+	// An explicit Chat Data scan always lists it and leaves the note alone.
+	const auto before = entries()[0].get<std::string>();
+	UAM_ASSERT_EQ(discover().errors, reported);
+	UAM_ASSERT_EQ(entries()[0].get<std::string>(), before);
 	// Deletion bookkeeping keeps the note.
 	UAM_ASSERT(ChatHistorySyncService().RemoveNativeImportTombstones(app.data_root, {"unrelated-key"}));
 	UAM_ASSERT_EQ(entries().size(), std::size_t{1});
-	UAM_ASSERT(scan().errors.empty());
-	// A changed file is reported once more and replaces the earlier note.
-	const auto before = entries()[0].get<std::string>();
+	UAM_ASSERT(startup().errors.empty());
+	// A changed file is reported once more at startup and replaces the earlier note.
 	fixture.Step(2, 14, 19, AgBytes(2, "Later synthetic input"), 4);
-	UAM_ASSERT_EQ(scan().errors, reported);
+	UAM_ASSERT_EQ(startup().errors, reported);
 	UAM_ASSERT_EQ(entries().size(), std::size_t{1});
 	UAM_ASSERT(entries()[0].get<std::string>() != before);
-	UAM_ASSERT(scan().errors.empty());
+	UAM_ASSERT(startup().errors.empty());
 	// A different reader version is a different key for the same conversation.
 	ChatHistorySyncService::ImportResult::FormatRefusal newer{"antigravity-cli|" + std::string(kSession), "antigravity-cli|" + std::string(kSession) + "|reader-999|0", "synthetic", "synthetic"};
 	UAM_ASSERT(ChatHistorySyncService().RecordNativeFormatRefusals(app.data_root, {newer}).empty());
@@ -1204,7 +1240,7 @@ UAM_TEST(SettingsAntigravityUnknownFieldRefusalIsReportedOnceUntilTheFileChanges
 	// Once the unknown field is gone the conversation is offered normally.
 	fixture.Sql("DELETE FROM steps WHERE idx>=1");
 	fixture.Step(1, 15, 20, AgBytes(1, "Visible synthetic reply"), 2);
-	const auto readable = scan();
+	const auto readable = discover();
 	UAM_ASSERT(readable.errors.empty());
 	UAM_ASSERT_EQ(readable.total_count, std::size_t{1});
 }

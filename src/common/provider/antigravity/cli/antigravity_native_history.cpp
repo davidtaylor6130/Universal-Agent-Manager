@@ -1013,7 +1013,8 @@ namespace uam::antigravity::history
 	Discovery Discover(const std::filesystem::path& root, const std::string& native_session, std::stop_token cancel, const SnapshotCopied& snapshot_copied, const WorkspaceFilter& workspace_filter, const SnapshotCopied& summary_snapshot_copied)
 	{
 		Discovery result;
-		const auto issue = [&](std::string message) { if (result.errors.size() < 20) result.errors.push_back(std::move(message)); else ++result.omitted_error_count; };
+		// Unknown-format refusals are listed outside this cap, so they never crowd out other details.
+		const auto issue = [&](std::string message) { if (result.errors.size() - result.format_refusals.size() < 20) result.errors.push_back(std::move(message)); else ++result.omitted_error_count; };
 		try
 		{
 			fs::path store = root;

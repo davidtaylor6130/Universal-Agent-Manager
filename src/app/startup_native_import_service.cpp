@@ -305,11 +305,11 @@ namespace uam
 		}
 	}
 
-	void StartupNativeImportService::AddError(const std::string& error)
+	void StartupNativeImportService::AddError(const std::string& error, bool log)
 	{
 		if (error.empty()) return;
 		const std::string message = strings::SafeLine(error, 512, true);
-		diagnostics::Write("Startup native history: " + message);
+		if (log) diagnostics::Write("Startup native history: " + message);
 		if (m_errors.size() < 20) m_errors.push_back(message);
 		else ++m_omitted_error_count;
 	}
@@ -487,16 +487,25 @@ namespace uam
 			const bool continue_scan = discovery.open_code_scanned_count > 0 && discovery.open_code_scanned_count < remaining &&
 			    discovery.open_code_next_offset && !discovery.open_code_list_fingerprint.empty();
 			m_omitted_error_count += discovery.result.omitted_error_count;
-			// A history in a format the reader cannot read yet is reported once, then stays quiet
-			// until the reader version or that history file changes; it is still retried every scan.
-			const std::unordered_set<std::string> already_reported = ChatHistorySyncService().RecordNativeFormatRefusals(app.data_root, discovery.result.format_refusals);
+			// An automatic startup scan reports a history in a format the reader cannot read yet
+			// once, then stays quiet until the reader version or that history file changes; the
+			// history is still retried. An explicit Chat Data scan always lists it.
+			const bool startup_scan = !m_include_unregistered_local;
+			const std::unordered_set<std::string> already_reported = startup_scan
+			    ? ChatHistorySyncService().RecordNativeFormatRefusals(app.data_root, discovery.result.format_refusals) : std::unordered_set<std::string>{};
+			std::unordered_set<std::string> detailed;
 			for (const auto& refusal : discovery.result.format_refusals)
-				if (!already_reported.contains(refusal.message)) diagnostics::Write("Startup native history: " + strings::SafeLine(refusal.diagnostic, 512, true));
+				if (!already_reported.contains(refusal.message))
+				{
+					// The detailed line replaces the plain one in the log.
+					diagnostics::Write("Startup native history: " + strings::SafeLine(refusal.diagnostic, 512, true));
+					detailed.insert(refusal.message);
+				}
 			for (const std::string& error : discovery.result.errors)
 			{
 				if (continue_scan && error == "OpenCode history scan stopped before all sessions were read; retry to continue.") continue;
 				if (already_reported.contains(error)) continue;
-				AddError(error);
+				AddError(error, !detailed.contains(error));
 			}
 			// Sub-chats leave the review list here: each waits for its parent's decision, and a fresh scan replaces an earlier sighting.
 			const auto take_child = [&](ChatSession& chat, std::filesystem::path* rollout)
