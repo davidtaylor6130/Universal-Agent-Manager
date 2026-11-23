@@ -1135,7 +1135,7 @@ namespace uam::remote
 			if (error_out != nullptr)
 				*error_out = "The uploaded file is incomplete on the host (" +
 				    (published->is_number_unsigned() ? std::to_string(published->get<std::uintmax_t>()) : std::string("unknown")) +
-				    " of " + std::to_string(bytes.size()) + " bytes), so it was removed. Check the host's free space and try again.";
+				    " of " + std::to_string(bytes.size()) + " bytes), so it was removed; check the host's free space.";
 			return false;
 		}
 		return true;
@@ -1159,7 +1159,7 @@ namespace uam::remote
 		if (size_error || !file) return fail("The file could not be opened for upload.");
 		if (size > m_maxUploadBytes)
 			return fail(m_maxUploadBytes < kMaxUploadBytes && size <= kMaxUploadBytes
-			    ? "This host's UAM helper accepts files up to 25 MB. Update the helper in Settings, then attach the file again."
+			    ? "This host's UAM helper accepts files up to 25 MB; update it in Settings to attach this file."
 			    : "The file is larger than the host accepts.");
 		const auto interrupt = [stop_token] { return stop_token.stop_requested(); };
 		std::string chunk(256 * 1024, '\0');
@@ -1219,7 +1219,7 @@ namespace uam::remote
 		    (!published->is_number_unsigned() || published->get<std::uintmax_t>() != size))
 		{
 			(void)RemoveFile(upload_id, remote_path);
-			return fail("The uploaded file is incomplete on the host, so it was removed. Check the host's free space and try again.");
+			return fail("The uploaded file was incomplete on the host and was removed; check the host's free space.");
 		}
 		return true;
 	}
@@ -1284,7 +1284,7 @@ namespace uam::remote
 		    !result.contains("enabled") || !result["enabled"].is_boolean() ||
 		    result["enabled"].get<bool>() != enabled || result["status"].get<std::string>() != (enabled ? "enabled" : "disabled"))
 		{
-			if (error_out != nullptr) *error_out = "The runner startup registration could not be confirmed. Update the host runner and try again.";
+			if (error_out != nullptr) *error_out = "The runner startup registration could not be confirmed; update the host runner.";
 			return false;
 		}
 		return true;
@@ -1339,7 +1339,7 @@ namespace uam::remote
 	{
 		remote_path.clear();
 		if (!m_connected && !Connect(error_out, stop_token)) return false;
-		constexpr const char* kHelperTooOld = "The UAM helper on this host is too old to receive secrets. Update it in Settings > Remote hosts.";
+		constexpr const char* kHelperTooOld = "This host's UAM helper is too old to receive secrets; update it in Settings > Remote hosts.";
 		if (!m_secretDrop) { if (error_out != nullptr) *error_out = kHelperTooOld; return false; }
 		nlohmann::json response;
 		// Older helpers do not advertise secretDrop, so they never receive this request.
@@ -1453,7 +1453,7 @@ namespace uam::remote
 			if (text.size() > next_total || chunk.size() != std::min<std::size_t>(512 * 1024, next_total - text.size()) ||
 			    (!fingerprint.empty() && (result["fingerprint"] != fingerprint || result["path"] != relative_path || next_total != total)))
 			{
-				if (error_out != nullptr) *error_out = "The file changed while loading. Try again.";
+				if (error_out != nullptr) *error_out = "The file changed while loading.";
 				return false;
 			}
 			total = next_total;
@@ -1511,7 +1511,7 @@ namespace uam::remote
 			if (text.size() > next_total || chunk.size() != std::min<std::size_t>(512 * 1024, next_total - text.size()) ||
 			    (!fingerprint.empty() && (result["fingerprint"] != fingerprint || result["path"] != relative_path || next_total != total)))
 			{
-				if (error_out != nullptr) *error_out = "The image changed while loading. Try again.";
+				if (error_out != nullptr) *error_out = "The image changed while loading.";
 				return false;
 			}
 			total = next_total;
@@ -1615,7 +1615,7 @@ namespace uam::remote
 				{ if (error_out) *error_out = "The runner returned invalid streamed accounting."; return false; }
 				const std::uint64_t next_total = result["totalBytes"].get<std::uint64_t>();
 				if (offset > next_total || chunk.size() != std::min<std::uint64_t>(512 * 1024, next_total - offset) || (!fingerprint.empty() && (result["fingerprint"] != fingerprint || total != next_total)) || chunk.find('\0') != std::string::npos)
-				{ if (error_out) *error_out = "Usage accounting changed while loading. Try again."; return false; }
+				{ if (error_out) *error_out = "Usage accounting changed while loading."; return false; }
 				total = next_total; fingerprint = result["fingerprint"].get<std::string>();
 				if (!append(chunk)) { if (error_out) *error_out = "Could not save usage cache."; return false; }
 				uam::hashing::UpdateFnv1a64(hash, chunk); offset += chunk.size();
@@ -1681,7 +1681,7 @@ namespace uam::remote
 			if (text.size() > next_total || chunk.size() != std::min<std::size_t>(512 * 1024, next_total - text.size()) ||
 			    (!fingerprint.empty() && (result["fingerprint"] != fingerprint || next_total != total)))
 			{
-				if (error_out != nullptr) *error_out = "Usage accounting changed while loading. Try again.";
+				if (error_out != nullptr) *error_out = "Usage accounting changed while loading.";
 				return false;
 			}
 			total = next_total;
@@ -1839,7 +1839,7 @@ namespace uam::remote
 		if (!m_directoryBrowsing)
 		{
 			if (error_out != nullptr)
-				*error_out = "This remote helper does not support directory browsing. Reinstall the helper from this UAM build.";
+				*error_out = "This remote helper cannot browse folders; reinstall it from this UAM build.";
 			return false;
 		}
 		nlohmann::json response;

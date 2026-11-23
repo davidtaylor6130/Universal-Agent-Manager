@@ -481,7 +481,7 @@ UAM_TEST(OpenCodeSavedQuarantinedHandoffCliRefusesBeforeContextStaging)
 		std::string launch_error;
 		UAM_ASSERT(!uam::PrepareAcpSessionForCliTerminalLaunch(fixture.app, chat, &launch_error));
 		UAM_ASSERT(!launch_error.empty());
-		UAM_ASSERT(launch_error.find(detached ? "Load the complete saved history" : "interrupted compaction history") != std::string::npos);
+		UAM_ASSERT(launch_error.find(detached ? "Load the full saved history" : "interrupted compaction history") != std::string::npos);
 		UAM_ASSERT(fixture.session->running);
 		UAM_ASSERT_EQ(fixture.session->session_id, std::string("private-native-session"));
 		UAM_ASSERT_EQ(chat.messages, retained_messages);

@@ -22,7 +22,7 @@ namespace uam::remote::native_history
 	inline constexpr std::size_t kChunkBytes = 128 * 1024;
 	inline constexpr std::size_t kMaxSnapshots = 2;
 	// Shown to the user when a read stops at kMaxSnapshotBytes.
-	inline constexpr const char* kSnapshotTooLargeError = "This native history exceeds the 64 MiB read limit, so it was not loaded. Existing saved history is unchanged.";
+	inline constexpr const char* kSnapshotTooLargeError = "This native history is over the 64 MiB read limit, so it was not loaded and saved history is unchanged.";
 	struct Snapshot
 	{
 		std::string provider;

@@ -82,7 +82,7 @@ namespace uam
 			chat.native_session_id.clear();
 			chat.native_session_reset_pending = previous_reset_pending;
 			chat.remote_claude_session_unstarted = true;
-			error = "Could not save the Claude session ID. Retry when storage is available.";
+			error = "Could not save the Claude session ID; retry when storage is available.";
 			return false;
 		}
 		argv.push_back("--session-id");
@@ -119,7 +119,7 @@ namespace uam
 		if (chat.imported_read_only)
 		{
 			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Disabled,
-			                            "Imported transcripts are read-only. Create a new chat in a workspace to continue.");
+			                            "Imported transcripts are read-only; create a new chat in a workspace to continue.");
 		}
 		if (chat.routing_mode == "automatic")
 		{
@@ -152,7 +152,7 @@ namespace uam
 		if (execution_host == nullptr || (remote && !uam::remote::CanAttemptRunnerConnection(*execution_host)))
 		{
 			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped,
-			                            remote ? "The selected remote runner is not ready. Recheck it in Settings."
+			                            remote ? "The selected remote runner is not ready; recheck it in Settings."
 			                                   : "The selected execution host no longer exists.");
 		}
 		const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);

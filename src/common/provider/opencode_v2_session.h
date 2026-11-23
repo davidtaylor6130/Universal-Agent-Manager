@@ -110,7 +110,7 @@ public:
 	void Handle(const Json& message);
 	void Event(const Json& event);
 	void CheckDeadlines(std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
-	void Disconnected(std::string reason = "OpenCode V2 connection closed; delivery may have occurred. Input is held and is never replayed automatically.");
+	void Disconnected(std::string reason = "The OpenCode V2 connection closed before delivery was confirmed; input is held and never replayed.");
 	bool Broken() const { return disconnected_; }
 	bool HasTurn() const { return !prompt_id_.is_null(); }
 	const std::string& NativeId() const { return session_id_; }

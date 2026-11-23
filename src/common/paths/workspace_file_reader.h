@@ -106,7 +106,7 @@ namespace uam::workspace_files
 		const std::wstring file_path = detail::FinalPath(handle.get());
 		if (root_path.empty() || file_path.size() <= root_path.size() || file_path[root_path.size()] != L'\\' ||
 		    CompareStringOrdinal(root_path.data(), static_cast<int>(root_path.size()), file_path.data(), static_cast<int>(root_path.size()), TRUE) != CSTR_EQUAL)
-		{ result.error = "The workspace or file path changed. Try again."; return result; }
+		{ result.error = "The workspace or file path changed while loading."; return result; }
 		result.path = paths::Utf8PathString(std::filesystem::path(file_path.substr(root_path.size() + 1)));
 		BY_HANDLE_FILE_INFORMATION before{};
 		if (!GetFileInformationByHandle(handle.get(), &before) ||
@@ -123,13 +123,13 @@ namespace uam::workspace_files
 		    !ReadFile(handle.get(), &extra, 1, &extra_count, nullptr) || extra_count != 0 || !GetFileInformationByHandle(handle.get(), &after) ||
 		    before.nFileSizeHigh != after.nFileSizeHigh || before.nFileSizeLow != after.nFileSizeLow ||
 		    CompareFileTime(&before.ftLastWriteTime, &after.ftLastWriteTime) != 0)
-		{ result.text.clear(); result.error = "The file changed while loading. Try again."; return result; }
+		{ result.text.clear(); result.error = "The file changed while loading."; return result; }
 #else
 		detail::OwnedFile directory = detail::Own(open(root.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
 		if (!directory) return result;
 		struct stat root_opened{};
 		if (fstat(*directory, &root_opened) != 0 || root_before.st_dev != root_opened.st_dev || root_before.st_ino != root_opened.st_ino)
-		{ result.error = "The workspace changed while loading. Try again."; return result; }
+		{ result.error = "The workspace changed while loading."; return result; }
 		std::filesystem::path::const_iterator part = relative.begin();
 		while (part != relative.end())
 		{
@@ -162,7 +162,7 @@ namespace uam::workspace_files
 		    || before.st_mtim.tv_nsec != after.st_mtim.tv_nsec || before.st_ctim.tv_nsec != after.st_ctim.tv_nsec
 #endif
 		    )
-		{ result.text.clear(); result.error = "The file changed while loading. Try again."; return result; }
+		{ result.text.clear(); result.error = "The file changed while loading."; return result; }
 #endif
 		if (!binary_attachment && result.text.find('\0') != std::string::npos)
 		{ result.text.clear(); result.error = "Binary files cannot be shown as text."; return result; }

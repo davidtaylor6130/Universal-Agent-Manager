@@ -97,7 +97,7 @@ std::string IProviderRuntime::InteractiveConfigurationError(const ProviderProfil
 {
 	if (uam::provider_runtime_internal::HasPermissionBypassExtraFlags(uam::provider_runtime_internal::MergeProviderSettings(profile, settings)))
 	{
-		return "Terminal fallback permissions are controlled by the provider. Remove permission-bypass flags from provider settings and approve requests in the terminal.";
+		return "Remove permission-bypass flags from provider settings and approve requests in the terminal.";
 	}
 	return {};
 }

@@ -439,7 +439,7 @@ namespace uam::remote
 				return 2;
 			nlohmann::json response;
 			if (ReadPipeFrame(service.Get(), response) != FrameReadResult::Ok)
-			{ std::cerr << "The runner shutdown reply was not confirmed. Retry after checking its sessions.\n"; return 2; }
+			{ std::cerr << "The runner shutdown reply was not confirmed; check its sessions and retry.\n"; return 2; }
 			if (!response.value("ok", false))
 			{
 				std::cerr << response.value("error", nlohmann::json::object()).value("message", "The runner cannot stop safely.") << '\n';

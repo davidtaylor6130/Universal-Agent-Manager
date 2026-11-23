@@ -743,7 +743,7 @@ namespace uam::provider_setup
 			if (!mcp_only && structured_setup) *protocol_instructions = instructions;
 			else if (!mcp_only)
 			{
-				if (instructions.size() > max_instruction_bytes) { error = host_instructions_only ? "Host instructions exceed the OS launch limit for this provider. Shorten them." : "Codex central instructions exceed the OS launch limit. Move reference material into skills."; return false; }
+				if (instructions.size() > max_instruction_bytes) { error = host_instructions_only ? "Host instructions are too long for this provider to launch; shorten them." : "Codex central instructions are too long to launch; move reference material into skills."; return false; }
 				argv.insert(argv.begin() + 1, {"-c", "developer_instructions=" + nlohmann::json(instructions).dump()});
 			}
 			for (const auto& [name, server] : native_servers.items())
@@ -753,7 +753,7 @@ namespace uam::provider_setup
 				{
 					if (key == "type")
 					{
-						if (value == "sse") { error = "Codex does not support SSE MCP servers. Use HTTP or stdio."; return false; }
+						if (value == "sse") { error = "Codex does not support SSE MCP servers; use HTTP or stdio."; return false; }
 						continue;
 					}
 					if (key == "env")

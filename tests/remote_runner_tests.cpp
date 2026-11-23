@@ -7100,7 +7100,7 @@ UAM_TEST(AcpRemoteUnconfirmedReceiptReturnsThePromptUnsentWithoutAHeldQueue)
 		std::this_thread::yield();
 	}
 	UAM_ASSERT(!session.pending_prompt_delivery);
-	UAM_ASSERT_EQ(session.last_error, std::string("Remote prompt was not sent because its owned durable receipt was not confirmed."));
+	UAM_ASSERT_EQ(session.last_error, std::string("The remote prompt was not sent because UAM could not confirm it was saved."));
 	UAM_ASSERT(fixture.input.Bytes().empty());
 	UAM_ASSERT(chat.messages.back().acp_prompt_not_sent && chat.messages.back().interrupted);
 	UAM_ASSERT(chat.acp_queued_prompts.empty() && chat.acp_dispatched_queued_prompt_count == 0);
@@ -9116,7 +9116,7 @@ UAM_TEST(AcpRemoteStagedPromptReturnsUnsentWhenItsBridgeCloses)
 		UAM_ASSERT(std::ranges::any_of(session.diagnostics, [](const uam::AcpDiagnosticEntryState& entry) { return entry.reason == "staged_prompt_requeued"; }));
 		PollUntilRemoteTurnSettles(app, session, true);
 		UAM_ASSERT(std::ranges::none_of(session.diagnostics, [](const uam::AcpDiagnosticEntryState& entry)
-		    { return entry.reason == "retry_scheduled" && entry.message == "Remote prompt is waiting for its owned durable receipt."; }));
+		    { return entry.reason == "retry_scheduled" && entry.message == "The remote prompt is waiting to be saved."; }));
 		UAM_ASSERT(!session.running && !session.processing && !session.reconnect_pending && !session.pending_prompt_delivery);
 		UAM_ASSERT_EQ(session.lifecycle_state, std::string("error"));
 		UAM_ASSERT(!session.last_error.empty());
@@ -10318,7 +10318,7 @@ UAM_TEST(AcpRemoteNativeMarkerFailurePreservesUnrelatedRpcRequest)
 				std::this_thread::yield();
 			}
 			UAM_ASSERT(!session.pending_prompt_delivery);
-			UAM_ASSERT_EQ(session.last_error, std::string("Remote prompt was not sent because its owned durable receipt was not confirmed."));
+			UAM_ASSERT_EQ(session.last_error, std::string("The remote prompt was not sent because UAM could not confirm it was saved."));
 			UAM_ASSERT(chat.messages.back().acp_prompt_not_sent);
 		}
 		UAM_ASSERT_EQ(chat.remote_pending_requests, prior_requests);
@@ -11025,7 +11025,7 @@ namespace
 		UAM_ASSERT(uam::acp_detail::SendQueuedPromptIfReady(app, session, chat));
 		// Unique target-branch error: no authored unsent-row pre-save is involved
 		// because the real internal queue gave this continuation indices -1.
-		UAM_ASSERT_EQ(session.last_error, std::string("Prompt is waiting for its remote recovery marker to be saved."));
+		UAM_ASSERT_EQ(session.last_error, std::string("The prompt is waiting to be saved before it is sent."));
 		UAM_ASSERT_EQ(session.next_request_id, next_request + 1);
 		UAM_ASSERT(!session.pending_prompt_delivery && session.prompt_request_id == 0);
 		UAM_ASSERT_EQ(chat.remote_pending_requests, requests);

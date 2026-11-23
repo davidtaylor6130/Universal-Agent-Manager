@@ -138,7 +138,7 @@ bool PollLocalSessionReceipt(AppState& app, AcpSessionState& session, ChatSessio
 		if (receipt->admission != DurableAdmissionState::Failed)
 		{
 			receipt->admission = DurableAdmissionState::Failed;
-			session.last_error = "Session setup ownership changed before its durable receipt committed.";
+			session.last_error = "The chat changed before session setup was saved.";
 		}
 		return true;
 	}
@@ -212,10 +212,11 @@ bool ReplayPersistedInteractionResponseIfMatched(
 		std::string error;
 		if (!WriteAcpMessage(session, response, &error))
 		{
-			RecoverDisconnectedRemoteAcpTransport(
-			    app, session, chat,
+			AppendAcpDiagnostic(session, "write", "remote_interaction_replay_failed", "", "", false, 0,
 			    "Failed to replay the saved remote interaction response: " +
 			        uam::strings::NonEmptyOrFallback(error, "unknown transport error"));
+			RecoverDisconnectedRemoteAcpTransport(
+			    app, session, chat, "Could not resend your saved response to the remote host.");
 		}
 		else
 		{

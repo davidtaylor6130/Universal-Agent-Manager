@@ -175,7 +175,7 @@ bool PrepareAcpSessionForCliTerminalLaunch(AppState& app, ChatSession& chat, std
 		if (error_out != nullptr)
 		{
 			*error_out = session != nullptr && session->remote_stop_unconfirmed
-			    ? "The remote stop could not be confirmed. Reconnect structured chat before retrying the terminal."
+			    ? "The remote stop was not confirmed; reconnect structured chat before retrying the terminal."
 			    : "Failed to stop the idle structured runtime before starting terminal fallback.";
 		}
 		return false;
@@ -207,7 +207,7 @@ std::string ProviderInteractiveCeilingError(const AppState& app, const ChatSessi
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
 	if (!uam::provider_ids::IsCliProviderAliasOf(provider.id, uam::provider_ids::kOpenCodeCli) || !InteractiveChatHasReadCeiling(app, chat)) return {};
-	return "OpenCode CLI View cannot be held to Plan or a read-only agent: its terminal has no Plan option UAM can enforce. Use Chat, or switch this chat to Default first.";
+	return "OpenCode CLI View cannot enforce Plan or read-only access; use Chat or switch this chat to Default.";
 #else
 	(void)app;
 	(void)chat;
@@ -301,7 +301,7 @@ bool ValidateProviderHandoffContext(const ChatSession& chat, std::size_t history
 	if (chat.provider_handoff_context.empty()) return true;
 	if (!chat.messages_loaded)
 	{
-		if (error) *error = "Load the complete saved history before replaying provider context. Input and context are retained.";
+		if (error) *error = "Load the full saved history before replaying provider context; your input and context are kept.";
 		return false;
 	}
 	const auto messages = std::span<const Message>(chat.messages);
@@ -319,7 +319,7 @@ bool ValidateProviderHandoffContext(const ChatSession& chat, std::size_t history
 		if (!stop_token.stop_requested() && projection_error.empty() && full_projection == chat.provider_handoff_context) return true;
 	}
 	if (error) *error = projection_error.empty()
-	    ? "Saved provider context cannot be verified against interrupted compaction history. Input and context are retained."
+	    ? "Saved provider context does not match the interrupted compaction; your input and context are kept."
 	    : projection_error;
 	return false;
 }
@@ -642,7 +642,7 @@ bool PrepareCliProviderConversation(AppState& app, ChatSession& chat, const Exec
 		if (stop_token.stop_requested()) { error = "Provider context preparation was cancelled."; return false; }
 		if (client != nullptr) return client->UploadFile("context-" + PlatformServicesFactory::Instance().process_service.GenerateUuid(), uam::paths::PathFromUtf8(path), content, &error, stop_token);
 		if (uam::io::WriteTextFile(uam::paths::PathFromUtf8(path), content)) return true;
-		error = "Could not save provider conversation context. Retry when storage is available.";
+		error = "Could not save provider conversation context; retry when storage is available.";
 		return false;
 	};
 	// Cleanup records the requested folder, which the helper maps to where the context actually went.
@@ -701,7 +701,7 @@ static bool ValidateAntigravityTerminalConfiguration(const ChatSession& chat, st
 	if (!uam::provider_ids::IsCliProviderAliasOf(chat.provider_id, uam::provider_ids::kAntigravityCli)) return true;
 	if (!chat.provider_handoff_context.empty())
 	{
-		error = "Antigravity terminal cannot import another provider's conversation. Start a new Antigravity chat or resume an existing conversation.";
+		error = "Antigravity's terminal cannot import another provider's chat; start or resume an Antigravity chat.";
 		return false;
 	}
 	return true;
@@ -777,7 +777,7 @@ static bool PrepareCliProviderHandoffAsyncImpl(AppState& app, CliTerminalState& 
 		{
 			if (task.state->chat_id == chat.id && !task.state->finished.load())
 			{
-				error = "Previous provider context preparation is stopping. Retry opening its terminal.";
+				error = "Previous provider context preparation is stopping; retry opening the terminal.";
 				return false;
 			}
 		}
@@ -806,7 +806,7 @@ static bool PrepareCliProviderHandoffAsyncImpl(AppState& app, CliTerminalState& 
 		{
 			state->cancellation.request_stop();
 			terminal.context_preparation.reset();
-			error = "The chat changed while provider context was preparing. Retry opening its terminal.";
+			error = "The chat changed while provider context was preparing; retry opening the terminal.";
 			return false;
 		}
 		if (!finished) return false;
@@ -817,7 +817,7 @@ static bool PrepareCliProviderHandoffAsyncImpl(AppState& app, CliTerminalState& 
 			if (terminal.uam_control_session != nullptr) UamControlService::RevokeForSession(app, *terminal.uam_control_session);
 			terminal.uam_control_session.reset();
 			terminal.uam_control_relay.reset();
-			if (error.empty()) error = "Provider context preparation failed. Retry opening its terminal.";
+			if (error.empty()) error = "Provider context preparation failed; retry opening the terminal.";
 			return false;
 		}
 		// Admit prepared cleanup metadata before any native files or remote channels can be staged.
@@ -858,7 +858,7 @@ static bool PrepareCliProviderHandoffAsyncImpl(AppState& app, CliTerminalState& 
 				chat.native_session_id = previous_identity;
 				chat.provider_handoff_session_id = previous_handoff;
 				chat.native_session_reset_pending = previous_reset_pending;
-				error = "Could not save the imported Codex session. Retry opening its terminal.";
+				error = "Could not save the imported Codex session; retry opening the terminal.";
 				return false;
 			}
 			terminal.attached_session_id = chat.native_session_id;
@@ -963,7 +963,7 @@ static bool PrepareCliProviderHandoffAsyncImpl(AppState& app, CliTerminalState& 
 			}
 			catch (...)
 			{
-				state->error = "Provider context preparation failed. Retry opening its terminal.";
+				state->error = "Provider context preparation failed; retry opening the terminal.";
 			}
 			state->finished.store(true);
 		});

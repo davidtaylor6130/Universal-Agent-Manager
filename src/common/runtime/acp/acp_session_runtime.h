@@ -140,7 +140,7 @@ bool ResolveAcpUserInput(AppState& app,
 
 /// <summary>True while a local stop was settled for the user at its exit deadline but its process has still not been seen to exit. AcpStopInProgress stays true too, so nothing may start another process for the chat.</summary>
 bool AcpStopExitUnobserved(const AppState& app, std::string_view chat_id);
-inline constexpr const char* kAcpProcessExitUnobservedMessage = "The previous provider process for this chat has not exited yet, so nothing new was started. UAM keeps ending it: this clears by itself once it exits, and quitting UAM also ends it.";
+inline constexpr const char* kAcpProcessExitUnobservedMessage = "The previous provider process is still exiting, so nothing new was started.";
 bool PollCompletedAcpProcessStops(AppState& app, CefRefPtr<CefBrowser> browser);
 bool PollAllAcpSessions(AppState& app, CefRefPtr<CefBrowser> browser = nullptr);
 /// A stop that is queued or running now. AcpStopInProgress also counts a remote stop the host never confirmed.

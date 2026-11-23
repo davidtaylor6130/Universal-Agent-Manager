@@ -501,7 +501,7 @@ bool CodexCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::AcpSes
 		const std::string error_message = std::string("Codex app-server message handling failed: ") + ex.what();
 		AppendAcpDiagnostic(session, "parse", "codex_message_parse_error", method, "", false, 0,
 		                    error_message, CapDiagnosticString(message.dump(), kMaxAcpDiagnosticDetailBytes));
-		InvalidateAcpTransport(app, session, chat, error_message);
+		InvalidateAcpTransport(app, session, chat, "Codex sent a message UAM could not read.");
 	}
 	return true;
 }
@@ -662,7 +662,7 @@ bool CodexCliProviderRuntime::OnAcpHandleResult(uam::AppState& app, uam::AcpSess
 		if (pending != session.pending_steer_requests.end())
 		{
 			const bool confirmed = uam::nlohmann_json::TrimmedStringValue(result, {"turnId"}) == pending->second.provider_turn_id;
-			FinishCodexSteer(app, session, chat, request_id, confirmed ? "" : "Codex did not confirm the steered message for the requested turn. Retry the message after this turn finishes.");
+			FinishCodexSteer(app, session, chat, request_id, confirmed ? "" : "Codex did not confirm the steered message; send it again after this turn finishes.");
 		}
 		return true;
 	}

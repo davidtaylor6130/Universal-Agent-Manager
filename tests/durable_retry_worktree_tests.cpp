@@ -104,7 +104,7 @@ namespace
 			{
 				const std::string& id = app.chats.front().id;
 				return indexed ? uam::RetryFailedAcpMessage(app, id, 0, &error) : uam::RetryLastAcpPrompt(app, id, &error);
-			}, "Saved image Retry needs this chat's existing ready SSH session. Reopen it or attach the files again.");
+			}, "Reopen this chat's SSH session or reattach the files to retry saved images.");
 		}
 
 		void CheckActionRefusal(const std::function<bool(std::string&)>& action, const std::string& expected_error)
@@ -336,7 +336,7 @@ UAM_TEST(AcpRemoteOwnedImageReceiptRetryDoesNotAcquireColdRuntime)
 		const ChatSession& chat = fixture.app.chats.front();
 		const auto receipt = chat.acp_queued_prompts.front();
 		fixture.CheckActionRefusal([&](std::string& error) { return uam::RetryQueuedAcpPrompt(fixture.app, chat.id, {receipt.id, receipt.revision}, &error); },
-		    "Saved image Retry needs this chat's existing ready SSH session. Reopen it or attach the files again.");
+		    "Reopen this chat's SSH session or reattach the files to retry saved images.");
 	}
 }
 
@@ -369,7 +369,7 @@ UAM_TEST(AcpRemoteOwnedImageQueueResumeKeepsRevokedInvocationHeld)
 		fixture.app.acp_sessions.push_back(std::move(session));
 		const auto receipt = chat.acp_queued_prompts.front();
 		fixture.CheckActionRefusal([&](std::string& error) { return uam::ResumeQueuedAcpPrompts(fixture.app, chat.id, {{receipt.id, receipt.revision}}, &error); },
-		    "Saved image Retry needs fresh saved-message verification before this queue can resume. Your input remains held.");
+		    "The saved images must be checked again before this queue can resume; your input stays held.");
 	}
 }
 

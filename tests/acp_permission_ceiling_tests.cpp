@@ -442,7 +442,7 @@ UAM_TEST(SshPermissionReanswerAfterFailedSendExplainsTheSavedAnswer)
 	UAM_ASSERT_EQ(fixture.app.chats.front().remote_interaction_responses.size(), std::size_t(1));
 	error.clear();
 	UAM_ASSERT(!fixture.Resolve(7, "reject_once", false, error));
-	UAM_ASSERT(error.starts_with("An earlier answer to this permission request is saved for delivery to the remote computer"));
+	UAM_ASSERT(error.starts_with("An earlier answer to this permission request is still being delivered"));
 	UAM_ASSERT(error.find("reused") == std::string::npos);
 	UAM_ASSERT_EQ(fixture.session->pending_permission.request_id_json, std::string("7"));
 }

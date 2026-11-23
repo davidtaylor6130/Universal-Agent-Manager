@@ -291,8 +291,6 @@ namespace uam::remote
 				if (probe_result != nullptr)
 					return failed(exit_code == 255 ? detail::BootstrapProbeStatus::TransportFailed
 					                               : detail::BootstrapProbeStatus::CommandFailed);
-				error = "Remote setup step failed (exit " + std::to_string(exit_code) + "): " +
-				        step.label;
 				std::string detail = uam::strings::Trim(output);
 				const std::string stderr_detail = uam::strings::Trim(diagnostic);
 				if (!stderr_detail.empty())
@@ -300,7 +298,9 @@ namespace uam::remote
 					if (!detail.empty()) detail += " — ";
 					detail += stderr_detail;
 				}
-				if (!detail.empty()) error += " — " + detail;
+				uam::diagnostics::Write("[remoteSetup] Remote setup step failed (exit " + std::to_string(exit_code) + "): " + step.label +
+				                        (detail.empty() ? std::string() : " — " + detail));
+				error = "Remote setup step failed: " + step.label + ".";
 				return false;
 			}
 			if (!step.expected_output.empty() &&
@@ -352,7 +352,7 @@ namespace uam::remote
 			int status = -1;
 			if (released || uncertain || service.PollStdioProcessExited(process, &status))
 			{
-				error = "The remote helper installation lock was lost. Retry setup after checking the host.";
+				error = "The remote helper installation lock was lost; check the host and retry setup.";
 				return false;
 			}
 			return true;
@@ -415,7 +415,8 @@ namespace uam::remote
 					}
 					if (line.substr(prefix.size(), status_end - prefix.size()) != "0")
 					{
-						error = "Remote setup step failed: " + step.label + ". " + uam::strings::Trim(output);
+						uam::diagnostics::Write("[remoteSetup] Remote setup step failed: " + step.label + ". " + uam::strings::Trim(output));
+						error = "Remote setup step failed: " + step.label + ".";
 						return false;
 					}
 					if (!step.expected_output.empty() && uam::strings::Trim(output) != step.expected_output)
@@ -1259,7 +1260,10 @@ done
 					result.rollback_confirmed = FinalizeBootstrapPlan(plan, result, false, &rollback_error);
 					if (!result.rollback_confirmed &&
 					    !rollback_error.empty())
-						result.error += " Rollback failed: " + rollback_error;
+					{
+						uam::diagnostics::Write("[remoteSetup] " + result.error + " Rollback failed: " + rollback_error);
+						result.error = "Remote setup failed and the helper could not be rolled back.";
+					}
 				}
 				return result;
 			}
@@ -1315,7 +1319,7 @@ done
 		const bool committed = keep_new_runner && receipts == 1;
 		if (committed_out) *committed_out = committed;
 		if (!finalized) return fail(std::move(error));
-		if (keep_new_runner && !committed) return fail("The remote helper commit could not be confirmed. Retry setup to reconcile it.");
+		if (keep_new_runner && !committed) return fail("The remote helper update could not be confirmed; retry setup to reconcile it.");
 		if (keep_new_runner)
 		{
 			// The commit is already confirmed, so a failed retirement pass is only reported; it still runs under the lease.

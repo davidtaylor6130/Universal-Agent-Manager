@@ -1308,7 +1308,7 @@ UAM_TEST(ExplicitFreshSendPreservesAcceptedRemoteTurnHeldFollowupAdmission)
 	UAM_ASSERT(session.processing && session.recovering_remote_turn && session.recovering_remote_process);
 	UAM_ASSERT(!session.running && !session.session_ready && session.queue_held && chat.acp_queue_held);
 	// Real Restore attempted recovery; its existing protocol2 safety guard refused BEFORE transport.
-	UAM_ASSERT_EQ(session.last_error, std::string("This SSH helper cannot safely resume the active turn. Update the helper in Settings."));
+	UAM_ASSERT_EQ(session.last_error, std::string("Update the SSH helper in Settings so it can safely resume the active turn."));
 	UAM_ASSERT(session.last_process_id.empty() && !session.initialized && session.pending_request_methods.empty());
 	UAM_ASSERT_EQ(session.queued_user_prompts.size(), std::size_t{1});
 	UAM_ASSERT_EQ(session.queued_user_prompts.front().id, std::string("two"));

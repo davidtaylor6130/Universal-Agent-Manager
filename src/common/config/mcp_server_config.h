@@ -284,7 +284,7 @@ namespace uam::mcp_server_config
 			{
 				if (!uam::paths::IsRegularFileNoThrow(uam::paths::PathFromUtf8(server.command)))
 				{
-					if (error_out) *error_out = "MCP server executable is missing: " + server.command;
+					if (error_out) *error_out = "MCP server '" + server.name + "' executable is missing.";
 					return nullptr;
 				}
 				resolved["command"] = server.command;

@@ -10,6 +10,7 @@
 #include "app/attachment_preview_service.h"
 #include "common/provider/structured_attachments.h"
 #include "common/utils/base64.h"
+#include "common/utils/diagnostic_log.h"
 #include "common/provider/opencode_terminal_activity.h"
 #include "common/paths/workspace_root.h"
 
@@ -330,7 +331,7 @@ std::string OpenCodeCliProviderRuntime::InteractiveConfigurationError(const Prov
 		}
 		if (selects_session)
 		{
-			return "OpenCode session selection is managed by UAM. Remove session, continue, and fork flags from the provider command and extra flags.";
+			return "Remove session, continue and fork flags from the OpenCode command, because UAM manages sessions.";
 		}
 	}
 	const std::string resume_argument = uam::strings::Trim(profile.resume_argument);
@@ -346,14 +347,14 @@ bool OpenCodeCliProviderRuntime::PrepareInteractiveSession(uam::AppState& app, C
 	if (error_out != nullptr) error_out->clear();
 	if (!uam::execution_hosts::IsPortableId(resume_id))
 	{
-		if (error_out != nullptr) *error_out = "OpenCode needs a saved session before terminal launch. Retry opening the terminal.";
+		if (error_out != nullptr) *error_out = "OpenCode needs a saved session first; open the terminal again.";
 		return false;
 	}
 	// A failed save retains the exact ID for retry, but must never launch an untracked CLI.
 	chat.LinkNativeSessionId(resume_id);
 	if (!SaveHistory(profile, app.data_root, chat))
 	{
-		if (error_out != nullptr) *error_out = "Could not save the OpenCode session. Retry when storage is available.";
+		if (error_out != nullptr) *error_out = "Could not save the OpenCode session; try again when storage is available.";
 		return false;
 	}
 	return true;
@@ -580,8 +581,9 @@ bool OpenCodeCliProviderRuntime::OnAcpHoldUnconfirmedInput(uam::AppState& app,
 		}
 		uam::acp_detail::MarkAcpProcessExited(session, &chat, true, *observed_exit_code, true);
 	}
+	uam::acp_detail::AppendAcpDiagnostic(session, "transport", "opencode_input_held", "", "", false, 0, reason);
 	uam::acp_detail::HoldAcpTransportForExplicitRecovery(app, session, chat,
-	    reason + " Input and queued follow-ups are held; nothing is replayed automatically. Inspect native history before explicitly resuming queued input.");
+	    "OpenCode could not confirm this turn, so your input and queued follow-ups are held and will not be resent.");
 	return true;
 }
 
@@ -611,6 +613,12 @@ namespace
 			if (!confirmed_session_id.empty()) return confirmed_session_id;
 			if (error_out != nullptr) *error_out = error;
 			return {};
+		};
+		// The user sees one fixed sentence; transport detail stays in the diagnostics log.
+		const auto fail_logged = [&fail](const std::string& message, const std::string& detail) -> std::string
+		{
+			uam::diagnostics::Write("[opencode] " + message + " " + std::string(uam::strings::Utf8Prefix(detail, 512)));
+			return fail(message);
 		};
 		if (stop_token.stop_requested()) return fail("OpenCode session creation was canceled.");
 		if (argv.empty()) return fail("OpenCode session creation requires a provider command.");
@@ -650,10 +658,10 @@ namespace
 			child.remote_process_id = "opencode-create-" + operation_id;
 			// Default authority uses the runner's transient lease if the connection disappears.
 			if (!child.remote->StartProcess(child.remote_process_id, workspace, argv, environment, &error))
-				return fail("Could not start remote OpenCode session creation: " + error);
+				return fail_logged("Could not start OpenCode on the remote host.", error);
 		}
 		else if (!service.StartStdioProcess(child.process, workspace, argv, &error, environment))
-			return fail("Could not start OpenCode session creation: " + error);
+			return fail_logged("Could not start OpenCode to create a session.", error);
 		const auto send = [&](int id, const char* method, nlohmann::json params)
 		{
 			if (stop_token.stop_requested() || std::chrono::steady_clock::now() >= deadline)
@@ -666,7 +674,7 @@ namespace
 			                    : service.WriteToStdioProcess(child.process, line.data(), line.size(), &error);
 		};
 		if (!send(1, "initialize", {{"protocolVersion", 1}, {"clientCapabilities", nlohmann::json::object()}, {"clientInfo", {{"name", "universal-agent-manager"}, {"version", "1"}}}}))
-			return fail("Could not initialize OpenCode: " + error);
+			return fail_logged("Could not initialize OpenCode.", error);
 		int expected_id = 1;
 		std::string pending, diagnostic, session_id;
 		std::size_t total_bytes = 0;
@@ -684,7 +692,7 @@ namespace
 			{
 				const auto interrupted = [&] { return stop_token.stop_requested() || std::chrono::steady_clock::now() >= deadline; };
 				if (!child.remote->PollProcess(child.remote_process_id, remote_poll, &error, interrupted))
-					return fail(stop_token.stop_requested() ? "OpenCode session creation was canceled." : "Could not read remote OpenCode session response: " + error);
+					return stop_token.stop_requested() ? fail("OpenCode session creation was canceled.") : fail_logged("Could not read OpenCode's reply from the remote host.", error);
 				total_bytes += remote_poll.standard_output.size() + remote_poll.standard_error.size();
 				if (total_bytes > uam::platform::kCapturedCommandMaxOutputBytes) return fail("OpenCode session response exceeded the output limit.");
 				pending += remote_poll.standard_output;
@@ -701,7 +709,7 @@ namespace
 				    ? service.ReadStdioProcessStderr(child.process, buffer, sizeof(buffer), &error)
 				    : service.ReadStdioProcessStdout(child.process, buffer, sizeof(buffer), &error);
 				if (count == 0) closed = true;
-				else if (count == -1) return fail("Could not read OpenCode session response: " + error);
+				else if (count == -1) return fail_logged("Could not read OpenCode's session reply.", error);
 				else if (count > 0)
 				{
 					received = true;
@@ -745,7 +753,7 @@ namespace
 					if (!version.is_number_integer() || version != 1) return fail("OpenCode returned an unsupported ACP protocol version.");
 					expected_id = 2;
 					if (!send(2, "session/new", {{"cwd", uam::paths::Utf8PathString(workspace)}, {"mcpServers", nlohmann::json::array()}}))
-						return fail("Could not request an OpenCode session: " + error);
+						return fail_logged("Could not request an OpenCode session.", error);
 				}
 				else
 				{
@@ -768,7 +776,7 @@ namespace
 			if (child.remote)
 			{
 				if (!child.remote->AcknowledgeProcessOutput(child.remote_process_id, remote_poll, &error))
-					return fail("Could not acknowledge remote OpenCode output: " + error);
+					return fail_logged("Could not confirm OpenCode output from the remote host.", error);
 				if (!remote_poll.running) return fail("OpenCode exited before session creation completed. " + diagnostic);
 				if (!received) std::this_thread::sleep_for(std::chrono::milliseconds(10));
 				continue;
@@ -799,12 +807,12 @@ AcpRequestPreflight OpenCodeCliProviderRuntime::OnAcpPrepareSetup(uam::AppState&
 	if (!session.opencode_v2_native && !chat.native_session_id.empty() && chat.opencode_v2_session_id &&
 	    (chat.opencode_v2_session_id->empty() || *chat.opencode_v2_session_id == chat.native_session_id))
 	{
-		error = "This saved OpenCode session was bound through V2. Use the verified native V2 adapter before resuming it; the native ID and authored input are retained.";
+		error = "This OpenCode session needs the OpenCode V2 adapter to resume, and your input is kept.";
 		return AcpRequestPreflight::Rejected;
 	}
 	if (!session.opencode_v2_native && CliProviderVersionAtLeast(session.agent_version, "2.0.0"))
 	{
-		error = "This process reports OpenCode V2 on a legacy ACP path. Refresh the CLI version and use the verified native adapter before input.";
+		error = "This OpenCode V2 process started on the old path; check OpenCode in Settings before sending.";
 		return AcpRequestPreflight::Rejected;
 	}
 	// After a failed local version check, the running process is the only evidence for the permission-mediation minimum.
@@ -813,7 +821,7 @@ AcpRequestPreflight OpenCodeCliProviderRuntime::OnAcpPrepareSetup(uam::AppState&
 	if (!session.opencode_v2_native && (chat.execution_host_id.empty() || chat.execution_host_id == uam::execution_hosts::kLocalHostId) &&
 	    checked != app.runtime_cli_versions_by_provider_id.end() && checked->second.installed_version.empty() && !CliProviderVersionAtLeast(session.agent_version, "1.15.13"))
 	{
-		error = "OpenCode's version check failed and this process did not report 1.15.13 or newer, which reliable ACP permission mediation requires. Check OpenCode in Settings, then retry.";
+		error = "OpenCode 1.15.13 or newer could not be confirmed; check OpenCode in Settings, then try again.";
 		return AcpRequestPreflight::Rejected;
 	}
 	return AcpRequestPreflight::Ready;
@@ -825,10 +833,10 @@ std::string OpenCodeCliProviderRuntime::StructuredCliVersionError(const Provider
 	if (!RequiresStructuredCliVersion(profile)) return {};
 	if (chat && !chat->native_session_id.empty() && chat->opencode_v2_session_id &&
 	    (chat->opencode_v2_session_id->empty() || *chat->opencode_v2_session_id == chat->native_session_id) && !CliProviderVersionAtLeast(checked_version, "2.0.0"))
-		return "This saved OpenCode V2 session requires the verified native V2 adapter. Its native ID and authored input are retained.";
+		return "This session needs OpenCode V2 to resume, and your input is kept.";
 	if (!CliProviderVersionAtLeast(checked_version, "2.0.0")) return {};
 	if (uam::opencode_v2::IsVerifiedV2(checked_version) && !remote) return {};
-	if (remote) return "OpenCode V2 requires the native API adapter on the executing SSH helper; this helper's V1 ACP launch remains refused. Existing owned remote recovery is preserved.";
+	if (remote) return "This SSH host cannot run OpenCode V2 yet.";
 	return "This OpenCode V2 protocol version has not been verified. " + uam::opencode_v2::UnverifiedV2Message(checked_version, "local native API adapter");
 }
 
@@ -840,7 +848,7 @@ bool OpenCodeCliProviderRuntime::PrepareStructuredLaunch(uam::AcpSessionState& s
 	if (!RequiresStructuredCliVersion(profile) || !uam::opencode_v2::IsVerifiedV2(version)) return true;
 	if (remote) { error = StructuredCliVersionError(profile, version, true); return false; }
 	if (session.saved_image_retry)
-	{ error = "OpenCode V2 saved-image Retry is not admitted by this adapter. The saved row and originals are retained without starting a provider process."; return false; }
+	{ error = "OpenCode V2 cannot retry saved images yet; the saved message and images are kept."; return false; }
 	if (session.active_uam_agent_execution_capability == "opencode-native-agent-config")
 	{ error = "Imported V1 OpenCode agent policies require separate V2 policy translation before input."; return false; }
 	const auto executable = PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath();
@@ -929,7 +937,7 @@ std::string OpenCodeCliProviderRuntime::LocalCliCompatibilityError(const uam::Ap
 	const uam::CliProviderVersionState& state = state_it->second;
 	if (!state.checked)
 	{
-		return "Checking OpenCode compatibility. Try again in a moment.";
+		return "Checking OpenCode compatibility; try again in a moment.";
 	}
 	// A failed or timed-out check says nothing about the installation; only a confirmed result blocks.
 	if (state.supported || !state.check_error.empty())
@@ -938,7 +946,7 @@ std::string OpenCodeCliProviderRuntime::LocalCliCompatibilityError(const uam::Ap
 	}
 	if (!state.installed_version.empty())
 	{
-		return "OpenCode 1.15.13 or newer is required for reliable ACP permission mediation (installed " + state.installed_version + "). Update it in Settings.";
+		return "OpenCode 1.15.13 or newer is required (installed " + state.installed_version + "); update it in Settings.";
 	}
 	return uam::strings::NonEmptyOrFallback(state.message, "OpenCode is not installed or its version could not be determined.") + " Open Settings to check or update it.";
 }
@@ -973,7 +981,7 @@ try
 		return found != object.end() && found->is_string() ? found->get<std::string>() : std::string{};
 	};
 	const auto fail = [&error]()
-	{ error = "OpenCode could not retain complete supported image input. The prompt was not sent."; return false; };
+	{ error = "OpenCode could not keep the full image input, so the prompt was not sent."; return false; };
 	if (images.empty() || images.size() > 32 || !request.is_object() || text(request, "jsonrpc") != "2.0" ||
 	    text(request, "method") != "session/prompt" || !request.contains("id") || !request["id"].is_number_integer() || request["id"].get<std::int64_t>() <= 0 ||
 	    text(metadata, "phase") != "ready" || text(metadata, "lifetime").empty() || !metadata.contains("generation") || !metadata["generation"].is_number_unsigned() || metadata["generation"].get<std::uint64_t>() == 0 ||
@@ -1019,6 +1027,6 @@ try
 }
 catch (...)
 {
-	error = "OpenCode image input or its native evidence is invalid. The prompt was not sent.";
+	error = "OpenCode image input is invalid, so the prompt was not sent.";
 	return false;
 }

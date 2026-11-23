@@ -20,7 +20,7 @@ A read-kind tool request (read, search, list, find and similar) counts as a read
 
 ## Refused responses
 
-When UAM does not accept a permission response, the card keeps its choices and shows the reason UAM gave, such as the request no longer being active or the answer exceeding a captured read ceiling, instead of a generic failure. On SSH chats an answer is saved for recovery before it is sent; if sending it fails, a different answer to the same request is refused with a message that an earlier answer is saved for delivery to the remote computer, and choosing the same answer sends it again.
+When UAM does not accept a permission response, the card keeps its choices and shows the reason UAM gave, such as the request no longer being active or the answer exceeding a captured read ceiling, instead of a generic failure. On SSH chats an answer is saved for recovery before it is sent; if sending it fails, a different answer to the same request is refused with a message that an earlier answer is still being delivered, and choosing the same answer sends it again.
 
 ## Launch ceilings
 

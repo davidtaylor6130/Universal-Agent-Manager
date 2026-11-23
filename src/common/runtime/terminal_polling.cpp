@@ -406,8 +406,8 @@ bool HandleCliTerminalInactivityTimeout(uam::AppState& app, uam::CliTerminalStat
 	{
 		constexpr char interrupt = '\x03';
 		terminal.inactivity_interrupt_requested_time_s = now_seconds;
-		const std::string message = "Provider terminal turn exceeded the " + (busy_limit_seconds % 60 == 0 ? std::to_string(busy_limit_seconds / 60) + "-minute " : std::to_string(busy_limit_seconds) + "-second ") +
-		    (app.settings.tool_call_timeout_seconds >= app.settings.active_turn_inactivity_timeout_seconds ? "tool call limit" : "provider turn timeout") + ". Interrupting it now; the delivered prompt will not be replayed.";
+		const std::string message = "The terminal turn exceeded the " + (busy_limit_seconds % 60 == 0 ? std::to_string(busy_limit_seconds / 60) + "-minute " : std::to_string(busy_limit_seconds) + "-second ") +
+		    (app.settings.tool_call_timeout_seconds >= app.settings.active_turn_inactivity_timeout_seconds ? "tool call limit" : "provider turn timeout") + "; interrupting it without replaying the prompt.";
 		if (!WriteToCliTerminal(terminal, &interrupt, 1))
 		{
 			StopCliTerminal(terminal, false, CliTerminalStopMode::FastExit);
@@ -419,7 +419,7 @@ bool HandleCliTerminalInactivityTimeout(uam::AppState& app, uam::CliTerminalStat
 		return true;
 	}
 
-	const std::string message = "Provider terminal stopped after the inactivity interrupt grace period. The delivered prompt was not replayed.";
+	const std::string message = "Provider terminal stopped after ignoring the interrupt; the prompt was not replayed.";
 	uam::LogCliDiagnosticEvent(app, "poll_all_cli_terminals", "turn_inactivity_force_stop", &terminal, message);
 	StopCliTerminal(terminal, false, CliTerminalStopMode::FastExit);
 	terminal.should_launch = false;
@@ -460,7 +460,7 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 	if (terminal.input_writer != nullptr && terminal.input_writer->FailureOrStall(&input_error))
 	{
 		uam::LogCliDiagnosticEvent(app, "poll_cli_terminal", "async_input_failed", &terminal, input_error);
-		uam::FailCliTerminalTransport(terminal, "Provider terminal input failed: " + uam::strings::NonEmptyOrFallback(input_error, "unknown transport error"));
+		uam::FailCliTerminalTransport(terminal, "Provider terminal input failed.");
 		app.status_line = terminal.last_error;
 		return true;
 	}

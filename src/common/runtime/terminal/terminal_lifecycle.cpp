@@ -52,7 +52,7 @@ bool WriteToCliTerminal(CliTerminalState& terminal, const char* bytes, std::size
 			terminal.native_identity_query_phase = 0;
 			terminal.native_identity_output.clear();
 			terminal.native_identity_deferred_input.clear();
-			terminal.last_error = "Terminal input exceeded the native startup buffer. Retry after startup completes.";
+			terminal.last_error = "Terminal input exceeded the startup buffer; retry after startup completes.";
 			return false;
 		}
 		terminal.native_identity_deferred_input.append(bytes, len);
@@ -107,7 +107,7 @@ bool RequestCliTerminalSteer(CliTerminalState& terminal, std::string_view prompt
 	}
 	if (terminal.lifecycle_state == CliTerminalLifecycleState::Unknown)
 	{
-		if (error_out != nullptr) *error_out = "Terminal activity is unavailable. Send or interrupt prompts in the native CLI.";
+		if (error_out != nullptr) *error_out = "Terminal activity is unavailable; send or interrupt prompts in the native CLI.";
 		return false;
 	}
 	if (!terminal.pending_steer_prompt.empty() && !retry)
@@ -418,7 +418,7 @@ void StopCliTerminal(CliTerminalState& terminal, bool clear_identity, CliTermina
 	if (!PlatformServicesFactory::Instance().terminal_runtime.PollCliTerminalProcessExited(terminal))
 	{
 		terminal.running = true;
-		terminal.last_error = "Terminal stop is not confirmed. Cleanup will retry.";
+		terminal.last_error = "Terminal stop is not confirmed yet; UAM will retry cleanup.";
 		MarkCliTerminalShuttingDown(terminal);
 		return;
 	}
@@ -501,7 +501,7 @@ bool PrepareCliTerminalForAcpLaunch(AppState& app, std::string_view chat_id, std
 
 	if (terminal->lifecycle_state == CliTerminalLifecycleState::Unknown)
 	{
-		if (error_out != nullptr) *error_out = "Terminal activity is unavailable. Exit the native CLI before starting structured chat.";
+		if (error_out != nullptr) *error_out = "Terminal activity is unavailable; exit the native CLI before starting structured chat.";
 		return false;
 	}
 	if (CliTerminalBlocksAcpHandoff(*terminal))
@@ -517,7 +517,7 @@ bool PrepareCliTerminalForAcpLaunch(AppState& app, std::string_view chat_id, std
 	DiscoverCliTerminalNativeSession(app, *terminal);
 	if (terminal->native_session_discovery_ambiguous)
 	{
-		if (error_out != nullptr) *error_out = "The native CLI session identity could not be verified. Keep the CLI open until its identity is available.";
+		if (error_out != nullptr) *error_out = "Could not verify the native CLI session yet; keep the CLI open until it is identified.";
 		return false;
 	}
 	StopCliTerminal(*terminal, false, CliTerminalStopMode::FastExit);

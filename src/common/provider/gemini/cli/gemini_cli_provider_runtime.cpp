@@ -180,8 +180,8 @@ SavedImageRetryPreflight GeminiCliProviderRuntime::PrepareSavedImageRetry(uam::A
 	if (images.empty() || images.size() > 32 || GeminiSavedImageOwner(session, settings).is_null())
 	{
 		error = session.saved_image_retry && session.saved_image_retry->remote_scope
-		    ? "Gemini saved-image Retry requires current negotiated ACP image support in its same ready SSH native session. The prompt was not sent."
-		    : "Gemini saved-image Retry requires current negotiated ACP image support in its ready local native session. The prompt was not sent.";
+		    ? "Gemini image retry needs the same ready SSH session with image support, so the prompt was not sent."
+		    : "Gemini image retry needs a ready session with image support, so the prompt was not sent.";
 		return SavedImageRetryPreflight::Rejected;
 	}
 	error.clear();
@@ -206,7 +206,7 @@ try
 	};
 	const auto fail = [&error]()
 	{
-		error = "Gemini could not retain complete negotiated image input. The prompt was not sent.";
+		error = "Gemini could not keep the full image input, so the prompt was not sent.";
 		return false;
 	};
 	const auto limit = uam::platform::kAsyncInputMaxQueuedBytes;
@@ -266,7 +266,7 @@ try
 }
 catch (...)
 {
-	error = "Gemini image input or its negotiated session evidence is invalid. The prompt was not sent.";
+	error = "Gemini image input is invalid, so the prompt was not sent.";
 	return false;
 }
 
@@ -620,8 +620,8 @@ bool GeminiCliProviderRuntime::PrepareStructuredLaunch(uam::AcpSessionState& ses
 	if (!remote && policy != argv.end() && std::next(policy) != argv.end() &&
 	    std::filesystem::is_regular_file(uam::paths::PathFromUtf8(*std::next(policy)), ec)) return true;
 	error = remote
-	    ? "Gemini Plan and read-only turns cannot start on an SSH host: UAM cannot install its Plan policy there, so project or user Gemini settings could approve edits or commands. Use a local workspace or Default mode."
-	    : "Gemini Plan and read-only turns need UAM's Gemini Plan policy file, which is missing from this installation. Reinstall UAM.";
+	    ? "Gemini Plan and read-only modes cannot run safely over SSH; use a local workspace or Default mode."
+	    : "UAM's Gemini Plan policy file is missing; reinstall UAM to use Plan or read-only mode.";
 	return false;
 }
 
