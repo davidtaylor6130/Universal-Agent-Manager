@@ -2,6 +2,7 @@
 
 #include "common/state/app_state.h"
 #include "common/chat/chat_repository.h"
+#include "common/chat/managed_parent_user_boundary.h"
 #include <functional>
 
 namespace uam
@@ -15,6 +16,8 @@ namespace uam
 		std::shared_ptr<const char> policy_birth;
 		const AcpSessionState* session = nullptr;
 		std::string id, chat_id, process, native_thread, configuration, user_digest;
+		// The user rows user_digest was taken from; the per-poll check compares these instead of rehashing.
+		std::vector<managed_parent_history::UserBoundaryRow> user_rows;
 		std::vector<std::pair<std::string, std::string>> runs;
 		SavedChatPrimaryWitness primary;
 		ManagedParentResultRecord expected_record;
