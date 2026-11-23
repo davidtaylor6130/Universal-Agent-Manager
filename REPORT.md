@@ -1,6 +1,28 @@
 # #518 and #965 first slices: report
 
-**Final SHA:** `9010b26ba9f2cf5f48dce8cbb4b446c565ab3b4f` on `v5/feat-518-965-schedules`. The base is `origin/uam/v5.2-sync-main` and the branch has 3 commits on top of it. No PR, issue, comment or label was created.
+**Final SHA:** `6d30f72f7e282339afaa4cec196d79cde011aecf` on `v5/feat-518-965-schedules` (PR #1141). The base is `origin/uam/v5.2-sync-main` and the branch has 4 commits on top of it. This agent created no PR, issue, comment or label.
+
+## Follow-up fix (notification titles)
+
+A schedule that could not start a chat and a dropped follow-up appeared in the notifications panel as "Change not saved". That is the generic panel title for any failure reported without a tone, and it does not fit these notices.
+
+- `reportAppFailure` now takes an optional `title`. Failures that pass no title keep "Change not saved".
+- Each native timer notice now carries its own one-line title:
+  - **Scheduled run did not start**: the run created no chat.
+  - **Scheduled chat did not start**: the chat was created but could not start.
+  - **Scheduled run interrupted**: UAM stopped during a run.
+  - **Follow-up dropped**: the chat refused a follow-up 30 times.
+- Tests:
+  - Native: title assertions for all four kinds in `tests/timer_service_tests.cpp`.
+  - Vitest: a new `AppShell` case checks that a custom title appears in the panel while untitled failures keep the default. The `timerNotices` test checks that each title is passed through.
+- Docs: `docs/ui/notifications.md` now states the title rule. `docs/automation-api.md` and `docs/chat/scheduled-follow-ups.md` name the titles.
+- Checks run on `6d30f72f`:
+  - `npx vitest run` passed 241 files and 4223 tests.
+  - `npx tsc --noEmit -p .` was clean and `npm run build` succeeded.
+  - `python3 scripts/check_docs.py` passed.
+  - The changed native files and tests compile with `-fsyntax-only`.
+  - `uam_core_tests` was still not run, because the desktop build refuses Linux.
+- This fix was not sent for another independent review.
 
 ## What was built
 
@@ -64,14 +86,14 @@ UAM can now run things on a clock. One timer service in the desktop app fires tw
 - **Automation schedules (#518, first slice; webhooks come later).** A schedule is a stored automation-API chat request with an interval (15 minutes to 7 days) or a local time on chosen weekdays. Each run starts a new chat under the schedule's own non-expiring internal credential, through the same checks as an API request: workspace, Git access, iteration cap, worktree isolation, provider availability and the 16-open-chats limit. Runs missed while UAM was closed are skipped or run once, chosen per schedule. A run is saved before its chat is created, so nothing runs twice. Daylight-saving changes and clocks set back are handled. Settings → Automation gains a Schedules list with last and next run, plus create, edit, pause and delete.
 - **`schedule` and `notify` UAM tools (#965).** `schedule` wakes the calling chat after 1–1440 minutes with the agent's note, through the pull request watch delivery path. Follow-ups survive a restart and are cancelled by Stop, Done or deleting the chat. `notify` raises the chat's attention flag under the user's own notification rules, with no separate push. Both are unavailable to subagents, side chats and goal reviewers.
 
-Failures reach the notifications panel as one line each. Docs, provider capability rows and David's 2026-11-23 decisions are updated.
+Failures reach the notifications panel as one line each, under their own titles: "Scheduled run did not start", "Scheduled chat did not start", "Scheduled run interrupted" and "Follow-up dropped". Docs, provider capability rows and David's 2026-11-23 decisions are updated.
 
 Related to #518 (webhooks remain). Related to #965 (`task_run`/`task_status` remain).
 
 <Before/After captures needed; see the list below.>
 
 **Proof:**
-- Frontend: `npx vitest run` passed 241 files and 4222 tests. `npx tsc --noEmit -p .` was clean and `npm run build` succeeded.
+- Frontend: `npx vitest run` passed 241 files and 4223 tests. `npx tsc --noEmit -p .` was clean and `npm run build` succeeded.
 - `python3 scripts/check_docs.py` passed.
 - The runner build (`-DUAM_RUNNER_ONLY=ON`, target `uam_runner`) compiled and linked. SQLite was linked from the system library because the amalgamation download is blocked in this environment.
 - `uam_companion_protocol_tests` was built and run on Linux and passed 32 of 32. This includes the refusal of the four new schedule actions to the phone.
@@ -103,6 +125,6 @@ The Settings UI change still needs Claude review and David's approval under AGEN
    - in "On chosen days" mode, with the day chips and the time field;
    - Save disabled for an unchanged edit.
 3. The Delete schedule confirmation.
-4. The notification toast and its bell-panel entry for a schedule that did not start a chat, and for a dropped follow-up ("Chat “…”: …").
+4. The notification toast and its bell-panel entry for a schedule that did not start a chat, titled "Scheduled run did not start", and for a dropped follow-up, titled "Follow-up dropped" ("Chat “…”: …"). The Before capture shows the old "Change not saved" title.
 5. A waiting chat started by a schedule: the approval card reading "Started by <schedule name>".
 6. An Active Chats row after `notify`. The visuals are unchanged, so this is an "After" capture only, to confirm.
