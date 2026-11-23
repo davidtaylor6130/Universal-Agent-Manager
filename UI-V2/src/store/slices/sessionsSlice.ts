@@ -152,8 +152,13 @@ function makeId(prefix: string, counter: number) {
 
 const computerUseSuccess: ComputerUseActionResult = { ok: true }
 
-function vcsCommitStatusFailure(vcsType: VcsType, error: string | undefined): VcsCommitStatus {
+/** Native 409 refusal of a status read whose chat workspace or host changed while it ran (vcs_handlers.cpp). */
+const VCS_STATUS_CONTEXT_CHANGED = 'The chat workspace changed while its repository context was loading.'
+
+function vcsCommitStatusFailure(vcsType: VcsType, error: string | undefined, code?: number): VcsCommitStatus {
+  const contextChanged = code === 409 && error?.trim() === VCS_STATUS_CONTEXT_CHANGED
   return {
+    ...(contextChanged ? { contextChanged: true } : {}),
     available: false,
     vcsTypes: [],
     activeVcsType: vcsType,
@@ -1552,7 +1557,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         if (!response.ok) {
           console.error('[CEF] getVcsCommitStatus failed:', response.error)
           // Callers that must not mistake a failed read (for example a dropped SSH host) for "no changes" get it as an error.
-          return options.reportFailure ? vcsCommitStatusFailure(vcsType, response.error) : null
+          return options.reportFailure ? vcsCommitStatusFailure(vcsType, response.error, response.code) : null
         }
         const status = sanitizeVcsCommitStatus(response.data)
         return status || !options.reportFailure ? status : vcsCommitStatusFailure(vcsType, '')

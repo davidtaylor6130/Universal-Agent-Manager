@@ -13,6 +13,14 @@ namespace uam
 {
 	class RemoteVcsContext;
 
+	/// <summary>Why a remote detection probe could not say whether a system is present.</summary>
+	enum class RemoteProbeFailure
+	{
+		None,
+		TimedOut,
+		LostConnection,
+	};
+
 	struct VcsStatusRequest
 	{
 		const AppState& app;
@@ -36,9 +44,9 @@ namespace uam
 
 		/// <summary>`root` arrives as the workspace and is replaced only when a repository root is known.</summary>
 		virtual bool DetectLocal(const std::filesystem::path& workspace, bool validate, std::filesystem::path& root) const = 0;
-		/// <summary>`connection_error` is set only when the probe never completed (lost connection, timeout or cancel), so a
-		/// dropped host is not mistaken for a workspace without this system.</summary>
-		virtual bool DetectRemote(RemoteVcsContext& context, const std::string& workspace, std::string& root, std::string& connection_error) const = 0;
+		/// <summary>`probe_failure` is raised (never lowered) only when the probe could not answer: it timed out or the
+		/// connection was lost, so the workspace is not mistaken for one without this system.</summary>
+		virtual bool DetectRemote(RemoteVcsContext& context, const std::string& workspace, std::string& root, RemoteProbeFailure& probe_failure) const = 0;
 
 		/// <summary>Fills branch or revision and changed files for an already detected and selected system.</summary>
 		virtual void PopulateLocalStatus(const VcsStatusRequest& request, const std::filesystem::path& workspace, const std::filesystem::path& root, VcsCommitStatus& status) const = 0;

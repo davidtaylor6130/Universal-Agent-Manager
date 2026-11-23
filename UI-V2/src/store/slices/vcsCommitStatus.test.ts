@@ -23,6 +23,16 @@ describe('getVcsCommitStatus failure reporting', () => {
     expect(status).toEqual(expect.objectContaining({ available: false, changedFiles: [], warning: '', error: 'The remote runner request failed.' }))
   })
 
+  it('marks only the native stale-context refusal as contextChanged', async () => {
+    const stale = 'The chat workspace changed while its repository context was loading.'
+    vi.mocked(sendToCEF)
+      .mockResolvedValueOnce({ ok: false, code: 409, error: stale })
+      .mockResolvedValueOnce({ ok: false, code: 409, error: 'Remote helper setup is running.' })
+    const slice = actions()
+    expect(await slice.getVcsCommitStatus('chat', 'git', { reportFailure: true })).toEqual(expect.objectContaining({ contextChanged: true, error: stale }))
+    expect(await slice.getVcsCommitStatus('chat', 'git', { reportFailure: true })).not.toHaveProperty('contextChanged')
+  })
+
   it('reports a malformed or empty failure with a fallback message', async () => {
     vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: true, data: 'not a status' }).mockResolvedValueOnce({ ok: false, error: '  ' })
     const slice = actions()

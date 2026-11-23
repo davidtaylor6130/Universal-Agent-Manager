@@ -13,6 +13,7 @@
 #include "common/provider/provider_runtime.h"
 #include "common/provider/provider_text_worker.h"
 #include "common/utils/io_utils.h"
+#include "common/utils/diagnostic_log.h"
 #include "common/utils/hash_utils.h"
 #include "common/utils/nlohmann_json_utils.h"
 #include "common/utils/parse_utils.h"
@@ -256,20 +257,25 @@ namespace uam
 
 	namespace
 	{
-		/// <summary>Empty when the remote command ran to completion or the runner refused it (for example a missing
-		/// executable) over a live connection; otherwise why the probe could not answer.</summary>
-		std::string RemoteProbeConnectionError(const RemoteVcsContext& context, const ProcessExecutionResult& result)
+		/// <summary>None when the remote command ran to completion or the runner refused it (for example a missing
+		/// executable) over a live connection. A lost connection outranks a timeout, which outranks None.</summary>
+		void NoteRemoteProbeFailure(const RemoteVcsContext& context, const ProcessExecutionResult& result, RemoteProbeFailure& probe_failure)
 		{
-			if (result.timed_out) return "the command timed out.";
-			if (result.canceled) return "the command was cancelled.";
-			if (result.ok || context.Connected()) return {};
-			return uam::strings::NonEmptyOrFallback(uam::strings::Trim(result.error), "the remote helper did not answer.");
+			RemoteProbeFailure observed = RemoteProbeFailure::None;
+			if (!context.Connected() && !result.ok) observed = RemoteProbeFailure::LostConnection;
+			else if (result.timed_out) observed = RemoteProbeFailure::TimedOut;
+			if (observed == RemoteProbeFailure::None) return;
+			// The runner's own text can carry paths or host details: it goes to the diagnostic log, not the interface.
+			diagnostics::Write(std::string("[vcs] remote repository detection ") + (observed == RemoteProbeFailure::TimedOut ? "timed out" : "lost its connection") +
+			                   ": " + uam::strings::NonEmptyOrFallback(uam::strings::Trim(result.error), "no detail").substr(0, 240));
+			if (static_cast<int>(observed) > static_cast<int>(probe_failure)) probe_failure = observed;
 		}
 
-		/// <summary>Keeps the first connection failure seen across the detection probes.</summary>
-		void NoteRemoteProbeFailure(const RemoteVcsContext& context, const ProcessExecutionResult& result, std::string& connection_error)
+		std::string RemoteProbeFailureMessage(const RemoteProbeFailure failure)
 		{
-			if (connection_error.empty()) connection_error = RemoteProbeConnectionError(context, result);
+			return failure == RemoteProbeFailure::TimedOut
+			    ? "Reading the repository on the remote host timed out."
+			    : "Lost the connection to the remote host while reading the repository.";
 		}
 
 		bool RemoteOutput(RemoteVcsContext& context, const std::string& cwd,
@@ -1762,12 +1768,12 @@ namespace uam
 				return true;
 			}
 
-			bool DetectRemote(RemoteVcsContext& context, const std::string& workspace, std::string& root, std::string& connection_error) const override
+			bool DetectRemote(RemoteVcsContext& context, const std::string& workspace, std::string& root, RemoteProbeFailure& probe_failure) const override
 			{
 				const ProcessExecutionResult probe = context.Run(workspace, {"git", "rev-parse", "--show-toplevel"});
 				if (!CommandSucceeded(probe))
 				{
-					NoteRemoteProbeFailure(context, probe, connection_error);
+					NoteRemoteProbeFailure(context, probe, probe_failure);
 					return false;
 				}
 				root = uam::strings::Trim(probe.output);
@@ -2016,11 +2022,11 @@ namespace uam
 				return SvnAvailable(workspace, validate);
 			}
 
-			bool DetectRemote(RemoteVcsContext& context, const std::string& workspace, std::string&, std::string& connection_error) const override
+			bool DetectRemote(RemoteVcsContext& context, const std::string& workspace, std::string&, RemoteProbeFailure& probe_failure) const override
 			{
 				const ProcessExecutionResult probe = RemoteSvnRunner(context, workspace)({"info", "--non-interactive", "--show-item", "revision", "--", "."});
 				if (CommandSucceeded(probe)) return true;
-				NoteRemoteProbeFailure(context, probe, connection_error);
+				NoteRemoteProbeFailure(context, probe, probe_failure);
 				return false;
 			}
 
@@ -2107,19 +2113,23 @@ namespace uam
 			if (!context.Ready(&status.error)) return status;
 
 			std::map<VcsType, std::string> roots;
-			std::string connection_error;
+			RemoteProbeFailure probe_failure = RemoteProbeFailure::None;
 			for (const VcsProvider* provider : VcsProviders())
 			{
 				std::string root;
-				if (!provider->Enabled(settings) || !provider->DetectRemote(context, status.workspace_directory, root, connection_error)) continue;
+				if (!provider->Enabled(settings) || !provider->DetectRemote(context, status.workspace_directory, root, probe_failure)) continue;
 				status.vcs_types.push_back(provider->Type());
 				roots[provider->Type()] = std::move(root);
 			}
 			status.available = !status.vcs_types.empty();
-			if (!status.available && !connection_error.empty())
+			// A probe that could not answer says nothing about the workspace. Report it instead of "no repository", and
+			// also when the requested system is the one that could not be read, rather than falling back to another.
+			if (probe_failure != RemoteProbeFailure::None &&
+			    std::ranges::find(status.vcs_types, requested_type) == status.vcs_types.end())
 			{
-				// A probe that never finished says nothing about the workspace; report it instead of "no repository".
-				status.error = "Lost the connection to the remote host while reading the repository: " + connection_error;
+				status.available = false;
+				status.vcs_types.clear();
+				status.error = RemoteProbeFailureMessage(probe_failure);
 				return status;
 			}
 			if (!status.available)

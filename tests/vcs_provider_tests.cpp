@@ -345,7 +345,9 @@ UAM_TEST(RemoteVcsStatusReportsALostConnectionInsteadOfNoRepository)
 	const uam::VcsCommitStatus status = uam::VcsCommitService().Status(host.app, host.chat, uam::VcsType::Git, true, "chat");
 	UAM_ASSERT(!status.available);
 	UAM_ASSERT(status.warning.empty());
-	UAM_ASSERT(status.error.find("Lost the connection to the remote host") != std::string::npos);
+	UAM_ASSERT(status.vcs_types.empty());
+	// One fixed sentence: the runner's own failure text goes to the diagnostic log, not the summary.
+	UAM_ASSERT_EQ(status.error, std::string("Lost the connection to the remote host while reading the repository."));
 }
 
 UAM_TEST(RemoteVcsStatusStillReportsAPlainFolderAsHavingNoRepository)
