@@ -85,6 +85,8 @@ describe('SSH routing controls', () => {
     expect(rows).toEqual(['Server AFull · 4/4', 'Server BUnreachable', '2 computersOff'])
     // Changing in-use counts stay out of the notice's live region.
     expect(host.querySelector('[role="status"] [aria-label="Computers passed over"]')).toBeNull()
+    // It follows the notice directly, so it reads as part of the notice it explains.
+    expect(host.querySelector('[role="status"] + [aria-label="Computers passed over"]')?.className).toBe('uam-rt-wait-hosts')
     expect(host.textContent).toContain('No computer can take this chat yet: 1 full, 1 unreachable, 2 off.')
   })
 

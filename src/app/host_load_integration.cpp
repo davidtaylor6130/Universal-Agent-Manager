@@ -1,7 +1,6 @@
 #include "app/host_load_integration.h"
 
 #include "app/agent_run_scheduler.h"
-#include "app/chat_domain_service.h"
 #include "app/execution_routing_integration.h"
 #include "common/config/build_features.h"
 #include "common/config/execution_host_config.h"
@@ -225,6 +224,8 @@ namespace uam
 		{
 			for (const std::string& key : app.host_load_sampler->Keys())
 				if (key != execution_hosts::kLocalHostId && execution_hosts::Find(app.settings.execution_hosts, key) == nullptr) app.host_load_sampler->Drop(key);
+			std::erase_if(app.host_load_reported_status, [&app](const std::pair<const std::string, std::string>& entry)
+			{ return entry.first != execution_hosts::kLocalHostId && execution_hosts::Find(app.settings.execution_hosts, entry.first) == nullptr; });
 			for (const ExecutionHost& host : wanted)
 			{
 				host_load::ReaderFactory reader = app.host_load_reader ? app.host_load_reader(host)
