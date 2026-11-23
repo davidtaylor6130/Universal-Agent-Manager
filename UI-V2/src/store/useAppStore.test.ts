@@ -1435,7 +1435,7 @@ describe('useAppStore Gemini CLI slice', () => {
       acpSession: { sessionId: 'acp-chat-2', running: true, processing: true, lifecycleState: 'processing', turnAssistantMessageIndex: 29, turnSerial: 1 },
     })
     const historyReads: unknown[] = []
-    let answerHistory = () => { throw new Error('No history read started') }
+    let answerHistory: () => void = () => { throw new Error('No history read started') }
     testWindow.cefQuery = ({ request, onSuccess }) => {
       const parsed = JSON.parse(request)
       if (parsed.action === 'getInitialState') onSuccess(JSON.stringify(initial))

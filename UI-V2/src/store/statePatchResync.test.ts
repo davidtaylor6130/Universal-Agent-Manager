@@ -372,11 +372,11 @@ describe('state patch gap recovery', () => {
       chatHistoryErrorBySessionId: Object.fromEntries(chatIds.map((id) => [id, 'Read failed'])),
       chatHistoryErrorWasRefreshBySessionId: Object.fromEntries(chatIds.map((id) => [id, false])),
     })
-    const keys = () => {
+    const maps = () => {
       const state = store.getState()
       return [state.chatHistoryPageBySessionId, state.chatHistoryReadBySessionId, state.chatHistoryErrorBySessionId, state.chatHistoryErrorWasRefreshBySessionId]
-        .map((values) => Object.keys(values).sort())
     }
+    const keys = () => maps().map((values) => Object.keys(values).sort())
     store.setState(historyMaps('chat-1', 'chat-2'))
     push({ type: 'statePatch', data: { stateRevision: 6, removedChatIds: ['chat-2'] } })
     expect(keys()).toEqual(Array(4).fill(['chat-1']))
@@ -388,12 +388,17 @@ describe('state patch gap recovery', () => {
     expect(keys()).toEqual(Array(4).fill(['chat-1']))
     expect(store.getState().historyStartIndexBySessionId).toEqual({ 'chat-1': 0 })
 
-    // A patch that removes nothing, or only chats these maps do not hold, keeps the same maps.
-    const before = store.getState().chatHistoryPageBySessionId
+    // A patch that removes nothing, or only chats these maps do not hold, and a full state that prunes nothing keep the same maps.
+    const before = maps()
+    const pageStartsBefore = store.getState().historyStartIndexBySessionId
     push(chatPatch(8))
-    expect(store.getState().chatHistoryPageBySessionId).toBe(before)
+    maps().forEach((values, index) => expect(values).toBe(before[index]))
     push({ type: 'statePatch', data: { stateRevision: 9, removedChatIds: ['chat-unknown'] } })
-    expect(store.getState().chatHistoryPageBySessionId).toBe(before)
+    maps().forEach((values, index) => expect(values).toBe(before[index]))
+    push({ type: 'stateUpdate', data: fullState(10, 'Only chat') })
+    await flush(0)
+    maps().forEach((values, index) => expect(values).toBe(before[index]))
+    expect(store.getState().historyStartIndexBySessionId).toEqual(pageStartsBefore)
   })
 
   it('keeps UI-only state through a mid-session resync', async () => {
