@@ -1,5 +1,8 @@
 #include "app/storage_retention_service.h"
 #include "common/config/compute_pools.h"
+#include "common/config/host_admission_config.h"
+#include "common/runtime/acp/acp_session_runtime.h"
+#include "common/utils/diagnostic_log.h"
 #include "app/data_folder_settings_service.h"
 #include "app/central_instruction_file_service.h"
 #include "common/config/voice_input_settings.h"
@@ -536,6 +539,60 @@ void UamQueryHandler::HandleSetComputePools(CefRefPtr<CefBrowser> browser, const
 	}
 	cb->Success(nlohmann::json{{"computePools", uam::compute_pools::Serialize(m_app.settings.compute_pools)}}.dump());
 	uam::PushStateUpdateIfChanged(browser, m_app);
+}
+
+void UamQueryHandler::HandleSetHostAdmission(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const nlohmann::json::const_iterator requested = payload.find("hostAdmission");
+	if (requested == payload.end() || !requested->is_object())
+	{
+		cb->Failure(400, "hostAdmission must be an object.");
+		return;
+	}
+	const HostAdmissionSettings settings = uam::host_admission_config::Parse(*requested);
+	if (!uam::host_admission_config::IsValid(settings))
+	{
+		cb->Failure(400, "Limits are out of range, or a hard limit is looser than its soft limit.");
+		return;
+	}
+	const AppSettings previous = m_app.settings;
+	m_app.settings.host_admission = settings;
+	if (!PersistenceCoordinator().SaveSettings(m_app))
+	{
+		m_app.settings = previous;
+		cb->Failure(500, "Failed to save host limits.");
+		return;
+	}
+	cb->Success(nlohmann::json{{"hostAdmission", uam::host_admission_config::Serialize(m_app.settings.host_admission)}}.dump());
+	uam::PushStateUpdateIfChanged(browser, m_app);
+}
+
+/// Run anyway for a chat turn or CLI View that host admission holds because its computer is full or overloaded.
+/// It applies to the start held now only, and only where the hold offered it.
+void UamQueryHandler::HandleRunHeldWorkAnyway(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string chat_id = payload.value("chatId", std::string());
+	bool applied = false;
+	if (AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat_id); session != nullptr && session->compute_pool_wait_run_anyway)
+	{
+		session->host_admission_run_anyway = true;
+		session->reconnect_not_before_time_s = 0.0;
+		applied = true;
+	}
+	for (const std::unique_ptr<CliTerminalState>& terminal : m_app.cli_terminals)
+		if (terminal && (terminal->attached_chat_id == chat_id || terminal->frontend_chat_id == chat_id) && terminal->host_admission_run_anyway_offered)
+		{
+			terminal->host_admission_run_anyway = true;
+			applied = true;
+		}
+	if (!applied)
+	{
+		cb->Failure(409, "This chat is no longer waiting for its computer.");
+		return;
+	}
+	uam::diagnostics::Write("Host admission: Run anyway chosen for a held start");
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success("{}");
 }
 
 void UamQueryHandler::HandleSetUamAgentPreferences(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)

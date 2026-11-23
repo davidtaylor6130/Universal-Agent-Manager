@@ -1,5 +1,7 @@
 #include "app/model_discovery_service.h"
 
+#include "app/host_admission_integration.h"
+
 #include "app/provider_model_catalog_service.h"
 #include "app/chat_domain_service.h"
 #include "common/config/execution_host_config.h"
@@ -60,7 +62,8 @@ namespace uam
 	}
 
 	StartupModelDiscoveryService::StartupModelDiscoveryService(LaunchFunction launch)
-	    : m_launch(launch ? std::move(launch) : LaunchFunction(StartEphemeralAcpModelDiscovery))
+	    : m_launch(launch ? std::move(launch) : LaunchFunction([](AppState& app, const std::string& provider_id, const std::string& workspace, const std::string& host_id, std::string* error)
+	      { return StartEphemeralAcpModelDiscovery(app, provider_id, workspace, host_id, error); }))
 	{
 	}
 
@@ -144,7 +147,8 @@ namespace uam
 			if (version == app.runtime_cli_versions_by_provider_id.end())
 			{
 				std::string check_error;
-				changed = ProviderCliCompatibilityService().StartProviderVersionCheck(app, scope.provider_id, false, scope.execution_host_id, &check_error) || changed;
+				if (AdmitBackgroundStart(app, "version-check:" + scope.provider_id + "@" + scope.execution_host_id, scope.execution_host_id, false).admitted)
+					changed = ProviderCliCompatibilityService().StartProviderVersionCheck(app, scope.provider_id, false, scope.execution_host_id, &check_error) || changed;
 				++item;
 				continue;
 			}
@@ -156,6 +160,13 @@ namespace uam
 			{
 				diagnostics::Write("Startup model discovery skipped an incompatible provider: " + scope.provider_id);
 				item = m_pending_scopes.erase(item);
+				continue;
+			}
+			// Background work: a computer at its background budget or over its load limit keeps the scope waiting here,
+			// in order, while scopes for other computers continue.
+			if (!AdmitBackgroundStart(app, "startup-discovery:" + scope.provider_id + "@" + scope.execution_host_id + ":" + scope.workspace_directory, scope.execution_host_id, false).admitted)
+			{
+				++item;
 				continue;
 			}
 			item = m_pending_scopes.erase(item);
@@ -199,7 +210,9 @@ namespace uam
 			{
 				const auto before = app.provider_model_catalog->ActiveNativeModelDiscoveries();
 				std::string error;
-				(void)app.provider_model_catalog->StartAntigravityEffortDiscovery(*provider, *host, workspace, model, &error);
+				BackgroundAdmission admission = AdmitBackgroundStart(app, "effort-discovery:" + host_id + ":" + workspace + ":" + model, host_id);
+				if (admission.admitted)
+					(void)app.provider_model_catalog->StartAntigravityEffortDiscovery(*provider, *host, workspace, model, &error, std::move(admission.lease));
 				changed = app.provider_model_catalog->ActiveNativeModelDiscoveries() > before || changed;
 			}
 		}

@@ -2,6 +2,7 @@
 #pragma once
 
 #include "app/execution_routing_integration.h"
+#include "app/host_admission_integration.h"
 #include "app/repository_route_match_service.h"
 
 #include <filesystem>
@@ -134,6 +135,31 @@ namespace uam
 		else if (app.settings.execution_routing.enabled)
 		{
 			(void)AdmitExecutionRouting(app, chat, true);
+		}
+		// Host admission: a CLI View is a live provider process for as long as it is open, so it takes a slot on its
+		// computer like a running turn. At the limit it waits with one line and Run anyway.
+		if (app.host_admission)
+		{
+			const double now = GetAppTimeSeconds();
+			RefreshHostAdmission(app, now);
+			host_admission::Request request;
+			request.key = "cli:" + chat.id;
+			request.host_id = uam::strings::NonEmptyOrFallback(chat.execution_host_id, std::string(uam::execution_hosts::kLocalHostId));
+			request.work_class = HostAdmissionClassForChat(nullptr, chat);
+			request.run_anyway = terminal.host_admission_run_anyway;
+			request.now_s = now;
+			const host_admission::Decision admission = app.host_admission->Admit(request);
+			if (!admission.admitted)
+			{
+				terminal.host_admission_wait = admission.message;
+				terminal.host_admission_run_anyway_offered = admission.run_anyway_offered;
+				terminal.last_error.clear();
+				terminal.should_launch = true;
+				return true;
+			}
+			terminal.host_admission_wait.clear();
+			terminal.host_admission_run_anyway_offered = false;
+			terminal.host_admission_run_anyway = false;
 		}
 		std::string repository_error;
 		const RepositoryRouteLaunchState repository = PrepareRepositoryRouteLaunch(app, chat, repository_error);

@@ -795,3 +795,48 @@ UAM_TEST(StartupModelDiscoveryContainsALaunchExceptionToItsScope)
 	UAM_ASSERT(snapshot.value("modelRefreshError", std::string{}).starts_with("unexpected error: "));
 	UAM_ASSERT(!discovery.Poll(fixture.app));
 }
+
+UAM_TEST(StartupModelDiscoveryWaitsForTheBackgroundBudgetInOrder)
+{
+	StartupDiscoveryFixture fixture;
+	fixture.app.settings.host_admission.background_budget = 1;
+	fixture.app.host_admission = std::make_shared<uam::host_admission::HostAdmission>();
+	uam::StartupModelDiscoveryService discovery(fixture.Launcher());
+	discovery.Initialize(fixture.app);
+	UAM_ASSERT(discovery.Poll(fixture.app));
+	// One background process at a time on this computer: the other scopes keep their places.
+	UAM_ASSERT_EQ(fixture.launched.size(), std::size_t{1});
+	const std::string first = fixture.launched.front().workspace_directory;
+	UAM_ASSERT(!discovery.Poll(fixture.app));
+	UAM_ASSERT_EQ(fixture.launched.size(), std::size_t{1});
+	fixture.app.acp_sessions.front()->running = false;
+	UAM_ASSERT(discovery.Poll(fixture.app));
+	UAM_ASSERT_EQ(fixture.launched.size(), std::size_t{2});
+	UAM_ASSERT(fixture.launched.back().workspace_directory != first);
+	fixture.app.acp_sessions.back()->running = false;
+	UAM_ASSERT(discovery.Poll(fixture.app));
+	UAM_ASSERT_EQ(fixture.launched.size(), std::size_t{3});
+}
+
+UAM_TEST(StartupModelDiscoveryWaitsWhileThisComputerIsOverTheSoftLimit)
+{
+	StartupDiscoveryFixture fixture;
+	fixture.app.host_admission = std::make_shared<uam::host_admission::HostAdmission>();
+	fixture.app.host_load_sample = [](const std::string&)
+	{
+		uam::host_admission::LoadSample load;
+		load.known = true;
+		load.cpu_percent = 85.0;
+		load.free_memory_percent = 60.0;
+		return load;
+	};
+	uam::StartupModelDiscoveryService discovery(fixture.Launcher());
+	discovery.Initialize(fixture.app);
+	UAM_ASSERT(!discovery.Poll(fixture.app));
+	UAM_ASSERT(fixture.launched.empty());
+	UAM_ASSERT_EQ(fixture.app.host_admission->HealthOf("local"), uam::host_admission::Health::Degraded);
+	// Unknown load is not idle: the held state keeps its back-off rather than clearing at once.
+	fixture.app.host_load_sample = {};
+	UAM_ASSERT(!discovery.Poll(fixture.app));
+	UAM_ASSERT(fixture.launched.empty());
+}

@@ -1112,8 +1112,17 @@ void UamQueryHandler::HandleDiscoverProviderModels(CefRefPtr<CefBrowser> browser
 		return;
 	}
 	std::string error;
+	bool admission_held = false;
 	const bool started = uam::StartEphemeralAcpModelDiscovery(
-	    m_app, provider_id, workspace_directory, execution_host_id, &error);
+	    m_app, provider_id, workspace_directory, execution_host_id, &error, &admission_held);
+	if (!started && admission_held)
+	{
+		// The computer is at its background budget or busy: the discovery keeps its place and starts by itself.
+		uam::QueueAcpModelDiscoveryAdmissionRetry(m_app, provider_id, workspace_directory, execution_host_id);
+		uam::PushStateUpdateIfChanged(browser, m_app);
+		cb->Success(nlohmann::json{{"started", false}, {"pending", true}, {"waiting", error}}.dump());
+		return;
+	}
 	if (!started)
 	{
 		if (uam::QueueAcpModelDiscoveryCompatibilityRetry(

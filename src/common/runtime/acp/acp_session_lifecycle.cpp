@@ -1,3 +1,4 @@
+#include "app/host_admission_integration.h"
 #include "app/managed_parent_continuation_service.h"
 #include "common/platform/background_thread_priority.h"
 #include "app/agent_run_scheduler.h"
@@ -1742,6 +1743,9 @@ void ResetAcpRuntimeState(AppState& app, AcpSessionState& session, ChatSession& 
 	session.compute_pool_ticket = 0;
 	session.compute_pool_admitted_turn_serial = -1;
 	session.compute_pool_wait_name.clear();
+	session.compute_pool_wait_message.clear();
+	session.compute_pool_wait_run_anyway = false;
+	session.host_admission_run_anyway = false;
 	session.queued_prompt.clear();
 	session.queued_skill_spans.clear();
 	if (session.attached_skill_preparation != nullptr) session.attached_skill_preparation->cancel.request_stop();
@@ -2321,6 +2325,43 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 			session.lifecycle_state = "waiting_routing";
 			return false;
 		}
+	}
+
+	// Host admission: a provider process for a turn starts only when the chat's computer has room for that turn, so
+	// a full or overloaded computer is not given another process. Reattaching to running work starts nothing new,
+	// and the turn itself is admitted again before delivery (compute_pool_gate.cpp).
+	if (!attach_only_to_stop && !session.model_discovery_only && !session.running && !session.recovering_remote_turn && !session.recovering_remote_process &&
+	    app.host_admission && (!session.queued_user_prompts.empty() || !session.queued_prompt.empty() || !chat.acp_queued_prompts.empty()))
+	{
+		const double now = GetAppTimeSeconds();
+		RefreshHostAdmission(app, now);
+		host_admission::Request request;
+		request.key = "turn:" + chat.id;
+		request.host_id = strings::NonEmptyOrFallback(chat.execution_host_id, std::string(execution_hosts::kLocalHostId));
+		request.work_class = HostAdmissionClassForChat(&session, chat);
+		request.run_anyway = session.host_admission_run_anyway;
+		request.now_s = now;
+		const host_admission::Decision decision = app.host_admission->Admit(request);
+		if (!decision.admitted)
+		{
+			// Time spent held is not time spent running, as at the turn gate: a sub-agent's run limit waits too.
+			const bool continuing = !session.compute_pool_wait_message.empty() && now - session.compute_pool_ticket_seen_s < 5.0;
+			if (const auto deadline = app.agent_run_deadline_steady_ms.find(session.managed_agent_run_id); continuing && deadline != app.agent_run_deadline_steady_ms.end())
+				deadline->second += static_cast<std::int64_t>((now - session.compute_pool_ticket_seen_s) * 1000.0);
+			session.compute_pool_wait_name = HostAdmissionLabel(app, request.host_id);
+			session.compute_pool_wait_in_use = static_cast<int>(decision.in_use);
+			session.compute_pool_wait_limit = static_cast<int>(decision.limit);
+			session.compute_pool_wait_message = decision.message;
+			session.compute_pool_wait_run_anyway = decision.run_anyway_offered;
+			session.compute_pool_ticket_seen_s = now;
+			session.lifecycle_state = "waiting_routing";
+			session.reconnect_pending = true;
+			session.reconnect_not_before_time_s = now + 1.0;
+			return true;
+		}
+		session.compute_pool_wait_name.clear();
+		session.compute_pool_wait_message.clear();
+		session.compute_pool_wait_run_anyway = false;
 	}
 
 	if (!session.model_discovery_only && !session.running && !session.recovering_remote_turn && !session.recovering_remote_process)

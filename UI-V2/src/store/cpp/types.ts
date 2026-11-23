@@ -184,6 +184,8 @@ export interface CppChat {
     active?: boolean
     pendingSteer?: boolean
     lastError: string
+    /** Host admission hold on this CLI View's launch. */
+    hostAdmissionWait?: { message: string; runAnyway: boolean }
   }
   acpSession?: CppAcpSession
   activeGoalId?: string | null
@@ -751,7 +753,28 @@ export interface ComputePoolWait {
   poolName: string
   inUse: number
   limit: number
+  /** Host admission hold: one plain line, for example "Waiting for host A (8/8)". Absent for a compute pool wait. */
+  message?: string
+  /** The hold may be skipped by the user (their own turn on a full or overloaded computer). */
+  runAnyway?: boolean
 }
+
+/** Host admission limits; see docs/settings/compute-pools.md#host-limits. A local limit of 0 means processors minus two. */
+export interface HostAdmissionSettings {
+  localSlotLimit: number
+  remoteSlotLimit: number
+  backgroundBudget: number
+  softCpuPercent: number
+  softFreeMemoryPercent: number
+  hardCpuPercent: number
+  hardCpuSeconds: number
+  hardFreeMemoryPercent: number
+}
+
+export type HostAdmissionHealth = 'ready' | 'degraded' | 'overloaded' | 'unreachable'
+
+/** Live work per computer by class, keyed by host id. */
+export type HostAdmissionUsage = Record<string, { label: string; interactive: number; agent: number; background: number; waiting: number; slotLimit: number; backgroundBudget: number; health: HostAdmissionHealth }>
 
 export type ComputePoolUsage = Record<string, { inUse: number; waiting: number }>
 
@@ -858,6 +881,7 @@ export interface CppSettings extends VoiceInputSettings, Partial<VcsStorageSetti
   toolCallTimeoutSeconds?: number
   streamLoopRepeatLimit?: number
   computePools?: ComputePool[]
+  hostAdmission?: HostAdmissionSettings
   acpTurnOutputLimitMiB?: number
   updateChecksEnabled: boolean
   automaticProviderUpdates: boolean
@@ -1119,6 +1143,7 @@ export interface CppAppState {
   cliVersionManager?: CliVersionManager
   shellActions?: ShellAction[]
   computePoolUsage?: ComputePoolUsage
+  hostAdmissionUsage?: HostAdmissionUsage
   prWatches?: PullRequestWatch[]
   shellActionNotification?: string
   statusLine?: string
@@ -1155,6 +1180,7 @@ export interface CppStatePatch {
   cliVersionManager?: CliVersionManager
   shellActions?: ShellAction[]
   computePoolUsage?: ComputePoolUsage
+  hostAdmissionUsage?: HostAdmissionUsage
   prWatches?: PullRequestWatch[]
   shellActionNotification?: string
   statusLine?: string
@@ -1176,6 +1202,7 @@ export interface CliBinding {
   active: boolean
   pendingSteer?: boolean
   lastError: string
+  hostAdmissionWait?: { message: string; runAnyway: boolean }
 }
 
 /** Native verdict on states the user cannot clear; every value except `none` and `warn` also lifts the provider lock. */

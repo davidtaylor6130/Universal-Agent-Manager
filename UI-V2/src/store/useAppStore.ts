@@ -161,6 +161,8 @@ function deserializeState(
     shellActions: ShellAction[]
     computePools: AppState['computePools']
     computePoolUsage: AppState['computePoolUsage']
+    hostAdmission: AppState['hostAdmission']
+    hostAdmissionUsage: AppState['hostAdmissionUsage']
     prWatches: AppState['prWatches']
     shellActionNotification: string
     statusLine: string
@@ -406,6 +408,8 @@ function deserializeState(
     shellActions: cpp.shellActions ?? existing.shellActions,
     computePools: cpp.settings.computePools ?? [],
     computePoolUsage: cpp.computePoolUsage ?? {},
+    hostAdmission: cpp.settings.hostAdmission ?? existing.hostAdmission,
+    hostAdmissionUsage: cpp.hostAdmissionUsage ?? {},
     prWatches: cpp.prWatches ?? existing.prWatches,
     shellActionNotification: cpp.shellActionNotification ?? existing.shellActionNotification,
     statusLine: cpp.statusLine ?? existing.statusLine,
@@ -655,6 +659,8 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     shellActions: patch.shellActions ?? current.shellActions,
     computePools: patch.settings?.computePools ?? current.computePools,
     computePoolUsage: patch.computePoolUsage ?? current.computePoolUsage,
+    hostAdmission: patch.settings?.hostAdmission ?? current.hostAdmission,
+    hostAdmissionUsage: patch.hostAdmissionUsage ?? current.hostAdmissionUsage,
     prWatches: patch.prWatches ?? current.prWatches,
     shellActionNotification: patch.shellActionNotification ?? current.shellActionNotification,
     statusLine: patch.statusLine ?? current.statusLine,
@@ -925,6 +931,8 @@ export const useAppStore = create<AppState>((set, get) => {
           shellActions: current.shellActions,
           computePools: current.computePools,
           computePoolUsage: current.computePoolUsage,
+          hostAdmission: current.hostAdmission,
+          hostAdmissionUsage: current.hostAdmissionUsage,
           prWatches: current.prWatches,
           shellActionNotification: current.shellActionNotification,
           statusLine: current.statusLine,
@@ -1448,6 +1456,8 @@ export const useAppStore = create<AppState>((set, get) => {
       shellActions: current.shellActions,
       computePools: current.computePools,
       computePoolUsage: current.computePoolUsage,
+      hostAdmission: current.hostAdmission,
+      hostAdmissionUsage: current.hostAdmissionUsage,
       prWatches: current.prWatches,
       shellActionNotification: current.shellActionNotification,
       statusLine: current.statusLine,

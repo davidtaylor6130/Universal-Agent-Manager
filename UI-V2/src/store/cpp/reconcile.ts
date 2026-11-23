@@ -604,6 +604,7 @@ export function acpBindingsEquivalent(existing: AcpBinding | undefined, next: Ac
     existing.lastStopReason === next.lastStopReason &&
     existing.remoteStopForceAvailable === next.remoteStopForceAvailable &&
     existing.computePoolWait?.poolName === next.computePoolWait?.poolName && existing.computePoolWait?.inUse === next.computePoolWait?.inUse && existing.computePoolWait?.limit === next.computePoolWait?.limit &&
+    existing.computePoolWait?.message === next.computePoolWait?.message && existing.computePoolWait?.runAnyway === next.computePoolWait?.runAnyway &&
     existing.timeoutStop?.label === next.timeoutStop?.label && existing.timeoutStop?.seconds === next.timeoutStop?.seconds &&
     existing.timeoutStop?.kind === next.timeoutStop?.kind && existing.timeoutStop?.count === next.timeoutStop?.count && existing.timeoutStop?.example === next.timeoutStop?.example &&
     diagnosticsEquivalent(existing.diagnostics, next.diagnostics) &&
@@ -657,7 +658,9 @@ export function cliBindingsEquivalent(existing: CliBinding | undefined, next: Cl
     existing.readySinceLastSelect === next.readySinceLastSelect &&
     existing.active === next.active &&
     existing.pendingSteer === next.pendingSteer &&
-    existing.lastError === next.lastError
+    existing.lastError === next.lastError &&
+    existing.hostAdmissionWait?.message === next.hostAdmissionWait?.message &&
+    existing.hostAdmissionWait?.runAnyway === next.hostAdmissionWait?.runAnyway
   )
 }
 
@@ -687,6 +690,7 @@ export function cliBindingFromCppChat(chat: CppChat, previous: CliBinding | unde
     active: lifecycleState === 'idle' && running,
     pendingSteer: Boolean(chat.cliTerminal.pendingSteer),
     lastError: chat.cliTerminal.lastError ?? '',
+    hostAdmissionWait: chat.cliTerminal.hostAdmissionWait,
   }
 
   return cliBindingsEquivalent(previous, next) ? previous! : next

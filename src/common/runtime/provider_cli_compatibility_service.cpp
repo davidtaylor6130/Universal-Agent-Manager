@@ -1,3 +1,4 @@
+#include "app/host_admission_integration.h"
 #include "common/platform/background_thread_priority.h"
 #include "provider_cli_compatibility_service.h"
 #include "common/runtime/cli_version_parser.h"
@@ -769,6 +770,8 @@ void ProviderCliCompatibilityService::StartVersionCheck(uam::AppState& app, bool
 	while (!app.runtime_cli_version_check_queue.empty() && !app.runtime_cli_version_check_task.running)
 	{
 		const std::pair<std::string, std::string> target = app.runtime_cli_version_check_queue.front();
+		// A queued sweep check is background work; held, it keeps its place and the poll asks again.
+		if (!uam::AdmitBackgroundStart(app, "version-check:" + target.first + "@" + target.second, target.second, false).admitted) break;
 		app.runtime_cli_version_check_queue.pop_front();
 		StartProviderVersionCheck(app, target.first, true, target.second);
 	}
@@ -1196,6 +1199,7 @@ void ProviderCliCompatibilityService::Poll(uam::AppState& app) const
 		while (!app.runtime_cli_version_check_queue.empty() && !app.runtime_cli_version_check_task.running)
 		{
 			const std::pair<std::string, std::string> target = app.runtime_cli_version_check_queue.front();
+			if (!uam::AdmitBackgroundStart(app, "version-check:" + target.first + "@" + target.second, target.second, false).admitted) break;
 			app.runtime_cli_version_check_queue.pop_front();
 			const auto queued = app.runtime_cli_versions_by_provider_id.find(CliProviderVersionStateKey(target.first, target.second));
 			if (queued == app.runtime_cli_versions_by_provider_id.end() || !host_matches(queued->second.execution_host) ||
@@ -1304,6 +1308,7 @@ void ProviderCliCompatibilityService::Poll(uam::AppState& app) const
 	while (!app.runtime_cli_version_check_task.running && !app.runtime_cli_version_check_queue.empty())
 	{
 		const auto target = app.runtime_cli_version_check_queue.front();
+		if (!uam::AdmitBackgroundStart(app, "version-check:" + target.first + "@" + target.second, target.second, false).admitted) break;
 		app.runtime_cli_version_check_queue.pop_front();
 		StartProviderVersionCheck(app, target.first, true, target.second);
 	}

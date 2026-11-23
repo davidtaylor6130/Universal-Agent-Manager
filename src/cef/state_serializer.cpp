@@ -1,3 +1,4 @@
+#include "app/host_admission_integration.h"
 #include "common/utils/uuid.h"
 #include "common/runtime/acp/compute_pool_gate.h"
 #include "common/chat/chat_repository.h"
@@ -1389,6 +1390,8 @@ namespace uam
 				terminal_json["active"] = uam::CliTerminalLifecycleIsIdleLive(*terminal);
 				terminal_json["pendingSteer"] = !terminal->pending_steer_prompt.empty();
 				terminal_json["lastError"] = terminal->last_error;
+				if (!terminal->host_admission_wait.empty())
+					terminal_json["hostAdmissionWait"] = {{"message", terminal->host_admission_wait}, {"runAnyway", terminal->host_admission_run_anyway_offered}};
 				if (terminal->running && terminal->lifecycle_state == CliTerminalLifecycleState::Idle && terminal->pending_steer_prompt.empty())
 					SerializeIdleDeadline(terminal_json, terminal->idle_interaction_started_time_s, app.settings.cli_idle_timeout_seconds);
 				w.Merge(std::move(terminal_json));
@@ -1923,8 +1926,16 @@ namespace uam
 					: AcpAttentionKindForFrontend(*session);
 			acp_json["attentionKind"] = uam::nlohmann_json::StringOrNull(attention_kind);
 			acp_json["lifecycleState"] = chat.claude_quota_continuation.state == "waiting" ? "waiting_quota" : chat.claude_quota_continuation.state == "held" ? "quota_held" : session->lifecycle_state;
-			if (uam::compute_pools::IsWaiting(*session, GetAppTimeSeconds()))
+			if (uam::compute_pools::IsWaiting(*session, GetAppTimeSeconds()) || uam::compute_pools::HostStartHeld(*session, GetAppTimeSeconds()))
+			{
 				acp_json["computePoolWait"] = {{"poolName", session->compute_pool_wait_name}, {"inUse", session->compute_pool_wait_in_use}, {"limit", session->compute_pool_wait_limit}};
+				// A host admission hold carries its own one-line message and whether Run anyway is offered.
+				if (!session->compute_pool_wait_message.empty())
+				{
+					acp_json["computePoolWait"]["message"] = session->compute_pool_wait_message;
+					acp_json["computePoolWait"]["runAnyway"] = session->compute_pool_wait_run_anyway;
+				}
+			}
 			acp_json["lastError"] = session->last_error;
 			if (session->remote_stop_force_offered) acp_json["remoteStopForceAvailable"] = true;
 			acp_json["timeoutStop"] = !session->last_error.empty() && session->timeout_stop_error == session->last_error
@@ -2556,6 +2567,7 @@ namespace uam
 		j["resourceCollections"] = SerializeResourceCollectionsForFrontend(app.resource_collections, app.data_root);
 		j["shellActions"] = SerializeShellActionsForFrontend(app.shell_actions);
 		j["computePoolUsage"] = uam::compute_pools::UsageForFrontend(app);
+		j["hostAdmissionUsage"] = uam::HostAdmissionUsageForFrontend(app);
 		j["prWatches"] = app.pr_watch_service != nullptr ? app.pr_watch_service->SerializeForFrontend() : nlohmann::json::array();
 		j["shellActionNotification"] = app.shell_action_notification;
 		j["statusLine"] = app.status_line;
@@ -2695,6 +2707,7 @@ namespace uam
 		j["resourceCollections"] = SerializeResourceCollectionsForFrontend(app.resource_collections, app.data_root);
 		j["shellActions"] = SerializeShellActionsForFrontend(app.shell_actions);
 		j["computePoolUsage"] = uam::compute_pools::UsageForFrontend(app);
+		j["hostAdmissionUsage"] = uam::HostAdmissionUsageForFrontend(app);
 		j["prWatches"] = app.pr_watch_service != nullptr ? app.pr_watch_service->SerializeForFrontend() : nlohmann::json::array();
 		j["shellActionNotification"] = app.shell_action_notification;
 		j["statusLine"] = app.status_line;

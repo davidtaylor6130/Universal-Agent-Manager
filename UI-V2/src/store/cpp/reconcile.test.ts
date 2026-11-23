@@ -167,6 +167,14 @@ describe('reconcileCppMessages deferred tool content', () => {
 })
 
 describe('unsent prompt native authority', () => {
+  it('keeps a host admission wait message and Run anyway offer', () => {
+    const held = sanitizeCppAcpSession({ processing: true, turnSerial: 1, computePoolWait: { poolName: 'host A', inUse: 8, limit: 8, message: 'Waiting for host A (8/8)', runAnyway: true } })!
+    expect(held.computePoolWait).toEqual({ poolName: 'host A', inUse: 8, limit: 8, message: 'Waiting for host A (8/8)', runAnyway: true })
+    const pool = sanitizeCppAcpSession({ processing: true, turnSerial: 1, computePoolWait: { poolName: 'Local GPU', inUse: 2, limit: 2, runAnyway: 'yes' } })!
+    expect(pool.computePoolWait?.message).toBeUndefined()
+    expect(pool.computePoolWait?.runAnyway).toBeUndefined()
+  })
+
   it('restarts the turn clock when a held turn is admitted and keeps it otherwise', () => {
     const held = sanitizeCppAcpSession({ processing: true, turnSerial: 4, computePoolWait: { poolName: 'Local GPU', inUse: 2, limit: 2 } })!
     const chat = { id: 'chat', providerId: 'codex-cli', acpSession: held } as CppChat

@@ -1,3 +1,4 @@
+#include "app/host_admission_integration.h"
 #include <charconv>
 #include "common/platform/background_thread_priority.h"
 #include "include/cef_parser.h"
@@ -383,7 +384,11 @@ int Application::Run(CefMainArgs main_args, std::vector<std::string> launch_argu
 
 bool Application::PollHistoryDiscovery()
 {
-	return m_app.startup_native_import_service != nullptr && m_app.startup_native_import_service->Poll(m_app);
+	if (m_app.startup_native_import_service == nullptr) return false;
+	// A startup scan held by host admission starts here once this computer admits background work.
+	if (!m_app.startup_native_import_service->Initialized() && uam::AdmitBackgroundStart(m_app, "history-import:start", "local", false).admitted)
+		m_app.startup_native_import_service->Initialize(m_app);
+	return m_app.startup_native_import_service->Poll(m_app);
 }
 
 bool Application::PollWorkspaceAvailability()
@@ -1046,7 +1051,9 @@ void Application::FinishStartupState(std::vector<ChatSession> chats, std::string
 	m_app.resource_collections = uam::ResourceCollectionService::Load(m_app.data_root);
 	const std::chrono::steady_clock::time_point restore_finished = std::chrono::steady_clock::now();
 	m_app.startup_native_import_service = std::make_shared<uam::StartupNativeImportService>();
-	m_app.startup_native_import_service->Initialize(m_app);
+	// Every process start asks host admission first; the startup history scan is background work and starts once admitted.
+	if (!m_app.host_admission) m_app.host_admission = std::make_shared<uam::host_admission::HostAdmission>();
+	if (uam::AdmitBackgroundStart(m_app, "history-import:start", "local", false).admitted) m_app.startup_native_import_service->Initialize(m_app);
 	const std::chrono::steady_clock::time_point native_import_finished = std::chrono::steady_clock::now();
 	// Counting memory entries probes every chat's workspace; the poll applies the count when it is ready.
 	MemoryService::RefreshMemoryActivityAsync(m_app);

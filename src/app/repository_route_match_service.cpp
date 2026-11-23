@@ -1,3 +1,4 @@
+#include "app/host_admission_integration.h"
 #include "common/platform/background_thread_priority.h"
 #include "app/repository_route_match_service.h"
 #include "common/utils/string_utils.h"
@@ -302,6 +303,8 @@ namespace uam
 		const bool fresh = app.repository_route_data_root == app.data_root && app.repository_route_observed_at_s >= 0.0 &&
 		    now >= app.repository_route_observed_at_s && now - app.repository_route_observed_at_s <= 30.0 && RepositoryRouteSnapshotMatches(app.repository_route_workspaces, current);
 		if (fresh || app.repository_route_refresh || app.folders.size() > 512) return fresh;
+		// The inventory read is background work run from this computer; the launch check below belongs to its turn.
+		if (!AdmitBackgroundStart(app, "repository-check:start", "local", false).admitted) return fresh;
 		const std::shared_ptr<RepositoryRouteTask> task = std::make_shared<RepositoryRouteTask>();
 		task->data_root = app.data_root;
 		task->captured = current;

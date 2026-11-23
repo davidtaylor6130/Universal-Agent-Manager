@@ -112,6 +112,9 @@ namespace uam
 		    const std::vector<std::string>& declined_ids, std::string* error_out = nullptr, const std::string& folder_id = {}, bool import_all = false);
 		void Cancel();
 		bool ImportPending() const { return m_phase == "importing"; }
+		bool Initialized() const { return m_initialized; }
+		/// <summary>A history scan is running off-thread: background work for host admission.</summary>
+		bool ScanRunning() const { return m_scan.valid(); }
 		bool BackgroundScanPendingOnHost(const std::string& host_id) const;
 		/// <summary>Cancel running and prevent new remote scans on this host until every copy of the returned lease is released; cancelled scopes rescan later.</summary>
 		std::shared_ptr<void> PauseBackgroundScanOnHost(const std::string& host_id);

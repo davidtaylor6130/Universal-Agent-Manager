@@ -627,6 +627,7 @@ add_library(uam_core_objects OBJECT
   src/app/execution_routing_service.cpp
   src/app/repository_route_match_service.cpp
   src/app/execution_routing_integration.cpp
+  src/app/host_admission_integration.cpp
   src/app/resource_collection_service.cpp
   src/app/provider_worker_command.cpp
   src/app/chat_title_service.cpp

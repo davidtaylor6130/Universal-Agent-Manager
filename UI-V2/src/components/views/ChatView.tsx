@@ -3791,8 +3791,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 <div data-testid="compute-pool-wait" role="status" className="uam-turn-starting px-4 py-2 text-xs" style={{ color: 'var(--text-3)' }}>
                   <span className="conversation-work__heading">
                     <span className="conversation-work__live" aria-hidden />
-                    <span>Waiting for {acp.computePoolWait.poolName} slot ({acp.computePoolWait.inUse}/{acp.computePoolWait.limit})</span>
+                    <span>{acp.computePoolWait.message ?? `Waiting for ${acp.computePoolWait.poolName} slot (${acp.computePoolWait.inUse}/${acp.computePoolWait.limit})`}</span>
                   </span>
+                  {acp.computePoolWait.runAnyway && (
+                    <Button size="sm" variant="ghost" className="ml-2" onClick={() => void useAppStore.getState().runHeldWorkAnyway(session.id)}>Run anyway</Button>
+                  )}
                 </div>
               )}
               {acp?.processing && !acp.computePoolWait && turnEvents.length === 0 && (activeWorkMessageIndex < 0 || unsentProjection.hiddenIndices.has(activeWorkMessageIndex)) && (

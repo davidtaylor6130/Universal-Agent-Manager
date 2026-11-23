@@ -51,6 +51,8 @@ import type {
   ShellAction,
   ComputePool,
   ComputePoolUsage,
+  HostAdmissionSettings,
+  HostAdmissionUsage,
   PullRequestWatch,
   PushChannelStatus,
   VcsCommitMessageSuggestion,
@@ -202,6 +204,8 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   shellActions: ShellAction[]
   computePools: ComputePool[]
   computePoolUsage: ComputePoolUsage
+  hostAdmission: HostAdmissionSettings
+  hostAdmissionUsage: HostAdmissionUsage
   /** Pull requests linked to chats, with their watch state; native-owned. */
   prWatches: PullRequestWatch[]
   shellActionNotification: string
@@ -305,6 +309,9 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   setNativeImportFilters: (filters: { titlePrefixes: string[]; directories: string[]; startupMaxAgeDays: number }) => Promise<boolean>
   setShellActions: (actions: ShellAction[]) => Promise<boolean>
   setComputePools: (pools: ComputePool[]) => Promise<boolean>
+  setHostAdmission: (settings: HostAdmissionSettings) => Promise<boolean>
+  /** Run anyway for a chat turn or CLI View held because its computer is full or overloaded. */
+  runHeldWorkAnyway: (chatId: string) => Promise<boolean>
   applyShellActions: () => Promise<boolean>
   dismissShellActionNotification: () => Promise<void>
   refreshCliProviderVersion: (providerId?: string, executionHostId?: string) => Promise<boolean>
