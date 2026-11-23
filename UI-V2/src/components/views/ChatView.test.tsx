@@ -1872,12 +1872,14 @@ describe('ChatView', () => {
   it('retries a read refused because the workspace changed under it once, and never shows that race as an error', async () => {
     const stale = { available: false, vcsTypes: [], activeVcsType: 'git' as const, workspaceDirectory: '', branchOrRevision: '', changedFiles: [], lineStatsReady: true, warning: '', error: 'The chat workspace changed while its repository context was loading.', contextChanged: true }
     const recovered = { available: true, vcsTypes: ['git' as const], activeVcsType: 'git' as const, workspaceDirectory: '/tmp/project', branchOrRevision: 'main', changedFiles: [{ path: 'src/after.ts', status: 'M', staged: false, additions: 1, deletions: 0, binary: false }], lineStatsReady: true, warning: '', error: '' }
+    const previous = { ...recovered, changedFiles: [{ path: 'src/previous-host.ts', status: 'M', staged: false, additions: 4, deletions: 0, binary: false }] }
     const run = async (summaryResults: Array<typeof stale | typeof recovered>) => {
       let summaryReads = 0
       const getVcsCommitStatus = vi.fn((_id: string, _type?: string, options?: { contextOnly?: boolean }) =>
         Promise.resolve(options?.contextOnly ? recovered : summaryResults[Math.min(summaryReads++, summaryResults.length - 1)]))
       useAppStore.setState((state) => ({
-        repositoryReviewBySessionId: {},
+        // Rows from before the host or workspace changed must not survive a read that stays stale.
+        repositoryReviewBySessionId: { 'chat-1': previous },
         getVcsCommitStatus,
         sessions: state.sessions.map((session) => ({ ...session, workspaceDirectory: '/tmp/project', workspaceIsolationKind: undefined })),
         acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false, lifecycleState: 'ready', pendingPermission: null, pendingUserInput: null, processingStartedAtMs: null, turnSerial: 2 } },
@@ -1905,6 +1907,8 @@ describe('ChatView', () => {
       expect(staysStale.reads()).toBe(2)
       expect(staysStale.host.querySelector('[aria-label="Review changes"]')).toBeNull()
       expect(staysStale.host.textContent).not.toContain('repository context was loading')
+      expect(staysStale.host.textContent).not.toContain('previous-host.ts')
+      expect(useAppStore.getState().repositoryReviewBySessionId['chat-1']).toBeUndefined()
     } finally {
       staysStale.cleanup()
     }

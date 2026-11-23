@@ -350,6 +350,31 @@ UAM_TEST(RemoteVcsStatusReportsALostConnectionInsteadOfNoRepository)
 	UAM_ASSERT_EQ(status.error, std::string("Lost the connection to the remote host while reading the repository."));
 }
 
+UAM_TEST(RemoteVcsStatusDoesNotFallBackToSvnWhenTheGitProbeLosesItsConnection)
+{
+	if (!GitAvailableForTests() || !SvnToolsAvailable()) return;
+	// A Git+SVN checkout: the Git probe drops only the bridge, so the reconnect lets the SVN probe succeed. The summary asks
+	// for Git, so whole-working-copy SVN rows must not stand in for the Git read that could not answer.
+	TempDir tools("uam-vcs-mixed-drop");
+	RemoteVcsHost host(tools.root);
+	const fs::path wrapper = tools.root / "git";
+	UAM_ASSERT(uam::io::WriteTextFile(wrapper, "#!/bin/sh\ncase \" $* \" in *\" --show-toplevel \"*) pkill -9 -f " + ShellQuoteForTest("bridge --socket " + host.socket.string()) + "; sleep 2; exit 0;; esac\nexec \"" + ResolvedTool("git") + "\" \"$@\"\n"));
+	fs::permissions(wrapper, fs::perms::owner_all);
+	const fs::path repository = host.temp.root / "repository";
+	const fs::path checkout = host.temp.root / "checkout";
+	UAM_ASSERT(RunTestCommand("svnadmin create " + ShellQuoteForTest(repository.string())));
+	UAM_ASSERT(uam::RunSvn(host.temp.root, {"checkout", "--non-interactive", "file://" + uam::paths::Utf8PathString(repository), checkout.string()}).exit_code == 0);
+	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(checkout.string())));
+	UAM_ASSERT(uam::io::WriteTextFile(checkout / "new.txt", "new\n"));
+	host.chat.workspace_directory = checkout.string();
+
+	const uam::VcsCommitStatus status = uam::VcsCommitService().Status(host.app, host.chat, uam::VcsType::Git, true, "chat");
+	UAM_ASSERT(!status.available);
+	UAM_ASSERT(status.vcs_types.empty());
+	UAM_ASSERT(status.changed_files.empty());
+	UAM_ASSERT_EQ(status.error, std::string("Lost the connection to the remote host while reading the repository."));
+}
+
 UAM_TEST(RemoteVcsStatusStillReportsAPlainFolderAsHavingNoRepository)
 {
 	RemoteVcsHost host;

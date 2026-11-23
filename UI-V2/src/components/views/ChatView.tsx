@@ -1946,7 +1946,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       // A read refused because the workspace or host changed under it is stale, not a failure: read once more per
       // completed turn, and drop a repeat silently so the race never shows as an error or loops.
       if (status?.contextChanged) {
-        if (repositoryContextRetryKeyRef.current === completedTurnKey) return
+        if (repositoryContextRetryKeyRef.current === completedTurnKey) {
+          // Rows or an error from before the change would read as current; clear them rather than keep them.
+          setRepositoryReview(session.id, null)
+          return
+        }
         repositoryContextRetryKeyRef.current = completedTurnKey
         setRepositoryReviewRetry((count) => count + 1)
         return

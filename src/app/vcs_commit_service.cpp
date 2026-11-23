@@ -238,6 +238,8 @@ namespace uam
 			    std::filesystem::path(path), nullptr);
 		}
 
+		std::string HostId() const { return m_host != nullptr ? m_host->id : std::string("unknown"); }
+
 		/// <summary>False after a transport failure; a runner that merely refused a command stays connected.</summary>
 		bool Connected() const { return m_client != nullptr && m_client->IsConnected(); }
 
@@ -264,10 +266,6 @@ namespace uam
 			RemoteProbeFailure observed = RemoteProbeFailure::None;
 			if (!context.Connected() && !result.ok) observed = RemoteProbeFailure::LostConnection;
 			else if (result.timed_out) observed = RemoteProbeFailure::TimedOut;
-			if (observed == RemoteProbeFailure::None) return;
-			// The runner's own text can carry paths or host details: it goes to the diagnostic log, not the interface.
-			diagnostics::Write(std::string("[vcs] remote repository detection ") + (observed == RemoteProbeFailure::TimedOut ? "timed out" : "lost its connection") +
-			                   ": " + uam::strings::NonEmptyOrFallback(uam::strings::Trim(result.error), "no detail").substr(0, 240));
 			if (static_cast<int>(observed) > static_cast<int>(probe_failure)) probe_failure = observed;
 		}
 
@@ -2130,6 +2128,9 @@ namespace uam
 				status.available = false;
 				status.vcs_types.clear();
 				status.error = RemoteProbeFailureMessage(probe_failure);
+				// One line per failed read, by host and kind. Raw runner or tool output can carry paths, so it is not logged.
+				diagnostics::Write("[vcs] remote repository detection on host " + context.HostId() + " failed: " +
+				                   (probe_failure == RemoteProbeFailure::TimedOut ? "timed out" : "connection lost"));
 				return status;
 			}
 			if (!status.available)

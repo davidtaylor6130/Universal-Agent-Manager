@@ -855,8 +855,11 @@ void UamQueryHandler::HandleGetVcsCommitStatus(CefRefPtr<CefBrowser> /*browser*/
 		                 const ChatSession* current = ChatDomainService().FindChatById(*live_app, chat_id);
 		                 const ExecutionHost* current_host = current == nullptr ? nullptr
 		                     : uam::execution_hosts::Find(live_app->settings.execution_hosts, current->execution_host_id);
-		                 if (current == nullptr || current_host == nullptr || !expected_host ||
-		                     !uam::execution_hosts::SameConnection(*current_host, *expected_host) ||
+		                 // A host that was already missing when the read started is not a race: the worker's own status
+		                 // reports it, so only a host that appeared, vanished or changed connection refuses the result.
+		                 const bool host_changed = expected_host.has_value() != (current_host != nullptr) ||
+		                     (expected_host && current_host != nullptr && !uam::execution_hosts::SameConnection(*current_host, *expected_host));
+		                 if (current == nullptr || host_changed ||
 		                     uam::paths::ResolveWorkspaceRootPath(*live_app, *current) != expected_workspace)
 		                     result = AsyncFailure(409, "The chat workspace changed while its repository context was loading.");
 	                 }, kVcsStatusThread);
