@@ -970,6 +970,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   }
   const [themeDraft, setThemeDraft] = useState<CustomTheme | null>(null)
   const [pendingDelete, setPendingDelete] = useState<{ kind: 'theme' | 'editor'; id: string; name: string } | null>(null)
+  // An imported theme whose id matches a saved custom theme waits for Replace or Keep both.
+  const [pendingThemeImport, setPendingThemeImport] = useState<{ theme: CustomTheme; existing: CustomTheme } | null>(null)
   const memoryMenuRef = useRef<HTMLDivElement>(null)
   const editorMenuRef = useRef<HTMLDivElement>(null)
   const cliVersionMenuRef = useRef<HTMLDivElement>(null)
@@ -1424,19 +1426,38 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     } catch { reportAppFailure('Theme could not be deleted.', 'Try again.'); return false }
     finally { themeSaveInFlightRef.current = false; setThemeSaving(false) }
   }
-  const importThemeFile = async (file?: File) => {
-    if (!file) return
+  const saveImportedTheme = async (imported: CustomTheme) => {
     try {
-      const imported = normalizeCustomTheme(JSON.parse(await file.text()))
-      if (!imported) throw new Error('invalid')
       const saved = await saveCustomTheme(imported)
       if (!saved) throw new Error('save')
       setTheme(saved.id)
       setThemeDraft(null)
       reportAppNotice('Theme imported.', 'success')
+      return true
     } catch {
       reportAppFailure('Theme import failed.', 'Choose a valid UAM theme JSON file.')
+      return false
     }
+  }
+  const importThemeFile = async (file?: File) => {
+    if (!file) return
+    let imported: CustomTheme | null = null
+    try { imported = normalizeCustomTheme(JSON.parse(await file.text())) } catch { imported = null }
+    if (!imported) { reportAppFailure('Theme import failed.', 'Choose a valid UAM theme JSON file.'); return }
+    // Ids come from the name, so a shared name would silently overwrite the saved theme.
+    const existing = customThemes.find((candidate) => candidate.id === imported.id)
+    if (existing) { setPendingThemeImport({ theme: imported, existing }); return }
+    await saveImportedTheme(imported)
+  }
+  const resolveThemeImport = async (keepBoth: boolean) => {
+    if (!pendingThemeImport || themeSaveInFlightRef.current) return
+    const { theme: imported } = pendingThemeImport
+    const name = keepBoth && customThemes.some((candidate) => candidate.name === imported.name) ? `${imported.name} copy` : imported.name
+    themeSaveInFlightRef.current = true
+    setThemeSaving(true)
+    try {
+      if (await saveImportedTheme(keepBoth ? { ...imported, name, id: customThemeId(name, customThemes) } : imported)) setPendingThemeImport(null)
+    } finally { themeSaveInFlightRef.current = false; setThemeSaving(false) }
   }
   const exportSelectedTheme = () => {
     if (!selectedCustomTheme) return
@@ -3183,6 +3204,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           if (deleted) setPendingDelete(null)
         }}>
         <p>“{pendingDelete?.name}” will be permanently deleted. This cannot be undone or restored.</p>
+      </ConfirmDialog>
+      <ConfirmDialog open={Boolean(pendingThemeImport)} title={`Replace “${pendingThemeImport?.existing.name ?? ''}”?`} label="Imported theme already exists"
+        confirmLabel="Replace" busy={themeSaving} secondaryAction={{ label: 'Keep both', onClick: () => void resolveThemeImport(true) }}
+        onCancel={() => setPendingThemeImport(null)} onConfirm={() => void resolveThemeImport(false)}>
+        <p>The imported theme “{pendingThemeImport?.theme.name}” has the same id as a saved theme. Replace overwrites it; Keep both saves the import separately.</p>
       </ConfirmDialog>
       <Presence open={Boolean(pendingDefaultYolo)}>{pendingDefaultYolo && <ConfirmDialog open title="Use YOLO by default?" confirmLabel="Use YOLO"
         onCancel={() => setPendingDefaultYolo(null)} onConfirm={() => { const pending = pendingDefaultYolo; setPendingDefaultYolo(null); updateProviderDefaults(pending.providerId, pending.defaults) }}>

@@ -2884,6 +2884,69 @@ describe('SettingsModal memory settings', () => {
     host.remove()
   })
 
+  it('asks before an imported theme replaces a saved theme with the same id', async () => {
+    const ocean = {
+      version: 1 as const, id: 'custom:ocean' as const, name: 'Ocean', base: 'dark' as const,
+      colors: { ...BUILT_IN_THEME_COLORS.dark },
+    }
+    useAppStore.setState({ theme: 'focus', customThemes: [ocean] })
+    const { host, root } = renderModal()
+    const save = useAppStore.getState().saveCustomTheme
+    const importJson = async (theme: object) => {
+      const input = host.querySelector('input[aria-label="Import theme JSON"]') as HTMLInputElement
+      const file = new File([], 'theme.json', { type: 'application/json' })
+      Object.defineProperty(file, 'text', { value: () => Promise.resolve(JSON.stringify(theme)) })
+      Object.defineProperty(input, 'files', { configurable: true, value: [file] })
+      await act(async () => { input.dispatchEvent(new Event('change', { bubbles: true })) })
+    }
+    const dialog = () => document.querySelector('[role="alertdialog"][aria-label="Imported theme already exists"]')
+    const choose = async (label: string) => {
+      const target = Array.from(dialog()!.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === label)!
+      await act(async () => { target.click(); await Promise.resolve() })
+    }
+
+    // Same default-derived id, different colours: nothing is saved until the user chooses.
+    await importJson({ ...ocean, colors: { ...ocean.colors, accent: '#ff0000' } })
+    expect(dialog()?.textContent).toContain('Replace “Ocean”?')
+    expect(save).not.toHaveBeenCalled()
+    await choose('Cancel')
+    expect(save).not.toHaveBeenCalled()
+
+    await importJson({ ...ocean, colors: { ...ocean.colors, accent: '#ff0000' } })
+    await choose('Keep both')
+    expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ id: 'custom:ocean-copy', name: 'Ocean copy' }))
+    expect(useAppStore.getState().setTheme).toHaveBeenLastCalledWith('custom:ocean-copy')
+    expect(dialog()).toBeNull()
+
+    await importJson({ ...ocean, colors: { ...ocean.colors, accent: '#00ff00' } })
+    await choose('Replace')
+    expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ id: 'custom:ocean', name: 'Ocean' }))
+    expect(save).toHaveBeenCalledTimes(2)
+
+    // A theme with a new id imports directly.
+    await importJson({ ...ocean, id: 'custom:forest', name: 'Forest' })
+    expect(dialog()).toBeNull()
+    expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ id: 'custom:forest' }))
+    act(() => root.unmount()); host.remove()
+  })
+
+  it('keeps a clashing theme import pending when saving it fails', async () => {
+    const ocean = { version: 1 as const, id: 'custom:ocean' as const, name: 'Ocean', base: 'dark' as const, colors: { ...BUILT_IN_THEME_COLORS.dark } }
+    useAppStore.setState({ theme: 'focus', customThemes: [ocean], saveCustomTheme: vi.fn(async () => null) })
+    const { host, root } = renderModal()
+    const input = host.querySelector('input[aria-label="Import theme JSON"]') as HTMLInputElement
+    const file = new File([], 'theme.json', { type: 'application/json' })
+    Object.defineProperty(file, 'text', { value: () => Promise.resolve(JSON.stringify(ocean)) })
+    Object.defineProperty(input, 'files', { configurable: true, value: [file] })
+    await act(async () => { input.dispatchEvent(new Event('change', { bubbles: true })) })
+    const dialog = () => document.querySelector('[role="alertdialog"][aria-label="Imported theme already exists"]')
+    await act(async () => { Array.from(dialog()!.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Keep both')!.click(); await Promise.resolve() })
+    expect(failures.at(-1)?.message).toBe('Theme import failed.')
+    expect(dialog()).toBeTruthy()
+    expect(useAppStore.getState().setTheme).not.toHaveBeenCalled()
+    act(() => root.unmount()); host.remove()
+  })
+
   it('exports and imports portable local chat bundles with honest outcomes', async () => {
     const requests: Array<{ action: string; payload?: { currentValue?: string } }> = []
     window.cefQuery = ({ request, onSuccess }) => {
