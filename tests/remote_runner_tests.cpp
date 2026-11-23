@@ -37,7 +37,9 @@
 #include <set>
 
 #if defined(__APPLE__)
+#include <signal.h>
 #include <sys/wait.h>
+#include <unistd.h>
 #endif
 #if defined(_WIN32)
 #include "remote/runner_service_windows.h"
@@ -3622,8 +3624,6 @@ namespace
 }
 
 #if !defined(_WIN32)
-#include <signal.h>
-#include <unistd.h>
 // Over SSH every connection is a new bridge to the one resident helper, so a connection that drops (a lost network,
 // a sleeping laptop, a killed ssh) ends only that bridge, in the middle of whatever it carried. A streamed upload cut
 // off that way left its partial temporary file and upload record on the host, and the attachment batch could not

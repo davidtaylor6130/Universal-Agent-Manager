@@ -1211,7 +1211,8 @@ namespace uam::remote
 			abort();
 			// A commit whose reply was lost may have published the file. The helper refused a target that already
 			// existed at begin, so whatever is there now can only be this copy.
-			if (reply_lost) (void)RemoveFile(upload_id, remote_path);
+			// Only when the abort reached the host again: another reconnect straight after would fail the same way.
+			if (reply_lost && m_connected) (void)RemoveFile(upload_id, remote_path);
 			return false;
 		}
 		const nlohmann::json& committed = response["result"];
@@ -1262,7 +1263,8 @@ namespace uam::remote
 		                          {"path", uam::paths::Utf8PathString(remote_path)}};
 		nlohmann::json response;
 		bool removed = Request(request, response, error_out);
-		// Only a transport failure is retried; the reply's error is kept when the host cannot be reached again.
+		// Only a transport failure is retried; the reply's error is kept when the host cannot be reached again. A
+		// removal that ran before its reply was lost reports remove_failed on the retry, as any failed transport did.
 		if (!removed && !m_connected && ReconnectForCleanup())
 			removed = Request(std::move(request), response, error_out);
 		return removed;

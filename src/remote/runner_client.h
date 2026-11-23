@@ -184,8 +184,7 @@ namespace uam::remote
 		                        const std::filesystem::path& source,
 		                        const std::function<void(std::uintmax_t, std::uintmax_t)>& progress = {},
 		                        std::string* error_out = nullptr, std::stop_token stop_token = {});
-		/// Reconnects once, within the cleanup budget, when the connection is down or drops during the request:
-		/// it is the cleanup after a failed upload, whose connection is often the one that just dropped.
+		/// Reconnects once, within the cleanup budget, when the connection is down or drops during the request.
 		bool RemoveFile(const std::string& request_id,
 		                const std::filesystem::path& remote_path,
 		                std::string* error_out = nullptr);
