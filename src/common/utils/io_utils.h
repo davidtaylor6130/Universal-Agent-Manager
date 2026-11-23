@@ -633,10 +633,11 @@ namespace uam::io
 	inline thread_local int t_replace_install_errno_for_tests = 0;
 	inline thread_local int t_replace_restore_errno_for_tests = 0;
 	inline thread_local int t_replace_reshape_errno_for_tests = 0;
-	// Test-only, with an install errno: first remove the destination (a non-atomic network client), or first complete
-	// the rename (a client reporting an error after the server finished it).
+	// Test-only, with an install errno: first remove the destination (a non-atomic network client), first complete
+	// the rename (a client reporting an error after the server finished it), or first put an unrelated file there.
 	inline thread_local bool t_replace_install_drops_destination_for_tests = false;
 	inline thread_local bool t_replace_install_lands_before_error_for_tests = false;
+	inline thread_local bool t_replace_install_substitutes_destination_for_tests = false;
 
 	/// <summary>Volumes (by st_dev) whose exchange rename was refused in this process, so later replacements skip the attempt.</summary>
 	/// <remarks>Only refusals are cached. A supported volume pays one lstat of the destination per replacement for the lookup.</remarks>
@@ -721,7 +722,7 @@ namespace uam::io
 	{
 		Replaced,
 		FailedUnchanged, // The destination still holds its previous file; the candidate may be discarded.
-		FailedHeld       // The destination is missing or not a file this replace recognises: keep every file.
+		FailedHeld       // The destination is missing or cannot be confirmed: the previous file is kept outside any sweep.
 	};
 
 	/// <summary>Replaces an existing destination with candidate, leaving the previous file at predecessor (normally the
@@ -731,10 +732,11 @@ namespace uam::io
 	/// (synced when sync_directory), sync the directory, rename(candidate, destination), then move holder to the
 	/// candidate name. The caller syncs the directory afterwards as on the exchange path. The fallback is only as atomic
 	/// as the volume's rename-over-existing (an SMB client may delete then rename). After a failed install the
-	/// destination's identity decides the outcome: unchanged removes the copy, the candidate's identity counts as
-	/// replaced, a missing name is restored from the copy, anything else keeps every file. holder_is_evidence marks a
-	/// caller-reserved evidence path that must keep a held predecessor; otherwise a held copy becomes the ".bak"
-	/// companion only when none exists. See docs/engineering/durable-writes.md.</remarks>
+	/// destination's identity, size and modification time decide the outcome: the previous file removes the copy, the
+	/// candidate counts as replaced, a missing name is restored from the copy, and anything ambiguous is held.
+	/// holder_is_evidence marks a caller-reserved evidence path that keeps a held predecessor; otherwise a held copy
+	/// becomes the ".bak" companion when the name is missing and none exists, else "<name>.held.<token>", which no
+	/// abandoned-temporary sweep matches. See docs/engineering/durable-writes.md.</remarks>
 	inline ReplaceExistingOutcome ReplaceExistingDestination(const std::filesystem::path& candidate, const std::filesystem::path& destination,
 	    const std::filesystem::path& holder, bool holder_is_evidence, bool sync_directory, std::filesystem::path& predecessor, AtomicWriteResult& result)
 	{
@@ -782,17 +784,49 @@ namespace uam::io
 		int install_error = t_replace_install_errno_for_tests;
 		if (install_error != 0 && t_replace_install_drops_destination_for_tests) unlink(destination.c_str());
 		if (install_error != 0 && t_replace_install_lands_before_error_for_tests) (void)rename(candidate.c_str(), destination.c_str());
+		if (install_error != 0 && t_replace_install_substitutes_destination_for_tests)
+		{
+			const std::filesystem::path other = MakeTempWritePath(destination);
+			const int fd = open(other.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, S_IRUSR | S_IWUSR);
+			if (fd >= 0) { (void)!write(fd, "unrelated", 9); close(fd); (void)rename(other.c_str(), destination.c_str()); }
+		}
 		if (install_error == 0 && rename(candidate.c_str(), destination.c_str()) != 0) install_error = errno;
 		if (install_error != 0)
 		{
 			struct stat remaining{};
 			const bool present = lstat(destination.c_str(), &remaining) == 0;
-			const auto is = [&](const struct stat& info) { return info.st_dev == remaining.st_dev && info.st_ino == remaining.st_ino; };
-			if (present && candidate_known && is(candidate_info))
+			// Identity alone is not enough: smbfs without server file IDs and exFAT derive inode numbers from the name
+			// or directory slot, so a renamed file can keep the old number. Size and modification time must agree too.
+			const auto same_file = [&](const struct stat& info)
+			{
+#if defined(__APPLE__)
+				const bool same_time = info.st_mtimespec.tv_sec == remaining.st_mtimespec.tv_sec && info.st_mtimespec.tv_nsec == remaining.st_mtimespec.tv_nsec;
+#else
+				const bool same_time = info.st_mtim.tv_sec == remaining.st_mtim.tv_sec && info.st_mtim.tv_nsec == remaining.st_mtim.tv_nsec;
+#endif
+				return info.st_dev == remaining.st_dev && info.st_ino == remaining.st_ino && info.st_size == remaining.st_size && same_time;
+			};
+			// Moves a held copy to a name no abandoned-temporary sweep matches and says where it is.
+			const auto hold_copy = [&](const std::string& cause)
+			{
+				std::string kept = holder.filename().string();
+				if (!holder_is_evidence)
+				{
+					const std::filesystem::path held = std::filesystem::path(destination) += ".held." + MakeTempWritePath(std::filesystem::path("x")).extension().string().substr(1);
+					if (rename(holder.c_str(), held.c_str()) == 0)
+					{
+						kept = held.filename().string();
+						if (sync_directory) (void)SyncAtomicWriteDirectory(parent, result);
+					}
+				}
+				result.error = cause + "; its previous file is kept beside it as " + kept + ": " + AtomicWriteSystemError(install_error);
+				return ReplaceExistingOutcome::FailedHeld;
+			};
+			if (present && candidate_known && same_file(candidate_info))
 			{
 				// The client reported an error after the rename landed: this is a completed replacement.
 			}
-			else if (present && is(destination_info))
+			else if (present && same_file(destination_info) && !(candidate_known && candidate_info.st_ino == remaining.st_ino && candidate_info.st_dev == remaining.st_dev))
 			{
 				unlink(holder.c_str());
 				result.error = "Failed to replace destination: " + AtomicWriteSystemError(install_error);
@@ -800,8 +834,7 @@ namespace uam::io
 			}
 			else if (present)
 			{
-				result.error = "Failed to replace destination, which changed unexpectedly; its previous file is kept beside it: " + AtomicWriteSystemError(install_error);
-				return ReplaceExistingOutcome::FailedHeld;
+				return hold_copy("Failed to replace destination, which cannot be confirmed unchanged");
 			}
 			else
 			{
@@ -816,17 +849,18 @@ namespace uam::io
 				}
 				// Recovery readers look for the ".bak" companion. Never overwrite an existing one, and leave a caller's
 				// reserved evidence path where its owner reports it.
-				bool backed_up = false;
 				if (!holder_is_evidence)
 				{
 					const std::filesystem::path backup = MakeBackupPath(destination);
 					struct stat existing{};
-					backed_up = lstat(backup.c_str(), &existing) != 0 && errno == ENOENT && rename(holder.c_str(), backup.c_str()) == 0;
-					if (backed_up && sync_directory) (void)SyncAtomicWriteDirectory(parent, result);
+					if (lstat(backup.c_str(), &existing) != 0 && errno == ENOENT && rename(holder.c_str(), backup.c_str()) == 0)
+					{
+						if (sync_directory) (void)SyncAtomicWriteDirectory(parent, result);
+						result.error = "Failed to replace destination; its previous file is kept as its recovery backup: " + AtomicWriteSystemError(install_error);
+						return ReplaceExistingOutcome::FailedHeld;
+					}
 				}
-				result.error = std::string("Failed to replace destination; its previous file is kept as ") +
-				    (backed_up ? "its recovery backup: " : "a recovery copy beside it: ") + AtomicWriteSystemError(install_error);
-				return ReplaceExistingOutcome::FailedHeld;
+				return hold_copy("Failed to replace destination, which is missing");
 			}
 		}
 

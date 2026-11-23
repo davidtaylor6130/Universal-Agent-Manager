@@ -49,7 +49,7 @@ namespace uam
 	/// ownership, directory identity and durable replacement are not established over network filesystems.
 	DataFolderPreflightResult InspectDataFolderTransition(const std::filesystem::path& active_root, const std::filesystem::path& selected_root, bool had_startup_environment_override, const std::vector<std::filesystem::path>& retained_roots = {}, DataFolderDestinationCheck destination_check = DataFolderDestinationCheck::RequireEmpty);
 
-	/// One plain line for a local folder whose volume cannot swap files atomically (for example exFAT), else empty.
+	/// One plain line for a local folder whose volume cannot replace files in a single step (no RENAME_SWAP, for example exFAT), else empty.
 	/// Saves there still work through the weaker durable replace documented in docs/engineering/durable-writes.md.
 	std::string DataFolderVolumeWarning(const std::filesystem::path& folder);
 } // namespace uam

@@ -22,6 +22,7 @@ namespace
 			uam::io::t_replace_reshape_errno_for_tests = 0;
 			uam::io::t_replace_install_drops_destination_for_tests = false;
 			uam::io::t_replace_install_lands_before_error_for_tests = false;
+			uam::io::t_replace_install_substitutes_destination_for_tests = false;
 			uam::io::ResetRenameSwapCapabilityCacheForTests();
 		}
 	};
@@ -99,6 +100,20 @@ UAM_TEST(DurableReplaceFallbackCopiesPredecessorKeepingModeAndSingleLink)
 	UAM_ASSERT_EQ(static_cast<int>(info.st_mode & 07777), 0640);
 	UAM_ASSERT(stat(file.c_str(), &info) == 0 && info.st_nlink == 1);
 	UAM_ASSERT(stat(backup.c_str(), &info) == 0 && info.st_nlink == 1);
+	// A failed fallback must leave the previous file exactly as it was: same file, one link, unchanged change time.
+	struct stat before{};
+	UAM_ASSERT(stat(file.c_str(), &before) == 0);
+	uam::io::t_replace_install_errno_for_tests = EIO;
+	UAM_ASSERT(!uam::io::AtomicWriteFileDetailed(file, "instructions v3", {}, true).success);
+	struct stat after{};
+	UAM_ASSERT(stat(file.c_str(), &after) == 0);
+	UAM_ASSERT(after.st_ino == before.st_ino && after.st_nlink == 1);
+#if defined(__APPLE__)
+	UAM_ASSERT(after.st_ctimespec.tv_sec == before.st_ctimespec.tv_sec && after.st_ctimespec.tv_nsec == before.st_ctimespec.tv_nsec);
+#else
+	UAM_ASSERT(after.st_ctim.tv_sec == before.st_ctim.tv_sec && after.st_ctim.tv_nsec == before.st_ctim.tv_nsec);
+#endif
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(file), std::string("instructions v2"));
 	UAM_ASSERT(Leftovers(temp.root, {"AGENTS.md", "AGENTS.md.bak"}).empty());
 }
 
@@ -174,8 +189,14 @@ UAM_TEST(DurableReplaceFallbackHeldFailureKeepsEveryCopyWithoutOverwritingBackup
 		// The candidate is never discarded, and the previous file survives as .bak or beside the older .bak.
 		if (backup_exists)
 		{
+			// Kept under a name the abandoned-temporary sweeps never match, and the error names it.
 			UAM_ASSERT_EQ(uam::io::ReadTextFile(backup), std::string("older backup"));
 			UAM_ASSERT(contents == std::vector<std::string>({"candidate", "older backup", "previous"}));
+			const auto held_copy = std::find_if(fs::directory_iterator(temp.root), fs::directory_iterator{}, [](const fs::directory_entry& entry)
+			{ return entry.path().filename().string().rfind("settings.txt.held.", 0) == 0; });
+			UAM_ASSERT(held_copy != fs::directory_iterator{});
+			UAM_ASSERT_EQ(uam::io::ReadTextFile(held_copy->path()), std::string("previous"));
+			UAM_ASSERT(held.error.find(held_copy->path().filename().string()) != std::string::npos);
 		}
 		else
 		{
@@ -183,6 +204,29 @@ UAM_TEST(DurableReplaceFallbackHeldFailureKeepsEveryCopyWithoutOverwritingBackup
 			UAM_ASSERT(contents == std::vector<std::string>({"candidate", "previous"}));
 		}
 	}
+}
+
+UAM_TEST(DurableReplaceFallbackHoldsPreviousFileWhenAnotherFileTookTheName)
+{
+	ReplaceFaults faults;
+	TempDir temp("uam-durable-replace-substituted");
+	const fs::path file = temp.root / "settings.txt";
+	UAM_ASSERT(uam::io::AtomicWriteFileDetailed(file, "previous", {}, false).success);
+	uam::io::t_rename_swap_errno_for_tests = ENOTSUP;
+	uam::io::t_replace_install_errno_for_tests = EIO;
+	uam::io::t_replace_install_substitutes_destination_for_tests = true;
+	const auto held = uam::io::AtomicWriteFileDetailed(file, "candidate", {}, true);
+	UAM_ASSERT(!held.success && !held.primary_committed && held.replace_fallback);
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(file), std::string("unrelated"));
+	std::vector<std::string> contents;
+	for (const auto& entry : fs::directory_iterator(temp.root))
+	{
+		const std::string name = entry.path().filename().string();
+		UAM_ASSERT(name.find(".tmp.") == std::string::npos || uam::io::ReadTextFile(entry.path()) == "candidate");
+		contents.push_back(uam::io::ReadTextFile(entry.path()));
+	}
+	std::sort(contents.begin(), contents.end());
+	UAM_ASSERT(contents == std::vector<std::string>({"candidate", "previous", "unrelated"}));
 }
 
 UAM_TEST(DurableReplaceFallbackTreatsAnInstallErrorAfterTheRenameLandedAsReplaced)
@@ -257,6 +301,34 @@ UAM_TEST(DurableReplaceConditionalFallbackFailuresKeepCandidateAndEvidenceContra
 			UAM_ASSERT(!fs::exists(file));
 			UAM_ASSERT_EQ(uam::io::ReadTextFile(evidence), std::string("predecessor"));
 		}
+	}
+}
+
+UAM_TEST(DurableReplaceConditionalFallbackLandedAndReshapeFailuresStillCommit)
+{
+	for (const bool landed : {true, false})
+	{
+		ReplaceFaults faults;
+		TempDir temp("uam-durable-replace-conditional-commit");
+		const fs::path file = temp.root / "chat.json";
+		UAM_ASSERT(uam::io::AtomicWriteFileDetailed(file, "predecessor", {}, false).success);
+		const fs::path candidate = uam::io::MakeTempWritePath(file);
+		const fs::path evidence = temp.root / "chat.json.evidence";
+		uam::io::AtomicWriteResult staged;
+		UAM_ASSERT(uam::io::WriteAndSyncAtomicTemp(candidate, "candidate", {}, staged));
+		uam::io::t_rename_swap_errno_for_tests = ENOTSUP;
+		if (landed)
+		{
+			uam::io::t_replace_install_errno_for_tests = EIO;
+			uam::io::t_replace_install_lands_before_error_for_tests = true;
+		}
+		else
+			uam::io::t_replace_reshape_errno_for_tests = EIO;
+		const auto committed = uam::io::CommitSyncedAtomicTemp(file, candidate, true, {}, true, true, evidence);
+		UAM_ASSERT(committed.success && committed.primary_committed && !committed.backup_degraded);
+		UAM_ASSERT_EQ(uam::io::ReadTextFile(file), std::string("candidate"));
+		UAM_ASSERT_EQ(uam::io::ReadTextFile(uam::io::MakeBackupPath(file)), std::string("predecessor"));
+		UAM_ASSERT(Leftovers(temp.root, {"chat.json", "chat.json.bak"}).empty());
 	}
 }
 
