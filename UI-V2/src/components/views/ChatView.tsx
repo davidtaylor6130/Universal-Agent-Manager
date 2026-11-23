@@ -1266,9 +1266,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     messages[turnUserMessageIndex]?.role === 'user' &&
     (turnUserMessageIndex === messages.length - 1 ||
       (turnAssistantMessageMatches && turnUserMessageIndex < turnAssistantMessageIndex))
+  // A settled answer may be followed by a queued or prepared user row (#278); the turn's own user row still places it.
   const completedFallbackAlreadyPersisted =
     !acp?.processing &&
-    latestAssistantMessageIndex > latestUserMessageIndex &&
+    (latestAssistantMessageIndex > latestUserMessageIndex ||
+      (latestAssistantMessageIndex > turnUserMessageIndex && messages[turnUserMessageIndex]?.role === 'user')) &&
     contentIsExactlyTurnText(messages[latestAssistantMessageIndex]?.content ?? '', turnEvents)
   // Bind only a confirmed assistant; steering can put user messages between turn rows.
   const disclosureAssistant = turnAssistantMessageMatches

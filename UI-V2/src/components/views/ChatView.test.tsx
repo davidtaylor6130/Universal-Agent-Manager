@@ -9476,9 +9476,26 @@ describe('ChatView', () => {
     expect(text.indexOf('Settled answer.')).toBeLessThan(text.indexOf('Follow-up row'))
   })
 
+  // #278: a queued or prepared follow-up row must not turn a settled answer's stale anchor into a second copy of it.
   it.each([
     { name: 'stale index on a user row', overrides: { turnAssistantMessageIndex: 2 } },
     { name: 'stale index past the end', overrides: { turnAssistantMessageIndex: 5 } },
+    { name: 'no recorded assistant row', overrides: { turnAssistantMessageIndex: -1 } },
+  ])('renders a settled answer once after its turn user row when a follow-up row follows it with a $name', ({ overrides }) => {
+    const text = renderTurnAfterFollowUp(overrides)
+    expect(text.match(/Settled answer\./g)).toHaveLength(1)
+    expect(text.indexOf('Settled answer.')).toBeLessThan(text.indexOf('Follow-up row'))
+  })
+
+  it('keeps the live card for a settled answer whose stale row is followed by a pending permission', () => {
+    const text = renderTurnAfterFollowUp({
+      turnAssistantMessageIndex: 5,
+      pendingPermission: { requestId: '5', toolCallId: 'tool-1', title: 'Read file', kind: 'read', status: 'pending', content: 'Read /tmp/project/file.txt', options: [{ id: 'allow-once', name: 'Allow once', kind: 'allow_once' }] },
+    })
+    expect(text.match(/Allow once/g)).toHaveLength(1)
+  })
+
+  it.each([
     { name: 'stale index without a preceding turn user row', overrides: { turnUserMessageIndex: -1 } },
     { name: 'assistant row content that does not contain the turn text', overrides: { assistantContent: 'Unrelated imported row.' } },
     { name: 'turn user index that points at a non-user row', overrides: { leadingAssistant: true, turnUserMessageIndex: 0, turnAssistantMessageIndex: 2 } },
