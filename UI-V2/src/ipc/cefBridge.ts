@@ -58,6 +58,80 @@ export function redactedEnvelope(envelope: CEFRequest): CEFRequest {
   return { ...envelope, payload: { ...payload, value: '[redacted]' } }
 }
 
+/** The companion listener rejects wire bodies over 64 KiB; envelopes of 60 KiB or more are uploaded in chunks instead. */
+export const COMPANION_DIRECT_REQUEST_BYTES = 60 * 1024
+const COMPANION_MAX_REQUEST_BYTES = 32 * 1024 * 1024
+const COMPANION_MAX_REQUEST_CHUNK_BYTES = 32 * 1024
+const COMPANION_TRANSFER_ACTIONS = ['beginCompanionRequestTransfer', 'appendCompanionRequestChunk', 'commitCompanionRequestTransfer']
+const COMPANION_TOKEN_REJECTED = 'UAM no longer accepts this connection token. Log out in Settings, then connect with the current token from the computer.'
+const COMPANION_UPLOAD_UNAVAILABLE = 'This request is too large to send without chunked uploads. Update UAM on the computer or shorten the request.'
+const COMPANION_REQUEST_TOO_LARGE = 'This request is too large to send to UAM. Shorten it or send fewer attachments.'
+
+const companionPost = (token: string, body: string) => fetch('/api', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+  body,
+  signal: AbortSignal.timeout(30000),
+  redirect: 'error',
+  cache: 'no-store',
+})
+
+const companionFailure = async (response: Response) => response.status === 401
+  // A rotated token (new pairing code or Regenerate token on the computer) ends this browser's pairing.
+  ? COMPANION_TOKEN_REJECTED
+  : (await response.json().catch(() => null))?.error ?? `Request failed (${response.status}).`
+
+const toBase64 = (bytes: Uint8Array) => {
+  let binary = ''
+  for (let offset = 0; offset < bytes.length; offset += 0x2000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x2000))
+  return btoa(binary)
+}
+
+/**
+ * Uploads a whole request envelope with begin, append and one commit, as the protocol requires above the direct limit.
+ * Every failure before commit means UAM never received the action. The commit is sent exactly once and never
+ * repeated: a lost commit reply leaves the outcome unknown (docs/reference/companion-protocol.md).
+ */
+async function uploadCompanionRequest(token: string, action: string, bytes: Uint8Array): Promise<{ response: Response } | { error: string }> {
+  const notSent = (reason: string) => ({ error: `${reason} The request was not sent.` })
+  if (COMPANION_TRANSFER_ACTIONS.includes(action)) return notSent('Nested request uploads are unsupported.')
+  if (bytes.length > COMPANION_MAX_REQUEST_BYTES) return { error: COMPANION_REQUEST_TOO_LARGE }
+  const step = async <T>(stepAction: string, payload: Record<string, unknown>): Promise<{ data: T } | { error: string }> => {
+    if (window.localStorage.getItem('uam-companion-token') !== token) return notSent('Disconnected.')
+    let response: Response
+    try { response = await companionPost(token, JSON.stringify({ action: stepAction, payload })) } catch { return notSent('Connection lost while uploading.') }
+    if (!response.ok) {
+      if (response.status === 401) return { error: COMPANION_TOKEN_REJECTED }
+      // An older UAM without request uploads does not list or route the capabilities action.
+      if ((response.status === 403 || response.status === 404) && stepAction === 'getCompanionCapabilities') return { error: COMPANION_UPLOAD_UNAVAILABLE }
+      return notSent(await companionFailure(response))
+    }
+    const data = await response.json().catch(() => null)
+    return data && typeof data === 'object' ? { data: data as T } : notSent('UAM returned an invalid upload reply.')
+  }
+  const capabilities = await step<{ protocolVersion?: unknown; features?: { requestChunks?: unknown }; limits?: { maxRequestBytes?: unknown; requestChunkBytes?: unknown } }>('getCompanionCapabilities', {})
+  if ('error' in capabilities) return capabilities
+  const { maxRequestBytes, requestChunkBytes: chunkBytes } = capabilities.data.limits ?? {}
+  if (capabilities.data.protocolVersion !== 1 || capabilities.data.features?.requestChunks !== true
+    || !Number.isSafeInteger(maxRequestBytes) || (maxRequestBytes as number) <= 0
+    || !Number.isSafeInteger(chunkBytes) || (chunkBytes as number) <= 0 || (chunkBytes as number) > COMPANION_MAX_REQUEST_CHUNK_BYTES) return { error: COMPANION_UPLOAD_UNAVAILABLE }
+  if (bytes.length > (maxRequestBytes as number)) return { error: COMPANION_REQUEST_TOO_LARGE }
+  const transfer = await step<{ id?: unknown; totalBytes?: unknown; chunkBytes?: unknown; nextOffset?: unknown }>('beginCompanionRequestTransfer', { totalBytes: bytes.length })
+  if ('error' in transfer) return transfer
+  const { id } = transfer.data
+  if (typeof id !== 'string' || id.length === 0 || id.length > 128 || transfer.data.totalBytes !== bytes.length
+    || transfer.data.nextOffset !== 0 || transfer.data.chunkBytes !== chunkBytes) return notSent('UAM returned an invalid upload descriptor.')
+  for (let offset = 0; offset < bytes.length;) {
+    const next = Math.min(offset + (chunkBytes as number), bytes.length)
+    const acknowledgement: { data: { id?: unknown; nextOffset?: unknown } } | { error: string } = await step('appendCompanionRequestChunk', { id, offset, base64: toBase64(bytes.subarray(offset, next)) })
+    if ('error' in acknowledgement) return acknowledgement
+    if (acknowledgement.data.id !== id || acknowledgement.data.nextOffset !== next) return notSent('UAM returned an invalid upload acknowledgement.')
+    offset = next
+  }
+  if (window.localStorage.getItem('uam-companion-token') !== token) return notSent('Disconnected.')
+  return { response: await companionPost(token, JSON.stringify({ action: 'commitCompanionRequestTransfer', payload: { id } })) }
+}
+
 /**
  * Send a request to the C++ backend.
  * In dev: returns a mock response after a short delay.
@@ -79,19 +153,20 @@ export async function sendToCEF<T = unknown>(
     if (!token) return { ok: false, error: 'Connect to UAM first.', requestId }
     let transferFailure = ''
     try {
-      const response = await fetch('/api', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify(envelope),
-        signal: AbortSignal.timeout(30000),
-        redirect: 'error',
-        cache: 'no-store',
-      })
+      const body = JSON.stringify(envelope)
+      const bytes = new TextEncoder().encode(body)
+      let response: Response
+      if (bytes.length < COMPANION_DIRECT_REQUEST_BYTES) response = await companionPost(token, body)
+      else {
+        const upload = await uploadCompanionRequest(token, request.action, bytes)
+        if ('error' in upload) {
+          if (logFailures) console.error(`[CEF] ${request.action}: ${upload.error}`)
+          return { ok: false, error: upload.error, requestId }
+        }
+        response = upload.response
+      }
       if (!response.ok) {
-        // A rotated token (new pairing code or Regenerate token on the computer) ends this browser's pairing.
-        const error = response.status === 401
-          ? 'UAM no longer accepts this connection token. Log out in Settings, then connect with the current token from the computer.'
-          : (await response.json().catch(() => null))?.error ?? `Request failed (${response.status}).`
+        const error = await companionFailure(response)
         if (logFailures) console.error(`[CEF] ${request.action}: ${error}`)
         return { ok: false, error, requestId }
       }
@@ -111,14 +186,7 @@ export async function sendToCEF<T = unknown>(
         const chunkCount = Math.ceil(totalBytes / transferChunkBytes)
         const loadChunk = async (offset: number) => {
           if (window.localStorage.getItem('uam-companion-token') !== token) throw new Error('Disconnected.')
-          const chunkResponse = await fetch('/api', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-            body: JSON.stringify({ action: 'getCompanionResponseChunk', payload: { id, offset } }),
-            signal: AbortSignal.timeout(30000),
-            redirect: 'error',
-            cache: 'no-store',
-          })
+          const chunkResponse = await companionPost(token, JSON.stringify({ action: 'getCompanionResponseChunk', payload: { id, offset } }))
           if (!chunkResponse.ok) {
             transferFailure = (await chunkResponse.json().catch(() => null))?.error || 'Could not load the rest of this response.'
             throw new Error(transferFailure)
