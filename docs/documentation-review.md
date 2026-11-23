@@ -326,6 +326,8 @@ Recorded limits that are not decisions: Claude Code, Gemini and Copilot children
 - The Active Chats row of a watched chat reads "Watching PR" rather than "Working", because no turn is running.
 - `pr_watch` and `pr_unwatch` need no approval and are allowed in Plan and read-only chats, because they act only on the calling chat. They carry no read-only hint.
 - The wake is delivered as an ordinary message in the chat, shown like a message the user sent. There is no separate transcript style for it.
+- Comment text is quoted only from authors GitHub reports as owner, member or collaborator, marked as untrusted information; other authors are named with their association and link only. GitHub can report a member whose organisation membership is private to the signed-in account as another association, so their text is not quoted.
+- In a YOLO chat, news that is only comments from other authors is held with a notification, then sent with the pull request's next other update or when the chat leaves YOLO; there is no per-wake Allow card. AI Review, Accept Edits and the providers' own automatic modes are not treated as YOLO, and such comments still count towards the 10 comment-only updates, so an outside author can end a watch by commenting.
 - Only the turn Stop control ends a chat's watches; stopping the provider session does not.
 - GitHub Enterprise hosts, GitLab and Azure DevOps are not supported.
 - The phone clients show no linked pull request row and cannot start or stop a watch.

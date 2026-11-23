@@ -1,9 +1,11 @@
 #include "app/pr_watch_service.h"
 
 #include "app/chat_domain_service.h"
+#include "common/config/approval_modes.h"
 #include "common/platform/background_thread_priority.h"
 #include "common/platform/platform_services.h"
 #include "common/runtime/acp/acp_session_runtime.h"
+#include "common/security/command_safety.h"
 #include "common/state/app_state.h"
 #include "common/utils/diagnostic_log.h"
 #include "common/utils/io_utils.h"
@@ -40,6 +42,20 @@ namespace uam
 		bool SendWake(AppState& app, const std::string& chat_id, const std::string& text, std::string* error)
 		{
 			return uam::SendAcpPrompt(app, chat_id, text, error);
+		}
+
+		/// A YOLO chat approves its agent's commands without asking anyone, so nobody is there to judge what a wake leads to.
+		bool RunsUnattended(const AppState& app, const std::string& chat_id)
+		{
+			const ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
+			return chat != nullptr && (uam::command_safety::ParseTier(chat->command_safety_tier) == uam::command_safety::Tier::Yolo ||
+			                           chat->approval_mode == uam::approval_modes::kLegacyYoloApprovalMode);
+		}
+
+		/// News only from people outside the repository's collaborators waits while the chat runs in YOLO.
+		bool HeldForYolo(const AppState& app, const std::string& chat_id, bool outside_only)
+		{
+			return outside_only && RunsUnattended(app, chat_id);
 		}
 
 		nlohmann::json ToJson(const pr_watch::Reported& reported)
@@ -140,7 +156,7 @@ namespace uam
 				if (!pr.has_value() || chat_id.empty() || m_links.size() >= kMaxLinks || FindLink(chat_id, *pr) != nullptr) continue;
 				m_links.push_back({.chat_id = chat_id, .pr = *pr, .watching = Field(item, "watching", false),
 				    .reported = ReportedFromJson(item.value("reported", nlohmann::json::object())), .pending_wake = Field<std::string>(item, "pendingWake", {}),
-				    .settled_seen = Field<std::string>(item, "settledSeen", {})});
+				    .pending_outside_only = Field(item, "pendingOutsideOnly", false), .settled_seen = Field<std::string>(item, "settledSeen", {})});
 				m_snapshots[pr_watch::Key(*pr)].pr = *pr;
 			}
 	}
@@ -150,7 +166,8 @@ namespace uam
 		nlohmann::json links = nlohmann::json::array();
 		for (const Link& link : m_links)
 			links.push_back({{"chatId", link.chat_id}, {"repository", link.pr.repository}, {"number", link.pr.number}, {"watching", link.watching},
-			    {"reported", ToJson(link.reported)}, {"pendingWake", link.pending_wake}, {"settledSeen", link.settled_seen}});
+			    {"reported", ToJson(link.reported)}, {"pendingWake", link.pending_wake},
+			    {"pendingOutsideOnly", link.pending_outside_only}, {"settledSeen", link.settled_seen}});
 		nlohmann::json pulls = nlohmann::json::array();
 		for (const auto& [key, snapshot] : m_snapshots)
 		{
@@ -451,7 +468,7 @@ namespace uam
 		uam::platform::StartBackgroundThread(std::move(task)).detach();
 	}
 
-	void PrWatchService::Apply(const std::vector<ReadResult>& results, std::int64_t now_ms)
+	void PrWatchService::Apply(const AppState& app, const std::vector<ReadResult>& results, std::int64_t now_ms)
 	{
 		for (const ReadResult& result : results)
 		{
@@ -502,6 +519,7 @@ namespace uam
 					// One final message tells the agent, then the watch ends; the message is still delivered below.
 					const pr_watch::Message ended = pr_watch::BuildEndedMessage(link.pr, result.detail.state);
 					link.pending_wake += (link.pending_wake.empty() ? "" : "\n\n") + ended.text;
+					link.pending_outside_only = false;
 					link.watching = false;
 					Notify(link, snapshot.pr.repository + " " + ended.summary, result.detail.state == "merged" ? "success" : "info");
 					continue;
@@ -510,10 +528,19 @@ namespace uam
 				link.reported = std::move(report.next);
 				if (report.changes.empty()) continue;
 				const pr_watch::Message message = pr_watch::BuildMessage(link.pr, result.detail, report);
+				// Held news stays held only while everything waiting came from outside the repository's collaborators.
+				link.pending_outside_only = message.outside_only && (link.pending_wake.empty() || link.pending_outside_only);
 				link.pending_wake += (link.pending_wake.empty() ? "" : "\n\n") + message.text;
 				// Undelivered news is bounded; the newest is kept.
-				if (link.pending_wake.size() > kMaxPendingWakeBytes) link.pending_wake = message.text.substr(0, kMaxPendingWakeBytes);
-				Notify(link, snapshot.pr.repository + " " + message.summary, message.outcome == "completed" ? "success" : message.outcome == "failed" ? "warning" : "info");
+				if (link.pending_wake.size() > kMaxPendingWakeBytes)
+				{
+					link.pending_wake = message.text.substr(0, kMaxPendingWakeBytes);
+					link.pending_outside_only = message.outside_only;
+				}
+				const bool held = HeldForYolo(app, link.chat_id, link.pending_outside_only);
+				Notify(link, snapshot.pr.repository + " " + message.summary +
+				                 (held ? ". Not sent to the agent, because this chat runs in YOLO: it goes with the pull request's next other update, or when the chat leaves YOLO." : ""),
+				    message.outcome == "completed" ? "success" : message.outcome == "failed" ? "warning" : "info");
 				if (report.exhausted) link.watching = false;
 			}
 			m_dirty = true;
@@ -522,17 +549,20 @@ namespace uam
 
 	bool PrWatchService::DeliverWakes(AppState& app, std::int64_t now_ms)
 	{
-		if (now_ms < m_next_wake_retry_ms || std::ranges::none_of(m_links, [](const Link& link) { return !link.pending_wake.empty(); })) return false;
+		const auto deliverable = [&](const Link& link) { return !link.pending_wake.empty() && !HeldForYolo(app, link.chat_id, link.pending_outside_only); };
+		if (now_ms < m_next_wake_retry_ms || std::ranges::none_of(m_links, deliverable)) return false;
 		// The news is saved before it is sent, so a crash between the two delivers it after restart instead of losing it.
 		if (!Save()) return false;
 		bool delivered = false;
 		for (Link& link : m_links)
 		{
-			if (link.pending_wake.empty()) continue;
+			// Comments from people outside the repository's collaborators never start an unattended YOLO turn on their own.
+			if (!deliverable(link)) continue;
 			std::string error;
 			if (m_sender(app, link.chat_id, link.pending_wake, &error))
 			{
 				link.pending_wake.clear();
+				link.pending_outside_only = false;
 				link.wake_refusals = 0;
 				delivered = true;
 				continue;
@@ -544,6 +574,7 @@ namespace uam
 			uam::diagnostics::Write("PR watch: chat " + link.chat_id + " refused a wake " + std::to_string(kWakeRefusalLimit) + " times; its watch ended.");
 			link.watching = false;
 			link.pending_wake.clear();
+			link.pending_outside_only = false;
 			link.wake_refusals = 0;
 			Notify(link, "Stopped watching " + link.pr.repository + " #" + std::to_string(link.pr.number) + ": the chat did not accept its updates. Open the chat in Chat view and watch it again.", "warning");
 			delivered = true;
@@ -570,7 +601,7 @@ namespace uam
 			std::vector<ReadResult> results;
 			try { results = m_worker.get(); }
 			catch (const std::exception&) { uam::diagnostics::Write("PR watch: a sweep ended unexpectedly; the next one starts on schedule."); }
-			Apply(results, now_ms);
+			Apply(app, results, now_ms);
 			applied = true;
 		}
 		// The app polls many times a second; the chat scan and wake delivery below run once a second or after news.
