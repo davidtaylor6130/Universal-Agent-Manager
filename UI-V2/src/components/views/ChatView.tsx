@@ -3,7 +3,7 @@ import { AutomationStartQuestion } from '../chat/AutomationStartQuestion'
 import { LinkedPullRequests, WatchPullRequestDialog } from '../chat/LinkedPullRequests'
 import type { AcpPromptPresentationObserver } from '../../store/storeTypes'
 import { subagentParentFor, subscribeSubagentNavigation, subagentNavigationRevision } from '../../utils/subagentNavigation'
-import { reportAppFailure, reportAppNotice, resolveAppNotice } from '../../utils/appFailure'
+import { failureDetail, reportAppFailure, reportAppNotice, resolveAppNotice } from '../../utils/appFailure'
 import type { AcpBinding, AcpQueuedPrompt, AcpTurnEvent, ManualCompactionAvailability, ProviderSwitchOverride } from '../../store/cpp/types'
 import { attachmentsEquivalent } from '../../store/cpp/reconcile'
 import { MAX_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS, messageAttachments, sanitizeManualCompaction, sanitizeNativeInputId, sanitizeOriginRequestId, sanitizeManagedOriginRunId } from '../../store/cpp/sanitizers'
@@ -169,7 +169,8 @@ const PLAN_APPROVE_PROMPT = 'Proceed with the plan.'
 const PLAN_DENY_PROMPT = 'Do not proceed with this plan. Please revise it before making changes.'
 
 type LocalAttachmentStatus = 'ready' | 'staging' | 'failed'
-type WorkspaceFeedback = { message: string; tone: 'success' | 'warning' | 'error' }
+/** `message` is one fixed sentence for the notice; backend text and next steps go in `detail`. */
+type WorkspaceFeedback = { message: string; tone: 'success' | 'warning' | 'error'; detail?: string }
 interface LocalAttachment extends Attachment {
   status: LocalAttachmentStatus
   error?: string
@@ -937,7 +938,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     const error = response.error || 'Could not start this chat.'
     if (useAppStore.getState().sessions.find((chat) => chat.id === session.id)?.automationPendingPrompt) { setAutomationStartError(error); return }
     // No longer held, so the question that would show this has closed.
-    reportAppFailure(error, 'Check the chat before starting the work again.')
+    reportAppFailure('Could not start this chat.', failureDetail(response.error, 'Check the chat before starting the work again.'))
   }, [session.automationPendingPrompt, session.createdAt, session.id])
   const sendCapturedComposerPrompt = useCallback(async (submission: ComposerReferenceSubmission, text: string, attachments?: Attachment[], steerNow?: boolean, submissionToken?: string) => {
     if (!composerReferenceSubmissionIsCurrent(submission)) return false
@@ -1441,13 +1442,14 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   // Workspace success is a completed system action: it goes to the shared notifications path, not an inline banner.
   useEffect(() => {
     if (workspaceFeedback?.tone !== 'success') return
-    reportAppNotice(workspaceFeedback.message, 'success')
+    reportAppNotice(workspaceFeedback.message, 'success', { detail: workspaceFeedback.detail })
     setWorkspaceFeedback(null)
   }, [workspaceFeedback])
   // Failures and completed actions reach the shared alert path instead of inline banners; error state is cleared once reported.
   useEffect(() => {
     if (!workspaceFeedback || workspaceFeedback.tone === 'success') return
-    reportAppFailure('Workspace action failed', workspaceFeedback.message)
+    if (workspaceFeedback.tone === 'warning') reportAppNotice(workspaceFeedback.message, 'warning', { detail: workspaceFeedback.detail })
+    else reportAppFailure(workspaceFeedback.message, workspaceFeedback.detail ?? '')
     setWorkspaceFeedback(null)
   }, [workspaceFeedback])
   useEffect(() => {
@@ -2054,11 +2056,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       const response = await sendToCEF({ action: 'moveChatWorkspace', payload: { chatId: movingChatId, folderId: destination.id } })
       if (!mountedRef.current || currentSessionIdRef.current !== movingChatId) return
       setWorkspaceFeedback(response.ok
-        ? { tone: 'success', message: 'Moved chat. The next provider session uses the selected workspace.' }
-        : { tone: 'error', message: response.error || 'The workspace move was not confirmed. Check this chat before retrying.' })
+        ? { tone: 'success', message: 'Moved chat to the selected workspace.', detail: 'The next provider session uses the selected workspace.' }
+        : { tone: 'error', message: 'The workspace move was not confirmed.', detail: failureDetail(response.error, 'Check this chat before retrying.') })
       if (response.ok) { setRemoteMoveFolderId(''); setWorkspaceMenuOpen(false) }
     } catch (error) {
-      if (mountedRef.current && currentSessionIdRef.current === movingChatId) setWorkspaceFeedback({ tone: 'error', message: error instanceof Error ? error.message : 'The workspace move was not confirmed. Check this chat before retrying.' })
+      if (mountedRef.current && currentSessionIdRef.current === movingChatId) setWorkspaceFeedback({ tone: 'error', message: 'The workspace move was not confirmed.', detail: failureDetail(error, 'Check this chat before retrying.') })
     } finally {
       if (mountedRef.current) setWorkspaceActionBusy(false)
     }
@@ -2069,7 +2071,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     const ok = await openSessionWorkspace(session.id)
     setWorkspaceFeedback(ok
       ? { message: 'Opened workspace directory.', tone: 'success' }
-      : { message: 'Failed to open workspace directory.', tone: 'error' })
+      : { message: 'Could not open the workspace directory.', tone: 'error' })
   }
   const openWorkspaceEditor = async () => {
     if (!workspaceDirectory) return
@@ -2077,7 +2079,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     const ok = await openSessionWorkspaceEditor(session.id)
     setWorkspaceFeedback(ok
       ? { message: 'Opened workspace editor.', tone: 'success' }
-      : { message: 'Failed to open workspace editor.', tone: 'error' })
+      : { message: 'Could not open the workspace editor.', tone: 'error' })
   }
   const openWorkspaceTerminal = async () => {
     if (!workspaceDirectory) return
@@ -2085,7 +2087,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     const ok = await openSessionTerminal(session.id)
     setWorkspaceFeedback(ok
       ? { message: 'Opened terminal at workspace.', tone: 'success' }
-      : { message: 'Failed to open terminal.', tone: 'error' })
+      : { message: 'Could not open a terminal at the workspace.', tone: 'error' })
   }
   const openSelectedSubAgentSession = async () => {
     if (!selectedToolCall?.isSubAgent || !selectedToolCall.subAgentId || isManagedSubagentTool(selectedToolCall)) return
@@ -2108,12 +2110,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     if (result.ok) {
       setRepositoryReview(session.id, null)
       const warning = result.status?.warning
-      setWorkspaceFeedback({
-        message: warning || result.message || (action === 'port' ? 'Applied chat changes and returned to the source workspace.' : 'Workspace action complete.'),
-        tone: warning ? 'warning' : 'success',
-      })
+      setWorkspaceFeedback(warning
+        ? { message: 'Workspace action finished with a warning.', detail: warning, tone: 'warning' }
+        : { message: result.message || (action === 'port' ? 'Applied chat changes and returned to the source workspace.' : 'Workspace action complete.'), tone: 'success' })
     } else {
-      setWorkspaceFeedback({ message: result.status?.error || result.message || 'Workspace action failed.', tone: 'error' })
+      setWorkspaceFeedback({ message: 'Workspace action failed.', detail: failureDetail(result.status?.error || result.message), tone: 'error' })
     }
   }
   const rollbackLatestTurn = async () => {
@@ -2140,7 +2141,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     const result = await rollbackChatTurn(session.id, messageIndex)
     setWorkspaceActionBusy(false)
     if (!result) {
-      setWorkspaceFeedback({ message: 'Rollback failed. Any later or uncommitted work was left untouched.', tone: 'error' })
+      setWorkspaceFeedback({ message: 'Rollback failed.', detail: 'Any later or uncommitted work was left untouched.', tone: 'error' })
       return
     }
     setRepositoryReview(session.id, null)
@@ -2254,9 +2255,9 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   } : null
   useEffect(() => {
     if (!staleUnsentEditor || branchingMessageIndex !== null) { resolveAppNotice(editNoticeId); return }
-    reportAppNotice('Message changed. Editing paused. Your edit and selected context are kept.', 'warning', {
+    reportAppNotice('Message changed, so editing paused.', 'warning', {
       id: editNoticeId,
-      detail: canBranchRefreshedEdit ? 'Saving in a new branch preserves the original chat.' : 'Wait for recovery, or cancel to return to your follow-up draft.',
+      detail: `Your edit and selected context are kept. ${canBranchRefreshedEdit ? 'Saving in a new branch preserves the original chat.' : 'Wait for recovery, or cancel to return to your follow-up draft.'}`,
       actions: canRebindUnsentEdit || canBranchRefreshedEdit ? [{ label: canRebindUnsentEdit ? 'Use refreshed message' : 'Edit in a new branch', run: () => { editRecoveryAction.current?.() } }] : [],
     })
   }, [staleUnsentEditor, branchingMessageIndex, canRebindUnsentEdit, canBranchRefreshedEdit, editNoticeId])
@@ -3686,8 +3687,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
             const modelSet = providerHandoffModelId === null || await setSessionModel(session.id, providerHandoffModelId, (reason) => { modelRefusal = reason })
             setProviderHandoffTargetId('')
             setProviderHandoffModelId(null)
-            // The shared toast shows only its message, so the reason and next step belong there.
-            if (!modelSet) reportAppFailure(`The model was not changed. ${modelRefusal ? `${modelRefusal} ` : ''}This chat is now on ${providerHandoffTargetName} with its default model. Choose the model again from the model picker.`, '')
+            // The shared toast shows only its message, so the refusal reason stays there; the next step is detail.
+            if (!modelSet) reportAppFailure(`The model was not changed, so ${providerHandoffTargetName} uses its default model.${modelRefusal ? ` ${modelRefusal}` : ''}`, 'Choose the model again from the model picker.')
             return true
           }}
         />
@@ -4155,7 +4156,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                           <label className="mt-2 flex items-center gap-2">
                             <input type="checkbox" checked={session.remoteRecoveryEnabled ?? false} disabled={!recoveryHost?.startupEnabled || recoveryHost.startupStatus !== 'enabled'} onChange={(event) => {
                               void sendToCEF({ action: 'setChatRemoteRecovery', payload: { chatId: session.id, enabled: event.target.checked } }).then((response) => {
-                                if (!response.ok) setWorkspaceFeedback({ tone: 'error', message: response.error || 'Chat recovery could not be saved.' })
+                                if (!response.ok) setWorkspaceFeedback({ tone: 'error', message: 'Chat recovery could not be saved.', detail: failureDetail(response.error) })
                               })
                             }} />
                             Recover this chat after host restart

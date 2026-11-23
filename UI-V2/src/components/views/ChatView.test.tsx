@@ -9980,7 +9980,7 @@ describe('ChatView', () => {
     await act(async () => { Array.from(menu.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Move chat')!.click() })
     expect(requests.filter((request) => request.action === 'moveChatWorkspace')).toMatchObject([{ action: 'moveChatWorkspace', payload: { chatId: 'chat-1', folderId: 'destination' } }])
     expect(useAppStore.getState().sessions[0]).toMatchObject({ folderId: 'original', nativeSessionId: 'parent-native', workspaceDirectory: '/srv/project' })
-    expect(confirmed ? appNotices.join('\n') : reportedText()).toContain(confirmed ? 'Moved chat.' : 'Stop the chat before moving')
+    expect(confirmed ? appNotices.join('\n') : reportedText()).toContain(confirmed ? 'Moved chat to the selected workspace.' : 'Stop the chat before moving')
     act(() => root.unmount())
     host.remove()
     window.cefQuery = previousCefQuery
@@ -10056,10 +10056,10 @@ describe('ChatView', () => {
       ;(Array.from(document.body.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]')).find((button) => button.textContent?.includes('Open terminal')) as HTMLButtonElement).click()
       await Promise.resolve()
     })
-    expect(reportedText()).toContain('Failed to open terminal.')
+    expect(reportedText()).toContain('Could not open a terminal at the workspace.')
     act(() => vi.advanceTimersByTime(6000))
     // The alert is reported once; the timer expiry of the success notice does not re-report or drop it.
-    expect(reportedText().split('Failed to open terminal.')).toHaveLength(2)
+    expect(reportedText().split('Could not open a terminal at the workspace.')).toHaveLength(2)
     expect(host.querySelector('button[aria-label="Dismiss workspace action message"]')).toBeNull()
 
     act(() => root.unmount())
@@ -12790,7 +12790,7 @@ describe('ChatView committed unsent editing', () => {
       await f.enter()
       expect(f.requests).toHaveLength(0)
       expect(f.editor().value).toBe('Edited local input')
-      expect((f.host.textContent ?? '') + reportedText()).toContain('Message changed. Editing paused.')
+      expect((f.host.textContent ?? '') + reportedText()).toContain('Message changed, so editing paused.')
       expect(useAppStore.getState().messages['chat-1'][0]).toBe(replacement)
       expect(readChatComposerDraft('chat-1')).toEqual(f.draft)
       f.noExecution()

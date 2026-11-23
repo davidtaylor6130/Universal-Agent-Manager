@@ -4,7 +4,7 @@ import type { AcpQueuedPrompt } from '../../store/cpp/types'
 import type { Attachment } from '../../types/message'
 import { Button, IconButton, Notice, StatusDot, motionAllowed } from '../ui'
 import { EXIT_MS } from '../ui/Overlay'
-import { reportAppFailure } from '../../utils/appFailure'
+import { failureDetail, reportAppFailure } from '../../utils/appFailure'
 import './InlinePromptQueue.css'
 
 export interface UnsentPrompt {
@@ -98,7 +98,7 @@ export function InlinePromptQueue({ steerUnavailable = false, prompts, unsentPro
       if (await operation()) finish?.()
       else reportAppFailure(failure, '')
     } catch (error) {
-      reportAppFailure(failure, error instanceof Error && error.message.trim() ? error.message : '')
+      reportAppFailure(failure, failureDetail(error))
     } finally {
       pendingRef.current = false
       setPending(false)
