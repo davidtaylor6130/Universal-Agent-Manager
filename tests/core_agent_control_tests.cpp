@@ -2007,14 +2007,24 @@ UAM_TEST(UamControlWorktreeStatusReadsTheCallingChatsGitWorkspaceOffTheAppThread
 	UAM_ASSERT(moved.value("error", "").find("changed") != std::string::npos);
 	ChatDomainService().FindChatById(fixture.app, "worktree-caller")->workspace_directory = uam::paths::Utf8PathString(repo);
 
-	// A cancelled read frees the chat at once, and its late result is never written.
+	// A cancelled read writes no reply. Its slot stays taken until the read really ends, so cancelling and
+	// retrying cannot pile up git processes.
 	const fs::path responses = std::ranges::find(fixture.app.uam_control_capabilities, capability, &uam::UamControlCapability::id)->directory / "responses";
 	UAM_ASSERT(fixture.Call(capability, "status-connect", "_mcp_initialized", {{"connectionId", "connection-a"}}).value("ok", false));
 	UAM_ASSERT(fixture.Call(capability, "status-cancelled", "worktree_status").value("pendingBackgroundRead", false));
 	UAM_ASSERT(fixture.Call(capability, "status-cancel", "_mcp_cancel_request", {{"connectionId", "connection-a"}, {"requestId", "status-cancelled"}}).value("ok", false));
+	UAM_ASSERT(!fixture.Call(capability, "status-during-cancel", "worktree_status").value("ok", true));
+	const auto drain_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+	while (!fixture.app.uam_control_background_reads.empty() && std::chrono::steady_clock::now() < drain_deadline)
+	{
+		(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	}
+	UAM_ASSERT(fixture.app.uam_control_background_reads.empty());
+	(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+	UAM_ASSERT(!fs::exists(responses / "status-cancelled.json"));
 	UAM_ASSERT(fixture.Call(capability, "status-after-cancel", "worktree_status").value("pendingBackgroundRead", false));
 	UAM_ASSERT(fixture.AwaitReply(capability, "status-after-cancel").value("ok", false));
-	UAM_ASSERT(!fs::exists(responses / "status-cancelled.json"));
 
 	// A long change list stays under the 64 KiB transport with an explicit marker, and skips line counts.
 	for (int index = 0; index < 1500; ++index)
