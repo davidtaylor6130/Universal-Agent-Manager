@@ -972,7 +972,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     : repositoryChanges?.workspaceDirectory === workspaceDirectory ? repositoryChanges : null
   const composerBranch = composerRepository
     ? composerRepository.available ? composerRepository.branchOrRevision : ''
-    : session.workspaceBranchName
+    : session.workspaceBranchName ?? ''
   const composerVcsType = composerRepository?.activeVcsType ?? 'git'
   // Before the first send, a chat's chosen Git base (not the checked-out branch) is what its worktree starts from.
   const composerChosenBase = composerVcsType === 'git' && session.workspaceIsolationKind === 'pendingGitWorktree'
