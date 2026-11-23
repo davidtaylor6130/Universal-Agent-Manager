@@ -1106,6 +1106,10 @@ describe('ChatView', () => {
     expect(buildUamAgentCycle(agents, ['writer', 'reviewer', 'writer', 'missing', 'plan'])).toEqual([
       'build', 'plan', 'writer', 'reviewer',
     ])
+    // A delegate-only agent is listed in the picker but never becomes the chat's agent through the cycle.
+    expect(buildUamAgentCycle([...agents, { id: 'helper', description: '', builtIn: false, delegateOnly: true }], ['helper', 'writer'])).toEqual([
+      'build', 'plan', 'writer',
+    ])
     expect(matchesUamAgentCycleShortcut('shift+tab', { key: 'Tab', shiftKey: true, ctrlKey: false, altKey: false, metaKey: false })).toBe(true)
     expect(matchesUamAgentCycleShortcut('shift+tab', { key: 'Tab', shiftKey: true, ctrlKey: true, altKey: false, metaKey: false })).toBe(false)
     expect(matchesUamAgentCycleShortcut('control+shift+tab', { key: 'Tab', shiftKey: true, ctrlKey: true, altKey: false, metaKey: false })).toBe(true)

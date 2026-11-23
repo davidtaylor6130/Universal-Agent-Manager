@@ -6966,7 +6966,7 @@ describe('useAppStore Gemini CLI slice', () => {
     })
   })
 
-  it('loads only primary-capable UAM agents for a chat catalog', async () => {
+  it('lists chat agents and marks sub-agents delegate-only for a chat catalog', async () => {
     useAppStore.getState().loadFromCef(makeCppState(1))
     const requests: Array<{ action: string; payload?: unknown }> = []
     window.cefQuery = ({ request, onSuccess }) => {
@@ -6979,8 +6979,37 @@ describe('useAppStore Gemini CLI slice', () => {
     }
 
     await expect(useAppStore.getState().refreshUamAgents('chat-1')).resolves.toBe(true)
-    expect(requests[0]).toMatchObject({ action: 'listUamAgents', payload: { chatId: 'chat-1' } })
-    expect(useAppStore.getState().uamAgentsBySessionId['chat-1'].map((agent) => agent.id)).toEqual(['build', 'reviewer'])
+    expect(requests[0]).toMatchObject({ action: 'listUamAgents', payload: { chatId: 'chat-1', includeDelegateOnly: true } })
+    expect(useAppStore.getState().uamAgentsBySessionId['chat-1']).toEqual([
+      { id: 'build', description: 'Build', builtIn: true },
+      { id: 'reviewer', description: 'Review', builtIn: false },
+      { id: 'helper', description: 'Help', builtIn: false, delegateOnly: true },
+    ])
+  })
+
+  it('returns the backend reason in one line when a provider agent import is refused', async () => {
+    useAppStore.getState().loadFromCef(makeCppState(1))
+    const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
+    window.cefQuery = ({ request, onFailure }) => {
+      requests.push(JSON.parse(request))
+      onFailure(400, 'Import source is already managed\nor the target agent already exists.')
+    }
+    const options = { chatId: '', providerId: 'claude-cli', sourcePath: '/tmp/reviewer.md', canonicalId: 'reviewer', workspaceAccess: 'read' as const, workspaceScope: false, acknowledgeIgnoredFields: false, replaceExisting: true }
+    await expect(useAppStore.getState().importProviderAgent(options)).resolves.toEqual({
+      ok: false,
+      error: 'Import source is already managed or the target agent already exists.',
+    })
+    expect(requests[0]).toMatchObject({ action: 'importProviderAgent', payload: { replaceExisting: true, workspaceScope: false } })
+  })
+
+  it('reports the imported agent, its mode and scope', async () => {
+    useAppStore.getState().loadFromCef(makeCppState(1))
+    window.cefQuery = ({ request, onSuccess }) => {
+      const { action } = JSON.parse(request)
+      onSuccess(JSON.stringify(action === 'importProviderAgent' ? { id: 'reviewer', description: 'Review', mode: 'subagent', scope: 'workspace' } : { agents: [] }))
+    }
+    await expect(useAppStore.getState().importProviderAgent({ chatId: 'chat-1', providerId: 'gemini-cli', sourcePath: '/tmp/reviewer.md', canonicalId: 'Reviewer', workspaceAccess: 'read', workspaceScope: true, acknowledgeIgnoredFields: false }))
+      .resolves.toEqual({ ok: true, id: 'reviewer', mode: 'subagent', scope: 'workspace' })
   })
 
   it('reconciles and persists sidebar display settings through CEF', async () => {
