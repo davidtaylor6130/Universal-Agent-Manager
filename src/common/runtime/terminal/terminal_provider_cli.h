@@ -39,7 +39,8 @@ bool ResolveCliViewAgent(const AppState& app, const ChatSession& chat, CliViewAg
 /// instructions; empty when they can be carried, Central Setup already carries them, or no custom agent applies.</summary>
 std::string ProviderInteractiveAgentError(const AppState& app, const ChatSession& chat, const ExecutionHost& host);
 /// <summary>Stages prior conversation, and a custom agent's instructions when Central Setup does not carry them,
-/// as provider-native context without synthetic user turns.</summary>
+/// as provider-native context without synthetic user turns. This synchronous form adds no UAM tool server, so a
+/// chat with UAM tools on and Central Setup off stages the agent itself; CLI View uses the asynchronous form.</summary>
 bool PrepareCliProviderHandoff(AppState& app, ChatSession& chat, const ExecutionHost& host,
     std::vector<std::string>& argv, std::vector<std::pair<std::string, std::string>>& environment,
     std::string& launch_channel, std::string& error, std::stop_token stop_token = {});

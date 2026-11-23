@@ -409,7 +409,7 @@ std::vector<std::string> OpenCodeCliProviderRuntime::BuildInteractiveArgv(const 
 	return argv;
 }
 
-bool OpenCodeCliProviderRuntime::StageInteractiveAgentInstructions(std::string_view instructions, std::vector<std::string>&, std::string& staged_context, std::string& error) const
+bool OpenCodeCliProviderRuntime::StageInteractiveAgentInstructions(const ExecutionHost&, std::string_view instructions, std::vector<std::string>&, std::string& staged_context, std::string& error) const
 {
 	// Written ahead of any handoff text in the staged file listed in OpenCode's inline instructions.
 	staged_context.assign(instructions);

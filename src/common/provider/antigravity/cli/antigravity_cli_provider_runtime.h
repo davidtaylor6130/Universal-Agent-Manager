@@ -10,6 +10,7 @@ class AntigravityCliProviderRuntime final : public IProviderRuntime
 	const ProviderCliPolicy* CliVersionPolicy() const override;
 	bool SupportsTextWorkers() const override { return false; }
 	std::vector<std::string> BuildInteractiveArgv(const ProviderProfile&, const ChatSession&, const AppSettings&) const override;
+	bool StageInteractiveAgentInstructions(const ExecutionHost& host, std::string_view instructions, std::vector<std::string>& argv, std::string& staged_context, std::string& error) const override;
 	bool SupportsInteractivePromptTracking() const override { return false; }
 	MessageRole RoleFromNativeType(const ProviderProfile&, std::string_view) const override;
 	std::vector<ChatSession> LoadHistory(const ProviderProfile&, const std::filesystem::path&, const std::filesystem::path&, const ProviderRuntimeHistoryLoadOptions&) const override;

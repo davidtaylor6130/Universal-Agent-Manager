@@ -11,6 +11,7 @@
 #include "common/utils/command_line_words.h"
 #include "common/runtime/terminal/terminal_launch.h"
 #include "app/agent_definition_service.h"
+#include "common/provider/provider_setup.h"
 #include "common/provider/provider_runtime.h"
 #include "common/provider/provider_native_context.h"
 #include "common/chat/staged_attachment_discard.h"
@@ -2997,15 +2998,6 @@ UAM_TEST(CliViewStagesCustomAgentInstructionsForEachProviderOrRefuses)
 		std::vector<std::pair<std::string, std::string>> environment;
 		std::string channel;
 		const bool prepared = PrepareCliProviderHandoff(app, chat, host, argv, environment, channel, error);
-		if (provider == "antigravity-cli")
-		{
-			// No context route: refused with one line rather than launched without the agent's role.
-			UAM_ASSERT(!prepared);
-			UAM_ASSERT_EQ(error, std::string("This provider's CLI View cannot carry a custom agent's instructions. Use Chat for this agent."));
-			UAM_ASSERT_EQ(uam::ProviderInteractiveAgentError(app, chat, host), error);
-			UAM_ASSERT(chat.provider_handoff_cli_contexts.empty());
-			continue;
-		}
 		UAM_ASSERT(prepared);
 		UAM_ASSERT(channel.empty());
 		UAM_ASSERT(uam::ProviderInteractiveAgentError(app, chat, host).empty());
@@ -3015,7 +3007,8 @@ UAM_TEST(CliViewStagesCustomAgentInstructionsForEachProviderOrRefuses)
 			UAM_ASSERT_EQ(argv.size(), std::size_t{3});
 			UAM_ASSERT_EQ(argv[1], std::string("-c"));
 			UAM_ASSERT(argv[2].starts_with("developer_instructions="));
-			UAM_ASSERT_EQ(nlohmann::json::parse(argv[2].substr(std::string_view("developer_instructions=").size())).get<std::string>(), reviewer.instructions);
+			UAM_ASSERT_EQ(nlohmann::json::parse(argv[2].substr(std::string_view("developer_instructions=").size())).get<std::string>(),
+			              std::string(uam::provider_setup::kAgentInstructionsIntro) + "\n\n" + reviewer.instructions);
 			UAM_ASSERT(chat.provider_handoff_cli_contexts.empty());
 			continue;
 		}
@@ -3046,6 +3039,15 @@ UAM_TEST(CliViewStagesCustomAgentInstructionsForEachProviderOrRefuses)
 			UAM_ASSERT_EQ(*std::next(include), uam::paths::Utf8PathString(directory));
 			UAM_ASSERT(uam::io::ReadTextFile(directory / "GEMINI.md").find(marker) != std::string::npos);
 		}
+		else if (provider == "antigravity-cli")
+		{
+			// The private additional directory Central Setup also uses for Antigravity instructions.
+			UAM_ASSERT_EQ(argv.size(), std::size_t{3});
+			UAM_ASSERT_EQ(argv[1], std::string("--add-dir"));
+			UAM_ASSERT_EQ(argv[2], uam::paths::Utf8PathString(directory));
+			UAM_ASSERT(uam::io::ReadTextFile(directory / "AGENTS.md").starts_with(intro));
+			UAM_ASSERT(uam::io::ReadTextFile(directory / "AGENTS.md").find(marker) != std::string::npos);
+		}
 		else if (provider == "opencode-cli")
 		{
 			UAM_ASSERT_EQ(environment.back().first, std::string("OPENCODE_CONFIG_CONTENT"));
@@ -3073,13 +3075,25 @@ UAM_TEST(CliViewStagesCustomAgentInstructionsForEachProviderOrRefuses)
 	UAM_ASSERT(combined.find("User: earlier saved turn") != std::string::npos);
 	UAM_ASSERT_EQ(std::ranges::count(argv, std::string("--append-system-prompt-file")), std::ptrdiff_t{1});
 
-	// Central Setup already installs the selected agent, so CLI View neither refuses nor stages a second copy.
+	// Launch options stay ahead of a positional "--" that extra flags may carry.
+	std::vector<std::string> positional{"claude-cli", "--", "start here"};
+	handoff.provider_handoff_cli_contexts.clear();
+	UAM_ASSERT(PrepareCliProviderHandoff(app, handoff, host, positional, environment, channel, error));
+	UAM_ASSERT_EQ(positional[1], std::string("--append-system-prompt-file"));
+	UAM_ASSERT_EQ(positional[3], std::string("--"));
+
+	// Instructions a provider cannot carry refuse CLI View with one line; Central Setup, which already installs
+	// the selected agent, neither refuses nor stages a second copy.
+	uam::AgentDefinition verbose = reviewer;
+	verbose.id = "verbose";
+	verbose.instructions = std::string(70 * 1024, 'v');
+	UAM_ASSERT(uam::AgentDefinitionService::SaveGlobalAgent(app.data_root, verbose, &error));
 	ChatSession central;
 	central.id = "agent-central";
-	central.provider_id = "antigravity-cli";
+	central.provider_id = "codex-cli";
 	central.workspace_directory = workspace.string();
-	central.uam_agent_id = "reviewer";
-	UAM_ASSERT(!uam::ProviderInteractiveAgentError(app, central, host).empty());
+	central.uam_agent_id = "verbose";
+	UAM_ASSERT_EQ(uam::ProviderInteractiveAgentError(app, central, host), std::string("This agent's instructions are too long for Codex CLI View's launch arguments. Use Chat for this agent."));
 	app.settings.central_provider_configuration.enabled = true;
 	UAM_ASSERT(uam::ProviderInteractiveAgentError(app, central, host).empty());
 	app.settings.central_provider_configuration.enabled = false;
@@ -3117,7 +3131,7 @@ UAM_TEST(CliViewRemovesClaudeNativeSkillsForCustomAgentsOnly)
 		{
 			chat.uam_agent_id = agent;
 			const std::vector<std::string> argv = uam::BuildProviderInteractiveArgv(app, chat);
-			const bool restricted = argv.size() >= skill_argv.size() && std::equal(skill_argv.begin(), skill_argv.end(), argv.end() - static_cast<std::ptrdiff_t>(skill_argv.size()));
+			const bool restricted = std::ranges::search(argv, skill_argv).begin() != argv.end();
 			UAM_ASSERT_EQ(restricted, provider == "claude-cli" && agent == "reviewer");
 			if (provider != "claude-cli") UAM_ASSERT(std::ranges::find(argv, "--disallowedTools") == argv.end());
 		}

@@ -18,6 +18,8 @@
 
 namespace uam::provider_setup
 {
+	/// <summary>Opens a custom agent's instructions in CLI View, and marks the Codex developer_instructions value setup may fold.</summary>
+	inline constexpr std::string_view kAgentInstructionsIntro = "Follow these instructions from the UAM agent selected for this chat.";
 	inline constexpr std::size_t kMaxFiles = 4096;
 	inline constexpr std::size_t kMaxFileBytes = 2 * 1024 * 1024;
 	inline constexpr std::size_t kMaxBundleBytes = 32 * 1024 * 1024;
@@ -744,17 +746,24 @@ namespace uam::provider_setup
 			else if (!mcp_only)
 			{
 				// CLI View may already carry a custom agent's developer instructions; a second value would replace
-				// one of them, so fold it in after the central or host text.
+				// one of them, so fold UAM's marked value in after the central or host text. A user's own value is left as it is.
 				constexpr std::string_view developer_instructions = "developer_instructions=";
+				bool folded_agent = false;
 				for (std::size_t index = 1; index + 1 < argv.size();)
 				{
 					if (argv[index] != "-c" || !argv[index + 1].starts_with(developer_instructions)) { ++index; continue; }
 					const nlohmann::json previous = nlohmann::json::parse(argv[index + 1].substr(developer_instructions.size()), nullptr, false);
-					if (!previous.is_string()) { error = "Existing Codex developer instructions are invalid."; return false; }
+					if (!previous.is_string() || !previous.get_ref<const std::string&>().starts_with(kAgentInstructionsIntro)) { index += 2; continue; }
 					instructions += "\n\n" + previous.get<std::string>();
+					folded_agent = true;
 					argv.erase(argv.begin() + static_cast<std::ptrdiff_t>(index), argv.begin() + static_cast<std::ptrdiff_t>(index) + 2);
 				}
-				if (instructions.size() > max_instruction_bytes) { error = host_instructions_only ? "Host instructions exceed the OS launch limit for this provider. Shorten them." : "Codex central instructions exceed the OS launch limit. Move reference material into skills."; return false; }
+				if (instructions.size() > max_instruction_bytes)
+				{
+					error = folded_agent ? "Codex instructions, including the selected agent's, exceed the OS launch limit. Shorten the agent or use Chat."
+					    : host_instructions_only ? "Host instructions exceed the OS launch limit for this provider. Shorten them." : "Codex central instructions exceed the OS launch limit. Move reference material into skills.";
+					return false;
+				}
 				argv.insert(argv.begin() + 1, {"-c", "developer_instructions=" + nlohmann::json(instructions).dump()});
 			}
 			for (const auto& [name, server] : native_servers.items())

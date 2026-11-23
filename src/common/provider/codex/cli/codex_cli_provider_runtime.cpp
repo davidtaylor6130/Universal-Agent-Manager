@@ -15,6 +15,8 @@
 #include "common/provider/codex/codex_options.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
+#include "common/provider/provider_setup.h"
+#include "common/config/execution_host_config.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "common/runtime/acp/acp_json_rpc.h"
@@ -352,23 +354,23 @@ std::vector<std::string> CodexCliProviderRuntime::BuildInteractiveArgv(const Pro
 	return argv;
 }
 
-bool CodexCliProviderRuntime::StageInteractiveAgentInstructions(std::string_view instructions, std::vector<std::string>& argv, std::string& staged_context, std::string& error) const
+bool CodexCliProviderRuntime::StageInteractiveAgentInstructions(const ExecutionHost& host, std::string_view instructions, std::vector<std::string>& argv, std::string& staged_context, std::string& error) const
 {
 	staged_context.clear();
-	// Codex has no extra instruction directory, so the agent's role goes in as developer instructions,
-	// within the same OS argument limit central instructions use. Central setup folds this value into its own.
+	// Codex has no extra instruction directory, so the agent's role goes in as developer instructions, within
+	// the executing host's OS argument limit. The marker lets setup fold this value, and only this one, into its own.
 #if defined(_WIN32)
-	constexpr std::size_t kMaxInstructionBytes = 12 * 1024;
+	const bool windows = host.id == uam::execution_hosts::kLocalHostId || host.platform == "windows" || host.platform == "Windows";
 #else
-	constexpr std::size_t kMaxInstructionBytes = 64 * 1024;
+	const bool windows = host.id != uam::execution_hosts::kLocalHostId && (host.platform == "windows" || host.platform == "Windows");
 #endif
-	if (instructions.size() > kMaxInstructionBytes)
+	const std::string value = std::string(uam::provider_setup::kAgentInstructionsIntro) + "\n\n" + std::string(instructions);
+	if (value.size() > (windows ? 12U : 64U) * 1024U)
 	{
 		error = "This agent's instructions are too long for Codex CLI View's launch arguments. Use Chat for this agent.";
 		return false;
 	}
-	argv.push_back("-c");
-	argv.push_back("developer_instructions=" + nlohmann::json(std::string(instructions)).dump());
+	uam::provider_runtime_internal::InsertBeforePositional(argv, {"-c", "developer_instructions=" + nlohmann::json(value).dump()});
 	error.clear();
 	return true;
 }

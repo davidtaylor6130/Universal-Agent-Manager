@@ -142,7 +142,7 @@ std::vector<std::string> ClaudeCliProviderRuntime::BuildInteractiveArgv(const Pr
 	return argv;
 }
 
-bool ClaudeCliProviderRuntime::StageInteractiveAgentInstructions(std::string_view instructions, std::vector<std::string>&, std::string& staged_context, std::string& error) const
+bool ClaudeCliProviderRuntime::StageInteractiveAgentInstructions(const ExecutionHost&, std::string_view instructions, std::vector<std::string>&, std::string& staged_context, std::string& error) const
 {
 	// Written ahead of any handoff text in the file passed to --append-system-prompt-file.
 	staged_context.assign(instructions);
@@ -153,7 +153,8 @@ bool ClaudeCliProviderRuntime::StageInteractiveAgentInstructions(std::string_vie
 std::vector<std::string> ClaudeCliProviderRuntime::CustomAgentNativeSkillArgv() const
 {
 	// Deny rules outrank allow rules in Claude, so native skills cannot be narrowed to the agent's allowlist;
-	// remove the model's skill and slash-command tools instead. Approved skills still reach it through UAM.
+	// remove the model's skill and slash-command tools instead. Approved skills reach it only through UAM's skill tools
+	// or Central Setup's skill index, so with both off the agent has no skills at all, which is narrower, not wider.
 	return {"--disallowedTools", "Skill", "SlashCommand"};
 }
 

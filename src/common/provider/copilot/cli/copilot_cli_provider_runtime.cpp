@@ -513,7 +513,7 @@ std::vector<std::string> CopilotCliProviderRuntime::BuildInteractiveArgv(const P
 	return argv;
 }
 
-bool CopilotCliProviderRuntime::StageInteractiveAgentInstructions(std::string_view instructions, std::vector<std::string>&, std::string& staged_context, std::string& error) const
+bool CopilotCliProviderRuntime::StageInteractiveAgentInstructions(const ExecutionHost&, std::string_view instructions, std::vector<std::string>&, std::string& staged_context, std::string& error) const
 {
 	// Written ahead of any handoff text in the staged applyTo "**" instructions file.
 	staged_context.assign(instructions);

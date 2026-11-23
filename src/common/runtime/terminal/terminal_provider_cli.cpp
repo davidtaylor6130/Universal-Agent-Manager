@@ -234,12 +234,19 @@ namespace
 	}
 
 	/// Asks the provider how CLI View carries the agent; `staged_context` is text for the shared context file route.
-	bool StageCliViewAgent(const AppSettings& settings, const ChatSession& chat, const std::string& host_id, bool control_only_launch,
+	bool StageCliViewAgent(const AppSettings& settings, const ChatSession& chat, const ExecutionHost& host, bool control_only_launch,
 	    const CliViewAgent& agent, std::vector<std::string>& argv, std::string& staged_context, std::string& error)
 	{
 		staged_context.clear();
-		if (agent.instructions.empty() || CentralSetupCarriesAgent(settings, chat, host_id, control_only_launch)) return true;
-		return ProviderRuntimeRegistry::ResolveById(chat.provider_id).StageInteractiveAgentInstructions(agent.instructions, argv, staged_context, error);
+		if (agent.instructions.empty() || CentralSetupCarriesAgent(settings, chat, host.id, control_only_launch)) return true;
+		return ProviderRuntimeRegistry::ResolveById(chat.provider_id).StageInteractiveAgentInstructions(host, agent.instructions, argv, staged_context, error);
+	}
+
+	/// Launch options go before a positional `--` that extra flags may carry, so prompt text cannot swallow them.
+	void InsertLaunchOptions(std::vector<std::string>& argv, const std::vector<std::string>& options)
+	{
+		const auto positional = std::find(argv.begin() + static_cast<std::ptrdiff_t>(std::min<std::size_t>(1, argv.size())), argv.end(), "--");
+		argv.insert(positional, options.begin(), options.end());
 	}
 }
 
@@ -280,7 +287,7 @@ std::string ProviderInteractiveAgentError(const AppState& app, const ChatSession
 	if (!ResolveCliViewAgent(app, chat, agent, error)) return error;
 	std::vector<std::string> argv{"provider"};
 	std::string staged_context;
-	if (!StageCliViewAgent(app.settings, chat, host.id, chat.uam_control_enabled, agent, argv, staged_context, error)) return error;
+	if (!StageCliViewAgent(app.settings, chat, host, chat.uam_control_enabled, agent, argv, staged_context, error)) return error;
 	return {};
 }
 
@@ -295,8 +302,7 @@ std::vector<std::string> BuildProviderInteractiveArgv(const AppState& app, const
 	// A custom agent's skill allowlist covers UAM's skills; the provider's own skill tool is removed where it can be.
 	if (!argv.empty() && AgentDefinitionService::IsCustomAgentId(CliViewAgentId(app, chat)))
 	{
-		const std::vector<std::string> skill_argv = ProviderRuntimeRegistry::Resolve(provider).CustomAgentNativeSkillArgv();
-		argv.insert(argv.end(), skill_argv.begin(), skill_argv.end());
+		InsertLaunchOptions(argv, ProviderRuntimeRegistry::Resolve(provider).CustomAgentNativeSkillArgv());
 	}
 	return argv;
 }
@@ -701,7 +707,7 @@ bool PrepareCliProviderConversation(AppState& app, ChatSession& chat, const Exec
 	std::string directory = requested_directory;
 	std::string snapshot;
 	if (!agent_context.empty())
-		snapshot = "Follow these instructions from the UAM agent selected for this chat.\n\n" + std::string(agent_context) + "\n\n";
+		snapshot = std::string(uam::provider_setup::kAgentInstructionsIntro) + "\n\n" + std::string(agent_context) + "\n\n";
 	if (replay_handoff) snapshot += "Use the saved conversation below as context. Do not repeat its tool actions.\n\n" + chat.provider_handoff_context;
 	std::unique_ptr<uam::remote::RunnerClient> client;
 	if (remote)
@@ -747,13 +753,11 @@ bool PrepareCliProviderConversation(AppState& app, ChatSession& chat, const Exec
 	if (!stage(context_path, snapshot)) return false;
 	if (chat.provider_id == uam::provider_ids::kCodexCli)
 	{
-		// The executing host imports the snapshot into owned native thread history. A custom agent's
-		// instructions never come here: Codex carries them as developer instructions in argv.
-		if (!agent_context.empty()) { error = "Codex CLI View carries agent instructions as developer instructions, not context files."; return false; }
+		// The executing host imports the snapshot into owned native thread history.
 	}
 	else if (chat.provider_id == uam::provider_ids::kClaudeCli)
 	{
-		argv.insert(argv.end(), {"--append-system-prompt-file", context_path});
+		InsertLaunchOptions(argv, {"--append-system-prompt-file", context_path});
 	}
 	else if (chat.provider_id == uam::provider_ids::kCopilotCli)
 	{
@@ -763,7 +767,13 @@ bool PrepareCliProviderConversation(AppState& app, ChatSession& chat, const Exec
 	else if (chat.provider_id == uam::provider_ids::kGeminiCli)
 	{
 		if (!stage(uam::execution_hosts::JoinRemotePath(host.platform, directory, "GEMINI.md"), snapshot)) return false;
-		argv.insert(argv.end(), {"--include-directories", directory});
+		InsertLaunchOptions(argv, {"--include-directories", directory});
+	}
+	else if (chat.provider_id == uam::provider_ids::kAntigravityCli)
+	{
+		// The private additional directory Central Setup also uses; handoff text never reaches Antigravity.
+		if (!stage(uam::execution_hosts::JoinRemotePath(host.platform, directory, "AGENTS.md"), snapshot)) return false;
+		InsertLaunchOptions(argv, {"--add-dir", directory});
 	}
 	else if (chat.provider_id != uam::provider_ids::kOpenCodeCli) { error = "The selected provider does not support conversation context files."; return false; }
 	if (!remote) return uam::provider_native_context::ConfigureEnvironment(chat.provider_id, uam::paths::PathFromUtf8(directory), environment, error, workspace, false, &PlatformServicesFactory::Instance().process_service, &argv, stop_token);
@@ -813,8 +823,8 @@ bool PrepareConfiguredCliProviderHandoff(AppState& app, ChatSession& chat, const
 	// Without Central Setup, which already installs the selected agent's instructions, the provider carries them
 	// itself or CLI View is refused; they are never dropped. Codex's argv route precedes setup's fold below.
 	std::string agent_context;
-	if (!StageCliViewAgent(settings, chat, host.id, false, agent, argv, agent_context, error)) return false;
-	if (!PrepareProviderConfiguration(app.data_root, settings, chat, host, workspace, bundle, error, nullptr,
+	if (!StageCliViewAgent(settings, chat, host, false, agent, argv, agent_context, error)) return false;
+	if (!PrepareProviderConfiguration(app.data_root, settings, chat, host, workspace, bundle, error, agent.instructions.empty() ? nullptr : &agent.instructions,
 	                                 CheckedProviderConfigurationVersion(app, chat.provider_id, host))) return false;
 	if (installed_directory) *installed_directory = bundle.local_directory;
 	std::filesystem::path target;
@@ -881,7 +891,7 @@ static bool PrepareCliProviderHandoffAsyncImpl(AppState& app, CliTerminalState& 
 		if (!ResolveCliViewAgent(app, chat, agent, error)) return false;
 		std::vector<std::string> probe_argv = argv;
 		std::string agent_context;
-		if (!StageCliViewAgent(app.settings, chat, host.id, chat.uam_control_enabled, agent, probe_argv, agent_context, error)) return false;
+		if (!StageCliViewAgent(app.settings, chat, host, chat.uam_control_enabled, agent, probe_argv, agent_context, error)) return false;
 		stages_agent_context = !agent_context.empty();
 	}
 	const bool launch_option_override = (ProviderRuntimeRegistry::ResolveById(chat.provider_id).ModelOptionsRequireRestart() && !chat.reasoning_effort.empty()) || (uam::provider_ids::IsCliProviderAliasOf(chat.provider_id, uam::provider_ids::kClaudeCli) && (chat.service_tier == "fast" || chat.service_tier_explicit)) ||

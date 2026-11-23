@@ -100,6 +100,14 @@ std::vector<std::string> AntigravityCliProviderRuntime::BuildInteractiveArgv(con
 	return argv;
 }
 
+bool AntigravityCliProviderRuntime::StageInteractiveAgentInstructions(const ExecutionHost&, std::string_view instructions, std::vector<std::string>&, std::string& staged_context, std::string& error) const
+{
+	// Written as AGENTS.md in a private --add-dir directory, the route Central Setup uses for its instructions.
+	staged_context.assign(instructions);
+	error.clear();
+	return true;
+}
+
 MessageRole AntigravityCliProviderRuntime::RoleFromNativeType(const ProviderProfile& profile, std::string_view type) const
 {
 	return uam::provider_runtime_internal::RoleFromNativeType(profile, type);
