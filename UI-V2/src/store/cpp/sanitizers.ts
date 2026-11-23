@@ -684,11 +684,16 @@ export function sanitizeSecretRequest(value: unknown): AcpSecretRequest | undefi
   }
   if (host !== null && !(isRecord(host) && isString(host.name) && host.name.trim() && isString(host.platform))) return undefined
   if (!isRecord(keychain) || typeof keychain.available !== 'boolean' || typeof keychain.saved !== 'boolean') return undefined
+  const savedAt = typeof keychain.savedAt === 'number' && Number.isFinite(keychain.savedAt) && keychain.savedAt > 0 ? keychain.savedAt : undefined
+  const agent = isString(keychain.agent) && keychain.agent.trim() ? keychain.agent : undefined
   return {
     label, reason, placeholder, url, provider, planOptIn,
     localPlatform: localPlatform === 'windows' ? 'windows' : 'macos',
     host: host === null ? null : { name: host.name as string, platform: host.platform as string },
-    keychain: { available: keychain.available, saved: keychain.saved },
+    keychain: {
+      available: keychain.available, saved: keychain.saved,
+      ...(savedAt !== undefined ? { savedAt } : {}), ...(agent ? { agent } : {}), ...(keychain.legacySaved === true ? { legacySaved: true } : {}),
+    },
   }
 }
 

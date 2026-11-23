@@ -1483,8 +1483,9 @@ UAM_TEST(UamControlPublicDelegationKeepsGoalCancelAndComputerUseGates)
 		UAM_ASSERT_EQ(fixture.Run(id).status, std::string("queued"));
 		const auto computer = fixture.Call(fixture.capability_id, "computer", "computer_use_request", {{"reason", "Private fixture request"}});
 		UAM_ASSERT(!computer.value("ok", true));
+		// A read-only session is never offered Computer Use, so the manager refuses it as unavailable.
 		if (captured_read)
-			UAM_ASSERT(computer.value("error", "").find("read-only") != std::string::npos);
+			UAM_ASSERT_EQ(computer.value("error", ""), std::string("This UAM tool is not available in this session."));
 		UAM_ASSERT(!fixture.app.uam_control_capabilities.front().pending_approval);
 		const auto goal = fixture.Call(fixture.capability_id, "goal", "goal_create", {{"objective", "Inspect the fixture."}, {"idempotencyKey", "private-policy-goal"}});
 		UAM_ASSERT(fixture.app.chats.front().goals.empty());
@@ -1525,7 +1526,13 @@ UAM_TEST(UamControlPublicReadParentDelegationKeepsSavedListAndDepthCeilings)
 	UAM_ASSERT(transcript && transcript->approval_mode == "plan" && transcript->command_safety_tier == "off");
 	fixture.Run(child_id).status = "running";
 	UAM_ASSERT(uam::AgentRunLedger::Save(fixture.app.data_root, fixture.Run(child_id)));
-	const auto child_cap = fixture.Attach(child.transcript_chat_id, "read", child.agent_id, child.delegates_snapshot);
+	// The leaf's saved definition lists no delegates, so its session is not offered the agent tools and the manager refuses them.
+	const auto leaf_cap = fixture.Attach(child.transcript_chat_id, "read", child.agent_id, child.delegates_snapshot);
+	const auto leaf = fixture.Call(leaf_cap, "leaf-delegate", "agent_delegate", {{"agentId", "policy-worker"}, {"task", "Refuse an unlisted tool."}});
+	UAM_ASSERT_EQ(leaf.value("error", ""), std::string("This UAM tool is not available in this session."));
+	UAM_ASSERT_EQ(fixture.app.agent_runs.size(), std::size_t{2});
+	// A session that does list a delegate still cannot delegate below two levels.
+	const auto child_cap = fixture.Attach(child.transcript_chat_id, "read", child.agent_id, {"policy-worker"});
 	const auto too_deep = fixture.Call(child_cap, "depth-three", "agent_delegate", {{"agentId", "policy-worker"}, {"task", "Refuse depth three."}});
 	UAM_ASSERT(!too_deep.value("ok", true));
 	UAM_ASSERT(too_deep.value("error", "").find("two levels") != std::string::npos);

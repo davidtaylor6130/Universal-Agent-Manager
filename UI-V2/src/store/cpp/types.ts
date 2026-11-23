@@ -405,7 +405,11 @@ export interface AcpSecretRequest {
   localPlatform: string
   /** The chat is in Plan mode: the user allows this one request before the field appears. */
   planOptIn: boolean
-  keychain: { available: boolean; saved: boolean }
+  /**
+   * Saved secrets are scoped to this workspace, provider, agent and label. savedAt (epoch ms) and agent describe the saved
+   * entry; legacySaved marks an entry from before scoping, which is never offered for use and can only be forgotten.
+   */
+  keychain: { available: boolean; saved: boolean; savedAt?: number; agent?: string; legacySaved?: boolean }
 }
 
 export type SecretSubmission = { value?: string; useSaved?: boolean; save?: boolean }

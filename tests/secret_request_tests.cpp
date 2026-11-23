@@ -310,6 +310,82 @@ UAM_TEST(SecretRequestRefusesSavingOnWindowsAndForSshHosts)
 	UAM_ASSERT_EQ(pending->secret_request.at("keychain").value("available", true), uam::secrets::keychain::Available());
 }
 
+UAM_TEST(SecretRequestSavedSecretIsOfferedOnlyToTheSavingProviderAndAgent)
+{
+	SecretFixture fixture;
+	// Same chat and workspace: a Claude session, and a Codex session running a different agent.
+	fixture.Issue("claude-capability", "caller", "caller").provider_id = "claude-cli";
+	fixture.app.uam_control_capabilities.back().provider_id = "claude-cli";
+	fixture.Issue("review-capability", "caller", "caller", "review");
+	const auto target_for = [&](const std::string& capability, const std::string& request_id)
+	{
+		UAM_ASSERT(fixture.Ask(request_id, SecretFixture::Token(), capability).value("pendingApproval", false));
+		const auto pending = uam::UamControlService::PendingApprovalForChat(fixture.app, "caller");
+		UAM_ASSERT(pending.has_value());
+		// The names Use saved and Forget saved act on for this card.
+		uam::SecretDeliveryTarget target;
+		target.keychain_account = uam::UamControlService::SecretKeychainAccount(fixture.app, "caller", pending->request_id_json).value_or("");
+		target.legacy_keychain_account = uam::UamControlService::SecretKeychainAccount(fixture.app, "caller", pending->request_id_json, true).value_or("");
+		std::string error;
+		UAM_ASSERT(uam::UamControlService::ResolveApproval(fixture.app, "caller", pending->request_id_json, {{"secretRequest", {"Deny"}}}, &error));
+		return target;
+	};
+	const auto codex = target_for("caller-capability", "codex-save");
+	const auto claude = target_for("claude-capability", "claude-ask");
+	const auto review = target_for("review-capability", "review-ask");
+	const std::string workspace = fixture.Chat("caller").workspace_directory;
+	UAM_ASSERT_EQ(codex.keychain_account, uam::SecretRequestService::KeychainAccount(workspace, "codex-cli", "build", "GitHub token"));
+	UAM_ASSERT_EQ(codex.legacy_keychain_account, workspace + " | GitHub token");
+	UAM_ASSERT(codex.keychain_account != claude.keychain_account && codex.keychain_account != review.keychain_account);
+	UAM_ASSERT_EQ(codex.legacy_keychain_account, claude.legacy_keychain_account);
+	// The parts stay separate whatever the agent puts in its label.
+	const nlohmann::json parts = nlohmann::json::parse(uam::SecretRequestService::KeychainAccount("/w | x", "codex-cli", "build", "\",\"claude-cli"));
+	UAM_ASSERT_EQ(parts, (nlohmann::json{"uam-secret-v2", "/w | x", "codex-cli", "build", "\",\"claude-cli"}));
+
+	// Codex's build agent saved it: only that provider and agent see it as saved, with the date it was saved.
+	constexpr std::int64_t saved_at = 1795000000000;
+	UAM_ASSERT(uam::SecretRequestService::RecordKeychainAccount(fixture.app.data_root, codex.keychain_account, true, saved_at));
+	UAM_ASSERT_EQ(uam::SecretRequestService::KeychainSavedAt(fixture.app.data_root, codex.keychain_account).value_or(-1), saved_at);
+	UAM_ASSERT(!uam::SecretRequestService::KeychainSaved(fixture.app.data_root, claude.keychain_account));
+	UAM_ASSERT(!uam::SecretRequestService::KeychainSaved(fixture.app.data_root, review.keychain_account));
+	// An entry saved before scoping is kept as a plain name with no date, and is never one of the scoped names.
+	UAM_ASSERT(uam::SecretRequestService::RecordKeychainAccount(fixture.app.data_root, codex.legacy_keychain_account, true));
+	UAM_ASSERT_EQ(uam::SecretRequestService::KeychainSavedAt(fixture.app.data_root, codex.legacy_keychain_account).value_or(-1), std::int64_t{0});
+	std::string index;
+	UAM_ASSERT(uam::io::TryReadTextFile(fixture.app.data_root / "secrets" / "keychain-accounts.json", index));
+	UAM_ASSERT_EQ(nlohmann::json::parse(index), (nlohmann::json{{{"account", codex.keychain_account}, {"savedAt", saved_at}}, codex.legacy_keychain_account}));
+	UAM_ASSERT(index.find(kCanary) == std::string::npos);
+
+	const auto projected = [&](const std::string& capability, const std::string& request_id)
+	{
+		UAM_ASSERT(fixture.Ask(request_id, SecretFixture::Token(), capability).value("pendingApproval", false));
+		const auto pending = uam::UamControlService::PendingApprovalForChat(fixture.app, "caller");
+		const nlohmann::json keychain = pending->secret_request.at("keychain");
+		std::string error;
+		UAM_ASSERT(uam::UamControlService::ResolveApproval(fixture.app, "caller", pending->request_id_json, {{"secretRequest", {"Deny"}}}, &error));
+		return keychain;
+	};
+	const nlohmann::json own = projected("caller-capability", "codex-again");
+	const nlohmann::json other = projected("claude-capability", "claude-again");
+	const bool keychain = uam::secrets::keychain::Available();
+	UAM_ASSERT_EQ(own.value("saved", !keychain), keychain);
+	UAM_ASSERT_EQ(own.value("agent", ""), std::string("build"));
+	UAM_ASSERT(!other.value("saved", true));
+	if (keychain)
+	{
+		UAM_ASSERT_EQ(own["savedAt"], nlohmann::json(saved_at));
+		UAM_ASSERT(other["savedAt"].is_null());
+		// The unscoped entry is shown to every agent only so the user can forget it.
+		UAM_ASSERT(own.value("legacySaved", false) && other.value("legacySaved", false));
+	}
+	else UAM_ASSERT(!own.value("legacySaved", true));
+
+	// Forgetting the old entry leaves the scoped one.
+	UAM_ASSERT(uam::SecretRequestService::RecordKeychainAccount(fixture.app.data_root, codex.legacy_keychain_account, false));
+	UAM_ASSERT(!uam::SecretRequestService::KeychainSaved(fixture.app.data_root, codex.legacy_keychain_account));
+	UAM_ASSERT(uam::SecretRequestService::KeychainSaved(fixture.app.data_root, codex.keychain_account));
+}
+
 UAM_TEST(SecretRedactionKeepsEchoesOutOfChatLogsMemoryCompanionAndExport)
 {
 	uam::secrets::ResetForTests();

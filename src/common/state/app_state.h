@@ -532,6 +532,10 @@ namespace uam
 		std::vector<std::string> agent_delegates;
 		/// Captured from a goal review launch; the capability can never mutate or start broader children.
 		bool read_only_at_launch = false;
+		/// Tools this session was never offered, fixed at launch (sorted). The manager refuses them itself, so a
+		/// request that bypasses the session's own tool server cannot reach them.
+		std::vector<std::string> hidden_tools;
+		bool hidden_tool_refusal_logged = false; // One diagnostic line per capability, not one per refused request.
 		/// Signing key held only by this capability's MCP server process; a request without its signature is refused.
 		std::string request_key;
 		int64_t expires_at_epoch_ms = 0;

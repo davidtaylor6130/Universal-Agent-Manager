@@ -1648,6 +1648,74 @@ UAM_TEST(SavedMcpSettingsReachAllFiveRuntimesWithoutEnablingCentralInstructions)
 	}
 }
 
+UAM_TEST(UamControlSigningKeyStaysOutOfConfigurationFilesWhereTheProviderReadsItsEnvironment)
+{
+	TempDir temp("uam-control-key-files");
+	AppSettings settings;
+	McpServerConfiguration shared;
+	shared.id = "shared-http";
+	shared.name = "shared-http";
+	shared.transport = "http";
+	shared.url = "http://localhost:5000/mcp";
+	settings.mcp_servers = {shared};
+	const std::string key = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+	const nlohmann::json session_servers = nlohmann::json::array({{{"name", "uam-control"}, {"command", "private-owned-uam"},
+	    {"args", {"--uam-control-mcp"}}, {"env", nlohmann::json::array({{{"name", "UAM_CONTROL_CAPABILITY_DIR"}, {"value", "/private/capability"}},
+	                                                                   {{"name", "UAM_CONTROL_REQUEST_KEY"}, {"value", key}}})}}});
+	const auto files_hold_key = [&](const fs::path& root)
+	{
+		std::error_code ignored;
+		for (const auto& entry : fs::recursive_directory_iterator(root, ignored))
+			if (entry.is_regular_file(ignored) && ReadFile(entry.path()).find(key) != std::string::npos) return true;
+		return false;
+	};
+	for (const std::string& provider : {"claude-cli", "gemini-cli", "codex-cli", "opencode-cli"})
+	{
+		ChatSession chat;
+		chat.id = "key-" + provider;
+		chat.provider_id = provider;
+		chat.uam_control_enabled = true;
+		uam::ProviderConfigurationBundle bundle;
+		std::string error;
+		UAM_ASSERT(uam::PrepareProviderConfiguration(temp.root / provider, settings, chat, uam::execution_hosts::LocalHost(), temp.root, bundle, error, nullptr, {}, true));
+		UAM_ASSERT(!bundle.local_directory.empty());
+		std::vector<std::string> argv{provider == "claude-cli" ? "claude" : provider == "gemini-cli" ? "gemini" : provider == "codex-cli" ? "codex" : "opencode"};
+		uam::provider_setup::Environment environment;
+		UAM_ASSERT(uam::provider_setup::Apply(provider, bundle.local_directory, temp.root, argv, environment, error, session_servers));
+		// No generated file holds the key, including the shared mcp.json copy these providers never read.
+		UAM_ASSERT(!files_hold_key(bundle.local_directory));
+		if (provider == "codex-cli")
+		{
+			// Codex forwards the named variable from its own environment.
+			UAM_ASSERT_EQ(uam::provider_setup::EnvironmentValue(environment, "UAM_CONTROL_REQUEST_KEY"), key);
+			UAM_ASSERT(std::ranges::none_of(argv, [&](const std::string& arg) { return arg.find(key) != std::string::npos; }));
+			continue;
+		}
+		if (provider == "opencode-cli")
+		{
+			// OpenCode's inline configuration is itself an environment variable, never a file.
+			const nlohmann::json config = nlohmann::json::parse(uam::provider_setup::EnvironmentValue(environment, "OPENCODE_CONFIG_CONTENT"));
+			UAM_ASSERT_EQ(config["mcp"]["uam-control"]["environment"]["UAM_CONTROL_REQUEST_KEY"], nlohmann::json(key));
+			continue;
+		}
+		// Claude and Gemini read a file: it references the provider's variable, which holds the key.
+		UAM_ASSERT_EQ(uam::provider_setup::EnvironmentValue(environment, "UAM_CONTROL_LAUNCH_KEY"), key);
+		std::string configuration_path;
+		if (provider == "gemini-cli") configuration_path = uam::provider_setup::EnvironmentValue(environment, "GEMINI_CLI_SYSTEM_SETTINGS_PATH");
+		else
+		{
+			const auto flag = std::ranges::find(argv, "--mcp-config");
+			UAM_ASSERT(flag != argv.end() && flag + 1 != argv.end());
+			configuration_path = *(flag + 1);
+		}
+		const nlohmann::json config = nlohmann::json::parse(ReadFile(uam::paths::PathFromUtf8(configuration_path)));
+		const nlohmann::json& env = config["mcpServers"]["uam-control"]["env"];
+		UAM_ASSERT_EQ(env["UAM_CONTROL_REQUEST_KEY"], nlohmann::json("${UAM_CONTROL_LAUNCH_KEY}"));
+		UAM_ASSERT_EQ(env["UAM_CONTROL_CAPABILITY_DIR"], nlohmann::json("/private/capability"));
+		UAM_ASSERT_EQ(config["mcpServers"]["shared-http"][provider == "gemini-cli" ? "httpUrl" : "url"], nlohmann::json(shared.url));
+	}
+}
+
 UAM_TEST(SharedMcpFollowsSourceWorkspaceIntoAnIsolatedWorktree)
 {
 	TempDir temp("uam-mcp-worktree-scope");

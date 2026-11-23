@@ -10,7 +10,7 @@ type Props = {
     sessionId?: string
     onResolve: (requestId: string, answers: AcpUserInputAnswers) => Promise<boolean>
 }
-type Busy = '' | 'submit' | 'saved' | 'deny' | 'allow' | 'forget'
+type Busy = '' | 'submit' | 'saved' | 'deny' | 'allow' | 'forget' | 'forgetLegacy'
 
 const PLATFORM_NAMES: Record<string, string> = { linux: 'Linux', windows: 'Windows', macos: 'macOS' }
 
@@ -22,6 +22,13 @@ function assurance(host: AcpSecretRequest['host'], localPlatform: string)
         : host.platform === 'windows' ? `Sent over the UAM connection to ${host.name} and written to a file only your account can read, deleted within 60 seconds.`
         : `Sent over the UAM connection to ${host.name} and written to a private pipe only your account can read, removed after one read.`
     return `${delivery} Never shown to the model or saved in chat history.`
+}
+
+/** Who a saved secret is kept for, and when UAM saved it. */
+function savedFor(provider: string, agent: string | undefined, savedAt: number | undefined)
+{
+    const date = savedAt ? new Date(savedAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) : ''
+    return `Saved for ${provider}${agent ? ` (${agent} agent)` : ''}${date ? ` on ${date}` : ''}. Other agents are not offered it.`
 }
 
 function hostOf(url: string)
@@ -62,7 +69,7 @@ export function SecretRequestCard({ input, sessionId, onResolve }: Props)
     const planOptIn = request?.planOptIn
     const wasPlan = useRef(planOptIn)
     useEffect(() => {
-        setBusy(current => current === 'allow' || current === 'forget' ? '' : current)
+        setBusy(current => current === 'allow' || current === 'forget' || current === 'forgetLegacy' ? '' : current)
         if (wasPlan.current && planOptIn === false) fieldRef.current?.focus()
         wasPlan.current = planOptIn
     }, [input, planOptIn])
@@ -97,11 +104,11 @@ export function SecretRequestCard({ input, sessionId, onResolve }: Props)
         setBusy('')
         setError(result.error || 'The secret was not delivered.')
     }
-    const forget = async () => {
+    const forget = async (legacy = false) => {
         if (busy || !sessionId) return
-        setBusy('forget')
+        setBusy(legacy ? 'forgetLegacy' : 'forget')
         setError('')
-        const result = await forgetSavedSecret(sessionId, input.requestId).catch(() => ({ ok: false, error: '' }))
+        const result = await forgetSavedSecret(sessionId, input.requestId, legacy).catch(() => ({ ok: false, error: '' }))
         if (!mountedRef.current) return
         if (!result.ok) { setBusy(''); setError(result.error || 'The saved secret was not forgotten.') }
     }
@@ -136,6 +143,8 @@ export function SecretRequestCard({ input, sessionId, onResolve }: Props)
     // Saving is macOS-only: on Windows every secret is one-time (any program of the user can read Credential Manager).
     const canSave = keychain.available && !host && localPlatform !== 'windows'
     const hasSaved = keychain.saved && !host && localPlatform !== 'windows'
+    // Saved before secrets were scoped: it does not record which agent saved it, so it is only offered for forgetting.
+    const legacySaved = keychain.legacySaved === true && keychain.available && !host && localPlatform !== 'windows'
     const headingId = `${id}-heading`
     const where = <span className="secret-card__where">
         {host
@@ -201,9 +210,16 @@ export function SecretRequestCard({ input, sessionId, onResolve }: Props)
             {(canSave || hasSaved) && <div className="secret-card__opts">
                 {canSave && <Switch label="Save in Keychain" checked={save} disabled={Boolean(busy)} onChange={event => setSave(event.target.checked)} />}
                 {hasSaved && <>
-                    <Button size="sm" variant="secondary" disabled={Boolean(busy) && busy !== 'saved'} loading={busy === 'saved'} onClick={() => void submit(true)}>Use saved secret</Button>
+                    <Button size="sm" variant="secondary" aria-describedby={`${id}-saved`} disabled={Boolean(busy) && busy !== 'saved'} loading={busy === 'saved'} onClick={() => void submit(true)}>Use saved secret</Button>
                     <Button size="sm" variant="ghost" disabled={Boolean(busy) && busy !== 'forget'} loading={busy === 'forget'} onClick={() => void forget()}>Forget saved</Button>
                 </>}
+            </div>}
+            {hasSaved && <p className="secret-card__saved" id={`${id}-saved`}>{savedFor(provider, keychain.agent, keychain.savedAt)}</p>}
+            {legacySaved && <div className="secret-card__legacy">
+                <Notice tone="info" title="An older saved value isn't offered." dismissible={false}
+                    actions={<Button size="sm" variant="ghost" disabled={Boolean(busy) && busy !== 'forgetLegacy'} loading={busy === 'forgetLegacy'} onClick={() => void forget(true)}>Forget it</Button>}>
+                    It was saved before UAM recorded which agent saved a secret. Type the secret instead; Save keeps it for {provider} only.
+                </Notice>
             </div>}
         </div>
         <footer className="secret-card__foot">

@@ -1461,7 +1461,8 @@ UAM_TEST(UamControlComputerUseRequiresVisibleGuiApproval)
 	    {{"requestId", "remote-computer-use"}, {"method", "computer_use_request"},
      {"arguments", {{"reason", "Remote must be rejected."}}}}, now);
 	UAM_ASSERT(!remote_rejected.value("ok", true));
-	UAM_ASSERT(remote_rejected.value("error", "").find("unavailable") != std::string::npos);
+	// SSH chats are never offered Computer Use, so the manager refuses it before evaluating the request.
+	UAM_ASSERT_EQ(remote_rejected.value("error", ""), std::string("This UAM tool is not available in this session."));
 	UAM_ASSERT(!remote_app.chats.front().computer_use_enabled);
 
 	uam::UamControlService::Shutdown(remote_app);
@@ -1726,6 +1727,147 @@ UAM_TEST(UamControlListsOnlyToolsTheSessionCanUse)
 		UAM_ASSERT(!uam::ranges::Contains(cli_tools, name));
 	UAM_ASSERT(uam::ranges::Contains(cli_tools, "user_question"));
 	uam::UamControlService::Shutdown(app);
+}
+
+UAM_TEST(UamControlManagerRefusesToolsTheSessionWasNotOffered)
+{
+	TempDir temp("uam-control-manager-hidden-tools");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession root = ChatDomainService().CreateNewChat("", "opencode-cli");
+	root.id = "chat-manager-hidden-tools";
+	root.uam_control_enabled = true;
+	root.execution_host_id = "local";
+	root.approval_mode = "default";
+	app.chats.push_back(std::move(root));
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = app.chats.front().id;
+	session->provider_id = "opencode-cli";
+	session->running = true;
+	session->active_uam_agent_workspace_access = "write";
+	uam::AcpSessionState& raw = *session;
+	app.acp_sessions.push_back(std::move(session));
+	std::string error;
+	UAM_ASSERT(uam::UamControlService::Initialize(app, &error));
+	const int64_t now = uam::time::SystemEpochMillisecondsNow();
+	const std::string refusal = "This UAM tool is not available in this session.";
+	const auto call = [&](const std::string& capability, const std::string& id, const std::string& method, nlohmann::json arguments)
+	{
+		return uam::UamControlService::HandleRequestForTests(app, capability, {{"requestId", id}, {"method", method}, {"arguments", std::move(arguments)}}, now);
+	};
+	const nlohmann::json html = {{"title", "Check"}, {"html", "<!doctype html><title>x</title><p>x</p>"}};
+	const auto issue = [&]()
+	{
+		nlohmann::json setup{{"params", {{"mcpServers", nlohmann::json::array()}}}};
+		UAM_ASSERT(uam::UamControlService::AppendSessionMcpServer(app, raw, app.chats.front(), "session/new", setup, &error));
+		return raw.uam_control_capability_id;
+	};
+
+	// A goal reviewer is offered no tools. Requests that bypass its tool server (for example signed with its key)
+	// are refused by the manager too, including tools the read-only ceiling alone would have let through.
+	raw.goal_review_turn = true;
+	const std::string reviewer = issue();
+	UAM_ASSERT_EQ(call(reviewer, "reviewer-delegate", "agent_delegate", {{"agentId", "plan"}, {"task", "Read the workspace."}}).value("error", ""), refusal);
+	UAM_ASSERT_EQ(call(reviewer, "reviewer-question", "user_question", {{"question", "Proceed?"}}).value("error", ""), refusal);
+	UAM_ASSERT_EQ(call(reviewer, "reviewer-preview", "html_view_preview", html).value("error", ""), refusal);
+	UAM_ASSERT_EQ(call(reviewer, "reviewer-publish", "html_view_publish", html).value("error", ""), refusal);
+	UAM_ASSERT_EQ(call(reviewer, "reviewer-list", "agent_list", nlohmann::json::object()).value("error", ""), refusal);
+	UAM_ASSERT(app.agent_runs.empty());
+	UAM_ASSERT(!uam::UamControlService::PendingApprovalForChat(app, app.chats.front().id).has_value());
+	// Transport receipts are not tools and still reach the manager.
+	UAM_ASSERT(call(reviewer, "reviewer-initialized", "_mcp_initialized", {{"connectionId", "reviewer-connection"}}).value("ok", false));
+	// The list is fixed at launch: the review turn settling does not restore tools to the same capability.
+	raw.goal_review_turn = false;
+	UAM_ASSERT_EQ(call(reviewer, "reviewer-after", "html_view_preview", html).value("error", ""), refusal);
+
+	// The worker's next session is offered its tools again and the manager serves them.
+	const std::string worker = issue();
+	UAM_ASSERT(worker != reviewer);
+	UAM_ASSERT(call(worker, "worker-preview", "html_view_preview", html).value("ok", false));
+	UAM_ASSERT(call(worker, "worker-question", "user_question", {{"question", "Proceed?"}}).value("pendingApproval", false));
+
+	// A read-only agent is not offered goal_create, so the manager refuses it as unavailable rather than evaluating it.
+	raw.active_uam_agent_workspace_access = "read";
+	const std::string read_only = issue();
+	UAM_ASSERT_EQ(call(read_only, "read-goal", "goal_create", {{"objective", "Change files"}, {"idempotencyKey", "read-goal"}}).value("error", ""), refusal);
+	raw.active_uam_agent_workspace_access = "write";
+
+	// CLI View hides the HTML view and wait tools; the manager refuses them for that terminal's capability.
+	app.cli_terminals.push_back(std::make_unique<uam::CliTerminalState>());
+	uam::CliTerminalState& terminal = *app.cli_terminals.back();
+	nlohmann::json server;
+	UAM_ASSERT(uam::UamControlService::PrepareTerminalMcpServer(app, terminal, app.chats.front(), server, error));
+	terminal.running = true;
+	const std::string cli = terminal.uam_control_session->uam_control_capability_id;
+	UAM_ASSERT_EQ(call(cli, "cli-preview", "html_view_preview", html).value("error", ""), refusal);
+	UAM_ASSERT_EQ(call(cli, "cli-wait", "agent_wait", {{"runId", "run-1"}}).value("error", ""), refusal);
+	UAM_ASSERT(call(cli, "cli-skills", "skill_list", nlohmann::json::object()).value("ok", false));
+	uam::UamControlService::Shutdown(app);
+}
+
+UAM_TEST(UamControlToolServerSignsWithTheProviderEnvironmentKeyWhenTheReferenceIsNotExpanded)
+{
+	TempDir temp("uam-control-launch-key");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession root = ChatDomainService().CreateNewChat("", "opencode-cli");
+	root.id = "chat-launch-key";
+	root.uam_control_enabled = true;
+	root.execution_host_id = "local";
+	app.chats.push_back(std::move(root));
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = app.chats.front().id;
+	session->provider_id = "opencode-cli";
+	session->running = true;
+	session->active_uam_agent_workspace_access = "write";
+	uam::AcpSessionState& raw = *session;
+	app.acp_sessions.push_back(std::move(session));
+	std::string error;
+	UAM_ASSERT(uam::UamControlService::Initialize(app, &error));
+	struct ShutdownManager
+	{
+		uam::AppState& app;
+		~ShutdownManager() { uam::UamControlService::Shutdown(app); }
+	} shutdown{app};
+	nlohmann::json setup{{"params", {{"mcpServers", nlohmann::json::array()}}}};
+	UAM_ASSERT(uam::UamControlService::AppendSessionMcpServer(app, raw, app.chats.front(), "session/new", setup, &error));
+	// What a provider that passes its environment through, but does not expand the configuration's reference, starts.
+	std::vector<std::pair<std::string, std::string>> environment;
+	for (const auto& entry : setup["params"]["mcpServers"].back()["env"])
+		environment.emplace_back(entry.value("name", ""), entry.value("name", "") == "UAM_CONTROL_REQUEST_KEY" ? std::string("${UAM_CONTROL_LAUNCH_KEY}") : entry.value("value", ""));
+	environment.emplace_back("UAM_CONTROL_LAUNCH_KEY", app.uam_control_capabilities.back().request_key);
+	auto& process_service = PlatformServicesFactory::Instance().process_service;
+	uam::platform::StdioProcessPlatformFields process;
+	UAM_ASSERT(process_service.StartStdioProcess(process, temp.root,
+	    {process_service.ResolveCurrentExecutablePath().string(), "--uam-test-control-mcp"}, &error, environment));
+	struct StopServer
+	{
+		uam::platform::StdioProcessPlatformFields& process;
+		~StopServer()
+		{
+			auto& service = PlatformServicesFactory::Instance().process_service;
+			service.StopStdioProcess(process, true);
+			service.CloseStdioProcessHandles(process);
+		}
+	} stop_server{process};
+	const std::string input = nlohmann::json{{"jsonrpc", "2.0"}, {"id", 1}, {"method", "tools/call"},
+	                                         {"params", {{"name", "goal_get"}, {"arguments", nlohmann::json::object()}}}}.dump() + "\n";
+	UAM_ASSERT(process_service.WriteToStdioProcess(process, input.data(), input.size(), &error));
+	std::string output;
+	char buffer[4096];
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+	while (output.find('\n') == std::string::npos && std::chrono::steady_clock::now() < deadline)
+	{
+		(void)uam::UamControlService::ProcessPendingRequests(app);
+		const auto read = process_service.ReadStdioProcessStdout(process, buffer, sizeof(buffer), &error);
+		if (read > 0) output.append(buffer, static_cast<std::size_t>(read));
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	}
+	UAM_ASSERT(output.find('\n') != std::string::npos);
+	const nlohmann::json reply = nlohmann::json::parse(output.substr(0, output.find('\n')));
+	// A literal reference used as the key would be refused as unsigned; the inherited key is accepted.
+	UAM_ASSERT_EQ(reply["result"]["isError"], nlohmann::json(false));
+	UAM_ASSERT(nlohmann::json::parse(reply["result"]["content"][0]["text"].get<std::string>()).contains("goal"));
 }
 
 UAM_TEST(UamControlUserQuestionRoutesThroughTheExistingGuiInput)
