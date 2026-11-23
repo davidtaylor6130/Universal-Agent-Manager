@@ -112,7 +112,8 @@ namespace uam::io
 		if (holds_unvalidated_bytes(primary_status, primary) || holds_unvalidated_bytes(backup_status, backup))
 		{
 			result.status = StoreLoadStatus::Unrecovered;
-			result.warning = "Could not load " + label + ": " + file.filename().string() + " is unreadable or invalid and has no valid backup. UAM will not save " + label + " until the file is repaired (or removed with its .bak) and UAM restarts.";
+			const std::filesystem::path damaged = primary_status == ReadFileStatus::Missing ? MakeBackupPath(file) : file;
+			result.warning = "Could not load " + label + ": " + damaged.filename().string() + " is unreadable or invalid and has no valid backup. UAM will not save " + label + " until the file is repaired (or removed with its .bak) and UAM restarts.";
 			if (fence == StoreFenceMode::Arm)
 				UnrecoveredStoreFence::Mark(file);
 			if (primary_status == ReadFileStatus::Read)

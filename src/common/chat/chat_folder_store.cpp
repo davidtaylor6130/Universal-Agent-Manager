@@ -130,7 +130,7 @@ std::vector<ChatFolder> ChatFolderStore::Load(const std::filesystem::path& data_
 	const uam::io::StoreLoadResult loaded = uam::io::LoadStoreTextWithBackup(
 	    FolderFilePath(data_root), [](const std::string& candidate) { return IsValidFolderFile(candidate); }, text, "workspaces", fence);
 	if (result != nullptr) *result = loaded;
-	// An unrecovered primary is still parsed for display; its saves stay fenced.
+	// An unrecovered primary is still parsed for display; saves are fenced only when the caller armed the load.
 	std::istringstream lines(text);
 	std::string line;
 	ChatFolder current;
