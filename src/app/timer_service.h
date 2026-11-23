@@ -107,7 +107,7 @@ namespace uam
 		void RecordLaunchResult(std::string_view schedule_id, std::string_view chat_id, bool started, std::string_view error);
 		const std::vector<Schedule>& SchedulesForTests() const { return m_schedules; }
 
-		/// {"notices": [{serial, message, tone, chatId?}]}: one-line messages for the notification system.
+		/// {"notices": [{serial, title, message, tone, chatId?}]}: titled one-line messages for the notification system.
 		nlohmann::json SerializeForFrontend() const;
 
 	  private:
@@ -118,7 +118,8 @@ namespace uam
 		bool PollWakes(AppState& app, std::int64_t now_ms);
 		bool PollSchedules(AppState& app, std::int64_t now_ms);
 		void RunSchedule(AppState& app, Schedule& schedule);
-		void Notify(std::string message, std::string tone, std::string chat_id = {});
+		/// Adds one notice. The title names what happened in the notifications panel; the message is one line.
+		void Notify(std::string title, std::string message, std::string tone, std::string chat_id = {});
 		Schedule* FindSchedule(std::string_view id);
 		std::optional<Schedule> ScheduleFromSpec(const AppState& app, const nlohmann::json& spec, std::string* error_out) const;
 		static nlohmann::json ScheduleJson(const Schedule& schedule);
@@ -126,6 +127,7 @@ namespace uam
 		struct Notice
 		{
 			int serial = 0;
+			std::string title;
 			std::string message;
 			std::string tone;
 			std::string chat_id;

@@ -2334,7 +2334,8 @@ export function sanitizeTimers(value: unknown): { notices: TimerNotice[] } {
       const message = stringOr(entry.message)
       if (serial < 1 || !message) return []
       const chatId = stringOr(entry.chatId)
-      return [{ serial, message, tone: noticeTone(entry.tone), ...(chatId ? { chatId } : {}) }]
+      const title = stringOr(entry.title).trim()
+      return [{ serial, message, tone: noticeTone(entry.tone), ...(title ? { title } : {}), ...(chatId ? { chatId } : {}) }]
     }),
   }
 }

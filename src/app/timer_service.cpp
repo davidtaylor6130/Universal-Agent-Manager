@@ -217,9 +217,9 @@ namespace uam
 		return true;
 	}
 
-	void TimerService::Notify(std::string message, std::string tone, std::string chat_id)
+	void TimerService::Notify(std::string title, std::string message, std::string tone, std::string chat_id)
 	{
-		m_notices.push_back({.serial = ++m_notice_serial, .message = std::move(message), .tone = std::move(tone), .chat_id = std::move(chat_id)});
+		m_notices.push_back({.serial = ++m_notice_serial, .title = std::move(title), .message = std::move(message), .tone = std::move(tone), .chat_id = std::move(chat_id)});
 		if (m_notices.size() > kMaxNotices) m_notices.erase(m_notices.begin(), m_notices.end() - kMaxNotices);
 	}
 
@@ -228,7 +228,7 @@ namespace uam
 		nlohmann::json notices = nlohmann::json::array();
 		for (const Notice& notice : m_notices)
 		{
-			nlohmann::json row = {{"serial", notice.serial}, {"message", notice.message}, {"tone", notice.tone}};
+			nlohmann::json row = {{"serial", notice.serial}, {"title", notice.title}, {"message", notice.message}, {"tone", notice.tone}};
 			if (!notice.chat_id.empty()) row["chatId"] = notice.chat_id;
 			notices.push_back(std::move(row));
 		}
@@ -363,7 +363,7 @@ namespace uam
 			{
 				uam::diagnostics::Write("Timers: chat " + chat_id + " refused a follow-up " + std::to_string(kWakeRefusalLimit) + " times; it was dropped.");
 				m_wakes.erase(m_wakes.begin() + static_cast<std::ptrdiff_t>(index));
-				Notify("A scheduled follow-up was dropped because the chat did not accept it for " + std::to_string(kWakeRefusalLimit) + " minutes; open the chat in Chat view to continue.", "warning", chat_id);
+				Notify("Follow-up dropped", "A scheduled follow-up was dropped because the chat did not accept it for " + std::to_string(kWakeRefusalLimit) + " minutes; open the chat in Chat view to continue.", "warning", chat_id);
 				changed = true;
 			}
 			else ++index;
@@ -530,7 +530,7 @@ namespace uam
 		if (schedule == nullptr || schedule->last_chat_id != chat_id) return;
 		schedule->last_result = started ? "started" : "failed";
 		schedule->last_error = started ? std::string{} : uam::strings::SafeLine(error, 300, true);
-		if (!started) Notify("Schedule “" + schedule->name + "” had a problem starting its chat: " + schedule->last_error, "warning", std::string(chat_id));
+		if (!started) Notify("Scheduled chat did not start", "Schedule “" + schedule->name + "” had a problem starting its chat: " + schedule->last_error, "warning", std::string(chat_id));
 		SaveSchedules();
 	}
 
@@ -543,7 +543,7 @@ namespace uam
 			schedule.last_result = "failed";
 			schedule.last_error = uam::strings::SafeLine(response.body.value("error", std::string("The chat could not be created.")), 300, true);
 			// One notice per new reason, so a schedule that keeps failing the same way does not repeat it every run.
-			if (schedule.last_error != previous_error) Notify("Schedule “" + schedule.name + "” did not start a chat: " + schedule.last_error, "warning");
+			if (schedule.last_error != previous_error) Notify("Scheduled run did not start", "Schedule “" + schedule.name + "” did not start a chat: " + schedule.last_error, "warning");
 			return;
 		}
 		schedule.last_error.clear();
@@ -595,7 +595,7 @@ namespace uam
 				{
 					schedule->last_result = "failed";
 					schedule->last_error = "UAM stopped during this run, so it may not have started a chat.";
-					Notify("Schedule “" + schedule->name + "” stopped with UAM during a run; check Active Chats for its chat.", "warning");
+					Notify("Scheduled run interrupted", "Schedule “" + schedule->name + "” stopped with UAM during a run; check Active Chats for its chat.", "warning");
 				}
 			}
 			m_unstarted_after_restart.clear();

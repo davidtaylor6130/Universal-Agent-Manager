@@ -12,7 +12,8 @@ export function reportTimerNotices(notices: readonly TimerNotice[], chatName: (c
     reported = notice.serial
     const name = notice.chatId ? chatName(notice.chatId) : undefined
     const message = name ? `Chat “${name}”: ${notice.message}` : notice.message
-    if (notice.tone === 'warning') reportAppFailure(message, '')
+    // Each kind names itself in the panel ("Follow-up dropped"), not the generic failure title.
+    if (notice.tone === 'warning') reportAppFailure(message, '', notice.title ? { title: notice.title } : {})
     else reportAppNotice(message, notice.tone)
   }
 }

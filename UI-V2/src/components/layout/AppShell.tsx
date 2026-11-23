@@ -557,7 +557,7 @@ function NotificationsPanel({
     }] : []),
     ...failures.map((failure): Notification => failure.tone
       ? { id: failure.id, title: failure.message, detail: failure.detail, warning: failure.tone === 'warning', notice: failure.tone === 'warning' ? undefined : failure.tone, actions: failure.actions }
-      : { id: failure.id, title: 'Change not saved', detail: failure.detail, failure }),
+      : { id: failure.id, title: failure.title || 'Change not saved', detail: failure.detail, failure }),
     ...remoteNotifications,
     ...(updates.length > 0 ? [{
       id: updateNotificationId(updates),

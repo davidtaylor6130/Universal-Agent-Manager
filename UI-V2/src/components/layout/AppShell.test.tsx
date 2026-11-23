@@ -541,6 +541,27 @@ describe('AppShell', () => {
     }
   })
 
+  it('titles a failure with its own title when the caller gives one', () => {
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
+    useAppStore.setState({ updateChecksEnabled: false, statusLine: '' })
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<AppShell />))
+      act(() => reportAppFailure('Chat “Parser work”: A scheduled follow-up was dropped.', '', { title: 'Follow-up dropped' }))
+      act(() => reportAppFailure('The chat was not renamed.', ''))
+      act(() => (host.querySelector('[aria-label="2 alerts"]') as HTMLButtonElement).click())
+      const panel = host.querySelector('[data-testid="notifications-panel"]')!
+      expect(Array.from(panel.querySelectorAll('.uam-np-row__title span:first-child'), (title) => title.textContent).sort()).toEqual(['Change not saved', 'Follow-up dropped'])
+      expect(panel.textContent).toContain('A scheduled follow-up was dropped.')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('groups dated notices newest first and refreshes across midnight without reannouncing', () => {
     vi.useFakeTimers()
     vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })

@@ -284,6 +284,7 @@ UAM_TEST(TimerScheduleRunsAWeekdayTimeAndStartsTrustedRuns)
 	UAM_ASSERT_EQ(notices.size(), std::size_t{1});
 	UAM_ASSERT(notices[0]["tone"] == "warning" && notices[0]["message"].get<std::string>().find("Nightly triage") != std::string::npos);
 	UAM_ASSERT(notices[0]["message"].get<std::string>().find('\n') == std::string::npos);
+	UAM_ASSERT_EQ(notices[0]["title"].get<std::string>(), std::string("Scheduled chat did not start"));
 	// An outcome for an earlier run's chat changes nothing.
 	fixture.service->RecordLaunchResult(fixture.Only().id, "run-1", true, "");
 	UAM_ASSERT_EQ(fixture.Only().last_result, std::string("failed"));
@@ -363,6 +364,7 @@ UAM_TEST(TimerScheduleAStopBetweenRecordingAndStartingNeverRunsTheSlotAgain)
 	fixture.PollAt(kMonday8 + kHour + 2000);
 	UAM_ASSERT(fixture.Only().last_result == "failed" && fixture.Only().last_error.find("UAM stopped during this run") != std::string::npos);
 	UAM_ASSERT_EQ(fixture.service->SerializeForFrontend()["notices"].size(), std::size_t{1});
+	UAM_ASSERT_EQ(fixture.service->SerializeForFrontend()["notices"][0]["title"].get<std::string>(), std::string("Scheduled run interrupted"));
 	fixture.PollAt(kMonday8 + kHour + 5000);
 	UAM_ASSERT(fixture.runs->empty());
 	fixture.PollAt(kMonday8 + 2 * kHour);
@@ -383,6 +385,7 @@ UAM_TEST(TimerScheduleRefusedRunRecordsOneFailureAndCreatesNoChat)
 	fixture.PollAt(kMonday8 + 2 * kHour);
 	// The same reason is not announced again on every run.
 	UAM_ASSERT_EQ(fixture.service->SerializeForFrontend()["notices"].size(), std::size_t{1});
+	UAM_ASSERT_EQ(fixture.service->SerializeForFrontend()["notices"][0]["title"].get<std::string>(), std::string("Scheduled run did not start"));
 	UAM_ASSERT(fixture.app.chats.empty());
 	(void)id;
 }
@@ -645,6 +648,7 @@ UAM_TEST(TimerWakeLimitsBoundsAndRefusals)
 	UAM_ASSERT(fixture.service->WakesForChat("chat-1").empty());
 	const nlohmann::json notices = fixture.service->SerializeForFrontend()["notices"];
 	UAM_ASSERT(notices.size() == 1 && notices[0]["chatId"] == "chat-1" && notices[0]["tone"] == "warning");
+	UAM_ASSERT_EQ(notices[0]["title"].get<std::string>(), std::string("Follow-up dropped"));
 }
 
 UAM_TEST(TimerWakeInterruptedDeliveryIsNotSentAgain)

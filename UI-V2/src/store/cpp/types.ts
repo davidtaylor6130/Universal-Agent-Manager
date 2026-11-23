@@ -781,6 +781,8 @@ export interface PullRequestWatch {
 /** A one-line message from the native timer service (scheduled follow-ups and automation schedules) for the notifications panel. */
 export interface TimerNotice {
   serial: number
+  /** Short panel title naming what happened, such as "Follow-up dropped". */
+  title?: string
   message: string
   tone: 'info' | 'success' | 'warning'
   /** The chat it concerns, when there is one. */
