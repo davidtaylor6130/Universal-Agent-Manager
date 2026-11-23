@@ -116,6 +116,9 @@ function ConflictActions({ file, kind, disabledReason, onChoose }: { file: VcsCh
         aria-label={`Resolve conflict in ${name}`}
         data-state={presence.closing ? 'closed' : 'open'}
         onRequestClose={() => setOpen(false)}
+        // The same raised surface as the other menus, so its items never draw over the rows below.
+        className="rounded-md p-1"
+        style={{ minWidth: 240, background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }}
       >
         {choices.map((choice) => (
           <MenuItem

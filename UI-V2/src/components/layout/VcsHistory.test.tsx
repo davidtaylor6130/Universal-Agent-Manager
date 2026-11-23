@@ -478,6 +478,11 @@ describe('commit panel SVN actions', () => {
     it('offers whole-file choices for a text conflict and only Mark resolved for a tree conflict', async () => {
       await act(async () => root.render(<VcsCommitPanel />))
       await act(async () => button('Resolve conflict in a.txt').click())
+      // The menu has its own raised surface, like the other menus, rather than showing the rows through it.
+      const menu = document.body.querySelector<HTMLElement>('[role="menu"][aria-label="Resolve conflict in a.txt"]')!
+      expect(menu.style.background).toBe('var(--surface)')
+      expect(menu.style.border).toBe('1px solid var(--border-bright)')
+      expect(menu.style.boxShadow).toBe('var(--elev-3)')
       const items = () => [...document.body.querySelectorAll('[role="menuitem"]')].map((item) => item.textContent)
       expect(items().map((text) => text?.split(/(?=Keep|Discards)/)[0])).toEqual(['Mark resolved', 'Use the repository version', 'Keep my version'])
       await act(async () => button('Resolve conflict in a.txt').click())
