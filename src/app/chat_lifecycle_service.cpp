@@ -41,6 +41,7 @@
 #include <algorithm>
 #include <map>
 #include <functional>
+#include <optional>
 #include <string_view>
 #include <system_error>
 #include <unordered_map>
@@ -127,13 +128,18 @@ namespace
 		});
 	}
 
+	bool SaveChatHistory(uam::AppState& app, const ChatSession& chat)
+	{
+		const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
+		return ProviderRuntime::SaveHistory(provider, app.data_root, chat);
+	}
+
 	bool SaveChatHistories(uam::AppState& app, const std::vector<ChatSession>& chats)
 	{
 		bool all_saved = true;
 		for (const ChatSession& chat : chats)
 		{
-			const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
-			if (!ProviderRuntime::SaveHistory(provider, app.data_root, chat))
+			if (!SaveChatHistory(app, chat))
 			{
 				all_saved = false;
 			}
@@ -971,6 +977,94 @@ namespace
 			position = separator + 1;
 		}
 		return host + "\n" + normalized;
+	}
+
+	/// <summary>Maps a chat's recorded directory from a folder's old root to its new root, keeping the subpath below the root.
+	/// Returns nothing for a blank directory or one outside the old root.</summary>
+	std::optional<std::string> RepointedFolderDirectory(const uam::AppState& app, std::string_view host_id, std::string_view recorded, std::string_view old_root, std::string_view new_root)
+	{
+		if (uam::strings::IsBlank(recorded) || uam::strings::IsBlank(old_root))
+		{
+			return std::nullopt;
+		}
+		if (FolderDirectoryMatches(uam::paths::PathFromUtf8(std::string(recorded)), uam::paths::PathFromUtf8(std::string(old_root))))
+		{
+			return std::string(new_root);
+		}
+		const std::string host = uam::strings::NonEmptyOrFallback(uam::strings::Trim(host_id), std::string(uam::execution_hosts::kLocalHostId));
+		if (host == uam::execution_hosts::kLocalHostId)
+		{
+			const std::optional<std::filesystem::path> relative = FolderDirectoryRelativeSubpath(uam::paths::ExpandTrimmedWorkspacePath(recorded), uam::paths::ExpandTrimmedWorkspacePath(old_root));
+			if (!relative.has_value())
+			{
+				return std::nullopt;
+			}
+			if (relative->empty())
+			{
+				return std::string(new_root);
+			}
+			return uam::paths::Utf8PathString(uam::paths::PathFromUtf8(uam::strings::Trim(new_root)) / *relative);
+		}
+		// Remote paths are compared in the host's normalised form, never resolved on this computer.
+		const std::string old_key = FolderOwnershipKey(app, host, old_root);
+		const std::string recorded_key = FolderOwnershipKey(app, host, recorded);
+		if (recorded_key == old_key)
+		{
+			return std::string(new_root);
+		}
+		std::string prefix = old_key;
+		if (prefix.empty() || prefix.back() != '/')
+		{
+			prefix.push_back('/');
+		}
+		if (!recorded_key.starts_with(prefix) || recorded_key.size() == prefix.size())
+		{
+			return std::nullopt;
+		}
+		// A Windows key is case-folded, so the subpath keeps the recorded spelling of its last components.
+		const ExecutionHost* execution_host = uam::execution_hosts::Find(app.settings.execution_hosts, host);
+		const bool windows = execution_host != nullptr && (execution_host->platform == "windows" || execution_host->platform == "Windows");
+		const std::string_view separators = windows ? std::string_view("/\\") : std::string_view("/");
+		std::string target = uam::strings::Trim(new_root);
+		if (target.empty())
+		{
+			return std::nullopt;
+		}
+		while (target.size() > 1 && (target.back() == '/' || (windows && target.back() == '\\')))
+		{
+			target.pop_back();
+		}
+		const auto components = [separators](std::string_view path)
+		{
+			std::vector<std::string_view> parts;
+			std::size_t position = 0;
+			while (position <= path.size())
+			{
+				const std::size_t separator = path.find_first_of(separators, position);
+				const std::size_t end = separator == std::string_view::npos ? path.size() : separator;
+				const std::string_view part = path.substr(position, end - position);
+				if (!part.empty() && part != ".")
+					parts.push_back(part);
+				if (separator == std::string_view::npos)
+					break;
+				position = separator + 1;
+			}
+			return parts;
+		};
+		const std::vector<std::string_view> relative_parts = components(std::string_view(recorded_key).substr(prefix.size()));
+		const std::vector<std::string_view> recorded_parts = components(uam::strings::TrimAsciiView(recorded));
+		if (relative_parts.empty() || relative_parts.size() > recorded_parts.size())
+		{
+			return std::nullopt;
+		}
+		const char separator = windows && target.find('/') == std::string::npos && target.find('\\') != std::string::npos ? '\\' : '/';
+		for (std::size_t index = recorded_parts.size() - relative_parts.size(); index < recorded_parts.size(); ++index)
+		{
+			if (target.back() != '/' && !(windows && target.back() == '\\'))
+				target.push_back(separator);
+			target.append(recorded_parts[index]);
+		}
+		return target;
 	}
 
 	bool HasOtherWorkspaceOwner(const uam::AppState& app, const FolderInput& input,
@@ -2560,7 +2654,6 @@ bool RenameFolderById(uam::AppState& app, const std::string& folder_id, const st
 	}
 
 	const ChatFolder original = folder;
-	const std::vector<ChatSession> original_chats = app.chats;
 	const std::string original_status_line = app.status_line;
 	const bool directory_changed = FolderOwnershipKey(app, original.execution_host_id, original.directory) !=
 	                               FolderOwnershipKey(app, input.execution_host_id, input.directory);
@@ -2576,16 +2669,53 @@ bool RenameFolderById(uam::AppState& app, const std::string& folder_id, const st
 		return false;
 	}
 
+	// Only chats in this folder whose recorded directory is the old root or below it change; every other chat,
+	// in this folder or any other, is neither rewritten nor saved, so its save state cannot block the change.
+	struct RepointedChat
+	{
+		std::size_t index = 0;
+		ChatSession original;
+	};
+	std::vector<RepointedChat> repointed_chats;
+	const auto restore_repointed_chats = [&app, &repointed_chats]()
+	{
+		for (auto entry = repointed_chats.rbegin(); entry != repointed_chats.rend(); ++entry)
+		{
+			app.chats[entry->index] = entry->original;
+		}
+	};
+	const auto save_original_repointed_chats = [&app, &repointed_chats](std::size_t count)
+	{
+		bool all_saved = true;
+		for (std::size_t position = 0; position < count && position < repointed_chats.size(); ++position)
+		{
+			all_saved = SaveChatHistory(app, repointed_chats[position].original) && all_saved;
+		}
+		return all_saved;
+	};
+	std::size_t chats_left_elsewhere = 0;
 	std::vector<std::string> reset_chat_ids;
 	if (directory_changed)
 	{
-		for (ChatSession& chat : app.chats)
+		for (std::size_t index = 0; index < app.chats.size(); ++index)
 		{
+			ChatSession& chat = app.chats[index];
 			if (!ChatBelongsToFolder(chat, target_folder_id))
 			{
 				continue;
 			}
-			if (FolderDirectoryMatches(chat.workspace_directory, original.directory))
+			const std::optional<std::string> directory = RepointedFolderDirectory(app, original.execution_host_id, chat.workspace_directory, original.directory, input.directory);
+			const std::optional<std::string> source_directory = RepointedFolderDirectory(app, original.execution_host_id, chat.workspace_source_directory, original.directory, input.directory);
+			if (!directory.has_value() && !uam::strings::IsBlank(chat.workspace_directory) && !RepointedFolderDirectory(app, original.execution_host_id, chat.workspace_directory, input.directory, input.directory).has_value())
+			{
+				++chats_left_elsewhere;
+			}
+			if ((!directory.has_value() || *directory == chat.workspace_directory) && (!source_directory.has_value() || *source_directory == chat.workspace_source_directory))
+			{
+				continue;
+			}
+			repointed_chats.push_back({index, chat});
+			if (directory.has_value() && *directory != chat.workspace_directory)
 			{
 				if (original.execution_host_id != uam::execution_hosts::kLocalHostId)
 				{
@@ -2593,14 +2723,14 @@ bool RenameFolderById(uam::AppState& app, const std::string& folder_id, const st
 					if (!ChatRepository::HydrateChatMessages(app.data_root, chat, &warning) ||
 					    !uam::chat::BuildConversationHandoff(chat, chat.provider_handoff_context, &warning))
 					{
-						app.chats = original_chats;
+						restore_repointed_chats();
 						app.status_line = "The workspace was kept because its chat context could not be prepared. " + warning;
 						return false;
 					}
 					if (const char* refusal = uam::NativeResetRefusalReason(app, chat))
 					{
 						const std::string blocking_title = chat.title;
-						app.chats = original_chats;
+						restore_repointed_chats();
 						app.status_line = "The workspace was kept because of the chat \"" + blocking_title + "\". " + refusal;
 						return false;
 					}
@@ -2610,11 +2740,11 @@ bool RenameFolderById(uam::AppState& app, const std::string& folder_id, const st
 					if (!uam::ChatHasUncertainRemoteInput(chat)) chat.acp_queue_held = false; // Saved with the reset.
 					reset_chat_ids.push_back(chat.id);
 				}
-				chat.workspace_directory = input.directory;
+				chat.workspace_directory = *directory;
 			}
-			if (FolderDirectoryMatches(chat.workspace_source_directory, original.directory))
+			if (source_directory.has_value())
 			{
-				chat.workspace_source_directory = input.directory;
+				chat.workspace_source_directory = *source_directory;
 			}
 		}
 		// An idle terminal still belongs to the old directory's session; one that survives could relink it after the reset.
@@ -2622,15 +2752,21 @@ bool RenameFolderById(uam::AppState& app, const std::string& folder_id, const st
 		for (const std::string& chat_id : reset_chat_ids)
 		{
 			if (StopAndEraseCliTerminalForChat(app, chat_id, false)) continue;
-			app.chats = original_chats;
+			restore_repointed_chats();
 			app.status_line = "The workspace was kept because a chat's CLI terminal could not be stopped. Try again.";
 			return false;
 		}
-		if (!SaveChatHistories(app, app.chats))
+		for (std::size_t position = 0; position < repointed_chats.size(); ++position)
 		{
-			const bool rollback_saved = SaveChatHistories(app, original_chats);
-			app.chats = original_chats;
-			app.status_line = StatusAfterFolderDeletePreconditionFailure("Failed to persist chat workspace updates; folder was kept.", rollback_saved);
+			const ChatSession& chat = app.chats[repointed_chats[position].index];
+			if (SaveChatHistory(app, chat))
+			{
+				continue;
+			}
+			const std::string failed_title = uam::strings::NonEmptyOrFallback(uam::strings::Trim(chat.title), "Untitled chat");
+			const bool rollback_saved = save_original_repointed_chats(position);
+			restore_repointed_chats();
+			app.status_line = "The workspace was kept because the chat \"" + failed_title + "\" could not be saved with the new directory" + (rollback_saved ? "." : ", and rollback also failed.");
 			return false;
 		}
 	}
@@ -2641,8 +2777,8 @@ bool RenameFolderById(uam::AppState& app, const std::string& folder_id, const st
 		folder = original;
 		if (directory_changed)
 		{
-			const bool rollback_saved = SaveChatHistories(app, original_chats);
-			app.chats = original_chats;
+			const bool rollback_saved = save_original_repointed_chats(repointed_chats.size());
+			restore_repointed_chats();
 			app.status_line = StatusAfterFolderDeletePreconditionFailure("Failed to persist folder settings.", rollback_saved);
 		}
 		else
@@ -2662,6 +2798,10 @@ bool RenameFolderById(uam::AppState& app, const std::string& folder_id, const st
 	}
 
 	app.status_line = "Folder settings saved.";
+	if (chats_left_elsewhere > 0)
+	{
+		app.status_line += chats_left_elsewhere == 1 ? " 1 chat in this workspace uses a directory outside the old folder and was left unchanged." : " " + std::to_string(chats_left_elsewhere) + " chats in this workspace use directories outside the old folder and were left unchanged.";
+	}
 	return true;
 }
 
