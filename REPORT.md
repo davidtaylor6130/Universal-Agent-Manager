@@ -1,6 +1,8 @@
 The review loop on `v5/fix-svn-update-conflicts` is finished and pushed. Two fresh-context Opus agents reviewed the branch over two rounds: 14 suggestions, 13 implemented, 1 declined.
 
-**Final SHA:** `762d1a408f6fe511fb02320f515014fca8cc5ab0`. The branch holds `2ae9fe5b` (the fix), `94402320` (round-1 fixes), `56df5e05` (round-2 fix) and `762d1a40` (finish-up).
+**Final SHA:** `7047e3f26571ace89ac30de6aabba2d29fcd8bc5`. The branch holds `2ae9fe5b` (the fix), `94402320` (round-1 fixes), `56df5e05` (round-2 fix), `762d1a40` (finish-up) and `7047e3f2` (resolve menu surface).
+
+**Publish-check fix (`7047e3f2`):** the resolve menu had no background, border or shadow, so its items drew over the changed-file rows. It now uses the same raised surface as the other menus (`--surface`, `--border-bright`, `--elev-3`), and a Vitest assertion checks it. Typecheck, the full Vitest run (239 files, 4,225 tests) and `npm run build` pass.
 
 **Finish-up (`762d1a40`):**
 - Removed six `node_modules/.vitest-cache` files (about 2,400 lines, including sandbox paths) that `56df5e05` had committed by mistake. `node_modules/` is now ignored at any depth. The branch no longer tracks any `node_modules`, cache, dist or build files.
@@ -93,7 +95,7 @@ Update before new chat gives info and status reads only 10 s. Its timeout messag
 ## PR preview
 
 **Title:** `fix(svn): finish updates past broken externals and keep conflict leftovers out of commits`
-**Base / head:** `uam/v5.2-sync-main` ← `v5/fix-svn-update-conflicts` (`762d1a40`)
+**Base / head:** `uam/v5.2-sync-main` ← `v5/fix-svn-update-conflicts` (`7047e3f2`)
 
 A broken `svn:externals` definition no longer fails Update, locally or over SSH. svn exits 1 with E205011 after updating the working copy, so UAM now treats that as finished. It still reports the conflicts and the revision, and names each skipped external on its own line in the panel; before a new chat they are only logged. Update before new chat starts when the status check afterwards shows no conflicts.
 
