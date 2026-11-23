@@ -6,6 +6,7 @@
 #include "common/platform/private_temp_directory.h"
 #include "common/provider/provider_ids.h"
 #include "common/utils/env_utils.h"
+#include "common/utils/hash_utils.h"
 #include "common/utils/time_utils.h"
 #include "core/native_import_content.h"
 #include <sqlite3.h>
@@ -36,6 +37,28 @@ namespace uam::antigravity::history
 		{
 			using std::runtime_error::runtime_error;
 		};
+		// Names the message kind, field number and wire type of a field the
+		// reader's tables do not list. It never carries field content.
+		struct UnknownField : Refused
+		{
+			const char* kind;
+			unsigned number, wire;
+			UnknownField(const char* message_kind, unsigned field_number, unsigned wire_type)
+			    : Refused("Antigravity added a history field UAM can't read yet."), kind(message_kind), number(field_number), wire(wire_type)
+			{
+			}
+		};
+		const char* WireName(unsigned wire)
+		{
+			switch (wire)
+			{
+			case 0: return "varint";
+			case 1: return "64-bit";
+			case 2: return "length-delimited";
+			case 5: return "32-bit";
+			default: return "unsupported";
+			}
+		}
 		void Require(bool value, const char* reason)
 		{
 			if (!value)
@@ -149,10 +172,11 @@ namespace uam::antigravity::history
 				const Field* field = One(number, 2);
 				return field ? field->bytes : std::string_view{};
 			}
-			void Known(std::initializer_list<unsigned> allowed) const
+			void Known(const char* kind, std::initializer_list<unsigned> allowed) const
 			{
 				for (const Field& field : fields)
-					Require(std::find(allowed.begin(), allowed.end(), field.number) != allowed.end(), "Antigravity history uses an unrecognised content field; retry with a supported reader.");
+					if (std::find(allowed.begin(), allowed.end(), field.number) == allowed.end())
+						throw UnknownField(kind, field.number, field.wire);
 			}
 		};
 		MessageAttachment InlineImage(std::string_view bytes, const std::string& event, const std::string& source_field,
@@ -160,7 +184,7 @@ namespace uam::antigravity::history
 		    const Budget& budget, const std::string& tool_call_id = {})
 		{
 			const Proto image(bytes);
-			image.Known({1, 2});
+			image.Known("ImageData", {1, 2});
 			MessageAttachment attachment;
 			attachment.mime_type = image.Text(2);
 			Require(attachment.mime_type.starts_with("image/") && attachment.mime_type.size() <= 255 && std::all_of(attachment.mime_type.begin(), attachment.mime_type.end(), [](unsigned char c) { return c > 32 && c < 127; }), "Antigravity native image MIME type is missing or invalid.");
@@ -184,7 +208,7 @@ namespace uam::antigravity::history
 			// Only this source-qualified scalar projection is supported. Complex
 			// render content (including media blocks) refuses the whole history.
 			const Proto render(bytes);
-			render.Known({1, 2, 4, 5, 6, 7, 11});
+			render.Known("StepRenderInfo", {1, 2, 4, 5, 6, 7, 11});
 			for (const auto number : {1U, 2U, 5U, 6U, 7U}) (void)render.Text(number);
 			for (const auto number : {4U, 11U}) Require(render.Number(number) <= 1, "Antigravity native render flag is invalid.");
 		}
@@ -193,7 +217,7 @@ namespace uam::antigravity::history
 			if (bytes.empty())
 				return {};
 			const Proto stamp(bytes);
-			stamp.Known({1, 2});
+			stamp.Known("Timestamp", {1, 2});
 			const auto seconds = stamp.Number(1), nanos = stamp.Number(2);
 			Require(seconds <= 253402300799ULL && nanos < 1000000000, "Antigravity history timestamp is invalid.");
 			std::ostringstream out;
@@ -274,7 +298,7 @@ namespace uam::antigravity::history
 			const auto plain = detail::DecryptLegacy(encrypted);
 			Require(plain != nullptr, "Antigravity legacy history authentication failed; unsupported or incomplete data remains unimported.");
 			const Proto trajectory(plain->bytes);
-			trajectory.Known({1, 2, 3, 4, 5, 6, 7, 8, 9, 10});
+			trajectory.Known("Trajectory", {1, 2, 3, 4, 5, 6, 7, 8, 9, 10});
 			Require(std::none_of(trajectory.fields.begin(), trajectory.fields.end(), [](const Field& field) { return field.number == 5; }), "Antigravity legacy history has parent context whose completeness is not yet supported.");
 			Require(trajectory.One(7, 2) != nullptr, "Antigravity legacy history lacks original workspace metadata.");
 			Require(sqlite3_exec(raw,
@@ -485,7 +509,7 @@ namespace uam::antigravity::history
 		ToolCall Call(std::string_view bytes)
 		{
 			const Proto fields(bytes);
-			fields.Known({1, 2, 3, 9});
+			fields.Known("ChatToolCall", {1, 2, 3, 9});
 			ToolCall call;
 			call.id = fields.Text(1);
 			call.name = fields.Text(2);
@@ -699,26 +723,26 @@ namespace uam::antigravity::history
 				default:
 					throw Refused("Antigravity history has an unrecognised native step; the conversation remains unimported.");
 				}
-				step.Known({1, 4, 5, 31, 133, 148, payload_field});
+				step.Known("Step", {1, 4, 5, 31, 133, 148, payload_field});
 				Require(step.Bytes(31) == error && step.Bytes(133) == permissions && step.Bytes(148) == task, "Antigravity redundant native error, permission or task fields disagree.");
 				Require(step.One(payload_field, 2) != nullptr, "Antigravity native step payload is missing.");
 				const Proto body(step.Bytes(payload_field));
 				if (type == 132)
 				{
-					body.Known({1, 2});
+					body.Known("CortexStepGeneric", {1, 2});
 					for (const auto& field : body.fields)
 						if (field.number == 1)
 						{
 							Require(field.wire == 2, "Antigravity generic arguments are malformed.");
 							const Proto entry(field.bytes);
-							entry.Known({1, 2});
+							entry.Known("CortexStepGeneric.ArgsEntry", {1, 2});
 							(void)entry.Text(1); (void)entry.Text(2);
 						}
 					Require(body.One(2, 2) != nullptr, "Antigravity generic tool result is missing.");
 					const Proto result(body.Bytes(2));
 					// Other fields can carry originals or richer content. Do not accept
 					// their text prefix while retaining usable content only as hex.
-					result.Known({1, 3});
+					result.Known("GenericStepResult", {1, 3});
 					(void)result.Text(1);
 					const Field* nested = result.One(3, 2);
 					Require(render_present == (nested != nullptr), "Antigravity redundant render presence disagrees.");
@@ -748,7 +772,8 @@ namespace uam::antigravity::history
 					chat.updated_at = message.created_at;
 				if (type == 14)
 				{
-					body.Known({1, 2, 3, 5});
+					// client_message_id (19) first appears in agy 1.5.1.
+					body.Known("CortexStepUserInput", {1, 2, 3, 5, 19});
 					Require(!meta.One(3, 0) || meta.Number(3) == 4 || meta.Number(3) == 5, "Antigravity input source is unrecognised; provenance cannot be inferred.");
 					message.role = meta.Number(3) == 4 ? MessageRole::User : MessageRole::System;
 					// The 1.1.16 minimal native shape can omit metadata. Retain its
@@ -763,7 +788,7 @@ namespace uam::antigravity::history
 						{
 							Require(field.wire == 2, "Antigravity input item is malformed.");
 							const Proto item(field.bytes);
-							item.Known({1});
+							item.Known("TextOrScopeItem", {1});
 							if (!items.empty())
 								items += '\n';
 							items += item.Text(1);
@@ -777,6 +802,12 @@ namespace uam::antigravity::history
 					const auto query = body.Text(1);
 					if (!query.empty() && query != message.content)
 						message.blocks.push_back({"native_input_context", query});
+					// The client's own message ID stays passive source evidence. It is not
+					// a UAM input ID or an original input-write receipt.
+					const auto client_message_id = body.Text(19);
+					Require(client_message_id.size() <= 4096, "Antigravity input client message ID exceeds its bound.");
+					if (!client_message_id.empty())
+						message.blocks.push_back({"native_input_metadata", nlohmann::json{{"clientMessageId", client_message_id}}.dump()});
 					// The stable provider_event_ids locator records the native row. No
 					// provider-issued input ID or original UAM write receipt was observed.
 					for (const Field& field : body.fields)
@@ -790,7 +821,7 @@ namespace uam::antigravity::history
 				}
 				else if (type == 15)
 				{
-					body.Known({1, 2, 3, 4, 5, 6, 7, 8, 11, 12, 13, 14, 15, 16, 17, 18, 19});
+					body.Known("CortexStepPlannerResponse", {1, 2, 3, 4, 5, 6, 7, 8, 11, 12, 13, 14, 15, 16, 17, 18, 19});
 					for (const Field& field : body.fields)
 						Require(field.wire == (field.number == 5 || field.number == 12 ? 0U : 2U), "Antigravity response field has an invalid native encoding.");
 					for (const unsigned field : {11U, 13U, 19U})
@@ -861,11 +892,14 @@ namespace uam::antigravity::history
 					Require(call.name == native_call.name && call.args_json == native_call.args_json && call.status == "pending", "Antigravity native tool correlation is ambiguous.");
 					// Refuse unrecognised result fields, especially original media that
 					// cannot be represented by a text-only projection of these tools.
-					if (type == 8) body.Known({1, 2, 3, 4, 9, 10, 11, 12, 13, 16, 17, 18, 19, 20});
-					if (type == 9) body.Known({1, 2, 3, 4, 5});
-					if (type == 7) body.Known({1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16});
-					if (type == 5) body.Known({1, 2, 4, 5, 7, 8, 11, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23, 24, 25, 26, 27, 28});
-					if (type == 21) body.Known({1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37});
+					if (type == 8) body.Known("CortexStepViewFile", {1, 2, 3, 4, 9, 10, 11, 12, 13, 16, 17, 18, 19, 20});
+					if (type == 9) body.Known("CortexStepListDirectory", {1, 2, 3, 4, 5});
+					if (type == 7) body.Known("CortexStepGrepSearch", {1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16});
+					if (type == 5) body.Known("CortexStepCodeAction", {1, 2, 4, 5, 7, 8, 11, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23, 24, 25, 26, 27, 28});
+					// environment_id (38) first appears in agy 1.5.13; it is a plain string
+					// retained with the rest of the record evidence.
+					if (type == 21) body.Known("CortexStepRunCommand", {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38});
+					if (type == 21) (void)body.Text(38);
 					std::string result;
 					if (type == 8)
 					{
@@ -887,7 +921,7 @@ namespace uam::antigravity::history
 					}
 					if (type == 38)
 					{
-						body.Known({1, 2, 3, 5});
+						body.Known("CortexStepMcpTool", {1, 2, 3, 5});
 						(void)body.Text(1);
 						result = body.Text(3);
 						std::size_t image_index = 0;
@@ -1044,6 +1078,25 @@ namespace uam::antigravity::history
 					Require(size <= kMaxBytes - retained_bytes, "Antigravity staged histories exceed this scan's memory budget; use scoped discovery.");
 					retained_bytes += size;
 					result.chats.push_back(std::move(chat));
+				}
+				catch (const UnknownField& failure)
+				{
+					// Listed outside the detail cap so the application can report each
+					// conversation once per reader version and file revision.
+					const std::string session = file.stem().string();
+					std::string revision;
+					try { revision = Revision(file); }
+					catch (const std::exception&) { revision = "unreadable"; }
+					FormatRefusal refusal;
+					refusal.native_session_id = session;
+					refusal.message = "Antigravity conversation " + session + ": " + failure.what();
+					refusal.diagnostic = "Antigravity history reader v" + std::to_string(kReaderVersion) + " refused conversation " + session +
+					    ": unknown field " + std::to_string(failure.number) + " (wire type " + std::to_string(failure.wire) + ", " + WireName(failure.wire) +
+					    ") in " + failure.kind + "; it stays unimported and is reported again when the reader or the file changes.";
+					refusal.report_key = std::string(uam::provider_ids::kAntigravityCli) + "|" + session + "|reader-" + std::to_string(kReaderVersion) + "|" +
+					    uam::hashing::Hex64(uam::hashing::Fnv1a64(revision));
+					result.errors.push_back(refusal.message);
+					result.format_refusals.push_back(std::move(refusal));
 				}
 				catch (const Refused& failure)
 				{

@@ -9,12 +9,35 @@
 
 namespace uam::antigravity::history
 {
+	/// Version of the reader's protobuf field tables. Raise it whenever a table
+	/// accepts a field it used to refuse, so earlier unknown-format refusals are
+	/// re-reported and the affected conversations are read again.
+	inline constexpr int kReaderVersion = 2;
+
+	/// A conversation refused because it uses a field this reader version does
+	/// not know. It names only the message kind, field number and wire type,
+	/// never history content.
+	struct FormatRefusal
+	{
+		std::string native_session_id;
+		/// Same text as the matching entry in Discovery::errors.
+		std::string message;
+		/// One detailed diagnostic line for the log.
+		std::string diagnostic;
+		/// Starts with "antigravity-cli|<session>|" and changes when the reader
+		/// version or the native file changes.
+		std::string report_key;
+	};
+
 	struct Discovery
 	{
 		std::vector<ChatSession> chats;
 		std::vector<std::string> errors;
 		// Omitted details remain structured so downstream caps cannot hide the total.
 		std::size_t omitted_error_count = 0;
+		// Unknown-format refusals are always listed in errors as well, outside the
+		// detail cap, so a caller can report each one once.
+		std::vector<FormatRefusal> format_refusals;
 	};
 
 	/// Reads only the CLI conversations directory, never launches agy or the SDK.

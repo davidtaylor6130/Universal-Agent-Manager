@@ -487,9 +487,15 @@ namespace uam
 			const bool continue_scan = discovery.open_code_scanned_count > 0 && discovery.open_code_scanned_count < remaining &&
 			    discovery.open_code_next_offset && !discovery.open_code_list_fingerprint.empty();
 			m_omitted_error_count += discovery.result.omitted_error_count;
+			// A history in a format the reader cannot read yet is reported once, then stays quiet
+			// until the reader version or that history file changes; it is still retried every scan.
+			const std::unordered_set<std::string> already_reported = ChatHistorySyncService().RecordNativeFormatRefusals(app.data_root, discovery.result.format_refusals);
+			for (const auto& refusal : discovery.result.format_refusals)
+				if (!already_reported.contains(refusal.message)) diagnostics::Write("Startup native history: " + strings::SafeLine(refusal.diagnostic, 512, true));
 			for (const std::string& error : discovery.result.errors)
 			{
 				if (continue_scan && error == "OpenCode history scan stopped before all sessions were read; retry to continue.") continue;
+				if (already_reported.contains(error)) continue;
 				AddError(error);
 			}
 			// Sub-chats leave the review list here: each waits for its parent's decision, and a fresh scan replaces an earlier sighting.
