@@ -2551,9 +2551,9 @@ input[type="checkbox"]:disabled { opacity: .45; cursor: not-allowed; }
 @media (prefers-reduced-motion: reduce) { .uam-icon-cell { transition: none; } }
 
 /* Loading placeholder (sidebar list, icons, settings rows, transcript history): one shared skeleton. The block is a
-   still --surface-up fill; only its highlight band moves, by transform on its own layer, so a loading surface is
-   composited each frame instead of repainted and stays off the main thread while history or settings load.
-   Motion Off and reduced motion keep the still block; the surrounding status label carries the loading state. */
+   still --surface-up fill; only its highlight band moves, and it animates transform alone (a compositor-only
+   property), with no script or React work per frame. Only the block itself takes this class, never a container
+   of blocks, or the container's fill and sweep would cover its lines. Motion Off and reduced motion keep the still block. */
 .uam-skeleton { position: relative; overflow: hidden; isolation: isolate; background: var(--surface-up); }
 .uam-skeleton::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: linear-gradient(90deg, transparent 0%, var(--surface-high) 50%, transparent 100%); transform: translateX(-100%); animation: uam-skeleton-sweep calc(1400ms * var(--motion-scale, 1)) ease-in-out infinite; }
 @keyframes uam-skeleton-sweep { to { transform: translateX(100%); } }

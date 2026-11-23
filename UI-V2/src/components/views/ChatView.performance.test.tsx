@@ -112,6 +112,8 @@ describe('chat interaction code-path performance', () => {
     }
     expect([...host.querySelectorAll('.uam-skeleton')]).toEqual(placeholders)
     expect(placeholders.every((node) => node.closest('[aria-hidden="true"]'))).toBe(true)
+    // Each skeleton is a leaf block; a container of lines that took it would paint over its own lines.
+    expect(placeholders.every((node) => node.childElementCount === 0)).toBe(true)
   })
 
   it.each([20, 50, 200, 2000, 10000])('commits the initial bounded history view for %i total messages within 1s', (count) => {

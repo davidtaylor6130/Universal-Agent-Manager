@@ -93,9 +93,13 @@ describe('shared motion contract', () => {
     for (const [file, family] of [['./components/layout/Sidebar.tsx', 'uam-icon-skeleton'], ['./components/shared/CustomIcon.tsx', 'uam-icon-skeleton'],
       ['./components/settings/SettingsPrimitives.tsx', 'uam-set-skeleton'], ['./components/views/ChatView.tsx', 'conversation-skeleton__'],
       ['./components/chat/SubagentTranscript.tsx', 'conversation-skeleton__']]) {
-      const uses = [...source(file).matchAll(/className="([^"]*)"/g)].map((match) => match[1]).filter((name) => name.includes(family) && !name.includes('__text'))
-      expect(uses.length, file).toBeGreaterThan(0)
-      for (const name of uses) expect(name.split(' '), `${file}: ${name}`).toContain('uam-skeleton')
+      const names = [...source(file).matchAll(/className="([^"]*)"/g)].map((match) => match[1]).filter((name) => name.includes(family))
+      // The skeleton paints its own fill and sweep, so a container of placeholder lines must never take it.
+      const containers = names.filter((name) => name.includes('__text'))
+      const blocks = names.filter((name) => !name.includes('__text'))
+      expect(blocks.length, file).toBeGreaterThan(0)
+      for (const name of blocks) expect(name.split(' '), `${file}: ${name}`).toContain('uam-skeleton')
+      for (const name of containers) expect(name.split(' '), `${file}: ${name}`).not.toContain('uam-skeleton')
     }
   })
 

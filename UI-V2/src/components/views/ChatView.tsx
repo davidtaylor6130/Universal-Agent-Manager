@@ -3749,14 +3749,14 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               {historyLoading && <div role="status" className="conversation-empty">
                 <div className="conversation-skeleton" aria-hidden>
                   <span className="uam-skeleton conversation-skeleton__bubble" />
-                  <div className="uam-skeleton conversation-skeleton__text">
+                  <div className="conversation-skeleton__text">
                     <span className="uam-skeleton conversation-skeleton__line" />
                     <span className="uam-skeleton conversation-skeleton__line" />
                     <span className="uam-skeleton conversation-skeleton__line conversation-skeleton__line--mid" />
                     <span className="uam-skeleton conversation-skeleton__line conversation-skeleton__line--short" />
                   </div>
                   <span className="uam-skeleton conversation-skeleton__bubble conversation-skeleton__bubble--short" />
-                  <div className="uam-skeleton conversation-skeleton__text">
+                  <div className="conversation-skeleton__text">
                     <span className="uam-skeleton conversation-skeleton__line" />
                     <span className="uam-skeleton conversation-skeleton__line conversation-skeleton__line--short" />
                   </div>
