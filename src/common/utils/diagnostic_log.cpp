@@ -48,6 +48,8 @@ namespace
 	bool g_auditCompactPending = false;
 	std::ofstream g_auditFile;
 	std::uintmax_t g_auditBytes = 0;
+	// After a failed compaction the size trigger waits this long, so a locked file is not reread for every line.
+	std::chrono::steady_clock::time_point g_auditCompactRetryAt{};
 
 	bool OpenRegular(const std::filesystem::path& path, std::ofstream& file, std::ios_base::openmode mode)
 	{
@@ -160,7 +162,8 @@ namespace
 		if (!OpenRegular(path, g_auditFile, std::ios::app)) { AuditUnavailable("could not be compacted or reopened"); return; }
 		const std::uintmax_t size = std::filesystem::file_size(path, error);
 		g_auditBytes = error ? 0 : size;
-		std::cerr << "Storage audit log could not be compacted; appending and retrying later.\n";
+		g_auditCompactRetryAt = std::chrono::steady_clock::now() + std::chrono::hours(1);
+		std::cerr << "Storage audit log could not be compacted; appending and retrying in an hour.\n";
 	}
 
 	// Rewrites the audit file without expired or excess lines, then reopens it for appending.
@@ -222,7 +225,8 @@ namespace
 		{
 			if (!g_auditFile.is_open()) return;
 			// Compact to three quarters of the cap so a busy day does not rewrite the file for every line.
-			if (g_auditBytes + line.size() > kMaxAuditFileBytes) CompactAudit(path, retention_days, kMaxAuditFileBytes * 3 / 4);
+			if (g_auditBytes + line.size() > kMaxAuditFileBytes && std::chrono::steady_clock::now() >= g_auditCompactRetryAt)
+				CompactAudit(path, retention_days, kMaxAuditFileBytes * 3 / 4);
 			if (!g_auditFile.is_open()) return;
 			g_auditFile.write(line.data(), static_cast<std::streamsize>(line.size()));
 			if (!g_auditFile) { AuditUnavailable("write failed"); return; }
@@ -255,7 +259,7 @@ namespace
 				audit_retention_days = g_auditRetentionDays;
 				compact_audit = std::exchange(g_auditCompactPending, false);
 				if (const std::size_t audit_dropped = std::exchange(g_auditDropped, 0); audit_dropped != 0)
-					audit_batch.push_back(FormatLine("Audit log dropped " + std::to_string(audit_dropped) + " entries because its queue was full; they remain in uam.log."));
+					audit_batch.push_back(FormatLine("Audit log dropped " + std::to_string(audit_dropped) + " entries because its queue was full; they were also queued to uam.log."));
 				g_queuedBytes = 0;
 				dropped = g_droppedEntries;
 				g_droppedEntries = 0;
@@ -373,6 +377,7 @@ void StopFileLog()
 	g_auditFile.close();
 	g_auditFile.clear();
 	g_auditBytes = 0;
+	g_auditCompactRetryAt = {};
 	std::lock_guard<std::mutex> queue_lock(g_queueMutex);
 	g_auditPath.clear();
 	g_auditQueue.clear();

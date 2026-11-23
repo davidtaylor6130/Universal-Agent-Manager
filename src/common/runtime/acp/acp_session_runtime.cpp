@@ -10364,7 +10364,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 	{
 		const auto failure = app.chat_save_failures_by_chat_id.find(chat_id);
 		if (failure == app.chat_save_failures_by_chat_id.end()) return;
-		diagnostics::Write("Chat save recovered after " + std::to_string(failure->second.attempts) + " failed attempts: " + chat_id);
+		diagnostics::Write("Chat save recovered after " + std::to_string(failure->second.attempts) + " failed attempts: " +
+		    (uam::chat_ids::IsSafeStorageChatId(chat_id) ? chat_id : std::string("unsafe chat id")));
 		app.chat_save_failures_by_chat_id.erase(failure);
 		ClearChatSaveStatusIfSettled(app);
 	}

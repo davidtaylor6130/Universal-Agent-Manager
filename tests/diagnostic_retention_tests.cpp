@@ -70,6 +70,25 @@ UAM_TEST(DiagnosticAuditLogRefusesUnsafePathsAndNeedsFileLog)
 	UAM_ASSERT(uam::strings::Contains(uam::io::ReadTextFile(temp.root / "uam.log"), "chat_id=diagnostic-only"));
 }
 
+UAM_TEST(DiagnosticAuditLogKeepsAppendingWhenCompactionFails)
+{
+	TempDir temp("uam-audit-locked");
+	const auto now = std::chrono::system_clock::now();
+	const fs::path audit = temp.root / "uam-audit.log";
+	UAM_ASSERT(uam::io::WriteTextFile(audit, StampDaysAgo(now, 200) + " Chat storage delete: reason=user_deletion, chat_id=expired-chat\n"));
+	fs::create_directories(temp.root / "uam-audit.log.tmp"); // The rewrite cannot stage its replacement.
+	std::string error;
+	UAM_ASSERT(uam::diagnostics::StartFileLog(temp.root / "uam.log", error, 0));
+	struct StopLog { ~StopLog() { uam::diagnostics::StopFileLog(); } } stop_log;
+	UAM_ASSERT(uam::diagnostics::StartAuditLog(audit, error, 90));
+	uam::diagnostics::WriteAudit("Chat storage delete: reason=user_deletion, chat_id=kept-while-locked");
+	uam::diagnostics::FlushFileLog();
+	const std::string text = uam::io::ReadTextFile(audit);
+	UAM_ASSERT(uam::strings::Contains(text, "chat_id=expired-chat")); // Not compacted...
+	UAM_ASSERT(uam::strings::Contains(text, "chat_id=kept-while-locked")); // ...but still written.
+	UAM_ASSERT(fs::is_directory(temp.root / "uam-audit.log.tmp"));
+}
+
 UAM_TEST(DiagnosticAuditTextCompactionDropsOldestToFitCap)
 {
 	const auto now = std::chrono::system_clock::now();

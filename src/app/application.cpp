@@ -1299,6 +1299,8 @@ void Application::Shutdown()
 			// Saves and provider shutdown above are complete. Process exit releases
 			// the data lock; do not tear CEF down underneath an unconfirmed worker.
 			// Unconfirmed worker teardown must not mint a migration restart marker.
+			FlushPollTiming();
+			if (m_dataRootLock != nullptr) uam::diagnostics::StopFileLog(); // Writes are queued, and _Exit would drop them.
 			std::_Exit(uam::platform::ApplicationRestartRequested() ? uam::platform::RequestedRestartExitCode() : m_exitCode);
 		}
 #endif

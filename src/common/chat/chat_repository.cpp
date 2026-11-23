@@ -4782,7 +4782,12 @@ std::shared_ptr<PreparedChatSave> ChatRepository::PrepareChatSave(const fs::path
 
 std::shared_ptr<PreparedChatSave> ChatRepository::PrepareChatSaveRecorded(const fs::path& data_root, const ChatSession& chat, std::string_view expected_storage_revision)
 {
-	if (!expected_storage_revision.empty() && ChatStorageRevision(data_root, chat.id) != expected_storage_revision) return SaveRefused("primary_changed_since_capture"), nullptr;
+	if (!expected_storage_revision.empty())
+	{
+		const std::optional<std::string> current = ChatStorageRevision(data_root, chat.id);
+		if (!current) return SaveFailed("primary_revision_unreadable"), nullptr;
+		if (*current != expected_storage_revision) return SaveRefused("primary_changed_since_capture"), nullptr;
+	}
 	std::shared_ptr<PreparedChatSave> prepared = std::make_shared<PreparedChatSave>();
 	prepared->passive_archive_worker_migration = chat.imported_read_only;
 	prepared->expected_storage_revision = expected_storage_revision.empty() ? ChatStorageRevision(data_root, chat.id).value_or("unreadable") : std::string(expected_storage_revision);
@@ -5115,8 +5120,8 @@ std::shared_ptr<PreparedChatSave> ChatRepository::PrepareLoadedChatBindingSave(c
 
 std::shared_ptr<PreparedChatSave> ChatRepository::PrepareLoadedChatBindingSaveRecorded(const fs::path& data_root, const ChatSession& chat, const SavedChatPrimaryWitness& expected)
 {
-	if (!chat.messages_loaded || chat.messages.empty() || chat.imported_read_only ||
-	    !MatchesSavedChatPrimaryWitness(data_root, chat.id, expected)) return SaveRefused("primary_changed_since_capture"), nullptr;
+	if (!chat.messages_loaded || chat.messages.empty() || chat.imported_read_only) return SaveRefused("not_a_loaded_writable_chat"), nullptr;
+	if (!MatchesSavedChatPrimaryWitness(data_root, chat.id, expected)) return SaveRefused("primary_changed_since_capture"), nullptr;
 	auto prepared = std::make_shared<PreparedChatSave>();
 	prepared->expected_storage_revision = expected.revision;
 	prepared->binding_expected_primary = expected;
