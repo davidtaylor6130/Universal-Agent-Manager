@@ -54,7 +54,7 @@ namespace
 				if (m_resume({})) m_resume = {};
 				else if (!CefPostDelayedTask(TID_UI, this, 50))
 				{
-					(void)m_resume("The terminal start queue is unavailable. Retry opening the terminal.");
+					(void)m_resume("The terminal start queue is unavailable; try opening the terminal again.");
 					m_resume = {};
 				}
 			}
@@ -121,7 +121,7 @@ void UamQueryHandler::HandleStartCli(CefRefPtr<CefBrowser> browser, const nlohma
 		}
 		else
 		{
-			ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
+			ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found.");
 			if (chat == nullptr)
 			{
 				return;
@@ -141,7 +141,7 @@ void UamQueryHandler::HandleStartCli(CefRefPtr<CefBrowser> browser, const nlohma
 		}
 	}
 
-	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
+	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found.");
 	if (chat == nullptr)
 	{
 		return;
@@ -368,9 +368,9 @@ void UamQueryHandler::HandleStartCli(CefRefPtr<CefBrowser> browser, const nlohma
 				        uam::paths::ResolveWorkspaceRootPath(m_app, *current) != workspace ||
 				        ProviderRuntime::BuildInteractiveArgv(ProviderResolutionService().ProviderForChatOrDefault(m_app, *current), *current, m_app.settings) != argv || !launch_host ||
 				        current_host == nullptr || !uam::execution_hosts::SameConnection(*current_host, *launch_host))
-					    error = "The chat or remote host changed. Retry opening its terminal.";
+					    error = "The chat or remote host changed; open its terminal again.";
 				    if (error.empty() && uam::GetAppTimeSeconds() >= deadline)
-					    error = "The remote stop timed out. Retry opening the terminal.";
+					    error = "The remote stop timed out; open the terminal again.";
 				    if (error.empty() && !uam::PrepareAcpSessionForCliTerminalLaunch(m_app, *current, &error) && error.empty())
 					    return false;
 				    target->native_session_setup_cancel.reset();
@@ -406,7 +406,7 @@ void UamQueryHandler::HandleStartCli(CefRefPtr<CefBrowser> browser, const nlohma
 			if (host == nullptr || !uam::remote::CanAttemptRunnerConnection(*host) ||
 			    host->runner_protocol_version < 3)
 			{
-				terminal.last_error = "Native session creation needs a ready, current remote runner. Recheck it in Settings.";
+				terminal.last_error = "The remote runner is not ready; recheck it in Settings.";
 				cb->Success(BuildCliBindingResponse(terminal).dump());
 				return;
 			}
@@ -454,7 +454,7 @@ void UamQueryHandler::HandleStartCli(CefRefPtr<CefBrowser> browser, const nlohma
 			        ProviderResolutionService().ProviderForChatOrDefault(m_app, *current).interactive_command != interactive_command ||
 			        uam::paths::ResolveWorkspaceRootPath(m_app, *current) != workspace)
 			    {
-				    response = AsyncFailure(409, "The chat changed while the provider was starting. Retry opening its terminal.");
+				    response = AsyncFailure(409, "The chat changed while the provider was starting; open its terminal again.");
 			    }
 			    if (response.ok && remote_host)
 			    {
@@ -465,7 +465,7 @@ void UamQueryHandler::HandleStartCli(CefRefPtr<CefBrowser> browser, const nlohma
 				        host->runner_version != remote_host->runner_version ||
 				        host->runner_protocol_version != remote_host->runner_protocol_version)
 				    {
-					    response = AsyncFailure(409, "Remote host changed while the provider was starting. Retry opening its terminal.");
+					    response = AsyncFailure(409, "The remote host changed while the provider was starting; open its terminal again.");
 				    }
 			    }
 			    if (response.ok)
@@ -473,7 +473,7 @@ void UamQueryHandler::HandleStartCli(CefRefPtr<CefBrowser> browser, const nlohma
 				    std::string handoff_error;
 				    const ProviderProfile& current_provider = ProviderResolutionService().ProviderForChatOrDefault(m_app, *current);
 				    if (!uam::ResolveProviderInteractiveResumeId(m_app, *current, current_provider).empty())
-					    response = AsyncFailure(409, "The chat already has a native session. Retry opening its terminal.");
+					    response = AsyncFailure(409, "The chat already has a native session; open its terminal again.");
 				    else if (!uam::PrepareAcpSessionForCliTerminalLaunch(m_app, *current, &handoff_error))
 					    response = AsyncFailure(409, handoff_error);
 			    }
@@ -486,7 +486,7 @@ void UamQueryHandler::HandleStartCli(CefRefPtr<CefBrowser> browser, const nlohma
 				    if (!ChatRepository::SaveChat(m_app.data_root, *current))
 				    {
 					    m_app.pending_chat_save_at_by_chat_id[chat_id] = uam::GetAppTimeSeconds() + 1.0;
-					    response = AsyncFailure(500, "Could not save the native session. Retry when storage is available.");
+					    response = AsyncFailure(500, "Could not save the native session; try again when storage is available.");
 				    }
 				    else if (target->ui_attached)
 				    {
@@ -612,7 +612,7 @@ void UamQueryHandler::HandleWriteCliInput(CefRefPtr<CefBrowser> browser, const n
 		}
 		else
 		{
-			cb->Failure(409, "Provider terminal is not running. Restart it to send input.");
+			cb->Failure(409, "The provider terminal is not running; restart it to send input.");
 			return;
 		}
 	}
@@ -653,7 +653,7 @@ void UamQueryHandler::HandleCompanionCli(CefRefPtr<CefBrowser> browser, const nl
 	    !uam::CliTerminalMatchesChatId(*terminal, chat_id) || terminal->terminal_id != terminal_id ||
 	    !terminal->running || terminal->lifecycle_state == uam::CliTerminalLifecycleState::ShuttingDown)
 	{
-		cb->Failure(409, "This chat has no live terminal to attach. Open its CLI view on the desktop first.");
+		cb->Failure(409, "This chat has no live terminal; open its CLI view on the desktop first.");
 		return;
 	}
 	const std::string operation = payload.value("operation", "attach");
@@ -662,7 +662,7 @@ void UamQueryHandler::HandleCompanionCli(CefRefPtr<CefBrowser> browser, const nl
 		if (!payload.contains("startupTime") || !payload["startupTime"].is_number() ||
 		    payload["startupTime"].get<double>() != terminal->startup_time_s)
 		{
-			cb->Failure(409, "The terminal session changed. Attach again to continue.");
+			cb->Failure(409, "The terminal session changed; attach again to continue.");
 			return;
 		}
 	}
@@ -682,7 +682,7 @@ void UamQueryHandler::HandleCompanionCli(CefRefPtr<CefBrowser> browser, const nl
 	{
 		if (!payload.contains("cursor") || !payload["cursor"].is_number_unsigned()) { cb->Failure(400, "Invalid output cursor."); return; }
 		const std::optional<std::string_view> chunk = uam::ReadTerminalOutputAfter(output, terminal->output_cursor, payload["cursor"].get<std::uint64_t>());
-		if (!chunk) { cb->Failure(409, "Terminal output expired. Attach again to reload it."); return; }
+		if (!chunk) { cb->Failure(409, "Terminal output expired; attach again to reload it."); return; }
 		output = *chunk;
 	}
 	response["replayData"] = uam::base64::Encode(std::string(output));

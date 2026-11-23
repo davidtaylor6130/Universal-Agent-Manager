@@ -1514,7 +1514,7 @@ UAM_TEST(GitWorktreeCreationExplainsUnbornHeadWithoutChangingRepository)
 		chat.workspace_directory = uam::paths::Utf8PathString(repo);
 		const uam::GitWorktreeOperationResult result = uam::GitWorktreeService().CreateForChat(app, chat);
 		UAM_ASSERT(!result.ok);
-		UAM_ASSERT_EQ(result.message, std::string("This repository has no commits. Create an initial commit before creating a worktree."));
+		UAM_ASSERT_EQ(result.message, std::string("Make a first commit before creating a worktree for this repository."));
 		UAM_ASSERT(chat.workspace_isolation_kind.empty());
 		UAM_ASSERT(chat.workspace_worktree_directory.empty());
 		UAM_ASSERT_EQ(uam::io::ReadTextFile(repo / ".git" / "HEAD"), original_head);
@@ -2042,7 +2042,7 @@ UAM_TEST(GitWorktreeDefaultLaunchPersistsRetriesAndLeavesExistingWorkspacesAlone
 		std::this_thread::sleep_for(std::chrono::milliseconds(2));
 	} while (std::chrono::steady_clock::now() < deadline);
 	UAM_ASSERT(failed_session != nullptr && failed_session->queue_held);
-	UAM_ASSERT_EQ(failed_session->last_error, std::string("Source workspace is not an available directory. Restore the folder, then retry."));
+	UAM_ASSERT_EQ(failed_session->last_error, std::string("The source folder is unavailable; restore it, then retry."));
 	UAM_ASSERT(!failed_session->running && !failed_session->processing && !failed_session->reconnect_pending);
 	UAM_ASSERT(app.chats.front().messages.empty());
 	UAM_ASSERT_EQ(failed_session->queued_user_prompts.size(), std::size_t{1});
@@ -2062,7 +2062,8 @@ UAM_TEST(GitWorktreeDefaultLaunchPersistsRetriesAndLeavesExistingWorkspacesAlone
 	UAM_ASSERT_EQ(failed_session->queued_user_prompts.size(), std::size_t{1});
 	app.chats.clear();
 	UAM_ASSERT(!service.PrepareForFirstLaunch(app, chat, &error));
-	UAM_ASSERT(error.find("Could not create this chat's worktree") != std::string::npos);
+	// The refusal is the worktree service's own one-line reason, without a stacked prefix.
+	UAM_ASSERT(!error.empty() && error.find("Retry after resolving") == std::string::npos);
 	UAM_ASSERT_EQ(chat.workspace_isolation_kind, std::string(uam::paths::kPendingGitWorktreeIsolationKind));
 	chat.workspace_directory = source.string();
 	UAM_ASSERT(service.PrepareForFirstLaunch(app, chat, &error));
@@ -2790,7 +2791,7 @@ UAM_TEST(AcpRepositoryBaselineFailureRetriesTheExistingDurableQueueOnce)
 	// A stale identity is refused without touching the hold.
 	const std::string held_error = held.last_error;
 	UAM_ASSERT(!uam::RetryQueuedAcpPrompt(app, chat.id, {receipt.id, receipt.revision + 1}, &error));
-	UAM_ASSERT_EQ(error, std::string("The retained message changed or its delivery is unresolved. Your input is kept."));
+	UAM_ASSERT_EQ(error, std::string("This message changed or its delivery is unresolved; your input is kept."));
 	UAM_ASSERT(held.queue_held && app.chats.front().acp_queue_held && !held.reconnect_pending && held.last_error == held_error);
 	UAM_ASSERT(app.chats.front().acp_queued_prompts.size() == 1 && app.chats.front().acp_queued_prompts.front() == receipt);
 	// Retrying while storage still fails re-holds the same input with a fresh marker once the baseline fails again.

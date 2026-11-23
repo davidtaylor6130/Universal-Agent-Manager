@@ -13,7 +13,7 @@ void UamQueryHandler::HandleListRepositoryMatches(CefRefPtr<CefBrowser> browser,
 	if (!payload.is_object() || !payload.empty()) { cb->Failure(400, "Repository matching takes no arguments."); return; }
 	if (m_workspaceDeletionPending || m_app.folders.size() > 512) { cb->Failure(409, "Workspace inventory is unavailable."); return; }
 	std::shared_ptr<void> slot = uam::AcquireWorkspaceVcsContextSlot(m_pendingWorkspaceVcsContexts);
-	if (!slot) { cb->Failure(429, "Repository context is busy. Try again shortly."); return; }
+	if (!slot) { cb->Failure(429, "Repository context is busy; try again shortly."); return; }
 	const std::vector<ExecutionHost> hosts = m_app.settings.execution_hosts;
 	const std::filesystem::path data_root = m_app.data_root;
 	const std::vector<uam::RepositoryRouteWorkspace> captured = uam::CaptureRepositoryRouteWorkspaces(m_app.folders, hosts);

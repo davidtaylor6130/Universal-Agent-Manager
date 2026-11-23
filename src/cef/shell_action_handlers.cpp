@@ -67,7 +67,7 @@ void UamQueryHandler::HandleSetShellActions(CefRefPtr<CefBrowser> browser, const
 		return;
 	}
 	m_app.shell_actions = ShellActionService::Load(m_app.data_root);
-	m_app.shell_action_notification = "Shell action settings saved. Choose Apply to update Finder or Explorer.";
+	m_app.shell_action_notification = "Shell action settings saved; choose Apply to update Finder or Explorer.";
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }

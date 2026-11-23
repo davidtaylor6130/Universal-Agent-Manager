@@ -1,6 +1,7 @@
 #include "cef/uam_query_handler.h"
 #include "common/provider/excluded_provider_data.h"
 #include "cef/uam_query_handler_async.h"
+#include "common/utils/diagnostic_log.h"
 
 #include "app/chat_domain_service.h"
 #include "app/local_chat_bundle_service.h"
@@ -174,9 +175,9 @@ void UamQueryHandler::HandleImportLocalChats(
 			    {
 				    import_result->ok = false;
 				    import_result->degraded = true;
-				    import_result->warnings.push_back(
-				        "Imported chat is durable but could not be added to the live sidebar: " + item.imported_id +
+				    uam::diagnostics::Write("[legacy-import] Imported chat could not be added to the live sidebar: " + item.imported_id +
 				        (warning.empty() ? std::string{} : " (" + warning + ")"));
+				    import_result->warnings.push_back("An imported chat was saved but could not be shown in the sidebar.");
 				    continue;
 			    }
 			    imported_summaries->push_back(std::move(*summary));
@@ -256,7 +257,7 @@ void UamQueryHandler::HandleResolveLegacyChatImport(
 	{
 		if (!uam::LocalChatBundleService::DeclineLegacyDataRoot(data_root, legacy_root))
 		{
-			cb->Failure(500, "Could not record this choice. Nothing was changed; try again.");
+			cb->Failure(500, "Could not record this choice, so nothing was changed.");
 			return;
 		}
 		pending.erase(found);
@@ -303,8 +304,7 @@ void UamQueryHandler::HandleResolveLegacyChatImport(
 		    if (!import_result->imported_folders.empty()) (void)ChatFolderStore::Save(live_app->data_root, live_app->folders);
 		    if (import_result->imported_count > 0)
 			    live_app->status_line = "Copied " + std::to_string(import_result->imported_count) + " chat" +
-			        (import_result->imported_count == 1 ? "" : "s") + " from a previous version in " +
-			        uam::paths::Utf8PathString(legacy_root) + ". The original files were left in place.";
+			        (import_result->imported_count == 1 ? "" : "s") + " from a previous version and left the original files in place.";
 		    uam::PushStateUpdateIfChanged(browser, *live_app);
 	    });
 	if (!posted) pending.push_back(legacy_root);

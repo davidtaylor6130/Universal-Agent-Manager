@@ -1106,7 +1106,7 @@ UAM_TEST(MemoryLibraryServiceListsCreatesAndDeletesEntries)
 	UAM_ASSERT(!MemoryLibraryService::ResolveScope(app, "folder", " missing-folder ", stale_scope, &error));
 	UAM_ASSERT(stale_scope.scope_type.empty());
 	UAM_ASSERT(stale_scope.root_path.empty());
-	UAM_ASSERT_EQ(error, std::string("Folder not found: missing-folder"));
+	UAM_ASSERT_EQ(error, std::string("Folder not found."));
 }
 
 UAM_TEST(MemoryLibraryServiceReadsFullKnownEntryMemorySection)
@@ -3302,7 +3302,7 @@ UAM_TEST(MemoryBoundedHydrationRejectsChangedQueueRevisionWithoutAdoption)
 		const std::string digest = cold.persisted_messages_digest;
 		std::string warning;
 		UAM_ASSERT(!ChatRepository::HydrateChatMessages(temp.root, cold, &warning, cap));
-		UAM_ASSERT_EQ(warning, std::string("Queued inputs changed while history was loading. Reload the chat before continuing."));
+		UAM_ASSERT_EQ(warning, std::string("Queued inputs changed while history loaded; reload the chat before continuing."));
 		UAM_ASSERT(!cold.messages_loaded && cold.messages.empty());
 		UAM_ASSERT_EQ(cold.title, std::string("live metadata must survive refusal"));
 		UAM_ASSERT_EQ(cold.acp_queue_storage_revision, queue_revision);
@@ -3388,7 +3388,7 @@ namespace
 		UAM_ASSERT(task.extraction_state->hydration_failed);
 		UAM_ASSERT(!task.state->result.ok);
 		UAM_ASSERT_EQ(task.state->result.error,
-		    std::string("Memory scan input could not be prepared safely. History and progress are unchanged."));
+		    std::string("Memory scan input could not be prepared safely, so history and progress are unchanged."));
 		UAM_ASSERT_EQ(task.scan_start_message_index, 0);
 		UAM_ASSERT(!task.prepared_from_cold);
 		UAM_ASSERT(app.acp_sessions.empty() && app.cli_terminals.empty());
@@ -3669,7 +3669,7 @@ printf '%s' '{"memories":[{"scope":"local","category":"Lessons/User_Lessons","ti
 		}
 		UAM_ASSERT(extraction->hydration_failed);
 		UAM_ASSERT(!extraction->output_prepared && !extraction->prepared_output);
-		UAM_ASSERT(app.memory_last_status.find("History and progress are unchanged.") != std::string::npos);
+		UAM_ASSERT(app.memory_last_status.find("history and progress are unchanged") != std::string::npos);
 		UAM_ASSERT_EQ(app.memory_failure_count_by_chat_id.at(chat.id), 1);
 		UAM_ASSERT(app.memory_retry_not_before_by_chat_id.at(chat.id) > uam::GetAppTimeSeconds());
 		UAM_ASSERT_EQ(app.memory_extraction_queue.size(), static_cast<std::size_t>(1));

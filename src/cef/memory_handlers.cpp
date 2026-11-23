@@ -279,7 +279,7 @@ void UamQueryHandler::HandleOpenMemoryRoot(CefRefPtr<CefBrowser> /*browser*/, co
 	}
 	if (scope.scope_type == "all")
 	{
-		cb->Failure(400, "The all memory view has multiple roots. Reveal a memory entry instead.");
+		cb->Failure(400, "The all-memory view has several folders; reveal a memory entry instead.");
 		return;
 	}
 
@@ -346,7 +346,7 @@ void UamQueryHandler::HandleRevealMemoryEntry(CefRefPtr<CefBrowser> /*browser*/,
 		return;
 	}
 
-	cb->Failure(404, "Memory entry not found: " + entry_id);
+	cb->Failure(404, "Memory entry not found.");
 }
 
 

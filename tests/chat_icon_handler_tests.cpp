@@ -272,7 +272,7 @@ UAM_TEST(ChatControlRefusalsNameTheirOwnReasonWithoutPathsOrStaleStatus)
 	// A disconnected remote turn: Stop names that cause, never the earlier status line.
 	const CefRefPtr<RecordingIconCallback> stop_refused = run("stopAcpSession", {{"chatId", chat.id}});
 	UAM_ASSERT_EQ(stop_refused->failures, 1);
-	UAM_ASSERT_EQ(stop_refused->failure_message, std::string("The remote host is disconnected. Reconnect it before stopping, so UAM can confirm the turn ended."));
+	UAM_ASSERT_EQ(stop_refused->failure_message, std::string("The remote host is disconnected; reconnect it so UAM can confirm the turn stopped."));
 
 	// A remote stop UAM is still confirming is progress for both Stop and Cancel turn.
 	session.remote_stop_pending = true;
@@ -290,33 +290,33 @@ UAM_TEST(ChatControlRefusalsNameTheirOwnReasonWithoutPathsOrStaleStatus)
 	const CefRefPtr<RecordingIconCallback> cancel_refused = run("cancelAcpTurn", {{"chatId", chat.id}});
 	session.running = false;
 	UAM_ASSERT_EQ(cancel_refused->failures, 1);
-	UAM_ASSERT_EQ(cancel_refused->failure_message, std::string("The turn could not be cancelled. Try again."));
+	UAM_ASSERT_EQ(cancel_refused->failure_message, std::string("The turn could not be cancelled."));
 	session.remote_stop_unconfirmed = false;
 
 	// A rename that cannot be saved names no path.
 	UAM_ASSERT(uam::io::WriteTextFile(app.data_root, "blocked"));
 	CefRefPtr<RecordingIconCallback> rename = run("renameSession", {{"chatId", chat.id}, {"title", "Renamed"}});
 	UAM_ASSERT_EQ(rename->failures, 1);
-	UAM_ASSERT_EQ(rename->failure_message, std::string("The chat could not be saved. Try again."));
+	UAM_ASSERT_EQ(rename->failure_message, std::string("The chat could not be saved."));
 	UAM_ASSERT_EQ(app.chats.front().title, std::string("Stand-in"));
 	CefRefPtr<RecordingIconCallback> agent = run("setChatUamAgent", {{"chatId", chat.id}, {"agentId", "plan"}});
 	UAM_ASSERT_EQ(agent->failures, 1);
-	UAM_ASSERT_EQ(agent->failure_message, std::string("The chat could not be saved. Try again."));
+	UAM_ASSERT_EQ(agent->failure_message, std::string("The chat could not be saved."));
 	CefRefPtr<RecordingIconCallback> small_model = run("setChatSmallModelMode", {{"chatId", chat.id}, {"enabled", true}});
 	UAM_ASSERT_EQ(small_model->failures, 1);
-	UAM_ASSERT_EQ(small_model->failure_message, std::string("The chat could not be saved. Try again."));
+	UAM_ASSERT_EQ(small_model->failure_message, std::string("The chat could not be saved."));
 	CefRefPtr<RecordingIconCallback> model = run("setChatModel", {{"chatId", chat.id}, {"modelId", "fixture/model-two"}});
 	UAM_ASSERT_EQ(model->failures, 1);
-	UAM_ASSERT_EQ(model->failure_message, std::string("The chat could not be saved. Try again."));
+	UAM_ASSERT_EQ(model->failure_message, std::string("The chat could not be saved."));
 	CefRefPtr<RecordingIconCallback> reviewer = run("setChatModel", {{"chatId", chat.id}, {"modelId", "fixture/model-two"}, {"modelRole", "reviewer"}});
 	UAM_ASSERT_EQ(reviewer->failures, 1);
-	UAM_ASSERT_EQ(reviewer->failure_message, std::string("The chat could not be saved. Try again."));
+	UAM_ASSERT_EQ(reviewer->failure_message, std::string("The chat could not be saved."));
 	CefRefPtr<RecordingIconCallback> speed = run("setChatCodexOptions", {{"chatId", codex.id}, {"serviceTier", "fast"}, {"serviceTierExplicit", true}});
 	UAM_ASSERT_EQ(speed->failures, 1);
-	UAM_ASSERT_EQ(speed->failure_message, std::string("The chat could not be saved. Try again."));
+	UAM_ASSERT_EQ(speed->failure_message, std::string("The chat could not be saved."));
 	CefRefPtr<RecordingIconCallback> reasoning = run("setChatCodexOptions", {{"chatId", codex.id}, {"reasoningEffort", "high"}});
 	UAM_ASSERT_EQ(reasoning->failures, 1);
-	UAM_ASSERT_EQ(reasoning->failure_message, std::string("The chat could not be saved. Try again."));
+	UAM_ASSERT_EQ(reasoning->failure_message, std::string("The chat could not be saved."));
 
 	// A phone cancel discards a held queue; when that cannot be saved its fixed reason is passed through.
 	uam::AcpQueuedUserPromptState held;
@@ -2446,7 +2446,7 @@ UAM_TEST(NativeChildLineageHandlerRejectsConflictsAndAsyncRecreatedRecords)
 		UAM_ASSERT_EQ(callback->successes, 0);
 		UAM_ASSERT_EQ(callback->failures, 1);
 		UAM_ASSERT_EQ(callback->status, 409);
-		UAM_ASSERT_EQ(callback->body, replacement < 2 ? std::string("Source chat changed while its child history was loading.") : std::string("Child chat changed while its history was loading. Try again."));
+		UAM_ASSERT_EQ(callback->body, replacement < 2 ? std::string("Source chat changed while its child history was loading.") : std::string("The child chat changed while its history was loading; try again."));
 		UAM_ASSERT_EQ(ReadFile(AppPaths::UamChatFilePath(fixture.app.data_root, fixture.child.id)), before);
 		UAM_ASSERT_EQ(fixture.app.resolved_native_sessions_by_chat_id, mappings);
 		UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(fixture.app), fixture.parent.id);
@@ -4454,7 +4454,7 @@ UAM_TEST(NativeChildLineageHandlerGeminiAckUncertaintyNotifiesWithoutRollingBack
 	const auto body = nlohmann::json::parse(callback->body);
 	UAM_ASSERT_EQ(body.at("chatId"), nlohmann::json(fixture.reference));
 	UAM_ASSERT(body.contains("warning") && !body.at("warning").get<std::string>().empty()); // Real uncertain branch, not fabricated success.
-	const std::string expected_warning = "History and attached files were kept, but UAM could not confirm the final save. Reopen the child to check it.";
+	const std::string expected_warning = "History and attached files were kept, but reopen the child chat to check the final save.";
 	UAM_ASSERT_EQ(fixture.app.status_line, expected_warning); // Intended old-source RED: callback warning was otherwise invisible.
 	UAM_ASSERT_EQ(body.at("warning"), nlohmann::json(expected_warning));
 	UAM_ASSERT_EQ(uam::StateSerializer::Serialize(fixture.app, true).at("statusLine"), nlohmann::json(expected_warning));
@@ -5699,7 +5699,7 @@ UAM_TEST(RemoteNativeHistoryHandlerGeminiAckUncertaintyRetainsPublishedOriginals
 	RunCreationLoopUntil([callback] { return callback->Completed(); }, std::chrono::seconds(15));
 	UAM_ASSERT(callback->Completed()); fixture.RequireSuccess(callback); fixture.Settle(callback);
 	const auto body = nlohmann::json::parse(callback->body);
-	const std::string warning = "History and attached files were kept, but UAM could not confirm the final save. Reopen the chat to check it.";
+	const std::string warning = "History and attached files were kept, but reopen the chat to check the final save.";
 	UAM_ASSERT_EQ(body.at("warning"), nlohmann::json(warning));
 	UAM_ASSERT_EQ(fixture.app.status_line, warning);
 	UAM_ASSERT_EQ(uam::StateSerializer::Serialize(fixture.app, true).at("statusLine"), nlohmann::json(warning));

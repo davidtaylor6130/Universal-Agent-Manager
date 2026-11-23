@@ -80,7 +80,7 @@ namespace
 {
 	const std::string kPng = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
 	const std::string kPriorWarning = "Earlier warning must remain";
-	const std::string kCommittedWarning = "History and attached files were kept, but UAM could not confirm the final save. Reopen the chat to check it.";
+	const std::string kCommittedWarning = "History and attached files were kept, but reopen the chat to check the final save.";
 
 	class FeedbackCallback final : public UamQueryHandler::Callback
 	{

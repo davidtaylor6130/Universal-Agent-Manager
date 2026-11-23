@@ -1,6 +1,7 @@
 #include "cef/uam_query_handler.h"
 #include "cef/uam_query_handler_internal.h"
 #include "cef/uam_query_handler_async.h"
+#include "common/utils/diagnostic_log.h"
 #include "remote/runner_client.h"
 
 #include "app/chat_domain_service.h"
@@ -255,7 +256,7 @@ void UamQueryHandler::HandleListGeminiChildConversations(CefRefPtr<CefBrowser> b
 	struct Listed { std::vector<std::string> references; };
 	// A stalled host must not take unbounded threads and helper connections, the same slot as an SSH child open.
 	const auto listed = host ? uam::native_history::TryCreateWorkerOwnedNativeRefresh<Listed, uam::native_history::NativeRefreshWorkerPool::RemoteRefresh>(host->id) : std::make_shared<Listed>();
-	if (!listed) { cb->Failure(503, "Native history reading is busy. Retry shortly."); return; }
+	if (!listed) { cb->Failure(503, "Native history reading is busy; try again shortly."); return; }
 	const std::string request_key = "gemini-children/" + source_id;
 	if (AwaitNativeHistoryRead(request_key, cb, [this, browser, payload, cb]() { HandleListGeminiChildConversations(browser, payload, cb); })) return;
 	const auto request = BeginNativeHistoryRead(request_key, cb);
@@ -368,7 +369,7 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 		auto work = passive_host
 		    ? uam::native_history::TryCreateWorkerOwnedNativeRefresh<Work, uam::native_history::NativeRefreshWorkerPool::RemoteRefresh>(passive_host->id)
 		    : uam::native_history::TryCreateWorkerOwnedNativeRefresh<Work>();
-		if (!work) { cb->Failure(503, "Native history preparation is busy. Retry shortly."); return; }
+		if (!work) { cb->Failure(503, "Native history preparation is busy; try again shortly."); return; }
 		work->root = m_app.data_root;
 		if (passive_host) work->host = *passive_host;
 		work->target_present = target != nullptr;
@@ -410,7 +411,7 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 		// One provider read per child: a newer open waits for it, then reuses its saved result.
 		if (AwaitNativeHistoryRead(request_key, cb, [this, browser, payload, cb]() { HandleOpenNativeSessionChat(browser, payload, cb); })) return;
 		const auto ownership = ChatDomainService().BeginBranchPreparation(m_app, source_id, native_id);
-		if (!ownership) { cb->Failure(409, "Chat preparation is still running. Retry after it settles."); return; }
+		if (!ownership) { cb->Failure(409, "Chat preparation is still running; try again after it settles."); return; }
 		const auto request = BeginNativeHistoryRead(request_key, cb, std::make_shared<NativeHistoryRequest>(ownership->cancellation));
 		if (passive_host) request->execution_host_id = passive_host->id; // A helper reinstall stops this read.
 		const auto finish = [this, source_id, request_key, request, ownership]()
@@ -467,7 +468,7 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 			    std::ranges::count_if(m_app.chats, [&](const ChatSession& row) { return row.id == native_id; }) != (child ? 1 : 0)) return false;
 			return NativeChildOpenReferenceAvailable(work->root, *parent, native_id);
 		};
-		if (!admitted()) { finish(); cb->Failure(409, "Passive native history ownership changed. Retry after it settles."); return; }
+		if (!admitted()) { finish(); cb->Failure(409, "Native history ownership changed; try again after it settles."); return; }
 		bool queued = false;
 		try
 		{
@@ -598,7 +599,7 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 						        work->retired = work->prepared->TakeCommittedChat();
 						        auto* current = ChatDomainService().FindChatById(m_app, native_id);
 						        if (!current || !work->retired)
-						        { response = AsyncFailure(500, "Passive history was saved but could not be adopted. Reload this chat."); return; }
+						        { response = AsyncFailure(500, "History was saved but not loaded into the chat; reload this chat."); return; }
 						        static_assert(std::is_nothrow_swappable_v<ChatSession>);
 						        std::swap(*current, *work->retired); // Old heavy graph retires on the same worker owner.
 						        work->staged_new = false;
@@ -613,7 +614,7 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 							        if (uncertain)
 							        {
 								        auto body = nlohmann::json::parse(ack.body);
-								        const std::string warning = "History and attached files were kept, but UAM could not confirm the final save. Reopen the child to check it.";
+								        const std::string warning = "History and attached files were kept, but reopen the child chat to check the final save.";
 								        body["warning"] = warning;
 								        ack.body = body.dump();
 								        if (m_app.data_root == work->root) m_app.status_line = warning;
@@ -679,7 +680,7 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 		// native-read seal or needs a still-present parent/child source file.
 		// Alias the existing generic branch's payloads to one prearmed lifetime.
 		cached_passive = uam::native_history::TryCreateWorkerOwnedNativeRefresh<CachedPassiveHistoryWork>();
-		if (!cached_passive) { cb->Failure(503, "Cached child history loading is busy. Retry shortly."); return; }
+		if (!cached_passive) { cb->Failure(503, "Child history loading is busy; try again shortly."); return; }
 	}
 	const std::string target_id = target == nullptr ? std::string{} : target->id;
 	const std::filesystem::path data_root = m_app.data_root;
@@ -696,7 +697,7 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 	if (!target_storage || m_app.worktree_operation_chat_ids.contains(source_id) || m_app.worktree_operation_chat_ids.contains(target_id) ||
 	    m_app.pending_chat_save_at_by_chat_id.contains(source_id) || m_app.pending_chat_save_at_by_chat_id.contains(target_id))
 	{
-		cb->Failure(409, "Chat history is changing. Retry after it settles.");
+		cb->Failure(409, "Chat history is changing; retry after it settles.");
 		return;
 	}
 
@@ -706,7 +707,7 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 	const std::shared_ptr<uam::BranchPreparationOwnership> ownership = domain.BeginBranchPreparation(m_app, source_id, target_id);
 	if (!ownership)
 	{
-		cb->Failure(409, "Chat preparation is still running. Retry after it settles.");
+		cb->Failure(409, "Chat preparation is still running; try again after it settles.");
 		return;
 	}
 	const auto request = BeginNativeHistoryRead(request_key, cb, std::make_shared<NativeHistoryRequest>(ownership->cancellation));
@@ -899,12 +900,12 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 		    ChatSession* current_target = ChatHistorySyncService().FindInMemoryNativeSessionChatForOpen(m_app, *current, current_provider, snapshot->native_session_id.empty() && snapshot->imported_read_only ? snapshot->id : snapshot->native_session_id, false);
 		    if ((current_target == nullptr ? std::string{} : current_target->id) != target_id)
 		    {
-			    result = AsyncFailure(409, "Child chat changed while its history was loading. Try again.");
+			    result = AsyncFailure(409, "The child chat changed while its history was loading; try again.");
 			    return;
 		    }
 		    if (current_target != nullptr && (!target_identity || !*baseline || current_target->created_at != (*baseline)->created_at || current_target->metadata_incarnation != (*baseline)->metadata_incarnation || !ChatDomainService().MatchesPreparedBranchHistory(*current_target, *target_identity, false, &**baseline) || ChatRepository::ChatStorageRevision(data_root, target_id) != target_storage))
 		    {
-			    result = AsyncFailure(409, "Child chat changed while its history was loading. Try again.");
+			    result = AsyncFailure(409, "The child chat changed while its history was loading; try again.");
 			    return;
 		    }
 		    if (ChatRepository::ChatStorageRevision(data_root, snapshot->id) != *prepared_revision ||
@@ -944,7 +945,7 @@ uam::query_handler_async::AsyncCefResult UamQueryHandler::FinishOpenNativeSessio
 	ChatSession* source_chat = ChatDomainService().FindChatById(m_app, source_chat_id);
 	if (source_chat == nullptr)
 	{
-		return AsyncFailure(404, "Source chat not found: " + source_chat_id);
+		return AsyncFailure(404, "Source chat not found.");
 	}
 	const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(m_app, *source_chat);
 	if (!ProviderRuntime::UsesNativeOverlayHistory(provider) && !ProviderRuntime::UsesLocalHistory(provider))
@@ -1120,8 +1121,8 @@ uam::query_handler_async::AsyncCefResult UamQueryHandler::FinishOpenNativeSessio
 static std::string LiveModelRefusal(const std::string& error)
 {
 	if (error.starts_with("Cannot change structured runtime model while ")) return error;
-	if (error == "ACP session is not ready.") return "The provider is still starting. Try again when it is ready.";
-	return "The running provider did not accept the model change. Try again.";
+	if (error == "ACP session is not ready.") return "The provider is still starting; try again when it is ready.";
+	return "The running provider did not accept the model change.";
 }
 
 void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -1136,7 +1137,7 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 		return;
 	}
 
-	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
+	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found.");
 	if (chat == nullptr)
 	{
 		return;
@@ -1331,7 +1332,7 @@ void UamQueryHandler::HandleSetChatCodexOptions(CefRefPtr<CefBrowser> browser, c
 	const std::string requested_reasoning_effort = payload.value("reasoningEffort", "");
 	std::string service_tier = uam::codex::NormalizeServiceTier(payload.value("serviceTier", ""));
 
-	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
+	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found.");
 	if (chat == nullptr)
 	{
 		return;
@@ -1482,10 +1483,10 @@ void UamQueryHandler::HandleSetChatProvider(CefRefPtr<CefBrowser> browser, const
 	switch (uam::SwitchChatProvider(m_app, chat_id, provider_id, uam::query_handler_internal::ProviderSwitchAllowsUncertainDelivery(payload)))
 	{
 	case uam::ChatProviderSwitchResult::UnsupportedProvider:
-		cb->Failure(400, "Unsupported provider: " + provider_id);
+		cb->Failure(400, "This provider is not supported.");
 		return;
 	case uam::ChatProviderSwitchResult::ChatNotFound:
-		cb->Failure(404, "Chat not found: " + chat_id);
+		cb->Failure(404, "Chat not found.");
 		return;
 	case uam::ChatProviderSwitchResult::ActiveRuntime:
 		cb->Failure(409, "Cannot change provider while a runtime turn or input request is active.");
@@ -1517,11 +1518,11 @@ void UamQueryHandler::HandleSetChatApprovalMode(CefRefPtr<CefBrowser> browser, c
 
 	if (!uam::approval_modes::IsAgentMode(mode_id))
 	{
-		cb->Failure(400, "Unsupported ACP mode: " + mode_id);
+		cb->Failure(400, "This chat mode is not supported.");
 		return;
 	}
 
-	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
+	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found.");
 	if (chat == nullptr)
 	{
 		return;
@@ -1576,7 +1577,9 @@ void UamQueryHandler::HandleSetChatApprovalMode(CefRefPtr<CefBrowser> browser, c
 			chat->updated_at = previous_updated_at;
 			(void)ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat mode reverted.", "Chat mode changed in UI, but failed to revert.");
 			uam::permission_log::RecordChange(chat->id, uam::permission_log::kSourceRollback, rejected, chat->approval_mode, chat->command_safety_tier, chat->command_safety_tier);
-			cb->Failure(409, FailureDetailOrFallback(acp_error, "Failed to update live ACP mode.") + (uam::provider_chat_defaults::ProviderManagesOwnPermissions(chat->provider_id) ? "" : " " + uam::permission_log::RollbackNotice(*chat)));
+			if (!acp_error.empty()) uam::diagnostics::Write("[setChatMode] Live mode change was refused: " + acp_error);
+			cb->Failure(409, uam::provider_chat_defaults::ProviderManagesOwnPermissions(chat->provider_id)
+			    ? std::string("The provider did not accept the mode change.") : uam::permission_log::RollbackNotice(*chat));
 			return;
 		}
 	}
@@ -1589,7 +1592,7 @@ void UamQueryHandler::HandleSetChatUamAgent(CefRefPtr<CefBrowser> browser, const
 {
 	const std::string chat_id = payload.value("chatId", "");
 	const std::string agent_id = uam::strings::NonEmptyOrFallback(uam::strings::Trim(payload.value("agentId", "")), "build");
-	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
+	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found.");
 	if (chat == nullptr) return;
 	if (!chat->agent_run_id.empty())
 	{
@@ -1601,7 +1604,7 @@ void UamQueryHandler::HandleSetChatUamAgent(CefRefPtr<CefBrowser> browser, const
 	const auto selected = std::ranges::find(agents.definitions, agent_id, &uam::AgentDefinition::id);
 	if (selected == agents.definitions.end() || (selected->mode != "primary" && selected->mode != "both"))
 	{
-		cb->Failure(400, "UAM agent is unavailable for primary chat use: " + agent_id);
+		cb->Failure(400, "This UAM agent cannot be used as the main chat agent.");
 		return;
 	}
 	if (chat->uam_agent_id == agent_id)
@@ -1640,7 +1643,7 @@ void UamQueryHandler::HandleSetChatUamControlEnabled(CefRefPtr<CefBrowser> brows
 		cb->Failure(400, "Next-launch setup requires an explicit boolean and supports enabling UAM tools only.");
 		return;
 	}
-	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
+	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found.");
 	if (chat == nullptr) return;
 	if (!chat->agent_run_id.empty())
 	{
@@ -1651,7 +1654,7 @@ void UamQueryHandler::HandleSetChatUamControlEnabled(CefRefPtr<CefBrowser> brows
 	if (*enabled && (provider == nullptr ||
 	                 !uam::UamControlService::SupportsStructuredProtocol(provider->structured_protocol)))
 	{
-		cb->Failure(409, "This provider's structured protocol cannot attach UAM Control. Supported providers are Codex, Claude Code, Gemini CLI, OpenCode, and GitHub Copilot CLI.");
+		cb->Failure(409, "UAM Control works only with Codex, Claude Code, Gemini CLI, OpenCode and GitHub Copilot CLI chats.");
 		return;
 	}
 	uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat->id);
@@ -1694,7 +1697,7 @@ void UamQueryHandler::HandleSetChatUamControlEnabled(CefRefPtr<CefBrowser> brows
 void UamQueryHandler::HandleListUamAgents(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = payload.value("chatId", "");
-	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
+	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found.");
 	if (chat == nullptr) return;
 
 	const uam::AgentDefinitionCatalog catalog = uam::AgentDefinitionService::Load(
@@ -1966,7 +1969,7 @@ void UamQueryHandler::HandleGetManagedAgentTranscript(CefRefPtr<CefBrowser> /*br
 			}
 			return;
 		}
-		cb->Failure(409, "Managed agent transcript is active or changed. Retry after it settles.");
+		cb->Failure(409, "The agent transcript is active or changed; try again after it settles.");
 		return;
 	}
 	std::string hydrate_warning;
@@ -2025,7 +2028,7 @@ void UamQueryHandler::HandleSetChatCommandSafetyTier(CefRefPtr<CefBrowser> brows
 		return;
 	}
 	const std::string requested = raw_requested == "acceptedits" ? uam::approval_modes::kAcceptEditsApprovalMode : raw_requested == "aireview" ? "aiReview" : raw_requested;
-	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
+	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found.");
 	if (chat == nullptr) return;
 	const auto auto_approve_pending = [&]()
 	{
@@ -2076,7 +2079,8 @@ void UamQueryHandler::HandleSetChatCommandSafetyTier(CefRefPtr<CefBrowser> brows
 			chat->updated_at = previous_updated_at;
 			(void)ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat permissions reverted.", "Chat permissions changed in UI, but failed to revert.");
 			uam::permission_log::RecordChange(chat->id, uam::permission_log::kSourceRollback, chat->approval_mode, chat->approval_mode, rejected, chat->command_safety_tier);
-			cb->Failure(409, FailureDetailOrFallback(acp_error, "Failed to update live ACP permissions.") + " " + uam::permission_log::RollbackNotice(*chat));
+			if (!acp_error.empty()) uam::diagnostics::Write("[setChatPermissions] Live permission change was refused: " + acp_error);
+			cb->Failure(409, uam::permission_log::RollbackNotice(*chat));
 			return;
 		}
 	}
@@ -2092,7 +2096,7 @@ void UamQueryHandler::HandleSetChatComputerUseEnabled(CefRefPtr<CefBrowser> brow
 {
 	const std::string chat_id = payload.value("chatId", "");
 	const bool enabled = payload.value("enabled", false);
-	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
+	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found.");
 	if (chat == nullptr) return;
 	if (enabled && !m_app.settings.computer_use_globally_enabled)
 	{
@@ -2125,7 +2129,7 @@ void UamQueryHandler::HandleSetChatComputerUseEnabled(CefRefPtr<CefBrowser> brow
 			m_app.computer_use_revocation_pending_chat_ids.erase(chat_id);
 		uam::PushStateUpdateIfChanged(browser, m_app);
 		if (m_app.computer_use_revocation_pending_chat_ids.contains(chat_id))
-			cb->Failure(500, FailureDetailOrFallback(error, "Computer Use is disabled; its previous controls are still stopping. Retry disabling."));
+			cb->Failure(500, FailureDetailOrFallback(error, "Computer Use is disabled, but its previous controls are still stopping; disable it again."));
 		else cb->Success("{}");
 		return;
 	}
@@ -2177,7 +2181,7 @@ void UamQueryHandler::HandleSetChatComputerUseBackend(CefRefPtr<CefBrowser> brow
 		cb->Failure(400, "Computer-use backend must be auto, provider, or uam.");
 		return;
 	}
-	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
+	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found.");
 	if (chat == nullptr) return;
 	if (requested == uam::computer_use::kBackendProvider && !uam::computer_use::ProviderBackendAvailable(chat->provider_id))
 	{
@@ -2239,7 +2243,7 @@ void UamQueryHandler::HandleSetComputerUseControl(CefRefPtr<CefBrowser> browser,
 {
 	const std::string chat_id = payload.value("chatId", "");
 	const std::string requested = uam::strings::ToLowerAscii(uam::strings::Trim(payload.value("state", "")));
-	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
+	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found.");
 	if (chat == nullptr) return;
 	if (!uam::computer_use::UsesUamBackend(*chat))
 	{
@@ -2333,7 +2337,7 @@ void UamQueryHandler::HandleSetComputerUseSettings(CefRefPtr<CefBrowser> browser
 	if (!revoked)
 	{
 		uam::PushStateUpdateIfChanged(browser, m_app);
-		cb->Failure(500, "Computer Use is disabled globally; some runtime controls are still stopping. Retry disabling to verify they stopped.");
+		cb->Failure(500, "Computer Use is disabled, but some controls are still stopping; disable it again to confirm.");
 		return;
 	}
 	uam::PushStateUpdateIfChanged(browser, m_app);
@@ -2388,7 +2392,7 @@ void UamQueryHandler::HandleSetChatMemoryEnabled(CefRefPtr<CefBrowser> browser, 
 	const std::string chat_id = payload.value("chatId", "");
 	const bool enabled = payload.value("enabled", true);
 	const std::string requested_level = uam::memory_levels::NormalizeSelection(uam::nlohmann_json::TrimmedStringValueOr(payload, "memoryLevel", ""), enabled);
-	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
+	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found.");
 	if (chat == nullptr)
 	{
 		return;
@@ -2454,7 +2458,7 @@ void UamQueryHandler::HandleSetChatSmallModelMode(CefRefPtr<CefBrowser> browser,
 		cb->Failure(400, "Small-model mode must be a boolean.");
 		return;
 	}
-	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
+	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found.");
 	if (chat == nullptr)
 	{
 		return;

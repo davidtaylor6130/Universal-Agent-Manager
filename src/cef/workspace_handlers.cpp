@@ -115,7 +115,7 @@ void UamQueryHandler::HandleOpenWorkspaceTerminal(CefRefPtr<CefBrowser> browser,
 		const std::vector<std::string> argv = uam::remote::BuildRemoteWorkspaceTerminalArgv(*host, directory);
 		if (!uam::remote::CanAttemptRunnerConnection(*host) || argv.empty())
 		{
-			cb->Failure(409, "The remote workspace or runner is unavailable. Check the host in Settings.");
+			cb->Failure(409, "The remote workspace or runner is unavailable; check the host in Settings.");
 			return;
 		}
 		const ExecutionHost observed = *host;
@@ -128,7 +128,8 @@ void UamQueryHandler::HandleOpenWorkspaceTerminal(CefRefPtr<CefBrowser> browser,
 			    std::string error;
 			    if (client.Connect(&error)) return uam::query_handler_async::AsyncSuccess({});
 			    std::cerr << "Remote workspace terminal connection failed: " << error << '\n';
-			    return uam::query_handler_async::AsyncFailure(502, "SSH connection failed: " + error);
+			    uam::diagnostics::Write("[openWorkspaceTerminal] Remote workspace terminal connection failed: " + error);
+			    return uam::query_handler_async::AsyncFailure(502, "Could not connect to the remote host.");
 		    },
 		    [this, browser, observed, chat_id, directory, argv](uam::query_handler_async::AsyncCefResult& response)
 		    {
@@ -139,7 +140,7 @@ void UamQueryHandler::HandleOpenWorkspaceTerminal(CefRefPtr<CefBrowser> browser,
 			        !uam::execution_hosts::SameConnection(*current_host, observed) ||
 			        uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(m_app, *current)) != directory)
 			    {
-				    response = uam::query_handler_async::AsyncFailure(409, "The remote workspace changed. Open the terminal again.");
+				    response = uam::query_handler_async::AsyncFailure(409, "The remote workspace changed; open the terminal again.");
 				    return;
 			    }
 			    std::string error;

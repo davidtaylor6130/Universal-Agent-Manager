@@ -922,9 +922,9 @@ UAM_TEST(InstallerRealTurnStillBlocksWithNamedReason)
 	UAM_ASSERT(uam::remote_install::HostHasActiveRuntimeWork(app, host, true, &reason, &chat_id));
 	UAM_ASSERT_EQ(chat_id, app.chats.front().id);
 	const std::string message = uam::remote_install::HostRuntimeBlockMessage(app, reason, chat_id);
-	UAM_ASSERT(message.find("\xE2\x80\x9CHomelab notes\xE2\x80\x9D has a turn in progress on this host. Stop it or let it finish") != std::string::npos);
+	UAM_ASSERT(message.find("\xE2\x80\x9CHomelab notes\xE2\x80\x9D has a turn in progress on this host; stop it or let it finish") != std::string::npos);
 	UAM_ASSERT(message.find("SSH") == std::string::npos);
-	UAM_ASSERT(message.find("(chat-process)") != std::string::npos);
+	UAM_ASSERT(message.find("(chat-process)") == std::string::npos);
 	UAM_ASSERT_EQ(uam::remote_install::QuiesceRetainedProcessesOnHost(app, host), std::size_t{0});
 	UAM_ASSERT(session.running);
 	UAM_ASSERT(app.chats.front().remote_process_exists);
@@ -1070,7 +1070,7 @@ UAM_TEST(InstallerUnconfirmedStopIsRetriedOnceThenSetAsideAndReconnectWaitsForIn
 	blocked_with("has a turn in progress on this host");
 	chat.remote_restart_pending = false;
 	chat.acp_queued_prompts.emplace_back();
-	blocked_with("has queued or unsent input for this host, and UAM could not confirm that its earlier process stopped. Remove that input");
+	blocked_with("has queued or unsent input and an unconfirmed stop on this host; remove that input");
 	chat.acp_queued_prompts.clear();
 	for (const char* state : {"waiting", "claimed"})
 	{
@@ -1242,7 +1242,7 @@ UAM_TEST(InstallerUnsentRecoveryBlocksOnlyWhileItsRowCanBeSentOrRemoved)
 	Reason reason = Reason::None;
 	std::string chat_id;
 	UAM_ASSERT(uam::remote_install::HostHasActiveRuntimeWork(app, host, true, &reason, &chat_id));
-	UAM_ASSERT(uam::remote_install::HostRuntimeBlockMessage(app, reason, chat_id).find("has queued or unsent input for this host. Send or remove it") != std::string::npos);
+	UAM_ASSERT(uam::remote_install::HostRuntimeBlockMessage(app, reason, chat_id).find("has queued or unsent input for this host; send or remove it") != std::string::npos);
 	// The answer reads saved rows only: a reconnect or stop retry covering that row does not change it.
 	uam::AcpSessionState& session = InstallerRetainedSession(app, chat);
 	session.turn_user_message_index = 0;

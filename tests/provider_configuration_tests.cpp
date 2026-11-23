@@ -323,7 +323,7 @@ UAM_TEST(RemoteOpenCodePublicLaunchFailureRestoresSelectedModelOptions)
 	fixture.Session().available_models = {model};
 	std::string error;
 	UAM_ASSERT(!uam::SendAcpPrompt(fixture.app, chat.id, "Private authored input", &error));
-	UAM_ASSERT_EQ(error, std::string("The selected remote runner is not ready. Recheck it in Settings."));
+	UAM_ASSERT_EQ(error, std::string("The selected remote runner is not ready; recheck it in Settings."));
 	UAM_ASSERT_EQ(fixture.Session().last_error, error);
 	UAM_ASSERT_EQ(fixture.Session().lifecycle_state, std::string(uam::acp_detail::kAcpLifecycleError));
 	UAM_ASSERT_EQ(fixture.Session().goal_turn_model_id, std::string("private/previous-model"));

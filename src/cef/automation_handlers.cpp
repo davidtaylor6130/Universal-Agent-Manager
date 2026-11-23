@@ -2,6 +2,7 @@
 #include "app/chat_domain_service.h"
 #include "cef/cef_push.h"
 #include "cef/uam_query_handler.h"
+#include "common/utils/diagnostic_log.h"
 
 namespace
 {
@@ -52,7 +53,8 @@ void UamQueryHandler::LaunchAutomationChat(CefRefPtr<CefBrowser> browser, const 
 	    {
 		    const bool waiting = !lifetime.expired() && uam::AutomationApiService::AbandonLaunch(m_app, chat_id, launch);
 		    if (!lifetime.expired()) uam::PushStateUpdateIfChanged(browser, m_app);
-		    if (from_desktop) cb->Failure(status, waiting ? reason : "This chat may not have started: " + reason);
+		    if (from_desktop && !waiting) uam::diagnostics::Write("[automation] Chat launch may not have started: " + reason);
+		    if (from_desktop) cb->Failure(status, waiting ? reason : "This chat may not have started.");
 		    else cb->Failure(status, "The chat " + chat_id + (waiting ? " could not start and is waiting in UAM: " : " may not have started: ") + reason);
 	    }));
 }

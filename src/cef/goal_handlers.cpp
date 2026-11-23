@@ -278,7 +278,7 @@ void UamQueryHandler::HandleUpdateGoalStatus(CefRefPtr<CefBrowser> browser, cons
 	}
 	else
 	{
-		cb->Failure(400, "Invalid goal status: " + status_str);
+		cb->Failure(400, "Invalid goal status.");
 		return;
 	}
 
@@ -362,7 +362,7 @@ void UamQueryHandler::HandleSetActiveGoal(CefRefPtr<CefBrowser> browser, const n
 	if (!updated)
 	{
 		previous.Restore(*chat);
-		cb->Failure(error.empty() ? 404 : 409, uam::strings::NonEmptyOrFallback(error, "Failed to set active goal. Goal may not exist or is not in this chat."));
+		cb->Failure(error.empty() ? 404 : 409, uam::strings::NonEmptyOrFallback(error, "Could not set the active goal because it is not in this chat."));
 		return;
 	}
 	// A queued continuation cannot outrun this control's owned FULL publication.
