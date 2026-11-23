@@ -357,7 +357,6 @@ namespace
 		{
 			if (!opened.exchange(true)) release.set_value();
 		}
-
 	};
 
 	/// <summary>Opens a gate on scope exit. Declare it after the futures whose threads wait on the gate: a failed
@@ -390,7 +389,7 @@ UAM_TEST(DurableWriteBlockedInStageHookDoesNotBlockOtherDestination)
 	});
 	const OpenGateOnExit open_holder{gate};
 	UAM_ASSERT(gate.entered.get_future().wait_for(std::chrono::seconds(10)) == std::future_status::ready);
-	// Same directory as the held write, so the shared temp-sweep listing is also used under contention.
+	// Same directory as the held write, so both writes share one cached temp-sweep listing.
 	auto unrelated = std::async(std::launch::async, [&] { return uam::io::WriteTextFileWithBackup(other, "other"); });
 	// Before the fix this waited for the held write's hook for as long as it chose to block.
 	const bool completed_while_held = unrelated.wait_for(std::chrono::seconds(10)) == std::future_status::ready;
