@@ -205,6 +205,27 @@ namespace uam::provider_setup
 		return slug + "-" + Digest(name).substr(0, 8);
 	}
 
+	/// <summary>The identity of an environment variable name: Windows names ignore case.</summary>
+	inline std::string CodexVariableKey(std::string_view variable)
+	{
+#if defined(_WIN32)
+		std::string key(variable);
+		std::ranges::transform(key, key.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+		return key;
+#else
+		return std::string(variable);
+#endif
+	}
+
+	/// <summary>Names a user's MCP server may not place in Codex's environment: they would redirect Codex itself, its
+	/// home or its shell commands, or impersonate UAM's own launch variables.</summary>
+	inline bool IsReservedCodexVariable(std::string_view variable)
+	{
+		std::string upper(variable);
+		std::ranges::transform(upper, upper.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+		return upper == "PATH" || upper == "HOME" || upper == "USERPROFILE" || upper == "CODEX_HOME" || upper.starts_with("UAM_");
+	}
+
 	/// <summary>A TOML value for a Codex -c override; tables are inline, so quoted keys keep any name intact, unlike a dotted -c path.</summary>
 	inline std::string TomlValue(const nlohmann::json& value)
 	{
@@ -804,6 +825,11 @@ namespace uam::provider_setup
 			std::map<std::string, std::string> codex_keys;
 			std::string largest_server;
 			std::size_t largest_bytes = 0;
+			// Variable -> (server, value) across all servers, and UAM's own session servers, which may use UAM_ names.
+			std::map<std::string, std::pair<std::string, std::string>> codex_variables;
+			std::set<std::string> uam_owned_servers;
+			for (const nlohmann::json& server : session_servers)
+				if (server.is_object() && server.contains("name") && server["name"].is_string()) uam_owned_servers.insert(server["name"].get<std::string>());
 			for (const auto& [name, server] : native_servers.items())
 			{
 				const std::string codex_key = CodexServerKey(name);
@@ -820,9 +846,23 @@ namespace uam::provider_setup
 					}
 					if (key == "env")
 					{
-						// The server's own env table: values never enter Codex's environment, so two servers' API_KEY
-						// cannot collide and a server's PATH or NODE_OPTIONS cannot change Codex or its shell commands.
-						if (!value.empty()) argv.insert(argv.begin() + 1, {"-c", prefix + "env=" + TomlValue(value)});
+						// Codex reads each value by name from its own environment (env_vars), so no value appears on its
+						// command line, which other processes can list. env_vars cannot rename a variable, so a name two
+						// servers set differently, or one that would change Codex's own environment, is refused.
+						std::vector<std::string> names;
+						for (const auto& [variable, text] : value.items())
+						{
+							const std::string text_value = text.get<std::string>();
+							const auto [owner, first] = codex_variables.emplace(CodexVariableKey(variable), std::pair<std::string, std::string>{name, text_value});
+							if (!first && owner->second.second != text_value)
+							{ error = "MCP servers '" + owner->second.first + "' and '" + name + "' set " + variable + " to different values. Codex passes MCP variables by name, so use one value or another variable name."; return false; }
+							const std::string current = EnvironmentValue(environment, variable);
+							if (!uam_owned_servers.contains(name) && (IsReservedCodexVariable(variable) || (first && !current.empty() && current != text_value)))
+							{ error = "MCP server '" + name + "' cannot set " + variable + " for Codex: Codex passes MCP variables through its own environment, so this would change Codex and its shell commands. Use another variable name."; return false; }
+							SetEnvironment(environment, variable, text_value);
+							names.push_back(variable);
+						}
+						if (!names.empty()) argv.insert(argv.begin() + 1, {"-c", prefix + "env_vars=" + TomlValue(names)});
 						continue;
 					}
 					if (key == "headers")
@@ -849,7 +889,7 @@ namespace uam::provider_setup
 			if (!WithinCodexLaunchLimit(argv))
 			{
 				error = "The Codex launch command is too long for this computer" + (largest_server.empty() ? std::string(".") : "; MCP server '" + largest_server + "' adds the most.") +
-				        " Shorten MCP environment values or arguments, remove servers, or shorten instructions.";
+				        " Shorten MCP arguments, remove servers, or shorten instructions.";
 				return false;
 			}
 		}

@@ -1648,52 +1648,78 @@ UAM_TEST(SavedMcpSettingsReachAllFiveRuntimesWithoutEnablingCentralInstructions)
 	}
 }
 
-UAM_TEST(CodexStdioMcpEnvironmentStaysInEachServersOwnTable)
+UAM_TEST(CodexMcpEnvironmentValuesNeverReachItsCommandLine)
 {
 	TempDir temp("uam-codex-mcp-env");
 	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "server", "#!/bin/sh\n"));
 	const std::string command = uam::paths::Utf8PathString(temp.root / "server");
-	AppSettings settings;
+	const std::string key = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+	const nlohmann::json session_servers = nlohmann::json::array({{{"name", "uam-control"}, {"command", "private-owned-uam"}, {"args", {"--uam-control-mcp"}},
+	    {"env", nlohmann::json::array({{{"name", "UAM_CONTROL_REQUEST_KEY"}, {"value", key}}})}}});
 	McpServerConfiguration alpha;
 	alpha.id = "alpha"; alpha.name = "alpha"; alpha.command = command;
-	alpha.environment = {{"API_KEY", "", "alpha-key"}, {"PATH", "", "/alpha/bin"}};
+	alpha.environment = {{"API_KEY", "", "shared-secret"}, {"ALPHA_TOKEN", "", "alpha-secret"}};
 	McpServerConfiguration beta = alpha;
 	beta.id = "beta"; beta.name = "beta";
-	beta.environment = {{"API_KEY", "", "beta \"key\"\x7f"}, {"NODE_OPTIONS", "", "--inspect"}};
-	settings.mcp_servers = {alpha, beta};
-	ChatSession chat;
-	chat.id = "codex-mcp-env";
-	ExecutionHost host;
-	uam::ProviderConfigurationBundle bundle;
-	std::string error;
-	UAM_ASSERT(uam::PrepareProviderConfiguration(temp.root / "data", settings, chat, host, temp.root, bundle, error));
-	std::vector<std::string> argv{"codex"};
+	beta.environment = {{"API_KEY", "", "shared-secret"}, {"BETA_TOKEN", "", "beta \"secret\""}};
+	int launch_count = 0;
+	std::vector<std::string> argv;
 	uam::provider_setup::Environment environment;
-	UAM_ASSERT(uam::provider_setup::Apply("codex-cli", bundle.local_directory, temp.root, argv, environment, error));
-	// Nothing reaches Codex's own environment, so its shell commands and the other server are unaffected.
-	UAM_ASSERT(environment.empty());
-	UAM_ASSERT(std::ranges::none_of(argv, [](const std::string& arg) { return arg.find("env_vars") != std::string::npos; }));
-	const auto table = [&](const std::string& server) {
-		const auto found = std::ranges::find_if(argv, [&](const std::string& arg) { return arg.starts_with("mcp_servers.") && arg.find(server) != std::string::npos && arg.find(".env=") != std::string::npos; });
-		UAM_ASSERT(found != argv.end());
-		return found->substr(found->find(".env=") + 5);
+	std::string error;
+	const auto launch = [&](const std::vector<McpServerConfiguration>& servers) {
+		AppSettings settings;
+		settings.mcp_servers = servers;
+		ChatSession chat;
+		chat.id = "codex-mcp-env";
+		ExecutionHost host;
+		uam::ProviderConfigurationBundle bundle;
+		UAM_ASSERT(uam::PrepareProviderConfiguration(temp.root / ("data-" + std::to_string(++launch_count)), settings, chat, host, temp.root, bundle, error));
+		argv = {"codex"};
+		environment.clear();
+		return uam::provider_setup::Apply("codex-cli", bundle.local_directory, temp.root, argv, environment, error, session_servers);
 	};
-	UAM_ASSERT_EQ(table("alpha"), std::string(R"({"API_KEY" = "alpha-key", "PATH" = "/alpha/bin"})"));
-	UAM_ASSERT_EQ(table("beta"), std::string(R"({"API_KEY" = "beta \"key\"\u007F", "NODE_OPTIONS" = "--inspect"})"));
-	// The launch diagnostics line never carries the env table's values.
+	UAM_ASSERT(launch({alpha, beta}));
+	// Codex forwards each value by name from its own environment; UAM's signing key travels the same way.
+	UAM_ASSERT_EQ(uam::provider_setup::EnvironmentValue(environment, "API_KEY"), std::string("shared-secret"));
+	UAM_ASSERT_EQ(uam::provider_setup::EnvironmentValue(environment, "ALPHA_TOKEN"), std::string("alpha-secret"));
+	UAM_ASSERT_EQ(uam::provider_setup::EnvironmentValue(environment, "BETA_TOKEN"), std::string("beta \"secret\""));
+	UAM_ASSERT_EQ(uam::provider_setup::EnvironmentValue(environment, "UAM_CONTROL_REQUEST_KEY"), key);
+	for (const std::string& expected : {std::string(R"(mcp_servers.alpha.env_vars=["ALPHA_TOKEN", "API_KEY"])"), std::string(R"(mcp_servers.beta.env_vars=["API_KEY", "BETA_TOKEN"])"),
+	         std::string(R"(mcp_servers.uam-control.env_vars=["UAM_CONTROL_REQUEST_KEY"])")})
+		UAM_ASSERT(std::ranges::find(argv, expected) != argv.end());
+	// No MCP env value appears anywhere on Codex's command line, which other processes can list, or in its launch log.
 	const std::string logged = uam::acp_detail::JoinAcpArgvForDiagnostics(argv);
-	UAM_ASSERT(logged.find("alpha-key") == std::string::npos && logged.find("/alpha/bin") == std::string::npos && logged.find("--inspect") == std::string::npos);
-	UAM_ASSERT(logged.find("mcp_servers.alpha.command=") != std::string::npos);
+	for (const std::string& secret : {std::string("shared-secret"), std::string("alpha-secret"), std::string("beta \"secret\""), std::string("secret\\\""), key})
+	{
+		UAM_ASSERT(std::ranges::none_of(argv, [&](const std::string& arg) { return arg.find(secret) != std::string::npos; }));
+		UAM_ASSERT(logged.find(secret) == std::string::npos);
+	}
+	UAM_ASSERT(std::ranges::none_of(argv, [](const std::string& arg) { return arg.find(".env=") != std::string::npos; }));
 
-	// Values that no longer fit one launch command are refused by server name, without echoing them.
+	// env_vars cannot rename a variable, so one name set to two values is refused without echoing either value.
+	McpServerConfiguration clash = beta;
+	clash.environment = {{"API_KEY", "", "other-secret"}};
+	UAM_ASSERT(!launch({alpha, clash}));
+	UAM_ASSERT(error.find("API_KEY") != std::string::npos && error.find("'alpha'") != std::string::npos && error.find("'beta'") != std::string::npos);
+	UAM_ASSERT(error.find("secret") == std::string::npos);
+	// A user server may not change Codex's own environment or impersonate UAM's launch variables.
+	ScopedEnvVar existing("CODEX_MCP_TEST_EXISTING", "host-value");
+	for (const std::string& variable : {"PATH", "CODEX_HOME", "UAM_CONTROL_REQUEST_KEY", "CODEX_MCP_TEST_EXISTING"})
+	{
+		McpServerConfiguration reserved = alpha;
+		reserved.environment = {{variable, "", "/changed"}};
+		UAM_ASSERT(!launch({reserved}));
+		UAM_ASSERT(error.find(variable) != std::string::npos && error.find("/changed") == std::string::npos);
+	}
+	McpServerConfiguration same = alpha;
+	same.environment = {{"CODEX_MCP_TEST_EXISTING", "", "host-value"}};
+	UAM_ASSERT(launch({same}));
+
+	// A launch command that no longer fits is refused by server name, without echoing its arguments.
 	McpServerConfiguration large = alpha;
-	large.id = "large"; large.name = "large";
-	large.environment = {{"ONE", "", std::string(60000, 'a')}, {"TWO", "", std::string(60000, 'b')}, {"THREE", "", std::string(60000, 'c')}};
-	settings.mcp_servers = {large};
-	UAM_ASSERT(uam::PrepareProviderConfiguration(temp.root / "data-large", settings, chat, host, temp.root, bundle, error));
-	argv = {"codex"};
-	environment.clear();
-	UAM_ASSERT(!uam::provider_setup::Apply("codex-cli", bundle.local_directory, temp.root, argv, environment, error));
+	large.id = "large"; large.name = "large"; large.environment.clear();
+	large.args = {std::string(60000, 'a'), std::string(60000, 'b'), std::string(60000, 'c')};
+	UAM_ASSERT(!launch({large}));
 	UAM_ASSERT(error.find("'large'") != std::string::npos && error.find("too long") != std::string::npos && error.find("aaaa") == std::string::npos);
 }
 
