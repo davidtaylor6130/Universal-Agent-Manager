@@ -1151,7 +1151,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     setRemoteMessage(null)
     const response = await sendToCEF({ action: 'removeRemoteHost', payload: { id: host.id } })
     setRemoteHostBusy(host.id, false)
-    if (response.ok) reportAppNotice(`${host.label} was removed.`, 'success', { detail: 'Helper files on that machine were left untouched.' })
+    if (response.ok) reportAppNotice(`${host.label} was removed from UAM.`, 'success', { detail: 'Helper files on that machine were left untouched.' })
     else reportAppFailure('Remote host removal failed.', failureDetail(response.error, 'Try again.'))
   }
 

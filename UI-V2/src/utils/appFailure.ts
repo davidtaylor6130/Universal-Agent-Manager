@@ -24,10 +24,20 @@ export function isRawBridgeError(text: string | undefined): boolean {
   return Boolean(text && /^(Bridge request failed:|Invalid bridge payload:)/.test(text))
 }
 
-/** A notice's detail from a caught value or backend error, followed by an optional next step; the message stays fixed wording. */
+/**
+ * A notice's detail from a caught value or backend error, followed by an optional next step; the message stays fixed
+ * wording. Raw bridge exception text is dropped here (the bridge has already logged it).
+ */
 export function failureDetail(cause: unknown, hint = ''): string {
-  const text = cause instanceof Error ? cause.message : typeof cause === 'string' ? cause : ''
-  return [text.trim(), hint.trim()].filter(Boolean).join(' ')
+  const raw = (cause instanceof Error ? cause.message : typeof cause === 'string' ? cause : '').trim()
+  const text = isRawBridgeError(raw) ? '' : raw && !/[.!?]$/.test(raw) && hint.trim() ? `${raw}.` : raw
+  return [text, hint.trim()].filter(Boolean).join(' ')
+}
+
+/** Splits fixed multi-sentence wording into its first sentence (the message) and the rest (the detail). */
+export function firstSentence(text: string): { message: string; detail: string } {
+  const match = /^(.+?[.!?])\s+(?=[A-Z])(.+)$/s.exec(text.trim())
+  return match ? { message: match[1], detail: match[2] } : { message: text.trim(), detail: '' }
 }
 
 export function reportAppFailure(message: string, detail: string) {

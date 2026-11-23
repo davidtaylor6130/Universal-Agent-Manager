@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { APP_FAILURE_EVENT, failureDetail, isRawBridgeError, noticeText, reportAppFailure, reportAppNotice, type AppFailure } from './appFailure'
+import { APP_FAILURE_EVENT, failureDetail, firstSentence, isRawBridgeError, noticeText, reportAppFailure, reportAppNotice, type AppFailure } from './appFailure'
 
 const notices: AppFailure[] = []
 const collect = (event: Event) => notices.push((event as CustomEvent<AppFailure>).detail)
@@ -30,7 +30,15 @@ describe('one-line notices', () => {
     expect(failureDetail('The chat is busy.', 'Try again.')).toBe('The chat is busy. Try again.')
     expect(failureDetail(new Error('Connection lost.'))).toBe('Connection lost.')
     expect(failureDetail(undefined, 'Try again.')).toBe('Try again.')
+    expect(failureDetail('Could not save wake time', 'Try again.')).toBe('Could not save wake time. Try again.')
+    // Raw bridge exception text stays in the log; only the next step reaches the detail.
+    expect(failureDetail('Bridge request failed: std::bad_alloc', 'Try again.')).toBe('Try again.')
     expect(isRawBridgeError('Bridge request failed: TypeError: x is undefined')).toBe(true)
     expect(isRawBridgeError('The chat could not be saved.')).toBe(false)
+  })
+
+  it('splits fixed multi-sentence wording at its first sentence', () => {
+    expect(firstSentence('The chat was replaced. Check the earlier input before sending again.')).toEqual({ message: 'The chat was replaced.', detail: 'Check the earlier input before sending again.' })
+    expect(firstSentence('Side chat opened.')).toEqual({ message: 'Side chat opened.', detail: '' })
   })
 })

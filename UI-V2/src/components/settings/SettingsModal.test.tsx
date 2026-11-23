@@ -1049,7 +1049,7 @@ describe('SettingsModal memory settings', () => {
       Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Connect and install'))?.click()
     })
     await act(async () => {})
-    expect(failures.at(-1)?.detail).toBe('ssh: connect to host homelab port 22: Connection refused Check the SSH connection and try again.')
+    expect(failures.at(-1)?.detail).toBe('ssh: connect to host homelab port 22: Connection refused. Check the SSH connection and try again.')
 
     act(() => root.unmount())
     host.remove()
@@ -1154,7 +1154,7 @@ describe('SettingsModal memory settings', () => {
     await act(async () => { remove.click() })
     await act(async () => { Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Remove host')!.click() })
 
-    expect(failures.at(-1)?.message).toBe('Colima was removed.')
+    expect(failures.at(-1)?.message).toBe('Colima was removed from UAM.')
     expect(failures.at(-1)?.detail).toBe('Helper files on that machine were left untouched.')
     expect(host.textContent).not.toContain('The remote helper was left installed.')
 

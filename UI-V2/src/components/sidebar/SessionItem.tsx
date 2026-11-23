@@ -466,10 +466,12 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
   const [generatingTitle, setGeneratingTitle] = useState(false)
   const [cancellingTitle, setCancellingTitle] = useState(false)
   const titleRequestPending = useRef(false)
+  const titleCancelled = useRef(false)
   const regenerateTitle = async () => {
     if (titleRequestPending.current) return
-    if (!isCefContext()) { reportAppFailure('Title generation is available in the desktop app.', ''); return }
+    if (!isCefContext()) { reportAppNotice('Title generation is available in the desktop app.', 'info'); return }
     titleRequestPending.current = true
+    titleCancelled.current = false
     setGeneratingTitle(true)
     try {
       const response = await sendToCEF<{ chatId: string; title: string }>({ action: 'regenerateChatTitle', payload: { chatId: sessionId } }, false)
@@ -478,7 +480,9 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
       // The native state push owns the rename, including concurrent-change checks.
       reportAppNotice('Chat title updated.', 'success')
     } catch (error) {
-      reportAppFailure('Could not generate a title.', failureDetail(error, 'Try again.'))
+      // A cancel the user asked for is not a failure.
+      if (titleCancelled.current) reportAppNotice('Title generation cancelled.', 'info')
+      else reportAppFailure('Could not generate a title.', failureDetail(error, 'Try again.'))
     } finally {
       titleRequestPending.current = false
       setGeneratingTitle(false)
@@ -491,6 +495,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
     try {
       const response = await sendToCEF({ action: 'cancelChatTitle', payload: { chatId: sessionId } }, false)
       if (!response.ok) throw new Error(response.error || '')
+      titleCancelled.current = true
     } catch (error) {
       setCancellingTitle(false)
       reportAppFailure('Could not cancel title generation.', failureDetail(error, 'Try again.'))

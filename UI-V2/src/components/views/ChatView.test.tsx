@@ -871,7 +871,7 @@ describe('ChatView', () => {
       act(() => root.unmount())
       host.remove()
     }
-    expect(appFailures.filter((failure) => failure.detail.includes('Remount history error.'))).toHaveLength(1)
+    expect(appFailures.filter((failure) => `${failure.message} ${failure.detail}`.includes('Remount history error.'))).toHaveLength(1)
   })
 
   it('keeps retry loading isolated when switching chats before completion', async () => {
@@ -5440,7 +5440,7 @@ describe('ChatView', () => {
     expect(reportedText()).toContain('Unsupported permission mode "unrestricted"')
     // Feedback now goes to the shared alert once; the inline dismiss control is gone.
     expect(host.querySelector('button[aria-label="Dismiss command feedback"]')).toBeNull()
-    expect(appFailures.filter((failure) => failure.detail.includes('Unsupported permission mode "unrestricted"'))).toHaveLength(1)
+    expect(appFailures.filter((failure) => `${failure.message} ${failure.detail}`.includes('Unsupported permission mode "unrestricted"'))).toHaveLength(1)
 
     act(() => {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, 'keep /permission yo tail')
@@ -5490,7 +5490,7 @@ describe('ChatView', () => {
     await act(acceptYolo)
     expect(reportedText()).toContain('Native permission update was rejected.')
     expect(host.querySelector('button[aria-label="Dismiss command feedback"]')).toBeNull()
-    expect(appFailures.filter((failure) => failure.detail.includes('Native permission update was rejected.'))).toHaveLength(1)
+    expect(appFailures.filter((failure) => `${failure.message} ${failure.detail}`.includes('Native permission update was rejected.'))).toHaveLength(1)
 
     await act(requestYolo)
     await act(acceptYolo)
@@ -5886,7 +5886,7 @@ describe('ChatView', () => {
     expect(useAppStore.getState().markdownStoreAttachedBySessionId['chat-1']).toEqual([skill])
     expect(useAppStore.getState().messages['chat-1']).toHaveLength(2)
     if (operation === 'failure') expect(reportedText()).toContain('This provider does not support manual compaction.')
-    if (operation === 'not-accepted') expect(reportedText()).toContain('Compaction failed: the request was not accepted.')
+    if (operation === 'not-accepted') expect(appFailures.at(-1)).toMatchObject({ message: 'Compaction failed.', detail: 'The request was not accepted.' })
     act(() => root.unmount())
     host.remove()
     delete window.cefQuery
@@ -11593,11 +11593,10 @@ describe('ChatView', () => {
         if (route !== 'goal') {
           expect(f.host.textContent).not.toContain('Claude Plan mode is read-only')
           if (change !== 'birth') {
-            const refusal = appFailures.find((failure) => failure.detail.includes("so this prompt wasn't sent. Review the selected references, then send again."))
-            expect(refusal).toBeTruthy()
-            expect(refusal!.message).toContain('Message not sent')
+            const refusal = appFailures.find((failure) => failure.message === "The chat's workspace or provider changed, so this prompt wasn't sent.")
+            expect(refusal?.detail).toBe('Review the selected references, then send again.')
             // A prevented send asks for recovery; it must not use the green completion treatment.
-            expect(refusal!.tone ?? 'failure').toBe('failure')
+            expect(refusal!.tone).toBe('warning')
           }
         }
       } finally {
@@ -11617,8 +11616,8 @@ describe('ChatView', () => {
         f.renderCurrentSession()
         await act(async () => f.pending[0].ack())
         expect(reportedText()).toContain('Check the earlier input before sending again.')
-        expect(appFailures.find((failure) => failure.detail.includes('Check the earlier input before sending again.'))?.message).toBe('Check earlier message')
-        expect(reportedText()).not.toContain('Message not sent')
+        expect(appFailures.find((failure) => `${failure.message} ${failure.detail}`.includes('Check the earlier input before sending again.'))).toMatchObject({ message: 'The chat was replaced.', tone: 'warning' })
+        expect(reportedText()).not.toContain("this prompt wasn't sent")
       } finally {
         await act(async () => { for (const request of f.pending) request.ack() })
         f.cleanup()
@@ -11638,7 +11637,7 @@ describe('ChatView', () => {
           ? { ...session, createdAt: new Date(session.createdAt.getTime() + 1000) } : session) })))
         f.renderCurrentSession()
         expect(reportedText()).toContain('Check the earlier input before sending again.')
-        expect(appFailures.find((failure) => failure.detail.includes('Check the earlier input before sending again.'))?.tone ?? 'failure').toBe('failure')
+        expect(appFailures.find((failure) => `${failure.message} ${failure.detail}`.includes('Check the earlier input before sending again.'))?.tone).toBe('warning')
         const fresh = { ...reference, id: 'replacement-ordinary-reference', text: 'Replacement selected context' }
         act(() => writeChatComposerDraft('chat-1', { text, attachments: [attachment], references: [fresh] }))
         await f.send()
@@ -11742,9 +11741,9 @@ describe('ChatView', () => {
         expect(f.sends()).toHaveLength(1)
         expect(f.sends()[0].payload.text).toBe(draft.text + '\n\n' + formatContextReferences([reference]))
         await act(async () => f.pending[0].reject('Synthetic acknowledgement failure'))
-        const recovery = appFailures.find((failure) => failure.detail.includes('Could not confirm the prompt. Check its saved state before retrying.'))
+        const recovery = appFailures.find((failure) => `${failure.message} ${failure.detail}`.includes('Could not confirm the prompt. Check its saved state before retrying.'))
         expect(recovery).toBeTruthy()
-        expect(recovery!.tone ?? 'failure').toBe('failure')
+        expect(recovery!.tone).toBe('warning')
         expect(readChatComposerDraft('chat-1')).toEqual(draft)
         expect(f.host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!.value).toBe(draft.text)
         expect(f.sends()).toHaveLength(1)
@@ -12790,7 +12789,7 @@ describe('ChatView committed unsent editing', () => {
       await f.enter()
       expect(f.requests).toHaveLength(0)
       expect(f.editor().value).toBe('Edited local input')
-      expect((f.host.textContent ?? '') + reportedText()).toContain('Message changed, so editing paused.')
+      expect((f.host.textContent ?? '') + reportedText()).toContain('Message changed. Editing paused.')
       expect(useAppStore.getState().messages['chat-1'][0]).toBe(replacement)
       expect(readChatComposerDraft('chat-1')).toEqual(f.draft)
       f.noExecution()

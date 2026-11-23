@@ -3,7 +3,7 @@ import { AutomationStartQuestion } from '../chat/AutomationStartQuestion'
 import { LinkedPullRequests, WatchPullRequestDialog } from '../chat/LinkedPullRequests'
 import type { AcpPromptPresentationObserver } from '../../store/storeTypes'
 import { subagentParentFor, subscribeSubagentNavigation, subagentNavigationRevision } from '../../utils/subagentNavigation'
-import { failureDetail, reportAppFailure, reportAppNotice, resolveAppNotice } from '../../utils/appFailure'
+import { failureDetail, firstSentence, reportAppFailure, reportAppNotice, resolveAppNotice } from '../../utils/appFailure'
 import type { AcpBinding, AcpQueuedPrompt, AcpTurnEvent, ManualCompactionAvailability, ProviderSwitchOverride } from '../../store/cpp/types'
 import { attachmentsEquivalent } from '../../store/cpp/reconcile'
 import { MAX_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS, messageAttachments, sanitizeManualCompaction, sanitizeNativeInputId, sanitizeOriginRequestId, sanitizeManagedOriginRunId } from '../../store/cpp/sanitizers'
@@ -105,8 +105,8 @@ function sameManualCompactionTarget(left: ManualCompactionAvailability, right: M
 }
 
 type ComposerNoticeTone = NoticeTone
-type SlashNotice = { message: string; tone: NoticeTone }
-const noticeFor = (message: string, tone: NoticeTone): SlashNotice | null => message ? { message, tone } : null
+type SlashNotice = { message: string; tone: NoticeTone; detail?: string }
+const noticeFor = (message: string, tone: NoticeTone, detail?: string): SlashNotice | null => message ? { message, tone, detail } : null
 // Last chat-history failure alerted; module-level so remounting ChatView does not re-alert the same stored error.
 let reportedHistoryFailure = ''
 type PermissionChangeResult = { ok: boolean; cancelled?: boolean; error?: string }
@@ -484,7 +484,6 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const [goalArmNextMessage, setGoalArmNextMessage] = useState(false)
   const [slashIndex, setSlashIndex] = useState(0)
   const [slashNotice, setSlashNotice] = useState<SlashNotice | null>(null)
-  const slashMessage = slashNotice?.message ?? ''
   const [slashGroup, setSlashGroup] = useState('')
   const [slashGroupIndex, setSlashGroupIndex] = useState(0)
   const [permissionMenuOpen, setPermissionMenuOpen] = useState(false)
@@ -1454,17 +1453,17 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   }, [workspaceFeedback])
   useEffect(() => {
     if (!goalError) return
-    reportAppFailure('Goal update failed', goalError)
+    reportAppFailure('The goal was not updated.', goalError)
     setGoalError('')
   }, [goalError])
   useEffect(() => {
     if (!messageBranchError) return
-    reportAppFailure(editingMessageSource.kind === 'unsent' ? 'Message edit failed' : 'Message branch failed', messageBranchError)
+    reportAppFailure(editingMessageSource.kind === 'unsent' ? 'The message edit was not saved.' : 'The message branch was not created.', messageBranchError)
     setMessageBranchError('')
   }, [messageBranchError])
   useEffect(() => {
     if (!attachmentError) return
-    reportAppFailure('Attachment failed', attachmentError)
+    reportAppFailure('The attachment could not be added.', attachmentError)
     setAttachmentError('')
   }, [attachmentError])
   // Toggling showComposer re-runs this effect; the reported ref keeps one alert per distinct dictation error.
@@ -1472,7 +1471,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     if (!dictationError) reportedDictationError.current = ''
     if (!dictationError || showComposer || reportedDictationError.current === dictationError) return
     reportedDictationError.current = dictationError
-    reportAppFailure('Dictation failed', dictationError)
+    reportAppFailure('Dictation stopped with an error.', dictationError)
   }, [dictationError, showComposer])
   // The history error lives in the store, so a remount would re-report it; alert once per distinct failure.
   useEffect(() => {
@@ -1806,7 +1805,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       if (!ownsFeedback()) return
       if (!response.ok || response.data?.accepted !== true) {
         // "failed" keeps this on the error tone; a plain message would show green.
-        setSlashNotice(noticeFor(`Compaction failed: ${response.error || 'the request was not accepted.'}`, 'error'))
+        setSlashNotice(noticeFor('Compaction failed.', 'error', failureDetail(response.error, 'The request was not accepted.')))
         return
       }
       // Acceptance is not completion; the "Compacting context" strip and the transcript show progress.
@@ -1992,7 +1991,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     try {
       const dismiss = action === 'dismiss'
       const response = await sendToCEF<{ chatId?: string; parentChatId?: string }>({ action: dismiss ? 'dismissSideChat' : 'createSideChat', payload: { chatId: session.id }, requestId: createRequestId('side') })
-      if (!response.ok) { setSlashNotice(noticeFor(response.error || 'Side chat could not be changed.', 'error')); return }
+      if (!response.ok) { setSlashNotice(noticeFor('Side chat could not be changed.', 'error', failureDetail(response.error))); return }
       const id = dismiss ? response.data?.parentChatId : response.data?.chatId
       if (id) showChatInPane(id)
     } finally { sideBusyRef.current = false; setSideBusy(false) }
@@ -2208,11 +2207,13 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     if (liveDividerOpen && isNearBottomRef.current) bottomRef.current?.scrollIntoView?.({ block: 'end' })
   }, [liveDividerOpen])
   const slashNoticeTone: ComposerNoticeTone = slashNotice?.tone ?? 'success'
-  const slashNoticeTitle = UNSENT_PROMPT_NOTICE.test(slashMessage) ? 'Message not sent' : /chat was replaced/i.test(slashMessage) ? 'Check earlier message' : 'Command'
   useEffect(() => {
     if (!slashNotice) return
-    if (slashNotice.tone === 'error' || slashNotice.tone === 'warning') reportAppFailure(slashNoticeTitle, slashNotice.message)
-    else reportAppNotice(slashNotice.message, slashNotice.tone === 'info' ? 'info' : 'success')
+    // The notice is the first sentence; any further fixed wording (the next step) is its detail.
+    const split = firstSentence(slashNotice.message)
+    const detail = [split.detail, slashNotice.detail ?? ''].filter(Boolean).join(' ')
+    if (slashNotice.tone === 'error') reportAppFailure(split.message, detail)
+    else reportAppNotice(split.message, slashNotice.tone === 'warning' ? 'warning' : slashNotice.tone === 'info' ? 'info' : 'success', { detail })
   }, [slashNotice])
   const unsupportedProviderMessage = providerSupported
     ? ''
@@ -2255,9 +2256,9 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   } : null
   useEffect(() => {
     if (!staleUnsentEditor || branchingMessageIndex !== null) { resolveAppNotice(editNoticeId); return }
-    reportAppNotice('Message changed, so editing paused.', 'warning', {
+    reportAppNotice('Message changed. Editing paused. Your edit and selected context are kept.', 'warning', {
       id: editNoticeId,
-      detail: `Your edit and selected context are kept. ${canBranchRefreshedEdit ? 'Saving in a new branch preserves the original chat.' : 'Wait for recovery, or cancel to return to your follow-up draft.'}`,
+      detail: canBranchRefreshedEdit ? 'Saving in a new branch preserves the original chat.' : 'Wait for recovery, or cancel to return to your follow-up draft.',
       actions: canRebindUnsentEdit || canBranchRefreshedEdit ? [{ label: canRebindUnsentEdit ? 'Use refreshed message' : 'Edit in a new branch', run: () => { editRecoveryAction.current?.() } }] : [],
     })
   }, [staleUnsentEditor, branchingMessageIndex, canRebindUnsentEdit, canBranchRefreshedEdit, editNoticeId])

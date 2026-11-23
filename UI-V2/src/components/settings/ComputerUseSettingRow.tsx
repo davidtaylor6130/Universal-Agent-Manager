@@ -63,7 +63,7 @@ export function ComputerUseSettingRow({ disabled = false }: { disabled?: boolean
       if (next === undefined) await check()
       else {
         const response = await sendToCEF<ComputerUseSettings>({ action: 'setComputerUseSettings', payload: { computerUseGloballyEnabled: next } })
-        if (!response.ok) throw Error(response.error || 'Could not change Computer Use.')
+        if (!response.ok) throw Error(response.error || '')
         if (observe(response.data, captured) !== 'applied') await check()
       }
     } catch (failure) {

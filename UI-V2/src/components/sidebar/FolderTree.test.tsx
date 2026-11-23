@@ -2030,7 +2030,7 @@ describe('FolderTree', () => {
     const deleteFolder = vi.fn(async () => false)
     useAppStore.setState({ renameFolder, deleteFolder })
     const failures: string[] = []
-    const collect = (event: Event) => failures.push((event as CustomEvent<{ message: string }>).detail.message)
+    const collect = (event: Event) => { const { message, detail } = (event as CustomEvent<{ message: string; detail: string }>).detail; failures.push(`${message} | ${detail}`) }
     window.addEventListener(APP_FAILURE_EVENT, collect)
     onTestFinished(() => window.removeEventListener(APP_FAILURE_EVENT, collect))
     const host = document.createElement('div')
@@ -2047,7 +2047,7 @@ describe('FolderTree', () => {
       directory.dispatchEvent(new Event('input', { bubbles: true }))
     })
     await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Save')!.click())
-    expect(failures).toContain('The workspace could not be updated.')
+    expect(failures).toContain('The workspace could not be updated. | Finish active work and try again.')
     expect(host.querySelector('input[placeholder="Workspace directory"]')).toBeTruthy()
 
     act(() => (host.querySelector('button[aria-label="Folder actions"]') as HTMLButtonElement).click())

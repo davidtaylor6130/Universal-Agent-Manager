@@ -316,7 +316,8 @@ describe('SessionItem status icons', () => {
       expect(button('Cancelling…').disabled).toBe(true)
       expect(requests.filter(action => action === 'cancelChatTitle')).toHaveLength(1)
       await act(async () => fail!(409, 'Title generation was cancelled.'))
-      expect(notices.at(-1)).toMatchObject({ message: 'Could not generate a title.', detail: 'Title generation was cancelled. Try again.' })
+      // The cancel the user asked for reads as information, not a failure.
+      expect(notices.at(-1)).toMatchObject({ message: 'Title generation cancelled.', tone: 'info' })
       expect(button('Regenerate title').disabled).toBe(false)
       expect(useAppStore.getState().sessions[0].name).toBe('Chat 1')
       await act(async () => button('Regenerate title').click())
@@ -333,7 +334,7 @@ describe('SessionItem status icons', () => {
       const menu = document.body.querySelector('[data-viewport-menu]')!
       const button = Array.from(menu.querySelectorAll<HTMLButtonElement>('button')).find(item => item.textContent === 'Regenerate title')!
       await act(async () => button.click())
-      expect(notices.at(-1)?.message).toBe('Title generation is available in the desktop app.')
+      expect(notices.at(-1)).toMatchObject({ message: 'Title generation is available in the desktop app.', tone: 'info' })
       window.cefQuery = ({ request, onSuccess }) => onSuccess(JSON.parse(request).action === 'regenerateChatTitle' ? JSON.stringify({ chatId: 'another-chat', title: 'Wrong title' }) : '{}')
       await act(async () => button.click())
       expect(notices.at(-1)).toMatchObject({ message: 'Could not generate a title.', detail: expect.stringContaining('invalid response') })

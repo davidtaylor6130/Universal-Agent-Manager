@@ -61,7 +61,7 @@ it('keeps a rejected save guarded and leaves only after successful retry', async
   act(() => handle.current!.requestLeave(leave))
   await click('Save and leave')
   expect(leave).not.toHaveBeenCalled()
-  expect(vi.mocked(reportAppFailure)).toHaveBeenCalledWith(expect.stringMatching(/not saved\.$/), expect.stringContaining('Private save rejection'))
+  expect(vi.mocked(reportAppFailure)).toHaveBeenCalledWith('Provider defaults were not saved.', 'Private save rejection. Your changes are kept. Try again.')
   expect(host.textContent).toContain('private-AGENTS.md')
   await click('Save and leave')
   expect(save).toHaveBeenCalledTimes(2)
