@@ -2231,6 +2231,7 @@ namespace uam
 			if (session.goal_review_turn || capability.read_only_at_launch)
 			{
 				for (const nlohmann::json& tool : Tools()) hidden.push_back(tool.value("name", ""));
+				std::ranges::sort(hidden); // HandleRequest binary-searches this list.
 				return hidden;
 			}
 			// Same rule as ReadOnlyAgent: a missing or unknown workspace access is read-only.
@@ -2683,6 +2684,9 @@ namespace uam
 		    {"env", std::move(environment)},
 		});
 		capability.hidden_tools = UnusableTools(capability, chat, *root_chat, session);
+		// HandleRequest binary-searches the list, so it must stay sorted and unique whatever UnusableTools returns.
+		std::ranges::sort(capability.hidden_tools);
+		capability.hidden_tools.erase(std::ranges::unique(capability.hidden_tools).begin(), capability.hidden_tools.end());
 		HideTools(request["params"]["mcpServers"].back(), capability.hidden_tools);
 		session.uam_control_capability_id = capability.id;
 		app.uam_control_capabilities.push_back(std::move(capability));

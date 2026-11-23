@@ -1648,7 +1648,7 @@ UAM_TEST(SavedMcpSettingsReachAllFiveRuntimesWithoutEnablingCentralInstructions)
 	}
 }
 
-UAM_TEST(UamControlSigningKeyStaysOutOfConfigurationFilesWhereTheProviderReadsItsEnvironment)
+UAM_TEST(UamControlSigningKeyStaysOutOfConfigurationFilesWhereTheProviderCanTakeItFromItsEnvironment)
 {
 	TempDir temp("uam-control-key-files");
 	AppSettings settings;
@@ -1671,6 +1671,7 @@ UAM_TEST(UamControlSigningKeyStaysOutOfConfigurationFilesWhereTheProviderReadsIt
 	};
 	for (const std::string& provider : {"claude-cli", "gemini-cli", "codex-cli", "opencode-cli"})
 	{
+		const bool gemini = provider == "gemini-cli";
 		ChatSession chat;
 		chat.id = "key-" + provider;
 		chat.provider_id = provider;
@@ -1682,6 +1683,18 @@ UAM_TEST(UamControlSigningKeyStaysOutOfConfigurationFilesWhereTheProviderReadsIt
 		std::vector<std::string> argv{provider == "claude-cli" ? "claude" : provider == "gemini-cli" ? "gemini" : provider == "codex-cli" ? "codex" : "opencode"};
 		uam::provider_setup::Environment environment;
 		UAM_ASSERT(uam::provider_setup::Apply(provider, bundle.local_directory, temp.root, argv, environment, error, session_servers));
+		if (gemini)
+		{
+			// No verified route lets Gemini take the key from its environment, so only its own settings file holds it
+			// (documented residual); the shared mcp.json copy it never reads does not.
+			const std::string settings_path = uam::provider_setup::EnvironmentValue(environment, "GEMINI_CLI_SYSTEM_SETTINGS_PATH");
+			const nlohmann::json config = nlohmann::json::parse(ReadFile(uam::paths::PathFromUtf8(settings_path)));
+			UAM_ASSERT_EQ(config["mcpServers"]["uam-control"]["env"]["UAM_CONTROL_REQUEST_KEY"], nlohmann::json(key));
+			UAM_ASSERT(uam::provider_setup::EnvironmentValue(environment, "UAM_CONTROL_LAUNCH_KEY").empty());
+			UAM_ASSERT(fs::remove(uam::paths::PathFromUtf8(settings_path)));
+			UAM_ASSERT(!files_hold_key(bundle.local_directory));
+			continue;
+		}
 		// No generated file holds the key, including the shared mcp.json copy these providers never read.
 		UAM_ASSERT(!files_hold_key(bundle.local_directory));
 		if (provider == "codex-cli")
@@ -1698,21 +1711,16 @@ UAM_TEST(UamControlSigningKeyStaysOutOfConfigurationFilesWhereTheProviderReadsIt
 			UAM_ASSERT_EQ(config["mcp"]["uam-control"]["environment"]["UAM_CONTROL_REQUEST_KEY"], nlohmann::json(key));
 			continue;
 		}
-		// Claude and Gemini read a file: it references the provider's variable, which holds the key.
+		// Claude reads a file: it references the provider's variable, which holds the key.
 		UAM_ASSERT_EQ(uam::provider_setup::EnvironmentValue(environment, "UAM_CONTROL_LAUNCH_KEY"), key);
-		std::string configuration_path;
-		if (provider == "gemini-cli") configuration_path = uam::provider_setup::EnvironmentValue(environment, "GEMINI_CLI_SYSTEM_SETTINGS_PATH");
-		else
-		{
-			const auto flag = std::ranges::find(argv, "--mcp-config");
-			UAM_ASSERT(flag != argv.end() && flag + 1 != argv.end());
-			configuration_path = *(flag + 1);
-		}
+		const auto flag = std::ranges::find(argv, "--mcp-config");
+		UAM_ASSERT(flag != argv.end() && flag + 1 != argv.end());
+		const std::string configuration_path = *(flag + 1);
 		const nlohmann::json config = nlohmann::json::parse(ReadFile(uam::paths::PathFromUtf8(configuration_path)));
 		const nlohmann::json& env = config["mcpServers"]["uam-control"]["env"];
 		UAM_ASSERT_EQ(env["UAM_CONTROL_REQUEST_KEY"], nlohmann::json("${UAM_CONTROL_LAUNCH_KEY}"));
 		UAM_ASSERT_EQ(env["UAM_CONTROL_CAPABILITY_DIR"], nlohmann::json("/private/capability"));
-		UAM_ASSERT_EQ(config["mcpServers"]["shared-http"][provider == "gemini-cli" ? "httpUrl" : "url"], nlohmann::json(shared.url));
+		UAM_ASSERT_EQ(config["mcpServers"]["shared-http"]["url"], nlohmann::json(shared.url));
 	}
 }
 

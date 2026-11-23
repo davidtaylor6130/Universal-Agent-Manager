@@ -218,7 +218,7 @@ export function SecretRequestCard({ input, sessionId, onResolve }: Props)
             {legacySaved && <div className="secret-card__legacy">
                 <Notice tone="info" title="An older saved value isn't offered." dismissible={false}
                     actions={<Button size="sm" variant="ghost" disabled={Boolean(busy) && busy !== 'forgetLegacy'} loading={busy === 'forgetLegacy'} onClick={() => void forget(true)}>Forget it</Button>}>
-                    It was saved before UAM recorded which agent saved a secret. Type the secret instead; Save keeps it for {provider} only.
+                    It was saved before UAM recorded which agent saved a secret. Type the secret instead; Save keeps it for {provider}{keychain.agent ? ` (${keychain.agent} agent)` : ''} only.
                 </Notice>
             </div>}
         </div>

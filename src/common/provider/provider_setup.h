@@ -709,6 +709,8 @@ namespace uam::provider_setup
 			native_servers[name] = std::move(native);
 		}
 		// Only Copilot reads this file as written (Claude rewrites it below); the others get it without the signing key.
+		// Gemini and Antigravity write their own files from native_servers with the key: no verified route lets them
+		// take it from their environment (Gemini's settings expansion and its environment filtering are unverified).
 		if (!WriteRuntimeFile(mcp_path, nlohmann::json{{"mcpServers", provider == uam::provider_ids::kCopilotCli ? native_servers : WithoutUamControlKeys(native_servers)}}.dump(), error)) { error = "Could not install central MCP configuration."; return false; }
 		const std::string instruction_file = uam::paths::Utf8PathString(instruction_path);
 		if (provider == uam::provider_ids::kAntigravityCli)
@@ -969,8 +971,6 @@ namespace uam::provider_setup
 				else if (std::find(names.begin(), names.end(), nlohmann::json("AGENTS.md")) == names.end()) names.push_back("AGENTS.md");
 				config["context"]["fileName"] = names;
 			}
-			// Gemini expands $VAR and ${VAR} references in settings values when it loads them.
-			if (!MoveUamControlKeysToEnvironment(native_servers, environment, error)) return false;
 			for (const auto& [name, server] : native_servers.items())
 			{
 				nlohmann::json native = server;
