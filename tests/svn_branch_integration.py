@@ -21,8 +21,8 @@ with tempfile.TemporaryDirectory(prefix="uam-svn-composer-@") as temporary:
     subprocess.run(["svnadmin", "create", str(repository)], check=True, timeout=30)
     svn = ["svn", "--config-dir", str(config), "--no-auth-cache", "--non-interactive"]
 
-    def run(*args):
-        subprocess.run(svn + list(args), check=True, timeout=30, stdout=subprocess.DEVNULL)
+    def run(*args, cwd=None):
+        subprocess.run(svn + list(args), check=True, timeout=30, stdout=subprocess.DEVNULL, cwd=cwd)
 
     def revisions(path):
         """Lowest and highest working revision of every node, from svn's own recursive info."""
@@ -36,7 +36,9 @@ with tempfile.TemporaryDirectory(prefix="uam-svn-composer-@") as temporary:
 
     url = repository.as_uri()
     run("mkdir", url + "/lines", url + "/lines/main", "-m", "fixture layout")
-    run("checkout", url + "/lines/main", str(working_copy))
+    # SVN 1.14 reads "@" in a checkout destination as a peg revision, so check out to a plain relative name and rename.
+    run("checkout", url + "/lines/main", "copy", cwd=root)
+    (root / "copy").rename(working_copy)
     (working_copy / "tracked.txt").write_text("fixture content\n")
     (working_copy / "child").mkdir()
     (working_copy / "child" / "retained.txt").write_text("nested fixture content\n")
@@ -45,7 +47,7 @@ with tempfile.TemporaryDirectory(prefix="uam-svn-composer-@") as temporary:
     run("commit", str(working_copy) + "@", "-m", "fixture content")
     run("copy", url + "/lines/main", url + "/lines/feature%20a", "-m", "fixture branch")
     branch_copy = root / "branch-edit"
-    run("checkout", url + "/lines/feature%20a", str(branch_copy))
+    run("checkout", url + "/lines/feature%20a", "branch-edit", cwd=root)
     (branch_copy / "tracked.txt").write_text("branch content\n")
     run("commit", str(branch_copy) + "@", "-m", "fixture branch content")
     for depth in ("empty", "files", "immediates", "exclude"):
