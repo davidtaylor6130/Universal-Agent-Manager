@@ -29,13 +29,13 @@ const expectNoRouting = (state: object) => { for (const key of ROUTING_MEMBERS) 
 async function startStore() {
   const win = window as TestWindow
   vi.resetModules()
-  win.dispatchEvent = vi.fn(() => true)
+  vi.spyOn(window, 'dispatchEvent').mockImplementation(() => true)
   win.cefQuery = ({ request, onSuccess }) => {
     if (JSON.parse(request).action === 'getInitialState') onSuccess(JSON.stringify(fullState(5, 'Initial')))
     else onSuccess('{}')
   }
   const { useAppStore } = await import('./useAppStore')
-  await new Promise((resolve) => setTimeout(resolve, 0))
+  await vi.waitFor(() => expect(useAppStore.getState().sessions[0]?.name).toBe('Initial'))
   return { store: useAppStore, push: (payload: unknown) => win.uamPush?.(payload) }
 }
 
