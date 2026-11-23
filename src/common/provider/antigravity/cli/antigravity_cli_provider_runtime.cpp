@@ -395,7 +395,7 @@ bool AntigravityCliProviderRuntime::OnAcpValidateGoalResume(const ChatSession& c
 		error = "The saved Antigravity conversation identity is invalid. The goal was not resumed.";
 		return false;
 	}
-	// Reviewed iterations only: like the shared ResumeGoal, a user Resume may run one more turn after an unreviewed-resume stop; the watchdog still bounds it.
+	// Reviewed iterations only: this also gates each goal prompt send, including the review after an unreviewed resume; the shared cap and watchdog bound unreviewed resumes.
 	if (!restart && (goal.loop_count < 0 || goal.loop_count >= uam::GoalService::IterationLimit(goal, settings)))
 	{
 		error = "Maximum goal loop iterations reached.";
