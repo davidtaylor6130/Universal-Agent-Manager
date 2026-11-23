@@ -1242,7 +1242,10 @@ namespace uam::remote
 		if (m_connected) return true;
 		const auto budget_spent = [deadline = std::chrono::steady_clock::now() + m_cleanupLimit]
 		{ return std::chrono::steady_clock::now() >= deadline; };
-		return Connect(error_out, {}, budget_spent);
+		if (Connect(error_out, {}, budget_spent)) return true;
+		// A spent budget reads as an interruption, which is not what happened.
+		if (error_out != nullptr && budget_spent()) *error_out = "The host could not be reached again to clean up.";
+		return false;
 	}
 
 	void RunnerClient::AbortUpload(const std::string& upload_id)
