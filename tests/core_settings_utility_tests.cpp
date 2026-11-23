@@ -3520,6 +3520,34 @@ UAM_TEST(TemporarySideChatKeepsFreshIdentityContextAndSafeCleanup)
 	UAM_ASSERT_EQ(app.chats.front().messages.size(), parent.messages.size());
 }
 
+// #961: startup flags every leftover side chat at once; each removal is a full deletion transaction on the UI thread.
+UAM_TEST(TemporarySideChatCleanupRemovesOneSideChatPerPoll)
+{
+	TempDir temp("uam-side-cleanup-budget");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession parent = ChatDomainService().CreateNewChat("project", "codex-cli");
+	parent.workspace_directory = temp.root.string();
+	app.chats.push_back(parent);
+	std::vector<std::string> side_ids(3);
+	for (std::string& side_id : side_ids)
+	{
+		UAM_ASSERT(uam::CreateTemporarySideChat(app, parent.id, &side_id));
+		UAM_ASSERT(uam::RequestTemporarySideChatCleanup(app, side_id));
+	}
+	for (std::size_t poll = 0; poll < side_ids.size(); ++poll)
+	{
+		UAM_ASSERT(uam::PollTemporarySideChatCleanup(app));
+		// Removed in list order, one per poll; the others stay due for the next poll.
+		for (std::size_t index = 0; index < side_ids.size(); ++index)
+			UAM_ASSERT_EQ(ChatDomainService().FindChatById(app, side_ids[index]) == nullptr, index <= poll);
+		UAM_ASSERT_EQ(app.chats.size(), side_ids.size() - poll);
+	}
+	UAM_ASSERT(!uam::PollTemporarySideChatCleanup(app));
+	UAM_ASSERT_EQ(app.chats.size(), std::size_t{1});
+	UAM_ASSERT(ChatDomainService().FindChatById(app, parent.id) != nullptr);
+}
+
 UAM_TEST(TemporarySideChatCleanupSaveFailureKeepsItsRecoveryMetadata)
 {
 	TempDir temp("uam-side-cleanup-failure");

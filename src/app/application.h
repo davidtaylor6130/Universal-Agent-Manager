@@ -58,7 +58,7 @@ class Application
 
   private:
 	/// Runs every runtime stage of one poll; PollTick contains its failures so the next poll still runs.
-	void PollTickStages(std::chrono::steady_clock::time_point poll_started);
+	void PollTickStages(std::chrono::steady_clock::time_point poll_started, std::chrono::steady_clock::time_point stages_started);
 	void ReportPollTickFailure(const std::string& reason);
 	std::unique_ptr<UamQueryHandler> m_managementHandler;
 	std::unique_ptr<uam::discovery::ManagementAnnouncement> m_managementAnnouncement;

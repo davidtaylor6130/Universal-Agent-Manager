@@ -1251,8 +1251,14 @@ bool uam::PollTemporarySideChatCleanup(AppState& app)
 		if (!chat.temporary_parent_chat_id.empty() && chat.side_cleanup_requested && chat.side_cleanup_retry_time_s <= now)
 			pending.push_back(chat.id);
 	bool changed = false;
+	// Each removal is a whole deletion transaction (several passes over every chat, staging and durable writes).
+	// Startup flags every leftover side chat at once, so remove one per poll; the rest keep their due time and
+	// are taken on the next poll, in the same order (#961).
+	constexpr std::size_t kMaxSideChatRemovalsPerPoll = 1;
+	std::size_t removals = 0;
 	for (const std::string& id : pending)
 	{
+		if (removals >= kMaxSideChatRemovalsPerPoll) break;
 		ChatSession* chat = ChatDomainService().FindChatById(app, id);
 		if (chat == nullptr) continue;
 		chat->side_cleanup_retry_time_s = now + 5.0;
@@ -1293,6 +1299,7 @@ bool uam::PollTemporarySideChatCleanup(AppState& app)
 		}
 		uam::StopAndEraseCliTerminalForChat(app, id, false);
 		if (ChatHasDeletionBlockingRuntime(app, id)) continue;
+		++removals;
 		changed = RemoveChatById(app, id) || changed;
 	}
 	return changed;
