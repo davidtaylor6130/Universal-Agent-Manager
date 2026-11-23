@@ -649,14 +649,14 @@ namespace uam::provider_agent_import
 			return uam::io::TryReadTextFile(path, text) && text.size() == *size && !HasDisallowedControl(text);
 		}
 
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 		std::filesystem::path OpenCodeConfigRoot()
 		{
-#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 			if (const auto xdg = uam::env::GetNonEmptyString("XDG_CONFIG_HOME")) return uam::paths::PathFromUtf8(*xdg) / "opencode";
 			if (const auto home = PlatformServicesFactory::Instance().path_service.ResolveUserHomePath()) return *home / ".config" / "opencode";
-#endif
 			return {};
 		}
+#endif
 
 		std::string ProviderLabel(const std::string& provider_id)
 		{
@@ -1216,6 +1216,17 @@ namespace uam::provider_agent_import
 						out.error = "prompt: the {file:...} reference must name a file inside the config's folder.";
 						return false;
 					}
+					// The check above is lexical, so a linked folder on the way could still lead outside; refuse any link.
+					std::filesystem::path step = config_folder;
+					for (const std::filesystem::path& component : inside)
+					{
+						step /= component;
+						if (uam::paths::IsLinkOrReparsePointNoThrow(step))
+						{
+							out.error = "prompt: the {file:...} reference must not pass through a linked folder or file.";
+							return false;
+						}
+					}
 					std::string body;
 					if (!ReadBoundedFile(prompt_path, kMaxInstructionsBytes, body))
 					{
@@ -1241,6 +1252,7 @@ namespace uam::provider_agent_import
 		return true;
 	}
 
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 	namespace
 	{
 		bool SamePath(const std::filesystem::path& left, const std::filesystem::path& right)
@@ -1269,8 +1281,8 @@ namespace uam::provider_agent_import
 			return false;
 		}
 
-		/// Merge one config's rules into the rules so far. Config order across files is not relied on: a deny already
-		/// present is kept, so the merged rules are at least as strict as OpenCode's own merge of the same files.
+		/// Merge one config's rules into the rules so far, in OpenCode's load order. A value that denies is kept when a later
+		/// file repeats the key, so each repeated key is at least as strict as OpenCode's merge of the same files.
 		void MergeStrict(OrderedJson& merged, const OrderedJson& next)
 		{
 			if (merged.is_null()) { merged = next; return; }
@@ -1286,9 +1298,23 @@ namespace uam::provider_agent_import
 			if (Denies(merged) && !Denies(next)) return;
 			merged = next;
 		}
-	} // namespace
 
-	bool AddInheritedConfigRules(const std::filesystem::path& source_path, ParsedSource& out)
+		/// Check one config value with the same rules as an agent's, so an invalid value is refused with its file named.
+		bool ValidateConfigRules(const OrderedJson& value, const std::string& prefix, bool tools, std::string& error)
+		{
+			Node node;
+			if (!JsonToNode(value, prefix, 1, node, error)) return false;
+			ProviderAgentImportPreview scratch;
+			std::vector<Rule> rules;
+			bool write = false;
+			const bool ok = tools ? AddToolRules(node, prefix, rules, write, scratch) : AddPermissionRules(node, prefix, rules, write, scratch);
+			if (!ok) error = scratch.error;
+			return ok;
+		}
+	} // namespace
+#endif
+
+	bool AddInheritedConfigRules(const std::filesystem::path& source_path, const std::string& agent_id, ParsedSource& out)
 	{
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 		std::vector<std::filesystem::path> configs;
@@ -1299,6 +1325,8 @@ namespace uam::provider_agent_import
 		const std::filesystem::path global = OpenCodeConfigRoot();
 		if (!global.empty())
 			for (const char* name : {"config.json", "opencode.json", "opencode.jsonc"}) add(global / name);
+		// OpenCode also loads a custom config file named by its environment.
+		if (const auto custom = uam::env::GetNonEmptyString("OPENCODE_CONFIG")) add(uam::paths::PathFromUtf8(*custom));
 		// A project agent lives in <project>/.opencode/agent(s); a JSON entry lives in <project>/opencode.json(c) or
 		// <project>/.opencode/opencode.json(c). Every project config applies, whichever file holds the agent.
 		std::filesystem::path directory = source_path.parent_path();
@@ -1338,9 +1366,24 @@ namespace uam::provider_agent_import
 				out.error = "config: " + label + " is not valid JSON or JSONC, so its rules cannot be applied.";
 				return false;
 			}
-			if (root.contains("tools")) MergeStrict(tools, root["tools"]);
-			if (root.contains("permission")) MergeStrict(permission, root["permission"]);
-			if (root.contains("tools") || root.contains("permission")) applied.push_back(label);
+			// Root rules apply to every agent; a same-named `agent`/`agents` entry in any config merges into this agent too.
+			bool contributed = false;
+			const auto take = [&](const OrderedJson& holder, const std::string& prefix) -> bool
+			{
+				for (const auto& [field, merged] : {std::pair<const char*, OrderedJson*>{"tools", &tools}, {"permission", &permission}})
+				{
+					if (!holder.contains(field)) continue;
+					if (!ValidateConfigRules(holder[field], prefix + field, std::string_view(field) == "tools", out.error)) return false;
+					MergeStrict(*merged, holder[field]);
+					contributed = true;
+				}
+				return true;
+			};
+			if (!take(root, label + " ")) return false;
+			for (const char* container : {"agent", "agents"})
+				if (!agent_id.empty() && root.contains(container) && root[container].is_object() && root[container].contains(agent_id) && root[container][agent_id].is_object())
+					if (!take(root[container][agent_id], label + " " + container + "." + agent_id + ".")) return false;
+			if (contributed) applied.push_back(label);
 		}
 		for (const auto& [field, value] : {std::pair<const char*, const OrderedJson*>{"tools", &tools}, {"permission", &permission}})
 		{
@@ -1351,6 +1394,7 @@ namespace uam::provider_agent_import
 		}
 #else
 		(void)source_path;
+		(void)agent_id;
 		(void)out;
 #endif
 		return true;

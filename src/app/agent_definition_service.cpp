@@ -631,7 +631,8 @@ namespace uam
 			file_id = NativeAgentFileId(preview.source_path);
 		}
 		// OpenCode applies config-level rules before an agent's own, so they are part of what the source allows.
-		if (preview.provider_id == provider_ids::kOpenCodeCli && !provider_agent_import::AddInheritedConfigRules(preview.source_path, parsed))
+		if (preview.provider_id == provider_ids::kOpenCodeCli && !provider_agent_import::AddInheritedConfigRules(preview.source_path,
+		        source_entry.empty() ? uam::paths::Utf8PathString(preview.source_path.stem()) : source_entry, parsed))
 		{
 			preview.error = parsed.error;
 			return preview;
@@ -744,6 +745,8 @@ namespace uam
 		{
 			std::string ceiling_error;
 			if (const auto stored = ParseMarkdown(target, false, previous, &ceiling_error)) ceiling = stored->max_workspace_access;
+			// An unreadable stored file still keeps a recorded read-only limit rather than dropping it.
+			else if (previous.find("\nmaxWorkspaceAccess:") != std::string::npos) ceiling = "read";
 			if (ceiling == "read" && agent.workspace_access != "read")
 				return fail("workspaceAccess: this agent was imported from a read-only source, so it stays read-only.");
 			std::string previous_policy, policy_error;

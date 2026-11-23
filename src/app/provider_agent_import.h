@@ -82,7 +82,8 @@ namespace uam::provider_agent_import
 
 	/// Add root `tools`/`permission` from every OpenCode config that applies to `source_path` (global, then the project's
 	/// root and `.opencode` configs), merged so a deny in any of them is kept. A config that exists but cannot be read is an error.
-	bool AddInheritedConfigRules(const std::filesystem::path& source_path, ParsedSource& out);
+	/// `agent_id` also merges same-named `agent`/`agents` entries from each config, as OpenCode merges whole config objects.
+	bool AddInheritedConfigRules(const std::filesystem::path& source_path, const std::string& agent_id, ParsedSource& out);
 
 	/// Agent entry names and descriptions in an OpenCode JSON(C) config, in file order.
 	std::vector<std::pair<std::string, std::string>> ListJsonConfigAgents(const std::string& text, std::string& error);

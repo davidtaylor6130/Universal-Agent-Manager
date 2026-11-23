@@ -790,3 +790,49 @@ UAM_TEST(ProviderAgentImportErrorsNameFieldsAndPromptFilesStayInTheirConfig)
 	UAM_ASSERT(preview.supported);
 	UAM_ASSERT(AnyNoteContains(preview, "prompt: instructions are read from prompts/in.md"));
 }
+
+UAM_TEST(OpenCodeImportMergesSameNamedAgentEntriesAndNamesConfigErrors)
+{
+	TempDir temp("uam-opencode-same-named-agent");
+	const fs::path xdg = temp.root / "xdg";
+	ScopedEnvVar isolated_config("XDG_CONFIG_HOME", xdg.string());
+	ScopedEnvVar custom_config("OPENCODE_CONFIG", (temp.root / "none.json").string());
+	const std::string opencode = uam::provider_ids::kOpenCodeCli;
+	// OpenCode merges whole configs, so a global `agent.a` deny also applies to the project's `agent.a`.
+	WriteSource(xdg / "opencode" / "opencode.json", R"({"agent": {"a": {"permission": {"edit": "deny"}}, "web": {"tools": {"webfetch": false}}}})");
+	const fs::path project = temp.root / "project";
+	const fs::path config = WriteSource(project / "opencode.json", R"({"agent": {"a": {"description": "x", "prompt": "Go."}}})");
+	auto preview = uam::AgentDefinitionService::PreviewProviderAgentImport(opencode, config, "a");
+	UAM_ASSERT(preview.supported);
+	UAM_ASSERT_EQ(preview.max_workspace_access, std::string("read"));
+	// ...and to a Markdown agent of the same name.
+	const fs::path web = WriteSource(project / ".opencode" / "agents" / "web.md", Frontmatter("description: Web\n"));
+	preview = uam::AgentDefinitionService::PreviewProviderAgentImport(opencode, web);
+	UAM_ASSERT(preview.provider_bound);
+	UAM_ASSERT(Contains(preview.open_code_permission_json, R"("webfetch":"deny")"));
+	// OPENCODE_CONFIG names one more config file.
+	fs::remove(xdg / "opencode" / "opencode.json");
+	WriteSource(temp.root / "none.json", R"({"permission": {"bash": "deny"}})");
+	preview = uam::AgentDefinitionService::PreviewProviderAgentImport(opencode, web);
+	UAM_ASSERT(preview.provider_bound);
+	// An invalid value in any config is refused with that file named.
+	WriteSource(temp.root / "none.json", R"({"permission": {"edit": "maybe"}})");
+	preview = uam::AgentDefinitionService::PreviewProviderAgentImport(opencode, web);
+	UAM_ASSERT(!preview.supported);
+	UAM_ASSERT(preview.error.starts_with("none.json permission.edit:"));
+}
+
+UAM_TEST(OpenCodePromptFilesCannotEscapeThroughLinkedFolders)
+{
+	TempDir temp("uam-opencode-prompt-link");
+	ScopedEnvVar isolated_config("XDG_CONFIG_HOME", (temp.root / "xdg").string());
+	WriteSource(temp.root / "secret.txt", "private\n");
+	const fs::path project = temp.root / "project";
+	const fs::path config = WriteSource(project / "opencode.json", R"({"agent": {"a": {"description": "x", "prompt": "{file:up/secret.txt}"}}})");
+	std::error_code link_error;
+	fs::create_directory_symlink(temp.root, project / "up", link_error);
+	if (link_error) return; // Creating links needs privileges on some Windows runners.
+	const auto preview = uam::AgentDefinitionService::PreviewProviderAgentImport(uam::provider_ids::kOpenCodeCli, config, "a");
+	UAM_ASSERT(!preview.supported);
+	UAM_ASSERT(preview.error.starts_with("prompt: the {file:...} reference must not pass through a linked"));
+}
