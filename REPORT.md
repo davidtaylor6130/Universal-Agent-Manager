@@ -1,7 +1,7 @@
 # MCP server configuration fixes: report
 
 **Work branch:** `v5/fix-mcp-config-env-names-paths` (from `origin/uam/v5.2-sync-main`)
-**Final SHA:** `4390b3bc05529ffb77de54afb47205c826ed4408`
+**Final SHA:** `13a6d2e90de17fd232990089df9fc00272b2b3a6`
 
 | Commit | Change |
 |---|---|
@@ -11,10 +11,20 @@
 | `a2caa580` | fix(settings): drop only invalid MCP server entries at load (bug 4) |
 | `cc93bc4c` | fix(mcp): keep Codex MCP env values out of logs and keep the load notice (review round 1) |
 | `4390b3bc` | fix(mcp): refuse cmd.exe-length Codex launches and restore the load notice (review round 2) |
+| `6168ad66` | fix(codex): forward MCP env values by name, never on the command line (integration security finding) |
+| `a2e1ac36` | test(codex): place the Codex MCP launch tests apart from the signing-key branch's |
+| `13a6d2e9` | fix(codex): refuse loader and shell variables for Codex MCP servers (review round 3) |
 
 All four findings were confirmed in the code. Bug 2's quoting also affected header names (`env_http_headers."X-Api-Key"`), and that is fixed too. Bug 4 was reproduced: with one valid and one relative-path server saved, the old code loaded 0 servers and the fixed code loads 1.
 
-**Open decision:** Codex's `env_vars` cannot rename a variable, so per-server mangled names would not reach the server under the name it expects. Env values therefore go in the server's own `mcp_servers.<key>.env` table on Codex's command line, as requested. They are no longer visible to Codex's shell commands, but other accounts on a shared Linux host can list command lines. In Codex CLI View this also applies to the UAM control key. Logs and Windows error text redact these values. Moving structured launches to per-thread app-server configuration would keep them off the command line; that is recorded as a follow-up in `docs/reference/central-configuration.md`.
+**Bug 1 route (changed after the integration security finding):** Codex receives each stdio server's env values from its own environment, forwarded to the server by name with `mcp_servers.<key>.env_vars`. No MCP env value, and not the UAM tool signing key (`UAM_CONTROL_REQUEST_KEY`), appears on Codex's command line. Codex can't rename a forwarded variable, so a launch is refused when:
+- two servers set one name to different values;
+- a user's server sets a name that would redirect or inject code into Codex or its shells (`PATH`, `PATHEXT`, `HOME`, `USERPROFILE`, `SHELL`, `COMSPEC`, `ENV`, `BASH_ENV`, `NODE_OPTIONS`, `NODE_PATH`, or a `CODEX_`, `UAM_`, `LD_` or `DYLD_` name);
+- a user's server sets a variable UAM's environment already has to another value.
+
+**Residual:** the agent's shell commands inherit the forwarded values. This is recorded as a known gap in `docs/documentation-review.md`.
+
+**Merge with `v5/fix-uam-control-hidden-tools-secrets`:** my edits to the `uam-tools.md` paragraph and the Codex checklist row were reverted to the base text, so that branch's wording ("Codex CLI View forwards it by variable name") wins. My Codex notes are on separate lines, and my tests sit apart from theirs. A trial merge has no conflicts, and `check_docs.py` passes on the merged tree. Its `UamControlSigningKeyStaysOut…` test expects the key in Codex's environment and absent from argv, which the code does.
 
 ## Review rounds
 
@@ -26,12 +36,17 @@ Each round used a fresh-context Opus sub-agent (requested with the `opus` alias;
 - **Round 2 (re-check of the round-1 fixes): 6 suggested (0 blockers, 1 should-fix, 5 nits); 5 implemented in full, 1 in part.**
   - Implemented in full: the cmd.exe 8,191-character limit for `.cmd` shims, the duplicated Windows error text, a single length check that names the largest server, the POSIX comment and docs, and restoring the notice after the bundled-skills message.
   - In part: the redaction tests. I added the portable `Redacted` test but not the `_WIN32`-only `BuildWindowsLaunchCommand` case, because it can't be compiled or run here.
+- **Integration security finding (env table on the command line):** implemented. Env values now go into Codex's environment and are forwarded by name; a test asserts no MCP env value appears in Codex argv or its launch log. The finding also superseded round 1's deferred per-thread-config item.
+- **Round 3 (fresh-context re-check of the named-variable change): 7 suggested (1 blocker, 1 should-fix, 5 nits); 7 implemented.**
+  - The blocker: `NODE_OPTIONS`, `LD_*` and `DYLD_*` were accepted when the host lacked them; they are now reserved.
+  - The should-fix: clearer guidance when a variable already exists.
+  - The nits: the reserved check now runs before the clash check; stale doc and comment wording; a `const char*` loop; test-unique variable names, with a cleared `NODE_OPTIONS`.
 
 ## Issue previews (not filed)
 
 No duplicates were found when searching open and closed issues for MCP env, Codex quoting, SSH paths and cleared servers. Proposed labels already exist in the repository.
 
-### 1. `bug(codex): MCP server env values leak into Codex's own environment`
+### 1. `bug(codex): MCP server env values collide and change Codex's own environment`
 Labels: `bug`, `provider`
 
 UAM put each Codex stdio MCP server's environment values into Codex's process environment and forwarded them by name with `env_vars`. Two servers using the same variable name collide, and a server's `PATH` or `NODE_OPTIONS` changes Codex itself and every shell command it runs.
@@ -45,8 +60,8 @@ UAM put each Codex stdio MCP server's environment values into Codex's process en
 
 **Acceptance criteria:**
 
-- [ ] Each server's values reach only that server through `mcp_servers.<key>.env`.
-- [ ] Nothing is added to Codex's environment for them.
+- [ ] No MCP env value appears on Codex's command line; values are forwarded by name.
+- [ ] Two servers setting one name to different values, or a user server setting a loader, shell, Codex or UAM variable or changing an existing one, are refused with a message that names only the server and variable.
 - [ ] Launch logs and error text do not contain the values.
 
 **Review:** Self-triaged; no independent report review.
@@ -122,7 +137,7 @@ Settings load validated the MCP list all-or-nothing and cleared it on any failur
 
 Fixes four MCP configuration defects:
 
-1. Codex stdio servers now get their env values through their own `mcp_servers.<key>.env` table instead of Codex's environment.
+1. Codex stdio servers receive their env values from Codex's environment by name (`env_vars`), never on the command line. Launches are refused when values for one name differ, or when a user server would set a loader, shell, Codex or UAM variable or change one Codex already has.
 2. Codex server keys are bare when the name allows, and a stable slug plus digest otherwise; names that would collide are refused. Header and env tables are inline TOML.
 3. MCP paths are validated against the executing host's platform, so a Windows UAM accepts POSIX paths for Linux SSH hosts.
 4. Settings load drops only invalid MCP entries, logs why without paths or values, and shows one application notice that later startup messages no longer overwrite.
@@ -132,7 +147,7 @@ Review follow-ups:
 - Env tables are redacted from launch diagnostics and Windows launch-failure text.
 - A Codex launch that would exceed the OS command limit (including cmd.exe's 8,191 for `.cmd` shims) is refused by server name.
 
-Boundary: the env table sits on Codex's command line. Moving structured launches to per-thread app-server configuration is a documented follow-up.
+Boundary: the agent's shell commands inherit forwarded MCP env values (known gap). Merges cleanly with `v5/fix-uam-control-hidden-tools-secrets`.
 
 Related: issue previews 1–4 above (not filed).
 
@@ -142,7 +157,13 @@ Related: issue previews 1–4 above (not filed).
 
 - `cmake -S . -B Builds/runner -DUAM_RUNNER_ONLY=ON -DCMAKE_BUILD_TYPE=Release` and `cmake --build Builds/runner --target uam_runner` passed after each commit. The SQLite amalgamation came from the npm `better-sqlite3` package via `FETCHCONTENT_SOURCE_DIR_UAM_SQLITE`, because the proxy blocks sqlite.org.
 - `python3 scripts/check_docs.py` passed: 203 pages, 1509 links, 6 providers × 32 capabilities.
-- A scratch harness ran `provider_setup::Apply` for Codex. It covered env tables for two servers that both use `API_KEY` (Codex environment stays empty), bare and derived keys, header inline tables, the key-collision refusal, redaction, and the oversize-launch refusal. Python `tomllib` parsed the emitted TOML values.
+- A scratch harness (`-Wall`) mirrored `CodexMcpEnvironmentValuesNeverReachItsCommandLine` against the real `provider_setup::Apply` for Codex, with the `uam-control` session server. It covered:
+  - values in the environment and `env_vars` names in argv;
+  - no value or signing key in argv or the redacted log;
+  - the clash refusal and the reserved refusals (`PATH`, `NODE_OPTIONS`, `LD_PRELOAD`, `CODEX_HOME`, `UAM_CONTROL_REQUEST_KEY`);
+  - the existing-variable refusal, same-value acceptance, the `zeta` ordering, and the oversize refusal.
+- A separate harness ran bare and derived keys, header inline tables and the key-collision refusal. Python `tomllib` parsed the emitted TOML values.
+- A trial merge with `origin/v5/fix-uam-control-hidden-tools-secrets` had no conflicts, and `check_docs.py` passed on the merged tree.
 - In-repo test bodies were extracted and run against a stand-in harness with `settings_store.cpp`; all pass:
   - `LaunchArgvRedactionHidesPrivateConfiguration`
   - `McpServerPathsFollowTheirExecutionHostsPlatform`
@@ -152,15 +173,16 @@ Related: issue previews 1–4 above (not filed).
 - `persistence_coordinator.cpp` and `acp_launch.cpp` passed a syntax-only compile with a CEF pointer stub.
 - Not run:
   - `uam_core_tests` and the full native and CTest gates (they need CEF, and the desktop build refuses Linux).
-  - `CodexStdioMcpEnvironmentStaysInEachServersOwnTable`, `CodexMcpOverridesUseBareServerKeysAndInlineTables` and `SettingsLoadShowsOneNoticeForDroppedMcpServerEntries`.
+  - `CodexMcpEnvironmentValuesNeverReachItsCommandLine`, `CodexMcpOverridesUseBareServerKeysAndInlineTables`, `SettingsLoadShowsOneNoticeForDroppedMcpServerEntries`, and the other branch's merged `UamControlSigningKeyStaysOut…` test.
   - Compilation of `application.cpp`, `settings_handlers.cpp` and the Windows platform files.
   - Any live Codex or provider CLI run.
   - UI-V2 checks (no frontend files changed).
 
-**Review:** 1 independent reviewer, 2 iterations. Independent Opus sub-agent (`opus` alias, exact model ID not recorded): 13 suggested, 11 implemented, 2 implemented in part.
+**Review:** 1 independent reviewer, 3 iterations, plus one integration security finding (implemented). Independent Opus sub-agent (`opus` alias, exact model ID not recorded): 20 suggested, 18 implemented, 2 implemented in part.
 
-- Round 1: 7 suggested, 6 implemented, 1 in part. The per-thread app-server transport was deferred because it can't be verified here.
+- Round 1: 7 suggested, 6 implemented, 1 in part. The per-thread transport was deferred, then superseded by the named-variable route.
 - Round 2: 6 suggested, 5 implemented, 1 in part. The Windows-only launch test can't be compiled here.
+- Round 3: 7 suggested, 7 implemented.
 
 Required Claude review of any UI is not applicable (no React changes). David's approval is pending.
 
