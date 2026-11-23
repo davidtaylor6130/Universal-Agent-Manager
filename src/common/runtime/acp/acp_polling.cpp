@@ -163,7 +163,7 @@ namespace uam::acp_detail
 				if (app.provider_model_catalog != nullptr)
 				{
 					app.provider_model_catalog->RememberRefreshFailure(session.provider_id,
-					    message, uam::paths::ResolveWorkspaceRootPath(app, chat).generic_string(), chat.execution_host_id, session.model_catalog_scope_key);
+					    message, uam::paths::PortablePathString(uam::paths::ResolveWorkspaceRootPath(app, chat)), chat.execution_host_id, session.model_catalog_scope_key);
 				}
 			}
 			session.queued_user_prompts = std::move(queued_prompts);
@@ -317,7 +317,9 @@ namespace uam::acp_detail
 			// A line that ends the process stops this batch. Output drained after a stop starts with the process already
 			// ended, so it keeps going to the line and time limits instead of handling one line per poll.
 			const bool was_running = session.running;
-			while (session.transport_ownership_error.empty() && result.lines < max_lines && PollClock::now() < deadline)
+			// The first line ignores the time budget: a pass that consumed nothing must mean no line can be consumed,
+			// which remote-stop drains rely on to end instead of retrying it forever.
+			while (session.transport_ownership_error.empty() && result.lines < max_lines && (result.lines == 0 || PollClock::now() < deadline))
 			{
 				if (session.protocol_kind == uam::provider_profile_constants::kProtocolCopilotSdk && consumed < session.stdout_buffer.size() && session.stdout_buffer[consumed] != '\x1e')
 				{
@@ -1062,6 +1064,7 @@ void MarkAcpProcessExited(AcpSessionState& session, ChatSession* chat,
 	session.running = false;
 	session.initialized = false;
 	session.session_ready = false;
+	if (!remote_process || session.remote_source_exit_reported) session.claude_self_started_turn = false;
 	if (active_turn && !preserve_active_turn)
 	{
 		const std::string message = uam::strings::NonEmptyOrFallback(session.last_error, std::string(RuntimeDisplayName(session)) + " process exited during an active turn.");

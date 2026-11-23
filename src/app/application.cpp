@@ -84,6 +84,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <exception>
 #include <csignal>
 #include <cstdio>
 #include <filesystem>
@@ -475,6 +476,33 @@ void Application::PollTick()
 		}
 	}
 
+	try
+	{
+		PollTickStages(poll_started);
+	}
+	catch (const std::exception& error)
+	{
+		ReportPollTickFailure(error.what());
+	}
+	catch (...)
+	{
+		ReportPollTickFailure("unknown exception");
+	}
+	ScheduleNextUpdate(NextPollDelay());
+}
+
+void Application::ReportPollTickFailure(const std::string& reason)
+{
+	// One bad saved value must not end the process; the next tick runs every stage again.
+	static auto last_report = std::chrono::steady_clock::time_point::min(); // ponytail: UI-thread rate limit, like the slow-poll report.
+	const auto now = std::chrono::steady_clock::now();
+	if (last_report != std::chrono::steady_clock::time_point::min() && now - last_report < std::chrono::seconds(30)) return;
+	last_report = now;
+	uam::diagnostics::Write("[poll] PollTick stage failed and was skipped for this tick: " + reason);
+}
+
+void Application::PollTickStages(std::chrono::steady_clock::time_point poll_started)
+{
 	const RuntimeCliCompatibilitySnapshot provider_snapshot_before = CreateCliCompatibilitySnapshot(m_app);
 	const bool side_chats_changed = uam::PollTemporarySideChatCleanup(m_app);
 	const bool acp_sessions_changed = uam::PollAllAcpSessions(m_app, m_browser);
@@ -503,15 +531,14 @@ void Application::PollTick()
 	const std::chrono::steady_clock::time_point controls_finished = std::chrono::steady_clock::now();
 	if (shell_actions_changed && m_browser && m_browser->GetHost())
 	{
-		m_browser->GetHost()->SetFocus(true);
-#if defined(_WIN32)
-		const HWND window = m_browser->GetHost()->GetWindowHandle();
-		if (window != nullptr)
+		// Raise the top-level Views window; the browser's own HWND is a child that cannot be restored or activated.
+		const CefRefPtr<CefBrowserView> view = CefBrowserView::GetForBrowser(m_browser);
+		if (const CefRefPtr<CefWindow> window = view != nullptr ? view->GetWindow() : nullptr)
 		{
-			ShowWindow(window, SW_RESTORE);
-			SetForegroundWindow(window);
+			if (window->IsMinimized()) window->Restore();
+			window->Activate();
 		}
-#endif
+		m_browser->GetHost()->SetFocus(true);
 	}
 	ProviderCliCompatibilityService().Poll(m_app);
 	const bool remote_recovery_changed = uam::PollRemoteHostRecovery(m_app);
@@ -595,8 +622,6 @@ void Application::PollTick()
 		    ",awake:" + milliseconds(push_finished, poll_finished) + " ms.");
 		last_slow_poll_report = poll_finished;
 	}
-
-	ScheduleNextUpdate(NextPollDelay());
 }
 
 int Application::NextPollDelay()

@@ -5,3 +5,5 @@ Shell Actions defines reusable user-configured actions and their ordered groups 
 [Workspace actions](../chat/composer/workspace-actions.md) · [UI settings](../ui/settings.md) · [Source map](../reference/source-map.md).
 
 Each action chooses its name/group, enabled state, provider/model, accepted file/folder inputs and whether to open a workspace or launch selected skill work. Group changes do not rewrite those execution choices. OS registration/installation must use the saved definition and show actual availability/failure; it is distinct from merely editing the action list.
+
+Choosing an installed action from the Explorer or Finder menu opens a new chat in the selected folder, or the selected file's folder, with the action's provider, model and skill prompt, whether or not UAM is already running. A running UAM handles the click itself and comes to the front. Only the selected paths count as the action's input: options UAM adds to its own launch, such as the crash supervisor's, never reach the action.

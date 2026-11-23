@@ -1,7 +1,9 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { describe, expect, it } from 'vitest'
-import { UsageGauge } from './UsageGauge'
+import { UsageGauge, usageGaugeBand, usageGaugeRotation } from './UsageGauge'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -66,5 +68,15 @@ describe('UsageGauge', () => {
       expect(view.host.querySelector('[role="meter"]')).toBeNull()
       expect(view.host.querySelector<SVGGElement>('[data-needle]')?.style.transform).toBe('rotate(-18deg)')
     } finally { view.close() }
+  })
+
+  it.each([NaN, Infinity, -Infinity])('treats non-finite %s like an unknown value', (used) => {
+    expect(usageGaugeRotation(used)).toBe(-90)
+    expect(usageGaugeBand(used)).toBe(0)
+  })
+
+  it('draws inactive strokes in the button text colour in forced-colours mode', () => {
+    const styles = readFileSync(resolve(process.cwd(), 'src/index.css'), 'utf8')
+    expect(styles).toMatch(/@media \(forced-colors: active\) \{\s*\.uam-usage-gauge path \{\s*stroke:\s*ButtonText;/)
   })
 })

@@ -135,7 +135,7 @@ namespace
 	std::string NormalizedWorkspace(std::string_view workspace_directory)
 	{
 		const std::string trimmed = uam::strings::Trim(std::string(workspace_directory));
-		return trimmed.empty() ? std::string{} : uam::paths::NormalizeExistingPath(uam::paths::AbsolutePathNoThrow(fs::path(trimmed))).generic_string();
+		return trimmed.empty() ? std::string{} : uam::paths::PortablePathString(uam::paths::NormalizeExistingPath(uam::paths::AbsolutePathNoThrow(uam::paths::PathFromUtf8(trimmed))));
 	}
 
 	std::string NormalizedCatalogWorkspace(std::string_view workspace_directory,
@@ -677,7 +677,7 @@ bool ProviderModelCatalogService::WritePersistentCatalogs() const
 	{
 		return false;
 	}
-	return uam::io::WriteTextFile(m_data_root / kProviderModelsCacheFile, nlohmann::json{{"version", 1}, {"catalogs", m_persistent_catalogs}}.dump(2) + "\n");
+	return uam::io::WriteTextFile(m_data_root / kProviderModelsCacheFile, nlohmann::json{{"version", 1}, {"catalogs", m_persistent_catalogs}}.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) + "\n");
 }
 
 bool ProviderModelCatalogService::RememberSuccessfulModels(const std::string& provider_id,

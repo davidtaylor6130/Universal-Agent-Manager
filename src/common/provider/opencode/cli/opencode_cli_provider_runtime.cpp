@@ -431,7 +431,8 @@ MessageRole OpenCodeCliProviderRuntime::RoleFromNativeType(const ProviderProfile
 
 void OpenCodeCliProviderRuntime::ApplyNativeToolMetadata(ToolCall& tool, const nlohmann::json& native_item) const
 {
-	if (tool.name != "task" && tool.name != "subagent") return;
+	// Only UAM's V2 export normalizer marks the native `subagent` tool; a V1 tool of that name is an ordinary tool.
+	if (tool.name != "task" && !(tool.name == "subagent" && uam::nlohmann_json::BoolFieldStrict(native_item, "uamOpenCodeV2SubagentTool") == true)) return;
 	tool.is_sub_agent = true;
 	const nlohmann::json* state = uam::nlohmann_json::FindObjectField(native_item, "state");
 	if (state == nullptr) return;

@@ -48,6 +48,7 @@ namespace uam
 	class DataFolderSettingsService;
 	class OpenCodeNativeActivityService;
 	class ManagedSubagentCancellationReceipt;
+	class ManagedWorktreeFamily;
 	struct ManagedInitialHistoryCatalogue;
 	struct OpenCodeNativeCompanion;
 	struct OpenCodeTerminalActivityObserver;
@@ -508,6 +509,8 @@ namespace uam
 			nlohmann::json chat_create_arguments;
 			/// secret_request card state (label, reason, Plan opt-in, delivery in progress); never the value.
 			nlohmann::json secret_request;
+			/// The caller's structured turn when the card was shown, or -1 when it was shown outside one.
+			int turn_serial = -1;
 		};
 
 		std::string id;
@@ -948,6 +951,8 @@ namespace uam
 		// Provider-switch context was written before this stream reported its native identity.
 		bool provider_handoff_identity_pending = false;
 		bool goal_review_turn = false;
+		// The turn_serial of the last goal review: its read-only limit also covers requests arriving after it ended, until a new turn starts.
+		int goal_review_ceiling_turn_serial = -1;
 		bool goal_review_scheduled = false;
 		std::string goal_review_goal_id;
 		std::string goal_review_user_prompt;
@@ -1022,6 +1027,11 @@ namespace uam
 		RecentIdentitySet claude_seen_parent_messages;
 		/// <summary>Observed tasks owned by this native process, retained across parent turns but never persisted.</summary>
 		std::unordered_set<std::string> claude_live_background_task_ids;
+		/// <summary>Claude started a parent turn of its own (a background task reported back) and its result has not arrived.
+		/// Stream-json results carry no prompt ID, so user input waits for that result instead of sharing its turn.</summary>
+		bool claude_self_started_turn = false;
+		/// <summary>Queued head ("id:revision") whose settings restart waits for Claude's background tasks; not retried until they end.</summary>
+		std::string claude_restart_wait_head;
 		std::vector<AcpPlanEntryState> plan_entries;
 		std::string plan_summary;
 		std::unordered_map<std::string, std::string> codex_agent_message_text_by_item_id;
@@ -1668,10 +1678,19 @@ namespace uam
 		std::unordered_map<std::string, double> remote_recovery_hydration_retry_not_before_by_chat_id;
 		std::optional<DeletionProgress> deletion_progress;
 		std::unordered_set<std::string> worktree_operation_chat_ids;
+		std::shared_ptr<const ManagedWorktreeFamily> worktree_cleanup_family;
 		std::unordered_map<std::string, std::shared_ptr<ChatBaselinePreparation>> repository_baseline_preparations;
 		std::vector<std::shared_ptr<ChatBaselinePreparation>> retired_repository_baseline_preparations;
 		struct GitPortRequest
 		{
+			struct CleanupCommit
+			{
+				std::string isolation_kind, source, worktree, branch, base, updated_at;
+			};
+			// Worker-written only after acknowledged publication; read only after Finished.
+			std::optional<CleanupCommit> cleanup_commit;
+			bool cleanup_completion_owned = false; // Serialized GUI settlement, not worker authority.
+			std::vector<std::string> family_fenced_ids;
 			enum class WorkerState { Queued, Running, Finished };
 			std::atomic<WorkerState> worker_state{WorkerState::Queued};
 			std::shared_ptr<WorkspaceLeaseGate::Lease> lease;

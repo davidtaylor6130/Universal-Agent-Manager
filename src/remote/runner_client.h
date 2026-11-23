@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <functional>
 #include <initializer_list>
+#include <set>
 #include <string>
 #include <stop_token>
 #include <unordered_map>
@@ -186,6 +187,10 @@ namespace uam::remote
 		bool RemoveFile(const std::string& request_id,
 		                const std::filesystem::path& remote_path,
 		                std::string* error_out = nullptr);
+		/// Removes the regular files in `<workspace>/.UAM/attachments/<chat id>` except `keep`, then the folder once
+		/// empty; `left` counts entries not removed. A helper from before this request refuses it and stays connected.
+		bool SweepChatAttachments(const std::string& request_id, const std::filesystem::path& folder, const std::set<std::string>& keep,
+		                          std::size_t& left, std::string* error_out = nullptr);
 		bool CopyFile(const std::string& request_id,
 		              const std::filesystem::path& source_path,
 		              const std::filesystem::path& target_path, bool overwrite,
@@ -220,6 +225,10 @@ namespace uam::remote
 		/// Reads one exact immutable native transcript, releasing its bounded runner snapshot on success or cancellation.
 		bool ReadNativeHistory(const std::string& provider, const std::string& session, const std::string& workspace,
 		    nlohmann::json& snapshot, std::string* error_out = nullptr, std::stop_token stop_token = {}, const std::string& agent_id = {});
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+		/// Lists the attested Gemini child journals stored under one exact parent session on this host.
+		bool ListGeminiChildren(const std::string& session, const std::string& workspace, nlohmann::json& listing, std::string* error_out = nullptr, std::stop_token stop_token = {});
+#endif
 		bool ListDirectories(const std::filesystem::path& remote_path,
 		                     DirectoryListing& result,
 		                     std::string* error_out = nullptr, std::stop_token stop_token = {});
@@ -272,6 +281,9 @@ namespace uam::remote
 		bool m_safePathInspection = false;
 		bool m_contextRead = false;
 		bool m_providerHistoryRead = false;
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+		bool m_providerHistoryChildren = false;
+#endif
 		bool m_workspaceFileRead = false;
 		bool m_workspaceAttachmentRead = false;
 		bool m_openCodeNativeControl = false;

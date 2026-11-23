@@ -4214,6 +4214,67 @@ UAM_TEST(OptInRealRemoteOpenCodeTurnRecoversAfterLocalRelayLoss)
 }
 
 #if defined(__APPLE__)
+UAM_TEST(RemoteReattachLaunchKeepsTheControlRelayItIssued)
+{
+	// #898: the real launch path on a stand-in host, not the reattach step alone. A Claude or Antigravity reattach
+	// issues its capability and starts its relay before the reattach step runs, and that step keeps both.
+	const fs::path runner = PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath().parent_path() / "uam-runner";
+	for (const std::string provider : {std::string(uam::provider_ids::kClaudeCli), std::string(uam::provider_ids::kAntigravityCli)})
+	{
+		TempDir temp("uam-remote-reattach-launch");
+		const fs::path ssh = temp.root / "ssh";
+		UAM_ASSERT(uam::io::WriteTextFile(ssh, "#!/bin/sh\nexec \"$UAM_TEST_RUNNER\" bridge-direct\n"));
+		fs::permissions(ssh, fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec);
+		ScopedEnvVar path("PATH", temp.root.string() + ":/usr/bin:/bin");
+		ScopedEnvVar home("HOME", temp.root.string());
+		ScopedEnvVar test_runner("UAM_TEST_RUNNER", runner.string());
+		uam::AppState app;
+		app.data_root = temp.root / "data";
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		ExecutionHost host;
+		host.id = "lab";
+		host.label = "Lab";
+		host.transport = "ssh";
+		host.ssh_alias = "home-lab";
+		host.runner_status = "ready";
+		host.runner_version = std::string(uam::constants::kAppVersion).substr(1);
+		host.runner_protocol_version = uam::remote::kRunnerProtocolVersion;
+		host.platform = "linux";
+		host.architecture = "arm64";
+		app.settings.execution_hosts = {host};
+		uam::execution_hosts::Normalize(app.settings.execution_hosts);
+		ChatSession chat;
+		chat.id = "remote-reattach-launch";
+		chat.provider_id = provider;
+		chat.execution_host_id = host.id;
+		chat.workspace_directory = temp.root.string();
+		chat.uam_control_enabled = true;
+		chat.remote_uam_control_channel_id = "11111111-1111-4111-8111-111111111111";
+		chat.remote_process_exists = true;
+		chat.remote_process_control_token = "reattach-launch-token";
+		app.chats.push_back(std::move(chat));
+		std::string error;
+		UAM_ASSERT(uam::UamControlService::Initialize(app, &error));
+		app.acp_sessions.push_back(std::make_unique<uam::AcpSessionState>());
+		uam::AcpSessionState& session = *app.acp_sessions.back();
+		session.chat_id = app.chats.front().id;
+		session.provider_id = provider;
+		session.process_execution_host_id = host.id;
+		session.recovering_remote_process = true;
+		UAM_ASSERT(uam::acp_detail::StartAcpProcessForChat(app, session, app.chats.front(), &error));
+		UAM_ASSERT(session.uam_control_relay != nullptr);
+		UAM_ASSERT(!session.uam_control_capability_id.empty());
+		UAM_ASSERT_EQ(app.uam_control_capabilities.size(), std::size_t{1});
+		UAM_ASSERT_EQ(app.uam_control_capabilities.front().id, session.uam_control_capability_id);
+		UAM_ASSERT_EQ(app.chats.front().remote_uam_control_channel_id, std::string("11111111-1111-4111-8111-111111111111"));
+		PlatformServicesFactory::Instance().process_service.StopStdioProcess(session, true);
+		PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(session);
+		session.running = false;
+		session.uam_control_relay.reset();
+		uam::UamControlService::Shutdown(app);
+	}
+}
+
 UAM_TEST(RemoteAcpRunsEndToEndThroughTheUamRunnerProxy)
 {
 	for (const std::string& cached_status : {"ready", "error", "offline"})
@@ -4637,6 +4698,56 @@ UAM_TEST(FailedRemoteStopPreservesTheRecoverableTurn)
 	UAM_ASSERT(persisted->remote_stop_cleanup_pending);
 }
 
+UAM_TEST(IdleRemoteReattachWithMissingProcessStartsFreshInsteadOfExhausting)
+{
+	// A box reboot: two reattaches fail on transport (broken pipe, SSH timeout), then the helper answers that the
+	// process is gone. The idle chat must relaunch fresh, not report reconnect exhausted and hold its input.
+	TempDir temp("uam-acp-idle-missing-remote");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ChatSession chat;
+	chat.id = "idle-missing-remote";
+	chat.execution_host_id = "ssh-test";
+	chat.remote_process_exists = true;
+	app.chats.push_back(chat);
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = chat.id;
+	session->running = true;
+	session->initialized = true;
+	session->session_ready = true;
+	session->lifecycle_state = "ready";
+	session->recovering_remote_process = true;
+	session->reconnect_attempts = 2;
+	session->last_runtime_activity_time_s = uam::GetAppTimeSeconds();
+	std::string error;
+#if defined(_WIN32)
+	const std::vector<std::string> argv = {"cmd.exe", "/d", "/s", "/c", "echo The remote process does not exist. 1>&2 & exit /b 70"};
+#else
+	const std::vector<std::string> argv = {"/bin/sh", "-c", "printf 'The remote process does not exist.\\n' >&2; exit 70"};
+#endif
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*session, temp.root, argv, &error));
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	for (int attempt = 0; attempt < 300 && raw_session->running; ++attempt)
+	{
+		(void)uam::PollAllAcpSessions(app);
+		if (raw_session->running) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT(!raw_session->running);
+	UAM_ASSERT(!std::ranges::any_of(raw_session->diagnostics, [](const uam::AcpDiagnosticEntryState& diagnostic)
+	{
+		return diagnostic.reason == "exhausted";
+	}));
+	UAM_ASSERT(raw_session->lifecycle_state != "error");
+	UAM_ASSERT(raw_session->reconnect_pending);
+	UAM_ASSERT_EQ(raw_session->reconnect_attempts, 0);
+	UAM_ASSERT(!raw_session->recovering_remote_process);
+	UAM_ASSERT(!raw_session->queue_held);
+	UAM_ASSERT(!app.chats.front().remote_process_exists);
+}
+
 UAM_TEST(RemoteStopReportsARecoveryPersistenceFailureAndSchedulesARetry)
 {
 	TempDir temp("uam-acp-stop-save-failure");
@@ -4743,6 +4854,73 @@ UAM_TEST(ShutdownFinalizesOrClosesEveryPendingRemoteStop)
 	UAM_ASSERT(app.pending_acp_remote_stops.empty());
 	UAM_ASSERT(!app.acp_sessions.front()->remote_stop_pending);
 	UAM_ASSERT(!app.chats.front().remote_turn_reconnect_pending);
+}
+
+UAM_TEST(ShutdownRemoteStopFinalizationEndsWhenBufferedOutputCannotBeProcessed)
+{
+	// Quit once spun forever here: a buffered line the latched session can never consume kept reporting more output.
+	TempDir temp("uam-acp-stop-shutdown-stuck-line");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ChatSession chat;
+	chat.id = "remote-stop-shutdown-stuck-line";
+	chat.execution_host_id = "ssh-test";
+	app.chats.push_back(chat);
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = chat.id;
+	session->running = true;
+	std::string error;
+#if defined(_WIN32)
+	const std::vector<std::string> argv = {
+	    "cmd.exe", "/d", "/s", "/c", "set /p line= & exit /b 0"};
+#else
+	const std::vector<std::string> argv = {"/bin/sh", "-c", "IFS= read -r line; exit 0"};
+#endif
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(
+	    *session, temp.root, argv, &error));
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+	UAM_ASSERT(!uam::StopAcpSession(app, chat.id));
+	UAM_ASSERT_EQ(app.pending_acp_remote_stops.size(), std::size_t{1});
+	// A provider hold during the drain latches ownership; the line behind it stays buffered.
+	raw_session->transport_ownership_error = "Rejected replacement ownership.";
+	raw_session->stdout_buffer = "{}\n";
+	std::this_thread::sleep_for(std::chrono::milliseconds(30));
+	uam::FinalizePendingAcpRemoteStopsForExit(app);
+	UAM_ASSERT(app.pending_acp_remote_stops.empty());
+	UAM_ASSERT(!raw_session->remote_stop_pending);
+}
+
+UAM_TEST(ShutdownRemoteStopFinalizationLeavesEndlessOutputForRecoveryAtItsDeadline)
+{
+#if !defined(_WIN32)
+	// ponytail: POSIX only; Windows has no stock writer fast enough to keep a nonblocking pipe full.
+	TempDir temp("uam-acp-stop-shutdown-endless");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ChatSession chat;
+	chat.id = "remote-stop-shutdown-endless";
+	chat.execution_host_id = "ssh-test";
+	app.chats.push_back(chat);
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = chat.id;
+	session->running = true;
+	std::string error;
+	UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(
+	    *session, temp.root, {"/bin/sh", "-c", "exec yes"}, &error));
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+	UAM_ASSERT(!uam::StopAcpSession(app, chat.id));
+	UAM_ASSERT_EQ(app.pending_acp_remote_stops.size(), std::size_t{1});
+	std::this_thread::sleep_for(std::chrono::milliseconds(30));
+	const auto started = std::chrono::steady_clock::now();
+	uam::FinalizePendingAcpRemoteStopsForExit(app);
+	UAM_ASSERT(std::chrono::steady_clock::now() - started < std::chrono::seconds(10));
+	UAM_ASSERT(app.pending_acp_remote_stops.empty());
+	// Output was still unread, so the stop is not confirmed: the saved cleanup marker lets the next start recover it.
+	UAM_ASSERT(raw_session->remote_stop_unconfirmed);
+	UAM_ASSERT(app.chats.front().remote_stop_cleanup_pending);
+#endif
 }
 
 UAM_TEST(ShutdownSettlesConfirmedRemoteRestartPromptAsInterrupted)
@@ -19710,6 +19888,153 @@ UAM_TEST(AcpNongenericDefaultConfiguredAndIdlessStreamsAdmitWithoutRestart)
 		}
 	}
 }
+
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+// A finished Claude turn whose background Bash task is still live: idle Send and Steer reach the provider
+// beside the task; only a settings restart, which would end the task, waits for it.
+UAM_TEST(AcpClaudeIdleInputWithLiveBackgroundTaskAdmitsWithoutRestart)
+{
+	if (!ProviderRuntimeRegistry::ResolveById("claude-cli").IsEnabled()) return;
+	for (const std::string_view route : {"send", "steer", "restart"})
+	{
+		RestartQueuedSettingsFixture fixture("claude-cli");
+		auto& chat = fixture.app.chats.front();
+		auto& session = *fixture.session;
+		chat.execution_host_id = session.process_execution_host_id = "local";
+		chat.workspace_directory = fixture.temp.root.string();
+		chat.remote_process_exists = false;
+		chat.remote_process_control_token.clear();
+		session.remote_runner_protocol_version = 0;
+		session.current_model_id = chat.model_id;
+		session.queued_user_prompts.clear();
+		chat.acp_queued_prompts.clear();
+		session.lifecycle_state = "ready";
+		session.claude_live_background_task_ids.insert("private-background-bash");
+		if (route == "restart") chat.model_id = "private-next-model";
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, chat));
+		const auto messages = chat.messages;
+		std::string error;
+		const bool admitted = route == "steer"
+		    ? uam::SteerAcpPrompt(fixture.app, chat.id, "Private follow-up beside the task.", {}, {}, false, &error)
+		    : uam::SendAcpPrompt(fixture.app, chat.id, "Private follow-up beside the task.", &error);
+		UAM_ASSERT(session.claude_live_background_task_ids.contains("private-background-bash"));
+		UAM_ASSERT(fixture.app.acp_process_stop_tasks.empty());
+		UAM_ASSERT(session.running && !session.local_stop_pending && !session.remote_stop_pending);
+		if (route == "restart")
+		{
+			UAM_ASSERT(!admitted);
+			UAM_ASSERT(error.find("background tasks") != std::string::npos);
+			UAM_ASSERT_EQ(chat.messages, messages);
+			UAM_ASSERT(session.queued_user_prompts.empty());
+			continue;
+		}
+		UAM_ASSERT(admitted);
+		UAM_ASSERT(error.empty());
+		// Stream-json has no prompt request ID; pump the owned admission save until the input is written.
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+		while ((!session.queued_prompt.empty() || session.pending_prompt_delivery) && std::chrono::steady_clock::now() < deadline)
+		{
+			uam::FlushPendingChatSaves(fixture.app);
+			(void)uam::acp_detail::SendQueuedPromptIfReady(fixture.app, session, chat);
+			std::this_thread::yield();
+		}
+		UAM_ASSERT(session.queued_prompt.empty() && !session.pending_prompt_delivery);
+		UAM_ASSERT(session.last_error.empty());
+		UAM_ASSERT(session.processing);
+		UAM_ASSERT_EQ(session.turn_serial, 1);
+		UAM_ASSERT(session.queued_user_prompts.empty());
+		UAM_ASSERT_EQ(chat.messages.size(), messages.size() + 1);
+		UAM_ASSERT_EQ(chat.messages.back().content, std::string("Private follow-up beside the task."));
+	}
+}
+#endif
+
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+// Claude starts a turn of its own when a background task reports back. Stream-json results carry no prompt ID, so
+// input sent meanwhile waits for that turn's result: it is never settled by it, nor merged into its answer.
+UAM_TEST(AcpClaudeSelfStartedTurnHoldsUserInputUntilItsResult)
+{
+	if (!ProviderRuntimeRegistry::ResolveById("claude-cli").IsEnabled()) return;
+	for (const std::string_view route : {"send", "steer"})
+	{
+		RestartQueuedSettingsFixture fixture("claude-cli");
+		auto& chat = fixture.app.chats.front();
+		auto& session = *fixture.session;
+		chat.execution_host_id = session.process_execution_host_id = "local";
+		chat.workspace_directory = fixture.temp.root.string();
+		chat.remote_process_exists = false;
+		chat.remote_process_control_token.clear();
+		session.remote_runner_protocol_version = 0;
+		session.current_model_id = chat.model_id;
+		session.queued_user_prompts.clear();
+		chat.acp_queued_prompts.clear();
+		session.lifecycle_state = "ready";
+		session.claude_live_background_task_ids = {"private-finished-bash", "private-still-running-bash"};
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, chat));
+		const std::size_t before = chat.messages.size();
+		const std::string sid = session.session_id;
+		const auto feed = [&](const nlohmann::json& line) { UAM_ASSERT(uam::ProcessAcpLineForTests(fixture.app, session, chat, line.dump())); };
+		const auto pump = [&]()
+		{
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+			while ((!session.queued_prompt.empty() || session.pending_prompt_delivery) && std::chrono::steady_clock::now() < deadline)
+			{
+				uam::FlushPendingChatSaves(fixture.app);
+				(void)uam::acp_detail::SendQueuedPromptIfReady(fixture.app, session, chat);
+				std::this_thread::yield();
+			}
+			UAM_ASSERT(session.queued_prompt.empty() && !session.pending_prompt_delivery);
+		};
+
+		// The finished task's notification opens Claude's own turn, which then streams its answer.
+		feed({{"type", "user"}, {"uuid", "6c7e3b52-0d7f-4c55-9a51-000000000001"}, {"session_id", sid},
+		    {"message", {{"role", "user"}, {"content", "<task-notification><task-id>private-finished-bash</task-id><tool-use-id>private-bash-tool</tool-use-id><status>completed</status><summary>Private wait finished</summary></task-notification>"}}}});
+		feed({{"type", "assistant"}, {"uuid", "6c7e3b52-0d7f-4c55-9a51-000000000002"}, {"session_id", sid},
+		    {"message", {{"content", nlohmann::json::array({{{"type", "text"}, {"text", "Private self-started answer."}}})}}}});
+		UAM_ASSERT(!session.processing);
+		UAM_ASSERT_EQ(chat.messages.size(), before + 1);
+
+		std::string error;
+		const bool admitted = route == "steer"
+		    ? uam::SteerAcpPrompt(fixture.app, chat.id, "Private user follow-up.", {}, {}, false, &error)
+		    : uam::SendAcpPrompt(fixture.app, chat.id, "Private user follow-up.", &error);
+		UAM_ASSERT(admitted);
+		UAM_ASSERT(error.empty());
+		// Held: nothing reaches Claude while its own turn is unsettled.
+		UAM_ASSERT(!session.processing && session.queued_prompt.empty());
+		UAM_ASSERT_EQ(session.queued_user_prompts.size(), std::size_t{1});
+		UAM_ASSERT_EQ(session.queued_user_prompts.front().text, std::string("Private user follow-up."));
+		UAM_ASSERT_EQ(chat.messages.size(), before + 1);
+		AwaitChatSave(fixture.app, chat);
+		UAM_ASSERT(!uam::DrainNextQueuedAcpUserPrompt(fixture.app, session, chat));
+		UAM_ASSERT(!session.processing && session.queued_user_prompts.size() == 1);
+
+		// That turn's result settles only that turn; the held input then starts its own turn beside the live task.
+		feed({{"type", "result"}, {"subtype", "success"}, {"uuid", "6c7e3b52-0d7f-4c55-9a51-000000000003"}, {"session_id", sid},
+		    {"result", "Private self-started answer."}});
+		pump();
+		UAM_ASSERT(session.processing);
+		UAM_ASSERT(session.claude_live_background_task_ids.contains("private-still-running-bash"));
+		UAM_ASSERT(session.queued_user_prompts.empty());
+		UAM_ASSERT_EQ(chat.messages.size(), before + 2);
+		UAM_ASSERT(chat.messages[before].role == MessageRole::Assistant);
+		UAM_ASSERT_EQ(chat.messages[before].content, std::string("Private self-started answer."));
+		UAM_ASSERT(chat.messages[before + 1].role == MessageRole::User);
+		UAM_ASSERT_EQ(chat.messages[before + 1].content, std::string("Private user follow-up."));
+
+		// The user turn's own answer gets its own row and result.
+		feed({{"type", "assistant"}, {"uuid", "6c7e3b52-0d7f-4c55-9a51-000000000004"}, {"session_id", sid},
+		    {"message", {{"content", nlohmann::json::array({{{"type", "text"}, {"text", "Private user answer."}}})}}}});
+		feed({{"type", "result"}, {"subtype", "success"}, {"uuid", "6c7e3b52-0d7f-4c55-9a51-000000000005"}, {"session_id", sid},
+		    {"result", "Private user answer."}});
+		UAM_ASSERT(!session.processing);
+		UAM_ASSERT_EQ(chat.messages.size(), before + 3);
+		UAM_ASSERT_EQ(chat.messages[before].content, std::string("Private self-started answer."));
+		UAM_ASSERT(chat.messages.back().role == MessageRole::Assistant);
+		UAM_ASSERT_EQ(chat.messages.back().content, std::string("Private user answer."));
+	}
+}
+#endif
 
 #if UAM_ENABLE_RUNTIME_CLAUDE_CLI
 UAM_TEST(AcpClaudeAliasLaunchWithResolvedModelReportAdmitsWithoutRestart)

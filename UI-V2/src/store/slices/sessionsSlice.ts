@@ -14,7 +14,7 @@ import { providerSwitchLockReason } from '../../utils/chatWork'
 import type { ComputerUseActionResult, ComputerUseBackend, ComputerUseControlState, Session, ViewMode } from '../../types/session'
 import { version as packageVersion } from '../../../package.json'
 import { defaultsForExecutionHost, withSettingsScope } from '../../utils/settingsScope'
-import type { Attachment, Message } from '../../types/message'
+import type { Attachment, Message, MessageBranchWitness } from '../../types/message'
 import type { Provider } from '../../types/provider'
 import type { MemoryLevel } from '../../types/memory'
 import type { WindowsPowerShellPreference, CreateSessionOptions, VoiceInputMode, VcsStorageSettings, ChatFileChangeReceiptsResponse, McpServerConfiguration } from '../cpp/types'
@@ -173,7 +173,8 @@ function unsentIndicesFromPage(data: ChatMessagesResponse) {
   const valid = (indices: unknown): indices is number[] => Array.isArray(indices) && Number.isSafeInteger(data.totalCount) && indices.every((index, position) =>
     Number.isSafeInteger(index) && index >= 0 && index < data.totalCount! && (position === 0 || index > indices[position - 1]))
   return valid(data.unsentMessageIndices) && valid(data.recoverableUnsentMessageIndices)
-    ? { unsentMessageIndices: data.unsentMessageIndices, recoverableUnsentMessageIndices: data.recoverableUnsentMessageIndices }
+    ? { unsentMessageIndices: data.unsentMessageIndices, recoverableUnsentMessageIndices: data.recoverableUnsentMessageIndices,
+        editableUnsentMessageIndices: valid(data.editableUnsentMessageIndices) ? data.editableUnsentMessageIndices : [] }
     : undefined
 }
 
@@ -1111,7 +1112,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
             chat.createdAt.getTime() !== initialChat.createdAt.getTime() || chat.executionHostId !== initialChat.executionHostId || !Number.isSafeInteger(messageIndex) || messageIndex < 0 ||
             rows[index] !== message || message.nativeMessageIndex !== messageIndex ||
             message.role !== 'user' || !message.acpPromptNotSent || message.acpPromptDiscarded ||
-            !binding?.unsentMessageIndices?.includes(messageIndex) || binding.processing || binding.pendingPermission || binding.pendingUserInput ||
+            !binding?.unsentMessageIndices?.includes(messageIndex) || !binding.editableUnsentMessageIndices?.includes(messageIndex) || binding.processing || binding.pendingPermission || binding.pendingUserInput ||
             binding.queuedPrompts?.length || binding.pendingDirectPrompts?.length || binding.unsentDirectPrompts?.length ||
             cli?.processing || cli?.turnState === 'busy') return false
         const providerId = normalizeCliProviderIdAlias(chat.providerId || binding.providerId)
@@ -1195,7 +1196,17 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return { ok: response.ok, error: response.error }
     },
 
-    branchFromMessage: async (id: string, messageIndex: number, content?: string, retainedAttachmentIds?: string[], retainedMarkdownStoreFiles?: string[]): Promise<string | null> => {
+    branchFromMessage: async (id: string, messageIndex: number, content?: string, retainedAttachmentIds?: string[], retainedMarkdownStoreFiles?: string[], sourceWitness?: MessageBranchWitness): Promise<string | null> => {
+      const witness = sourceWitness === undefined ? undefined : Object.freeze({ ...sourceWitness })
+      if (witness) {
+        const state = get()
+        const source = state.sessions.find(session => session.id === id)
+        const row = state.messages[id]?.[messageIndex - (state.historyStartIndexBySessionId[id] ?? 0)]
+        if (!source || source.messagesDigest !== witness.messagesDigest || source.providerId !== witness.providerId ||
+            (source.executionHostId ?? 'local') !== witness.executionHostId || row?.nativeInputId !== witness.nativeInputId) {
+          throw new Error('The message selected for branching changed. Your edit is kept; refresh before saving.')
+        }
+      }
       const nativeSelection = retainedAttachmentIds === undefined ? undefined : Object.freeze([...retainedAttachmentIds])
       const skillSelection = retainedMarkdownStoreFiles === undefined ? undefined : Object.freeze([...retainedMarkdownStoreFiles])
       if (isCefContext()) {
@@ -1206,6 +1217,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           ...(content === undefined ? {} : { content }),
           ...(nativeSelection === undefined ? {} : { retainedAttachmentIds: nativeSelection }),
           ...(skillSelection === undefined ? {} : { retainedMarkdownStoreFiles: skillSelection }),
+          ...(witness === undefined ? {} : { sourceWitness: witness }),
           ...(operationId ? { operationId } : {}),
         })
         let response = await sendToCEF<{ chatId?: string; warning?: string }>({
@@ -1347,7 +1359,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return Boolean(session?.workspaceDirectory?.trim() || folderDirectory.trim())
     },
 
-    openSubAgentSession: async (sourceChatId: string, nativeSessionId: string, title = '', selectChat = true, onFailure?: (message: string) => void) => {
+    openSubAgentSession: async (sourceChatId: string, nativeSessionId: string, title = '', selectChat = true, onFailure?: (message: string) => void, stillWanted?: () => boolean) => {
       if (isCefContext()) {
         const stateAtRequest = get()
         const source = stateAtRequest.sessions.find(candidate => candidate.id === sourceChatId)
@@ -1377,7 +1389,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           onFailure?.('The native conversation could not be read. Refresh to try again.')
           return null
         }
-        if (selectChat && intentionalSelectionRevision !== selectionRevision) return null
+        if (selectChat && (intentionalSelectionRevision !== selectionRevision || stillWanted?.() === false)) return null
         const currentSource = get().sessions.find(candidate => candidate.id === sourceChatId)
         if (!source || !currentSource || source.createdAt.getTime() !== currentSource.createdAt.getTime() ||
             source.providerId !== currentSource.providerId || source.executionHostId !== currentSource.executionHostId ||
@@ -3424,7 +3436,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return true
     },
 
-    resolveAcpPermission: async (sessionId: string, requestId: string, optionId: string | 'cancelled'): Promise<boolean> => {
+    resolveAcpPermission: async (sessionId: string, requestId: string, optionId: string | 'cancelled'): Promise<boolean | string> => {
       if (isCefContext()) {
         const response = await sendToCEF({
           action: 'resolveAcpPermission',
@@ -3435,7 +3447,8 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
             cancelled: optionId === 'cancelled',
           },
         })
-        return response.ok
+        // A refusal carries the backend's reason so the card can show what happened.
+        return response.ok || response.error || false
       }
 
       set((state) => ({

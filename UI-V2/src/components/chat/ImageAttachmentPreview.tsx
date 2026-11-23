@@ -92,7 +92,7 @@ export function ImageAttachmentPreview({ chatId, messageIndex, attachment, fallb
   if (!eligible) return <>{unavailableFallback}</>
 
   const current = preview?.identity === identity ? preview : null
-  return <span ref={host} className="inline-flex max-w-full flex-wrap items-center gap-2">
+  return <span ref={host} className={`inline-flex max-w-full flex-wrap items-center gap-2${unavailableIdentity !== identity || current || loadingIdentity === identity ? ' conversation-image-preview-slot' : ''}`}>
     {current ? <img src={current.url} alt={attachment.name} width={current.width} height={current.height}
       className={`conversation-image-preview h-20 w-20 object-contain${motionAllowed() ? ' uam-reveal' : ''}`} onError={() => { URL.revokeObjectURL(current.url); setPreview(null); setUnavailableIdentity(identity) }} /> : unavailableIdentity === identity && loadingIdentity !== identity ? unavailableFallback : fallback}
     {!current && attachment.historyDigest && unavailableIdentity === identity && <Button type="button"

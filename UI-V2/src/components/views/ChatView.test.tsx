@@ -3186,7 +3186,7 @@ describe('ChatView', () => {
       ] },
       acpBindingBySessionId: { 'chat-1': { ...state.acpBindingBySessionId['chat-1'], sessionId: nativeSession, running: Boolean(nativeSession), processing: false,
         lifecycleState: nativeSession ? 'ready' : 'error', turnEvents: [], toolCalls: [], turnUserMessageIndex: -1, turnAssistantMessageIndex: -1,
-        pendingPermission: null, pendingUserInput: null, unsentMessageIndices: [7, 8], recoverableUnsentMessageIndices: [8] } },
+        pendingPermission: null, pendingUserInput: null, unsentMessageIndices: [7, 8], editableUnsentMessageIndices: readOnly ? [] : [7, 8], recoverableUnsentMessageIndices: [8] } },
     }))
     writeChatComposerDraft('chat-1', { text: 'Independent draft', attachments: [] })
     const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
@@ -3215,7 +3215,7 @@ describe('ChatView', () => {
         expect(host.querySelectorAll('[role="alert"]')).toHaveLength(1)
       }
       const editor = recovery.querySelector<HTMLButtonElement>('[aria-label="Edit unsent message"]')!
-      expect(editor.disabled).toBe(readOnly)
+      expect(editor.disabled || editor.getAttribute('aria-disabled') === 'true').toBe(readOnly)
       act(() => editor.click())
       if (readOnly) expect(host.querySelector('[aria-label="Edit message"]')).toBeNull()
       else {
@@ -4548,6 +4548,28 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('shows the backend reason when a permission response is refused', async () => {
+    const reason = 'An earlier answer to this permission request is saved for delivery to the remote computer, so a different answer cannot be sent. Choose the same answer to send it again, or stop the turn.'
+    const resolveAcpPermission = vi.fn(() => Promise.resolve(reason))
+    useAppStore.setState({ resolveAcpPermission })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    const allowButton = Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent?.includes('Allow once'))
+    await act(async () => {
+      allowButton?.click()
+      await Promise.resolve()
+    })
+    const alerts = Array.from(host.querySelectorAll('[role="alert"]')).map((alert) => alert.textContent)
+    expect(alerts).toContain(reason)
+    expect(alerts.some((text) => text?.includes('did not accept'))).toBe(false)
+    // The card stays answerable after the refusal.
+    expect(allowButton?.disabled).toBe(false)
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('submits one permission response at a time and retries a rejected response', async () => {
     let finishResponse: ((accepted: boolean) => void) | undefined
     const resolveAcpPermission = vi.fn(() => new Promise<boolean>((resolve) => { finishResponse = resolve }))
@@ -5320,7 +5342,7 @@ describe('ChatView', () => {
     expect(setSessionApprovalMode).toHaveBeenCalledWith('chat-1', 'plan')
 
     const permission = document.body.querySelector('button[aria-label="Permissions"]') as HTMLButtonElement
-    expect(permission.textContent).toContain('AI Review')
+    expect(permission.textContent).toContain('AI review')
     act(() => permission.click())
     const yolo = Array.from(document.body.querySelectorAll('[role="option"]')).find((option) => option.textContent?.includes('YOLO')) as HTMLButtonElement
     await act(async () => { yolo.click(); await Promise.resolve() })
@@ -5390,13 +5412,13 @@ describe('ChatView', () => {
     expect(permissionMenu?.textContent).toContain('Default')
     expect(permissionMenu?.textContent).not.toContain('Plan')
     expect(permissionMenu?.textContent).toContain('YOLO')
-    expect(permissionMenu?.textContent).toContain('AI Review')
-    expect(permissionMenu?.textContent).toContain('Accept Edits')
+    expect(permissionMenu?.textContent).toContain('AI review')
+    expect(permissionMenu?.textContent).toContain('Accept edits')
     expect(permissionMenu?.querySelector('svg')).not.toBeNull()
     expect(textarea.parentElement?.querySelector('[role="status"]')).toBeNull()
     expect(setSessionApprovalMode).not.toHaveBeenCalled()
 
-    const slashAiReview = Array.from(permissionMenu?.querySelectorAll('[role="option"]') ?? []).find((option) => option.textContent?.includes('AI Review')) as HTMLButtonElement
+    const slashAiReview = Array.from(permissionMenu?.querySelectorAll('[role="option"]') ?? []).find((option) => option.textContent?.includes('AI review')) as HTMLButtonElement
     await act(async () => { slashAiReview.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })) })
     expect(setSessionCommandSafetyTier).toHaveBeenCalledWith('chat-1', 'aiReview')
     expect(host.textContent).not.toContain('Permission mode changed')
@@ -6204,6 +6226,23 @@ describe('ChatView', () => {
       .find((option) => option.textContent?.startsWith('High')) as HTMLButtonElement
     await act(async () => { high.click(); await Promise.resolve() })
     expect(setSessionCodexOptions).toHaveBeenCalledWith('chat-1', { reasoningEffort: 'high' })
+
+    // The /reasoning hint names no provider in a non-Codex chat, and the command changes this chat's reasoning.
+    const textarea = host.querySelector('textarea') as HTMLTextAreaElement
+    const setDraft = (value: string) => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, value)
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    }
+    act(() => setDraft('/rea'))
+    const slashReasoning = Array.from(document.body.querySelectorAll('[aria-label="Slash commands"] [role="option"]')).find((option) => option.textContent?.includes('/reasoning')) as HTMLElement
+    expect(slashReasoning.textContent).toContain('Choose reasoning')
+    expect(slashReasoning.textContent).not.toContain('Codex')
+    await act(async () => {
+      setDraft('/reasoning low')
+      textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+      await Promise.resolve()
+    })
+    expect(setSessionCodexOptions).toHaveBeenLastCalledWith('chat-1', { reasoningEffort: 'low' }, expect.any(Function))
 
     act(() => root.unmount())
     host.remove()
@@ -7374,9 +7413,9 @@ describe('ChatView', () => {
     expect(permissionButton.textContent).toContain('Default')
     expect(permissionButton.disabled).toBe(false)
     act(() => permissionButton.click())
-    const reviewOption = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) => option.textContent?.startsWith('AI Review'))!
+    const reviewOption = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="option"]')).find((option) => option.textContent?.startsWith('AI review'))!
     act(() => reviewOption.click())
-    expect(document.body.textContent).not.toContain('Accept Edits')
+    expect(document.body.textContent).not.toMatch(/accept edits/i)
     expect(setSessionCommandSafetyTier).toHaveBeenCalledWith('chat-1', 'aiReview')
     expect(setSessionApprovalMode).not.toHaveBeenCalled()
 
@@ -12354,7 +12393,7 @@ describe('ChatView definite unsent local editing', () => {
       acpSession: { sessionId: 'native-ready', providerId: 'gemini-cli', protocolKind: 'gemini-acp',
         running: true, lifecycleState: 'ready', processing: false, readySinceLastSelect: true,
         turnUserMessageIndex: -1, turnAssistantMessageIndex: -1, turnEvents: [], toolCalls: [], planEntries: [],
-        pendingPermission: null, pendingUserInput: null, unsentMessageIndices: [7], recoverableUnsentMessageIndices: [7],
+        pendingPermission: null, pendingUserInput: null, unsentMessageIndices: [7], editableUnsentMessageIndices: [7], recoverableUnsentMessageIndices: [7],
         queuedPrompts: [], pendingDirectPrompts: [], unsentDirectPrompts: [] },
     }
     const rows = reconcileCppMessages('chat-1', undefined, chat.messages!, true, 7)
@@ -12479,7 +12518,7 @@ describe('ChatView committed unsent editing', () => {
     const branch = vi.fn(async () => null)
     const retry = vi.fn(async () => ({ ok: false }))
     const send = vi.fn(async () => false)
-    const native = { role: 'user' as const, providerId: 'gemini-cli', content: 'Original unsent input',
+    const native = { role: 'user' as const, providerId: 'gemini-cli', content: 'Original unsent input', nativeInputId: '11111111-1111-4111-8111-111111111111',
       createdAt: '2026-01-01T00:00:07.000Z', acpPromptNotSent: true, acpPromptDiscarded: false, interrupted: true,
       attachments: [
         { id: 'keep', name: 'keep.txt', type: 'file', size: 4, path: '/tmp/keep.txt' },
@@ -12506,7 +12545,7 @@ describe('ChatView committed unsent editing', () => {
     }
     const binding = acpBindingFromCppChat({ id: 'chat-1', title: 'Gemini', folderId: 'default', providerId: 'gemini-cli', createdAt: '', updatedAt: '',
       acpSession: { sessionId: 'native-ready', providerId: 'gemini-cli', protocolKind: 'gemini-acp', running: true,
-        lifecycleState: 'ready', processing: false, unsentMessageIndices: [7], recoverableUnsentMessageIndices: [7],
+        lifecycleState: 'ready', processing: false, unsentMessageIndices: [7], editableUnsentMessageIndices: [7], recoverableUnsentMessageIndices: [7],
         queuedPrompts: [], pendingDirectPrompts: [], unsentDirectPrompts: [] } }, undefined)
     const session = { id: 'chat-1', name: 'Gemini', providerId: 'gemini-cli', viewMode: 'chat' as const, folderId: 'default',
       executionHostId: 'local', workspaceDirectory: '/tmp/project', importedReadOnly: false, uamAgentId: 'current-agent',
@@ -12562,6 +12601,124 @@ describe('ChatView committed unsent editing', () => {
     return { host, root, row, session, second, committed, draft, requests, open, editor, changeText, enter, noExecution, unmount, cleanup,
       reply: async (data: unknown) => { expect(reply).toBeTypeOf('function'); await act(async () => reply(data)) } }
   }
+  it('keeps a known-unsent row and follow-up draft while native authority denies local editing', async () => {
+    const f = fixture()
+    try {
+      act(() => useAppStore.setState(state => ({ acpBindingBySessionId: { ...state.acpBindingBySessionId,
+        'chat-1': { ...state.acpBindingBySessionId['chat-1'], editableUnsentMessageIndices: [] } } })))
+      await act(async () => f.root.render(<ChatView key="chat-1" session={useAppStore.getState().sessions[0]} />))
+      const edit = f.host.querySelector<HTMLButtonElement>('button[aria-label="Edit unsent message"]')!
+      expect(edit.getAttribute('aria-disabled')).toBe('true')
+      expect(edit.getAttribute('aria-describedby')).toBeTruthy()
+      act(() => edit.click())
+      expect(f.host.querySelector('textarea[aria-label="Edit message"]')).toBeNull()
+      expect(useAppStore.getState().messages['chat-1'][0]).toBe(f.row)
+      expect(readChatComposerDraft('chat-1')).toEqual(f.draft)
+      expect(f.requests).toEqual([])
+      f.noExecution()
+    } finally { f.cleanup() }
+  })
+  it.each(['revoked', 'refreshed', 'completed', 'foreign'] as const)('preserves an open Save edit draft when asynchronous native history is %s', async transition => {
+    const f = fixture()
+    try {
+      await f.open()
+      const replacement = { ...f.row, ...(transition === 'completed' ? { acpPromptNotSent: false } : {}),
+        ...(transition === 'foreign' ? { nativeInputId: 'different-input' } : {}) }
+      act(() => useAppStore.setState(state => ({
+        messages: { ...state.messages, 'chat-1': transition === 'revoked' ? [f.row] : [replacement] },
+        acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'],
+          editableUnsentMessageIndices: transition === 'refreshed' ? [7] : [],
+          unsentMessageIndices: transition === 'completed' ? [] : [7] } },
+      })))
+      expect(f.host.textContent).not.toContain('Message changed')
+      expect(reportedText()).toContain('Your edit and selected context are kept')
+      expect(f.host.querySelector('[aria-label="Save edit"]')?.getAttribute('title')).toContain('paused')
+      expect(f.host.querySelector<HTMLButtonElement>('button[aria-label="Save edit"]')!.disabled).toBe(true)
+      await f.enter()
+      expect(f.requests).toEqual([])
+      expect(f.editor().value).toBe('Edited local input')
+      expect(f.host.querySelector('[aria-label="Remove keep.txt from edited message"]')).not.toBeNull()
+      expect(f.host.querySelector('[aria-label="Remove original.md from edited message"]')).not.toBeNull()
+      expect(f.host.querySelector('[aria-label="Remove drop.txt from edited message"]')).toBeNull()
+      expect(readChatComposerDraft('chat-1')).toEqual(f.draft)
+      f.noExecution()
+      const action = appFailures.at(-1)?.actions?.find(action => action.label === (transition === 'completed' ? 'Edit in a new branch' : 'Use refreshed message'))
+      if (transition === 'refreshed' || transition === 'completed') {
+        expect(action).toBeTruthy()
+        await act(async () => action!.run())
+        expect(f.editor().value).toBe('Edited local input')
+        f.noExecution()
+        await f.enter()
+        if (transition === 'completed') {
+          expect(useAppStore.getState().branchFromMessage).toHaveBeenCalledWith('chat-1', 7, 'Edited local input', ['keep'], ['/skills/original.md'], { messagesDigest: '0123456789abcdef', nativeInputId: f.row.nativeInputId, providerId: f.session.providerId, executionHostId: 'local' })
+          expect(f.requests).toEqual([])
+        } else {
+          expect(f.requests.map(request => request.action)).toEqual(['getChatMessages', 'manageQueuedAcpPrompt'])
+          await f.reply(f.committed)
+        }
+      } else expect(action).toBeUndefined()
+    } finally { f.cleanup() }
+  })
+  it.each(['input', 'history', 'owner'] as const)('keeps a recovered branch edit fenced after a later %s change', async change => {
+    const f = fixture()
+    try {
+      await f.open()
+      const completed = { ...f.row, acpPromptNotSent: false }
+      act(() => useAppStore.setState(state => ({
+        messages: { ...state.messages, 'chat-1': [completed] },
+        acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'], editableUnsentMessageIndices: [], unsentMessageIndices: [] } },
+      })))
+      const action = appFailures.at(-1)?.actions?.find(action => action.label === 'Edit in a new branch')
+      expect(action).toBeTruthy()
+      await act(async () => action!.run())
+      act(() => useAppStore.setState(state => ({
+        messages: { ...state.messages, 'chat-1': change === 'input' ? [{ ...completed, nativeInputId: 'different-input', content: 'Foreign input' }] : [completed] },
+        sessions: state.sessions.map(session => session.id === 'chat-1' ? { ...session,
+          ...(change === 'history' ? { messagesDigest: 'aaaaaaaaaaaaaaaa' } : {}),
+          ...(change === 'owner' ? { executionHostId: 'other-host' } : {}),
+        } : session),
+      })))
+      await act(async () => f.root.render(<ChatView key="chat-1" session={useAppStore.getState().sessions[0]} />))
+      expect(f.host.querySelector<HTMLButtonElement>('button[aria-label="Save edit"]')!.disabled).toBe(true)
+      await f.enter()
+      expect(useAppStore.getState().branchFromMessage).not.toHaveBeenCalled()
+      expect(f.editor().value).toBe('Edited local input')
+      expect(f.host.querySelector('[aria-label="Remove keep.txt from edited message"]')).not.toBeNull()
+      expect(f.host.querySelector('[aria-label="Remove original.md from edited message"]')).not.toBeNull()
+      expect(readChatComposerDraft('chat-1')).toEqual(f.draft)
+      expect(f.requests).toEqual([])
+      f.noExecution()
+    } finally { f.cleanup() }
+  })
+  it('requires explicit recovery selection again when a recovered branch history changes', async () => {
+    const f = fixture()
+    try {
+      await f.open()
+      const completed = { ...f.row, acpPromptNotSent: false }
+      act(() => useAppStore.setState(state => ({ messages: { ...state.messages, 'chat-1': [completed] },
+        acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'], editableUnsentMessageIndices: [], unsentMessageIndices: [] } } })))
+      const recover = () => appFailures.at(-1)?.actions?.find(action => action.label === 'Edit in a new branch')
+      await act(async () => recover()!.run())
+      act(() => useAppStore.setState(state => ({ sessions: state.sessions.map(session => session.id === 'chat-1'
+        ? { ...session, messagesDigest: 'aaaaaaaaaaaaaaaa' } : session) })))
+      await act(async () => f.root.render(<ChatView key="chat-1" session={useAppStore.getState().sessions[0]} />))
+      expect(f.host.querySelector<HTMLButtonElement>('button[aria-label="Save edit"]')!.disabled).toBe(true)
+      await f.enter()
+      expect(useAppStore.getState().branchFromMessage).not.toHaveBeenCalled()
+      expect(recover()).toBeTruthy()
+      await act(async () => recover()!.run())
+      expect(f.editor().value).toBe('Edited local input')
+      expect(readChatComposerDraft('chat-1')).toEqual(f.draft)
+      await f.enter()
+      expect(useAppStore.getState().branchFromMessage).toHaveBeenCalledWith('chat-1', 7, 'Edited local input', ['keep'], ['/skills/original.md'],
+        { messagesDigest: 'aaaaaaaaaaaaaaaa', nativeInputId: f.row.nativeInputId, providerId: f.session.providerId, executionHostId: 'local' })
+      expect(useAppStore.getState().branchFromMessage).toHaveBeenCalledTimes(1)
+      expect(useAppStore.getState().retryFailedMessage).not.toHaveBeenCalled()
+      expect(useAppStore.getState().sendAcpPrompt).not.toHaveBeenCalled()
+    } finally { f.cleanup() }
+  })
   it.each(['ack-only', 'commit-push-first'] as const)('saves the local row and retained file/skill context after %s while preserving the independent draft', async order => {
     const f = fixture()
     try {
@@ -12576,10 +12733,12 @@ describe('ChatView committed unsent editing', () => {
       expect(useAppStore.getState().messages['chat-1'][0]).toBe(f.row)
       expect(f.editor().value).toBe('Edited local input')
       expect(f.editor().disabled).toBe(true)
+      const warningCount = appFailures.filter(item => item.tone === 'warning').length
       if (order === 'commit-push-first') act(() => useAppStore.setState(state => ({
         messages: { ...state.messages, 'chat-1': reconcileCppMessages('chat-1', state.messages['chat-1'], f.committed.messages, true, 7) },
         sessions: state.sessions.map(session => session.id === 'chat-1' ? { ...session, messagesDigest: f.committed.messagesDigest } : session),
       })))
+      expect(appFailures.filter(item => item.tone === 'warning')).toHaveLength(warningCount)
       await f.reply(f.committed)
       f.noExecution()
       const saved = useAppStore.getState().messages['chat-1'][0]
@@ -12631,7 +12790,7 @@ describe('ChatView committed unsent editing', () => {
       await f.enter()
       expect(f.requests).toHaveLength(0)
       expect(f.editor().value).toBe('Edited local input')
-      expect(reportedText()).toContain('unsent message changed')
+      expect((f.host.textContent ?? '') + reportedText()).toContain('Message changed. Editing paused.')
       expect(useAppStore.getState().messages['chat-1'][0]).toBe(replacement)
       expect(readChatComposerDraft('chat-1')).toEqual(f.draft)
       f.noExecution()
@@ -12649,7 +12808,7 @@ describe('ChatView committed unsent editing', () => {
       expect(useAppStore.getState().sessions[0].messagesDigest).toBe('aaaaaaaaaaaaaaaa')
       expect(f.editor().value).toBe('Edited local input')
       expect(f.editor().disabled).toBe(false)
-      expect(reportedText()).toContain('unsent message changed')
+      expect((f.host.textContent ?? '') + reportedText()).toContain('unsent message changed')
       expect(readChatComposerDraft('chat-1')).toEqual(f.draft)
       f.noExecution()
     } finally { f.cleanup() }

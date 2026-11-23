@@ -472,7 +472,7 @@ std::optional<bool> OpenCodeNativeActivityService::TryWritePermissionResponse(Ac
 		const auto outcome = result->find("outcome");
 		if (outcome != result->end() && outcome->is_object() && String(*outcome, "outcome") == "selected" && String(*outcome, "optionId") == "allow-once") reply = "once";
 	}
-	if (reply == "once" && (state.read_only || session.current_mode_id == "plan" || session.goal_review_turn || session.active_uam_agent_workspace_access != "write") && !AllowedUnderReadCeiling(permission->second))
+	if (reply == "once" && (state.read_only || session.current_mode_id == "plan" || acp_detail::CapturedReadTurn(session)) && !AllowedUnderReadCeiling(permission->second))
 		return fail("Plan and read-only restrictions prohibit this native child action.");
 	if (state.replies.size() >= kMaximumPermissions && !state.replies.contains(native_id)) return fail("The native OpenCode permission reply queue is full.");
 	state.replies[native_id] = reply;

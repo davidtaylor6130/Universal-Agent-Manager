@@ -1,3 +1,4 @@
+#include "app/managed_subagent_control_service.h"
 #include <nlohmann/json.hpp>
 #include "app/git_worktree_service.h"
 #include "app/chat_domain_service.h"
@@ -981,9 +982,17 @@ namespace uam
 
 		/** Refuse destructive mutations while another local chat references this worktree. */
 		bool RefuseSharedWorktreeMutation(const AppState& app, const ChatSession& chat,
-		    const std::filesystem::path& worktree, std::string* error_out)
+		    const std::filesystem::path& worktree, std::string* error_out, bool family_cleanup = false)
 		{
 			if (worktree.empty()) return false;
+			const auto family = family_cleanup ? app.worktree_cleanup_family : nullptr;
+			if (family && (!ManagedSubagentControlService::WorktreeFamilyContains(*family, chat) ||
+			    !ManagedSubagentControlService::ValidateWorktreeFamily(*family, error_out)))
+			{
+				if (error_out && error_out->empty()) *error_out = "Cleanup candidate no longer matches its admitted family.";
+				return true;
+			}
+
 			std::error_code physical_error;
 			const std::filesystem::path physical = std::filesystem::weakly_canonical(worktree, physical_error);
 			if (physical_error)
@@ -994,6 +1003,7 @@ namespace uam
 			const auto references_worktree = [&](const ChatSession& other)
 			{
 				if (other.id == chat.id || !uam::paths::IsControllerLocalWorkspace(other)) return false;
+				if (family && ManagedSubagentControlService::WorktreeFamilyContains(*family, other)) return false;
 				for (const std::string* directory : {&other.workspace_directory, &other.workspace_worktree_directory, &other.workspace_source_directory})
 				{
 					if (directory->empty()) continue;
@@ -1006,7 +1016,8 @@ namespace uam
 			};
 			// Async operation snapshots contain only the target chat; consult persisted metadata too.
 			const std::vector<ChatSession> persisted = ChatRepository::LoadLocalChatSummariesReadOnly(app.data_root);
-			if (std::any_of(app.chats.begin(), app.chats.end(), references_worktree) ||
+			if ((family && std::ranges::any_of(family->UnrelatedReferences(), references_worktree)) ||
+			    std::any_of(app.chats.begin(), app.chats.end(), references_worktree) ||
 			    std::any_of(persisted.begin(), persisted.end(), references_worktree))
 			{
 				if (error_out != nullptr) *error_out = "Another chat uses this worktree. Its files and branch were left untouched.";
@@ -1082,13 +1093,14 @@ namespace uam
 			    (PhysicalWorktreeRootForChat(app, source, branch, physical, error) && actual == paths::AbsolutePathNoThrow(physical).lexically_normal());
 		}
 
-		bool ClearWorktreeIsolation(AppState& app, ChatSession& chat, const GitWorktreeStatus& status, std::string* error_out)
+		bool ClearWorktreeIsolation(AppState& app, ChatSession& chat, const GitWorktreeStatus& status, std::string* error_out,
+		    const std::function<void(GitWorktreeCleanupStage)>& observe)
 		{
 			const std::filesystem::path source = SourcePathFromStatusOrChat(app, chat, status);
 			const std::filesystem::path repository = status.managed_repository ? ManagedRepositoryRoot(app, source, chat.id) : source;
 			const std::filesystem::path worktree = WorktreePathFromStatus(status);
 			const std::filesystem::path managed_root = app.data_root / "worktrees";
-			if (RefuseSharedWorktreeMutation(app, chat, worktree, error_out)) return false;
+			if (RefuseSharedWorktreeMutation(app, chat, worktree, error_out, true)) return false;
 
 			if (status.managed_repository && !PathIsWithin(repository, managed_root))
 			{
@@ -1099,6 +1111,13 @@ namespace uam
 				return false;
 			}
 
+			// Ordinary callers need a durable retry association before removing files.
+			// Family workers already retain a validated primary and summary revision.
+			if (!app.worktree_cleanup_family && !SaveChat(app, chat, error_out))
+			{
+				return false;
+			}
+
 			ChatSession cleared_chat = chat;
 			cleared_chat.workspace_isolation_kind.clear();
 			cleared_chat.workspace_source_directory.clear();
@@ -1106,40 +1125,59 @@ namespace uam
 			cleared_chat.workspace_branch_name.clear();
 			cleared_chat.workspace_worktree_directory.clear();
 			cleared_chat.updated_at = uam::time::TimestampNow();
-			if (!SaveChat(app, cleared_chat, error_out))
+			// Preserve the saved association until Git has completed. It is the durable retry
+			// authority if cancellation, command failure or conditional publication interrupts cleanup.
+			const auto current = [&]
 			{
+				return !app.worktree_cleanup_family || ManagedSubagentControlService::ValidateWorktreeFamily(*app.worktree_cleanup_family, error_out);
+			};
+			const auto interrupted = [&]
+			{
+				if (error_out) *error_out += " Cleanup is incomplete; the saved worktree association is retained. Inspect the source workspace and retry Discard to finish cleanup.";
 				return false;
-			}
-
-			if (!worktree.empty())
-			{
-				if (uam::paths::PathExistsNoThrow(worktree))
-				{
-					if (!GitCommand(repository, "worktree remove --force " + uam::shell::EscapeArg(uam::paths::Utf8PathString(worktree)), error_out))
-					{
-						SaveChat(app, chat, nullptr);
-						return false;
-					}
-				}
-			}
-
+			};
+			if (!current()) return false;
+			if (observe) observe(GitWorktreeCleanupStage::BeforeWorktreeRemoval);
+			if (!current()) return false;
+			if (!worktree.empty() && uam::paths::PathExistsNoThrow(worktree) &&
+			    !GitCommand(repository, "worktree remove --force " + uam::shell::EscapeArg(uam::paths::Utf8PathString(worktree)), error_out))
+				return interrupted();
+			if (observe) observe(GitWorktreeCleanupStage::AfterWorktreeRemoval);
+			if (!current()) return interrupted();
 			const std::string branch_name = BranchNameFromStatusOrChat(status, chat);
 			if (!branch_name.empty() && OriginalWorktreeBranchPath(app, source, worktree, branch_name, chat.id))
 			{
-				GitCommand(repository, "branch -D " + uam::shell::EscapeArg(branch_name));
+				// An already absent owned branch is an idempotent retry, not a reason to hide a
+				// different Git error (including a branch checked out by another worktree).
+				const auto branch = RunCommand(BuildGitCommandInDirectory(repository, "show-ref --verify --quiet " + uam::shell::EscapeArg("refs/heads/" + branch_name)));
+				if (!CommandSucceeded(branch) && (branch.timed_out || branch.canceled || branch.output_truncated || !branch.error.empty() || branch.exit_code != 1))
+				{
+					if (error_out) *error_out = CommandOutputOrError(branch);
+					return interrupted();
+				}
+				if (CommandSucceeded(branch) && !GitCommand(repository, "branch -D " + uam::shell::EscapeArg(branch_name), error_out)) return interrupted();
 			}
+			if (observe) observe(GitWorktreeCleanupStage::AfterBranchRemoval);
+			if (!current()) return interrupted();
+			if (!(app.worktree_cleanup_family ? ManagedSubagentControlService::PublishWorktreeCleanup(*app.worktree_cleanup_family, cleared_chat, error_out) : SaveChat(app, cleared_chat, error_out)))
+			{
+				if (error_out) *error_out += " Git cleanup finished; inspect the saved isolation state before retrying Discard.";
+				return false;
+			}
+			if (observe) observe(GitWorktreeCleanupStage::AfterMetadataPublication);
 
+			// Metadata commit is the completion boundary. A snapshot is retired only afterward,
+			// under the same recognized tombstone name used by retention. Failed retirement
+			// leaves a complete unreferenced baseline for ordinary retention, never a partial one.
 			if (status.managed_repository && uam::paths::PathExistsNoThrow(repository))
 			{
+				const auto tombstone = repository.parent_path() / (std::string(kManagedSnapshotTombstonePrefix) +
+				    uam::paths::Utf8PathString(repository.filename()).substr(std::string_view("managed-repository-").size()));
 				std::error_code ec;
-				if (!uam::paths::RemoveAllNoThrow(repository, &ec))
+				if (!uam::paths::PathExistsNoThrow(tombstone))
 				{
-					chat = std::move(cleared_chat);
-					if (error_out != nullptr)
-					{
-						*error_out = "Failed to remove managed repository: " + ec.message();
-					}
-					return false;
+					std::filesystem::rename(repository, tombstone, ec);
+					if (!ec) (void)uam::paths::RemoveTreeWithoutFollowingLinksNoThrow(tombstone);
 				}
 			}
 
@@ -1621,10 +1659,19 @@ namespace uam
 			// A verified unborn source can have an owned snapshot baseline while remaining a Git repository.
 			const std::filesystem::path managed = ManagedRepositoryRoot(app, source_candidate, chat.id);
 			std::string common;
-			if (paths::IsDirectoryNoThrow(managed) && !paths::IsLinkOrReparsePointNoThrow(managed) &&
-			    GitOutput(paths::PathFromUtf8(status.worktree_directory), "rev-parse --path-format=absolute --git-common-dir", &common) &&
-			    paths::NormalizeExistingOrAbsolutePath(paths::PathFromUtf8(common)) == paths::NormalizeExistingOrAbsolutePath(managed / ".git"))
-				status.managed_repository = true;
+			if (paths::IsDirectoryNoThrow(managed) && !paths::IsLinkOrReparsePointNoThrow(managed))
+			{
+				if (GitOutput(paths::PathFromUtf8(status.worktree_directory), "rev-parse --path-format=absolute --git-common-dir", &common) &&
+				    paths::NormalizeExistingOrAbsolutePath(paths::PathFromUtf8(common)) == paths::NormalizeExistingOrAbsolutePath(managed / ".git"))
+					status.managed_repository = true;
+				else if (!paths::PathExistsNoThrow(paths::PathFromUtf8(status.worktree_directory)))
+				{
+					std::string source_head, baseline;
+					if (!GitOutput(source_candidate, "rev-parse --verify HEAD", &source_head) && !status.base_ref.empty() &&
+					    GitOutput(managed, "rev-parse --verify " + shell::EscapeArg(status.base_ref + "^{commit}"), &baseline))
+						status.managed_repository = true;
+				}
+			}
 		}
 		if (status.isolated && !status.is_git_repository)
 		{
@@ -2721,24 +2768,10 @@ namespace uam
 			return result;
 		}
 
-		if (RefuseSharedWorktreeMutation(app, chat, WorktreePathFromStatus(result.status), &result.message)) return result;
-
-		if (!result.status.worktree_missing)
-		{
-			const std::filesystem::path worktree = WorktreePathFromStatus(result.status);
-			if (!GitCommand(worktree, "reset --hard HEAD", &result.message))
-			{
-				return result;
-			}
-
-			if (!GitCommand(worktree, "clean -fd", &result.message))
-			{
-				return result;
-			}
-		}
+		if (RefuseSharedWorktreeMutation(app, chat, WorktreePathFromStatus(result.status), &result.message, true)) return result;
 
 		std::string save_error;
-		if (!ClearWorktreeIsolation(app, chat, result.status, &save_error))
+		if (!ClearWorktreeIsolation(app, chat, result.status, &save_error, m_cleanup_hook_for_tests))
 		{
 			result.message = save_error;
 			return result;
@@ -2845,6 +2878,46 @@ namespace uam
 		if (request != app.git_port_requests.end()) request->second->cancellation->request_stop();
 	}
 
+	bool SettleGitWorktreeCleanupRequest(AppState& app, const std::string& chat_id,
+	    const std::shared_ptr<AppState::GitPortRequest>& request)
+	{
+		if (!request || request->family_fenced_ids.empty()) return false;
+		if (request->gui_settled)
+		{
+			const auto owner = app.git_port_requests.find(chat_id);
+			const auto* chat = ChatDomainService().FindChatById(app, chat_id);
+			if (!request->cleanup_completion_owned || (owner != app.git_port_requests.end() && owner->second != request) ||
+			    !chat || app.data_root != request->root || chat->metadata_incarnation != request->incarnation || chat->workspace_directory != request->workspace) return false;
+			const auto& committed = request->cleanup_commit;
+			return chat->workspace_source_directory == (committed ? committed->source : request->source) &&
+			    chat->workspace_worktree_directory == (committed ? committed->worktree : request->worktree) &&
+			    chat->workspace_branch_name == (committed ? committed->branch : request->branch) &&
+			    chat->workspace_base_ref == (committed ? committed->base : request->base);
+		}
+		if (request->worker_state.load() != AppState::GitPortRequest::WorkerState::Finished) return false;
+		const auto owner = app.git_port_requests.find(chat_id);
+		if (owner == app.git_port_requests.end() || owner->second != request) return false;
+		auto* chat = ChatDomainService().FindChatById(app, chat_id);
+		request->cleanup_completion_owned = chat && app.data_root == request->root && chat->metadata_incarnation == request->incarnation &&
+		    chat->workspace_directory == request->workspace && chat->workspace_source_directory == request->source &&
+		    chat->workspace_worktree_directory == request->worktree && chat->workspace_branch_name == request->branch && chat->workspace_base_ref == request->base;
+		if (request->cleanup_completion_owned && request->cleanup_commit)
+		{
+			const auto& committed = *request->cleanup_commit;
+			chat->workspace_isolation_kind = committed.isolation_kind;
+			chat->workspace_source_directory = committed.source;
+			chat->workspace_worktree_directory = committed.worktree;
+			chat->workspace_branch_name = committed.branch;
+			chat->workspace_base_ref = committed.base;
+			chat->updated_at = committed.updated_at;
+		}
+		request->gui_settled = true;
+		request->lease.reset();
+		for (const auto& id : request->family_fenced_ids) app.worktree_operation_chat_ids.erase(id);
+		app.git_port_requests.erase(owner);
+		return request->cleanup_completion_owned;
+	}
+
 	void PollGitPortRequests(AppState& app)
 	{
 		for (std::unordered_map<std::string, std::shared_ptr<AppState::GitPortRequest>>::iterator iterator = app.git_port_requests.begin(); iterator != app.git_port_requests.end();)
@@ -2861,11 +2934,19 @@ namespace uam
 				AppState::GitPortRequest::WorkerState queued = AppState::GitPortRequest::WorkerState::Queued;
 				(void)request->worker_state.compare_exchange_strong(queued, AppState::GitPortRequest::WorkerState::Finished);
 			}
+			if (request->worker_state.load() == AppState::GitPortRequest::WorkerState::Finished && !request->family_fenced_ids.empty())
+			{
+				const std::string chat_id = iterator->first;
+				++iterator; // Settlement removes only the captured map entry; no iterator reuse.
+				(void)SettleGitWorktreeCleanupRequest(app, chat_id, request);
+				continue;
+			}
 			if (request->worker_state.load() == AppState::GitPortRequest::WorkerState::Finished)
 			{
 				request->gui_settled = true;
 				request->lease.reset();
 				app.worktree_operation_chat_ids.erase(iterator->first);
+				for (const auto& id : request->family_fenced_ids) app.worktree_operation_chat_ids.erase(id);
 				iterator = app.git_port_requests.erase(iterator);
 				continue;
 			}
@@ -2901,7 +2982,7 @@ namespace uam
 
 		if (app.settings.git_port_method != GitPortMethod::Patch) return StageCommittedPort(app, chat, std::move(result), {});
 
-		if (RefuseSharedWorktreeMutation(app, chat, WorktreePathFromStatus(result.status), &result.message)) return result;
+		if (RefuseSharedWorktreeMutation(app, chat, WorktreePathFromStatus(result.status), &result.message, true)) return result;
 
 		const std::filesystem::path source = SourcePathFromStatusOrChat(app, chat, result.status);
 		const std::filesystem::path worktree = WorktreePathFromStatus(result.status);
@@ -2951,7 +3032,7 @@ namespace uam
 		if (uam::strings::IsBlank(patch))
 		{
 			std::string save_error;
-			if (!ClearWorktreeIsolation(app, chat, result.status, &save_error))
+			if (!ClearWorktreeIsolation(app, chat, result.status, &save_error, m_cleanup_hook_for_tests))
 			{
 				result.message = save_error;
 				return result;
@@ -2977,6 +3058,7 @@ namespace uam
 				return result;
 			}
 		}
+		if (app.worktree_cleanup_family && !ManagedSubagentControlService::ValidateWorktreeFamily(*app.worktree_cleanup_family, &result.message)) return result;
 		ProcessExecutionResult apply_result = RunCommand(BuildGitCommandInDirectory(source, std::string(result.status.managed_repository ? "-c core.autocrlf=false apply " : "apply --3way ") + uam::shell::EscapeArg(uam::paths::Utf8PathString(patch_path))));
 		if (!CommandSucceeded(apply_result))
 		{
@@ -2986,7 +3068,7 @@ namespace uam
 		}
 
 		std::string save_error;
-		if (!ClearWorktreeIsolation(app, chat, result.status, &save_error))
+		if (!ClearWorktreeIsolation(app, chat, result.status, &save_error, m_cleanup_hook_for_tests))
 		{
 			result.message = save_error;
 			return result;

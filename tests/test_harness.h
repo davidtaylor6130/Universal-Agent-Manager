@@ -130,6 +130,12 @@
 
 namespace fs = std::filesystem;
 
+#if defined(_WIN32)
+#include <cstdio>
+#include <fcntl.h>
+#include <io.h>
+#endif
+
 namespace uam_test
 {
 	struct TestCase
@@ -225,6 +231,16 @@ namespace uam_test
 		fs::path native;
 		std::string error;
 		return uam::io::NativeFilePath(path, native, error) ? native : path;
+	}
+
+	/// A fixture that answers runner frames over stdio. Windows text mode would turn a 0x0A byte in a frame's binary
+	/// length into CR LF, so the client waits for a frame that never parses; the real helper switches to binary too.
+	inline void UseBinaryFrameStdio()
+	{
+#if defined(_WIN32)
+		(void)_setmode(_fileno(stdin), _O_BINARY);
+		(void)_setmode(_fileno(stdout), _O_BINARY);
+#endif
 	}
 
 	inline std::string ReadFile(const fs::path& path)

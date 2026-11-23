@@ -11,6 +11,7 @@ std::optional<int> RunRemoteAttachmentFixture(int argc, char** argv)
 	const std::string content(512 * 1024 + 7, '\0');
 	uam::remote::RunnerState state;
 	nlohmann::json request;
+	uam_test::UseBinaryFrameStdio();
 	while (uam::remote::ReadFrame(std::cin, request) == uam::remote::FrameReadResult::Ok)
 	{
 		nlohmann::json response;
@@ -276,4 +277,42 @@ UAM_TEST(RemoteImageNegotiationSavesCapabilityOnlyForItsOwnedRemoteProcess)
 		}
 	}
 #endif
+}
+
+UAM_TEST(RemoteChatAttachmentSweepRemovesOnlyTheChatsOwnUnkeptCopies)
+{
+	TempDir temp("uam-remote-attachment-sweep");
+	const fs::path folder = temp.root / "workspace" / ".UAM" / "attachments" / "deleted-chat";
+	fs::create_directories(folder / "nested");
+	for (const char* name : {"1-0-unsent.png", "2-0-sent.png", "3-0-kept.png"}) UAM_ASSERT(uam::io::WriteBinaryFile(folder / name, "image"));
+	UAM_ASSERT(uam::io::WriteBinaryFile(temp.root / "workspace" / "user.png", "image"));
+	IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
+	// The real helper binary over stdio, as an SSH host runs it, without SSH.
+	const fs::path runner = service.ResolveCurrentExecutablePath().parent_path() /
+#if defined(_WIN32)
+	    "uam-runner.exe";
+#else
+	    "uam-runner";
+#endif
+	uam::remote::RunnerClient client(service, {uam::paths::Utf8PathString(runner), "bridge-direct"});
+	std::string error;
+	UAM_ASSERT(client.Connect(&error));
+	std::size_t left = 9;
+	UAM_ASSERT(client.SweepChatAttachments("sweep-1", folder, {"3-0-kept.png"}, left, &error));
+	// The subfolder is never entered, so it is the one entry left besides the kept copy.
+	UAM_ASSERT_EQ(left, std::size_t{1});
+	UAM_ASSERT(!fs::exists(folder / "1-0-unsent.png") && !fs::exists(folder / "2-0-sent.png"));
+	UAM_ASSERT(fs::exists(folder / "3-0-kept.png") && fs::exists(folder / "nested"));
+	// Anything that is not a chat's own staging folder is refused untouched, and the refusal keeps the connection.
+	for (const fs::path& refused : {temp.root / "workspace", temp.root / "workspace" / ".UAM" / "attachments", temp.root / "workspace" / "other" / "deleted-chat",
+	         folder / ".." / ".." / ".." / ".UAM" / "attachments" / "deleted-chat", folder / "."})
+		UAM_ASSERT(!client.SweepChatAttachments("sweep-2", refused, {}, left, &error));
+	UAM_ASSERT(client.IsConnected());
+	UAM_ASSERT(fs::exists(temp.root / "workspace" / "user.png"));
+	fs::remove(folder / "nested");
+	UAM_ASSERT(client.SweepChatAttachments("sweep-3", folder, {}, left, &error));
+	UAM_ASSERT_EQ(left, std::size_t{0});
+	UAM_ASSERT(!fs::exists(folder));
+	// A folder already gone is a successful sweep.
+	UAM_ASSERT(client.SweepChatAttachments("sweep-4", folder, {}, left, &error));
 }

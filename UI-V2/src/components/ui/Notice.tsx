@@ -55,7 +55,7 @@ export function Notice({
         </div>
         {details != null && (
           <Button type="button" asLink size="sm" aria-expanded={showDetails} onClick={() => setShowDetails((current) => !current)}>
-            <ChevronRight size={12} className="inline-block transition-transform duration-150" style={{ transform: showDetails ? 'rotate(90deg)' : 'none' }} aria-hidden />
+            <ChevronRight size={12} className="uam-notice__chevron inline-block" style={{ transform: showDetails ? 'rotate(90deg)' : 'none' }} aria-hidden />
             Details
           </Button>
         )}

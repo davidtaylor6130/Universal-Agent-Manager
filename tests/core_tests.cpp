@@ -1592,6 +1592,7 @@ int main(int argc, char** argv)
 		std::set<std::string> version_probes;
 		uam::remote::RunnerState state;
 		nlohmann::json request;
+		uam_test::UseBinaryFrameStdio();
 		while (uam::remote::ReadFrame(std::cin, request) == uam::remote::FrameReadResult::Ok)
 		{
 			if (argc >= 4)

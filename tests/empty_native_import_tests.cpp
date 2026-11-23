@@ -14,6 +14,7 @@ std::optional<int> RunEmptyNativeImportFixture(int argc, char** argv)
 	std::string output;
 	std::uint64_t cursor = 0;
 	bool rpc_process = false;
+	uam_test::UseBinaryFrameStdio();
 	while (uam::remote::ReadFrame(std::cin, request) == uam::remote::FrameReadResult::Ok)
 	{
 		const std::string type = request.value("type", "");
@@ -25,7 +26,15 @@ std::optional<int> RunEmptyNativeImportFixture(int argc, char** argv)
 			rpc_process = std::ranges::find(arguments, "app-server") != arguments.end();
 			if (data.contains("startLog")) { std::ofstream log(data.at("startLog").get<std::string>(), std::ios::app); log << nlohmann::json(arguments).dump() << '\n'; }
 			if (std::ranges::find(arguments, "--version") != arguments.end()) output = data.value("openCodeVersion", std::string("1.19.4")) + "\n";
-			else if (!rpc_process) output = (std::ranges::find(arguments, "export") != arguments.end() ? data.at("openCodeExport") : data.at("openCodeList")).dump();
+			else if (!rpc_process)
+			{
+				const bool exporting = std::ranges::find(arguments, "export") != arguments.end();
+				output = (exporting ? data.at("openCodeExport") : data.at("openCodeList")).dump();
+				// Optional per-session exports, for a parent and its sub-agent sessions.
+				if (exporting && data.contains("openCodeExports"))
+					for (const std::string& argument : arguments)
+						if (data["openCodeExports"].contains(argument)) output = data["openCodeExports"][argument].dump();
+			}
 		}
 		if (type == "process.write")
 		{
@@ -39,8 +48,10 @@ std::optional<int> RunEmptyNativeImportFixture(int argc, char** argv)
 				if (!rpc.contains("id")) continue;
 				nlohmann::json value = nlohmann::json::object();
 				const std::string method = rpc.value("method", "");
-				if (method == "thread/read") value = data.at("codexRead");
-				if (method == "thread/list") value = {{"data", rpc["params"].value("archived", false) ? nlohmann::json::array() : data.at("codexList")}};
+				if (method == "thread/read") value = data.contains("codexReads") ? data["codexReads"].at(rpc["params"].value("threadId", "")) : data.at("codexRead");
+				// The spawned-thread listing asks for `sourceKinds`; a fixture without `codexSubagentList` lists none.
+				const bool spawned = rpc.contains("params") && rpc["params"].contains("sourceKinds");
+				if (method == "thread/list") value = {{"data", rpc["params"].value("archived", false) ? nlohmann::json::array() : spawned ? data.value("codexSubagentList", nlohmann::json::array()) : data.at("codexList")}};
 				output += nlohmann::json({{"jsonrpc", "2.0"}, {"id", rpc["id"]}, {"result", value}}).dump() + "\n";
 			}
 			result["inputSequence"] = request.value("inputSequence", std::uint64_t{0});
@@ -100,7 +111,6 @@ namespace
 		}
 	};
 
-#if !defined(_WIN32)
 	struct RemoteEmptyImportFixture : EmptyImportFixture
 	{
 		const std::string codex_id = "11111111-1111-4111-8111-111111111111";
@@ -117,9 +127,14 @@ namespace
 			app.folders.front().execution_host_id = host.id;
 			app.folders.front().directory = "/srv/private-workspace";
 			const auto executable = PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath();
+#if defined(_WIN32)
+			UAM_ASSERT(uam::io::WriteTextFile(temp.root / "ssh.cmd", "@\"" + executable.string() + "\" --uam-test-empty-import-runner \"" + response.string() + "\"\r\n"));
+			path = std::make_unique<ScopedEnvVar>("PATH", temp.root.string() + ";" + uam::env::GetNonEmptyString("PATH").value_or(""));
+#else
 			UAM_ASSERT(uam::io::WriteTextFile(temp.root / "ssh", "#!/bin/sh\nexec " + ShellQuoteForTest(executable.string()) + " --uam-test-empty-import-runner " + ShellQuoteForTest(response.string()) + "\n"));
 			fs::permissions(temp.root / "ssh", fs::perms::owner_all);
 			path = std::make_unique<ScopedEnvVar>("PATH", temp.root.string() + ":" + uam::env::GetNonEmptyString("PATH").value_or("/usr/bin:/bin"));
+#endif
 			data = {{"openCodeList", nlohmann::json::array({{{"id", "ses_empty"}, {"title", "Empty"}, {"directory", app.folders.front().directory}, {"created", 1}, {"updated", 2}}})},
 			    {"openCodeExport", {{"info", {{"id", "ses_empty"}, {"directory", app.folders.front().directory}}}, {"messages", nlohmann::json::array()}}},
 			    {"codexList", nlohmann::json::array({{{"id", codex_id}, {"preview", "Empty"}, {"cwd", app.folders.front().directory}, {"createdAt", 1}, {"updatedAt", 2}}})},
@@ -134,7 +149,6 @@ namespace
 			Write();
 		}
 	};
-#endif
 }
 
 UAM_TEST(EmptyNativeImportsAreFilteredAndNeverPublishedAcrossProviders)
@@ -259,6 +273,86 @@ UAM_TEST(RemoteCodexImportLoadsHistoryAndSkipsEmptyWithoutTombstone)
 	const auto full = service.ImportRemoteCodexChatsForFolder(fixture.app, "workspace", sessions);
 	UAM_ASSERT(full.success && full.imported_count == 1);
 	UAM_ASSERT_EQ(ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.codex_id)->messages.front().content, std::string("Private question"));
+#endif
+}
+
+UAM_TEST(RemoteSubchatsDiscoverStageAndPublishUnderTheirParentThroughTheRunner)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI && UAM_ENABLE_RUNTIME_CODEX_CLI
+	RemoteEmptyImportFixture fixture;
+	const std::string directory = fixture.app.folders.front().directory;
+	const std::string child_thread = "22222222-2222-4222-8222-222222222222";
+	const auto text = [](const char* role, const std::string& value)
+	{
+		return nlohmann::json{{"info", {{"role", role}}}, {"parts", nlohmann::json::array({{{"type", "text"}, {"text", value}}})}};
+	};
+	const auto exported = [&](const std::string& id, const std::string& parent, nlohmann::json messages)
+	{
+		nlohmann::json info{{"id", id}, {"directory", directory}};
+		if (!parent.empty()) info["parentID"] = parent;
+		return nlohmann::json{{"info", info}, {"messages", std::move(messages)}};
+	};
+	const auto turn = [](const std::string& value)
+	{
+		return nlohmann::json{{"items", nlohmann::json::array({{{"type", "userMessage"}, {"content", nlohmann::json::array({{{"type", "text"}, {"text", value}}})}}})}};
+	};
+	// OpenCode lists the root only; its task call names the child session.
+	const nlohmann::json task{{"info", {{"role", "assistant"}}}, {"parts", nlohmann::json::array({{{"type", "tool"}, {"callID", "call_child"}, {"tool", "task"},
+	    {"state", {{"status", "completed"}, {"title", "Delegate"}, {"output", "Done"}, {"metadata", {{"sessionId", "ses_child"}}}}}}})}};
+	fixture.data["openCodeList"] = nlohmann::json::array({{{"id", "ses_parent"}, {"title", "Parent"}, {"directory", directory}, {"created", 1}, {"updated", 2}}});
+	fixture.data["openCodeExports"] = {
+	    {"ses_parent", exported("ses_parent", "", nlohmann::json::array({text("user", "Parent request"), task}))},
+	    {"ses_child", exported("ses_child", "ses_parent", nlohmann::json::array({text("user", "Child request")}))}};
+	// Codex lists a spawned thread only through the `sourceKinds` listing, naming its parent thread.
+	fixture.data["codexList"] = nlohmann::json::array({{{"id", fixture.codex_id}, {"preview", "Parent"}, {"cwd", directory}, {"createdAt", 1}, {"updatedAt", 2}}});
+	fixture.data["codexSubagentList"] = nlohmann::json::array({{{"id", child_thread}, {"preview", "Child"}, {"cwd", directory}, {"createdAt", 1}, {"updatedAt", 2},
+	    {"parentThreadId", fixture.codex_id}, {"source", {{"subAgent", {{"thread_spawn", {{"parent_thread_id", fixture.codex_id}, {"depth", 1}}}}}}}}});
+	fixture.data["codexReads"] = {
+	    {fixture.codex_id, {{"thread", {{"id", fixture.codex_id}, {"cwd", directory}, {"turns", nlohmann::json::array({turn("Parent question")})}}}}},
+	    {child_thread, {{"thread", {{"id", child_thread}, {"cwd", directory}, {"turns", nlohmann::json::array({turn("Child question")})}}}}}};
+	fixture.Write();
+	const auto profile = ProviderProfileStore::DefaultOpenCodeProfile();
+	auto discovery = ChatHistorySyncService().DiscoverRemoteProviderChatsForFolder(fixture.app.folders.front(), fixture.app.settings.execution_hosts.front(), &profile);
+	UAM_ASSERT(discovery.result.success);
+	const auto parent_of = [&](const std::string& id)
+	{
+		const auto found = std::ranges::find(discovery.chats, id, &ChatSession::native_session_id);
+		UAM_ASSERT(found != discovery.chats.end());
+		return found->native_parent_session_id;
+	};
+	UAM_ASSERT_EQ(discovery.chats.size(), std::size_t{4});
+	UAM_ASSERT_EQ(parent_of("ses_child"), std::string("ses_parent"));
+	UAM_ASSERT_EQ(parent_of(child_thread), fixture.codex_id);
+	UAM_ASSERT(parent_of("ses_parent").empty() && parent_of(fixture.codex_id).empty());
+
+	// The import takes histories from the back, so roots go last and children first, as the startup queue orders them.
+	std::ranges::stable_partition(discovery.chats, [](const ChatSession& chat) { return !chat.native_parent_session_id.empty(); });
+	discovery.expected_hosts.emplace(fixture.app.settings.execution_hosts.front().id, fixture.app.settings.execution_hosts.front());
+	ChatHistorySyncService::ImportResult result;
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+	while (discovery.Pending())
+	{
+		UAM_ASSERT(std::chrono::steady_clock::now() < deadline);
+		result.Merge(ChatHistorySyncService().ImportDiscoveredProviderChatsBatch(fixture.app, {}, discovery, 8, ChatHistorySyncService::ImportPolicy::SelectedNewChatsOnly));
+		std::this_thread::yield();
+	}
+	UAM_ASSERT(result.success);
+	UAM_ASSERT_EQ(result.imported_count, 4);
+	const auto saved = ChatRepository::LoadLocalChats(fixture.app.data_root);
+	UAM_ASSERT_EQ(saved.size(), std::size_t{4});
+	const auto by_native = [&](const std::string& id) -> const ChatSession&
+	{
+		const auto found = std::ranges::find(saved, id, &ChatSession::native_session_id);
+		UAM_ASSERT(found != saved.end());
+		return *found;
+	};
+	for (const auto& [child, parent] : {std::pair<std::string, std::string>{"ses_child", "ses_parent"}, {child_thread, fixture.codex_id}})
+	{
+		UAM_ASSERT_EQ(by_native(child).subagent_parent_chat_id, by_native(parent).id);
+		UAM_ASSERT_EQ(by_native(child).execution_host_id, fixture.app.settings.execution_hosts.front().id);
+	}
+	UAM_ASSERT_EQ(ChatRepository::LoadLocalChat(fixture.app.data_root, by_native("ses_child").id)->messages.front().content, std::string("Child request"));
+	UAM_ASSERT_EQ(ChatRepository::LoadLocalChat(fixture.app.data_root, by_native(child_thread).id)->messages.front().content, std::string("Child question"));
 #endif
 }
 

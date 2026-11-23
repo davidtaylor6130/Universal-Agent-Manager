@@ -365,8 +365,10 @@ namespace uam
 		invocation.environment_overrides.insert(invocation.environment_overrides.end(), launch_environment.begin(), launch_environment.end());
 		invocation.command_preview = BuildProviderWorkerShellCommand(invocation.argv, path_mode) + " <prompt via stdin>";
 		invocation.isolated_working_directory = isolation_directory;
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 		if (!private_isolation && IsProvider(profile, uam::provider_ids::kOpenCodeCli))
 			invocation.output_failure = uam::provider_workers::OpenCodeWorkerProviderError;
+#endif
 		return invocation;
 	}
 

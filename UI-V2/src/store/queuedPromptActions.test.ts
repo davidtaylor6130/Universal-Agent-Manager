@@ -267,7 +267,7 @@ describe('definitely-unsent local editing', () => {
     removeComposerDrafts(['chat']); writeChatComposerDraft('chat', draft)
     useAppStore.setState({ sessions: [session as never], activeSessionId: 'another-pane', messages: { chat: [row, later] },
       historyStartIndexBySessionId: { chat: 7 }, chatSearchNavigation: { chatId: 'chat', phase: 'ready' } as never,
-      acpBindingBySessionId: { chat: { providerId: 'gemini-cli', processing: false, unsentMessageIndices: [7],
+      acpBindingBySessionId: { chat: { providerId: 'gemini-cli', processing: false, unsentMessageIndices: [7], editableUnsentMessageIndices: [7],
         queuedPrompts: [], pendingDirectPrompts: [], unsentDirectPrompts: [], pendingPermission: null, pendingUserInput: null } }, cliBindingBySessionId: {} })
     const retained = row.attachments!.filter(attachment => attachment.id !== 'drop')
     const page = { chatId: 'chat', messagesDigest: originalDigest, startIndex: 7, totalCount: 200, unchanged: false, messages: [native] }
@@ -304,6 +304,14 @@ describe('definitely-unsent local editing', () => {
     expect(readChatComposerDraft('chat')).toEqual(f.draft)
     expect(bridge.send).toHaveBeenCalledTimes(2)
   })
+  it.each([undefined, []])('refuses a local edit without current native eligibility and keeps author input', async editable => {
+    const f = fixture()
+    useAppStore.setState(state => ({ acpBindingBySessionId: { chat: { ...state.acpBindingBySessionId.chat, editableUnsentMessageIndices: editable } } }))
+    expect(await useAppStore.getState().editUnsentMessage('chat', 7, f.row, 'Revised author input', f.retained)).toMatchObject({ ok: false })
+    expect(bridge.send).not.toHaveBeenCalled()
+    expect(useAppStore.getState().messages.chat[0]).toBe(f.row)
+    expect(readChatComposerDraft('chat')).toEqual(f.draft)
+  })
   it('confirms native ASCII trimming without removing authored non-ASCII edge characters', async () => {
     const f = fixture()
     const text = '\u00a0Edited unsent\u00a0'
@@ -332,7 +340,7 @@ describe('definitely-unsent local editing', () => {
       expect(f.row.content).toBe('Original unsent')
       expect(readChatComposerDraft('chat')).toEqual(f.draft)
     })
-  it.each(['row-replaced', 'chat-reborn'] as const)('rejects %s while the body probe is pending', async change => {
+  it.each(['row-replaced', 'chat-reborn', 'authority-revoked', 'remote-completed'] as const)('rejects %s while the body probe is pending', async change => {
     const f = fixture()
     let finish!: (value: unknown) => void
     bridge.send.mockImplementation(() => new Promise(resolve => { finish = resolve }))
@@ -340,6 +348,10 @@ describe('definitely-unsent local editing', () => {
     const pushed = change === 'row-replaced' ? { ...f.row } : f.row
     useAppStore.setState({ messages: { chat: [pushed, f.later] },
       sessions: [{ ...f.session, createdAt: new Date(change === 'chat-reborn' ? 1 : 0) } as never] })
+    if (change === 'authority-revoked' || change === 'remote-completed') useAppStore.setState(state => ({
+      acpBindingBySessionId: { chat: { ...state.acpBindingBySessionId.chat, editableUnsentMessageIndices: [],
+        ...(change === 'remote-completed' ? { unsentMessageIndices: [] } : {}) } },
+    }))
     finish({ ok: true, data: f.page })
     expect(await saving).toMatchObject({ ok: false })
     expect(bridge.send).toHaveBeenCalledTimes(1)

@@ -1,6 +1,7 @@
 #include "app/worktree_launch_preparation_service.h"
 #include "common/platform/background_thread_priority.h"
 
+#include "app/agent_run_ledger.h"
 #include "app/chat_domain_service.h"
 #include "app/vcs_commit_service.h"
 #include "common/chat/chat_repository.h"
@@ -8,6 +9,8 @@
 #include "common/paths/workspace_root.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_session_runtime.h"
+#include "common/runtime/acp/acp_session_state_helpers.h"
+#include "common/utils/diagnostic_log.h"
 #include "common/utils/hash_utils.h"
 #include "common/utils/io_utils.h"
 #include "common/utils/time_utils.h"
@@ -25,6 +28,9 @@ namespace uam
 {
 	namespace
 	{
+		// ponytail: one bound for the whole remote worker; every helper request is already bounded, this stops their sum.
+		constexpr std::chrono::minutes kRemotePreparationDeadline{5};
+
 		bool PhysicalWorkspaceFieldsMatch(const ChatSession& a, const ChatSession& b)
 		{
 			return a.workspace_isolation_kind == b.workspace_isolation_kind && a.workspace_source_directory == b.workspace_source_directory &&
@@ -233,6 +239,32 @@ namespace uam
 			for (const std::string* path : {&other.workspace_directory, &other.workspace_worktree_directory, &other.workspace_source_directory})
 				if (!path->empty() && paths::IsSameOrInsideRoot(worktree, paths::PathFromUtf8(*path))) return true;
 			return false;
+		}
+
+		/// A finished delegated child of this parent that only names the parent's worktree as its workspace. Lineage comes from the
+		/// run ledger; restart-inert v2 runs are absent from the live ledger, so the worker's read-only observation supplies them.
+		/// Terminal status alone is not settlement: retained input, a runtime, a save or a helper process still protects the worktree.
+		bool SettledChildReference(const AppState& app, const ChatSession& parent, const ChatSession& reference, const std::vector<AgentRun>& observed_runs)
+		{
+			if (reference.agent_run_id.empty() || reference.execution_host_id != parent.execution_host_id || !reference.workspace_worktree_directory.empty()) return false;
+			const auto same_run = [&reference](const AgentRun& run) { return run.id == reference.agent_run_id; };
+			const auto live = std::ranges::find_if(app.agent_runs, same_run);
+			const auto observed = std::ranges::find_if(observed_runs, same_run);
+			const AgentRun* run = live != app.agent_runs.end() ? &*live : observed != observed_runs.end() ? &*observed : nullptr;
+			if (!run || run->root_chat_id != parent.id || run->transcript_chat_id != reference.id ||
+			    (run->status != "completed" && run->status != "failed" && run->status != "cancelled" && run->status != "interrupted")) return false;
+			const ChatSession* live_chat = ChatDomainService().FindChatById(app, reference.id);
+			const ChatSession& chat = live_chat ? *live_chat : reference;
+			if (!chat.acp_queued_prompts.empty() || !chat.acp_unsent_prompt_recoveries.empty() || chat.acp_queue_storage_error ||
+			    chat.remote_process_exists || chat.remote_turn_reconnect_pending || chat.remote_stop_cleanup_pending || chat.remote_restart_pending ||
+			    !chat.remote_pending_requests.empty() || !chat.remote_active_turn_id.empty() || chat.remote_source_exit_pending ||
+			    chat.remote_manual_compaction_pending || !chat.remote_process_control_token.empty() || !chat.remote_interaction_responses.empty() ||
+			    !chat.remote_prompt_delivery_session_id.empty() || !chat.remote_prompt_delivery_id.empty() ||
+			    !chat.remote_prompt_delivery_payload.empty() || !chat.remote_prompt_delivery_input_ids.empty() || app.worktree_operation_chat_ids.contains(chat.id) ||
+			    app.pending_chat_save_at_by_chat_id.contains(chat.id) || app.pending_chat_save_tasks.contains(chat.id)) return false;
+			if (const AcpSessionState* session = FindAcpSessionForChat(app, chat.id); session && !AcpSessionCanIdleShutdown(*session, chat)) return false;
+			return std::ranges::none_of(app.cli_terminals, [&chat](const auto& terminal)
+			    { return terminal && terminal->running && (terminal->attached_chat_id == chat.id || terminal->frontend_chat_id == chat.id); });
 		}
 
 		/// Names each saved launch setting that no longer matches, in the words Settings uses; empty when all match.
@@ -566,6 +598,7 @@ namespace uam
 					prepared.operation.message = "Prepared workspace ownership changed. The workspace was preserved.";
 				return prepared;
 			});
+			if (task->remote_host) task->worker_deadline = std::chrono::steady_clock::now() + kRemotePreparationDeadline;
 			task->worker = validation.get_future();
 			app.worktree_operation_chat_ids.insert(chat.id);
 			try { uam::platform::StartBackgroundThread(std::move(validation)).detach(); }
@@ -589,6 +622,12 @@ namespace uam
 		    !(found->second->saved.value_or(false) && found->second->error.empty() && !found->second->cancellation->stop_requested());
 	}
 
+	bool IsWorktreeLaunchPreparationRunning(const AppState& app, const std::string& chat_id)
+	{
+		const auto found = app.worktree_launch_preparations.find(chat_id);
+		return found != app.worktree_launch_preparations.end() && (found->second->worker.valid() || found->second->saving);
+	}
+
 	void CancelWorktreeLaunchPreparation(AppState& app, const std::string& chat_id, const std::shared_ptr<std::stop_source>& expected)
 	{
 		const std::unordered_map<std::string, std::shared_ptr<WorktreeLaunchPreparationTask>>::iterator found = app.worktree_launch_preparations.find(chat_id);
@@ -606,6 +645,13 @@ namespace uam
 			if (!owned) task->cancellation->request_stop();
 			if (task->worker.valid())
 			{
+				// An unanswered helper (for example across a host reboot) ends in the ordinary visible cancellation, never an endless wait.
+				if (task->remote_host && !task->cancellation->stop_requested() && std::chrono::steady_clock::now() >= task->worker_deadline)
+				{
+					diagnostics::Write("[worktree-prep] chat_id=" + iterator->first + " event=deadline_expired action=cancel");
+					task->cancellation->request_stop();
+					changed = true;
+				}
 				if (task->worker.wait_for(std::chrono::seconds(0)) != std::future_status::ready) { ++iterator; continue; }
 				try { task->prepared = task->worker.get(); }
 				catch (const std::exception&) { task->error = "Workspace preparation failed. Retry opening the chat."; }
@@ -663,11 +709,29 @@ namespace uam
 			}
 			if (task->prepared && !task->merged && task->error.empty())
 			{
-				if (task->prepared->operation.ok && (task->remote_host || !task->update_only) && std::any_of(app.chats.begin(), app.chats.end(),
-				    [&](const ChatSession& other) { return ReferencesPreparedWorkspace(other, task->prepared->metadata, task->remote_host ? std::string_view(task->remote_host->platform) : std::string_view{}); }))
+				if (task->prepared->operation.ok && (task->remote_host || !task->update_only))
 				{
-					task->prepared->operation.ok = false;
-					task->prepared->operation.message = "Another chat uses the prepared workspace. The workspace was preserved.";
+					const std::string_view platform = task->remote_host ? std::string_view(task->remote_host->platform) : std::string_view{};
+					std::vector<std::string> blockers;
+					const auto admit = [&](const ChatSession& other)
+					{
+						if (!ReferencesPreparedWorkspace(other, task->prepared->metadata, platform) || std::ranges::find(blockers, other.id) != blockers.end()) return;
+						// Finished children of this chat keep their saved workspace field; they no longer use the worktree.
+						if (task->remote_host && SettledChildReference(app, *chat, other, task->prepared->reference_runs)) return;
+						blockers.push_back(other.id);
+					};
+					for (const ChatSession& other : app.chats) admit(other);
+					for (const ChatSession& other : task->prepared->references) admit(other);
+					if (!blockers.empty())
+					{
+						std::string named;
+						for (std::size_t index = 0; index < blockers.size() && index < 3; ++index) named += (index ? ", " : "") + blockers[index];
+						if (blockers.size() > 3) named += " and " + std::to_string(blockers.size() - 3) + " more";
+						task->prepared->operation.ok = false;
+						task->prepared->operation.message = "Other chats still use this workspace: " + named +
+						    ". Stop them or let them finish, then retry. The workspace was preserved.";
+						diagnostics::Write("[worktree-prep] chat_id=" + chat->id + " event=reference_refused blockers=" + named);
+					}
 				}
 				if (!task->prepared->operation.ok) task->error = task->prepared->operation.message.empty() ? "Workspace preparation failed. Retry opening the chat." : task->prepared->operation.message;
 				else
@@ -693,6 +757,12 @@ namespace uam
 			++iterator;
 		}
 		return changed;
+	}
+
+	bool WorktreeLaunchWaitsForChatSave(const AppState& app, const ChatSession& chat)
+	{
+		return app.pending_chat_save_at_by_chat_id.contains(chat.id) &&
+		    (chat.workspace_isolation_kind == paths::kPendingGitWorktreeIsolationKind || paths::IsGitWorktreeIsolated(chat));
 	}
 
 	WorktreeLaunchPreparationResult PrepareWorktreeForLaunch(AppState& app, ChatSession& chat, bool explicit_create)
@@ -760,8 +830,7 @@ namespace uam
 			}
 			return {WorktreeLaunchPreparationState::Pending, {}, task->cancellation};
 		}
-		if (app.pending_chat_save_at_by_chat_id.contains(chat.id) &&
-		    (chat.workspace_isolation_kind == paths::kPendingGitWorktreeIsolationKind || paths::IsGitWorktreeIsolated(chat)))
+		if (WorktreeLaunchWaitsForChatSave(app, chat))
 			return {WorktreeLaunchPreparationState::Pending, {}, {}};
 		const bool remote_workspace = !paths::IsControllerLocalWorkspace(chat);
 		if (remote_workspace && explicit_create && !app.settings.git_enabled)
@@ -839,6 +908,7 @@ namespace uam
 		{
 			task->remote_host = *remote_host;
 			task->remote_host_lease = app.remote_vcs_operation_leases_by_host_id[chat.execution_host_id].Hold();
+			task->worker_deadline = std::chrono::steady_clock::now() + kRemotePreparationDeadline;
 		}
 		task->lease = lease;
 		task->receipt_file = task->data_root / ".worktree-launch" / (hashing::Hex64(hashing::Fnv1a64(chat.id)) + "-" + time::SteadyEpochNanosecondsTokenNow() + ".json");
@@ -874,12 +944,9 @@ namespace uam
 			if (task->remote_host)
 			{
 				GitWorktreeOperationResult operation = PrepareRemoteLaunch(snapshot, metadata, task);
-				const std::vector<ChatSession> persisted = operation.ok ? ChatRepository::LoadLocalChatSummariesReadOnly(root) : std::vector<ChatSession>{};
-				const auto referenced = [&metadata, task](const ChatSession& other)
-				{ return ReferencesPreparedWorkspace(other, metadata, task->remote_host->platform); };
-				if (operation.ok && (std::ranges::any_of(live_chats, referenced) || std::ranges::any_of(persisted, referenced)))
-				{ operation.ok = false; operation.message = "Another chat references the SSH worktree. Its files were preserved."; }
-				return PreparedLaunchWorktree{std::move(operation), std::move(metadata)};
+				if (!operation.ok) return PreparedLaunchWorktree{std::move(operation), std::move(metadata)};
+				// Reference admission runs on the owner, which alone sees live runtimes, queues and saves.
+				return PreparedLaunchWorktree{std::move(operation), std::move(metadata), ChatRepository::LoadLocalChatSummariesReadOnly(root), AgentRunLedger::LoadAllReadOnly(root).runs};
 			}
 			std::string update_error;
 			if (metadata.svn_update_pending && snapshot.settings.svn_enabled && snapshot.settings.svn_update_before_chat &&
