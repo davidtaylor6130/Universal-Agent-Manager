@@ -11,6 +11,7 @@
 #include "common/runtime/provider_cli_compatibility_service.h"
 #include "common/state/app_state.h"
 #include "common/utils/diagnostic_log.h"
+#include "common/utils/nlohmann_json_utils.h"
 #include "common/utils/string_utils.h"
 
 #include <algorithm>
@@ -152,8 +153,11 @@ namespace uam
 		for (std::vector<PendingShare>::iterator share = m_pending_shares.begin(); share != m_pending_shares.end();)
 		{
 			if (app.provider_model_catalog->IsDiscoveryPending(share->provider_id, share->source_workspace, share->execution_host_id)) { ++share; continue; }
+			const nlohmann::json source = app.provider_model_catalog->GetPersistentCatalogEntry(share->provider_id, share->source_workspace, share->execution_host_id);
+			const nlohmann::json* source_models = source.is_object() ? nlohmann_json::FindArrayField(source, "models") : nullptr;
+			// An error, nothing stored, or a store without models (options only) all leave nothing to share.
 			const bool source_failed = !app.provider_model_catalog->GetProviderRefreshError(share->provider_id, share->source_workspace, share->execution_host_id).empty() ||
-			                           app.provider_model_catalog->GetPersistentCatalogEntry(share->provider_id, share->source_workspace, share->execution_host_id) == share->source_before;
+			                           source == share->source_before || source_models == nullptr || source_models->empty();
 			if (source_failed)
 			{
 				// A failed or empty discovery shares nothing; another workspace may still answer for the rest.

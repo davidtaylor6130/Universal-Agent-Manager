@@ -1028,11 +1028,52 @@ UAM_TEST(ModelCatalogSharedListKeepsATargetsNewerOwnResult)
 	UAM_ASSERT_EQ(catalog.ShareAccountWideCatalog("codex-cli", "local", source, {target, pending}), std::size_t{0});
 	UAM_ASSERT_EQ(catalog.GetCachedProviderModels("codex-cli", target)[0].value("id", ""), std::string("target-own"));
 	UAM_ASSERT(catalog.GetCachedProviderModels("codex-cli", pending).empty());
-	// A target fetched by another CLI version is replaced even when its time is the same.
+	// A target fetched by another CLI version is replaced even when it is newer.
 	catalog.NoteCheckedCliVersion("codex-cli", "local", "1.0.0");
 	UAM_ASSERT(catalog.RememberSuccessfulModels("codex-cli", nlohmann::json::array({{{"id", "target-old-cli"}}}), target));
 	catalog.NoteCheckedCliVersion("codex-cli", "local", "2.0.0");
 	UAM_ASSERT_EQ(catalog.ShareAccountWideCatalog("codex-cli", "local", source, {target}), std::size_t{1});
 	UAM_ASSERT_EQ(catalog.GetCachedProviderModels("codex-cli", target)[0].value("id", ""), std::string("source"));
 	UAM_ASSERT(catalog.IsCacheFreshForCliVersion("codex-cli", target, "local", "2.0.0"));
+}
+
+UAM_TEST(StartupModelDiscoveryPrefersTheNewestCacheAsTheSharedSource)
+{
+	StartupDiscoveryFixture fixture;
+	uam::ProviderModelCatalogService& catalog = *fixture.app.provider_model_catalog;
+	const std::string older = fixture.app.folders[0].directory;
+	const std::string newer = fixture.app.folders[1].directory;
+	const std::string empty = fixture.app.folders[2].directory;
+	// Stores both caches with one CLI version, then dates them an hour and a minute ago in the saved file.
+	const auto store = [&](const std::string& version)
+	{
+		fixture.app.provider_model_catalog->Initialize(fixture.app.data_root, fixture.app.provider_profiles);
+		catalog.NoteCheckedCliVersion("codex-cli", "local", version);
+		UAM_ASSERT(catalog.RememberSuccessfulModels("codex-cli", nlohmann::json::array({{{"id", "older"}}}), older));
+		UAM_ASSERT(catalog.RememberSuccessfulModels("codex-cli", nlohmann::json::array({{{"id", "newer"}}}), newer));
+		const fs::path cache_file = fixture.app.data_root / "provider_model_catalog_cache.json";
+		nlohmann::json root = nlohmann::json::parse(ReadFile(cache_file));
+		const std::int64_t now = uam::time::TimestampNowSec();
+		for (auto& [key, entry] : root["catalogs"].items())
+			entry["updatedAtSec"] = now - (entry["models"][0]["id"] == "older" ? 3600 : 60);
+		UAM_ASSERT(uam::io::WriteTextFile(cache_file, root.dump()));
+		catalog.Initialize(fixture.app.data_root, fixture.app.provider_profiles);
+		catalog.SetExecutionHostContext(fixture.app.settings.execution_hosts);
+	};
+	// Every cache is from an older CLI: the newest one is asked first.
+	fixture.app.runtime_cli_versions_by_provider_id["codex-cli"].installed_version = "2.0.0";
+	store("1.0.0");
+	uam::StartupModelDiscoveryService stale(fixture.Launcher());
+	stale.Initialize(fixture.app);
+	UAM_ASSERT(stale.Poll(fixture.app));
+	UAM_ASSERT_EQ(fixture.launched.size(), std::size_t{1});
+	UAM_ASSERT_EQ(fixture.launched.front().workspace_directory, uam::paths::PortablePathString(fs::weakly_canonical(newer)));
+	fixture.app.acp_sessions.clear();
+	// Both caches current: the empty workspace takes the newer list without a process.
+	store("2.0.0");
+	uam::StartupModelDiscoveryService fresh(fixture.Launcher());
+	fresh.Initialize(fixture.app);
+	UAM_ASSERT(fresh.Poll(fixture.app));
+	UAM_ASSERT_EQ(fixture.launched.size(), std::size_t{1});
+	UAM_ASSERT_EQ(catalog.GetCachedProviderModels("codex-cli", empty)[0].value("id", ""), std::string("newer"));
 }
