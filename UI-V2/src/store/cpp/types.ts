@@ -1285,7 +1285,9 @@ export type ParsedPushMessage =
 
 export type ParsedPushResult =
   | { ok: true; message: ParsedPushMessage }
-  | { ok: false; status: Exclude<PushChannelStatus, 'connected' | 'no-push-yet'>; error: string; mayHaveCarriedState?: true }
+  | { ok: false; status: Exclude<PushChannelStatus, 'connected' | 'no-push-yet'>; error: string; mayHaveCarriedState?: true
+      // A rejected state message's own revision and the model catalogue it referenced without having, when known.
+      stateRevision?: number; missingModelCatalogId?: string }
 
 export interface CentralProviderConfiguration {
   mcpOverrides?: Array<{ providerId: string; executionHostId: string; serverId: string; enabled: boolean; kind?: 'preference' }>

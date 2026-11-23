@@ -831,6 +831,10 @@ export const useAppStore = create<AppState>((set, get) => {
   // reply and pushes travel separate IPC paths, so a diff-only patch can overtake the
   // snapshot. Until a full state hydrates, re-pull a stale snapshot (#622).
   let bootstrapHydrated = false
+  // Resync waits for hydration, so a state push rejected before it is remembered here: the highest rejected revision,
+  // Infinity when a rejection's revision is unknown, -1 for none. Hydration re-pulls unless its snapshot covers it.
+  let rejectedStateRevisionBeforeHydration = -1
+  let resyncAfterHydration: ((reason: string) => void) | null = null
   let bootstrapRetryTimer: ReturnType<typeof setTimeout> | null = null
   // A newer store instance (module reload) owns window.uamPush; this one must stop re-pulling.
   let ownedUamPush: unknown = null
@@ -964,6 +968,9 @@ export const useAppStore = create<AppState>((set, get) => {
         console.info('[UI startup] Initial state loaded through the native bridge.')
         if (bootstrapRetryTimer !== null) clearTimeout(bootstrapRetryTimer)
         bootstrapRetryTimer = null
+        // A snapshot at revision R holds every patch up to R; a rejected newer one is only restored by another pull.
+        if (rejectedStateRevisionBeforeHydration > nextRevision) resyncAfterHydration?.('state push rejected before startup state loaded')
+        rejectedStateRevisionBeforeHydration = -1
         // Sync theme to DOM
         if (deserialized.theme) {
           persistTheme(deserialized.theme, get().customThemes)
@@ -1109,6 +1116,7 @@ export const useAppStore = create<AppState>((set, get) => {
       const delay = Math.max(STATE_RESYNC_COALESCE_MS, lastStateResyncAt + stateResyncSpacingMs - now)
       stateResyncTimer = setTimeout(pullStateResync, delay)
     }
+    resyncAfterHydration = requestStateResync
 
     const settleStateResync = (generation: number, snapshot: CppAppState | null) => {
       if (generation !== stateResyncGeneration || !stateResyncInFlight) return
@@ -1221,7 +1229,18 @@ export const useAppStore = create<AppState>((set, get) => {
           pushChannelError: parsed.error,
           lastPushAtMs: state.lastPushAtMs,
         }))
-        console.error('[uamPush] Rejected payload:', parsed.error, payload)
+        // One short line: native writes console arguments to its log, where the payload was only [object Object].
+        // Companion pages never run the desktop bootstrap, so only a desktop window waits for hydration.
+        const beforeHydration = Boolean(parsed.mayHaveCarriedState) && !bootstrapHydrated && !isCompanionContext()
+        const detail = [
+          parsed.stateRevision === undefined ? '' : `revision ${parsed.stateRevision}`,
+          parsed.missingModelCatalogId ? `missing model catalogue ${parsed.missingModelCatalogId}` : '',
+          beforeHydration ? 'before startup state loaded' : '',
+        ].filter(Boolean).join(', ')
+        console.error(`[uamPush] Rejected payload${detail ? ` (${detail})` : ''}: ${parsed.error}`)
+        if (beforeHydration) {
+          rejectedStateRevisionBeforeHydration = Math.max(rejectedStateRevisionBeforeHydration, parsed.stateRevision ?? Number.POSITIVE_INFINITY)
+        }
         if (parsed.mayHaveCarriedState) requestStateResync('rejected state push')
         return
       }

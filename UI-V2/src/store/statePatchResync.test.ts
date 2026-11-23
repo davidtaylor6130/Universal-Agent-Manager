@@ -21,17 +21,20 @@ const chatPatch = (revision: number, title = `Patch ${revision}`) => ({
   data: { stateRevision: revision, chats: [chat('chat-1', title)] },
 })
 
-async function startStore(hydrate = true, initial = fullState(5)) {
+// hydrate 'held' keeps the startup reply until replyToBootstrap, so pushes can arrive before it.
+async function startStore(hydrate: boolean | 'held' = true, initial = fullState(5)) {
   const win = window as TestWindow
   vi.resetModules()
   win.dispatchEvent = vi.fn(() => true)
   let bootstrapped = false
+  let heldBootstrap: ((state: CppAppState) => void) | null = null
   const pulls: Array<{ reply: (state: CppAppState) => void; fail: () => void }> = []
   win.cefQuery = ({ request, onSuccess, onFailure }) => {
     if (JSON.parse(request).action !== 'getInitialState') { onSuccess('{}'); return }
     if (!bootstrapped) {
       bootstrapped = true
-      if (hydrate) onSuccess(JSON.stringify(initial))
+      if (hydrate === 'held') heldBootstrap = (state) => onSuccess(JSON.stringify(state))
+      else if (hydrate) onSuccess(JSON.stringify(initial))
       return
     }
     pulls.push({ reply: (state) => onSuccess(JSON.stringify(state)), fail: () => onFailure(500, 'Backend busy') })
@@ -41,7 +44,7 @@ async function startStore(hydrate = true, initial = fullState(5)) {
   vi.useFakeTimers()
   const push = (payload: unknown) => win.uamPush?.(payload)
   const flush = (ms = 100) => vi.advanceTimersByTimeAsync(ms)
-  return { store: useAppStore, pulls, push, flush }
+  return { store: useAppStore, pulls, push, flush, replyToBootstrap: (state = initial) => heldBootstrap?.(state) }
 }
 
 describe('state patch gap recovery', () => {
@@ -320,6 +323,43 @@ describe('state patch gap recovery', () => {
   it('leaves gaps before the first hydration to the bootstrap pull', async () => {
     const { pulls, push, flush } = await startStore(false)
     push(chatPatch(3)); push(chatPatch(9))
+    await flush(60000)
+    expect(pulls).toHaveLength(0)
+  })
+
+  it('pulls again after startup when a state push was rejected before the startup reply, and logs a short summary', async () => {
+    const errors = vi.mocked(console.error)
+    const { store, pulls, push, flush, replyToBootstrap } = await startStore('held')
+    // The catalogue this patch names travels in the startup reply it overtook.
+    push({ type: 'statePatch', data: { stateRevision: 6, chats: [{ ...chat('chat-1', 'Lost before startup'), acpSession: { sessionId: 'acp-1', modelCatalogId: 'catalogue-a' } }] } })
+    expect(String(errors.mock.calls.at(-1)?.[0])).toBe('[uamPush] Rejected payload (revision 6, missing model catalogue catalogue-a, before startup state loaded): statePatch.data does not match CppStatePatch shape.')
+    expect(errors.mock.calls.at(-1)).toHaveLength(1)
+    await flush(60000)
+    expect(pulls).toHaveLength(0)
+
+    replyToBootstrap(fullState(5, 'Startup'))
+    await flush()
+    expect(store.getState().sessions[0].name).toBe('Startup')
+    expect(pulls).toHaveLength(1)
+    pulls[0].reply(fullState(6, 'Recovered after startup'))
+    await flush(0)
+    expect(store.getState().sessions[0].name).toBe('Recovered after startup')
+    await flush(60000)
+    expect(pulls).toHaveLength(1)
+  })
+
+  it('pulls again after startup for a rejected push of unknown revision', async () => {
+    const { pulls, push, flush, replyToBootstrap } = await startStore('held')
+    push({ type: 'statePatch', data: 'not a patch' })
+    replyToBootstrap(fullState(5))
+    await flush()
+    expect(pulls).toHaveLength(1)
+  })
+
+  it('does not pull again when the startup reply already covers the rejected revision', async () => {
+    const { pulls, push, flush, replyToBootstrap } = await startStore('held')
+    push({ type: 'statePatch', data: { stateRevision: 5, chats: [{ ...chat('chat-1', 'In the snapshot'), acpSession: { sessionId: 'acp-1', modelCatalogId: 'catalogue-a' } }] } })
+    replyToBootstrap(fullState(5))
     await flush(60000)
     expect(pulls).toHaveLength(0)
   })
