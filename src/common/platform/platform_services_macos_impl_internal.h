@@ -39,6 +39,7 @@
 #include <signal.h>
 #include <poll.h>
 #include <sys/qos.h>
+#include <pthread/spawn.h>
 #include <spawn.h>
 #include <sys/event.h>
 #include <sys/file.h>

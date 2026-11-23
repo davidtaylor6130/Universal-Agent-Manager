@@ -38,7 +38,8 @@ namespace
 
 	std::vector<std::string> NicenessReporter(const fs::path& report)
 	{
-		return {"/bin/sh", "-c", "ps -o ni= -p $$ > \"$0.tmp\" && mv \"$0.tmp\" \"$0\"", uam::paths::Utf8PathString(report)};
+		// Linux reads its own /proc entry (field 19 is the niceness), so a host without ps still runs the check.
+		return {"/bin/sh", "-c", "if [ -r /proc/$$/stat ]; then cut -d' ' -f19 /proc/$$/stat; else ps -o ni= -p $$; fi > \"$0.tmp\" && mv \"$0.tmp\" \"$0\"", uam::paths::Utf8PathString(report)};
 	}
 #endif
 }

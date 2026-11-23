@@ -1,5 +1,6 @@
 #include "app/managed_parent_continuation_service.h"
 #include "common/platform/background_thread_priority.h"
+#include "common/chat/chat_process_class.h"
 #include "app/agent_run_scheduler.h"
 #include "common/chat/acp_prompt_recovery.h"
 #include "common/chat/message_attachment_sources.h"
@@ -188,9 +189,8 @@ namespace uam::acp_detail
 platform::ChildProcessClass ProviderProcessClass(const AcpSessionState& session, const ChatSession& chat)
 {
 	if (session.model_discovery_only || session.ephemeral_model_discovery) return platform::ChildProcessClass::Background;
-	if (!session.managed_agent_run_id.empty() || !chat.agent_run_id.empty() || !chat.goal_owner_chat_id.empty() || !chat.automation_token_id.empty())
-		return platform::ChildProcessClass::Agent;
-	return platform::ChildProcessClass::UserTurn;
+	if (!session.managed_agent_run_id.empty()) return platform::ChildProcessClass::Agent;
+	return ChatWorkProcessClass(chat);
 }
 
 namespace

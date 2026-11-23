@@ -102,7 +102,7 @@ namespace uam
 		bool Release(const std::string& chat_id, bool release_authorized);
 		/// Drops a chat's place in the admission queue, for a chat that no longer exists. Returns whether it had one.
 		bool Withdraw(const std::string& chat_id);
-		/// The chats holding a place in the queue, earliest first. For diagnostics and tests.
+		/// The chats with a ticket, earliest first, including silent ones not yet forgotten. For diagnostics and tests.
 		std::vector<std::string> QueuedChatIds();
 
 	private:

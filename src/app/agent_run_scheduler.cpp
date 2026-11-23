@@ -4151,6 +4151,17 @@ namespace uam
 			changed = true;
 		}
 		app.queued_agent_run_ids.insert(app.queued_agent_run_ids.begin(), held.begin(), held.end());
+		// A queued agent that did not ask routing on this poll (no running slot, or its parent's share is full) gives up
+		// its place in the routing queue at once, so it never holds a computer it cannot use yet.
+		if (app.execution_routing_service)
+		{
+			for (const AgentRun& queued : app.agent_runs)
+				if (queued.status == "queued" && !app.agent_routing_held_this_poll.contains(queued.id))
+					(void)app.execution_routing_service->Withdraw(queued.transcript_chat_id);
+			for (const auto& [id, owner] : app.managed_initial_runtime_owners)
+				if (owner && owner->phase == ManagedInitialRuntimeOwner::Phase::Queued && !app.agent_routing_held_this_poll.contains(id))
+					(void)app.execution_routing_service->Withdraw(owner->transcript_id);
+		}
 		// A run that routing did not refuse on this poll is no longer waiting for routing.
 		std::erase_if(app.agent_routing_wait_since_steady_ms, [&](const auto& entry) { return !app.agent_routing_held_this_poll.contains(entry.first); });
 		std::erase_if(app.agent_routing_invalid_since_steady_ms, [&](const auto& entry) { return !app.agent_routing_held_this_poll.contains(entry.first); });

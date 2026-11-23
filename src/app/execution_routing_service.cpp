@@ -33,7 +33,8 @@ namespace uam
 			for (const std::string& name : names)
 			{
 				const HostCandidates::const_iterator host = hosts.find(name);
-				if (host == hosts.end() || counts[name] >= host->second->max_active_turns) continue;
+				// A computer that is off or not ready cannot take the waiter, so it holds nothing there.
+				if (host == hosts.end() || !host->second->pool_enabled || !host->second->runner_ready || counts[name] >= host->second->max_active_turns) continue;
 				if (chosen == nullptr || counts[name] < counts[chosen->host_id] || (counts[name] == counts[chosen->host_id] && name < chosen->host_id))
 					chosen = host->second;
 			}
