@@ -1,12 +1,24 @@
-import type { ReactNode } from 'react'
+import { useEffect, useRef, type ReactNode } from 'react'
 import { ChevronLeft, ChevronRight, Pencil, RotateCcw } from 'lucide-react'
 import { IconButton, Tooltip } from '../ui'
+import { useChatAnnouncement } from './StatusHelpers'
 import './conversation.css'
 
 /** Outgoing input not yet confirmed as delivered; `label` explains the state and its recovery.
  * `unconfirmed` is native uncertainty and is never presented as a definite failure. */
 export type ConversationDelivery = { state: 'sending' | 'unsent' | 'unconfirmed' | 'waiting'; label: string }
 const DELIVERY_TEXT = { sending: 'Sending', unsent: 'Not sent', unconfirmed: 'Delivery not confirmed', waiting: 'Not sent yet' } as const
+const IN_FLIGHT = new Set<ConversationDelivery['state'] | undefined>(['sending', 'waiting', 'unconfirmed'])
+
+/** Announces once when this row's in-flight input becomes definitely unsent; the marker itself is never live. */
+function useUnsentAnnouncement(state?: ConversationDelivery['state']) {
+  const announce = useChatAnnouncement()
+  const previous = useRef(state)
+  useEffect(() => {
+    if (state === 'unsent' && IN_FLIGHT.has(previous.current)) announce('Message not sent.')
+    previous.current = state
+  }, [state, announce])
+}
 
 /** A conversation turn using the chat's existing message and branch actions. */
 export function ConversationTurn({
@@ -30,12 +42,14 @@ export function ConversationTurn({
   deliveryActions?: ReactNode
 }) {
   const branchActions = !delivery && (onEdit || onRevert)
+  useUnsentAnnouncement(delivery?.state)
   return <article className={`conversation-turn conversation-turn--${role}`} aria-label={role === 'user' ? 'You' : goalReview ? 'Goal Reviewer' : assistantLabel} data-streaming={streaming || undefined} data-delivery={delivery?.state}>
     <div className="conversation-turn__body">{children}</div>
     {(branchLabel || branchActions || branchNavigation || delivery) && <footer className="conversation-turn__footer">
       {delivery && <Tooltip label={delivery.label}>
-        <span className="conversation-turn__delivery" tabIndex={0} role="status" aria-label={`${DELIVERY_TEXT[delivery.state]}. ${delivery.label}`}>
-          {DELIVERY_TEXT[delivery.state]}
+        {/* Not a focus stop or a live region: the explanation is read with the message, and only a failure is announced. */}
+        <span className="conversation-turn__delivery">
+          {DELIVERY_TEXT[delivery.state]}<span className="sr-only conversation-turn__delivery-explanation">. {delivery.label}</span>
         </span>
       </Tooltip>}
       {delivery && deliveryActions}

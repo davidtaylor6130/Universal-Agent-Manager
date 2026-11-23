@@ -1,7 +1,7 @@
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, expect, it, vi } from 'vitest'
-import { ChatStatusStrip, CopyTextButton } from './StatusHelpers'
+import { ChatAnnouncer, ChatStatusStrip, CopyTextButton, ReplyAnnouncement, replyOutcomeAnnouncement } from './StatusHelpers'
 import * as clipboard from '../../utils/copySelection'
 
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -90,6 +90,89 @@ it('removes the strip immediately when the OS requests reduced motion', () => {
   render(true)
   render(false)
   expect(host.querySelector('.chat-status-strip')).toBeNull()
+  act(() => root.unmount())
+  host.remove()
+})
+
+const announcement = (host: HTMLElement) => host.querySelector('[data-testid="chat-announcement"]')!
+
+it('announces a status divider once when it opens and never its ticking timer', () => {
+  vi.useFakeTimers()
+  vi.stubGlobal('matchMedia', () => ({ matches: true }))
+  const host = document.createElement('div')
+  document.body.append(host)
+  const root = createRoot(host)
+  const render = (open: boolean) => act(() => root.render(
+    <ChatAnnouncer><ChatStatusStrip open={open} tone="info" scene={null} title="Compacting context" /></ChatAnnouncer>,
+  ))
+  render(false)
+  const region = announcement(host)
+  expect(region.getAttribute('aria-live')).toBe('polite')
+  expect(region.textContent).toBe('')
+  render(true)
+  const strip = host.querySelector('.chat-status-strip')!
+  expect(strip.getAttribute('role')).toBeNull()
+  expect(strip.closest('[aria-live]')).toBeNull()
+  expect(region.contains(strip)).toBe(false)
+  expect(region.textContent).toBe('Compacting context')
+  const announced = region.firstChild
+  const mutations: MutationRecord[] = []
+  const observer = new MutationObserver((records) => mutations.push(...records))
+  observer.observe(region, { childList: true, subtree: true, characterData: true })
+  act(() => vi.advanceTimersByTime(3000))
+  expect(strip.textContent).toContain('3s')
+  observer.disconnect()
+  expect(mutations).toEqual([])
+  expect(region.firstChild).toBe(announced)
+  act(() => root.unmount())
+  host.remove()
+})
+
+it('does not announce a divider that was already open when the chat opened', () => {
+  vi.stubGlobal('matchMedia', () => ({ matches: true }))
+  const host = document.createElement('div')
+  document.body.append(host)
+  const root = createRoot(host)
+  act(() => root.render(<ChatAnnouncer><ChatStatusStrip open tone="agents" scene={null} title="Waiting on subagents" /></ChatAnnouncer>))
+  expect(announcement(host).textContent).toBe('')
+  act(() => root.unmount())
+  host.remove()
+})
+
+it.each([
+  { failed: false, stopReason: undefined, interrupted: false, line: 'Reply finished.' },
+  { failed: true, stopReason: undefined, interrupted: false, line: 'Reply failed.' },
+  { failed: false, stopReason: 'failed', interrupted: false, line: 'Reply failed.' },
+  { failed: true, stopReason: 'timeout', interrupted: false, line: 'Reply stopped.' },
+  { failed: false, stopReason: undefined, interrupted: true, line: 'Reply stopped.' },
+])('reads one outcome line: $line', ({ line, ...outcome }) => {
+  expect(replyOutcomeAnnouncement(outcome)).toBe(line)
+})
+
+it('announces a reply starting, waiting, finishing and failing once each, but not the state it opened in', () => {
+  const host = document.createElement('div')
+  document.body.append(host)
+  const root = createRoot(host)
+  const region = () => announcement(host)
+  const lines: string[] = []
+  let last: ChildNode | null = null
+  // Each announcement is a fresh node; record only renders that produced one.
+  const render = (props: Partial<Parameters<typeof ReplyAnnouncement>[0]>) => {
+    act(() => root.render(<ChatAnnouncer><ReplyAnnouncement working={false} failed={false} interrupted={false} {...props} /></ChatAnnouncer>))
+    if (region().firstChild !== last) { last = region().firstChild; if (last) lines.push(last.textContent ?? '') }
+  }
+  render({ working: true })
+  expect(lines).toEqual([])
+  render({ working: false })
+  render({ working: true })
+  render({ working: true, waitingFor: 'permission' })
+  render({ working: true })
+  render({ working: true, waitingFor: 'answer' })
+  render({ working: false, failed: true })
+  render({ working: false, failed: true })
+  render({ working: true })
+  render({ working: false })
+  expect(lines).toEqual(['Reply finished.', 'Reply started.', 'Waiting for your permission.', 'Waiting for your answer.', 'Reply failed.', 'Reply started.', 'Reply finished.'])
   act(() => root.unmount())
   host.remove()
 })

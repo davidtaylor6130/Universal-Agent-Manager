@@ -349,7 +349,8 @@
   flex-shrink: 0;
 }
 .conversation-turn[data-delivery="unsent"] .conversation-turn__delivery { color: var(--error-text); }
-.conversation-turn__delivery:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
+/* Screen-reader text only; kept out of copied transcript text. */
+.conversation-turn__delivery-explanation { user-select: none; -webkit-user-select: none; }
 .conversation-turn__delivery-error { flex-basis: 100%; text-align: right; color: var(--red); }
 
 /* Message navigation gutter: the rail's widest expanded footprint is 54px from left 0, so a present rail reserves 64px

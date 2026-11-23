@@ -199,7 +199,10 @@ describe('ChatView', () => {
       expect(open()).toBeNull() // A refresh that answers quickly never flashes the divider.
       act(() => { vi.advanceTimersByTime(400) })
       const strip = open()
-      expect(strip?.getAttribute('role')).toBe('status')
+      // The divider is not live; its title is announced once through the chat's polite region.
+      expect(strip?.getAttribute('role')).toBeNull()
+      expect(strip?.closest('[aria-live]')).toBeNull()
+      expect(host.querySelector('[data-testid="chat-announcement"]')?.textContent).toBe('Refreshing history')
       expect(strip?.textContent).toContain('Refreshing history')
       expect(host.textContent).toContain('Already loaded answer')
       expect(host.querySelector('.conversation-skeleton')).toBeNull()
@@ -2452,6 +2455,43 @@ describe('ChatView', () => {
     expect(host.querySelector('[data-testid="turn-starting"]')).toBeNull()
     act(() => root.unmount())
     host.remove()
+  })
+
+  it('keeps the working clock out of the live region and announces only the reply starting, finishing and failing', () => {
+    vi.useFakeTimers()
+    const binding = (patch: Partial<AcpBinding>) => useAppStore.setState((state) => ({
+      acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'], turnEvents: [], turnAssistantMessageIndex: -1, ...patch } },
+    }))
+    binding({ lifecycleState: 'processing', processing: true, running: true, lastError: '' })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      const region = host.querySelector('[data-testid="chat-announcement"]')!
+      expect(region.getAttribute('aria-live')).toBe('polite')
+      expect(host.querySelectorAll('[data-testid="chat-announcement"]')).toHaveLength(1)
+      const starting = host.querySelector('[data-testid="turn-starting"]')!
+      expect(starting.getAttribute('role')).toBeNull()
+      expect(starting.closest('[aria-live],[role="status"]')).toBeNull()
+      expect(starting.querySelector('[aria-live],[role="status"]')).toBeNull()
+      // The state the chat opened in is not announced, and the ticking clock never is.
+      expect(region.textContent).toBe('')
+      act(() => vi.advanceTimersByTime(3000))
+      expect(starting.textContent).toContain('Working 3s')
+      expect(region.textContent).toBe('')
+      act(() => binding({ lifecycleState: 'ready', processing: false }))
+      expect(region.textContent).toBe('Reply finished.')
+      act(() => binding({ lifecycleState: 'processing', processing: true }))
+      expect(region.textContent).toBe('Reply started.')
+      act(() => vi.advanceTimersByTime(2000))
+      expect(region.textContent).toBe('Reply started.')
+      act(() => binding({ lifecycleState: 'error', processing: false, lastError: 'Provider exited.' }))
+      expect(region.textContent).toBe('Reply failed.')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
   })
 
   it('starts one working clock immediately and keeps time when the first turn event arrives', async () => {
@@ -11928,7 +11968,7 @@ describe('ChatView', () => {
         expect(first.isConnected).toBe(true)
         expect(first.querySelector('article')?.getAttribute('data-delivery')).toBe('unconfirmed')
         expect(first.textContent).toContain(outgoing.content)
-        const explanation = first.querySelector('.conversation-turn__delivery')?.getAttribute('aria-label') ?? ''
+        const explanation = first.querySelector('.conversation-turn__delivery')?.textContent ?? ''
         expect(explanation).toContain('retained here')
         expect(explanation).not.toMatch(/draft.*unchanged/i)
         expect(f.host.querySelector('[data-message-index="2"]')).not.toBe(first)
@@ -11957,7 +11997,7 @@ describe('ChatView', () => {
         expect(f.host.querySelector('[data-outgoing-message]')).toBe(row)
         expect(row.querySelector('article')).toBe(attempt)
         expect(attempt!.getAttribute('data-delivery')).toBe('sending')
-        expect(row.querySelector('.conversation-turn__delivery')?.getAttribute('aria-label')).toContain('waiting for the provider to confirm delivery')
+        expect(row.querySelector('.conversation-turn__delivery')?.textContent).toContain('waiting for the provider to confirm delivery')
         expect(f.occurrences()).toBe(1)
         expect(f.host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!.value).toBe('')
         push([...history, { ...outgoing, ...f.inputIdentity() }])
@@ -11994,8 +12034,11 @@ describe('ChatView', () => {
         expect(article!.getAttribute('data-delivery')).toBe('unsent')
         expect(slot.querySelector<HTMLButtonElement>('[aria-label="Retry message"]')?.disabled).toBe(false)
         const status = slot.querySelector<HTMLElement>('.conversation-turn__delivery')!
-        expect(status.tabIndex).toBe(0)
-        expect(status.getAttribute('aria-label')).toContain('never resent automatically')
+        // The marker is neither a focus stop nor live; the failure is announced once through the chat's region.
+        expect(status.tabIndex).toBe(-1)
+        expect(status.closest('[aria-live],[role="status"]')).toBeNull()
+        expect(status.textContent).toContain('never resent automatically')
+        expect(f.host.querySelector('[data-testid="chat-announcement"]')?.textContent).toBe('Message not sent.')
         push([...history, { ...outgoing, ...f.inputIdentity() }, { role: 'assistant', content: 'Delivered answer', createdAt: '2026-01-02T00:00:01.000Z' }])
         expect(f.host.querySelector('[data-message-index="2"]')).toBe(slot)
         expect(slot.querySelector('article')).toBe(article)
@@ -12275,7 +12318,7 @@ describe('ChatView', () => {
         const user = host.querySelector('article.conversation-turn--user')!
         expect(user).not.toBeNull()
         return { body: normalize(user.querySelector('.conversation-turn__body')!.outerHTML), delivery: user.getAttribute('data-delivery'),
-          explanation: user.querySelector('.conversation-turn__delivery')?.getAttribute('aria-label') ?? null,
+          explanation: user.querySelector('.conversation-turn__delivery')?.textContent ?? null,
           answer: normalize(host.querySelector('article.conversation-turn--assistant .conversation-turn__body')!.outerHTML) }
       }
       const same = capture(main)
@@ -12288,7 +12331,7 @@ describe('ChatView', () => {
       if (expected === 'unconfirmed') for (const host of [main, managed, passive]) {
         const user = host.querySelector('article.conversation-turn--user')!
         expect(user.querySelector('[aria-label="Retry message"],[aria-label="Edit message in new branch"],[aria-label="Revert to message in new branch"]')).toBeNull()
-        expect(user.querySelector<HTMLElement>('.conversation-turn__delivery')?.tabIndex).toBe(0)
+        expect(user.querySelector<HTMLElement>('.conversation-turn__delivery')?.tabIndex).toBe(-1)
       }
       expect(native).not.toHaveBeenCalled()
       expect(requests.filter(action => /sendAcpPrompt|retry|resume|discard|remove|edit|openSubAgent|Preview|Image/i.test(action))).toEqual([])

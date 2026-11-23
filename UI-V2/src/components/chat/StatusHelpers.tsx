@@ -1,6 +1,6 @@
 // Status labels, colors, and diagnostic display helpers for the chat view.
 
-import { useEffect, useRef, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
 import { Check, Circle, CircleCheck, CircleX, Clock3, Copy, LoaderCircle } from 'lucide-react'
 import type { ReactNode } from 'react'
 import type { LucideIcon } from 'lucide-react'
@@ -39,9 +39,66 @@ function useElapsedSeconds(open: boolean) {
 
 export type ChatStatusTone = 'info' | 'agents' | 'warning'
 
+type Announce = (message: string) => void
+const ChatAnnouncementContext = createContext<Announce | null>(null)
+const NO_ANNOUNCEMENT: Announce = () => {}
+
+/**
+ * One persistent, initially empty polite region for the open chat's state changes (a reply starting,
+ * waiting, finishing or failing, a status divider opening, a message failing to send).
+ * Timers and streamed text never go here, so nothing is re-announced while work runs.
+ */
+export function ChatAnnouncer({ children }: { children: ReactNode }) {
+  const [announcement, setAnnouncement] = useState({ text: '', serial: 0 })
+  const announce = useCallback<Announce>((text) => setAnnouncement((current) => ({ text, serial: current.serial + 1 })), [])
+  return <ChatAnnouncementContext.Provider value={announce}>
+    {children}
+    <div aria-live="polite" aria-atomic="true" className="sr-only" data-testid="chat-announcement">
+      {/* A fresh node per announcement, so the same line twice is still read twice. */}
+      {announcement.text && <span key={announcement.serial}>{announcement.text}</span>}
+    </div>
+  </ChatAnnouncementContext.Provider>
+}
+
+/** Announce through the open chat's region; a no-op outside one, such as a child transcript. */
+export function useChatAnnouncement(): Announce {
+  return useContext(ChatAnnouncementContext) ?? NO_ANNOUNCEMENT
+}
+
+/** The single line read when a reply stops working; a stop or failure is never read as finished. */
+export function replyOutcomeAnnouncement({ failed, stopReason, interrupted }: { failed: boolean; stopReason?: string; interrupted: boolean }) {
+  if (stopReason === 'timeout' || stopReason === 'forced') return 'Reply stopped.'
+  if (failed || stopReason === 'failed' || stopReason === 'unknown') return 'Reply failed.'
+  if (stopReason || interrupted) return 'Reply stopped.'
+  return 'Reply finished.'
+}
+
+/**
+ * Announces the open chat's reply lifecycle once per change: started, waiting on the user, and
+ * finished, stopped or failed. The state the chat opened in is not announced.
+ */
+export function ReplyAnnouncement({ working, waitingFor, failed, stopReason, interrupted }: {
+  working: boolean
+  waitingFor?: 'permission' | 'answer'
+  failed: boolean
+  stopReason?: string
+  interrupted: boolean
+}) {
+  const announce = useChatAnnouncement()
+  const previous = useRef({ working, waitingFor })
+  useEffect(() => {
+    const before = previous.current
+    previous.current = { working, waitingFor }
+    if (waitingFor && waitingFor !== before.waitingFor) announce(waitingFor === 'permission' ? 'Waiting for your permission.' : 'Waiting for your answer.')
+    else if (working && !before.working) announce('Reply started.')
+    else if (!working && before.working) announce(replyOutcomeAnnouncement({ failed, stopReason, interrupted }))
+  }, [working, waitingFor, failed, stopReason, interrupted, announce])
+  return null
+}
+
 /**
  * One centred status divider above the composer, styled like the compacted-context line in the transcript:
- * a hairline either side of a tiny illustrated scene, the title and a live elapsed timer.
+ * a hairline either side of a tiny illustrated scene, the title and a ticking elapsed timer.
  * Keeps its last content mounted briefly so the exit can animate.
  */
 export function ChatStatusStrip({ open, tone, scene, title, detail, timeMode = 'elapsed' }: {
@@ -63,10 +120,17 @@ export function ChatStatusStrip({ open, tone, scene, title, detail, timeMode = '
   if (!open && !present) since.current = null
   const frozenElapsed = useRef(0)
   if (open) frozenElapsed.current = elapsed
+  // The strip itself is not live: its title is announced once when it opens, never its ticking time.
+  const announce = useChatAnnouncement()
+  const wasOpen = useRef(open)
+  useEffect(() => {
+    if (open && !wasOpen.current) announce(title)
+    wasOpen.current = open
+  }, [open, title, announce])
   if (!present || !lastShown.current) return null
   const shown = lastShown.current
   return (
-    <div role="status" className="chat-status-strip" data-tone={shown.tone} data-state={open ? 'open' : 'closed'}>
+    <div className="chat-status-strip" data-tone={shown.tone} data-state={open ? 'open' : 'closed'}>
       <span className="chat-status-strip__pill">
         <span className="chat-status-strip__scene">{shown.scene}</span>
         <span className="chat-status-strip__title">{shown.title}</span>
