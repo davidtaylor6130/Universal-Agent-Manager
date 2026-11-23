@@ -419,3 +419,33 @@ UAM_TEST(CommandRulesRemoteCommitsAlwaysAskUnlessOverridden)
 	UAM_ASSERT(rules::TestCommand(none, "git push", false).remote_commit);
 	UAM_ASSERT(rules::TestCommand(none, "git push", false, true).outcome == rules::Outcome::NoMatch);
 }
+
+UAM_TEST(CommandRulesRemoteCommitRuleCoversReviewedForms)
+{
+	const std::vector<rules::Rule> none;
+	for (const std::string_view command : {
+	         "gh pr --body x merge 1", "gh --body x pr merge 1", "gh pr --match-head-commit abc merge 1", "gh pr close 3 --delete-branch",
+	         "gh repo sync --force", "gh repo create x --source . --push", "gh m 1", "gh extension exec x",
+	         "svn --non-interactive --trust-server-cert-failures unknown-ca commit -m x", "svn propset svn:ignore x https://h/r/trunk -m m",
+	         "svn propedit svn:externals ^/trunk -m m", "svnmucc -m m mkdir https://h/r/x", "svnrdump load https://h/r", "svnsync sync https://h/m",
+	         "git bisect run git push", "git bisect run sh -c 'git push'", "git difftool --extcmd='git push'", "git-push origin main",
+	         "/usr/lib/git-core/git-push origin main", "git-send-pack x", "git-svn dcommit", "git-subtree push --prefix d origin main", "git-lfs push origin main",
+	         "git subtree push --prefix d origin main", "git lfs push origin main", "hub push", "hub pr merge 1", "call git push", "wsl git push",
+	         "echo push | xargs git", "svn frobnicate x"})
+	{
+		const rules::Outcome outcome = rules::Evaluate(none, CommandContext(command)).outcome;
+		if (outcome != rules::Outcome::AskUser) throw TestFailure("Remote commit form did not ask: " + std::string(command));
+	}
+	for (const std::string_view command : {
+	         "git cherry-pick -x abc", "git cherry-pick -x \"$c\"", "git log --grep foreach -- src", "git stage x", "git show-branch", "git prune", "git rerere", "git lfs track '*.psd'",
+	         "git lfs install", "git subtree split --prefix d", "svn copy ^/branches/x@100 ./restored", "svn copy https://h/r/trunk/f.c@5 f.c",
+	         "svn move ^/a b", "svn propset svn:ignore x .", "gh pr close 3", "gh repo view", "gh issue list"})
+	{
+		const rules::Decision decision = rules::Evaluate(none, CommandContext(command));
+		if (decision.outcome != rules::Outcome::NoMatch) throw TestFailure("Local form was held: " + std::string(command) + " (" + decision.reason + ")");
+	}
+	// With only the built-in rule, an unreadable program names the built-in rule rather than user rules.
+	const rules::Decision unknown = rules::Evaluate(none, CommandContext("$TOOL x"));
+	UAM_ASSERT(unknown.outcome == rules::Outcome::AskUser && unknown.remote_commit);
+	UAM_ASSERT(unknown.reason.find("push") != std::string::npos);
+}

@@ -590,7 +590,7 @@ namespace detail
 		constexpr std::string_view wrappers[] = {
 		    "command", "builtin", "exec", "time", "nice", "ionice", "timeout", "gtimeout", "stdbuf", "caffeinate", "chrt", "taskset", "unbuffer",
 		    "nohup", "setsid", "sudo", "doas", "env", "xargs", "watch", "strace", "ltrace", "then", "do", "else", "elif", "if", "while", "until",
-		    "!", "{", "}", "start", "start-process", "runas", "flock", "chroot", "systemd-run", "script", "busybox", "nsenter", "unshare", "firejail", "parallel"};
+		    "!", "{", "}", "start", "start-process", "runas", "flock", "chroot", "systemd-run", "script", "busybox", "nsenter", "unshare", "firejail", "parallel", "call", "wsl"};
 		return std::find(std::begin(wrappers), std::end(wrappers), name) != std::end(wrappers);
 	}
 
@@ -662,6 +662,59 @@ namespace detail
 		view.nested.push_back(std::move(body));
 	}
 
+	inline std::string LowerText(std::string_view text)
+	{
+		std::string lower;
+		for (char ch : text) lower.push_back(Lower(ch));
+		return lower;
+	}
+
+	inline bool OneOf(std::string_view value, std::initializer_list<std::string_view> list)
+	{
+		return std::find(list.begin(), list.end(), value) != list.end();
+	}
+
+	/// <summary>Git subcommands that only change the local repository or read from a remote. Any other
+	/// subcommand may be an alias from the user's Git configuration, which could push.</summary>
+	inline bool LocalGitSubcommand(std::string_view name)
+	{
+		return OneOf(name, {"add", "am", "apply", "archive", "bisect", "blame", "branch", "bundle", "cat-file", "check-ignore", "checkout", "cherry",
+		    "cherry-pick", "clean", "clone", "commit", "config", "count-objects", "describe", "diff", "diff-files", "diff-index", "diff-tree", "difftool",
+		    "fetch", "for-each-ref", "format-patch", "fsck", "gc", "grep", "help", "init", "log", "ls-files", "ls-remote", "ls-tree", "maintenance", "merge",
+		    "merge-base", "mergetool", "mv", "notes", "pull", "range-diff", "rebase", "reflog", "remote", "repack", "replace", "reset", "restore", "rev-list",
+		    "rev-parse", "revert", "rm", "shortlog", "show", "show-ref", "sparse-checkout", "stash", "status", "submodule", "switch", "symbolic-ref", "tag",
+		    "update-index", "update-ref", "var", "verify-commit", "verify-tag", "version", "whatchanged", "worktree", "write-tree", "stage", "show-branch", "prune",
+		    "annotate", "hash-object", "rerere", "filter-branch", "commit-graph", "name-rev", "check-attr", "pack-refs", "read-tree", "merge-tree",
+		    "interpret-trailers", "request-pull", "gui", "citool", "fast-export", "fast-import", "mailinfo", "mailsplit", "check-ref-format", "multi-pack-index",
+		    "prune-packed", "verify-pack", "index-pack", "pack-objects", "unpack-objects", "checkout-index", "merge-file", "patch-id", "column",
+		    "update-server-info", "check-mailmap", "credential-cache", "get-tar-commit-id", "ls-remote", "mktag", "mktree", "replay", "restore", "scalar",
+		    "shell", "stripspace", "unpack-file", "diagnose", "bugreport", "init-db", "instaweb", "range-diff", "send-email"});
+	}
+
+	/// <summary>Non-option words after `start`, skipping the values of the listed options.</summary>
+	inline std::vector<std::size_t> Operands(const std::vector<Word>& words, std::size_t start, std::initializer_list<std::string_view> valued_options)
+	{
+		std::vector<std::size_t> operands;
+		for (std::size_t i = start; i < words.size(); ++i)
+		{
+			const std::string_view text = words[i].text;
+			if (text == "--") { for (++i; i < words.size(); ++i) operands.push_back(i); break; }
+			if (text.size() > 1 && text.starts_with('-'))
+			{
+				if (text.find('=') == std::string_view::npos && OneOf(text, valued_options)) ++i;
+				continue;
+			}
+			operands.push_back(i);
+		}
+		return operands;
+	}
+
+	/// <summary>Git's operands after `start`, skipping the values of its global options.</summary>
+	inline std::vector<std::size_t> GitOperands(const std::vector<Word>& words, std::size_t start)
+	{
+		return Operands(words, start, {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env", "--super-prefix", "--attr-source"});
+	}
+
 	/// <summary>Everything a program starting at words[i] could run: the program itself, shell -c, cmd /c,
 	/// PowerShell -Command, eval and iex strings, find -exec targets and, after a wrapper such as sudo, env,
 	/// xargs or timeout, every later word as a possible program (so unknown wrapper options cannot hide it).
@@ -722,18 +775,24 @@ namespace detail
 		}
 		if (name == "git")
 		{
-			// `git submodule foreach <cmd>` and `git rebase --exec <cmd>` run shell commands.
-			for (std::size_t j = i + 1; j + 1 < words.size(); ++j)
+			// Subcommands that run other commands: `submodule foreach <cmd>`, `bisect run <cmd>`, `rebase -x <cmd>`
+			// and `difftool -x/--extcmd <cmd>`.
+			const std::vector<std::size_t> git_operands = GitOperands(words, i + 1);
+			const std::string sub = git_operands.empty() ? std::string{} : LowerText(words[git_operands[0]].text);
+			for (std::size_t j = git_operands.empty() ? words.size() : git_operands[0] + 1; j < words.size(); ++j)
 			{
-				if (words[j].text == "foreach")
+				const std::string_view text = words[j].text;
+				if ((sub == "submodule" && text == "foreach") || (sub == "bisect" && text == "run"))
 				{
 					std::size_t k = j + 1;
 					while (k < words.size() && words[k].text.starts_with('-')) ++k;
 					if (k < words.size()) AddNested(view, rest_of_line(k + 1, words[k].text), depth);
 					break;
 				}
-				if (words[j].text == "-x" || words[j].text == "--exec") AddNested(view, words[j + 1].text, depth);
-				else if (words[j].text.starts_with("--exec=")) AddNested(view, words[j].text.substr(7), depth);
+				const bool runner = sub == "rebase" || sub == "difftool";
+				if (runner && (text == "-x" || text == "--exec" || text == "--extcmd") && j + 1 < words.size()) AddNested(view, words[j + 1].text, depth);
+				else if (runner && text.starts_with("--exec=")) AddNested(view, std::string(text.substr(7)), depth);
+				else if (runner && text.starts_with("--extcmd=")) AddNested(view, std::string(text.substr(9)), depth);
 			}
 			// `git -c alias.x='push --force' x` defines and runs an alias on the command line; a `!` alias runs a shell.
 			for (std::size_t j = i + 1; j + 1 < words.size(); ++j)
@@ -748,7 +807,7 @@ namespace detail
 				AddNested(view, body.starts_with('!') ? body.substr(1) : "git " + body, depth);
 			}
 		}
-		if (name == "find" || name == "fd" || name == "git" || name == "parallel")
+		if (name == "find" || name == "fd" || name == "parallel")
 		{
 			for (std::size_t j = i + 1; j + 1 < words.size(); ++j)
 			{
@@ -1048,79 +1107,83 @@ namespace detail
 		return best;
 	}
 
-	inline std::string LowerText(std::string_view text)
-	{
-		std::string lower;
-		for (char ch : text) lower.push_back(Lower(ch));
-		return lower;
-	}
-
-	inline bool OneOf(std::string_view value, std::initializer_list<std::string_view> list)
-	{
-		return std::find(list.begin(), list.end(), value) != list.end();
-	}
-
-	/// <summary>Git subcommands that only change the local repository or read from a remote. Any other
-	/// subcommand may be an alias from the user's Git configuration, which could push.</summary>
-	inline bool LocalGitSubcommand(std::string_view name)
-	{
-		return OneOf(name, {"add", "am", "apply", "archive", "bisect", "blame", "branch", "bundle", "cat-file", "check-ignore", "checkout", "cherry",
-		    "cherry-pick", "clean", "clone", "commit", "config", "count-objects", "describe", "diff", "diff-files", "diff-index", "diff-tree", "difftool",
-		    "fetch", "for-each-ref", "format-patch", "fsck", "gc", "grep", "help", "init", "log", "ls-files", "ls-remote", "ls-tree", "maintenance", "merge",
-		    "merge-base", "mergetool", "mv", "notes", "pull", "range-diff", "rebase", "reflog", "remote", "repack", "replace", "reset", "restore", "rev-list",
-		    "rev-parse", "revert", "rm", "shortlog", "show", "show-ref", "sparse-checkout", "stash", "status", "submodule", "switch", "symbolic-ref", "tag",
-		    "update-index", "update-ref", "var", "verify-commit", "verify-tag", "version", "whatchanged", "worktree", "write-tree"});
-	}
-
-	/// <summary>Non-option words after `start`, skipping the values of the listed options.</summary>
-	inline std::vector<std::size_t> Operands(const std::vector<Word>& words, std::size_t start, std::initializer_list<std::string_view> valued_options)
-	{
-		std::vector<std::size_t> operands;
-		for (std::size_t i = start; i < words.size(); ++i)
-		{
-			const std::string_view text = words[i].text;
-			if (text == "--") { for (++i; i < words.size(); ++i) operands.push_back(i); break; }
-			if (text.size() > 1 && text.starts_with('-'))
-			{
-				if (text.find('=') == std::string_view::npos && OneOf(text, valued_options)) ++i;
-				continue;
-			}
-			operands.push_back(i);
-		}
-		return operands;
-	}
 
 	/// <summary>Whether the program starting at words[start] commits permanently to a remote: git push and the
-	/// Git commands that push (send-pack, svn dcommit, p4 submit, possible config aliases), gh pr merge,
-	/// gh release create/delete and mutating gh api calls, and SVN commits, URL operations, imports and revision
-	/// property changes. Words the shell expands make it a possible match.</summary>
+	/// Git commands that push (send-pack, svn dcommit, p4 submit, subtree and lfs push, git-* programs, hub,
+	/// possible config aliases), gh pr merge, pr close --delete-branch, repo sync, repo create --push, release
+	/// create/delete and mutating gh api calls, and SVN commits, imports, URL operations, revision and URL
+	/// property changes, svnmucc, svnrdump load and svnsync. Words the shell expands make it a possible match,
+	/// and so does a subcommand UAM does not recognise.</summary>
 	inline Certainty RemoteCommitAt(const std::vector<Word>& words, std::size_t start)
 	{
-		const std::string name = ProgramName(words[start].text);
+		std::string name = ProgramName(words[start].text);
 		const auto expanded = [](const Word& word) { return word.dynamic || !word.literal; };
+		const auto any_word = [&](std::string_view text) { return std::any_of(words.begin() + static_cast<std::ptrdiff_t>(start + 1), words.end(), [&](const Word& word) { return LowerText(word.text) == text; }); };
+		const auto remote_target = [](const Word& word) { return word.text.find("://") != std::string::npos || word.text.starts_with("^/"); };
+		// Arguments appended by xargs or parallel are invisible here.
+		const bool fed = std::any_of(words.begin(), words.begin() + static_cast<std::ptrdiff_t>(start), [](const Word& word) { const std::string wrapper = ProgramName(word.text); return wrapper == "xargs" || wrapper == "parallel"; });
+
+		if (name == "hub")
+		{
+			// hub is git with GitHub commands: `hub pr merge` merges, everything else behaves like git.
+			const std::vector<std::size_t> operands = GitOperands(words, start + 1);
+			if (operands.size() > 1 && LowerText(words[operands[0]].text) == "pr" && any_word("merge")) return kDefiniteMatch;
+			name = "git";
+		}
+		std::string git_command;
+		std::size_t git_next = 0; // Index into operands of the word after the subcommand.
+		std::vector<std::size_t> operands;
 		if (name == "git")
 		{
-			const std::vector<std::size_t> operands = Operands(words, start + 1, {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env", "--super-prefix"});
-			if (operands.empty()) return kNoMatch;
+			operands = GitOperands(words, start + 1);
+			if (operands.empty()) return fed ? kPossibleMatch : kNoMatch;
 			const Word& sub = words[operands[0]];
 			if (expanded(sub)) return kPossibleMatch;
-			const std::string command = LowerText(sub.text);
-			const std::string next = operands.size() > 1 ? LowerText(words[operands[1]].text) : std::string{};
-			if (OneOf(command, {"push", "send-pack", "http-push"})) return kDefiniteMatch;
-			if (command == "svn") return OneOf(next, {"dcommit", "commit-diff", "set-tree", "branch", "tag"}) ? kDefiniteMatch : kNoMatch;
-			if (command == "p4") return next == "submit" ? kDefiniteMatch : kNoMatch;
-			return LocalGitSubcommand(command) ? kNoMatch : kPossibleMatch;
+			git_command = LowerText(sub.text);
+			git_next = 1;
+		}
+		else if (name.starts_with("git-") && name.size() > 4)
+		{
+			// Git's own programs: git-push, git-send-pack, git-svn, git-subtree, git-lfs and the rest.
+			operands = GitOperands(words, start + 1);
+			git_command = name.substr(4);
+			git_next = 0;
+		}
+		if (!git_command.empty())
+		{
+			const std::string next = operands.size() > git_next ? LowerText(words[operands[git_next]].text) : std::string{};
+			if (OneOf(git_command, {"push", "send-pack", "http-push"})) return kDefiniteMatch;
+			if (git_command == "svn") return OneOf(next, {"dcommit", "commit-diff", "set-tree", "branch", "tag"}) ? kDefiniteMatch : kNoMatch;
+			if (git_command == "p4") return next == "submit" ? kDefiniteMatch : kNoMatch;
+			if (OneOf(git_command, {"subtree", "lfs"})) return next == "push" ? kDefiniteMatch : kNoMatch;
+			if (git_command == "annex") return OneOf(next, {"sync", "copy", "move", "export"}) ? kPossibleMatch : kNoMatch;
+			return LocalGitSubcommand(git_command) ? kNoMatch : kPossibleMatch;
 		}
 		if (name == "gh")
 		{
-			const std::vector<std::size_t> operands = Operands(words, start + 1, {"-R", "--repo", "--hostname", "-X", "--method", "-f", "-F", "--field", "--raw-field",
+			operands = Operands(words, start + 1, {"-R", "--repo", "--hostname", "-X", "--method", "-f", "-F", "--field", "--raw-field",
 			    "--input", "-H", "--header", "-q", "--jq", "-t", "--template", "--cache", "-p", "--preview"});
-			if (operands.empty()) return kNoMatch;
+			if (operands.empty()) return fed ? kPossibleMatch : kNoMatch;
 			if (std::any_of(operands.begin(), operands.begin() + std::min<std::ptrdiff_t>(2, static_cast<std::ptrdiff_t>(operands.size())), [&](std::size_t at) { return expanded(words[at]); })) return kPossibleMatch;
+			// gh skips a flag it does not know together with its value while finding the command, so a value can
+			// sit before the command words: look for them in order anywhere among the operands.
+			const auto then = [&](std::string_view first, std::initializer_list<std::string_view> second)
+			{
+				for (std::size_t a = 0; a < operands.size(); ++a)
+					if (LowerText(words[operands[a]].text) == first)
+						for (std::size_t b = a + 1; b < operands.size(); ++b)
+							if (OneOf(LowerText(words[operands[b]].text), second)) return true;
+				return false;
+			};
+			if (then("pr", {"merge"}) || then("release", {"create", "delete"}) || then("repo", {"sync"})) return kDefiniteMatch;
+			if (then("pr", {"close"}) && any_word("--delete-branch")) return kDefiniteMatch;
+			if (then("repo", {"create"}) && any_word("--push")) return kDefiniteMatch;
 			const std::string group = LowerText(words[operands[0]].text);
-			const std::string action = operands.size() > 1 ? LowerText(words[operands[1]].text) : std::string{};
-			if (group == "pr" && action == "merge") return kDefiniteMatch;
-			if (group == "release" && OneOf(action, {"create", "delete"})) return kDefiniteMatch;
+			// A command gh does not ship may be an alias or an extension.
+			if (!OneOf(group, {"alias", "api", "attestation", "auth", "browse", "cache", "co", "codespace", "completion", "config", "gist", "gpg-key", "help",
+			        "issue", "label", "org", "pr", "project", "release", "repo", "ruleset", "run", "search", "secret", "ssh-key", "status", "variable",
+			        "workflow", "version"}))
+				return kPossibleMatch;
 			if (group != "api") return kNoMatch;
 			// gh api is a GET unless a method says otherwise, or fields or an input body make it a POST.
 			Certainty result = kNoMatch;
@@ -1139,30 +1202,41 @@ namespace detail
 			if (mutating_method || (body && !explicit_get)) return kDefiniteMatch;
 			return result;
 		}
+		if (name == "svnmucc") return Operands(words, start + 1, {"-m", "--message", "-F", "--file", "-U", "--root-url", "-r", "--revision", "-u", "--username", "-p", "--password", "--config-dir", "--config-option", "-X", "--extra-args"}).empty() ? kNoMatch : kDefiniteMatch;
+		if (name == "svnrdump") return any_word("load") ? kDefiniteMatch : kNoMatch;
+		if (name == "svnsync") return any_word("init") || any_word("initialize") || any_word("sync") || any_word("synchronize") || any_word("copy-revprops") ? kDefiniteMatch : kNoMatch;
 		if (name == "svn")
 		{
-			const std::vector<std::size_t> operands = Operands(words, start + 1, {"-m", "--message", "-F", "--file", "--username", "--password", "--config-dir",
+			operands = Operands(words, start + 1, {"-m", "--message", "-F", "--file", "--username", "--password", "--config-dir",
 			    "--config-option", "-r", "--revision", "--depth", "--set-depth", "--targets", "--encoding", "--with-revprop", "--changelist", "--cl", "--accept",
-			    "--native-eol", "-c", "--change", "--editor-cmd", "--diff-cmd", "--diff3-cmd", "-l", "--limit", "-x", "--extensions"});
-			if (operands.empty()) return kNoMatch;
+			    "--native-eol", "-c", "--change", "--editor-cmd", "--diff-cmd", "--diff3-cmd", "-l", "--limit", "-x", "--extensions",
+			    "--trust-server-cert-failures", "--show-item", "--search", "--search-and", "--strip", "--old", "--new", "--password-from-stdin"});
+			if (operands.empty()) return fed ? kPossibleMatch : kNoMatch;
 			const Word& sub = words[operands[0]];
 			if (expanded(sub)) return kPossibleMatch;
 			const std::string command = LowerText(sub.text);
 			if (OneOf(command, {"commit", "ci", "import"})) return kDefiniteMatch;
-			if (OneOf(command, {"copy", "cp", "mkdir", "delete", "del", "remove", "rm", "move", "mv", "rename", "ren"}))
+			const auto targets = [&](std::size_t from) -> Certainty
 			{
 				Certainty result = kNoMatch;
-				for (std::size_t k = 1; k < operands.size(); ++k)
+				for (std::size_t k = from; k < operands.size(); ++k)
 				{
 					const Word& operand = words[operands[k]];
-					if (operand.text.find("://") != std::string::npos || operand.text.starts_with("^/")) return kDefiniteMatch;
+					if (remote_target(operand)) return kDefiniteMatch;
 					if (expanded(operand)) result = kPossibleMatch;
 				}
 				return result;
-			}
+			};
+			// Copy and move commit only when the destination (the last operand) is in the repository.
+			if (OneOf(command, {"copy", "cp", "move", "mv", "rename", "ren"})) return operands.size() > 1 ? targets(operands.size() - 1) : kNoMatch;
+			if (OneOf(command, {"mkdir", "delete", "del", "remove", "rm", "lock", "unlock"}))
+				return OneOf(command, {"lock", "unlock"}) ? kNoMatch : targets(1);
 			if (OneOf(command, {"propset", "pset", "ps", "propdel", "pdel", "pd", "propedit", "pedit", "pe"}))
-				return std::any_of(words.begin() + static_cast<std::ptrdiff_t>(start + 1), words.end(), [](const Word& word) { return word.text == "--revprop"; }) ? kDefiniteMatch : kNoMatch;
-			return kNoMatch;
+				return any_word("--revprop") ? kDefiniteMatch : targets(1);
+			// A subcommand svn does not ship (or an option value UAM cannot place) cannot be ruled out.
+			return OneOf(command, {"add", "auth", "blame", "praise", "annotate", "ann", "cat", "changelist", "cl", "checkout", "co", "cleanup", "diff", "di",
+			           "export", "help", "h", "?", "info", "list", "ls", "log", "merge", "mergeinfo", "patch", "propget", "pget", "pg", "proplist", "plist", "pl",
+			           "relocate", "resolve", "resolved", "revert", "status", "stat", "st", "switch", "sw", "update", "up", "upgrade"}) ? kNoMatch : kPossibleMatch;
 		}
 		return kNoMatch;
 	}
@@ -1371,10 +1445,11 @@ inline Decision Evaluate(const std::vector<Rule>& rules, const Context& context)
 	const bool remote_rule = command && !context.remote_commit_override;
 	const detail::Certainty remote = remote_rule ? detail::RemoteCommitMatches(view) : detail::kNoMatch;
 	bool command_guard = remote_rule;
+	bool user_command_guard = false;
 	for (const Rule& rule : rules)
 	{
 		if (!rule.enabled) continue;
-		if (rule.action != Action::Allow && rule.tool == Tool::Command && detail::ScopeMatches(rule, context)) command_guard = true;
+		if (rule.action != Action::Allow && rule.tool == Tool::Command && detail::ScopeMatches(rule, context)) command_guard = user_command_guard = true;
 		const detail::Certainty match = RuleMatches(rule, context, command ? &view : nullptr);
 		if (match == detail::kNoMatch) continue;
 		if (match == detail::kPossibleMatch) { if (possible == nullptr) possible = &rule; continue; }
@@ -1414,7 +1489,14 @@ inline Decision Evaluate(const std::vector<Rule>& rules, const Context& context)
 	if (command && !context.command.empty() && view.unresolved && command_guard)
 	{
 		decision.outcome = Outcome::AskUser;
-		decision.reason = "UAM cannot tell exactly what this command runs, so deny and ask rules cannot be checked.";
+		if (user_command_guard) decision.reason = "UAM cannot tell exactly what this command runs, so deny and ask rules cannot be checked.";
+		else
+		{
+			// Only the built-in rule applies: say so, and show it on the approval card like a held push.
+			decision.rule_id = std::string(kRemoteCommitRuleId);
+			decision.reason = "UAM cannot tell what this command runs, so it cannot rule out a push or other remote commit; it waits for your approval.";
+			decision.remote_commit = true;
+		}
 		return decision;
 	}
 	if (allow != nullptr)
