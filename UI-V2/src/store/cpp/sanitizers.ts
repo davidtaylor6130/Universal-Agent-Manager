@@ -995,6 +995,67 @@ function rememberModelCatalogs(value: unknown, reset: boolean): void {
 
 export function resetModelCatalogsForTests(): void {
   modelCatalogsById.clear()
+  retainedChatFieldsByChatId.clear()
+}
+
+// Native leaves a chat's large fields out of a patch when this page already holds them (#947): a PNG customIcon
+// with its data URL, and the live-session fields below, named 'acpSession.toolCalls' and so on. The chat's
+// reusedFields maps a field to true (unchanged, omitted) or, for an array, to the number of leading entries kept
+// from this page's copy, the patch carrying only the entries after them. reusedFieldsFrom names the copy's
+// revision; retainedFieldsRevision asks the page to keep this patch's values under a new one. Raw values are
+// kept, so a restored chat gives the sanitizer exactly what a patch carrying every field would have.
+const RETAINED_ACP_SESSION_FIELDS = ['toolCalls', 'turnEvents', 'availableCommands', 'availableModes', 'diagnostics',
+  'planEntries', 'nativeModelOptions', 'providerUsage', 'recentStderr'] as const
+const RETAINED_CHAT_FIELDS = new Set<string>(['customIcon', ...RETAINED_ACP_SESSION_FIELDS.map((name) => `acpSession.${name}`)])
+type RetainedChatFields = { revision: number; fields: Record<string, unknown> }
+const retainedChatFieldsByChatId = new Map<string, RetainedChatFields>()
+let missingRetainedChatFields = false
+
+function restoreRetainedChatFields(chat: unknown): unknown {
+  if (!isRecord(chat) || !isString(chat.id)) return chat
+  const chatId = chat.id.trim()
+  const restored: Record<string, unknown> = { ...chat }
+  const acp: Record<string, unknown> | undefined = isRecord(chat.acpSession) ? { ...chat.acpSession } : undefined
+  if (acp) restored.acpSession = acp
+  const ownerOf = (name: string) => name.startsWith('acpSession.') ? acp : restored
+  const fieldOf = (name: string) => name.startsWith('acpSession.') ? name.slice('acpSession.'.length) : name
+  if (chat.reusedFields !== undefined) {
+    const known = retainedChatFieldsByChatId.get(chatId)
+    // A copy this page never received or has since replaced (a lost patch, say): reject so the store pulls full state.
+    if (!isRecord(chat.reusedFields) || !known || known.revision !== chat.reusedFieldsFrom) {
+      missingRetainedChatFields = true
+      return chat
+    }
+    for (const [name, reuse] of Object.entries(chat.reusedFields)) {
+      const owner = ownerOf(name)
+      const previous = known.fields[name]
+      const rest = owner?.[fieldOf(name)]
+      if (owner && RETAINED_CHAT_FIELDS.has(name) && reuse === true && previous !== undefined) {
+        owner[fieldOf(name)] = previous
+      } else if (owner && RETAINED_CHAT_FIELDS.has(name) && typeof reuse === 'number' && Number.isSafeInteger(reuse) && reuse > 0 &&
+          Array.isArray(previous) && reuse <= previous.length && Array.isArray(rest)) {
+        owner[fieldOf(name)] = [...previous.slice(0, reuse), ...rest]
+      } else {
+        missingRetainedChatFields = true
+        return chat
+      }
+    }
+  }
+  delete restored.reusedFields
+  delete restored.reusedFieldsFrom
+  delete restored.retainedFieldsRevision
+  const revision = chat.retainedFieldsRevision
+  if (typeof revision === 'number' && Number.isSafeInteger(revision)) {
+    const fields: Record<string, unknown> = {}
+    for (const name of RETAINED_CHAT_FIELDS) {
+      const value = ownerOf(name)?.[fieldOf(name)]
+      if (value !== undefined) fields[name] = value
+    }
+    retainedChatFieldsByChatId.set(chatId, { revision, fields })
+  } else {
+    retainedChatFieldsByChatId.delete(chatId)
+  }
+  return restored
 }
 
 export function sanitizeCppAcpSession(value: unknown): CppAcpSession | undefined {
@@ -2183,6 +2244,9 @@ export function sanitizeCppAppState(value: unknown): CppAppState | null {
       })
     : []
   if (missingModelCatalog) return null
+  // Copies stay valid across a full state (each carries its revision); only chats that no longer exist drop theirs.
+  const chatIds = new Set(chats.map((chat) => chat.id.trim()))
+  for (const chatId of retainedChatFieldsByChatId.keys()) if (!chatIds.has(chatId)) retainedChatFieldsByChatId.delete(chatId)
   const providers = Array.isArray(value.providers)
     ? value.providers.flatMap((provider) => {
         const sanitized = sanitizeCppProvider(provider)
@@ -2389,14 +2453,17 @@ function sanitizeResourceCollections(value: unknown): ResourceCollection[] {
 export function sanitizeCppStatePatch(value: unknown): CppStatePatch | null {
   if (!isRecord(value)) return null
   rememberModelCatalogs(value.modelCatalogs, value.modelCatalogsReset === true)
+  missingRetainedChatFields = false
   const chats = Array.isArray(value.chats)
     ? value.chats.flatMap((chat) => {
-        const sanitized = sanitizeCppChat(chat)
+        const sanitized = sanitizeCppChat(restoreRetainedChatFields(chat))
         return sanitized ? [sanitized] : []
       })
     : undefined
-  // A catalogue this page never received (a lost patch, say): reject so the store pulls full state.
-  if (missingModelCatalog) return null
+  // A catalogue or chat field copy this page never received (a lost patch, say): reject so the store pulls full state.
+  if (missingModelCatalog || missingRetainedChatFields) return null
+  if (Array.isArray(value.removedChatIds))
+    for (const chatId of value.removedChatIds) if (isString(chatId)) retainedChatFieldsByChatId.delete(chatId.trim())
 
   return {
     stateRevision: finiteNumberOr(value.stateRevision, 0),

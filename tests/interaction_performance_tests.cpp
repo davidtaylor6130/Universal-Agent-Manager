@@ -1798,8 +1798,14 @@ UAM_TEST(StatePushSerializesLiveToolCallsOnlyWhenTheyChange)
 		UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
 		const nlohmann::json patch = nlohmann::json::parse(g_observed_state_patch)["data"];
 		UAM_ASSERT_EQ(patch["chats"].size(), std::size_t{3});
-		// The published summary still carries every tool call.
-		UAM_ASSERT_EQ(patch["chats"][0]["acpSession"]["toolCalls"].size(), app.acp_sessions[0]->tool_calls.size());
+		// The first patch after the full state carries every tool call; later ones name the page's copy instead (#947).
+		if (token == 0 && patch["chats"][0]["acpSession"].contains("toolCalls"))
+			UAM_ASSERT_EQ(patch["chats"][0]["acpSession"]["toolCalls"].size(), app.acp_sessions[0]->tool_calls.size());
+		else
+		{
+			UAM_ASSERT(!patch["chats"][0]["acpSession"].contains("toolCalls"));
+			UAM_ASSERT_EQ(patch["chats"][0]["reusedFields"]["acpSession.toolCalls"], true);
+		}
 	}
 	UAM_ASSERT_EQ(uam::StateSerializer::LiveToolCallSerializationCountForTests(), serialized);
 
@@ -1814,6 +1820,214 @@ UAM_TEST(StatePushSerializesLiveToolCallsOnlyWhenTheyChange)
 	UAM_ASSERT_EQ(patch["chats"][0]["acpSession"]["toolCalls"].back()["status"], "failed");
 	UAM_ASSERT(uam::StateSerializer::LiveToolCallSerializationCountForTests() > serialized);
 	UAM_ASSERT(uam::StateSerializer::LiveToolCallSerializationCountForTests() <= serialized + 3);
+}
+
+namespace
+{
+	constexpr const char* kRetainedPatchMetadata[] = {"reusedFields", "reusedFieldsFrom", "retainedFieldsRevision"};
+
+	/// <summary>
+	/// What the page does with a patched chat (sanitizers.ts restoreRetainedChatFields): restores what reusedFields
+	/// names from its copy, then keeps the restored fields when the patch gives a retainedFieldsRevision.
+	/// </summary>
+	struct PageChatFieldCopies
+	{
+		struct Copy
+		{
+			std::uint64_t revision = 0;
+			nlohmann::json chat;
+		};
+		std::unordered_map<std::string, Copy> by_chat_id;
+
+		static nlohmann::json& Field(nlohmann::json& chat, const std::string& name)
+		{
+			return name.starts_with("acpSession.") ? chat["acpSession"][name.substr(11)] : chat[name];
+		}
+
+		nlohmann::json Restore(nlohmann::json chat)
+		{
+			const std::string chat_id = chat.at("id").get<std::string>();
+			if (chat.contains("reusedFields"))
+			{
+				const auto known = by_chat_id.find(chat_id);
+				if (known == by_chat_id.end() || known->second.revision != chat["reusedFieldsFrom"].get<std::uint64_t>())
+					throw TestFailure("patch for " + chat_id + " reuses a copy the page does not hold");
+				for (const auto& [name, reuse] : chat["reusedFields"].items())
+				{
+					const nlohmann::json& previous = Field(known->second.chat, name);
+					if (reuse.is_boolean()) Field(chat, name) = previous;
+					else
+					{
+						nlohmann::json restored(previous.begin(), previous.begin() + reuse.get<std::ptrdiff_t>());
+						for (const nlohmann::json& entry : Field(chat, name)) restored.push_back(entry);
+						Field(chat, name) = std::move(restored);
+					}
+				}
+			}
+			const bool keep = chat.contains("retainedFieldsRevision");
+			const std::uint64_t revision = keep ? chat["retainedFieldsRevision"].get<std::uint64_t>() : 0;
+			for (const char* name : kRetainedPatchMetadata) chat.erase(name);
+			if (keep) by_chat_id[chat_id] = Copy{revision, chat};
+			else by_chat_id.erase(chat_id);
+			return chat;
+		}
+	};
+
+	/// <summary>Bytes each top-level patch field and each acpSession field takes, summed over the patched chats.</summary>
+	std::map<std::string, std::size_t> PatchBytesByField(const nlohmann::json& patch)
+	{
+		std::map<std::string, std::size_t> bytes;
+		for (const auto& [name, value] : patch.items())
+			if (name != "chats") bytes[name] += value.dump().size();
+		for (const nlohmann::json& chat : patch.value("chats", nlohmann::json::array()))
+			for (const auto& [name, value] : chat.items())
+			{
+				if (name != "acpSession") bytes["chat." + name] += value.dump().size();
+				else
+					for (const auto& [field, field_value] : value.items()) bytes["acpSession." + field] += field_value.dump().size();
+			}
+		return bytes;
+	}
+
+	void PrintPatchBytesByField(const std::string& label, const std::string& message)
+	{
+		std::cout << "[SIZE] " << label << ": total=" << message.size() << " bytes";
+		std::vector<std::pair<std::size_t, std::string>> largest;
+		for (const auto& [name, bytes] : PatchBytesByField(nlohmann::json::parse(message)["data"])) largest.emplace_back(bytes, name);
+		std::ranges::sort(largest, std::greater<>());
+		for (std::size_t index = 0; index < largest.size() && index < 8; ++index) std::cout << ", " << largest[index].second << "=" << largest[index].first;
+		std::cout << '\n';
+	}
+}
+
+// Issue #947: live chats resent every tool call (each with up to 64 KB of content), turn event, command and usage
+// object with each streamed token. Patches now carry only what the page lacks, and the page rebuilds exactly the
+// summary a full patch would have carried. Fixture: 63 chats with PNG icons, three streaming chats with 30, 5 and 5
+// tool calls of 50 KB, plus 2,000 stopped chats.
+UAM_TEST(StatePushLiveSessionPatchCarriesOnlyWhatThePageLacks)
+{
+	const WithoutStateCacheVerification unverified;
+	FakeStatePushClock clock;
+	StatePatchObserver observer;
+	TempDir temp("uam-live-field-reuse");
+	uam::AppState app;
+	BuildStreamingPushFixture(app, temp.root);
+	for (int index = 0; index < 2000; ++index)
+	{
+		ChatSession chat;
+		chat.id = "stopped-chat-" + std::to_string(index);
+		chat.title = chat.id;
+		chat.provider_id = "claude-cli";
+		chat.folder_id = "folder-" + std::to_string(index % 8);
+		chat.messages_loaded = false;
+		app.chats.push_back(std::move(chat));
+	}
+	for (std::size_t index = 0; index < 3; ++index)
+	{
+		uam::AcpSessionState& session = *app.acp_sessions[index];
+		for (int command = 0; command < 60; ++command)
+			session.available_commands.push_back({"command-" + std::to_string(command), std::string(160, 'c'), "argument"});
+	}
+	PageChatFieldCopies page;
+	const auto SessionFor = [&](const nlohmann::json& chat) -> const uam::AcpSessionState*
+	{
+		for (const auto& session : app.acp_sessions)
+			if (session->chat_id == chat["id"].get<std::string>()) return session.get();
+		throw TestFailure("no live session for " + chat["id"].get<std::string>());
+	};
+	const auto check_restored = [&](const nlohmann::json& patch)
+	{
+		nlohmann::json table = nlohmann::json::object();
+		for (const nlohmann::json& chat : patch.value("chats", nlohmann::json::array()))
+		{
+			nlohmann::json restored = page.Restore(chat);
+			const ChatSession* source = nullptr;
+			for (const ChatSession& candidate : app.chats)
+				if (candidate.id == chat["id"].get<std::string>()) source = &candidate;
+			UAM_ASSERT(source != nullptr);
+			// The page rebuilds every field a patch used to carry in full.
+			nlohmann::json expected = uam::StateSerializer::SerializeChatSummary(app, *source, &table)["acpSession"];
+			for (const char* name : {"toolCalls", "turnEvents", "availableCommands", "availableModes", "diagnostics", "planEntries",
+			         "nativeModelOptions", "providerUsage", "recentStderr"})
+				UAM_ASSERT_EQ(restored["acpSession"].value(name, nlohmann::json()), expected.value(name, nlohmann::json()));
+			UAM_ASSERT(restored["customIcon"].value("dataUrl", "").starts_with("data:image/png;base64,"));
+		}
+	};
+	const auto publish = [&](const std::function<void()>& change)
+	{
+		clock.Advance(std::chrono::milliseconds(120));
+		change();
+		g_observed_state_patch.clear();
+		UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
+		const nlohmann::json patch = nlohmann::json::parse(g_observed_state_patch)["data"];
+		check_restored(patch);
+		return patch;
+	};
+
+	uam::PushStateUpdate(nullptr, app);
+	// After a full state each live chat's fields travel whole once.
+	nlohmann::json patch = publish([&] { AppendStreamToken(app, 0); });
+	const std::size_t first_bytes = g_observed_state_patch.size();
+	PrintPatchBytesByField("live fields 3 streaming of 2063 chats, first token patch", g_observed_state_patch);
+	UAM_ASSERT_EQ(patch["chats"].size(), std::size_t{3});
+	for (const nlohmann::json& chat : patch["chats"])
+	{
+		UAM_ASSERT(!chat.contains("reusedFields"));
+		UAM_ASSERT(chat.contains("retainedFieldsRevision"));
+		UAM_ASSERT_EQ(chat["acpSession"]["toolCalls"].size(), SessionFor(chat)->tool_calls.size());
+		UAM_ASSERT(chat["customIcon"].value("dataUrl", "").starts_with("data:image/png;base64,"));
+	}
+
+	// A streamed token: the page keeps every tool call, command and earlier turn event; only the growing last
+	// turn event travels, after the entries the page keeps.
+	std::size_t token_bytes = 0;
+	for (int token = 1; token < 6; ++token)
+	{
+		patch = publish([&] { AppendStreamToken(app, token); });
+		token_bytes = std::max(token_bytes, g_observed_state_patch.size());
+		UAM_ASSERT_EQ(patch["chats"].size(), std::size_t{3});
+		for (const nlohmann::json& chat : patch["chats"])
+		{
+			const nlohmann::json& acp = chat["acpSession"];
+			const uam::AcpSessionState& session = *SessionFor(chat);
+			UAM_ASSERT(!acp.contains("toolCalls") && !acp.contains("availableCommands") && !chat.contains("customIcon"));
+			UAM_ASSERT_EQ(chat["reusedFields"]["acpSession.toolCalls"], true);
+			UAM_ASSERT_EQ(chat["reusedFields"]["acpSession.availableCommands"], true);
+			UAM_ASSERT_EQ(chat["reusedFields"]["customIcon"], true);
+			UAM_ASSERT_EQ(chat["reusedFields"]["acpSession.turnEvents"].get<std::size_t>(), session.turn_events.size() - 1);
+			UAM_ASSERT_EQ(acp["turnEvents"].size(), std::size_t{1});
+		}
+	}
+	PrintPatchBytesByField("live fields 3 streaming of 2063 chats, steady token patch", g_observed_state_patch);
+	std::cout << "[SIZE] live fields token patch: before reuse=" << first_bytes << " bytes, with reuse=" << token_bytes << " bytes\n";
+	// Regression bound: about 2 MB of tool calls before this change; the token patch is now a few KB.
+	if (token_bytes > 16 * 1024) throw TestFailure("a streamed-token patch for three live chats carried " + std::to_string(token_bytes) + " bytes");
+
+	// One finished tool call travels alone, after the tool calls before it.
+	patch = publish([&] { app.acp_sessions[1]->tool_calls.back().status = "failed"; });
+	UAM_ASSERT_EQ(patch["chats"].size(), std::size_t{1});
+	const nlohmann::json& changed = patch["chats"][0]["acpSession"];
+	UAM_ASSERT_EQ(patch["chats"][0]["reusedFields"]["acpSession.toolCalls"].get<std::size_t>(), app.acp_sessions[1]->tool_calls.size() - 1);
+	UAM_ASSERT_EQ(changed["toolCalls"].size(), std::size_t{1});
+	UAM_ASSERT_EQ(changed["toolCalls"][0]["status"], "failed");
+	if (g_observed_state_patch.size() > 80 * 1024) throw TestFailure("one changed tool call carried " + std::to_string(g_observed_state_patch.size()) + " bytes");
+
+	// A desktop pull may come from a reloaded page with no copies: the next patch sends each field whole again.
+	uam::ForgetSentModelCatalogs();
+	page.by_chat_id.clear();
+	patch = publish([&] { AppendStreamToken(app, 6); });
+	for (const nlohmann::json& chat : patch["chats"])
+	{
+		UAM_ASSERT(!chat.contains("reusedFields"));
+		UAM_ASSERT_EQ(chat["acpSession"]["toolCalls"].size(), SessionFor(chat)->tool_calls.size());
+	}
+
+	// A stopped session's empty fields are sent as they are; the PNG icon is still the page's.
+	patch = publish([&] { app.acp_sessions.erase(app.acp_sessions.begin() + 2); });
+	UAM_ASSERT_EQ(patch["chats"].size(), std::size_t{1});
+	UAM_ASSERT_EQ(patch["chats"][0]["reusedFields"], nlohmann::json({{"customIcon", true}}));
+	UAM_ASSERT(patch["chats"][0]["acpSession"]["toolCalls"].empty());
+	UAM_ASSERT_EQ(page.by_chat_id.at(app.chats[2].id).chat["acpSession"]["toolCalls"], nlohmann::json::array());
 }
 
 UAM_TEST(StatePushReconciliationRepairsABypassedToolCallStampAndCatalogueMemo)

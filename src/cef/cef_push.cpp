@@ -81,6 +81,20 @@ namespace
 	std::unordered_set<std::string> g_sent_model_catalog_ids;
 	// After the set is cleared, the next patch with chats tells the page to clear its table too, so both stay equal.
 	bool g_model_catalogs_reset_pending = false;
+	// Large fields of each chat as the page last received them in a patch, under a revision the page keeps beside
+	// its copy. A patch leaves out a field (or the leading array entries) that still matches (#947).
+	struct RetainedChatFields
+	{
+		std::uint64_t revision = 0;
+		nlohmann::json fields = nlohmann::json::object();
+	};
+	std::unordered_map<std::string, RetainedChatFields> g_retained_chat_fields_by_chat_id;
+	// Process-wide and never reused, so a page copy from before a reset can never match a later revision.
+	std::uint64_t g_last_retained_chat_fields_revision = 0;
+	// Live-session fields that grow with a turn or a session (tool calls carry up to 64 KB of content each) or are
+	// long lists that rarely change. Every other acpSession field is small and always sent.
+	constexpr const char* kRetainedAcpSessionFields[] = {"toolCalls", "turnEvents", "availableCommands", "availableModes",
+	    "diagnostics", "planEntries", "nativeModelOptions", "providerUsage", "recentStderr"};
 	// The first desktop full reply supplies the initial state; a prior poll must not duplicate that catalogue.
 	// Preparation is not a browser acknowledgement. Reloads and IPC recovery keep using full state pulls.
 	bool g_initial_desktop_snapshot_prepared = false;
@@ -238,6 +252,8 @@ namespace
 		g_last_summary_push_time_by_chat_id.clear();
 		g_sent_model_catalog_ids.clear();
 		g_model_catalogs_reset_pending = false;
+		// Patches after a full state send each chat's large fields whole once; the page's older copies are then replaced.
+		g_retained_chat_fields_by_chat_id.clear();
 		if (const nlohmann::json::const_iterator catalogs = fingerprint_state.find("modelCatalogs"); catalogs != fingerprint_state.end() && catalogs->is_object())
 			for (const auto& entry : catalogs->items()) g_sent_model_catalog_ids.insert(entry.key());
 		g_last_runtime_state_rebuild_at = {};
@@ -451,9 +467,76 @@ namespace
 			{
 				g_last_pushed_chat_summaries_by_chat_id.erase(chat_id.get<std::string>());
 				g_last_pushed_chat_digests_by_chat_id.erase(chat_id.get<std::string>());
+				g_retained_chat_fields_by_chat_id.erase(chat_id.get<std::string>());
 			}
 			data["removedChatIds"] = std::move(diff.removed_chat_ids);
 		}
+	}
+
+	bool IsEmptyRetainedField(const nlohmann::json& value)
+	{
+		return value.is_null() || ((value.is_array() || value.is_object()) && value.empty()) || (value.is_string() && value.get_ref<const std::string&>().empty());
+	}
+
+	/// <summary>
+	/// Leaves out of a patched chat the large fields the page already holds for it (#947): a PNG customIcon with its
+	/// data URL, and the live-session fields in kRetainedAcpSessionFields (named "acpSession.toolCalls" and so on).
+	/// "reusedFields" maps a field to true (unchanged, omitted) or, for an array, to the count of leading entries the
+	/// page keeps from its copy, the patch carrying only the entries after them; "reusedFieldsFrom" names the
+	/// revision of that copy. While any such field is non-empty, "retainedFieldsRevision" asks the page to keep this
+	/// patch's values. A page without that revision rejects the patch and pulls full state, which clears this record.
+	/// </summary>
+	void ReuseRetainedChatFields(nlohmann::json& chat)
+	{
+		const std::string chat_id = uam::nlohmann_json::TrimmedStringValue(chat, {"id"});
+		if (chat_id.empty()) return;
+		const auto known = g_retained_chat_fields_by_chat_id.find(chat_id);
+		nlohmann::json current = nlohmann::json::object();
+		nlohmann::json reused = nlohmann::json::object();
+		const auto reuse = [&](nlohmann::json& owner, const char* field_name, const std::string& name)
+		{
+			const nlohmann::json::iterator field = owner.find(field_name);
+			if (field == owner.end() || IsEmptyRetainedField(*field)) return;
+			nlohmann::json value = std::move(*field);
+			const nlohmann::json* previous = nullptr;
+			if (known != g_retained_chat_fields_by_chat_id.end())
+				if (const nlohmann::json::const_iterator found = known->second.fields.find(name); found != known->second.fields.end()) previous = &*found;
+			std::size_t kept = 0;
+			if (previous != nullptr && previous->is_array() && value.is_array())
+				while (kept < value.size() && kept < previous->size() && (*previous)[kept] == value[kept]) ++kept;
+			if (previous != nullptr && *previous == value)
+			{
+				owner.erase(field);
+				reused[name] = true;
+			}
+			else if (kept > 0)
+			{
+				// A streamed turn appends: earlier turn events and finished tool calls stay with the page.
+				*field = nlohmann::json(value.begin() + static_cast<std::ptrdiff_t>(kept), value.end());
+				reused[name] = kept;
+			}
+			else
+				*field = value;
+			current[name] = std::move(value);
+		};
+		// Other icons are a few bytes; a PNG icon carries its whole file as a data URL.
+		if (const nlohmann::json::const_iterator icon = chat.find("customIcon"); icon != chat.end() && icon->is_object() && icon->contains("dataUrl"))
+			reuse(chat, "customIcon", "customIcon");
+		if (const nlohmann::json::iterator acp = chat.find("acpSession"); acp != chat.end() && acp->is_object())
+			for (const char* field_name : kRetainedAcpSessionFields) reuse(*acp, field_name, std::string("acpSession.") + field_name);
+		if (!reused.empty())
+		{
+			chat["reusedFields"] = std::move(reused);
+			chat["reusedFieldsFrom"] = known->second.revision;
+		}
+		if (current.empty())
+		{
+			if (known != g_retained_chat_fields_by_chat_id.end()) g_retained_chat_fields_by_chat_id.erase(known);
+			return;
+		}
+		const std::uint64_t revision = ++g_last_retained_chat_fields_revision;
+		chat["retainedFieldsRevision"] = revision;
+		g_retained_chat_fields_by_chat_id[chat_id] = RetainedChatFields{revision, std::move(current)};
 	}
 
 	std::string BuildStatePatchMessage(const uam::AppState& app, const nlohmann::json& fingerprint_state, bool* has_payload = nullptr)
@@ -527,6 +610,8 @@ namespace
 					uam::StateSerializer::ReferenceModelCatalog(*acp, catalogs);
 				// The frontend replaces the whole chat, so a patched PNG icon needs its data URL as in stateUpdate.
 				uam::icons::AddFrontendAsset(chat, app.data_root, source->custom_icon);
+				// ...unless the page already holds it, or the chat's other large fields, from an earlier patch.
+				ReuseRetainedChatFields(chat);
 			}
 			nlohmann::json unsent = nlohmann::json::object();
 			if (g_model_catalogs_reset_pending || g_sent_model_catalog_ids.size() > kMaxSentModelCatalogIds)
@@ -617,6 +702,8 @@ namespace uam
 	{
 		g_sent_model_catalog_ids.clear();
 		g_model_catalogs_reset_pending = true;
+		// A reloaded page holds no chat field copies either; the next patch sends each chat's large fields whole.
+		g_retained_chat_fields_by_chat_id.clear();
 	}
 
 	void PrepareInitialDesktopStatePushBaseline(const AppState& app, nlohmann::json snapshot, bool summary_only)

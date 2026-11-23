@@ -8563,6 +8563,88 @@ describe('model catalogues by reference', () => {
 })
 
 
+describe('chat fields the page already holds (#947)', () => {
+  const icon = { type: 'png', value: '00000000-0000-4000-8000-0000000000aa.png', dataUrl: 'data:image/png;base64,AAAA' }
+  const tool = (id: string, status = 'completed') => ({ id, title: `Read ${id}`, kind: 'read', status, content: 'x'.repeat(64) })
+  const live = (revision: number, acp: Record<string, unknown>, extra: Record<string, unknown> = {}) => {
+    const chat = makeCppState(revision).chats[0]
+    return { ...chat, customIcon: icon, ...extra, acpSession: { sessionId: 'native-1', providerId: 'gemini-cli', running: true, ...acp } }
+  }
+  const full = { toolCalls: [tool('a'), tool('b')], turnEvents: [{ type: 'assistant_text', text: 'Hello' }], availableCommands: [{ name: 'review', description: 'Review', inputHint: '' }] }
+
+  it('restores omitted and appended fields from the copy it holds and rejects a copy it lacks', () => {
+    resetModelCatalogsForTests()
+    const first = sanitizeCppStatePatch({ stateRevision: 2, chats: [live(2, full, { retainedFieldsRevision: 7 })] })
+    expect(first?.chats?.[0].acpSession?.toolCalls.map((call) => call.id)).toEqual(['a', 'b'])
+
+    // A token: tool calls, commands and the icon unchanged; the turn events keep their first entry and add one.
+    const token = sanitizeCppStatePatch({ stateRevision: 3, chats: [{
+      ...live(3, { turnEvents: [{ type: 'assistant_text', text: ' more' }] }, { retainedFieldsRevision: 8, reusedFieldsFrom: 7,
+        reusedFields: { customIcon: true, 'acpSession.toolCalls': true, 'acpSession.availableCommands': true, 'acpSession.turnEvents': 1 } }),
+      customIcon: undefined,
+    }] })
+    const acp = token?.chats?.[0].acpSession
+    expect(acp?.toolCalls.map((call) => call.id)).toEqual(['a', 'b'])
+    expect(acp?.availableCommands.map((command) => command.name)).toEqual(['review'])
+    expect(acp?.turnEvents.map((event) => event.text)).toEqual(['Hello', ' more'])
+    expect(token?.chats?.[0].customIcon).toMatchObject({ type: 'png', dataUrl: icon.dataUrl })
+
+    // One changed tool call after the first; the copy is now revision 8.
+    const changed = sanitizeCppStatePatch({ stateRevision: 4, chats: [live(4, { toolCalls: [tool('b', 'failed')] }, {
+      retainedFieldsRevision: 9, reusedFieldsFrom: 8, reusedFields: { 'acpSession.toolCalls': 1, 'acpSession.turnEvents': true } })] })
+    expect(changed?.chats?.[0].acpSession?.toolCalls.map((call) => call.status)).toEqual(['completed', 'failed'])
+    expect(changed?.chats?.[0].acpSession?.turnEvents.map((event) => event.text)).toEqual(['Hello', ' more'])
+
+    // A copy the page replaced, or never had, rejects the patch; so does a count past the copy's end.
+    const stale = { stateRevision: 5, chats: [live(5, {}, { reusedFieldsFrom: 8, reusedFields: { 'acpSession.toolCalls': true } })] }
+    expect(sanitizeCppStatePatch(stale)).toBeNull()
+    expect(parseUamPushPayload({ type: 'statePatch', data: stale })).toMatchObject({ ok: false, mayHaveCarriedState: true })
+    expect(sanitizeCppStatePatch({ stateRevision: 5, chats: [live(5, { toolCalls: [] }, { reusedFieldsFrom: 9, reusedFields: { 'acpSession.toolCalls': 3 } })] })).toBeNull()
+    expect(sanitizeCppStatePatch({ stateRevision: 5, chats: [live(5, {}, { reusedFieldsFrom: 9, reusedFields: { 'acpSession.lastError': true } })] })).toBeNull()
+
+    // A patch without a revision drops the copy, as does a removed chat.
+    expect(sanitizeCppStatePatch({ stateRevision: 6, chats: [live(6, { toolCalls: [] })] })).not.toBeNull()
+    expect(sanitizeCppStatePatch({ stateRevision: 7, chats: [live(7, {}, { reusedFieldsFrom: 9, reusedFields: { customIcon: true } })] })).toBeNull()
+    sanitizeCppStatePatch({ stateRevision: 8, chats: [live(8, full, { retainedFieldsRevision: 10 })] })
+    sanitizeCppStatePatch({ stateRevision: 9, removedChatIds: ['chat-1'] })
+    expect(sanitizeCppStatePatch({ stateRevision: 10, chats: [live(10, {}, { reusedFieldsFrom: 10, reusedFields: { customIcon: true } })] })).toBeNull()
+  })
+
+  it('keeps live fields on the chat binding through real pushes and pulls full state for a lost copy', async () => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.dispatchEvent = vi.fn(() => true)
+    const initial = { ...makeCppState(1), chats: [live(1, full)] }
+    const actions: string[] = []
+    testWindow.cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request) as { action: string }
+      actions.push(parsed.action)
+      if (parsed.action === 'getInitialState') onSuccess(JSON.stringify(initial))
+    }
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const binding = () => cefStore.getState().acpBindingBySessionId['chat-1']
+
+    testWindow.uamPush!({ type: 'statePatch', data: { stateRevision: 2, chats: [live(2, full, { retainedFieldsRevision: 21 })] } })
+    testWindow.uamPush!({ type: 'statePatch', data: { stateRevision: 3, chats: [{
+      ...live(3, { turnEvents: [{ type: 'assistant_text', text: ' world' }] }, { retainedFieldsRevision: 22, reusedFieldsFrom: 21,
+        reusedFields: { customIcon: true, 'acpSession.toolCalls': true, 'acpSession.availableCommands': true, 'acpSession.turnEvents': 1 } }),
+      customIcon: undefined,
+    }] } })
+    expect(cefStore.getState().lastAppliedStateRevision).toBe(3)
+    expect(binding()?.toolCalls.map((call) => call.id)).toEqual(['a', 'b'])
+    expect(binding()?.turnEvents.map((event) => event.text)).toEqual(['Hello', ' world'])
+
+    // A patch built on a copy this page never received is not applied; the store pulls the full state instead.
+    const pulls = actions.filter((action) => action === 'getInitialState').length
+    testWindow.uamPush!({ type: 'statePatch', data: { stateRevision: 4, chats: [live(4, {}, { reusedFieldsFrom: 99, reusedFields: { 'acpSession.toolCalls': true } })] } })
+    expect(cefStore.getState().lastAppliedStateRevision).toBe(3)
+    expect(binding()?.toolCalls.map((call) => call.id)).toEqual(['a', 'b'])
+    await vi.waitFor(() => expect(actions.filter((action) => action === 'getInitialState').length).toBeGreaterThan(pulls), { timeout: 3000 })
+  })
+})
+
+
 describe('SVN update settings transport', () => {
   it('loads explicit SVN update values and preserves them through partial patches', () => {
     const full = sanitizeCppAppState({ ...makeCppState(1), settings: { ...makeCppState(1).settings, svnUpdateBeforeChat: true } })
