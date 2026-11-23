@@ -133,7 +133,11 @@ namespace uam
 				if (!request.automatic_enabled || !AutomaticCandidateReady(*owner->second))
 					return {ExecutionRoutingStatus::Waiting, ExecutionRoutingReason::NoEligibleHost, existing};
 				const std::size_t owned_slot = occupied != occupied_hosts.end() ? 1 : 0;
-				if (owner->second->overloaded || owner->second->full || counts[existing.host_id] - owned_slot >= owner->second->max_active_turns)
+				// Host admission's full or overloaded view only offers unstarted work a move. Otherwise the chat stays
+				// assigned and waits in its computer's host admission line, with its one-line wait (and Run anyway).
+				if (owner->second->overloaded || owner->second->full)
+					if (std::optional<ExecutionRoutingDecision> moved = move_unstarted()) return *moved;
+				if (counts[existing.host_id] - owned_slot >= owner->second->max_active_turns)
 				{
 					if (std::optional<ExecutionRoutingDecision> moved = move_unstarted()) return *moved;
 					return {ExecutionRoutingStatus::Waiting, ExecutionRoutingReason::NoEligibleHost, existing};

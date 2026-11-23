@@ -284,12 +284,22 @@ namespace uam
 		return false;
 	}
 
+	bool ExecutionRoutingStartHeld(const AppState& app, const ChatSession& chat)
+	{
+		const AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
+		return session != nullptr && !session->running && !session->recovering_remote_turn && !session->recovering_remote_process &&
+		    !session->remote_stop_unconfirmed && session->prompt_request_id == 0 && !session->compute_pool_wait_message.empty() &&
+		    chat.remote_prompt_delivery_id.empty() && chat.remote_active_turn_id.empty() && !chat.remote_turn_reconnect_pending &&
+		    chat.remote_pending_requests.empty() && chat.remote_interaction_responses.empty();
+	}
+
 	bool ExecutionRoutingWorkUnstarted(const AppState& app, const ChatSession& chat)
 	{
 		if (chat.routing_mode != "automatic" || chat.routing_assigned_connection_identity.empty()) return false;
 		// Anything the provider may have seen or still holds pins the chat: a provider session, a remote process, a
-		// delivery in flight, work this app owns, or a reservation restored without its work.
-		if (!chat.native_session_id.empty() || chat.remote_process_exists || ExecutionRoutingOwnsWork(app, chat) ||
+		// delivery in flight, work this app owns, or a reservation restored without its work. A turn staged for a
+		// provider start that host admission holds owns nothing yet: no process exists to have seen it.
+		if (!chat.native_session_id.empty() || chat.remote_process_exists || (ExecutionRoutingOwnsWork(app, chat) && !ExecutionRoutingStartHeld(app, chat)) ||
 		    app.execution_routing_restored_unresolved_chat_ids.contains(chat.id)) return false;
 		if (std::ranges::any_of(app.acp_sessions, [&chat](const std::unique_ptr<AcpSessionState>& session)
 		    { return session && session->chat_id == chat.id && (session->running || session->remote_stop_unconfirmed || !session->session_id.empty()); })) return false;
@@ -351,7 +361,7 @@ namespace uam
 				{
 					candidate.overloaded = app.host_admission->HealthOf(host.id) == host_admission::Health::Overloaded;
 					host_admission::Request probe;
-					probe.key = "turn:" + chat.id; // Its own place in line, if it has one, counts as its own.
+					probe.key = (terminal ? "cli:" : "turn:") + chat.id; // Its own place in line, if any, is its own.
 					probe.host_id = host.id;
 					probe.work_class = HostAdmissionClassForChat(FindAcpSessionForChat(app, chat.id), chat);
 					probe.now_s = now;
@@ -403,7 +413,7 @@ namespace uam
 		ExecutionRoutingRequest request;
 		request.chat_id = chat.id;
 		request.automatic_enabled = app.settings.execution_routing.enabled;
-		request.recovery_of_owned_work = ExecutionRoutingOwnsWork(app, chat);
+		request.recovery_of_owned_work = ExecutionRoutingOwnsWork(app, chat) && !ExecutionRoutingStartHeld(app, chat);
 		if (!chat.routing_assigned_connection_identity.empty()) request.assigned = AssignmentForChat(chat);
 		request.movable = movable;
 		if (!request.assigned.host_id.empty())

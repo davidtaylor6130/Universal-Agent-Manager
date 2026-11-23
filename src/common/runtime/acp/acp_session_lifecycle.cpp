@@ -2655,7 +2655,10 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	}
 	else if (!prepared)
 	{
+		// Run anyway admitted this start; its turn must be admitted over the limit too, not offered it again.
+		const bool run_anyway = session.host_admission_run_anyway;
 		ResetAcpRuntimeState(app, session, chat);
+		session.host_admission_run_anyway = run_anyway;
 		// Preserve this invocation across its own launch reset, never create a second permission.
 		if (saved_retry && ((cold_binding && cold_binding->input == saved_retry) || SavedImageRetrySourceMatches(app, session, chat, *saved_retry)))
 		{

@@ -1508,6 +1508,7 @@ namespace uam
 		/// Each entry is the wait's message and when it was last asked; PollHostAdmission drops stale ones.
 		std::unordered_map<std::string, std::pair<std::string, double>> host_admission_waits;
 		double host_admission_next_refresh_s = 0.0;
+		std::string host_admission_health_snapshot;
 		std::vector<RepositoryRouteWorkspace> repository_route_workspaces;
 		std::filesystem::path repository_route_data_root;
 		double repository_route_observed_at_s = -1.0;

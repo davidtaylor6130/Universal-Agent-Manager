@@ -249,9 +249,10 @@ UAM_TEST(ExecutionRoutingMovesUnstartedWorkToAnotherRemoteHostWhenItsHostIsDownF
 		if (cause == 2) a.overloaded = true;
 		uam::ExecutionRoutingRequest request = RoutingRequest("queued");
 		request.assigned = initial.assignment;
-		// Started work stays pinned: without the unstarted flag the chat waits for its own computer.
+		// Started work stays pinned: without the unstarted flag the chat stays on its own computer. There it waits
+		// for routing's count, or (overloaded) stays assigned and waits in that computer's host admission line.
 		const uam::ExecutionRoutingDecision pinned = service.Admit(request, {a, RoutingHost("b")}, occupancy);
-		UAM_ASSERT_EQ(pinned.status, uam::ExecutionRoutingStatus::Waiting);
+		UAM_ASSERT_EQ(pinned.status, cause == 2 ? uam::ExecutionRoutingStatus::Assigned : uam::ExecutionRoutingStatus::Waiting);
 		UAM_ASSERT_EQ(pinned.assignment.host_id, std::string("a"));
 		UAM_ASSERT(!pinned.moved);
 		request.movable = true;

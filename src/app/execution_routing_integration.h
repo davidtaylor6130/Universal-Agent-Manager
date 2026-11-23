@@ -20,6 +20,8 @@ namespace uam
 	/// An automatic chat with a saved assignment that has not started: no provider session, process, terminal,
 	/// delivery or unresolved reservation. Only such work may move to another remote computer.
 	bool ExecutionRoutingWorkUnstarted(const AppState& app, const ChatSession& chat);
+	/// The chat's provider start is held by host admission: a turn may be staged, but no process exists to have seen it.
+	bool ExecutionRoutingStartHeld(const AppState& app, const ChatSession& chat);
 	bool RestoreExecutionRoutingReservations(AppState& app);
 	bool PollExecutionRouting(AppState& app);
 	/// Contacts hosts whose last health check failed and hosts holding a reservation restored without its

@@ -61,7 +61,7 @@ function HostLimitsSettings() {
   const error = hostLimitsError(draft)
   const field = (spec: LimitField) => <SettingsField key={spec.key} label={spec.label} hint={spec.hint}>
     <input className="uam-field w-full" aria-label={spec.label} type="number" min={spec.min} max={spec.max} step={1} disabled={busy}
-      value={Number.isNaN(draft[spec.key]) ? '' : draft[spec.key]} onChange={(event) => { const value = event.currentTarget.valueAsNumber; setDraft((current) => ({ ...current, [spec.key]: value })) }} />
+      value={Number.isNaN(draft[spec.key]) ? '' : draft[spec.key]} onChange={(event) => { const value = event.currentTarget.valueAsNumber; setSaveError(''); setDraft((current) => ({ ...current, [spec.key]: value })) }} />
   </SettingsField>
   const persist = async () => {
     if (!dirty || error) return

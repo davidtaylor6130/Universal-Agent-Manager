@@ -69,7 +69,12 @@ namespace uam
 		app.host_admission_next_refresh_s = now + 1.0;
 		RefreshHostAdmission(app, now);
 		std::erase_if(app.host_admission_waits, [now](const auto& wait) { return now - wait.second.second > kBackgroundWaitForgetSeconds; });
-		return false;
+		// A health change alone is pushed, so Settings shows it without waiting for other state to change.
+		std::string health;
+		for (const host_admission::HostUsage& usage : app.host_admission->Usage(now)) health += usage.host_id + '=' + host_admission::HealthName(usage.health) + ';';
+		const bool changed = health != app.host_admission_health_snapshot;
+		app.host_admission_health_snapshot = std::move(health);
+		return changed;
 	}
 
 	std::string HostAdmissionLabel(const AppState& app, const std::string& host_id)

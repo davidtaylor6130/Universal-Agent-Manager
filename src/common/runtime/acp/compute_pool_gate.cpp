@@ -163,6 +163,13 @@ namespace uam
 					return other.get() != &session && compute_pools::IsWaiting(*other, now) && !HeldByHost(*other) && other->compute_pool_ticket < session.compute_pool_ticket && InPool(app, *other, pool);
 				}));
 				if (in_use + ahead < pool.limit) continue;
+				// A turn a pool holds keeps no host slot or place: its start reservation and host waiter are dropped,
+				// and it asks the host again once the pool admits it.
+				if (host_gate)
+				{
+					(void)app.host_admission->Release(host_request.key);
+					(void)app.host_admission->Withdraw(host_request.key);
+				}
 				// A slot promised to an earlier waiter is as unavailable as one in use.
 				return hold(pool.name, std::min(in_use + ahead, pool.limit), pool.limit, std::string(), false);
 			}

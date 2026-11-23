@@ -583,6 +583,7 @@ void UamQueryHandler::HandleRunHeldWorkAnyway(CefRefPtr<CefBrowser> browser, con
 		if (terminal && (terminal->attached_chat_id == chat_id || terminal->frontend_chat_id == chat_id) && terminal->host_admission_run_anyway_offered)
 		{
 			terminal->host_admission_run_anyway = true;
+			terminal->host_admission_retry_at_s = 0.0; // The next poll tries once more, now.
 			applied = true;
 		}
 	if (!applied)

@@ -179,7 +179,8 @@ namespace uam::host_admission
 		void SetLive(const std::vector<LiveWork>& live);
 		/// <summary>Decides one start. A refused request keeps (or takes) its place in line for its computer and class.</summary>
 		Decision Admit(const Request& request);
-		/// <summary>Would this request be admitted now? Takes no ticket and changes nothing.</summary>
+		/// <summary>Would this request be admitted now? Takes no ticket and adds no waiter or hold; like every call, it
+		/// first drops expired holds and forgotten waiters.</summary>
 		Decision Peek(const Request& request);
 		/// <summary>Drops a held entry. Returns whether one existed.</summary>
 		bool Release(const std::string& key);
