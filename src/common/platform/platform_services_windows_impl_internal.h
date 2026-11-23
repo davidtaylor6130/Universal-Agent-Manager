@@ -8,6 +8,7 @@
 #include "common/paths/path_utils.h"
 #include "common/state/app_state.h"
 #include "common/utils/env_utils.h"
+#include "common/utils/launch_argv_redaction.h"
 #include "common/utils/range_utils.h"
 #include "common/utils/shell_escape.h"
 #include "common/utils/string_utils.h"
@@ -631,6 +632,8 @@ struct WindowsLaunchCommand
 	std::string original_command_line;
 	std::string resolved_command;
 	bool uses_cmd_wrapper = false;
+	/// The original command line with private arguments (such as MCP env tables) replaced, for error text and logs.
+	std::string diagnostic_command_line;
 };
 
 inline WindowsLaunchCommand BuildWindowsLaunchCommand(const std::vector<std::string>& argv)
@@ -638,6 +641,7 @@ inline WindowsLaunchCommand BuildWindowsLaunchCommand(const std::vector<std::str
 	RefreshProcessPathFromRegistry();
 	WindowsLaunchCommand launch;
 	launch.original_command_line = BuildWindowsCommandLine(argv);
+	launch.diagnostic_command_line = BuildWindowsCommandLine(uam::launch_argv::Redacted(argv));
 
 	if (argv.empty())
 	{
@@ -671,7 +675,7 @@ inline std::string WindowsLaunchDiagnosticSuffix(const WindowsLaunchCommand& lau
 	std::ostringstream out;
 	if (!launch.original_command_line.empty())
 	{
-		out << " Original command: " << launch.original_command_line << ".";
+		out << " Original command: " << launch.diagnostic_command_line << ".";
 	}
 	if (!launch.resolved_command.empty())
 	{

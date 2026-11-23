@@ -617,7 +617,7 @@ class WindowsProcessService final : public IPlatformProcessService
 			const DWORD launch_error = GetLastError();
 			if (error_out != nullptr)
 			{
-				*error_out = "Failed to start stdio process. " + FormatWindowsError(launch_error) + ". Command: " + launch.command_line + "." + WindowsLaunchDiagnosticSuffix(launch);
+				*error_out = "Failed to start stdio process. " + FormatWindowsError(launch_error) + ". Command: " + launch.diagnostic_command_line + "." + WindowsLaunchDiagnosticSuffix(launch);
 			}
 			CloseStdioParentPipeEnds(stdin_write, stdout_read, stderr_read);
 			return false;

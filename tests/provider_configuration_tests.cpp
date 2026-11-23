@@ -1680,6 +1680,21 @@ UAM_TEST(CodexStdioMcpEnvironmentStaysInEachServersOwnTable)
 	};
 	UAM_ASSERT_EQ(table("alpha"), std::string(R"({"API_KEY" = "alpha-key", "PATH" = "/alpha/bin"})"));
 	UAM_ASSERT_EQ(table("beta"), std::string(R"({"API_KEY" = "beta \"key\"\u007F", "NODE_OPTIONS" = "--inspect"})"));
+	// The launch diagnostics line never carries the env table's values.
+	const std::string logged = uam::acp_detail::JoinAcpArgvForDiagnostics(argv);
+	UAM_ASSERT(logged.find("alpha-key") == std::string::npos && logged.find("/alpha/bin") == std::string::npos && logged.find("--inspect") == std::string::npos);
+	UAM_ASSERT(logged.find("mcp_servers.alpha.command=") != std::string::npos);
+
+	// Values that no longer fit one launch command are refused by server name, without echoing them.
+	McpServerConfiguration large = alpha;
+	large.id = "large"; large.name = "large";
+	large.environment = {{"ONE", "", std::string(60000, 'a')}, {"TWO", "", std::string(60000, 'b')}, {"THREE", "", std::string(60000, 'c')}};
+	settings.mcp_servers = {large};
+	UAM_ASSERT(uam::PrepareProviderConfiguration(temp.root / "data-large", settings, chat, host, temp.root, bundle, error));
+	argv = {"codex"};
+	environment.clear();
+	UAM_ASSERT(!uam::provider_setup::Apply("codex-cli", bundle.local_directory, temp.root, argv, environment, error));
+	UAM_ASSERT(error.find("'large'") != std::string::npos && error.find("too long") != std::string::npos && error.find("aaaa") == std::string::npos);
 }
 
 UAM_TEST(CodexMcpOverridesUseBareServerKeysAndInlineTables)

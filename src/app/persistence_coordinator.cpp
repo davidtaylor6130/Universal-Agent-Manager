@@ -226,7 +226,7 @@ bool PersistenceCoordinator::LoadSettings(uam::AppState& app) const
 		std::string reasons;
 		for (std::size_t index = 0; index < count && index < 5; ++index) reasons += (index == 0 ? "" : " | ") + result.removed_mcp_servers[index];
 		uam::diagnostics::Write("[Settings] Dropped " + std::to_string(count) + " invalid saved MCP server entr" + (count == 1 ? "y" : "ies") + " at load; the rest loaded. " + reasons);
-		const std::string notice = "Could not load " + std::to_string(count) + " saved MCP server entr" + (count == 1 ? "y" : "ies") + "; the other servers loaded.";
+		const std::string notice = "Could not load " + std::to_string(count) + " saved MCP server entr" + (count == 1 ? "y" : "ies") + " because " + (count == 1 ? "it is" : "they are") + " invalid; other servers are unaffected.";
 		app.status_line = app.status_line.empty() ? notice : app.status_line + " " + notice;
 	}
 	// Preserve legacy backup-loading semantics, but backup/defaults cannot retire an Unknown primary.

@@ -141,7 +141,7 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 			const DWORD last_error = GetLastError();
 			if (error_out != nullptr)
 			{
-				*error_out = "Failed to start provider process. " + FormatWindowsError(last_error) + ". Command: " + launch.command_line + "." + WindowsLaunchDiagnosticSuffix(launch);
+				*error_out = "Failed to start provider process. " + FormatWindowsError(last_error) + ". Command: " + launch.diagnostic_command_line + "." + WindowsLaunchDiagnosticSuffix(launch);
 			}
 
 			DeleteProcThreadAttributeList(terminal.attr_list);

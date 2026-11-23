@@ -859,12 +859,14 @@ bool Application::InitializeState()
 	}
 	const std::chrono::steady_clock::time_point agent_runs_finished = std::chrono::steady_clock::now();
 
+	const std::string status_before_settings = m_app.status_line;
 	if (!PersistenceCoordinator().LoadSettings(m_app))
 	{
 		uam::diagnostics::Write(m_app.status_line);
 		m_exitCode = 1;
 		return false;
 	}
+	if (m_app.status_line != status_before_settings) m_settingsLoadNotice = m_app.status_line;
 	m_settingsLoaded = true;
 	m_app.storage_retention_service = std::make_shared<uam::StorageRetentionService>(m_dataRootLock);
 	m_app.pr_watch_service = std::make_shared<uam::PrWatchService>(m_app.data_root);
@@ -1061,6 +1063,9 @@ void Application::FinishStartupState(std::vector<ChatSession> chats, std::string
 		m_app.status_line =
 		    "A previous computer-use control file could not be stopped. End any orphaned provider process before using computer use.";
 	}
+	// The startup messages above replace the status line; keep the settings load notice (such as dropped MCP servers) beside them.
+	if (!m_settingsLoadNotice.empty() && m_app.status_line.find(m_settingsLoadNotice) == std::string::npos)
+		m_app.status_line = m_app.status_line.empty() ? m_settingsLoadNotice : m_app.status_line + " " + m_settingsLoadNotice;
 
 	const std::chrono::steady_clock::time_point finish_finished = std::chrono::steady_clock::now();
 	const auto milliseconds = [](std::chrono::steady_clock::time_point begin, std::chrono::steady_clock::time_point end)

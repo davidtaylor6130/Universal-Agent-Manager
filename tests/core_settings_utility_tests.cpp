@@ -22,6 +22,7 @@
 #include "cef/uam_query_handler_internal.h"
 #include "cef/uam_query_handler_async.h"
 #include "common/config/mcp_server_config.h"
+#include "common/paths/app_paths.h"
 #include "common/chat/chat_repository.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_goal_loop.h"
@@ -1111,6 +1112,24 @@ UAM_TEST(SettingsLoadDropsOnlyInvalidMcpServerEntries)
 	UAM_ASSERT_EQ(reloaded.mcp_servers.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT(reloaded.host_scoped_settings[host.id].mcp_servers.has_value());
 	UAM_ASSERT_EQ(reloaded.host_scoped_settings[host.id].mcp_servers->size(), static_cast<std::size_t>(1));
+}
+
+UAM_TEST(SettingsLoadShowsOneNoticeForDroppedMcpServerEntries)
+{
+	TempDir temp("uam-mcp-load-notice");
+	McpServerConfiguration valid;
+	valid.id = "docs"; valid.name = "docs"; valid.transport = "http"; valid.url = "http://localhost:5000/mcp";
+	McpServerConfiguration relative = valid;
+	relative.id = "relative"; relative.name = "relative"; relative.transport = "stdio"; relative.url.clear(); relative.command = "bin/private-server";
+	AppSettings settings;
+	settings.mcp_servers = {valid, relative};
+	UAM_ASSERT(SettingsStore::Save(AppPaths::SettingsFilePath(temp.root), settings));
+	uam::AppState app;
+	app.data_root = temp.root;
+	UAM_ASSERT(PersistenceCoordinator().LoadSettings(app));
+	UAM_ASSERT_EQ(app.settings.mcp_servers.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(app.status_line, std::string("Could not load 1 saved MCP server entry because it is invalid; other servers are unaffected."));
+	UAM_ASSERT(app.status_line.find("private-server") == std::string::npos);
 }
 
 UAM_TEST(SettingsStoreRejectsPartialNumericValuesAndParsesStrictBooleans)

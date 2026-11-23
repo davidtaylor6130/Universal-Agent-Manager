@@ -8,6 +8,7 @@
 #include "common/platform/native_user_home.h"
 #include "common/utils/hash_utils.h"
 #include "common/utils/io_utils.h"
+#include "common/utils/shell_escape.h"
 #include <algorithm>
 #include <array>
 #include <fstream>
@@ -217,6 +218,19 @@ namespace uam::provider_setup
 			first = false;
 		}
 		return text + (value.is_object() ? "}" : "]");
+	}
+
+	/// <summary>Whether a Codex launch fits the OS limit: Windows CreateProcess takes 32,767 characters for the whole
+	/// escaped command line; Linux limits each argument to 128 KiB (macOS has no lower per-argument limit).</summary>
+	inline bool WithinCodexLaunchLimit(const std::vector<std::string>& argv)
+	{
+#if defined(_WIN32)
+		std::size_t command_line = 0;
+		for (const std::string& argument : argv) command_line += uam::shell::EscapedArgSize(argument) + 1;
+		return command_line < 32767;
+#else
+		return std::ranges::all_of(argv, [](const std::string& argument) { return argument.size() < 128 * 1024; });
+#endif
 	}
 
 	/// OpenCode's built-in provider request timeout; UAM never configures a value at or below it.
@@ -694,7 +708,8 @@ namespace uam::provider_setup
 			if (!NoSymlinks(path)) { error = "Central runtime file contains a symbolic link."; return false; }
 		if (ec || !WriteRuntimeFile(instruction_path, instructions, error)) { error = "Could not install central instructions."; return false; }
 		std::vector<McpServerConfiguration> configured = uam::mcp_server_config::Parse(manifest.value("mcpServers", nlohmann::json::array()));
-		if (!uam::mcp_server_config::NormalizeAndValidate(configured, &error)) return false;
+		// The manifest holds only this computer's servers, with host ids cleared: check paths by its native rule.
+		if (!uam::mcp_server_config::NormalizeAndValidate(configured, &error, nullptr, uam::execution_hosts::kLocalHostId)) return false;
 		nlohmann::json servers = uam::mcp_server_config::ResolveForWorkspace(configured, uam::paths::Utf8PathString(workspace), true, true, &error);
 		if (!servers.is_array()) return false;
 		for (const nlohmann::json& server : session_servers) servers.push_back(server);
@@ -782,7 +797,7 @@ namespace uam::provider_setup
 			else if (!mcp_only)
 			{
 				if (instructions.size() > max_instruction_bytes) { error = host_instructions_only ? "Host instructions exceed the OS launch limit for this provider. Shorten them." : "Codex central instructions exceed the OS launch limit. Move reference material into skills."; return false; }
-				argv.insert(argv.begin() + 1, {"-c", "developer_instructions=" + nlohmann::json(instructions).dump()});
+				argv.insert(argv.begin() + 1, {"-c", "developer_instructions=" + TomlString(instructions)});
 			}
 			// Codex key -> configured name, so two names that share a key are refused instead of merged.
 			std::map<std::string, std::string> codex_keys;
@@ -821,6 +836,9 @@ namespace uam::provider_setup
 					}
 					argv.insert(argv.begin() + 1, {"-c", prefix + key + "=" + TomlValue(value)});
 				}
+				// The values that used to sit in the environment block now count against the command line; refuse
+				// clearly instead of an opaque launch failure. Only the server's name appears in the message.
+				if (!WithinCodexLaunchLimit(argv)) { error = "MCP server '" + name + "' makes the Codex launch command too long for this computer. Shorten its environment values or arguments."; return false; }
 			}
 		}
 		else if (provider == uam::provider_ids::kCopilotCli)
