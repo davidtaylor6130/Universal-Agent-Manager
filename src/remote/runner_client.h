@@ -184,6 +184,8 @@ namespace uam::remote
 		                        const std::filesystem::path& source,
 		                        const std::function<void(std::uintmax_t, std::uintmax_t)>& progress = {},
 		                        std::string* error_out = nullptr, std::stop_token stop_token = {});
+		/// Reconnects once, within the cleanup budget, when the connection is down or drops during the request:
+		/// it is the cleanup after a failed upload, whose connection is often the one that just dropped.
 		bool RemoveFile(const std::string& request_id,
 		                const std::filesystem::path& remote_path,
 		                std::string* error_out = nullptr);
@@ -256,6 +258,11 @@ namespace uam::remote
 		bool AddProcessControlToken(nlohmann::json& request,
 		                            const std::string& session_id,
 		                            std::string* error_out);
+		/// The connection lost to a failed request comes back first: a transfer that failed on the transport has
+		/// already disconnected. Bounded by the cleanup budget rather than a user's cancel, so a cancel still cleans up.
+		bool ReconnectForCleanup(std::string* error_out = nullptr);
+		/// Asks the helper to drop a partial upload's temporary file, reconnecting first when needed.
+		void AbortUpload(const std::string& upload_id);
 
 		IPlatformProcessService& m_processService;
 		std::vector<std::string> m_bridgeArgv;
