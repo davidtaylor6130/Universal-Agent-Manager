@@ -3247,6 +3247,8 @@ namespace uam
 			(void)PollCompletedAcpProcessStops(app, nullptr);
 			FinalizePendingAcpRemoteStopsForExit(app);
 			(void)FlushPendingChatSaves(app, false);
+			// This loop waits for chat saves to settle, including ones the flush just started (#526, #647).
+			RaiseAllChatSaveWorkersForBarrier(app);
 			settled = app.managed_initial_mentions.empty() && app.managed_followups.empty();
 			bool workers = std::ranges::any_of(app.managed_initial_mentions, [](const auto& entry) { return entry.second && (entry.second->work || !entry.second->retired->load(std::memory_order_acquire)); });
 			workers = workers || std::ranges::any_of(app.managed_followups, [](const auto& entry)

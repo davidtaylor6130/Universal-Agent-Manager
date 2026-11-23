@@ -9464,18 +9464,25 @@ For desktop observation and input, use only the provider's built-in controller; 
 	template <typename Work> static void StartChatSaveWorker(PendingChatSaveTask& task, Work&& work)
 	{
 		std::erase_if(task.worker_priorities, [](const std::shared_ptr<platform::BarrierRaisableWorkerPriority>& priority) { return priority->Finished(); });
+		// Reserve first, so recording the priority cannot fail once the worker is running.
+		task.worker_priorities.reserve(task.worker_priorities.size() + 1);
 		auto priority = std::make_shared<platform::BarrierRaisableWorkerPriority>();
 		platform::StartBarrierRaisableBackgroundThread(priority, std::forward<Work>(work)).detach();
-		// Losing this entry only loses the barrier raise; the worker and its result are unaffected.
-		try { task.worker_priorities.push_back(std::move(priority)); }
-		catch (...) { diagnostics::Write("Chat save worker priority was not recorded."); }
+		task.worker_priorities.push_back(std::move(priority));
 	}
 
-	// Call before any wait that blocks on this chat's save workers: force and shutdown barriers, synchronous saves.
 	static void RaiseChatSaveWorkersForBarrier(const PendingChatSaveTask& task) noexcept
 	{
 		for (const std::shared_ptr<platform::BarrierRaisableWorkerPriority>& priority : task.worker_priorities)
 			priority->RaiseForBarrier();
+	}
+
+	// Every chat's save workers, not only the waited-on chat's: publication holds the process-wide chat
+	// save lock, and Windows mutexes give a lowered holder no priority inheritance.
+	void RaiseAllChatSaveWorkersForBarrier(AppState& app) noexcept
+	{
+		for (const auto& [chat_id, task] : app.pending_chat_save_tasks)
+			if (task) RaiseChatSaveWorkersForBarrier(*task);
 	}
 
 	// Observes the real preparation future without consuming it or changing save ownership.
@@ -10655,11 +10662,12 @@ For desktop observation and input, use only the provider's built-in controller; 
 
 		void FinishPendingQueuedAdmissionSave(AppState& app, const std::string& chat_id)
 		{
+			// Synchronous saves and the force barrier come through here before they wait on save workers,
+			// directly or through the shared chat save lock.
+			RaiseAllChatSaveWorkersForBarrier(app);
 			const std::unordered_map<std::string, std::shared_ptr<PendingChatSaveTask>>::iterator found = app.pending_chat_save_tasks.find(chat_id);
 			if (found == app.pending_chat_save_tasks.end() || !found->second) return;
 			const std::shared_ptr<PendingChatSaveTask> task = found->second;
-			// Synchronous saves and the force barrier come through here before they wait on this chat's workers.
-			RaiseChatSaveWorkersForBarrier(*task);
 			task->queue_owned->store(false, std::memory_order_release);
 			if (!task->queued_publication.valid()) return;
 			try { (void)AdoptQueuedAdmissionReceipt(app, task, task->queued_publication.get()); }
@@ -10785,6 +10793,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 
 	bool FlushPendingChatSaves(AppState& app, bool force)
 	{
+		if (force) RaiseAllChatSaveWorkersForBarrier(app);
 		const double now = GetAppTimeSeconds();
 		PruneChatSaveRecords(app, now);
 		bool state_changed = false;

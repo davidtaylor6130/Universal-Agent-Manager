@@ -139,10 +139,20 @@ UAM_TEST(ChatSaveWorkersRiseForBarriersAndStopWorkersKeepDefaultPriority)
 		const std::size_t at = runtime.find(signature);
 		return at == std::string::npos ? std::string{} : LambdaBodyAfter(runtime, at);
 	};
-	UAM_ASSERT(body_of("void FinishPendingQueuedAdmissionSave(AppState& app").find("RaiseChatSaveWorkersForBarrier(*task);") != std::string::npos);
+	// Raises cover every chat's workers: publication holds the process-wide chat save lock.
+	const std::string finish = body_of("void FinishPendingQueuedAdmissionSave(AppState& app");
+	UAM_ASSERT(finish.find("RaiseAllChatSaveWorkersForBarrier(app);") < finish.find("pending_chat_save_tasks.find(chat_id)"));
 	UAM_ASSERT(body_of("static bool PollEmptyHeldSend(").find("if (force) RaiseChatSaveWorkersForBarrier(*task);") != std::string::npos);
 	UAM_ASSERT(body_of("static bool PollOwnedChatPublication(").find("if (force) RaiseChatSaveWorkersForBarrier(*task);") != std::string::npos);
 	const std::string flush = body_of("bool FlushPendingChatSaves(AppState& app, bool force)");
+	UAM_ASSERT(flush.find("if (force) RaiseAllChatSaveWorkersForBarrier(app);") == flush.find_first_not_of("{\n\t"));
+	// The shutdown quiesce loop spins on chat saves settling, so it raises after each flush.
+	const std::string scheduler = ReadSource("src/app/agent_run_scheduler.cpp");
+	const std::size_t quiesce = scheduler.find("bool AgentRunScheduler::QuiesceInitialForShutdown(AppState& app)");
+	UAM_ASSERT(quiesce != std::string::npos);
+	const std::string quiesce_body = LambdaBodyAfter(scheduler, quiesce);
+	const std::size_t quiesce_flush = quiesce_body.find("(void)FlushPendingChatSaves(app, false);");
+	UAM_ASSERT(quiesce_flush != std::string::npos && quiesce_body.find("RaiseAllChatSaveWorkersForBarrier(app);", quiesce_flush) != std::string::npos);
 	const std::size_t force_block = flush.find("if (force)\n");
 	UAM_ASSERT(force_block != std::string::npos);
 	UAM_ASSERT(flush.find("acp_detail::FinishPendingQueuedAdmissionSave(app, chat_id);", force_block) < flush.find("task->published.get()", force_block));
