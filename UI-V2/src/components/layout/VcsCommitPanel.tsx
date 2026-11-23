@@ -39,7 +39,7 @@ function statusColor(status: string) {
 }
 
 /** Updates still running, by chat: the panel is per selected chat, but an update outlives a switch to another chat. */
-const updatesInFlight = new Map<string, { requestId: string; result: Promise<VcsUpdateResult> }>()
+const updatesInFlight = new Map<string, { requestId: string; vcsType: VcsType; result: Promise<VcsUpdateResult> }>()
 
 export function VcsCommitPanel() {
   const gitEnabled = useAppStore((s) => s.gitEnabled)
@@ -221,7 +221,7 @@ export function VcsCommitPanel() {
   const revisionPrefix = selectedVcsType === 'svn' ? 'r' : ''
 
   /** Shows an update's progress and outcome while its chat stays selected; switching away and back picks it up again. */
-  const followUpdate = useCallback(async (sourceSessionId: string, vcsType: VcsType, running: { requestId: string; result: Promise<VcsUpdateResult> }) => {
+  const followUpdate = useCallback(async (sourceSessionId: string, vcsType: VcsType, running: { requestId: string; vcsType: VcsType; result: Promise<VcsUpdateResult> }) => {
     const request = ++latestUpdateRequestRef.current
     updateRequestIdRef.current = running.requestId
     setUpdating(true)
@@ -244,7 +244,7 @@ export function VcsCommitPanel() {
 
   useEffect(() => {
     const running = activeSessionId ? updatesInFlight.get(activeSessionId) : undefined
-    if (running && activeSessionId) void followUpdate(activeSessionId, selectedVcsType, running)
+    if (running && activeSessionId) void followUpdate(activeSessionId, running.vcsType, running)
     // Only on arriving at a chat; followUpdate itself changes with every refresh.
   }, [activeSessionId]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -252,7 +252,7 @@ export function VcsCommitPanel() {
     if (!activeSessionId || updating || committing) return
     const sourceSessionId = activeSessionId
     const requestId = `vcs-update:${sourceSessionId}:${Date.now()}`
-    const running = { requestId, result: updateVcsWorkspace(sourceSessionId, sourceVcsType, requestId) }
+    const running = { requestId, vcsType: sourceVcsType, result: updateVcsWorkspace(sourceSessionId, sourceVcsType, requestId) }
     updatesInFlight.set(sourceSessionId, running)
     void running.result.finally(() => { if (updatesInFlight.get(sourceSessionId) === running) updatesInFlight.delete(sourceSessionId) })
     setNotice('')
@@ -342,7 +342,7 @@ export function VcsCommitPanel() {
           </div>
           {snapshot && <p className="mb-2 text-xs" style={{ color: 'var(--text-3)' }}>
             {snapshotSvn
-              ? `Commits stay in this hidden copy. Publishing to SVN happens after you port the chat's changes back to ${snapshotSourceName}; SVN history and Update use that working copy.`
+              ? `Commits stay in this hidden copy. Publishing to SVN happens after you port the chat's changes back to ${snapshotSourceName}${historyAvailable || updateAvailable ? '; SVN history and Update use that working copy' : ''}.`
               : `Commits stay in this hidden copy. Port the chat's changes back to apply them to ${snapshotSourceName}.`}
           </p>}
         </div>

@@ -453,6 +453,32 @@ describe('commit panel SVN actions', () => {
     expect(updateVcsWorkspace).toHaveBeenCalledTimes(1)
   })
 
+  it('resumes a snapshot chat\'s SVN update as SVN after switching chats', async () => {
+    const snapshotStatus = {
+      available: true, vcsTypes: ['git'], activeVcsType: 'git', workspaceDirectory: '/data/worktrees/x/chat', branchOrRevision: 'uam/chat',
+      changedFiles: [], lineStatsReady: true, capabilities: [], warning: '', error: '',
+      localSnapshot: { sourceKind: 'svn', sourceDirectory: '/work/checkout', sourceCapabilities: ['history', 'update'] },
+    } as VcsCommitStatus
+    const pending = deferred<{ ok: boolean; conflicts: boolean; revision: string; output: string; error: string }>()
+    const updateVcsWorkspace = vi.fn((_id: string, _type: string, _requestId?: string) => pending.promise)
+    const getVcsCommitStatus = vi.fn(async () => snapshotStatus)
+    await act(async () => { useAppStore.setState({
+      sessions: [
+        { id: 'chat-a', name: 'A', viewMode: 'chat', folderId: null, workspaceDirectory: '/tmp/a', createdAt: new Date(), updatedAt: new Date() },
+        { id: 'chat-b', name: 'B', viewMode: 'chat', folderId: null, workspaceDirectory: '/tmp/b', createdAt: new Date(), updatedAt: new Date() },
+      ],
+      updateVcsWorkspace, getVcsCommitStatus,
+    }) })
+    await act(async () => root.render(<VcsCommitPanel />))
+    await act(async () => button('Update SVN').click())
+    await act(async () => { useAppStore.setState({ activeSessionId: 'chat-b' }) })
+    await act(async () => { useAppStore.setState({ activeSessionId: 'chat-a' }) })
+    await act(async () => pending.resolve({ ok: true, conflicts: false, revision: '7', output: '', error: '' }))
+    expect(updateVcsWorkspace).toHaveBeenCalledWith('chat-a', 'svn', expect.any(String))
+    expect(host.querySelector('[role="status"]')!.textContent).toContain('Updated to r7.')
+    expect(getVcsCommitStatus).toHaveBeenLastCalledWith('chat-a', 'svn', expect.anything())
+  })
+
   it('labels a local snapshot as its Git copy and runs SVN history and update against the source working copy', async () => {
     const snapshotStatus: VcsCommitStatus = {
       available: true, vcsTypes: ['git'], activeVcsType: 'git', workspaceDirectory: '/data/worktrees/x/chat', branchOrRevision: 'uam/chat',
@@ -463,7 +489,7 @@ describe('commit panel SVN actions', () => {
     await act(async () => root.render(<VcsCommitPanel />))
     expect(host.textContent).toContain('Local snapshot (Git)')
     expect(host.textContent).not.toContain('GIT')
-    expect(host.textContent).toContain('Publishing to SVN happens after you port the chat\'s changes back to checkout')
+    expect(host.textContent).toContain('Publishing to SVN happens after you port the chat\'s changes back to checkout; SVN history and Update use that working copy.')
     expect(host.textContent).toContain('Commits only the selected files to the snapshot copy')
 
     await act(async () => button('Update SVN').click())
@@ -477,6 +503,8 @@ describe('commit panel SVN actions', () => {
     await act(async () => { useAppStore.setState({ svnEnabled: false }) })
     await act(async () => button('Refresh VCS status').click())
     expect(host.textContent).toContain('Local snapshot (Git)')
+    expect(host.textContent).toContain('Publishing to SVN happens after you port the chat\'s changes back to checkout.')
+    expect(host.textContent).not.toContain('use that working copy')
     expect([...host.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent)).not.toContain('SVN history')
     expect([...host.querySelectorAll('button')].some((candidate) => candidate.textContent === 'Update SVN')).toBe(false)
     await act(async () => { useAppStore.setState({ svnEnabled: true, getVcsCommitStatus: vi.fn(async () => ({ ...snapshotStatus, localSnapshot: { sourceKind: 'folder', sourceDirectory: '/work/notes', sourceCapabilities: [] } }) as VcsCommitStatus) }) })

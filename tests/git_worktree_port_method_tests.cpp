@@ -723,13 +723,18 @@ UAM_TEST(GitWorktreeManagedSnapshotInterruptedCleanupRetainsRepositoryForRetry)
 UAM_TEST(GitWorktreePortSnapshotFallsBackToPatchForMergeAndSquash)
 {
 	if (!GitAvailableForTests()) return;
-	// A plain folder under Merge, and a folder marked as an SVN working copy under Squash: neither shares history with
-	// its snapshot, so both port back through the patch path with the one-line notice instead of being refused.
-	for (const bool svn : {false, true})
+	// The snapshot reads SVN ignore rules through this clean stand-in for the marked folder below.
+	const ScopedCleanSvnStatus clean_svn;
+	// A plain folder under Merge, a folder marked as an SVN working copy under Squash, and a plain folder below an empty
+	// .git folder (which snapshots ignore, as Git does): none shares history with its snapshot, so each ports back through
+	// the patch path with the one-line notice instead of being refused.
+	for (const int variant : {0, 1, 2})
 	{
-		TempDir temporary{svn ? "uam-snapshot-port-svn" : "uam-snapshot-port-plain"};
-		const fs::path source = temporary.root / "source";
+		const bool svn = variant == 1;
+		TempDir temporary{variant == 0 ? "uam-snapshot-port-plain" : svn ? "uam-snapshot-port-svn" : "uam-snapshot-port-empty-git"};
+		const fs::path source = variant == 2 ? temporary.root / "home" / "source" : temporary.root / "source";
 		fs::create_directories(source);
+		if (variant == 2) fs::create_directories(temporary.root / "home" / ".git");
 		if (svn) UAM_ASSERT(uam::io::WriteTextFile(source / ".svn" / "entries", "svn metadata\n"));
 		UAM_ASSERT(uam::io::WriteTextFile(source / "app.txt", "baseline\n"));
 		uam::AppState app;

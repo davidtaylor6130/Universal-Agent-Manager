@@ -1238,10 +1238,10 @@ namespace uam
 		}
 
 		/// A UAM-owned snapshot (plain folder, SVN working copy or unborn repository) has no shared history with its
-		/// source, so merge and squash cannot stage it there; it ports back only as a patch.
+		/// source, so merge and squash cannot stage it there; it ports back only as a patch. Other refusals stay refusals.
 		bool RequiresPatchPort(const GitWorktreeStatus& status)
 		{
-			return status.managed_repository || status.is_svn_workspace || !status.is_git_repository;
+			return status.managed_repository;
 		}
 
 		std::string WithPatchPortNotice(std::string message)
@@ -1249,6 +1249,16 @@ namespace uam
 			return message + " " + std::string(kSnapshotPatchPortNotice);
 		}
 	} // namespace
+
+	LocalSnapshotSourceKind DescribeLocalSnapshotSource(const AppState& app, const ChatSession& chat, std::filesystem::path* source_out)
+	{
+		if (!uam::paths::IsControllerLocalWorkspace(chat) || !uam::paths::HasGitWorktreeSource(chat)) return LocalSnapshotSourceKind::None;
+		const std::filesystem::path source = EffectiveSourceWorkspace(app, chat);
+		const std::filesystem::path managed = ManagedRepositoryRoot(app, source, chat.id);
+		if (!uam::paths::IsDirectoryNoThrow(managed) || uam::paths::IsLinkOrReparsePointNoThrow(managed)) return LocalSnapshotSourceKind::None;
+		if (source_out != nullptr) *source_out = source;
+		return ClassifyLocalSnapshotSource(source) == LocalSnapshotSource::Svn ? LocalSnapshotSourceKind::Svn : LocalSnapshotSourceKind::Folder;
+	}
 
 	std::string RemoteWorktreeHostIdentity(const ExecutionHost& host)
 	{
@@ -3003,105 +3013,108 @@ namespace uam
 		const bool patch_fallback = app.settings.git_port_method != GitPortMethod::Patch && RequiresPatchPort(result.status);
 		if (app.settings.git_port_method != GitPortMethod::Patch && !patch_fallback) return StageCommittedPort(app, chat, std::move(result), {});
 
-		if (RefuseSharedWorktreeMutation(app, chat, WorktreePathFromStatus(result.status), &result.message, true)) return result;
+		// Every outcome of a fallback, including a refusal before the patch is written, names why a patch was used.
+		const auto port_as_patch = [&]() -> GitWorktreeOperationResult
+		{
+			if (RefuseSharedWorktreeMutation(app, chat, WorktreePathFromStatus(result.status), &result.message, true)) return result;
 
-		const std::filesystem::path source = SourcePathFromStatusOrChat(app, chat, result.status);
-		const std::filesystem::path worktree = WorktreePathFromStatus(result.status);
-		const std::string base_ref = uam::strings::Trim(result.status.base_ref);
-		if (base_ref.empty())
-		{
-			result.message = "Isolation baseline is missing.";
-			return result;
-		}
-		const std::filesystem::path repository = result.status.managed_repository ? ManagedRepositoryRoot(app, source, chat.id) : source;
-		if (!result.status.managed_repository)
-		{
-			bool source_dirty = false;
-			if (!IsDirty(source, &source_dirty, &result.message))
+			const std::filesystem::path source = SourcePathFromStatusOrChat(app, chat, result.status);
+			const std::filesystem::path worktree = WorktreePathFromStatus(result.status);
+			const std::string base_ref = uam::strings::Trim(result.status.base_ref);
+			if (base_ref.empty())
+			{
+				result.message = "Isolation baseline is missing.";
+				return result;
+			}
+			const std::filesystem::path repository = result.status.managed_repository ? ManagedRepositoryRoot(app, source, chat.id) : source;
+			if (!result.status.managed_repository)
+			{
+				bool source_dirty = false;
+				if (!IsDirty(source, &source_dirty, &result.message))
+				{
+					return result;
+				}
+				if (source_dirty)
+				{
+					result.message = "Source workspace has uncommitted changes. Commit, stash, or discard them before porting chat changes back.";
+					return result;
+				}
+			}
+
+			if (!StageOutsideAttachmentCopies(worktree, &result.message))
 			{
 				return result;
 			}
-			if (source_dirty)
+			if (result.status.managed_repository && ManagedSourceHasConflicts(repository, source, worktree, base_ref, result.message))
 			{
-				result.message = "Source workspace has uncommitted changes. Commit, stash, or discard them before porting chat changes back.";
+				GitCommand(worktree, "reset --mixed HEAD");
 				return result;
 			}
-		}
 
-		if (!StageOutsideAttachmentCopies(worktree, &result.message))
-		{
-			return result;
-		}
-		if (result.status.managed_repository && ManagedSourceHasConflicts(repository, source, worktree, base_ref, result.message))
-		{
-			GitCommand(worktree, "reset --mixed HEAD");
-			return result;
-		}
+			ProcessExecutionResult diff_result = RunCommand(BuildGitCommandInDirectory(worktree, "diff --binary --cached " + uam::shell::EscapeArg(base_ref)));
+			if (!CommandSucceeded(diff_result))
+			{
+				result.message = CommandOutputOrError(diff_result);
+				return result;
+			}
+			if (!GitCommand(worktree, "reset --mixed HEAD", &result.message))
+			{
+				return result;
+			}
 
-		ProcessExecutionResult diff_result = RunCommand(BuildGitCommandInDirectory(worktree, "diff --binary --cached " + uam::shell::EscapeArg(base_ref)));
-		if (!CommandSucceeded(diff_result))
-		{
-			result.message = CommandOutputOrError(diff_result);
-			return result;
-		}
-		if (!GitCommand(worktree, "reset --mixed HEAD", &result.message))
-		{
-			return result;
-		}
+			const std::string patch = diff_result.output;
+			if (uam::strings::IsBlank(patch))
+			{
+				std::string save_error;
+				if (!ClearWorktreeIsolation(app, chat, result.status, &save_error, m_cleanup_hook_for_tests))
+				{
+					result.message = save_error;
+					return result;
+				}
+				CompleteSuccessfulResult(result, Status(app, chat), "No chat worktree changes to port. Returned to the source workspace.");
+				return result;
+			}
 
-		const std::string patch = diff_result.output;
-		if (uam::strings::IsBlank(patch))
-		{
+			const std::filesystem::path patch_path = PatchPathForChat(app, chat.id);
+			if (!uam::io::WriteTextFile(patch_path, patch))
+			{
+				result.message = "Failed to write patch file.";
+				return result;
+			}
+
+			if (result.status.managed_repository)
+			{
+				const ProcessExecutionResult check_result = RunCommand(BuildGitCommandInDirectory(source, "-c core.autocrlf=false apply --check " + uam::shell::EscapeArg(uam::paths::Utf8PathString(patch_path))));
+				if (!CommandSucceeded(check_result))
+				{
+					result.patch_path = patch_path;
+					result.message = CommandOutputOrFallback(check_result, "Chat changes cannot be applied cleanly to the source workspace.");
+					return result;
+				}
+			}
+			if (app.worktree_cleanup_family && !ManagedSubagentControlService::ValidateWorktreeFamily(*app.worktree_cleanup_family, &result.message)) return result;
+			ProcessExecutionResult apply_result = RunCommand(BuildGitCommandInDirectory(source, std::string(result.status.managed_repository ? "-c core.autocrlf=false apply " : "apply --3way ") + uam::shell::EscapeArg(uam::paths::Utf8PathString(patch_path))));
+			if (!CommandSucceeded(apply_result))
+			{
+				result.patch_path = patch_path;
+				result.message = CommandOutputOrFallback(apply_result, "Failed to apply patch to source workspace.");
+				return result;
+			}
+
 			std::string save_error;
 			if (!ClearWorktreeIsolation(app, chat, result.status, &save_error, m_cleanup_hook_for_tests))
 			{
 				result.message = save_error;
 				return result;
 			}
-			const std::string message = "No chat worktree changes to port. Returned to the source workspace.";
-			CompleteSuccessfulResult(result, Status(app, chat), patch_fallback ? WithPatchPortNotice(message) : message);
-			return result;
-		}
 
-		const std::filesystem::path patch_path = PatchPathForChat(app, chat.id);
-		if (!uam::io::WriteTextFile(patch_path, patch))
-		{
-			result.message = "Failed to write patch file.";
-			return result;
-		}
-
-		if (result.status.managed_repository)
-		{
-			const ProcessExecutionResult check_result = RunCommand(BuildGitCommandInDirectory(source, "-c core.autocrlf=false apply --check " + uam::shell::EscapeArg(uam::paths::Utf8PathString(patch_path))));
-			if (!CommandSucceeded(check_result))
-			{
-				result.patch_path = patch_path;
-				result.message = CommandOutputOrFallback(check_result, "Chat changes cannot be applied cleanly to the source workspace.");
-				if (patch_fallback) result.message = WithPatchPortNotice(result.message);
-				return result;
-			}
-		}
-		if (app.worktree_cleanup_family && !ManagedSubagentControlService::ValidateWorktreeFamily(*app.worktree_cleanup_family, &result.message)) return result;
-		ProcessExecutionResult apply_result = RunCommand(BuildGitCommandInDirectory(source, std::string(result.status.managed_repository ? "-c core.autocrlf=false apply " : "apply --3way ") + uam::shell::EscapeArg(uam::paths::Utf8PathString(patch_path))));
-		if (!CommandSucceeded(apply_result))
-		{
 			result.patch_path = patch_path;
-			result.message = CommandOutputOrFallback(apply_result, "Failed to apply patch to source workspace.");
-			if (patch_fallback) result.message = WithPatchPortNotice(result.message);
+			CompleteSuccessfulResult(result, Status(app, chat), "Applied chat worktree changes and returned to the source workspace.");
 			return result;
-		}
-
-		std::string save_error;
-		if (!ClearWorktreeIsolation(app, chat, result.status, &save_error, m_cleanup_hook_for_tests))
-		{
-			result.message = save_error;
-			return result;
-		}
-
-		result.patch_path = patch_path;
-		const std::string message = "Applied chat worktree changes and returned to the source workspace.";
-		CompleteSuccessfulResult(result, Status(app, chat), patch_fallback ? WithPatchPortNotice(message) : message);
-		return result;
+		};
+		GitWorktreeOperationResult ported = port_as_patch();
+		if (patch_fallback && !ported.message.empty()) ported.message = WithPatchPortNotice(ported.message);
+		return ported;
 	}
 
 	bool GitWorktreeService::CanCheckpointTurn(const AppState& app, const ChatSession& chat, std::string* reason_out, std::stop_token stop_token) const

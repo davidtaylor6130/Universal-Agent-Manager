@@ -57,6 +57,13 @@ namespace uam
 		bool requires_patch_port = false;
 	};
 
+	enum class LocalSnapshotSourceKind { None, Svn, Folder };
+
+	/// <summary>For a local chat isolated in a UAM-owned snapshot (a managed repository exists for it), what it was copied
+	/// from: an SVN working copy, or a folder (plain or an unborn Git repository). The same classification snapshot creation
+	/// uses, so the commit panel and SVN routing agree with it. File-system checks only; call it off the UI thread.</summary>
+	LocalSnapshotSourceKind DescribeLocalSnapshotSource(const AppState& app, const ChatSession& chat, std::filesystem::path* source_out = nullptr);
+
 	/// <summary>One-line notice added to a patch port that ran in place of the configured merge or squash.</summary>
 	inline constexpr std::string_view kSnapshotPatchPortNotice = "Local snapshots port back as a patch; the Merge and Squash port methods apply only to Git worktrees.";
 

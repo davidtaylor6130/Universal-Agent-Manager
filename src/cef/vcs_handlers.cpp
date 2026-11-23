@@ -618,6 +618,7 @@ void UamQueryHandler::HandlePortChatWorktreeChanges(CefRefPtr<CefBrowser> browse
 		cb->Failure(409, "Stop the chat runtime before porting worktree changes.");
 		return;
 	}
+	if (const std::string refusal = SnapshotSourceUpdateRefusal(*chat); !refusal.empty()) { cb->Failure(409, refusal); return; }
 
 	if (m_app.settings.git_port_method != GitPortMethod::Patch)
 	{
@@ -696,6 +697,7 @@ void UamQueryHandler::HandlePortChatWorktreeChanges(CefRefPtr<CefBrowser> browse
 			    // success message names the fallback. The same query receives that result; nothing was staged above.
 			    if (m_app.pending_chat_save_at_by_chat_id.contains(chat_id)) { result = AsyncFailure(409, "Wait for chat history to finish saving before changing workspace isolation."); return; }
 			    if (ChatRuntimeBusy(m_app, chat_id)) { result = AsyncFailure(409, "Stop the chat runtime before porting worktree changes."); return; }
+			    if (std::string refusal = SnapshotSourceUpdateRefusal(*current); !refusal.empty()) { result = AsyncFailure(409, std::move(refusal)); return; }
 			    if (m_app.worktree_operation_chat_ids.contains(chat_id) || m_app.git_port_requests.contains(chat_id)) { result = AsyncFailure(409, "Wait for the current workspace operation to finish."); return; }
 			    result.callback_deferred = true;
 			    RunWorktreeOperationAsync(m_asyncLifetime, m_app, browser, cb, chat_id, &uam::GitWorktreeService::PortChatChanges, "Failed to port worktree changes.");
@@ -1188,15 +1190,23 @@ void UamQueryHandler::HandleUpdateVcsWorkspace(CefRefPtr<CefBrowser> browser, co
 	const std::filesystem::path workspace = snapshot_source.empty() ? uam::paths::ResolveWorkspaceRootPath(m_app, *chat) : snapshot_source;
 	const bool local = uam::paths::IsControllerLocalWorkspace(*chat);
 	// Every chat sharing the working copy is fenced for the whole update, so none can start working in it meanwhile.
-	// Snapshot chats of the same working copy are fenced too, so none ports changes back into it mid-update.
+	// A chat isolated in a snapshot of it keeps working in its own copy; it may not port changes back mid-update
+	// (SnapshotSourceUpdateRefusal), and an update waits for a port already running.
 	std::vector<std::string> fenced = {chat->id};
 	for (const ChatSession& other : m_app.chats)
 	{
 		if (other.id == chat->id || uam::paths::IsControllerLocalWorkspace(other) != local || (!local && other.execution_host_id != chat->execution_host_id)) continue;
-		const bool works_in_copy = WorkspacesOverlap(m_app, *chat, workspace, uam::paths::ResolveWorkspaceRootPath(m_app, other));
-		const std::filesystem::path other_source = uam::paths::LocalIsolationSourcePath(other);
-		if (!works_in_copy && (other_source.empty() || !WorkspacesOverlap(m_app, *chat, workspace, other_source))) continue;
-		if (works_in_copy && ChatRuntimeBusy(m_app, other.id))
+		if (!WorkspacesOverlap(m_app, *chat, workspace, uam::paths::ResolveWorkspaceRootPath(m_app, other)))
+		{
+			const std::filesystem::path other_source = uam::paths::LocalIsolationSourcePath(other);
+			if (!other_source.empty() && WorkspacesOverlap(m_app, *chat, workspace, other_source) && m_app.worktree_operation_chat_ids.contains(other.id))
+			{
+				cb->Failure(409, "Another chat is porting changes into this working copy. Try again shortly.");
+				return;
+			}
+			continue;
+		}
+		if (ChatRuntimeBusy(m_app, other.id))
 		{
 			cb->Failure(409, "Another chat is working in this working copy. Stop it before updating.");
 			return;
@@ -1225,6 +1235,7 @@ void UamQueryHandler::HandleUpdateVcsWorkspace(CefRefPtr<CefBrowser> browser, co
 	if (!remote_vcs.Hold(remote_vcs_lease)) { cb->Failure(409, kRemoteHelperSetupRunning); return; }
 	const std::shared_ptr<std::stop_source> stop = std::make_shared<std::stop_source>();
 	m_vcsRequestStops[request_id] = stop;
+	if (local) m_vcsUpdateTargets[request_id] = workspace;
 	for (const std::string& id : fenced) m_app.worktree_operation_chat_ids.insert(id);
 	// An update can take minutes, so it gets its own thread rather than holding a shared slow-query lane that status,
 	// diff and history reads of other chats (or of every chat on an SSH host) wait behind.
@@ -1243,13 +1254,27 @@ void UamQueryHandler::HandleUpdateVcsWorkspace(CefRefPtr<CefBrowser> browser, co
 	                 {
 		                 for (const std::string& id : fenced) m_app.worktree_operation_chat_ids.erase(id);
 		                 const auto found = m_vcsRequestStops.find(request_id);
-		                 if (found != m_vcsRequestStops.end() && found->second == stop) m_vcsRequestStops.erase(found);
+		                 if (found != m_vcsRequestStops.end() && found->second == stop)
+		                 {
+			                 m_vcsRequestStops.erase(found);
+			                 m_vcsUpdateTargets.erase(request_id);
+		                 }
 		                 if (result.ok) uam::PushStateUpdateIfChanged(browser, m_app);
 	                 }))
 	{
 		for (const std::string& id : fenced) m_app.worktree_operation_chat_ids.erase(id);
 		m_vcsRequestStops.erase(request_id);
+		m_vcsUpdateTargets.erase(request_id);
 	}
+}
+
+std::string UamQueryHandler::SnapshotSourceUpdateRefusal(const ChatSession& chat) const
+{
+	const std::filesystem::path source = uam::paths::LocalIsolationSourcePath(chat);
+	if (source.empty()) return {};
+	for (const auto& [request_id, target] : m_vcsUpdateTargets)
+		if (WorkspacesOverlap(m_app, chat, source, target)) return "The working copy this chat was copied from is being updated. Port changes back after the update finishes.";
+	return {};
 }
 
 void UamQueryHandler::HandleCancelVcsRequest(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
