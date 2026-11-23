@@ -1996,7 +1996,9 @@ UAM_TEST(PerformanceSuiteUamRequestOverhead)
 				if (context == "ssh_root" || context == "read_only_agent" || !UAM_ENABLE_COMPUTER_USE) UAM_ASSERT(!has("computer_use_request"));
 				if (context == "read_only_agent") UAM_ASSERT(!has("goal_create") && !has("agent_cancel") && !has("chat_create"));
 				// Read-only insight tools stay listed wherever any UAM tool is.
-				if (context != "goal_reviewer") UAM_ASSERT(has("usage_report") && has("worktree_status") && has("memory_search"));
+				if (context != "goal_reviewer") UAM_ASSERT(has("usage_report") && has("worktree_status"));
+				// Recall reads nothing on an SSH host, so memory_search is offered only locally.
+				if (context != "goal_reviewer") UAM_ASSERT(has("memory_search") == (context != "ssh_root"));
 				if (context == "child_without_delegates") UAM_ASSERT(!has("agent_list") && !has("agent_delegate") && !has("agent_wait"));
 				if (context == "temporary_side_chat") UAM_ASSERT(!has("pr_watch") && !has("pr_unwatch") && !has("secret_request"));
 				if (view == "cli") UAM_ASSERT(!has("agent_wait") && !has("html_view_preview") && !has("html_view_publish"));

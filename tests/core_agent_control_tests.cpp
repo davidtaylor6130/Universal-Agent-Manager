@@ -2111,7 +2111,7 @@ UAM_TEST(UamControlMemorySearchUsesOnlyTheCallingChatsRecallScopes)
 	const ChatSession& caller = *ChatDomainService().FindChatById(fixture.app, "memory-caller");
 	const std::vector<MemoryService::RecallMatch> ranked = MemoryService::RankRecall(MemoryService::RecallRoots(fixture.app, caller), "widget indentation release");
 	UAM_ASSERT_EQ(ranked.size(), std::size_t{2});
-	UAM_ASSERT_EQ(results[0].value("text", ""), ranked[0].text);
+	UAM_ASSERT_EQ("- " + results[0].value("text", ""), ranked[0].text);
 	UAM_ASSERT_EQ(ChatDomainService().FindChatById(fixture.app, "memory-caller")->uam_control_audit.back().method, std::string("memory_search"));
 
 	// A query without searchable words answers at once with no results.
