@@ -9487,6 +9487,21 @@ describe('ChatView', () => {
     expect(text.indexOf('Settled answer.')).toBeLessThan(text.indexOf('Follow-up row'))
   })
 
+  it('renders a processing answer and its next tool once at a stale-anchored row when a steer row follows it', () => {
+    const text = renderTurnAfterFollowUp({ ...liveAnswerWithTool, turnAssistantMessageIndex: 5 })
+    expect(text.match(/Settled answer\./g)).toHaveLength(1)
+    expect(text.match(/Inspect workspace files/g)).toHaveLength(1)
+    expect(text.indexOf('Settled answer.')).toBeLessThan(text.indexOf('Inspect workspace files'))
+    expect(text.indexOf('Inspect workspace files')).toBeLessThan(text.indexOf('Follow-up row'))
+  })
+
+  it.each([false, true])('keeps the turn card when the matching settled row is outside the rendered window (processing %s)', (processing) => {
+    const trailingRows = Array.from({ length: 200 }, (_, index): Message => ({ id: `q-${index}`, sessionId: 'chat-1', role: 'user', content: `Queued row ${index}`, createdAt: new Date(3) }))
+    const text = renderTurnAfterFollowUp({ ...(processing ? liveAnswerWithTool : {}), turnAssistantMessageIndex: 5, trailingRows })
+    expect(text).not.toContain('Please inspect the workspace')
+    expect(text.match(/Settled answer\./g)).toHaveLength(1)
+  })
+
   it('keeps the live card for a settled answer whose stale row is followed by a pending permission', () => {
     const text = renderTurnAfterFollowUp({
       turnAssistantMessageIndex: 5,

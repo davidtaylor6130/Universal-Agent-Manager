@@ -1252,11 +1252,15 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     messages[recordedTurnAssistantMessageIndex]?.role === 'assistant'
   // A live turn whose index no longer resolves still owns the latest assistant row when that row holds its text; the
   // timeline replaces the row in place, keeping live tools and controls without a second card.
+  // A steer, queued or prepared user row can follow the answer (#278); the turn's own user row still places it then.
+  const latestAssistantFollowsTurnUser =
+    latestAssistantMessageIndex >= earliestRenderedMessageIndex &&
+    (latestAssistantMessageIndex > latestUserMessageIndex ||
+      (latestAssistantMessageIndex > turnUserMessageIndex && messages[turnUserMessageIndex]?.role === 'user'))
   const liveTurnOwnsLatestAssistant =
     !recordedTurnAssistantMatches && Boolean(acp?.processing) &&
     historyStartIndex + messages.length >= (session.messageCount ?? 0) &&
-    latestAssistantMessageIndex >= earliestRenderedMessageIndex &&
-    latestAssistantMessageIndex > latestUserMessageIndex &&
+    latestAssistantFollowsTurnUser &&
     contentIsExactlyTurnText(messages[latestAssistantMessageIndex].content, turnEvents, messages[latestAssistantMessageIndex].isStreaming)
   const turnAssistantMessageIndex = liveTurnOwnsLatestAssistant ? latestAssistantMessageIndex : recordedTurnAssistantMessageIndex
   const turnAssistantMessageMatches = recordedTurnAssistantMatches || liveTurnOwnsLatestAssistant
@@ -1266,11 +1270,9 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     messages[turnUserMessageIndex]?.role === 'user' &&
     (turnUserMessageIndex === messages.length - 1 ||
       (turnAssistantMessageMatches && turnUserMessageIndex < turnAssistantMessageIndex))
-  // A settled answer may be followed by a queued or prepared user row (#278); the turn's own user row still places it.
   const completedFallbackAlreadyPersisted =
     !acp?.processing &&
-    (latestAssistantMessageIndex > latestUserMessageIndex ||
-      (latestAssistantMessageIndex > turnUserMessageIndex && messages[turnUserMessageIndex]?.role === 'user')) &&
+    latestAssistantFollowsTurnUser &&
     contentIsExactlyTurnText(messages[latestAssistantMessageIndex]?.content ?? '', turnEvents)
   // Bind only a confirmed assistant; steering can put user messages between turn rows.
   const disclosureAssistant = turnAssistantMessageMatches
