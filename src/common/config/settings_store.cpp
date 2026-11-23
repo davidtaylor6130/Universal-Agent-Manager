@@ -581,7 +581,8 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 		settings.provider_chat_defaults[provider_key] = NormalizeProviderChatDefaults(settings.provider_chat_defaults[provider_key], provider_key);
 	}
 
-	void ClampSettings(AppSettings& settings)
+	/// <param name="removed_mcp_servers">Load only: receives the reason for each invalid MCP entry it drops.</param>
+	void ClampSettings(AppSettings& settings, std::vector<std::string>* removed_mcp_servers = nullptr)
 	{
 		settings.voice_input_mode = uam::voice_input::NormalizeMode(settings.voice_input_mode);
 		settings.voice_input_server_base_url = uam::strings::Trim(settings.voice_input_server_base_url);
@@ -604,9 +605,12 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 		settings.default_editor_preset_id = uam::editor_file_associations::NormalizeEditorPresetId(settings.default_editor_preset_id);
 		uam::editor_file_associations::NormalizeEditorFileAssociations(settings.editor_file_associations);
 		uam::execution_hosts::Normalize(settings.execution_hosts);
-		if (!uam::mcp_server_config::NormalizeAndValidate(settings.mcp_servers, nullptr, &settings.execution_hosts)) settings.mcp_servers.clear();
 		uam::compute_pools::Normalize(settings.compute_pools);
 		std::erase_if(settings.host_scoped_settings, [&](const std::pair<const std::string, HostScopedSettings>& entry) { const ExecutionHost* host = uam::execution_hosts::Find(settings.execution_hosts, entry.first); return host == nullptr || host->transport != "ssh"; });
+		// Per entry, after hosts: one bad server must not clear the rest, and each path is checked on its own computer.
+		uam::mcp_server_config::NormalizeEach(settings.mcp_servers, &settings.execution_hosts, {}, removed_mcp_servers);
+		for (auto& [host_id, scoped] : settings.host_scoped_settings)
+			if (scoped.mcp_servers) uam::mcp_server_config::NormalizeEach(*scoped.mcp_servers, &settings.execution_hosts, host_id, removed_mcp_servers);
 		uam::provider_availability::Normalize(settings.provider_availability);
 		std::string routing_error;
 		ExecutionRoutingSettings validated_routing;
@@ -1207,11 +1211,9 @@ SettingsLoadResult SettingsStore::LoadInternal(const std::filesystem::path& sett
 						if (uam::provider_ids::IsRetainedExcludedProviderId(NormalizeStoredProviderId(saved))) (void)SelectIncludedProvider(settings, "host:" + entry.key(), saved, "");
 						else next.default_new_chat_provider_id = NormalizeProviderId(saved);
 					}
+					// Validated per entry once hosts are loaded (ClampSettings), since they are saved after this key.
 					if (entry.value().contains("servers") && entry.value()["servers"].is_array())
-					{
-						std::vector<McpServerConfiguration> servers = uam::mcp_server_config::Parse(entry.value()["servers"]);
-						if (uam::mcp_server_config::NormalizeAndValidate(servers, nullptr, nullptr, entry.key())) next.mcp_servers = std::move(servers);
-					}
+						next.mcp_servers = uam::mcp_server_config::Parse(entry.value()["servers"]);
 					settings.host_scoped_settings[entry.key()] = std::move(next);
 				}
 			}
@@ -1295,7 +1297,7 @@ SettingsLoadResult SettingsStore::LoadInternal(const std::filesystem::path& sett
 	{
 		settings.provider_extra_flags = legacy_extra_flags;
 	}
-	ClampSettings(settings);
+	ClampSettings(settings, &result.removed_mcp_servers);
 	if (legacy_yolo)
 	{
 		for (auto& [provider_id, defaults] : settings.provider_chat_defaults)

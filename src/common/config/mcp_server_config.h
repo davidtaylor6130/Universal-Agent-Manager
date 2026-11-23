@@ -261,6 +261,27 @@ namespace uam::mcp_server_config
 		return true;
 	}
 
+	/// <summary>Normalizes each saved entry on its own, so one bad entry never empties the whole list.</summary>
+	/// <param name="removed">On load, receives one reason per dropped entry (invalid, or repeating an earlier id); the
+	/// reasons name servers but carry no paths, URLs or values. Null keeps such entries unchanged, so a save never
+	/// deletes what the next load can report.</param>
+	inline void NormalizeEach(std::vector<McpServerConfiguration>& servers, const std::vector<ExecutionHost>* hosts,
+	                          std::string_view scope_host_id, std::vector<std::string>* removed)
+	{
+		std::vector<McpServerConfiguration> kept;
+		std::set<std::string> ids;
+		for (McpServerConfiguration& server : servers)
+		{
+			std::vector<McpServerConfiguration> one{server};
+			std::string error;
+			const bool valid = NormalizeAndValidate(one, &error, hosts, scope_host_id);
+			if (valid && ids.insert(one.front().id).second) kept.push_back(std::move(one.front()));
+			else if (removed == nullptr) kept.push_back(std::move(server));
+			else removed->push_back(valid ? "MCP server '" + one.front().name + "' repeats another server's id." : error);
+		}
+		servers = std::move(kept);
+	}
+
 	/// <summary>Workspace and host overrides replace global entries by server name without duplicate connections.</summary>
 	inline std::vector<McpServerConfiguration> SelectForWorkspace(const std::vector<McpServerConfiguration>& configured, std::string_view workspace_directory, std::string_view host_id = "local")
 	{

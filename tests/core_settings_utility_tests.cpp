@@ -1062,6 +1062,57 @@ UAM_TEST(McpServerPathsFollowTheirExecutionHostsPlatform)
 #endif
 }
 
+UAM_TEST(SettingsLoadDropsOnlyInvalidMcpServerEntries)
+{
+	TempDir temp("uam-mcp-load-invalid");
+	const fs::path settings_file = temp.root / "settings.txt";
+	ExecutionHost host;
+	host.id = "ssh-linux"; host.label = "Linux"; host.transport = "ssh"; host.ssh_alias = "linux-box"; host.platform = "linux";
+	McpServerConfiguration valid;
+	valid.id = "docs"; valid.name = "docs"; valid.transport = "http"; valid.url = "http://localhost:5000/mcp";
+	McpServerConfiguration relative = valid;
+	relative.id = "relative"; relative.name = "relative"; relative.transport = "stdio"; relative.url.clear(); relative.command = "bin/server";
+	McpServerConfiguration repeated = valid;
+	repeated.name = "docs-copy";
+	McpServerConfiguration remote = relative;
+	remote.id = "remote-node"; remote.name = "remote-node"; remote.command = "/usr/bin/node";
+	McpServerConfiguration windows_only = remote;
+	windows_only.id = "windows-node"; windows_only.name = "windows-node"; windows_only.command = "C:\\tools\\node.exe";
+	AppSettings settings;
+	settings.execution_hosts = {ExecutionHost{}, host};
+	settings.mcp_servers = {valid, relative, repeated};
+	settings.host_scoped_settings[host.id].mcp_servers = std::vector<McpServerConfiguration>{remote, windows_only};
+	// A save keeps entries it cannot validate, so the next load reports them instead of losing them silently.
+	UAM_ASSERT(SettingsStore::Save(settings_file, settings));
+	const std::string saved = ReadFile(settings_file);
+	UAM_ASSERT(saved.find("docs-copy") != std::string::npos && saved.find("windows-node") != std::string::npos);
+
+	AppSettings loaded;
+	const SettingsLoadResult result = SettingsStore::Load(settings_file, loaded);
+	UAM_ASSERT(result.loaded);
+	// Only the three bad entries go: a relative path, a repeated id and a Windows path for a Linux host.
+	UAM_ASSERT_EQ(result.removed_mcp_servers.size(), static_cast<std::size_t>(3));
+	UAM_ASSERT_EQ(loaded.mcp_servers.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(loaded.mcp_servers.front().id, std::string("docs"));
+	UAM_ASSERT(loaded.host_scoped_settings.contains(host.id) && loaded.host_scoped_settings[host.id].mcp_servers.has_value());
+	const std::vector<McpServerConfiguration>& scoped = *loaded.host_scoped_settings[host.id].mcp_servers;
+	UAM_ASSERT_EQ(scoped.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(scoped.front().id, std::string("remote-node"));
+	UAM_ASSERT(std::ranges::any_of(result.removed_mcp_servers, [](const std::string& reason) { return reason == "MCP server 'docs-copy' repeats another server's id."; }));
+	// Reasons name servers for the log but never carry their paths.
+	for (const std::string& reason : result.removed_mcp_servers)
+		UAM_ASSERT(reason.find("bin/server") == std::string::npos && reason.find("node.exe") == std::string::npos);
+
+	// The following save and load keep the valid entries and report nothing.
+	UAM_ASSERT(SettingsStore::Save(settings_file, loaded));
+	AppSettings reloaded;
+	const SettingsLoadResult second = SettingsStore::Load(settings_file, reloaded);
+	UAM_ASSERT(second.removed_mcp_servers.empty());
+	UAM_ASSERT_EQ(reloaded.mcp_servers.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(reloaded.host_scoped_settings[host.id].mcp_servers.has_value());
+	UAM_ASSERT_EQ(reloaded.host_scoped_settings[host.id].mcp_servers->size(), static_cast<std::size_t>(1));
+}
+
 UAM_TEST(SettingsStoreRejectsPartialNumericValuesAndParsesStrictBooleans)
 {
 	TempDir temp("uam-settings-partial-numeric");
