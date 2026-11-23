@@ -1830,11 +1830,13 @@ UAM_TEST(UamControlUsageReportCoversOnlyTheCallingChatAndKeepsMoneyOut)
 	fetched.primary_label = "5-hour";
 	std::atomic<int> reads{0};
 	auto allowances = std::make_shared<uam::usage::AccountAllowanceService>(temp.root,
-	    std::vector<uam::usage::AccountAllowanceProviderConfig>{{"gemini-cli", {"gemini"}}},
+	    std::vector<uam::usage::AccountAllowanceProviderConfig>{{"gemini-cli", {"gemini"}}, {"codex-cli", {"codex"}}},
 	    [&](const uam::usage::AccountAllowanceProviderConfig&, const std::filesystem::path&, std::stop_token, bool) { ++reads; return fetched; });
 	app.account_allowances = allowances;
 	const auto ready_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-	while (allowances->CachedRow("gemini-cli").value("status", "") != "ready" && std::chrono::steady_clock::now() < ready_deadline)
+	// Both providers read once at start; wait for both, so a late read cannot be mistaken for one the tool started.
+	while ((allowances->CachedRow("gemini-cli").value("status", "") != "ready" || allowances->CachedRow("codex-cli").value("status", "") != "ready") &&
+	       std::chrono::steady_clock::now() < ready_deadline)
 		std::this_thread::sleep_for(std::chrono::milliseconds(2));
 	const int reads_before = reads.load();
 	report = call(capability, "usage-2");
@@ -1847,7 +1849,7 @@ UAM_TEST(UamControlUsageReportCoversOnlyTheCallingChatAndKeepsMoneyOut)
 	UAM_ASSERT_EQ(allowance["windows"].size(), std::size_t{1});
 	UAM_ASSERT_EQ(allowance["spendLimitRemainingPercent"], nlohmann::json(40));
 	const std::string dumped = report.dump();
-	for (const std::string hidden : {"$12.34", "$100.00", "$60.00", "usage-other", "usage-child"})
+	for (const std::string hidden : {"$12.34", "$100.00", "$60.00", "codex-cli", "usage-other", "usage-child"})
 		UAM_ASSERT(dumped.find(hidden) == std::string::npos);
 	UAM_ASSERT_EQ(reads.load(), reads_before);
 
