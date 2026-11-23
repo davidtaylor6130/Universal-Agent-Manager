@@ -4,4 +4,4 @@ The published browser has Activity, Chats and connection Settings, with its own 
 
 [Phone access](phone-access.md) · [Phone settings](settings/phone-access.md) · [Navigation](navigation/navigation.md).
 
-Browser theme, input-alert preferences, clipboard and supported speech recognition belong to the phone browser and do not change the desktop’s settings or use its microphone or clipboard. Optional browser notifications require a secure context and browser permission; they report input requests while the companion is open, and selecting one opens that saved chat locally without sending input. If permission is denied, the ordinary Activity view remains available.
+Browser theme (a labelled menu), input-alert preferences, clipboard and supported speech recognition belong to the phone browser and do not change the desktop’s settings or use its microphone or clipboard. Optional browser notifications require a secure context and browser permission; they report input requests while the companion is open, and selecting one opens that saved chat locally without sending input. If permission is denied, the ordinary Activity view remains available.

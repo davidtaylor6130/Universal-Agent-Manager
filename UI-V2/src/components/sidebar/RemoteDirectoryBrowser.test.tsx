@@ -12,9 +12,11 @@ const listing = (directory: string): RemoteDirectoryBrowseResult => ({ ok: true,
 const originalList = useAppStore.getState().listRemoteDirectories
 let element: HTMLDivElement
 let root: ReturnType<typeof createRoot>
-const button = (label: string) => Array.from(element.querySelectorAll<HTMLButtonElement>('button')).find((item) => item.textContent === label || item.getAttribute('aria-label') === label)!
+const button = (label: string) => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((item) => item.textContent === label || item.getAttribute('aria-label') === label)!
 const editPath = (value: string) => act(() => {
-  const input = element.querySelector<HTMLInputElement>('#remote-directory-path')!
+  // Found through its label, so the field keeps a programmatic name (the dialog is portalled to document.body).
+  const label = Array.from(document.body.querySelectorAll('label')).find((item) => item.textContent?.includes('Directory on'))!
+  const input = document.getElementById(label.htmlFor) as HTMLInputElement
   Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value)
   input.dispatchEvent(new Event('input', { bubbles: true }))
 })
@@ -45,11 +47,11 @@ describe('RemoteDirectoryBrowser', () => {
     editPath(failedPath)
     expect(button('Use this directory').disabled).toBe(true)
     await click('Go')
-    const error = element.querySelector<HTMLElement>('[role="alert"]')!
+    const error = document.body.querySelector<HTMLElement>('[role="alert"]')!
     expect(error.textContent).toContain(failedPath === 'relative' ? 'Enter an absolute Unix path.' : failedPath === '/missing' ? 'Directory not found.' : 'SSH connection lost.')
     if (failedPath === 'relative') expect(listRemoteDirectories).not.toHaveBeenCalledWith('lab', 'relative')
     await click('Dismiss directory error')
-    expect(element.querySelector('[role="alert"]')).toBeNull()
+    expect(document.body.querySelector('[role="alert"]')).toBeNull()
     expect(button('Use this directory').disabled).toBe(true)
     await click('Use this directory')
     expect(onSelect).not.toHaveBeenCalled()
@@ -62,7 +64,7 @@ describe('RemoteDirectoryBrowser', () => {
   it('rejects a malformed successful listing', async () => {
     useAppStore.setState({ listRemoteDirectories: vi.fn().mockResolvedValue(listing('relative')) })
     await act(async () => { root.render(<RemoteDirectoryBrowser host={remoteHost} initialPath="/valid" onCancel={() => {}} onSelect={() => {}} />) })
-    expect(element.textContent).toContain('invalid directory path')
+    expect(document.body.textContent).toContain('invalid directory path')
     await click('Dismiss directory error')
     expect(button('Use this directory').disabled).toBe(true)
   })
@@ -78,7 +80,7 @@ describe('RemoteDirectoryBrowser', () => {
     editPath('/new')
     await click('Go')
     await act(async () => { finishOld(listing('/old')) })
-    expect(element.querySelector<HTMLInputElement>('input')!.value).toBe('/new')
+    expect(document.body.querySelector<HTMLInputElement>('input')!.value).toBe('/new')
     await click('Use this directory')
     expect(onSelect).toHaveBeenCalledWith('/new')
   })
@@ -101,7 +103,7 @@ describe('RemoteDirectoryBrowser', () => {
       expect(listRemoteDirectories).toHaveBeenCalledTimes(calls + 1)
       await act(async () => { finishOld(listing('/old-computer')) })
       expect(button('Use this directory').disabled).toBe(true)
-      expect(element.querySelector<HTMLInputElement>('input')!.value).toBe('/work')
+      expect(document.body.querySelector<HTMLInputElement>('input')!.value).toBe('/work')
       await act(async () => { finish(listing('/work')) })
       expect(button('Use this directory').disabled).toBe(false)
     }
@@ -124,11 +126,27 @@ describe('RemoteDirectoryBrowser', () => {
     await act(async () => { root.render(<RemoteDirectoryBrowser host={windows} initialPath={'C:\\work'} onCancel={() => {}} onSelect={onSelect} />) })
     await act(async () => { finishOld(listing('/old')) })
     expect(listRemoteDirectories).toHaveBeenLastCalledWith('windows', 'C:\\work')
-    expect(element.querySelector<HTMLInputElement>('input')!.value).toBe('C:\\work')
+    expect(document.body.querySelector<HTMLInputElement>('input')!.value).toBe('C:\\work')
     expect(button('Use this directory').disabled).toBe(false)
     await act(async () => { root.render(<RemoteDirectoryBrowser host={{ ...windows, runnerStatus: 'offline' }} initialPath={'C:\\work'} onCancel={() => {}} onSelect={onSelect} />) })
     expect(button('Use this directory').disabled).toBe(true)
     await click('Use this directory')
     expect(onSelect).not.toHaveBeenCalled()
+  })
+
+  it('is a modal dialog named for its host, described by its read-only scope, that returns focus to its opener', async () => {
+    useAppStore.setState({ listRemoteDirectories: vi.fn(async (_id: string, path: string) => listing(path)) })
+    const opener = document.createElement('button')
+    document.body.appendChild(opener)
+    opener.focus()
+    await act(async () => { root.render(<RemoteDirectoryBrowser host={remoteHost} initialPath="/work" onCancel={() => {}} onSelect={() => {}} />) })
+    const dialog = document.body.querySelector<HTMLElement>('[role="dialog"]')!
+    expect(dialog.getAttribute('aria-modal')).toBe('true')
+    expect(dialog.getAttribute('aria-label')).toBe('Choose directory on Home lab')
+    expect(document.getElementById(dialog.getAttribute('aria-describedby')!)?.textContent).toContain('Read-only')
+    expect(dialog.contains(document.activeElement)).toBe(true)
+    await act(async () => { root.render(<></>) })
+    expect(document.activeElement).toBe(opener)
+    opener.remove()
   })
 })

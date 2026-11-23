@@ -3,7 +3,7 @@ import { ArrowDown, ArrowUp, CornerUpRight, GripVertical, Pencil, X } from 'luci
 import type { AcpQueuedPrompt } from '../../store/cpp/types'
 import type { Attachment } from '../../types/message'
 import { Button, IconButton, Notice, StatusDot, motionAllowed } from '../ui'
-import { EXIT_MS } from '../ui/Overlay'
+import { EXIT_MS, scaledMs } from '../ui/Overlay'
 import { reportAppFailure } from '../../utils/appFailure'
 import './InlinePromptQueue.css'
 
@@ -46,6 +46,11 @@ function FileChip({ name, title, trailing }: { name: string; title?: string; tra
 
 /** Removed rows stay visible for the exit animation; reduced motion or no matchMedia (jsdom) drops them at once. */
 
+/** Reorder slide length: --dur-base (180 ms) scaled by Appearance > Animation speed. */
+export const REORDER_MS = 180
+/** Matches --ease-out-soft, which Web Animations cannot read from CSS. */
+const REORDER_EASING = 'cubic-bezier(0.22, 1, 0.36, 1)'
+
 /** Edits queue snapshots separately from the composer; native ID/revision guards own admission. */
 export function InlinePromptQueue({ steerUnavailable = false, prompts, unsentPrompts = [], unsentActionsDisabled = false, unsentReceiptDeleteDisabled = unsentActionsDisabled, onRetryUnsent, onRemoveUnsent, onEditUnsent, held = false, onResume, disabled = false, onEdit, onReorder, onSteer, onRemove }: InlinePromptQueueProps) {
   const [editing, setEditing] = useState<{ id: string; revision: number; text: string; retainedAttachmentIds?: string[] } | null>(null)
@@ -65,7 +70,8 @@ export function InlinePromptQueue({ steerUnavailable = false, prompts, unsentPro
   }, [prompts])
   useLayoutEffect(() => {
     if (leaving.length === 0) return
-    const timer = window.setTimeout(() => setLeaving([]), EXIT_MS)
+    // Removed rows play --dur-exit, which follows Animation speed, so the timer scales with it.
+    const timer = window.setTimeout(() => setLeaving([]), scaledMs(EXIT_MS))
     return () => window.clearTimeout(timer)
   }, [leaving])
   const rows = prompts.map((prompt, index) => ({ prompt, index, leaving: false }))
@@ -80,11 +86,13 @@ export function InlinePromptQueue({ steerUnavailable = false, prompts, unsentPro
     const order = rowEls.map((row) => row.dataset.queueId).join('\n')
     const tops = new Map(rowEls.map((row) => [row.dataset.queueId!, row.getBoundingClientRect().top]))
     const previous = layoutRef.current
-    if (previous.order && order !== previous.order && motionAllowed() && typeof HTMLElement.prototype.animate === 'function') {
+    // Read the speed only when the order changed: the scale is a computed style, and this effect runs every render.
+    const duration = previous.order && order !== previous.order && motionAllowed() && typeof HTMLElement.prototype.animate === 'function' ? scaledMs(REORDER_MS) : 0
+    if (duration > 0) {
       for (const row of rowEls) {
         const before = previous.tops.get(row.dataset.queueId!)
         const dy = before === undefined ? 0 : before - tops.get(row.dataset.queueId!)!
-        if (dy) row.animate([{ transform: `translateY(${dy}px)` }, { transform: 'translateY(0)' }], { duration: 180, easing: 'cubic-bezier(0.22, 1, 0.36, 1)' })
+        if (dy) row.animate([{ transform: `translateY(${dy}px)` }, { transform: 'translateY(0)' }], { duration, easing: REORDER_EASING })
       }
     }
     layoutRef.current = { order, tops }

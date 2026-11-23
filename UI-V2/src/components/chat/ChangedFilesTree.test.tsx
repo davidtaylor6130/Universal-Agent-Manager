@@ -41,3 +41,24 @@ it('browses changed files with the keyboard and opens the focused file on Enter'
   act(() => root.unmount())
   host.remove()
 })
+
+it('tells screen readers each change type and its line counts instead of hiding them behind the row name', async () => {
+  const host = document.createElement('div')
+  document.body.append(host)
+  const root = createRoot(host)
+  const files = [file('src/app.ts', 'A'), { ...file('src/logo.png', 'M'), binary: true }, { ...file('src/old.ts', 'D'), additions: 0, deletions: 1 }, file('notes.txt', '?')]
+  await act(async () => root.render(<ChangedFilesTree files={files} onOpenFile={vi.fn()} />))
+  const description = (name: string) => {
+    const row = host.querySelector<HTMLElement>(`[role="treeitem"][aria-label="${name}"]`)!
+    return document.getElementById(row.getAttribute('aria-describedby')!)?.textContent
+  }
+  expect(description('src')).toBe('2 lines added, 2 lines removed.') // binary files carry no line counts
+  expect(description('Review changes to src/app.ts')).toBe('Added, 2 lines added, 1 line removed.')
+  expect(description('Review changes to src/logo.png')).toBe('Modified, binary file.')
+  expect(description('Review changes to src/old.ts')).toBe('Deleted, 0 lines added, 1 line removed.')
+  expect(description('Review changes to notes.txt')).toBe('Untracked, 2 lines added, 1 line removed.')
+  // The coloured letter and +/- counts are visual duplicates of that description.
+  expect([...host.querySelectorAll('.uam-tree-status, .uam-tree-counts')].every((mark) => mark.getAttribute('aria-hidden') === 'true')).toBe(true)
+  act(() => root.unmount())
+  host.remove()
+})
