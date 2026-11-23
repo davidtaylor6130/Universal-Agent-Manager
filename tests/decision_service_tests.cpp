@@ -188,7 +188,7 @@ UAM_TEST(GoalServiceRecordsDecisionBackendOnlyForModelDecisions)
 	UAM_ASSERT(uam::GoalService::CreateGoal(app, chat.id, "Keep attribution honest.", 0, &goal_id));
 	Goal& goal = app.chats.front().goals.front();
 
-	const auto model = FromChatProvider(uam::GoalService::ReviewDecisionRequest(), R"({"choice":"blocked","reason":"Needs access."})");
+	const auto model = FromChatProvider(uam::GoalService::ReviewDecisionRequest(), R"({"decision":"blocked","reason":"Needs access."})");
 	UAM_ASSERT(model.has_value());
 	uam::GoalService::RecordBlocker(app, chat.id, goal_id, "Needs access.", model->attribution);
 	UAM_ASSERT_EQ(goal.last_decision_source, std::string("model:reviewer-model"));
