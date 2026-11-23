@@ -51,5 +51,5 @@ No provider capability rows are affected.
 ## Screens needing Before/After capture
 
 1. The composer workspace/branch tab in a new chat before its first message, with Pull before first chat on, the workspace on `main` and another existing branch chosen as the starting branch in New chat. Before: the tab shows `main`. After: it shows the chosen branch, and hovering shows "Starts from <branch>. Local copy is on main."
-2. The refusal shown on the first send in that setup, after changing the default base branch in Git settings so that it differs from the checked-out branch. With a starting-branch override the tab now shows the base, but the refusal still fires. Before: the long Git message. After: "Local copy is on main, not <branch>."
+2. The refusal in the same setup after sending the first message. Before: the long "Pull before chat requires the default base…" message. After: "Local copy is on main, not <branch>."
 3. Optional: both captures in the light and dark themes.
