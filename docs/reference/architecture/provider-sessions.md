@@ -30,6 +30,37 @@ Ordinary ledger Save preserves an identical managed continuation as a no-write r
 
 Local Codex manual compaction can start an idle or stopped structured session and wait for provider readiness. The pending request owns the chat incarnation, data root, provider, workspace and native session; stop, cancellation, deletion or an unrelated ownership change clears it. Preparation can transfer ownership only through its captured saved workspace task. Active turns, queued prompts, pending delivery and controls block admission. Compaction is maintenance, creates no user message or turn checkpoint, and reports `compacting` while waiting or running. Other providers and remote sessions retain their explicit unsupported response.
 
+### Gemini and Antigravity manual compaction checks
+
+Both adapters keep the default runtime hooks: `OnAcpBuildCompact` returns null and `SupportsAcpCompaction` is false. Chat therefore offers no `/compact` action for these providers. An exact `/compact` draft shows the unavailable notice, keeps the draft and sends nothing. Issue [#512](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues/512) tracks the work. The 2026-11-23 check read only public sources and published packages. No provider CLI was run, so nothing below is live-verified.
+
+**Gemini.** The ACP command handler registers only Memory, Extensions, Init, Restore, About and Help ([`acpCommandHandler.ts` at v0.70.0](https://github.com/google-gemini/gemini-cli/blob/8468962efadfbcdfd988a8fd04af4110a68c886e/packages/cli/src/acp/acpCommandHandler.ts#L23-L31)). The file is unchanged at the 0.71.0-nightly.20261123 tag. The published 0.70.0, 0.71.0-preview.0 and 0.71.0-nightly.20261123 bundles contain the same registry. The ACP agent has no extension method, and the ACP prompt loop handles no chat-compressed event. Gemini therefore exposes no structured manual compaction, and `/compress` sent as prompt text would reach the model as an ordinary request.
+
+**Antigravity: trigger and completion step.** The first-party [CLI changelog](https://github.com/google-antigravity/antigravity-cli/blob/1eedbb78b37c8acde91394fc7fef3ed33409328d/CHANGELOG.md) shows when the pieces arrived:
+
+- 1.1.9 added slash-command expansion in print mode, with `--disable-slash-commands` to opt out.
+- 1.1.11 made print mode refuse interactive-only commands.
+- 1.1.15 added stream-json input.
+- 1.3.5 added `/compact`. On its own it summarises the conversation and ends the turn; `/compact <message>` summarises and then answers. The entry describes the terminal UI.
+
+That `/compact` also runs natively from stream input comes from third-party reports:
+
+- On 1.4.12, [codex-host#746](https://github.com/BytePioneer-AI/codex-host/issues/746) logged `expanded slash command "compact"`. The stream then showed a `step_update` with `step_type` `checkpoint` reaching `DONE`, followed by a `SUCCESS` result with an empty response.
+- On 1.3.5–1.4.0, [untether#1114](https://github.com/littlebearapps/untether/issues/1114) reported the same outcome from stream input, with input tokens falling afterwards.
+
+UAM does not add `--disable-slash-commands`. These reports supersede, for `/compact` only, the [2026-10-23 recheck](../../documentation-review.md#antigravity-native-goals) that stream input rejects CLI-handled slash commands.
+
+**Antigravity: no summary source.**
+
+- Neither report saw summary text.
+- Google's SDK schema has an empty `ActionCompaction` on the step update. The summary appears only in the SDK's `OnCompaction` hook arguments ([`localharness.proto`](https://github.com/google-antigravity/antigravity-sdk-python/blob/97c5c53d0741c601ea8c2401497cad3b5ee8dc98/google/antigravity/proto/localharness.proto#L424)). The CLI reports no compaction hook.
+- The native store's checkpoint row is an undocumented internal format. Its numeric step type is not known here; if UAM's history reader does not recognise it, the reader refuses the whole conversation.
+- [antigravity-cli#1509](https://github.com/google-antigravity/antigravity-cli/issues/1509), which is open, reports that `agy acp` sends no compaction notification through 1.5.13.
+
+Wiring the hook therefore waits on the [open decision](../../documentation-review.md#provider-parity-decisions): is a completion signal without a summary enough? Claude's compact action also sends `/compact` as stream user content. However, Claude then reports a compact boundary and a summary record, so only the trigger is comparable.
+
+**Known gap against the [compaction agreement](../../providers/compaction.md).** The adapter counts checkpoint-step usage but neither displays nor records the step. Chat intercepts only an exact `/compact` draft. So when `/compact <message>` is the leading text of the delivered prompt, it reaches `agy`. On the reported versions (1.3.5–1.4.12) `agy` then compacts without UAM showing it. UAM context prefixes or batched `Message N:` labels can put other text first, and then it is not a leading command. For Gemini and the other providers, the same draft goes out as ordinary input. The agreement says typing the command must not fall through to an ordinary prompt; refusing it or routing it through the compact action is part of the open decision.
+
 Model catalogs preserve optional `contextWindowTokens` and `maxOutputTokens` across cached and frontend projections. Structured provider metadata and OpenCode's model `limit.context` and `limit.output` supply these values. Only nonnegative integers within JavaScript's exact integer range are accepted; absent or invalid limits remain unknown. Context capacity and maximum output stay separate and are not inferred from one another.
 
 Retry locates the latest authored user message after hydrating cold history. Empty assistant placeholders do not block retry when their content, thoughts and plan summaries contain only JavaScript `trim` whitespace, including its Unicode whitespace characters. Substantive output or malformed UTF-8 blocks retry. A later user message still rejects an obsolete retry request.
