@@ -25,6 +25,7 @@
 #include "app/goal_service.h"
 #include "app/git_worktree_service.h"
 #include "app/markdown_store_service.h"
+#include "app/vcs_commit_service.h"
 #include "app/managed_subagent_control_service.h"
 #include "common/chat/chat_repository.h"
 #include "common/chat/html_view.h"
@@ -68,6 +69,7 @@
 #include <random>
 #include <set>
 #include <sstream>
+#include <system_error>
 #include <thread>
 
 namespace uam
@@ -116,6 +118,23 @@ namespace uam
 		bool scope_lost = false; // The caller is still current but the child changed: the sealed reply is an explicit error.
 	};
 
+	/// One read-only tool read (worktree_status, memory_search) on a detached worker. The worker holds its own reference,
+	/// so the app thread can drop this at any time without waiting; the worker never touches AppState and publishes
+	/// its outcome fields before `done`.
+	struct UamControlBackgroundRead
+	{
+		std::string capability_id, request_id, method;
+		std::filesystem::path directory;
+		// The chat that was read; a change to it before the reply turns the reply into an error.
+		std::string chat_id, workspace, worktree, host_id;
+		std::shared_ptr<const std::uint8_t> chat_incarnation;
+		std::stop_source stop;
+		std::atomic<bool> done{false};
+		bool ok = false;
+		nlohmann::json result;
+		std::string error, reason;
+	};
+
 	namespace
 	{
 		constexpr std::size_t kMaxRequestBytes = 64U * 1024U;
@@ -132,6 +151,12 @@ namespace uam
 		// briefly locked file). Wall clock, because the poll delay ranges 16 ms to 1 s; well inside the proxy's 10 s.
 		constexpr auto kUnreadableRequestGrace = std::chrono::seconds(2);
 		constexpr std::size_t kMaxActiveWaits = 16;
+		/// Workspace and memory reads running at once across every chat; each chat has at most one.
+		constexpr std::size_t kMaxBackgroundReads = 8;
+		/// Byte budget for the listed changed files, so the doubly escaped stdio reply stays under kMaxResponseBytes.
+		constexpr std::size_t kMaxWorktreeFileBytes = 40U * 1024U;
+		/// worktree_status collects line counts only up to this many changed files (see WorktreeStatusWork).
+		constexpr std::size_t kMaxWorktreeLineCountFiles = 200;
 		constexpr std::size_t kMaxChatCreatesPerTurn = 2;
 		constexpr std::size_t kMaxChatCreatesPerCaller = 8;
 		constexpr std::size_t kMaxChatTitleBytes = 256;
@@ -382,6 +407,12 @@ namespace uam
 			return method == "user_question" || method == "goal_create" || method == "chat_create" || method == "computer_use_request" || method == "secret_request";
 		}
 
+		/// Read-only tools whose work (a git or svn command, memory files) runs off the app thread.
+		bool IsBackgroundReadMethod(std::string_view method)
+		{
+			return method == "worktree_status";
+		}
+
 		std::size_t RequestLimit(std::string_view method)
 		{
 			return IsHtmlViewMethod(method) ? html_view::kMaxRequestBytes : kMaxRequestBytes;
@@ -395,7 +426,7 @@ namespace uam
 				    SafeRequestId(arguments["requestId"].get_ref<const std::string&>());
 			if (method == "_mcp_initialized" || method == "_mcp_disconnected" || method == "_mcp_heartbeat")
 				return HasOnlyStringArguments(arguments, {"connectionId"}) && SafeRequestId(arguments["connectionId"].get_ref<const std::string&>());
-			if (method == "skill_list" || method == "agent_list" || method == "goal_get" || method == "usage_report")
+			if (method == "skill_list" || method == "agent_list" || method == "goal_get" || method == "usage_report" || method == "worktree_status")
 				return arguments.is_object() && arguments.empty();
 			if (method == "skill_read") return HasOnlyStringArguments(arguments, {"id"}, {"path"});
 			if (method == "agent_status" || method == "agent_cancel" || method == "agent_wait")
@@ -497,6 +528,7 @@ namespace uam
 			return (capability.pending_agent_wait && capability.pending_agent_wait->request_id == request_id) ||
 			       (capability.pending_approval && capability.pending_approval->request_id == request_id) ||
 			       capability.render_check_request_id == request_id ||
+			       (!capability.background_read_request_id.empty() && capability.background_read_request_id == request_id) ||
 			       std::ranges::any_of(capability.pending_audited_replies, [&](const auto& reply) { return reply.request_id == request_id; });
 		}
 
@@ -631,7 +663,7 @@ namespace uam
 		bool ReadOnlyTool(std::string_view method)
 		{
 			return method == "agent_status" || method == "agent_list" || method == "goal_get" || method == "skill_list" || method == "skill_read" ||
-			       method == "usage_report";
+			       method == "usage_report" || IsBackgroundReadMethod(method);
 		}
 
 		std::shared_ptr<ControlAuditSaveTicket> ScheduleAuditedReplySave(AppState& app, const std::string& capability_id, const ChatSession& chat,
@@ -1066,6 +1098,168 @@ namespace uam
 			                   {"note", "Totals cover this chat only, as UAM recorded them. The cost is an estimate from recorded tokens, not a bill; some providers report no tokens, so totals can be low."},
 			                   {"accountAllowance", UsageAllowance(app, *chat)}},
 			        .reason = "Read this chat's own usage totals."};
+		}
+
+		/// <summary>One status read as the agent sees it: paths, status codes and line counts, never file contents. The
+		/// file list stops at a byte budget and says how many files it left out.</summary>
+		nlohmann::json WorktreeStatusJson(const VcsCommitStatus& status, const std::string& isolation, const std::string& base_ref)
+		{
+			const bool svn = status.active_vcs_type == VcsType::Svn;
+			if (!status.available)
+				return {{"available", false}, {"reason", uam::strings::SafeLine(status.warning.empty() ? std::string("No Git or SVN repository was found for this chat's workspace.") : status.warning, 512, true)}};
+			nlohmann::json files = nlohmann::json::array();
+			std::size_t bytes = 0, omitted = 0, binary = 0;
+			std::int64_t additions = 0, deletions = 0;
+			for (const VcsChangedFile& file : status.changed_files)
+			{
+				additions += std::max(0, file.additions);
+				deletions += std::max(0, file.deletions);
+				binary += file.binary ? 1 : 0;
+				if (omitted > 0) { ++omitted; continue; }
+				nlohmann::json entry{{"path", file.path}, {"status", file.status}};
+				if (status.line_stats_ready)
+				{
+					entry["additions"] = file.additions;
+					entry["deletions"] = file.deletions;
+				}
+				if (file.staged) entry["staged"] = true;
+				if (file.binary) entry["binary"] = true;
+				if (!file.previous_path.empty()) entry["previousPath"] = file.previous_path;
+				// Measured as the stdio server sends it: escaped in the reply and again in its envelope.
+				const std::size_t size = nlohmann::json(entry.dump()).dump().size() + 2;
+				if (bytes + size > kMaxWorktreeFileBytes) { ++omitted; continue; }
+				bytes += size;
+				files.push_back(std::move(entry));
+			}
+			nlohmann::json out{{"available", true}, {"vcs", svn ? "svn" : "git"}, {svn ? "revision" : "branch", status.branch_or_revision},
+			                   {"compares", svn ? "local changes against the checked-out revision" : "uncommitted changes against the current commit"},
+			                   {"summary", {{"files", status.changed_files.size()},
+			                                {"additions", status.line_stats_ready ? nlohmann::json(additions) : nlohmann::json(nullptr)},
+			                                {"deletions", status.line_stats_ready ? nlohmann::json(deletions) : nlohmann::json(nullptr)},
+			                                {"binaryFiles", status.line_stats_ready ? nlohmann::json(binary) : nlohmann::json(nullptr)}}},
+			                   {"lineCountsComplete", status.line_stats_ready}, {"changedFiles", std::move(files)},
+			                   {"truncated", omitted > 0}, {"omittedFiles", omitted}};
+			if (!isolation.empty()) out["isolation"] = isolation;
+			if (!base_ref.empty()) out["baseRef"] = base_ref;
+			if (!status.warning.empty()) out["warning"] = uam::strings::SafeLine(status.warning, 512, true);
+			return out;
+		}
+
+		/// <summary>The work one background read runs on its worker, from values captured on the app thread.</summary>
+		using BackgroundReadWork = std::function<void(UamControlBackgroundRead&)>;
+
+		/// <summary>worktree_status: the calling chat's own workspace or worktree, through the commit panel's status read
+		/// (Git or SVN, local or over SSH), on a snapshot so the worker never reads live AppState.</summary>
+		ToolResult WorktreeStatusWork(AppState& app, const ChatSession& chat, BackgroundReadWork& work)
+		{
+			std::shared_ptr<void> remote_lease;
+			if (!uam::paths::IsControllerLocalWorkspace(chat))
+			{
+				// Same rule as the commit panel: no VCS command starts on a host whose helper is being replaced.
+				remote_lease = app.remote_vcs_operation_leases_by_host_id[chat.execution_host_id].Hold();
+				if (!remote_lease) return {.error = "The helper on this chat's SSH host is being set up. Try again shortly."};
+			}
+			work = [data_root = app.data_root, settings = app.settings, folders = app.folders, profiles = app.provider_profiles,
+			        versions = app.runtime_cli_versions_by_provider_id, captured = CaptureVcsChatContext(chat),
+			        isolation = chat.workspace_isolation_kind, base_ref = chat.workspace_base_ref, remote_lease](UamControlBackgroundRead& read) mutable
+			{
+				AppState snapshot;
+				snapshot.data_root = std::move(data_root);
+				snapshot.settings = std::move(settings);
+				snapshot.folders = std::move(folders);
+				snapshot.provider_profiles = std::move(profiles);
+				snapshot.runtime_cli_versions_by_provider_id = std::move(versions);
+				// Line counts read every changed file, and over SSH run a command per new file, so they are collected
+				// only for a list short enough to stay inside the tool's time budget; a longer one is listed without them.
+				VcsCommitStatus status = VcsCommitService().Status(snapshot, captured, VcsType::Git, false);
+				status.line_stats_ready = false;
+				if (status.error.empty() && status.available && status.changed_files.size() <= kMaxWorktreeLineCountFiles)
+					status = VcsCommitService().Status(snapshot, captured, status.active_vcs_type, true);
+				remote_lease.reset();
+				if (!status.error.empty())
+				{
+					read.error = uam::strings::SafeLine(status.error, 512, true);
+					return;
+				}
+				read.result = WorktreeStatusJson(status, isolation, base_ref);
+				read.reason = "Read this chat's workspace status.";
+				read.ok = true;
+			};
+			return {.ok = true};
+		}
+
+		/// <summary>Starts a read-only tool's work on a detached worker. FinishBackgroundReads writes the reply once the
+		/// work is done, through the same audited path as the other read-only tools.</summary>
+		ToolResult StartBackgroundRead(AppState& app, UamControlCapability& capability, const std::string& request_id,
+		                               std::string_view method, const nlohmann::json& arguments)
+		{
+			const ChatSession* chat = ChatDomainService().FindChatById(app, capability.session_chat_id);
+			if (chat == nullptr) return {.error = "This chat is no longer available."};
+			if (!capability.background_read_request_id.empty())
+				return {.error = "This chat's previous workspace or memory read is still running. Try again when it finishes."};
+			if (app.uam_control_background_reads.size() >= kMaxBackgroundReads)
+				return {.error = "UAM is busy with other workspace and memory reads. Try again shortly."};
+			BackgroundReadWork work;
+			(void)arguments;
+			ToolResult prepared = method == "worktree_status" ? WorktreeStatusWork(app, *chat, work)
+			                                                   : ToolResult{.error = "Unknown UAM control method."};
+			if (!prepared.ok || !work) return prepared;
+			auto read = std::make_shared<UamControlBackgroundRead>();
+			read->capability_id = capability.id;
+			read->request_id = request_id;
+			read->method = std::string(method);
+			read->directory = capability.directory;
+			read->chat_id = chat->id;
+			read->workspace = chat->workspace_directory;
+			read->worktree = chat->workspace_worktree_directory;
+			read->host_id = chat->execution_host_id;
+			read->chat_incarnation = chat->metadata_incarnation;
+			try
+			{
+				uam::platform::StartBackgroundThread([read, work = std::move(work)]() mutable
+				{
+					try { work(*read); }
+					catch (...)
+					{
+						read->ok = false;
+						read->error = "The read failed unexpectedly. Try again.";
+					}
+					read->done.store(true, std::memory_order_release);
+				}).detach();
+			}
+			catch (const std::system_error&)
+			{
+				return {.error = "UAM could not start the read. Try again."};
+			}
+			capability.background_read_request_id = request_id;
+			app.uam_control_background_reads.push_back(std::move(read));
+			return {.ok = true, .deferred = true};
+		}
+
+		/// <summary>Replies to every finished background read whose capability is still current. A read whose chat moved
+		/// to another workspace, host or incarnation meanwhile is answered with an error instead of stale data.</summary>
+		bool FinishBackgroundReads(AppState& app)
+		{
+			bool changed = false;
+			for (auto it = app.uam_control_background_reads.begin(); it != app.uam_control_background_reads.end();)
+			{
+				const std::shared_ptr<UamControlBackgroundRead> read = *it;
+				if (!read->done.load(std::memory_order_acquire)) { ++it; continue; }
+				it = app.uam_control_background_reads.erase(it);
+				changed = true;
+				UamControlCapability* capability = FindCapability(app, read->capability_id);
+				if (capability == nullptr || capability->directory != read->directory || capability->background_read_request_id != read->request_id) continue;
+				capability->background_read_request_id.clear();
+				ToolResult result = read->ok ? ToolResult{.ok = true, .result = std::move(read->result), .reason = read->reason}
+				                             : ToolResult{.error = read->error};
+				const ChatSession* chat = ChatDomainService().FindChatById(app, read->chat_id);
+				if (chat == nullptr || chat->metadata_incarnation != read->chat_incarnation || chat->workspace_directory != read->workspace ||
+				    chat->workspace_worktree_directory != read->worktree || chat->execution_host_id != read->host_id)
+					result = {.error = "This chat's workspace changed while it was being read. Ask again."};
+				const nlohmann::json response = ReadOnlyToolReply(app, read->capability_id, read->request_id, read->method, std::move(result), true);
+				if (!response.value("pendingAuditSave", false)) (void)WriteResponse(read->directory, read->request_id, response);
+			}
+			return changed;
 		}
 
 		ToolResult GoalCreate(AppState& app, UamControlCapability& capability,
@@ -1550,7 +1744,7 @@ namespace uam
 			        .reason = "Watching one pull request for this chat."};
 		}
 
-		ToolResult ExecuteTool(AppState& app, UamControlCapability& capability,
+		ToolResult ExecuteTool(AppState& app, UamControlCapability& capability, const std::string& request_id,
 		                       std::string_view method, const nlohmann::json& arguments)
 		{
 			ChatSession* chat = ChatDomainService().FindChatById(app, capability.chat_id);
@@ -1566,6 +1760,7 @@ namespace uam
 			if (method == "agent_cancel") return AgentCancel(app, capability, arguments);
 			if (method == "goal_get") return GoalGet(app, capability);
 			if (method == "usage_report") return UsageReport(app, capability);
+			if (IsBackgroundReadMethod(method)) return StartBackgroundRead(app, capability, request_id, method, arguments);
 			if (method == "goal_create") return GoalCreate(app, capability, arguments);
 			if (method == "pr_watch" || method == "pr_unwatch") return PullRequestWatch(app, capability, *chat, method == "pr_watch", arguments);
 			return {.error = "Unknown UAM control method."};
@@ -2083,8 +2278,9 @@ namespace uam
 			                                                       : ChatCreateRequest(app, *capability, request_id, arguments, now_epoch_ms))
 			                        : method == "chat_create"
 			                            ? ChatCreate(app, *capability, request_id, arguments)
-			                            : ExecuteTool(app, *capability, method, arguments);
+			                            : ExecuteTool(app, *capability, request_id, method, arguments);
 			if (result.deferred) return method == "agent_wait" ? nlohmann::json{{"pendingAgentWait", true}} :
+			    IsBackgroundReadMethod(method) ? nlohmann::json{{"pendingBackgroundRead", true}} :
 			    method == "chat_create" && result.ok ? nlohmann::json{{"pendingChatCreate", true}} : nlohmann::json{{"pendingApproval", true}};
 			if (ReadOnlyTool(method)) return ReadOnlyToolReply(app, capability_id, request_id, method, std::move(result), defer_audit);
 			const UamControlCapability capability_snapshot = *capability;
@@ -2203,6 +2399,8 @@ namespace uam
 			agent_cancel["description"] = "Cancel one child run this chat started. Requires this chat's YOLO permission mode; refused in Plan mode.";
 			nlohmann::json goal_get = ToolSchema("goal_get");
 			goal_get["description"] = "Read this chat's current goal: objective, status, progress, budget, and whether goal creation is allowed.";
+			nlohmann::json worktree_status = ToolSchema("worktree_status");
+			worktree_status["description"] = "Read this chat's own workspace or worktree: Git branch or SVN revision, the uncommitted changed files with their status, and added/removed line counts with totals when 200 or fewer files changed. Paths only, no file contents; a long list is cut off and says how many files it left out. Use it instead of running git status or svn status.";
 			nlohmann::json usage_report = ToolSchema("usage_report");
 			usage_report["description"] = "Read this chat's own token totals and estimated cost (an estimate, not a bill), plus the cached account allowance of this chat's provider on this computer: used share and reset time of each window. Covers no other chat and starts no account read.";
 			nlohmann::json agent_delegate = MutationToolSchema("agent_delegate", {{"agentId", {{"type", "string"}}}, {"task", {{"type", "string"}}},
@@ -2238,6 +2436,7 @@ namespace uam
 			    std::move(agent_status),
 			    std::move(goal_get),
 			    std::move(usage_report),
+			    std::move(worktree_status),
 			    std::move(agent_delegate),
 			    std::move(agent_cancel),
 			    std::move(goal_create),
@@ -2259,7 +2458,7 @@ namespace uam
 				const std::string name = tool.value("name", "");
 				if (name == "agent_list" || name == "agent_status" || name == "agent_wait" || name == "skill_list" ||
 				    name == "skill_read" || name == "goal_get" || name == "user_question" || name == "usage_report" ||
-				    IsHtmlViewMethod(name)) // HTML views only add a display card to this chat's own transcript.
+				    name == "worktree_status" || IsHtmlViewMethod(name)) // HTML views only add a display card to this chat's own transcript.
 					tool["annotations"] = {{"readOnlyHint", true}};
 			}
 			return tools;
@@ -2372,7 +2571,7 @@ namespace uam
 			const std::filesystem::path response_path = capability / "responses" / (id + ".json");
 			// Measured on the clock, not in polls: a poll's 25 ms sleep can stretch several times over on a loaded or
 			// timer-throttled machine, and the caller's wait must not stretch with it. HTML views wait for their bounded runtime check.
-			auto budget_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(IsHtmlViewMethod(method) ? 20 : 10);
+			auto budget_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(IsHtmlViewMethod(method) || IsBackgroundReadMethod(method) ? 20 : 10);
 			bool budget_spent = false;
 			std::optional<nlohmann::json> timeout_reply;
 			while (!cancel.stop_requested())
@@ -2645,6 +2844,9 @@ namespace uam
 		for (auto& session : app.acp_sessions)
 			if (session != nullptr) session->uam_control_capability_id.clear();
 		app.uam_control_capabilities.clear();
+		// Detached readers hold their own state; ask them to stop and drop their replies.
+		for (const auto& read : app.uam_control_background_reads) read->stop.request_stop();
+		app.uam_control_background_reads.clear();
 		// Explicit shutdown barrier only; normal owner polling never waits for IO.
 		HarvestWaitRetirements(app, true);
 		if (!app.data_root.empty() && !app.uam_control_manager_id.empty())
@@ -3263,12 +3465,13 @@ namespace uam
 				(void)uam::paths::RemoveFileNoThrow(file);
 				if (!response.value("pendingApproval", false) && !response.value("pendingAgentWait", false) &&
 				    !response.value("pendingChatCreate", false) && !response.value("pendingRenderCheck", false) &&
-				    !response.value("pendingAuditSave", false))
+				    !response.value("pendingAuditSave", false) && !response.value("pendingBackgroundRead", false))
 					(void)WriteResponse(capability_directory, request_id, response);
 				changed = true;
 			}
 			++capability_index;
 		}
+		changed = FinishBackgroundReads(app) || changed;
 		changed = WriteAuditedReplies(app) || changed;
 		ProcessAgentWaits(app, response_write_hook);
 		// Sent after every capability borrow ends: a provider launch may issue new capabilities.

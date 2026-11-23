@@ -1996,7 +1996,7 @@ UAM_TEST(PerformanceSuiteUamRequestOverhead)
 				if (context == "ssh_root" || context == "read_only_agent" || !UAM_ENABLE_COMPUTER_USE) UAM_ASSERT(!has("computer_use_request"));
 				if (context == "read_only_agent") UAM_ASSERT(!has("goal_create") && !has("agent_cancel") && !has("chat_create"));
 				// Read-only insight tools stay listed wherever any UAM tool is.
-				if (context != "goal_reviewer") UAM_ASSERT(has("usage_report"));
+				if (context != "goal_reviewer") UAM_ASSERT(has("usage_report") && has("worktree_status"));
 				if (context == "child_without_delegates") UAM_ASSERT(!has("agent_list") && !has("agent_delegate") && !has("agent_wait"));
 				if (context == "temporary_side_chat") UAM_ASSERT(!has("pr_watch") && !has("pr_unwatch") && !has("secret_request"));
 				if (view == "cli") UAM_ASSERT(!has("agent_wait") && !has("html_view_preview") && !has("html_view_publish"));

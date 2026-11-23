@@ -488,6 +488,7 @@ namespace uam
 	};
 
 	struct UamAgentWait;
+	struct UamControlBackgroundRead;
 	struct ControlAuditSaveTicket;
 	struct RemoteOutputAckSaveTicket;
 
@@ -564,6 +565,8 @@ namespace uam
 		};
 		std::vector<PendingAuditedReply> pending_audited_replies;
 		std::shared_ptr<UamAgentWait> pending_agent_wait;
+		/// The one worktree_status or memory_search read this capability has running off the app thread; empty when none.
+		std::string background_read_request_id;
 		// Captured by real setup; wait admission cannot adopt a changed host/workspace selection.
 		std::optional<ExecutionHost> wait_host_at_launch;
 		std::shared_ptr<const std::uint8_t> wait_root_incarnation_at_launch, wait_chat_incarnation_at_launch;
@@ -1555,6 +1558,8 @@ namespace uam
 		};
 		std::vector<UamChatCreateLaunch> uam_chat_create_launches;
 		std::deque<std::shared_ptr<UamAgentWait>> uam_wait_retirements;
+		/// Read-only UAM tool reads running on detached workers; each reply is written once its read finishes.
+		std::vector<std::shared_ptr<UamControlBackgroundRead>> uam_control_background_reads;
 		std::string uam_control_manager_id;
 		std::deque<std::string> queued_agent_run_ids;
 		/// Terminal v2 records whose result card a previous process never wrote; the scheduler delivers each once.
