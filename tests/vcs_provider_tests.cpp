@@ -31,13 +31,6 @@ namespace
 		return std::ranges::any_of(status.changed_files, [&](const uam::VcsChangedFile& file) { return file.path == path && file.status == code; });
 	}
 
-	bool SvnToolsAvailable()
-	{
-		if (!ResolvedTool("svn").empty() && !ResolvedTool("svnadmin").empty()) return true;
-		std::fprintf(stderr, "SKIP real-svn case: svn or svnadmin is not installed\n");
-		return false;
-	}
-
 	/// Real runner service reached through a fake `ssh`, so remote VCS commands execute against temporary repositories.
 	struct RemoteVcsHost
 	{
@@ -203,7 +196,7 @@ UAM_TEST(VcsCommitNoticeNamesGitWhenTheToolPrintsNothing)
 
 UAM_TEST(VcsCommitNoticeNamesSvnWhenTheToolPrintsNothing)
 {
-	if (!SvnToolsAvailable()) return;
+	if (!RealSvnAvailable()) return;
 	TempDir wrappers("uam-vcs-tools");
 	WriteSilentCommitWrapper(wrappers.root, "svn", ResolvedTool("svn"));
 	RemoteVcsHost host(wrappers.root);
@@ -229,7 +222,7 @@ UAM_TEST(VcsCommitNoticeNamesSvnWhenTheToolPrintsNothing)
 
 UAM_TEST(RemoteSvnStatusDiffAndCommitGoThroughTheSvnProvider)
 {
-	if (!GitAvailableForTests() || !SvnToolsAvailable()) return;
+	if (!GitAvailableForTests() || !RealSvnAvailable()) return;
 	RemoteVcsHost host;
 	const fs::path repository = host.temp.root / "repository";
 	const fs::path checkout = host.temp.root / "checkout";

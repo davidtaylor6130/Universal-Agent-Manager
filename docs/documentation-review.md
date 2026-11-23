@@ -329,3 +329,11 @@ Recorded limits that are not decisions: Claude Code, Gemini and Copilot children
 - Only the turn Stop control ends a chat's watches; stopping the provider session does not.
 - GitHub Enterprise hosts, GitLab and Azure DevOps are not supported.
 - The phone clients show no linked pull request row and cannot start or stop a watch.
+
+## SVN working-copy edge cases
+
+Real-svn cases added with the CI SVN install found three behaviours the [SVN agreement](settings/version-control/svn.md) does not settle. Each is pinned by a case in `tests/svn_working_copy_tests.cpp`, so a change is deliberate; each awaits David's decision.
+
+- **Mixed revisions in History.** History reports the working copy's root revision. After a commit from the working copy the root stays older than the committed file, so that commit is marked not updated yet until an update, although its content is already in the working copy. Interim: keep the root's revision; an update brings every node to one revision. Should History show the range, or the newest revision present?
+- **Porting into `svn:needs-lock` files.** Porting a snapshot's changes back with `git apply` writes a needs-lock file without taking its lock, so it becomes an ordinary writable local edit; committing it succeeds unless another working copy holds the lock. Interim: keep, since the lock is advisory and svn still enforces another holder's lock at commit. Should porting refuse, or offer to lock, such files?
+- **Keyword expansion and porting back.** A snapshot holds keywords as the working copy expanded them. If the working copy's expansion changes after the snapshot (an update brings a newer revision of the file, even a property-only one), an edit next to the keyword no longer matches and porting back is refused with the chat's patch kept; nothing is half-applied. Interim: keep the refusal. Should snapshots or patches contract keywords instead?

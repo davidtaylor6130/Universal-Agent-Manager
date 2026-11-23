@@ -45,14 +45,6 @@ namespace
 		       "</url>\r\n<relative-url>" + relative_url + "</relative-url>\r\n<repository>\r\n<root>" + root + "</root>\r\n<uuid>d7397596-24e3-4444-990a-c95097028d41</uuid>\r\n</repository>\r\n<commit\r\n   revision=\"3\">\r\n</commit>\r\n</entry>\r\n</info>\r\n";
 	}
 
-	/// Real-repository cases need both client tools; hosted CI runners have neither.
-	bool SvnToolsAvailableForHistory()
-	{
-		if (RunTestCommand("svn --version --quiet") && RunTestCommand("svnadmin --version --quiet")) return true;
-		std::fprintf(stderr, "SKIP real-svn history case: svn or svnadmin is not installed\n");
-		return false;
-	}
-
 	void Svn(const fs::path& cwd, std::vector<std::string> args)
 	{
 		args.insert(args.begin() + 1, "--non-interactive");
@@ -317,7 +309,7 @@ UAM_TEST(VcsHistoryAndUpdateAreDeclinedForSystemsThatDoNotDeclareThem)
 
 UAM_TEST(SvnHistoryPagesARealRepositoryAcrossItsBranchPoint)
 {
-	if (!SvnToolsAvailableForHistory()) return;
+	if (!RealSvnAvailable()) return;
 	SvnHistoryRepository repository;
 	const uam::VcsCommitService vcs;
 
@@ -363,7 +355,7 @@ UAM_TEST(SvnHistoryPagesARealRepositoryAcrossItsBranchPoint)
 
 UAM_TEST(SvnRevisionDiffShowsEditsAdditionsDeletionsAndOddNames)
 {
-	if (!SvnToolsAvailableForHistory()) return;
+	if (!RealSvnAvailable()) return;
 	SvnHistoryRepository repository;
 	const uam::VcsCommitService vcs;
 	const auto diff = [&](const std::string& revision, const std::string& path)
@@ -388,7 +380,7 @@ UAM_TEST(SvnRevisionDiffShowsEditsAdditionsDeletionsAndOddNames)
 
 UAM_TEST(SvnUpdateBringsInNewRevisionsAndPostponesAConflict)
 {
-	if (!SvnToolsAvailableForHistory()) return;
+	if (!RealSvnAvailable()) return;
 	SvnHistoryRepository repository;
 	const uam::VcsCommitService vcs;
 	const uam::VcsUpdateResult clean = vcs.Update(repository.app, repository.chat, uam::VcsType::Svn);
@@ -543,7 +535,7 @@ UAM_TEST(SvnOriginBehindPageKeepsOnlyTheRequestedRevisions)
 
 UAM_TEST(SvnOriginComparesARealBranchWithItsTrunk)
 {
-	if (!SvnToolsAvailableForHistory()) return;
+	if (!RealSvnAvailable()) return;
 	SvnHistoryRepository repository;
 	const uam::VcsCommitService vcs;
 	// Trunk moves on after the copy.

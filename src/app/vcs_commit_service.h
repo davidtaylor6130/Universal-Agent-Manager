@@ -166,7 +166,7 @@ namespace uam
 	/// <summary>Bounded failure detail: the missing-client notice or svn's first "E<code>: ..." or "W<code>: ..." line; empty when neither exists.</summary>
 	std::string SvnFailureSummary(const ProcessExecutionResult& result);
 	/// <summary>Strict `svn status` text parser. Rows need seven valid status columns and a separator; headers and
-	/// tree-conflict details are skipped. Codes keep their column positions (right-trimmed). Absolute paths under
+	/// tree-conflict details are skipped, as are rows that report only a lock. Codes keep their column positions (right-trimmed). Absolute paths under
 	/// `workspace` become workspace-relative.</summary>
 	std::vector<VcsChangedFile> ParseSvnStatusOutput(std::string_view output, std::string_view workspace = {});
 

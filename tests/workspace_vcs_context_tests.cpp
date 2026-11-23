@@ -132,7 +132,7 @@ UAM_TEST(WorkspaceVcsContextDisabledCanceledAndPlainDirectoryDoNotMutate)
 
 UAM_TEST(WorkspaceVcsContextSvnReportsActualCheckoutWithoutBranchInference)
 {
-	if (!RunTestCommand("svn --version --quiet") || !RunTestCommand("svnadmin --version --quiet")) return;
+	if (!RealSvnAvailable()) return;
 	TempDir temp("uam-local-svn-context");
 	const fs::path repository = temp.root / "repository";
 	const fs::path checkout = temp.root / "checkout";

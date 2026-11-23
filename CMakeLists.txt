@@ -50,7 +50,8 @@ if(CMAKE_GENERATOR MATCHES "Makefiles|Ninja")
   endif()
 endif()
 
-if(NOT WIN32 AND NOT APPLE AND NOT UAM_RUNNER_ONLY)
+# The isolated SVN branch service tests need no CEF, so CI also runs them on Linux.
+if(NOT WIN32 AND NOT APPLE AND NOT UAM_RUNNER_ONLY AND NOT UAM_SVN_BRANCH_TESTS_ONLY)
   message(FATAL_ERROR "universal_agent_manager supports only Windows and macOS builds.")
 endif()
 
@@ -1624,6 +1625,7 @@ if(UAM_BUILD_TESTS)
     tests/claude_model_metadata_tests.cpp
     tests/svn_commit_scheduling_tests.cpp
     tests/svn_history_tests.cpp
+    tests/svn_working_copy_tests.cpp
     tests/native_import_failure_tests.cpp
     tests/empty_native_import_tests.cpp
     tests/opencode_import_stream_tests.cpp

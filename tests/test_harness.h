@@ -297,6 +297,25 @@ namespace uam_test
 		return RunTestCommand("git --version");
 	}
 
+	/// <summary>Whether a real-svn case can run. Without svn and svnadmin the case is skipped, except under
+	/// UAM_REQUIRE_SVN=1 (set in CI, which installs both), where a missing client fails it instead.</summary>
+	inline bool RealSvnAvailable()
+	{
+		if (RunTestCommand("svn --version --quiet") && RunTestCommand("svnadmin --version --quiet")) return true;
+		if (uam::env::GetNonEmptyString("UAM_REQUIRE_SVN").value_or("") == "1")
+			throw TestFailure("UAM_REQUIRE_SVN=1, but svn or svnadmin is not installed");
+		std::fprintf(stderr, "SKIP real-svn case: svn or svnadmin is not installed\n");
+		return false;
+	}
+
+	/// <summary>The file:// URL svn accepts for a local repository folder, on POSIX and Windows paths alike.</summary>
+	inline std::string SvnFileUrlForTest(const fs::path& repository)
+	{
+		std::string path = uam::paths::Utf8PathString(repository);
+		std::ranges::replace(path, '\\', '/');
+		return "file://" + std::string(path.starts_with('/') ? "" : "/") + path;
+	}
+
 	inline bool RunGitForTest(const fs::path& repo, const std::string& args)
 	{
 		return RunTestCommand("git -C " + ShellQuoteForTest(uam::paths::Utf8PathString(repo)) + " " + args);
