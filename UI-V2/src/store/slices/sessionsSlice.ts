@@ -4,7 +4,7 @@ import type { ContextReference } from '../../types/contextReference'
 import { sanitizeContextReferences, CONTEXT_REFERENCE_MAX_COUNT } from '../../utils/contextReferences'
 import { readChatComposerDraft, writeChatComposerDraft } from '../../utils/composerDraftStorage'
 import { filePreviewResponse } from '../../types/filePreview'
-import { reportAppFailure, reportDeletionRejections, type DeletionRejection } from '../../utils/appFailure'
+import { failureDetail, isRawBridgeError, reportAppFailure, reportDeletionRejections, type DeletionRejection } from '../../utils/appFailure'
 import { canRouteAutomatically } from '../../types/executionRouting'
 import type { ChatSearchHit, ChatSearchNavigation } from '../../types/chatSearch'
 import { chatSearchPageRequest, sanitizeChatSearchHits } from '../../utils/chatSearchResults'
@@ -137,7 +137,7 @@ function codexOptionsTitle(options: { reasoningEffort?: string; serviceTier?: st
  */
 function reportRefusal(title: string, reason: string | undefined, onFailure?: (reason: string) => void) {
   // The bridge's own failures carry raw exception text; that stays in the console, never in a notice.
-  const shown = reason && !reason.startsWith('Bridge request failed:') && !reason.startsWith('Invalid bridge payload:') ? reason : ''
+  const shown = reason && !isRawBridgeError(reason) ? reason : ''
   if (onFailure) onFailure(shown)
   else reportAppFailure(`${title}. ${shown || 'Try again.'}`, '')
 }
@@ -2191,7 +2191,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 
 		if (isLatestPendingRequest(requestKey, response.requestId)) {
 		  pendingRequestIdsByKey.delete(requestKey)
-		  if (response.error) reportAppFailure(response.error, '')
+		  reportRefusal('The permission mode was not changed', response.error)
         }
 
         return false

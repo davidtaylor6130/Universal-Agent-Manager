@@ -540,7 +540,7 @@ function NotificationsPanel({
 
   type NotificationAction = { label: string; variant?: ButtonVariant; run: () => void | Promise<void> }
   /** `hostId` labels a single-computer notice; `hostLines` replaces the expanded detail with one line per computer; `label` names the row for copy and dismiss when the visible title omits the computer. */
-  type Notification = { id: string; title: string; label?: string; detail: string; warning?: boolean; notice?: 'info' | 'success'; failure?: AppFailure; actions?: NotificationAction[]; hostId?: string; hostLines?: Array<{ key: string; hostId: string; text: string }> }
+  type Notification = { id: string; title: string; label?: string; detail: string; warning?: boolean; notice?: 'info' | 'success'; failure?: boolean; actions?: NotificationAction[]; hostId?: string; hostLines?: Array<{ key: string; hostId: string; text: string }> }
 
   const notifications: Notification[] = [
     ...(statusLine ? [{
@@ -556,7 +556,8 @@ function NotificationsPanel({
     }] : []),
     ...failures.map((failure): Notification => failure.tone
       ? { id: failure.id, title: failure.message, detail: failure.detail, warning: failure.tone === 'warning', notice: failure.tone === 'warning' ? undefined : failure.tone, actions: failure.actions }
-      : { id: failure.id, title: 'Change not saved', detail: failure.detail, failure }),
+      // The row title is the failure's own one-line message; its detail is what the row expands to.
+      : { id: failure.id, title: failure.message, detail: failure.detail, failure: true }),
     ...remoteNotifications,
     ...(updates.length > 0 ? [{
       id: updateNotificationId(updates),
@@ -686,7 +687,7 @@ function NotificationsPanel({
                   const ToneIcon = tone === 'error' ? CircleAlert : tone === 'warning' ? AlertTriangle : tone === 'success' ? CheckCircle2 : Info
                   const time = new Date(notification.time)
                   const exactTime = time.toLocaleString()
-                  const fullDetail = [notification.failure?.message, notification.detail].filter(Boolean).join(' · ')
+                  const fullDetail = notification.detail
                   const relativeTime = shortNotificationTime(notification.time, now)
                   const expanded = expandedIds.has(notification.id)
                   const expandable = expanded || Boolean(fullDetail) || overflowingIds.has(notification.id)

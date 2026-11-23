@@ -82,6 +82,10 @@ The source patch uses a shared captured submission, refuses a changed target cha
 
 Do not treat these items as fixed from this documentation trial. Statuses are conservative source-level assessments, not a replacement for running a provider implementation audit.
 
+## Refusal reasons in notice messages
+
+**Open question for David.** The one-line notice standard (“Local copy doesn't match what we expect.”) puts causes in the detail. [Notifications](ui/notifications.md) still deliberately puts a refused chat control's backend reason in the message, because the toast does not show the detail, so those notices can read as two or three sentences (for example “The chat was not renamed. The chat could not be saved. Try again.”). Interim interpretation: keep the documented refusal format and the fixed native wording; every other notice moves backend text to the detail. Deciding whether refusals should also move their reason to the detail, or whether the toast should show a one-line detail, needs David's confirmation.
+
 ## Stalled goal loop cap
 
 **Resolved (#516).** Stalled-loop auto-resume now shares the review-driven [iteration cap](settings/goal-loops.md) check, because the automation API depends on that bound. A goal at or above its limit is blocked instead of resumed. Live-provider verification remains pending.
