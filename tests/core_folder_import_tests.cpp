@@ -39,6 +39,8 @@
 #include <windows.h>
 #include <io.h>
 #include <versionhelpers.h>
+#else
+#include <unistd.h>
 #endif
 
 #if defined(__APPLE__)
@@ -381,6 +383,54 @@ UAM_TEST(BundledMarkdownStoreEntriesParseFromNestedFolders)
 	UAM_ASSERT(std::ranges::all_of(actions.begin() + 1, actions.end(), [](const ShellAction& action) { return !action.group_path.empty(); }));
 	UAM_ASSERT(std::ranges::any_of(actions, [](const ShellAction& action) { return action.group_path == std::vector<std::string>{"GitHub"}; }));
 }
+
+#if !defined(_WIN32)
+UAM_TEST(SkillsLibraryListsReadableSkillsPastAnUnreadableSubfolder)
+{
+	if (::geteuid() == 0) return; // Root opens folders without read permission.
+	TempDir temp("uam-skills-unreadable-folder");
+	const fs::path root = temp.root / "store";
+	const fs::path locked = root / "locked";
+	fs::create_directories(locked);
+	fs::create_directories(root / "readable" / "nested");
+	UAM_ASSERT(uam::io::WriteTextFile(root / "top.uam", "---\ntitle: Top\ncommandName: top\n---\n\n# Top\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(root / "readable" / "nested" / "deep.uam", "---\ntitle: Deep\ncommandName: deep\n---\n\n# Deep\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(locked / "hidden.uam", "---\ntitle: Hidden\ncommandName: hidden\n---\n\n# Hidden\n"));
+	struct RestoreAccess
+	{
+		std::vector<fs::path> paths;
+		~RestoreAccess()
+		{
+			for (const fs::path& path : paths) { std::error_code ec; fs::permissions(path, fs::perms::owner_all, fs::perm_options::replace, ec); }
+		}
+	} restore{{root, locked}}; // Root first, so its folder can be reached again.
+	fs::permissions(locked, fs::perms::none, fs::perm_options::replace);
+
+	std::string error = "stale";
+	std::vector<fs::path> skipped{"stale"};
+	const std::vector<MarkdownStoreService::Entry> entries = MarkdownStoreService::ListEntries(root, &error, &skipped);
+	UAM_ASSERT(error.empty());
+	std::vector<std::string> titles;
+	for (const MarkdownStoreService::Entry& entry : entries) titles.push_back(entry.title);
+	std::ranges::sort(titles);
+	UAM_ASSERT(titles == (std::vector<std::string>{"Deep", "Top"}));
+	UAM_ASSERT(skipped == std::vector<fs::path>{fs::path("locked")});
+	// Creating a skill walks the same folders and still succeeds.
+	MarkdownStoreService::Draft draft;
+	draft.title = "Fresh";
+	draft.body = "# Fresh";
+	MarkdownStoreService::Entry created;
+	UAM_ASSERT(MarkdownStoreService::CreateEntry(root, draft, &created, &error));
+	UAM_ASSERT(error.empty());
+	UAM_ASSERT_EQ(MarkdownStoreService::ListEntries(root, &error).size(), static_cast<std::size_t>(3));
+
+	// An unreadable library root still fails instead of showing an empty library.
+	fs::permissions(root, fs::perms::none, fs::perm_options::replace);
+	UAM_ASSERT(MarkdownStoreService::ListEntries(root, &error, &skipped).empty());
+	UAM_ASSERT(!error.empty());
+	UAM_ASSERT(skipped.empty());
+}
+#endif
 
 UAM_TEST(MarkdownStoreCreatesListsAndValidatesUamFiles)
 {

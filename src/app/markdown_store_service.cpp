@@ -3,6 +3,7 @@
 
 #include "common/paths/path_utils.h"
 #include "common/platform/platform_services.h"
+#include "common/utils/diagnostic_log.h"
 #include "common/utils/env_utils.h"
 #include "common/utils/io_utils.h"
 #include "common/utils/string_utils.h"
@@ -10,7 +11,9 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <functional>
 #include <map>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -276,22 +279,68 @@ namespace
 		return target;
 	}
 
+	/// <summary>Visits every .uam file under root. A subfolder that cannot be opened is skipped and recorded relative to root instead of failing the walk; only an unreadable root or a failed walk returns false.</summary>
+	bool ForEachStoreFile(const fs::path& root, const std::function<void(const fs::directory_entry&)>& visit, std::vector<fs::path>* skipped_folders_out = nullptr)
+	{
+		std::error_code ec;
+		{
+			// skip_permission_denied would show an unreadable root as an empty library, so the root still fails.
+			const fs::directory_iterator root_probe(root, ec);
+			if (ec) return false;
+		}
+		for (fs::recursive_directory_iterator it(root, fs::directory_options::skip_permission_denied, ec), end; !ec && it != end; it.increment(ec))
+		{
+			std::error_code type_ec;
+			if (it->is_directory(type_ec) && !it->is_symlink(type_ec))
+			{
+				std::error_code open_ec;
+				const fs::directory_iterator folder_probe(it->path(), open_ec);
+				if (open_ec)
+				{
+					it.disable_recursion_pending();
+					if (skipped_folders_out != nullptr) skipped_folders_out->push_back(it->path().lexically_relative(root));
+				}
+				continue;
+			}
+			if (uam::paths::IsRegularFileWithExtensionNoThrow(*it, ".uam")) visit(*it);
+		}
+		return !ec;
+	}
+
+	/// <summary>Writes one diagnostic line when a library's skipped folders change, naming at most five of them.</summary>
+	void ReportSkippedFolders(const fs::path& root, const std::vector<fs::path>& skipped)
+	{
+		std::string summary;
+		if (!skipped.empty())
+		{
+			summary = "[skills] Skills library skipped " + std::to_string(skipped.size()) + " unreadable folder" + (skipped.size() == 1 ? "" : "s") + "; their skills are not listed:";
+			constexpr std::size_t kNamedFolders = 5;
+			for (std::size_t i = 0; i < skipped.size() && i < kNamedFolders; ++i)
+				summary += (i == 0 ? " " : ", ") + uam::strings::SafeLine(uam::paths::Utf8PathString(skipped[i]), 120, true);
+			if (skipped.size() > kNamedFolders) summary += ", +" + std::to_string(skipped.size() - kNamedFolders) + " more";
+			summary += ".";
+		}
+		static std::mutex mutex;
+		static std::map<std::string, std::string> last_summary_by_root;
+		std::lock_guard<std::mutex> lock(mutex);
+		std::string& last = last_summary_by_root[uam::paths::Utf8PathString(root)];
+		if (summary == last) return;
+		last = summary;
+		if (!summary.empty()) uam::diagnostics::Write(summary);
+	}
+
 	std::string UniqueCommandName(const fs::path& root, std::string_view title, const fs::path& ignored_path = {})
 	{
 		std::set<std::string> used;
-		std::error_code ec;
-		for (fs::recursive_directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec))
+		ForEachStoreFile(root, [&](const fs::directory_entry& file)
 		{
-			if (!uam::paths::IsRegularFileWithExtensionNoThrow(*it, ".uam") || (!ignored_path.empty() && uam::paths::NormalizeExistingPath(it->path()) == uam::paths::NormalizeExistingPath(ignored_path)))
-			{
-				continue;
-			}
+			if (!ignored_path.empty() && uam::paths::NormalizeExistingPath(file.path()) == uam::paths::NormalizeExistingPath(ignored_path)) return;
 			MarkdownStoreService::Entry entry;
-			if (ParseEntryFile(it->path(), entry))
+			if (ParseEntryFile(file.path(), entry))
 			{
 				used.insert(entry.command_name.empty() ? uam::strings::AsciiSlug(entry.title, kCommandMaxChars, "skill") : entry.command_name);
 			}
-		}
+		});
 
 		const std::string base = uam::strings::AsciiSlug(title, kCommandMaxChars, "skill");
 		std::string candidate = base;
@@ -504,36 +553,36 @@ bool MarkdownStoreService::IsConfiguredRoot(const fs::path& root, std::string* e
 	return true;
 }
 
-std::vector<MarkdownStoreService::Entry> MarkdownStoreService::ListEntries(const fs::path& root, std::string* error_out)
+std::vector<MarkdownStoreService::Entry> MarkdownStoreService::ListEntries(const fs::path& root, std::string* error_out, std::vector<fs::path>* skipped_folders_out)
 {
 	ClearError(error_out);
+	if (skipped_folders_out != nullptr) skipped_folders_out->clear();
 	std::vector<Entry> entries;
 	if (!IsConfiguredRoot(root, error_out))
 	{
 		return entries;
 	}
 
-	std::error_code ec;
-	for (fs::recursive_directory_iterator it(root, ec), end; !ec && it != end; it.increment(ec))
+	std::vector<fs::path> skipped_folders;
+	const bool walked = ForEachStoreFile(root, [&](const fs::directory_entry& file)
 	{
-		if (!uam::paths::IsRegularFileWithExtensionNoThrow(*it, ".uam"))
-		{
-			continue;
-		}
 		Entry entry;
-		if (!ParseEntryFile(it->path(), entry))
+		if (!ParseEntryFile(file.path(), entry))
 		{
-			continue;
+			return;
 		}
-		entry.id = EntryIdForPath(root, it->path());
+		entry.id = EntryIdForPath(root, file.path());
 		entries.push_back(std::move(entry));
-	}
+	}, &skipped_folders);
 
-	if (ec)
+	if (!walked)
 	{
 		SetError(error_out, "Failed to enumerate Markdown Store files.");
 		return {};
 	}
+	std::ranges::sort(skipped_folders);
+	ReportSkippedFolders(root, skipped_folders);
+	if (skipped_folders_out != nullptr) *skipped_folders_out = std::move(skipped_folders);
 
 	std::ranges::sort(entries, {}, [](const Entry& entry) { return uam::paths::Utf8PathString(entry.file_path); });
 	std::set<std::string> command_names;
