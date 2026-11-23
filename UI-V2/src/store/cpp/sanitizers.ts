@@ -1091,6 +1091,7 @@ export function sanitizeCppAcpSession(value: unknown): CppAcpSession | undefined
     queueHeld: booleanOr(value.queueHeld),
     providerSwitchOverride: value.providerSwitchOverride === 'warn' || value.providerSwitchOverride === 'disconnected' || value.providerSwitchOverride === 'stranded' || value.providerSwitchOverride === 'stranded-disconnected' ? value.providerSwitchOverride : 'none',
     unsentMessageIndices: Array.isArray(value.unsentMessageIndices) ? value.unsentMessageIndices.filter((index): index is number => typeof index === 'number' && Number.isSafeInteger(index) && index >= 0) : [],
+    editableUnsentMessageIndices: Array.isArray(value.editableUnsentMessageIndices) ? value.editableUnsentMessageIndices.filter((index): index is number => typeof index === 'number' && Number.isSafeInteger(index) && index >= 0) : [],
     recoverableUnsentMessageIndices: Array.isArray(value.recoverableUnsentMessageIndices) ? value.recoverableUnsentMessageIndices.filter((index): index is number => typeof index === 'number' && Number.isSafeInteger(index) && index >= 0) : [],
     queuedPrompts: Array.isArray(value.queuedPrompts)
       ? value.queuedPrompts.flatMap((prompt) => {

@@ -1,10 +1,12 @@
 .uam-notice {
-  animation: uam-notice-enter 140ms ease-out backwards;
+  animation: uam-notice-enter var(--dur-enter) var(--ease-out-soft) backwards;
 }
 
 .uam-notice[data-state="closed"] {
-  animation: uam-notice-exit var(--dur-exit) ease-in forwards;
+  animation: uam-notice-exit var(--dur-exit) var(--ease) forwards;
 }
+
+.uam-notice__chevron { transition: transform var(--dur-fast) var(--ease); }
 
 @keyframes uam-notice-exit {
   to { opacity: 0; transform: translateY(4px); }

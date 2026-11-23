@@ -527,7 +527,7 @@ namespace uam::acp_detail
 			if (AcpStopInProgress(app, id) || (session != nullptr && (session->processing || !session->queued_prompt.empty() ||
 			    AcpSessionHasPendingRuntimeRequest(*session) || AcpSessionIsWaitingForInput(*session) ||
 			    session->remote_stop_pending || session->remote_stop_unconfirmed ||
-			    !session->claude_live_background_task_ids.empty() || session->queue_held ||
+			    !session->claude_live_background_task_ids.empty() || session->claude_self_started_turn || session->queue_held ||
 			    (session->running && (!session->session_ready || session->session_id != owner.native_session_id))))) continue;
 			if (chat->remote_turn_reconnect_pending || chat->remote_stop_cleanup_pending || chat->remote_restart_pending || chat->acp_queue_held) continue;
 			const bool staged = CanStageQuotaPublication(app, *chat, session);

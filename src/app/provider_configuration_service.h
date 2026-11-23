@@ -75,11 +75,15 @@ namespace uam
 		{ error = "The selected Gemini model and checked executing-host CLI version do not support that thinking level; select Default or refresh the host CLI version."; return false; }
 		// OpenCode's own provider request timeout follows UAM's turn timeout so it cannot end the turn first.
 		// ponytail: only the launch model's provider; a mid-session switch to another provider keeps its own limit until relaunch.
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 		const std::string open_code_model_provider = provider_ids::IsCliProviderAliasOf(chat.provider_id, provider_ids::kOpenCodeCli)
 		    ? provider_setup::OpenCodeModelProviderId(chat.model_id) : std::string{};
 		// Only a value that raises OpenCode's built-in default is sent, so the launch records exactly what OpenCode received.
 		const bool open_code_request_timeout = !open_code_model_provider.empty() &&
 		    static_cast<std::int64_t>(settings.active_turn_inactivity_timeout_seconds) * 1000 > provider_setup::kOpenCodeDefaultRequestTimeoutMilliseconds;
+#else
+		constexpr bool open_code_request_timeout = false;
+#endif
 		// Launch configuration is the only channel for host instructions, so every route on this process has them.
 		const bool host_instructions = execution_hosts::HasInstructions(host) && !host_instructions_in_prompt;
 		if (!configuration.enabled && selected_servers.empty() && !open_code_discovery && !open_code_uam_control_deadline && !open_code_request_timeout && !claude_fast_override && !gemini_thinking_override && !require_session_mcp_configuration && !host_instructions) return true;
@@ -238,8 +242,10 @@ namespace uam
 		// Format 1 helpers predating this optional hint retain their ordinary eager MCP discovery.
 		if (open_code_discovery) bundle.manifest["openCodeCodeMode"] = true;
 		if (open_code_uam_control_deadline) bundle.manifest["openCodeUamControlDeadline"] = true;
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 		if (open_code_request_timeout)
 			bundle.manifest["openCodeRequestTimeout"] = {{"provider", open_code_model_provider}, {"milliseconds", static_cast<std::int64_t>(settings.active_turn_inactivity_timeout_seconds) * 1000}};
+#endif
 		// The host resolves expert --settings paths; only the requested override crosses SSH.
 		if (claude_fast_override) bundle.manifest["claudeTerminalFastMode"] = chat.service_tier == "fast";
 		if (gemini_thinking_override) bundle.manifest["geminiThinking"] = {{"model", chat.model_id}, {"effort", chat.reasoning_effort}, {"cliVersion", checked_provider_version}};

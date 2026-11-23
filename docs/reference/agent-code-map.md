@@ -91,6 +91,7 @@ Current bridge actions, grouped by domain (the live dispatch table is `UamQueryH
 | `getUsageHistory` | Query host-scoped usage history with immutable byte-bounded snapshot continuation |
 | `createSession` | Create a chat in a workspace folder with a provider |
 | `openNativeSessionChat` | Open a chat backed by a discovered native session |
+| `listGeminiChildConversations` | List attested child journals stored under one Gemini parent, locally or through the host helper's `provider.history.children` request |
 | `renameSession` | Rename a chat |
 | `setChatPinned` | Pin or unpin a chat |
 | `setChatProvider` | Switch between enabled providers |

@@ -1680,7 +1680,7 @@ bool CopilotCliProviderRuntime::OnAcpHandleError(uam::AppState& app, uam::AcpSes
 	if (method == "models.list")
 	{
 		if (app.provider_model_catalog)
-			app.provider_model_catalog->RememberRefreshFailure(session.provider_id, details.formatted_error, uam::paths::ResolveWorkspaceRootPath(app, chat).generic_string(), chat.execution_host_id, session.model_catalog_scope_key);
+			app.provider_model_catalog->RememberRefreshFailure(session.provider_id, details.formatted_error, uam::paths::PortablePathString(uam::paths::ResolveWorkspaceRootPath(app, chat)), chat.execution_host_id, session.model_catalog_scope_key);
 		StopBackgroundModelDiscovery(app, session);
 		return true;
 	}
@@ -1823,7 +1823,7 @@ bool CopilotCliProviderRuntime::OnAcpHandleResult(uam::AppState& app, uam::AcpSe
 			app.provider_model_catalog->RememberRefreshFailure(session.provider_id, models
 			        ? "Copilot SDK server returned no available models; check authentication and account model access."
 			        : "Copilot SDK server returned an invalid model list; check authentication and account model access.",
-			    uam::paths::ResolveWorkspaceRootPath(app, chat).generic_string(), chat.execution_host_id, session.model_catalog_scope_key);
+			    uam::paths::PortablePathString(uam::paths::ResolveWorkspaceRootPath(app, chat)), chat.execution_host_id, session.model_catalog_scope_key);
 		StopBackgroundModelDiscovery(app, session);
 		return true;
 	}

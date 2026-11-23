@@ -3967,6 +3967,31 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(requests).toHaveLength(0)
   })
 
+  it('retains the recovered branch witness on ambiguous retry and rejects a stale source before IPC', async () => {
+    const previous = useAppStore.getState()
+    const witness = { messagesDigest: '0123456789abcdef', nativeInputId: '11111111-1111-4111-8111-111111111111', providerId: 'gemini-cli', executionHostId: 'local' }
+    const requests: Array<{ payload: Record<string, unknown> }> = []
+    try {
+      useAppStore.setState({ sessions: [{ id: 'chat-1', name: 'Fixture', providerId: 'gemini-cli', executionHostId: 'local', viewMode: 'chat',
+        folderId: null, createdAt: new Date(0), updatedAt: new Date(0), messagesDigest: witness.messagesDigest }],
+        messages: { 'chat-1': [{ id: 'row', role: 'user', content: 'Original', createdAt: new Date(0), nativeInputId: witness.nativeInputId }] },
+        historyStartIndexBySessionId: { 'chat-1': 0 } })
+      window.cefQuery = ({ request, onSuccess, onFailure }) => {
+        requests.push(JSON.parse(request))
+        if (requests.length === 1) {
+          witness.nativeInputId = 'caller-mutated'
+          onFailure(1, 'Connection lost; action may have reached the application')
+        } else onSuccess(JSON.stringify({ chatId: 'branch-1' }))
+      }
+      await expect(useAppStore.getState().branchFromMessage('chat-1', 0, 'Edited', [], [], witness)).resolves.toBe('branch-1')
+      expect(requests).toHaveLength(2)
+      expect(requests[0].payload).toEqual(requests[1].payload)
+      expect(requests[0].payload.sourceWitness).toEqual({ ...witness, nativeInputId: '11111111-1111-4111-8111-111111111111' })
+      await expect(useAppStore.getState().branchFromMessage('chat-1', 0, 'Edited', [], [], witness)).rejects.toThrow('selected for branching changed')
+      expect(requests).toHaveLength(2)
+    } finally { useAppStore.setState(previous, true) }
+  })
+
   it('preserves the native branch rejection cause', async () => {
     window.cefQuery = ({ onFailure }) => onFailure(1, 'The source image is unavailable.')
     await expect(useAppStore.getState().branchFromMessage('chat-1', 7, 'Keep text', ['image'])).rejects.toThrow('The source image is unavailable.')

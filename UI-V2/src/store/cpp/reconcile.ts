@@ -626,6 +626,7 @@ export function acpBindingsEquivalent(existing: AcpBinding | undefined, next: Ac
     (existing.queueHeld ?? false) === (next.queueHeld ?? false) &&
     (existing.providerSwitchOverride ?? 'none') === (next.providerSwitchOverride ?? 'none') &&
     sameArrayEntries(existing.unsentMessageIndices ?? [], next.unsentMessageIndices ?? []) &&
+    sameArrayEntries(existing.editableUnsentMessageIndices ?? [], next.editableUnsentMessageIndices ?? []) &&
     sameArrayEntries(existing.recoverableUnsentMessageIndices ?? [], next.recoverableUnsentMessageIndices ?? []) &&
     queuedPromptsEquivalent(existing.queuedPrompts ?? [], next.queuedPrompts ?? []) &&
     queuedPromptsEquivalent(existing.pendingDirectPrompts ?? [], next.pendingDirectPrompts ?? []) &&
@@ -766,6 +767,7 @@ export function acpBindingFromCppChat(chat: CppChat, previous: AcpBinding | unde
     queueHeld: acp?.queueHeld ?? false,
     providerSwitchOverride: acp?.providerSwitchOverride ?? 'none',
     unsentMessageIndices: acp?.unsentMessageIndices ?? [],
+    editableUnsentMessageIndices: acp?.editableUnsentMessageIndices ?? [],
     recoverableUnsentMessageIndices: acp?.recoverableUnsentMessageIndices ?? [],
     queuedPrompts: acp?.queuedPrompts ?? [],
     pendingDirectPrompts: acp?.pendingDirectPrompts ?? [],

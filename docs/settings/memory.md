@@ -4,7 +4,7 @@ Memory settings control extraction, recall, storage, worker selection and budget
 
 [Memory store](../memory/store.md) · [Memory reference](../reference/architecture/durable-memory.md).
 
-[Policy choices](memory-policies.md) · [Manual scans](../memory/scanning.md).
+[Policy choices](memory-policies.md) · [Manual scans](../memory/scanning.md); Scan chats under Memory defaults opens the manual scan chooser.
 
 [Worker bindings, idle delay, recall budget and last-run diagnostics](memory-workers.md).
 

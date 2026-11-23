@@ -322,7 +322,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
           <Tab value="json" className="uam-prov-seg__item" disabled={busy}>JSON</Tab>
         </Tabs>} />
       <Swap swapKey={view}>{setupPresence.mounted && setupSnapshot.current && view === 'form' ? <div role="group" aria-label="MCP setup" tabIndex={-1} data-closing={setupPresence.closing ? 'true' : undefined}
-        className="uam-skills-step grid gap-3 py-3" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); if (!busy) cancelSetup() } }}>
+        className="uam-skills-step uam-skills-step--inline grid gap-3 py-3" onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); if (!busy) cancelSetup() } }}>
         <div className="flex items-center gap-2"><Button size="sm" disabled={busy} leadingIcon={<ArrowLeft size={14} aria-hidden />} onClick={cancelSetup}>Back</Button><strong className="text-sm">{setupSnapshot.current.title}</strong></div>
         <Swap swapKey={setupSnapshot.current.step}>{setupSnapshot.current.body}</Swap>
       </div> : view === 'json' ? <div className="grid gap-2 py-3">

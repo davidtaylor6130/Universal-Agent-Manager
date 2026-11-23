@@ -608,7 +608,8 @@ namespace uam
 		if (m_phase != "importing") return false;
 		const ChatHistorySyncService::ImportResult result = ChatHistorySyncService().ImportDiscoveredProviderChatsBatch(
 		    app, {}, m_import, 8, ChatHistorySyncService::ImportPolicy::SelectedNewChatsOnly);
-		m_imported_count += result.imported_count;
+		// The scan reports the histories the user selected; their sub-chats follow without being counted.
+		m_imported_count += result.imported_count - result.imported_subchat_count;
 		if (!result.confirmed_empty_native_keys.empty()) std::erase_if(m_selected, [&](const Candidate& candidate)
 		{
 			return std::ranges::find(result.confirmed_empty_native_keys, chat_identity::NativeIdentityKeyForHistoryImport(candidate.chat)) != result.confirmed_empty_native_keys.end();

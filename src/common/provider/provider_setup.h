@@ -193,6 +193,7 @@ namespace uam::provider_setup
 		return valid ? std::string(id) : std::string{};
 	}
 
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 	/// Seconds of the OpenCode request timeout a launch actually configured: the manifest value when Apply wrote it
 	/// into this environment (or, for a remote host whose environment is built there, the manifest value), else 0.
 	inline int AppliedOpenCodeRequestTimeoutSeconds(const nlohmann::json& manifest, const std::vector<std::pair<std::string, std::string>>* local_environment)
@@ -210,6 +211,9 @@ namespace uam::provider_setup
 		    config["provider"][id]["options"].value("timeout", nlohmann::json()) == timeout["milliseconds"];
 		return written ? seconds : 0;
 	}
+#else
+	inline int AppliedOpenCodeRequestTimeoutSeconds(const nlohmann::json&, const std::vector<std::pair<std::string, std::string>>*) { return 0; }
+#endif
 
 	inline bool ValidateManifest(const nlohmann::json& manifest, std::string& error)
 	{
@@ -217,6 +221,7 @@ namespace uam::provider_setup
 		{ error = "Central resource manifest is invalid."; return false; }
 		if (manifest.contains("mcpOnly") && !manifest["mcpOnly"].is_boolean()) { error = "MCP-only metadata must be boolean."; return false; }
 		if (manifest.contains("hostInstructionsOnly") && !manifest["hostInstructionsOnly"].is_boolean()) { error = "Host instruction metadata must be boolean."; return false; }
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 		if (manifest.contains("openCodeCodeMode") && !manifest["openCodeCodeMode"].is_boolean()) { error = "OpenCode discovery metadata must be boolean."; return false; }
 		if (manifest.contains("openCodeUamControlDeadline") && !manifest["openCodeUamControlDeadline"].is_boolean()) { error = "OpenCode UAM control deadline metadata must be boolean."; return false; }
 		if (manifest.contains("openCodeRequestTimeout"))
@@ -228,6 +233,7 @@ namespace uam::provider_setup
 			    !timeout.contains("milliseconds") || !timeout["milliseconds"].is_number_integer() || timeout["milliseconds"] < 60000 || timeout["milliseconds"] > 86400000)
 			{ error = "OpenCode request timeout metadata requires a provider ID and 1 minute to 24 hours."; return false; }
 		}
+#endif
 		if (manifest.contains("claudeTerminalFastMode") && !manifest["claudeTerminalFastMode"].is_boolean()) { error = "Claude terminal fast-mode metadata must be boolean."; return false; }
 		if (manifest.contains("geminiThinking"))
 		{
@@ -785,6 +791,7 @@ namespace uam::provider_setup
 			if (!mcp_only) SetEnvironment(environment, "COPILOT_CUSTOM_INSTRUCTIONS_DIRS", uam::paths::Utf8PathString(runtime) + (existing.empty() ? "" : "," + existing));
 			if (!servers.empty()) argv.insert(argv.end(), {"--additional-mcp-config", "@" + uam::paths::Utf8PathString(mcp_path)});
 		}
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 		else if (provider == uam::provider_ids::kOpenCodeCli)
 		{
 			// Resolve defaults on the executing host, preserving even an explicitly empty override.
@@ -849,6 +856,7 @@ namespace uam::provider_setup
 			}
 			SetEnvironment(environment, "OPENCODE_CONFIG_CONTENT", config.dump());
 		}
+#endif
 		else if (provider == uam::provider_ids::kGeminiCli)
 		{
 			nlohmann::json config = nlohmann::json::object();

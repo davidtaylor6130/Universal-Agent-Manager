@@ -94,6 +94,7 @@ namespace uam::provider_workers
 		return phase == Phase::Complete ? std::optional<std::string>(std::move(final_text)) : std::nullopt;
 	}
 
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 	/// <summary>Counts OpenCode failed-model-request log lines in the complete lines of `output` into
 	/// `reports`; returns a stop reason from the second report on, else empty.</summary>
 	/// <remarks>OpenCode 1.x `run` retries retryable provider errors (usage or rate limits) without
@@ -119,6 +120,7 @@ namespace uam::provider_workers
 		}
 		return reason;
 	}
+#endif
 
 	/// <summary>Maps owned worker paths to the selected host without changing adjacent directory names.</summary>
 	inline void RemapWorkerPaths(std::vector<std::string>& argv, const std::filesystem::path& original_directory,
@@ -145,7 +147,11 @@ namespace uam::provider_workers
 	{
 		// The checked V2 bridge owns a proof-verified deny-all lease. Never leave
 		// a V1 opencode.json or V1 argv flags in that worker's empty workspace.
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 		if (private_isolation) return IsProvider(profile, uam::provider_ids::kOpenCodeCli) && argv.size() == 5 && argv[1] == "--uam-opencode-v2-text-worker";
+#else
+		if (private_isolation) return false;
+#endif
 		if (IsProvider(profile, uam::provider_ids::kOpenCodeCli))
 		{
 			if (!uam::io::WriteTextFile(workspace / "opencode.json", R"({"permission":{"*":"deny","external_directory":"deny"},"agent":{"uam-text-worker":{"mode":"primary","prompt":"Complete the supplied text-only task directly. Do not delegate or compact. Tools are denied.","permission":{"*":"deny"}}},"share":"disabled","autoupdate":false})"))

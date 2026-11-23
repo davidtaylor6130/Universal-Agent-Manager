@@ -1266,7 +1266,8 @@ UAM_TEST(ShellActionOpenWorkspaceRequestCreatesAndSelectsPersistedChat)
 	app.shell_actions.push_back(action);
 	bool recognized = false;
 	std::string error;
-	UAM_ASSERT(ShellActionService::QueueLaunchRequest(app.data_root, {"uam", "--uam-shell-action", action.id, uam::paths::Utf8PathString(workspace)}, &recognized, &error));
+	// The crash supervisor appends its own options after the selected path on every GUI launch.
+	UAM_ASSERT(ShellActionService::QueueLaunchRequest(app.data_root, {"uam", "--uam-shell-action", action.id, uam::paths::Utf8PathString(workspace), "--uam-supervised-gui", "--uam-supervisor-pid=4242"}, &recognized, &error));
 	UAM_ASSERT(recognized);
 	UAM_ASSERT(ShellActionService::ProcessPendingRequests(app));
 	UAM_ASSERT_EQ(app.folders.size(), static_cast<std::size_t>(1));
@@ -1278,6 +1279,49 @@ UAM_TEST(ShellActionOpenWorkspaceRequestCreatesAndSelectsPersistedChat)
 	UAM_ASSERT_EQ(app.chats.front().model_id, action.model_id);
 	UAM_ASSERT(app.shell_action_notification.find("Opened workspace") != std::string::npos);
 	UAM_ASSERT(uam::paths::PathExistsNoThrow(AppPaths::UamChatFilePath(app.data_root, app.chats.front().id)));
+}
+
+UAM_TEST(ShellActionSkillRequestFromSupervisedLaunchOpensChatAndSendsSkill)
+{
+	TempDir temp("uam-shell-skill-launch");
+	const fs::path workspace = temp.root / uam::paths::PathFromUtf8("Repo ü with spaces");
+	const fs::path store = temp.root / "Markdown Store";
+	fs::create_directories(workspace);
+	fs::create_directories(store);
+	UAM_ASSERT(uam::io::WriteTextFile(store / "bug-fix.uam", "# Bug fix\n"));
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	fs::create_directories(app.data_root);
+	app.settings.markdown_store_directory = uam::paths::Utf8PathString(store);
+	ShellAction action;
+	action.id = "coding-bug-fix";
+	action.label = "Bug Fix";
+	// An unknown provider makes the send stop at provider resolution, so no real agent CLI starts.
+	action.provider_id = "provider-not-installed";
+	action.model_id = "shell-action-model";
+	action.skill_path = uam::paths::Utf8PathString(store / "bug-fix.uam");
+	app.shell_actions.push_back(action);
+	bool recognized = false;
+	std::string error;
+	// Explorer's command line plus the options the crash supervisor appends to every GUI launch.
+	UAM_ASSERT(ShellActionService::QueueLaunchRequest(app.data_root, {"uam", "--uam-shell-action", action.id, uam::paths::Utf8PathString(workspace), "--uam-supervised-gui", "--uam-supervisor-pid=4242"}, &recognized, &error));
+	UAM_ASSERT(recognized);
+	std::vector<fs::path> request_files;
+	for (const fs::directory_entry& entry : fs::directory_iterator(app.data_root / "shell-action-requests"))
+		request_files.push_back(entry.path());
+	UAM_ASSERT_EQ(request_files.size(), static_cast<std::size_t>(1));
+	const nlohmann::json request = nlohmann::json::parse(ReadFile(request_files.front()));
+	UAM_ASSERT_EQ(request["paths"], nlohmann::json::array({uam::paths::Utf8PathString(workspace)}));
+
+	UAM_ASSERT(ShellActionService::ProcessPendingRequests(app));
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(app.chats.front().title, action.label);
+	UAM_ASSERT_EQ(app.chats.front().workspace_directory, uam::paths::Utf8PathString(workspace));
+	UAM_ASSERT_EQ(app.chats.front().model_id, action.model_id);
+	UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(app), app.chats.front().id);
+	// The validated skill prompt reached the provider send, which then refused the unknown provider.
+	UAM_ASSERT(app.shell_action_notification.starts_with("Failed to run shell action 'Bug Fix':"));
+	UAM_ASSERT(app.shell_action_notification.find("not supported") != std::string::npos);
 }
 
 #if defined(__APPLE__)

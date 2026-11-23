@@ -1,11 +1,33 @@
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { Notice } from './Notice'
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
 describe('Notice', () => {
+  it('keeps a closed notice mounted for the scaled exit', () => {
+    const previousScale = document.documentElement.style.getPropertyValue('--motion-scale')
+    const host = document.createElement('div'); document.body.append(host); const root = createRoot(host)
+    vi.useFakeTimers()
+    vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: false }))
+    document.documentElement.style.setProperty('--motion-scale', '1.5')
+    try {
+      act(() => root.render(<Notice dismissLabel="Dismiss">Message</Notice>))
+      act(() => host.querySelector<HTMLButtonElement>('[aria-label="Dismiss"]')!.click())
+      expect(host.querySelector('.uam-notice')?.getAttribute('data-state')).toBe('closed')
+      act(() => vi.advanceTimersByTime(170))
+      expect(host.querySelector('.uam-notice')).not.toBeNull()
+      act(() => vi.advanceTimersByTime(85))
+      expect(host.querySelector('.uam-notice')).toBeNull()
+    } finally {
+      act(() => root.unmount()); host.remove(); vi.useRealTimers()
+      vi.unstubAllGlobals()
+      if (previousScale) document.documentElement.style.setProperty('--motion-scale', previousScale)
+      else document.documentElement.style.removeProperty('--motion-scale')
+    }
+  })
+
   it('renders one bar with the message inline and dismisses itself; long details collapse', () => {
     const host = document.createElement('div')
     document.body.appendChild(host)

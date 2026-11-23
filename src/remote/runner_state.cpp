@@ -1,3 +1,4 @@
+#include "common/chat/staged_attachment_folder.h"
 #include "common/provider/provider_setup_location.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_text_worker.h"
@@ -1237,6 +1238,30 @@ namespace uam::remote
 			return ProcessSuccess(request, {{"dataBase64", uam::base64::Encode(chunk)}, {"path", file.path},
 			    {"offset", offset}, {"totalBytes", file.text.size()}, {"fingerprint", fingerprint}});
 		}
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+		if (type == "provider.history.children")
+		{
+			const std::string provider = native_history::String(request, "providerId");
+			const std::string session = native_history::String(request, "sessionId");
+			const std::string workspace = native_history::String(request, "workspace");
+			if (provider == uam::provider_ids::kExcludedCliProviderId || provider != uam::provider_ids::kGeminiCli || !native_history::SafeId(session) || !IsBoundedText(workspace, kMaxWorkingDirectoryBytes) ||
+			    !execution_hosts::IsAbsoluteRemotePath(native_history::Platform(), workspace))
+				return ProcessError(request, "invalid_request", "The native child listing request is invalid.");
+			state_lock.unlock();
+			native_history::GeminiChildListing listing;
+			std::string list_error;
+			bool ok = false;
+			try { ok = native_history::ListGeminiChildren(session, workspace, listing, list_error, {}, native_history::kMaxSnapshotBytes); }
+			catch (const std::exception&) { list_error = "The native child journals could not be read safely."; }
+			if (!ok) return ProcessError(request, "history_unavailable", list_error);
+			nlohmann::json children = nlohmann::json::array();
+			for (const auto& child : listing.children)
+				children.push_back({{"agentId", child.agent_id}, {"preview", child.preview}, {"startedAt", child.started_at}, {"updatedAt", child.updated_at}, {"messages", child.messages}});
+			return ProcessSuccess(request, {{"providerId", provider}, {"sessionId", session}, {"workspace", workspace}, {"children", std::move(children)},
+			    {"unreadable", listing.unreadable}, {"truncated", listing.truncated}});
+		}
+#endif
+
 		if (type == "provider.history.read" || type == "provider.history.release")
 		{
 			const std::string provider = native_history::String(request, "providerId");
@@ -1524,6 +1549,27 @@ namespace uam::remote
 					return ProcessError(request, "remove_failed", "The staged file could not be removed.");
 				return ProcessSuccess(request, nlohmann::json::object());
 			}
+			if (type == "file.sweepChatAttachments")
+			{
+				// Only `<workspace>/.UAM/attachments/<chat id>`: its regular files except `keep`, then the folder once empty.
+				if (!request.contains("path") || !request["path"].is_string() || !request.contains("keep") || !request["keep"].is_array() || request["keep"].size() > 4096)
+					return ProcessError(request, "invalid_request", "A chat attachment folder and its kept names are required.");
+				const std::string path_text = request["path"].get<std::string>();
+				const std::filesystem::path folder = uam::paths::PathFromUtf8(path_text);
+				std::set<std::string> keep;
+				for (const nlohmann::json& name : request["keep"])
+				{
+					if (!name.is_string() || !IsBoundedText(name.get_ref<const std::string&>(), 1024)) return ProcessError(request, "invalid_request", "A kept attachment name is invalid.");
+					keep.insert(name.get<std::string>());
+				}
+				if (!IsBoundedText(path_text, kMaxWorkingDirectoryBytes) || !uam::staged_attachment_folder::IsChatFolder(folder))
+					return ProcessError(request, "invalid_request", "Only a chat's own attachment folder can be swept.");
+				state_lock.unlock();
+				std::size_t left = 0;
+				if (!uam::staged_attachment_folder::Sweep(folder, keep, left))
+					return ProcessError(request, "sweep_failed", "The chat's attachment folder could not be read.");
+				return ProcessSuccess(request, {{"left", left}});
+			}
 			if (type == "file.begin")
 			{
 				if (m_uploads.contains(upload_id))
@@ -1715,7 +1761,10 @@ namespace uam::remote
 				{
 					// The shim reported its waiting calls as failed: nothing it sent may reach a desktop afterwards.
 					drop_undelivered();
-					state.desktop_fenced = true;
+					// Only a desktop that names its tool server can clear a fence. One that never named one (from before
+					// desktop epochs) is not fenced, or it would be refused until restarted; dropping its unread calls is
+					// enough, and any desktop that does name a server replaces it anyway.
+					state.desktop_fenced = !state.desktop_epoch.empty();
 				}
 				if (request.contains("desktopEpoch"))
 				{

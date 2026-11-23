@@ -36,9 +36,9 @@ export type DictationState = 'idle' | 'starting' | 'listening' | 'stopping'
 
 export const PERMISSION_MODES = [
   { id: 'default', name: 'Default', description: 'Ask before commands and file changes.' },
-  { id: 'acceptEdits', name: 'Accept Edits', description: 'Automatically approve workspace file edits.' },
+  { id: 'acceptEdits', name: 'Accept edits', description: 'Automatically approve workspace file edits.' },
   { id: 'yolo', name: 'YOLO', description: 'Automatically approve every permission request.' },
-  { id: 'aiReview', name: 'AI Review', description: 'Ask a configured isolated reviewer; failures and uncertainty come back to you.' },
+  { id: 'aiReview', name: 'AI review', description: 'Ask a configured isolated reviewer; failures and uncertainty come back to you.' },
 ] as const
 
 export type CommandSafetyTier = 'off' | 'acceptEdits' | 'aiReview' | 'yolo'
@@ -176,6 +176,7 @@ export function ComposerToolbar({
   canSend,
   editing = false,
   sendLabel,
+  sendTitle,
   holdSend = false,
   runtimeStatusLabel,
   runtimeStatusColor,
@@ -246,6 +247,7 @@ export function ComposerToolbar({
   editing?: boolean
   /** Overrides the send button's label, e.g. while it submits question answers. */
   sendLabel?: string
+  sendTitle?: string
   /** Always show the (possibly disabled) send button, with Cancel turn beside it while the turn runs, e.g. while a question fills the composer. */
   holdSend?: boolean
   runtimeStatusLabel: string
@@ -779,7 +781,7 @@ export function ComposerToolbar({
         {running && !editing && (holdSend || !canSend) && (
           <IconButton title="Cancel turn" icon={<Square size={11} fill="currentColor" aria-hidden />} label="Cancel turn" tooltip={false} onClick={onCancelTurn} className="uam-composer-action h-8 w-8 shrink-0 text-xs font-semibold inline-flex items-center justify-center" style={{ width: 32, height: 32, borderRadius: 8, border: '1px solid color-mix(in srgb, var(--red) 46%, var(--border-bright))', background: 'color-mix(in srgb, var(--red) 14%, var(--surface))', color: 'var(--red)' }} />
         )}
-        {(holdSend || editing || !running || canSend) && <ComposerSendButton canSend={canSend} running={running} editing={editing} steer={steerByDefault} label={sendLabel ?? (steerByDefault ? steerLabel : undefined)} title={steerByDefault ? `${steerLabel}: ${steerDetail}` : undefined} />}
+        {(holdSend || editing || !running || canSend) && <ComposerSendButton canSend={canSend} running={running} editing={editing} steer={steerByDefault} label={sendLabel ?? (steerByDefault ? steerLabel : undefined)} title={sendTitle ?? (steerByDefault ? `${steerLabel}: ${steerDetail}` : undefined)} />}
     </div>
   )
 }

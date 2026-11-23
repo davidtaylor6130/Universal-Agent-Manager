@@ -45,8 +45,11 @@ namespace uam::remote
 		/// Desktop bytes. Returns what the provider may read: late replies to calls already failed here are dropped.
 		std::string FromDesktop(std::string_view bytes);
 		/// Applies the latest desktop state, failing calls that can no longer be answered into replies.
-		/// Returns true when the caller must fence the channel so those calls cannot reach a desktop later.
+		/// Returns true while the caller owes a fence of the channel so those calls cannot reach a desktop later.
 		bool Observe(bool desktop_live, const std::string& epoch, std::string& replies);
+		/// The helper accepted the fence; until then it is owed, including on a reopened connection.
+		void Fenced() { m_fenceOwed = false; }
+		bool FenceOwed() const { return m_fenceOwed; }
 
 	  private:
 		struct Pending
@@ -62,6 +65,8 @@ namespace uam::remote
 		std::deque<std::string> m_failed;
 		std::string m_fromProvider;
 		std::string m_fromDesktop;
+		bool m_fenceOwed = false;
+		std::string m_fenceEpoch; // The tool server the owed fence is for.
 	};
 	inline constexpr std::string_view kRemoteStopOutcomePrefix = "UAM_REMOTE_STOP_OUTCOME ";
 	/// Last stderr line of an attach whose bridge failed on a reachable host where neither a helper nor a process of that

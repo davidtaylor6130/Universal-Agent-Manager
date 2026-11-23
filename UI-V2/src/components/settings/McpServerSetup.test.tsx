@@ -232,6 +232,8 @@ it('shows native source paths and warnings beside import controls and accepts a 
   vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: true, data: { servers: [{ ...server, id: 'docs', name: 'docs' }], sources: ['/config/opencode/opencode.jsonc'], warnings: ['legacy: OAuth settings need manual configuration'], requiresReview: true } })
   await click('Add server'); await click('Import configuration')
   const section = document.querySelector('[aria-label="MCP setup"]')!
+  // The setup step stays in the page flow instead of the Skills pane's absolute overlay.
+  expect(section.classList.contains('uam-skills-step--inline')).toBe(true)
   expect(section.textContent).toContain('file or directory')
   await type(section.querySelector<HTMLInputElement>('input')!, '/config/opencode')
   await click("Read OpenCode config")
