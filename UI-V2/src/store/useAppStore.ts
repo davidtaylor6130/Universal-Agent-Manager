@@ -1,4 +1,4 @@
-import { MOBILE_COMPANION_ENABLED } from '../config/buildFeatures'
+import { MOBILE_COMPANION_ENABLED, SSH_ENABLED } from '../config/buildFeatures'
 import { EMPTY_STARTUP_NATIVE_IMPORT_STATUS } from '../types/startupNativeImports'
 import { createExecutionRoutingSlice } from './slices/executionRoutingSlice'
 import { DEFAULT_CENTRAL_PROVIDER_CONFIGURATION, type CentralProviderConfiguration } from './cpp/types'
@@ -144,7 +144,7 @@ function deserializeState(
     editorFileAssociations: EditorFileAssociation[]
     centralProviderConfiguration: CentralProviderConfiguration
     mcpServers: McpServerConfiguration[]
-    executionRouting: AppState['executionRouting']
+    executionRouting?: AppState['executionRouting'] // Absent in builds without SSH.
     executionHosts: AppState['executionHosts']
     favoriteUamAgentIds: string[]
     nativeImportExcludedTitlePrefixes: string[]
@@ -387,7 +387,7 @@ function deserializeState(
     httpCacheClearIntervalDays: cpp.settings.httpCacheClearIntervalDays ?? existing.httpCacheClearIntervalDays,
     centralProviderConfiguration: cpp.settings.centralProviderConfiguration ?? DEFAULT_CENTRAL_PROVIDER_CONFIGURATION,
     mcpServers: cpp.settings.mcpServers ?? [],
-    executionRouting: cpp.settings.executionRouting ?? existing.executionRouting,
+    ...(SSH_ENABLED ? { executionRouting: cpp.settings.executionRouting ?? existing.executionRouting } : {}),
     executionHosts: cpp.settings.executionHosts ?? existing.executionHosts,
     favoriteUamAgentIds: cpp.settings.favoriteUamAgentIds ?? [],
     nativeImportExcludedTitlePrefixes: cpp.settings.nativeImportExcludedTitlePrefixes ?? [],
@@ -635,7 +635,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     httpCacheClearIntervalDays: patch.settings?.httpCacheClearIntervalDays ?? current.httpCacheClearIntervalDays,
     centralProviderConfiguration: patch.settings?.centralProviderConfiguration ?? current.centralProviderConfiguration,
     mcpServers: patch.settings?.mcpServers ?? current.mcpServers,
-    executionRouting: patch.settings?.executionRouting ?? current.executionRouting,
+    ...(SSH_ENABLED ? { executionRouting: patch.settings?.executionRouting ?? current.executionRouting } : {}),
     executionHosts: patch.settings?.executionHosts ?? current.executionHosts,
     favoriteUamAgentIds: patch.settings?.favoriteUamAgentIds ?? current.favoriteUamAgentIds,
     nativeImportExcludedTitlePrefixes: patch.settings?.nativeImportExcludedTitlePrefixes ?? current.nativeImportExcludedTitlePrefixes,
@@ -908,7 +908,7 @@ export const useAppStore = create<AppState>((set, get) => {
           editorFileAssociations: current.editorFileAssociations,
           centralProviderConfiguration: current.centralProviderConfiguration,
           mcpServers: current.mcpServers,
-          executionRouting: current.executionRouting,
+          ...(SSH_ENABLED ? { executionRouting: current.executionRouting } : {}),
           executionHosts: current.executionHosts,
           favoriteUamAgentIds: current.favoriteUamAgentIds,
           nativeImportExcludedTitlePrefixes: current.nativeImportExcludedTitlePrefixes,
@@ -1431,7 +1431,7 @@ export const useAppStore = create<AppState>((set, get) => {
       editorFileAssociations: current.editorFileAssociations,
       centralProviderConfiguration: current.centralProviderConfiguration,
           mcpServers: current.mcpServers,
-      executionRouting: current.executionRouting,
+      ...(SSH_ENABLED ? { executionRouting: current.executionRouting } : {}),
       executionHosts: current.executionHosts,
       favoriteUamAgentIds: current.favoriteUamAgentIds,
       nativeImportExcludedTitlePrefixes: current.nativeImportExcludedTitlePrefixes,
@@ -1475,7 +1475,8 @@ export const useAppStore = create<AppState>((set, get) => {
     computerUseAllowlistEnabled: false,
     computerUseAllowedApplications: [],
     ...createSessionsSlice(set, get, inCef),
-    ...createExecutionRoutingSlice(get),
+    // Builds without SSH carry no routing state or actions; storeTypes keeps the fields for SSH builds.
+    ...(SSH_ENABLED ? createExecutionRoutingSlice(get) : {} as ReturnType<typeof createExecutionRoutingSlice>),
     ...createFoldersSlice(set, get),
     ...createResourceCollectionsSlice(set, get),
     ...createGoalsSlice(set, get),

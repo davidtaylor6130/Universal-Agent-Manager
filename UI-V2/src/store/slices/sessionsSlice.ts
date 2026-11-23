@@ -20,7 +20,7 @@ import type { MemoryLevel } from '../../types/memory'
 import type { WindowsPowerShellPreference, CreateSessionOptions, VoiceInputMode, VcsStorageSettings, ChatFileChangeReceiptsResponse, McpServerConfiguration } from '../cpp/types'
 import type { CEFResponse } from '../../ipc/cefBridge'
 import { sendWhenRemoteStopSettles, sendToCEF, isCefContext, isCompanionContext, createRequestId } from '../../ipc/cefBridge'
-import { COMPUTER_USE_ENABLED, MOBILE_COMPANION_ENABLED } from '../../config/buildFeatures'
+import { COMPUTER_USE_ENABLED, MOBILE_COMPANION_ENABLED, SSH_ENABLED } from '../../config/buildFeatures'
 import {
   CLAUDE_CLI_PROVIDER_ID,
   CODEX_CLI_PROVIDER_ID,
@@ -978,7 +978,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         : current.providers.some((provider) => provider.id === normalizedDefaultProviderId)
           ? normalizedDefaultProviderId
           : DEFAULT_PROVIDER_ID
-      if (routingMode === 'automatic' && !canRouteAutomatically(current.executionRouting, selectedFolder, requestedProviderId)) return false
+      if (routingMode === 'automatic' && (!SSH_ENABLED || !canRouteAutomatically(current.executionRouting, selectedFolder, requestedProviderId))) return false
       const defaults = providerChatDefaultsForNewChat({ ...current, providerChatDefaults: effectiveDefaults.providerChatDefaults }, requestedProviderId)
       if (modelId !== undefined) defaults.modelId = modelId.trim()
 	  if (reasoningEffort !== undefined) defaults.reasoningEffort = normalizeCodexReasoningEffort(reasoningEffort)

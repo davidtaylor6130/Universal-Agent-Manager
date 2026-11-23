@@ -2126,7 +2126,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
     editorFileAssociations: sanitizeEditorFileAssociations(value.editorFileAssociations),
     centralProviderConfiguration: sanitizeCentralProviderConfiguration(value.centralProviderConfiguration),
     mcpServers,
-    executionRouting: sanitizeExecutionRouting(value.executionRouting),
+    ...(SSH_ENABLED ? { executionRouting: sanitizeExecutionRouting(value.executionRouting) } : {}),
     executionHosts,
     favoriteUamAgentIds,
     nativeImportExcludedTitlePrefixes,
