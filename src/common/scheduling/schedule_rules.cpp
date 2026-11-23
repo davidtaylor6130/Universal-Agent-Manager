@@ -77,7 +77,16 @@ namespace uam::scheduling
 			    local.tm_min = minute;
 			    // The C library decides whether daylight saving applies, including in the skipped and repeated hours.
 			    local.tm_isdst = -1;
-			    return static_cast<std::int64_t>(std::mktime(&local)) * 1000;
+			    std::tm copy = local;
+			    std::time_t seconds = std::mktime(&copy);
+			    // glibc moves a skipped time forward; the BSD-derived C library on macOS can refuse it instead.
+			    if (seconds == static_cast<std::time_t>(-1))
+			    {
+				    copy = local;
+				    copy.tm_isdst = 0;
+				    seconds = std::mktime(&copy);
+			    }
+			    return seconds == static_cast<std::time_t>(-1) ? std::int64_t{-1} : static_cast<std::int64_t>(seconds) * 1000;
 		    },
 		};
 		return clock;
@@ -184,7 +193,9 @@ namespace uam::scheduling
 			if (offset == 0 && (now.hour > trigger.hour || (now.hour == trigger.hour && now.minute >= trigger.minute))) continue;
 			int year = 0, month = 0, day = 0;
 			CivilFromDays(today + offset, year, month, day);
-			const std::int64_t candidate = clock.from_local(year, month, day, trigger.hour, trigger.minute);
+			std::int64_t candidate = clock.from_local(year, month, day, trigger.hour, trigger.minute);
+			// A time the clock cannot express (skipped when clocks go forward) runs at the next hour instead of not at all.
+			if (candidate < 0 && trigger.hour < 23) candidate = clock.from_local(year, month, day, trigger.hour + 1, trigger.minute);
 			if (candidate > after_ms) return candidate;
 		}
 		return std::numeric_limits<std::int64_t>::max();

@@ -38,7 +38,8 @@ namespace uam::scheduling
 	{
 		std::function<LocalTime(std::int64_t epoch_ms)> to_local;
 		/// Epoch milliseconds of a local date and time. A time skipped by a daylight-saving change resolves to a
-		/// moment just after the change; a repeated time resolves to either instance.
+		/// moment just after the change, or is negative when the zone cannot express it; a repeated time resolves to
+		/// either instance.
 		std::function<std::int64_t(int year, int month, int day, int hour, int minute)> from_local;
 	};
 	const LocalClock& SystemLocalClock();

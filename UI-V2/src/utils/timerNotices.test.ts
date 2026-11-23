@@ -18,7 +18,7 @@ describe('timer notices', () => {
     reportTimerNotices(notices, (chatId) => chatId === 'chat-1' ? 'Parser work' : undefined)
     reportTimerNotices(notices, () => undefined)
     expect(reportAppFailure).toHaveBeenCalledTimes(2)
-    expect(reportAppFailure).toHaveBeenCalledWith('A scheduled follow-up was dropped. (chat “Parser work”)', '')
+    expect(reportAppFailure).toHaveBeenCalledWith('Chat “Parser work”: A scheduled follow-up was dropped.', '')
     reportTimerNotices([...notices, { serial: 3, message: 'Done.', tone: 'info' }], () => undefined)
     expect(reportAppNotice).toHaveBeenCalledWith('Done.', 'info')
   })

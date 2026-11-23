@@ -349,6 +349,13 @@ namespace uam
 		if (folder == nullptr || uam::strings::IsBlank(folder->directory)) return "That workspace no longer exists.";
 		if (uam::provider_chat_defaults::ProviderManagesOwnPermissions(provider_ids::NormalizeCliProviderAliasOrSelf(request.provider)))
 			return "That provider answers its own permission prompts, so UAM cannot hold it to a Git permission.";
+		// The run's own checks, made now too, so a schedule that could never start is not saved.
+		ChatSession probe = ChatDomainService().CreateNewChat(folder->id, provider_ids::NormalizeCliProviderAliasOrSelf(request.provider), true);
+		probe.execution_host_id = uam::strings::NonEmptyOrFallback(folder->execution_host_id, execution_hosts::kLocalHostId);
+		probe.workspace_directory = folder->directory;
+		probe.automation_token_id = "schedule-check";
+		if (std::string refusal = UamControlService::ChatWorktreeIsolationRefusal(app, probe); !refusal.empty()) return refusal;
+		if (!ProviderResolutionService().ChatProviderIsAvailable(app, probe)) return ProviderResolutionService().ChatProviderUnavailableReason(app, probe);
 		return {};
 	}
 

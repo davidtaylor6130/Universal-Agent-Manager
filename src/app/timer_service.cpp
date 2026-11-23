@@ -171,8 +171,17 @@ namespace uam
 				m_schedules.clear();
 				return;
 			}
-			// A launch the app did not see finish is no longer starting.
-			if (schedule.last_result == "starting") schedule.last_result = "awaitingApproval";
+			// A run the app did not see finish: with no chat it never created one; otherwise its chat is waiting.
+			if (schedule.last_result == "starting" && schedule.last_chat_id.empty())
+			{
+				schedule.last_result = "failed";
+				schedule.last_error = "UAM stopped before the chat was created.";
+			}
+			else if (schedule.last_result == "starting")
+			{
+				schedule.last_result = "awaitingApproval";
+				m_unstarted_after_restart.push_back(schedule.id);
+			}
 			m_schedules.push_back(std::move(schedule));
 		}
 	}
@@ -272,6 +281,13 @@ namespace uam
 		return true;
 	}
 
+	bool TimerService::CancelWake(std::string_view wake_id)
+	{
+		if (std::erase_if(m_wakes, [&](const ChatWake& wake) { return wake.id == wake_id; }) == 0) return false;
+		SaveWakes();
+		return true;
+	}
+
 	std::vector<TimerService::ChatWake> TimerService::WakesForChat(std::string_view chat_id) const
 	{
 		std::vector<ChatWake> wakes;
@@ -303,6 +319,13 @@ namespace uam
 		for (std::size_t index = 0; index < m_wakes.size();)
 		{
 			ChatWake& wake = m_wakes[index];
+			// The clock was set back since the wake was set: it is due no later than its longest delay from now.
+			const std::int64_t latest_due = now_ms + static_cast<std::int64_t>(kMaxWakeMinutes) * scheduling::kMinuteMs;
+			if (wake.due_ms > latest_due)
+			{
+				wake.due_ms = latest_due;
+				wake.created_ms = std::min(wake.created_ms, now_ms);
+			}
 			if (now_ms < wake.due_ms || now_ms < wake.retry_at_ms)
 			{
 				++index;
@@ -315,13 +338,25 @@ namespace uam
 				wake.delivering = false;
 				break;
 			}
-			const std::string text = "UAM follow-up: the follow-up you scheduled " + DurationText((wake.due_ms - wake.created_ms) / scheduling::kMinuteMs) +
+			// The time since it was set, so a follow-up delivered late (UAM closed, chat busy) says how long it really was.
+			const std::string text = "UAM follow-up: the follow-up you scheduled " + DurationText(std::max<std::int64_t>(1, (now_ms - wake.created_ms) / scheduling::kMinuteMs)) +
 			    " ago is due. Your note:\n\n" + wake.note;
 			std::string error;
 			const std::string chat_id = wake.chat_id;
-			if (m_sender(app, chat_id, text, &error))
+			const std::string wake_id = wake.id;
+			const bool sent = m_sender(app, chat_id, text, &error);
+			// Found again by its ID: the list is not assumed unchanged across the send.
+			const auto found = std::ranges::find(m_wakes, wake_id, &ChatWake::id);
+			if (found == m_wakes.end())
 			{
-				m_wakes.erase(m_wakes.begin() + static_cast<std::ptrdiff_t>(index));
+				SaveWakes();
+				changed = true;
+				continue;
+			}
+			index = static_cast<std::size_t>(found - m_wakes.begin());
+			if (sent)
+			{
+				m_wakes.erase(found);
 				SaveWakes();
 				changed = true;
 				continue;
@@ -335,7 +370,7 @@ namespace uam
 			{
 				uam::diagnostics::Write("Timers: chat " + chat_id + " refused a follow-up " + std::to_string(kWakeRefusalLimit) + " times; it was dropped.");
 				m_wakes.erase(m_wakes.begin() + static_cast<std::ptrdiff_t>(index));
-				Notify("A scheduled follow-up was dropped because the chat did not accept it for " + std::to_string(kWakeRefusalLimit) + " minutes. Open the chat in Chat view to continue.", "warning", chat_id);
+				Notify("A scheduled follow-up was dropped because the chat did not accept it for " + std::to_string(kWakeRefusalLimit) + " minutes; open the chat in Chat view to continue.", "warning", chat_id);
 				changed = true;
 			}
 			else ++index;
@@ -433,9 +468,13 @@ namespace uam
 		existing->trigger = edited->trigger;
 		existing->missed_policy = edited->missed_policy;
 		existing->request = edited->request;
-		// An edit starts the timing again from now, so changing a schedule never runs it at once for slots it missed.
-		existing->anchor_ms = now_ms;
-		existing->next_run_ms = scheduling::NextRunAfter(existing->trigger, now_ms, now_ms, m_clock);
+		// A changed trigger starts its timing again from now, so an edit never runs it at once for times it missed. An edit
+		// that keeps the trigger keeps the schedule's timing, so saving a renamed or reworded schedule does not move it.
+		if (scheduling::TriggerJson(before.trigger) != scheduling::TriggerJson(existing->trigger))
+		{
+			existing->anchor_ms = now_ms;
+			existing->next_run_ms = scheduling::NextRunAfter(existing->trigger, now_ms, now_ms, m_clock);
+		}
 		if (!SaveSchedules())
 		{
 			*existing = before;
@@ -498,7 +537,7 @@ namespace uam
 		if (schedule == nullptr || schedule->last_chat_id != chat_id) return;
 		schedule->last_result = started ? "started" : "failed";
 		schedule->last_error = started ? std::string{} : uam::strings::SafeLine(error, 300, true);
-		if (!started) Notify("Schedule “" + schedule->name + "” could not start its chat: " + schedule->last_error, "warning", std::string(chat_id));
+		if (!started) Notify("Schedule “" + schedule->name + "” created a chat that could not start: " + schedule->last_error, "warning", std::string(chat_id));
 		SaveSchedules();
 	}
 
@@ -536,10 +575,34 @@ namespace uam
 	{
 		if (m_schedules_unreadable) return false;
 		bool changed = false;
+		// A trusted run's chat created just before UAM stopped was never started or marked; it waits for the user now.
+		if (m_chats_seen || !app.chats.empty())
+		{
+			for (const std::string& id : m_unstarted_after_restart)
+			{
+				const Schedule* schedule = FindSchedule(id);
+				const ChatSession* chat = schedule == nullptr ? nullptr : ChatDomainService().FindChatById(app, schedule->last_chat_id);
+				if (chat != nullptr && chat->AwaitsAutomationApproval())
+				{
+					ChatDomainService().MarkChatNeedsAttention(app, chat->id);
+					changed = true;
+				}
+			}
+			m_unstarted_after_restart.clear();
+		}
 		for (std::size_t index = 0; index < m_schedules.size(); ++index)
 		{
 			Schedule& schedule = m_schedules[index];
 			if (schedule.paused) continue;
+			// The clock was set back (or a run happened while it was wrong): a next run more than one period away starts
+			// its timing again from now rather than leaving the schedule silent until the clock catches up.
+			const std::int64_t period_ms = schedule.trigger.kind == scheduling::TriggerKind::Interval
+			    ? static_cast<std::int64_t>(schedule.trigger.interval_minutes) * scheduling::kMinuteMs : 8 * 24 * 60 * scheduling::kMinuteMs;
+			if (schedule.next_run_ms > now_ms + period_ms)
+			{
+				schedule.anchor_ms = now_ms;
+				schedule.next_run_ms = 0;
+			}
 			if (schedule.next_run_ms <= 0) schedule.next_run_ms = scheduling::NextRunAfter(schedule.trigger, schedule.anchor_ms, now_ms, m_clock);
 			if (now_ms < schedule.next_run_ms) continue;
 			const scheduling::DueDecision decision = scheduling::Decide(schedule.trigger, schedule.missed_policy, schedule.anchor_ms, schedule.next_run_ms, now_ms, m_clock);
@@ -576,8 +639,9 @@ namespace uam
 	bool TimerService::Poll(AppState& app, std::int64_t now_ms)
 	{
 		if (m_wakes.empty() && m_schedules.empty()) return false;
-		// The app polls many times a second; timers have minute granularity, so once a second is enough.
-		if (now_ms < m_next_housekeeping_ms) return false;
+		// The app polls many times a second; timers have minute granularity, so once a second is enough. A clock set
+		// back resets the limiter instead of pausing every timer until the clock catches up.
+		if (now_ms < m_next_housekeeping_ms && now_ms >= m_next_housekeeping_ms - 1000) return false;
 		m_next_housekeeping_ms = now_ms + 1000;
 		const bool wakes_changed = PollWakes(app, now_ms);
 		const bool schedules_changed = PollSchedules(app, now_ms);

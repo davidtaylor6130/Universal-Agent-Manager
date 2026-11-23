@@ -158,12 +158,17 @@ export function AutomationSchedules() {
   const [draft, setDraft] = useState<Draft>(() => emptyDraft('', ''))
   const [busy, setBusy] = useState(false)
   const [deleting, setDeleting] = useState<AutomationSchedule | null>(null)
+  const [pausing, setPausing] = useState<string[]>([])
+  const [loadError, setLoadError] = useState('')
 
   const load = useCallback(async (reportFailure: boolean) => {
     const response = await sendToCEF<{ schedules: AutomationSchedule[] }>({ action: 'getAutomationSchedules' })
-    if (response.ok && response.data) setSchedules(Array.isArray(response.data.schedules) ? response.data.schedules : [])
-    else {
+    if (response.ok && response.data) {
+      setSchedules(Array.isArray(response.data.schedules) ? response.data.schedules : [])
+      setLoadError('')
+    } else {
       setSchedules(current => current ?? [])
+      setLoadError(response.error || 'Could not load automation schedules.')
       if (reportFailure) reportAppFailure(`Could not load automation schedules. ${response.error || 'Try again.'}`, '')
     }
   }, [])
@@ -199,7 +204,9 @@ export function AutomationSchedules() {
     setEditing(null)
   }
   const setPaused = async (schedule: AutomationSchedule, paused: boolean) => {
+    setPausing(current => [...current, schedule.id])
     const response = await sendToCEF<{ schedule: AutomationSchedule }>({ action: 'setAutomationSchedulePaused', payload: { id: schedule.id, paused } })
+    setPausing(current => current.filter(id => id !== schedule.id))
     if (!response.ok || !response.data) {
       reportAppFailure(`The schedule was not ${paused ? 'paused' : 'resumed'}. ${response.error || 'Try again.'}`, '')
       return
@@ -216,17 +223,20 @@ export function AutomationSchedules() {
   const weekly = draft.repeat === 'weekly'
   const valid = draft.name.trim() !== '' && draft.prompt.trim() !== '' && draft.workspaceId !== '' && draft.providerId !== '' && iterationsValid(draft.maxIterations) &&
     (!weekly || (draft.days.length > 0 && /^([01]\d|2[0-3]):[0-5]\d$/.test(draft.time)))
+  // An edit that changes nothing keeps Save disabled, as every settings save does.
+  const unchanged = editing !== null && editing !== 'new' && JSON.stringify(specFrom(draft)) === JSON.stringify(specFrom(draftFrom(editing)))
   const workspaceName = (id: string) => folders.find(folder => folder.id === id)?.name ?? 'Missing workspace'
 
   return <>
-    <SettingsSection title="Schedules" actions={<Button size="sm" variant="secondary" leadingIcon={<Plus size={14} aria-hidden />} onClick={() => open('new')}>New schedule</Button>}>
+    <SettingsSection title="Schedules" actions={<Button size="sm" variant="secondary" leadingIcon={<Plus size={14} aria-hidden />} disabled={loadError !== ''} onClick={() => open('new')}>New schedule</Button>}>
       {schedules === null && <SettingsLoading label="Loading automation schedules" rows={2} />}
-      {schedules !== null && schedules.length === 0 && <SettingRow title={<span style={{ color: 'var(--text-3)' }}>No schedules. They run while UAM is open, whether or not Phone access is on.</span>} />}
+      {schedules !== null && loadError !== '' && schedules.length === 0 && <SettingRow title="Schedules unavailable" status={loadError} />}
+      {schedules !== null && loadError === '' && schedules.length === 0 && <SettingRow title={<span style={{ color: 'var(--text-3)' }}>No schedules; they run while UAM is open, even with Phone access off.</span>} />}
       {schedules?.map(schedule => <SettingRow key={schedule.id} title={schedule.name}
         description={`${describeTrigger(schedule.trigger)} · ${workspaceName(schedule.request.workspaceId)} · ${schedule.trusted ? 'Starts straight away' : 'Waits for approval'}`}
         status={describeStatus(schedule) || undefined}
         control={<div className="flex items-center gap-1">
-          <Switch hideLabel label={`Run ${schedule.name} on schedule`} checked={!schedule.paused} onChange={event => void setPaused(schedule, !event.currentTarget.checked)} />
+          <Switch hideLabel label={`Run ${schedule.name} on schedule`} checked={!schedule.paused} disabled={pausing.includes(schedule.id)} onChange={event => void setPaused(schedule, !event.currentTarget.checked)} />
           <IconButton size="sm" icon={<Pencil size={14} />} label={`Edit ${schedule.name}`} onClick={() => open(schedule)} />
           <IconButton size="sm" icon={<X size={14} />} label={`Delete ${schedule.name}`} onClick={() => setDeleting(schedule)} />
         </div>} />)}
@@ -281,7 +291,7 @@ export function AutomationSchedules() {
             </SettingsField>
             <div className="flex justify-end gap-2">
               <Button size="sm" variant="ghost" disabled={busy} onClick={close}>Cancel</Button>
-              <Button size="sm" disabled={busy || !valid} onClick={() => void save()}>{busy ? 'Saving…' : 'Save schedule'}</Button>
+              <Button size="sm" disabled={busy || !valid || unchanged} onClick={() => void save()}>{busy ? 'Saving…' : 'Save schedule'}</Button>
             </div>
           </div>
         </div>

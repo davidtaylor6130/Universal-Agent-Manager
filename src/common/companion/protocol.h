@@ -170,6 +170,7 @@ namespace uam::companion
 		if (state.contains("shellActions"))
 			state["shellActions"] = nlohmann::json::array();
 		state.erase("shellActionNotification");
+		state.erase("timers"); // Desktop notices about schedules and follow-ups; the desktop panel reports them.
 		state.erase("companionConfirmations"); // Desktop-only; the phone never sees or answers its own held requests.
 		return state;
 	}

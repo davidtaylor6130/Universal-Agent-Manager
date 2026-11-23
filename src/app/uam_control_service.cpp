@@ -1497,7 +1497,7 @@ namespace uam
 			if (!wake) return {.error = std::move(error)};
 			// Chat and delay only: the note is the agent's text and stays out of the diagnostic log.
 			uam::diagnostics::Write("UAM schedule: chat " + chat.id + " scheduled a follow-up in " + std::to_string(minutes) + " minute(s).");
-			return {.ok = true, .result = {{"scheduled", true}, {"minutes", minutes}, {"dueAtEpochMs", wake->due_ms},
+			return {.ok = true, .result = {{"scheduled", true}, {"followUpId", wake->id}, {"minutes", minutes}, {"dueAtEpochMs", wake->due_ms},
 			                              {"pendingForThisChat", app.timer_service->WakesForChat(chat.id).size()},
 			                              {"next", "End your turn. UAM sends this chat your note when it is due; Stop, marking the chat done or deleting it cancels it."}},
 			        .reason = "Scheduled one follow-up for this chat."};
@@ -2073,6 +2073,9 @@ namespace uam
 					AcpSessionState* session = HtmlViewSession(app, capability_snapshot);
 					if (session != nullptr && view_chat != nullptr) RemoveAcpHtmlView(*session, *view_chat, result.result.value("viewId", ""));
 				}
+				// The agent is told this call failed, so a follow-up it set must not arrive later or be duplicated by a retry.
+				if (result.ok && method == "schedule" && app.timer_service != nullptr)
+					(void)app.timer_service->CancelWake(result.result.value("followUpId", std::string{}));
 				if (result.ok && method == "agent_delegate")
 				{
 					std::string cancel_error;

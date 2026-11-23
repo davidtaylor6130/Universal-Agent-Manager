@@ -11,7 +11,7 @@ export function reportTimerNotices(notices: readonly TimerNotice[], chatName: (c
     if (notice.serial <= reported) continue
     reported = notice.serial
     const name = notice.chatId ? chatName(notice.chatId) : undefined
-    const message = name ? `${notice.message} (chat “${name}”)` : notice.message
+    const message = name ? `Chat “${name}”: ${notice.message}` : notice.message
     if (notice.tone === 'warning') reportAppFailure(message, '')
     else reportAppNotice(message, notice.tone)
   }

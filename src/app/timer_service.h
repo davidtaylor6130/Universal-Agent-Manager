@@ -92,6 +92,8 @@ namespace uam
 		std::optional<ChatWake> ScheduleWake(const AppState& app, std::string_view chat_id, int minutes, std::string_view note, std::int64_t now_ms, std::string* error_out = nullptr);
 		/// The user pressed Stop on the chat: every pending wake of that chat is dropped.
 		bool CancelWakesForChat(std::string_view chat_id);
+		/// Removes one wake, e.g. when the tool call that set it could not be recorded.
+		bool CancelWake(std::string_view wake_id);
 		std::vector<ChatWake> WakesForChat(std::string_view chat_id) const;
 
 		// Automation schedules; desktop Settings only.
@@ -139,6 +141,8 @@ namespace uam
 		std::vector<Schedule> m_schedules;
 		/// The saved schedule list exists but could not be read; nothing runs and nothing overwrites it.
 		bool m_schedules_unreadable = false;
+		/// Schedules whose last run's chat was created but not started when UAM stopped; checked on the first poll.
+		std::vector<std::string> m_unstarted_after_restart;
 		bool m_chats_seen = false;
 		bool m_wakes_save_failed = false;
 		bool m_schedules_save_failed = false;

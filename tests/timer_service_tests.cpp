@@ -105,6 +105,18 @@ UAM_TEST(ScheduleRulesRunADailyTimeOnceWhenClocksGoBack)
 	UAM_ASSERT_EQ(clock.to_local(sched::NextRunAfter(nightly, 0, earlier, clock)).day, 26);
 }
 
+UAM_TEST(ScheduleRulesRunATimeSkippedWhenClocksGoForwardOnce)
+{
+	// Like the C library on macOS: a local time in the skipped hour (02:00-02:59 on 2026-03-29) cannot be expressed.
+	const sched::LocalClock base = sched::FixedOffsetClock(0);
+	const sched::LocalClock clock{.to_local = base.to_local, .from_local = [base](int year, int month, int day, int hour, int minute)
+	{ return year == 2026 && month == 3 && day == 29 && hour == 2 ? std::int64_t{-1} : base.from_local(year, month, day, hour, minute); }};
+	const sched::Trigger nightly = Weekly({0, 1, 2, 3, 4, 5, 6}, 2, 30);
+	const std::int64_t run = sched::NextRunAfter(nightly, 0, base.from_local(2026, 3, 29, 0, 0), clock);
+	UAM_ASSERT_EQ(run, base.from_local(2026, 3, 29, 3, 30));
+	UAM_ASSERT_EQ(clock.to_local(sched::NextRunAfter(nightly, 0, run, clock)).day, 30);
+}
+
 UAM_TEST(ScheduleRulesApplyTheMissedRunPolicy)
 {
 	const sched::Trigger hourly = Every(60);
@@ -290,7 +302,12 @@ UAM_TEST(TimerSchedulePausedEditedAndDeletedSchedulesDoNotRun)
 	fixture.PollAt(fixture.now + kMinute);
 	UAM_ASSERT(fixture.runs->empty());
 	UAM_ASSERT_EQ(fixture.Only().next_run_ms, kMonday8 + 6 * kHour);
-	// An edit changes the stored request and restarts the timing from the edit.
+	// An edit that keeps the trigger keeps the timing.
+	nlohmann::json renamed = {{"name", "Renamed"}, {"trigger", {{"kind", "interval"}, {"minutes", 60}}}, {"missedPolicy", "skip"}, {"request", TimerFixture::Request()}};
+	const std::int64_t kept = fixture.Only().next_run_ms;
+	UAM_ASSERT(fixture.service->UpdateSchedule(fixture.app, id, renamed, fixture.now + 10 * kMinute, &error).has_value());
+	UAM_ASSERT_EQ(fixture.Only().next_run_ms, kept);
+	// An edit that changes the trigger restarts the timing from the edit.
 	nlohmann::json edited = {{"name", "Morning triage"}, {"trigger", {{"kind", "interval"}, {"minutes", 30}}}, {"missedPolicy", "runOnce"}, {"request", TimerFixture::Request()}};
 	edited["request"]["prompt"] = "Summarise this morning's failures.";
 	UAM_ASSERT(fixture.service->UpdateSchedule(fixture.app, id, edited, fixture.now, &error).has_value());
@@ -341,8 +358,9 @@ UAM_TEST(TimerScheduleAStopBetweenRecordingAndStartingNeverRunsTheSlotAgain)
 	try { fixture.PollAt(kMonday8 + kHour); }
 	catch (const std::runtime_error&) { stopped = true; }
 	UAM_ASSERT(stopped);
-	// The restarted app sees the slot as already run, even under run-once.
+	// The restarted app sees the slot as already run, even under run-once, and says no chat was created.
 	fixture.Restart();
+	UAM_ASSERT(fixture.Only().last_result == "failed" && fixture.Only().last_error == "UAM stopped before the chat was created.");
 	fixture.PollAt(kMonday8 + kHour + 5000);
 	UAM_ASSERT(fixture.runs->empty());
 	fixture.PollAt(kMonday8 + 2 * kHour);
@@ -400,6 +418,109 @@ UAM_TEST(TimerScheduleUnreadableFileIsKeptAndNothingRuns)
 	UAM_ASSERT(uam::io::TryReadTextFile(file, text) && text == "{not json");
 }
 
+namespace
+{
+	/// Saving fails while a directory stands where the file is written; removing it lets saves succeed again.
+	void BlockSaves(const fs::path& file)
+	{
+		fs::remove(file);
+		fs::create_directories(file / "blocked");
+	}
+	void UnblockSaves(const fs::path& file)
+	{
+		fs::remove_all(file);
+	}
+} // namespace
+
+UAM_TEST(TimerScheduleSaveFailuresStartNothingAndKeepTheSchedule)
+{
+	TimerFixture fixture;
+	const std::string id = fixture.Create({{"kind", "interval"}, {"minutes", 60}});
+	const fs::path file = fixture.app.data_root / "automation_schedules.json";
+	BlockSaves(file);
+	// The run cannot be recorded first, so it does not start; the slot stays due.
+	fixture.PollAt(kMonday8 + kHour);
+	UAM_ASSERT(fixture.runs->empty());
+	UAM_ASSERT_EQ(fixture.Only().next_run_ms, kMonday8 + kHour);
+	std::string error;
+	nlohmann::json edited = {{"name", "Edited"}, {"trigger", {{"kind", "interval"}, {"minutes", 30}}}, {"missedPolicy", "skip"}, {"request", TimerFixture::Request()}};
+	UAM_ASSERT(!fixture.service->UpdateSchedule(fixture.app, id, edited, fixture.now, &error).has_value());
+	UAM_ASSERT(fixture.Only().name == "Nightly triage" && fixture.Only().trigger.interval_minutes == 60);
+	UAM_ASSERT(!fixture.service->SetSchedulePaused(id, true, fixture.now, &error).has_value() && !fixture.Only().paused);
+	UAM_ASSERT(!fixture.service->DeleteSchedule(id, &error));
+	UAM_ASSERT_EQ(fixture.service->SchedulesForTests().size(), std::size_t{1});
+	UnblockSaves(file);
+	fixture.PollAt(kMonday8 + kHour + 2000);
+	UAM_ASSERT_EQ(fixture.runs->size(), std::size_t{1});
+	fixture.Restart();
+	fixture.PollAt(kMonday8 + kHour + 4000);
+	UAM_ASSERT_EQ(fixture.runs->size(), std::size_t{1});
+}
+
+UAM_TEST(TimerScheduleWeekdayRunOnceAfterRestart)
+{
+	TimerFixture fixture;
+	fixture.Create({{"kind", "weekly"}, {"days", {1, 3}}, {"time", "09:00"}}, "runOnce");
+	// UAM is closed from Monday 08:00 until Wednesday 10:00: Monday's and Wednesday's runs pass.
+	fixture.Restart();
+	fixture.PollAt(kClock.from_local(2026, 11, 25, 10, 0));
+	fixture.PollAt(fixture.now + 2000);
+	UAM_ASSERT_EQ(fixture.runs->size(), std::size_t{1});
+	UAM_ASSERT_EQ(fixture.Only().last_skipped, 1);
+	UAM_ASSERT_EQ(fixture.Only().next_run_ms, kClock.from_local(2026, 11, 30, 9, 0));
+}
+
+UAM_TEST(TimerClockSetBackDoesNotSilenceTimers)
+{
+	TimerFixture fixture;
+	fixture.Create({{"kind", "interval"}, {"minutes", 60}});
+	std::string error;
+	UAM_ASSERT(fixture.service->ScheduleWake(fixture.app, "chat-1", 30, "Check CI.", fixture.now, &error).has_value());
+	fixture.PollAt(kMonday8 + 10 * kMinute);
+	// The clock jumps back two days: the schedule and the follow-up are each due within one period of the new time.
+	fixture.PollAt(kMonday8 - 2 * kDay);
+	UAM_ASSERT_EQ(fixture.Only().next_run_ms, kMonday8 - 2 * kDay + kHour);
+	UAM_ASSERT_EQ(fixture.service->WakesForChat("chat-1").front().due_ms, kMonday8 - 2 * kDay + kDay);
+	fixture.PollAt(kMonday8 - 2 * kDay + kHour);
+	UAM_ASSERT_EQ(fixture.runs->size(), std::size_t{1});
+	fixture.PollAt(kMonday8 - kDay);
+	UAM_ASSERT_EQ(fixture.wakes->size(), std::size_t{1});
+}
+
+UAM_TEST(TimerScheduleTrustedChatLeftUnstartedByAStopWaitsForTheUser)
+{
+	TimerFixture fixture(false);
+	fixture.app.chats.clear();
+	fixture.Create({{"kind", "interval"}, {"minutes", 60}}, "skip", true);
+	fixture.PollAt(kMonday8 + kHour);
+	// The launcher was handed the chat, but UAM stops before it starts.
+	UAM_ASSERT_EQ(fixture.launched->size(), std::size_t{1});
+	UAM_ASSERT_EQ(fixture.Only().last_result, std::string("starting"));
+	const std::string chat_id = fixture.app.chats.front().id;
+	fixture.app.chats_with_unseen_updates.clear();
+	fixture.Restart();
+	UAM_ASSERT_EQ(fixture.Only().last_result, std::string("awaitingApproval"));
+	fixture.PollAt(kMonday8 + kHour + 2000);
+	UAM_ASSERT(fixture.app.chats_with_unseen_updates.contains(chat_id));
+	UAM_ASSERT(fixture.app.chats.front().AwaitsAutomationApproval());
+}
+
+UAM_TEST(TimerWakeSaveFailureSendsNothing)
+{
+	TimerFixture fixture;
+	std::string error;
+	UAM_ASSERT(fixture.service->ScheduleWake(fixture.app, "chat-1", 1, "Check CI.", fixture.now, &error).has_value());
+	const fs::path file = fixture.app.data_root / "chat_wakes.json";
+	BlockSaves(file);
+	fixture.PollAt(kMonday8 + 2 * kMinute);
+	UAM_ASSERT(fixture.wakes->empty());
+	UAM_ASSERT(!fixture.service->ScheduleWake(fixture.app, "chat-1", 5, "Another.", fixture.now, &error).has_value());
+	UAM_ASSERT_EQ(error, std::string("The follow-up could not be saved. Try again."));
+	UnblockSaves(file);
+	fixture.PollAt(kMonday8 + 2 * kMinute + 2000);
+	UAM_ASSERT_EQ(fixture.wakes->size(), std::size_t{1});
+}
+
 UAM_TEST(TimerWakeFiresOnceAndSurvivesRestart)
 {
 	TimerFixture fixture;
@@ -413,7 +534,8 @@ UAM_TEST(TimerWakeFiresOnceAndSurvivesRestart)
 	fixture.PollAt(kMonday8 + 31 * kMinute);
 	UAM_ASSERT_EQ(fixture.wakes->size(), std::size_t{1});
 	UAM_ASSERT(fixture.wakes->front().first == "chat-1");
-	UAM_ASSERT(fixture.wakes->front().second.find("30 minutes ago") != std::string::npos);
+	// The message says how long ago it was really set, here one minute past its due time.
+	UAM_ASSERT(fixture.wakes->front().second.find("31 minutes ago") != std::string::npos);
 	UAM_ASSERT(fixture.wakes->front().second.find("Check whether CI passed on the parser branch.") != std::string::npos);
 	fixture.PollAt(kMonday8 + 40 * kMinute);
 	fixture.Restart();
@@ -532,6 +654,8 @@ namespace
 			app.timer_service = std::make_shared<uam::TimerService>(app.data_root, [](uam::AppState&, const std::string&, const std::string&, std::string*) { return true; });
 			Issue("capability", {});
 			Issue("child-capability", "run-1");
+			Issue("reviewer-capability", {});
+			app.uam_control_capabilities.back().read_only_at_launch = true;
 		}
 		void Issue(const std::string& id, const std::string& run_id)
 		{
@@ -569,6 +693,7 @@ UAM_TEST(UamControlScheduleToolWakesOnlyTheCallingChat)
 	nlohmann::json response = fixture.Call("schedule-1", "schedule", {{"minutes", 30}, {"note", "Check CI."}});
 	UAM_ASSERT(response.value("ok", false));
 	UAM_ASSERT(response["result"]["scheduled"] == true && response["result"]["minutes"] == 30 && response["result"]["pendingForThisChat"] == 1);
+	UAM_ASSERT(response["result"]["followUpId"].get<std::string>().starts_with("wk_"));
 	UAM_ASSERT_EQ(fixture.app.timer_service->WakesForChat("chat-1").size(), std::size_t{1});
 	// A subagent cannot schedule; the chat that delegated to it can.
 	response = fixture.Call("schedule-2", "schedule", {{"minutes", 30}, {"note", "Child."}}, "child-capability");
@@ -578,6 +703,11 @@ UAM_TEST(UamControlScheduleToolWakesOnlyTheCallingChat)
 	for (const char* bad : {R"({"minutes":0,"note":"x"})", R"({"minutes":1441,"note":"x"})", R"({"minutes":"30","note":"x"})", R"({"minutes":30})",
 	         R"({"minutes":30,"note":"x","extra":1})", R"({"minutes":30,"note":""})"})
 		UAM_ASSERT(!fixture.Call("bad-" + std::to_string(++bad_index), "schedule", nlohmann::json::parse(bad)).value("ok", false));
+	UAM_ASSERT_EQ(fixture.app.timer_service->WakesForChat("chat-1").size(), std::size_t{1});
+
+	// A goal reviewer is refused by the server even if a provider calls the hidden tool.
+	UAM_ASSERT(!fixture.Call("schedule-reviewer", "schedule", {{"minutes", 30}, {"note", "Reviewer."}}, "reviewer-capability").value("ok", false));
+	UAM_ASSERT(!fixture.Call("notify-reviewer", "notify", {{"message", "Reviewer."}}, "reviewer-capability").value("ok", false));
 	UAM_ASSERT_EQ(fixture.app.timer_service->WakesForChat("chat-1").size(), std::size_t{1});
 
 	const nlohmann::json tools = uam::UamControlService::ToolDefinitionsForTests();

@@ -93,6 +93,9 @@ describe('Automation schedules', () => {
       ? { ok: false, error: 'That workspace no longer exists.' }
       : { ok: true, data: { schedules: [schedule] } })
     act(() => button('Edit Nightly triage').click())
+    // Nothing changed yet, so there is nothing to save.
+    expect((button('Save schedule') as HTMLButtonElement).disabled).toBe(true)
+    setValue(document.querySelector<HTMLTextAreaElement>('[aria-label="Schedule prompt"]')!, 'Summarise every failure.')
     await act(async () => { button('Save schedule').click(); await Promise.resolve() })
     await flush()
     expect(reportAppFailure).toHaveBeenCalledWith('The schedule was not saved. That workspace no longer exists.', '')
@@ -110,5 +113,16 @@ describe('Automation schedules', () => {
     await flush()
     expect(send).toHaveBeenCalledWith({ action: 'deleteAutomationSchedule', payload: { id: 'as_1' } })
     expect(host.textContent).not.toContain('Nightly triage')
+  })
+
+  it('shows why schedules are unavailable instead of an empty list', async () => {
+    act(() => root.unmount())
+    send.mockImplementation(async () => ({ ok: false, error: 'The automation schedule file could not be read.' }))
+    root = createRoot(host)
+    act(() => root.render(<AutomationSchedules />))
+    await flush()
+    expect(host.textContent).toContain('The automation schedule file could not be read.')
+    expect(host.textContent).not.toContain('No schedules')
+    expect((button('New schedule') as HTMLButtonElement).disabled).toBe(true)
   })
 })

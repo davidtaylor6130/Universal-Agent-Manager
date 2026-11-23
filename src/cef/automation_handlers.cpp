@@ -76,7 +76,11 @@ void UamQueryHandler::RegisterAutomationScheduleLauncher(CefRefPtr<CefBrowser> b
 			}), {}, true);
 		}));
 		if (!posted && !lifetime.expired() && m_app.timer_service != nullptr)
-			m_app.timer_service->RecordLaunchResult(schedule_id, chat_id, false, "UAM was closing, so the chat is waiting for you to start it.");
+		{
+			// The chat waits for Start chat, so it is marked for the user like an untrusted run's chat.
+			ChatDomainService().MarkChatNeedsAttention(m_app, chat_id);
+			m_app.timer_service->RecordLaunchResult(schedule_id, chat_id, false, "UAM was closing, so it is waiting in Active Chats for you to start it.");
+		}
 	});
 }
 
@@ -105,11 +109,13 @@ void UamQueryHandler::LaunchAutomationChat(CefRefPtr<CefBrowser> browser, const 
 	// Carries the desktop request ID, so the sent message clears its "Sending" state as any composer send does.
 	if (!origin_request_id.empty()) send["_uamOriginRequestId"] = origin_request_id;
 	HandleSendAcpPrompt(browser, send,
-	    new AutomationLaunchReply(cb, std::move(response), [this, lifetime, browser, cb, chat_id, from_desktop, launch = *launch](int status, const std::string& reason)
+	    new AutomationLaunchReply(cb, std::move(response), [this, lifetime, browser, cb, chat_id, from_desktop, scheduled, launch = *launch](int status, const std::string& reason)
 	    {
 		    const bool waiting = !lifetime.expired() && uam::AutomationApiService::AbandonLaunch(m_app, chat_id, launch);
 		    if (!lifetime.expired()) uam::PushStateUpdateIfChanged(browser, m_app);
-		    if (from_desktop) cb->Failure(status, waiting ? reason : "This chat may not have started: " + reason);
+		    // A schedule names the outcome in its own notice; it gets the reason and whether the chat still waits.
+		    if (scheduled) cb->Failure(status, waiting ? reason + " It is waiting in Active Chats." : reason + " It may have started; check the chat.");
+		    else if (from_desktop) cb->Failure(status, waiting ? reason : "This chat may not have started: " + reason);
 		    else cb->Failure(status, "The chat " + chat_id + (waiting ? " could not start and is waiting in UAM: " : " may not have started: ") + reason);
 	    }));
 }
