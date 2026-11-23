@@ -2020,7 +2020,7 @@ UAM_TEST(OwnChatAdmissionRejectsChangedOwnerRowPolicyRootAndForceWithoutFallback
 
 UAM_TEST(OwnedPublicationChainsBindingAndPacketReceiptsWithoutProcesses)
 {
-	for (const std::string fault : {"none", "foreign-primary", "newer-save"})
+	for (const std::string fault : {"none", "foreign-primary", "owner-loss", "newer-save"})
 	{
 		TempDir temp("uam-owned-publication-chain-no-process");
 		auto receipt = OwnContinuationLaunch(temp.root, true);
@@ -2049,7 +2049,8 @@ UAM_TEST(OwnedPublicationChainsBindingAndPacketReceiptsWithoutProcesses)
 		candidate.remote_prompt_delivery_payload = "{\"type\":\"user\",\"privateFixture\":true}\n";
 		std::optional<ChatPublicationState> packet_fact;
 		std::shared_ptr<const StoppedChatLaunchStorageReceipt> packet_receipt;
-		UAM_ASSERT(uam::acp_detail::BeginOwnedChatPublicationAdmission(app, candidate, receipt, [] { return true; },
+		bool packet_owned = true;
+		UAM_ASSERT(uam::acp_detail::BeginOwnedChatPublicationAdmission(app, candidate, receipt, [&] { return packet_owned; },
 		    [&](StoppedChatLaunchPublicationResult result)
 		    {
 			    ++packet_callbacks; packet_fact = result.publication.state;
@@ -2062,6 +2063,7 @@ UAM_TEST(OwnedPublicationChainsBindingAndPacketReceiptsWithoutProcesses)
 		const auto foreign_stage = primary.parent_path() / "foreign-owned-stage.tmp";
 		UAM_ASSERT(uam::io::WriteTextFile(foreign_stage, "foreign creator bytes"));
 		if (fault == "foreign-primary") ReplaceOwnContinuationFile(primary);
+		if (fault == "owner-loss") packet_owned = false; // After the worker is ready: the commit itself still lands.
 		if (fault == "newer-save")
 		{
 			candidate.title = "Newer independently scheduled save";
@@ -2070,7 +2072,8 @@ UAM_TEST(OwnedPublicationChainsBindingAndPacketReceiptsWithoutProcesses)
 		SettleOwnedPublicationActualWork(app);
 		UAM_ASSERT_EQ(packet_callbacks, 1);
 		UAM_ASSERT(packet_fact && *packet_fact == ChatPublicationState::Committed);
-		// Only an untouched chained publication stays current; a foreign or newer primary retires it.
+		// Only an untouched, still-owned chained publication returns a receipt; the Committed fact survives either way.
+		UAM_ASSERT_EQ(static_cast<bool>(packet_receipt), fault == "none");
 		const bool packet_current = packet_receipt && packet_receipt->Current();
 		UAM_ASSERT_EQ(packet_current, fault == "none");
 		UAM_ASSERT_EQ(ReadFile(foreign_stage), std::string("foreign creator bytes"));
