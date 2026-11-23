@@ -260,8 +260,10 @@ bool CliTerminalLifecycleIsIdleLive(const CliTerminalState& terminal)
 
 bool CliTerminalPromptConfirmsTurnIdle(CliTerminalState& terminal, bool prompt_detected, bool received_output, double now_seconds)
 {
+	// An Unknown set by MarkCliTerminalTurnUnknown still leaves the turn to prompt evidence.
+	const bool unconfirmed_unknown = terminal.lifecycle_state == CliTerminalLifecycleState::Unknown && terminal.turn_end_unconfirmed;
 	if (!terminal.running || !terminal.uses_prompt_activity_tracking ||
-	    terminal.lifecycle_state != CliTerminalLifecycleState::Busy)
+	    (terminal.lifecycle_state != CliTerminalLifecycleState::Busy && !unconfirmed_unknown))
 	{
 		return false;
 	}
@@ -308,10 +310,17 @@ bool CliTerminalPromptConfirmsTurnIdle(CliTerminalState& terminal, bool prompt_d
 
 void MarkCliTerminalTurnBusy(CliTerminalState& terminal, bool settle_first_prompt)
 {
-	terminal.codex_activity_turn_id.clear();
-	terminal.codex_activity_awaiting_turn = settle_first_prompt;
-	terminal.codex_activity_completed = false;
 	const double now = GetAppTimeSeconds();
+	// Input during a tracked native turn (an approval or a queued message) answers that turn: keep it, so its own
+	// completion still ends the busy state. Only a submission with no tracked turn waits for a new one.
+	if (terminal.codex_activity_turn_id.empty())
+	{
+		terminal.codex_activity_awaiting_turn = settle_first_prompt;
+		terminal.codex_activity_awaiting_since_s = settle_first_prompt ? now : 0.0;
+		terminal.native_turn_receipt_expired = false;
+	}
+	terminal.codex_activity_completed = false;
+	terminal.turn_end_unconfirmed = false;
 	terminal.current_turn_output_bytes.clear();
 	terminal.prompt_settle_required = terminal.uses_prompt_activity_tracking && settle_first_prompt;
 	terminal.prompt_settle_candidate_time_s = 0.0;
@@ -326,7 +335,9 @@ void MarkCliTerminalTurnBusy(CliTerminalState& terminal, bool settle_first_promp
 void MarkCliTerminalTurnIdle(CliTerminalState& terminal)
 {
 	terminal.codex_activity_awaiting_turn = false;
+	terminal.codex_activity_awaiting_since_s = 0.0;
 	terminal.codex_activity_completed = false;
+	terminal.turn_end_unconfirmed = false;
 	const double now = GetAppTimeSeconds();
 	terminal.prompt_settle_required = false;
 	terminal.prompt_settle_candidate_time_s = 0.0;
@@ -336,6 +347,21 @@ void MarkCliTerminalTurnIdle(CliTerminalState& terminal)
 	terminal.last_idle_confirmed_time_s = now;
 	terminal.inactivity_interrupt_requested_time_s = 0.0;
 	terminal.shutdown_requested_time_s = 0.0;
+}
+
+void MarkCliTerminalTurnUnknown(CliTerminalState& terminal)
+{
+	if (!terminal.running || terminal.lifecycle_state != CliTerminalLifecycleState::Busy) return;
+	terminal.prompt_settle_required = false;
+	terminal.prompt_settle_candidate_time_s = 0.0;
+	terminal.lifecycle_state = CliTerminalLifecycleState::Unknown;
+	terminal.turn_state = CliTerminalTurnState::Unknown;
+	terminal.generation_in_progress = false;
+	terminal.last_busy_time_s = 0.0;
+	terminal.inactivity_interrupt_requested_time_s = 0.0;
+	// Only output drawn from now on counts, so a running turn's earlier status line cannot hide a later idle prompt.
+	terminal.current_turn_output_bytes.clear();
+	terminal.turn_end_unconfirmed = true;
 }
 
 bool IsCliTerminalTurnBusy(const CliTerminalState& terminal)
@@ -365,6 +391,9 @@ void MarkCliTerminalStopped(CliTerminalState& terminal)
 	terminal.codex_activity_string_cursor = {};
 	terminal.codex_activity_turn_id.clear();
 	terminal.codex_activity_awaiting_turn = false;
+	terminal.codex_activity_awaiting_since_s = 0.0;
+	terminal.native_turn_receipt_expired = false;
+	terminal.turn_end_unconfirmed = false;
 	terminal.codex_activity_read_failed = false;
 	terminal.codex_activity_completed = false;
 	terminal.codex_activity_discard_line = false;

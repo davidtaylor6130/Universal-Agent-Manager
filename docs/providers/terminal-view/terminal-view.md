@@ -11,4 +11,4 @@ Closing a CLI terminal never types into it. The composer may hold unsent text, a
 
 Steering an idle CLI terminal delivers the steer at once; a busy terminal gets Ctrl-C and the steer once it is idle. A failed interrupt or delivery keeps the prompt pending for retry, and steering is refused while terminal activity is Unknown.
 
-Busy and Ready must come from evidence owned by that terminal and session. When native activity or input admission cannot be proven, display Unknown; an idle-looking screen or an unrelated server must not imply completion, and an idle terminal should not keep background observation processes running.
+Busy and Ready must come from evidence owned by that terminal and session. Input to a running turn, such as accepting an approval with Enter, does not start a new turn. A submission the provider never records as a turn must not keep the terminal busy. When native activity or input admission cannot be proven, display Unknown; an idle-looking screen or an unrelated server must not imply completion, and an idle terminal should not keep background observation processes running.

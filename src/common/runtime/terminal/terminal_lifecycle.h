@@ -61,6 +61,9 @@ bool CliTerminalLifecycleIsIdleLive(const CliTerminalState& terminal);
 bool CliTerminalPromptConfirmsTurnIdle(CliTerminalState& terminal, bool prompt_detected, bool received_output, double now_seconds);
 void MarkCliTerminalTurnBusy(CliTerminalState& terminal, bool settle_first_prompt = true);
 void MarkCliTerminalTurnIdle(CliTerminalState& terminal);
+/// <summary>A busy turn whose end cannot be proven shows Unknown instead of staying busy. Prompt tracking stays on, so
+/// the next submission or native turn start marks the terminal busy again.</summary>
+void MarkCliTerminalTurnUnknown(CliTerminalState& terminal);
 bool IsCliTerminalTurnBusy(const CliTerminalState& terminal);
 void MarkCliTerminalShuttingDown(CliTerminalState& terminal);
 void MarkCliTerminalStopped(CliTerminalState& terminal);
