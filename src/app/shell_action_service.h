@@ -10,6 +10,8 @@
 class ShellActionService
 {
   public:
+	/// The one-line warning Load gives when the saved file exists but cannot be read or parsed.
+	static constexpr std::string_view kUnreadableWarning = "Saved shell actions could not be read. The file is kept, and set aside when shell actions are next saved.";
 	/// Saved entries that fail validation are kept in place as disabled, read-only actions carrying a one-line `invalid_reason`;
 	/// `warning_out` receives a one-line summary when any were kept or the saved file could not be read; `unreadable_out`
 	/// reports the latter, which the next save must pass on as `set_current_aside`.

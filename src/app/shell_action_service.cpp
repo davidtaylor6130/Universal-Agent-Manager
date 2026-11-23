@@ -802,8 +802,10 @@ namespace
 		catch (const nlohmann::json::exception&)
 		{
 		}
-		// A wall-clock name sorts and reads by date; the counter keeps two saves in one second apart.
-		const fs::path aside = data_root / ("shell_actions.unreadable-" + uam::time::UtcTimestampNow("%Y%m%dT%H%M%SZ") + "-" + std::to_string(uam::time::SteadyEpochNanosecondsNow() % 1000000000ULL) + ".json");
+		// A wall-clock name sorts and reads by date; a numbered suffix keeps an earlier copy from the same second.
+		const std::string stem = "shell_actions.unreadable-" + uam::time::UtcTimestampNow("%Y%m%dT%H%M%SZ");
+		fs::path aside = data_root / (stem + ".json");
+		for (int suffix = 1; uam::paths::PathExistsNoThrow(aside); ++suffix) aside = data_root / (stem + "-" + std::to_string(suffix) + ".json");
 		if (!uam::io::WriteTextFile(aside, text))
 		{
 			if (error_out != nullptr) *error_out = "The saved shell actions file could not be read or kept aside, so it was not replaced.";
@@ -828,7 +830,7 @@ std::vector<ShellAction> ShellActionService::Load(const std::filesystem::path& d
 		return result;
 	}
 	if (!uam::paths::PathExistsNoThrow(actions_path)) return result;
-	const std::string unreadable = "Saved shell actions could not be read. The file is kept, and set aside when shell actions are next saved.";
+	const std::string unreadable(kUnreadableWarning);
 	std::string text;
 	if (!uam::io::TryReadTextFile(actions_path, text))
 	{

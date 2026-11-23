@@ -263,7 +263,7 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
           return <div key={action.id} className="uam-presence" data-state={removingActionIds.has(action.id) ? 'closed' : 'open'}><SettingRow icon={<FolderTree size={15} aria-hidden />}
             title={action.label || 'Untitled action'}
             description={kept ? undefined : summary}
-            status={kept ? <span className="uam-prov-status" data-tone="error" style={{ whiteSpace: 'normal' }}><StatusDot tone="error" />Invalid: {action.invalidReason}</span>
+            status={kept ? <span className="uam-prov-status" data-tone="error" style={{ whiteSpace: 'normal', overflowWrap: 'anywhere' }}><StatusDot tone="error" />Invalid: {action.invalidReason}</span>
               : changed ? <span className="uam-prov-status" data-tone="warning"><StatusDot tone="warning" />Unsaved changes</span> : undefined}
             control={<>
               <Switch hideLabel label={`Enable ${action.label}`} checked={kept ? false : action.enabled} disabled={kept} onChange={(event) => update(action.id, { enabled: event.target.checked })} />

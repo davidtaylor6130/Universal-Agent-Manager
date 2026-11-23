@@ -57,8 +57,11 @@ void UamQueryHandler::HandleSetShellActions(CefRefPtr<CefBrowser> browser, const
 		cb->Failure(400, error);
 		return;
 	}
-	// A save that followed an unreadable load set the old file aside; a failed reload here is caught again on the next save.
-	m_app.shell_actions = ShellActionService::Load(m_app.data_root, {}, nullptr, &m_app.shell_actions_unreadable);
+	bool reload_unreadable = false;
+	std::vector<ShellAction> reloaded = ShellActionService::Load(m_app.data_root, {}, nullptr, &reload_unreadable);
+	// The file now holds exactly what was just written, so a reload blocked by a transient lock keeps that list instead of an empty one.
+	m_app.shell_actions = reload_unreadable ? std::move(actions) : std::move(reloaded);
+	m_app.shell_actions_unreadable = false;
 	m_app.shell_action_notification = "Shell action settings saved. Choose Apply to update Finder or Explorer.";
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
@@ -68,7 +71,9 @@ void UamQueryHandler::HandleApplyShellActions(CefRefPtr<CefBrowser> browser, con
 {
 	std::string error;
 	const std::filesystem::path executable = PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath();
-	if (!ShellActionService::Apply(m_app, executable, &error))
+	// While the saved list could not be read the in-memory list is empty, and applying it would remove every installed menu item.
+	if (m_app.shell_actions_unreadable) error = std::string(ShellActionService::kUnreadableWarning);
+	if (!error.empty() || !ShellActionService::Apply(m_app, executable, &error))
 	{
 		m_app.shell_action_notification = error;
 		uam::PushStateUpdateIfChanged(browser, m_app);

@@ -267,15 +267,15 @@ namespace
 	class AppApplySeedMarkdownTask : public CefTask
 	{
 	  public:
-		AppApplySeedMarkdownTask(Application* app, std::shared_ptr<std::atomic_bool> lifetime_token, bool seeded, std::string error, std::vector<ShellAction> shell_actions, std::string destination_directory)
-		    : m_app(app), m_lifetime_token(std::move(lifetime_token)), m_seeded(seeded), m_error(std::move(error)), m_shell_actions(std::move(shell_actions)), m_destination_directory(std::move(destination_directory))
+		AppApplySeedMarkdownTask(Application* app, std::shared_ptr<std::atomic_bool> lifetime_token, bool seeded, std::string error, std::vector<ShellAction> shell_actions, bool shell_actions_unreadable, std::string destination_directory)
+		    : m_app(app), m_lifetime_token(std::move(lifetime_token)), m_seeded(seeded), m_error(std::move(error)), m_shell_actions(std::move(shell_actions)), m_shell_actions_unreadable(shell_actions_unreadable), m_destination_directory(std::move(destination_directory))
 		{
 		}
 		void Execute() override
 		{
 			if (m_app != nullptr && m_lifetime_token != nullptr && m_lifetime_token->load())
 			{
-				m_app->ApplyBundledMarkdownStoreSeed(m_seeded, std::move(m_error), std::move(m_shell_actions), m_destination_directory);
+				m_app->ApplyBundledMarkdownStoreSeed(m_seeded, std::move(m_error), std::move(m_shell_actions), m_shell_actions_unreadable, m_destination_directory);
 			}
 		}
 
@@ -285,6 +285,7 @@ namespace
 		bool m_seeded;
 		std::string m_error;
 		std::vector<ShellAction> m_shell_actions;
+		bool m_shell_actions_unreadable;
 		std::string m_destination_directory;
 		IMPLEMENT_REFCOUNTING(AppApplySeedMarkdownTask);
 	};
@@ -304,9 +305,10 @@ namespace
 				const std::filesystem::path destination_root = MarkdownStoreService::NormalizeRoot(m_destination_directory);
 				const bool seeded = MarkdownStoreService::SeedBundledEntries(m_bundled_root, destination_root, &error);
 				if (!m_lifetime_token->load()) return;
-				std::vector<ShellAction> shell_actions = ShellActionService::Load(m_data_root, seeded ? destination_root : std::filesystem::path{});
+				bool shell_actions_unreadable = false;
+				std::vector<ShellAction> shell_actions = ShellActionService::Load(m_data_root, seeded ? destination_root : std::filesystem::path{}, nullptr, &shell_actions_unreadable);
 				if (!m_lifetime_token->load()) return;
-				CefPostTask(TID_UI, new AppApplySeedMarkdownTask(m_app, m_lifetime_token, seeded, std::move(error), std::move(shell_actions), m_destination_directory));
+				CefPostTask(TID_UI, new AppApplySeedMarkdownTask(m_app, m_lifetime_token, seeded, std::move(error), std::move(shell_actions), shell_actions_unreadable, m_destination_directory));
 			}
 		}
 
@@ -673,7 +675,7 @@ void Application::OnRuntimeReady(CefRefPtr<CefBrowser> browser)
 		    !m_markdownSeedWorker->GetTaskRunner()->PostTask(
 		        new AppSeedMarkdownTask(this, m_lifetimeToken, m_app.data_root, std::move(m_pendingBundledMarkdownRoot), std::move(m_pendingMarkdownStoreDirectory))))
 		{
-			ApplyBundledMarkdownStoreSeed(false, "Background worker is unavailable.", {}, destination_directory);
+			ApplyBundledMarkdownStoreSeed(false, "Background worker is unavailable.", {}, true, destination_directory);
 		}
 	}
 	// Both desktop and management mode share state polling and persistence.
@@ -729,7 +731,7 @@ void Application::OnManagementReady()
 	OnRuntimeReady(nullptr);
 }
 
-void Application::ApplyBundledMarkdownStoreSeed(bool seeded, std::string error, std::vector<ShellAction> shell_actions, const std::string& destination_directory)
+void Application::ApplyBundledMarkdownStoreSeed(bool seeded, std::string error, std::vector<ShellAction> shell_actions, bool shell_actions_unreadable, const std::string& destination_directory)
 {
 	CEF_REQUIRE_UI_THREAD();
 	if (m_done || m_app.settings.markdown_store_directory != destination_directory)
@@ -744,6 +746,12 @@ void Application::ApplyBundledMarkdownStoreSeed(bool seeded, std::string error, 
 	else if (m_app.shell_actions.empty())
 	{
 		m_app.shell_actions = std::move(shell_actions);
+		// A later read can succeed where the startup read did not; the list on screen then matches the file again.
+		if (m_app.shell_actions_unreadable && !shell_actions_unreadable)
+		{
+			m_app.shell_actions_unreadable = false;
+			if (m_app.shell_action_notification == ShellActionService::kUnreadableWarning) m_app.shell_action_notification.clear();
+		}
 	}
 	// While the chat list loads, the waiting initial-state request carries this change instead.
 	if (m_browser && !m_app.startup_state_loading)
