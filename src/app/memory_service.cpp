@@ -116,7 +116,6 @@ namespace
 	constexpr const char* kMemoryWorkerOutputDiscardedStatus = "Memory worker output was discarded.";
 	constexpr const char* kMemoryScanStoppedStatus = "Memory scan stopped for this chat.";
 	constexpr const char* kLowSignalMemoryDeltaSkippedStatus = "Memory gate skipped low-signal chat delta.";
-	constexpr const char* kMemoryRetriesPausedStatus = "Memory paused for a chat after the same failure repeated; new messages, a provider or settings change, a restart or Scan chats resumes it.";
 
 	std::string MemoryLevel(const ChatSession& chat)
 	{
@@ -1236,64 +1235,88 @@ namespace
 		uam::diagnostics::Write(line);
 	}
 
-	/// <summary>Everything a retry of the same chat would feed the worker, other than transcript text: a change resumes paused retries.</summary>
-	std::string MemoryWorkerInputsFingerprint(const uam::AppState& app, const ChatSession& chat, int message_count)
+	/// <summary>Everything a retry of the same chat would feed the worker except its messages: a change resumes paused retries.</summary>
+	std::string MemoryWorkerInputsFingerprint(const uam::AppState& app, const ChatSession& chat)
 	{
 		const ProviderResolutionService::WorkerProviderSelection worker = ProviderResolutionService().WorkerProviderSelectionForChat(app, chat);
-		std::string inputs = std::to_string(message_count);
-		inputs.append("\n").append(MemoryLevel(app, chat));
-		inputs.append("\n").append(uam::paths::IsControllerLocalWorkspace(chat) ? std::string_view(uam::execution_hosts::kLocalHostId) : std::string_view(chat.execution_host_id));
+		const std::string_view host = uam::paths::IsControllerLocalWorkspace(chat) ? std::string_view(uam::execution_hosts::kLocalHostId) : std::string_view(chat.execution_host_id);
+		std::string inputs = MemoryLevel(app, chat);
+		inputs.append("\n").append(host);
 		inputs.append("\n").append(chat.workspace_directory).append("\n").append(chat.folder_id);
 		inputs.append("\n").append(worker.provider != nullptr ? worker.provider->id : chat.provider_id).append("\n").append(worker.model_id);
 		if (worker.provider == nullptr) return inputs;
 		inputs.append("\n").append(worker.provider->interactive_command);
 		for (const std::string& flag : worker.provider->runtime_flags) inputs.append("\n").append(flag);
-		for (const auto& [provider_id, version] : app.runtime_cli_versions_by_provider_id)
-			if (uam::provider_ids::IsCliProviderAliasOf(worker.provider->id, provider_id))
-				inputs.append("\n").append(version.installed_version).append("\n").append(version.selected_version).append(version.supported ? "\n1" : "\n0");
+		// The version check keys SSH hosts as "<host>/<provider>", so a remote CLI change resumes only that host's chats.
+		const auto version = app.runtime_cli_versions_by_provider_id.find(CliProviderVersionStateKey(worker.provider->id, host));
+		if (version != app.runtime_cli_versions_by_provider_id.end())
+			inputs.append("\n").append(version->second.installed_version).append("\n").append(version->second.selected_version).append(version->second.supported ? "\n1" : "\n0");
 		return inputs;
 	}
 
+	std::string MemoryRetriesPausedStatus(const uam::AppState& app)
+	{
+		const auto paused = std::ranges::count_if(app.memory_failure_streak_by_chat_id, [](const auto& entry) { return entry.second.paused; });
+		return "Memory paused for " + std::to_string(paused) + (paused == 1 ? " chat" : " chats") +
+		       " after the same failure repeated; new messages, a provider or settings change, a restart or Scan chats resumes it.";
+	}
+
 	/// <summary>Records a failure that will repeat while nothing changes. After a few identical ones for the same inputs,
-	/// retries for the chat pause and the shared memory status says so once, instead of retrying hourly for ever.</summary>
+	/// retries for the chat pause and the shared memory status says so once, instead of retrying hourly for ever.
+	/// Transient categories keep only the ordinary backoff.</summary>
 	void RecordRepeatableMemoryFailure(uam::AppState& app, const ChatSession& chat, const std::string& reason, std::string_view category, int exit_code, int message_count)
 	{
 		const std::string signature = uam::memory::WorkerFailureSignature(category, exit_code);
 		RecordMemoryFailure(app, chat.id, reason, "category=" + signature);
+		if (uam::memory::IsTransientWorkerFailure(category)) return;
 		if (message_count < 0) message_count = MessageCount(chat);
 		uam::MemoryWorkerFailureStreak& streak = app.memory_failure_streak_by_chat_id[chat.id];
-		if (!uam::memory::RecordWorkerFailure(streak, signature, MemoryWorkerInputsFingerprint(app, chat, message_count), message_count, uam::GetAppTimeSeconds())) return;
-		app.memory_last_status = kMemoryRetriesPausedStatus;
+		if (!uam::memory::RecordWorkerFailure(streak, signature, MemoryWorkerInputsFingerprint(app, chat), message_count)) return;
+		const int count = streak.count;
+		app.memory_last_status = MemoryRetriesPausedStatus(app);
 		app.memory_activity.last_status = app.memory_last_status;
-		uam::diagnostics::Write("memory: chat=" + chat.id + " retries paused after " + std::to_string(streak.count) + " identical failures (category=" + signature + ")");
+		uam::diagnostics::Write("memory: chat=" + chat.id + " retries paused after " + std::to_string(count) + " identical failures (category=" + signature + ")");
 	}
 
-	/// <summary>Ends pauses whose chat gained messages or whose provider, CLI or settings inputs changed; deleted chats drop theirs.</summary>
-	template <typename FindChat> bool ResumeChangedMemoryPauses(uam::AppState& app, double now, FindChat&& find_chat)
+	/// <summary>Lets a paused chat retry and gives back a manual scan the pause took off the queue. New messages keep
+	/// the streak, so the same failure on them pauses again at once; the per-chat failure count keeps the backoff growing.</summary>
+	bool ResumeMemoryRetries(uam::AppState& app, std::unordered_map<std::string, uam::MemoryWorkerFailureStreak>::iterator streak, bool keep_streak)
 	{
+		const std::string chat_id = streak->first;
+		const int parked_start = std::exchange(streak->second.parked_manual_scan_start, -1);
+		if (keep_streak)
+			streak->second.paused = false;
+		else
+			app.memory_failure_streak_by_chat_id.erase(streak);
+		app.memory_retry_not_before_by_chat_id.erase(chat_id);
+		uam::diagnostics::Write("memory: chat=" + chat_id + " retries resumed after its " + (keep_streak ? "messages" : "inputs") + " changed");
+		if (parked_start < 0) return false;
+		RequeueMemoryWork(app, {chat_id, parked_start, true});
+		return true;
+	}
+
+	/// <summary>At most every 30 seconds: resumes paused chats whose provider, CLI or settings inputs changed, and drops
+	/// streaks of deleted chats. New messages are noticed by the idle sweep, which visits every chat anyway.</summary>
+	template <typename FindChat> bool RecheckMemoryFailureStreaks(uam::AppState& app, double now, FindChat&& find_chat)
+	{
+		if (app.memory_failure_streak_by_chat_id.empty() || now < app.memory_failure_pause_recheck_at) return false;
+		app.memory_failure_pause_recheck_at = now + uam::memory::kPausedWorkerInputRecheckSeconds;
 		bool changed = false;
 		for (auto it = app.memory_failure_streak_by_chat_id.begin(); it != app.memory_failure_streak_by_chat_id.end();)
 		{
-			if (!it->second.paused)
-			{
-				++it;
-				continue;
-			}
 			const ChatSession* chat = find_chat(it->first);
-			if (chat != nullptr)
+			if (chat == nullptr)
 			{
-				const int message_count = MessageCount(*chat);
-				if (!uam::memory::PausedWorkerInputsChanged(it->second, message_count, now, [&] { return MemoryWorkerInputsFingerprint(app, *chat, message_count); }))
-				{
-					++it;
-					continue;
-				}
-				uam::diagnostics::Write("memory: chat=" + it->first + " retries resumed after its inputs changed");
+				it = app.memory_failure_streak_by_chat_id.erase(it);
+				changed = true;
 			}
-			app.memory_retry_not_before_by_chat_id.erase(it->first);
-			app.memory_failure_count_by_chat_id.erase(it->first);
-			it = app.memory_failure_streak_by_chat_id.erase(it);
-			changed = true;
+			else if (it->second.paused && MemoryWorkerInputsFingerprint(app, *chat) != it->second.inputs)
+			{
+				ResumeMemoryRetries(app, it++, false);
+				changed = true;
+			}
+			else
+				++it;
 		}
 		return changed;
 	}
@@ -2558,7 +2581,7 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 		// A padded or missing id takes the ordinary trimmed search.
 		return found != chats_by_id.end() ? found->second : ChatDomainService().FindChatById(app, chat_id);
 	};
-	changed = ResumeChangedMemoryPauses(app, uam::GetAppTimeSeconds(), find_queued_chat) || changed;
+	changed = RecheckMemoryFailureStreaks(app, uam::GetAppTimeSeconds(), find_queued_chat) || changed;
 	while (RunningMemoryTaskCount(app) < kMaxConcurrentMemoryWorkers && !app.memory_extraction_queue.empty())
 	{
 		const std::size_t attempts = app.memory_extraction_queue.size();
@@ -2586,8 +2609,9 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 
 			if (MemoryRetriesPaused(app, chat.id))
 			{
-				// A queued manual scan would hold the fast poll for the whole pause. Scan chats clears the pause
-				// before queueing, and the automatic sweep queues the chat again once its pause ends.
+				// A queued manual scan would hold the fast poll for the whole pause, so it waits on the streak and is
+				// queued again on resume; the automatic sweep queues automatic work again by itself.
+				if (queued.manual) app.memory_failure_streak_by_chat_id[chat.id].parked_manual_scan_start = queued.scan_start_message_index;
 				changed = true;
 				continue;
 			}
@@ -2677,6 +2701,15 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 	for (const uam::QueuedMemoryExtractionTask& task : app.memory_extraction_queue) queued_ids.insert(task.chat_id);
 	for (ChatSession& chat : app.chats)
 	{
+		if (!app.memory_failure_streak_by_chat_id.empty())
+		{
+			const auto streak = app.memory_failure_streak_by_chat_id.find(chat.id);
+			if (streak != app.memory_failure_streak_by_chat_id.end() && streak->second.paused && MessageCount(chat) != streak->second.message_count)
+			{
+				if (ResumeMemoryRetries(app, streak, true)) queued_ids.insert(app.memory_extraction_queue.back().chat_id);
+				changed = true;
+			}
+		}
 		if (AutomaticMemoryScanBlocked(app, chat, now, queued_ids))
 		{
 			app.memory_idle_started_at_by_chat_id.erase(chat.id);

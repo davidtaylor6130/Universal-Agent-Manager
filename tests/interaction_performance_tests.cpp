@@ -1420,9 +1420,20 @@ UAM_TEST(PerformanceMemoryPollOnLargeInstall)
 	{
 		ChatSession& chat = app.chats[index];
 		chat.memory_level = uam::memory_levels::kBalanced;
-		// Half wait out a failed scan's retry; the other half are queued behind a failing worker's backoff.
+		// Half wait out a failed scan's retry, a quarter of all chats paused after repeated identical failures;
+		// the other half are queued behind a failing worker's backoff.
 		if (index % 2 == 0)
+		{
 			app.memory_retry_not_before_by_chat_id[chat.id] = now + 3600.0;
+			if (index % 4 == 0)
+			{
+				uam::MemoryWorkerFailureStreak& streak = app.memory_failure_streak_by_chat_id[chat.id];
+				streak.signature = "exit code=1";
+				streak.count = 3;
+				streak.paused = true;
+				streak.message_count = static_cast<int>(chat.messages_loaded ? chat.messages.size() : chat.persisted_message_count);
+			}
+		}
 		else
 		{
 			app.memory_extraction_queue.push_back({chat.id, -1, false});
@@ -1438,11 +1449,14 @@ UAM_TEST(PerformanceMemoryPollOnLargeInstall)
 	terminal->turn_state = uam::CliTerminalTurnState::Busy;
 	app.cli_terminals.push_back(std::move(terminal));
 	const std::size_t queued = app.memory_extraction_queue.size();
+	// Paused chats' inputs are rebuilt every 30 seconds, not per poll; this measures the per-poll path.
+	app.memory_failure_pause_recheck_at = now + 3600.0;
 	const double poll = MedianMs(11, [&] { UAM_ASSERT(!MemoryService::ProcessDueMemoryWork(app)); });
 	// Nothing was due: every chat stays blocked and the queue keeps its order.
 	UAM_ASSERT_EQ(app.memory_extraction_queue.size(), queued);
 	UAM_ASSERT_EQ(app.memory_extraction_queue.front().chat_id, app.chats[1].id);
 	UAM_ASSERT(app.memory_extraction_tasks.empty());
+	UAM_ASSERT_EQ(app.memory_failure_streak_by_chat_id.size(), std::size_t{500});
 	std::cout << "[TIMING] memory poll, 2000 chats, " << queued << " queued: p50=" << poll << " ms\n";
 	constexpr double kMemoryPollBudgetMs = 25.0;
 	if (poll > kMemoryPollBudgetMs)

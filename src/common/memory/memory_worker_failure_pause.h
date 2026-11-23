@@ -14,23 +14,31 @@ namespace uam
 	struct MemoryWorkerFailureStreak
 	{
 		std::string signature; // failure category and exit code; never worker or chat text
-		std::string inputs;    // fingerprint of the chat's extraction inputs when it failed
+		std::string inputs;    // fingerprint of the chat's worker, provider, CLI and policy inputs when it failed
 		int count = 0;
 		bool paused = false;
-		int message_count = 0;   // cheap per-poll check for new chat content while paused
-		double recheck_at = 0.0; // next full input comparison while paused
+		int message_count = 0;             // new messages end a pause; checked by the idle sweep on every poll
+		int parked_manual_scan_start = -1; // a manual scan taken off the queue while paused, queued again on resume
 	};
 }
 
 namespace uam::memory
 {
 	// ponytail: three identical failures (about 15 minutes of retries at the per-chat backoff) before
-	// pausing; make it a setting only if a provider shows legitimate failures that clear on their own.
+	// pausing; make it a setting only if a deterministic category shows failures that clear on their own.
 	constexpr int kIdenticalWorkerFailuresBeforePause = 3;
-	// A paused chat's provider, CLI and settings inputs are compared at most this often; new messages resume it on the next poll.
+	// Paused chats' provider, CLI and settings inputs are compared at most this often; new messages resume a chat on the next poll.
 	constexpr double kPausedWorkerInputRecheckSeconds = 30.0;
 
-	/// <summary>Returns a fixed category for a failed worker process. Worker text is read, never returned.</summary>
+	/// <summary>Failures that clear on their own (a quota reset, a host coming back, a slow provider) keep the
+	/// ordinary backoff and never pause: nothing in the chat's inputs would change to resume it.</summary>
+	inline bool IsTransientWorkerFailure(std::string_view category)
+	{
+		return category == "rate-limit" || category == "network" || category == "timeout";
+	}
+
+	/// <summary>Returns a fixed category for a failed worker process from its error and stderr text, which it
+	/// reads but never returns. Standard output is model text derived from the chat, so it is not consulted.</summary>
 	inline std::string_view ClassifyWorkerFailure(const ProcessExecutionResult& result)
 	{
 		if (result.timed_out) return "timeout";
@@ -39,7 +47,7 @@ namespace uam::memory
 		if (result.exit_code == 127) return "command-not-found";
 		constexpr std::size_t kTailBytes = 4096;
 		const auto tail = [](std::string_view text) { return text.size() > kTailBytes ? text.substr(text.size() - kTailBytes) : text; };
-		const std::string_view sources[] = {tail(result.error), tail(result.diagnostic_tail), tail(result.output)};
+		const std::string_view sources[] = {tail(result.error), tail(result.diagnostic_tail)};
 		const auto any = [&sources](std::initializer_list<std::string_view> needles)
 		{
 			for (const std::string_view source : sources)
@@ -58,12 +66,13 @@ namespace uam::memory
 	inline std::string WorkerFailureSignature(std::string_view category, int exit_code)
 	{
 		std::string signature(category);
-		if (exit_code >= 0) signature.append(" exit=").append(std::to_string(exit_code));
+		if (exit_code >= 0) signature.append(" code=").append(std::to_string(exit_code));
 		return signature;
 	}
 
-	/// <summary>Counts one deterministic failure; returns true only when this failure starts the pause.</summary>
-	inline bool RecordWorkerFailure(MemoryWorkerFailureStreak& streak, std::string signature, std::string inputs, int message_count, double now)
+	/// <summary>Counts one deterministic failure; returns true only when this failure starts a pause. The streak
+	/// survives a resume caused by new messages, so the same failure on the new messages pauses again at once.</summary>
+	inline bool RecordWorkerFailure(MemoryWorkerFailureStreak& streak, std::string signature, std::string inputs, int message_count)
 	{
 		if (streak.signature != signature || streak.inputs != inputs)
 		{
@@ -74,17 +83,6 @@ namespace uam::memory
 		streak.message_count = message_count;
 		if (++streak.count < kIdenticalWorkerFailuresBeforePause || streak.paused) return false;
 		streak.paused = true;
-		streak.recheck_at = now + kPausedWorkerInputRecheckSeconds;
 		return true;
-	}
-
-	/// <summary>Whether a paused chat's inputs changed. The full fingerprint is built only when new content cannot decide it and the recheck is due.</summary>
-	template <typename Fingerprint>
-	inline bool PausedWorkerInputsChanged(MemoryWorkerFailureStreak& streak, int message_count, double now, Fingerprint&& fingerprint)
-	{
-		if (message_count != streak.message_count) return true;
-		if (now < streak.recheck_at) return false;
-		streak.recheck_at = now + kPausedWorkerInputRecheckSeconds;
-		return fingerprint() != streak.inputs;
 	}
 }

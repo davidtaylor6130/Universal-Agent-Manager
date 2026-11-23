@@ -1651,6 +1651,7 @@ namespace uam
 		std::unordered_map<std::string, MemoryWorkerBackoff> memory_worker_backoff_by_key;
 		// Retries stop after repeated identical failures until the chat's inputs change, a manual scan or a restart.
 		std::unordered_map<std::string, MemoryWorkerFailureStreak> memory_failure_streak_by_chat_id;
+		double memory_failure_pause_recheck_at = 0.0;
 		std::unordered_map<std::string, CliProviderVersionState> runtime_cli_versions_by_provider_id;
 		std::unordered_map<std::string, ComputerUseRuntimeState> computer_use_by_chat_id;
 		std::unordered_set<std::string> computer_use_revocation_pending_chat_ids;
