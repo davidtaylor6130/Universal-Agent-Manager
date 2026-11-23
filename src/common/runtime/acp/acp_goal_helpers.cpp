@@ -1134,6 +1134,7 @@ void ApplyGoalProgressUpdate(Goal& goal, const GoalService::ReviewDecision& deci
 		goal.last_verification = decision.last_verification;
 	}
 	goal.loop_count += 1;
+	goal.unreviewed_resume_count = 0;
 	goal.updated_at = uam::time::TimestampNow();
 }
 

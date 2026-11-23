@@ -1136,7 +1136,8 @@ std::optional<GoalService::ReviewDecision> GoalService::ParseReviewDecision(cons
 			decision.current_step = uam::strings::Trim(it->value("currentStep", ""));
 			decision.last_verification = uam::strings::Trim(it->value("lastVerification", ""));
 		}
-		if (decision.decision == "stop" || decision.decision == "done" || decision.decision == "passed" || decision.decision == "yes")
+		// "stop" usually means blocked and "yes" names no decision, so both stay invalid and get the repair turn.
+		if (decision.decision == "done" || decision.decision == "passed")
 		{
 			decision.decision = "complete";
 		}

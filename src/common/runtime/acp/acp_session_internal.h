@@ -118,6 +118,7 @@ inline constexpr std::size_t kMinAssistantReplayPrefixBytes = 32;
 inline constexpr double kAcpStaleWaitSeconds = 120.0;
 inline constexpr double kAcpCancelTimeoutSeconds = 5.0;
 inline constexpr double kGoalLoopResumeIdleSeconds = 5.0;
+inline constexpr int kGoalMaxUnreviewedResumes = 3; // consecutive stalled-loop auto-resumes without an applied review
 
 // Goal turn kind labels
 inline constexpr std::string_view kGoalTurnKindNone = "";
