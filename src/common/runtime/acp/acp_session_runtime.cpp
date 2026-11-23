@@ -1567,7 +1567,7 @@ namespace uam
 			{
 				diagnostics::Write("[remote-restore] chat_id=" + chat.id + " start_returned lifecycle=" + session.lifecycle_state +
 				    " running=" + std::to_string(session.running) + " pending_local_launch=" + std::to_string(static_cast<bool>(session.pending_local_launch)) +
-				    " worktree_pending=" + std::to_string(session.worktree_launch_pending) + " cold_binding=" + std::to_string(static_cast<bool>(session.cold_retry_binding)) +
+				    " worktree_pending=" + std::to_string(session.worktree_launch_pending) +
 				    " reconnect_pending=" + std::to_string(session.reconnect_pending) + " error=" + session.last_error);
 				++restored;
 			}
@@ -2933,7 +2933,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				session.saved_image_retry = saved_retry;
 				session.saved_image_retry_turn_serial = -1;
 			}
-			if (!StartAcpProcessForChat(app, session, chat, error_out, saved_retry.get(), {}, true))
+			if (!StartAcpProcessForChat(app, session, chat, error_out, saved_retry.get(), true))
 			{
 				session.goal_turn_model_id = previous_turn_model;
 				chat.reasoning_effort = previous_reasoning_effort;
@@ -8349,7 +8349,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 					session.pending_local_launch.reset();
 					session.pending_referenced_queue_launch_fingerprint.clear();
 				}
-				else if (!acp_detail::StartAcpProcessForChat(app, session, *launch_chat, nullptr, nullptr, {}, true))
+				else if (!acp_detail::StartAcpProcessForChat(app, session, *launch_chat, nullptr, nullptr, true))
 				{
 					session.pending_referenced_queue_launch_fingerprint.clear();
 					if (referenced_launch)
