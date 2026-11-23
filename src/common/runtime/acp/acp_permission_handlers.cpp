@@ -666,7 +666,7 @@ void QueueAcpPermission(AppState& app, AcpSessionState& session, ChatSession& ch
 		{
 			const std::string message = session.queued_user_prompts.empty()
 			    ? "The provider sent too many permission requests at once."
-			    : "The provider sent too many permission requests, so queued follow-up prompts were not sent.";
+			    : "The provider sent too many permission requests, so queued follow-up prompts were not sent; resend them.";
 			AppendAcpDiagnostic(session, "permission", "queue_limit_exceeded",
 			                    pending.provider_request_method, pending.request_id_json,
 			                    false, 0, message);

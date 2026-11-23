@@ -218,12 +218,13 @@ namespace
 		std::string cleanup;
 		if (!exited && !client.StopProcess(id, &cleanup))
 		{
-			uam::diagnostics::Write("Model discovery stop failed: " + cleanup);
+			uam::diagnostics::Write("[model-discovery] Remote stop failed: " + cleanup);
+			cleanup.clear();
 			if (result.error.empty()) result.error = "Model discovery could not be stopped.";
 		}
 		if (!client.RemoveProcess(id, &cleanup))
 		{
-			uam::diagnostics::Write("Model discovery cleanup failed: " + cleanup);
+			uam::diagnostics::Write("[model-discovery] Remote cleanup failed: " + cleanup);
 			if (result.error.empty()) result.error = "Model discovery could not be cleaned up.";
 		}
 		result.ok = exited && result.exit_code == 0 && result.error.empty() && !result.canceled && !result.timed_out && !result.output_truncated;

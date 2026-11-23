@@ -1488,7 +1488,7 @@ UAM_TEST(AntigravityTerminalAliasesAndCapabilitiesRemainDistinct)
 	UAM_ASSERT(!state["cliVersionManager"]["providers"][0]["canInstall"].get<bool>());
 	std::string error;
 	UAM_ASSERT(!ProviderCliCompatibilityService().StartInstallProviderVersion(app, profile.id, "latest", &error));
-	UAM_ASSERT(error.find("existing installer") != std::string::npos);
+	UAM_ASSERT(error.find("its own installer") != std::string::npos);
 	UAM_ASSERT(app.runtime_cli_install_tasks.empty());
 }
 

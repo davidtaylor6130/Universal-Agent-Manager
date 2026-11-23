@@ -2063,7 +2063,7 @@ UAM_TEST(GitWorktreeDefaultLaunchPersistsRetriesAndLeavesExistingWorkspacesAlone
 	app.chats.clear();
 	UAM_ASSERT(!service.PrepareForFirstLaunch(app, chat, &error));
 	// The refusal is the worktree service's own one-line reason, without a stacked prefix.
-	UAM_ASSERT(!error.empty() && error.find("Retry after resolving") == std::string::npos);
+	UAM_ASSERT_EQ(error, std::string("The source folder is unavailable; restore it, then retry."));
 	UAM_ASSERT_EQ(chat.workspace_isolation_kind, std::string(uam::paths::kPendingGitWorktreeIsolationKind));
 	chat.workspace_directory = source.string();
 	UAM_ASSERT(service.PrepareForFirstLaunch(app, chat, &error));
@@ -2434,7 +2434,7 @@ UAM_TEST(VcsChatBaselinePersistsAllContentWithoutChangingSourceIndexOrBranch)
 	existing.id = "existing-chat";
 	existing.persisted_message_count = 1;
 	UAM_ASSERT(!service.CaptureChatBaseline(app, existing, &error));
-	UAM_ASSERT(error.find("existing conversation") != std::string::npos);
+	UAM_ASSERT(error.find("start a new chat to record its changes") != std::string::npos);
 	const uam::VcsCommitStatus unavailable = service.Status(app, existing, uam::VcsType::Git, true, "chat");
 	UAM_ASSERT(!unavailable.error.empty());
 	UAM_ASSERT(unavailable.changed_files.empty());

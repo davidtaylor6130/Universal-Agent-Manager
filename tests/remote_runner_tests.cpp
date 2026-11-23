@@ -1502,7 +1502,7 @@ UAM_TEST(RemoteEphemeralDiscoveryLeasePreservesOwnedAuthorityAndDurableChats)
 		} guard{session};
 		if (kind == 4)
 		{
-			UAM_ASSERT(!started && error.find("Update the helper") != std::string::npos);
+			UAM_ASSERT(!started && error.find("Update the SSH helper") != std::string::npos);
 			UAM_ASSERT(!session.running && !fs::exists(log));
 			continue;
 		}
@@ -2547,7 +2547,7 @@ UAM_TEST(LargeAttachmentStreamsFromDiskCompleteWithProgressOrFailsVisibly)
 		UAM_ASSERT(client.Connect(&error));
 		error.clear();
 		UAM_ASSERT(!client.UploadFileFromPath("attachment-legacy", "/remote/clip.MOV", source, {}, &error));
-		UAM_ASSERT(error.find("Update the helper") != std::string::npos);
+		UAM_ASSERT(error.find("Update the SSH helper") != std::string::npos);
 		UAM_ASSERT(uam_test::ReadFile(requests).find("file.begin") == std::string::npos);
 	}
 #endif
@@ -10477,7 +10477,7 @@ static void VerifyProviderSwitchStopsTheOldHelper(const bool automatic, const bo
 	// A prompt cannot launch or deliver until the old helper is confirmed gone.
 	std::string error;
 	UAM_ASSERT(!uam::SendAcpPrompt(app, chat.id, "Too early for the new provider.", &error));
-	UAM_ASSERT(error.find("stopping the previous process") != std::string::npos);
+	UAM_ASSERT(error.find("UAM stops the previous process") != std::string::npos);
 	error.clear();
 	// The target being disabled on this host must not stop the old helper being attached and stopped.
 	const auto settings_availability = app.settings.provider_availability;
@@ -10596,7 +10596,7 @@ UAM_TEST(RemovingTheLastHeldPromptKeepsRetiringTheHelperUntilTheHostReturns)
 	// Resume could only turn the prompt into an interrupted row now, so it refuses and keeps it.
 	std::string error;
 	UAM_ASSERT(!uam::ResumeQueuedAcpPrompts(app, chat.id, {{visible.id, visible.revision}}, &error));
-	UAM_ASSERT(error.find("stopping the previous process") != std::string::npos);
+	UAM_ASSERT(error.find("UAM stops the previous process") != std::string::npos);
 	UAM_ASSERT_EQ(chat.acp_queued_prompts.size(), std::size_t{1});
 	UAM_ASSERT(chat.acp_queue_held);
 	error.clear();

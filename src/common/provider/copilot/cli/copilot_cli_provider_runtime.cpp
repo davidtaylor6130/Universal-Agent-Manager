@@ -766,7 +766,8 @@ std::string CopilotCliProviderRuntime::LocalCliCompatibilityError(const uam::App
 	const uam::CliProviderVersionState& state = state_it->second;
 	if (!state.checked)
 	{
-		return "Checking GitHub Copilot CLI compatibility; try again in a moment.";
+		// CLI View retries automatically while the refusal starts with this exact sentence.
+		return "Checking GitHub Copilot CLI compatibility.";
 	}
 	// A failed or timed-out check says nothing about the installation; only a confirmed result blocks.
 	if (state.supported || !state.check_error.empty())

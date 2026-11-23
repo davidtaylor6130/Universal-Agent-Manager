@@ -750,7 +750,7 @@ UAM_TEST(SvnUpdateBeforeChatCancellationAndStaleSourceCannotPublish)
 			const auto locked = fixture.Start();
 			fixture.Wait(locked);
 			UAM_ASSERT(!locked->merged);
-			UAM_ASSERT(locked->error.find("Run svn cleanup") != std::string::npos);
+			UAM_ASSERT(locked->error.find("run svn cleanup") != std::string::npos);
 			UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, fixture.app.chats.front()).state, uam::WorktreeLaunchPreparationState::Failed);
 			UAM_ASSERT_EQ(uam::io::ReadTextFile(fixture.log), "update\n");
 			// A consistent working copy recovers the interrupted receipt by retrying the update once.

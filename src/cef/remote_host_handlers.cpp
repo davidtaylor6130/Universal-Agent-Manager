@@ -512,6 +512,7 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 					        if (keep_new_runner)
 						        return uam::query_handler_async::AsyncFailure(500,
 						            "The helper installation could not be confirmed; run setup again to fix it.");
+					        if (!outcome.error.empty()) uam::diagnostics::Write("[remote-install] Setup failed before rollback: " + outcome.error);
 					        outcome.error = "Setup failed and the remote helper could not be rolled back.";
 				        }
 				        if (*finalized && startup_needed)
@@ -746,7 +747,7 @@ void UamQueryHandler::HandleCheckRemoteHostInstruction(CefRefPtr<CefBrowser>, co
 	if (host == nullptr || host->id == "local" || !uam::execution_hosts::IsAbsoluteRemotePath(host->platform, path))
 	{ cb->Failure(400, "Use an absolute instruction file path on this SSH host."); return; }
 	if (host->runner_install_unresolved)
-	{ cb->Failure(409, "Retry helper setup to reconcile the unfinished installation first."); return; }
+	{ cb->Failure(409, "Run helper setup again to finish the unfinished helper installation."); return; }
 	uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner(host->id), m_asyncLifetime, cb, [host = *host, path]()
 	{
 		uam::remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,
@@ -813,7 +814,7 @@ void UamQueryHandler::HandleSaveRemoteHostOptions(CefRefPtr<CefBrowser> browser,
 	const ExecutionHost observed = *host;
 	const bool configure_startup = uam::execution_hosts::NeedsStartupConfiguration(updated, observed);
 	if (configure_startup && observed.runner_install_unresolved)
-	{ cb->Failure(409, "Retry helper setup to reconcile the unfinished installation first."); return; }
+	{ cb->Failure(409, "Run helper setup again to finish the unfinished helper installation."); return; }
 	updated.startup_status = configure_startup ? "pending" : observed.startup_status;
 	if (configure_startup)
 	{
@@ -970,7 +971,7 @@ void UamQueryHandler::HandleListRemoteDirectories(CefRefPtr<CefBrowser> browser,
 		if (!client.Connect(&result->error))
 		{
 			if (!result->error.empty()) uam::diagnostics::Write("[browseRemoteDirectories] Remote helper connection failed: " + result->error);
-			return uam::query_handler_async::AsyncFailure(502, "The remote helper could not be reached.");
+			return uam::query_handler_async::AsyncFailure(502, uam::remote::RunnerConnectErrorForUser(result->error, "The remote helper could not be reached."));
 		}
 		result->connected = true;
 		(void)client.ObserveStartup(result->startup_status, &result->startup_error);

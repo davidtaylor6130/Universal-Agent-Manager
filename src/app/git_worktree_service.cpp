@@ -2474,7 +2474,7 @@ namespace uam
 		if (!pull_warning.empty()) result.status.warning = std::move(pull_warning);
 		else if (!snapshot_warning.empty()) result.status.warning = std::move(snapshot_warning);
 		else if (result.status.source_dirty && !result.status.managed_repository)
-			result.status.warning = "Warning: source changes were preserved and were not copied into the isolated worktree, which uses the verified committed base.";
+			result.status.warning = "Your uncommitted changes were kept in the source folder and not copied into the new worktree.";
 		return result;
 	}
 

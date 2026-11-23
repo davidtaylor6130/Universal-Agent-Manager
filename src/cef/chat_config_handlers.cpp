@@ -614,7 +614,7 @@ void UamQueryHandler::HandleOpenNativeSessionChat(CefRefPtr<CefBrowser> browser,
 							        if (uncertain)
 							        {
 								        auto body = nlohmann::json::parse(ack.body);
-								        const std::string warning = "History and attached files were kept, but reopen the child chat to check the final save.";
+								        const std::string warning = "History and attached files were kept, but the final save is unconfirmed; reopen the child chat to check it.";
 								        body["warning"] = warning;
 								        ack.body = body.dump();
 								        if (m_app.data_root == work->root) m_app.status_line = warning;
@@ -1118,10 +1118,24 @@ uam::query_handler_async::AsyncCefResult UamQueryHandler::FinishOpenNativeSessio
 }
 
 /// A user notice never forwards transport or status-line text: live model refusals keep only their fixed wording.
+/// Maps the runtime's busy/pending/not-ready refusals to one plain sentence; nullopt for anything else.
+static std::optional<std::string> LiveSettingBusyRefusal(const std::string& error, std::string_view setting)
+{
+	const std::string busy_prefix = "Cannot change structured runtime " + std::string(setting) + " while ";
+	constexpr std::string_view busy_suffix = " is busy.";
+	if (error.starts_with(busy_prefix) && error.ends_with(busy_suffix) && error.size() > busy_prefix.size() + busy_suffix.size())
+	{
+		const std::string runtime = error.substr(busy_prefix.size(), error.size() - busy_prefix.size() - busy_suffix.size());
+		return runtime + " is busy; try again after the current turn.";
+	}
+	if (error == busy_prefix + "another session setting change is pending.") return std::string("Another setting change is still pending; try again when it finishes.");
+	if (error == "ACP session is not ready.") return std::string("The provider is still starting; try again when it is ready.");
+	return std::nullopt;
+}
+
 static std::string LiveModelRefusal(const std::string& error)
 {
-	if (error.starts_with("Cannot change structured runtime model while ")) return error;
-	if (error == "ACP session is not ready.") return "The provider is still starting; try again when it is ready.";
+	if (const std::optional<std::string> busy = LiveSettingBusyRefusal(error, "model")) return *busy;
 	return "The running provider did not accept the model change.";
 }
 
@@ -1578,7 +1592,8 @@ void UamQueryHandler::HandleSetChatApprovalMode(CefRefPtr<CefBrowser> browser, c
 			(void)ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat mode reverted.", "Chat mode changed in UI, but failed to revert.");
 			uam::permission_log::RecordChange(chat->id, uam::permission_log::kSourceRollback, rejected, chat->approval_mode, chat->command_safety_tier, chat->command_safety_tier);
 			if (!acp_error.empty()) uam::diagnostics::Write("[setChatMode] Live mode change was refused: " + acp_error);
-			cb->Failure(409, uam::provider_chat_defaults::ProviderManagesOwnPermissions(chat->provider_id)
+			if (const std::optional<std::string> busy = LiveSettingBusyRefusal(acp_error, "mode")) cb->Failure(409, *busy);
+			else cb->Failure(409, uam::provider_chat_defaults::ProviderManagesOwnPermissions(chat->provider_id)
 			    ? std::string("The provider did not accept the mode change.") : uam::permission_log::RollbackNotice(*chat));
 			return;
 		}
@@ -2080,7 +2095,8 @@ void UamQueryHandler::HandleSetChatCommandSafetyTier(CefRefPtr<CefBrowser> brows
 			(void)ChatHistorySyncService().SaveChatWithStatus(m_app, *chat, "Chat permissions reverted.", "Chat permissions changed in UI, but failed to revert.");
 			uam::permission_log::RecordChange(chat->id, uam::permission_log::kSourceRollback, chat->approval_mode, chat->approval_mode, rejected, chat->command_safety_tier);
 			if (!acp_error.empty()) uam::diagnostics::Write("[setChatPermissions] Live permission change was refused: " + acp_error);
-			cb->Failure(409, uam::permission_log::RollbackNotice(*chat));
+			const std::optional<std::string> busy = LiveSettingBusyRefusal(acp_error, "mode");
+			cb->Failure(409, busy ? *busy : uam::permission_log::RollbackNotice(*chat));
 			return;
 		}
 	}

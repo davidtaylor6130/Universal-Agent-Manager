@@ -3993,7 +3993,7 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverPr
 			uam::diagnostics::Write("[history import] OpenCode history discovery failed: " + (!reason.empty() ? reason
 			    : listed.output_truncated ? std::string("session list exceeded its output limit.")
 			    : listed.exit_code != 0 ? "exit " + std::to_string(listed.exit_code) + "." : std::string("invalid session list.")));
-			discovery.result.Fail(!adapter_refusal.empty() ? adapter_refusal : std::string("Could not list OpenCode history."));
+			discovery.result.Fail(!adapter_refusal.empty() ? adapter_refusal : std::string("OpenCode history could not be listed."));
 		}
 		else
 		{
@@ -5075,7 +5075,7 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredPro
 						                                   if (malformed)
 						                                   {
 							                                   uam::diagnostics::Write("[history import] Codex history is unreadable, invalid, or exceeds import limits: " + uam::paths::Utf8PathString(candidate.codex_rollout));
-							                                   candidate.error = "A Codex history file is unreadable, invalid or too large to import.";
+							                                   candidate.error = "Codex history file is unreadable, invalid or too large to import.";
 						                                   }
 						                                   continue;
 					                                   }
@@ -5209,7 +5209,7 @@ ChatHistorySyncService::RemoteOpenCodeDiscovery ChatHistorySyncService::Discover
 					uam::diagnostics::Write("[history import] Remote OpenCode session discovery failed (exit " +
 					                        std::to_string(polled.exit_code) + "): " +
 					                        uam::strings::TrimAndElide(uam::strings::NonEmptyOrFallback(
-					                            uam::strings::Trim(diagnostic), uam::strings::Trim(output)), 512));
+					                            uam::strings::Trim(diagnostic), "no stderr; " + std::to_string(output.size()) + " output bytes"), 512));
 					result.error = "Could not list remote OpenCode sessions.";
 					return result;
 				}
@@ -5808,7 +5808,7 @@ ChatHistorySyncService::LoadRemoteOpenCodeTranscript(
 				uam::diagnostics::Write("[history import] OpenCode could not export the remote session (exit " +
 				                        std::to_string(polled.exit_code) + "): " +
 				                        uam::strings::TrimAndElide(uam::strings::NonEmptyOrFallback(
-				                            uam::strings::Trim(diagnostic), uam::strings::Trim(output)), 512));
+				                            uam::strings::Trim(diagnostic), "no stderr; " + std::to_string(output.size()) + " output bytes"), 512));
 				result.error = "OpenCode could not export the remote session.";
 				return result;
 			}
@@ -6505,7 +6505,7 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChat
 	if (!discovery.error.empty())
 	{
 		uam::diagnostics::Write("[history import] " + native_provider.title + " history discovery failed: " + discovery.error);
-		result.Fail("Could not find " + native_provider.title + " history.");
+		result.Fail(native_provider.title + " history could not be found.");
 		return result;
 	}
 

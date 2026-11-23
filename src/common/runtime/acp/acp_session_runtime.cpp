@@ -231,7 +231,7 @@ namespace uam
 		if (remove_available && ChatHasUnsentAcpPrompt(app, chat))
 			return "This message was not sent; remove the chat's earlier unsent message first.";
 		if (!ProviderSwitchRefusalReason(app, chat) && ChatHasUncertainRemoteInput(chat))
-			return "This message was not sent; wait for the earlier unconfirmed message to settle.";
+			return "This message was not sent; wait for the earlier unconfirmed one, or change the chat's provider and accept it may run twice.";
 		if (QueueHoldBlocksNativeReset(app, chat))
 			return "This message was not sent because the chat's held input could not be confirmed.";
 		if (chat.native_session_reset_pending)

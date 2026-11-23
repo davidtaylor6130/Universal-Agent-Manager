@@ -1543,7 +1543,7 @@ void UamQueryHandler::HandleRefreshRemoteGeminiMedia(CefRefPtr<CefBrowser> brows
 						        ack = SerializeGuardedChatMessagesResult(*current, known_digest, page, defer_tool_call_content, {}, ChatDomainService().SelectedChatId(m_app) == id);
 						        if (uncertain && ack.ok)
 						        {
-							        const std::string warning = "History and attached files were kept, but reopen the chat to check the final save.";
+							        const std::string warning = "History and attached files were kept, but the final save is unconfirmed; reopen the chat to check it.";
 							        auto body = nlohmann::json::parse(ack.body);
 							        body["warning"] = warning; ack.body = body.dump();
 							        if (m_app.data_root == root) m_app.status_line = warning;
@@ -2398,9 +2398,14 @@ void UamQueryHandler::HandleBranchFromMessage(CefRefPtr<CefBrowser> browser, con
 			if (result.ok)
 			{
 				auto body = nlohmann::json::parse(result.body);
-				// One sentence reaches the notice: the branch's own warning wins and the originals note is logged.
-				if (body.value("warning", "").empty()) body["warning"] = warning;
-				else uam::diagnostics::Write("[branchFromMessage] " + warning);
+				// One line reaches the notice: the originals note joins the branch's own warning as a clause.
+				std::string existing = body.value("warning", "");
+				if (existing.empty()) body["warning"] = warning;
+				else
+				{
+					while (!existing.empty() && (existing.back() == '.' || existing.back() == ' ')) existing.pop_back();
+					body["warning"] = existing + "; attached originals were kept, but their save could not be fully confirmed.";
+				}
 				result.body = body.dump();
 			}
 			else

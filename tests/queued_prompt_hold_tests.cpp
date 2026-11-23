@@ -1064,7 +1064,7 @@ UAM_TEST(SendRefusalNamesProviderSwitchOnlyWhenItWouldSucceed)
 		fixture.Chat().messages.push_back(Message{MessageRole::Assistant, "Replied anyway."});
 		UAM_ASSERT(uam::KnownUnsentAcpMessageIndices(fixture.app, fixture.Chat()).empty());
 		const std::string error = refusal(fixture);
-		UAM_ASSERT(error.find("Change the chat's provider") != std::string::npos);
+		UAM_ASSERT(error.find("change the chat's provider") != std::string::npos);
 		UAM_ASSERT(error.find("Remove") == std::string::npos);
 		UAM_ASSERT_EQ(uam::SwitchChatProvider(fixture.app, fixture.id, "claude-cli"), uam::ChatProviderSwitchResult::Changed);
 		UAM_ASSERT(!fixture.Chat().acp_queue_held);

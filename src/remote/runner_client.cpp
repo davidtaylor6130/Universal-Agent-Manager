@@ -295,8 +295,8 @@ namespace uam::remote
 	try
 	{
 		if (stop_token.stop_requested()) return false;
-		if (!UAM_ENABLE_SSH) { if (error_out) *error_out = "Remote execution is not included in this build."; return false; }
-		if (!m_connectionAllowed) { if (error_out) *error_out = "Retry helper setup to reconcile the unfinished or unavailable installation first."; return false; }
+		if (!UAM_ENABLE_SSH) { if (error_out) *error_out = kRunnerConnectUnavailableInBuild; return false; }
+		if (!m_connectionAllowed) { if (error_out) *error_out = kRunnerConnectNeedsSetup; return false; }
 		if (m_connected) return true;
 		if (ShuttingDown())
 		{
@@ -1159,7 +1159,7 @@ namespace uam::remote
 		if (size_error || !file) return fail("The file could not be opened for upload.");
 		if (size > m_maxUploadBytes)
 			return fail(m_maxUploadBytes < kMaxUploadBytes && size <= kMaxUploadBytes
-			    ? "This host's UAM helper accepts files up to 25 MB; update it in Settings to attach this file."
+			    ? "Update the SSH helper in Settings to attach files over 25 MB to this host."
 			    : "The file is larger than the host accepts.");
 		const auto interrupt = [stop_token] { return stop_token.stop_requested(); };
 		std::string chunk(256 * 1024, '\0');

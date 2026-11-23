@@ -1402,7 +1402,7 @@ UAM_TEST(StoppingDisconnectedRemoteTurnDoesNotClaimSuccessOrClearRecovery)
 	UAM_ASSERT(!uam::CancelAcpTurn(app, chat.id, &error));
 	UAM_ASSERT(app.acp_sessions.front()->remote_stop_unconfirmed);
 	UAM_ASSERT(app.chats.front().remote_stop_cleanup_pending);
-	UAM_ASSERT(error.find("Reconnecting to confirm") != std::string::npos);
+	UAM_ASSERT(error.find("reconnecting to confirm") != std::string::npos);
 	UAM_ASSERT(!uam::StopAcpSession(app, chat.id));
 	UAM_ASSERT(app.chats.front().remote_turn_reconnect_pending);
 	UAM_ASSERT(app.acp_sessions.front()->reconnect_pending);
@@ -10425,7 +10425,7 @@ UAM_TEST(AcpPermissionFloodStopsTheProviderAtTheBoundedQueueLimit)
 	UAM_ASSERT(!raw_session->processing);
 	UAM_ASSERT(raw_session->queued_permissions.empty());
 	UAM_ASSERT(raw_session->queued_user_prompts.empty());
-	UAM_ASSERT(raw_session->last_error.find("64-request") != std::string::npos);
+	UAM_ASSERT(raw_session->last_error.find("too many permission requests") != std::string::npos);
 	UAM_ASSERT(raw_session->last_error.find("resend") != std::string::npos);
 	UAM_ASSERT_EQ(raw_session->tool_calls.front().status, std::string("failed"));
 	const std::vector<ChatSession> reloaded = ChatRepository::LoadLocalChats(temp.root);
@@ -12979,7 +12979,7 @@ UAM_TEST(AcpOptInRestartRecoveryBlocksMissingTurnWithoutReplayingAndRetainsGoal)
 		(void)uam::PollAllAcpSessions(app);
 		std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	}
-	UAM_ASSERT(session->last_error.find("exact provider turn is gone") != std::string::npos);
+	UAM_ASSERT(session->last_error.find("The runner lost this turn on restart") != std::string::npos);
 	UAM_ASSERT_EQ(app.chats.front().remote_recovery_state, std::string("blocked"));
 	UAM_ASSERT(!session->reconnect_pending);
 	const Goal* retained = uam::GoalService::FindGoalById(app, chat.id, goal_id);
@@ -14325,7 +14325,7 @@ UAM_TEST(AcpLegacyRemoteHelperCannotSilentlyResumeAnActiveTurn)
 		std::string error;
 		UAM_ASSERT(!uam::acp_detail::StartAcpProcessForChat(
 		    app, session, app.chats.front(), &error));
-		UAM_ASSERT(uam::strings::Contains(error, "Update the helper"));
+		UAM_ASSERT(uam::strings::Contains(error, "Update the SSH helper"));
 		UAM_ASSERT_EQ(app.chats.front().remote_delivered_stdout_cursor,
 		              static_cast<std::uintmax_t>(123));
 		UAM_ASSERT(app.chats.front().remote_turn_reconnect_pending);
@@ -16313,7 +16313,7 @@ UAM_TEST(SendIsRefusedDuringRetirementEvenWhileTheBaselineIsPending)
 	UAM_ASSERT(uam::PrepareChatRepositoryBaseline(fixture.app, chat, &error) == uam::ChatBaselineReadiness::Pending);
 	error.clear();
 	UAM_ASSERT(!uam::SendAcpPrompt(fixture.app, chat.id, "Too early.", &error));
-	UAM_ASSERT(error.find("stopping the previous process") != std::string::npos);
+	UAM_ASSERT(error.find("UAM stops the previous process") != std::string::npos);
 	// No receipt to turn into an interrupted row later, so a further switch needs no warning either.
 	UAM_ASSERT(chat.acp_queued_prompts.empty());
 	const uam::AcpSessionState* retiring = uam::FindAcpSessionForChat(fixture.app, chat.id);

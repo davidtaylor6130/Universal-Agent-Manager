@@ -442,8 +442,8 @@ namespace uam
 		if (decision.status == ExecutionRoutingStatus::Waiting || decision.status == ExecutionRoutingStatus::Invalid)
 		{
 			app.execution_routing_waits[chat.id] = decision.reason != ExecutionRoutingReason::OwnershipChanged || !connection_held ? WaitReason(decision.reason)
-			    : saved_before_format_change ? "Stop this chat's turn from before its computer changed, then confirm the provider in Routing settings."
-			    : "This chat still runs on the host's previous connection; stop the turn or restore the old SSH settings, then retry.";
+			    : saved_before_format_change ? "Stop the turn from before this chat's computer changed, then confirm the provider in Routing settings."
+			    : "Stop the turn and let its kept provider process close on the host's previous connection, or restore the old SSH settings.";
 			app.execution_routing_retry_at_by_chat_id[chat.id] = now + 1.0;
 			return decision;
 		}

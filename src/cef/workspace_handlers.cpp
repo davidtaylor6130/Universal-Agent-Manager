@@ -129,7 +129,7 @@ void UamQueryHandler::HandleOpenWorkspaceTerminal(CefRefPtr<CefBrowser> browser,
 			    if (client.Connect(&error)) return uam::query_handler_async::AsyncSuccess({});
 			    std::cerr << "Remote workspace terminal connection failed: " << error << '\n';
 			    uam::diagnostics::Write("[openWorkspaceTerminal] Remote workspace terminal connection failed: " + error);
-			    return uam::query_handler_async::AsyncFailure(502, "Could not connect to the remote host.");
+			    return uam::query_handler_async::AsyncFailure(502, uam::remote::RunnerConnectErrorForUser(error, "Could not connect to the remote host."));
 		    },
 		    [this, browser, observed, chat_id, directory, argv](uam::query_handler_async::AsyncCefResult& response)
 		    {

@@ -4454,7 +4454,7 @@ UAM_TEST(NativeChildLineageHandlerGeminiAckUncertaintyNotifiesWithoutRollingBack
 	const auto body = nlohmann::json::parse(callback->body);
 	UAM_ASSERT_EQ(body.at("chatId"), nlohmann::json(fixture.reference));
 	UAM_ASSERT(body.contains("warning") && !body.at("warning").get<std::string>().empty()); // Real uncertain branch, not fabricated success.
-	const std::string expected_warning = "History and attached files were kept, but reopen the child chat to check the final save.";
+	const std::string expected_warning = "History and attached files were kept, but the final save is unconfirmed; reopen the child chat to check it.";
 	UAM_ASSERT_EQ(fixture.app.status_line, expected_warning); // Intended old-source RED: callback warning was otherwise invisible.
 	UAM_ASSERT_EQ(body.at("warning"), nlohmann::json(expected_warning));
 	UAM_ASSERT_EQ(uam::StateSerializer::Serialize(fixture.app, true).at("statusLine"), nlohmann::json(expected_warning));
@@ -5699,7 +5699,7 @@ UAM_TEST(RemoteNativeHistoryHandlerGeminiAckUncertaintyRetainsPublishedOriginals
 	RunCreationLoopUntil([callback] { return callback->Completed(); }, std::chrono::seconds(15));
 	UAM_ASSERT(callback->Completed()); fixture.RequireSuccess(callback); fixture.Settle(callback);
 	const auto body = nlohmann::json::parse(callback->body);
-	const std::string warning = "History and attached files were kept, but reopen the chat to check the final save.";
+	const std::string warning = "History and attached files were kept, but the final save is unconfirmed; reopen the chat to check it.";
 	UAM_ASSERT_EQ(body.at("warning"), nlohmann::json(warning));
 	UAM_ASSERT_EQ(fixture.app.status_line, warning);
 	UAM_ASSERT_EQ(uam::StateSerializer::Serialize(fixture.app, true).at("statusLine"), nlohmann::json(warning));
@@ -5756,7 +5756,7 @@ UAM_TEST(RemoteNativeHistoryHandlerGeminiAckHeldResponseUsesCurrentOwner)
 		{
 			UAM_ASSERT_EQ(callback->successes, 0); UAM_ASSERT_EQ(callback->failures, 1); UAM_ASSERT_EQ(callback->status, 409);
 			UAM_ASSERT(callback->body.find("already saved") != std::string::npos);
-			UAM_ASSERT(callback->body.find("Reopen the chat") != std::string::npos);
+			UAM_ASSERT(callback->body.find("reopen the chat") != std::string::npos);
 			UAM_ASSERT(callback->body.find(expected.messages.back().content) == std::string::npos);
 			UAM_ASSERT(callback->body.find("PRIVATE_REPLACEMENT_OWNER_AUTHORED_CONTENT") == std::string::npos);
 			UAM_ASSERT(callback->body.find("nativeAssetKey") == std::string::npos);

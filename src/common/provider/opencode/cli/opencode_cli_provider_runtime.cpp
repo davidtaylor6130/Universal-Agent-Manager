@@ -937,7 +937,7 @@ std::string OpenCodeCliProviderRuntime::LocalCliCompatibilityError(const uam::Ap
 	const uam::CliProviderVersionState& state = state_it->second;
 	if (!state.checked)
 	{
-		return "Checking OpenCode compatibility; try again in a moment.";
+		return "Checking OpenCode compatibility.";
 	}
 	// A failed or timed-out check says nothing about the installation; only a confirmed result blocks.
 	if (state.supported || !state.check_error.empty())

@@ -271,7 +271,7 @@ UAM_TEST(OpenCodeInterruptedCompactionRetryRefusesUnprovedQuarantineCoverage)
 	const std::vector<Message> original = chat.messages;
 	std::string error;
 	UAM_ASSERT(!uam::RetryLastAcpPrompt(fixture.app, chat.id, &error));
-	UAM_ASSERT(error.find("interrupted compaction history") != std::string::npos);
+	UAM_ASSERT(error.find("interrupted compaction") != std::string::npos);
 	UAM_ASSERT_EQ(chat.messages, original);
 	UAM_ASSERT(fixture.session->queued_prompt.empty());
 	UAM_ASSERT(fixture.session->queued_user_prompts.empty());
@@ -316,9 +316,9 @@ UAM_TEST(OpenCodeQuarantinedSummaryHandoffsRejectAmbiguousCoverage)
 	std::string error;
 	UAM_ASSERT(!uam::chat::BuildConversationHandoff(chat, context, &error));
 	UAM_ASSERT_EQ(context, std::string("Previously prepared context"));
-	UAM_ASSERT(error.find("interrupted compaction history") != std::string::npos);
+	UAM_ASSERT(error.find("interrupted compaction") != std::string::npos);
 	UAM_ASSERT(uam::BuildProviderHandoffContext(chat, {}, &error).empty());
-	UAM_ASSERT(error.find("interrupted compaction history") != std::string::npos);
+	UAM_ASSERT(error.find("interrupted compaction") != std::string::npos);
 	UAM_ASSERT_EQ(chat.messages.front(), assistant);
 }
 
@@ -336,7 +336,7 @@ UAM_TEST(OpenCodeQuarantinedSummaryProviderSwitchRetainsSessionAndInput)
 	fixture.session->remote_stop_unconfirmed = true;
 	// Refusal must precede every stop path; no process or remote transport is installed.
 	UAM_ASSERT_EQ(uam::SwitchChatProvider(fixture.app, chat.id, "gemini-cli"), uam::ChatProviderSwitchResult::SaveFailed);
-	UAM_ASSERT(fixture.app.status_line.find("interrupted compaction history") != std::string::npos);
+	UAM_ASSERT(fixture.app.status_line.find("interrupted compaction") != std::string::npos);
 	UAM_ASSERT_EQ(chat.provider_id, original.provider_id);
 	UAM_ASSERT_EQ(chat.native_session_id, original.native_session_id);
 	UAM_ASSERT_EQ(chat.provider_handoff_context, original.provider_handoff_context);
@@ -358,7 +358,7 @@ UAM_TEST(OpenCodeQuarantinedSummaryWorkspaceRetryRefusesBeforeStaging)
 	const ChatSession original = chat;
 	std::string error;
 	UAM_ASSERT(!uam::RetryLastAcpPrompt(fixture.app, chat.id, &error));
-	UAM_ASSERT(error.find("interrupted compaction history") != std::string::npos);
+	UAM_ASSERT(error.find("interrupted compaction") != std::string::npos);
 	UAM_ASSERT_EQ(chat.messages, original.messages);
 	UAM_ASSERT(chat.svn_update_pending);
 	UAM_ASSERT(chat.acp_queued_prompts.empty());
@@ -433,7 +433,7 @@ UAM_TEST(OpenCodeSavedQuarantinedHandoffRefusesBeforeRetryAdmission)
 		const ChatSession original = chat;
 		std::string error;
 		UAM_ASSERT(!uam::RetryLastAcpPrompt(fixture.app, chat.id, &error));
-		UAM_ASSERT(error.find("interrupted compaction history") != std::string::npos);
+		UAM_ASSERT(error.find("interrupted compaction") != std::string::npos);
 		UAM_ASSERT_EQ(chat.messages, original.messages);
 		UAM_ASSERT_EQ(chat.provider_handoff_context, original.provider_handoff_context);
 		UAM_ASSERT_EQ(chat.native_session_id, original.native_session_id);
@@ -481,7 +481,7 @@ UAM_TEST(OpenCodeSavedQuarantinedHandoffCliRefusesBeforeContextStaging)
 		std::string launch_error;
 		UAM_ASSERT(!uam::PrepareAcpSessionForCliTerminalLaunch(fixture.app, chat, &launch_error));
 		UAM_ASSERT(!launch_error.empty());
-		UAM_ASSERT(launch_error.find(detached ? "Load the full saved history" : "interrupted compaction history") != std::string::npos);
+		UAM_ASSERT(launch_error.find(detached ? "Load the full saved history" : "interrupted compaction") != std::string::npos);
 		UAM_ASSERT(fixture.session->running);
 		UAM_ASSERT_EQ(fixture.session->session_id, std::string("private-native-session"));
 		UAM_ASSERT_EQ(chat.messages, retained_messages);
@@ -493,7 +493,7 @@ UAM_TEST(OpenCodeSavedQuarantinedHandoffCliRefusesBeforeContextStaging)
 		std::vector<std::pair<std::string, std::string>> environment;
 		std::string channel, error;
 		UAM_ASSERT(!uam::PrepareCliProviderHandoff(fixture.app, chat, host, argv, environment, channel, error));
-		UAM_ASSERT(error.find("interrupted compaction history") != std::string::npos);
+		UAM_ASSERT(error.find("interrupted compaction") != std::string::npos);
 		UAM_ASSERT_EQ(chat.provider_handoff_context, context);
 		UAM_ASSERT_EQ(chat.native_session_id, std::string("private-native-session"));
 		UAM_ASSERT_EQ(argv, original_argv);
@@ -546,7 +546,7 @@ UAM_TEST(OpenCodeRetainedRetryRechecksHistoryBeforeRuntimeMutation)
 	chat.acp_queued_prompts = {queued};
 	const auto messages = chat.messages;
 	UAM_ASSERT(!uam::DrainNextQueuedAcpUserPrompt(fixture.app, *fixture.session, chat));
-	UAM_ASSERT(fixture.session->last_error.find("interrupted compaction history") != std::string::npos);
+	UAM_ASSERT(fixture.session->last_error.find("interrupted compaction") != std::string::npos);
 	UAM_ASSERT(fixture.session->running);
 	UAM_ASSERT(fixture.session->queued_prompt.empty());
 	UAM_ASSERT_EQ(fixture.session->queued_user_prompts, std::deque<uam::AcpQueuedUserPromptState>{queued});
@@ -555,7 +555,7 @@ UAM_TEST(OpenCodeRetainedRetryRechecksHistoryBeforeRuntimeMutation)
 	UAM_ASSERT_EQ(chat.messages, messages);
 	std::string error;
 	UAM_ASSERT(!uam::ResumeQueuedAcpPrompts(fixture.app, chat.id, {{queued.id, queued.revision}}, &error));
-	UAM_ASSERT(error.find("interrupted compaction history") != std::string::npos);
+	UAM_ASSERT(error.find("interrupted compaction") != std::string::npos);
 	UAM_ASSERT(fixture.session->queue_held && chat.acp_queue_held);
 	UAM_ASSERT_EQ(fixture.session->queued_user_prompts, std::deque<uam::AcpQueuedUserPromptState>{queued});
 }
@@ -613,7 +613,7 @@ namespace
 		const std::string lifecycle = fixture.session->lifecycle_state;
 		std::string error;
 		UAM_ASSERT(!uam::RetryFailedAcpMessage(fixture.app, chat.id, 2, &error));
-		UAM_ASSERT(error.find("interrupted compaction history") != std::string::npos);
+		UAM_ASSERT(error.find("interrupted compaction") != std::string::npos);
 		UAM_ASSERT_EQ(chat.messages, original.messages);
 		UAM_ASSERT_EQ(chat.provider_handoff_context, original.provider_handoff_context);
 		UAM_ASSERT_EQ(chat.native_session_id, original.native_session_id);

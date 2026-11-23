@@ -1542,7 +1542,7 @@ UAM_TEST(AntigravityCapturedPermissionDenialPreservesOtherSuccessAndReportsAmbig
 				{
 					++summaries;
 					UAM_ASSERT_EQ(tool.status, std::string("failed"));
-					UAM_ASSERT(tool.result_text.find("cannot identify") != std::string::npos);
+					UAM_ASSERT(tool.result_text.find("which tool step it was is unknown") != std::string::npos);
 					UAM_ASSERT(tool.result_text.size() < 256);
 				}
 			}

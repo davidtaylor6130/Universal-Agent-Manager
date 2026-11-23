@@ -415,7 +415,7 @@ namespace uam::remote
 					}
 					if (line.substr(prefix.size(), status_end - prefix.size()) != "0")
 					{
-						uam::diagnostics::Write("[remoteSetup] Remote setup step failed: " + step.label + ". " + uam::strings::Trim(output));
+						uam::diagnostics::Write("[remoteSetup] Remote setup step failed: " + step.label + ". " + uam::strings::TrimAndElide(output, 1024));
 						error = "Remote setup step failed: " + step.label + ".";
 						return false;
 					}

@@ -40,6 +40,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <map>
 #include <functional>
 #include <string_view>
@@ -1640,7 +1641,7 @@ bool uam::QueueHoldHasNoInput(const AppState& app, const ChatSession& chat)
 
 namespace
 {
-	constexpr const char* kQueueStorageRefusal = "This chat's saved queue could not be read; restart UAM to read it again.";
+	constexpr const char* kQueueStorageRefusal = "This chat's saved queue could not be read, so restart UAM to read it again.";
 	constexpr const char* kHeldQueueRefusal = "Resume or discard the held queued input first.";
 	constexpr const char* kUnsentRefusal = "Remove or retry the unsent message first.";
 
@@ -1719,11 +1720,11 @@ const char* uam::NativeResetRefusalReason(const AppState& app, const ChatSession
 	if (!chat.acp_queue_held && (session == nullptr || !session->queue_held)) return nullptr;
 	if (chat.acp_queue_storage_error || chat.managed_followup_input_unavailable) return kQueueStorageRefusal;
 	if (!chat.acp_queued_prompts.empty() || chat.acp_dispatched_queued_prompt_count != 0 || (session != nullptr && !session->queued_user_prompts.empty()))
-		return ScanProviderSwitchQueue(app, chat).clearable ? kHeldQueueRefusal : "This chat has held input UAM cannot control; change its provider and accept the warning to continue.";
+		return ScanProviderSwitchQueue(app, chat).clearable ? kHeldQueueRefusal : "Change the chat's provider and accept the warning to clear its held input.";
 	if (ChatHasUnsentAcpPrompt(app, chat) || ChatHasActionableUnsentRecovery(chat)) return kUnsentRefusal;
 	// The old turn may already have run this row; a handoff would send it again.
 	if (ChatHasUncertainRemoteInput(chat) && std::ranges::any_of(chat.messages, &Message::AcpPromptAwaitsDecision))
-		return "UAM cannot confirm the provider got the latest message; wait for it to settle or switch and accept the warning.";
+		return "Wait for the latest message to settle, or change the chat's provider and accept the warning.";
 	return nullptr;
 }
 
@@ -2607,7 +2608,9 @@ bool RenameFolderById(uam::AppState& app, const std::string& folder_id, const st
 					{
 						const std::string blocking_title = chat.title;
 						app.chats = original_chats;
-						app.status_line = "\"" + blocking_title + "\": " + refusal;
+						std::string action = refusal;
+						if (!action.empty()) action[0] = static_cast<char>(std::tolower(static_cast<unsigned char>(action[0])));
+						app.status_line = "The workspace was kept; in \"" + blocking_title + "\", " + action;
 						return false;
 					}
 					chat.native_session_id.clear();

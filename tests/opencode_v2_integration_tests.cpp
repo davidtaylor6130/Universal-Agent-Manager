@@ -251,7 +251,7 @@ UAM_TEST(OpenCodeV2TransportLossHoldsQueueThroughSharedPolling)
 			fixture.Session().observed_process_exit_code = 1;
 			fixture.Session().last_runtime_activity_time_s = uam::GetAppTimeSeconds();
 			(void)uam::PollAllAcpSessions(fixture.app);
-			UAM_ASSERT(fixture.Session().last_error.find("owned provider process exited") != std::string::npos);
+			UAM_ASSERT(fixture.Session().last_error.find("The provider exited before UAM could confirm") != std::string::npos);
 		}
 		fixture.AssertHeld(expected);
 	}
