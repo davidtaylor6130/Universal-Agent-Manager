@@ -1682,6 +1682,50 @@ UAM_TEST(CodexStdioMcpEnvironmentStaysInEachServersOwnTable)
 	UAM_ASSERT_EQ(table("beta"), std::string(R"({"API_KEY" = "beta \"key\"\u007F", "NODE_OPTIONS" = "--inspect"})"));
 }
 
+UAM_TEST(CodexMcpOverridesUseBareServerKeysAndInlineTables)
+{
+	TempDir temp("uam-codex-mcp-keys");
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "server", "#!/bin/sh\n"));
+	const std::string command = uam::paths::Utf8PathString(temp.root / "server");
+	McpServerConfiguration plain;
+	plain.id = "plain"; plain.name = "plain-name_1"; plain.command = command; plain.args = {"--port", "7"};
+	McpServerConfiguration spaced;
+	spaced.id = "spaced"; spaced.name = "my server.v2"; spaced.transport = "http"; spaced.url = "http://localhost:5000/mcp";
+	spaced.headers = {{"X-Api-Key", "", "header-secret"}};
+	const std::string spaced_key = uam::provider_setup::CodexServerKey(spaced.name);
+	UAM_ASSERT_EQ(uam::provider_setup::CodexServerKey(plain.name), plain.name);
+	UAM_ASSERT(spaced_key.starts_with("my_server_v2-") && uam::provider_setup::IsCodexBareKey(spaced_key));
+	UAM_ASSERT_EQ(uam::provider_setup::CodexServerKey(spaced.name), spaced_key);
+	const auto apply = [&](const std::vector<McpServerConfiguration>& servers, std::vector<std::string>& argv, uam::provider_setup::Environment& environment, std::string& error) {
+		AppSettings settings;
+		settings.mcp_servers = servers;
+		ChatSession chat;
+		chat.id = "codex-mcp-keys";
+		ExecutionHost host;
+		uam::ProviderConfigurationBundle bundle;
+		UAM_ASSERT(uam::PrepareProviderConfiguration(temp.root / ("data-" + std::to_string(servers.size())), settings, chat, host, temp.root, bundle, error));
+		argv = {"codex"};
+		return uam::provider_setup::Apply("codex-cli", bundle.local_directory, temp.root, argv, environment, error);
+	};
+	std::vector<std::string> argv;
+	uam::provider_setup::Environment environment;
+	std::string error;
+	UAM_ASSERT(apply({plain, spaced}, argv, environment, error));
+	const std::string variable = "UAM_CENTRAL_MCP_HEADER_" + uam::provider_setup::Digest(spaced.name + "X-Api-Key");
+	for (const std::string& expected : {"mcp_servers.plain-name_1.command=" + nlohmann::json(command).dump(), std::string(R"(mcp_servers.plain-name_1.args=["--port", "7"])"),
+	         "mcp_servers." + spaced_key + R"(.url="http://localhost:5000/mcp")", "mcp_servers." + spaced_key + R"(.env_http_headers={"X-Api-Key" = ")" + variable + "\"}"})
+		UAM_ASSERT(std::ranges::find(argv, expected) != argv.end());
+	// Codex keeps quote marks and splits on dots in -c key paths, so no generated key may contain either.
+	UAM_ASSERT(std::ranges::none_of(argv, [](const std::string& arg) { return arg.starts_with("mcp_servers.") && arg.substr(0, arg.find('=')).find('"') != std::string::npos; }));
+	UAM_ASSERT_EQ(uam::provider_setup::EnvironmentValue(environment, variable), std::string("header-secret"));
+	// A configured name equal to another server's derived key is refused rather than merged into it.
+	McpServerConfiguration clash = plain;
+	clash.id = "clash"; clash.name = spaced_key;
+	environment.clear();
+	UAM_ASSERT(!apply({plain, spaced, clash}, argv, environment, error));
+	UAM_ASSERT(error.find("apart") != std::string::npos);
+}
+
 UAM_TEST(SharedMcpFollowsSourceWorkspaceIntoAnIsolatedWorktree)
 {
 	TempDir temp("uam-mcp-worktree-scope");

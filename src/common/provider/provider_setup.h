@@ -189,13 +189,34 @@ namespace uam::provider_setup
 		return quoted;
 	}
 
-	/// <summary>A TOML inline table of string values; quoted keys keep any name intact, unlike a dotted -c path.</summary>
-	inline std::string TomlInlineTable(const nlohmann::json& entries)
+	/// <summary>Codex splits a -c key path on every dot and keeps quote marks, so only a bare TOML key survives intact.</summary>
+	inline bool IsCodexBareKey(std::string_view name)
 	{
-		std::string table = "{";
-		for (const auto& [key, text] : entries.items())
-			table += (table.size() > 1 ? ", " : "") + TomlString(key) + " = " + TomlString(text.get<std::string>());
-		return table + "}";
+		return !name.empty() && std::ranges::all_of(name, [](unsigned char c) { return (c < 0x80 && std::isalnum(c) != 0) || c == '-' || c == '_'; });
+	}
+
+	/// <summary>The Codex key for a server: its name when bare, otherwise a safe slug plus a digest of the full name.</summary>
+	inline std::string CodexServerKey(std::string_view name)
+	{
+		if (IsCodexBareKey(name)) return std::string(name);
+		std::string slug;
+		for (const unsigned char c : name.substr(0, 40)) slug.push_back((c < 0x80 && std::isalnum(c) != 0) || c == '-' ? static_cast<char>(c) : '_');
+		return slug + "-" + Digest(name).substr(0, 8);
+	}
+
+	/// <summary>A TOML value for a Codex -c override; tables are inline, so quoted keys keep any name intact, unlike a dotted -c path.</summary>
+	inline std::string TomlValue(const nlohmann::json& value)
+	{
+		if (value.is_string()) return TomlString(value.get<std::string>());
+		if (!value.is_structured()) return value.dump();
+		std::string text = value.is_object() ? "{" : "[";
+		bool first = true;
+		for (const auto& [key, entry] : value.items())
+		{
+			text += (first ? "" : ", ") + (value.is_object() ? TomlString(key) + " = " : std::string{}) + TomlValue(entry);
+			first = false;
+		}
+		return text + (value.is_object() ? "}" : "]");
 	}
 
 	/// OpenCode's built-in provider request timeout; UAM never configures a value at or below it.
@@ -763,9 +784,14 @@ namespace uam::provider_setup
 				if (instructions.size() > max_instruction_bytes) { error = host_instructions_only ? "Host instructions exceed the OS launch limit for this provider. Shorten them." : "Codex central instructions exceed the OS launch limit. Move reference material into skills."; return false; }
 				argv.insert(argv.begin() + 1, {"-c", "developer_instructions=" + nlohmann::json(instructions).dump()});
 			}
+			// Codex key -> configured name, so two names that share a key are refused instead of merged.
+			std::map<std::string, std::string> codex_keys;
 			for (const auto& [name, server] : native_servers.items())
 			{
-				const std::string prefix = "mcp_servers." + nlohmann::json(name).dump() + ".";
+				const std::string codex_key = CodexServerKey(name);
+				if (const auto [existing, inserted] = codex_keys.emplace(codex_key, name); !inserted)
+				{ error = "Codex cannot tell MCP servers '" + existing->second + "' and '" + name + "' apart. Rename one using letters, digits, '-' or '_'."; return false; }
+				const std::string prefix = "mcp_servers." + codex_key + ".";
 				for (const auto& [key, value] : server.items())
 				{
 					if (key == "type")
@@ -777,24 +803,23 @@ namespace uam::provider_setup
 					{
 						// The server's own env table: values never enter Codex's environment, so two servers' API_KEY
 						// cannot collide and a server's PATH or NODE_OPTIONS cannot change Codex or its shell commands.
-						if (!value.empty()) argv.insert(argv.begin() + 1, {"-c", prefix + "env=" + TomlInlineTable(value)});
+						if (!value.empty()) argv.insert(argv.begin() + 1, {"-c", prefix + "env=" + TomlValue(value)});
 						continue;
 					}
 					if (key == "headers")
 					{
+						nlohmann::json variables = nlohmann::json::object();
 						for (const auto& [header, text] : value.items())
 						{
 							const std::string variable = "UAM_CENTRAL_MCP_HEADER_" + Digest(name + header);
 							SetEnvironment(environment, variable, text.get<std::string>());
-							argv.insert(argv.begin() + 1, {"-c", prefix + "env_http_headers." + nlohmann::json(header).dump() + "=" + nlohmann::json(variable).dump()});
+							variables[header] = variable;
 						}
+						// One inline table: a dotted header key would keep its quote marks in the header name.
+						if (!variables.empty()) argv.insert(argv.begin() + 1, {"-c", prefix + "env_http_headers=" + TomlValue(variables)});
 						continue;
 					}
-					if (value.is_object())
-					{
-						for (const auto& [entry, text] : value.items()) argv.insert(argv.begin() + 1, {"-c", prefix + key + "." + nlohmann::json(entry).dump() + "=" + text.dump()});
-					}
-					else argv.insert(argv.begin() + 1, {"-c", prefix + key + "=" + value.dump()});
+					argv.insert(argv.begin() + 1, {"-c", prefix + key + "=" + TomlValue(value)});
 				}
 			}
 		}
