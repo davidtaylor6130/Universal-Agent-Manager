@@ -227,6 +227,14 @@ namespace
 		return result;
 	}
 #endif
+
+	nlohmann::json ManagedTranscriptResponse(const AgentRun& run, const std::string& title, nlohmann::json messages, std::optional<nlohmann::json> followup)
+	{
+		nlohmann::json response{{"runId", run.id}, {"agentId", run.agent_id}, {"status", run.status}, {"providerId", run.provider_id}, {"executionCapability", run.execution_capability}, {"resumedFromRunId", run.resumed_from_run_id}, {"title", title}, {"messages", std::move(messages)}};
+		if (followup)
+			response["followup"] = std::move(*followup);
+		return response;
+	}
 }
 
 using namespace uam::query_handler_internal;
@@ -1969,36 +1977,65 @@ void UamQueryHandler::HandleGetManagedAgentTranscript(CefRefPtr<CefBrowser> /*br
 		cb->Failure(409, "Managed agent transcript is active or changed. Retry after it settles.");
 		return;
 	}
-	std::string hydrate_warning;
-	std::optional<ChatSession> loaded_transcript;
 	if (transcript == nullptr)
 	{
-		loaded_transcript = ChatRepository::LoadLocalChat(m_app.data_root, transcript_chat_id, true, &hydrate_warning);
-		if (!loaded_transcript)
+		// Not in memory (for example an unfinished run whose transcript was never adopted): read, hydrate and
+		// serialize the saved file on a worker, then revalidate the run before replying.
+		if (m_nativeHistoryRequests.contains(transcript_chat_id))
 		{
-			cb->Failure(404, FailureDetailOrFallback(hydrate_warning, "Managed agent transcript is unavailable."));
+			cb->Failure(409, "Managed agent transcript history is already loading.");
 			return;
 		}
-		transcript = &*loaded_transcript;
-		if (transcript->agent_run_id != run->id)
-		{
-			cb->Failure(404, "Managed agent transcript is unavailable.");
-			return;
-		}
-	}
-	if (!transcript->messages_loaded && !ChatRepository::HydrateChatMessages(m_app.data_root, *transcript, &hydrate_warning))
-	{
-		cb->Failure(500, FailureDetailOrFallback(hydrate_warning, "Failed to load the managed agent transcript."));
+		const auto request = BeginNativeHistoryRead(transcript_chat_id, cb);
+		const std::filesystem::path data_root = m_app.data_root;
+		const std::string run_id = run->id;
+		auto saved = std::make_shared<ChatSession>();
+		auto messages = std::make_shared<nlohmann::json>();
+		if (!DispatchManagedSubagentQuery(
+		        cb,
+		        [data_root, transcript_chat_id, run_id, request, saved, messages]()
+		        {
+			        if (request->stop_requested())
+				        return AsyncFailure(409, "A newer transcript history request was made.");
+			        std::string warning;
+			        std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(data_root, transcript_chat_id, true, &warning);
+			        if (!loaded)
+				        return AsyncFailure(404, FailureDetailOrFallback(warning, "Managed agent transcript is unavailable."));
+			        if (loaded->agent_run_id != run_id)
+				        return AsyncFailure(404, "Managed agent transcript is unavailable.");
+			        if (!loaded->messages_loaded && !ChatRepository::HydrateChatMessages(data_root, *loaded, &warning))
+				        return AsyncFailure(500, FailureDetailOrFallback(warning, "Failed to load the managed agent transcript."));
+			        *messages = uam::StateSerializer::SerializeSession(*loaded).value("messages", nlohmann::json::array());
+			        *saved = std::move(*loaded);
+			        return AsyncSuccess({});
+		        },
+		        [this, root_chat_id, transcript_chat_id, run_id, data_root, request, saved, messages](AsyncCefResult& response)
+		        {
+			        const auto pending = m_nativeHistoryRequests.find(transcript_chat_id);
+			        if (pending == m_nativeHistoryRequests.end() || pending->second != request)
+			        {
+				        response = AsyncFailure(409, "Managed agent transcript changed while it was loading.");
+				        return;
+			        }
+			        FinishNativeHistoryRead(transcript_chat_id, request);
+			        if (!response.ok)
+				        return;
+			        // The same run must still own this transcript, and nothing may have adopted a newer copy meanwhile.
+			        const ChatSession* current_root = ChatDomainService().FindChatById(m_app, root_chat_id);
+			        const auto current_run = std::ranges::find_if(m_app.agent_runs, [&](const AgentRun& candidate) { return candidate.root_chat_id == root_chat_id && candidate.transcript_chat_id == transcript_chat_id; });
+			        if (m_app.data_root != data_root || current_root == nullptr || !current_root->agent_run_id.empty() || current_run == m_app.agent_runs.end() || current_run->id != run_id || saved->agent_run_id != run_id || ChatDomainService().FindChatById(m_app, transcript_chat_id) != nullptr || (m_workspaceDeletionPending && m_app.worktree_operation_chat_ids.contains(transcript_chat_id)))
+			        {
+				        response = AsyncFailure(409, "Managed agent transcript changed while it was loading.");
+				        return;
+			        }
+			        response = AsyncSuccess(ManagedTranscriptResponse(*current_run, saved->title, std::move(*messages), ManagedFollowupHint(root_chat_id, run_id, saved.get())));
+		        }))
+			FinishNativeHistoryRead(transcript_chat_id, request);
 		return;
 	}
-	const nlohmann::json serialized = uam::StateSerializer::SerializeSession(*transcript);
-	nlohmann::json response{
-	    {"runId", run->id}, {"agentId", run->agent_id}, {"status", run->status},
-	    {"providerId", run->provider_id}, {"executionCapability", run->execution_capability},
-	    {"resumedFromRunId", run->resumed_from_run_id},
-	    {"title", transcript->title}, {"messages", serialized.value("messages", nlohmann::json::array())}};
-	if (const auto hint = ManagedFollowupHint(root_chat_id, run->id, transcript)) response["followup"] = *hint;
-	cb->Success(response.dump());
+	// Loaded in memory: an unloaded in-memory transcript was handled above, so no file is read here.
+	nlohmann::json messages = uam::StateSerializer::SerializeSession(*transcript).value("messages", nlohmann::json::array());
+	cb->Success(ManagedTranscriptResponse(*run, transcript->title, std::move(messages), ManagedFollowupHint(root_chat_id, run->id, transcript)).dump());
 }
 
 void UamQueryHandler::HandleResumeAgentRun(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
