@@ -39,6 +39,8 @@ export interface CEFResponse<T = unknown> {
   error?: string
   /** Native CEF failure code; absent for companion and transport failures. */
   code?: number
+  /** A native success body that finished with a caveat, such as a helper installed without confirmed startup. */
+  warning?: string
   requestId?: string
 }
 

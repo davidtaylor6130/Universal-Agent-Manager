@@ -1124,7 +1124,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       reportAppFailure(response.error || 'Remote helper setup failed.', connectionHint)
       return
     }
-    reportAppNotice(`${host.label} is ready.`, 'success')
+    // Installed with a caveat (for example startup not confirmed) is not a clean "ready".
+    const warning = response.warning?.replace(/\s+/g, ' ').trim()
+    if (warning) reportAppNotice(warning, 'warning')
+    else reportAppNotice(`${host.label} is ready.`, 'success')
     setRemoteAlias('')
     setRemoteLabel('')
   }

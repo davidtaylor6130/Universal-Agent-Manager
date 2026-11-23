@@ -893,6 +893,46 @@ describe('SettingsModal memory settings', () => {
     host.remove()
   })
 
+  it('reports a helper install that succeeded with a warning as a warning, not as ready', async () => {
+    let installBody = ''
+    window.cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request) as { action: string; payload: { id: string; label: string; sshAlias: string } }
+      if (parsed.action === 'previewRemoteHost') {
+        onSuccess(JSON.stringify({
+          host: { id: parsed.payload.id, label: parsed.payload.label, transport: 'ssh', sshAlias: parsed.payload.sshAlias, runnerStatus: 'uninstalled', runnerVersion: '', platform: '', architecture: '', lastSeenAt: '' },
+          preview: '1. Check remote platform',
+        }))
+        return
+      }
+      onSuccess(parsed.action === 'installRemoteHost' ? installBody : '{}')
+    }
+    const { host, root } = renderModal()
+    openRemoteHostsSection(host)
+    const install = async (body: string) => {
+      installBody = body
+      const alias = host.querySelector('input[aria-label="SSH config alias"]') as HTMLInputElement
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(alias, 'colima')
+        alias.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+      await act(async () => { Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Preview setup'))?.click() })
+      await act(async () => { Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Connect and install'))?.click() })
+      await act(async () => {})
+    }
+
+    failures.length = 0
+    await install(JSON.stringify({ ok: true, warning: "Helper installed. Save this host's options to confirm runner startup.\n  Startup timed out." }))
+    expect(failures).toEqual([expect.objectContaining({ tone: 'warning', message: "Helper installed. Save this host's options to confirm runner startup. Startup timed out." })])
+    expect(failures.some((notice) => notice.message.includes('is ready'))).toBe(false)
+
+    failures.length = 0
+    await install('{"ok":true}')
+    expect(failures).toEqual([expect.objectContaining({ tone: 'success', message: 'colima is ready.' })])
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('dismisses the setup preview so a failed compatibility check is visible', async () => {
     window.cefQuery = ({ request, onSuccess, onFailure }) => {
       const parsed = JSON.parse(request) as { action: string; payload: { id: string; label: string; sshAlias: string } }
