@@ -624,8 +624,12 @@ describe('MarkdownStoreModal', () => {
     // Escape on the prompt keeps editing and forgets the leave.
     expect(host.querySelector('[aria-label="Unsaved skill changes"]')).toBeNull()
     expect((host.querySelector('input[aria-label="Entry title"]') as HTMLInputElement).value).toBe('Review code v2')
-    click('Cancel'); click('Keep editing')
+    // A later plain Cancel and Discard only closes the editor, because Escape dropped the leave.
+    click('Cancel'); click('Discard')
+    expect(host.querySelector('input[aria-label="Entry title"]')).toBeNull()
     expect(close).not.toHaveBeenCalled()
+    click('Edit Review code in app')
+    changeField('Entry title', 'Review code v2')
     click('Close skills')
     click('Save & close')
     expect(host.querySelector('[aria-label="Overwrite skill"]')).toBeTruthy()
