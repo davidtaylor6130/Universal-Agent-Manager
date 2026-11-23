@@ -1191,7 +1191,7 @@ void UamQueryHandler::HandleUpdateVcsWorkspace(CefRefPtr<CefBrowser> browser, co
 	const bool local = uam::paths::IsControllerLocalWorkspace(*chat);
 	// Every chat sharing the working copy is fenced for the whole update, so none can start working in it meanwhile.
 	// A chat isolated in a snapshot of it keeps working in its own copy; it may not port changes back mid-update
-	// (SnapshotSourceUpdateRefusal), and an update waits for a port already running.
+	// (SnapshotSourceUpdateRefusal), and an update is refused while one of them is porting or discarding.
 	std::vector<std::string> fenced = {chat->id};
 	for (const ChatSession& other : m_app.chats)
 	{
@@ -1199,7 +1199,7 @@ void UamQueryHandler::HandleUpdateVcsWorkspace(CefRefPtr<CefBrowser> browser, co
 		if (!WorkspacesOverlap(m_app, *chat, workspace, uam::paths::ResolveWorkspaceRootPath(m_app, other)))
 		{
 			const std::filesystem::path other_source = uam::paths::LocalIsolationSourcePath(other);
-			if (!other_source.empty() && WorkspacesOverlap(m_app, *chat, workspace, other_source) && m_app.worktree_operation_chat_ids.contains(other.id))
+			if (!other_source.empty() && WorkspacesOverlap(m_app, *chat, workspace, other_source) && m_app.git_port_requests.contains(other.id))
 			{
 				cb->Failure(409, "Another chat is porting changes into this working copy. Try again shortly.");
 				return;

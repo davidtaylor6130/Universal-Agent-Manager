@@ -61,7 +61,7 @@ namespace uam
 
 	/// <summary>For a local chat isolated in a UAM-owned snapshot (a managed repository exists for it), what it was copied
 	/// from: an SVN working copy, or a folder (plain or an unborn Git repository). The same classification snapshot creation
-	/// uses, so the commit panel and SVN routing agree with it. File-system checks only; call it off the UI thread.</summary>
+	/// uses, so the commit panel and SVN routing agree with it. A few file-system checks and no subprocess.</summary>
 	LocalSnapshotSourceKind DescribeLocalSnapshotSource(const AppState& app, const ChatSession& chat, std::filesystem::path* source_out = nullptr);
 
 	/// <summary>One-line notice added to a patch port that ran in place of the configured merge or squash.</summary>

@@ -782,3 +782,15 @@ UAM_TEST(GitWorktreePortSnapshotFallsBackToPatchForMergeAndSquash)
 		UAM_ASSERT(chat.workspace_worktree_directory.empty() && !fs::exists(worktree));
 	}
 }
+
+UAM_TEST(GitWorktreeSvnUpdateDeclinesIsolatedChatThatIsNotSvnSnapshot)
+{
+	if (!GitAvailableForTests()) return;
+	// An ordinary Git worktree has no SVN working copy behind it, so an SVN update is declined before any svn runs.
+	PortFixture fixture("merge");
+	fixture.app.settings.svn_enabled = true;
+	const uam::VcsUpdateResult update = uam::VcsCommitService().Update(fixture.app, fixture.app.chats.front(), uam::VcsType::Svn, {});
+	UAM_ASSERT(!update.ok);
+	UAM_ASSERT_EQ(update.error, std::string("This chat's isolated workspace is not a copy of an SVN working copy."));
+	fixture.AssertRetained();
+}
