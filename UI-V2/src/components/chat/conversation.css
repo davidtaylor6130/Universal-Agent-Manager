@@ -179,7 +179,7 @@
 .context-compaction[open] > summary { color: var(--text-2); }
 .context-compaction > div { margin-top: 6px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--r-md); background: var(--surface); font-size: var(--fs-base); color: var(--text-2); }
 
-/* Loading and empty history: a quiet shimmer on placeholder rows that mirror the transcript layout. */
+/* Loading and empty history: placeholder rows that mirror the transcript layout, sized for the shared uam-skeleton. */
 .conversation-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--sp-4); min-height: 30vh; font-size: var(--fs-base); color: var(--text-2); }
 .conversation-skeleton { display: flex; flex-direction: column; gap: var(--sp-5); width: 100%; max-width: var(--conversation-column, 1000px); animation: conversation-turn-in var(--dur-base) var(--ease-out-soft) backwards; }
 .conversation-skeleton__bubble, .conversation-skeleton__line { display: block; }

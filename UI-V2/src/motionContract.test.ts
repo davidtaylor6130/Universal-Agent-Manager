@@ -100,6 +100,11 @@ describe('shared motion contract', () => {
       expect(blocks.length, file).toBeGreaterThan(0)
       for (const name of blocks) expect(name.split(' '), `${file}: ${name}`).toContain('uam-skeleton')
       for (const name of containers) expect(name.split(' '), `${file}: ${name}`).not.toContain('uam-skeleton')
+      // Any element that takes the skeleton, whatever its other classes, must be a self-closing leaf.
+      const text = source(file)
+      const all = [...text.matchAll(/className="[^"]*\buam-skeleton\b[^"]*"/g)].length
+      const leaves = [...text.matchAll(/<\w+[^<>]*className="[^"]*\buam-skeleton\b[^"]*"[^<>]*\/>/g)].length
+      expect(leaves, `${file}: uam-skeleton on a non-leaf element`).toBe(all)
     }
   })
 
