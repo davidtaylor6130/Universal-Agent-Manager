@@ -1213,6 +1213,31 @@ UAM_TEST(EmptyQueueJournalForMovedWorkspaceDoesNotBlockSavesOrMemoryProgress)
 	UAM_ASSERT(ChatRepository::SaveChat(temp.root, *reloaded));
 }
 
+UAM_TEST(EmptyQueueJournalForMovedWorkspaceAcceptsQueueSaveMemoryProgressAndHydration)
+{
+	TempDir temp("uam-queue-journal-empty-moved-queue-save");
+	ChatSession chat = QueueJournalFixture(temp.root);
+	chat.acp_queued_prompts.clear();
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	UAM_ASSERT(ChatRepository::SaveQueuedPromptOutbox(temp.root, chat));
+	MoveSavedChatWorkspace(temp.root, chat.id, temp.root / "moved-workspace");
+	// Startup reads metadata first (publishing a fresh summary), then hydrates the transcript.
+	std::optional<ChatSession> meta = ChatRepository::LoadLocalChat(temp.root, chat.id, false);
+	UAM_ASSERT(meta && !meta->acp_queue_storage_error && !meta->acp_queue_held);
+	UAM_ASSERT(ChatRepository::HydrateChatMessages(temp.root, *meta));
+	UAM_ASSERT(!meta->acp_queue_storage_error);
+	// Memory progress goes through the queue journal first; before any full save it must succeed alone.
+	meta->memory_last_processed_message_count = 1;
+	meta->memory_last_processed_at = "2026-11-23T10:00:00Z";
+	bool full_save_required = true;
+	UAM_ASSERT(ChatRepository::SaveQueuedPromptOutbox(temp.root, *meta, &full_save_required));
+	UAM_ASSERT(!full_save_required);
+	const std::optional<ChatSession> reloaded = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(reloaded && !reloaded->acp_queue_storage_error && !reloaded->acp_queue_held);
+	UAM_ASSERT_EQ(reloaded->memory_last_processed_message_count, 1);
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, *reloaded));
+}
+
 UAM_TEST(QueueJournalWithInputForMovedWorkspaceStaysHeldWithStorageError)
 {
 	TempDir temp("uam-queue-journal-input-moved");

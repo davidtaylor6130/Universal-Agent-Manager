@@ -1985,8 +1985,23 @@ namespace
 		// like a consumed journal: the next full save consumes it and the next queue save replaces it under the
 		// current owner. Its memory progress belongs to the other owner's transcript, so the primary's own
 		// progress stays: rows may be processed again, never skipped.
+		// The owner also carries unsent-input recovery records and the managed birth; a journal whose copy of
+		// those differs may be their last record, so it keeps the hold.
+		const auto owner_field = [](const std::string& text, std::string_view key) -> std::optional<std::string>
+		{
+			const std::optional<JsonValue> parsed = ParseJson(text);
+			if (!parsed || parsed->type != JsonValue::Type::Object) return std::nullopt;
+			const JsonValue* field = parsed->Find(key);
+			return field ? SerializeJson(*field) : std::string();
+		};
+		const auto same_owner_field = [&](std::string_view key)
+		{
+			const std::optional<std::string> saved = owner_field(owner, key);
+			return saved && saved == owner_field(journal->owner, key);
+		};
 		if (journal && journal->prompts.empty() && !journal->held && journal->dispatched == 0 &&
-		    chat.acp_queued_prompts.empty() && chat.acp_dispatched_queued_prompt_count == 0)
+		    chat.acp_queued_prompts.empty() && chat.acp_dispatched_queued_prompt_count == 0 &&
+		    same_owner_field("acp_unsent_prompt_recoveries") && same_owner_field(kChatManagedFollowupBirthField))
 		{
 			chat.acp_queue_storage_revision = journal->revision;
 			log_once("empty", "Empty queue journal rebound: it no longer matches the saved chat and holds no input " + chat.id);
