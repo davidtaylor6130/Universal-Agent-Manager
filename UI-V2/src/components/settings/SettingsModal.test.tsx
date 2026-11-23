@@ -1510,8 +1510,8 @@ describe('SettingsModal memory settings', () => {
   /** Preview and Import stay busy until their bridge calls settle (the saved-agent listing included). */
   const importSettled = () => vi.waitFor(() => expect(document.body.querySelector('button[aria-busy="true"]')).toBeNull())
   const buttonNamed = (text: string) => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === text)
-  async function previewSupportedAgent(host: HTMLElement, settle = true) {
-    useAppStore.setState({ previewProviderAgentImport: vi.fn(async () => supportedPreview) })
+  async function previewSupportedAgent(host: HTMLElement, settle = true, preview = supportedPreview) {
+    useAppStore.setState({ previewProviderAgentImport: vi.fn(async () => preview) })
     openAgentsSection(host)
     const path = host.querySelector('input[aria-label="Native agent Markdown file"]') as HTMLInputElement
     await act(async () => {
@@ -1631,6 +1631,19 @@ describe('SettingsModal memory settings', () => {
     expect(dialog).toContain('It gains write access to the workspace.')
     expect(dialog).toContain('It loses its skill.')
     expect(dialog).toContain('It loses the agents it may delegate to.')
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('names a lost delegation role and lost write access when replacing', async () => {
+    mockAgentStore([{ ...storeAgent('reviewer-native', 'global', 'both'), workspaceAccess: 'write' }])
+    const { host, root } = renderModal()
+    await previewSupportedAgent(host, true, { ...supportedPreview, mode: 'primary' })
+    await act(async () => buttonNamed('Replace agent…')!.click())
+    const dialog = document.body.textContent ?? ''
+    expect(dialog).toContain('It changes from being a chat agent that other agents can also use to being a chat agent only.')
+    expect(dialog).toContain('It loses write access to the workspace.')
+    expect(dialog).not.toContain('It loses its')
     act(() => root.unmount())
     host.remove()
   })

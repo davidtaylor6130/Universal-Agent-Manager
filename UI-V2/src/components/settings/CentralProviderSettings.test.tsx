@@ -359,4 +359,7 @@ it('names the scope in the actions of a global and a workspace agent that share 
   expect(host.querySelector('[aria-label="Edit solo"]')).toBeTruthy()
   await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="View reviewer (this workspace)"]')!.click())
   expect(document.querySelector('[role="dialog"][aria-label="View reviewer (this workspace)"]')).toBeTruthy()
+  await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Close agent editor"]')!.click())
+  await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Delete agent reviewer (all workspaces)"]')!.click())
+  expect(document.body.textContent).toContain('Delete reviewer (all workspaces)?')
 })

@@ -268,7 +268,7 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle,
   />}</Presence>
   return <div className="grid gap-0" style={{ color: 'var(--text)' }}>
     {leaveDialog}
-    <ConfirmDialog open={pendingDelete !== null} title="Delete agent?" confirmLabel="Delete" busy={busy} onCancel={() => setPendingDelete(null)} onConfirm={() => { if (pendingDelete) void deleteAgent(pendingDelete) }}>This removes the agent from the UAM agent store.</ConfirmDialog>
+    <ConfirmDialog open={pendingDelete !== null} title={`Delete ${pendingDelete ? agentAccessibleName({ ...blankAgent(), id: pendingDelete }) : 'agent'}?`} confirmLabel="Delete" busy={busy} onCancel={() => setPendingDelete(null)} onConfirm={() => { if (pendingDelete) void deleteAgent(pendingDelete) }}>This removes the agent from the UAM agent store.</ConfirmDialog>
     <SettingsSection title="Shared instructions"
       actions={<Button size="sm" leadingIcon={<Plus size={14} />} disabled={busy} onClick={() => void addInstructionFile()}>Choose file…</Button>}>
       <Reveal open={instructionFiles.length === 0}><p className="uam-prov-sub">No instruction files. Choose an AGENTS.md file to share.</p></Reveal>

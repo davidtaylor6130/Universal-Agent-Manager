@@ -487,6 +487,12 @@ const SETTINGS_GROUPS: { label: string; sections: SettingsSectionId[] }[] = [
 ]
 const PROVIDER_SEARCH_TERMS = [CODEX_ENABLED && 'codex', GEMINI_ENABLED && 'gemini', CLAUDE_ENABLED && 'claude', COPILOT_ENABLED && 'copilot', OPENCODE_ENABLED && 'opencode'].filter(Boolean).join(' ')
 /** Native agent files UAM can import, in menu order; only providers in this build. */
+/** How a replace confirmation names an agent's role before and after. */
+const AGENT_MODE_PHRASE: Record<string, string> = {
+  primary: 'a chat agent only',
+  subagent: 'delegate-only',
+  both: 'a chat agent that other agents can also use',
+}
 const AGENT_IMPORT_PROVIDER_OPTIONS = [
   ...(OPENCODE_ENABLED ? [{ value: OPENCODE_CLI_PROVIDER_ID, label: 'OpenCode' }] : []),
   ...(COPILOT_ENABLED ? [{ value: COPILOT_CLI_PROVIDER_ID, label: 'GitHub Copilot CLI' }] : []),
@@ -2316,8 +2322,9 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       const replaceChanges = importTarget && agentImportPreview ? [
         importTarget.mode !== agentImportPreview.mode && (agentImportPreview.mode === 'subagent'
           ? 'It becomes delegate-only, so chats can no longer select it.'
-          : `It changes from ${importTarget.mode === 'subagent' ? 'delegate-only' : 'a chat agent'} to ${agentImportPreview.mode === 'both' ? 'a chat agent that can also be delegated to' : 'a chat agent'}.`),
+          : `It changes from being ${AGENT_MODE_PHRASE[importTarget.mode] ?? importTarget.mode} to being ${AGENT_MODE_PHRASE[agentImportPreview.mode] ?? agentImportPreview.mode}.`),
         importTarget.workspaceAccess === 'read' && agentImportAccess === 'write' && 'It gains write access to the workspace.',
+        importTarget.workspaceAccess === 'write' && agentImportAccess === 'read' && 'It loses write access to the workspace.',
         importTarget.skills.length > 0 && `It loses its ${importTarget.skills.length === 1 ? 'skill' : `${importTarget.skills.length} skills`}.`,
         importTarget.delegates.length > 0 && 'It loses the agents it may delegate to.',
       ].filter((change): change is string => Boolean(change)) : []
