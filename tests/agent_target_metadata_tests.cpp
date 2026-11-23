@@ -415,6 +415,7 @@ UAM_TEST(AgentListRejectsStaleHostVersionAndUnreadyOrUpdatingTargetMetadata)
 UAM_TEST(OpenCodeAgentImportDefaultsOmittedModeToBoth)
 {
 	TempDir temp("uam-opencode-agent-default-mode");
+	ScopedEnvVar isolated_config("XDG_CONFIG_HOME", (temp.root / "xdg").string());
 	const fs::path source_root = temp.root / "native";
 	fs::create_directories(source_root);
 	const fs::path source = source_root / "reviewer.md";
@@ -452,6 +453,7 @@ UAM_TEST(OpenCodeAgentImportDefaultsOmittedModeToBoth)
 UAM_TEST(ProviderAgentImportRejectsDuplicateSkillsWithoutCreatingInvalidFile)
 {
 	TempDir temp("uam-agent-import-duplicate-skills");
+	ScopedEnvVar isolated_config("XDG_CONFIG_HOME", (temp.root / "xdg").string());
 	const fs::path source = temp.root / "agent.md";
 	UAM_ASSERT(uam::io::WriteTextFile(source, "---\ndescription: Reviews code\n---\nReview.\n"));
 	uam::ProviderAgentImportRequest request;
@@ -468,6 +470,7 @@ UAM_TEST(ProviderAgentImportRejectsDuplicateSkillsWithoutCreatingInvalidFile)
 UAM_TEST(ProviderAgentImportFailedReplacementPreservesPreviousBytes)
 {
 	TempDir temp("uam-agent-import-preserve-replacement");
+	ScopedEnvVar isolated_config("XDG_CONFIG_HOME", (temp.root / "xdg").string());
 	const fs::path source = temp.root / "agent.md";
 	UAM_ASSERT(uam::io::WriteTextFile(source, "---\ndescription: Reviews code\n---\nReview.\n"));
 	uam::ProviderAgentImportRequest request;
@@ -488,6 +491,7 @@ UAM_TEST(ProviderAgentImportFailedReplacementPreservesPreviousBytes)
 UAM_TEST(ProviderAgentImportExpandsDirectHomeMarkdownPath)
 {
 	TempDir temp("uam-agent-import-home-path");
+	ScopedEnvVar isolated_config("XDG_CONFIG_HOME", (temp.root / "xdg").string());
 	const std::optional<fs::path> home = PlatformServicesFactory::Instance().path_service.ResolveUserHomePath();
 	UAM_ASSERT(home.has_value());
 	const fs::path source = temp.root / "agent.md";
@@ -510,6 +514,7 @@ UAM_TEST(ProviderAgentImportExpandsDirectHomeMarkdownPath)
 UAM_TEST(ProviderAgentAliasesImportGloballyWithSelectedSkillsAndExplicitAccess)
 {
 	TempDir temp("uam-agent-import-aliases");
+	ScopedEnvVar isolated_config("XDG_CONFIG_HOME", (temp.root / "xdg").string());
 	const fs::path source = temp.root / "agent.md";
 	UAM_ASSERT(uam::io::WriteTextFile(source,
 	    "---\nname: agent\ndescription: Reviews code\n---\nReview.\n"));
@@ -544,6 +549,7 @@ namespace
 UAM_TEST(OpenCodePermissionImportPreservesSourceRulesAndRequiresExplicitReadAccess)
 {
 	TempDir temp("uam-opencode-policy-import");
+	ScopedEnvVar isolated_config("XDG_CONFIG_HOME", (temp.root / "xdg").string());
 	const fs::path source = temp.root / "reviewer.md";
 	const std::string original = "---\nname: read-only\ndescription: Reviews code\nmode: primary\npermission:\n  bash: ask\n  edit: deny\n  webfetch: deny\n---\nReview code.\n";
 	UAM_ASSERT(uam::io::WriteTextFile(source, original));
@@ -588,6 +594,7 @@ UAM_TEST(OpenCodePermissionImportPreservesSourceRulesAndRequiresExplicitReadAcce
 UAM_TEST(OpenCodePermissionImportRejectsUnsupportedYamlAndOtherSecurityFields)
 {
 	TempDir temp("uam-opencode-policy-rejections");
+	ScopedEnvVar isolated_config("XDG_CONFIG_HOME", (temp.root / "xdg").string());
 	const fs::path source = temp.root / "reviewer.md";
 	// Each rejection names the field that caused it.
 	const std::vector<std::pair<std::string, std::string>> rejected{

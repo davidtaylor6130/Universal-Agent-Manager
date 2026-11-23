@@ -1758,7 +1758,7 @@ void UamQueryHandler::HandleDiscoverProviderAgents(CefRefPtr<CefBrowser>, const 
 	nlohmann::json searched = nlohmann::json::array();
 	for (const std::filesystem::path& path : discovery.searched) searched.push_back(uam::paths::Utf8PathString(path));
 	cb->Success(nlohmann::json{{"candidates", std::move(candidates)}, {"searched", std::move(searched)},
-	                           {"errors", discovery.errors}, {"unsupported", discovery.unsupported}}.dump());
+	                           {"errors", discovery.errors}, {"unsupported", discovery.unsupported}}.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
 }
 
 void UamQueryHandler::HandleBrowseProviderAgentImport(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -1780,7 +1780,8 @@ void UamQueryHandler::HandlePreviewProviderAgentImport(CefRefPtr<CefBrowser>, co
 	const auto preview = uam::AgentDefinitionService::PreviewProviderAgentImport(
 	    payload.value("providerId", ""), uam::paths::PathFromUtf8(payload.value("sourcePath", "")),
 	    payload.value("sourceEntry", ""), LocalOpenCodeVersion(m_app));
-	cb->Success(SerializeProviderAgentImportPreview(preview).dump());
+	// Source text may hold invalid UTF-8; replace it rather than fail the whole reply.
+	cb->Success(SerializeProviderAgentImportPreview(preview).dump(-1, ' ', false, nlohmann::json::error_handler_t::replace));
 }
 
 void UamQueryHandler::HandleListAgentDefinitions(CefRefPtr<CefBrowser>, const nlohmann::json&, CefRefPtr<Callback> cb)

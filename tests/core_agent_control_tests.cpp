@@ -2140,6 +2140,7 @@ UAM_TEST(GlobalAgentEditorSavesValidDefinitionsAndRejectsInvalidOnes)
 UAM_TEST(ProviderMarkdownAgentImportIsProviderNeutralAndNeverSilentlyDropsSecurity)
 {
 	TempDir temp("uam-provider-agent-import");
+	ScopedEnvVar isolated_config("XDG_CONFIG_HOME", (temp.root / "xdg").string());
 	const fs::path sources = temp.root / "native";
 	fs::create_directories(sources);
 	const fs::path opencode = sources / "reviewer.md";

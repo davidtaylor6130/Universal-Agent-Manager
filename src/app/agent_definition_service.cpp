@@ -619,6 +619,12 @@ namespace uam
 			}
 			file_id = NativeAgentFileId(preview.source_path);
 		}
+		// OpenCode applies config-level rules before an agent's own, so they are part of what the source allows.
+		if (preview.provider_id == provider_ids::kOpenCodeCli && !provider_agent_import::AddInheritedOpenCodeRules(preview.source_path, parsed))
+		{
+			preview.error = parsed.error;
+			return preview;
+		}
 		ProviderAgentImportPreview built = provider_agent_import::BuildPreview(preview.provider_id, std::move(parsed), file_id, local_opencode_version);
 		built.source_path = preview.source_path;
 		built.source_entry = preview.source_entry;
@@ -687,7 +693,7 @@ namespace uam
 			std::string previous, previous_policy, policy_error;
 			if (!uam::io::TryReadTextFile(target, previous) ||
 			    !CapturedOpenCodePermission(id, previous, previous_policy, &policy_error) ||
-			    (!previous_policy.empty() && previous_policy != policy))
+			    (!previous_policy.empty() && !provider_agent_import::PoliciesEquivalent(previous_policy, policy)))
 				return fail("permission: replacement cannot remove or change an existing provider-bound permission policy.");
 		}
 

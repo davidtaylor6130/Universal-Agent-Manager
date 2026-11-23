@@ -145,6 +145,7 @@ UAM_TEST(ProviderAgentFrontmatterRejectsUnsafeYamlNamingTheField)
 UAM_TEST(OpenCodeImportAcceptsEveryReportedMacAgentShapeWithinItsCeiling)
 {
 	TempDir temp("uam-opencode-reported-shapes");
+	ScopedEnvVar isolated_config("XDG_CONFIG_HOME", (temp.root / "xdg").string());
 	const fs::path data = temp.root / "data";
 	const std::string opencode = uam::provider_ids::kOpenCodeCli;
 	std::string error;
@@ -231,6 +232,7 @@ UAM_TEST(OpenCodeImportAcceptsEveryReportedMacAgentShapeWithinItsCeiling)
 UAM_TEST(OpenCodeImportKeepsDeniesAndNamesTheOffendingField)
 {
 	TempDir temp("uam-opencode-rule-normalisation");
+	ScopedEnvVar isolated_config("XDG_CONFIG_HOME", (temp.root / "xdg").string());
 	const std::string opencode = uam::provider_ids::kOpenCodeCli;
 	const fs::path source = temp.root / "agent.md";
 
@@ -273,6 +275,7 @@ UAM_TEST(OpenCodeImportKeepsDeniesAndNamesTheOffendingField)
 UAM_TEST(ProviderAgentImportShortensLongAndBlockDescriptionsVisibly)
 {
 	TempDir temp("uam-agent-import-descriptions");
+	ScopedEnvVar isolated_config("XDG_CONFIG_HOME", (temp.root / "xdg").string());
 	const fs::path source = temp.root / "agent.md";
 	std::string block = "description: |\n";
 	for (int line = 0; line < 40; ++line) block += "  Use this agent when the user says \"review\" and wants a detailed report line " + std::to_string(line) + ".\n";
@@ -307,6 +310,7 @@ UAM_TEST(ProviderAgentImportShortensLongAndBlockDescriptionsVisibly)
 UAM_TEST(ClaudeGeminiAndCopilotAgentsImportWithToolListsMappedToTheirCeiling)
 {
 	TempDir temp("uam-agent-import-native-tools");
+	ScopedEnvVar isolated_config("XDG_CONFIG_HOME", (temp.root / "xdg").string());
 	const fs::path data = temp.root / "data";
 	std::string error;
 	uam::AgentDefinition imported;
@@ -377,6 +381,7 @@ UAM_TEST(ClaudeGeminiAndCopilotAgentsImportWithToolListsMappedToTheirCeiling)
 UAM_TEST(OpenCodeJsoncAgentEntriesPreviewAndImportWithFilePrompts)
 {
 	TempDir temp("uam-opencode-json-agents");
+	ScopedEnvVar isolated_config("XDG_CONFIG_HOME", (temp.root / "xdg").string());
 	const fs::path config = WriteSource(temp.root / "project" / "opencode.jsonc",
 	    "{\n"
 	    "  // Project agents\n"
@@ -431,6 +436,7 @@ UAM_TEST(OpenCodeJsoncAgentEntriesPreviewAndImportWithFilePrompts)
 UAM_TEST(OpenCodeTwoRefusesProviderBoundRulesAtPreviewOnly)
 {
 	TempDir temp("uam-opencode-v2-import-preview");
+	ScopedEnvVar isolated_config("XDG_CONFIG_HOME", (temp.root / "xdg").string());
 	const std::string opencode = uam::provider_ids::kOpenCodeCli;
 	const fs::path bound = WriteSource(temp.root / "bound.md", Frontmatter("description: Bound\npermission:\n  bash: deny\n"));
 	const fs::path neutral = WriteSource(temp.root / "neutral.md", Frontmatter("description: Neutral\npermission:\n  edit: deny\n  bash: ask\n"));
@@ -451,6 +457,7 @@ UAM_TEST(OpenCodeTwoRefusesProviderBoundRulesAtPreviewOnly)
 UAM_TEST(ImportedOpenCodeRulesStayBoundThroughEditsAndRuntimeCapture)
 {
 	TempDir temp("uam-opencode-bound-edit");
+	ScopedEnvVar isolated_config("XDG_CONFIG_HOME", (temp.root / "xdg").string());
 	const fs::path data = temp.root / "data";
 	const std::string opencode = uam::provider_ids::kOpenCodeCli;
 	const fs::path source = WriteSource(temp.root / "native" / "web.md", Frontmatter("description: No web\npermission:\n  edit: ask\n  webfetch: deny\n"));
@@ -470,7 +477,7 @@ UAM_TEST(ImportedOpenCodeRulesStayBoundThroughEditsAndRuntimeCapture)
 	edited.workspace_access = "read";
 	UAM_ASSERT(uam::AgentDefinitionService::SaveGlobalAgent(data, edited, &error));
 	UAM_ASSERT(uam::AgentDefinitionService::CapturedOpenCodePermission("web", uam::io::ReadTextFile(data / "agents" / "web.md"), permission, &error));
-	UAM_ASSERT_EQ(permission, std::string(R"({"edit":"deny","webfetch":"deny"})"));
+	UAM_ASSERT_EQ(permission, std::string(R"({"webfetch":"deny","edit":"deny"})"));
 	const std::string tightened = uam::io::ReadTextFile(data / "agents" / "web.md");
 	edited.workspace_access = "write";
 	UAM_ASSERT(!uam::AgentDefinitionService::SaveGlobalAgent(data, edited, &error));
@@ -534,4 +541,131 @@ UAM_TEST(ProviderAgentDiscoveryListsGlobalWorkspaceAndJsonAgents)
 	std::string error;
 	UAM_ASSERT(uam::AgentDefinitionService::ImportProviderAgent(data, {}, Request("claude", claude.candidates[0].source_path, "read"), nullptr, &error));
 	UAM_ASSERT(uam::AgentDefinitionService::DiscoverProviderAgents("claude", data, workspace).candidates[0].already_imported);
+}
+
+UAM_TEST(ProviderAgentImportRefusesBareCarriageReturnsThatHideFields)
+{
+	TempDir temp("uam-agent-import-bare-cr");
+	ScopedEnvVar isolated_config("XDG_CONFIG_HOME", (temp.root / "xdg").string());
+	const fs::path source = WriteSource(temp.root / "agent.md", "---\ndescription: d\nmodel: x\rpermission:\r  edit: deny\n---\nbody\n");
+	auto preview = uam::AgentDefinitionService::PreviewProviderAgentImport(uam::provider_ids::kOpenCodeCli, source);
+	UAM_ASSERT(!preview.supported);
+	UAM_ASSERT(preview.error.starts_with("frontmatter: a carriage return"));
+	WriteSource(source, "---\r\ndescription: d\rtools: Read, Grep\r\n---\r\nbody\r\n");
+	UAM_ASSERT(!uam::AgentDefinitionService::PreviewProviderAgentImport(uam::provider_ids::kClaudeCli, source).supported);
+	WriteSource(source, "---\r\nname: reader\r\ndescription: d\r\ntools: Read, Grep\r\n---\r\nbody\r\n");
+	preview = uam::AgentDefinitionService::PreviewProviderAgentImport(uam::provider_ids::kClaudeCli, source);
+	UAM_ASSERT(preview.supported);
+	UAM_ASSERT_EQ(preview.max_workspace_access, std::string("read"));
+}
+
+UAM_TEST(OpenCodeImportFollowsLastMatchingRuleOrder)
+{
+	TempDir temp("uam-opencode-rule-order");
+	ScopedEnvVar isolated_config("XDG_CONFIG_HOME", (temp.root / "xdg").string());
+	const std::string opencode = uam::provider_ids::kOpenCodeCli;
+	const fs::path source = temp.root / "agent.md";
+	std::string error;
+	// A later `*: deny` overrides earlier allows.
+	WriteSource(source, Frontmatter("description: d\npermission:\n  edit: allow\n  bash: allow\n  \"*\": deny\n"));
+	auto preview = uam::AgentDefinitionService::PreviewProviderAgentImport(opencode, source);
+	UAM_ASSERT(preview.supported);
+	UAM_ASSERT_EQ(preview.max_workspace_access, std::string("read"));
+	UAM_ASSERT_EQ(preview.open_code_permission_json, std::string(R"({"*":"deny","bash":"deny","edit":"deny"})"));
+	UAM_ASSERT(!uam::AgentDefinitionService::ImportProviderAgent(temp.root / "data", {}, Request(opencode, source, "write"), nullptr, &error));
+	UAM_ASSERT(error.starts_with("workspaceAccess: permission.* is deny"));
+	// A later exception after `*: deny` stays an exception, and `*` is stored first so the exception still wins.
+	WriteSource(source, Frontmatter("description: d\npermission:\n  \"*\": deny\n  read: allow\n"));
+	preview = uam::AgentDefinitionService::PreviewProviderAgentImport(opencode, source);
+	UAM_ASSERT_EQ(preview.open_code_permission_json, std::string(R"({"*":"deny","read":"ask","edit":"deny"})"));
+	// Disabled tools win over enabled ones in order, and over permission.
+	WriteSource(source, Frontmatter("description: d\ntools:\n  read: true\n  \"*\": false\npermission:\n  read: allow\n"));
+	preview = uam::AgentDefinitionService::PreviewProviderAgentImport(opencode, source);
+	UAM_ASSERT(Contains(preview.open_code_permission_json, R"("read":"deny")"));
+	// A wildcard that covers edit caps access, and a read import keeps edit denied after it.
+	WriteSource(source, Frontmatter("description: d\npermission:\n  \"ed*\": deny\n"));
+	preview = uam::AgentDefinitionService::PreviewProviderAgentImport(opencode, source);
+	UAM_ASSERT_EQ(preview.max_workspace_access, std::string("read"));
+	WriteSource(source, Frontmatter("description: d\npermission:\n  bash: deny\n  \"edit*\": allow\n"));
+	preview = uam::AgentDefinitionService::PreviewProviderAgentImport(opencode, source);
+	UAM_ASSERT(preview.supported);
+	uam::AgentDefinition imported;
+	UAM_ASSERT(uam::AgentDefinitionService::ImportProviderAgent(temp.root / "data", {}, Request(opencode, source, "read"), &imported, &error));
+	UAM_ASSERT(import::ValidStoredPolicy(imported.open_code_permission_json, "read"));
+	UAM_ASSERT(Contains(imported.open_code_permission_json, R"("edit*":"ask","bash":"deny","edit":"deny")"));
+	// Wildcards that disagree both deny rather than depend on order.
+	WriteSource(source, Frontmatter("description: d\npermission:\n  \"ba*\": allow\n  \"b*\": deny\n"));
+	preview = uam::AgentDefinitionService::PreviewProviderAgentImport(opencode, source);
+	UAM_ASSERT_EQ(preview.open_code_permission_json, std::string(R"({"b*":"deny","ba*":"deny"})"));
+	// Stored rules are read in order too.
+	UAM_ASSERT(!import::ValidStoredPolicy(R"({"edit":"deny","edit*":"ask"})", "read"));
+	UAM_ASSERT(!import::ValidStoredPolicy(R"({"ed*":"deny"})", "write"));
+	UAM_ASSERT(import::ValidStoredPolicy(R"({"*":"deny","edit":"ask"})", "write"));
+}
+
+UAM_TEST(OpenCodeImportAppliesConfigLevelRules)
+{
+	TempDir temp("uam-opencode-config-rules");
+	const fs::path xdg = temp.root / "xdg";
+	ScopedEnvVar isolated_config("XDG_CONFIG_HOME", xdg.string());
+	const std::string opencode = uam::provider_ids::kOpenCodeCli;
+	// Root rules in the same JSON(C) config apply to its agents.
+	const fs::path config = WriteSource(temp.root / "project" / "opencode.json", R"({"permission": {"edit": "deny"}, "agent": {"a": {"description": "x", "prompt": "Go."}}})");
+	auto preview = uam::AgentDefinitionService::PreviewProviderAgentImport(opencode, config, "a");
+	UAM_ASSERT(preview.supported);
+	UAM_ASSERT_EQ(preview.max_workspace_access, std::string("read"));
+	UAM_ASSERT(Contains(preview.read_only_reason, "opencode.json permission.edit"));
+	// A project Markdown agent inherits the project config; the agent's own later rule can still narrow it.
+	WriteSource(temp.root / "project" / ".opencode" / "opencode.jsonc", "{ // project\n \"tools\": { \"webfetch\": false, }, }");
+	const fs::path agent = WriteSource(temp.root / "project" / ".opencode" / "agents" / "web.md", Frontmatter("description: Web\npermission:\n  edit: allow\n"));
+	preview = uam::AgentDefinitionService::PreviewProviderAgentImport(opencode, agent);
+	UAM_ASSERT(preview.supported);
+	UAM_ASSERT(preview.provider_bound);
+	UAM_ASSERT(Contains(preview.open_code_permission_json, R"("webfetch":"deny")"));
+	UAM_ASSERT_EQ(preview.max_workspace_access, std::string("write")); // the agent's later edit rule overrides the project deny
+	UAM_ASSERT(AnyNoteContains(preview, "config: opencode.json permission"));
+	// The global config applies to every source; a broken one refuses rather than guessing.
+	WriteSource(xdg / "opencode" / "opencode.json", R"({"permission": {"bash": "deny"}})");
+	const fs::path plain = WriteSource(temp.root / "plain.md", Frontmatter("description: Plain\n"));
+	preview = uam::AgentDefinitionService::PreviewProviderAgentImport(opencode, plain);
+	UAM_ASSERT(preview.provider_bound);
+	WriteSource(xdg / "opencode" / "opencode.json", "{broken");
+	preview = uam::AgentDefinitionService::PreviewProviderAgentImport(opencode, plain);
+	UAM_ASSERT(!preview.supported);
+	UAM_ASSERT(preview.error.starts_with("config: opencode.json"));
+}
+
+UAM_TEST(ReimportAfterNarrowingEditTreatsKeyOrderAsUnchanged)
+{
+	TempDir temp("uam-opencode-reimport-order");
+	ScopedEnvVar isolated_config("XDG_CONFIG_HOME", (temp.root / "xdg").string());
+	const fs::path data = temp.root / "data";
+	const std::string opencode = uam::provider_ids::kOpenCodeCli;
+	const fs::path source = WriteSource(temp.root / "web.md", Frontmatter("description: No web\npermission:\n  edit: ask\n  webfetch: deny\n"));
+	uam::AgentDefinition imported;
+	std::string error;
+	UAM_ASSERT(uam::AgentDefinitionService::ImportProviderAgent(data, {}, Request(opencode, source, "write"), &imported, &error));
+	imported.workspace_access = "read";
+	UAM_ASSERT(uam::AgentDefinitionService::SaveGlobalAgent(data, imported, &error));
+	auto request = Request(opencode, source, "read");
+	request.replace_existing = true;
+	UAM_ASSERT(uam::AgentDefinitionService::ImportProviderAgent(data, {}, request, &imported, &error));
+	UAM_ASSERT(import::PoliciesEquivalent(R"({"webfetch":"deny","edit":"deny"})", R"({"edit":"deny","webfetch":"deny"})"));
+	UAM_ASSERT(!import::PoliciesEquivalent(R"({"edit":"deny","edit*":"ask"})", R"({"edit*":"ask","edit":"deny"})"));
+}
+
+UAM_TEST(ProviderAgentDiscoverySkipsLinkedParentFolders)
+{
+	TempDir temp("uam-provider-agent-discovery-links");
+	const fs::path home = temp.root / "home";
+	ScopedEnvVar home_env("HOME", home.string());
+	ScopedEnvVar profile_env("USERPROFILE", home.string());
+	WriteSource(temp.root / "elsewhere" / "agents" / "hidden.md", Frontmatter("name: hidden\ndescription: Hidden\n"));
+	fs::create_directories(home);
+	std::error_code link_error;
+	fs::create_directory_symlink(temp.root / "elsewhere", home / ".claude", link_error);
+	if (link_error) return; // Creating links needs privileges on some Windows runners.
+	const auto discovery = uam::AgentDefinitionService::DiscoverProviderAgents("claude", temp.root / "data", {});
+	UAM_ASSERT(discovery.candidates.empty());
+	UAM_ASSERT(!discovery.errors.empty());
 }

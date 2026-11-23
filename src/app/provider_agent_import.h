@@ -32,9 +32,18 @@ namespace uam::provider_agent_import
 		const Node* Find(std::string_view key) const;
 	};
 
+	/// Config-level `tools` or `permission` that OpenCode applies before an agent's own rules.
+	struct InheritedRules
+	{
+		std::string label; // e.g. the config file name
+		std::string field; // "tools" or "permission"
+		Node node;
+	};
+
 	struct ParsedSource
 	{
 		std::vector<std::pair<std::string, Node>> fields;
+		std::vector<InheritedRules> inherited;
 		std::string instructions;
 		std::string error;
 
@@ -60,6 +69,10 @@ namespace uam::provider_agent_import
 	bool ParseOpenCodeJsonAgent(const std::string& text, const std::string& entry,
 	                            const std::filesystem::path& config_path, ParsedSource& out);
 
+	/// Add root `tools`/`permission` from the OpenCode configs that apply to `source_path` (global config, then the
+	/// project's), in OpenCode's merge order. A config that exists but cannot be read safely is an error.
+	bool AddInheritedOpenCodeRules(const std::filesystem::path& source_path, ParsedSource& out);
+
 	/// Agent entry names and descriptions in an OpenCode JSON(C) config, in file order.
 	std::vector<std::pair<std::string, std::string>> ListOpenCodeJsonAgents(const std::string& text, std::string& error);
 
@@ -82,6 +95,9 @@ namespace uam::provider_agent_import
 
 	/// Tighten a stored policy for read access (write tools denied); returns empty on invalid input.
 	std::string TightenPolicyForRead(const std::string& policy_json);
+
+	/// Same rules with the same last-match reading; key order alone does not make a re-import a change.
+	bool PoliciesEquivalent(const std::string& left, const std::string& right);
 
 	ProviderAgentDiscovery Discover(const std::string& provider_id, const std::filesystem::path& data_root,
 	                                const std::filesystem::path& workspace_root);

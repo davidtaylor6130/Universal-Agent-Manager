@@ -745,94 +745,205 @@ namespace uam::provider_agent_import
 			return std::nullopt;
 		}
 
-		struct RuleSet
+		bool IsWildcard(std::string_view key)
 		{
-			nlohmann::json rules = nlohmann::json::object();
-			std::map<std::string, std::string> deny_origin;
-			bool explicit_write = false;
+			return key.find('*') != std::string_view::npos;
+		}
 
-			void Put(const std::string& key, const std::string& effect, const std::string& origin)
+		/// `*` matches any run of characters; every other character matches itself.
+		bool GlobMatch(std::string_view pattern, std::string_view text)
+		{
+			std::size_t p = 0, t = 0, star = std::string_view::npos, mark = 0;
+			while (t < text.size())
 			{
-				if (!rules.contains(key) || effect == "deny") rules[key] = effect;
-				if (effect == "deny" && !deny_origin.contains(key)) deny_origin[key] = origin;
+				if (p < pattern.size() && pattern[p] != '*' && pattern[p] == text[t]) { ++p; ++t; }
+				else if (p < pattern.size() && pattern[p] == '*') { star = p++; mark = t; }
+				else if (star != std::string_view::npos) { p = star + 1; t = ++mark; }
+				else return false;
 			}
+			while (p < pattern.size() && pattern[p] == '*') ++p;
+			return p == pattern.size();
+		}
 
-			std::string Effective(const std::string& key) const
-			{
-				if (rules.contains(key)) return rules[key].get<std::string>();
-				if (rules.contains("*")) return rules["*"].get<std::string>();
-				return "ask";
-			}
+		bool Covers(std::string_view key, std::string_view name)
+		{
+			return key == name || (IsWildcard(key) && GlobMatch(key, name));
+		}
+
+		struct Rule
+		{
+			std::string key;
+			std::string effect;
+			std::string origin;
 		};
 
-		bool NormalizeOpenCodeRules(const ParsedSource& source, ProviderAgentImportPreview& preview, RuleSet& set)
+		/// OpenCode evaluates rules in order and the last matching rule wins.
+		const Rule* LastMatch(const std::vector<Rule>& rules, std::string_view name)
 		{
-			if (const Node* tools = source.Find("tools"); tools != nullptr && tools->kind != Node::Kind::Null)
-			{
-				if (tools->kind != Node::Kind::Map) { preview.error = "tools: expected a map of tool: true or false."; return false; }
-				for (const auto& [key, value] : tools->entries)
-				{
-					const std::string path = "tools." + key;
-					if (!ValidRuleKey(key)) { preview.error = path + ": unsupported tool name."; return false; }
-					const std::string flag = value.kind == Node::Kind::Scalar ? Lower(value.text) : std::string{};
-					if (flag != "true" && flag != "false") { preview.error = path + ": expected true or false."; return false; }
-					set.Put(key, flag == "true" ? "ask" : "deny", path);
-					if (flag == "true" && IsOpenCodeWriteTool(key)) set.explicit_write = true;
-				}
-				AddNote(preview.notes, "tools: enabled tools become ask and disabled tools become deny.");
-			}
-			if (const Node* permission = source.Find("permission"); permission != nullptr && permission->kind != Node::Kind::Null)
-			{
-				if (permission->kind == Node::Kind::Scalar)
-				{
-					const std::optional<std::string> effect = RuleEffect(*permission);
-					if (!effect) { preview.error = "permission: expected allow, ask or deny."; return false; }
-					set.Put("*", *effect, "permission");
-					if (Lower(permission->text) == "allow") set.explicit_write = true;
-				}
-				else if (permission->kind == Node::Kind::Map)
-				{
-					for (const auto& [key, value] : permission->entries)
-					{
-						const std::string path = "permission." + key;
-						if (!ValidRuleKey(key)) { preview.error = path + ": unsupported tool name."; return false; }
-						if (value.kind == Node::Kind::Map)
-						{
-							if (value.entries.empty()) { preview.error = path + ": empty rule map."; return false; }
-							bool any_deny = false;
-							bool all_deny = true;
-							for (const auto& [pattern, rule] : value.entries)
-							{
-								const std::optional<std::string> effect = RuleEffect(rule);
-								if (!effect) { preview.error = path + "." + pattern + ": expected allow, ask or deny."; return false; }
-								any_deny = any_deny || *effect == "deny";
-								all_deny = all_deny && *effect == "deny";
-							}
-							if (any_deny && !all_deny)
-								AddNote(preview.notes, path + ": pattern rules become one rule, so a deny for any pattern denies the whole tool.");
-							set.Put(key, any_deny ? "deny" : "ask", path);
-							if (!any_deny && IsOpenCodeWriteTool(key)) set.explicit_write = true;
-							continue;
-						}
-						const std::optional<std::string> effect = RuleEffect(value);
-						if (!effect) { preview.error = path + ": expected allow, ask or deny."; return false; }
-						set.Put(key, *effect, path);
-						if (*effect == "ask" && IsOpenCodeWriteTool(key)) set.explicit_write = true;
-						if (Lower(value.text) == "allow") AddNote(preview.notes, "permission: allow becomes ask, so UAM still asks before each use.");
-					}
-				}
-				else { preview.error = "permission: expected allow, ask, deny or a map of tool rules."; return false; }
-			}
-			if (set.rules.size() > kMaxRuleEntries) { preview.error = "permission: more than 64 tool rules."; return false; }
+			const Rule* match = nullptr;
+			for (const Rule& rule : rules)
+				if (Covers(rule.key, name)) match = &rule;
+			return match;
+		}
 
-			// OpenCode can check several edit tools under one rule, so one denied edit tool denies them all.
+		/// The last rule that decides a wildcard key itself: the same key or a later `*`.
+		const Rule* LastPatternMatch(const std::vector<Rule>& rules, std::string_view key)
+		{
+			const Rule* match = nullptr;
+			for (const Rule& rule : rules)
+				if (rule.key == key || rule.key == "*") match = &rule;
+			return match;
+		}
+
+		struct Verdict
+		{
+			std::string effect = "ask";
+			std::string origin;
+		};
+
+		/// Strictest of the permission and tools verdicts for one name; `tools: false` disables a tool whatever `permission` says.
+		Verdict VerdictFor(const std::vector<Rule>& permission, const std::vector<Rule>& tools, std::string_view name, bool pattern = false)
+		{
+			Verdict verdict;
+			for (const std::vector<Rule>* list : {&permission, &tools})
+			{
+				const Rule* rule = pattern ? LastPatternMatch(*list, name) : LastMatch(*list, name);
+				if (rule == nullptr) continue;
+				if (verdict.origin.empty() || (rule->effect == "deny" && verdict.effect != "deny")) verdict = {rule->effect, rule->origin};
+			}
+			return verdict;
+		}
+
+		/// Last-match effect of `name` under a stored policy, as OpenCode evaluates it.
+		std::string StoredEffect(const OrderedJson& policy, std::string_view name)
+		{
+			std::string effect = "ask";
+			for (const auto& [key, value] : policy.items())
+				if (value.is_string() && Covers(key, name)) effect = value.get<std::string>();
+			return effect;
+		}
+
+		struct NormalizedRules
+		{
+			OrderedJson canonical = OrderedJson::object();
+			bool explicit_write = false;
+		};
+
+		bool AddToolRules(const Node& tools, const std::string& prefix, std::vector<Rule>& out, bool& explicit_write, ProviderAgentImportPreview& preview)
+		{
+			if (tools.kind == Node::Kind::Null) return true;
+			if (tools.kind != Node::Kind::Map) { preview.error = prefix + ": expected a map of tool: true or false."; return false; }
+			for (const auto& [key, value] : tools.entries)
+			{
+				const std::string path = prefix + "." + key;
+				if (!ValidRuleKey(key)) { preview.error = path + ": unsupported tool name."; return false; }
+				const std::string flag = value.kind == Node::Kind::Scalar ? Lower(value.text) : std::string{};
+				if (flag != "true" && flag != "false") { preview.error = path + ": expected true or false."; return false; }
+				out.push_back({key, flag == "true" ? "ask" : "deny", path});
+				if (flag == "true" && IsOpenCodeWriteTool(key)) explicit_write = true;
+			}
+			AddNote(preview.notes, "tools: enabled tools become ask and disabled tools become deny.");
+			return true;
+		}
+
+		bool AddPermissionRules(const Node& permission, const std::string& prefix, std::vector<Rule>& out, bool& explicit_write, ProviderAgentImportPreview& preview)
+		{
+			if (permission.kind == Node::Kind::Null) return true;
+			if (permission.kind == Node::Kind::Scalar)
+			{
+				const std::optional<std::string> effect = RuleEffect(permission);
+				if (!effect) { preview.error = prefix + ": expected allow, ask or deny."; return false; }
+				out.push_back({"*", *effect, prefix});
+				if (Lower(permission.text) == "allow") explicit_write = true;
+				return true;
+			}
+			if (permission.kind != Node::Kind::Map) { preview.error = prefix + ": expected allow, ask, deny or a map of tool rules."; return false; }
+			for (const auto& [key, value] : permission.entries)
+			{
+				const std::string path = prefix + "." + key;
+				if (!ValidRuleKey(key)) { preview.error = path + ": unsupported tool name."; return false; }
+				if (value.kind == Node::Kind::Map)
+				{
+					if (value.entries.empty()) { preview.error = path + ": empty rule map."; return false; }
+					bool any_deny = false;
+					bool all_deny = true;
+					for (const auto& [pattern, rule] : value.entries)
+					{
+						const std::optional<std::string> effect = RuleEffect(rule);
+						if (!effect) { preview.error = path + "." + pattern + ": expected allow, ask or deny."; return false; }
+						any_deny = any_deny || *effect == "deny";
+						all_deny = all_deny && *effect == "deny";
+					}
+					if (any_deny && !all_deny)
+						AddNote(preview.notes, path + ": pattern rules become one rule, so a deny for any pattern denies the whole tool.");
+					out.push_back({key, any_deny ? "deny" : "ask", path});
+					if (!any_deny && IsOpenCodeWriteTool(key)) explicit_write = true;
+					continue;
+				}
+				const std::optional<std::string> effect = RuleEffect(value);
+				if (!effect) { preview.error = path + ": expected allow, ask or deny."; return false; }
+				out.push_back({key, *effect, path});
+				if (*effect == "ask" && IsOpenCodeWriteTool(key)) explicit_write = true;
+				if (Lower(value.text) == "allow") AddNote(preview.notes, "permission: allow becomes ask, so UAM still asks before each use.");
+			}
+			return true;
+		}
+
+		/// Resolve inherited and agent rules in OpenCode's order (last match wins) into a canonical policy whose own
+		/// last-match reading is never looser than the source: `*` first, then other wildcards, then exact tools.
+		bool NormalizeOpenCodeRules(const ParsedSource& source, ProviderAgentImportPreview& preview, NormalizedRules& out)
+		{
+			std::vector<Rule> permission;
+			std::vector<Rule> tools;
+			bool explicit_write = false;
+			for (const InheritedRules& inherited : source.inherited)
+			{
+				const bool ok = inherited.field == "tools" ? AddToolRules(inherited.node, inherited.label + " tools", tools, explicit_write, preview)
+				                                           : AddPermissionRules(inherited.node, inherited.label + " permission", permission, explicit_write, preview);
+				if (!ok) return false;
+				AddNote(preview.notes, "config: " + inherited.label + " " + inherited.field + " rules apply before the agent's own rules.");
+			}
+			if (const Node* node = source.Find("tools"); node != nullptr && !AddToolRules(*node, "tools", tools, explicit_write, preview)) return false;
+			if (const Node* node = source.Find("permission"); node != nullptr && !AddPermissionRules(*node, "permission", permission, explicit_write, preview)) return false;
+			if (permission.empty() && tools.empty()) return true;
+
+			std::set<std::string> exact;
+			std::set<std::string> wildcards;
+			for (const std::vector<Rule>* list : {&permission, &tools})
+				for (const Rule& rule : *list) (IsWildcard(rule.key) ? wildcards : exact).insert(rule.key);
+			std::map<std::string, Verdict> wildcard_verdicts;
+			for (const std::string& key : wildcards) wildcard_verdicts[key] = VerdictFor(permission, tools, key, true);
+			// Wildcards other than `*` that disagree cannot keep a safe order between them, so both deny.
+			bool conflicting = false;
+			for (auto& [key, verdict] : wildcard_verdicts)
+				for (const auto& [other, other_verdict] : wildcard_verdicts)
+					if (key != "*" && other != "*" && key != other && verdict.effect != "deny" && other_verdict.effect == "deny")
+					{
+						verdict = {"deny", other_verdict.origin};
+						conflicting = true;
+					}
+			if (conflicting) AddNote(preview.notes, "permission: wildcard rules that disagree are both denied, because their order cannot be kept.");
+			OrderedJson canonical = OrderedJson::object();
+			if (wildcard_verdicts.contains("*")) canonical["*"] = wildcard_verdicts["*"].effect;
+			for (const auto& [key, verdict] : wildcard_verdicts)
+				if (key != "*") canonical[key] = verdict.effect;
+			std::map<std::string, Verdict> exact_verdicts;
+			for (const std::string& key : exact)
+			{
+				exact_verdicts[key] = VerdictFor(permission, tools, key);
+				canonical[key] = exact_verdicts[key].effect;
+			}
+			if (canonical.size() > kMaxRuleEntries) { preview.error = "permission: more than 64 tool rules."; return false; }
+
+			// OpenCode checks file edits under `edit`; a denied edit tool denies them all and caps access at read.
 			std::string reason;
-			if (set.Effective("edit") == "deny")
-				reason = set.deny_origin.contains("edit") ? set.deny_origin.at("edit") : set.deny_origin.contains("*") ? set.deny_origin.at("*") : "permission.edit";
+			if (const Verdict edit = VerdictFor(permission, tools, "edit"); edit.effect == "deny") reason = edit.origin;
 			for (const std::string_view tool : kOpenCodeWriteTools)
 			{
-				const std::string key(tool);
-				if (reason.empty() && set.rules.contains(key) && set.rules[key] == "deny") reason = set.deny_origin.contains(key) ? set.deny_origin.at(key) : key;
+				if (!reason.empty()) break;
+				const bool named = exact.contains(std::string(tool)) ||
+				                   std::ranges::any_of(wildcards, [&](const std::string& key) { return key != "*" && GlobMatch(key, tool); });
+				if (const Verdict verdict = VerdictFor(permission, tools, tool); named && verdict.effect == "deny") reason = verdict.origin;
 			}
 			if (!reason.empty())
 			{
@@ -840,14 +951,19 @@ namespace uam::provider_agent_import
 				for (const std::string_view tool : kOpenCodeWriteTools)
 				{
 					const std::string key(tool);
-					if (key != "edit" && !set.rules.contains(key)) continue;
-					if (set.rules.contains(key) && set.rules[key] != "deny") tightened = true;
-					set.rules[key] = "deny";
+					if (key != "edit" && !canonical.contains(key)) continue;
+					if (canonical.contains(key) && canonical[key] != "deny") tightened = true;
+					canonical[key] = "deny";
 				}
 				if (tightened) AddNote(preview.notes, "edit tools: OpenCode may check file edits under one rule, so every edit tool is denied.");
 				preview.max_workspace_access = "read";
 				preview.read_only_reason = reason + " is deny";
 			}
+			// The canonical reading must never be looser than the source for any named tool.
+			for (const auto& [key, verdict] : exact_verdicts)
+				if (verdict.effect == "deny" && StoredEffect(canonical, key) != "deny") canonical[key] = "deny";
+			out.canonical = std::move(canonical);
+			out.explicit_write = explicit_write && preview.max_workspace_access == "write";
 			return true;
 		}
 	} // namespace
@@ -883,6 +999,13 @@ namespace uam::provider_agent_import
 			if (line.ends_with('\r')) line.pop_back();
 			return true;
 		};
+		// YAML and OpenCode's loader treat a bare CR as a line break; splitting only on LF would hide a field.
+		for (std::size_t index = 0; index < text.size(); ++index)
+			if (text[index] == '\r' && (index + 1 == text.size() || text[index + 1] != '\n'))
+			{
+				out.error = "frontmatter: a carriage return without a line feed is not supported; save the file with LF or CRLF line endings.";
+				return false;
+			}
 		std::string line;
 		if (!next_line(line) || TrimView(line) != "---")
 		{
@@ -1024,6 +1147,70 @@ namespace uam::provider_agent_import
 			if (!interpreted.contains(key)) node.kind = Node::Kind::Opaque;
 			else if (!JsonToNode(value, key, 1, node, out.error)) return false;
 			out.fields.emplace_back(key, std::move(node));
+		}
+		return true;
+	}
+
+	namespace
+	{
+		std::filesystem::path OpenCodeConfigRoot()
+		{
+			if (const auto xdg = uam::env::GetNonEmptyString("XDG_CONFIG_HOME")) return uam::paths::PathFromUtf8(*xdg) / "opencode";
+			if (const auto home = PlatformServicesFactory::Instance().path_service.ResolveUserHomePath()) return *home / ".config" / "opencode";
+			return {};
+		}
+
+		bool SamePath(const std::filesystem::path& left, const std::filesystem::path& right)
+		{
+			return uam::paths::LexicallyNormalPath(uam::paths::AbsolutePathNoThrow(left)) == uam::paths::LexicallyNormalPath(uam::paths::AbsolutePathNoThrow(right));
+		}
+	} // namespace
+
+	bool AddInheritedOpenCodeRules(const std::filesystem::path& source_path, ParsedSource& out)
+	{
+		std::vector<std::filesystem::path> configs;
+		const auto add = [&](const std::filesystem::path& path)
+		{
+			if (!path.empty() && std::ranges::none_of(configs, [&](const auto& existing) { return SamePath(existing, path); })) configs.push_back(path);
+		};
+		// OpenCode merges the global config, then the project's root config, then `.opencode`, then the agent itself.
+		const std::filesystem::path global = OpenCodeConfigRoot();
+		if (!global.empty())
+			for (const char* name : {"config.json", "opencode.json", "opencode.jsonc"}) add(global / name);
+		const std::filesystem::path parent = source_path.parent_path();
+		const std::string parent_name = Lower(uam::paths::Utf8PathString(parent.filename()));
+		const std::filesystem::path base = parent_name == "agent" || parent_name == "agents" ? parent.parent_path() : parent;
+		if (Lower(uam::paths::Utf8PathString(base.filename())) == ".opencode")
+		{
+			for (const char* name : {"opencode.json", "opencode.jsonc"}) add(base.parent_path() / name);
+			for (const char* name : {"opencode.json", "opencode.jsonc"}) add(base / name);
+		}
+		const std::string extension = Lower(uam::paths::Utf8PathString(source_path.extension()));
+		if (extension == ".json" || extension == ".jsonc") add(source_path);
+		for (const std::filesystem::path& config : configs)
+		{
+			if (!uam::paths::PathExistsNoThrow(config)) continue;
+			const std::string label = uam::paths::Utf8PathString(config.filename());
+			std::string text;
+			if (!ReadBoundedFile(config, kMaxSourceBytes, text))
+			{
+				out.error = "config: " + label + " could not be read safely, so its rules cannot be applied.";
+				return false;
+			}
+			std::string error;
+			const OrderedJson root = ParseJsonc(text, error);
+			if (root.is_discarded() || !root.is_object())
+			{
+				out.error = "config: " + label + " is not valid JSON or JSONC, so its rules cannot be applied.";
+				return false;
+			}
+			for (const char* field : {"tools", "permission"})
+			{
+				if (!root.contains(field)) continue;
+				InheritedRules rules{label, field, {}};
+				if (!JsonToNode(root[field], label + " " + field, 1, rules.node, out.error)) return false;
+				out.inherited.push_back(std::move(rules));
+			}
 		}
 		return true;
 	}
@@ -1191,21 +1378,21 @@ namespace uam::provider_agent_import
 		// Restrictions and the workspace-access ceiling.
 		if (opencode)
 		{
-			RuleSet rules;
+			NormalizedRules rules;
 			if (!NormalizeOpenCodeRules(source, preview, rules)) return fail(preview.error);
 			std::vector<std::string> bound_denies;
-			for (const auto& [key, value] : rules.rules.items())
+			for (const auto& [key, value] : rules.canonical.items())
 				if (value == "deny" && !IsOpenCodeWriteTool(key)) bound_denies.push_back(key);
 			preview.provider_bound = !bound_denies.empty();
-			if (!rules.rules.empty()) preview.open_code_permission_json = rules.rules.dump();
-			preview.suggested_workspace_access = preview.max_workspace_access == "write" && rules.explicit_write ? "write" : "read";
+			if (!rules.canonical.empty()) preview.open_code_permission_json = rules.canonical.dump();
+			preview.suggested_workspace_access = rules.explicit_write ? "write" : "read";
 			if (preview.provider_bound)
 			{
 				AddNote(preview.notes, "Deny rules (" + Join(bound_denies, ", ") + ") keep this agent to local OpenCode 1.x chats without Central Setup; other routes refuse it.");
 				if (MajorVersion(local_opencode_version) >= 2)
 					return fail("permission: OpenCode " + std::string(TrimView(local_opencode_version)) + " cannot run imported agents with deny rules yet, so this import is refused.");
 			}
-			else if (!rules.rules.empty())
+			else if (!rules.canonical.empty())
 				AddNote(preview.notes, "permission: workspace access covers every rule, so the agent is not tied to OpenCode.");
 		}
 		else
@@ -1271,8 +1458,9 @@ namespace uam::provider_agent_import
 	std::string BoundPolicyForAccess(const ProviderAgentImportPreview& preview, const std::string& workspace_access)
 	{
 		if (!preview.provider_bound || preview.open_code_permission_json.empty()) return {};
-		nlohmann::json rules = nlohmann::json::parse(preview.open_code_permission_json, nullptr, false);
+		OrderedJson rules = OrderedJson::parse(preview.open_code_permission_json, nullptr, false);
 		if (!rules.is_object()) return {};
+		// Exact keys come last in canonical order, so an edit deny set or appended here decides edit.
 		if (workspace_access == "read")
 			for (const std::string_view tool : kOpenCodeWriteTools)
 				if (tool == "edit" || rules.contains(std::string(tool))) rules[std::string(tool)] = "deny";
@@ -1286,11 +1474,12 @@ namespace uam::provider_agent_import
 		if (policy.is_discarded() || !policy.is_object() || policy.empty() || policy.size() > kMaxRuleEntries) return false;
 		for (const auto& [key, value] : policy.items())
 			if (!ValidRuleKey(key) || !value.is_string() || (value != "ask" && value != "deny")) return false;
-		const std::string edit = policy.contains("edit") ? policy["edit"].get<std::string>() : policy.contains("*") ? policy["*"].get<std::string>() : "ask";
-		if (workspace_access == "read") return edit == "deny";
-		if (workspace_access != "write" || edit == "deny") return false;
+		// Read the rules as OpenCode does: in order, last match wins.
+		if (workspace_access == "read") return StoredEffect(policy, "edit") == "deny";
+		if (workspace_access != "write") return false;
 		return std::ranges::none_of(kOpenCodeWriteTools, [&](std::string_view tool) {
-			return policy.contains(std::string(tool)) && policy[std::string(tool)] == "deny";
+			const bool named = tool == "edit" || std::ranges::any_of(policy.items(), [&](const auto& entry) { return entry.key() != "*" && Covers(entry.key(), tool); });
+			return named && StoredEffect(policy, tool) == "deny";
 		});
 	}
 
@@ -1298,9 +1487,28 @@ namespace uam::provider_agent_import
 	{
 		OrderedJson policy = OrderedJson::parse(policy_json, nullptr, false);
 		if (!policy.is_object()) return {};
+		if (ValidStoredPolicy(policy_json, "read")) return policy.dump();
+		// Move edit tools to the end so no earlier wildcard can reopen them.
 		for (const std::string_view tool : kOpenCodeWriteTools)
-			if (tool == "edit" || policy.contains(std::string(tool))) policy[std::string(tool)] = "deny";
+		{
+			const std::string key(tool);
+			if (key != "edit" && !policy.contains(key)) continue;
+			policy.erase(key);
+			policy[key] = "deny";
+		}
 		return policy.dump();
+	}
+
+	bool PoliciesEquivalent(const std::string& left, const std::string& right)
+	{
+		if (left.empty() || right.empty()) return left.empty() && right.empty();
+		const OrderedJson a = OrderedJson::parse(left, nullptr, false);
+		const OrderedJson b = OrderedJson::parse(right, nullptr, false);
+		if (!a.is_object() || !b.is_object() || a.size() != b.size()) return false;
+		// Same rules, and every named tool reads the same under both orders.
+		for (const auto& [key, value] : a.items())
+			if (!b.contains(key) || b[key] != value || StoredEffect(a, key) != StoredEffect(b, key)) return false;
+		return std::ranges::all_of(kOpenCodeWriteTools, [&](std::string_view tool) { return StoredEffect(a, tool) == StoredEffect(b, tool); });
 	}
 
 	namespace
@@ -1309,7 +1517,27 @@ namespace uam::provider_agent_import
 		{
 			std::filesystem::path path;
 			std::string scope;
+			std::filesystem::path base; // links are refused from here down
 		};
+
+		constexpr std::size_t kMaxEntriesScanned = 4096;
+
+		/// True when `path` or any folder between `base` and it is a link or reparse point.
+		bool LinkedBelow(const std::filesystem::path& base, const std::filesystem::path& path)
+		{
+			// Lexical, so a linked folder is seen rather than resolved through.
+			const std::filesystem::path relative = path.lexically_normal().lexically_relative(base.lexically_normal());
+			if (relative == ".") return false; // The trusted base itself.
+			if (relative.empty() || relative.is_absolute() || *relative.begin() == "..") return uam::paths::IsLinkOrReparsePointNoThrow(path);
+			std::filesystem::path current = base;
+			for (const std::filesystem::path& component : relative)
+			{
+				if (component == "." || component == "..") return true;
+				current /= component;
+				if (uam::paths::IsLinkOrReparsePointNoThrow(current)) return true;
+			}
+			return false;
+		}
 
 		std::string MarkdownFileId(const std::filesystem::path& path)
 		{
@@ -1340,25 +1568,24 @@ namespace uam::provider_agent_import
 		const std::optional<std::filesystem::path> home = PlatformServicesFactory::Instance().path_service.ResolveUserHomePath();
 		std::vector<Folder> folders;
 		std::vector<Folder> configs;
-		const auto global = [&](const std::filesystem::path& relative) { if (home) folders.push_back({*home / relative, "global"}); };
-		const auto workspace = [&](const std::filesystem::path& relative) { if (!workspace_root.empty()) folders.push_back({workspace_root / relative, "workspace"}); };
+		const auto global = [&](const std::filesystem::path& relative) { if (home) folders.push_back({*home / relative, "global", *home}); };
+		const auto workspace = [&](const std::filesystem::path& relative) { if (!workspace_root.empty()) folders.push_back({workspace_root / relative, "workspace", workspace_root}); };
 		if (opencode)
 		{
-			std::filesystem::path config_root;
-			if (const auto xdg = uam::env::GetNonEmptyString("XDG_CONFIG_HOME")) config_root = uam::paths::PathFromUtf8(*xdg) / "opencode";
-			else if (home) config_root = *home / ".config" / "opencode";
+			const std::filesystem::path config_root = OpenCodeConfigRoot();
 			if (!config_root.empty())
 			{
-				folders.push_back({config_root / "agent", "global"});
-				folders.push_back({config_root / "agents", "global"});
-				for (const char* name : {"opencode.json", "opencode.jsonc", "config.json"}) configs.push_back({config_root / name, "global"});
+				const std::filesystem::path base = config_root.parent_path();
+				folders.push_back({config_root / "agent", "global", base});
+				folders.push_back({config_root / "agents", "global", base});
+				for (const char* name : {"opencode.json", "opencode.jsonc", "config.json"}) configs.push_back({config_root / name, "global", base});
 			}
 			workspace(std::filesystem::path(".opencode") / "agent");
 			workspace(std::filesystem::path(".opencode") / "agents");
 			if (!workspace_root.empty())
 				for (const std::filesystem::path& relative : {std::filesystem::path("opencode.json"), std::filesystem::path("opencode.jsonc"),
 				                                             std::filesystem::path(".opencode") / "opencode.json", std::filesystem::path(".opencode") / "opencode.jsonc"})
-					configs.push_back({workspace_root / relative, "workspace"});
+					configs.push_back({workspace_root / relative, "workspace", workspace_root});
 		}
 		else if (provider_id == provider_ids::kClaudeCli) { global(std::filesystem::path(".claude") / "agents"); workspace(std::filesystem::path(".claude") / "agents"); }
 		else if (provider_id == provider_ids::kGeminiCli) { global(std::filesystem::path(".gemini") / "agents"); workspace(std::filesystem::path(".gemini") / "agents"); }
@@ -1370,15 +1597,17 @@ namespace uam::provider_agent_import
 		{
 			discovery.searched.push_back(folder.path);
 			if (!uam::paths::PathExistsNoThrow(folder.path)) continue;
-			if (uam::paths::IsLinkOrReparsePointNoThrow(folder.path) || !uam::paths::IsDirectoryNoThrow(folder.path))
+			if (LinkedBelow(folder.base, folder.path) || !uam::paths::IsDirectoryNoThrow(folder.path))
 			{
 				discovery.errors.push_back(uam::paths::Utf8PathString(folder.path) + ": linked or non-folder agent locations are not searched.");
 				continue;
 			}
 			std::vector<std::filesystem::path> files;
 			std::error_code error;
+			std::size_t scanned = 0;
 			for (std::filesystem::directory_iterator it(folder.path, error), end; !error && it != end; it.increment(error))
 			{
+				if (++scanned > kMaxEntriesScanned) { discovery.errors.push_back(uam::paths::Utf8PathString(folder.path) + ": only the first 4096 entries are searched."); break; }
 				if (Lower(uam::paths::Utf8PathString(it->path().extension())) != ".md") continue;
 				if (files.size() == kMaxFilesPerFolder) { discovery.errors.push_back(uam::paths::Utf8PathString(folder.path) + ": only the first 256 agent files are listed."); break; }
 				files.push_back(it->path());
@@ -1415,6 +1644,11 @@ namespace uam::provider_agent_import
 		{
 			discovery.searched.push_back(config.path);
 			if (!uam::paths::PathExistsNoThrow(config.path)) continue;
+			if (LinkedBelow(config.base, config.path.parent_path()))
+			{
+				discovery.errors.push_back(uam::paths::Utf8PathString(config.path) + ": linked agent locations are not searched.");
+				continue;
+			}
 			std::string text;
 			const std::optional<std::uintmax_t> size = uam::paths::FileSizeNoThrow(config.path);
 			if (!size || bytes + *size > kMaxDiscoveryBytes || !ReadBoundedFile(config.path, kMaxSourceBytes, text))
