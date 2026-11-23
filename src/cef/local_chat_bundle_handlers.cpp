@@ -308,11 +308,9 @@ void UamQueryHandler::HandleResolveLegacyChatImport(
 			        uam::paths::Utf8PathString(legacy_root) + ". The original files were left in place.";
 		    // The worker already saved these folders; a failed re-save matters only if a UI folder save replaced them.
 		    if (!folders_saved)
-		    {
 			    uam::diagnostics::Write("[workspaces] Re-saving " + std::to_string(import_result->imported_folders.size()) +
-			        " imported previous-version workspace(s) failed; chats naming them show under Unsorted until it succeeds.");
-			    live_app->status_line = "Could not save the workspaces copied from a previous version. Their chats show under Unsorted.";
-		    }
+			        " imported previous-version workspace(s) failed; the copy's own save stands unless a folder save since then "
+			        "replaced it, in which case their chats show under Unsorted after a restart.");
 		    uam::PushStateUpdateIfChanged(browser, *live_app);
 	    });
 	if (!posted) pending.push_back(legacy_root);

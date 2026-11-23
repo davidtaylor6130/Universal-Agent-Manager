@@ -1429,6 +1429,38 @@ UAM_TEST(LegacyDataRootImportCopiesV49ChatsOnceWithoutTouchingSource)
 	UAM_ASSERT_EQ(TreeBytes(legacy), source_before);
 }
 
+UAM_TEST(LegacyDataRootImportCopiesNoChatsWhenItsWorkspacesCannotBeSaved)
+{
+	TempDir temp("uam-legacy-data-root-folders-first");
+	const fs::path legacy = WriteV49DataRoot(temp.root / "legacy");
+	const fs::path target = temp.root / "target";
+	// Non-empty directories where folders.txt and its backup belong make only the folder save fail.
+	const fs::path folders_path = target / "folders.txt";
+	const fs::path folders_backup_path = uam::io::MakeBackupPath(folders_path);
+	fs::create_directories(folders_path);
+	fs::create_directories(folders_backup_path);
+	UAM_ASSERT(uam::io::WriteTextFile(folders_path / "block", "block"));
+	UAM_ASSERT(uam::io::WriteTextFile(folders_backup_path / "block", "block"));
+
+	const uam::LocalChatBundleImportResult blocked = uam::LocalChatBundleService::ImportLegacyDataRoot(target, legacy);
+	UAM_ASSERT(!blocked.ok);
+	UAM_ASSERT_EQ(blocked.imported_count, std::size_t{0});
+	UAM_ASSERT(blocked.imported_folders.empty());
+	// A copied chat would have named a workspace this root never saved.
+	UAM_ASSERT(!ChatRepository::LoadLocalChat(target, "legacy-chat-a").has_value());
+	UAM_ASSERT(uam::LocalChatBundleService::LegacyDataRootPending(target, legacy));
+
+	fs::remove_all(folders_path);
+	fs::remove_all(folders_backup_path);
+	const uam::LocalChatBundleImportResult retried = uam::LocalChatBundleService::ImportLegacyDataRoot(target, legacy);
+	UAM_ASSERT(retried.ok);
+	const std::optional<ChatSession> imported = ChatRepository::LoadLocalChat(target, "legacy-chat-a");
+	UAM_ASSERT(imported.has_value());
+	const std::vector<ChatFolder> folders = ChatFolderStore::Load(target);
+	UAM_ASSERT_EQ(folders.size(), std::size_t{1});
+	UAM_ASSERT_EQ(imported->folder_id, folders[0].id);
+}
+
 UAM_TEST(LegacyDataRootImportRetriesWhenAChatCannotBeRead)
 {
 	TempDir temp("uam-legacy-data-root-retry");

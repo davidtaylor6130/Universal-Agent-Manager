@@ -166,7 +166,9 @@ namespace
 		outcome.rolled_back = true;
 		for (std::size_t index = 0; index < moved.size(); ++index)
 		{
-			if (!moved_on_disk[index] || SaveChatHistories(app, {originals[index]})) continue;
+			// A failed save may still have published the file, so put every chat back. Only a chat whose move is
+			// known to be on disk blocks dropping the new workspaces when it cannot be put back.
+			if (SaveChatHistories(app, {originals[index]}) || !moved_on_disk[index]) continue;
 			outcome.rolled_back = false;
 			outcome.kept_folder_by_chat_id[moved[index].id] = moved[index].folder_id;
 		}
@@ -1461,7 +1463,13 @@ bool uam::MigrateWorkspaceFolderOwnership(AppState& app, const std::function<voi
 	if (between_saves_for_tests) between_saves_for_tests();
 	std::vector<ChatSession> original_changed_chats;
 	for (const ChatSession& changed_chat : changed_chats)
-		original_changed_chats.push_back(*std::ranges::find(original_chats, changed_chat.id, &ChatSession::id));
+	{
+		// Moves only change folder IDs, so every changed chat has its original; a fresh copy keeps the pairing if not.
+		const auto original = std::ranges::find(original_chats, changed_chat.id, &ChatSession::id);
+		ChatSession fallback = changed_chat;
+		if (original == original_chats.end()) fallback.folder_id.clear();
+		original_changed_chats.push_back(original == original_chats.end() ? std::move(fallback) : *original);
+	}
 	if (const MovedChatsSave outcome = SaveMovedChats(app, changed_chats, original_changed_chats); !outcome.saved)
 	{
 		// Restore the old folder list only once every moved chat is back; otherwise keep the destinations saved,
