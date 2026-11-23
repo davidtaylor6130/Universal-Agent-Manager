@@ -140,6 +140,7 @@ class Mirror:
         self.crash_after_commit = False
         self.crash_after_revmap = False
         self.crash_after_publish_pull = False
+        self.publishing = False
 
     # ----- small helpers -----
     def state(self) -> dict:
@@ -325,10 +326,19 @@ class Mirror:
         args = ["commit-tree", tree, "-F", "-"] + (["-p", parent] if parent else [])
         return self.t.git(*args, git_dir=self.git_dir, env=env, input=message).stdout.strip()
 
+    def revisions_on_path(self, svn_path: str, first: int, last: int) -> list[int]:
+        if first > last:
+            return []
+        out = self.t.svn("log", "-q", "--xml", "-r", f"{first}:{last}", f"{self.url(svn_path)}@{last}").stdout
+        return [int(e.get("revision")) for e in ET.fromstring(out).iter("logentry")]
+
     def pull(self, svn_path: str, up_to: int | None = None) -> list[tuple[int, str, str]]:
         """Explicit, one-way: bring SVN revisions that changed svn_path into its upstream ref.
         Only the bridge checkout and the upstream ref move; agent worktrees and branches never do."""
         self.reconcile(svn_path)
+        journal = json.loads(self.journal_path.read_text(encoding="utf-8")) if self.journal_path.exists() else None
+        if journal and journal.get("state") != "awaiting-pull" and not self.publishing:
+            raise SpikeError("A publish was interrupted; UAM settles it before pulling.")
         state = self.state()
         last = state["paths"][svn_path]["last_rev"]
         head = int(self.t.svn("info", "--show-item", "revision", self.repo_root_url).stdout.strip())
@@ -368,6 +378,8 @@ class Mirror:
         state["paths"][svn_path]["last_rev"] = target
         self.save_state(state)
         self.write_excludes(svn_path)
+        if journal and journal.get("state") == "awaiting-pull" and journal["path"] == svn_path and target >= journal["rev"]:
+            self.write_journal(None)  # The published revision is now mapped through its revision property.
         return imported
 
     # ----- publish (Git -> SVN) -----
@@ -404,6 +416,8 @@ class Mirror:
 
     def preflight(self, svn_path: str, branch: str) -> list[str]:
         self.reconcile(svn_path)
+        if self.journal_path.exists():
+            raise SpikeError("SVN has revisions the mirror has not pulled yet; pull them and rebase before publishing.")
         tip = self.tip(svn_path)
         base = self.t.git("merge-base", tip, branch, git_dir=self.git_dir, check=False).stdout.strip()
         if base != tip:
@@ -506,6 +520,13 @@ class Mirror:
 
     def publish(self, svn_path: str, branch: str) -> list[tuple[str, int]]:
         """Publish the branch's unpublished commits to svn_path as SVN revisions, oldest first."""
+        self.publishing = True
+        try:
+            return self._publish(svn_path, branch)
+        finally:
+            self.publishing = False
+
+    def _publish(self, svn_path: str, branch: str) -> list[tuple[str, int]]:
         commits = self.preflight(svn_path, branch)
         published = []
         for commit in commits:
@@ -548,14 +569,20 @@ class Mirror:
             rev = int(re.search(r"Committed revision (\d+)\.", stdout).group(1))
             if self.crash_after_commit:
                 raise KeyboardInterrupt("simulated crash after the SVN commit")
+            # David, 2026-11-23: Publish never brings in anyone else's revision. If one landed before this commit,
+            # stop and ask for a Pull; the journal keeps the commit's revision so that Pull settles it.
+            others = [r for r in self.revisions_on_path(svn_path, base_rev + 1, rev) if r != rev]
+            if others:
+                journal.update({"state": "awaiting-pull", "rev": rev})
+                self.write_journal(journal)
+                raise SpikeError(f"\"{self.subject(commit)}\" is in SVN, but SVN also has newer revisions from someone else; "
+                                 "pull them, rebase and publish the rest.")
             imported = self.pull(svn_path, up_to=rev)
             if self.crash_after_publish_pull:
                 raise KeyboardInterrupt("simulated crash after the publish recorded its revision")
             self.write_journal(None)
             published.append((commit, rev))
             if self.tip(svn_path) != commit:
-                if any(r != rev for r, _, _ in imported):
-                    raise SpikeError(f"SVN combined \"{self.subject(commit)}\" with a newer change; rebase onto the pulled revisions and publish again.")
                 raise SpikeError(f"SVN stored \"{self.subject(commit)}\" with different content; rebase onto the pulled revisions and check it.")
         return published
 
@@ -569,8 +596,14 @@ class Mirror:
         if pid and pid_running(pid):
             raise SpikeError("A previous publish is still running; try again when it has finished.")
         svn_path = entry["path"]
+        if entry.get("state") == "awaiting-pull":
+            return "awaiting pull"  # The commit landed and nothing is in doubt; the person's Pull settles it.
         self.reset_bridge(svn_path, entry["parent"], base_rev=entry["base_rev"])
-        self.pull(svn_path)
+        self.publishing = True  # Recovery's own pull settles the journal.
+        try:
+            self.pull(svn_path)
+        finally:
+            self.publishing = False
         # The stop may have come after the pull had already recorded the revision; the pull above then finds nothing
         # new and leaves the bridge behind, so bring it to what the mirror has recorded.
         last_rev = self.state()["paths"][svn_path]["last_rev"]
@@ -857,7 +890,7 @@ class Run:
         self.check("S5b pull, Git conflict in the agent's worktree, resolve, publish: both changes kept",
                    conflicted and len(again) == 1 and "2 + 3" in final, f"pulled r{pulled[0][0]}, republished r{again[0][1]}")
 
-        # S6: a race on a different file: SVN accepts it, the mirror notices and stops.
+        # S6: a race on a different file: SVN accepts it; publish stops and asks for a Pull instead of importing Bob's revision.
         def c6a():
             (agent / "src" / "main.c").write_text("int main(void)\n{\n\treturn util() + 1;\n}\n", encoding="utf-8")
         def c6b():
@@ -869,11 +902,20 @@ class Run:
             mirror.publish("trunk", "chat/feature")
         except SpikeError as e:
             error = str(e)
+        tip_before_pull = mirror.tip("trunk")
+        imported_nothing = not [e for e in mirror.revmap() if e.get("published_from") == c6[0]]
+        try:
+            mirror.publish("trunk", "chat/feature")
+            refused = False
+        except SpikeError:
+            refused = True
+        pulled = mirror.pull("trunk")
         merged = [e for e in mirror.revmap() if e.get("published_from") == c6[0]]
         tip_tree_has_both = "src/other.c" in self.git_digest(mirror.git_dir, mirror.tip("trunk"))
-        self.check("S6 race on another file: SVN accepts, mirror imports both revisions and stops",
-                   bool(error) and len(merged) == 1 and merged[0]["commit"] != c6[0] and tip_tree_has_both
-                   and c6[1] not in mirror.published_commits(), error)
+        self.check("S6 race on another file: SVN accepts; publish stops without importing anyone else's revision, and refuses until a Pull",
+                   bool(error) and imported_nothing and refused and tip_before_pull != mirror.tip("trunk")
+                   and len(pulled) == 2 and len(merged) == 1 and merged[0]["commit"] != c6[0] and tip_tree_has_both
+                   and c6[1] not in mirror.published_commits() and not mirror.journal_path.exists(), error)
         t.git("rebase", mirror.ref("trunk"), cwd=agent)
         remaining = t.git("rev-list", "--count", f"{mirror.ref('trunk')}..chat/feature", cwd=agent).stdout.strip()
         again = mirror.publish("trunk", "chat/feature")

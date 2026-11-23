@@ -1,21 +1,25 @@
 # Design note: SVN through a Git mirror that UAM owns
 
-**Status:** design and throwaway spike for [issue #521](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues/521). Nothing here is implemented in UAM, and nothing here is accepted. [David's decisions of 2026-11-23](../documentation-review.md#svn-through-git) set the frame: UAM builds and owns the Git mirror (no `git svn`, so no Perl SVN bindings), pulling SVN changes is always explicit and one-way, and a new SVN branch copies from the working copy's URL and revision by default, with an editable message UAM writes ([#520 decision](../documentation-review.md#svn-branch-creation)). The spike script is [`tools/svn-git-mirror-spike/spike.py`](../../tools/svn-git-mirror-spike/spike.py); its results are [below](#spike-results).
+**Status:** design and throwaway spike for [issue #521](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues/521). Nothing here is implemented in UAM, and nothing here is accepted. [David's decisions of 2026-11-23](../documentation-review.md#svn-through-git) set the frame: UAM builds and owns the Git mirror (no `git svn`, so no Perl SVN bindings), pulling SVN changes is always explicit and one-way, and a new SVN branch copies from the working copy's URL and revision by default, with an editable message UAM writes ([#520 decision](../documentation-review.md#svn-branch-creation)). His answers of the same day to this note's questions are [recorded below](#decisions), together with the rule that [every change to SVN needs the person's approval](#approval-for-changes-to-svn). The spike script is [`tools/svn-git-mirror-spike/spike.py`](../../tools/svn-git-mirror-spike/spike.py); its results are [below](#spike-results).
 
 ## What the person and the agents see
 
-Turning the mode on for an SVN workspace gives each chat an ordinary Git worktree on its own branch. Agents use plain Git: status, diff, commit, branch, rebase. Two UAM actions cross over to SVN, and only when the person asks (whether agents may ask too is an [open question](#open-questions)):
+Turning the mode on for an SVN workspace gives each chat an ordinary Git worktree on its own branch. Agents use plain Git: status, diff, commit, branch, rebase. Two UAM actions cross over to SVN. The person can start either; an agent can request either, and each request waits for the person's approval:
 
 - **Pull from SVN** brings new SVN revisions into the mirror. It never writes to SVN and never touches a chat's branch, worktree or uncommitted files.
-- **Publish to SVN** turns a branch's new Git commits into SVN commits, one revision per commit, in order, with the original messages. A new Git branch is first created as an SVN branch with `svn copy`. Publishing ends with a pull of the revisions it wrote; if someone else committed in between, that pull also brings in their revisions, as part of the publish the person asked for.
+- **Publish to SVN** turns a branch's new Git commits into SVN commits, one revision per commit, in order, with the original messages. A new Git branch is first created as an SVN branch with `svn copy`. Publishing records its own revisions in the mirror, but never brings in anyone else's: when SVN has newer revisions, Publish stops and asks the person to Pull first.
 
 The person's own SVN checkout is never modified by either action. It stays at its revision with its local edits until the person updates it with the existing commit panel **Update**.
+
+## Approval for changes to SVN
+
+David's rule of 2026-11-23 covers every action that permanently commits somewhere other than the person's computer, here every `svn commit` from Publish and every `svn copy` to a repository URL that creates a branch. By default each one needs the person's explicit approval, even when the chat runs in YOLO or another full-auto mode, and whether the person or an agent started it. The approval names the SVN path and lists the commits, or the branch, with the default message for a copy. Only a hidden advanced setting may turn the rule off. Pull commits nothing to SVN, but an agent's request to pull still waits for approval, as David decided; a Pull the person starts needs none. Approving a Publish once covers its listed commits in order; if it stops partway, publishing the rest asks again.
 
 ## Layout
 
 | Part | Where | Purpose |
 |---|---|---|
-| Mirror repository | `<data-root>/svn-mirrors/<repository UUID>/mirror.git` (bare) | Holds every imported revision and every chat branch. Not inside the SVN checkout: a `.git` there would make [`FindNearestVcsRoot`](../architecture/vcs-boundaries.md) treat the workspace as Git. |
+| Mirror repository | `<data-root>/svn-mirrors/<hash of the repository root URL and UUID>/mirror.git` (bare) | One per repository, shared by every workspace checked out from it, each at its own revision. Both parts of the key are needed: copies made with `svnsync` share a UUID, and one server can be reached by different URLs. Holds every imported revision and every chat branch. Not inside the SVN checkout: a `.git` there would make [`FindNearestVcsRoot`](../architecture/vcs-boundaries.md) treat the workspace as Git. |
 | Bridge checkout | `<mirror>/bridges/<hash of the SVN path>` | A private SVN checkout of one repository path (trunk, or one branch) that is also a work tree of the mirror with its own index. Only UAM uses it, so it never holds anyone's uncommitted work. Pull updates it; publish replays commits in it. A hash names it, so two SVN paths can never share one. |
 | Upstream ref | `refs/uam-svn/upstream/<SVN path>` | One Git commit per SVN revision that changed that path. Each path segment is percent-encoded (`branches/chat%20branchy%201%2E0`), because SVN allows names Git refs do not. Chat branches start from it and rebase onto it. |
 | Revision map | `<mirror>/revmap.jsonl`, append-only, synced per line | The authority: SVN revision ↔ Git commit, per path, and which Git commit a published revision came from. |
@@ -33,9 +37,9 @@ The mirror starts at the checkout's own revision, not at HEAD, so the chat sees 
 
 - **Exactly SVN's versioned files.** The bridge's file list comes from `svn info -R`, not from ignore rules, so a versioned file that matches an ignore pattern (a committed `keep.o`) is included and unversioned or ignored files are not.
 - **Keywords unexpanded.** An `svn:keywords` file is staged as the repository stores it (`$Id$`), otherwise every revision would change `$Id: … $` lines in Git and cause needless rebase conflicts. SVN still treats the contracted bridge file as unmodified.
-- **The person's uncommitted SVN edits stay in their checkout.** They are not imported. Carrying them into a chat as uncommitted changes, as the managed snapshot does today, is an [open question](#open-questions).
+- **The person's uncommitted SVN edits stay in their checkout.** New chats start from the clean committed revision; uncommitted edits are not copied into them, unlike the managed snapshot today.
 
-History before the checkout's revision is not imported; Git log starts there. Each later revision becomes its own commit, authored as the SVN user (`name <name@repository-UUID>`) at the revision's date, with the SVN message followed by `UAM-SVN-Revision:` and `UAM-SVN-Path:` trailers.
+History before the checkout's revision is not imported; Git log starts there. A second workspace of the same repository attaches to the same mirror at its own revision: its chats start from the commit mapped to the newest revision of the path at or below it. When the mirror holds no such revision, UAM imports that revision as one more starting commit without a parent, and before such a chat publishes, UAM rebases its commits onto the upstream ref (`git rebase --onto`), where a conflict is an ordinary Git conflict. A Pull in one workspace moves the shared upstream ref, which every workspace's chats then see; each integrates when it chooses. Each later revision becomes its own commit, authored as the SVN user (`name <name@repository-UUID>`) at the revision's date, with the SVN message followed by `UAM-SVN-Revision:` and `UAM-SVN-Path:` trailers.
 
 For a workspace with this mode on, the mirror replaces the [managed local snapshot](../settings/version-control/local-snapshots.md): chats get mirror worktrees instead of snapshot copies.
 
@@ -87,8 +91,8 @@ For each commit, oldest first:
 1. Write the journal entry (commit, parent, the bridge's revision).
 2. Move the bridge from the parent's tree to the commit's tree with a two-tree `git read-tree -m -u`, then schedule the SVN side from `git diff-tree --no-renames`: new folders and files are checked against SVN's ignore rules and added, deleted files are `svn rm`ed, executable-bit changes become `svn:executable` changes, and a versioned folder the commit emptied is deleted (Git cannot show an empty folder, so the agent saw it go). Every path reaches `svn` after `--` and with a trailing `@`, or one per line in a `--targets` file, so a name like `icon@2x.png` is not read as a peg revision, a name like `-dash.txt` is not read as an option, and a long list stays under Windows' command-line limit.
 3. Start `svn commit` with the Git commit's full message and the revision property `uam:git-commit=<commit id>`, and record its process id in the journal. Setting a revision property during a commit needs no server hook.
-4. Pull up to the new revision. If the revision's tree equals the commit's tree and its parent is the previous upstream commit, the upstream ref fast-forwards to the agent's own commit, so the branch and the mirror share commit ids and the next publish has nothing to rebase.
-5. Remove the journal entry.
+4. Check that no one else's revision of the path landed between the bridge's revision and the new one. If one did, stop: keep the journal entry, marked as waiting for a Pull with the new revision, and ask the person to pull. Otherwise record the new revision: if its tree equals the commit's tree and its parent is the previous upstream commit, the upstream ref fast-forwards to the agent's own commit, so the branch and the mirror share commit ids and the next publish has nothing to rebase.
+5. Remove the journal entry. (A Pull removes an entry waiting for it, once it has mapped that revision.)
 
 Renames publish as a delete and an add; using `svn move` for an exact Git rename is a later improvement. A change between a file and a symbolic link is refused in the first version.
 
@@ -97,7 +101,7 @@ Renames publish as a delete and an add; using `svn move` for an exact Git rename
 | Situation | What SVN does | What the mirror does | What is kept |
 |---|---|---|---|
 | Someone changed the same file after the last pull | Refuses the commit (out of date); SVN commits are atomic, so nothing is written | Resets the bridge to the parent, stops, and says to pull, rebase and publish again | Earlier commits stay published; this and later commits stay on the branch unchanged |
-| Someone changed a different file after the last pull | **Accepts** the commit: SVN only checks out-of-date per file, so the new revision combines both changes | The pull in step 4 imports the other revision and then this one as a new commit (its tree differs from the agent's), records which commit it came from, and stops publishing because a revision other than its own came in | The branch is unchanged; after a rebase onto the upstream ref, Git drops the published commit (same patch) and the rest can be published |
+| Someone changed a different file after the last pull | **Accepts** the commit: SVN only checks out-of-date per file, so the new revision combines both changes | Step 4 finds the other revision, imports nothing and stops, asking the person to pull; Publish refuses until they do. The Pull imports the other revision and then this one as a new commit (its tree differs from the agent's) and records which commit it came from | The branch is unchanged; after a rebase onto the upstream ref, Git drops the published commit (same patch) and the rest can be published |
 | SVN stores the commit with different content and nobody else committed | Accepts it | The same import, but with no other revision in between UAM says SVN stored the commit differently and asks for a rebase and a check, rather than blaming a newer change. The checks before publishing make this rare | As above |
 | A new file is ignored by SVN | Would add it silently | Refuses before the commit and resets the bridge | Nothing is written to SVN |
 | An upstream ref moved outside UAM | Nothing | Refuses before anything is written | Everything |
@@ -111,13 +115,13 @@ Renames publish as a delete and an add; using `svn move` for an exact Git rename
 
 No failure rewrites a chat branch, discards a commit or touches the person's checkout. The only ways a published revision can differ from its Git commit are the two "accepts" cases, and the mirror then imports what SVN really holds rather than claiming the agent's tree.
 
-A server whose `start-commit` or `pre-commit` hook refuses unknown revision properties would refuse every publish. The fallback is a matching log message with the `UAM-SVN-Revision` trailer, which is weaker; this needs checking against real servers.
+A server whose `start-commit` or `pre-commit` hook refuses unknown revision properties would refuse every publish. Then, as David decided, UAM publishes without the property and adds one line, `UAM-Git-Commit: <commit id>`, to the end of the SVN log message instead, and recovery and Pull look for that line. It is the only change UAM makes to a message. The spike does not exercise this fallback, and which servers refuse the property needs checking against real ones.
 
 ## Publishing a new branch
 
-A Git branch with no SVN path yet is published by a server-side `svn copy` to the configured branches location, followed by the branch's commits on the new path. The branches location comes from **SVN repository layouts** in Settings, as [#520](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues/520) defines it. Following the [#520 decision](../documentation-review.md#svn-branch-creation), UAM asks each time where to copy from and writes an editable default message.
+A Git branch with no SVN path yet is published by a server-side `svn copy` to the configured branches location, followed by the branch's commits on the new path. The branches location comes from **SVN repository layouts** in Settings, as [#520](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues/520) defines it. Following the [#520 decision](../documentation-review.md#svn-branch-creation), which David confirmed applies in this mode too, UAM asks each time whether to copy from the working copy's revision (the default) or from trunk HEAD, and writes an editable default message. The copy needs the person's approval like every other change to SVN.
 
-In this mode, "the working copy's URL and revision" is read as the SVN path and revision the Git branch starts from (the revision mapped to the point where the branch left the upstream ref), because that is the content the branch's commits were made on. It can be newer than the revision of the person's own checkout, as in the spike (`/trunk@15` while the checkout was at r2). The copy revision then maps to that same Git commit, because a copy changes no content, and the commits replay without a rebase. Choosing trunk HEAD instead copies newer content, so the branch must first be rebased onto the pulled revisions. Whether this reading is right is an [open question](#open-questions).
+A chat's working copy in this mode is its Git worktree, so the default copies the SVN path at the revision the Git branch starts from (the revision mapped to the point where the branch left the upstream ref), the content the branch's commits were made on. It can be newer than the revision of the person's own checkout, as in the spike (`/trunk@15` while the checkout was at r2). The copy revision then maps to that same Git commit, because a copy changes no content, and the commits replay without a rebase. Choosing trunk HEAD instead copies newer content, so the branch must first be rebased onto the pulled revisions.
 
 ## Spike results
 
@@ -136,7 +140,7 @@ In this mode, "the working copy's URL and revision" is read as the SVN path and 
 | S4b | With Git's excludes removed, SVN's own check still refuses it, and the bridge is clean | Pass |
 | S5 | A same-file change between the check and the commit: SVN refuses it as out of date, the earlier commit stays published, the branch and the bridge are intact | Pass |
 | S5b | Pull, rebase with a real Git conflict in the chat worktree, resolve, publish: both changes are in SVN | Pass |
-| S6 | A different-file change between the check and the commit: SVN accepts, the mirror imports both revisions and stops | Pass |
+| S6 | A different-file change between the check and the commit: SVN accepts; Publish stops without importing the other person's revision and refuses until a Pull, and the Pull then imports both and clears the journal | Pass |
 | S6b | After a rebase, Git drops the published commit and the remaining one publishes | Pass |
 | S7 | A simulated stop right after `svn commit`: recovery maps the revision from `uam:git-commit`, and publishing again writes nothing | Pass |
 | S7b | A simulated stop after the publish recorded its revision but before the journal was cleared: recovery leaves the bridge at r13, the recorded revision, and the next commit publishes as r14 | Pass |
@@ -164,14 +168,19 @@ Following the [VCS boundaries](../architecture/vcs-boundaries.md), the product v
 3. Branch publish through #520's branch creation. Test: S9.
 4. SSH workspaces, renames with `svn move`, and Windows and macOS line-ending and case checks.
 
-Each slice needs its own UI for the two actions and their errors, which needs Claude review and David's approval under [AGENTS.md](../../AGENTS.md).
+Each slice needs its own UI for the two actions, their approvals and their errors, which needs Claude review and David's approval under [AGENTS.md](../../AGENTS.md). Slice 2 also needs the approval rule above in UAM's approval handling, which today lets YOLO skip approvals; the hidden setting that turns the rule off is part of it.
 
-## Open questions
+## Decisions
 
-- Should turning the mode on carry the person's uncommitted SVN edits into each new chat as uncommitted changes, as the managed snapshot does, or start chats from the clean revision?
-- Is deleting an SVN folder that a published commit emptied right, or should empty folders stay in SVN?
-- May agents call Pull and Publish themselves, each write approved by the person as proposed for the pull-request tool in [#514](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues/514), or are both person-only?
-- Publishing pulls the revisions it wrote, and with them any revision someone else committed meanwhile. Is that within "pulling is always explicit", or should publish stop and ask before importing anyone else's revision?
-- For a new branch, is "the working copy's URL and revision" the revision the Git branch starts from (as above), or the revision of the person's own checkout?
-- The mirror is keyed by repository UUID and starts at the first checkout's revision. How should a second workspace of the same repository at an earlier revision attach, and how should two repositories that share a UUID (copies made with `svnsync`) be kept apart, for example by keying on the root URL too?
-- Where a server refuses custom revision properties, is recovery by log-message trailer acceptable?
+David answered this note's questions on 2026-11-23; each answer is applied in the sections above and [recorded in the documentation review](../documentation-review.md#svn-through-git).
+
+| Question | Answer |
+|---|---|
+| Carry the person's uncommitted SVN edits into new chats? | No: new chats start from the clean committed revision |
+| Import other people's revisions during Publish? | No: Publish stops and asks; Pull first, then Publish |
+| May agents pull and publish? | They may request either; each request needs the person's approval |
+| Delete an SVN folder that a published commit emptied? | Yes |
+| Which revision does a new branch copy from? | As #520: ask each time, defaulting to the working copy's revision |
+| How do several workspaces of one repository share a mirror? | Keyed by repository root URL and UUID, shared by workspaces at their own revisions |
+| A server refuses custom revision properties? | Fall back to a one-line `UAM-Git-Commit` trailer in the log message |
+| Approval for changes outside the computer | Every SVN commit and copy to a URL needs explicit approval, even in YOLO, unless a hidden advanced setting turns that off |
