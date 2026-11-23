@@ -284,21 +284,27 @@ namespace
 	{
 		std::error_code ec;
 		{
-			// skip_permission_denied would show an unreadable root as an empty library, so the root still fails.
+			// skip_permission_denied would show an unreadable root as an empty library, so the root still fails,
+			// including one that can be listed but not entered.
 			const fs::directory_iterator root_probe(root, ec);
+			if (ec) return false;
+			(void)fs::status(root / ".", ec);
 			if (ec) return false;
 		}
 		for (fs::recursive_directory_iterator it(root, fs::directory_options::skip_permission_denied, ec), end; !ec && it != end; it.increment(ec))
 		{
+			// The entry's own type, so a link or Windows junction is never treated as a folder to enter.
 			std::error_code type_ec;
-			if (it->is_directory(type_ec) && !it->is_symlink(type_ec))
+			if (fs::is_directory(it->symlink_status(type_ec)))
 			{
 				std::error_code open_ec;
 				const fs::directory_iterator folder_probe(it->path(), open_ec);
 				if (open_ec)
 				{
 					it.disable_recursion_pending();
-					if (skipped_folders_out != nullptr) skipped_folders_out->push_back(it->path().lexically_relative(root));
+					// A folder removed during the walk has nothing to list and is not reported as unreadable.
+					if (open_ec != std::errc::no_such_file_or_directory && skipped_folders_out != nullptr)
+						skipped_folders_out->push_back(it->path().lexically_relative(root));
 				}
 				continue;
 			}

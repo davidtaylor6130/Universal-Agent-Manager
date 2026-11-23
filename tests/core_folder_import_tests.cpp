@@ -424,11 +424,15 @@ UAM_TEST(SkillsLibraryListsReadableSkillsPastAnUnreadableSubfolder)
 	UAM_ASSERT(error.empty());
 	UAM_ASSERT_EQ(MarkdownStoreService::ListEntries(root, &error).size(), static_cast<std::size_t>(3));
 
-	// An unreadable library root still fails instead of showing an empty library.
-	fs::permissions(root, fs::perms::none, fs::perm_options::replace);
-	UAM_ASSERT(MarkdownStoreService::ListEntries(root, &error, &skipped).empty());
-	UAM_ASSERT(!error.empty());
-	UAM_ASSERT(skipped.empty());
+	// An unreadable library root, or one that can be listed but not entered, still fails instead of showing an empty library.
+	for (const fs::perms access : {fs::perms::none, fs::perms::owner_read})
+	{
+		fs::permissions(root, access, fs::perm_options::replace);
+		error.clear();
+		UAM_ASSERT(MarkdownStoreService::ListEntries(root, &error, &skipped).empty());
+		UAM_ASSERT(!error.empty());
+		UAM_ASSERT(skipped.empty());
+	}
 }
 #endif
 
