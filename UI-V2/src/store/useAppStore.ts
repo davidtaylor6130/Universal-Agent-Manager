@@ -734,6 +734,9 @@ export const useAppStore = create<AppState>((set, get) => {
       for (const [chatId, pending] of entries) {
         if (!liveSessionIds.has(chatId)) continue
         if (state.chatSearchNavigation?.chatId === chatId) continue
+        // An unopened chat with saved history stays unloaded: a fragment would make streamDone read and keep its
+        // latest page for the rest of the session. Opening it reads history, which already holds the streamed text.
+        if (nextMessages[chatId] === undefined && (state.sessions.find((session) => session.id === chatId)?.messageCount ?? 0) > 0) continue
         const existingMessages = nextMessages[chatId] ?? []
         let lastMessage = existingMessages[existingMessages.length - 1]
         const token = pending.token
