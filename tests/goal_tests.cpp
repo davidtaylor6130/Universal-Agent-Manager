@@ -1603,6 +1603,10 @@ UAM_TEST(RemoteRestartRestoresRootGoalReviewIdentity)
 	UAM_ASSERT(session->goal_review_scheduled);
 	UAM_ASSERT_EQ(session->goal_review_goal_id, std::string("goal-review"));
 	UAM_ASSERT_EQ(session->goal_review_repair_attempts, 1);
+	// The recovered repair lost its first turn's start and cost, so the decision's latency and usage are unknown.
+	UAM_ASSERT(session->goal_review_decision.repaired);
+	UAM_ASSERT(!session->goal_review_decision.earlier_tokens.has_value());
+	UAM_ASSERT_EQ(session->goal_review_decision.started_ms, static_cast<std::int64_t>(0));
 }
 
 UAM_TEST(GoalServiceCancellationMatchesPaddedLegacyIterationIds)
@@ -2597,6 +2601,45 @@ UAM_TEST(AcpGoalReviewRepairKeepsOneDecisionTimeAndCost)
 	UAM_ASSERT(detail.find("decisionLatencyMs=unknown") == std::string::npos);
 	UAM_ASSERT(std::stoll(detail.substr(latency_at + std::string_view("decisionLatencyMs=").size())) >= 2000);
 	UAM_ASSERT_EQ(fixture.Session().goal_review_decision.started_ms, static_cast<std::int64_t>(0));
+}
+
+UAM_TEST(AcpGoalReviewSecondRepairKeepsEveryEarlierTurnCost)
+{
+	// After a restart reset the repair count, a decision already repaired once can be repaired again; its cost must
+	// still include every earlier turn.
+	TempDir temp("uam-review-second-repair");
+	GoalReviewBudgetFixture fixture(temp.root);
+	fixture.ReviewedGoal().token_budget = 0;
+	fixture.Session().goal_review_decision.repaired = true;
+	fixture.Session().goal_review_decision.earlier_tokens = 20;
+	UAM_ASSERT_EQ(fixture.Session().goal_review_repair_attempts, 0);
+	fixture.Output("Invalid again after restart");
+	fixture.Reply(10, GoalReviewUsageResult(12, 8));
+	UAM_ASSERT(fixture.Session().queued_prompt.find("only repair attempt") != std::string::npos);
+	UAM_ASSERT(fixture.Session().goal_review_decision.repaired);
+	UAM_ASSERT(fixture.Session().goal_review_decision.earlier_tokens.has_value() && *fixture.Session().goal_review_decision.earlier_tokens == 40);
+}
+
+UAM_TEST(GoalLoopDiagnosticKeepsFailureCauseButNotConversationText)
+{
+	uam::AcpSessionState session;
+	session.chat_id = "diagnostic-cause";
+	const std::string cause = "Provider exited: " + std::string(400, 'x');
+	uam::acp_detail::AppendGoalLoopDiagnosticCause(session, "goal_blocked_process_exit", "goal-1", cause);
+	UAM_ASSERT(!session.diagnostics.empty());
+	const uam::AcpDiagnosticEntryState& failure = session.diagnostics.back();
+	UAM_ASSERT_EQ(failure.reason, std::string("goal_blocked_process_exit"));
+	UAM_ASSERT(failure.message.starts_with("Provider exited: "));
+	// Capped at 160 bytes of the cause plus the truncation marker.
+	UAM_ASSERT(failure.message.find("[truncated") != std::string::npos);
+	UAM_ASSERT(failure.message.size() < 200);
+	UAM_ASSERT(failure.detail.find("textBytes") == std::string::npos);
+
+	uam::acp_detail::AppendGoalLoopDiagnostic(session, "complete_review_turn", "goal-1", "Private model reply text");
+	const uam::AcpDiagnosticEntryState& reply = session.diagnostics.back();
+	UAM_ASSERT(reply.detail.find("Private model reply text") == std::string::npos);
+	UAM_ASSERT(reply.detail.find("textBytes=24") != std::string::npos);
+	UAM_ASSERT(reply.message.empty());
 }
 
 UAM_TEST(AcpGoalReviewUsagePreservesUnknownAndObservedZero)

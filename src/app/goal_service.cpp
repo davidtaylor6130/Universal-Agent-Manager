@@ -1142,9 +1142,10 @@ std::optional<GoalService::ReviewDecision> GoalService::ParseReviewDecision(cons
 			decision.current_step = uam::strings::Trim(it->value("currentStep", ""));
 			decision.last_verification = uam::strings::Trim(it->value("lastVerification", ""));
 		}
-		if (decision.decision == "stop" || decision.decision == "done" || decision.decision == "passed" || decision.decision == "yes")
+		// The same spellings the decision interface accepts for the review (ReviewDecisionRequest).
+		for (const auto& [spelling, option] : ReviewDecisionRequest().option_aliases)
 		{
-			decision.decision = "complete";
+			if (decision.decision == uam::strings::ToLowerAscii(uam::strings::Trim(spelling))) decision.decision = option;
 		}
 		if (decision.decision != "complete" && decision.decision != "continue" && decision.decision != "blocked")
 		{

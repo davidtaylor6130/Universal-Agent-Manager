@@ -513,7 +513,7 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 		    if (!parsed.has_value()) return false;
 		    std::string choice = uam::strings::ToLowerAscii(uam::strings::Trim(answer.choice));
 		    for (const auto& [spelling, option] : review_request.option_aliases)
-			    if (choice == spelling) choice = option;
+			    if (choice == uam::strings::ToLowerAscii(uam::strings::Trim(spelling))) choice = option;
 		    return parsed->decision == choice;
 	    });
 	if (!verdict.has_value())
@@ -530,7 +530,7 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 				session.goal_review_repair_attempts = 1;
 			}
 			const std::string repair_prompt =
-			    "Your previous goal review was not usable: it needs one decision with a non-empty reason. This is the only repair attempt. "
+			    "Your previous goal review was not usable: it needs one decision in the format below. This is the only repair attempt. "
 			    "Do not call tools. Output exactly one valid JSON object and nothing else. "
 			    "For continue use {\"decision\":\"continue\",\"reason\":\"...\",\"nextPrompt\":\"...\",\"progressUpdate\":{\"completed\":[],\"remaining\":[\"next step\"],\"currentStep\":\"next step\",\"lastVerification\":\"...\"}}. "
 			    "For blocked use {\"decision\":\"blocked\",\"reason\":\"...\",\"blockerKind\":\"...\"}. "
@@ -574,7 +574,7 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 		return true;
 	}
 
-	// The reader parsed this reply; a verdict is only returned for an answer it read.
+	// The check parsed this reply; a verdict is only returned when the check accepted it.
 	GoalService::ReviewDecision decision = std::move(*parsed);
 	// Only a reply the decision interface validated reaches here, so this is the sole model attribution.
 	decision.attribution = verdict->attribution;

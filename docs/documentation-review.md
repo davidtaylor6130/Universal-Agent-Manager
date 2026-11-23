@@ -334,7 +334,7 @@ Recorded limits that are not decisions: Claude Code, Gemini and Copilot children
 
 Issue #363's first slice adds the decision interface with only the chat-provider backend, used by the goal review ([Goals](chat/goals.md#decision-source)).
 
-**Resolved by David, 2026-11-23.** The issue's "turn review" is the UAM-managed goal-loop review, which already answers through the interface; no separate per-turn review is to be added. Sending goal or transcript text to any hosted decision backend, such as Jev, is opt-in only: a hosted backend must stay off until the user turns it on. No hosted backend exists yet, so nothing is sent today.
+**Resolved by David, 2026-11-23.** The issue's "turn review" is the UAM-managed goal-loop review, which already answers through the interface; the issue does not ask for a separate per-turn review. Sending goal or transcript text to any hosted decision backend, such as Jev, is opt-in only: a hosted decision backend may receive goal or transcript text only after the user opts in. No hosted backend exists yet, so nothing is sent today.
 
 These questions remain open and await David's decision before the next slices:
 

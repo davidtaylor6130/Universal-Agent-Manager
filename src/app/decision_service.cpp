@@ -165,7 +165,7 @@ namespace
 			{
 				const auto score = parsed.find(key);
 				if (score == parsed.end() || !score->is_number_integer()) return std::nullopt;
-				// An unsigned value above INT64_MAX would wrap if read as signed.
+				// An unsigned value above INT_MAX is out of range, and above INT64_MAX it would wrap if read as signed.
 				if (score->is_number_unsigned() && score->get<std::uint64_t>() > static_cast<std::uint64_t>(std::numeric_limits<int>::max())) return std::nullopt;
 				const std::int64_t value = score->get<std::int64_t>();
 				if (value < std::numeric_limits<int>::min() || value > std::numeric_limits<int>::max()) return std::nullopt;
