@@ -1057,9 +1057,11 @@ UAM_TEST(RemoteWorkspaceReferenceAdmissionSkipsExpiredRunChildBySavedRootLink)
 	for (const Case kind : {Case::Linked, Case::LinkedSavedOnly, Case::Legacy, Case::OtherBirth, Case::OtherRoot, Case::UnreadableLedger, Case::QueuedInput, Case::RecordNamesChat})
 	{
 		WorkspacePromptFixture fixture;
+		// The birth the link names must exist before the task captures the parent's identity.
+		fixture.app.chats.front().created_at = "2026-01-02 03:04:05";
 		const std::shared_ptr<uam::WorktreeLaunchPreparationTask> task = SeedRemoteWorkspaceTask(fixture);
 		uam::AppState& app = fixture.app;
-		app.chats.front().created_at = "2026-01-02 03:04:05";
+		UAM_ASSERT_EQ(task->original.created_at, app.chats.front().created_at);
 		const ChatSession parent = app.chats.front();
 		uam::PreparedLaunchWorktree prepared{{.ok = true}, task->original};
 		prepared.metadata.workspace_isolation_kind = uam::paths::kGitWorktreeIsolationKind;
