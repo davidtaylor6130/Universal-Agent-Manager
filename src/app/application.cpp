@@ -17,6 +17,7 @@
 #include <system_error>
 #include <cstdlib>
 #include "common/utils/diagnostic_log.h"
+#include "common/utils/stage_timing_summary.h"
 #include "common/platform/app_crash_supervisor.h"
 #include "cef/companion_server.h"
 
@@ -597,31 +598,29 @@ void Application::PollTickStages(std::chrono::steady_clock::time_point poll_star
 
 	const auto poll_finished = std::chrono::steady_clock::now();
 	const auto poll_duration = std::chrono::duration_cast<std::chrono::milliseconds>(poll_finished - poll_started);
-	static auto last_slow_poll_report = std::chrono::steady_clock::time_point::min(); // ponytail: UI-thread rate limit; move to metrics state if telemetry needs aggregation.
-	if (poll_duration >= std::chrono::milliseconds(50) &&
-	    (last_slow_poll_report == std::chrono::steady_clock::time_point::min() || poll_finished - last_slow_poll_report >= std::chrono::seconds(5)))
+	const auto milliseconds = [](std::chrono::steady_clock::time_point begin, std::chrono::steady_clock::time_point end)
 	{
-		const std::function<std::string(std::chrono::steady_clock::time_point, std::chrono::steady_clock::time_point)> milliseconds =
-		    [](std::chrono::steady_clock::time_point begin, std::chrono::steady_clock::time_point end)
-		{
-			return std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count());
-		};
-		uam::diagnostics::Write("[performance] PollTick took " + std::to_string(poll_duration.count()) + " ms; stages=" +
-		    "runtimes:" + milliseconds(poll_started, runtimes_finished) +
-		    ",terminals:" + milliseconds(runtimes_finished, terminals_finished) +
-		    ",memory:" + milliseconds(terminals_finished, memory_finished) +
-		    ",controls:" + milliseconds(memory_finished, controls_finished) +
-		    ",computer_use:" + milliseconds(memory_finished, computer_use_finished) +
-		    ",shell_actions:" + milliseconds(computer_use_finished, shell_actions_finished) +
-		    ",workspace_availability:" + milliseconds(shell_actions_finished, controls_finished) +
-		    ",providers:" + milliseconds(controls_finished, providers_finished) +
-		    ",history:" + milliseconds(providers_finished, history_finished) +
-		    ",retention:" + milliseconds(history_finished, retention_finished) +
-		    ",catalogs:" + milliseconds(retention_finished, catalogs_finished) +
-		    ",push:" + milliseconds(catalogs_finished, push_finished) +
-		    ",awake:" + milliseconds(push_finished, poll_finished) + " ms.");
-		last_slow_poll_report = poll_finished;
-	}
+		return std::chrono::duration_cast<std::chrono::milliseconds>(end - begin);
+	};
+	// One p50/p95/max summary per five minutes that had a tick of 50 ms or more, plus single lines only from 250 ms;
+	// a line per slow tick filled almost half of the retained log. ponytail: UI-thread only, like the poll itself.
+	static uam::diagnostics::StageTimingSummary poll_timing("PollTick", {"runtimes", "terminals", "memory", "controls", "computer_use", "shell_actions",
+	    "workspace_availability", "providers", "history", "retention", "catalogs", "push", "awake"});
+	for (const std::string& line : poll_timing.Record(poll_finished, poll_duration, {
+	         milliseconds(poll_started, runtimes_finished),
+	         milliseconds(runtimes_finished, terminals_finished),
+	         milliseconds(terminals_finished, memory_finished),
+	         milliseconds(memory_finished, controls_finished),
+	         milliseconds(memory_finished, computer_use_finished),
+	         milliseconds(computer_use_finished, shell_actions_finished),
+	         milliseconds(shell_actions_finished, controls_finished),
+	         milliseconds(controls_finished, providers_finished),
+	         milliseconds(providers_finished, history_finished),
+	         milliseconds(history_finished, retention_finished),
+	         milliseconds(retention_finished, catalogs_finished),
+	         milliseconds(catalogs_finished, push_finished),
+	         milliseconds(push_finished, poll_finished)}))
+		uam::diagnostics::Write(line);
 }
 
 int Application::NextPollDelay()
@@ -820,6 +819,9 @@ bool Application::InitializeState()
 	(void)uam::env::SetString("UAM_DATA_DIR", uam::paths::Utf8PathString(m_app.data_root));
 	std::string log_error;
 	if (!uam::diagnostics::StartFileLog(m_app.data_root / "uam.log", log_error, 0))
+		uam::diagnostics::Write(log_error);
+	// Deletion and storage audit lines get their own long-retention file; uam.log covers only days.
+	else if (!uam::diagnostics::StartAuditLog(m_app.data_root / "uam-audit.log", log_error))
 		uam::diagnostics::Write(log_error);
 	uam::diagnostics::Write("[storage] data_root=" + uam::paths::Utf8PathString(m_app.data_root));
 	std::string uam_control_error;

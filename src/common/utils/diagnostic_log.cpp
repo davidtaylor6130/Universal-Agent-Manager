@@ -13,7 +13,10 @@
 #include <memory>
 #include <thread>
 #include <iostream>
+#include <iterator>
 #include <mutex>
+#include <utility>
+#include <vector>
 
 namespace uam::diagnostics
 {
@@ -35,24 +38,38 @@ namespace
 	uam::WorkspaceLeaseGate g_retentionGate;
 	std::atomic<int> g_backupRetentionDays{14};
 	constexpr std::size_t kMaxQueuedBytes = 512 * 1024;
+	// Storage audit channel. Path, pending lines and the compaction request are guarded by g_queueMutex;
+	// the file itself belongs to the worker (and to StopFileLog after the worker joins).
+	constexpr std::size_t kMaxAuditQueuedEntries = 4096;
+	std::deque<std::string> g_auditQueue;
+	std::filesystem::path g_auditPath;
+	int g_auditRetentionDays = kAuditRetentionDays;
+	bool g_auditCompactPending = false;
+	std::ofstream g_auditFile;
+	std::uintmax_t g_auditBytes = 0;
 
-	bool Open(std::ios_base::openmode mode)
+	bool OpenRegular(const std::filesystem::path& path, std::ofstream& file, std::ios_base::openmode mode)
 	{
 		// Special paths can redirect diagnostics or block desktop startup before the worker exists.
 		std::error_code status_error;
-		const std::filesystem::file_status status = std::filesystem::symlink_status(g_path, status_error);
+		const std::filesystem::file_status status = std::filesystem::symlink_status(path, status_error);
 		if ((status_error && status_error != std::errc::no_such_file_or_directory) ||
 		    (std::filesystem::exists(status) && !std::filesystem::is_regular_file(status)) ||
-		    uam::paths::IsLinkOrReparsePointNoThrow(g_path)) return false;
-		g_file.clear();
-		g_file.open(g_path, std::ios::binary | mode);
-		if (!g_file.is_open()) return false;
+		    uam::paths::IsLinkOrReparsePointNoThrow(path)) return false;
+		file.clear();
+		file.open(path, std::ios::binary | mode);
+		if (!file.is_open()) return false;
 		std::error_code error;
-		std::filesystem::permissions(g_path,
+		std::filesystem::permissions(path,
 		    std::filesystem::perms::owner_read | std::filesystem::perms::owner_write,
 		    std::filesystem::perm_options::replace, error);
-		if (error) g_file.close();
+		if (error) file.close();
 		return !error;
+	}
+
+	bool Open(std::ios_base::openmode mode)
+	{
+		return OpenRegular(g_path, g_file, mode);
 	}
 
 	bool Rotate()
@@ -112,19 +129,120 @@ namespace
 		}
 	}
 
+	std::string FormatLine(std::string_view message)
+	{
+		constexpr std::string_view truncation = " [truncated]";
+		// Scrub before truncation and control-byte folding, either of which could split or alter a registered secret.
+		std::string scrubbed; if (uam::secrets::Active()) message = scrubbed = uam::secrets::Scrub(message);
+		std::string line = uam::time::IsoUtcTimestampNow() + " ";
+		const std::size_t body_limit = kMaxEntryBytes - line.size() - truncation.size() - 1;
+		line.append(message.substr(0, body_limit));
+		for (char& ch : line)
+		{
+			if (static_cast<unsigned char>(ch) < 32 || ch == 127) ch = ' ';
+		}
+		if (message.size() > body_limit) line.append(truncation);
+		line.push_back('\n');
+		return line;
+	}
+
+	void AuditUnavailable(const char* what)
+	{
+		g_auditFile.close();
+		std::cerr << "Storage audit log " << what << "; audit lines remain in the diagnostic log only.\n";
+	}
+
+	// Rewrites the audit file without expired or excess lines, then reopens it for appending.
+	void CompactAudit(const std::filesystem::path& path, int retention_days, std::size_t max_bytes)
+	{
+		g_auditFile.close();
+		if (path.empty()) return;
+		std::string text;
+		bool truncated_read = false;
+		{
+			std::error_code error;
+			const std::filesystem::file_status status = std::filesystem::symlink_status(path, error);
+			if (!error && std::filesystem::is_regular_file(status) && !uam::paths::IsLinkOrReparsePointNoThrow(path))
+			{
+				std::ifstream input(path, std::ios::binary);
+				input.seekg(0, std::ios::end);
+				const std::streamoff size = input.tellg();
+				// Read at most twice the cap: the oldest bytes of an overgrown file would be dropped anyway.
+				const std::streamoff limit = static_cast<std::streamoff>(2 * kMaxAuditFileBytes);
+				const std::streamoff start = size > limit ? size - limit : 0;
+				input.seekg(start);
+				text.assign(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+				truncated_read = start > 0;
+				if (truncated_read)
+				{
+					const std::size_t newline = text.find('\n');
+					text.erase(0, newline == std::string::npos ? text.size() : newline + 1);
+				}
+			}
+			else if (error && error != std::errc::no_such_file_or_directory) { AuditUnavailable("could not be inspected"); return; }
+			else if (!error && std::filesystem::exists(status) && !std::filesystem::is_regular_file(status)) { AuditUnavailable("is not a regular file"); return; }
+		}
+		const std::string kept = CompactAuditText(text, std::chrono::system_clock::now(), retention_days, max_bytes);
+		if (truncated_read || kept.size() != text.size())
+		{
+			std::filesystem::path temp = path;
+			temp += ".tmp";
+			std::ofstream output;
+			if (!OpenRegular(temp, output, std::ios::trunc)) { AuditUnavailable("could not be compacted"); return; }
+			output.write(kept.data(), static_cast<std::streamsize>(kept.size()));
+			output.close();
+			std::error_code error;
+			if (output.fail()) error = std::make_error_code(std::errc::io_error);
+			else std::filesystem::rename(temp, path, error);
+			if (error)
+			{
+				std::filesystem::remove(temp, error);
+				AuditUnavailable("could not be compacted");
+				return;
+			}
+		}
+		if (!OpenRegular(path, g_auditFile, std::ios::app)) { AuditUnavailable("could not be opened"); return; }
+		g_auditBytes = kept.size();
+	}
+
+	void WriteAuditLines(const std::deque<std::string>& lines, const std::filesystem::path& path, int retention_days)
+	{
+		for (const std::string& line : lines)
+		{
+			if (!g_auditFile.is_open()) return;
+			// Compact to three quarters of the cap so a busy day does not rewrite the file for every line.
+			if (g_auditBytes + line.size() > kMaxAuditFileBytes) CompactAudit(path, retention_days, kMaxAuditFileBytes * 3 / 4);
+			if (!g_auditFile.is_open()) return;
+			g_auditFile.write(line.data(), static_cast<std::streamsize>(line.size()));
+			if (!g_auditFile) { AuditUnavailable("write failed"); return; }
+			g_auditBytes += line.size();
+		}
+		g_auditFile.flush();
+		if (!g_auditFile) AuditUnavailable("flush failed");
+	}
+
 	void Drain(std::stop_token stop)
 	{
 		ExpirePreviousLog();
 		std::chrono::steady_clock::time_point next_expiry_check = std::chrono::steady_clock::now() + std::chrono::minutes(5);
+		std::chrono::steady_clock::time_point next_audit_compaction = std::chrono::steady_clock::time_point::max();
 		for (;;)
 		{
 			std::deque<std::string> batch;
+			std::deque<std::string> audit_batch;
+			std::filesystem::path audit_path;
+			int audit_retention_days = kAuditRetentionDays;
+			bool compact_audit = false;
 			std::size_t dropped = 0;
 			{
 				std::unique_lock<std::mutex> lock(g_queueMutex);
-				g_ready.wait_until(lock, stop, next_expiry_check, []() { return !g_queue.empty() || g_droppedEntries != 0; });
-				if (g_queue.empty() && g_droppedEntries == 0 && stop.stop_requested()) break;
+				g_ready.wait_until(lock, stop, next_expiry_check, []() { return !g_queue.empty() || !g_auditQueue.empty() || g_droppedEntries != 0 || g_auditCompactPending; });
+				if (g_queue.empty() && g_auditQueue.empty() && g_droppedEntries == 0 && !g_auditCompactPending && stop.stop_requested()) break;
 				batch.swap(g_queue);
+				audit_batch.swap(g_auditQueue);
+				audit_path = g_auditPath;
+				audit_retention_days = g_auditRetentionDays;
+				compact_audit = std::exchange(g_auditCompactPending, false);
 				g_queuedBytes = 0;
 				dropped = g_droppedEntries;
 				g_droppedEntries = 0;
@@ -135,6 +253,13 @@ namespace
 				ExpirePreviousLog();
 				next_expiry_check = std::chrono::steady_clock::now() + std::chrono::minutes(5);
 			}
+			// Age expiry runs when the audit log opens and then daily, so a long-running app still forgets old lines.
+			if (!audit_path.empty() && (compact_audit || std::chrono::steady_clock::now() >= next_audit_compaction))
+			{
+				CompactAudit(audit_path, audit_retention_days, kMaxAuditFileBytes);
+				next_audit_compaction = std::chrono::steady_clock::now() + std::chrono::hours(24);
+			}
+			if (!audit_batch.empty() && !audit_path.empty()) WriteAuditLines(audit_batch, audit_path, audit_retention_days);
 			if (dropped != 0) WriteLine(uam::time::IsoUtcTimestampNow() + " Logging dropped " + std::to_string(dropped) + " older entries because the disk queue was full.\n");
 			for (const std::string& line : batch) WriteLine(line);
 			if (g_file.is_open())
@@ -210,7 +335,7 @@ bool StartFileLog(const std::filesystem::path& path, std::string& error, int bac
 void FlushFileLog()
 {
 	std::unique_lock<std::mutex> lock(g_queueMutex);
-	g_drained.wait(lock, []() { return g_queue.empty() && !g_writing && g_droppedEntries == 0; });
+	g_drained.wait(lock, []() { return g_queue.empty() && g_auditQueue.empty() && !g_writing && g_droppedEntries == 0 && !g_auditCompactPending; });
 }
 
 void StopFileLog()
@@ -218,6 +343,8 @@ void StopFileLog()
 	std::lock_guard<std::mutex> lock(g_lifecycleMutex);
 	{
 		std::lock_guard<std::mutex> queue_lock(g_queueMutex);
+		// The closing marker lets a reader tell an uninterrupted audit history from a crash or kill.
+		if (g_accepting && !g_auditPath.empty()) g_auditQueue.push_back(FormatLine("Audit log closed"));
 		g_accepting = false;
 	}
 	if (g_worker)
@@ -230,22 +357,18 @@ void StopFileLog()
 	g_file.clear();
 	g_path.clear();
 	g_bytes = 0;
+	g_auditFile.close();
+	g_auditFile.clear();
+	g_auditBytes = 0;
+	std::lock_guard<std::mutex> queue_lock(g_queueMutex);
+	g_auditPath.clear();
+	g_auditQueue.clear();
+	g_auditCompactPending = false;
 }
 
 void Write(std::string_view message)
 {
-	constexpr std::string_view truncation = " [truncated]";
-	// Scrub before truncation and control-byte folding, either of which could split or alter a registered secret.
-	std::string scrubbed; if (uam::secrets::Active()) message = scrubbed = uam::secrets::Scrub(message);
-	std::string line = uam::time::IsoUtcTimestampNow() + " ";
-	const std::size_t body_limit = kMaxEntryBytes - line.size() - truncation.size() - 1;
-	line.append(message.substr(0, body_limit));
-	for (char& ch : line)
-	{
-		if (static_cast<unsigned char>(ch) < 32 || ch == 127) ch = ' ';
-	}
-	if (message.size() > body_limit) line.append(truncation);
-	line.push_back('\n');
+	std::string line = FormatLine(message);
 	{
 		std::lock_guard<std::mutex> lock(g_queueMutex);
 		if (g_accepting)
@@ -263,6 +386,75 @@ void Write(std::string_view message)
 		}
 	}
 	std::cerr << line;
+}
+
+bool StartAuditLog(const std::filesystem::path& path, std::string& error, int retention_days)
+{
+	std::lock_guard<std::mutex> lock(g_lifecycleMutex);
+	error.clear();
+	if (retention_days < 1 || retention_days > 3650) { error = "Storage audit retention is invalid."; return false; }
+	if (!g_worker) { error = "Storage audit log needs an active diagnostic file log."; return false; }
+	std::error_code status_error;
+	const std::filesystem::file_status status = std::filesystem::symlink_status(path, status_error);
+	if (path.filename().empty() || (status_error && status_error != std::errc::no_such_file_or_directory) ||
+	    (std::filesystem::exists(status) && !std::filesystem::is_regular_file(status)) || uam::paths::IsLinkOrReparsePointNoThrow(path))
+	{
+		error = "Storage audit log path is not a regular file; audit lines remain in the diagnostic log only.";
+		return false;
+	}
+	{
+		std::lock_guard<std::mutex> queue_lock(g_queueMutex);
+		if (!g_auditPath.empty()) { error = "Storage audit logging is already active."; return false; }
+		g_auditPath = path;
+		g_auditRetentionDays = retention_days;
+		g_auditCompactPending = true;
+		g_auditQueue.push_back(FormatLine("Audit log opened: retention_days=" + std::to_string(retention_days)));
+		g_ready.notify_one();
+	}
+	return true;
+}
+
+void WriteAudit(std::string_view message)
+{
+	std::string line = FormatLine(message);
+	{
+		std::lock_guard<std::mutex> lock(g_queueMutex);
+		if (g_accepting && !g_auditPath.empty())
+		{
+			// Bounded only against a stalled worker; ordinary audit volume is a few lines per user action.
+			if (g_auditQueue.size() < kMaxAuditQueuedEntries) g_auditQueue.push_back(line);
+			else ++g_droppedEntries;
+		}
+	}
+	Write(message);
+}
+
+std::string CompactAuditText(std::string_view text, std::chrono::system_clock::time_point now, int retention_days, std::size_t max_bytes)
+{
+	// Lines start with the fixed-width ISO UTC stamp, so string order is time order.
+	const std::time_t cutoff_time = std::chrono::system_clock::to_time_t(now - std::chrono::hours(24) * retention_days);
+	const std::string cutoff = uam::time::detail::FormatTimestamp(uam::time::detail::UtcTimeSnapshot(cutoff_time), uam::time::kIsoUtcTimestampFormat);
+	std::vector<std::string_view> kept;
+	std::size_t kept_bytes = 0;
+	std::size_t begin = 0;
+	while (begin < text.size())
+	{
+		std::size_t end = text.find('\n', begin);
+		end = end == std::string_view::npos ? text.size() : end + 1;
+		const std::string_view line = text.substr(begin, end - begin);
+		begin = end;
+		const bool stamped = line.size() > cutoff.size() && line[cutoff.size()] == ' ' && line[4] == '-' && line[10] == 'T';
+		// An unstamped fragment (a torn final write) has no age to keep it by.
+		if (!stamped || line.substr(0, cutoff.size()) < cutoff || line.back() != '\n') continue;
+		kept.push_back(line);
+		kept_bytes += line.size();
+	}
+	std::size_t first = 0;
+	while (first < kept.size() && kept_bytes > max_bytes) kept_bytes -= kept[first++].size();
+	std::string result;
+	result.reserve(kept_bytes);
+	for (std::size_t index = first; index < kept.size(); ++index) result.append(kept[index]);
+	return result;
 }
 
 } // namespace uam::diagnostics

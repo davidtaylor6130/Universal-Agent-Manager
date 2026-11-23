@@ -5348,14 +5348,14 @@ namespace
 		if (!uam::chat_ids::IsSafeStorageChatId(chat_id))
 		{
 			result.unsafe_chat_id = true;
-			uam::diagnostics::Write("Chat storage delete refused: reason=" + std::string(reason) + ", unsafe chat id");
+			uam::diagnostics::WriteAudit("Chat storage delete refused: reason=" + std::string(reason) + ", unsafe chat id");
 			return result;
 		}
 
 		if (uam::paths::IsLinkOrReparsePointNoThrow(QueueJournalPath(data_root, chat_id).parent_path()))
 		{
 			result.queue_file_error = std::make_error_code(std::errc::operation_not_permitted);
-			uam::diagnostics::Write("Chat storage delete refused: reason=" + std::string(reason) + ", chat_id=" + std::string(chat_id) + ", queue directory is a link");
+			uam::diagnostics::WriteAudit("Chat storage delete refused: reason=" + std::string(reason) + ", chat_id=" + std::string(chat_id) + ", queue directory is a link");
 			return result;
 		}
 		uam::paths::RemoveTreeWithoutFollowingLinksNoThrow(AppPaths::ChatPath(data_root, chat_id), &result.legacy_directory_error);
@@ -5371,7 +5371,7 @@ namespace
 		uam::paths::RemoveTreeWithoutFollowingLinksNoThrow(
 		    data_root / "computer-use" / std::string(chat_id), &result.computer_use_directory_error);
 		// Ids and outcomes only: the sole UAM path that removes a chat primary must leave an attributable record.
-		uam::diagnostics::Write("Chat storage delete: reason=" + std::string(reason) + ", chat_id=" + std::string(chat_id) +
+		uam::diagnostics::WriteAudit("Chat storage delete: reason=" + std::string(reason) + ", chat_id=" + std::string(chat_id) +
 		    ", primary=" + RemovalOutcome(primary_removed, result.metadata_file_error) +
 		    ", backup=" + RemovalOutcome(backup_removed, result.metadata_backup_file_error) +
 		    ", result=" + (result.Failed() ? "failed" : "ok"));

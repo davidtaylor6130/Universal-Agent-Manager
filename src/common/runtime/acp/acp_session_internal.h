@@ -74,6 +74,8 @@ void AppendQuotedAcpLogField(std::ostringstream& out, const char* name, const st
 std::string JsonRpcIdToDiagnosticString(const nlohmann::json& id);
 nlohmann::json JsonRpcIdOrNull(const nlohmann::json& message);
 std::string FormatAcpDiagnosticLogLine(const AcpSessionState& session, const AcpDiagnosticEntryState& entry);
+/// <summary>False for a model-discovery session's routine success traffic, which stays in memory only.</summary>
+bool ShouldWriteAcpDiagnosticLogLine(const AcpSessionState& session, const AcpDiagnosticEntryState& entry);
 // clang-format off
 void AppendAcpDiagnostic(
     AcpSessionState& session,
