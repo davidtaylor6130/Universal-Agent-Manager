@@ -948,6 +948,17 @@ UAM_TEST(ChatRepositoryRefusesOversizedChatWithoutChangingItsFiles)
 
 		UAM_ASSERT_EQ(uam::io::ReadTextFile(primary), primary_before);
 		UAM_ASSERT_EQ(uam::io::ReadTextFile(backup), backup_before);
+
+		// An oversized backup without a primary is not restored into a new primary.
+		const fs::path orphan_backup = uam::io::MakeBackupPath(AppPaths::UamChatFilePath(temp.root, "chat-orphan"));
+		UAM_ASSERT(uam::io::WriteTextFile(orphan_backup, primary_before));
+		warning.clear();
+		(void)ChatRepository::LoadLocalChats(temp.root, &warning);
+		UAM_ASSERT(warning.find("Skipped backup file chat-orphan.json.bak") != std::string::npos);
+		UAM_ASSERT(!fs::exists(AppPaths::UamChatFilePath(temp.root, "chat-orphan")));
+		UAM_ASSERT_EQ(uam::io::ReadTextFile(orphan_backup), primary_before);
+		std::error_code removed;
+		fs::remove(orphan_backup, removed);
 	}
 
 	const std::optional<ChatSession> reopened = ChatRepository::LoadLocalChat(temp.root, chat.id);

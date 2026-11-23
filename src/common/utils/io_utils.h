@@ -149,10 +149,17 @@ namespace uam::io
 		return TryReadFile(path, out);
 	}
 
+	/// <summary>Reads a whole file of at most max_bytes; a larger file is refused by its size before any body is read.</summary>
 	inline bool TryReadTextFile(
 	    const std::filesystem::path& path, std::string& out, std::size_t max_bytes)
 	{
 		out.clear();
+		std::filesystem::path native_path;
+		std::string path_error;
+		std::error_code size_error;
+		if (!NativeFilePath(path, native_path, path_error)) return false;
+		const std::uintmax_t size = std::filesystem::file_size(native_path, size_error);
+		if (!size_error && size > max_bytes) return false;
 		std::ifstream file;
 		if (!OpenReadFile(path, file)) return false;
 

@@ -2746,7 +2746,7 @@ namespace
 		return {std::nullopt, "contains invalid attachment metadata"};
 	}
 
-	/// <summary>One diagnostic line per oversized file and size per run, so retries and rescans do not repeat it.</summary>
+	/// <summary>One diagnostic line per oversized file per run, so retries and rescans do not repeat it.</summary>
 	void LogOversizedChatFileOnce(const fs::path& path, std::uintmax_t source_bytes, std::size_t limit)
 	{
 		static std::mutex mutex;
@@ -2754,7 +2754,7 @@ namespace
 		const std::string name = path.filename().string();
 		{
 			std::lock_guard<std::mutex> lock(mutex);
-			if (!logged.insert(name + ":" + std::to_string(source_bytes)).second) return;
+			if (!logged.insert(name).second) return;
 		}
 		uam::diagnostics::Write("[chat-storage] Refused to read " + name + ": " + std::to_string(source_bytes) +
 		    " bytes exceeds the " + std::to_string(limit) + "-byte chat read limit. The file was left unchanged.");
@@ -4568,7 +4568,13 @@ try
 				    publication->SourceIndex(candidate, *revision, chat.id, source_index_path) : EnsureMessageIndex(candidate, *revision, chat.id);
 				if (publication == nullptr) source_index_path = uam::chat_pages::IndexPath(candidate);
 				const std::optional<ChatSession> metadata = index ? ReadIndexedMetadata(candidate, *index) : std::nullopt;
-				if (!metadata || metadata->id != chat.id || index->message_count == 0) continue;
+				if (!metadata || metadata->id != chat.id || index->message_count == 0)
+				{
+					// An oversized primary is newer than its backup; refuse the save rather than replace it with the older transcript.
+					std::error_code size_error;
+					if (candidate == file_path && fs::file_size(candidate, size_error) > ChatRepository::MaxChatReadBytes() && !size_error) break;
+					continue;
+				}
 				source_index = index;
 				source_path = candidate;
 				source_revision = *revision;
@@ -5425,12 +5431,29 @@ ChatSession LoadLegacyChatFromDirectory(const fs::path& chat_root)
 	ChatSession chat;
 	chat.id = chat_root.filename().string();
 	chat.title = "Imported Chat";
+	// The whole legacy folder shares the chat read limit; an oversized folder is left unmigrated and unchanged.
+	std::size_t budget = ChatRepository::MaxChatReadBytes();
+	const auto read_within_budget = [&](const fs::path& file, std::string& text)
+	{
+		const uam::io::BoundedReadResult read = uam::io::TryReadFileWithinLimit(file, text, budget);
+		if (read.status == uam::io::BoundedReadStatus::TooLarge) return false;
+		budget -= text.size();
+		return true;
+	};
+	const auto refuse = [&]()
+	{
+		uam::diagnostics::Write("[chat-storage] Skipped migrating legacy chat folder " + chat_root.filename().string() +
+		    ": it exceeds the " + std::to_string(ChatRepository::MaxChatReadBytes()) + "-byte chat read limit. The folder was left unchanged.");
+		return ChatSession{};
+	};
 
 	const fs::path meta_file = chat_root / "meta.txt";
 
 	if (uam::paths::PathExistsNoThrow(meta_file))
 	{
-		std::istringstream lines(uam::io::ReadTextFile(meta_file));
+		std::string meta_text;
+		if (!read_within_budget(meta_file, meta_text)) return refuse();
+		std::istringstream lines(std::move(meta_text));
 		std::string line;
 
 		while (std::getline(lines, line))
@@ -5477,7 +5500,7 @@ ChatSession LoadLegacyChatFromDirectory(const fs::path& chat_root)
 		{
 			Message message;
 			message.role = ParseLegacyMessageRoleFromFilename(message_file);
-			message.content = uam::io::ReadTextFile(message_file);
+			if (!read_within_budget(message_file, message.content)) return refuse();
 			message.created_at = chat.updated_at;
 			chat.messages.push_back(std::move(message));
 		}
@@ -6054,11 +6077,13 @@ std::optional<ChatSession> ChatRepository::LoadLocalChatPrimaryReadOnly(const fs
 }
 
 std::optional<ChatSession> ChatRepository::LoadLocalChatBounded(const fs::path& data_root,
-    std::string_view chat_id, std::size_t max_bytes)
+    std::string_view chat_id, std::size_t max_bytes, std::string* too_large_out)
 {
 	if (!uam::chat_ids::IsSafeStorageChatId(chat_id) || max_bytes == 0) return std::nullopt;
 	const fs::path primary = AppPaths::UamChatFilePath(data_root, chat_id);
 	LoadChatResult loaded = ParseLocalChatFile(primary, true, 0, false, max_bytes);
+	// Only the chat-limit refusal is reported; a file merely above the caller's tighter limit is not.
+	if (loaded.too_large) SetWarning(too_large_out, loaded.error);
 	if (loaded.chat) ApplySummaryOpenedAtToFullChat(primary, *loaded.chat, max_bytes);
 	return std::move(loaded.chat);
 }

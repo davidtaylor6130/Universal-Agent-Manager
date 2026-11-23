@@ -578,7 +578,7 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 			    if (*hydrate_unsent) *unsent_revision = ChatRepository::ChatStorageRevision(data_root, chat_id);
 			    *loaded_revision = ChatRepository::ChatStorageRevision(data_root, chat_id);
 			    *loaded = recover_direct_receipt
-			        ? ChatRepository::LoadLocalChatBounded(data_root, chat_id, 8 * 1024 * 1024)
+			        ? ChatRepository::LoadLocalChatBounded(data_root, chat_id, 8 * 1024 * 1024, &warning)
 			        : ChatRepository::LoadLocalChat(data_root, chat_id, true, &warning);
 			    if (!*loaded && recover_direct_receipt && page)
 			    {
