@@ -900,8 +900,10 @@ elseif(WIN32)
     uiautomationcore
     windowscodecs
     ws2_32
-    # Last, so the classic libraries above resolve first: the umbrella would otherwise bind user32 and similar
-    # functions to load-time api-ms/ext-ms imports, which sandboxed CEF subprocesses cannot load.
+    # Last, so the libraries above (kernel32 named here, because MSVC appends its standard libraries after every
+    # target library) resolve first: the umbrella would otherwise bind user32 and similar functions to load-time
+    # api-ms/ext-ms imports, which sandboxed CEF subprocesses cannot load.
+    kernel32
     windowsapp
   )
 endif()

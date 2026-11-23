@@ -118,8 +118,8 @@ Before an enterprise release:
   - Layout: CEF 156 ships no `cef_sandbox.lib` for Windows, so the shipped
     `universal_agent_manager.exe` is CEF's `bootstrap.exe`, renamed. It sets up the sandbox, loads
     `universal_agent_manager.dll` (all of UAM's code) and calls its `RunWinMain` export with the
-    sandbox information that `CefExecuteProcess` and `CefInitialize` receive. CEF refuses nothing when
-    that information is missing, so UAM refuses to start CEF without it.
+    sandbox information that `CefExecuteProcess` and `CefInitialize` receive. CEF silently starts
+    unsandboxed when that information is missing, so UAM refuses to start CEF without it.
   - Load-time imports: the DLL loads into every renderer, GPU and utility process, possibly after
     lockdown, so it delay-loads every system library except `kernel32`, `ntdll` and
     `api-ms-win-core-*`. The build runs `dumpbin /imports` on it and fails otherwise. CEF subprocesses
@@ -132,7 +132,11 @@ Before an enterprise release:
     folder, counting split folder and inherit-only entries as Program Files uses, and adds the grant
     only to a folder that holds `libcef.dll` and `universal_agent_manager.dll` and is not the profile,
     Desktop, Documents or Downloads folder. Otherwise it logs why.
-  - Smoke test: fails when a CEF process has `--no-sandbox` or `--disable-gpu-sandbox`, a renderer runs
+  - Static initialisers: the import check cannot see a namespace-scope initialiser that calls a
+    delay-loaded library while the DLL loads. A source search on 2026-11-23 found none in UAM's code;
+    the first Windows run must still confirm renderers start.
+  - Smoke test: fails when a CEF process has `--no-sandbox`, or `--disable-gpu-sandbox` outside
+    Chromium's short-lived info-collection GPU process (`--use-gl=disabled`), a renderer runs
     at medium integrity or above, or the network service lacks `--service-sandbox-type=network` or runs
     at medium integrity or above.
   - Entry points: every process without `--type` (the crash supervisor, the stdio MCP and control
