@@ -2746,17 +2746,21 @@ namespace
 		return {std::nullopt, "contains invalid attachment metadata"};
 	}
 
-	/// <summary>One diagnostic line per oversized file per run, so retries and rescans do not repeat it.</summary>
-	void LogOversizedChatFileOnce(const fs::path& path, std::uintmax_t source_bytes, std::size_t limit)
+	/// <summary>Writes one diagnostic line per oversized file or legacy folder per run, so retries and rescans do not repeat it.</summary>
+	void LogOversizedOnce(const fs::path& path, const std::string& line)
 	{
 		static std::mutex mutex;
 		static std::unordered_set<std::string> logged;
-		const std::string name = path.filename().string();
 		{
 			std::lock_guard<std::mutex> lock(mutex);
-			if (!logged.insert(name).second) return;
+			if (!logged.insert(path.lexically_normal().string()).second) return;
 		}
-		uam::diagnostics::Write("[chat-storage] Refused to read " + name + ": " + std::to_string(source_bytes) +
+		uam::diagnostics::Write(line);
+	}
+
+	void LogOversizedChatFileOnce(const fs::path& path, std::uintmax_t source_bytes, std::size_t limit)
+	{
+		LogOversizedOnce(path, "[chat-storage] Refused to read " + path.filename().string() + ": " + std::to_string(source_bytes) +
 		    " bytes exceeds the " + std::to_string(limit) + "-byte chat read limit. The file was left unchanged.");
 	}
 
@@ -5426,7 +5430,7 @@ ChatStorageDeleteResult ChatRepository::DeleteChatStorageFiles(const fs::path& d
 	return DeleteChatStorageFilesLocked(data_root, chat_id, reason);
 }
 
-ChatSession LoadLegacyChatFromDirectory(const fs::path& chat_root)
+ChatSession LoadLegacyChatFromDirectory(const fs::path& chat_root, bool* too_large_out = nullptr)
 {
 	ChatSession chat;
 	chat.id = chat_root.filename().string();
@@ -5442,8 +5446,9 @@ ChatSession LoadLegacyChatFromDirectory(const fs::path& chat_root)
 	};
 	const auto refuse = [&]()
 	{
-		uam::diagnostics::Write("[chat-storage] Skipped migrating legacy chat folder " + chat_root.filename().string() +
+		LogOversizedOnce(chat_root, "[chat-storage] Skipped migrating legacy chat folder " + chat_root.filename().string() +
 		    ": it exceeds the " + std::to_string(ChatRepository::MaxChatReadBytes()) + "-byte chat read limit. The folder was left unchanged.");
+		if (too_large_out != nullptr) *too_large_out = true;
 		return ChatSession{};
 	};
 
@@ -5552,7 +5557,13 @@ namespace
 			return false;
 		}
 
-		ChatSession chat = LoadLegacyChatFromDirectory(folder.path());
+		bool too_large = false;
+		ChatSession chat = LoadLegacyChatFromDirectory(folder.path(), &too_large);
+		if (too_large)
+		{
+			AppendWarning(warning_out, "Skipped legacy chat folder " + folder.path().filename().string() + ": it is too large to open.");
+			return false;
+		}
 		if (chat.id.empty())
 		{
 			return false;

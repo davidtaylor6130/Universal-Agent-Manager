@@ -966,6 +966,71 @@ UAM_TEST(ChatRepositoryRefusesOversizedChatWithoutChangingItsFiles)
 	UAM_ASSERT_EQ(reopened->messages.size(), static_cast<std::size_t>(2));
 }
 
+UAM_TEST(ChatRepositoryOversizedBoundedLoadSaveAndLegacyFolderLeaveFilesUnchanged)
+{
+	TempDir temp("uam-chat-oversized-paths");
+	// Bounded load reports only the chat-limit refusal.
+	{
+		ChatSession chat;
+		chat.id = "chat-bounded";
+		chat.provider_id = "codex-cli";
+		chat.created_at = "2026-01-01T00:00:00.000Z";
+		chat.updated_at = "2026-01-01T00:00:01.000Z";
+		chat.messages.push_back(Message{MessageRole::User, std::string(32 * 1024, 'b')});
+		UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+		std::string warning;
+		UAM_ASSERT(!ChatRepository::LoadLocalChatBounded(temp.root, chat.id, 1024, &warning).has_value());
+		UAM_ASSERT(warning.empty());
+		const ScopedChatReadLimit limit(16 * 1024);
+		UAM_ASSERT(!ChatRepository::LoadLocalChatBounded(temp.root, chat.id, 8 * 1024 * 1024, &warning).has_value());
+		UAM_ASSERT(warning == std::string(ChatRepository::kChatTooLargeToOpenMessage));
+	}
+	// An unloaded save never adopts the older backup over an oversized, unindexable primary.
+	{
+		ChatSession chat;
+		chat.id = "chat-unindexable";
+		chat.provider_id = "codex-cli";
+		chat.title = "Backup";
+		chat.created_at = "2026-01-01T00:00:00.000Z";
+		chat.updated_at = "2026-01-01T00:00:01.000Z";
+		chat.messages.push_back(Message{MessageRole::User, "older message"});
+		UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+		const fs::path primary = AppPaths::UamChatFilePath(temp.root, chat.id);
+		const fs::path backup = uam::io::MakeBackupPath(primary);
+		std::error_code copy_error;
+		fs::copy_file(primary, backup, fs::copy_options::overwrite_existing, copy_error);
+		UAM_ASSERT(!copy_error);
+		const std::string backup_before = uam::io::ReadTextFile(backup);
+		const std::string primary_before(20 * 1024, 'z');
+		UAM_ASSERT(uam::io::WriteTextFile(primary, primary_before));
+		ChatSession unloaded = chat;
+		unloaded.messages.clear();
+		unloaded.messages_loaded = false;
+		unloaded.persisted_message_count = 1;
+		unloaded.title = "Renamed";
+		{
+			const ScopedChatReadLimit limit(16 * 1024);
+			UAM_ASSERT(!ChatRepository::SaveChat(temp.root, unloaded));
+		}
+		UAM_ASSERT(uam::io::ReadTextFile(primary) == primary_before);
+		UAM_ASSERT(uam::io::ReadTextFile(backup) == backup_before);
+	}
+	// A legacy chat folder above the limit stays unmigrated and unchanged.
+	{
+		const fs::path folder = AppPaths::ChatsRootPath(temp.root) / "legacy-large";
+		UAM_ASSERT(uam::io::WriteTextFile(folder / "meta.txt", "title=Legacy large\n"));
+		const std::string body(20 * 1024, 'm');
+		UAM_ASSERT(uam::io::WriteTextFile(folder / "messages" / "0001_user.txt", body));
+		const ScopedChatReadLimit limit(16 * 1024);
+		std::string warning;
+		const std::vector<ChatSession> loaded = ChatRepository::LoadLocalChats(temp.root, &warning);
+		UAM_ASSERT(std::ranges::none_of(loaded, [](const ChatSession& entry) { return entry.id == "legacy-large"; }));
+		UAM_ASSERT(warning.find("Skipped legacy chat folder legacy-large: it is too large to open.") != std::string::npos);
+		UAM_ASSERT(!fs::exists(AppPaths::UamChatFilePath(temp.root, "legacy-large")));
+		UAM_ASSERT(uam::io::ReadTextFile(folder / "messages" / "0001_user.txt") == body);
+	}
+}
+
 UAM_TEST(ChatRepositoryRecoversBackupWhenPrimaryMessagesFieldIsNotAnArray)
 {
 	TempDir temp("uam-chat-backup-non-array-messages");
