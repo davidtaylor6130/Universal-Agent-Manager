@@ -919,7 +919,14 @@ bool Application::InitializeState()
 	m_app.pending_legacy_data_roots = uam::LocalChatBundleService::PendingLegacyDataRoots(
 	    m_app.data_root, m_platformServices->path_service.DefaultDataRootPath(), executable_path);
 	m_app.folders = ChatFolderStore::Load(m_app.data_root);
-	m_app.shell_actions = ShellActionService::Load(m_app.data_root, {});
+	std::string shell_action_warning;
+	m_app.shell_actions = ShellActionService::Load(m_app.data_root, {}, &shell_action_warning);
+	if (!shell_action_warning.empty())
+	{
+		// The warning names no action, label or path.
+		m_app.shell_action_notification = shell_action_warning;
+		uam::diagnostics::Write("Shell actions: " + shell_action_warning);
+	}
 
 	const std::chrono::steady_clock::time_point folders_finished = std::chrono::steady_clock::now();
 	// Initialize the provider model catalog service (async refresh for OpenCode Zen models).

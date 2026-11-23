@@ -111,7 +111,8 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
   const [newGroupActionId, setNewGroupActionId] = useState('')
   const [newGroupName, setNewGroupName] = useState('')
   const dirty = JSON.stringify(actions) !== JSON.stringify(appliedActions)
-  const invalidAction = actions.find(action => !action.label.trim() || (!action.acceptsFiles && !action.acceptsFolders) || (action.enabled && !action.openWorkspace && !action.skillPath))
+  // A saved entry that failed to load is read-only here and saved exactly as loaded, so it never blocks Save.
+  const invalidAction = actions.find(action => !action.invalidReason && (!action.label.trim() || (!action.acceptsFiles && !action.acceptsFolders) || (action.enabled && !action.openWorkspace && !action.skillPath)))
   const validationError = invalidAction ? 'Each action needs a label and input type; enabled skill actions also need a skill.' : ''
   const dirtyRef = useRef(dirty)
   dirtyRef.current = dirty
@@ -257,16 +258,19 @@ export const ShellActionsSettings = forwardRef<ShellActionsHandle>(function Shel
           const expanded = expandedActions[action.id] ?? false
           const changed = JSON.stringify(action) !== JSON.stringify(appliedActions.find(item => item.id === action.id))
           const summary = [action.openWorkspace ? 'Open as workspace' : 'Run skill', action.acceptsFiles && action.acceptsFolders ? 'files and folders' : action.acceptsFolders ? 'folders only' : 'files only', provider?.shortName || provider?.name || providerId].join(' · ')
+          // A saved entry that failed to load stays disabled and read-only with its one-line reason; it can only be deleted.
+          const kept = Boolean(action.invalidReason)
           return <div key={action.id} className="uam-presence" data-state={removingActionIds.has(action.id) ? 'closed' : 'open'}><SettingRow icon={<FolderTree size={15} aria-hidden />}
             title={action.label || 'Untitled action'}
             description={summary}
-            status={changed ? <span className="uam-prov-status" data-tone="warning"><StatusDot tone="warning" />Unsaved changes</span> : undefined}
+            status={kept ? <span className="uam-prov-status" data-tone="error"><StatusDot tone="error" />Invalid and disabled: {action.invalidReason}</span>
+              : changed ? <span className="uam-prov-status" data-tone="warning"><StatusDot tone="warning" />Unsaved changes</span> : undefined}
             control={<>
-              <Switch hideLabel label={`Enable ${action.label}`} checked={action.enabled} onChange={(event) => update(action.id, { enabled: event.target.checked })} />
-              <IconButton size="sm" aria-expanded={expanded} icon={<ChevronRight size={14} className="transition-transform duration-base motion-reduce:transition-none" style={{ transform: expanded ? 'rotate(90deg)' : 'none' }} />} label={expanded ? `Collapse ${action.label}` : `Expand ${action.label}`} onClick={() => setExpandedActions((current) => ({ ...current, [action.id]: !expanded }))} />
+              <Switch hideLabel label={`Enable ${action.label}`} checked={kept ? false : action.enabled} disabled={kept} onChange={(event) => update(action.id, { enabled: event.target.checked })} />
+              {!kept && <IconButton size="sm" aria-expanded={expanded} icon={<ChevronRight size={14} className="transition-transform duration-base motion-reduce:transition-none" style={{ transform: expanded ? 'rotate(90deg)' : 'none' }} />} label={expanded ? `Collapse ${action.label}` : `Expand ${action.label}`} onClick={() => setExpandedActions((current) => ({ ...current, [action.id]: !expanded }))} />}
               <IconButton size="sm" icon={<X size={14} />} label={`Remove ${action.label}`} onClick={() => setPendingDeleteActionId(action.id)} />
             </>}>
-            <ActionEditor open={expanded}>
+            <ActionEditor open={expanded && !kept}>
               <SettingsField label="Name">
                 <input id={actionFieldId(action.id, 'name')} aria-label={`Label for ${action.label}`} placeholder="Action name" value={action.label} onChange={(event) => update(action.id, { label: event.target.value })} className="uam-field w-full" />
               </SettingsField>

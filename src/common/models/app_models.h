@@ -951,6 +951,10 @@ struct ShellAction
 	bool accepts_folders = true;
 	bool enabled = true;
 	bool open_workspace = false;
+	/// Set only for a saved entry that failed validation on load: a one-line reason. The entry stays disabled, read-only and in
+	/// its place, and is written back from `preserved_json` (its saved form) until the user deletes it.
+	std::string invalid_reason;
+	std::string preserved_json;
 };
 
 struct McpSecretReference

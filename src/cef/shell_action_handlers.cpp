@@ -2,14 +2,10 @@
 
 #include "app/shell_action_service.h"
 #include "common/platform/platform_services.h"
-#include "common/provider/excluded_provider_data.h"
 #include "common/utils/string_utils.h"
 #include "cef/cef_push.h"
 
 #include <nlohmann/json.hpp>
-
-#include <algorithm>
-#include <cstddef>
 
 namespace
 {
@@ -54,13 +50,8 @@ void UamQueryHandler::HandleSetShellActions(CefRefPtr<CefBrowser> browser, const
 {
 	std::vector<ShellAction> actions;
 	std::string error;
-	if (ParseActions(payload, actions, error))
-	{
-		// The interface never sees an excluded provider's actions, so its full-list save keeps them unchanged and in place.
-		for (std::size_t index = 0; index < m_app.shell_actions.size(); ++index)
-			if (uam::excluded_provider_data::IsExcluded(m_app.shell_actions[index].provider_id))
-				actions.insert(actions.begin() + static_cast<std::ptrdiff_t>(std::min(index, actions.size())), m_app.shell_actions[index]);
-	}
+	// Excluded providers' actions and kept invalid entries are saved as loaded, never as the interface returned them.
+	if (ParseActions(payload, actions, error)) actions = ShellActionService::MergeInterfaceList(m_app.shell_actions, std::move(actions));
 	if (!error.empty() || !ShellActionService::Save(m_app.data_root, actions, &error))
 	{
 		cb->Failure(400, error);
