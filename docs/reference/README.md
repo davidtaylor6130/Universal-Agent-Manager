@@ -8,6 +8,7 @@ These pages preserve useful source-level details from the trial base, outside th
 | [Source map](source-map.md) | Entry points for checking implementation routes |
 | [Queue setting admission audit](nongeneric-queue-setting-admission.md) | Per-adapter mode, model and reasoning routes with isolated corrections, scoped fixtures and remaining verification |
 | [Provider parity evidence](provider-runtime-parity.md) | Existing provider limits and investigation evidence |
+| [Model catalogue scope](model-catalogue-scope.md) | Which providers' model lists are account-wide or per workspace, with runtime evidence, and how startup shares them |
 | [Antigravity native history](antigravity-native-history-decision.md) | Pinned primary storage evidence, read-only reader, completeness limits and remaining upstream export dependency |
 | [Antigravity runtime and goals](antigravity-runtime-goals.md) | CLI-conversation UAM goal lifecycle and all 26 capability source boundaries |
 | [OpenCode V2 protocol assessment](opencode-v2-protocol-assessment.md) | Verified V2 range (2.1.2 through 2.2.7), native adapter contracts, session/history differences, permission guard and verification limits |

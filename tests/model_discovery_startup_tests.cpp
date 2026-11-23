@@ -68,30 +68,45 @@ namespace
 	};
 }
 
-UAM_TEST(StartupModelDiscoveryRefreshesFreshCacheOncePerRestart)
+UAM_TEST(StartupModelDiscoveryKeepsFreshCacheFromTheSameCliVersionAcrossRestarts)
 {
 	StartupDiscoveryFixture fixture;
 	fixture.app.folders.resize(1);
 	const std::string workspace = fixture.app.folders.front().directory;
+	fixture.app.runtime_cli_versions_by_provider_id["codex-cli"].installed_version = "1.0.0";
+	fixture.app.provider_model_catalog->SetExecutionHostContext(fixture.app.settings.execution_hosts);
+	// The first run has no stamped cache, so it asks once and records the version that answered.
+	uam::StartupModelDiscoveryService first(fixture.Launcher());
+	first.Initialize(fixture.app);
+	UAM_ASSERT(first.Poll(fixture.app));
+	UAM_ASSERT_EQ(fixture.launched.size(), std::size_t{1});
 	const nlohmann::json cached = nlohmann::json::array({{{"id", "cached-before-restart"}}});
 	UAM_ASSERT(fixture.app.provider_model_catalog->RememberSuccessfulModels("codex-cli", cached, workspace));
+	fixture.app.acp_sessions.clear();
+	// Restart with the same CLI: a cache under seven days old starts no process.
 	fixture.app.provider_model_catalog->Initialize(fixture.app.data_root, fixture.app.provider_profiles);
 	fixture.app.provider_model_catalog->SetExecutionHostContext(fixture.app.settings.execution_hosts);
-	uam::StartupModelDiscoveryService discovery(fixture.Launcher());
-	discovery.Initialize(fixture.app);
-	UAM_ASSERT(discovery.Poll(fixture.app));
+	uam::StartupModelDiscoveryService same_version(fixture.Launcher());
+	same_version.Initialize(fixture.app);
+	UAM_ASSERT(!same_version.Poll(fixture.app));
 	UAM_ASSERT_EQ(fixture.launched.size(), std::size_t{1});
+	UAM_ASSERT(!fixture.app.provider_model_catalog->IsDiscoveryPending("codex-cli", workspace));
+	UAM_ASSERT_EQ(fixture.app.provider_model_catalog->GetCachedProviderModels("codex-cli", workspace), cached);
+	// A settings-requested refresh still asks the provider while the cache is fresh.
+	UAM_ASSERT(fixture.app.provider_model_catalog->BeginDiscovery("codex-cli", workspace));
+	fixture.app.provider_model_catalog->RememberRefreshFailure("codex-cli", "explicit refresh failed", workspace);
+	// Restart after a CLI update: the same fresh cache is refreshed once, keeping its choices visible meanwhile.
+	fixture.app.runtime_cli_versions_by_provider_id["codex-cli"].installed_version = "1.1.0";
+	fixture.app.provider_model_catalog->Initialize(fixture.app.data_root, fixture.app.provider_profiles);
+	fixture.app.provider_model_catalog->SetExecutionHostContext(fixture.app.settings.execution_hosts);
+	uam::StartupModelDiscoveryService updated(fixture.Launcher());
+	updated.Initialize(fixture.app);
+	UAM_ASSERT(updated.Poll(fixture.app));
+	UAM_ASSERT_EQ(fixture.launched.size(), std::size_t{2});
 	UAM_ASSERT_EQ(fixture.app.provider_model_catalog->GetCachedProviderModels("codex-cli", workspace), cached);
 	UAM_ASSERT(fixture.app.provider_model_catalog->IsDiscoveryPending("codex-cli", workspace));
-	UAM_ASSERT(!discovery.Poll(fixture.app));
-	fixture.app.provider_model_catalog->RememberRefreshFailure("codex-cli", "isolated refresh failure", workspace);
-	fixture.app.acp_sessions.clear();
-	discovery.Initialize(fixture.app);
-	UAM_ASSERT(!discovery.Poll(fixture.app));
-	UAM_ASSERT_EQ(fixture.launched.size(), std::size_t{1});
-	UAM_ASSERT_EQ(fixture.app.provider_model_catalog->GetCachedProviderModels("codex-cli", workspace), cached);
-	// A settings-requested retry remains available after the one startup attempt.
-	UAM_ASSERT(fixture.app.provider_model_catalog->BeginDiscovery("codex-cli", workspace));
+	UAM_ASSERT(!updated.Poll(fixture.app));
+	UAM_ASSERT_EQ(fixture.launched.size(), std::size_t{2});
 }
 
 UAM_TEST(StartupModelDiscoveryRunsAfterAFailedLocalVersionCheck)
@@ -208,6 +223,13 @@ UAM_TEST(StartupModelDiscoveryPrewarmsOnlyInitialNewChatWorkspaceAcrossProviders
 UAM_TEST(StartupModelDiscoveryBoundsConcurrencyAndLeavesExistingTurnsUntouched)
 {
 	StartupDiscoveryFixture fixture;
+	// Gemini's model request carries the workspace, so its three folders need three processes.
+	fixture.app.provider_profiles.push_back(ProviderProfileStore::DefaultGeminiProfile());
+	fixture.app.provider_model_catalog->Initialize(fixture.app.data_root, fixture.app.provider_profiles);
+	fixture.app.settings.default_new_chat_provider_id = "gemini-cli";
+	fixture.app.runtime_cli_versions_by_provider_id["gemini-cli"].checked = true;
+	fixture.app.runtime_cli_versions_by_provider_id["gemini-cli"].supported = true;
+	fixture.app.runtime_cli_versions_by_provider_id["codex-cli"].supported = false;
 	for (const bool processing : {false, true})
 	{
 		std::unique_ptr<uam::AcpSessionState> session = std::make_unique<uam::AcpSessionState>();
@@ -481,9 +503,17 @@ UAM_TEST(StartupModelDiscoveryPreservesRemoteLinuxLiteralBackslashesInScopeAndLa
 	uam::StartupModelDiscoveryService service(fixture.Launcher());
 	service.Initialize(fixture.app);
 	UAM_ASSERT(service.Poll(fixture.app));
-	UAM_ASSERT_EQ(fixture.launched.size(), std::size_t{2});
+	// Codex's list is account-wide: one process on the host answers both literal paths, which stay separate scopes.
+	UAM_ASSERT_EQ(fixture.launched.size(), std::size_t{1});
 	UAM_ASSERT_EQ(fixture.launched[0].workspace_directory, paths[0]);
-	UAM_ASSERT_EQ(fixture.launched[1].workspace_directory, paths[1]);
+	const nlohmann::json models = nlohmann::json::array({{{"id", "remote-model"}}});
+	UAM_ASSERT(fixture.app.provider_model_catalog->RememberSuccessfulModels("codex-cli", models, paths[0], nlohmann::json::array(), host.id));
+	UAM_ASSERT(service.Poll(fixture.app));
+	UAM_ASSERT_EQ(fixture.launched.size(), std::size_t{1});
+	UAM_ASSERT_EQ(fixture.app.provider_model_catalog->GetCachedProviderModels("codex-cli", paths[1], host.id), models);
+	UAM_ASSERT(fixture.app.provider_model_catalog->CaptureScopeKey("codex-cli", paths[0], host.id) != fixture.app.provider_model_catalog->CaptureScopeKey("codex-cli", paths[1], host.id));
+	const nlohmann::json shared = fixture.app.provider_model_catalog->GetPersistentCatalogEntry("codex-cli", paths[1], host.id);
+	UAM_ASSERT_EQ(shared.value("workspaceDirectory", std::string{}), paths[1]);
 }
 
 UAM_TEST(ModelCatalogSeparatesRemotePosixLiteralBackslashesAndPreservesWindowsAliases)
@@ -794,4 +824,173 @@ UAM_TEST(StartupModelDiscoveryContainsALaunchExceptionToItsScope)
 	const nlohmann::json snapshot = fixture.app.provider_model_catalog->GetCatalogSnapshot("codex-cli", workspace, "local");
 	UAM_ASSERT(snapshot.value("modelRefreshError", std::string{}).starts_with("unexpected error: "));
 	UAM_ASSERT(!discovery.Poll(fixture.app));
+}
+
+namespace
+{
+	struct ManyWorkspaceDiscovery
+	{
+		static constexpr int kLocalWorkspaces = 40;
+		static constexpr int kRemoteWorkspaces = 20;
+		StartupDiscoveryFixture fixture;
+		ExecutionHost remote;
+
+		ManyWorkspaceDiscovery()
+		{
+			fixture.app.provider_profiles.push_back(ProviderProfileStore::DefaultGeminiProfile());
+			fixture.app.folders.clear();
+			remote.id = "remote";
+			remote.transport = "ssh";
+			remote.platform = "linux";
+			remote.runner_status = "ready";
+			fixture.app.settings.execution_hosts.push_back(remote);
+			for (const std::string host : {std::string("local"), remote.id})
+				for (const std::string provider : {"codex-cli", "claude-cli", "gemini-cli"})
+				{
+					uam::CliProviderVersionState& version = fixture.app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey(provider, host)];
+					version.checked = true;
+					version.supported = true;
+					version.installed_version = "1.0.0";
+				}
+			for (int index = 0; index < kLocalWorkspaces + kRemoteWorkspaces; ++index)
+			{
+				const bool local = index < kLocalWorkspaces;
+				std::string directory = "/srv/workspace-" + std::to_string(index);
+				if (local)
+				{
+					const fs::path path = fixture.temp.root / ("many-" + std::to_string(index));
+					fs::create_directories(path);
+					directory = path.string();
+				}
+				ChatFolder folder{"many-folder-" + std::to_string(index), "Workspace", directory, false};
+				folder.execution_host_id = local ? "local" : remote.id;
+				fixture.app.folders.push_back(folder);
+				for (const std::string provider : {"codex-cli", "claude-cli", "gemini-cli"})
+				{
+					ChatSession chat;
+					chat.id = provider + "-" + std::to_string(index);
+					chat.provider_id = provider;
+					chat.folder_id = folder.id;
+					chat.workspace_directory = directory;
+					chat.execution_host_id = folder.execution_host_id;
+					fixture.app.chats.push_back(chat);
+				}
+			}
+			Restart();
+		}
+
+		void Restart()
+		{
+			fixture.app.acp_sessions.clear();
+			fixture.app.provider_model_catalog->Initialize(fixture.app.data_root, fixture.app.provider_profiles);
+			fixture.app.provider_model_catalog->SetExecutionHostContext(fixture.app.settings.execution_hosts);
+		}
+
+		/// <summary>Runs one app start to completion: every launched discovery answers before the next poll. Returns the launches.</summary>
+		std::size_t RunStartup(const std::function<bool(const uam::ModelDiscoveryScope&)>& succeeds = {})
+		{
+			const std::size_t before = fixture.launched.size();
+			uam::StartupModelDiscoveryService service(fixture.Launcher());
+			service.Initialize(fixture.app);
+			for (int poll = 0; poll < 1000; ++poll)
+			{
+				const std::size_t launched_before = fixture.launched.size();
+				const bool changed = service.Poll(fixture.app);
+				// The concurrency limit holds: no poll starts more than two discoveries, and at most two run at once.
+				UAM_ASSERT(fixture.launched.size() - launched_before <= 2);
+				UAM_ASSERT(std::ranges::count_if(fixture.app.acp_sessions, [](const auto& session) { return session->running; }) <= 2);
+				for (std::size_t index = launched_before; index < fixture.launched.size(); ++index)
+				{
+					const uam::ModelDiscoveryScope& scope = fixture.launched[index];
+					if (!succeeds || succeeds(scope))
+						UAM_ASSERT(fixture.app.provider_model_catalog->RememberSuccessfulModels(scope.provider_id, nlohmann::json::array({{{"id", scope.provider_id + "-model"}}}), scope.workspace_directory, nlohmann::json::array(), scope.execution_host_id));
+					else
+						fixture.app.provider_model_catalog->RememberRefreshFailure(scope.provider_id, "Fixture discovery failure.", scope.workspace_directory, scope.execution_host_id);
+				}
+				for (const auto& session : fixture.app.acp_sessions) session->running = false;
+				if (!changed && fixture.launched.size() == launched_before) break;
+			}
+			return fixture.launched.size() - before;
+		}
+
+		std::size_t CachedScopes(const std::string& provider) const
+		{
+			std::size_t cached = 0;
+			for (const ChatFolder& folder : fixture.app.folders)
+				cached += fixture.app.provider_model_catalog->GetCachedProviderModels(provider, folder.directory, folder.execution_host_id).empty() ? 0 : 1;
+			return cached;
+		}
+	};
+}
+
+// The process storm: 60 workspaces (40 local, 20 over SSH) with Codex, Claude and Gemini chats each.
+UAM_TEST(StartupModelDiscoveryAsksAccountWideProvidersOncePerHostForManyWorkspaces)
+{
+	ManyWorkspaceDiscovery run;
+	constexpr std::size_t workspaces = ManyWorkspaceDiscovery::kLocalWorkspaces + ManyWorkspaceDiscovery::kRemoteWorkspaces;
+	// Before this change startup launched one discovery per collected scope of a compatible provider: 3 providers x 60
+	// workspaces (the fixture's Antigravity scope is incompatible and was never launched).
+	const std::vector<uam::ModelDiscoveryScope> scopes = uam::StartupModelDiscoveryService::CollectScopes(run.fixture.app);
+	UAM_ASSERT_EQ(std::ranges::count_if(scopes, [](const uam::ModelDiscoveryScope& scope) { return scope.provider_id != "antigravity-cli"; }), static_cast<std::ptrdiff_t>(3 * workspaces));
+	// First start with no cache: Codex and Claude once per computer (4), Gemini once per workspace (60).
+	UAM_ASSERT_EQ(run.RunStartup(), std::size_t{4} + workspaces);
+	UAM_ASSERT_EQ(std::ranges::count(run.fixture.launched, std::string("gemini-cli"), &uam::ModelDiscoveryScope::provider_id), static_cast<std::ptrdiff_t>(workspaces));
+	UAM_ASSERT_EQ(std::ranges::count_if(run.fixture.launched, [](const uam::ModelDiscoveryScope& scope) { return scope.execution_host_id == "remote"; }), 2 + ManyWorkspaceDiscovery::kRemoteWorkspaces);
+	for (const std::string provider : {"codex-cli", "claude-cli", "gemini-cli"}) UAM_ASSERT_EQ(run.CachedScopes(provider), workspaces);
+	// Restart within seven days with the same CLI versions: nothing is launched.
+	run.Restart();
+	UAM_ASSERT_EQ(run.RunStartup(), std::size_t{0});
+	// A new workspace for an account-wide provider takes a current list from another workspace without a process.
+	const fs::path added = run.fixture.temp.root / "many-added";
+	fs::create_directories(added);
+	run.fixture.app.folders.push_back(ChatFolder{"many-added", "Workspace", added.string(), false});
+	run.Restart();
+	UAM_ASSERT_EQ(run.RunStartup(), std::size_t{0});
+	UAM_ASSERT_EQ(run.fixture.app.provider_model_catalog->GetCachedProviderModels("codex-cli", added.string())[0].value("id", ""), std::string("codex-cli-model"));
+	run.fixture.app.folders.pop_back();
+	// A local Codex update refreshes Codex once on this computer, not in each of its 40 workspaces.
+	run.fixture.app.runtime_cli_versions_by_provider_id["codex-cli"].installed_version = "1.1.0";
+	run.Restart();
+	const std::size_t before_update = run.fixture.launched.size();
+	UAM_ASSERT_EQ(run.RunStartup(), std::size_t{1});
+	UAM_ASSERT_EQ(run.fixture.launched[before_update].provider_id, std::string("codex-cli"));
+	UAM_ASSERT_EQ(run.fixture.launched[before_update].execution_host_id, std::string("local"));
+	for (int index = 0; index < ManyWorkspaceDiscovery::kLocalWorkspaces; ++index)
+		UAM_ASSERT(run.fixture.app.provider_model_catalog->IsCacheFreshForCliVersion("codex-cli", run.fixture.app.folders[index].directory, "local", "1.1.0"));
+	UAM_ASSERT(run.fixture.app.provider_model_catalog->IsCacheFreshForCliVersion("codex-cli", run.fixture.app.folders.back().directory, "remote", "1.0.0"));
+	run.Restart();
+	UAM_ASSERT_EQ(run.RunStartup(), std::size_t{0});
+}
+
+UAM_TEST(StartupModelDiscoverySharesNothingWhenTheAccountWideDiscoveryFails)
+{
+	ManyWorkspaceDiscovery run;
+	run.fixture.app.runtime_cli_versions_by_provider_id["gemini-cli"].supported = false;
+	run.fixture.app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("gemini-cli", "remote")].supported = false;
+	// Every discovery fails: still one launch per account-wide provider and computer, and no workspace gains a list.
+	UAM_ASSERT_EQ(run.RunStartup([](const uam::ModelDiscoveryScope&) { return false; }), std::size_t{4});
+	UAM_ASSERT_EQ(run.CachedScopes("codex-cli"), std::size_t{0});
+	UAM_ASSERT_EQ(run.CachedScopes("claude-cli"), std::size_t{0});
+	// Only the attempted workspace records the failure; the others are untouched and their own Refresh still asks the provider.
+	const ChatFolder& second = run.fixture.app.folders[1];
+	UAM_ASSERT(run.fixture.app.provider_model_catalog->GetProviderRefreshError("codex-cli", second.directory).empty());
+	UAM_ASSERT(run.fixture.app.provider_model_catalog->BeginDiscovery("codex-cli", second.directory));
+}
+
+UAM_TEST(ModelCatalogSharedListKeepsATargetsNewerOwnResult)
+{
+	StartupDiscoveryFixture fixture;
+	const std::string source = fixture.app.folders[0].directory;
+	const std::string target = fixture.app.folders[1].directory;
+	const std::string pending = fixture.app.folders[2].directory;
+	UAM_ASSERT(fixture.app.provider_model_catalog->RememberSuccessfulModels("codex-cli", nlohmann::json::array({{{"id", "older"}}}), source));
+	nlohmann::json entry = fixture.app.provider_model_catalog->GetPersistentCatalogEntry("codex-cli", source);
+	// A target refreshed after the source keeps its own list; one with a discovery in flight is left to it.
+	UAM_ASSERT(fixture.app.provider_model_catalog->RememberSuccessfulModels("codex-cli", nlohmann::json::array({{{"id", "newer"}}}), target));
+	UAM_ASSERT(fixture.app.provider_model_catalog->BeginDiscovery("codex-cli", pending));
+	UAM_ASSERT_EQ(fixture.app.provider_model_catalog->ShareAccountWideCatalog("codex-cli", "local", source, {target, pending}, entry), std::size_t{0});
+	entry["updatedAtSec"] = entry.value("updatedAtSec", std::int64_t{0}) - 60;
+	UAM_ASSERT_EQ(fixture.app.provider_model_catalog->ShareAccountWideCatalog("codex-cli", "local", source, {target, pending}, entry), std::size_t{0});
+	UAM_ASSERT_EQ(fixture.app.provider_model_catalog->GetCachedProviderModels("codex-cli", target)[0].value("id", ""), std::string("newer"));
+	UAM_ASSERT(fixture.app.provider_model_catalog->GetCachedProviderModels("codex-cli", pending).empty());
 }

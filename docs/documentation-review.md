@@ -329,3 +329,7 @@ Recorded limits that are not decisions: Claude Code, Gemini and Copilot children
 - Only the turn Stop control ends a chat's watches; stopping the provider session does not.
 - GitHub Enterprise hosts, GitLab and Azure DevOps are not supported.
 - The phone clients show no linked pull request row and cannot start or stop a watch.
+
+## Model list scope
+
+Startup now asks Codex, Claude Code and GitHub Copilot once per computer and shares the answer with their other workspaces, because their discovery requests carry no workspace; Gemini, OpenCode and Antigravity stay per workspace ([evidence](reference/model-catalogue-scope.md)). Two questions remain open: whether project configuration read from the working directory (a trusted project's Codex configuration, a project's Claude settings) can change an account-wide list, and whether Gemini's list, rather than only its current model, varies by workspace. The interim interpretation is that a workspace's own Refresh or Retry still asks the provider there, so a workspace-specific list is reachable on request; startup sharing is reversed by returning false from `ModelListIsAccountWide` for that provider.

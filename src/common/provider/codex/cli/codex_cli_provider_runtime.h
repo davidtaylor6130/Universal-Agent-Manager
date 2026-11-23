@@ -8,6 +8,8 @@ class CodexCliProviderRuntime final : public IProviderRuntime
 	const char* RuntimeId() const override;
 	nlohmann::json ReadLocalModelCatalog() const override;
 	const ProviderCliPolicy* CliVersionPolicy() const override;
+	// model/list carries only a cursor and discovery stops before thread/start sends a cwd.
+	bool ModelListIsAccountWide() const override { return true; }
 	bool RecentOutputIndicatesInputPrompt(std::string_view recent_output) const override;
 	ProviderTerminalActivity PollInteractiveActivity(uam::CliTerminalState& terminal, std::string_view session_id,
 	    const std::filesystem::path& cwd, bool ambiguous) const override;
