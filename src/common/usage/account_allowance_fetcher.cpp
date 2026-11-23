@@ -385,7 +385,7 @@ namespace uam::usage
 					return codex ? NormalizeCodexAccountAllowance(*result, time::SystemEpochMillisecondsNow())
 					             : NormalizeCopilotAccountAllowance(*result, time::SystemEpochMillisecondsNow());
 				if (copilot && !uam::copilot::IsVerifiedSdkProtocolResult(*result))
-					return Failure(uam::copilot::SdkProtocolRefusal(*result));
+					return Failure(uam::copilot::SdkProtocolRefusalForResult(*result));
 				if (codex && !send({{"jsonrpc", "2.0"}, {"method", "initialized"}}))
 					return Failure("The provider account reader could not receive initialization.");
 				initialized = true;

@@ -2,8 +2,8 @@
 #include "common/provider/copilot/cli/copilot_cli_provider_runtime.h"
 
 #include "app/agent_run_scheduler.h"
-#include "common/provider/copilot_sdk_protocol.h"
 #include "common/config/approval_modes.h"
+#include "common/provider/copilot_sdk_protocol.h"
 #include "common/runtime/acp/acp_json_rpc.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/provider_cli_compatibility_service.h"
@@ -345,7 +345,7 @@ bool HandleResult(AppState& app, AcpSessionState& session, ChatSession& chat, co
 	{
 		const auto version = Text(result, "version");
 		if (!uam::copilot::IsVerifiedSdkProtocolResult(result))
-			Reject(app, session, chat, *state, uam::copilot::SdkProtocolRefusal(result));
+			Reject(app, session, chat, *state, uam::copilot::SdkProtocolRefusalForResult(result));
 		else if (!SupportedVersion(version))
 			Reject(app, session, chat, *state, "Managed Copilot continuation requires stable Copilot CLI 1.0.98 or newer.");
 		else { (*state)["supported"] = true; (*state)["phase"] = "setup"; }

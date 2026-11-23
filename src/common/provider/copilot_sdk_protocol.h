@@ -68,7 +68,7 @@ inline std::string SdkProtocolRefusal(std::optional<std::int64_t> protocol)
 	                : "This Copilot CLI did not report a protocol; " + supported;
 }
 
-inline std::string SdkProtocolRefusal(const nlohmann::json& result)
+inline std::string SdkProtocolRefusalForResult(const nlohmann::json& result)
 {
 	return SdkProtocolRefusal(ReportedSdkProtocol(result));
 }

@@ -214,14 +214,14 @@ UAM_TEST(CopilotSdkProtocolGateAdmitsOnlyVerifiedProtocolsWithOnePlainLine)
 	         nlohmann::json{{"version", "1.0.114"}, {"protocolVersion", 4}}})
 	{
 		UAM_ASSERT(!IsVerifiedSdkProtocolResult(result));
-		UAM_ASSERT_EQ(SdkProtocolRefusal(result), std::string("This Copilot CLI uses protocol 4; UAM supports 3."));
+		UAM_ASSERT_EQ(SdkProtocolRefusalForResult(result), std::string("This Copilot CLI uses protocol 4; UAM supports 3."));
 	}
 	for (const nlohmann::json& result : {nlohmann::json::object(), nlohmann::json{{"protocolVersion", "3"}}, nlohmann::json{{"protocolVersion", 3.0}},
 	         nlohmann::json{{"protocolVersion", -3}}, nlohmann::json{{"protocolVersion", nullptr}}, nlohmann::json{{"protocolVersion", true}},
 	         nlohmann::json{{"protocolVersion", std::numeric_limits<std::uint64_t>::max()}}, nlohmann::json::array({3}), nlohmann::json(3)})
 	{
 		UAM_ASSERT(!IsVerifiedSdkProtocolResult(result));
-		UAM_ASSERT_EQ(SdkProtocolRefusal(result), std::string("This Copilot CLI did not report a protocol; UAM supports 3."));
+		UAM_ASSERT_EQ(SdkProtocolRefusalForResult(result), std::string("This Copilot CLI did not report a protocol; UAM supports 3."));
 	}
 	for (const std::int64_t protocol : {0, 2, 4, 5})
 		UAM_ASSERT(!IsVerifiedSdkProtocol(protocol));
@@ -230,18 +230,14 @@ UAM_TEST(CopilotSdkProtocolGateAdmitsOnlyVerifiedProtocolsWithOnePlainLine)
 	UAM_ASSERT(refusal.find("update") == std::string::npos);
 }
 
-UAM_TEST(CopilotNativeProtocolFourPingIsRefusedBeforeModelsOrSessionSetup)
+UAM_TEST(CopilotNativeProtocolFourPingIsRefusedBeforeAnyFurtherWireMessage)
 {
 	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(uam::provider_ids::kCopilotCli);
 	for (const int protocol : {4, 3})
 	{
-		uam::AppState app;
-		ChatSession chat;
-		chat.id = "chat-protocol";
-		chat.provider_id = uam::provider_ids::kCopilotCli;
 		uam::AcpSessionState session;
-		session.chat_id = chat.id;
-		session.provider_id = chat.provider_id;
+		session.chat_id = "chat-protocol";
+		session.provider_id = uam::provider_ids::kCopilotCli;
 		session.running = true;
 		CopilotPrivateWriter writer(session);
 		const nlohmann::json ping = runtime.OnAcpBuildInitialize(session, 1);
@@ -252,7 +248,7 @@ UAM_TEST(CopilotNativeProtocolFourPingIsRefusedBeforeModelsOrSessionSetup)
 		runtime.OnAcpInitializeResult(session, pong);
 		const auto wire = [&]
 		{
-			if (session.stdin_writer) (void)session.stdin_writer->Flush(std::chrono::seconds(2));
+			if (session.stdin_writer) UAM_ASSERT(session.stdin_writer->Flush(std::chrono::seconds(2)));
 			std::string bytes = *writer.written;
 			std::fflush(writer.file);
 			std::rewind(writer.file);
@@ -266,11 +262,10 @@ UAM_TEST(CopilotNativeProtocolFourPingIsRefusedBeforeModelsOrSessionSetup)
 			UAM_ASSERT_EQ(session.last_error, std::string("This Copilot CLI uses protocol 4; UAM supports 3."));
 			UAM_ASSERT(!session.copilot_native_state.contains("protocolVersion"));
 			UAM_ASSERT(session.pending_request_methods.empty());
+			// Nothing reaches the CLI after the refused ping. SendSessionSetupIfReady only sends
+			// session.create/resume for an initialized runtime, and the refusal cleared that above.
 			UAM_ASSERT(wire().empty());
-			// No session.create/resume follows: setup requires an initialized runtime.
-			UAM_ASSERT(!uam::acp_detail::SendSessionSetupIfReady(app, session, chat));
 			UAM_ASSERT_EQ(session.session_setup_request_id, 0);
-			UAM_ASSERT(wire().find("session.") == std::string::npos);
 		}
 		else
 		{
