@@ -334,6 +334,23 @@ UAM_TEST(ManualCompactionRefusesOldOrRemoteAntigravityAndOverlongClaudeInstructi
 		UAM_ASSERT(!uam::CompactAcpSession(app, chat.id, &error));
 		UAM_ASSERT(error.find("1.3.5 or later") != std::string::npos);
 		UAM_ASSERT(app.acp_sessions.empty());
+		// An unknown version is refused at send time with its own reason, not as an old CLI.
+		app.runtime_cli_versions_by_provider_id.clear();
+		app.acp_sessions.push_back(std::make_unique<uam::AcpSessionState>());
+		uam::AcpSessionState& ready = *app.acp_sessions.back();
+		ready.chat_id = chat.id;
+		ready.provider_id = chat.provider_id;
+		ready.protocol_kind = "antigravity-stream-json";
+		ready.session_id = chat.native_session_id;
+		ready.running = true;
+		ready.session_ready = true;
+		UAM_ASSERT(!uam::CompactAcpSession(app, chat.id, &error));
+		UAM_ASSERT(error.find("has not checked") != std::string::npos);
+		UAM_ASSERT(!ready.manual_compaction_pending);
+		UAM_ASSERT(ready.pending_request_methods.empty());
+		app.acp_sessions.clear();
+		// clear() invalidated `version`; restore the old CLI through a fresh lookup.
+		app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("antigravity-cli", "local")].installed_version = "1.3.4";
 		app.chats.front().execution_host_id = "remote-fixture";
 		bool used = true;
 		UAM_ASSERT(!uam::CompactAcpSession(app, chat.id, &error, "keep notes", &used));

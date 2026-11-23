@@ -3720,14 +3720,14 @@ For desktop observation and input, use only the provider's built-in controller; 
 		if (remote_compaction && !runtime.SupportsRemoteAcpCompaction())
 			return fail("This provider can compact only chats that run on this computer.");
 		const std::string typed_instructions = uam::strings::Trim(instructions);
-		if (queued && !typed_instructions.empty() && typed_instructions != pending->instructions)
+		const bool accepts_instructions = runtime.SupportsAcpCompactionInstructions();
+		if (queued && accepts_instructions && !typed_instructions.empty() && typed_instructions != pending->instructions)
 		{
 			// The waiting request keeps its own instructions; it is not replaced or cancelled here.
 			if (error_out != nullptr) *error_out = "A compaction is already waiting to start. Try again when it finishes.";
 			return false;
 		}
 		// Instructions reach only runtimes that accept them; others run the plain command and report them unused.
-		const bool accepts_instructions = runtime.SupportsAcpCompactionInstructions();
 		const std::string requested_instructions = !accepts_instructions ? std::string{} : queued ? pending->instructions : typed_instructions;
 		if (requested_instructions.size() > kMaxManualCompactionInstructionBytes)
 			return fail("Compaction instructions are too long. Shorten them and try again.");
@@ -3800,7 +3800,15 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return fail("Remote compaction requires a ready owned protocol 3 provider process.");
 		const int request_id = session->next_request_id;
 		std::string method;
-		if (!AcpCompactionVersionSatisfied(app, runtime, provider_id, chat->execution_host_id).value_or(false))
+		const std::optional<bool> version_ok = AcpCompactionVersionSatisfied(app, runtime, provider_id, chat->execution_host_id);
+		if (!version_ok)
+		{
+			// A deferred request waits for this provider's running version check; otherwise an unknown version is refused.
+			if (queued && app.runtime_cli_version_check_task.running && app.runtime_cli_version_provider_id == provider_id &&
+			    app.runtime_cli_version_check_task.execution_host.id == chat->execution_host_id) return true;
+			return fail("UAM has not checked this provider's CLI version yet. Check it in Settings and try again.");
+		}
+		if (!*version_ok)
 			return fail(std::string("Update the provider CLI to ") + runtime.MinimumAcpCompactionVersion() + " or later to compact this chat.");
 		session->manual_compaction_instructions = requested_instructions;
 		const nlohmann::json request = runtime.OnAcpBuildCompact(*session, request_id, method);

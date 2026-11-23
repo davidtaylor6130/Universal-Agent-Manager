@@ -2190,9 +2190,9 @@ namespace
 			extra["state"] = state;
 			UAM_ASSERT(runtime.OnAcpHandleMessage(app, session, Chat(), {{"event", "step_update"}, {"step_update", extra}}, nullptr));
 		}
-		void Result(const std::string& status, int turns = 2)
+		void Result(const std::string& status, int turns = 2, const std::string& response = "")
 		{
-			UAM_ASSERT(runtime.OnAcpHandleMessage(app, session, Chat(), {{"event", "result"}, {"result", {{"conversation_id", conversation}, {"status", status}, {"num_turns", turns}, {"response", ""}}}}, nullptr));
+			UAM_ASSERT(runtime.OnAcpHandleMessage(app, session, Chat(), {{"event", "result"}, {"result", {{"conversation_id", conversation}, {"status", status}, {"num_turns", turns}, {"response", response}}}}, nullptr));
 		}
 		void AssertSettled()
 		{
@@ -2255,7 +2255,7 @@ UAM_TEST(AntigravityManualCompactionRecordsSummaryLessMarkerFromCheckpoint)
 
 UAM_TEST(AntigravityManualCompactionNoOpAndFailuresRecordNoMarker)
 {
-	for (const std::string outcome : {"no-checkpoint", "result-error", "checkpoint-error", "answered-as-message", "foreign-conversation"})
+	for (const std::string outcome : {"no-checkpoint", "result-error", "checkpoint-error", "answered-as-message", "answered-in-result", "foreign-conversation"})
 	{
 		AntigravityCompactionFixture fixture;
 		if (outcome == "foreign-conversation")
@@ -2274,14 +2274,14 @@ UAM_TEST(AntigravityManualCompactionNoOpAndFailuresRecordNoMarker)
 		if (outcome == "result-error") fixture.Step("checkpoint", 4, "DONE");
 		if (outcome == "checkpoint-error") fixture.Step("checkpoint", 4, "ERROR");
 		if (outcome == "answered-as-message") fixture.Step("agent_response", 3, "DONE", {{"text_delta", "I cannot run /compact."}});
-		fixture.Result(outcome == "result-error" ? "ERROR" : "SUCCESS");
+		fixture.Result(outcome == "result-error" ? "ERROR" : "SUCCESS", 2, outcome == "answered-in-result" ? "I cannot run /compact." : "");
 		fixture.AssertSettled();
 		UAM_ASSERT(!fixture.session.last_error.empty());
 		UAM_ASSERT(fixture.session.last_error.find('\n') == std::string::npos);
 		UAM_ASSERT_EQ(fixture.Chat().messages.size(), std::size_t{2});
 		UAM_ASSERT_EQ(fixture.session.lifecycle_state, std::string(outcome == "no-checkpoint" ? "ready" : "error"));
 		UAM_ASSERT(!fixture.session.antigravity_compaction_answered);
-		if (outcome == "answered-as-message") UAM_ASSERT(fixture.session.last_error.find("answered /compact as a message") != std::string::npos);
+		if (outcome.starts_with("answered")) UAM_ASSERT(fixture.session.last_error.find("answered /compact as a message") != std::string::npos);
 		else UAM_ASSERT(fixture.session.last_error.find("I cannot") == std::string::npos);
 	}
 }

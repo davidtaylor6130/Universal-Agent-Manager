@@ -574,6 +574,8 @@ namespace
 			return;
 		}
 		const std::string status = JsonDiagnosticStringValue(payload, "status");
+		// agy can carry an answer only in the result, as the ordinary turn path allows.
+		if (!JsonDiagnosticStringValue(payload, "response").empty()) session.antigravity_compaction_answered = true;
 		const bool checkpoint = session.antigravity_compaction_checkpoint_step.has_value();
 		const bool failed = status != "SUCCESS" || session.antigravity_compaction_checkpoint_failed || (session.antigravity_compaction_answered && !checkpoint);
 		if (!failed && checkpoint)
