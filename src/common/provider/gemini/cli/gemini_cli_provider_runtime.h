@@ -13,6 +13,13 @@ class GeminiCliProviderRuntime final : public IProviderRuntime
 	bool DeliversHostInstructionsInFirstPrompt() const override { return true; }
 	const char* AcpProtocolKind() const override { return "gemini-acp"; }
 	const char* GetAcpDisplayName() const override { return "Gemini ACP"; }
+	std::string AccountRefusalNotice(uam::account_refusal::Kind kind, std::string_view provider_title) const override
+	{
+		// Google answers Gemini Code Assist for individuals with a migration notice instead of a model list.
+		return kind == uam::account_refusal::Kind::UnsupportedClient ? "Google no longer supports this Gemini client for personal accounts."
+		    : kind == uam::account_refusal::Kind::Entitlement ? "Google says this account is not eligible for Gemini Code Assist."
+		    : uam::account_refusal::GenericNotice(provider_title, kind);
+	}
 	bool IsGenericAcpSession() const override
 	{
 		return true;

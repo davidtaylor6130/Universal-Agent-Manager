@@ -2378,6 +2378,13 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	{
 		return true;
 	}
+	// A provider that refused the account on this computer is not relaunched until its refusal expires or the user
+	// retries from the model menu; the refusal stays visible on the provider meanwhile.
+	if (!attach_only_to_stop && app.provider_model_catalog != nullptr && app.provider_model_catalog->IsAccountRefusalActive(provider.id, chat.execution_host_id))
+	{
+		if (error_out != nullptr) *error_out = app.provider_model_catalog->GetAccountRefusalNotice(provider.id, chat.execution_host_id) + " Use Retry in the model menu to ask again.";
+		return false;
+	}
 	if (!attach_only_to_stop && !provider_availability::IsEnabled(app.settings, provider.id, chat.execution_host_id))
 	{
 		if (error_out != nullptr) *error_out = provider_availability::DisabledReason();

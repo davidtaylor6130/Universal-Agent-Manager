@@ -122,6 +122,8 @@ namespace uam
 		for (std::vector<ModelDiscoveryScope>::iterator item = m_pending_scopes.begin(); item != m_pending_scopes.end() && active < kMaxConcurrentDiscoveries;)
 		{
 			const ModelDiscoveryScope scope = *item;
+			// An account refusal on this computer answers every workspace; keep the scope until it expires or is retried.
+			if (app.provider_model_catalog->IsAccountRefusalActive(scope.provider_id, scope.execution_host_id)) { ++item; continue; }
 			const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, scope.execution_host_id);
 			const std::map<std::string, ExecutionHost>::const_iterator captured_host = m_hosts.find(scope.execution_host_id);
 			const ProviderProfile* provider = ProviderProfileStore::FindById(app.provider_profiles, scope.provider_id);
