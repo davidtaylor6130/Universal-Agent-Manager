@@ -590,6 +590,43 @@ describe('MarkdownStoreModal', () => {
     expect(useAppStore.getState().createMarkdownStoreEntry).toHaveBeenCalledTimes(2)
   })
 
+  it('asks before the close button discards an unsaved skill draft', async () => {
+    const close = useAppStore.getState().closeMarkdownStore
+    const { host } = mountSkills()
+    click('New skill'); click('Create'); changeField('Entry title', 'Draft skill'); changeField('Entry Markdown body', 'Draft body')
+    click('Close skills')
+    expect(close).not.toHaveBeenCalled()
+    expect(host.querySelector('[aria-label="Unsaved skill changes"]')).toBeTruthy()
+    click('Keep editing')
+    expect((host.querySelector('textarea') as HTMLTextAreaElement).value).toBe('Draft body')
+    // Keep editing cancels the leave, so a later plain discard stays in the dialog.
+    click('Cancel'); click('Discard')
+    expect(close).not.toHaveBeenCalled()
+    click('New skill'); click('Create'); changeField('Entry title', 'Saved skill'); changeField('Entry Markdown body', 'Saved body')
+    click('Close skills')
+    await act(async () => { button('Save & close').click(); await Promise.resolve() })
+    expect(useAppStore.getState().createMarkdownStoreEntry).toHaveBeenCalledWith({ title: 'Saved skill', maker: '', review: '', body: 'Saved body', group: '' })
+    expect(close).toHaveBeenCalledTimes(1)
+    click('New skill'); click('Create'); changeField('Entry title', 'Thrown away')
+    click('Close skills'); click('Discard')
+    expect(close).toHaveBeenCalledTimes(2)
+    expect(useAppStore.getState().createMarkdownStoreEntry).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the draft and stays open when saving before leaving fails', async () => {
+    useAppStore.setState({ createMarkdownStoreEntry: vi.fn(() => Promise.resolve(false)) })
+    const close = useAppStore.getState().closeMarkdownStore
+    const { host } = mountSkills()
+    click('New skill'); click('Create'); changeField('Entry title', 'Draft skill'); changeField('Entry Markdown body', 'Draft body')
+    click('Close skills')
+    await act(async () => { button('Save & close').click(); await Promise.resolve() })
+    expect(close).not.toHaveBeenCalled()
+    expect((host.querySelector('textarea') as HTMLTextAreaElement).value).toBe('Draft body')
+    // The failed leave is forgotten: a later Cancel and Discard only closes the editor.
+    click('Cancel'); click('Discard')
+    expect(close).not.toHaveBeenCalled()
+  })
+
   it('filters all five native provider names without rewriting import source identities', async () => {
     const providers = [
       ['Gemini CLI', 'gemini-cli'], ['Codex CLI', 'codex'], ['Claude Code', 'claude-code'], ['OpenCode', 'opencode'], ['GitHub Copilot CLI', 'github-copilot'],

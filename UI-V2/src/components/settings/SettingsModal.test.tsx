@@ -2686,6 +2686,55 @@ describe('SettingsModal memory settings', () => {
     act(() => root.unmount()); host.remove()
   })
 
+  it('guards an embedded skill draft before changing pages or closing Settings', async () => {
+    useAppStore.setState({ createMarkdownStoreEntry: vi.fn(() => Promise.resolve(true)) })
+    const { host, root } = renderModal()
+    openMarkdownStoreSection(host)
+    const find = (text: string) => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === text || button.getAttribute('aria-label') === text)
+    const type = (label: string, value: string) => act(() => {
+      const field = host.querySelector<HTMLInputElement | HTMLTextAreaElement>(`[aria-label="${label}"]`)!
+      Object.getOwnPropertyDescriptor(field.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, 'value')!.set!.call(field, value)
+      field.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    act(() => find('New skill')?.click()); act(() => find('Create')?.click())
+    type('Entry title', 'Unsaved skill'); type('Entry Markdown body', 'Body')
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Editors"]')?.click())
+    expect(host.querySelector('[aria-label="Unsaved skill changes"]')).toBeTruthy()
+    expect(host.querySelector<HTMLInputElement>('[aria-label="Entry title"]')?.value).toBe('Unsaved skill')
+    act(() => find('Keep editing')?.click())
+    act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })))
+    // Escape inside the editor asks the store first; Settings stays open with the draft.
+    expect(useAppStore.getState().setSettingsOpen).not.toHaveBeenCalled()
+    act(() => find('Keep editing')?.click())
+    act(() => find('Back to chats')?.click())
+    expect(useAppStore.getState().setSettingsOpen).not.toHaveBeenCalled()
+    expect(host.querySelector('[aria-label="Unsaved skill changes"]')).toBeTruthy()
+    await act(async () => { find('Save & close')?.click(); await Promise.resolve() })
+    expect(useAppStore.getState().createMarkdownStoreEntry).toHaveBeenCalledWith({ title: 'Unsaved skill', maker: '', review: '', body: 'Body', group: '' })
+    expect(useAppStore.getState().setSettingsOpen).toHaveBeenCalledWith(false)
+    act(() => root.unmount()); host.remove()
+  })
+
+  it('discards an embedded skill draft only when asked and then changes page', () => {
+    useAppStore.setState({ createMarkdownStoreEntry: vi.fn(() => Promise.resolve(true)) })
+    const { host, root } = renderModal()
+    openMarkdownStoreSection(host)
+    const find = (text: string) => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === text || button.getAttribute('aria-label') === text)
+    act(() => find('New skill')?.click()); act(() => find('Create')?.click())
+    act(() => {
+      const field = host.querySelector<HTMLInputElement>('[aria-label="Entry title"]')!
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(field, 'Unsaved skill')
+      field.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Editors"]')?.click())
+    expect(host.querySelector('[aria-label="Unsaved skill changes"]')).toBeTruthy()
+    act(() => find('Discard')?.click())
+    expect(host.querySelector('[role="region"][aria-label="Skills"]')).toBeNull()
+    expect(find('Add group')).toBeTruthy()
+    expect(useAppStore.getState().createMarkdownStoreEntry).not.toHaveBeenCalled()
+    act(() => root.unmount()); host.remove()
+  })
+
   it('disables Save for clean and reverted existing theme drafts', () => {
     const theme = { version: 1 as const, id: 'custom:ocean' as const, name: 'Ocean', base: 'dark' as const, colors: { ...BUILT_IN_THEME_COLORS.dark } }
     useAppStore.setState({ theme: theme.id, customThemes: [theme] })

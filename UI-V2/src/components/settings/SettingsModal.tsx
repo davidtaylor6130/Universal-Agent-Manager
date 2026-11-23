@@ -64,7 +64,7 @@ import { Button, Card, ConfirmDialog, Disclosure, EXIT_MS, IconButton, MenuItem,
 import { ShellActionsSettings, type ShellActionsHandle } from './ShellActionsSettings'
 import { ComputePoolsSettings } from './ComputePoolsSettings'
 import { MemoryLibraryModal, type MemoryLibraryHandle } from './MemoryLibraryModal'
-import { MarkdownStoreModal } from './MarkdownStoreModal'
+import { MarkdownStoreModal, type MarkdownStoreHandle } from './MarkdownStoreModal'
 import { StatusIndicator } from '../shared/StatusIndicator'
 import {
   CLAUDE_CLI_PROVIDER_ID,
@@ -921,6 +921,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     return () => observer.disconnect()
   }, [selectedSection, visibleSettingsGroups.length])
   const memoryRef = useRef<MemoryLibraryHandle>(null)
+  const markdownStoreRef = useRef<MarkdownStoreHandle>(null)
   const shellRef = useRef<ShellActionsHandle>(null)
   const centralRef = useRef<CentralProviderSettingsHandle>(null)
   const voiceRef = useRef<SettingsDraftHandle>(null)
@@ -997,6 +998,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     else if (selectedSection === 'voice-input' && voiceRef.current) voiceRef.current.requestLeave(next)
     else if ((selectedSection === 'provider-summary' || selectedSection.startsWith('provider:')) && providerAvailabilityRef.current) providerAvailabilityRef.current.requestLeave(next)
     else if (selectedSection === 'memory-store' && memoryRef.current) memoryRef.current.requestLeave(next)
+    else if (selectedSection === 'markdown-store' && markdownStoreRef.current) markdownStoreRef.current.requestLeave(next)
     else if (selectedSection === 'shell-actions' && shellRef.current) shellRef.current.requestLeave(next)
     else if ((selectedSection === 'central-configuration' || selectedSection === 'agents') && centralRef.current) centralRef.current.requestLeave(next)
     else if ((selectedSection === 'mcp-servers' && mcpDraftDirty) || (selectedSection === 'chat-data' && importFiltersDirty) || (SSH_ENABLED && selectedSection === 'remote-hosts' && remoteHostOptionsDirty)) { setDiscardExit(() => next); setConfirmDiscard(true) }
@@ -2817,7 +2819,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
 
     if (selectedSection === 'memory-store') return <MemoryLibraryModal embedded ref={memoryRef}/>
     // The folder setting (choose or type a path) lives inside the Skills card, so the page is just the library.
-    if (selectedSection === 'markdown-store') return <MarkdownStoreModal embedded/>
+    if (selectedSection === 'markdown-store') return <MarkdownStoreModal embedded ref={markdownStoreRef}/>
 
     if (selectedSection === 'goal-loops') {
       return (
