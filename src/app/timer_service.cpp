@@ -171,17 +171,8 @@ namespace uam
 				m_schedules.clear();
 				return;
 			}
-			// A run the app did not see finish: with no chat it never created one; otherwise its chat is waiting.
-			if (schedule.last_result == "starting" && schedule.last_chat_id.empty())
-			{
-				schedule.last_result = "failed";
-				schedule.last_error = "UAM stopped before the chat was created.";
-			}
-			else if (schedule.last_result == "starting")
-			{
-				schedule.last_result = "awaitingApproval";
-				m_unstarted_after_restart.push_back(schedule.id);
-			}
+			// A run the app did not see finish is resolved against the chats on the first poll.
+			if (schedule.last_result == "starting") m_unstarted_after_restart.push_back(schedule.id);
 			m_schedules.push_back(std::move(schedule));
 		}
 	}
@@ -323,8 +314,10 @@ namespace uam
 			const std::int64_t latest_due = now_ms + static_cast<std::int64_t>(kMaxWakeMinutes) * scheduling::kMinuteMs;
 			if (wake.due_ms > latest_due)
 			{
-				wake.due_ms = latest_due;
-				wake.created_ms = std::min(wake.created_ms, now_ms);
+				// Keeps the delay the agent asked for, counted from the new time, and saves it so a restart keeps it too.
+				wake.due_ms = now_ms + std::clamp<std::int64_t>(wake.due_ms - wake.created_ms, scheduling::kMinuteMs, latest_due - now_ms);
+				wake.created_ms = now_ms;
+				SaveWakes();
 			}
 			if (now_ms < wake.due_ms || now_ms < wake.retry_at_ms)
 			{
@@ -537,7 +530,7 @@ namespace uam
 		if (schedule == nullptr || schedule->last_chat_id != chat_id) return;
 		schedule->last_result = started ? "started" : "failed";
 		schedule->last_error = started ? std::string{} : uam::strings::SafeLine(error, 300, true);
-		if (!started) Notify("Schedule “" + schedule->name + "” created a chat that could not start: " + schedule->last_error, "warning", std::string(chat_id));
+		if (!started) Notify("Schedule “" + schedule->name + "” had a problem starting its chat: " + schedule->last_error, "warning", std::string(chat_id));
 		SaveSchedules();
 	}
 
@@ -575,20 +568,39 @@ namespace uam
 	{
 		if (m_schedules_unreadable) return false;
 		bool changed = false;
-		// A trusted run's chat created just before UAM stopped was never started or marked; it waits for the user now.
-		if (m_chats_seen || !app.chats.empty())
+		// Runs UAM stopped during, resolved once the chats are loaded: a chat that still waits is marked for the user (a
+		// trusted run's chat was never started or marked), a running one counts as started, and anything else is a failure.
+		if (!m_unstarted_after_restart.empty() && (m_chats_seen || !app.chats.empty()))
 		{
 			for (const std::string& id : m_unstarted_after_restart)
 			{
-				const Schedule* schedule = FindSchedule(id);
-				const ChatSession* chat = schedule == nullptr ? nullptr : ChatDomainService().FindChatById(app, schedule->last_chat_id);
-				if (chat != nullptr && chat->AwaitsAutomationApproval())
+				Schedule* schedule = FindSchedule(id);
+				if (schedule == nullptr || schedule->last_result != "starting") continue;
+				// The run's own chat, or (when UAM stopped before recording it) any chat of this schedule still waiting.
+				bool waiting = false, exists = false;
+				for (const ChatSession& chat : app.chats)
 				{
-					ChatDomainService().MarkChatNeedsAttention(app, chat->id);
-					changed = true;
+					if (chat.automation_token_id != schedule->id) continue;
+					const bool this_run = chat.id == schedule->last_chat_id;
+					if (chat.AwaitsAutomationApproval() && (this_run || schedule->last_chat_id.empty()))
+					{
+						ChatDomainService().MarkChatNeedsAttention(app, chat.id);
+						waiting = true;
+					}
+					exists = exists || this_run;
+				}
+				if (waiting) schedule->last_result = "awaitingApproval";
+				else if (exists) schedule->last_result = "started";
+				else
+				{
+					schedule->last_result = "failed";
+					schedule->last_error = "UAM stopped during this run, so it may not have started a chat.";
+					Notify("Schedule “" + schedule->name + "” stopped with UAM during a run; check Active Chats for its chat.", "warning");
 				}
 			}
 			m_unstarted_after_restart.clear();
+			SaveSchedules();
+			changed = true;
 		}
 		for (std::size_t index = 0; index < m_schedules.size(); ++index)
 		{
@@ -603,6 +615,10 @@ namespace uam
 				schedule.anchor_ms = now_ms;
 				schedule.next_run_ms = 0;
 			}
+			// A weekday time whose next run is later than the trigger now gives (the clock went back, or the computer moved
+			// to another zone) takes the earlier one. NextRunAfter only moves later as time passes, so this never repeats a run.
+			if (schedule.trigger.kind == scheduling::TriggerKind::Weekly && schedule.next_run_ms > 0)
+				schedule.next_run_ms = std::min(schedule.next_run_ms, scheduling::NextRunAfter(schedule.trigger, schedule.anchor_ms, now_ms, m_clock));
 			if (schedule.next_run_ms <= 0) schedule.next_run_ms = scheduling::NextRunAfter(schedule.trigger, schedule.anchor_ms, now_ms, m_clock);
 			if (now_ms < schedule.next_run_ms) continue;
 			const scheduling::DueDecision decision = scheduling::Decide(schedule.trigger, schedule.missed_policy, schedule.anchor_ms, schedule.next_run_ms, now_ms, m_clock);

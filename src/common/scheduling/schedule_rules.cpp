@@ -194,8 +194,15 @@ namespace uam::scheduling
 			int year = 0, month = 0, day = 0;
 			CivilFromDays(today + offset, year, month, day);
 			std::int64_t candidate = clock.from_local(year, month, day, trigger.hour, trigger.minute);
-			// A time the clock cannot express (skipped when clocks go forward) runs at the next hour instead of not at all.
-			if (candidate < 0 && trigger.hour < 23) candidate = clock.from_local(year, month, day, trigger.hour + 1, trigger.minute);
+			// A time the clock cannot express (skipped when clocks go forward) runs at the next hour it can, or at the next
+			// midnight, instead of not at all.
+			for (int hour = trigger.hour + 1; candidate < 0 && hour <= 23; ++hour) candidate = clock.from_local(year, month, day, hour, trigger.minute);
+			if (candidate < 0)
+			{
+				int next_year = 0, next_month = 0, next_day = 0;
+				CivilFromDays(today + offset + 1, next_year, next_month, next_day);
+				candidate = clock.from_local(next_year, next_month, next_day, 0, 0);
+			}
 			if (candidate > after_ms) return candidate;
 		}
 		return std::numeric_limits<std::int64_t>::max();

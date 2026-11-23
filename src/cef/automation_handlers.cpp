@@ -114,7 +114,7 @@ void UamQueryHandler::LaunchAutomationChat(CefRefPtr<CefBrowser> browser, const 
 		    const bool waiting = !lifetime.expired() && uam::AutomationApiService::AbandonLaunch(m_app, chat_id, launch);
 		    if (!lifetime.expired()) uam::PushStateUpdateIfChanged(browser, m_app);
 		    // A schedule names the outcome in its own notice; it gets the reason and whether the chat still waits.
-		    if (scheduled) cb->Failure(status, waiting ? reason + " It is waiting in Active Chats." : reason + " It may have started; check the chat.");
+		    if (scheduled) cb->Failure(status, waiting ? reason + " It is waiting in Active Chats." : reason + " It may have started anyway; check the chat.");
 		    else if (from_desktop) cb->Failure(status, waiting ? reason : "This chat may not have started: " + reason);
 		    else cb->Failure(status, "The chat " + chat_id + (waiting ? " could not start and is waiting in UAM: " : " may not have started: ") + reason);
 	    }));

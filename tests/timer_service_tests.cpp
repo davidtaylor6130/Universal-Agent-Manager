@@ -358,9 +358,11 @@ UAM_TEST(TimerScheduleAStopBetweenRecordingAndStartingNeverRunsTheSlotAgain)
 	try { fixture.PollAt(kMonday8 + kHour); }
 	catch (const std::runtime_error&) { stopped = true; }
 	UAM_ASSERT(stopped);
-	// The restarted app sees the slot as already run, even under run-once, and says no chat was created.
+	// The restarted app sees the slot as already run, even under run-once, and reports the interrupted run once.
 	fixture.Restart();
-	UAM_ASSERT(fixture.Only().last_result == "failed" && fixture.Only().last_error == "UAM stopped before the chat was created.");
+	fixture.PollAt(kMonday8 + kHour + 2000);
+	UAM_ASSERT(fixture.Only().last_result == "failed" && fixture.Only().last_error.find("UAM stopped during this run") != std::string::npos);
+	UAM_ASSERT_EQ(fixture.service->SerializeForFrontend()["notices"].size(), std::size_t{1});
 	fixture.PollAt(kMonday8 + kHour + 5000);
 	UAM_ASSERT(fixture.runs->empty());
 	fixture.PollAt(kMonday8 + 2 * kHour);
@@ -480,11 +482,27 @@ UAM_TEST(TimerClockSetBackDoesNotSilenceTimers)
 	// The clock jumps back two days: the schedule and the follow-up are each due within one period of the new time.
 	fixture.PollAt(kMonday8 - 2 * kDay);
 	UAM_ASSERT_EQ(fixture.Only().next_run_ms, kMonday8 - 2 * kDay + kHour);
-	UAM_ASSERT_EQ(fixture.service->WakesForChat("chat-1").front().due_ms, kMonday8 - 2 * kDay + kDay);
+	// The follow-up keeps its 30-minute delay, counted from the new time.
+	UAM_ASSERT_EQ(fixture.service->WakesForChat("chat-1").front().due_ms, kMonday8 - 2 * kDay + 30 * kMinute);
+	fixture.PollAt(kMonday8 - 2 * kDay + 31 * kMinute);
+	UAM_ASSERT_EQ(fixture.wakes->size(), std::size_t{1});
+	UAM_ASSERT(fixture.runs->empty());
 	fixture.PollAt(kMonday8 - 2 * kDay + kHour);
 	UAM_ASSERT_EQ(fixture.runs->size(), std::size_t{1});
-	fixture.PollAt(kMonday8 - kDay);
-	UAM_ASSERT_EQ(fixture.wakes->size(), std::size_t{1});
+}
+
+UAM_TEST(TimerClockSetBackDaysKeepsADailyScheduleRunning)
+{
+	TimerFixture fixture;
+	fixture.Create({{"kind", "weekly"}, {"days", {0, 1, 2, 3, 4, 5, 6}}, {"time", "09:00"}});
+	const std::int64_t monday9 = kClock.from_local(2026, 11, 23, 9, 0);
+	fixture.PollAt(monday9 + kMinute);
+	UAM_ASSERT_EQ(fixture.runs->size(), std::size_t{1});
+	// The clock goes back three days to Friday 08:00: Friday's 09:00 run happens rather than waiting for Tuesday.
+	fixture.PollAt(monday9 - 3 * kDay - kHour);
+	UAM_ASSERT_EQ(fixture.Only().next_run_ms, monday9 - 3 * kDay);
+	fixture.PollAt(monday9 - 3 * kDay + kMinute);
+	UAM_ASSERT_EQ(fixture.runs->size(), std::size_t{2});
 }
 
 UAM_TEST(TimerScheduleTrustedChatLeftUnstartedByAStopWaitsForTheUser)
@@ -499,8 +517,8 @@ UAM_TEST(TimerScheduleTrustedChatLeftUnstartedByAStopWaitsForTheUser)
 	const std::string chat_id = fixture.app.chats.front().id;
 	fixture.app.chats_with_unseen_updates.clear();
 	fixture.Restart();
-	UAM_ASSERT_EQ(fixture.Only().last_result, std::string("awaitingApproval"));
 	fixture.PollAt(kMonday8 + kHour + 2000);
+	UAM_ASSERT_EQ(fixture.Only().last_result, std::string("awaitingApproval"));
 	UAM_ASSERT(fixture.app.chats_with_unseen_updates.contains(chat_id));
 	UAM_ASSERT(fixture.app.chats.front().AwaitsAutomationApproval());
 }
@@ -706,8 +724,8 @@ UAM_TEST(UamControlScheduleToolWakesOnlyTheCallingChat)
 	UAM_ASSERT_EQ(fixture.app.timer_service->WakesForChat("chat-1").size(), std::size_t{1});
 
 	// A goal reviewer is refused by the server even if a provider calls the hidden tool.
-	UAM_ASSERT(!fixture.Call("schedule-reviewer", "schedule", {{"minutes", 30}, {"note", "Reviewer."}}, "reviewer-capability").value("ok", false));
-	UAM_ASSERT(!fixture.Call("notify-reviewer", "notify", {{"message", "Reviewer."}}, "reviewer-capability").value("ok", false));
+	UAM_ASSERT(fixture.Call("schedule-reviewer", "schedule", {{"minutes", 30}, {"note", "Reviewer."}}, "reviewer-capability").value("error", "").find("goal reviewer") != std::string::npos);
+	UAM_ASSERT(fixture.Call("notify-reviewer", "notify", {{"message", "Reviewer."}}, "reviewer-capability").value("error", "").find("goal reviewer") != std::string::npos);
 	UAM_ASSERT_EQ(fixture.app.timer_service->WakesForChat("chat-1").size(), std::size_t{1});
 
 	const nlohmann::json tools = uam::UamControlService::ToolDefinitionsForTests();

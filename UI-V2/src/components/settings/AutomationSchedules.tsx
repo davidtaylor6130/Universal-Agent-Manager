@@ -168,7 +168,8 @@ export function AutomationSchedules() {
       setLoadError('')
     } else {
       setSchedules(current => current ?? [])
-      setLoadError(response.error || 'Could not load automation schedules.')
+      // Only the first load decides that schedules are unavailable; a failed background refresh keeps the shown list.
+      if (reportFailure) setLoadError(response.error || 'Could not load automation schedules.')
       if (reportFailure) reportAppFailure(`Could not load automation schedules. ${response.error || 'Try again.'}`, '')
     }
   }, [])
