@@ -142,6 +142,21 @@ std::vector<std::string> ClaudeCliProviderRuntime::BuildInteractiveArgv(const Pr
 	return argv;
 }
 
+bool ClaudeCliProviderRuntime::StageInteractiveAgentInstructions(std::string_view instructions, std::vector<std::string>&, std::string& staged_context, std::string& error) const
+{
+	// Written ahead of any handoff text in the file passed to --append-system-prompt-file.
+	staged_context.assign(instructions);
+	error.clear();
+	return true;
+}
+
+std::vector<std::string> ClaudeCliProviderRuntime::CustomAgentNativeSkillArgv() const
+{
+	// Deny rules outrank allow rules in Claude, so native skills cannot be narrowed to the agent's allowlist;
+	// remove the model's skill and slash-command tools instead. Approved skills still reach it through UAM.
+	return {"--disallowedTools", "Skill", "SlashCommand"};
+}
+
 MessageRole ClaudeCliProviderRuntime::RoleFromNativeType(const ProviderProfile& profile, std::string_view native_type) const
 {
 	return uam::provider_runtime_internal::RoleFromNativeType(profile, native_type);

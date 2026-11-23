@@ -425,6 +425,14 @@ std::vector<std::string> GeminiCliProviderRuntime::BuildInteractiveArgv(const Pr
 	return uam::provider_runtime_internal::BuildInteractiveArgv(profile, chat, uam::provider_runtime_internal::MergeProviderSettings(profile, settings));
 }
 
+bool GeminiCliProviderRuntime::StageInteractiveAgentInstructions(std::string_view instructions, std::vector<std::string>&, std::string& staged_context, std::string& error) const
+{
+	// Written ahead of any handoff text in the staged GEMINI.md loaded through --include-directories.
+	staged_context.assign(instructions);
+	error.clear();
+	return true;
+}
+
 MessageRole GeminiCliProviderRuntime::RoleFromNativeType(const ProviderProfile& profile, std::string_view native_type) const
 {
 	return uam::provider_runtime_internal::RoleFromNativeType(profile, native_type);

@@ -181,6 +181,11 @@ namespace uam
 		{
 			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, ceiling_error);
 		}
+		// A custom agent's instructions must reach the provider; refuse before worktree, baseline or SSH work when they cannot.
+		if (const std::string agent_error = ProviderInteractiveAgentError(app, chat, *execution_host); !agent_error.empty())
+		{
+			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, agent_error);
+		}
 		// Without its created native session this launch is refused anyway; refuse before worktree,
 		// baseline or SSH work. HandleStartCli creates the session (after the baseline) before calling here.
 		if (std::string session_error; runtime.RequiresNativeSessionCreation() &&

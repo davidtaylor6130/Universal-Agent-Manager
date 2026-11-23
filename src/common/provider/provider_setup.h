@@ -743,6 +743,17 @@ namespace uam::provider_setup
 			if (!mcp_only && structured_setup) *protocol_instructions = instructions;
 			else if (!mcp_only)
 			{
+				// CLI View may already carry a custom agent's developer instructions; a second value would replace
+				// one of them, so fold it in after the central or host text.
+				constexpr std::string_view developer_instructions = "developer_instructions=";
+				for (std::size_t index = 1; index + 1 < argv.size();)
+				{
+					if (argv[index] != "-c" || !argv[index + 1].starts_with(developer_instructions)) { ++index; continue; }
+					const nlohmann::json previous = nlohmann::json::parse(argv[index + 1].substr(developer_instructions.size()), nullptr, false);
+					if (!previous.is_string()) { error = "Existing Codex developer instructions are invalid."; return false; }
+					instructions += "\n\n" + previous.get<std::string>();
+					argv.erase(argv.begin() + static_cast<std::ptrdiff_t>(index), argv.begin() + static_cast<std::ptrdiff_t>(index) + 2);
+				}
 				if (instructions.size() > max_instruction_bytes) { error = host_instructions_only ? "Host instructions exceed the OS launch limit for this provider. Shorten them." : "Codex central instructions exceed the OS launch limit. Move reference material into skills."; return false; }
 				argv.insert(argv.begin() + 1, {"-c", "developer_instructions=" + nlohmann::json(instructions).dump()});
 			}

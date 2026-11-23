@@ -352,6 +352,27 @@ std::vector<std::string> CodexCliProviderRuntime::BuildInteractiveArgv(const Pro
 	return argv;
 }
 
+bool CodexCliProviderRuntime::StageInteractiveAgentInstructions(std::string_view instructions, std::vector<std::string>& argv, std::string& staged_context, std::string& error) const
+{
+	staged_context.clear();
+	// Codex has no extra instruction directory, so the agent's role goes in as developer instructions,
+	// within the same OS argument limit central instructions use. Central setup folds this value into its own.
+#if defined(_WIN32)
+	constexpr std::size_t kMaxInstructionBytes = 12 * 1024;
+#else
+	constexpr std::size_t kMaxInstructionBytes = 64 * 1024;
+#endif
+	if (instructions.size() > kMaxInstructionBytes)
+	{
+		error = "This agent's instructions are too long for Codex CLI View's launch arguments. Use Chat for this agent.";
+		return false;
+	}
+	argv.push_back("-c");
+	argv.push_back("developer_instructions=" + nlohmann::json(std::string(instructions)).dump());
+	error.clear();
+	return true;
+}
+
 MessageRole CodexCliProviderRuntime::RoleFromNativeType(const ProviderProfile& profile, std::string_view native_type) const
 {
 	return uam::provider_runtime_internal::RoleFromNativeType(profile, native_type);

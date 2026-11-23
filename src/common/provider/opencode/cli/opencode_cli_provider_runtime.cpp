@@ -409,6 +409,14 @@ std::vector<std::string> OpenCodeCliProviderRuntime::BuildInteractiveArgv(const 
 	return argv;
 }
 
+bool OpenCodeCliProviderRuntime::StageInteractiveAgentInstructions(std::string_view instructions, std::vector<std::string>&, std::string& staged_context, std::string& error) const
+{
+	// Written ahead of any handoff text in the staged file listed in OpenCode's inline instructions.
+	staged_context.assign(instructions);
+	error.clear();
+	return true;
+}
+
 std::vector<std::string> OpenCodeCliProviderRuntime::BuildNativeDiscoveryArgv(const ProviderProfile& profile) const
 {
 	std::vector<std::string> argv = uam::provider_runtime_internal::SplitInteractiveCommandOrDefault(profile, "opencode");

@@ -26,6 +26,7 @@ class OpenCodeCliProviderRuntime final : public IProviderRuntime
 	std::string InteractiveConfigurationError(const ProviderProfile& profile, const AppSettings& settings) const override;
 	bool PrepareInteractiveSession(uam::AppState& app, ChatSession& chat, const ProviderProfile& profile, const std::string& resume_id, const ExecutionHost& host, std::string* error_out) const override;
 	std::vector<std::string> BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings) const override;
+	bool StageInteractiveAgentInstructions(std::string_view instructions, std::vector<std::string>& argv, std::string& staged_context, std::string& error) const override;
 	bool PrepareInteractiveLaunch(uam::AppState&, uam::CliTerminalState&, const ChatSession&, const ExecutionHost&,
 	    std::vector<std::string>&, std::vector<std::pair<std::string, std::string>>&, std::string*) const override;
 	ProviderTerminalActivity PollInteractiveActivity(uam::CliTerminalState&, std::string_view, const std::filesystem::path&, bool) const override;

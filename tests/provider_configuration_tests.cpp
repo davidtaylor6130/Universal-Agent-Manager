@@ -982,6 +982,33 @@ UAM_TEST(CentralLaunchContractsCoverAllFiveProvidersAndPreserveOpenCodeConfig)
 	}
 }
 
+UAM_TEST(CodexSetupFoldsCliViewAgentDeveloperInstructionsInsteadOfReplacingThem)
+{
+	TempDir temp("uam-codex-agent-developer-instructions");
+	AppSettings settings;
+	settings.central_provider_configuration.enabled = true;
+	settings.central_provider_configuration.instructions = "Shared central preference";
+	ChatSession chat;
+	chat.provider_id = uam::provider_ids::kCodexCli;
+	ExecutionHost host;
+	uam::ProviderConfigurationBundle bundle;
+	std::string error;
+	UAM_ASSERT(uam::PrepareProviderConfiguration(temp.root / "data", settings, chat, host, temp.root, bundle, error));
+	// CLI View's custom agent value arrives first; a second developer_instructions would replace one of them.
+	std::vector<std::string> argv{"codex", "-c", "developer_instructions=" + nlohmann::json("Agent role marker").dump()};
+	uam::provider_setup::Environment environment;
+	UAM_ASSERT(uam::provider_setup::Apply(chat.provider_id, bundle.local_directory, temp.root, argv, environment, error));
+	const auto developer = std::ranges::count_if(argv, [](const std::string& argument) { return argument.starts_with("developer_instructions="); });
+	UAM_ASSERT_EQ(developer, std::ptrdiff_t{1});
+	const auto value = std::ranges::find_if(argv, [](const std::string& argument) { return argument.starts_with("developer_instructions="); });
+	const std::string text = nlohmann::json::parse(value->substr(std::string_view("developer_instructions=").size())).get<std::string>();
+	const std::size_t central = text.find("Shared central preference");
+	const std::size_t agent_role = text.find("Agent role marker");
+	UAM_ASSERT(central != std::string::npos && agent_role != std::string::npos && central < agent_role);
+	argv = {"codex", "-c", "developer_instructions=not-json"};
+	UAM_ASSERT(!uam::provider_setup::Apply(chat.provider_id, bundle.local_directory, temp.root, argv, environment, error));
+}
+
 UAM_TEST(CodexCentralSetupLeavesWorkspaceInstructionsToNativeDiscovery)
 {
 	TempDir temp("uam-codex-native-workspace-instructions");
