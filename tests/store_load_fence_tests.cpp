@@ -71,7 +71,7 @@ UAM_TEST(FolderStoreInvalidPrimaryWithoutBackupIsNotOverwrittenByNextSave)
 	UAM_ASSERT(!fs::exists(uam::io::MakeBackupPath(file)));
 
 	uam::io::StoreLoadResult result;
-	const std::vector<ChatFolder> loaded = ChatFolderStore::Load(temp.root, &result);
+	const std::vector<ChatFolder> loaded = ChatFolderStore::Load(temp.root, &result, uam::io::StoreFenceMode::Arm);
 	UAM_ASSERT(result.status == uam::io::StoreLoadStatus::Unrecovered);
 	UAM_ASSERT(!result.warning.empty());
 	UAM_ASSERT(result.warning.find('\n') == std::string::npos);
@@ -103,7 +103,7 @@ UAM_TEST(FolderStoreReadErrorIsNotTreatedAsEmpty)
 	uam::io::StoreLoadResult result;
 	{
 		ReadFailureInjection failure(file);
-		const std::vector<ChatFolder> loaded = ChatFolderStore::Load(temp.root, &result);
+		const std::vector<ChatFolder> loaded = ChatFolderStore::Load(temp.root, &result, uam::io::StoreFenceMode::Arm);
 		UAM_ASSERT(loaded.empty());
 	}
 	UAM_ASSERT(result.status == uam::io::StoreLoadStatus::Unrecovered);
@@ -125,7 +125,7 @@ UAM_TEST(FolderStoreValidBackupStillRecoversAndSaves)
 	UAM_ASSERT(uam::io::WriteTextFile(file, "not a folder file"));
 
 	uam::io::StoreLoadResult result;
-	const std::vector<ChatFolder> recovered = ChatFolderStore::Load(temp.root, &result);
+	const std::vector<ChatFolder> recovered = ChatFolderStore::Load(temp.root, &result, uam::io::StoreFenceMode::Arm);
 	UAM_ASSERT(result.status == uam::io::StoreLoadStatus::RecoveredFromBackup);
 	UAM_ASSERT_EQ(recovered.size(), std::size_t{1});
 	UAM_ASSERT_EQ(recovered.front().id, std::string("first"));
@@ -134,7 +134,7 @@ UAM_TEST(FolderStoreValidBackupStillRecoversAndSaves)
 	// The primary read failing still recovers from a valid backup.
 	{
 		ReadFailureInjection failure(file);
-		UAM_ASSERT_EQ(ChatFolderStore::Load(temp.root, &result).size(), std::size_t{1});
+		UAM_ASSERT_EQ(ChatFolderStore::Load(temp.root, &result, uam::io::StoreFenceMode::Arm).size(), std::size_t{1});
 	}
 	UAM_ASSERT(result.status == uam::io::StoreLoadStatus::RecoveredFromBackup);
 	UAM_ASSERT(!ChatFolderStore::IsSaveFenced(temp.root));
@@ -149,13 +149,13 @@ UAM_TEST(FolderStoreMissingOrBlankFilesLoadEmptyWithoutFence)
 {
 	TempDir temp("uam-folder-fence-empty");
 	uam::io::StoreLoadResult result;
-	UAM_ASSERT(ChatFolderStore::Load(temp.root, &result).empty());
+	UAM_ASSERT(ChatFolderStore::Load(temp.root, &result, uam::io::StoreFenceMode::Arm).empty());
 	UAM_ASSERT(result.status == uam::io::StoreLoadStatus::Missing);
 	UAM_ASSERT(result.warning.empty());
 
 	// Early releases wrote an empty folders.txt for no workspaces; it holds nothing to protect.
 	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "folders.txt", ""));
-	UAM_ASSERT(ChatFolderStore::Load(temp.root, &result).empty());
+	UAM_ASSERT(ChatFolderStore::Load(temp.root, &result, uam::io::StoreFenceMode::Arm).empty());
 	UAM_ASSERT(result.status == uam::io::StoreLoadStatus::Valid);
 	UAM_ASSERT(!ChatFolderStore::IsSaveFenced(temp.root));
 	UAM_ASSERT(ChatFolderStore::Save(temp.root, {FenceTestFolder("new")}));
@@ -172,7 +172,7 @@ UAM_TEST(ResourceCollectionInvalidPrimaryWithoutBackupIsNotOverwrittenByNextSave
 	uam::io::StoreLoadResult result;
 	uam::AppState app;
 	app.data_root = temp.root;
-	app.resource_collections = uam::ResourceCollectionService::Load(temp.root, &result);
+	app.resource_collections = uam::ResourceCollectionService::Load(temp.root, &result, uam::io::StoreFenceMode::Arm);
 	UAM_ASSERT(result.status == uam::io::StoreLoadStatus::Unrecovered);
 	UAM_ASSERT(app.resource_collections.empty());
 	UAM_ASSERT(uam::ResourceCollectionService::IsSaveFenced(temp.root));
@@ -196,7 +196,7 @@ UAM_TEST(ResourceCollectionReadErrorFencesAndValidBackupRecovers)
 	uam::io::StoreLoadResult result;
 	{
 		ReadFailureInjection failure(file);
-		UAM_ASSERT_EQ(uam::ResourceCollectionService::Load(temp.root, &result).size(), std::size_t{1});
+		UAM_ASSERT_EQ(uam::ResourceCollectionService::Load(temp.root, &result, uam::io::StoreFenceMode::Arm).size(), std::size_t{1});
 	}
 	UAM_ASSERT(result.status == uam::io::StoreLoadStatus::RecoveredFromBackup);
 	UAM_ASSERT(!uam::ResourceCollectionService::IsSaveFenced(temp.root));
@@ -207,9 +207,68 @@ UAM_TEST(ResourceCollectionReadErrorFencesAndValidBackupRecovers)
 	const std::string saved = ReadFile(file);
 	{
 		ReadFailureInjection failure(file);
-		UAM_ASSERT(uam::ResourceCollectionService::Load(temp.root, &result).empty());
+		UAM_ASSERT(uam::ResourceCollectionService::Load(temp.root, &result, uam::io::StoreFenceMode::Arm).empty());
 	}
 	UAM_ASSERT(result.status == uam::io::StoreLoadStatus::Unrecovered);
 	UAM_ASSERT(!uam::ResourceCollectionService::Save(temp.root, {}));
 	UAM_ASSERT_EQ(ReadFile(file), saved);
+}
+
+UAM_TEST(StoreLoadWithoutArmReportsButDoesNotFence)
+{
+	TempDir temp("uam-store-fence-observe");
+	const std::string damaged = "folders_format_version=1\n\n[folder]\nid=partial\n";
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "folders.txt", damaged));
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "resource_collections.json", "{"));
+
+	// A passing read (legacy import, staging, read-only checks) reports damage without owning the fence.
+	uam::io::StoreLoadResult result;
+	(void)ChatFolderStore::Load(temp.root, &result);
+	UAM_ASSERT(result.Unrecovered());
+	UAM_ASSERT(!ChatFolderStore::IsSaveFenced(temp.root));
+	(void)uam::ResourceCollectionService::Load(temp.root, &result);
+	UAM_ASSERT(result.Unrecovered());
+	UAM_ASSERT(!uam::ResourceCollectionService::IsSaveFenced(temp.root));
+}
+
+UAM_TEST(FolderStoreInvalidBackupWithoutUsablePrimaryIsUnrecovered)
+{
+	TempDir temp("uam-folder-fence-bad-backup");
+	const fs::path file = temp.root / "folders.txt";
+	const fs::path backup = uam::io::MakeBackupPath(file);
+	UAM_ASSERT(uam::io::WriteTextFile(backup, "damaged backup"));
+
+	// Primary missing, backup holds unvalidated bytes.
+	uam::io::StoreLoadResult result;
+	UAM_ASSERT(ChatFolderStore::Load(temp.root, &result, uam::io::StoreFenceMode::Arm).empty());
+	UAM_ASSERT(result.Unrecovered());
+	UAM_ASSERT(!ChatFolderStore::Save(temp.root, {FenceTestFolder("new")}));
+	UAM_ASSERT_EQ(ReadFile(backup), std::string("damaged backup"));
+	UAM_ASSERT(!fs::exists(file));
+
+	// A blank primary beside a damaged backup is still unrecovered.
+	TempDir blank("uam-folder-fence-blank-bad-backup");
+	UAM_ASSERT(uam::io::WriteTextFile(blank.root / "folders.txt", ""));
+	UAM_ASSERT(uam::io::WriteTextFile(uam::io::MakeBackupPath(blank.root / "folders.txt"), "damaged backup"));
+	(void)ChatFolderStore::Load(blank.root, &result);
+	UAM_ASSERT(result.Unrecovered());
+}
+
+UAM_TEST(FolderStorePreparedSaveIsNotPublishedOnceFenced)
+{
+	TempDir temp("uam-folder-fence-prepared");
+	const fs::path file = temp.root / "folders.txt";
+	UAM_ASSERT(ChatFolderStore::Save(temp.root, {FenceTestFolder("a")}));
+	const std::shared_ptr<PreparedFolderSave> prepared = ChatFolderStore::PrepareSave(temp.root, {});
+	UAM_ASSERT(prepared != nullptr);
+
+	// The store becomes fenced between preparation and publication.
+	UAM_ASSERT(uam::io::WriteTextFile(file, "damaged"));
+	std::error_code ec;
+	fs::remove(uam::io::MakeBackupPath(file), ec);
+	uam::io::StoreLoadResult result;
+	(void)ChatFolderStore::Load(temp.root, &result, uam::io::StoreFenceMode::Arm);
+	UAM_ASSERT(result.Unrecovered());
+	UAM_ASSERT(!ChatFolderStore::PublishPreparedSave(prepared));
+	UAM_ASSERT_EQ(ReadFile(file), std::string("damaged"));
 }

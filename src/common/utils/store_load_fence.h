@@ -1,5 +1,6 @@
 #pragma once
 
+#include "common/paths/path_utils.h"
 #include "common/utils/io_utils.h"
 
 #include <filesystem>
@@ -51,7 +52,8 @@ namespace uam::io
 	  private:
 		static std::string Key(const std::filesystem::path& file)
 		{
-			return file.lexically_normal().generic_string();
+			// UTF-8, never the narrow code page: a non-ANSI character in the data root must not throw on Windows.
+			return uam::paths::NormalizedPortablePathString(file);
 		}
 
 		static std::mutex& Mutex()
@@ -67,6 +69,14 @@ namespace uam::io
 		}
 	};
 
+	/// Whether a load arms the save fence. Only a load whose result becomes the live saved state
+	/// (startup, startup deletion recovery) arms it; a passing read or a staging/legacy root only reports.
+	enum class StoreFenceMode
+	{
+		Observe,
+		Arm,
+	};
+
 	/// Blank text holds no data to protect: an empty legacy file is an empty store, not damage.
 	inline bool IsBlankStoreText(const std::string& text)
 	{
@@ -76,8 +86,8 @@ namespace uam::io
 	/// Reads `file`, falling back to its validated .bak, and classifies the outcome. `valid` decides
 	/// whether text is a complete store file. On Valid or RecoveredFromBackup, `text_out` holds the
 	/// validated text; on Unrecovered it holds whatever primary bytes were read (possibly none) for a
-	/// best-effort display, and the file is fenced against saves. `label` names the store in the warning.
-	template <typename Validate> StoreLoadResult LoadStoreTextWithBackup(const std::filesystem::path& file, Validate&& valid, std::string& text_out, const std::string& label)
+	/// best-effort display, and with StoreFenceMode::Arm the file is fenced against saves. `label` names the store in the warning.
+	template <typename Validate> StoreLoadResult LoadStoreTextWithBackup(const std::filesystem::path& file, Validate&& valid, std::string& text_out, const std::string& label, StoreFenceMode fence = StoreFenceMode::Observe)
 	{
 		StoreLoadResult result;
 		text_out.clear();
@@ -102,8 +112,9 @@ namespace uam::io
 		if (holds_unvalidated_bytes(primary_status, primary) || holds_unvalidated_bytes(backup_status, backup))
 		{
 			result.status = StoreLoadStatus::Unrecovered;
-			result.warning = "Could not load " + label + ": " + file.filename().string() + " is unreadable or invalid and has no valid backup. UAM will not save " + label + " until the file is repaired or removed and UAM restarts.";
-			UnrecoveredStoreFence::Mark(file);
+			result.warning = "Could not load " + label + ": " + file.filename().string() + " is unreadable or invalid and has no valid backup. UAM will not save " + label + " until the file is repaired (or removed with its .bak) and UAM restarts.";
+			if (fence == StoreFenceMode::Arm)
+				UnrecoveredStoreFence::Mark(file);
 			if (primary_status == ReadFileStatus::Read)
 				text_out = std::move(primary);
 			return result;

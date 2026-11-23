@@ -1208,9 +1208,18 @@ namespace uam
 			}
 			if (ec) AppendError(result.errors, "Could not read previous-version chats in " + uam::paths::Utf8PathString(legacy_root) + ": " + ec.message());
 
-			std::vector<ChatFolder> folders = ChatFolderStore::Load(data_root);
+			uam::io::StoreLoadResult current_folders_load;
+			uam::io::StoreLoadResult legacy_folders_load;
+			std::vector<ChatFolder> folders = ChatFolderStore::Load(data_root, &current_folders_load);
+			std::vector<ChatFolder> legacy_folders = ChatFolderStore::Load(legacy_root, &legacy_folders_load);
 			const std::size_t existing_folder_count = folders.size();
-			for (ChatFolder& folder : ChatFolderStore::Load(legacy_root))
+			// A damaged workspace file on either side is reported, never merged from a partial read.
+			if (current_folders_load.Unrecovered() || legacy_folders_load.Unrecovered())
+			{
+				AppendError(result.errors, "Previous-version workspaces were not imported because a workspace file is unreadable or invalid.");
+				legacy_folders.clear();
+			}
+			for (ChatFolder& folder : legacy_folders)
 			{
 				if (!LedgerContains(*imported_folders, folder.id) &&
 				    std::none_of(folders.begin(), folders.end(), [&](const ChatFolder& existing) { return existing.id == folder.id; }))

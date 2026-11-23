@@ -14,8 +14,10 @@ class ResourceCollectionService
 {
   public:
 	/// Falls back to the validated backup. An unreadable or invalid file with no valid backup reports
-	/// Unrecovered, loads no collections and fences every later save of this data root's collections.
-	static std::vector<ResourceCollection> Load(const std::filesystem::path& data_root, uam::io::StoreLoadResult* result = nullptr);
+	/// Unrecovered and loads no collections; with StoreFenceMode::Arm it also fences every later save of
+	/// this data root's collections for the rest of the process.
+	static std::vector<ResourceCollection> Load(const std::filesystem::path& data_root, uam::io::StoreLoadResult* result = nullptr,
+	    uam::io::StoreFenceMode fence = uam::io::StoreFenceMode::Observe);
 	/// True while a failed load fences saves of this data root's collections.
 	static bool IsSaveFenced(const std::filesystem::path& data_root);
 	/// Refused while the store is fenced.

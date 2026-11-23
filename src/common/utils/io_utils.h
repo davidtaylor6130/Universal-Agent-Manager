@@ -187,8 +187,9 @@ namespace uam::io
 	/// Test-only: a read of this exact path reports ReadFileStatus::Error on this thread.
 	inline thread_local std::filesystem::path t_read_failure_path_for_tests;
 
-	/// Reads a whole file, reporting Missing only when nothing exists at the path. A path that
-	/// exists but cannot be opened or read, or is not a regular file, reports Error, never "".
+	/// Reads a whole file, reporting Missing only when nothing exists at the path. A path that exists
+	/// but cannot be opened, is not a regular file or hits a stream error reports Error, never "".
+	/// A short read without a stream error is not detected here; callers validate completeness.
 	inline ReadFileStatus TryReadTextFileStatus(const std::filesystem::path& path, std::string& out)
 	{
 		out.clear();

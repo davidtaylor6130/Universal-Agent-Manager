@@ -303,12 +303,12 @@ namespace uam
 		}
 	} // namespace
 
-	std::vector<ResourceCollection> ResourceCollectionService::Load(const std::filesystem::path& data_root, uam::io::StoreLoadResult* result)
+	std::vector<ResourceCollection> ResourceCollectionService::Load(const std::filesystem::path& data_root, uam::io::StoreLoadResult* result, uam::io::StoreFenceMode fence)
 	{
 		std::optional<std::vector<ResourceCollection>> parsed;
 		std::string text;
 		const uam::io::StoreLoadResult loaded = uam::io::LoadStoreTextWithBackup(
-		    FilePath(data_root), [&](const std::string& candidate) { return (parsed = ParseCollections(candidate)).has_value(); }, text, "collections");
+		    FilePath(data_root), [&](const std::string& candidate) { return (parsed = ParseCollections(candidate)).has_value(); }, text, "collections", fence);
 		if (result != nullptr) *result = loaded;
 		const bool validated = loaded.status == uam::io::StoreLoadStatus::Valid || loaded.status == uam::io::StoreLoadStatus::RecoveredFromBackup;
 		return validated && !text.empty() && parsed.has_value() ? std::move(*parsed) : std::vector<ResourceCollection>{};

@@ -123,12 +123,12 @@ std::string ChatFolderStore::AllocateId(const std::vector<ChatFolder>& folders)
 	return AllocateId(used_ids);
 }
 
-std::vector<ChatFolder> ChatFolderStore::Load(const std::filesystem::path& data_root, uam::io::StoreLoadResult* result)
+std::vector<ChatFolder> ChatFolderStore::Load(const std::filesystem::path& data_root, uam::io::StoreLoadResult* result, uam::io::StoreFenceMode fence)
 {
 	std::vector<ChatFolder> folders;
 	std::string text;
 	const uam::io::StoreLoadResult loaded = uam::io::LoadStoreTextWithBackup(
-	    FolderFilePath(data_root), [](const std::string& candidate) { return IsValidFolderFile(candidate); }, text, "workspaces");
+	    FolderFilePath(data_root), [](const std::string& candidate) { return IsValidFolderFile(candidate); }, text, "workspaces", fence);
 	if (result != nullptr) *result = loaded;
 	// An unrecovered primary is still parsed for display; its saves stay fenced.
 	std::istringstream lines(text);
