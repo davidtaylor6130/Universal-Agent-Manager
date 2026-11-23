@@ -1,6 +1,6 @@
 # VCS adapter protocol, version 1
 
-**Status:** specification, conformance runner and sample for the first slice of [issue #522](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues/522). UAM does not launch adapters yet; nothing here is wired into the app or accepted. [David's decisions of 2026-11-23](../documentation-review.md#extension-adapters) set two rules this page builds on: an action button may only open a URL or a file, and each adapter executable is registered and approved once by the person in Settings.
+**Status:** specification, conformance runner and sample for the first slice of [issue #522](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues/522). UAM does not launch adapters yet; nothing here is wired into the app or accepted. [David's decisions of 2026-11-23](../documentation-review.md#extension-adapters) set two rules this page builds on: an action button may only open a URL or a file, and each adapter executable is registered and approved once by the person in Settings. His answers of the same day to this page's questions are [recorded below](#decisions).
 
 An adapter lets someone add a version-control system to UAM without changing UAM. It is a separate program that UAM starts and talks to over standard input and output, in the same JSON-RPC style as ACP, so a crashing or misbehaving adapter can never take UAM down with it (no plugins load into UAM's process, as decided on 2026-10-25). Version 1 is read-only: an adapter can report status, diffs, history and branches, and offer buttons that open a web page or show a file. Writing operations come in a later version.
 
@@ -12,10 +12,11 @@ An adapter lets someone add a version-control system to UAM without changing UAM
 
 ## Registration and trust
 
-The person registers an adapter in Settings with its executable, its arguments and a name. UAM never takes an adapter command from a repository, a chat or an agent, and refuses an executable or script that lies inside a registered workspace, because a repository's content is not trusted. Before the first launch, UAM shows the exact command line and asks for approval. The approval is bound to the command line and to a SHA-256 hash of the executable and of every argument that names an existing file, so `python3 adapter.py` covers `adapter.py`; if any of them changes, UAM asks again. Modules or files the adapter loads by itself are not covered, so a single-file executable or script is the safer form, and whether to go further is an [open question](#open-questions).
+The person registers an adapter in Settings with its executable, its arguments and a name. UAM never takes an adapter command from a repository, a chat or an agent, and refuses an executable or script that lies inside a registered workspace, because a repository's content is not trusted. Before the first launch, UAM shows the exact command line and asks for approval. As David decided, the approval covers the adapter's executable and its own install folder: the command line, a SHA-256 hash of the executable, and hashes of every file in the folder that holds the adapter (for an interpreter command such as `python3 /opt/folder-adapter/adapter.py`, the interpreter and the script's folder `/opt/folder-adapter`, including the modules the script loads from it). Any change to either, an added, removed or edited file included, makes UAM ask again before the next launch. An adapter therefore lives in a folder of its own: UAM refuses a folder that holds other programs, such as a system `bin` folder or the home folder, or that lies inside a registered workspace.
 
 ## Launch and transport
 
+- **Where.** Local only in version 1: UAM starts adapters on the person's computer for local workspaces. Starting them on an SSH host through the helper comes later.
 - **Process.** One adapter process per workspace that uses it, started on first use in an empty folder UAM owns, not in the workspace: a program the adapter runs by bare name must not be found in the repository. The workspace path arrives in `initialize`. The adapter runs in a Job Object that kills its members when closed on Windows, and in its own process group elsewhere, and stopping it stops everything it started. A process group does not hold a child that starts its own session (`setsid`), so on macOS and Linux UAM also stops the adapter's remaining descendants by walking the process tree, which is an open implementation detail.
 - **Environment.** Only what a program needs to start: `PATH`, `HOME` or `USERPROFILE`, `LANG`, `LC_ALL`, `LC_CTYPE`, the temporary-folder variables, and on Windows `SYSTEMROOT`, `WINDIR`, `COMSPEC` and `PATHEXT`, plus `NoDefaultCurrentDirectoryInExePath=1` so Windows does not search the current folder for programs. No provider keys, tokens or proxy settings.
 - **Framing.** JSON-RPC 2.0, one UTF-8 JSON object per line, ended by `\n`. No batches. Standard output carries only protocol messages; anything else there is a protocol violation. Standard error is for the adapter's own diagnostics: UAM drains it, keeps the last 64 KiB for the diagnostic log and never shows it in a chat.
@@ -34,7 +35,7 @@ The person registers an adapter in Settings with its executable, its arguments a
 | Error message | One line, at most 200 characters | UAM shortens it to one line |
 | Actions | 8 per adapter | UAM refuses the adapter |
 
-When UAM stops an adapter, it shows one plain line through the notification system, for example "The Folder adapter stopped responding.", and marks that workspace's version-control status unavailable. It starts the adapter again only on the next request the person makes, never in a loop; after three stops within ten minutes it leaves the adapter off for that workspace until the person turns it back on in Settings.
+When UAM stops an adapter, it shows one plain line through the notification system, for example "The Folder adapter stopped responding.", and marks that workspace's version-control status unavailable. As David decided, it starts the adapter again only on the next request the person makes, never in a loop; after three stops within ten minutes it leaves the adapter off for that workspace until the person turns it back on in Settings.
 
 ## Handshake
 
@@ -108,7 +109,11 @@ An action has either `target` or `context`, never both.
 - **`openUrl`** opens an absolute `http` or `https` URL with a host and no user name or password in the default browser.
 - **`openFile`** shows a file or folder inside the workspace in the system file manager (Finder, File Explorer or the desktop's file manager): a folder is opened there, and a file is selected in its folder. UAM never hands a file to the operating system's default handler, because for a program or launcher (`.exe`, `.bat`, `.lnk`, `.url`, `.app`, `.command`, `.webloc`, `.desktop` and others) that would run it, and a repository's files are not trusted. The target is `.`, a normalized path relative to the workspace, or an absolute path inside it; UAM checks the text first, refusing network paths and anything that leaves the workspace, then checks again after resolving links, and the item must exist.
 
-UAM checks every target, fixed or resolved, before using it, and shows one line instead when it fails. A resolved `kind` must match the declared one. An adapter must refuse an `actions/resolve` path that is not one of its own changed files or that leaves the workspace. Whether a file may instead be opened in its default application, for documents only, and whether URLs may use other schemes, such as one that opens a desktop client, are [open questions](#open-questions).
+UAM checks every target, fixed or resolved, before using it, and shows one line instead when it fails. A resolved `kind` must match the declared one. An adapter must refuse an `actions/resolve` path that is not one of its own changed files or that leaves the workspace. David confirmed both limits: a file action only reveals the item in the file manager and never opens it in an application, and a URL is `http` or `https` only, with no scheme that opens a desktop client.
+
+## Approval for writes
+
+Version 1 has no writing methods, so nothing an adapter does needs approval beyond its registration. The writes a later version adds follow David's rule of 2026-11-23 for actions that permanently commit somewhere other than the person's computer ([documentation review](../documentation-review.md#approval-for-remote-commits)): a commit to a server, creating a remote branch or tag, or anything else that publishes. UAM sends such a request only after the person has explicitly approved that one action, even in YOLO or another full-auto mode, unless a hidden advanced setting turns the rule off. An adapter cannot raise its own trust: it only acts on requests, and a write it performs without one breaks the protocol, which a later conformance version should check the way it checks the read-only guarantee today.
 
 ## Errors
 
@@ -157,10 +162,15 @@ Crashing, hanging, oversized or unreadably nested output, writing anything else 
 - **Custom AI providers:** the matching recipe uses generic ACP ([#523](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues/523)), not this protocol.
 - **Recipe package:** a template project and an author-facing page built from this one.
 
-## Open questions
+## Decisions
 
-- May `openFile` open a document in its default application, refusing program and launcher types on each system, or should it only ever show the item in the file manager, as above?
-- Should an action URL be allowed to use a scheme other than `http` or `https`, such as one that opens a desktop client like a Perforce or Plastic GUI? The operating system would hand it to an installed program, which is closer to running a command.
-- Should the approval also cover what an adapter loads by itself, for example by requiring a single-file executable or hashing a declared folder?
-- Should adapters work on SSH workspaces, started on the remote host through the helper, or stay local only?
-- Is the restart rule above (only on the next request; off after three stops in ten minutes) right?
+David answered this page's questions on 2026-11-23; each answer is applied above and [recorded in the documentation review](../documentation-review.md#extension-adapters).
+
+| Question | Answer |
+|---|---|
+| May a file action open a document in its default application? | No: file actions only reveal a workspace file in the file manager |
+| May action URLs use other schemes? | No: `http` and `https` only |
+| What does approving an adapter cover? | Its executable and its own install folder; any change to either asks again |
+| Do adapters run on SSH workspaces? | Not in version 1; local only, SSH later |
+| The restart rule after a stop | As proposed: restart on the next request; off after three stops in ten minutes until turned back on |
+| Approval for writes | Every write that commits outside the person's computer needs explicit approval, even in YOLO, unless a hidden advanced setting turns that off |
