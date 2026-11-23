@@ -25,8 +25,7 @@ import {
   buildChatSearchIndex,
   buildChatSearchModel,
   tokenizeChatSearchQuery,
-  mergeDisplayedStatus,
-  type DisplayedChatStatus,
+  displayedChatStatus,
 } from './chatSearch'
 import type { Folder, Session, WorkspaceFolderRecoveryPreview } from '../../types/session'
 import { chatGridLeaves, chatPaneColors, readChatGridLayout, setChatInLeaf, subscribeChatGridLayout, writeChatGridLayout } from '../../utils/chatGridStorage'
@@ -406,32 +405,37 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
   }, [sessions, nativeChildIds])
   useLayoutEffect(() => { previousFamiliesRef.current = familySessionIdsByRootId }, [familySessionIdsByRootId])
   // Rows carry their status in their names, not in a live region each; the sidebar's one polite region
-  // announces an Active row whose spoken status changes to waiting, failed or done. Each row's status
-  // merges its branch family the way the row does. Running starts, the first render and chats the
-  // sidebar had not listed before (newly created or reloaded) are not announced.
-  const announcedStatusesRef = useRef<Map<string, string> | null>(null)
+  // announces an Active row whose spoken status changes to waiting or done. Each row's status is worked out
+  // as SessionItem does for its name (branch family bindings, held automation, pull request watch). Running
+  // starts and the first render are not announced; nor are chats the sidebar had not listed before (newly
+  // created or reloaded), except a new chat held for automation approval once the sidebar has loaded.
+  // Only Active rows are evaluated, so the status reads stay proportional to the Active list.
+  const announcedStatusesRef = useRef<{ known: Set<string>; spoken: Map<string, string> } | null>(null)
   useEffect(() => {
-    const spoken = new Map<string, string>()
-    for (const [rootId, familyIds] of familySessionIdsByRootId) {
-      let status: DisplayedChatStatus = null
-      for (const id of familyIds) {
-        const runtime = runtimeStatusBySessionId.get(id)
-        status = mergeDisplayedStatus(status, runtime === 'processing' ? { type: 'processing' } : runtime === 'done' ? { type: 'done' }
-          : runtime?.startsWith('attention:') ? { type: 'attention', kind: runtime.slice('attention:'.length) as AcpAttentionKind } : null)
-      }
-      spoken.set(rootId, chatRowStatusText(status, { automationHeld: Boolean(sessionsById.get(rootId)?.automationPendingPrompt) }))
+    const state = useAppStore.getState()
+    const speak = (ownerId: string, ids: readonly string[]) => {
+      const owner = sessionsById.get(ownerId)
+      if (owner?.automationPendingPrompt) return chatRowStatusText(null, { automationHeld: true })
+      let status = displayedChatStatus(ids.map((id) => state.cliBindingBySessionId[id]), ids.map((id) => state.acpBindingBySessionId[id]))
+      if ((!status || status.type === 'done') && owner && automationStartPending(owner, state.acpBindingBySessionId[ownerId]?.pendingDirectPrompts)) status = { type: 'processing' }
+      return chatRowStatusText(status, { watchingPullRequest: status?.type !== 'attention' && ids.some((id) => watchingSessionIds.has(id)) })
     }
+    // Roots speak for their branch family; a branch row shown while searching speaks for itself.
+    const spoken = new Map(searchModel.activeSessionIds.map((id) => [id, speak(id, familySessionIdsByRootId.get(id) ?? [id])]))
     const previous = announcedStatusesRef.current
-    announcedStatusesRef.current = spoken
+    // A search hides Active rows without changing them: keep their last status, so clearing it is silent.
+    if (previous && searchModel.isSearching) for (const [id, text] of previous.spoken) if (!spoken.has(id)) spoken.set(id, text)
+    announcedStatusesRef.current = { known: new Set(sessionsById.keys()), spoken }
     if (!previous) return
-    const changes = searchModel.activeSessionIds.flatMap((id) => {
-      const text = spoken.get(id) ?? ''
-      if (!text || text === 'running' || !previous.has(id) || previous.get(id) === text) return []
+    const changes = [...spoken].flatMap(([id, text]) => {
+      // Only states the user acts on: waiting, failed or done. Running and a pull request watch stay silent.
+      if (!/^(waiting|failed|done)/.test(text) || previous.spoken.get(id) === text) return []
+      if (!previous.known.has(id) && !(previous.known.size > 0 && text === 'waiting for approval')) return []
       return [`${sessionsById.get(id)?.name || 'Chat'}: ${text}`]
     })
     if (changes.length === 0) return
     setMoveAnnouncement(changes.length > 3 ? `${changes.slice(0, 3).join('; ')}; and ${changes.length - 3} more` : changes.join('; '))
-  }, [familySessionIdsByRootId, runtimeStatusBySessionId, searchModel.activeSessionIds, sessionsById])
+  }, [familySessionIdsByRootId, runtimeStatusBySessionId, searchModel.activeSessionIds, searchModel.isSearching, sessionsById, watchingSessionIds])
   // Each selected row stands for its branch family, matching single-row deletion.
   const pendingBulkDeleteFamilyIds = useMemo(() => pendingBulkDeleteIds
     ? [...new Set(pendingBulkDeleteIds.flatMap((id) => familySessionIdsByRootId.get(id) ?? [id]))]

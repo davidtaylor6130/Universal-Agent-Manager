@@ -85,8 +85,7 @@ export function isUnsettledChat(updatedAtMs: number, settledAt: string | undefin
   return Number.isNaN(settledMs) || updatedAtMs > settledMs
 }
 
-/** Attention outranks running, which outranks done: the status a branch family's row shows. */
-export function mergeDisplayedStatus(a: DisplayedChatStatus, b: DisplayedChatStatus): DisplayedChatStatus {
+function mergeDisplayedStatus(a: DisplayedChatStatus, b: DisplayedChatStatus): DisplayedChatStatus {
   const rank = (status: DisplayedChatStatus) => status?.type === 'attention' ? 3 : status?.type === 'processing' ? 2 : status ? 1 : 0
   return rank(b) > rank(a) ? b : a
 }

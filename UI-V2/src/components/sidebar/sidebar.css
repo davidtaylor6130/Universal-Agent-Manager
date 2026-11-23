@@ -89,6 +89,7 @@
 .uam-iconbtn.uam-sb-iconbtn--framed { --sb-paint: 22px; }
 .uam-sb-iconbtn--framed::before,
 .uam-sb-iconbtn--framed:hover:not(:disabled):not([aria-disabled="true"])::before { background: var(--surface-up); border: 1px solid var(--border); }
+.uam-iconbtn.uam-sb-iconbtn--framed:hover:not(:disabled):not([aria-disabled="true"]) { color: var(--text-3); }
 /* The shared close rule (index.css) turns X buttons red on hover and focus; here the red paints the tile, not the 24px box. */
 .uam-iconbtn.uam-sb-iconbtn:has(> svg.lucide-x):not(:disabled):not([aria-disabled="true"]):is(:hover, :focus-visible) { background: transparent; color: color-mix(in srgb, var(--error) 72%, var(--text)); }
 .uam-sb-iconbtn:has(> svg.lucide-x):not(:disabled):not([aria-disabled="true"]):is(:hover, :focus-visible)::before { background: var(--error-dim); }

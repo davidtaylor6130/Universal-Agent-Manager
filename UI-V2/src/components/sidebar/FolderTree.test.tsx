@@ -1746,7 +1746,26 @@ describe('FolderTree', () => {
       act(() => useAppStore.setState({ acpBindingBySessionId: { 'chat-1': { running: true, processing: false, lifecycleState: 'ready', readySinceLastSelect: true } as never, 'chat-2': { running: true, processing: false, lifecycleState: 'ready', attentionKind: 'permission' } as never } }))
       expect(row().getAttribute('aria-label')).toBe('Open chat Build fixes, waiting, permission needed')
       expect(region.textContent).toBe('Build fixes: waiting, permission needed')
+      // A chat that automation creates held for approval is new to the sidebar but still needs the user.
+      act(() => useAppStore.setState((state) => ({ sessions: [...state.sessions, { ...makeSession(5), name: 'Automation run', updatedAt: new Date(), automationPendingPrompt: 'Fix the parser' }] })))
+      expect(host.querySelector('[data-session-id="chat-5"]')?.getAttribute('aria-label')).toBe('Open chat Automation run, waiting for approval')
+      expect(region.textContent).toBe('Automation run: waiting for approval')
+      // A watched pull request outranks done on the row, so a finished wake turn is not announced as done.
+      act(() => useAppStore.setState((state) => ({
+        prWatches: [{ chatId: 'chat-1', repository: 'acme/app', number: 12, url: 'https://github.com/acme/app/pull/12', title: '', state: 'open' as const, watching: true, checksPassed: 0, checksFailed: 0, checksPending: 0, conflicting: false, readFailing: false, paused: false }],
+        acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-2': { running: true, processing: true, lifecycleState: 'processing' } as never } })))
+      act(() => useAppStore.setState((state) => ({ acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-2': { running: true, processing: false, lifecycleState: 'ready', readySinceLastSelect: true } as never } })))
+      expect(row().getAttribute('aria-label')).toBe('Open chat Build fixes, watching pull request')
+      expect(region.textContent).toBe('Automation run: waiting for approval')
+      // Searching hides Active rows without changing them, so clearing the search announces nothing.
+      act(() => root.render(<FolderTree searchQuery="Build" />))
+      expect(host.querySelector('[data-testid="active-chats"] [data-session-id="chat-5"]')).toBeNull()
+      region.textContent = ''
+      act(() => root.render(<FolderTree searchQuery="" />))
+      expect(host.querySelector('[data-testid="active-chats"] [data-session-id="chat-5"]')).not.toBeNull()
+      expect(region.textContent).toBe('')
     } finally {
+      useAppStore.setState({ prWatches: [] })
       act(() => root.unmount())
       host.remove()
     }

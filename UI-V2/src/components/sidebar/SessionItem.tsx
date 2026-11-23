@@ -805,10 +805,11 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
           </span>
         )}
         {!editing && isPinned && (
-          // Keeps the 12px pin's place in the row; the 24px hit area overlaps only the gaps either side. It is a
-          // pointer shortcut out of the Tab order: the row's own pin chip, its menu and the row button cover it by keyboard.
+          // Keeps the 12px pin's place in the row; the 24px hit area overlaps only the gaps either side. On the desktop
+          // it is a pointer shortcut out of the Tab order, since the row's pin chip and menu cover it by keyboard; the
+          // phone companion has neither, so there it stays a Tab stop.
           <IconButton
-            tabIndex={-1}
+            tabIndex={isCompanionContext() ? undefined : -1}
             size="sm"
             label={multiSelected ? 'Unpin selected chats' : `Unpin ${sessionName}`}
             tooltip={multiSelected ? 'Unpin selected chats' : 'Unpin chat'}
