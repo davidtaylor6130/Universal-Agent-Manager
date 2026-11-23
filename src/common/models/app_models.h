@@ -17,6 +17,7 @@
 #include "common/provider/runtime/provider_build_config.h"
 #include "common/utils/uuid.h"
 #include "common/models/revisioned_vector.h"
+#include "common/security/command_rules.h"
 
 // Inert authored-input provenance. Never delivery, replay, cancellation or ownership authority.
 namespace uam::input_provenance
@@ -1177,6 +1178,11 @@ struct AppSettings
 	/// saved id back while the fallback is still selected, so a build that includes the provider finds the choice again.</summary>
 	std::map<std::string, std::pair<std::string, std::string>> excluded_provider_selections;
 	std::string permission_reviewer_model_id;
+	/// <summary>User allow/ask/deny rules checked before AI review. Empty in a default-constructed value; a settings
+	/// file without the key seeds uam::command_rules::DefaultRules() on load.</summary>
+	std::vector<uam::command_rules::Rule> permission_command_rules;
+	/// <summary>Whether AI Review asks the reviewer model about requests no rule decides; off leaves them for the user.</summary>
+	bool permission_ai_review_enabled = true;
 	std::string default_new_chat_provider_id = provider_build_config::FirstEnabledProviderId();
 	std::map<std::string, ProviderChatDefaults> provider_chat_defaults;
 	std::map<std::string, HostScopedSettings> host_scoped_settings;

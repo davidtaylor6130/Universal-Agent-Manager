@@ -133,8 +133,9 @@ inline Category CategoryForKind(std::string_view kind, bool uses_network)
 	std::string lower;
 	for (char ch : kind)
 		if (ch != ' ' && ch != '\t') lower.push_back(ch >= 'A' && ch <= 'Z' ? static_cast<char>(ch - 'A' + 'a') : ch);
-	if (uses_network || lower == "fetch") return Category::Fetch;
+	// A typed command stays a command even when it names a URL, so command rules still see curl and wget.
 	if (lower == "commandexecution" || lower == "execute") return Category::Command;
+	if (uses_network || lower == "fetch") return Category::Fetch;
 	if (lower == "read" || lower == "search" || lower == "inspect" || lower == "list" || lower == "query" || lower == "find") return Category::Read;
 	if (lower == "filechange" || lower == "edit" || lower == "write" || lower == "create" || lower == "delete" || lower == "move") return Category::Edit;
 	return Category::Other;
@@ -383,10 +384,11 @@ namespace detail
 				++i;
 				continue;
 			}
-			if (ch == '#' && !in_word)
+			// '#' is deliberately not a comment: cmd.exe has none, so text after it can still run there.
+			if (ch == '%')
 			{
-				while (i < text.size() && text[i] != '\n') ++i;
-				continue;
+				// cmd.exe expands %VAR% before it parses operators, so the value is only known at run time.
+				word.dynamic = out.dynamic = true;
 			}
 			if (Space(ch))
 			{
@@ -549,7 +551,8 @@ namespace detail
 			if (words[i].dynamic) view.unresolved = true;
 			view.invocations.emplace_back(words.begin() + static_cast<std::ptrdiff_t>(i), words.end());
 			const std::string name = ProgramName(words[i].text);
-			if (ShellProgram(name) || name == "eval")
+			// A program computed at run time might be a shell, so its -c or /c string is checked too.
+			if (ShellProgram(name) || name == "eval" || words[i].dynamic)
 			{
 				if (name == "eval")
 				{
@@ -601,10 +604,28 @@ namespace detail
 		}
 	}
 
+	/// <summary>The command with every quote and escape character removed. Lexing it as well exposes operators
+	/// that only POSIX quoting hides (cmd.exe treats ' as text and has no backslash escape), so deny and ask
+	/// rules over-approximate across shells.</summary>
+	inline std::string QuoteBlind(std::string_view command)
+	{
+		std::string blind;
+		for (char ch : command)
+			if (ch != '\'' && ch != '"' && ch != '\\' && ch != '^') blind.push_back(ch);
+		return blind;
+	}
+
 	inline void Collect(std::string_view command, CommandView& view, int depth)
 	{
 		Lexed lexed = Lex(command.substr(0, std::min(command.size(), kMaxCommandBytes)));
 		if (!lexed.ok || command.size() > kMaxCommandBytes) view.unresolved = true;
+		if (const std::string blind = QuoteBlind(command.substr(0, std::min(command.size(), kMaxCommandBytes))); blind != command && depth < kMaxNesting)
+		{
+			Lexed extra = Lex(blind);
+			if (!extra.ok) view.unresolved = true;
+			for (std::vector<Word>& segment : extra.segments) lexed.segments.push_back(std::move(segment));
+			for (std::string& body : extra.nested) lexed.nested.push_back(std::move(body));
+		}
 		for (const std::vector<Word>& segment : lexed.segments) CollectInvocations(segment, view, depth);
 		for (std::string& body : lexed.nested) view.nested.push_back(std::move(body));
 		std::vector<std::string> nested = std::move(view.nested);
@@ -660,6 +681,10 @@ namespace detail
 	inline bool AllowPatternMatches(const std::vector<Word>& pattern, std::string_view command)
 	{
 		if (pattern.empty() || command.empty() || command.size() > kMaxCommandBytes) return false;
+		// Providers may run commands through cmd.exe or PowerShell, where single quotes, '#' and backslashes do not
+		// hide operators. An allowed command therefore contains no operator or expansion character anywhere,
+		// quoted or not.
+		if (command.find_first_of(";&|<>()$`%!\n\r") != std::string_view::npos) return false;
 		const Lexed lexed = Lex(command);
 		if (!lexed.ok || lexed.compound || lexed.dynamic || lexed.segments.size() != 1) return false;
 		const std::vector<Word>& words = lexed.segments.front();

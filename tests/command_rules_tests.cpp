@@ -103,8 +103,20 @@ UAM_TEST(CommandRulesInjectionCannotRideAnAllowedPrefix)
 		const rules::Outcome outcome = rules::Evaluate(allow_only, CommandContext(command)).outcome;
 		if (outcome == rules::Outcome::Approve) throw TestFailure("Allow prefix approved non-literal command: " + std::string(command));
 	}
-	// Single-quoted operators are plain text and stay within the allowed command.
-	UAM_ASSERT(rules::Evaluate(allow_only, CommandContext("npm test -- --grep 'a;b'")).outcome == rules::Outcome::Approve);
+	// cmd.exe and PowerShell do not share POSIX quoting or comments, so quoted or commented operators never
+	// ride an allow prefix either, and deny rules still see the program they would run there.
+	for (const std::string_view command : {"npm test -- --grep 'a;b'", "npm test 'x&rm y'", "npm test \"\\\"&rm y\"", "npm test #&rm y", "npm test %X%", "npm test !X!", "npm test ^& rm y"})
+	{
+		if (rules::Evaluate(allow_only, CommandContext(command)).outcome == rules::Outcome::Approve) throw TestFailure("Allow prefix approved a cross-shell operator: " + std::string(command));
+	}
+	for (const std::string_view command : {"npm test 'x&rm y'", "npm test \"\\\"&rm y\"", "npm test #&rm y", "npm test ^& rm y"})
+	{
+		if (OutcomeFor(list, command) != rules::Outcome::Deny) throw TestFailure("Cross-shell rm was not denied: " + std::string(command));
+	}
+	UAM_ASSERT(OutcomeFor(list, "%COMSPEC% /c rm x") == rules::Outcome::Deny);
+	UAM_ASSERT(OutcomeFor(list, "npm test && %TOOL% x") == rules::Outcome::AskUser);
+	// Literal quoted arguments without operator characters still match.
+	UAM_ASSERT(rules::Evaluate(allow_only, CommandContext("npm test -- --grep 'two words'")).outcome == rules::Outcome::Approve);
 }
 
 UAM_TEST(CommandRulesDenyFollowsWrappersButNotPlainArguments)
@@ -192,6 +204,7 @@ UAM_TEST(CommandRulesToolCategoriesUseStructuredKinds)
 {
 	UAM_ASSERT(rules::CategoryForKind("execute", false) == rules::Category::Command);
 	UAM_ASSERT(rules::CategoryForKind("commandExecution", false) == rules::Category::Command);
+	UAM_ASSERT(rules::CategoryForKind("execute", true) == rules::Category::Command);
 	UAM_ASSERT(rules::CategoryForKind("read", false) == rules::Category::Read);
 	UAM_ASSERT(rules::CategoryForKind("read", true) == rules::Category::Fetch);
 	UAM_ASSERT(rules::CategoryForKind("fileChange", false) == rules::Category::Edit);

@@ -9,6 +9,7 @@
 #include "common/config/approval_modes.h"
 #include "common/config/line_value_codec.h"
 #include "common/config/mcp_server_config.h"
+#include "common/config/permission_command_rules_json.h"
 #include "common/config/provider_chat_defaults.h"
 #include "common/config/host_scoped_settings.h"
 #include "common/config/provider_availability.h"
@@ -98,6 +99,8 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	constexpr std::string_view kMemoryWorkerBindingsKey = "memory_worker_bindings";
 	constexpr std::string_view kPermissionReviewerProviderIdKey = "permission_reviewer_provider_id";
 	constexpr std::string_view kPermissionReviewerModelIdKey = "permission_reviewer_model_id";
+	constexpr std::string_view kPermissionCommandRulesKey = "permission_command_rules";
+	constexpr std::string_view kPermissionAiReviewEnabledKey = "permission_ai_review_enabled";
 	constexpr std::string_view kDefaultNewChatProviderIdKey = "default_new_chat_provider_id";
 	constexpr std::string_view kProviderChatDefaultsKey = "provider_chat_defaults";
 	constexpr std::string_view kMarkdownStoreDirectoryKey = "markdown_store_directory";
@@ -732,6 +735,8 @@ bool SettingsStore::SaveInternal(const std::filesystem::path& settings_file, con
 		WriteRawSetting(lines, kMemoryWorkerBindingsKey, EncodeMemoryWorkerBindings(normalized.memory_worker_bindings));
 		WriteEncodedSetting(lines, kPermissionReviewerProviderIdKey, SavedProviderSelection(normalized, kPermissionReviewerProviderIdKey, normalized.permission_reviewer_provider_id));
 		WriteEncodedSetting(lines, kPermissionReviewerModelIdKey, normalized.permission_reviewer_model_id);
+		WriteEncodedSetting(lines, kPermissionCommandRulesKey, uam::permission_command_rules::Serialize(uam::command_rules::Normalize(normalized.permission_command_rules)).dump());
+		WriteBoolSetting(lines, kPermissionAiReviewEnabledKey, normalized.permission_ai_review_enabled);
 		WriteEncodedSetting(lines, kDefaultNewChatProviderIdKey, SavedProviderSelection(normalized, kDefaultNewChatProviderIdKey, normalized.default_new_chat_provider_id));
 		WriteRawSetting(lines, kProviderChatDefaultsKey, EncodeProviderChatDefaults(normalized.provider_chat_defaults));
 		nlohmann::json host_settings = nlohmann::json::object();
@@ -910,6 +915,8 @@ SettingsLoadResult SettingsStore::LoadInternal(const std::filesystem::path& sett
 		}
 		else
 		{
+			// A first run starts with the safe default rules; unreadable files are not overwritten here.
+			if (!primary_exists && !backup_exists) settings.permission_command_rules = uam::command_rules::DefaultRules();
 			ClampSettings(settings);
 			result.unrecovered_error = primary_exists || backup_exists;
 			if (result.unrecovered_error)
@@ -921,6 +928,7 @@ SettingsLoadResult SettingsStore::LoadInternal(const std::filesystem::path& sett
 	}
 	result.loaded = true;
 	settings.excluded_provider_selections.clear(); // Only this file's choices may be remembered.
+	bool saw_permission_command_rules = false;
 
 	std::istringstream lines(text);
 	std::string line;
@@ -1153,6 +1161,16 @@ SettingsLoadResult SettingsStore::LoadInternal(const std::filesystem::path& sett
 		{
 			settings.permission_reviewer_model_id = decoded_value;
 		}
+		else if (key == kPermissionCommandRulesKey)
+		{
+			// Validated at load: invalid or excess rules are dropped, never widened.
+			settings.permission_command_rules = uam::permission_command_rules::ParseLenient(nlohmann::json::parse(decoded_value, nullptr, false));
+			saw_permission_command_rules = true;
+		}
+		else if (key == kPermissionAiReviewEnabledKey)
+		{
+			settings.permission_ai_review_enabled = uam::parse::BoolOr(value, settings.permission_ai_review_enabled);
+		}
 		else if (key == kDefaultNewChatProviderIdKey)
 		{
 			settings.default_new_chat_provider_id = decoded_value;
@@ -1295,6 +1313,8 @@ SettingsLoadResult SettingsStore::LoadInternal(const std::filesystem::path& sett
 	{
 		settings.provider_extra_flags = legacy_extra_flags;
 	}
+	// Files written before command rules existed start with the safe defaults; a saved empty list stays empty.
+	if (!saw_permission_command_rules) settings.permission_command_rules = uam::command_rules::DefaultRules();
 	ClampSettings(settings);
 	if (legacy_yolo)
 	{

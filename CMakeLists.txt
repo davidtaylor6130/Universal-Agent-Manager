@@ -1766,6 +1766,7 @@ if(UAM_BUILD_TESTS)
     tests/copilot_captured_question_replay_tests.cpp
     tests/read_only_command_tests.cpp
     tests/command_rules_tests.cpp
+    tests/acp_permission_rule_tests.cpp
     tests/compaction_runtime_sync_tests.cpp
     tests/installer_quiesce_tests.cpp
     tests/durable_retry_worktree_tests.cpp

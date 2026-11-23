@@ -11,6 +11,7 @@
 #include "common/config/editor_file_associations.h"
 #include "common/config/execution_host_config.h"
 #include "common/config/mcp_server_config.h"
+#include "common/config/permission_command_rules_json.h"
 #include "common/config/provider_chat_defaults.h"
 #include "common/config/host_scoped_settings.h"
 #include "common/config/provider_availability.h"
@@ -115,6 +116,8 @@ namespace uam::settings_frontend_json
 		settings_json["sidebarPinnedChatOrder"] = settings.sidebar_pinned_chat_order;
 		settings_json["sidebarActiveChatOrder"] = settings.sidebar_active_chat_order;
 		settings_json["steerActiveTurnOnSend"] = settings.steer_active_turn_on_send;
+		settings_json["permissionCommandRules"] = uam::permission_command_rules::Serialize(settings.permission_command_rules);
+		settings_json["permissionAiReviewEnabled"] = settings.permission_ai_review_enabled;
 		settings_json["gitEnabled"] = settings.git_enabled;
 		settings_json["gitAutoWorktree"] = settings.git_auto_worktree;
 		settings_json["gitSnapshotSvn"] = settings.git_snapshot_svn;
