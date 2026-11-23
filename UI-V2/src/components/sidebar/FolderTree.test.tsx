@@ -227,7 +227,7 @@ describe('FolderTree', () => {
       expect(header.getAttribute('aria-expanded')).toBe('true')
       expect(header.hasAttribute('aria-pressed')).toBe(false)
       expect(header.querySelector('button, [tabindex="0"]')).toBeNull()
-      const actions = host.querySelector<HTMLButtonElement>('button[aria-label="Folder actions"]')!
+      const actions = host.querySelector<HTMLButtonElement>('button[aria-label="Actions for Project"]')!
       expect(header.contains(actions)).toBe(false)
       expect(actions.closest('.group')?.contains(header)).toBe(true)
       expect(actions.parentElement?.closest('[class*="group-has-[:focus-visible]:opacity-100"]')).toBeTruthy()
@@ -272,7 +272,7 @@ describe('FolderTree', () => {
       act(() => host.querySelector<HTMLElement>('[data-testid="folder-header-a"]')!.click())
       act(() => host.querySelector<HTMLElement>('[data-testid="folder-header-c"]')!.dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
       expect(host.querySelector('[aria-label="Delete 3 selected workspaces"]')).toBeTruthy()
-      act(() => (host.querySelector('button[aria-label="Folder actions"]') as HTMLButtonElement).click())
+      act(() => (host.querySelector('button[aria-label="Actions for a"]') as HTMLButtonElement).click())
       expect(document.body.querySelector('[role="menu"][aria-label="a actions"]')?.textContent).toContain('Rename folder')
 
       window.history.replaceState(null, '', '/companion')
@@ -519,11 +519,14 @@ describe('FolderTree', () => {
     expect(folderHeader?.className).toContain('gap-1.5')
     expect(folderHeader?.className).toContain('px-2.5')
     expect(folderHeader?.className).toContain('py-0.5')
-    expect(chat?.className).toContain('gap-1.5')
-    expect(chat?.className).toContain('px-2.5')
-    expect(chat?.className).toContain('py-1')
-    expect(chat?.parentElement?.parentElement?.className).toContain('pl-3.5')
-    expect(chat?.querySelector('button[aria-label="More actions"]')).toBeTruthy()
+    // The chat's visual row holds its one interactive element and, beside it, its action buttons.
+    const chatRow = chat?.closest<HTMLElement>('.uam-sb-row')
+    expect(chatRow?.className).toContain('gap-1.5')
+    expect(chatRow?.className).toContain('px-2.5')
+    expect(chatRow?.className).toContain('py-1')
+    expect(chatRow?.parentElement?.parentElement?.className).toContain('pl-3.5')
+    expect(chatRow?.querySelector('button[aria-label="More actions for Chat 1"]')).toBeTruthy()
+    expect(chat?.querySelector('button')).toBeNull()
 
     act(() => root.unmount())
     host.remove()
@@ -1140,7 +1143,7 @@ describe('FolderTree', () => {
     act(() => pointer(document, 'pointerup', 20, 80))
     act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })) })
     // Workspace chats keep their time order and native drag.
-    expect((host.querySelector('[data-testid="folder-row-project"] [data-session-id="chat-1"]')?.parentElement as HTMLElement).draggable).toBe(true)
+    expect((host.querySelector('[data-testid="folder-row-project"] [data-session-id="chat-1"]')?.closest('.uam-sb-row')?.parentElement as HTMLElement).draggable).toBe(true)
     await releaseClickGuard()
 
     act(() => root.unmount())
@@ -1664,22 +1667,102 @@ describe('FolderTree', () => {
 
     const active = host.querySelector<HTMLElement>('[data-testid="active-chats"] [data-session-id="active"]')
     const pinned = host.querySelector<HTMLElement>('[data-testid="pinned-chats"] [data-session-id="pinned"]')
-    expect(active?.className).toContain('py-1.5')
-    expect(active?.style.opacity).toBe('0.95')
-    expect(active?.querySelector('[role="status"]')?.textContent).toBe('Working')
+    const activeRow = active?.closest<HTMLElement>('.uam-sb-row')
+    expect(activeRow?.className).toContain('py-1.5')
+    expect(activeRow?.style.opacity).toBe('0.95')
+    expect(active?.textContent).toContain('Working')
+    // Each row says its status in its name; no row is its own live region.
+    expect(active?.getAttribute('aria-label')).toBe('Open chat Build fixes, running')
+    expect(host.querySelector('[data-testid="active-chats"] [role="status"]')).toBeNull()
     expect(active?.textContent).toContain('Project')
     expect(active?.textContent).toContain('Build fixes')
     expect(active?.querySelector('[aria-label="Runs on This computer"], [aria-label^="Runs on"]')).toBeTruthy()
-    expect(active?.querySelector('button[aria-label^="Mark"]')).toBeNull()
-    expect(pinned?.className).toContain('min-h-[26px]')
+    expect(activeRow?.querySelector('button[aria-label^="Mark"]')).toBeNull()
+    expect(pinned?.closest('.uam-sb-row')?.className).toContain('min-h-[26px]')
     act(() => useAppStore.setState({ acpBindingBySessionId: { active: { running: true, processing: false, lifecycleState: 'ready', backgroundTaskCount: 1, readySinceLastSelect: true, processingStartedAtMs: null } as never } }))
-    expect(host.querySelector('[data-testid="active-chats"] [data-session-id="active"] [role="status"]')?.textContent).toBe('Working')
+    expect(host.querySelector('[data-testid="active-chats"] [data-session-id="active"]')?.textContent).toContain('Working')
     act(() => useAppStore.setState({ acpBindingBySessionId: { active: { running: true, processing: false, lifecycleState: 'ready', backgroundTaskCount: 0, readySinceLastSelect: true, processingStartedAtMs: null } as never } }))
-    expect(host.querySelector('[data-testid="active-chats"] [data-session-id="active"] [role="status"]')?.textContent).not.toBe('Working')
+    expect(host.querySelector('[data-testid="active-chats"] [data-session-id="active"]')?.textContent).not.toContain('Working')
+    expect(host.querySelector('[data-testid="active-chats"] [data-session-id="active"]')?.getAttribute('aria-label')).toBe('Open chat Build fixes, done, unread')
+    // Finishing is announced once, through the sidebar's single polite region.
+    expect(host.querySelector('[data-testid="sidebar-move-status"]')?.textContent).toBe('Build fixes: done, unread')
 
 
     act(() => root.unmount())
     host.remove()
+  })
+
+  it('announces Active status changes once through the sidebar region instead of a live region per row', () => {
+    const recent = new Date()
+    useAppStore.setState({
+      sessions: [{ ...makeSession(1), name: 'Build fixes', updatedAt: recent }, { ...makeSession(2), name: 'Docs pass', updatedAt: recent }],
+      acpBindingBySessionId: { 'chat-1': { running: true, processing: true, lifecycleState: 'processing' } as never, 'chat-2': { running: true, processing: true, lifecycleState: 'processing' } as never },
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<FolderTree searchQuery="" />))
+      const region = host.querySelector<HTMLElement>('[data-testid="sidebar-move-status"]')!
+      // Mounting and running work announce nothing; the sidebar has exactly one polite region.
+      expect(region.textContent).toBe('')
+      expect(host.querySelectorAll('[role="status"], [aria-live]')).toHaveLength(1)
+      expect(region.getAttribute('aria-live')).toBe('polite')
+      act(() => useAppStore.setState({ acpBindingBySessionId: { 'chat-1': { running: true, processing: false, lifecycleState: 'ready', attentionKind: 'permission' } as never, 'chat-2': { running: true, processing: true, lifecycleState: 'processing' } as never } }))
+      expect(region.textContent).toBe('Build fixes: waiting, permission needed')
+      expect(host.querySelector('[data-session-id="chat-1"]')?.getAttribute('aria-label')).toBe('Open chat Build fixes, waiting, permission needed')
+      act(() => useAppStore.setState({ acpBindingBySessionId: { 'chat-1': { running: true, processing: false, lifecycleState: 'ready', attentionKind: 'permission' } as never, 'chat-2': { running: true, processing: false, lifecycleState: 'ready', readySinceLastSelect: true } as never } }))
+      expect(region.textContent).toBe('Docs pass: done, unread')
+      expect(host.querySelectorAll('[role="status"], [aria-live]')).toHaveLength(1)
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  it('names workspace and collection controls after their item and gives them a 24px IconButton hit area', () => {
+    useAppStore.setState({
+      folders: [makeFolder(), { ...makeFolder(), id: 'docs', name: 'Docs', directory: '/tmp/docs' }],
+      sessions: [makeSession(1), makeSession(2), { ...makeSession(3), folderId: 'docs' }, { ...makeSession(4), folderId: null }],
+      resourceCollections: [{ id: 'work', name: 'Work', collapsed: false, references: [{ id: 'project-ref', type: 'workspace-folder', target: 'project', label: 'Project' }] }],
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<FolderTree searchQuery="" />))
+      const labels = Array.from(host.querySelectorAll<HTMLButtonElement>('button[aria-haspopup="menu"]')).map((button) => button.getAttribute('aria-label'))
+      expect(labels).toEqual(expect.arrayContaining(['Actions for Project', 'Actions for Docs', 'Actions for Work', 'Actions for Unsorted']))
+      expect(labels).not.toContain('Folder actions')
+      for (const label of ['Actions for Project', 'Actions for Docs', 'Actions for Work', 'Actions for Unsorted', 'Collapse Work']) {
+        const button = host.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!
+        expect(button.classList.contains('uam-iconbtn')).toBe(true)
+        expect(button.classList.contains('uam-sb-iconbtn')).toBe(true)
+      }
+      // Each chat row's actions carry its chat's name, so no two rows share an action name.
+      const chatActions = Array.from(host.querySelectorAll('[data-testid^="session-actions-"] button')).map((button) => button.getAttribute('aria-label'))
+      expect(new Set(chatActions).size).toBe(chatActions.length)
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  it('extends a shift-click chat selection from a press anywhere on the visual row', () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<FolderTree searchQuery="" />))
+      const visualRow = (id: string) => host.querySelector<HTMLElement>(`#all-chat-list [data-session-id="${id}"]`)!.closest<HTMLElement>('.uam-sb-row')!
+      act(() => visualRow('chat-2').dispatchEvent(new MouseEvent('click', { bubbles: true })))
+      act(() => visualRow('chat-4').dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true })))
+      expect(Array.from(host.querySelectorAll('#all-chat-list [data-session-id][data-selected="true"]')).map((row) => row.getAttribute('data-session-id'))).toEqual(['chat-2', 'chat-3', 'chat-4'])
+      expect(host.querySelector('#all-chat-list [data-session-id="chat-3"]')?.getAttribute('aria-label')).toBe('Open chat Chat 3, selected for bulk actions')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
   })
 
   it('labels a held automation chat as waiting and offers no Done or Snooze', () => {
@@ -1888,7 +1971,7 @@ describe('FolderTree', () => {
     expect(host.textContent).toContain('Chat 1')
 
     expect(host.querySelector('button[aria-label="Unpin Chat 1"]')).toBeTruthy()
-    const pinButton = host.querySelector<HTMLButtonElement>('button[aria-label="Pin chat"]')
+    const pinButton = host.querySelector<HTMLButtonElement>('button[aria-label="Pin Chat 2"]')
     expect(pinButton).toBeTruthy()
     const actions = pinButton?.closest<HTMLElement>('[data-testid^="session-actions-"]')
     expect(actions?.className).toContain('absolute')
@@ -1920,7 +2003,7 @@ describe('FolderTree', () => {
 
     // Folder actions are now in an overflow menu — open it first.
     act(() => {
-      (host.querySelector('button[aria-label="Folder actions"]') as HTMLButtonElement | null)
+      (host.querySelector('button[aria-label="Actions for Project"]') as HTMLButtonElement | null)
         ?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
@@ -1951,7 +2034,7 @@ describe('FolderTree', () => {
     const root = createRoot(host)
     act(() => root.render(<FolderTree searchQuery="" />))
 
-    const trigger = host.querySelector('button[aria-label="Folder actions"]') as HTMLButtonElement
+    const trigger = host.querySelector('button[aria-label="Actions for Project"]') as HTMLButtonElement
     trigger.focus()
     act(() => trigger.click())
     const menu = document.body.querySelector('[role="menu"][aria-label="Project actions"]')
@@ -1976,7 +2059,7 @@ describe('FolderTree', () => {
     const root = createRoot(host)
     act(() => root.render(<FolderTree searchQuery="" />))
     const openDelete = () => {
-      act(() => (host.querySelector('button[aria-label="Folder actions"]') as HTMLButtonElement).click())
+      act(() => (host.querySelector('button[aria-label="Actions for Project"]') as HTMLButtonElement).click())
       act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')).find((button) => button.textContent?.includes('Delete folder'))!.click())
       return document.body.querySelector<HTMLElement>('[role="alertdialog"][aria-label^="Delete workspace Project"]')!
     }
@@ -2034,7 +2117,7 @@ describe('FolderTree', () => {
     const root = createRoot(host)
     act(() => root.render(<FolderTree searchQuery="" />))
 
-    act(() => (host.querySelector('button[aria-label="Folder actions"]') as HTMLButtonElement).click())
+    act(() => (host.querySelector('button[aria-label="Actions for Project"]') as HTMLButtonElement).click())
     const rename = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')).find((button) => button.textContent?.includes('Rename folder'))!
     act(() => rename.click())
     const directory = host.querySelector('input[placeholder="Workspace directory"]') as HTMLInputElement
@@ -2046,7 +2129,7 @@ describe('FolderTree', () => {
     expect(host.textContent).toContain('workspace could not be updated')
     expect(host.querySelector('input[placeholder="Workspace directory"]')).toBeTruthy()
 
-    act(() => (host.querySelector('button[aria-label="Folder actions"]') as HTMLButtonElement).click())
+    act(() => (host.querySelector('button[aria-label="Actions for Project"]') as HTMLButtonElement).click())
     const remove = Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')).find((button) => button.textContent?.includes('Delete folder'))!
     act(() => remove.click())
     await act(async () => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Delete workspace')!.click())
@@ -2106,7 +2189,7 @@ describe('FolderTree', () => {
 	  const root = createRoot(host)
 	  act(() => root.render(<FolderTree searchQuery="" />))
 
-	  act(() => (host.querySelector('button[aria-label="Folder actions"]') as HTMLButtonElement).click())
+	  act(() => (host.querySelector('button[aria-label="Actions for Containers"]') as HTMLButtonElement).click())
 	  act(() => Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')).find((button) => button.textContent?.includes('Rename folder'))!.click())
 	  const computer = host.querySelector<HTMLInputElement>('input[aria-label="Workspace computer"]')!
 	  const name = host.querySelector<HTMLInputElement>('input[aria-label="Workspace name"]')!

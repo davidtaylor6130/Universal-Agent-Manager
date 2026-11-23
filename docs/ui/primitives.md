@@ -9,7 +9,7 @@ Primitives never restyle a raw `<button>`; every repeated element is a shared pr
 Import from `components/ui` (index.ts):
 
 - Button (variant primary|secondary|ghost|danger, size sm|md|lg, leadingIcon, loading, `asLink` for the inline text-link look)
-- IconButton (`tooltip={false}` skips its own Tooltip when the caller already wraps it; role, aria-checked and style pass through for toggles)
+- IconButton (`tooltip={false}` skips its own Tooltip when the caller already wraps it; role, aria-checked and style pass through for toggles; `label` is the accessible name and `tooltip` can stay shorter, so a row action is named after its item while its tooltip reads “More actions”. Sidebar icon controls add `.uam-sb-iconbtn` from `sidebar.css` for a 24px hit area whose painted tile keeps the earlier size (`--sb-paint`); `--inline` also keeps the earlier footprint in the row's flow, `--chip` paints the chat row's resting tile and `--framed` the workspace actions tile)
 - Chip (compact choice button; `selected` exposes aria-pressed, tone neutral|danger, size sm|md, icon; all button attributes and ref pass through)
 - Tabs and Tab (role tablist/tab, aria-selected, roving tabindex with arrow, Home and End keys; variant underline|pill; one sliding indicator that stops under reduced motion or Motion Off)
 - Tooltip

@@ -439,15 +439,19 @@ describe('SessionItem status icons', () => {
   it('does not reserve pin space and keeps row actions keyboard discoverable', () => {
     const { host, root } = renderSessionItem()
 
-    const row = host.querySelector<HTMLElement>('[data-testid="session-row-chat-1"]')
+    const open = host.querySelector<HTMLElement>('[data-testid="session-row-chat-1"]')
+    const row = open?.closest<HTMLElement>('.uam-sb-row')
     const actions = host.querySelector<HTMLElement>('[data-testid="session-actions-chat-1"]')
-    const pin = actions?.querySelector<HTMLButtonElement>('button[aria-label="Pin chat"]')
-    const more = actions?.querySelector<HTMLButtonElement>('button[aria-label="More actions"]')
+    const pin = actions?.querySelector<HTMLButtonElement>('button[aria-label="Pin Chat 1"]')
+    const more = actions?.querySelector<HTMLButtonElement>('button[aria-label="More actions for Chat 1"]')
 
     expect(row?.className).toContain('gap-1.5')
     expect(row?.className).toContain('px-2.5')
     expect(row?.className).toContain('py-1')
     expect(row?.className).toContain('min-h-[26px]')
+    // The row's one interactive element holds no other control; its action buttons are siblings.
+    expect(open?.querySelector('button, [role="button"], input')).toBeNull()
+    expect(actions?.parentElement).toBe(row)
     expect(Array.from(row?.querySelectorAll('span') ?? []).find((span) => span.textContent === 'Chat 1')?.className).toContain('text-[13px]')
     expect(actions?.className).toContain('absolute')
     expect(actions?.className).toContain('opacity-0')
@@ -670,12 +674,13 @@ describe('SessionItem status icons', () => {
       <SessionItem sessionId="chat-branch" session={branchSession} familySessionIds={['chat-root', 'chat-branch']} />
     </>))
 
-    expect(host.querySelector('[data-testid="session-row-chat-root"] [aria-label="Selected chat"]')).toBeTruthy()
-    expect(host.querySelector('[data-testid="session-row-chat-branch"] [aria-label="Selected chat"]')).toBeNull()
+    const frame = (id: string) => host.querySelector('[data-testid="session-row-' + id + '"]')!.closest('.uam-sb-row')!
+    expect(frame('chat-root').querySelector('[aria-label="Selected chat"]')).toBeTruthy()
+    expect(frame('chat-branch').querySelector('[aria-label="Selected chat"]')).toBeNull()
 
     act(() => useAppStore.setState({ activeSessionId: 'chat-branch' }))
-    expect(host.querySelector('[data-testid="session-row-chat-root"] [aria-label="Selected chat"]')).toBeNull()
-    expect(host.querySelector('[data-testid="session-row-chat-branch"] [aria-label="Selected chat"]')).toBeTruthy()
+    expect(frame('chat-root').querySelector('[aria-label="Selected chat"]')).toBeNull()
+    expect(frame('chat-branch').querySelector('[aria-label="Selected chat"]')).toBeTruthy()
 
     act(() => root.unmount())
     host.remove()
@@ -704,7 +709,9 @@ describe('SessionItem status icons', () => {
 
     expect(host.querySelector('button[aria-label="Unpin Chat 1"]')).toBeTruthy()
     const actions = host.querySelector<HTMLElement>('[data-testid="session-actions-chat-1"]')
-    expect(actions?.querySelector('button[aria-label="Unpin chat"]')).toBeTruthy()
+    expect(actions?.querySelector('button[aria-label="Unpin Chat 1"]')).toBeTruthy()
+    // Both unpin controls sit beside the row's button, not inside it.
+    expect(host.querySelector('[data-testid="session-row-chat-1"] button')).toBeNull()
     expect(actions?.className).toContain('opacity-0')
     expect(actions?.className).toContain('group-hover:opacity-100')
     expect(actions?.className).toContain('group-focus-within:opacity-100')
@@ -1063,7 +1070,12 @@ describe('SessionItem status icons', () => {
       if (activity) {
         const titleLine = host.querySelector('.uam-sb-activity')!.firstElementChild!
         expect(titleLine.firstElementChild?.textContent).toBe('Chat 1')
-        if (working) expect(titleLine.querySelector('[role="status"]')?.textContent).toBe('Working')
+        if (working) {
+          expect(titleLine.textContent).toContain('Working')
+          // Status lives in the row's name, not in a live region per row.
+          expect(host.querySelector('[role="status"]')).toBeNull()
+          expect(host.querySelector('[data-testid="session-row-chat-1"]')?.getAttribute('aria-label')).toBe('Open chat Chat 1, running')
+        }
         else expect(host.querySelector('[aria-label="Snooze Chat 1"]')).toBeTruthy()
       } else {
         expect(host.querySelector('[aria-label="Unpin Chat 1"]')).toBeTruthy()
@@ -1246,7 +1258,7 @@ describe('SessionItem snooze actions', () => {
       expect(wake.className).toContain('group-hover:opacity-0')
       expect(wake.className).toContain('group-focus-within:opacity-0')
       // An open row menu keeps the actions visible without hover, so the wake time stays hidden too.
-      act(() => host.querySelector<HTMLButtonElement>('button[aria-label="More actions"]')!.click())
+      act(() => host.querySelector<HTMLButtonElement>('button[aria-label="More actions for Chat 1"]')!.click())
       expect(host.querySelector<HTMLElement>('[data-testid="session-actions-chat-1"]')!.className).toContain('opacity-100')
       expect(wake.className.split(' ')).toContain('opacity-0')
     } finally {
@@ -1266,9 +1278,12 @@ describe('SessionItem pull request watch', () => {
     document.body.appendChild(host)
     try {
       act(() => { useAppStore.setState({ sessions: [session], prWatches: [watch] }); root.render(<SessionItem sessionId={session.id} session={session} activityLayout />) })
-      expect(host.querySelector('[role="status"]')?.textContent).toBe('Watching PR')
+      expect(host.textContent).toContain('Watching PR')
+      expect(host.querySelector('[role="status"]')).toBeNull()
+      expect(host.querySelector('[data-session-id="watch-row"]')?.getAttribute('aria-label')).toBe('Open chat Chat 1, watching pull request')
       act(() => useAppStore.setState({ prWatches: [{ ...watch, watching: false }] }))
       expect(host.textContent).not.toContain('Watching PR')
+      expect(host.querySelector('[data-session-id="watch-row"]')?.getAttribute('aria-label')).toBe('Open chat Chat 1')
     } finally {
       act(() => root.unmount()); host.remove()
       useAppStore.setState(previous, true)
