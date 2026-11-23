@@ -376,8 +376,12 @@ export function VcsCommitPanel() {
     const request = ++latestResolveRequestRef.current
     setResolving({ ...target, busy: true, error: '' })
     const result = await resolveVcsConflict(target.chatId, selectedVcsType, target.path, target.accept)
-    // A result for a chat left behind, or for a dialog since replaced, must not close or fill the current one.
-    if (latestResolveRequestRef.current !== request || useAppStore.getState().activeSessionId !== target.chatId) return
+    if (useAppStore.getState().activeSessionId !== target.chatId) return
+    // A result for a dialog since replaced must not close or fill the current one, but a success still changed the list.
+    if (latestResolveRequestRef.current !== request) {
+      if (result.ok) await refresh(selectedVcsType, true)
+      return
+    }
     if (!result.ok) {
       setResolving({ ...target, busy: false, error: result.error || 'Failed to resolve the conflict.' })
       return

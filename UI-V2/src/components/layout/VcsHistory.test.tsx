@@ -530,8 +530,11 @@ describe('commit panel SVN actions', () => {
       await act(async () => { useAppStore.setState({ activeSessionId: 'chat-b' }) })
       await act(async () => { useAppStore.setState({ activeSessionId: 'chat-a' }) })
       await choose('x.txt', 'Mark resolved')
+      const refreshes = (useAppStore.getState().getVcsCommitStatus as ReturnType<typeof vi.fn>).mock.calls.length
       await act(async () => first.resolve({ ok: true, output: '', error: '' }))
       expect(dialog()!.textContent).toContain('d/x.txt')
+      // The superseded success still refreshes the changed files.
+      expect((useAppStore.getState().getVcsCommitStatus as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(refreshes)
       expect(host.querySelector('[role="status"]')?.textContent ?? '').not.toContain('Marked a.txt resolved.')
     })
 
