@@ -1946,8 +1946,19 @@ UAM_TEST(StatePushCatalogueMemoReadsTheTrimmedHostOfAChat)
 	app.chats.push_back(std::move(chat));
 	clock.Advance(std::chrono::milliseconds(120));
 	const std::size_t divergences = uam::StateSerializer::CacheDivergenceCount();
+	const std::size_t trusted = uam::StateSerializer::TrustedCacheReadCount();
 	(void)uam::PushStateUpdateIfChanged(nullptr, app);
+	// The push trusted the memoised list, so the chat built its scope's value before any list did.
+	UAM_ASSERT(uam::StateSerializer::TrustedCacheReadCount() > trusted);
 	UAM_ASSERT_EQ(uam::StateSerializer::CacheDivergenceCount(), divergences);
+	// Not vacuous: the checked version does decorate this model, so the two host lookups disagreed before the fix.
+	nlohmann::json catalogs = nlohmann::json::object();
+	const nlohmann::json summary = uam::StateSerializer::SerializeChatSummary(app, app.chats.back(), &catalogs);
+	const nlohmann::json& models = catalogs.at(summary.at("acpSession").at("modelCatalogId").get<std::string>()).at("availableModels");
+	UAM_ASSERT(std::ranges::any_of(models, [](const nlohmann::json& model)
+	{
+		return model.value("id", "") == "gemini-3.1-pro-preview" && model.value("supportedReasoningEfforts", nlohmann::json::array()).size() == 3;
+	}));
 }
 
 namespace

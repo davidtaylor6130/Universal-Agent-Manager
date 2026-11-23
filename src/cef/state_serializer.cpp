@@ -61,6 +61,7 @@
 #include <functional>
 #include <map>
 #include <optional>
+#include <utility>
 #include <tuple>
 #include <unordered_set>
 #include <vector>
@@ -215,8 +216,8 @@ namespace uam
 		thread_local std::size_t g_unreported_divergence_count = 0;
 		// How many of them were of each kind, so a report shows what the total is made of beyond the five names.
 		thread_local std::map<std::string, std::size_t, std::less<>> g_unreported_divergence_kinds;
-		// RecentPathProbeChangeCount at the previous report on this thread.
-		thread_local std::size_t g_reported_path_probe_changes = 0;
+		// RecentPathProbeChangeCount at this thread's previous verifying pass; empty before its first one.
+		thread_local std::optional<std::size_t> g_reported_path_probe_changes;
 		// Transcripts whose stamp moved while their digest did not: a non-const read restamped them and they were rehashed for nothing.
 		thread_local std::size_t g_restamped_unchanged_transcripts = 0;
 
@@ -2535,18 +2536,22 @@ namespace uam
 
 	void StateSerializer::FlushCacheDivergenceReport()
 	{
+		// Taken at every verifying pass, so a report counts only probes since the pass before it.
+		const std::size_t path_changes = uam::paths::RecentPathProbeChangeCount().load();
+		const std::optional<std::size_t> previous_path_changes = std::exchange(g_reported_path_probe_changes, path_changes);
 		if (g_unreported_divergence_count == 0) return;
 		std::string names;
 		for (const std::string& name : g_unreported_divergences) names += (names.empty() ? "" : ", ") + name;
 		std::string kinds;
 		for (const auto& [kind, count] : g_unreported_divergence_kinds) kinds += (kinds.empty() ? "" : ", ") + kind + " " + std::to_string(count);
-		const std::size_t path_changes = uam::paths::RecentPathProbeChangeCount().load();
-		const std::size_t new_path_changes = path_changes - std::exchange(g_reported_path_probe_changes, path_changes);
 		// Catalogue values also depend on how workspace paths resolve on disk, which no stamp covers.
+		const bool catalogues = g_unreported_divergence_kinds.contains("model catalogue") || g_unreported_divergence_kinds.contains("model catalogues");
+		const std::string path_cause = !catalogues ? std::string{} :
+		    ", or a workspace path resolved differently on disk (memoised path probes whose value changed since the previous verifying pass: " +
+		    (previous_path_changes ? std::to_string(path_changes - *previous_path_changes) : std::string("not yet measured")) + ")";
 		uam::diagnostics::Write("[desync] " + std::to_string(g_unreported_divergence_count) + " cached value(s) differed from their source and were repaired (" +
 		    names + (g_unreported_divergence_count > g_unreported_divergences.size() ? ", ..." : "") + "; by kind: " + kinds +
-		    "); a write bypassed a revision stamp, or a workspace path resolved differently on disk (path resolutions changed since the last report: " +
-		    std::to_string(new_path_changes) + "). Total so far: " + std::to_string(g_cache_divergences.load()) + ".");
+		    "); a write bypassed a revision stamp" + path_cause + ". Total so far: " + std::to_string(g_cache_divergences.load()) + ".");
 		g_unreported_divergences.clear();
 		g_unreported_divergence_kinds.clear();
 		g_unreported_divergence_count = 0;
