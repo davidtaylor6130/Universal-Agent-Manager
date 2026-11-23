@@ -3688,6 +3688,15 @@ For desktop observation and input, use only the provider's built-in controller; 
 		}
 	}
 
+	std::optional<bool> AcpCompactionVersionSatisfied(const AppState& app, const IProviderRuntime& runtime, std::string_view provider_id, std::string_view execution_host_id)
+	{
+		const char* minimum = runtime.MinimumAcpCompactionVersion();
+		if (minimum == nullptr) return true;
+		const auto state = app.runtime_cli_versions_by_provider_id.find(CliProviderVersionStateKey(provider_id, execution_host_id));
+		if (state == app.runtime_cli_versions_by_provider_id.end() || state->second.installed_version.empty()) return std::nullopt;
+		return CliProviderVersionAtLeast(state->second.installed_version, minimum);
+	}
+
 	bool CompactAcpSession(AppState& app, const std::string& chat_id, std::string* error_out, const std::string& instructions, bool* instructions_used)
 	{
 		ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
@@ -3702,10 +3711,6 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return false;
 		};
 		if (!chat) return fail("Chat not found: " + chat_id);
-		// A deferred request keeps the instructions it was admitted with; a poll passes none.
-		const std::string requested_instructions = queued ? pending->instructions : uam::strings::Trim(instructions);
-		if (requested_instructions.size() > kMaxManualCompactionInstructionBytes)
-			return fail("Compaction instructions are too long. Shorten them and try again.");
 		const std::string provider_id = !chat->provider_id.empty() ? chat->provider_id : session ? session->provider_id :
 		    ProviderResolutionService().ProviderForChatOrDefault(app, *chat).id;
 		const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(provider_id);
@@ -3714,8 +3719,22 @@ For desktop observation and input, use only the provider's built-in controller; 
 		const bool remote_compaction = !chat->execution_host_id.empty() && chat->execution_host_id != "local";
 		if (remote_compaction && !runtime.SupportsRemoteAcpCompaction())
 			return fail("This provider can compact only chats that run on this computer.");
-		const bool use_instructions = !requested_instructions.empty() && runtime.SupportsAcpCompactionInstructions();
+		const std::string typed_instructions = uam::strings::Trim(instructions);
+		if (queued && !typed_instructions.empty() && typed_instructions != pending->instructions)
+		{
+			// The waiting request keeps its own instructions; it is not replaced or cancelled here.
+			if (error_out != nullptr) *error_out = "A compaction is already waiting to start. Try again when it finishes.";
+			return false;
+		}
+		// Instructions reach only runtimes that accept them; others run the plain command and report them unused.
+		const bool accepts_instructions = runtime.SupportsAcpCompactionInstructions();
+		const std::string requested_instructions = !accepts_instructions ? std::string{} : queued ? pending->instructions : typed_instructions;
+		if (requested_instructions.size() > kMaxManualCompactionInstructionBytes)
+			return fail("Compaction instructions are too long. Shorten them and try again.");
+		const bool use_instructions = !requested_instructions.empty();
 		if (instructions_used != nullptr) *instructions_used = use_instructions;
+		if (AcpCompactionVersionSatisfied(app, runtime, provider_id, chat->execution_host_id) == std::optional<bool>(false))
+			return fail(std::string("Update the provider CLI to ") + runtime.MinimumAcpCompactionVersion() + " or later to compact this chat.");
 		if (session && !chat->provider_id.empty() && session->provider_id != chat->provider_id)
 			return fail("The provider runtime no longer belongs to this chat. Restart the chat before compacting.");
 		if (chat->imported_read_only || chat->side_cleanup_requested)
@@ -3781,7 +3800,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return fail("Remote compaction requires a ready owned protocol 3 provider process.");
 		const int request_id = session->next_request_id;
 		std::string method;
-		session->manual_compaction_instructions = use_instructions ? requested_instructions : std::string{};
+		if (!AcpCompactionVersionSatisfied(app, runtime, provider_id, chat->execution_host_id).value_or(false))
+			return fail(std::string("Update the provider CLI to ") + runtime.MinimumAcpCompactionVersion() + " or later to compact this chat.");
+		session->manual_compaction_instructions = requested_instructions;
 		const nlohmann::json request = runtime.OnAcpBuildCompact(*session, request_id, method);
 		session->manual_compaction_instructions.clear();
 		if (request.is_null() || method.empty()) return fail("The provider context is not ready for manual compaction.");

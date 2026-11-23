@@ -344,6 +344,7 @@ nlohmann::json AntigravityCliProviderRuntime::OnAcpBuildInitialize(uam::AcpSessi
 	session.antigravity_completed_steps.clear();
 	session.antigravity_compaction_checkpoint_step.reset();
 	session.antigravity_compaction_checkpoint_failed = false;
+	session.antigravity_compaction_answered = false;
 	session.antigravity_turn_usage_complete = true;
 	session.antigravity_turn_has_usage = false;
 	// A new process cannot inherit a previous process's in-memory preflight receipt,
@@ -543,6 +544,7 @@ namespace
 		std::erase_if(session.pending_request_methods, [](const auto& request) { return request.second == "antigravity/compact"; });
 		session.antigravity_compaction_checkpoint_step.reset();
 		session.antigravity_compaction_checkpoint_failed = false;
+		session.antigravity_compaction_answered = false;
 	}
 
 	/// Settles UAM's own /compact request. The stream reports a checkpoint step and no summary text, so a completed
@@ -553,7 +555,10 @@ namespace
 		using namespace uam::acp_detail;
 		if (event == "step_update")
 		{
-			// Maintenance owns no answer, tool, child or goal usage; only the checkpoint step is read.
+			// Maintenance owns no answer, tool, child or goal usage. An answer means the command reached the model
+			// as text; it is noted (never shown) so the result cannot read as a quiet no-op.
+			if (JsonDiagnosticStringValue(payload, "step_type") == "agent_response" && !JsonDiagnosticStringValue(payload, "text_delta").empty())
+				session.antigravity_compaction_answered = true;
 			if (JsonDiagnosticStringValue(payload, "step_type") != "checkpoint") return;
 			const std::string state = JsonDiagnosticStringValue(payload, "state");
 			if (state == "ACTIVE")
@@ -569,18 +574,17 @@ namespace
 			return;
 		}
 		const std::string status = JsonDiagnosticStringValue(payload, "status");
-		const int64_t turn = AntigravityCounter(payload, "num_turns");
-		const bool failed = status != "SUCCESS" || session.antigravity_compaction_checkpoint_failed;
-		if (!failed && session.antigravity_compaction_checkpoint_step)
+		const bool checkpoint = session.antigravity_compaction_checkpoint_step.has_value();
+		const bool failed = status != "SUCCESS" || session.antigravity_compaction_checkpoint_failed || (session.antigravity_compaction_answered && !checkpoint);
+		if (!failed && checkpoint)
 			AppendContextCompactionEvent(app, session, chat, "", "antigravity-compaction:" + identity + ":" + std::to_string(*session.antigravity_compaction_checkpoint_step));
+		else if (session.antigravity_compaction_answered && !checkpoint)
+			session.last_error = "Antigravity answered /compact as a message instead of compacting this chat.";
 		else if (failed)
-		{
-			const std::string detail = uam::strings::SafeLine(JsonDiagnosticStringValue(payload, "error"), 240, true);
-			session.last_error = detail.empty() ? "Antigravity could not compact this chat." : "Antigravity could not compact this chat: " + detail;
-		}
+			session.last_error = "Antigravity could not compact this chat.";
 		else
 			session.last_error = "Antigravity finished without compacting this chat. It may have nothing to compact yet.";
-		if (turn > session.antigravity_completed_turns) session.antigravity_completed_turns = turn;
+		// num_turns is not advanced from maintenance: whether agy counts or resets turns around a checkpoint is unverified.
 		RetireAntigravityCompactionRequest(session);
 		session.manual_compaction_pending = false;
 		session.context_compaction_in_progress = false;

@@ -164,7 +164,7 @@ Actual Claude source review is recorded in the [archived V5 change log](https://
 
 Gemini still exposes no structured control, so its row stays Partial; no UAM fallback for it was agreed.
 
-**Implementation:** source-integrated for local Antigravity chats and for typed instructions on every provider; SSH Antigravity chats are not offered the action. The native tests compile only on macOS and Windows and have not been run, and live provider verification, Claude review and David's acceptance remain pending. See the [compaction agreement](providers/compaction.md) and the [reference detail](reference/architecture/provider-sessions.md#gemini-and-antigravity-manual-compaction-checks).
+**Implementation:** source-integrated for local Antigravity chats with a checked `agy` 1.3.5 or later, and for typed instructions on every provider; SSH Antigravity chats are not offered the action, and a compacted Antigravity conversation may no longer load through native history refresh or import. The native tests compile only on macOS and Windows and have not been run, and live provider verification, Claude review and David's acceptance remain pending. See the [compaction agreement](providers/compaction.md) and the [reference detail](reference/architecture/provider-sessions.md#gemini-and-antigravity-manual-compaction-checks).
 
 ## T3 subagent experience reference
 

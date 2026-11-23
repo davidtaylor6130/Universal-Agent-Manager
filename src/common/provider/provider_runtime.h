@@ -489,6 +489,8 @@ class IProviderRuntime
 	virtual bool SupportsAcpCompactionInstructions() const { return false; }
 	/// False when manual compaction is offered only for chats that run on this computer.
 	virtual bool SupportsRemoteAcpCompaction() const { return true; }
+	/// Lowest checked CLI version whose native compaction command UAM uses; null means no version gate.
+	virtual const char* MinimumAcpCompactionVersion() const { return nullptr; }
 
 	/// <summary>True when input can be appended to an active turn without interrupting it.</summary>
 	virtual bool SupportsAcpSteering() const

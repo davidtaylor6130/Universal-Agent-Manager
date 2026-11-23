@@ -13368,6 +13368,25 @@ describe('ChatView conditional manual compaction offer', () => {
     } finally { f.cleanup() }
   })
 
+  it('keeps the typed /compact draft and reports a backend refusal in one line', async () => {
+    const f = await unsupportedCompactionFixture('/compact keep the API notes')
+    try {
+      await act(async () => { publishCompactionChat(supportedCompactionChat(f.chat)); f.render() })
+      window.cefQuery = ({ request, onSuccess, onFailure }) => {
+        const parsed = JSON.parse(request)
+        f.requests.push(parsed)
+        if (parsed.action === 'compactAcpSession') onFailure(409, 'This provider can compact only chats that run on this computer.')
+        else onSuccess('{}')
+      }
+      await act(async () => f.host.querySelector<HTMLButtonElement>('button[aria-label="Send prompt"]')!.click())
+      expect(f.requests.filter(request => request.action === 'compactAcpSession')).toHaveLength(1)
+      expect(f.sendAcpPrompt).not.toHaveBeenCalled()
+      expect(f.textarea.value).toBe('/compact keep the API notes')
+      expect(reportedText()).toContain('Compaction failed: This provider can compact only chats that run on this computer.')
+      expect(appNotices.some(message => message.includes('yours were not used'))).toBe(false)
+    } finally { f.cleanup() }
+  })
+
   it('keeps a typed /compact with instructions out of ordinary send when compaction is unavailable', async () => {
     const f = await unsupportedCompactionFixture('/compact keep the API notes')
     try {

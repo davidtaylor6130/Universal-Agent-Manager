@@ -1789,7 +1789,8 @@ namespace uam
 			    session->remote_output_delivery_token != chat.remote_process_control_token || !chat.remote_pending_requests.empty() ||
 			    !session->pending_remote_output_ack_line.empty() || !session->pending_remote_source_exit_ack_line.empty())) return false;
 			const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(session->provider_id);
-			if (!runtime.SupportsAcpCompaction() || session->protocol_kind != runtime.AcpProtocolKind() || (remote && !runtime.SupportsRemoteAcpCompaction())) return false;
+			if (!runtime.SupportsAcpCompaction() || session->protocol_kind != runtime.AcpProtocolKind() || (remote && !runtime.SupportsRemoteAcpCompaction()) ||
+			    !AcpCompactionVersionSatisfied(app, runtime, session->provider_id, chat.execution_host_id).value_or(false)) return false;
 			std::string method;
 			const nlohmann::json request = runtime.OnAcpBuildCompact(*session, 0, method);
 			return !request.is_null() && !request.empty() && !method.empty();

@@ -30,7 +30,7 @@ Ordinary ledger Save preserves an identical managed continuation as a no-write r
 
 Local Codex manual compaction can start an idle or stopped structured session and wait for provider readiness. The pending request owns the chat incarnation, data root, provider, workspace and native session; stop, cancellation, deletion or an unrelated ownership change clears it. Preparation can transfer ownership only through its captured saved workspace task. Active turns, queued prompts, pending delivery and controls block admission. Compaction is maintenance, creates no user message or turn checkpoint, and reports `compacting` while waiting or running. Other providers and remote sessions retain their explicit unsupported response.
 
-Chat sends every typed `/compact` draft, with or without text after it, to `compactAcpSession` and never to an ordinary send (`compactCommandInstructions` in `UI-V2/src/utils/compactCommand.ts`). The text after the command travels as the optional `instructions` field. `CompactAcpSession` trims it, refuses more than 4,000 bytes and keeps it with a deferred cold-start request. It passes the text through `AcpSessionState::manual_compaction_instructions` only while a runtime whose `SupportsAcpCompactionInstructions` is true builds its request; today that is Claude, which sends `/compact <instructions>`. The bridge replies `instructionsUsed`, and when typed instructions were not used Chat reports one informational notice. A runtime whose `SupportsRemoteAcpCompaction` is false is refused for SSH chats before any process starts, and its Chat action is not offered there.
+Chat sends every typed `/compact` draft, with or without text after it, to `compactAcpSession` and never to an ordinary send (`compactCommandInstructions` in `UI-V2/src/utils/compactCommand.ts`). The text after the command travels as the optional `instructions` field. For a runtime whose `SupportsAcpCompactionInstructions` is true (today Claude, which sends `/compact <instructions>`), `CompactAcpSession` trims the text, refuses more than 4,000 bytes, keeps it with a deferred cold-start request and passes it through `AcpSessionState::manual_compaction_instructions` only while the request is built. For other runtimes the text is dropped, whatever its length. A second request that brings different text while one is deferred is refused, and the waiting request is kept. A runtime's `MinimumAcpCompactionVersion` gates the action on the checked CLI version for the chat's host (`AcpCompactionVersionSatisfied`): Chat offers it only when the version is known and new enough, and the request is refused when it is too old or still unknown at send time. The bridge replies `instructionsUsed`, and when typed instructions were not used Chat reports one informational notice. A runtime whose `SupportsRemoteAcpCompaction` is false is refused for SSH chats before any process starts, and its Chat action is not offered there.
 
 ### Gemini and Antigravity manual compaction checks
 
@@ -64,20 +64,22 @@ UAM does not add `--disable-slash-commands`. These reports supersede, for `/comp
 - `ACTIVE` sets `context_compaction_in_progress`.
 - `DONE` records the step index.
 - `ERROR` or a cancelled state marks the compaction failed.
+- Answer text means the command reached the model as a message. The text is noted, never shown.
 
 The terminal `result` settles the request:
 
 - A `SUCCESS` with a completed checkpoint appends a `context_compaction` block with empty text and the identity `antigravity-compaction:<conversation>:<step>`; the transcript shows it as "Context compacted" with "The provider did not include a summary."
 - A `SUCCESS` without a checkpoint is an explicit no-op with a one-line reason.
-- Any other status, or a failed checkpoint, is a one-line failure and records nothing.
+- An answer without a checkpoint, any other status, or a failed checkpoint is a one-line failure and records nothing. Provider error text stays out of that line.
 
-The result also raises `antigravity_completed_turns`, clears the owned request entry and drains held input. A changed conversation identity retires the request before the shared turn failure. A new process clears any stale checkpoint receipt. Step usage during maintenance is not added to turn or goal accounting.
+The result also clears the owned request entry and drains held input. A changed conversation identity retires the request before the shared turn failure. A new process clears any stale checkpoint receipt. Step usage during maintenance is not added to turn or goal accounting. The result's `num_turns` does not advance the ordinary turn counter, because whether `agy` counts or resets turns around a checkpoint is unverified. A late or duplicate maintenance result is not filtered by turn number for the same reason, since dropping the real one would leave the chat compacting.
 
 Remaining boundaries:
 
 - SSH chats are not offered the action, because the remote maintenance receipt and reconnect replay are not implemented for this stream.
 - A checkpoint during an ordinary turn (automatic compaction) is still not shown.
-- `agy` older than 1.3.5 refuses the command, which settles as a failure.
+- The native history reader refuses step types it does not recognise, and the checkpoint row's type is unknown here. After a compaction, native history refresh and import of that conversation may therefore be refused until a real checkpoint fixture is added. UAM's own saved chat history is unaffected.
+- The 1.3.5 minimum follows the changelog; the command's behaviour on versions just below it was not checked.
 
 Live verification against a real `agy` is pending.
 

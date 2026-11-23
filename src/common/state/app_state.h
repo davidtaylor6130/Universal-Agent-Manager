@@ -784,6 +784,7 @@ namespace uam
 		// Owned manual compaction: the native checkpoint step that completed it, or a checkpoint that failed.
 		std::optional<int64_t> antigravity_compaction_checkpoint_step;
 		bool antigravity_compaction_checkpoint_failed = false;
+		bool antigravity_compaction_answered = false;
 		struct AntigravityGoalTurn
 		{
 			std::string owner_chat_id;
