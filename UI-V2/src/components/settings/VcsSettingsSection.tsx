@@ -112,7 +112,7 @@ export const VcsSettingsSection = forwardRef<VcsSettingsSectionHandle>(function 
       <SettingRow title="Default base branch" description="Empty uses HEAD. Must exist locally." control={<input className="uam-field" aria-label="Default local Git base branch" placeholder="HEAD" value={draft.gitDefaultBaseBranch} disabled={saving || !draft.gitEnabled} spellCheck={false} onChange={(event) => edit({ gitDefaultBaseBranch: event.currentTarget.value })} />}>
         {validationNotice.mounted && <div className="uam-presence" data-state={validationNotice.closing ? 'closed' : 'open'}><Notice tone="error" dismissible={false} dismissLabel="Dismiss">{shownValidation.current}</Notice></div>}
       </SettingRow>
-      <SettingRow title="Port changes" description="Merge and Squash stage changes for you to commit."
+      <SettingRow title="Port changes" description="Merge and Squash stage changes for you to commit. Local snapshots always port as a patch."
         control={<SegmentedControl aria-label="Port method" disabled={saving || !draft.gitEnabled} value={draft.gitPortMethod}
           options={[{ value: 'patch', label: 'Patch' }, { value: 'merge', label: 'Merge' }, { value: 'squash', label: 'Squash' }]}
           onChange={(method) => edit({ gitPortMethod: method })} />} />

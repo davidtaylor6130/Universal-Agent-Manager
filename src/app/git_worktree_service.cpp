@@ -1236,6 +1236,18 @@ namespace uam
 		{
 			return (value.size() == 40 || value.size() == 64) && std::ranges::all_of(value, [](unsigned char c) { return std::isxdigit(c) != 0; });
 		}
+
+		/// A UAM-owned snapshot (plain folder, SVN working copy or unborn repository) has no shared history with its
+		/// source, so merge and squash cannot stage it there; it ports back only as a patch.
+		bool RequiresPatchPort(const GitWorktreeStatus& status)
+		{
+			return status.managed_repository || status.is_svn_workspace || !status.is_git_repository;
+		}
+
+		std::string WithPatchPortNotice(std::string message)
+		{
+			return message + " " + std::string(kSnapshotPatchPortNotice);
+		}
 	} // namespace
 
 	std::string RemoteWorktreeHostIdentity(const ExecutionHost& host)
@@ -2961,6 +2973,13 @@ namespace uam
 		{ result.message = "Staged porting requires an enabled local Git merge or squash method."; return result; }
 		result.status = Status(app, chat);
 		if (!result.status.isolated || result.status.worktree_missing) { result.message = "An owned isolated worktree is required."; return result; }
+		// The caller reruns a snapshot through PortChatChanges' patch path; nothing is staged or recorded here.
+		if (!chat.imported_read_only && RequiresPatchPort(result.status))
+		{
+			result.requires_patch_port = true;
+			result.message = std::string(kSnapshotPatchPortNotice);
+			return result;
+		}
 		return StageCommittedPort(app, chat, std::move(result), stop);
 	}
 
@@ -2980,7 +2999,9 @@ namespace uam
 			return result;
 		}
 
-		if (app.settings.git_port_method != GitPortMethod::Patch) return StageCommittedPort(app, chat, std::move(result), {});
+		// Merge and squash need history shared with the source; a snapshot falls back to the patch path and says so.
+		const bool patch_fallback = app.settings.git_port_method != GitPortMethod::Patch && RequiresPatchPort(result.status);
+		if (app.settings.git_port_method != GitPortMethod::Patch && !patch_fallback) return StageCommittedPort(app, chat, std::move(result), {});
 
 		if (RefuseSharedWorktreeMutation(app, chat, WorktreePathFromStatus(result.status), &result.message, true)) return result;
 
@@ -3037,7 +3058,8 @@ namespace uam
 				result.message = save_error;
 				return result;
 			}
-			CompleteSuccessfulResult(result, Status(app, chat), "No chat worktree changes to port. Returned to the source workspace.");
+			const std::string message = "No chat worktree changes to port. Returned to the source workspace.";
+			CompleteSuccessfulResult(result, Status(app, chat), patch_fallback ? WithPatchPortNotice(message) : message);
 			return result;
 		}
 
@@ -3055,6 +3077,7 @@ namespace uam
 			{
 				result.patch_path = patch_path;
 				result.message = CommandOutputOrFallback(check_result, "Chat changes cannot be applied cleanly to the source workspace.");
+				if (patch_fallback) result.message = WithPatchPortNotice(result.message);
 				return result;
 			}
 		}
@@ -3064,6 +3087,7 @@ namespace uam
 		{
 			result.patch_path = patch_path;
 			result.message = CommandOutputOrFallback(apply_result, "Failed to apply patch to source workspace.");
+			if (patch_fallback) result.message = WithPatchPortNotice(result.message);
 			return result;
 		}
 
@@ -3075,7 +3099,8 @@ namespace uam
 		}
 
 		result.patch_path = patch_path;
-		CompleteSuccessfulResult(result, Status(app, chat), "Applied chat worktree changes and returned to the source workspace.");
+		const std::string message = "Applied chat worktree changes and returned to the source workspace.";
+		CompleteSuccessfulResult(result, Status(app, chat), patch_fallback ? WithPatchPortNotice(message) : message);
 		return result;
 	}
 

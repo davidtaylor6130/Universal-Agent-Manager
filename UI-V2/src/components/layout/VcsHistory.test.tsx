@@ -452,4 +452,36 @@ describe('commit panel SVN actions', () => {
     expect(host.querySelector('[role="status"]')!.textContent).toContain('Updated to r7.')
     expect(updateVcsWorkspace).toHaveBeenCalledTimes(1)
   })
+
+  it('labels a local snapshot as its Git copy and runs SVN history and update against the source working copy', async () => {
+    const snapshotStatus: VcsCommitStatus = {
+      available: true, vcsTypes: ['git'], activeVcsType: 'git', workspaceDirectory: '/data/worktrees/x/chat', branchOrRevision: 'uam/chat',
+      changedFiles: [], lineStatsReady: true, capabilities: [], warning: '', error: '',
+      localSnapshot: { sourceKind: 'svn', sourceDirectory: '/work/checkout', sourceCapabilities: ['history', 'update', 'originComparison'] },
+    }
+    await act(async () => { useAppStore.setState({ getVcsCommitStatus: vi.fn(async () => snapshotStatus) }) })
+    await act(async () => root.render(<VcsCommitPanel />))
+    expect(host.textContent).toContain('Local snapshot (Git)')
+    expect(host.textContent).not.toContain('GIT')
+    expect(host.textContent).toContain('Publishing to SVN happens after you port the chat\'s changes back to checkout')
+    expect(host.textContent).toContain('Commits only the selected files to the snapshot copy')
+
+    await act(async () => button('Update SVN').click())
+    expect(useAppStore.getState().updateVcsWorkspace).toHaveBeenCalledWith('chat-a', 'svn', expect.stringContaining('vcs-update:chat-a'))
+    expect(host.querySelector('[role="status"]')!.textContent).toContain('Updated to r7.')
+
+    await act(async () => [...host.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find((tab) => tab.textContent === 'SVN history')!.click())
+    expect(useAppStore.getState().getVcsHistory).toHaveBeenCalledWith('chat-a', 'svn', expect.objectContaining({ limit: 50 }))
+
+    // With SVN off, the copy keeps its label but offers no SVN actions; a plain-folder snapshot never does.
+    await act(async () => { useAppStore.setState({ svnEnabled: false }) })
+    await act(async () => button('Refresh VCS status').click())
+    expect(host.textContent).toContain('Local snapshot (Git)')
+    expect([...host.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent)).not.toContain('SVN history')
+    expect([...host.querySelectorAll('button')].some((candidate) => candidate.textContent === 'Update SVN')).toBe(false)
+    await act(async () => { useAppStore.setState({ svnEnabled: true, getVcsCommitStatus: vi.fn(async () => ({ ...snapshotStatus, localSnapshot: { sourceKind: 'folder', sourceDirectory: '/work/notes', sourceCapabilities: [] } }) as VcsCommitStatus) }) })
+    await act(async () => button('Refresh VCS status').click())
+    expect(host.textContent).toContain('Port the chat\'s changes back to apply them to notes.')
+    expect([...host.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent)).not.toContain('SVN history')
+  })
 })

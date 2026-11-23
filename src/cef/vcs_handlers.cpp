@@ -26,6 +26,7 @@
 
 #include <nlohmann/json.hpp>
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <memory>
@@ -373,6 +374,8 @@ namespace
 			for (const uam::vcs::VcsCapability capability : uam::VcsProviderFor(status.active_vcs_type).Declaration().capabilities)
 				capabilities.push_back(uam::vcs::VcsCapabilityId(capability));
 		json["capabilities"] = std::move(capabilities);
+		if (!status.snapshot_source_kind.empty())
+			json["localSnapshot"] = {{"sourceKind", status.snapshot_source_kind}, {"sourceDirectory", status.snapshot_source_directory}, {"sourceCapabilities", status.snapshot_source_capabilities}};
 		return json;
 	}
 
@@ -631,6 +634,8 @@ void UamQueryHandler::HandlePortChatWorktreeChanges(CefRefPtr<CefBrowser> browse
 		const AppSettings settings = m_app.settings;
 		const std::shared_ptr<const ChatSession> expected = std::make_shared<const ChatSession>(std::move(captured));
 		const std::shared_ptr<uam::AppState::GitPortRequest> request = std::make_shared<uam::AppState::GitPortRequest>();
+		// Set by the worker when the chat is a local snapshot, which ports back only through the patch path below.
+		const std::shared_ptr<std::atomic<bool>> patch_fallback = std::make_shared<std::atomic<bool>>(false);
 		request->lease = lease;
 		request->handler_lifetime = m_asyncLifetime; request->lifetime_bound = true;
 		request->root = root; request->incarnation = expected->metadata_incarnation;
@@ -639,7 +644,7 @@ void UamQueryHandler::HandlePortChatWorktreeChanges(CefRefPtr<CefBrowser> browse
 		m_app.git_port_requests[chat_id] = request;
 		m_app.worktree_operation_chat_ids.insert(chat_id);
 		if (!RunAsyncCefQuery(SlowQueryRunner(*chat), m_asyncLifetime, cb,
-		    [expected, root, settings, request]() mutable
+		    [expected, root, settings, request, patch_fallback]() mutable
 		    {
 			    if (request->handler_lifetime.expired()) request->cancellation->request_stop();
 			    uam::AppState::GitPortRequest::WorkerState queued = uam::AppState::GitPortRequest::WorkerState::Queued;
@@ -656,11 +661,16 @@ void UamQueryHandler::HandlePortChatWorktreeChanges(CefRefPtr<CefBrowser> browse
 			    snapshot.settings = settings;
 			    ChatSession context = *expected;
 			    const uam::GitWorktreeOperationResult port = uam::GitWorktreeService().PortCommittedChanges(snapshot, context, request->cancellation->get_token());
+			    if (port.requires_patch_port)
+			    {
+				    patch_fallback->store(true);
+				    return AsyncSuccess(nlohmann::json::object());
+			    }
 			    // Conflicts are a durable Git result and must retain their recovery receipt in the response.
 			    if (!port.ok && port.port_state.empty()) return AsyncFailure(400, port.message);
 			    return AsyncSuccess(SerializeGitWorktreeResult(port));
 		    },
-		    [this, expected, root, chat_id, request](AsyncCefResult& result)
+		    [this, browser, cb, expected, root, chat_id, request, patch_fallback](AsyncCefResult& result)
 		    {
 			    const std::unordered_map<std::string, std::shared_ptr<uam::AppState::GitPortRequest>>::iterator owner = m_app.git_port_requests.find(chat_id);
 			    if ((owner == m_app.git_port_requests.end() && !request->gui_settled) || (owner != m_app.git_port_requests.end() && owner->second != request))
@@ -677,7 +687,25 @@ void UamQueryHandler::HandlePortChatWorktreeChanges(CefRefPtr<CefBrowser> browse
 			        current->workspace_directory != expected->workspace_directory || current->workspace_source_directory != expected->workspace_source_directory ||
 			        current->workspace_worktree_directory != expected->workspace_worktree_directory || current->workspace_branch_name != expected->workspace_branch_name ||
 			        current->workspace_base_ref != expected->workspace_base_ref || current->execution_host_id != expected->execution_host_id)
-			        result = AsyncFailure(409, "The chat workspace changed during porting. Inspect the source Git workspace and port receipt.");
+			    {
+				    result = AsyncFailure(409, "The chat workspace changed during porting. Inspect the source Git workspace and port receipt.");
+				    return;
+			    }
+			    if (!result.ok || !patch_fallback->load()) return;
+			    // A local snapshot shares no history with its source, so it ports back through the patch path, whose
+			    // success message names the fallback. The same query receives that result; nothing was staged above.
+			    if (m_app.pending_chat_save_at_by_chat_id.contains(chat_id)) { result = AsyncFailure(409, "Wait for chat history to finish saving before changing workspace isolation."); return; }
+			    if (ChatRuntimeBusy(m_app, chat_id)) { result = AsyncFailure(409, "Stop the chat runtime before porting worktree changes."); return; }
+			    if (m_app.worktree_operation_chat_ids.contains(chat_id) || m_app.git_port_requests.contains(chat_id)) { result = AsyncFailure(409, "Wait for the current workspace operation to finish."); return; }
+			    result.callback_deferred = true;
+			    RunWorktreeOperationAsync(m_asyncLifetime, m_app, browser, cb, chat_id, &uam::GitWorktreeService::PortChatChanges, "Failed to port worktree changes.");
+			    // Keep the query's cancellation bound to the patch operation that now answers it.
+			    if (const auto patch = m_app.git_port_requests.find(chat_id); patch != m_app.git_port_requests.end())
+			    {
+				    patch->second->query_id = request->query_id;
+				    patch->second->browser_id = request->browser_id;
+				    patch->second->frame_id = request->frame_id;
+			    }
 		    }))
 		{
 			m_app.git_port_requests.erase(chat_id);
@@ -1153,16 +1181,22 @@ void UamQueryHandler::HandleUpdateVcsWorkspace(CefRefPtr<CefBrowser> browser, co
 	if (chat == nullptr) return;
 	if (chat->imported_read_only) { cb->Failure(409, "This chat's workspace is read-only."); return; }
 	if (ChatRuntimeBusy(m_app, chat->id)) { cb->Failure(409, "Stop the active chat runtime before updating the working copy."); return; }
+	const uam::VcsType type = uam::VcsTypeFromString(payload.value("vcsType", "git"));
 	// An update rewrites files under every chat that shares this working copy, so none of them may be working in it.
-	const std::filesystem::path workspace = uam::paths::ResolveWorkspaceRootPath(m_app, *chat);
+	// A local snapshot chat's SVN update targets the working copy it was copied from, not its hidden Git copy.
+	const std::filesystem::path snapshot_source = type == uam::VcsType::Svn ? uam::paths::LocalIsolationSourcePath(*chat) : std::filesystem::path{};
+	const std::filesystem::path workspace = snapshot_source.empty() ? uam::paths::ResolveWorkspaceRootPath(m_app, *chat) : snapshot_source;
 	const bool local = uam::paths::IsControllerLocalWorkspace(*chat);
 	// Every chat sharing the working copy is fenced for the whole update, so none can start working in it meanwhile.
+	// Snapshot chats of the same working copy are fenced too, so none ports changes back into it mid-update.
 	std::vector<std::string> fenced = {chat->id};
 	for (const ChatSession& other : m_app.chats)
 	{
 		if (other.id == chat->id || uam::paths::IsControllerLocalWorkspace(other) != local || (!local && other.execution_host_id != chat->execution_host_id)) continue;
-		if (!WorkspacesOverlap(m_app, *chat, workspace, uam::paths::ResolveWorkspaceRootPath(m_app, other))) continue;
-		if (ChatRuntimeBusy(m_app, other.id))
+		const bool works_in_copy = WorkspacesOverlap(m_app, *chat, workspace, uam::paths::ResolveWorkspaceRootPath(m_app, other));
+		const std::filesystem::path other_source = uam::paths::LocalIsolationSourcePath(other);
+		if (!works_in_copy && (other_source.empty() || !WorkspacesOverlap(m_app, *chat, workspace, other_source))) continue;
+		if (works_in_copy && ChatRuntimeBusy(m_app, other.id))
 		{
 			cb->Failure(409, "Another chat is working in this working copy. Stop it before updating.");
 			return;
@@ -1184,7 +1218,6 @@ void UamQueryHandler::HandleUpdateVcsWorkspace(CefRefPtr<CefBrowser> browser, co
 	// exactly as a commit does. DispatchAction already refuses chats that are inside another worktree operation.
 	std::shared_ptr<uam::WorkspaceLeaseGate::Lease> lease = m_app.worktree_retention_gate.TryAcquireMutation();
 	if (!lease) { cb->Failure(409, "Workspace cleanup is finishing. Try again shortly."); return; }
-	const uam::VcsType type = uam::VcsTypeFromString(payload.value("vcsType", "git"));
 	ChatSession chat_snapshot = uam::CaptureVcsChatContext(*chat);
 	ReadOnlyAppSnapshotInputs snapshot_inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
 	const RemoteVcsQueuedWork remote_vcs = QueueRemoteVcsWork(m_app, chat->execution_host_id);

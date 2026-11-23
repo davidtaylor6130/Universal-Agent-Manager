@@ -53,7 +53,12 @@ namespace uam
 		std::filesystem::path operation_receipt;
 		std::string port_state;
 		std::string message;
+		/// Merge or squash was requested for a UAM-owned local snapshot, which ports back only as a patch. Nothing was changed.
+		bool requires_patch_port = false;
 	};
+
+	/// <summary>One-line notice added to a patch port that ran in place of the configured merge or squash.</summary>
+	inline constexpr std::string_view kSnapshotPatchPortNotice = "Local snapshots port back as a patch; the Merge and Squash port methods apply only to Git worktrees.";
 
 	struct GitTurnCheckpointResult
 	{
