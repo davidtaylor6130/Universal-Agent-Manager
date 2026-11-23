@@ -14,7 +14,6 @@ namespace uam
 {
 	inline constexpr double kCliNativeHistoryRefreshIntervalSeconds = 1.25;
 
-	double LatestCliTransportActivityTime(const uam::CliTerminalState& terminal);
 	std::string AsyncNativeChatLoadTaskKey(std::string_view provider_id, const std::filesystem::path& chats_dir);
 	std::string NativeHistorySnapshotDigest(const std::vector<ChatSession>& chats);
 	uam::platform::AsyncNativeChatLoadTask& AsyncNativeChatLoadTaskFor(uam::AppState& app, const std::string& provider_id, const std::filesystem::path& chats_dir);

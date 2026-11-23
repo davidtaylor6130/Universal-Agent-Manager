@@ -882,23 +882,6 @@ UAM_TEST(CliSilentTurnInterruptsThenStopsWithoutReplayingPrompt)
 	UAM_ASSERT(uam::strings::Contains(terminal.last_error, "not replayed"));
 }
 
-UAM_TEST(GeminiCliCompatibilityAcceptsCurrentStableVersions)
-{
-	UAM_ASSERT_EQ(std::string(uam::PreferredGeminiCliVersion()), std::string("latest"));
-	UAM_ASSERT_EQ(uam::SupportedGeminiCliVersionsLabel(), std::string("0.55.1 or newer (verified 2026-08-27)"));
-	UAM_ASSERT(!uam::IsSupportedGeminiCliVersion("0.38.1"));
-	UAM_ASSERT(!uam::IsSupportedGeminiCliVersion("0.55.0"));
-	UAM_ASSERT(uam::IsSupportedGeminiCliVersion("0.55.1"));
-	UAM_ASSERT(uam::IsSupportedGeminiCliVersion("0.56.0"));
-	UAM_ASSERT(uam::IsSupportedGeminiCliVersion("1.0.0"));
-	UAM_ASSERT(!uam::IsSupportedGeminiCliVersion("0.30.0"));
-	UAM_ASSERT(!uam::IsSupportedGeminiCliVersion("0..0"));
-	UAM_ASSERT(!uam::IsSupportedGeminiCliVersion("0.36."));
-	UAM_ASSERT(!uam::IsSupportedGeminiCliVersion("-1.36.0"));
-	UAM_ASSERT(!uam::IsSupportedGeminiCliVersion("0.39.0-beta"));
-	UAM_ASSERT(!uam::IsSupportedGeminiCliVersion("not-a-version"));
-}
-
 UAM_TEST(GeminiPromptClassifierStripsAnsiAndDetectsPrompt)
 {
 	const std::string output = "\x1b[33mThinking...\x1b[0m\r\n\xe2\x94\x82 > Type your message or @path\r\n";

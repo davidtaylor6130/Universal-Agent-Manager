@@ -22,7 +22,6 @@ class AppPaths
 	/// <summary>Returns the user's Gemini home directory.</summary>
 	static std::filesystem::path GeminiHomePath();
 	/// <summary>Returns the global Gemini root directory for shared config.</summary>
-	static std::filesystem::path DefaultGeminiUniversalRootPath();
 	/// <summary>Resolves Gemini's per-project temp directory for a workspace, when available.</summary>
 	static std::optional<std::filesystem::path> ResolveGeminiProjectTmpDir(const std::filesystem::path& project_root);
 	/// <summary>Returns the UAM chat files root directory (separate from native history).</summary>

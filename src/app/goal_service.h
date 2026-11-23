@@ -93,7 +93,6 @@ class GoalService
 	/// <summary>
 	/// Get all goals for a chat session.
 	/// </summary>
-	static std::vector<Goal> GetGoalsForChat(const AppState& app, const std::string& chat_id);
 
 	enum class GoalRemovalStage { Normal, PrepareOnly, AfterReceipt };
 	/// Metadata captured before removal; an absent goal alone never authorizes cancellation.

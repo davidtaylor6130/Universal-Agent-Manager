@@ -19,8 +19,6 @@ bool IsInjectedChatTitle(std::string_view title);
 std::string BuildImportedChatTitle(const std::vector<Message>& messages, const std::string& created_at, std::size_t max_length = 48);
 
 std::string BuildFolderTitleFromProjectRoot(const std::filesystem::path& project_root);
-bool ImportedProjectRootExists(const std::filesystem::path& project_root);
-std::filesystem::path ResolveImportedProjectRootOrFallback(const std::filesystem::path& project_root, const std::filesystem::path& fallback_root);
 
 /// <summary>Resolve linked worktrees to main-checkout folders for organisation; unavailable metadata retains the original location.</summary>
 std::filesystem::path ResolveImportedWorkspaceFolderDirectory(const std::filesystem::path& workspace);

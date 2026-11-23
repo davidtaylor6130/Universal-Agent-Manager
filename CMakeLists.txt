@@ -297,7 +297,6 @@ if(UAM_ENABLE_RUNTIME_GEMINI_CLI)
     src/common/provider/gemini/cli/gemini_native_agent_history.cpp
     src/common/provider/gemini/base/gemini_history_loader.cpp
   )
-  list(APPEND UAM_PROVIDER_APP_SOURCES src/core/gemini_cli_compat.cpp)
 endif()
 if(UAM_ENABLE_RUNTIME_GEMINI_CLI OR UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI)
   # Google account allowance reads serve Gemini and Antigravity.
@@ -1590,7 +1589,6 @@ if(UAM_BUILD_TESTS)
     src/common/provider/codex/cli/codex_cli_provider_runtime.cpp
     src/common/runtime/acp/claude_quota_continuation.cpp
     src/app/opencode_import_stream.cpp
-    src/core/gemini_cli_compat.cpp
   )
   list(REMOVE_ITEM UAM_CORE_TEST_UNSHARED_PROVIDER_SOURCES ${UAM_PROVIDER_SOURCES} ${UAM_PROVIDER_APP_SOURCES} ${UAM_RUNNER_PROVIDER_SOURCES})
   add_executable(uam_core_tests
