@@ -1435,12 +1435,13 @@ describe('useAppStore Gemini CLI slice', () => {
       acpSession: { sessionId: 'acp-chat-2', running: true, processing: true, lifecycleState: 'processing', turnAssistantMessageIndex: 29, turnSerial: 1 },
     })
     const historyReads: unknown[] = []
+    let answerHistory = () => { throw new Error('No history read started') }
     testWindow.cefQuery = ({ request, onSuccess }) => {
       const parsed = JSON.parse(request)
       if (parsed.action === 'getInitialState') onSuccess(JSON.stringify(initial))
       else if (parsed.action === 'getChatMessages') {
         historyReads.push(parsed.payload)
-        onSuccess(JSON.stringify({ chatId: 'chat-2', startIndex: 0, totalCount: 30, messagesDigest: 'thirty', messages: Array.from({ length: 30 }, (_, index) => ({
+        answerHistory = () => onSuccess(JSON.stringify({ chatId: 'chat-2', startIndex: 0, totalCount: 30, messagesDigest: 'thirty', messages: Array.from({ length: 30 }, (_, index) => ({
           role: index % 2 === 0 ? 'user' : 'assistant', content: index === 29 ? 'Background answer' : `saved ${index}`, createdAt: '2026-01-01T00:00:00Z',
         })) }))
       } else onSuccess('{}')
@@ -1456,8 +1457,14 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(historyReads).toEqual([])
 
     // Opening it mid-turn reads the saved page, which holds the text streamed so far, then live tokens continue it.
-    await cefStore.getState().loadSessionMessages('chat-2')
+    // A token that arrives while the read is in flight is already in the page, so the page must not be extended by it.
+    const opening = cefStore.getState().loadSessionMessages('chat-2')
     expect(historyReads).toHaveLength(1)
+    testWindow.uamPush?.({ type: 'streamToken', chatId: 'chat-2', messageIndex: 29, token: ' answer' })
+    answerHistory()
+    await opening
+    await new Promise((resolve) => setTimeout(resolve, 80))
+    expect(cefStore.getState().messages['chat-2'].at(-1)?.content).toBe('Background answer')
     testWindow.uamPush?.({ type: 'streamToken', chatId: 'chat-2', messageIndex: 29, token: ' continued' })
     await new Promise((resolve) => setTimeout(resolve, 80))
     expect(cefStore.getState().messages['chat-2']).toHaveLength(30)

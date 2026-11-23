@@ -382,14 +382,17 @@ describe('state patch gap recovery', () => {
     expect(keys()).toEqual(Array(4).fill(['chat-1']))
 
     // A full state prunes ids it no longer lists, whether a patch or the bridge lost the removal.
-    store.setState(historyMaps('chat-1', 'chat-3'))
+    store.setState({ ...historyMaps('chat-1', 'chat-3'), historyStartIndexBySessionId: { 'chat-1': 0, 'chat-3': 40 } })
     push({ type: 'stateUpdate', data: fullState(7, 'Only chat') })
     await flush(0)
     expect(keys()).toEqual(Array(4).fill(['chat-1']))
+    expect(store.getState().historyStartIndexBySessionId).toEqual({ 'chat-1': 0 })
 
-    // A patch that removes nothing keeps the same maps.
+    // A patch that removes nothing, or only chats these maps do not hold, keeps the same maps.
     const before = store.getState().chatHistoryPageBySessionId
     push(chatPatch(8))
+    expect(store.getState().chatHistoryPageBySessionId).toBe(before)
+    push({ type: 'statePatch', data: { stateRevision: 9, removedChatIds: ['chat-unknown'] } })
     expect(store.getState().chatHistoryPageBySessionId).toBe(before)
   })
 
