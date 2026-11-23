@@ -2,7 +2,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createRef } from 'react'
-import { CustomAcpAgentSettings, type CustomAcpAgentSettingsHandle, parseArguments, parseEnvironment, type CustomAcpAgentView } from './CustomAcpAgentSettings'
+import { CustomAcpAgentSettings, resetCustomAcpLoadErrorReport, type CustomAcpAgentSettingsHandle, parseArguments, parseEnvironment, type CustomAcpAgentView } from './CustomAcpAgentSettings'
 
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -30,7 +30,7 @@ const setValue = (element: HTMLInputElement | HTMLTextAreaElement, value: string
 })
 
 beforeEach(async () => {
-  send.mockReset(); failure.mockReset(); notice.mockReset()
+  send.mockReset(); failure.mockReset(); notice.mockReset(); resetCustomAcpLoadErrorReport()
   send.mockImplementation(async ({ action, payload }: { action: string; payload?: Record<string, unknown> }) => {
     if (action === 'getCustomAcpAgent') return { ok: true, data: view() }
     if (action === 'setCustomAcpAgent') return { ok: true, data: view({ ...(payload as Partial<CustomAcpAgentView>), fingerprint: 'fedcba9876543210', displayCommand: 'agent --acp', allowed: false }) }
@@ -114,5 +114,20 @@ describe('Custom ACP agent settings', () => {
     act(() => root.render(<CustomAcpAgentSettings />))
     await flush()
     expect(failure).toHaveBeenCalledWith('The custom ACP agent settings file is damaged. Saving it in Settings replaces the file.', 'The form shows an empty agent until you save one.')
+    act(() => root.unmount())
+    root = createRoot(host)
+    act(() => root.render(<CustomAcpAgentSettings />))
+    await flush()
+    expect(failure).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows the current command again when allowing is refused because it changed', async () => {
+    send.mockImplementation(async ({ action }: { action: string }) => action === 'allowCustomAcpAgent'
+      ? { ok: false, error: 'The custom ACP agent command now finds a different program. Review it again before allowing it.' }
+      : { ok: true, data: view({ program: '/opt/other/python3' }) })
+    await act(async () => { button('Allow this command').click() })
+    await flush()
+    expect(failure).toHaveBeenCalledWith('The custom ACP agent command now finds a different program. Review it again before allowing it.', 'Review the command and try again.')
+    expect(host.textContent).toContain('Runs /opt/other/python3.')
   })
 })

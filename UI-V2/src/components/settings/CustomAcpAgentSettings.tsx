@@ -28,6 +28,10 @@ export interface CustomAcpAgentSettingsHandle { requestLeave: (next: () => void)
 
 interface Draft { displayName: string; command: string; argumentsText: string; environmentText: string }
 
+let loadErrorReported = false
+/** Test hook: lets each case see the startup load error again. */
+export function resetCustomAcpLoadErrorReport() { loadErrorReported = false }
+
 const field = 'uam-field w-full'
 const monoArea = { minHeight: 96, resize: 'vertical' as const, fontFamily: 'var(--font-mono)', fontSize: 'var(--fs-sm)' }
 
@@ -67,7 +71,8 @@ function isCustomAcpAgentView(value: unknown): value is CustomAcpAgentView {
  * Settings for the one Custom ACP agent: name, command, arguments and environment. The configuration lives only in
  * these settings, and a changed command must be allowed here, after reading it, before its first launch.
  */
-export const CustomAcpAgentSettings = forwardRef<CustomAcpAgentSettingsHandle>(function CustomAcpAgentSettings(_props, ref) {
+// Pure, so a build without the Custom ACP agent drops this component entirely.
+export const CustomAcpAgentSettings = /* @__PURE__ */ forwardRef<CustomAcpAgentSettingsHandle>(function CustomAcpAgentSettings(_props, ref) {
   const [saved, setSaved] = useState<CustomAcpAgentView | null>(null)
   const [draft, setDraft] = useState<Draft | null>(null)
   const [saving, setSaving] = useState(false)
@@ -84,7 +89,11 @@ export const CustomAcpAgentSettings = forwardRef<CustomAcpAgentSettingsHandle>(f
       if (response.ok && isCustomAcpAgentView(response.data)) {
         setSaved(response.data)
         setDraft(draftFrom(response.data))
-        if (response.data.loadError) reportAppFailure(response.data.loadError, 'The form shows an empty agent until you save one.')
+        // Reported once per app run, not on every visit to the page.
+        if (response.data.loadError && !loadErrorReported) {
+          loadErrorReported = true
+          reportAppFailure(response.data.loadError, 'The form shows an empty agent until you save one.')
+        }
       } else reportAppFailure(response.error || 'The custom ACP agent settings could not be loaded.', 'Reopen Settings to try again.')
     })
     return () => { active = false }
@@ -129,7 +138,12 @@ export const CustomAcpAgentSettings = forwardRef<CustomAcpAgentSettingsHandle>(f
     try {
       const response = await sendToCEF<CustomAcpAgentView>({ action: 'allowCustomAcpAgent', payload: { fingerprint: saved.fingerprint, program: saved.program } })
       if (response.ok) accept(response.data, 'Custom ACP agent command allowed.')
-      else reportAppFailure(response.error || 'The custom ACP agent command could not be allowed.', 'Review the command and try again.')
+      else {
+        reportAppFailure(response.error || 'The custom ACP agent command could not be allowed.', 'Review the command and try again.')
+        // The command or the program it finds may have changed; show the current one so it can be reviewed.
+        const current = await sendToCEF<CustomAcpAgentView>({ action: 'getCustomAcpAgent' })
+        if (current.ok && isCustomAcpAgentView(current.data)) setSaved(current.data)
+      }
     } finally { setAllowing(false) }
   }
 
@@ -171,8 +185,8 @@ export const CustomAcpAgentSettings = forwardRef<CustomAcpAgentSettingsHandle>(f
               : <Button size="sm" variant="secondary" disabled={allowing || dirty || !saved.program} aria-busy={allowing || undefined} onClick={() => void allow()}>Allow this command</Button>}
             status={dirty ? 'Save your changes to review the new command.' : saved.programError || undefined}
           >
-            <pre role="group" aria-label="Exact command" className="uam-set-field__hint" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontFamily: 'var(--font-mono)' }}>{saved.displayCommand}</pre>
-            {saved.program && <p className="uam-set-field__hint">Runs <code>{saved.program}</code>.</p>}
+            <pre role="group" aria-label="Exact command" dir="ltr" className="uam-set-field__hint" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-all', fontFamily: 'var(--font-mono)', unicodeBidi: 'isolate' }}>{saved.displayCommand}</pre>
+            {saved.program && <p className="uam-set-field__hint">Runs <code dir="ltr" style={{ unicodeBidi: 'isolate' }}>{saved.program}</code>.</p>}
             {environmentNames.length > 0 && <p className="uam-set-field__hint">Also sets {environmentNames.join(', ')}.</p>}
           </SettingRow>
         </SettingsSection>

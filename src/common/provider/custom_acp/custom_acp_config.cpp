@@ -13,9 +13,7 @@
 #include <set>
 #include <system_error>
 
-#if defined(_WIN32)
-#include <windows.h>
-#else
+#if !defined(_WIN32)
 #include <unistd.h>
 #endif
 
@@ -43,11 +41,12 @@ namespace uam::custom_acp
 			{
 				const unsigned char first = static_cast<unsigned char>(value[index]);
 				const unsigned char second = static_cast<unsigned char>(value[index + 1]);
-				if (first == 0xC2 && second == 0xA0) return true; // U+00A0
+				if (first == 0xC2 && (second == 0xA0 || second == 0xAD || (second >= 0x80 && second <= 0x9F))) return true; // U+00A0, U+00AD, C1 controls
+				if (first == 0xD8 && second == 0x9C) return true; // U+061C
 				if (index + 2 >= value.size()) continue;
 				const unsigned char third = static_cast<unsigned char>(value[index + 2]);
-				if (first == 0xE2 && second == 0x80 && ((third >= 0x8B && third <= 0x8F) || (third >= 0xAA && third <= 0xAE) || third == 0xAF)) return true; // U+200B-200F, U+202A-202F
-				if (first == 0xE2 && second == 0x81 && (third == 0xA0 || (third >= 0xA6 && third <= 0xA9))) return true; // U+2060, U+2066-2069
+				if (first == 0xE2 && second == 0x80 && ((third >= 0x8B && third <= 0x8F) || (third >= 0xA8 && third <= 0xAF))) return true; // U+200B-200F, U+2028-202F
+				if (first == 0xE2 && second == 0x81 && third >= 0xA0 && third <= 0xAF) return true; // U+2060-206F
 				if (first == 0xEF && second == 0xBB && third == 0xBF) return true; // U+FEFF
 			}
 			return false;
@@ -320,6 +319,12 @@ namespace uam::custom_acp
 			}
 		}
 		parsed = Normalized(std::move(parsed));
+		// An approval missing either half (as an earlier build saved it) is dropped, keeping the agent itself.
+		if (parsed.approved_fingerprint.empty() != parsed.approved_executable.empty())
+		{
+			parsed.approved_fingerprint.clear();
+			parsed.approved_executable.clear();
+		}
 		if (const std::string invalid = ValidationError(parsed); !invalid.empty()) return fail(invalid);
 		out = std::move(parsed);
 		return true;
@@ -385,22 +390,8 @@ namespace uam::custom_acp
 #else
 		constexpr char kSeparator = ':';
 #endif
-#if defined(_WIN32)
-		// The Win32 block, which the platform refreshes from the registry before launches, not the CRT's ANSI copy.
-		std::optional<std::string> path;
-		if (const DWORD length = ::GetEnvironmentVariableW(L"PATH", nullptr, 0); length > 0)
-		{
-			std::wstring wide(length, L'\0');
-			const DWORD written = ::GetEnvironmentVariableW(L"PATH", wide.data(), length);
-			if (written > 0 && written < length)
-			{
-				wide.resize(written);
-				path = uam::paths::Utf8PathString(std::filesystem::path(wide));
-			}
-		}
-#else
+		// A fallback only: the app replaces these with the platform launcher's own folders (see the runtime).
 		const std::optional<std::string> path = uam::env::GetNonEmptyString("PATH");
-#endif
 		if (path)
 		{
 			std::size_t start = 0;

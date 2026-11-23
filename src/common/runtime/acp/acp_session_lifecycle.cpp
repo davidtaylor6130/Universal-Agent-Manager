@@ -3126,8 +3126,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 			}
 			session.lifecycle_state = kAcpLifecycleError;
 			// Platform start errors can quote the whole command line, which for a user-typed launch may hold private values.
-			session.last_error = private_arguments ? std::string("The custom ACP agent could not start. Check its command in Settings.")
-			    : startup_error.empty() ? ("Failed to start " + std::string(RuntimeDisplayName(session)) + " process.") : startup_error;
+			session.last_error = private_arguments || startup_error.empty() ? ("Failed to start " + std::string(RuntimeDisplayName(session)) + " process.") : startup_error;
 			AppendAcpDiagnostic(session, "process_launch", "start_failed", "", "", false, 0, session.last_error, launch_detail);
 			if (error_out != nullptr)
 			{

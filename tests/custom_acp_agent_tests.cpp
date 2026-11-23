@@ -110,6 +110,8 @@ namespace
 		invalid([](AgentConfig& c) { c.arguments.push_back("safe\xE2\x80\xAEtxt.exe"); }, "arguments cannot hold direction-changing characters");
 		invalid([](AgentConfig& c) { c.arguments.push_back("two\xC2\xA0words"); }, "arguments cannot hold a no-break space that looks like a separator");
 		invalid([](AgentConfig& c) { c.command = "agent\xE2\x80\x8B"; }, "commands cannot hold zero-width characters");
+		invalid([](AgentConfig& c) { c.arguments.push_back("a\xE2\x80\xA8" "b"); }, "arguments cannot hold a line separator");
+		invalid([](AgentConfig& c) { c.arguments.push_back("a\xC2\x85" "b"); }, "arguments cannot hold C1 controls");
 		invalid([](AgentConfig& c) { c.approved_fingerprint = "0123456789abcdef"; }, "an approval names the program it allowed");
 		invalid([](AgentConfig& c) { c.command = "agent\n--flag"; }, "commands are one line");
 		invalid([](AgentConfig& c) { c.arguments.assign(65, "x"); }, "argument count is bounded");
@@ -125,6 +127,11 @@ namespace
 		wrong_type["arguments"] = "--acp";
 		Check(!uam::custom_acp::FromJson(wrong_type, parsed, &error), "arguments must be a list");
 		CheckOneLine(error, "argument list type");
+		nlohmann::json half_approval = uam::custom_acp::ToJson(config);
+		half_approval["approvedFingerprint"] = uam::custom_acp::LaunchFingerprint(config);
+		half_approval.erase("approvedExecutable");
+		Check(uam::custom_acp::FromJson(half_approval, parsed, &error) && parsed.command == config.command && parsed.approved_fingerprint.empty(),
+		    "a half-saved approval is dropped without losing the agent");
 	}
 
 	void ApprovalCases()
@@ -223,14 +230,12 @@ namespace
 		Check(uam::custom_acp::ResolveExecutable("tool", windows, error) == win / "tool.exe", "a program name finds its .exe: " + error);
 		Check(uam::custom_acp::ResolveExecutable("agent.ps1", windows, error).empty(), "a script that needs another program is refused");
 		CheckOneLine(error, "powershell script");
-#if defined(_WIN32)
 		// An extensionless full path (an npm shim) would make Windows try name.cmd next to it, so it is refused.
 		WriteFile(win / "npm-agent", "#!/bin/sh\n", false);
 		WriteFile(win / "npm-agent.cmd", "@echo off\n", false);
 		Check(uam::custom_acp::ResolveExecutable(uam::paths::Utf8PathString(win / "npm-agent"), windows, error).empty(), "an extensionless full path is refused on Windows");
 		Check(error.find(".exe") != std::string::npos, "the error asks for the .exe file: " + error);
 		Check(uam::custom_acp::ResolveExecutable(uam::paths::Utf8PathString(win / "tool.exe"), windows, error) == win / "tool.exe", "a full .exe path is used as given");
-#endif
 	}
 
 	void LaunchCheckCases(const std::filesystem::path& python)

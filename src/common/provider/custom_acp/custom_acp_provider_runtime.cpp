@@ -6,12 +6,7 @@
 #include "common/provider/runtime/provider_runtime_internal.h"
 #include "common/paths/path_utils.h"
 #include "common/runtime/acp/acp_session_internal.h"
-
-#if defined(__APPLE__)
-#include "common/platform/platform_services_macos_impl_internal.h"
-#elif defined(_WIN32)
-#include "common/platform/platform_services_windows_impl_internal.h"
-#endif
+#include "common/platform/platform_services.h"
 
 const char* CustomAcpProviderRuntime::RuntimeId() const
 {
@@ -73,17 +68,15 @@ bool CustomAcpProviderRuntime::PrepareStructuredLaunch(uam::AcpSessionState&, co
 
 uam::custom_acp::ExecutableSearch CustomAcpExecutableSearch()
 {
-#if defined(_WIN32)
-	// Programs installed while UAM runs are found, as the platform launcher would find them.
-	uam::platform_windows_impl::RefreshProcessPathFromRegistry();
-#endif
+	// The folders the platform's own launcher searches (on macOS also Homebrew and Node version managers; on Windows
+	// the PATH refreshed from the registry), so the program allowed in Settings is the one that starts.
 	uam::custom_acp::ExecutableSearch search = uam::custom_acp::DefaultExecutableSearch();
-#if defined(__APPLE__)
-	// The same folders the platform launcher searches: PATH plus Homebrew, system and Node version manager folders.
-	search.directories.clear();
-	for (const std::string& directory : uam::platform_macos_impl::CollectTerminalPathSearchDirs())
-		search.directories.push_back(uam::paths::PathFromUtf8(directory));
-#endif
+	const std::vector<std::string> platform_directories = PlatformServicesFactory::Instance().process_service.ExecutableSearchDirectories();
+	if (!platform_directories.empty())
+	{
+		search.directories.clear();
+		for (const std::string& directory : platform_directories) search.directories.push_back(uam::paths::PathFromUtf8(directory));
+	}
 	return search;
 }
 
