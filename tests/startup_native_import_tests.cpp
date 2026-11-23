@@ -7,6 +7,9 @@
 #include "common/companion/protocol.h"
 #include "common/config/provider_availability.h"
 #include "common/provider/provider_profile.h"
+#include "common/chat/native_chat_identity.h"
+#include "common/paths/path_utils.h"
+#include "core/chat_import_utils.h"
 
 #include <atomic>
 #include <fstream>
@@ -2427,3 +2430,153 @@ UAM_TEST(StartupNativeImportSkipsOpenCodeWhereItIsTurnedOff)
 	UAM_ASSERT_EQ(local_enabled.load(), 1);
 }
 #endif
+
+namespace
+{
+	/// A scanner that holds its discovery until the case releases it, so the app can change under a running scan.
+	struct HeldStartupScanner
+	{
+		std::shared_ptr<std::promise<void>> release = std::make_shared<std::promise<void>>();
+		std::shared_future<void> released = release->get_future().share();
+
+		uam::StartupNativeImportService::Scanner Scanner(std::vector<ChatSession> chats) const
+		{
+			return [chats = std::move(chats), released = released](const uam::StartupNativeImportScanRequest&, std::stop_token)
+			{
+				released.wait();
+				ChatHistorySyncService::LocalHistoryDiscovery discovery;
+				discovery.chats = chats;
+				return discovery;
+			};
+		}
+	};
+}
+
+UAM_TEST(StartupNativePlanResolvesEachRegisteredFolderOncePerPass)
+{
+	TempDir temp("uam-startup-plan-folder-once");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	constexpr std::size_t kFolders = 8;
+	constexpr std::size_t kPerFolder = 6;
+	std::vector<ChatSession> histories;
+	for (std::size_t folder = 0; folder < kFolders; ++folder)
+	{
+		const fs::path directory = temp.root / ("workspace-" + std::to_string(folder));
+		fs::create_directories(directory / "nested");
+		app.folders.push_back({"folder-" + std::to_string(folder), "Folder " + std::to_string(folder), directory.string(), false, "local"});
+		for (std::size_t chat = 0; chat < kPerFolder; ++chat)
+			histories.push_back(StartupHistory(chat % 2 == 0 ? directory : directory / "nested", "registered-" + std::to_string(folder) + "-" + std::to_string(chat)));
+	}
+	// Two unregistered directories plan one new workspace each; planning resolves only those appended folders.
+	for (const std::string& name : {std::string("unregistered-a"), std::string("unregistered-b")})
+	{
+		fs::create_directories(temp.root / name);
+		for (std::size_t chat = 0; chat < 3; ++chat) histories.push_back(StartupHistory(temp.root / name, name + "-" + std::to_string(chat)));
+	}
+	ChatHistorySyncService::LocalHistoryDiscovery discovery;
+	discovery.chats = histories;
+
+	// The per-lookup form resolves every registered folder on every call: this pass would have cost candidates x folders.
+	const std::size_t single_before = uam::RegisteredWorkspaceFolderResolutionsOnThisThread();
+	UAM_ASSERT(uam::FindImportedWorkspaceFolder(app.folders, uam::paths::PathFromUtf8(histories.front().workspace_directory)) != nullptr);
+	UAM_ASSERT_EQ(uam::RegisteredWorkspaceFolderResolutionsOnThisThread() - single_before, kFolders);
+
+	uam::StartupNativeImportService service(FixtureScanner({}));
+	const uam::StartupNativeImportPlanningSnapshot snapshot = service.CapturePlanningSnapshot(app);
+	const std::size_t before = uam::RegisteredWorkspaceFolderResolutionsOnThisThread();
+	const uam::StartupNativeImportPlan plan = uam::StartupNativeImportService::PlanDiscovery(snapshot, discovery);
+	UAM_ASSERT_EQ(uam::RegisteredWorkspaceFolderResolutionsOnThisThread() - before, kFolders + 2);
+	UAM_ASSERT(!plan.filter_failed);
+	UAM_ASSERT_EQ(plan.histories.size(), histories.size());
+	std::map<std::string, std::string> planned_by_directory;
+	for (const uam::StartupNativeImportPlan::History& entry : plan.histories)
+	{
+		const ChatSession& chat = discovery.chats[entry.source];
+		UAM_ASSERT_EQ(entry.key, uam::chat_identity::NativeIdentityKeyForHistoryImport(chat));
+		if (const ChatFolder* owner = uam::FindImportedWorkspaceFolder(app.folders, uam::paths::PathFromUtf8(chat.workspace_directory)))
+		{
+			UAM_ASSERT_EQ(entry.folder_id, owner->id);
+			UAM_ASSERT(!entry.new_workspace);
+			continue;
+		}
+		UAM_ASSERT(entry.new_workspace.has_value());
+		UAM_ASSERT_EQ(entry.new_workspace->id, entry.folder_id);
+		UAM_ASSERT_EQ(planned_by_directory.try_emplace(chat.workspace_directory, entry.folder_id).first->second, entry.folder_id);
+	}
+	UAM_ASSERT_EQ(planned_by_directory.size(), std::size_t{2});
+	// Planning saved nothing.
+	UAM_ASSERT_EQ(app.folders.size(), kFolders);
+}
+
+UAM_TEST(StartupNativeMergeDoesNoFileSystemProbingOnTheAppThread)
+{
+	TempDir temp("uam-startup-merge-no-probe");
+	uam::AppState app;
+	StartupWorkspace(app, temp.root);
+	const fs::path unregistered = temp.root / "unregistered";
+	fs::create_directories(temp.root / "workspace" / "nested");
+	fs::create_directories(unregistered);
+	std::vector<ChatSession> histories;
+	for (int index = 0; index < 12; ++index)
+		histories.push_back(StartupHistory(index % 3 == 0 ? unregistered : index % 3 == 1 ? temp.root / "workspace" : temp.root / "workspace" / "nested", "history-" + std::to_string(index)));
+	ChatSession owned = StartupHistory(temp.root / "workspace", "history-1");
+	owned.id = "chat-owned";
+	app.chats.push_back(owned);
+	uam::StartupNativeImportService service(FixtureScanner(histories));
+	// Starting the scan, polling it and merging its plan all run here, on the app thread: none of it may touch the disk.
+	const std::size_t probes = uam::paths::FileSystemProbeCountOnThisThread();
+	const std::size_t resolutions = uam::RegisteredWorkspaceFolderResolutionsOnThisThread();
+	service.Initialize(app);
+	WaitForStartup(service, app);
+	UAM_ASSERT_EQ(uam::paths::FileSystemProbeCountOnThisThread() - probes, std::size_t{0});
+	UAM_ASSERT_EQ(uam::RegisteredWorkspaceFolderResolutionsOnThisThread() - resolutions, std::size_t{0});
+	const uam::StartupNativeImportSnapshot ready = service.Snapshot();
+	UAM_ASSERT_EQ(ready.phase, std::string("ready"));
+	UAM_ASSERT_EQ(ready.total_count, histories.size() - 1);
+	std::set<std::string> planned;
+	for (const uam::StartupNativeImportCandidate& candidate : ready.candidates)
+	{
+		UAM_ASSERT(candidate.native_session_id != "history-1");
+		if (candidate.workspace_directory == unregistered.string())
+		{
+			UAM_ASSERT(candidate.new_workspace);
+			planned.insert(candidate.folder_id);
+		}
+		else
+		{
+			UAM_ASSERT_EQ(candidate.folder_id, std::string("known"));
+			UAM_ASSERT(!candidate.new_workspace);
+		}
+	}
+	UAM_ASSERT_EQ(planned.size(), std::size_t{1});
+}
+
+UAM_TEST(StartupNativeStalePlanIsReplannedInsteadOfMerged)
+{
+	TempDir temp("uam-startup-stale-plan");
+	uam::AppState app;
+	StartupWorkspace(app, temp.root);
+	const fs::path later = temp.root / "later";
+	fs::create_directories(later);
+	HeldStartupScanner held;
+	uam::StartupNativeImportService service(held.Scanner({StartupHistory(temp.root / "workspace", "taken"), StartupHistory(later, "moved"), StartupHistory(temp.root / "workspace", "kept")}));
+	service.Initialize(app);
+	// While the scan runs, a UAM chat takes one session and a workspace is registered for another directory.
+	ChatSession owner = StartupHistory(temp.root / "workspace", "taken");
+	owner.id = "chat-taken";
+	app.chats.push_back(owner);
+	app.folders.push_back({"later", "Later", later.string(), false, "local"});
+	held.release->set_value();
+	WaitForStartup(service, app);
+	const uam::StartupNativeImportSnapshot ready = service.Snapshot();
+	// The plan made against the launch snapshot would have offered "taken" and planned a new workspace for "moved".
+	UAM_ASSERT_EQ(ready.total_count, std::size_t{2});
+	for (const uam::StartupNativeImportCandidate& candidate : ready.candidates)
+	{
+		UAM_ASSERT(candidate.native_session_id != "taken");
+		UAM_ASSERT(!candidate.new_workspace);
+		UAM_ASSERT_EQ(candidate.folder_id, std::string(candidate.native_session_id == "moved" ? "later" : "known"));
+	}
+	UAM_ASSERT(service.Snapshot().errors.empty());
+}
