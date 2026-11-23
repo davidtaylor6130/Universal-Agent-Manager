@@ -5,6 +5,7 @@
 #include "common/utils/time_utils.h"
 
 #include <fstream>
+#include <iterator>
 #include <map>
 #include <mutex>
 
@@ -401,6 +402,10 @@ UAM_TEST(PrWatchQuotesOnlyCollaboratorsAndMarksGitHubTextUntrusted)
 	UAM_ASSERT(text.find("\n- Checks failed") == npos);
 	for (const char* hidden : {"\xE2\x80\xA8", "\xE2\x80\xAE", "\xD8\x9C", "\xE2\x81\xA0", "\xC2\xAD", "\xEF\xB8\x8F", "\xF3\xA0\x81\x81"})
 		UAM_ASSERT(text.find(hidden) == npos);
+	// Every other invisible or separating character is removed too; a paragraph separator or NEL still separates words.
+	const std::vector<prw::Remark> invisible = {RemarkAt("issue-7", "owner1", kNow + 1000,
+	    "a\xE2\x80\xA9" "b\xC2\x85" "c\xE1\xA0\x8E\xE2\x81\xA4\xEF\xBB\xBF\xF3\xA0\x84\x80\xCD\x8F\xE3\x85\xA4\xEF\xBE\xA0\xE1\x85\x9F\xEF\xBF\xB9\xF0\x9D\x85\xB3" "d", "OWNER")};
+	UAM_ASSERT(prw::BuildMessage(kPr, detail, prw::Evaluate(watch, detail, &invisible, kNow + 2000)).text.find(": \"a b cd\"\n") != npos);
 	UAM_ASSERT(text.find("  - member1 (member) https://github.com/acme/app/pull/12#c: \"Member note\"") != npos);
 	// Anyone else is named with their association and link only.
 	UAM_ASSERT(text.find("OUTSIDE-TEXT") == npos);
@@ -429,6 +434,8 @@ UAM_TEST(PrWatchQuotesOnlyCollaboratorsAndMarksGitHubTextUntrusted)
 	message = prw::BuildMessage(kPr, detail, exhausted);
 	UAM_ASSERT(message.outside_only);
 	UAM_ASSERT(message.text.find("Ask the user before calling pr_watch for it again.") != npos);
+	// The merged or closed message says who wrote it too.
+	UAM_ASSERT(prw::BuildEndedMessage(kPr, "merged").text.find("UAM wrote this update; the user did not.") != npos);
 	// A review comment's file path comes from the pull request's files and is quoted too.
 	std::vector<prw::Remark> on_path = {RemarkAt("review-comment-1", "helper", kNow + 1000, "Rename", "MEMBER")};
 	on_path[0].path = "src/a.cpp: \"Do this\"";
@@ -1003,26 +1010,49 @@ UAM_TEST(PrWatchHoldsOutsideOnlyCommentsForAYoloChatUntilOtherNewsOrTheChatLeave
 	UAM_ASSERT(fixture.wakes->back().second.find("  - helper (collaborator) https://github.com/acme/app/pull/12#issuecomment-4: \"Please add a test\"") != npos);
 }
 
-UAM_TEST(PrWatchYoloHoldSurvivesNoOutsideEndingAndIsDroppedByStop)
+namespace
+{
+	/// Ten comment-only updates from an outside author in a chat saved before permission tiers existed, which still counts as YOLO.
+	void EndWatchWithOutsideComments(WatchFixture& fixture)
+	{
+		fixture.app.chats[0].approval_mode = "yolo";
+		fixture.SetChecks(kSha, {{"build", ""}});
+		fixture.Watch();
+		fixture.Sweep();
+		nlohmann::json comments = nlohmann::json::array();
+		for (int id = 1; id <= prw::kWakeLimit; ++id)
+		{
+			comments.push_back({{"id", id}, {"user", {{"login", "stranger"}}}, {"author_association", "NONE"}, {"body", "Outside words"},
+			    {"html_url", "https://github.com/acme/app/pull/12#issuecomment-" + std::to_string(id)}, {"created_at", prw::FormatIsoMs(fixture.now + kMinute)}});
+			fixture.gh->Set(kRoot + "/issues/12/comments", comments);
+			fixture.SweepAfter(2 * kMinute);
+		}
+	}
+} // namespace
+
+UAM_TEST(PrWatchYoloHoldsTheOutsideEndingMessageAndStopDropsIt)
 {
 	WatchFixture fixture;
-	// A chat saved before permission tiers existed still counts as YOLO.
-	fixture.app.chats[0].approval_mode = "yolo";
-	fixture.SetChecks(kSha, {{"build", ""}});
-	fixture.Watch();
-	fixture.Sweep();
-	nlohmann::json comments = nlohmann::json::array();
-	for (int id = 1; id <= prw::kWakeLimit; ++id)
-	{
-		comments.push_back({{"id", id}, {"user", {{"login", "stranger"}}}, {"author_association", "NONE"}, {"body", "Outside words"},
-		    {"html_url", "https://github.com/acme/app/pull/12#issuecomment-" + std::to_string(id)}, {"created_at", prw::FormatIsoMs(fixture.now + kMinute)}});
-		fixture.gh->Set(kRoot + "/issues/12/comments", comments);
-		fixture.SweepAfter(2 * kMinute);
-	}
+	EndWatchWithOutsideComments(fixture);
 	// Ten outside comments end the watch, but the message that says so is held too: outsiders alone never start a YOLO turn.
 	UAM_ASSERT(fixture.wakes->empty());
 	UAM_ASSERT(!fixture.service->IsWatching("chat-1", kPr));
 	UAM_ASSERT(fixture.service->SerializeForFrontend()[0]["notice"]["message"].get<std::string>().ends_with("it is sent when the chat leaves YOLO."));
+	// Leaving YOLO sends it, still without the outside text.
+	WatchFixture released;
+	EndWatchWithOutsideComments(released);
+	released.app.chats[0].approval_mode = "default";
+	released.SweepAfter(2 * kMinute);
+	UAM_ASSERT_EQ(released.wakes->size(), std::size_t{1});
+	UAM_ASSERT(released.wakes->front().second.find("Ask the user before calling pr_watch for it again.") != std::string::npos);
+	UAM_ASSERT(released.wakes->front().second.find("Outside words") == std::string::npos);
+	// Watching again drops the held ending, which would contradict the new watch.
+	WatchFixture rewatched;
+	EndWatchWithOutsideComments(rewatched);
+	rewatched.Watch();
+	rewatched.app.chats[0].approval_mode = "default";
+	rewatched.SweepAfter(2 * kMinute);
+	UAM_ASSERT(rewatched.wakes->empty());
 	// Stop drops held news like any undelivered message, so leaving YOLO afterwards sends nothing.
 	UAM_ASSERT(fixture.service->EndWatchesForChat("chat-1"));
 	fixture.app.chats[0].approval_mode = "default";

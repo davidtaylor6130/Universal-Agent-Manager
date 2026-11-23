@@ -242,6 +242,13 @@ namespace uam
 			m_links.push_back({.chat_id = std::string(chat_id), .pr = pr});
 			link = &m_links.back();
 		}
+		if (!link->watching && link->pending_outside_only)
+		{
+			// A held message that ended the last watch would contradict the new one; the user restarting it has seen the notice.
+			link->pending_wake.clear();
+			link->pending_outside_only = false;
+			link->held = false;
+		}
 		if (!link->watching)
 		{
 			// Comments made while nobody watched are not news; check and conflict news already told stays told.
@@ -274,6 +281,7 @@ namespace uam
 		link->watching = false;
 		link->pending_wake.clear();
 		link->pending_outside_only = false;
+		link->held = false;
 		m_dirty = true;
 		Save();
 		return was_watching;
@@ -299,6 +307,7 @@ namespace uam
 			link.watching = false;
 			link.pending_wake.clear();
 			link.pending_outside_only = false;
+			link.held = false;
 			changed = true;
 		}
 		if (changed)
@@ -559,6 +568,7 @@ namespace uam
 				const bool held = HeldForYolo(app, link.chat_id, link.pending_outside_only);
 				// Holding is a permission decision, so it is logged once per held message, naming only the chat.
 				if (held && !was_held) uam::diagnostics::Write("PR watch: chat " + link.chat_id + " runs in YOLO; an update with only outside comments is held.");
+				link.held = link.held || held;
 				const std::string held_note = report.exhausted
 				    ? ". Not sent to the agent, because this chat runs in YOLO: it is sent when the chat leaves YOLO."
 				    : ". Not sent to the agent, because this chat runs in YOLO: it goes with the pull request's next other update, or when the chat leaves YOLO.";
@@ -573,6 +583,9 @@ namespace uam
 	bool PrWatchService::DeliverWakes(AppState& app, std::int64_t now_ms)
 	{
 		const auto deliverable = [&](const Link& link) { return !link.pending_wake.empty() && !HeldForYolo(app, link.chat_id, link.pending_outside_only); };
+		// A wake held after a restart, or since the chat entered YOLO, is marked so its release is logged.
+		for (Link& link : m_links)
+			if (!link.pending_wake.empty() && !deliverable(link)) link.held = true;
 		if (now_ms < m_next_wake_retry_ms || std::ranges::none_of(m_links, deliverable)) return false;
 		// The news is saved before it is sent, so a crash between the two delivers it after restart instead of losing it.
 		if (!Save()) return false;
@@ -580,11 +593,7 @@ namespace uam
 		for (Link& link : m_links)
 		{
 			// Comments from people outside the repository's collaborators never start an unattended YOLO turn on their own.
-			if (!deliverable(link))
-			{
-				link.held = !link.pending_wake.empty();
-				continue;
-			}
+			if (!deliverable(link)) continue;
 			std::string error;
 			if (m_sender(app, link.chat_id, link.pending_wake, &error))
 			{
@@ -604,6 +613,7 @@ namespace uam
 			link.watching = false;
 			link.pending_wake.clear();
 			link.pending_outside_only = false;
+			link.held = false;
 			link.wake_refusals = 0;
 			Notify(link, "Stopped watching " + link.pr.repository + " #" + std::to_string(link.pr.number) + ": the chat did not accept its updates. Open the chat in Chat view and watch it again.", "warning");
 			delivered = true;
@@ -659,6 +669,7 @@ namespace uam
 					link.watching = false;
 					link.pending_wake.clear();
 					link.pending_outside_only = false;
+					link.held = false;
 					m_dirty = true;
 				}
 			}
