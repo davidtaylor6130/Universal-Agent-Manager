@@ -125,6 +125,13 @@ const char* ClaudeCliProviderRuntime::RuntimeId() const
 }
 
 
+/// Claude reads the staged conversation as an appended system prompt file.
+bool ClaudeCliProviderRuntime::StageCliHandoffContext(const ProviderCliHandoffStaging& staging, std::vector<std::string>& argv, std::string&) const
+{
+	argv.insert(argv.end(), {"--append-system-prompt-file", staging.context_path});
+	return true;
+}
+
 std::vector<std::string> ClaudeCliProviderRuntime::BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings) const
 {
 	if (!profile.supports_interactive)

@@ -87,6 +87,13 @@ const char* AntigravityCliProviderRuntime::RuntimeId() const
 	return uam::provider_ids::kAntigravityCli;
 }
 
+/// The terminal refuses Antigravity handoff before staging; this keeps that refusal if a caller ever reaches staging.
+bool AntigravityCliProviderRuntime::StageCliHandoffContext(const ProviderCliHandoffStaging&, std::vector<std::string>&, std::string& error) const
+{
+	error = "The selected provider does not support conversation context files.";
+	return false;
+}
+
 std::vector<std::string> AntigravityCliProviderRuntime::BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings) const
 {
 	if (!profile.supports_interactive) return {};
