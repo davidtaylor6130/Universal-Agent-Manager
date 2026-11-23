@@ -25,7 +25,8 @@ namespace uam
 	std::string SvnFailureMessage(const ProcessExecutionResult& result, std::string_view fallback, std::string_view workspace = {});
 
 	/// <summary>Logs a failure whose message is shown to a person. Only svn's own E/W lines (or UAM's first error line) are
-	/// written, never command output, with workspace and home paths shortened and URL user names removed, bounded, and
-	/// once per `operation` and error code every five minutes.</summary>
+	/// written, never command output (a line counts as svn's only when it starts with svn's prefix, and output cut at the
+	/// capture limit is not read at all), with workspace and home paths shortened and URL user names removed, bounded, and
+	/// once per workspace, `operation` and error code every five minutes.</summary>
 	void LogSvnFailure(const ProcessExecutionResult& result, std::string_view operation, std::string_view workspace = {});
 } // namespace uam

@@ -35,7 +35,7 @@ src/                                 C++ backend (CMake target: universal_agent_
     vcs_commit_service.*             VCS status/diff/commit + commit-message generation
     vcs_provider.h                   Git/SVN provider interface behind vcs_commit_service
     svn_history.*                    SVN log paging, per-revision patch, update and branch origin behind the SVN provider
-    svn_failure.*                    One-line SVN failure messages (credentials, out of date, most specific E line); raw output to the log
+    svn_failure.*                    One-line SVN failure messages (credentials, out of date, most specific E line); sanitised svn error lines to the log
     svn_branch_service.* / svn_branch_process.cpp  Composer SVN folder discovery and switch; RunSvn-backed runner
   cef/
     uam_cef_app.*                    Browser-process CefApp, command line switches

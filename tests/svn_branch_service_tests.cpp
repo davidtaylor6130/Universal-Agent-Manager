@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -277,6 +278,24 @@ namespace
 		const std::size_t before = uam::diagnostics::g_log.size();
 		uam::LogSvnFailure(canceled, "status", "/w");
 		Check(uam::diagnostics::g_log.size() == before, "a stop is not a failure");
+		uam::diagnostics::g_log.clear();
+		ProcessExecutionResult quoted;
+		quoted.exit_code = 1;
+		quoted.output = "+note: svn: E170001: Can't get password; token=sk-fixture\nsvn: E000013: Can't open file '/w2/x': Permission denied\n";
+		uam::LogSvnFailure(quoted, "diff", "/w2");
+		Check(uam::diagnostics::g_log.find("sk-fixture") == std::string::npos && uam::diagnostics::g_log.find("E000013") != std::string::npos, "svn's prefix inside content is not logged: " + uam::diagnostics::g_log);
+#ifndef _WIN32
+		uam::diagnostics::g_log.clear();
+		const char* previous_home = std::getenv("HOME");
+		const std::string saved_home = previous_home != nullptr ? previous_home : "";
+		setenv("HOME", "/home/fixture/", 1);
+		ProcessExecutionResult homed;
+		homed.exit_code = 1;
+		homed.output = "svn: E000013: Can't open file '/home/fixture/other/x' or '/home/fixturebeta/y': Permission denied\n";
+		uam::LogSvnFailure(homed, "status", "/w3");
+		if (previous_home != nullptr) setenv("HOME", saved_home.c_str(), 1); else unsetenv("HOME");
+		Check(uam::diagnostics::g_log.find("'~/other/x'") != std::string::npos && uam::diagnostics::g_log.find("'/home/fixturebeta/y'") != std::string::npos, "only the whole home folder is shortened: " + uam::diagnostics::g_log);
+#endif
 		std::cout << "PASS: SVN failure log keeps svn's lines only, sanitised and rate limited\n";
 	}
 	void InjectedCases()

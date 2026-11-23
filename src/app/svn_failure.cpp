@@ -1,6 +1,7 @@
 #include "app/svn_failure.h"
 
 #include "common/paths/path_utils.h"
+#include "common/platform/platform_services.h"
 #include "common/utils/diagnostic_log.h"
 #include "common/utils/env_utils.h"
 #include "common/utils/string_utils.h"
@@ -24,14 +25,22 @@ namespace uam
 			std::string next; ///< The first non-empty line after it, when that line is not svn's own (hook output, a path).
 		};
 
+		/// Only a line that starts with svn's prefix is svn's own; the same text inside a diff or log message is content.
 		bool IsSvnLine(const std::string& line)
 		{
-			return line.find("svn: E") != std::string::npos || line.find("svn: warning: W") != std::string::npos;
+			return line.starts_with("svn: E") || line.starts_with("svn: warning: W");
+		}
+
+		/// Output cut at the capture limit can end anywhere in a diff or listing, so none of it is read as svn's errors.
+		bool OutputLimited(const ProcessExecutionResult& result)
+		{
+			return result.output_truncated || result.error.find(uam::platform::kCapturedCommandOutputLimitError) != std::string::npos;
 		}
 
 		/// Every `svn: E...` and `svn: warning: W...` line, in order.
 		std::vector<SvnLine> ParseLines(const ProcessExecutionResult& result)
 		{
+			if (OutputLimited(result)) return {};
 			std::vector<std::string> raw;
 			std::istringstream stream(result.output + "\n" + result.error);
 			for (std::string line; std::getline(stream, line);) raw.push_back(uam::strings::Trim(line));
@@ -39,11 +48,10 @@ namespace uam
 			for (std::size_t index = 0; index < raw.size(); ++index)
 			{
 				const std::string& line = raw[index];
+				if (!IsSvnLine(line)) continue;
 				SvnLine parsed;
-				std::size_t start = line.find("svn: E");
-				if (start != std::string::npos) start += 5;
-				else if ((start = line.find("svn: warning: W")) != std::string::npos) { start += 14; parsed.warning = true; }
-				else continue;
+				parsed.warning = line.starts_with("svn: warning: W");
+				const std::size_t start = parsed.warning ? 14 : 5;
 				const std::size_t colon = line.find(':', start);
 				if (colon == std::string::npos) continue;
 				parsed.code = line.substr(start, colon - start);
@@ -129,7 +137,7 @@ namespace uam
 				if (line.code == "E170001" && (line.text.starts_with("Can't get") || line.text.starts_with("Authentication error"))) return true;
 				connect = connect || line.code == "E170013";
 			}
-			if (!connect) return false;
+			if (!connect || OutputLimited(result)) return false;
 			// With SVN_SSH in batch mode, ssh reports why it gave up on the lines around svn's own.
 			const std::string raw = result.output + "\n" + result.error;
 			for (const std::string_view cause : {"Permission denied (", "Host key verification failed", "Too many authentication failures", "Authentication failed"})
@@ -176,9 +184,13 @@ namespace uam
 			text = Relative(std::move(text), workspace);
 			if (const std::optional<std::filesystem::path> home = uam::env::GetUserHomePath())
 			{
-				const std::string prefix = uam::paths::Utf8PathString(*home);
+				std::string prefix = uam::paths::Utf8PathString(*home);
+				while (prefix.size() > 1 && (prefix.back() == '/' || prefix.back() == '\\')) prefix.pop_back();
+				// Only the whole home folder: `/Users/bob` must not shorten `/Users/bobby`.
+				const auto boundary = [&](const std::size_t end) { return end == text.size() || std::string_view("/\\'\" ").find(text[end]) != std::string_view::npos; };
 				if (prefix.size() > 1)
-					for (std::size_t at = text.find(prefix); at != std::string::npos; at = text.find(prefix, at + 1)) text.replace(at, prefix.size(), "~");
+					for (std::size_t at = text.find(prefix); at != std::string::npos; at = text.find(prefix, at + 1))
+						if (boundary(at + prefix.size())) text.replace(at, prefix.size(), "~");
 			}
 			for (std::size_t scheme = text.find("://"); scheme != std::string::npos; scheme = text.find("://", scheme + 3))
 			{
@@ -244,7 +256,8 @@ namespace uam
 			const std::string error = uam::strings::Trim(result.error);
 			detail = Bound(Sanitize(error.substr(0, error.find('\n')), workspace), 240);
 		}
-		const std::string key = std::string(operation) + ':' + (result.timed_out ? std::string("timeout") : selected != nullptr ? selected->code : detail);
+		// Per working copy too: another checkout failing the same way is a separate event.
+		const std::string key = std::string(workspace) + '\n' + std::string(operation) + ':' + (result.timed_out ? std::string("timeout") : selected != nullptr ? selected->code : detail);
 		{
 			static std::mutex mutex;
 			static std::map<std::string, std::chrono::steady_clock::time_point> logged;

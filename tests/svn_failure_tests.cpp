@@ -47,6 +47,9 @@ UAM_TEST(SvnFailureSummaryChoosesTheInnermostCause)
 	UAM_ASSERT_EQ(uam::SvnFailureSummary(Failed({}, "svn: E000022: Can't convert string from native encoding to 'UTF-8':\nsvn: E000022: /w/wc?\\195?\\169\n")),
 	    std::string("E000022: Can't convert string from native encoding to 'UTF-8'"));
 	UAM_ASSERT_EQ(uam::SvnFailureSummary(Failed("Sending a.txt\n")), std::string());
+	// svn's prefix inside a diff or log message is content, not svn's own error.
+	UAM_ASSERT_EQ(uam::SvnFailureSummary(Failed("+ticket says: svn: E170001: Can't get password\nsvn: E155010: The node '/w/x' was not found.\n")),
+	    std::string("E155010: The node '/w/x' was not found"));
 	// A hook's reason follows svn's "with output:" line and is not svn's own line; it is the part the person needs.
 	UAM_ASSERT_EQ(uam::SvnFailureSummary(Failed("Sending a.txt\nsvn: E165001: Commit failed (details follow):\nsvn: E165001: Commit blocked by pre-commit hook (exit code 1) with output:\n\nCommit message must reference a ticket (ABC-123)\nsecond hook line\n")),
 	    std::string("E165001: Commit blocked by pre-commit hook (exit code 1) with output: Commit message must reference a ticket (ABC-123)"));
@@ -98,7 +101,11 @@ UAM_TEST(SvnFailureMessageCoversStopsTimeoutsAndUamErrors)
 	timed_out.timed_out = true;
 	UAM_ASSERT_EQ(uam::SvnFailureMessage(timed_out, {}), std::string("SVN did not answer in time. Check the connection to the repository, then retry."));
 	UAM_ASSERT_EQ(uam::SvnFailureMessage(Failed({}, std::string(uam::kSvnClientMissing)), {}), std::string(uam::kSvnClientMissing));
-	// UAM's own reason, first line only, when svn printed nothing recognisable.
+	// Output cut at the capture limit is never read as svn's errors, even when a cut line starts like one.
+	ProcessExecutionResult limited = Failed("Index: notes.txt\nsvn: E170001: Can't get password\n", "Command output exceeded the 4 MiB safety limit.");
+	limited.output_truncated = true;
+	UAM_ASSERT_EQ(uam::SvnFailureMessage(limited, "fallback"), std::string("Command output exceeded the 4 MiB safety limit."));
+		// UAM's own reason, first line only, when svn printed nothing recognisable.
 	UAM_ASSERT_EQ(uam::SvnFailureMessage(Failed({}, "The remote VCS helper is unavailable.\nsecond line"), "fallback"), std::string("The remote VCS helper is unavailable."));
 	UAM_ASSERT_EQ(uam::SvnFailureMessage(Failed("Sending a.txt\nTransmitting file data .\n"), "SVN did not commit the selection."), std::string("SVN did not commit the selection."));
 }
@@ -111,7 +118,10 @@ UAM_TEST(SvnConfigSshTunnelCountsOnlyAUserChoice)
 	UAM_ASSERT(!uam::vcs::SvnConfigDefinesSshTunnel("[tunnels]\nssh = $SVN_SSH ssh -q\n"));
 	UAM_ASSERT(!uam::vcs::SvnConfigDefinesSshTunnel("[auth]\nssh = something\n[tunnels]\nrsh = rsh\n"));
 	UAM_ASSERT(uam::vcs::SvnConfigDefinesSshTunnel("[miscellany]\nglobal-ignores = *.o\n\n[tunnels]\nssh = $SVN_SSH ssh -i ~/.ssh/svnkey -l bob\n"));
-	UAM_ASSERT(uam::vcs::SvnConfigDefinesSshTunnel("[ tunnels ]\r\nssh: plink -batch\r\n"));
+	UAM_ASSERT(uam::vcs::SvnConfigDefinesSshTunnel("[tunnels]\r\nSSH: plink -batch\r\n"));
+	// svn itself ignores these: a spaced section name, and an indented line, which continues the previous value.
+	UAM_ASSERT(!uam::vcs::SvnConfigDefinesSshTunnel("[ tunnels ]\nssh = plink -batch\n"));
+	UAM_ASSERT(!uam::vcs::SvnConfigDefinesSshTunnel("[tunnels]\nrsh = rsh\n  ssh = plink -batch\n"));
 }
 
 UAM_TEST(SvnEnvironmentSetsBatchSshOnlyWhenTheUserHasNotChosenOne)
