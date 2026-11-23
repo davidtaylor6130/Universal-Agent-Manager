@@ -231,7 +231,8 @@ void UamQueryHandler::HandleSwitchChatBranch(CefRefPtr<CefBrowser> browser, cons
 	const std::string& branch = selection.branch;
 	const bool create = selection.create;
 	if (RefuseUndeclaredBranchCreation(*provider, selection, cb)) return;
-	// Only a system that creates branches has a pending first-message branch to withdraw.
+	// Only a system that creates branches has a pending first-message branch to withdraw. The pending branch is Git's
+	// (pending_git_branch_name, applied through the default provider), the only system that declares BranchCreate today.
 	if (uam::DeclaresCapability(*provider, uam::vcs::VcsCapability::BranchCreate) && !create && !chat->pending_git_branch_name.empty() && branch == chat->workspace_branch_name)
 	{
 		// Withdrawing a pending first-message branch is metadata only, so dirty files cannot trap it.
