@@ -103,7 +103,7 @@ public:
 	enum class ProbeReceipt { Exact, Missing, WrongNonce, WrongWorkspace, WrongSession, NativeDeny };
 	ProbeReceipt probe_receipt = ProbeReceipt::Exact;
 	bool early_cancel = false, failed_delete = false, lost_interrupt = false;
-	std::string version_output;
+	std::string version_output, startup_nonce;
 	std::string cwd = std::filesystem::current_path().generic_string();
 	mutable Json info, plugin_options, pending_probe;
 	mutable std::string password, private_directory;
@@ -367,7 +367,12 @@ public:
 	void CloseStdioProcessInput(Fields& fields) const override { if (&fields == server) ++lease_closes; }
 	void TerminateStdioProcess(Fields& fields, bool fast) const override { StopStdioProcess(fields, fast); }
 	bool WriteToStdioProcess(Fields&, const char*, std::size_t, std::string*) const override { throw std::runtime_error("Unexpected simulated pipe write"); }
-	std::string GenerateUuid() const override { return "fixture-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "-" + std::to_string(++uuid); }
+	std::string GenerateUuid() const override
+	{
+		++uuid;
+		if (uuid == 1 && !startup_nonce.empty()) return startup_nonce;
+		return "fixture-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "-" + std::to_string(uuid);
+	}
 	bool SupportsDetachedProcesses() const override { return false; }
 	bool PopulateLocalTime(std::time_t, std::tm*) const override { return false; }
 	std::string BuildShellCommandWithWorkingDirectory(const std::filesystem::path&, const std::string&) const override { throw std::runtime_error("Shell invocation forbidden in fixture"); }
@@ -412,6 +417,31 @@ void RunOpenCodeV2TransportFixtures()
 	}
 	const std::vector<std::string> candidate{"uam-fixture", "--uam-opencode-v2-bridge", "2.3.2", "--", "opencode"};
 	{
+		SimulatedProcesses native;
+		native.input.clear();
+		OutputCapture capture;
+		Require(RunCommand(candidate, native) == std::optional<int>{1} && native.commands.empty(), "Missing initialize launched a child");
+		const auto notification = Json::parse(capture.Read());
+		Require(notification.at("method") == kStartupFailureMethod && !notification.contains("id") &&
+		    notification.at("params").at("code") == kRuntimeVerificationError &&
+		    notification.at("params").at("message") == "OpenCode V2 did not receive an owned initialize request. Input remains held.",
+		    "Missing initialize lost its startup failure notification");
+	}
+	{
+		SimulatedProcesses native, ids;
+		native.startup_nonce = ids.GenerateUuid();
+		const auto directory = std::filesystem::temp_directory_path() / ("uam-opencode-v2-" + native.startup_nonce);
+		Require(std::filesystem::create_directory(directory), "Could not reserve the fixture's startup directory");
+		struct Cleanup { std::filesystem::path directory; ~Cleanup() { std::error_code ignored; std::filesystem::remove(directory, ignored); } } cleanup{directory};
+		OutputCapture capture;
+		Require(RunCommand(candidate, native) == std::optional<int>{1} && native.commands.empty() &&
+		    std::filesystem::is_directory(directory), "Failed private directory allocation launched a child or removed a pre-existing directory");
+		const auto reply = Json::parse(capture.Read());
+		Require(reply.at("id") == 1 && reply.at("error").at("code") == kRuntimeVerificationError &&
+		    reply.at("error").at("message") == "Could not allocate private OpenCode V2 configuration. Input remains held.",
+		    "Failed private directory allocation lost its initialize error");
+	}
+	{
 		SimulatedProcesses native; native.version = "2.3.2"; native.version_output = "opencode v2.3.2 (Homebrew)\n";
 		OutputCapture capture;
 		Require(RunCommand(candidate, native) == std::optional<int>{0}, "Proven candidate did not complete the bridge lifecycle");
@@ -452,6 +482,10 @@ void RunOpenCodeV2TransportFixtures()
 		const auto output = capture.Read();
 		Require(native.prompts == 0 && native.server_stops == 1 && output.find(reason) != std::string::npos &&
 		    output.find(std::to_string(kRuntimeVerificationError)) != std::string::npos, reason);
+		constexpr std::string_view held = "Input remains held.";
+		const auto held_at = output.find(held);
+		Require(held_at != std::string::npos && output.find(held, held_at + held.size()) == std::string::npos,
+		    "Bridge startup failure must state that input is held exactly once");
 		if (fault == Fault::Deadline || fault == Fault::ClosedAfterInitialize)
 			Require(output.find(kStartupFailureMethod) != std::string::npos, "Uncorrelated startup failure lost its controller notification");
 	}
@@ -489,6 +523,23 @@ void RunOpenCodeV2TransportFixtures()
 		OutputCapture capture;
 		Require(RunCommand(candidate, native) == std::optional<int>{1} && native.creates == 0 && native.prompts == 0 &&
 		    capture.Read().find("captured workspace") != std::string::npos, "Candidate with wrong workspace admitted input");
+	}
+	{
+		SimulatedProcesses native; native.version = "2.3.2";
+		native.info["location"]["directory"] = native.cwd + "/other";
+		native.input[1] += native.input[3];
+		OutputCapture capture;
+		Require(RunCommand(candidate, native) == std::optional<int>{1} && native.creates == 1 &&
+		    native.deletions == 1 && native.probes == 0 && native.prompts == 0 && native.server_stops == 1,
+		    "A newly created session with a wrong binding survived startup or admitted input");
+		std::istringstream replies(capture.Read());
+		std::string line;
+		std::getline(replies, line);
+		std::getline(replies, line);
+		const auto reply = Json::parse(line);
+		Require(reply.at("id") == 2 && reply.at("error").at("code") == kRuntimeVerificationError &&
+		    reply.at("error").at("message") == "OpenCode V2 returned an invalid session binding." &&
+		    !reply.at("error").contains("data"), "Wrong binding lost its startup error or reported a deleted session");
 	}
 	{
 		SimulatedProcesses native; native.version = "2.3.2"; native.wrong_readback = true;

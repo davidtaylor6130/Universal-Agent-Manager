@@ -199,8 +199,9 @@ Json Session::Setup(const Json& params, bool load)
 	}
 	else info = Data(query_("POST", "/api/session", {{"location", {{"directory", cwd_}}}, {"agent", read_only_ ? "plan" : "build"}, {"permissions", Rules(read_only_)}}));
 	session_id_ = info.at("id").get<std::string>();
-	if (!Id(session_id_) || info.value("location", Json::object()).value("directory", "") != cwd_) throw std::runtime_error("OpenCode V2 returned an invalid session binding.");
-	startup_created_ = verify_permission_ && !load;
+	const bool valid_id = Id(session_id_);
+	startup_created_ = verify_permission_ && !load && valid_id;
+	if (!valid_id || info.value("location", Json::object()).value("directory", "") != cwd_) throw std::runtime_error("OpenCode V2 returned an invalid session binding.");
 	const auto native_model = ModelRef(info.value("model", Json::object()));
 	if (native_model.is_object() && native_model.contains("id")) model_ = native_model.value("providerID", "") + "/" + native_model.value("id", "");
 	if (native_model.is_object() && native_model.contains("variant")) model_ += "/" + native_model.at("variant").get<std::string>();

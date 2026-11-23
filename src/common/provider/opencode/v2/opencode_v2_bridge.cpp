@@ -156,9 +156,16 @@ public:
 		: server(process_service), events(process_service), startup_now(startup_now)
 	{
 		nonce = server.service.GenerateUuid(); password = server.service.GenerateUuid() + server.service.GenerateUuid();
-		directory = std::filesystem::temp_directory_path() / ("uam-opencode-v2-" + nonce);
-		if (!std::filesystem::create_directory(directory)) throw std::runtime_error("Could not allocate private OpenCode V2 configuration.");
-		std::filesystem::permissions(directory, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace);
+		std::error_code error;
+		directory = std::filesystem::temp_directory_path(error) / ("uam-opencode-v2-" + nonce);
+		if (error || !std::filesystem::create_directory(directory, error))
+			throw std::runtime_error("Could not allocate private OpenCode V2 configuration.");
+		std::filesystem::permissions(directory, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace, error);
+		if (error)
+		{
+			std::filesystem::remove(directory, error);
+			throw std::runtime_error("Could not protect private OpenCode V2 configuration.");
+		}
 		policy_path = directory / "policy.json"; proof_path = directory / "proof.json"; probe_path = directory / "probe.json";
 	}
 	~Service()
@@ -423,37 +430,44 @@ int Bridge(const std::vector<std::string>& command, IPlatformProcessService& pro
 	std::string input;
 	Json initialize_id;
 	const bool runtime_verification = !expected_version.empty();
-	if (runtime_verification) initialize_id = ReadInitialize(process_service, input);
 	const auto report_startup_failure = [&](std::string_view reason)
 	{
-		Json error{{"code", kRuntimeVerificationError}, {"message", std::string(reason) + " Input remains held."}};
+		constexpr std::string_view held = " Input remains held.";
+		std::string message(reason);
+		if (!reason.ends_with(held)) message += held;
+		Json error{{"code", kRuntimeVerificationError}, {"message", std::move(message)}};
 		if (!initialize_id.is_null()) Output({{"jsonrpc", "2.0"}, {"id", initialize_id}, {"error", std::move(error)}});
 		else Output({{"jsonrpc", "2.0"}, {"method", kStartupFailureMethod}, {"params", std::move(error)}});
 	};
-	Service service(process_service, startup_now);
-	if (runtime_verification)
+	std::optional<Service> startup_service;
+	try
 	{
-		service.startup_deadline = startup_now() + std::chrono::seconds(90);
-		auto probe = command;
-		probe.push_back("--version");
-		try
+		if (runtime_verification) initialize_id = ReadInitialize(process_service, input);
+		startup_service.emplace(process_service, startup_now);
+		if (runtime_verification)
 		{
-			if (cli_versions::ExtractCliReportedVersion(Capture(probe, process_service, 10), true) != expected_version)
-				throw std::runtime_error("Unexpected CLI version");
+			startup_service->startup_deadline = startup_now() + std::chrono::seconds(90);
+			auto probe = command;
+			probe.push_back("--version");
+			try
+			{
+				if (cli_versions::ExtractCliReportedVersion(Capture(probe, process_service, 10), true) != expected_version)
+					throw std::runtime_error("Unexpected CLI version");
+			}
+			catch (...)
+			{
+				throw std::runtime_error("OpenCode V2 could not confirm the checked release with an exact, unsuffixed CLI version.");
+			}
 		}
-		catch (...)
-		{
-			report_startup_failure("OpenCode V2 could not confirm the checked release with an exact, unsuffixed CLI version.");
-			return 1;
-		}
+		startup_service->Start(command, expected_version);
 	}
-	try { service.Start(command, expected_version); }
 	catch (const std::exception& error)
 	{
 		if (!runtime_verification) throw;
 		report_startup_failure(error.what());
 		return 1;
 	}
+	auto& service = *startup_service;
 	VerifyPermission verify;
 	if (runtime_verification) verify = [&](const auto& id, const auto& cwd, PermissionProbe probe)
 	{

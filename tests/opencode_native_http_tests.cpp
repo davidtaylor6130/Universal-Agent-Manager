@@ -184,7 +184,7 @@ UAM_TEST(OpenCodeStructuredCompatibilitySeparatesV1FromUnverifiedNewMajors)
 	local_chat.native_session_id = "ses_saved_v2";
 	local_chat.opencode_v2_session_id = local_chat.native_session_id;
 	UAM_ASSERT(!runtime.StructuredCliVersionError(profile, "1.19.4", false, &local_chat, false).empty());
-	UAM_ASSERT(runtime.CliVersionPolicy()->protocol_version_refusal("2.3.2").find("Local Chat verifies this release at startup") != std::string::npos);
+	UAM_ASSERT(runtime.CliVersionPolicy()->protocol_version_refusal("2.3.2").find("Only Chat on this computer can use this release, after startup checks.") != std::string::npos);
 	UAM_ASSERT_EQ(ProviderCliCompatibilityService().CompatibilityStatusForProvider("opencode-cli", "2.2.8"), std::string("untested-newer"));
 	UAM_ASSERT_EQ(ProviderCliCompatibilityService().CompatibilityStatusForProvider("opencode-cli", "1.18.15"), std::string("verified"));
 	for (const std::string command : {"/opt/other/bin/opencode", "C:\\other\\opencode.exe", "opencode-wrapper", "/bin/sh wrapper.sh"})

@@ -416,7 +416,7 @@ const ProviderCliPolicy* OpenCodeCliProviderRuntime::CliVersionPolicy() const
 		.protocol_version_refusal = [](std::string_view version)
 		{
 			if (uam::opencode_v2::NeedsLocalChatRuntimeVerification(version))
-				return std::string("Local Chat verifies this release at startup. Model refresh, text workers and history import need ") +
+				return std::string("Only Chat on this computer can use this release, after startup checks. Model refresh, text workers and history import need ") +
 				    std::string(uam::opencode_v2::kVerifiedV2Minimum) + "–" + std::string(uam::opencode_v2::kVerifiedV2Maximum) + ".";
 			return CliProviderVersionAtLeast(version, "2.0.0") && !uam::opencode_v2::IsVerifiedV2(version)
 			    ? "This OpenCode V2 protocol version has not been verified. " + uam::opencode_v2::UnverifiedV2Message(version, "native API adapter")
