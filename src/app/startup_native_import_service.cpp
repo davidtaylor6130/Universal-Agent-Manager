@@ -457,8 +457,11 @@ namespace uam
 
 	bool StartupNativeImportService::LaunchReplan(const AppState& app, ScanOutcome outcome)
 	{
-		diagnostics::Write("Startup native history: workspaces, chats or import settings changed during discovery; checking " +
-		    std::to_string(outcome.discovery.chats.size() + outcome.discovery.codex_rollouts.size()) + " found sessions again before offering them.");
+		// Replans are not capped, so a continuously changing app logs the first and then every power-of-two replan.
+		const std::size_t replan = ++outcome.replan_count;
+		if ((replan & (replan - 1)) == 0)
+			diagnostics::Write("Startup native history: workspaces, chats or import settings changed during discovery; checking " +
+			    std::to_string(outcome.discovery.chats.size() + outcome.discovery.codex_rollouts.size()) + " found sessions again before offering them (replan " + std::to_string(replan) + ").");
 		outcome.replanned = true;
 		outcome.plan.reset();
 		auto snapshot = std::make_shared<const StartupNativeImportPlanningSnapshot>(CapturePlanningSnapshot(app));
@@ -735,6 +738,12 @@ namespace uam
 				outcome.plan.emplace();
 				outcome.plan->app_fingerprint = AppPlanningFingerprint(app);
 				outcome.plan->fingerprint = ReviewPlanningFingerprint(outcome.plan->app_fingerprint);
+				// Keep keys an earlier plan resolved for this state, so child linking still reads only memory.
+				if (m_saved_keys_fingerprint == outcome.plan->app_fingerprint)
+				{
+					outcome.plan->saved_keys = m_saved_keys;
+					outcome.plan->saved_owners = m_saved_owners;
+				}
 			}
 			if (m_stop.stop_requested()) return false;
 			ChatHistorySyncService::LocalHistoryDiscovery& discovery = outcome.discovery;

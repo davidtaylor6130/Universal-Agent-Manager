@@ -189,6 +189,7 @@ namespace uam
 			std::optional<StartupNativeImportPlan> plan;
 			/// <summary>Errors and continuation counters of this discovery were already taken; only the plan was redone.</summary>
 			bool replanned = false;
+			std::size_t replan_count = 0;
 			/// <summary>Resolved workspaces of this discovery's first plan, reused when it is planned again.</summary>
 			std::shared_ptr<chat_identity::NativeWorkspaceCache> workspaces;
 		};
