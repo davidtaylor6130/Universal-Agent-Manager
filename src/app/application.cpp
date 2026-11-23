@@ -44,6 +44,7 @@
 #include "common/paths/app_paths.h"
 #include "common/paths/path_utils.h"
 #include "common/paths/workspace_root.h"
+#include "common/platform/cef_sandbox_folder_access.h"
 #include "common/chat/chat_branching.h"
 #include "common/chat/chat_folder_store.h"
 #include "common/chat/chat_repository.h"
@@ -338,7 +339,7 @@ Application::~Application()
 	m_platformServices = nullptr;
 }
 
-int Application::Run(CefMainArgs main_args, std::vector<std::string> launch_arguments)
+int Application::Run(CefMainArgs main_args, std::vector<std::string> launch_arguments, void* windows_sandbox_info)
 {
 	m_platformServices = &PlatformServicesFactory::Instance();
 	m_launchArguments = std::move(launch_arguments);
@@ -360,7 +361,7 @@ int Application::Run(CefMainArgs main_args, std::vector<std::string> launch_argu
 	}
 
 	const std::chrono::steady_clock::time_point cef_started = std::chrono::steady_clock::now();
-	if (!InitializeCef(main_args))
+	if (!InitializeCef(main_args, windows_sandbox_info))
 	{
 		return m_exitCode != 0 ? m_exitCode : 1;
 	}
@@ -1075,13 +1076,14 @@ void Application::FinishStartupState(std::vector<ChatSession> chats, std::string
 	m_app.startup_state_loading = false;
 }
 
-bool Application::InitializeCef(CefMainArgs main_args)
+bool Application::InitializeCef(CefMainArgs main_args, void* windows_sandbox_info)
 {
 	CefSettings settings;
 #if defined(UAM_CEF_SANDBOX)
+	// macOS helper bundles and Windows bootstrap.exe processes; see docs/reference/security-enterprise.md.
 	settings.no_sandbox = false;
 #else
-	// Known gap on Windows (CEF's bootstrap.exe client-DLL layout) and Linux; see docs/reference/security-enterprise.md.
+	// Known gap on Linux; see docs/reference/security-enterprise.md.
 	settings.no_sandbox = true;
 #endif
 	const fs::path cef_cache_path = m_app.data_root / "cef";
@@ -1111,6 +1113,9 @@ bool Application::InitializeCef(CefMainArgs main_args)
 #else
 		CefString(&settings.resources_dir_path) = uam::paths::NormalizedNativePathString(exe_dir);
 		CefString(&settings.locales_dir_path) = uam::paths::NormalizedNativePathString(exe_dir / "locales");
+		// Windows only: sandboxed LPAC processes must be able to read the app folder, which ZIP extraction loses.
+		if (std::string access_error; !uam::platform::EnsureCefSandboxFolderAccess(exe_dir, access_error))
+			uam::diagnostics::Write("[CEF] " + access_error);
 #endif
 	}
 
@@ -1147,7 +1152,8 @@ bool Application::InitializeCef(CefMainArgs main_args)
 		// Turning it back on is m_app.html_view_render_checker = uam::cef::CreateHtmlViewRenderChecker().
 	}
 
-	if (!CefInitialize(main_args, settings, cef_app.get(), nullptr))
+	// Only Windows passes sandbox information; macOS sandboxes its helper bundles instead.
+	if (!CefInitialize(main_args, settings, cef_app.get(), windows_sandbox_info))
 	{
 		uam::diagnostics::Write("CefInitialize failed.");
 		m_exitCode = 1;

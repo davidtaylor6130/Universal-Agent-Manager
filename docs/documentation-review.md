@@ -78,7 +78,7 @@ The source patch uses a shared captured submission, refuses a changed target cha
 | Notifications and undo | Shared notification system and organization-undo removal are implemented; review and user testing remain pending | [Recorded decisions](architecture/decisions.md), Single Notification System and Remove Organization Undo |
 | Account usage | Independent local reads exist for four providers; Gemini eligibility, OpenCode acquisition, custom commands, remote feeds and platform acceptance remain limited | [Allowances](usage/allowances.md), Independent Account Allowance Snapshots |
 | Cross-platform/SSH | Source routes and fixture receipts do not prove every real CLI, OS or SSH combination | [Provider checklists](providers/providers.md#provider-checklists) |
-| CEF process sandbox | Enabled for macOS app bundles only; Windows needs CEF's `bootstrap.exe` client-DLL layout and Linux desktop builds are not shipped | [Security reference](reference/security-enterprise.md#known-gaps) |
+| CEF process sandbox | Enabled for macOS app bundles; Windows ships CEF's `bootstrap.exe` client-DLL layout, not yet verified on Windows; Linux desktop builds are not shipped | [Security reference](reference/security-enterprise.md#known-gaps) |
 
 Do not treat these items as fixed from this documentation trial. Statuses are conservative source-level assessments, not a replacement for running a provider implementation audit.
 
@@ -278,7 +278,7 @@ The [stream watch](providers/runtime-lifecycle.md#stream-watch) ships with loop 
 - Both tools report static validation and blocked-content warnings plus a runtime-error check from a hidden render. This error-only preview is the agreed V5.1 slice, and the screenshot in the original issue is deferred past V5.1. The check's own limits remain interim: five second limit, one second wait, three hidden browsers, 2,000 console messages and 20 reported errors of up to 512 bytes each.
 - Save as HTML file uses the existing folder picker and writes a unique title-based name, because no native Save As dialog exists. Open in browser writes a content-addressed copy under the system temporary folder with the restrictive policy prepended. The copy folder is refused if it is a link, not a folder or (outside Windows) owned by another user, and each new copy deletes view copies older than 24 hours.
 - Reduced motion and Motion Off stop the page's CSS animations and transitions; script-driven animation is not controlled.
-- Hardening on 2026-11-12: an agent page loads only after the user chooses Run on its card, remembered per view and exact page, and the hidden runtime check is off, so `runtimeCheck` returns `not_run`. This supersedes the runtime check item above. Since the macOS renderer now runs in the Chromium process sandbox, re-enabling the check on macOS can be reconsidered later; it stays off on every platform for now, and Windows and Linux remain a known sandbox gap. Acceptance of the Run control is pending.
+- Hardening on 2026-11-12: an agent page loads only after the user chooses Run on its card, remembered per view and exact page, and the hidden runtime check is off, so `runtimeCheck` returns `not_run`. This supersedes the runtime check item above. Since the macOS renderer now runs in the Chromium process sandbox, re-enabling the check on macOS can be reconsidered later; it stays off on every platform for now; the Windows renderer sandbox awaits verification on Windows and Linux remains a known sandbox gap. Acceptance of the Run control is pending.
 
 ## Active-turn Send in CLI View
 

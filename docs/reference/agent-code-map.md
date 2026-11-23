@@ -16,7 +16,7 @@ UAM has structured chat routes for all six providers through provider-specific s
 
 ```text
 src/                                 C++ backend (CMake target: universal_agent_manager)
-  main.cpp                           CEF multiprocess entry and Application::Run
+  main.cpp                           CEF multiprocess entry (Windows: RunWinMain for bootstrap.exe) and Application::Run
   app/
     application.*                    App lifecycle, CEF init, polling loop
     chat_domain_service.*            Chat CRUD, selection, branching, sorting
@@ -217,7 +217,7 @@ The canonical app outputs are:
 
 ```text
 Builds/universal_agent_manager.app
-Builds/Release/universal_agent_manager.exe
+Builds/Release/universal_agent_manager.exe   (CEF's bootstrap.exe; loads universal_agent_manager.dll beside it)
 ```
 
 Tests:

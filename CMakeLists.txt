@@ -264,16 +264,38 @@ FetchContent_Declare(
 # Force libcef_dll_wrapper to be a STATIC library regardless of BUILD_SHARED_LIBS.
 # Shared wrapper builds can hide symbols and leave the app with unresolved CEF
 # references at link time.
-if(WIN32)
-  # CEF's sandbox option builds the wrapper for a bootstrap.exe client DLL (versioned API, bootstrap entry points).
-  # UAM still ships a plain executable on Windows; the bootstrap sandbox is a documented known gap.
-  set(USE_SANDBOX OFF)
-endif()
+# CEF's USE_SANDBOX option stays at its default (ON). On Windows it builds the wrapper for a client DLL that CEF's
+# bootstrap.exe loads (CEF_USE_BOOTSTRAP, versioned API); UAM ships that layout below.
 set(_saved_bsl ${BUILD_SHARED_LIBS})
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(cef_binary)
 set(BUILD_SHARED_LIBS ${_saved_bsl} CACHE BOOL "" FORCE)
 set(CMAKE_FOLDER "")
+if(WIN32)
+  # Every target that includes CEF headers must use the CEF API version and sandbox defines the wrapper was built
+  # with, or CEF structures and entry points would not match it. Directory scope covers the app, its shared objects
+  # and the test programs; CEF's other defines (for example _HAS_EXCEPTIONS=0) stay private to the wrapper.
+  get_target_property(_uam_cef_wrapper_definitions libcef_dll_wrapper COMPILE_DEFINITIONS)
+  set(UAM_CEF_API_DEFINITIONS)
+  foreach(_uam_cef_definition IN LISTS _uam_cef_wrapper_definitions)
+    if(_uam_cef_definition MATCHES "^CEF_(API_VERSION=.+|USE_SANDBOX|USE_BOOTSTRAP)$")
+      list(APPEND UAM_CEF_API_DEFINITIONS "${_uam_cef_definition}")
+    endif()
+  endforeach()
+  if(NOT "CEF_USE_BOOTSTRAP" IN_LIST UAM_CEF_API_DEFINITIONS)
+    message(FATAL_ERROR "The CEF wrapper was not built for the bootstrap.exe sandbox layout (USE_SANDBOX must stay ON on Windows).")
+  endif()
+  add_compile_definitions(${UAM_CEF_API_DEFINITIONS})
+  # The client DLL delay-loads the same system libraries as CEF's own clients, so sandboxed subprocesses that load it
+  # do not map user32, gdi32 or similar libraries before CEF locks them down.
+  get_directory_property(UAM_CEF_DELAYLOAD_FLAGS DIRECTORY "${cef_binary_SOURCE_DIR}" DEFINITION CEF_DELAYLOAD_FLAGS)
+  if(NOT UAM_CEF_DELAYLOAD_FLAGS)
+    message(FATAL_ERROR "The CEF distribution did not provide CEF_DELAYLOAD_FLAGS for the bootstrap client DLL.")
+  endif()
+  if(NOT EXISTS "${cef_binary_SOURCE_DIR}/Release/bootstrap.exe")
+    message(FATAL_ERROR "The CEF distribution has no Release/bootstrap.exe, which the Windows sandbox layout ships as universal_agent_manager.exe.")
+  endif()
+endif()
 endif()
 
 # FetchContent_MakeAvailable already processes the CEF CMakeLists.txt, which
@@ -403,6 +425,9 @@ set(UAM_COMPUTER_USE_PLATFORM_SOURCES)
 # Connected handler fixtures replace the PTY, so it stays out of the shared objects.
 if(WIN32)
   set(UAM_PTY_SOURCES src/common/platform/platform_pty_windows.cpp)
+  # The DLL's manifest has no process effect: the build copies the icon into the shipped bootstrap executable and
+  # merges the long-path setting into its manifest. The CEF handler test executables reuse these sources and need
+  # the manifest's Windows 10 entry themselves.
   list(APPEND UAM_PLATFORM_SOURCES src/uam.rc src/uam_long_paths.manifest)
   # Ninja only tracks #include in .rc files, so name the ICON file or incremental builds keep the old icon.
   set_source_files_properties(src/uam.rc PROPERTIES OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/assets/app_icon.ico")
@@ -416,6 +441,7 @@ if(WIN32)
     src/common/platform/platform_paths_windows.cpp
     src/common/platform/platform_dictation_windows.cpp
     src/common/platform/platform_speech_output_windows.cpp
+    src/common/platform/cef_sandbox_folder_access_windows.cpp
   )
   list(APPEND UAM_COMPUTER_USE_PLATFORM_SOURCES
     src/computer_use/computer_use_platform_windows.cpp
@@ -757,12 +783,23 @@ add_library(uam_app_objects OBJECT
   src/cef/acp_handlers.cpp
   src/cef/goal_handlers.cpp
 )
-add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
-  ${UAM_PLATFORM_SOURCES}
-  ${UAM_PTY_SOURCES}
-  src/main.cpp
-  src/remote/runner_proxy.cpp
-)
+if(WIN32)
+  # Windows uses CEF's bootstrap layout: UAM builds as universal_agent_manager.dll exporting RunWinMain, and CEF's
+  # bootstrap.exe, copied below as universal_agent_manager.exe, starts every process inside the Chromium sandbox.
+  add_library(universal_agent_manager SHARED
+    ${UAM_PLATFORM_SOURCES}
+    ${UAM_PTY_SOURCES}
+    src/main.cpp
+    src/remote/runner_proxy.cpp
+  )
+else()
+  add_executable(universal_agent_manager ${UAM_EXECUTABLE_KIND}
+    ${UAM_PLATFORM_SOURCES}
+    ${UAM_PTY_SOURCES}
+    src/main.cpp
+    src/remote/runner_proxy.cpp
+  )
+endif()
 target_link_libraries(universal_agent_manager PRIVATE uam_core_objects uam_app_objects)
 
 set_target_properties(universal_agent_manager PROPERTIES
@@ -848,6 +885,7 @@ elseif(WIN32)
     nlohmann_json::nlohmann_json
     libcef_dll_wrapper
     "${cef_binary_SOURCE_DIR}/Release/libcef.lib"
+    delayimp
     advapi32
     shell32
     windowsapp
@@ -863,9 +901,16 @@ elseif(WIN32)
   )
 endif()
 
-if(APPLE AND UAM_MACOS_BUNDLE)
-  # Only the macOS helper bundles enter the Chromium sandbox. Windows (bootstrap.exe) and Linux are known gaps.
+if((APPLE AND UAM_MACOS_BUNDLE) OR WIN32)
+  # macOS helper bundles and Windows bootstrap.exe processes enter the Chromium sandbox. Linux is a known gap.
   target_compile_definitions(universal_agent_manager PRIVATE UAM_CEF_SANDBOX)
+endif()
+if(WIN32)
+  # Product system libraries that are not in CEF's list are delay-loaded too; the linker ignores unused entries.
+  target_link_options(universal_agent_manager PRIVATE ${UAM_CEF_DELAYLOAD_FLAGS} /DELAYLOAD:dnsapi.dll /DELAYLOAD:windowscodecs.dll)
+  # bootstrap.exe loads the DLL named after itself, so the name must stay universal_agent_manager.dll. Keep the
+  # DLL's import library out of the packaged folder; nothing links against it.
+  set_target_properties(universal_agent_manager PROPERTIES PREFIX "" ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/uam-import-library")
 endif()
 target_compile_definitions(universal_agent_manager PRIVATE
   ${UAM_FEATURE_DEFINITIONS}
@@ -1196,6 +1241,59 @@ if(WIN32)
       )
     endif()
   endforeach()
+endif()
+
+# Windows: ship CEF's bootstrap.exe as universal_agent_manager.exe beside universal_agent_manager.dll. The script
+# copies UAM's icon into it, drops the bootstrap's version text, merges the long-path manifest and grants the folder
+# the ALL RESTRICTED APPLICATION PACKAGES access that Chromium's LPAC sandboxed processes need.
+if(WIN32)
+  # The MSVC developer environment puts mt.exe on PATH; Visual Studio generator builds outside it (as in the release
+  # workflow) find it in the Windows SDK, preferring the SDK version the generator targets.
+  get_filename_component(_uam_rc_directory "${CMAKE_RC_COMPILER}" DIRECTORY)
+  set(_uam_mt_hints "${_uam_rc_directory}")
+  set(_uam_program_files_x86 "ProgramFiles(x86)")
+  set(_uam_windows_kits_bin "$ENV{${_uam_program_files_x86}}/Windows Kits/10/bin")
+  if(CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION)
+    list(APPEND _uam_mt_hints "${_uam_windows_kits_bin}/${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}/x64")
+  endif()
+  file(GLOB _uam_sdk_mt_tools LIST_DIRECTORIES false "${_uam_windows_kits_bin}/*/x64/mt.exe")
+  list(SORT _uam_sdk_mt_tools COMPARE NATURAL ORDER DESCENDING)
+  foreach(_uam_sdk_mt IN LISTS _uam_sdk_mt_tools)
+    get_filename_component(_uam_sdk_mt_directory "${_uam_sdk_mt}" DIRECTORY)
+    list(APPEND _uam_mt_hints "${_uam_sdk_mt_directory}")
+  endforeach()
+  if(CMAKE_MT)
+    set(UAM_MT_EXECUTABLE "${CMAKE_MT}")
+  else()
+    find_program(UAM_MT_EXECUTABLE NAMES mt HINTS ${_uam_mt_hints} ENV WindowsSdkVerBinPath PATH_SUFFIXES x64)
+  endif()
+  if(NOT UAM_MT_EXECUTABLE)
+    message(FATAL_ERROR "mt.exe (Windows SDK) is required to merge the long-path manifest into universal_agent_manager.exe.")
+  endif()
+  add_executable(uam_windows_exe_resources tools/windows-exe-resources/windows_exe_resources.cpp)
+  set_target_properties(uam_windows_exe_resources PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON FOLDER "Build tools"
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/build-tools")
+  if(MSVC)
+    set_property(TARGET uam_windows_exe_resources PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+  endif()
+  add_dependencies(universal_agent_manager uam_windows_exe_resources)
+  add_custom_command(TARGET universal_agent_manager POST_BUILD
+    COMMAND ${CMAKE_COMMAND}
+      "-DBOOTSTRAP=${cef_binary_SOURCE_DIR}/Release/bootstrap.exe"
+      "-DCLIENT_DLL=$<TARGET_FILE:universal_agent_manager>"
+      "-DEXECUTABLE=$<TARGET_FILE_DIR:universal_agent_manager>/universal_agent_manager.exe"
+      "-DRESOURCE_TOOL=$<TARGET_FILE:uam_windows_exe_resources>"
+      "-DMT=${UAM_MT_EXECUTABLE}"
+      "-DMANIFEST=${CMAKE_SOURCE_DIR}/src/uam_bootstrap_long_paths.manifest"
+      "-DWORK_DIRECTORY=${CMAKE_BINARY_DIR}/windows-bootstrap/$<CONFIG>"
+      -P "${CMAKE_SOURCE_DIR}/cmake/windows_bootstrap_executable.cmake"
+    COMMENT "Creating the sandboxed universal_agent_manager.exe from CEF's bootstrap.exe"
+    VERBATIM
+  )
+  if(CMAKE_GENERATOR MATCHES "Visual Studio")
+    set_target_properties(universal_agent_manager PROPERTIES
+      VS_DEBUGGER_COMMAND "$<TARGET_FILE_DIR:universal_agent_manager>/universal_agent_manager.exe")
+  endif()
 endif()
 
 # Build + copy React UI bundle into the app bundle.
@@ -1543,7 +1641,7 @@ if(UAM_BUILD_TESTS)
   endif()
   if(WIN32)
     add_test(NAME uam_app_icon_resource
-      COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/app_icon_resource_test.py" "$<TARGET_FILE:universal_agent_manager>")
+      COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/app_icon_resource_test.py" "$<TARGET_FILE_DIR:universal_agent_manager>/universal_agent_manager.exe")
   else()
     add_test(NAME uam_app_icon_resource COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/app_icon_resource_test.py")
   endif()

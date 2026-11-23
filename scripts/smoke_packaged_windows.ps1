@@ -13,6 +13,8 @@ $packagedUi = Join-Path $packageRoot 'UI-V2/dist'
 $nativeRunner = Join-Path $packageRoot 'remote/uam-runner.exe'
 foreach ($required in @(
     $executable,
+    (Join-Path $packageRoot 'universal_agent_manager.dll'),
+    (Join-Path $packageRoot 'chrome_elf.dll'),
     (Join-Path $packagedUi 'index.html'),
     (Join-Path $packageRoot 'libcef.dll'),
     (Join-Path $packageRoot 'icudtl.dat'),
@@ -77,6 +79,39 @@ if (Compare-Object (Get-TreeDigest $ExpectedUiDist) (Get-TreeDigest $packagedUi)
     throw 'Packaged Windows UI does not match the production React build.'
 }
 
+# universal_agent_manager.exe is CEF's bootstrap.exe, which loads universal_agent_manager.dll inside the sandbox.
+$sandboxHelper = @'
+using System;
+using System.Runtime.InteropServices;
+public static class UamProcessIntegrity {
+    [DllImport("kernel32.dll", SetLastError = true)] static extern IntPtr OpenProcess(uint access, bool inherit, int id);
+    [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+    [DllImport("advapi32.dll", SetLastError = true)] static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+    [DllImport("advapi32.dll", SetLastError = true)] static extern bool GetTokenInformation(IntPtr token, int kind, IntPtr data, int length, out int needed);
+    [DllImport("advapi32.dll")] static extern IntPtr GetSidSubAuthorityCount(IntPtr sid);
+    [DllImport("advapi32.dll")] static extern IntPtr GetSidSubAuthority(IntPtr sid, uint index);
+    // Mandatory integrity RID of a process: 0x0000 untrusted, 0x1000 low, 0x2000 medium; -1 when unreadable.
+    public static int Level(int id) {
+        IntPtr process = OpenProcess(0x1000, false, id); // PROCESS_QUERY_LIMITED_INFORMATION
+        if (process == IntPtr.Zero) return -1;
+        IntPtr token;
+        try { if (!OpenProcessToken(process, 0x0008, out token)) return -1; } finally { CloseHandle(process); }
+        try {
+            int needed;
+            GetTokenInformation(token, 25, IntPtr.Zero, 0, out needed); // TokenIntegrityLevel
+            IntPtr data = Marshal.AllocHGlobal(needed);
+            try {
+                if (!GetTokenInformation(token, 25, data, needed, out needed)) return -1;
+                IntPtr sid = Marshal.ReadIntPtr(data);
+                int count = Marshal.ReadByte(GetSidSubAuthorityCount(sid));
+                return Marshal.ReadInt32(GetSidSubAuthority(sid, (uint)(count - 1)));
+            } finally { Marshal.FreeHGlobal(data); }
+        } finally { CloseHandle(token); }
+    }
+}
+'@
+Add-Type -TypeDefinition $sandboxHelper
+
 New-Item -ItemType Directory -Path $dataRoot | Out-Null
 $env:UAM_DATA_DIR = $dataRoot
 $process = $null
@@ -92,6 +127,21 @@ try {
     }
     if ($process.HasExited) { throw "Packaged Windows app exited during startup with code $($process.ExitCode)." }
     if (-not $bridged) { throw 'Packaged Windows UI did not complete a native bridge round-trip.' }
+    # Every CEF process is a copy of the bootstrap executable. Renderers must run sandboxed: below medium integrity
+    # (Chromium lowers them to untrusted) and never with --no-sandbox.
+    $cefProcesses = @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -eq $executable -and $_.CommandLine -match '--type=' })
+    $unsandboxed = @($cefProcesses | Where-Object { $_.CommandLine -match '--no-sandbox' })
+    if ($unsandboxed.Count -gt 0) { throw "Packaged Windows CEF processes run with --no-sandbox: $(($unsandboxed | ForEach-Object { ($_.CommandLine -split ' ' | Where-Object { $_ -like '--type=*' }) }) -join ', ')." }
+    $renderers = @($cefProcesses | Where-Object { $_.CommandLine -match '--type=renderer' })
+    if ($renderers.Count -eq 0) { throw 'Packaged Windows app has no CEF renderer process to check.' }
+    foreach ($renderer in $renderers) {
+        $level = [UamProcessIntegrity]::Level([int]$renderer.ProcessId)
+        if ($level -lt 0 -or $level -ge 0x2000) { throw "Packaged Windows renderer $($renderer.ProcessId) is not inside the Chromium sandbox (integrity 0x$('{0:X}' -f $level))." }
+    }
+    foreach ($process in $cefProcesses) {
+        $type = ($process.CommandLine -split ' ' | Where-Object { $_ -like '--type=*' } | Select-Object -First 1)
+        Write-Host ("CEF {0} integrity 0x{1:X}" -f $type, [UamProcessIntegrity]::Level([int]$process.ProcessId))
+    }
     Stop-Process -Id $process.Id -Force
     if (-not $process.WaitForExit(10000)) { throw 'Packaged Windows app did not stop.' }
 } finally {
