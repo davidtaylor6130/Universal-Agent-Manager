@@ -2492,6 +2492,10 @@ describe('ChatView', () => {
       expect(region().textContent).toBe('Reply started.')
       act(() => vi.advanceTimersByTime(2000))
       expect(region().textContent).toBe('Reply started.')
+      // A reply whose row has not loaded yet is judged from the turn's own events, not read as stopped.
+      act(() => binding({ lifecycleState: 'ready', processing: false, turnEvents: [{ type: 'assistant_text', text: 'Answer' }] }))
+      expect(region().textContent).toBe('Reply finished.')
+      act(() => binding({ lifecycleState: 'processing', processing: true }))
       act(() => { history([question, answer]); binding({ lifecycleState: 'ready', processing: false }) })
       expect(region().textContent).toBe('Reply finished.')
       // The line clears later, so reading the transcript afterwards finds no stale state.
@@ -2502,8 +2506,15 @@ describe('ChatView', () => {
       act(() => binding({ lifecycleState: 'error', processing: false, lastError: 'Provider exited.' }))
       expect(Array.from(host.querySelectorAll('[role="alert"]')).some((alert) => alert.textContent?.includes('Provider exited.'))).toBe(true)
       expect(region().textContent).toBe('Reply started.')
+      // A dismissed alert does not come back for the same error text, so that failure gets its line.
+      act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Dismiss composer error"]')!.click())
+      act(() => binding({ lifecycleState: 'processing', processing: true }))
+      act(() => binding({ lifecycleState: 'error', processing: false, lastError: 'Provider exited.' }))
+      expect(Array.from(host.querySelectorAll('[role="alert"]')).some((alert) => alert.textContent?.includes('Provider exited.'))).toBe(false)
+      expect(region().textContent).toBe('Reply failed.')
       // A failure with no error text still gets its one line.
       act(() => binding({ lifecycleState: 'processing', processing: true, lastError: '' }))
+      expect(region().textContent).toBe('Reply started.')
       act(() => binding({ lifecycleState: 'error', processing: false, lastError: '' }))
       expect(region().textContent).toBe('Reply failed.')
       // Switching from a working chat to an idle one announces nothing for either chat.
@@ -2519,6 +2530,7 @@ describe('ChatView', () => {
     } finally {
       act(() => root.unmount())
       host.remove()
+      vi.useRealTimers()
     }
   })
 

@@ -3748,13 +3748,19 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               <ChatAnnouncer key={session.id}>
               <ReplyAnnouncement
                 working={Boolean(acp?.processing)}
+                turnSerial={turnSerial}
                 waitingFor={pendingPermission ? 'permission' : pendingUserInput ? 'answer' : undefined}
                 failed={Boolean(currentAcpError) || acp?.lifecycleState === 'error'}
                 stopReason={acp?.lastStopReason}
-                // A turn that ended with no reply after the latest message (Cancel turn before any text) did not finish.
-                interrupted={latestAssistantMessageIndex <= latestUserMessageIndex || Boolean(latestAssistantMessage?.interrupted)}
-                // The error alert and the stopped divider announce themselves, so the outcome is not read twice.
-                noticed={(Boolean(currentAcpError) && !timeoutStop) || Boolean(stoppedStatusLabel)}
+                // A turn with no reply (Cancel turn before any text) did not finish. Reply evidence comes from the
+                // binding's own turn facts, which arrive with processing=false, before the reply row may be loaded.
+                interrupted={!(latestAssistantMessageIndex > latestUserMessageIndex ||
+                  (acp?.turnAssistantMessageIndex ?? -1) > (acp?.turnUserMessageIndex ?? -1) ||
+                  turnEvents.some((event) => event.type === 'tool_call' || (event.type === 'assistant_text' && Boolean(event.text.trim())))) ||
+                  (latestAssistantMessageIndex > latestUserMessageIndex && Boolean(latestAssistantMessage?.interrupted))}
+                // The composer error alert (when it actually shows) and the stopped divider announce themselves.
+                alertKey={currentAcpError && !timeoutStop && (currentAcpErrorKey !== dismissedAcpErrorKey || remoteStopForceAvailable) ? currentAcpErrorKey : ''}
+                stoppedNotice={Boolean(stoppedStatusLabel)}
               />
               <SubAgentDisclosureProvider expandedTools={subagentDisclosures}>
               <div ref={messageListRef} className="uam-message-list space-y-1.5" aria-busy={historyLoading} data-message-motion={messageMotion}>

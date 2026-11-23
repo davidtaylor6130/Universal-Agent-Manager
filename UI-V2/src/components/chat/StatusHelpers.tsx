@@ -85,28 +85,35 @@ export function replyOutcomeAnnouncement({ failed, stopReason, interrupted }: { 
 
 /**
  * Announces the open chat's reply lifecycle once per change: started, waiting on the user, and
- * finished, stopped or failed. The state the chat opened in is not announced. When a notice that
- * announces itself already carries the outcome (`noticed`: the error alert or the stopped divider),
- * no second line is added.
+ * finished, stopped or failed. The state the chat opened in is not announced. A new turn that starts
+ * while work continues (a goal or queued continuation) reads the previous one as finished.
+ * An error alert that appeared during the turn (`alertKey` changed) or the stopped divider
+ * (`stoppedNotice`) announces the outcome itself, so no second line is added.
  */
-export function ReplyAnnouncement({ working, waitingFor, failed, stopReason, interrupted, noticed = false }: {
+export function ReplyAnnouncement({ working, turnSerial = 0, waitingFor, failed, stopReason, interrupted, alertKey = '', stoppedNotice = false }: {
   working: boolean
+  turnSerial?: number
   waitingFor?: 'permission' | 'answer'
   failed: boolean
   stopReason?: string
   /** The reply was cut short, or the turn ended with no reply at all (such as Cancel turn before any text). */
   interrupted: boolean
-  noticed?: boolean
+  /** Identity of the error alert currently shown, or '' when none is. */
+  alertKey?: string
+  stoppedNotice?: boolean
 }) {
   const announce = useChatAnnouncement()
-  const previous = useRef({ working, waitingFor })
+  const previous = useRef({ working, turnSerial, waitingFor, alertKeyAtStart: alertKey })
   useEffect(() => {
     const before = previous.current
-    previous.current = { working, waitingFor }
+    const startedNow = working && !before.working
+    previous.current = { working, turnSerial, waitingFor, alertKeyAtStart: startedNow ? alertKey : before.alertKeyAtStart }
+    const noticed = (Boolean(alertKey) && alertKey !== before.alertKeyAtStart) || stoppedNotice
     if (waitingFor && waitingFor !== before.waitingFor) announce(waitingFor === 'permission' ? 'Waiting for your permission.' : 'Waiting for your answer.')
-    else if (working && !before.working) announce('Reply started.')
-    else if (!working && before.working && !noticed) announce(replyOutcomeAnnouncement({ failed, stopReason, interrupted }))
-  }, [working, waitingFor, failed, stopReason, interrupted, noticed, announce])
+    else if (startedNow) announce('Reply started.')
+    else if (!working && before.working) { if (!noticed) announce(replyOutcomeAnnouncement({ failed, stopReason, interrupted })) }
+    else if (working && turnSerial > before.turnSerial) announce('Reply finished.')
+  }, [working, turnSerial, waitingFor, failed, stopReason, interrupted, alertKey, stoppedNotice, announce])
   return null
 }
 

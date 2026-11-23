@@ -177,7 +177,7 @@ it('announces a reply starting, waiting, finishing and failing once each, but no
   host.remove()
 })
 
-it('reads the same line twice as two announcements, skips an outcome a notice already carries and clears after a while', () => {
+it('reads the same line twice as two announcements, skips an outcome an alert raised during the turn carries and clears after a while', () => {
   vi.useFakeTimers()
   const host = document.createElement('div')
   document.body.append(host)
@@ -193,11 +193,35 @@ it('reads the same line twice as two announcements, skips an outcome a notice al
   render({ working: false })
   expect(announcement(host).firstChild?.textContent).toBe('Reply finished.')
   expect(announcement(host).firstChild).not.toBe(first)
+  // An error alert that appears during the turn carries the outcome, so no second line is added.
   render({ working: true })
-  render({ working: false, failed: true, noticed: true })
+  render({ working: false, failed: true, alertKey: 'chat:Provider exited.' })
   expect(announcement(host).textContent).toBe('Reply started.')
   act(() => vi.advanceTimersByTime(CHAT_ANNOUNCEMENT_CLEAR_MS))
   expect(announcement(host).textContent).toBe('')
+  // An alert already showing before the turn is not re-read, so the turn's own outcome still is.
+  render({ working: true, alertKey: 'chat:Provider exited.' })
+  render({ working: false, failed: true, alertKey: 'chat:Provider exited.' })
+  expect(announcement(host).textContent).toBe('Reply failed.')
+  // The stopped divider announces its own title.
+  render({ working: true })
+  render({ working: false, stopReason: 'failed', stoppedNotice: true })
+  expect(announcement(host).textContent).toBe('Reply started.')
+  act(() => root.unmount())
+  host.remove()
+})
+
+it('reads a turn that hands over to the next one while work continues as finished', () => {
+  const host = document.createElement('div')
+  document.body.append(host)
+  const root = createRoot(host)
+  const render = (props: Partial<Parameters<typeof ReplyAnnouncement>[0]>) => act(() => root.render(
+    <ChatAnnouncer><ReplyAnnouncement working failed={false} interrupted={false} {...props} /></ChatAnnouncer>,
+  ))
+  render({ turnSerial: 4 })
+  expect(announcement(host).textContent).toBe('')
+  render({ turnSerial: 5 })
+  expect(announcement(host).textContent).toBe('Reply finished.')
   act(() => root.unmount())
   host.remove()
 })
