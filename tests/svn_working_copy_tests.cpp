@@ -44,6 +44,15 @@ namespace
 		return row != nullptr && row->status.size() == 7 && row->status[6] == 'C';
 	}
 
+	/// Snapshot cases also need Git; under UAM_REQUIRE_SVN=1 a missing Git fails them rather than skipping silently.
+	bool GitForRealSvn()
+	{
+		if (GitAvailableForTests()) return true;
+		if (uam::env::GetNonEmptyString("UAM_REQUIRE_SVN").value_or("") == "1") throw TestFailure("UAM_REQUIRE_SVN=1, but git is not installed");
+		std::fprintf(stderr, "SKIP real-svn case: git is not installed\n");
+		return false;
+	}
+
 	bool Writable(const fs::path& path)
 	{
 		return (fs::status(path).permissions() & fs::perms::owner_write) != fs::perms::none;
@@ -393,12 +402,12 @@ UAM_TEST(SvnRealExpandedKeywordsAreNotChangesAndStayOutOfDiffs)
 	UAM_ASSERT(ReadFile(copies.checkout / "k.txt").starts_with("$Revision: 2 $\n"));
 }
 
-// POSIX-only, like the existing SVN snapshot case in svn_commit_scheduling_tests.cpp: managed snapshots of SVN
-// working copies have no Windows real-svn run yet, and these cases have not been run on Windows.
+// POSIX-only because these managed-snapshot cases have not been run on Windows; Windows has no real-svn coverage of
+// SVN snapshots yet (recorded in docs/engineering/testing.md).
 #ifndef _WIN32
 UAM_TEST(SvnRealSnapshotChangesPortBackIntoTheWorkingCopy)
 {
-	if (!RealSvnAvailable() || !GitAvailableForTests()) return;
+	if (!RealSvnAvailable() || !GitForRealSvn()) return;
 	SvnWorkingCopies copies;
 	UAM_ASSERT(uam::io::WriteTextFile(copies.checkout / "a.txt", "a\n"));
 	UAM_ASSERT(uam::io::WriteTextFile(copies.checkout / "k.txt", "$Revision$\nbody\n"));
@@ -442,7 +451,7 @@ UAM_TEST(SvnRealSnapshotChangesPortBackIntoTheWorkingCopy)
 
 UAM_TEST(SvnRealSnapshotPortBackRefusesWhenTheWorkingCopyMovedOn)
 {
-	if (!RealSvnAvailable() || !GitAvailableForTests()) return;
+	if (!RealSvnAvailable() || !GitForRealSvn()) return;
 	// Another user changes only a property of the file the chat edited. Without keywords its text is unchanged, so the
 	// port proceeds; with an expanded keyword the update rewrites the text, the source no longer matches the snapshot's
 	// baseline and the whole port is refused.
@@ -489,7 +498,7 @@ UAM_TEST(SvnRealSnapshotPortBackRefusesWhenTheWorkingCopyMovedOn)
 
 UAM_TEST(SvnRealUpdateBeforeNewChatRunsBeforeTheManagedSnapshot)
 {
-	if (!RealSvnAvailable() || !GitAvailableForTests()) return;
+	if (!RealSvnAvailable() || !GitForRealSvn()) return;
 	SvnWorkingCopies copies;
 	copies.CommitFiles(copies.checkout, {{"b.txt", "b\n"}}, "baseline");
 	Svn(copies.other, {"update"});
