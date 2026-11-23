@@ -907,23 +907,43 @@ namespace uam
 		std::unordered_map<std::string, std::string> folders;
 		std::unordered_map<std::string, std::size_t> saved_children;
 		std::unordered_map<std::string, const ChatFolder*> owners;
+		// SSH children come from this session's own scan of the parent's host; staging reads them again from that host.
+		std::map<std::string, ExecutionHost> hosts;
 		for (const Child& child : m_children)
 		{
 			if (saved.contains(child.key)) { ++saved_children[child.parent_key]; continue; }
 			const auto parent = saved.find(child.parent_key);
 			if (parent == saved.end() || folders.contains(child.parent_key)) continue;
 			const ChatSession& chat = *parent->second;
-			if (chat.imported_read_only || !paths::IsControllerLocalWorkspace(chat)) continue;
+			if (chat.imported_read_only) continue;
+			const bool local = paths::IsControllerLocalWorkspace(chat);
+			const auto captured = local ? m_remote_hosts.end() : m_remote_hosts.find(chat.execution_host_id);
+			if (!local)
+			{
+				// The host must still be the connection that scan used, and ready now.
+				const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
+				if (captured == m_remote_hosts.end() || host == nullptr || host->transport != "ssh" || host->runner_status != "ready" ||
+				    !execution_hosts::SameConnection(captured->second, *host)) continue;
+			}
 			// The staged import files a history under the workspace that owns its directory; a parent the user moved elsewhere is left alone.
-			const auto [owner, fresh] = owners.try_emplace(chat.workspace_worktree_directory + '\n' + chat.workspace_directory, nullptr);
+			const auto [owner, fresh] = owners.try_emplace(chat.execution_host_id + '\n' + chat.workspace_worktree_directory + '\n' + chat.workspace_directory, nullptr);
 			if (fresh) owner->second = ChatHistorySyncService().StartupImportWorkspaceOwner(app, chat);
-			if (owner->second != nullptr && owner->second->id == chat.folder_id) folders.emplace(child.parent_key, chat.folder_id);
+			if (owner->second == nullptr || owner->second->id != chat.folder_id) continue;
+			if (!local)
+			{
+				// A remote workspace counts only as the folder that scan read, unchanged since.
+				const auto scanned = m_remote_folders.find(owner->second->id);
+				if (scanned == m_remote_folders.end() || scanned->second.directory != owner->second->directory || scanned->second.execution_host_id != owner->second->execution_host_id) continue;
+				hosts.insert_or_assign(captured->first, captured->second);
+			}
+			folders.emplace(child.parent_key, chat.folder_id);
 		}
 		if (folders.empty()) return false;
 		std::vector<Child> riders = CollectRiders(folders, std::move(saved_children));
-		std::erase_if(riders, [&](const Child& rider) { return saved.contains(rider.key) || !paths::IsControllerLocalWorkspace(rider.chat); });
+		std::erase_if(riders, [&](const Child& rider) { return saved.contains(rider.key) || (!paths::IsControllerLocalWorkspace(rider.chat) && !hosts.contains(rider.chat.execution_host_id)); });
 		if (riders.empty()) return false;
 		m_import.preparation_stop = std::stop_source{};
+		for (const auto& [id, host] : hosts) m_import.expected_hosts[id] = host;
 		QueueRiders(std::move(riders));
 		m_phase = "importing";
 		return true;
