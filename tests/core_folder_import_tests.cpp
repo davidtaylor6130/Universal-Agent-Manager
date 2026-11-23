@@ -872,27 +872,49 @@ UAM_TEST(WorkspaceDirectoryChangeLeavesChatsAlreadyInsideTheNewRoot)
 	app.chats = {
 	    WorkspaceMoveChat("root", "ws", project.string()), WorkspaceMoveChat("in-app", "ws", app_root.string()), WorkspaceMoveChat("in-app-src", "ws", (app_root / "src").string()), WorkspaceMoveChat("lib", "ws", (project / "lib").string()), worktree,
 	};
-	// Narrowing: chats already inside the new root keep their directory instead of nesting it again.
+	// Narrowing: only the old root itself follows; nothing is nested or invented below the new root.
 	UAM_ASSERT(RenameFolderById(app, "ws", "Workspace", app_root.string()));
 	const auto directory_of = [&app](const std::string& id) { return ChatDomainService().FindChatById(app, id)->workspace_directory; };
+	const auto source_of = [&app](const std::string& id) { return ChatDomainService().FindChatById(app, id)->workspace_source_directory; };
 	UAM_ASSERT_EQ(directory_of("root"), app_root.string());
 	UAM_ASSERT_EQ(directory_of("in-app"), app_root.string());
 	UAM_ASSERT_EQ(directory_of("in-app-src"), (app_root / "src").string());
-	UAM_ASSERT_EQ(directory_of("lib"), (app_root / "lib").string());
+	UAM_ASSERT_EQ(directory_of("lib"), (project / "lib").string());
 	UAM_ASSERT_EQ(directory_of("worktree"), (temp.root / "worktrees" / "feature").string());
-	UAM_ASSERT_EQ(ChatDomainService().FindChatById(app, "worktree")->workspace_source_directory, app_root.string());
+	UAM_ASSERT_EQ(source_of("worktree"), app_root.string());
 	UAM_ASSERT(!ChatRepository::LoadLocalChat(app.data_root, "in-app").has_value());
 	UAM_ASSERT(!ChatRepository::LoadLocalChat(app.data_root, "in-app-src").has_value());
-	// The worktree chat follows the folder through its source directory, so nothing is reported as left behind.
-	UAM_ASSERT_EQ(app.status_line, std::string("Folder settings saved."));
+	UAM_ASSERT(!ChatRepository::LoadLocalChat(app.data_root, "lib").has_value());
+	// The worktree chat follows through its source directory; only the chat outside the narrowed root is reported.
+	UAM_ASSERT_EQ(app.status_line, std::string("Folder settings saved. 1 chat in this workspace uses a directory outside the old folder and was left unchanged."));
 
-	// Widening: chats inside the old, narrower root are already inside the new one.
+	// Widening back reverses the move for chats at the root; chats below it are already inside the new root.
 	UAM_ASSERT(RenameFolderById(app, "ws", "Workspace", project.string()));
+	UAM_ASSERT_EQ(directory_of("root"), project.string());
+	UAM_ASSERT_EQ(directory_of("in-app"), project.string());
 	UAM_ASSERT_EQ(directory_of("in-app-src"), (app_root / "src").string());
-	UAM_ASSERT_EQ(directory_of("lib"), (app_root / "lib").string());
-	UAM_ASSERT_EQ(directory_of("root"), app_root.string());
-	UAM_ASSERT_EQ(ChatDomainService().FindChatById(app, "worktree")->workspace_source_directory, app_root.string());
+	UAM_ASSERT_EQ(directory_of("lib"), (project / "lib").string());
+	UAM_ASSERT_EQ(source_of("worktree"), project.string());
 	UAM_ASSERT_EQ(app.status_line, std::string("Folder settings saved."));
+}
+
+UAM_TEST(WorkspaceDirectoryChangeReportsWorktreeChatWhoseSourceIsElsewhere)
+{
+	TempDir temp("uam-workspace-move-worktree-elsewhere");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	fs::create_directories(temp.root / "old");
+	fs::create_directories(temp.root / "new");
+	app.folders = {{"ws", "Workspace", (temp.root / "old").string(), false, "local"}};
+	UAM_ASSERT(ChatFolderStore::Save(app.data_root, app.folders));
+	ChatSession worktree = WorkspaceMoveChat("worktree", "ws", (temp.root / "worktrees" / "feature").string());
+	worktree.workspace_isolation_kind = uam::paths::kGitWorktreeIsolationKind;
+	worktree.workspace_worktree_directory = worktree.workspace_directory;
+	worktree.workspace_source_directory = (temp.root / "unrelated-repo").string();
+	app.chats = {worktree};
+	UAM_ASSERT(RenameFolderById(app, "ws", "Workspace", (temp.root / "new").string()));
+	UAM_ASSERT_EQ(app.chats.front().workspace_source_directory, (temp.root / "unrelated-repo").string());
+	UAM_ASSERT_EQ(app.status_line, std::string("Folder settings saved. 1 chat in this workspace uses a directory outside the old folder and was left unchanged."));
 }
 
 UAM_TEST(RemoteWorkspaceDirectoryChangeRepointsSubdirectoryChatsWithNativeReset)

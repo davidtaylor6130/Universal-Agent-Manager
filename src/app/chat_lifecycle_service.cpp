@@ -2697,6 +2697,7 @@ bool RenameFolderById(uam::AppState& app, const std::string& folder_id, const st
 	std::vector<std::string> reset_chat_ids;
 	if (directory_changed)
 	{
+		const bool roots_nested = RepointedFolderDirectory(app, original.execution_host_id, input.directory, original.directory, input.directory).has_value() || RepointedFolderDirectory(app, original.execution_host_id, original.directory, input.directory, input.directory).has_value();
 		for (std::size_t index = 0; index < app.chats.size(); ++index)
 		{
 			ChatSession& chat = app.chats[index];
@@ -2704,21 +2705,28 @@ bool RenameFolderById(uam::AppState& app, const std::string& folder_id, const st
 			{
 				continue;
 			}
-			// A directory already at or inside the new root stays, so narrowing or widening a root never nests it again.
-			const auto repoint = [&](const std::string& recorded) -> std::optional<std::string>
+			const std::string& host = original.execution_host_id;
+			const auto in_new_root = [&](const std::string& recorded) { return RepointedFolderDirectory(app, host, recorded, input.directory, input.directory).has_value(); };
+			// A directory already at or inside the new root stays. When one root contains the other, only the
+			// old root itself follows, so a narrowed or widened folder never invents a nested path and the move reverses.
+			const auto repoint = [&](const std::string& recorded, bool recorded_in_new_root) -> std::optional<std::string>
 			{
-				if (RepointedFolderDirectory(app, original.execution_host_id, recorded, input.directory, input.directory).has_value())
+				std::optional<std::string> repointed = RepointedFolderDirectory(app, host, recorded, original.directory, input.directory);
+				if (!repointed.has_value() || *repointed == recorded)
 					return std::nullopt;
-				std::optional<std::string> repointed = RepointedFolderDirectory(app, original.execution_host_id, recorded, original.directory, input.directory);
-				if (repointed.has_value() && *repointed == recorded)
-					return std::nullopt;
-				return repointed;
+				if (roots_nested)
+					return *repointed == input.directory ? repointed : std::nullopt;
+				return recorded_in_new_root ? std::nullopt : repointed;
 			};
-			const std::optional<std::string> repointed_directory = repoint(chat.workspace_directory);
-			const std::optional<std::string> repointed_source_directory = repoint(chat.workspace_source_directory);
-			const bool directory_in_new_root = RepointedFolderDirectory(app, original.execution_host_id, chat.workspace_directory, input.directory, input.directory).has_value();
-			// A worktree chat follows the folder through its source directory, so it is not reported as left behind.
-			if (!repointed_directory.has_value() && !repointed_source_directory.has_value() && !directory_in_new_root && !uam::strings::IsBlank(chat.workspace_directory) && !uam::paths::IsGitWorktreeIsolated(chat))
+			const bool directory_in_new_root = in_new_root(chat.workspace_directory);
+			const bool source_in_new_root = in_new_root(chat.workspace_source_directory);
+			const std::optional<std::string> repointed_directory = repoint(chat.workspace_directory, directory_in_new_root);
+			const std::optional<std::string> repointed_source_directory = repoint(chat.workspace_source_directory, source_in_new_root);
+			// A worktree chat belongs to the workspace through its source directory, not its worktree path.
+			const bool worktree_source = uam::paths::HasGitWorktreeSource(chat);
+			const bool left_in_new_root = worktree_source ? source_in_new_root : directory_in_new_root;
+			const std::string& associated_directory = worktree_source ? chat.workspace_source_directory : chat.workspace_directory;
+			if (!repointed_directory.has_value() && !repointed_source_directory.has_value() && !left_in_new_root && !uam::strings::IsBlank(associated_directory))
 			{
 				++chats_left_elsewhere;
 			}
