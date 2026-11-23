@@ -80,6 +80,10 @@ struct ChatIconHandlerTestAccess
 	{
 		handler.HandleSetComputerUseSettings(nullptr, {{"computerUseGloballyEnabled", enabled}}, callback);
 	}
+	static void SaveComputerUseSettings(UamQueryHandler& handler, const nlohmann::json& payload, CefRefPtr<UamQueryHandler::Callback> callback)
+	{
+		handler.HandleSetComputerUseSettings(nullptr, payload, callback);
+	}
 	static void GetComputerUseSettings(UamQueryHandler& handler, CefRefPtr<UamQueryHandler::Callback> callback)
 	{
 		handler.HandleGetComputerUseSettings(nullptr, {}, callback);
@@ -1141,6 +1145,50 @@ UAM_TEST(ComputerUseGlobalSettingsSaveFailurePreservesCapturedAuthority)
 	const nlohmann::json receipt = nlohmann::json::parse(read->success_message);
 	UAM_ASSERT(receipt.at("computerUseGloballyEnabled").get<bool>());
 	UAM_ASSERT(!receipt.at("computerUseRevocationPending").get<bool>());
+}
+
+UAM_TEST(ComputerUseAllowlistSaveWhileOnIgnoresOneChatsPendingCleanup)
+{
+	TempDir temp("uam-cu-allowlist-pending-chat");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.settings.computer_use_globally_enabled = true;
+	// One chat was turned off while Computer Use stayed on, and its cleanup has not finished.
+	app.computer_use_revocation_pending_chat_ids.insert("chat-cleanup-pending");
+	auto handler = UamQueryHandlerTestAccess::Create(app, "file:///private/index.html");
+	const nlohmann::json text_edit = {{"identityKind", "bundleId"}, {"identity", "com.apple.TextEdit"}};
+	// The Settings page sends only the allowlist fields, as it does after any allowlist edit.
+	for (const nlohmann::json& payload : {
+	         nlohmann::json{{"allowlistEnabled", true}, {"allowedApplications", nlohmann::json::array({text_edit})}},
+	         nlohmann::json{{"allowlistEnabled", true}, {"allowedApplications", nlohmann::json::array()}},
+	         nlohmann::json{{"computerUseGloballyEnabled", true}, {"allowlistEnabled", false}}})
+	{
+		CefRefPtr<RecordingIconCallback> saved = new RecordingIconCallback;
+		ChatIconHandlerTestAccess::SaveComputerUseSettings(*handler, payload, saved);
+		UAM_ASSERT_EQ(saved->failures, 0);
+		UAM_ASSERT_EQ(saved->successes, 1);
+		UAM_ASSERT(app.settings.computer_use_globally_enabled);
+		UAM_ASSERT_EQ(app.settings.computer_use_allowlist_enabled, payload.at("allowlistEnabled").get<bool>());
+		UAM_ASSERT(app.computer_use_revocation_pending_chat_ids.contains("chat-cleanup-pending"));
+		const nlohmann::json receipt = nlohmann::json::parse(saved->success_message);
+		UAM_ASSERT(receipt.at("computerUseRevocationPending").get<bool>());
+		AppSettings persisted;
+		UAM_ASSERT(SettingsStore::Load(AppPaths::SettingsFilePath(temp.root), persisted).loaded);
+		UAM_ASSERT_EQ(persisted.computer_use_allowlist_enabled, payload.at("allowlistEnabled").get<bool>());
+		UAM_ASSERT_EQ(persisted.computer_use_allowed_applications.size(), app.settings.computer_use_allowed_applications.size());
+	}
+	UAM_ASSERT(app.settings.computer_use_allowed_applications.empty());
+
+	// Turning the feature on from Off still waits for that cleanup, and an allowlist save cannot sneak it on.
+	app.settings.computer_use_globally_enabled = false;
+	CefRefPtr<RecordingIconCallback> blocked = new RecordingIconCallback;
+	ChatIconHandlerTestAccess::SaveComputerUseSettings(*handler, {{"computerUseGloballyEnabled", true}, {"allowlistEnabled", true}, {"allowedApplications", nlohmann::json::array({text_edit})}}, blocked);
+	UAM_ASSERT_EQ(blocked->failures, 1);
+	UAM_ASSERT_EQ(blocked->last_failure, 500);
+	UAM_ASSERT_EQ(blocked->successes, 0);
+	UAM_ASSERT(!app.settings.computer_use_globally_enabled);
+	UAM_ASSERT(!app.settings.computer_use_allowlist_enabled);
+	UAM_ASSERT(app.settings.computer_use_allowed_applications.empty());
 }
 
 UAM_TEST(ChoosingAModelAfterSwitchAnywaySucceedsWhileTheHelperRetires)

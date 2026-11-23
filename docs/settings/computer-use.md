@@ -6,7 +6,7 @@ The global status-row switch appears on Computer Use and the all-environments MC
 
 [Computer-use agreement](../computer-use.md) · [Environment scope](environment-scope.md).
 
-Readiness combines observed OS access/helper state with saved enablement; an allowlist limits which applications may be offered, and refreshing target applications does not grant control. Restrict-to-listed-apps policy is distinct from the per-session target grant. [OS permissions](permissions.md) remain separate from native provider approvals.
+Readiness combines observed OS access/helper state with saved enablement; an allowlist limits which applications may be offered, and refreshing target applications does not grant control. Restrict-to-listed-apps policy is distinct from the per-session target grant. Allowlist changes while Computer Use is On save normally even when one chat's cleanup is pending; only turning the feature on from Off waits for that cleanup. [OS permissions](permissions.md) remain separate from native provider approvals.
 
 Cleanup can also remain pending after a chat is turned off while global Computer Use stays On. Both settings surfaces and the provider overview distinguish that state and explain that turning Computer Use off for all chats retries cleanup, without claiming the chat always offers a retry. A newer native status observation supersedes obsolete failure feedback; navigation alone retains it. If a state change makes the focused switch or recovery action unavailable, keyboard focus moves to an available control in the same row unless the user has moved elsewhere.
 
