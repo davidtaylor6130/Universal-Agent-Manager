@@ -335,6 +335,7 @@ class Mirror:
     def pull(self, svn_path: str, up_to: int | None = None) -> list[tuple[int, str, str]]:
         """Explicit, one-way: bring SVN revisions that changed svn_path into its upstream ref.
         Only the bridge checkout and the upstream ref move; agent worktrees and branches never do."""
+        self.settle_interrupted()
         self.reconcile(svn_path)
         journal = json.loads(self.journal_path.read_text(encoding="utf-8")) if self.journal_path.exists() else None
         if journal and journal.get("state") != "awaiting-pull" and not self.publishing:
@@ -414,18 +415,28 @@ class Mirror:
             return f"{path} has Unix line endings, but SVN stores it with Windows ones; convert it before publishing."
         return None
 
-    def require_no_journal(self) -> None:
+    def settle_interrupted(self) -> None:
+        """Recovery runs before every pull, publish and branch copy while a publish is still in doubt, not only at start,
+        so a publish whose svn was still running at start is settled as soon as it has finished."""
+        if self.journal_path.exists() and not self.publishing:
+            journal = json.loads(self.journal_path.read_text(encoding="utf-8"))
+            if journal.get("state") != "awaiting-pull":
+                self.recover()
+
+    def require_no_journal(self, svn_path: str) -> None:
         """One journal per mirror: while it exists, nothing is written to SVN on any path."""
         if not self.journal_path.exists():
             return
         journal = json.loads(self.journal_path.read_text(encoding="utf-8"))
         if journal.get("state") == "awaiting-pull":
-            raise SpikeError(f"SVN has newer revisions on {journal['path']}; pull {journal['path']}, rebase and publish again.")
+            if journal["path"] != svn_path:
+                raise SpikeError(f"SVN has newer revisions on {journal['path']}; pull {journal['path']} first.")
+            raise SpikeError(f"SVN has newer revisions on {svn_path}; pull {svn_path}, rebase and publish again.")
         raise SpikeError("A publish was interrupted; UAM settles it before anything else is published.")
 
     def preflight(self, svn_path: str, branch: str) -> list[str]:
         self.reconcile(svn_path)
-        self.require_no_journal()
+        self.require_no_journal(svn_path)
         tip = self.tip(svn_path)
         base = self.t.git("merge-base", tip, branch, git_dir=self.git_dir, check=False).stdout.strip()
         if base != tip:
@@ -528,6 +539,7 @@ class Mirror:
 
     def publish(self, svn_path: str, branch: str) -> list[tuple[str, int]]:
         """Publish the branch's unpublished commits to svn_path as SVN revisions, oldest first."""
+        self.settle_interrupted()
         self.publishing = True
         try:
             return self._publish(svn_path, branch)
@@ -646,7 +658,8 @@ class Mirror:
 
     def publish_branch(self, from_path: str, new_path: str, git_branch: str, message: str) -> tuple[int, int]:
         """Server-side copy (#520 default: from the revision the branch starts from), then mirror the new path."""
-        self.require_no_journal()
+        self.settle_interrupted()
+        self.require_no_journal(new_path)
         from_rev, origin = self.branch_base_revision(from_path, git_branch)
         res = self.t.svn("copy", "-m", message, "--with-revprop", f"{REVPROP_BRANCH}={git_branch}",
                          f"{self.url(from_path)}@{from_rev}", self.url(new_path))
@@ -990,6 +1003,34 @@ class Run:
                    outcome == "awaiting pull" and untouched and "pull trunk" in message and len(pulled) == 2
                    and not restarted.journal_path.exists(), message)
         t.git("rebase", "-q", restarted.ref("trunk"), cwd=agent)
+        mirror = restarted
+
+        # S7d: at the next start the interrupted publish's svn is still running; once it ends, the next action settles it.
+        def c7d():
+            (agent / "src" / "util.c").write_text("int util(void) { return 71; }\n", encoding="utf-8")
+        c7d_commit = agent_commit("Agent sets util to 71", c7d)
+        mirror.crash_after_commit = True
+        try:
+            mirror.publish("trunk", "chat/feature")
+        except KeyboardInterrupt:
+            pass
+        mirror.crash_after_commit = False
+        stand_in = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])  # Plays the still-running svn.
+        journal = json.loads(mirror.journal_path.read_text(encoding="utf-8"))
+        journal["svn_pid"] = stand_in.pid
+        mirror.write_journal(journal)
+        restarted = Mirror(t, mirror.home, self.root)
+        try:
+            restarted.pull("trunk")
+            while_running = "pulled"
+        except SpikeError as e:
+            while_running = str(e)
+        stand_in.kill()
+        stand_in.wait()
+        settled = restarted.pull("trunk")
+        self.check("S7d svn still running at start: actions wait, and the first one after it ends settles the publish",
+                   "still running" in while_running and settled == [] and restarted.tip("trunk") == c7d_commit
+                   and not restarted.journal_path.exists(), while_running)
         mirror = restarted
 
         # S7b: a stop after the publish recorded its revision but before the journal was cleared.

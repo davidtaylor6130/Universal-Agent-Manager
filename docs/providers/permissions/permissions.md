@@ -12,7 +12,7 @@ A chat's permission level changes only when someone changes it: the composer chi
 
 ## Remote commits
 
-**Decided by David, 2026-11-23.** By default, every action that permanently commits somewhere other than the person's computer needs the person's explicit approval, in every permission mode, YOLO and other full-auto modes included, whether the person or an agent started it: an SVN commit or publish, an `svn copy` to a repository URL, `git push`, creating a remote branch or tag, and merging a pull request. Only a hidden advanced setting may turn this off.
+**Decided by David, 2026-11-23.** By default, every action that permanently commits somewhere other than the person's computer needs the person's explicit approval, in every permission mode, YOLO and other full-auto modes included: an SVN commit or publish, an `svn copy` to a repository URL, `git push`, creating a remote branch or tag, and merging a pull request. Only a hidden advanced setting may turn this off. **Interim reading, pending David's confirmation:** an action the person starts from a control that shows the target and what will be committed, such as Commit in the [commit panel](../../changes/commits.md), is itself the approval; the separate approval applies to actions an agent, a provider or automation starts.
 
 **Implementation note:** not built. UAM does not yet single these actions out, so YOLO approves them like any other request, and a provider's own full-auto mode can run commands such as `git push` without asking UAM at all ([recorded gap](../../documentation-review.md#approval-for-remote-commits)).
 
