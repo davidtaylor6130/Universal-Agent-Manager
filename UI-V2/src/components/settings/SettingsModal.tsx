@@ -5,6 +5,7 @@ import { DataFolderSettingsSection, type DataFolderSettingsHandle } from './Data
 import { TypographySettings } from './TypographySettings'
 import { AppearanceDisplaySettings } from './AppearanceDisplaySettings'
 import { PermissionsSettings } from './PermissionsSettings'
+import { PermissionRulesSettings } from './PermissionRulesSettings'
 import { SaveButton, SettingRow, SettingsField, SettingsSection, StatusMark } from './SettingsPrimitives'
 import { localBuildLabel } from '../../services/updateCatalog'
 import { SettingsScopeBar } from './SettingsScopeBar'
@@ -59,7 +60,7 @@ import { formatTimeoutDuration, TIMEOUT_RESTART_STEP_SECONDS } from '../chat/Tim
 import type { VoiceInputSettingsRequest } from '../../store/cpp/types'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { useShallow } from 'zustand/react/shallow'
-import { Cpu, Search, ArrowDown, ArrowLeft, ArrowUp, BookOpen, Brain, Check, ChevronRight, ClipboardList, Copy, Download, GripVertical, Upload, FolderOpen, Info, MemoryStick, MessageSquare, Mic, Minus, MousePointerClick, Palette, Pencil, Plus, RefreshCw, Route, Save, Server, Smartphone, Target, TerminalSquare, Trash2, TriangleAlert, Workflow, X, type LucideIcon } from 'lucide-react'
+import { Cpu, Search, ShieldCheck, ArrowDown, ArrowLeft, ArrowUp, BookOpen, Brain, Check, ChevronRight, ClipboardList, Copy, Download, GripVertical, Upload, FolderOpen, Info, MemoryStick, MessageSquare, Mic, Minus, MousePointerClick, Palette, Pencil, Plus, RefreshCw, Route, Save, Server, Smartphone, Target, TerminalSquare, Trash2, TriangleAlert, Workflow, X, type LucideIcon } from 'lucide-react'
 import { Button, Card, ConfirmDialog, Disclosure, EXIT_MS, IconButton, MenuItem, MenuSelect, Notice, Overlay, Presence, ProgressFill, RowButton, SegmentedControl, StatusDot, Swap, Switch, ViewportMenu, cx, motionAllowed, scaledMs, Reveal } from '../ui'
 import { ShellActionsSettings, type ShellActionsHandle } from './ShellActionsSettings'
 import { ComputePoolsSettings } from './ComputePoolsSettings'
@@ -421,7 +422,7 @@ function memoryModelOptions(provider?: Provider, providerId = '', selectedModelI
   ]
 }
 
-type SettingsSectionId = `provider:${string}` | 'provider-summary' | 'permissions' | 'central-configuration' | 'appearance' | 'typography' | 'defaults' | 'agents' | 'cli-version' | 'remote-hosts' | 'routing' | 'phone' | 'automation' | 'voice-input' | 'memory-settings' | 'memory-store' | 'markdown-store' | 'goal-loops' | 'mcp-servers' | 'vcs' | 'editors' | 'shell-actions' | 'compute-pools' | 'chat-data' | 'storage-cleanup' | 'computer-use' | 'about'
+type SettingsSectionId = `provider:${string}` | 'provider-summary' | 'permissions' | 'permission-rules' | 'central-configuration' | 'appearance' | 'typography' | 'defaults' | 'agents' | 'cli-version' | 'remote-hosts' | 'routing' | 'phone' | 'automation' | 'voice-input' | 'memory-settings' | 'memory-store' | 'markdown-store' | 'goal-loops' | 'mcp-servers' | 'vcs' | 'editors' | 'shell-actions' | 'compute-pools' | 'chat-data' | 'storage-cleanup' | 'computer-use' | 'about'
 
 interface LocalChatBundleResult {
   cancelled: boolean
@@ -447,6 +448,7 @@ const AUTOMATION_SETTINGS_ENABLED = MOBILE_COMPANION_ENABLED && !isCompanionCont
 
 const SETTINGS_SECTIONS: SettingsSection[] = [
   { id: 'permissions', label: 'Permissions', icon: Check },
+  { id: 'permission-rules', label: 'Permission rules', icon: ShieldCheck },
   { id: 'appearance', label: 'Appearance', icon: Palette },
   { id: 'defaults', label: 'Chat defaults', icon: MessageSquare },
   { id: 'agents', label: 'Agents', icon: ClipboardList },
@@ -480,7 +482,7 @@ const SETTINGS_GROUPS: { label: string; sections: SettingsSectionId[] }[] = [
   { label: 'Providers', sections: ['provider-summary', ...SUPPORTED_CLI_PROVIDER_IDS.map(id => `provider:${id}` as SettingsSectionId)] },
   { label: 'Connections', sections: [...(SSH_ENABLED ? ['remote-hosts' as const, 'routing' as const] : []), 'mcp-servers'] },
   { label: 'Agent preferences', sections: ['central-configuration', 'agents', 'markdown-store', 'memory-settings', 'memory-store', 'shell-actions', 'goal-loops', 'compute-pools'] },
-  { label: 'Security', sections: ['permissions', ...(COMPUTER_USE_ENABLED ? ['computer-use' as const] : [])] },
+  { label: 'Security', sections: ['permissions', 'permission-rules', ...(COMPUTER_USE_ENABLED ? ['computer-use' as const] : [])] },
   { label: 'Workspace', sections: ['vcs', 'editors'] },
   { label: 'App', sections: ['chat-data', 'storage-cleanup', 'about'] },
 ]
@@ -501,6 +503,7 @@ const UAM_CONTROL_PROTOCOLS = [
 // Terms name controls inside each page so searches work beyond sidebar titles.
 const SETTINGS_SEARCH_TERMS: Partial<Record<SettingsSectionId, string>> = {
   permissions: 'privacy local network microphone speech recording accessibility authorization',
+  'permission-rules': 'command rules allow deny ask list allowlist denylist ai review reviewer approve automatic patterns force push rm credentials test',
   vcs: 'git svn source control version control worktrees checkpoints commits revisions base branch merge squash patch pull',
   'storage-cleanup': 'data folder directory storage migration restart cleanup retention worktrees backup logs cache days',
   appearance: 'themes colours colors palettes dark light import export sidebar icons worktree paths compact working activity typography font fonts size text code monospace terminal message input',
@@ -1877,6 +1880,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       return <div className="grid">{availability('Availability', [providerId])}{renderSectionContent('cli-version', providerId)}{renderSectionContent('defaults', providerId)}<ProviderConnections providerId={providerId} selectedHostId={effectiveProviderSettingsHostId} onMcpSelect={() => changeSection('mcp-servers')} onPreferencesSelect={() => changeSection('central-configuration')} /></div>
     }
     if (selectedSection === 'permissions') return <PermissionsSettings />
+    if (selectedSection === 'permission-rules') return <PermissionRulesSettings />
     if (COMPUTER_USE_ENABLED && selectedSection === 'computer-use') return renderComputerUse()
     if (selectedSection === 'appearance') {
       const themeChoices: Array<{ value: StoredTheme; label: string; swatch: ThemeSwatch }> = [

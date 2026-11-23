@@ -1,4 +1,5 @@
 import type { ContextReference } from '../types/contextReference'
+import type { PermissionCommandRule, PermissionRuleTestResult } from '../types/permissionRules'
 import type { WorkspaceFilePreview } from '../types/filePreview'
 import type { StartupNativeImportStatus } from '../types/startupNativeImports'
 import type { ExecutionRoutingSettings, RoutingReservation } from '../types/executionRouting'
@@ -146,6 +147,10 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   sidebarPinnedChatOrder: string[]
   sidebarActiveChatOrder: string[]
   steerActiveTurnOnSend: boolean
+  /** User allow/ask/deny rules checked locally before AI review; validated natively on load and save. */
+  permissionCommandRules: PermissionCommandRule[]
+  /** Whether AI Review asks the reviewer model about requests no rule decides. */
+  permissionAiReviewEnabled: boolean
   gitEnabled: boolean
   svnEnabled: boolean
   updateChecksEnabled: boolean
@@ -449,6 +454,10 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   setSidebarSettings: (settings: Pick<AppState, 'showProviderIconsInSidebar' | 'showWorktreePathInSidebar'>) => Promise<boolean>
   /** Saves what composer Send does while a turn runs: steer it (true) or queue for the next turn (false). */
   setSteerActiveTurnOnSend: (steer: boolean) => Promise<boolean>
+  /** Saves the permission rules and/or the AI review switch; resolves with the native validation error on failure. */
+  setPermissionCommandRules: (patch: { rules?: PermissionCommandRule[]; aiReviewEnabled?: boolean }) => Promise<{ ok: boolean; error?: string }>
+  /** Asks the native matcher which of these (draft) rules decides a typed command. */
+  testPermissionCommandRules: (rules: PermissionCommandRule[], command: string) => Promise<PermissionRuleTestResult | { error: string }>
   setNewChatModalOpen: (open: boolean, folderId?: string | null, worktreeContext?: NewChatWorktreeContext | null) => void
   setSettingsOpen: (open: boolean) => void
   setSettingsScopeHostId: (hostId: string) => void

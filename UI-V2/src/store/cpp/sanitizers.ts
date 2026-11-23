@@ -2,6 +2,7 @@ import { sanitizeStartupNativeImportStatus } from '../../types/startupNativeImpo
 import { sanitizeExecutionRouting } from '../../types/executionRouting'
 import { DEFAULT_CENTRAL_PROVIDER_CONFIGURATION, type CentralProviderConfiguration, type WindowsPowerShellPreference } from './types'
 import { sanitizeCustomIcon } from '../../types/customIcon'
+import { sanitizePermissionCommandRules } from '../../types/permissionRules'
 // Sanitiser and normaliser functions for raw C++ state payloads.
 // Extracted from useAppStore.ts (MO-1). Pure functions — no side effects.
 
@@ -1921,6 +1922,8 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
       sidebarPinnedChatOrder: [],
       sidebarActiveChatOrder: [],
       steerActiveTurnOnSend: false,
+      permissionCommandRules: [],
+      permissionAiReviewEnabled: true,
       gitEnabled: true,
       svnEnabled: true,
       memoryEnabledDefault: true,
@@ -2095,6 +2098,8 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
     sidebarPinnedChatOrder: sidebarChatOrder(value.sidebarPinnedChatOrder),
     sidebarActiveChatOrder: sidebarChatOrder(value.sidebarActiveChatOrder),
     steerActiveTurnOnSend: booleanOr(value.steerActiveTurnOnSend, false),
+    permissionCommandRules: sanitizePermissionCommandRules(value.permissionCommandRules),
+    permissionAiReviewEnabled: booleanOr(value.permissionAiReviewEnabled, true),
     gitEnabled: booleanOr(value.gitEnabled, true),
     svnEnabled: booleanOr(value.svnEnabled, true),
     memoryEnabledDefault: normalizeMemoryLevel(value.memoryLevelDefault, booleanOr(value.memoryEnabledDefault, true), false) !== 'off',

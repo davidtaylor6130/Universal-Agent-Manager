@@ -14,4 +14,4 @@ Rules apply on every structured route that delivers permission callbacks to UAM:
 
 **Implementation: Implemented, Needs verification.** The shared matcher, persistence, settings page and permission-flow integration are implemented with native unit and integration cases and frontend tests; native cases were compile-checked but not run on macOS or Windows, and live-provider, desktop journey and user acceptance remain pending.
 
-[AI Review](ai-review.md) · [Permissions](permissions.md).
+[Permission rules settings](../../settings/permission-rules.md) · [AI Review](ai-review.md) · [Permissions](permissions.md).

@@ -7,6 +7,7 @@ import { Session, Folder } from '../types/session'
 import { Message } from '../types/message'
 import { Provider } from '../types/provider'
 import type { MemoryLevel } from '../types/memory'
+import type { PermissionCommandRule } from '../types/permissionRules'
 import { sendToCEF, isCefContext, isCompanionContext } from '../ipc/cefBridge'
 import {
   CLI_TRANSCRIPT_FLUSH_DELAY_MS,
@@ -123,6 +124,8 @@ function deserializeState(
     sidebarPinnedChatOrder: string[]
     sidebarActiveChatOrder: string[]
     steerActiveTurnOnSend: boolean
+    permissionCommandRules: PermissionCommandRule[]
+    permissionAiReviewEnabled: boolean
     gitEnabled?: boolean
     svnEnabled?: boolean
     updateChecksEnabled: boolean
@@ -347,6 +350,8 @@ function deserializeState(
     sidebarPinnedChatOrder: cpp.settings.sidebarPinnedChatOrder ?? [],
     sidebarActiveChatOrder: cpp.settings.sidebarActiveChatOrder ?? [],
     steerActiveTurnOnSend: cpp.settings.steerActiveTurnOnSend ?? false,
+    permissionCommandRules: cpp.settings.permissionCommandRules ?? [],
+    permissionAiReviewEnabled: cpp.settings.permissionAiReviewEnabled ?? true,
     gitEnabled: typeof cpp.settings.gitEnabled === 'boolean' ? cpp.settings.gitEnabled : true,
     svnEnabled: typeof cpp.settings.svnEnabled === 'boolean' ? cpp.settings.svnEnabled : true,
     updateChecksEnabled: cpp.settings.updateChecksEnabled,
@@ -595,6 +600,8 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     sidebarPinnedChatOrder: patch.settings?.sidebarPinnedChatOrder ?? current.sidebarPinnedChatOrder,
     sidebarActiveChatOrder: patch.settings?.sidebarActiveChatOrder ?? current.sidebarActiveChatOrder,
     steerActiveTurnOnSend: patch.settings?.steerActiveTurnOnSend ?? current.steerActiveTurnOnSend,
+    permissionCommandRules: patch.settings?.permissionCommandRules ?? current.permissionCommandRules,
+    permissionAiReviewEnabled: patch.settings?.permissionAiReviewEnabled ?? current.permissionAiReviewEnabled,
     gitEnabled: typeof patch.settings?.gitEnabled === 'boolean' ? patch.settings.gitEnabled : current.gitEnabled,
     svnEnabled: typeof patch.settings?.svnEnabled === 'boolean' ? patch.settings.svnEnabled : current.svnEnabled,
     updateChecksEnabled: patch.settings?.updateChecksEnabled ?? current.updateChecksEnabled,
@@ -868,6 +875,8 @@ export const useAppStore = create<AppState>((set, get) => {
           sidebarPinnedChatOrder: current.sidebarPinnedChatOrder,
           sidebarActiveChatOrder: current.sidebarActiveChatOrder,
           steerActiveTurnOnSend: current.steerActiveTurnOnSend,
+          permissionCommandRules: current.permissionCommandRules,
+          permissionAiReviewEnabled: current.permissionAiReviewEnabled,
         gitEnabled: current.gitEnabled,
         svnEnabled: current.svnEnabled,
           updateChecksEnabled: current.updateChecksEnabled,
@@ -1391,6 +1400,8 @@ export const useAppStore = create<AppState>((set, get) => {
       sidebarPinnedChatOrder: current.sidebarPinnedChatOrder,
       sidebarActiveChatOrder: current.sidebarActiveChatOrder,
       steerActiveTurnOnSend: current.steerActiveTurnOnSend,
+      permissionCommandRules: current.permissionCommandRules,
+      permissionAiReviewEnabled: current.permissionAiReviewEnabled,
       gitEnabled: current.gitEnabled,
       svnEnabled: current.svnEnabled,
       updateChecksEnabled: current.updateChecksEnabled,
