@@ -1186,10 +1186,16 @@ $e
 			if (!client.StopProcess(session_id, &error, true, &outcome)) return false;
 			bool drained = false;
 			bool unterminated_stdout = false;
+			// A batch already written to the app but not yet acknowledged (the app stops before it acknowledges,
+			// as model discovery does on its answer) is delivered: the drain starts after it, never at the runner's
+			// last acknowledged cursor, which would write the same lines again. Every later poll resumes after the
+			// previous one, because an empty poll needs no acknowledgement and would otherwise fall back too.
+			std::optional<ProcessPollResult> drain_cursor = awaiting_output_ack;
 			for (int batch = 0; batch < 256; ++batch)
 			{
 				ProcessPollResult final_output;
-				if (!client.PollProcess(session_id, final_output, &error)) break;
+				if (!client.PollProcess(session_id, final_output, &error, {}, nullptr,
+				        drain_cursor ? &*drain_cursor : nullptr)) break;
 				std::cout << final_output.standard_output << std::flush;
 				if (!final_output.standard_output.empty())
 					unterminated_stdout = final_output.standard_output.back() != '\n';
@@ -1200,6 +1206,7 @@ $e
 					drained = true;
 					break;
 				}
+				drain_cursor = std::move(final_output);
 			}
 			// Native Stop cleanup projects complete lines, including the final EOF fragment.
 			if (drained && unterminated_stdout) std::cout << '\n' << std::flush;
