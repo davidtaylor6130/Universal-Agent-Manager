@@ -2459,35 +2459,63 @@ describe('ChatView', () => {
 
   it('keeps the working clock out of the live region and announces only the reply starting, finishing and failing', () => {
     vi.useFakeTimers()
-    const binding = (patch: Partial<AcpBinding>) => useAppStore.setState((state) => ({
-      acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'], turnEvents: [], turnAssistantMessageIndex: -1, ...patch } },
+    const binding = (patch: Partial<AcpBinding>, chatId = 'chat-1') => useAppStore.setState((state) => ({
+      acpBindingBySessionId: { ...state.acpBindingBySessionId, [chatId]: { ...state.acpBindingBySessionId['chat-1'], turnEvents: [], turnAssistantMessageIndex: -1, ...patch } },
     }))
-    binding({ lifecycleState: 'processing', processing: true, running: true, lastError: '' })
+    const question: Message = { id: 'question', sessionId: 'chat-1', role: 'user', content: 'Question', createdAt: new Date(0) } as Message
+    const answer: Message = { id: 'answer', sessionId: 'chat-1', role: 'assistant', content: 'Answer', createdAt: new Date(1) } as Message
+    const history = (messages: Message[]) => useAppStore.setState((state) => ({ messages: { ...state.messages, 'chat-1': messages } }))
+    history([question])
+    binding({ lifecycleState: 'processing', processing: true, running: true, lastError: '', lastStopReason: undefined })
     const host = document.createElement('div')
     document.body.appendChild(host)
     const root = createRoot(host)
+    const region = () => host.querySelector('[data-testid="chat-announcement"]')!
     try {
       act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
-      const region = host.querySelector('[data-testid="chat-announcement"]')!
-      expect(region.getAttribute('aria-live')).toBe('polite')
+      expect(region().getAttribute('aria-live')).toBe('polite')
+      expect(region().classList.contains('select-none')).toBe(true)
       expect(host.querySelectorAll('[data-testid="chat-announcement"]')).toHaveLength(1)
       const starting = host.querySelector('[data-testid="turn-starting"]')!
       expect(starting.getAttribute('role')).toBeNull()
       expect(starting.closest('[aria-live],[role="status"]')).toBeNull()
       expect(starting.querySelector('[aria-live],[role="status"]')).toBeNull()
       // The state the chat opened in is not announced, and the ticking clock never is.
-      expect(region.textContent).toBe('')
+      expect(region().textContent).toBe('')
       act(() => vi.advanceTimersByTime(3000))
       expect(starting.textContent).toContain('Working 3s')
-      expect(region.textContent).toBe('')
+      expect(region().textContent).toBe('')
+      // Cancel turn before any reply text: processing ends with no stop reason and no reply row.
       act(() => binding({ lifecycleState: 'ready', processing: false }))
-      expect(region.textContent).toBe('Reply finished.')
+      expect(region().textContent).toBe('Reply stopped.')
       act(() => binding({ lifecycleState: 'processing', processing: true }))
-      expect(region.textContent).toBe('Reply started.')
+      expect(region().textContent).toBe('Reply started.')
       act(() => vi.advanceTimersByTime(2000))
-      expect(region.textContent).toBe('Reply started.')
+      expect(region().textContent).toBe('Reply started.')
+      act(() => { history([question, answer]); binding({ lifecycleState: 'ready', processing: false }) })
+      expect(region().textContent).toBe('Reply finished.')
+      // The line clears later, so reading the transcript afterwards finds no stale state.
+      act(() => vi.advanceTimersByTime(7000))
+      expect(region().textContent).toBe('')
+      // A failure whose error alert announces itself is not read a second time.
+      act(() => { history([question, answer, { ...question, id: 'second' }]); binding({ lifecycleState: 'processing', processing: true }) })
       act(() => binding({ lifecycleState: 'error', processing: false, lastError: 'Provider exited.' }))
-      expect(region.textContent).toBe('Reply failed.')
+      expect(Array.from(host.querySelectorAll('[role="alert"]')).some((alert) => alert.textContent?.includes('Provider exited.'))).toBe(true)
+      expect(region().textContent).toBe('Reply started.')
+      // A failure with no error text still gets its one line.
+      act(() => binding({ lifecycleState: 'processing', processing: true, lastError: '' }))
+      act(() => binding({ lifecycleState: 'error', processing: false, lastError: '' }))
+      expect(region().textContent).toBe('Reply failed.')
+      // Switching from a working chat to an idle one announces nothing for either chat.
+      const first = useAppStore.getState().sessions[0]
+      const second = { ...first, id: 'chat-2', name: 'Second chat' }
+      useAppStore.setState((state) => ({ sessions: [first, second], messages: { ...state.messages, 'chat-2': [answer] } }))
+      binding({ lifecycleState: 'processing', processing: true })
+      binding({ lifecycleState: 'ready', processing: false }, 'chat-2')
+      act(() => root.render(<ChatView session={first} />))
+      expect(region().textContent).toBe('Reply started.')
+      act(() => root.render(<ChatView session={second} />))
+      expect(region().textContent).toBe('')
     } finally {
       act(() => root.unmount())
       host.remove()

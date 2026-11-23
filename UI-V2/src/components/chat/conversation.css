@@ -339,11 +339,9 @@
   color: var(--text-2);
 }
 .conversation-turn__delivery {
-  border-radius: var(--r-sm);
   padding-inline: 2px;
   color: var(--text-3);
   cursor: default;
-  outline: none;
   /* One quiet line; it never wraps or yields its width to the action row beside it. */
   white-space: nowrap;
   flex-shrink: 0;

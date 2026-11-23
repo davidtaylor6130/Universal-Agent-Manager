@@ -3745,13 +3745,16 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 }
               }}>
               {/* One polite region per open chat, outside the busy message list: state changes only, never ticking time. */}
-              <ChatAnnouncer>
+              <ChatAnnouncer key={session.id}>
               <ReplyAnnouncement
                 working={Boolean(acp?.processing)}
                 waitingFor={pendingPermission ? 'permission' : pendingUserInput ? 'answer' : undefined}
                 failed={Boolean(currentAcpError) || acp?.lifecycleState === 'error'}
                 stopReason={acp?.lastStopReason}
-                interrupted={latestAssistantMessageIndex > latestUserMessageIndex && Boolean(latestAssistantMessage?.interrupted)}
+                // A turn that ended with no reply after the latest message (Cancel turn before any text) did not finish.
+                interrupted={latestAssistantMessageIndex <= latestUserMessageIndex || Boolean(latestAssistantMessage?.interrupted)}
+                // The error alert and the stopped divider announce themselves, so the outcome is not read twice.
+                noticed={(Boolean(currentAcpError) && !timeoutStop) || Boolean(stoppedStatusLabel)}
               />
               <SubAgentDisclosureProvider expandedTools={subagentDisclosures}>
               <div ref={messageListRef} className="uam-message-list space-y-1.5" aria-busy={historyLoading} data-message-motion={messageMotion}>

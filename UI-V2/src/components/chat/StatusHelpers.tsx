@@ -43,24 +43,34 @@ type Announce = (message: string) => void
 const ChatAnnouncementContext = createContext<Announce | null>(null)
 const NO_ANNOUNCEMENT: Announce = () => {}
 
+/** How long an announced line stays in the region, so browse-mode reading later finds no stale state. */
+export const CHAT_ANNOUNCEMENT_CLEAR_MS = 7000
+
 /**
  * One persistent, initially empty polite region for the open chat's state changes (a reply starting,
  * waiting, finishing or failing, a status divider opening, a message failing to send).
  * Timers and streamed text never go here, so nothing is re-announced while work runs.
+ * Announcements made in the same commit collapse to the last one, so one change reads as one line.
  */
 export function ChatAnnouncer({ children }: { children: ReactNode }) {
   const [announcement, setAnnouncement] = useState({ text: '', serial: 0 })
   const announce = useCallback<Announce>((text) => setAnnouncement((current) => ({ text, serial: current.serial + 1 })), [])
+  useEffect(() => {
+    if (!announcement.text) return
+    const timer = window.setTimeout(() => setAnnouncement((current) => current.serial === announcement.serial ? { ...current, text: '' } : current), CHAT_ANNOUNCEMENT_CLEAR_MS)
+    return () => window.clearTimeout(timer)
+  }, [announcement])
   return <ChatAnnouncementContext.Provider value={announce}>
     {children}
-    <div aria-live="polite" aria-atomic="true" className="sr-only" data-testid="chat-announcement">
+    {/* select-none keeps the line out of text copied from the transcript. */}
+    <div aria-live="polite" aria-atomic="true" className="sr-only select-none" data-testid="chat-announcement">
       {/* A fresh node per announcement, so the same line twice is still read twice. */}
       {announcement.text && <span key={announcement.serial}>{announcement.text}</span>}
     </div>
   </ChatAnnouncementContext.Provider>
 }
 
-/** Announce through the open chat's region; a no-op outside one, such as a child transcript. */
+/** Announce through the open chat's region; a no-op where no ChatAnnouncer is mounted (managed or passive child panes). */
 export function useChatAnnouncement(): Announce {
   return useContext(ChatAnnouncementContext) ?? NO_ANNOUNCEMENT
 }
@@ -75,14 +85,18 @@ export function replyOutcomeAnnouncement({ failed, stopReason, interrupted }: { 
 
 /**
  * Announces the open chat's reply lifecycle once per change: started, waiting on the user, and
- * finished, stopped or failed. The state the chat opened in is not announced.
+ * finished, stopped or failed. The state the chat opened in is not announced. When a notice that
+ * announces itself already carries the outcome (`noticed`: the error alert or the stopped divider),
+ * no second line is added.
  */
-export function ReplyAnnouncement({ working, waitingFor, failed, stopReason, interrupted }: {
+export function ReplyAnnouncement({ working, waitingFor, failed, stopReason, interrupted, noticed = false }: {
   working: boolean
   waitingFor?: 'permission' | 'answer'
   failed: boolean
   stopReason?: string
+  /** The reply was cut short, or the turn ended with no reply at all (such as Cancel turn before any text). */
   interrupted: boolean
+  noticed?: boolean
 }) {
   const announce = useChatAnnouncement()
   const previous = useRef({ working, waitingFor })
@@ -91,8 +105,8 @@ export function ReplyAnnouncement({ working, waitingFor, failed, stopReason, int
     previous.current = { working, waitingFor }
     if (waitingFor && waitingFor !== before.waitingFor) announce(waitingFor === 'permission' ? 'Waiting for your permission.' : 'Waiting for your answer.')
     else if (working && !before.working) announce('Reply started.')
-    else if (!working && before.working) announce(replyOutcomeAnnouncement({ failed, stopReason, interrupted }))
-  }, [working, waitingFor, failed, stopReason, interrupted, announce])
+    else if (!working && before.working && !noticed) announce(replyOutcomeAnnouncement({ failed, stopReason, interrupted }))
+  }, [working, waitingFor, failed, stopReason, interrupted, noticed, announce])
   return null
 }
 

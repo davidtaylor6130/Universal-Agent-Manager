@@ -1,7 +1,7 @@
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, expect, it, vi } from 'vitest'
-import { ChatAnnouncer, ChatStatusStrip, CopyTextButton, ReplyAnnouncement, replyOutcomeAnnouncement } from './StatusHelpers'
+import { CHAT_ANNOUNCEMENT_CLEAR_MS, ChatAnnouncer, ChatStatusStrip, CopyTextButton, ReplyAnnouncement, replyOutcomeAnnouncement } from './StatusHelpers'
 import * as clipboard from '../../utils/copySelection'
 
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -173,6 +173,31 @@ it('announces a reply starting, waiting, finishing and failing once each, but no
   render({ working: true })
   render({ working: false })
   expect(lines).toEqual(['Reply finished.', 'Reply started.', 'Waiting for your permission.', 'Waiting for your answer.', 'Reply failed.', 'Reply started.', 'Reply finished.'])
+  act(() => root.unmount())
+  host.remove()
+})
+
+it('reads the same line twice as two announcements, skips an outcome a notice already carries and clears after a while', () => {
+  vi.useFakeTimers()
+  const host = document.createElement('div')
+  document.body.append(host)
+  const root = createRoot(host)
+  const render = (props: Partial<Parameters<typeof ReplyAnnouncement>[0]>) => act(() => root.render(
+    <ChatAnnouncer><ReplyAnnouncement working={false} failed={false} interrupted={false} {...props} /></ChatAnnouncer>,
+  ))
+  render({ working: true })
+  render({ working: false })
+  const first = announcement(host).firstChild
+  expect(first?.textContent).toBe('Reply finished.')
+  render({ working: true })
+  render({ working: false })
+  expect(announcement(host).firstChild?.textContent).toBe('Reply finished.')
+  expect(announcement(host).firstChild).not.toBe(first)
+  render({ working: true })
+  render({ working: false, failed: true, noticed: true })
+  expect(announcement(host).textContent).toBe('Reply started.')
+  act(() => vi.advanceTimersByTime(CHAT_ANNOUNCEMENT_CLEAR_MS))
+  expect(announcement(host).textContent).toBe('')
   act(() => root.unmount())
   host.remove()
 })
