@@ -1117,7 +1117,6 @@ uam::query_handler_async::AsyncCefResult UamQueryHandler::FinishOpenNativeSessio
 	return AsyncSuccess(nlohmann::json{{"chatId", target_chat_id}});
 }
 
-/// A user notice never forwards transport or status-line text: live model refusals keep only their fixed wording.
 /// Maps the runtime's busy/pending/not-ready refusals to one plain sentence; nullopt for anything else.
 static std::optional<std::string> LiveSettingBusyRefusal(const std::string& error, std::string_view setting)
 {
@@ -1133,6 +1132,7 @@ static std::optional<std::string> LiveSettingBusyRefusal(const std::string& erro
 	return std::nullopt;
 }
 
+/// A user notice never forwards transport or status-line text: live model refusals keep only their fixed wording.
 static std::string LiveModelRefusal(const std::string& error)
 {
 	if (const std::optional<std::string> busy = LiveSettingBusyRefusal(error, "model")) return *busy;

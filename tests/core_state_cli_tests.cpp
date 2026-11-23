@@ -1773,7 +1773,7 @@ UAM_TEST(CliProviderVersionRemoteUpdateRequiresUnchangedIdentifiedInstallation)
 	UAM_ASSERT(!ValidateRemoteCliInstallProbeForTests(shim, standalone, "windows", &error));
 	UAM_ASSERT(ValidateRemoteCliInstallProbeForTests(npm, npm, "linux", &error));
 	UAM_ASSERT(!ValidateRemoteCliInstallProbeForTests(npm, "[UAM CLI PATH] /usr/local/bin/codex|../lib/node_modules/@openai/codex/bin/codex.js\n[UAM CLI RUNNING] 1\n0.148.0", "linux", &error));
-	UAM_ASSERT(error.find("no update was started") != std::string::npos);
+	UAM_ASSERT(error.find("still running on the remote host") != std::string::npos);
 	UAM_ASSERT(!ValidateRemoteCliInstallProbeForTests(npm, "[UAM CLI PATH] /usr/local/bin/codex|../lib/node_modules/@openai/codex/bin/codex.js\n0.148.0", "linux", &error));
 	const std::string windows_probe = BuildInstallAwareCliProbeForTests("codex-cli", "windows");
 	std::string encoded_script;
