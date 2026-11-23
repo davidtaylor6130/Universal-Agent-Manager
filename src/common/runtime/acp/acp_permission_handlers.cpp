@@ -251,7 +251,7 @@ namespace
 	}
 
 	/// <summary>A rule added or changed while the reviewer was running decides the request now; its verdict is
-	/// then not delivered and the request stays for the user.</summary>
+	/// then not delivered and the rule is applied instead.</summary>
 	bool RulesNowDecide(const AppState& app, const AcpSessionState& session, const ChatSession& chat)
 	{
 		const uam::command_rules::Outcome outcome = EvaluatePermissionRules(app, session, chat).outcome;
@@ -442,8 +442,16 @@ std::string PermissionReviewCacheKey(const AppState& app, const AcpSessionState&
 	const std::string workspace = uam::paths::PortablePathString(session.pending_permission.read_scope.workspace);
 	const std::string cwd = uam::paths::PortablePathString(session.pending_permission.read_scope.cwd);
 	std::string key;
+	// The reviewer judges the whole tool input (sandbox flags, working directory, timeouts) and its stated purpose,
+	// so all of it is part of the key; only identifiers that differ on every call are left out.
+	nlohmann::json input = nlohmann::json::parse(pending.provider_input_json.empty() ? "null" : pending.provider_input_json, nullptr, false);
+	if (input.is_discarded()) return {};
+	if (input.is_object())
+		for (const char* id : {"toolCallId", "tool_call_id", "callId", "call_id", "id", "itemId", "item_id", "requestId", "request_id"}) input.erase(id);
+	const std::string canonical_input = input.dump();
 	for (const std::string_view part : {reviewer_provider_id, std::string_view(app.settings.permission_reviewer_model_id), std::string_view(session.provider_id),
-	         std::string_view(ceiling ? "ceiling" : "open"), std::string_view(kind), std::string_view(workspace), std::string_view(cwd), std::string_view(pending.execution_command)})
+	         std::string_view(ceiling ? "ceiling" : "open"), std::string_view(kind), std::string_view(workspace), std::string_view(cwd), std::string_view(pending.execution_command),
+	         std::string_view(canonical_input), std::string_view(pending.title), std::string_view(pending.content)})
 	{
 		key.append(part);
 		key.push_back('\x1f');
@@ -1149,7 +1157,7 @@ void HandlePermissionRequest(AppState& app, AcpSessionState& session, ChatSessio
 	{
 		if (const nlohmann::json* command = uam::nlohmann_json::FindStringField(*raw_input, "command"))
 			pending.execution_command = command->get_ref<const std::string&>();
-		for (const char* key : {"cwd", "dir_path", "directory"})
+		for (const char* key : {"cwd", "workdir", "dir_path", "directory"})
 			if (const nlohmann::json* cwd = uam::nlohmann_json::FindStringField(*raw_input, key); cwd != nullptr && pending.read_scope.cwd.empty())
 				pending.read_scope.cwd = uam::paths::PathFromUtf8(cwd->get_ref<const std::string&>());
 	}

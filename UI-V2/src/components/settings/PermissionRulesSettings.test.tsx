@@ -127,7 +127,7 @@ describe('PermissionRulesSettings', () => {
     show()
     type('Command to test', 'git push --force')
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 260)) })
-    expect(document.body.textContent).toContain('It applies only to codex-cli in /work/app.')
+    expect(document.body.textContent).toMatch(/It applies only to (Codex|codex-cli)\S* in \/work\/app\./)
   })
 
   it('refuses a relative workspace in the editor', async () => {

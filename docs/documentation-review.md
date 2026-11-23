@@ -92,7 +92,7 @@ The local checker validates navigation, heading targets, reachability and one ex
 
 ## Permission rule defaults under YOLO
 
-**Open, for David.** The default [permission rules](providers/permissions/rules.md) seeded into existing settings files include ask rules for deletion commands and `.env` files. Ask outranks every level, so a YOLO chat that used to run `rm`, `Remove-Item` or `cat *` without a prompt now asks. Interim interpretation: keep the defaults, because the request asked for destructive commands to be denied or always asked and rules must never relax enforcement; users can disable a default. Confirm whether YOLO should keep this, or whether ask defaults should apply only below YOLO.
+**Open, for David.** The default [permission rules](providers/permissions/rules.md) seeded into existing settings files include ask rules for deletion commands and `.env` files. Ask outranks every level, so a YOLO chat that used to run `rm`, `Remove-Item`, `cat *` or a command with a variable argument such as `echo $HOME` without a prompt now asks, because an expanded argument might reach a `.env` file. Interim interpretation: keep the defaults, because the request asked for destructive commands to be denied or always asked and rules must never relax enforcement; users can disable a default. Confirm whether YOLO should keep this, or whether ask defaults should apply only below YOLO.
 
 ## Decision status
 

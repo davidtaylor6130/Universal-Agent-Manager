@@ -1180,7 +1180,7 @@ SettingsLoadResult SettingsStore::LoadInternal(const std::filesystem::path& sett
 			{
 				settings.permission_command_rules = uam::permission_command_rules::ParseLenient(parsed);
 				if (settings.permission_command_rules.size() != parsed.size())
-					append_warning("Some saved permission rules were invalid and were ignored.");
+					append_warning("Some saved permission rules were invalid, duplicated or over the 200-rule limit and were ignored.");
 			}
 			saw_permission_command_rules = true;
 		}

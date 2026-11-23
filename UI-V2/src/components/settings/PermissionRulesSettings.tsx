@@ -43,10 +43,10 @@ export function ruleTitle(rule: PermissionCommandRule) {
   return rule.tool === 'command' ? rule.pattern : TOOL_LABELS[rule.tool]
 }
 
-function testSummary(result: PermissionRuleTestResult, rules: PermissionCommandRule[], aiReviewEnabled: boolean) {
+function testSummary(result: PermissionRuleTestResult, rules: PermissionCommandRule[], aiReviewEnabled: boolean, providerName: (id: string) => string) {
   const rule = rules.find((candidate) => candidate.id === result.ruleId)
   const name = rule ? `“${ruleTitle(rule)}”` : ''
-  const scope = rule && (rule.providerId || rule.workspace) ? ` It applies only to ${[rule.providerId, rule.workspace].filter(Boolean).join(' in ')}.` : ''
+  const scope = rule && (rule.providerId || rule.workspace) ? ` It applies only to ${[rule.providerId ? providerName(rule.providerId) : '', rule.workspace].filter(Boolean).join(' in ')}.` : ''
   if (result.outcome === 'deny') return `Denied by ${name}.${scope}`
   if (result.outcome === 'ask') return rule ? `Always asks you: ${name}.${scope}` : result.reason
   if (result.outcome === 'allow') return `Allowed by ${name} under AI Review; no model review runs.${scope}`
@@ -199,7 +199,7 @@ export function PermissionRulesSettings() {
       </SettingsField>
       <Reveal open={Boolean(testResult)}>
         <p className="uam-prov-sub" role="status" aria-live="polite" style={testError ? { color: 'var(--error)' } : undefined}>
-          {testResult && ('error' in testResult ? testResult.error : testSummary(testResult, rules, aiReviewEnabled))}
+          {testResult && ('error' in testResult ? testResult.error : testSummary(testResult, rules, aiReviewEnabled, providerName))}
         </p>
       </Reveal>
     </SettingsSection>

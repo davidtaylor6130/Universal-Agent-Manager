@@ -266,17 +266,33 @@ UAM_TEST(CommandRulesGlobsAndBracesCannotHideAProgramOrPath)
 		const rules::Outcome outcome = OutcomeFor(defaults, command);
 		if (outcome != rules::Outcome::AskUser && outcome != rules::Outcome::Deny) throw TestFailure("Expanded program passed: " + std::string(command));
 	}
-	// An argument glob that could expand to a denied path counts as that path.
-	for (const std::string_view command : {"cat ~/.ss?/id_rsa", "cat ~/.ssh/id_*", "cp {~/.ssh/id_rsa,x}", "cat ~/.aws/cred*"})
+	// An argument the shell expands into a denied path might match, so it waits for the user (never a hard deny).
+	for (const std::string_view command : {"cat ~/.ss?/id_rsa", "cat ~/.ssh/id_*", "cp {~/.ssh/id_rsa,x} y", "cat ~/.aws/cred*", "cat ~/.ss$E/id_rsa", "cat ~/.ssh/id_rsa$E", "cat \"$X\"", "cat %P%/.ssh/x"})
 	{
-		if (OutcomeFor(defaults, command) != rules::Outcome::Deny) throw TestFailure("Globbed credential path was not denied: " + std::string(command));
+		if (OutcomeFor(defaults, command) != rules::Outcome::AskUser) throw TestFailure("Expanded credential path did not ask: " + std::string(command));
+	}
+	// Exact user rules cannot be dodged with an empty glob, an empty variable, nested braces, dotglob or a glob
+	// standing in for a subcommand.
+	const std::vector<rules::Rule> exact = {MakeRule("shadow", rules::Action::Deny, rules::Tool::Command, "cat /etc/shadow"),
+	                                        MakeRule("force", rules::Action::Deny, rules::Tool::Command, "git ** push ** --force"),
+	                                        MakeRule("key", rules::Action::Deny, rules::Tool::Command, "cat /home/u/.ssh/id_rsa")};
+	for (const std::string_view command : {"cat /etc/*shadow", "cat /etc/sh${E}adow", "cat /etc/sh%E%adow", "cat /home/u/.ssh/*id_rsa", "cat /home/u/.ssh/{id_rsa,{a,b}}",
+	         "git {push,--force}", "git pu{sh,} --force", "git pus? --force", "shopt -s dotglob; cat /home/u/*/id_rsa", "cat $(echo /etc/shadow)"})
+	{
+		const rules::Outcome outcome = OutcomeFor(exact, command);
+		if (outcome != rules::Outcome::AskUser && outcome != rules::Outcome::Deny) throw TestFailure("Expansion dodged an exact rule: " + std::string(command));
+	}
+	// Literal braces and plain home paths are not expansions.
+	for (const std::string_view command : {"git reset HEAD@{1}", "find . -name x -exec grep y {} +", "ls ~", "cat ~/notes.txt", "echo hi"})
+	{
+		if (OutcomeFor(defaults, command) != rules::Outcome::NoMatch) throw TestFailure("Plain command was held: " + std::string(command));
 	}
 	// A glob that cannot reach the pattern does not.
 	UAM_ASSERT(OutcomeFor(defaults, "ls *.txt") == rules::Outcome::NoMatch);
 	UAM_ASSERT(OutcomeFor(defaults, "cat src/*.cpp") == rules::Outcome::NoMatch);
 	UAM_ASSERT(OutcomeFor(defaults, "git add *") == rules::Outcome::AskUser); // Could stage prod.env; never a credential deny.
 	// A glob can still expand to an option-shaped file name, so it counts against option patterns.
-	UAM_ASSERT(OutcomeFor(defaults, "git push origin *") == rules::Outcome::Deny);
+	UAM_ASSERT(OutcomeFor(defaults, "git push origin *") == rules::Outcome::AskUser);
 	UAM_ASSERT(OutcomeFor(defaults, "cat *") == rules::Outcome::AskUser);
 }
 
@@ -291,6 +307,12 @@ UAM_TEST(CommandRulesCoverWindowsPathsCaseAndShells)
 		if (outcome != rules::Outcome::Deny && outcome != rules::Outcome::AskUser) throw TestFailure("Windows or case form passed: " + std::string(command));
 	}
 	UAM_ASSERT(OutcomeFor(defaults, "cat .ENV") == rules::Outcome::AskUser);
+	UAM_ASSERT(OutcomeFor(defaults, "git -c alias.p='push --force' p") == rules::Outcome::Deny);
+	UAM_ASSERT(OutcomeFor(defaults, "git -c alias.x='!rm -rf build' x") == rules::Outcome::AskUser);
+	for (const std::string_view command : {"sudo --chdir /tmp rm x", "sudo -nu root rm x", "exec -a foo rm x", "flock /tmp/l rm -rf x", "chroot / rm -rf x", "rm\v-rf\vx", "cmd /crm x", "Remove-Item\xC2\xA0x"})
+	{
+		if (OutcomeFor(defaults, command) != rules::Outcome::AskUser) throw TestFailure("Wrapper or separator hid rm: " + std::string(command));
+	}
 	for (const std::string_view command : {"Remove-Item -Recurse build", "del /s build", "rd /s /q build", "rmdir build", "unlink x", "shred x", "find . -name '*.o' -delete", "ri build"})
 	{
 		if (OutcomeFor(defaults, command) != rules::Outcome::AskUser) throw TestFailure("Deletion did not ask: " + std::string(command));

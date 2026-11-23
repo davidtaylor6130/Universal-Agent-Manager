@@ -211,6 +211,15 @@ UAM_TEST(PermissionReviewCacheKeyCoversOnlyPlainTypedCommands)
 	const ChatSession& chat = fixture.app.chats.front();
 	fixture.Request(1, "execute", "npm test");
 	const std::string first = uam::acp_detail::PermissionReviewCacheKey(fixture.app, *fixture.session, chat, "gemini-cli");
+	// Per-call ids do not split the key; anything else in the tool input the reviewer judged does.
+	const std::string original_input = fixture.session->pending_permission.provider_input_json;
+	fixture.session->pending_permission.provider_input_json = R"({"command":"npm test","toolCallId":"another-call"})";
+	UAM_ASSERT_EQ(uam::acp_detail::PermissionReviewCacheKey(fixture.app, *fixture.session, chat, "gemini-cli"), first);
+	fixture.session->pending_permission.provider_input_json = R"({"command":"npm test","dangerouslyDisableSandbox":true})";
+	UAM_ASSERT(uam::acp_detail::PermissionReviewCacheKey(fixture.app, *fixture.session, chat, "gemini-cli") != first);
+	fixture.session->pending_permission.provider_input_json = R"({"command":"npm test","workdir":"/elsewhere"})";
+	UAM_ASSERT(uam::acp_detail::PermissionReviewCacheKey(fixture.app, *fixture.session, chat, "gemini-cli") != first);
+	fixture.session->pending_permission.provider_input_json = original_input;
 	fixture.session->pending_permission.execution_command = "npm test -- --watch";
 	UAM_ASSERT(uam::acp_detail::PermissionReviewCacheKey(fixture.app, *fixture.session, chat, "gemini-cli") != first);
 	fixture.session->pending_permission.codex_approval_payload_json = R"({"grantRoot":"/"})";
