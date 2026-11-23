@@ -73,6 +73,8 @@ import type {
   OpenWorkspaceEditorResponse,
   ProviderChatDefaults,
   ProviderAgentImportPreview,
+  ProviderAgentDiscovery,
+  ProviderAgentImportOutcome,
   ProviderModelCatalog,
   VcsCommitMessageSuggestion,
   VcsCommitResult,
@@ -2317,24 +2319,33 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return selected || null
     },
 
-    previewProviderAgentImport: async (providerId: string, sourcePath: string) => {
+    discoverProviderAgents: async (providerId: string, chatId = '') => {
       if (!isCefContext()) return null
-      const response = await sendToCEF<ProviderAgentImportPreview>({
-        action: 'previewProviderAgentImport',
-        payload: { providerId, sourcePath },
+      const response = await sendToCEF<ProviderAgentDiscovery>({
+        action: 'discoverProviderAgents',
+        payload: { providerId, chatId },
       })
       return response.ok ? response.data ?? null : null
     },
 
-    importProviderAgent: async (options: { chatId: string; providerId: string; sourcePath: string; canonicalId: string; workspaceAccess: 'read' | 'write'; workspaceScope: boolean; acknowledgeIgnoredFields: boolean }) => {
-      if (!isCefContext()) return false
+    previewProviderAgentImport: async (providerId: string, sourcePath: string, sourceEntry = '') => {
+      if (!isCefContext()) return null
+      const response = await sendToCEF<ProviderAgentImportPreview>({
+        action: 'previewProviderAgentImport',
+        payload: { providerId, sourcePath, sourceEntry },
+      })
+      return response.ok ? response.data ?? null : null
+    },
+
+    importProviderAgent: async (options: { chatId: string; providerId: string; sourcePath: string; sourceEntry?: string; canonicalId: string; workspaceAccess: 'read' | 'write'; workspaceScope: boolean; acknowledgeIgnoredFields: boolean }): Promise<ProviderAgentImportOutcome> => {
+      if (!isCefContext()) return { ok: false, error: 'Import needs the desktop app.' }
       const response = await sendToCEF<{ id?: string }>({
         action: 'importProviderAgent',
-        payload: options,
+        payload: { ...options, sourceEntry: options.sourceEntry ?? '' },
       })
-      if (!response.ok) return false
+      if (!response.ok) return { ok: false, error: response.error || 'Provider agent import failed.' }
       if (options.chatId) await get().refreshUamAgents(options.chatId)
-      return true
+      return { ok: true }
     },
 
     setSessionCommandSafetyTier: async (id: string, tier: 'off' | 'acceptEdits' | 'aiReview' | 'yolo') => {

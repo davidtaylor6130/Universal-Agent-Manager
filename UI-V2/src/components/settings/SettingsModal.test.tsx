@@ -144,6 +144,7 @@ describe('SettingsModal memory settings', () => {
       setUamAgentPreferences: vi.fn(() => Promise.resolve(true)),
       refreshUamAgents: vi.fn(() => Promise.resolve(true)),
       browseProviderAgentImport: vi.fn(() => Promise.resolve(null)),
+      discoverProviderAgents: vi.fn(() => Promise.resolve(null)),
       previewProviderAgentImport: vi.fn(() => Promise.resolve(null)),
       importProviderAgent: vi.fn(() => Promise.resolve(true)),
       setTheme: vi.fn(),
@@ -1438,10 +1439,10 @@ describe('SettingsModal memory settings', () => {
     host.remove()
   })
 
-  it('shows the path-based provider agent import without a capability flag', async () => {
+  it('offers agent discovery and a typed path without a capability flag', async () => {
     const { host, root } = renderModal()
     openAgentsSection(host)
-    expect(Array.from(host.querySelectorAll('button')).some((button) => button.textContent === 'Find agents')).toBe(false)
+    expect(Array.from(host.querySelectorAll('button')).some((button) => button.textContent === 'Find agents')).toBe(true)
     expect(host.textContent).toContain('Import from a provider')
     expect(host.querySelector('input[aria-label="Native agent Markdown file"]')).not.toBeNull()
     act(() => root.unmount())
@@ -1460,7 +1461,7 @@ describe('SettingsModal memory settings', () => {
       error: '',
       supported: true,
     }))
-    const importProviderAgent = vi.fn(() => Promise.resolve(true))
+    const importProviderAgent = vi.fn(() => Promise.resolve({ ok: true as const }))
     useAppStore.setState({ previewProviderAgentImport, importProviderAgent })
     const { host, root } = renderModal()
     openAgentsSection(host)
@@ -1473,7 +1474,7 @@ describe('SettingsModal memory settings', () => {
     const preview = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Preview') as HTMLButtonElement
     await act(async () => preview.click())
 
-    expect(previewProviderAgentImport).toHaveBeenCalledWith('opencode-cli', '/tmp/reviewer.md')
+    expect(previewProviderAgentImport).toHaveBeenCalledWith('opencode-cli', '/tmp/reviewer.md', '')
     expect(host.textContent).toContain('Provider-only fields that will be omitted: model')
     const importButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Import agent') as HTMLButtonElement
     expect(importButton.disabled).toBe(true)
@@ -1499,7 +1500,7 @@ describe('SettingsModal memory settings', () => {
     type Preview = Awaited<ReturnType<ReturnType<typeof useAppStore.getState>['previewProviderAgentImport']>>
     const pending: Array<(preview: Preview) => void> = []
     const previewProviderAgentImport = vi.fn(() => new Promise<Preview>(resolve => pending.push(resolve)))
-    const importProviderAgent = vi.fn(async () => true)
+    const importProviderAgent = vi.fn(async () => ({ ok: true as const }))
     useAppStore.setState({ previewProviderAgentImport, importProviderAgent })
     const { host, root } = renderModal()
     openAgentsSection(host)
@@ -1542,6 +1543,83 @@ describe('SettingsModal memory settings', () => {
 
 
 
+
+  it('finds native agents, previews a JSON entry and keeps a read-only source read-only', async () => {
+    const discoverProviderAgents = vi.fn(async () => ({
+      candidates: [
+        { providerId: 'opencode-cli', id: 'reviewer', description: 'Reviews code', sourcePath: '/home/me/.config/opencode/opencode.jsonc', sourceEntry: 'reviewer', scope: 'global' as const, alreadyImported: false },
+        { providerId: 'opencode-cli', id: 'builder', description: 'Builds', sourcePath: '/work/.opencode/agents/builder.md', sourceEntry: '', scope: 'workspace' as const, alreadyImported: true },
+      ],
+      searched: [], errors: ['/home/me/.config/opencode/agent/big.md: skipped because it is linked, empty, unreadable or larger than 256 KiB.'], unsupported: '',
+    }))
+    const previewProviderAgentImport = vi.fn(async () => ({
+      providerId: 'opencode-cli', sourcePath: '/home/me/.config/opencode/opencode.jsonc', sourceEntry: 'reviewer', suggestedId: 'reviewer',
+      description: 'Reviews code', mode: 'subagent', securityFields: [], ignoredFields: [], error: '', supported: true,
+      notes: ['tools: enabled tools become ask and disabled tools become deny.', 'Workspace access: read only, because tools.edit is deny.'],
+      providerBound: true, maxWorkspaceAccess: 'read' as const, suggestedWorkspaceAccess: 'read' as const,
+    }))
+    const importProviderAgent = vi.fn(async () => ({ ok: false as const, error: 'id: an agent named reviewer already exists.' }))
+    useAppStore.setState({ discoverProviderAgents, previewProviderAgentImport, importProviderAgent })
+    const { host, root } = renderModal()
+    openAgentsSection(host)
+    const findButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Find agents') as HTMLButtonElement
+    await act(async () => findButton.click())
+    expect(discoverProviderAgents).toHaveBeenCalledWith('opencode-cli', 'chat-1')
+    expect(host.textContent).toContain('2 found')
+    expect(host.textContent).toContain('Some agent files were skipped')
+
+    act(() => (host.querySelector('button[aria-label="Native agent"]') as HTMLButtonElement).click())
+    const options = Array.from(document.body.querySelectorAll('[role="option"]'))
+    expect(options.map((option) => option.textContent)).toEqual(expect.arrayContaining([expect.stringContaining('builder (imported)')]))
+    const reviewer = options.find((option) => option.textContent?.includes('reviewer')) as HTMLButtonElement
+    await act(async () => reviewer.click())
+    expect(previewProviderAgentImport).toHaveBeenCalledWith('opencode-cli', '/home/me/.config/opencode/opencode.jsonc', 'reviewer')
+    expect(host.textContent).toContain('How this agent maps')
+    expect(host.textContent).toContain('Workspace access: read only, because tools.edit is deny.')
+
+    act(() => (host.querySelector('button[aria-label="Workspace access"]') as HTMLButtonElement).click())
+    const write = Array.from(document.body.querySelectorAll('[role="option"]')).find((option) => option.textContent?.includes('Read and write')) as HTMLElement
+    expect(write.getAttribute('aria-disabled') === 'true' || (write as HTMLButtonElement).disabled).toBe(true)
+    act(() => document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+
+    const importButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Import agent') as HTMLButtonElement
+    await act(async () => importButton.click())
+    expect(importProviderAgent).toHaveBeenCalledWith(expect.objectContaining({
+      sourcePath: '/home/me/.config/opencode/opencode.jsonc', sourceEntry: 'reviewer', workspaceAccess: 'read',
+    }))
+    expect(failures.at(-1)?.message).toBe('Import failed.')
+    expect(failures.at(-1)?.detail).toBe('id: an agent named reviewer already exists.')
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('suggests write access only when the source grants edits, and a typed path clears the JSON entry', async () => {
+    const discoverProviderAgents = vi.fn(async () => ({
+      candidates: [{ providerId: 'opencode-cli', id: 'writer', description: '', sourcePath: '/cfg/opencode.json', sourceEntry: 'writer', scope: 'global' as const, alreadyImported: false }],
+      searched: [], errors: [], unsupported: '',
+    }))
+    const previewProviderAgentImport = vi.fn(async (_provider: string, sourcePath: string, sourceEntry?: string) => ({
+      providerId: 'opencode-cli', sourcePath, sourceEntry, suggestedId: 'writer', description: 'Writes', mode: 'both', securityFields: [], ignoredFields: [],
+      error: '', supported: true, notes: [], maxWorkspaceAccess: 'write' as const, suggestedWorkspaceAccess: 'write' as const,
+    }))
+    useAppStore.setState({ discoverProviderAgents, previewProviderAgentImport })
+    const { host, root } = renderModal()
+    openAgentsSection(host)
+    await act(async () => (Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Find agents') as HTMLButtonElement).click())
+    act(() => (host.querySelector('button[aria-label="Native agent"]') as HTMLButtonElement).click())
+    await act(async () => (Array.from(document.body.querySelectorAll('[role="option"]')).find((option) => option.textContent?.includes('writer')) as HTMLButtonElement).click())
+    expect(host.querySelector('button[aria-label="Workspace access"]')?.textContent).toContain('Read and write')
+
+    const path = host.querySelector('input[aria-label="Native agent Markdown file"]') as HTMLInputElement
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(path, '/tmp/typed.md')
+      path.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => (Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Preview') as HTMLButtonElement).click())
+    expect(previewProviderAgentImport).toHaveBeenLastCalledWith('opencode-cli', '/tmp/typed.md', '')
+    act(() => root.unmount())
+    host.remove()
+  })
 
   it('opens and switches sections without a forced animation or duplicate theme refresh', () => {
     const { host, root } = renderModal()

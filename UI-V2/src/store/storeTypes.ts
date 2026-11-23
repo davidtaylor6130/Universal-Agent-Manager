@@ -46,6 +46,8 @@ import type {
   VoiceInputSettingsRequest,
   ProviderModelCatalog,
   ProviderAgentImportPreview,
+  ProviderAgentDiscovery,
+  ProviderAgentImportOutcome,
   UamAgentCycleShortcut,
   UamAgentSummary,
   ShellAction,
@@ -282,8 +284,9 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   setSessionUamControlEnabled: (id: string, enabled: boolean, applyOnNextLaunch?: boolean) => Promise<boolean>
   refreshUamAgents: (id: string) => Promise<boolean>
   browseProviderAgentImport: (currentValue?: string) => Promise<string | null>
-  previewProviderAgentImport: (providerId: string, sourcePath: string) => Promise<ProviderAgentImportPreview | null>
-  importProviderAgent: (options: { chatId: string; providerId: string; sourcePath: string; canonicalId: string; workspaceAccess: 'read' | 'write'; workspaceScope: boolean; acknowledgeIgnoredFields: boolean }) => Promise<boolean>
+  discoverProviderAgents: (providerId: string, chatId?: string) => Promise<ProviderAgentDiscovery | null>
+  previewProviderAgentImport: (providerId: string, sourcePath: string, sourceEntry?: string) => Promise<ProviderAgentImportPreview | null>
+  importProviderAgent: (options: { chatId: string; providerId: string; sourcePath: string; sourceEntry?: string; canonicalId: string; workspaceAccess: 'read' | 'write'; workspaceScope: boolean; acknowledgeIgnoredFields: boolean }) => Promise<ProviderAgentImportOutcome>
   setSessionCommandSafetyTier: (id: string, tier: 'off' | 'acceptEdits' | 'aiReview' | 'yolo') => Promise<CommandSafetyTierResult>
 	setSessionComputerUseEnabled: (id: string, enabled: boolean) => Promise<ComputerUseActionResult>
 	setSessionComputerUseBackend: (id: string, backend: ComputerUseBackend) => Promise<ComputerUseActionResult>

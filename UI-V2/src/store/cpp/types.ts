@@ -911,30 +911,47 @@ export interface UamAgentSummary {
   builtIn: boolean
 }
 
+/** A native agent file or OpenCode JSON(C) entry found in a provider's global or workspace folder. */
 export interface ProviderAgentCandidate {
+  providerId: string
   id: string
-  name: string
-  description?: string
+  description: string
   sourcePath: string
-  alreadyImported?: boolean
+  /** Agent key inside an OpenCode JSON(C) config; empty for a Markdown agent file. */
+  sourceEntry: string
+  scope: 'global' | 'workspace'
+  alreadyImported: boolean
 }
 
-export interface ProviderAgentImportResult {
-  imported: number
-  failed?: Array<{ id: string; error: string }>
+export interface ProviderAgentDiscovery {
+  candidates: ProviderAgentCandidate[]
+  searched: string[]
+  errors: string[]
+  /** Set when the provider has no native agent files to import. */
+  unsupported: string
 }
 
 export interface ProviderAgentImportPreview {
   providerId: string
   sourcePath: string
+  sourceEntry?: string
   suggestedId: string
   description: string
   mode: string
   securityFields: string[]
   ignoredFields: string[]
+  /** One line per mapped restriction, shortened text or runtime limit. */
+  notes?: string[]
+  /** The rules hold a deny that workspace access cannot express, so the agent runs only on local OpenCode 1.x. */
+  providerBound?: boolean
+  /** A read-only source never imports with write access. */
+  maxWorkspaceAccess?: 'read' | 'write'
+  suggestedWorkspaceAccess?: 'read' | 'write'
   error: string
   supported: boolean
 }
+
+export type ProviderAgentImportOutcome = { ok: true } | { ok: false; error: string }
 
 export interface McpSecretReference {
   name: string
