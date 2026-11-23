@@ -398,7 +398,11 @@ bool GoalService::UpdateGoalStatus(AppState& app, const std::string& chat_id,
 	goal->status = status;
 	goal->updated_at = uam::time::TimestampNow();
 	// The user replaced the last automatic verdict; do not leave it attributed to it.
-	if (user_action && status != GoalStatus::Paused) goal->last_decision_source.clear();
+	if (user_action && status != GoalStatus::Paused)
+	{
+		goal->last_decision_source.clear();
+		goal->last_decision_backend.clear();
+	}
 	if (status == GoalStatus::Complete)
 	{
 		goal->remaining_items.clear();
@@ -850,7 +854,7 @@ void GoalService::RecordTurnCompletion(AppState& app, const std::string& chat_id
 		goal->status = GoalStatus::Blocked;
 		goal->last_blocker = "Token budget exceeded.";
 		goal->last_blocker_kind = "token_budget";
-		goal->last_decision_source = kDecisionSourceFilter;
+		RecordDecision(*goal, DecisionAttribution::Filter());
 		if (chat->active_goal_id == goal_id)
 		{
 			ClearActiveGoal(app, chat->id);
@@ -863,6 +867,15 @@ void GoalService::RecordBlocker(AppState& app, const std::string& chat_id,
 	                            const std::string& goal_id, const std::string& blocker,
 	                            const std::string& decision_source, const std::string& blocker_kind)
 {
+	// A bare string cannot prove a model answered, so anything but a rule is recorded as fallback.
+	RecordBlocker(app, chat_id, goal_id, blocker,
+	              decision_source == kDecisionSourceFilter ? DecisionAttribution::Filter() : DecisionAttribution::Fallback(), blocker_kind);
+}
+
+void GoalService::RecordBlocker(AppState& app, const std::string& chat_id,
+	                            const std::string& goal_id, const std::string& blocker,
+	                            const DecisionAttribution& attribution, const std::string& blocker_kind)
+{
 	Goal* goal = FindGoalById(app, chat_id, goal_id);
 	ChatSession* chat = FindChatMutable(app, chat_id);
 	if (goal == nullptr || chat == nullptr)
@@ -873,7 +886,7 @@ void GoalService::RecordBlocker(AppState& app, const std::string& chat_id,
 	const std::string normalized_blocker = NormalizeBlocker(blocker);
 	const std::string normalized_kind = uam::strings::Trim(blocker_kind);
 	if (!normalized_kind.empty()) goal->last_blocker_kind = normalized_kind;
-	goal->last_decision_source = decision_source;
+	RecordDecision(*goal, attribution);
 
 	if (goal->last_blocker == normalized_blocker)
 	{
@@ -897,6 +910,17 @@ void GoalService::RecordBlocker(AppState& app, const std::string& chat_id,
 	}
 
 	MarkDirty(app, chat->id);
+}
+
+void GoalService::RecordDecision(Goal& goal, const DecisionAttribution& attribution)
+{
+	goal.last_decision_source = attribution.Source();
+	goal.last_decision_backend = attribution.BackendId();
+}
+
+DecisionRequest GoalService::ReviewDecisionRequest()
+{
+	return DecisionRequest::Choice("Should the goal continue, is it blocked, or is it complete?", {"continue", "blocked", "complete"});
 }
 
 std::string GoalService::BuildContinuationPrompt(const Goal& goal, int64_t tokens_used, int64_t token_budget,

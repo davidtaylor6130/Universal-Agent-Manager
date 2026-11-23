@@ -109,6 +109,13 @@ namespace uam::acp_detail
 			}
 		}
 
+		/// <summary>Goal diagnostics for one review decision: its answer, backend, latency and usage, never its reason text.</summary>
+		void AppendGoalReviewDecisionDiagnostic(AcpSessionState& session, const std::string& goal_id, const DecisionResult& decision)
+		{
+			AppendAcpDiagnostic(session, "goal_loop", "goal_review_decision", "", "", false, 0, "",
+			                    GoalLoopDiagnosticDetail(session, goal_id, "") + "\n" + DecisionService::DiagnosticDetail(decision));
+		}
+
 		/// <summary>Blocks a goal that has used its iteration allowance; every automatic continuation checks this first.</summary>
 		bool BlockGoalAtIterationCap(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& owner_chat_id,
 		                             const std::string& goal_id, Goal& goal, CefRefPtr<CefBrowser> browser)
@@ -459,6 +466,8 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 	const int review_repair_attempts = iteration_review
 	                                     ? chat.goal_iteration_repair_attempts
 	                                     : session.goal_review_repair_attempts;
+	const std::int64_t review_started_ms = session.goal_review_started_ms;
+	const std::int64_t review_finished_ms = DecisionService::NowMs();
 	ClearGoalReviewState(session);
 	Goal* active_review_goal = GoalService::FindActiveGoal(app, owner_chat_id);
 	if (active_review_goal != nullptr && active_review_goal->id == goal_id)
@@ -481,8 +490,21 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 		}
 	}
 
-	const std::optional<GoalService::ReviewDecision> parsed = GoalService::ParseReviewDecision(review_text);
-	if (!parsed.has_value())
+	// The review is a Choice answered by the chat-provider backend; only a reply it validates is a model decision.
+	const DecisionRequest review_request = GoalService::ReviewDecisionRequest();
+	std::string review_model_id = session.goal_turn_model_id;
+	if (const Goal* reviewed_goal = GoalService::FindGoalById(app, owner_chat_id, goal_id); reviewed_goal != nullptr)
+	{
+		const ChatSession* reviewer_chat = GoalOwnerChat(app, chat);
+		// The turn's own model outranks the chat's current selection, which can change during the turn.
+		review_model_id = uam::strings::NonEmptyOrFallback(session.goal_turn_model_id, uam::strings::NonEmptyOrFallback(
+		    GoalService::ReviewerModelId(reviewer_chat != nullptr ? *reviewer_chat : chat, *reviewed_goal, &session), session.current_model_id));
+	}
+	const DecisionRun review_run{review_model_id, review_started_ms, review_finished_ms, review_tokens};
+	std::optional<GoalService::ReviewDecision> parsed = GoalService::ParseReviewDecision(review_text);
+	std::optional<DecisionResult> verdict;
+	if (parsed.has_value()) verdict = DecisionService::ChatProviderChoice(review_request, parsed->decision, parsed->reason, parsed->evidence, review_run);
+	if (!verdict.has_value())
 	{
 		Goal* active_goal = GoalService::FindActiveGoal(app, owner_chat_id);
 		if (review_repair_attempts == 0 && active_goal != nullptr && active_goal->id == goal_id)
@@ -511,17 +533,21 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 				        : QueueGoalInternalPrompt(app, session, chat, repair_prompt, true,
 				                                  GoalService::ReviewerModelId(chat, *active_goal, &session)))
 			{
+				// The repair belongs to the same decision, so its latency runs from the first request.
+				session.goal_review_started_ms = review_started_ms;
 				return true;
 			}
 			ClearGoalReviewState(session);
 		}
 
+		const DecisionResult fallback = DecisionService::Fallback(review_request, "blocked", "Goal reviewer did not return valid JSON after one repair attempt.", review_run);
 		if (Goal* goal = GoalService::FindGoalById(app, owner_chat_id, goal_id); goal != nullptr)
 		{
 			goal->last_diagnostic = "goal_blocked_invalid_review";
-			GoalService::RecordBlocker(app, owner_chat_id, goal_id, "Goal reviewer did not return valid JSON after one repair attempt.", kDecisionSourceFallback);
+			GoalService::RecordBlocker(app, owner_chat_id, goal_id, fallback.reason, fallback.attribution);
 			(void)GoalService::UpdateGoalStatus(app, owner_chat_id, goal_id, GoalStatus::Blocked);
 		}
+		AppendGoalReviewDecisionDiagnostic(session, goal_id, fallback);
 		AppendGoalLoopDiagnostic(session, "goal_blocked_invalid_review", goal_id, review_text);
 		if (ChatSession* owner = GoalOwnerChat(app, chat); owner != nullptr) SaveChatQuietly(app, *owner);
 		StopCompletedGoalIterationRuntime(app, chat, session);
@@ -532,15 +558,10 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 		return true;
 	}
 
-	GoalService::ReviewDecision decision = *parsed;
-	// Only a reply that parsed as a review reaches here, so this is the sole model attribution.
-	if (const Goal* reviewed_goal = GoalService::FindGoalById(app, owner_chat_id, goal_id); reviewed_goal != nullptr)
-	{
-		const ChatSession* reviewer_chat = GoalOwnerChat(app, chat);
-		// The turn's own model outranks the chat's current selection, which can change during the turn.
-		decision.source = ModelDecisionSource(uam::strings::NonEmptyOrFallback(session.goal_turn_model_id, uam::strings::NonEmptyOrFallback(
-		    GoalService::ReviewerModelId(reviewer_chat != nullptr ? *reviewer_chat : chat, *reviewed_goal, &session), session.current_model_id)));
-	}
+	GoalService::ReviewDecision decision = std::move(*parsed);
+	// Only a reply the decision interface validated reaches here, so this is the sole model attribution.
+	decision.attribution = verdict->attribution;
+	AppendGoalReviewDecisionDiagnostic(session, goal_id, *verdict);
 	if (decision.decision == "complete")
 	{
 		if (Goal* goal = GoalService::FindGoalById(app, owner_chat_id, goal_id); goal != nullptr)
@@ -564,7 +585,7 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 			ApplyGoalProgressUpdate(*goal, decision);
 			goal->last_blocker_kind = decision.blocker_kind;
 		}
-		GoalService::RecordBlocker(app, owner_chat_id, goal_id, decision.reason, decision.source);
+		GoalService::RecordBlocker(app, owner_chat_id, goal_id, decision.reason, decision.attribution);
 		if (GoalBlockerStopsImmediately(decision.blocker_kind))
 		{
 			(void)GoalService::UpdateGoalStatus(app, owner_chat_id, goal_id, GoalStatus::Blocked);

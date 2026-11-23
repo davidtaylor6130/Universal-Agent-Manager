@@ -2619,6 +2619,8 @@ namespace
 				// Goals saved before sources existed report their earlier verdicts as unknown, never guessed.
 				if (const JsonValue* decision_source = goal_obj.Find("lastDecisionSource"); decision_source != nullptr) goal.last_decision_source = NormalizeDecisionSource(JsonStringOrEmpty(decision_source));
 				else if (goal.status == GoalStatus::Blocked || goal.status == GoalStatus::Complete || !goal.last_blocker.empty() || !goal.last_diagnostic.empty() || !goal.last_next_prompt.empty()) goal.last_decision_source = kDecisionSourceUnknown;
+				// A backend only stays with a model source, so a filter, fallback or edited file cannot claim one.
+				goal.last_decision_backend = NormalizeDecisionBackend(goal.last_decision_source, JsonStringOrEmpty(goal_obj.Find("lastDecisionBackend")));
 				goal.creator = JsonStringOrEmpty(goal_obj.Find("creator")) == "model" ? "model" : "user";
 				goal.creator_provider_id = goal.creator == "model" ? JsonStringOrEmpty(goal_obj.Find("creatorProviderId")) : "";
 				goal.creator_agent_id = goal.creator == "model" ? JsonStringOrEmpty(goal_obj.Find("creatorAgentId")) : "";
@@ -4372,6 +4374,7 @@ try
 			uam::json::SetString(goal_obj, "lastBlockerKind", goal.last_blocker_kind);
 			uam::json::SetString(goal_obj, "lastDiagnostic", goal.last_diagnostic);
 			uam::json::SetString(goal_obj, "lastDecisionSource", goal.last_decision_source);
+			uam::json::SetString(goal_obj, "lastDecisionBackend", NormalizeDecisionBackend(goal.last_decision_source, goal.last_decision_backend));
 			uam::json::SetValue(goal_obj, "completedItems", StringArrayToJson(goal.completed_items));
 			uam::json::SetValue(goal_obj, "remainingItems", StringArrayToJson(goal.remaining_items));
 			uam::json::SetString(goal_obj, "currentStep", goal.current_step);

@@ -617,6 +617,7 @@ add_library(uam_core_objects OBJECT
   src/app/memory_library_service.cpp
   src/app/memory_service.cpp
   src/app/goal_service.cpp
+  src/app/decision_service.cpp
   src/app/native_session_link_service.cpp
   src/app/persistence_coordinator.cpp
   src/app/provider_resolution_service.cpp
@@ -1784,6 +1785,7 @@ if(UAM_BUILD_TESTS)
     tests/deleted_active_native_refresh_tests.cpp
     tests/sidechat_context_tests.cpp
     tests/goal_tests.cpp
+    tests/decision_service_tests.cpp
     tests/provider_child_activity_tests.cpp
     tests/theme_tests.cpp
     tests/resource_collection_tests.cpp

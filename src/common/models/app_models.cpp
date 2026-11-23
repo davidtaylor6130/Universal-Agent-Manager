@@ -58,6 +58,12 @@ std::string NormalizeDecisionSource(std::string_view source)
 	return known ? std::string(source) : std::string(kDecisionSourceUnknown);
 }
 
+std::string NormalizeDecisionBackend(std::string_view source, std::string_view backend)
+{
+	const bool model_source = source.starts_with(kDecisionSourceModelPrefix);
+	return model_source && backend == kDecisionBackendChatProvider ? std::string(backend) : std::string();
+}
+
 GoalStatus GoalStatusFromString(std::string_view value)
 {
 	if (value == "complete")

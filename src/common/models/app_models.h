@@ -465,6 +465,12 @@ inline constexpr char kDecisionSourceUnknown[] = "unknown";
 std::string ModelDecisionSource(std::string_view model_id);
 /// Unrecognized saved values become "unknown" so they can never read as a model review.
 std::string NormalizeDecisionSource(std::string_view source);
+/// Structured id of the decision backend behind a "model:<id>" source (see app/decision_service.h). The only backend
+/// is the chat provider: the goal's reviewer model answering in a private provider session.
+inline constexpr char kDecisionBackendChatProvider[] = "chat_provider";
+/// The backend id when the source names a model and the id is known; empty for filter, fallback, unknown or none,
+/// so a saved or stale backend can never attach to a decision no model made.
+std::string NormalizeDecisionBackend(std::string_view source, std::string_view backend);
 
 /// <summary>
 /// A thread-level goal that persists the agent across turns until it
@@ -483,6 +489,7 @@ struct Goal
 	std::string last_blocker_kind;           // machine-readable blocker category
 	std::string last_diagnostic;             // durable goal-loop diagnostic reason
 	std::string last_decision_source;        // see kDecisionSource*; empty until an automatic decision exists
+	std::string last_decision_backend;       // see kDecisionBackend*; read through NormalizeDecisionBackend
 	std::vector<std::string> completed_items;
 	std::vector<std::string> remaining_items;
 	std::string current_step;

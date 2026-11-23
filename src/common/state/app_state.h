@@ -958,6 +958,8 @@ namespace uam
 		std::string goal_review_user_prompt;
 		std::string goal_review_assistant_text;
 		int goal_review_repair_attempts = 0;
+		// DecisionService::NowMs() when the current goal review was first queued (its JSON repair keeps it); 0 when unknown.
+		std::int64_t goal_review_started_ms = 0;
 		// Runtime receipt from validated provider usage for the current goal worker or review turn, never reconstructed from turn text.
 		struct GoalReviewUsage
 		{

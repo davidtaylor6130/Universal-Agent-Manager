@@ -5221,6 +5221,8 @@ bool QueueGoalInternalPrompt(AppState& app, AcpSessionState& session, ChatSessio
 	if (fresh_session)
 		session.goal_internal_session = review_turn || !ProviderRuntimeRegistry::ResolveById(chat.provider_id).AcpGoalWorkersResumeConversation();
 	session.goal_review_turn = review_turn;
+	// Decision latency starts when the review is requested; a repair restores the first request's time.
+	session.goal_review_started_ms = review_turn ? DecisionService::NowMs() : 0;
 	if (chat.goal_owner_chat_id.empty() && !chat.active_goal_id.empty())
 	{
 		chat.goal_iteration_goal_id = chat.active_goal_id;
@@ -5344,6 +5346,7 @@ void ClearGoalReviewState(AcpSessionState& session)
 	session.goal_review_user_prompt.clear();
 	session.goal_review_assistant_text.clear();
 	session.goal_review_repair_attempts = 0;
+	session.goal_review_started_ms = 0;
 }
 
 void FailAcpTurnOrSession(AcpSessionState& session, ChatSession* chat,

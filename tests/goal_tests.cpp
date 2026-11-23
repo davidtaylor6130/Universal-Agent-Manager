@@ -4338,7 +4338,8 @@ UAM_TEST(GoalPromptCompactionPreservesDistinctTasksAndVerificationRules)
 namespace
 {
 	/// Runs one completed review turn and returns the goal it left behind.
-	Goal RunReviewForDecisionSource(const TempDir& temp, const std::string& review, const std::function<void(uam::AppState&, ChatSession&, Goal&)>& prepare = {}, const std::string& turn_model = {})
+	Goal RunReviewForDecisionSource(const TempDir& temp, const std::string& review, const std::function<void(uam::AppState&, ChatSession&, Goal&)>& prepare = {}, const std::string& turn_model = {},
+	                                std::int64_t review_started_ms = 0, std::vector<uam::AcpDiagnosticEntryState>* diagnostics_out = nullptr)
 	{
 		uam::AppState app;
 		app.data_root = temp.root;
@@ -4363,7 +4364,10 @@ namespace
 		session.goal_turn_model_id = turn_model;
 		session.goal_review_repair_attempts = 1; // No further repair: an invalid reply must stop here.
 		session.turn_assistant_message_index = 0;
+		session.goal_review_started_ms = review_started_ms;
 		UAM_ASSERT(uam::acp_detail::HandleGoalReviewCompletion(app, session, app.chats.front(), nullptr));
+		UAM_ASSERT_EQ(session.goal_review_started_ms, static_cast<std::int64_t>(0));
+		if (diagnostics_out != nullptr) *diagnostics_out = session.diagnostics;
 		return app.chats.front().goals.front();
 	}
 
@@ -4376,9 +4380,11 @@ UAM_TEST(GoalDecisionSourceNamesAModelOnlyForAParsedReview)
 	const Goal complete = RunReviewForDecisionSource(temp, R"({"decision":"complete","reason":"Verified.","evidence":["Tests passed"]})");
 	UAM_ASSERT_EQ(complete.status, GoalStatus::Complete);
 	UAM_ASSERT_EQ(complete.last_decision_source, std::string("model:worker-model"));
+	UAM_ASSERT_EQ(complete.last_decision_backend, std::string("chat_provider"));
 
 	const Goal blocked = RunReviewForDecisionSource(temp, R"({"decision":"blocked","reason":"Needs access.","blockerKind":"user_permission_approval"})");
 	UAM_ASSERT_EQ(blocked.last_decision_source, std::string("model:worker-model"));
+	UAM_ASSERT_EQ(blocked.last_decision_backend, std::string("chat_provider"));
 
 	const Goal small_model = RunReviewForDecisionSource(temp, R"({"decision":"complete","reason":"Verified.","evidence":["Tests passed"]})", [](uam::AppState&, ChatSession& chat, Goal& goal) {
 		chat.small_model_mode = true;
@@ -4397,6 +4403,7 @@ UAM_TEST(GoalDecisionSourceNamesAModelOnlyForAParsedReview)
 	});
 	UAM_ASSERT_EQ(capped.last_diagnostic, std::string("goal_blocked_max_loop_iterations_reached"));
 	UAM_ASSERT_EQ(capped.last_decision_source, std::string("filter"));
+	UAM_ASSERT(capped.last_decision_backend.empty());
 
 	const Goal repeated = RunReviewForDecisionSource(temp, kContinueReview, [](uam::AppState&, ChatSession&, Goal& goal) {
 		goal.last_next_prompt = "Do the next step.";
@@ -4404,10 +4411,51 @@ UAM_TEST(GoalDecisionSourceNamesAModelOnlyForAParsedReview)
 	});
 	UAM_ASSERT_EQ(repeated.status, GoalStatus::Blocked);
 	UAM_ASSERT_EQ(repeated.last_decision_source, std::string("filter"));
+	UAM_ASSERT(repeated.last_decision_backend.empty());
 
 	const Goal invalid = RunReviewForDecisionSource(temp, "Not a review at all.");
 	UAM_ASSERT_EQ(invalid.status, GoalStatus::Blocked);
 	UAM_ASSERT_EQ(invalid.last_decision_source, std::string("fallback"));
+	UAM_ASSERT(invalid.last_decision_backend.empty());
+
+	// A choice outside continue, blocked or complete never reaches the model attribution either.
+	const Goal unknown_choice = RunReviewForDecisionSource(temp, R"({"decision":"maybe","reason":"Unsure."})");
+	UAM_ASSERT_EQ(unknown_choice.last_decision_source, std::string("fallback"));
+	UAM_ASSERT(unknown_choice.last_decision_backend.empty());
+}
+
+UAM_TEST(GoalReviewDecisionDiagnosticReportsBackendLatencyAndUsage)
+{
+	TempDir temp("uam-decision-latency");
+	const auto decision_detail = [](const std::vector<uam::AcpDiagnosticEntryState>& diagnostics) {
+		for (const uam::AcpDiagnosticEntryState& entry : diagnostics)
+			if (entry.event == "goal_loop" && entry.reason == "goal_review_decision") return entry.detail;
+		return std::string{};
+	};
+
+	std::vector<uam::AcpDiagnosticEntryState> diagnostics;
+	const std::int64_t started = uam::DecisionService::NowMs() - 1500;
+	const Goal complete = RunReviewForDecisionSource(temp, R"({"decision":"complete","reason":"Private verdict text.","evidence":["Tests passed"]})", {}, {}, started, &diagnostics);
+	UAM_ASSERT_EQ(complete.status, GoalStatus::Complete);
+	const std::string detail = decision_detail(diagnostics);
+	UAM_ASSERT(detail.find("decisionChoice=complete") != std::string::npos);
+	UAM_ASSERT(detail.find("decisionSource=model:worker-model") != std::string::npos);
+	UAM_ASSERT(detail.find("decisionBackend=chat_provider") != std::string::npos);
+	UAM_ASSERT(detail.find("decisionLatencyMs=unknown") == std::string::npos);
+	const std::size_t latency_at = detail.find("decisionLatencyMs=");
+	UAM_ASSERT(latency_at != std::string::npos);
+	UAM_ASSERT(std::stoll(detail.substr(latency_at + std::string_view("decisionLatencyMs=").size())) >= 1500);
+	// No validated usage receipt in this fixture, so usage stays unknown instead of being estimated.
+	UAM_ASSERT(detail.find("decisionUsageTokens=unknown") != std::string::npos);
+	UAM_ASSERT(detail.find("Private verdict text.") == std::string::npos);
+
+	// A review with no recorded start reports unknown latency; an invalid one reports a fallback with no backend.
+	diagnostics.clear();
+	(void)RunReviewForDecisionSource(temp, "Not a review at all.", {}, {}, 0, &diagnostics);
+	const std::string fallback = decision_detail(diagnostics);
+	UAM_ASSERT(fallback.find("decisionSource=fallback") != std::string::npos);
+	UAM_ASSERT(fallback.find("decisionBackend=none") != std::string::npos);
+	UAM_ASSERT(fallback.find("decisionLatencyMs=unknown") != std::string::npos);
 }
 
 UAM_TEST(GoalDecisionSourceLeavesManualVerdictsUnattributed)
@@ -4442,6 +4490,7 @@ UAM_TEST(GoalDecisionSourcePersistsAndOlderSavesClaimNoSource)
 	goal.status = GoalStatus::Blocked;
 	goal.last_blocker = "Stopped.";
 	goal.last_decision_source = "model:reviewer";
+	goal.last_decision_backend = "chat_provider";
 	chat.goals.push_back(goal);
 	chat.attention_revision = "attention-1";
 	chat.attention_source = "filter";
@@ -4449,6 +4498,7 @@ UAM_TEST(GoalDecisionSourcePersistsAndOlderSavesClaimNoSource)
 	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(temp.root, chat.id);
 	UAM_ASSERT(saved.has_value());
 	UAM_ASSERT_EQ(saved->goals.front().last_decision_source, std::string("model:reviewer"));
+	UAM_ASSERT_EQ(saved->goals.front().last_decision_backend, std::string("chat_provider"));
 	UAM_ASSERT_EQ(saved->attention_source, std::string("filter"));
 
 	// A turn-end flag normally reaches disk through the summary overlay alone.
@@ -4509,7 +4559,19 @@ UAM_TEST(GoalDecisionSourcePersistsAndOlderSavesClaimNoSource)
 		document["attention_source"] = "ai";
 	});
 	UAM_ASSERT_EQ(tampered.goals.front().last_decision_source, std::string("unknown"));
+	UAM_ASSERT(tampered.goals.front().last_decision_backend.empty());
 	UAM_ASSERT_EQ(tampered.attention_source, std::string("unknown"));
+
+	// A saved backend beside a rule or fallback source, or an unknown backend id, is dropped on load.
+	const ChatSession filter_with_backend = load_edited([](nlohmann::json& document) { document["goals"][0]["lastDecisionSource"] = "filter"; });
+	UAM_ASSERT_EQ(filter_with_backend.goals.front().last_decision_source, std::string("filter"));
+	UAM_ASSERT(filter_with_backend.goals.front().last_decision_backend.empty());
+	const ChatSession unknown_backend = load_edited([](nlohmann::json& document) { document["goals"][0]["lastDecisionBackend"] = "hosted"; });
+	UAM_ASSERT_EQ(unknown_backend.goals.front().last_decision_source, std::string("model:reviewer"));
+	UAM_ASSERT(unknown_backend.goals.front().last_decision_backend.empty());
+	const ChatSession no_backend_key = load_edited([](nlohmann::json& document) { document["goals"][0].erase("lastDecisionBackend"); });
+	UAM_ASSERT_EQ(no_backend_key.goals.front().last_decision_source, std::string("model:reviewer"));
+	UAM_ASSERT(no_backend_key.goals.front().last_decision_backend.empty());
 
 	const ChatSession user_cleared = load_edited([](nlohmann::json& document) { document["goals"][0]["lastDecisionSource"] = ""; });
 	UAM_ASSERT(user_cleared.goals.front().last_decision_source.empty());

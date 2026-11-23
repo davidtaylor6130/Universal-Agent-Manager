@@ -329,3 +329,15 @@ Recorded limits that are not decisions: Claude Code, Gemini and Copilot children
 - Only the turn Stop control ends a chat's watches; stopping the provider session does not.
 - GitHub Enterprise hosts, GitLab and Azure DevOps are not supported.
 - The phone clients show no linked pull request row and cannot start or stop a watch.
+
+## Decision model
+
+Issue #363's first slice adds the decision interface with only the chat-provider backend, used by the goal review ([Goals](chat/goals.md#decision-source)). These questions are open and await David's decision before the next slices:
+
+- Is the issue's "turn review" the goal-loop review, which now uses the interface, or a separate per-turn review that does not exist yet?
+- Are hosted Jev early-access credentials available, and should sending goal or transcript text to a hosted decision service be opt-in only? This blocks only the hosted backend.
+- How would a local Laya backend be packaged and shipped?
+- Should [Permission AI Review](providers/permissions/ai-review.md), which is getting user allow/ask/deny command rules in separate work, later answer through the same interface, or stay a separate reviewer?
+- Where should the backend appear to the user: the goal window's Last decision row, diagnostics only, or both? The goal window is unchanged in this slice.
+
+The Settings backend picker waits until a second backend exists.
