@@ -11,10 +11,12 @@ class ShellActionService
 {
   public:
 	/// Saved entries that fail validation are kept in place as disabled, read-only actions carrying a one-line `invalid_reason`;
-	/// `warning_out` receives a one-line summary when any were kept or the saved file could not be read.
-	static std::vector<ShellAction> Load(const std::filesystem::path& data_root, const std::filesystem::path& default_skills_root = {}, std::string* warning_out = nullptr);
-	/// Writes kept invalid entries back from their saved form (disabled) and sets an unreadable saved file aside before replacing it.
-	static bool Save(const std::filesystem::path& data_root, const std::vector<ShellAction>& actions, std::string* error_out = nullptr);
+	/// `warning_out` receives a one-line summary when any were kept or the saved file could not be read; `unreadable_out`
+	/// reports the latter, which the next save must pass on as `set_current_aside`.
+	static std::vector<ShellAction> Load(const std::filesystem::path& data_root, const std::filesystem::path& default_skills_root = {}, std::string* warning_out = nullptr, bool* unreadable_out = nullptr);
+	/// Writes kept invalid entries back from their saved form (disabled). A saved file that does not parse, or any existing file when
+	/// `set_current_aside` is true (the last load could not read it), is copied aside before it is replaced.
+	static bool Save(const std::filesystem::path& data_root, const std::vector<ShellAction>& actions, std::string* error_out = nullptr, bool set_current_aside = false);
 	/// The list to save from the interface's full list: an excluded provider's actions, which the interface never sees, keep their
 	/// places, and each kept invalid entry the interface returns is saved exactly as loaded rather than as the interface sent it.
 	static std::vector<ShellAction> MergeInterfaceList(const std::vector<ShellAction>& current, std::vector<ShellAction> submitted);

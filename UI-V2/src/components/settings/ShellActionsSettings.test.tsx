@@ -198,7 +198,9 @@ describe('ShellActionsSettings', () => {
     const root = createRoot(host)
     await act(async () => root.render(<ShellActionsSettings />))
     try {
-      expect(host.textContent).toContain("Invalid and disabled: Shell action 'No input' must accept files, folders, or both.")
+      expect(host.textContent).toContain("Invalid: Shell action 'No input' must accept files, folders, or both.")
+      // A kept row's summary would describe settings it cannot use, so it shows only the reason.
+      expect(host.textContent).not.toContain('Open as workspace · files only')
       const toggle = host.querySelector<HTMLInputElement>('input[aria-label="Enable No input"]')!
       expect(toggle.disabled).toBe(true)
       expect(toggle.checked).toBe(false)

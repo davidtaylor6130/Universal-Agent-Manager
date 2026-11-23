@@ -599,12 +599,13 @@ namespace
 	{
 		const std::string action_id = request.contains("actionId") && request["actionId"].is_string() ? SafeId(request["actionId"].get<std::string>()) : std::string();
 		const auto action_it = std::find_if(app.shell_actions.begin(), app.shell_actions.end(), [&](const ShellAction& action) { return action.id == action_id; });
-		if (action_it != app.shell_actions.end() && !action_it->invalid_reason.empty())
+		// An excluded provider's actions are never shown or used, so a kept invalid one reports nothing about itself.
+		if (action_it != app.shell_actions.end() && !action_it->invalid_reason.empty() && !uam::excluded_provider_data::IsExcluded(action_it->provider_id))
 		{
 			status = "Shell action '" + action_it->label + "' is disabled because its saved settings are invalid: " + action_it->invalid_reason;
 			return false;
 		}
-		if (action_it == app.shell_actions.end() || !action_it->enabled || uam::provider_ids::IsRetainedExcludedProviderId(action_it->provider_id))
+		if (action_it == app.shell_actions.end() || !action_it->enabled || !action_it->invalid_reason.empty() || uam::provider_ids::IsRetainedExcludedProviderId(action_it->provider_id))
 		{
 			status = "Shell action is no longer available.";
 			return false;
@@ -636,7 +637,14 @@ namespace
 					status = "Shell action '" + action_it->label + "' cannot use: " + uam::paths::Utf8PathString(path);
 					return false;
 				}
-				paths.push_back(uam::paths::AbsolutePathNoThrow(path));
+				// A relative path gains the working directory, which is checked the same way.
+				fs::path absolute = uam::paths::AbsolutePathNoThrow(path);
+				if (ShellActionService::PathHasControlCharacters(uam::paths::Utf8PathString(absolute)))
+				{
+					status = "Shell action '" + action_it->label + "' cannot use a selected path whose name contains a line break or control character.";
+					return false;
+				}
+				paths.push_back(std::move(absolute));
 			}
 		}
 		if (paths.empty())
@@ -730,7 +738,8 @@ namespace
 		const char* wrong_type = nullptr;
 		const auto read = [&](const char* key, auto& out)
 		{
-			if (wrong_type == nullptr && !ReadSavedField(entry, key, out)) wrong_type = key;
+			// Every field is still read, so the kept row shows as much of the saved entry as possible.
+			if (!ReadSavedField(entry, key, out) && wrong_type == nullptr) wrong_type = key;
 		};
 		read("id", raw.id);
 		read("label", raw.label);
@@ -741,10 +750,13 @@ namespace
 		read("acceptsFolders", raw.accepts_folders);
 		read("enabled", raw.enabled);
 		read("openWorkspace", raw.open_workspace);
-		if (const auto group = entry.find("groupPath"); wrong_type == nullptr && group != entry.end())
+		if (const auto group = entry.find("groupPath"); group != entry.end())
 		{
 			const bool segments_are_text = group->is_array() && std::ranges::all_of(*group, [](const nlohmann::json& segment) { return segment.is_string(); });
-			if (!segments_are_text) wrong_type = "groupPath";
+			if (!segments_are_text)
+			{
+				if (wrong_type == nullptr) wrong_type = "groupPath";
+			}
 			else
 				for (const auto& segment : *group) raw.group_path.push_back(segment.get<std::string>());
 		}
@@ -771,8 +783,8 @@ namespace
 		return kept;
 	}
 
-	/// Saving replaces the file, so a file Load could not read is copied aside first rather than lost.
-	bool KeepUnreadableFileAside(const fs::path& data_root, std::string* error_out)
+	/// Saving replaces the file, so a file Load could not parse, or could not read at all (`always`), is copied aside first rather than lost.
+	bool KeepUnreadableFileAside(const fs::path& data_root, bool always, std::string* error_out)
 	{
 		const fs::path path = ActionsPath(data_root);
 		if (!uam::paths::PathExistsNoThrow(path)) return true;
@@ -785,12 +797,13 @@ namespace
 		if (uam::strings::Trim(text).empty()) return true;
 		try
 		{
-			if (nlohmann::json::parse(text).is_array()) return true;
+			if (!always && nlohmann::json::parse(text).is_array()) return true;
 		}
 		catch (const nlohmann::json::exception&)
 		{
 		}
-		const fs::path aside = data_root / ("shell_actions.unreadable-" + std::to_string(uam::time::SteadyEpochNanosecondsNow()) + ".json");
+		// A wall-clock name sorts and reads by date; the counter keeps two saves in one second apart.
+		const fs::path aside = data_root / ("shell_actions.unreadable-" + uam::time::UtcTimestampNow("%Y%m%dT%H%M%SZ") + "-" + std::to_string(uam::time::SteadyEpochNanosecondsNow() % 1000000000ULL) + ".json");
 		if (!uam::io::WriteTextFile(aside, text))
 		{
 			if (error_out != nullptr) *error_out = "The saved shell actions file could not be read or kept aside, so it was not replaced.";
@@ -801,9 +814,10 @@ namespace
 	}
 } // namespace
 
-std::vector<ShellAction> ShellActionService::Load(const std::filesystem::path& data_root, const std::filesystem::path& default_skills_root, std::string* warning_out)
+std::vector<ShellAction> ShellActionService::Load(const std::filesystem::path& data_root, const std::filesystem::path& default_skills_root, std::string* warning_out, bool* unreadable_out)
 {
 	if (warning_out != nullptr) warning_out->clear();
+	if (unreadable_out != nullptr) *unreadable_out = false;
 	std::vector<ShellAction> result;
 	const fs::path actions_path = ActionsPath(data_root);
 	if (!uam::paths::PathExistsNoThrow(actions_path) && !default_skills_root.empty())
@@ -819,6 +833,7 @@ std::vector<ShellAction> ShellActionService::Load(const std::filesystem::path& d
 	if (!uam::io::TryReadTextFile(actions_path, text))
 	{
 		if (warning_out != nullptr) *warning_out = unreadable;
+		if (unreadable_out != nullptr) *unreadable_out = true;
 		return result;
 	}
 	if (uam::strings::Trim(text).empty()) return result;
@@ -834,6 +849,7 @@ std::vector<ShellAction> ShellActionService::Load(const std::filesystem::path& d
 	if (!root.is_array())
 	{
 		if (warning_out != nullptr) *warning_out = unreadable;
+		if (unreadable_out != nullptr) *unreadable_out = true;
 		return result;
 	}
 
@@ -861,7 +877,8 @@ std::vector<ShellAction> ShellActionService::Load(const std::filesystem::path& d
 	for (std::size_t index = 0; index < result.size(); ++index)
 	{
 		if (result[index].invalid_reason.empty()) continue;
-		++invalid_count;
+		// An excluded provider's actions are never shown, so the notice does not count them.
+		if (!uam::excluded_provider_data::IsExcluded(result[index].provider_id)) ++invalid_count;
 		std::string id = kept_ids[index];
 		for (std::size_t suffix = 1; id.empty() || ids.contains(id); ++suffix) id = "invalid-shell-action-" + std::to_string(suffix);
 		ids.insert(id);
@@ -875,7 +892,7 @@ std::vector<ShellAction> ShellActionService::Load(const std::filesystem::path& d
 	return result;
 }
 
-bool ShellActionService::Save(const std::filesystem::path& data_root, const std::vector<ShellAction>& actions, std::string* error_out)
+bool ShellActionService::Save(const std::filesystem::path& data_root, const std::vector<ShellAction>& actions, std::string* error_out, bool set_current_aside)
 {
 	nlohmann::json root = nlohmann::json::array();
 	std::set<std::string> ids;
@@ -910,7 +927,7 @@ bool ShellActionService::Save(const std::filesystem::path& data_root, const std:
 		normalized_actions.push_back(std::move(normalized));
 	}
 	if (!ValidateMenuHierarchy(normalized_actions, error_out)) return false;
-	if (!KeepUnreadableFileAside(data_root, error_out)) return false;
+	if (!KeepUnreadableFileAside(data_root, set_current_aside, error_out)) return false;
 	if (!uam::io::WriteTextFile(ActionsPath(data_root), root.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) + "\n"))
 	{
 		if (error_out != nullptr) *error_out = "Failed to persist shell actions.";

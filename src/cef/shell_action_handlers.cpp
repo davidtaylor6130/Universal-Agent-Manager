@@ -52,12 +52,13 @@ void UamQueryHandler::HandleSetShellActions(CefRefPtr<CefBrowser> browser, const
 	std::string error;
 	// Excluded providers' actions and kept invalid entries are saved as loaded, never as the interface returned them.
 	if (ParseActions(payload, actions, error)) actions = ShellActionService::MergeInterfaceList(m_app.shell_actions, std::move(actions));
-	if (!error.empty() || !ShellActionService::Save(m_app.data_root, actions, &error))
+	if (!error.empty() || !ShellActionService::Save(m_app.data_root, actions, &error, m_app.shell_actions_unreadable))
 	{
 		cb->Failure(400, error);
 		return;
 	}
-	m_app.shell_actions = ShellActionService::Load(m_app.data_root);
+	// A save that followed an unreadable load set the old file aside; a failed reload here is caught again on the next save.
+	m_app.shell_actions = ShellActionService::Load(m_app.data_root, {}, nullptr, &m_app.shell_actions_unreadable);
 	m_app.shell_action_notification = "Shell action settings saved. Choose Apply to update Finder or Explorer.";
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");

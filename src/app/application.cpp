@@ -920,7 +920,7 @@ bool Application::InitializeState()
 	    m_app.data_root, m_platformServices->path_service.DefaultDataRootPath(), executable_path);
 	m_app.folders = ChatFolderStore::Load(m_app.data_root);
 	std::string shell_action_warning;
-	m_app.shell_actions = ShellActionService::Load(m_app.data_root, {}, &shell_action_warning);
+	m_app.shell_actions = ShellActionService::Load(m_app.data_root, {}, &shell_action_warning, &m_app.shell_actions_unreadable);
 	if (!shell_action_warning.empty())
 	{
 		// The warning names no action, label or path.
