@@ -200,7 +200,10 @@ jobs:
   # fails those cases instead of skipping them.
   svn-branch-linux:
     name: SVN branch service (Linux)
+    needs: changes
+    if: needs.changes.outputs.native == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     env:
       UAM_REQUIRE_SVN: '1'
     steps:
@@ -446,7 +449,7 @@ jobs:
         shell: pwsh
         run: |
           choco install sliksvn -y --no-progress
-          if ($LASTEXITCODE -ne 0) { throw 'SlikSVN install failed.' }
+          if ($LASTEXITCODE -notin 0, 1641, 3010) { throw 'SlikSVN install failed.' }
           $tool = Get-ChildItem 'C:\Program Files\SlikSvn', 'C:\Program Files (x86)\SlikSvn' -Recurse -Filter svnadmin.exe -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not $tool) { throw 'SlikSVN did not install svnadmin.exe.' }
           Add-Content -Path $env:GITHUB_PATH -Value $tool.DirectoryName
@@ -572,7 +575,7 @@ jobs:
         shell: pwsh
         run: |
           choco install sliksvn -y --no-progress
-          if ($LASTEXITCODE -ne 0) { throw 'SlikSVN install failed.' }
+          if ($LASTEXITCODE -notin 0, 1641, 3010) { throw 'SlikSVN install failed.' }
           $tool = Get-ChildItem 'C:\Program Files\SlikSvn', 'C:\Program Files (x86)\SlikSvn' -Recurse -Filter svnadmin.exe -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not $tool) { throw 'SlikSVN did not install svnadmin.exe.' }
           Add-Content -Path $env:GITHUB_PATH -Value $tool.DirectoryName

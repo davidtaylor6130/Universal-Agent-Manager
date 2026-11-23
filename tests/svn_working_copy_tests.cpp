@@ -393,6 +393,8 @@ UAM_TEST(SvnRealExpandedKeywordsAreNotChangesAndStayOutOfDiffs)
 	UAM_ASSERT(ReadFile(copies.checkout / "k.txt").starts_with("$Revision: 2 $\n"));
 }
 
+// POSIX-only, like the existing SVN snapshot case in svn_commit_scheduling_tests.cpp: managed snapshots of SVN
+// working copies have no Windows real-svn run yet, and these cases have not been run on Windows.
 #ifndef _WIN32
 UAM_TEST(SvnRealSnapshotChangesPortBackIntoTheWorkingCopy)
 {
@@ -441,33 +443,68 @@ UAM_TEST(SvnRealSnapshotChangesPortBackIntoTheWorkingCopy)
 UAM_TEST(SvnRealSnapshotPortBackRefusesWhenTheWorkingCopyMovedOn)
 {
 	if (!RealSvnAvailable() || !GitAvailableForTests()) return;
+	// Another user changes only a property of the file the chat edited. Without keywords its text is unchanged, so the
+	// port proceeds; with an expanded keyword the update rewrites the text, the source no longer matches the snapshot's
+	// baseline and the whole port is refused.
+	for (const bool keyword : {false, true})
+	{
+		SvnWorkingCopies copies;
+		UAM_ASSERT(uam::io::WriteTextFile(copies.checkout / "k.txt", "$Revision$\nbody\n"));
+		Svn(copies.checkout, {"add", "--", "k.txt"});
+		if (keyword) Svn(copies.checkout, {"propset", "svn:keywords", "Revision", "k.txt"});
+		Svn(copies.checkout, {"commit", "-m", "baseline"});
+		Svn(copies.checkout, {"update"});
+		const std::string before = keyword ? "$Revision: 1 $\nbody\n" : "$Revision$\nbody\n";
+		UAM_ASSERT_EQ(ReadFile(copies.checkout / "k.txt"), before);
+		SvnSnapshotChat snapshot(copies);
+		const fs::path worktree = snapshot.Worktree();
+		const std::string edited = keyword ? "$Revision: 1 $\nbody ported\n" : "$Revision$\nbody ported\n";
+		UAM_ASSERT(uam::io::WriteTextFile(worktree / "k.txt", edited));
+
+		Svn(copies.other, {"update"});
+		Svn(copies.other, {"propset", "uam:fixture", "moved", "k.txt"});
+		Svn(copies.other, {"commit", "-m", "property only"});
+		Svn(copies.checkout, {"update"});
+		const std::string updated = keyword ? "$Revision: 2 $\nbody\n" : before;
+		UAM_ASSERT_EQ(ReadFile(copies.checkout / "k.txt"), updated);
+
+		const uam::GitWorktreeOperationResult ported = uam::GitWorktreeService().PortChatChanges(copies.app, snapshot.Chat());
+		if (!keyword)
+		{
+			if (!ported.ok) throw TestFailure("port: " + ported.message);
+			UAM_ASSERT_EQ(ReadFile(copies.checkout / "k.txt"), edited);
+			continue;
+		}
+		UAM_ASSERT(!ported.ok);
+		UAM_ASSERT_EQ(ported.message, std::string("Source changed after the isolation baseline at k.txt. Resolve that conflict before porting chat changes."));
+		// Nothing was applied: the working copy is as the update left it and the chat keeps its snapshot and edit.
+		UAM_ASSERT_EQ(ReadFile(copies.checkout / "k.txt"), updated);
+		UAM_ASSERT(!snapshot.Chat().workspace_worktree_directory.empty());
+		UAM_ASSERT_EQ(ReadFile(worktree / "k.txt"), edited);
+		ChatSession source;
+		source.workspace_directory = copies.checkout.string();
+		UAM_ASSERT(copies.vcs.Status(copies.app, source, uam::VcsType::Svn, false).changed_files.empty());
+	}
+}
+
+UAM_TEST(SvnRealUpdateBeforeNewChatRunsBeforeTheManagedSnapshot)
+{
+	if (!RealSvnAvailable() || !GitAvailableForTests()) return;
 	SvnWorkingCopies copies;
-	UAM_ASSERT(uam::io::WriteTextFile(copies.checkout / "k.txt", "$Revision$\nbody\n"));
-	Svn(copies.checkout, {"add", "--", "k.txt"});
-	Svn(copies.checkout, {"propset", "svn:keywords", "Revision", "k.txt"});
-	Svn(copies.checkout, {"commit", "-m", "baseline"});
-	Svn(copies.checkout, {"update"});
-	SvnSnapshotChat snapshot(copies);
-	const fs::path worktree = snapshot.Worktree();
-	UAM_ASSERT(uam::io::WriteTextFile(worktree / "k.txt", "$Revision: 1 $\nbody ported\n"));
-
-	// Another user changes only a property: after the update the file's expanded keyword names the new revision,
-	// so the snapshot's patch context no longer matches the working copy's text.
+	copies.CommitFiles(copies.checkout, {{"b.txt", "b\n"}}, "baseline");
 	Svn(copies.other, {"update"});
-	Svn(copies.other, {"propset", "uam:fixture", "moved", "k.txt"});
-	Svn(copies.other, {"commit", "-m", "property only"});
-	Svn(copies.checkout, {"update"});
-	UAM_ASSERT_EQ(ReadFile(copies.checkout / "k.txt"), std::string("$Revision: 2 $\nbody\n"));
-
-	const uam::GitWorktreeOperationResult ported = uam::GitWorktreeService().PortChatChanges(copies.app, snapshot.Chat());
-	UAM_ASSERT(!ported.ok);
-	UAM_ASSERT(!ported.message.empty());
-	// Nothing was half-applied: the working copy is as the update left it and the chat keeps its snapshot.
-	UAM_ASSERT_EQ(ReadFile(copies.checkout / "k.txt"), std::string("$Revision: 2 $\nbody\n"));
-	UAM_ASSERT(!snapshot.Chat().workspace_worktree_directory.empty());
-	UAM_ASSERT_EQ(ReadFile(worktree / "k.txt"), std::string("$Revision: 1 $\nbody ported\n"));
-	ChatSession source;
-	source.workspace_directory = copies.checkout.string();
-	UAM_ASSERT(copies.vcs.Status(copies.app, source, uam::VcsType::Svn, false).changed_files.empty());
+	copies.CommitFiles(copies.other, {{"b.txt", "b\nincoming\n"}}, "incoming edit");
+	SvnLaunch launch(copies);
+	copies.app.settings.git_enabled = true;
+	launch.Chat().workspace_isolation_kind = uam::paths::kPendingGitWorktreeIsolationKind;
+	const auto task = launch.Run();
+	UAM_ASSERT(task->error.empty() && task->merged);
+	// The update runs first, so the chat's snapshot starts from the newest revision.
+	UAM_ASSERT_EQ(ReadFile(uam::paths::PathFromUtf8(launch.Chat().workspace_worktree_directory) / "b.txt"), std::string("b\nincoming\n"));
+	launch.AwaitSave(task);
+	UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(copies.app, launch.Chat()).state, uam::WorktreeLaunchPreparationState::Ready);
+	UAM_ASSERT(!ChatRepository::LoadLocalChat(copies.app.data_root, launch.chat_id)->svn_update_pending);
+	UAM_ASSERT_EQ(ReadFile(copies.checkout / "b.txt"), std::string("b\nincoming\n"));
+	UAM_ASSERT_EQ(copies.WorkingRevisions(), (std::set<std::string>{"2"}));
 }
 #endif

@@ -265,7 +265,9 @@ namespace
 			std::vector<std::string> command{"svn", "--config-dir", config, "--no-auth-cache"};
 			command.insert(command.end(), args.begin(), args.end());
 #ifdef _WIN32
-			FILE* pipe = _popen(uam::shell::JoinEscapedArgs(command).c_str(), "r");
+			// _popen runs `cmd /c` without /S: a line starting with a quote and holding more than two loses its first and
+			// last quote. One extra outer pair is what cmd strips, leaving every argument's own quotes intact.
+			FILE* pipe = _popen(("\"" + uam::shell::JoinEscapedArgs(command) + "\"").c_str(), "r");
 #else
 			FILE* pipe = popen(uam::shell::JoinEscapedArgs(command).c_str(), "r");
 #endif
