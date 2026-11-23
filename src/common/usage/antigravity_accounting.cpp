@@ -24,8 +24,11 @@ namespace uam::usage
 			case protobuf_wire::Error::OverflowingVarint: return std::runtime_error("Overflowing varint");
 			case protobuf_wire::Error::UnsupportedWireType: return std::runtime_error("Unsupported wire type");
 			case protobuf_wire::Error::TruncatedField: return std::runtime_error("Truncated field");
-			default: return std::runtime_error("Invalid fields");
+			case protobuf_wire::Error::NoncanonicalVarint:
+			case protobuf_wire::Error::InvalidTag:
+			case protobuf_wire::Error::TooManyFields: return std::runtime_error("Invalid fields");
 			}
+			return std::runtime_error("Invalid fields");
 		}
 		class Fields
 		{

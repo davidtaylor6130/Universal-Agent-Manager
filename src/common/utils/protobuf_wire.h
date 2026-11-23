@@ -37,9 +37,9 @@ namespace uam::protobuf_wire
 		bool reject_noncanonical_varints = false;
 	};
 
-	/// <summary>Reads one varint at position; make_error(Error) returns the exception object to throw.</summary>
+	/// <summary>Reads one varint at position; make_error(Error) returns the exception object to throw; pass a function or a copyable callable.</summary>
 	template <typename MakeError>
-	std::uint64_t ReadVarint(std::string_view bytes, std::size_t& position, const Policy& policy, const MakeError& make_error)
+	std::uint64_t ReadVarint(std::string_view bytes, std::size_t& position, const Policy& policy, MakeError make_error)
 	{
 		std::uint64_t value = 0;
 		for (unsigned shift = 0; shift < 70; shift += 7)
@@ -59,7 +59,7 @@ namespace uam::protobuf_wire
 
 	/// <summary>Splits bytes into fields in wire order. Accepts varint, 64-bit, length-delimited and 32-bit fields; groups are refused.</summary>
 	template <typename MakeError>
-	std::vector<Field> ReadFields(std::string_view bytes, const Policy& policy, const MakeError& make_error)
+	std::vector<Field> ReadFields(std::string_view bytes, const Policy& policy, MakeError make_error)
 	{
 		std::vector<Field> fields;
 		for (std::size_t position = 0; position < bytes.size();)
