@@ -828,7 +828,7 @@ namespace uam
 		const auto imported = ParseMarkdown(target, request.workspace_scope, markdown, &parse_error);
 		if (!imported.has_value())
 		{
-			if (error_out != nullptr) *error_out = "The imported UAM agent failed canonical validation: " + parse_error;
+			if (error_out != nullptr) *error_out = uam::strings::NonEmptyOrFallback(parse_error, "The imported UAM agent is invalid.");
 			return false;
 		}
 		if (!uam::io::WriteTextFile(target, markdown))
@@ -845,7 +845,7 @@ namespace uam
 	{
 		const auto fail = [&](const std::string& message) { if (error_out != nullptr) *error_out = message; return false; };
 		const std::string id = uam::strings::TrimAndLowerAscii(agent.id);
-		if (!ValidId(id) || id == "build" || id == "plan") return fail("Use a lowercase agent name with letters, numbers, - or _. Build and Plan are built in.");
+		if (!ValidId(id) || id == "build" || id == "plan") return fail("Use a lowercase agent name with letters, numbers, - or _, other than the built-in Build and Plan.");
 		if (agent.description.find_first_of("\"\r\n") != std::string::npos) return fail("The description must be one line without double quotes.");
 		const std::filesystem::path root = data_root / "agents";
 		std::error_code create_error;
@@ -873,7 +873,7 @@ namespace uam
 		                             "\nskills: " + IdListMarkdown(agent.skills) + "\ndelegates: " + IdListMarkdown(agent.delegates) +
 		                             "\n" + (permission.empty() ? "" : "openCodePermission: " + permission + "\n") + "---\n" + uam::strings::Trim(agent.instructions) + "\n";
 		std::string validation_error;
-		if (!ParseMarkdown(target, false, markdown, &validation_error)) return fail("Agent is invalid: " + validation_error);
+		if (!ParseMarkdown(target, false, markdown, &validation_error)) return fail(uam::strings::NonEmptyOrFallback(validation_error, "The agent is invalid."));
 		if (!uam::io::WriteTextFile(target, markdown)) return fail("The agent could not be written.");
 		std::uintmax_t bytes = 0;
 		std::string parse_error;
@@ -882,7 +882,7 @@ namespace uam
 			// Never leave an invalid definition behind; restore the previous file or remove the new one.
 			if (previous.empty()) std::filesystem::remove(target, create_error);
 			else (void)uam::io::WriteTextFile(target, previous);
-			return fail("Agent is invalid: " + parse_error);
+			return fail(uam::strings::NonEmptyOrFallback(parse_error, "The agent is invalid."));
 		}
 		if (error_out != nullptr) error_out->clear();
 		return true;
@@ -986,7 +986,7 @@ namespace uam
 			    ? nlohmann::json::parse(inline_config, inline_config + length, nullptr, false) : nlohmann::json();
 			if (!config.is_object() || config.contains("agent") || config.contains("default_agent") || config.contains("mode"))
 			{
-				if (error_out != nullptr) *error_out = "The imported permission policy cannot run with invalid or oversized OPENCODE_CONFIG_CONTENT, or inline agent, default_agent, or mode overrides. Adjust that environment setting before retrying.";
+				if (error_out != nullptr) *error_out = "The imported permission policy cannot run with the current OPENCODE_CONFIG_CONTENT setting; adjust it before retrying.";
 				return false;
 			}
 		}

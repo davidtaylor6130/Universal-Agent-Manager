@@ -6,6 +6,7 @@
 #include "common/paths/app_paths.h"
 #include <utility>
 #include "common/utils/io_utils.h"
+#include "common/utils/diagnostic_log.h"
 
 #include <fstream>
 #include <nlohmann/json.hpp>
@@ -67,9 +68,9 @@ namespace
 				if (m_depth == 1)
 				{
 					if ((m_root_key == "nextCursor" || m_root_key == "next_cursor") && !value.is_null() && (!value.is_string() || !value.get_ref<const std::string&>().empty()))
-						return Fail("OpenCode export returned incomplete paginated history. Retry the import.");
+						return Fail("OpenCode returned incomplete history; retry the import.");
 					if ((m_root_key == "hasMore" || m_root_key == "has_more") && (!value.is_boolean() || value.get<bool>()))
-						return Fail("OpenCode export returned incomplete paginated history. Retry the import.");
+						return Fail("OpenCode returned incomplete history; retry the import.");
 				}
 				return true;
 			}
@@ -122,7 +123,7 @@ namespace
 			wrapper["messages"].push_back(std::move(value));
 			ChatHistorySyncService::RemoteOpenCodeTranscript mapped = ChatHistorySyncService::ParseRemoteOpenCodeTranscript(wrapper.dump());
 			if (!mapped.success) return Fail(mapped.error);
-			if (!mapped.verified_empty && !uam::HasImportedConversationContent(mapped.messages)) return Fail("OpenCode history contains entries that could not be imported. Retry after updating the provider.");
+			if (!mapped.verified_empty && !uam::HasImportedConversationContent(mapped.messages)) return Fail("Some OpenCode history could not be imported; update OpenCode and retry.");
 			for (const Message& message : mapped.messages)
 				if (m_stop.stop_requested() || !m_emit(message)) return Fail("OpenCode history loading was canceled or its destination could not be written.");
 			return true;
@@ -169,13 +170,22 @@ namespace uam::opencode_import
 			const ProcessExecutionResult result = ExecuteProviderWorkerInvocation(invocation, workspace, opencode_v2::HistoryCommandTimeoutMilliseconds(invocation.argv), stop);
 			if (!result.ok || result.exit_code != 0 || stop.stop_requested())
 			{
-				error = "OpenCode could not export the session: " + strings::NonEmptyOrFallback(result.error,
-				    strings::NonEmptyOrFallback(opencode_v2::AdapterError(result.diagnostic_tail), "exit " + std::to_string(result.exit_code)));
+				diagnostics::Write("[OpenCode import] OpenCode could not export the session: " + strings::NonEmptyOrFallback(result.error,
+				    strings::NonEmptyOrFallback(opencode_v2::AdapterError(result.diagnostic_tail), "exit " + std::to_string(result.exit_code))));
+				error = "OpenCode could not export the session.";
 				return false;
 			}
 			return true;
 		}, {}, written);
-		if (!complete) { if (error.empty()) error = "OpenCode export could not be written: " + written.error; return {}; }
+		if (!complete)
+		{
+			if (error.empty())
+			{
+				diagnostics::Write("[OpenCode import] OpenCode export could not be written: " + written.error);
+				error = "OpenCode export could not be saved.";
+			}
+			return {};
+		}
 		return source;
 	}
 

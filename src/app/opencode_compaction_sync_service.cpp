@@ -925,7 +925,10 @@ struct OpenCodeCompactionSyncService::State
 			else if (!((detail.find("no such column") != std::string::npos || detail.find("no such table") != std::string::npos ||
 			    work.result.output.find("no such column") != std::string::npos || work.result.output.find("no such table") != std::string::npos) &&
 			    DegradeUnverifiedBaseline(app, context, work, detail)))
-				context.error = "Native compaction metadata query failed: " + detail;
+			{
+				diagnostics::Write("[OpenCode compaction] Native compaction metadata query failed: " + detail);
+				context.error = "Could not read OpenCode compaction details.";
+			}
 			return false;
 		}
 		try
@@ -1104,7 +1107,8 @@ struct OpenCodeCompactionSyncService::State
 			context.cursor = work.cursor;
 			context.pending = work.pending;
 			if (context.owner) context.owner->completed = work.completed;
-			context.error = std::string("Native compaction metadata could not be verified: ") + exception.what();
+			diagnostics::Write(std::string("[OpenCode compaction] Native compaction metadata could not be verified: ") + exception.what());
+			context.error = "Could not verify OpenCode compaction details.";
 			return false;
 		}
 	}
@@ -1128,7 +1132,7 @@ struct OpenCodeCompactionSyncService::State
 			{
 				const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
 				if (now >= context.owner->pending_deadline)
-					context.error = "Native compaction metadata remained pending after its completed turn. The next prompt was not sent; retry after checking the provider.";
+					context.error = "OpenCode compaction details remained pending, so the next prompt was not sent.";
 				else if (now < context.owner->next_pending_probe) { ++current; continue; }
 			}
 			if (std::chrono::steady_clock::now() < context.retry_at) { ++current; continue; }
@@ -1323,7 +1327,7 @@ bool OpenCodeCompactionSyncService::Poll(AppState& app)
 		if (context.error.empty() && context.owner && !context.owner->live && !m_state->QueryAwaited(context) && context.owner->pending_deadline != std::chrono::steady_clock::time_point{} &&
 		    std::chrono::steady_clock::now() >= context.owner->pending_deadline)
 		{
-			context.error = "Native compaction metadata remained pending after its completed turn. The next prompt was not sent; retry after checking the provider.";
+			context.error = "OpenCode compaction details remained pending, so the next prompt was not sent.";
 			if (m_state->active && m_state->active->identity.chat_id == current->first) m_state->active->cancellation.request_stop();
 			diagnostics::Write("[OpenCode compaction] " + context.error);
 		}

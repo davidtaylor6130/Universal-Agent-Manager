@@ -13,6 +13,7 @@
 #include "common/paths/path_utils.h"
 #include "common/paths/workspace_root.h"
 #include "common/runtime/acp/acp_session_runtime.h"
+#include "common/utils/diagnostic_log.h"
 #include "common/utils/env_utils.h"
 #include "common/utils/io_utils.h"
 #include "common/utils/string_utils.h"
@@ -547,7 +548,7 @@ namespace
 		const std::string provider_id = action_it->provider_id.empty() ? app.settings.default_new_chat_provider_id : action_it->provider_id;
 		if (!uam::provider_availability::IsEnabled(app.settings, provider_id))
 		{
-			status = "Shell action '" + action_it->label + "' uses a provider that is disabled on this computer. Enable it in Settings > Providers.";
+			status = "Shell action '" + action_it->label + "' uses a provider that is disabled here; enable it in Settings > Providers.";
 			return false;
 		}
 
@@ -582,7 +583,8 @@ namespace
 			std::string error;
 			if (!MarkdownStoreService::ValidateStoreFilePath(store_root, action_it->skill_path, &skill_path, &error))
 			{
-				status = "Shell action skill is unavailable: " + error;
+				uam::diagnostics::Write("[shell-action] Shell action skill is unavailable: " + error);
+				status = "This shell action's skill is unavailable.";
 				return false;
 			}
 		}
@@ -610,7 +612,7 @@ namespace
 
 		if (action_it->open_workspace)
 		{
-			status = "Opened workspace: " + uam::paths::Utf8PathString(workspace);
+			status = "Opened workspace in a new chat.";
 			return true;
 		}
 

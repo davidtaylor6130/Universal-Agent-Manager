@@ -155,8 +155,8 @@ namespace uam
 			{
 				std::string titles;
 				for (const std::string& title : waiting) titles += (titles.empty() ? "" : ", ") + title;
-				discovery.result.Fail("Remote history on " + host.id + " could not be reached (" + strings::SafeLine(reason, 240, true) +
-				    "). UAM will retry automatically for these workspaces: " + titles + ".");
+				diagnostics::Write("Startup native history: remote history on host " + strings::SafeLine(host.id, 128, true) + " could not be reached: " + strings::SafeLine(reason, 240, true));
+				discovery.result.Fail("Remote history on " + host.id + " could not be reached; UAM will retry for these workspaces: " + titles + ".");
 			}
 			return discovery;
 		}
@@ -164,7 +164,8 @@ namespace uam
 		{
 			// A jthread body must not throw; the failure stays on this host's report.
 			ChatHistorySyncService::LocalHistoryDiscovery failed;
-			failed.result.Fail(std::string("Remote history discovery failed: ") + error.what());
+			diagnostics::Write(std::string("Startup native history: Remote history discovery failed: ") + error.what());
+			failed.result.Fail("Remote history discovery failed.");
 			return failed;
 		}
 	}
@@ -300,7 +301,8 @@ namespace uam
 		}
 		catch (const std::exception& error)
 		{
-			AddError(std::string("History discovery could not start: ") + error.what());
+			diagnostics::Write(std::string("Startup native history: History discovery could not start: ") + error.what());
+			AddError("History discovery could not start.");
 			m_phase = "complete";
 		}
 	}
@@ -412,7 +414,8 @@ namespace uam
 		catch (const std::exception& error)
 		{
 			for (const StartupNativeImportRemoteScope& scope : m_scan_request.remote_scopes) scope.complete->store(true);
-			AddError(std::string("Remote history discovery could not start: ") + error.what());
+			diagnostics::Write(std::string("Startup native history: Remote history discovery could not start: ") + error.what());
+			AddError("Remote history discovery could not start.");
 		}
 		return true;
 	}
@@ -470,7 +473,11 @@ namespace uam
 			})) return false;
 			ChatHistorySyncService::LocalHistoryDiscovery discovery;
 			try { discovery = m_scan.get(); }
-			catch (const std::exception& error) { AddError(std::string("History discovery failed: ") + error.what()); }
+			catch (const std::exception& error)
+			{
+				diagnostics::Write(std::string("Startup native history: History discovery failed: ") + error.what());
+				AddError("History discovery failed.");
+			}
 			if (m_stop.stop_requested()) return false;
 			if (discovery.open_code_next_offset) app.open_code_history_scan_offset = *discovery.open_code_next_offset;
 			const bool changed_list = m_scan_request.open_code_remaining &&
@@ -708,7 +715,7 @@ namespace uam
 			return false;
 		};
 		if (!m_include_unregistered_local || m_phase != "ready" || generation != m_generation)
-			return reject("History candidates changed. Review the current list.");
+			return reject("The history list changed; review the current list.");
 		const std::string name = strings::Trim(title);
 		if (name.empty() || name.size() > 256 || std::ranges::any_of(name, [](unsigned char character) { return character < 0x20 || character == 0x7f; }))
 			return reject("Enter a workspace name of at most 256 bytes on one line.");
@@ -733,7 +740,7 @@ namespace uam
 				if (candidate.chat.workspace_directory == found->chat.workspace_directory) assignment = candidate.owner;
 			}
 			if (assignment.id.empty()) assignment.id = ChatFolderStore::AllocateId(reserved);
-			if (assignment.id.empty()) return reject("A workspace identity could not be allocated. Try again.");
+			if (assignment.id.empty()) return reject("Could not create a workspace for this history; try again.");
 			assignment.title = name;
 			assignment.directory = found->chat.workspace_directory;
 			assignment.execution_host_id = "local";
@@ -745,7 +752,7 @@ namespace uam
 			if (candidate.owner.id.empty()) continue;
 			const ChatFolder* resolved = ChatHistorySyncService().StartupImportWorkspaceOwner(plan, candidate.chat);
 			if (resolved == nullptr || resolved->id != candidate.owner.id)
-				return reject("This workspace conflicts with another reviewed assignment. Import that selection first, then discover again.");
+				return reject("This workspace conflicts with another choice; import that selection first, then discover again.");
 		}
 		// Group only the exact source path; no caller-supplied path can relocate native history.
 		const std::string source = found->chat.workspace_directory;
@@ -770,7 +777,7 @@ namespace uam
 			if (error_out != nullptr) *error_out = error;
 			return false;
 		};
-		if (m_phase != "ready" || generation != m_generation) return reject("History candidates changed. Review the current list.");
+		if (m_phase != "ready" || generation != m_generation) return reject("The history list changed; review the current list.");
 		if (import_all && (!selected_ids.empty() || !declined_ids.empty())) return reject("Import all cannot be combined with selected decisions.");
 		std::vector<std::string> selected_candidates = selected_ids;
 		if (import_all)
@@ -798,9 +805,9 @@ namespace uam
 		{
 			const std::unordered_map<std::string, const Candidate*>::const_iterator candidate = candidates_by_id.find(id);
 			if (candidate == candidates_by_id.end())
-				return reject("A history candidate is no longer available or its workspace changed. Review the current list.");
+				return reject("A history is gone or its workspace changed; review the current list.");
 			if (!folder_id.empty() && candidate->second->owner.id != folder_id)
-				return reject("A history candidate belongs to another workspace. Review the current list.");
+				return reject("A history belongs to another workspace; review the current list.");
 			if (std::ranges::find(selected_candidates, id) != selected_candidates.end() && candidate->second->owner.id.empty())
 				return reject("Assign a workspace to every selected history before importing.");
 		}
@@ -810,7 +817,7 @@ namespace uam
 			if (declined.contains(candidate.summary.candidate_id)) declined_chats.push_back(OwnershipMetadata(candidate.chat));
 		std::vector<std::string> added_keys;
 		if (!ChatHistorySyncService().AddNativeImportTombstones(app.data_root, declined_chats, added_keys))
-			return reject("Declined history could not be saved. No decisions were applied.");
+			return reject("Declined history could not be saved, so no choices were applied.");
 		const std::unordered_set<std::string> selected(selected_candidates.begin(), selected_candidates.end());
 		m_import.preparation_stop = std::stop_source{};
 		// Sub-chats follow their parent's decision. Collect them nearest level first, each in its parent's reviewed workspace.

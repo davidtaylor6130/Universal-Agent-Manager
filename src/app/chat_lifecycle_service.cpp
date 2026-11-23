@@ -32,6 +32,7 @@
 #include "common/runtime/terminal/terminal_identity.h"
 #include "common/runtime/terminal/terminal_provider_cli.h"
 #include "common/security/permission_change_log.h"
+#include "common/utils/diagnostic_log.h"
 #include "common/utils/io_utils.h"
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
@@ -846,18 +847,18 @@ namespace
 
 	std::string StatusAfterFolderDelete(std::size_t deleted_chat_count, bool settings_saved, bool native_cleanup_failed)
 	{
-		std::string status_line = "Workspace deletion complete. Deleted " + std::to_string(deleted_chat_count) + " chat(s).";
+		std::string status_line = "Workspace deleted with " + std::to_string(deleted_chat_count) + " chat(s)";
 
 		if (!settings_saved)
 		{
-			status_line += " Settings persistence also failed.";
+			status_line += "; settings could not be saved";
 		}
 		if (native_cleanup_failed)
 		{
-			status_line += " Some provider-native history could not be removed.";
+			status_line += "; some provider history could not be removed";
 		}
 
-		return status_line;
+		return status_line + ".";
 	}
 
 	std::string StatusAfterFolderDeletePreconditionFailure(std::string_view failure, bool rollback_saved)
@@ -865,6 +866,7 @@ namespace
 		std::string status_line(failure);
 		if (!rollback_saved)
 		{
+			if (status_line.ends_with('.')) status_line.pop_back();
 			status_line += ", and rollback also failed.";
 		}
 		return status_line;
@@ -1158,7 +1160,7 @@ std::optional<ChatSession> uam::BuildTemporarySideChatCandidate(AppState& app, c
 		!ChatRepository::MatchesMessagePage(*parent, prepared->page) ||
 		ChatRepository::ChatStorageRevision(app.data_root, parent->id) != prepared->page.storage_revision))
 	{
-		app.status_line = "The main chat context changed or is not prepared. Retry the side chat.";
+		app.status_line = "The main chat changed or is not ready; retry the side chat.";
 		return std::nullopt;
 	}
 	std::string context_error;
@@ -1236,7 +1238,7 @@ bool uam::RequestTemporarySideChatCleanup(AppState& app, const std::string& chat
 	if (!ChatRepository::SaveChat(app.data_root, *chat))
 	{
 		chat->side_cleanup_requested = previous;
-		app.status_line = "Could not save the side-chat cleanup request. The conversation was kept.";
+		app.status_line = "Could not save the side-chat cleanup request, so the conversation was kept.";
 		return false;
 	}
 	chat->side_cleanup_retry_time_s = 0.0;
@@ -1272,7 +1274,7 @@ bool uam::PollTemporarySideChatCleanup(AppState& app)
 					if (result->exit_confirmed) service.CloseStdioProcessHandles(*owned);
 					finished->store(true);
 				});
-				app.status_line = "Side-chat stop is not confirmed. Cleanup will retry.";
+				app.status_line = "Side-chat stop is not confirmed yet; UAM will retry cleanup.";
 				continue;
 			}
 		}
@@ -1638,7 +1640,7 @@ bool uam::QueueHoldHasNoInput(const AppState& app, const ChatSession& chat)
 
 namespace
 {
-	constexpr const char* kQueueStorageRefusal = "This chat's saved queue could not be read, and UAM has no control to repair it here. Restart UAM to read it again.";
+	constexpr const char* kQueueStorageRefusal = "This chat's saved queue could not be read; restart UAM to read it again.";
 	constexpr const char* kHeldQueueRefusal = "Resume or discard the held queued input first.";
 	constexpr const char* kUnsentRefusal = "Remove or retry the unsent message first.";
 
@@ -1717,11 +1719,11 @@ const char* uam::NativeResetRefusalReason(const AppState& app, const ChatSession
 	if (!chat.acp_queue_held && (session == nullptr || !session->queue_held)) return nullptr;
 	if (chat.acp_queue_storage_error || chat.managed_followup_input_unavailable) return kQueueStorageRefusal;
 	if (!chat.acp_queued_prompts.empty() || chat.acp_dispatched_queued_prompt_count != 0 || (session != nullptr && !session->queued_user_prompts.empty()))
-		return ScanProviderSwitchQueue(app, chat).clearable ? kHeldQueueRefusal : "This chat has held input with no control. Change the chat's provider and accept the warning, then try again.";
+		return ScanProviderSwitchQueue(app, chat).clearable ? kHeldQueueRefusal : "This chat has held input UAM cannot control; change its provider and accept the warning to continue.";
 	if (ChatHasUnsentAcpPrompt(app, chat) || ChatHasActionableUnsentRecovery(chat)) return kUnsentRefusal;
 	// The old turn may already have run this row; a handoff would send it again.
 	if (ChatHasUncertainRemoteInput(chat) && std::ranges::any_of(chat.messages, &Message::AcpPromptAwaitsDecision))
-		return "UAM cannot confirm whether this chat's latest message reached the provider. Wait for that turn to settle, or change the chat's provider and accept the warning, then try again.";
+		return "UAM cannot confirm the provider got the latest message; wait for it to settle or switch and accept the warning.";
 	return nullptr;
 }
 
@@ -1935,7 +1937,8 @@ bool uam::BranchFromMessageAndRetry(AppState& app, const std::string& source_cha
 	if (reused_existing_branch)
 	{
 		if (branch->branch_retry_error.empty()) return true;
-		app.status_line = "Branch exists, but regeneration did not start: " + branch->branch_retry_error;
+		uam::diagnostics::Write("[chat-branch] Branch exists, but regeneration did not start: " + branch->branch_retry_error);
+		app.status_line = "The branch exists, but regeneration did not start.";
 		if (warning_out != nullptr) *warning_out = app.status_line;
 		if (error_out != nullptr) *error_out = app.status_line;
 		return false;
@@ -1954,7 +1957,8 @@ bool uam::BranchFromMessageAndRetry(AppState& app, const std::string& source_cha
 			failed_branch->branch_retry_error = failure;
 			(void)SaveChatHistories(app, {*failed_branch});
 		}
-		app.status_line = "Branch was created, but regeneration could not start: " + failure;
+		uam::diagnostics::Write("[chat-branch] Branch was created, but regeneration could not start: " + failure);
+		app.status_line = "Branch was created, but regeneration could not start.";
 		if (warning_out != nullptr) *warning_out = app.status_line;
 		if (error_out != nullptr) *error_out = app.status_line;
 		return false;
@@ -2055,7 +2059,7 @@ bool uam::RecoverPendingDeletionTransaction(AppState& app)
 	DeletionIntent intent;
 	if (!LoadDeletionIntent(app.data_root, intent))
 	{
-		app.status_line = "A pending deletion transaction is corrupt. UAM left the recovery evidence untouched and will not open the chat database.";
+		app.status_line = "A pending deletion is damaged, so UAM kept its recovery data and did not open the chats.";
 		return false;
 	}
 
@@ -2071,11 +2075,12 @@ bool uam::RecoverPendingDeletionTransaction(AppState& app)
 	bool native_cleanup_failed = false;
 	if (!CompleteDeletionTransaction(recovery, intent, next_chats, next_folders, deleted_chats, native_cleanup_failed))
 	{
-		app.status_line = "A pending deletion transaction could not be completed. Recovery evidence was preserved and UAM will not open a partial chat database.";
+		app.status_line = "A pending deletion could not finish, so UAM kept its recovery data and did not open the chats.";
 		return false;
 	}
-	app.status_line = "Recovered and completed an interrupted deletion transaction.";
-	if (native_cleanup_failed) app.status_line += " Some provider-native history could not be removed, but durable tombstones prevent reimport.";
+	app.status_line = native_cleanup_failed
+	    ? "Finished an interrupted deletion; some provider history could not be removed but will not be reimported."
+	    : "Recovered and completed an interrupted deletion transaction.";
 	return true;
 }
 
@@ -2173,7 +2178,7 @@ bool uam::PrepareWorkspaceDeletion(AppState& app, const std::vector<std::string>
 	}
 	if (remote_stop_started)
 	{
-		app.status_line = "Remote runtimes in this folder are stopping. Retry deletion after they finish.";
+		app.status_line = "Remote runtimes in this folder are stopping; retry deletion after they finish.";
 		return false;
 	}
 	if (std::ranges::any_of(deleted.chats, [&app](const ChatSession& chat)
@@ -2254,7 +2259,7 @@ bool uam::PrepareChatDeletion(AppState& app, const std::vector<std::string>& cha
 		}
 		if (BeginIdleRemoteStopForDeletion(app, id, chat))
 		{
-			app.status_line = "The remote runtime is stopping. Retry deletion after it finishes.";
+			app.status_line = "The remote runtime is stopping; retry deletion after it finishes.";
 			return false;
 		}
 		if (ChatHasDeletionBlockingRuntime(app, id, chat))
@@ -2287,7 +2292,7 @@ bool uam::PrepareChatDeletion(AppState& app, const std::vector<std::string>& cha
 	}
 	if (!StopChatRuntimes(app, targets))
 	{
-		app.status_line = "Deletion is waiting for its runtime to stop. Retry after it finishes.";
+		app.status_line = "Deletion is waiting for its runtime to stop; retry after it finishes.";
 		return false;
 	}
 	task.deleting_chats = true;
@@ -2437,7 +2442,7 @@ void uam::CommitWorkspaceDeletion(AppState& app, WorkspaceDeletionTask& task)
 	{
 		task.commit_rejected = true;
 		app.worktree_operation_chat_ids.insert(task.deleted_ids.begin(), task.deleted_ids.end());
-		app.status_line = "Failed to save deletion ownership. Deletion is pending until restart.";
+		app.status_line = "Could not save the deletion, so it stays pending until UAM restarts.";
 		return;
 	}
 	std::vector<ChatFolder> next_folders;
@@ -2446,7 +2451,7 @@ void uam::CommitWorkspaceDeletion(AppState& app, WorkspaceDeletionTask& task)
 	if (std::ranges::find(task.folder_ids, uam::strings::Trim(app.new_chat_folder_id)) != task.folder_ids.end())
 		app.new_chat_folder_id.clear();
 	task.settings_saved = PersistenceCoordinator().SaveSettings(app);
-	app.status_line = task.deleting_chats ? "Chats deleted. Cleaning up history." : "Workspaces deleted. Cleaning up history.";
+	app.status_line = task.deleting_chats ? "Chats deleted; cleaning up history." : "Workspaces deleted; cleaning up history.";
 }
 
 bool uam::CleanupWorkspaceDeletion(WorkspaceDeletionTask& task)
@@ -2461,8 +2466,8 @@ bool uam::CleanupWorkspaceDeletion(WorkspaceDeletionTask& task)
 	            (native_cleanup_failed ? " Some provider-native history could not be removed." : std::string())
 	        : StatusAfterFolderDelete(task.deleted_ids.size(), task.settings_saved, native_cleanup_failed))
 	    : (task.deleting_chats
-	        ? "Chat deletion is committed and hidden. Disk cleanup will finish safely on restart."
-	        : "Workspace deletion is committed and hidden. Disk cleanup will finish safely on restart.");
+	        ? "Chats were deleted and hidden; disk cleanup will finish on restart."
+	        : "Workspaces were deleted and hidden; disk cleanup will finish on restart.");
 	return completed;
 }
 
@@ -2594,14 +2599,15 @@ bool RenameFolderById(uam::AppState& app, const std::string& folder_id, const st
 					    !uam::chat::BuildConversationHandoff(chat, chat.provider_handoff_context, &warning))
 					{
 						app.chats = original_chats;
-						app.status_line = "The workspace was kept because its chat context could not be prepared. " + warning;
+						uam::diagnostics::Write("[workspace-move] Chat context could not be prepared: " + warning);
+						app.status_line = "The workspace was kept because its chat context could not be prepared.";
 						return false;
 					}
 					if (const char* refusal = uam::NativeResetRefusalReason(app, chat))
 					{
 						const std::string blocking_title = chat.title;
 						app.chats = original_chats;
-						app.status_line = "The workspace was kept because of the chat \"" + blocking_title + "\". " + refusal;
+						app.status_line = "\"" + blocking_title + "\": " + refusal;
 						return false;
 					}
 					chat.native_session_id.clear();
@@ -2623,7 +2629,7 @@ bool RenameFolderById(uam::AppState& app, const std::string& folder_id, const st
 		{
 			if (StopAndEraseCliTerminalForChat(app, chat_id, false)) continue;
 			app.chats = original_chats;
-			app.status_line = "The workspace was kept because a chat's CLI terminal could not be stopped. Try again.";
+			app.status_line = "The workspace was kept because a chat's CLI terminal could not be stopped.";
 			return false;
 		}
 		if (!SaveChatHistories(app, app.chats))

@@ -59,6 +59,7 @@
 #include "common/runtime/terminal/terminal_identity.h"
 #include "common/runtime/terminal_common.h"
 #include "common/runtime/terminal_polling.h"
+#include "common/utils/diagnostic_log.h"
 #include "common/utils/io_utils.h"
 #include "common/utils/nlohmann_json_utils.h"
 #include "common/utils/string_utils.h"
@@ -2083,8 +2084,11 @@ namespace
 			if (!version)
 			{
 				if (!stop_token.stop_requested())
-					error = "Remote OpenCode version check failed: " + uam::strings::NonEmptyOrFallback(probed.error,
-					    probed.ok ? std::string("the CLI did not report one clear version, so no history command was sent.") : "exit " + std::to_string(probed.exit_code) + ".");
+				{
+					uam::diagnostics::Write("[history import] Remote OpenCode version check failed: " + uam::strings::NonEmptyOrFallback(probed.error,
+					    probed.ok ? std::string("the CLI did not report one clear version, so no history command was sent.") : "exit " + std::to_string(probed.exit_code) + "."));
+					error = "Could not check the remote OpenCode version, so no history was imported.";
+				}
 				return {};
 			}
 			std::lock_guard lock(RemoteOpenCodeVersionMutex());
@@ -2112,7 +2116,7 @@ namespace
 		if (chat.provider_id == uam::provider_ids::kOpenCodeCli)
 		{
 			auto history = ChatHistorySyncService().LoadRemoteOpenCodeTranscript(host, chat, profile, stop, scan);
-			if (!history.success) { error = uam::strings::NonEmptyOrFallback(std::move(history.error), "Remote OpenCode history could not be verified. Retry the import."); return false; }
+			if (!history.success) { error = uam::strings::NonEmptyOrFallback(std::move(history.error), "Remote OpenCode history could not be verified; retry the import."); return false; }
 			// A sub-chat is known only by the ID on its parent's task call; its own export must name that parent.
 			if (!chat.native_parent_session_id.empty() && history.parent_session_id != chat.native_parent_session_id)
 			{ error = "OpenCode session " + chat.native_session_id + " does not name the chat that spawned it as its parent."; return false; }
@@ -2122,7 +2126,7 @@ namespace
 		else if (chat.provider_id == uam::provider_ids::kCodexCli)
 		{
 			auto history = ChatHistorySyncService().LoadRemoteCodexTranscript(host, chat, stop, scan);
-			if (!history.success) { error = uam::strings::NonEmptyOrFallback(std::move(history.error), "Remote Codex history could not be verified. Retry the import."); return false; }
+			if (!history.success) { error = uam::strings::NonEmptyOrFallback(std::move(history.error), "Remote Codex history could not be verified; retry the import."); return false; }
 			verified_empty = !uam::HasImportedConversationContent(history.messages);
 			messages = std::move(history.messages);
 		}
@@ -2130,7 +2134,7 @@ namespace
 		if (stop.stop_requested()) { error = "Remote history import was canceled."; return false; }
 		if (!uam::HasImportedConversationContent(messages))
 		{
-			if (!verified_empty) error = "Provider history contains entries that could not be imported. Retry after updating the provider.";
+			if (!verified_empty) error = "Some provider history could not be imported; update the provider and retry.";
 			return false;
 		}
 		chat.messages = std::move(messages);
@@ -2613,8 +2617,10 @@ namespace
 	{
 		if (!error.empty())
 		{
+			if (app.native_chat_refresh_error_target_id != target || app.native_chat_refresh_error_status.empty())
+				uam::diagnostics::Write("[native-refresh] Native chat refresh failed: " + std::string(error));
 			app.native_chat_refresh_error_target_id = target;
-			app.native_chat_refresh_error_status = "Native chat refresh failed: " + std::string(error);
+			app.native_chat_refresh_error_status = "Could not refresh the native chat history.";
 			app.status_line = app.native_chat_refresh_error_status;
 		}
 		else if (app.native_chat_refresh_error_target_id == target)
@@ -3018,7 +3024,7 @@ bool ChatHistorySyncService::SaveChatWithStatus(uam::AppState& app, ChatSession&
 		// Model/pin/title handlers restore their attempted metadata on false.
 		// Keep the original cold primary intact until final import has its actual
 		// message witness; a later explicit retry saves against completed history.
-		app.status_line = "Final terminal history is being saved. Retry changing this chat after it finishes.";
+		app.status_line = "Wait for the terminal history to finish saving before changing this chat.";
 		if (refusal_out != nullptr) *refusal_out = app.status_line;
 		return false;
 	}
@@ -3034,7 +3040,7 @@ bool ChatHistorySyncService::SaveChatWithStatus(uam::AppState& app, ChatSession&
 	}
 
 	app.status_line = failure;
-	if (refusal_out != nullptr) *refusal_out = "The chat could not be saved. Try again.";
+	if (refusal_out != nullptr) *refusal_out = "The chat could not be saved.";
 	return false;
 }
 
@@ -3068,7 +3074,10 @@ bool ChatHistorySyncService::RenameChat(uam::AppState& app, ChatSession& chat, c
 	chat.title = previous_title;
 	chat.updated_at = previous_updated_at;
 	if (!final_save_deferred)
-		app.status_line = "Failed to save renamed chat file: " + uam::paths::Utf8PathString(AppPaths::UamChatFilePath(app.data_root, chat.id));
+	{
+		uam::diagnostics::Write("[chat] Failed to save renamed chat file: " + uam::paths::Utf8PathString(AppPaths::UamChatFilePath(app.data_root, chat.id)));
+		app.status_line = "The renamed chat could not be saved.";
+	}
 	return false;
 }
 
@@ -3828,7 +3837,11 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportCodexRolloutC
 				result.Fail("Failed to save imported Codex chat " + chat->native_session_id + ".");
 			}
 		}
-		if (error) result.Fail("Could not finish scanning Codex history: " + error.message());
+		if (error)
+		{
+			uam::diagnostics::Write("[history import] Could not finish scanning Codex history: " + error.message());
+			result.Fail("Could not finish scanning Codex history.");
+		}
 	}
 #else
 	(void)app;
@@ -3871,7 +3884,8 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverPr
 		if (!fs::exists(root, error) && !error) continue;
 		if (error || !fs::is_directory(root, error))
 		{
-			discovery.result.Fail("Could not inspect Codex history: " + (error ? error.message() : "history path is not a directory."));
+			uam::diagnostics::Write("[history import] Could not inspect Codex history: " + (error ? error.message() : "history path is not a directory."));
+			discovery.result.Fail("Could not read Codex history.");
 			continue;
 		}
 		for (fs::recursive_directory_iterator it(root, error), end; !error && !stop_token.stop_requested() && it != end; it.increment(error))
@@ -3884,7 +3898,11 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverPr
 			if (malformed) discovery.result.Fail("Could not parse Codex history file " + uam::paths::Utf8PathString(it->path()) + " (unreadable or invalid).");
 			if (chat) discovery.codex_rollouts.emplace_back(std::move(*chat), it->path());
 		}
-		if (error) discovery.result.Fail("Could not finish scanning Codex history: " + error.message());
+		if (error)
+		{
+			uam::diagnostics::Write("[history import] Could not finish scanning Codex history: " + error.message());
+			discovery.result.Fail("Could not finish scanning Codex history.");
+		}
 	}
 	}
 #endif
@@ -3970,10 +3988,12 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverPr
 		if (!listed.ok || listed.exit_code != 0 || listed.output_truncated || !sessions.is_array())
 		{
 			// The exit code and UAM's own adapter refusal distinguish an unverified CLI from a malformed list.
-			const std::string reason = !listed.error.empty() ? listed.error : uam::opencode_v2::AdapterError(listed.diagnostic_tail);
-			discovery.result.Fail("OpenCode history discovery failed: " + (!reason.empty() ? reason
+			const std::string adapter_refusal = uam::opencode_v2::AdapterError(listed.diagnostic_tail);
+			const std::string reason = !listed.error.empty() ? listed.error : adapter_refusal;
+			uam::diagnostics::Write("[history import] OpenCode history discovery failed: " + (!reason.empty() ? reason
 			    : listed.output_truncated ? std::string("session list exceeded its output limit.")
 			    : listed.exit_code != 0 ? "exit " + std::to_string(listed.exit_code) + "." : std::string("invalid session list.")));
+			discovery.result.Fail(!adapter_refusal.empty() ? adapter_refusal : std::string("Could not list OpenCode history."));
 		}
 		else
 		{
@@ -4110,7 +4130,8 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverPr
 	const bool project_path_available = uam::io::NativeFilePath(claude_root / "projects", project, project_path_error, true);
 	if (!project_path_available)
 	{
-		discovery.result.Fail("Could not resolve Claude history directory: " + project_path_error);
+		uam::diagnostics::Write("[history import] Could not resolve Claude history directory: " + project_path_error);
+		discovery.result.Fail("Could not find the Claude history folder.");
 	}
 	std::error_code claude_error;
 	if (project_path_available && (fs::exists(project, claude_error) || claude_error))
@@ -4143,7 +4164,11 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverPr
 			else if (!parse_error.empty())
 				discovery.result.Fail(parse_error);
 		}
-		if (claude_error) discovery.result.Fail("Could not finish scanning Claude history: " + claude_error.message());
+		if (claude_error)
+		{
+			uam::diagnostics::Write("[history import] Could not finish scanning Claude history: " + claude_error.message());
+			discovery.result.Fail("Could not finish scanning Claude history.");
+		}
 	}
 	}
 #endif
@@ -4262,7 +4287,8 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredPro
 		{
 			if (!uam::paths::PathFromUtf8(chat.workspace_directory).is_absolute())
 			{
-				result.Fail("Provider history has no absolute workspace: " + chat.native_session_id);
+				uam::diagnostics::Write("[history import] Provider history has no absolute workspace: " + chat.native_session_id);
+				result.Fail("A provider chat has no usable workspace folder, so it was not imported.");
 				continue;
 			}
 			ProviderChatSource source;
@@ -4386,7 +4412,14 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverRe
 	RemoteHistoryScanContext& host_scan = scan != nullptr ? *scan : owned_scan.emplace(host);
 	const auto report_discovery_error = [&](const std::string& error)
 	{
-		if (!error.empty()) discovery.result.Fail(host_scan.connect_failed ? "Remote history on " + host.id + " was not scanned: " + error : error);
+		if (error.empty()) return;
+		if (!host_scan.connect_failed)
+		{
+			discovery.result.Fail(error);
+			return;
+		}
+		uam::diagnostics::Write("[history import] Remote history on " + host.id + " was not scanned: " + error);
+		discovery.result.Fail("Remote history on " + uam::strings::NonEmptyOrFallback(host.label, host.id) + " was not scanned because the computer could not be reached.");
 	};
 	const auto append = [&](const std::string& id, const std::string& title, const std::string& directory,
 	    const std::string& provider, const std::string& created, const std::string& updated)
@@ -4466,7 +4499,7 @@ bool ChatHistorySyncService::FilterStartupImportCandidates(const uam::AppState& 
 	const NativeImportIndex index = LoadNativeImportIndex(app, &app.chats);
 	if (!index.tombstones_available)
 	{
-		if (error_out != nullptr) *error_out = "Deletion and decline records could not be read. History import is unavailable.";
+		if (error_out != nullptr) *error_out = "History import is unavailable because deletion and decline records could not be read.";
 		return false;
 	}
 	std::unordered_set<std::string> seen;
@@ -4534,7 +4567,7 @@ namespace
 		if (loaded->id != chat.id || !loaded->imported_read_only || !loaded->native_session_id.empty() || loaded->parent_chat_id != chat.native_parent_session_id)
 			return fail("its native transcript belongs to a different parent.");
 		// ponytail: a journal with inline images needs the passive media save; it stays openable from its parent's tool call until import shares that route.
-		if (HasLocalDiscoveredPendingOriginals(*loaded)) return fail("it contains inline images. Open it from its parent chat instead.");
+		if (HasLocalDiscoveredPendingOriginals(*loaded)) return fail("it contains inline images, so open it from its parent chat instead.");
 		loaded->folder_id = chat.folder_id;
 		loaded->subagent_parent_chat_id = chat.subagent_parent_chat_id;
 		loaded->subagent_parent_created_at = chat.subagent_parent_created_at;
@@ -4567,7 +4600,11 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredPro
 	{
 		if (discovery.publication_sync.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return result;
 		try { if (!discovery.publication_sync.get()) result.Fail("Imported history could not be fully synced to disk."); }
-		catch (const std::exception& error) { result.Fail(std::string("History sync failed: ") + error.what()); }
+		catch (const std::exception& error)
+		{
+			uam::diagnostics::Write(std::string("[history import] History sync failed: ") + error.what());
+			result.Fail("Imported history could not be synced to disk.");
+		}
 		discovery.publication_sync = {};
 		return result;
 	}
@@ -4579,7 +4616,11 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredPro
 		{
 			prepared_owner = discovery.preparation.get();
 		}
-		catch (const std::exception& error) { result.Fail(std::string("History file preparation failed: ") + error.what()); }
+		catch (const std::exception& error)
+		{
+			uam::diagnostics::Write(std::string("[history import] History file preparation failed: ") + error.what());
+			result.Fail("History files could not be prepared for import.");
+		}
 		discovery.preparation = {};
 		if (!prepared_owner)
 			return result;
@@ -5032,7 +5073,10 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportDiscoveredPro
 					                                   {
 						                                   candidate.skipped = true;
 						                                   if (malformed)
-							                                   candidate.error = "Codex history is unreadable, invalid, or exceeds import limits: " + uam::paths::Utf8PathString(candidate.codex_rollout) + ".";
+						                                   {
+							                                   uam::diagnostics::Write("[history import] Codex history is unreadable, invalid, or exceeds import limits: " + uam::paths::Utf8PathString(candidate.codex_rollout));
+							                                   candidate.error = "A Codex history file is unreadable, invalid or too large to import.";
+						                                   }
 						                                   continue;
 					                                   }
 					                                   loaded->id = candidate.chat.id;
@@ -5162,10 +5206,11 @@ ChatHistorySyncService::RemoteOpenCodeDiscovery ChatHistorySyncService::Discover
 				if (polled.exit_code != 0)
 				{
 					ForgetRemoteOpenCodeVersion(version_key);
-					result.error = "Remote OpenCode session discovery failed (exit " +
-					               std::to_string(polled.exit_code) + "): " +
-					               uam::strings::NonEmptyOrFallback(
-					                   uam::strings::Trim(diagnostic), uam::strings::Trim(output));
+					uam::diagnostics::Write("[history import] Remote OpenCode session discovery failed (exit " +
+					                        std::to_string(polled.exit_code) + "): " +
+					                        uam::strings::TrimAndElide(uam::strings::NonEmptyOrFallback(
+					                            uam::strings::Trim(diagnostic), uam::strings::Trim(output)), 512));
+					result.error = "Could not list remote OpenCode sessions.";
 					return result;
 				}
 				result = ParseRemoteOpenCodeSessionList(output, open_code_v2);
@@ -5325,10 +5370,10 @@ try
 	}
 	for (const char* key : {"nextCursor", "next_cursor"})
 		if (root.contains(key) && !root[key].is_null() && (!root[key].is_string() || !root[key].get_ref<const std::string&>().empty()))
-		{ result.error = "OpenCode export returned incomplete paginated history. Retry the import."; return result; }
+		{ result.error = "OpenCode returned incomplete history; retry the import."; return result; }
 	for (const char* key : {"hasMore", "has_more"})
 		if (root.contains(key) && (!root[key].is_boolean() || root[key].get<bool>()))
-		{ result.error = "OpenCode export returned incomplete paginated history. Retry the import."; return result; }
+		{ result.error = "OpenCode returned incomplete history; retry the import."; return result; }
 	result.verified_empty = root["messages"].empty();
 	const nlohmann::json& session_info = root["info"];
 	result.session_id = session_info.value("id", "");
@@ -5641,7 +5686,7 @@ std::optional<ChatSession> ChatHistorySyncService::LoadLocalCodexChildChat(const
 	std::optional<ChatSession> loaded = LoadCodexRolloutChat(*rollout, folder, &malformed, CodexSubagentRollouts::All, {}, false, {}, &chat);
 	if (malformed)
 	{
-		if (error != nullptr) *error = "Codex history is incomplete or could not be read. Try again.";
+		if (error != nullptr) *error = "Codex history is incomplete or could not be read.";
 		return std::nullopt;
 	}
 	if (loaded && loaded->native_session_id != chat.native_session_id)
@@ -5760,10 +5805,11 @@ ChatHistorySyncService::LoadRemoteOpenCodeTranscript(
 			if (polled.exit_code != 0)
 			{
 				ForgetRemoteOpenCodeVersion(version_key);
-				result.error = "OpenCode could not export the remote session (exit " +
-				               std::to_string(polled.exit_code) + "): " +
-				               uam::strings::NonEmptyOrFallback(
-				                   uam::strings::Trim(diagnostic), uam::strings::Trim(output));
+				uam::diagnostics::Write("[history import] OpenCode could not export the remote session (exit " +
+				                        std::to_string(polled.exit_code) + "): " +
+				                        uam::strings::TrimAndElide(uam::strings::NonEmptyOrFallback(
+				                            uam::strings::Trim(diagnostic), uam::strings::Trim(output)), 512));
+				result.error = "OpenCode could not export the remote session.";
 				return result;
 			}
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI
@@ -5773,7 +5819,8 @@ ChatHistorySyncService::LoadRemoteOpenCodeTranscript(
 				catch (const std::exception& refusal)
 				{
 					ForgetRemoteOpenCodeVersion(version_key);
-					result.error = std::string("OpenCode returned an unreadable remote export: ") + refusal.what();
+					uam::diagnostics::Write(std::string("[history import] OpenCode returned an unreadable remote export: ") + refusal.what());
+					result.error = "OpenCode returned a remote export UAM could not read.";
 					return result;
 				}
 			}
@@ -6034,10 +6081,10 @@ try
 	{
 		for (const char* key : {"nextCursor", "next_cursor"})
 			if (scope->contains(key) && !(*scope)[key].is_null() && (!(*scope)[key].is_string() || !(*scope)[key].get_ref<const std::string&>().empty()))
-			{ transcript.error = "Codex returned incomplete paginated history. Retry the import."; return transcript; }
+			{ transcript.error = "Codex returned incomplete history; retry the import."; return transcript; }
 		for (const char* key : {"hasMore", "has_more"})
 			if (scope->contains(key) && (!(*scope)[key].is_boolean() || (*scope)[key].get<bool>()))
-			{ transcript.error = "Codex returned incomplete paginated history. Retry the import."; return transcript; }
+			{ transcript.error = "Codex returned incomplete history; retry the import."; return transcript; }
 	}
 	transcript.session_id = uam::codex::ValidThreadIdOrEmpty((*thread)["id"].get<std::string>());
 	transcript.directory = (*thread)["cwd"].get<std::string>();
@@ -6231,7 +6278,7 @@ try
 		}
 	}
 	if (unmapped && !uam::HasImportedConversationContent(transcript.messages))
-	{ transcript.error = "Codex history contains entries that could not be imported. Retry after updating the provider."; return transcript; }
+	{ transcript.error = "Some Codex history could not be imported; update Codex and retry."; return transcript; }
 	transcript.success = true;
 	return transcript;
 }
@@ -6457,7 +6504,8 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChat
 	const ProviderDiscoveryResult discovery = ProviderRuntime::DiscoverChatSources(native_provider);
 	if (!discovery.error.empty())
 	{
-		result.Fail(native_provider.title + " history discovery failed: " + discovery.error);
+		uam::diagnostics::Write("[history import] " + native_provider.title + " history discovery failed: " + discovery.error);
+		result.Fail("Could not find " + native_provider.title + " history.");
 		return result;
 	}
 
@@ -6916,7 +6964,7 @@ bool ChatHistorySyncService::MoveChatToFolder(uam::AppState& app, ChatSession& c
 
 	if (!uam::StopAndEraseCliTerminalForChat(app, chat.id))
 	{
-		app.status_line = "The terminal is still stopping. Retry moving the chat after it exits.";
+		app.status_line = "Wait for the terminal to stop before moving the chat.";
 		return false;
 	}
 	// A workspace move changes the native ownership key. Let the captured final
@@ -6924,7 +6972,7 @@ bool ChatHistorySyncService::MoveChatToFolder(uam::AppState& app, ChatSession& c
 	if (app.terminal_native_media && std::ranges::any_of(app.terminal_native_media->jobs, [&](const auto& work)
 	    { return work->final && work->expected.id == chat.id; }))
 	{
-		app.status_line = "Final terminal history is being saved. Retry moving this chat after it finishes.";
+		app.status_line = "Wait for the terminal history to finish saving before moving this chat.";
 		return false;
 	}
 	const ChatSession original_chat = chat;
@@ -7544,7 +7592,7 @@ std::vector<ChatSession> ChatHistorySyncService::OverlayLocalHistory(const uam::
 	{
 		if (error_out != nullptr)
 		{
-			*error_out = "Saved chat history could not be read. Reopen the chat and try again.";
+			*error_out = "Saved chat history could not be read; reopen the chat and try again.";
 		}
 		native_chats.clear();
 		return {};

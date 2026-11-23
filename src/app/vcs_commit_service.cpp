@@ -12,6 +12,7 @@
 #include "common/provider/provider_profile.h"
 #include "common/provider/provider_runtime.h"
 #include "common/provider/provider_text_worker.h"
+#include "common/utils/diagnostic_log.h"
 #include "common/utils/io_utils.h"
 #include "common/utils/hash_utils.h"
 #include "common/utils/nlohmann_json_utils.h"
@@ -129,7 +130,7 @@ namespace uam
 			}
 			if (!uam::remote::CanAttemptRunnerConnection(*m_host))
 			{
-				m_error = "The selected remote runner is not ready. Recheck it in Settings.";
+				m_error = "The selected remote runner is not ready; recheck it in Settings.";
 				return;
 			}
 			m_client = std::make_unique<uam::remote::RunnerClient>(
@@ -281,7 +282,7 @@ namespace uam
 		}
 
 		constexpr std::string_view kSvnClientMissing =
-		    "The svn command-line client was not found. Install Subversion and make sure svn is on PATH.";
+		    "The svn command was not found; install Subversion and make sure svn is on PATH.";
 
 		/// UTF-8 path encoding and parseable messages regardless of the GUI launch locale; Windows svn ignores LC_ALL.
 		std::vector<std::pair<std::string, std::string>> SvnEnvironment(std::string_view platform)
@@ -526,7 +527,11 @@ namespace uam
 				std::filesystem::copy_file(absolute, m_index, std::filesystem::copy_options::none, error);
 				result.ok = !error;
 				result.exit_code = error ? 1 : 0;
-				if (error) result.error = "Failed to copy the repository index for review: " + error.message();
+				if (error)
+				{
+					uam::diagnostics::Write("[vcs] Failed to copy the repository index for review: " + error.message());
+					result.error = "Could not copy the repository index for review.";
+				}
 				return result;
 			}
 			ProcessExecutionResult Run(std::vector<std::string> args, bool use_index = true) const
@@ -2526,7 +2531,7 @@ namespace uam
 		if (uam::paths::PathExistsNoThrow(ChatBaselinePath(app, chat))) return !SavedChatBaseline(app, chat, workspace, error_out).empty();
 		if (chat.imported_read_only || !chat.messages.empty() || chat.persisted_message_count != 0)
 		{
-			if (error_out) *error_out = "The original baseline is unavailable for an existing conversation. Create a new chat to record its changes.";
+			if (error_out) *error_out = "This chat has no original baseline; start a new chat to record its changes.";
 			return false;
 		}
 		GitReviewIndex index(workspace, cancellation, remote.get());

@@ -2,6 +2,7 @@
 
 #include "common/models/app_models.h"
 #include "common/provider/provider_setup.h"
+#include "common/utils/diagnostic_log.h"
 #include <memory>
 #include <iterator>
 #include <sstream>
@@ -156,7 +157,7 @@ namespace uam::central_instruction_files
 		result.ok = false;
 		if (!ValidateText(content, result.error) || !ValidateText(expected_content, result.error)) return prepared;
 		if (result.content == content) { result.ok = true; prepared->expected_content = content; return prepared; }
-		if (result.content != expected_content) { result.status = 409; result.error = "The instruction file changed on disk. Reload it before saving."; return prepared; }
+		if (result.content != expected_content) { result.status = 409; result.error = "The instruction file changed on disk; reload it before saving."; return prepared; }
 		prepared->expected_content = expected_content;
 		prepared->temporary = io::MakeTempWritePath(result.resolved);
 		io::AtomicWriteResult written;
@@ -185,7 +186,11 @@ namespace uam::central_instruction_files
 		if (!io::WriteAndSyncAtomicTemp(prepared->temporary, content, preserve, written))
 		{
 			result.status = 500;
-			if (result.error.empty()) result.error = "Could not stage the instruction file: " + written.error;
+			if (result.error.empty())
+			{
+				uam::diagnostics::Write("[instruction-file] Could not stage the instruction file: " + written.error);
+				result.error = "Could not stage the instruction file.";
+			}
 			return prepared;
 		}
 		result.content = content;
@@ -201,17 +206,18 @@ namespace uam::central_instruction_files
 		if (!current.ok) return current;
 		if (current.content == prepared.result.content) return current;
 		if (current.content != prepared.expected_content || current.resolved != prepared.result.resolved || current.revision != prepared.result.revision)
-		{ current.ok = false; current.status = 409; current.error = "The instruction file changed on disk. Reload it before saving."; return current; }
+		{ current.ok = false; current.status = 409; current.error = "The instruction file changed on disk; reload it before saving."; return current; }
 		// shortcut: external writers can race the final check/rename, add a cooperative editor lock if cross-process compare-and-swap is required.
 		const io::AtomicWriteResult committed = io::CommitSyncedAtomicTemp(current.resolved, prepared.temporary);
 		if (!committed.success)
 		{
 			current.ok = false; current.status = 500;
-			current.error = "Could not save the instruction file: " + committed.error;
+			uam::diagnostics::Write("[instruction-file] Could not save the instruction file: " + committed.error);
+			current.error = "Could not save the instruction file.";
 			if (committed.stage == io::AtomicWriteStage::AfterReplaceBeforeDirectorySync)
 			{
 				// A failed directory sync leaves the old file at the temporary path for recovery.
-				current.error = "The file was replaced but disk sync failed. Reload it before saving again. Recovery file: " + paths::Utf8PathString(prepared.temporary);
+				current.error = "The file was saved but not fully synced; reload it before saving again (previous copy: " + paths::Utf8PathString(prepared.temporary) + ").";
 				prepared.temporary.clear();
 			}
 			return current;

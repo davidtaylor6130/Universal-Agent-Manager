@@ -1345,7 +1345,7 @@ UAM_TEST(WorktreeLaunchEarlierSessionCreationStillRunningIsNotDuplicated)
 		const auto waiting = launch.Retry();
 		const uam::WorktreeLaunchPreparationResult refusal = uam::PrepareWorktreeForLaunch(launch.fixture.app, chat);
 		UAM_ASSERT_EQ(refusal.state, uam::WorktreeLaunchPreparationState::Failed);
-		UAM_ASSERT(refusal.error.find("Wait a minute, then retry") != std::string::npos);
+		UAM_ASSERT(refusal.error.find("wait a minute and retry") != std::string::npos);
 		// No second worktree or branch, and the journal still owns whatever the earlier session finishes.
 		UAM_ASSERT_EQ(ReadFile(launch.receipt), receipt);
 		UAM_ASSERT_EQ(launch.BranchCount(), branches);

@@ -54,7 +54,7 @@ namespace uam
 		const std::optional<std::string> summary_revision = ChatRepository::ChatSummaryStorageRevision(data_root, identity.id);
 		std::optional<ChatSession> chat = ChatRepository::LoadLocalChat(data_root, identity.id, true, nullptr, false);
 		if (!revision || !summary_revision || !chat || !identity.Matches(*chat, false))
-		{ update.error = "The chat changed. Try regenerating its title again."; return update; }
+		{ update.error = "The chat changed; regenerate its title again."; return update; }
 		update.identity = ChatTitleIdentity::Capture(*chat);
 		update.title = validated.title;
 		update.updated_at = time::TimestampNow();
@@ -63,7 +63,7 @@ namespace uam
 		update.save = ChatRepository::PrepareChatSave(data_root, *chat, *revision);
 		if (update.save) update.save->expected_summary_revision = *summary_revision;
 		if (stop_token.stop_requested()) update.save.reset();
-		if (!update.save) update.error = "The chat changed or could not be saved. Its current name was kept.";
+		if (!update.save) update.error = "The chat changed or could not be saved, so its current name was kept.";
 		return update;
 	}
 
@@ -122,7 +122,7 @@ namespace uam
 		const std::string prompt = BuildPrompt(chat);
 		if (prompt.empty()) return {false, {}, "Send a message before generating a chat title."};
 		const ProviderResolutionService::WorkerProviderSelection worker = ProviderResolutionService().WorkerProviderSelectionForChat(app, chat);
-		if (worker.provider == nullptr) return {false, {}, "This chat has no supported text worker. Select a worker provider in Settings."};
+		if (worker.provider == nullptr) return {false, {}, "Select a worker provider in Settings; this chat has no supported text worker."};
 		const bool remote = !chat.execution_host_id.empty() && chat.execution_host_id != execution_hosts::kLocalHostId;
 		const ExecutionHost* host = remote ? execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id) : nullptr;
 		if (remote && host == nullptr) return {false, {}, "The selected remote execution host no longer exists."};
@@ -130,7 +130,7 @@ namespace uam
 		const ProviderWorkerInvocation invocation = BuildProviderWorkerInvocation(app, *worker.provider, app.settings, prompt, worker.model_id, ProviderWorkerPathMode::BasePath, &error, remote ? std::string_view(chat.execution_host_id) : std::string_view());
 		if (invocation.Empty()) return {false, {}, error.empty() ? "Title worker is unavailable." : error};
 		const ProcessExecutionResult result = ExecuteIsolatedProviderTextWorker(invocation, worker.provider->id, host, 60000, stop_token);
-		if (!result.ok || result.exit_code != 0 || result.output_truncated || result.timed_out || result.canceled) return {false, {}, "Title generation failed. Your current chat name was kept."};
+		if (!result.ok || result.exit_code != 0 || result.output_truncated || result.timed_out || result.canceled) return {false, {}, "Title generation failed, so the current chat name was kept."};
 		return ParseResult(result.output, worker.provider->id);
 	}
 }

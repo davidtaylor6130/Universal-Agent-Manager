@@ -123,7 +123,7 @@ namespace uam::svn_history
 		std::string Failure(const ProcessExecutionResult& result, std::string_view fallback)
 		{
 			if (result.canceled) return "Canceled.";
-			if (result.timed_out) return "SVN did not answer in time. Check the connection to the repository, then retry.";
+			if (result.timed_out) return "SVN did not answer in time; check the connection to the repository.";
 			const std::string summary = SvnFailureSummary(result);
 			if (!summary.empty()) return summary;
 			const std::string detail = uam::strings::Trim(result.error.empty() ? result.output : result.error);
@@ -368,7 +368,7 @@ namespace uam::svn_history
 		update.output = uam::strings::Trim(result.output);
 		if (!Succeeded(result))
 		{
-			update.error = result.canceled ? "The update was stopped. Run it again to finish; a locked working copy needs svn cleanup first."
+			update.error = result.canceled ? "The update was stopped; run it again, after svn cleanup if the working copy is locked."
 			    : Failure(result, "SVN could not update this working copy.");
 			return update;
 		}

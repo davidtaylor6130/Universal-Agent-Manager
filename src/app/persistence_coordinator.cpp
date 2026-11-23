@@ -10,6 +10,7 @@
 #include "common/config/settings_store.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/runtime/provider_build_config.h"
+#include "common/utils/diagnostic_log.h"
 #include "common/utils/string_utils.h"
 #include "common/platform/platform_services.h"
 
@@ -92,7 +93,7 @@ bool PersistenceCoordinator::AdvanceSettingsPublication(uam::AppState& app) cons
 {
 	if (app.settings_publication_revision >= kMaxSettingsPublicationRevision)
 	{
-		app.status_line = "Settings publication revision is exhausted. Restart the app before changing settings.";
+		app.status_line = "Restart UAM before changing settings again.";
 		return false;
 	}
 	if (!EnsureSettingsPublicationScope(app)) return false;
@@ -236,7 +237,8 @@ void PersistenceCoordinator::LoadFrontendActions(uam::AppState& app) const
 
 		if (!uam::SaveFrontendActionMap(action_map_path, app.frontend_actions, &error) && !error.empty())
 		{
-			app.status_line = "Frontend action map reset, but saving failed: " + error;
+			uam::diagnostics::Write("[settings] Frontend action map reset, but saving failed: " + error);
+			app.status_line = "Interface actions were reset to defaults but could not be saved.";
 		}
 		else if (!error.empty())
 		{

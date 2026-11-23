@@ -217,10 +217,10 @@ namespace uam::attachment_preview
 			if (size > kMaxSourceBytes || size > 50 * 1024 * 1024 - total)
 			{ error = "Images must be nonempty, at most 25 MiB each and 50 MiB total."; return false; }
 			if (!readable)
-			{ error = "Attached image is no longer available or empty: " + attachment.name; return false; }
+			{ error = "Attached image " + attachment.name + " is missing or empty."; return false; }
 			total += size;
 			if (ImageMime(prefix).empty())
-			{ error = "Unsupported image. Use PNG, JPEG, GIF or WebP: " + attachment.name; return false; }
+			{ error = "Image " + attachment.name + " must be PNG, JPEG, GIF or WebP."; return false; }
 		}
 		return true;
 	}

@@ -76,8 +76,8 @@ namespace uam
 			switch (reason)
 			{
 			case ExecutionRoutingReason::HostUnavailable: return "The assigned host is unavailable.";
-			case ExecutionRoutingReason::OwnershipChanged: return "The assigned host or provider configuration changed. Confirm the provider for this computer in Routing settings; the chat then continues by itself.";
-			case ExecutionRoutingReason::InconsistentSnapshot: return "Routing ownership is inconsistent. Review the chat before retrying.";
+			case ExecutionRoutingReason::OwnershipChanged: return "The assigned host or provider changed; confirm the provider for this computer in Routing settings to continue.";
+			case ExecutionRoutingReason::InconsistentSnapshot: return "This chat's routing is inconsistent; review the chat before retrying.";
 			default: return "Waiting for an eligible host with a matching workspace and available slot.";
 			}
 		}
@@ -289,7 +289,7 @@ namespace uam
 		if (AdoptCurrentIdentityFormat(app, chat) && app.execution_routing_service) (void)app.execution_routing_service->Release(chat.id, true);
 		if (automatic && app.execution_routing_restored_unresolved_chat_ids.contains(chat.id) && !ExecutionRoutingOwnsWork(app, chat))
 		{
-			app.execution_routing_waits[chat.id] = "Previous admission has unresolved ownership. Review and explicitly release its reservation before starting again. The previous runner process may still exist.";
+			app.execution_routing_waits[chat.id] = "A previous run may still be active on its host; review and release its reservation before starting again.";
 			return {ExecutionRoutingStatus::Waiting, ExecutionRoutingReason::OwnershipChanged, AssignmentForChat(chat)};
 		}
 		const double now = GetAppTimeSeconds();
@@ -378,7 +378,7 @@ namespace uam
 			if (destination == nullptr || destination->execution_host_id != request.assigned.host_id ||
 			    destination->directory != chat.workspace_directory)
 			{
-				app.execution_routing_waits[chat.id] = "The assigned workspace changed. Review the assignment before retrying.";
+				app.execution_routing_waits[chat.id] = "The assigned workspace changed; review the assignment before retrying.";
 				app.execution_routing_retry_at_by_chat_id[chat.id] = now + 1.0;
 				return {ExecutionRoutingStatus::Waiting, ExecutionRoutingReason::OwnershipChanged, request.assigned};
 			}
@@ -425,7 +425,7 @@ namespace uam
 			request.source_workspace_identity = WorkspaceIdentity(app, chat.routing_source_folder_id, chat.routing_source_directory);
 			if (request.assigned.host_id.empty() && (!chat.native_session_id.empty() || chat.remote_process_exists))
 			{
-				app.execution_routing_waits[chat.id] = "This chat already has a provider session from before automatic routing assigned it a computer. Review the chat before retrying.";
+				app.execution_routing_waits[chat.id] = "This chat has a provider session from before routing assigned a computer; review it before retrying.";
 				return {ExecutionRoutingStatus::Waiting, ExecutionRoutingReason::OwnershipChanged, {}};
 			}
 		}
@@ -442,8 +442,8 @@ namespace uam
 		if (decision.status == ExecutionRoutingStatus::Waiting || decision.status == ExecutionRoutingStatus::Invalid)
 		{
 			app.execution_routing_waits[chat.id] = decision.reason != ExecutionRoutingReason::OwnershipChanged || !connection_held ? WaitReason(decision.reason)
-			    : saved_before_format_change ? "This chat still has a turn from before its computer's configuration changed. Stop the turn, then confirm the provider for this computer in Routing settings."
-			    : "This chat still has work or a kept provider process on its host's previous connection. Stop the turn and let the provider close, or restore the host's previous SSH settings, then retry.";
+			    : saved_before_format_change ? "Stop this chat's turn from before its computer changed, then confirm the provider in Routing settings."
+			    : "This chat still runs on the host's previous connection; stop the turn or restore the old SSH settings, then retry.";
 			app.execution_routing_retry_at_by_chat_id[chat.id] = now + 1.0;
 			return decision;
 		}
@@ -504,7 +504,7 @@ namespace uam
 				(void)RoutingService(app).Release(chat.id, true);
 				app.execution_routing_reserved_chat_ids.erase(chat.id);
 			}
-			app.execution_routing_waits[chat.id] = "Routing assignment could not be saved. The provider was not launched.";
+			app.execution_routing_waits[chat.id] = "The routing assignment could not be saved, so the provider was not started.";
 			app.execution_routing_retry_at_by_chat_id[chat.id] = now + 1.0;
 			return {ExecutionRoutingStatus::Waiting, ExecutionRoutingReason::InconsistentSnapshot, {}};
 		}
@@ -547,7 +547,7 @@ namespace uam
 			if (ExecutionRoutingOwnsWork(app, chat)) continue;
 			if (app.execution_routing_restored_unresolved_chat_ids.contains(chat.id))
 			{
-				app.execution_routing_waits[chat.id] = "Previous admission has unresolved ownership. Its runner process may still exist; review before releasing the reservation.";
+				app.execution_routing_waits[chat.id] = "A previous run may still be active on its host; review it before releasing the reservation.";
 				continue;
 			}
 			const AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
@@ -644,12 +644,12 @@ namespace uam
 		if (!acknowledged || chat == nullptr || !app.execution_routing_restored_unresolved_chat_ids.contains(expected.chat_id) ||
 		    !chat->routing_reservation_pending || AssignmentForChat(*chat) != expected)
 		{
-			error = "The reservation changed or unresolved ownership was not acknowledged. Refresh the chat before releasing it.";
+			error = "The reservation changed or was not acknowledged; refresh the chat before releasing it.";
 			return false;
 		}
 		if (ExecutionRoutingOwnsWork(app, *chat))
 		{
-			error = "The chat still has active owning work. Stop or settle it before releasing its reservation.";
+			error = "Stop or finish this chat's active work before releasing its reservation.";
 			return false;
 		}
 		for (const std::unique_ptr<AcpSessionState>& session : app.acp_sessions)

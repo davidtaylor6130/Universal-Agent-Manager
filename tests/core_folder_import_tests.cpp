@@ -1476,7 +1476,7 @@ UAM_TEST(LocalOpenCodeDiscoveryNamesAdapterRefusalAndFailingSession)
 	const auto refused = ChatHistorySyncService().DiscoverProviderChatsForFolder(folder, &profile);
 	UAM_ASSERT(!refused.result.success);
 	const std::string refusal = uam::strings::Join(refused.result.errors, " ");
-	UAM_ASSERT(refusal.find("OpenCode history discovery failed: OpenCode 2.1.4 history has not been verified") != std::string::npos);
+	UAM_ASSERT(refusal.find("OpenCode 2.1.4 history has not been verified") != std::string::npos);
 	UAM_ASSERT(refusal.find("native private detail") == std::string::npos);
 
 	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "fixture.sh", "if [ \"$1\" = session ]; then cat '" + (temp.root / "list.json").string() + "'; else echo '{\"info\":'; fi\n"));
@@ -1487,7 +1487,7 @@ UAM_TEST(LocalOpenCodeDiscoveryNamesAdapterRefusalAndFailingSession)
 
 	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "fixture.sh", "if [ \"$1\" = session ]; then cat '" + (temp.root / "list.json").string() + "'; else exit 3; fi\n"));
 	const auto failed = ChatHistorySyncService().DiscoverProviderChatsForFolder(folder, &profile);
-	UAM_ASSERT(uam::strings::Join(failed.result.errors, " ").find("OpenCode session ses_bad: OpenCode could not export the session: exit 3") != std::string::npos);
+	UAM_ASSERT(uam::strings::Join(failed.result.errors, " ").find("OpenCode session ses_bad: OpenCode could not export the session.") != std::string::npos);
 
 	// OpenCode 1.19.4 can exit before a piped stdout drains; emulate an export that is complete only to a regular file.
 	const nlohmann::json exported = {{"info", {{"id", "ses_bad"}, {"directory", workspace.string()}}}, {"messages", nlohmann::json::array({{{"info", {{"role", "user"}}}, {"parts", nlohmann::json::array({{{"type", "text"}, {"text", "complete export"}}})}}})}};

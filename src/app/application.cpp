@@ -739,7 +739,8 @@ void Application::ApplyBundledMarkdownStoreSeed(bool seeded, std::string error, 
 
 	if (!seeded && !error.empty())
 	{
-		m_app.status_line = "Could not import bundled skills: " + error;
+		uam::diagnostics::Write("[skills] Could not import bundled skills: " + error);
+		m_app.status_line = "Could not import bundled skills.";
 	}
 	else if (m_app.shell_actions.empty())
 	{
@@ -1059,7 +1060,7 @@ void Application::FinishStartupState(std::vector<ChatSession> chats, std::string
 	if (!uam::ComputerUseService::ResetControlsForStartup(m_app))
 	{
 		m_app.status_line =
-		    "A previous computer-use control file could not be stopped. End any orphaned provider process before using computer use.";
+		    "Computer use is blocked until a leftover provider process from a previous run is stopped.";
 	}
 
 	const std::chrono::steady_clock::time_point finish_finished = std::chrono::steady_clock::now();

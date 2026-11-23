@@ -253,7 +253,7 @@ UAM_TEST(ProviderMcpStatusDistinguishesIdleEnabledSetupFromAnActiveMissingCapabi
 	UAM_ASSERT_EQ(status()["activeSessionCount"].get<std::size_t>(), std::size_t{1});
 	UAM_ASSERT_EQ(status()["configuredSessionCount"].get<std::size_t>(), std::size_t{0});
 	UAM_ASSERT_EQ(status()["connectedSessionCount"].get<std::size_t>(), std::size_t{0});
-	UAM_ASSERT_EQ(status()["detail"].get<std::string>(), std::string("UAM MCP setup is in progress. No connection has been confirmed."));
+	UAM_ASSERT_EQ(status()["detail"].get<std::string>(), std::string("UAM MCP setup is in progress and has not connected yet."));
 	// Starting cannot excuse a capability that was already bound and is now missing.
 	session.uam_control_capability_id = "missing-bound-capability";
 	UAM_ASSERT_EQ(status()["status"].get<std::string>(), std::string("missing"));
