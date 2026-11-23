@@ -398,11 +398,7 @@ bool GoalService::UpdateGoalStatus(AppState& app, const std::string& chat_id,
 	goal->status = status;
 	goal->updated_at = uam::time::TimestampNow();
 	// The user replaced the last automatic verdict; do not leave it attributed to it.
-	if (user_action && status != GoalStatus::Paused)
-	{
-		goal->last_decision_source.clear();
-		goal->last_decision_backend.clear();
-	}
+	if (user_action && status != GoalStatus::Paused) ClearDecision(*goal);
 	if (status == GoalStatus::Complete)
 	{
 		goal->remaining_items.clear();
@@ -916,6 +912,12 @@ void GoalService::RecordDecision(Goal& goal, const DecisionAttribution& attribut
 {
 	goal.last_decision_source = attribution.Source();
 	goal.last_decision_backend = attribution.BackendId();
+}
+
+void GoalService::ClearDecision(Goal& goal)
+{
+	goal.last_decision_source.clear();
+	goal.last_decision_backend.clear();
 }
 
 DecisionRequest GoalService::ReviewDecisionRequest()

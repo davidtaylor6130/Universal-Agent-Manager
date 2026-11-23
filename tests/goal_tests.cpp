@@ -2559,6 +2559,46 @@ UAM_TEST(AcpGoalReviewRepairUsageAddsOnceBeforeBudgetAdmission)
 	UAM_ASSERT(fixture.Session().queued_prompt.empty());
 }
 
+UAM_TEST(AcpGoalReviewRepairKeepsOneDecisionTimeAndCost)
+{
+	TempDir temp("uam-review-repair-decision");
+	GoalReviewBudgetFixture fixture(temp.root);
+	fixture.ReviewedGoal().token_budget = 0;
+	const std::int64_t started = uam::DecisionService::NowMs() - 2000;
+	fixture.Session().goal_review_decision.started_ms = started;
+	fixture.Output("Invalid first review");
+	fixture.Reply(10, GoalReviewUsageResult(12, 8));
+	// The repair is queued as part of the same decision: first request time and first-turn cost carried over.
+	UAM_ASSERT_EQ(fixture.Session().goal_review_repair_attempts, 1);
+	UAM_ASSERT(fixture.Session().queued_prompt.find("only repair attempt") != std::string::npos);
+	UAM_ASSERT_EQ(fixture.Session().goal_review_decision.started_ms, started);
+	UAM_ASSERT(fixture.Session().goal_review_decision.repaired);
+	UAM_ASSERT(fixture.Session().goal_review_decision.earlier_tokens.has_value() && *fixture.Session().goal_review_decision.earlier_tokens == 20);
+	for (const uam::AcpDiagnosticEntryState& entry : fixture.Session().diagnostics)
+	{
+		UAM_ASSERT(entry.reason != "goal_review_decision");
+		UAM_ASSERT(entry.detail.find("Invalid first review") == std::string::npos);
+	}
+
+	fixture.Session().queued_prompt.clear();
+	fixture.Session().prompt_request_id = 11;
+	fixture.Session().pending_request_methods[11] = uam::acp_methods::kSessionPrompt;
+	fixture.Output(R"({"decision":"complete","reason":"Verified.","evidence":["Tests passed"]})");
+	fixture.Reply(11, GoalReviewUsageResult(30, 15));
+	UAM_ASSERT_EQ(fixture.ReviewedGoal().status, GoalStatus::Complete);
+	UAM_ASSERT_EQ(fixture.ReviewedGoal().last_decision_backend, std::string("chat_provider"));
+	std::string detail;
+	for (const uam::AcpDiagnosticEntryState& entry : fixture.Session().diagnostics)
+		if (entry.reason == "goal_review_decision") detail = entry.detail;
+	UAM_ASSERT(detail.find("decisionChoice=complete") != std::string::npos);
+	UAM_ASSERT(detail.find("decisionUsageTokens=65") != std::string::npos);
+	const std::size_t latency_at = detail.find("decisionLatencyMs=");
+	UAM_ASSERT(latency_at != std::string::npos);
+	UAM_ASSERT(detail.find("decisionLatencyMs=unknown") == std::string::npos);
+	UAM_ASSERT(std::stoll(detail.substr(latency_at + std::string_view("decisionLatencyMs=").size())) >= 2000);
+	UAM_ASSERT_EQ(fixture.Session().goal_review_decision.started_ms, static_cast<std::int64_t>(0));
+}
+
 UAM_TEST(AcpGoalReviewUsagePreservesUnknownAndObservedZero)
 {
 	for (const nlohmann::json& result : std::vector<nlohmann::json>{nlohmann::json::object(),
@@ -4364,9 +4404,9 @@ namespace
 		session.goal_turn_model_id = turn_model;
 		session.goal_review_repair_attempts = 1; // No further repair: an invalid reply must stop here.
 		session.turn_assistant_message_index = 0;
-		session.goal_review_started_ms = review_started_ms;
+		session.goal_review_decision.started_ms = review_started_ms;
 		UAM_ASSERT(uam::acp_detail::HandleGoalReviewCompletion(app, session, app.chats.front(), nullptr));
-		UAM_ASSERT_EQ(session.goal_review_started_ms, static_cast<std::int64_t>(0));
+		UAM_ASSERT_EQ(session.goal_review_decision.started_ms, static_cast<std::int64_t>(0));
 		if (diagnostics_out != nullptr) *diagnostics_out = session.diagnostics;
 		return app.chats.front().goals.front();
 	}
@@ -4418,10 +4458,12 @@ UAM_TEST(GoalDecisionSourceNamesAModelOnlyForAParsedReview)
 	UAM_ASSERT_EQ(invalid.last_decision_source, std::string("fallback"));
 	UAM_ASSERT(invalid.last_decision_backend.empty());
 
-	// A choice outside continue, blocked or complete never reaches the model attribution either.
-	const Goal unknown_choice = RunReviewForDecisionSource(temp, R"({"decision":"maybe","reason":"Unsure."})");
-	UAM_ASSERT_EQ(unknown_choice.last_decision_source, std::string("fallback"));
-	UAM_ASSERT(unknown_choice.last_decision_backend.empty());
+	// The review parser accepts a blocked verdict with no reason, but the decision interface needs a reason or
+	// evidence, so the reply is not a model decision and the goal falls back.
+	const Goal no_reason = RunReviewForDecisionSource(temp, R"({"decision":"blocked","reason":"","blockerKind":"transient"})");
+	UAM_ASSERT_EQ(no_reason.status, GoalStatus::Blocked);
+	UAM_ASSERT_EQ(no_reason.last_decision_source, std::string("fallback"));
+	UAM_ASSERT(no_reason.last_decision_backend.empty());
 }
 
 UAM_TEST(GoalReviewDecisionDiagnosticReportsBackendLatencyAndUsage)

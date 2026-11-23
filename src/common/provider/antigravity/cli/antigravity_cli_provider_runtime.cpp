@@ -219,7 +219,8 @@ namespace
 		{
 			const std::string id = goal->id;
 			goal->last_diagnostic = diagnostic;
-			goal->last_decision_source = decision_source;
+			// Antigravity holds are UAM rules or fallbacks; neither may carry a model backend.
+			uam::GoalService::RecordDecision(*goal, std::string_view(decision_source) == kDecisionSourceFilter ? uam::DecisionAttribution::Filter() : uam::DecisionAttribution::Fallback());
 			goal->last_blocker = reason;
 			goal->last_blocker_kind = diagnostic == "antigravity_goal_budget_reached" ? "token_budget" : "usage_unknown";
 			(void)uam::GoalService::UpdateGoalStatus(app, session.antigravity_goal_turn.owner_chat_id, id, GoalStatus::Blocked, false, true);
@@ -478,7 +479,7 @@ void AntigravityCliProviderRuntime::OnAcpTurnStopping(uam::AppState& app, uam::A
 	}
 	if (goal->status == GoalStatus::Active)
 	{
-		if (goal->last_diagnostic == "antigravity_goal_usage_unknown") goal->last_decision_source = kDecisionSourceFilter;
+		if (goal->last_diagnostic == "antigravity_goal_usage_unknown") uam::GoalService::RecordDecision(*goal, uam::DecisionAttribution::Filter());
 		(void)uam::GoalService::UpdateGoalStatus(app, owner_id, goal->id, GoalStatus::Paused, false, true);
 	}
 	session.antigravity_goal_turn.settled = true;

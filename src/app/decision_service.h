@@ -3,6 +3,7 @@
 #include "common/models/app_models.h"
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -41,6 +42,16 @@ struct DecisionRequest
 	bool IsValid() const;
 };
 
+/// <summary>What a backend reply says, before DecisionService checks it against the request.</summary>
+struct DecisionAnswer
+{
+	std::string choice;
+	int score = 0;
+	double probability = 0.0;
+	std::string reason;
+	std::vector<std::string> evidence;
+};
+
 /// <summary>Who produced a decision: a model through a backend, a deterministic UAM rule, or UAM with no model answer.</summary>
 enum class DecisionOrigin
 {
@@ -50,8 +61,8 @@ enum class DecisionOrigin
 };
 
 /// <summary>
-/// Attribution for one decision. Only DecisionService can make a Model attribution, and only from a backend reply
-/// it validated against the request, so a filter or fallback path has no way to name a model.
+/// Attribution for one decision. Only DecisionService can make a Model attribution, and only from a backend's
+/// reply text whose answer it checked against the request; filter and fallback paths have no way to name a model.
 /// </summary>
 class DecisionAttribution
 {
@@ -80,10 +91,10 @@ class DecisionAttribution
 struct DecisionRun
 {
 	std::string model_id;
-	/// DecisionService::NowMs() when the request was sent and when its answer arrived; 0 when unknown.
+	/// DecisionService::NowMs() when the request was first sent and when its settling answer arrived; 0 when unknown.
 	std::int64_t started_ms = 0;
 	std::int64_t finished_ms = 0;
-	/// Provider-reported tokens of the turn that answered; unknown stays unknown.
+	/// Provider-reported tokens of every turn the decision took; unknown stays unknown.
 	std::optional<std::int64_t> usage_tokens;
 };
 
@@ -102,26 +113,44 @@ struct DecisionResult
 };
 
 /// <summary>
-/// One decision interface for review and gate decisions (#363). Backends answer a DecisionRequest with a
-/// DecisionResult. The only backend today is the chat provider (kDecisionBackendChatProvider): a model answering in
-/// a provider turn that the caller runs, so the interface is split into the prompt and the reply. Hosted and local
-/// decision-model backends and a Settings choice between them are not implemented.
+/// A decision backend: it phrases a request for its model and reads that model's reply. A prompt-driven backend's
+/// turn is run by the caller, so the interface is split into the prompt and the reply text.
+/// </summary>
+class DecisionBackend
+{
+  public:
+	virtual ~DecisionBackend() = default;
+	/// <summary>Structured id saved with each model decision (kDecisionBackend* in app_models.h).</summary>
+	virtual const char* Id() const = 0;
+	/// <summary>Instructions asking for one answer to a valid request; empty for an invalid one.</summary>
+	virtual std::string Prompt(const DecisionRequest& request) const = 0;
+	/// <summary>The answer in a reply to Prompt, or nullopt when the reply holds none.</summary>
+	virtual std::optional<DecisionAnswer> ReadReply(const DecisionRequest& request, std::string_view reply) const = 0;
+};
+
+/// <summary>Reads a caller's own reply format (the goal review asks for more than the answer) into an answer.</summary>
+using DecisionReplyReader = std::function<std::optional<DecisionAnswer>(std::string_view reply)>;
+
+/// <summary>
+/// One decision interface for review and gate decisions (#363). The only backend is the chat provider
+/// (kDecisionBackendChatProvider): a model answering in a provider turn. Hosted and local decision-model backends
+/// and a Settings choice between them are not implemented, so ActiveBackend() always returns the chat provider.
 /// </summary>
 class DecisionService
 {
   public:
 	/// <summary>Monotonic milliseconds for DecisionRun timing; never wall-clock time.</summary>
 	static std::int64_t NowMs();
+	/// <summary>The backend decisions use. Callers never name a backend themselves.</summary>
+	static const DecisionBackend& ActiveBackend();
 
-	/// <summary>Chat-provider instructions asking for one JSON answer to the request; empty for an invalid request.
-	/// The request text is embedded as JSON-escaped data that the model is told not to follow.</summary>
-	static std::string ChatProviderPrompt(const DecisionRequest& request);
-	/// <summary>A model's reply to ChatProviderPrompt as a model decision, or nullopt when it does not answer the
-	/// request (no JSON object, an option or level outside the request, a probability outside 0 to 1, or no reason).</summary>
-	static std::optional<DecisionResult> ParseChatProviderReply(const DecisionRequest& request, std::string_view reply, const DecisionRun& run);
-	/// <summary>A Choice the caller's own parser read from a chat-provider reply (the goal review has a richer reply
-	/// format). Nullopt unless the request is a valid Choice and the answer is one of its options.</summary>
-	static std::optional<DecisionResult> ChatProviderChoice(const DecisionRequest& request, std::string_view choice, std::string reason, std::vector<std::string> evidence, const DecisionRun& run);
+	/// <summary>
+	/// The model decision in a backend's reply text, read by the backend or by the caller's reader, or nullopt when the
+	/// reply does not answer the request: no answer, an option or level outside the request, a probability outside
+	/// 0 to 1, or neither a reason nor evidence. This is the only way to attribute a decision to a model.
+	/// </summary>
+	static std::optional<DecisionResult> FromReply(const DecisionBackend& backend, const DecisionRequest& request, std::string_view reply,
+	                                               const DecisionRun& run, const DecisionReplyReader& reader = {});
 
 	/// <summary>A deterministic UAM rule decided; never attributed to a model.</summary>
 	static DecisionResult Filter(const DecisionRequest& request, std::string choice, std::string reason);

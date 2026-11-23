@@ -462,7 +462,6 @@ inline constexpr char kDecisionSourceModelPrefix[] = "model:";
 inline constexpr char kDecisionSourceFilter[] = "filter";
 inline constexpr char kDecisionSourceFallback[] = "fallback";
 inline constexpr char kDecisionSourceUnknown[] = "unknown";
-std::string ModelDecisionSource(std::string_view model_id);
 /// Unrecognized saved values become "unknown" so they can never read as a model review.
 std::string NormalizeDecisionSource(std::string_view source);
 /// Structured id of the decision backend behind a "model:<id>" source (see app/decision_service.h). The only backend

@@ -139,6 +139,8 @@ class GoalService
 	                          const DecisionAttribution& attribution, const std::string& blocker_kind = {});
 	/// <summary>Save who made the goal's latest automatic decision: its source string and, for a model, the backend.</summary>
 	static void RecordDecision(Goal& goal, const DecisionAttribution& attribution);
+	/// <summary>The user replaced the automatic verdict (Mark complete, marking blocked, Restart): no source, no backend.</summary>
+	static void ClearDecision(Goal& goal);
 	/// <summary>The goal review as a Choice: continue, blocked or complete.</summary>
 	static DecisionRequest ReviewDecisionRequest();
 

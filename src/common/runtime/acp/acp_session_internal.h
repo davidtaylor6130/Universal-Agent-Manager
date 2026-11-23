@@ -221,7 +221,6 @@ void ScheduleCompletedAcpPromptRecoverySaveIfReady(AppState& app, std::string_vi
 
 // Goal loop helpers
 std::string MessageTextForGoalReview(const ChatSession& chat, int index);
-std::string GoalTextPrefixForDiagnostics(const std::string& text);
 std::string GoalLoopDiagnosticDetail(const AcpSessionState& session, const std::string& goal_id, const std::string& text = "");
 void AppendGoalLoopDiagnostic(AcpSessionState& session, const std::string& reason, const std::string& goal_id, const std::string& text = "");
 int64_t EstimateGoalTurnTokens(const ChatSession& chat, const AcpSessionState& session);

@@ -956,14 +956,6 @@ std::string MessageTextForGoalReview(const ChatSession& chat, int index)
 	return chat.messages[static_cast<std::size_t>(index)].content;
 }
 
-std::string GoalTextPrefixForDiagnostics(const std::string& text)
-{
-	std::string flattened = text;
-	std::replace(flattened.begin(), flattened.end(), '\n', ' ');
-	std::replace(flattened.begin(), flattened.end(), '\r', ' ');
-	return CapDiagnosticString(flattened, 160);
-}
-
 std::string GoalLoopDiagnosticDetail(const AcpSessionState& session, const std::string& goal_id, const std::string& text)
 {
 	std::ostringstream detail;
@@ -973,9 +965,10 @@ std::string GoalLoopDiagnosticDetail(const AcpSessionState& session, const std::
 	       << "\ngoalReviewScheduled=" << (session.goal_review_scheduled ? "true" : "false")
 	       << "\nturnUserMessageIndex=" << session.turn_user_message_index
 	       << "\nturnAssistantMessageIndex=" << session.turn_assistant_message_index;
+	// Prompts and model replies stay out of the diagnostic log (docs/engineering/logging.md); only their size is kept.
 	if (!text.empty())
 	{
-		detail << "\ntextPrefix=" << GoalTextPrefixForDiagnostics(text);
+		detail << "\ntextBytes=" << text.size();
 	}
 	return detail.str();
 }

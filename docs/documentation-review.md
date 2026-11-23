@@ -340,4 +340,4 @@ Issue #363's first slice adds the decision interface with only the chat-provider
 - Should [Permission AI Review](providers/permissions/ai-review.md), which is getting user allow/ask/deny command rules in separate work, later answer through the same interface, or stay a separate reviewer?
 - Where should the backend appear to the user: the goal window's Last decision row, diagnostics only, or both? The goal window is unchanged in this slice.
 
-The Settings backend picker waits until a second backend exists.
+**Interim interpretation:** only the chat-provider backend exists, so no goal or transcript text goes to a hosted decision service; "turn review" is read as the goal-loop review; the goal window is unchanged and the backend appears in saved goal state and diagnostics only. The Settings backend picker waits until a second backend exists.

@@ -354,7 +354,7 @@ bool ResumeGoal(AppState& app, const std::string& chat_id, const std::string& go
 			goal->last_blocker.clear();
 			goal->last_blocker_kind.clear();
 			goal->last_diagnostic.clear();
-			goal->last_decision_source.clear();
+			GoalService::ClearDecision(*goal);
 			goal->last_verification.clear();
 			goal->completed_items.clear();
 			goal->remaining_items.clear();
@@ -466,7 +466,7 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 	const int review_repair_attempts = iteration_review
 	                                     ? chat.goal_iteration_repair_attempts
 	                                     : session.goal_review_repair_attempts;
-	const std::int64_t review_started_ms = session.goal_review_started_ms;
+	const AcpSessionState::GoalReviewDecisionTiming review_timing = session.goal_review_decision;
 	const std::int64_t review_finished_ms = DecisionService::NowMs();
 	ClearGoalReviewState(session);
 	Goal* active_review_goal = GoalService::FindActiveGoal(app, owner_chat_id);
@@ -500,10 +500,17 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 		review_model_id = uam::strings::NonEmptyOrFallback(session.goal_turn_model_id, uam::strings::NonEmptyOrFallback(
 		    GoalService::ReviewerModelId(reviewer_chat != nullptr ? *reviewer_chat : chat, *reviewed_goal, &session), session.current_model_id));
 	}
-	const DecisionRun review_run{review_model_id, review_started_ms, review_finished_ms, review_tokens};
-	std::optional<GoalService::ReviewDecision> parsed = GoalService::ParseReviewDecision(review_text);
-	std::optional<DecisionResult> verdict;
-	if (parsed.has_value()) verdict = DecisionService::ChatProviderChoice(review_request, parsed->decision, parsed->reason, parsed->evidence, review_run);
+	// A repaired decision costs both turns; one unknown turn leaves the total unknown.
+	std::optional<std::int64_t> decision_tokens = review_tokens;
+	if (review_timing.repaired) decision_tokens = review_timing.earlier_tokens && review_tokens ? std::optional<std::int64_t>(*review_timing.earlier_tokens + *review_tokens) : std::nullopt;
+	const DecisionRun review_run{review_model_id, review_timing.started_ms, review_finished_ms, decision_tokens};
+	std::optional<GoalService::ReviewDecision> parsed;
+	const std::optional<DecisionResult> verdict = DecisionService::FromReply(DecisionService::ActiveBackend(), review_request, review_text, review_run,
+	    [&parsed](std::string_view reply) -> std::optional<DecisionAnswer> {
+		    parsed = GoalService::ParseReviewDecision(std::string(reply));
+		    if (!parsed.has_value()) return std::nullopt;
+		    return DecisionAnswer{parsed->decision, 0, 0.0, parsed->reason, parsed->evidence};
+	    });
 	if (!verdict.has_value())
 	{
 		Goal* active_goal = GoalService::FindActiveGoal(app, owner_chat_id);
@@ -523,7 +530,8 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 			    "For continue use {\"decision\":\"continue\",\"reason\":\"...\",\"nextPrompt\":\"...\",\"progressUpdate\":{\"completed\":[],\"remaining\":[\"next step\"],\"currentStep\":\"next step\",\"lastVerification\":\"...\"}}. "
 			    "For blocked use {\"decision\":\"blocked\",\"reason\":\"...\",\"blockerKind\":\"...\"}. "
 			    "For complete use {\"decision\":\"complete\",\"reason\":\"...\",\"evidence\":[\"one concrete item\"]}.";
-			AppendGoalLoopDiagnostic(session, "review_json_invalid_retry", goal_id, review_text);
+			// Model replies stay out of the diagnostic log; the reply itself remains in the private review transcript.
+			AppendGoalLoopDiagnostic(session, "review_json_invalid_retry", goal_id);
 			const ChatSession* model_chat = GoalOwnerChat(app, chat);
 			if (model_chat == nullptr) model_chat = &chat;
 			if (iteration_review
@@ -533,8 +541,10 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 				        : QueueGoalInternalPrompt(app, session, chat, repair_prompt, true,
 				                                  GoalService::ReviewerModelId(chat, *active_goal, &session)))
 			{
-				// The repair belongs to the same decision, so its latency runs from the first request.
-				session.goal_review_started_ms = review_started_ms;
+				// The repair belongs to the same decision: its latency runs from the first request and its cost includes this turn.
+				session.goal_review_decision.started_ms = review_timing.started_ms;
+				session.goal_review_decision.repaired = true;
+				session.goal_review_decision.earlier_tokens = review_tokens;
 				return true;
 			}
 			ClearGoalReviewState(session);
@@ -548,7 +558,7 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 			(void)GoalService::UpdateGoalStatus(app, owner_chat_id, goal_id, GoalStatus::Blocked);
 		}
 		AppendGoalReviewDecisionDiagnostic(session, goal_id, fallback);
-		AppendGoalLoopDiagnostic(session, "goal_blocked_invalid_review", goal_id, review_text);
+		AppendGoalLoopDiagnostic(session, "goal_blocked_invalid_review", goal_id);
 		if (ChatSession* owner = GoalOwnerChat(app, chat); owner != nullptr) SaveChatQuietly(app, *owner);
 		StopCompletedGoalIterationRuntime(app, chat, session);
 		if (browser)
@@ -558,6 +568,7 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 		return true;
 	}
 
+	// The reader parsed this reply; a verdict is only returned for an answer it read.
 	GoalService::ReviewDecision decision = std::move(*parsed);
 	// Only a reply the decision interface validated reaches here, so this is the sole model attribution.
 	decision.attribution = verdict->attribution;
@@ -1117,7 +1128,7 @@ bool PollPendingGoalIterations(AppState& app)
 		if (!ResumeGoal(app, id, goal_id, &error))
 		{
 			(void)GoalService::UpdateGoalStatus(app, id, goal_id, GoalStatus::Blocked);
-			if (Goal* goal = GoalService::FindGoalById(app, id, goal_id)) { goal->last_diagnostic = error; goal->last_decision_source = kDecisionSourceFallback; }
+			if (Goal* goal = GoalService::FindGoalById(app, id, goal_id)) { goal->last_diagnostic = error; GoalService::RecordDecision(*goal, DecisionAttribution::Fallback()); }
 			(void)SaveChatQuietly(app, *chat);
 		}
 		changed = true;
