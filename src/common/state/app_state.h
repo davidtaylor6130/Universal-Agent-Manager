@@ -1519,7 +1519,6 @@ namespace uam
 		std::vector<ShellAction> shell_actions;
 		std::string shell_action_notification;
 		std::vector<ProviderProfile> provider_profiles;
-		uam::FrontendActionMap frontend_actions;
 
 		std::vector<ChatSession> chats;
 		HiddenAgentChatOwnership hidden_agent_chat_ownership;

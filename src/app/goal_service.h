@@ -90,10 +90,6 @@ class GoalService
 	/// </summary>
 	static Goal* FindGoalById(AppState& app, const std::string& chat_id, const std::string& goal_id);
 	static const Goal* FindGoalById(const AppState& app, const std::string& chat_id, const std::string& goal_id);
-	/// <summary>
-	/// Get all goals for a chat session.
-	/// </summary>
-
 	enum class GoalRemovalStage { Normal, PrepareOnly, AfterReceipt };
 	/// Metadata captured before removal; an absent goal alone never authorizes cancellation.
 	struct GoalRemovalPreparation

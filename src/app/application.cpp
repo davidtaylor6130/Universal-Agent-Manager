@@ -48,7 +48,6 @@
 #include "common/chat/chat_folder_store.h"
 #include "common/chat/chat_repository.h"
 #include "common/provider/excluded_provider_data.h"
-#include "common/config/frontend_actions.h"
 #include "common/config/settings_normalization.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_profile.h"
