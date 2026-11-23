@@ -38,6 +38,7 @@ import { CustomIcon, useCustomIconPicker } from '../shared/CustomIcon'
 import { resolveCustomIcon } from '../../types/customIcon'
 import { reportAppFailure } from '../../utils/appFailure'
 import { sidebarIconPaint } from './sidebarIconPaint'
+import { ATTENTION_LABELS, chatRowStatusText } from './chatRowStatus'
 import type { CustomIcon as CustomIconValue } from '../../types/customIcon'
 import { SSH_ENABLED } from '../../config/buildFeatures'
 
@@ -187,29 +188,6 @@ interface SessionItemProps {
   sortList?: ChatSortList
 }
 
-const ATTENTION_LABELS: Record<AcpAttentionKind, string> = {
-  question: 'Needs answer',
-  plan: 'Plan needs review',
-  memory: 'Memory input needed',
-  permission: 'Permission needed',
-  command: 'Command approval needed',
-  file: 'File approval needed',
-  error: 'Needs attention',
-  generic: 'Input needed',
-}
-
-/**
- * Spoken status for a chat row's accessible name and the sidebar's status announcement, so the
- * state shown by icon and colour is also in words. Empty when the row shows no status.
- */
-export function chatRowStatusText(status: DisplayedChatStatus, options: { automationHeld?: boolean; watchingPullRequest?: boolean } = {}): string {
-  if (options.automationHeld) return 'waiting for approval'
-  if (status?.type === 'processing') return 'running'
-  if (status?.type === 'attention') return status.kind === 'error' ? 'failed' : `waiting, ${ATTENTION_LABELS[status.kind].toLowerCase()}`
-  if (options.watchingPullRequest) return 'watching pull request'
-  if (status?.type === 'done') return 'done, unread'
-  return ''
-}
 
 export function sidebarStatusIcon(kind: AcpAttentionKind, size = 12) {
   const props = { size, 'aria-hidden': true } as const
@@ -714,6 +692,8 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
           setEditValue(sessionName)
         }}
         onContextMenu={(e) => {
+          // The rename field keeps its own text menu.
+          if (editing) return
           e.preventDefault()
           if (isCompanionContext()) return
           menuReturnFocusRef.current = rowRef.current
@@ -825,8 +805,10 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
           </span>
         )}
         {!editing && isPinned && (
-          // Keeps the 12px pin's place in the row; the 24px hit area overlaps only the gaps either side.
+          // Keeps the 12px pin's place in the row; the 24px hit area overlaps only the gaps either side. It is a
+          // pointer shortcut out of the Tab order: the row's own pin chip, its menu and the row button cover it by keyboard.
           <IconButton
+            tabIndex={-1}
             size="sm"
             label={multiSelected ? 'Unpin selected chats' : `Unpin ${sessionName}`}
             tooltip={multiSelected ? 'Unpin selected chats' : 'Unpin chat'}
@@ -923,7 +905,8 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
         {!editing && !activityLayout && <div
           data-testid={`session-actions-${sessionId}`}
           style={isCompanionContext() ? { display: 'none' } : undefined}
-          // The 24px hit areas reach 2px past the chips' painted tiles, so the group sits 2px further right to keep the tiles in place.
+          // The 24px hit areas reach 2px past the chips' painted tiles, so the group sits 2px further right and the
+          // more-actions tile keeps its place; the tiles themselves are now 4px apart (2px before).
           className={`absolute ${lifecycleStatus ? 'right-[28px]' : 'right-2'} flex items-center transition-opacity duration-100 ${
             menuPos
               ? 'opacity-100 pointer-events-auto'

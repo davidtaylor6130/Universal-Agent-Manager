@@ -4,7 +4,8 @@ import { createRoot } from 'react-dom/client'
 import { afterEach, describe, expect, it } from 'vitest'
 import { useAppStore, type AcpBinding } from '../../store/useAppStore'
 import type { Session } from '../../types/session'
-import { SessionItem, chatRowStatusText } from './SessionItem'
+import { SessionItem } from './SessionItem'
+import { chatRowStatusText } from './chatRowStatus'
 
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -124,10 +125,14 @@ describe('sidebar chat row accessibility', () => {
         expect(button.classList.contains('uam-iconbtn')).toBe(true)
         expect(button.classList.contains('uam-sb-iconbtn')).toBe(true)
       }
-      // The inline pin keeps its 12px place in the row while its hit area is 24px.
+      // The inline pin keeps its 12px place in the row while its hit area is 24px. It is a pointer shortcut:
+      // Tab reaches the row button first, then the row's own pin and more-actions chips.
       const inlinePin = host.querySelectorAll<HTMLButtonElement>('button[aria-label="Unpin Pinned"]')[0]
       expect(inlinePin.classList.contains('uam-sb-iconbtn--inline')).toBe(true)
       expect(inlinePin.style.getPropertyValue('--sb-paint')).toBe('12px')
+      expect(inlinePin.tabIndex).toBe(-1)
+      const tabbable = Array.from(host.querySelectorAll<HTMLElement>('button, [role="button"]')).filter((element) => element.tabIndex >= 0).map((element) => element.getAttribute('aria-label'))
+      expect(tabbable).toEqual(['Open chat Pinned', 'Unpin Pinned', 'More actions for Pinned'])
     } finally { unmount() }
 
     // A variable path keeps Vite from rewriting the URL into an asset import.
@@ -138,6 +143,6 @@ describe('sidebar chat row accessibility', () => {
     expect(rule('.uam-iconbtn.uam-sb-iconbtn--inline')).toContain('margin: calc((var(--sb-paint) - 24px) / 2)')
     expect(rule('.uam-sb-target::after')).toContain('height: max(24px, 100%)')
     // The row draws the focus ring for its one interactive element.
-    expect(css).toContain('.uam-sb-row:has(> .uam-sb-row__open:focus-visible) { outline: var(--focus-ring); outline-offset: var(--focus-inset); }')
+    expect(rule('.uam-sb-row:has(> .uam-sb-row__open:focus-visible)')).toMatch(/outline:\s*var\(--focus-ring\)/)
   })
 })

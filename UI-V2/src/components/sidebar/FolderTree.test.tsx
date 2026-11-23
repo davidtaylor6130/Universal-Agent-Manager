@@ -1714,6 +1714,38 @@ describe('FolderTree', () => {
       act(() => useAppStore.setState({ acpBindingBySessionId: { 'chat-1': { running: true, processing: false, lifecycleState: 'ready', attentionKind: 'permission' } as never, 'chat-2': { running: true, processing: false, lifecycleState: 'ready', readySinceLastSelect: true } as never } }))
       expect(region.textContent).toBe('Docs pass: done, unread')
       expect(host.querySelectorAll('[role="status"], [aria-live]')).toHaveLength(1)
+      // A chat the sidebar had not listed before (created or reloaded) arrives silently, whatever its status.
+      act(() => useAppStore.setState((state) => ({ sessions: [...state.sessions, { ...makeSession(3), name: 'Reloaded', updatedAt: new Date() }],
+        acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-3': { running: true, processing: false, lifecycleState: 'ready', attentionKind: 'question' } as never } })))
+      expect(host.querySelector('[data-session-id="chat-3"]')?.getAttribute('aria-label')).toBe('Open chat Reloaded, waiting, needs answer')
+      expect(region.textContent).toBe('Docs pass: done, unread')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  it('announces a branch family the way its Active row shows it', () => {
+    const recent = new Date()
+    useAppStore.setState({
+      sessions: [{ ...makeSession(1), name: 'Build fixes', updatedAt: recent }, { ...makeSession(2), name: 'Build fixes branch', parentChatId: 'chat-1', branchRootChatId: 'chat-1', updatedAt: recent }],
+      acpBindingBySessionId: { 'chat-1': { running: true, processing: true, lifecycleState: 'processing' } as never, 'chat-2': { running: true, processing: true, lifecycleState: 'processing' } as never },
+    })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<FolderTree searchQuery="" />))
+      const region = host.querySelector<HTMLElement>('[data-testid="sidebar-move-status"]')!
+      const row = () => host.querySelector('[data-testid="active-chats"] [data-session-id="chat-1"]')!
+      // The root finishing while its branch still runs leaves the row running: nothing to announce.
+      act(() => useAppStore.setState({ acpBindingBySessionId: { 'chat-1': { running: true, processing: false, lifecycleState: 'ready', readySinceLastSelect: true } as never, 'chat-2': { running: true, processing: true, lifecycleState: 'processing' } as never } }))
+      expect(row().getAttribute('aria-label')).toBe('Open chat Build fixes, running')
+      expect(region.textContent).toBe('')
+      // The branch asking for permission changes the row, so the row's chat is announced.
+      act(() => useAppStore.setState({ acpBindingBySessionId: { 'chat-1': { running: true, processing: false, lifecycleState: 'ready', readySinceLastSelect: true } as never, 'chat-2': { running: true, processing: false, lifecycleState: 'ready', attentionKind: 'permission' } as never } }))
+      expect(row().getAttribute('aria-label')).toBe('Open chat Build fixes, waiting, permission needed')
+      expect(region.textContent).toBe('Build fixes: waiting, permission needed')
     } finally {
       act(() => root.unmount())
       host.remove()

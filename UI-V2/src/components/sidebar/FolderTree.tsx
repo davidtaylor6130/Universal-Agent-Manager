@@ -13,7 +13,8 @@ import { useAppStore, type AcpAttentionKind } from '../../store/useAppStore'
 import type { AppState } from '../../store/storeTypes'
 import { useShallow } from 'zustand/react/shallow'
 import { shallow } from 'zustand/shallow'
-import { SessionItem, chatRowStatusText } from './SessionItem'
+import { SessionItem } from './SessionItem'
+import { chatRowStatusText } from './chatRowStatus'
 import { sidebarIconPaint } from './sidebarIconPaint'
 import { DeleteConfirmDialog, chatDeleteFailure, countLabel, relatedBranchContents } from './DeleteConfirmDialog'
 import './sidebar.css'
@@ -24,6 +25,8 @@ import {
   buildChatSearchIndex,
   buildChatSearchModel,
   tokenizeChatSearchQuery,
+  mergeDisplayedStatus,
+  type DisplayedChatStatus,
 } from './chatSearch'
 import type { Folder, Session, WorkspaceFolderRecoveryPreview } from '../../types/session'
 import { chatGridLeaves, chatPaneColors, readChatGridLayout, setChatInLeaf, subscribeChatGridLayout, writeChatGridLayout } from '../../utils/chatGridStorage'
@@ -365,22 +368,6 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
     }
     return counts
   }, [runtimeStatusBySessionId, searchModel.activeSessionIds, sessionsById])
-  // Rows carry their status in their names, not in a live region each; the sidebar's one polite region
-  // announces Active chats that start waiting, fail or finish. Running starts are not announced.
-  const announcedStatusesRef = useRef<Map<string, string | null | undefined> | null>(null)
-  useEffect(() => {
-    const previous = announcedStatusesRef.current
-    announcedStatusesRef.current = runtimeStatusBySessionId
-    if (!previous) return
-    const changes = searchModel.activeSessionIds.flatMap((id) => {
-      const status = runtimeStatusBySessionId.get(id)
-      if (!status || status === 'processing' || previous.get(id) === status) return []
-      const text = chatRowStatusText(status === 'done' ? { type: 'done' } : status.startsWith('attention:') ? { type: 'attention', kind: status.slice('attention:'.length) as AcpAttentionKind } : null)
-      return text ? [`${sessionsById.get(id)?.name || 'Chat'}: ${text}`] : []
-    })
-    if (changes.length === 0) return
-    setMoveAnnouncement(changes.length > 3 ? `${changes.slice(0, 3).join('; ')}; and ${changes.length - 3} more` : changes.join('; '))
-  }, [runtimeStatusBySessionId, searchModel.activeSessionIds, sessionsById])
   const activeStatusSummary = [
     activeStatusCounts.running ? `${activeStatusCounts.running} running` : '',
     activeStatusCounts.attention ? `${activeStatusCounts.attention} attention` : '',
@@ -418,6 +405,33 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
     return families
   }, [sessions, nativeChildIds])
   useLayoutEffect(() => { previousFamiliesRef.current = familySessionIdsByRootId }, [familySessionIdsByRootId])
+  // Rows carry their status in their names, not in a live region each; the sidebar's one polite region
+  // announces an Active row whose spoken status changes to waiting, failed or done. Each row's status
+  // merges its branch family the way the row does. Running starts, the first render and chats the
+  // sidebar had not listed before (newly created or reloaded) are not announced.
+  const announcedStatusesRef = useRef<Map<string, string> | null>(null)
+  useEffect(() => {
+    const spoken = new Map<string, string>()
+    for (const [rootId, familyIds] of familySessionIdsByRootId) {
+      let status: DisplayedChatStatus = null
+      for (const id of familyIds) {
+        const runtime = runtimeStatusBySessionId.get(id)
+        status = mergeDisplayedStatus(status, runtime === 'processing' ? { type: 'processing' } : runtime === 'done' ? { type: 'done' }
+          : runtime?.startsWith('attention:') ? { type: 'attention', kind: runtime.slice('attention:'.length) as AcpAttentionKind } : null)
+      }
+      spoken.set(rootId, chatRowStatusText(status, { automationHeld: Boolean(sessionsById.get(rootId)?.automationPendingPrompt) }))
+    }
+    const previous = announcedStatusesRef.current
+    announcedStatusesRef.current = spoken
+    if (!previous) return
+    const changes = searchModel.activeSessionIds.flatMap((id) => {
+      const text = spoken.get(id) ?? ''
+      if (!text || text === 'running' || !previous.has(id) || previous.get(id) === text) return []
+      return [`${sessionsById.get(id)?.name || 'Chat'}: ${text}`]
+    })
+    if (changes.length === 0) return
+    setMoveAnnouncement(changes.length > 3 ? `${changes.slice(0, 3).join('; ')}; and ${changes.length - 3} more` : changes.join('; '))
+  }, [familySessionIdsByRootId, runtimeStatusBySessionId, searchModel.activeSessionIds, sessionsById])
   // Each selected row stands for its branch family, matching single-row deletion.
   const pendingBulkDeleteFamilyIds = useMemo(() => pendingBulkDeleteIds
     ? [...new Set(pendingBulkDeleteIds.flatMap((id) => familySessionIdsByRootId.get(id) ?? [id]))]
