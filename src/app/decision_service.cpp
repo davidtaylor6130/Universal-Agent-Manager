@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <limits>
 #include <set>
@@ -56,6 +57,10 @@ namespace
 		{
 			if (uam::strings::ToLowerAscii(uam::strings::Trim(option)) == wanted) return option;
 		}
+		for (const auto& [spelling, option] : request.option_aliases)
+		{
+			if (uam::strings::ToLowerAscii(uam::strings::Trim(spelling)) == wanted) return option;
+		}
 		return {};
 	}
 
@@ -105,7 +110,7 @@ namespace
 			case DecisionShape::Choice:
 				data["question"] = request.question;
 				data["options"] = request.options;
-				answer_format = R"({"choice":"<one of the options, exactly>","reason":"<why>","evidence":["<optional supporting item>"]})";
+				answer_format = "{\"" + request.AnswerKey() + R"(":"<one of the options, exactly>","reason":"<why>","evidence":["<optional supporting item>"]})";
 				break;
 			case DecisionShape::Score:
 			{
@@ -113,12 +118,12 @@ namespace
 				nlohmann::json levels = nlohmann::json::array();
 				for (const DecisionScoreLevel& level : request.levels) levels.push_back({{"score", level.value}, {"meaning", level.description}});
 				data["levels"] = std::move(levels);
-				answer_format = R"({"score":<one of the level scores>,"reason":"<why>","evidence":["<optional supporting item>"]})";
+				answer_format = "{\"" + request.AnswerKey() + R"(":<one of the level scores>,"reason":"<why>","evidence":["<optional supporting item>"]})";
 				break;
 			}
 			case DecisionShape::Probability:
 				data["statement"] = request.statement;
-				answer_format = R"({"probability":<number from 0 to 1 that the statement is true>,"reason":"<why>","evidence":["<optional supporting item>"]})";
+				answer_format = "{\"" + request.AnswerKey() + R"(":<number from 0 to 1 that the statement is true>,"reason":"<why>","evidence":["<optional supporting item>"]})";
 				break;
 			}
 			// Angle brackets only occur inside JSON strings here, so escaping them keeps the data from closing its marker.
@@ -139,11 +144,11 @@ namespace
 
 		std::optional<DecisionAnswer> ReadReply(const DecisionRequest& request, std::string_view reply) const override
 		{
-			const std::size_t first = reply.find('{');
-			const std::size_t last = reply.rfind('}');
-			if (first == std::string_view::npos || last == std::string_view::npos || last <= first) return std::nullopt;
-			const nlohmann::json parsed = nlohmann::json::parse(reply.substr(first, last - first + 1), nullptr, false);
-			if (parsed.is_discarded() || !parsed.is_object()) return std::nullopt;
+			if (!request.IsValid()) return std::nullopt;
+			const std::optional<nlohmann::json> object = ParseDecisionJsonObject(reply);
+			if (!object.has_value()) return std::nullopt;
+			const nlohmann::json& parsed = *object;
+			const std::string key = request.AnswerKey();
 			DecisionAnswer answer;
 			if (const auto reason = parsed.find("reason"); reason != parsed.end() && reason->is_string()) answer.reason = reason->get<std::string>();
 			if (const auto evidence = parsed.find("evidence"); evidence != parsed.end()) answer.evidence = EvidenceFromJson(*evidence);
@@ -151,15 +156,17 @@ namespace
 			{
 			case DecisionShape::Choice:
 			{
-				const auto choice = parsed.find("choice");
+				const auto choice = parsed.find(key);
 				if (choice == parsed.end() || !choice->is_string()) return std::nullopt;
 				answer.choice = choice->get<std::string>();
 				return answer;
 			}
 			case DecisionShape::Score:
 			{
-				const auto score = parsed.find("score");
+				const auto score = parsed.find(key);
 				if (score == parsed.end() || !score->is_number_integer()) return std::nullopt;
+				// An unsigned value above INT64_MAX would wrap if read as signed.
+				if (score->is_number_unsigned() && score->get<std::uint64_t>() > static_cast<std::uint64_t>(std::numeric_limits<int>::max())) return std::nullopt;
 				const std::int64_t value = score->get<std::int64_t>();
 				if (value < std::numeric_limits<int>::min() || value > std::numeric_limits<int>::max()) return std::nullopt;
 				answer.score = static_cast<int>(value);
@@ -167,7 +174,7 @@ namespace
 			}
 			case DecisionShape::Probability:
 			{
-				const auto probability = parsed.find("probability");
+				const auto probability = parsed.find(key);
 				if (probability == parsed.end() || !probability->is_number()) return std::nullopt;
 				answer.probability = probability->get<double>();
 				return answer;
@@ -217,6 +224,12 @@ bool DecisionRequest::IsValid() const
 			const std::string key = uam::strings::ToLowerAscii(uam::strings::Trim(option));
 			if (key.empty() || !seen.insert(key).second) return false;
 		}
+		for (const auto& [spelling, option] : option_aliases)
+		{
+			const std::string key = uam::strings::ToLowerAscii(uam::strings::Trim(spelling));
+			const bool names_option = std::ranges::find(options, option) != options.end();
+			if (key.empty() || !names_option || !seen.insert(key).second) return false;
+		}
 		return true;
 	}
 	case DecisionShape::Score:
@@ -233,6 +246,35 @@ bool DecisionRequest::IsValid() const
 		return !uam::strings::Trim(statement).empty();
 	}
 	return false;
+}
+
+std::string DecisionRequest::AnswerKey() const
+{
+	if (!answer_key.empty()) return answer_key;
+	return ShapeName(shape);
+}
+
+std::optional<nlohmann::json> ParseDecisionJsonObject(std::string_view reply)
+{
+	const std::size_t first = reply.find('{');
+	const std::size_t last = reply.rfind('}');
+	if (first == std::string_view::npos || last == std::string_view::npos || last <= first) return std::nullopt;
+	std::string json_text(reply.substr(first, last - first + 1));
+	nlohmann::json parsed = nlohmann::json::parse(json_text, nullptr, false);
+	if (parsed.is_discarded())
+	{
+		// Models sometimes write "evidence":"a", "b"] without the opening bracket; repair only that.
+		constexpr std::string_view kEvidenceKey = "\"evidence\":";
+		const std::size_t evidence_key = json_text.find(kEvidenceKey);
+		if (evidence_key == std::string::npos) return std::nullopt;
+		std::size_t evidence_value = evidence_key + kEvidenceKey.size();
+		while (evidence_value < json_text.size() && std::isspace(static_cast<unsigned char>(json_text[evidence_value]))) ++evidence_value;
+		if (evidence_value >= json_text.size() || json_text[evidence_value] != '"' || json_text.find(']', evidence_value) == std::string::npos) return std::nullopt;
+		json_text.insert(evidence_value, "[");
+		parsed = nlohmann::json::parse(json_text, nullptr, false);
+	}
+	if (parsed.is_discarded() || !parsed.is_object()) return std::nullopt;
+	return parsed;
 }
 
 DecisionAttribution::DecisionAttribution(DecisionOrigin origin, std::string backend_id, std::string model_id)
@@ -275,18 +317,19 @@ std::int64_t DecisionService::LatencyMs(std::int64_t started_ms, std::int64_t fi
 	return finished_ms - started_ms;
 }
 
-const DecisionBackend& DecisionService::ActiveBackend()
+const DecisionBackend& DecisionService::ChatProviderBackend()
 {
 	static const ChatProviderDecisionBackend backend;
 	return backend;
 }
 
 std::optional<DecisionResult> DecisionService::FromReply(const DecisionBackend& backend, const DecisionRequest& request, std::string_view reply,
-	                                                     const DecisionRun& run, const DecisionReplyReader& reader)
+	                                                     const DecisionRun& run, const DecisionReplyCheck& check)
 {
 	if (!request.IsValid()) return std::nullopt;
-	std::optional<DecisionAnswer> answer = reader ? reader(reply) : backend.ReadReply(request, reply);
-	if (!answer.has_value()) return std::nullopt;
+	// The backend reads the answer; the caller can only reject it.
+	std::optional<DecisionAnswer> answer = backend.ReadReply(request, reply);
+	if (!answer.has_value() || (check && !check(reply, *answer))) return std::nullopt;
 	DecisionResult result = BaseResult(request, run);
 	result.reason = uam::strings::Trim(answer->reason);
 	result.evidence = BoundedEvidence(std::move(answer->evidence));

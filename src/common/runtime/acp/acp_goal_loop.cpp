@@ -128,7 +128,7 @@ namespace uam::acp_detail
 			goal.last_diagnostic = "goal_blocked_max_loop_iterations_reached";
 			GoalService::RecordBlocker(app, owner_chat_id, goal_id, blocker, kDecisionSourceFilter);
 			(void)GoalService::UpdateGoalStatus(app, owner_chat_id, goal_id, GoalStatus::Blocked);
-			AppendGoalLoopDiagnostic(session, "goal_blocked_max_loop_iterations_reached", goal_id, blocker);
+			AppendGoalLoopDiagnosticCause(session, "goal_blocked_max_loop_iterations_reached", goal_id, blocker);
 			if (ChatSession* owner = GoalOwnerChat(app, chat); owner != nullptr) SaveChatQuietly(app, *owner);
 			StopCompletedGoalIterationRuntime(app, chat, session);
 			if (browser)
@@ -504,12 +504,17 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 	std::optional<std::int64_t> decision_tokens = review_tokens;
 	if (review_timing.repaired) decision_tokens = review_timing.earlier_tokens && review_tokens ? std::optional<std::int64_t>(*review_timing.earlier_tokens + *review_tokens) : std::nullopt;
 	const DecisionRun review_run{review_model_id, review_timing.started_ms, review_finished_ms, decision_tokens};
+	// The review ran as a chat-provider turn, so that backend reads the answer; the goal's own rules (a next prompt
+	// and progress for continue, evidence for complete) can only reject it.
 	std::optional<GoalService::ReviewDecision> parsed;
-	const std::optional<DecisionResult> verdict = DecisionService::FromReply(DecisionService::ActiveBackend(), review_request, review_text, review_run,
-	    [&parsed](std::string_view reply) -> std::optional<DecisionAnswer> {
+	const std::optional<DecisionResult> verdict = DecisionService::FromReply(DecisionService::ChatProviderBackend(), review_request, review_text, review_run,
+	    [&parsed, &review_request](std::string_view reply, const DecisionAnswer& answer) {
 		    parsed = GoalService::ParseReviewDecision(std::string(reply));
-		    if (!parsed.has_value()) return std::nullopt;
-		    return DecisionAnswer{parsed->decision, 0, 0.0, parsed->reason, parsed->evidence};
+		    if (!parsed.has_value()) return false;
+		    std::string choice = uam::strings::ToLowerAscii(uam::strings::Trim(answer.choice));
+		    for (const auto& [spelling, option] : review_request.option_aliases)
+			    if (choice == spelling) choice = option;
+		    return parsed->decision == choice;
 	    });
 	if (!verdict.has_value())
 	{
@@ -525,7 +530,7 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 				session.goal_review_repair_attempts = 1;
 			}
 			const std::string repair_prompt =
-			    "Your previous goal review could not be parsed. This is the only repair attempt. "
+			    "Your previous goal review was not usable: it needs one decision with a non-empty reason. This is the only repair attempt. "
 			    "Do not call tools. Output exactly one valid JSON object and nothing else. "
 			    "For continue use {\"decision\":\"continue\",\"reason\":\"...\",\"nextPrompt\":\"...\",\"progressUpdate\":{\"completed\":[],\"remaining\":[\"next step\"],\"currentStep\":\"next step\",\"lastVerification\":\"...\"}}. "
 			    "For blocked use {\"decision\":\"blocked\",\"reason\":\"...\",\"blockerKind\":\"...\"}. "
@@ -544,13 +549,14 @@ bool HandleGoalReviewCompletion(AppState& app, AcpSessionState& session, ChatSes
 				// The repair belongs to the same decision: its latency runs from the first request and its cost includes this turn.
 				session.goal_review_decision.started_ms = review_timing.started_ms;
 				session.goal_review_decision.repaired = true;
-				session.goal_review_decision.earlier_tokens = review_tokens;
+				// After a restart a decision can be repaired again; it keeps the cost of every earlier turn.
+				session.goal_review_decision.earlier_tokens = decision_tokens;
 				return true;
 			}
 			ClearGoalReviewState(session);
 		}
 
-		const DecisionResult fallback = DecisionService::Fallback(review_request, "blocked", "Goal reviewer did not return valid JSON after one repair attempt.", review_run);
+		const DecisionResult fallback = DecisionService::Fallback(review_request, "blocked", "Goal reviewer did not return a usable review after one repair attempt.", review_run);
 		if (Goal* goal = GoalService::FindGoalById(app, owner_chat_id, goal_id); goal != nullptr)
 		{
 			goal->last_diagnostic = "goal_blocked_invalid_review";
@@ -798,7 +804,7 @@ void ScheduleGoalReviewAfterSuccessfulTurn(AppState& app, AcpSessionState& sessi
 	}
 	if (!queued)
 	{
-		AppendGoalLoopDiagnostic(session, "queue_review_failed", goal_id, queue_error);
+		AppendGoalLoopDiagnosticCause(session, "queue_review_failed", goal_id, queue_error);
 		ClearGoalReviewState(session);
 		GoalService::RecordBlocker(app, owner_chat_id, goal_id,
 		                           uam::strings::NonEmptyOrFallback(queue_error, "The private goal review could not start."), kDecisionSourceFallback);
@@ -870,7 +876,7 @@ bool ResumeStalledGoalLoopIfNeeded(AppState& app, AcpSessionState& session, Chat
 	if (!QueueGoalInternalPrompt(app, session, chat, prompt, false,
 	                             GoalService::WorkerModelId(chat, *active_goal), true))
 	{
-		AppendGoalLoopDiagnostic(session, "auto_resume_goal_iteration_failed", goal_id, session.last_error);
+		AppendGoalLoopDiagnosticCause(session, "auto_resume_goal_iteration_failed", goal_id, session.last_error);
 	}
 	if (browser)
 	{

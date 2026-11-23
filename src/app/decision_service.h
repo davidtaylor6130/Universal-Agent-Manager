@@ -2,6 +2,8 @@
 
 #include "common/models/app_models.h"
 
+#include <nlohmann/json.hpp>
+
 #include <cstdint>
 #include <functional>
 #include <optional>
@@ -34,12 +36,18 @@ struct DecisionRequest
 	std::vector<std::string> options;       ///< Choice: the allowed answers.
 	std::vector<DecisionScoreLevel> levels; ///< Score: the allowed levels.
 	std::string statement;                  ///< Probability: the statement to rate.
+	/// Reply key that holds the answer; empty uses "choice", "score" or "probability".
+	std::string answer_key;
+	/// Choice: other spellings a reply may use for an option, as {spelling, option}.
+	std::vector<std::pair<std::string, std::string>> option_aliases;
 
 	static DecisionRequest Choice(std::string question, std::vector<std::string> options);
 	static DecisionRequest Score(std::string question, std::vector<DecisionScoreLevel> levels);
 	static DecisionRequest Probability(std::string statement);
-	/// <summary>Non-empty, distinct options or levels (at least two), or a non-empty statement.</summary>
+	/// <summary>Non-empty, distinct options or levels (at least two), or a non-empty statement; aliases name options.</summary>
 	bool IsValid() const;
+	/// <summary>The reply key that holds the answer.</summary>
+	std::string AnswerKey() const;
 };
 
 /// <summary>What a backend reply says, before DecisionService checks it against the request.</summary>
@@ -61,8 +69,8 @@ enum class DecisionOrigin
 };
 
 /// <summary>
-/// Attribution for one decision. Only DecisionService can make a Model attribution, and only from a backend's
-/// reply text whose answer it checked against the request; filter and fallback paths have no way to name a model.
+/// Attribution for one decision. Only DecisionService::FromReply can make a Model attribution, from an answer the
+/// backend read in its reply text and checked against the request; filter and fallback paths cannot name a model.
 /// </summary>
 class DecisionAttribution
 {
@@ -128,29 +136,35 @@ class DecisionBackend
 	virtual std::optional<DecisionAnswer> ReadReply(const DecisionRequest& request, std::string_view reply) const = 0;
 };
 
-/// <summary>Reads a caller's own reply format (the goal review asks for more than the answer) into an answer.</summary>
-using DecisionReplyReader = std::function<std::optional<DecisionAnswer>(std::string_view reply)>;
+/// <summary>A caller's own rules for a reply the backend already answered (the goal review also needs a next prompt or
+/// evidence). It can only reject the answer; it cannot supply one.</summary>
+using DecisionReplyCheck = std::function<bool(std::string_view reply, const DecisionAnswer& answer)>;
+
+/// <summary>The JSON object between the first '{' and last '}' of a model reply, tolerating an "evidence" value
+/// written as a bare string list without its opening bracket; nullopt when there is none.</summary>
+std::optional<nlohmann::json> ParseDecisionJsonObject(std::string_view reply);
 
 /// <summary>
 /// One decision interface for review and gate decisions (#363). The only backend is the chat provider
-/// (kDecisionBackendChatProvider): a model answering in a provider turn. Hosted and local decision-model backends
-/// and a Settings choice between them are not implemented, so ActiveBackend() always returns the chat provider.
+/// (kDecisionBackendChatProvider): a model answering in a provider turn that the caller runs. Hosted and local
+/// decision-model backends and a Settings choice between them are not implemented.
 /// </summary>
 class DecisionService
 {
   public:
 	/// <summary>Monotonic milliseconds for DecisionRun timing; never wall-clock time.</summary>
 	static std::int64_t NowMs();
-	/// <summary>The backend decisions use. Callers never name a backend themselves.</summary>
-	static const DecisionBackend& ActiveBackend();
+	/// <summary>The chat-provider backend, for callers that run a provider turn for the decision.</summary>
+	static const DecisionBackend& ChatProviderBackend();
 
 	/// <summary>
-	/// The model decision in a backend's reply text, read by the backend or by the caller's reader, or nullopt when the
-	/// reply does not answer the request: no answer, an option or level outside the request, a probability outside
-	/// 0 to 1, or neither a reason nor evidence. This is the only way to attribute a decision to a model.
+	/// The model decision the backend reads from its reply text, or nullopt when the reply does not answer the request
+	/// (no answer, an option or level outside the request, a probability outside 0 to 1, neither a reason nor evidence)
+	/// or the caller's check rejects it. This is the only way to attribute a decision to a model; the attribution is
+	/// only as true as the reply text the caller passes, which must be the backend's own reply.
 	/// </summary>
 	static std::optional<DecisionResult> FromReply(const DecisionBackend& backend, const DecisionRequest& request, std::string_view reply,
-	                                               const DecisionRun& run, const DecisionReplyReader& reader = {});
+	                                               const DecisionRun& run, const DecisionReplyCheck& check = {});
 
 	/// <summary>A deterministic UAM rule decided; never attributed to a model.</summary>
 	static DecisionResult Filter(const DecisionRequest& request, std::string choice, std::string reason);

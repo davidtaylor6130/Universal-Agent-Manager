@@ -922,7 +922,11 @@ void GoalService::ClearDecision(Goal& goal)
 
 DecisionRequest GoalService::ReviewDecisionRequest()
 {
-	return DecisionRequest::Choice("Should the goal continue, is it blocked, or is it complete?", {"continue", "blocked", "complete"});
+	DecisionRequest request = DecisionRequest::Choice("Should the goal continue, is it blocked, or is it complete?", {"continue", "blocked", "complete"});
+	// The review prompt asks for {"decision": ...}; these spellings have always meant complete.
+	request.answer_key = "decision";
+	request.option_aliases = {{"stop", "complete"}, {"done", "complete"}, {"passed", "complete"}, {"yes", "complete"}};
+	return request;
 }
 
 std::string GoalService::BuildContinuationPrompt(const Goal& goal, int64_t tokens_used, int64_t token_budget,
@@ -1119,35 +1123,11 @@ std::string GoalService::SummarizeWorkspaceChanges(const std::vector<std::tuple<
 
 std::optional<GoalService::ReviewDecision> GoalService::ParseReviewDecision(const std::string& text)
 {
-	const std::size_t first = text.find('{');
-	const std::size_t last = text.rfind('}');
-	if (first == std::string::npos || last == std::string::npos || last <= first)
-	{
-		return std::nullopt;
-	}
-
-	std::string json_text = text.substr(first, last - first + 1);
+	const std::optional<nlohmann::json> object = ParseDecisionJsonObject(text);
+	if (!object.has_value()) return std::nullopt;
 	try
 	{
-		nlohmann::json parsed;
-		try
-		{
-			parsed = nlohmann::json::parse(json_text);
-		}
-		catch (const nlohmann::json::parse_error&)
-		{
-			const std::size_t evidence_key = json_text.find("\"evidence\":");
-			if (evidence_key == std::string::npos) return std::nullopt;
-			std::size_t evidence_value = evidence_key + std::string_view("\"evidence\":").size();
-			while (evidence_value < json_text.size() && std::isspace(static_cast<unsigned char>(json_text[evidence_value]))) ++evidence_value;
-			if (evidence_value >= json_text.size() || json_text[evidence_value] != '"' || json_text.find(']', evidence_value) == std::string::npos) return std::nullopt;
-			json_text.insert(evidence_value, "[");
-			parsed = nlohmann::json::parse(json_text);
-		}
-		if (!parsed.is_object())
-		{
-			return std::nullopt;
-		}
+		const nlohmann::json& parsed = *object;
 		ReviewDecision decision;
 		decision.decision = uam::strings::ToLowerAscii(uam::strings::Trim(parsed.value("decision", "")));
 		decision.reason = uam::strings::Trim(parsed.value("reason", ""));

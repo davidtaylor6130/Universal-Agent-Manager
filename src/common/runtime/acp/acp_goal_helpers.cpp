@@ -978,6 +978,12 @@ void AppendGoalLoopDiagnostic(AcpSessionState& session, const std::string& reaso
 	AppendAcpDiagnostic(session, "goal_loop", reason, "", "", false, 0, "", GoalLoopDiagnosticDetail(session, goal_id, text));
 }
 
+void AppendGoalLoopDiagnosticCause(AcpSessionState& session, const std::string& reason, const std::string& goal_id, const std::string& cause)
+{
+	// Bounded as the earlier text prefix was; the cause is UAM or provider error text, not conversation content.
+	AppendAcpDiagnostic(session, "goal_loop", reason, "", "", false, 0, CapDiagnosticString(cause, 160), GoalLoopDiagnosticDetail(session, goal_id));
+}
+
 int64_t EstimateGoalTurnTokens(const ChatSession& chat, const AcpSessionState& session)
 {
 	int64_t tokens = 0;
