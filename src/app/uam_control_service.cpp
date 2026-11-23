@@ -1033,8 +1033,25 @@ namespace uam
 				return "This chat cannot start other chats.";
 			// ponytail: depth 1 only; a created chat would need its own provenance chain to delegate further.
 			if (!caller->created_by_chat_id.empty()) return "A chat started by another chat cannot start further chats.";
-			// An automation chat's starts count against its token, which must still be valid.
-			return AutomationApiService::StartedChatRefusal(app, *caller);
+			return {};
+		}
+
+		/// <summary>The retry key of a chat_create call: the caller and its exact arguments.</summary>
+		std::string ChatCreateKey(const ChatSession& caller, const nlohmann::json& arguments)
+		{
+			return "fnv1a64:" + uam::hashing::Hex64Padded(uam::hashing::Fnv1a64(nlohmann::json::array({caller.id,
+			    uam::strings::Trim(arguments.value("task", "")), uam::strings::Trim(arguments.value("providerId", "")),
+			    uam::strings::Trim(arguments.value("modelId", "")),
+			    uam::strings::SafeLine(uam::strings::Trim(arguments.value("title", "")), 120, true)}).dump()));
+		}
+
+		/// <summary>The chat a call with identical arguments already started, if any. A chat whose first prompt
+		/// failed is removed or loses its key, so it is never returned.</summary>
+		const ChatSession* ExistingChatCreate(const AppState& app, const ChatSession& caller, const std::string& key)
+		{
+			const auto existing = std::ranges::find_if(app.chats, [&](const ChatSession& chat)
+			{ return chat.created_by_chat_id == caller.id && chat.created_by_request_key == key; });
+			return existing == app.chats.end() ? nullptr : &*existing;
 		}
 
 		std::string ChatCreateArgumentError(const nlohmann::json& arguments)
@@ -1077,19 +1094,18 @@ namespace uam
 			const std::string requested_provider = uam::strings::Trim(arguments.value("providerId", ""));
 			const std::string requested_model = uam::strings::Trim(arguments.value("modelId", ""));
 			const std::string title = uam::strings::SafeLine(uam::strings::Trim(arguments.value("title", "")), 120, true);
-			const std::string key = "fnv1a64:" + uam::hashing::Hex64Padded(uam::hashing::Fnv1a64(
-			    nlohmann::json::array({caller->id, task, requested_provider, requested_model, title}).dump()));
+			const std::string key = ChatCreateKey(*caller, arguments);
 			// A model retry gets a new transport request ID; identical arguments return the chat already started.
-			// A chat whose first prompt failed is removed or loses its key, so it is never returned here.
-			const auto existing = std::ranges::find_if(app.chats, [&](const ChatSession& chat)
-			{ return chat.created_by_chat_id == caller->id && chat.created_by_request_key == key; });
-			if (existing != app.chats.end())
+			if (const ChatSession* existing = ExistingChatCreate(app, *caller, key); existing != nullptr)
 			{
 				if (ChatCreateLaunchPending(app, existing->id))
 					return {.error = "An identical chat is still sending its first prompt; wait for that result."};
 				return {.ok = true, .result = {{"chatId", existing->id}, {"status", "started"}, {"reused", true}},
 				        .reason = "Returned the chat already started for identical arguments."};
 			}
+			// An automation chat's new starts count against its token, which must still be valid. After the retry
+			// lookup, so a retry still returns the chat it already started.
+			if (std::string refusal = AutomationApiService::StartedChatRefusal(app, *caller); !refusal.empty()) return {.error = std::move(refusal)};
 			const AcpSessionState* session = WaitSession(app, capability);
 			// ponytail: CLI View callers have no structured turn serial, so their per-turn limit is per connection.
 			const int turn = session != nullptr ? session->turn_serial : 0;
@@ -1284,6 +1300,9 @@ namespace uam
 			const ChatSession* caller = ChatDomainService().FindChatById(app, capability.chat_id);
 			if (std::string refusal = ChatCreateRefusal(app, capability, caller); !refusal.empty()) return {.error = std::move(refusal)};
 			if (std::string invalid = ChatCreateArgumentError(arguments); !invalid.empty()) return {.error = std::move(invalid)};
+			// Refuse before asking the user when the token could not take a new chat; ChatCreate checks again on Allow.
+			if (ExistingChatCreate(app, *caller, ChatCreateKey(*caller, arguments)) == nullptr)
+				if (std::string refusal = AutomationApiService::StartedChatRefusal(app, *caller); !refusal.empty()) return {.error = std::move(refusal)};
 			return QueueApproval(app, capability, {.request_id = std::string(request_id), .method = "chat_create",
 			                                     .chat_create_arguments = arguments});
 		}

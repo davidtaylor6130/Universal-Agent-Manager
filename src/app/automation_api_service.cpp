@@ -195,12 +195,17 @@ namespace uam
 			return chat.acp_queue_held || (session != nullptr && session->lifecycle_state == "error");
 		}
 
-		/// <summary>Counts against the token's open-chat limit. A chat started from an automation chat has no goal of its own,
-		/// so a turn that is being sent or running also counts.</summary>
+		/// <summary>Counts against the token's open-chat limit.</summary>
 		bool ChatIsOpen(const AppState& app, const ChatSession& chat)
 		{
-			if (chat.AwaitsAutomationApproval() || (GoalService::FindActiveGoal(app, chat.id) != nullptr && !LaunchFailedAfterAcceptance(app, chat))) return true;
-			if (std::ranges::any_of(app.uam_chat_create_launches, [&](const auto& launch) { return launch.chat_id == chat.id; })) return true;
+			if (chat.AwaitsAutomationApproval()) return true;
+			// A chat an automation chat started holds its place for as long as it exists, like the 8-per-caller
+			// allowance, because later wakes such as a pull request watch do not check the token.
+			if (!chat.created_by_chat_id.empty()) return true;
+			// A launch that failed after acceptance waits for the user, not the token.
+			if (LaunchFailedAfterAcceptance(app, chat)) return false;
+			if (GoalService::FindActiveGoal(app, chat.id) != nullptr) return true;
+			// A branch has no goal of its own, so a turn that is running or waiting to be sent also counts.
 			const AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
 			return (session != nullptr && AcpSessionHasActiveTurn(*session)) || ChatHasBusyCliTerminal(app, chat);
 		}

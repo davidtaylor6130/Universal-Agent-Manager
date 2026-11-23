@@ -509,21 +509,46 @@ UAM_TEST(UamControlChatCreateFromAutomationChatCountsAgainstTheTokenLimit)
 	std::erase_if(fixture.app.chats, [](const ChatSession& chat) { return chat.id == "waiting-0"; });
 	const nlohmann::json started = fixture.Call("room", {{"task", "Do work."}});
 	UAM_ASSERT(started.value("ok", false));
-	// While its turn runs the started chat is open, so the token is full again.
-	auto running = std::make_unique<uam::AcpSessionState>();
-	running->chat_id = started["result"].value("chatId", "");
-	running->provider_id = "codex-cli";
-	running->running = true;
-	running->processing = true;
-	fixture.app.acp_sessions.push_back(std::move(running));
-	fixture.app.acp_sessions.front()->turn_serial = 2;
+	const std::string started_id = started["result"].value("chatId", "");
+	// A started chat holds its place while it exists, even idle, because later wakes do not check the token.
 	const nlohmann::json again = fixture.Call("again", {{"task", "More work."}});
 	UAM_ASSERT(!again.value("ok", true));
 	UAM_ASSERT(again.value("error", "").find("16 open chats") != std::string::npos);
-	// Once that turn ends it no longer holds a place.
-	fixture.app.acp_sessions.back()->processing = false;
-	UAM_ASSERT(fixture.Call("after", {{"task", "More work."}}).value("ok", false));
-	UAM_ASSERT_EQ(fixture.CreatedCount(), std::size_t{2});
+	// A retry of the call that succeeded still returns its chat rather than a refusal.
+	const nlohmann::json retry = fixture.Call("room-retry", {{"task", "Do work."}});
+	UAM_ASSERT(retry.value("ok", false));
+	UAM_ASSERT(retry["result"].value("reused", false));
+	UAM_ASSERT_EQ(retry["result"].value("chatId", ""), started_id);
+	UAM_ASSERT_EQ(fixture.CreatedCount(), std::size_t{1});
+	// Deleting it frees the place.
+	std::erase_if(fixture.app.chats, [&](const ChatSession& chat) { return chat.id == started_id; });
+	UAM_ASSERT(fixture.Call("after-delete", {{"task", "More work."}}).value("ok", false));
+	UAM_ASSERT_EQ(fixture.CreatedCount(), std::size_t{1});
+}
+
+UAM_TEST(AutomationTokenOpenChatsCountRunningTurnsButNotFailedLaunches)
+{
+	ChatCreateFixture fixture;
+	(void)fixture.MakeAutomationCaller();
+	for (int index = 0; index < 15; ++index) fixture.AddWaitingTokenChat("waiting-" + std::to_string(index));
+	// A chat under the token with no goal (such as a branch) counts while a turn is waiting to be sent or running.
+	ChatSession branch;
+	branch.id = "token-branch";
+	branch.parent_chat_id = "caller";
+	branch.automation_token_id = fixture.token_id;
+	fixture.app.chats.push_back(branch);
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "token-branch";
+	session->provider_id = "codex-cli";
+	session->queued_user_prompts.emplace_back();
+	fixture.app.acp_sessions.push_back(std::move(session));
+	const nlohmann::json busy = fixture.Call("busy", {{"task", "Do work."}});
+	UAM_ASSERT(!busy.value("ok", true));
+	UAM_ASSERT(busy.value("error", "").find("16 open chats") != std::string::npos);
+	// A launch that failed after acceptance keeps its queued prompt but waits for the user, not the token.
+	std::ranges::find(fixture.app.chats, std::string("token-branch"), &ChatSession::id)->acp_queue_held = true;
+	UAM_ASSERT(fixture.Call("held", {{"task", "Do work."}}).value("ok", false));
+	UAM_ASSERT_EQ(fixture.CreatedCount(), std::size_t{1});
 }
 
 UAM_TEST(UamControlChatCreateFromAutomationChatRefusesARevokedTokenAndSelfApprovingProvider)
@@ -546,6 +571,20 @@ UAM_TEST(UamControlChatCreateFromAutomationChatRefusesARevokedTokenAndSelfApprov
 		const nlohmann::json refused = fixture.Call("revoked", {{"task", "Do work."}});
 		UAM_ASSERT(!refused.value("ok", true));
 		UAM_ASSERT(refused.value("error", "").find("revoked") != std::string::npos);
+		UAM_ASSERT_EQ(fixture.CreatedCount(), std::size_t{0});
+	}
+	{
+		ChatCreateFixture fixture;
+		(void)fixture.MakeAutomationCaller();
+		const fs::path store = fixture.app.data_root / "automation_tokens.json";
+		std::string text;
+		UAM_ASSERT(uam::io::TryReadTextFile(store, text));
+		nlohmann::json tokens = nlohmann::json::parse(text);
+		tokens["tokens"][0]["expiresAt"] = 1;
+		UAM_ASSERT(uam::io::WriteTextFile(store, tokens.dump()));
+		const nlohmann::json refused = fixture.Call("expired", {{"task", "Do work."}});
+		UAM_ASSERT(!refused.value("ok", true));
+		UAM_ASSERT(refused.value("error", "").find("expired") != std::string::npos);
 		UAM_ASSERT_EQ(fixture.CreatedCount(), std::size_t{0});
 	}
 	{
@@ -575,6 +614,23 @@ UAM_TEST(UamControlGoalCreateInAutomationChatCarriesTheCapAndGitPolicy)
 	UAM_ASSERT(goal->objective.starts_with("Ship the parser."));
 	UAM_ASSERT(goal->objective.find(uam::GoalService::AutomationGitPolicy("pr")) != std::string::npos);
 	UAM_ASSERT(uam::GoalService::BuildContinuationPrompt(*goal, 0, 0, false, "", true).find("open a pull request") != std::string::npos);
+	// Automation chats run in Default mode, where goal_create waits for the user; the approved goal is capped too.
+	ChatCreateFixture approved;
+	(void)approved.MakeAutomationCaller(2, "commit");
+	approved.app.settings.goal_max_loop_iterations = 50;
+	approved.app.chats.front().approval_mode = "default";
+	approved.app.chats.front().command_safety_tier = "off";
+	UAM_ASSERT(uam::UamControlService::HandleRequestForTests(approved.app, "caller-capability",
+	    {{"requestId", "goal-approval"}, {"method", "goal_create"}, {"arguments", {{"objective", "Ship it."}, {"idempotencyKey", "goal-key-2"}}}},
+	    uam::time::SystemEpochMillisecondsNow()).value("pendingApproval", false));
+	const auto question = uam::UamControlService::PendingApprovalForChat(approved.app, "caller");
+	UAM_ASSERT(question.has_value());
+	std::string error;
+	UAM_ASSERT(uam::UamControlService::ResolveApproval(approved.app, "caller", question->request_id_json, {{"goalCreate", {"Allow"}}}, &error));
+	const Goal* approved_goal = uam::GoalService::FindActiveGoal(approved.app, "caller");
+	UAM_ASSERT(approved_goal != nullptr);
+	UAM_ASSERT_EQ(approved_goal->max_iterations, 2);
+	UAM_ASSERT(approved_goal->objective.find(uam::GoalService::AutomationGitPolicy("commit")) != std::string::npos);
 	// An ordinary chat's goal is unchanged.
 	ChatCreateFixture plain;
 	std::string goal_id;
