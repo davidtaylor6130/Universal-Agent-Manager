@@ -180,6 +180,51 @@ UAM_TEST(VcsProviderReadOnlyListsApplyOnlyToTheirOwnExecutable)
 	UAM_ASSERT(!IsReadOnlyCommand("hg status"));
 }
 
+UAM_TEST(VcsBranchPickerRoutesThroughEachSystemsProvider)
+{
+	const uam::VcsProvider& git = uam::VcsProviderFor(uam::VcsType::Git);
+	const uam::VcsProvider& svn = uam::VcsProviderFor(uam::VcsType::Svn);
+	// The picker's vcsType must match a declared id exactly; anything else keeps the default (Git), as the bridge always did.
+	UAM_ASSERT_EQ(&uam::VcsProviderForId("svn"), &svn);
+	UAM_ASSERT_EQ(&uam::VcsProviderForId("git"), &git);
+	for (const char* other : {"", "SVN", " svn", "hg"}) UAM_ASSERT_EQ(&uam::VcsProviderForId(other), &git);
+	UAM_ASSERT(!git.BranchesAreLocated());
+	UAM_ASSERT(svn.BranchesAreLocated());
+	UAM_ASSERT(uam::DeclaresCapability(git, uam::vcs::VcsCapability::BranchCreate));
+	UAM_ASSERT(!uam::DeclaresCapability(svn, uam::vcs::VcsCapability::BranchCreate));
+
+	// Git's listing answers SVN for an SVN working copy, and its switch check sends the picker to the SVN selector.
+	TempDir temp("uam-vcs-branches");
+	const fs::path working_copy = temp.root / "copy";
+	fs::create_directories(working_copy / ".svn");
+	uam::AppState snapshot;
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.workspace_directory = working_copy.string();
+	const uam::VcsBranchListing listing = git.ListBranches(snapshot, chat, {});
+	UAM_ASSERT(listing.ok);
+	UAM_ASSERT_EQ(listing.type, uam::VcsType::Svn);
+	UAM_ASSERT(listing.branches.empty());
+	const uam::VcsBranchOutcome refused = git.CheckBranchSwitch(snapshot, chat, {"main", false, {}});
+	UAM_ASSERT(!refused.ok);
+	UAM_ASSERT(!refused.conflict);
+	UAM_ASSERT_EQ(refused.error, std::string("Open the SVN folder selector for this working copy."));
+
+	// SVN refuses a chat outside its editable scope, and a selection that cannot be rechecked is a conflict.
+	snapshot.settings.svn_enabled = false;
+	UAM_ASSERT(!svn.ListBranches(snapshot, chat, "^/lines").ok);
+	const uam::VcsBranchOutcome stale = svn.CheckBranchSelection(snapshot, chat, {"^/lines/a", false, {}});
+	UAM_ASSERT(!stale.ok);
+	UAM_ASSERT(stale.conflict);
+	UAM_ASSERT(!stale.error.empty());
+
+	// The bridge names no system's branch operations itself.
+	const std::string bridge = ReadFile(fs::path(__FILE__).parent_path().parent_path() / "src/cef/chat_branch_handlers.cpp");
+	for (const char* direct : {"GitWorktreeService().ListChatBranches", "GitWorktreeService().ValidateChatBranchSelection", "GitWorktreeService().SwitchChatBranch",
+	         "DiscoverSvnBranches", "SwitchSvnBranch", "BuildSvnBranchScope", "== \"svn\""})
+		UAM_ASSERT(bridge.find(direct) == std::string::npos);
+}
+
 #if !defined(_WIN32) && UAM_ENABLE_SSH
 UAM_TEST(VcsCommitNoticeNamesGitWhenTheToolPrintsNothing)
 {
@@ -322,5 +367,56 @@ UAM_TEST(RemoteGitStatusUsesTheWorkspaceWhenTheRootIsReportedEmpty)
 	const uam::VcsCommitStatus status = uam::VcsCommitService().Status(host.app, host.chat, uam::VcsType::Git);
 	if (!status.error.empty()) throw TestFailure(status.error);
 	UAM_ASSERT(ChangedPathStatus(status, "new.txt", "??"));
+}
+UAM_TEST(SvnBranchListCheckAndSwitchGoThroughTheSvnProvider)
+{
+	if (!SvnToolsAvailable()) return;
+	TempDir temp("uam-vcs-svn-branches");
+	// SVN selection refuses linked ancestors (such as macOS /var), so work under the resolved path.
+	const fs::path root = fs::canonical(temp.root);
+	const fs::path repository = root / "repository";
+	const fs::path checkout = root / "checkout";
+	UAM_ASSERT(RunTestCommand("svnadmin create " + ShellQuoteForTest(repository.string())));
+	const std::string url = "file://" + uam::paths::Utf8PathString(repository);
+	UAM_ASSERT(uam::RunSvn(root, {"mkdir", "--non-interactive", "-m", "layout", url + "/lines", url + "/lines/main"}).exit_code == 0);
+	UAM_ASSERT(uam::RunSvn(root, {"copy", "--non-interactive", "-m", "branch", url + "/lines/main", url + "/lines/feature"}).exit_code == 0);
+	UAM_ASSERT(uam::RunSvn(root, {"checkout", "--non-interactive", url + "/lines/main", checkout.string()}).exit_code == 0);
+	uam::AppState snapshot;
+	snapshot.settings.svn_enabled = true;
+	ChatFolder folder;
+	folder.id = "folder-1";
+	folder.directory = uam::paths::Utf8PathString(checkout);
+	snapshot.folders.push_back(folder);
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.folder_id = folder.id;
+	chat.workspace_directory = folder.directory;
+	const ChatSession before = chat;
+	const uam::VcsProvider& svn = uam::VcsProviderForId("svn");
+
+	const uam::VcsBranchListing listing = svn.ListBranches(snapshot, chat, "^/lines");
+	if (!listing.ok) throw TestFailure(listing.error);
+	UAM_ASSERT_EQ(listing.type, uam::VcsType::Svn);
+	UAM_ASSERT_EQ(listing.context.parent, std::string("^/lines"));
+	const auto feature = std::ranges::find(listing.branches, std::string("feature"), &uam::VcsBranch::name);
+	UAM_ASSERT(feature != listing.branches.end() && !feature->current && !feature->path.empty());
+	UAM_ASSERT(std::ranges::any_of(listing.branches, [](const uam::VcsBranch& branch) { return branch.name == "main" && branch.current; }));
+
+	const uam::VcsBranchSelection selection{feature->path, false, listing.context};
+	const uam::VcsBranchOutcome checked = svn.CheckBranchSelection(snapshot, chat, selection);
+	if (!checked.ok) throw TestFailure(checked.error);
+	UAM_ASSERT(svn.CheckBranchSwitch(snapshot, chat, selection).ok);
+	const uam::VcsBranchOutcome switched = svn.SwitchBranch(snapshot, chat, selection);
+	if (!switched.ok) throw TestFailure(switched.error);
+	UAM_ASSERT(!switched.chat_updated);
+	UAM_ASSERT(switched.context.url.ends_with("/lines/feature"));
+	UAM_ASSERT_EQ(switched.branch, switched.context.revision);
+	// The working copy moved; the chat's saved branch fields did not, and the old listing is now stale.
+	UAM_ASSERT_EQ(chat.workspace_branch_name, before.workspace_branch_name);
+	UAM_ASSERT_EQ(chat.updated_at, before.updated_at);
+	UAM_ASSERT(uam::RunSvn(checkout, {"info", "--non-interactive", "--show-item", "url"}).output.find("/lines/feature") != std::string::npos);
+	const uam::VcsBranchOutcome stale = svn.CheckBranchSelection(snapshot, chat, selection);
+	UAM_ASSERT(!stale.ok);
+	UAM_ASSERT(stale.conflict);
 }
 #endif
