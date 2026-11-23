@@ -1939,6 +1939,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       includeLineStats: true,
       requestId: `chat-summary:${session.id}:${completedTurnKey}:${repositoryReviewRetry}`,
       comparisonRef: repositoryComparisonRef,
+      reportFailure: true,
     }).then((status) => {
       if (cancelled) return
       // Any read failure, including a lost remote connection, is shown as such, never as whole-workspace rows.

@@ -152,6 +152,20 @@ function makeId(prefix: string, counter: number) {
 
 const computerUseSuccess: ComputerUseActionResult = { ok: true }
 
+function vcsCommitStatusFailure(vcsType: VcsType, error: string | undefined): VcsCommitStatus {
+  return {
+    available: false,
+    vcsTypes: [],
+    activeVcsType: vcsType,
+    workspaceDirectory: '',
+    branchOrRevision: '',
+    changedFiles: [],
+    lineStatsReady: true,
+    warning: '',
+    error: error?.trim() || 'UAM could not read the repository status.',
+  }
+}
+
 function computerUseFailure(error?: string): ComputerUseActionResult {
   return error ? { ok: false, error } : { ok: false }
 }
@@ -1522,7 +1536,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return response.data
     },
 
-    getVcsCommitStatus: async (id: string, vcsType: VcsType = 'git', options: { includeLineStats?: boolean; contextOnly?: boolean; requestId?: string; comparisonRef?: string } = {}): Promise<VcsCommitStatus | null> => {
+    getVcsCommitStatus: async (id: string, vcsType: VcsType = 'git', options: { includeLineStats?: boolean; contextOnly?: boolean; requestId?: string; comparisonRef?: string; reportFailure?: boolean } = {}): Promise<VcsCommitStatus | null> => {
       if (isCefContext()) {
         const response = await sendToCEF<VcsCommitStatus>({
           action: 'getVcsCommitStatus',
@@ -1537,9 +1551,11 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         })
         if (!response.ok) {
           console.error('[CEF] getVcsCommitStatus failed:', response.error)
-          return null
+          // Callers that must not mistake a failed read (for example a dropped SSH host) for "no changes" get it as an error.
+          return options.reportFailure ? vcsCommitStatusFailure(vcsType, response.error) : null
         }
-        return sanitizeVcsCommitStatus(response.data)
+        const status = sanitizeVcsCommitStatus(response.data)
+        return status || !options.reportFailure ? status : vcsCommitStatusFailure(vcsType, '')
       }
 
       const session = get().sessions.find((candidate) => candidate.id === id)

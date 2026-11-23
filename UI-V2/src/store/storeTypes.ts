@@ -336,7 +336,8 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   previewChatTurnRollback: (id: string, messageIndex: number) => Promise<GitTurnCheckpointResult | null>
   rollbackChatTurn: (id: string, messageIndex: number) => Promise<GitTurnCheckpointResult | null>
   getChatFileChangeReceipts: (id: string) => Promise<ChatFileChangeReceiptsResponse>
-  getVcsCommitStatus: (id: string, vcsType?: VcsType, options?: { includeLineStats?: boolean; contextOnly?: boolean; requestId?: string; comparisonRef?: string }) => Promise<VcsCommitStatus | null>
+  /** With `reportFailure`, a failed or malformed bridge reply comes back as a status whose `error` is set instead of null. */
+  getVcsCommitStatus: (id: string, vcsType?: VcsType, options?: { includeLineStats?: boolean; contextOnly?: boolean; requestId?: string; comparisonRef?: string; reportFailure?: boolean }) => Promise<VcsCommitStatus | null>
   getWorkspaceFilePreview: (id: string, path: string) => Promise<WorkspaceFilePreview>
   getVcsFileDiff: (id: string, path: string, vcsType: VcsType, comparisonRef?: string) => Promise<string>
   commitVcsChanges: (id: string, vcsType: VcsType, message: string, files: string[]) => Promise<VcsCommitResult>

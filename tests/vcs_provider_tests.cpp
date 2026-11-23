@@ -324,3 +324,41 @@ UAM_TEST(RemoteGitStatusUsesTheWorkspaceWhenTheRootIsReportedEmpty)
 	UAM_ASSERT(ChangedPathStatus(status, "new.txt", "??"));
 }
 #endif
+
+#if !defined(_WIN32) && UAM_ENABLE_SSH
+UAM_TEST(RemoteVcsStatusReportsALostConnectionInsteadOfNoRepository)
+{
+	if (!GitAvailableForTests()) return;
+	// Detection whose probe loses the runner must not read as "no repository": the chat summary would vanish (#310).
+	TempDir tools("uam-vcs-dropped-host");
+	RemoteVcsHost host(tools.root);
+	// The runner's environment is fixed at start, so its pid is written into the wrapper rather than passed in.
+	const fs::path wrapper = tools.root / "git";
+	UAM_ASSERT(uam::io::WriteTextFile(wrapper, "#!/bin/sh\ncase \" $* \" in *\" --show-toplevel \"*) kill -9 " + std::to_string(host.process.child_pid) + "; sleep 2; exit 0;; esac\nexec \"" + ResolvedTool("git") + "\" \"$@\"\n"));
+	fs::permissions(wrapper, fs::perms::owner_all);
+	const fs::path repository = host.temp.root / "repository";
+	fs::create_directories(repository);
+	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(repository.string())));
+	UAM_ASSERT(uam::io::WriteTextFile(repository / "new.txt", "new\n"));
+	host.chat.workspace_directory = repository.string();
+
+	const uam::VcsCommitStatus status = uam::VcsCommitService().Status(host.app, host.chat, uam::VcsType::Git, true, "chat");
+	UAM_ASSERT(!status.available);
+	UAM_ASSERT(status.warning.empty());
+	UAM_ASSERT(status.error.find("Lost the connection to the remote host") != std::string::npos);
+}
+
+UAM_TEST(RemoteVcsStatusStillReportsAPlainFolderAsHavingNoRepository)
+{
+	RemoteVcsHost host;
+	const fs::path folder = host.temp.root / "plain";
+	fs::create_directories(folder);
+	host.chat.workspace_directory = folder.string();
+
+	// A completed probe that finds nothing (or a runner that cannot start svn) is not a lost connection.
+	const uam::VcsCommitStatus status = uam::VcsCommitService().Status(host.app, host.chat, uam::VcsType::Git);
+	if (!status.error.empty()) throw TestFailure(status.error);
+	UAM_ASSERT(!status.available);
+	UAM_ASSERT_EQ(status.warning, std::string("No Git or SVN repository detected for this remote workspace."));
+}
+#endif

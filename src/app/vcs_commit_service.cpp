@@ -237,6 +237,9 @@ namespace uam
 			    std::filesystem::path(path), nullptr);
 		}
 
+		/// <summary>False after a transport failure; a runner that merely refused a command stays connected.</summary>
+		bool Connected() const { return m_client != nullptr && m_client->IsConnected(); }
+
 		std::string NullDevice() const
 		{
 			return m_host != nullptr &&
@@ -253,6 +256,22 @@ namespace uam
 
 	namespace
 	{
+		/// <summary>Empty when the remote command ran to completion or the runner refused it (for example a missing
+		/// executable) over a live connection; otherwise why the probe could not answer.</summary>
+		std::string RemoteProbeConnectionError(const RemoteVcsContext& context, const ProcessExecutionResult& result)
+		{
+			if (result.timed_out) return "the command timed out.";
+			if (result.canceled) return "the command was cancelled.";
+			if (result.ok || context.Connected()) return {};
+			return uam::strings::NonEmptyOrFallback(uam::strings::Trim(result.error), "the remote helper did not answer.");
+		}
+
+		/// <summary>Keeps the first connection failure seen across the detection probes.</summary>
+		void NoteRemoteProbeFailure(const RemoteVcsContext& context, const ProcessExecutionResult& result, std::string& connection_error)
+		{
+			if (connection_error.empty()) connection_error = RemoteProbeConnectionError(context, result);
+		}
+
 		bool RemoteOutput(RemoteVcsContext& context, const std::string& cwd,
 		                  const std::vector<std::string>& argv, std::string* output_out,
 		                  std::string* error_out = nullptr, const bool raw = false)
@@ -1743,9 +1762,16 @@ namespace uam
 				return true;
 			}
 
-			bool DetectRemote(RemoteVcsContext& context, const std::string& workspace, std::string& root) const override
+			bool DetectRemote(RemoteVcsContext& context, const std::string& workspace, std::string& root, std::string& connection_error) const override
 			{
-				return RemoteOutput(context, workspace, {"git", "rev-parse", "--show-toplevel"}, &root);
+				const ProcessExecutionResult probe = context.Run(workspace, {"git", "rev-parse", "--show-toplevel"});
+				if (!CommandSucceeded(probe))
+				{
+					NoteRemoteProbeFailure(context, probe, connection_error);
+					return false;
+				}
+				root = uam::strings::Trim(probe.output);
+				return true;
 			}
 
 			void PopulateLocalStatus(const VcsStatusRequest& request, const std::filesystem::path& workspace, const std::filesystem::path& root, VcsCommitStatus& status) const override
@@ -1990,9 +2016,12 @@ namespace uam
 				return SvnAvailable(workspace, validate);
 			}
 
-			bool DetectRemote(RemoteVcsContext& context, const std::string& workspace, std::string&) const override
+			bool DetectRemote(RemoteVcsContext& context, const std::string& workspace, std::string&, std::string& connection_error) const override
 			{
-				return CommandSucceeded(RemoteSvnRunner(context, workspace)({"info", "--non-interactive", "--show-item", "revision", "--", "."}));
+				const ProcessExecutionResult probe = RemoteSvnRunner(context, workspace)({"info", "--non-interactive", "--show-item", "revision", "--", "."});
+				if (CommandSucceeded(probe)) return true;
+				NoteRemoteProbeFailure(context, probe, connection_error);
+				return false;
 			}
 
 			void PopulateLocalStatus(const VcsStatusRequest& request, const std::filesystem::path& workspace, const std::filesystem::path&, VcsCommitStatus& status) const override
@@ -2078,14 +2107,21 @@ namespace uam
 			if (!context.Ready(&status.error)) return status;
 
 			std::map<VcsType, std::string> roots;
+			std::string connection_error;
 			for (const VcsProvider* provider : VcsProviders())
 			{
 				std::string root;
-				if (!provider->Enabled(settings) || !provider->DetectRemote(context, status.workspace_directory, root)) continue;
+				if (!provider->Enabled(settings) || !provider->DetectRemote(context, status.workspace_directory, root, connection_error)) continue;
 				status.vcs_types.push_back(provider->Type());
 				roots[provider->Type()] = std::move(root);
 			}
 			status.available = !status.vcs_types.empty();
+			if (!status.available && !connection_error.empty())
+			{
+				// A probe that never finished says nothing about the workspace; report it instead of "no repository".
+				status.error = "Lost the connection to the remote host while reading the repository: " + connection_error;
+				return status;
+			}
 			if (!status.available)
 			{
 				status.warning = "No Git or SVN repository detected for this remote workspace.";
