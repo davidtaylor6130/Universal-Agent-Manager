@@ -272,15 +272,6 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
           })}
         </SettingsSection>
 
-        {/* Observed figures, separate from the saved routing settings above. Unknown load is shown as unknown, never as idle. */}
-        <SettingsSection title="Live load">
-          {[{ id: 'local', label: 'This computer' }, ...sshHosts].map((host) => {
-            const figures = hostLoad.hosts[host.id]
-            return <SettingRow key={host.id} title={host.label} description={hostUsageSummary(figures) || '0 in use'} status={hostLoadSummary(figures)} />
-          })}
-          <Reveal open={hostLoad.unassignedWaiting > 0}><SettingRow title="Waiting for any computer" description={plural(hostLoad.unassignedWaiting, 'chat')} /></Reveal>
-        </SettingsSection>
-
         {/* Folders stay usable while repositories are checked; manual mapping never waits for matching. */}
         <Reveal open={sshHosts.length > 0}>
           <SettingsSection title="Folders" className="uam-rt-folders" actions={<>
@@ -316,6 +307,15 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
             </Disclosure></Reveal>
           </SettingsSection>
         </Reveal>
+
+        {/* Observed figures, after the saved routing settings they describe. Unknown load is shown as unknown, never as idle. */}
+        <SettingsSection title="Live load">
+          {[{ id: 'local', label: 'This computer' }, ...sshHosts].map((host) => {
+            const figures = hostLoad.hosts[host.id]
+            return <SettingRow key={host.id} title={host.label} description={hostUsageSummary(figures) || '0 in use'} status={hostLoadSummary(figures)} />
+          })}
+          <Reveal open={hostLoad.unassignedWaiting > 0}><SettingRow title="Waiting for any computer" description={plural(hostLoad.unassignedWaiting, 'chat')} /></Reveal>
+        </SettingsSection>
       </fieldset>
       {variant === 'dialog' && footer}</div></Reveal>
       {/* The dialog never opens a second dialog: the Map folder chooser is an in-place step in the same panel. */}

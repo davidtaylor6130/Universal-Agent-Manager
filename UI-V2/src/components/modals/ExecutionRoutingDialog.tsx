@@ -59,8 +59,9 @@ export function ExecutionRoutingWaitNotice({ session }: { session: Session }) {
       {routingReservation(session) && <Button variant="ghost" size="sm" onClick={() => { setExpected(routingReservation(session)); setError('') }}>Release reservation</Button>}
     </>}>
       {session.routingWaitReason || 'This chat has an unresolved remote reservation.'}
-      <RoutingWaitHosts hosts={session.routingWaitHosts} />
     </Notice>
+    {/* Outside the notice's live region: its in-use counts change with every load reading and must not re-announce the notice. */}
+    <RoutingWaitHosts hosts={session.routingWaitHosts} />
     {configure && <ExecutionRoutingDialog onClose={() => setConfigure(false)} />}
     <ConfirmDialog open={expected !== null} title="Release remote reservation?" confirmLabel="Release reservation" busy={busy} error={error} onCancel={() => { if (!busyRef.current) setExpected(null) }} onConfirm={() => {
       if (!expected || busyRef.current) return

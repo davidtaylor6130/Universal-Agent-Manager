@@ -1168,6 +1168,8 @@ void Application::Shutdown()
 {
 	// Quit must not wait on a remote host: no remote connection starts from here, and the waits already under way end together
 	uam::remote::BeginRunnerShutdown();
+	// Load readers stop now, while their helper connections fail fast, rather than when the app state is destroyed.
+	m_app.host_load_sampler.reset();
 	if (m_startupChats.valid())
 	{
 		// Quit while the chat list loads: the loader writes summary caches under the data-folder lock released below,

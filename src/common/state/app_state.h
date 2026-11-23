@@ -1524,6 +1524,10 @@ namespace uam
 		/// Settings that show load ask for it; until this time every configured computer is sampled.
 		double host_load_interest_until_s = 0.0;
 		double host_load_next_poll_s = 0.0;
+		/// The load figures last published, as the interface sees them; a change here is what pushes state.
+		std::string host_load_published;
+		/// Last logged load status per computer, so a status change is logged once.
+		std::unordered_map<std::string, std::string> host_load_reported_status;
 		std::unordered_map<std::string, ExecutionHostUsage> execution_host_usage;
 		/// Automatic chats waiting for any computer, before one is assigned.
 		std::size_t execution_routing_unassigned_waiting = 0;

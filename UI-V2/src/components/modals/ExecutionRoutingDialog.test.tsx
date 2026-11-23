@@ -83,6 +83,8 @@ describe('SSH routing controls', () => {
     const host = mount(<ExecutionRoutingWaitNotice session={session} />)
     const rows = Array.from(host.querySelectorAll('[aria-label="Computers passed over"] li')).map((row) => row.textContent)
     expect(rows).toEqual(['Server AFull · 4/4', 'Server BUnreachable', '2 computersOff'])
+    // Changing in-use counts stay out of the notice's live region.
+    expect(host.querySelector('[role="status"] [aria-label="Computers passed over"]')).toBeNull()
     expect(host.textContent).toContain('No computer can take this chat yet: 1 full, 1 unreachable, 2 off.')
   })
 

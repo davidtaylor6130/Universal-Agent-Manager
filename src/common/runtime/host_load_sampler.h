@@ -46,14 +46,14 @@ namespace uam::host_load
 	/// <summary>
 	/// Keeps a recent load reading for each wanted computer. Each computer is read by its own background thread at
 	/// most once per interval, so a cached figure is never older than the interval plus one read; a figure older
-	/// than the freshness limit reports Stale. Want, Latest and Poll never wait for a read and never join a thread
+	/// than the freshness limit (15 seconds: one interval plus one read) reports Stale. Want, Latest and Poll never wait for a read and never join a thread
 	/// that is still reading; only the destructor joins, after asking every reader to stop.
 	/// </summary>
 	class Sampler
 	{
 	public:
 		explicit Sampler(std::chrono::milliseconds interval = std::chrono::seconds(10), std::chrono::milliseconds linger = std::chrono::seconds(30),
-		    std::chrono::milliseconds stale_after = std::chrono::seconds(30));
+		    std::chrono::milliseconds stale_after = std::chrono::seconds(15));
 		~Sampler();
 		Sampler(const Sampler&) = delete;
 		Sampler& operator=(const Sampler&) = delete;
@@ -61,6 +61,8 @@ namespace uam::host_load
 		/// <summary>Keeps <paramref name="key"/> sampled until <c>linger</c> after the last call. A different identity
 		/// (another connection or helper version) retires the old thread and starts a fresh reader.</summary>
 		void Want(const std::string& key, const std::string& identity, ReaderFactory factory);
+		/// <summary>Stops the key's thread now and forgets its reading, without waiting for the thread to end.</summary>
+		void Drop(const std::string& key);
 		/// <summary>The latest reading for the key's current identity; empty when the key is not sampled.</summary>
 		std::optional<Sample> Latest(const std::string& key) const;
 		/// <summary>True when a reading changed since the previous call, including a figure turning stale. Reaps

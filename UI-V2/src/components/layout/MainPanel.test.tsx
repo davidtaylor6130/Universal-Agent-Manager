@@ -227,7 +227,10 @@ describe('MainPanel', () => {
     act(() => useAppStore.setState({ executionHostLoad: { hosts: { lab: { status: 'known', cores: 8, loadAverage1m: 2.5, cpuPercent: null, memoryAvailableBytes: null, memoryTotalBytes: null, processes: 3, inUse: 3, waiting: 0, limit: 8 } }, unassignedWaiting: 0 } }))
     const chip = host.querySelector('[data-testid="chat-host-chat-1"]')
     expect(chip?.textContent).toBe('Remote · Homelab · 3/8')
-    expect(chip?.getAttribute('aria-label')).toBe('Remote · Homelab: 3 of 8 in use · Load 2.5 on 8 cores · 3 processes')
+    // A focusable button named by its visible text; no native title competes with its tooltip.
+    expect(chip?.tagName).toBe('BUTTON')
+    expect(chip?.hasAttribute('aria-label')).toBe(false)
+    expect(chip?.closest('[title]')).toBeNull()
     act(() => useAppStore.setState({ executionHostLoad: { hosts: {}, unassignedWaiting: 0 } }))
 
     act(() => useAppStore.setState((state) => ({

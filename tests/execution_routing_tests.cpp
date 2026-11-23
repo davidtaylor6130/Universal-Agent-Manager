@@ -1185,12 +1185,15 @@ UAM_TEST(ExecutionRoutingRestoredReservationReleasesOnlyWhenTheHelperReportsNoPr
 }
 #endif
 
+#if UAM_ENABLE_SSH
+// Load is read and shown only in builds with SSH.
 UAM_TEST(HostLoadPollSamplesRoutedComputersOffTheAppThreadAndKeepsUnknownLoadUnknown)
 {
+	// Declared before the app, so the sampler threads that read it stop first.
+	std::atomic<bool> supported{true};
 	TempDir temp("uam-routing-host-load");
 	uam::AppState app;
 	ConfigureRoutingFixture(app, temp.root);
-	std::atomic<bool> supported{true};
 	app.host_load_reader = [&supported](const ExecutionHost& host)
 	{
 		return uam::host_load::ReaderFactory([&supported, local = host.id == "local"]
@@ -1208,7 +1211,7 @@ UAM_TEST(HostLoadPollSamplesRoutedComputersOffTheAppThreadAndKeepsUnknownLoadUnk
 			});
 		});
 	};
-	// Automatic routing to an enabled computer keeps it sampled; this computer is idle and is not.
+	// Admission does not read load yet, so an idle computer, even one turned on for routing, is not sampled.
 	const auto settle = [&app](const std::string& id, const std::string& status)
 	{
 		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
@@ -1221,6 +1224,12 @@ UAM_TEST(HostLoadPollSamplesRoutedComputersOffTheAppThreadAndKeepsUnknownLoadUnk
 		}
 		return false;
 	};
+	(void)uam::PollHostLoad(app);
+	UAM_ASSERT_EQ(uam::HostLoadForFrontend(app)["hosts"]["remote"].value("status", std::string()), std::string("notSampled"));
+	UAM_ASSERT(!app.host_load_sampler || app.host_load_sampler->Keys().empty());
+
+	// Settings that show load sample every computer.
+	uam::RequestHostLoad(app);
 	UAM_ASSERT(settle("remote", "known"));
 	nlohmann::json state = uam::HostLoadForFrontend(app);
 	const nlohmann::json& remote = state["hosts"]["remote"];
@@ -1229,13 +1238,15 @@ UAM_TEST(HostLoadPollSamplesRoutedComputersOffTheAppThreadAndKeepsUnknownLoadUnk
 	UAM_ASSERT_EQ(remote["processes"], nlohmann::json(3));
 	UAM_ASSERT_EQ(remote["inUse"], nlohmann::json(0));
 	UAM_ASSERT_EQ(remote["limit"], nlohmann::json(1));
-	UAM_ASSERT_EQ(state["hosts"]["local"].value("status", std::string()), std::string("notSampled"));
-	UAM_ASSERT(state["hosts"]["local"]["cores"].is_null());
-
-	// Settings that show load sample every computer, this one included.
-	uam::RequestHostLoad(app);
 	UAM_ASSERT(settle("local", "known"));
 	UAM_ASSERT_EQ(uam::HostLoadForFrontend(app)["hosts"]["local"]["processes"], nlohmann::json(0));
+
+	// A limit is shown only where admission applies it.
+	app.settings.execution_routing.hosts.front().enabled = false;
+	app.host_load_next_poll_s = 0.0;
+	(void)uam::PollHostLoad(app);
+	UAM_ASSERT(uam::HostLoadForFrontend(app)["hosts"]["remote"]["limit"].is_null());
+	app.settings.execution_routing.hosts.front().enabled = true;
 
 	// A helper updated to one without host.load is read afresh and reports unknown, never zero.
 	supported = false;
@@ -1246,3 +1257,4 @@ UAM_TEST(HostLoadPollSamplesRoutedComputersOffTheAppThreadAndKeepsUnknownLoadUnk
 		UAM_ASSERT(state["hosts"]["remote"][figure].is_null());
 	app.host_load_sampler.reset();
 }
+#endif

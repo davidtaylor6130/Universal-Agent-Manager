@@ -1996,7 +1996,8 @@ namespace uam
 			w.Set("memoryEnabled", uam::memory_levels::IsEnabled(uam::memory_policy::Resolve(app.settings, chat)));
 			const std::unordered_map<std::string, std::string>::const_iterator routing_wait = app.execution_routing_waits.find(chat.id);
 			w.Set("routingWaitReason", routing_wait == app.execution_routing_waits.end() ? "" : routing_wait->second);
-			w.Set("routingWaitHosts", uam::RoutingWaitHostsForFrontend(app, chat.id));
+			// Almost always empty, so the key is sent only with reasons; the interface reads a missing key as none.
+			if (nlohmann::json wait_hosts = uam::RoutingWaitHostsForFrontend(app, chat.id); !wait_hosts.empty()) w.Set("routingWaitHosts", std::move(wait_hosts));
 			w.Set("routingUnresolvedReservation", app.execution_routing_restored_unresolved_chat_ids.contains(chat.id));
 			w.Set("attentionRevision", AttentionRevisionForChat(app, chat, cache));
 			w.Set("attentionSource", chat.attention_source);
@@ -2589,7 +2590,7 @@ namespace uam
 				chat_json["memoryEnabled"] = uam::memory_levels::IsEnabled(uam::memory_policy::Resolve(app.settings, chat));
 				const std::unordered_map<std::string, std::string>::const_iterator routing_wait = app.execution_routing_waits.find(chat.id);
 				chat_json["routingWaitReason"] = routing_wait == app.execution_routing_waits.end() ? "" : routing_wait->second;
-				chat_json["routingWaitHosts"] = uam::RoutingWaitHostsForFrontend(app, chat.id);
+				if (nlohmann::json wait_hosts = uam::RoutingWaitHostsForFrontend(app, chat.id); !wait_hosts.empty()) chat_json["routingWaitHosts"] = std::move(wait_hosts);
 			chat_json["routingUnresolvedReservation"] = app.execution_routing_restored_unresolved_chat_ids.contains(chat.id);
 			if (!chat.imported_read_only || chat.subagent_parent_chat_id.empty() || chat.subagent_parent_created_at.empty())
 				chat_json["workspaceDirectory"] = uam::paths::Utf8PathString(WorkspaceSnapshotForChat(app, chat, catalog_cache));

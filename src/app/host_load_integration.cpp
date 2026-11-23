@@ -1,12 +1,16 @@
 #include "app/host_load_integration.h"
 
+#include "app/agent_run_scheduler.h"
 #include "app/chat_domain_service.h"
 #include "app/execution_routing_integration.h"
+#include "common/config/build_features.h"
 #include "common/config/execution_host_config.h"
 #include "common/platform/platform_services.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "common/runtime/acp/compute_pool_gate.h"
 #include "common/runtime/app_time.h"
+#include "common/utils/diagnostic_log.h"
+#include "common/utils/string_utils.h"
 #include "remote/runner_client.h"
 
 #include <nlohmann/json.hpp>
@@ -64,13 +68,48 @@ namespace uam
 			return ExecutionRoutingConnectionIdentity(host) + "|" + host.runner_version + "|" + std::to_string(host.runner_protocol_version);
 		}
 
+		/// Chats that can own work by state held outside the chat record. Any other chat owns work only through its own
+		/// remote fields, so ExecutionRoutingOwnsWork, which scans sessions, terminals and runs, is asked only about these.
+		std::unordered_set<std::string> ChatsWithRuntimeState(const AppState& app)
+		{
+			std::unordered_set<std::string> ids(app.execution_routing_reserved_chat_ids.begin(), app.execution_routing_reserved_chat_ids.end());
+			for (const std::unique_ptr<AcpSessionState>& session : app.acp_sessions)
+				if (session) ids.insert(session->chat_id);
+			for (const std::unique_ptr<CliTerminalState>& terminal : app.cli_terminals)
+				if (terminal) { ids.insert(terminal->attached_chat_id); ids.insert(terminal->frontend_chat_id); }
+			for (const AgentRun& run : app.agent_runs)
+				if (run.status == "running") ids.insert(run.transcript_chat_id);
+			for (const auto& [id, mention] : app.managed_initial_mentions) ids.insert(id);
+			return ids;
+		}
+
+		bool RemoteFieldsOwnWork(const ChatSession& chat)
+		{
+			return chat.remote_turn_reconnect_pending || !chat.remote_prompt_delivery_id.empty() || !chat.remote_pending_requests.empty() ||
+			    !chat.remote_interaction_responses.empty() || !chat.remote_active_turn_id.empty() || chat.remote_stop_cleanup_pending || chat.remote_restart_pending;
+		}
+
 		std::unordered_map<std::string, ExecutionHostUsage> CountUsage(const AppState& app, std::size_t& unassigned_waiting)
 		{
 			std::unordered_map<std::string, ExecutionHostUsage> usage;
 			std::vector<ExecutionRoutingOccupancy> occupancy;
+			const std::unordered_set<std::string> runtime_chats = ChatsWithRuntimeState(app);
+			const bool every_chat = !app.managed_initial_runtime_owners.empty();
+			std::unordered_map<std::string_view, const ChatSession*> chats_by_id;
+			chats_by_id.reserve(app.chats.size());
 			for (const ChatSession& chat : app.chats)
-				if (ExecutionRoutingOwnsWork(app, chat) || chat.routing_reservation_pending)
+			{
+				chats_by_id.emplace(chat.id, &chat);
+				// The same answer as admission's occupancy, without scanning every runtime list for every idle chat.
+				// A managed initial runtime owner names its root chat privately, so while any exists every chat is asked.
+				if (chat.routing_reservation_pending || ((every_chat || RemoteFieldsOwnWork(chat) || runtime_chats.contains(chat.id)) && ExecutionRoutingOwnsWork(app, chat)))
 					occupancy.push_back({chat.id, HostIdOf(chat.execution_host_id)});
+			}
+			const auto find_chat = [&chats_by_id](const std::string& id) -> const ChatSession*
+			{
+				const auto found = chats_by_id.find(id);
+				return found == chats_by_id.end() ? nullptr : found->second;
+			};
 			if (app.execution_routing_service)
 				for (const auto& [host_id, count] : app.execution_routing_service->OccupiedCounts(occupancy)) usage[host_id].in_use = count;
 			else
@@ -81,7 +120,7 @@ namespace uam
 			for (const auto& [chat_id, text] : app.execution_routing_waits)
 			{
 				if (text.empty()) continue;
-				const ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
+				const ChatSession* chat = find_chat(chat_id);
 				if (chat == nullptr) continue;
 				// An automatic chat has no computer until it is admitted; it waits for all of them.
 				if (chat->routing_mode == "automatic" && chat->routing_assigned_connection_identity.empty()) ++unassigned_waiting;
@@ -98,12 +137,14 @@ namespace uam
 			{
 				if (!terminal || !terminal->running) continue;
 				const std::string& chat_id = terminal->attached_chat_id.empty() ? terminal->frontend_chat_id : terminal->attached_chat_id;
-				const ChatSession* chat = chat_id.empty() ? nullptr : ChatDomainService().FindChatById(app, chat_id);
+				const ChatSession* chat = chat_id.empty() ? nullptr : find_chat(chat_id);
 				if (chat == nullptr || HostIdOf(chat->execution_host_id) == execution_hosts::kLocalHostId) ++usage[std::string(execution_hosts::kLocalHostId)].local_processes;
 			}
 			for (const auto& [host_id, chats] : waiting) usage[host_id].waiting = chats.size();
-			for (const ExecutionRoutingHostPolicy& policy : app.settings.execution_routing.hosts)
-				usage[policy.host_id].limit = policy.max_active_turns;
+			// A limit is shown only where admission applies it.
+			if (app.settings.execution_routing.enabled)
+				for (const ExecutionRoutingHostPolicy& policy : app.settings.execution_routing.hosts)
+					if (policy.enabled) usage[policy.host_id].limit = policy.max_active_turns;
 			return usage;
 		}
 
@@ -144,44 +185,71 @@ namespace uam
 
 	bool PollHostLoad(AppState& app)
 	{
+		// Nothing shows these figures without SSH, so a build without it reads and recounts nothing.
+		if constexpr (!UAM_ENABLE_SSH) return false;
 		const double now = GetAppTimeSeconds();
 		if (now < app.host_load_next_poll_s) return false;
 		app.host_load_next_poll_s = now + kUsageRecountSeconds;
 
-		std::size_t unassigned_waiting = 0;
-		std::unordered_map<std::string, ExecutionHostUsage> usage = CountUsage(app, unassigned_waiting);
-		bool changed = usage != app.execution_host_usage || unassigned_waiting != app.execution_routing_unassigned_waiting;
-		app.execution_host_usage = std::move(usage);
-		app.execution_routing_unassigned_waiting = unassigned_waiting;
-
 		const bool interest = now < app.host_load_interest_until_s;
+		const bool has_ssh_host = std::ranges::any_of(app.settings.execution_hosts, [](const ExecutionHost& host) { return host.id != execution_hosts::kLocalHostId; });
+		// Counts are shown only for SSH computers and in routing settings; without either, nothing is recounted.
+		if (has_ssh_host || interest || app.settings.execution_routing.enabled)
+			app.execution_host_usage = CountUsage(app, app.execution_routing_unassigned_waiting);
+		else
+		{
+			app.execution_host_usage.clear();
+			app.execution_routing_unassigned_waiting = 0;
+		}
+
+		// Load is read for a computer with live or waiting work and, while settings show load, for every computer.
+		// Admission does not read load yet, so an idle computer is not sampled just because routing may use it.
 		std::vector<ExecutionHost> wanted;
-		const ExecutionHostUsage* local = nullptr;
-		if (const auto found = app.execution_host_usage.find(std::string(execution_hosts::kLocalHostId)); found != app.execution_host_usage.end()) local = &found->second;
-		if (interest || (local != nullptr && (local->in_use > 0 || local->waiting > 0 || local->local_processes > 0)))
-			wanted.push_back(execution_hosts::LocalHost());
+		if (interest) wanted.push_back(execution_hosts::LocalHost());
 		for (const ExecutionHost& host : app.settings.execution_hosts)
 		{
-			if (host.id == execution_hosts::kLocalHostId || !remote::CanAttemptRunnerConnection(host)) continue;
+			if (host.id == execution_hosts::kLocalHostId) continue;
+			// An install fence or a missing helper stops a running reader at once, so it never reconnects mid-install.
+			if (!remote::CanAttemptRunnerConnection(host))
+			{
+				if (app.host_load_sampler) app.host_load_sampler->Drop(host.id);
+				continue;
+			}
 			const std::unordered_map<std::string, ExecutionHostUsage>::const_iterator figures = app.execution_host_usage.find(host.id);
 			const bool busy = figures != app.execution_host_usage.end() && (figures->second.in_use > 0 || figures->second.waiting > 0);
-			const bool routed = app.settings.execution_routing.enabled && std::ranges::any_of(app.settings.execution_routing.hosts,
-			    [&host](const ExecutionRoutingHostPolicy& policy) { return policy.host_id == host.id && policy.enabled; });
 			// A computer whose last health check failed is left to the recovery contact; busy work there may still try it.
-			if ((interest || routed || busy) && (host.runner_status == "ready" || busy)) wanted.push_back(host);
+			if ((interest || busy) && (host.runner_status == "ready" || busy)) wanted.push_back(host);
 		}
 		if (!wanted.empty() && !app.host_load_sampler) app.host_load_sampler = std::make_shared<host_load::Sampler>();
 		if (app.host_load_sampler)
 		{
+			for (const std::string& key : app.host_load_sampler->Keys())
+				if (key != execution_hosts::kLocalHostId && execution_hosts::Find(app.settings.execution_hosts, key) == nullptr) app.host_load_sampler->Drop(key);
 			for (const ExecutionHost& host : wanted)
 			{
 				host_load::ReaderFactory reader = app.host_load_reader ? app.host_load_reader(host)
 				    : host.id == execution_hosts::kLocalHostId ? LocalReader() : RemoteReader(host);
 				app.host_load_sampler->Want(host.id, SampleIdentity(host), std::move(reader));
 			}
-			changed = app.host_load_sampler->Poll() || changed;
+			(void)app.host_load_sampler->Poll();
+			// One line per computer whose reading changed status, never per reading.
+			for (const std::string& key : app.host_load_sampler->Keys())
+			{
+				const std::optional<host_load::Sample> sample = app.host_load_sampler->Latest(key);
+				if (!sample || sample->status == host_load::SampleStatus::Pending) continue;
+				std::string& reported = app.host_load_reported_status[key];
+				const std::string status = StatusName(sample->status);
+				if (reported == status) continue;
+				if (!reported.empty() || sample->status != host_load::SampleStatus::Known)
+					diagnostics::Write("[host-load] computer " + strings::SafeLine(key, 128, true) + " load " + (reported.empty() ? std::string("first read") : reported) + " -> " + status + ".");
+				reported = status;
+			}
 		}
-		return changed;
+		// Publish only what the interface would show: rounded figures, so a byte of memory never pushes state.
+		std::string shown = HostLoadForFrontend(app).dump();
+		if (shown == app.host_load_published) return false;
+		app.host_load_published = std::move(shown);
+		return true;
 	}
 
 	nlohmann::json HostLoadForFrontend(const AppState& app)

@@ -129,11 +129,12 @@ UAM_TEST(RunnerHostLoadIsVersionedAndCountsLiveProcessesForEveryDesktop)
 
 UAM_TEST(HostLoadSamplerReadsOffTheCallerThreadAndRefreshesWithinTheInterval)
 {
-	uam::host_load::Sampler sampler(std::chrono::milliseconds(20), std::chrono::seconds(30), std::chrono::seconds(30));
+	// Everything the readers capture is declared before the sampler, so its threads stop before these go.
 	const std::thread::id caller = std::this_thread::get_id();
 	std::atomic<int> reads{0};
 	std::atomic<bool> read_on_caller{false};
 	std::atomic<bool> release{false};
+	uam::host_load::Sampler sampler(std::chrono::milliseconds(20), std::chrono::seconds(30), std::chrono::seconds(30));
 	sampler.Want("host-a", "identity-1", [&]
 	{
 		return uam::host_load::Reader([&](std::stop_token stop)
@@ -158,14 +159,15 @@ UAM_TEST(HostLoadSamplerReadsOffTheCallerThreadAndRefreshesWithinTheInterval)
 	UAM_ASSERT(WaitFor([&] { return reads.load() >= 3; }));
 	UAM_ASSERT(WaitFor([&] { return sampler.Latest("host-a")->load.runner_processes.value_or(0) >= 3; }));
 	UAM_ASSERT(!read_on_caller.load());
-	UAM_ASSERT(sampler.Poll());
+	// Each new figure is reported; wait for one rather than assume a read landed since the last Poll.
+	UAM_ASSERT(WaitFor([&] { return sampler.Poll(); }));
 	UAM_ASSERT(!sampler.Latest("missing").has_value());
 }
 
 UAM_TEST(HostLoadSamplerNeverReportsAFailedOrOldReadingAsIdle)
 {
-	uam::host_load::Sampler sampler(std::chrono::milliseconds(10), std::chrono::seconds(30), std::chrono::milliseconds(150));
 	std::atomic<int> mode{0};
+	uam::host_load::Sampler sampler(std::chrono::milliseconds(10), std::chrono::seconds(30), std::chrono::milliseconds(150));
 	sampler.Want("host-a", "identity-1", [&]
 	{
 		return uam::host_load::Reader([&](std::stop_token stop)
@@ -195,7 +197,6 @@ UAM_TEST(HostLoadSamplerNeverReportsAFailedOrOldReadingAsIdle)
 
 UAM_TEST(HostLoadSamplerStopsAskingAnOlderHelperAndRestartsWhenTheHostChanges)
 {
-	uam::host_load::Sampler sampler(std::chrono::milliseconds(5), std::chrono::seconds(30), std::chrono::seconds(30));
 	std::atomic<int> old_reads{0};
 	std::atomic<bool> old_reader_closed_on_caller{false};
 	const std::thread::id caller = std::this_thread::get_id();
@@ -205,6 +206,7 @@ UAM_TEST(HostLoadSamplerStopsAskingAnOlderHelperAndRestartsWhenTheHostChanges)
 		std::atomic<bool>* closed_on_caller;
 		~Connection() { if (std::this_thread::get_id() == caller) *closed_on_caller = true; }
 	};
+	uam::host_load::Sampler sampler(std::chrono::milliseconds(5), std::chrono::seconds(30), std::chrono::seconds(30));
 	sampler.Want("host-a", "helper-5.1", [&]
 	{
 		const std::shared_ptr<Connection> connection = std::make_shared<Connection>(Connection{caller, &old_reader_closed_on_caller});
@@ -235,8 +237,8 @@ UAM_TEST(HostLoadSamplerStopsAskingAnOlderHelperAndRestartsWhenTheHostChanges)
 
 UAM_TEST(HostLoadSamplerDropsAHostNobodyWantsAfterTheLingerTime)
 {
-	uam::host_load::Sampler sampler(std::chrono::milliseconds(5), std::chrono::milliseconds(60), std::chrono::seconds(30));
 	std::atomic<int> reads{0};
+	uam::host_load::Sampler sampler(std::chrono::milliseconds(5), std::chrono::milliseconds(60), std::chrono::seconds(30));
 	sampler.Want("host-a", "identity-1", [&]
 	{
 		return uam::host_load::Reader([&](std::stop_token) { ++reads; return uam::host_load::Reading{uam::host_load::SampleStatus::Known, SampleLoad(0)}; });
@@ -249,4 +251,31 @@ UAM_TEST(HostLoadSamplerDropsAHostNobodyWantsAfterTheLingerTime)
 	std::this_thread::sleep_for(std::chrono::milliseconds(50));
 	UAM_ASSERT_EQ(reads.load(), settled);
 	(void)sampler.Poll();
+}
+
+UAM_TEST(HostLoadSamplerDropStopsAReaderAtOnceWithoutWaitingForIt)
+{
+	std::atomic<bool> reading{false};
+	std::atomic<bool> stopped{false};
+	uam::host_load::Sampler sampler(std::chrono::milliseconds(5), std::chrono::seconds(30), std::chrono::seconds(30));
+	sampler.Want("host-a", "identity-1", [&]
+	{
+		return uam::host_load::Reader([&](std::stop_token stop)
+		{
+			// A read that only ends when asked to stop, like a helper connection during an install.
+			reading = true;
+			while (!stop.stop_requested()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			stopped = true;
+			return uam::host_load::Reading{};
+		});
+	});
+	UAM_ASSERT(WaitFor([&] { return reading.load(); }));
+	const std::chrono::steady_clock::time_point before = std::chrono::steady_clock::now();
+	sampler.Drop("host-a");
+	UAM_ASSERT(std::chrono::steady_clock::now() - before < std::chrono::milliseconds(500));
+	UAM_ASSERT(!sampler.Latest("host-a").has_value());
+	UAM_ASSERT(sampler.Keys().empty());
+	UAM_ASSERT(WaitFor([&] { return stopped.load(); }));
+	(void)sampler.Poll();
+	sampler.Drop("missing");
 }

@@ -99,6 +99,18 @@ namespace uam::host_load
 		Start(task);
 	}
 
+	void Sampler::Drop(const std::string& key)
+	{
+		std::scoped_lock lock(m_mutex);
+		const std::unordered_map<std::string, std::shared_ptr<Task>>::iterator found = m_tasks.find(key);
+		if (found == m_tasks.end()) return;
+		found->second->worker.request_stop();
+		found->second->wake.notify_all();
+		m_retiring.push_back(found->second);
+		m_tasks.erase(found);
+		m_changed->store(true, std::memory_order_release);
+	}
+
 	std::optional<Sample> Sampler::Latest(const std::string& key) const
 	{
 		std::scoped_lock lock(m_mutex);
