@@ -2075,6 +2075,40 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(cefStore.getState().messages['chat-1'][1].isStreaming).toBe(false)
   })
 
+  it('removes a duplicate stream placeholder from a long chat whose loaded page starts after message 0', async () => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.dispatchEvent = vi.fn(() => true)
+    const initial = makeCppState(1)
+    delete initial.chats[0].messages
+    initial.chats[0].cliTerminal = undefined
+    initial.chats[0].messageCount = 110
+    initial.chats[0].acpSession = {
+      sessionId: 'acp-chat-1', running: true, processing: true, lifecycleState: 'processing',
+      turnSerial: 1, turnUserMessageIndex: 108, turnAssistantMessageIndex: 109,
+      turnEvents: [{ type: 'tool_call', toolCallId: 'tool-1' }, { type: 'assistant_text', text: ' Final text.' }],
+    }
+    // The reload streamDone starts stays pending, so the assertions see what streamDone itself wrote.
+    testWindow.cefQuery = ({ request, onSuccess }) => { if (JSON.parse(request).action === 'getInitialState') onSuccess(JSON.stringify(initial)) }
+
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const page: Message[] = Array.from({ length: 50 }, (_, index) => ({
+      id: `saved-${60 + index}`, sessionId: 'chat-1', role: index % 2 === 0 ? 'user' : 'assistant',
+      content: index === 49 ? 'Initial text.' : `saved ${60 + index}`, createdAt: new Date(0), nativeMessageIndex: 60 + index,
+    }))
+    cefStore.setState({
+      historyStartIndexBySessionId: { 'chat-1': 60 },
+      messages: { 'chat-1': [...page, { id: 'stream-chat-1', sessionId: 'chat-1', role: 'assistant', content: ' Final text.', createdAt: new Date(1), isStreaming: true }] },
+    })
+
+    testWindow.uamPush?.({ type: 'streamDone', chatId: 'chat-1' })
+
+    const messages = cefStore.getState().messages['chat-1']
+    expect(messages).toHaveLength(50)
+    expect(messages[49]).toMatchObject({ id: 'saved-109', content: 'Initial text. Final text.', isStreaming: false })
+  })
+
   it('preserves the active runtime when a delayed queued prompt is rejected', async () => {
     const testWindow = ensureTestWindow()
     vi.resetModules()

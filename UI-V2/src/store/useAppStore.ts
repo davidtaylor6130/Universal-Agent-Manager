@@ -1304,8 +1304,9 @@ export const useAppStore = create<AppState>((set, get) => {
 
             if (lastMessage && lastMessage.role === 'assistant' && lastMessage.isStreaming) {
               const binding = get().acpBindingBySessionId[chatId]
-              const currentAssistantIndex = binding?.turnAssistantMessageIndex ?? -1
-              const currentAssistant = existingMessages[currentAssistantIndex]
+              // The native index counts the whole transcript; a loaded page starts at historyStartIndex.
+              const currentAssistantIndex = (binding?.turnAssistantMessageIndex ?? -1) - (get().historyStartIndexBySessionId[chatId] ?? 0)
+              const currentAssistant = currentAssistantIndex >= 0 ? existingMessages[currentAssistantIndex] : undefined
               const turnAssistantText = (binding?.turnEvents ?? []).reduce(
                 (text, event) => event.type === 'assistant_text' ? text + event.text : text,
                 ''
