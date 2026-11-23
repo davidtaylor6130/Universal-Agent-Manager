@@ -6,6 +6,7 @@ import { sanitizeCustomIcon } from '../../types/customIcon'
 // Extracted from useAppStore.ts (MO-1). Pure functions — no side effects.
 
 import type {
+  TimerNotice,
   ManualCompactionAvailability,
   CopilotAutoRoutingProjection,
   CopilotAutoTierDescriptor,
@@ -2224,6 +2225,7 @@ export function sanitizeCppAppState(value: unknown): CppAppState | null {
     shellActions,
     computePoolUsage: sanitizeComputePoolUsage(value.computePoolUsage),
     prWatches: sanitizePullRequestWatches(value.prWatches),
+    timers: sanitizeTimers(value.timers),
     shellActionNotification: stringOr(value.shellActionNotification),
     statusLine: stringOr(value.statusLine),
     deletionProgress: sanitizeDeletionProgress(value.deletionProgress),
@@ -2321,6 +2323,20 @@ export function sanitizePullRequestWatches(value: unknown): PullRequestWatch[] {
       ...(notice ? { notice } : {}),
     }]
   })
+}
+
+export function sanitizeTimers(value: unknown): { notices: TimerNotice[] } {
+  const notices = isRecord(value) && Array.isArray(value.notices) ? value.notices : []
+  return {
+    notices: notices.flatMap((entry) => {
+      if (!isRecord(entry)) return []
+      const serial = nonNegativeInteger(entry.serial) ?? 0
+      const message = stringOr(entry.message)
+      if (serial < 1 || !message) return []
+      const chatId = stringOr(entry.chatId)
+      return [{ serial, message, tone: noticeTone(entry.tone), ...(chatId ? { chatId } : {}) }]
+    }),
+  }
 }
 
 function sanitizeShellActions(value: unknown): ShellAction[] {
@@ -2439,6 +2455,7 @@ export function sanitizeCppStatePatch(value: unknown): CppStatePatch | null {
     shellActions: value.shellActions !== undefined ? sanitizeShellActions(value.shellActions) : undefined,
     computePoolUsage: value.computePoolUsage !== undefined ? sanitizeComputePoolUsage(value.computePoolUsage) : undefined,
     prWatches: value.prWatches !== undefined ? sanitizePullRequestWatches(value.prWatches) : undefined,
+    timers: value.timers !== undefined ? sanitizeTimers(value.timers) : undefined,
     shellActionNotification: value.shellActionNotification !== undefined ? stringOr(value.shellActionNotification) : undefined,
     statusLine: value.statusLine !== undefined ? stringOr(value.statusLine) : undefined,
   }

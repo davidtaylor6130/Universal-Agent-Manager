@@ -8,6 +8,7 @@ A chat is UAM’s durable conversation with its own provider selection, model, a
 - [HTML views](html-views.md)
 - [Secure secret entry](secrets.md)
 - [Pull request watching](pull-request-watch.md)
+- [Scheduled follow-ups](scheduled-follow-ups.md)
 - [Composer](composer/composer.md)
 - [Goals](goals.md)
 - [Subagents](subagents.md)

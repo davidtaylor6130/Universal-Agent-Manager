@@ -1996,7 +1996,7 @@ UAM_TEST(PerformanceSuiteUamRequestOverhead)
 				if (context == "ssh_root" || context == "read_only_agent" || !UAM_ENABLE_COMPUTER_USE) UAM_ASSERT(!has("computer_use_request"));
 				if (context == "read_only_agent") UAM_ASSERT(!has("goal_create") && !has("agent_cancel") && !has("chat_create"));
 				if (context == "child_without_delegates") UAM_ASSERT(!has("agent_list") && !has("agent_delegate") && !has("agent_wait"));
-				if (context == "temporary_side_chat") UAM_ASSERT(!has("pr_watch") && !has("pr_unwatch") && !has("secret_request"));
+				if (context == "temporary_side_chat") UAM_ASSERT(!has("pr_watch") && !has("pr_unwatch") && !has("schedule") && !has("notify") && !has("secret_request"));
 				if (view == "cli") UAM_ASSERT(!has("agent_wait") && !has("html_view_preview") && !has("html_view_publish"));
 				std::cout << "[SIZE] " << provider << " " << view << " " << context << " uam-control exposure: " << tools.dump().size() << " bytes, " << tools.size() << " tools\n";
 			};

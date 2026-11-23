@@ -1179,12 +1179,12 @@ UAM_TEST(UamControlCapabilityBoundsGoalAuthorityReplayRateCancellationAndRestart
 	{
 		const std::string name = tool.value("name", "");
 		const bool read_only = name == "agent_list" || name == "agent_status" || name == "agent_wait" || name == "skill_list" ||
-		    name == "skill_read" || name == "goal_get" || name == "user_question" ||
+		    name == "skill_read" || name == "goal_get" || name == "user_question" || name == "notify" ||
 		    name == "html_view_preview" || name == "html_view_publish";
 		UAM_ASSERT_EQ(tool.contains("annotations") && tool["annotations"].value("readOnlyHint", false), read_only);
 		hinted += read_only ? 1 : 0;
 	}
-	UAM_ASSERT_EQ(hinted, std::size_t{9});
+	UAM_ASSERT_EQ(hinted, std::size_t{10});
 	const nlohmann::json read_only_goal = call(capability, "policy-read", "goal_get");
 	UAM_ASSERT(read_only_goal.value("ok", false));
 	UAM_ASSERT(!read_only_goal["result"].value("mutationToolsEnabled", true));
@@ -1628,7 +1628,7 @@ UAM_TEST(UamControlListsOnlyToolsTheSessionCanUse)
 
 	// A local root build chat keeps every tool.
 	UAM_ASSERT_EQ(hidden_for(raw), std::string(UAM_ENABLE_COMPUTER_USE ? "" : "computer_use_request"));
-	UAM_ASSERT_EQ(uam::UamControlService::ToolDefinitionsForTests("").size(), std::size_t{17});
+	UAM_ASSERT_EQ(uam::UamControlService::ToolDefinitionsForTests("").size(), std::size_t{19});
 
 	// A chat started by another chat cannot start chats, so chat_create is not offered.
 	app.chats.front().created_by_chat_id = "creator";
@@ -1700,12 +1700,13 @@ UAM_TEST(UamControlListsOnlyToolsTheSessionCanUse)
 	UAM_ASSERT_EQ(refused["error"]["message"].get<std::string>(), std::string("This UAM tool is not available in this session."));
 	UAM_ASSERT(fs::is_empty(app.uam_control_capabilities.back().directory / "requests"));
 	raw.goal_review_turn = false;
-	UAM_ASSERT_EQ(uam::UamControlService::ToolDefinitionsForTests(hidden_for(raw)).size(), std::size_t{UAM_ENABLE_COMPUTER_USE ? 17 : 16});
+	UAM_ASSERT_EQ(uam::UamControlService::ToolDefinitionsForTests(hidden_for(raw)).size(), std::size_t{UAM_ENABLE_COMPUTER_USE ? 19 : 18});
 
-	// A temporary side chat cannot watch pull requests, so it is not offered the watch tools.
+	// A temporary side chat cannot watch pull requests, schedule follow-ups or notify, so it is not offered those tools.
 	app.chats.front().temporary_parent_chat_id = "parent";
 	hidden = hidden_for(raw);
 	UAM_ASSERT(hidden.find("pr_watch") != std::string::npos && hidden.find("pr_unwatch") != std::string::npos);
+	UAM_ASSERT(hidden.find("schedule") != std::string::npos && hidden.find("notify") != std::string::npos);
 	UAM_ASSERT(hidden.find("secret_request") != std::string::npos);
 	app.chats.front().temporary_parent_chat_id.clear();
 

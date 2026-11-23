@@ -4,6 +4,7 @@
 #include "common/chat/chat_message_page_index.h"
 #include "app/startup_native_import_service.h"
 #include "app/pr_watch_service.h"
+#include "app/timer_service.h"
 #include "app/worktree_launch_preparation_service.h"
 #include "app/execution_routing_integration.h"
 #include "cef/state_serializer.h"
@@ -2557,6 +2558,7 @@ namespace uam
 		j["shellActions"] = SerializeShellActionsForFrontend(app.shell_actions);
 		j["computePoolUsage"] = uam::compute_pools::UsageForFrontend(app);
 		j["prWatches"] = app.pr_watch_service != nullptr ? app.pr_watch_service->SerializeForFrontend() : nlohmann::json::array();
+		j["timers"] = app.timer_service != nullptr ? app.timer_service->SerializeForFrontend() : nlohmann::json{{"notices", nlohmann::json::array()}};
 		j["shellActionNotification"] = app.shell_action_notification;
 		j["statusLine"] = app.status_line;
 		if (app.deletion_progress)
@@ -2696,6 +2698,7 @@ namespace uam
 		j["shellActions"] = SerializeShellActionsForFrontend(app.shell_actions);
 		j["computePoolUsage"] = uam::compute_pools::UsageForFrontend(app);
 		j["prWatches"] = app.pr_watch_service != nullptr ? app.pr_watch_service->SerializeForFrontend() : nlohmann::json::array();
+		j["timers"] = app.timer_service != nullptr ? app.timer_service->SerializeForFrontend() : nlohmann::json{{"notices", nlohmann::json::array()}};
 		j["shellActionNotification"] = app.shell_action_notification;
 		j["statusLine"] = app.status_line;
 		if (app.deletion_progress)

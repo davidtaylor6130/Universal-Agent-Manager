@@ -45,6 +45,7 @@ namespace uam
 	class StartupNativeImportService;
 	class StorageRetentionService;
 	class PrWatchService;
+	class TimerService;
 	class DataFolderSettingsService;
 	class OpenCodeNativeActivityService;
 	class ManagedSubagentCancellationReceipt;
@@ -535,6 +536,8 @@ namespace uam
 		/// Signing key held only by this capability's MCP server process; a request without its signature is refused.
 		std::string request_key;
 		int64_t expires_at_epoch_ms = 0;
+		/// When this session last raised its chat's attention flag through `notify`; bounds it to once a minute.
+		int64_t last_notify_epoch_ms = 0;
 		std::deque<int64_t> request_times_epoch_ms;
 		std::unordered_set<std::string> seen_request_ids;
 		std::deque<std::string> seen_request_order; // Insertion order, so eviction drops the oldest ID.
@@ -1480,6 +1483,8 @@ namespace uam
 		std::shared_ptr<StorageRetentionService> storage_retention_service;
 		/// Pull request watches for every chat; null in tools and tests that do not create it.
 		std::shared_ptr<PrWatchService> pr_watch_service;
+		/// Chat follow-up wakes and automation schedules; null in tools and tests that do not create it.
+		std::shared_ptr<TimerService> timer_service;
 		std::shared_ptr<DataFolderSettingsService> data_folder_settings;
 		std::shared_ptr<ExecutionRoutingService> execution_routing_service;
 		std::vector<RepositoryRouteWorkspace> repository_route_workspaces;

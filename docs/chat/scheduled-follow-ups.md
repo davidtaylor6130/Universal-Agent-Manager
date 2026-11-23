@@ -1,0 +1,13 @@
+# Scheduled follow-ups
+
+An agent can ask UAM to wake its own chat later, for example to check CI in 30 minutes, with the UAM `schedule` tool ([UAM tool connection](../providers/uam-tools.md)). It gives a delay from 1 minute to 24 hours and a short note of up to 500 bytes. When the time comes UAM sends the chat one message carrying the note, through the same path as a [pull request watch](pull-request-watch.md) message, so a busy chat gets it after its current turn. Only the chat that asked is woken, so the tool needs no approval and works in every permission mode; the message runs under the chat's own agent and permission modes. Subagents, temporary side chats and goal reviewers cannot schedule follow-ups, because their turn ends with their task; the chat that delegated to them can.
+
+## Limits and cancellation
+
+A chat can have 3 follow-ups pending, and UAM 200 in all. Pressing Stop on the chat's turn, marking the chat done (Done or Clear all in Active Chats) and deleting the chat drop its pending follow-ups. A chat that was already marked done when the follow-up was set keeps it until it is marked done again.
+
+## Delivery and restart
+
+Follow-ups are local timers in the desktop app, kept in `chat_wakes.json` in the data folder ([source of truth](../architecture/source-of-truth.md)), so they run whether or not Phone access is on and continue after a restart. One that fell due while UAM was closed is sent once after the next start. Delivery is at most once: a follow-up is saved as being delivered just before it is sent, and one interrupted by the app stopping is not sent again. A message that the chat refuses is tried again every minute; after 30 refusals the follow-up is dropped and one entry in the [notifications panel](../ui/notifications.md) names the chat. The diagnostic log records the chat and delay, never the note.
+
+**Implementation: Needs verification.** The timer service, the tool, persistence and the cancellation rules exist in source with native tests that drive an injected clock and a stand-in sender; nothing has been run with a live provider or in the packaged app, and review and David's acceptance are pending. Known gaps: there is no row or control that lists or cancels a pending follow-up other than Stop, Done or deleting the chat (the tool call shows in the transcript); a chat used only in CLI View may refuse the message; the message is admitted like one the user typed, with the same side effects as a pull request watch wake; the phone clients show nothing. [Open decisions](../documentation-review.md#automation-schedules-and-scheduled-follow-ups) are recorded separately.

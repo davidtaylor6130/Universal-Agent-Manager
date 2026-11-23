@@ -6,6 +6,7 @@
 #include "app/local_chat_bundle_service.h"
 #include "app/storage_retention_service.h"
 #include "app/pr_watch_service.h"
+#include "app/timer_service.h"
 #include "app/secret_request_service.h"
 #include "app/data_folder_settings_service.h"
 #include "app/data_folder_transition.h"
@@ -525,6 +526,8 @@ void Application::PollTickStages(std::chrono::steady_clock::time_point poll_star
 	const bool computer_use_changed = m_computerUseService.PollInBackground(m_app);
 	const std::chrono::steady_clock::time_point computer_use_finished = std::chrono::steady_clock::now();
 	const bool pr_watch_changed = m_app.pr_watch_service != nullptr && m_app.pr_watch_service->Poll(m_app);
+	// Local timers: they run whether or not Phone access is on.
+	const bool timers_changed = m_app.timer_service != nullptr && m_app.timer_service->Poll(m_app);
 	const bool shell_actions_changed = ShellActionService::ProcessPendingRequests(m_app);
 	const std::chrono::steady_clock::time_point shell_actions_finished = std::chrono::steady_clock::now();
 	const bool folder_availability_changed = PollWorkspaceAvailability();
@@ -572,7 +575,7 @@ void Application::PollTickStages(std::chrono::steady_clock::time_point poll_star
 	const bool provider_compatibility_changed = IsCliCompatibilitySnapshotChanged(provider_snapshot_before, CreateCliCompatibilitySnapshot(m_app));
 	// A memory backlog finishes a chat on almost every poll; publishing each rebuilt the whole state four times a second.
 	const bool memory_push_due = m_memoryPush.Due(memory_changed, catalogs_finished);
-	const bool runtime_state_changed = routing_changed || remote_recovery_changed || side_chats_changed || acp_sessions_changed || compaction_sync_changed || opencode_native_changed || uam_control_changed || pr_watch_changed || agent_runs_changed || cli_terminals_changed || memory_push_due || computer_use_changed || shell_actions_changed || folder_availability_changed || model_discovery_retry_changed || startup_model_discovery_changed || history_discovery_changed || remote_host_health_changed;
+	const bool runtime_state_changed = routing_changed || remote_recovery_changed || side_chats_changed || acp_sessions_changed || compaction_sync_changed || opencode_native_changed || uam_control_changed || pr_watch_changed || timers_changed || agent_runs_changed || cli_terminals_changed || memory_push_due || computer_use_changed || shell_actions_changed || folder_availability_changed || model_discovery_retry_changed || startup_model_discovery_changed || history_discovery_changed || remote_host_health_changed;
 	const bool ui_relevant_state_changed = runtime_state_changed || chat_saves_changed || provider_compatibility_changed || model_catalog_changed || uam::DeferredStatePushDue() || uam::StateReconciliationDue();
 	for (const DictationEvent& event : m_platformServices->dictation_service.PollEvents())
 	{
@@ -868,6 +871,7 @@ bool Application::InitializeState()
 	m_settingsLoaded = true;
 	m_app.storage_retention_service = std::make_shared<uam::StorageRetentionService>(m_dataRootLock);
 	m_app.pr_watch_service = std::make_shared<uam::PrWatchService>(m_app.data_root);
+	m_app.timer_service = std::make_shared<uam::TimerService>(m_app.data_root);
 	bool settings_dirty = false;
 	const fs::path bundled_skills_root = MarkdownStoreService::BundledRootForExecutable(executable_path);
 	if (m_app.settings.markdown_store_directory.empty())

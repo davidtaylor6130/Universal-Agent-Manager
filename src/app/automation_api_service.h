@@ -34,6 +34,15 @@ namespace uam
 		std::string goal_id;
 	};
 
+	/// <summary>The credential an automation schedule runs under. It is the schedule itself: chosen in desktop Settings,
+	/// kept only inside UAM and never expiring, unlike external tokens.</summary>
+	struct AutomationScheduleCredential
+	{
+		std::string id;
+		std::string name;
+		bool trusted = false;
+	};
+
 	/// <summary>Token-scoped automation API. Tokens live only as hashes in one file, read per request, so revocation needs no cache invalidation.</summary>
 	class AutomationApiService
 	{
@@ -46,6 +55,12 @@ namespace uam
 		static bool ConstantTimeEquals(std::string_view left, std::string_view right);
 		/// <summary>Authorizes and serves one request. Every refusal returns before any chat is created.</summary>
 		static AutomationApiResponse Handle(AppState& app, const AutomationApiRequest& request);
+
+		/// <summary>Checks a schedule's stored chat request without creating anything; empty when it is valid. One line for Settings.</summary>
+		static std::string ScheduledRequestRefusal(const AppState& app, const nlohmann::json& body);
+		/// <summary>Creates one scheduled run's chat through the same checks as POST /automation/chats. A trusted
+		/// schedule's response carries launch_chat_id for the caller to start; every refusal creates nothing.</summary>
+		static AutomationApiResponse CreateScheduledChat(AppState& app, const AutomationScheduleCredential& credential, const nlohmann::json& body);
 
 		/// <summary>Token metadata for Settings; never contains a secret or its hash.</summary>
 		static std::optional<nlohmann::json> ListTokens(const AppState& app, std::string* error_out);

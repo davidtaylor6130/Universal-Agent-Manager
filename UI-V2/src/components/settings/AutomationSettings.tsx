@@ -6,6 +6,7 @@ import { useAppStore } from '../../store/useAppStore'
 import { reportAppFailure } from '../../utils/appFailure'
 import { copyTextToClipboard } from '../../utils/copySelection'
 import { Button, ConfirmDialog, IconButton, MenuSelect, Notice, Overlay, Presence, Switch } from '../ui'
+import { AutomationSchedules } from './AutomationSchedules'
 import { SettingRow, SettingsField, SettingsLoading, SettingsSection } from './SettingsPrimitives'
 
 export interface AutomationToken {
@@ -112,6 +113,8 @@ export function AutomationSettings() {
           <IconButton size="sm" icon={<X size={14} />} label={`Revoke ${token.name}`} onClick={() => setRevoking(token)} />
         </div>} />)}
     </SettingsSection>
+
+    <AutomationSchedules />
 
     <Presence open={editing}>
       <Overlay open zIndex={60} onBackdropMouseDown={secret ? undefined : close}>

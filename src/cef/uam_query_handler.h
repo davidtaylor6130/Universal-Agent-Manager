@@ -330,13 +330,20 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	void HandleGetCompanionToken(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleRegenerateCompanionToken(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleResolveCompanionConfirmation(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
-	void LaunchAutomationChat(CefRefPtr<CefBrowser> browser, const std::string& chat_id, std::string response, CefRefPtr<Callback> cb, const std::string& origin_request_id = {});
+	/// A scheduled launch, like a desktop one, reports only the reason; the HTTP caller is also told which chat waits.
+	void LaunchAutomationChat(CefRefPtr<CefBrowser> browser, const std::string& chat_id, std::string response, CefRefPtr<Callback> cb, const std::string& origin_request_id = {}, bool scheduled = false);
+	/// Lets the timer service start a trusted schedule run's chat; registered when the window opens, whatever Phone access is.
+	void RegisterAutomationScheduleLauncher(CefRefPtr<CefBrowser> browser);
 	void HandleAutomationHttpRequest(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleApproveAutomationChat(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleGetAutomationTokens(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleCreateAutomationToken(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleRevokeAutomationToken(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleRegenerateAutomationToken(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleGetAutomationSchedules(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleSaveAutomationSchedule(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleSetAutomationSchedulePaused(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleDeleteAutomationSchedule(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleGetAppPermissions(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleRequestAppPermission(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleOpenAppPermissionSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);

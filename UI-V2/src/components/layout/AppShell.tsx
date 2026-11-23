@@ -51,6 +51,7 @@ import { FILE_MANAGER_NAME, matchShortcut, shortcutLabel } from '../../utils/sho
 import { focusActiveInput } from '../../utils/activeInputFocus'
 import { APP_FAILURE_EVENT, APP_NOTICE_RESOLVED_EVENT, reportAppFailure, type AppFailure } from '../../utils/appFailure'
 import { reportPullRequestWatchNotices } from '../../utils/prWatchNotices'
+import { reportTimerNotices } from '../../utils/timerNotices'
 import { useNotificationClock, useNotificationTimes } from '../../hooks/useNotificationTimes'
 import { notificationTimeGroup } from '../../utils/notificationTime'
 import { useRowLeave } from './useRowLeave'
@@ -918,6 +919,11 @@ export function AppShell() {
   useEffect(() => {
     reportPullRequestWatchNotices(prWatches, (chatId) => useAppStore.getState().sessions.find((candidate) => candidate.id === chatId)?.name)
   }, [prWatches])
+  // Scheduled follow-ups and automation schedules report through the same panel.
+  const timerNotices = useAppStore((s) => s.timerNotices)
+  useEffect(() => {
+    reportTimerNotices(timerNotices, (chatId) => useAppStore.getState().sessions.find((candidate) => candidate.id === chatId)?.name)
+  }, [timerNotices])
 
   const [dismissedNotificationIds, setDismissedNotificationIds] = useState<Set<string>>(() => new Set())
   const [updatesOpen, setUpdatesOpen] = useState(false)

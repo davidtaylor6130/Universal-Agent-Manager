@@ -162,6 +162,7 @@ function deserializeState(
     computePools: AppState['computePools']
     computePoolUsage: AppState['computePoolUsage']
     prWatches: AppState['prWatches']
+    timerNotices: AppState['timerNotices']
     shellActionNotification: string
     statusLine: string
   }
@@ -407,6 +408,7 @@ function deserializeState(
     computePools: cpp.settings.computePools ?? [],
     computePoolUsage: cpp.computePoolUsage ?? {},
     prWatches: cpp.prWatches ?? existing.prWatches,
+    timerNotices: cpp.timers?.notices ?? existing.timerNotices,
     shellActionNotification: cpp.shellActionNotification ?? existing.shellActionNotification,
     statusLine: cpp.statusLine ?? existing.statusLine,
     // Full-state only: absent means no deletion is running, so do not keep the previous value.
@@ -656,6 +658,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     computePools: patch.settings?.computePools ?? current.computePools,
     computePoolUsage: patch.computePoolUsage ?? current.computePoolUsage,
     prWatches: patch.prWatches ?? current.prWatches,
+    timerNotices: patch.timers?.notices ?? current.timerNotices,
     shellActionNotification: patch.shellActionNotification ?? current.shellActionNotification,
     statusLine: patch.statusLine ?? current.statusLine,
   }
@@ -926,6 +929,7 @@ export const useAppStore = create<AppState>((set, get) => {
           computePools: current.computePools,
           computePoolUsage: current.computePoolUsage,
           prWatches: current.prWatches,
+          timerNotices: current.timerNotices,
           shellActionNotification: current.shellActionNotification,
           statusLine: current.statusLine,
         })
@@ -1449,6 +1453,7 @@ export const useAppStore = create<AppState>((set, get) => {
       computePools: current.computePools,
       computePoolUsage: current.computePoolUsage,
       prWatches: current.prWatches,
+      timerNotices: current.timerNotices,
       shellActionNotification: current.shellActionNotification,
       statusLine: current.statusLine,
     })
