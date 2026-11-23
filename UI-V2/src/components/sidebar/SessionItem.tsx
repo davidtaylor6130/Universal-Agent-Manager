@@ -493,10 +493,12 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
     if (cancellingTitle) return
     setCancellingTitle(true)
     try {
+      // Set before the request: the generation's own "cancelled" reply can arrive before this one.
+      titleCancelled.current = true
       const response = await sendToCEF({ action: 'cancelChatTitle', payload: { chatId: sessionId } }, false)
       if (!response.ok) throw new Error(response.error || '')
-      titleCancelled.current = true
     } catch (error) {
+      titleCancelled.current = false
       setCancellingTitle(false)
       reportAppFailure('Could not cancel title generation.', failureDetail(error, 'Try again.'))
     }

@@ -50,7 +50,7 @@ export function ComputerUseSettingRow({ disabled = false }: { disabled?: boolean
   const check = async () => {
     const captured = currentObservation()
     const response = await sendToCEF<ComputerUseSettings>({ action: 'getComputerUseSettings' })
-    if (!response.ok || observe(response.data, captured) === 'invalid') throw Error(response.error || 'Could not confirm Computer Use status.')
+    if (!response.ok || observe(response.data, captured) === 'invalid') throw Error(response.error || '')
   }
   const change = async (next?: boolean, trigger?: HTMLInputElement | HTMLButtonElement) => {
     if (operationInFlight || disabled || !COMPUTER_USE_ENABLED) return

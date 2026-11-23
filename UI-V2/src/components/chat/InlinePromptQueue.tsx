@@ -130,7 +130,7 @@ export function InlinePromptQueue({ steerUnavailable = false, prompts, unsentPro
   const saveEdit = () => {
     if (!editing || !editedPrompt) return
     const retainedAttachmentIds = editing.retainedAttachmentIds
-    void run(() => onEdit(editing.id, editing.revision, editing.text, retainedAttachmentIds), 'The queued prompt could not be saved.', 'It may have changed. Your edit is kept.', () => setEditing(null))
+    void run(() => onEdit(editing.id, editing.revision, editing.text, retainedAttachmentIds), 'The queued prompt could not be saved.', 'The queued prompt may have changed. Your edit is kept.', () => setEditing(null))
   }
   return <div className="uam-queue mb-1.5" role="group" aria-label="Queued prompt">
     {prompts.length > 0 && <span className="sr-only" role="status">{prompts.length} queued prompt{prompts.length === 1 ? '' : 's'}</span>}

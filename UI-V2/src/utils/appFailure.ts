@@ -19,17 +19,18 @@ export function noticeText(message: string, detail = ''): { message: string; det
   return { message: line, detail: [rest, detail.trim()].filter((part) => part && part !== line).join(' · ') }
 }
 
-/** Raw transport failures carry exception text; they are logged by the bridge and never shown as a notice message. */
+/** Raw transport failures carry exception text; it goes to the diagnostics log, never into a notice. */
 export function isRawBridgeError(text: string | undefined): boolean {
-  return Boolean(text && /^(Bridge request failed:|Invalid bridge payload:)/.test(text))
+  return Boolean(text && /^(Bridge request failed[:.]|Invalid bridge payload:)/.test(text))
 }
 
 /**
  * A notice's detail from a caught value or backend error, followed by an optional next step; the message stays fixed
- * wording. Raw bridge exception text is dropped here (the bridge has already logged it).
+ * wording. Raw bridge exception text is logged (console errors reach the diagnostics log) and left out of the notice.
  */
 export function failureDetail(cause: unknown, hint = ''): string {
   const raw = (cause instanceof Error ? cause.message : typeof cause === 'string' ? cause : '').trim()
+  if (isRawBridgeError(raw)) console.error(`[notice] ${raw}`)
   const text = isRawBridgeError(raw) ? '' : raw && !/[.!?]$/.test(raw) && hint.trim() ? `${raw}.` : raw
   return [text, hint.trim()].filter(Boolean).join(' ')
 }

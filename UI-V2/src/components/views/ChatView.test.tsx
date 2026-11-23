@@ -5490,7 +5490,7 @@ describe('ChatView', () => {
     await act(acceptYolo)
     expect(reportedText()).toContain('Native permission update was rejected.')
     expect(host.querySelector('button[aria-label="Dismiss command feedback"]')).toBeNull()
-    expect(appFailures.filter((failure) => `${failure.message} ${failure.detail}`.includes('Native permission update was rejected.'))).toHaveLength(1)
+    expect(appFailures.filter((failure) => failure.detail.includes('Native permission update was rejected.')).map((failure) => failure.message)).toEqual(['The permission mode was not changed.'])
 
     await act(requestYolo)
     await act(acceptYolo)

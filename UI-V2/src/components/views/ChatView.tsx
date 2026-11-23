@@ -1476,11 +1476,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   // The history error lives in the store, so a remount would re-report it; alert once per distinct failure.
   useEffect(() => {
     if (!chatHistoryError) { reportedHistoryFailure = ''; return }
-    const title = historyRefreshFailed ? 'Chat history did not refresh' : 'Chat history did not load'
+    const title = historyRefreshFailed ? 'Chat history did not refresh.' : 'Chat history did not load.'
     const key = `${session.id}\u0000${title}\u0000${chatHistoryError}`
     if (key === reportedHistoryFailure) return
     reportedHistoryFailure = key
-    reportAppFailure(title, `${chatHistoryError} Use Retry at the top of the transcript to try again.`)
+    reportAppFailure(title, failureDetail(chatHistoryError, 'Use Retry at the top of the transcript to try again.'))
   }, [chatHistoryError, historyRefreshFailed, session.id])
 
   const runtimeBlocksControlChanges = acpRuntimeBlocksControlChanges(acp)
@@ -2701,7 +2701,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     return applyPermissionMode(modeId)
   }
   const showPermissionResult = (result: PermissionChangeResult, fallback: string) => {
-    setSlashNotice(noticeFor(result.ok || result.cancelled ? '' : result.error || fallback, 'error'))
+    // A refused permission change names the control; the backend reason (or the fallback) is detail.
+    setSlashNotice(noticeFor(result.ok || result.cancelled ? '' : 'The permission mode was not changed.', 'error', failureDetail(result.error || fallback, 'Try again.')))
   }
   const selectPermissionMode = async (modeId: string) => {
     const mode = permissionModes.find((candidate) => candidate.id === modeId)
@@ -2941,7 +2942,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const setComputerUseActive = async (active: boolean): Promise<ComputerUseActionResult> => {
     if (!COMPUTER_USE_ENABLED) return { ok: false }
     const result = await setSessionComputerUseEnabled(session.id, active)
-    if (!result.ok) setSlashNotice(noticeFor(result.error || 'Computer use could not be changed.', 'error'))
+    if (!result.ok) setSlashNotice(noticeFor('Computer use could not be changed.', 'error', failureDetail(result.error, 'Try again.')))
     return result
   }
 
@@ -3329,7 +3330,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
         ? normalizePermissionChangeResult(await setSessionCommandSafetyTier(submittedSessionId, 'acceptEdits'))
         : { ok: true }
       if (!permissionResult.ok) {
-        if (ownsFeedback() && !permissionResult.cancelled) setSlashNotice(noticeFor(permissionResult.error || 'Failed to change permission mode to Accept edits.', 'error'))
+        if (ownsFeedback() && !permissionResult.cancelled) setSlashNotice(noticeFor('The permission mode was not changed to Accept edits.', 'error', failureDetail(permissionResult.error, 'Try again.')))
         return
       }
       if (!composerReferenceSubmissionIsCurrent(submission.context)) {

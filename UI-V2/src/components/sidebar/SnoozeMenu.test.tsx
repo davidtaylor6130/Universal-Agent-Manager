@@ -125,7 +125,7 @@ describe('snooze menu', () => {
     act(() => root.render(<SnoozeMenu chatId="a" familyIds={[]} targets={[{ id: 'a', label: 'a' }, { id: 'b', label: 'b' }]} />))
     try {
       await act(async () => [...host.querySelectorAll<HTMLButtonElement>('button')].find((item) => item.textContent?.startsWith('1 hour'))!.click())
-      expect(notices.map(({ message, detail, tone }) => [message, detail, tone])).toEqual([['Could not snooze chats (1 of 2)', '“b”: Chat is busy.', undefined]])
+      expect(notices.map(({ message, detail, tone }) => [message, detail, tone])).toEqual([['Could not snooze chats: 1 of 2 failed.', '“b”: Chat is busy.', undefined]])
     } finally { window.removeEventListener(APP_FAILURE_EVENT, collect); act(() => root.unmount()); host.remove(); useAppStore.setState({ sessions: previous, setChatSnoozedUntil: save }) }
   })
 
