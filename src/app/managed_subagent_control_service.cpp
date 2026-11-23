@@ -63,6 +63,11 @@ namespace uam
 		std::filesystem::path data_root;
 		std::vector<Entry> entries;
 		std::string error;
+		/// Every run ID and transcript chat ID the startup ledger read retained, in every record shape, and whether that
+		/// read was complete. Only a complete observation can show that a child's run record has expired.
+		std::unordered_set<std::string> retained_run_ids;
+		std::unordered_set<std::string> retained_transcript_ids;
+		bool ledger_complete = false;
 	};
 	namespace
 	{
@@ -608,6 +613,12 @@ namespace uam
 					if (!captured_chats.emplace(chat.id, &chat).second)
 						captured_chats[chat.id] = nullptr;
 			const auto ledger = AgentRunLedger::LoadAllReadOnly(app.data_root);
+			for (const auto& run : ledger.runs)
+			{
+				history->retained_run_ids.insert(run.id);
+				history->retained_transcript_ids.insert(run.transcript_chat_id);
+			}
+			history->ledger_complete = ledger.errors.empty();
 			if (!ledger.errors.empty())
 				history->error = "Saved managed initial ledger is unavailable or invalid.";
 			else
@@ -657,6 +668,7 @@ namespace uam
 		catch (...)
 		{
 			history->entries.clear();
+			history->ledger_complete = false;
 			history->error = "Saved managed initial history could not be read.";
 		}
 		app.managed_initial_history = std::move(history); // Empty/error results are latched too.
@@ -995,10 +1007,15 @@ namespace uam
 		}
 		// A finished child whose run record has expired keeps its saved root link. It joins on the same workspace terms;
 		// any run record, owner or queued work still naming it leaves it to the ordinary reference check instead.
+		// The live index omits restart-inert records outside the initial history shape and unreadable ones, so absence there
+		// proves nothing: the startup ledger observation must be complete and name neither the run nor the transcript.
+		const auto observed = app.managed_initial_history;
+		const bool observation_complete = observed && observed->data_root == app.data_root && observed->ledger_complete;
 		const auto expired_run_child = [&](const ChatSession& chat)
 		{
 			const auto names_chat = [&](const auto& entry) { return entry.first == chat.agent_run_id; };
 			return ManagedSubagentControlService::SavedRootLinkMatches(*index.root, chat) && !index.root->workspace_worktree_directory.empty() &&
+			    observation_complete && !observed->retained_run_ids.contains(chat.agent_run_id) && !observed->retained_transcript_ids.contains(chat.id) &&
 			    !index.runs.contains(chat.agent_run_id) && !index.transcript_uses.contains(chat.id) &&
 			    std::ranges::none_of(index.runs, [&](const auto& entry) { return entry.second->transcript_chat_id == chat.id; }) &&
 			    !app.pending_agent_run_cancellation_ids.contains(chat.agent_run_id) && !app.agent_result_retry_steady_ms.contains(chat.agent_run_id) &&
@@ -1011,7 +1028,10 @@ namespace uam
 		for (const auto* chats : {&index.chats, &index.archived})
 			for (const auto& [id, chat] : *chats)
 				if (expired_run_child(*chat) && std::ranges::none_of(members, [&](const ChatSession* member) { return member->id == chat->id; }))
+				{
 					members.push_back(chat);
+					family->expired_run_children.emplace_back(chat->id, chat->agent_run_id);
+				}
 		const auto family_run = [&](const auto& entry)
 		{
 			const auto run = index.runs.find(entry.first);
@@ -1056,6 +1076,11 @@ namespace uam
 		retain(app.chats); retain(app.excluded_provider_chats);
 		if (app.hidden_agent_chat_ownership.data_root == app.data_root) retain(app.hidden_agent_chat_ownership.chats);
 		return family;
+	}
+
+	bool ManagedSubagentControlService::ChildInputSettled(const ChatSession& chat)
+	{
+		return CleanupSettled(chat);
 	}
 
 	bool ManagedSubagentControlService::SavedRootLinkMatches(const ChatSession& root, const ChatSession& child)
@@ -1118,8 +1143,13 @@ namespace uam
 		for (const auto& run : family.ownership.records) expected_runs.insert(run.id);
 		if (!ledger.errors.empty()) return Fail(error, "Managed ledger could not be verified; cleanup refused.");
 		for (const auto& run : ledger.runs)
+		{
 			if (run.root_chat_id == family.identities.front().first && !expected_runs.erase(run.id))
 				return Fail(error, "Managed family membership changed; cleanup refused.");
+			// A child admitted by its saved root link must still have no record of any shape.
+			if (std::ranges::any_of(family.expired_run_children, [&](const auto& child) { return run.id == child.second || run.transcript_chat_id == child.first; }))
+				return Fail(error, "Managed family membership changed; cleanup refused.");
+		}
 		if (!expected_runs.empty()) return Fail(error, "Managed family membership changed; cleanup refused.");
 		if (!ReadDetached(family.ownership, false).ready)
 			return Fail(error, "Managed family ledger changed; the worktree and branch were retained.");

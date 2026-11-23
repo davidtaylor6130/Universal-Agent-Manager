@@ -120,6 +120,8 @@ namespace uam
 		mutable std::weak_ptr<AppState::GitPortRequest> operation;
 		mutable bool operation_bound = false;
 		std::vector<ChatSession> unrelated_references;
+		/// Members admitted by their saved root link (chat ID, run ID); revalidated against a complete worker ledger read.
+		std::vector<std::pair<std::string, std::string>> expired_run_children;
 	  public:
 		std::vector<std::string> ChatIds() const;
 		const std::vector<ChatSession>& UnrelatedReferences() const { return unrelated_references; }
@@ -140,6 +142,9 @@ namespace uam
 		/// names this exact root by ID and creation time. Callers must first establish that no run record names the child;
 		/// children saved without the link keep run-ledger lineage only. Grants no display, follow-up or execution authority.
 		static bool SavedRootLinkMatches(const ChatSession& root, const ChatSession& child);
+		/// The saved-state settlement both worktree paths require of a finished managed child: no queued, held, dispatched or
+		/// approval-pending input and no remote process, turn, delivery, stop, restart or recovery claim.
+		static bool ChildInputSettled(const ChatSession& chat);
 		/// Once per data root in existing startup/sidebar loading, including empty/error results.
 		static void LoadRestartInspection(AppState& app);
 		/// Pure display hints; does not inspect disk or create controls/owners.

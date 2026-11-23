@@ -265,7 +265,8 @@ namespace uam
 			    (run->status != "completed" && run->status != "failed" && run->status != "cancelled" && run->status != "interrupted")) return false;
 			const ChatSession* live_chat = ChatDomainService().FindChatById(app, reference.id);
 			const ChatSession& chat = live_chat ? *live_chat : reference;
-			if (!chat.acp_queued_prompts.empty() || !chat.acp_unsent_prompt_recoveries.empty() || chat.acp_queue_storage_error ||
+			// The same saved-state settlement Port back and Discard require, plus the live claims only this owner sees.
+			if (!ManagedSubagentControlService::ChildInputSettled(chat) || !chat.acp_queued_prompts.empty() || !chat.acp_unsent_prompt_recoveries.empty() || chat.acp_queue_storage_error ||
 			    chat.remote_process_exists || chat.remote_turn_reconnect_pending || chat.remote_stop_cleanup_pending || chat.remote_restart_pending ||
 			    !chat.remote_pending_requests.empty() || !chat.remote_active_turn_id.empty() || chat.remote_source_exit_pending ||
 			    chat.remote_manual_compaction_pending || !chat.remote_process_control_token.empty() || !chat.remote_interaction_responses.empty() ||
