@@ -355,9 +355,19 @@ namespace uam::io
 		}
 	}
 
+	/// <summary>Guards only the throttled sweep's cached directory listings, never directory reads, removals or writes.</summary>
+	inline std::mutex& AtomicTempListingsMutex()
+	{
+		static std::mutex listings_mutex;
+		return listings_mutex;
+	}
+
 	/// <summary>Removes the abandoned temporaries of one destination, reading its directory at most once per interval.</summary>
-	/// The caller holds the durable writer lock. Only temporaries at least 24 hours old are removed, so one
-	/// that appears after the directory was listed is simply left for a later listing.
+	/// The caller holds that destination's durable writer lock, so no write to this destination (or its backup) is in
+	/// flight. The cached listings have their own small mutex, held only to read or update the cache: directory reads,
+	/// status checks and removals run without it, so writers to unrelated destinations never wait on each other here.
+	/// Only temporaries at least 24 hours old are removed, so one that appears after the directory was listed is
+	/// simply left for a later listing.
 	inline void CleanupAbandonedAtomicTempsThrottled(const std::filesystem::path& path)
 	{
 		struct Listing
@@ -369,13 +379,21 @@ namespace uam::io
 		std::filesystem::path native_parent;
 		std::string normalization_error;
 		if (path.parent_path().empty() || !NativeFilePath(path.parent_path(), native_parent, normalization_error, true)) return;
+		const std::string key = uam::paths::Utf8PathString(native_parent);
 		const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
-		const auto [found, inserted] = listings.try_emplace(uam::paths::Utf8PathString(native_parent));
-		Listing& listing = found->second;
-		if (inserted || now - listing.read_at >= std::chrono::minutes(10))
+		bool refresh = false;
 		{
-			listing.read_at = now;
-			listing.temp_names.clear();
+			std::lock_guard<std::mutex> lock(AtomicTempListingsMutex());
+			const auto [found, inserted] = listings.try_emplace(key);
+			Listing& listing = found->second;
+			// Claim the refresh before listing, so concurrent writers to this directory do not all read it.
+			refresh = inserted || now - listing.read_at >= std::chrono::minutes(10);
+			if (refresh) listing.read_at = now;
+			else if (listing.temp_names.empty()) return;
+		}
+		if (refresh)
+		{
+			std::vector<std::string> temp_names;
 			std::error_code error;
 			for (std::filesystem::directory_iterator it(native_parent, std::filesystem::directory_options::skip_permission_denied, error), end;
 			     !error && it != end;
@@ -383,21 +401,38 @@ namespace uam::io
 			{
 				++AtomicTempSweepEntriesExamined();
 				std::string name = uam::paths::Utf8PathString(it->path().filename());
-				if (name.find(kTempWritePathSuffix) != std::string::npos) listing.temp_names.push_back(std::move(name));
+				if (name.find(kTempWritePathSuffix) != std::string::npos) temp_names.push_back(std::move(name));
 			}
+			std::lock_guard<std::mutex> lock(AtomicTempListingsMutex());
+			listings[key].temp_names = std::move(temp_names);
+			if (listings[key].temp_names.empty()) return;
 		}
-		if (listing.temp_names.empty()) return;
 		// Same rule as the unthrottled sweep: an existing destination and an existing backup each own their prefix.
+		std::vector<std::string> prefixes;
 		for (const std::filesystem::path& owner : {path, MakeBackupPath(path)})
 		{
 			std::filesystem::path native_owner;
 			if (!NativeFilePath(owner, native_owner, normalization_error) || !uam::paths::PathExistsNoThrow(native_owner)) continue;
-			const std::string prefix = uam::paths::Utf8PathString(owner.filename()) + kTempWritePathSuffix;
-			std::erase_if(listing.temp_names, [&](const std::string& name)
-			{
-				return name.starts_with(prefix) && RemoveAbandonedAtomicTempNoThrow(path.parent_path() / uam::paths::PathFromUtf8(name));
-			});
+			prefixes.push_back(uam::paths::Utf8PathString(owner.filename()) + kTempWritePathSuffix);
 		}
+		if (prefixes.empty()) return;
+		const auto owned = [&prefixes](const std::string& name)
+		{
+			return std::ranges::any_of(prefixes, [&name](const std::string& prefix) { return name.starts_with(prefix); });
+		};
+		std::vector<std::string> candidates;
+		{
+			std::lock_guard<std::mutex> lock(AtomicTempListingsMutex());
+			for (const std::string& name : listings[key].temp_names)
+				if (owned(name)) candidates.push_back(name);
+		}
+		if (candidates.empty()) return;
+		std::vector<std::string> removed;
+		for (std::string& name : candidates)
+			if (RemoveAbandonedAtomicTempNoThrow(path.parent_path() / uam::paths::PathFromUtf8(name))) removed.push_back(std::move(name));
+		if (removed.empty()) return;
+		std::lock_guard<std::mutex> lock(AtomicTempListingsMutex());
+		std::erase_if(listings[key].temp_names, [&removed](const std::string& name) { return std::ranges::find(removed, name) != removed.end(); });
 	}
 
 #if defined(_WIN32)
@@ -1078,20 +1113,112 @@ namespace uam::io
 		result.stage = AtomicWriteStage::Complete;
 		return result;
 	}
+	/// <summary>Normalised identity of a durable write destination: one lock per key.</summary>
+	/// Absolute and lexically normal, so "a/./b.json" and "a/b.json" share a lock. Windows and macOS default to
+	/// case-insensitive volumes, so ASCII case is folded there; folding a case-sensitive volume only serialises two
+	/// distinct files, which is safe. Links are not resolved: every write is still a temp + rename publication.
+	inline std::string DurableWriteLockKey(const std::filesystem::path& path)
+	{
+		std::error_code error;
+		std::filesystem::path absolute = std::filesystem::absolute(path, error);
+		if (error) absolute = path;
+		std::string key = uam::paths::Utf8PathString(absolute.lexically_normal());
+#if defined(_WIN32) || defined(__APPLE__)
+		std::ranges::transform(key, key.begin(), [](char c) { return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c; });
+#endif
+		return key;
+	}
+
+	/// <summary>Holds the durable writer lock of one destination for its lifetime.</summary>
+	/// The table mutex is held only to find or retire an entry, never while waiting for or holding a
+	/// destination lock, so it is never held across disk I/O, fsync or a caller's stage hook. Entries are
+	/// reference counted and removed when their last user leaves, so the table stays as small as the set of
+	/// destinations being written at once. A stage hook must not durably write its own destination: the
+	/// destination lock is not recursive.
+	class DurableWriteDestinationLock
+	{
+	public:
+		explicit DurableWriteDestinationLock(const std::filesystem::path& path) : m_key(DurableWriteLockKey(path))
+		{
+			{
+				std::lock_guard<std::mutex> table_lock(TableMutex());
+				Entry& entry = Table()[m_key];
+				++entry.users;
+				m_entry = &entry; // unordered_map nodes stay put until erased, and a counted entry is never erased.
+			}
+			try
+			{
+				m_entry->mutex.lock();
+			}
+			catch (...)
+			{
+				Release();
+				throw;
+			}
+		}
+
+		~DurableWriteDestinationLock()
+		{
+			m_entry->mutex.unlock();
+			Release();
+		}
+
+		DurableWriteDestinationLock(const DurableWriteDestinationLock&) = delete;
+		DurableWriteDestinationLock& operator=(const DurableWriteDestinationLock&) = delete;
+
+		/// <summary>Whether a writer holds or waits for this destination's lock; lets a test confirm entries are retired.</summary>
+		static bool IsTrackedForTests(const std::filesystem::path& path)
+		{
+			const std::string key = DurableWriteLockKey(path);
+			std::lock_guard<std::mutex> table_lock(TableMutex());
+			return Table().contains(key);
+		}
+
+	private:
+		struct Entry
+		{
+			std::mutex mutex;
+			std::size_t users = 0;
+		};
+
+		void Release() noexcept
+		{
+			std::lock_guard<std::mutex> table_lock(TableMutex());
+			if (--m_entry->users == 0) Table().erase(m_key);
+		}
+
+		static std::mutex& TableMutex()
+		{
+			static std::mutex table_mutex;
+			return table_mutex;
+		}
+
+		static std::unordered_map<std::string, Entry>& Table()
+		{
+			static std::unordered_map<std::string, Entry> table;
+			return table;
+		}
+
+		std::string m_key;
+		Entry* m_entry = nullptr;
+	};
+
 	inline AtomicWriteResult AtomicWriteFileDetailed(
 	    const std::filesystem::path& path,
 	    std::string_view content,
 	    const AtomicWriteStageHook& hook = {},
 	    bool preserve_backup = false, bool sync_to_disk = true)
 	{
-		static std::mutex write_mutex;
-		std::lock_guard<std::mutex> lock(write_mutex);
 		AtomicWriteResult result;
 		if (path.empty() || path.filename().empty())
 		{
 			result.error = "Destination path is empty.";
 			return result;
 		}
+		// Serialise writers of this destination only. Unrelated destinations (a settings save on the UI
+		// thread and a large background snapshot, say) sync in parallel, and the caller's stage hooks run
+		// under this destination's lock alone, never under a process-wide one.
+		const DurableWriteDestinationLock destination_lock(path);
 
 		const std::filesystem::path parent = path.parent_path().empty() ? std::filesystem::path(".") : path.parent_path();
 		std::error_code ec;
@@ -1143,7 +1270,7 @@ namespace uam::io
 	inline bool WriteCacheFile(const std::filesystem::path& path, std::string_view content)
 	{
 #if defined(_WIN32)
-		// Still temp+rename, minus the durable writer's global lock, directory probe, second
+		// Still temp+rename, minus the durable writer's per-destination lock, directory probe, second
 		// destination probe and abandoned-temp sweeps: each is a filter-driver round trip on
 		// Windows, and together they doubled cold 1000-chat summary regeneration.
 		const std::filesystem::path temp_path = MakeTempWritePath(path);

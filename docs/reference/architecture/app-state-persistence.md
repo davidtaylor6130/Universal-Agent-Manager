@@ -30,6 +30,14 @@ the turn-end attention mark leaves its new values to the background transcript s
 just queued (which writes them to the primary and summary), and a local provider exit during a turn
 queues its transcript save. Remote chats still save recovery metadata before the poll continues.
 
+## Durable writes
+
+Durable files go through `AtomicWriteFileDetailed` in `src/common/utils/io_utils.h` (`WriteTextFile`, `WriteBinaryFile`, their `WithBackup` forms and, outside Windows, `WriteCacheFile`). Each write creates a private temporary beside the destination, writes and syncs it (`F_FULLFSYNC` on macOS, `fsync` elsewhere, `FlushFileBuffers` on Windows), renames it over the destination, syncs the directory on macOS and Linux and, when asked, keeps the previous primary as the `.bak` companion. Cache writes skip only the syncs.
+
+Writers of the same destination are serialised by a lock for that destination, keyed by its absolute, lexically normal path (ASCII case folded on Windows and macOS). Writers of different destinations do not wait for each other, so a settings, folder or chat save on the UI thread does not queue behind an unrelated background write such as a usage snapshot. The lock table's own mutex is held only to find or retire an entry, never across disk I/O, a sync or a stage hook, and an entry is removed when its last writer leaves. The throttled abandoned-temporary sweep keeps its cached directory listings under a separate small mutex and reads the directory and removes files outside it. Links are not resolved, so two different paths to one file are not serialised against each other; each write is still a complete temp-and-rename publication.
+
+Caller stage hooks run while their destination's lock is held, never under a process-wide lock. A hook may block or write other files, but must not durably write its own destination: the lock is not recursive. `tests/chat_save_stall_tests.cpp` covers a write to one destination completing while another destination's write is blocked inside a hook, and concurrent writes to one destination staying serialised and intact.
+
 ## Computer-scoped defaults
 
 `host_scoped_settings` persists optional provider defaults, the default new-chat provider and MCP server lists for configured SSH computers. Missing overrides inherit global values; an explicitly empty MCP list disables inherited servers for that computer. `scopeExecutionHostId` selects a configured SSH host, while an omitted, empty or `*` scope selects global settings. Invalid or removed hosts cannot become save targets, and loading settings removes obsolete host overrides.
