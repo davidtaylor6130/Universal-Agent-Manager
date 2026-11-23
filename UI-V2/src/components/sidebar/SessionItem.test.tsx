@@ -1075,10 +1075,12 @@ describe('SessionItem status icons', () => {
 
   it('shows the working time in the shared format, drops seconds after a minute and stops ticking while hidden', () => {
     vi.useFakeTimers()
-    useAppStore.setState({ acpBindingBySessionId: { 'chat-1': makeAcpBinding({ processing: true, lifecycleState: 'processing', processingStartedAtMs: Date.now() - 3_725_000 }) } })
-    const { host, root } = renderSessionItem(true)
-    const time = () => host.querySelector('.uam-sb-activity [aria-hidden] > .tabular-nums')?.textContent
+    let view: ReturnType<typeof renderSessionItem> | undefined
     try {
+      useAppStore.setState({ acpBindingBySessionId: { 'chat-1': makeAcpBinding({ processing: true, lifecycleState: 'processing', processingStartedAtMs: Date.now() - 3_725_000 }) } })
+      view = renderSessionItem(true)
+      const host = view.host
+      const time = () => host.querySelector('.uam-sb-activity [aria-hidden] > .tabular-nums')?.textContent
       expect(time()).toBe('1h 2m')
       act(() => useAppStore.setState({ acpBindingBySessionId: { 'chat-1': makeAcpBinding({ processing: true, lifecycleState: 'processing', processingStartedAtMs: Date.now() - 90_000 }) } }))
       expect(time()).toBe('1m')
@@ -1091,7 +1093,7 @@ describe('SessionItem status icons', () => {
       expect(time()).toBe('2m')
     } finally {
       Reflect.deleteProperty(document, 'visibilityState')
-      act(() => root.unmount()); host.remove()
+      if (view) { const { root, host } = view; act(() => root.unmount()); host.remove() }
       vi.useRealTimers()
     }
   })

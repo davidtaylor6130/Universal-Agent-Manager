@@ -42,7 +42,7 @@ import { SSH_ENABLED } from '../../config/buildFeatures'
 import { formatElapsed } from '../../utils/elapsed'
 import { useNow } from '../../hooks/useNow'
 
-/** Sidebar rows are one dense line, so they drop seconds from the first minute; the chat shows the same time with seconds. */
+/** Sidebar rows are one dense line, so they drop seconds from one minute on; the chat shows the same time with seconds. */
 function WorkingDuration({ startedAtMs }: { startedAtMs: number }) {
   const now = useNow(true)
   return <span className="tabular-nums">{formatElapsed(now - startedAtMs, { seconds: 'under-minute' })}</span>

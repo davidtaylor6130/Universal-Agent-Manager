@@ -8,12 +8,15 @@ import { managedElapsed } from './managedSubagents'
 
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
+const mounted = new Set<() => void>()
 const mount = (node: React.ReactNode) => {
   const host = document.createElement('div')
   document.body.append(host)
   const root = createRoot(host)
   act(() => root.render(node))
-  return { host, unmount: () => { act(() => root.unmount()); host.remove() } }
+  const unmount = () => { if (!mounted.delete(unmount)) return; act(() => root.unmount()); host.remove() }
+  mounted.add(unmount)
+  return { host, unmount }
 }
 
 beforeEach(() => {
@@ -21,6 +24,7 @@ beforeEach(() => {
   vi.stubGlobal('matchMedia', () => ({ matches: false }))
 })
 afterEach(() => {
+  for (const unmount of [...mounted]) unmount()
   Reflect.deleteProperty(document, 'visibilityState')
   vi.useRealTimers()
   vi.unstubAllGlobals()
