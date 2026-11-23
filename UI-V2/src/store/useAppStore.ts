@@ -414,6 +414,29 @@ function deserializeState(
   }
 }
 
+type HistoryReadMaps = Pick<AppState, 'chatHistoryPageBySessionId' | 'chatHistoryReadBySessionId' | 'chatHistoryErrorBySessionId' | 'chatHistoryErrorWasRefreshBySessionId'>
+
+// Saved history pages, reads and read errors of chats native removed; empty when none, so unchanged maps keep their identity.
+function historyReadMapsWithout(current: HistoryReadMaps, removedChatIds: Set<string>): Partial<HistoryReadMaps> {
+  if (removedChatIds.size === 0) return {}
+  return {
+    chatHistoryPageBySessionId: withoutDeletedKeys(current.chatHistoryPageBySessionId ?? {}, removedChatIds),
+    chatHistoryReadBySessionId: withoutDeletedKeys(current.chatHistoryReadBySessionId ?? {}, removedChatIds),
+    chatHistoryErrorBySessionId: withoutDeletedKeys(current.chatHistoryErrorBySessionId ?? {}, removedChatIds),
+    chatHistoryErrorWasRefreshBySessionId: withoutDeletedKeys(current.chatHistoryErrorWasRefreshBySessionId ?? {}, removedChatIds),
+  }
+}
+
+// A full state lists every chat, so entries for any other id belong to removed chats.
+function historyReadMapsForChats(current: HistoryReadMaps, chats: ReadonlyArray<{ id: string }>): Partial<HistoryReadMaps> {
+  const liveChatIds = new Set(chats.map((chat) => chat.id))
+  const removedChatIds = new Set<string>()
+  for (const values of [current.chatHistoryPageBySessionId, current.chatHistoryReadBySessionId, current.chatHistoryErrorBySessionId, current.chatHistoryErrorWasRefreshBySessionId]) {
+    for (const chatId of Object.keys(values ?? {})) if (!liveChatIds.has(chatId)) removedChatIds.add(chatId)
+  }
+  return historyReadMapsWithout(current, removedChatIds)
+}
+
 function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppState> | null {
   const nextRevision = cppPatchRevision(patch)
   if (!isNewerStateRevision(nextRevision, current.lastAppliedStateRevision)) return null
@@ -557,6 +580,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
   const markdownStoreAttachedBySessionId = withoutDeletedKeys(current.markdownStoreAttachedBySessionId, removedChatIds)
   const repositoryReviewBySessionId = withoutDeletedKeys(current.repositoryReviewBySessionId, removedChatIds)
   const uamAgentsBySessionId = withoutDeletedKeys(current.uamAgentsBySessionId, removedChatIds)
+  const historyReadMaps = historyReadMapsWithout(current, removedChatIds)
 
   return {
     folders,
@@ -564,6 +588,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     sessions: sameArrayEntries(current.sessions, sessionsWithPendingCodexOptions) ? current.sessions : sessionsWithPendingCodexOptions,
     messages: sameRecordEntries(current.messages, messages) ? current.messages : messages,
     historyStartIndexBySessionId,
+    ...historyReadMaps,
     chatSearchNavigation: current.chatSearchNavigation && removedChatIds.has(current.chatSearchNavigation.chatId) ? null : current.chatSearchNavigation,
     goalsByChatId: sameRecordEntries(current.goalsByChatId, goalsByChatId) ? current.goalsByChatId : goalsByChatId,
     activeGoalIdByChatId: sameRecordEntries(current.activeGoalIdByChatId, activeGoalIdByChatId) ? current.activeGoalIdByChatId : activeGoalIdByChatId,
@@ -932,7 +957,7 @@ export const useAppStore = create<AppState>((set, get) => {
           shellActionNotification: current.shellActionNotification,
           statusLine: current.statusLine,
         })
-        set({ ...current.reconcileMemorySettingsProjection(deserialized, sanitized.settings), bootstrapStateError: '', bootstrapStateLoading: false, bootstrapPending: false })
+        set({ ...current.reconcileMemorySettingsProjection(deserialized, sanitized.settings), ...historyReadMapsForChats(current, sanitized.chats), bootstrapStateError: '', bootstrapStateLoading: false, bootstrapPending: false })
         // Only after the state applied: a throw above must still reach failBootstrap.
         bootstrapHydrated = true
         // Native writes "[UI startup]" console lines to the diagnostic log; the packaged smoke tests wait for this one.
@@ -1456,7 +1481,7 @@ export const useAppStore = create<AppState>((set, get) => {
       shellActionNotification: current.shellActionNotification,
       statusLine: current.statusLine,
     })
-    return current.reconcileMemorySettingsProjection(deserialized, sanitized.settings)
+    return { ...current.reconcileMemorySettingsProjection(deserialized, sanitized.settings), ...historyReadMapsForChats(current, sanitized.chats) }
   }
 
   const inCef = isCefContext()

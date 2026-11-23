@@ -324,6 +324,35 @@ describe('state patch gap recovery', () => {
     expect(pulls).toHaveLength(0)
   })
 
+  it('drops saved history pages, reads and read errors of chats native removes', async () => {
+    const { store, push, flush } = await startStore(true, fullState(5, 'First', [chat('chat-2', 'Removed by patch')]))
+    const historyMaps = (...chatIds: string[]) => ({
+      chatHistoryPageBySessionId: Object.fromEntries(chatIds.map((id) => [id, { chatId: id } as never])),
+      chatHistoryReadBySessionId: Object.fromEntries(chatIds.map((id) => [id, { requestId: `read-${id}`, birth: 0 }])),
+      chatHistoryErrorBySessionId: Object.fromEntries(chatIds.map((id) => [id, 'Read failed'])),
+      chatHistoryErrorWasRefreshBySessionId: Object.fromEntries(chatIds.map((id) => [id, false])),
+    })
+    const keys = () => {
+      const state = store.getState()
+      return [state.chatHistoryPageBySessionId, state.chatHistoryReadBySessionId, state.chatHistoryErrorBySessionId, state.chatHistoryErrorWasRefreshBySessionId]
+        .map((values) => Object.keys(values).sort())
+    }
+    store.setState(historyMaps('chat-1', 'chat-2'))
+    push({ type: 'statePatch', data: { stateRevision: 6, removedChatIds: ['chat-2'] } })
+    expect(keys()).toEqual(Array(4).fill(['chat-1']))
+
+    // A full state prunes ids it no longer lists, whether a patch or the bridge lost the removal.
+    store.setState(historyMaps('chat-1', 'chat-3'))
+    push({ type: 'stateUpdate', data: fullState(7, 'Only chat') })
+    await flush(0)
+    expect(keys()).toEqual(Array(4).fill(['chat-1']))
+
+    // A patch that removes nothing keeps the same maps.
+    const before = store.getState().chatHistoryPageBySessionId
+    push(chatPatch(8))
+    expect(store.getState().chatHistoryPageBySessionId).toBe(before)
+  })
+
   it('keeps UI-only state through a mid-session resync', async () => {
     const initial = fullState(5, 'First', [chat('chat-2', 'Second')])
     const { store, pulls, push, flush } = await startStore(true, initial)
