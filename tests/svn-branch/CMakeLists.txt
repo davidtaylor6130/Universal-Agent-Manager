@@ -9,7 +9,7 @@ target_compile_definitions(uam_svn_branch_tests PRIVATE
   UAM_ENABLE_RUNTIME_GEMINI_CLI=1 UAM_ENABLE_RUNTIME_CODEX_CLI=1
   UAM_ENABLE_RUNTIME_CLAUDE_CLI=1 UAM_ENABLE_RUNTIME_OPENCODE_CLI=1
   UAM_ENABLE_RUNTIME_COPILOT_CLI=1 UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI=1
-  UAM_ENABLE_COMPUTER_USE=1 UAM_ENABLE_SSH=1 UAM_ENABLE_MOBILE_COMPANION=1)
+  UAM_ENABLE_COMPUTER_USE=1 UAM_ENABLE_SSH=1 UAM_ENABLE_MOBILE_COMPANION=1 NOMINMAX)
 add_test(NAME uam_svn_branch_service COMMAND uam_svn_branch_tests)
 # Disposable file:// repositories only; registered when the SVN client tools exist (not on hosted CI runners).
 find_package(Python3 COMPONENTS Interpreter QUIET)
