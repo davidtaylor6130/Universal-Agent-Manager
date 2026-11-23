@@ -147,7 +147,8 @@ std::optional<nlohmann::json> ParseDecisionJsonObject(std::string_view reply);
 /// <summary>
 /// One decision interface for review and gate decisions (#363). The only backend is the chat provider
 /// (kDecisionBackendChatProvider): a model answering in a provider turn that the caller runs. Hosted and local
-/// decision-model backends and a Settings choice between them are not implemented.
+/// decision-model backends and a Settings choice between them are not implemented; a hosted backend may receive goal
+/// or transcript text only after the user opts in (docs/documentation-review.md, Decision model).
 /// </summary>
 class DecisionService
 {

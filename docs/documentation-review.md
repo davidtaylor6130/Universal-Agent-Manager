@@ -332,12 +332,15 @@ Recorded limits that are not decisions: Claude Code, Gemini and Copilot children
 
 ## Decision model
 
-Issue #363's first slice adds the decision interface with only the chat-provider backend, used by the goal review ([Goals](chat/goals.md#decision-source)). These questions are open and await David's decision before the next slices:
+Issue #363's first slice adds the decision interface with only the chat-provider backend, used by the goal review ([Goals](chat/goals.md#decision-source)).
 
-- Is the issue's "turn review" the goal-loop review, which now uses the interface, or a separate per-turn review that does not exist yet?
-- Are hosted Jev early-access credentials available, and should sending goal or transcript text to a hosted decision service be opt-in only? This blocks only the hosted backend.
+**Resolved by David, 2026-11-23.** The issue's "turn review" is the UAM-managed goal-loop review, which already answers through the interface; no separate per-turn review is to be added. Sending goal or transcript text to any hosted decision backend, such as Jev, is opt-in only: a hosted backend must stay off until the user turns it on. No hosted backend exists yet, so nothing is sent today.
+
+These questions remain open and await David's decision before the next slices:
+
+- Are hosted Jev early-access credentials available? This blocks only the hosted backend.
 - How would a local Laya backend be packaged and shipped?
 - Should [Permission AI Review](providers/permissions/ai-review.md), which is getting user allow/ask/deny command rules in separate work, later answer through the same interface, or stay a separate reviewer?
 - Where should the backend appear to the user: the goal window's Last decision row, diagnostics only, or both? The goal window is unchanged in this slice.
 
-**Interim interpretation:** only the chat-provider backend exists, so no goal or transcript text goes to a hosted decision service; "turn review" is read as the goal-loop review; the goal window is unchanged and the backend appears in saved goal state and diagnostics only. The Settings backend picker waits until a second backend exists.
+**Interim interpretation:** the goal window is unchanged and the backend appears in saved goal state and diagnostics only. The Settings backend picker waits until a second backend exists.
