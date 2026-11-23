@@ -316,6 +316,30 @@ describe('SettingsModal memory settings', () => {
     act(() => root.unmount()); host.remove()
   })
 
+  it('asks before an application restart that would stop a running chat', async () => {
+    const actions: string[] = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request)
+      actions.push(parsed.action)
+      onSuccess(JSON.stringify(parsed.action === 'getCompanionSettings'
+        ? { configured: true, enabled: true, state: 'failed', reason: 'The secure phone connection could not start.', desiredUrl: 'https://phone.example/companion', effectiveUrl: '', proxyRunning: false, restartRequired: true }
+        : {}))
+    }
+    useAppStore.setState({ acpBindingBySessionId: { 'chat-1': { processing: true } as never } })
+    const { host, root } = renderModal()
+    try {
+      act(() => (host.querySelector('nav button[aria-label="Phone"]') as HTMLButtonElement).click())
+      await act(async () => {})
+      await act(async () => (Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Restart Universal Agent Manager') as HTMLButtonElement).click())
+      const dialog = document.querySelector<HTMLElement>('[role="alertdialog"]')!
+      expect(dialog.textContent).toContain('Restart will stop 1 running chat.')
+      expect(dialog.querySelector('[aria-label="Running chats"]')?.textContent).toBe('Chat')
+      expect(actions).not.toContain('restartApplication')
+      await act(async () => Array.from(dialog.querySelectorAll('button')).find(button => button.textContent === 'Restart')!.click())
+      expect(actions.filter(action => action === 'restartApplication')).toHaveLength(1)
+    } finally { useAppStore.setState({ acpBindingBySessionId: {} }); act(() => root.unmount()); host.remove() }
+  })
+
   it('clears recovered polling errors without hiding a failed phone action', async () => {
     vi.useFakeTimers()
     let loads = 0
