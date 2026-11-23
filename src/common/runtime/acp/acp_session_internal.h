@@ -169,9 +169,9 @@ struct PermissionReviewDecision
 std::optional<PermissionReviewDecision> ParsePermissionReviewOutput(std::string_view output);
 /// <summary>Return a complete bounded review request, or an empty prompt when safe review is unavailable.</summary>
 std::string BuildPermissionReviewPrompt(const AcpPendingPermissionState& pending);
-/// <summary>Key for this run's in-memory AI review verdict cache: reviewer, model, chat provider, ceiling,
-/// workspace, working directory and the exact reviewer input.</summary>
-std::string PermissionReviewCacheKey(const AppState& app, const AcpSessionState& session, const ChatSession& chat, std::string_view reviewer_provider_id, std::string_view prompt);
+/// <summary>Key for this run's in-memory AI review verdict cache: reviewer, model, chat provider, ceiling, kind,
+/// workspace, working directory and the typed command. Empty for requests that must not be cached.</summary>
+std::string PermissionReviewCacheKey(const AppState& app, const AcpSessionState& session, const ChatSession& chat, std::string_view reviewer_provider_id);
 bool TryAutoApprovePendingPermission(AppState& app, AcpSessionState& session, const ChatSession& chat, std::string* error_out = nullptr);
 void QueueAcpPermission(AppState& app, AcpSessionState& session, ChatSession& chat, AcpPendingPermissionState pending);
 void AdvanceAcpPermissionQueue(AppState& app, AcpSessionState& session, const ChatSession& chat, std::string* error_out = nullptr);

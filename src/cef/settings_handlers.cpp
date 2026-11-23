@@ -788,6 +788,9 @@ void UamQueryHandler::HandleSetPermissionCommandRules(CefRefPtr<CefBrowser> brow
 		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to save the permission rules."));
 		return;
 	}
+	// Verdicts were reached under the previous rules and switch; start the next ones fresh.
+	m_app.permission_review_cache.clear();
+	m_app.permission_review_cache_order.clear();
 
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");

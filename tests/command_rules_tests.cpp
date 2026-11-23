@@ -2,6 +2,7 @@
 #include "common/security/command_rules.h"
 
 #include <array>
+#include <chrono>
 #include <string>
 #include <vector>
 
@@ -238,4 +239,102 @@ UAM_TEST(CommandRulesNormalizeDropsInvalidDuplicateAndExcessRules)
 	UAM_ASSERT_EQ(normalized.size(), rules::kMaxRules);
 	UAM_ASSERT_EQ(normalized.front().pattern, std::string("rm"));
 	UAM_ASSERT_EQ(normalized[1].id, std::string("n0"));
+}
+
+UAM_TEST(CommandRulesStayLinearOnHostileCommands)
+{
+	// Many wrapper and -exec hops against `**` patterns once took minutes; caps and the linear matcher keep a
+	// maximum-size command well inside a second, and anything past the caps waits for the user.
+	std::string command = "find .";
+	while (command.size() + 32 < rules::kMaxCommandBytes) command += " -exec git push -exec sudo env xargs";
+	const auto started = std::chrono::steady_clock::now();
+	const rules::Decision decision = rules::Evaluate(rules::DefaultRules(), CommandContext(command));
+	const auto elapsed = std::chrono::steady_clock::now() - started;
+	UAM_ASSERT(decision.outcome == rules::Outcome::AskUser || decision.outcome == rules::Outcome::Deny);
+	if (elapsed > std::chrono::seconds(5)) throw TestFailure("Rule evaluation took " + std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count()) + " ms");
+	std::string chained;
+	while (chained.size() + 16 < rules::kMaxCommandBytes) chained += "git push -f;";
+	UAM_ASSERT(OutcomeFor(rules::DefaultRules(), chained) == rules::Outcome::Deny);
+}
+
+UAM_TEST(CommandRulesGlobsAndBracesCannotHideAProgramOrPath)
+{
+	const std::vector<rules::Rule> defaults = rules::DefaultRules();
+	// A program name the shell expands is unknown until it runs, so it waits for the user.
+	for (const std::string_view command : {"/bin/r? -rf x", "/bin/r[m] -rf x", "{rm,-rf,x}", "r* -rf x"})
+	{
+		const rules::Outcome outcome = OutcomeFor(defaults, command);
+		if (outcome != rules::Outcome::AskUser && outcome != rules::Outcome::Deny) throw TestFailure("Expanded program passed: " + std::string(command));
+	}
+	// An argument glob that could expand to a denied path counts as that path.
+	for (const std::string_view command : {"cat ~/.ss?/id_rsa", "cat ~/.ssh/id_*", "cp {~/.ssh/id_rsa,x}", "cat ~/.aws/cred*"})
+	{
+		if (OutcomeFor(defaults, command) != rules::Outcome::Deny) throw TestFailure("Globbed credential path was not denied: " + std::string(command));
+	}
+	// A glob that cannot reach the pattern does not.
+	UAM_ASSERT(OutcomeFor(defaults, "ls *.txt") == rules::Outcome::NoMatch);
+	UAM_ASSERT(OutcomeFor(defaults, "cat src/*.cpp") == rules::Outcome::NoMatch);
+	UAM_ASSERT(OutcomeFor(defaults, "git add *") == rules::Outcome::AskUser); // Could stage prod.env; never a credential deny.
+	// A glob can still expand to an option-shaped file name, so it counts against option patterns.
+	UAM_ASSERT(OutcomeFor(defaults, "git push origin *") == rules::Outcome::Deny);
+	UAM_ASSERT(OutcomeFor(defaults, "cat *") == rules::Outcome::AskUser);
+}
+
+UAM_TEST(CommandRulesCoverWindowsPathsCaseAndShells)
+{
+	const std::vector<rules::Rule> defaults = rules::DefaultRules();
+	for (const std::string_view command : {
+	         "type C:\\Users\\me\\.ssh\\id_rsa", "Get-Content C:\\Users\\me\\.aws\\credentials", "cat ~/.SSH/id_rsa", "doas -u root rm x",
+	         "iex 'git push --force'", "Invoke-Expression \"git push -f\"", "cmd.exe /c git push --force", "git.cmd push --force"})
+	{
+		const rules::Outcome outcome = OutcomeFor(defaults, command);
+		if (outcome != rules::Outcome::Deny && outcome != rules::Outcome::AskUser) throw TestFailure("Windows or case form passed: " + std::string(command));
+	}
+	UAM_ASSERT(OutcomeFor(defaults, "cat .ENV") == rules::Outcome::AskUser);
+	for (const std::string_view command : {"Remove-Item -Recurse build", "del /s build", "rd /s /q build", "rmdir build", "unlink x", "shred x", "find . -name '*.o' -delete", "ri build"})
+	{
+		if (OutcomeFor(defaults, command) != rules::Outcome::AskUser) throw TestFailure("Deletion did not ask: " + std::string(command));
+	}
+	for (const std::string_view command : {"powershell -EncodedCommand ZQBjAGgAbwA=", "pwsh -enc ZQBjAGgAbwA=", "powershell -ec ZQBj", "Invoke-Command -ScriptBlock x"})
+	{
+		if (OutcomeFor(defaults, command) != rules::Outcome::AskUser) throw TestFailure("Opaque PowerShell did not ask: " + std::string(command));
+	}
+}
+
+UAM_TEST(CommandRulesLeaveRequestsWithoutATypedCommandToTheNormalFlow)
+{
+	// Command rules have nothing to read, so they neither hold nor deny; any-request rules still apply.
+	UAM_ASSERT(OutcomeFor(rules::DefaultRules(), "") == rules::Outcome::NoMatch);
+	UAM_ASSERT(OutcomeFor({MakeRule("ask-any", rules::Action::Ask, rules::Tool::Any)}, "") == rules::Outcome::AskUser);
+}
+
+UAM_TEST(CommandRulesValidateWorkspacesAndTestScopedRules)
+{
+	rules::Rule rule = MakeRule("deny-make", rules::Action::Deny, rules::Tool::Command, "make");
+	for (const std::string_view folder : {"project", "~/project", "./x"})
+	{
+		rule.workspace = std::string(folder);
+		UAM_ASSERT(!rules::ValidationError(rule).empty());
+	}
+	for (const std::string_view folder : {"/work/project", "C:\\work\\project", "c:/work", "\\\\server\\share"})
+	{
+		rule.workspace = std::string(folder);
+		UAM_ASSERT(rules::ValidationError(rule).empty());
+	}
+	UAM_ASSERT(!rules::ValidationError(MakeRule("x", rules::Action::Allow, rules::Tool::Command, "./npm test")).empty());
+
+	// A worktree chat still matches a rule for its source folder.
+	rule.workspace = "/work/source";
+	rules::Context context = CommandContext("make");
+	context.workspace = "/work/.worktrees/feature";
+	context.source_workspace = "/work/source/";
+	UAM_ASSERT(rules::Evaluate({rule}, context).outcome == rules::Outcome::Deny);
+
+	// The tester reports scoped rules as if they applied and keeps credential reads out of the read-only allow.
+	rule.provider_id = "codex-cli";
+	UAM_ASSERT(rules::TestCommand({rule}, "make", false).outcome == rules::Outcome::Deny);
+	const std::vector<rules::Rule> read_only = {MakeRule("ro", rules::Action::Allow, rules::Tool::ReadOnly)};
+	UAM_ASSERT(rules::TestCommand(read_only, "cat README.md", true).outcome == rules::Outcome::Approve);
+	UAM_ASSERT(rules::TestCommand(read_only, "cat secrets.txt", true).outcome == rules::Outcome::NoMatch);
+	UAM_ASSERT(rules::LooksCredentialLike("type C:\\Users\\me\\.SSH\\config"));
 }

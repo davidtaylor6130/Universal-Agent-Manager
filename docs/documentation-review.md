@@ -90,6 +90,10 @@ Do not treat these items as fixed from this documentation trial. Statuses are co
 
 The local checker validates navigation, heading targets, reachability and one explicit row for each required capability in every provider checklist. The trial passes six negative scenarios: omitted capability, acceptance used as implementation status, duplicate capability, missing local target, missing heading and unreachable feature page. A manual reading check traced provider completeness, memory Off semantics, editor actions, waking chats and build exclusion to their owning agreements. This is documentation validation, not an independent user study or application acceptance.
 
+## Permission rule defaults under YOLO
+
+**Open, for David.** The default [permission rules](providers/permissions/rules.md) seeded into existing settings files include ask rules for deletion commands and `.env` files. Ask outranks every level, so a YOLO chat that used to run `rm`, `Remove-Item` or `cat *` without a prompt now asks. Interim interpretation: keep the defaults, because the request asked for destructive commands to be denied or always asked and rules must never relax enforcement; users can disable a default. Confirm whether YOLO should keep this, or whether ask defaults should apply only below YOLO.
+
 ## Decision status
 
 Both questions raised by the trial are resolved above. David approved retaining the guide and requested its merge into `uam/v5-improvements` on 2026-10-17. Independent documentation review remains pending; implementation gaps and runtime acceptance remain tracked separately.

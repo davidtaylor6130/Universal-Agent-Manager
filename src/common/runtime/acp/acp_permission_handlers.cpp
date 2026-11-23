@@ -174,27 +174,16 @@ namespace
 		return ParentPermissionReviewEligible(session, chat) && !PendingIsHighRisk(session);
 	}
 
-	/// <summary>Names that usually hold secrets. Read-only work naming one never skips review through a rule;
-	/// a substring check over-approximates, which only sends more requests to the reviewer or the user.</summary>
-	bool CredentialLikeText(std::string_view text)
-	{
-		const std::string lower = uam::strings::ToLowerAscii(text);
-		constexpr auto markers = std::to_array<std::string_view>({
-		    ".env", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", ".pem", ".key", ".p12", ".pfx", ".keystore", ".jks", ".netrc", ".npmrc", ".pypirc",
-		    ".git-credentials", "credential", ".ssh", ".aws", ".gnupg", ".kube", ".docker/config", "secret", "token", "password", "keychain"});
-		return std::ranges::any_of(markers, [&](std::string_view marker) { return lower.find(marker) != std::string::npos; });
-	}
-
 	/// <summary>Whether this request is read-only work an allow rule may stand in for: a command the literal read
 	/// filter admitted, or a read/search tool whose every target stays inside the captured read scope with no
 	/// network input, and in both cases naming nothing that looks like a credential.</summary>
 	bool PermissionIsReadOnlyWork(const AcpSessionState& session, const AcpPendingPermissionState& pending, uam::command_rules::Category category)
 	{
 		if (category == uam::command_rules::Category::Command)
-			return !pending.execution_command.empty() && !CredentialLikeText(pending.execution_command) &&
+			return !pending.execution_command.empty() && !uam::command_rules::LooksCredentialLike(pending.execution_command) &&
 			       uam::command_safety::IsReadOnlyCommand(pending.execution_command, pending.read_scope);
 		if (category != uam::command_rules::Category::Read || !PermissionFitsPlanCeiling(session, pending)) return false;
-		return std::ranges::none_of(PermissionTargetPaths(pending), [](const std::string& path) { return CredentialLikeText(path); });
+		return std::ranges::none_of(PermissionTargetPaths(pending), [](const std::string& path) { return uam::command_rules::LooksCredentialLike(path); });
 	}
 
 	/// <summary>The ceiling for a rule's approval: exactly when UAM's AI reviewer could itself have approved this
@@ -229,12 +218,17 @@ namespace
 		const bool ai_review_tier = uam::command_safety::ParseTier(chat.command_safety_tier) == uam::command_safety::Tier::AiReview;
 		const bool read_only = ai_review_tier && PermissionIsReadOnlyWork(session, pending, category);
 		const std::string workspace = uam::paths::PortablePathString(pending.read_scope.workspace);
+		// A worktree chat runs in its worktree; rules for the source folder and the chat's own folder still apply.
+		const std::string source_workspace = chat.workspace_source_directory;
+		const std::string folder_workspace = chat.workspace_directory;
 		uam::command_rules::Context context;
 		context.category = pending.kind == uam::acp_permissions::kPermissionsToolKind ? uam::command_rules::Category::Other : category;
 		context.command = pending.execution_command;
 		context.read_only = read_only;
 		context.provider_id = session.provider_id;
 		context.workspace = workspace;
+		context.source_workspace = source_workspace;
+		context.folder_workspace = folder_workspace;
 		context.allow_permitted = ai_review_tier && RuleApprovalWithinCeiling(session, chat, context.category, read_only);
 		return uam::command_rules::Evaluate(app.settings.permission_command_rules, context);
 	}
@@ -337,11 +331,12 @@ namespace
 			return false;
 		}
 
-		// The reviewer has no tools: its verdict depends only on this exact input. Identical input in the same
-		// workspace, provider, ceiling and reviewer reuses an earlier approve/deny from this run instead of a
-		// new worker. Eligibility above is rechecked first and again when the verdict is delivered.
-		std::string cache_key = PermissionReviewCacheKey(app, session, chat, provider->id, prompt);
-		if (const auto cached = app.permission_review_cache.find(cache_key); cached != app.permission_review_cache.end())
+		// The reviewer has no tools, so for a plain command its verdict rests on the typed command itself. The same
+		// command in the same workspace, working directory, provider, ceiling and reviewer reuses an earlier
+		// approve/deny from this run instead of a new worker. Eligibility above is rechecked first and again when
+		// the verdict is delivered. Requests the key cannot capture completely are never cached.
+		std::string cache_key = PermissionReviewCacheKey(app, session, chat, provider->id);
+		if (const auto cached = cache_key.empty() ? app.permission_review_cache.end() : app.permission_review_cache.find(cache_key); cached != app.permission_review_cache.end())
 		{
 			AsyncPermissionReviewTask task;
 			task.chat_id = chat.id;
@@ -435,14 +430,20 @@ bool CapturedReadCeilingAllowsSavedPermissionResponse(const AcpSessionState& ses
 	return false;
 }
 
-std::string PermissionReviewCacheKey(const AppState& app, const AcpSessionState& session, const ChatSession& chat, std::string_view reviewer_provider_id, std::string_view prompt)
+std::string PermissionReviewCacheKey(const AppState& app, const AcpSessionState& session, const ChatSession& chat, std::string_view reviewer_provider_id)
 {
+	const AcpPendingPermissionState& pending = session.pending_permission;
+	const std::string kind = uam::strings::ToLowerAscii(uam::strings::Trim(pending.kind));
+	// Only typed shell commands: Codex payloads (grant roots, permission changes) and other tools carry
+	// decision-relevant fields beyond the command.
+	if ((kind != "execute" && kind != "commandexecution") || pending.execution_command.empty() || !pending.codex_approval_payload_json.empty())
+		return {};
 	const bool ceiling = CapturedReadTurn(session) || uam::approval_modes::AppApprovalModeOrEmpty(chat.approval_mode) == uam::approval_modes::kPlanApprovalMode;
 	const std::string workspace = uam::paths::PortablePathString(session.pending_permission.read_scope.workspace);
 	const std::string cwd = uam::paths::PortablePathString(session.pending_permission.read_scope.cwd);
 	std::string key;
 	for (const std::string_view part : {reviewer_provider_id, std::string_view(app.settings.permission_reviewer_model_id), std::string_view(session.provider_id),
-	         std::string_view(ceiling ? "ceiling" : "open"), std::string_view(workspace), std::string_view(cwd), prompt})
+	         std::string_view(ceiling ? "ceiling" : "open"), std::string_view(kind), std::string_view(workspace), std::string_view(cwd), std::string_view(pending.execution_command)})
 	{
 		key.append(part);
 		key.push_back('\x1f');
@@ -760,10 +761,12 @@ bool TryAutoApprovePendingPermission(AppState& app, AcpSessionState& session, co
 				}
 			}
 			else rule_option_id = AutoApproveOptionId(session.pending_permission);
-			// No single one-time choice: leave it for the user rather than guessing a broader grant.
+			// No single one-time choice, or the approval did not reach the provider: leave it for the user rather
+			// than guessing a broader grant, and do not start a reviewer whose approval could not be sent either.
 			if (rule_option_id.empty() ||
 			    !SendPermissionResponse(session, session.pending_permission.request_id_json, rule_option_id, false, error_out))
 			{
+				session.pending_permission.command_rule_hold = true;
 				break;
 			}
 			NoteRuleOutcome(session, "allow", rule);
@@ -944,7 +947,18 @@ bool PollPermissionReviewTasks(AppState& app)
 		if (session != nullptr && chat != nullptr && session->running && task.permission_review_incarnation != nullptr &&
 		    session->permission_review_incarnation == task.permission_review_incarnation &&
 		    session->pending_permission.request_id_json == task.request_id_json && ParentPermissionReviewAllowed(*session, *chat) &&
-		    !session->pending_permission.command_rule_hold && !RulesNowDecide(app, *session, *chat))
+		    (session->pending_permission.command_rule_hold || RulesNowDecide(app, *session, *chat)))
+		{
+			// A rule added or changed while the reviewer ran decides now: apply it instead of the verdict.
+			AppendPermissionReviewDiagnostic(*session, "superseded_by_rule", task.request_id_json, "A permission rule now decides this request; the reviewer's verdict was not used.", "permission_rule", false, task.state->provider_id, task.requested_model_id);
+			std::string rule_error;
+			(void)TryAutoApprovePendingPermission(app, *session, *chat, &rule_error);
+			ScheduleChatSave(app, *chat, 0.0);
+			changed = true;
+		}
+		else if (session != nullptr && chat != nullptr && session->running && task.permission_review_incarnation != nullptr &&
+		    session->permission_review_incarnation == task.permission_review_incarnation &&
+		    session->pending_permission.request_id_json == task.request_id_json && ParentPermissionReviewAllowed(*session, *chat))
 		{
 			const bool from_cache = !task.cached_decision.empty();
 			const auto decision = from_cache

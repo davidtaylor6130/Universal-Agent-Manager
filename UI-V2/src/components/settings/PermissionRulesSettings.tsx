@@ -46,9 +46,10 @@ export function ruleTitle(rule: PermissionCommandRule) {
 function testSummary(result: PermissionRuleTestResult, rules: PermissionCommandRule[], aiReviewEnabled: boolean) {
   const rule = rules.find((candidate) => candidate.id === result.ruleId)
   const name = rule ? `“${ruleTitle(rule)}”` : ''
-  if (result.outcome === 'deny') return `Denied by ${name}.`
-  if (result.outcome === 'ask') return rule ? `Always asks you: ${name}.` : result.reason
-  if (result.outcome === 'allow') return `Allowed by ${name} under AI Review; no model review runs.`
+  const scope = rule && (rule.providerId || rule.workspace) ? ` It applies only to ${[rule.providerId, rule.workspace].filter(Boolean).join(' in ')}.` : ''
+  if (result.outcome === 'deny') return `Denied by ${name}.${scope}`
+  if (result.outcome === 'ask') return rule ? `Always asks you: ${name}.${scope}` : result.reason
+  if (result.outcome === 'allow') return `Allowed by ${name} under AI Review; no model review runs.${scope}`
   return aiReviewEnabled ? 'No rule matches. Under AI Review the reviewer decides.' : 'No rule matches. It waits for you.'
 }
 
@@ -144,10 +145,12 @@ export function PermissionRulesSettings() {
     if (!pendingDelete) return
     const { id } = pendingDelete
     setPendingDelete(null)
-    // The row leaves through its exit before the store drops it; a failed save brings it back.
+    // The row leaves through its exit before the store drops it; a failed save brings it back. Controls stay
+    // disabled meanwhile, and the save filters the latest list so no change made during the exit is lost.
+    setBusy(true)
     setRemovingIds((current) => new Set(current).add(id))
     if (motionAllowed()) await new Promise((resolve) => window.setTimeout(resolve, scaledMs(EXIT_MS)))
-    const result = await persist(rules.filter((rule) => rule.id !== id))
+    const result = await persist(useAppStore.getState().permissionCommandRules.filter((rule) => rule.id !== id))
     setListError(result.ok ? '' : result.error ?? 'Could not delete the rule.')
     setRemovingIds((current) => { const next = new Set(current); next.delete(id); return next })
   }

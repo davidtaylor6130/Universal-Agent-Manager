@@ -122,6 +122,23 @@ describe('PermissionRulesSettings', () => {
     expect(save.mock.calls[1][0]).toEqual({ aiReviewEnabled: false })
   })
 
+  it('names the scope of a scoped rule in the test result', async () => {
+    useAppStore.setState({ permissionCommandRules: [{ ...denyForce, providerId: 'codex-cli', workspace: '/work/app' }] })
+    show()
+    type('Command to test', 'git push --force')
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 260)) })
+    expect(document.body.textContent).toContain('It applies only to codex-cli in /work/app.')
+  })
+
+  it('refuses a relative workspace in the editor', async () => {
+    show()
+    await click('Add rule')
+    type('Command pattern', 'rm')
+    type('Rule workspace', 'project')
+    expect(button('Save rule').disabled).toBe(true)
+    expect(document.body.textContent).toContain('A workspace must be a full folder path.')
+  })
+
   it('shows which rule decides a tested command', async () => {
     useAppStore.setState({ permissionCommandRules: [denyForce] })
     show()

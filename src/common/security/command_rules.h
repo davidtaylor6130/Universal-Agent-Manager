@@ -10,6 +10,8 @@
 // Kept free of JSON, provider and platform types so it can be tested in isolation.
 
 #include <algorithm>
+#include <array>
+#include <bitset>
 #include <cstddef>
 #include <optional>
 #include <string>
@@ -65,6 +67,11 @@ struct Context
 	bool read_only = false;    // Admitted by the literal read filter or a read tool inside the read scope.
 	std::string_view provider_id;
 	std::string_view workspace;
+	// Other folders the chat works for, such as the source folder of a worktree; a workspace rule matches any.
+	std::string_view source_workspace;
+	std::string_view folder_workspace;
+	// Settings tester only: report scoped rules as if their provider and workspace applied.
+	bool ignore_scope = false;
 	// The caller's ceiling: true only when the AI reviewer itself could have approved this request once
 	// (AI Review tier, reviewer-eligible, within Plan/captured ceilings, not high risk, category checks passed).
 	bool allow_permitted = false;
@@ -92,6 +99,13 @@ inline constexpr std::size_t kMaxPatternBytes = 512;
 inline constexpr std::size_t kMaxFieldBytes = 1024;
 inline constexpr std::size_t kMaxCommandBytes = 64 * 1024;
 inline constexpr int kMaxNesting = 4;
+// Bounds on agent-controlled input: past these the command is left for the user rather than analysed further,
+// so matching stays linear in the command and the pattern.
+inline constexpr std::size_t kMaxWordsPerSegment = 128;
+inline constexpr std::size_t kMaxTotalWords = 4096;
+inline constexpr std::size_t kMaxInvocations = 512;
+inline constexpr std::size_t kMaxNestedBodies = 64;
+inline constexpr std::size_t kMaxGlobWordBytes = 128;
 
 inline std::string_view ActionName(Action action)
 {
@@ -215,6 +229,7 @@ namespace detail
 		bool literal = true;  // No unquoted glob, tilde or brace expansion.
 		bool dynamic = false; // Contains a parameter, command or ANSI-C expansion: its run-time value is unknown.
 		bool quoted = false;
+		std::vector<bool> meta; // Per character of text: an unquoted glob, brace or tilde character.
 	};
 
 	struct Lexed
@@ -276,6 +291,15 @@ namespace detail
 		Word word;
 		bool in_word = false;
 		bool skip_next_word = false; // The word after a redirection operator names a file, not an argument.
+		const auto put = [&](char value, bool meta = false)
+		{
+			word.text.push_back(value);
+			word.meta.push_back(meta);
+		};
+		const auto put_text = [&](std::string_view value)
+		{
+			for (char c : value) put(c);
+		};
 		const auto end_word = [&]
 		{
 			if (!in_word) return;
@@ -313,7 +337,7 @@ namespace detail
 				if (i + 1 >= text.size()) { ++i; continue; }
 				if (text[i + 1] == '\n') { i += 2; continue; }
 				if (text[i + 1] == '\r' && i + 2 < text.size() && text[i + 2] == '\n') { i += 3; continue; }
-				word.text.push_back(text[i + 1]);
+				put(text[i + 1]);
 				in_word = true;
 				i += 2;
 				continue;
@@ -321,8 +345,8 @@ namespace detail
 			if (ch == '\'')
 			{
 				const std::size_t close = text.find('\'', i + 1);
-				if (close == std::string_view::npos) { out.ok = false; word.text.append(text.substr(i + 1)); in_word = true; break; }
-				word.text.append(text.substr(i + 1, close - i - 1));
+				if (close == std::string_view::npos) { out.ok = false; put_text(text.substr(i + 1)); in_word = true; break; }
+				put_text(text.substr(i + 1, close - i - 1));
 				word.quoted = in_word = true;
 				i = close + 1;
 				continue;
@@ -339,8 +363,8 @@ namespace detail
 					if (inner == '\\' && j + 1 < text.size())
 					{
 						const char next = text[j + 1];
-						if (next == '"' || next == '\\' || next == '$' || next == '`') word.text.push_back(next);
-						else if (next != '\n') { word.text.push_back('\\'); word.text.push_back(next); }
+						if (next == '"' || next == '\\' || next == '$' || next == '`') put(next);
+						else if (next != '\n') { put('\\'); put(next); }
 						j += 2;
 						continue;
 					}
@@ -358,7 +382,7 @@ namespace detail
 					{
 						word.dynamic = out.dynamic = true;
 					}
-					word.text.push_back(inner);
+					put(inner);
 					++j;
 				}
 				if (!closed) { out.ok = false; break; }
@@ -379,7 +403,7 @@ namespace detail
 				}
 				// $VAR, ${...}, $'...' (ANSI-C), $"..." (locale) and $1: the value is only known at run time.
 				word.dynamic = out.dynamic = true;
-				word.text.push_back(ch);
+				put(ch);
 				in_word = true;
 				++i;
 				continue;
@@ -449,9 +473,9 @@ namespace detail
 				skip_next_word = true;
 				continue;
 			}
-			if (ch == '*' || ch == '?' || ch == '[' || ch == ']' || ch == '{' || ch == '}' || (ch == '~' && !in_word))
-				word.literal = false;
-			word.text.push_back(ch);
+			const bool meta = ch == '*' || ch == '?' || ch == '[' || ch == ']' || ch == '{' || ch == '}' || (ch == '~' && !in_word);
+			if (meta) word.literal = false;
+			put(ch, meta);
 			in_word = true;
 			++i;
 		}
@@ -472,7 +496,8 @@ namespace detail
 		if (const std::size_t slash = word.find_last_of("/\\"); slash != std::string_view::npos) word.remove_prefix(slash + 1);
 		std::string name;
 		for (char ch : word) name.push_back(Lower(ch));
-		if (name.size() > 4 && name.ends_with(".exe")) name.resize(name.size() - 4);
+		for (std::string_view extension : {".exe", ".cmd", ".bat", ".com", ".ps1"})
+			if (name.size() > extension.size() && name.ends_with(extension)) { name.resize(name.size() - extension.size()); break; }
 		return name;
 	}
 
@@ -492,13 +517,14 @@ namespace detail
 		constexpr std::string_view wrappers[] = {
 		    "command", "builtin", "exec", "time", "nice", "ionice", "timeout", "gtimeout", "stdbuf", "caffeinate", "chrt", "taskset", "unbuffer",
 		    "nohup", "setsid", "sudo", "doas", "env", "xargs", "watch", "strace", "ltrace", "then", "do", "else", "elif", "if", "while", "until",
-		    "!", "{", "}", "start", "start-process", "runas", "flock", "chroot", "systemd-run", "script", "busybox", "nsenter", "unshare", "firejail"};
+		    "!", "{", "}", "start", "start-process", "runas", "flock", "chroot", "systemd-run", "script", "busybox", "nsenter", "unshare", "firejail", "parallel"};
 		return std::find(std::begin(wrappers), std::end(wrappers), name) != std::end(wrappers);
 	}
 
 	/// <summary>Wrapper options whose value is the next word.</summary>
 	inline bool WrapperOptionTakesValue(std::string_view wrapper, std::string_view option)
 	{
+		if (wrapper == "doas") return option == "-u" || option == "-C";
 		if (wrapper == "sudo") return option == "-u" || option == "-g" || option == "-C" || option == "-D" || option == "-h" || option == "-p" || option == "-r" || option == "-t" || option == "-U" || option == "-T";
 		if (wrapper == "timeout" || wrapper == "gtimeout") return option == "-s" || option == "-k" || option == "--signal" || option == "--kill-after";
 		if (wrapper == "nice") return option == "-n" || option == "--adjustment";
@@ -519,7 +545,7 @@ namespace detail
 
 	inline bool ShellProgram(std::string_view name)
 	{
-		constexpr std::string_view shells[] = {"bash", "sh", "zsh", "dash", "ksh", "mksh", "csh", "tcsh", "fish", "ash", "busybox", "cmd", "powershell", "pwsh", "wsl", "su", "eval", "script"};
+		constexpr std::string_view shells[] = {"bash", "sh", "zsh", "dash", "ksh", "mksh", "csh", "tcsh", "fish", "ash", "busybox", "cmd", "powershell", "pwsh", "wsl", "su", "eval", "script", "iex", "invoke-expression"};
 		return std::find(std::begin(shells), std::end(shells), name) != std::end(shells);
 	}
 
@@ -533,39 +559,83 @@ namespace detail
 		       std::all_of(lower.begin() + 1, lower.end(), [](char ch) { return ch >= 'a' && ch <= 'z'; });
 	}
 
+	struct Invocation
+	{
+		std::size_t segment = 0; // Index into CommandView::segments.
+		std::size_t start = 0;   // Word where the program starts.
+	};
+
 	struct CommandView
 	{
-		std::vector<std::vector<Word>> invocations; // Each starts at a program word.
-		std::vector<std::string> nested;            // Command strings run by shells, eval and substitutions.
-		bool unresolved = false;                    // A program word is computed at run time or the text did not lex.
+		std::vector<std::vector<Word>> segments;  // Simple commands from every lexing pass and nested body.
+		std::vector<Invocation> invocations;      // Each starts at a program word; ranges, never copies.
+		std::vector<std::string> nested;          // Command strings run by shells, eval and substitutions.
+		std::size_t total_words = 0;
+		std::size_t nested_bodies = 0;
+		bool unresolved = false;                  // A program word is computed at run time, or the text is too
+		                                          // large or malformed to analyse completely.
 	};
+
+	inline void AddInvocation(CommandView& view, std::size_t segment, std::size_t start)
+	{
+		if (view.invocations.size() >= kMaxInvocations) { view.unresolved = true; return; }
+		view.invocations.push_back({segment, start});
+	}
+
+	inline void AddNested(CommandView& view, std::string body, int depth)
+	{
+		if (depth >= kMaxNesting || view.nested_bodies >= kMaxNestedBodies) { view.unresolved = true; return; }
+		++view.nested_bodies;
+		view.nested.push_back(std::move(body));
+	}
 
 	/// <summary>Every place a program can start inside one simple command, following wrappers such as sudo,
 	/// env, xargs and timeout, find -exec, and shell -c strings. Over-approximates on purpose (deny side).</summary>
-	inline void CollectInvocations(const std::vector<Word>& words, CommandView& view, int depth)
+	inline void CollectInvocations(std::size_t segment_index, CommandView& view, int depth)
 	{
+		const std::vector<Word>& words = view.segments[segment_index];
 		std::size_t i = 0;
 		while (i < words.size() && Assignment(words[i])) ++i;
 		while (i < words.size())
 		{
-			if (words[i].dynamic) view.unresolved = true;
-			view.invocations.emplace_back(words.begin() + static_cast<std::ptrdiff_t>(i), words.end());
+			// A program computed at run time ($X, %X%, a glob or a brace list) cannot be checked against rules.
+			if (words[i].dynamic || !words[i].literal) view.unresolved = true;
+			AddInvocation(view, segment_index, i);
 			const std::string name = ProgramName(words[i].text);
-			// A program computed at run time might be a shell, so its -c or /c string is checked too.
-			if (ShellProgram(name) || name == "eval" || words[i].dynamic)
+			if (name == "invoke-command") view.unresolved = true; // Runs a script block UAM does not parse.
+			if (name == "powershell" || name == "pwsh")
 			{
-				if (name == "eval")
+				// -EncodedCommand and its abbreviations carry base64 code UAM cannot read.
+				for (std::size_t j = i + 1; j < words.size(); ++j)
+				{
+					std::string option;
+					for (char ch : words[j].text) option.push_back(Lower(ch));
+					if (option.size() >= 2 && (option[0] == '-' || option[0] == '/') &&
+					    (std::string_view("-encodedcommand").substr(1).starts_with(std::string_view(option).substr(1)) || option.substr(1) == "ec"))
+						view.unresolved = true;
+				}
+			}
+			// A program computed at run time might be a shell, so its -c or /c string is checked too.
+			if (ShellProgram(name) || words[i].dynamic || !words[i].literal)
+			{
+				if (name == "eval" || name == "iex" || name == "invoke-expression")
 				{
 					std::string joined;
 					for (std::size_t j = i + 1; j < words.size(); ++j) joined += (j > i + 1 ? " " : "") + words[j].text;
-					if (depth < kMaxNesting) view.nested.push_back(std::move(joined));
-					else view.unresolved = true;
+					AddNested(view, std::move(joined), depth);
 				}
 				for (std::size_t j = i + 1; j + 1 < words.size(); ++j)
 					if (CommandStringOption(words[j].text))
 					{
-						if (depth < kMaxNesting) view.nested.push_back(words[j + 1].text);
-						else view.unresolved = true;
+						// POSIX shells run the next word; cmd /c and PowerShell -Command run the rest of the line.
+						AddNested(view, words[j + 1].text, depth);
+						if (j + 2 < words.size())
+						{
+							std::string rest;
+							for (std::size_t k = j + 1; k < words.size(); ++k) rest += (k > j + 1 ? " " : "") + words[k].text;
+							AddNested(view, std::move(rest), depth);
+						}
+						break;
 					}
 			}
 			if (name == "find" || name == "fd" || name == "git" || name == "parallel")
@@ -573,8 +643,8 @@ namespace detail
 				for (std::size_t j = i + 1; j + 1 < words.size(); ++j)
 				{
 					const std::string option = ProgramName(words[j].text);
-					if (option == "-exec" || option == "-execdir" || option == "-ok" || option == "-okdir" || option == "--exec" || option == "-x" || option == "--exec-batch" || option == "-X" || option == ":::")
-						view.invocations.emplace_back(words.begin() + static_cast<std::ptrdiff_t>(j + 1), words.end());
+					if (option == "-exec" || option == "-execdir" || option == "-ok" || option == "-okdir" || option == "--exec" || option == "-x" || option == "--exec-batch" || option == ":::")
+						AddInvocation(view, segment_index, j + 1);
 				}
 			}
 			if (!Wrapper(name)) break;
@@ -590,11 +660,11 @@ namespace detail
 					if (wrapper == "env" && (word == "-S" || word.starts_with("--split-string")))
 					{
 						const std::size_t equals = word.find('=');
-						if (equals != std::string_view::npos) view.nested.emplace_back(word.substr(equals + 1));
-						else if (i + 1 < words.size()) view.nested.push_back(words[++i].text);
+						if (equals != std::string_view::npos) AddNested(view, std::string(word.substr(equals + 1)), depth);
+						else if (i + 1 < words.size()) AddNested(view, words[++i].text, depth);
 						continue;
 					}
-					if (wrapper == "env" && word.starts_with("-S")) { view.nested.emplace_back(word.substr(2)); continue; }
+					if (wrapper == "env" && word.starts_with("-S")) { AddNested(view, std::string(word.substr(2)), depth); continue; }
 					if (WrapperOptionTakesValue(wrapper, word) && word.find('=') == std::string_view::npos) ++i;
 					continue;
 				}
@@ -604,57 +674,239 @@ namespace detail
 		}
 	}
 
-	/// <summary>The command with every quote and escape character removed. Lexing it as well exposes operators
-	/// that only POSIX quoting hides (cmd.exe treats ' as text and has no backslash escape), so deny and ask
-	/// rules over-approximate across shells.</summary>
+	/// <summary>The command with quote characters and the cmd.exe escape removed and backslashes read as path
+	/// separators. Lexing it as well exposes operators that only POSIX quoting hides (cmd.exe treats ' as text
+	/// and has no backslash escape) and Windows paths, so deny and ask rules over-approximate across shells.</summary>
 	inline std::string QuoteBlind(std::string_view command)
 	{
 		std::string blind;
 		for (char ch : command)
-			if (ch != '\'' && ch != '"' && ch != '\\' && ch != '^') blind.push_back(ch);
+		{
+			if (ch == '\\') blind.push_back('/');
+			else if (ch != '\'' && ch != '"' && ch != '^') blind.push_back(ch);
+		}
 		return blind;
+	}
+
+	inline void AddSegments(Lexed& lexed, CommandView& view, int depth)
+	{
+		for (std::vector<Word>& segment : lexed.segments)
+		{
+			if (segment.size() > kMaxWordsPerSegment) { segment.resize(kMaxWordsPerSegment); view.unresolved = true; }
+			if (view.total_words + segment.size() > kMaxTotalWords) { view.unresolved = true; break; }
+			view.total_words += segment.size();
+			view.segments.push_back(std::move(segment));
+			CollectInvocations(view.segments.size() - 1, view, depth);
+		}
+		for (std::string& body : lexed.nested) AddNested(view, std::move(body), depth);
 	}
 
 	inline void Collect(std::string_view command, CommandView& view, int depth)
 	{
-		Lexed lexed = Lex(command.substr(0, std::min(command.size(), kMaxCommandBytes)));
-		if (!lexed.ok || command.size() > kMaxCommandBytes) view.unresolved = true;
-		if (const std::string blind = QuoteBlind(command.substr(0, std::min(command.size(), kMaxCommandBytes))); blind != command && depth < kMaxNesting)
+		if (command.size() > kMaxCommandBytes) { view.unresolved = true; command = command.substr(0, kMaxCommandBytes); }
+		Lexed lexed = Lex(command);
+		if (!lexed.ok) view.unresolved = true;
+		AddSegments(lexed, view, depth);
+		if (const std::string blind = QuoteBlind(command); blind != command)
 		{
 			Lexed extra = Lex(blind);
 			if (!extra.ok) view.unresolved = true;
-			for (std::vector<Word>& segment : extra.segments) lexed.segments.push_back(std::move(segment));
-			for (std::string& body : extra.nested) lexed.nested.push_back(std::move(body));
+			AddSegments(extra, view, depth);
 		}
-		for (const std::vector<Word>& segment : lexed.segments) CollectInvocations(segment, view, depth);
-		for (std::string& body : lexed.nested) view.nested.push_back(std::move(body));
 		std::vector<std::string> nested = std::move(view.nested);
 		view.nested.clear();
-		for (const std::string& body : nested)
-		{
-			if (depth + 1 > kMaxNesting) { view.unresolved = true; continue; }
-			Collect(body, view, depth + 1);
-		}
+		for (const std::string& body : nested) Collect(body, view, depth + 1);
 	}
 
-	/// <summary>Matches pattern words against the start of an invocation. `**` spans any number of words; the
-	/// first word compares as a program name (path, case and .exe ignored) unless the pattern names a path.</summary>
-	inline bool MatchWords(const std::vector<Word>& pattern, std::size_t p, const std::vector<Word>& words, std::size_t w, bool program_position)
+	/// <summary>One glob position: a run of any length (star) or one character, each from an allowed set.</summary>
+	struct GlobToken
 	{
-		if (p == pattern.size()) return true;
-		const Word& part = pattern[p];
-		if (part.text == "**" && !part.quoted)
+		bool star = false;
+		std::bitset<256> set;
+	};
+
+	inline void AddChar(std::bitset<256>& set, char ch, bool fold)
+	{
+		set.set(static_cast<unsigned char>(ch));
+		if (fold && ch >= 'a' && ch <= 'z') set.set(static_cast<unsigned char>(ch - 'a' + 'A'));
+		if (fold && ch >= 'A' && ch <= 'Z') set.set(static_cast<unsigned char>(ch - 'A' + 'a'));
+	}
+
+	/// <summary>Parses "[...]" starting at text[at]; returns the index after ']' or npos when not a class.</summary>
+	inline std::size_t ParseClass(std::string_view text, std::size_t at, std::bitset<256>& set, bool fold)
+	{
+		const std::size_t close = text.find(']', at + 2);
+		if (close == std::string_view::npos) return std::string_view::npos;
+		std::size_t q = at + 1;
+		const bool negate = text[q] == '!' || text[q] == '^';
+		if (negate) ++q;
+		std::bitset<256> chosen;
+		for (; q < close; ++q)
 		{
-			for (std::size_t k = w; k <= words.size(); ++k)
-				if (MatchWords(pattern, p + 1, words, k, program_position && k == w)) return true;
-			return false;
+			if (q + 2 < close && text[q + 1] == '-')
+			{
+				for (int c = static_cast<unsigned char>(text[q]); c <= static_cast<unsigned char>(text[q + 2]); ++c) AddChar(chosen, static_cast<char>(c), fold);
+				q += 2;
+			}
+			else AddChar(chosen, text[q], fold);
 		}
-		if (w >= words.size()) return false;
-		bool matched;
+		set = negate ? ~chosen : chosen;
+		return close + 1;
+	}
+
+	/// <summary>A rule pattern word as glob tokens: '*' spans anything, including '/'.</summary>
+	inline std::vector<GlobToken> PatternTokens(std::string_view pattern)
+	{
+		std::vector<GlobToken> tokens;
+		for (std::size_t i = 0; i < pattern.size();)
+		{
+			GlobToken token;
+			if (pattern[i] == '*') { token.star = true; token.set.set(); ++i; }
+			else if (pattern[i] == '?') { token.set.set(); ++i; }
+			else if (pattern[i] == '[')
+			{
+				const std::size_t next = ParseClass(pattern, i, token.set, true);
+				if (next == std::string_view::npos) { AddChar(token.set, '[', true); ++i; }
+				else i = next;
+			}
+			else { AddChar(token.set, pattern[i] == '\\' ? '/' : pattern[i], true); ++i; }
+			tokens.push_back(token);
+		}
+		return tokens;
+	}
+
+	/// <summary>A command word the shell would expand, as glob tokens: unquoted '*' and '?' stop at '/', a brace
+	/// list or a leading '~' may become anything.</summary>
+	inline std::vector<GlobToken> ExpansionTokens(const Word& word)
+	{
+		std::vector<GlobToken> tokens;
+		std::bitset<256> no_slash;
+		no_slash.set();
+		no_slash.reset(static_cast<unsigned char>('/'));
+		const std::string& text = word.text;
+		for (std::size_t i = 0; i < text.size();)
+		{
+			const bool meta = i < word.meta.size() && word.meta[i];
+			// Like the shell, a '*' or '?' that starts a path component never matches a leading dot.
+			const bool component_start = i == 0 || text[i - 1] == '/';
+			std::bitset<256> first = no_slash;
+			first.reset(static_cast<unsigned char>('.'));
+			GlobToken token;
+			if (meta && text[i] == '*' && component_start)
+			{
+				GlobToken leading;
+				leading.set = first;
+				tokens.push_back(leading);
+				token.star = true;
+				token.set = no_slash;
+				++i;
+			}
+			else if (meta && text[i] == '*') { token.star = true; token.set = no_slash; ++i; }
+			else if (meta && text[i] == '?') { token.set = component_start ? first : no_slash; ++i; }
+			else if (meta && (text[i] == '{' || text[i] == '~'))
+			{
+				token.star = true;
+				token.set.set();
+				if (text[i] == '{')
+				{
+					std::size_t close = i + 1;
+					while (close < text.size() && !(text[close] == '}' && close < word.meta.size() && word.meta[close])) ++close;
+					i = close < text.size() ? close + 1 : text.size();
+				}
+				else ++i;
+			}
+			else if (meta && text[i] == '[')
+			{
+				const std::size_t next = ParseClass(text, i, token.set, true);
+				if (next == std::string::npos) { AddChar(token.set, '[', true); ++i; }
+				else i = next;
+			}
+			else { AddChar(token.set, text[i] == '\\' ? '/' : text[i], true); ++i; }
+			tokens.push_back(token);
+		}
+		return tokens;
+	}
+
+	/// <summary>Whether two globs can match a common string (both sides case-folded).</summary>
+	inline bool GlobsIntersect(const std::vector<GlobToken>& a, const std::vector<GlobToken>& b)
+	{
+		const std::size_t width = b.size() + 1;
+		std::vector<char> reach((a.size() + 1) * width, 0);
+		reach[0] = 1;
+		// reach[i][j]: some string takes a's first i tokens and b's first j tokens to the same point.
+		for (std::size_t i = 0; i <= a.size(); ++i)
+			for (std::size_t j = 0; j <= b.size(); ++j)
+			{
+				if (!reach[i * width + j]) continue;
+				const bool a_star = i < a.size() && a[i].star;
+				const bool b_star = j < b.size() && b[j].star;
+				if (a_star) reach[(i + 1) * width + j] = 1; // a's run ends empty here.
+				if (b_star) reach[i * width + j + 1] = 1;
+				if (i < a.size() && j < b.size() && (a[i].set & b[j].set).any())
+				{
+					// Consume one shared character: a run stays open, a single position advances.
+					reach[(a_star ? i : i + 1) * width + (b_star ? j : j + 1)] = 1;
+					if (a_star && b_star) { reach[(i + 1) * width + j + 1] = 1; }
+					else if (a_star) reach[i * width + j + 1] = 1;
+					else if (b_star) reach[(i + 1) * width + j] = 1;
+				}
+			}
+		return reach[a.size() * width + b.size()] != 0;
+	}
+
+	/// <summary>Compares one rule pattern word with one command word.</summary>
+	inline bool WordMatches(const Word& part, const Word& word, bool program_position, bool deny_side)
+	{
+		if (!deny_side) return GlobMatch(part.text, word.text);
 		if (program_position && part.text.find_first_of("/\\") == std::string::npos)
-			matched = GlobMatch(ProgramName(part.text), ProgramName(words[w].text), true);
-		else matched = GlobMatch(part.text, words[w].text);
-		return matched && MatchWords(pattern, p + 1, words, w + 1, false);
+			return GlobMatch(ProgramName(part.text), ProgramName(word.text), true);
+		// A glob argument is compared by what it could expand to when the pattern word names a path (it contains '/'
+		// or '.') or an option (a file can be named "--force"); a plain word such as a subcommand is compared as
+		// written, so `git add *` is not taken for `git credential`.
+		const bool path_or_option = part.text.find_first_of("/.\\") != std::string::npos || part.text.starts_with('-') || part.text.starts_with('+');
+		if (!word.literal && path_or_option)
+		{
+			if (word.text.size() > kMaxGlobWordBytes || part.text.size() > kMaxGlobWordBytes) return true; // Too large to compare: assume it can.
+			return GlobsIntersect(PatternTokens(part.text), ExpansionTokens(word));
+		}
+		std::string normalized = word.text;
+		std::replace(normalized.begin(), normalized.end(), '\\', '/');
+		return GlobMatch(part.text, normalized, true);
+	}
+
+	inline bool IsSpan(const Word& part) { return part.text == "**" && !part.quoted; }
+
+	/// <summary>Whether the pattern matches the start of words[start..). Linear in pattern x words: `**` spans any
+	/// number of words through a running OR instead of backtracking.</summary>
+	inline bool MatchFrom(const std::vector<Word>& pattern, const std::vector<Word>& words, std::size_t start, bool deny_side,
+	    const std::vector<char>* argument_table = nullptr)
+	{
+		const std::size_t count = words.size() - std::min(start, words.size());
+		std::vector<char> current(count + 1, 0), next(count + 1, 0);
+		current[0] = 1;
+		for (std::size_t p = 0; p < pattern.size(); ++p)
+		{
+			std::fill(next.begin(), next.end(), 0);
+			if (IsSpan(pattern[p]))
+			{
+				char running = 0;
+				for (std::size_t w = 0; w <= count; ++w) next[w] = running = static_cast<char>(running | current[w]);
+			}
+			else
+			{
+				for (std::size_t w = 0; w < count; ++w)
+				{
+					if (!current[w]) continue;
+					const bool matched = argument_table != nullptr && w > 0
+					    ? (*argument_table)[p * words.size() + start + w] != 0
+					    : WordMatches(pattern[p], words[start + w], w == 0, deny_side);
+					if (matched) next[w + 1] = 1;
+				}
+			}
+			std::swap(current, next);
+			if (std::none_of(current.begin(), current.end(), [](char value) { return value != 0; })) return false;
+		}
+		return std::any_of(current.begin(), current.end(), [](char value) { return value != 0; });
 	}
 
 	inline std::vector<Word> PatternWords(std::string_view pattern)
@@ -667,11 +919,26 @@ namespace detail
 	}
 
 	/// <summary>Deny/ask side: true when any program invocation anywhere in the command, including wrapped,
-	/// chained, substituted and shell -c commands, starts with the pattern.</summary>
+	/// chained, substituted and shell -c commands, starts with the pattern. Argument comparisons are computed
+	/// once per segment and shared by every invocation inside it.</summary>
 	inline bool DenyPatternMatches(const std::vector<Word>& pattern, const CommandView& view)
 	{
 		if (pattern.empty()) return true;
-		return std::any_of(view.invocations.begin(), view.invocations.end(), [&](const std::vector<Word>& words) { return MatchWords(pattern, 0, words, 0, true); });
+		std::vector<std::vector<char>> tables(view.segments.size());
+		for (const Invocation& invocation : view.invocations)
+		{
+			const std::vector<Word>& words = view.segments[invocation.segment];
+			std::vector<char>& table = tables[invocation.segment];
+			if (table.empty())
+			{
+				table.assign(pattern.size() * words.size(), 0);
+				for (std::size_t p = 0; p < pattern.size(); ++p)
+					if (!IsSpan(pattern[p]))
+						for (std::size_t w = 0; w < words.size(); ++w) table[p * words.size() + w] = WordMatches(pattern[p], words[w], false, true) ? 1 : 0;
+			}
+			if (MatchFrom(pattern, words, invocation.start, true, &table)) return true;
+		}
+		return false;
 	}
 
 	/// <summary>Allow side: the command must be one plain simple command with no operators, redirection,
@@ -688,11 +955,11 @@ namespace detail
 		const Lexed lexed = Lex(command);
 		if (!lexed.ok || lexed.compound || lexed.dynamic || lexed.segments.size() != 1) return false;
 		const std::vector<Word>& words = lexed.segments.front();
-		if (words.empty() || Assignment(words.front()) || words.front().text.find_first_of("/\\") != std::string::npos) return false;
+		if (words.empty() || words.size() > kMaxWordsPerSegment || Assignment(words.front()) || words.front().text.find_first_of("/\\") != std::string::npos) return false;
 		// Every word must be literal and static, so no expansion can change what the matched words say.
 		if (std::any_of(words.begin(), words.end(), [](const Word& word) { return word.dynamic || !word.literal; })) return false;
 		// The first word compares exactly (a case-sensitive bare name) on the allow side.
-		return MatchWords(pattern, 0, words, 0, false);
+		return MatchFrom(pattern, words, 0, false);
 	}
 
 	inline bool SamePathOrInside(std::string_view base, std::string_view path)
@@ -722,8 +989,10 @@ namespace detail
 	inline bool ScopeMatches(const Rule& rule, const Context& context)
 	{
 		if (!rule.enabled) return false;
+		if (context.ignore_scope) return true;
 		if (!rule.provider_id.empty() && rule.provider_id != context.provider_id) return false;
-		if (!rule.workspace.empty() && !SamePathOrInside(rule.workspace, context.workspace)) return false;
+		if (!rule.workspace.empty() && !SamePathOrInside(rule.workspace, context.workspace) &&
+		    !SamePathOrInside(rule.workspace, context.source_workspace) && !SamePathOrInside(rule.workspace, context.folder_workspace)) return false;
 		return true;
 	}
 
@@ -752,6 +1021,13 @@ inline std::string ValidationError(const Rule& rule)
 	for (std::string_view field : {std::string_view(rule.pattern), std::string_view(rule.provider_id), std::string_view(rule.workspace)})
 		if (std::any_of(field.begin(), field.end(), [](char ch) { return ch == '\n' || ch == '\r' || ch == '\0'; })) return "Rules must be a single line.";
 	if (rule.tool != Tool::Command && !rule.pattern.empty()) return "Only command rules take a pattern.";
+	if (!rule.workspace.empty())
+	{
+		const std::string_view folder = rule.workspace;
+		const bool absolute = folder.starts_with('/') || folder.starts_with("\\\\") ||
+		    (folder.size() >= 3 && ((folder[0] >= 'A' && folder[0] <= 'Z') || (folder[0] >= 'a' && folder[0] <= 'z')) && folder[1] == ':' && (folder[2] == '/' || folder[2] == '\\'));
+		if (!absolute) return "A workspace must be a full folder path.";
+	}
 	if (rule.tool == Tool::Command)
 	{
 		if (rule.pattern.find_first_not_of(" \t") == std::string::npos) return "A command rule needs a pattern.";
@@ -764,7 +1040,7 @@ inline std::string ValidationError(const Rule& rule)
 	if (rule.action == Action::Allow && rule.tool == Tool::Command)
 	{
 		const std::vector<detail::Word> words = detail::PatternWords(rule.pattern);
-		if (words.empty() || words.front().text == "**" || words.front().text.find_first_of("*?[") != std::string::npos)
+		if (words.empty() || words.front().text == "**" || words.front().text.find_first_of("*?[/\\") != std::string::npos)
 			return "An allow pattern must start with a program name.";
 	}
 	return {};
@@ -800,8 +1076,18 @@ inline std::vector<Rule> DefaultRules()
 	return {
 	    rule("default-read-only", Action::Allow, Tool::ReadOnly),
 	    rule("default-rm", Action::Ask, Tool::Command, "rm"),
+	    rule("default-rmdir", Action::Ask, Tool::Command, "rmdir"),
+	    rule("default-unlink", Action::Ask, Tool::Command, "unlink"),
+	    rule("default-shred", Action::Ask, Tool::Command, "shred"),
+	    rule("default-find-delete", Action::Ask, Tool::Command, "find ** -delete"),
+	    rule("default-del", Action::Ask, Tool::Command, "del"),
+	    rule("default-erase", Action::Ask, Tool::Command, "erase"),
+	    rule("default-rd", Action::Ask, Tool::Command, "rd"),
+	    rule("default-remove-item", Action::Ask, Tool::Command, "remove-item"),
+	    rule("default-ri", Action::Ask, Tool::Command, "ri"),
 	    rule("default-env-files", Action::Ask, Tool::Command, "** *.env"),
-	    rule("default-env-file-variants", Action::Ask, Tool::Command, "** *.env.*"),
+	    rule("default-env-file-variants", Action::Ask, Tool::Command, "** .env.*"),
+	    rule("default-env-file-variants-in-folders", Action::Ask, Tool::Command, "** */.env.*"),
 	    rule("default-force-push", Action::Deny, Tool::Command, "git ** push ** --force*"),
 	    rule("default-force-push-short", Action::Deny, Tool::Command, "git ** push ** -f"),
 	    rule("default-force-push-combined", Action::Deny, Tool::Command, "git ** push ** -[!-]*f*"),
@@ -834,8 +1120,8 @@ inline Decision Evaluate(const std::vector<Rule>& rules, const Context& context)
 	Decision decision;
 	detail::CommandView view;
 	const bool command = context.category == Category::Command;
+	// A request with no typed command gives command rules nothing to read; only any-request rules apply.
 	if (command) detail::Collect(context.command, view, 0);
-	if (command && context.command.empty()) view.unresolved = true;
 
 	const Rule* deny = nullptr;
 	const Rule* ask = nullptr;
@@ -844,7 +1130,7 @@ inline Decision Evaluate(const std::vector<Rule>& rules, const Context& context)
 	for (const Rule& rule : rules)
 	{
 		if (!rule.enabled) continue;
-		if (rule.action != Action::Allow && (rule.tool == Tool::Command || rule.tool == Tool::Any) && detail::ScopeMatches(rule, context)) command_guard = true;
+		if (rule.action != Action::Allow && rule.tool == Tool::Command && detail::ScopeMatches(rule, context)) command_guard = true;
 		if (!RuleMatches(rule, context, command ? &view : nullptr)) continue;
 		if (rule.action == Action::Deny && deny == nullptr) deny = &rule;
 		else if (rule.action == Action::Ask && ask == nullptr) ask = &rule;
@@ -864,7 +1150,7 @@ inline Decision Evaluate(const std::vector<Rule>& rules, const Context& context)
 		decision.reason = "An ask rule matched; the request waits for you.";
 		return decision;
 	}
-	if (command && view.unresolved && command_guard)
+	if (command && !context.command.empty() && view.unresolved && command_guard)
 	{
 		decision.outcome = Outcome::AskUser;
 		decision.reason = "UAM cannot tell which program this command runs, so deny and ask rules cannot be checked.";
@@ -887,16 +1173,28 @@ inline Decision Evaluate(const std::vector<Rule>& rules, const Context& context)
 	return decision;
 }
 
+/// <summary>Names that usually hold secrets. Read-only work naming one never skips review through a rule; a
+/// substring check over-approximates, which only sends more requests to the reviewer or the user.</summary>
+inline bool LooksCredentialLike(std::string_view text)
+{
+	std::string lower;
+	for (char ch : text) lower.push_back(detail::Lower(ch == '\\' ? '/' : ch));
+	constexpr std::string_view markers[] = {
+	    ".env", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", ".pem", ".key", ".p12", ".pfx", ".keystore", ".jks", ".netrc", ".npmrc", ".pypirc",
+	    ".git-credentials", "credential", ".ssh", ".aws", ".gnupg", ".kube", ".docker/config", "secret", "token", "password", "keychain"};
+	return std::any_of(std::begin(markers), std::end(markers), [&](std::string_view marker) { return lower.find(marker) != std::string::npos; });
+}
+
 /// <summary>For the settings test field: which rule decides a typed command, as if it were a shell command
-/// request with every allow permitted (the real ceiling can still refuse an allow at run time).</summary>
-inline Decision TestCommand(const std::vector<Rule>& rules, std::string_view command, bool read_only, std::string_view provider_id = {}, std::string_view workspace = {})
+/// request with every allow permitted and every rule's provider and workspace applying; the caller reports a
+/// deciding rule's scope. The real ceiling can still refuse an allow at run time.</summary>
+inline Decision TestCommand(const std::vector<Rule>& rules, std::string_view command, bool read_only)
 {
 	Context context;
 	context.category = Category::Command;
 	context.command = command;
-	context.read_only = read_only;
-	context.provider_id = provider_id;
-	context.workspace = workspace;
+	context.read_only = read_only && !LooksCredentialLike(command);
+	context.ignore_scope = true;
 	context.allow_permitted = true;
 	return Evaluate(rules, context);
 }

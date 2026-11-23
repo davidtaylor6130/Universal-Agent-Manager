@@ -50,19 +50,21 @@ export function sanitizePermissionCommandRules(value: unknown): PermissionComman
 }
 
 /** Mirrors the native save checks so the editor can block an invalid rule before it is sent. */
-export function permissionRuleError(rule: Pick<PermissionCommandRule, 'action' | 'tool' | 'pattern'>): string {
+export function permissionRuleError(rule: Pick<PermissionCommandRule, 'action' | 'tool' | 'pattern'> & { workspace?: string }): string {
   const pattern = rule.pattern.trim()
+  const workspace = rule.workspace?.trim() ?? ''
+  if (workspace && !/^(\/|\\\\|[A-Za-z]:[\\/])/.test(workspace)) return 'A workspace must be a full folder path.'
   if (rule.tool !== 'command' && pattern) return 'Only command rules take a pattern.'
   if (rule.tool === 'command') {
     if (!pattern) return 'A command rule needs a pattern.'
     if (/[\r\n]/.test(pattern)) return 'Rules must be a single line.'
     if (pattern.length > 512) return 'A command pattern can be at most 512 characters.'
-    if (/(^|[^\\])(;|&|\||<|>|\$\(|`)/.test(pattern.replace(/'[^']*'/g, ''))) return 'A pattern is one command: no ;, &&, |, redirection or $( ).'
+    if (/(^|[^\\])(;|&|\||<|>|\(|\)|\$\(|`)/.test(pattern.replace(/'[^']*'/g, ''))) return 'A pattern is one command: no ;, &&, |, redirection or $( ).'
   }
   if (rule.action === 'allow' && (rule.tool === 'any' || rule.tool === 'fetch' || rule.tool === 'other')) return 'Allow rules can target commands, read-only work or file edits only.'
   if (rule.action === 'allow' && rule.tool === 'command') {
     const first = pattern.split(/\s+/)[0] ?? ''
-    if (!first || first === '**' || /[*?[]/.test(first)) return 'An allow pattern must start with a program name.'
+    if (!first || first === '**' || /[*?[/\\]/.test(first)) return 'An allow pattern must start with a program name.'
   }
   return ''
 }

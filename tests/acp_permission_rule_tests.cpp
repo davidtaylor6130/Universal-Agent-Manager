@@ -19,7 +19,7 @@ namespace
 		return rule;
 	}
 
-	/// <summary>A running Gemini ACP session whose permission responses go to a discarding sink, so the
+	/// <summary>A running Gemini ACP session whose permission responses go to a file sink, so the
 	/// outcome is observed through UAM's own pending state and diagnostics.</summary>
 	struct PermissionRuleFixture
 	{
@@ -49,11 +49,7 @@ namespace
 			session->session_id = "permission-rules-native";
 			session->running = session->processing = true;
 			app.acp_sessions.push_back(std::move(owned));
-#if defined(_WIN32)
-			const std::vector<std::string> sink = {"cmd", "/C", "more > NUL"};
-#else
-			const std::vector<std::string> sink = {"/bin/sh", "-c", "exec /bin/cat >/dev/null"};
-#endif
+			const std::vector<std::string> sink = StdioCatArgv(temp.root / "permission-responses.bin");
 			std::string error;
 			UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*session, temp.root, sink, &error));
 		}
@@ -185,9 +181,8 @@ UAM_TEST(PermissionReviewCacheReplaysAnIdenticalVerdictWithoutAWorker)
 		fixture.Request(1, "execute", "npm test");
 		UAM_ASSERT(fixture.Waiting(1));
 		const ChatSession& chat = fixture.app.chats.front();
-		const std::string prompt = uam::acp_detail::BuildPermissionReviewPrompt(fixture.session->pending_permission);
-		UAM_ASSERT(!prompt.empty());
-		const std::string key = uam::acp_detail::PermissionReviewCacheKey(fixture.app, *fixture.session, chat, "gemini-cli", prompt);
+		const std::string key = uam::acp_detail::PermissionReviewCacheKey(fixture.app, *fixture.session, chat, "gemini-cli");
+		UAM_ASSERT(!key.empty());
 		fixture.app.permission_review_cache[key] = verdict;
 		fixture.app.permission_review_cache_order.push_back(key);
 
@@ -200,7 +195,37 @@ UAM_TEST(PermissionReviewCacheReplaysAnIdenticalVerdictWithoutAWorker)
 		UAM_ASSERT(!fixture.Waiting(1));
 		UAM_ASSERT(fixture.Diagnostic(verdict == "approve" ? "approved_once" : "denied"));
 		UAM_ASSERT(fixture.app.permission_review_tasks.empty());
+
+		// A later call of the same command carries a new tool-call id and request id, and still reuses it.
+		fixture.Request(2, "execute", "npm test");
+		UAM_ASSERT_EQ(std::ranges::count_if(fixture.session->diagnostics, [](const uam::AcpDiagnosticEntryState& entry) { return entry.reason == "cached"; }), std::ptrdiff_t{2});
+		(void)uam::acp_detail::PollPermissionReviewTasks(fixture.app);
+		UAM_ASSERT(!fixture.Waiting(2));
 	}
+}
+
+UAM_TEST(PermissionReviewCacheKeyCoversOnlyPlainTypedCommands)
+{
+	PermissionRuleFixture fixture("aiReview", {});
+	fixture.app.settings.permission_ai_review_enabled = false;
+	const ChatSession& chat = fixture.app.chats.front();
+	fixture.Request(1, "execute", "npm test");
+	const std::string first = uam::acp_detail::PermissionReviewCacheKey(fixture.app, *fixture.session, chat, "gemini-cli");
+	fixture.session->pending_permission.execution_command = "npm test -- --watch";
+	UAM_ASSERT(uam::acp_detail::PermissionReviewCacheKey(fixture.app, *fixture.session, chat, "gemini-cli") != first);
+	fixture.session->pending_permission.codex_approval_payload_json = R"({"grantRoot":"/"})";
+	UAM_ASSERT(uam::acp_detail::PermissionReviewCacheKey(fixture.app, *fixture.session, chat, "gemini-cli").empty());
+	fixture.session->pending_permission.codex_approval_payload_json.clear();
+	fixture.session->pending_permission.kind = "edit";
+	UAM_ASSERT(uam::acp_detail::PermissionReviewCacheKey(fixture.app, *fixture.session, chat, "gemini-cli").empty());
+}
+
+UAM_TEST(PermissionRulesDoNotHoldRequestsWithoutATypedCommand)
+{
+	PermissionRuleFixture fixture("yolo", rules::DefaultRules());
+	fixture.Request(1, "execute", "");
+	UAM_ASSERT(!fixture.Waiting(1));
+	UAM_ASSERT(!fixture.Diagnostic("held_by_rule"));
 }
 
 UAM_TEST(PermissionReviewCacheIsNotConsultedForHeldOrHighRiskRequests)
@@ -212,6 +237,17 @@ UAM_TEST(PermissionReviewCacheIsNotConsultedForHeldOrHighRiskRequests)
 	UAM_ASSERT(fixture.Waiting(1));
 	UAM_ASSERT(fixture.app.permission_review_tasks.empty());
 	UAM_ASSERT(!fixture.Diagnostic("cached") && !fixture.Diagnostic("started"));
+
+	PermissionRuleFixture high_risk("aiReview", {});
+	high_risk.app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	high_risk.app.settings.permission_reviewer_provider_id = "gemini-cli";
+	high_risk.Request(1, "execute", "git push origin main");
+	const std::string key = uam::acp_detail::PermissionReviewCacheKey(high_risk.app, *high_risk.session, high_risk.app.chats.front(), "gemini-cli");
+	high_risk.app.permission_review_cache[key] = "approve";
+	(void)uam::acp_detail::TryAutoApprovePendingPermission(high_risk.app, *high_risk.session, high_risk.app.chats.front());
+	UAM_ASSERT(high_risk.Waiting(1));
+	UAM_ASSERT(high_risk.app.permission_review_tasks.empty());
+	UAM_ASSERT(!high_risk.Diagnostic("cached"));
 }
 
 UAM_TEST(PermissionReviewCacheStoresOnlyDeliveredVerdicts)
@@ -244,10 +280,12 @@ UAM_TEST(PermissionReviewCacheStoresOnlyDeliveredVerdicts)
 	UAM_ASSERT(fixture.app.permission_review_cache.contains("approve-key"));
 	UAM_ASSERT_EQ(fixture.app.permission_review_cache.at("approve-key"), std::string("approve"));
 
-	// A deny rule added while the reviewer ran wins: the approval is not delivered or cached.
+	// A deny rule added while the reviewer ran wins: the approval is not delivered or cached, and the deny applies.
 	fixture.app.settings.permission_command_rules = {CommandRule("deny-npm", rules::Action::Deny, "npm")};
 	completed("9", R"({"decision":"approve","reason":"Routine test run"})", "late-key");
-	UAM_ASSERT(fixture.Waiting(9));
+	UAM_ASSERT(!fixture.Waiting(9));
+	UAM_ASSERT(fixture.Diagnostic("superseded_by_rule"));
+	UAM_ASSERT(fixture.Diagnostic("denied_by_rule"));
 	UAM_ASSERT(!fixture.app.permission_review_cache.contains("late-key"));
 	UAM_ASSERT(fixture.app.permission_review_tasks.empty());
 }
@@ -307,7 +345,17 @@ UAM_TEST(PermissionRulesPersistAndAreValidatedAtLoad)
 	text.replace(key, end - key, "permission_command_rules=" + uam::EncodeLineValue(edited.dump()));
 	UAM_ASSERT(uam::io::WriteTextFile(file, text));
 	AppSettings validated;
-	(void)SettingsStore::Load(file, validated);
+	const SettingsLoadResult partial = SettingsStore::Load(file, validated);
 	UAM_ASSERT_EQ(validated.permission_command_rules.size(), std::size_t{1});
 	UAM_ASSERT_EQ(validated.permission_command_rules.front().id, std::string("ok"));
+	UAM_ASSERT(partial.warning.find("permission rules") != std::string::npos);
+
+	// An unreadable list falls back to the defaults, never to no rules, and says so.
+	const std::size_t again = text.find("permission_command_rules=");
+	text.replace(again, text.find('\n', again) - again, "permission_command_rules=" + uam::EncodeLineValue("{not json"));
+	UAM_ASSERT(uam::io::WriteTextFile(file, text));
+	AppSettings corrupt;
+	const SettingsLoadResult unreadable = SettingsStore::Load(file, corrupt);
+	UAM_ASSERT_EQ(corrupt.permission_command_rules.size(), rules::DefaultRules().size());
+	UAM_ASSERT(unreadable.warning.find("default rules") != std::string::npos);
 }

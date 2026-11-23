@@ -1231,6 +1231,8 @@ void Application::Shutdown()
 		uam::StopAsyncPermissionReviewTask(task);
 	}
 	m_app.permission_review_tasks.clear();
+	m_app.permission_review_cache.clear();
+	m_app.permission_review_cache_order.clear();
 	uam::platform::ResetAsyncNativeChatLoadTask(m_app.native_chat_load_task);
 	uam::platform::ResetAsyncNativeChatLoadTasks(m_app.native_chat_load_tasks);
 	folder_shutdown_confirmed = uam::AgentRunScheduler::InterruptForShutdown(m_app) && folder_shutdown_confirmed;

@@ -1163,8 +1163,25 @@ SettingsLoadResult SettingsStore::LoadInternal(const std::filesystem::path& sett
 		}
 		else if (key == kPermissionCommandRulesKey)
 		{
-			// Validated at load: invalid or excess rules are dropped, never widened.
-			settings.permission_command_rules = uam::permission_command_rules::ParseLenient(nlohmann::json::parse(decoded_value, nullptr, false));
+			// Validated at load: invalid or excess rules are dropped, never widened. An unreadable list falls back to
+			// the safe defaults rather than to no rules, and either case is reported.
+			const nlohmann::json parsed = nlohmann::json::parse(decoded_value, nullptr, false);
+			const auto append_warning = [&](std::string_view text)
+			{
+				if (!result.warning.empty()) result.warning += ' ';
+				result.warning += text;
+			};
+			if (!parsed.is_array())
+			{
+				settings.permission_command_rules = uam::command_rules::DefaultRules();
+				append_warning("The saved permission rules could not be read; the default rules apply until you save new ones.");
+			}
+			else
+			{
+				settings.permission_command_rules = uam::permission_command_rules::ParseLenient(parsed);
+				if (settings.permission_command_rules.size() != parsed.size())
+					append_warning("Some saved permission rules were invalid and were ignored.");
+			}
 			saw_permission_command_rules = true;
 		}
 		else if (key == kPermissionAiReviewEnabledKey)
