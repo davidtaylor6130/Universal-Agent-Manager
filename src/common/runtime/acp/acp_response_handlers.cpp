@@ -614,13 +614,15 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 			const std::string notice = ProviderRuntimeRegistry::ResolveById(session.provider_id).AccountRefusalNotice(
 			    refusal, profile != nullptr && !profile->title.empty() ? std::string_view(profile->title) : std::string_view(session.provider_id), error_message);
 			const std::string host_id = uam::strings::NonEmptyOrFallback(chat.execution_host_id, "local");
-			app.provider_model_catalog->RememberAccountRefusal(session.provider_id, host_id, refusal, notice);
-			// The raw provider text is already in this error's [acp-diag] entry; this line records the decision.
-			diagnostics::Write("Account refusal recorded for " + session.provider_id + " on " + host_id + " (" + account_refusal::KindName(refusal) +
-			    ", " + method + ", code=" + std::to_string(code) + "); automatic launches skip it for " + std::to_string(account_refusal::TtlSeconds(refusal) / 60) +
-			    " minutes unless retried: " + account_refusal::DiagnosticMessage(error_message));
-			// Sign-in errors already carry the provider's own instruction (for example `copilot login`).
-			if (refusal != account_refusal::Kind::Authentication) formatted_error = notice + " " + formatted_error;
+			if (app.provider_model_catalog->RememberAccountRefusal(session.provider_id, host_id, refusal, notice))
+			{
+				// The raw provider text is already in this error's [acp-diag] entry; this line records the decision.
+				diagnostics::Write("Account refusal recorded for " + session.provider_id + " on " + host_id + " (" + account_refusal::KindName(refusal) +
+				    ", " + method + ", code=" + std::to_string(code) + "); automatic launches skip it for " + std::to_string(account_refusal::TtlSeconds(refusal) / 60) +
+				    " minutes unless retried: " + account_refusal::DiagnosticMessage(error_message));
+				// Sign-in errors already carry the provider's own instruction (for example `copilot login`).
+				if (refusal != account_refusal::Kind::Authentication) formatted_error = notice + " " + formatted_error;
+			}
 		}
 		if (session.model_discovery_only && (model_discovery_request || method == uam::acp_methods::kInitialize))
 		{

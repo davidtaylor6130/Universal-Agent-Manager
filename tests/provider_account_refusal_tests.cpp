@@ -293,8 +293,16 @@ UAM_TEST(AuthenticationRefusalHoldsDiscoveryButNotChatLaunches)
 	UAM_ASSERT(app.provider_model_catalog->IsAccountRefusalActive(uam::provider_ids::kGeminiCli, "local"));
 	UAM_ASSERT(!app.provider_model_catalog->IsAccountRefusalActive(uam::provider_ids::kGeminiCli, "local", true));
 	UAM_ASSERT(!app.provider_model_catalog->BeginDiscoveryIfStale(uam::provider_ids::kGeminiCli, app.folders.front().directory, "local"));
-	app.provider_model_catalog->RememberAccountRefusal(uam::provider_ids::kGeminiCli, "local", uam::account_refusal::Kind::UnsupportedClient, kGeminiNotice);
+	// A chat launch it let through that fails for its own reason shows that reason, not the old sign-in line.
+	app.provider_model_catalog->RememberRefreshFailure(uam::provider_ids::kGeminiCli, "Workspace directory is not trusted.", app.folders[1].directory, "local");
+	UAM_ASSERT(app.provider_model_catalog->GetAccountRefusalNotice(uam::provider_ids::kGeminiCli, "local").empty());
+	UAM_ASSERT_EQ(app.provider_model_catalog->GetProviderRefreshError(uam::provider_ids::kGeminiCli, app.folders[1].directory, "local"), std::string("Workspace directory is not trusted."));
+	UAM_ASSERT(app.provider_model_catalog->RememberAccountRefusal(uam::provider_ids::kGeminiCli, "local", uam::account_refusal::Kind::UnsupportedClient, kGeminiNotice));
 	UAM_ASSERT(app.provider_model_catalog->IsAccountRefusalActive(uam::provider_ids::kGeminiCli, "local", true));
+	UAM_ASSERT_EQ(app.provider_model_catalog->GetChatLaunchRefusalNotice(uam::provider_ids::kGeminiCli, "local"), std::string(kGeminiNotice));
+	// A client refusal is not replaced by an ordinary workspace failure while it lasts.
+	app.provider_model_catalog->RememberRefreshFailure(uam::provider_ids::kGeminiCli, "Workspace directory is not trusted.", app.folders[1].directory, "local");
+	UAM_ASSERT_EQ(app.provider_model_catalog->GetAccountRefusalNotice(uam::provider_ids::kGeminiCli, "local"), std::string(kGeminiNotice));
 }
 
 UAM_TEST(ExpiredAccountRefusalGivesWayToTheNextAttemptsOwnError)

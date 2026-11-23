@@ -673,7 +673,7 @@ void ProviderModelCatalogService::LoadPersistentCatalogs()
 		if (const nlohmann::json* refusals = uam::nlohmann_json::FindObjectField(root, "accountRefusals"))
 			for (const auto& [key, entry] : refusals->items())
 				if (entry.is_object() && account_refusal::KindFromName(entry.value("kind", "")) != account_refusal::Kind::None &&
-				    !uam::strings::IsBlank(entry.value("notice", "")) && entry.value("expiresAtSec", static_cast<std::int64_t>(0)) > 0)
+				    !uam::strings::IsBlank(entry.value("notice", "")) && entry.value("expiresAtSec", static_cast<std::int64_t>(0)) > uam::time::TimestampNowSec())
 					m_account_refusals[key] = entry;
 	}
 }
@@ -758,6 +758,13 @@ void ProviderModelCatalogService::RememberRefreshFailure(const std::string& prov
 	m_scope_by_catalog_key[key] = CatalogScope(provider_id, workspace_directory, execution_host_id);
 	m_pending_discovery_provider_ids.erase(key);
 	m_refresh_error_by_provider_id[key] = uam::strings::Trim(std::move(error));
+	// A launch an authentication refusal let through reached the provider; its own failure is the current state.
+	if (const nlohmann::json* refusal = AccountRefusalLocked(provider_id, execution_host_id);
+	    refusal != nullptr && !account_refusal::BlocksChatLaunch(account_refusal::KindFromName(refusal->value("kind", ""))))
+	{
+		m_account_refusals.erase(CatalogKey(provider_id, {}, execution_host_id));
+		(void)WritePersistentCatalogs();
+	}
 	EraseExpiredAccountRefusalLocked(provider_id, execution_host_id);
 }
 
@@ -768,15 +775,15 @@ const nlohmann::json* ProviderModelCatalogService::AccountRefusalLocked(const st
 	return key.empty() ? nullptr : uam::nlohmann_json::FindObjectField(m_account_refusals, key);
 }
 
-void ProviderModelCatalogService::RememberAccountRefusal(const std::string& provider_id, std::string_view execution_host_id,
+bool ProviderModelCatalogService::RememberAccountRefusal(const std::string& provider_id, std::string_view execution_host_id,
 	account_refusal::Kind kind, std::string notice, std::int64_t recorded_at_sec)
 {
 	notice = uam::strings::Trim(std::move(notice));
-	if (kind == account_refusal::Kind::None || notice.empty()) return;
+	if (kind == account_refusal::Kind::None || notice.empty()) return false;
 	const GenerationMutex::Write lock(m_mutex);
 	const std::string host = uam::strings::NonEmptyOrFallback(uam::strings::Trim(std::string(execution_host_id)), "local");
 	const std::string key = CatalogKey(provider_id, {}, host);
-	if (key.empty()) return;
+	if (key.empty()) return false;
 	const std::int64_t recorded = recorded_at_sec > 0 ? recorded_at_sec : uam::time::TimestampNowSec();
 	m_account_refusals[key] = {
 	    {"providerId", uam::provider_ids::NormalizeCliProviderAliasOrSelf(provider_id)},
@@ -788,6 +795,7 @@ void ProviderModelCatalogService::RememberAccountRefusal(const std::string& prov
 	};
 	// The refusal is still honoured for this run when the cache cannot be written; a restart then asks once more.
 	(void)WritePersistentCatalogs();
+	return true;
 }
 
 std::string ProviderModelCatalogService::GetAccountRefusalNotice(const std::string& provider_id, std::string_view execution_host_id) const
@@ -814,6 +822,14 @@ bool ProviderModelCatalogService::IsAccountRefusalActive(const std::string& prov
 	const nlohmann::json* refusal = AccountRefusalLocked(provider_id, execution_host_id);
 	return refusal != nullptr && AccountRefusalUnexpired(*refusal) &&
 	    (!for_chat_launch || account_refusal::BlocksChatLaunch(account_refusal::KindFromName(refusal->value("kind", ""))));
+}
+
+std::string ProviderModelCatalogService::GetChatLaunchRefusalNotice(const std::string& provider_id, std::string_view execution_host_id) const
+{
+	const GenerationMutex::Read lock(m_mutex);
+	const nlohmann::json* refusal = AccountRefusalLocked(provider_id, execution_host_id);
+	return refusal != nullptr && AccountRefusalUnexpired(*refusal) && account_refusal::BlocksChatLaunch(account_refusal::KindFromName(refusal->value("kind", "")))
+	    ? refusal->value("notice", "") : std::string{};
 }
 
 void ProviderModelCatalogService::EraseExpiredAccountRefusalLocked(const std::string& provider_id, std::string_view execution_host_id)

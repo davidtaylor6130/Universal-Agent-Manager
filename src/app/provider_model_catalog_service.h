@@ -75,7 +75,7 @@ class ProviderModelCatalogService
 	/// Records a refusal that applies to the provider's account on one computer, not to a workspace, and persists it
 	/// with the catalogue so a restart does not relaunch the provider for every workspace. recorded_at_sec 0 is now.
 	/// </summary>
-	void RememberAccountRefusal(const std::string& provider_id, std::string_view execution_host_id, account_refusal::Kind kind, std::string notice, std::int64_t recorded_at_sec = 0);
+	bool RememberAccountRefusal(const std::string& provider_id, std::string_view execution_host_id, account_refusal::Kind kind, std::string notice, std::int64_t recorded_at_sec = 0);
 	/// <summary>The recorded notice, active or expired, until a retry succeeds or the user retries; empty when none.</summary>
 	std::string GetAccountRefusalNotice(const std::string& provider_id, std::string_view execution_host_id = "local") const;
 	/// <summary>
@@ -83,6 +83,8 @@ class ProviderModelCatalogService
 	/// for_chat_launch asks whether a chat launch is also held, which an authentication refusal never does.
 	/// </summary>
 	bool IsAccountRefusalActive(const std::string& provider_id, std::string_view execution_host_id = "local", bool for_chat_launch = false) const;
+	/// <summary>The notice of an active refusal that holds chat launches, read under one lock; empty when launches may proceed.</summary>
+	std::string GetChatLaunchRefusalNotice(const std::string& provider_id, std::string_view execution_host_id = "local") const;
 	/// <summary>A manual retry forgets the refusal so the next request asks the provider again. Returns whether one was recorded.</summary>
 	bool ClearAccountRefusal(const std::string& provider_id, std::string_view execution_host_id = "local");
 
@@ -272,7 +274,8 @@ class ProviderModelCatalogService
 	void LoadPersistentCatalogs();
 	// Caller holds m_mutex.
 	const nlohmann::json* AccountRefusalLocked(const std::string& provider_id, std::string_view execution_host_id) const;
-	// Caller holds m_mutex for writing. A new attempt or failure replaces an expired refusal's notice.
+	// Caller holds m_mutex for writing. A new attempt or failure replaces an expired refusal's notice; a failure also
+	// replaces an authentication refusal, which never holds the chat launch that produced it.
 	void EraseExpiredAccountRefusalLocked(const std::string& provider_id, std::string_view execution_host_id);
 	bool WritePersistentCatalogs() const;
 
