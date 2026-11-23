@@ -2580,3 +2580,23 @@ UAM_TEST(StartupNativeStalePlanIsReplannedInsteadOfMerged)
 	}
 	UAM_ASSERT(service.Snapshot().errors.empty());
 }
+
+UAM_TEST(StartupNativeDeclineMakesAnEarlierPlanStale)
+{
+	TempDir temp("uam-startup-decline-stale");
+	uam::AppState app;
+	StartupWorkspace(app, temp.root);
+	const fs::path directory = temp.root / "workspace";
+	uam::StartupNativeImportService service(FixtureScanner({StartupHistory(directory, "declined"), StartupHistory(directory, "kept")}));
+	service.Initialize(app);
+	WaitForStartup(service, app);
+	const uam::StartupNativeImportSnapshot ready = service.Snapshot();
+	UAM_ASSERT_EQ(ready.total_count, std::size_t{2});
+	const auto declined = std::ranges::find(ready.candidates, std::string("declined"), &uam::StartupNativeImportCandidate::native_session_id);
+	UAM_ASSERT(declined != ready.candidates.end());
+	// A plan read before the decline record was written must not merge: the decline changes what planning read.
+	const std::uint64_t before = service.PlanningFingerprint(app);
+	std::string error;
+	UAM_ASSERT(service.Decide(app, ready.generation, {}, {declined->candidate_id}, &error));
+	UAM_ASSERT(service.PlanningFingerprint(app) != before);
+}

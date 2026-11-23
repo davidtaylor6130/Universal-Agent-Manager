@@ -42,7 +42,8 @@ class ImportedWorkspaceFolderIndex
 	/// so a plan that appends folders to a list resolves only the appended ones; otherwise resolves every folder.</summary>
 	ImportedWorkspaceFolderIndex(const std::vector<ChatFolder>& folders, const ImportedWorkspaceFolderIndex& prefix);
 	const ChatFolder* Find(const std::filesystem::path& workspace) const;
-	/// <summary>Indexes folders appended since the last call and forgets earlier answers, which an appended folder may change.</summary>
+	/// <summary>Indexes folders appended since the last call and forgets earlier answers, which an appended folder may change.
+	/// A list that shrank is indexed again from the start.</summary>
 	void Refresh();
 	const std::vector<ChatFolder>& Folders() const { return m_folders; }
 

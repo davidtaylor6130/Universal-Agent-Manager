@@ -274,6 +274,12 @@ namespace uam
 	void ImportedWorkspaceFolderIndex::Refresh()
 	{
 		if (m_indexed == m_folders.size()) return;
+		if (m_folders.size() < m_indexed)
+		{
+			// The list shrank, so indexed positions may be past its end: index it again from the start.
+			m_registered.clear();
+			m_indexed = 0;
+		}
 		for (; m_indexed < m_folders.size(); ++m_indexed)
 		{
 			const ChatFolder& folder = m_folders[m_indexed];

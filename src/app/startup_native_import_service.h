@@ -1,6 +1,7 @@
 #pragma once
 
 #include "app/runtime_orchestration_services.h"
+#include "common/chat/native_chat_identity.h"
 
 #include <atomic>
 #include <cstdint>
@@ -173,10 +174,12 @@ namespace uam
 		/// <summary>Hash of every app and review input a plan depends on. Reads memory only; a plan merges only while it matches.</summary>
 		std::uint64_t PlanningFingerprint(const AppState& app) const;
 		/// <summary>The app-only part of PlanningFingerprint: data root, folders, import settings, hosts and chat ownership.</summary>
-		static std::uint64_t AppPlanningFingerprint(const AppState& app);
+		static std::uint64_t AppPlanningFingerprint(const AppState& app, const std::unordered_set<std::string>* live_chat_ids = nullptr);
 		/// <summary>Filters, resolves owners and identity keys, and plans workspaces for a discovery. Runs on the scan worker:
-		/// each registered folder and distinct workspace is resolved once per call.</summary>
-		static StartupNativeImportPlan PlanDiscovery(const StartupNativeImportPlanningSnapshot& snapshot, const ChatHistorySyncService::LocalHistoryDiscovery& discovery);
+		/// each registered folder and distinct workspace is resolved once per call.
+		/// A `workspaces` cache from an earlier plan of the same discovery is reused (path answers do not depend on the snapshot).</summary>
+		static StartupNativeImportPlan PlanDiscovery(const StartupNativeImportPlanningSnapshot& snapshot, const ChatHistorySyncService::LocalHistoryDiscovery& discovery,
+		    chat_identity::NativeWorkspaceCache* workspaces = nullptr);
 
 	  private:
 		/// <summary>A scan worker's result: the discovery as found, and its plan against the snapshot taken at launch.</summary>
@@ -186,7 +189,11 @@ namespace uam
 			std::optional<StartupNativeImportPlan> plan;
 			/// <summary>Errors and continuation counters of this discovery were already taken; only the plan was redone.</summary>
 			bool replanned = false;
+			/// <summary>Resolved workspaces of this discovery's first plan, reused when it is planned again.</summary>
+			std::shared_ptr<chat_identity::NativeWorkspaceCache> workspaces;
 		};
+		/// <summary>PlanningFingerprint from an already computed app part: adds the review's own inputs.</summary>
+		std::uint64_t ReviewPlanningFingerprint(std::uint64_t app_fingerprint) const;
 		std::future<ScanOutcome> LaunchScan(const AppState& app, StartupNativeImportScanRequest request);
 		/// <summary>Plans the same discovery again from a fresh snapshot after the app changed under the first plan.</summary>
 		bool LaunchReplan(const AppState& app, ScanOutcome outcome);
@@ -211,7 +218,7 @@ namespace uam
 			std::string parent_key;
 		};
 		/// <summary>Links a saved child that has no parent link to its saved parent, for a parent imported after its child.</summary>
-		void LinkOwnedChildren(AppState& app);
+		void LinkOwnedChildren(AppState& app, bool planned_keys_current);
 		/// <summary>Children (and their children) of the given parent keys, each given its parent's workspace, at most 64 per parent including those `per_parent` already counts.</summary>
 		std::vector<Child> CollectRiders(std::unordered_map<std::string, std::string>& folders, std::unordered_map<std::string, std::size_t> per_parent = {}) const;
 		void QueueRiders(std::vector<Child> riders);
@@ -227,6 +234,8 @@ namespace uam
 		std::unordered_map<std::size_t, std::string> m_saved_keys;
 		std::unordered_map<std::size_t, std::string> m_saved_owners;
 		std::optional<std::uint64_t> m_saved_keys_fingerprint;
+		/// <summary>Advances when this review writes decline records, so a plan read before a decline is never merged.</summary>
+		std::uint64_t m_decision_revision = 0;
 		bool Revalidate(AppState& app, std::string* error_out);
 		void StartScan(const AppState& app, bool include_remote);
 		void AddError(const std::string& error);
