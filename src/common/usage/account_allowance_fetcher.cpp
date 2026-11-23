@@ -1,4 +1,5 @@
 #include "account_allowance_fetcher.h"
+#include "common/provider/copilot_sdk_protocol.h"
 #include "common/provider/provider_ids.h"
 #include "common/platform/platform_services.h"
 #include "common/platform/platform_state_fields.h"
@@ -12,6 +13,7 @@
 #include <cmath>
 #include <optional>
 #include <thread>
+#include <utility>
 
 namespace uam::usage
 {
@@ -21,10 +23,10 @@ namespace uam::usage
 		constexpr std::size_t kMaxOutputBytes = 1024 * 1024;
 		constexpr std::size_t kMaxHeaderBytes = 8192;
 
-		AccountAllowanceFetchResult Failure(const char* message, bool account_unavailable = false)
+		AccountAllowanceFetchResult Failure(std::string message, bool account_unavailable = false)
 		{
 			AccountAllowanceFetchResult result;
-			result.error = message;
+			result.error = std::move(message);
 			result.account_unavailable = account_unavailable;
 			return result;
 		}
@@ -382,8 +384,8 @@ namespace uam::usage
 				if (initialized)
 					return codex ? NormalizeCodexAccountAllowance(*result, time::SystemEpochMillisecondsNow())
 					             : NormalizeCopilotAccountAllowance(*result, time::SystemEpochMillisecondsNow());
-				if (copilot && Field(*result, "protocolVersion") != nullptr && *Field(*result, "protocolVersion") != 3)
-					return Failure("The Copilot account reader protocol is incompatible.");
+				if (copilot && !uam::copilot::IsVerifiedSdkProtocolResult(*result))
+					return Failure(uam::copilot::SdkProtocolRefusal(*result));
 				if (codex && !send({{"jsonrpc", "2.0"}, {"method", "initialized"}}))
 					return Failure("The provider account reader could not receive initialization.");
 				initialized = true;

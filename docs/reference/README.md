@@ -10,6 +10,7 @@ These pages preserve useful source-level details from the trial base, outside th
 | [Provider parity evidence](provider-runtime-parity.md) | Existing provider limits and investigation evidence |
 | [Antigravity native history](antigravity-native-history-decision.md) | Pinned primary storage evidence, read-only reader, completeness limits and remaining upstream export dependency |
 | [Antigravity runtime and goals](antigravity-runtime-goals.md) | CLI-conversation UAM goal lifecycle and all 26 capability source boundaries |
+| [Copilot SDK protocol 4 assessment](copilot-sdk-protocol-4-assessment.md) | What protocol 4 (CLI 1.0.113+) changes on the wire, why it stays refused and what a live check must settle |
 | [OpenCode V2 protocol assessment](opencode-v2-protocol-assessment.md) | Verified V2 range (2.1.2 through 2.2.7), native adapter contracts, session/history differences, permission guard and verification limits |
 | [Provider sessions](architecture/provider-sessions.md) | Native identities, recovery and compaction details |
 | [Native child sessions](native-child-sessions.md) | How each provider stores sub-agent sessions, what links a child to its parent and how import uses it |
