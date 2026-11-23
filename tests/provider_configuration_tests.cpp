@@ -1648,6 +1648,39 @@ UAM_TEST(SavedMcpSettingsReachAllFiveRuntimesWithoutEnablingCentralInstructions)
 	}
 }
 
+UAM_TEST(SharedMcpFollowsSourceWorkspaceIntoAnIsolatedWorktree)
+{
+	TempDir temp("uam-mcp-worktree-scope");
+	AppSettings settings;
+	McpServerConfiguration server;
+	server.id = "source-server";
+	server.name = "source-server";
+	server.workspace_directory = (temp.root / "source").string();
+	server.transport = "http";
+	server.url = "http://localhost:5000/mcp";
+	settings.mcp_servers = {server};
+	ChatSession chat;
+	chat.workspace_source_directory = server.workspace_directory;
+	ExecutionHost host;
+	uam::ProviderConfigurationBundle bundle;
+	std::string error;
+	UAM_ASSERT(uam::PrepareProviderConfiguration(temp.root / "data", settings, chat, host, temp.root / "worktree", bundle, error));
+	UAM_ASSERT_EQ(bundle.manifest["mcpServers"].size(), std::size_t{1});
+	UAM_ASSERT_EQ(bundle.manifest["mcpServers"][0]["name"], nlohmann::json(server.name));
+	McpServerConfiguration override = server;
+	override.id = "worktree-override";
+	override.workspace_directory = (temp.root / "worktree").string();
+	override.url = "http://localhost:5001/mcp";
+	for (const bool source_first : {false, true})
+	{
+		settings.mcp_servers = source_first ? std::vector<McpServerConfiguration>{server, override} : std::vector<McpServerConfiguration>{override, server};
+		UAM_ASSERT(uam::PrepareProviderConfiguration(temp.root / "data", settings, chat, host, temp.root / "worktree", bundle, error));
+		UAM_ASSERT_EQ(bundle.manifest["mcpServers"][0]["url"], nlohmann::json(override.url));
+	}
+	bundle.manifest["mcpOnly"] = "yes";
+	UAM_ASSERT(!uam::provider_setup::ValidateManifest(bundle.manifest, error));
+}
+
 UAM_TEST(CodexMcpEnvironmentValuesNeverReachItsCommandLine)
 {
 	TempDir temp("uam-codex-mcp-env");
@@ -1765,39 +1798,6 @@ UAM_TEST(CodexMcpOverridesUseBareServerKeysAndInlineTables)
 	environment.clear();
 	UAM_ASSERT(!apply({plain, spaced, clash}, argv, environment, error));
 	UAM_ASSERT(error.find("apart") != std::string::npos);
-}
-
-UAM_TEST(SharedMcpFollowsSourceWorkspaceIntoAnIsolatedWorktree)
-{
-	TempDir temp("uam-mcp-worktree-scope");
-	AppSettings settings;
-	McpServerConfiguration server;
-	server.id = "source-server";
-	server.name = "source-server";
-	server.workspace_directory = (temp.root / "source").string();
-	server.transport = "http";
-	server.url = "http://localhost:5000/mcp";
-	settings.mcp_servers = {server};
-	ChatSession chat;
-	chat.workspace_source_directory = server.workspace_directory;
-	ExecutionHost host;
-	uam::ProviderConfigurationBundle bundle;
-	std::string error;
-	UAM_ASSERT(uam::PrepareProviderConfiguration(temp.root / "data", settings, chat, host, temp.root / "worktree", bundle, error));
-	UAM_ASSERT_EQ(bundle.manifest["mcpServers"].size(), std::size_t{1});
-	UAM_ASSERT_EQ(bundle.manifest["mcpServers"][0]["name"], nlohmann::json(server.name));
-	McpServerConfiguration override = server;
-	override.id = "worktree-override";
-	override.workspace_directory = (temp.root / "worktree").string();
-	override.url = "http://localhost:5001/mcp";
-	for (const bool source_first : {false, true})
-	{
-		settings.mcp_servers = source_first ? std::vector<McpServerConfiguration>{server, override} : std::vector<McpServerConfiguration>{override, server};
-		UAM_ASSERT(uam::PrepareProviderConfiguration(temp.root / "data", settings, chat, host, temp.root / "worktree", bundle, error));
-		UAM_ASSERT_EQ(bundle.manifest["mcpServers"][0]["url"], nlohmann::json(override.url));
-	}
-	bundle.manifest["mcpOnly"] = "yes";
-	UAM_ASSERT(!uam::provider_setup::ValidateManifest(bundle.manifest, error));
 }
 
 UAM_TEST(McpOnlySetupPreservesGeminiContextConfiguration)
