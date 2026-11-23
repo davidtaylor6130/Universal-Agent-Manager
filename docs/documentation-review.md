@@ -241,7 +241,7 @@ Issue #517 adds the UAM `chat_create` tool ([UAM tools](providers/uam-tools.md))
 
 ## Delegation limits
 
-UAM Control's `agent_delegate` needs no approval in any mode, so fixed limits bound it ([UAM tools](providers/uam-tools.md)). The per-chat cap of four live top-level agents uses the same figure of four as the cap on children per run, and matches the cap already applied to agents started from a chat mention or follow-up. Children can outlive a finished parent, so a chat is also capped at 20 live agents at any depth (four top-level runs with four children each). The per-turn cap of eight agents (two full rounds of four) is an interim default chosen where no figure was given, and awaits David's decision. Like `chat_create`, a CLI View caller has no structured turn, so its per-turn cap applies per tool connection.
+UAM Control's `agent_delegate` needs no approval in any mode, so fixed limits bound it ([UAM tools](providers/uam-tools.md)). The per-chat cap of four live top-level agents uses the same figure of four as the cap on children per run, and matches the cap already applied to agents started from a chat mention or follow-up. Children can outlive a finished parent, so delegation is also refused once a chat has 20 live agents at any depth (four top-level runs with four children each). Mentions and follow-ups keep only their four top-level check, and resuming an interrupted run, which the user starts, checks only the shared queue. The per-turn cap of eight agents (two full rounds of four) is an interim default chosen where no figure was given, and awaits David's decision. Like `chat_create`, a CLI View caller has no structured turn, so its per-turn cap applies per tool connection.
 
 ## Automation API
 

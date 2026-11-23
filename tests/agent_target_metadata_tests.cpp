@@ -300,6 +300,16 @@ UAM_TEST(DelegationLimitsLiveAgentsPerChatAndPerTurn)
 	}
 	UAM_ASSERT(!uam::AgentRunScheduler::Enqueue(app, "root", "", "worker", "Over the chat total.", &run_id, &error));
 	UAM_ASSERT_EQ(error, std::string("This chat already has 20 agents queued or running; wait for some to finish."));
+	// A live parent's child counts toward the same total.
+	app.agent_runs.back().status = "completed";
+	AgentRun parent = app.agent_runs.front();
+	parent.id = "live-parent";
+	parent.parent_run_id.clear();
+	parent.depth = 1;
+	parent.status = "running";
+	app.agent_runs.push_back(std::move(parent));
+	UAM_ASSERT(!uam::AgentRunScheduler::Enqueue(app, "root", "live-parent", "worker", "Child over the chat total.", &run_id, &error));
+	UAM_ASSERT_EQ(error, std::string("This chat already has 20 agents queued or running; wait for some to finish."));
 	// The other chat keeps its own allowance.
 	UAM_ASSERT(uam::AgentRunScheduler::Enqueue(app, "other-root", "", "worker", "Other chat again.", &run_id, &error));
 }
