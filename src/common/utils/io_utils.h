@@ -176,6 +176,38 @@ namespace uam::io
 		return true;
 	}
 
+	/// Outcome of a read that must not mistake an I/O failure for an absent or empty file.
+	enum class ReadFileStatus
+	{
+		Read,
+		Missing,
+		Error,
+	};
+
+	/// Test-only: a read of this exact path reports ReadFileStatus::Error on this thread.
+	inline thread_local std::filesystem::path t_read_failure_path_for_tests;
+
+	/// Reads a whole file, reporting Missing only when nothing exists at the path. A path that
+	/// exists but cannot be opened or read, or is not a regular file, reports Error, never "".
+	inline ReadFileStatus TryReadTextFileStatus(const std::filesystem::path& path, std::string& out)
+	{
+		out.clear();
+		if (!t_read_failure_path_for_tests.empty() && path == t_read_failure_path_for_tests) return ReadFileStatus::Error;
+		std::filesystem::path native_path;
+		std::string error;
+		if (!NativeFilePath(path, native_path, error)) return ReadFileStatus::Error;
+		std::error_code ec;
+		const std::filesystem::file_status status = std::filesystem::status(native_path, ec);
+		if (ec)
+		{
+			if (ec == std::errc::no_such_file_or_directory) return ReadFileStatus::Missing;
+			return ReadFileStatus::Error;
+		}
+		if (status.type() == std::filesystem::file_type::not_found) return ReadFileStatus::Missing;
+		if (!std::filesystem::is_regular_file(status)) return ReadFileStatus::Error;
+		return TryReadFile(path, out) ? ReadFileStatus::Read : ReadFileStatus::Error;
+	}
+
 	inline std::string ReadTextFile(const std::filesystem::path& path)
 	{
 		std::string text;

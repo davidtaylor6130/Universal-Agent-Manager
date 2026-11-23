@@ -918,7 +918,7 @@ bool Application::InitializeState()
 	// UAM_DATA_DIR now overrides. Nothing is copied until the user answers the startup prompt.
 	m_app.pending_legacy_data_roots = uam::LocalChatBundleService::PendingLegacyDataRoots(
 	    m_app.data_root, m_platformServices->path_service.DefaultDataRootPath(), executable_path);
-	m_app.folders = ChatFolderStore::Load(m_app.data_root);
+	m_app.folders = ChatFolderStore::Load(m_app.data_root, &m_app.folders_load);
 	m_app.shell_actions = ShellActionService::Load(m_app.data_root, {});
 
 	const std::chrono::steady_clock::time_point folders_finished = std::chrono::steady_clock::now();
@@ -1043,7 +1043,7 @@ void Application::FinishStartupState(std::vector<ChatSession> chats, std::string
 		                    " active goal" + (paused_goals == 1 ? "" : "s") +
 		                    " after the manager restarted.";
 	}
-	m_app.resource_collections = uam::ResourceCollectionService::Load(m_app.data_root);
+	m_app.resource_collections = uam::ResourceCollectionService::Load(m_app.data_root, &m_app.resource_collections_load);
 	const std::chrono::steady_clock::time_point restore_finished = std::chrono::steady_clock::now();
 	m_app.startup_native_import_service = std::make_shared<uam::StartupNativeImportService>();
 	m_app.startup_native_import_service->Initialize(m_app);
@@ -1060,6 +1060,13 @@ void Application::FinishStartupState(std::vector<ChatSession> chats, std::string
 	{
 		m_app.status_line =
 		    "A previous computer-use control file could not be stopped. End any orphaned provider process before using computer use.";
+	}
+	// Store load outcomes outrank earlier startup notices: an unrecovered store has refused its saves.
+	for (const uam::io::StoreLoadResult* load : {&m_app.resource_collections_load, &m_app.folders_load})
+	{
+		if (load->warning.empty()) continue;
+		uam::diagnostics::Write("[storage] " + load->warning);
+		if (load->Unrecovered() || m_app.status_line.empty()) m_app.status_line = load->warning;
 	}
 
 	const std::chrono::steady_clock::time_point finish_finished = std::chrono::steady_clock::now();
