@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <vector>
 
@@ -360,6 +361,53 @@ void UamCefApp::OnBeforeCommandLineProcessing(const CefString& process_type, Cef
 	if (command_line == nullptr)
 	{
 		return;
+	}
+
+	// UAM forwards its command line to CEF, so without this filter any launch could open a DevTools port that lets a local
+	// process drive the UI. Only explicit test runs (UAM_TEST_ALLOW_REMOTE_DEBUGGING=1, set by scripts/perf_driven.py) keep it.
+	CefCommandLine::SwitchMap switches;
+	command_line->GetSwitches(switches);
+	std::vector<std::string> switch_names;
+	for (const auto& entry : switches)
+	{
+		switch_names.push_back(entry.first.ToString());
+	}
+	const std::vector<std::string> dropped = uam::cef::RemoteDebuggingSwitchesToDrop(switch_names, std::getenv(uam::cef::kTestRemoteDebuggingEnv));
+	if (!dropped.empty())
+	{
+		// CefCommandLine cannot remove a switch, so rebuild it without the dropped ones; switch order does not matter to Chromium.
+		CefCommandLine::ArgumentList arguments;
+		command_line->GetArguments(arguments);
+		command_line->Reset();
+		for (const auto& entry : switches)
+		{
+			const std::string name = entry.first.ToString();
+			if (std::find(dropped.begin(), dropped.end(), name) != dropped.end())
+			{
+				continue;
+			}
+			if (entry.second.empty())
+			{
+				command_line->AppendSwitch(entry.first);
+			}
+			else
+			{
+				command_line->AppendSwitchWithValue(entry.first, entry.second);
+			}
+		}
+		for (const auto& argument : arguments)
+		{
+			command_line->AppendArgument(argument);
+		}
+		if (process_type.empty())
+		{
+			std::string names;
+			for (const std::string& name : dropped)
+			{
+				names += (names.empty() ? "" : ",") + name;
+			}
+			uam::diagnostics::Write("[CEF] Ignored remote debugging switches outside an explicit test run: " + names);
+		}
 	}
 
 #if defined(__APPLE__)
