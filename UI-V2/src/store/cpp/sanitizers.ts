@@ -995,6 +995,9 @@ function rememberModelCatalogs(value: unknown, reset: boolean): void {
 
 export function resetModelCatalogsForTests(): void {
   modelCatalogsById.clear()
+}
+
+export function resetRetainedChatFieldsForTests(): void {
   retainedChatFieldsByChatId.clear()
 }
 
@@ -1009,7 +1012,9 @@ const RETAINED_ACP_SESSION_FIELDS = ['toolCalls', 'turnEvents', 'availableComman
 const RETAINED_CHAT_FIELDS = new Set<string>(['customIcon', ...RETAINED_ACP_SESSION_FIELDS.map((name) => `acpSession.${name}`)])
 type RetainedChatFields = { revision: number; fields: Record<string, unknown> }
 const retainedChatFieldsByChatId = new Map<string, RetainedChatFields>()
-let missingRetainedChatFields = false
+
+// A patched chat built on a copy this page lacks: the patch applies without it and the store pulls full state.
+const MISSING_RETAINED_COPY = Symbol('missing retained copy')
 
 function restoreRetainedChatFields(chat: unknown): unknown {
   if (!isRecord(chat) || !isString(chat.id)) return chat
@@ -1021,10 +1026,11 @@ function restoreRetainedChatFields(chat: unknown): unknown {
   const fieldOf = (name: string) => name.startsWith('acpSession.') ? name.slice('acpSession.'.length) : name
   if (chat.reusedFields !== undefined) {
     const known = retainedChatFieldsByChatId.get(chatId)
-    // A copy this page never received or has since replaced (a lost patch, say): reject so the store pulls full state.
+    // A copy this page never received or has since replaced (a lost patch, say). Native has moved its copy on,
+    // so the page drops its own too; every later patch for this chat then skips it until the full state arrives.
     if (!isRecord(chat.reusedFields) || !known || known.revision !== chat.reusedFieldsFrom) {
-      missingRetainedChatFields = true
-      return chat
+      retainedChatFieldsByChatId.delete(chatId)
+      return MISSING_RETAINED_COPY
     }
     for (const [name, reuse] of Object.entries(chat.reusedFields)) {
       const owner = ownerOf(name)
@@ -1036,8 +1042,8 @@ function restoreRetainedChatFields(chat: unknown): unknown {
           Array.isArray(previous) && reuse <= previous.length && Array.isArray(rest)) {
         owner[fieldOf(name)] = [...previous.slice(0, reuse), ...rest]
       } else {
-        missingRetainedChatFields = true
-        return chat
+        retainedChatFieldsByChatId.delete(chatId)
+        return MISSING_RETAINED_COPY
       }
     }
   }
@@ -2244,9 +2250,6 @@ export function sanitizeCppAppState(value: unknown): CppAppState | null {
       })
     : []
   if (missingModelCatalog) return null
-  // Copies stay valid across a full state (each carries its revision); only chats that no longer exist drop theirs.
-  const chatIds = new Set(chats.map((chat) => chat.id.trim()))
-  for (const chatId of retainedChatFieldsByChatId.keys()) if (!chatIds.has(chatId)) retainedChatFieldsByChatId.delete(chatId)
   const providers = Array.isArray(value.providers)
     ? value.providers.flatMap((provider) => {
         const sanitized = sanitizeCppProvider(provider)
@@ -2453,15 +2456,20 @@ function sanitizeResourceCollections(value: unknown): ResourceCollection[] {
 export function sanitizeCppStatePatch(value: unknown): CppStatePatch | null {
   if (!isRecord(value)) return null
   rememberModelCatalogs(value.modelCatalogs, value.modelCatalogsReset === true)
-  missingRetainedChatFields = false
+  let skippedChat = false
   const chats = Array.isArray(value.chats)
     ? value.chats.flatMap((chat) => {
-        const sanitized = sanitizeCppChat(restoreRetainedChatFields(chat))
+        const restored = restoreRetainedChatFields(chat)
+        if (restored === MISSING_RETAINED_COPY) {
+          skippedChat = true
+          return []
+        }
+        const sanitized = sanitizeCppChat(restored)
         return sanitized ? [sanitized] : []
       })
     : undefined
-  // A catalogue or chat field copy this page never received (a lost patch, say): reject so the store pulls full state.
-  if (missingModelCatalog || missingRetainedChatFields) return null
+  // A catalogue this page never received (a lost patch, say): reject so the store pulls full state.
+  if (missingModelCatalog) return null
   if (Array.isArray(value.removedChatIds))
     for (const chatId of value.removedChatIds) if (isString(chatId)) retainedChatFieldsByChatId.delete(chatId.trim())
 
@@ -2477,6 +2485,8 @@ export function sanitizeCppStatePatch(value: unknown): CppStatePatch | null {
       ? sanitizeResourceCollections(value.resourceCollections)
       : undefined,
     chats,
+    // The other chats and fields still apply, so approvals and turn state do not wait for the pull.
+    ...(skippedChat ? { skippedChats: true as const } : {}),
     removedChatIds: Array.isArray(value.removedChatIds)
       ? value.removedChatIds.filter(isString)
       : undefined,

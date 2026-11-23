@@ -502,9 +502,11 @@ namespace
 			if (known != g_retained_chat_fields_by_chat_id.end())
 				if (const nlohmann::json::const_iterator found = known->second.fields.find(name); found != known->second.fields.end()) previous = &*found;
 			std::size_t kept = 0;
-			if (previous != nullptr && previous->is_array() && value.is_array())
+			const bool arrays = previous != nullptr && previous->is_array() && value.is_array();
+			if (arrays)
 				while (kept < value.size() && kept < previous->size() && (*previous)[kept] == value[kept]) ++kept;
-			if (previous != nullptr && *previous == value)
+			// The prefix scan already compared every entry of two arrays; only other values need a full comparison.
+			if (arrays ? kept == value.size() && kept == previous->size() : previous != nullptr && *previous == value)
 			{
 				owner.erase(field);
 				reused[name] = true;
@@ -597,7 +599,12 @@ namespace
 			for (nlohmann::json& chat : *chats)
 			{
 				const ChatSession* source = ChatDomainService().FindChatById(app, chat.value("id", ""));
-				if (source == nullptr) continue;
+				if (source == nullptr)
+				{
+					// Sent without a revision, so the page drops its copy; native must forget its own too.
+					g_retained_chat_fields_by_chat_id.erase(uam::nlohmann_json::TrimmedStringValue(chat, {"id"}));
+					continue;
+				}
 				const nlohmann::json::iterator acp = chat.find("acpSession");
 				if (acp != chat.end() && acp->contains("catalogDigest"))
 				{

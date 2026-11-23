@@ -6,7 +6,7 @@ import type { Attachment, Message } from '../types/message'
 import { CppAppState, useAppStore } from './useAppStore'
 import { createUiSlice } from './slices/uiSlice'
 import { parseUamPushPayload } from './push/uamPush'
-import { resetModelCatalogsForTests, sanitizeCppAppState, sanitizeCppStatePatch } from './cpp/sanitizers'
+import { resetModelCatalogsForTests, resetRetainedChatFieldsForTests, sanitizeCppAppState, sanitizeCppStatePatch } from './cpp/sanitizers'
 import { preferredFamilyChat, setPreferredFamilyChat } from '../utils/branchPreferenceStorage'
 import { APP_FAILURE_EVENT, type AppFailure } from '../utils/appFailure'
 
@@ -8572,8 +8572,9 @@ describe('chat fields the page already holds (#947)', () => {
   }
   const full = { toolCalls: [tool('a'), tool('b')], turnEvents: [{ type: 'assistant_text', text: 'Hello' }], availableCommands: [{ name: 'review', description: 'Review', inputHint: '' }] }
 
-  it('restores omitted and appended fields from the copy it holds and rejects a copy it lacks', () => {
+  it('restores omitted and appended fields from the copy it holds and skips a chat whose copy it lacks', () => {
     resetModelCatalogsForTests()
+    resetRetainedChatFieldsForTests()
     const first = sanitizeCppStatePatch({ stateRevision: 2, chats: [live(2, full, { retainedFieldsRevision: 7 })] })
     expect(first?.chats?.[0].acpSession?.toolCalls.map((call) => call.id)).toEqual(['a', 'b'])
 
@@ -8595,22 +8596,40 @@ describe('chat fields the page already holds (#947)', () => {
     expect(changed?.chats?.[0].acpSession?.toolCalls.map((call) => call.status)).toEqual(['completed', 'failed'])
     expect(changed?.chats?.[0].acpSession?.turnEvents.map((event) => event.text)).toEqual(['Hello', ' more'])
 
-    // A copy the page replaced, or never had, rejects the patch; so does a count past the copy's end.
-    const stale = { stateRevision: 5, chats: [live(5, {}, { reusedFieldsFrom: 8, reusedFields: { 'acpSession.toolCalls': true } })] }
-    expect(sanitizeCppStatePatch(stale)).toBeNull()
-    expect(parseUamPushPayload({ type: 'statePatch', data: stale })).toMatchObject({ ok: false, mayHaveCarriedState: true })
-    expect(sanitizeCppStatePatch({ stateRevision: 5, chats: [live(5, { toolCalls: [] }, { reusedFieldsFrom: 9, reusedFields: { 'acpSession.toolCalls': 3 } })] })).toBeNull()
-    expect(sanitizeCppStatePatch({ stateRevision: 5, chats: [live(5, {}, { reusedFieldsFrom: 9, reusedFields: { 'acpSession.lastError': true } })] })).toBeNull()
+    // A copy the page replaced, or never had, leaves that chat out and marks the patch; the rest still applies.
+    const other = { ...live(5, full), id: 'chat-2' }
+    const stale = { stateRevision: 5, statusLine: 'still applied', chats: [live(5, {}, { reusedFieldsFrom: 8, reusedFields: { 'acpSession.toolCalls': true } }), other] }
+    expect(sanitizeCppStatePatch(stale)).toMatchObject({ skippedChats: true, statusLine: 'still applied', chats: [expect.objectContaining({ id: 'chat-2' })] })
+    expect(parseUamPushPayload({ type: 'statePatch', data: stale })).toMatchObject({ ok: true })
+    // The skipped chat's copy is dropped, so its next reuse is skipped too; so are a count past the end and an unknown field.
+    expect(sanitizeCppStatePatch({ stateRevision: 6, chats: [live(6, {}, { reusedFieldsFrom: 9, reusedFields: { customIcon: true } })] })?.skippedChats).toBe(true)
+    sanitizeCppStatePatch({ stateRevision: 6, chats: [live(6, full, { retainedFieldsRevision: 11 })] })
+    expect(sanitizeCppStatePatch({ stateRevision: 7, chats: [live(7, { toolCalls: [] }, { reusedFieldsFrom: 11, reusedFields: { 'acpSession.toolCalls': 3 } })] })?.skippedChats).toBe(true)
+    sanitizeCppStatePatch({ stateRevision: 7, chats: [live(7, full, { retainedFieldsRevision: 12 })] })
+    expect(sanitizeCppStatePatch({ stateRevision: 8, chats: [live(8, {}, { reusedFieldsFrom: 12, reusedFields: { 'acpSession.lastError': true } })] })?.skippedChats).toBe(true)
 
     // A patch without a revision drops the copy, as does a removed chat.
-    expect(sanitizeCppStatePatch({ stateRevision: 6, chats: [live(6, { toolCalls: [] })] })).not.toBeNull()
-    expect(sanitizeCppStatePatch({ stateRevision: 7, chats: [live(7, {}, { reusedFieldsFrom: 9, reusedFields: { customIcon: true } })] })).toBeNull()
-    sanitizeCppStatePatch({ stateRevision: 8, chats: [live(8, full, { retainedFieldsRevision: 10 })] })
-    sanitizeCppStatePatch({ stateRevision: 9, removedChatIds: ['chat-1'] })
-    expect(sanitizeCppStatePatch({ stateRevision: 10, chats: [live(10, {}, { reusedFieldsFrom: 10, reusedFields: { customIcon: true } })] })).toBeNull()
+    sanitizeCppStatePatch({ stateRevision: 9, chats: [live(9, full, { retainedFieldsRevision: 13 })] })
+    expect(sanitizeCppStatePatch({ stateRevision: 10, chats: [live(10, { toolCalls: [] })] })?.skippedChats).toBeUndefined()
+    expect(sanitizeCppStatePatch({ stateRevision: 11, chats: [live(11, {}, { reusedFieldsFrom: 13, reusedFields: { customIcon: true } })] })?.skippedChats).toBe(true)
+    sanitizeCppStatePatch({ stateRevision: 12, chats: [live(12, full, { retainedFieldsRevision: 14 })] })
+    sanitizeCppStatePatch({ stateRevision: 13, removedChatIds: ['chat-1'] })
+    expect(sanitizeCppStatePatch({ stateRevision: 14, chats: [live(14, {}, { reusedFieldsFrom: 14, reusedFields: { customIcon: true } })] })?.skippedChats).toBe(true)
+  })
+
+  it('keeps copies across a pulled full state that later patches overtook', () => {
+    resetRetainedChatFieldsForTests()
+    // A new chat streams before an older snapshot (without it) arrives on the reply channel.
+    sanitizeCppStatePatch({ stateRevision: 5, chats: [{ ...live(5, full, { retainedFieldsRevision: 30 }), id: 'chat-new' }] })
+    expect(sanitizeCppAppState(makeCppState(4))).not.toBeNull()
+    const next = sanitizeCppStatePatch({ stateRevision: 6, chats: [{ ...live(6, {}, { retainedFieldsRevision: 31, reusedFieldsFrom: 30,
+      reusedFields: { 'acpSession.toolCalls': true } }), id: 'chat-new' }] })
+    expect(next?.skippedChats).toBeUndefined()
+    expect(next?.chats?.[0].acpSession?.toolCalls.map((call) => call.id)).toEqual(['a', 'b'])
   })
 
   it('keeps live fields on the chat binding through real pushes and pulls full state for a lost copy', async () => {
+    resetRetainedChatFieldsForTests()
     const testWindow = ensureTestWindow()
     vi.resetModules()
     testWindow.dispatchEvent = vi.fn(() => true)
@@ -8635,10 +8654,13 @@ describe('chat fields the page already holds (#947)', () => {
     expect(binding()?.toolCalls.map((call) => call.id)).toEqual(['a', 'b'])
     expect(binding()?.turnEvents.map((event) => event.text)).toEqual(['Hello', ' world'])
 
-    // A patch built on a copy this page never received is not applied; the store pulls the full state instead.
+    // A chat built on a copy this page never received keeps its current state; the rest of the patch applies and
+    // the store pulls the full state.
     const pulls = actions.filter((action) => action === 'getInitialState').length
-    testWindow.uamPush!({ type: 'statePatch', data: { stateRevision: 4, chats: [live(4, {}, { reusedFieldsFrom: 99, reusedFields: { 'acpSession.toolCalls': true } })] } })
-    expect(cefStore.getState().lastAppliedStateRevision).toBe(3)
+    testWindow.uamPush!({ type: 'statePatch', data: { stateRevision: 4, statusLine: 'applied anyway',
+      chats: [live(4, {}, { reusedFieldsFrom: 99, reusedFields: { 'acpSession.toolCalls': true } })] } })
+    expect(cefStore.getState().lastAppliedStateRevision).toBe(4)
+    expect(cefStore.getState().statusLine).toBe('applied anyway')
     expect(binding()?.toolCalls.map((call) => call.id)).toEqual(['a', 'b'])
     await vi.waitFor(() => expect(actions.filter((action) => action === 'getInitialState').length).toBeGreaterThan(pulls), { timeout: 3000 })
   })

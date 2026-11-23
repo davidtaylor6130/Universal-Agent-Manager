@@ -1233,8 +1233,12 @@ export const useAppStore = create<AppState>((set, get) => {
           break
         case 'statePatch':
           if (stateResyncInFlight) {
-            if (patchesDuringResync.length < STATE_RESYNC_MAX_HELD_PATCHES) patchesDuringResync.push(msg.data)
+            // A copy missing a chat cannot rebuild the store; the snapshot in flight (taken after native dropped
+            // its field copies) carries that chat, so it settles only from a snapshot at or above the store.
+            if (patchesDuringResync.length < STATE_RESYNC_MAX_HELD_PATCHES && !msg.data.skippedChats) patchesDuringResync.push(msg.data)
             else patchesDuringResyncOverflowed = true
+          } else if (msg.data.skippedChats) {
+            requestStateResync('patch built on a chat field copy this page lacks')
           }
           applyLivePatch(msg.data)
           break

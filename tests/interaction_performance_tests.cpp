@@ -1799,8 +1799,11 @@ UAM_TEST(StatePushSerializesLiveToolCallsOnlyWhenTheyChange)
 		const nlohmann::json patch = nlohmann::json::parse(g_observed_state_patch)["data"];
 		UAM_ASSERT_EQ(patch["chats"].size(), std::size_t{3});
 		// The first patch after the full state carries every tool call; later ones name the page's copy instead (#947).
-		if (token == 0 && patch["chats"][0]["acpSession"].contains("toolCalls"))
+		if (token == 0)
+		{
+			UAM_ASSERT(!patch["chats"][0].contains("reusedFields"));
 			UAM_ASSERT_EQ(patch["chats"][0]["acpSession"]["toolCalls"].size(), app.acp_sessions[0]->tool_calls.size());
+		}
 		else
 		{
 			UAM_ASSERT(!patch["chats"][0]["acpSession"].contains("toolCalls"));
