@@ -613,6 +613,28 @@ describe('MarkdownStoreModal', () => {
     expect(useAppStore.getState().createMarkdownStoreEntry).toHaveBeenCalledTimes(1)
   })
 
+  it('leaves after Overwrite when Save & close edits an existing skill, and Escape cancels the leave', async () => {
+    const close = useAppStore.getState().closeMarkdownStore
+    const { host } = mountSkills()
+    openSkill('Review code')
+    click('Edit Review code in app')
+    changeField('Entry title', 'Review code v2')
+    click('Close skills')
+    escape()
+    // Escape on the prompt keeps editing and forgets the leave.
+    expect(host.querySelector('[aria-label="Unsaved skill changes"]')).toBeNull()
+    expect((host.querySelector('input[aria-label="Entry title"]') as HTMLInputElement).value).toBe('Review code v2')
+    click('Cancel'); click('Keep editing')
+    expect(close).not.toHaveBeenCalled()
+    click('Close skills')
+    click('Save & close')
+    expect(host.querySelector('[aria-label="Overwrite skill"]')).toBeTruthy()
+    expect(close).not.toHaveBeenCalled()
+    await act(async () => { button('Overwrite').click(); await Promise.resolve() })
+    expect(useAppStore.getState().updateMarkdownStoreEntry).toHaveBeenCalledWith(expect.objectContaining({ id: 'review' }), expect.objectContaining({ title: 'Review code v2' }))
+    expect(close).toHaveBeenCalledTimes(1)
+  })
+
   it('keeps the draft and stays open when saving before leaving fails', async () => {
     useAppStore.setState({ createMarkdownStoreEntry: vi.fn(() => Promise.resolve(false)) })
     const close = useAppStore.getState().closeMarkdownStore

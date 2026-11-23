@@ -625,6 +625,17 @@ function customThemeId(name: string, themes: CustomTheme[]) {
   return id
 }
 
+/** "<name> copy", then "<name> copy 2"…, kept within the 64-character theme name limit and unused by saved themes. */
+function importedCopyName(name: string, themes: CustomTheme[]) {
+  const names = new Set(themes.map((theme) => theme.name))
+  if (!names.has(name)) return name
+  for (let index = 1; ; ++index) {
+    const suffix = index === 1 ? ' copy' : ` copy ${index}`
+    const candidate = `${name.slice(0, 64 - suffix.length).trimEnd()}${suffix}`
+    if (!names.has(candidate)) return candidate
+  }
+}
+
 function editorPresetLabel(id: string) {
   return EDITOR_PRESETS.find((preset) => preset.id === id)?.label ?? 'VS Code'
 }
@@ -1127,7 +1138,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     // Installed with a caveat (for example startup not confirmed) is not a clean "ready".
     const warning = response.warning?.replace(/\s+/g, ' ').trim()
     if (warning) reportAppNotice(warning, 'warning')
-    else reportAppNotice(`${host.label} is ready.`, 'success')
+    else reportAppNotice('Remote helper is ready.', 'success')
     setRemoteAlias('')
     setRemoteLabel('')
   }
@@ -1438,7 +1449,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       reportAppNotice('Theme imported.', 'success')
       return true
     } catch {
-      reportAppFailure('Theme import failed.', 'Choose a valid UAM theme JSON file.')
+      // The file already passed validation here, so this is a save failure.
+      reportAppFailure('Theme could not be saved.', 'Try again.')
       return false
     }
   }
@@ -1455,7 +1467,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const resolveThemeImport = async (keepBoth: boolean) => {
     if (!pendingThemeImport || themeSaveInFlightRef.current) return
     const { theme: imported } = pendingThemeImport
-    const name = keepBoth && customThemes.some((candidate) => candidate.name === imported.name) ? `${imported.name} copy` : imported.name
+    const name = keepBoth ? importedCopyName(imported.name, customThemes) : imported.name
     themeSaveInFlightRef.current = true
     setThemeSaving(true)
     try {
@@ -3211,7 +3223,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       <ConfirmDialog open={Boolean(pendingThemeImport)} title={`Replace “${pendingThemeImport?.existing.name ?? ''}”?`} label="Imported theme already exists"
         confirmLabel="Replace" busy={themeSaving} secondaryAction={{ label: 'Keep both', onClick: () => void resolveThemeImport(true) }}
         onCancel={() => setPendingThemeImport(null)} onConfirm={() => void resolveThemeImport(false)}>
-        <p>The imported theme “{pendingThemeImport?.theme.name}” has the same id as a saved theme. Replace overwrites it; Keep both saves the import separately.</p>
+        <p>Importing “{pendingThemeImport?.theme.name}” would overwrite your saved theme.</p>
       </ConfirmDialog>
       <Presence open={Boolean(pendingDefaultYolo)}>{pendingDefaultYolo && <ConfirmDialog open title="Use YOLO by default?" confirmLabel="Use YOLO"
         onCancel={() => setPendingDefaultYolo(null)} onConfirm={() => { const pending = pendingDefaultYolo; setPendingDefaultYolo(null); updateProviderDefaults(pending.providerId, pending.defaults) }}>

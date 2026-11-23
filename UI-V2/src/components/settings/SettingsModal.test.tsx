@@ -927,7 +927,7 @@ describe('SettingsModal memory settings', () => {
 
     failures.length = 0
     await install('{"ok":true}')
-    expect(failures).toEqual([expect.objectContaining({ tone: 'success', message: 'colima is ready.' })])
+    expect(failures).toEqual([expect.objectContaining({ tone: 'success', message: 'Remote helper is ready.' })])
 
     act(() => root.unmount())
     host.remove()
@@ -2766,10 +2766,13 @@ describe('SettingsModal memory settings', () => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(field, 'Unsaved skill')
       field.dispatchEvent(new Event('input', { bubbles: true }))
     })
-    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Editors"]')?.click())
+    const editors = host.querySelector<HTMLButtonElement>('[aria-label="Editors"]')!
+    act(() => { editors.focus(); editors.click() })
     expect(host.querySelector('[aria-label="Unsaved skill changes"]')).toBeTruthy()
     act(() => find('Discard')?.click())
     expect(host.querySelector('[role="region"][aria-label="Skills"]')).toBeNull()
+    // The prompt that held focus is gone, so focus returns to the page button that asked to leave.
+    expect(document.activeElement).toBe(editors)
     expect(find('Add group')).toBeTruthy()
     expect(useAppStore.getState().createMarkdownStoreEntry).not.toHaveBeenCalled()
     act(() => root.unmount()); host.remove()
@@ -2970,6 +2973,35 @@ describe('SettingsModal memory settings', () => {
     act(() => root.unmount()); host.remove()
   })
 
+  it('keeps both under a unique name within the theme name limit', async () => {
+    const longName = 'A'.repeat(62)
+    const themes = [
+      { version: 1 as const, id: 'custom:ocean' as const, name: 'Ocean', base: 'dark' as const, colors: { ...BUILT_IN_THEME_COLORS.dark } },
+      { version: 1 as const, id: 'custom:ocean-copy' as const, name: 'Ocean copy', base: 'dark' as const, colors: { ...BUILT_IN_THEME_COLORS.dark } },
+      { version: 1 as const, id: 'custom:long' as const, name: longName, base: 'dark' as const, colors: { ...BUILT_IN_THEME_COLORS.dark } },
+    ]
+    useAppStore.setState({ theme: 'focus', customThemes: themes })
+    const { host, root } = renderModal()
+    const save = useAppStore.getState().saveCustomTheme
+    const keepBoth = async (theme: object) => {
+      const input = host.querySelector('input[aria-label="Import theme JSON"]') as HTMLInputElement
+      const file = new File([], 'theme.json', { type: 'application/json' })
+      Object.defineProperty(file, 'text', { value: () => Promise.resolve(JSON.stringify(theme)) })
+      Object.defineProperty(input, 'files', { configurable: true, value: [file] })
+      await act(async () => { input.dispatchEvent(new Event('change', { bubbles: true })) })
+      const dialog = document.querySelector('[role="alertdialog"][aria-label="Imported theme already exists"]')!
+      await act(async () => { Array.from(dialog.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Keep both')!.click(); await Promise.resolve() })
+    }
+    await keepBoth(themes[0])
+    expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ id: 'custom:ocean-copy-2', name: 'Ocean copy 2' }))
+    await keepBoth(themes[2])
+    const saved = vi.mocked(save).mock.lastCall![0]
+    expect(saved.name).toBe(`${'A'.repeat(59)} copy`)
+    expect(saved.name.length).toBeLessThanOrEqual(64)
+    expect(saved.id).not.toBe('custom:long')
+    act(() => root.unmount()); host.remove()
+  })
+
   it('keeps a clashing theme import pending when saving it fails', async () => {
     const ocean = { version: 1 as const, id: 'custom:ocean' as const, name: 'Ocean', base: 'dark' as const, colors: { ...BUILT_IN_THEME_COLORS.dark } }
     useAppStore.setState({ theme: 'focus', customThemes: [ocean], saveCustomTheme: vi.fn(async () => null) })
@@ -2981,7 +3013,7 @@ describe('SettingsModal memory settings', () => {
     await act(async () => { input.dispatchEvent(new Event('change', { bubbles: true })) })
     const dialog = () => document.querySelector('[role="alertdialog"][aria-label="Imported theme already exists"]')
     await act(async () => { Array.from(dialog()!.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Keep both')!.click(); await Promise.resolve() })
-    expect(failures.at(-1)?.message).toBe('Theme import failed.')
+    expect(failures.at(-1)).toMatchObject({ message: 'Theme could not be saved.', detail: 'Try again.' })
     expect(dialog()).toBeTruthy()
     expect(useAppStore.getState().setTheme).not.toHaveBeenCalled()
     act(() => root.unmount()); host.remove()

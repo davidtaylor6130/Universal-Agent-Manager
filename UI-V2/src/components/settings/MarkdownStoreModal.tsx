@@ -73,6 +73,13 @@ export const MarkdownStoreModal = forwardRef<MarkdownStoreHandle, { embedded?: b
   const draftDirty = JSON.stringify(draft) !== JSON.stringify(initialDraftRef.current)
   // Where to go once the unsaved draft is saved or discarded (leaving the page or closing Skills).
   const pendingLeaveRef = useRef<(() => void) | null>(null)
+  // The control that asked to leave (a Settings page button, say), focused again if leaving unmounts Skills.
+  const leaveOpenerRef = useRef<HTMLElement | null>(null)
+  const leftRef = useRef(false)
+  useEffect(() => () => {
+    const opener = leaveOpenerRef.current
+    if (leftRef.current && opener?.isConnected && (!document.activeElement || document.activeElement === document.body)) opener.focus()
+  }, [])
   const [addView, setAddView] = useState<'choose' | 'provider' | null>(null)
   const [importProvider, setImportProvider] = useState('')
   const [previewing, setPreviewing] = useState(false)
@@ -130,7 +137,7 @@ export const MarkdownStoreModal = forwardRef<MarkdownStoreHandle, { embedded?: b
     setShowEditorPreview(false)
     const next = pendingLeaveRef.current
     pendingLeaveRef.current = null
-    if (next) next()
+    if (next) { leftRef.current = true; next() }
     else editorTriggerRef.current?.focus()
   }
 
@@ -142,7 +149,12 @@ export const MarkdownStoreModal = forwardRef<MarkdownStoreHandle, { embedded?: b
   // An unsaved draft asks first; Discard or a successful save then carries on with the leave.
   const requestLeave = useCallback((next: () => void) => {
     if (submittingRef.current) return
-    if (editing && draftDirty) { pendingLeaveRef.current = next; setConfirmation('discard') }
+    leftRef.current = false
+    if (editing && draftDirty) {
+      leaveOpenerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+      pendingLeaveRef.current = next
+      setConfirmation('discard')
+    }
     else next()
   }, [editing, draftDirty])
   useImperativeHandle(ref, () => ({ requestLeave }), [requestLeave])
