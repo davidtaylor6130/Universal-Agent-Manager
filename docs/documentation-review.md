@@ -318,13 +318,15 @@ Recorded limits that are not decisions: Claude Code, Gemini and Copilot children
 
 ## UAM read-only insight tools
 
-The [UAM tools](providers/uam-tools.md) `usage_report` and `worktree_status` follow the first slices of the V5.2.x scoping review for #967 and #964. They are read-only, carry the read-only hint and are offered to every session that has UAM tools, except goal reviewers, which still get none. `log_tail` from the same issue waits for log lines that carry a chat id, because filtering free text by chat could leak other chats' lines.
+The [UAM tools](providers/uam-tools.md) `usage_report`, `worktree_status` and `memory_search` follow the first slices of the V5.2.x scoping review for #967, #964 and #963. They are read-only, carry the read-only hint and are offered to every session that has UAM tools, except goal reviewers, which still get none. `log_tail` from the same issue waits for log lines that carry a chat id, because filtering free text by chat could leak other chats' lines.
 
 **Open, pending David's decision.** Interim choices:
 
 - `usage_report` leaves out account money figures (credit balance, spend limit and amount used) and reports only shares, resets and limit flags. Whether agents may see those amounts is undecided.
 - Goal reviewers do not get `worktree_status`, so their prompt still tells them to run shell `git`. Giving a reviewer this one read-only tool is a deliberate change to the reviewer's no-tools rule and waits for a decision.
 - `worktree_status` reports only uncommitted changes against the current commit or checked-out revision; changes since the chat started (the commit panel's chat comparison) are not offered yet.
+- `memory_search` follows memory's Off setting but not the recall budget: a recall budget of zero stops automatic recall in prompts, while an agent can still search. It refuses chats on SSH hosts, as recall does.
+- `memory_save`, `skill_create`/`skill_update` and `agent_define` from #963, and `commit_propose` and the pull request tools from #964, wait for the decisions recorded on those issues.
 
 ## Pull request watching
 

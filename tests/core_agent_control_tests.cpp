@@ -1148,6 +1148,7 @@ UAM_TEST(UamControlCapabilityBoundsGoalAuthorityReplayRateCancellationAndRestart
 	    {"goal_get", {{"unexpected", "value"}}},
 	    {"usage_report", {{"chatId", "another-chat"}}},
 	    {"worktree_status", {{"path", "/"}}},
+	    {"memory_search", {{"query", "widget"}, {"chatId", "another-chat"}}},
 	    {"goal_create", {{"objective", "goal"}, {"idempotencyKey", "strict"}, {"maxTurns", "999"}}},
 	};
 	for (std::size_t index = 0; index < strict_arguments.size(); ++index)
@@ -1183,11 +1184,11 @@ UAM_TEST(UamControlCapabilityBoundsGoalAuthorityReplayRateCancellationAndRestart
 		const std::string name = tool.value("name", "");
 		const bool read_only = name == "agent_list" || name == "agent_status" || name == "agent_wait" || name == "skill_list" ||
 		    name == "skill_read" || name == "goal_get" || name == "user_question" || name == "usage_report" ||
-		    name == "worktree_status" || name == "html_view_preview" || name == "html_view_publish";
+		    name == "worktree_status" || name == "memory_search" || name == "html_view_preview" || name == "html_view_publish";
 		UAM_ASSERT_EQ(tool.contains("annotations") && tool["annotations"].value("readOnlyHint", false), read_only);
 		hinted += read_only ? 1 : 0;
 	}
-	UAM_ASSERT_EQ(hinted, std::size_t{11});
+	UAM_ASSERT_EQ(hinted, std::size_t{12});
 	const nlohmann::json read_only_goal = call(capability, "policy-read", "goal_get");
 	UAM_ASSERT(read_only_goal.value("ok", false));
 	UAM_ASSERT(!read_only_goal["result"].value("mutationToolsEnabled", true));
@@ -1631,7 +1632,7 @@ UAM_TEST(UamControlListsOnlyToolsTheSessionCanUse)
 
 	// A local root build chat keeps every tool.
 	UAM_ASSERT_EQ(hidden_for(raw), std::string(UAM_ENABLE_COMPUTER_USE ? "" : "computer_use_request"));
-	UAM_ASSERT_EQ(uam::UamControlService::ToolDefinitionsForTests("").size(), std::size_t{19});
+	UAM_ASSERT_EQ(uam::UamControlService::ToolDefinitionsForTests("").size(), std::size_t{20});
 
 	// A chat started by another chat cannot start chats, so chat_create is not offered.
 	app.chats.front().created_by_chat_id = "creator";
@@ -1647,7 +1648,8 @@ UAM_TEST(UamControlListsOnlyToolsTheSessionCanUse)
 		UAM_ASSERT(hidden.find(name) != std::string::npos);
 	UAM_ASSERT(hidden.find("agent_delegate") == std::string::npos);
 	// Read-only insight stays available to a read-only agent.
-	UAM_ASSERT(hidden.find("usage_report") == std::string::npos && hidden.find("worktree_status") == std::string::npos);
+	UAM_ASSERT(hidden.find("usage_report") == std::string::npos && hidden.find("worktree_status") == std::string::npos &&
+	           hidden.find("memory_search") == std::string::npos);
 	// A missing workspace access counts as read-only too.
 	raw.active_uam_agent_workspace_access.clear();
 	UAM_ASSERT(hidden_for(raw).find("goal_create") != std::string::npos);
@@ -1705,7 +1707,7 @@ UAM_TEST(UamControlListsOnlyToolsTheSessionCanUse)
 	UAM_ASSERT_EQ(refused["error"]["message"].get<std::string>(), std::string("This UAM tool is not available in this session."));
 	UAM_ASSERT(fs::is_empty(app.uam_control_capabilities.back().directory / "requests"));
 	raw.goal_review_turn = false;
-	UAM_ASSERT_EQ(uam::UamControlService::ToolDefinitionsForTests(hidden_for(raw)).size(), std::size_t{UAM_ENABLE_COMPUTER_USE ? 19 : 18});
+	UAM_ASSERT_EQ(uam::UamControlService::ToolDefinitionsForTests(hidden_for(raw)).size(), std::size_t{UAM_ENABLE_COMPUTER_USE ? 20 : 19});
 
 	// A temporary side chat cannot watch pull requests, so it is not offered the watch tools.
 	app.chats.front().temporary_parent_chat_id = "parent";
@@ -2060,6 +2062,85 @@ UAM_TEST(UamControlWorktreeStatusReadsAnSvnWorkingCopy)
 	UAM_ASSERT_EQ(reply["result"]["changedFiles"][0].value("path", ""), std::string("tracked.txt"));
 }
 #endif
+
+UAM_TEST(UamControlMemorySearchUsesOnlyTheCallingChatsRecallScopes)
+{
+	ReadToolFixture fixture("uam-control-memory-search");
+	const fs::path workspace = fixture.temp.root / "workspace";
+	const fs::path other_workspace = fixture.temp.root / "other-workspace";
+	fs::create_directories(workspace);
+	fs::create_directories(other_workspace);
+	const std::string category = uam::memory::SupportedCategories().front();
+	const auto remember = [&](const fs::path& root, const std::string& name, const std::string& fact)
+	{
+		const fs::path directory = MemoryService::CategoryPath(root, category);
+		fs::create_directories(directory);
+		UAM_ASSERT(uam::io::WriteTextFile(directory / (name + ".md"), "# " + name + "\n\n## Memory\n" + fact + "\n"));
+	};
+	remember(MemoryService::GlobalMemoryRoot(fixture.app.data_root), "global-widget", "Widget builds use tabs for indentation.");
+	remember(MemoryService::LocalMemoryRoot(workspace), "workspace-widget", "The widget workspace keeps release notes in docs.");
+	remember(MemoryService::LocalMemoryRoot(other_workspace), "other-widget", "Another widget indentation release note-marker-other-workspace.");
+	fixture.AddChat("memory-caller", workspace);
+	fixture.AddChat("memory-other", other_workspace);
+	const std::string capability = fixture.Issue("memory-caller");
+	const auto search = [&](const std::string& request_id, const std::string& query)
+	{
+		const nlohmann::json started = fixture.Call(capability, request_id, "memory_search", {{"query", query}});
+		return started.value("pendingBackgroundRead", false) ? fixture.AwaitReply(capability, request_id) : started;
+	};
+
+	// Global and this chat's workspace memories match; another workspace's never does.
+	nlohmann::json reply = search("memory-1", "widget indentation release");
+	UAM_ASSERT(reply.value("ok", false));
+	const nlohmann::json& results = reply["result"]["results"];
+	UAM_ASSERT_EQ(results.size(), std::size_t{2});
+	std::set<std::string> scopes;
+	for (const nlohmann::json& result : results) scopes.insert(result.value("scope", ""));
+	UAM_ASSERT(scopes == std::set<std::string>({"global", "workspace"}));
+	UAM_ASSERT(reply.dump().find("note-marker-other-workspace") == std::string::npos);
+	// The order is recall's own ranking for the same chat and words.
+	const ChatSession& caller = *ChatDomainService().FindChatById(fixture.app, "memory-caller");
+	const std::vector<MemoryService::RecallMatch> ranked = MemoryService::RankRecall(MemoryService::RecallRoots(fixture.app, caller), "widget indentation release");
+	UAM_ASSERT_EQ(ranked.size(), std::size_t{2});
+	UAM_ASSERT_EQ(results[0].value("text", ""), ranked[0].text);
+	UAM_ASSERT_EQ(ChatDomainService().FindChatById(fixture.app, "memory-caller")->uam_control_audit.back().method, std::string("memory_search"));
+
+	// A query without searchable words answers at once with no results.
+	reply = fixture.Call(capability, "memory-empty", "memory_search", {{"query", "the and to"}});
+	UAM_ASSERT(reply.value("ok", false));
+	UAM_ASSERT(reply["result"]["results"].empty());
+
+	// Many matches: at most ten, with an explicit marker for the rest.
+	for (int index = 0; index < 25; ++index)
+		remember(MemoryService::GlobalMemoryRoot(fixture.app.data_root), "bulk-" + std::to_string(index), "Bulk widget fact number " + std::to_string(index) + ".");
+	reply = search("memory-many", "widget");
+	UAM_ASSERT(reply.value("ok", false));
+	UAM_ASSERT_EQ(reply["result"]["results"].size(), std::size_t{10});
+	UAM_ASSERT_EQ(reply["result"]["matches"].get<std::size_t>(), std::size_t{27});
+	UAM_ASSERT(reply["result"].value("truncated", false));
+	UAM_ASSERT_EQ(reply["result"]["omittedMatches"].get<std::size_t>(), std::size_t{17});
+	UAM_ASSERT(nlohmann::json(reply.dump()).dump().size() + 256 <= 64U * 1024U);
+
+	// Where recall reads nothing, search refuses: memory off for the chat, or a chat on an SSH host.
+	ChatDomainService().FindChatById(fixture.app, "memory-caller")->memory_level = "off";
+	reply = fixture.Call(capability, "memory-off", "memory_search", {{"query", "widget"}});
+	UAM_ASSERT(!reply.value("ok", true));
+	UAM_ASSERT(reply.value("error", "").find("turned off") != std::string::npos);
+	ChatDomainService().FindChatById(fixture.app, "memory-caller")->memory_level = "strict";
+	ChatDomainService().FindChatById(fixture.app, "memory-caller")->execution_host_id = "ssh-host";
+	reply = fixture.Call(capability, "memory-ssh", "memory_search", {{"query", "widget"}});
+	UAM_ASSERT(!reply.value("ok", true));
+	ChatDomainService().FindChatById(fixture.app, "memory-caller")->execution_host_id = "local";
+
+	// Arguments are a single bounded, non-blank query.
+	const std::vector<nlohmann::json> invalid = {nlohmann::json::object(), nlohmann::json{{"query", "   "}}, nlohmann::json{{"query", std::string(513, 'w')}},
+	                                             nlohmann::json{{"query", "widget"}, {"scope", "all"}}, nlohmann::json{{"query", 1}}};
+	for (std::size_t index = 0; index < invalid.size(); ++index)
+	{
+		const nlohmann::json refused = fixture.Call(capability, "memory-bad-" + std::to_string(index), "memory_search", invalid[index]);
+		UAM_ASSERT(!refused.value("ok", true) && refused.value("error", "").find("invalid arguments") != std::string::npos);
+	}
+}
 
 UAM_TEST(UamControlUserQuestionRoutesThroughTheExistingGuiInput)
 {
