@@ -1833,7 +1833,7 @@ void UamQueryHandler::HandleImportProviderAgent(CefRefPtr<CefBrowser>, const nlo
 	cb->Success(nlohmann::json{{"id", imported.id}, {"description", imported.description}, {"mode", imported.mode}}.dump());
 }
 
-void UamQueryHandler::HandleGetManagedAgentTranscript(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+void UamQueryHandler::HandleGetManagedAgentTranscript(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	using namespace uam::query_handler_async;
 	const std::string root_chat_id = payload.value("chatId", "");
@@ -1981,14 +1981,14 @@ void UamQueryHandler::HandleGetManagedAgentTranscript(CefRefPtr<CefBrowser> /*br
 	{
 		// Not in memory (for example an unfinished run whose transcript was never adopted): read, hydrate and
 		// serialize the saved file on a worker, then revalidate the run before replying.
-		if (m_nativeHistoryRequests.contains(transcript_chat_id))
-		{
-			cb->Failure(409, "Managed agent transcript history is already loading.");
+		// A newer open waits for the pending read and then re-runs this handler; the older delivery is withdrawn.
+		if (AwaitNativeHistoryRead(transcript_chat_id, cb, [this, browser, payload, cb]() { HandleGetManagedAgentTranscript(browser, payload, cb); }))
 			return;
-		}
 		const auto request = BeginNativeHistoryRead(transcript_chat_id, cb);
 		const std::filesystem::path data_root = m_app.data_root;
 		const std::string run_id = run->id;
+		const std::string run_status = run->status;
+		const std::string run_updated_at = run->updated_at;
 		auto saved = std::make_shared<ChatSession>();
 		auto messages = std::make_shared<nlohmann::json>();
 		if (!DispatchManagedSubagentQuery(
@@ -2003,13 +2003,14 @@ void UamQueryHandler::HandleGetManagedAgentTranscript(CefRefPtr<CefBrowser> /*br
 				        return AsyncFailure(404, FailureDetailOrFallback(warning, "Managed agent transcript is unavailable."));
 			        if (loaded->agent_run_id != run_id)
 				        return AsyncFailure(404, "Managed agent transcript is unavailable.");
+			        // LoadLocalChat with messages normally returns them loaded; hydrate defensively if a capped read did not.
 			        if (!loaded->messages_loaded && !ChatRepository::HydrateChatMessages(data_root, *loaded, &warning))
 				        return AsyncFailure(500, FailureDetailOrFallback(warning, "Failed to load the managed agent transcript."));
 			        *messages = uam::StateSerializer::SerializeSession(*loaded).value("messages", nlohmann::json::array());
 			        *saved = std::move(*loaded);
 			        return AsyncSuccess({});
 		        },
-		        [this, root_chat_id, transcript_chat_id, run_id, data_root, request, saved, messages](AsyncCefResult& response)
+		        [this, root_chat_id, transcript_chat_id, run_id, run_status, run_updated_at, data_root, request, saved, messages](AsyncCefResult& response)
 		        {
 			        const auto pending = m_nativeHistoryRequests.find(transcript_chat_id);
 			        if (pending == m_nativeHistoryRequests.end() || pending->second != request)
@@ -2020,10 +2021,11 @@ void UamQueryHandler::HandleGetManagedAgentTranscript(CefRefPtr<CefBrowser> /*br
 			        FinishNativeHistoryRead(transcript_chat_id, request);
 			        if (!response.ok)
 				        return;
-			        // The same run must still own this transcript, and nothing may have adopted a newer copy meanwhile.
+			        // The same run, unchanged since the read began, must still own this transcript, and nothing may have
+			        // adopted a newer copy meanwhile; otherwise the status and messages could disagree.
 			        const ChatSession* current_root = ChatDomainService().FindChatById(m_app, root_chat_id);
 			        const auto current_run = std::ranges::find_if(m_app.agent_runs, [&](const AgentRun& candidate) { return candidate.root_chat_id == root_chat_id && candidate.transcript_chat_id == transcript_chat_id; });
-			        if (m_app.data_root != data_root || current_root == nullptr || !current_root->agent_run_id.empty() || current_run == m_app.agent_runs.end() || current_run->id != run_id || saved->agent_run_id != run_id || ChatDomainService().FindChatById(m_app, transcript_chat_id) != nullptr || (m_workspaceDeletionPending && m_app.worktree_operation_chat_ids.contains(transcript_chat_id)))
+			        if (m_app.data_root != data_root || current_root == nullptr || !current_root->agent_run_id.empty() || current_run == m_app.agent_runs.end() || current_run->id != run_id || current_run->status != run_status || current_run->updated_at != run_updated_at || ChatDomainService().FindChatById(m_app, transcript_chat_id) != nullptr || (m_workspaceDeletionPending && m_app.worktree_operation_chat_ids.contains(transcript_chat_id)))
 			        {
 				        response = AsyncFailure(409, "Managed agent transcript changed while it was loading.");
 				        return;
