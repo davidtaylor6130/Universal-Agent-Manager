@@ -1253,15 +1253,19 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   // A live turn whose index no longer resolves still owns the latest assistant row when that row holds its text; the
   // timeline replaces the row in place, keeping live tools and controls without a second card.
   // A steer, queued or prepared user row can follow the answer (#278); the turn's own user row still places it then.
-  const latestAssistantFollowsTurnUser =
-    latestAssistantMessageIndex >= earliestRenderedMessageIndex &&
-    (latestAssistantMessageIndex > latestUserMessageIndex ||
-      (latestAssistantMessageIndex > turnUserMessageIndex && messages[turnUserMessageIndex]?.role === 'user'))
+  // While the turn runs, only priority steers may follow it: an ordinary row there may be this turn's own prompt, with
+  // the stale index left on an older turn whose answer reads the same.
+  const latestAssistantShown = latestAssistantMessageIndex >= earliestRenderedMessageIndex
+  const latestAssistantFollowsLatestUser = latestAssistantShown && latestAssistantMessageIndex > latestUserMessageIndex
+  const latestAssistantFollowsTurnUser = latestAssistantFollowsLatestUser ||
+    (latestAssistantShown && latestAssistantMessageIndex > turnUserMessageIndex && messages[turnUserMessageIndex]?.role === 'user')
+  const onlySteersFollowLatestAssistant = latestAssistantFollowsLatestUser ||
+    (latestAssistantFollowsTurnUser && messages.slice(latestAssistantMessageIndex + 1).every((message) => message.role !== 'user' || message.prioritySteer))
   const liveTurnOwnsLatestAssistant =
     !recordedTurnAssistantMatches && Boolean(acp?.processing) &&
     historyStartIndex + messages.length >= (session.messageCount ?? 0) &&
-    latestAssistantFollowsTurnUser &&
-    contentIsExactlyTurnText(messages[latestAssistantMessageIndex].content, turnEvents, messages[latestAssistantMessageIndex].isStreaming)
+    onlySteersFollowLatestAssistant &&
+    contentIsExactlyTurnText(messages[latestAssistantMessageIndex]?.content ?? '', turnEvents, messages[latestAssistantMessageIndex]?.isStreaming)
   const turnAssistantMessageIndex = liveTurnOwnsLatestAssistant ? latestAssistantMessageIndex : recordedTurnAssistantMessageIndex
   const turnAssistantMessageMatches = recordedTurnAssistantMatches || liveTurnOwnsLatestAssistant
   const turnUserMessageMatches =
