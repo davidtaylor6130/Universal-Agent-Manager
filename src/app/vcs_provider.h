@@ -55,6 +55,8 @@ namespace uam
 		virtual VcsHistoryPage History(const VcsCommandRunner& run, const VcsHistoryRequest& request) const;
 		virtual std::string RevisionDiff(const VcsCommandRunner& run, const std::string& revision, const std::string& path, std::string& error) const;
 		virtual VcsUpdateResult Update(const VcsCommandRunner& run) const;
+		/// <summary>Marks one conflicted path resolved with `accept`; empty on success, otherwise the reason.</summary>
+		virtual std::string Resolve(const VcsCommandRunner& run, const std::string& path, const std::string& accept, std::string& output) const;
 		virtual VcsOriginReply Origin(const VcsCommandRunner& run, const VcsOriginRequest& request) const;
 	};
 

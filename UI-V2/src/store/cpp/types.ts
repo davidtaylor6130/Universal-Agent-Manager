@@ -1057,6 +1057,17 @@ export interface VcsUpdateResult {
   conflicts: boolean
   revision: string
   output: string
+  /** The update finished, but something it covers did not, one line each (an external that could not be updated). */
+  warnings?: string[]
+  error: string
+}
+
+/** How `svn resolve` settles a conflicted path: keep the file as it is now, take the repository's version or keep the local one. */
+export type VcsResolveChoice = 'working' | 'theirs-full' | 'mine-full'
+
+export interface VcsResolveResult {
+  ok: boolean
+  output: string
   error: string
 }
 

@@ -60,6 +60,8 @@ import type {
   VcsOriginReply,
   VcsOriginView,
   VcsUpdateResult,
+  VcsResolveChoice,
+  VcsResolveResult,
   VcsType,
   ComputerUseAllowedApplication,
   WindowsPowerShellPreference,
@@ -348,6 +350,8 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   getVcsOrigin: (id: string, vcsType: VcsType, view: VcsOriginView, options?: { before?: string; limit?: number; revisions?: string[]; requestId?: string }) => Promise<VcsOriginReply>
   /** `requestId` lets cancelVcsRequest stop it; a stopped update may leave the working copy needing cleanup. */
   updateVcsWorkspace: (id: string, vcsType: VcsType, requestId?: string) => Promise<VcsUpdateResult>
+  /** Marks one conflicted path resolved; the commit panel refreshes afterwards. */
+  resolveVcsConflict: (id: string, vcsType: VcsType, path: string, accept: VcsResolveChoice) => Promise<VcsResolveResult>
   /** Stops a history or revision-diff request that is still running. */
   cancelVcsRequest: (requestId: string) => void
   generateVcsCommitMessage: (id: string, vcsType: VcsType, files: string[]) => Promise<VcsCommitMessageSuggestion | null>

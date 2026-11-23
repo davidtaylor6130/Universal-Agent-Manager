@@ -7,15 +7,13 @@
 #include <charconv>
 #include <cstdint>
 #include <functional>
+#include <sstream>
 #include <system_error>
 
 namespace uam::svn_history
 {
 	namespace
 	{
-		constexpr int kReadTimeoutMs = 120000;
-		// A large checkout can take minutes to update; the caller's stop token still ends it early.
-		constexpr int kUpdateTimeoutMs = 15 * 60 * 1000;
 		constexpr std::size_t kMaxPathBytes = 4096;
 
 		bool ParseRevision(std::string_view text, long long& revision)
@@ -361,12 +359,50 @@ namespace uam::svn_history
 		return {};
 	}
 
+	bool UpdateFinished(const ProcessExecutionResult& result)
+	{
+		if (Succeeded(result)) return true;
+		if (result.timed_out || result.canceled || OutputLimited(result) || !result.error.empty() || result.exit_code != 1) return false;
+		// Externals are processed after the working copy itself, so an E205011 alone means only externals were left behind.
+		bool externals = false;
+		const std::string_view output = result.output;
+		for (std::size_t at = output.find("svn: E"); at != std::string_view::npos; at = output.find("svn: E", at + 1))
+		{
+			if (output.substr(at + 5, 7) != "E205011") return false;
+			externals = true;
+		}
+		return externals;
+	}
+
+	std::vector<std::string> ExternalUpdateWarnings(const std::string_view output)
+	{
+		std::vector<std::string> warnings;
+		for (std::size_t start = 0; start < output.size();)
+		{
+			std::size_t end = output.find('\n', start);
+			if (end == std::string_view::npos) end = output.size();
+			std::string_view line = output.substr(start, end - start);
+			start = end + 1;
+			const std::size_t code = line.find("svn: warning: W205011:");
+			if (code == std::string_view::npos) continue;
+			line.remove_prefix(code);
+			// "Error handling externals definition for 'name':"; the name sits between the first and last quote.
+			const std::size_t open = line.find('\'');
+			const std::size_t close = line.rfind('\'');
+			std::string warning = open != std::string_view::npos && close > open + 1
+			    ? "External '" + std::string(line.substr(open + 1, close - open - 1)) + "' could not be updated."
+			    : std::string("An external could not be updated.");
+			if (std::ranges::find(warnings, warning) == warnings.end()) warnings.push_back(std::move(warning));
+		}
+		return warnings;
+	}
+
 	VcsUpdateResult Update(const VcsCommandRunner& svn)
 	{
 		VcsUpdateResult update;
 		const ProcessExecutionResult result = svn({"update", "--non-interactive", "--accept", "postpone", "--", "."}, kUpdateTimeoutMs);
 		update.output = uam::strings::Trim(result.output);
-		if (!Succeeded(result))
+		if (!UpdateFinished(result))
 		{
 			update.error = result.canceled ? "The update was stopped. Run it again to finish; a locked working copy needs svn cleanup first."
 			    : Failure(result, "SVN could not update this working copy.");
@@ -374,8 +410,156 @@ namespace uam::svn_history
 		}
 		update.ok = true;
 		update.conflicts = ReportsConflict(result.output);
+		update.warnings = ExternalUpdateWarnings(result.output);
 		update.revision = ReadWorkingCopy(svn).revision;
 		return update;
+	}
+
+	bool IsConflicted(const VcsChangedFile& file)
+	{
+		const std::string& code = file.status;
+		return (!code.empty() && code[0] == 'C') || (code.size() > 1 && code[1] == 'C') || (code.size() > 6 && code[6] == 'C');
+	}
+
+	namespace
+	{
+		/// Windows svn spells status rows and `info` paths with `\`; compare both with `/`.
+		std::string ForwardSlashes(std::string path)
+		{
+			std::ranges::replace(path, '\\', '/');
+			return path;
+		}
+
+		std::string JoinRelative(const std::string& directory, std::string_view name)
+		{
+			return directory.empty() || directory == "." ? std::string(name) : directory + "/" + std::string(name);
+		}
+
+		std::string ParentRelative(const std::string& path)
+		{
+			const std::size_t slash = path.rfind('/');
+			return slash == std::string::npos ? std::string() : path.substr(0, slash);
+		}
+
+		bool SafeRelativePath(std::string_view path)
+		{
+			if (path.empty() || path.size() > kMaxPathBytes || path.front() == '/' || path.front() == '\\' || (path.size() > 1 && path[1] == ':')) return false;
+			if (std::ranges::any_of(path, [](const char c) { return static_cast<unsigned char>(c) < 0x20 || c == 0x7F; })) return false;
+			const std::string slashed = ForwardSlashes(std::string(path));
+			for (std::size_t start = 0; start <= slashed.size();)
+			{
+				std::size_t end = slashed.find('/', start);
+				if (end == std::string::npos) end = slashed.size();
+				const std::string_view component = std::string_view(slashed).substr(start, end - start);
+				if (component == ".." || component == ".svn") return false;
+				start = end + 1;
+			}
+			return true;
+		}
+
+		constexpr std::size_t kConflictTargetsPerInfo = 100;
+	} // namespace
+
+	std::vector<std::string> ParseConflictLeftovers(const std::string_view xml)
+	{
+		std::vector<std::string> leftovers;
+		const auto add = [&](std::string path) { if (std::ranges::find(leftovers, path) == leftovers.end()) leftovers.push_back(std::move(path)); };
+		constexpr std::string_view kEntryEnd = "</entry>";
+		for (std::size_t start = xml.find("<entry"); start != std::string_view::npos;)
+		{
+			const std::size_t end = xml.find(kEntryEnd, start);
+			if (end == std::string_view::npos) break;
+			const std::string_view block = xml.substr(start, end - start);
+			start = xml.find("<entry", end);
+			const std::size_t head_end = block.find('>');
+			if (head_end == std::string_view::npos) continue;
+			const std::string_view head = block.substr(0, head_end);
+			const std::string path = ForwardSlashes(Attribute(head, "path"));
+			const bool folder = Attribute(head, "kind") == "dir";
+			if (path.empty() || path.starts_with('/') || (path.size() > 1 && path[1] == ':')) continue;
+			// Leftovers sit beside a file, and inside a folder (its property conflicts' `dir_conflicts.prej`).
+			const std::string directory = folder ? path : ParentRelative(path);
+			for (const std::string_view element : {"prev-base-file", "prev-wc-file", "cur-base-file", "prop-file"})
+			{
+				const std::string open = "<" + std::string(element) + ">";
+				for (std::size_t at = block.find(open); at != std::string_view::npos; at = block.find(open, at + 1))
+				{
+					const std::size_t value = at + open.size();
+					const std::size_t close = block.find('<', value);
+					if (close == std::string_view::npos) break;
+					const std::string absolute = ForwardSlashes(Unescape(block.substr(value, close - value)));
+					const std::string name = absolute.substr(absolute.rfind('/') + 1);
+					if (!name.empty() && name != "." && name != "..") add(JoinRelative(directory, name));
+				}
+			}
+			// svn 1.14 names the text conflict's `.rN` as the property reject file of an item with both conflicts, so the
+			// usual reject file is matched by name as well.
+			if (block.find("type=\"property\"") != std::string_view::npos)
+				add(folder ? JoinRelative(path, "dir_conflicts.prej") : path + ".prej");
+		}
+		return leftovers;
+	}
+
+	bool ConflictLeftovers(const VcsCommandRunner& svn, const std::vector<VcsChangedFile>& files, std::vector<std::string>& leftovers, std::string& error)
+	{
+		leftovers.clear();
+		std::vector<std::string> conflicted;
+		for (const VcsChangedFile& file : files)
+			if (IsConflicted(file)) conflicted.push_back(file.path);
+		if (conflicted.empty()) return true;
+		std::vector<std::string> named;
+		for (std::size_t first = 0; first < conflicted.size(); first += kConflictTargetsPerInfo)
+		{
+			std::vector<std::string> args = {"info", "--xml", "--non-interactive", "--"};
+			for (std::size_t index = first; index < std::min(conflicted.size(), first + kConflictTargetsPerInfo); ++index) args.push_back(conflicted[index] + "@");
+			const ProcessExecutionResult result = svn(args, kReadTimeoutMs);
+			if (!Succeeded(result))
+			{
+				error = Failure(result, "SVN could not read its conflict details.");
+				return false;
+			}
+			for (std::string& path : ParseConflictLeftovers(result.output)) named.push_back(std::move(path));
+		}
+		for (const VcsChangedFile& file : files)
+			if (file.status == "?" && std::ranges::find(named, ForwardSlashes(file.path)) != named.end()) leftovers.push_back(file.path);
+		return true;
+	}
+
+	std::string Resolve(const VcsCommandRunner& svn, const std::string_view path, const std::string_view accept, std::string& output)
+	{
+		output.clear();
+		if (accept != "working" && accept != "theirs-full" && accept != "mine-full") return "Choose how to resolve this conflict.";
+		if (!SafeRelativePath(path)) return "Select a conflicted path in this workspace.";
+		const std::string target = std::string(path) + "@";
+		const ProcessExecutionResult state = svn({"status", "--non-interactive", "--depth", "empty", "--", target}, kReadTimeoutMs);
+		if (!Succeeded(state)) return Failure(state, "SVN could not read this path's status.");
+		const std::vector<VcsChangedFile> rows = ParseSvnStatusOutput(state.output);
+		if (rows.empty() || !IsConflicted(rows.front())) return "This path is no longer conflicted. Refresh the changed files.";
+		const std::string& code = rows.front().status;
+		const bool content_conflict = code[0] == 'C' || (code.size() > 1 && code[1] == 'C');
+		// svn applies a whole-file choice only to text and property conflicts (W195024 otherwise).
+		if (!content_conflict && accept != "working") return "A tree conflict can only be marked resolved with the working copy as it is.";
+		const ProcessExecutionResult result = svn({"resolve", "--non-interactive", "--accept", std::string(accept), "--", target}, kReadTimeoutMs);
+		output = uam::strings::Trim(result.output);
+		if (!Succeeded(result)) return result.canceled ? "Canceled." : Failure(result, "SVN could not resolve this conflict.");
+		return {};
+	}
+
+	std::string ParseSvnVersion(const std::string_view output)
+	{
+		const std::string text = uam::strings::Trim(std::string(output));
+		std::size_t end = 0;
+		const auto digits = [&]
+		{
+			const std::size_t begin = end;
+			while (end < text.size() && text[end] >= '0' && text[end] <= '9') ++end;
+			return end > begin;
+		};
+		if (!digits()) return {};
+		if (end < text.size() && text[end] == ':' && (++end, !digits())) return {};
+		// Flags follow: M (modified), S (switched), P (sparse).
+		if (text.find_first_not_of("MSP", end) != std::string::npos) return {};
+		return text.substr(0, end);
 	}
 
 	namespace
@@ -599,3 +783,72 @@ namespace uam::svn_history
 		return reply;
 	}
 } // namespace uam::svn_history
+
+namespace uam
+{
+	namespace
+	{
+		constexpr std::size_t kSvnStatusCodeWidth = 7;
+		constexpr std::size_t kSvnStatusPathOffset = 8;
+	} // namespace
+
+	std::string SvnFailureSummary(const ProcessExecutionResult& result)
+	{
+		if (result.error == kSvnClientMissing) return result.error;
+		// The error that ended the command, not a warning printed on the way: a broken external prints
+		// "W205011: Error handling externals definition for 'x':" long before its E205011.
+		std::string warning;
+		std::istringstream lines(result.output + "\n" + result.error);
+		std::string line;
+		while (std::getline(lines, line))
+		{
+			std::size_t code = line.find("svn: E");
+			const bool error = code != std::string::npos;
+			if (error) code += 5;
+			else if ((code = line.find("svn: warning: W")) != std::string::npos && warning.empty()) code += 14;
+			else continue;
+			std::string summary = uam::strings::Trim(line.substr(code));
+			constexpr std::size_t kMaxSummaryBytes = 240;
+			if (summary.size() > kMaxSummaryBytes)
+			{
+				std::size_t end = kMaxSummaryBytes;
+				while (end > 0 && (static_cast<unsigned char>(summary[end]) & 0xc0) == 0x80) --end;
+				summary.resize(end);
+			}
+			while (!summary.empty() && (summary.back() == '.' || summary.back() == ':')) summary.pop_back();
+			if (error) return summary;
+			warning = std::move(summary);
+		}
+		return warning;
+	}
+
+	std::vector<VcsChangedFile> ParseSvnStatusOutput(std::string_view output, std::string_view workspace)
+	{
+		// Valid characters per status column; anything else is a header, summary or tree-conflict detail line.
+		static constexpr std::string_view columns[kSvnStatusCodeWidth] = {" ADMRCXI?!~", " MC", " L", " +", " SX", " KOTB", " C"};
+		std::vector<VcsChangedFile> files;
+		std::size_t position = 0;
+		while (position < output.size())
+		{
+			std::size_t end = output.find('\n', position);
+			if (end == std::string_view::npos) end = output.size();
+			std::string_view line = output.substr(position, end - position);
+			position = end + 1;
+			if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
+			if (line.size() <= kSvnStatusPathOffset || line[kSvnStatusCodeWidth] != ' ') continue;
+			bool valid = true;
+			for (std::size_t column = 0; column < kSvnStatusCodeWidth && valid; ++column)
+				valid = columns[column].find(line[column]) != std::string_view::npos;
+			if (!valid || line.substr(0, kSvnStatusCodeWidth) == "       ") continue;
+			std::string code(line.substr(0, kSvnStatusCodeWidth));
+			while (!code.empty() && code.back() == ' ') code.pop_back();
+			std::string path(line.substr(kSvnStatusPathOffset));
+			// Defensive: svn echoes absolute targets; selections must stay workspace-relative.
+			if (!workspace.empty() && path.size() > workspace.size() + 1 && path.starts_with(workspace) &&
+			    (path[workspace.size()] == '/' || path[workspace.size()] == '\\'))
+				path.erase(0, workspace.size() + 1);
+			files.push_back({std::move(path), std::move(code), true});
+		}
+		return files;
+	}
+} // namespace uam

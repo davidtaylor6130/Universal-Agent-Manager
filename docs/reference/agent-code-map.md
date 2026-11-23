@@ -34,7 +34,7 @@ src/                                 C++ backend (CMake target: universal_agent_
     runtime_orchestration_services.* Native history sync and provider request dispatch
     vcs_commit_service.*             VCS status/diff/commit + commit-message generation
     vcs_provider.h                   Git/SVN provider interface behind vcs_commit_service
-    svn_history.*                    SVN log paging, per-revision patch, update and branch origin behind the SVN provider
+    svn_history.*                    SVN log paging, per-revision patch, update, conflict leftovers and resolve, status parsing and branch origin behind the SVN provider
   cef/
     uam_cef_app.*                    Browser-process CefApp, command line switches
     uam_cef_renderer_app.*           Subprocess CefApp, renderer router (window.cefQuery)
@@ -133,6 +133,7 @@ Current bridge actions, grouped by domain (the live dispatch table is `UamQueryH
 | `getVcsCommitStatus` | Return VCS status for the commit panel |
 | `getVcsFileDiff` | Return a file diff for the commit panel |
 | `commitVcsChanges` | Commit staged changes |
+| `resolveVcsConflict` | Mark one conflicted SVN path resolved (`working`, `theirs-full` or `mine-full`) |
 | `getVcsHistory` | Return one page of revision history for the commit panel |
 | `getVcsRevisionDiff` | Return the patch one revision applied to a path |
 | `updateVcsWorkspace` | Update the working copy to the latest revision |

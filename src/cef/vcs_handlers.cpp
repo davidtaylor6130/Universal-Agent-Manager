@@ -1204,7 +1204,7 @@ void UamQueryHandler::HandleUpdateVcsWorkspace(CefRefPtr<CefBrowser> browser, co
 		                 uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(snapshot_inputs));
 		                 const uam::VcsUpdateResult update = uam::VcsCommitService().Update(snapshot, chat, type, stop->get_token());
 		                 if (!update.ok) return AsyncFailure(400, FailureDetailOrFallback(update.error, "Failed to update the working copy."));
-		                 return AsyncSuccess(WithOptionalRequestId(nlohmann::json{{"ok", true}, {"conflicts", update.conflicts}, {"revision", update.revision}, {"output", update.output}}, request_id));
+		                 return AsyncSuccess(WithOptionalRequestId(nlohmann::json{{"ok", true}, {"conflicts", update.conflicts}, {"revision", update.revision}, {"output", update.output}, {"warnings", update.warnings}}, request_id));
 	                 },
 	                 [this, browser, fenced, request_id, stop](AsyncCefResult& result)
 	                 {
@@ -1263,6 +1263,43 @@ void UamQueryHandler::HandleCommitVcsChanges(CefRefPtr<CefBrowser> browser, cons
 		                 const uam::VcsCommitResult result = uam::VcsCommitService().Commit(snapshot, chat, type, message, files);
 		                 if (!result.ok) return AsyncFailure(400, FailureDetailOrFallback(result.error, "Failed to commit changes."));
 		                 return AsyncSuccess(SerializeVcsCommitResult(result));
+	                 },
+	                 [live_app, browser, chat_id](AsyncCefResult& result)
+	                 {
+		                 live_app->worktree_operation_chat_ids.erase(chat_id);
+		                 if (result.ok) uam::PushStateUpdateIfChanged(browser, *live_app);
+	                 }))
+		m_app.worktree_operation_chat_ids.erase(chat_id);
+}
+
+void UamQueryHandler::HandleResolveVcsConflict(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const ChatSession* chat = FindPayloadChatOrFail(m_app, payload, cb);
+	if (chat == nullptr) return;
+	if (chat->imported_read_only) { cb->Failure(409, "This chat's workspace is read-only."); return; }
+	if (ChatRuntimeBusy(m_app, chat->id)) { cb->Failure(409, "Stop the active chat runtime before resolving a conflict."); return; }
+	// Resolving rewrites or removes working-copy files, so it holds the same retention lease and operation guard as a commit.
+	std::shared_ptr<uam::WorkspaceLeaseGate::Lease> lease = m_app.worktree_retention_gate.TryAcquireMutation();
+	if (!lease) { cb->Failure(409, "Workspace cleanup is finishing. Try again shortly."); return; }
+	const std::string path = payload.value("path", "");
+	const std::string accept = payload.value("accept", "");
+	const uam::VcsType type = uam::VcsTypeFromString(payload.value("vcsType", "git"));
+	ChatSession chat_snapshot = uam::CaptureVcsChatContext(*chat);
+	ReadOnlyAppSnapshotInputs snapshot_inputs = CaptureReadOnlyAppSnapshotInputs(m_app);
+	const RemoteVcsQueuedWork remote_vcs = QueueRemoteVcsWork(m_app, chat->execution_host_id);
+	std::shared_ptr<void> remote_vcs_lease;
+	if (!remote_vcs.Hold(remote_vcs_lease)) { cb->Failure(409, kRemoteHelperSetupRunning); return; }
+	uam::AppState* live_app = &m_app;
+	const std::string chat_id = chat->id;
+	m_app.worktree_operation_chat_ids.insert(chat_id);
+	if (!RunAsyncCefQuery(SlowQueryRunner(*chat), m_asyncLifetime, cb,
+	                 [snapshot_inputs = std::move(snapshot_inputs), chat = std::move(chat_snapshot), type, path, accept, remote_vcs, lease, remote_vcs_lease]() mutable
+	                 {
+		                 const uam::remote::ScopedRunnerQueuedWork queued(remote_vcs.queued_at);
+		                 uam::AppState snapshot = BuildReadOnlyAppSnapshot(std::move(snapshot_inputs));
+		                 const uam::VcsResolveResult result = uam::VcsCommitService().Resolve(snapshot, chat, type, path, accept);
+		                 if (!result.ok) return AsyncFailure(400, FailureDetailOrFallback(result.error, "Failed to resolve the conflict."));
+		                 return AsyncSuccess(nlohmann::json{{"ok", true}, {"output", result.output}});
 	                 },
 	                 [live_app, browser, chat_id](AsyncCefResult& result)
 	                 {
