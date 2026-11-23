@@ -275,6 +275,9 @@ namespace uam::io
 		bool primary_committed = false;
 		bool backup_degraded = false;
 		bool interrupted = false;
+		/// POSIX only: the destination's volume refused an exchange rename, so the predecessor was kept by link or
+		/// copy before a plain rename replaced the destination (see ReplaceExistingDestination).
+		bool replace_fallback = false;
 		AtomicWriteStage stage = AtomicWriteStage::None;
 		std::string error;
 	};
@@ -615,6 +618,197 @@ namespace uam::io
 		}
 		return synced;
 	}
+
+	/// <summary>Errors with which a volume refuses an exchange rename it does not implement (SMB, exFAT, NFS, some FUSE).</summary>
+	/// <remarks>Same set as provider_setup.h PublishExclusive, plus ENOTTY, which some network clients return.</remarks>
+	inline bool RenameSwapUnsupportedError(int error)
+	{
+		return error == ENOTSUP || error == EOPNOTSUPP || error == EINVAL || error == ENOSYS || error == ENOTTY;
+	}
+
+	// Test-only errnos on the calling thread while nonzero: the exchange rename, the predecessor hard link and the
+	// fallback's installing rename fail with them instead of making the system call.
+	inline thread_local int t_rename_swap_errno_for_tests = 0;
+	inline thread_local int t_replace_link_errno_for_tests = 0;
+	inline thread_local int t_replace_install_errno_for_tests = 0;
+	// Test-only: the failing installing rename first removes the destination, as a non-atomic network client can.
+	inline thread_local bool t_replace_install_drops_destination_for_tests = false;
+
+	/// <summary>Volumes (by st_dev) whose exchange rename was refused in this process, so later replacements skip the attempt.</summary>
+	/// <remarks>Only refusals are cached: a supported volume pays nothing extra, because its exchange is the replacement itself.</remarks>
+	struct RenameSwapCapabilityCache
+	{
+		std::mutex mutex;
+		std::vector<dev_t> unsupported;
+	};
+	inline RenameSwapCapabilityCache& RenameSwapCapabilities()
+	{
+		static RenameSwapCapabilityCache cache;
+		return cache;
+	}
+	inline bool RenameSwapKnownUnsupported(dev_t device)
+	{
+		auto& cache = RenameSwapCapabilities();
+		std::lock_guard lock(cache.mutex);
+		return std::find(cache.unsupported.begin(), cache.unsupported.end(), device) != cache.unsupported.end();
+	}
+	inline void RecordRenameSwapUnsupported(dev_t device)
+	{
+		auto& cache = RenameSwapCapabilities();
+		std::lock_guard lock(cache.mutex);
+		if (std::find(cache.unsupported.begin(), cache.unsupported.end(), device) == cache.unsupported.end()) cache.unsupported.push_back(device);
+	}
+	inline void ResetRenameSwapCapabilityCacheForTests()
+	{
+		auto& cache = RenameSwapCapabilities();
+		std::lock_guard lock(cache.mutex);
+		cache.unsupported.clear();
+	}
+
+	/// <summary>Copies an existing regular file to a new private sibling, keeping its mode and times where the volume allows.</summary>
+	inline bool CopyPredecessorForReplace(const std::filesystem::path& source, const std::filesystem::path& target, bool sync_to_disk, int& error_out)
+	{
+		const int input = open(source.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+		if (input < 0) { error_out = errno; return false; }
+		struct stat info{};
+		const bool inspected = fstat(input, &info) == 0;
+		if (!inspected || !S_ISREG(info.st_mode))
+		{
+			error_out = inspected ? EINVAL : errno;
+			close(input);
+			return false;
+		}
+		const int output = open(target.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, S_IRUSR | S_IWUSR);
+		if (output < 0) { error_out = errno; close(input); return false; }
+		bool copied = true;
+		std::array<char, 64 * 1024> buffer{};
+		while (copied)
+		{
+			const ssize_t count = read(input, buffer.data(), buffer.size());
+			if (count < 0 && errno == EINTR) continue;
+			if (count < 0) { error_out = errno; copied = false; break; }
+			if (count == 0) break;
+			ssize_t offset = 0;
+			while (offset < count)
+			{
+				const ssize_t written = write(output, buffer.data() + offset, static_cast<std::size_t>(count - offset));
+				if (written < 0 && errno == EINTR) continue;
+				if (written <= 0) { error_out = written < 0 ? errno : EIO; copied = false; break; }
+				offset += written;
+			}
+		}
+		if (copied)
+		{
+			// Mode and times are fidelity, not durability: exFAT and some shares refuse them, which is not a failure.
+			(void)fchmod(output, info.st_mode & 07777);
+#if defined(__APPLE__)
+			const struct timespec times[2] = {info.st_atimespec, info.st_mtimespec};
+#else
+			const struct timespec times[2] = {info.st_atim, info.st_mtim};
+#endif
+			(void)futimens(output, times);
+		}
+#if defined(__APPLE__)
+		if (copied && sync_to_disk && fcntl(output, F_FULLFSYNC) != 0 && fsync(output) != 0) { error_out = errno; copied = false; }
+#else
+		if (copied && sync_to_disk && fsync(output) != 0) { error_out = errno; copied = false; }
+#endif
+		if (close(output) != 0 && copied) { error_out = errno; copied = false; }
+		close(input);
+		if (!copied) unlink(target.c_str());
+		return copied;
+	}
+
+	enum class ReplaceExistingOutcome
+	{
+		Replaced,
+		FailedUnchanged, // The destination still holds its previous file; the candidate may be discarded.
+		FailedHeld       // The destination name was lost mid-replace and could not be restored: keep every file.
+	};
+
+	/// <summary>Replaces an existing destination with candidate, leaving the previous file at predecessor (normally the
+	/// candidate path, exactly where an exchange rename leaves it).</summary>
+	/// <remarks>Prefers the atomic exchange (macOS RENAME_SWAP, Linux RENAME_EXCHANGE). When the destination's volume
+	/// refuses it, the volume is cached as unsupported and the replace falls back to: keep the predecessor at holder (a
+	/// hard link where supported, otherwise a synced copy), sync the directory, rename(candidate, destination), then move
+	/// holder to the candidate name. The caller syncs the directory afterwards as on the exchange path. The fallback's
+	/// guarantee is weaker: rename-over-existing is only as atomic as the volume makes it (SMB clients may delete then
+	/// rename), and a crash between the two directory syncs can leave the predecessor at holder, a ".tmp." sibling the
+	/// abandoned-temporary sweep removes after 24 hours. The destination never holds a partial file.</remarks>
+	inline ReplaceExistingOutcome ReplaceExistingDestination(const std::filesystem::path& candidate, const std::filesystem::path& destination,
+	    const std::filesystem::path& holder, bool sync_directory, std::filesystem::path& predecessor, AtomicWriteResult& result)
+	{
+		predecessor = candidate;
+		struct stat destination_info{};
+		const bool device_known = lstat(destination.c_str(), &destination_info) == 0;
+		if (!device_known || !RenameSwapKnownUnsupported(destination_info.st_dev))
+		{
+			int swap_error = t_rename_swap_errno_for_tests;
+			if (swap_error == 0)
+			{
+#if defined(__APPLE__)
+				if (renameatx_np(AT_FDCWD, candidate.c_str(), AT_FDCWD, destination.c_str(), RENAME_SWAP) == 0) return ReplaceExistingOutcome::Replaced;
+#else
+				if (syscall(SYS_renameat2, AT_FDCWD, candidate.c_str(), AT_FDCWD, destination.c_str(), RENAME_EXCHANGE) == 0) return ReplaceExistingOutcome::Replaced;
+#endif
+				swap_error = errno;
+			}
+			if (!RenameSwapUnsupportedError(swap_error))
+			{
+				result.error = "Failed to atomically swap destination: " + AtomicWriteSystemError(swap_error);
+				return ReplaceExistingOutcome::FailedUnchanged;
+			}
+			if (device_known) RecordRenameSwapUnsupported(destination_info.st_dev);
+		}
+		result.replace_fallback = true;
+		const std::filesystem::path parent = destination.parent_path().empty() ? std::filesystem::path(".") : destination.parent_path();
+
+		// 1. Keep the predecessor before the destination name changes.
+		int keep_error = t_replace_link_errno_for_tests;
+		if (keep_error == 0 && link(destination.c_str(), holder.c_str()) != 0) keep_error = errno;
+		if (keep_error != 0 && (keep_error == EEXIST || !CopyPredecessorForReplace(destination, holder, sync_directory, keep_error)))
+		{
+			result.error = "Failed to keep the destination's previous file before replacing it: " + AtomicWriteSystemError(keep_error);
+			return ReplaceExistingOutcome::FailedUnchanged;
+		}
+		if (sync_directory && !SyncAtomicWriteDirectory(parent, result))
+		{
+			unlink(holder.c_str());
+			return ReplaceExistingOutcome::FailedUnchanged;
+		}
+
+		// 2. Install the candidate. POSIX rename replaces atomically where the volume implements it.
+		int install_error = t_replace_install_errno_for_tests;
+		if (install_error != 0 && t_replace_install_drops_destination_for_tests) unlink(destination.c_str());
+		if (install_error == 0 && rename(candidate.c_str(), destination.c_str()) != 0) install_error = errno;
+		if (install_error != 0)
+		{
+			struct stat remaining{};
+			if (lstat(destination.c_str(), &remaining) == 0)
+			{
+				unlink(holder.c_str());
+				result.error = "Failed to replace destination: " + AtomicWriteSystemError(install_error);
+				return ReplaceExistingOutcome::FailedUnchanged;
+			}
+			// A non-atomic client removed the old name before failing: put the kept predecessor back.
+			if (rename(holder.c_str(), destination.c_str()) == 0)
+			{
+				if (sync_directory) (void)SyncAtomicWriteDirectory(parent, result);
+				result.error = "Failed to replace destination; its previous file was restored: " + AtomicWriteSystemError(install_error);
+				return ReplaceExistingOutcome::FailedUnchanged;
+			}
+			// Recovery readers look for the ".bak" companion; an abandoned ".tmp." name would be swept after 24 hours.
+			const bool backed_up = rename(holder.c_str(), MakeBackupPath(destination).c_str()) == 0;
+			if (backed_up && sync_directory) (void)SyncAtomicWriteDirectory(parent, result);
+			result.error = std::string("Failed to replace destination; its previous file is kept as ") +
+			    (backed_up ? "its recovery backup: " : "a temporary recovery copy beside it: ") + AtomicWriteSystemError(install_error);
+			return ReplaceExistingOutcome::FailedHeld;
+		}
+
+		// 3. Match the exchange's shape so callers find the predecessor where they expect it.
+		if (rename(holder.c_str(), candidate.c_str()) != 0) predecessor = holder;
+		return ReplaceExistingOutcome::Replaced;
+	}
 #endif
 
 	/// <summary>Publishes an already synced temporary file with the normal atomic backup contract.</summary>
@@ -818,17 +1012,14 @@ namespace uam::io
 		}
 		result.primary_committed = true;
 #else
+		// After an exchange (or its fallback) the destination's previous file is here, not at temp_path.
+		std::filesystem::path predecessor_path = temp_path;
 		if (destination_exists)
 		{
-#if defined(__APPLE__)
-			const int swapped = renameatx_np(AT_FDCWD, temp_path.c_str(), AT_FDCWD, path.c_str(), RENAME_SWAP);
-#else
-			const long swapped = syscall(SYS_renameat2, AT_FDCWD, temp_path.c_str(), AT_FDCWD, path.c_str(), RENAME_EXCHANGE);
-#endif
-			if (swapped != 0)
+			const ReplaceExistingOutcome replaced = ReplaceExistingDestination(temp_path, path, MakeTempWritePath(path), sync_directory, predecessor_path, result);
+			if (replaced != ReplaceExistingOutcome::Replaced)
 			{
-				result.error = "Failed to atomically swap destination: " + AtomicWriteSystemError(errno);
-				RemoveAtomicTempNoThrow(temp_path);
+				if (replaced == ReplaceExistingOutcome::FailedUnchanged) RemoveAtomicTempNoThrow(temp_path);
 				return result;
 			}
 		}
@@ -865,7 +1056,7 @@ namespace uam::io
 			if (!preserve_backup)
 			{
 #if !defined(_WIN32)
-				RemoveAtomicTempNoThrow(temp_path);
+				RemoveAtomicTempNoThrow(predecessor_path);
 #endif
 				result.success = true;
 				result.primary_committed = true;
@@ -890,7 +1081,7 @@ namespace uam::io
 				return result;
 			}
 #else
-			if (rename(temp_path.c_str(), backup_path.c_str()) != 0)
+			if (rename(predecessor_path.c_str(), backup_path.c_str()) != 0)
 			{
 				result.error = "Destination was saved, but its recovery backup could not be installed: " + AtomicWriteSystemError(errno);
 				result.success = true;
@@ -1000,14 +1191,11 @@ namespace uam::io
 		if (!ReplaceAtomicTemp(destination, candidate, evidence, destination_exists, destination_exists, result, sync_replace)) return result;
 		result.primary_committed = true;
 #else
+		// The reserved private evidence path holds a fallback's kept predecessor, so retained evidence covers it.
+		fs::path predecessor = candidate;
 		if (destination_exists)
 		{
-#if defined(__APPLE__)
-			const int swapped = renameatx_np(AT_FDCWD, candidate.c_str(), AT_FDCWD, destination.c_str(), RENAME_SWAP);
-#else
-			const long swapped = syscall(SYS_renameat2, AT_FDCWD, candidate.c_str(), AT_FDCWD, destination.c_str(), RENAME_EXCHANGE);
-#endif
-			if (swapped != 0) { result.error = "Failed to atomically swap destination: " + AtomicWriteSystemError(errno); return result; }
+			if (ReplaceExistingDestination(candidate, destination, evidence, sync_directory, predecessor, result) != ReplaceExistingOutcome::Replaced) return result;
 		}
 		else if (rename(candidate.c_str(), destination.c_str()) != 0)
 		{
@@ -1031,12 +1219,12 @@ namespace uam::io
 			if (!preserve_backup)
 			{
 #if defined(_WIN32)
-				const fs::path& predecessor = native_evidence;
+				const fs::path& kept = native_evidence;
 #else
-				const fs::path& predecessor = native_candidate;
+				const fs::path& kept = predecessor;
 #endif
 				std::error_code error;
-				fs::remove(predecessor, error);
+				fs::remove(kept, error);
 				result.success = true;
 				if (error)
 				{
@@ -1057,7 +1245,7 @@ namespace uam::io
 					return result;
 				}
 #else
-				if (rename(candidate.c_str(), backup.c_str()) != 0)
+				if (rename(predecessor.c_str(), backup.c_str()) != 0)
 				{
 					result.error = "Destination committed; recovery backup installation failed: " + AtomicWriteSystemError(errno);
 					result.success = true;
