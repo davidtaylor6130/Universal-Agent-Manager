@@ -12,6 +12,8 @@
 #include "common/platform/platform_services.h"
 #include "common/provider/provider_ids.h"
 #include "common/runtime/acp/acp_session_runtime.h"
+#include "common/runtime/acp/acp_session_state_helpers.h"
+#include "common/runtime/terminal/terminal_chat_sync.h"
 #include "common/state/app_state.h"
 #include "common/utils/diagnostic_log.h"
 #include "common/utils/io_utils.h"
@@ -193,9 +195,25 @@ namespace uam
 			return chat.acp_queue_held || (session != nullptr && session->lifecycle_state == "error");
 		}
 
+		/// <summary>Counts against the token's open-chat limit. A chat started from an automation chat has no goal of its own,
+		/// so a turn that is being sent or running also counts.</summary>
 		bool ChatIsOpen(const AppState& app, const ChatSession& chat)
 		{
-			return chat.AwaitsAutomationApproval() || (GoalService::FindActiveGoal(app, chat.id) != nullptr && !LaunchFailedAfterAcceptance(app, chat));
+			if (chat.AwaitsAutomationApproval() || (GoalService::FindActiveGoal(app, chat.id) != nullptr && !LaunchFailedAfterAcceptance(app, chat))) return true;
+			if (std::ranges::any_of(app.uam_chat_create_launches, [&](const auto& launch) { return launch.chat_id == chat.id; })) return true;
+			const AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
+			return (session != nullptr && AcpSessionHasActiveTurn(*session)) || ChatHasBusyCliTerminal(app, chat);
+		}
+
+		std::size_t OpenChatCount(const AppState& app, std::string_view token_id)
+		{
+			return static_cast<std::size_t>(std::ranges::count_if(app.chats, [&](const ChatSession& chat) { return chat.automation_token_id == token_id && ChatIsOpen(app, chat); }));
+		}
+
+		/// <summary>A chat started directly through the API, as opposed to one an automation chat started or branched; only those report status.</summary>
+		bool CreatedThroughApi(const ChatSession& chat)
+		{
+			return chat.created_by_chat_id.empty() && chat.parent_chat_id.empty();
 		}
 
 		AutomationApiResponse CreateChat(AppState& app, const AutomationApiRequest& request, const TokenRecord& token)
@@ -221,7 +239,7 @@ namespace uam
 			if (GitRank(git_permission) > GitRank(token.max_git_permission)) return Refuse(403, "This token may not request that Git permission.");
 			const ChatFolder* folder = ChatDomainService().FindFolderById(app, workspace_id);
 			if (folder == nullptr || uam::strings::IsBlank(folder->directory)) return Refuse(404, "That workspace no longer exists.");
-			if (static_cast<std::size_t>(std::ranges::count_if(app.chats, [&](const ChatSession& chat) { return chat.automation_token_id == token.id && ChatIsOpen(app, chat); })) >= kMaxOpenChatsPerToken)
+			if (OpenChatCount(app, token.id) >= kMaxOpenChatsPerToken)
 				return Refuse(429, "This token already has 16 open chats. Finish or delete one first.");
 
 			ChatSession chat = ChatDomainService().CreateNewChat(folder->id, provider_ids::NormalizeCliProviderAliasOrSelf(provider), true);
@@ -257,7 +275,8 @@ namespace uam
 		{
 			const auto chat = std::ranges::find_if(app.chats, [&](const ChatSession& value) { return value.id == chat_id; });
 			// A chat from another token is indistinguishable from a missing one.
-			if (chat == app.chats.end() || chat->automation_token_id != token.id) return Refuse(404, "Chat not found.");
+			// So is a chat an automation chat started or branched: the token's read scope stays the chats it created.
+			if (chat == app.chats.end() || chat->automation_token_id != token.id || !CreatedThroughApi(*chat)) return Refuse(404, "Chat not found.");
 			std::string status = "awaitingApproval";
 			int used = 0;
 			if (!chat->AwaitsAutomationApproval())
@@ -386,6 +405,19 @@ namespace uam
 		return true;
 	}
 
+	std::string AutomationApiService::StartedChatRefusal(const AppState& app, const ChatSession& caller)
+	{
+		if (caller.automation_token_id.empty()) return {};
+		const std::optional<std::vector<TokenRecord>> tokens = ReadTokens(app);
+		if (!tokens) return "Automation tokens are unavailable, so this automation chat cannot start another chat.";
+		const auto token = std::ranges::find(*tokens, caller.automation_token_id, &TokenRecord::id);
+		// A revoked or expired token creates nothing, through the API or through its chats.
+		if (token == tokens->end()) return "This automation chat's token was revoked, so it cannot start another chat.";
+		if (uam::time::TimestampNowSec() >= token->expires_at) return "This automation chat's token has expired, so it cannot start another chat.";
+		if (OpenChatCount(app, token->id) >= kMaxOpenChatsPerToken) return "This automation chat's token already has 16 open chats. Wait for one to finish.";
+		return {};
+	}
+
 	std::optional<AutomationChatLaunch> AutomationApiService::BeginLaunch(AppState& app, const std::string& chat_id, std::string* error_out)
 	{
 		const auto fail = [&](std::string message) { if (error_out != nullptr) *error_out = std::move(message); return std::nullopt; };
@@ -395,17 +427,13 @@ namespace uam
 		const ChatSession before = *chat;
 		AutomationChatLaunch launch;
 		launch.text = chat->automation_pending_prompt;
-		// ponytail: an instruction, not a block; Default approval is what stops a push, and a Git-aware command gate would make this enforceable.
-		// In the goal rather than the message, so the transcript shows what was asked and every continuation repeats the policy.
-		const std::string objective = launch.text + (chat->automation_git_permission == "pr"
-		                   ? "\n\nAutomation policy: you may commit to this chat's branch and open a pull request. Do not push anywhere else."
-		                   : "\n\nAutomation policy: commit to this chat's branch only. Do not push or open a pull request.");
-		if (!GoalService::CreateGoal(app, chat_id, objective, app.settings.goal_token_budget, &launch.goal_id) || !GoalService::SetActiveGoal(app, chat_id, launch.goal_id, nullptr, nullptr, true))
+		// CreateGoal adds the Git policy and iteration cap to every goal of an automation chat. The policy goes in the goal
+		// rather than the message, so the transcript shows what was asked and every continuation repeats it.
+		if (!GoalService::CreateGoal(app, chat_id, launch.text, app.settings.goal_token_budget, &launch.goal_id) || !GoalService::SetActiveGoal(app, chat_id, launch.goal_id, nullptr, nullptr, true))
 		{
 			*chat = before;
 			return fail("The chat's goal could not be created.");
 		}
-		GoalService::FindGoalById(app, chat_id, launch.goal_id)->max_iterations = chat->automation_max_iterations;
 		chat->automation_pending_prompt.clear();
 		if (!ChatRepository::SaveChat(app.data_root, *chat))
 		{

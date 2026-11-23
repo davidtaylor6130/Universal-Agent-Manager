@@ -12,6 +12,7 @@
 #include "common/platform/platform_incremental_sha256.h"
 
 #include "app/agent_definition_service.h"
+#include "app/automation_api_service.h"
 #include "app/agent_run_scheduler.h"
 #include "app/managed_agent_model_options.h"
 #include "app/provider_model_catalog_service.h"
@@ -1032,7 +1033,8 @@ namespace uam
 				return "This chat cannot start other chats.";
 			// ponytail: depth 1 only; a created chat would need its own provenance chain to delegate further.
 			if (!caller->created_by_chat_id.empty()) return "A chat started by another chat cannot start further chats.";
-			return {};
+			// An automation chat's starts count against its token, which must still be valid.
+			return AutomationApiService::StartedChatRefusal(app, *caller);
 		}
 
 		std::string ChatCreateArgumentError(const nlohmann::json& arguments)
@@ -1110,6 +1112,10 @@ namespace uam
 				return {.error = "This chat and its branches may start at most 8 chats."};
 			const std::string provider_id = provider_ids::NormalizeCliProviderAliasOrSelf(
 			    uam::strings::NonEmptyOrFallback(requested_provider, caller->provider_id));
+			// The automation API's own rule: Default approval is what holds a chat to its Git permission.
+			const bool automation = !caller->automation_token_id.empty();
+			if (automation && uam::provider_chat_defaults::ProviderManagesOwnPermissions(provider_id))
+				return {.error = "That provider answers its own permission prompts, so an automation chat cannot start it under its Git permission."};
 			const nlohmann::json targets = AgentProviderTargets(app, *caller);
 			const auto target = std::ranges::find_if(targets, [&](const nlohmann::json& value) { return value.value("providerId", "") == provider_id; });
 			if (target == targets.end() || !target->value("eligible", false))
@@ -1144,10 +1150,18 @@ namespace uam
 			chat.uam_agent_id = caller->uam_agent_id;
 			chat.created_by_chat_id = caller->id;
 			chat.created_by_request_key = key;
+			// A chat an automation chat starts stays under the same token: its open-chat limit, iteration cap, Git policy,
+			// worktree requirement and secret refusal. The approval hold is not copied; the first prompt is sent below.
+			chat.automation_token_id = caller->automation_token_id;
+			chat.automation_token_name = caller->automation_token_name;
+			chat.automation_max_iterations = caller->automation_max_iterations;
+			chat.automation_git_permission = caller->automation_git_permission;
+			// No goal states the policy here, so the first prompt does; any later goal states it again.
+			const std::string first_prompt = automation ? task + "\n\n" + GoalService::AutomationGitPolicy(chat.automation_git_permission) : task;
 			if (!ChatRepository::SaveChat(app.data_root, chat)) return {.error = "The new chat could not be saved."};
 			nlohmann::json result = {{"chatId", chat.id}, {"status", "started"}, {"providerId", chat.provider_id},
 			                         {"modelId", chat.model_id}, {"title", chat.title}, {"reused", false}};
-			app.uam_chat_create_launches.push_back({.chat_id = chat.id, .task = task, .request_id = std::string(request_id),
+			app.uam_chat_create_launches.push_back({.chat_id = chat.id, .task = first_prompt, .request_id = std::string(request_id),
 			    .capability_id = capability.id, .directory = capability.directory, .root_chat_id = capability.chat_id,
 			    .provider_id = capability.provider_id, .agent_id = capability.agent_id, .agent_run_id = capability.agent_run_id,
 			    .result = std::move(result)});

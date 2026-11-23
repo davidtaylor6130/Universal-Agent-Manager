@@ -137,6 +137,21 @@ int GoalService::IterationLimit(const Goal& goal, AppSettings settings)
 	return goal.max_iterations > 0 ? std::min(goal.max_iterations, settings.goal_max_loop_iterations) : settings.goal_max_loop_iterations;
 }
 
+int GoalService::IterationLimit(const ChatSession* owner, const Goal& goal, AppSettings settings)
+{
+	const int limit = IterationLimit(goal, std::move(settings));
+	return owner != nullptr && !owner->automation_token_id.empty() && owner->automation_max_iterations > 0
+	           ? std::min(limit, owner->automation_max_iterations) : limit;
+}
+
+std::string GoalService::AutomationGitPolicy(std::string_view git_permission)
+{
+	// ponytail: an instruction, not a block; Default approval is what stops a push, and a Git-aware command gate would make this enforceable.
+	return git_permission == "pr"
+	           ? "Automation policy: you may commit to this chat's branch and open a pull request. Do not push anywhere else."
+	           : "Automation policy: commit to this chat's branch only. Do not push or open a pull request.";
+}
+
 bool GoalService::CreateGoal(AppState& app, const std::string& chat_id, const std::string& objective,
                               int64_t token_budget, std::string* created_goal_id,
 							  std::string execution_owner, std::string provider_command,
@@ -165,6 +180,14 @@ bool GoalService::CreateGoal(AppState& app, const std::string& chat_id, const st
 		return false;
 	}
 	goal.objective = trimmed_objective;
+	// Every goal in an automation chat carries its cap and Git policy, whoever creates it. A side chat shares its parent's.
+	const ChatSession* automation = chat->automation_token_id.empty() && !chat->temporary_parent_chat_id.empty()
+	                                    ? FindChatConst(app, chat->temporary_parent_chat_id) : chat;
+	if (automation != nullptr && !automation->automation_token_id.empty())
+	{
+		goal.objective += "\n\n" + AutomationGitPolicy(automation->automation_git_permission);
+		if (automation->automation_max_iterations > 0) goal.max_iterations = automation->automation_max_iterations;
+	}
 	goal.status = GoalStatus::Active;
 	goal.token_budget = token_budget;
 	goal.tokens_used = 0;
