@@ -372,7 +372,9 @@ void UamCefApp::OnBeforeCommandLineProcessing(const CefString& process_type, Cef
 	{
 		switch_names.push_back(entry.first.ToString());
 	}
-	const std::vector<std::string> dropped = uam::cef::RemoteDebuggingSwitchesToDrop(switch_names, std::getenv(uam::cef::kTestRemoteDebuggingEnv));
+	const char* test_env_value = std::getenv(uam::cef::kTestRemoteDebuggingEnv);
+	const bool test_run = test_env_value != nullptr && std::string(test_env_value) == "1";
+	const std::vector<std::string> dropped = uam::cef::RemoteDebuggingSwitchesToDrop(switch_names, test_env_value);
 	if (!dropped.empty())
 	{
 		// CefCommandLine cannot remove a switch, so rebuild it without the dropped ones; switch order does not matter to Chromium.
@@ -406,7 +408,8 @@ void UamCefApp::OnBeforeCommandLineProcessing(const CefString& process_type, Cef
 			{
 				names += (names.empty() ? "" : ",") + name;
 			}
-			uam::diagnostics::Write("[CEF] Ignored remote debugging switches outside an explicit test run: " + names);
+			uam::diagnostics::Write(test_run ? "[CEF] Ignored --remote-debugging-address; DevTools stays on 127.0.0.1."
+			                                 : "[CEF] Ignored remote debugging switches outside an explicit test run: " + names);
 		}
 	}
 
