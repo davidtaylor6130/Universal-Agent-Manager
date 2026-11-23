@@ -9,6 +9,7 @@
 #include "common/config/provider_availability.h"
 #include "common/config/settings_frontend_json.h"
 #include "common/config/settings_normalization.h"
+#include "common/provider/codex/codex_options.h"
 #include <atomic>
 #include <thread>
 #include <utility>
@@ -1509,10 +1510,15 @@ namespace
 		{
 			ChatSession* chat = ChatDomainService().FindChatById(app, session.chat_id);
 			if (chat == nullptr || !UamControlService::EnabledForChat(app.settings, *chat)) return true;
-			// The installed 0.159.2 schema verifies per-thread config on start and resume.
-			if (!CliProviderVersionAtLeast(session.agent_version, "0.159.2"))
+			// Shared code also built without Codex: the reviewed build-flag residue holds this exact message, so it stays
+			// one literal; local constants add no symbol and tie it and the check to codex::kUamControlMinimumVersion.
+			constexpr std::string_view kCodexFloor = "0.159.2";
+			constexpr std::string_view kCodexRefusal = "UAM Control needs Codex 0.159.2 or newer. Update Codex, or turn off UAM Control for this chat.";
+			static_assert(kCodexFloor == codex::kUamControlMinimumVersion && kCodexRefusal.find(kCodexFloor) != std::string_view::npos,
+			    "Update the UAM Control floor and its message together.");
+			if (!CliProviderVersionAtLeast(session.agent_version, kCodexFloor))
 			{
-				session.last_error = "UAM Control needs Codex 0.159.2 or newer. Update Codex, or turn off UAM Control for this chat.";
+				session.last_error = kCodexRefusal;
 				return false;
 			}
 			nlohmann::json control_request = {{"params", {{"mcpServers", nlohmann::json::array()}}}};
