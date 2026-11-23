@@ -42,7 +42,8 @@ namespace uam
 	/// The adapter runs `svn args...` (argv only) within `timeout_ms`, fills `output` and returns true on success. On failure
 	/// it may set `failure` to one line for the person, which the service adds to its own refusal.
 	using SvnBranchRunner = std::function<bool(const std::vector<std::string>& args, int timeout_ms, std::string& output, std::string& failure)>;
-	/// RunSvn-backed adapter: the shared SVN environment, `stop` ends the command in flight, failures read as SvnFailureMessage.
+	/// RunSvn-backed adapter: the shared SVN environment, `stop` ends a read in flight (never `svn switch` itself), failures
+	/// read as SvnFailureMessage and are logged.
 	SvnBranchRunner CreateSvnBranchRunner(std::stop_token stop = {});
 
 	/// Captures local workspace ownership using the same projection as the composer bridge.

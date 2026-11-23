@@ -120,9 +120,10 @@ namespace uam::svn_history
 			return result.output_truncated || result.error.find(uam::platform::kCapturedCommandOutputLimitError) != std::string::npos;
 		}
 
-		/// Every history, patch, update and origin failure reads the same way as the rest of the panel.
-		std::string Failure(const ProcessExecutionResult& result, std::string_view fallback)
+		/// Every history, patch, update and origin failure reads the same way as the rest of the panel; each is shown, so logged.
+		std::string Failure(const ProcessExecutionResult& result, std::string_view fallback, std::string_view operation)
 		{
+			LogSvnFailure(result, operation);
 			return SvnFailureMessage(result, fallback);
 		}
 
@@ -286,7 +287,7 @@ namespace uam::svn_history
 		const bool limited = OutputLimited(result);
 		if (!Succeeded(result) && !limited)
 		{
-			page.error = Failure(result, "SVN could not read this working copy's history.");
+			page.error = Failure(result, "SVN could not read this working copy's history.", "log");
 			return page;
 		}
 		page.entries = ParseLogXml(result.output);
@@ -300,7 +301,7 @@ namespace uam::svn_history
 				const ProcessExecutionResult brief = run(from, false, 1);
 				if (!Succeeded(brief))
 				{
-					page.error = Failure(brief, "SVN could not read this working copy's history.");
+					page.error = Failure(brief, "SVN could not read this working copy's history.", "log");
 					return page;
 				}
 				page.entries = ParseLogXml(brief.output);
@@ -348,12 +349,12 @@ namespace uam::svn_history
 			if (Succeeded(result)) return result.output;
 			if (result.canceled || result.timed_out)
 			{
-				error = Failure(result, "");
+				error = Failure(result, "", "diff");
 				return {};
 			}
 			if (peg == number) first = result;
 		}
-		error = Failure(first, "SVN could not produce this change.");
+		error = Failure(first, "SVN could not produce this change.", "diff");
 		return {};
 	}
 
@@ -365,7 +366,7 @@ namespace uam::svn_history
 		if (!Succeeded(result))
 		{
 			update.error = result.canceled ? "The update was stopped. Run it again to finish; a locked working copy needs svn cleanup first."
-			    : Failure(result, "SVN could not update this working copy.");
+			    : Failure(result, "SVN could not update this working copy.", "update");
 			return update;
 		}
 		update.ok = true;
@@ -410,7 +411,7 @@ namespace uam::svn_history
 			}
 			if (!Succeeded(result) && !OutputLimited(result))
 			{
-				error = Failure(result, "SVN could not read where this working copy was copied from.");
+				error = Failure(result, "SVN could not read where this working copy was copied from.", "log");
 				return false;
 			}
 			const std::vector<VcsHistoryEntry> entries = ParseLogXml(result.output, kMaxCopyEntryPaths);
@@ -583,7 +584,7 @@ namespace uam::svn_history
 			}
 			if (!Succeeded(result))
 			{
-				reply.error = Failure(result, "SVN could not read the origin's history.");
+				reply.error = Failure(result, "SVN could not read the origin's history.", "log");
 				return reply;
 			}
 			reply.page.entries = ParseLogXml(result.output);

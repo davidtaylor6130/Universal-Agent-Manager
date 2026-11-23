@@ -79,6 +79,13 @@ with tempfile.TemporaryDirectory(prefix="uam-svn-composer-@") as temporary:
         assert record.read_text().splitlines()[:2] == ["-o", "BatchMode=yes"], "ssh runs in batch mode when SVN_SSH is unset"
         subprocess.run([str(binary), "--ssh-probe", str(config), ssh_url], check=True, timeout=60, env=dict(tool_environment, SVN_SSH="ssh -o UserChoice=yes"))
         assert "BatchMode=yes" not in record.read_text() and "UserChoice=yes" in record.read_text(), "the user's own SVN_SSH wins"
+        # A tunnel the user configured is kept: setting SVN_SSH would replace its `$SVN_SSH ...` command whole.
+        user_home = root / "home"
+        user_config = user_home / ".subversion"
+        user_config.mkdir(parents=True)
+        (user_config / "config").write_text("[tunnels]\nssh = $SVN_SSH ssh -o UserTunnel=yes\n")
+        subprocess.run([str(binary), "--ssh-probe", str(user_config), ssh_url], check=True, timeout=60, env=dict(tool_environment, HOME=str(user_home)))
+        assert "BatchMode=yes" not in record.read_text() and "UserTunnel=yes" in record.read_text(), "the user's configured tunnel wins"
 
     if shutil.which("svnserve"):
         # A repository that refuses anonymous access, served on 127.0.0.1 only for this run.

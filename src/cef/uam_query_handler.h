@@ -106,7 +106,7 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	std::unordered_map<std::string, std::shared_ptr<std::stop_source>> m_titleRequests;
 	// History, revision-diff and update requests in flight, by the caller's requestId, so cancelVcsRequest can stop their VCS client.
 	std::unordered_map<std::string, std::shared_ptr<std::stop_source>> m_vcsRequestStops;
-	// Stops SVN folder discovery and its pre-switch checks at shutdown; a switch already running is left to finish.
+	// Stops SVN folder discovery and the reads before a switch at shutdown; the svn switch command itself is left to finish.
 	std::stop_source m_svnBranchDiscoveryStop;
 #if UAM_ENABLE_MOBILE_COMPANION
 	std::shared_ptr<UamCompanionService> m_companion;

@@ -1,11 +1,13 @@
 #include "app/svn_failure.h"
 
+#include "common/paths/path_utils.h"
 #include "common/utils/diagnostic_log.h"
+#include "common/utils/env_utils.h"
 #include "common/utils/string_utils.h"
 
-#include <array>
 #include <chrono>
 #include <cstddef>
+#include <map>
 #include <mutex>
 #include <sstream>
 #include <vector>
@@ -19,16 +21,24 @@ namespace uam
 			bool warning = false;
 			std::string code; ///< "E170001" or "W155010".
 			std::string text; ///< svn's message after the code.
+			std::string next; ///< The first non-empty line after it, when that line is not svn's own (hook output, a path).
 		};
+
+		bool IsSvnLine(const std::string& line)
+		{
+			return line.find("svn: E") != std::string::npos || line.find("svn: warning: W") != std::string::npos;
+		}
 
 		/// Every `svn: E...` and `svn: warning: W...` line, in order.
 		std::vector<SvnLine> ParseLines(const ProcessExecutionResult& result)
 		{
-			std::vector<SvnLine> lines;
+			std::vector<std::string> raw;
 			std::istringstream stream(result.output + "\n" + result.error);
-			std::string line;
-			while (std::getline(stream, line))
+			for (std::string line; std::getline(stream, line);) raw.push_back(uam::strings::Trim(line));
+			std::vector<SvnLine> lines;
+			for (std::size_t index = 0; index < raw.size(); ++index)
 			{
+				const std::string& line = raw[index];
 				SvnLine parsed;
 				std::size_t start = line.find("svn: E");
 				if (start != std::string::npos) start += 5;
@@ -38,6 +48,8 @@ namespace uam
 				if (colon == std::string::npos) continue;
 				parsed.code = line.substr(start, colon - start);
 				parsed.text = uam::strings::Trim(std::string_view(line).substr(colon + 1));
+				for (std::size_t after = index + 1; after < raw.size() && !IsSvnLine(raw[after]); ++after)
+					if (!raw[after].empty()) { parsed.next = raw[after]; break; }
 				lines.push_back(std::move(parsed));
 			}
 			return lines;
@@ -53,18 +65,29 @@ namespace uam
 			return text;
 		}
 
+		/// A lead line such as "Commit failed (details follow):" that only introduces the next error. The second test does
+		/// not depend on svn's language: a line ending in ':' followed by the same code naming a quoted path.
+		bool IsWrapper(const std::vector<const SvnLine*>& errors, const std::size_t index)
+		{
+			const SvnLine& line = *errors[index];
+			if (line.text.ends_with("(details follow):")) return true;
+			return line.text.ends_with(':') && index + 1 < errors.size() && errors[index + 1]->code == line.code && errors[index + 1]->text.find('\'') != std::string::npos;
+		}
+
 		const SvnLine* SelectLine(const std::vector<SvnLine>& lines)
 		{
 			const SvnLine* first_warning = nullptr;
-			std::vector<const SvnLine*> errors;
+			std::vector<const SvnLine*> all_errors;
 			for (const SvnLine& line : lines)
 			{
 				if (line.warning) { if (first_warning == nullptr) first_warning = &line; continue; }
 				// What follows "Additional errors:" belongs to cleanup after the first failure, not to its cause.
 				if (line.code == "E200042") break;
-				if (line.text.ends_with("(details follow):")) continue;
-				errors.push_back(&line);
+				all_errors.push_back(&line);
 			}
+			std::vector<const SvnLine*> errors;
+			for (std::size_t index = 0; index < all_errors.size(); ++index)
+				if (!IsWrapper(all_errors, index)) errors.push_back(all_errors[index]);
 			if (errors.empty()) return first_warning;
 			// svn prints a chain outermost first. The innermost code is the cause; within that code the first line is svn's
 			// own lead (E155004 leads with "Run 'svn cleanup'", then lists the locked paths).
@@ -100,7 +123,10 @@ namespace uam
 			bool connect = false;
 			for (const SvnLine& line : lines)
 			{
-				if (line.code == "E170001" || line.code == "E215004") return true;
+				if (line.code == "E215004") return true;
+				// E170001 also means "Authorization failed": signed in, but this account may not read the path. Saving
+				// credentials cannot help then, so only svn's "could not get" and "server refused" wordings count.
+				if (line.code == "E170001" && (line.text.starts_with("Can't get") || line.text.starts_with("Authentication error"))) return true;
 				connect = connect || line.code == "E170013";
 			}
 			if (!connect) return false;
@@ -123,41 +149,45 @@ namespace uam
 			return "SVN needs your credentials. Run svn info -r HEAD once in a terminal in this working copy to save them, then retry.";
 		}
 
-		/// Empty unless svn refused a commit because a selected path is older than the repository's.
+		/// Empty unless svn refused a commit because a selected path is older than the repository's. Keyed on the codes,
+		/// which mean nothing else, so a localised client still gets the plain wording.
 		std::string OutOfDateMessage(const std::vector<SvnLine>& lines, std::string_view workspace)
 		{
 			std::string path;
 			bool out_of_date = false;
 			for (const SvnLine& line : lines)
 			{
-				if (line.warning || line.text.find("out of date") == std::string::npos) continue;
-				if (line.code != "E155011" && line.code != "E160028" && line.code != "E170004") continue;
+				if (line.warning || (line.code != "E155011" && line.code != "E160028" && line.code != "E170004")) continue;
 				out_of_date = true;
 				// The working-copy path (E155011) reads better than the repository path, when svn gave one.
-				if (path.empty() || line.code == "E155011") path = Quoted(line.text);
-				if (line.code == "E155011" && !path.empty()) break;
+				const std::string quoted = Quoted(line.text);
+				if (quoted.empty()) continue;
+				if (path.empty() || line.code == "E155011") path = quoted;
+				if (line.code == "E155011") break;
 			}
 			if (!out_of_date) return {};
 			path = Bound(Relative(path, workspace), 300);
 			return (path.empty() ? std::string("A selected file") : path) + " is out of date. Update, then commit again.";
 		}
 
-		void LogFailure(const ProcessExecutionResult& result, const std::string& message)
+		/// Log text keeps svn's own message, never file contents: workspace and home paths shortened, URL user names removed.
+		std::string Sanitize(std::string text, std::string_view workspace)
 		{
-			static std::mutex mutex;
-			static std::string last;
-			static std::chrono::steady_clock::time_point last_time;
-			std::string raw = uam::strings::Trim(result.output + "\n" + result.error);
-			for (char& c : raw) if (c == '\n' || c == '\r') c = ' ';
-			const std::string entry = "SVN command failed (exit " + std::to_string(result.exit_code) + (result.timed_out ? ", timed out" : "") + "): " + message + " | " + Bound(raw, 2048);
+			text = Relative(std::move(text), workspace);
+			if (const std::optional<std::filesystem::path> home = uam::env::GetUserHomePath())
 			{
-				const std::lock_guard lock(mutex);
-				const auto now = std::chrono::steady_clock::now();
-				if (entry == last && now - last_time < std::chrono::minutes(5)) return;
-				last = entry;
-				last_time = now;
+				const std::string prefix = uam::paths::Utf8PathString(*home);
+				if (prefix.size() > 1)
+					for (std::size_t at = text.find(prefix); at != std::string::npos; at = text.find(prefix, at + 1)) text.replace(at, prefix.size(), "~");
 			}
-			uam::diagnostics::Write(entry);
+			for (std::size_t scheme = text.find("://"); scheme != std::string::npos; scheme = text.find("://", scheme + 3))
+			{
+				const std::size_t host = scheme + 3;
+				const std::size_t end = text.find_first_of("/'\" ", host);
+				const std::size_t user = text.rfind('@', end == std::string::npos ? text.size() : end);
+				if (user != std::string::npos && user >= host && (end == std::string::npos || user < end)) text.erase(host, user + 1 - host);
+			}
+			return text;
 		}
 	} // namespace
 
@@ -167,8 +197,11 @@ namespace uam
 		const std::vector<SvnLine> lines = ParseLines(result);
 		const SvnLine* line = SelectLine(lines);
 		if (line == nullptr) return {};
-		std::string summary = Bound(line->code + ": " + line->text, 240);
-		// svn ends a line with ':' when it continues on the next one (often a path); the summary stops at the sentence.
+		std::string text = line->text;
+		// svn ends a line with ':' when it continues on the next one. A hook's own reason follows its "with output:" line;
+		// a continuation that is svn's own (often a path) is left out and the summary stops at the sentence.
+		if (text.ends_with(':') && !line->next.empty()) text += ' ' + Bound(line->next, 200);
+		std::string summary = Bound(line->code + ": " + text, 400);
 		while (!summary.empty() && (summary.back() == '.' || summary.back() == ':')) summary.pop_back();
 		return summary;
 	}
@@ -176,23 +209,52 @@ namespace uam
 	std::string SvnFailureMessage(const ProcessExecutionResult& result, std::string_view fallback, std::string_view workspace)
 	{
 		if (result.canceled) return "Canceled.";
-		std::string message;
+		if (result.timed_out) return "SVN did not answer in time. Check the connection to the repository, then retry.";
+		if (result.error == kSvnClientMissing) return result.error;
 		const std::vector<SvnLine> lines = ParseLines(result);
-		if (result.timed_out) message = "SVN did not answer in time. Check the connection to the repository, then retry.";
-		else if (result.error == kSvnClientMissing) message = result.error;
-		else if (NeedsCredentials(lines, result)) message = CredentialsMessage(lines);
-		else if (message = OutOfDateMessage(lines, workspace); message.empty())
+		if (NeedsCredentials(lines, result)) return CredentialsMessage(lines);
+		if (std::string message = OutOfDateMessage(lines, workspace); !message.empty()) return message;
+		if (std::string summary = Relative(SvnFailureSummary(result), workspace); !summary.empty()) return summary;
+		// UAM's own reason (the remote helper, an output limit) when svn printed nothing it recognises.
+		const std::string error = uam::strings::Trim(result.error);
+		if (std::string first = Bound(error.substr(0, error.find('\n')), 240); !first.empty()) return first;
+		return std::string(fallback);
+	}
+
+	void LogSvnFailure(const ProcessExecutionResult& result, std::string_view operation, std::string_view workspace)
+	{
+		if (result.canceled) return;
+		const std::vector<SvnLine> lines = ParseLines(result);
+		const SvnLine* selected = SelectLine(lines);
+		std::string detail;
+		if (result.timed_out) detail = "timed out";
+		else if (!lines.empty())
 		{
-			message = Relative(SvnFailureSummary(result), workspace);
-			if (message.empty())
+			for (const SvnLine& line : lines)
 			{
-				// UAM's own reason (the remote helper, an output limit) when svn printed nothing it recognises.
-				const std::string error = uam::strings::Trim(result.error);
-				message = Bound(error.substr(0, error.find('\n')), 240);
+				if (!detail.empty()) detail += " | ";
+				detail += line.code + ": " + line.text;
+				if (detail.size() > 1024) break;
 			}
-			if (message.empty()) message = std::string(fallback);
+			detail = Bound(Sanitize(std::move(detail), workspace), 1024);
 		}
-		LogFailure(result, message);
-		return message;
+		else
+		{
+			// No svn diagnostics: only UAM's own one-line reason, never the command's output (a diff, a listing).
+			const std::string error = uam::strings::Trim(result.error);
+			detail = Bound(Sanitize(error.substr(0, error.find('\n')), workspace), 240);
+		}
+		const std::string key = std::string(operation) + ':' + (result.timed_out ? std::string("timeout") : selected != nullptr ? selected->code : detail);
+		{
+			static std::mutex mutex;
+			static std::map<std::string, std::chrono::steady_clock::time_point> logged;
+			const std::lock_guard lock(mutex);
+			const auto now = std::chrono::steady_clock::now();
+			const auto found = logged.find(key);
+			if (found != logged.end() && now - found->second < std::chrono::minutes(5)) return;
+			if (logged.size() >= 64) logged.clear();
+			logged[key] = now;
+		}
+		uam::diagnostics::Write("SVN " + std::string(operation) + " failed (exit " + std::to_string(result.exit_code) + "): " + (detail.empty() ? std::string("no detail") : detail));
 	}
 } // namespace uam

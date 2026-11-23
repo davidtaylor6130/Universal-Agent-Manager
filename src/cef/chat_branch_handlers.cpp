@@ -362,11 +362,11 @@ void UamQueryHandler::ContinueSwitchChatBranch(CefRefPtr<CefBrowser> browser, co
 			}
 			uam::query_handler_async::DispatchBranchOperation(m_app.worktree_operation_chat_ids, request->chat.id, [&]()
 			{
-				return uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner(request->chat), m_asyncLifetime, cb, [request, branch, create, svn, svn_context]()
+				return uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner(request->chat), m_asyncLifetime, cb, [request, branch, create, svn, svn_context, stop = m_svnBranchDiscoveryStop.get_token()]()
 				{
 					if (svn)
 					{
-						const auto result = uam::SwitchSvnBranch(SvnScope(*request), svn_context, branch, uam::CreateSvnBranchRunner());
+						const auto result = uam::SwitchSvnBranch(SvnScope(*request), svn_context, branch, uam::CreateSvnBranchRunner(stop));
 						if (!result.ok) return uam::query_handler_async::AsyncFailure(409, result.error);
 						return uam::query_handler_async::AsyncSuccess({{"vcsType", "svn"}, {"branch", result.context.revision}, {"svnContext", SvnContextJson(result.context)}});
 					}

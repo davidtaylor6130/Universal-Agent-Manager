@@ -249,8 +249,39 @@ namespace
 		}
 		std::cout << "PASS: SVN failure reasons carried into discovery and switch refusals\n";
 	}
+	/// The log keeps svn's own error lines only: no command output, workspace paths shortened, URL user names removed,
+	/// and one entry per operation and code at a time.
+	void LogSanitisingCases()
+	{
+		uam::diagnostics::g_log.clear();
+		ProcessExecutionResult limited;
+		limited.exit_code = 1;
+		limited.output = "Index: secret.c\n+password = hunter2\n";
+		limited.error = "Command output exceeded the 4 MiB safety limit.";
+		uam::LogSvnFailure(limited, "diff", "/w");
+		Check(uam::diagnostics::g_log.find("exceeded") != std::string::npos && uam::diagnostics::g_log.find("hunter2") == std::string::npos && uam::diagnostics::g_log.find("Index:") == std::string::npos, "an output-limited failure logs UAM's reason, never the output: " + uam::diagnostics::g_log);
+		uam::diagnostics::g_log.clear();
+		ProcessExecutionResult refused;
+		refused.exit_code = 1;
+		refused.output = "Sending        sub/file.txt\nsvn: E170013: Unable to connect to a repository at URL 'svn+ssh://alice@repository.invalid/r'\nsvn: E000013: Can't open file '/w/sub/.svn/wc.db': Permission denied\n";
+		uam::LogSvnFailure(refused, "commit", "/w");
+		const std::string first = uam::diagnostics::g_log;
+		Check(first.find("svn+ssh://repository.invalid/r") != std::string::npos && first.find("alice") == std::string::npos, "URL user names are removed: " + first);
+		Check(first.find("'sub/.svn/wc.db'") != std::string::npos && first.find("/w/") == std::string::npos && first.find("Sending") == std::string::npos, "workspace paths are relative and output lines are left out: " + first);
+		uam::LogSvnFailure(refused, "commit", "/w");
+		Check(uam::diagnostics::g_log == first, "the same failure is logged once in five minutes");
+		uam::LogSvnFailure(refused, "update", "/w");
+		Check(uam::diagnostics::g_log.size() > first.size(), "another operation's failure is logged");
+		ProcessExecutionResult canceled = refused;
+		canceled.canceled = true;
+		const std::size_t before = uam::diagnostics::g_log.size();
+		uam::LogSvnFailure(canceled, "status", "/w");
+		Check(uam::diagnostics::g_log.size() == before, "a stop is not a failure");
+		std::cout << "PASS: SVN failure log keeps svn's lines only, sanitised and rate limited\n";
+	}
 	void InjectedCases()
 	{
+		LogSanitisingCases();
 		BranchDispatchFailureCases();
 		SourceOwnershipCases();
 		SparseDescendantCases();
@@ -351,6 +382,7 @@ namespace
 			result.ok = result.exit_code == 0;
 			result.output = output;
 			failure = result.ok ? std::string{} : uam::SvnFailureMessage(result, {});
+			if (!result.ok) uam::LogSvnFailure(result, args[0]);
 			return result.ok;
 		};
 	}

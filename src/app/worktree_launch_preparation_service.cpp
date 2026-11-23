@@ -108,7 +108,14 @@ namespace uam
 				if (result.timed_out) { error = "SVN update timed out. Retry after checking the working copy."; return false; }
 				if (!result.ok || result.exit_code != 0 || result.output_truncated)
 				{
-					// Carry svn's own E-code (for example E155004, which needs svn cleanup) through the existing error.
+					// Carry svn's own E-code (for example E155004, which needs svn cleanup) through the existing error; missing
+					// credentials get the shared advice on saving them, which a Finder launch cannot prompt for.
+					LogSvnFailure(result, arguments.front(), paths::Utf8PathString(checkout));
+					if (const std::string message = SvnFailureMessage(result, {}); message.starts_with("SVN needs your credentials."))
+					{
+						error = "SVN preparation failed. " + message;
+						return false;
+					}
 					const std::string detail = SvnFailureSummary(result);
 					error = detail.empty() ? "SVN preparation failed. Check the working copy and authentication, then retry."
 					    : "SVN preparation failed (" + detail + "). Check the working copy and authentication, then retry.";

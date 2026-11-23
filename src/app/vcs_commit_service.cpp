@@ -305,15 +305,27 @@ namespace uam
 			}, cwd};
 		}
 
-		/// On failure `error` is one line for the person (SvnFailureMessage); svn's raw output goes only to the log.
-		bool SvnOutput(const SvnRunner& svn, const std::vector<std::string>& args, std::string* output_out, std::string& error, bool* output_limited = nullptr)
+		/// How a failure is logged: a failure the person sees is logged; one the caller expects or discards is not.
+		enum class SvnLog
+		{
+			Shown,
+			Quiet,
+			/// A name containing '@' probed with a trailing peg: SVN 1.15 answers E155010 and the caller retries without it.
+			UnlessPegMiss
+		};
+
+		/// On failure `error` is one line for the person (SvnFailureMessage); svn's own error lines go only to the log.
+		bool SvnOutput(const SvnRunner& svn, const std::vector<std::string>& args, std::string* output_out, std::string& error, bool* output_limited = nullptr, const SvnLog log = SvnLog::Shown)
 		{
 			const ProcessExecutionResult result = svn(args);
 			if (output_limited != nullptr)
 				*output_limited = result.output_truncated || result.error.find(uam::platform::kCapturedCommandOutputLimitError) != std::string::npos;
 			if (!CommandSucceeded(result))
 			{
-				error = SvnFailureMessage(result, args.empty() ? std::string("SVN failed.") : "SVN " + args.front() + " failed.", svn.workspace);
+				const std::string operation = args.empty() ? std::string("command") : args.front();
+				error = SvnFailureMessage(result, "SVN " + operation + " failed.", svn.workspace);
+				if (log == SvnLog::Shown || (log == SvnLog::UnlessPegMiss && error.find("E155010") == std::string::npos))
+					LogSvnFailure(result, operation, svn.workspace);
 				return false;
 			}
 			if (output_out != nullptr) *output_out = result.output;
@@ -762,6 +774,7 @@ namespace uam
 			commit.insert(commit.end(), plan.targets.begin(), plan.targets.end());
 			committed = svn(commit);
 			if (CommandSucceeded(committed)) return true;
+			LogSvnFailure(committed, "commit", svn.workspace);
 			error = SvnFailureMessage(committed, "SVN did not commit the selection.", svn.workspace) + " Local SVN scheduling is retained; verify repository publication before retrying.";
 			return false;
 		}
@@ -1055,16 +1068,16 @@ namespace uam
 
 		/// SVN 1.15 diff reads a trailing peg '@' as part of the name, while older clients need it for names containing '@'
 		/// (unescaped, "name@123" could diff revision 123 of "name"). Names with '@' try the peg form first; 1.15 then misses it.
-		bool SvnFileDiff(const SvnRunner& svn, const std::string& path, std::string& output, std::string& error, bool* output_limited = nullptr)
+		bool SvnFileDiff(const SvnRunner& svn, const std::string& path, std::string& output, std::string& error, bool* output_limited = nullptr, const bool shown = true)
 		{
 			const bool has_at = path.find('@') != std::string::npos;
 			if (has_at)
 			{
-				if (SvnOutput(svn, SvnDiffArgs(path + "@"), &output, error, output_limited)) return true;
+				if (SvnOutput(svn, SvnDiffArgs(path + "@"), &output, error, output_limited, shown ? SvnLog::UnlessPegMiss : SvnLog::Quiet)) return true;
 				// Only a client that reads the suffix as part of the name (E155010) retries; other failures are real.
 				if (error.find("E155010") == std::string::npos) return false;
 			}
-			if (!SvnOutput(svn, SvnDiffArgs(path), &output, error, output_limited)) return false;
+			if (!SvnOutput(svn, SvnDiffArgs(path), &output, error, output_limited, shown ? SvnLog::Shown : SvnLog::Quiet)) return false;
 			if (!has_at || output.empty()) return true;
 			// Accept the unescaped spelling only when svn diffed this path (or, for a folder, its children).
 			const std::string key = SlashKey(path);
@@ -1083,7 +1096,8 @@ namespace uam
 			std::string ignored;
 			if (files.empty()) return;
 			std::map<std::string, std::string> sections;
-			const bool workspace_diffed = SvnOutput(svn, SvnDiffArgs("."), &output, ignored);
+			// Line counts are best effort: their failures are not shown, so they are not logged either.
+			const bool workspace_diffed = SvnOutput(svn, SvnDiffArgs("."), &output, ignored, nullptr, SvnLog::Quiet);
 			if (workspace_diffed) sections = SvnDiffSections(output);
 			// A failed workspace diff (for example one file's huge diff exceeding the capture limit) still counts each
 			// file from its own diff, until one fails for another reason (a locked working copy would fail them all).
@@ -1097,7 +1111,7 @@ namespace uam
 				{
 					std::string single;
 					bool limited = false;
-					const bool diffed = SvnFileDiff(svn, file.path, single, ignored, &limited);
+					const bool diffed = SvnFileDiff(svn, file.path, single, ignored, &limited, false);
 					per_file = diffed || limited;
 					// A folder's own diff lists its children, which have their own rows; count only this path's section.
 					if (diffed) for (auto& [path, section] : SvnDiffSections(single)) sections.try_emplace(path, std::move(section));
@@ -1423,7 +1437,7 @@ namespace uam
 		{
 			std::string output;
 			std::string error;
-			if (SvnOutput(svn, {"info", "--non-interactive", "--show-item", "revision", "--", "."}, &output, error))
+			if (SvnOutput(svn, {"info", "--non-interactive", "--show-item", "revision", "--", "."}, &output, error, nullptr, SvnLog::Quiet))
 				status.branch_or_revision = uam::strings::Trim(output);
 			if (context_only) return false;
 			if (!SvnOutput(svn, {"status", "--non-interactive", "--", "."}, &output, error))
