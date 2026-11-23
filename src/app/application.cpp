@@ -1019,6 +1019,8 @@ void Application::FinishStartupState(std::vector<ChatSession> chats, std::string
 		if (!chat.temporary_parent_chat_id.empty())
 			(void)uam::RequestTemporarySideChatCleanup(m_app, chat.id);
 	uam::MigrateWorkspaceFolderOwnership(m_app);
+	// Once per start, after the split above has had its chance to add any destination it saved earlier.
+	(void)uam::LogDanglingWorkspaceFolderReferences(m_app);
 
 	if (uam::MigrateExecutionRoutingIdentities(m_app)) (void)PersistenceCoordinator().SaveSettings(m_app);
 	(void)uam::RestoreExecutionRoutingReservations(m_app);
