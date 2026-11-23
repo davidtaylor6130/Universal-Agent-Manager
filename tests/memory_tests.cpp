@@ -3,6 +3,7 @@
 #include "common/provider/provider_text_worker.h"
 #include "common/memory/memory_levels.h"
 #include "common/memory/memory_policy.h"
+#include "common/memory/memory_worker_failure_pause.h"
 #include "common/provider/provider_setup.h"
 #include "common/paths/workspace_file_reader.h"
 
@@ -1894,6 +1895,173 @@ UAM_TEST(MemoryServiceFailedWorkerBacksOffItsHostAndProviderBeforeNextQueuedChat
 	UAM_ASSERT_EQ(app.memory_extraction_queue.size(), static_cast<std::size_t>(2));
 	UAM_ASSERT_EQ(app.memory_failure_count_by_chat_id[queued.id], 1);
 	UAM_ASSERT(!app.memory_failure_count_by_chat_id.contains(queued_again.id));
+}
+
+namespace
+{
+	void CompleteFailedMemoryWorkerForTests(uam::AppState& app, const ChatSession& chat, int exit_code, bool timed_out = false)
+	{
+		uam::AsyncMemoryExtractionTask task;
+		task.data_root = app.data_root;
+		task.running = true;
+		task.chat_id = chat.id;
+		task.memory_level = uam::memory_policy::Resolve(app.settings, chat);
+		task.message_count = static_cast<int>(chat.messages.size());
+		task.state = std::make_shared<AsyncProcessTaskState>();
+		task.state->provider_id = chat.provider_id;
+		task.state->result.exit_code = exit_code;
+		task.state->result.timed_out = timed_out;
+		task.state->result.output = "private worker output";
+		task.state->completed.store(true);
+		app.memory_extraction_tasks.push_back(std::move(task));
+		UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+		// The per-chat and per-host waits are not under test; let the next attempt be due now.
+		app.memory_retry_not_before_by_chat_id.erase(chat.id);
+		app.memory_worker_backoff_by_key.clear();
+	}
+
+	ChatSession PauseTestChat(const TempDir& temp, const char* id)
+	{
+		ChatSession chat;
+		chat.id = id;
+		chat.provider_id = "gemini-cli";
+		chat.workspace_directory = temp.root.string();
+		chat.memory_enabled = true;
+		// Open extraction queues any new message, so the idle sweep's response to a resume does not depend on wording.
+		chat.memory_level = uam::memory_levels::kOpen;
+		chat.messages.push_back({MessageRole::User, "Remember this.", "now"});
+		return chat;
+	}
+}
+
+UAM_TEST(MemoryWorkerFailureClassifierReturnsFixedCategoriesWithoutWorkerText)
+{
+	ProcessExecutionResult result;
+	result.exit_code = 1;
+	result.output = "private transcript words";
+	UAM_ASSERT_EQ(std::string(uam::memory::ClassifyWorkerFailure(result)), std::string("exit"));
+	result.diagnostic_tail = "Error: 429 Too Many Requests";
+	UAM_ASSERT_EQ(std::string(uam::memory::ClassifyWorkerFailure(result)), std::string("rate-limit"));
+	result.diagnostic_tail.clear();
+	result.error = "opencode 2.3.1 is not supported for text workers";
+	UAM_ASSERT_EQ(std::string(uam::memory::ClassifyWorkerFailure(result)), std::string("unsupported-cli"));
+	result.error = "Not logged in";
+	UAM_ASSERT_EQ(std::string(uam::memory::ClassifyWorkerFailure(result)), std::string("auth"));
+	result.error.clear();
+	result.exit_code = 127;
+	UAM_ASSERT_EQ(std::string(uam::memory::ClassifyWorkerFailure(result)), std::string("command-not-found"));
+	result.timed_out = true;
+	UAM_ASSERT_EQ(std::string(uam::memory::ClassifyWorkerFailure(result)), std::string("timeout"));
+	UAM_ASSERT_EQ(uam::memory::WorkerFailureSignature("exit", 1), std::string("exit exit=1"));
+	UAM_ASSERT_EQ(uam::memory::WorkerFailureSignature("start-failed", -1), std::string("start-failed"));
+}
+
+UAM_TEST(MemoryServiceRepeatedIdenticalWorkerFailuresPauseRetriesUntilChatGainsMessages)
+{
+	TempDir temp("uam-memory-failure-pause");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.chats = {PauseTestChat(temp, "chat-failure-pause")};
+
+	for (int attempt = 1; attempt < uam::memory::kIdenticalWorkerFailuresBeforePause; ++attempt)
+	{
+		CompleteFailedMemoryWorkerForTests(app, app.chats.front(), 1);
+		UAM_ASSERT_EQ(app.memory_failure_streak_by_chat_id[app.chats.front().id].count, attempt);
+		UAM_ASSERT(!app.memory_failure_streak_by_chat_id[app.chats.front().id].paused);
+		UAM_ASSERT_EQ(app.memory_last_status, std::string("Memory worker exited with code 1."));
+	}
+	CompleteFailedMemoryWorkerForTests(app, app.chats.front(), 1);
+	const uam::MemoryWorkerFailureStreak& streak = app.memory_failure_streak_by_chat_id[app.chats.front().id];
+	UAM_ASSERT(streak.paused);
+	UAM_ASSERT_EQ(streak.signature, std::string("exit exit=1"));
+	UAM_ASSERT(streak.inputs.find("private") == std::string::npos);
+	UAM_ASSERT(app.memory_last_status.starts_with("Memory paused for a chat"));
+	UAM_ASSERT_EQ(app.memory_activity.last_status, app.memory_last_status);
+	UAM_ASSERT(app.memory_last_status.find('\n') == std::string::npos);
+
+	// Paused: neither a queued automatic request nor the idle sweep starts another worker, even once the hourly retry is due.
+	app.memory_last_status = "unchanged";
+	app.memory_extraction_queue.push_back({app.chats.front().id, -1, false});
+	MemoryService::ProcessDueMemoryWork(app);
+	MemoryService::ProcessDueMemoryWork(app);
+	UAM_ASSERT(app.memory_extraction_queue.empty());
+	UAM_ASSERT(app.memory_extraction_tasks.empty());
+	UAM_ASSERT(!app.memory_idle_started_at_by_chat_id.contains(app.chats.front().id));
+	UAM_ASSERT_EQ(app.memory_last_status, std::string("unchanged"));
+
+	// New chat content resumes on the next poll without waiting for the input recheck.
+	app.chats.front().messages.push_back({MessageRole::Assistant, "Noted.", "now"});
+	UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+	UAM_ASSERT(!app.memory_failure_streak_by_chat_id.contains(app.chats.front().id));
+	UAM_ASSERT(!app.memory_retry_not_before_by_chat_id.contains(app.chats.front().id));
+	UAM_ASSERT(!app.memory_failure_count_by_chat_id.contains(app.chats.front().id));
+	UAM_ASSERT(app.memory_idle_started_at_by_chat_id.contains(app.chats.front().id));
+}
+
+UAM_TEST(MemoryServiceDifferentWorkerFailuresDoNotPauseRetries)
+{
+	TempDir temp("uam-memory-failure-mixed");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.chats = {PauseTestChat(temp, "chat-failure-mixed")};
+
+	CompleteFailedMemoryWorkerForTests(app, app.chats.front(), 1);
+	CompleteFailedMemoryWorkerForTests(app, app.chats.front(), 1);
+	CompleteFailedMemoryWorkerForTests(app, app.chats.front(), 2);
+	CompleteFailedMemoryWorkerForTests(app, app.chats.front(), -1, true);
+	const uam::MemoryWorkerFailureStreak& streak = app.memory_failure_streak_by_chat_id[app.chats.front().id];
+	UAM_ASSERT(!streak.paused);
+	UAM_ASSERT_EQ(streak.count, 1);
+	UAM_ASSERT_EQ(streak.signature, std::string("timeout"));
+}
+
+UAM_TEST(MemoryServicePausedRetriesResumeOnProviderChangeManualScanOrSuccess)
+{
+	TempDir temp("uam-memory-failure-resume");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	app.runtime_cli_versions_by_provider_id[uam::provider_ids::kGeminiCli].installed_version = "1.0.0";
+	app.chats = {PauseTestChat(temp, "chat-failure-resume")};
+	const auto pause = [&app]
+	{
+		for (int attempt = 0; attempt < uam::memory::kIdenticalWorkerFailuresBeforePause; ++attempt)
+			CompleteFailedMemoryWorkerForTests(app, app.chats.front(), 1);
+		UAM_ASSERT(app.memory_failure_streak_by_chat_id[app.chats.front().id].paused);
+	};
+
+	pause();
+	// A CLI update is noticed at the next input recheck, not on every poll.
+	app.runtime_cli_versions_by_provider_id[uam::provider_ids::kGeminiCli].installed_version = "1.1.0";
+	MemoryService::ProcessDueMemoryWork(app);
+	UAM_ASSERT(app.memory_failure_streak_by_chat_id[app.chats.front().id].paused);
+	app.memory_failure_streak_by_chat_id[app.chats.front().id].recheck_at = 0.0;
+	UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+	UAM_ASSERT(!app.memory_failure_streak_by_chat_id.contains(app.chats.front().id));
+
+	// A settings change that alters the chat's memory policy also resumes it.
+	pause();
+	app.chats.front().memory_level = uam::memory_levels::kBalanced;
+	app.memory_failure_streak_by_chat_id[app.chats.front().id].recheck_at = 0.0;
+	UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+	UAM_ASSERT(!app.memory_failure_streak_by_chat_id.contains(app.chats.front().id));
+
+	// Unchanged inputs stay paused after the recheck.
+	pause();
+	app.memory_failure_streak_by_chat_id[app.chats.front().id].recheck_at = 0.0;
+	MemoryService::ProcessDueMemoryWork(app);
+	UAM_ASSERT(app.memory_failure_streak_by_chat_id[app.chats.front().id].paused);
+
+	// Scan chats is the manual retry.
+	UAM_ASSERT(MemoryService::QueueManualScan(app, {app.chats.front().id}));
+	UAM_ASSERT(!app.memory_failure_streak_by_chat_id.contains(app.chats.front().id));
+	app.memory_extraction_queue.clear();
+
+	// A deleted chat drops its pause.
+	pause();
+	app.chats.clear();
+	UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+	UAM_ASSERT(app.memory_failure_streak_by_chat_id.empty());
 }
 
 UAM_TEST(MemoryServiceFailedWorkerReportsCommandNotFound)

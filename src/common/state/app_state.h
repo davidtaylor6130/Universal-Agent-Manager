@@ -4,6 +4,7 @@
 #include "app/execution_routing_service.h"
 #include "app/repository_route_match_service.h"
 #include "common/models/app_models.h"
+#include "common/memory/memory_worker_failure_pause.h"
 #include "common/paths/workspace_lease.h"
 #include "common/config/frontend_actions.h"
 #include "common/platform/platform_state_fields.h"
@@ -1648,6 +1649,8 @@ namespace uam
 		std::unordered_map<std::string, double> memory_retry_not_before_by_chat_id;
 		std::unordered_map<std::string, int> memory_failure_count_by_chat_id;
 		std::unordered_map<std::string, MemoryWorkerBackoff> memory_worker_backoff_by_key;
+		// Retries stop after repeated identical failures until the chat's inputs change, a manual scan or a restart.
+		std::unordered_map<std::string, MemoryWorkerFailureStreak> memory_failure_streak_by_chat_id;
 		std::unordered_map<std::string, CliProviderVersionState> runtime_cli_versions_by_provider_id;
 		std::unordered_map<std::string, ComputerUseRuntimeState> computer_use_by_chat_id;
 		std::unordered_set<std::string> computer_use_revocation_pending_chat_ids;

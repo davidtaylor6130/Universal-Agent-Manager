@@ -2,6 +2,7 @@
 #include "common/platform/background_thread_priority.h"
 #include "common/memory/extraction_receipts.h"
 #include "common/memory/memory_storage_guard.h"
+#include "common/memory/memory_worker_failure_pause.h"
 #include "remote/runner_client.h"
 #include "common/config/execution_host_config.h"
 #include "app/memory_service.h"
@@ -115,6 +116,7 @@ namespace
 	constexpr const char* kMemoryWorkerOutputDiscardedStatus = "Memory worker output was discarded.";
 	constexpr const char* kMemoryScanStoppedStatus = "Memory scan stopped for this chat.";
 	constexpr const char* kLowSignalMemoryDeltaSkippedStatus = "Memory gate skipped low-signal chat delta.";
+	constexpr const char* kMemoryRetriesPausedStatus = "Memory paused for a chat after the same failure repeated; new messages, a provider or settings change, a restart or Scan chats resumes it.";
 
 	std::string MemoryLevel(const ChatSession& chat)
 	{
@@ -1111,9 +1113,16 @@ namespace
 		return found != app.memory_retry_not_before_by_chat_id.end() && found->second > now;
 	}
 
+	bool MemoryRetriesPaused(const uam::AppState& app, const std::string& chat_id)
+	{
+		if (app.memory_failure_streak_by_chat_id.empty()) return false;
+		const auto found = app.memory_failure_streak_by_chat_id.find(chat_id);
+		return found != app.memory_failure_streak_by_chat_id.end() && found->second.paused;
+	}
+
 	bool MemoryRetryDue(const uam::AppState& app, const std::string& chat_id, double now)
 	{
-		return !MemoryRetryScheduledForFuture(app, chat_id, now);
+		return !MemoryRetryScheduledForFuture(app, chat_id, now) && !MemoryRetriesPaused(app, chat_id);
 	}
 
 	// Pure checks, cheapest first: a chat waiting out a failed scan's retry must not pay for the busy check.
@@ -1214,7 +1223,7 @@ namespace
 		return detail == std::string::npos ? summary : summary + ": [details withheld]";
 	}
 
-	void RecordMemoryFailure(uam::AppState& app, const std::string& chat_id, const std::string& reason)
+	void RecordMemoryFailure(uam::AppState& app, const std::string& chat_id, const std::string& reason, std::string_view log_detail = {})
 	{
 		const int failure_count = ++app.memory_failure_count_by_chat_id[chat_id];
 		app.memory_retry_not_before_by_chat_id[chat_id] = uam::GetAppTimeSeconds() + RetryDelayForFailureCount(failure_count);
@@ -1222,13 +1231,78 @@ namespace
 		app.memory_activity.last_created_count = 0;
 		app.memory_activity.last_status = app.memory_last_status;
 		app.memory_activity.last_worker_status = app.memory_last_status;
-		uam::diagnostics::Write("memory: chat=" + chat_id + " " + MemoryFailureLogSummary(app.memory_last_status));
+		std::string line = "memory: chat=" + chat_id + " " + MemoryFailureLogSummary(app.memory_last_status);
+		if (!log_detail.empty()) line.append(" (").append(log_detail).append(")");
+		uam::diagnostics::Write(line);
+	}
+
+	/// <summary>Everything a retry of the same chat would feed the worker, other than transcript text: a change resumes paused retries.</summary>
+	std::string MemoryWorkerInputsFingerprint(const uam::AppState& app, const ChatSession& chat, int message_count)
+	{
+		const ProviderResolutionService::WorkerProviderSelection worker = ProviderResolutionService().WorkerProviderSelectionForChat(app, chat);
+		std::string inputs = std::to_string(message_count);
+		inputs.append("\n").append(MemoryLevel(app, chat));
+		inputs.append("\n").append(uam::paths::IsControllerLocalWorkspace(chat) ? std::string_view(uam::execution_hosts::kLocalHostId) : std::string_view(chat.execution_host_id));
+		inputs.append("\n").append(chat.workspace_directory).append("\n").append(chat.folder_id);
+		inputs.append("\n").append(worker.provider != nullptr ? worker.provider->id : chat.provider_id).append("\n").append(worker.model_id);
+		if (worker.provider == nullptr) return inputs;
+		inputs.append("\n").append(worker.provider->interactive_command);
+		for (const std::string& flag : worker.provider->runtime_flags) inputs.append("\n").append(flag);
+		for (const auto& [provider_id, version] : app.runtime_cli_versions_by_provider_id)
+			if (uam::provider_ids::IsCliProviderAliasOf(worker.provider->id, provider_id))
+				inputs.append("\n").append(version.installed_version).append("\n").append(version.selected_version).append(version.supported ? "\n1" : "\n0");
+		return inputs;
+	}
+
+	/// <summary>Records a failure that will repeat while nothing changes. After a few identical ones for the same inputs,
+	/// retries for the chat pause and the shared memory status says so once, instead of retrying hourly for ever.</summary>
+	void RecordRepeatableMemoryFailure(uam::AppState& app, const ChatSession& chat, const std::string& reason, std::string_view category, int exit_code, int message_count)
+	{
+		const std::string signature = uam::memory::WorkerFailureSignature(category, exit_code);
+		RecordMemoryFailure(app, chat.id, reason, "category=" + signature);
+		if (message_count < 0) message_count = MessageCount(chat);
+		uam::MemoryWorkerFailureStreak& streak = app.memory_failure_streak_by_chat_id[chat.id];
+		if (!uam::memory::RecordWorkerFailure(streak, signature, MemoryWorkerInputsFingerprint(app, chat, message_count), message_count, uam::GetAppTimeSeconds())) return;
+		app.memory_last_status = kMemoryRetriesPausedStatus;
+		app.memory_activity.last_status = app.memory_last_status;
+		uam::diagnostics::Write("memory: chat=" + chat.id + " retries paused after " + std::to_string(streak.count) + " identical failures (category=" + signature + ")");
+	}
+
+	/// <summary>Ends pauses whose chat gained messages or whose provider, CLI or settings inputs changed; deleted chats drop theirs.</summary>
+	template <typename FindChat> bool ResumeChangedMemoryPauses(uam::AppState& app, double now, FindChat&& find_chat)
+	{
+		bool changed = false;
+		for (auto it = app.memory_failure_streak_by_chat_id.begin(); it != app.memory_failure_streak_by_chat_id.end();)
+		{
+			if (!it->second.paused)
+			{
+				++it;
+				continue;
+			}
+			const ChatSession* chat = find_chat(it->first);
+			if (chat != nullptr)
+			{
+				const int message_count = MessageCount(*chat);
+				if (!uam::memory::PausedWorkerInputsChanged(it->second, message_count, now, [&] { return MemoryWorkerInputsFingerprint(app, *chat, message_count); }))
+				{
+					++it;
+					continue;
+				}
+				uam::diagnostics::Write("memory: chat=" + it->first + " retries resumed after its inputs changed");
+			}
+			app.memory_retry_not_before_by_chat_id.erase(it->first);
+			app.memory_failure_count_by_chat_id.erase(it->first);
+			it = app.memory_failure_streak_by_chat_id.erase(it);
+			changed = true;
+		}
+		return changed;
 	}
 
 	void RecordMemorySuccess(uam::AppState& app, const std::string& chat_id)
 	{
 		app.memory_failure_count_by_chat_id.erase(chat_id);
 		app.memory_retry_not_before_by_chat_id.erase(chat_id);
+		if (!app.memory_failure_streak_by_chat_id.empty()) app.memory_failure_streak_by_chat_id.erase(chat_id);
 	}
 
 	void RecordMemoryWorkerResult(uam::AppState& app, const uam::AsyncMemoryExtractionTask& task, const std::string& status)
@@ -1294,11 +1368,13 @@ namespace
 		{
 			const std::string failure_status = task.state->result.output_truncated ? "Memory worker output was truncated." : MemoryWorkerFailureStatus(task.state->result);
 			RecordMemoryWorkerResult(app, task, failure_status);
-			RecordMemoryFailure(app, task.chat_id, failure_status);
-			if (!task.state->result.canceled)
+			if (task.state->result.canceled)
 			{
-				RecordMemoryBackoff(app, chat);
+				RecordMemoryFailure(app, task.chat_id, failure_status);
+				return false;
 			}
+			RecordRepeatableMemoryFailure(app, chat, failure_status, uam::memory::ClassifyWorkerFailure(task.state->result), task.state->result.exit_code, task.message_count);
+			RecordMemoryBackoff(app, chat);
 			return false;
 		}
 
@@ -1352,7 +1428,7 @@ namespace
 
 		const std::string failure_reason = uam::strings::NonEmptyOrFallback(error, kMemoryWorkerOutputDiscardedStatus);
 		RecordMemoryWorkerResult(app, task, failure_reason);
-		RecordMemoryFailure(app, task.chat_id, failure_reason);
+		RecordRepeatableMemoryFailure(app, chat, failure_reason, "output-rejected", task.state->result.exit_code, task.message_count);
 		RecordMemoryBackoff(app, chat);
 		return false;
 	}
@@ -2302,6 +2378,7 @@ bool MemoryService::QueueManualScan(uam::AppState& app, const std::vector<std::s
 		}
 
 		app.memory_retry_not_before_by_chat_id.erase(chat.id);
+		app.memory_failure_streak_by_chat_id.erase(chat.id);
 		ResetMemoryBackoff(app, chat);
 		const auto queued = std::ranges::find_if(app.memory_extraction_queue, [&chat](const uam::QueuedMemoryExtractionTask& task)
 		                                              { return task.chat_id == chat.id; });
@@ -2437,7 +2514,7 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 				else if (task.extraction_state != nullptr && task.extraction_state->hydration_failed)
 				{
 					const std::string failure_status = MemoryWorkerFailureStatus(task.state->result);
-					RecordMemoryFailure(app, chat.id, failure_status);
+					RecordRepeatableMemoryFailure(app, chat, failure_status, "history-read", -1, task.message_count);
 					requeue_completed_task();
 				}
 				else if (task.extraction_state != nullptr && task.extraction_state->low_signal_skip)
@@ -2481,6 +2558,7 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 		// A padded or missing id takes the ordinary trimmed search.
 		return found != chats_by_id.end() ? found->second : ChatDomainService().FindChatById(app, chat_id);
 	};
+	changed = ResumeChangedMemoryPauses(app, uam::GetAppTimeSeconds(), find_queued_chat) || changed;
 	while (RunningMemoryTaskCount(app) < kMaxConcurrentMemoryWorkers && !app.memory_extraction_queue.empty())
 	{
 		const std::size_t attempts = app.memory_extraction_queue.size();
@@ -2506,6 +2584,13 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 				continue;
 			}
 
+			if (MemoryRetriesPaused(app, chat.id))
+			{
+				// A queued manual scan would hold the fast poll for the whole pause. Scan chats clears the pause
+				// before queueing, and the automatic sweep queues the chat again once its pause ends.
+				changed = true;
+				continue;
+			}
 			if (QueuedMemoryWorkTemporarilyBlocked(app, chat) || !MemoryBackoffDue(app, chat, uam::GetAppTimeSeconds()))
 			{
 				RequeueMemoryWork(app, std::move(queued));
@@ -2535,7 +2620,7 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 				{
 					// Restore the exact popped request before failure reporting can allocate.
 					RequeueMemoryWork(app, std::move(queued));
-					RecordMemoryFailure(app, chat.id, kMemoryInputPreparationError);
+					RecordRepeatableMemoryFailure(app, chat, kMemoryInputPreparationError, "input-preparation", -1, -1);
 					changed = true;
 					continue;
 				}
@@ -2568,7 +2653,7 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 			}
 			else
 			{
-				RecordMemoryFailure(app, chat.id, app.memory_last_status);
+				RecordRepeatableMemoryFailure(app, chat, app.memory_last_status, "start-failed", -1, -1);
 				RecordMemoryBackoff(app, chat);
 				if (queued.manual)
 				{
@@ -2615,7 +2700,7 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 			{
 				// Keep unprocessed history intact; the normal retry gate will rediscover it.
 				app.memory_idle_started_at_by_chat_id.erase(chat.id);
-				RecordMemoryFailure(app, chat.id, kMemoryInputPreparationError);
+				RecordRepeatableMemoryFailure(app, chat, kMemoryInputPreparationError, "input-preparation", -1, -1);
 				changed = true;
 				continue;
 			}
