@@ -1041,35 +1041,6 @@ void RecordEventReceipt(AcpSessionState& session, ChatSession& chat, const nlohm
 		message->provider_event_ids.push_back(receipt);
 }
 
-AcpToolCallState& TrackedTool(AcpSessionState& session, const ChatSession& chat, const std::string& id)
-{
-	for (AcpToolCallState& tool : session.tool_calls) if (tool.id == id) return tool;
-	AcpToolCallState& tool = UpsertToolCall(session, id);
-	for (std::size_t index = 0; index < chat.messages.size(); ++index)
-	{
-		for (const ToolCall& saved : chat.messages[index].tool_calls)
-		{
-			if (saved.id != id) continue;
-			tool.title = saved.name;
-			tool.kind = saved.kind;
-			tool.status = saved.status;
-			tool.args_json = saved.args_json;
-			tool.content = saved.result_text;
-			tool.is_sub_agent = saved.is_sub_agent;
-			tool.sub_agent_id = saved.sub_agent_id;
-			tool.sub_agent_title = saved.sub_agent_title;
-			tool.sub_agent_children = saved.sub_agent_children;
-			tool.sub_agent_children_authoritative = saved.sub_agent_children_authoritative;
-			tool.approval_status = saved.approval_status;
-			tool.task_id = saved.task_id;
-			tool.child_activity = saved.child_activity;
-			session.tool_call_message_indices[id] = static_cast<int>(index);
-			return tool;
-		}
-	}
-	return tool;
-}
-
 void AppendTrackedToolEvent(AcpSessionState& session, const std::string& id)
 {
 	const auto owner = session.tool_call_message_indices.find(id);
@@ -1124,7 +1095,7 @@ void ApplyToolEvent(AcpSessionState& session, ChatSession& chat, const nlohmann:
 	const std::string id = Text(data, "toolCallId");
 	if (id.empty()) return;
 	if (type == "tool.execution_start") uam::copilot::presentation::Observe(McpPresentationOrigins(session), event, data);
-	AcpToolCallState& tool = TrackedTool(session, chat, id);
+	AcpToolCallState& tool = RestoreToolCallFromChat(session, chat, id);
 	const std::string name = Text(data, "toolName");
 	if (!name.empty())
 	{
@@ -1160,7 +1131,7 @@ void ApplyToolEvent(AcpSessionState& session, ChatSession& chat, const nlohmann:
 	if (!parent.empty())
 	{
 		const std::string activity = tool.title;
-		AcpToolCallState& owner = TrackedTool(session, chat, parent);
+		AcpToolCallState& owner = RestoreToolCallFromChat(session, chat, parent);
 		owner.is_sub_agent = true;
 		if (!agent.empty())
 		{
@@ -2100,7 +2071,7 @@ bool CopilotCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::AcpS
 		uam::copilot::presentation::AcceptedBoundary(McpPresentationOrigins(session), event, data);
 	if (child && !parent.empty() && !agent.empty())
 	{
-		AcpToolCallState& owner = TrackedTool(session, chat, parent);
+		AcpToolCallState& owner = RestoreToolCallFromChat(session, chat, parent);
 		owner.is_sub_agent = true;
 		owner.task_id = agent;
 		owner.sub_agent_id = BuildCopilotAgentHistoryId(session.session_id, agent, chat.execution_host_id.empty() ? "local" : chat.execution_host_id);
@@ -2251,7 +2222,7 @@ bool CopilotCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::AcpS
 		if (!live.is_object()) live = nlohmann::json::object();
 		if (type == "subagent.started") live[id] = true;
 		else live.erase(id);
-		AcpToolCallState& tool = TrackedTool(session, chat, id);
+		AcpToolCallState& tool = RestoreToolCallFromChat(session, chat, id);
 		tool.is_sub_agent = true;
 		tool.kind = "sub-agent";
 		if (!agent.empty()) tool.task_id = agent;

@@ -183,6 +183,8 @@ void HandlePermissionRequest(AppState& app, AcpSessionState& session, ChatSessio
 
 // Tool call state helpers
 AcpToolCallState& UpsertToolCall(AcpSessionState& session, const std::string& id);
+/// <summary>Returns the live tool call, or restores it from the saved message that owns it so late task/child events update that message even after the next turn starts.</summary>
+AcpToolCallState& RestoreToolCallFromChat(AcpSessionState& session, const ChatSession& chat, const std::string& id);
 bool LooksLikeSubAgentTool(const nlohmann::json& update, const AcpToolCallState& tool_call, const IProviderRuntime& runtime);
 void ApplySubAgentMetadata(AcpToolCallState& tool_call, const nlohmann::json& update, const IProviderRuntime& runtime);
 
