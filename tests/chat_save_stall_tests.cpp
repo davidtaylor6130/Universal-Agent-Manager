@@ -4,13 +4,16 @@
 #include "common/runtime/acp/acp_polling.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/app_time.h"
+#include "common/utils/diagnostic_log.h"
 
 #include <cstdio>
 #include <mutex>
 #if defined(_WIN32)
 #include <io.h>
 #else
+#include <csignal>
 #include <fcntl.h>
+#include <sys/resource.h>
 #include <unistd.h>
 #endif
 
@@ -502,6 +505,96 @@ UAM_TEST(ChatSaveRefusalIsNotReportedAsStorageFailure)
 	fixture.Chat().managed_followup_incarnation.clear();
 	UAM_ASSERT(uam::acp_detail::SaveChatQuietly(fixture.app, fixture.Chat()));
 	UAM_ASSERT(fixture.app.status_line.empty() && fixture.app.chat_save_failures_by_chat_id.empty());
+}
+
+UAM_TEST(ChatSaveReturnsItsRefusalOrWriteErrorCause)
+{
+	SaveStallFixture fixture(4, 64);
+	ChatSession& chat = fixture.Chat();
+	ChatSaveFailure failure{"stale", true};
+	UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, chat, false, &failure));
+	UAM_ASSERT(failure.reason.empty() && !failure.refused);
+
+	chat.managed_followup_incarnation = "not-a-uuid";
+	UAM_ASSERT(!ChatRepository::SaveChat(fixture.app.data_root, chat, false, &failure));
+	UAM_ASSERT(failure.refused);
+	UAM_ASSERT_EQ(failure.reason, std::string("content_not_storable"));
+	chat.managed_followup_incarnation.clear();
+
+	// A journal UAM cannot read is held for the user, never overwritten: a refusal, not a storage failure.
+	const fs::path journal = fixture.app.data_root / "queue-outboxes" / "stall-chat.json";
+	fs::create_directories(journal.parent_path());
+	UAM_ASSERT(uam::io::WriteTextFile(journal, "{broken"));
+	UAM_ASSERT(!ChatRepository::SaveChat(fixture.app.data_root, chat, false, &failure));
+	UAM_ASSERT(failure.refused);
+	UAM_ASSERT_EQ(failure.reason, std::string("queue_journal_unreadable"));
+	fs::remove(journal);
+
+	// A primary UAM cannot read (here a directory in its place) is a storage failure, not a refusal.
+	const fs::path primary = AppPaths::UamChatFilePath(fixture.app.data_root, "stall-chat");
+	fs::rename(primary, fixture.temporary.root / "preserved.json"); fs::create_directory(primary);
+	UAM_ASSERT(!ChatRepository::SaveChat(fixture.app.data_root, chat, false, &failure));
+	UAM_ASSERT(!failure.refused);
+	UAM_ASSERT_EQ(failure.reason, std::string("primary_unreadable"));
+	SavedChatPrimaryWitness witness;
+	UAM_ASSERT(!ChatRepository::SaveLoadedChatWithPrimaryWitness(fixture.app.data_root, chat, witness, &failure));
+	UAM_ASSERT(!failure.refused && failure.reason == "primary_unreadable");
+	fs::remove(primary); fs::rename(fixture.temporary.root / "preserved.json", primary);
+	UAM_ASSERT(ChatRepository::SaveLoadedChatWithPrimaryWitness(fixture.app.data_root, chat, witness, &failure));
+	UAM_ASSERT(failure.reason.empty());
+#if !defined(_WIN32)
+	// A failed write carries the atomic writer's own text (the step and OS error), never a path.
+	{
+		struct FileSizeLimit
+		{
+			rlimit previous{};
+			void (*previous_handler)(int) = SIG_DFL;
+			FileSizeLimit()
+			{
+				UAM_ASSERT(getrlimit(RLIMIT_FSIZE, &previous) == 0);
+				previous_handler = std::signal(SIGXFSZ, SIG_IGN);
+				rlimit small = previous;
+				small.rlim_cur = 16;
+				UAM_ASSERT(setrlimit(RLIMIT_FSIZE, &small) == 0);
+			}
+			~FileSizeLimit() { (void)setrlimit(RLIMIT_FSIZE, &previous); std::signal(SIGXFSZ, previous_handler); }
+		} limit;
+		chat.messages.back().content += " grows past the limit";
+		UAM_ASSERT(!ChatRepository::SaveChat(fixture.app.data_root, chat, false, &failure));
+	}
+	UAM_ASSERT(!failure.refused);
+	UAM_ASSERT(failure.reason.rfind("write: Failed to write temporary file: ", 0) == 0);
+	UAM_ASSERT(failure.reason.find(fixture.app.data_root.filename().string()) == std::string::npos);
+	UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, chat, false, &failure));
+#endif
+}
+
+UAM_TEST(ChatSaveFailureLogsOneLineWithItsCauseAtDurableBarrier)
+{
+	SaveStallFixture fixture(4, 64);
+	std::string error;
+	UAM_ASSERT(uam::diagnostics::StartFileLog(fixture.temporary.root / "uam.log", error, 0));
+	struct StopLog { ~StopLog() { uam::diagnostics::StopFileLog(); } } stop_log;
+	const fs::path primary = AppPaths::UamChatFilePath(fixture.app.data_root, "stall-chat");
+	fs::rename(primary, fixture.temporary.root / "preserved.json"); fs::create_directory(primary);
+	fixture.Chat().messages.back().content += " unsaved output";
+	// Not yet due, so only the quit barrier attempts it: the case that logged two reasonless lines per chat.
+	uam::acp_detail::ScheduleChatSave(fixture.app, fixture.Chat(), 100.0);
+	uam::FlushPendingChatSaves(fixture.app, true);
+	uam::diagnostics::FlushFileLog();
+	const std::string text = uam::io::ReadTextFile(fixture.temporary.root / "uam.log");
+	std::size_t lines = 0;
+	for (std::size_t at = text.find("chat_id=stall-chat"); at != std::string::npos; at = text.find("chat_id=stall-chat", at + 1)) ++lines;
+	UAM_ASSERT_EQ(lines, std::size_t{1});
+	UAM_ASSERT(uam::strings::Contains(text, "Chat save failed at the durable barrier: chat_id=stall-chat, reason=primary_unreadable; retrying"));
+	UAM_ASSERT(!uam::strings::Contains(text, "Chat history was not saved"));
+	UAM_ASSERT(fixture.app.pending_chat_save_at_by_chat_id.contains("stall-chat"));
+	fs::remove(primary); fs::rename(fixture.temporary.root / "preserved.json", primary);
+
+	const std::string refused = uam::acp_detail::ChatSaveFailureLogLine("held-chat", {"queue_journal_revision_changed", true}, false);
+	UAM_ASSERT_EQ(refused, std::string("Chat save refused before writing: chat_id=held-chat, reason=queue_journal_revision_changed; retrying with backoff up to 60 s while UAM runs."));
+	UAM_ASSERT(uam::strings::Contains(uam::acp_detail::ChatSaveFailureLogLine("chat", {}, false), "Chat save failed: chat_id=chat, reason=unclassified;"));
+	UAM_ASSERT(uam::acp_detail::ChatSaveFailureLogLine("chat", {std::string(5000, 'x'), false}, false).size() < 400);
 }
 
 UAM_TEST(ZeroDelayUpdatesRewriteTranscriptAtMostTwiceASecond)

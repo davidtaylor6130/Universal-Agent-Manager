@@ -2913,6 +2913,40 @@ namespace
 		return mutex;
 	}
 
+	// The failure record of the SaveChat call running on this thread; a nested save without one hides it.
+	thread_local ChatSaveFailure* t_saveFailure = nullptr;
+
+	// Records the first cause of a failing save for a caller that asked for it; always returns false.
+	bool NoteSaveFailure(std::string_view reason, bool refused)
+	{
+		if (t_saveFailure != nullptr && t_saveFailure->reason.empty()) *t_saveFailure = {std::string(reason), refused};
+		return false;
+	}
+	bool SaveRefused(std::string_view reason) { return NoteSaveFailure(reason, true); }
+	bool SaveFailed(std::string_view reason) { return NoteSaveFailure(reason, false); }
+
+	class ScopedSaveFailure
+	{
+	public:
+		explicit ScopedSaveFailure(ChatSaveFailure* failure) : m_failure(failure), m_previous(std::exchange(t_saveFailure, failure))
+		{
+			if (failure != nullptr) *failure = {};
+		}
+		~ScopedSaveFailure() { t_saveFailure = m_previous; }
+		bool Finish(bool saved) const
+		{
+			if (saved && m_failure != nullptr) *m_failure = {};
+			else if (!saved && m_failure != nullptr && m_failure->reason.empty()) m_failure->reason = "unclassified";
+			return saved;
+		}
+		ScopedSaveFailure(const ScopedSaveFailure&) = delete;
+		ScopedSaveFailure& operator=(const ScopedSaveFailure&) = delete;
+
+	private:
+		ChatSaveFailure* m_failure;
+		ChatSaveFailure* m_previous;
+	};
+
 	std::optional<std::string> StorageRevision(const fs::path& path)
 	{
 		std::error_code error;
@@ -3990,28 +4024,29 @@ try
 	std::unique_lock<std::mutex> lock(ChatSaveMutex(), std::defer_lock);
 	if (prepared == nullptr && fingerprint == nullptr) lock.lock();
 
-	if ((fingerprint == nullptr && chat.managed_followup_input_unavailable) || ChatContentRefusesSave(chat))
-	{
-		return false;
-	}
+	if (fingerprint == nullptr && chat.managed_followup_input_unavailable) return SaveRefused("managed_input_unavailable");
+	if (ChatContentRefusesSave(chat)) return SaveRefused("content_not_storable");
 
 	const fs::path file_path = AppPaths::UamChatFilePath(data_root, chat.id);
 	if (fingerprint == nullptr && prepared == nullptr &&
-	    !CanonicalBirthAllowsValue(file_path, chat.managed_followup_incarnation)) return false;
+	    !CanonicalBirthAllowsValue(file_path, chat.managed_followup_incarnation))
+		return ReadCanonicalBirth(file_path).kind == CanonicalBirthKind::Unknown ? SaveFailed("primary_unreadable") : SaveRefused("managed_followup_identity_mismatch");
 	if (fingerprint == nullptr && !fail_if_exists && !chat.temporary_storage_owner_token.empty() &&
-		!PrimaryTemporaryOwnerMatches(file_path, chat.temporary_parent_chat_id, chat.temporary_storage_owner_token)) return false;
+		!PrimaryTemporaryOwnerMatches(file_path, chat.temporary_parent_chat_id, chat.temporary_storage_owner_token)) return SaveRefused("temporary_owner_mismatch");
 	const fs::path queue_path = QueueJournalPath(data_root, chat.id);
 	const bool stopped_publication = publication && publication->HasOwnPublicationPredecessor();
-	if (stopped_publication && !publication->OwnPublicationPredecessorCurrent()) return false;
+	if (stopped_publication && !publication->OwnPublicationPredecessorCurrent()) return SaveRefused("publication_predecessor_changed");
 	const std::optional<std::string> queue_revision = fingerprint == nullptr && !stopped_publication ? QueueJournalRevision(queue_path) : std::optional<std::string>("missing");
-	if (!queue_revision || (*queue_revision != "missing" &&
-	    (chat.acp_queue_storage_error || *queue_revision != chat.acp_queue_storage_revision))) return false;
+	if (!queue_revision) return SaveRefused("queue_journal_unreadable");
+	// A held journal (storage error, or one written against another queue revision) keeps its input for the user.
+	if (*queue_revision != "missing" && (chat.acp_queue_storage_error || *queue_revision != chat.acp_queue_storage_revision))
+		return SaveRefused(chat.acp_queue_storage_error ? "held_queue_journal" : "queue_journal_revision_changed");
 	std::string full_queue_revision = chat.acp_queue_full_save_revision;
 	if (fingerprint == nullptr && *queue_revision != "missing")
 	{
 		const std::optional<JsonValue> saved = SavedQueueMetadata(data_root, chat.id);
 		if (!saved || (chat.acp_queue_full_save_revision != JsonStringOrEmpty(saved->Find(kQueueFullRevisionField)) &&
-		    QueuePayload(chat) != QueuePayload(*saved))) return false;
+		    QueuePayload(chat) != QueuePayload(*saved))) return SaveRefused("queue_journal_not_bound_to_primary");
 		full_queue_revision = uam::io::MakeTempWritePath(fs::path("queue-full")).filename().string();
 	}
 	if (prepared != nullptr)
@@ -4028,7 +4063,7 @@ try
 	    (uam::paths::PathExistsNoThrow(file_path) ||
 	     uam::paths::PathExistsNoThrow(uam::io::MakeBackupPath(file_path))))
 	{
-		return false;
+		return SaveRefused("already_exists");
 	}
 
 	auto passive_archive = chat.passive_queued_prompt_archive;
@@ -4037,12 +4072,12 @@ try
 		if (passive_archive)
 		{
 			passive_archive = ValidatePassiveArchive(*passive_archive, chat.id);
-			if (!passive_archive) return false;
+			if (!passive_archive) return SaveRefused("passive_archive_invalid");
 		}
 		if (fingerprint == nullptr)
 		{
 			const auto revision = StorageRevision(file_path);
-			if (!revision) return false;
+			if (!revision) return SaveFailed("primary_revision_unreadable");
 			if (*revision != "missing")
 			{
 				auto current = ReadPrimaryPassiveArchive(file_path, chat.id, *revision);
@@ -4056,7 +4091,7 @@ try
 					    uam::io::TryReadTextFile(file_path, canonical, kMaxChatJsonBytes) && StorageRevision(file_path) == revision)
 						current = ChatRepository::ParsePassiveQueuedPromptArchive(canonical, chat.id);
 				}
-				if (!current || (passive_archive && !SamePassiveArchive(current, passive_archive))) return false;
+				if (!current || (passive_archive && !SamePassiveArchive(current, passive_archive))) return SaveRefused("passive_archive_unverified");
 				passive_archive = current; // Unknown never means permission to erase an existing archive.
 			}
 			else if (!passive_archive)
@@ -4072,7 +4107,7 @@ try
 	std::error_code ec;
 	if (fingerprint == nullptr && !uam::paths::CreateDirectoriesNoThrow(file_path.parent_path(), &ec))
 	{
-		return false;
+		return SaveFailed("create_directory: " + ec.message());
 	}
 
 	JsonValue root = uam::json::Object();
@@ -4173,7 +4208,7 @@ try
 	uam::json::SetString(root, kChatRemotePromptDeliverySessionIdField,
 	                     chat.remote_prompt_delivery_session_id);
 	if (chat.remote_active_turn_id.size() > 256 || chat.remote_turn_serial < 0 ||
-	    chat.remote_turn_user_message_index < -1) return false;
+	    chat.remote_turn_user_message_index < -1) return SaveRefused("invalid_remote_turn_state");
 	uam::json::SetString(root, kChatRemoteActiveTurnIdField, chat.remote_active_turn_id);
 	uam::json::SetNumber(root, kChatRemoteTurnSerialField, chat.remote_turn_serial);
 	uam::json::SetNumber(root, kChatRemoteTurnUserMessageIndexField, chat.remote_turn_user_message_index);
@@ -4339,7 +4374,7 @@ try
 		    SelectTranscriptForUnloadedSave(file_path, chat.id, chat.persisted_message_count);
 		if (transcript.source == UnloadedTranscriptSource::Unrecoverable)
 		{
-			return false;
+			return SaveRefused("unloaded_transcript_unrecoverable");
 		}
 		if (transcript.chat)
 		{
@@ -4450,7 +4485,7 @@ try
 		uam::json::SetValue(root, "uamControlAudit", std::move(audit));
 	}
 
-	if (!uam::managed_parent_history::ValidCollection(chat.managed_parent_input_receipts)) return false;
+	if (!uam::managed_parent_history::ValidCollection(chat.managed_parent_input_receipts)) return SaveRefused("invalid_managed_parent_record");
 	if (chat.managed_parent_input_receipts_present || !chat.managed_parent_input_receipts.empty() ||
 	    !chat.managed_parent_result || chat.managed_parent_result->accepted_turn_id.empty())
 	{
@@ -4484,7 +4519,7 @@ try
 	if (chat.managed_parent_result)
 	{
 		const auto& record = *chat.managed_parent_result;
-		if (record.version != 1 || record.run_ids.size() > 4 || record.delivered_ids.size() > 4 || record.batch_ids.size() > 4 || record.payload.size() > 72 * 1024) return false;
+		if (record.version != 1 || record.run_ids.size() > 4 || record.delivered_ids.size() > 4 || record.batch_ids.size() > 4 || record.payload.size() > 72 * 1024) return SaveRefused("invalid_managed_parent_record");
 		JsonValue value = uam::json::Object();
 		uam::json::SetNumber(value, "version", record.version);
 		uam::json::SetString(value, "id", record.id);
@@ -4675,12 +4710,11 @@ try
 		       uam::io::WriteAndSyncAtomicTemp(prepared->summary_temp, summary_json, {}, result);
 	}
 	const bool primary_unchanged = skip_unchanged && matches_file(file_path, json);
-	const bool chat_saved = primary_unchanged || (preserve_existing_primary_as_backup
-	    ? uam::io::WriteTextFileWithBackup(file_path, json)
-	    : uam::io::WriteTextFile(file_path, json));
-	if (!chat_saved)
+	if (!primary_unchanged)
 	{
-		return false;
+		// The detailed writer is what WriteTextFile(WithBackup) wraps; its error text names the step and OS error, not the path.
+		const uam::io::AtomicWriteResult written = uam::io::AtomicWriteFileDetailed(file_path, json, {}, preserve_existing_primary_as_backup);
+		if (!written.success) return SaveFailed("write: " + (written.error.empty() ? std::string("unknown error") : written.error));
 	}
 
 	if (!primary_unchanged || !SummaryCacheIsCurrent(file_path, summary_path) || !matches_file(summary_path, summary_json))
@@ -4693,10 +4727,10 @@ try
 		// This digest binds the JSON emitted by THIS save, even if a foreign file
 		// wins before the subsequent revision sample. A worker must verify both.
 		uam::platform::IncrementalSha256 hash;
-		if (!hash.Add(json)) return false;
+		if (!hash.Add(json)) return SaveFailed("primary_witness_unavailable");
 		const std::string digest = hash.Finish();
 		const std::optional<std::string> revision = StorageRevision(file_path);
-		if (digest.empty() || !revision || *revision == "missing") return false;
+		if (digest.empty() || !revision || *revision == "missing") return SaveFailed("primary_witness_unavailable");
 		*primary_witness = {*revision, static_cast<std::uint64_t>(json.size()), digest};
 	}
 	if (saved_revision != nullptr)
@@ -4712,7 +4746,7 @@ try
 catch (const std::length_error& error)
 {
 	uam::diagnostics::Write(std::string("Chat save rejected: ") + error.what());
-	return false;
+	return SaveRefused("too_large");
 }
 
 PreparedChatSave::~PreparedChatSave()
@@ -4996,7 +5030,13 @@ bool ApplyNativeChildLineage(const ChatSession& source, ChatSession& child, std:
 }
 }
 
-bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const ChatSession& chat, bool skip_unchanged)
+bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const ChatSession& chat, bool skip_unchanged, ChatSaveFailure* failure)
+{
+	const ScopedSaveFailure scope(failure);
+	return scope.Finish(SaveChatRecorded(data_root, chat, skip_unchanged));
+}
+
+bool ChatRepository::SaveChatRecorded(const std::filesystem::path& data_root, const ChatSession& chat, bool skip_unchanged)
 {
 	if (chat.imported_read_only)
 	{
@@ -5020,25 +5060,26 @@ bool ChatRepository::SaveChat(const std::filesystem::path& data_root, const Chat
 		prepared->passive_archive_worker_migration = explicit_conversion;
 		prepared->expected_storage_revision = *revision;
 		if (!SaveChatImpl(data_root, *candidate, false, false, prepared.get())) return false;
-		if (!PublishPreparedChatSave(prepared)) return false;
+		if (!PublishPreparedChatSave(prepared)) return SaveFailed("prepared_publication_failed");
 		chat.acp_queue_full_save_revision = prepared->published_queue_full_revision;
 		return true;
 	}
 	if (!chat.messages_loaded && chat.persisted_message_count > 0)
 	{
 		const std::shared_ptr<PreparedChatSave> prepared = PrepareChatSave(data_root, chat);
-		if (!PublishPreparedChatSave(prepared)) return false;
+		if (!PublishPreparedChatSave(prepared)) return SaveFailed(prepared ? "prepared_publication_failed" : "preparation_rejected");
 		chat.acp_queue_full_save_revision = prepared->published_queue_full_revision;
 		return true;
 	}
 	return SaveChatImpl(data_root, chat, false, skip_unchanged);
 }
 
-bool ChatRepository::SaveLoadedChatWithPrimaryWitness(const fs::path& data_root, const ChatSession& chat, SavedChatPrimaryWitness& witness)
+bool ChatRepository::SaveLoadedChatWithPrimaryWitness(const fs::path& data_root, const ChatSession& chat, SavedChatPrimaryWitness& witness, ChatSaveFailure* failure)
 {
+	const ScopedSaveFailure scope(failure);
 	witness = {};
-	if (!chat.messages_loaded || chat.imported_read_only) return false;
-	return SaveChatImpl(data_root, chat, false, false, nullptr, nullptr, nullptr, nullptr, &witness);
+	if (!chat.messages_loaded || chat.imported_read_only) return scope.Finish(SaveRefused("not_a_loaded_writable_chat"));
+	return scope.Finish(SaveChatImpl(data_root, chat, false, false, nullptr, nullptr, nullptr, nullptr, &witness));
 }
 
 bool ChatRepository::MatchesSavedChatPrimaryWitness(const fs::path& data_root, std::string_view chat_id, const SavedChatPrimaryWitness& witness)

@@ -51,6 +51,15 @@ struct ChatPublicationResult
 	std::vector<std::filesystem::path> evidence_paths;
 };
 
+/// Why a chat save returned false, for diagnostics only. A refusal is a deliberate decision before
+/// writing (a held queue journal, content UAM cannot store, an ownership or identity check); anything
+/// else is a failure. The reason is a short code, plus OS error text for a write; never a path.
+struct ChatSaveFailure
+{
+	std::string reason;
+	bool refused = false;
+};
+
 /// Exact own serializer output, not a later current-file sample or execution authority.
 struct SavedChatPrimaryWitness
 {
@@ -244,8 +253,9 @@ class ChatRepository
 	/// <summary>Native import's link: the evidence is the parent the child's own native record names
 	/// (child.native_parent_session_id), under the same identity rules as an explicit open.</summary>
 	static bool ApplyImportedNativeChildLineage(const ChatSession& source, ChatSession& child);
-	/// <summary>Saves one chat; native refreshes may skip byte-identical files while repairing summaries.</summary>
-	static bool SaveChat(const std::filesystem::path& data_root, const ChatSession& chat, bool skip_unchanged = false);
+	/// <summary>Saves one chat; native refreshes may skip byte-identical files while repairing summaries.
+	/// On false, an optional failure receives the first recorded cause.</summary>
+	static bool SaveChat(const std::filesystem::path& data_root, const ChatSession& chat, bool skip_unchanged = false, ChatSaveFailure* failure = nullptr);
 	/// Bounded canonical DATA only; no publication receipt, graph promotion or runtime authority.
 	static std::shared_ptr<const StoppedChatCanonicalRead> ReadStoppedChatCanonical(
 	    const std::filesystem::path& data_root, std::string_view chat_id, std::uint64_t max_bytes,
@@ -266,7 +276,7 @@ class ChatRepository
 	    const std::shared_ptr<PreparedChatPublication>& prepared, const std::function<bool()>& still_owned,
 	    const std::function<bool(ChatPublicationFile, uam::io::AtomicWriteStage)>& stage_hook_for_tests = {});
 	/// Opt-in loaded writable save; hashes its OWN serializer bytes before returning the publication witness.
-	static bool SaveLoadedChatWithPrimaryWitness(const std::filesystem::path& data_root, const ChatSession& chat, SavedChatPrimaryWitness& witness);
+	static bool SaveLoadedChatWithPrimaryWitness(const std::filesystem::path& data_root, const ChatSession& chat, SavedChatPrimaryWitness& witness, ChatSaveFailure* failure = nullptr);
 	/// Worker-only bounded streaming verification; caller must still use exact-revision publication CAS.
 	static bool MatchesSavedChatPrimaryWitness(const std::filesystem::path& data_root, std::string_view chat_id, const SavedChatPrimaryWitness& witness);
 	/// Worker-only opt-in full save; neither a later disk baseline nor a queue-only receipt can replace expected.
@@ -337,5 +347,6 @@ class ChatRepository
 	static ChatStorageDeleteResult DeleteChatStorageFiles(const std::filesystem::path& data_root, std::string_view chat_id, std::string_view reason = "unspecified");
 
   private:
+	static bool SaveChatRecorded(const std::filesystem::path& data_root, const ChatSession& chat, bool skip_unchanged);
 	static bool SaveChatImpl(const std::filesystem::path& data_root, const ChatSession& chat, bool fail_if_exists, bool skip_unchanged = false, PreparedChatSave* prepared = nullptr, std::string* fingerprint = nullptr, std::string* saved_revision = nullptr, PreparedChatPublication* publication = nullptr, SavedChatPrimaryWitness* primary_witness = nullptr);
 };
