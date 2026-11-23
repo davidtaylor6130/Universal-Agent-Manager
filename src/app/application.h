@@ -90,6 +90,7 @@ class Application
 	std::vector<std::string> m_startupInterruptedRunIds;
 	/// Status text the settings load produced, restored after later startup messages replace the status line.
 	std::string m_settingsLoadNotice;
+	void RestoreSettingsLoadNotice();
 	void FinishStartupState(std::vector<ChatSession> chats, std::string warning);
 	int m_exitCode = 0;
 	bool PollHistoryDiscovery();

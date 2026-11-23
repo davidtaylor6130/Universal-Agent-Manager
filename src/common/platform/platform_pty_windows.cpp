@@ -101,9 +101,9 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 		const WindowsLaunchCommand launch = BuildWindowsLaunchCommand(argv);
 		const std::wstring command_w = WideFromUtf8(launch.command_line);
 
-		if (command_w.empty())
+		if (command_w.empty() || !WindowsLaunchFitsCmdLimit(launch, error_out))
 		{
-			if (error_out != nullptr)
+			if (error_out != nullptr && command_w.empty())
 			{
 				*error_out = "Failed to encode interactive command line.";
 			}

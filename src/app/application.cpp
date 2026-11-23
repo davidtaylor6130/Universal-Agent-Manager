@@ -740,6 +740,7 @@ void Application::ApplyBundledMarkdownStoreSeed(bool seeded, std::string error, 
 	if (!seeded && !error.empty())
 	{
 		m_app.status_line = "Could not import bundled skills: " + error;
+		RestoreSettingsLoadNotice();
 	}
 	else if (m_app.shell_actions.empty())
 	{
@@ -1010,6 +1011,13 @@ bool Application::InitializeState()
 	return true;
 }
 
+/// Startup messages replace the status line; keep the settings load notice (such as dropped MCP servers) beside them.
+void Application::RestoreSettingsLoadNotice()
+{
+	if (!m_settingsLoadNotice.empty() && m_app.status_line.find(m_settingsLoadNotice) == std::string::npos)
+		m_app.status_line = m_app.status_line.empty() ? m_settingsLoadNotice : m_app.status_line + " " + m_settingsLoadNotice;
+}
+
 void Application::FinishStartupState(std::vector<ChatSession> chats, std::string warning)
 {
 	const std::chrono::steady_clock::time_point finish_started = std::chrono::steady_clock::now();
@@ -1063,9 +1071,7 @@ void Application::FinishStartupState(std::vector<ChatSession> chats, std::string
 		m_app.status_line =
 		    "A previous computer-use control file could not be stopped. End any orphaned provider process before using computer use.";
 	}
-	// The startup messages above replace the status line; keep the settings load notice (such as dropped MCP servers) beside them.
-	if (!m_settingsLoadNotice.empty() && m_app.status_line.find(m_settingsLoadNotice) == std::string::npos)
-		m_app.status_line = m_app.status_line.empty() ? m_settingsLoadNotice : m_app.status_line + " " + m_settingsLoadNotice;
+	RestoreSettingsLoadNotice();
 
 	const std::chrono::steady_clock::time_point finish_finished = std::chrono::steady_clock::now();
 	const auto milliseconds = [](std::chrono::steady_clock::time_point begin, std::chrono::steady_clock::time_point end)

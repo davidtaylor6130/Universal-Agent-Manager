@@ -23,6 +23,7 @@
 #include "cef/uam_query_handler_async.h"
 #include "common/config/mcp_server_config.h"
 #include "common/paths/app_paths.h"
+#include "common/utils/launch_argv_redaction.h"
 #include "common/chat/chat_repository.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_goal_loop.h"
@@ -1130,6 +1131,23 @@ UAM_TEST(SettingsLoadShowsOneNoticeForDroppedMcpServerEntries)
 	UAM_ASSERT_EQ(app.settings.mcp_servers.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(app.status_line, std::string("Could not load 1 saved MCP server entry because it is invalid; other servers are unaffected."));
 	UAM_ASSERT(app.status_line.find("private-server") == std::string::npos);
+	// Startup messages that replace the status line afterwards restore the notice beside them.
+	const std::string application = ReadFile(fs::path(__FILE__).parent_path().parent_path() / "src/app/application.cpp");
+	const std::size_t computer_use = application.find("uam::ComputerUseService::ResetControlsForStartup(m_app)", application.find("void Application::FinishStartupState("));
+	const std::size_t bundled = application.find("\"Could not import bundled skills: \"");
+	UAM_ASSERT(computer_use != std::string::npos && bundled != std::string::npos);
+	UAM_ASSERT(application.find("RestoreSettingsLoadNotice();", computer_use) < application.find("const std::chrono::steady_clock::time_point finish_finished", computer_use));
+	UAM_ASSERT(application.find("RestoreSettingsLoadNotice();", bundled) < application.find("\n}\n", bundled));
+}
+
+UAM_TEST(LaunchArgvRedactionHidesPrivateConfiguration)
+{
+	const std::vector<std::string> argv{"codex", "-c", R"(mcp_servers.docs.env={"API_KEY" = "env-secret"})", "-c", R"(mcp_servers.docs.env_http_headers={"X-Api-Key" = "UAM_CENTRAL_MCP_HEADER_1"})",
+	    "-c", "developer_instructions=\"private\"", "-c", R"(mcp_servers.docs.command="/usr/bin/node")", "--settings", R"({"env":{"TOKEN":"settings-secret"}})", "--settings={}", "--model", "gpt"};
+	const std::vector<std::string> redacted = uam::launch_argv::Redacted(argv);
+	const std::vector<std::string> expected{"codex", "-c", "[private configuration]", "-c", "[private configuration]", "-c", "[private configuration]", "-c",
+	    R"(mcp_servers.docs.command="/usr/bin/node")", "--settings", "[private configuration]", "[private configuration]", "--model", "gpt"};
+	UAM_ASSERT(redacted == expected);
 }
 
 UAM_TEST(SettingsStoreRejectsPartialNumericValuesAndParsesStrictBooleans)

@@ -221,7 +221,8 @@ namespace uam::provider_setup
 	}
 
 	/// <summary>Whether a Codex launch fits the OS limit: Windows CreateProcess takes 32,767 characters for the whole
-	/// escaped command line; Linux limits each argument to 128 KiB (macOS has no lower per-argument limit).</summary>
+	/// escaped command line (the platform launcher also refuses a .cmd shim over cmd.exe's 8,191); Linux limits each
+	/// argument to 128 KiB, and other POSIX systems use the same conservative per-argument rule.</summary>
 	inline bool WithinCodexLaunchLimit(const std::vector<std::string>& argv)
 	{
 #if defined(_WIN32)
@@ -801,12 +802,15 @@ namespace uam::provider_setup
 			}
 			// Codex key -> configured name, so two names that share a key are refused instead of merged.
 			std::map<std::string, std::string> codex_keys;
+			std::string largest_server;
+			std::size_t largest_bytes = 0;
 			for (const auto& [name, server] : native_servers.items())
 			{
 				const std::string codex_key = CodexServerKey(name);
 				if (const auto [existing, inserted] = codex_keys.emplace(codex_key, name); !inserted)
 				{ error = "Codex cannot tell MCP servers '" + existing->second + "' and '" + name + "' apart. Rename one using letters, digits, '-' or '_'."; return false; }
 				const std::string prefix = "mcp_servers." + codex_key + ".";
+				const std::size_t arguments_before = argv.size();
 				for (const auto& [key, value] : server.items())
 				{
 					if (key == "type")
@@ -836,9 +840,17 @@ namespace uam::provider_setup
 					}
 					argv.insert(argv.begin() + 1, {"-c", prefix + key + "=" + TomlValue(value)});
 				}
-				// The values that used to sit in the environment block now count against the command line; refuse
-				// clearly instead of an opaque launch failure. Only the server's name appears in the message.
-				if (!WithinCodexLaunchLimit(argv)) { error = "MCP server '" + name + "' makes the Codex launch command too long for this computer. Shorten its environment values or arguments."; return false; }
+				std::size_t bytes = 0;
+				for (std::size_t index = 1; index <= argv.size() - arguments_before; ++index) bytes += argv[index].size();
+				if (bytes > largest_bytes) { largest_bytes = bytes; largest_server = name; }
+			}
+			// Env values that used to sit in the environment block now count against the command line; refuse clearly
+			// instead of an opaque launch failure, naming only the server that adds the most (never its values).
+			if (!WithinCodexLaunchLimit(argv))
+			{
+				error = "The Codex launch command is too long for this computer" + (largest_server.empty() ? std::string(".") : "; MCP server '" + largest_server + "' adds the most.") +
+				        " Shorten MCP environment values or arguments, remove servers, or shorten instructions.";
+				return false;
 			}
 		}
 		else if (provider == uam::provider_ids::kCopilotCli)
