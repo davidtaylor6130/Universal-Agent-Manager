@@ -3361,6 +3361,12 @@ namespace uam
 			if (error_out != nullptr) *error_out = "An agent run may create at most four direct children.";
 			return false;
 		}
+		// The same per-chat bound as mentions and follow-ups, so one chat cannot fill the shared queue.
+		if (parent == nullptr && std::ranges::count_if(app.agent_runs, [&](const AgentRun& run) { return run.root_chat_id == root_chat->id && run.parent_run_id.empty() && !IsTerminal(run.status); }) >= kMaxDirectChildren)
+		{
+			if (error_out != nullptr) *error_out = "This chat already has four agents queued or running; wait for one to finish.";
+			return false;
+		}
 		for (const AgentRun* ancestor = parent; ancestor != nullptr; ancestor = ancestor->parent_run_id.empty() ? nullptr : FindRun(app, ancestor->parent_run_id))
 		{
 			if (ancestor->agent_id == requested_agent)

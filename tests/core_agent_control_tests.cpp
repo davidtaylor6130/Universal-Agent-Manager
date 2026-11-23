@@ -1591,6 +1591,83 @@ UAM_TEST(UamControlGoalApprovalAndChildComputerUseScope)
 	uam::UamControlService::Shutdown(app);
 }
 
+UAM_TEST(UamControlRefusesGoalCreationFromManagedSubagents)
+{
+	TempDir temp("uam-control-subagent-goal");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession root = ChatDomainService().CreateNewChat("", "opencode-cli");
+	root.id = "chat-subagent-goal-root";
+	root.uam_control_enabled = true;
+	root.execution_host_id = "local";
+	const std::string root_id = root.id;
+	app.chats.push_back(std::move(root));
+	ChatSession child = ChatDomainService().CreateNewChat("", "opencode-cli");
+	child.id = "chat-subagent-goal-child";
+	child.uam_control_enabled = true;
+	child.execution_host_id = "local";
+	child.agent_run_id = "subagent-goal-run";
+	app.chats.push_back(std::move(child));
+	AgentRun run;
+	run.id = "subagent-goal-run";
+	run.root_chat_id = root_id;
+	run.transcript_chat_id = "chat-subagent-goal-child";
+	run.status = "running";
+	app.agent_runs.push_back(std::move(run));
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-subagent-goal-child";
+	session->provider_id = "opencode-cli";
+	session->running = session->processing = true;
+	session->turn_serial = 1;
+	// A write agent, so only the subagent rule can refuse it.
+	session->active_uam_agent_workspace_access = "write";
+	uam::AcpSessionState& raw = *session;
+	app.acp_sessions.push_back(std::move(session));
+	std::string error;
+	UAM_ASSERT(uam::UamControlService::Initialize(app, &error));
+	nlohmann::json setup{{"params", {{"mcpServers", nlohmann::json::array()}}}};
+	UAM_ASSERT(uam::UamControlService::AppendSessionMcpServer(app, raw, app.chats.back(), "session/new", setup, &error));
+	uam::UamControlCapability& capability = app.uam_control_capabilities.back();
+	// The capability acts on the root chat, which is why a subagent goal would land on the parent.
+	UAM_ASSERT_EQ(capability.chat_id, root_id);
+	UAM_ASSERT(uam::UamControlService::HiddenToolsForTests(setup["params"]["mcpServers"].back()).find("goal_create") != std::string::npos);
+	const std::string capability_id = capability.id;
+	const int64_t now = uam::time::SystemEpochMillisecondsNow();
+	const auto find_capability = [&]() -> uam::UamControlCapability&
+	{ return *std::ranges::find(app.uam_control_capabilities, capability_id, &uam::UamControlCapability::id); };
+	const auto call = [&](const std::string& id, const std::string& method, nlohmann::json arguments)
+	{ return uam::UamControlService::HandleRequestForTests(app, capability_id, {{"requestId", id}, {"method", method}, {"arguments", std::move(arguments)}}, now); };
+
+	// Refused before an approval card is shown, and refused in YOLO, where it would otherwise run at once.
+	for (const std::string tier : {"off", "yolo"})
+	{
+		app.chats.front().command_safety_tier = tier;
+		const nlohmann::json refused = call("subagent-goal-" + tier, "goal_create", {{"objective", "Drive the parent."}, {"idempotencyKey", "subagent-" + tier}});
+		UAM_ASSERT(!refused.value("ok", true) && !refused.value("pendingApproval", false));
+		UAM_ASSERT_EQ(refused.value("error", ""), std::string("Managed subagents cannot create goals."));
+		UAM_ASSERT(!uam::UamControlService::PendingApprovalForChat(app, root_id).has_value());
+		UAM_ASSERT(app.chats.front().goals.empty());
+		const nlohmann::json goal = call("subagent-goal-get-" + tier, "goal_get", nlohmann::json::object());
+		UAM_ASSERT(!goal["result"].value("agentGoalManagementEnabled", true));
+		UAM_ASSERT_EQ(goal["result"].value("goalCreationPolicy", ""), std::string("disabled"));
+	}
+
+	// An approval queued before this rule cannot create the goal either: Allow answers the agent with the refusal.
+	app.chats.front().command_safety_tier = "off";
+	find_capability().pending_approval =
+	    uam::UamControlCapability::PendingApproval{.request_id = "queued-subagent-goal", .method = "goal_create", .objective = "Drive the parent.", .idempotency_key = "queued-subagent-goal"};
+	const std::optional<uam::AcpPendingUserInputState> question = uam::UamControlService::PendingApprovalForChat(app, root_id);
+	UAM_ASSERT(question.has_value());
+	UAM_ASSERT(uam::UamControlService::ResolveApproval(app, root_id, question->request_id_json, {{"goalCreate", {"Allow"}}}, &error));
+	UAM_ASSERT(app.chats.front().goals.empty());
+	UAM_ASSERT(uam::GoalService::FindActiveGoal(app, root_id) == nullptr);
+	std::string response;
+	UAM_ASSERT(uam::io::TryReadTextFile(find_capability().directory / "responses" / "queued-subagent-goal.json", response));
+	UAM_ASSERT_EQ(nlohmann::json::parse(response).value("error", ""), std::string("Managed subagents cannot create goals."));
+
+	uam::UamControlService::Shutdown(app);
+}
+
 UAM_TEST(UamControlListsOnlyToolsTheSessionCanUse)
 {
 	TempDir temp("uam-control-tool-gating");

@@ -232,6 +232,62 @@ UAM_TEST(WriteCallersAndGoalWorkersKeepTheirPermissions)
 	UAM_ASSERT_EQ(app.agent_runs.back().effective_workspace_access, std::string("write"));
 }
 
+UAM_TEST(DelegationLimitsLiveAgentsPerChatAndPerTurn)
+{
+	TargetMetadataFixture fixture;
+	uam::AppState& app = fixture.app;
+	ChatSession other = app.chats.front();
+	other.id = "other-root";
+	app.chats.push_back(other);
+	int serial = 0;
+	const auto delegate = [&]
+	{
+		const std::string id = "delegate-" + std::to_string(++serial);
+		// Distinct tasks, so no call is answered as a retry of the one before.
+		return uam::UamControlService::HandleRequestForTests(app, "target-capability",
+		    {{"requestId", id}, {"method", "agent_delegate"}, {"arguments", {{"agentId", "worker"}, {"task", "Task " + id + "."}}}}, 1001);
+	};
+	const auto live_root_runs = [&]
+	{
+		return std::ranges::count_if(app.agent_runs, [](const AgentRun& run) { return run.root_chat_id == "root" && run.status == "queued"; });
+	};
+	const auto settle_root_runs = [&]
+	{
+		for (AgentRun& run : app.agent_runs)
+			if (run.root_chat_id == "root") run.status = "completed";
+	};
+
+	// One chat holds at most four live top-level agents, so it cannot fill the shared 32-run queue.
+	for (int index = 0; index < 4; ++index) UAM_ASSERT(delegate().value("ok", false));
+	const nlohmann::json full = delegate();
+	UAM_ASSERT(!full.value("ok", true));
+	UAM_ASSERT_EQ(full.value("error", ""), std::string("This chat already has four agents queued or running; wait for one to finish."));
+	UAM_ASSERT_EQ(live_root_runs(), std::ptrdiff_t{4});
+	std::string run_id, error;
+	UAM_ASSERT(!uam::AgentRunScheduler::Enqueue(app, "root", "", "worker", "Direct scheduler call.", &run_id, &error));
+	UAM_ASSERT(error.find("four agents") != std::string::npos);
+	// Another chat still has room in the shared queue.
+	UAM_ASSERT(uam::AgentRunScheduler::Enqueue(app, "other-root", "", "worker", "Other chat.", &run_id, &error));
+	// A finished agent frees its place.
+	app.agent_runs.front().status = "completed";
+	UAM_ASSERT(delegate().value("ok", false));
+
+	// Five agents started this turn; settling them all does not lift the per-turn limit of eight.
+	for (int started = 5; started < 8; ++started)
+	{
+		settle_root_runs();
+		UAM_ASSERT(delegate().value("ok", false));
+	}
+	settle_root_runs();
+	const nlohmann::json turn_full = delegate();
+	UAM_ASSERT(!turn_full.value("ok", true));
+	UAM_ASSERT_EQ(turn_full.value("error", ""), std::string("UAM may start at most 8 agents per turn."));
+	UAM_ASSERT_EQ(live_root_runs(), std::ptrdiff_t{0});
+	// The next turn starts a fresh allowance.
+	++app.acp_sessions.front()->turn_serial;
+	UAM_ASSERT(delegate().value("ok", false));
+}
+
 UAM_TEST(BuiltinCapturedDefinitionsRoundTripWithoutPromotingLegacySnapshots)
 {
 	TempDir temp("uam-builtin-capture-versions");

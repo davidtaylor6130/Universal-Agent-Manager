@@ -247,7 +247,7 @@ Commit consumes the ID **before** parsing, policy checks or action dispatch. Inc
 | 404 | Unknown, expired or consumed transfer ID / missing chat |
 | 409 | Noncontiguous offset, incomplete consumed commit, or existing handler revision/runtime conflict |
 | 413 | Wire body over 64 KiB, declared total/chunk/attachment too large or chunk overruns total |
-| 428 | Held for [desktop confirmation](../phone-access.md): a raise above Default, leaving Plan, agent change, enabling UAM Control or provider-default change; not applied yet |
+| 428 | Held for [desktop confirmation](../phone-access.md): a raise above Default, leaving Plan, agent change, enabling UAM Control, provider-default change, or `resolveAcpUserInput` answering Allow to a `uam-control:` Computer Use, chat or goal request; not applied yet |
 | 429 | Eight such requests already wait for desktop confirmation |
 | 503 | Upload count/aggregate capacity, UUID generation/collision, attachment descriptor capacity or shutdown |
 
