@@ -41,6 +41,7 @@ namespace uam
 	namespace claude_preinput { class Observation; }
 	namespace acp_detail { struct ColdRetryBinding; }
 	namespace html_view { class RenderChecker; }
+	namespace usage { class AccountAllowanceService; }
 
 	class StartupNativeImportService;
 	class StorageRetentionService;
@@ -1541,6 +1542,8 @@ namespace uam
 		std::uint64_t compute_pool_next_ticket = 0;
 		/// Renders published HTML views to report their runtime errors. Null outside the desktop app.
 		std::shared_ptr<html_view::RenderChecker> html_view_render_checker;
+		/// The desktop's account allowance cache, read by the usage_report tool without starting a read. Empty outside the desktop app.
+		std::weak_ptr<usage::AccountAllowanceService> account_allowances;
 		/// A chat_create whose first prompt is sent after control requests finish; its reply and audit wait for that send.
 		struct UamChatCreateLaunch
 		{

@@ -316,6 +316,14 @@ A transcript save that fails while UAM is running is reported once through the s
 
 Recorded limits that are not decisions: Claude Code, Gemini and Copilot children on SSH hosts, and Antigravity children, are not imported, for the reasons in the [child session reference](reference/native-child-sessions.md).
 
+## UAM read-only insight tools
+
+The [UAM tool](providers/uam-tools.md) `usage_report` follows the first slice of the V5.2.x scoping review for #967. It is read-only, carries the read-only hint and is offered to every session that has UAM tools, except goal reviewers, which still get none. `log_tail` from the same issue waits for log lines that carry a chat id, because filtering free text by chat could leak other chats' lines.
+
+**Open, pending David's decision.** Interim choices:
+
+- `usage_report` leaves out account money figures (credit balance, spend limit and amount used) and reports only shares, resets and limit flags. Whether agents may see those amounts is undecided.
+
 ## Pull request watching
 
 [Pull request watching](chat/pull-request-watch.md) follows T3 Code where UAM has an equivalent. David decided on 2026-11-12: the read cadence stands (an unwatched linked pull request every 2 minutes while it is being updated, 5 once quiet for 30 minutes and 15 while closed); a merged or closed pull request wakes the agent once with a final message and then ends the watch; and a chat with an active watch stays in Active Chats between wakes until the watch ends.

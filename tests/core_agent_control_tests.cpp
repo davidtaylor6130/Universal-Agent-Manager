@@ -30,6 +30,7 @@
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_goal_loop.h"
 #include "common/utils/diagnostic_log.h"
+#include "common/usage/account_allowance_service.h"
 #include "common/utils/time_utils.h"
 #include "common/utils/uuid.h"
 
@@ -1145,6 +1146,7 @@ UAM_TEST(UamControlCapabilityBoundsGoalAuthorityReplayRateCancellationAndRestart
 	    {"agent_delegate", {{"agentId", "agent"}, {"task", "task"}, {"maxDepth", "999"}}},
 	    {"agent_cancel", {{"runId", "run"}, {"unexpected", "value"}}},
 	    {"goal_get", {{"unexpected", "value"}}},
+	    {"usage_report", {{"chatId", "another-chat"}}},
 	    {"goal_create", {{"objective", "goal"}, {"idempotencyKey", "strict"}, {"maxTurns", "999"}}},
 	};
 	for (std::size_t index = 0; index < strict_arguments.size(); ++index)
@@ -1179,12 +1181,12 @@ UAM_TEST(UamControlCapabilityBoundsGoalAuthorityReplayRateCancellationAndRestart
 	{
 		const std::string name = tool.value("name", "");
 		const bool read_only = name == "agent_list" || name == "agent_status" || name == "agent_wait" || name == "skill_list" ||
-		    name == "skill_read" || name == "goal_get" || name == "user_question" ||
+		    name == "skill_read" || name == "goal_get" || name == "user_question" || name == "usage_report" ||
 		    name == "html_view_preview" || name == "html_view_publish";
 		UAM_ASSERT_EQ(tool.contains("annotations") && tool["annotations"].value("readOnlyHint", false), read_only);
 		hinted += read_only ? 1 : 0;
 	}
-	UAM_ASSERT_EQ(hinted, std::size_t{9});
+	UAM_ASSERT_EQ(hinted, std::size_t{10});
 	const nlohmann::json read_only_goal = call(capability, "policy-read", "goal_get");
 	UAM_ASSERT(read_only_goal.value("ok", false));
 	UAM_ASSERT(!read_only_goal["result"].value("mutationToolsEnabled", true));
@@ -1628,7 +1630,7 @@ UAM_TEST(UamControlListsOnlyToolsTheSessionCanUse)
 
 	// A local root build chat keeps every tool.
 	UAM_ASSERT_EQ(hidden_for(raw), std::string(UAM_ENABLE_COMPUTER_USE ? "" : "computer_use_request"));
-	UAM_ASSERT_EQ(uam::UamControlService::ToolDefinitionsForTests("").size(), std::size_t{17});
+	UAM_ASSERT_EQ(uam::UamControlService::ToolDefinitionsForTests("").size(), std::size_t{18});
 
 	// A chat started by another chat cannot start chats, so chat_create is not offered.
 	app.chats.front().created_by_chat_id = "creator";
@@ -1643,6 +1645,8 @@ UAM_TEST(UamControlListsOnlyToolsTheSessionCanUse)
 	for (const std::string name : {"agent_cancel", "goal_create", "chat_create", "computer_use_request", "secret_request"})
 		UAM_ASSERT(hidden.find(name) != std::string::npos);
 	UAM_ASSERT(hidden.find("agent_delegate") == std::string::npos);
+	// Read-only insight stays available to a read-only agent.
+	UAM_ASSERT(hidden.find("usage_report") == std::string::npos);
 	// A missing workspace access counts as read-only too.
 	raw.active_uam_agent_workspace_access.clear();
 	UAM_ASSERT(hidden_for(raw).find("goal_create") != std::string::npos);
@@ -1700,7 +1704,7 @@ UAM_TEST(UamControlListsOnlyToolsTheSessionCanUse)
 	UAM_ASSERT_EQ(refused["error"]["message"].get<std::string>(), std::string("This UAM tool is not available in this session."));
 	UAM_ASSERT(fs::is_empty(app.uam_control_capabilities.back().directory / "requests"));
 	raw.goal_review_turn = false;
-	UAM_ASSERT_EQ(uam::UamControlService::ToolDefinitionsForTests(hidden_for(raw)).size(), std::size_t{UAM_ENABLE_COMPUTER_USE ? 17 : 16});
+	UAM_ASSERT_EQ(uam::UamControlService::ToolDefinitionsForTests(hidden_for(raw)).size(), std::size_t{UAM_ENABLE_COMPUTER_USE ? 18 : 17});
 
 	// A temporary side chat cannot watch pull requests, so it is not offered the watch tools.
 	app.chats.front().temporary_parent_chat_id = "parent";
@@ -1725,6 +1729,143 @@ UAM_TEST(UamControlListsOnlyToolsTheSessionCanUse)
 	for (const std::string name : {"agent_wait", "html_view_preview", "html_view_publish"})
 		UAM_ASSERT(!uam::ranges::Contains(cli_tools, name));
 	UAM_ASSERT(uam::ranges::Contains(cli_tools, "user_question"));
+	uam::UamControlService::Shutdown(app);
+}
+
+UAM_TEST(UamControlUsageReportCoversOnlyTheCallingChatAndKeepsMoneyOut)
+{
+	TempDir temp("uam-control-usage-report");
+	uam::AppState app;
+	app.data_root = temp.root;
+	const auto message = [](MessageRole role, int input, int output, double cost)
+	{
+		Message value;
+		value.role = role;
+		value.tokens_input = input;
+		value.tokens_output = output;
+		value.estimated_cost_usd = cost;
+		return value;
+	};
+	ChatSession chat = ChatDomainService().CreateNewChat("", "gemini-cli");
+	chat.id = "usage-caller";
+	chat.uam_control_enabled = true;
+	chat.uam_agent_id = "plan";
+	chat.execution_host_id = "local";
+	chat.messages = {message(MessageRole::User, 0, 0, 0.0), message(MessageRole::Assistant, 1000, 200, 0.25),
+	                 message(MessageRole::User, 0, 0, 0.0), message(MessageRole::Assistant, 3000, 400, 0.5)};
+	app.chats.push_back(std::move(chat));
+	// Neither an unrelated chat nor a child the caller delegated to is counted.
+	ChatSession other = ChatDomainService().CreateNewChat("", "gemini-cli");
+	other.id = "usage-other";
+	other.messages = {message(MessageRole::Assistant, 900000, 900000, 99.0)};
+	app.chats.push_back(std::move(other));
+	ChatSession child = ChatDomainService().CreateNewChat("", "gemini-cli");
+	child.id = "usage-child";
+	child.uam_control_enabled = true;
+	child.agent_run_id = "usage-run";
+	child.messages = {message(MessageRole::Assistant, 70000, 7000, 7.0)};
+	app.chats.push_back(std::move(child));
+	AgentRun run;
+	run.id = "usage-run";
+	run.root_chat_id = "usage-caller";
+	run.transcript_chat_id = "usage-child";
+	run.status = "running";
+	app.agent_runs.push_back(run);
+
+	const auto start_session = [&](const std::string& chat_id)
+	{
+		auto session = std::make_unique<uam::AcpSessionState>();
+		session->chat_id = chat_id;
+		session->provider_id = "gemini-cli";
+		session->running = true;
+		session->active_uam_agent_id = "plan";
+		session->active_uam_agent_workspace_access = "read";
+		app.acp_sessions.push_back(std::move(session));
+		return app.acp_sessions.back().get();
+	};
+	uam::AcpSessionState* root_session = start_session("usage-caller");
+	std::string error;
+	UAM_ASSERT(uam::UamControlService::Initialize(app, &error));
+	const auto issue = [&](uam::AcpSessionState& session, const std::string& chat_id)
+	{
+		nlohmann::json setup{{"params", {{"mcpServers", nlohmann::json::array()}}}};
+		UAM_ASSERT(uam::UamControlService::AppendSessionMcpServer(app, session, *ChatDomainService().FindChatById(app, chat_id), "session/new", setup, &error));
+		// A read-only (Plan) session is still offered the tool.
+		UAM_ASSERT(uam::UamControlService::HiddenToolsForTests(setup["params"]["mcpServers"].back()).find("usage_report") == std::string::npos);
+		return session.uam_control_capability_id;
+	};
+	const std::string capability = issue(*root_session, "usage-caller");
+	const auto call = [&](const std::string& id, const std::string& request_id)
+	{
+		return uam::UamControlService::HandleRequestForTests(app, id,
+		    {{"requestId", request_id}, {"method", "usage_report"}, {"arguments", nlohmann::json::object()}}, 1000000);
+	};
+
+	// No allowance service: totals still come back and the allowance says why it is missing.
+	nlohmann::json report = call(capability, "usage-1");
+	UAM_ASSERT(report.value("ok", false));
+	const nlohmann::json& totals = report["result"];
+	UAM_ASSERT_EQ(totals["tokens"]["input"].get<std::int64_t>(), std::int64_t{4000});
+	UAM_ASSERT_EQ(totals["tokens"]["output"].get<std::int64_t>(), std::int64_t{600});
+	UAM_ASSERT_EQ(totals["tokens"]["total"].get<std::int64_t>(), std::int64_t{4600});
+	UAM_ASSERT_EQ(totals["messagesWithUsage"].get<std::size_t>(), std::size_t{2});
+	UAM_ASSERT(std::abs(totals["estimatedCostUsd"].get<double>() - 0.75) < 1e-9);
+	UAM_ASSERT_EQ(totals.value("costBasis", ""), std::string("estimate"));
+	UAM_ASSERT_EQ(totals["accountAllowance"].value("status", ""), std::string("unavailable"));
+	UAM_ASSERT(!totals["accountAllowance"].value("reason", "").empty());
+	// The call is audited like the other read-only tools, and changes nothing else.
+	UAM_ASSERT_EQ(ChatDomainService().FindChatById(app, "usage-caller")->uam_control_audit.back().method, std::string("usage_report"));
+	UAM_ASSERT_EQ(ChatDomainService().FindChatById(app, "usage-caller")->messages.size(), std::size_t{4});
+
+	// The cached allowance of this chat's provider is reported as shares and resets; money figures stay out.
+	uam::usage::AccountAllowanceFetchResult fetched;
+	fetched.limits = {{"updatedAt", 1700000000000LL}, {"planType", "pro"},
+	                  {"primary", {{"usedPercent", 40}, {"resetsAt", 1800000000LL}, {"windowDurationMinutes", 300}}},
+	                  {"credits", {{"hasCredits", true}, {"unlimited", false}, {"balance", "$12.34"}}},
+	                  {"individualLimit", {{"limit", "$100.00"}, {"used", "$60.00"}, {"remainingPercent", 40}, {"resetsAt", 1800000000LL}}}};
+	fetched.windows = nlohmann::json::array({{{"id", "daily"}, {"label", "Daily requests"}, {"usedPercent", 10}}});
+	fetched.primary_label = "5-hour";
+	std::atomic<int> reads{0};
+	auto allowances = std::make_shared<uam::usage::AccountAllowanceService>(temp.root,
+	    std::vector<uam::usage::AccountAllowanceProviderConfig>{{"gemini-cli", {"gemini"}}, {"codex-cli", {"codex"}}},
+	    [&](const uam::usage::AccountAllowanceProviderConfig&, const std::filesystem::path&, std::stop_token, bool) { ++reads; return fetched; });
+	app.account_allowances = allowances;
+	const auto ready_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	while (allowances->CachedRow("gemini-cli").value("status", "") != "ready" && std::chrono::steady_clock::now() < ready_deadline)
+		std::this_thread::sleep_for(std::chrono::milliseconds(2));
+	const int reads_before = reads.load();
+	report = call(capability, "usage-2");
+	UAM_ASSERT(report.value("ok", false));
+	const nlohmann::json& allowance = report["result"]["accountAllowance"];
+	UAM_ASSERT_EQ(allowance.value("status", ""), std::string("ready"));
+	UAM_ASSERT_EQ(allowance.value("providerId", ""), std::string("gemini-cli"));
+	UAM_ASSERT_EQ(allowance["primary"]["usedPercent"], nlohmann::json(40));
+	UAM_ASSERT_EQ(allowance["primary"]["label"], nlohmann::json("5-hour"));
+	UAM_ASSERT_EQ(allowance["windows"].size(), std::size_t{1});
+	UAM_ASSERT_EQ(allowance["spendLimitRemainingPercent"], nlohmann::json(40));
+	const std::string dumped = report.dump();
+	for (const std::string hidden : {"$12.34", "$100.00", "$60.00", "codex-cli", "usage-other", "usage-child"})
+		UAM_ASSERT(dumped.find(hidden) == std::string::npos);
+	UAM_ASSERT_EQ(reads.load(), reads_before);
+
+	// An SSH chat's account lives on its host, which UAM does not read.
+	ChatDomainService().FindChatById(app, "usage-caller")->execution_host_id = "ssh-host";
+	report = call(capability, "usage-3");
+	UAM_ASSERT_EQ(report["result"]["accountAllowance"].value("status", ""), std::string("unavailable"));
+	ChatDomainService().FindChatById(app, "usage-caller")->execution_host_id = "local";
+
+	// A delegated child reports its own transcript, never its parent's.
+	uam::AcpSessionState* child_session = start_session("usage-child");
+	const std::string child_capability = issue(*child_session, "usage-child");
+	report = call(child_capability, "usage-child-1");
+	UAM_ASSERT(report.value("ok", false));
+	UAM_ASSERT_EQ(report["result"]["tokens"]["total"].get<std::int64_t>(), std::int64_t{77000});
+
+	// A transcript that is not loaded is not reported as zero.
+	ChatDomainService().FindChatById(app, "usage-caller")->messages_loaded = false;
+	report = call(capability, "usage-4");
+	UAM_ASSERT(!report.value("ok", true));
+	ChatDomainService().FindChatById(app, "usage-caller")->messages_loaded = true;
 	uam::UamControlService::Shutdown(app);
 }
 

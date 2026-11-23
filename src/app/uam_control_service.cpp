@@ -49,12 +49,14 @@
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
 #include "common/utils/diagnostic_log.h"
+#include "common/usage/account_allowance_service.h"
 #include "common/config/provider_chat_defaults.h"
 #include "computer_use/computer_use_mcp_config.h"
 
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <filesystem>
 #include <deque>
 #include <functional>
@@ -393,7 +395,7 @@ namespace uam
 				    SafeRequestId(arguments["requestId"].get_ref<const std::string&>());
 			if (method == "_mcp_initialized" || method == "_mcp_disconnected" || method == "_mcp_heartbeat")
 				return HasOnlyStringArguments(arguments, {"connectionId"}) && SafeRequestId(arguments["connectionId"].get_ref<const std::string&>());
-			if (method == "skill_list" || method == "agent_list" || method == "goal_get")
+			if (method == "skill_list" || method == "agent_list" || method == "goal_get" || method == "usage_report")
 				return arguments.is_object() && arguments.empty();
 			if (method == "skill_read") return HasOnlyStringArguments(arguments, {"id"}, {"path"});
 			if (method == "agent_status" || method == "agent_cancel" || method == "agent_wait")
@@ -628,7 +630,8 @@ namespace uam
 
 		bool ReadOnlyTool(std::string_view method)
 		{
-			return method == "agent_status" || method == "agent_list" || method == "goal_get" || method == "skill_list" || method == "skill_read";
+			return method == "agent_status" || method == "agent_list" || method == "goal_get" || method == "skill_list" || method == "skill_read" ||
+			       method == "usage_report";
 		}
 
 		std::shared_ptr<ControlAuditSaveTicket> ScheduleAuditedReplySave(AppState& app, const std::string& capability_id, const ChatSession& chat,
@@ -985,6 +988,84 @@ namespace uam
 			                   {"goalCreationPolicy", mutations_allowed ? "yoloAutoApprove" :
 			                       goal_creation_allowed ? "userApproval" : "disabled"}},
 			        .reason = "Read current-chat goal state and immutable ceilings."};
+		}
+
+		/// <summary>The cached allowance of the calling chat's own provider, reduced to shares, resets and limit flags. Money
+		/// figures (credit balances, spend amounts) stay out, and no account read or Keychain prompt is ever started.</summary>
+		nlohmann::json UsageAllowance(const AppState& app, const ChatSession& chat)
+		{
+			nlohmann::json out{{"providerId", chat.provider_id}, {"status", "unavailable"}};
+			if (!chat.execution_host_id.empty() && chat.execution_host_id != uam::execution_hosts::kLocalHostId)
+			{
+				out["reason"] = "Account allowances are read only on the computer running UAM, not on an SSH host.";
+				return out;
+			}
+			const std::shared_ptr<usage::AccountAllowanceService> service = app.account_allowances.lock();
+			nlohmann::json row = service != nullptr && service->DataRoot() == app.data_root ? service->CachedRow(chat.provider_id) : nlohmann::json(nullptr);
+			if (!row.is_object())
+			{
+				out["reason"] = "UAM has no allowance reading for this provider on this computer.";
+				return out;
+			}
+			out["status"] = row.value("status", "unavailable");
+			const nlohmann::json limits = row.value("limits", nlohmann::json(nullptr));
+			if (!limits.is_object())
+			{
+				out["reason"] = "UAM has not read this provider's allowance yet, or the provider does not report one.";
+				return out;
+			}
+			const auto window = [](const nlohmann::json& value, const nlohmann::json& label)
+			{
+				if (!value.is_object()) return nlohmann::json(nullptr);
+				return nlohmann::json{{"label", label}, {"usedPercent", value.value("usedPercent", nlohmann::json(nullptr))},
+				                      {"resetsAt", value.value("resetsAt", nlohmann::json(nullptr))},
+				                      {"windowDurationMinutes", value.value("windowDurationMinutes", nlohmann::json(nullptr))}};
+			};
+			out["updatedAt"] = limits.value("updatedAt", nlohmann::json(nullptr));
+			out["planType"] = limits.value("planType", "");
+			out["primary"] = window(limits.value("primary", nlohmann::json(nullptr)), row.value("primaryLabel", ""));
+			out["secondary"] = window(limits.value("secondary", nlohmann::json(nullptr)), row.value("secondaryLabel", ""));
+			nlohmann::json windows = nlohmann::json::array();
+			for (const nlohmann::json& item : row.value("windows", nlohmann::json::array()))
+			{
+				if (windows.size() == 16) break;
+				windows.push_back(window(item, item.value("label", "")));
+			}
+			out["windows"] = std::move(windows);
+			out["limitReached"] = !limits.value("rateLimitReachedType", "").empty();
+			out["spendLimitReached"] = limits.value("spendControlReached", nlohmann::json(nullptr)).is_boolean() && limits["spendControlReached"].get<bool>();
+			const nlohmann::json individual = limits.value("individualLimit", nlohmann::json(nullptr));
+			out["spendLimitRemainingPercent"] = individual.is_object() ? individual.value("remainingPercent", nlohmann::json(nullptr)) : nlohmann::json(nullptr);
+			return out;
+		}
+
+		/// <summary>usage_report: the calling chat's own token and estimated-cost totals and its provider's cached allowance.
+		/// Another chat's figures, including a parent's or a child's, are never read.</summary>
+		ToolResult UsageReport(const AppState& app, const UamControlCapability& capability)
+		{
+			const ChatSession* chat = ChatDomainService().FindChatById(app, capability.session_chat_id);
+			if (chat == nullptr) return {.error = "This chat is no longer available."};
+			if (!chat->messages_loaded) return {.error = "This chat's history is still loading. Try again in a moment."};
+			std::int64_t input = 0, output = 0;
+			double cost = 0.0;
+			std::size_t counted = 0;
+			for (const Message& message : chat->messages)
+			{
+				if (message.tokens_input <= 0 && message.tokens_output <= 0 && !(message.estimated_cost_usd > 0.0)) continue;
+				++counted;
+				input += std::max(0, message.tokens_input);
+				output += std::max(0, message.tokens_output);
+				if (std::isfinite(message.estimated_cost_usd) && message.estimated_cost_usd > 0.0) cost += message.estimated_cost_usd;
+			}
+			return {.ok = true,
+			        .result = {{"providerId", chat->provider_id}, {"modelId", chat->model_id},
+			                   {"tokens", {{"input", input}, {"output", output}, {"total", input + output}}},
+			                   {"messagesWithUsage", counted},
+			                   {"estimatedCostUsd", std::round(cost * 1000000.0) / 1000000.0},
+			                   {"costBasis", "estimate"},
+			                   {"note", "Totals cover this chat only, as UAM recorded them. The cost is an estimate from recorded tokens, not a bill; some providers report no tokens, so totals can be low."},
+			                   {"accountAllowance", UsageAllowance(app, *chat)}},
+			        .reason = "Read this chat's own usage totals."};
 		}
 
 		ToolResult GoalCreate(AppState& app, UamControlCapability& capability,
@@ -1484,6 +1565,7 @@ namespace uam
 			if (method == "agent_status") return AgentStatus(app, capability, arguments);
 			if (method == "agent_cancel") return AgentCancel(app, capability, arguments);
 			if (method == "goal_get") return GoalGet(app, capability);
+			if (method == "usage_report") return UsageReport(app, capability);
 			if (method == "goal_create") return GoalCreate(app, capability, arguments);
 			if (method == "pr_watch" || method == "pr_unwatch") return PullRequestWatch(app, capability, *chat, method == "pr_watch", arguments);
 			return {.error = "Unknown UAM control method."};
@@ -2121,6 +2203,8 @@ namespace uam
 			agent_cancel["description"] = "Cancel one child run this chat started. Requires this chat's YOLO permission mode; refused in Plan mode.";
 			nlohmann::json goal_get = ToolSchema("goal_get");
 			goal_get["description"] = "Read this chat's current goal: objective, status, progress, budget, and whether goal creation is allowed.";
+			nlohmann::json usage_report = ToolSchema("usage_report");
+			usage_report["description"] = "Read this chat's own token totals and estimated cost (an estimate, not a bill), plus the cached account allowance of this chat's provider on this computer: used share and reset time of each window. Covers no other chat and starts no account read.";
 			nlohmann::json agent_delegate = MutationToolSchema("agent_delegate", {{"agentId", {{"type", "string"}}}, {"task", {{"type", "string"}}},
 			    {"providerId", {{"type", "string"}}}, {"modelId", {{"type", "string"}}}, {"reasoningEffort", {{"type", "string"}, {"maxLength", 32}, {"description", "Supported effort from the selected model in agent_list; omit to inherit, or use an empty string for provider Default."}}}}, {"agentId", "task"});
 			agent_delegate["description"] = "Start one permitted agent using optional providerId, modelId and reasoningEffort from agent_list providerTargets. Omit reasoningEffort to keep normal inheritance, or use an empty string for provider Default. Unsupported explicit efforts are refused. Omitting providerId inherits the parent provider; switching provider without modelId uses the target provider's default. CLI availability does not verify login. resultDelivery reports cooperative-only, automatic-pending or held. An accepted direct-root delegation may deliver bounded child results after a normal turn end on the SAME still-live local Codex session; it never restarts a parent or replays uncertain input.";
@@ -2153,6 +2237,7 @@ namespace uam
 			    std::move(agent_list),
 			    std::move(agent_status),
 			    std::move(goal_get),
+			    std::move(usage_report),
 			    std::move(agent_delegate),
 			    std::move(agent_cancel),
 			    std::move(goal_create),
@@ -2173,7 +2258,7 @@ namespace uam
 			{
 				const std::string name = tool.value("name", "");
 				if (name == "agent_list" || name == "agent_status" || name == "agent_wait" || name == "skill_list" ||
-				    name == "skill_read" || name == "goal_get" || name == "user_question" ||
+				    name == "skill_read" || name == "goal_get" || name == "user_question" || name == "usage_report" ||
 				    IsHtmlViewMethod(name)) // HTML views only add a display card to this chat's own transcript.
 					tool["annotations"] = {{"readOnlyHint", true}};
 			}
