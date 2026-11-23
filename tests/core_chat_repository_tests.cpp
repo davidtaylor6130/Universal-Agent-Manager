@@ -1168,6 +1168,85 @@ UAM_TEST(QueueJournalForAnotherQueueRevisionStaysHeldWithStorageError)
 	UAM_ASSERT(!ChatRepository::SaveChat(temp.root, *held));
 }
 
+namespace
+{
+	// The saved chat's workspace folder moved after its queue journal was written: the journal's owner
+	// differs from the primary only in workspace_directory.
+	void MoveSavedChatWorkspace(const fs::path& root, const std::string& chat_id, const fs::path& moved)
+	{
+		const fs::path primary = AppPaths::UamChatFilePath(root, chat_id);
+		nlohmann::json saved = nlohmann::json::parse(ReadFile(primary));
+		saved["workspace_directory"] = moved.string();
+		UAM_ASSERT(uam::io::WriteTextFile(primary, saved.dump(2)));
+		std::error_code ignored;
+		fs::remove(AppPaths::UamChatSummaryFilePath(root, chat_id), ignored);
+	}
+}
+
+UAM_TEST(EmptyQueueJournalForMovedWorkspaceDoesNotBlockSavesOrMemoryProgress)
+{
+	TempDir temp("uam-queue-journal-empty-moved");
+	ChatSession chat = QueueJournalFixture(temp.root);
+	chat.acp_queued_prompts.clear();
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	UAM_ASSERT(ChatRepository::SaveQueuedPromptOutbox(temp.root, chat));
+	const fs::path moved = temp.root / "moved-workspace";
+	MoveSavedChatWorkspace(temp.root, chat.id, moved);
+	std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(loaded.has_value());
+	// The journal holds no input and neither does the saved chat, so there is nothing to protect.
+	UAM_ASSERT(!loaded->acp_queue_storage_error);
+	UAM_ASSERT(!loaded->acp_queue_held);
+	UAM_ASSERT(loaded->acp_queued_prompts.empty());
+	UAM_ASSERT_EQ(loaded->workspace_directory, moved.string());
+	// Saves and memory progress persist again; a second load stays clear.
+	loaded->memory_last_processed_message_count = 1;
+	loaded->memory_last_processed_at = "2026-11-23T10:00:00Z";
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, *loaded));
+	std::optional<ChatSession> reloaded = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(reloaded && !reloaded->acp_queue_storage_error && !reloaded->acp_queue_held);
+	UAM_ASSERT_EQ(reloaded->memory_last_processed_message_count, 1);
+	// The queue journal is written again under the current owner.
+	UAM_ASSERT(ChatRepository::SaveQueuedPromptOutbox(temp.root, *reloaded));
+	reloaded = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(reloaded && !reloaded->acp_queue_storage_error && !reloaded->acp_queue_held);
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, *reloaded));
+}
+
+UAM_TEST(QueueJournalWithInputForMovedWorkspaceStaysHeldWithStorageError)
+{
+	TempDir temp("uam-queue-journal-input-moved");
+	ChatSession chat = QueueJournalFixture(temp.root);
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	chat.acp_queued_prompts.front().text = "Journalled input";
+	++chat.acp_queued_prompts.front().revision;
+	UAM_ASSERT(ChatRepository::SaveQueuedPromptOutbox(temp.root, chat));
+	const fs::path journal = temp.root / "queue-outboxes" / (chat.id + ".json");
+	const std::string journal_bytes = ReadFile(journal);
+	MoveSavedChatWorkspace(temp.root, chat.id, temp.root / "moved-workspace");
+	const std::optional<ChatSession> held = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	// Real queued input is never dropped: the chat stays held and refuses saves that would orphan it.
+	UAM_ASSERT(held && held->acp_queue_storage_error && held->acp_queue_held);
+	UAM_ASSERT(!ChatRepository::SaveChat(temp.root, *held));
+	UAM_ASSERT_EQ(ReadFile(journal), journal_bytes);
+}
+
+UAM_TEST(EmptyQueueJournalOverSavedQueuedInputForMovedWorkspaceStaysHeld)
+{
+	TempDir temp("uam-queue-journal-empty-over-input");
+	ChatSession chat = QueueJournalFixture(temp.root);
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	// The journal says the queue emptied while the saved chat still carries a queued prompt: which is
+	// newer is not provable, so the saved prompt is neither replayed nor dropped.
+	chat.acp_queued_prompts.clear();
+	UAM_ASSERT(ChatRepository::SaveQueuedPromptOutbox(temp.root, chat));
+	MoveSavedChatWorkspace(temp.root, chat.id, temp.root / "moved-workspace");
+	const std::optional<ChatSession> held = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(held && held->acp_queue_storage_error && held->acp_queue_held);
+	UAM_ASSERT_EQ(held->acp_queued_prompts.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(!ChatRepository::SaveChat(temp.root, *held));
+}
+
 UAM_TEST(QueueJournalControlsKeepPendingTranscriptSaveAndDurableQueueOrder)
 {
 	TempDir temp("uam-queue-journal-controls");
