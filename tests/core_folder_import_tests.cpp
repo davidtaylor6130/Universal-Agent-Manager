@@ -391,7 +391,10 @@ UAM_TEST(SkillsLibraryListsReadableSkillsPastAnUnreadableSubfolder)
 	TempDir temp("uam-skills-unreadable-folder");
 	const fs::path root = temp.root / "store";
 	const fs::path locked = root / "locked";
+	const fs::path listable = root / "listable";
 	fs::create_directories(locked);
+	fs::create_directories(listable);
+	UAM_ASSERT(uam::io::WriteTextFile(listable / "listed.uam", "---\ntitle: Listed\ncommandName: listed\n---\n\n# Listed\n"));
 	fs::create_directories(root / "readable" / "nested");
 	UAM_ASSERT(uam::io::WriteTextFile(root / "top.uam", "---\ntitle: Top\ncommandName: top\n---\n\n# Top\n"));
 	UAM_ASSERT(uam::io::WriteTextFile(root / "readable" / "nested" / "deep.uam", "---\ntitle: Deep\ncommandName: deep\n---\n\n# Deep\n"));
@@ -403,8 +406,9 @@ UAM_TEST(SkillsLibraryListsReadableSkillsPastAnUnreadableSubfolder)
 		{
 			for (const fs::path& path : paths) { std::error_code ec; fs::permissions(path, fs::perms::owner_all, fs::perm_options::replace, ec); }
 		}
-	} restore{{root, locked}}; // Root first, so its folder can be reached again.
+	} restore{{root, locked, listable}}; // Root first, so its folders can be reached again.
 	fs::permissions(locked, fs::perms::none, fs::perm_options::replace);
+	fs::permissions(listable, fs::perms::owner_read, fs::perm_options::replace); // Listed but not entered.
 
 	std::string error = "stale";
 	std::vector<fs::path> skipped{"stale"};
@@ -414,7 +418,7 @@ UAM_TEST(SkillsLibraryListsReadableSkillsPastAnUnreadableSubfolder)
 	for (const MarkdownStoreService::Entry& entry : entries) titles.push_back(entry.title);
 	std::ranges::sort(titles);
 	UAM_ASSERT(titles == (std::vector<std::string>{"Deep", "Top"}));
-	UAM_ASSERT(skipped == std::vector<fs::path>{fs::path("locked")});
+	UAM_ASSERT(skipped == (std::vector<fs::path>{fs::path("listable"), fs::path("locked")}));
 	// Creating a skill walks the same folders and still succeeds.
 	MarkdownStoreService::Draft draft;
 	draft.title = "Fresh";

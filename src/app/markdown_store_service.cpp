@@ -299,6 +299,8 @@ namespace
 			{
 				std::error_code open_ec;
 				const fs::directory_iterator folder_probe(it->path(), open_ec);
+				// A folder that can be listed but not entered hides its files just like one that cannot be opened.
+				if (!open_ec) (void)fs::status(it->path() / ".", open_ec);
 				if (open_ec)
 				{
 					it.disable_recursion_pending();
