@@ -603,8 +603,8 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 		uam::settings::ClampAcpOutputSettings(settings);
 		settings.default_editor_preset_id = uam::editor_file_associations::NormalizeEditorPresetId(settings.default_editor_preset_id);
 		uam::editor_file_associations::NormalizeEditorFileAssociations(settings.editor_file_associations);
-		if (!uam::mcp_server_config::NormalizeAndValidate(settings.mcp_servers)) settings.mcp_servers.clear();
 		uam::execution_hosts::Normalize(settings.execution_hosts);
+		if (!uam::mcp_server_config::NormalizeAndValidate(settings.mcp_servers, nullptr, &settings.execution_hosts)) settings.mcp_servers.clear();
 		uam::compute_pools::Normalize(settings.compute_pools);
 		std::erase_if(settings.host_scoped_settings, [&](const std::pair<const std::string, HostScopedSettings>& entry) { const ExecutionHost* host = uam::execution_hosts::Find(settings.execution_hosts, entry.first); return host == nullptr || host->transport != "ssh"; });
 		uam::provider_availability::Normalize(settings.provider_availability);
@@ -1210,7 +1210,7 @@ SettingsLoadResult SettingsStore::LoadInternal(const std::filesystem::path& sett
 					if (entry.value().contains("servers") && entry.value()["servers"].is_array())
 					{
 						std::vector<McpServerConfiguration> servers = uam::mcp_server_config::Parse(entry.value()["servers"]);
-						if (uam::mcp_server_config::NormalizeAndValidate(servers)) next.mcp_servers = std::move(servers);
+						if (uam::mcp_server_config::NormalizeAndValidate(servers, nullptr, nullptr, entry.key())) next.mcp_servers = std::move(servers);
 					}
 					settings.host_scoped_settings[entry.key()] = std::move(next);
 				}

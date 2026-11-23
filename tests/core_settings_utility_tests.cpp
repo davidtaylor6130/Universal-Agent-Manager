@@ -999,6 +999,69 @@ UAM_TEST(McpServerConfigurationIsWorkspaceScopedCapabilityGatedAndSecretSafe)
 	UAM_ASSERT(!uam::mcp_server_config::NormalizeAndValidate(servers, &error));
 }
 
+UAM_TEST(McpServerPathsFollowTheirExecutionHostsPlatform)
+{
+	using uam::mcp_server_config::IsAbsoluteOnHost;
+	using uam::mcp_server_config::NormalizeAndValidate;
+	ExecutionHost linux_host;
+	linux_host.id = "ssh-linux"; linux_host.transport = "ssh"; linux_host.ssh_alias = "linux-box"; linux_host.platform = "linux";
+	ExecutionHost windows_host = linux_host;
+	windows_host.id = "ssh-windows"; windows_host.ssh_alias = "windows-box"; windows_host.platform = "windows";
+	ExecutionHost unprobed_host = linux_host;
+	unprobed_host.id = "ssh-new"; unprobed_host.ssh_alias = "new-box"; unprobed_host.platform.clear();
+	const std::vector<ExecutionHost> hosts{ExecutionHost{}, linux_host, windows_host, unprobed_host};
+	// A known SSH host uses its own platform, whatever platform UAM runs on.
+	UAM_ASSERT(IsAbsoluteOnHost("/usr/bin/node", "ssh-linux", &hosts));
+	UAM_ASSERT(!IsAbsoluteOnHost("C:\\tools\\node.exe", "ssh-linux", &hosts));
+	UAM_ASSERT(IsAbsoluteOnHost("C:\\tools\\node.exe", "ssh-windows", &hosts));
+	UAM_ASSERT(IsAbsoluteOnHost("\\\\server\\share\\node.exe", "ssh-windows", &hosts));
+	UAM_ASSERT(!IsAbsoluteOnHost("/usr/bin/node", "ssh-windows", &hosts));
+	// An unrecorded platform, an unknown host or every computer accepts either absolute form, never a relative one.
+	for (const std::string_view host : {std::string_view("ssh-new"), std::string_view("missing"), std::string_view()})
+	{
+		UAM_ASSERT(IsAbsoluteOnHost("/usr/bin/node", host, &hosts));
+		UAM_ASSERT(IsAbsoluteOnHost("C:/tools/node.exe", host, &hosts));
+		UAM_ASSERT(!IsAbsoluteOnHost("tools/node", host, &hosts));
+	}
+	UAM_ASSERT(IsAbsoluteOnHost("/usr/bin/node", "ssh-windows", nullptr));
+	// This computer keeps its native rule.
+#if defined(_WIN32)
+	UAM_ASSERT(IsAbsoluteOnHost("C:\\tools\\node.exe", "local", &hosts));
+	UAM_ASSERT(!IsAbsoluteOnHost("/usr/bin/node", "local", &hosts));
+#else
+	UAM_ASSERT(IsAbsoluteOnHost("/usr/bin/node", "local", &hosts));
+	UAM_ASSERT(!IsAbsoluteOnHost("C:\\tools\\node.exe", "local", &hosts));
+#endif
+
+	McpServerConfiguration server;
+	server.id = "node"; server.name = "node"; server.execution_host_id = "ssh-linux";
+	server.command = "/usr/bin/node"; server.workspace_directory = "/home/dev/project/";
+	std::vector<McpServerConfiguration> servers{server};
+	std::string error;
+	UAM_ASSERT(NormalizeAndValidate(servers, &error, &hosts));
+	UAM_ASSERT_EQ(servers.front().workspace_directory, server.workspace_directory);
+	servers = {server};
+	servers.front().execution_host_id = "ssh-windows";
+	UAM_ASSERT(!NormalizeAndValidate(servers, &error, &hosts));
+	// An entry without a host id in a host-scoped list runs on that list's computer.
+	servers = {server};
+	servers.front().execution_host_id.clear();
+	UAM_ASSERT(NormalizeAndValidate(servers, &error, &hosts, "ssh-linux"));
+	UAM_ASSERT(!NormalizeAndValidate(servers, &error, &hosts, "ssh-windows"));
+	servers.front().workspace_directory.clear();
+	servers.front().command = "C:\\tools\\node.exe";
+	UAM_ASSERT(NormalizeAndValidate(servers, &error, &hosts, "ssh-windows"));
+	UAM_ASSERT(!NormalizeAndValidate(servers, &error, &hosts, "ssh-linux"));
+	UAM_ASSERT_EQ(error, std::string("MCP server 'node' needs an absolute executable path."));
+	// An all-computers entry keeps another platform's path as written instead of resolving it locally.
+	servers = {server};
+	servers.front().execution_host_id.clear();
+	UAM_ASSERT(NormalizeAndValidate(servers, &error, &hosts));
+#if defined(_WIN32)
+	UAM_ASSERT_EQ(servers.front().workspace_directory, server.workspace_directory);
+#endif
+}
+
 UAM_TEST(SettingsStoreRejectsPartialNumericValuesAndParsesStrictBooleans)
 {
 	TempDir temp("uam-settings-partial-numeric");

@@ -162,7 +162,23 @@ namespace uam::mcp_server_config
 		return result;
 	}
 
-	inline bool NormalizeAndValidate(std::vector<McpServerConfiguration>& servers, std::string* error_out = nullptr)
+	/// <summary>Whether a path is absolute on the computer that runs the server, by that computer's platform.</summary>
+	/// <remarks>This computer uses its native rule. A known SSH host uses its recorded platform, so a Windows UAM accepts
+	/// /usr/bin/node for a Linux host. An empty host id (every computer), an unknown host or an unrecorded platform
+	/// accepts either absolute form; the launch on the executing computer still requires the file to exist.</remarks>
+	inline bool IsAbsoluteOnHost(std::string_view path, std::string_view host_id, const std::vector<ExecutionHost>* hosts)
+	{
+		const std::string trimmed = uam::strings::Trim(path);
+		if (host_id == uam::execution_hosts::kLocalHostId) return !trimmed.empty() && uam::paths::PathFromUtf8(trimmed).is_absolute();
+		const ExecutionHost* host = hosts != nullptr && !host_id.empty() ? uam::execution_hosts::Find(*hosts, host_id) : nullptr;
+		if (host != nullptr && !host->platform.empty()) return uam::execution_hosts::IsAbsoluteRemotePath(host->platform, trimmed);
+		return uam::execution_hosts::IsAbsoluteRemotePath("windows", trimmed) || uam::execution_hosts::IsAbsoluteRemotePath("linux", trimmed);
+	}
+
+	/// <param name="hosts">Configured computers, for each server's platform; null treats every SSH host's platform as unknown.</param>
+	/// <param name="scope_host_id">The computer a host-scoped list belongs to; its entries without a host id run there.</param>
+	inline bool NormalizeAndValidate(std::vector<McpServerConfiguration>& servers, std::string* error_out = nullptr,
+	                                 const std::vector<ExecutionHost>* hosts = nullptr, std::string_view scope_host_id = {})
 	{
 		std::set<std::string> ids;
 		for (McpServerConfiguration& server : servers)
@@ -170,13 +186,16 @@ namespace uam::mcp_server_config
 			server.execution_host_id = uam::strings::Trim(server.execution_host_id);
 			server.id = uam::strings::Trim(server.id);
 			server.name = uam::strings::Trim(server.name);
-			const std::filesystem::path workspace_path = uam::paths::PathFromUtf8(uam::strings::Trim(server.workspace_directory));
-			if (!workspace_path.empty() && !workspace_path.is_absolute() && !uam::execution_hosts::IsAbsoluteRemotePath("windows", server.workspace_directory))
+			const std::string_view host_id = server.execution_host_id.empty() ? scope_host_id : std::string_view(server.execution_host_id);
+			const std::string workspace = uam::strings::Trim(server.workspace_directory);
+			if (!workspace.empty() && !IsAbsoluteOnHost(workspace, host_id, hosts))
 			{
 				if (error_out) *error_out = "Every MCP server needs a unique id, a name, and an absolute workspace directory or an empty global scope.";
 				return false;
 			}
-			server.workspace_directory = server.execution_host_id.empty() || server.execution_host_id == "local" ? WorkspaceKey(server.workspace_directory) : uam::strings::Trim(server.workspace_directory);
+			// A path in another platform's form stays as written; local normalization would rewrite /home/x as C:/home/x on Windows.
+			const bool local_form = uam::paths::PathFromUtf8(workspace).is_absolute() || uam::execution_hosts::IsAbsoluteRemotePath("windows", workspace);
+			server.workspace_directory = (server.execution_host_id.empty() || server.execution_host_id == "local") && local_form ? WorkspaceKey(workspace) : workspace;
 			server.transport = uam::strings::TrimAndLowerAscii(server.transport);
 			server.command = uam::strings::Trim(server.command);
 			server.url = uam::strings::Trim(server.url);
@@ -197,7 +216,7 @@ namespace uam::mcp_server_config
 			}
 			if (server.transport == "stdio")
 			{
-				if (server.command.empty() || (!uam::paths::PathFromUtf8(server.command).is_absolute() && !uam::execution_hosts::IsAbsoluteRemotePath("windows", server.command)))
+				if (server.command.empty() || !IsAbsoluteOnHost(server.command, host_id, hosts))
 				{
 					if (error_out) *error_out = "MCP server '" + server.name + "' needs an absolute executable path.";
 					return false;
