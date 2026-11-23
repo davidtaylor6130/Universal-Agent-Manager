@@ -1,8 +1,8 @@
 # #363 decision interface (first slice): report
 
-The goal review now answers through the decision interface. David's 2026-11-23 decisions are recorded, and the work is pushed to `v5/feat-363-decision-interface`. No PR, issue or comment was created.
+The goal review now answers through the decision interface. David's three 2026-11-23 decisions are recorded, and the work is pushed to `v5/feat-363-decision-interface`. No PR, issue or comment was created.
 
-**Final SHA:** `0dec7eaf4a8a55e1aa25b941778872759510ac42`. That is 5 commits on top of `origin/uam/v5.2-sync-main`: `d52ed520`, `2949e512`, `27e53b79`, `6ce9d77f` and `0dec7eaf`.
+**Final SHA:** `4c93695156c9e6be807021ab0ae63b80cd29f562`. That is 6 commits on top of `origin/uam/v5.2-sync-main`: `d52ed520`, `2949e512`, `27e53b79`, `6ce9d77f`, `0dec7eaf` and `4c936951`.
 
 ## What changed
 
@@ -25,6 +25,7 @@ The goal review now answers through the decision interface. David's 2026-11-23 d
 - **Decisions recorded** in `docs/documentation-review.md` ("Decision model", Resolved by David, 2026-11-23):
   - #363's "turn review" is the goal-loop review, which already uses the interface; the issue does not ask for a separate per-turn review.
   - A hosted decision backend such as Jev may receive goal or transcript text only after the user opts in. No hosted backend exists yet, so nothing is sent today.
+  - Permission AI Review should later answer through the decision interface for commands that no allow/ask/deny rule matches. That is a later slice; this branch leaves Permission AI Review unchanged.
 - **Docs:** `docs/chat/goals.md` now carries both decisions as agreements, and its gap note no longer lists the turn review. `docs/reference/source-map.md` is updated. The six provider `goals` rows stay Partial.
 - **UI:** none.
 - **Permission-rules branch:** no permission AI Review files are touched. `git merge-tree` against `origin/v5/feat-ai-review-command-rules` merges cleanly.
@@ -40,6 +41,7 @@ All three reviewers were fresh-context Opus agents (`claude-opus-5-5`).
 | 3 | Agent 3: the round-2 fixes and the recorded decisions | 9 (0 blocker, 1 should-fix, 8 nit) | 9 |
 
 None were declined. Two notes:
+- **Last commit:** `4c936951` only records the Permission AI Review decision in `docs/documentation-review.md`. It changes no code and was not reviewed; `check_docs.py` passes.
 - **Round 3:** I ran no further re-check after it. Its fixes were tests, comments, docs wording, the repair-prompt wording and one shared alias list. The alias change was checked against the base parser over the same 37,800 replies, with no new difference.
 - **Round 1:** while fixing nit 10, I also fixed a related problem: request text could close the `</decision_request>` marker in the prompt, because JSON does not escape `<`.
 
@@ -47,11 +49,11 @@ None were declined. Two notes:
 
 1. Are hosted Jev early-access credentials available? This blocks only the hosted backend.
 2. How would a local Laya backend be packaged and shipped?
-3. Should Permission AI Review (getting allow/ask/deny rules on `v5/feat-ai-review-command-rules`) later answer through this interface, or stay a separate reviewer?
-4. Where should the backend and the reason show for the user: the goal window's Last decision row, diagnostics only, or both? The goal window is unchanged. The Settings backend picker waits until a second backend exists.
+3. Where should the backend and the reason show for the user: the goal window's Last decision row, diagnostics only, or both? The goal window is unchanged. The Settings backend picker waits until a second backend exists.
 
 Still open under #363 after this slice:
 - the attention flag going through the interface;
+- Permission AI Review answering through the interface for commands no rule matches (decided; a later slice);
 - latency and cost measured against the text-model path;
 - hosted (opt-in) and local backends.
 
@@ -98,13 +100,13 @@ UAM's goal review recorded who decided as a plain string, with no shared interfa
 - **Attribution:** the backend reads the answer from its reply. Only an answer it reads and checks is attributed to a model. Goals save the backend id (`chat_provider`) beside the existing decision source, which keeps working as before. A filter, a fallback or a bare `model:` string can never carry a backend.
 - **Behaviour change:** a review reply with neither a reason nor evidence is now repaired and then falls back, instead of being accepted.
 - **Diagnostics:** each review decision writes a `goal_review_decision` goal-loop diagnostic with the answer, backend, latency and usage, including the JSON repair turn. Goal-loop diagnostics now record the size of prompts and replies instead of a text prefix of them, and failures keep a short cause.
-- **Decisions:** David's 2026-11-23 decisions are recorded in `docs/documentation-review.md`. The turn review is the goal-loop review, and a hosted backend may receive goal or transcript text only after the user opts in.
-- **Not included:** no UI change. Hosted and local backends, the Settings picker, comparative latency and cost measurement, and the attention flag stay open.
+- **Decisions:** David's 2026-11-23 decisions are recorded in `docs/documentation-review.md`. The turn review is the goal-loop review; a hosted backend may receive goal or transcript text only after the user opts in; and Permission AI Review will later answer through the interface for commands no allow/ask/deny rule matches.
+- **Not included:** no UI change. Hosted and local backends, the Settings picker, comparative latency and cost measurement, the attention flag and Permission AI Review stay for later slices.
 
 Related to #363.
 
 **Proof:**
-- `python3 scripts/check_docs.py` passes (203 pages, 1517 local links, 6 providers × 32 capabilities).
+- `python3 scripts/check_docs.py` passes (203 pages, 1518 local links, 6 providers × 32 capabilities).
 - `g++ 13` and `clang++ 18` `-fsyntax-only` are clean on every changed C++ file. CEF headers were stubbed, because the native desktop build refuses Linux and the CEF and SQLite downloads are blocked here.
 - In a scratch harness, these pass: the 3 pure DecisionService tests and the 5 existing `ParseReviewDecision` tests.
 - A comparison of the base and new review parsing over 37,800 generated replies differs only for the 520 replies with neither a reason nor evidence.
@@ -119,7 +121,7 @@ Related to #363.
 
 - Agent 1: claude-opus-5-5 — suggested 11; implemented 11.
 - Agent 2: claude-opus-5-5 — suggested 5; implemented 5.
-- Agent 3: claude-opus-5-5 — suggested 9; implemented 9. Its fixes (tests, comments, docs wording, one shared alias list checked by the 37,800-reply comparison) were not re-reviewed.
+- Agent 3: claude-opus-5-5 — suggested 9; implemented 9. Its fixes (tests, comments, docs wording, one shared alias list checked by the 37,800-reply comparison) were not re-reviewed, nor was the final docs-only decision record.
 
 **Created with:** Claude Opus 5.5 (claude-opus-5-5) in Claude Code on the web (Claude Code harness), on behalf of David Taylor.
 ```
