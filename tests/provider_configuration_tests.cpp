@@ -1691,10 +1691,10 @@ UAM_TEST(CodexMcpEnvironmentValuesNeverReachItsCommandLine)
 	    {"env", nlohmann::json::array({{{"name", "UAM_CONTROL_REQUEST_KEY"}, {"value", key}}})}}});
 	McpServerConfiguration alpha;
 	alpha.id = "alpha"; alpha.name = "alpha"; alpha.command = command;
-	alpha.environment = {{"API_KEY", "", "shared-secret"}, {"ALPHA_TOKEN", "", "alpha-secret"}};
+	alpha.environment = {{"MCPTEST_API_KEY", "", "shared-secret"}, {"MCPTEST_ALPHA_TOKEN", "", "alpha-secret"}};
 	McpServerConfiguration beta = alpha;
 	beta.id = "beta"; beta.name = "beta";
-	beta.environment = {{"API_KEY", "", "shared-secret"}, {"BETA_TOKEN", "", "beta \"secret\""}};
+	beta.environment = {{"MCPTEST_API_KEY", "", "shared-secret"}, {"MCPTEST_BETA_TOKEN", "", "beta \"secret\""}};
 	int launch_count = 0;
 	std::vector<std::string> argv;
 	uam::provider_setup::Environment environment;
@@ -1713,11 +1713,11 @@ UAM_TEST(CodexMcpEnvironmentValuesNeverReachItsCommandLine)
 	};
 	UAM_ASSERT(launch({alpha, beta}));
 	// Codex forwards each value by name from its own environment; UAM's signing key travels the same way.
-	UAM_ASSERT_EQ(uam::provider_setup::EnvironmentValue(environment, "API_KEY"), std::string("shared-secret"));
-	UAM_ASSERT_EQ(uam::provider_setup::EnvironmentValue(environment, "ALPHA_TOKEN"), std::string("alpha-secret"));
-	UAM_ASSERT_EQ(uam::provider_setup::EnvironmentValue(environment, "BETA_TOKEN"), std::string("beta \"secret\""));
+	UAM_ASSERT_EQ(uam::provider_setup::EnvironmentValue(environment, "MCPTEST_API_KEY"), std::string("shared-secret"));
+	UAM_ASSERT_EQ(uam::provider_setup::EnvironmentValue(environment, "MCPTEST_ALPHA_TOKEN"), std::string("alpha-secret"));
+	UAM_ASSERT_EQ(uam::provider_setup::EnvironmentValue(environment, "MCPTEST_BETA_TOKEN"), std::string("beta \"secret\""));
 	UAM_ASSERT_EQ(uam::provider_setup::EnvironmentValue(environment, "UAM_CONTROL_REQUEST_KEY"), key);
-	for (const std::string& expected : {std::string(R"(mcp_servers.alpha.env_vars=["ALPHA_TOKEN", "API_KEY"])"), std::string(R"(mcp_servers.beta.env_vars=["API_KEY", "BETA_TOKEN"])"),
+	for (const std::string& expected : {std::string(R"(mcp_servers.alpha.env_vars=["MCPTEST_ALPHA_TOKEN", "MCPTEST_API_KEY"])"), std::string(R"(mcp_servers.beta.env_vars=["MCPTEST_API_KEY", "MCPTEST_BETA_TOKEN"])"),
 	         std::string(R"(mcp_servers.uam-control.env_vars=["UAM_CONTROL_REQUEST_KEY"])")})
 		UAM_ASSERT(std::ranges::find(argv, expected) != argv.end());
 	// No MCP env value appears anywhere on Codex's command line, which other processes can list, or in its launch log.
@@ -1731,22 +1731,30 @@ UAM_TEST(CodexMcpEnvironmentValuesNeverReachItsCommandLine)
 
 	// env_vars cannot rename a variable, so one name set to two values is refused without echoing either value.
 	McpServerConfiguration clash = beta;
-	clash.environment = {{"API_KEY", "", "other-secret"}};
+	clash.environment = {{"MCPTEST_API_KEY", "", "other-secret"}};
 	UAM_ASSERT(!launch({alpha, clash}));
-	UAM_ASSERT(error.find("API_KEY") != std::string::npos && error.find("'alpha'") != std::string::npos && error.find("'beta'") != std::string::npos);
+	UAM_ASSERT(error.find("MCPTEST_API_KEY") != std::string::npos && error.find("'alpha'") != std::string::npos && error.find("'beta'") != std::string::npos);
 	UAM_ASSERT(error.find("secret") == std::string::npos);
-	// A user server may not change Codex's own environment or impersonate UAM's launch variables.
-	ScopedEnvVar existing("CODEX_MCP_TEST_EXISTING", "host-value");
-	for (const std::string& variable : {"PATH", "CODEX_HOME", "UAM_CONTROL_REQUEST_KEY", "CODEX_MCP_TEST_EXISTING"})
+	// A user server may not put loader, shell or Codex variables into Codex's environment, even when Codex lacks them,
+	// impersonate UAM's launch variables, or change a variable Codex already has.
+	ScopedEnvVar existing("MCP_TEST_EXISTING_VALUE", "host-value");
+	ScopedEnvVar node_options("NODE_OPTIONS", "");
+	for (const char* variable : {"PATH", "NODE_OPTIONS", "LD_PRELOAD", "CODEX_HOME", "UAM_CONTROL_REQUEST_KEY", "MCP_TEST_EXISTING_VALUE"})
 	{
 		McpServerConfiguration reserved = alpha;
 		reserved.environment = {{variable, "", "/changed"}};
 		UAM_ASSERT(!launch({reserved}));
 		UAM_ASSERT(error.find(variable) != std::string::npos && error.find("/changed") == std::string::npos);
 	}
+	UAM_ASSERT(error.find("already has") != std::string::npos);
 	McpServerConfiguration same = alpha;
-	same.environment = {{"CODEX_MCP_TEST_EXISTING", "", "host-value"}};
+	same.environment = {{"MCP_TEST_EXISTING_VALUE", "", "host-value"}};
 	UAM_ASSERT(launch({same}));
+	// The reserved check comes first, so a server sorting after uam-control is never told to match UAM's signing key.
+	McpServerConfiguration zeta = alpha;
+	zeta.id = "zeta"; zeta.name = "zeta"; zeta.environment = {{"UAM_CONTROL_REQUEST_KEY", "", "/changed"}};
+	UAM_ASSERT(!launch({zeta}));
+	UAM_ASSERT(error.find("'zeta' cannot set UAM_CONTROL_REQUEST_KEY") != std::string::npos && error.find("uam-control") == std::string::npos);
 
 	// A launch command that no longer fits is refused by server name, without echoing its arguments.
 	McpServerConfiguration large = alpha;

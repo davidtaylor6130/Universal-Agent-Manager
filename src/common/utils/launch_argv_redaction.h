@@ -10,7 +10,8 @@ namespace uam::launch_argv
 	inline constexpr std::string_view kRedacted = "[private configuration]";
 
 	/// <summary>Whether a provider launch argument carries private configuration that diagnostics and error text must omit.</summary>
-	/// <remarks>Codex -c overrides carry instructions, MCP env tables (secret values) and header variable maps; Claude
+	/// <remarks>Codex -c overrides carry instructions and header variable maps; MCP env values reach Codex through its
+	/// environment (env_vars lists names only), and ".env=" stays covered in case a table value is ever passed. Claude
 	/// --settings can carry auth keys (env, apiKeyHelper) copied from the user's settings.</remarks>
 	inline bool IsPrivate(const std::vector<std::string>& argv, std::size_t index)
 	{

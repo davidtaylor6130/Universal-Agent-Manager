@@ -217,13 +217,18 @@ namespace uam::provider_setup
 #endif
 	}
 
-	/// <summary>Names a user's MCP server may not place in Codex's environment: they would redirect Codex itself, its
-	/// home or its shell commands, or impersonate UAM's own launch variables.</summary>
+	/// <summary>Names a user's MCP server may not place in Codex's environment, even when Codex lacks them: they would
+	/// redirect or inject code into Codex (its Node launcher, loaders, shells and command lookup) and every shell command
+	/// it runs, change its home or settings, or impersonate UAM's own launch variables.</summary>
 	inline bool IsReservedCodexVariable(std::string_view variable)
 	{
 		std::string upper(variable);
 		std::ranges::transform(upper, upper.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
-		return upper == "PATH" || upper == "HOME" || upper == "USERPROFILE" || upper == "CODEX_HOME" || upper.starts_with("UAM_");
+		for (const std::string_view name : {"PATH", "PATHEXT", "HOME", "USERPROFILE", "SHELL", "COMSPEC", "ENV", "BASH_ENV", "NODE_OPTIONS", "NODE_PATH"})
+			if (upper == name) return true;
+		for (const std::string_view prefix : {"CODEX_", "UAM_", "LD_", "DYLD_"})
+			if (upper.starts_with(prefix)) return true;
+		return false;
 	}
 
 	/// <summary>A TOML value for a Codex -c override; tables are inline, so quoted keys keep any name intact, unlike a dotted -c path.</summary>
@@ -853,12 +858,15 @@ namespace uam::provider_setup
 						for (const auto& [variable, text] : value.items())
 						{
 							const std::string text_value = text.get<std::string>();
+							const bool user_server = !uam_owned_servers.contains(name);
+							if (user_server && IsReservedCodexVariable(variable))
+							{ error = "MCP server '" + name + "' cannot set " + variable + " for Codex: Codex passes MCP variables through its own environment, so this would change Codex and its shell commands."; return false; }
 							const auto [owner, first] = codex_variables.emplace(CodexVariableKey(variable), std::pair<std::string, std::string>{name, text_value});
 							if (!first && owner->second.second != text_value)
-							{ error = "MCP servers '" + owner->second.first + "' and '" + name + "' set " + variable + " to different values. Codex passes MCP variables by name, so use one value or another variable name."; return false; }
+							{ error = "MCP servers '" + owner->second.first + "' and '" + name + "' set " + variable + " to different values. Codex passes MCP variables by name, so they must match for Codex."; return false; }
 							const std::string current = EnvironmentValue(environment, variable);
-							if (!uam_owned_servers.contains(name) && (IsReservedCodexVariable(variable) || (first && !current.empty() && current != text_value)))
-							{ error = "MCP server '" + name + "' cannot set " + variable + " for Codex: Codex passes MCP variables through its own environment, so this would change Codex and its shell commands. Use another variable name."; return false; }
+							if (user_server && first && !current.empty() && current != text_value)
+							{ error = "MCP server '" + name + "' sets " + variable + ", which UAM's environment already has with another value. Codex passes MCP variables through its own environment, so use the same value, start UAM without " + variable + ", or have the server's command set it."; return false; }
 							SetEnvironment(environment, variable, text_value);
 							names.push_back(variable);
 						}
