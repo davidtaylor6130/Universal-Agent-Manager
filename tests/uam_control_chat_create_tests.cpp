@@ -526,6 +526,39 @@ UAM_TEST(UamControlChatCreateFromAutomationChatCountsAgainstTheTokenLimit)
 	UAM_ASSERT_EQ(fixture.CreatedCount(), std::size_t{1});
 }
 
+UAM_TEST(UamControlChatCreateApprovalFromAutomationChatChecksTheTokenFirst)
+{
+	ChatCreateFixture fixture;
+	(void)fixture.MakeAutomationCaller();
+	// Automation chats run in Default mode, so every start goes through the approval request.
+	fixture.app.chats.front().approval_mode = "default";
+	fixture.app.chats.front().command_safety_tier = "off";
+	for (int index = 0; index < 15; ++index) fixture.AddWaitingTokenChat("waiting-" + std::to_string(index));
+	const auto allow = [&](const std::string& request_id)
+	{
+		const auto question = uam::UamControlService::PendingApprovalForChat(fixture.app, "caller");
+		UAM_ASSERT(question.has_value());
+		std::string error;
+		UAM_ASSERT(uam::UamControlService::ResolveApproval(fixture.app, "caller", question->request_id_json, {{"chatCreate", {"Allow"}}}, &error));
+		return fixture.Flush(request_id);
+	};
+	UAM_ASSERT(fixture.Call("first", {{"task", "Do work."}}).value("pendingApproval", false));
+	const nlohmann::json first = allow("first");
+	UAM_ASSERT(first.value("ok", false));
+	// The token is now full: a new start is refused without asking the user.
+	const nlohmann::json full = fixture.Call("second", {{"task", "Other work."}});
+	UAM_ASSERT(!full.value("pendingApproval", false));
+	UAM_ASSERT(full.value("error", "").find("16 open chats") != std::string::npos);
+	UAM_ASSERT(!uam::UamControlService::PendingApprovalForChat(fixture.app, "caller").has_value());
+	// A retry of the start that succeeded still reaches the chat already started.
+	UAM_ASSERT(fixture.Call("first-retry", {{"task", "Do work."}}).value("pendingApproval", false));
+	const nlohmann::json retry = allow("first-retry");
+	UAM_ASSERT(retry.value("ok", false));
+	UAM_ASSERT(retry["result"].value("reused", false));
+	UAM_ASSERT_EQ(retry["result"].value("chatId", ""), first["result"].value("chatId", ""));
+	UAM_ASSERT_EQ(fixture.CreatedCount(), std::size_t{1});
+}
+
 UAM_TEST(AutomationTokenOpenChatsCountRunningTurnsButNotFailedLaunches)
 {
 	ChatCreateFixture fixture;

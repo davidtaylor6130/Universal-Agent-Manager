@@ -202,12 +202,12 @@ namespace uam
 			// A chat an automation chat started holds its place for as long as it exists, like the 8-per-caller
 			// allowance, because later wakes such as a pull request watch do not check the token.
 			if (!chat.created_by_chat_id.empty()) return true;
-			// A launch that failed after acceptance waits for the user, not the token.
-			if (LaunchFailedAfterAcceptance(app, chat)) return false;
-			if (GoalService::FindActiveGoal(app, chat.id) != nullptr) return true;
-			// A branch has no goal of its own, so a turn that is running or waiting to be sent also counts.
 			const AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
-			return (session != nullptr && AcpSessionHasActiveTurn(*session)) || ChatHasBusyCliTerminal(app, chat);
+			if (ChatHasBusyCliTerminal(app, chat) || (session != nullptr && (session->processing || AcpSessionIsWaitingForInput(*session)))) return true;
+			// A launch that failed after acceptance keeps its goal and queued prompt but waits for the user, not the token.
+			if (LaunchFailedAfterAcceptance(app, chat)) return false;
+			// A branch has no goal of its own, so a turn waiting to be sent also counts.
+			return GoalService::FindActiveGoal(app, chat.id) != nullptr || (session != nullptr && AcpSessionHasActiveTurn(*session));
 		}
 
 		std::size_t OpenChatCount(const AppState& app, std::string_view token_id)
@@ -245,7 +245,7 @@ namespace uam
 			const ChatFolder* folder = ChatDomainService().FindFolderById(app, workspace_id);
 			if (folder == nullptr || uam::strings::IsBlank(folder->directory)) return Refuse(404, "That workspace no longer exists.");
 			if (OpenChatCount(app, token.id) >= kMaxOpenChatsPerToken)
-				return Refuse(429, "This token already has 16 open chats. Finish or delete one first.");
+				return Refuse(429, "This token already has 16 open chats. Finish or delete one first; a chat an automation chat started counts until it is deleted.");
 
 			ChatSession chat = ChatDomainService().CreateNewChat(folder->id, provider_ids::NormalizeCliProviderAliasOrSelf(provider), true);
 			chat.execution_host_id = uam::strings::NonEmptyOrFallback(folder->execution_host_id, execution_hosts::kLocalHostId);
@@ -419,7 +419,7 @@ namespace uam
 		// A revoked or expired token creates nothing, through the API or through its chats.
 		if (token == tokens->end()) return "This automation chat's token was revoked, so it cannot start another chat.";
 		if (uam::time::TimestampNowSec() >= token->expires_at) return "This automation chat's token has expired, so it cannot start another chat.";
-		if (OpenChatCount(app, token->id) >= kMaxOpenChatsPerToken) return "This automation chat's token already has 16 open chats. Wait for one to finish.";
+		if (OpenChatCount(app, token->id) >= kMaxOpenChatsPerToken) return "This automation chat's token already has 16 open chats. Chats started from automation chats count until they are deleted, so ask the user to delete one, or wait for another chat to finish.";
 		return {};
 	}
 
