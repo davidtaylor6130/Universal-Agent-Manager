@@ -837,7 +837,7 @@ static bool PrepareCliProviderHandoffAsyncImpl(AppState& app, CliTerminalState& 
 				if (capability.id == terminal.uam_control_session->uam_control_capability_id) capability.provider_configuration_directory = state->provider_configuration_directory;
 		}
 		argv = state->argv;
-		if (chat.provider_id == uam::provider_ids::kCodexCli && host.id == uam::execution_hosts::kLocalHostId && !chat.provider_handoff_context.empty() && (chat.native_session_id.empty() || chat.provider_handoff_session_id != chat.native_session_id))
+		if (chat.provider_id == uam::provider_ids::kCodexCli && host.id == uam::execution_hosts::kLocalHostId && !chat.provider_handoff_context.empty() && !ReusesCodexHandoffSession(chat))
 		{
 			const std::vector<std::string>::const_iterator resume = std::find(argv.cbegin() + 1, argv.cend(), "resume");
 			if (resume == argv.cend() || resume + 1 == argv.cend() || !uam::uuid::IsCanonicalUuid(*(resume + 1))) return false;
@@ -938,7 +938,7 @@ static bool PrepareCliProviderHandoffAsyncImpl(AppState& app, CliTerminalState& 
 				}
 				else
 					state->succeeded = PrepareConfiguredCliProviderHandoff(isolated, snapshot, host, state->argv, state->environment, state->channel, state->error, state->cancellation.get_token(), native_servers, &state->provider_configuration_directory);
-				if (state->succeeded && !state->history_preparation && snapshot.provider_id == uam::provider_ids::kCodexCli && host.id == uam::execution_hosts::kLocalHostId && !snapshot.provider_handoff_context.empty() && (snapshot.native_session_id.empty() || snapshot.provider_handoff_session_id != snapshot.native_session_id))
+				if (state->succeeded && !state->history_preparation && snapshot.provider_id == uam::provider_ids::kCodexCli && host.id == uam::execution_hosts::kLocalHostId && !snapshot.provider_handoff_context.empty() && !ReusesCodexHandoffSession(snapshot))
 				{
 					const std::vector<std::string>::const_iterator resume = std::find(state->argv.cbegin() + 1, state->argv.cend(), "resume");
 					if (resume == state->argv.cend() || resume + 1 == state->argv.cend() || !uam::uuid::IsCanonicalUuid(*(resume + 1)))

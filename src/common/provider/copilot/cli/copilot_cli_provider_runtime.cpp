@@ -500,8 +500,7 @@ bool CopilotCliProviderRuntime::PrepareInteractiveSession(uam::AppState& app, Ch
 bool CopilotCliProviderRuntime::StageCliHandoffContext(const ProviderCliHandoffStaging& staging, std::vector<std::string>&, std::string&) const
 {
 	const std::string instructions_path = uam::execution_hosts::JoinRemotePath(staging.host_platform, staging.directory, ".github/instructions/handoff.instructions.md");
-	if (!staging.stage_file(instructions_path, "---\napplyTo: \"**\"\n---\n" + staging.snapshot)) return false;
-	return true;
+	return staging.stage_file(instructions_path, "---\napplyTo: \"**\"\n---\n" + staging.snapshot);
 }
 
 std::vector<std::string> CopilotCliProviderRuntime::BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings) const

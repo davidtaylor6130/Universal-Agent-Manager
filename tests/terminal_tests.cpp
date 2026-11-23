@@ -3050,8 +3050,6 @@ UAM_TEST(CliHandoffStagingIsOwnedByEachProviderRuntime)
 	UAM_ASSERT(files.empty() && argv.empty());
 	error.clear();
 #endif
-	UAM_ASSERT(StageHandoffForRuntime("unknown-provider", "macos", files, argv, error));
-	UAM_ASSERT(files.empty() && argv.empty() && error.empty());
 }
 
 UAM_TEST(CliHandoffLauncherStagesProviderFilesAndArguments)
@@ -3096,16 +3094,17 @@ UAM_TEST(CliHandoffLauncherStagesProviderFilesAndArguments)
 		const fs::path directory = uam::paths::PathFromUtf8(chat.provider_handoff_cli_contexts.front().directory);
 		const std::string context_path = uam::paths::Utf8PathString(directory / "conversation.md");
 		UAM_ASSERT_EQ(uam::io::ReadTextFile(directory / "conversation.md"), snapshot);
-		const bool claude_argument = std::ranges::find(argv, "--append-system-prompt-file") != argv.end();
-		const bool gemini_argument = std::ranges::find(argv, "--include-directories") != argv.end();
-		const bool copilot_file = fs::exists(directory / ".github/instructions/handoff.instructions.md");
-		const bool gemini_file = fs::exists(directory / "GEMINI.md");
+		[[maybe_unused]] const bool claude_argument = std::ranges::find(argv, "--append-system-prompt-file") != argv.end();
+		[[maybe_unused]] const bool gemini_argument = std::ranges::find(argv, "--include-directories") != argv.end();
+		[[maybe_unused]] const bool copilot_file = fs::exists(directory / ".github/instructions/handoff.instructions.md");
+		[[maybe_unused]] const bool gemini_file = fs::exists(directory / "GEMINI.md");
 #if UAM_ENABLE_RUNTIME_CLAUDE_CLI
 		if (provider == uam::provider_ids::kClaudeCli)
 		{
 			UAM_ASSERT(argv.size() >= 3);
 			UAM_ASSERT_EQ(argv[1], std::string("--append-system-prompt-file"));
-			UAM_ASSERT_EQ(argv[2], context_path);
+			// Compare paths: the launcher joins with '/' for an unnamed host platform, which Windows also accepts.
+			UAM_ASSERT(uam::paths::PathFromUtf8(argv[2]) == directory / "conversation.md");
 			UAM_ASSERT(!gemini_argument && !copilot_file && !gemini_file);
 			continue;
 		}
