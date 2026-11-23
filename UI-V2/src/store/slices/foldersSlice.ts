@@ -410,16 +410,14 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
       return true
     },
 
-    setHostAdmission: async (hostAdmission: HostAdmissionSettings) => {
+    setHostAdmission: async (hostAdmission: HostAdmissionSettings): Promise<string> => {
       if (isCefContext()) {
         const response = await sendToCEF({ action: 'setHostAdmission', payload: { hostAdmission } })
-        if (!response.ok) {
-          reportAppFailure('Could not save host limits.', response.error ?? 'Try again.')
-          return false
-        }
+        // The page shows a failed save beside the form and keeps the draft.
+        if (!response.ok) return response.error || 'Host limits could not be saved. Try again.'
       }
       set({ hostAdmission })
-      return true
+      return ''
     },
 
     runHeldWorkAnyway: async (chatId: string) => {

@@ -573,13 +573,13 @@ void UamQueryHandler::HandleRunHeldWorkAnyway(CefRefPtr<CefBrowser> browser, con
 {
 	const std::string chat_id = payload.value("chatId", std::string());
 	bool applied = false;
-	if (AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat_id); session != nullptr && session->compute_pool_wait_run_anyway)
+	if (uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat_id); session != nullptr && session->compute_pool_wait_run_anyway)
 	{
 		session->host_admission_run_anyway = true;
 		session->reconnect_not_before_time_s = 0.0;
 		applied = true;
 	}
-	for (const std::unique_ptr<CliTerminalState>& terminal : m_app.cli_terminals)
+	for (const std::unique_ptr<uam::CliTerminalState>& terminal : m_app.cli_terminals)
 		if (terminal && (terminal->attached_chat_id == chat_id || terminal->frontend_chat_id == chat_id) && terminal->host_admission_run_anyway_offered)
 		{
 			terminal->host_admission_run_anyway = true;

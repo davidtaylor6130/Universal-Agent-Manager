@@ -166,6 +166,7 @@ namespace uam
 		std::string host_admission_wait;
 		bool host_admission_run_anyway_offered = false;
 		bool host_admission_run_anyway = false;
+		double host_admission_retry_at_s = 0.0;
 		bool worktree_launch_pending = false;
 		std::shared_ptr<std::stop_source> worktree_launch_cancellation;
 		std::shared_ptr<CliContextPreparation> context_preparation;
@@ -1504,7 +1505,8 @@ namespace uam
 		/// Load reading per computer from the host load signal. Unset, or an unknown reading, means slot counts only.
 		std::function<host_admission::LoadSample(const std::string& host_id)> host_load_sample;
 		/// One-line waits of starts that have no chat status line (background lanes), by admission key, for diagnostics.
-		std::unordered_map<std::string, std::string> host_admission_waits;
+		/// Each entry is the wait's message and when it was last asked; PollHostAdmission drops stale ones.
+		std::unordered_map<std::string, std::pair<std::string, double>> host_admission_waits;
 		double host_admission_next_refresh_s = 0.0;
 		std::vector<RepositoryRouteWorkspace> repository_route_workspaces;
 		std::filesystem::path repository_route_data_root;

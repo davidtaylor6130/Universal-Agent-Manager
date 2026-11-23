@@ -138,18 +138,19 @@ namespace uam
 			};
 
 			// Host admission first: the chat's computer, whatever routing chose it, applies its slot cap and load limits.
+			// A refused turn takes its place in that computer's line. One the computer would admit is only looked at
+			// here and admitted after the pools, so a turn a pool holds keeps no host slot it cannot use.
+			host_admission::Request host_request;
 			if (host_gate)
 			{
 				RefreshHostAdmission(app, now);
-				host_admission::Request request;
-				request.key = "turn:" + chat.id;
-				request.host_id = strings::NonEmptyOrFallback(chat.execution_host_id, std::string("local"));
-				request.work_class = HostAdmissionClassForChat(&session, chat);
-				request.run_anyway = session.host_admission_run_anyway;
-				request.now_s = now;
-				const host_admission::Decision decision = app.host_admission->Admit(request);
-				if (!decision.admitted)
-					return hold(HostAdmissionLabel(app, request.host_id), static_cast<int>(decision.in_use), static_cast<int>(decision.limit), decision.message, decision.run_anyway_offered);
+				host_request = HostAdmissionTurnRequest(app, &session, chat, now);
+				if (!app.host_admission->Peek(host_request).admitted)
+				{
+					const host_admission::Decision decision = app.host_admission->Admit(host_request);
+					if (!decision.admitted)
+						return hold(HostAdmissionLabel(app, host_request.host_id), static_cast<int>(decision.in_use), static_cast<int>(decision.limit), decision.message, decision.run_anyway_offered);
+				}
 			}
 
 			const std::string model_id = TurnModelId(session, chat);
@@ -164,6 +165,14 @@ namespace uam
 				if (in_use + ahead < pool.limit) continue;
 				// A slot promised to an earlier waiter is as unavailable as one in use.
 				return hold(pool.name, std::min(in_use + ahead, pool.limit), pool.limit, std::string(), false);
+			}
+			if (host_gate)
+			{
+				const host_admission::Decision decision = app.host_admission->Admit(host_request);
+				if (!decision.admitted)
+					return hold(HostAdmissionLabel(app, host_request.host_id), static_cast<int>(decision.in_use), static_cast<int>(decision.limit), decision.message, decision.run_anyway_offered);
+				// The turn is live from now on; the reservation its provider start held is no longer needed.
+				(void)app.host_admission->Release(host_request.key);
 			}
 
 			// The inactivity limits measure provider silence, which starts now for a turn that was held.

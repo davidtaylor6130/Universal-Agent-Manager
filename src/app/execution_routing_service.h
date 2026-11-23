@@ -31,6 +31,8 @@ namespace uam
 		std::size_t max_active_turns = 0;
 		/// Host admission reports it over its hard load limit: no new automatic work is placed there.
 		bool overloaded = false;
+		/// Host admission reports every slot taken, by any work: treated as full whatever the routing count says.
+		bool full = false;
 		std::vector<ExecutionRoutingMapping> mappings;
 	};
 

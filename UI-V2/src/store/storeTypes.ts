@@ -309,7 +309,8 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   setNativeImportFilters: (filters: { titlePrefixes: string[]; directories: string[]; startupMaxAgeDays: number }) => Promise<boolean>
   setShellActions: (actions: ShellAction[]) => Promise<boolean>
   setComputePools: (pools: ComputePool[]) => Promise<boolean>
-  setHostAdmission: (settings: HostAdmissionSettings) => Promise<boolean>
+  /** Resolves to '' when saved, otherwise the error to show beside the form. */
+  setHostAdmission: (settings: HostAdmissionSettings) => Promise<string>
   /** Run anyway for a chat turn or CLI View held because its computer is full or overloaded. */
   runHeldWorkAnyway: (chatId: string) => Promise<boolean>
   applyShellActions: () => Promise<boolean>

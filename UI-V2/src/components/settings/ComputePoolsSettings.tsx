@@ -26,7 +26,7 @@ type LimitField = { key: keyof HostAdmissionSettings; label: string; min: number
 const HOST_LIMIT_FIELDS: LimitField[] = [
   { key: 'localSlotLimit', label: 'This computer', min: 0, max: 256, hint: 'User turns and agents at once. 0 uses processors minus two.' },
   { key: 'remoteSlotLimit', label: 'Remote computers', min: 1, max: 256, hint: 'Used when routing sets no slot count for that computer.' },
-  { key: 'backgroundBudget', label: 'Background work per computer', min: 1, max: 8, hint: 'Model lists, memory, history import and checks.' },
+  { key: 'backgroundBudget', label: 'Background work per computer', min: 1, max: 4, hint: 'Model lists, memory, history import and checks.' },
 ]
 
 const LOAD_FIELDS: LimitField[] = [
@@ -54,8 +54,9 @@ function HostLimitsSettings() {
   const save = useAppStore((s) => s.setHostAdmission)
   const [draft, setDraft] = useState<HostAdmissionSettings>(saved)
   const [busy, setBusy] = useState(false)
+  const [saveError, setSaveError] = useState('')
   const savedKey = JSON.stringify(saved)
-  useEffect(() => { setDraft(saved) }, [savedKey]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { setDraft(saved); setSaveError('') }, [savedKey]) // eslint-disable-line react-hooks/exhaustive-deps
   const dirty = JSON.stringify(draft) !== savedKey
   const error = hostLimitsError(draft)
   const field = (spec: LimitField) => <SettingsField key={spec.key} label={spec.label} hint={spec.hint}>
@@ -65,15 +66,16 @@ function HostLimitsSettings() {
   const persist = async () => {
     if (!dirty || error) return
     setBusy(true)
-    try { await save(draft) } finally { setBusy(false) }
+    try { setSaveError(await save(draft)) } finally { setBusy(false) }
   }
   const hosts = Object.entries(usage)
   return <>
     <SettingsSection title="Host limits">
       <div className="uam-set-fields">{HOST_LIMIT_FIELDS.map(field)}</div>
       <div className="uam-set-fields">{LOAD_FIELDS.map(field)}</div>
+      <p className="uam-prov-sub">Load limits apply once live load readings are available; until then only the slot counts apply.</p>
       <div className="uam-set-actions flex items-center justify-end gap-2">
-        {error && <p className="mr-auto text-sm" role="alert">{error}</p>}
+        {(error || saveError) && <p className="mr-auto text-sm" role="alert">{error || saveError}</p>}
         <Button size="sm" disabled={busy || !dirty} onClick={() => setDraft(saved)}>Discard</Button>
         <SaveButton saving={busy} loading={busy} disabled={busy || !dirty || Boolean(error)} onClick={() => void persist()}>Save limits</SaveButton>
       </div>

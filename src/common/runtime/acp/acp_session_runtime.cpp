@@ -5094,9 +5094,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 		chat.execution_host_id = uam::strings::NonEmptyOrFallback(
 		    uam::strings::Trim(execution_host_id), std::string(uam::execution_hosts::kLocalHostId));
 		// Background work: the computer's background budget and load limits apply before a provider process starts.
-		// The place is held under the session's live key, so it counts once while the process runs and is released
-		// when the finished session is removed.
-		BackgroundAdmission admission = AdmitBackgroundStart(app, "discovery-session:" + chat.id, chat.execution_host_id);
+		// The waiter is keyed by scope, so retries keep their place; the place is held by a lease on the session,
+		// which counts it while the process runs and releases it when the finished session is removed.
+		BackgroundAdmission admission = AdmitBackgroundStart(app, "discovery:" + provider->id + "@" + chat.execution_host_id + ":" + workspace, chat.execution_host_id);
 		if (!admission.admitted)
 		{
 			if (error_out != nullptr) *error_out = admission.message;
@@ -6824,6 +6824,16 @@ For desktop observation and input, use only the provider's built-in controller; 
 			session->cancel_requested = false;
 			session->cancel_requested_time_s = 0.0;
 			session->lifecycle_state = kAcpLifecycleStopped;
+			// A start held by host admission leaves the line, and a Run anyway chosen for it does not carry over.
+			session->compute_pool_wait_name.clear();
+			session->compute_pool_wait_message.clear();
+			session->compute_pool_wait_run_anyway = false;
+			session->host_admission_run_anyway = false;
+			if (app.host_admission)
+			{
+				(void)app.host_admission->Withdraw("turn:" + chat_id);
+				(void)app.host_admission->Release("turn:" + chat_id);
+			}
 			return true;
 		}
 
@@ -6837,7 +6847,11 @@ For desktop observation and input, use only the provider's built-in controller; 
 			session->compute_pool_wait_message.clear();
 			session->compute_pool_wait_run_anyway = false;
 			session->host_admission_run_anyway = false;
-			if (app.host_admission) (void)app.host_admission->Withdraw("turn:" + chat_id);
+			if (app.host_admission)
+			{
+				(void)app.host_admission->Withdraw("turn:" + chat_id);
+				(void)app.host_admission->Release("turn:" + chat_id);
+			}
 			return true;
 		}
 

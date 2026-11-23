@@ -2327,20 +2327,19 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 		}
 	}
 
-	// Host admission: a provider process for a turn starts only when the chat's computer has room for that turn, so
-	// a full or overloaded computer is not given another process. Reattaching to running work starts nothing new,
-	// and the turn itself is admitted again before delivery (compute_pool_gate.cpp).
-	if (!attach_only_to_stop && !session.model_discovery_only && !session.running && !session.recovering_remote_turn && !session.recovering_remote_process &&
-	    app.host_admission && (!session.queued_user_prompts.empty() || !session.queued_prompt.empty() || !chat.acp_queued_prompts.empty()))
+	// Host admission: a chat's provider process starts only when its computer has room, so a full or overloaded
+	// computer is not given another process. Every chat launch asks (a queued turn, a direct send, a retry, a model
+	// list), except attaching to stop, model discovery (its own background gate) and reattaching to running work.
+	// The admitted start holds its slot for a short while, until its turn is admitted at the prompt gate
+	// (compute_pool_gate.cpp), so a burst of starts cannot all take the last slot.
+	if (!attach_only_to_stop && !session.model_discovery_only && !session.running && !session.recovering_remote_turn && !session.recovering_remote_process && app.host_admission)
 	{
+		constexpr double kStartReservationSeconds = 30.0;
 		const double now = GetAppTimeSeconds();
 		RefreshHostAdmission(app, now);
-		host_admission::Request request;
-		request.key = "turn:" + chat.id;
-		request.host_id = strings::NonEmptyOrFallback(chat.execution_host_id, std::string(execution_hosts::kLocalHostId));
-		request.work_class = HostAdmissionClassForChat(&session, chat);
-		request.run_anyway = session.host_admission_run_anyway;
-		request.now_s = now;
+		host_admission::Request request = HostAdmissionTurnRequest(app, &session, chat, now);
+		request.hold = true;
+		request.hold_seconds = kStartReservationSeconds;
 		const host_admission::Decision decision = app.host_admission->Admit(request);
 		if (!decision.admitted)
 		{

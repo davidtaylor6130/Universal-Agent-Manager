@@ -32,6 +32,7 @@
 
 #include <nlohmann/json.hpp>
 #include <algorithm>
+#include <optional>
 #include <sstream>
 
 namespace uam
@@ -315,6 +316,10 @@ namespace uam
 		const ProviderProfile* provider = ProviderResolutionService().ProviderForChat(app, chat);
 		if (provider == nullptr) return {ExecutionRoutingStatus::Invalid, ExecutionRoutingReason::InconsistentSnapshot, {}};
 		const bool repository_matches_current = automatic ? RefreshRepositoryRoutes(app) : false;
+		// Unstarted work is not running anywhere: it may move instead of retrying a computer that failed its health
+		// check, and its own pending reservation is bookkeeping, not occupancy, or it could never leave a full,
+		// down or overloaded computer.
+		const bool movable = automatic && ExecutionRoutingWorkUnstarted(app, chat);
 		std::vector<ExecutionRoutingCandidate> candidates;
 		for (const ExecutionHost& host : app.settings.execution_hosts)
 		{
@@ -324,7 +329,7 @@ namespace uam
 			candidate.provider_configuration_identity = ExecutionRoutingProviderIdentity(app, *provider, host.id);
 			// New work goes only to a host last seen Ready. A chat already assigned to this host may try it
 			// after a failed health check, exactly as an explicit SSH chat does.
-			const bool assigned_here = automatic && !chat.routing_assigned_connection_identity.empty() && chat.execution_host_id == host.id;
+			const bool assigned_here = automatic && !movable && !chat.routing_assigned_connection_identity.empty() && chat.execution_host_id == host.id;
 			candidate.runner_ready = host.id == "local" || host.runner_status == "ready" || (assigned_here && execution_hosts::CanConnectRunner(host));
 			candidate.runner_compatible = host.id == "local" || (!host.runner_version.empty() && host.runner_protocol_version == remote::kRunnerProtocolVersion);
 			const std::unordered_map<std::string, CliProviderVersionState>::const_iterator version = app.runtime_cli_versions_by_provider_id.find(CliProviderVersionStateKey(provider->id, host.id));
@@ -340,8 +345,18 @@ namespace uam
 				else if (automatic && host.id != "local" && policy.enabled && provider_enabled) RetryRoutingVersionCheck(app, *provider, host, now);
 				candidate.pool_enabled = policy.enabled;
 				candidate.max_active_turns = policy.max_active_turns;
-				// Over its hard load limit, a computer takes no new automatic work and unstarted work may leave it.
-				candidate.overloaded = app.host_admission && app.host_admission->HealthOf(host.id) == host_admission::Health::Overloaded;
+				// Over its hard load limit, or with every slot taken by any work (explicit chats, CLI Views, Run anyway),
+				// a computer takes no new automatic work and unstarted work may leave it.
+				if (app.host_admission && host.id != execution_hosts::kLocalHostId)
+				{
+					candidate.overloaded = app.host_admission->HealthOf(host.id) == host_admission::Health::Overloaded;
+					host_admission::Request probe;
+					probe.key = "turn:" + chat.id; // Its own place in line, if it has one, counts as its own.
+					probe.host_id = host.id;
+					probe.work_class = HostAdmissionClassForChat(FindAcpSessionForChat(app, chat.id), chat);
+					probe.now_s = now;
+					candidate.full = app.host_admission->Peek(probe).reason == host_admission::Reason::SlotsFull;
+				}
 				for (const ExecutionRoutingProviderConfirmation& confirmation : policy.provider_confirmations)
 					if (confirmation.provider_id == provider->id)
 					{
@@ -383,14 +398,14 @@ namespace uam
 		}
 		std::vector<ExecutionRoutingOccupancy> occupancy;
 		for (const ChatSession& other : app.chats)
-			if (ExecutionRoutingOwnsWork(app, other) || other.routing_reservation_pending)
+			if ((ExecutionRoutingOwnsWork(app, other) || other.routing_reservation_pending) && !(movable && other.id == chat.id))
 				occupancy.push_back({other.id, other.execution_host_id});
 		ExecutionRoutingRequest request;
 		request.chat_id = chat.id;
 		request.automatic_enabled = app.settings.execution_routing.enabled;
 		request.recovery_of_owned_work = ExecutionRoutingOwnsWork(app, chat);
 		if (!chat.routing_assigned_connection_identity.empty()) request.assigned = AssignmentForChat(chat);
-		request.movable = automatic && ExecutionRoutingWorkUnstarted(app, chat);
+		request.movable = movable;
 		if (!request.assigned.host_id.empty())
 		{
 			const ChatFolder* destination = ChatDomainService().FindFolderById(app, request.assigned.destination_folder_id);
@@ -472,10 +487,13 @@ namespace uam
 		if (!automatic || decision.status != ExecutionRoutingStatus::Assigned) return decision;
 		// A new assignment and a move of unstarted work both take the destination's workspace; a pinned chat keeps its own.
 		const bool placing = request.assigned.host_id.empty() || decision.moved;
+		// The launch check remembered the checkouts of the old computer; a moved chat looks them up again once saved.
+		std::optional<std::vector<RepositoryRouteWorkspace>> previous_route_assignment;
 		if (decision.moved)
 		{
+			if (const auto found = app.repository_route_assignments.find(chat.id); found != app.repository_route_assignments.end())
+				previous_route_assignment = found->second;
 			app.repository_route_assignments.erase(chat.id);
-			diagnostics::Write("Routing moved an unstarted chat to another remote computer because its own was full, down or overloaded.");
 		}
 		const std::string previous_model_id = chat.model_id;
 		const std::string previous_reviewer_model_id = chat.reviewer_model_id;
@@ -530,11 +548,13 @@ namespace uam
 				(void)RoutingService(app).Release(chat.id, true);
 				app.execution_routing_reserved_chat_ids.erase(chat.id);
 			}
+			if (previous_route_assignment) app.repository_route_assignments[chat.id] = std::move(*previous_route_assignment);
 			app.execution_routing_waits[chat.id] = "Routing assignment could not be saved. The provider was not launched.";
 			app.execution_routing_retry_at_by_chat_id[chat.id] = now + 1.0;
 			return {ExecutionRoutingStatus::Waiting, ExecutionRoutingReason::InconsistentSnapshot, {}};
 		}
 		if (placing) RememberRepositoryRouteAssignment(app, chat);
+		if (decision.moved) diagnostics::Write("Routing moved an unstarted chat to another remote computer because its own was full, down or overloaded.");
 		return decision;
 	}
 

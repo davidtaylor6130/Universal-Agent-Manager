@@ -12,12 +12,15 @@
 namespace uam::host_admission_config
 {
 	inline constexpr int kMaxSlotLimit = 256;
-	inline constexpr int kMaxBackgroundBudget = 8;
+	/// A small budget by design (the default is 2); a busy machine is protected by the load limits too.
+	inline constexpr int kMaxBackgroundBudget = 4;
 	inline constexpr int kMaxHardCpuSeconds = 300;
 
-	/// <summary>The local default: every processor but two, so the interface and the system keep room. At least one.</summary>
+	/// <summary>The local default: every processor but two, so the interface and the system keep room. At least one;
+	/// when the processor count is unknown (reported as 0), a conservative four.</summary>
 	inline int AutomaticLocalSlotLimit(unsigned cores)
 	{
+		if (cores == 0) return 4;
 		return cores > 3 ? static_cast<int>(std::min<unsigned>(cores - 2, kMaxSlotLimit)) : 1;
 	}
 

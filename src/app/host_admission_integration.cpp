@@ -19,8 +19,11 @@ namespace uam
 	{
 		std::string HostOf(const std::string& host_id)
 		{
-			return strings::NonEmptyOrFallback(strings::Trim(host_id), std::string(execution_hosts::kLocalHostId));
+			return HostAdmissionHostId(host_id);
 		}
+
+		/// A background wait not asked about for this long is no longer waiting; its diagnostic entry is dropped.
+		constexpr double kBackgroundWaitForgetSeconds = 60.0;
 
 		host_admission::LoadSample LoadFor(const AppState& app, const std::string& host_id)
 		{
@@ -39,6 +42,34 @@ namespace uam
 			thresholds.hard_free_memory_percent = settings.hard_free_memory_percent;
 			return thresholds;
 		}
+	}
+
+	std::string HostAdmissionHostId(const std::string& host_id)
+	{
+		return strings::NonEmptyOrFallback(strings::Trim(host_id), std::string(execution_hosts::kLocalHostId));
+	}
+
+	host_admission::Request HostAdmissionTurnRequest(const AppState& app, const AcpSessionState* session, const ChatSession& chat, double now_s)
+	{
+		(void)app;
+		host_admission::Request request;
+		request.key = "turn:" + chat.id;
+		request.host_id = HostAdmissionHostId(chat.execution_host_id);
+		request.work_class = HostAdmissionClassForChat(session, chat);
+		request.run_anyway = session != nullptr && session->host_admission_run_anyway;
+		request.now_s = now_s;
+		return request;
+	}
+
+	bool PollHostAdmission(AppState& app)
+	{
+		if (!app.host_admission) return false;
+		const double now = GetAppTimeSeconds();
+		if (now < app.host_admission_next_refresh_s) return false;
+		app.host_admission_next_refresh_s = now + 1.0;
+		RefreshHostAdmission(app, now);
+		std::erase_if(app.host_admission_waits, [now](const auto& wait) { return now - wait.second.second > kBackgroundWaitForgetSeconds; });
+		return false;
 	}
 
 	std::string HostAdmissionLabel(const AppState& app, const std::string& host_id)
@@ -92,6 +123,8 @@ namespace uam
 		for (const std::unique_ptr<AcpSessionState>& session : app.acp_sessions)
 		{
 			if (!session) continue;
+			// A discovery that holds a lease is counted by that lease (its key is the discovery scope).
+			if (session->model_discovery_only && session->host_admission_lease) continue;
 			if (session->model_discovery_only && session->running)
 			{
 				const ChatSession* chat = ChatDomainService().FindChatById(app, session->chat_id);
@@ -157,9 +190,9 @@ namespace uam
 			return result;
 		}
 		// One diagnostic line when a wait starts or its reason changes, not one per retry.
-		std::string& previous = app.host_admission_waits[key];
-		if (previous != decision.message) diagnostics::Write("Host admission: background start waits (" + key.substr(0, key.find(':')) + "): " + decision.message);
-		previous = decision.message;
+		std::pair<std::string, double>& previous = app.host_admission_waits[key];
+		if (previous.first != decision.message) diagnostics::Write("Host admission: background start waits (" + key.substr(0, key.find(':')) + "): " + decision.message);
+		previous = {decision.message, now};
 		return result;
 	}
 

@@ -523,6 +523,7 @@ void Application::PollTickStages(std::chrono::steady_clock::time_point poll_star
 	const bool chat_saves_changed = uam::FlushPendingChatSaves(m_app);
 	const std::chrono::steady_clock::time_point runtimes_finished = std::chrono::steady_clock::now();
 	const bool cli_terminals_changed = uam::PollAllCliTerminals(m_browser, m_app, TerminalUiVisible(m_browser));
+	(void)uam::PollHostAdmission(m_app);
 	const bool routing_changed = uam::PollExecutionRouting(m_app);
 	const std::chrono::steady_clock::time_point terminals_finished = std::chrono::steady_clock::now();
 	const bool memory_changed = MemoryService::ProcessDueMemoryWork(m_app);

@@ -35,7 +35,7 @@ namespace uam
 			std::size_t selected_count = 0;
 			for (const ExecutionRoutingCandidate& candidate : candidates)
 			{
-				if (!AutomaticCandidateReady(candidate) || candidate.overloaded || candidate.host_id == excluded_host) continue;
+				if (!AutomaticCandidateReady(candidate) || candidate.overloaded || candidate.full || candidate.host_id == excluded_host) continue;
 				const std::size_t count = counts[candidate.host_id];
 				if (count >= candidate.max_active_turns) continue;
 				for (const ExecutionRoutingMapping& mapping : candidate.mappings)
@@ -133,7 +133,7 @@ namespace uam
 				if (!request.automatic_enabled || !AutomaticCandidateReady(*owner->second))
 					return {ExecutionRoutingStatus::Waiting, ExecutionRoutingReason::NoEligibleHost, existing};
 				const std::size_t owned_slot = occupied != occupied_hosts.end() ? 1 : 0;
-				if (owner->second->overloaded || counts[existing.host_id] - owned_slot >= owner->second->max_active_turns)
+				if (owner->second->overloaded || owner->second->full || counts[existing.host_id] - owned_slot >= owner->second->max_active_turns)
 				{
 					if (std::optional<ExecutionRoutingDecision> moved = move_unstarted()) return *moved;
 					return {ExecutionRoutingStatus::Waiting, ExecutionRoutingReason::NoEligibleHost, existing};

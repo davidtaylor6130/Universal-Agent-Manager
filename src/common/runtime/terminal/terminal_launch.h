@@ -144,7 +144,7 @@ namespace uam
 			RefreshHostAdmission(app, now);
 			host_admission::Request request;
 			request.key = "cli:" + chat.id;
-			request.host_id = uam::strings::NonEmptyOrFallback(chat.execution_host_id, std::string(uam::execution_hosts::kLocalHostId));
+			request.host_id = HostAdmissionHostId(chat.execution_host_id);
 			request.work_class = HostAdmissionClassForChat(nullptr, chat);
 			request.run_anyway = terminal.host_admission_run_anyway;
 			request.now_s = now;

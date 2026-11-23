@@ -450,6 +450,47 @@ UAM_TEST(ExecutionRoutingPersistsRemoteAssignmentWithExplicitSshWorktreeParity)
 	UAM_ASSERT(app.cli_terminals.empty());
 }
 
+UAM_TEST(ExecutionRoutingMovesAQueuedChatWithItsPendingReservationOffADownHost)
+{
+	TempDir temp("uam-routing-move-unstarted");
+	uam::AppState app;
+	ConfigureRoutingFixture(app, temp.root);
+	ExecutionHost second = *std::ranges::find(app.settings.execution_hosts, std::string("remote"), &ExecutionHost::id);
+	second.id = "remote-b";
+	second.ssh_alias = "fixture-no-ssh-b";
+	app.settings.execution_hosts.push_back(second);
+	uam::CliProviderVersionState version = app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("codex-cli", "remote")];
+	version.execution_host = second;
+	app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("codex-cli", second.id)] = version;
+	app.folders.push_back({"destination-b", "Destination B", "/mapped/repo-b", false, "remote-b"});
+	ExecutionRoutingHostPolicy policy = app.settings.execution_routing.hosts.front();
+	policy.host_id = "remote-b";
+	policy.provider_confirmations = {{"codex-cli", uam::ExecutionRoutingConnectionIdentity(second), uam::ExecutionRoutingProviderIdentity(app, app.provider_profiles.front(), "remote-b")}};
+	policy.workspace_mappings = {{"source", (temp.root / "repo").string(), "destination-b"}};
+	app.settings.execution_routing.hosts.push_back(policy);
+	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(app, app.chats.front()).status, uam::ExecutionRoutingStatus::Assigned);
+	UAM_ASSERT_EQ(app.chats.front().execution_host_id, std::string("remote"));
+	// The chat is still queued: its reservation is pending and nothing has started. Its computer then fails its check.
+	UAM_ASSERT(app.chats.front().routing_reservation_pending);
+	const auto host = [&app](const std::string& id) -> ExecutionHost& { return *std::ranges::find(app.settings.execution_hosts, id, &ExecutionHost::id); };
+	host("remote").runner_status = "error";
+	const uam::ExecutionRoutingDecision moved = uam::AdmitExecutionRouting(app, app.chats.front());
+	UAM_ASSERT_EQ(moved.status, uam::ExecutionRoutingStatus::Assigned);
+	UAM_ASSERT(moved.moved);
+	UAM_ASSERT_EQ(app.chats.front().execution_host_id, std::string("remote-b"));
+	UAM_ASSERT_EQ(app.chats.front().folder_id, std::string("destination-b"));
+	UAM_ASSERT_EQ(app.chats.front().workspace_directory, std::string("/mapped/repo-b"));
+	const std::optional<ChatSession> persisted = ChatRepository::LoadLocalChat(app.data_root, "automatic-chat");
+	UAM_ASSERT(persisted.has_value() && persisted->execution_host_id == "remote-b" && persisted->routing_reservation_pending);
+	// Once the chat has a provider session it has started, and it stays on its computer.
+	host("remote-b").runner_status = "error";
+	host("remote").runner_status = "ready";
+	app.chats.front().native_session_id = "native-started";
+	const uam::ExecutionRoutingDecision pinned = uam::AdmitExecutionRouting(app, app.chats.front());
+	UAM_ASSERT(!pinned.moved);
+	UAM_ASSERT_EQ(app.chats.front().execution_host_id, std::string("remote-b"));
+}
+
 UAM_TEST(ExecutionRoutingMaterializedWorktreeWithoutExactMappingWaitsWithoutMutation)
 {
 	TempDir temp("uam-routing-worktree-mapping");

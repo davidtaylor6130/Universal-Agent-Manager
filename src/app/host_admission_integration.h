@@ -13,6 +13,9 @@
 // their previous behaviour.
 namespace uam
 {
+	/// The host id admission uses: trimmed, and "local" when empty.
+	std::string HostAdmissionHostId(const std::string& host_id);
+
 	/// "this computer" for the local host, otherwise the computer's label.
 	std::string HostAdmissionLabel(const AppState& app, const std::string& host_id);
 
@@ -29,6 +32,13 @@ namespace uam
 
 	/// Refreshes thresholds, limits, health and live work. Cheap; every gate calls it before deciding.
 	void RefreshHostAdmission(AppState& app, double now_s);
+
+	/// The app poll: refreshes health about once a second even when nothing asks, so the hard-limit timer, the
+	/// back-off and routing's view of overloaded computers stay current, and drops stale background waits.
+	bool PollHostAdmission(AppState& app);
+
+	/// A chat turn's admission request: the chat's computer and class, and the user's Run anyway choice.
+	host_admission::Request HostAdmissionTurnRequest(const AppState& app, const AcpSessionState* session, const ChatSession& chat, double now_s);
 
 	/// One background start (model discovery, a memory worker, history import, a version or repository check). When
 	/// admitted with hold, the returned lease keeps the place until it is destroyed: move it into the worker so it is

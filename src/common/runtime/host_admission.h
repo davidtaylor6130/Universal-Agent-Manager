@@ -106,6 +106,10 @@ namespace uam::host_admission
 		/// Keep a held entry in the ledger after admission until Release(key). Work whose life is derived from app
 		/// state each time (turns, terminals) leaves this false and appears through SetLive instead.
 		bool hold = false;
+		/// With hold: drop the held entry by itself after this long (0 keeps it until Release). For a reservation
+		/// that becomes live work soon, such as a provider process starting for a turn, so a start that never
+		/// gets that far cannot keep the slot.
+		double hold_seconds = 0.0;
 		double now_s = 0.0;
 	};
 
@@ -201,7 +205,10 @@ namespace uam::host_admission
 			HostLimits limits;
 			Health health = Health::Ready;
 			std::optional<double> hard_cpu_since_s;
+			/// Degraded or worse until this time (back-off after the last over-limit reading).
 			double hold_until_s = 0.0;
+			/// Overloaded until this time; only hard readings extend it.
+			double hard_hold_until_s = 0.0;
 			double backoff_s = 0.0;
 			double cleared_at_s = -1.0e18;
 		};
@@ -224,6 +231,8 @@ namespace uam::host_admission
 		std::unordered_map<std::string, HostState> m_hosts;
 		std::unordered_map<std::string, LiveWork> m_live;
 		std::unordered_map<std::string, LiveWork> m_held;
+		std::unordered_map<std::string, double> m_held_until;
+		void PruneHeld(double now_s);
 		std::unordered_map<std::string, Waiter> m_waiters;
 		std::uint64_t m_next_ticket = 0;
 	};

@@ -324,3 +324,40 @@ UAM_TEST(HostAdmissionLoadSampleFromFiguresNeverReadsUnknownAsIdle)
 	UAM_ASSERT(!uam::host_admission::LoadSampleFromFigures(std::nullopt, 3.0, std::nullopt, std::nullopt, 0ull).known);
 	UAM_ASSERT(!uam::host_admission::LoadSampleFromFigures(std::nullopt, std::nullopt, std::nullopt, std::nullopt, std::nullopt).known);
 }
+
+UAM_TEST(HostAdmissionOverloadedFallsBackToDegradedWhileStillBusy)
+{
+	HostAdmission admission;
+	// One hard reading (low memory), then the host stays over the soft limit only.
+	admission.UpdateHosts({Host("A", 4, 2, Load(80.0, 5.0))}, 0.0);
+	UAM_ASSERT_EQ(admission.HealthOf("A"), Health::Overloaded);
+	for (double now = 1.0; now < HostAdmission::kBackoffInitialSeconds; now += 1.0)
+	{
+		admission.UpdateHosts({Host("A", 4, 2, Load(80.0, 50.0))}, now);
+		UAM_ASSERT_EQ(admission.HealthOf("A"), Health::Overloaded);
+	}
+	for (double now = HostAdmission::kBackoffInitialSeconds; now < 600.0; now += 1.0)
+		admission.UpdateHosts({Host("A", 4, 2, Load(80.0, 50.0))}, now);
+	// Busy but not overloaded: agents run again, background work still waits.
+	UAM_ASSERT_EQ(admission.HealthOf("A"), Health::Degraded);
+	UAM_ASSERT(admission.Admit(Ask("agent", "A", WorkClass::Agent, 600.0)).admitted);
+	UAM_ASSERT_EQ(admission.Admit(Ask("bg", "A", WorkClass::Background, 600.0)).reason, Reason::Busy);
+}
+
+UAM_TEST(HostAdmissionStartReservationHoldsASlotUntilItBecomesLiveOrExpires)
+{
+	HostAdmission admission;
+	admission.UpdateHosts({Host("A", 1)}, 0.0);
+	Request start = Ask("turn:cold", "A", WorkClass::Interactive, 0.0, true);
+	start.hold_seconds = 30.0;
+	UAM_ASSERT(admission.Admit(start).admitted);
+	// The starting process holds the slot before its turn is live.
+	UAM_ASSERT_EQ(admission.Admit(Ask("turn:other", "A", WorkClass::Interactive, 1.0)).reason, Reason::SlotsFull);
+	// Live under the same key it is counted once; the reservation itself is not counted twice.
+	admission.SetLive({{"turn:cold", "A", WorkClass::Interactive}});
+	UAM_ASSERT_EQ(admission.Usage(2.0).front().interactive, std::size_t{1});
+	// A start that never became live gives the slot back after its reservation expires.
+	admission.SetLive({});
+	UAM_ASSERT(!admission.Admit(Ask("turn:other", "A", WorkClass::Interactive, 29.0)).admitted);
+	UAM_ASSERT(admission.Admit(Ask("turn:other", "A", WorkClass::Interactive, 30.5)).admitted);
+}

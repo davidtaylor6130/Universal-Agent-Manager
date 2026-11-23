@@ -75,6 +75,7 @@ namespace uam::host_admission
 	void HostAdmission::UpdateHosts(const std::vector<HostLimits>& hosts, double now_s)
 	{
 		std::scoped_lock lock(m_mutex);
+		PruneHeld(now_s);
 		std::unordered_map<std::string, HostState> next;
 		for (const HostLimits& limits : hosts)
 		{
@@ -110,29 +111,30 @@ namespace uam::host_admission
 				state.hard_cpu_since_s.reset();
 			}
 			const bool was_limited = before == Health::Degraded || before == Health::Overloaded;
-			if (raw != Health::Ready)
-			{
-				if (!was_limited)
-					state.backoff_s = state.backoff_s > 0.0 && now_s - state.cleared_at_s <= kBackoffMemorySeconds
-					    ? std::min(state.backoff_s * 2.0, kBackoffMaxSeconds) : kBackoffInitialSeconds;
-				state.hold_until_s = std::max(state.hold_until_s, now_s + state.backoff_s);
-				// Overloaded holds its level for the back-off too; a later soft reading does not lower it early.
-				if (raw == Health::Overloaded || (before == Health::Overloaded && now_s < state.hold_until_s)) state.health = Health::Overloaded;
-				else state.health = Health::Degraded;
-			}
-			else if (now_s < state.hold_until_s && (before == Health::Degraded || before == Health::Overloaded))
-			{
-				state.health = before;
-			}
-			else
-			{
-				if (before == Health::Degraded || before == Health::Overloaded) state.cleared_at_s = now_s;
-				state.health = Health::Ready;
-				state.hold_until_s = 0.0;
-			}
+			if (raw != Health::Ready && !was_limited)
+				state.backoff_s = state.backoff_s > 0.0 && now_s - state.cleared_at_s <= kBackoffMemorySeconds
+				    ? std::min(state.backoff_s * 2.0, kBackoffMaxSeconds) : kBackoffInitialSeconds;
+			// Each level keeps its own hold: a soft reading extends only the Degraded hold, so a host that was briefly
+			// Overloaded falls back to Degraded once its hard hold ends, even while it stays busy.
+			if (raw == Health::Overloaded) state.hard_hold_until_s = std::max(state.hard_hold_until_s, now_s + state.backoff_s);
+			if (raw != Health::Ready) state.hold_until_s = std::max(state.hold_until_s, now_s + state.backoff_s);
+			const Health held = now_s < state.hard_hold_until_s ? Health::Overloaded : now_s < state.hold_until_s ? Health::Degraded : Health::Ready;
+			if (held == Health::Ready && was_limited) state.cleared_at_s = now_s;
+			if (held == Health::Ready) state.hold_until_s = state.hard_hold_until_s = 0.0;
+			state.health = held;
 			next[limits.host_id] = std::move(state);
 		}
 		m_hosts = std::move(next);
+	}
+
+	void HostAdmission::PruneHeld(double now_s)
+	{
+		for (auto it = m_held_until.begin(); it != m_held_until.end();)
+		{
+			if (now_s < it->second) { ++it; continue; }
+			m_held.erase(it->first);
+			it = m_held_until.erase(it);
+		}
 	}
 
 	void HostAdmission::SetLive(const std::vector<LiveWork>& live)
@@ -160,6 +162,7 @@ namespace uam::host_admission
 	bool HostAdmission::Release(const std::string& key)
 	{
 		std::scoped_lock lock(m_mutex);
+		m_held_until.erase(key);
 		return m_held.erase(key) != 0;
 	}
 
@@ -216,6 +219,7 @@ namespace uam::host_admission
 	Decision HostAdmission::Decide(const Request& request, bool register_waiter)
 	{
 		const double now = request.now_s;
+		PruneHeld(now);
 		std::erase_if(m_waiters, [now](const std::pair<const std::string, Waiter>& waiter) { return now - waiter.second.last_seen_s > kQueueForgetSeconds; });
 		const HostState* host = Find(request.host_id);
 		HostLimits unknown_host;
@@ -252,7 +256,11 @@ namespace uam::host_admission
 					return " (" + Percent(*load.free_memory_percent) + "% memory free)";
 				if (load.cpu_percent && *load.cpu_percent > m_thresholds.soft_cpu_percent) return " (CPU " + Percent(*load.cpu_percent) + "%)";
 			}
-			if (host != nullptr && host->hold_until_s > now) return ", rechecking in " + Seconds(host->hold_until_s - now) + " s";
+			if (host != nullptr)
+			{
+				const double until = host->health == Health::Overloaded ? host->hard_hold_until_s : host->hold_until_s;
+				if (until > now) return ", rechecking in " + Seconds(until - now) + " s";
+			}
 			return {};
 		};
 		const auto refuse = [&](Reason reason, std::size_t in_use, std::size_t limit) -> Decision
@@ -279,7 +287,12 @@ namespace uam::host_admission
 			if (register_waiter)
 			{
 				m_waiters.erase(request.key);
-				if (request.hold) m_held[request.key] = {request.key, request.host_id, request.work_class};
+				if (request.hold)
+				{
+					m_held[request.key] = {request.key, request.host_id, request.work_class};
+					if (request.hold_seconds > 0.0) m_held_until[request.key] = now + request.hold_seconds;
+					else m_held_until.erase(request.key);
+				}
 			}
 			Decision decision;
 			decision.admitted = true;
@@ -339,8 +352,8 @@ namespace uam::host_admission
 				entry.slot_cap = host->limits.slot_cap;
 				entry.background_budget = host->limits.background_budget;
 				entry.health = host->health;
-				if ((host->health == Health::Degraded || host->health == Health::Overloaded) && host->hold_until_s > now_s)
-					entry.backoff_remaining_s = host->hold_until_s - now_s;
+				const double until = host->health == Health::Overloaded ? host->hard_hold_until_s : host->health == Health::Degraded ? host->hold_until_s : 0.0;
+				if (until > now_s) entry.backoff_remaining_s = until - now_s;
 			}
 			usage.push_back(std::move(entry));
 		}

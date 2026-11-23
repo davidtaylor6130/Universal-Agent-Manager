@@ -2558,16 +2558,16 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 			}
 
 			// Background work: the worker's computer must have background budget and no load over the soft limit.
-			// A held scan keeps its place at the front of the queue and is asked again on the next poll.
+			// A held scan goes back in the queue and is asked again; scans for other computers continue meanwhile.
 			const std::string worker_host = uam::paths::IsControllerLocalWorkspace(chat) ? std::string(uam::execution_hosts::kLocalHostId) : chat.execution_host_id;
 			uam::BackgroundAdmission admission = uam::AdmitBackgroundStart(app, "memory:" + chat.id, worker_host);
 			if (!admission.admitted)
 			{
 				const bool status_changed = app.memory_last_status != admission.message;
 				app.memory_last_status = admission.message;
-				app.memory_extraction_queue.push_front(std::move(queued));
+				RequeueMemoryWork(app, std::move(queued));
 				changed = changed || status_changed;
-				break;
+				continue;
 			}
 			const std::size_t tasks_before = app.memory_extraction_tasks.size();
 			bool started_task = StartWorkerTask(app, chat, uam::paths::ResolveControllerWorkspaceRootPath(app, chat), queued.scan_start_message_index);
