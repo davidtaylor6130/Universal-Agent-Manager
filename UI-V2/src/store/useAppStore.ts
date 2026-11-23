@@ -1475,8 +1475,8 @@ export const useAppStore = create<AppState>((set, get) => {
     computerUseAllowlistEnabled: false,
     computerUseAllowedApplications: [],
     ...createSessionsSlice(set, get, inCef),
-    // Builds without SSH carry no routing state or actions; storeTypes keeps the fields for SSH builds.
-    ...(SSH_ENABLED ? createExecutionRoutingSlice(get) : {} as ReturnType<typeof createExecutionRoutingSlice>),
+    // Builds without SSH carry no routing state or actions.
+    ...(SSH_ENABLED ? createExecutionRoutingSlice(get) : {}),
     ...createFoldersSlice(set, get),
     ...createResourceCollectionsSlice(set, get),
     ...createGoalsSlice(set, get),

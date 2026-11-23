@@ -169,10 +169,10 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   editorFileAssociations: EditorFileAssociation[]
   centralProviderConfiguration: CentralProviderConfiguration
   mcpServers: McpServerConfiguration[]
-  // The three routing members exist only in builds with SSH; read them behind SSH_ENABLED.
-  executionRouting: ExecutionRoutingSettings
-  setExecutionRoutingSettings: (settings: ExecutionRoutingSettings) => Promise<void>
-  releaseExecutionRoutingReservation: (expected: RoutingReservation) => Promise<void>
+  // Routing state and actions exist only in builds with SSH, so readers must check SSH_ENABLED or presence.
+  executionRouting?: ExecutionRoutingSettings
+  setExecutionRoutingSettings?: (settings: ExecutionRoutingSettings) => Promise<void>
+  releaseExecutionRoutingReservation?: (expected: RoutingReservation) => Promise<void>
   executionHosts: ExecutionHost[]
   favoriteUamAgentIds: string[]
   /** Native sessions whose title starts with one of these (ignoring case) are never offered for import. */

@@ -978,7 +978,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         : current.providers.some((provider) => provider.id === normalizedDefaultProviderId)
           ? normalizedDefaultProviderId
           : DEFAULT_PROVIDER_ID
-      if (routingMode === 'automatic' && (!SSH_ENABLED || !canRouteAutomatically(current.executionRouting, selectedFolder, requestedProviderId))) return false
+      if (routingMode === 'automatic' && (!SSH_ENABLED || !current.executionRouting || !canRouteAutomatically(current.executionRouting, selectedFolder, requestedProviderId))) return false
       const defaults = providerChatDefaultsForNewChat({ ...current, providerChatDefaults: effectiveDefaults.providerChatDefaults }, requestedProviderId)
       if (modelId !== undefined) defaults.modelId = modelId.trim()
 	  if (reasoningEffort !== undefined) defaults.reasoningEffort = normalizeCodexReasoningEffort(reasoningEffort)
