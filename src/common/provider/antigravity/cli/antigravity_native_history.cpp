@@ -6,6 +6,7 @@
 #include "common/platform/private_temp_directory.h"
 #include "common/provider/provider_ids.h"
 #include "common/utils/env_utils.h"
+#include "common/utils/protobuf_wire.h"
 #include "common/utils/time_utils.h"
 #include "core/native_import_content.h"
 #include <sqlite3.h>
@@ -70,52 +71,34 @@ namespace uam::antigravity::history
 			}
 			return true;
 		}
-		struct Field
+		using uam::protobuf_wire::Field;
+		Refused ProtoError(uam::protobuf_wire::Error error)
 		{
-			unsigned number = 0, wire = 0;
-			std::uint64_t integer = 0;
-			std::string_view bytes;
-		};
-		std::uint64_t Varint(std::string_view bytes, std::size_t& position)
-		{
-			std::uint64_t value = 0;
-			for (unsigned shift = 0; shift < 70; shift += 7)
+			switch (error)
 			{
-				Require(position < bytes.size(), "Antigravity history contains truncated protobuf data.");
-				const unsigned char part = bytes[position++];
-				Require(shift < 63 || part <= 1, "Antigravity history contains overflowing protobuf data.");
-				value |= static_cast<std::uint64_t>(part & 127) << shift;
-				if (!(part & 128))
-				{
-					Require(shift == 0 || part != 0, "Antigravity history contains noncanonical protobuf integers.");
-					return value;
-				}
+			case uam::protobuf_wire::Error::TruncatedVarint:
+			case uam::protobuf_wire::Error::TruncatedField:
+				return Refused("Antigravity history contains truncated protobuf data.");
+			case uam::protobuf_wire::Error::OverflowingVarint:
+				return Refused("Antigravity history contains overflowing protobuf data.");
+			case uam::protobuf_wire::Error::NoncanonicalVarint:
+				return Refused("Antigravity history contains noncanonical protobuf integers.");
+			case uam::protobuf_wire::Error::InvalidTag:
+				return Refused("Antigravity history has an invalid protobuf tag.");
+			case uam::protobuf_wire::Error::TooManyFields:
+				return Refused("Antigravity native record exceeds the field limit.");
+			case uam::protobuf_wire::Error::UnsupportedWireType:
+				return Refused("Antigravity history has an unsupported protobuf encoding.");
 			}
-			throw Refused("Antigravity history contains invalid protobuf data.");
+			return Refused("Antigravity history contains invalid protobuf data.");
 		}
 		struct Proto
 		{
 			std::vector<Field> fields;
+			// Canonical varints only; One() below also refuses repeated or retyped fields.
 			explicit Proto(std::string_view bytes)
+			    : fields(uam::protobuf_wire::ReadFields(bytes, {.max_fields = kMaxSteps, .reject_noncanonical_varints = true}, ProtoError))
 			{
-				for (std::size_t position = 0; position < bytes.size();)
-				{
-					Require(fields.size() < kMaxSteps, "Antigravity native record exceeds the field limit.");
-					const auto tag = Varint(bytes, position);
-					Require((tag >> 3) > 0 && (tag >> 3) <= 536870911, "Antigravity history has an invalid protobuf tag.");
-					Field field{static_cast<unsigned>(tag >> 3), static_cast<unsigned>(tag & 7)};
-					if (field.wire == 0)
-						field.integer = Varint(bytes, position);
-					else
-					{
-						Require(field.wire == 1 || field.wire == 2 || field.wire == 5, "Antigravity history has an unsupported protobuf encoding.");
-						const auto size = field.wire == 2 ? Varint(bytes, position) : field.wire == 1 ? 8U : 4U;
-						Require(size <= bytes.size() - position, "Antigravity history contains truncated protobuf data.");
-						field.bytes = bytes.substr(position, static_cast<std::size_t>(size));
-						position += static_cast<std::size_t>(size);
-					}
-					fields.push_back(field);
-				}
 			}
 			const Field* One(unsigned number, unsigned wire) const
 			{
