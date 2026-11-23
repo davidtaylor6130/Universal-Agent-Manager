@@ -329,3 +329,7 @@ Recorded limits that are not decisions: Claude Code, Gemini and Copilot children
 - Only the turn Stop control ends a chat's watches; stopping the provider session does not.
 - GitHub Enterprise hosts, GitLab and Azure DevOps are not supported.
 - The phone clients show no linked pull request row and cannot start or stop a watch.
+
+## Routing load admission
+
+**Open, pending David's decision.** UAM now reads live load per computer and shows it, with per-computer wait reasons, but [routing](remote-environments/routing.md#load-and-visibility) still admits by concurrent sessions alone. Before load changes admission, decide: which figure holds or steers work (load per core, available memory, helper processes, or a combination) and at what thresholds; whether unknown load blocks new work, counts as full or is ignored; whether this computer becomes an automatic candidate; and how a computer shared with other desktops or helper versions is counted, since `runnerProcesses` covers only the answering helper's service. Until then unknown load is only displayed as unknown.

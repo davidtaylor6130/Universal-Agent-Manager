@@ -34,6 +34,8 @@ namespace uam::remote
 		nlohmann::json HandleProcessRequest(const nlohmann::json& request);
 		nlohmann::json HandleStartupRequest(const nlohmann::json& request, std::string_view runner_version);
 		bool HasManagedProcesses();
+		/// <summary>Processes this helper started that have not exited yet, for every desktop connected to it. Retiring processes count until they exit.</summary>
+		std::uint32_t LiveProcessCount();
 		/// <summary>Removes sibling spools whose owning helper is provably gone. Call with the service endpoint lock held; failures are tolerated.</summary>
 		void RemoveOrphanedSpools();
 		/// <summary>Call after a response frame was written: a written exit report stops the exit counting as owed.</summary>

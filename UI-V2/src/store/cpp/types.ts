@@ -1,5 +1,6 @@
 import type { StartupNativeImportStatus } from '../../types/startupNativeImports'
 import type { ExecutionRoutingSettings } from '../../types/executionRouting'
+import type { ExecutionHostLoad, RoutingWaitHost } from '../../types/hostLoad'
 import type { CustomIcon } from '../../types/customIcon'
 // C++ state serialisation types (mirrors state_serializer.cpp output) plus the
 // frontend-facing binding/push types. Extracted from useAppStore.ts (MO-1); the
@@ -96,6 +97,7 @@ export interface CppChat {
   routingAssignedConnectionIdentity?: string
   routingAssignedProviderConfigurationIdentity?: string
   routingWaitReason?: string
+  routingWaitHosts?: RoutingWaitHost[]
   routingUnresolvedReservation?: boolean
 
   id: string
@@ -753,7 +755,8 @@ export interface ComputePoolWait {
   limit: number
 }
 
-export type ComputePoolUsage = Record<string, { inUse: number; waiting: number }>
+/** Per pool; `hosts` splits the same counts by the computer each turn runs on. */
+export type ComputePoolUsage = Record<string, { inUse: number; waiting: number; hosts?: Record<string, { inUse: number; waiting: number }> }>
 
 /** One pull request linked to one chat. The native watch service owns it; the UI only displays and toggles it. */
 export interface PullRequestWatch {
@@ -1119,6 +1122,7 @@ export interface CppAppState {
   cliVersionManager?: CliVersionManager
   shellActions?: ShellAction[]
   computePoolUsage?: ComputePoolUsage
+  executionHostLoad?: ExecutionHostLoad
   prWatches?: PullRequestWatch[]
   shellActionNotification?: string
   statusLine?: string
@@ -1155,6 +1159,7 @@ export interface CppStatePatch {
   cliVersionManager?: CliVersionManager
   shellActions?: ShellAction[]
   computePoolUsage?: ComputePoolUsage
+  executionHostLoad?: ExecutionHostLoad
   prWatches?: PullRequestWatch[]
   shellActionNotification?: string
   statusLine?: string

@@ -1,5 +1,6 @@
 import { sanitizeStartupNativeImportStatus } from '../../types/startupNativeImports'
 import { sanitizeExecutionRouting } from '../../types/executionRouting'
+import { sanitizeExecutionHostLoad, sanitizeRoutingWaitHosts } from '../../types/hostLoad'
 import { DEFAULT_CENTRAL_PROVIDER_CONFIGURATION, type CentralProviderConfiguration, type WindowsPowerShellPreference } from './types'
 import { sanitizeCustomIcon } from '../../types/customIcon'
 // Sanitiser and normaliser functions for raw C++ state payloads.
@@ -1251,6 +1252,7 @@ export function sanitizeCppChat(value: unknown): CppChat | null {
     routingAssignedConnectionIdentity: isString(value.routingAssignedConnectionIdentity) ? value.routingAssignedConnectionIdentity : undefined,
     routingAssignedProviderConfigurationIdentity: isString(value.routingAssignedProviderConfigurationIdentity) ? value.routingAssignedProviderConfigurationIdentity : undefined,
     routingWaitReason: isString(value.routingWaitReason) ? value.routingWaitReason : undefined,
+    routingWaitHosts: sanitizeRoutingWaitHosts(value.routingWaitHosts),
     routingReservationPending: booleanOr(value.routingReservationPending),
     routingUnresolvedReservation: booleanOr(value.routingUnresolvedReservation),
 
@@ -2223,6 +2225,7 @@ export function sanitizeCppAppState(value: unknown): CppAppState | null {
     cliVersionManager: sanitizeCliVersionManager(value.cliVersionManager),
     shellActions,
     computePoolUsage: sanitizeComputePoolUsage(value.computePoolUsage),
+    executionHostLoad: sanitizeExecutionHostLoad(value.executionHostLoad),
     prWatches: sanitizePullRequestWatches(value.prWatches),
     shellActionNotification: stringOr(value.shellActionNotification),
     statusLine: stringOr(value.statusLine),
@@ -2292,8 +2295,9 @@ function sanitizeComputePools(value: unknown): ComputePool[] {
 
 function sanitizeComputePoolUsage(value: unknown): ComputePoolUsage {
   if (!isRecord(value)) return {}
+  const counts = (entry: Record<string, unknown>) => ({ inUse: nonNegativeInteger(entry.inUse) ?? 0, waiting: nonNegativeInteger(entry.waiting) ?? 0 })
   return Object.fromEntries(Object.entries(value).flatMap(([id, entry]) => isRecord(entry)
-    ? [[id, { inUse: nonNegativeInteger(entry.inUse) ?? 0, waiting: nonNegativeInteger(entry.waiting) ?? 0 }]]
+    ? [[id, { ...counts(entry), ...(isRecord(entry.hosts) ? { hosts: Object.fromEntries(Object.entries(entry.hosts).flatMap(([host, figures]) => isRecord(figures) ? [[host, counts(figures)]] : [])) } : {}) }]]
     : []))
 }
 
@@ -2438,6 +2442,7 @@ export function sanitizeCppStatePatch(value: unknown): CppStatePatch | null {
     cliVersionManager: value.cliVersionManager !== undefined ? sanitizeCliVersionManager(value.cliVersionManager) : undefined,
     shellActions: value.shellActions !== undefined ? sanitizeShellActions(value.shellActions) : undefined,
     computePoolUsage: value.computePoolUsage !== undefined ? sanitizeComputePoolUsage(value.computePoolUsage) : undefined,
+    executionHostLoad: value.executionHostLoad !== undefined ? sanitizeExecutionHostLoad(value.executionHostLoad) : undefined,
     prWatches: value.prWatches !== undefined ? sanitizePullRequestWatches(value.prWatches) : undefined,
     shellActionNotification: value.shellActionNotification !== undefined ? stringOr(value.shellActionNotification) : undefined,
     statusLine: value.statusLine !== undefined ? stringOr(value.statusLine) : undefined,

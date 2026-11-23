@@ -41,6 +41,7 @@ import {
   type ChatSplitDirection,
 } from '../../utils/chatGridStorage'
 import { SSH_ENABLED } from '../../config/buildFeatures'
+import { HostLoadChip } from '../shared/HostLoadChip'
 
 const PushStatusDot = memo(function PushStatusDot() {
   const pushChannelStatus = useAppStore((s) => s.pushChannelStatus)
@@ -323,7 +324,8 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
             title={workspaceDirectory ? `${workspaceDirectory} · ${executionHostLabel}` : executionHostLabel}
           >
             {workspaceLabel && <span className="min-w-0 truncate">{workspaceLabel}</span>}
-            {executionHostIsRemote && <span data-testid={`chat-host-${session.id}`} className="shrink-0">{workspaceLabel ? ` · ${executionHostLabel}` : executionHostLabel}</span>}
+            {executionHostIsRemote && workspaceLabel && <span className="shrink-0">{' · '}</span>}
+            {executionHostIsRemote && <HostLoadChip hostId={session.executionHostId!} label={executionHostLabel} testId={`chat-host-${session.id}`} />}
           </span>
         </div>
 
