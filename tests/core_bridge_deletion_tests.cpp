@@ -907,7 +907,7 @@ UAM_TEST(UnsortedWorkspaceRecoveryPreviewsAndRebuildsAvailableFolders)
 	UAM_ASSERT_EQ(ChatFolderStore::Load(app.data_root).size(), static_cast<std::size_t>(2));
 }
 
-UAM_TEST(UnsortedWorkspaceRecoveryRollsBackChatsWhenFolderSaveFails)
+UAM_TEST(UnsortedWorkspaceRecoveryLeavesChatsUntouchedWhenFolderSaveFails)
 {
 	TempDir temp("uam-unsorted-workspace-recovery-rollback");
 	uam::AppState app;
@@ -2056,13 +2056,14 @@ namespace
 
 	// The files a process stopped at this point would leave: every saved chat must name a saved workspace,
 	// or the chat drops out of its workspace with nothing on disk to say where it went.
-	void AssertSavedChatsNameSavedWorkspaces(const fs::path& data_root)
+	// already_missing names IDs that were dangling before the operation; the operation must not add any others.
+	void AssertSavedChatsNameSavedWorkspaces(const fs::path& data_root, const std::unordered_set<std::string>& already_missing = {})
 	{
 		std::unordered_set<std::string> saved_folder_ids;
 		for (const ChatFolder& folder : ChatFolderStore::Load(data_root)) saved_folder_ids.insert(folder.id);
 		for (const ChatSession& chat : ChatRepository::LoadLocalChats(data_root))
 		{
-			if (chat.folder_id.empty()) continue;
+			if (chat.folder_id.empty() || already_missing.contains(chat.folder_id)) continue;
 			UAM_ASSERT(saved_folder_ids.contains(chat.folder_id));
 		}
 	}
@@ -2169,11 +2170,12 @@ UAM_TEST(InterruptedUnsortedWorkspaceRebuildNeverLeavesChatsNamingAnUnsavedWorks
 	UAM_ASSERT_EQ(uam::LogDanglingWorkspaceFolderReferences(app), static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(uam::PreviewUnsortedWorkspaceFolders(app).groups.size(), static_cast<std::size_t>(1));
 
+	const std::unordered_set<std::string> already_missing = {"workspace-that-was-never-saved"};
 	bool interrupted = false;
 	try
 	{
 		(void)uam::RebuildUnsortedWorkspaceFolders(app, nullptr, [&] {
-			AssertSavedChatsNameSavedWorkspaces(app.data_root);
+			AssertSavedChatsNameSavedWorkspaces(app.data_root, already_missing);
 			throw InterruptedBetweenWorkspaceSaves{};
 		});
 	}
@@ -2182,7 +2184,7 @@ UAM_TEST(InterruptedUnsortedWorkspaceRebuildNeverLeavesChatsNamingAnUnsavedWorks
 		interrupted = true;
 	}
 	UAM_ASSERT(interrupted);
-	AssertSavedChatsNameSavedWorkspaces(app.data_root);
+	AssertSavedChatsNameSavedWorkspaces(app.data_root, already_missing);
 
 	// The recovered workspace is saved; running recovery again reuses it instead of adding a second one.
 	uam::AppState restarted = ReloadSavedWorkspaceState(app);
@@ -2212,4 +2214,45 @@ UAM_TEST(DanglingWorkspaceFolderReferencesAreCountedWithoutChangingChats)
 	UAM_ASSERT_EQ(app.chats[4].folder_id, std::string(" gone-b "));
 	app.chats.erase(app.chats.begin() + 2, app.chats.end());
 	UAM_ASSERT_EQ(uam::LogDanglingWorkspaceFolderReferences(app), static_cast<std::size_t>(0));
+}
+
+UAM_TEST(UnsortedWorkspaceRecoveryPutsMovedChatsBackWhenAChatSaveFails)
+{
+	TempDir temp("uam-unsorted-rebuild-chat-save-fails");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.settings.execution_hosts = {
+	    uam::execution_hosts::LocalHost(),
+	    {"homelab", "Homelab", "ssh", "homelab", "ready", "4.5.7", "linux", "x86_64", "", ""},
+	};
+	for (const std::string& id : {"moves", "blocked"})
+	{
+		ChatSession chat;
+		chat.id = id;
+		chat.title = id;
+		chat.provider_id = "opencode-cli";
+		chat.execution_host_id = "homelab";
+		chat.workspace_directory = "/srv/recovered";
+		chat.created_at = "2026-01-01T00:00:00.000Z";
+		chat.updated_at = chat.created_at;
+		if (id == "moves") UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		app.chats.push_back(std::move(chat));
+	}
+	// A directory where the second chat's file and backup belong makes only that chat's save fail.
+	const fs::path blocked = AppPaths::UamChatFilePath(app.data_root, "blocked");
+	fs::create_directories(blocked);
+	fs::create_directories(uam::io::MakeBackupPath(blocked));
+	UAM_ASSERT(uam::io::WriteTextFile(blocked / "block", "block"));
+	UAM_ASSERT(uam::io::WriteTextFile(uam::io::MakeBackupPath(blocked) / "block", "block"));
+
+	UAM_ASSERT(!uam::RebuildUnsortedWorkspaceFolders(app));
+	// Every moved chat went back, so the added workspace was dropped from disk and memory.
+	UAM_ASSERT(app.folders.empty());
+	UAM_ASSERT(ChatFolderStore::Load(app.data_root).empty());
+	for (const ChatSession& chat : app.chats) UAM_ASSERT(chat.folder_id.empty());
+	fs::remove_all(blocked);
+	fs::remove_all(uam::io::MakeBackupPath(blocked));
+	const std::vector<ChatSession> persisted = ChatRepository::LoadLocalChats(app.data_root);
+	UAM_ASSERT_EQ(persisted.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(persisted.front().folder_id.empty());
 }

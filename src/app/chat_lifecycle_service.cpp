@@ -142,6 +142,46 @@ namespace
 		return all_saved;
 	}
 
+	struct MovedChatsSave
+	{
+		bool saved = false;
+		bool rolled_back = false;
+		// Chats whose move reached disk and could not be undone, with the folder ID their file now holds.
+		std::unordered_map<std::string, std::string> kept_folder_by_chat_id;
+	};
+
+	// Saves each moved chat; if any save fails, puts back every chat that did move. moved[i] and originals[i] are the
+	// same chat. The result says which moves stayed on disk so memory can match the files.
+	MovedChatsSave SaveMovedChats(uam::AppState& app, const std::vector<ChatSession>& moved, const std::vector<ChatSession>& originals)
+	{
+		MovedChatsSave outcome;
+		std::vector<bool> moved_on_disk(moved.size(), false);
+		outcome.saved = true;
+		for (std::size_t index = 0; index < moved.size(); ++index)
+		{
+			moved_on_disk[index] = SaveChatHistories(app, {moved[index]});
+			outcome.saved = moved_on_disk[index] && outcome.saved;
+		}
+		if (outcome.saved) return outcome;
+		outcome.rolled_back = true;
+		for (std::size_t index = 0; index < moved.size(); ++index)
+		{
+			if (!moved_on_disk[index] || SaveChatHistories(app, {originals[index]})) continue;
+			outcome.rolled_back = false;
+			outcome.kept_folder_by_chat_id[moved[index].id] = moved[index].folder_id;
+		}
+		return outcome;
+	}
+
+	void ApplyKeptChatMoves(std::vector<ChatSession>& chats, const MovedChatsSave& outcome)
+	{
+		for (ChatSession& chat : chats)
+		{
+			const auto kept = outcome.kept_folder_by_chat_id.find(chat.id);
+			if (kept != outcome.kept_folder_by_chat_id.end()) chat.folder_id = kept->second;
+		}
+	}
+
 	bool IsTerminalAgentRun(const AgentRun& run)
 	{
 		return run.status == "completed" || run.status == "failed" ||
@@ -864,10 +904,8 @@ namespace
 	std::string StatusAfterFolderDeletePreconditionFailure(std::string_view failure, bool rollback_saved)
 	{
 		std::string status_line(failure);
-		if (!rollback_saved)
-		{
-			status_line += ", and rollback also failed.";
-		}
+		while (!status_line.empty() && status_line.back() == '.') status_line.pop_back();
+		status_line += rollback_saved ? "." : ", and rollback also failed.";
 		return status_line;
 	}
 
@@ -1421,19 +1459,17 @@ bool uam::MigrateWorkspaceFolderOwnership(AppState& app, const std::function<voi
 		return false;
 	}
 	if (between_saves_for_tests) between_saves_for_tests();
-	if (!SaveChatHistories(app, changed_chats))
+	std::vector<ChatSession> original_changed_chats;
+	for (const ChatSession& changed_chat : changed_chats)
+		original_changed_chats.push_back(*std::ranges::find(original_chats, changed_chat.id, &ChatSession::id));
+	if (const MovedChatsSave outcome = SaveMovedChats(app, changed_chats, original_changed_chats); !outcome.saved)
 	{
-		std::vector<ChatSession> original_changed_chats;
-		for (const ChatSession& changed_chat : changed_chats)
-		{
-			const auto original = std::ranges::find(original_chats, changed_chat.id, &ChatSession::id);
-			if (original != original_chats.end()) original_changed_chats.push_back(*original);
-		}
-		// Restore the old folder list only once every moved chat is back; otherwise keep the destinations saved.
-		const bool rollback_saved = SaveChatHistories(app, original_changed_chats) &&
-		                            ChatFolderStore::Save(app.data_root, original_folders);
+		// Restore the old folder list only once every moved chat is back; otherwise keep the destinations saved,
+		// and keep the chats that stayed moved on disk moved in memory too.
+		const bool rollback_saved = outcome.rolled_back && ChatFolderStore::Save(app.data_root, original_folders);
 		if (rollback_saved) app.folders = original_folders;
 		app.chats = original_chats;
+		ApplyKeptChatMoves(app.chats, outcome);
 		app.status_line = StatusAfterFolderDeletePreconditionFailure(
 		    "Could not split a mixed-machine workspace safely", rollback_saved);
 		return false;
@@ -1635,13 +1671,14 @@ bool uam::RebuildUnsortedWorkspaceFolders(AppState& app, WorkspaceFolderRecovery
 		return false;
 	}
 	if (between_saves_for_tests) between_saves_for_tests();
-	if (!SaveChatHistories(app, next_changed_chats))
+	if (const MovedChatsSave outcome = SaveMovedChats(app, next_changed_chats, original_changed_chats); !outcome.saved)
 	{
-		// Drop the added workspaces only once every moved chat is back; otherwise keep them saved and in memory.
-		const bool rollback_saved = SaveChatHistories(app, original_changed_chats) &&
-		                            ChatFolderStore::Save(app.data_root, app.folders);
+		// Drop the added workspaces only once every moved chat is back; otherwise keep them saved and in memory,
+		// with the chats that stayed moved on disk moved in memory too.
+		const bool rollback_saved = outcome.rolled_back && ChatFolderStore::Save(app.data_root, app.folders);
 		if (!rollback_saved) app.folders = std::move(next_folders);
-		app.status_line = StatusAfterFolderDeletePreconditionFailure("Failed to save reorganized chats.", rollback_saved);
+		ApplyKeptChatMoves(app.chats, outcome);
+		app.status_line = StatusAfterFolderDeletePreconditionFailure("Failed to save reorganized chats", rollback_saved);
 		return false;
 	}
 
@@ -1671,12 +1708,13 @@ std::size_t uam::LogDanglingWorkspaceFolderReferences(const AppState& app)
 	// IDs and counts only: no titles or directories. Bounded so a damaged catalogue cannot flood the log.
 	constexpr std::size_t kListedIds = 20;
 	std::string listed;
+	constexpr std::size_t kListedIdLength = 64;
 	for (std::size_t index = 0; index < ordered.size() && index < kListedIds; ++index)
-		listed += (index == 0 ? "" : ", ") + ordered[index].first + "=" + std::to_string(ordered[index].second);
+		listed += (index == 0 ? "" : ", ") + ordered[index].first.substr(0, kListedIdLength) + "=" + std::to_string(ordered[index].second);
 	if (ordered.size() > kListedIds) listed += ", +" + std::to_string(ordered.size() - kListedIds) + " more";
 	uam::diagnostics::Write("[workspaces] " + std::to_string(chat_count) + " saved chat(s) name " +
-	    std::to_string(ordered.size()) + " workspace folder ID(s) that no saved workspace has; they show under Unsorted and "
-	    "their saved folder IDs are left unchanged: " + listed + ".");
+	    std::to_string(ordered.size()) + " workspace folder ID(s) that no saved workspace has; they count as Unsorted (internal agent and "
+	    "side chats included, though the sidebar does not list those) and their saved folder IDs are left unchanged: " + listed + ".");
 	return chat_count;
 }
 
