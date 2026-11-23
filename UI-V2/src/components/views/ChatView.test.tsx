@@ -7931,6 +7931,28 @@ describe('ChatView', () => {
     useAppStore.setState({ branchSwitching: undefined })
   })
 
+  it.each([
+    { label: 'shows the chosen base that differs from the checked-out branch', gitBaseBranch: 'build/x', shown: 'build/x', aria: 'Base branch build/x, local copy on main' },
+    { label: 'keeps the checked-out branch without a base override', gitBaseBranch: null, shown: 'main', aria: 'Branch main' },
+    { label: 'keeps the checked-out branch when the base matches it', gitBaseBranch: 'main', shown: 'main', aria: 'Branch main' },
+    { label: 'keeps the checked-out branch for an explicit HEAD base', gitBaseBranch: '', shown: 'main', aria: 'Branch main' },
+  ])('$label before the first message (#1029)', async ({ gitBaseBranch, shown, aria }) => {
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, workspaceDirectory: '/tmp/project', workspaceIsolationKind: 'pendingGitWorktree', workspaceBranchName: '', gitBaseBranch } : session),
+      getVcsCommitStatus: vi.fn(async (): Promise<VcsCommitStatus> => ({ available: true, vcsTypes: ['git'], activeVcsType: 'git', workspaceDirectory: '/tmp/project', branchOrRevision: 'main', changedFiles: [], lineStatsReady: true, warning: '', error: '' })),
+      branchSwitching: true,
+    }))
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => { root.render(<ChatView session={useAppStore.getState().sessions[0]} />) })
+      const branch = host.querySelector('.uam-composer-workspace-tab [aria-label^="B"]')
+      expect(branch?.getAttribute('aria-label')).toBe(aria)
+      expect(branch?.textContent).toBe(shown)
+    } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ branchSwitching: undefined }) }
+  })
+
   it('reads the repository branch for the composer tab once when the chat opens', async () => {
     const getVcsCommitStatus = vi.fn(() => Promise.resolve({
       available: true, vcsTypes: ['git'], activeVcsType: 'git', workspaceDirectory: '/tmp/project',
