@@ -337,3 +337,7 @@ Recorded limits that are not decisions: Claude Code, Gemini and Copilot children
 - Only the turn Stop control ends a chat's watches; stopping the provider session does not.
 - GitHub Enterprise hosts, GitLab and Azure DevOps are not supported.
 - The phone clients show no linked pull request row and cannot start or stop a watch.
+
+## Extension adapters
+
+**Decided by David, 2026-11-23** ([#522](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues/522)). An adapter's action buttons may only open URLs or files, never run commands. Each adapter executable is registered and approved once by the person in Settings, never taken from a repository or a chat. The first slice is the [version 1 protocol](reference/vcs-adapter-protocol.md), a conformance runner and a sample read-only folder adapter, with no UAM integration. Interim interpretation recorded in the protocol: a file action shows the item in the system file manager and never hands it to the default handler, because that would run a program or launcher file from the repository. Still open for David: whether a file action may open documents in their default application, whether action URLs may use schemes other than `http` and `https` (for example to open a desktop client), whether approval should also cover what an adapter loads by itself, whether adapters run on SSH workspaces, and the restart rule after an adapter stops. Nothing is wired into UAM or accepted.
