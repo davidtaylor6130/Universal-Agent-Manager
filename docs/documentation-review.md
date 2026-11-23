@@ -6,6 +6,14 @@ This page records the isolated documentation trial and subsequent provider imple
 
 Task-1230’s initial read-only revision patch left this requirement open. David explicitly requested completion on 2026-10-23, including an explicit mapping boundary when repository layout is unknown. The implementation now accepts an explicit repository-relative parent, discovers existing child directories and offers a guarded, confirmed local working-copy switch; it does not infer `trunk`/`branches`. The per-selection mapping resolves the layout question for this route. Automated, connected bridge, platform and user acceptance remain separately recorded in the [archived V5 change log](https://github.com/davidtaylor6130/Universal-Agent-Manager/blob/1d4865fcb/V5%20Improvement%20Change%20log.md). The separate new-chat Git selector remains task-1322; see [composer workspace actions](chat/composer/workspace-actions.md) and [SVN](settings/version-control/svn.md).
 
+## SVN branch creation
+
+**Decided by David, 2026-11-23** ([#520](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues/520)). Creating an SVN branch asks each time whether to copy from the working copy's URL at its revision or from trunk HEAD, defaulting to the working copy, and UAM writes a default commit message the person can edit. The [SVN-through-Git design](reference/svn-git-mirror-design.md#publishing-a-new-branch) relies on this for publishing a Git branch. This decides the product rule, not its implementation or acceptance.
+
+## SVN through Git
+
+**Decided by David, 2026-11-23** ([#521](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues/521)). UAM builds and owns the Git mirror of an SVN checkout, with no dependency on `git svn`. Pulling SVN changes into the mirror is always explicit and one-way. The first slice is a design note and a throwaway spike, not product code: see the [design note](reference/svn-git-mirror-design.md), whose open questions still need his answer: carrying uncommitted SVN edits into chats, deleting folders a commit emptied, whether agents may pull and publish, whether publish may import other people's revisions as it records its own, which revision a new branch copies from in this mode, attaching a second workspace of the same repository, and recovery where a server refuses custom revision properties. Nothing in the mode is implemented or accepted.
+
 ## Resolved documentation conflicts
 
 | Previous conflict | Documentation disposition |
