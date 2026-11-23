@@ -926,9 +926,6 @@ namespace uam
 		// from reconnect_attempts, which stop retries and exits also count, so the number of launches is exact.
 		int discovery_cleanup_attaches = 0;
 		double discovery_cleanup_last_attach_time_s = 0.0;
-		// Counts watchdog re-queues of a stalled goal loop; the goal is marked
-		// blocked after 3 so a failing provider cannot be retried forever.
-		// Cleared when a turn completes or a new user prompt is sent.
 		// Set when the user cancels a turn so the goal-loop watchdog does not
 		// override an explicit stop; cleared on the next user prompt.
 		enum class GoalQueueAdmission { None, Pending, Held, PendingContinuation, HeldContinuation };

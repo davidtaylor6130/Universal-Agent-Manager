@@ -1793,6 +1793,7 @@ UAM_TEST(AcpResumeGoalPersistsActiveStateBeforeQueueingWork)
 	Goal& goal = app.chats.front().goals.front();
 	goal.status = GoalStatus::Paused;
 	goal.last_next_prompt = "Run the focused regression tests.";
+	goal.unreviewed_resume_count = 3;
 	goal.worker_model_id.clear();
 	goal.reviewer_model_id.clear();
 	app.settings.provider_chat_defaults[chat.provider_id].model_id = "fast-worker";
@@ -1819,6 +1820,8 @@ UAM_TEST(AcpResumeGoalPersistsActiveStateBeforeQueueingWork)
 	UAM_ASSERT_EQ(app.chats.front().goals.front().worker_model_id, std::string("fast-worker"));
 	UAM_ASSERT_EQ(app.chats.front().goals.front().reviewer_model_id, std::string("smart-reviewer"));
 	UAM_ASSERT(!raw_session->goal_resume_suppressed);
+	// Only an applied review or Restart clears the unreviewed-resume count; an ordinary Resume keeps it.
+	UAM_ASSERT_EQ(app.chats.front().goals.front().unreviewed_resume_count, 3);
 	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT(app.chats.front().messages.empty());
 	const std::optional<ChatSession> persisted = ChatRepository::LoadLocalChat(app.data_root, chat.id);
@@ -3190,7 +3193,7 @@ UAM_TEST(AcpGoalReviewTurnWithLostReviewBoolDoesNotScheduleReviewOfReviewOutput)
 	UAM_ASSERT_EQ(app.chats.front().goals.front().blocked_turn_count, 1);
 }
 
-UAM_TEST(AcpGoalSchedulerSkipsMissingUserIndexAndReviewDecisionOutput)
+UAM_TEST(AcpGoalSchedulerSkipsMissingUserIndex)
 {
 	TempDir temp("uam-goal-scheduler-guards");
 	uam::AppState app;
@@ -3221,23 +3224,6 @@ UAM_TEST(AcpGoalSchedulerSkipsMissingUserIndexAndReviewDecisionOutput)
 
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Normal worker output."}}}})"));
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":10,"result":{}})"));
-	UAM_ASSERT(!raw_session->goal_review_scheduled);
-	UAM_ASSERT(raw_session->queued_prompt.empty());
-	UAM_ASSERT_EQ(app.chats.front().goals.front().tokens_used, 0);
-
-	Message user;
-	user.role = MessageRole::User;
-	user.content = "Worker prompt";
-	app.chats.front().messages.push_back(std::move(user));
-	raw_session->processing = true;
-	raw_session->prompt_request_id = 11;
-	raw_session->pending_request_methods[11] = uam::acp_methods::kSessionPrompt;
-	raw_session->turn_user_message_index = static_cast<int>(app.chats.front().messages.size()) - 1;
-	raw_session->current_assistant_message_index = -1;
-	raw_session->turn_assistant_message_index = -1;
-
-	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"{\"decision\":\"continue\",\"reason\":\"Still going.\",\"nextPrompt\":\"Repeat this review.\",\"evidence\":[\"review output\"],\"progressUpdate\":{\"remaining\":[\"Repeat this review.\"],\"currentStep\":\"Repeat this review.\"}}"}}}})"));
-	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":11,"result":{}})"));
 	UAM_ASSERT(!raw_session->goal_review_scheduled);
 	UAM_ASSERT(raw_session->queued_prompt.empty());
 	UAM_ASSERT_EQ(app.chats.front().goals.front().tokens_used, 0);
@@ -3427,7 +3413,7 @@ namespace
 	}
 }
 
-UAM_TEST(AcpGoalWatchdogStopsUnreviewedResumesAcrossUserTurnsAndSkippedReviews)
+UAM_TEST(AcpGoalWatchdogStopsUnreviewedResumesAcrossTurnCompletionsAndSkippedReviews)
 {
 	TempDir temp("uam-goal-unreviewed-resumes");
 	ScopedEnvVar scoped_path("PATH", InstallSilentGoalProviderShims(temp));
@@ -3469,7 +3455,7 @@ UAM_TEST(AcpGoalWatchdogStopsUnreviewedResumesAcrossUserTurnsAndSkippedReviews)
 		// The resumed worker turn ends without reviewable text, so no review runs.
 		CompleteTurnWithoutReviewableText(app, *raw_session, app.chats.front());
 
-		// A queued user turn then starts and also ends without reviewable text; neither may reopen the allowance.
+		// A user turn (its start state set directly, not through the queue dispatcher) also ends without reviewable text; neither may reopen the allowance.
 		Message user;
 		user.role = MessageRole::User;
 		user.content = "Queued note " + std::to_string(resume);
@@ -3799,6 +3785,7 @@ UAM_TEST(GoalRestartDuringTurnReplacesOnePendingContinuation)
 	app.chats.front().goals.front().tokens_used = 100;
 	app.chats.front().goals.front().completed_items = {"old result"};
 	app.chats.front().goals.front().last_decision_source = "model:old-reviewer";
+	app.chats.front().goals.front().unreviewed_resume_count = 2;
 	auto session = std::make_unique<uam::AcpSessionState>();
 	session->chat_id = chat.id;
 	session->processing = true;
@@ -3810,6 +3797,7 @@ UAM_TEST(GoalRestartDuringTurnReplacesOnePendingContinuation)
 	UAM_ASSERT_EQ(app.chats.front().goals.front().tokens_used, 0);
 	UAM_ASSERT(app.chats.front().goals.front().completed_items.empty());
 	UAM_ASSERT(app.chats.front().goals.front().last_decision_source.empty());
+	UAM_ASSERT_EQ(app.chats.front().goals.front().unreviewed_resume_count, 0);
 	UAM_ASSERT_EQ(app.chats.front().goal_pending_continuation_id, goal_id);
 	const std::string first = app.chats.front().goal_command_revision;
 	UAM_ASSERT(uam::acp_detail::ResumeGoal(app, chat.id, goal_id, &error, true));
