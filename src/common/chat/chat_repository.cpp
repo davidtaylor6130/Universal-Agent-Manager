@@ -1981,7 +1981,8 @@ namespace
 			return;
 		}
 		// A readable journal that holds no input, with a saved chat that holds none either, protects nothing,
-		// whoever it was written for (for example the same chat before its workspace folder moved). Rebind it
+		// whoever it was written for (for example the same chat before its workspace folder moved), as long as
+		// its copy of the recovery records and managed birth matches (checked below). Rebind it
 		// like a consumed journal: the next full save consumes it and the next queue save replaces it under the
 		// current owner. Its memory progress belongs to the other owner's transcript, so the primary's own
 		// progress stays: rows may be processed again, never skipped.

@@ -1224,6 +1224,9 @@ UAM_TEST(EmptyQueueJournalForMovedWorkspaceAcceptsQueueSaveMemoryProgressAndHydr
 	// Startup reads metadata first (publishing a fresh summary), then hydrates the transcript.
 	std::optional<ChatSession> meta = ChatRepository::LoadLocalChat(temp.root, chat.id, false);
 	UAM_ASSERT(meta && !meta->acp_queue_storage_error && !meta->acp_queue_held);
+	// A second metadata load reads the summary that the first one published.
+	meta = ChatRepository::LoadLocalChat(temp.root, chat.id, false);
+	UAM_ASSERT(meta && !meta->acp_queue_storage_error && !meta->acp_queue_held);
 	UAM_ASSERT(ChatRepository::HydrateChatMessages(temp.root, *meta));
 	UAM_ASSERT(!meta->acp_queue_storage_error);
 	// Memory progress goes through the queue journal first; before any full save it must succeed alone.
@@ -1236,6 +1239,28 @@ UAM_TEST(EmptyQueueJournalForMovedWorkspaceAcceptsQueueSaveMemoryProgressAndHydr
 	UAM_ASSERT(reloaded && !reloaded->acp_queue_storage_error && !reloaded->acp_queue_held);
 	UAM_ASSERT_EQ(reloaded->memory_last_processed_message_count, 1);
 	UAM_ASSERT(ChatRepository::SaveChat(temp.root, *reloaded));
+}
+
+UAM_TEST(EmptyQueueJournalCarryingOtherRecoveryRecordsStaysHeld)
+{
+	TempDir temp("uam-queue-journal-empty-recoveries");
+	ChatSession chat = QueueJournalFixture(temp.root);
+	chat.acp_queued_prompts.clear();
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	UAM_ASSERT(ChatRepository::SaveQueuedPromptOutbox(temp.root, chat));
+	// The journal's owner may be the last copy of unsent-input recovery records the saved chat lacks.
+	const fs::path journal = temp.root / "queue-outboxes" / (chat.id + ".json");
+	nlohmann::json record = nlohmann::json::parse(ReadFile(journal));
+	nlohmann::json owner = nlohmann::json::parse(record["owner"].get<std::string>());
+	owner["acp_unsent_prompt_recoveries"] = nlohmann::json::array({nlohmann::json{{"id", "recovery"}}});
+	record["owner"] = owner.dump();
+	UAM_ASSERT(uam::io::WriteTextFile(journal, record.dump()));
+	const std::string journal_bytes = ReadFile(journal);
+	MoveSavedChatWorkspace(temp.root, chat.id, temp.root / "moved-workspace");
+	const std::optional<ChatSession> held = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(held && held->acp_queue_storage_error && held->acp_queue_held);
+	UAM_ASSERT(!ChatRepository::SaveChat(temp.root, *held));
+	UAM_ASSERT_EQ(ReadFile(journal), journal_bytes);
 }
 
 UAM_TEST(QueueJournalWithInputForMovedWorkspaceStaysHeldWithStorageError)
