@@ -987,13 +987,13 @@ namespace
 		{
 			return std::nullopt;
 		}
-		if (FolderDirectoryMatches(uam::paths::PathFromUtf8(std::string(recorded)), uam::paths::PathFromUtf8(std::string(old_root))))
-		{
-			return std::string(new_root);
-		}
 		const std::string host = uam::strings::NonEmptyOrFallback(uam::strings::Trim(host_id), std::string(uam::execution_hosts::kLocalHostId));
 		if (host == uam::execution_hosts::kLocalHostId)
 		{
+			if (FolderDirectoryMatches(uam::paths::PathFromUtf8(std::string(recorded)), uam::paths::PathFromUtf8(std::string(old_root))))
+			{
+				return std::string(new_root);
+			}
 			const std::optional<std::filesystem::path> relative = FolderDirectoryRelativeSubpath(uam::paths::ExpandTrimmedWorkspacePath(recorded), uam::paths::ExpandTrimmedWorkspacePath(old_root));
 			if (!relative.has_value())
 			{
@@ -2704,18 +2704,30 @@ bool RenameFolderById(uam::AppState& app, const std::string& folder_id, const st
 			{
 				continue;
 			}
-			const std::optional<std::string> directory = RepointedFolderDirectory(app, original.execution_host_id, chat.workspace_directory, original.directory, input.directory);
-			const std::optional<std::string> source_directory = RepointedFolderDirectory(app, original.execution_host_id, chat.workspace_source_directory, original.directory, input.directory);
-			if (!directory.has_value() && !uam::strings::IsBlank(chat.workspace_directory) && !RepointedFolderDirectory(app, original.execution_host_id, chat.workspace_directory, input.directory, input.directory).has_value())
+			// A directory already at or inside the new root stays, so narrowing or widening a root never nests it again.
+			const auto repoint = [&](const std::string& recorded) -> std::optional<std::string>
+			{
+				if (RepointedFolderDirectory(app, original.execution_host_id, recorded, input.directory, input.directory).has_value())
+					return std::nullopt;
+				std::optional<std::string> repointed = RepointedFolderDirectory(app, original.execution_host_id, recorded, original.directory, input.directory);
+				if (repointed.has_value() && *repointed == recorded)
+					return std::nullopt;
+				return repointed;
+			};
+			const std::optional<std::string> repointed_directory = repoint(chat.workspace_directory);
+			const std::optional<std::string> repointed_source_directory = repoint(chat.workspace_source_directory);
+			const bool directory_in_new_root = RepointedFolderDirectory(app, original.execution_host_id, chat.workspace_directory, input.directory, input.directory).has_value();
+			// A worktree chat follows the folder through its source directory, so it is not reported as left behind.
+			if (!repointed_directory.has_value() && !repointed_source_directory.has_value() && !directory_in_new_root && !uam::strings::IsBlank(chat.workspace_directory) && !uam::paths::IsGitWorktreeIsolated(chat))
 			{
 				++chats_left_elsewhere;
 			}
-			if ((!directory.has_value() || *directory == chat.workspace_directory) && (!source_directory.has_value() || *source_directory == chat.workspace_source_directory))
+			if (!repointed_directory.has_value() && !repointed_source_directory.has_value())
 			{
 				continue;
 			}
 			repointed_chats.push_back({index, chat});
-			if (directory.has_value() && *directory != chat.workspace_directory)
+			if (repointed_directory.has_value())
 			{
 				if (original.execution_host_id != uam::execution_hosts::kLocalHostId)
 				{
@@ -2740,11 +2752,11 @@ bool RenameFolderById(uam::AppState& app, const std::string& folder_id, const st
 					if (!uam::ChatHasUncertainRemoteInput(chat)) chat.acp_queue_held = false; // Saved with the reset.
 					reset_chat_ids.push_back(chat.id);
 				}
-				chat.workspace_directory = *directory;
+				chat.workspace_directory = *repointed_directory;
 			}
-			if (source_directory.has_value())
+			if (repointed_source_directory.has_value())
 			{
-				chat.workspace_source_directory = *source_directory;
+				chat.workspace_source_directory = *repointed_source_directory;
 			}
 		}
 		// An idle terminal still belongs to the old directory's session; one that survives could relink it after the reset.

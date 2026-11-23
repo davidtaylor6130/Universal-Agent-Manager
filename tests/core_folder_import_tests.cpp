@@ -16,6 +16,7 @@
 #include "app/transcript_retention_service.h"
 #include "app/startup_native_import_service.h"
 #include "app/runtime_orchestration_internal.h"
+#include "common/paths/workspace_root.h"
 #include "app/uam_control_service.h"
 #include "cef/state_serializer.h"
 #include "cef/uam_cef_client.h"
@@ -851,6 +852,47 @@ UAM_TEST(WorkspaceDirectoryChangeRollsBackWhenAnAffectedChatCannotBeSaved)
 	UAM_ASSERT(RenameFolderById(app, "ws", "Workspace", new_root.string()));
 	UAM_ASSERT_EQ(SavedWorkspaceDirectory(app.data_root, "saved-first"), new_root.string());
 	UAM_ASSERT_EQ(SavedWorkspaceDirectory(app.data_root, "blocked"), (new_root / "api").string());
+}
+
+UAM_TEST(WorkspaceDirectoryChangeLeavesChatsAlreadyInsideTheNewRoot)
+{
+	TempDir temp("uam-workspace-move-nested");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	const fs::path project = temp.root / "proj";
+	const fs::path app_root = project / "app";
+	fs::create_directories(app_root / "src");
+	fs::create_directories(project / "lib");
+	app.folders = {{"ws", "Workspace", project.string(), false, "local"}};
+	UAM_ASSERT(ChatFolderStore::Save(app.data_root, app.folders));
+	ChatSession worktree = WorkspaceMoveChat("worktree", "ws", (temp.root / "worktrees" / "feature").string());
+	worktree.workspace_isolation_kind = uam::paths::kGitWorktreeIsolationKind;
+	worktree.workspace_worktree_directory = (temp.root / "worktrees" / "feature").string();
+	worktree.workspace_source_directory = project.string();
+	app.chats = {
+	    WorkspaceMoveChat("root", "ws", project.string()), WorkspaceMoveChat("in-app", "ws", app_root.string()), WorkspaceMoveChat("in-app-src", "ws", (app_root / "src").string()), WorkspaceMoveChat("lib", "ws", (project / "lib").string()), worktree,
+	};
+	// Narrowing: chats already inside the new root keep their directory instead of nesting it again.
+	UAM_ASSERT(RenameFolderById(app, "ws", "Workspace", app_root.string()));
+	const auto directory_of = [&app](const std::string& id) { return ChatDomainService().FindChatById(app, id)->workspace_directory; };
+	UAM_ASSERT_EQ(directory_of("root"), app_root.string());
+	UAM_ASSERT_EQ(directory_of("in-app"), app_root.string());
+	UAM_ASSERT_EQ(directory_of("in-app-src"), (app_root / "src").string());
+	UAM_ASSERT_EQ(directory_of("lib"), (app_root / "lib").string());
+	UAM_ASSERT_EQ(directory_of("worktree"), (temp.root / "worktrees" / "feature").string());
+	UAM_ASSERT_EQ(ChatDomainService().FindChatById(app, "worktree")->workspace_source_directory, app_root.string());
+	UAM_ASSERT(!ChatRepository::LoadLocalChat(app.data_root, "in-app").has_value());
+	UAM_ASSERT(!ChatRepository::LoadLocalChat(app.data_root, "in-app-src").has_value());
+	// The worktree chat follows the folder through its source directory, so nothing is reported as left behind.
+	UAM_ASSERT_EQ(app.status_line, std::string("Folder settings saved."));
+
+	// Widening: chats inside the old, narrower root are already inside the new one.
+	UAM_ASSERT(RenameFolderById(app, "ws", "Workspace", project.string()));
+	UAM_ASSERT_EQ(directory_of("in-app-src"), (app_root / "src").string());
+	UAM_ASSERT_EQ(directory_of("lib"), (app_root / "lib").string());
+	UAM_ASSERT_EQ(directory_of("root"), app_root.string());
+	UAM_ASSERT_EQ(ChatDomainService().FindChatById(app, "worktree")->workspace_source_directory, app_root.string());
+	UAM_ASSERT_EQ(app.status_line, std::string("Folder settings saved."));
 }
 
 UAM_TEST(RemoteWorkspaceDirectoryChangeRepointsSubdirectoryChatsWithNativeReset)
