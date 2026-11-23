@@ -107,6 +107,8 @@ namespace uam
 			std::string settled_seen;
 			// This app run only: refused deliveries of the pending wake, and the latest notice for the notifications panel.
 			int wake_refusals = 0;
+			/// The pending wake was held for a YOLO chat, so its release is logged.
+			bool held = false;
 			int notice_serial = 0;
 			std::string notice_message;
 			std::string notice_tone;

@@ -28,6 +28,8 @@ namespace uam
 		/// Refused deliveries, a minute apart, after which a watch ends instead of retrying for ever.
 		constexpr int kWakeRefusalLimit = 30;
 		constexpr std::size_t kMaxPendingWakeBytes = 16 * 1024;
+		/// 2: wakes quote only collaborators' text and record whether they are held for a YOLO chat.
+		constexpr int kFileVersion = 2;
 		constexpr std::string_view kRequiredQuery =
 		    "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){commits(last:1){nodes{commit{statusCheckRollup{contexts(first:100){nodes{__typename ... on CheckRun{name isRequired(pullRequestNumber:$number)} ... on StatusContext{context isRequired(pullRequestNumber:$number)}}}}}}}}}}";
 
@@ -147,6 +149,9 @@ namespace uam
 						snapshot.detail.checks.push_back({.name = Field<std::string>(check, "name", {}), .status = Field<std::string>(check, "status", {}),
 						    .url = Field<std::string>(check, "url", {}), .required = Field(check, "required", false)});
 			}
+		// Version 1 saved wakes that quoted every commenter and asked the agent to act on them; they are not sent.
+		const bool old_wakes = Field(root, "version", 1) < kFileVersion;
+		bool dropped_old_wake = false;
 		if (const auto links = root.find("links"); links != root.end() && links->is_array())
 			for (const nlohmann::json& item : *links)
 			{
@@ -157,8 +162,19 @@ namespace uam
 				m_links.push_back({.chat_id = chat_id, .pr = *pr, .watching = Field(item, "watching", false),
 				    .reported = ReportedFromJson(item.value("reported", nlohmann::json::object())), .pending_wake = Field<std::string>(item, "pendingWake", {}),
 				    .pending_outside_only = Field(item, "pendingOutsideOnly", false), .settled_seen = Field<std::string>(item, "settledSeen", {})});
+				if (old_wakes && !m_links.back().pending_wake.empty())
+				{
+					m_links.back().pending_wake.clear();
+					m_links.back().pending_outside_only = false;
+					dropped_old_wake = true;
+				}
 				m_snapshots[pr_watch::Key(*pr)].pr = *pr;
 			}
+		if (dropped_old_wake)
+		{
+			uam::diagnostics::Write("PR watch: undelivered updates saved by an earlier version were dropped; later changes are reported as usual.");
+			m_dirty = true;
+		}
 	}
 
 	bool PrWatchService::Save()
@@ -180,7 +196,7 @@ namespace uam
 			    {"updatedAtMs", snapshot.detail.updated_at_ms}, {"closedAtMs", snapshot.detail.closed_at_ms}, {"checks", std::move(checks)}});
 		}
 		m_dirty = false;
-		const std::string text = nlohmann::json{{"version", 1}, {"links", std::move(links)}, {"pullRequests", std::move(pulls)}}.dump(1, '\t', false, nlohmann::json::error_handler_t::replace);
+		const std::string text = nlohmann::json{{"version", kFileVersion}, {"links", std::move(links)}, {"pullRequests", std::move(pulls)}}.dump(1, '\t', false, nlohmann::json::error_handler_t::replace);
 		if (text == m_saved) return true;
 		if (!uam::io::AtomicWriteFile(m_file, text))
 		{
@@ -257,6 +273,7 @@ namespace uam
 		const bool was_watching = link->watching;
 		link->watching = false;
 		link->pending_wake.clear();
+		link->pending_outside_only = false;
 		m_dirty = true;
 		Save();
 		return was_watching;
@@ -281,6 +298,7 @@ namespace uam
 			if (link.chat_id != chat_id || (!link.watching && link.pending_wake.empty())) continue;
 			link.watching = false;
 			link.pending_wake.clear();
+			link.pending_outside_only = false;
 			changed = true;
 		}
 		if (changed)
@@ -528,6 +546,7 @@ namespace uam
 				link.reported = std::move(report.next);
 				if (report.changes.empty()) continue;
 				const pr_watch::Message message = pr_watch::BuildMessage(link.pr, result.detail, report);
+				const bool was_held = !link.pending_wake.empty() && HeldForYolo(app, link.chat_id, link.pending_outside_only);
 				// Held news stays held only while everything waiting came from outside the repository's collaborators.
 				link.pending_outside_only = message.outside_only && (link.pending_wake.empty() || link.pending_outside_only);
 				link.pending_wake += (link.pending_wake.empty() ? "" : "\n\n") + message.text;
@@ -538,8 +557,12 @@ namespace uam
 					link.pending_outside_only = message.outside_only;
 				}
 				const bool held = HeldForYolo(app, link.chat_id, link.pending_outside_only);
-				Notify(link, snapshot.pr.repository + " " + message.summary +
-				                 (held ? ". Not sent to the agent, because this chat runs in YOLO: it goes with the pull request's next other update, or when the chat leaves YOLO." : ""),
+				// Holding is a permission decision, so it is logged once per held message, naming only the chat.
+				if (held && !was_held) uam::diagnostics::Write("PR watch: chat " + link.chat_id + " runs in YOLO; an update with only outside comments is held.");
+				const std::string held_note = report.exhausted
+				    ? ". Not sent to the agent, because this chat runs in YOLO: it is sent when the chat leaves YOLO."
+				    : ". Not sent to the agent, because this chat runs in YOLO: it goes with the pull request's next other update, or when the chat leaves YOLO.";
+				Notify(link, snapshot.pr.repository + " " + message.summary + (held ? held_note : ""),
 				    message.outcome == "completed" ? "success" : message.outcome == "failed" ? "warning" : "info");
 				if (report.exhausted) link.watching = false;
 			}
@@ -557,10 +580,16 @@ namespace uam
 		for (Link& link : m_links)
 		{
 			// Comments from people outside the repository's collaborators never start an unattended YOLO turn on their own.
-			if (!deliverable(link)) continue;
+			if (!deliverable(link))
+			{
+				link.held = !link.pending_wake.empty();
+				continue;
+			}
 			std::string error;
 			if (m_sender(app, link.chat_id, link.pending_wake, &error))
 			{
+				if (link.held) uam::diagnostics::Write("PR watch: chat " + link.chat_id + " left YOLO or got other news; its held update was sent.");
+				link.held = false;
 				link.pending_wake.clear();
 				link.pending_outside_only = false;
 				link.wake_refusals = 0;
@@ -629,6 +658,7 @@ namespace uam
 					// Marked done since the watch started: it ends, and news not yet delivered (such as a final merged message) is dropped.
 					link.watching = false;
 					link.pending_wake.clear();
+					link.pending_outside_only = false;
 					m_dirty = true;
 				}
 			}

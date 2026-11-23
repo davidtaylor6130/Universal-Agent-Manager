@@ -139,7 +139,7 @@ namespace uam::pr_watch
 		std::string summary;
 		/// failed, completed or updated.
 		std::string outcome;
-		/// Every change is a comment or review from someone who is not an owner, member or collaborator, and watching continues.
+		/// Every change is a comment or review from someone who is not an owner, member or collaborator.
 		bool outside_only = false;
 	};
 
