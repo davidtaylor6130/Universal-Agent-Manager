@@ -1,6 +1,6 @@
 # AI review → command allow/ask/deny rules: final report
 
-Work branch: `v5/feat-ai-review-command-rules`. Final SHA: **`ad7d9d6b`**.
+Work branch: `v5/feat-ai-review-command-rules` (PR #1091). Final SHA: **`53f83bd3`**.
 
 Commits on top of `uam/v5.2-sync-main`:
 
@@ -11,6 +11,8 @@ Commits on top of `uam/v5.2-sync-main`:
 | `b515e2ea` | Adds the Settings page and UI tests |
 | `119fdfa9` | Fixes from review round 1 |
 | `ad7d9d6b` | Fixes from review round 2 |
+| `905c7f95` | Built-in rule: remote commits always ask (David, 2026-11-23) |
+| `53f83bd3` | Fixes from review round 3 (of the remote-commit rule) |
 
 No PR, issue or comment was created.
 
@@ -194,3 +196,48 @@ Adds local permission rules, checked before automatic approval and AI review. De
 Claude UI review and David's approval are still pending.
 
 **Created with:** claude-opus-5-5 in Claude Code on the web (Claude Code CLI 2.1.330), on behalf of David Taylor.
+
+## Update: remote commits always ask (David's rule, 2026-11-23)
+
+By default, every non-local permanent committing action now waits for explicit approval under every permission level, YOLO included.
+
+**How it works.** A built-in ask rule runs inside the rule evaluation that precedes the YOLO, Accept Edits and AI Review approval paths. YOLO keeps providers in their default ask mode, so they still send UAM their permission requests. The rule is not stored in the rules list, so neither the editor nor `setPermissionCommandRules` can remove it.
+
+**What it holds:**
+- **Git:** `git push` with any options or refspecs (force pushes, remote branch and tag create/delete); command-line aliases; `send-pack`, `svn dcommit`, `p4 submit`, `subtree push` and `lfs push`; `git-*` programs and `hub`; and any Git subcommand UAM does not recognise as local, which may be a configured alias.
+- **GitHub CLI:** `gh pr merge` (also with flags before `merge`), `pr close --delete-branch`, `repo sync`, `repo create --push`, `release create`/`delete`, `gh api` calls that change something, and any gh command it does not ship.
+- **Subversion:** `svn commit`/`ci` and `import`; copy/move to a repository URL or `^/` path; mkdir/delete on one; prop commands with `--revprop` or on a URL; any unknown svn subcommand; `svnmucc`; `svnrdump load`; and `svnsync`.
+
+It follows chains, wrappers (including `call` and `wsl`), shell strings, `submodule foreach`, `bisect run`, `rebase --exec` and `difftool --extcmd`.
+
+**What it leaves alone.** Local work: `git commit`, local branches and tags, fetch and pull, `svn update`, `svn revert`, and working-copy SVN operations, including copying from a URL into the working copy.
+
+**Interaction with user rules.** A user deny still wins, and a user allow cannot approve these actions.
+
+**Notice.** While such a request waits, the approval card shows: "Pushes, merges and other remote commits always wait for your approval." When UAM cannot read what a command runs, the card says instead that it cannot rule out a push.
+
+**Hidden override.** The settings-file key `permission_remote_commits_without_approval=1` is off by default, is written to the file only when set, appears in neither Settings nor the frontend state, and is included in the agent-run fingerprint. When on, it restores the previous behaviour. The Settings page shows the built-in rule as a locked row, and the tester reports it.
+
+**Side effect.** Because the rule is always on, a command whose program UAM cannot read (`$CC -o x x.c`) now also asks under YOLO. This is documented.
+
+**Not covered (documented; open item for David).** MCP tool calls (for example a GitHub server's merge or push-files actions), provider-native auto modes, sandboxed commands that need no approval, CLI View terminals, and pushes started indirectly (hooks the agent wrote, `core.sshCommand`, `git fetch --upload-pack`, scripts).
+
+**Review round 3:** fresh-context `claude-opus-5-5` review of `905c7f95`. **16 suggested (2 blockers, 10 should-fix, 4 nits); 14 implemented in code, 2 addressed in docs only.**
+
+The blockers were `gh pr merge` slipping through when a flag with a value came before `merge`, and svn letting unknown subcommands through. Handled in docs only:
+- **#12, optional part:** holding MCP tools whose names suggest merge or push. Left as a documented limit and an open decision, because MCP tools have no typed command identity to match against.
+- **#15:** the locked row keeps the same text when the override is on. Documented; the tester reflects the override.
+
+**Tests and checks for this update:**
+- **Matcher:** 16 standalone cases pass under clang `-Werror -Wconversion`. New cases: every listed command asks; the reviewer's forms ask; local commits, `svn revert` and `svn update` do not; the override restores today's behaviour; a user deny still wins; a user allow cannot approve.
+- **Native integration:** the listed commands ask under YOLO with no user rules; `git commit`, `svn revert` and `svn update` run; the override and its hidden settings key are tested. These compile under g++ and clang but have not run (CMake refuses Linux).
+- **Frontend:** the approval-card notice and locked-row tests pass. The full suite passed on `905c7f95` (242 files, 4,229 tests); round 3 changed no frontend code. Type check and build pass.
+- **Docs:** `check_docs.py` passes.
+
+**Docs updated:** the "Remote commits always ask" section of the rules page; the YOLO and settings pages; and `documentation-review.md`, which records the decision and its date.
+
+**Review line for the PR:** "1 independent reviewer (claude-opus-5-5), fresh context, 3 iterations. Round 1: 16 suggested, 16 implemented (2 only in part). Round 2: 13 suggested, 13 implemented (3 only in part). Round 3 (remote-commit rule): 16 suggested, 14 implemented, 2 handled in docs only."
+
+**Additional screens needing Before/After capture:**
+- The approval card showing the remote-commit notice under YOLO.
+- The locked built-in row at the top of Settings › Permission rules.
