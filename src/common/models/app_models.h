@@ -1183,6 +1183,9 @@ struct AppSettings
 	std::vector<uam::command_rules::Rule> permission_command_rules;
 	/// <summary>Whether AI Review asks the reviewer model about requests no rule decides; off leaves them for the user.</summary>
 	bool permission_ai_review_enabled = true;
+	/// <summary>Hidden advanced override, settings key only (permission_remote_commits_without_approval=1): lets pushes,
+	/// merges and other remote commits follow the chat's permission level. Off by default, so they always ask.</summary>
+	bool permission_remote_commits_without_approval = false;
 	std::string default_new_chat_provider_id = provider_build_config::FirstEnabledProviderId();
 	std::map<std::string, ProviderChatDefaults> provider_chat_defaults;
 	std::map<std::string, HostScopedSettings> host_scoped_settings;

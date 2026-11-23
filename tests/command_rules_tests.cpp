@@ -142,8 +142,14 @@ UAM_TEST(CommandRulesDefaultsDenyForcePushAndCredentials)
 	}
 	for (const std::string_view command : {"rm -rf build", "rm x", "cat .env", "source .env.local"})
 		UAM_ASSERT(OutcomeFor(defaults, command) == rules::Outcome::AskUser);
+	// Plain pushes are not denied: the built-in remote-commit rule asks for them instead.
 	for (const std::string_view command : {"git push", "git push --follow-tags", "git push origin main"})
-		UAM_ASSERT(OutcomeFor(defaults, command) == rules::Outcome::NoMatch);
+	{
+		UAM_ASSERT(OutcomeFor(defaults, command) == rules::Outcome::AskUser);
+		rules::Context overridden = CommandContext(command);
+		overridden.remote_commit_override = true;
+		UAM_ASSERT(rules::Evaluate(defaults, overridden).outcome == rules::Outcome::NoMatch);
+	}
 	// The read-only default stands in for the reviewer only when the read filter admitted the command.
 	UAM_ASSERT(rules::Evaluate(defaults, CommandContext("cat README.md", true, true)).outcome == rules::Outcome::Approve);
 	UAM_ASSERT(rules::Evaluate(defaults, CommandContext("cat README.md", true, false)).outcome == rules::Outcome::NoMatch);
@@ -359,4 +365,57 @@ UAM_TEST(CommandRulesValidateWorkspacesAndTestScopedRules)
 	UAM_ASSERT(rules::TestCommand(read_only, "cat README.md", true).outcome == rules::Outcome::Approve);
 	UAM_ASSERT(rules::TestCommand(read_only, "cat secrets.txt", true).outcome == rules::Outcome::NoMatch);
 	UAM_ASSERT(rules::LooksCredentialLike("type C:\\Users\\me\\.SSH\\config"));
+}
+
+UAM_TEST(CommandRulesRemoteCommitsAlwaysAskUnlessOverridden)
+{
+	// Built in and not removable: with no user rules at all, every remote commit waits for the user.
+	const std::vector<rules::Rule> none;
+	for (const std::string_view command : {
+	         "git push", "git push --force origin main", "git push origin +main", "git push origin :feature", "git push origin --delete feature",
+	         "git push origin refs/tags/v1", "git push --tags", "git -C repo push", "git -c push.default=current push", "git --no-pager push",
+	         "git -c alias.p='push --force' p", "git send-pack origin main", "git svn dcommit", "git p4 submit", "cd repo && git push",
+	         "bash -c 'git push'", "git submodule foreach git push", "git rebase -x 'git push' main", "sudo -u ci git push",
+	         "gh pr merge 12 --squash", "gh pr merge --auto", "gh -R o/r pr merge 3", "gh api -X PUT repos/o/r/pulls/1/merge",
+	         "gh api repos/o/r/pulls/1/merge --method PUT", "gh api repos/o/r/merges -f base=main -f head=x", "gh api -X DELETE repos/o/r/git/refs/heads/x",
+	         "gh api repos/o/r/git/refs -f ref=refs/tags/v1 -f sha=abc", "gh release create v1", "gh release delete v1",
+	         "svn commit -m x", "svn ci -m x", "svn copy ^/trunk ^/branches/x -m b", "svn cp https://svn/r/trunk https://svn/r/tags/v1 -m t",
+	         "svn mkdir https://svn/r/branches/x -m b", "svn delete ^/branches/x -m d", "svn rm svn://h/r/x -m d", "svn move ^/a ^/b -m m",
+	         "svn import dir https://svn/r/x -m i", "svn propset --revprop -r 5 svn:log msg", "svn ps svn:log --revprop -r 5 msg"})
+	{
+		const rules::Decision decision = rules::Evaluate(none, CommandContext(command));
+		if (decision.outcome != rules::Outcome::AskUser || !decision.remote_commit) throw TestFailure("Remote commit did not ask: " + std::string(command));
+		UAM_ASSERT_EQ(decision.reason, std::string(rules::kRemoteCommitNotice));
+	}
+	// Local commits, reads and fetches are unaffected.
+	for (const std::string_view command : {
+	         "git commit -m x", "git commit --amend", "git status", "git fetch origin", "git pull", "git tag v1", "git tag -d v1", "git branch -D x",
+	         "git merge feature", "git log --oneline", "svn revert -R .", "svn update", "svn up", "svn status", "svn copy a b", "svn mkdir dir",
+	         "svn delete file", "svn move a b", "svn propset svn:ignore x .", "gh pr view 12", "gh pr list", "gh api repos/o/r/pulls",
+	         "gh api -X GET repos/o/r/merges -f per_page=5", "gh release view v1"})
+	{
+		const rules::Decision decision = rules::Evaluate(none, CommandContext(command));
+		if (decision.outcome != rules::Outcome::NoMatch) throw TestFailure("Local action was held: " + std::string(command) + " (" + decision.reason + ")");
+	}
+	// An unknown git subcommand may be a configured alias that pushes; an expanded one may be anything.
+	UAM_ASSERT(rules::Evaluate(none, CommandContext("git p")).outcome == rules::Outcome::AskUser);
+	UAM_ASSERT(rules::Evaluate(none, CommandContext("git $SUB")).outcome == rules::Outcome::AskUser);
+	UAM_ASSERT(rules::Evaluate(none, CommandContext("svn cp ^/trunk $DEST")).outcome == rules::Outcome::AskUser);
+
+	// The hidden override restores the previous behaviour; user deny rules still apply.
+	for (const std::string_view command : {"git push", "gh pr merge 1", "svn commit -m x", "git p"})
+	{
+		rules::Context context = CommandContext(command);
+		context.remote_commit_override = true;
+		UAM_ASSERT(rules::Evaluate(none, context).outcome == rules::Outcome::NoMatch);
+	}
+	rules::Context forced = CommandContext("git push --force");
+	forced.remote_commit_override = true;
+	UAM_ASSERT(rules::Evaluate(rules::DefaultRules(), forced).outcome == rules::Outcome::Deny);
+	// A user deny still wins over the built-in ask, and a user allow cannot approve a push.
+	UAM_ASSERT(rules::Evaluate(rules::DefaultRules(), CommandContext("git push -f")).outcome == rules::Outcome::Deny);
+	UAM_ASSERT(rules::Evaluate({MakeRule("allow-git", rules::Action::Allow, rules::Tool::Command, "git push")}, CommandContext("git push")).outcome == rules::Outcome::AskUser);
+	// The settings tester reports the built-in rule too, and honours the override.
+	UAM_ASSERT(rules::TestCommand(none, "git push", false).remote_commit);
+	UAM_ASSERT(rules::TestCommand(none, "git push", false, true).outcome == rules::Outcome::NoMatch);
 }

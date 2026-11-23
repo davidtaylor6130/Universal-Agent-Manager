@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
-import { Ban, CircleCheck, CircleHelp, Pencil, Plus, X } from 'lucide-react'
+import { Ban, CircleCheck, CircleHelp, Lock, Pencil, Plus, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { permissionRuleError, type PermissionCommandRule, type PermissionRuleAction, type PermissionRuleTestResult, type PermissionRuleTool } from '../../types/permissionRules'
 import { providerShortName } from '../../utils/providerMetadata'
@@ -178,7 +178,8 @@ export function PermissionRulesSettings() {
 
     <SettingsSection title="Rules"
       actions={<Button size="sm" leadingIcon={<Plus size={14} />} disabled={busy} onClick={() => startEditing(newRule(), true)}>Add rule</Button>}>
-      <Reveal open={rules.length === 0}><p className="uam-prov-sub">No rules. Every request follows the chat’s permission level.</p></Reveal>
+      <SettingRow icon={<Lock size={15} aria-hidden />} title="Pushes, merges and other remote commits" description="Ask · Built in, even under YOLO" />
+      <Reveal open={rules.length === 0}><p className="uam-prov-sub">No rules of your own. Other requests follow the chat’s permission level.</p></Reveal>
       {rules.map((rule) => {
         const Icon = ACTION_ICONS[rule.action]
         const title = ruleTitle(rule)

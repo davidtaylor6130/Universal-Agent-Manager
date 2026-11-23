@@ -536,6 +536,7 @@ function pendingPermissionEquivalent(existing: AcpPendingPermission | null, next
     existing.safetyRisk === next.safetyRisk &&
     existing.safetyTier === next.safetyTier &&
     existing.safetyRequiresApproval === next.safetyRequiresApproval &&
+    existing.ruleNotice === next.ruleNotice &&
     existing.options.length === next.options.length &&
     existing.options.every((option, index) => {
       const other = next.options[index]

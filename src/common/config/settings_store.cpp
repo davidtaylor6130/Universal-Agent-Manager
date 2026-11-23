@@ -101,6 +101,7 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	constexpr std::string_view kPermissionReviewerModelIdKey = "permission_reviewer_model_id";
 	constexpr std::string_view kPermissionCommandRulesKey = "permission_command_rules";
 	constexpr std::string_view kPermissionAiReviewEnabledKey = "permission_ai_review_enabled";
+	constexpr std::string_view kPermissionRemoteCommitsWithoutApprovalKey = "permission_remote_commits_without_approval";
 	constexpr std::string_view kDefaultNewChatProviderIdKey = "default_new_chat_provider_id";
 	constexpr std::string_view kProviderChatDefaultsKey = "provider_chat_defaults";
 	constexpr std::string_view kMarkdownStoreDirectoryKey = "markdown_store_directory";
@@ -737,6 +738,8 @@ bool SettingsStore::SaveInternal(const std::filesystem::path& settings_file, con
 		WriteEncodedSetting(lines, kPermissionReviewerModelIdKey, normalized.permission_reviewer_model_id);
 		WriteEncodedSetting(lines, kPermissionCommandRulesKey, uam::permission_command_rules::Serialize(uam::command_rules::Normalize(normalized.permission_command_rules)).dump());
 		WriteBoolSetting(lines, kPermissionAiReviewEnabledKey, normalized.permission_ai_review_enabled);
+		// Hidden advanced override: written only once someone sets it, so ordinary files never show it.
+		if (normalized.permission_remote_commits_without_approval) WriteBoolSetting(lines, kPermissionRemoteCommitsWithoutApprovalKey, true);
 		WriteEncodedSetting(lines, kDefaultNewChatProviderIdKey, SavedProviderSelection(normalized, kDefaultNewChatProviderIdKey, normalized.default_new_chat_provider_id));
 		WriteRawSetting(lines, kProviderChatDefaultsKey, EncodeProviderChatDefaults(normalized.provider_chat_defaults));
 		nlohmann::json host_settings = nlohmann::json::object();
@@ -1183,6 +1186,10 @@ SettingsLoadResult SettingsStore::LoadInternal(const std::filesystem::path& sett
 					append_warning("Some saved permission rules were invalid, duplicated or over the 200-rule limit and were ignored.");
 			}
 			saw_permission_command_rules = true;
+		}
+		else if (key == kPermissionRemoteCommitsWithoutApprovalKey)
+		{
+			settings.permission_remote_commits_without_approval = uam::parse::BoolOr(value, false);
 		}
 		else if (key == kPermissionAiReviewEnabledKey)
 		{

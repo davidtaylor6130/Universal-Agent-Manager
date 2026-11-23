@@ -637,6 +637,7 @@ export function sanitizePendingPermission(value: unknown): AcpPendingPermission 
     safetyRisk: value.safetyRisk === 'allowed' || value.safetyRisk === 'warn' || value.safetyRisk === 'warn_high' ? value.safetyRisk : undefined,
     safetyTier: value.safetyTier === 'low' || value.safetyTier === 'medium' || value.safetyTier === 'high' ? value.safetyTier : undefined,
     safetyRequiresApproval: booleanOr(value.safetyRequiresApproval),
+    ruleNotice: typeof value.ruleNotice === 'string' && value.ruleNotice.trim() ? value.ruleNotice.trim().slice(0, 300) : undefined,
     options: Array.isArray(value.options)
       ? value.options.flatMap((option) => {
           const sanitized = sanitizePermissionOption(option)

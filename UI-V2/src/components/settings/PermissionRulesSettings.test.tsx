@@ -41,7 +41,9 @@ describe('PermissionRulesSettings', () => {
 
   it('shows the empty sentence and adds a trimmed deny rule through the editor', async () => {
     show()
-    expect(document.body.textContent).toContain('No rules. Every request follows the chat’s permission level.')
+    expect(document.body.textContent).toContain('No rules of your own. Other requests follow the chat’s permission level.')
+    expect(document.body.textContent).toContain('Pushes, merges and other remote commits')
+    expect(button('Delete rule Pushes, merges and other remote commits')).toBeUndefined()
     await click('Add rule')
     expect(document.querySelector('[role="dialog"]')?.getAttribute('aria-label')).toBe('New permission rule')
     expect(button('Save rule').disabled).toBe(true)

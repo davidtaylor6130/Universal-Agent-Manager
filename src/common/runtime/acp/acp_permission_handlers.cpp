@@ -211,7 +211,6 @@ namespace
 	uam::command_rules::Decision EvaluatePermissionRules(const AppState& app, const AcpSessionState& session, const ChatSession& chat)
 	{
 		const AcpPendingPermissionState& pending = session.pending_permission;
-		if (app.settings.permission_command_rules.empty()) return {};
 		// Recognized non-action questions are answers, not tool calls; rules do not apply to them.
 		if (ProviderRuntimeRegistry::ResolveById(session.provider_id).AcpPermissionIsNonActionQuestion(pending)) return {};
 		const uam::command_rules::Category category = uam::command_rules::CategoryForKind(pending.kind, PermissionUsesNetwork(pending) || pending.kind == uam::acp_permissions::kPermissionsToolKind);
@@ -228,6 +227,7 @@ namespace
 		context.provider_id = session.provider_id;
 		context.workspace = workspace;
 		context.source_workspace = source_workspace;
+		context.remote_commit_override = app.settings.permission_remote_commits_without_approval;
 		context.folder_workspace = folder_workspace;
 		context.allow_permitted = ai_review_tier && RuleApprovalWithinCeiling(session, chat, context.category, read_only);
 		return uam::command_rules::Evaluate(app.settings.permission_command_rules, context);
@@ -722,6 +722,7 @@ bool TryAutoApprovePendingPermission(AppState& app, AcpSessionState& session, co
 		// (Cancel when none is offered), ask keeps the request for the user under every tier including YOLO, and
 		// allow approves once only within the AI reviewer's own ceiling (EvaluatePermissionRules).
 		session.pending_permission.command_rule_hold = false;
+		session.pending_permission.command_rule_notice.clear();
 		const uam::command_rules::Decision rule = EvaluatePermissionRules(app, session, chat);
 		if (rule.outcome == uam::command_rules::Outcome::Deny)
 		{
@@ -749,8 +750,9 @@ bool TryAutoApprovePendingPermission(AppState& app, AcpSessionState& session, co
 		if (rule.outcome == uam::command_rules::Outcome::AskUser)
 		{
 			session.pending_permission.command_rule_hold = true;
+			if (rule.remote_commit) session.pending_permission.command_rule_notice = rule.reason;
 			NoteRuleOutcome(session, "ask", rule);
-			AppendRuleDiagnostic(session, "held_by_rule", rule);
+			AppendRuleDiagnostic(session, rule.remote_commit ? "remote_commit_held" : "held_by_rule", rule);
 			break;
 		}
 		if (rule.outcome == uam::command_rules::Outcome::Approve)

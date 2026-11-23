@@ -450,6 +450,8 @@ namespace uam
 		// Transient: an ask rule (or an unresolvable program name) keeps this request for the user, so neither
 		// automatic approval nor AI review may answer it.
 		bool command_rule_hold = false;
+		// One-line notice shown on the approval card when a rule holds the request (a push waiting for approval).
+		std::string command_rule_notice;
 	};
 
 	struct AcpUserInputOptionState

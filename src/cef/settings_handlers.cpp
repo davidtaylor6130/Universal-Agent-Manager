@@ -818,11 +818,11 @@ void UamQueryHandler::HandleTestPermissionCommandRules(CefRefPtr<CefBrowser>, co
 	scope.local = false;
 	scope.resolve_executables = false;
 	const bool read_only = uam::command_safety::IsReadOnlyCommand(text, scope);
-	const uam::command_rules::Decision decision = uam::command_rules::TestCommand(rules, text, read_only);
+	const uam::command_rules::Decision decision = uam::command_rules::TestCommand(rules, text, read_only, m_app.settings.permission_remote_commits_without_approval);
 	const char* outcome = decision.outcome == uam::command_rules::Outcome::Approve ? "allow"
 	    : decision.outcome == uam::command_rules::Outcome::Deny ? "deny"
 	    : decision.outcome == uam::command_rules::Outcome::AskUser ? "ask" : "none";
-	cb->Success(nlohmann::json{{"outcome", outcome}, {"ruleId", decision.rule_id}, {"reason", decision.reason}, {"readOnly", read_only}}.dump());
+	cb->Success(nlohmann::json{{"outcome", outcome}, {"ruleId", decision.rule_id}, {"reason", decision.reason}, {"readOnly", read_only}, {"remoteCommit", decision.remote_commit}}.dump());
 }
 
 void UamQueryHandler::HandleSetUpdateSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)

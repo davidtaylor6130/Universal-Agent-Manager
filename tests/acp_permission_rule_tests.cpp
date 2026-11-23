@@ -229,6 +229,54 @@ UAM_TEST(PermissionReviewCacheKeyCoversOnlyPlainTypedCommands)
 	UAM_ASSERT(uam::acp_detail::PermissionReviewCacheKey(fixture.app, *fixture.session, chat, "gemini-cli").empty());
 }
 
+UAM_TEST(PermissionRulesRemoteCommitsAskUnderYoloWithNoUserRules)
+{
+	for (const std::string_view command : {
+	         "git push", "git push --force origin main", "git push origin +main", "git push origin --delete feature", "git push origin refs/tags/v1",
+	         "git -c alias.p='push --force' p", "gh pr merge 12 --squash", "gh api -X PUT repos/o/r/pulls/1/merge", "svn commit -m x", "svn ci -m x",
+	         "svn copy ^/trunk ^/branches/x -m b", "svn mkdir https://svn/r/branches/x -m b", "svn delete ^/branches/x -m d",
+	         "svn move ^/a ^/b -m m", "svn import dir https://svn/r/x -m i", "svn propset --revprop -r 5 svn:log msg"})
+	{
+		PermissionRuleFixture fixture("yolo", {});
+		fixture.Request(1, "execute", std::string(command));
+		if (!fixture.Waiting(1)) throw TestFailure("YOLO auto-approved a remote commit: " + std::string(command));
+		UAM_ASSERT(fixture.Diagnostic("remote_commit_held"));
+		UAM_ASSERT_EQ(fixture.session->pending_permission.command_rule_notice, std::string(rules::kRemoteCommitNotice));
+	}
+	for (const std::string_view command : {"git commit -m x", "git status", "svn revert -R .", "svn update"})
+	{
+		PermissionRuleFixture fixture("yolo", {});
+		fixture.Request(1, "execute", std::string(command));
+		if (fixture.Waiting(1)) throw TestFailure("Local action was held under YOLO: " + std::string(command));
+	}
+}
+
+UAM_TEST(PermissionRulesHiddenOverrideRestoresRemoteCommitsUnderYolo)
+{
+	for (const std::string_view command : {"git push", "gh pr merge 12", "svn commit -m x"})
+	{
+		PermissionRuleFixture fixture("yolo", {});
+		fixture.app.settings.permission_remote_commits_without_approval = true;
+		fixture.Request(1, "execute", std::string(command));
+		UAM_ASSERT(!fixture.Waiting(1));
+		UAM_ASSERT(!fixture.Diagnostic("remote_commit_held"));
+	}
+	// The override is a hidden settings key: absent by default, read when present.
+	TempDir temp("uam-remote-commit-override");
+	const fs::path file = temp.root / "settings.txt";
+	AppSettings defaults;
+	UAM_ASSERT(SettingsStore::Save(file, defaults));
+	std::string text;
+	UAM_ASSERT(uam::io::TryReadTextFile(file, text));
+	UAM_ASSERT(text.find("permission_remote_commits_without_approval") == std::string::npos);
+	AppSettings enabled;
+	enabled.permission_remote_commits_without_approval = true;
+	UAM_ASSERT(SettingsStore::Save(file, enabled));
+	AppSettings loaded;
+	(void)SettingsStore::Load(file, loaded);
+	UAM_ASSERT(loaded.permission_remote_commits_without_approval);
+}
+
 UAM_TEST(PermissionRulesDoNotHoldRequestsWithoutATypedCommand)
 {
 	PermissionRuleFixture fixture("yolo", rules::DefaultRules());

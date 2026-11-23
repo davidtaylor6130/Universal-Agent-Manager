@@ -10,6 +10,7 @@
 // Kept free of JSON, provider and platform types so it can be tested in isolation.
 
 #include <algorithm>
+#include <initializer_list>
 #include <array>
 #include <bitset>
 #include <cstddef>
@@ -72,6 +73,9 @@ struct Context
 	std::string_view folder_workspace;
 	// Settings tester only: report scoped rules as if their provider and workspace applied.
 	bool ignore_scope = false;
+	// The hidden advanced override (settings key permission_remote_commits_without_approval). Off by default:
+	// pushes and other remote commits then wait for the user under every permission level, YOLO included.
+	bool remote_commit_override = false;
 	// The caller's ceiling: true only when the AI reviewer itself could have approved this request once
 	// (AI Review tier, reviewer-eligible, within Plan/captured ceilings, not high risk, category checks passed).
 	bool allow_permitted = false;
@@ -92,9 +96,14 @@ struct Decision
 	std::string reason;
 	// An allow rule matched but the ceiling did not permit automatic approval; the normal flow continues.
 	bool allow_blocked_by_ceiling = false;
+	// The built-in remote-commit rule holds the request (a push, merge or SVN commit waits for the user).
+	bool remote_commit = false;
 };
 
 inline constexpr std::size_t kMaxRules = 200;
+/// <summary>Id reported for the built-in rule that holds pushes and other remote commits for the user.</summary>
+inline constexpr std::string_view kRemoteCommitRuleId = "builtin-remote-commits";
+inline constexpr std::string_view kRemoteCommitNotice = "Pushes, merges and other remote commits always wait for your approval.";
 inline constexpr std::size_t kMaxPatternBytes = 512;
 inline constexpr std::size_t kMaxFieldBytes = 1024;
 inline constexpr std::size_t kMaxCommandBytes = 64 * 1024;
@@ -713,6 +722,19 @@ namespace detail
 		}
 		if (name == "git")
 		{
+			// `git submodule foreach <cmd>` and `git rebase --exec <cmd>` run shell commands.
+			for (std::size_t j = i + 1; j + 1 < words.size(); ++j)
+			{
+				if (words[j].text == "foreach")
+				{
+					std::size_t k = j + 1;
+					while (k < words.size() && words[k].text.starts_with('-')) ++k;
+					if (k < words.size()) AddNested(view, rest_of_line(k + 1, words[k].text), depth);
+					break;
+				}
+				if (words[j].text == "-x" || words[j].text == "--exec") AddNested(view, words[j + 1].text, depth);
+				else if (words[j].text.starts_with("--exec=")) AddNested(view, words[j].text.substr(7), depth);
+			}
 			// `git -c alias.x='push --force' x` defines and runs an alias on the command line; a `!` alias runs a shell.
 			for (std::size_t j = i + 1; j + 1 < words.size(); ++j)
 			{
@@ -1026,6 +1048,136 @@ namespace detail
 		return best;
 	}
 
+	inline std::string LowerText(std::string_view text)
+	{
+		std::string lower;
+		for (char ch : text) lower.push_back(Lower(ch));
+		return lower;
+	}
+
+	inline bool OneOf(std::string_view value, std::initializer_list<std::string_view> list)
+	{
+		return std::find(list.begin(), list.end(), value) != list.end();
+	}
+
+	/// <summary>Git subcommands that only change the local repository or read from a remote. Any other
+	/// subcommand may be an alias from the user's Git configuration, which could push.</summary>
+	inline bool LocalGitSubcommand(std::string_view name)
+	{
+		return OneOf(name, {"add", "am", "apply", "archive", "bisect", "blame", "branch", "bundle", "cat-file", "check-ignore", "checkout", "cherry",
+		    "cherry-pick", "clean", "clone", "commit", "config", "count-objects", "describe", "diff", "diff-files", "diff-index", "diff-tree", "difftool",
+		    "fetch", "for-each-ref", "format-patch", "fsck", "gc", "grep", "help", "init", "log", "ls-files", "ls-remote", "ls-tree", "maintenance", "merge",
+		    "merge-base", "mergetool", "mv", "notes", "pull", "range-diff", "rebase", "reflog", "remote", "repack", "replace", "reset", "restore", "rev-list",
+		    "rev-parse", "revert", "rm", "shortlog", "show", "show-ref", "sparse-checkout", "stash", "status", "submodule", "switch", "symbolic-ref", "tag",
+		    "update-index", "update-ref", "var", "verify-commit", "verify-tag", "version", "whatchanged", "worktree", "write-tree"});
+	}
+
+	/// <summary>Non-option words after `start`, skipping the values of the listed options.</summary>
+	inline std::vector<std::size_t> Operands(const std::vector<Word>& words, std::size_t start, std::initializer_list<std::string_view> valued_options)
+	{
+		std::vector<std::size_t> operands;
+		for (std::size_t i = start; i < words.size(); ++i)
+		{
+			const std::string_view text = words[i].text;
+			if (text == "--") { for (++i; i < words.size(); ++i) operands.push_back(i); break; }
+			if (text.size() > 1 && text.starts_with('-'))
+			{
+				if (text.find('=') == std::string_view::npos && OneOf(text, valued_options)) ++i;
+				continue;
+			}
+			operands.push_back(i);
+		}
+		return operands;
+	}
+
+	/// <summary>Whether the program starting at words[start] commits permanently to a remote: git push and the
+	/// Git commands that push (send-pack, svn dcommit, p4 submit, possible config aliases), gh pr merge,
+	/// gh release create/delete and mutating gh api calls, and SVN commits, URL operations, imports and revision
+	/// property changes. Words the shell expands make it a possible match.</summary>
+	inline Certainty RemoteCommitAt(const std::vector<Word>& words, std::size_t start)
+	{
+		const std::string name = ProgramName(words[start].text);
+		const auto expanded = [](const Word& word) { return word.dynamic || !word.literal; };
+		if (name == "git")
+		{
+			const std::vector<std::size_t> operands = Operands(words, start + 1, {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env", "--super-prefix"});
+			if (operands.empty()) return kNoMatch;
+			const Word& sub = words[operands[0]];
+			if (expanded(sub)) return kPossibleMatch;
+			const std::string command = LowerText(sub.text);
+			const std::string next = operands.size() > 1 ? LowerText(words[operands[1]].text) : std::string{};
+			if (OneOf(command, {"push", "send-pack", "http-push"})) return kDefiniteMatch;
+			if (command == "svn") return OneOf(next, {"dcommit", "commit-diff", "set-tree", "branch", "tag"}) ? kDefiniteMatch : kNoMatch;
+			if (command == "p4") return next == "submit" ? kDefiniteMatch : kNoMatch;
+			return LocalGitSubcommand(command) ? kNoMatch : kPossibleMatch;
+		}
+		if (name == "gh")
+		{
+			const std::vector<std::size_t> operands = Operands(words, start + 1, {"-R", "--repo", "--hostname", "-X", "--method", "-f", "-F", "--field", "--raw-field",
+			    "--input", "-H", "--header", "-q", "--jq", "-t", "--template", "--cache", "-p", "--preview"});
+			if (operands.empty()) return kNoMatch;
+			if (std::any_of(operands.begin(), operands.begin() + std::min<std::ptrdiff_t>(2, static_cast<std::ptrdiff_t>(operands.size())), [&](std::size_t at) { return expanded(words[at]); })) return kPossibleMatch;
+			const std::string group = LowerText(words[operands[0]].text);
+			const std::string action = operands.size() > 1 ? LowerText(words[operands[1]].text) : std::string{};
+			if (group == "pr" && action == "merge") return kDefiniteMatch;
+			if (group == "release" && OneOf(action, {"create", "delete"})) return kDefiniteMatch;
+			if (group != "api") return kNoMatch;
+			// gh api is a GET unless a method says otherwise, or fields or an input body make it a POST.
+			Certainty result = kNoMatch;
+			bool explicit_get = false, body = false, mutating_method = false;
+			for (std::size_t i = start + 1; i < words.size(); ++i)
+			{
+				const std::string text = words[i].text;
+				std::string method;
+				if ((text == "-X" || text == "--method") && i + 1 < words.size()) { if (expanded(words[i + 1])) result = kPossibleMatch; method = words[i + 1].text; }
+				else if (text.starts_with("--method=")) method = text.substr(9);
+				else if (text.starts_with("-X") && text.size() > 2) method = text.substr(2);
+				if (!method.empty()) { if (LowerText(method) == "get") explicit_get = true; else mutating_method = true; }
+				if (OneOf(text, {"-f", "-F", "--field", "--raw-field", "--input"}) || text.starts_with("--field=") || text.starts_with("--raw-field=") ||
+				    text.starts_with("--input=") || (text.starts_with("-f") && text.size() > 2) || (text.starts_with("-F") && text.size() > 2)) body = true;
+			}
+			if (mutating_method || (body && !explicit_get)) return kDefiniteMatch;
+			return result;
+		}
+		if (name == "svn")
+		{
+			const std::vector<std::size_t> operands = Operands(words, start + 1, {"-m", "--message", "-F", "--file", "--username", "--password", "--config-dir",
+			    "--config-option", "-r", "--revision", "--depth", "--set-depth", "--targets", "--encoding", "--with-revprop", "--changelist", "--cl", "--accept",
+			    "--native-eol", "-c", "--change", "--editor-cmd", "--diff-cmd", "--diff3-cmd", "-l", "--limit", "-x", "--extensions"});
+			if (operands.empty()) return kNoMatch;
+			const Word& sub = words[operands[0]];
+			if (expanded(sub)) return kPossibleMatch;
+			const std::string command = LowerText(sub.text);
+			if (OneOf(command, {"commit", "ci", "import"})) return kDefiniteMatch;
+			if (OneOf(command, {"copy", "cp", "mkdir", "delete", "del", "remove", "rm", "move", "mv", "rename", "ren"}))
+			{
+				Certainty result = kNoMatch;
+				for (std::size_t k = 1; k < operands.size(); ++k)
+				{
+					const Word& operand = words[operands[k]];
+					if (operand.text.find("://") != std::string::npos || operand.text.starts_with("^/")) return kDefiniteMatch;
+					if (expanded(operand)) result = kPossibleMatch;
+				}
+				return result;
+			}
+			if (OneOf(command, {"propset", "pset", "ps", "propdel", "pdel", "pd", "propedit", "pedit", "pe"}))
+				return std::any_of(words.begin() + static_cast<std::ptrdiff_t>(start + 1), words.end(), [](const Word& word) { return word.text == "--revprop"; }) ? kDefiniteMatch : kNoMatch;
+			return kNoMatch;
+		}
+		return kNoMatch;
+	}
+
+	inline Certainty RemoteCommitMatches(const CommandView& view)
+	{
+		Certainty best = kNoMatch;
+		for (const Invocation& invocation : view.invocations)
+		{
+			best = std::max(best, RemoteCommitAt(view.segments[invocation.segment], invocation.start));
+			if (best == kDefiniteMatch) break;
+		}
+		return best;
+	}
+
 	/// <summary>Allow side: the command must be one plain simple command with no operators, redirection,
 	/// substitution, expansion, glob or unclosed quote; the pattern must match from its very first word (no
 	/// leading assignments or wrappers) and the program must be a bare name. Anything else falls through to
@@ -1215,7 +1367,10 @@ inline Decision Evaluate(const std::vector<Rule>& rules, const Context& context)
 	const Rule* ask = nullptr;
 	const Rule* possible = nullptr;
 	const Rule* allow = nullptr;
-	bool command_guard = false;
+	// Built-in, non-removable ask rule: remote commits wait for the user unless the hidden override is set.
+	const bool remote_rule = command && !context.remote_commit_override;
+	const detail::Certainty remote = remote_rule ? detail::RemoteCommitMatches(view) : detail::kNoMatch;
+	bool command_guard = remote_rule;
 	for (const Rule& rule : rules)
 	{
 		if (!rule.enabled) continue;
@@ -1232,6 +1387,14 @@ inline Decision Evaluate(const std::vector<Rule>& rules, const Context& context)
 		decision.outcome = Outcome::Deny;
 		decision.rule_id = deny->id;
 		decision.reason = "A deny rule matched.";
+		return decision;
+	}
+	if (remote == detail::kDefiniteMatch || (remote == detail::kPossibleMatch && ask == nullptr))
+	{
+		decision.outcome = Outcome::AskUser;
+		decision.rule_id = std::string(kRemoteCommitRuleId);
+		decision.reason = std::string(kRemoteCommitNotice);
+		decision.remote_commit = true;
 		return decision;
 	}
 	if (ask != nullptr)
@@ -1286,13 +1449,14 @@ inline bool LooksCredentialLike(std::string_view text)
 /// <summary>For the settings test field: which rule decides a typed command, as if it were a shell command
 /// request with every allow permitted and every rule's provider and workspace applying; the caller reports a
 /// deciding rule's scope. The real ceiling can still refuse an allow at run time.</summary>
-inline Decision TestCommand(const std::vector<Rule>& rules, std::string_view command, bool read_only)
+inline Decision TestCommand(const std::vector<Rule>& rules, std::string_view command, bool read_only, bool remote_commit_override = false)
 {
 	Context context;
 	context.category = Category::Command;
 	context.command = command;
 	context.read_only = read_only && !LooksCredentialLike(command);
 	context.ignore_scope = true;
+	context.remote_commit_override = remote_commit_override;
 	context.allow_permitted = true;
 	return Evaluate(rules, context);
 }

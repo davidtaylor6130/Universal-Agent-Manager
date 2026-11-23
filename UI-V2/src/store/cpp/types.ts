@@ -364,6 +364,8 @@ export interface AcpPendingPermission {
   safetyRisk?: 'allowed' | 'warn' | 'warn_high'
   safetyTier?: 'low' | 'medium' | 'high'
   safetyRequiresApproval?: boolean
+  /** One-line reason a permission rule holds this request, such as a push waiting for approval. */
+  ruleNotice?: string
   options: AcpPermissionOption[]
 }
 
