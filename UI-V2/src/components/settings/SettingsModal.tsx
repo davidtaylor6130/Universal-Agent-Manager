@@ -2274,8 +2274,9 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         ;[next[index], next[target]] = [next[target], next[index]]
         updatePreferences(next)
       }
-      const previewImport = async (path = agentImportPath.trim(), entry = agentImportEntry) => {
-        if (agentImportBusy || !path) return
+      // A picked candidate supersedes any preview still loading, whose result is then ignored.
+      const previewImport = async (path = agentImportPath.trim(), entry = agentImportEntry, supersede = false) => {
+        if ((agentImportBusy && !supersede) || !path) return
         const requestId = ++agentImportRequest.current
         setAgentImportPreview(null)
         setAgentImportBusy(true)
@@ -2308,7 +2309,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         invalidateAgentImport()
         setAgentImportPath(candidate.sourcePath)
         setAgentImportEntry(candidate.sourceEntry)
-        void previewImport(candidate.sourcePath, candidate.sourceEntry)
+        void previewImport(candidate.sourcePath, candidate.sourceEntry, true)
       }
       const readOnlySource = agentImportPreview?.maxWorkspaceAccess === 'read'
       const importNotes = agentImportPreview?.notes ?? []

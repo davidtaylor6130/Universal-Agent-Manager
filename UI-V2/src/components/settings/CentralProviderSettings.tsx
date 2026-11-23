@@ -11,7 +11,7 @@ import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
 const AGENT_NAME = /^[a-z0-9][a-z0-9_-]*$/
 const same = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right)
 
-type Agent = { id: string; description: string; mode: string; workspaceAccess: string; skills: string[]; delegates: string[]; instructions: string; builtIn: boolean }
+type Agent = { id: string; description: string; mode: string; workspaceAccess: string; skills: string[]; delegates: string[]; instructions: string; builtIn: boolean; /** 'read' for an agent imported from a read-only source. */ maxWorkspaceAccess?: string }
 type InstructionEditor = { path: string; content: string; original: string; loading: boolean; readFailed: boolean; error: string }
 const blankAgent = (): Agent => ({ id: '', description: '', mode: 'primary', workspaceAccess: 'write', skills: [], delegates: [], instructions: '', builtIn: false })
 const field = 'uam-field w-full'
@@ -315,7 +315,7 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
                   <MenuSelect label="Used as" value={draft.mode} disabled={busy || builtIn} options={USED_AS.map(option => ({ value: option.value, label: option.label, description: option.detail }))} onChange={mode => set({ mode })} />
                 </SettingsField>
                 <SettingsField label="Workspace access">
-                  <MenuSelect label="Workspace access" value={draft.workspaceAccess} disabled={busy || builtIn} options={[{ value: 'write', label: 'Read and write' }, { value: 'read', label: 'Read only' }]} onChange={workspaceAccess => set({ workspaceAccess })} />
+                  <MenuSelect label="Workspace access" value={draft.workspaceAccess} disabled={busy || builtIn} options={[{ value: 'write', label: 'Read and write', disabled: draft.maxWorkspaceAccess === 'read', description: draft.maxWorkspaceAccess === 'read' ? 'Imported from a read-only source.' : undefined }, { value: 'read', label: 'Read only' }]} onChange={workspaceAccess => set({ workspaceAccess })} />
                 </SettingsField>
               </div>
               <SettingsField label="Skills for this agent">

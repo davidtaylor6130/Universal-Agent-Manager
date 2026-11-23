@@ -105,7 +105,7 @@ namespace uam
 		}
 
 		/// Stored OpenCode rules: tool -> ask|deny, consistent with the agent's workspace access, no duplicate keys.
-		std::optional<std::string> ParseOpenCodePermissionJson(const std::string& text, const std::string& workspace_access)
+		std::optional<std::string> ParseStoredToolRulesJson(const std::string& text, const std::string& workspace_access)
 		{
 			bool duplicate = false;
 			std::vector<std::set<std::string>> keys;
@@ -220,7 +220,7 @@ namespace uam
 					return std::nullopt;
 				}
 				const std::string key = uam::strings::Trim(line.substr(0, colon));
-				if (!std::set<std::string>{"version", "name", "description", "mode", "workspaceAccess", "skills", "delegates", "openCodePermission"}.contains(key) ||
+				if (!std::set<std::string>{"version", "name", "description", "mode", "workspaceAccess", "maxWorkspaceAccess", "skills", "delegates", "openCodePermission"}.contains(key) ||
 				    !fields.emplace(key, uam::strings::Trim(line.substr(colon + 1))).second)
 				{
 					*error_out = "Agent frontmatter contains an unknown or duplicate field: " + key;
@@ -248,12 +248,22 @@ namespace uam
 				*error_out = "Agent definition has an invalid version, name, mode, access, list, description, or instruction body.";
 				return std::nullopt;
 			}
+			// An import from a read-only source records that ceiling; it outlives edits to the agent.
+			if (fields.contains("maxWorkspaceAccess"))
+			{
+				result.max_workspace_access = uam::strings::TrimAndLowerAscii(Unquote(fields["maxWorkspaceAccess"]));
+				if (result.max_workspace_access != "read" || result.workspace_access != "read")
+				{
+					*error_out = "maxWorkspaceAccess: only read is supported, and workspaceAccess must then be read.";
+					return std::nullopt;
+				}
+			}
 			if (fields.contains("openCodePermission"))
 			{
-				const std::optional<std::string> policy = ParseOpenCodePermissionJson(fields["openCodePermission"], result.workspace_access);
+				const std::optional<std::string> policy = ParseStoredToolRulesJson(fields["openCodePermission"], result.workspace_access);
 				if (!policy || !delegates->empty())
 				{
-					*error_out = "openCodePermission: rules must be ask or deny, match the workspace access, and the agent cannot have delegates.";
+					*error_out = "permission rules: must be ask or deny, match the workspace access, and the agent cannot have delegates.";
 					return std::nullopt;
 				}
 				result.open_code_permission_json = *policy;
@@ -381,6 +391,7 @@ namespace uam
 		std::string NativeProviderId(std::string_view value)
 		{
 			const std::string provider = provider_ids::NormalizeCliProviderAliasOrSelf(value);
+			if (provider == provider_ids::kExcludedCliProviderId) return {};
 			return provider == provider_ids::kOpenCodeCli || provider == provider_ids::kCopilotCli ||
 			               provider == provider_ids::kGeminiCli || provider == provider_ids::kClaudeCli
 			           ? provider
@@ -572,7 +583,7 @@ namespace uam
 		    PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(uam::paths::Utf8PathString(source_path)));
 		if (preview.provider_id.empty())
 		{
-			preview.error = "provider: only OpenCode, Copilot CLI, Gemini CLI and Claude Code have native agents to import; Codex CLI and Antigravity have none.";
+			preview.error = "provider: this provider has no native agent files to import.";
 			return preview;
 		}
 		std::error_code error;
@@ -598,10 +609,10 @@ namespace uam
 		{
 			if (preview.provider_id != provider_ids::kOpenCodeCli)
 			{
-				preview.error = "source: only OpenCode keeps agents in a JSON config.";
+				preview.error = "source: this provider does not keep agents in a JSON config.";
 				return preview;
 			}
-			if (!provider_agent_import::ParseOpenCodeJsonAgent(text, source_entry, preview.source_path, parsed))
+			if (!provider_agent_import::ParseJsonConfigAgent(text, source_entry, preview.source_path, parsed))
 			{
 				preview.error = parsed.error;
 				return preview;
@@ -620,7 +631,7 @@ namespace uam
 			file_id = NativeAgentFileId(preview.source_path);
 		}
 		// OpenCode applies config-level rules before an agent's own, so they are part of what the source allows.
-		if (preview.provider_id == provider_ids::kOpenCodeCli && !provider_agent_import::AddInheritedOpenCodeRules(preview.source_path, parsed))
+		if (preview.provider_id == provider_ids::kOpenCodeCli && !provider_agent_import::AddInheritedConfigRules(preview.source_path, parsed))
 		{
 			preview.error = parsed.error;
 			return preview;
@@ -636,11 +647,6 @@ namespace uam
 	{
 		const std::string provider = provider_ids::NormalizeCliProviderAliasOrSelf(provider_id);
 		ProviderAgentDiscovery discovery = provider_agent_import::Discover(NativeProviderId(provider), data_root, workspace_root);
-		const bool included = provider != provider_ids::kExcludedCliProviderId;
-		if (!discovery.unsupported.empty() && included && provider == provider_ids::kCodexCli)
-			discovery.unsupported = "Codex CLI has no native agent files to import.";
-		else if (!discovery.unsupported.empty() && included && provider == provider_ids::kAntigravityCli)
-			discovery.unsupported = "Antigravity has no native agent files to import.";
 		return discovery;
 	}
 
@@ -663,7 +669,11 @@ namespace uam
 		    request.canonical_id.empty() ? preview.suggested_id : request.canonical_id);
 		if (!preview.supported) return fail(preview.error);
 		if (!preview.ignored_fields.empty() && !request.acknowledge_ignored_fields)
-			return fail("Provider-only fields would be omitted; preview and explicitly acknowledge them before import.");
+		{
+			std::string fields;
+			for (const std::string& field : preview.ignored_fields) fields += (fields.empty() ? "" : ", ") + field;
+			return fail(fields + ": these provider fields would be omitted; preview and acknowledge them before import.");
+		}
 		if (!ValidId(id) || id == "build" || id == "plan")
 			return fail("id: use lowercase letters, numbers and single hyphens (up to 64); Build and Plan are built in.");
 		if (request.workspace_access != "read" && request.workspace_access != "write")
@@ -673,6 +683,8 @@ namespace uam
 		if (request.skills.size() > kMaxListItems ||
 		    !std::ranges::all_of(request.skills, [](const std::string& value) { return ValidId(value); }))
 			return fail("skills: up to 16 valid skill IDs.");
+		if (std::set<std::string>(request.skills.begin(), request.skills.end()).size() != request.skills.size())
+			return fail("skills: each skill can be attached once.");
 		if (!request.delegates.empty()) return fail("delegates: imports cannot pre-authorise delegates.");
 
 		const std::string policy = provider_agent_import::BoundPolicyForAccess(preview, request.workspace_access);
@@ -699,7 +711,8 @@ namespace uam
 
 		const std::string markdown = "---\nversion: 1\nname: " + id + "\ndescription: \"" +
 		                             preview.description + "\"\nmode: " + preview.mode +
-		                             "\nworkspaceAccess: " + request.workspace_access + "\nskills: " +
+		                             "\nworkspaceAccess: " + request.workspace_access +
+		                             (preview.max_workspace_access == "read" ? "\nmaxWorkspaceAccess: read" : "") + "\nskills: " +
 		                             IdListMarkdown(request.skills) + "\ndelegates: []\n" +
 		                             (policy.empty() ? "" : "openCodePermission: " + policy + "\n") + "---\n" +
 		                             preview.instructions + "\n";
@@ -726,8 +739,13 @@ namespace uam
 		std::string previous;
 		if (uam::paths::PathExistsNoThrow(target) && !uam::io::TryReadTextFile(target, previous)) return fail("The existing agent could not be read.");
 		std::string permission = agent.open_code_permission_json;
+		std::string ceiling;
 		if (!previous.empty())
 		{
+			std::string ceiling_error;
+			if (const auto stored = ParseMarkdown(target, false, previous, &ceiling_error)) ceiling = stored->max_workspace_access;
+			if (ceiling == "read" && agent.workspace_access != "read")
+				return fail("workspaceAccess: this agent was imported from a read-only source, so it stays read-only.");
 			std::string previous_policy, policy_error;
 			if (!CapturedOpenCodePermission(id, previous, previous_policy, &policy_error)) return fail(policy_error);
 			if (!previous_policy.empty())
@@ -738,15 +756,16 @@ namespace uam
 		}
 		if (!permission.empty())
 		{
-			if (!agent.delegates.empty()) return fail("delegates: an agent with imported OpenCode rules cannot delegate.");
+			if (!agent.delegates.empty()) return fail("delegates: an agent with imported tool rules cannot delegate.");
 			// Read access may only tighten the imported rules; write access cannot reopen denied edits.
 			if (agent.workspace_access == "read") permission = provider_agent_import::TightenPolicyForRead(permission);
 			else if (!provider_agent_import::ValidStoredPolicy(permission, agent.workspace_access))
-				return fail("workspaceAccess: the imported OpenCode rules deny edits, so this agent stays read-only.");
+				return fail("workspaceAccess: the imported tool rules deny edits, so this agent stays read-only.");
 		}
 
 		const std::string markdown = "---\nversion: 1\nname: " + id + "\ndescription: \"" + agent.description +
 		                             "\"\nmode: " + agent.mode + "\nworkspaceAccess: " + agent.workspace_access +
+		                             (ceiling == "read" ? "\nmaxWorkspaceAccess: read" : "") +
 		                             "\nskills: " + IdListMarkdown(agent.skills) + "\ndelegates: " + IdListMarkdown(agent.delegates) +
 		                             "\n" + (permission.empty() ? "" : "openCodePermission: " + permission + "\n") + "---\n" + uam::strings::Trim(agent.instructions) + "\n";
 		std::string validation_error;

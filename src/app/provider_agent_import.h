@@ -29,15 +29,24 @@ namespace uam::provider_agent_import
 		std::vector<Node> items;
 		std::vector<std::pair<std::string, Node>> entries;
 
+		// Out of line: a vector of pairs holding the incomplete Node is not portable with an implicit definition.
+		Node();
+		Node(const Node&);
+		Node(Node&&) noexcept;
+		Node& operator=(const Node&);
+		Node& operator=(Node&&) noexcept;
+		~Node();
+
 		const Node* Find(std::string_view key) const;
 	};
 
 	/// Config-level `tools` or `permission` that OpenCode applies before an agent's own rules.
 	struct InheritedRules
 	{
-		std::string label; // e.g. the config file name
+		std::string label; // origin prefix in errors and reasons
 		std::string field; // "tools" or "permission"
 		Node node;
+		std::string files; // the config files that contributed, for the preview note
 	};
 
 	struct ParsedSource
@@ -45,6 +54,8 @@ namespace uam::provider_agent_import
 		std::vector<std::pair<std::string, Node>> fields;
 		std::vector<InheritedRules> inherited;
 		std::string instructions;
+		/// A JSON agent's `{file:...}` prompt, relative to its config, shown in the preview.
+		std::string prompt_file;
 		std::string error;
 
 		const Node* Find(std::string_view key) const;
@@ -65,16 +76,16 @@ namespace uam::provider_agent_import
 	/// Remove `//` and `/* */` comments and trailing commas outside strings.
 	std::string StripJsonc(std::string_view text);
 
-	/// Read one `agent`/`agents` entry of an OpenCode JSON(C) config. `{file:...}` prompts resolve beside the config.
-	bool ParseOpenCodeJsonAgent(const std::string& text, const std::string& entry,
+	/// Read one `agent`/`agents` entry of an OpenCode JSON(C) config. `{file:...}` prompts must stay inside the config's folder.
+	bool ParseJsonConfigAgent(const std::string& text, const std::string& entry,
 	                            const std::filesystem::path& config_path, ParsedSource& out);
 
-	/// Add root `tools`/`permission` from the OpenCode configs that apply to `source_path` (global config, then the
-	/// project's), in OpenCode's merge order. A config that exists but cannot be read safely is an error.
-	bool AddInheritedOpenCodeRules(const std::filesystem::path& source_path, ParsedSource& out);
+	/// Add root `tools`/`permission` from every OpenCode config that applies to `source_path` (global, then the project's
+	/// root and `.opencode` configs), merged so a deny in any of them is kept. A config that exists but cannot be read is an error.
+	bool AddInheritedConfigRules(const std::filesystem::path& source_path, ParsedSource& out);
 
 	/// Agent entry names and descriptions in an OpenCode JSON(C) config, in file order.
-	std::vector<std::pair<std::string, std::string>> ListOpenCodeJsonAgents(const std::string& text, std::string& error);
+	std::vector<std::pair<std::string, std::string>> ListJsonConfigAgents(const std::string& text, std::string& error);
 
 	/// Lowercase a provider name into a UAM agent ID (`a-z`, `0-9`, `-`), or empty when nothing usable remains.
 	std::string SuggestId(std::string_view raw);

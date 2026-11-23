@@ -1593,6 +1593,33 @@ describe('SettingsModal memory settings', () => {
     host.remove()
   })
 
+  it('previews a newly picked agent even while an earlier preview is still loading', async () => {
+    type Preview = Awaited<ReturnType<ReturnType<typeof useAppStore.getState>['previewProviderAgentImport']>>
+    const discoverProviderAgents = vi.fn(async () => ({
+      candidates: [
+        { providerId: 'opencode-cli', id: 'first', description: '', sourcePath: '/a/first.md', sourceEntry: '', scope: 'global' as const, alreadyImported: false },
+        { providerId: 'opencode-cli', id: 'second', description: '', sourcePath: '/a/second.md', sourceEntry: '', scope: 'global' as const, alreadyImported: false },
+      ],
+      searched: [], errors: [], unsupported: '',
+    }))
+    const pending: Array<(preview: Preview) => void> = []
+    const previewProviderAgentImport = vi.fn(() => new Promise<Preview>(resolve => pending.push(resolve)))
+    useAppStore.setState({ discoverProviderAgents, previewProviderAgentImport })
+    const { host, root } = renderModal()
+    openAgentsSection(host)
+    await act(async () => (Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Find agents') as HTMLButtonElement).click())
+    const pick = async (name: string) => {
+      act(() => (host.querySelector('button[aria-label="Native agent"]') as HTMLButtonElement).click())
+      await act(async () => (Array.from(document.body.querySelectorAll('[role="option"]')).find((option) => option.textContent?.startsWith(name)) as HTMLButtonElement).click())
+    }
+    await pick('first')
+    await pick('second')
+    expect(previewProviderAgentImport).toHaveBeenCalledTimes(2)
+    expect(previewProviderAgentImport).toHaveBeenLastCalledWith('opencode-cli', '/a/second.md', '')
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('suggests write access only when the source grants edits, and a typed path clears the JSON entry', async () => {
     const discoverProviderAgents = vi.fn(async () => ({
       candidates: [{ providerId: 'opencode-cli', id: 'writer', description: '', sourcePath: '/cfg/opencode.json', sourceEntry: 'writer', scope: 'global' as const, alreadyImported: false }],

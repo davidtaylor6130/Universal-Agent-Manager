@@ -22,6 +22,8 @@ namespace uam
 		bool workspace_override = false;
 		bool built_in = false;
 		std::string open_code_permission_json;
+		/// "read" when the agent was imported from a read-only source; edits cannot raise its access.
+		std::string max_workspace_access;
 	};
 
 	struct AgentDefinitionCatalog
