@@ -10,7 +10,7 @@ Import from `components/ui` (index.ts):
 
 - Button (variant primary|secondary|ghost|danger, size sm|md|lg, leadingIcon, loading, `asLink` for the inline text-link look)
 - IconButton (`tooltip={false}` skips its own Tooltip when the caller already wraps it; role, aria-checked and style pass through for toggles)
-- Badge (short read-only label beside a name, such as an agent's scope or Delegate-only; tone neutral|accent; its text joins the surrounding accessible name, it is never a control and never the only cue for a state)
+- Badge (short read-only label beside a name, such as an agent's scope or Delegate-only; its text joins the surrounding accessible name, it is never a control and never the only cue for a state)
 - Chip (compact choice button; `selected` exposes aria-pressed, tone neutral|danger, size sm|md, icon; all button attributes and ref pass through)
 - Tabs and Tab (role tablist/tab, aria-selected, roving tabindex with arrow, Home and End keys; variant underline|pill; one sliding indicator that stops under reduced motion or Motion Off)
 - Tooltip

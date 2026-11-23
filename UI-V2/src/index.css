@@ -1762,7 +1762,6 @@ summary,
   white-space: nowrap;
   vertical-align: middle;
 }
-.uam-badge[data-tone="accent"] { border-color: transparent; background: var(--accent-dim); color: var(--text); }
 @media (forced-colors: active) { .uam-badge { border-color: CanvasText; } }
 
 /* ── SegmentedControl: one sliding highlight behind the pressed option ── */

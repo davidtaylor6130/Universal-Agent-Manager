@@ -88,6 +88,14 @@ struct ChatIconHandlerTestAccess
 	{
 		handler.HandleImportProviderAgent(nullptr, payload, callback);
 	}
+	static void ListUamAgents(UamQueryHandler& handler, const nlohmann::json& payload, CefRefPtr<UamQueryHandler::Callback> callback)
+	{
+		handler.HandleListUamAgents(nullptr, payload, callback);
+	}
+	static void ListAgentDefinitions(UamQueryHandler& handler, const nlohmann::json& payload, CefRefPtr<UamQueryHandler::Callback> callback)
+	{
+		handler.HandleListAgentDefinitions(nullptr, payload, callback);
+	}
 #if UAM_ENABLE_RUNTIME_GEMINI_CLI
 	static void ListGeminiChildren(UamQueryHandler& handler, const nlohmann::json& payload, CefRefPtr<UamQueryHandler::Callback> callback)
 	{
@@ -1444,6 +1452,124 @@ UAM_TEST(ChatAgentImportGlobalWithoutChatRetainsSelectedSkills)
 	UAM_ASSERT_EQ(malformed->failures, 1); UAM_ASSERT_EQ(malformed->successes, 0);
 	UAM_ASSERT_EQ(malformed->last_failure, 400);
 	UAM_ASSERT_EQ(ReadFile(target), previous);
+}
+
+namespace
+{
+	std::string HandlerAgentMarkdown(const std::string& id, const std::string& mode)
+	{
+		return "---\nversion: 1\nname: " + id + "\ndescription: \"" + id + " agent\"\nmode: " + mode +
+		       "\nworkspaceAccess: read\nskills: []\ndelegates: []\n---\nHelp with " + id + ".\n";
+	}
+
+	void WriteHandlerAgent(const fs::path& directory, const std::string& id, const std::string& mode)
+	{
+		fs::create_directories(directory);
+		UAM_ASSERT(uam::io::WriteTextFile(directory / (id + ".md"), HandlerAgentMarkdown(id, mode)));
+	}
+
+	bool HasHandlerAgentRow(const nlohmann::json& agents, const std::string& id, const std::string& key, const std::string& value)
+	{
+		return std::ranges::any_of(agents, [&](const nlohmann::json& row) { return row.value("id", std::string{}) == id && row.value(key, std::string{}) == value; });
+	}
+
+	nlohmann::json CallAgentList(UamQueryHandler& handler, void (*invoke)(UamQueryHandler&, const nlohmann::json&, CefRefPtr<UamQueryHandler::Callback>), const nlohmann::json& payload)
+	{
+		CefRefPtr<RecordingIconCallback> callback = new RecordingIconCallback;
+		invoke(handler, payload, callback);
+		UAM_ASSERT_EQ(callback->failures, 0);
+		UAM_ASSERT_EQ(callback->successes, 1);
+		return nlohmann::json::parse(callback->success_message);
+	}
+}
+
+UAM_TEST(ChatAgentListsAddDelegateOnlyAndWorkspaceAgentsOnRequest)
+{
+	TempDir temp("uam-handler-agent-lists");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	const fs::path workspace = temp.root / "workspace";
+	WriteHandlerAgent(app.data_root / "agents", "writer", "primary");
+	WriteHandlerAgent(app.data_root / "agents", "helper", "subagent");
+	WriteHandlerAgent(workspace / ".uam" / "agents", "writer", "primary");
+	WriteHandlerAgent(workspace / ".uam" / "agents", "local-reviewer", "primary");
+	UAM_ASSERT(uam::io::WriteTextFile(app.data_root / "agents" / "broken.md", "not an agent\n"));
+	ChatSession chat = HandlerChat("chat");
+	chat.workspace_directory = workspace.string();
+	app.chats.push_back(chat);
+	auto handler_owner = UamQueryHandlerTestAccess::Create(app, "file:///private/index.html");
+	auto& handler = *handler_owner;
+
+	// Older clients (the phone app) get chat agents only; the desktop opts in to delegate-only agents.
+	const nlohmann::json chat_agents = CallAgentList(handler, &ChatIconHandlerTestAccess::ListUamAgents, {{"chatId", "chat"}}).at("agents");
+	UAM_ASSERT(HasHandlerAgentRow(chat_agents, "writer", "mode", "primary"));
+	UAM_ASSERT(HasHandlerAgentRow(chat_agents, "local-reviewer", "mode", "primary"));
+	UAM_ASSERT(!HasHandlerAgentRow(chat_agents, "helper", "mode", "subagent"));
+	const nlohmann::json all_agents = CallAgentList(handler, &ChatIconHandlerTestAccess::ListUamAgents, {{"chatId", "chat"}, {"includeDelegateOnly", true}}).at("agents");
+	UAM_ASSERT(HasHandlerAgentRow(all_agents, "helper", "mode", "subagent"));
+
+	// Without a chat (or with an unknown one) the store lists global agents only.
+	for (const nlohmann::json& payload : {nlohmann::json::object(), nlohmann::json{{"chatId", "missing"}}})
+	{
+		const nlohmann::json global_only = CallAgentList(handler, &ChatIconHandlerTestAccess::ListAgentDefinitions, payload).at("agents");
+		UAM_ASSERT(std::ranges::all_of(global_only, [](const nlohmann::json& row) { return row.value("scope", std::string{}) == "global"; }));
+		UAM_ASSERT(HasHandlerAgentRow(global_only, "helper", "mode", "subagent"));
+		UAM_ASSERT(!HasHandlerAgentRow(global_only, "local-reviewer", "scope", "global"));
+	}
+
+	// With the chat, workspace agents are added with their scope; a same-named global agent stays listed.
+	const nlohmann::json listed = CallAgentList(handler, &ChatIconHandlerTestAccess::ListAgentDefinitions, {{"chatId", "chat"}});
+	const nlohmann::json& rows = listed.at("agents");
+	UAM_ASSERT(HasHandlerAgentRow(rows, "writer", "scope", "global"));
+	UAM_ASSERT(HasHandlerAgentRow(rows, "writer", "scope", "workspace"));
+	UAM_ASSERT(HasHandlerAgentRow(rows, "local-reviewer", "scope", "workspace"));
+	UAM_ASSERT(!HasHandlerAgentRow(rows, "helper", "scope", "workspace"));
+	UAM_ASSERT(!HasHandlerAgentRow(rows, "build", "scope", "workspace"));
+	// The broken global file is reported once although both catalogues read it.
+	const std::ptrdiff_t broken_errors = std::ranges::count_if(listed.at("errors"), [](const nlohmann::json& error) {
+		return error.get<std::string>().find("broken.md") != std::string::npos;
+	});
+	UAM_ASSERT_EQ(broken_errors, static_cast<std::ptrdiff_t>(1));
+}
+
+UAM_TEST(ChatAgentImportReplacesOnlyWhenRequested)
+{
+	TempDir temp("uam-handler-agent-replace");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	const fs::path source = temp.root / "agent.md";
+	UAM_ASSERT(uam::io::WriteTextFile(source, "---\ndescription: Reviews code\n---\nReview.\n"));
+	auto handler_owner = UamQueryHandlerTestAccess::Create(app, "file:///private/index.html");
+	auto& handler = *handler_owner;
+	const nlohmann::json payload = {{"providerId", "opencode"}, {"sourcePath", source.string()}, {"workspaceAccess", "read"}, {"workspaceScope", false}};
+
+	CefRefPtr<RecordingIconCallback> first = new RecordingIconCallback;
+	ChatIconHandlerTestAccess::ImportAgent(handler, payload, first);
+	UAM_ASSERT_EQ(first->successes, 1);
+	const nlohmann::json imported = nlohmann::json::parse(first->success_message);
+	UAM_ASSERT_EQ(imported.value("id", std::string{}), std::string("agent"));
+	UAM_ASSERT_EQ(imported.value("scope", std::string{}), std::string("global"));
+
+	const fs::path target = app.data_root / "agents" / "agent.md";
+	const std::string previous = ReadFile(target);
+	UAM_ASSERT(uam::io::WriteTextFile(source, "---\ndescription: Reviews code carefully\n---\nReview.\n"));
+	CefRefPtr<RecordingIconCallback> refused = new RecordingIconCallback;
+	ChatIconHandlerTestAccess::ImportAgent(handler, payload, refused);
+	UAM_ASSERT_EQ(refused->failures, 1);
+	UAM_ASSERT_EQ(refused->last_failure, 400);
+	UAM_ASSERT(refused->failure_message.find("already exists") != std::string::npos);
+	UAM_ASSERT_EQ(ReadFile(target), previous);
+
+	nlohmann::json replace = payload;
+	replace["replaceExisting"] = true;
+	CefRefPtr<RecordingIconCallback> replaced = new RecordingIconCallback;
+	ChatIconHandlerTestAccess::ImportAgent(handler, replace, replaced);
+	UAM_ASSERT_EQ(replaced->failures, 0);
+	UAM_ASSERT_EQ(replaced->successes, 1);
+	const uam::AgentDefinitionCatalog catalog = uam::AgentDefinitionService::Load(app.data_root, {});
+	const auto agent = std::ranges::find(catalog.definitions, std::string("agent"), &uam::AgentDefinition::id);
+	UAM_ASSERT(agent != catalog.definitions.end());
+	UAM_ASSERT_EQ(agent->description, std::string("Reviews code carefully"));
 }
 
 UAM_TEST(ChatAgentImportWorkspaceWithoutChatDoesNotPublish)

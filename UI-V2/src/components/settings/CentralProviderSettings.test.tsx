@@ -348,3 +348,15 @@ it('scrolls to, focuses and briefly highlights a just-imported agent', async () 
     delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView
   }
 })
+
+it('names the scope in the actions of a global and a workspace agent that share a name', async () => {
+  vi.spyOn(bridge, 'sendToCEF').mockResolvedValue({ ok: true, data: { agents: [storeAgent('reviewer', 'global'), storeAgent('reviewer', 'workspace'), storeAgent('solo', 'global')], errors: [] } })
+  useAppStore.setState({ activeSessionId: 'chat-1' })
+  await act(async () => root.render(<CentralProviderSettings ref={handle} />))
+  expect(host.querySelector('[aria-label="Edit reviewer (all workspaces)"]')).toBeTruthy()
+  expect(host.querySelector('[aria-label="Delete agent reviewer (all workspaces)"]')).toBeTruthy()
+  expect(host.querySelector('[aria-label="View reviewer (this workspace)"]')).toBeTruthy()
+  expect(host.querySelector('[aria-label="Edit solo"]')).toBeTruthy()
+  await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="View reviewer (this workspace)"]')!.click())
+  expect(document.querySelector('[role="dialog"][aria-label="View reviewer (this workspace)"]')).toBeTruthy()
+})

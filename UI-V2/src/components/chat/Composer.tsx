@@ -124,7 +124,6 @@ function ActiveModeChip({ label, compactLabel = label, icon, onClear }: { label:
     : <Tooltip label={label}><span data-mode-chip={label} className="inline-flex h-[26px] shrink-0 items-center gap-1.5 px-2 text-xs">{icon}<span>{compactLabel}</span></span></Tooltip>
 }
 
-/** Selected agent precedes the draft without becoming part of submitted text. */
 type ComposerUamAgent = { id: string; name: string; description?: string; delegateOnly?: boolean }
 
 /** Picker options: delegate-only agents stay visible with a badge, but only another agent can use them. */
@@ -138,6 +137,7 @@ export function uamAgentMenuOptions(agents: ComposerUamAgent[], icon?: (agent: C
   }))
 }
 
+/** Selected agent precedes the draft without becoming part of submitted text. */
 export function ComposerAgentSelector({ agents, agentId, nextTurn, onSelectUamAgent }: {
   agents: ComposerUamAgent[]
   agentId: string

@@ -138,15 +138,19 @@ function codexOptionsTitle(options: { reasoningEffort?: string; serviceTier?: st
  * A caller that already names the change takes the raw reason for its own notice.
  */
 function reportRefusal(title: string, reason: string | undefined, onFailure?: (reason: string) => void) {
-  // The bridge's own failures carry raw exception text; that stays in the console, never in a notice.
-  const shown = reason && !reason.startsWith('Bridge request failed:') && !reason.startsWith('Invalid bridge payload:') ? reason : ''
+  const shown = reason && !isRawBridgeReason(reason) ? reason : ''
   if (onFailure) onFailure(shown)
   else reportAppFailure(`${title}. ${shown || 'Try again.'}`, '')
 }
 
-/** A backend refusal as one plain line; raw bridge failures stay in the console and give ''. */
+/** The bridge's own failures carry raw exception text; that stays in the console, never in a notice. */
+function isRawBridgeReason(reason: string) {
+  return reason.startsWith('Bridge request failed:') || reason.startsWith('Invalid bridge payload:')
+}
+
+/** A backend refusal as one plain line; raw bridge failures give ''. */
 function oneLineRefusalReason(reason: string | undefined) {
-  if (!reason || reason.startsWith('Bridge request failed:') || reason.startsWith('Invalid bridge payload:')) return ''
+  if (!reason || isRawBridgeReason(reason)) return ''
   return reason.replace(/\s+/g, ' ').trim()
 }
 

@@ -189,6 +189,10 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle,
   // Shared defaults apply to every workspace, so they offer only agents saved for all workspaces.
   const globalAgents = agents.filter(agent => agent.scope === 'global')
   const primaryAgents = globalAgents.filter(agent => agent.mode !== 'subagent')
+  // A global and a workspace agent can share a name; their action and dialog names then say which scope they belong to.
+  const agentAccessibleName = (agent: Agent) => agents.filter(other => other.id === agent.id).length > 1
+    ? `${agent.id} (${AGENT_SCOPE_LABEL[agent.scope].toLowerCase()})`
+    : agent.id
   const skillName = (entry: typeof skills[number]) => entry.commandName || entry.title
   const skillOptions: Option[] = skills.map(entry => ({ value: skillName(entry), label: entry.title, group: entry.group || 'Ungrouped' }))
   const agentOptions: Option[] = globalAgents.filter(agent => !agent.builtIn).map(agent => ({ value: agent.id, label: agent.id, group: agent.mode === 'subagent' ? 'Helpers' : 'Chat agents' }))
@@ -317,6 +321,7 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle,
         // Workspace agents live in that workspace's .uam/agents folder; this store edits only agents saved for all workspaces.
         const readOnly = agent.builtIn || agent.scope === 'workspace'
         const usedAs = USED_AS.find(option => option.value === agent.mode)
+        const name = agentAccessibleName(agent)
         return <Reveal key={key} open={!removingKeys.has(`agent:${key}`)}>
           <div className="uam-central-agent" data-highlighted={highlightedKey === key || undefined}
             ref={element => { if (element) agentRows.current.set(key, element); else agentRows.current.delete(key) }}>
@@ -328,8 +333,8 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle,
               </span>}
               description={[delegateOnly ? undefined : usedAs?.label, agent.builtIn ? 'Built in · read only' : agent.description || 'No description yet'].filter(Boolean).join(' · ')}
               control={<>
-                <IconButton size="sm" icon={<Pencil size={14} />} label={readOnly ? `View ${agent.id}` : `Edit ${agent.id}`} disabled={busy} onClick={() => startEditing({ draft: { ...agent }, isNew: false })} />
-                {!readOnly && <IconButton size="sm" icon={<X size={14} />} label={`Delete agent ${agent.id}`} disabled={busy} onClick={() => setPendingDelete(agent.id)} />}
+                <IconButton size="sm" icon={<Pencil size={14} />} label={readOnly ? `View ${name}` : `Edit ${name}`} disabled={busy} onClick={() => startEditing({ draft: { ...agent }, isNew: false })} />
+                {!readOnly && <IconButton size="sm" icon={<X size={14} />} label={`Delete agent ${name}`} disabled={busy} onClick={() => setPendingDelete(agent.id)} />}
               </>} />
           </div>
         </Reveal>
@@ -343,7 +348,7 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle,
           // Built-in and workspace agents open read-only: saving here would write an agent for all workspaces instead.
           const builtIn = draft.builtIn || draft.scope === 'workspace'
           const set = (change: Partial<Agent>) => setEditing(current => current && { ...current, draft: { ...current.draft, ...change } })
-          return <div role="dialog" aria-modal="true" aria-label={isNew ? 'New agent' : `Edit ${draft.id}`} tabIndex={-1} className="uam-mcp-dialog uam-central-dialog"
+          return <div role="dialog" aria-modal="true" aria-label={isNew ? 'New agent' : `${builtIn ? 'View' : 'Edit'} ${agentAccessibleName(draft)}`} tabIndex={-1} className="uam-mcp-dialog uam-central-dialog"
             onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeEditor() } }}>
             <header className="uam-central-dialog__head">
               <div className="min-w-0">

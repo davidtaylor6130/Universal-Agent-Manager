@@ -1757,7 +1757,7 @@ void UamQueryHandler::HandlePreviewProviderAgentImport(CefRefPtr<CefBrowser>, co
 void UamQueryHandler::HandleListAgentDefinitions(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	// Global definitions always; with an open chat, also the agents saved in that chat's workspace. Each row names its scope,
-	// so a workspace agent with the same name as a global one is listed beside it rather than hiding it.
+	// so a workspace agent with the same name as a global one is listed as well rather than hiding it.
 	const uam::AgentDefinitionCatalog global = uam::AgentDefinitionService::Load(m_app.data_root, {});
 	std::filesystem::path workspace_root;
 	const std::string chat_id = payload.is_object() ? payload.value("chatId", "") : std::string{};

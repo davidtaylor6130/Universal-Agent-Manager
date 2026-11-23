@@ -14,7 +14,7 @@ import { AutomationSettings } from './AutomationSettings'
 import { SETTINGS_ALL_ENVIRONMENTS } from '../../utils/settingsScope'
 import { ProviderConnections } from './ProviderConnections'
 import { CentralProviderSettings, type CentralAgentHighlight, type CentralProviderSettingsHandle } from './CentralProviderSettings'
-import { AGENT_SCOPE_LABEL, agentKey, listAgentDefinitions } from './agentDefinitions'
+import { AGENT_SCOPE_LABEL, agentKey, listAgentDefinitions, type AgentDefinition } from './agentDefinitions'
 import { McpServerSetup } from './McpServerSetup'
 import { ComputerUseSettingRow } from './ComputerUseSettingRow'
 import { ExecutionRoutingSettings, type ExecutionRoutingSettingsHandle } from './ExecutionRoutingSettings'
@@ -895,8 +895,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const [agentImportAcknowledged, setAgentImportAcknowledged] = useState(false)
   const [agentImportPreview, setAgentImportPreview] = useState<ProviderAgentImportPreview | null>(null)
   const [agentImportBusy, setAgentImportBusy] = useState(false)
-  // Saved agents (`scope:id`) the import could overwrite; null until listed, so Replace is offered only for a known match.
-  const [agentImportExisting, setAgentImportExisting] = useState<Set<string> | null>(null)
+  // Saved agents by `scope:id` that the import could overwrite; null until listed, so Replace is offered only for a known match.
+  const [agentImportExisting, setAgentImportExisting] = useState<Map<string, AgentDefinition> | null>(null)
   const [confirmAgentReplace, setConfirmAgentReplace] = useState(false)
   const [agentHighlight, setAgentHighlight] = useState<CentralAgentHighlight | null>(null)
   const agentImportRequest = useRef(0)
@@ -912,8 +912,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     const request = ++agentImportTargetsRequest.current
     const listed = await listAgentDefinitions(activeSessionId)
     if (request !== agentImportTargetsRequest.current) return
-    setAgentImportExisting(listed.ok ? new Set(listed.agents.filter((agent) => !agent.builtIn).map(agentKey)) : null)
+    setAgentImportExisting(listed.ok ? new Map(listed.agents.filter((agent) => !agent.builtIn).map((agent) => [agentKey(agent), agent])) : null)
   }
+  // Read when an import finishes: a user who has left the Agents page is not moved to Central setup.
+  const selectedSectionRef = useRef<SettingsSectionId>('appearance')
   useEffect(() => () => { agentImportRequest.current += 1; agentImportTargetsRequest.current += 1 }, [])
   const [chatDataBusy, setChatDataBusy] = useState<'export' | 'import' | null>(null)
   const [chatDataFolder, setChatDataFolder] = useState('')
@@ -1037,10 +1039,12 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       else setSettingsOpen(false)
     }))
   }
-  const changeSection = (requested: SettingsSectionId) => {
+  /** `onEnter` runs only when the section actually changes, not when a pending save or an unsaved-changes prompt keeps the user here. */
+  const changeSection = (requested: SettingsSectionId, onEnter?: () => void) => {
     const section = SETTINGS_SECTION_ALIASES[requested] ?? requested
     if (!SETTINGS_SECTIONS.some((entry) => entry.id === section) || section === selectedSection || mcpSaving || editorSavePending.current || remoteBusy) return
     requestThemeExit(() => requestSectionExit(() => {
+      onEnter?.()
       setThemeDraft(null)
       setSelectedSection(section)
       setOpenRemoteHostId(null)
@@ -1049,6 +1053,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       setOpenCliVersionMenu(null)
     }))
   }
+
+  const changeSectionRef = useRef(changeSection)
+  changeSectionRef.current = changeSection
+  selectedSectionRef.current = selectedSection
 
   useImperativeHandle(ref, () => ({ requestClose, showMemory: () => changeSection('memory-store') }))
 
@@ -2292,15 +2300,27 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         setAgentImportId(preview?.suggestedId ?? '')
         setAgentImportAcknowledged(false)
         if (!preview) reportAppFailure('Preview failed.', agentImportPath.trim())
+        // Stay busy until saved agents are listed, so Import never turns into Replace under the pointer.
+        if (preview?.supported) await refreshAgentImportTargets()
+        if (requestId !== agentImportRequest.current) return
         setAgentImportBusy(false)
-        if (preview?.supported) void refreshAgentImportTargets()
       }
       // Only a workspace-scoped import needs a chat; a global import is admitted without one.
       const importNeedsChat = agentImportWorkspaceScope && !activeSessionId
       const importTargetId = agentImportId.trim().toLowerCase()
       const importTargetScope = agentImportWorkspaceScope ? 'workspace' : 'global'
       const importTargetWhere = agentImportWorkspaceScope ? 'in this workspace' : 'for all workspaces'
-      const importTargetExists = Boolean(importTargetId && agentImportExisting?.has(agentKey({ id: importTargetId, scope: importTargetScope })))
+      const importTarget = importTargetId ? agentImportExisting?.get(agentKey({ id: importTargetId, scope: importTargetScope })) : undefined
+      const importTargetExists = Boolean(importTarget)
+      // What replacing would change on the saved agent; the import sends no skills or delegates.
+      const replaceChanges = importTarget && agentImportPreview ? [
+        importTarget.mode !== agentImportPreview.mode && (agentImportPreview.mode === 'subagent'
+          ? 'It becomes delegate-only, so chats can no longer select it.'
+          : `It changes from ${importTarget.mode === 'subagent' ? 'delegate-only' : 'a chat agent'} to ${agentImportPreview.mode === 'both' ? 'a chat agent that can also be delegated to' : 'a chat agent'}.`),
+        importTarget.workspaceAccess === 'read' && agentImportAccess === 'write' && 'It gains write access to the workspace.',
+        importTarget.skills.length > 0 && `It loses its ${importTarget.skills.length === 1 ? 'skill' : `${importTarget.skills.length} skills`}.`,
+        importTarget.delegates.length > 0 && 'It loses the agents it may delegate to.',
+      ].filter((change): change is string => Boolean(change)) : []
       const runImport = async (replaceExisting = false) => {
         if (agentImportBusy || importNeedsChat || !agentImportPreview?.supported) return
         // Overwriting a saved agent is never implicit: an existing ID asks first, and only that answer sends replaceExisting.
@@ -2334,8 +2354,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         setAgentImportPreview(null)
         setAgentImportExisting(null)
         // Show the agent where it now lives: the agent store in Central setup, scrolled to and highlighted.
-        setAgentHighlight({ id: result.id, scope: result.scope, nonce: Date.now() })
-        changeSection('central-configuration')
+        // Only from the Agents page, and the highlight is set only if the section really changes.
+        if (selectedSectionRef.current === 'agents') {
+          const highlight = { id: result.id, scope: result.scope, nonce: Date.now() }
+          changeSectionRef.current('central-configuration', () => setAgentHighlight(highlight))
+        }
       }
       return (
         <div className="grid gap-0">
@@ -2387,12 +2410,13 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             />
             <AnimatedRows items={favoriteUamAgentIds} keyOf={(agentId) => agentId} render={(agentId) => {
               const index = favoriteUamAgentIds.indexOf(agentId)
-              const available = activeUamAgents.some((agent) => agent.id === agentId && !agent.delegateOnly)
+              const listed = activeUamAgents.find((agent) => agent.id === agentId)
+              const available = Boolean(listed && !listed.delegateOnly)
               return (
                 <SettingRow
                   icon={<GripVertical size={14} aria-hidden />}
                   title={<span className="font-mono">{agentId}</span>}
-                  status={available ? undefined : <><StatusDot tone="warning" /> Unavailable in this workspace</>}
+                  status={available ? undefined : <><StatusDot tone="warning" /> {listed?.delegateOnly ? "Delegate-only: chats can't select it" : 'Unavailable in this workspace'}</>}
                   control={
                     <div className="flex items-center gap-1">
                       <span className="mr-2 text-xs" style={{ color: 'var(--text-3)' }}>{index + 1}</span>
@@ -2525,7 +2549,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           </SettingsSection>}
           <ConfirmDialog open={confirmAgentReplace} title={`Replace ${importTargetId}?`} label={`Replace agent ${importTargetId}`} confirmLabel="Replace" busy={agentImportBusy} settingsOwned
             onCancel={() => setConfirmAgentReplace(false)} onConfirm={() => void runImport(true)}>
-            {`This overwrites the saved ${importTargetId} agent ${importTargetWhere}. Running chats keep their current copy.`}
+            <p>{`This overwrites the saved ${importTargetId} agent ${importTargetWhere}. Running chats keep their current copy.`}</p>
+            {replaceChanges.map((change) => <p key={change} className="mt-1">{change}</p>)}
           </ConfirmDialog>
         </div>
       )

@@ -1472,6 +1472,7 @@ describe('SettingsModal memory settings', () => {
     })
     const preview = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Preview') as HTMLButtonElement
     await act(async () => preview.click())
+    await vi.waitFor(() => expect(host.querySelector('button[aria-busy="true"]')).toBeNull())
 
     expect(previewProviderAgentImport).toHaveBeenCalledWith('opencode-cli', '/tmp/reviewer.md')
     expect(host.textContent).toContain('Provider-only fields that will be omitted: model')
@@ -1506,8 +1507,10 @@ describe('SettingsModal memory settings', () => {
     request.action === 'listAgentDefinitions'
       ? { ok: true, data: { agents, errors: [] } as never, requestId: 'test' }
       : { ok: true, data: {} as never, requestId: 'test' })
+  /** Preview and Import stay busy until their bridge calls settle (the saved-agent listing included). */
+  const importSettled = () => vi.waitFor(() => expect(document.body.querySelector('button[aria-busy="true"]')).toBeNull())
   const buttonNamed = (text: string) => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === text)
-  async function previewSupportedAgent(host: HTMLElement) {
+  async function previewSupportedAgent(host: HTMLElement, settle = true) {
     useAppStore.setState({ previewProviderAgentImport: vi.fn(async () => supportedPreview) })
     openAgentsSection(host)
     const path = host.querySelector('input[aria-label="Native agent Markdown file"]') as HTMLInputElement
@@ -1516,6 +1519,7 @@ describe('SettingsModal memory settings', () => {
       path.dispatchEvent(new Event('input', { bubbles: true }))
     })
     await act(async () => buttonNamed('Preview')!.click())
+    if (settle) await importSettled()
   }
 
   it('installs for all workspaces by default, even with no workspace chat open', async () => {
@@ -1600,7 +1604,7 @@ describe('SettingsModal memory settings', () => {
     try {
       await previewSupportedAgent(host)
       await act(async () => buttonNamed('Import agent')!.click())
-      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 400)) })
+      await vi.waitFor(() => expect(host.querySelector('.uam-central-agent[data-highlighted="true"]')).not.toBeNull())
 
       expect(failures.at(-1)).toMatchObject({ message: 'Imported reviewer-native as a delegate-only agent for all workspaces.', tone: 'success' })
       const row = host.querySelector<HTMLElement>('.uam-central-agent[data-highlighted="true"]')
@@ -1612,6 +1616,59 @@ describe('SettingsModal memory settings', () => {
       host.remove()
       delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView
     }
+  })
+
+  it('names what a replacement would change before overwriting a saved agent', async () => {
+    mockAgentStore([{ ...storeAgent('reviewer-native', 'global'), skills: ['docs'], delegates: ['writer'] }])
+    const { host, root } = renderModal()
+    await previewSupportedAgent(host)
+    act(() => (host.querySelector('button[aria-label="Workspace access"]') as HTMLButtonElement).click())
+    act(() => (Array.from(document.body.querySelectorAll('[role="option"]')).find((option) => option.textContent?.startsWith('Read and write')) as HTMLButtonElement).click())
+    await act(async () => buttonNamed('Replace agent…')!.click())
+
+    const dialog = document.body.textContent ?? ''
+    expect(dialog).toContain('It becomes delegate-only, so chats can no longer select it.')
+    expect(dialog).toContain('It gains write access to the workspace.')
+    expect(dialog).toContain('It loses its skill.')
+    expect(dialog).toContain('It loses the agents it may delegate to.')
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('keeps the import action busy until saved agents are listed', async () => {
+    let answer!: (agents: ReturnType<typeof storeAgent>[]) => void
+    vi.spyOn(cefBridge, 'sendToCEF').mockImplementation((request) => request.action === 'listAgentDefinitions'
+      ? new Promise((resolve) => { answer = (agents) => resolve({ ok: true, data: { agents, errors: [] } as never, requestId: 'test' }) })
+      : Promise.resolve({ ok: true, data: {} as never, requestId: 'test' }))
+    const { host, root } = renderModal()
+    await previewSupportedAgent(host, false)
+    expect(buttonNamed('Import agent')?.disabled).toBe(true)
+    await act(async () => answer([storeAgent('reviewer-native', 'global')]))
+    expect(buttonNamed('Import agent')).toBeUndefined()
+    expect(buttonNamed('Replace agent…')?.disabled).toBe(false)
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('does not move a user who left the Agents page while the import was running', async () => {
+    mockAgentStore([])
+    let finish!: () => void
+    useAppStore.setState({ importProviderAgent: vi.fn(() => new Promise((resolve) => {
+      finish = () => resolve({ ok: true as const, id: 'reviewer-native', mode: 'subagent', scope: 'global' as const })
+    })) })
+    const { host, root } = renderModal()
+    await previewSupportedAgent(host)
+    await act(async () => buttonNamed('Import agent')!.click())
+    openEditorsSection(host)
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)) })
+    await act(async () => finish())
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)) })
+
+    expect(failures.at(-1)).toMatchObject({ message: 'Imported reviewer-native as a delegate-only agent for all workspaces.' })
+    expect(host.textContent).not.toContain('Agent store')
+    expect(host.querySelector('.uam-central-agent')).toBeNull()
+    act(() => root.unmount())
+    host.remove()
   })
 
   it('keeps delegate-only agents out of the favourite agent choices', () => {
@@ -1629,7 +1686,7 @@ describe('SettingsModal memory settings', () => {
     const choices = Array.from(document.body.querySelectorAll('[role="option"]')).map((option) => option.textContent)
     expect(choices.some((choice) => choice?.startsWith('writer'))).toBe(true)
     expect(choices.some((choice) => choice?.startsWith('helper'))).toBe(false)
-    expect(host.textContent).toContain('Unavailable in this workspace')
+    expect(host.textContent).toContain("Delegate-only: chats can't select it")
     act(() => root.unmount())
     host.remove()
   })
@@ -1668,6 +1725,7 @@ describe('SettingsModal memory settings', () => {
       providerId: changedField === 'provider' ? 'copilot-cli' : 'opencode-cli',
       sourcePath: changedField === 'path' ? '/tmp/new.md' : '/tmp/old.md',
     }))
+    await vi.waitFor(() => expect(host.querySelector('button[aria-busy="true"]')).toBeNull())
     const importButton = Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Import agent') as HTMLButtonElement
     await act(async () => importButton.click())
     expect(importProviderAgent).toHaveBeenCalledWith(expect.objectContaining({
