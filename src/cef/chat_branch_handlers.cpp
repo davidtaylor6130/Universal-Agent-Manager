@@ -172,11 +172,11 @@ void UamQueryHandler::HandleListChatBranches(CefRefPtr<CefBrowser>, const nlohma
 	const std::shared_ptr<BranchRequest> request = CaptureBranchRequest(m_app, *chat);
 	const bool svn_requested = payload.value("vcsType", std::string{}) == "svn";
 	const std::string parent = payload.value("svnParent", std::string{});
-	uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner(request->chat), m_asyncLifetime, cb, [request, svn_requested, parent]()
+	uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner(request->chat), m_asyncLifetime, cb, [request, svn_requested, parent, stop = m_svnBranchDiscoveryStop.get_token()]()
 	{
 		if (svn_requested)
 		{
-			const auto result = uam::DiscoverSvnBranches(SvnScope(*request), parent, uam::CreateSvnBranchRunner());
+			const auto result = uam::DiscoverSvnBranches(SvnScope(*request), parent, uam::CreateSvnBranchRunner(stop));
 			if (!result.ok) return uam::query_handler_async::AsyncFailure(400, result.error);
 			nlohmann::json branches = nlohmann::json::array();
 			for (const auto& branch : result.branches) branches.push_back({{"name", branch.name}, {"path", branch.path}, {"current", branch.current}});
@@ -222,11 +222,11 @@ void UamQueryHandler::HandleSwitchChatBranch(CefRefPtr<CefBrowser> browser, cons
 		return;
 	}
 	const std::shared_ptr<BranchRequest> request = CaptureBranchRequest(m_app, *chat);
-	uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner(request->chat), m_asyncLifetime, cb, [request, branch, create, svn, svn_context]()
+	uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner(request->chat), m_asyncLifetime, cb, [request, branch, create, svn, svn_context, stop = m_svnBranchDiscoveryStop.get_token()]()
 	{
 		if (svn)
 		{
-			const auto result = uam::DiscoverSvnBranches(SvnScope(*request), svn_context.parent, uam::CreateSvnBranchRunner());
+			const auto result = uam::DiscoverSvnBranches(SvnScope(*request), svn_context.parent, uam::CreateSvnBranchRunner(stop));
 			if (!result.ok || result.context != svn_context) return uam::query_handler_async::AsyncFailure(409, result.ok ? "The SVN context changed. Discover the folders again." : result.error);
 			return uam::query_handler_async::AsyncSuccess(nlohmann::json::object());
 		}
@@ -336,11 +336,11 @@ void UamQueryHandler::ContinueSwitchChatBranch(CefRefPtr<CefBrowser> browser, co
 	m_app.worktree_operation_chat_ids.insert(chat->id);
 	uam::query_handler_async::DispatchBranchOperation(m_app.worktree_operation_chat_ids, request->chat.id, [&]()
 	{
-		return uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner(request->chat), m_asyncLifetime, cb, [request, svn, svn_context]()
+		return uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner(request->chat), m_asyncLifetime, cb, [request, svn, svn_context, stop = m_svnBranchDiscoveryStop.get_token()]()
 		{
 			if (svn)
 			{
-				const auto result = uam::DiscoverSvnBranches(SvnScope(*request), svn_context.parent, uam::CreateSvnBranchRunner());
+				const auto result = uam::DiscoverSvnBranches(SvnScope(*request), svn_context.parent, uam::CreateSvnBranchRunner(stop));
 				if (!result.ok || result.context != svn_context) return uam::query_handler_async::AsyncFailure(409, result.ok ? "The SVN context changed. Discover the folders again." : result.error);
 				return uam::query_handler_async::AsyncSuccess(nlohmann::json::object());
 			}

@@ -190,6 +190,7 @@ UamQueryHandler::~UamQueryHandler()
 	uam::attachment_payload::ShuttingDown().store(true);
 	for (const std::pair<const std::string, std::shared_ptr<std::stop_source>>& request : m_titleRequests) request.second->request_stop();
 	for (const auto& request : m_vcsRequestStops) request.second->request_stop();
+	m_svnBranchDiscoveryStop.request_stop();
 	for (const auto& request : m_nativeHistoryRequests) request.second->request_stop();
 	m_remoteRefreshReadThreads.clear(); // Joins the stopped reads; each read is also bounded by its own deadline.
 	for (const auto& install : m_remoteInstallStops)

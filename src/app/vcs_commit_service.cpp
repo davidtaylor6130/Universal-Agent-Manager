@@ -20,6 +20,7 @@
 #include "common/utils/shell_escape.h"
 #include "common/utils/string_utils.h"
 #include "common/vcs/git_command.h"
+#include "common/vcs/svn_environment.h"
 #include "remote/runner_client.h"
 
 #include <nlohmann/json.hpp>
@@ -280,39 +281,31 @@ namespace uam
 			return BuildGitCommandInDirectory(cwd, "--literal-pathspecs " + args);
 		}
 
-		constexpr std::string_view kSvnClientMissing =
-		    "The svn command-line client was not found. Install Subversion and make sure svn is on PATH.";
-
-		/// UTF-8 path encoding and parseable messages regardless of the GUI launch locale; Windows svn ignores LC_ALL.
-		std::vector<std::pair<std::string, std::string>> SvnEnvironment(std::string_view platform)
-		{
-			if (platform == "windows" || platform == "Windows") return {};
-#if defined(__APPLE__)
-			if (platform.empty()) return {{"LC_ALL", "en_US.UTF-8"}};
-#elif defined(_WIN32)
-			if (platform.empty()) return {};
-#endif
-			return {{"LC_ALL", "C.UTF-8"}};
-		}
-
 		/// Runs `svn args...` in the captured workspace, locally or through the remote runner. Targets are workspace-relative.
-		using SvnRunner = std::function<ProcessExecutionResult(const std::vector<std::string>&)>;
+		struct SvnRunner
+		{
+			std::function<ProcessExecutionResult(const std::vector<std::string>&)> run;
+			/// The workspace as svn prints it, so failure messages can name paths relative to it.
+			std::string workspace;
+			ProcessExecutionResult operator()(const std::vector<std::string>& args) const { return run(args); }
+		};
 
 		SvnRunner LocalSvnRunner(const std::filesystem::path& workspace)
 		{
-			return [workspace](const std::vector<std::string>& args) { return RunSvn(workspace, args); };
+			return {[workspace](const std::vector<std::string>& args) { return RunSvn(workspace, args); }, uam::paths::Utf8PathString(workspace)};
 		}
 
 		SvnRunner RemoteSvnRunner(RemoteVcsContext& context, const std::string& cwd)
 		{
-			return [&context, cwd](const std::vector<std::string>& args)
+			return {[&context, cwd](const std::vector<std::string>& args)
 			{
 				std::vector<std::string> argv = {"svn"};
 				argv.insert(argv.end(), args.begin(), args.end());
-				return context.Run(cwd, argv, SvnEnvironment(context.Platform()));
-			};
+				return context.Run(cwd, argv, uam::vcs::SvnEnvironment(context.Platform()));
+			}, cwd};
 		}
 
+		/// On failure `error` is one line for the person (SvnFailureMessage); svn's raw output goes only to the log.
 		bool SvnOutput(const SvnRunner& svn, const std::vector<std::string>& args, std::string* output_out, std::string& error, bool* output_limited = nullptr)
 		{
 			const ProcessExecutionResult result = svn(args);
@@ -320,7 +313,7 @@ namespace uam
 				*output_limited = result.output_truncated || result.error.find(uam::platform::kCapturedCommandOutputLimitError) != std::string::npos;
 			if (!CommandSucceeded(result))
 			{
-				error = CommandOutputOrError(result);
+				error = SvnFailureMessage(result, args.empty() ? std::string("SVN failed.") : "SVN " + args.front() + " failed.", svn.workspace);
 				return false;
 			}
 			if (output_out != nullptr) *output_out = result.output;
@@ -769,7 +762,7 @@ namespace uam
 			commit.insert(commit.end(), plan.targets.begin(), plan.targets.end());
 			committed = svn(commit);
 			if (CommandSucceeded(committed)) return true;
-			error = CommandOutputOrError(committed) + " Local SVN scheduling is retained; verify repository publication before retrying.";
+			error = SvnFailureMessage(committed, "SVN did not commit the selection.", svn.workspace) + " Local SVN scheduling is retained; verify repository publication before retrying.";
 			return false;
 		}
 
@@ -2236,7 +2229,7 @@ namespace uam
 			{
 				std::vector<std::string> argv = {"svn"};
 				argv.insert(argv.end(), args.begin(), args.end());
-				ProcessExecutionResult result = context.Run(context.WorkspaceDirectory(), argv, SvnEnvironment(context.Platform()), {}, timeout_ms, stop);
+				ProcessExecutionResult result = context.Run(context.WorkspaceDirectory(), argv, uam::vcs::SvnEnvironment(context.Platform()), {}, timeout_ms, stop);
 				result.canceled = result.canceled || stop.stop_requested();
 				return result;
 			});
@@ -2298,37 +2291,12 @@ namespace uam
 		invocation.direct_process = true;
 		invocation.argv = {"svn"};
 		invocation.argv.insert(invocation.argv.end(), args.begin(), args.end());
-		invocation.environment_overrides = SvnEnvironment({});
+		invocation.environment_overrides = uam::vcs::SvnEnvironment({});
 		ProcessExecutionResult result = ExecuteProviderWorkerInvocation(invocation, cwd, timeout_ms, stop);
 		// ponytail: a process that never started has no exit code or output; the directory check rules out a missing workspace.
 		if (!result.ok && !result.timed_out && !result.canceled && result.exit_code == -1 && result.output.empty() && uam::paths::IsDirectoryNoThrow(cwd))
 			result.error = std::string(kSvnClientMissing);
 		return result;
-	}
-
-	std::string SvnFailureSummary(const ProcessExecutionResult& result)
-	{
-		if (result.error == kSvnClientMissing) return result.error;
-		std::istringstream lines(result.output + "\n" + result.error);
-		std::string line;
-		while (std::getline(lines, line))
-		{
-			std::size_t code = line.find("svn: E");
-			if (code != std::string::npos) code += 5;
-			else if ((code = line.find("svn: warning: W")) != std::string::npos) code += 14;
-			else continue;
-			std::string summary = uam::strings::Trim(line.substr(code));
-			constexpr std::size_t kMaxSummaryBytes = 240;
-			if (summary.size() > kMaxSummaryBytes)
-			{
-				std::size_t end = kMaxSummaryBytes;
-				while (end > 0 && (static_cast<unsigned char>(summary[end]) & 0xc0) == 0x80) --end;
-				summary.resize(end);
-			}
-			while (!summary.empty() && summary.back() == '.') summary.pop_back();
-			return summary;
-		}
-		return {};
 	}
 
 	std::vector<VcsChangedFile> ParseSvnStatusOutput(std::string_view output, std::string_view workspace)
@@ -2728,11 +2696,11 @@ namespace uam
 	bool VcsCommitService::CommitSvnSelectionForTests(const std::function<ProcessExecutionResult(const std::vector<std::string>&)>& svn, const std::string& message, const std::vector<std::string>& files, std::string& error)
 	{
 		ProcessExecutionResult committed;
-		return CommitSvnSelection(svn, nullptr, message, files, {}, committed, error);
+		return CommitSvnSelection(SvnRunner{svn, {}}, nullptr, message, files, {}, committed, error);
 	}
 
 	void VcsCommitService::ApplySvnLineStatsForTests(const std::function<ProcessExecutionResult(const std::vector<std::string>&)>& svn, std::vector<VcsChangedFile>& files)
 	{
-		ApplySvnLineStats(svn, files);
+		ApplySvnLineStats(SvnRunner{svn, {}}, files);
 	}
 } // namespace uam

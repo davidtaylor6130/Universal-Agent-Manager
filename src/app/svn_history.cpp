@@ -120,14 +120,10 @@ namespace uam::svn_history
 			return result.output_truncated || result.error.find(uam::platform::kCapturedCommandOutputLimitError) != std::string::npos;
 		}
 
+		/// Every history, patch, update and origin failure reads the same way as the rest of the panel.
 		std::string Failure(const ProcessExecutionResult& result, std::string_view fallback)
 		{
-			if (result.canceled) return "Canceled.";
-			if (result.timed_out) return "SVN did not answer in time. Check the connection to the repository, then retry.";
-			const std::string summary = SvnFailureSummary(result);
-			if (!summary.empty()) return summary;
-			const std::string detail = uam::strings::Trim(result.error.empty() ? result.output : result.error);
-			return detail.empty() ? std::string(fallback) : detail.substr(0, 400);
+			return SvnFailureMessage(result, fallback);
 		}
 
 		bool Succeeded(const ProcessExecutionResult& result)

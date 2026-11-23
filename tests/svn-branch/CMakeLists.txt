@@ -1,7 +1,7 @@
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
   message(FATAL_ERROR "Configure the repository root inside Builds/ with UAM_BUILD_TESTS=ON and UAM_SVN_BRANCH_TESTS_ONLY=ON.")
 endif()
-add_executable(uam_svn_branch_tests ../svn_branch_service_tests.cpp ../../src/app/svn_branch_service.cpp)
+add_executable(uam_svn_branch_tests ../svn_branch_service_tests.cpp ../../src/app/svn_branch_service.cpp ../../src/app/svn_failure.cpp)
 target_include_directories(uam_svn_branch_tests PRIVATE ../../src)
 target_compile_features(uam_svn_branch_tests PRIVATE cxx_std_20)
 # The isolated model fixtures cover all six providers without launching any of them.

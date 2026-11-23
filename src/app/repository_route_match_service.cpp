@@ -2,6 +2,7 @@
 #include "app/repository_route_match_service.h"
 #include "common/utils/string_utils.h"
 #include "app/execution_routing_integration.h"
+#include "app/vcs_commit_service.h"
 #include "common/config/execution_host_config.h"
 #include <algorithm>
 #include <cctype>
@@ -209,20 +210,16 @@ namespace uam
 						const std::vector<std::string> git_arguments(argv.begin() + (git ? 1 : 0), argv.end());
 						if (runner) result = runner->ExecuteCommand(process.GenerateUuid(), paths::PathFromUtf8(workspace->directory),
 						    git ? vcs::HardenedGitArgv(git_arguments, vcs::IsWindowsHostPlatform(host->platform)) : argv, timeout, stop);
-						else
+						else if (git)
 						{
-							std::vector<std::string> local_argv = argv;
-							if (git)
-							{
-								std::vector<std::string> in_directory{"-C", workspace->directory};
-								in_directory.insert(in_directory.end(), git_arguments.begin(), git_arguments.end());
-								local_argv = vcs::HardenedGitArgv(in_directory, vcs::kLocalHostIsWindows);
-							}
-							else local_argv.back() = workspace->directory;
+							std::vector<std::string> in_directory{"-C", workspace->directory};
+							in_directory.insert(in_directory.end(), git_arguments.begin(), git_arguments.end());
 							std::string command;
-							for (const std::string& argument : local_argv) command += shell::EscapeArg(argument) + " ";
+							for (const std::string& argument : vcs::HardenedGitArgv(in_directory, vcs::kLocalHostIsWindows)) command += shell::EscapeArg(argument) + " ";
 							result = process.ExecuteCommand(command, timeout, stop);
 						}
+						// svn needs the shared SVN environment to read a non-ASCII workspace path; RunSvn runs it in the workspace.
+						else result = RunSvn(paths::PathFromUtf8(workspace->directory), {argv.begin() + 1, argv.end()}, timeout, stop);
 						if (result.timed_out || result.canceled || (runner && !runner->IsConnected())) inconclusive = true;
 						if (!result.ok || result.exit_code != 0 || result.output_truncated || result.canceled || result.timed_out || result.output.size() > 4096) return false;
 						output = result.output;
