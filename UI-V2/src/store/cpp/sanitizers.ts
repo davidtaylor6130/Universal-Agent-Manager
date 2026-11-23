@@ -165,6 +165,11 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }
 
+/** Like isRecord, but rejects arrays, for validators where `[]` must not pass as an object. */
+export function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return isRecord(value) && !Array.isArray(value)
+}
+
 export function isString(value: unknown): value is string {
   return typeof value === 'string'
 }
