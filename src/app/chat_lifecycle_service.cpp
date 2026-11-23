@@ -1240,6 +1240,7 @@ bool uam::RequestTemporarySideChatCleanup(AppState& app, const std::string& chat
 		return false;
 	}
 	chat->side_cleanup_retry_time_s = 0.0;
+	app.latest_side_cleanup_chat_id = chat_id;
 	return true;
 }
 
@@ -1250,10 +1251,13 @@ bool uam::PollTemporarySideChatCleanup(AppState& app)
 	for (const ChatSession& chat : app.chats)
 		if (!chat.temporary_parent_chat_id.empty() && chat.side_cleanup_requested && chat.side_cleanup_retry_time_s <= now)
 			pending.push_back(chat.id);
+	// The latest request goes first, so Dismiss side chat removes the dismissed chat even while startup leftovers drain.
+	if (const std::vector<std::string>::iterator latest = std::ranges::find(pending, app.latest_side_cleanup_chat_id); latest != pending.end())
+		std::rotate(pending.begin(), latest, latest + 1);
 	bool changed = false;
 	// Each removal is a whole deletion transaction (several passes over every chat, staging and durable writes).
 	// Startup flags every leftover side chat at once, so remove one per poll; the rest keep their due time and
-	// are taken on the next poll, in the same order (#961).
+	// are taken on later polls (#961).
 	constexpr std::size_t kMaxSideChatRemovalsPerPoll = 1;
 	std::size_t removals = 0;
 	for (const std::string& id : pending)

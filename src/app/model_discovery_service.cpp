@@ -156,7 +156,8 @@ namespace uam
 		});
 		active += app.provider_model_catalog->ActiveNativeModelDiscoveries();
 		bool changed = false;
-		// Built on first use: scopes waiting on a host or version check are re-validated every tick.
+		// Built only when a scope is about to start a check or a launch; a scope that only waits for its host or version
+		// check this tick skips the registration test, so a long wait does not resolve every chat's workspace per tick.
 		RegisteredWorkspaces registered(app);
 		for (std::vector<ModelDiscoveryScope>::iterator item = m_pending_scopes.begin(); item != m_pending_scopes.end() && active < kMaxConcurrentDiscoveries;)
 		{
@@ -165,7 +166,7 @@ namespace uam
 			const std::map<std::string, ExecutionHost>::const_iterator captured_host = m_hosts.find(scope.execution_host_id);
 			const ProviderProfile* provider = ProviderProfileStore::FindById(app.provider_profiles, scope.provider_id);
 			if (host == nullptr || captured_host == m_hosts.end() || !execution_hosts::SameConnection(*host, captured_host->second) ||
-			    provider == nullptr || !provider->supports_structured || !registered.Contains(scope) || !provider_availability::IsEnabled(app.settings, scope.provider_id, scope.execution_host_id))
+			    provider == nullptr || !provider->supports_structured || !provider_availability::IsEnabled(app.settings, scope.provider_id, scope.execution_host_id))
 			{
 				item = m_pending_scopes.erase(item);
 				continue;
@@ -182,12 +183,22 @@ namespace uam
 			const std::unordered_map<std::string, CliProviderVersionState>::const_iterator version = app.runtime_cli_versions_by_provider_id.find(version_key);
 			if (version == app.runtime_cli_versions_by_provider_id.end())
 			{
+				if (!registered.Contains(scope))
+				{
+					item = m_pending_scopes.erase(item);
+					continue;
+				}
 				std::string check_error;
 				changed = ProviderCliCompatibilityService().StartProviderVersionCheck(app, scope.provider_id, false, scope.execution_host_id, &check_error) || changed;
 				++item;
 				continue;
 			}
 			if (!ProviderCliLaunchBlockReason(app, scope.provider_id, scope.execution_host_id).empty() || (version != app.runtime_cli_versions_by_provider_id.end() && !version->second.checked)) { ++item; continue; }
+			if (!registered.Contains(scope))
+			{
+				item = m_pending_scopes.erase(item);
+				continue;
+			}
 			const std::string compatibility_error = host->transport == "local" ? ProviderRuntimeRegistry::ResolveById(scope.provider_id).LocalCliCompatibilityError(app) : std::string{};
 			// A failed local check says nothing about the installation; launch applies the same rule.
 			const bool local_check_failed = host->transport == "local" && !version->second.check_error.empty();

@@ -509,6 +509,7 @@ void Application::PollTickStages(std::chrono::steady_clock::time_point poll_star
 {
 	const RuntimeCliCompatibilitySnapshot provider_snapshot_before = CreateCliCompatibilitySnapshot(m_app);
 	const bool side_chats_changed = uam::PollTemporarySideChatCleanup(m_app);
+	const std::chrono::steady_clock::time_point side_chats_finished = std::chrono::steady_clock::now();
 	const bool acp_sessions_changed = uam::PollAllAcpSessions(m_app, m_browser);
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 	const bool compaction_sync_changed = m_openCodeCompactionSync && m_openCodeCompactionSync->Poll(m_app);
@@ -613,6 +614,7 @@ void Application::PollTickStages(std::chrono::steady_clock::time_point poll_star
 		uam::diagnostics::Write("[performance] PollTick took " + std::to_string(poll_duration.count()) + " ms; stages=" +
 		    "startup:" + milliseconds(poll_started, stages_started) +
 		    ",runtimes:" + milliseconds(stages_started, runtimes_finished) +
+		    ",side_chats:" + milliseconds(stages_started, side_chats_finished) +
 		    ",terminals:" + milliseconds(runtimes_finished, terminals_finished) +
 		    ",memory:" + milliseconds(terminals_finished, memory_finished) +
 		    ",controls:" + milliseconds(memory_finished, controls_finished) +

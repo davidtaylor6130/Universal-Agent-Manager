@@ -863,8 +863,18 @@ UAM_TEST(PerformanceStartupModelDiscoveryOnLargeInstall)
 	const double poll_ms = median_ms([&] { (void)discovery.Poll(fixture.app); });
 	UAM_ASSERT(fixture.launched.empty());
 	std::cout << "[TIMING] startup model discovery, " << kChats << " chats, " << kWorktrees << " worktrees: collect p50=" << collect_ms << " ms, waiting poll p50=" << poll_ms << " ms\n";
-	// The UI-thread interaction budget; the per-comparison version took seconds on this workload.
-	constexpr double kBudgetMs = 250.0;
-	if (collect_ms > kBudgetMs || poll_ms > kBudgetMs)
-		throw TestFailure("startup model discovery on " + std::to_string(kChats) + " chats took collect=" + std::to_string(collect_ms) + " ms, poll=" + std::to_string(poll_ms) + " ms; limit " + std::to_string(kBudgetMs) + " ms");
+	// Fixed limits. Collection runs once, inside the tick that applies the startup chat list; the waiting poll runs on
+	// every tick, so it stays under the 50 ms slow-PollTick threshold. Comparing every scope with every chat took seconds here.
+	constexpr double kCollectBudgetMs = 250.0;
+	constexpr double kWaitingPollBudgetMs = 40.0;
+	if (collect_ms > kCollectBudgetMs || poll_ms > kWaitingPollBudgetMs)
+		throw TestFailure("startup model discovery on " + std::to_string(kChats) + " chats took collect=" + std::to_string(collect_ms) + " ms (limit " +
+		    std::to_string(kCollectBudgetMs) + " ms), waiting poll=" + std::to_string(poll_ms) + " ms (limit " + std::to_string(kWaitingPollBudgetMs) + " ms)");
+
+	// Once the version check finishes, registered scopes still launch, two at a time.
+	fixture.app.runtime_cli_versions_by_provider_id["codex-cli"].checked = true;
+	UAM_ASSERT(discovery.Poll(fixture.app));
+	UAM_ASSERT_EQ(fixture.launched.size(), std::size_t{2});
+	for (const uam::ModelDiscoveryScope& launched : fixture.launched)
+		UAM_ASSERT_EQ(launched.provider_id, std::string("codex-cli"));
 }

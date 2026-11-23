@@ -1522,6 +1522,8 @@ namespace uam
 		uam::FrontendActionMap frontend_actions;
 
 		std::vector<ChatSession> chats;
+		/// The side chat whose cleanup was requested last; its poll removes it ahead of older requests (Dismiss side chat).
+		std::string latest_side_cleanup_chat_id;
 		HiddenAgentChatOwnership hidden_agent_chat_ownership;
 		/// Saved chats of providers this build excludes (see excluded_provider_data.h): never shown or changed, consulted only so
 		/// import and deletion respect the native sessions and workspaces they own. Always empty in a build with every provider.
