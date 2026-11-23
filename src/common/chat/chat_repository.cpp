@@ -64,6 +64,8 @@ namespace
 	namespace attachment_persisted_fields = uam::message_attachment_json::persisted;
 	// Refuse oversized saves before allocating the output or changing existing files.
 	constexpr std::size_t kMaxChatJsonBytes = 256U * 1024U * 1024U;
+	// Zero uses kMaxChatJsonBytes; only tests lower it.
+	std::atomic<std::size_t> g_max_chat_read_bytes_for_tests{0};
 	constexpr std::size_t kMaxQueueJournalBytes = 16U * 1024U * 1024U;
 	constexpr std::size_t kMaxPassiveArchiveBytes = 16U * 1024U * 1024U;
 	constexpr std::size_t kMaxPassiveNativeMetadataBytes = 1024U * 1024U;
@@ -1703,6 +1705,8 @@ namespace
 		bool managed_followup_input_unavailable = false;
 		// The document still holds a remote OpenCode server password written by an older build.
 		bool legacy_opencode_native_secret = false;
+		// The file exceeds the chat read limit and was refused without reading its body; it must stay unchanged.
+		bool too_large = false;
 	};
 
 	// Older builds saved the remote OpenCode server password and its port in chat files. Both now stay in memory only.
@@ -2742,20 +2746,38 @@ namespace
 		return {std::nullopt, "contains invalid attachment metadata"};
 	}
 
+	/// <summary>One diagnostic line per oversized file and size per run, so retries and rescans do not repeat it.</summary>
+	void LogOversizedChatFileOnce(const fs::path& path, std::uintmax_t source_bytes, std::size_t limit)
+	{
+		static std::mutex mutex;
+		static std::unordered_set<std::string> logged;
+		const std::string name = path.filename().string();
+		{
+			std::lock_guard<std::mutex> lock(mutex);
+			if (!logged.insert(name + ":" + std::to_string(source_bytes)).second) return;
+		}
+		uam::diagnostics::Write("[chat-storage] Refused to read " + name + ": " + std::to_string(source_bytes) +
+		    " bytes exceeds the " + std::to_string(limit) + "-byte chat read limit. The file was left unchanged.");
+	}
+
 	LoadChatResult ParseLocalChatFile(const fs::path& path, bool include_messages = true, std::uintmax_t expected_source_size = 0, bool publish_summary_cache = true, std::size_t max_read_bytes = 0)
 	{
+		// Every full chat read is bounded: a caller's own limit can only tighten the chat read limit.
+		const std::size_t chat_limit = ChatRepository::MaxChatReadBytes();
+		const std::size_t read_limit = max_read_bytes != 0 ? std::min(max_read_bytes, chat_limit) : chat_limit;
 		std::string file_text;
-		if (max_read_bytes != 0)
+		const uam::io::BoundedReadResult read = uam::io::TryReadFileWithinLimit(path, file_text, read_limit);
+		if (read.status == uam::io::BoundedReadStatus::TooLarge)
 		{
-			// Refuse a known oversize source before allocating its body; the reader
-			// also enforces the ceiling if the file grows after this observation.
-			std::error_code size_error;
-			const std::uintmax_t source_size = fs::file_size(path, size_error);
-			if (size_error || source_size > max_read_bytes ||
-			    !uam::io::TryReadTextFile(path, file_text, max_read_bytes))
+			if (read_limit < chat_limit && read.source_bytes <= chat_limit)
 				return {std::nullopt, "cannot be read within the requested size limit"};
+			LogOversizedChatFileOnce(path, read.source_bytes, chat_limit);
+			LoadChatResult refused{std::nullopt, std::string(ChatRepository::kChatTooLargeToOpenMessage)};
+			refused.too_large = true;
+			return refused;
 		}
-		else file_text = uam::io::ReadTextFile(path);
+		if (read.status != uam::io::BoundedReadStatus::Read && max_read_bytes != 0)
+			return {std::nullopt, "cannot be read within the requested size limit"};
 		if (file_text.empty())
 		{
 			return {std::nullopt, "is empty"};
@@ -2796,6 +2818,8 @@ namespace
 		if (primary_exists)
 		{
 			LoadChatResult primary = ParseLocalChatFile(primary_path, true);
+			// An oversized primary is newer than any backup; never replace it with an older transcript.
+			if (primary.too_large) return {UnloadedTranscriptSource::Unrecoverable, std::nullopt};
 			if (primary.chat && primary.chat->id == expected_chat_id &&
 			    HasTranscriptForUnloadedSave(*primary.chat, expected_message_count))
 			{
@@ -5709,6 +5733,11 @@ namespace
 	                              std::string* warning_out)
 	{
 		const LoadChatResult backup_chat = ParseLocalChatFile(backup_path, include_messages);
+		if (backup_chat.too_large)
+		{
+			AppendWarning(warning_out, "Skipped backup file " + backup_path.filename().string() + ": it is too large to open.");
+			return;
+		}
 		if (!backup_chat.chat)
 		{
 			AppendWarning(warning_out, "Skipped corrupted backup file " + backup_path.string() + ": " + backup_chat.error + ".");
@@ -5887,6 +5916,12 @@ namespace
 				AppendWarning(warning_out, "Skipped unsupported managed input without backup adoption: " + path.string() + ".");
 				continue;
 			}
+			if (primary_chat.too_large)
+			{
+				// Backup recovery would replace the oversized primary; leave both files untouched.
+				AppendWarning(warning_out, "Skipped chat file " + path.filename().string() + ": it is too large to open.");
+				continue;
+			}
 			const fs::path backup_path = uam::io::MakeBackupPath(path);
 			if (uam::paths::PathExistsNoThrow(backup_path))
 			{
@@ -5951,6 +5986,17 @@ namespace
 		return chats;
 	}
 } // namespace
+
+std::size_t ChatRepository::MaxChatReadBytes()
+{
+	const std::size_t override_bytes = g_max_chat_read_bytes_for_tests.load(std::memory_order_relaxed);
+	return override_bytes != 0 ? override_bytes : kMaxChatJsonBytes;
+}
+
+void ChatRepository::SetMaxChatReadBytesForTests(std::size_t max_bytes)
+{
+	g_max_chat_read_bytes_for_tests.store(max_bytes, std::memory_order_relaxed);
+}
 
 std::vector<ChatSession> ChatRepository::LoadLocalChats(const std::filesystem::path& data_root, std::string* warning_out)
 {

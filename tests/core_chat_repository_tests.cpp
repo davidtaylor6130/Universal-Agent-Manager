@@ -872,6 +872,89 @@ UAM_TEST(ChatRepositoryRecoversValidatedBackupWhenPrimaryIsMissingOrCorrupt)
 	}
 }
 
+namespace
+{
+	/// <summary>Lowers the chat read limit for one case and restores it even when an assertion fails.</summary>
+	struct ScopedChatReadLimit
+	{
+		explicit ScopedChatReadLimit(std::size_t bytes) { ChatRepository::SetMaxChatReadBytesForTests(bytes); }
+		~ScopedChatReadLimit() { ChatRepository::SetMaxChatReadBytesForTests(0); }
+		ScopedChatReadLimit(const ScopedChatReadLimit&) = delete;
+		ScopedChatReadLimit& operator=(const ScopedChatReadLimit&) = delete;
+	};
+}
+
+UAM_TEST(BoundedFileReadRefusesOversizedFileBeforeReadingIt)
+{
+	TempDir temp("uam-bounded-read");
+	const fs::path file = temp.root / "large.json";
+	UAM_ASSERT(uam::io::WriteTextFile(file, std::string(100, 'x')));
+
+	std::string text = "stale";
+	const uam::io::BoundedReadResult refused = uam::io::TryReadFileWithinLimit(file, text, 99);
+	UAM_ASSERT(refused.status == uam::io::BoundedReadStatus::TooLarge);
+	UAM_ASSERT_EQ(refused.source_bytes, static_cast<std::uintmax_t>(100));
+	UAM_ASSERT(text.empty());
+
+	const uam::io::BoundedReadResult read = uam::io::TryReadFileWithinLimit(file, text, 100);
+	UAM_ASSERT(read.status == uam::io::BoundedReadStatus::Read);
+	UAM_ASSERT_EQ(text, std::string(100, 'x'));
+
+	const uam::io::BoundedReadResult missing = uam::io::TryReadFileWithinLimit(temp.root / "missing.json", text, 100);
+	UAM_ASSERT(missing.status == uam::io::BoundedReadStatus::Unreadable);
+}
+
+UAM_TEST(ChatRepositoryRefusesOversizedChatWithoutChangingItsFiles)
+{
+	TempDir temp("uam-chat-oversized");
+	ChatSession chat;
+	chat.id = "chat-oversized";
+	chat.provider_id = "codex-cli";
+	chat.title = "Small";
+	chat.created_at = "2026-01-01T00:00:00.000Z";
+	chat.updated_at = "2026-01-01T00:00:01.000Z";
+	chat.messages.push_back(Message{MessageRole::User, "small message"});
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+	// The second save leaves a small, valid backup that recovery must not adopt over the oversized primary.
+	chat.messages.push_back(Message{MessageRole::Assistant, std::string(64 * 1024, 'a')});
+	chat.updated_at = "2026-01-01T00:00:02.000Z";
+	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
+
+	const fs::path primary = AppPaths::UamChatFilePath(temp.root, chat.id);
+	const fs::path backup = uam::io::MakeBackupPath(primary);
+	const std::string primary_before = uam::io::ReadTextFile(primary);
+	const std::string backup_before = uam::io::ReadTextFile(backup);
+	UAM_ASSERT(primary_before.size() > 64 * 1024);
+	UAM_ASSERT(!backup_before.empty() && backup_before.size() < 16 * 1024);
+	const std::optional<ChatSession> summary = ChatRepository::LoadLocalChat(temp.root, chat.id, false);
+	UAM_ASSERT(summary.has_value());
+
+	{
+		const ScopedChatReadLimit limit(16 * 1024);
+		std::string warning;
+		UAM_ASSERT(!ChatRepository::LoadLocalChat(temp.root, chat.id, true, &warning).has_value());
+		UAM_ASSERT_EQ(warning, std::string(ChatRepository::kChatTooLargeToOpenMessage));
+
+		ChatSession hydrating = *summary;
+		warning.clear();
+		UAM_ASSERT(!ChatRepository::HydrateChatMessages(temp.root, hydrating, &warning));
+		UAM_ASSERT_EQ(warning, std::string(ChatRepository::kChatTooLargeToOpenMessage));
+
+		// A full scan skips the chat instead of restoring the older backup over it.
+		warning.clear();
+		const std::vector<ChatSession> loaded = ChatRepository::LoadLocalChats(temp.root, &warning);
+		UAM_ASSERT(std::ranges::none_of(loaded, [&](const ChatSession& entry) { return entry.id == chat.id; }));
+		UAM_ASSERT(warning.find("too large to open") != std::string::npos);
+
+		UAM_ASSERT_EQ(uam::io::ReadTextFile(primary), primary_before);
+		UAM_ASSERT_EQ(uam::io::ReadTextFile(backup), backup_before);
+	}
+
+	const std::optional<ChatSession> reopened = ChatRepository::LoadLocalChat(temp.root, chat.id);
+	UAM_ASSERT(reopened.has_value());
+	UAM_ASSERT_EQ(reopened->messages.size(), static_cast<std::size_t>(2));
+}
+
 UAM_TEST(ChatRepositoryRecoversBackupWhenPrimaryMessagesFieldIsNotAnArray)
 {
 	TempDir temp("uam-chat-backup-non-array-messages");

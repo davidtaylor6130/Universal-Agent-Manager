@@ -209,6 +209,12 @@ struct ChatStorageDeleteResult
 class ChatRepository
 {
   public:
+	/// User-facing load failure for a saved chat file above the chat read limit; the size detail goes to the diagnostic log.
+	static constexpr std::string_view kChatTooLargeToOpenMessage = "This chat is too large to open.";
+	/// Largest saved chat file any full read accepts (the same ceiling saves enforce).
+	static std::size_t MaxChatReadBytes();
+	/// Test seam: lowers the chat read limit for the whole process; zero restores the default.
+	static void SetMaxChatReadBytesForTests(std::size_t max_bytes);
 	/// Conditional durable full-primary storage only; does not admit execution or mint identities.
 	static std::shared_ptr<PreparedChatPublication> PrepareChatPublication(
 	    const std::filesystem::path& data_root, const ChatSession& candidate,
