@@ -48,10 +48,16 @@ namespace uam::io
 	// Test-only delay before each durable temporary-file write on the calling thread only, so a case can
 	// prove its own thread (for example the UI poll) performs no synchronous durable write.
 	inline thread_local int t_durable_write_delay_ms_for_tests = 0;
+	// Test-only count of the durable writes that delay applied to on this thread, so a case can detect such a
+	// write without timing it (#526). It changes only while a test has armed the delay.
+	inline thread_local int t_delayed_durable_writes_for_tests = 0;
 	inline void DelayDurableWriteForTests()
 	{
 		if (t_durable_write_delay_ms_for_tests > 0)
+		{
+			++t_delayed_durable_writes_for_tests;
 			std::this_thread::sleep_for(std::chrono::milliseconds(t_durable_write_delay_ms_for_tests));
+		}
 	}
 
 #if defined(_WIN32)
