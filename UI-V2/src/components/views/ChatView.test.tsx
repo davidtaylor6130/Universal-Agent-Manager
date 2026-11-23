@@ -7936,10 +7936,14 @@ describe('ChatView', () => {
     { label: 'keeps the checked-out branch without a base override', gitBaseBranch: null, shown: 'main', aria: 'Branch main' },
     { label: 'keeps the checked-out branch when the base matches it', gitBaseBranch: 'main', shown: 'main', aria: 'Branch main' },
     { label: 'keeps the checked-out branch for an explicit HEAD base', gitBaseBranch: '', shown: 'main', aria: 'Branch main' },
-  ])('$label before the first message (#1029)', async ({ gitBaseBranch, shown, aria }) => {
+    { label: 'shows the chosen base while the branch read has failed', gitBaseBranch: 'build/x', shown: 'build/x', aria: 'Base branch build/x', readFails: true },
+    { label: 'shows no branch while the read has failed without a base override', gitBaseBranch: null, shown: undefined, aria: undefined, readFails: true },
+  ])('$label before the first message (#1029)', async ({ gitBaseBranch, shown, aria, readFails }) => {
     useAppStore.setState((state) => ({
       sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, workspaceDirectory: '/tmp/project', workspaceIsolationKind: 'pendingGitWorktree', workspaceBranchName: '', gitBaseBranch } : session),
-      getVcsCommitStatus: vi.fn(async (): Promise<VcsCommitStatus> => ({ available: true, vcsTypes: ['git'], activeVcsType: 'git', workspaceDirectory: '/tmp/project', branchOrRevision: 'main', changedFiles: [], lineStatsReady: true, warning: '', error: '' })),
+      getVcsCommitStatus: vi.fn(async (): Promise<VcsCommitStatus> => readFails
+        ? { available: false, vcsTypes: [], activeVcsType: 'git', workspaceDirectory: '/tmp/project', branchOrRevision: '', changedFiles: [], lineStatsReady: true, warning: '', error: 'read failed' }
+        : { available: true, vcsTypes: ['git'], activeVcsType: 'git', workspaceDirectory: '/tmp/project', branchOrRevision: 'main', changedFiles: [], lineStatsReady: true, warning: '', error: '' }),
       branchSwitching: true,
     }))
     const host = document.createElement('div')
@@ -7948,8 +7952,8 @@ describe('ChatView', () => {
     try {
       await act(async () => { root.render(<ChatView session={useAppStore.getState().sessions[0]} />) })
       const branch = host.querySelector('.uam-composer-workspace-tab [aria-label^="B"]')
-      expect(branch?.getAttribute('aria-label')).toBe(aria)
-      expect(branch?.textContent).toBe(shown)
+      expect(branch?.getAttribute('aria-label') ?? undefined).toBe(aria)
+      expect(branch?.textContent ?? undefined).toBe(shown)
     } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ branchSwitching: undefined }) }
   })
 
