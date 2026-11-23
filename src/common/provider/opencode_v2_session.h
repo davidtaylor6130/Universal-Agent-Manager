@@ -27,7 +27,8 @@ namespace uam::opencode_v2
 // are UAM's internal projection, never messages sent to `opencode acp`.
 using Json = nlohmann::json;
 using Query = std::function<Json(const std::string&, const std::string&, const Json&)>;
-using PublishPolicy = std::function<void(const std::string&, const std::string&, bool)>;
+/// Publishes the captured guard: native session, workspace, read-only ceiling and imported agent deny actions.
+using PublishPolicy = std::function<void(const std::string&, const std::string&, bool, const std::vector<std::string>&)>;
 using Emit = std::function<void(const Json&)>;
 
 // The one OpenCode V2 native-protocol contract UAM has verified, for chat, model
@@ -103,6 +104,12 @@ std::vector<std::string> FileBackedStdoutArgv(std::vector<std::string> command);
 #endif
 
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+/// <summary>V2 deny actions for an imported agent's canonical V1 rules (tool -> ask|deny). Pinned V2 renames `bash` to
+/// `shell` and `task` to `subagent`, and edits are one `edit` action, so both spellings are denied. Throws on invalid rules.</summary>
+std::vector<std::string> ImportedDenyActions(const std::string& permission_json);
+#endif
+
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 class Session
 {
 public:
@@ -131,6 +138,7 @@ private:
 	Emit emit_;
 	std::string native_version_, cwd_, session_id_, mode_ = "build", model_, prompt_inbox_;
 	bool read_only_ = false, prompt_started_ = false, disconnected_ = false, ready_ = false;
+	std::vector<std::string> deny_;
 	bool usage_invalid_ = false;
 	bool cancel_requested_ = false, cancel_interrupt_sent_ = false;
 	std::chrono::steady_clock::time_point cancel_deadline_{};
