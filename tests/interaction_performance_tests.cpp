@@ -1900,6 +1900,56 @@ UAM_TEST(StatePushReconciliationRepairsABypassedToolCallStampAndCatalogueMemo)
 #endif
 }
 
+// A chat whose host id carries stray whitespace shares its trimmed scope's memo key, so it must read the same
+// value: the checked CLI version of that trimmed host. Before the fix it looked its host up untrimmed, so a
+// trusting push that met the chat first memoised a catalogue without Gemini's reasoning levels, and the
+// verifying push (which builds the catalogue list, with trimmed hosts, first) reported a [desync] every time.
+UAM_TEST(StatePushCatalogueMemoReadsTheTrimmedHostOfAChat)
+{
+	FakeStatePushClock clock;
+	FakePathProbeClock probe_clock;
+	StatePatchObserver observer;
+	TempDir temp("uam-catalogue-trimmed-host");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	app.provider_model_catalog = std::make_unique<uam::ProviderModelCatalogService>();
+	app.provider_model_catalog->Initialize(app.data_root);
+	ChatFolder folder;
+	folder.id = "folder-gemini";
+	folder.title = folder.id;
+	folder.directory = (temp.root / "workspace").generic_string();
+	fs::create_directories(temp.root / "workspace");
+	app.folders.push_back(folder);
+	UAM_ASSERT(app.provider_model_catalog->RememberSuccessfulModels("gemini-cli", nlohmann::json::array({{{"id", "gemini-3.1-pro-preview"}}}), folder.directory));
+	uam::CliProviderVersionState& version = app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("gemini-cli", "local")];
+	version.provider_id = "gemini-cli";
+	version.execution_host = *uam::execution_hosts::Find(app.settings.execution_hosts, "local");
+	version.checked = true;
+	version.supported = true;
+	version.installed_version = "0.64.0";
+
+	// A full push; the verification after it memoises the catalogue list for these inputs.
+	clock.Advance(std::chrono::seconds(10));
+	uam::PushStateUpdate(nullptr, app);
+
+	// A new chat in that scope changes no catalogue input, so the next (trusting) push reuses the list and
+	// builds this scope's fingerprint from the chat; the verification after it rebuilds the list first.
+	ChatSession chat;
+	chat.id = "gemini-untrimmed-host";
+	chat.title = chat.id;
+	chat.provider_id = "gemini-cli";
+	chat.folder_id = folder.id;
+	chat.execution_host_id = "local ";
+	chat.updated_at = "2026-10-25T10:00:00Z";
+	chat.messages_loaded = false;
+	app.chats.push_back(std::move(chat));
+	clock.Advance(std::chrono::milliseconds(120));
+	const std::size_t divergences = uam::StateSerializer::CacheDivergenceCount();
+	(void)uam::PushStateUpdateIfChanged(nullptr, app);
+	UAM_ASSERT_EQ(uam::StateSerializer::CacheDivergenceCount(), divergences);
+}
+
 namespace
 {
 	/// <summary>Bytes of prompt text UAM wrapped around the typed prompt: every request string holding it, minus the prompt itself.</summary>

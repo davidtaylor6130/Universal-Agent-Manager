@@ -213,6 +213,10 @@ namespace uam
 		// Found by the current verifying pass; FlushCacheDivergenceReport writes them as one log line.
 		thread_local std::vector<std::string> g_unreported_divergences;
 		thread_local std::size_t g_unreported_divergence_count = 0;
+		// How many of them were of each kind, so a report shows what the total is made of beyond the five names.
+		thread_local std::map<std::string, std::size_t, std::less<>> g_unreported_divergence_kinds;
+		// RecentPathProbeChangeCount at the previous report on this thread.
+		thread_local std::size_t g_reported_path_probe_changes = 0;
 		// Transcripts whose stamp moved while their digest did not: a non-const read restamped them and they were rehashed for nothing.
 		thread_local std::size_t g_restamped_unchanged_transcripts = 0;
 
@@ -220,6 +224,9 @@ namespace uam
 		{
 			++g_cache_divergences;
 			++g_unreported_divergence_count;
+			const auto kind = g_unreported_divergence_kinds.find(what);
+			if (kind != g_unreported_divergence_kinds.end()) ++kind->second;
+			else g_unreported_divergence_kinds.emplace(std::string(what), std::size_t{1});
 			// Identifiers only: the diverged content is private.
 			if (g_unreported_divergences.size() < 5) g_unreported_divergences.push_back(std::string(what) + " of " + std::string(owner));
 		}
@@ -271,13 +278,18 @@ namespace uam
 			    uam::paths::ResolveWorkspaceRootPath(app, chat)).first->second;
 		}
 
+		/// <summary>The host a catalogue scope belongs to: trimmed, with an empty id meaning the local host.</summary>
+		std::string CatalogSnapshotHost(std::string_view execution_host_id)
+		{
+			return uam::strings::NonEmptyOrFallback(
+			    uam::strings::Trim(std::string(execution_host_id)), std::string(uam::execution_hosts::kLocalHostId));
+		}
+
 		std::string CatalogSnapshotKey(const std::string& provider_id,
 		                              std::string_view workspace,
 		                              std::string_view execution_host_id)
 		{
-			const std::string host = uam::strings::NonEmptyOrFallback(
-			    uam::strings::Trim(std::string(execution_host_id)), std::string(uam::execution_hosts::kLocalHostId));
-			return provider_id + "\n" + std::string(workspace) + "\n" + host;
+			return provider_id + "\n" + std::string(workspace) + "\n" + CatalogSnapshotHost(execution_host_id);
 		}
 
 		std::string FallbackAcpCurrentModelForChat(const AppState& app, const ChatSession& chat)
@@ -304,7 +316,8 @@ namespace uam
 				auto snapshot = app.provider_model_catalog->GetCatalogSnapshot(chat.provider_id, workspace, chat.execution_host_id, include_models, include_config_options);
 				if (include_models)
 				{
-					const auto* host = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id.empty() ? "local" : chat.execution_host_id);
+					// The same trimmed host the key uses: an untrimmed id must not decorate one scope two ways.
+					const auto* host = execution_hosts::Find(app.settings.execution_hosts, CatalogSnapshotHost(chat.execution_host_id));
 					ProviderModelCatalogService::ApplyLaunchOptionMetadata(snapshot["availableModels"], chat.provider_id, host != nullptr ? CheckedProviderConfigurationVersion(app, chat.provider_id, *host) : std::string{});
 				}
 				return cache.catalogs.emplace(key, std::move(snapshot)).first->second;
@@ -1952,7 +1965,7 @@ namespace uam
 				acp_json["availableModels"] = SerializeAcpModels(session->available_models);
 			else
 				acp_json["availableModels"] = ProviderModelCatalogService::MergeAcpModelArrays(std::move(acp_json["availableModels"]), SerializeAcpModels(session->available_models), true);
-			const auto* model_host = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id.empty() ? "local" : chat.execution_host_id);
+			const auto* model_host = execution_hosts::Find(app.settings.execution_hosts, CatalogSnapshotHost(chat.execution_host_id));
 			ProviderModelCatalogService::ApplyLaunchOptionMetadata(acp_json["availableModels"], chat.provider_id, model_host != nullptr ? CheckedProviderConfigurationVersion(app, chat.provider_id, *model_host) : std::string{});
 			if (session_owns_config) acp_json["configOptions"] = SerializeAcpConfigOptions(session->available_config_options);
 			acp_json["nativeModelOptions"] = ProviderRuntimeRegistry::ResolveById(session->provider_id).OnAcpNativeModelOptionsForFrontend(*session);
@@ -2525,10 +2538,17 @@ namespace uam
 		if (g_unreported_divergence_count == 0) return;
 		std::string names;
 		for (const std::string& name : g_unreported_divergences) names += (names.empty() ? "" : ", ") + name;
+		std::string kinds;
+		for (const auto& [kind, count] : g_unreported_divergence_kinds) kinds += (kinds.empty() ? "" : ", ") + kind + " " + std::to_string(count);
+		const std::size_t path_changes = uam::paths::RecentPathProbeChangeCount().load();
+		const std::size_t new_path_changes = path_changes - std::exchange(g_reported_path_probe_changes, path_changes);
+		// Catalogue values also depend on how workspace paths resolve on disk, which no stamp covers.
 		uam::diagnostics::Write("[desync] " + std::to_string(g_unreported_divergence_count) + " cached value(s) differed from their source and were repaired (" +
-		    names + (g_unreported_divergence_count > g_unreported_divergences.size() ? ", ..." : "") +
-		    "); a write bypassed a revision stamp. Total so far: " + std::to_string(g_cache_divergences.load()) + ".");
+		    names + (g_unreported_divergence_count > g_unreported_divergences.size() ? ", ..." : "") + "; by kind: " + kinds +
+		    "); a write bypassed a revision stamp, or a workspace path resolved differently on disk (path resolutions changed since the last report: " +
+		    std::to_string(new_path_changes) + "). Total so far: " + std::to_string(g_cache_divergences.load()) + ".");
 		g_unreported_divergences.clear();
+		g_unreported_divergence_kinds.clear();
 		g_unreported_divergence_count = 0;
 	}
 
