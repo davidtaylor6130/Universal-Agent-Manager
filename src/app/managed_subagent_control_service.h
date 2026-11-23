@@ -143,7 +143,8 @@ namespace uam
 		/// children saved without the link keep run-ledger lineage only. Grants no display, follow-up or execution authority.
 		static bool SavedRootLinkMatches(const ChatSession& root, const ChatSession& child);
 		/// The saved-state settlement both worktree paths require of a finished managed child: no queued, held, dispatched or
-		/// approval-pending input and no remote process, turn, delivery, stop, restart or recovery claim.
+		/// approval-pending input and no remote process, turn, delivery, stop, restart or recovery claim. Port back and
+		/// Discard additionally refuse a child whose chat-recovery preference is on; SSH preparation does not.
 		static bool ChildInputSettled(const ChatSession& chat);
 		/// Once per data root in existing startup/sidebar loading, including empty/error results.
 		static void LoadRestartInspection(AppState& app);

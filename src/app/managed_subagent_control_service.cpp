@@ -951,18 +951,24 @@ namespace uam
 
 	namespace
 	{
-		bool CleanupSettled(const ChatSession& chat)
+		/// Saved work-in-flight claims only. The persisted chat-recovery preference is a setting, not work, so it is left to
+		/// CleanupSettled, which also refuses it for Port back and Discard.
+		bool ChildWorkSettled(const ChatSession& chat)
 		{
 			return !chat.imported_read_only && !chat.side_cleanup_requested && !chat.managed_followup_input_unavailable &&
 			    !chat.routing_reservation_pending && !chat.native_session_reset_pending && !chat.acp_queue_storage_error &&
 			    !chat.acp_queue_held && chat.acp_queued_prompts.empty() && chat.acp_unsent_prompt_recoveries.empty() &&
 			    !chat.passive_queued_prompt_archive && chat.acp_dispatched_queued_prompt_count == 0 && !chat.AwaitsAutomationApproval() &&
 			    !chat.remote_turn_reconnect_pending && !chat.remote_process_exists && !chat.remote_manual_compaction_pending &&
-			    !chat.remote_stop_cleanup_pending && !chat.remote_restart_pending && !chat.remote_recovery_enabled &&
+			    !chat.remote_stop_cleanup_pending && !chat.remote_restart_pending &&
 			    chat.remote_recovery_state.empty() && !chat.remote_source_exit_pending && chat.remote_interaction_responses.empty() &&
 			    chat.remote_process_control_token.empty() && chat.remote_prompt_delivery_session_id.empty() &&
 			    chat.remote_prompt_delivery_id.empty() && chat.remote_prompt_delivery_payload.empty() &&
 			    chat.remote_prompt_delivery_input_ids.empty() && chat.remote_pending_requests.empty() && chat.remote_active_turn_id.empty();
+		}
+		bool CleanupSettled(const ChatSession& chat)
+		{
+			return ChildWorkSettled(chat) && !chat.remote_recovery_enabled;
 		}
 		std::string CleanupIdentity(const ChatSession& chat)
 		{
@@ -1080,7 +1086,7 @@ namespace uam
 
 	bool ManagedSubagentControlService::ChildInputSettled(const ChatSession& chat)
 	{
-		return CleanupSettled(chat);
+		return ChildWorkSettled(chat);
 	}
 
 	bool ManagedSubagentControlService::SavedRootLinkMatches(const ChatSession& root, const ChatSession& child)
