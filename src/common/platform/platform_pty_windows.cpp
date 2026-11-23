@@ -129,7 +129,7 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 			return false;
 		}
 		const std::wstring working_directory_w = working_directory.empty() ? std::wstring() : working_directory.wstring();
-		const DWORD creation_flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED;
+		const DWORD creation_flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED | ChildProcessPriorityCreationFlags();
 		const wchar_t* working_directory_arg = working_directory.empty() ? nullptr : working_directory_w.c_str();
 		void* environment_arg = environment_block.empty() ? nullptr : environment_block.data();
 		const BOOL created = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, FALSE, creation_flags, environment_arg, working_directory_arg, &si.StartupInfo, &pi);

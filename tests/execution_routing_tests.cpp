@@ -226,12 +226,114 @@ UAM_TEST(ExecutionRoutingAssignedIdleAutomaticChatWaitsForItsOwnHostCapacity)
 	const uam::ExecutionRoutingDecision full = service.Admit(next_turn, {RoutingHost("a"), RoutingHost("b")}, {{"another-chat", "a"}});
 	UAM_ASSERT_EQ(full.status, uam::ExecutionRoutingStatus::Waiting);
 	UAM_ASSERT_EQ(full.assignment.host_id, std::string("a"));
-	const uam::ExecutionRoutingDecision unrelated = service.Admit(RoutingRequest("unrelated"), {RoutingHost("a")}, {});
-	UAM_ASSERT_EQ(unrelated.status, uam::ExecutionRoutingStatus::Assigned);
-	UAM_ASSERT(service.Release("unrelated", true));
+	// The assigned chat queued first on its computer, so a newer chat cannot take the slot freed there.
+	const uam::ExecutionRoutingDecision newer = service.Admit(RoutingRequest("unrelated"), {RoutingHost("a")}, {});
+	UAM_ASSERT_EQ(newer.status, uam::ExecutionRoutingStatus::Waiting);
 	const uam::ExecutionRoutingDecision available = service.Admit(next_turn, {RoutingHost("a")}, {});
 	UAM_ASSERT_EQ(available.status, uam::ExecutionRoutingStatus::Assigned);
 	UAM_ASSERT_EQ(available.assignment, initial.assignment);
+	UAM_ASSERT(service.Release("idle", true));
+	const uam::ExecutionRoutingDecision unrelated = service.Admit(RoutingRequest("unrelated"), {RoutingHost("a")}, {});
+	UAM_ASSERT_EQ(unrelated.status, uam::ExecutionRoutingStatus::Assigned);
+}
+
+UAM_TEST(ExecutionRoutingFreedSlotGoesToTheLongestWaitingChatNotTheNewestArrival)
+{
+	uam::ExecutionRoutingService service;
+	const std::vector<uam::ExecutionRoutingCandidate> host{RoutingHost("a")};
+	const auto request = [](const std::string& chat, double now)
+	{
+		uam::ExecutionRoutingRequest value = RoutingRequest(chat);
+		value.now_seconds = now;
+		return value;
+	};
+	// The only slot is taken; two chats wait in the order they asked.
+	UAM_ASSERT_EQ(service.Admit(request("first", 10.0), host, {{"busy", "a"}}).status, uam::ExecutionRoutingStatus::Waiting);
+	UAM_ASSERT_EQ(service.Admit(request("second", 10.5), host, {{"busy", "a"}}).status, uam::ExecutionRoutingStatus::Waiting);
+	UAM_ASSERT_EQ(service.QueuedChatIds(), (std::vector<std::string>{"first", "second"}));
+	// The slot frees. A chat arriving now, and the second waiter retrying first, both stay behind the first waiter.
+	UAM_ASSERT_EQ(service.Admit(request("third", 11.0), host, {}).status, uam::ExecutionRoutingStatus::Waiting);
+	UAM_ASSERT_EQ(service.Admit(request("second", 11.2), host, {}).status, uam::ExecutionRoutingStatus::Waiting);
+	const uam::ExecutionRoutingDecision first = service.Admit(request("first", 11.5), host, {});
+	UAM_ASSERT_EQ(first.status, uam::ExecutionRoutingStatus::Assigned);
+	UAM_ASSERT_EQ(service.QueuedChatIds(), (std::vector<std::string>{"second", "third"}));
+	// Retrying does not move a waiter back: when the next slot frees, the second waiter is still ahead of the third.
+	UAM_ASSERT(service.Release("first", true));
+	UAM_ASSERT_EQ(service.Admit(request("third", 12.0), host, {}).status, uam::ExecutionRoutingStatus::Waiting);
+	UAM_ASSERT_EQ(service.Admit(request("second", 12.1), host, {}).status, uam::ExecutionRoutingStatus::Assigned);
+	UAM_ASSERT(service.Release("second", true));
+	UAM_ASSERT_EQ(service.Admit(request("third", 12.2), host, {}).status, uam::ExecutionRoutingStatus::Assigned);
+	UAM_ASSERT(service.QueuedChatIds().empty());
+}
+
+UAM_TEST(ExecutionRoutingEarlierWaiterHoldsOneSlotAndLeavesOtherComputersUsable)
+{
+	uam::ExecutionRoutingService service;
+	const std::vector<uam::ExecutionRoutingCandidate> hosts{RoutingHost("a"), RoutingHost("b")};
+	UAM_ASSERT_EQ(service.Admit(RoutingRequest("waiter"), hosts, {{"busy-a", "a"}, {"busy-b", "b"}}).status, uam::ExecutionRoutingStatus::Waiting);
+	// One slot frees: it is the earlier waiter's, whichever computer it is on.
+	UAM_ASSERT_EQ(service.Admit(RoutingRequest("newer"), hosts, {{"busy-a", "a"}}).status, uam::ExecutionRoutingStatus::Waiting);
+	// With both free the earlier waiter needs only one of them, so the newer chat runs at once on the other.
+	const uam::ExecutionRoutingDecision newer = service.Admit(RoutingRequest("newer"), hosts, {});
+	UAM_ASSERT_EQ(newer.status, uam::ExecutionRoutingStatus::Assigned);
+	UAM_ASSERT_EQ(newer.assignment.host_id, std::string("b"));
+	const uam::ExecutionRoutingDecision waiter = service.Admit(RoutingRequest("waiter"), hosts, {});
+	UAM_ASSERT_EQ(waiter.status, uam::ExecutionRoutingStatus::Assigned);
+	UAM_ASSERT_EQ(waiter.assignment.host_id, std::string("a"));
+}
+
+UAM_TEST(ExecutionRoutingQueueOnlyHoldsComputersTheWaiterCanUse)
+{
+	uam::ExecutionRoutingService service;
+	uam::ExecutionRoutingCandidate other_repository = RoutingHost("b");
+	other_repository.mappings = {{"local:/other", "folder-b-other", "/mapped/other"}};
+	uam::ExecutionRoutingRequest unmapped = RoutingRequest("other-workspace");
+	unmapped.source_workspace_identity = "local:/other";
+	// This chat's workspace is mapped only on b, which is full; it queues for b alone.
+	UAM_ASSERT_EQ(service.Admit(unmapped, {RoutingHost("a"), other_repository}, {{"busy-b", "b"}}).status, uam::ExecutionRoutingStatus::Waiting);
+	// A chat for the repository mapped on a is not held up by a waiter that could never run there.
+	const uam::ExecutionRoutingDecision mapped = service.Admit(RoutingRequest("repository"), {RoutingHost("a"), other_repository}, {{"busy-b", "b"}});
+	UAM_ASSERT_EQ(mapped.status, uam::ExecutionRoutingStatus::Assigned);
+	UAM_ASSERT_EQ(mapped.assignment.host_id, std::string("a"));
+	// A chat no ready computer can take is not waiting for capacity and takes no place in the queue.
+	uam::ExecutionRoutingRequest nowhere = RoutingRequest("nowhere");
+	nowhere.source_workspace_identity = "local:/unmapped";
+	UAM_ASSERT_EQ(service.Admit(nowhere, {RoutingHost("a")}, {}).status, uam::ExecutionRoutingStatus::Waiting);
+	UAM_ASSERT_EQ(service.QueuedChatIds(), (std::vector<std::string>{"other-workspace"}));
+}
+
+UAM_TEST(ExecutionRoutingWaiterThatStopsAskingAgesOutOfTheQueue)
+{
+	uam::ExecutionRoutingService service;
+	const std::vector<uam::ExecutionRoutingCandidate> host{RoutingHost("a")};
+	const auto request = [](const std::string& chat, double now)
+	{
+		uam::ExecutionRoutingRequest value = RoutingRequest(chat);
+		value.now_seconds = now;
+		return value;
+	};
+	UAM_ASSERT_EQ(service.Admit(request("gone", 100.0), host, {{"busy", "a"}}).status, uam::ExecutionRoutingStatus::Waiting);
+	// The slot frees, but the waiter has not asked again yet: within the stale limit it keeps its place.
+	UAM_ASSERT_EQ(service.Admit(request("newer", 100.0 + uam::ExecutionRoutingService::kQueueStaleSeconds), host, {}).status, uam::ExecutionRoutingStatus::Waiting);
+	// Silent past the stale limit (stopped, disabled, deleted), it no longer keeps the computer idle.
+	UAM_ASSERT_EQ(service.Admit(request("newer", 100.5 + uam::ExecutionRoutingService::kQueueStaleSeconds), host, {}).status, uam::ExecutionRoutingStatus::Assigned);
+	UAM_ASSERT(service.Release("newer", true));
+	// A waiter that comes back within the forget limit still has its original place ahead of later chats.
+	UAM_ASSERT_EQ(service.Admit(request("later", 110.0), host, {{"busy", "a"}}).status, uam::ExecutionRoutingStatus::Waiting);
+	UAM_ASSERT_EQ(service.Admit(request("gone", 110.5), host, {{"busy", "a"}}).status, uam::ExecutionRoutingStatus::Waiting);
+	UAM_ASSERT_EQ(service.QueuedChatIds(), (std::vector<std::string>{"gone", "later"}));
+	UAM_ASSERT_EQ(service.Admit(request("later", 111.0), host, {}).status, uam::ExecutionRoutingStatus::Waiting);
+	UAM_ASSERT_EQ(service.Admit(request("gone", 111.5), host, {}).status, uam::ExecutionRoutingStatus::Assigned);
+	UAM_ASSERT(service.Release("gone", true));
+	// Silent past the forget limit, a waiter loses its ticket: asking again joins the back of the queue.
+	const double forgotten = 111.0 + uam::ExecutionRoutingService::kQueueForgetSeconds + 1.0;
+	UAM_ASSERT_EQ(service.Admit(request("gone", forgotten), host, {{"busy", "a"}}).status, uam::ExecutionRoutingStatus::Waiting);
+	UAM_ASSERT_EQ(service.Admit(request("later", forgotten + 0.5), host, {{"busy", "a"}}).status, uam::ExecutionRoutingStatus::Waiting);
+	UAM_ASSERT_EQ(service.QueuedChatIds(), (std::vector<std::string>{"gone", "later"}));
+	UAM_ASSERT(service.Withdraw("gone"));
+	UAM_ASSERT(service.Withdraw("later"));
+	UAM_ASSERT(!service.Withdraw("later"));
+	UAM_ASSERT(service.QueuedChatIds().empty());
 }
 
 UAM_TEST(ExecutionRoutingOnlyOwnedRecoveryBypassesChangedOptInAndFullCapacity)

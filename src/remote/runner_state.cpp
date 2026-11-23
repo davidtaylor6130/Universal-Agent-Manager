@@ -5,6 +5,7 @@
 #include "remote/memory_protocol.h"
 #include "remote/runner_protocol.h"
 #include "remote/runner_state.h"
+#include "common/platform/child_process_priority.h"
 #include "common/platform/observed_process_stop.h"
 
 #include "common/paths/path_utils.h"
@@ -2032,6 +2033,9 @@ namespace uam::remote
 			// The marker is launch-only: the saved environment still compares equal to a repeated start request.
 			auto marked_environment = environment;
 			marked_environment.emplace_back(std::string(kRemoteSessionEnvironment), session_id);
+			// Agent and background work from the controller starts lowered here too; anything else keeps normal priority.
+			const uam::platform::ScopedChildProcessClass process_class(uam::platform::ParseChildProcessClass(
+			    request.contains("processClass") && request["processClass"].is_string() ? request["processClass"].get_ref<const std::string&>() : std::string_view()));
 			if (!ProcessService().StartStdioProcess(process->fields, working_directory,
 			                                                arguments, &error, marked_environment))
 			{

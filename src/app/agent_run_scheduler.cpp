@@ -277,6 +277,9 @@ namespace uam
 		constexpr std::size_t kMaxRunningAgents = 4;
 		constexpr std::size_t kMaxQueuedAgents = 32;
 		constexpr std::size_t kMaxDirectChildren = 4;
+		// One parent's agents may hold at most half the running slots, so another parent's agents always find room.
+		constexpr std::size_t kMaxRunningPerParent = kMaxRunningAgents / 2;
+		static_assert(kMaxRunningPerParent >= 1 && kMaxRunningPerParent < kMaxRunningAgents);
 		constexpr std::size_t kMaxResultExcerptBytes = 16U * 1024U;
 		constexpr int64_t kMaxRunElapsedMs = 30LL * 60LL * 1000LL;
 		constexpr int64_t kProviderCrashWindowMs = 60LL * 1000LL;
@@ -305,6 +308,25 @@ namespace uam
 			{
 				const bool reserved = owner && ((owner->transition && owner->action == ManagedInitialRuntimeOwner::Action::Running) || (owner->uncertain_candidate && owner->uncertain_candidate->status == "running"));
 				if (reserved && std::ranges::none_of(app.agent_runs, [&](const AgentRun& run) { return run.id == id && run.status == "running"; }))
+					++running;
+			}
+			return running;
+		}
+
+		/// The parent whose share a run uses: the agent run that started it, or the chat for a top-level agent.
+		std::string RunParentKey(const AgentRun& run)
+		{
+			return run.parent_run_id.empty() ? "chat:" + run.root_chat_id : "run:" + run.parent_run_id;
+		}
+
+		/// Running slots held by one parent's agents, counted the same way as RunningAgentSlots.
+		std::size_t RunningSlotsOfParent(const AppState& app, const std::string& parent)
+		{
+			std::size_t running = static_cast<std::size_t>(std::ranges::count_if(app.agent_runs, [&](const AgentRun& run) { return run.status == "running" && RunParentKey(run) == parent; }));
+			for (const auto& [id, owner] : app.managed_initial_runtime_owners)
+			{
+				const bool reserved = owner && ((owner->transition && owner->action == ManagedInitialRuntimeOwner::Action::Running) || (owner->uncertain_candidate && owner->uncertain_candidate->status == "running"));
+				if (reserved && RunParentKey(owner->expected) == parent && std::ranges::none_of(app.agent_runs, [&](const AgentRun& run) { return run.id == id && run.status == "running"; }))
 					++running;
 			}
 			return running;
@@ -2837,9 +2859,14 @@ namespace uam
 		bool PollInitialRuntimes(AppState& app, int64_t now_epoch_ms, int64_t now_steady_ms)
 		{
 			bool changed = false;
-			std::vector<std::string> ids;
+			// Oldest first, so a freed running slot goes to the agent that has waited longest.
+			std::vector<std::pair<std::string, std::string>> ordered;
 			for (const auto& [id, owner] : app.managed_initial_runtime_owners)
-				ids.push_back(id);
+				ordered.emplace_back(owner ? owner->expected.created_at : std::string(), id);
+			std::ranges::sort(ordered);
+			std::vector<std::string> ids;
+			for (auto& entry : ordered)
+				ids.push_back(std::move(entry.second));
 			for (const auto& id : ids)
 			{
 				const auto found = app.managed_initial_runtime_owners.find(id);
@@ -2962,7 +2989,7 @@ namespace uam
 				if (owner->phase == ManagedInitialRuntimeOwner::Phase::Queued)
 				{
 					const auto running = RunningAgentSlots(app);
-					if (!owner->completion_acked || running >= kMaxRunningAgents)
+					if (!owner->completion_acked || running >= kMaxRunningAgents || RunningSlotsOfParent(app, RunParentKey(owner->expected)) >= kMaxRunningPerParent)
 						continue;
 					auto* routed = ChatDomainService().FindChatById(app, owner->transcript_id);
 					const ChatSession before_routing = *routed;
@@ -4021,6 +4048,8 @@ namespace uam
 
 		std::size_t running = RunningAgentSlots(app);
 		std::size_t remaining_queued = app.queued_agent_run_ids.size();
+		// Runs that stay queued keep their place ahead of runs not yet visited, so the queue stays first in, first out.
+		std::vector<std::string> held;
 		while (running < kMaxRunningAgents && remaining_queued > 0 && !app.queued_agent_run_ids.empty())
 		{
 			--remaining_queued;
@@ -4031,12 +4060,18 @@ namespace uam
 				continue;
 			if (run->managed_continuation)
 			{
-				app.queued_agent_run_ids.push_back(id);
+				held.push_back(id);
 				continue;
 			}
 			if (app.pending_agent_run_cancellation_ids.contains(id))
 			{
-				app.queued_agent_run_ids.push_back(id);
+				held.push_back(id);
+				continue;
+			}
+			// A parent already using its share waits; the slot stays free for another parent's agent.
+			if (RunningSlotsOfParent(app, RunParentKey(*run)) >= kMaxRunningPerParent)
+			{
+				held.push_back(id);
 				continue;
 			}
 			ChatSession* transcript = ChatDomainService().FindChatById(app, run->transcript_chat_id);
@@ -4050,7 +4085,7 @@ namespace uam
 			{
 				FinishRun(app, *run, "failed", "provider_crash_circuit_open",
 				          "The provider crashed three times within one minute; managed launches are paused for five minutes.");
-				if (run->status == "queued") app.queued_agent_run_ids.push_back(id); // The terminal save failed; retry next tick.
+				if (run->status == "queued") held.push_back(id); // The terminal save failed; retry next tick.
 				changed = true;
 				continue;
 			}
@@ -4065,11 +4100,11 @@ namespace uam
 					const bool invalid = hold == RoutingHold::Invalid;
 					FinishRun(app, *run, "failed", invalid ? "routing_invalid" : "routing_wait_timeout",
 					          RoutingWaitReason(app, run->transcript_chat_id, invalid ? "No execution host can run this agent." : "No execution host became available in time."));
-					if (run->status == "queued") app.queued_agent_run_ids.push_back(id); // The terminal save failed; retry next tick.
+					if (run->status == "queued") held.push_back(id); // The terminal save failed; retry next tick.
 					changed = true;
 					continue;
 				}
-				app.queued_agent_run_ids.push_back(id);
+				held.push_back(id);
 				changed = began || changed; // Only the start of a wait is a state change.
 				continue;
 			}
@@ -4077,7 +4112,7 @@ namespace uam
 			if (!AgentRunScheduler::ValidateRequestedReasoningEffort(app, *transcript, nullptr, &effort_error))
 			{
 				FinishRun(app, *run, "failed", "reasoning_effort_unsupported", effort_error);
-				if (run->status == "queued") app.queued_agent_run_ids.push_back(id);
+				if (run->status == "queued") held.push_back(id);
 				changed = true;
 				continue;
 			}
@@ -4115,6 +4150,7 @@ namespace uam
 			++running;
 			changed = true;
 		}
+		app.queued_agent_run_ids.insert(app.queued_agent_run_ids.begin(), held.begin(), held.end());
 		// A run that routing did not refuse on this poll is no longer waiting for routing.
 		std::erase_if(app.agent_routing_wait_since_steady_ms, [&](const auto& entry) { return !app.agent_routing_held_this_poll.contains(entry.first); });
 		std::erase_if(app.agent_routing_invalid_since_steady_ms, [&](const auto& entry) { return !app.agent_routing_held_this_poll.contains(entry.first); });

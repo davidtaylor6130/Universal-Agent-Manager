@@ -1,4 +1,5 @@
 #include <fstream>
+#include "common/platform/child_process_priority.h"
 #include "common/platform/observed_process_stop.h"
 #include "common/utils/io_utils.h"
 #include "common/provider/provider_setup_location.h"
@@ -715,6 +716,9 @@ namespace uam::remote
 			request["configurationProvider"] = configuration_provider;
 			request["configurationDirectory"] = uam::paths::Utf8PathString(configuration_directory);
 		}
+		// The class this thread starts processes at; an older helper ignores the field and starts it normally.
+		if (const uam::platform::ChildProcessClass process_class = uam::platform::CurrentChildProcessClass(); process_class != uam::platform::ChildProcessClass::UserTurn)
+			request["processClass"] = std::string(uam::platform::ChildProcessClassName(process_class));
 		if (m_expectedProtocolVersion >= 3) request["controlToken"] = control_token;
 		if (m_expectedProtocolVersion >= 3 && transient_lease)
 			request["transientLeaseMs"] = 60000;

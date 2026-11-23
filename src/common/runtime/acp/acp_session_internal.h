@@ -7,6 +7,7 @@
 #include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/state/app_state.h"
 #include "common/platform/async_byte_writer.h"
+#include "common/platform/child_process_priority.h"
 #include "common/provider/provider_profile.h"
 
 #include <nlohmann/json.hpp>
@@ -30,6 +31,13 @@ namespace uam::platform { class PublishedFileChangeWitness; }
 
 namespace uam::acp_detail
 {
+/// <summary>
+/// The scheduling class a provider process starts at. Model discovery is background work; a sub-agent, a goal
+/// iteration transcript and an automation chat are agent work; every other chat serves its user's own turns and
+/// keeps normal priority. Fixed at launch: the process keeps its class for its lifetime.
+/// </summary>
+platform::ChildProcessClass ProviderProcessClass(const AcpSessionState& session, const ChatSession& chat);
+
 bool BeginManagedResultPrompt(AppState&, AcpSessionState&, ChatSession&,
     std::shared_ptr<const ManagedResultPromptInput>, const SavedChatPrimaryWitness&);
 

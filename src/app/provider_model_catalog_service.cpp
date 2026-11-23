@@ -1,4 +1,5 @@
 #include "common/platform/background_thread_priority.h"
+#include "common/platform/child_process_priority.h"
 #include "provider_model_catalog_service.h"
 #include "common/config/build_features.h"
 #include "app/provider_worker_command.h"
@@ -478,6 +479,7 @@ bool ProviderModelCatalogService::StartAntigravityEffortDiscovery(const Provider
 	task->worker = std::make_unique<std::jthread>([state, host, argv, workspace, model_id](std::stop_token stop)
 	{
 		uam::platform::LowerCurrentThreadToBackgroundPriority();
+		const uam::platform::ScopedChildProcessClass background_children(uam::platform::ChildProcessClass::Background);
 		try
 		{
 			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
@@ -537,6 +539,7 @@ bool ProviderModelCatalogService::StartAntigravityModelDiscovery(const ProviderP
 	task->worker = std::make_unique<std::jthread>([state, host, argv, workspace](std::stop_token stop)
 	{
 		uam::platform::LowerCurrentThreadToBackgroundPriority();
+		const uam::platform::ScopedChildProcessClass background_children(uam::platform::ChildProcessClass::Background);
 		try
 		{
 			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
@@ -1241,6 +1244,7 @@ void ProviderModelCatalogService::StartRefreshTask()
 	    [state, this](std::stop_token stop_token)
 	    {
 	    	uam::platform::LowerCurrentThreadToBackgroundPriority();
+		    const uam::platform::ScopedChildProcessClass background_children(uam::platform::ChildProcessClass::Background);
 		    const std::optional<nlohmann::json> result = FetchOpenCodeZenModels(stop_token);
 
 		    if (!result.has_value())

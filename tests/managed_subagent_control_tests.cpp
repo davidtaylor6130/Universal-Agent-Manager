@@ -2121,3 +2121,31 @@ UAM_TEST(AgentRunLedgerStartupPrunesExpiredTerminalRecordsAndKeepsLiveLineage)
 	UAM_ASSERT(reloaded.errors.empty());
 	UAM_ASSERT_EQ(reloaded.runs.size(), std::size_t{4});
 }
+
+UAM_TEST(AgentRunSchedulerCapsOneParentAtHalfTheRunningSlotsAndKeepsItsQueueOrder)
+{
+	ManagedControlFixture fixture;
+	// The chat "root" already has two agents running: half of the four running slots.
+	const auto first_running = fixture.Add("root", {}, "running");
+	(void)fixture.Add("root", {}, "running");
+	const auto held_first = fixture.Add("root");
+	const auto held_second = fixture.Add("root");
+	// A running agent's own child counts against that agent's share, not the chat's.
+	const auto child = fixture.Add("root", first_running);
+	const auto other_parent = fixture.Add("other-root");
+	(void)uam::AgentRunScheduler::PollAtForTests(fixture.app, 1000);
+	const auto status = [&](const std::string& id) { return std::ranges::find(fixture.app.agent_runs, id, &AgentRun::id)->status; };
+	// Two free slots, but the chat's third and fourth agents wait; the slots go to agents of other parents.
+	UAM_ASSERT_EQ(status(held_first), std::string("queued"));
+	UAM_ASSERT_EQ(status(held_second), std::string("queued"));
+	UAM_ASSERT(status(child) != "queued");
+	UAM_ASSERT(status(other_parent) != "queued");
+	// Held runs keep their places, first in, first out, rather than moving behind runs not yet visited.
+	UAM_ASSERT_EQ(std::vector<std::string>(fixture.app.queued_agent_run_ids.begin(), fixture.app.queued_agent_run_ids.end()), (std::vector<std::string>{held_first, held_second}));
+	UAM_ASSERT_EQ(std::ranges::count_if(fixture.app.agent_runs, [](const AgentRun& run) { return run.root_chat_id == "root" && run.parent_run_id.empty() && run.status == "running"; }), 2);
+	// Once one of the chat's agents finishes, its oldest waiting agent is the next to start.
+	fixture.app.agent_runs.front().status = "completed";
+	(void)uam::AgentRunScheduler::PollAtForTests(fixture.app, 1001);
+	UAM_ASSERT(status(held_first) != "queued");
+	UAM_ASSERT(std::ranges::find(fixture.app.queued_agent_run_ids, held_first) == fixture.app.queued_agent_run_ids.end());
+}
