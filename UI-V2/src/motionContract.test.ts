@@ -76,9 +76,27 @@ describe('shared motion contract', () => {
     expect(styles).toMatch(/@media \(prefers-reduced-motion: reduce\)\s*\{\s*\.uam-progress-fill::before \{[^}]*\}\s*\.uam-progress-fill\[data-indeterminate\]::before \{ animation: none; \}/s)
   })
 
-  it('scales settings and icon loading placeholders with the selected motion speed', () => {
-    expect(rule(styles, '.uam-icon-skeleton')).toContain('uam-icon-shimmer calc(1200ms * var(--motion-scale, 1))')
-    expect(rule(settingsShell, '.uam-set-skeleton')).toContain('uam-set-shimmer calc(1200ms * var(--motion-scale, 1))')
+  it('sweeps every loading placeholder through one compositor-only shared skeleton that follows motion speed', () => {
+    expect(rule(styles, '.uam-skeleton')).toContain('background: var(--surface-up)')
+    const sweep = rule(styles, '.uam-skeleton::after')
+    expect(sweep).toContain('uam-skeleton-sweep calc(1400ms * var(--motion-scale, 1)) ease-in-out infinite')
+    expect(sweep).toContain('transform: translateX(-100%)')
+    expect(animatedProperties(keyframes(styles, 'uam-skeleton-sweep'))).toEqual(['transform'])
+    expect(styles).toMatch(/\[data-motion="off"\] \.uam-skeleton::after \{ animation: none; \}/)
+    expect(styles).toMatch(/@media \(prefers-reduced-motion: reduce\) \{ \.uam-skeleton::after \{ animation: none; \} \}/)
+    // Feature placeholders only size the shared block; none repaints a background-position shimmer of its own.
+    for (const [sheet, selector] of [[styles, '.uam-icon-skeleton'], [settingsShell, '.uam-set-skeleton'],
+      [conversation, '.conversation-skeleton__bubble, .conversation-skeleton__line']] as const) {
+      expect(rule(sheet, selector)).not.toMatch(/animation|gradient/)
+    }
+    for (const sheet of [styles, settingsShell, conversation]) expect(sheet).not.toMatch(/@keyframes [a-z-]*shimmer/)
+    for (const [file, family] of [['./components/layout/Sidebar.tsx', 'uam-icon-skeleton'], ['./components/shared/CustomIcon.tsx', 'uam-icon-skeleton'],
+      ['./components/settings/SettingsPrimitives.tsx', 'uam-set-skeleton'], ['./components/views/ChatView.tsx', 'conversation-skeleton__'],
+      ['./components/chat/SubagentTranscript.tsx', 'conversation-skeleton__']]) {
+      const uses = [...source(file).matchAll(/className="([^"]*)"/g)].map((match) => match[1]).filter((name) => name.includes(family) && !name.includes('__text'))
+      expect(uses.length, file).toBeGreaterThan(0)
+      for (const name of uses) expect(name.split(' '), `${file}: ${name}`).toContain('uam-skeleton')
+    }
   })
 
   it('scales coordinated status-scene timing and offsets together', () => {
@@ -106,7 +124,6 @@ describe('shared motion contract', () => {
     expect(conversation.indexOf('\n.status-scene__box {')).toBeLessThan(conversation.indexOf('\n.status-scene__box--3 {'))
     expect(rule(conversation, '.status-page__line')).toContain('infinite backwards')
     expect(rule(conversation, '.conversation-work__live')).toContain('calc(1400ms * var(--motion-scale, 1))')
-    expect(rule(conversation, '.conversation-skeleton__bubble, .conversation-skeleton__line')).toContain('calc(1600ms * var(--motion-scale, 1))')
   })
 
   it('collapses every transition and animation under reduced motion', () => {

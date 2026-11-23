@@ -5,7 +5,7 @@ import { ChatView } from './ChatView'
 import { useAppStore } from '../../store/useAppStore'
 import { acpBindingFromCppChat } from '../../store/cpp/reconcile'
 import { readChatComposerDraft, removeComposerDrafts } from '../../utils/composerDraftStorage'
-import { expectWithinBudget, INPUT_BUDGET_MS, HISTORY_PAGE_BUDGET_MS } from '../../test/interactionBudgets'
+import { expectWithinBudget, INPUT_BUDGET_MS, INTERACTION_BUDGET_MS, HISTORY_PAGE_BUDGET_MS } from '../../test/interactionBudgets'
 import type { Message } from '../../types/message'
 import type { Session } from '../../types/session'
 
@@ -38,7 +38,7 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount())
   host.remove()
-  removeComposerDrafts([session.id, 'performance-warm-up'])
+  removeComposerDrafts([session.id, 'performance-warm-up', 'performance-loading'])
   useAppStore.setState(initial, true)
   vi.unstubAllGlobals()
 })
@@ -83,6 +83,35 @@ describe('chat interaction code-path performance', () => {
     expect(send).toHaveBeenCalledTimes(1)
     await act(async () => finish(true))
     expect(input.value).toBe('')
+  })
+
+  it('shows the shared loading skeleton within 250ms and keeps it stable while typing during a history read', () => {
+    // Its own chat, so the send case's pending outgoing attempt does not count as retained input here.
+    const loading: Session = { ...session, id: 'performance-loading', messageCount: 2000 }
+    useAppStore.setState({ sessions: [loading], activeSessionId: loading.id, messages: {},
+      chatHistoryReadBySessionId: { [loading.id]: { requestId: 'performance-read', birth: loading.createdAt.getTime() } },
+      loadSessionMessages: vi.fn(() => new Promise<boolean>(() => {})) })
+    let placeholders: Element[] = []
+    expectWithinBudget('chat open to loading skeleton', INTERACTION_BUDGET_MS, () => {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      expect(host.textContent).toContain('Loading chat history…')
+      placeholders = [...host.querySelectorAll('.uam-skeleton')]
+      expect(placeholders.length).toBeGreaterThan(0)
+    })
+    // The sweep is CSS-only: typing while history loads commits within budget and never remounts the placeholders.
+    const input = host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!
+    for (let index = 0; index < 10; index += 1) {
+      const text = `Draft while loading ${index}`
+      expectWithinBudget(`input ${index} during history load`, INPUT_BUDGET_MS, () => {
+        act(() => {
+          Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, text)
+          input.dispatchEvent(new Event('input', { bubbles: true }))
+        })
+        expect(input.value).toBe(text)
+      })
+    }
+    expect([...host.querySelectorAll('.uam-skeleton')]).toEqual(placeholders)
+    expect(placeholders.every((node) => node.closest('[aria-hidden="true"]'))).toBe(true)
   })
 
   it.each([20, 50, 200, 2000, 10000])('commits the initial bounded history view for %i total messages within 1s', (count) => {

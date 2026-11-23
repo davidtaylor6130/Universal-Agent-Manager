@@ -3748,17 +3748,17 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               <div ref={messageListRef} className="uam-message-list space-y-1.5" aria-busy={historyLoading} data-message-motion={messageMotion}>
               {historyLoading && <div role="status" className="conversation-empty">
                 <div className="conversation-skeleton" aria-hidden>
-                  <span className="conversation-skeleton__bubble" />
-                  <div className="conversation-skeleton__text">
-                    <span className="conversation-skeleton__line" />
-                    <span className="conversation-skeleton__line" />
-                    <span className="conversation-skeleton__line conversation-skeleton__line--mid" />
-                    <span className="conversation-skeleton__line conversation-skeleton__line--short" />
+                  <span className="uam-skeleton conversation-skeleton__bubble" />
+                  <div className="uam-skeleton conversation-skeleton__text">
+                    <span className="uam-skeleton conversation-skeleton__line" />
+                    <span className="uam-skeleton conversation-skeleton__line" />
+                    <span className="uam-skeleton conversation-skeleton__line conversation-skeleton__line--mid" />
+                    <span className="uam-skeleton conversation-skeleton__line conversation-skeleton__line--short" />
                   </div>
-                  <span className="conversation-skeleton__bubble conversation-skeleton__bubble--short" />
-                  <div className="conversation-skeleton__text">
-                    <span className="conversation-skeleton__line" />
-                    <span className="conversation-skeleton__line conversation-skeleton__line--short" />
+                  <span className="uam-skeleton conversation-skeleton__bubble conversation-skeleton__bubble--short" />
+                  <div className="uam-skeleton conversation-skeleton__text">
+                    <span className="uam-skeleton conversation-skeleton__line" />
+                    <span className="uam-skeleton conversation-skeleton__line conversation-skeleton__line--short" />
                   </div>
                 </div>
                 <span>Loading chat history…</span>
