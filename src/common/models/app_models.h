@@ -1100,6 +1100,23 @@ struct ComputePool
 	std::vector<ComputePoolMember> members;
 };
 
+/// <summary>Per-computer admission limits; see docs/settings/compute-pools.md#host-limits.</summary>
+struct HostAdmissionSettings
+{
+	/// User turns and agents running at once on this computer; 0 uses the processor count minus two.
+	int local_slot_limit = 0;
+	/// The same limit for a remote computer that has no routing slot count of its own.
+	int remote_slot_limit = 8;
+	/// Background processes (model discovery, memory workers, history import, checks) at once per computer.
+	int background_budget = 2;
+	int soft_cpu_percent = 70;
+	int soft_free_memory_percent = 15;
+	int hard_cpu_percent = 90;
+	int hard_cpu_seconds = 10;
+	int hard_free_memory_percent = 10;
+	bool operator==(const HostAdmissionSettings&) const = default;
+};
+
 /// <summary>Where one SVN repository keeps its main line, branches and tags, as repository-relative folders.</summary>
 struct SvnRepositoryLayout
 {
@@ -1191,6 +1208,7 @@ struct AppSettings
 	std::vector<McpServerConfiguration> mcp_servers;
 	std::vector<ExecutionHost> execution_hosts;
 	std::vector<ComputePool> compute_pools; // Empty leaves prompt delivery unlimited.
+	HostAdmissionSettings host_admission;
 	ExecutionRoutingSettings execution_routing;
 	std::vector<std::string> favorite_uam_agent_ids;
 	/// <summary>Native sessions whose title (the first user message for most providers) starts with one of these, ignoring case, are never offered for import.</summary>

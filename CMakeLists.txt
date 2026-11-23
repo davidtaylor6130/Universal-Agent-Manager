@@ -703,6 +703,7 @@ add_library(uam_core_objects OBJECT
   src/common/provider/attached_skill_resources.cpp
   src/common/runtime/acp/acp_session_runtime.cpp
   src/common/runtime/acp/compute_pool_gate.cpp
+  src/common/runtime/host_admission.cpp
   src/common/runtime/acp/acp_wait_state.cpp
   src/common/runtime/json_runtime.cpp
   src/common/runtime/terminal_polling.cpp
@@ -1674,6 +1675,7 @@ if(UAM_BUILD_TESTS)
     tests/codex_permission_tests.cpp
     tests/memory_workspace_ownership_tests.cpp
     tests/execution_routing_tests.cpp
+    tests/host_admission_tests.cpp
     tests/routing_default_scope_tests.cpp
     tests/model_discovery_startup_tests.cpp
     tests/remote_delivery_exit_tests.cpp
