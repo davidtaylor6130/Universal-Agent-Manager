@@ -28,9 +28,16 @@ std::vector<std::string> ImportedDenyActions(const std::string& permission_json)
 		if (!effect.is_string() || (effect != "ask" && effect != "deny")) throw std::runtime_error("The imported OpenCode agent rules are invalid.");
 		if (effect != "deny") continue;
 		add(action);
-		if (action == "bash") add("shell");
-		else if (action == "task") add("subagent");
-		else if (action == "write" || action == "patch" || action == "multiedit" || action == "apply_patch") add("edit");
+		// A V1 rule that names or matches a renamed tool must also deny its V2 action.
+		const auto covers = [&](std::string_view name)
+		{
+			if (action == name) return true;
+			const auto star = action.find('*');
+			return star != std::string::npos && star == action.size() - 1 && name.starts_with(std::string_view(action).substr(0, star));
+		};
+		if (covers("bash")) add("shell");
+		if (covers("task")) add("subagent");
+		if (covers("write") || covers("patch") || covers("multiedit") || covers("apply_patch") || covers("edit")) add("edit");
 	}
 	return deny;
 }

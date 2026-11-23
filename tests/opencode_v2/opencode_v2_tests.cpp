@@ -144,6 +144,8 @@ int main(int argc, char** argv)
 			          std::vector<std::string>({"bash", "shell", "edit", "mcp_*", "write"}), "V1 rules were not translated to V2 action names");
 			Check(ImportedDenyActions(R"({"task":"deny"})") == std::vector<std::string>({"task", "subagent"}), "task deny lost its V2 name");
 			Check(ImportedDenyActions(R"({"read":"ask"})").empty(), "ask became a deny");
+			Check(ImportedDenyActions(R"({"b*":"deny"})") == std::vector<std::string>({"b*", "shell"}), "a wildcard covering bash did not deny shell");
+			Check(ImportedDenyActions(R"({"ed*":"deny"})") == std::vector<std::string>({"ed*", "edit"}), "a wildcard covering edit did not deny edit");
 			for (const std::string invalid : {"[]", "broken", R"({"bash":"allow"})", R"({"bash":{"*":"deny"}})"})
 			{
 				bool refused = false; try { (void)ImportedDenyActions(invalid); } catch (const std::exception&) { refused = true; }
