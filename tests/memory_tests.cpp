@@ -1900,7 +1900,7 @@ UAM_TEST(MemoryServiceFailedWorkerBacksOffItsHostAndProviderBeforeNextQueuedChat
 
 namespace
 {
-	void CompleteFailedMemoryWorkerForTests(uam::AppState& app, const ChatSession& chat, int exit_code, bool timed_out = false)
+	void CompleteFailedMemoryWorkerForTests(uam::AppState& app, const ChatSession& chat, int exit_code, bool timed_out = false, const char* stderr_tail = "")
 	{
 		uam::AsyncMemoryExtractionTask task;
 		task.data_root = app.data_root;
@@ -1912,6 +1912,7 @@ namespace
 		task.state->provider_id = chat.provider_id;
 		task.state->result.exit_code = exit_code;
 		task.state->result.timed_out = timed_out;
+		task.state->result.diagnostic_tail = stderr_tail;
 		task.state->result.output = "private worker output";
 		task.state->completed.store(true);
 		app.memory_extraction_tasks.push_back(std::move(task));
@@ -1993,12 +1994,20 @@ UAM_TEST(MemoryServiceRepeatedIdenticalWorkerFailuresPauseRetriesUntilChatGainsM
 	UAM_ASSERT(!app.memory_idle_started_at_by_chat_id.contains(id));
 	UAM_ASSERT_EQ(app.memory_last_status, std::string("unchanged"));
 
-	// New chat content resumes on the next poll. The per-chat failure count stays, so the backoff keeps growing.
+	// New chat content resumes on the next poll, but the chat still waits out its pending retry time and the failure
+	// count stays, so an active chat retries no more often than its backoff allows.
+	const double retry_at = uam::GetAppTimeSeconds() + 600.0;
+	app.memory_retry_not_before_by_chat_id[id] = retry_at;
 	app.chats.front().messages.push_back({MessageRole::Assistant, "Noted.", "now"});
 	UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
 	UAM_ASSERT(!app.memory_failure_streak_by_chat_id[id].paused);
-	UAM_ASSERT(!app.memory_retry_not_before_by_chat_id.contains(id));
+	UAM_ASSERT_EQ(app.memory_retry_not_before_by_chat_id[id], retry_at);
 	UAM_ASSERT_EQ(app.memory_failure_count_by_chat_id[id], uam::memory::kIdenticalWorkerFailuresBeforePause);
+	UAM_ASSERT(!app.memory_idle_started_at_by_chat_id.contains(id));
+	UAM_ASSERT(app.memory_extraction_queue.empty());
+	// Once the retry is due, the idle sweep picks the chat up again.
+	app.memory_retry_not_before_by_chat_id.erase(id);
+	MemoryService::ProcessDueMemoryWork(app);
 	UAM_ASSERT(app.memory_idle_started_at_by_chat_id.contains(id));
 
 	// The same failure on the new messages pauses again at once instead of starting a fresh run of three.
@@ -2022,12 +2031,17 @@ UAM_TEST(MemoryServiceDifferentOrTransientWorkerFailuresDoNotPauseRetries)
 	UAM_ASSERT_EQ(app.memory_failure_streak_by_chat_id[id].count, 1);
 	UAM_ASSERT_EQ(app.memory_failure_streak_by_chat_id[id].signature, std::string("exit code=2"));
 
-	// Timeouts clear on their own: they keep the ordinary backoff and neither pause nor touch the streak.
+	// Timeouts, rate limits and network or server outages clear on their own: they keep the ordinary backoff and
+	// neither pause nor touch the streak, even when the same text also mentions authentication.
 	for (int attempt = 0; attempt < uam::memory::kIdenticalWorkerFailuresBeforePause + 1; ++attempt)
 		CompleteFailedMemoryWorkerForTests(app, app.chats.front(), -1, true);
-	UAM_ASSERT(!app.memory_failure_streak_by_chat_id[id].paused);
-	UAM_ASSERT_EQ(app.memory_failure_streak_by_chat_id[id].signature, std::string("exit code=2"));
 	UAM_ASSERT_EQ(app.memory_last_status, std::string("Memory worker timed out after 120 seconds."));
+	for (const char* stderr_tail : {"Error: 429 Too Many Requests", "TypeError: fetch failed", "503 Service Unavailable", "authentication request failed: connect ECONNREFUSED"})
+		for (int attempt = 0; attempt < uam::memory::kIdenticalWorkerFailuresBeforePause + 1; ++attempt)
+			CompleteFailedMemoryWorkerForTests(app, app.chats.front(), 1, false, stderr_tail);
+	UAM_ASSERT(!app.memory_failure_streak_by_chat_id[id].paused);
+	UAM_ASSERT_EQ(app.memory_failure_streak_by_chat_id[id].count, 1);
+	UAM_ASSERT_EQ(app.memory_failure_streak_by_chat_id[id].signature, std::string("exit code=2"));
 
 	// A completed run ends the streak.
 	uam::AsyncMemoryExtractionTask success;
@@ -2108,6 +2122,7 @@ UAM_TEST(MemoryServicePausedRetriesResumeOnInputChangeManualScanOrDeletion)
 	app.chats.front().messages.push_back({MessageRole::Assistant, "Noted.", "now"});
 	UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
 	UAM_ASSERT_EQ(app.memory_extraction_queue.size(), std::size_t{1});
+	UAM_ASSERT_EQ(app.memory_extraction_queue.front().chat_id, id);
 	UAM_ASSERT(app.memory_extraction_queue.front().manual);
 	UAM_ASSERT_EQ(app.memory_extraction_queue.front().scan_start_message_index, 0);
 	app.memory_extraction_queue.clear();

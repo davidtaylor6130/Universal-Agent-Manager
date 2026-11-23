@@ -54,11 +54,14 @@ namespace uam::memory
 				if (uam::strings::ContainsAnyCaseInsensitive(source, needles)) return true;
 			return false;
 		};
-		if (any({"rate limit", "rate_limit", "ratelimit", "too many requests", "quota", "usage limit"})) return "rate-limit";
+		// Transient categories come first, so an auth or version word in the same text cannot turn a passing outage into a pause.
+		if (any({"rate limit", "rate_limit", "ratelimit", "too many requests", "quota exceeded", "exceeded your current quota", "insufficient_quota", "resource_exhausted", "resource exhausted", "usage limit"})) return "rate-limit";
+		if (any({"econnrefused", "enotfound", "econnreset", "etimedout", "enetunreach", "eai_again", "connection refused", "connection reset", "could not resolve", "network error",
+		         "fetch failed", "socket hang up", "timed out", "deadline exceeded", "internal server error", "bad gateway", "service unavailable", "gateway timeout", "overloaded"}))
+			return "network";
 		if (any({"unauthorized", "unauthenticated", "not logged in", "authenticat", "api key", "apikey", "forbidden", "login required"})) return "auth";
 		if (any({"model not found", "unknown model", "invalid model", "model is not supported", "model not supported"})) return "model";
 		if (any({"unsupported", "not supported", "minimum version", "unknown option", "unknown argument", "unrecognized option", "unexpected argument"})) return "unsupported-cli";
-		if (any({"econnrefused", "enotfound", "econnreset", "connection refused", "connection reset", "could not resolve", "network error"})) return "network";
 		return result.exit_code >= 0 ? "exit" : "unknown";
 	}
 

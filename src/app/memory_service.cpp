@@ -1242,7 +1242,8 @@ namespace
 		const std::string_view host = uam::paths::IsControllerLocalWorkspace(chat) ? std::string_view(uam::execution_hosts::kLocalHostId) : std::string_view(chat.execution_host_id);
 		std::string inputs = MemoryLevel(app, chat);
 		inputs.append("\n").append(host);
-		inputs.append("\n").append(chat.workspace_directory).append("\n").append(chat.folder_id);
+		const ChatFolder* folder = uam::paths::FindWorkspaceFolderById(app, chat.folder_id);
+		inputs.append("\n").append(chat.workspace_directory).append("\n").append(chat.folder_id).append("\n").append(folder != nullptr ? std::string_view(folder->directory) : std::string_view{});
 		inputs.append("\n").append(worker.provider != nullptr ? worker.provider->id : chat.provider_id).append("\n").append(worker.model_id);
 		if (worker.provider == nullptr) return inputs;
 		inputs.append("\n").append(worker.provider->interactive_command);
@@ -1279,7 +1280,8 @@ namespace
 	}
 
 	/// <summary>Lets a paused chat retry and gives back a manual scan the pause took off the queue. New messages keep
-	/// the streak, so the same failure on them pauses again at once; the per-chat failure count keeps the backoff growing.</summary>
+	/// the streak, so the same failure on them pauses again at once, and keep the pending retry time and failure count,
+	/// so the chat still waits out its growing backoff. Changed inputs may fix the failure, so they retry after the idle delay.</summary>
 	bool ResumeMemoryRetries(uam::AppState& app, std::unordered_map<std::string, uam::MemoryWorkerFailureStreak>::iterator streak, bool keep_streak)
 	{
 		const std::string chat_id = streak->first;
@@ -1287,11 +1289,14 @@ namespace
 		if (keep_streak)
 			streak->second.paused = false;
 		else
+		{
 			app.memory_failure_streak_by_chat_id.erase(streak);
-		app.memory_retry_not_before_by_chat_id.erase(chat_id);
+			app.memory_retry_not_before_by_chat_id.erase(chat_id);
+		}
 		uam::diagnostics::Write("memory: chat=" + chat_id + " retries resumed after its " + (keep_streak ? "messages" : "inputs") + " changed");
 		if (parked_start < 0) return false;
-		RequeueMemoryWork(app, {chat_id, parked_start, true});
+		// A manual scan goes to the front, as QueueManualScan puts it.
+		app.memory_extraction_queue.push_front({chat_id, parked_start, true});
 		return true;
 	}
 
@@ -2696,7 +2701,7 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 	}
 
 	const double now = uam::GetAppTimeSeconds();
-	// Views stay valid: the sweep only appends to the queue, and a deque append moves no element.
+	// Views stay valid: the sweep only adds at either end of the queue, which moves no deque element.
 	std::unordered_set<std::string_view> queued_ids;
 	for (const uam::QueuedMemoryExtractionTask& task : app.memory_extraction_queue) queued_ids.insert(task.chat_id);
 	for (ChatSession& chat : app.chats)
@@ -2706,7 +2711,7 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 			const auto streak = app.memory_failure_streak_by_chat_id.find(chat.id);
 			if (streak != app.memory_failure_streak_by_chat_id.end() && streak->second.paused && MessageCount(chat) != streak->second.message_count)
 			{
-				if (ResumeMemoryRetries(app, streak, true)) queued_ids.insert(app.memory_extraction_queue.back().chat_id);
+				if (ResumeMemoryRetries(app, streak, true)) queued_ids.insert(app.memory_extraction_queue.front().chat_id);
 				changed = true;
 			}
 		}

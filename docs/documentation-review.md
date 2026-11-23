@@ -308,7 +308,7 @@ A transcript save that fails while UAM is running is reported once through the s
 
 ## Paused memory retries notice
 
-A chat whose memory extraction keeps failing the same way now [pauses its retries](memory/scanning.md) and says so once, with the number of paused chats, through the memory status shown in Memory settings and the diagnostic log. The status does not name the chats, so finding them for Scan chats means looking for chats with unprocessed messages. It does not raise a bell notice: memory status reaches the interface as a state field, and no native route into the shared notification panel exists for it. Interim interpretation: keep the status line; a bell notice needs a native notice route and a reviewed interface change.
+A chat whose memory extraction keeps failing the same way now [pauses its retries](memory/scanning.md) and says so once, with the number of paused chats, through the memory status shown in Memory settings and the diagnostic log. The status does not name the chats, so finding them for Scan chats means looking for chats with unprocessed messages, and its count is not refreshed when chats resume until another memory status replaces it. A chat whose content changes without a new message (an edited or regenerated last reply) stays paused until its inputs change, a restart or Scan chats. It does not raise a bell notice: memory status reaches the interface as a state field, and no native route into the shared notification panel exists for it. Interim interpretation: keep the status line; a bell notice needs a native notice route and a reviewed interface change.
 
 ## Treat as stopped
 
