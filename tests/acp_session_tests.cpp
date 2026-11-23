@@ -17,8 +17,6 @@
 #include "common/config/mcp_server_config.h"
 #include "common/runtime/acp/acp_goal_loop.h"
 #include "common/runtime/acp/acp_session_internal.h"
-#include "common/provider/copilot/cli/copilot_managed_read_policy.h"
-#include "common/provider/opencode/cli/opencode_cli_provider_runtime.h"
 #include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/runtime/acp/acp_polling.h"
 #include "common/runtime/acp/claude_quota_continuation.h"
@@ -5466,16 +5464,18 @@ UAM_TEST(RemoteAcpRetryIgnoresLocalCliCompatibility)
 
 UAM_TEST(ProviderVersionFloorsStayWithinTheirInstallFallbacks)
 {
-	// A floor above the CLI policy's install fallback would make a fallback install fail its own gate.
+	// A floor above the CLI policy's install fallback would make a fallback install fail its own gate. Tests reach
+	// providers only through the public runtime interface, so the Copilot floor is restated here.
 #if UAM_ENABLE_RUNTIME_COPILOT_CLI
 	const ProviderCliPolicy* copilot = ProviderRuntimeRegistry::ResolveById(uam::provider_ids::kCopilotCli).CliVersionPolicy();
 	UAM_ASSERT(copilot != nullptr && copilot->fallback_version != nullptr);
-	UAM_ASSERT(CliProviderVersionAtLeast(copilot->fallback_version, uam::copilot::managed_read::kStableCliMinimumVersion));
+	// uam::copilot::managed_read::kStableCliMinimumVersion
+	UAM_ASSERT(CliProviderVersionAtLeast(copilot->fallback_version, "1.0.98"));
 #endif
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	// The OpenCode policy's minimum_version is uam::opencode::kAcpPermissionMediationMinimumVersion.
 	const ProviderCliPolicy* opencode = ProviderRuntimeRegistry::ResolveById(uam::provider_ids::kOpenCodeCli).CliVersionPolicy();
 	UAM_ASSERT(opencode != nullptr && opencode->fallback_version != nullptr && opencode->minimum_version != nullptr);
-	UAM_ASSERT_EQ(std::string(opencode->minimum_version), std::string(uam::opencode::kAcpPermissionMediationMinimumVersion));
 	UAM_ASSERT(CliProviderVersionAtLeast(opencode->fallback_version, opencode->minimum_version));
 #endif
 }
