@@ -43,6 +43,9 @@ namespace uam
 		VcsType type = VcsType::Git;
 		std::vector<VcsBranch> branches;
 		VcsBranchContext context;
+		/// A located listing that can create branches: where a new branch goes and the main line it can start from, both
+		/// repository-relative. Empty when the system cannot place one here.
+		SvnBranchLocations create_locations;
 	};
 
 	/// <summary>One branch choice: a branch name, or a repository path from a located listing with the context it was listed in.</summary>
@@ -51,6 +54,9 @@ namespace uam
 		std::string branch;
 		bool create = false;
 		VcsBranchContext context;
+		/// Creation in a located listing (SVN): the source the person chose and the commit message they confirmed.
+		SvnBranchSource create_source = SvnBranchSource::WorkingCopy;
+		std::string create_message;
 	};
 
 	struct VcsBranchOutcome
@@ -108,6 +114,9 @@ namespace uam
 		/// <summary>True when choices are repository paths under an explicit parent and a selection must carry the
 		/// listing's context (SVN). False when choices are the repository's named branches (Git).</summary>
 		virtual bool BranchesAreLocated() const = 0;
+		/// <summary>True when a branch chosen for a chat with no user message is only recorded, and created when the chat
+		/// starts (Git). False when creation runs as soon as it is confirmed (SVN, where it is a repository commit).</summary>
+		virtual bool DefersBranchCreation() const = 0;
 		/// <summary>Lists the choices for the chat's workspace; `parent` is the explicit location for a located listing.</summary>
 		virtual VcsBranchListing ListBranches(const AppState& snapshot, const ChatSession& chat, const std::string& parent) const = 0;
 		/// <summary>Checks a choice when the picker submits it, before any runtime is stopped.</summary>

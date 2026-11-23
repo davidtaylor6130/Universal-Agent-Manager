@@ -6,6 +6,10 @@ This page records the isolated documentation trial and subsequent provider imple
 
 Task-1230’s initial read-only revision patch left this requirement open. David explicitly requested completion on 2026-10-23, including an explicit mapping boundary when repository layout is unknown. The implementation now accepts an explicit repository-relative parent, discovers existing child directories and offers a guarded, confirmed local working-copy switch; it does not infer `trunk`/`branches`. The per-selection mapping resolves the layout question for this route. Automated, connected bridge, platform and user acceptance remain separately recorded in the [archived V5 change log](https://github.com/davidtaylor6130/Universal-Agent-Manager/blob/1d4865fcb/V5%20Improvement%20Change%20log.md). The separate new-chat Git selector remains task-1322; see [composer workspace actions](chat/composer/workspace-actions.md) and [SVN](settings/version-control/svn.md).
 
+## SVN branch creation
+
+David decided on 2026-11-23 (#520) that creating an SVN branch asks each time whether to copy from the working copy's URL at its revision or from trunk HEAD, defaulting to the working copy, and that UAM writes an editable default commit message. The first slice implements this in the composer picker for local working copies: the branch is placed from the repository's layout and the working copy is switched to it ([composer agreement](chat/composer/workspace-actions.md)). Merging, SVN parity in the new-chat selector, greyed-out reasons and branch methods for remote hosts remain later #520 slices. The picker form is new UI and awaits Claude review and David's approval. When the stoppable SVN runner from the SVN error-handling work is merged, its exemption from stopping must cover every command `SvnCommandChangesRepository` names (the copy as well as the switch), so a stop never interrupts the branch commit.
+
 ## Resolved documentation conflicts
 
 | Previous conflict | Documentation disposition |

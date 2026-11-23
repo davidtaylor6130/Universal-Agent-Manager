@@ -99,11 +99,11 @@ namespace uam::vcs
 	inline constexpr std::array<VcsCapability, 9> kGitCapabilities = {
 	    VcsCapability::Status, VcsCapability::Diff, VcsCapability::Commit, VcsCapability::ChatComparison, VcsCapability::RevisionComparison,
 	    VcsCapability::BranchList, VcsCapability::BranchCreate, VcsCapability::BranchSwitch, VcsCapability::WorkspaceIsolation};
-	// SVN has no chat or revision comparison in the panel and cannot create a branch. Its branch listing and switching are local-only,
-	// and its isolation is a managed local Git snapshot. Git has no History, Update or origin comparison in the panel yet.
-	inline constexpr std::array<VcsCapability, 9> kSvnCapabilities = {
+	// SVN has no chat or revision comparison in the panel. Its branch listing, creation (a server-side copy, then a switch) and switching
+	// are local-only, and its isolation is a managed local Git snapshot. Git has no History, Update or origin comparison in the panel yet.
+	inline constexpr std::array<VcsCapability, 10> kSvnCapabilities = {
 	    VcsCapability::Status, VcsCapability::Diff, VcsCapability::Commit,
-	    VcsCapability::BranchList, VcsCapability::BranchSwitch, VcsCapability::WorkspaceIsolation,
+	    VcsCapability::BranchList, VcsCapability::BranchCreate, VcsCapability::BranchSwitch, VcsCapability::WorkspaceIsolation,
 	    VcsCapability::History, VcsCapability::Update, VcsCapability::OriginComparison};
 
 	/// <summary>Static facts about one version-control system. Lives below the application layer so the
