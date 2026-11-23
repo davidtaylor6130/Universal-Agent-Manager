@@ -27,14 +27,16 @@ namespace uam::account_refusal
 	inline constexpr std::int64_t kAccountRefusalTtlSeconds = 24 * 60 * 60;
 	/// <summary>Signing in again is a quick user fix, so an authentication refusal is retried sooner.</summary>
 	inline constexpr std::int64_t kAuthenticationRefusalTtlSeconds = 60 * 60;
+	/// <summary>Signing in again in CLI View must not wait for the TTL, so an authentication refusal never blocks a chat launch.</summary>
+	inline bool BlocksChatLaunch(Kind kind) { return kind == Kind::UnsupportedClient || kind == Kind::Entitlement; }
 
 	/// <summary>
-	/// Classifies an ACP <c>initialize</c> or <c>session/new</c> error. Only the server error code together with a
+	/// Classifies an ACP <c>initialize</c>, <c>session/new</c>, <c>session/load</c> or <c>session/resume</c> error. Only the server error code together with a
 	/// small set of documented phrases qualifies; any other method, code or message is an ordinary scoped failure.
 	/// </summary>
 	Kind ClassifyAcpError(std::string_view method, bool has_code, int code, std::string_view message);
 
-	/// <summary>How long startup discovery and chat launches skip the provider on that computer.</summary>
+	/// <summary>How long automatic launches skip the provider on that computer.</summary>
 	std::int64_t TtlSeconds(Kind kind);
 
 	/// <summary>Stable name stored with the refusal and written to diagnostics.</summary>

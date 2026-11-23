@@ -28,7 +28,13 @@ namespace
 	struct AccountRefusalFixture
 	{
 		TempDir temp{"uam-account-refusal"};
+		// Keep every provider's home inside the fixture so no developer catalogue or setting is read.
+		ScopedEnvVar codex{"CODEX_HOME", (temp.root / "codex").string()};
+		ScopedEnvVar claude{"CLAUDE_CONFIG_DIR", (temp.root / "claude").string()};
+		ScopedEnvVar opencode{"XDG_CONFIG_HOME", (temp.root / "config").string()};
+		ScopedEnvVar opencode_config{"OPENCODE_CONFIG", (temp.root / "config" / "opencode.json").string()};
 		ScopedEnvVar gemini{"GEMINI_CLI_HOME", (temp.root / "gemini").string()};
+		ScopedEnvVar copilot{"COPILOT_HOME", (temp.root / "copilot").string()};
 		uam::AppState app;
 		std::vector<uam::ModelDiscoveryScope> launched;
 
@@ -79,9 +85,14 @@ UAM_TEST(AccountRefusalClassifierNeedsTheServerCodeAndADocumentedPhrase)
 	UAM_ASSERT(ClassifyAcpError("session/new", true, -32000, "Sorry: this CLIENT IS NO LONGER SUPPORTED for Gemini Code Assist for teams.") == Kind::UnsupportedClient);
 	UAM_ASSERT(ClassifyAcpError("session/new", true, -32000, "Your account is not eligible for this service.") == Kind::Entitlement);
 	UAM_ASSERT(ClassifyAcpError("session/new", true, -32000, "Authentication required") == Kind::Authentication);
+	// Resuming a saved session meets the same account refusal.
+	UAM_ASSERT(ClassifyAcpError("session/load", true, -32000, kGeminiIndividualsRefusal) == Kind::UnsupportedClient);
+	UAM_ASSERT(ClassifyAcpError("session/resume", true, -32000, kGeminiIndividualsRefusal) == Kind::UnsupportedClient);
 	// Only setup methods, only the server error code, and only the phrase list qualify.
 	UAM_ASSERT(ClassifyAcpError("session/prompt", true, -32000, kGeminiIndividualsRefusal) == Kind::None);
-	UAM_ASSERT(ClassifyAcpError("session/load", true, -32000, kGeminiIndividualsRefusal) == Kind::None);
+	// Model, plan and workspace messages that sound similar stay scoped to their workspace.
+	UAM_ASSERT(ClassifyAcpError("session/new", true, -32000, "Model gemini-x is no longer supported for this project.") == Kind::None);
+	UAM_ASSERT(ClassifyAcpError("session/new", true, -32000, "This workspace is not eligible for indexing.") == Kind::None);
 	UAM_ASSERT(ClassifyAcpError("session/new", true, -32603, kGeminiIndividualsRefusal) == Kind::None);
 	UAM_ASSERT(ClassifyAcpError("session/new", false, 0, kGeminiIndividualsRefusal) == Kind::None);
 	UAM_ASSERT(ClassifyAcpError("session/new", true, -32000, "Workspace directory is not trusted.") == Kind::None);
@@ -93,9 +104,17 @@ UAM_TEST(AccountRefusalClassifierNeedsTheServerCodeAndADocumentedPhrase)
 	const std::string logged = uam::account_refusal::DiagnosticMessage(std::string("line one\nline two") + std::string(1000, 'x'));
 	UAM_ASSERT(logged.find('\n') == std::string::npos);
 	UAM_ASSERT(logged.size() <= 403);
-	UAM_ASSERT_EQ(ProviderRuntimeRegistry::ResolveById(uam::provider_ids::kGeminiCli).AccountRefusalNotice(Kind::UnsupportedClient, "Gemini CLI"), std::string(kGeminiNotice));
-	UAM_ASSERT_EQ(ProviderRuntimeRegistry::ResolveById(uam::provider_ids::kCodexCli).AccountRefusalNotice(Kind::Authentication, "Codex CLI"),
+	const IProviderRuntime& gemini = ProviderRuntimeRegistry::ResolveById(uam::provider_ids::kGeminiCli);
+	UAM_ASSERT_EQ(gemini.AccountRefusalNotice(Kind::UnsupportedClient, "Gemini CLI", kGeminiIndividualsRefusal), std::string(kGeminiNotice));
+	// Only an individuals refusal is described as a personal-account one.
+	UAM_ASSERT_EQ(gemini.AccountRefusalNotice(Kind::UnsupportedClient, "Gemini CLI", "This client is no longer supported for Gemini Code Assist for teams."),
+	    std::string("Google no longer supports this Gemini client for the signed-in account."));
+	UAM_ASSERT_EQ(ProviderRuntimeRegistry::ResolveById(uam::provider_ids::kCodexCli).AccountRefusalNotice(Kind::Authentication, "Codex CLI", "Authentication required"),
 	    std::string("Codex CLI needs you to sign in again on this computer."));
+	UAM_ASSERT(!uam::account_refusal::BlocksChatLaunch(Kind::Authentication));
+	UAM_ASSERT(uam::account_refusal::BlocksChatLaunch(Kind::UnsupportedClient));
+	const std::string accented = uam::account_refusal::DiagnosticMessage(std::string(399, 'a') + "\xC3\xA9" + std::string(10, 'b'));
+	UAM_ASSERT(accented.ends_with("a..."));
 }
 
 UAM_TEST(GeminiSessionNewAccountRefusalIsRecordedForTheProviderAndHost)
@@ -262,4 +281,36 @@ UAM_TEST(ChatLaunchIsRefusedWithTheNoticeWhileTheAccountRefusalIsActive)
 	UAM_ASSERT(error.starts_with(kGeminiNotice));
 	UAM_ASSERT(uam::strings::Contains(error, "Retry"));
 	UAM_ASSERT(!session.running);
+}
+
+UAM_TEST(AuthenticationRefusalHoldsDiscoveryButNotChatLaunches)
+{
+	AccountRefusalFixture fixture;
+	uam::AppState& app = fixture.app;
+	// Copilot and other ACP providers answer a signed-out account with -32000 "Authentication required".
+	UAM_ASSERT(uam::account_refusal::ClassifyAcpError("session/new", true, -32000, "Authentication required") == uam::account_refusal::Kind::Authentication);
+	app.provider_model_catalog->RememberAccountRefusal(uam::provider_ids::kGeminiCli, "local", uam::account_refusal::Kind::Authentication, "Gemini CLI needs you to sign in again on this computer.");
+	UAM_ASSERT(app.provider_model_catalog->IsAccountRefusalActive(uam::provider_ids::kGeminiCli, "local"));
+	UAM_ASSERT(!app.provider_model_catalog->IsAccountRefusalActive(uam::provider_ids::kGeminiCli, "local", true));
+	UAM_ASSERT(!app.provider_model_catalog->BeginDiscoveryIfStale(uam::provider_ids::kGeminiCli, app.folders.front().directory, "local"));
+	app.provider_model_catalog->RememberAccountRefusal(uam::provider_ids::kGeminiCli, "local", uam::account_refusal::Kind::UnsupportedClient, kGeminiNotice);
+	UAM_ASSERT(app.provider_model_catalog->IsAccountRefusalActive(uam::provider_ids::kGeminiCli, "local", true));
+}
+
+UAM_TEST(ExpiredAccountRefusalGivesWayToTheNextAttemptsOwnError)
+{
+	AccountRefusalFixture fixture;
+	uam::AppState& app = fixture.app;
+	const std::string workspace = app.folders.front().directory;
+	const std::int64_t now = uam::time::TimestampNowSec();
+	app.provider_model_catalog->RememberAccountRefusal(uam::provider_ids::kGeminiCli, "local", uam::account_refusal::Kind::UnsupportedClient, kGeminiNotice,
+	    now - uam::account_refusal::kAccountRefusalTtlSeconds - 1);
+	UAM_ASSERT(app.provider_model_catalog->BeginDiscovery(uam::provider_ids::kGeminiCli, workspace, "local"));
+	app.provider_model_catalog->RememberRefreshFailure(uam::provider_ids::kGeminiCli, "Workspace directory is not trusted.", workspace, "local");
+	UAM_ASSERT(app.provider_model_catalog->GetAccountRefusalNotice(uam::provider_ids::kGeminiCli, "local").empty());
+	UAM_ASSERT_EQ(app.provider_model_catalog->GetProviderRefreshError(uam::provider_ids::kGeminiCli, workspace, "local"), std::string("Workspace directory is not trusted."));
+	// A refusal dated in the future (a clock moved back) is never held longer than its TTL from now.
+	app.provider_model_catalog->RememberAccountRefusal(uam::provider_ids::kGeminiCli, "local", uam::account_refusal::Kind::UnsupportedClient, kGeminiNotice,
+	    now + 10 * uam::account_refusal::kAccountRefusalTtlSeconds);
+	UAM_ASSERT(!app.provider_model_catalog->IsAccountRefusalActive(uam::provider_ids::kGeminiCli, "local"));
 }

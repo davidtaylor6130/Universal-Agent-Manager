@@ -2378,9 +2378,9 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	{
 		return true;
 	}
-	// A provider that refused the account on this computer is not relaunched until its refusal expires or the user
-	// retries from the model menu; the refusal stays visible on the provider meanwhile.
-	if (!attach_only_to_stop && app.provider_model_catalog != nullptr && app.provider_model_catalog->IsAccountRefusalActive(provider.id, chat.execution_host_id))
+	// A provider that refused the account or client on this computer is not relaunched until the refusal expires or
+	// the user retries from the model menu. An authentication refusal never holds a chat launch: signing in fixes it.
+	if (!attach_only_to_stop && app.provider_model_catalog != nullptr && app.provider_model_catalog->IsAccountRefusalActive(provider.id, chat.execution_host_id, true))
 	{
 		if (error_out != nullptr) *error_out = app.provider_model_catalog->GetAccountRefusalNotice(provider.id, chat.execution_host_id) + " Use Retry in the model menu to ask again.";
 		return false;

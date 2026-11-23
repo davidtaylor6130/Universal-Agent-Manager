@@ -78,8 +78,11 @@ class ProviderModelCatalogService
 	void RememberAccountRefusal(const std::string& provider_id, std::string_view execution_host_id, account_refusal::Kind kind, std::string notice, std::int64_t recorded_at_sec = 0);
 	/// <summary>The recorded notice, active or expired, until a retry succeeds or the user retries; empty when none.</summary>
 	std::string GetAccountRefusalNotice(const std::string& provider_id, std::string_view execution_host_id = "local") const;
-	/// <summary>True while a recorded refusal's TTL has not expired; automatic launches skip the provider on that computer.</summary>
-	bool IsAccountRefusalActive(const std::string& provider_id, std::string_view execution_host_id = "local") const;
+	/// <summary>
+	/// True while a recorded refusal's TTL has not expired; automatic discovery skips the provider on that computer.
+	/// for_chat_launch asks whether a chat launch is also held, which an authentication refusal never does.
+	/// </summary>
+	bool IsAccountRefusalActive(const std::string& provider_id, std::string_view execution_host_id = "local", bool for_chat_launch = false) const;
 	/// <summary>A manual retry forgets the refusal so the next request asks the provider again. Returns whether one was recorded.</summary>
 	bool ClearAccountRefusal(const std::string& provider_id, std::string_view execution_host_id = "local");
 
@@ -269,6 +272,8 @@ class ProviderModelCatalogService
 	void LoadPersistentCatalogs();
 	// Caller holds m_mutex.
 	const nlohmann::json* AccountRefusalLocked(const std::string& provider_id, std::string_view execution_host_id) const;
+	// Caller holds m_mutex for writing. A new attempt or failure replaces an expired refusal's notice.
+	void EraseExpiredAccountRefusalLocked(const std::string& provider_id, std::string_view execution_host_id);
 	bool WritePersistentCatalogs() const;
 
 	void StartRefreshTask();
