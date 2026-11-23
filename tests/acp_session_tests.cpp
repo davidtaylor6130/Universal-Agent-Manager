@@ -22624,6 +22624,9 @@ UAM_TEST(AcpRemoteInitializeRefusalIsFinalWithoutRemoteRecovery)
 		fixture.app.provider_model_catalog->SetExecutionHostContext(fixture.app.settings.execution_hosts);
 		if (undelivered_prompt)
 		{
+			chat.messages.push_back({.role = MessageRole::User, .content = "Send once the session is ready."});
+			session.turn_first_user_message_index = session.turn_user_message_index = 0;
+			session.turn_serial = 1;
 			session.processing = true;
 			session.queued_prompt = "Send once the session is ready.";
 		}
@@ -22665,10 +22668,14 @@ UAM_TEST(AcpRemoteInitializeRefusalIsFinalWithoutRemoteRecovery)
 		}
 		if (undelivered_prompt)
 		{
-			// The waiting prompt is held for Resume or Remove: a launch would only meet the same refusal.
-			UAM_ASSERT(session.queue_held && chat.acp_queue_held);
+			// The waiting prompt returns as an unsent message with Retry: a launch would only meet the same refusal.
+			UAM_ASSERT(!session.processing && session.queued_prompt.empty());
+			UAM_ASSERT(chat.messages.front().acp_prompt_not_sent);
+			UAM_ASSERT(!session.queue_held);
 			UAM_ASSERT_EQ(fixture.app.pending_acp_remote_stops.size(), std::size_t{1});
-			// The helper confirms the stop (the stand-in exits cleanly); nothing relaunches afterwards either.
+			// The helper confirms the stop: the stand-in exits cleanly once every copy of its input is closed (the
+			// fixture's transport writer holds a duplicate). Nothing relaunches afterwards either.
+			fixture.transport_writer->Stop();
 			PlatformServicesFactory::Instance().process_service.CloseStdioProcessInput(*fixture.app.pending_acp_remote_stops.front());
 			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
 			while (!fixture.app.pending_acp_remote_stops.empty() && std::chrono::steady_clock::now() < deadline)
@@ -22679,8 +22686,8 @@ UAM_TEST(AcpRemoteInitializeRefusalIsFinalWithoutRemoteRecovery)
 			UAM_ASSERT(fixture.app.pending_acp_remote_stops.empty());
 			(void)uam::PollAllAcpSessions(fixture.app);
 			UAM_ASSERT(!session.running && !session.remote_stop_pending);
-			UAM_ASSERT(!session.reconnect_pending && !session.recovering_remote_process);
-			UAM_ASSERT(session.queue_held);
+			UAM_ASSERT(!session.reconnect_pending && !session.recovering_remote_process && !session.processing);
+			UAM_ASSERT(chat.messages.front().acp_prompt_not_sent);
 			UAM_ASSERT(std::ranges::none_of(session.diagnostics, [](const uam::AcpDiagnosticEntryState& entry)
 			    { return entry.reason == "remote_transport_recovery_scheduled"; }));
 		}
