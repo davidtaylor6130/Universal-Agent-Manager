@@ -1981,14 +1981,17 @@ void UamQueryHandler::HandleGetManagedAgentTranscript(CefRefPtr<CefBrowser> brow
 	{
 		// Not in memory (for example an unfinished run whose transcript was never adopted): read, hydrate and
 		// serialize the saved file on a worker, then revalidate the run before replying.
-		// A newer open waits for the pending read and then re-runs this handler; the older delivery is withdrawn.
-		if (AwaitNativeHistoryRead(transcript_chat_id, cb, [this, browser, payload, cb]() { HandleGetManagedAgentTranscript(browser, payload, cb); }))
+		// A newer open waits for the pending read and then re-runs this handler. The older request keeps its own
+		// validated result, so concurrent viewers both receive history and a cancelled waiter strands nobody.
+		// The key is the bare chat id on purpose: other chat-id history reads and deletion checks see this read.
+		if (AwaitNativeHistoryRead(transcript_chat_id, cb, [this, browser, payload, cb]() { HandleGetManagedAgentTranscript(browser, payload, cb); }, false))
 			return;
 		const auto request = BeginNativeHistoryRead(transcript_chat_id, cb);
 		const std::filesystem::path data_root = m_app.data_root;
 		const std::string run_id = run->id;
 		const std::string run_status = run->status;
 		const std::string run_updated_at = run->updated_at;
+		const std::optional<std::uint64_t> run_revision = run->managed_continuation ? std::optional<std::uint64_t>(run->managed_continuation->state_revision) : std::nullopt;
 		auto saved = std::make_shared<ChatSession>();
 		auto messages = std::make_shared<nlohmann::json>();
 		if (!DispatchManagedSubagentQuery(
@@ -2010,7 +2013,7 @@ void UamQueryHandler::HandleGetManagedAgentTranscript(CefRefPtr<CefBrowser> brow
 			        *saved = std::move(*loaded);
 			        return AsyncSuccess({});
 		        },
-		        [this, root_chat_id, transcript_chat_id, run_id, run_status, run_updated_at, data_root, request, saved, messages](AsyncCefResult& response)
+		        [this, root_chat_id, transcript_chat_id, run_id, run_status, run_updated_at, run_revision, data_root, request, saved, messages](AsyncCefResult& response)
 		        {
 			        const auto pending = m_nativeHistoryRequests.find(transcript_chat_id);
 			        if (pending == m_nativeHistoryRequests.end() || pending->second != request)
@@ -2025,7 +2028,7 @@ void UamQueryHandler::HandleGetManagedAgentTranscript(CefRefPtr<CefBrowser> brow
 			        // adopted a newer copy meanwhile; otherwise the status and messages could disagree.
 			        const ChatSession* current_root = ChatDomainService().FindChatById(m_app, root_chat_id);
 			        const auto current_run = std::ranges::find_if(m_app.agent_runs, [&](const AgentRun& candidate) { return candidate.root_chat_id == root_chat_id && candidate.transcript_chat_id == transcript_chat_id; });
-			        if (m_app.data_root != data_root || current_root == nullptr || !current_root->agent_run_id.empty() || current_run == m_app.agent_runs.end() || current_run->id != run_id || current_run->status != run_status || current_run->updated_at != run_updated_at || ChatDomainService().FindChatById(m_app, transcript_chat_id) != nullptr || (m_workspaceDeletionPending && m_app.worktree_operation_chat_ids.contains(transcript_chat_id)))
+			        if (m_app.data_root != data_root || current_root == nullptr || !current_root->agent_run_id.empty() || current_run == m_app.agent_runs.end() || current_run->id != run_id || current_run->status != run_status || current_run->updated_at != run_updated_at || (current_run->managed_continuation ? std::optional<std::uint64_t>(current_run->managed_continuation->state_revision) : std::nullopt) != run_revision || ChatDomainService().FindChatById(m_app, transcript_chat_id) != nullptr || (m_workspaceDeletionPending && m_app.worktree_operation_chat_ids.contains(transcript_chat_id)))
 			        {
 				        response = AsyncFailure(409, "Managed agent transcript changed while it was loading.");
 				        return;

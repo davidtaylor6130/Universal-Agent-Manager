@@ -285,17 +285,27 @@ UAM_TEST(ManagedSubagentTranscriptNewerOpenWaitsAndCancelledOpenGetsNoHistory)
 	UAM_ASSERT_EQ(newer->successes + newer->failures, 0);
 	auto first = fixture.pending[0]; // Its completion re-runs the waiter, which appends to pending.
 	first.Finish();
-	UAM_ASSERT_EQ(older->successes, 0);
-	UAM_ASSERT_EQ(older->status, 409);                     // Withdrawn in favour of the newer open.
+	UAM_ASSERT_EQ(older->successes, 1);                    // The older open keeps its own checked result.
 	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{2}); // The newer open re-ran and read again.
 	fixture.pending[1].Finish();
 	UAM_ASSERT_EQ(newer->successes, 1);
 	UAM_ASSERT_EQ(newer->body.at("messages")[0].at("content").get<std::string>(), std::string("Saved unfinished answer"));
 
+	ManagedSubagentHandlerTestAccess::Query(*fixture.handler, 76);
+	const auto kept = fixture.Transcript();
+	ManagedSubagentHandlerTestAccess::Query(*fixture.handler, 75);
+	const auto abandoned = fixture.Transcript(); // Waits, then is cancelled before the read finishes.
+	ManagedSubagentHandlerTestAccess::CancelQuery(*fixture.handler, 75);
+	auto second = fixture.pending[2];
+	second.Finish();
+	UAM_ASSERT_EQ(kept->successes, 1); // A cancelled waiter does not strand the request it waited on.
+	UAM_ASSERT_EQ(abandoned->successes + abandoned->failures, 0);
+	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{3});
+
 	ManagedSubagentHandlerTestAccess::Query(*fixture.handler, 77);
 	const auto cancelled = fixture.Transcript();
 	ManagedSubagentHandlerTestAccess::CancelQuery(*fixture.handler, 77);
-	fixture.pending[2].Finish();
+	fixture.pending[3].Finish();
 	UAM_ASSERT_EQ(cancelled->successes, 0);
 	UAM_ASSERT_EQ(cancelled->status, 409);
 	ManagedSubagentHandlerTestAccess::Query(*fixture.handler, 78);
@@ -314,8 +324,8 @@ UAM_TEST(ManagedSubagentTranscriptNewerOpenWaitsAndCancelledOpenGetsNoHistory)
 		                                           return true;
 	                                           });
 	const auto after = fixture.Transcript(); // Neither the cancelled read nor the refused dispatch kept the slot.
-	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{4});
-	fixture.pending[3].Finish();
+	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{5});
+	fixture.pending[4].Finish();
 	UAM_ASSERT_EQ(after->successes, 1);
 }
 
@@ -348,9 +358,14 @@ UAM_TEST(ManagedSubagentTranscriptDetachedReadNeverRepliesWithAnotherRunsTranscr
 	fixture.pending[3].Finish();
 	UAM_ASSERT_EQ(status_changed->successes, 0);
 	UAM_ASSERT_EQ(status_changed->status, 409);
+	const auto touched = fixture.Transcript();
+	fixture.app.agent_runs.front().updated_at = "2026-10-16 10:04:00"; // Same status, newer record.
+	fixture.pending[4].Finish();
+	UAM_ASSERT_EQ(touched->successes, 0);
+	UAM_ASSERT_EQ(touched->status, 409);
 	fixture.app.chats.push_back(saved);
 	const auto live = fixture.Transcript(); // A loaded in-memory transcript is answered directly, with no read.
-	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{4});
+	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{5});
 	UAM_ASSERT_EQ(live->successes, 1);
 	UAM_ASSERT_EQ(live->body.at("messages")[0].at("content").get<std::string>(), std::string("Answer from the replaced run"));
 }

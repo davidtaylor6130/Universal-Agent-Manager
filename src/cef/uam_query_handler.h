@@ -178,7 +178,8 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	// Registers the read and wraps cb so a cancelled request receives no history.
 	std::shared_ptr<NativeHistoryRequest> BeginNativeHistoryRead(const std::string& key, CefRefPtr<Callback>& cb,
 	    std::shared_ptr<NativeHistoryRequest> request = std::make_shared<NativeHistoryRequest>());
-	bool AwaitNativeHistoryRead(const std::string& key, CefRefPtr<Callback> cb, std::function<void()> retry);
+	// replace_older=false keeps the pending request's delivery: for reads whose waiters re-read instead of reusing a saved result.
+	bool AwaitNativeHistoryRead(const std::string& key, CefRefPtr<Callback> cb, std::function<void()> retry, bool replace_older = true);
 	void FinishNativeHistoryRead(const std::string& key, const std::shared_ptr<NativeHistoryRequest>& request);
 	// Stops remote refresh reads on a host whose helper connection is being replaced.
 	void StopNativeHistoryReadsOnHost(const std::string& host_id);
