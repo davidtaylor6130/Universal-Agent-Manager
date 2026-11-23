@@ -14,15 +14,22 @@
 #include "common/utils/string_utils.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <exception>
 #include <filesystem>
+#include <functional>
+#include <string>
 #include <unordered_set>
+#include <utility>
+#include <vector>
 
 namespace uam
 {
 	namespace
 	{
 		constexpr std::size_t kMaxConcurrentDiscoveries = 2;
+		// One account-wide list may be tried from this many workspaces per run before the rest wait for their own Refresh.
+		constexpr int kMaxSourceAttemptsPerGroup = 3;
 
 		std::string HostId(const std::string& id)
 		{
@@ -125,13 +132,16 @@ namespace uam
 		// Successful discoveries store the version that fetched them, so a later restart can tell whether the CLI changed.
 		for (const auto& [key, state] : app.runtime_cli_versions_by_provider_id)
 		{
-			const std::string version = state.checked && state.check_error.empty() ? strings::Trim(state.installed_version) : std::string{};
-			const auto noted = m_noted_cli_versions.find(key);
-			if (noted != m_noted_cli_versions.end() && noted->second == version) continue;
-			m_noted_cli_versions[key] = version;
 			const std::size_t separator = key.rfind('/');
 			const std::string provider = separator == std::string::npos ? key : key.substr(separator + 1);
 			const std::string host = separator == std::string::npos ? std::string(execution_hosts::kLocalHostId) : key.substr(0, separator);
+			std::string version = state.checked && state.check_error.empty() ? strings::Trim(state.installed_version) : std::string{};
+			// A remote check made before the host was re-pointed says nothing about the computer it names now.
+			if (separator != std::string::npos)
+				if (const ExecutionHost* current = execution_hosts::Find(app.settings.execution_hosts, host); current == nullptr || !execution_hosts::SameConnection(state.execution_host, *current)) version.clear();
+			const auto noted = m_noted_cli_versions.find(key);
+			if (noted != m_noted_cli_versions.end() && noted->second == version) continue;
+			m_noted_cli_versions[key] = version;
 			app.provider_model_catalog->NoteCheckedCliVersion(provider, host, version);
 		}
 	}
@@ -142,11 +152,30 @@ namespace uam
 		for (std::vector<PendingShare>::iterator share = m_pending_shares.begin(); share != m_pending_shares.end();)
 		{
 			if (app.provider_model_catalog->IsDiscoveryPending(share->provider_id, share->source_workspace, share->execution_host_id)) { ++share; continue; }
-			// A failed or empty discovery shares nothing; the other workspaces keep their caches and their own Refresh.
-			changed = app.provider_model_catalog->ShareAccountWideCatalog(share->provider_id, share->execution_host_id, share->source_workspace, share->target_workspaces, share->source_before) > 0 || changed;
+			const bool source_failed = !app.provider_model_catalog->GetProviderRefreshError(share->provider_id, share->source_workspace, share->execution_host_id).empty() ||
+			                           app.provider_model_catalog->GetPersistentCatalogEntry(share->provider_id, share->source_workspace, share->execution_host_id) == share->source_before;
+			if (source_failed)
+			{
+				// A failed or empty discovery shares nothing; another workspace may still answer for the rest.
+				diagnostics::Write("Startup model discovery source failed for " + share->provider_id + "; " + std::to_string(share->target_workspaces.size()) + " workspace(s) wait for another source.");
+				RequeueAfterFailedSource(share->provider_id, share->execution_host_id, std::move(share->target_workspaces), share->attempts);
+				changed = true;
+			}
+			else
+			{
+				const std::size_t shared = app.provider_model_catalog->ShareAccountWideCatalog(share->provider_id, share->execution_host_id, share->source_workspace, share->target_workspaces, share->source_before);
+				diagnostics::Write("Startup model discovery shared " + share->provider_id + " models with " + std::to_string(shared) + " workspace(s).");
+				changed = shared > 0 || changed;
+			}
 			share = m_pending_shares.erase(share);
 		}
 		return changed;
+	}
+
+	void StartupModelDiscoveryService::RequeueAfterFailedSource(const std::string& provider_id, const std::string& execution_host_id, std::vector<std::string> workspaces, int attempts)
+	{
+		if (workspaces.empty() || attempts >= kMaxSourceAttemptsPerGroup) return;
+		m_requeued_groups.push_back({provider_id, execution_host_id, std::move(workspaces), attempts});
 	}
 
 	bool StartupModelDiscoveryService::Poll(AppState& app)
@@ -203,27 +232,55 @@ namespace uam
 			const ScopeGroup scopes = std::move(*group);
 			group = m_pending_groups.erase(group);
 			// A cache under seven days old that this CLI version fetched is kept; Refresh and Retry still ask the provider.
-			const std::string checked_version = version->second.check_error.empty() ? strings::Trim(version->second.installed_version) : std::string{};
+			// The same rule as the stamp: a remote check counts only for the connection it was made on.
+			const bool same_connection = host->transport == "local" || execution_hosts::SameConnection(version->second.execution_host, *host);
+			const std::string checked_version = version->second.check_error.empty() && same_connection ? strings::Trim(version->second.installed_version) : std::string{};
 			std::vector<std::string> fresh;
 			std::vector<std::string> stale;
 			for (const std::string& workspace : scopes.workspaces)
 				(app.provider_model_catalog->IsCacheFreshForCliVersion(scopes.provider_id, workspace, scopes.execution_host_id, checked_version) ? fresh : stale).push_back(workspace);
-			if (stale.empty()) continue;
+			// The newest cache is the most likely to answer again: prefer it as the source.
+			const auto newest_first = [&](std::vector<std::string>& candidates) {
+				std::vector<std::pair<std::int64_t, std::string>> dated;
+				for (std::string& candidate : candidates)
+				{
+					const nlohmann::json entry = app.provider_model_catalog->GetPersistentCatalogEntry(scopes.provider_id, candidate, scopes.execution_host_id);
+					const std::int64_t updated_at = entry.is_object() ? entry.value("updatedAtSec", static_cast<std::int64_t>(0)) : 0;
+					dated.emplace_back(updated_at, std::move(candidate));
+				}
+				std::ranges::stable_sort(dated, std::ranges::greater{}, &std::pair<std::int64_t, std::string>::first);
+				candidates.clear();
+				for (auto& entry : dated) candidates.push_back(std::move(entry.second));
+			};
+			if (stale.empty())
+			{
+				// One line per account-wide group; a per-workspace group keeping its cache stays silent.
+				if (fresh.size() > 1) diagnostics::Write("Startup model discovery kept " + std::to_string(fresh.size()) + " fresh " + scopes.provider_id + " caches.");
+				continue;
+			}
 			if (!fresh.empty())
 			{
 				// Account-wide only: another workspace already holds a current list, so no process is needed.
-				changed = app.provider_model_catalog->ShareAccountWideCatalog(scopes.provider_id, scopes.execution_host_id, fresh.front(), stale) > 0 || changed;
+				newest_first(fresh);
+				const std::size_t shared = app.provider_model_catalog->ShareAccountWideCatalog(scopes.provider_id, scopes.execution_host_id, fresh.front(), stale);
+				diagnostics::Write("Startup model discovery shared a fresh " + scopes.provider_id + " cache with " + std::to_string(shared) + " workspace(s) without a process.");
+				changed = shared > 0 || changed;
 				continue;
 			}
-			const std::string& workspace = stale.front();
-			const std::vector<std::string> targets(stale.begin() + 1, stale.end());
+			newest_first(stale);
+			const std::string workspace = stale.front();
+			std::vector<std::string> targets(stale.begin() + 1, stale.end());
+			const int attempts = scopes.attempts + 1;
 			const nlohmann::json source_before = app.provider_model_catalog->GetPersistentCatalogEntry(scopes.provider_id, workspace, scopes.execution_host_id);
 			// Keep cached choices visible while the scope is attempted once; an already pending explicit refresh owns it,
 			// and its result is shared the same way when it ends.
 			if (!app.provider_model_catalog->BeginDiscovery(scopes.provider_id, workspace, scopes.execution_host_id))
 			{
-				if (!targets.empty() && app.provider_model_catalog->IsDiscoveryPending(scopes.provider_id, workspace, scopes.execution_host_id))
-					m_pending_shares.push_back({scopes.provider_id, scopes.execution_host_id, workspace, targets, source_before});
+				if (app.provider_model_catalog->IsDiscoveryPending(scopes.provider_id, workspace, scopes.execution_host_id))
+				{
+					if (!targets.empty()) m_pending_shares.push_back({scopes.provider_id, scopes.execution_host_id, workspace, std::move(targets), source_before, attempts});
+				}
+				else RequeueAfterFailedSource(scopes.provider_id, scopes.execution_host_id, std::move(targets), attempts);
 				continue;
 			}
 			std::string error;
@@ -235,16 +292,19 @@ namespace uam
 			if (launched)
 			{
 				app.provider_model_catalog->MarkDiscoveryLaunchStarted(scopes.provider_id, workspace, scopes.execution_host_id);
-				if (!targets.empty()) m_pending_shares.push_back({scopes.provider_id, scopes.execution_host_id, workspace, targets, source_before});
+				if (!targets.empty()) m_pending_shares.push_back({scopes.provider_id, scopes.execution_host_id, workspace, std::move(targets), source_before, attempts});
 				++active;
 			}
 			else
 			{
 				app.provider_model_catalog->RememberRefreshFailure(scopes.provider_id, strings::NonEmptyOrFallback(error, "Provider model discovery failed to start."), workspace, scopes.execution_host_id);
 				diagnostics::Write("Startup model discovery launch failed for " + scopes.provider_id + ": " + error);
+				RequeueAfterFailedSource(scopes.provider_id, scopes.execution_host_id, std::move(targets), attempts);
 			}
 			changed = true;
 		}
+		for (ScopeGroup& requeued : m_requeued_groups) m_pending_groups.push_back(std::move(requeued));
+		m_requeued_groups.clear();
 		// Query only the visible saved Antigravity model; native /effort is a read-only builtin, never a model turn.
 		// The catalogue deduplicates attempts and retains scoped metadata so idle polling cannot spawn repeated probes.
 		const ChatSession* selected = ChatDomainService().SelectedChat(app);

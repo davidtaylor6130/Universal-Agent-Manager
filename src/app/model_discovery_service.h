@@ -44,6 +44,8 @@ namespace uam
 			std::string provider_id;
 			std::string execution_host_id;
 			std::vector<std::string> workspaces;
+			// Sources tried this run; a failed source hands the remaining workspaces to another, a bounded number of times.
+			int attempts = 0;
 		};
 		/// <summary>A started account-wide discovery whose result is shared with the other workspaces when it ends.</summary>
 		struct PendingShare
@@ -53,7 +55,10 @@ namespace uam
 			std::string source_workspace;
 			std::vector<std::string> target_workspaces;
 			nlohmann::json source_before;
+			int attempts = 0;
 		};
+		/// <summary>Puts workspaces whose source failed back in the queue under another source, until the attempt limit.</summary>
+		void RequeueAfterFailedSource(const std::string& provider_id, const std::string& execution_host_id, std::vector<std::string> workspaces, int attempts);
 		bool ShareFinishedDiscoveries(AppState& app);
 		void NoteCheckedCliVersions(AppState& app);
 
@@ -61,6 +66,8 @@ namespace uam
 		LaunchFunction m_launch;
 		std::vector<ScopeGroup> m_pending_groups;
 		std::vector<PendingShare> m_pending_shares;
+		// Filled while m_pending_groups is being iterated, then appended to it.
+		std::vector<ScopeGroup> m_requeued_groups;
 		std::map<std::string, ExecutionHost> m_hosts;
 		std::map<std::string, std::string> m_noted_cli_versions;
 	};
