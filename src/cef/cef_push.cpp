@@ -484,7 +484,7 @@ namespace
 	/// "reusedFields" maps a field to true (unchanged, omitted) or, for an array, to the count of leading entries the
 	/// page keeps from its copy, the patch carrying only the entries after them; "reusedFieldsFrom" names the
 	/// revision of that copy. While any such field is non-empty, "retainedFieldsRevision" asks the page to keep this
-	/// patch's values. A page without that revision rejects the patch and pulls full state, which clears this record.
+	/// patch's values. A page without that revision leaves the chat out, applies the rest and pulls full state, which clears this record.
 	/// </summary>
 	void ReuseRetainedChatFields(nlohmann::json& chat)
 	{

@@ -8617,6 +8617,36 @@ describe('chat fields the page already holds (#947)', () => {
     expect(sanitizeCppStatePatch({ stateRevision: 14, chats: [live(14, {}, { reusedFieldsFrom: 14, reusedFields: { customIcon: true } })] })?.skippedChats).toBe(true)
   })
 
+  it('settles a pull whose reply later patches overtook even when one patch left out a chat', async () => {
+    resetRetainedChatFieldsForTests()
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.dispatchEvent = vi.fn(() => true)
+    let pulls = 0
+    let reply: ((response: string) => void) | null = null
+    testWindow.cefQuery = ({ request, onSuccess }) => {
+      if ((JSON.parse(request) as { action: string }).action !== 'getInitialState') return
+      pulls += 1
+      if (pulls === 1) onSuccess(JSON.stringify({ ...makeCppState(1), chats: [live(1, full)] }))
+      else reply = onSuccess
+    }
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    testWindow.uamPush!({ type: 'statePatch', data: { stateRevision: 2, chats: [live(2, full, { retainedFieldsRevision: 41 })] } })
+    // A gap starts a pull; while it is in flight a patch built before native dropped its copies skips the chat.
+    testWindow.uamPush!({ type: 'statePatch', data: { stateRevision: 4, statusLine: 'gap' } })
+    await vi.waitFor(() => expect(reply).not.toBeNull(), { timeout: 3000 })
+    testWindow.uamPush!({ type: 'statePatch', data: { stateRevision: 5, chats: [live(5, {}, { reusedFieldsFrom: 99, reusedFields: { customIcon: true } })] } })
+    testWindow.uamPush!({ type: 'statePatch', data: { stateRevision: 6, statusLine: 'after the snapshot' } })
+    // The snapshot (revision 5) covers the skipped chat; the copy after it rebuilds the store, so the pull settles.
+    reply!(JSON.stringify({ ...makeCppState(5), statusLine: 'snapshot', chats: [live(5, { toolCalls: [tool('a'), tool('b'), tool('c')] })] }))
+    await vi.waitFor(() => expect(cefStore.getState().acpBindingBySessionId['chat-1']?.toolCalls.map((call) => call.id)).toEqual(['a', 'b', 'c']))
+    expect(cefStore.getState().lastAppliedStateRevision).toBe(6)
+    expect(cefStore.getState().statusLine).toBe('after the snapshot')
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    expect(pulls).toBe(2)
+  })
+
   it('keeps copies across a pulled full state that later patches overtook', () => {
     resetRetainedChatFieldsForTests()
     // A new chat streams before an older snapshot (without it) arrives on the reply channel.

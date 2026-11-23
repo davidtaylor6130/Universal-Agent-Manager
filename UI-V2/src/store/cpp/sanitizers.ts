@@ -997,6 +997,12 @@ export function resetModelCatalogsForTests(): void {
   modelCatalogsById.clear()
 }
 
+/** Drops field copies of chats a pushed full state no longer lists (pulled snapshots may be overtaken, so not those). */
+export function forgetRetainedChatFieldsExcept(chatIds: readonly string[]): void {
+  const kept = new Set(chatIds.map((chatId) => chatId.trim()))
+  for (const chatId of retainedChatFieldsByChatId.keys()) if (!kept.has(chatId)) retainedChatFieldsByChatId.delete(chatId)
+}
+
 export function resetRetainedChatFieldsForTests(): void {
   retainedChatFieldsByChatId.clear()
 }
