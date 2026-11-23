@@ -13,6 +13,7 @@
 #include <future>
 #include "common/chat/chat_repository.h"
 #include "common/chat/chat_folder_store.h"
+#include "common/provider/antigravity_native_history.h"
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -178,6 +179,8 @@ class ChatHistorySyncService
 		std::map<std::string, uam::opencode_import::Spool> open_code_exports;
 		std::vector<std::pair<ChatSession, std::filesystem::path>> codex_rollouts;
 		ImportResult result;
+		/// Antigravity's per-conversation refusals, so an exact read can report its plain reason.
+		std::vector<uam::antigravity::history::Refusal> antigravity_refusals;
 		std::shared_future<std::shared_ptr<PreparedHistoryBatch>> preparation;
 		std::shared_future<bool> publication_sync;
 		std::optional<std::size_t> open_code_next_offset;
@@ -219,7 +222,9 @@ class ChatHistorySyncService
 	    uam::AppState& app, const std::string& folder_id,
 	    const std::vector<RemoteCodexSession>& sessions) const;
 	/// Reads a local rollout without touching application state; run off the GUI thread.
-	std::optional<ChatSession> LoadLocalNativeTranscript(const ChatSession& chat, std::string* error = nullptr, std::stop_token stop_token = {}) const;
+	/// unsettled_out is set when the provider is still writing the exact conversation, so a
+	/// passive refresh can keep saved history instead of reporting a failure.
+	std::optional<ChatSession> LoadLocalNativeTranscript(const ChatSession& chat, std::string* error = nullptr, std::stop_token stop_token = {}, bool* unsettled_out = nullptr) const;
 	/// <summary>Reads exact Gemini, Claude or Copilot native history through an authenticated immutable runner snapshot.</summary>
 	std::optional<ChatSession> LoadRemoteNativeTranscript(const ExecutionHost& host, const ChatSession& chat, std::string* error = nullptr, std::stop_token stop_token = {}) const;
 	/// <summary>Validates snapshot ownership and reuses provider-native parsers without changing environment variables.</summary>

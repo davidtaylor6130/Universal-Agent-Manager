@@ -16,6 +16,7 @@
 #include <sstream>
 #if !defined(UAM_ANTIGRAVITY_HISTORY_STANDALONE)
 #include "app/startup_native_import_service.h"
+#include "app/runtime_orchestration_services.h"
 #include "common/chat/message_attachment_sources.h"
 #endif
 
@@ -690,6 +691,30 @@ UAM_TEST(AntigravityNativeHistorySnapshotsSummaryOnceAcrossFiftyConversationsAnd
 	UAM_ASSERT_EQ(refused.omitted_error_count, std::size_t{30});
 }
 
+UAM_TEST(AntigravityNativeHistoryRecordsPlainRefusalReasonAndUnsettledSource)
+{
+	AgFixture nested;
+	nested.User();
+	nested.Sql("INSERT INTO parent_references VALUES(0,X'0801')");
+	const auto refused = nested.Read();
+	UAM_ASSERT(refused.chats.empty());
+	UAM_ASSERT_EQ(refused.refusals.size(), std::size_t(1));
+	UAM_ASSERT_EQ(refused.refusals[0].session, std::string(kSession));
+	UAM_ASSERT_EQ(refused.refusals[0].reason, std::string("This conversation continues another Antigravity conversation, and UAM cannot read that earlier context completely yet."));
+	UAM_ASSERT(!refused.refusals[0].unsettled);
+	UAM_ASSERT_EQ(refused.errors.size(), std::size_t(1));
+	UAM_ASSERT(refused.errors[0].find(kSession) != std::string::npos);
+
+	AgFixture running;
+	running.User();
+	running.Step(1, 15, 20, AgBytes(1, "Still streaming"), 2, {}, 2);
+	const auto unsettled = running.Read();
+	UAM_ASSERT(unsettled.chats.empty());
+	UAM_ASSERT_EQ(unsettled.refusals.size(), std::size_t(1));
+	UAM_ASSERT(unsettled.refusals[0].unsettled);
+	UAM_ASSERT_EQ(unsettled.refusals[0].reason, std::string("Antigravity is still working on this conversation. Retry after it finishes."));
+}
+
 #if !defined(UAM_ANTIGRAVITY_HISTORY_STANDALONE) && UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
 namespace
 {
@@ -963,6 +988,77 @@ UAM_TEST(SettingsAntigravityLegacyDiscoveryAssignmentAndSelectedPublication)
 	UAM_ASSERT(service.DiscoverLocalHistory(app));
 	AgWait(service, app);
 	UAM_ASSERT_EQ(service.Snapshot().total_count, std::size_t(0));
+}
+
+namespace
+{
+	// The exact local transcript read used by Terminal-to-Chat refresh, against the
+	// documented CLI store under a synthetic HOME.
+	struct AgExactReadFixture
+	{
+		ScopedNativeHistoryHome home;
+		TempDir workspace_root{"uam-antigravity-exact-read"};
+		AgFixture native;
+		ChatSession chat;
+		AgExactReadFixture()
+		{
+			const fs::path workspace = workspace_root.root / "workspace";
+			fs::create_directories(workspace);
+			std::string uri;
+			for (const char c : workspace.generic_string()) uri += c == ' ' ? std::string("%20") : std::string(1, c);
+			native.Metadata(uri.front() == '/' ? "file://" + uri : "file:///" + uri);
+			native.User("Recorded text");
+			chat.id = "saved-UAM-antigravity";
+			chat.provider_id = uam::provider_ids::kAntigravityCli;
+			chat.native_session_id = kSession;
+			chat.workspace_directory = workspace.string();
+			chat.execution_host_id = "local";
+		}
+		std::optional<ChatSession> Load(std::string& error, bool& unsettled)
+		{
+			native.db.reset();
+			const fs::path store = home.directory.root / ".gemini" / "antigravity-cli" / "conversations";
+			fs::create_directories(store);
+			fs::copy_file(native.file, store / native.file.filename(), fs::copy_options::overwrite_existing);
+			return ChatHistorySyncService().LoadLocalNativeTranscript(chat, &error, {}, &unsettled);
+		}
+	};
+} // namespace
+
+UAM_TEST(AntigravityExactLocalTranscriptReadsSettledConversation)
+{
+	AgExactReadFixture fixture;
+	fixture.native.Step(1, 15, 20, AgBytes(1, "Native terminal answer"), 2);
+	std::string error;
+	bool unsettled = true;
+	const auto loaded = fixture.Load(error, unsettled);
+	UAM_ASSERT(loaded.has_value());
+	UAM_ASSERT(!unsettled);
+	UAM_ASSERT(error.empty());
+	UAM_ASSERT_EQ(loaded->messages.size(), std::size_t(2));
+	UAM_ASSERT_EQ(loaded->messages[1].content, std::string("Native terminal answer"));
+}
+
+UAM_TEST(AntigravityExactLocalTranscriptReportsPlainRefusalReason)
+{
+	AgExactReadFixture fixture;
+	fixture.native.Sql("INSERT INTO parent_references VALUES(0,X'0801')");
+	std::string error;
+	bool unsettled = true;
+	UAM_ASSERT(!fixture.Load(error, unsettled));
+	UAM_ASSERT(!unsettled);
+	UAM_ASSERT_EQ(error, std::string("This conversation continues another Antigravity conversation, and UAM cannot read that earlier context completely yet."));
+}
+
+UAM_TEST(AntigravityExactLocalTranscriptMarksUnfinishedConversation)
+{
+	AgExactReadFixture fixture;
+	fixture.native.Step(1, 15, 20, AgBytes(1, "Still streaming"), 2, {}, 2);
+	std::string error;
+	bool unsettled = false;
+	UAM_ASSERT(!fixture.Load(error, unsettled));
+	UAM_ASSERT(unsettled);
+	UAM_ASSERT_EQ(error, std::string("Antigravity is still working on this conversation. Retry after it finishes."));
 }
 #endif
 

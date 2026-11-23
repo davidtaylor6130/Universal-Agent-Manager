@@ -328,10 +328,36 @@ UAM_TEST(NativeMediaRefreshHandlerShortSnapshotNeverPublishesOrAcknowledges)
 	UAM_ASSERT(!fs::exists(fixture.app.data_root / std::string(uam::native_assets::kStoreDirectory)));
 }
 
+#endif
+
 #if UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
 namespace
 {
 	using namespace uam_test::antigravity_fixture;
+	// Own callback/query doubles: these cases must not depend on the Gemini build flag.
+	class AgRefreshCallback final : public UamQueryHandler::Callback
+	{
+	  public:
+		int successes = 0, failures = 0, status = 0;
+		std::string failure;
+		void Success(const CefString&) override { ++successes; }
+		void Success(const void*, size_t) override { ++successes; }
+		void Failure(int code, const CefString& error) override
+		{
+			++failures;
+			status = code;
+			failure = error.ToString();
+		}
+
+	  private:
+		IMPLEMENT_REFCOUNTING(AgRefreshCallback);
+	};
+	struct AgRefreshQuery
+	{
+		CefRefPtr<UamQueryHandler::Callback> cb;
+		std::function<AsyncCefResult()> worker;
+		std::function<void(AsyncCefResult&)> completion;
+	};
 	std::string AntigravityWorkspaceUri(const fs::path& workspace)
 	{
 		std::string uri = workspace.generic_string(), encoded;
@@ -347,16 +373,16 @@ namespace
 		ScopedEnvVar profile{"USERPROFILE", (temp.root / "home").string()};
 		uam::AppState app;
 		std::unique_ptr<UamQueryHandler> handler;
-		std::vector<MediaQuery> pending;
+		std::vector<AgRefreshQuery> pending;
 		AgFixture native;
-		explicit AntigravityRefreshFixture(const std::string& host = "local", bool nested = false)
+		explicit AntigravityRefreshFixture(const std::string& host = "local", bool nested = false, bool unfinished = false)
 		{
 			app.data_root = temp.root / "data";
 			const fs::path workspace = temp.root / "workspace";
 			fs::create_directories(workspace);
 			native.Metadata(AntigravityWorkspaceUri(workspace));
 			native.User("Recorded text");
-			native.Step(1, 15, 20, AgBytes(1, "Native terminal answer"), 2);
+			native.Step(1, 15, 20, AgBytes(1, "Native terminal answer"), 2, {}, unfinished ? 2 : 3);
 			if (nested) native.Sql("INSERT INTO parent_references VALUES(0,X'0801')");
 			native.db.reset();
 			const fs::path store = temp.root / "home" / ".gemini" / "antigravity-cli" / "conversations";
@@ -391,16 +417,17 @@ namespace
 			while (uam::native_history::detail::refresh_owners.load() != 0 && std::chrono::steady_clock::now() < deadline)
 				std::this_thread::yield();
 		}
-		CefRefPtr<MediaCallback> Start()
+		CefRefPtr<AgRefreshCallback> Start()
 		{
-			CefRefPtr<MediaCallback> cb = new MediaCallback;
+			CefRefPtr<AgRefreshCallback> cb = new AgRefreshCallback;
 			NativeMediaRefreshHandlerTestAccess::Invoke(*handler, app.chats.front().id, cb);
 			return cb;
 		}
 		void Complete(std::size_t index)
 		{
 			auto query = std::move(pending.at(index));
-			query.Finish(query.Run());
+			auto result = std::async(std::launch::async, query.worker).get();
+			CompleteAsyncCefQuery(query.cb, result, query.completion);
 		}
 		std::string Primary()
 		{
@@ -439,7 +466,22 @@ UAM_TEST(AntigravityTerminalRefreshRefusesNestedChildAndRetainsSavedHistory)
 	UAM_ASSERT_EQ(cb->successes, 0);
 	UAM_ASSERT_EQ(cb->failures, 1);
 	UAM_ASSERT_EQ(cb->status, 502);
-	UAM_ASSERT(cb->failure.find("parent context") != std::string::npos);
+	UAM_ASSERT_EQ(cb->failure, std::string("This conversation continues another Antigravity conversation, and UAM cannot read that earlier context completely yet."));
+	UAM_ASSERT_EQ(fixture.Primary(), before);
+	UAM_ASSERT_EQ(fixture.app.chats.front().messages.size(), std::size_t{1});
+}
+
+UAM_TEST(AntigravityTerminalRefreshOfUnfinishedConversationServesSavedHistory)
+{
+	// CLI View to Chat while a terminal turn is still running: not a failure, nothing published.
+	AntigravityRefreshFixture fixture("local", false, true);
+	const auto before = fixture.Primary();
+	const auto cb = fixture.Start();
+	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{1});
+	fixture.Complete(0);
+	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{1});
+	UAM_ASSERT_EQ(cb->failures, 0);
+	UAM_ASSERT_EQ(cb->successes, 1);
 	UAM_ASSERT_EQ(fixture.Primary(), before);
 	UAM_ASSERT_EQ(fixture.app.chats.front().messages.size(), std::size_t{1});
 }
@@ -453,7 +495,6 @@ UAM_TEST(AntigravityTerminalRefreshOnSshHostServesSavedHistoryWithoutNativeRead)
 	UAM_ASSERT_EQ(cb->failures, 0);
 	UAM_ASSERT_EQ(fixture.app.chats.front().messages.size(), std::size_t{1});
 }
-#endif
 #endif
 
 #if UAM_ENABLE_RUNTIME_GEMINI_CLI

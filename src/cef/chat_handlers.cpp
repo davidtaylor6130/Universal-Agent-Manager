@@ -1015,6 +1015,7 @@ void UamQueryHandler::HandleRefreshLocalNativeMedia(CefRefPtr<CefBrowser> browse
 		std::unique_ptr<uam::PreparedNativeMediaChatSave> prepared;
 		std::string error;
 		bool skipped = false;
+		bool unsettled = false;
 		~Work() noexcept
 		{
 			// This destructor runs on the armed cleanup worker, even when a CEF
@@ -1100,8 +1101,10 @@ void UamQueryHandler::HandleRefreshLocalNativeMedia(CefRefPtr<CefBrowser> browse
 		queued = DispatchNativeMediaRefresh(cb,
 		    [work, parse_identity, request]()
 		    {
-			    auto loaded = ChatHistorySyncService().LoadLocalNativeTranscript(parse_identity, &work->error, request->get_token());
+			    auto loaded = ChatHistorySyncService().LoadLocalNativeTranscript(parse_identity, &work->error, request->get_token(), &work->unsettled);
 			    if (request->stop_requested()) return AsyncFailure(409, "A newer history refresh was requested.");
+			    // A conversation the provider is still writing is not a failure: saved history stays current.
+			    if (!loaded && work->unsettled) return AsyncSuccess({{"ok", true}});
 			    if (!loaded) return AsyncFailure(502, uam::strings::NonEmptyOrFallback(work->error, "Native chat history is not available yet."));
 			    work->messages = loaded->messages.take();
 			    return AsyncSuccess({{"ok", true}});
@@ -1112,9 +1115,9 @@ void UamQueryHandler::HandleRefreshLocalNativeMedia(CefRefPtr<CefBrowser> browse
 			    ChatSession* current = admitted();
 			    if (!current) { response = AsyncFailure(409, "Chat changed while its native history was loading. Retry to refresh it."); return; }
 			    if (!response.ok) return;
-			    if (work->messages.size() < current->messages.size())
+			    if (work->unsettled || work->messages.size() < current->messages.size())
 			    {
-				    request->cache_filled = true; // Fuller saved history already reflects this read.
+				    request->cache_filled = true; // Fuller saved history, or an unfinished native source, leaves saved history current.
 				    response = SerializeGuardedChatMessagesResult(*current, known_digest, page, defer_tool_call_content, {});
 				    return;
 			    }
