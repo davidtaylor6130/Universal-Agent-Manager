@@ -305,12 +305,12 @@ namespace uam
 		}
 	}
 
-	void StartupNativeImportService::AddError(const std::string& error, bool log)
+	void StartupNativeImportService::AddError(const std::string& error, bool log, bool capped)
 	{
 		if (error.empty()) return;
 		const std::string message = strings::SafeLine(error, 512, true);
 		if (log) diagnostics::Write("Startup native history: " + message);
-		if (m_errors.size() < 20) m_errors.push_back(message);
+		if (!capped || m_errors.size() < 20) m_errors.push_back(message);
 		else ++m_omitted_error_count;
 	}
 
@@ -505,7 +505,9 @@ namespace uam
 			{
 				if (continue_scan && error == "OpenCode history scan stopped before all sessions were read; retry to continue.") continue;
 				if (already_reported.contains(error)) continue;
-				AddError(error, !detailed.contains(error));
+				// Each reported refusal is listed outside the detail cap; there is one per conversation.
+				const bool refusal = detailed.contains(error);
+				AddError(error, !refusal, !refusal);
 			}
 			// Sub-chats leave the review list here: each waits for its parent's decision, and a fresh scan replaces an earlier sighting.
 			const auto take_child = [&](ChatSession& chat, std::filesystem::path* rollout)
