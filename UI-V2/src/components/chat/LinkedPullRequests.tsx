@@ -3,7 +3,7 @@ import { Check, CircleDashed, Eye, EyeOff, GitMerge, GitPullRequest, GitPullRequ
 import { sendToCEF } from '../../ipc/cefBridge'
 import { useAppStore } from '../../store/useAppStore'
 import type { PullRequestWatch } from '../../store/cpp/types'
-import { reportAppFailure } from '../../utils/appFailure'
+import { failureDetail, reportAppFailure } from '../../utils/appFailure'
 import { Button, ConfirmDialog, IconButton, Reveal } from '../ui'
 import './LinkedPullRequests.css'
 
@@ -42,7 +42,7 @@ function PullRequestRow({ watch }: { watch: PullRequestWatch }) {
     setBusy(true)
     void managePullRequestWatch(watch.chatId, operation, watch.repository, watch.number)
       .then((response) => {
-        if (!response.ok) reportAppFailure(`${operation === 'watch' ? 'Could not watch' : operation === 'unwatch' ? 'Could not stop watching' : 'Could not unlink'} ${name}. ${response.error || 'Try again.'}`, '')
+        if (!response.ok) reportAppFailure(`${operation === 'watch' ? 'Could not watch' : operation === 'unwatch' ? 'Could not stop watching' : 'Could not unlink'} ${name}.`, failureDetail(response.error, 'Try again.'))
       })
       .finally(() => setBusy(false))
   }

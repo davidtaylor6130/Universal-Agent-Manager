@@ -28,9 +28,18 @@ namespace uam::antigravity::history
 		std::string report_key;
 	};
 
+	/// One refused conversation: its native ID, a plain reason without that ID, and
+	/// whether the CLI is still writing it (a later read can succeed unchanged).
+	struct Refusal
+	{
+		std::string session;
+		std::string reason;
+		bool unsettled = false;
+	};
 	struct Discovery
 	{
 		std::vector<ChatSession> chats;
+		std::vector<Refusal> refusals;
 		std::vector<std::string> errors;
 		// Omitted details remain structured so downstream caps cannot hide the total.
 		std::size_t omitted_error_count = 0;

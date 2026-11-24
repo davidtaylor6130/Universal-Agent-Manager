@@ -578,12 +578,15 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 			    if (*hydrate_unsent) *unsent_revision = ChatRepository::ChatStorageRevision(data_root, chat_id);
 			    *loaded_revision = ChatRepository::ChatStorageRevision(data_root, chat_id);
 			    *loaded = recover_direct_receipt
-			        ? ChatRepository::LoadLocalChatBounded(data_root, chat_id, 8 * 1024 * 1024)
+			        ? ChatRepository::LoadLocalChatBounded(data_root, chat_id, 8 * 1024 * 1024, &warning)
 			        : ChatRepository::LoadLocalChat(data_root, chat_id, true, &warning);
 			    if (!*loaded && recover_direct_receipt && page)
 			    {
 				    *hydrate_unsent = false;
-				    *indexed = ChatRepository::ReadMessagePage(data_root, expected, page->first, page->second, &warning, [lifetime]() { return lifetime.expired(); });
+				    // Keep the too-large message when the page fallback also fails.
+				    std::string page_warning;
+				    *indexed = ChatRepository::ReadMessagePage(data_root, expected, page->first, page->second, &page_warning, [lifetime]() { return lifetime.expired(); });
+				    if (warning.empty()) warning = std::move(page_warning);
 				    if (*indexed) return uam::query_handler_async::AsyncSuccess(uam::StateSerializer::SerializeDetachedMessagePage(
 				        **indexed, defer_tool_call_content, known_digest, !page->second));
 			    }
@@ -720,6 +723,13 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 	    uam::strings::Trim(chat->execution_host_id), uam::execution_hosts::kLocalHostId);
 	const std::string provider_id =
 	    uam::provider_ids::NormalizeCliProviderAliasOrSelf(chat->provider_id);
+#if UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
+	// Antigravity's settled SQLite/legacy reader is controller-local only; no SSH helper reads it.
+	const bool local_antigravity_history = provider_id == uam::provider_ids::kAntigravityCli &&
+	    execution_host_id == uam::execution_hosts::kLocalHostId;
+#else
+	const bool local_antigravity_history = false;
+#endif
 	const bool hydrate_native_chat =
 	    (refresh_native ||
 	     (chat->messages.empty() && execution_host_id != uam::execution_hosts::kLocalHostId && !reuse_saved_read)) &&
@@ -728,7 +738,8 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 	    !uam::strings::IsBlank(chat->native_session_id) &&
 	    (provider_id == uam::provider_ids::kOpenCodeCli ||
 	     provider_id == uam::provider_ids::kCodexCli ||
-	     provider_id == uam::provider_ids::kClaudeCli || provider_id == uam::provider_ids::kCopilotCli || provider_id == uam::provider_ids::kGeminiCli);
+	     provider_id == uam::provider_ids::kClaudeCli || provider_id == uam::provider_ids::kCopilotCli || provider_id == uam::provider_ids::kGeminiCli ||
+	     local_antigravity_history);
 	if (!hydrate_native_chat)
 	{
 		ScheduleDeferredRecencySave(chat_id); // This read was served from memory, so nothing is reading the file.
@@ -753,9 +764,10 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 		host_snapshot = *host;
 	}
 
-	if (provider_id == uam::provider_ids::kGeminiCli && !host_snapshot)
+	// Both readers can return pending inline originals, so they share the guarded media publication route.
+	if ((provider_id == uam::provider_ids::kGeminiCli || local_antigravity_history) && !host_snapshot)
 	{
-		HandleRefreshLocalGeminiMedia(browser, *chat, known_digest, page, defer_tool_call_content, cb);
+		HandleRefreshLocalNativeMedia(browser, *chat, known_digest, page, defer_tool_call_content, cb);
 		return;
 	}
 
@@ -993,7 +1005,7 @@ bool UamQueryHandler::DispatchRemoteRefreshRead(CefRefPtr<Callback> cb, ManagedS
 	return true;
 }
 
-void UamQueryHandler::HandleRefreshLocalGeminiMedia(CefRefPtr<CefBrowser> browser, const ChatSession& chat,
+void UamQueryHandler::HandleRefreshLocalNativeMedia(CefRefPtr<CefBrowser> browser, const ChatSession& chat,
     const std::string& known_digest, const std::optional<std::pair<std::size_t, std::optional<std::size_t>>>& page,
     bool defer_tool_call_content, CefRefPtr<Callback> cb)
 {
@@ -1006,6 +1018,7 @@ void UamQueryHandler::HandleRefreshLocalGeminiMedia(CefRefPtr<CefBrowser> browse
 		std::unique_ptr<uam::PreparedNativeMediaChatSave> prepared;
 		std::string error;
 		bool skipped = false;
+		bool unsettled = false;
 		~Work() noexcept
 		{
 			// This destructor runs on the armed cleanup worker, even when a CEF
@@ -1091,8 +1104,10 @@ void UamQueryHandler::HandleRefreshLocalGeminiMedia(CefRefPtr<CefBrowser> browse
 		queued = DispatchNativeMediaRefresh(cb,
 		    [work, parse_identity, request]()
 		    {
-			    auto loaded = ChatHistorySyncService().LoadLocalNativeTranscript(parse_identity, &work->error, request->get_token());
+			    auto loaded = ChatHistorySyncService().LoadLocalNativeTranscript(parse_identity, &work->error, request->get_token(), &work->unsettled);
 			    if (request->stop_requested()) return AsyncFailure(409, "A newer history refresh was requested.");
+			    // A conversation the provider is still writing is not a failure: saved history stays current.
+			    if (!loaded && work->unsettled) return AsyncSuccess({{"ok", true}});
 			    if (!loaded) return AsyncFailure(502, uam::strings::NonEmptyOrFallback(work->error, "Native chat history is not available yet."));
 			    work->messages = loaded->messages.take();
 			    return AsyncSuccess({{"ok", true}});
@@ -1103,9 +1118,9 @@ void UamQueryHandler::HandleRefreshLocalGeminiMedia(CefRefPtr<CefBrowser> browse
 			    ChatSession* current = admitted();
 			    if (!current) { response = AsyncFailure(409, "Chat changed while its native history was loading. Retry to refresh it."); return; }
 			    if (!response.ok) return;
-			    if (work->messages.size() < current->messages.size())
+			    if (work->unsettled || work->messages.size() < current->messages.size())
 			    {
-				    request->cache_filled = true; // Fuller saved history already reflects this read.
+				    request->cache_filled = true; // Fuller saved history, or an unfinished native source, leaves saved history current.
 				    response = SerializeGuardedChatMessagesResult(*current, known_digest, page, defer_tool_call_content, {});
 				    return;
 			    }
