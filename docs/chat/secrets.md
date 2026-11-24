@@ -8,7 +8,7 @@ The request shows as its own card above the composer, like other UAM questions, 
 
 ## Who can ask
 
-Read-only agents, goal-review turns, side chats and automation-API chats are refused with no card. A chat in Plan mode shows a blocked card that needs **Allow once** before the field appears; the chat stays in Plan. YOLO never answers a secret card. Subagents inherit their parent's read-only ceiling. The tool carries no read-only hint, so a provider in Plan mode may ask before calling it.
+Read-only agents, goal-review turns, side chats and automation-API chats, including chats they start or branch, are refused with no card. A chat in Plan mode shows a blocked card that needs **Allow once** before the field appears; the chat stays in Plan. YOLO never answers a secret card. Subagents inherit their parent's read-only ceiling. The tool carries no read-only hint, so a provider in Plan mode may ask before calling it.
 
 ## Delivery and storage
 

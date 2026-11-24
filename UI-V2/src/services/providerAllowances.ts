@@ -1,5 +1,6 @@
 import { isCefContext, sendToCEF } from '../ipc/cefBridge'
 import type { AcpRateLimits, AcpRateLimitWindow } from '../store/cpp/types'
+import { isPlainRecord } from '../store/cpp/sanitizers'
 import { USAGE_PROVIDERS, type UsageProviderId } from './usageHistory'
 
 export interface ProviderAllowanceWindow extends AcpRateLimitWindow {
@@ -61,11 +62,10 @@ export function subscribeProviderAllowances(host: string, listener: () => void) 
   return () => { value.listeners.delete(listener) }
 }
 
-const object = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value)
 const percent = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 100
 const nonnegativeInteger = (value: unknown) => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
 function validWindow(value: unknown): value is AcpRateLimitWindow {
-  return object(value) && percent(value.usedPercent)
+  return isPlainRecord(value) && percent(value.usedPercent)
     && (value.resetsAt === null || (nonnegativeInteger(value.resetsAt) && (value.resetsAt as number) <= 253402300799))
     && (value.windowDurationMinutes === null || (nonnegativeInteger(value.windowDurationMinutes) && (value.windowDurationMinutes as number) > 0))
 }
@@ -73,30 +73,30 @@ function validModelWindows(value: unknown): value is ProviderAllowanceWindow[] {
   if (!Array.isArray(value) || value.length > 64) return false
   const ids = new Set<string>()
   return value.every(window => {
-    if (!validWindow(window) || !object(window) || typeof window.id !== 'string' || !window.id.trim() || window.id.length > 128 || ids.has(window.id)
+    if (!validWindow(window) || !isPlainRecord(window) || typeof window.id !== 'string' || !window.id.trim() || window.id.length > 128 || ids.has(window.id)
       || typeof window.label !== 'string' || !window.label.trim() || window.label.length > 128) return false
     ids.add(window.id)
     return true
   })
 }
 function validLimits(value: unknown): value is AcpRateLimits {
-  if (!object(value) || !nonnegativeInteger(value.updatedAt) || (value.updatedAt as number) > 8640000000000000
+  if (!isPlainRecord(value) || !nonnegativeInteger(value.updatedAt) || (value.updatedAt as number) > 8640000000000000
     || !['limitId', 'limitName', 'planType', 'rateLimitReachedType'].every(key => typeof value[key] === 'string')) return false
   for (const key of ['primary', 'secondary']) {
     const window = value[key]
     if (window === null) continue
     if (!validWindow(window)) return false
   }
-  if (value.credits !== null && (!object(value.credits) || typeof value.credits.hasCredits !== 'boolean' || typeof value.credits.unlimited !== 'boolean' || !(value.credits.balance === null || typeof value.credits.balance === 'string'))) return false
-  if (value.individualLimit !== null && (!object(value.individualLimit) || typeof value.individualLimit.limit !== 'string' || typeof value.individualLimit.used !== 'string' || !percent(value.individualLimit.remainingPercent) || !nonnegativeInteger(value.individualLimit.resetsAt))) return false
+  if (value.credits !== null && (!isPlainRecord(value.credits) || typeof value.credits.hasCredits !== 'boolean' || typeof value.credits.unlimited !== 'boolean' || !(value.credits.balance === null || typeof value.credits.balance === 'string'))) return false
+  if (value.individualLimit !== null && (!isPlainRecord(value.individualLimit) || typeof value.individualLimit.limit !== 'string' || typeof value.individualLimit.used !== 'string' || !percent(value.individualLimit.remainingPercent) || !nonnegativeInteger(value.individualLimit.resetsAt))) return false
   return value.spendControlReached === null || typeof value.spendControlReached === 'boolean'
 }
 export function parseProviderAllowances(value: unknown, host: string): ProviderAllowanceSnapshot {
-  if (!object(value) || value.executionHostId !== host || typeof value.refreshing !== 'boolean' || !Array.isArray(value.providers) || value.providers.length > USAGE_PROVIDERS.length) throw new Error('Account allowances returned an invalid computer or response.')
+  if (!isPlainRecord(value) || value.executionHostId !== host || typeof value.refreshing !== 'boolean' || !Array.isArray(value.providers) || value.providers.length > USAGE_PROVIDERS.length) throw new Error('Account allowances returned an invalid computer or response.')
   if (value.refreshAfterMs !== undefined && (!nonnegativeInteger(value.refreshAfterMs) || (value.refreshAfterMs as number) > 30000)) throw new Error('Account allowances returned an invalid refresh interval.')
   const seen = new Set<string>()
   for (const row of value.providers) {
-    if (!object(row) || !USAGE_PROVIDERS.includes(row.providerId as UsageProviderId) || seen.has(row.providerId as string)
+    if (!isPlainRecord(row) || !USAGE_PROVIDERS.includes(row.providerId as UsageProviderId) || seen.has(row.providerId as string)
       || typeof row.scope !== 'string' || !row.scope || row.scope.length > 256
       || !['ready', 'loading', 'unavailable', 'error'].includes(row.status as string) || typeof row.error !== 'string' || row.error.length > 1024
       || !(row.limits === null || validLimits(row.limits))

@@ -594,6 +594,7 @@ void UamQueryHandler::HandleWriteCliInput(CefRefPtr<CefBrowser> browser, const n
 			// must reach the child process unmodified — do NOT queue these as
 			// structured prompts (which wrap them in bracketed-paste sequences
 			// and append \r, breaking all interactive CLI communication).
+			const bool draft_before = uam::CliTerminalComposerMayHoldDraft(*term);
 			const bool wrote = uam::WriteToCliTerminal(*term, data.c_str(), data.size());
 			if (!wrote)
 			{
@@ -607,6 +608,11 @@ void UamQueryHandler::HandleWriteCliInput(CefRefPtr<CefBrowser> browser, const n
 			{
 				uam::MarkCliTerminalTurnBusy(*term);
 				uam::LogCliDiagnosticEvent(m_app, "handle_write_cli_input", "turn_submitted", term);
+				uam::PushStateUpdateIfChanged(browser, m_app);
+			}
+			else if (uam::CliTerminalComposerMayHoldDraft(*term) != draft_before)
+			{
+				// Starting a draft withdraws the idle countdown; only this transition pushes, not every keystroke.
 				uam::PushStateUpdateIfChanged(browser, m_app);
 			}
 		}

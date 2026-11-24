@@ -101,7 +101,10 @@ bool RetryFailedAcpMessage(AppState& app, const std::string& chat_id, int messag
 bool DrainNextQueuedAcpUserPrompt(AppState& app, AcpSessionState& session, ChatSession& chat);
 bool PersistQueuedAcpUserPromptsAsInterrupted(AcpSessionState& session, ChatSession& chat);
 /// <summary>Requests native compaction in a ready idle session without deleting saved history.</summary>
-bool CompactAcpSession(AppState& app, const std::string& chat_id, std::string* error_out = nullptr);
+/// Whether the checked CLI on the chat's host meets the runtime's compaction minimum; nullopt while no version is known.
+std::optional<bool> AcpCompactionVersionSatisfied(const AppState& app, const IProviderRuntime& runtime, std::string_view provider_id, std::string_view execution_host_id);
+/// Requests native manual compaction. Instructions reach only runtimes that accept them; instructions_used reports whether they will.
+bool CompactAcpSession(AppState& app, const std::string& chat_id, std::string* error_out = nullptr, const std::string& instructions = {}, bool* instructions_used = nullptr);
 /// <summary>Adds one agent-published HTML view to the live turn's assistant message; false when the id already exists.</summary>
 bool AppendAcpHtmlView(AcpSessionState& session, ChatSession& chat, const std::string& view_id, const std::string& title, const std::string& html);
 /// <summary>Removes an HTML view whose publication could not be durably recorded.</summary>
@@ -165,6 +168,8 @@ bool PrepareCodexThreadForRuntimeLaunch(AppState& app, const ChatSession& chat, 
 std::size_t RestoreRemoteAcpSessionsAfterRestart(AppState& app, bool initial_restore = true);
 std::size_t RetryPendingRemoteAcpSessionHydration(AppState& app);
 bool FlushPendingChatSaves(AppState& app, bool force = false);
+/// <summary>Returns every live chat-save worker to its starting priority; call before blocking or spinning on chat saves (#526, #647).</summary>
+void RaiseAllChatSaveWorkersForBarrier(AppState& app) noexcept;
 /// <summary>After normal hydration, settle only proven stopped direct receipts without replay.</summary>
 bool SettleStoppedDirectAcpAdmissions(AppState& app, ChatSession& chat);
 /// Full-primary publication facts are distinct from current caller eligibility.

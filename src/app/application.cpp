@@ -44,6 +44,7 @@
 #include "common/paths/app_paths.h"
 #include "common/paths/path_utils.h"
 #include "common/paths/workspace_root.h"
+#include "common/config/custom_icon.h"
 #include "common/chat/chat_branching.h"
 #include "common/chat/chat_folder_store.h"
 #include "common/chat/chat_repository.h"
@@ -267,15 +268,15 @@ namespace
 	class AppApplySeedMarkdownTask : public CefTask
 	{
 	  public:
-		AppApplySeedMarkdownTask(Application* app, std::shared_ptr<std::atomic_bool> lifetime_token, bool seeded, std::string error, std::vector<ShellAction> shell_actions, std::string destination_directory)
-		    : m_app(app), m_lifetime_token(std::move(lifetime_token)), m_seeded(seeded), m_error(std::move(error)), m_shell_actions(std::move(shell_actions)), m_destination_directory(std::move(destination_directory))
+		AppApplySeedMarkdownTask(Application* app, std::shared_ptr<std::atomic_bool> lifetime_token, bool seeded, std::string error, std::vector<ShellAction> shell_actions, bool shell_actions_unreadable, std::string destination_directory)
+		    : m_app(app), m_lifetime_token(std::move(lifetime_token)), m_seeded(seeded), m_error(std::move(error)), m_shell_actions(std::move(shell_actions)), m_shell_actions_unreadable(shell_actions_unreadable), m_destination_directory(std::move(destination_directory))
 		{
 		}
 		void Execute() override
 		{
 			if (m_app != nullptr && m_lifetime_token != nullptr && m_lifetime_token->load())
 			{
-				m_app->ApplyBundledMarkdownStoreSeed(m_seeded, std::move(m_error), std::move(m_shell_actions), m_destination_directory);
+				m_app->ApplyBundledMarkdownStoreSeed(m_seeded, std::move(m_error), std::move(m_shell_actions), m_shell_actions_unreadable, m_destination_directory);
 			}
 		}
 
@@ -285,6 +286,7 @@ namespace
 		bool m_seeded;
 		std::string m_error;
 		std::vector<ShellAction> m_shell_actions;
+		bool m_shell_actions_unreadable;
 		std::string m_destination_directory;
 		IMPLEMENT_REFCOUNTING(AppApplySeedMarkdownTask);
 	};
@@ -304,9 +306,10 @@ namespace
 				const std::filesystem::path destination_root = MarkdownStoreService::NormalizeRoot(m_destination_directory);
 				const bool seeded = MarkdownStoreService::SeedBundledEntries(m_bundled_root, destination_root, &error);
 				if (!m_lifetime_token->load()) return;
-				std::vector<ShellAction> shell_actions = ShellActionService::Load(m_data_root, seeded ? destination_root : std::filesystem::path{});
+				bool shell_actions_unreadable = false;
+				std::vector<ShellAction> shell_actions = ShellActionService::Load(m_data_root, seeded ? destination_root : std::filesystem::path{}, nullptr, &shell_actions_unreadable);
 				if (!m_lifetime_token->load()) return;
-				CefPostTask(TID_UI, new AppApplySeedMarkdownTask(m_app, m_lifetime_token, seeded, std::move(error), std::move(shell_actions), m_destination_directory));
+				CefPostTask(TID_UI, new AppApplySeedMarkdownTask(m_app, m_lifetime_token, seeded, std::move(error), std::move(shell_actions), shell_actions_unreadable, m_destination_directory));
 			}
 		}
 
@@ -393,12 +396,13 @@ bool Application::PollWorkspaceAvailability()
 	{
 		try
 		{
-			for (const ChatFolder& result : m_workspaceAvailabilityScan.get())
+			for (ChatFolder& result : m_workspaceAvailabilityScan.get())
 			{
 				const std::vector<ChatFolder>::iterator current = std::ranges::find(m_app.folders, result.id, &ChatFolder::id);
 				if (current == m_app.folders.end() || current->directory != result.directory || current->execution_host_id != result.execution_host_id) continue;
-				changed = changed || current->directory_missing != result.directory_missing;
+				changed = changed || current->directory_missing != result.directory_missing || current->project_icon != result.project_icon;
 				current->directory_missing = result.directory_missing;
+				current->project_icon = std::move(result.project_icon);
 				current->availability_directory = result.directory;
 				current->availability_host_id = result.execution_host_id;
 			}
@@ -412,10 +416,18 @@ bool Application::PollWorkspaceAvailability()
 			for (ChatFolder& folder : folders)
 			{
 				folder.directory_missing = false;
+				folder.project_icon.clear();
 				if (!folder.directory.empty() && uam::paths::IsControllerLocalWorkspace(folder))
 				{
 					const fs::path directory = uam::paths::PathFromUtf8(folder.directory);
 					folder.directory_missing = PlatformServicesFactory::Instance().path_service.CanProbeDirectoryWithoutPrompt(directory) && !uam::paths::IsDirectoryNoThrow(directory);
+#if defined(_WIN32) || defined(__APPLE__)
+					// Read even under Documents/Desktop/Downloads: agents already run in these user-chosen folders,
+					// so macOS asks for that access once anyway. Kept off the UI thread because slow mounts can block.
+					// Probed even with a custom icon, so removing it shows the project icon at once; the serializer hides it meanwhile.
+					if (!folder.directory_missing)
+						folder.project_icon = uam::icons::ProjectIconDataUrl(directory);
+#endif
 				}
 			}
 			return folders;
@@ -673,7 +685,7 @@ void Application::OnRuntimeReady(CefRefPtr<CefBrowser> browser)
 		    !m_markdownSeedWorker->GetTaskRunner()->PostTask(
 		        new AppSeedMarkdownTask(this, m_lifetimeToken, m_app.data_root, std::move(m_pendingBundledMarkdownRoot), std::move(m_pendingMarkdownStoreDirectory))))
 		{
-			ApplyBundledMarkdownStoreSeed(false, "Background worker is unavailable.", {}, destination_directory);
+			ApplyBundledMarkdownStoreSeed(false, "Background worker is unavailable.", {}, true, destination_directory);
 		}
 	}
 	// Both desktop and management mode share state polling and persistence.
@@ -729,7 +741,7 @@ void Application::OnManagementReady()
 	OnRuntimeReady(nullptr);
 }
 
-void Application::ApplyBundledMarkdownStoreSeed(bool seeded, std::string error, std::vector<ShellAction> shell_actions, const std::string& destination_directory)
+void Application::ApplyBundledMarkdownStoreSeed(bool seeded, std::string error, std::vector<ShellAction> shell_actions, bool shell_actions_unreadable, const std::string& destination_directory)
 {
 	CEF_REQUIRE_UI_THREAD();
 	if (m_done || m_app.settings.markdown_store_directory != destination_directory)
@@ -744,6 +756,12 @@ void Application::ApplyBundledMarkdownStoreSeed(bool seeded, std::string error, 
 	else if (m_app.shell_actions.empty())
 	{
 		m_app.shell_actions = std::move(shell_actions);
+		// A later read can succeed where the startup read did not; the list on screen then matches the file again.
+		if (m_app.shell_actions_unreadable && !shell_actions_unreadable)
+		{
+			m_app.shell_actions_unreadable = false;
+			if (m_app.shell_action_notification == ShellActionService::kUnreadableWarning) m_app.shell_action_notification.clear();
+		}
 	}
 	// While the chat list loads, the waiting initial-state request carries this change instead.
 	if (m_browser && !m_app.startup_state_loading)
@@ -919,7 +937,14 @@ bool Application::InitializeState()
 	m_app.pending_legacy_data_roots = uam::LocalChatBundleService::PendingLegacyDataRoots(
 	    m_app.data_root, m_platformServices->path_service.DefaultDataRootPath(), executable_path);
 	m_app.folders = ChatFolderStore::Load(m_app.data_root);
-	m_app.shell_actions = ShellActionService::Load(m_app.data_root, {});
+	std::string shell_action_warning;
+	m_app.shell_actions = ShellActionService::Load(m_app.data_root, {}, &shell_action_warning, &m_app.shell_actions_unreadable);
+	if (!shell_action_warning.empty())
+	{
+		// The warning names no action, label or path.
+		m_app.shell_action_notification = shell_action_warning;
+		uam::diagnostics::Write("Shell actions: " + shell_action_warning);
+	}
 
 	const std::chrono::steady_clock::time_point folders_finished = std::chrono::steady_clock::now();
 	// Initialize the provider model catalog service (async refresh for OpenCode Zen models).
@@ -1019,6 +1044,8 @@ void Application::FinishStartupState(std::vector<ChatSession> chats, std::string
 		if (!chat.temporary_parent_chat_id.empty())
 			(void)uam::RequestTemporarySideChatCleanup(m_app, chat.id);
 	uam::MigrateWorkspaceFolderOwnership(m_app);
+	// Once per start, after the split above has had its chance to add any destination it saved earlier.
+	(void)uam::LogDanglingWorkspaceFolderReferences(m_app);
 
 	if (uam::MigrateExecutionRoutingIdentities(m_app)) (void)PersistenceCoordinator().SaveSettings(m_app);
 	(void)uam::RestoreExecutionRoutingReservations(m_app);

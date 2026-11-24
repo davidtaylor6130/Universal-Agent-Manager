@@ -19,11 +19,20 @@ if(UAM_ENABLE_MOBILE_COMPANION AND uam_caddy_SOURCE_DIR)
 endif()
 file(GENERATE OUTPUT "${CMAKE_BINARY_DIR}/package-inputs-$<CONFIG>.txt" CONTENT "${UAM_PACKAGE_INPUTS}\n")
 # A generated translation unit also invalidates Visual Studio builds, which ignore LINK_DEPENDS.
-add_custom_command(OUTPUT "${CMAKE_BINARY_DIR}/uam-package-inputs-$<CONFIG>.cpp"
-  COMMAND "${CMAKE_COMMAND}" -E touch "${CMAKE_BINARY_DIR}/uam-package-inputs-$<CONFIG>.cpp"
+# CMake 4.5 resolves a $<CONFIG> source path with an empty configuration on single-config generators,
+# so those generators name the per-configuration files with CMAKE_BUILD_TYPE instead.
+get_property(UAM_MULTI_CONFIG GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
+if(UAM_MULTI_CONFIG)
+  set(UAM_PACKAGE_INPUTS_CONFIG "$<CONFIG>")
+else()
+  set(UAM_PACKAGE_INPUTS_CONFIG "${CMAKE_BUILD_TYPE}")
+endif()
+set(UAM_PACKAGE_INPUTS_SOURCE "${CMAKE_BINARY_DIR}/uam-package-inputs-${UAM_PACKAGE_INPUTS_CONFIG}.cpp")
+add_custom_command(OUTPUT "${UAM_PACKAGE_INPUTS_SOURCE}"
+  COMMAND "${CMAKE_COMMAND}" -E touch "${UAM_PACKAGE_INPUTS_SOURCE}"
   DEPENDS ${UAM_PACKAGE_INPUTS} "${UAM_UI_DIST_SRC}/index.html"
-    "${CMAKE_BINARY_DIR}/package-inputs-$<CONFIG>.txt" "${CMAKE_CURRENT_LIST_FILE}"
+    "${CMAKE_BINARY_DIR}/package-inputs-${UAM_PACKAGE_INPUTS_CONFIG}.txt" "${CMAKE_CURRENT_LIST_FILE}"
     "${CMAKE_CURRENT_LIST_DIR}/copy_ui_dist.cmake" "${CMAKE_CURRENT_LIST_DIR}/Info.plist.in"
   COMMENT "Refreshing packaged resource dependencies"
   VERBATIM)
-target_sources(universal_agent_manager PRIVATE "${CMAKE_BINARY_DIR}/uam-package-inputs-$<CONFIG>.cpp")
+target_sources(universal_agent_manager PRIVATE "${UAM_PACKAGE_INPUTS_SOURCE}")
