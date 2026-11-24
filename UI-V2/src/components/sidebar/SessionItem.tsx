@@ -36,7 +36,7 @@ import { runForEach, type BulkTarget } from '../../utils/runForEach'
 import { displayedChatStatus, type DisplayedChatStatus } from './chatSearch'
 import { CustomIcon, useCustomIconPicker } from '../shared/CustomIcon'
 import { resolveCustomIcon } from '../../types/customIcon'
-import { reportAppFailure } from '../../utils/appFailure'
+import { failureDetail, reportAppFailure, reportAppNotice } from '../../utils/appFailure'
 import { sidebarIconPaint } from './sidebarIconPaint'
 import { ATTENTION_LABELS, chatRowStatusText } from './chatRowStatus'
 import type { CustomIcon as CustomIconValue } from '../../types/customIcon'
@@ -457,22 +457,24 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
   ]
   const [generatingTitle, setGeneratingTitle] = useState(false)
   const [cancellingTitle, setCancellingTitle] = useState(false)
-  const [titleFeedback, setTitleFeedback] = useState<{ error: boolean; text: string } | null>(null)
   const titleRequestPending = useRef(false)
+  const titleCancelled = useRef(false)
   const regenerateTitle = async () => {
     if (titleRequestPending.current) return
-    if (!isCefContext()) { setTitleFeedback({ error: true, text: 'Title generation is available in the desktop app.' }); return }
+    if (!isCefContext()) { reportAppNotice('Title generation is available in the desktop app.', 'info'); return }
     titleRequestPending.current = true
+    titleCancelled.current = false
     setGeneratingTitle(true)
-    setTitleFeedback(null)
     try {
       const response = await sendToCEF<{ chatId: string; title: string }>({ action: 'regenerateChatTitle', payload: { chatId: sessionId } }, false)
-      if (!response.ok) throw new Error(response.error || 'Could not generate a title. Try again.')
+      if (!response.ok) throw new Error(response.error || '')
       if (response.data?.chatId !== sessionId || typeof response.data.title !== 'string' || !response.data.title.trim() || new TextEncoder().encode(response.data.title).length > 240 || /[\x00-\x1f\x7f]/.test(response.data.title)) throw new Error('The title worker returned an invalid response.')
       // The native state push owns the rename, including concurrent-change checks.
-      setTitleFeedback({ error: false, text: 'Chat title updated.' })
+      reportAppNotice('Chat title updated.', 'success')
     } catch (error) {
-      setTitleFeedback({ error: true, text: error instanceof Error ? error.message : 'Could not generate a title. Try again.' })
+      // A cancel the user asked for is not a failure.
+      if (titleCancelled.current) reportAppNotice('Title generation cancelled.', 'info')
+      else reportAppFailure('Could not generate a title.', failureDetail(error, 'Try again.'))
     } finally {
       titleRequestPending.current = false
       setGeneratingTitle(false)
@@ -483,11 +485,14 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
     if (cancellingTitle) return
     setCancellingTitle(true)
     try {
+      // Set before the request: the generation's own "cancelled" reply can arrive before this one.
+      titleCancelled.current = true
       const response = await sendToCEF({ action: 'cancelChatTitle', payload: { chatId: sessionId } }, false)
-      if (!response.ok) throw new Error(response.error || 'Could not cancel title generation.')
+      if (!response.ok) throw new Error(response.error || '')
     } catch (error) {
+      titleCancelled.current = false
       setCancellingTitle(false)
-      setTitleFeedback({ error: true, text: error instanceof Error ? error.message : 'Could not cancel title generation.' })
+      reportAppFailure('Could not cancel title generation.', failureDetail(error, 'Try again.'))
     }
   }
   const showMenu = menuPos !== null
@@ -1018,9 +1023,6 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
             label={generatingTitle ? 'Generating title…' : 'Regenerate title'} onSelect={() => { void regenerateTitle() }} />
           {generatingTitle && <MenuItem className="uam-sb-menu-item" nativeDisabled disabled={cancellingTitle}
             label={cancellingTitle ? 'Cancelling…' : 'Cancel title generation'} onSelect={() => { void cancelTitle() }} />}
-          {titleFeedback && <p role={titleFeedback.error ? 'alert' : 'status'} className="flex items-center gap-1.5 px-3 py-1 text-xs" style={{ color: titleFeedback.error ? 'var(--error)' : 'var(--text-2)' }}>
-            {titleFeedback.error ? <CircleAlert size={12} aria-hidden /> : <Check size={12} aria-hidden />}{titleFeedback.text}
-          </p>}
           <MenuItem className="uam-sb-menu-item" icon={<Pin size={13} fill={isPinned ? 'currentColor' : 'none'} aria-hidden />} label={isPinned ? 'Unpin chat' : 'Pin chat'}
             onSelect={() => { setMenuPos(null); void setSessionPinned(sessionId, !isPinned) }} />
           <MenuItem className="uam-sb-menu-item" icon={<SmilePlus size={13} aria-hidden />} label="Icon…"

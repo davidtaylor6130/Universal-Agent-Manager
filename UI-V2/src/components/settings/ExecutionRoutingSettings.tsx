@@ -2,7 +2,7 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 're
 import { ArrowRight, LoaderCircle, Pencil, Plus, RotateCcw, Unlink } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { boundedRead, sendToCEF, type CEFResponse } from '../../ipc/cefBridge'
-import { routingConfigurationError, routingFolderRows, sanitizeRepositoryMatches, shortRepositoryIdentity, type ExecutionRoutingSettings as RoutingSettings, type RoutingFolderGroup, type RoutingHostPolicy, type RoutingWorkspaceMapping, type WorkspaceRepositoryMatches } from '../../types/executionRouting'
+import { NO_EXECUTION_ROUTING, routingConfigurationError, routingFolderRows, sanitizeRepositoryMatches, shortRepositoryIdentity, type ExecutionRoutingSettings as RoutingSettings, type RoutingFolderGroup, type RoutingHostPolicy, type RoutingWorkspaceMapping, type WorkspaceRepositoryMatches } from '../../types/executionRouting'
 import type { ExecutionHost, Folder } from '../../types/session'
 import { Button, Disclosure, IconButton, Presence, Switch, type StatusTone, Reveal } from '../ui'
 import { NumberField } from './NumberField'
@@ -42,7 +42,8 @@ function savePayload(settings: RoutingSettings) {
  */
 export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRoutingSettingsHandle, { variant: 'dialog' | 'page'; onClose?: () => void; onBusyChange?: (busy: boolean) => void; onAddComputer?: () => void }>(
   function ExecutionRoutingSettings({ variant, onClose, onBusyChange, onAddComputer }, ref) {
-    const saved = useAppStore((state) => state.executionRouting)
+    // This page exists only in builds with SSH, where the store always holds routing settings.
+    const saved = useAppStore((state) => state.executionRouting) ?? NO_EXECUTION_ROUTING
     const hosts = useAppStore((state) => state.executionHosts)
     const folders = useAppStore((state) => state.folders)
     const providers = useAppStore((state) => state.providers)
@@ -129,18 +130,18 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
     async function submit(next?: () => void) {
       if (busyRef.current || !dirty) return
       const validation = routingConfigurationError(draft, hosts, folders)
-      if (validation) return
-      const beforeSave = useAppStore.getState().executionRouting
+      if (validation || !save) return
+      const beforeSave = useAppStore.getState().executionRouting ?? NO_EXECUTION_ROUTING
       busyRef.current = true; setBusy(true); onBusyChange?.(true)
       try {
         await save(savePayload(draft))
         // Keep the acknowledged confirmation intent while native replaces it with connection identities.
-        savedRef.current = useAppStore.getState().executionRouting
+        savedRef.current = useAppStore.getState().executionRouting ?? NO_EXECUTION_ROUTING
         setBaseline(draft)
         setExit(null); next?.()
       }
       catch (failure) {
-        const currentSaved = useAppStore.getState().executionRouting
+        const currentSaved = useAppStore.getState().executionRouting ?? NO_EXECUTION_ROUTING
         if (JSON.stringify(currentSaved) !== JSON.stringify(beforeSave)) setBaseline(currentSaved)
         reportAppFailure('Routing settings could not be saved.', failure instanceof Error ? failure.message : 'Try again.')
       }

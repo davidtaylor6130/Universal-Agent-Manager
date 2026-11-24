@@ -16,12 +16,15 @@
 #include <stop_token>
 #include <string>
 #include <string_view>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
 namespace uam
 {
 	class PreparedNativeMediaChatSave;
+	class ImportedWorkspaceFolderIndex;
 }
 
 namespace uam::remote { class RunnerClient; }
@@ -195,12 +198,31 @@ class ChatHistorySyncService
 	LocalHistoryDiscovery DiscoverRemoteProviderChatsForFolder(const ChatFolder& folder, const ExecutionHost& host, const ProviderProfile* open_code_profile, std::stop_token stop_token = {}, RemoteHistoryScanContext* scan = nullptr) const;
 	/// Read provider transcripts without accessing live app state or writing local history.
 	LocalHistoryDiscovery DiscoverProviderChatsForFolder(const ChatFolder& folder, const ProviderProfile* open_code_profile = nullptr, std::stop_token stop_token = {}, std::size_t open_code_scan_offset = 0, bool open_code_only = false, std::optional<std::size_t> open_code_remaining = {}, const std::string& open_code_list_fingerprint = {}, const std::string& provider_filter = {}, const std::string& native_session_filter = {}, const std::filesystem::path& native_history_root = {}) const;
-	/// <summary>Resolves existing workspace ownership without creating folders.</summary>
-	const ChatFolder* StartupImportWorkspaceOwner(const uam::AppState& app, const ChatSession& chat) const;
-	/// <summary>Finds or plans (unsaved, in plan.folders) a workspace for an unmatched local history whose absolute directory exists; remote and other paths return null.</summary>
-	const ChatFolder* PlanImportWorkspace(uam::AppState& plan, const ChatSession& chat) const;
-	/// <summary>Removes owned, declined and duplicate candidates; explicit local review may retain unmatched absolute workspaces.</summary>
-	bool FilterStartupImportCandidates(const uam::AppState& app, LocalHistoryDiscovery& discovery, std::string* error_out = nullptr, bool include_unregistered_local = false) const;
+	/// <summary>Resolves existing workspace ownership without creating folders. A local_folders index of app.folders resolves
+	/// each registered folder once for a whole pass; an index of another folder list is ignored.</summary>
+	const ChatFolder* StartupImportWorkspaceOwner(const uam::AppState& app, const ChatSession& chat, const uam::ImportedWorkspaceFolderIndex* local_folders = nullptr) const;
+	/// <summary>Finds or plans (unsaved, in plan.folders) a workspace for an unmatched local history whose absolute directory exists; remote and other paths return null.
+	/// An index of plan.folders is kept current as planned folders are appended.</summary>
+	const ChatFolder* PlanImportWorkspace(uam::AppState& plan, const ChatSession& chat, uam::ImportedWorkspaceFolderIndex* local_folders = nullptr) const;
+	/// <summary>What a startup filter pass may share or take from a snapshot instead of the live app.</summary>
+	struct StartupImportFilterContext
+	{
+		/// <summary>Chats with a live terminal or running ACP session when the snapshot was taken; null reads the live app.</summary>
+		const std::unordered_set<std::string>* live_chat_ids = nullptr;
+		/// <summary>Resolved local workspaces shared across the pass (chat_identity::NativeWorkspaceCache).</summary>
+		std::unordered_map<std::string, std::string>* workspaces = nullptr;
+		/// <summary>An index of the filtered app's folders, shared across the pass.</summary>
+		const uam::ImportedWorkspaceFolderIndex* local_folders = nullptr;
+	};
+	/// <summary>Chat IDs with a live terminal or running ACP session, for a StartupImportFilterContext snapshot. Reads memory only.</summary>
+	std::unordered_set<std::string> StartupImportLiveChatIds(const uam::AppState& app) const;
+	/// <summary>FilterStartupImportCandidates without changing anything: for each chat, in order, the owner folder ID it would
+	/// keep ("" for a retained unregistered local workspace), or nullopt when the filter would remove it.</summary>
+	bool ClassifyStartupImportCandidates(const uam::AppState& app, const std::vector<const ChatSession*>& chats, std::vector<std::optional<std::string>>& owners,
+	    std::string* error_out = nullptr, bool include_unregistered_local = false, const StartupImportFilterContext* context = nullptr) const;
+	/// <summary>Removes owned, declined and duplicate candidates; explicit local review may retain unmatched absolute workspaces.
+	/// Each registered folder and distinct workspace is resolved once per call (or once per shared context).</summary>
+	bool FilterStartupImportCandidates(const uam::AppState& app, LocalHistoryDiscovery& discovery, std::string* error_out = nullptr, bool include_unregistered_local = false, const StartupImportFilterContext* context = nullptr) const;
 	/// Revalidate and merge a completed scan on the app thread.
 	ImportResult ImportDiscoveredProviderChatsForFolder(uam::AppState& app, const ChatFolder& folder, LocalHistoryDiscovery discovery, bool sidebar_is_complete = false) const;
 	ImportResult ImportDiscoveredProviderChatsBatch(uam::AppState& app, const ChatFolder& folder, LocalHistoryDiscovery& discovery, std::size_t max_chats = 8, ImportPolicy policy = ImportPolicy::ExplicitImport) const;
