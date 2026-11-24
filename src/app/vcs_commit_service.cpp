@@ -1,6 +1,7 @@
 #include "app/vcs_commit_service.h"
 
 #include "app/vcs_provider.h"
+#include "app/git_worktree_service.h"
 #include "app/svn_history.h"
 #include "app/provider_resolution_service.h"
 #include "app/chat_domain_service.h"
@@ -13,6 +14,7 @@
 #include "common/provider/provider_runtime.h"
 #include "common/provider/provider_text_worker.h"
 #include "common/utils/io_utils.h"
+#include "common/utils/diagnostic_log.h"
 #include "common/utils/hash_utils.h"
 #include "common/utils/nlohmann_json_utils.h"
 #include "common/utils/parse_utils.h"
@@ -238,6 +240,11 @@ namespace uam
 			    std::filesystem::path(path), nullptr);
 		}
 
+		std::string HostId() const { return m_host != nullptr ? m_host->id : std::string("unknown"); }
+
+		/// <summary>False after a transport failure; a runner that merely refused a command stays connected.</summary>
+		bool Connected() const { return m_client != nullptr && m_client->IsConnected(); }
+
 		std::string NullDevice() const
 		{
 			return m_host != nullptr &&
@@ -254,6 +261,23 @@ namespace uam
 
 	namespace
 	{
+		/// <summary>None when the remote command ran to completion or the runner refused it (for example a missing
+		/// executable) over a live connection. A lost connection outranks a timeout, which outranks None.</summary>
+		void NoteRemoteProbeFailure(const RemoteVcsContext& context, const ProcessExecutionResult& result, RemoteProbeFailure& probe_failure)
+		{
+			RemoteProbeFailure observed = RemoteProbeFailure::None;
+			if (!context.Connected() && !result.ok) observed = RemoteProbeFailure::LostConnection;
+			else if (result.timed_out) observed = RemoteProbeFailure::TimedOut;
+			if (static_cast<int>(observed) > static_cast<int>(probe_failure)) probe_failure = observed;
+		}
+
+		std::string RemoteProbeFailureMessage(const RemoteProbeFailure failure)
+		{
+			return failure == RemoteProbeFailure::TimedOut
+			    ? "Reading the repository on the remote host timed out."
+			    : "Lost the connection to the remote host while reading the repository.";
+		}
+
 		bool RemoteOutput(RemoteVcsContext& context, const std::string& cwd,
 		                  const std::vector<std::string>& argv, std::string* output_out,
 		                  std::string* error_out = nullptr, const bool raw = false)
@@ -1750,9 +1774,16 @@ namespace uam
 				return true;
 			}
 
-			bool DetectRemote(RemoteVcsContext& context, const std::string& workspace, std::string& root) const override
+			bool DetectRemote(RemoteVcsContext& context, const std::string& workspace, std::string& root, RemoteProbeFailure& probe_failure) const override
 			{
-				return RemoteOutput(context, workspace, {"git", "rev-parse", "--show-toplevel"}, &root);
+				const ProcessExecutionResult probe = context.Run(workspace, {"git", "rev-parse", "--show-toplevel"});
+				if (!CommandSucceeded(probe))
+				{
+					NoteRemoteProbeFailure(context, probe, probe_failure);
+					return false;
+				}
+				root = uam::strings::Trim(probe.output);
+				return true;
 			}
 
 			void PopulateLocalStatus(const VcsStatusRequest& request, const std::filesystem::path& workspace, const std::filesystem::path& root, VcsCommitStatus& status) const override
@@ -1997,9 +2028,12 @@ namespace uam
 				return SvnAvailable(workspace, validate);
 			}
 
-			bool DetectRemote(RemoteVcsContext& context, const std::string& workspace, std::string&) const override
+			bool DetectRemote(RemoteVcsContext& context, const std::string& workspace, std::string&, RemoteProbeFailure& probe_failure) const override
 			{
-				return CommandSucceeded(RemoteSvnRunner(context, workspace)({"info", "--non-interactive", "--show-item", "revision", "--", "."}));
+				const ProcessExecutionResult probe = RemoteSvnRunner(context, workspace)({"info", "--non-interactive", "--show-item", "revision", "--", "."});
+				if (CommandSucceeded(probe)) return true;
+				NoteRemoteProbeFailure(context, probe, probe_failure);
+				return false;
 			}
 
 			void PopulateLocalStatus(const VcsStatusRequest& request, const std::filesystem::path& workspace, const std::filesystem::path&, VcsCommitStatus& status) const override
@@ -2085,14 +2119,28 @@ namespace uam
 			if (!context.Ready(&status.error)) return status;
 
 			std::map<VcsType, std::string> roots;
+			RemoteProbeFailure probe_failure = RemoteProbeFailure::None;
 			for (const VcsProvider* provider : VcsProviders())
 			{
 				std::string root;
-				if (!provider->Enabled(settings) || !provider->DetectRemote(context, status.workspace_directory, root)) continue;
+				if (!provider->Enabled(settings) || !provider->DetectRemote(context, status.workspace_directory, root, probe_failure)) continue;
 				status.vcs_types.push_back(provider->Type());
 				roots[provider->Type()] = std::move(root);
 			}
 			status.available = !status.vcs_types.empty();
+			// A probe that could not answer says nothing about the workspace. Report it instead of "no repository", and
+			// also when the requested system is the one that could not be read, rather than falling back to another.
+			if (probe_failure != RemoteProbeFailure::None &&
+			    std::ranges::find(status.vcs_types, requested_type) == status.vcs_types.end())
+			{
+				status.available = false;
+				status.vcs_types.clear();
+				status.error = RemoteProbeFailureMessage(probe_failure);
+				// One line per failed read, by host and kind. Raw runner or tool output can carry paths, so it is not logged.
+				diagnostics::Write("[vcs] remote repository detection on host " + context.HostId() + " failed: " +
+				                   (probe_failure == RemoteProbeFailure::TimedOut ? "timed out" : "connection lost"));
+				return status;
+			}
 			if (!status.available)
 			{
 				status.warning = "No Git or SVN repository detected for this remote workspace.";
@@ -2219,6 +2267,22 @@ namespace uam
 
 	namespace
 	{
+		/// A local chat isolated in a UAM-owned snapshot: the folder it was copied from, and whether it is an SVN working copy.
+		struct LocalSnapshotSource
+		{
+			std::filesystem::path directory;
+			bool svn = false;
+		};
+
+		std::optional<LocalSnapshotSource> FindLocalSnapshotSource(const AppState& app, const ChatSession& chat)
+		{
+			LocalSnapshotSource found;
+			const LocalSnapshotSourceKind kind = DescribeLocalSnapshotSource(app, chat, &found.directory);
+			if (kind == LocalSnapshotSourceKind::None) return std::nullopt;
+			found.svn = kind == LocalSnapshotSourceKind::Svn;
+			return found;
+		}
+
 		/// Gate shared by History, RevisionDiff, Update and Origin: the system's switch, then its declared capability.
 		std::string HistoryGateError(const VcsProvider& provider, const AppSettings& settings, const vcs::VcsCapability capability)
 		{
@@ -2235,7 +2299,9 @@ namespace uam
 		{
 			if (uam::paths::IsControllerLocalWorkspace(chat))
 			{
-				const std::filesystem::path workspace = uam::paths::ResolveWorkspaceRootPath(app, chat);
+				// A local snapshot's copy has no SVN metadata: history and update read and update the source working copy.
+				const std::optional<LocalSnapshotSource> snapshot = FindLocalSnapshotSource(app, chat);
+				const std::filesystem::path workspace = snapshot && snapshot->svn ? snapshot->directory : uam::paths::ResolveWorkspaceRootPath(app, chat);
 				return operation([&](const std::vector<std::string>& args, const int timeout_ms) { return RunSvn(workspace, args, timeout_ms, stop); });
 			}
 			RemoteVcsContext context(app, chat);
@@ -2284,6 +2350,12 @@ namespace uam
 		VcsUpdateResult gated;
 		gated.error = HistoryGateError(provider, app.settings, vcs::VcsCapability::Update);
 		if (!gated.error.empty()) return gated;
+		// An isolated local chat's copy has no SVN metadata; only a snapshot of an SVN working copy has one to update.
+		if (type == VcsType::Svn && uam::paths::IsControllerLocalWorkspace(chat) && uam::paths::IsGitWorktreeIsolated(chat))
+		{
+			const std::optional<LocalSnapshotSource> snapshot = FindLocalSnapshotSource(app, chat);
+			if (!snapshot || !snapshot->svn) { gated.error = "This chat's isolated workspace is not a copy of an SVN working copy."; return gated; }
+		}
 		return WithWorkspaceRunner(app, chat, stop, [&](const VcsCommandRunner& run) { return provider.Update(run); });
 	}
 
@@ -2558,6 +2630,16 @@ namespace uam
 		status.line_stats_ready = include_line_stats;
 		const std::filesystem::path workspace = uam::paths::ResolveWorkspaceRootPath(app, chat);
 		status.workspace_directory = uam::paths::Utf8PathString(workspace);
+		if (const std::optional<LocalSnapshotSource> snapshot = FindLocalSnapshotSource(app, chat))
+		{
+			status.snapshot_source_kind = snapshot->svn ? "svn" : "folder";
+			status.snapshot_source_directory = uam::paths::Utf8PathString(snapshot->directory);
+			const VcsProvider& svn = VcsProviderFor(VcsType::Svn);
+			if (snapshot->svn && svn.Enabled(app.settings))
+				for (const vcs::VcsCapability capability : svn.Declaration().capabilities)
+					if (capability == vcs::VcsCapability::History || capability == vcs::VcsCapability::Update || capability == vcs::VcsCapability::OriginComparison)
+						status.snapshot_source_capabilities.emplace_back(vcs::VcsCapabilityId(capability));
+		}
 		std::map<VcsType, std::filesystem::path> roots;
 
 		PopulateAvailableVcsTypes(status, workspace, roots, context_only, app.settings);

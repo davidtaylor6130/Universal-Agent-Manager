@@ -53,6 +53,12 @@ namespace uam
 		std::string error;
 		/// The chat comparison has no usable baseline: Retry cannot help, unlike any other read failure in `error`.
 		bool baseline_unavailable = false;
+		/// Set when the workspace is a UAM local snapshot: a hidden Git copy of a plain folder (`folder`) or an SVN working
+		/// copy (`svn`). Commits here stay in the copy; SVN history and update run against `snapshot_source_directory`.
+		std::string snapshot_source_kind;
+		std::string snapshot_source_directory;
+		/// The source system's read and update capabilities offered for that source (`history`, `update`, `originComparison`).
+		std::vector<std::string> snapshot_source_capabilities;
 	};
 
 	struct VcsCommitResult

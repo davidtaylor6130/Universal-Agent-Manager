@@ -248,7 +248,7 @@ smoke test for every installed provider.
 
 Antigravity uses `--input-format stream-json --output-format stream-json`, not ACP. UAM captures native conversation identity, streams text and tool results, persists history and resumes with `--conversation`. Cancellation stops the owned process because this protocol does not accept control RPC envelopes.
 
-Managed instructions and MCP servers load from a private `--add-dir` directory, preserving the selected working directory and existing user configuration. Native policy owns permission decisions. Headless MCP discovery can succeed while tool calls remain denied; UAM does not substitute its Claude permission callback or add permission bypass flags. Native history import, text workers and `/compact` remain unavailable.
+Managed instructions and MCP servers load from a private `--add-dir` directory, preserving the selected working directory and existing user configuration. Native policy owns permission decisions. Headless MCP discovery can succeed while tool calls remain denied; UAM does not substitute its Claude permission callback or add permission bypass flags. Text workers remain unavailable. Manual compaction is covered by the [manual compaction check](architecture/provider-sessions.md#gemini-and-antigravity-manual-compaction-checks).
 
 The implementation has captured-event regression coverage. Live text, saved-ID resume, private instructions and isolated MCP discovery were probed with `agy` 1.3.1 on macOS. Windows and SSH runtime acceptance require separate evidence.
 
