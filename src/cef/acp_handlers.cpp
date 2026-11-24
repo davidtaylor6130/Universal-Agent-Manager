@@ -467,8 +467,14 @@ namespace
 		}
 		if (!result.error.empty())
 		{
+			// RemoveFile reconnects after a dropped connection. A host it cannot reach again keeps the rest for the
+			// chat's delete sweep (each was staged above) rather than waiting out a reconnect per file.
 			for (std::size_t cleanup = 0; cleanup < committed.size(); ++cleanup)
-				(void)client.RemoveFile("cleanup-" + std::to_string(cleanup), committed[cleanup]);
+			{
+				if (client.RemoveFile("cleanup-" + std::to_string(cleanup), committed[cleanup]) || client.IsConnected()) continue;
+				uam::diagnostics::Write("[stageChatAttachments] Remote attachment cleanup stopped: host unreachable, copies_left=" + std::to_string(committed.size() - cleanup));
+				break;
+			}
 			return result;
 		}
 		result.ok = true;
@@ -478,14 +484,22 @@ namespace
 
 void UamQueryHandler::HandleCompactAcpSession(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
+	// Typed `/compact <instructions>` arrives here too; a non-string value is refused rather than dropped.
+	const auto instructions = payload.find("instructions");
+	if (instructions != payload.end() && !instructions->is_string() && !instructions->is_null())
+	{
+		cb->Failure(400, "Compaction instructions must be text.");
+		return;
+	}
 	std::string error;
-	if (!uam::CompactAcpSession(m_app, payload.value("chatId", ""), &error))
+	bool instructions_used = false;
+	if (!uam::CompactAcpSession(m_app, payload.value("chatId", ""), &error, instructions != payload.end() && instructions->is_string() ? instructions->get<std::string>() : std::string{}, &instructions_used))
 	{
 		cb->Failure(409, FailureDetailOrFallback(error, "Manual compaction could not be requested."));
 		return;
 	}
 	uam::PushStateUpdateIfChanged(browser, m_app);
-	cb->Success(R"({"accepted":true})");
+	cb->Success(nlohmann::json{{"accepted", true}, {"instructionsUsed", instructions_used}}.dump());
 }
 
 void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)

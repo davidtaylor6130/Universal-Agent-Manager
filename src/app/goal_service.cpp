@@ -137,6 +137,21 @@ int GoalService::IterationLimit(const Goal& goal, AppSettings settings)
 	return goal.max_iterations > 0 ? std::min(goal.max_iterations, settings.goal_max_loop_iterations) : settings.goal_max_loop_iterations;
 }
 
+int GoalService::IterationLimit(const ChatSession* owner, const Goal& goal, AppSettings settings)
+{
+	const int limit = IterationLimit(goal, std::move(settings));
+	return owner != nullptr && !owner->automation_token_id.empty() && owner->automation_max_iterations > 0
+	           ? std::min(limit, owner->automation_max_iterations) : limit;
+}
+
+std::string GoalService::AutomationGitPolicy(std::string_view git_permission)
+{
+	// ponytail: an instruction, not a block; Default approval is what stops a push, and a Git-aware command gate would make this enforceable.
+	return git_permission == "pr"
+	           ? "Automation policy: you may commit to this chat's branch and open a pull request. Do not push anywhere else."
+	           : "Automation policy: commit to this chat's branch only. Do not push or open a pull request.";
+}
+
 bool GoalService::CreateGoal(AppState& app, const std::string& chat_id, const std::string& objective,
                               int64_t token_budget, std::string* created_goal_id,
 							  std::string execution_owner, std::string provider_command,
@@ -165,6 +180,14 @@ bool GoalService::CreateGoal(AppState& app, const std::string& chat_id, const st
 		return false;
 	}
 	goal.objective = trimmed_objective;
+	// Every goal in an automation chat carries its cap and Git policy, whoever creates it. A side chat shares its parent's.
+	const ChatSession* automation = chat->automation_token_id.empty() && !chat->temporary_parent_chat_id.empty()
+	                                    ? FindChatConst(app, chat->temporary_parent_chat_id) : chat;
+	if (automation != nullptr && !automation->automation_token_id.empty())
+	{
+		goal.objective += "\n\n" + AutomationGitPolicy(automation->automation_git_permission);
+		if (automation->automation_max_iterations > 0) goal.max_iterations = automation->automation_max_iterations;
+	}
 	goal.status = GoalStatus::Active;
 	goal.token_budget = token_budget;
 	goal.tokens_used = 0;
@@ -1000,14 +1023,20 @@ std::string GoalService::BuildReadOnlyTerminalPrompt(const Goal& goal)
 
 std::string GoalService::BuildReviewPrompt(const Goal& goal, const std::string& recent_user_prompt,
                                            const std::string& recent_assistant_text, int repeated_output_count,
-                                           bool small_model_mode, const std::string& workspace_changes)
+                                           bool small_model_mode, const std::string& workspace_changes,
+                                           std::optional<VcsType> workspace_vcs)
 {
+	// Each named command passes the reviewer's read-only ceiling exactly as written.
+	constexpr std::string_view git_reads = "`git status --short --ignore-submodules` and `git diff --no-ext-diff --no-textconv` (add --stat or a workspace path as needed)";
+	constexpr std::string_view svn_reads = "`svn status` and `svn diff --internal-diff` (add --summarize or a workspace path as needed)";
 	std::ostringstream ss;
 	ss << "Read-only goal review: inspect the workspace, changed files, diff, relevant tests/build evidence, and objective. "
 	      "Do not rely on the worker summary alone; do not edit files or run mutating commands. "
-	      "Run one command per call (no ;, && or pipes). Accepted Git reads: `git status --short --ignore-submodules` and "
-	      "`git diff --no-ext-diff --no-textconv` (add --stat or a workspace path as needed). "
-	      "Your ONLY output must be a single JSON object, without prose or code fences:\n";
+	      "Run one command per call (no ;, && or pipes). ";
+	if (!workspace_vcs) ss << "Accepted reads: in a Git workspace " << git_reads << "; in an SVN working copy " << svn_reads << ". ";
+	else if (*workspace_vcs == VcsType::Svn) ss << "Accepted SVN reads: " << svn_reads << ". ";
+	else ss << "Accepted Git reads: " << git_reads << ". ";
+	ss << "Your ONLY output must be a single JSON object, without prose or code fences:\n";
 	ss << R"({"decision":"continue|complete|blocked","reason":"","nextPrompt":"","evidence":[],"blockerKind":"","progressUpdate":{"completed":[],"remaining":[],"currentStep":"","lastVerification":""}})" << "\n\n";
 	if (repeated_output_count >= 3)
 	{

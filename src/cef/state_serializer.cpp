@@ -1392,7 +1392,9 @@ namespace uam
 				terminal_json["lastError"] = terminal->last_error;
 				if (!terminal->host_admission_wait.empty())
 					terminal_json["hostAdmissionWait"] = {{"message", terminal->host_admission_wait}, {"runAnyway", terminal->host_admission_run_anyway_offered}};
-				if (terminal->running && terminal->lifecycle_state == CliTerminalLifecycleState::Idle && terminal->pending_steer_prompt.empty())
+				// A draft keeps the terminal open (see IsCliTerminalEligibleForBackgroundIdleShutdown), so it shows no countdown.
+				if (terminal->running && terminal->lifecycle_state == CliTerminalLifecycleState::Idle && terminal->pending_steer_prompt.empty() &&
+				    !uam::CliTerminalComposerMayHoldDraft(*terminal))
 					SerializeIdleDeadline(terminal_json, terminal->idle_interaction_started_time_s, app.settings.cli_idle_timeout_seconds);
 				w.Merge(std::move(terminal_json));
 				return;
@@ -1792,7 +1794,8 @@ namespace uam
 			    session->remote_output_delivery_token != chat.remote_process_control_token || !chat.remote_pending_requests.empty() ||
 			    !session->pending_remote_output_ack_line.empty() || !session->pending_remote_source_exit_ack_line.empty())) return false;
 			const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(session->provider_id);
-			if (!runtime.SupportsAcpCompaction() || session->protocol_kind != runtime.AcpProtocolKind()) return false;
+			if (!runtime.SupportsAcpCompaction() || session->protocol_kind != runtime.AcpProtocolKind() || (remote && !runtime.SupportsRemoteAcpCompaction()) ||
+			    !AcpCompactionVersionSatisfied(app, runtime, session->provider_id, chat.execution_host_id).value_or(false)) return false;
 			std::string method;
 			const nlohmann::json request = runtime.OnAcpBuildCompact(*session, 0, method);
 			return !request.is_null() && !request.empty() && !method.empty();
@@ -2351,7 +2354,7 @@ namespace uam
 			{
 				// An excluded provider's actions stay saved but do not exist in this build's interface.
 				if (uam::excluded_provider_data::IsExcluded(action.provider_id)) continue;
-				result.push_back({
+				nlohmann::json entry{
 				    {"id", action.id},
 				    {"label", action.label},
 				    {"skillPath", action.skill_path},
@@ -2362,7 +2365,10 @@ namespace uam
 				    {"acceptsFolders", action.accepts_folders},
 				    {"enabled", action.enabled},
 				    {"openWorkspace", action.open_workspace},
-				});
+				};
+				// A kept invalid entry is shown disabled and read-only with its one-line reason.
+				if (!action.invalid_reason.empty()) entry["invalidReason"] = action.invalid_reason;
+				result.push_back(std::move(entry));
 			}
 			return result;
 		}

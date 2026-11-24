@@ -5477,8 +5477,7 @@ void ReturnUnwrittenRemotePromptAsUnsent(AppState& app, AcpSessionState& session
 void MarkAcpChatUnseenIfBackground(AppState& app, const ChatSession& chat, bool ordinary_save_queued)
 {
 	// ordinary_save_queued: the caller has just queued an ordinary background save of this chat, which
-	// publishes the attention fields, so the poll skips the durable summary write that would wait on the
-	// atomic writer lock behind that transcript save.
+	// publishes the attention fields, so the poll skips a redundant synchronous durable summary write.
 	ChatDomainService().MarkChatNeedsAttention(app, chat.id, ordinary_save_queued);
 }
 

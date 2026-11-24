@@ -1,5 +1,6 @@
 #pragma once
 
+#include "common/config/build_features.h"
 #include "common/config/voice_input_settings.h"
 #include "common/config/compute_pools.h"
 #include "common/config/host_admission_config.h"
@@ -185,7 +186,10 @@ namespace uam::settings_frontend_json
 		settings_json["executionHosts"] = uam::execution_hosts::Serialize(settings.execution_hosts);
 		settings_json["computePools"] = uam::compute_pools::Serialize(settings.compute_pools);
 		settings_json["hostAdmission"] = uam::host_admission_config::Serialize(settings.host_admission);
+#if UAM_ENABLE_SSH
+		// Builds without SSH send no routing state; the stored routing settings stay unchanged on disk.
 		settings_json["executionRouting"] = SettingsStore::SerializeExecutionRoutingSettings(settings.execution_routing);
+#endif
 		settings_json["favoriteUamAgentIds"] = settings.favorite_uam_agent_ids;
 		settings_json["nativeImportExcludedTitlePrefixes"] = settings.native_import_excluded_title_prefixes;
 		settings_json["nativeImportExcludedDirectories"] = settings.native_import_excluded_directories;

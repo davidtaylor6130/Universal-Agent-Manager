@@ -364,6 +364,8 @@ namespace uam
 		terminal.native_identity_deferred_input.clear();
 		terminal.native_identity_query_phase = 0;
 		terminal.native_identity_query_time_s = launch_time_s;
+		terminal.composer_may_hold_draft = false;
+		terminal.composer_last_input_byte = 0;
 		const std::string version_key = CliProviderVersionStateKey(provider.id, execution_host->id);
 		if (terminal.attached_session_id.empty())
 		{

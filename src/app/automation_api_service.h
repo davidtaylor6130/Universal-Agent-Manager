@@ -6,6 +6,8 @@
 #include <string>
 #include <string_view>
 
+struct ChatSession;
+
 namespace uam
 {
 	struct AppState;
@@ -55,6 +57,9 @@ namespace uam
 		/// <summary>Replaces one token's secret, keeping its settings and restarting its expiry. The old secret stops working at once.</summary>
 		static std::optional<nlohmann::json> RegenerateToken(const AppState& app, std::string_view token_id, std::string* error_out);
 
+		/// <summary>Why a chat linked to an automation token may not start another chat: the token is unreadable, revoked or
+		/// expired, or already has 16 open chats. Empty for an ordinary chat or when the start is allowed.</summary>
+		static std::string StartedChatRefusal(const AppState& app, const ChatSession& caller);
 		/// <summary>Creates the capped goal and releases the approval hold. Only an awaiting chat can launch.</summary>
 		static std::optional<AutomationChatLaunch> BeginLaunch(AppState& app, const std::string& chat_id, std::string* error_out);
 		/// <summary>Restores the approval hold after a refused send, so the chat waits instead of being lost. Returns false when the prompt may already have been delivered.</summary>

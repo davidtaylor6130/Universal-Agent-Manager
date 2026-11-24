@@ -1,6 +1,7 @@
 #include "common/usage/antigravity_accounting.h"
 // Builds without this provider use the inline stubs in the header; test targets may still list this file.
 #if UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
+#include "common/utils/protobuf_wire.h"
 #include "common/utils/string_utils.h"
 #include <algorithm>
 #include <functional>
@@ -14,48 +15,29 @@ namespace uam::usage
 {
 	namespace
 	{
-		struct Field
+		using protobuf_wire::Field;
+		std::runtime_error FieldsError(protobuf_wire::Error error)
 		{
-			std::uint32_t number;
-			unsigned wire;
-			std::uint64_t integer = 0;
-			std::string_view bytes;
-		};
+			switch (error)
+			{
+			case protobuf_wire::Error::TruncatedVarint: return std::runtime_error("Truncated varint");
+			case protobuf_wire::Error::OverflowingVarint: return std::runtime_error("Overflowing varint");
+			case protobuf_wire::Error::UnsupportedWireType: return std::runtime_error("Unsupported wire type");
+			case protobuf_wire::Error::TruncatedField: return std::runtime_error("Truncated field");
+			case protobuf_wire::Error::NoncanonicalVarint:
+			case protobuf_wire::Error::InvalidTag:
+			case protobuf_wire::Error::TooManyFields: return std::runtime_error("Invalid fields");
+			}
+			return std::runtime_error("Invalid fields");
+		}
 		class Fields
 		{
 		public:
+			// First-match lookup over at most 4096 fields; accepts noncanonical varints.
 			explicit Fields(std::string_view bytes)
 			{
 				if (bytes.size() > 8 * 1024 * 1024) throw std::runtime_error("Oversized metadata");
-				std::size_t position = 0;
-				const std::function<std::uint64_t()> varint = [&]()
-				{
-					std::uint64_t value = 0;
-					for (unsigned index = 0; index < 10; ++index)
-					{
-						if (position == bytes.size()) throw std::runtime_error("Truncated varint");
-						const unsigned char byte = static_cast<unsigned char>(bytes[position++]);
-						if (index == 9 && byte > 1) throw std::runtime_error("Overflowing varint");
-						value |= std::uint64_t(byte & 127) << (index * 7);
-						if (byte < 128) return value;
-					}
-					throw std::runtime_error("Overflowing varint");
-				};
-				while (position < bytes.size())
-				{
-					const std::uint64_t tag = varint();
-					if (tag < 8 || tag / 8 > 536870911 || m_values.size() == 4096) throw std::runtime_error("Invalid fields");
-					Field field{static_cast<std::uint32_t>(tag / 8), static_cast<unsigned>(tag % 8)};
-					if (field.wire == 0) field.integer = varint();
-					else if (field.wire == 1 || field.wire == 2 || field.wire == 5)
-					{
-						const std::uint64_t length = field.wire == 2 ? varint() : field.wire == 1 ? 8 : 4;
-						if (length > bytes.size() - position) throw std::runtime_error("Truncated field");
-						field.bytes = bytes.substr(position, static_cast<std::size_t>(length)); position += static_cast<std::size_t>(length);
-					}
-					else throw std::runtime_error("Unsupported wire type");
-					m_values.push_back(field);
-				}
+				m_values = protobuf_wire::ReadFields(bytes, {.max_fields = 4096, .reject_noncanonical_varints = false}, FieldsError);
 			}
 			const Field* First(std::uint32_t number) const
 			{
