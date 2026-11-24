@@ -959,6 +959,133 @@ UAM_TEST(CodexNativeActivityRequiresFreshMatchingCompleteRecord)
 	UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Unavailable);
 }
 
+namespace
+{
+	void AppendCodexTurnEvent(const fs::path& rollout, const std::string& type, const std::string& turn_id)
+	{
+		std::ofstream(rollout, std::ios::app) << nlohmann::json{{"type", "event_msg"}, {"payload", {{"type", type}, {"turn_id", turn_id}}}}.dump() << '\n';
+	}
+} // namespace
+
+UAM_TEST(CodexNativeActivityKeepsRunningTurnAcrossMidTurnEnter)
+{
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::Resolve(ProviderProfileStore::DefaultCodexProfile());
+	if (!runtime.IsEnabled()) return;
+	TempDir temp("codex-native-mid-turn-enter");
+	ScopedEnvVar codex_home("CODEX_HOME", temp.root.string());
+	const std::string id = "0194c9a0-1111-7111-8111-111111111111";
+	fs::create_directories(temp.root / "sessions");
+	const fs::path rollout = temp.root / "sessions" / (id + ".jsonl");
+	std::ofstream(rollout) << nlohmann::json{{"type", "session_meta"}, {"payload", {{"id", id}, {"cwd", temp.root.string()}}}}.dump() << '\n';
+	uam::CliTerminalState terminal;
+	terminal.running = true;
+	const auto poll = [&] { return runtime.PollInteractiveActivity(terminal, id, temp.root, false); };
+	// What the desktop and phone input paths do for every write containing CR or LF.
+	const auto enter = [&]
+	{
+		runtime.CheckpointInteractiveSubmission(terminal);
+		uam::MarkCliTerminalTurnBusy(terminal);
+	};
+	UAM_ASSERT(poll() == ProviderTerminalActivity::Unavailable);
+	enter();
+	AppendCodexTurnEvent(rollout, "task_started", "current");
+	UAM_ASSERT(poll() == ProviderTerminalActivity::Busy);
+	// Accepting an approval with Enter answers the running turn; it starts no other.
+	enter();
+	UAM_ASSERT_EQ(terminal.codex_activity_turn_id, std::string("current"));
+	UAM_ASSERT(!terminal.codex_activity_awaiting_turn);
+	// Busy reported by the observer re-marks the terminal without forgetting the turn either.
+	uam::MarkCliTerminalTurnIdle(terminal);
+	uam::MarkCliTerminalTurnBusy(terminal, false);
+	UAM_ASSERT_EQ(terminal.codex_activity_turn_id, std::string("current"));
+	UAM_ASSERT(poll() == ProviderTerminalActivity::Busy);
+	AppendCodexTurnEvent(rollout, "task_complete", "current");
+	UAM_ASSERT(poll() == ProviderTerminalActivity::Complete);
+
+	// An Enter after Codex wrote a completion but before UAM read it must not skip that completion.
+	uam::MarkCliTerminalTurnIdle(terminal);
+	enter();
+	AppendCodexTurnEvent(rollout, "task_started", "next");
+	UAM_ASSERT(poll() == ProviderTerminalActivity::Busy);
+	AppendCodexTurnEvent(rollout, "task_complete", "next");
+	enter();
+	UAM_ASSERT(poll() == ProviderTerminalActivity::Complete);
+	// The turn that Enter queued is still observed from its own start.
+	AppendCodexTurnEvent(rollout, "task_started", "queued");
+	UAM_ASSERT(poll() == ProviderTerminalActivity::Busy);
+	AppendCodexTurnEvent(rollout, "task_complete", "queued");
+	UAM_ASSERT(poll() == ProviderTerminalActivity::Complete);
+}
+
+UAM_TEST(CodexNativeActivityReleasesSubmissionThatStartsNoTurn)
+{
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::Resolve(ProviderProfileStore::DefaultCodexProfile());
+	if (!runtime.IsEnabled()) return;
+	TempDir temp("codex-native-no-turn");
+	ScopedEnvVar codex_home("CODEX_HOME", temp.root.string());
+	const std::string id = "0194c9a0-1111-7111-8111-111111111111";
+	fs::create_directories(temp.root / "sessions");
+	const fs::path rollout = temp.root / "sessions" / (id + ".jsonl");
+	std::ofstream(rollout) << nlohmann::json{{"type", "session_meta"}, {"payload", {{"id", id}, {"cwd", temp.root.string()}}}}.dump() << '\n';
+	const std::string idle_composer = "\x1b[2K\r› Ask Codex to do anything\nGPT-6.1-Sol low · workspace · 100% context left";
+	uam::CliTerminalState terminal;
+	terminal.running = true;
+	const auto poll = [&] { return runtime.PollInteractiveActivity(terminal, id, temp.root, false); };
+	// What the input paths do for a write containing CR or LF.
+	const auto enter = [&]
+	{
+		runtime.CheckpointInteractiveSubmission(terminal);
+		uam::MarkCliTerminalTurnBusy(terminal);
+	};
+	// Advance the receipt clock past its deadline.
+	const auto expire = [](uam::CliTerminalState& target) { target.codex_activity_awaiting_since_s -= uam::kCliTerminalTurnReceiptSeconds + 1.0; };
+	UAM_ASSERT(poll() == ProviderTerminalActivity::Unavailable);
+	uam::MarkCliTerminalTurnIdle(terminal);
+	// Enter on an empty composer or in a local slash-command menu records nothing in the rollout.
+	enter();
+	UAM_ASSERT(uam::IsCliTerminalTurnBusy(terminal));
+	UAM_ASSERT(poll() == ProviderTerminalActivity::Busy);
+	// Past the deadline with no idle composer drawn, the turn's end is unproven: Unknown, never Busy.
+	expire(terminal);
+	UAM_ASSERT(poll() != ProviderTerminalActivity::Busy);
+	UAM_ASSERT_EQ(terminal.lifecycle_state, uam::CliTerminalLifecycleState::Unknown);
+	UAM_ASSERT(!uam::IsCliTerminalTurnBusy(terminal));
+	UAM_ASSERT(!terminal.codex_activity_awaiting_turn);
+	UAM_ASSERT_EQ(uam::CliTerminalInactivityRecovery(terminal, uam::GetAppTimeSeconds() + 100000.0, 1.0), uam::CliTerminalInactivityRecoveryAction::None);
+	// Unknown is not a dead end: Codex drawing its idle composer later still confirms Ready.
+	UAM_ASSERT(terminal.current_turn_output_bytes.empty());
+	UAM_ASSERT(!uam::CliTerminalPromptConfirmsTurnIdle(terminal, runtime.RecentOutputIndicatesInputPrompt("• Working (12s • esc to interrupt)"), true, uam::GetAppTimeSeconds()));
+	UAM_ASSERT(!uam::CliTerminalPromptConfirmsTurnIdle(terminal, runtime.RecentOutputIndicatesInputPrompt(idle_composer), false, uam::GetAppTimeSeconds()));
+	UAM_ASSERT(uam::CliTerminalPromptConfirmsTurnIdle(terminal, runtime.RecentOutputIndicatesInputPrompt(idle_composer), true, uam::GetAppTimeSeconds()));
+	// With the idle composer drawn since the Enter, the terminal is Ready.
+	enter();
+	UAM_ASSERT_EQ(terminal.lifecycle_state, uam::CliTerminalLifecycleState::Busy);
+	terminal.current_turn_output_bytes = idle_composer;
+	expire(terminal);
+	UAM_ASSERT(poll() == ProviderTerminalActivity::Complete);
+	uam::MarkCliTerminalTurnIdle(terminal);
+	UAM_ASSERT(poll() == ProviderTerminalActivity::Unavailable);
+	// A turn that starts only after the deadline is still observed to its completion.
+	AppendCodexTurnEvent(rollout, "task_started", "late");
+	UAM_ASSERT(poll() == ProviderTerminalActivity::Busy);
+	uam::MarkCliTerminalTurnBusy(terminal, false);
+	AppendCodexTurnEvent(rollout, "task_complete", "late");
+	UAM_ASSERT(poll() == ProviderTerminalActivity::Complete);
+
+	// Before a rollout is bound the same rule applies instead of reporting Busy forever.
+	uam::CliTerminalState unbound;
+	unbound.running = true;
+	uam::MarkCliTerminalTurnBusy(unbound);
+	UAM_ASSERT(runtime.PollInteractiveActivity(unbound, "", temp.root, false) == ProviderTerminalActivity::Busy);
+	expire(unbound);
+	UAM_ASSERT(runtime.PollInteractiveActivity(unbound, "", temp.root, false) == ProviderTerminalActivity::Unavailable);
+	UAM_ASSERT_EQ(unbound.lifecycle_state, uam::CliTerminalLifecycleState::Unknown);
+	uam::MarkCliTerminalTurnBusy(unbound);
+	unbound.current_turn_output_bytes = idle_composer;
+	expire(unbound);
+	UAM_ASSERT(runtime.PollInteractiveActivity(unbound, "", temp.root, false) == ProviderTerminalActivity::Complete);
+}
+
 UAM_TEST(CodexNativeActivityRejectsUnverifiedIdentityAndFailedReads)
 {
 	const IProviderRuntime& runtime = ProviderRuntimeRegistry::Resolve(ProviderProfileStore::DefaultCodexProfile());
@@ -1133,7 +1260,7 @@ UAM_TEST(CodexNativeSubmissionCheckpointSkipsOnlyTheAbandonedRecordTail)
 {
 	const IProviderRuntime& runtime = ProviderRuntimeRegistry::Resolve(ProviderProfileStore::DefaultCodexProfile());
 	if (!runtime.IsEnabled()) return;
-	for (const std::string& scenario : {"empty", "newline", "partial-completion"})
+	for (const std::string& scenario : {"empty", "newline", "partial-record", "partial-completion"})
 	{
 		TempDir temp("codex-checkpoint-tail");
 		ScopedEnvVar codex_home("CODEX_HOME", temp.root.string());
@@ -1144,24 +1271,29 @@ UAM_TEST(CodexNativeSubmissionCheckpointSkipsOnlyTheAbandonedRecordTail)
 		uam::CliTerminalState terminal;
 		(void)runtime.PollInteractiveActivity(terminal, id, temp.root, false);
 		if (scenario == "empty") std::ofstream(rollout, std::ios::trunc);
-		if (scenario == "partial-completion")
+		// partial-record: a record with no tracked turn is mid-write at the Enter, so its tail is abandoned.
+		// partial-completion: the completion of tracked turn "old" is mid-write; the Enter answers that turn.
+		const bool partial = scenario == "partial-record" || scenario == "partial-completion";
+		const bool tracked = scenario == "partial-completion";
+		if (partial)
 		{
-			std::ofstream(rollout, std::ios::app) << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"old\"}}\n"
-			    << "{\"payload\":{\"last_agent_message\":\"" << std::string(300000, 'x') << "\\uD83D";
+			if (tracked) std::ofstream(rollout, std::ios::app) << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"old\"}}\n";
+			std::ofstream(rollout, std::ios::app) << (tracked ? "{\"payload\":{\"last_agent_message\":\"" : "{\"type\":\"response_item\",\"payload\":{\"text\":\"")
+			    << std::string(300000, 'x') << "\\uD83D";
 			for (int poll = 0; poll < 8; ++poll)
 				UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Busy);
 			UAM_ASSERT(terminal.codex_activity_string_cursor.compacting);
 			UAM_ASSERT(!terminal.codex_activity_string_cursor.token.empty());
 		}
 		runtime.CheckpointInteractiveSubmission(terminal);
-		UAM_ASSERT(terminal.codex_activity_partial_line.empty());
-		UAM_ASSERT(terminal.codex_activity_string_cursor.token.empty());
-		UAM_ASSERT(!terminal.codex_activity_string_cursor.inside_string);
-		UAM_ASSERT(terminal.codex_activity_string_cursor.discard_checkpoint_tail == (scenario == "partial-completion"));
-		if (scenario == "partial-completion")
+		UAM_ASSERT(terminal.codex_activity_partial_line.empty() != tracked);
+		UAM_ASSERT(terminal.codex_activity_string_cursor.token.empty() != tracked);
+		UAM_ASSERT(terminal.codex_activity_string_cursor.inside_string == tracked);
+		UAM_ASSERT(terminal.codex_activity_string_cursor.discard_checkpoint_tail == (scenario == "partial-record"));
+		if (partial)
 		{
-			std::ofstream(rollout, std::ios::app) << "\\uDE00\",\"turn_id\":\"old\",\"type\":\"task_complete\"},\"type\":\"event_msg\"}\n";
-			UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Busy);
+			std::ofstream(rollout, std::ios::app) << (tracked ? "\\uDE00\",\"turn_id\":\"old\",\"type\":\"task_complete\"},\"type\":\"event_msg\"}\n" : "\\uDE00\"}}\n");
+			UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == (tracked ? ProviderTerminalActivity::Complete : ProviderTerminalActivity::Busy));
 		}
 		std::ofstream(rollout, std::ios::app) << "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"fresh\"}}\n";
 		UAM_ASSERT(runtime.PollInteractiveActivity(terminal, id, temp.root, false) == ProviderTerminalActivity::Busy);
@@ -1215,6 +1347,80 @@ UAM_TEST(CodexNativeCompletionClearsBusyDespiteStaleTerminalRedraws)
 	uam::StopCliTerminal(terminal, false, uam::CliTerminalStopMode::FastExit);
 	UAM_ASSERT(busy_before_completion);
 	UAM_ASSERT(idle_after_completion);
+#endif
+}
+
+UAM_TEST(CodexCliViewEnterWithoutNewTurnDoesNotStayBusy)
+{
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	TempDir temp("codex-native-enter");
+	ScopedEnvVar codex_home("CODEX_HOME", temp.root.string());
+	const std::string id = "0194c9a0-1111-7111-8111-111111111111";
+	fs::create_directories(temp.root / "sessions");
+	const fs::path rollout = temp.root / "sessions" / (id + ".jsonl");
+	std::ofstream(rollout) << nlohmann::json{{"type", "session_meta"}, {"payload", {{"id", id}, {"cwd", temp.root.string()}}}}.dump() << '\n';
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession chat;
+	chat.id = "native-enter";
+	chat.provider_id = uam::provider_ids::kCodexCli;
+	chat.native_session_id = id;
+	chat.workspace_directory = temp.root.string();
+	app.chats.push_back(chat);
+	uam::CliTerminalState terminal;
+	terminal.frontend_chat_id = chat.id;
+	terminal.attached_chat_id = chat.id;
+	terminal.attached_session_id = id;
+	terminal.last_sync_time_s = uam::GetAppTimeSeconds();
+	std::string error;
+#if defined(_WIN32)
+	const std::vector<std::string> argv{"cmd.exe", "/C", "ping -n 31 127.0.0.1 >NUL"};
+#else
+	const std::vector<std::string> argv{"/bin/cat"};
+#endif
+	UAM_ASSERT(PlatformServicesFactory::Instance().terminal_runtime.StartCliTerminalProcess(terminal, temp.root, argv, &error));
+	terminal.running = true;
+	uam::MarkCliTerminalTurnIdle(terminal);
+	(void)uam::PollCliTerminal(nullptr, app, terminal, false);
+	// Each write below is followed by what HandleWriteCliInput does for input containing CR or LF.
+	const bool prompt_written = uam::WriteToCliTerminal(terminal, "run ls in the parent folder\r", 28);
+	uam::MarkCliTerminalTurnBusy(terminal);
+	AppendCodexTurnEvent(rollout, "task_started", "current");
+	(void)uam::PollCliTerminal(nullptr, app, terminal, false);
+	const bool busy_in_turn = uam::IsCliTerminalTurnBusy(terminal);
+	// Accepting the command approval with Enter, then the turn completes.
+	const bool approval_written = uam::WriteToCliTerminal(terminal, "\r", 1);
+	uam::MarkCliTerminalTurnBusy(terminal);
+	AppendCodexTurnEvent(rollout, "task_complete", "current");
+	(void)uam::PollCliTerminal(nullptr, app, terminal, false);
+	const bool idle_after_approved_turn = uam::CliTerminalLifecycleIsIdleLive(terminal);
+	// Enter on the empty composer: Codex starts no turn and records nothing.
+	const bool empty_enter_written = uam::WriteToCliTerminal(terminal, "\r", 1);
+	uam::MarkCliTerminalTurnBusy(terminal);
+	(void)uam::PollCliTerminal(nullptr, app, terminal, false);
+	const bool busy_within_receipt = uam::IsCliTerminalTurnBusy(terminal);
+	// Past the receipt deadline with no idle composer drawn (no PTY output at all on Windows), the end is unproven.
+	terminal.codex_activity_awaiting_since_s -= uam::kCliTerminalTurnReceiptSeconds + 1.0;
+	(void)uam::PollCliTerminal(nullptr, app, terminal, false);
+	const bool unknown_after_receipt = terminal.lifecycle_state == uam::CliTerminalLifecycleState::Unknown && !uam::IsCliTerminalTurnBusy(terminal) &&
+	    uam::CliTerminalInactivityRecovery(terminal, uam::GetAppTimeSeconds() + 100000.0, 1.0) == uam::CliTerminalInactivityRecoveryAction::None;
+	// The same Enter when Codex redraws its idle composer returns the terminal to Ready.
+	const bool second_enter_written = uam::WriteToCliTerminal(terminal, "\r", 1);
+	uam::MarkCliTerminalTurnBusy(terminal);
+	terminal.current_turn_output_bytes += "\x1b[2K\r› Ask Codex to do anything\nGPT-6.1-Sol low · workspace · 100% context left";
+	terminal.codex_activity_awaiting_since_s -= uam::kCliTerminalTurnReceiptSeconds + 1.0;
+	(void)uam::PollCliTerminal(nullptr, app, terminal, false);
+	const bool idle_after_receipt = uam::CliTerminalLifecycleIsIdleLive(terminal);
+	const bool handoff_allowed = !uam::CliTerminalBlocksAcpHandoff(terminal);
+	uam::StopCliTerminal(terminal, false, uam::CliTerminalStopMode::FastExit);
+	UAM_ASSERT(prompt_written && approval_written && empty_enter_written && second_enter_written);
+	UAM_ASSERT(busy_in_turn);
+	UAM_ASSERT(idle_after_approved_turn);
+	UAM_ASSERT(busy_within_receipt);
+	UAM_ASSERT(unknown_after_receipt);
+	UAM_ASSERT(idle_after_receipt);
+	UAM_ASSERT(handoff_allowed);
 #endif
 }
 
@@ -1297,7 +1503,6 @@ UAM_TEST(CliLifecycleTransitionsDriveBackgroundShutdownEligibility)
 
 	uam::MarkCliTerminalTurnBusy(terminal);
 	UAM_ASSERT_EQ(uam::kCliTerminalProcessingLifecycleStates.size(), static_cast<std::size_t>(2));
-	UAM_ASSERT_EQ(uam::kCliTerminalQuitCommand, std::string_view("/quit\r\n"));
 	UAM_ASSERT_EQ(uam::kCliTerminalDefaultRows, 24);
 	UAM_ASSERT_EQ(uam::kCliTerminalDefaultCols, 80);
 	UAM_ASSERT_EQ(uam::ClampCliTerminalResizeRows(0), 1);
@@ -1347,6 +1552,137 @@ UAM_TEST(CliLifecycleTransitionsDriveBackgroundShutdownEligibility)
 	app.chats_with_unseen_updates.insert("chat-1");
 	uam::ClearCliReadyForChat(app, std::string_view("xx chat-1 yy").substr(2, 8));
 	UAM_ASSERT(app.chats_with_unseen_updates.empty());
+}
+
+UAM_TEST(CliTerminalComposerDraftClearsOnlyOnSubmittedLine)
+{
+	uam::CliTerminalState terminal;
+	const auto note = [&terminal](std::string_view bytes)
+	{
+		uam::NoteCliTerminalComposerInput(terminal, bytes);
+		return uam::CliTerminalComposerMayHoldDraft(terminal);
+	};
+	UAM_ASSERT(!uam::CliTerminalComposerMayHoldDraft(terminal));
+	UAM_ASSERT(note("delete the build folder and redeploy"));
+	// Interrupts, a lone Escape, focus and mouse reports and terminal replies add no text and clear none.
+	UAM_ASSERT(note("\x03"));
+	UAM_ASSERT(note("\x1b"));
+	UAM_ASSERT(note("\x1b[I"));
+	UAM_ASSERT(!note("\r"));
+	UAM_ASSERT(!note("\x03"));
+	UAM_ASSERT(!note("\x1b"));
+	UAM_ASSERT(!note("\x1b[O"));
+	UAM_ASSERT(!note("\x1b[<0;12;5M"));
+	UAM_ASSERT(!note("\x1b[12;40R"));
+	// History recall and single-key answers can leave text in the composer.
+	UAM_ASSERT(note("\x1b[A"));
+	UAM_ASSERT(!note("ask\r"));
+	UAM_ASSERT(note("y"));
+	UAM_ASSERT(!note("\r\n"));
+	// Line breaks inside a draft are not submissions.
+	UAM_ASSERT(note("first line\x1b\r"));
+	UAM_ASSERT(!note("second line\r"));
+	UAM_ASSERT(note("\n"));
+	UAM_ASSERT(!note("\r"));
+	UAM_ASSERT(note("line\\"));
+	UAM_ASSERT(note("\r"));
+	UAM_ASSERT(!note("\r"));
+	UAM_ASSERT(note("\x1b[200~pasted\r"));
+	UAM_ASSERT(!note("\x1b[201~\r"));
+	UAM_ASSERT(!note("\x1b[200~one\ntwo\x1b[201~\r"));
+	// UAM's own status command sits unsubmitted in the composer until its Enter.
+	terminal.native_identity_query_phase = 2;
+	UAM_ASSERT(uam::CliTerminalComposerMayHoldDraft(terminal));
+	terminal.native_identity_query_phase = 3;
+	UAM_ASSERT(!uam::CliTerminalComposerMayHoldDraft(terminal));
+	// Input typed while the status reply is pending reaches the composer once the query finishes.
+	terminal.native_identity_deferred_input = "draft";
+	UAM_ASSERT(uam::CliTerminalComposerMayHoldDraft(terminal));
+	terminal.native_identity_deferred_input.clear();
+
+	uam::AppState app;
+	app.settings.cli_idle_timeout_seconds = 60;
+	terminal.running = true;
+	terminal.frontend_chat_id = "chat-1";
+	terminal.attached_chat_id = "chat-1";
+	uam::MarkCliTerminalTurnIdle(terminal);
+	terminal.idle_interaction_started_time_s = 1.0;
+	UAM_ASSERT(uam::IsCliTerminalEligibleForBackgroundIdleShutdown(app, terminal, "", 1000.0));
+	UAM_ASSERT(note("draft"));
+	UAM_ASSERT(!uam::IsCliTerminalEligibleForBackgroundIdleShutdown(app, terminal, "", 1000.0));
+	terminal.native_identity_query_phase = 2;
+	UAM_ASSERT(note("\r"));
+	UAM_ASSERT(!terminal.composer_may_hold_draft);
+	UAM_ASSERT(!uam::IsCliTerminalEligibleForBackgroundIdleShutdown(app, terminal, "", 1000.0));
+	terminal.native_identity_query_phase = 0;
+	UAM_ASSERT(uam::IsCliTerminalEligibleForBackgroundIdleShutdown(app, terminal, "", 1000.0));
+}
+
+UAM_TEST(CliTerminalShutdownNeverSubmitsAnUnsentDraft)
+{
+	TempDir temp("uam-cli-quit-draft");
+	uam::AppState app;
+	app.settings.cli_idle_timeout_seconds = 60;
+	const fs::path submitted = temp.root / "submitted.txt";
+	// The child records a line only once one is submitted; typed text without Enter stays in its input buffer.
+#if defined(_WIN32)
+	const std::vector<std::string> argv = {"cmd.exe", "/C", "set /p line=&& echo submitted>submitted.txt& ping -n 31 127.0.0.1 >NUL"};
+#else
+	const std::vector<std::string> argv = {"/bin/sh", "-c", "IFS= read -r line && echo submitted > submitted.txt; sleep 30"};
+#endif
+	uam::CliTerminalState quitting;
+	uam::CliTerminalState stopping;
+	struct StopBoth
+	{
+		uam::CliTerminalState& first;
+		uam::CliTerminalState& second;
+		~StopBoth()
+		{
+			uam::StopCliTerminal(first, false, uam::CliTerminalStopMode::FastExit);
+			uam::StopCliTerminal(second, false, uam::CliTerminalStopMode::FastExit);
+		}
+	} cleanup{quitting, stopping};
+	const auto start_with_draft = [&](uam::CliTerminalState& terminal)
+	{
+		std::string error;
+		UAM_ASSERT(PlatformServicesFactory::Instance().terminal_runtime.StartCliTerminalProcess(terminal, temp.root, argv, &error));
+		terminal.running = true;
+		terminal.frontend_chat_id = "chat-1";
+		terminal.attached_chat_id = "chat-1";
+		uam::MarkCliTerminalTurnIdle(terminal);
+		UAM_ASSERT(uam::WriteToCliTerminal(terminal, "draft", 5));
+		UAM_ASSERT(uam::CliTerminalComposerMayHoldDraft(terminal));
+	};
+
+	start_with_draft(quitting);
+	UAM_ASSERT(!uam::IsCliTerminalEligibleForBackgroundIdleShutdown(app, quitting, "", uam::GetAppTimeSeconds() + 3600.0));
+	// Safety must not rest on the draft heuristic: Enter in a file picker or an approval overlay leaves text unsubmitted.
+	quitting.composer_may_hold_draft = false;
+	uam::BeginCliTerminalIdleShutdown(quitting);
+	UAM_ASSERT_EQ(quitting.lifecycle_state, uam::CliTerminalLifecycleState::ShuttingDown);
+	// The platform exit request ends the child without typing anything into it.
+	// Drain the output while waiting: Windows reports a ConPTY exit only once its output pipe reads as broken.
+	IPlatformTerminalRuntime& runtime = PlatformServicesFactory::Instance().terminal_runtime;
+	bool exited = false;
+	const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	while (std::chrono::steady_clock::now() < deadline && !fs::exists(submitted) && !exited)
+	{
+		char buffer[1024];
+		while (runtime.ReadCliTerminalOutput(quitting, buffer, sizeof(buffer)) > 0) {}
+		exited = runtime.PollCliTerminalProcessExited(quitting);
+		if (!exited) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+	}
+	UAM_ASSERT(!fs::exists(submitted));
+	UAM_ASSERT(exited);
+	uam::StopCliTerminal(quitting, false, uam::CliTerminalStopMode::FastExit);
+	UAM_ASSERT(!quitting.running);
+	UAM_ASSERT(!uam::CliTerminalComposerMayHoldDraft(quitting));
+
+	// The default graceful stop (StopAllCliTerminals, relaunch) typed the quit command on Windows before terminating.
+	start_with_draft(stopping);
+	stopping.composer_may_hold_draft = false;
+	uam::StopCliTerminal(stopping);
+	UAM_ASSERT(!fs::exists(submitted));
 }
 
 UAM_TEST(UnknownNativeActivityDoesNotReportReadyOrAllowAutomaticInterruption)
@@ -3146,6 +3482,231 @@ UAM_TEST(CliViewRemovesClaudeNativeSkillsForCustomAgentsOnly)
 			if (provider != "claude-cli") UAM_ASSERT(std::ranges::find(argv, "--disallowedTools") == argv.end());
 		}
 	}
+}
+
+namespace
+{
+	struct StagedHandoffFile
+	{
+		std::string path;
+		std::string content;
+	};
+
+	/// Runs one provider's runtime staging against a fixed remote-style context and records what it adds.
+	bool StageHandoffForRuntime(std::string_view provider_id, const std::string& platform, std::vector<StagedHandoffFile>& files,
+	    std::vector<std::string>& argv, std::string& error, bool stage_succeeds = true)
+	{
+		const std::string directory = platform == "windows" ? "C:\\ws\\.UAM\\context\\0123456789abcdef" : "/ws/.UAM/context/0123456789abcdef";
+		const std::string context_path = uam::execution_hosts::JoinRemotePath(platform, directory, "conversation.md");
+		const std::string snapshot = "Use the saved conversation below as context. Do not repeat its tool actions.\n\nUser: kumquat";
+		const ProviderCliHandoffStaging staging{platform, directory, context_path, snapshot,
+		    [&](const std::string& path, const std::string& content)
+		    {
+			    files.push_back({path, content});
+			    if (!stage_succeeds) error = "stage refused";
+			    return stage_succeeds;
+		    }};
+		return ProviderRuntimeRegistry::ResolveById(provider_id).StageCliHandoffContext(staging, argv, error);
+	}
+} // namespace
+
+UAM_TEST(CliHandoffStagingIsOwnedByEachProviderRuntime)
+{
+	const std::string snapshot = "Use the saved conversation below as context. Do not repeat its tool actions.\n\nUser: kumquat";
+	std::vector<StagedHandoffFile> files;
+	std::vector<std::string> argv;
+	std::string error;
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	UAM_ASSERT(StageHandoffForRuntime(uam::provider_ids::kClaudeCli, "macos", files, argv, error));
+	UAM_ASSERT(files.empty());
+	UAM_ASSERT(argv == (std::vector<std::string>{"--append-system-prompt-file", "/ws/.UAM/context/0123456789abcdef/conversation.md"}));
+	UAM_ASSERT(error.empty());
+	argv.clear();
+	UAM_ASSERT(StageHandoffForRuntime(uam::provider_ids::kClaudeCli, "windows", files, argv, error));
+	UAM_ASSERT(argv == (std::vector<std::string>{"--append-system-prompt-file", "C:\\ws\\.UAM\\context\\0123456789abcdef\\conversation.md"}));
+	argv.clear();
+#endif
+#if UAM_ENABLE_RUNTIME_COPILOT_CLI
+	UAM_ASSERT(StageHandoffForRuntime(uam::provider_ids::kCopilotCli, "macos", files, argv, error));
+	UAM_ASSERT(argv.empty());
+	UAM_ASSERT_EQ(files.size(), std::size_t{1});
+	UAM_ASSERT_EQ(files[0].path, std::string("/ws/.UAM/context/0123456789abcdef/.github/instructions/handoff.instructions.md"));
+	UAM_ASSERT_EQ(files[0].content, "---\napplyTo: \"**\"\n---\n" + snapshot);
+	files.clear();
+	UAM_ASSERT(StageHandoffForRuntime(uam::provider_ids::kCopilotCli, "windows", files, argv, error));
+	UAM_ASSERT_EQ(files[0].path, std::string("C:\\ws\\.UAM\\context\\0123456789abcdef\\.github\\instructions\\handoff.instructions.md"));
+	files.clear();
+	UAM_ASSERT(!StageHandoffForRuntime(uam::provider_ids::kCopilotCli, "macos", files, argv, error, false));
+	UAM_ASSERT_EQ(error, std::string("stage refused"));
+	UAM_ASSERT(argv.empty());
+	files.clear();
+	error.clear();
+#endif
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+	UAM_ASSERT(StageHandoffForRuntime(uam::provider_ids::kGeminiCli, "macos", files, argv, error));
+	UAM_ASSERT_EQ(files.size(), std::size_t{1});
+	UAM_ASSERT_EQ(files[0].path, std::string("/ws/.UAM/context/0123456789abcdef/GEMINI.md"));
+	UAM_ASSERT_EQ(files[0].content, snapshot);
+	UAM_ASSERT(argv == (std::vector<std::string>{"--include-directories", "/ws/.UAM/context/0123456789abcdef"}));
+	files.clear();
+	argv.clear();
+	UAM_ASSERT(StageHandoffForRuntime(uam::provider_ids::kGeminiCli, "windows", files, argv, error));
+	UAM_ASSERT_EQ(files[0].path, std::string("C:\\ws\\.UAM\\context\\0123456789abcdef\\GEMINI.md"));
+	UAM_ASSERT(argv == (std::vector<std::string>{"--include-directories", "C:\\ws\\.UAM\\context\\0123456789abcdef"}));
+	files.clear();
+	argv.clear();
+	// A refused file write stops before the include-directory argument is added.
+	UAM_ASSERT(!StageHandoffForRuntime(uam::provider_ids::kGeminiCli, "macos", files, argv, error, false));
+	UAM_ASSERT_EQ(error, std::string("stage refused"));
+	UAM_ASSERT(argv.empty());
+	files.clear();
+	error.clear();
+#endif
+	// Codex imports the shared conversation file into native history and OpenCode reads it from its configuration environment.
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	UAM_ASSERT(StageHandoffForRuntime(uam::provider_ids::kCodexCli, "macos", files, argv, error));
+	UAM_ASSERT(files.empty() && argv.empty() && error.empty());
+#endif
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	UAM_ASSERT(StageHandoffForRuntime(uam::provider_ids::kOpenCodeCli, "macos", files, argv, error));
+	UAM_ASSERT(files.empty() && argv.empty() && error.empty());
+#endif
+#if UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
+	// Antigravity stages only a custom agent's instructions; the launcher refuses another provider's conversation first.
+	UAM_ASSERT(StageHandoffForRuntime(uam::provider_ids::kAntigravityCli, "macos", files, argv, error));
+	UAM_ASSERT_EQ(files.size(), std::size_t{1});
+	UAM_ASSERT_EQ(files[0].path, std::string("/ws/.UAM/context/0123456789abcdef/AGENTS.md"));
+	UAM_ASSERT_EQ(files[0].content, snapshot);
+	UAM_ASSERT(argv == (std::vector<std::string>{"--add-dir", "/ws/.UAM/context/0123456789abcdef"}));
+	UAM_ASSERT(error.empty());
+	files.clear();
+	argv.clear();
+#endif
+}
+
+UAM_TEST(CliHandoffLauncherStagesProviderFilesAndArguments)
+{
+	TempDir temp("uam-provider-cli-staging");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ExecutionHost host;
+	host.id = "local";
+	ScopedEnvVar opencode("OPENCODE_CONFIG_CONTENT", "");
+	ScopedEnvVar copilot("COPILOT_CUSTOM_INSTRUCTIONS_DIRS", "");
+	ScopedEnvVar gemini("GEMINI_CLI_SYSTEM_SETTINGS_PATH", (temp.root / "missing-system.json").string());
+	ScopedEnvVar gemini_defaults("GEMINI_CLI_SYSTEM_DEFAULTS_PATH", (temp.root / "missing-defaults.json").string());
+	ScopedEnvVar gemini_home("GEMINI_CLI_HOME", (temp.root / "gemini-home").string());
+	const std::string snapshot = "Use the saved conversation below as context. Do not repeat its tool actions.\n\nUser: My favourite fruit is kumquat.";
+	std::vector<std::string> providers;
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	providers.push_back(uam::provider_ids::kClaudeCli);
+#endif
+#if UAM_ENABLE_RUNTIME_COPILOT_CLI
+	providers.push_back(uam::provider_ids::kCopilotCli);
+#endif
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+	providers.push_back(uam::provider_ids::kGeminiCli);
+#endif
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	providers.push_back(uam::provider_ids::kOpenCodeCli);
+#endif
+	for (const std::string& provider : providers)
+	{
+		ChatSession chat;
+		chat.id = "staging-" + provider;
+		chat.provider_id = provider;
+		chat.provider_handoff_context = "User: My favourite fruit is kumquat.";
+		std::vector<std::string> argv{provider};
+		std::vector<std::pair<std::string, std::string>> environment;
+		std::string channel;
+		std::string error;
+		UAM_ASSERT(PrepareCliProviderHandoff(app, chat, host, argv, environment, channel, error));
+		UAM_ASSERT(channel.empty());
+		UAM_ASSERT_EQ(chat.provider_handoff_cli_contexts.size(), std::size_t{1});
+		const fs::path directory = uam::paths::PathFromUtf8(chat.provider_handoff_cli_contexts.front().directory);
+		const std::string context_path = uam::paths::Utf8PathString(directory / "conversation.md");
+		UAM_ASSERT_EQ(uam::io::ReadTextFile(directory / "conversation.md"), snapshot);
+		[[maybe_unused]] const bool claude_argument = std::ranges::find(argv, "--append-system-prompt-file") != argv.end();
+		[[maybe_unused]] const bool gemini_argument = std::ranges::find(argv, "--include-directories") != argv.end();
+		[[maybe_unused]] const bool copilot_file = fs::exists(directory / ".github/instructions/handoff.instructions.md");
+		[[maybe_unused]] const bool gemini_file = fs::exists(directory / "GEMINI.md");
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+		if (provider == uam::provider_ids::kClaudeCli)
+		{
+			UAM_ASSERT(argv.size() >= 3);
+			UAM_ASSERT_EQ(argv[1], std::string("--append-system-prompt-file"));
+			// Compare paths: the launcher joins with '/' for an unnamed host platform, which Windows also accepts.
+			UAM_ASSERT(uam::paths::PathFromUtf8(argv[2]) == directory / "conversation.md");
+			UAM_ASSERT(!gemini_argument && !copilot_file && !gemini_file);
+			continue;
+		}
+#endif
+#if UAM_ENABLE_RUNTIME_COPILOT_CLI
+		if (provider == uam::provider_ids::kCopilotCli)
+		{
+			UAM_ASSERT_EQ(uam::io::ReadTextFile(directory / ".github/instructions/handoff.instructions.md"), "---\napplyTo: \"**\"\n---\n" + snapshot);
+			UAM_ASSERT(!environment.empty());
+			UAM_ASSERT_EQ(environment.back().first, std::string("COPILOT_CUSTOM_INSTRUCTIONS_DIRS"));
+			UAM_ASSERT_EQ(environment.back().second, uam::paths::Utf8PathString(directory));
+			UAM_ASSERT(!claude_argument && !gemini_argument && !gemini_file);
+			continue;
+		}
+#endif
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+		if (provider == uam::provider_ids::kGeminiCli)
+		{
+			UAM_ASSERT_EQ(uam::io::ReadTextFile(directory / "GEMINI.md"), snapshot);
+			const auto include = std::ranges::find(argv, "--include-directories");
+			UAM_ASSERT(include != argv.end() && include + 1 != argv.end());
+			UAM_ASSERT_EQ(*(include + 1), uam::paths::Utf8PathString(directory));
+			UAM_ASSERT(!claude_argument && !copilot_file);
+			continue;
+		}
+#endif
+		// OpenCode keeps the launcher's shared file only and reads it from its configuration environment.
+		UAM_ASSERT(argv == std::vector<std::string>{provider});
+		UAM_ASSERT(!copilot_file && !gemini_file);
+		UAM_ASSERT(!environment.empty());
+		const nlohmann::json configuration = nlohmann::json::parse(environment.back().second);
+		UAM_ASSERT_EQ(configuration["instructions"].back(), nlohmann::json(context_path));
+	}
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	{
+		// A Codex thread that already imported this handoff stages nothing again.
+		ChatSession chat;
+		chat.id = "staging-codex-bound";
+		chat.provider_id = uam::provider_ids::kCodexCli;
+		chat.provider_handoff_context = "User: My favourite fruit is kumquat.";
+		chat.native_session_id = "11111111-2222-4333-8444-555555555555";
+		chat.provider_handoff_session_id = chat.native_session_id;
+		chat.messages_loaded = true;
+		const std::vector<std::string> original{"codex", "resume", chat.native_session_id};
+		std::vector<std::string> argv = original;
+		std::vector<std::pair<std::string, std::string>> environment;
+		std::string channel;
+		std::string error;
+		UAM_ASSERT(PrepareCliProviderHandoff(app, chat, host, argv, environment, channel, error));
+		UAM_ASSERT(argv == original);
+		UAM_ASSERT(environment.empty() && channel.empty());
+		UAM_ASSERT(chat.provider_handoff_cli_contexts.empty());
+	}
+#endif
+#if UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
+	{
+		ChatSession chat;
+		chat.id = "staging-antigravity";
+		chat.provider_id = uam::provider_ids::kAntigravityCli;
+		chat.provider_handoff_context = "User: My favourite fruit is kumquat.";
+		std::vector<std::string> argv{"agy"};
+		std::vector<std::pair<std::string, std::string>> environment;
+		std::string channel;
+		std::string error;
+		UAM_ASSERT(!PrepareCliProviderHandoff(app, chat, host, argv, environment, channel, error));
+		UAM_ASSERT(error.starts_with("Antigravity terminal cannot import another provider's conversation."));
+		UAM_ASSERT(argv == std::vector<std::string>{"agy"});
+		UAM_ASSERT(chat.provider_handoff_cli_contexts.empty());
+	}
+#endif
 }
 
 UAM_TEST(CliViewHandoffWaitsForPriorStructuredProcessExit)

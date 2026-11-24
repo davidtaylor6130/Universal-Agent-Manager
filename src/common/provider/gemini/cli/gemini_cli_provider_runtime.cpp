@@ -14,6 +14,7 @@
 #include "common/platform/async_byte_writer.h"
 #include "common/utils/base64.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
+#include "common/provider/provider_setup.h"
 #include "common/runtime/json_runtime.h"
 #include "common/runtime/acp/acp_protocol_methods.h"
 #include "common/usage/transcript_usage.h"
@@ -414,6 +415,14 @@ const char* GeminiCliProviderRuntime::RuntimeId() const
 	return uam::provider_ids::kGeminiCli;
 }
 
+
+/// Gemini loads memory from an included directory's context file.
+bool GeminiCliProviderRuntime::StageCliHandoffContext(const ProviderCliHandoffStaging& staging, std::vector<std::string>& argv, std::string&) const
+{
+	if (!staging.stage_file(uam::execution_hosts::JoinRemotePath(staging.host_platform, staging.directory, "GEMINI.md"), staging.snapshot)) return false;
+	uam::provider_setup::InsertLaunchOptions(argv, {"--include-directories", staging.directory});
+	return true;
+}
 
 std::vector<std::string> GeminiCliProviderRuntime::BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings) const
 {

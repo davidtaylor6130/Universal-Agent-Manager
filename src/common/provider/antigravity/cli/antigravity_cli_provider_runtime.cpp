@@ -5,6 +5,7 @@
 #include "common/provider/provider_ids.h"
 #include "common/config/execution_host_config.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
+#include "common/provider/provider_setup.h"
 
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_goal_loop.h"
@@ -86,6 +87,16 @@ namespace
 const char* AntigravityCliProviderRuntime::RuntimeId() const
 {
 	return uam::provider_ids::kAntigravityCli;
+}
+
+/// The terminal refuses Antigravity handoff before staging; this keeps that refusal if a caller ever reaches staging.
+bool AntigravityCliProviderRuntime::StageCliHandoffContext(const ProviderCliHandoffStaging& staging, std::vector<std::string>& argv, std::string&) const
+{
+	// Only a custom agent's instructions reach here: the launcher refuses another provider's conversation for Antigravity
+	// first. They go in the private additional directory Central Setup also uses.
+	if (!staging.stage_file(uam::execution_hosts::JoinRemotePath(staging.host_platform, staging.directory, "AGENTS.md"), staging.snapshot)) return false;
+	uam::provider_setup::InsertLaunchOptions(argv, {"--add-dir", staging.directory});
+	return true;
 }
 
 std::vector<std::string> AntigravityCliProviderRuntime::BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings) const
@@ -358,6 +369,9 @@ nlohmann::json AntigravityCliProviderRuntime::OnAcpBuildInitialize(uam::AcpSessi
 	session.antigravity_output_tokens = 0;
 	session.antigravity_completed_turns = 0;
 	session.antigravity_completed_steps.clear();
+	session.antigravity_compaction_checkpoint_step.reset();
+	session.antigravity_compaction_checkpoint_failed = false;
+	session.antigravity_compaction_answered = false;
 	session.antigravity_turn_usage_complete = true;
 	session.antigravity_turn_has_usage = false;
 	// A new process cannot inherit a previous process's in-memory preflight receipt,
@@ -411,7 +425,7 @@ bool AntigravityCliProviderRuntime::OnAcpValidateGoalResume(const ChatSession& c
 		error = "The saved Antigravity conversation identity is invalid. The goal was not resumed.";
 		return false;
 	}
-	if (!restart && (goal.loop_count < 0 || goal.loop_count >= uam::GoalService::IterationLimit(goal, settings)))
+	if (!restart && (goal.loop_count < 0 || goal.loop_count >= uam::GoalService::IterationLimit(&chat, goal, settings)))
 	{
 		error = "Maximum goal loop iterations reached.";
 		return false;
@@ -531,11 +545,84 @@ std::string AntigravityCliProviderRuntime::OnAcpValidateResumeId(const ChatSessi
 	return uam::uuid::IsCanonicalUuid(id) ? id : std::string{};
 }
 
+nlohmann::json AntigravityCliProviderRuntime::OnAcpBuildCompact(const uam::AcpSessionState& session, int, std::string& method) const
+{
+	method.clear();
+	// Native /compact (agy 1.3.5+) needs an existing conversation; print mode expands it as a command, not model text.
+	// Only local chats are offered: the remote maintenance receipt and reconnect replay are not implemented for this stream.
+	const bool remote = !session.process_execution_host_id.empty() && session.process_execution_host_id != "local";
+	if (remote || !uam::uuid::IsCanonicalUuid(session.session_id)) return nullptr;
+	method = "antigravity/compact";
+	return {{"event", "user"}, {"message", {{"content", "/compact"}}}};
+}
+
 nlohmann::json AntigravityCliProviderRuntime::OnAcpBuildCancel(const uam::AcpSessionState&, int, std::string& method) const
 {
 	// Shared cancellation stops this owned process; sending control envelopes aborts the native protocol.
 	method.clear();
 	return nullptr;
+}
+
+namespace
+{
+	/// Retires the owned /compact request entry and its checkpoint receipt.
+	void RetireAntigravityCompactionRequest(uam::AcpSessionState& session)
+	{
+		std::erase_if(session.pending_request_methods, [](const auto& request) { return request.second == "antigravity/compact"; });
+		session.antigravity_compaction_checkpoint_step.reset();
+		session.antigravity_compaction_checkpoint_failed = false;
+		session.antigravity_compaction_answered = false;
+	}
+
+	/// Settles UAM's own /compact request. The stream reports a checkpoint step and no summary text, so a completed
+	/// checkpoint records a summary-less compaction marker; anything else stays an explicit failure or no-op.
+	void HandleAntigravityManualCompaction(uam::AppState& app, uam::AcpSessionState& session, ChatSession& chat,
+	    const std::string& event, const nlohmann::json& payload, const std::string& identity)
+	{
+		using namespace uam::acp_detail;
+		if (event == "step_update")
+		{
+			// Maintenance owns no answer, tool, child or goal usage. An answer means the command reached the model
+			// as text; it is noted (never shown) so the result cannot read as a quiet no-op.
+			if (JsonDiagnosticStringValue(payload, "step_type") == "agent_response" && !JsonDiagnosticStringValue(payload, "text_delta").empty())
+				session.antigravity_compaction_answered = true;
+			if (JsonDiagnosticStringValue(payload, "step_type") != "checkpoint") return;
+			const std::string state = JsonDiagnosticStringValue(payload, "state");
+			if (state == "ACTIVE")
+				session.context_compaction_in_progress = true;
+			else if (state == "DONE")
+			{
+				const auto step_index = AntigravityStepIndex(payload);
+				if (step_index) session.antigravity_compaction_checkpoint_step = *step_index;
+				else session.antigravity_compaction_checkpoint_failed = true;
+			}
+			else if (state == "ERROR" || state == "CANCELED" || state == "CANCELLED")
+				session.antigravity_compaction_checkpoint_failed = true;
+			return;
+		}
+		const std::string status = JsonDiagnosticStringValue(payload, "status");
+		// agy can carry an answer only in the result, as the ordinary turn path allows.
+		if (!JsonDiagnosticStringValue(payload, "response").empty()) session.antigravity_compaction_answered = true;
+		const bool checkpoint = session.antigravity_compaction_checkpoint_step.has_value();
+		const bool failed = status != "SUCCESS" || session.antigravity_compaction_checkpoint_failed || (session.antigravity_compaction_answered && !checkpoint);
+		if (!failed && checkpoint)
+			AppendContextCompactionEvent(app, session, chat, "", "antigravity-compaction:" + identity + ":" + std::to_string(*session.antigravity_compaction_checkpoint_step));
+		else if (session.antigravity_compaction_answered && !checkpoint)
+			session.last_error = "Antigravity answered /compact as a message instead of compacting this chat.";
+		else if (failed)
+			session.last_error = "Antigravity could not compact this chat.";
+		else
+			session.last_error = "Antigravity finished without compacting this chat. It may have nothing to compact yet.";
+		// num_turns is not advanced from maintenance: whether agy counts or resets turns around a checkpoint is unverified.
+		RetireAntigravityCompactionRequest(session);
+		session.manual_compaction_pending = false;
+		session.context_compaction_in_progress = false;
+		session.processing = false;
+		session.inactivity_timeout_pending = false;
+		session.lifecycle_state = failed ? kAcpLifecycleError : kAcpLifecycleReady;
+		// This maintenance result owns no user turn, goal iteration or checkpoint.
+		(void)uam::DrainNextQueuedAcpUserPrompt(app, session, chat);
+	}
 }
 
 bool AntigravityCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::AcpSessionState& session, ChatSession& chat,
@@ -561,6 +648,8 @@ bool AntigravityCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::
 				HoldAntigravityGoal(app, session, chat, "antigravity_goal_usage_unknown", "Antigravity returned a different goal conversation. Continuing work is held.", kDecisionSourceFallback);
 				return true;
 			}
+			// A changed identity ends an owned compaction too; it can never complete it.
+			if (session.manual_compaction_pending) RetireAntigravityCompactionRequest(session);
 			FailAcpTurnOrSession(session, &chat, "Antigravity returned an invalid or changed conversation identity.");
 			SaveChatQuietly(app, chat);
 			return true;
@@ -590,6 +679,11 @@ bool AntigravityCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::
 		// Native events contain current-turn text, never ACP session/load transcript replay.
 		session.assistant_replay_prefixes.clear();
 		session.load_history_replay_updates.clear();
+		if (session.manual_compaction_pending)
+		{
+			HandleAntigravityManualCompaction(app, session, chat, event, payload, identity);
+			return true;
+		}
 		if (event == "step_update")
 		{
 			const std::string state = JsonDiagnosticStringValue(payload, "state");

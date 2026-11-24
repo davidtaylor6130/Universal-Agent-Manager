@@ -13,6 +13,7 @@
 #include "common/provider/provider_ids.h"
 #include "common/state/app_state.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
+#include "common/provider/provider_setup.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_claude_stream.h"
 #include "common/runtime/acp/acp_model_json.h"
@@ -124,6 +125,14 @@ const char* ClaudeCliProviderRuntime::RuntimeId() const
 	return uam::provider_ids::kClaudeCli;
 }
 
+
+/// Claude reads the staged conversation as an appended system prompt file.
+bool ClaudeCliProviderRuntime::StageCliHandoffContext(const ProviderCliHandoffStaging& staging, std::vector<std::string>& argv, std::string&) const
+{
+	// Ahead of any positional "--" that extra launch flags may carry.
+	uam::provider_setup::InsertLaunchOptions(argv, {"--append-system-prompt-file", staging.context_path});
+	return true;
+}
 
 std::vector<std::string> ClaudeCliProviderRuntime::BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings) const
 {
@@ -427,7 +436,7 @@ nlohmann::json ClaudeCliProviderRuntime::OnAcpBuildCompact(const uam::AcpSession
 	if (!session.claude_manual_compaction_supported || session.session_id.empty()) return nullptr;
 	out_method = "claude/compact";
 	return {{"type", "user"}, {"session_id", session.session_id}, {"parent_tool_use_id", nullptr},
-	    {"message", {{"role", "user"}, {"content", "/compact"}}}};
+	    {"message", {{"role", "user"}, {"content", session.manual_compaction_instructions.empty() ? std::string("/compact") : "/compact " + session.manual_compaction_instructions}}}};
 }
 
 nlohmann::json ClaudeCliProviderRuntime::OnAcpBuildPermissionResponse(const uam::AcpSessionState& session, const uam::AcpPendingPermissionState& pending, const std::string& option_id, bool cancelled) const

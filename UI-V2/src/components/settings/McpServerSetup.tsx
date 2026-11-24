@@ -219,7 +219,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
       setImportSources(response.data.sources)
       setImportWarnings(response.data.warnings)
       setImportText(response.data.servers.length ? toJsonText(response.data.servers, uamEnabled) : '')
-      if (response.data.servers.length) reportAppNotice(`Loaded ${response.data.servers.length} server${response.data.servers.length === 1 ? '' : 's'}. Review the configuration below before importing.`)
+      if (response.data.servers.length) reportAppNotice(`Loaded ${response.data.servers.length} server${response.data.servers.length === 1 ? '' : 's'}; review them before importing.`)
       else reportAppNotice('No external MCP servers found in the configuration.')
     } catch { if (generation === importGeneration.current) reportAppFailure('Could not read OpenCode configuration.', 'Try again.') }
     finally { if (generation === importGeneration.current) { setBusy(false); onBusyChange(false) } }
@@ -290,7 +290,7 @@ export function McpServerSetup({ onBusyChange, onDirtyChange, scopeExecutionHost
     <textarea aria-label="Import MCP configuration" className="uam-prov-json uam-prov-json--compact" spellCheck={false} rows={8} disabled={busy} value={importText} onChange={event => { setImportText(event.currentTarget.value); setImportSources([]) }} />
     <Reveal open={importSources.length > 0}><div className="text-xs break-all" style={{ color: 'var(--text-3)' }}>{importSources.map(source => <div key={source}>{source}</div>)}</div></Reveal>
     {warningNotice(importWarnings.length > 0)}
-    <Button size="sm" variant="primary" className="self-start" disabled={busy || !importText.trim()} onClick={() => { try { setServers(mergeMcpImport(importText, servers)); setSetup(null); reportAppNotice('Imported into the draft. Review the servers, then Save.', 'success') } catch (error) { reportAppFailure('Could not import configuration.', error instanceof Error ? error.message : 'Check the JSON and try again.') } }}>Review import</Button>
+    <Button size="sm" variant="primary" className="self-start" disabled={busy || !importText.trim()} onClick={() => { try { setServers(mergeMcpImport(importText, servers)); setSetup(null); reportAppNotice('Imported into the draft; review, then Save.', 'success') } catch (error) { reportAppFailure('Could not import configuration.', error instanceof Error ? error.message : 'Check the JSON and try again.') } }}>Review import</Button>
   </> : <>
     {text('Server name', guidedName, setGuidedName, 'playwright')}
     <SettingsField label="How does this server connect?"><MenuSelect label="Setup connection type" value={guidedTransport} onChange={value => setGuidedTransport(value as McpServerConfiguration['transport'])} options={[{ value: 'stdio', label: "Run a program on the agent's machine" }, { value: 'http', label: 'Connect to an HTTP URL' }, { value: 'sse', label: 'Connect to an SSE URL' }]} /></SettingsField>
