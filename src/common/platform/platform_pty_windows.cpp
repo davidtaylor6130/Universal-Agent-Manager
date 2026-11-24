@@ -275,21 +275,16 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 			return;
 		}
 
-		if (terminal.running && terminal.pipe_input != INVALID_HANDLE_VALUE)
-		{
-			static constexpr char kQuitCommand[] = "/quit\r\n";
-			(void)WriteToCliTerminal(terminal, kQuitCommand, sizeof(kQuitCommand) - 1);
-		}
+		// Never type a quit command: the composer may hold the user's unsent draft, and the command's Enter would submit
+		// both as one live prompt. ConPTY children have no console close signal UAM can send, so the tree is terminated.
+		TerminateProcessTree(terminal.job_object, terminal.process_info.hProcess, 1);
+		if (WaitForSingleObject(terminal.process_info.hProcess, 250) == WAIT_OBJECT_0) CloseCliTerminalHandles(terminal);
+	}
 
-		DWORD wait_result = WaitForSingleObject(terminal.process_info.hProcess, 250);
-
-		if (wait_result == WAIT_TIMEOUT)
-		{
-			TerminateProcessTree(terminal.job_object, terminal.process_info.hProcess, 1);
-			wait_result = WaitForSingleObject(terminal.process_info.hProcess, 250);
-		}
-
-		if (wait_result == WAIT_OBJECT_0) CloseCliTerminalHandles(terminal);
+	void RequestCliTerminalProcessExit(uam::CliTerminalState& terminal) const override
+	{
+		// Terminate without waiting or closing handles: the poll drains the final output and observes the exit.
+		if (terminal.process_info.hProcess != INVALID_HANDLE_VALUE) TerminateProcessTree(terminal.job_object, terminal.process_info.hProcess, 1);
 	}
 
 	void ResizeCliTerminal(uam::CliTerminalState& terminal) const override

@@ -181,7 +181,7 @@ The following mutate only the requested chat or create a chat. Their responses r
 | `setChatMemoryEnabled` | `{chatId,enabled,memoryLevel?}` |
 | `setChatSmallModelMode` | `{chatId,enabled}` |
 | `setAcpConfigOption` | `{chatId,configId,value}`; existing provider session option validation |
-| `compactAcpSession` | `{chatId}` |
+| `compactAcpSession` | `{chatId,instructions?}`; replies `{accepted,instructionsUsed}` |
 | `manageQueuedAcpPrompt` | `{chatId,operation,...existing revision-bound queue fields}`; `remove`/`steer` require `{index,expected:{id,revision}}`; other operations `edit`, `reorder`, `discardUnsent` retain their existing schemas |
 | `stageChatAttachments` | Byte staging schema below |
 | `sendAcpPrompt` | `{chatId,text,attachments?,goalMode?,goalId?,computerUseMode?,steerNow?}`; attachments must be unchanged staging results; host `markdownStoreFiles` are unavailable |
