@@ -2125,6 +2125,10 @@ UAM_TEST(AgentRunLedgerStartupPrunesExpiredTerminalRecordsAndKeepsLiveLineage)
 UAM_TEST(AgentRunSchedulerCapsOneParentAtHalfTheRunningSlotsAndKeepsItsQueueOrder)
 {
 	ManagedControlFixture fixture;
+	// With a routing service, an agent whose provider is unknown is refused as invalid and stays queued, so the
+	// provider exists. Never an installed CLI: a launch that is reached fails on its own.
+	fixture.app.provider_profiles = {ProviderProfileStore::DefaultCodexProfile()};
+	fixture.app.provider_profiles.front().interactive_command = (fixture.temp.root / "missing-provider-cli").string();
 	// The chat "root" already has two agents running: half of the four running slots.
 	const auto first_running = fixture.Add("root", {}, "running");
 	(void)fixture.Add("root", {}, "running");
@@ -2164,4 +2168,5 @@ UAM_TEST(AgentRunSchedulerCapsOneParentAtHalfTheRunningSlotsAndKeepsItsQueueOrde
 	(void)uam::AgentRunScheduler::PollAtForTests(fixture.app, 1001);
 	UAM_ASSERT(status(held_first) != "queued");
 	UAM_ASSERT(std::ranges::find(fixture.app.queued_agent_run_ids, held_first) == fixture.app.queued_agent_run_ids.end());
+	uam::FastStopAcpSessionsForExit(fixture.app);
 }

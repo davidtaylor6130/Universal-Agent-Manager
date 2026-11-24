@@ -143,7 +143,12 @@ UAM_TEST(SpawnedChildrenStartAtTheirClassPriority)
 		service.StopStdioProcess(process, true);
 		return value;
 	};
-	UAM_ASSERT(priority_class(ChildProcessClass::UserTurn) != BELOW_NORMAL_PRIORITY_CLASS);
+	UAM_ASSERT_EQ(uam::platform::CurrentChildProcessClass(), ChildProcessClass::UserTurn);
+	// A user turn passes no class flag, so it gets Windows' default: normal, or this process's own class when that
+	// is below normal or idle (a lowered CI runner), exactly as any child of this process would.
+	const DWORD own = GetPriorityClass(GetCurrentProcess());
+	const DWORD user_default = own == BELOW_NORMAL_PRIORITY_CLASS || own == IDLE_PRIORITY_CLASS ? own : static_cast<DWORD>(NORMAL_PRIORITY_CLASS);
+	UAM_ASSERT_EQ(priority_class(ChildProcessClass::UserTurn), user_default);
 	UAM_ASSERT_EQ(priority_class(ChildProcessClass::Agent), static_cast<DWORD>(BELOW_NORMAL_PRIORITY_CLASS));
 	UAM_ASSERT_EQ(priority_class(ChildProcessClass::Background), static_cast<DWORD>(BELOW_NORMAL_PRIORITY_CLASS));
 #else
