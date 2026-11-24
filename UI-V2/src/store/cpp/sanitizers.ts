@@ -2413,7 +2413,9 @@ function sanitizeShellActions(value: unknown): ShellAction[] {
     const id = stringOr(entry.id).trim()
     const label = stringOr(entry.label).trim()
     if (!id || !label) return []
+    const invalidReason = stringOr(entry.invalidReason).trim()
     return [{
+      ...(invalidReason ? { invalidReason } : {}),
       id,
       label,
       skillPath: stringOr(entry.skillPath),

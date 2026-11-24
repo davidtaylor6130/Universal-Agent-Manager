@@ -1538,6 +1538,8 @@ namespace uam
 		std::vector<ChatFolder> folders;
 		std::vector<ResourceCollection> resource_collections;
 		std::vector<ShellAction> shell_actions;
+		/// The saved shell actions file existed but could not be read on the last load, so the next save sets it aside first.
+		bool shell_actions_unreadable = false;
 		std::string shell_action_notification;
 		std::vector<ProviderProfile> provider_profiles;
 		uam::FrontendActionMap frontend_actions;

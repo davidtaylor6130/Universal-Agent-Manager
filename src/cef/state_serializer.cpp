@@ -2343,7 +2343,7 @@ namespace uam
 			{
 				// An excluded provider's actions stay saved but do not exist in this build's interface.
 				if (uam::excluded_provider_data::IsExcluded(action.provider_id)) continue;
-				result.push_back({
+				nlohmann::json entry{
 				    {"id", action.id},
 				    {"label", action.label},
 				    {"skillPath", action.skill_path},
@@ -2354,7 +2354,10 @@ namespace uam
 				    {"acceptsFolders", action.accepts_folders},
 				    {"enabled", action.enabled},
 				    {"openWorkspace", action.open_workspace},
-				});
+				};
+				// A kept invalid entry is shown disabled and read-only with its one-line reason.
+				if (!action.invalid_reason.empty()) entry["invalidReason"] = action.invalid_reason;
+				result.push_back(std::move(entry));
 			}
 			return result;
 		}

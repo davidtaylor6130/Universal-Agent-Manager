@@ -789,6 +789,8 @@ export interface ShellAction {
   acceptsFolders: boolean
   enabled: boolean
   openWorkspace: boolean
+  /** Set when the saved entry failed validation: it stays disabled and read-only, and saving keeps it as saved. */
+  invalidReason?: string
 }
 
 export interface ProviderAvailabilityOverride {
