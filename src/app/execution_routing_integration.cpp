@@ -331,6 +331,8 @@ namespace uam
 		// down or overloaded computer.
 		const bool movable = automatic && ExecutionRoutingWorkUnstarted(app, chat);
 		std::vector<ExecutionRoutingCandidate> candidates;
+		// Unstarted work first looks for another computer; with none, it may still try its own after a failed check.
+		bool own_host_retry_possible = false;
 		for (const ExecutionHost& host : app.settings.execution_hosts)
 		{
 			ExecutionRoutingCandidate candidate;
@@ -339,8 +341,10 @@ namespace uam
 			candidate.provider_configuration_identity = ExecutionRoutingProviderIdentity(app, *provider, host.id);
 			// New work goes only to a host last seen Ready. A chat already assigned to this host may try it
 			// after a failed health check, exactly as an explicit SSH chat does.
-			const bool assigned_here = automatic && !movable && !chat.routing_assigned_connection_identity.empty() && chat.execution_host_id == host.id;
+			const bool assigned_host = automatic && !chat.routing_assigned_connection_identity.empty() && chat.execution_host_id == host.id;
+			const bool assigned_here = assigned_host && !movable;
 			candidate.runner_ready = host.id == "local" || host.runner_status == "ready" || (assigned_here && execution_hosts::CanConnectRunner(host));
+			if (movable && assigned_host && !candidate.runner_ready && execution_hosts::CanConnectRunner(host)) own_host_retry_possible = true;
 			candidate.runner_compatible = host.id == "local" || (!host.runner_version.empty() && host.runner_protocol_version == remote::kRunnerProtocolVersion);
 			const std::unordered_map<std::string, CliProviderVersionState>::const_iterator version = app.runtime_cli_versions_by_provider_id.find(CliProviderVersionStateKey(provider->id, host.id));
 			const bool version_usable = version != app.runtime_cli_versions_by_provider_id.end() && version->second.checked && version->second.supported &&
@@ -483,6 +487,13 @@ namespace uam
 			if (request.recovery_of_owned_work) return {ExecutionRoutingStatus::Disabled, ExecutionRoutingReason::None, {}};
 		}
 		ExecutionRoutingDecision decision = RoutingService(app).Admit(request, candidates, occupancy);
+		if (own_host_retry_possible && !decision.moved && decision.status == ExecutionRoutingStatus::Waiting &&
+		    decision.reason == ExecutionRoutingReason::HostUnavailable)
+		{
+			for (ExecutionRoutingCandidate& candidate : candidates)
+				if (candidate.host_id == chat.execution_host_id) candidate.runner_ready = true;
+			decision = RoutingService(app).Admit(request, candidates, occupancy);
+		}
 		if (decision.status == ExecutionRoutingStatus::Waiting || decision.status == ExecutionRoutingStatus::Invalid)
 		{
 			app.execution_routing_waits[chat.id] = decision.reason != ExecutionRoutingReason::OwnershipChanged || !connection_held ? WaitReason(decision.reason)
