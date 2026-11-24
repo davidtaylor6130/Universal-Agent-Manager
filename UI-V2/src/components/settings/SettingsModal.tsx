@@ -10,6 +10,7 @@ import { localBuildLabel } from '../../services/updateCatalog'
 import { SettingsScopeBar } from './SettingsScopeBar'
 import { PhonePairingPanel } from './PhonePairingPanel'
 import { PhoneTokenRegenerateRow } from './PhoneTokenRegenerateRow'
+import { PhoneRestartButton } from './PhoneRestartButton'
 import { AutomationSettings } from './AutomationSettings'
 import { SETTINGS_ALL_ENVIRONMENTS } from '../../utils/settingsScope'
 import { ProviderConnections } from './ProviderConnections'
@@ -1740,7 +1741,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           status={!companionSettings?.enabled && !failed && !companionLoadError && !companionSettings?.restartRequired && companionBusyAction !== 'setCompanionEnabled' && companionSettings ? undefined : <span role="status" aria-live="polite" className="inline-flex items-center gap-1" style={{ color: failed || companionLoadError ? 'var(--error)' : 'var(--text-2)' }}>{failed || companionLoadError ? <StatusDot tone="error" /> : null}{companionSettings?.restartRequired ? 'Restart Universal Agent Manager to apply this change.' : companionBusyAction === 'setCompanionEnabled' ? 'Updating…' : companionLoadError ? <span className="sr-only">Needs attention</span> : !companionSettings ? 'Checking…' : ready ? 'Ready to connect' : companionSettings.state === 'starting' ? 'Updating…' : failed ? <span className="sr-only">Needs attention</span> : 'Off'}</span>}
           control={<div className="flex flex-wrap gap-2">
             <Reveal open={Boolean(failed || companionLoadError)}><Button size="sm" variant="secondary" disabled={companionBusy} onClick={() => { if (failed) void changeCompanion('restartCompanion'); else void loadCompanionSettings(true) }}>{['restartCompanion', 'reloadCompanion'].includes(companionBusyAction) ? 'Retrying…' : 'Retry phone access'}</Button></Reveal>
-            <Reveal open={Boolean(failed || companionSettings?.restartRequired)}><Button size="sm" variant="secondary" disabled={companionBusy} onClick={() => void restartApplication()}>{companionBusyAction === 'restartApplication' ? 'Restarting Universal Agent Manager…' : 'Restart Universal Agent Manager'}</Button></Reveal>
+            <Reveal open={Boolean(failed || companionSettings?.restartRequired)}><PhoneRestartButton disabled={companionBusy} restarting={companionBusyAction === 'restartApplication'} onRestart={() => void restartApplication()} /></Reveal>
           </div>}
         >{phoneFeedback}</SettingRow>
         <Reveal open={repairAddresses.length > 0}>{repairAddresses.length > 0 && <SettingRow title="Network address changed" description={`${configuredHost} is no longer on this computer.`}
