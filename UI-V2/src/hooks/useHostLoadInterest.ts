@@ -8,7 +8,8 @@ export const HOST_LOAD_INTEREST_MS = 20_000
 export function useHostLoadInterest(active = true) {
   const request = useAppStore((state) => state.requestHostLoad)
   useEffect(() => {
-    if (!active) return
+    // Builds without SSH have no routing slice, so there is no load to ask for.
+    if (!active || !request) return
     request()
     const timer = window.setInterval(request, HOST_LOAD_INTEREST_MS)
     return () => window.clearInterval(timer)

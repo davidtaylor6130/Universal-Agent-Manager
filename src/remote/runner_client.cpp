@@ -1184,12 +1184,8 @@ namespace uam::remote
 		if (file.bad() || hashed != size) return fail("The file changed or could not be read while preparing the upload.");
 		file.clear();
 		file.seekg(0);
-		// Also after a cancel, so the helper drops the partial temporary file; bounded by the request deadline.
-		const auto abort = [&]
-		{
-			nlohmann::json ignored;
-			if (m_connected) (void)Request({{"type", "file.abort"}, {"uploadId", upload_id}}, ignored, nullptr);
-		};
+		// Also after a cancel or a dropped connection, so the helper drops the partial temporary file.
+		const auto abort = [&] { AbortUpload(upload_id); };
 		nlohmann::json response;
 		if (!Request({{"type", "file.begin"}, {"uploadId", upload_id}, {"path", uam::paths::Utf8PathString(remote_path)},
 		              {"size", size}, {"digest", uam::hashing::Hex64Padded(digest)}}, response, error_out, interrupt))
@@ -1216,7 +1212,12 @@ namespace uam::remote
 		}
 		if (!Request({{"type", "file.commit"}, {"uploadId", upload_id}}, response, error_out, interrupt))
 		{
+			const bool reply_lost = !m_connected;
 			abort();
+			// A commit whose reply was lost may have published the file. The helper refused a target that already
+			// existed at begin, so whatever is there now can only be this copy.
+			// Only when the abort reached the host again: another reconnect straight after would fail the same way.
+			if (reply_lost && m_connected) (void)RemoveFile(upload_id, remote_path);
 			return false;
 		}
 		const nlohmann::json& committed = response["result"];
@@ -1241,13 +1242,40 @@ namespace uam::remote
 		return Request({{"type", "context.remove"}, {"directory", uam::paths::Utf8PathString(directory)}}, response, error_out, [stop_token] { return stop_token.stop_requested(); });
 	}
 
+	bool RunnerClient::ReconnectForCleanup(std::string* error_out)
+	{
+		if (m_connected) return true;
+		const auto budget_spent = [deadline = std::chrono::steady_clock::now() + m_cleanupLimit]
+		{ return std::chrono::steady_clock::now() >= deadline; };
+		if (Connect(error_out, {}, budget_spent)) return true;
+		// A spent budget reads as an interruption, which is not what happened.
+		if (error_out != nullptr && budget_spent()) *error_out = "The host could not be reached again to clean up.";
+		return false;
+	}
+
+	void RunnerClient::AbortUpload(const std::string& upload_id)
+	{
+		// A host that cannot be reached again in time is left to the helper, which expires a quiet upload itself.
+		if (!ReconnectForCleanup()) return;
+		nlohmann::json ignored;
+		// Bounded by the request deadline, not the cancel that may have ended the transfer.
+		(void)Request({{"type", "file.abort"}, {"uploadId", upload_id}}, ignored, nullptr);
+	}
+
 	bool RunnerClient::RemoveFile(const std::string& request_id,
 	                              const std::filesystem::path& remote_path,
 	                              std::string* error_out)
 	{
+		if (!ReconnectForCleanup(error_out)) return false;
+		nlohmann::json request = {{"type", "file.remove"}, {"uploadId", request_id},
+		                          {"path", uam::paths::Utf8PathString(remote_path)}};
 		nlohmann::json response;
-		return Request({{"type", "file.remove"}, {"uploadId", request_id},
-		                {"path", uam::paths::Utf8PathString(remote_path)}}, response, error_out);
+		bool removed = Request(request, response, error_out);
+		// Only a transport failure is retried; the reply's error is kept when the host cannot be reached again. A
+		// removal that ran before its reply was lost reports remove_failed on the retry, as any failed transport did.
+		if (!removed && !m_connected && ReconnectForCleanup())
+			removed = Request(std::move(request), response, error_out);
+		return removed;
 	}
 
 	bool RunnerClient::SweepChatAttachments(const std::string& request_id, const std::filesystem::path& folder, const std::set<std::string>& keep,

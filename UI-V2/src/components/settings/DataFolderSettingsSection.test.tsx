@@ -71,7 +71,7 @@ describe('Application data-folder Settings', () => {
       await act(async () => button('Choose folder…').click())
       await act(async () => button('Save folder choice').click())
       expect(document.body.textContent).toContain('/occupied')
-      expect(vi.mocked(reportAppFailure)).toHaveBeenCalledWith('Choose an empty folder.', expect.any(String))
+      expect(vi.mocked(reportAppFailure)).toHaveBeenCalledWith('The data folder was not changed.', expect.stringContaining('Choose an empty folder.'))
       expect(document.body.textContent).not.toContain('Saved folder choice')
     } finally { act(() => root.unmount()) }
   })

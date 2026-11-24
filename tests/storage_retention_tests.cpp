@@ -230,9 +230,11 @@ UAM_TEST(StorageRetentionWriterHoldsActualRootLockUntilCompletion)
 	};
 	std::promise<void> entered, release;
 	const std::shared_future<void> resume = release.get_future().share();
+	// Block a write of the policy file itself: durable writes are serialised per destination, so the policy
+	// writer queues behind this one while holding its root lease.
 	std::thread blocker([&]()
 	{
-		(void)uam::io::AtomicWriteFileDetailed(temp.root / "fixture-blocker", "fixture", [&](uam::io::AtomicWriteStage stage)
+		(void)uam::io::AtomicWriteFileDetailed(temp.root / "storage-retention.json", "fixture", [&](uam::io::AtomicWriteStage stage)
 		{
 			if (stage == uam::io::AtomicWriteStage::DuringWrite) { entered.set_value(); resume.wait(); }
 			return true;

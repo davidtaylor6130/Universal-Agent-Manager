@@ -3,7 +3,7 @@ import { COMPUTER_USE_ENABLED } from '../../config/buildFeatures'
 import { sendToCEF } from '../../ipc/cefBridge'
 import { useAppStore } from '../../store/useAppStore'
 import { Button, Switch, Reveal } from '../ui'
-import { reportAppFailure } from '../../utils/appFailure'
+import { failureDetail, reportAppFailure } from '../../utils/appFailure'
 import { SettingRow } from './SettingsPrimitives'
 
 type ComputerUseSettings = { computerUseGloballyEnabled?: boolean; computerUseRevocationPending?: boolean }
@@ -50,7 +50,7 @@ export function ComputerUseSettingRow({ disabled = false }: { disabled?: boolean
   const check = async () => {
     const captured = currentObservation()
     const response = await sendToCEF<ComputerUseSettings>({ action: 'getComputerUseSettings' })
-    if (!response.ok || observe(response.data, captured) === 'invalid') throw Error(response.error || 'Could not confirm Computer Use status.')
+    if (!response.ok || observe(response.data, captured) === 'invalid') throw Error(response.error || '')
   }
   const change = async (next?: boolean, trigger?: HTMLInputElement | HTMLButtonElement) => {
     if (operationInFlight || disabled || !COMPUTER_USE_ENABLED) return
@@ -63,11 +63,11 @@ export function ComputerUseSettingRow({ disabled = false }: { disabled?: boolean
       if (next === undefined) await check()
       else {
         const response = await sendToCEF<ComputerUseSettings>({ action: 'setComputerUseSettings', payload: { computerUseGloballyEnabled: next } })
-        if (!response.ok) throw Error(response.error || 'Could not change Computer Use.')
+        if (!response.ok) throw Error(response.error || '')
         if (observe(response.data, captured) !== 'applied') await check()
       }
     } catch (failure) {
-      const message = failure instanceof Error ? failure.message : 'Could not change Computer Use.'
+      const message = next === undefined ? 'Could not check Computer Use.' : 'Could not change Computer Use.'
       // Off can persist even when native shutdown fails, so re-read instead of rolling back.
       let confirmed = false
       if (next !== undefined) {
@@ -77,7 +77,7 @@ export function ComputerUseSettingRow({ disabled = false }: { disabled?: boolean
       if (!confirmed) {
         useAppStore.setState({ computerUseEnabled: undefined, computerUseRevocationPending: undefined })
       }
-      reportAppFailure(message, confirmed ? '' : 'Status is not confirmed; check before trying again.')
+      reportAppFailure(message, failureDetail(failure, confirmed ? '' : 'Status is not confirmed; check before trying again.'))
     } finally {
       operationInFlight = false
       useAppStore.setState({ computerUseSettingsOperation: undefined })
