@@ -156,13 +156,21 @@ namespace uam
 	    const TemporarySideChatContext* prepared = nullptr);
 	bool RequestTemporarySideChatCleanup(AppState& app, const std::string& chat_id);
 	bool PollTemporarySideChatCleanup(AppState& app);
-	bool MigrateWorkspaceFolderOwnership(AppState& app);
+	/// <summary>Splits legacy workspaces whose chats run on different machines. Saves the folder list before the chats that
+	/// move, so an interruption between the two writes never leaves a saved chat naming an unsaved workspace.
+	/// The hook runs between those writes so tests can inspect the files an interruption would leave.</summary>
+	bool MigrateWorkspaceFolderOwnership(AppState& app, const std::function<void()>& between_saves_for_tests = {});
 	bool RecoverPendingDeletionTransaction(AppState& app);
 	bool BranchFromMessageAndRetry(AppState& app, const std::string& source_chat_id, int message_index, const std::optional<std::string>& replacement_content, std::string* branch_id_out = nullptr, std::string* error_out = nullptr, const std::optional<std::string>& operation_id = std::nullopt, std::string* warning_out = nullptr, const std::optional<std::vector<std::string>>& retained_attachment_ids = std::nullopt, const ChatSession* prepared_source = nullptr, const ChatSession* prepared_existing_branch = nullptr, uam::PreparedBranchOriginals* prepared_originals = nullptr, const std::optional<std::vector<std::string>>& retained_markdown_store_files = std::nullopt, bool select_chat = true, bool regenerate = true);
 	/// Companion callers retain their explicit selection/regeneration controls.
 	bool BranchFromMessageAndRetry(AppState& app, const std::string& source_chat_id, int message_index, const std::optional<std::string>& replacement_content, std::string* branch_id_out, std::string* error_out, const std::optional<std::string>& operation_id, std::string* warning_out, const std::optional<std::vector<std::string>>& retained_attachment_ids, const ChatSession* prepared_source, const ChatSession* prepared_existing_branch, bool select_chat, bool regenerate = true);
 	WorkspaceFolderRecoveryPreview PreviewUnsortedWorkspaceFolders(const AppState& app);
-	bool RebuildUnsortedWorkspaceFolders(AppState& app, WorkspaceFolderRecoveryResult* result_out = nullptr);
+	/// <summary>Same save order and test hook as MigrateWorkspaceFolderOwnership: folders first, then the chats that move.</summary>
+	bool RebuildUnsortedWorkspaceFolders(AppState& app, WorkspaceFolderRecoveryResult* result_out = nullptr,
+	    const std::function<void()>& between_saves_for_tests = {});
+	/// <summary>Writes one diagnostic line naming the workspace folder IDs that saved chats reference but no saved
+	/// workspace has, with a chat count per ID and no paths. Those chats show under Unsorted. Returns the chat count.</summary>
+	std::size_t LogDanglingWorkspaceFolderReferences(const AppState& app);
 }
 
 bool RemoveChatById(uam::AppState& app, const std::string& chat_id);

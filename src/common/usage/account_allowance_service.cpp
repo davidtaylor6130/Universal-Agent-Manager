@@ -164,6 +164,19 @@ namespace uam::usage
 		return {{"executionHostId", host}, {"providers", std::move(rows)}, {"refreshing", refreshing}, {"refreshAfterMs", has_targets ? refresh_after_ms : 0}};
 	}
 
+	nlohmann::json AccountAllowanceService::CachedRow(std::string_view provider_id)
+	{
+		std::lock_guard lock(m_mutex);
+		for (const auto& provider : m_providers)
+		{
+			if (provider->config.provider_id != provider_id || provider->config.command.empty()) continue;
+			auto row = provider->row;
+			row["scope"] = Scope(provider->config);
+			return row;
+		}
+		return nullptr;
+	}
+
 	void AccountAllowanceService::Run(std::stop_token stop, std::size_t index)
 	{
 		while (!stop.stop_requested())

@@ -66,6 +66,20 @@ UAM_TEST(ClaudeManualCompactionRequiresAdvertisedNativeCommand)
 	UAM_ASSERT_EQ(request["session_id"], nlohmann::json(session.session_id));
 }
 
+UAM_TEST(ClaudeManualCompactionPassesTypedInstructionsToNativeCommand)
+{
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById("claude-cli");
+	UAM_ASSERT(runtime.SupportsAcpCompactionInstructions());
+	uam::AcpSessionState session;
+	session.session_id = "11111111-2222-4333-8444-555555555555";
+	runtime.OnAcpInitializeResult(session, {{"commands", {{{"name", "compact"}, {"builtin", true}}}}});
+	std::string method;
+	session.manual_compaction_instructions = "keep the API schema notes";
+	UAM_ASSERT_EQ(runtime.OnAcpBuildCompact(session, 42, method)["message"]["content"], nlohmann::json("/compact keep the API schema notes"));
+	session.manual_compaction_instructions.clear();
+	UAM_ASSERT_EQ(runtime.OnAcpBuildCompact(session, 42, method)["message"]["content"], nlohmann::json("/compact"));
+}
+
 UAM_TEST(ClaudeManualCompactionRequiresOwnedBoundaryAndAvoidsNormalTurnCompletion)
 {
 	ClaudeMaintenanceFixture fixture;

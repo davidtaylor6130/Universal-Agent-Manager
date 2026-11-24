@@ -61,7 +61,7 @@ export function ExecutionRoutingWaitNotice({ session }: { session: Session }) {
     </Notice>
     {configure && <ExecutionRoutingDialog onClose={() => setConfigure(false)} />}
     <ConfirmDialog open={expected !== null} title="Release remote reservation?" confirmLabel="Release reservation" busy={busy} error={error} onCancel={() => { if (!busyRef.current) setExpected(null) }} onConfirm={() => {
-      if (!expected || busyRef.current) return
+      if (!expected || busyRef.current || !release) return
       busyRef.current = true; setBusy(true); setError('')
       void release(expected).then(() => setExpected(null)).catch((failure) => setError(failure instanceof Error ? failure.message : 'The reservation could not be released.')).finally(() => { busyRef.current = false; setBusy(false) })
     }}>The existing runner process may still exist on this computer. Release this reservation only after checking the runner. UAM may assign new work to this computer after release.</ConfirmDialog>

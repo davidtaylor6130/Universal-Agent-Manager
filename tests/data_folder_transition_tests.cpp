@@ -1,4 +1,5 @@
 #include "data_folder_test_support.h"
+#include "common/platform/volume_capabilities.h"
 #include "app/data_folder_transition.h"
 #include "common/paths/path_utils.h"
 #include "app/data_folder_settings_service.h"
@@ -1674,4 +1675,18 @@ UAM_TEST(DataFolderTransferUnknownArmedCancellationHoldsWriterAuthority)
 				UAM_ASSERT_EQ(FrozenInventory(historical), retained);
 				UAM_ASSERT_EQ(ControlInventory(fixture.control), control);
 			}
+}
+
+UAM_TEST(DataFolderTransferActivationRefusesNetworkDestinationWithoutHolding)
+{
+	struct VolumeAnswer
+	{
+		~VolumeAnswer() { uam::platform::t_volume_capabilities_for_tests.reset(); }
+	} restore;
+	TransferFixture fixture;
+	uam::platform::t_volume_capabilities_for_tests = uam::platform::VolumeCapabilities{false, std::nullopt, "smbfs"};
+	UAM_ASSERT(!fixture.Activate());
+	UAM_ASSERT(fixture.error.find("Network folders") != std::string::npos);
+	UAM_ASSERT(!fixture.transaction->Held() && fixture.transaction->State() == "armed");
+	UAM_ASSERT(!fs::exists(fixture.destination / ".uam-data-root.lock") && !fs::exists(fixture.destination / ".uam-data-writers.lock"));
 }
