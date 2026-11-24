@@ -74,7 +74,8 @@ class Faulty(sample.FolderAdapter):
                 os._exit(3)  # The child is now an orphan whose parent has gone.
             time.sleep(30)
         if MODE == "deep-nesting":
-            sys.stdout.buffer.write(b'{"jsonrpc":"2.0","id":2,"result":' + b"[" * 100000 + b"]" * 100000 + b"}\n")
+            # No closing brace: Python 3.15's json reads 100,000 levels, so the message stays unreadable on every version.
+            sys.stdout.buffer.write(b'{"jsonrpc":"2.0","id":2,"result":' + b"[" * 100000 + b"]" * 100000 + b"\n")
             sys.stdout.buffer.flush()
         if MODE == "oversize-status":
             sys.stdout.buffer.write(b'{"jsonrpc":"2.0","id":0,"result":"' + b"x" * (2 * 1024 * 1024) + b'"}\n')
