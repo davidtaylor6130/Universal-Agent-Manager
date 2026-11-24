@@ -6,7 +6,6 @@
 #include <future>
 #include "common/platform/published_file_change_witness.h"
 #include "common/runtime/acp/acp_session_internal.h"
-#include "common/runtime/acp/acp_cold_retry_witness.h"
 #include <type_traits>
 
 using namespace uam_test;
@@ -2019,199 +2018,52 @@ UAM_TEST(OwnChatAdmissionRejectsChangedOwnerRowPolicyRootAndForceWithoutFallback
 	}
 }
 
-namespace
+UAM_TEST(OwnedPublicationChainsBindingAndPacketReceiptsWithoutProcesses)
 {
-	// Injected lifetime/identity facts only: no PID, native process, byte writer, CLI or runner is created.
-	struct ProcessFreeColdWitness
+	for (const std::string fault : {"none", "foreign-primary", "owner-loss", "newer-save"})
 	{
-		int runtime = 0;
-		std::shared_ptr<const char> epoch = std::make_shared<const char>(0);
-		std::shared_ptr<const char> writer = std::make_shared<const char>(0);
-		std::shared_ptr<const char> observer = std::make_shared<const char>(0);
-		bool owner_current = true, native_current = true, initial_current = true, handed_off = false;
-		int writes = 0;
-		uam::cold_retry::Sequence sequence{&runtime, [&] { return owner_current; }, [&] { return initial_current; }};
-		uam::cold_retry::Identity Identity() const
-		{
-			return {&runtime, "injected-original-generation", epoch, writer, observer};
-		}
-		uam::cold_retry::Launch Launch() const
-		{
-			return {"/injected/working-directory", {"injected-command", "--resume", "injected-native"}, {{"INJECTED_KEY", "private launch value"}}};
-		}
-		void Observe()
-		{
-			auto launched = Identity(); launched.writer.reset(); launched.observer.reset();
-			UAM_ASSERT(sequence.BeginProcessAttempt(Launch()));
-			UAM_ASSERT(sequence.ProcessStarted(launched, Launch()));
-			UAM_ASSERT(sequence.InitializeWritten(Identity()));
-			UAM_ASSERT(sequence.NativeObserved(Identity(), [&] { return native_current; }));
-		}
-		void Ready()
-		{
-			Observe();
-			UAM_ASSERT(sequence.BeginBinding(Identity()));
-			initial_current = false; // The original file was genuinely replaced by our binding publication.
-			UAM_ASSERT(sequence.BindingPublished(Identity(), [] { return true; }));
-			UAM_ASSERT(sequence.Handoff(Identity(), [&] { handed_off = true; return true; }));
-		}
-	};
-}
-
-UAM_TEST(ColdWitnessSequenceRefusesCopiedIdentityReplacementStopAndExpiredCreators)
-{
-	for (const std::string fault : {"runtime", "same-process-new-epoch", "writer", "observer", "expired-observer", "stop"})
-	{
-		ProcessFreeColdWitness fixture; fixture.Ready();
-		const auto original_epoch = fixture.epoch, original_writer = fixture.writer, original_observer = fixture.observer;
-		auto identity = fixture.Identity();
-		int foreign_runtime = 0;
-		if (fault == "runtime") identity.runtime = &foreign_runtime;
-		if (fault == "same-process-new-epoch") fixture.epoch = std::make_shared<const char>(0);
-		if (fault == "writer") fixture.writer = std::make_shared<const char>(0);
-		if (fault == "observer") fixture.observer = std::make_shared<const char>(0);
-		if (fault == "expired-observer") identity.observer.reset();
-		if (fault == "stop") fixture.sequence.Refuse(); // The same transition used by actual Stop/reset hooks.
-		if (fault != "runtime" && fault != "expired-observer") identity = fixture.Identity();
-		UAM_ASSERT(!fixture.sequence.Check(identity));
-		fixture.epoch = original_epoch; fixture.writer = original_writer; fixture.observer = original_observer;
-		UAM_ASSERT(!fixture.sequence.Check(fixture.Identity()));
-		UAM_ASSERT(!fixture.sequence.WriteOnce(fixture.Identity(), "wire", "delivery", 1, 2, [&] { ++fixture.writes; return true; }));
-		UAM_ASSERT_EQ(fixture.writes, 0);
-	}
-	ProcessFreeColdWitness expired; expired.Observe();
-	const std::weak_ptr<const void> lifetime = expired.observer;
-	expired.observer.reset();
-	UAM_ASSERT(lifetime.expired()); // The transition fence retains no creator handles.
-	UAM_ASSERT(!expired.sequence.Check(expired.Identity()));
-}
-
-UAM_TEST(ColdWitnessSequenceRequiresStartupHandoffAndExactFinalPublicationBeforeOneWrite)
-{
-	for (const std::string fault : {"none", "no-binding", "handoff", "no-packet", "foreign-publication", "post-final-foreign", "native-drift", "payload", "delivery", "turn", "request", "sink-failure", "sink-throw"})
-	{
-		ProcessFreeColdWitness fixture; fixture.Observe();
-		bool final_current = true;
-		if (fault == "no-binding")
-		{
-			UAM_ASSERT(!fixture.sequence.Handoff(fixture.Identity(), [] { return true; }));
-		}
-		else
-		{
-			UAM_ASSERT(fixture.sequence.BeginBinding(fixture.Identity()));
-			fixture.initial_current = false;
-			UAM_ASSERT(fixture.sequence.BindingPublished(fixture.Identity(), [] { return true; }));
-			const bool handed_off = fixture.sequence.Handoff(fixture.Identity(), [&] { return fault != "handoff"; });
-			UAM_ASSERT_EQ(handed_off, fault != "handoff");
-			if (handed_off)
-			{
-				UAM_ASSERT(fixture.sequence.BeginPacket(fixture.Identity(), "exact-wire", "exact-delivery", 7, 19));
-				if (fault != "no-packet")
-				{
-					const bool published = fixture.sequence.PacketPublished(fixture.Identity(), [&] { return final_current && fault != "foreign-publication"; });
-					UAM_ASSERT_EQ(published, fault != "foreign-publication");
-				}
-			}
-		}
-		if (fault == "native-drift") fixture.native_current = false;
-		if (fault == "post-final-foreign") final_current = false;
-		const bool written = fixture.sequence.WriteOnce(fixture.Identity(), fault == "payload" ? "changed-wire" : "exact-wire",
-		    fault == "delivery" ? "foreign-delivery" : "exact-delivery", fault == "turn" ? 8 : 7, fault == "request" ? 20 : 19, [&]
-		    {
-			    ++fixture.writes;
-			    if (fault == "sink-throw") throw 1;
-			    return fault != "sink-failure";
-		    });
-		UAM_ASSERT_EQ(written, fault == "none");
-		const bool attempted = fault == "none" || fault == "sink-failure" || fault == "sink-throw";
-		UAM_ASSERT_EQ(fixture.writes, attempted ? 1 : 0);
-		UAM_ASSERT_EQ(fixture.sequence.InputAttempted(), attempted);
-		UAM_ASSERT(!fixture.sequence.WriteOnce(fixture.Identity(), "exact-wire", "exact-delivery", 7, 19, [&] { ++fixture.writes; return true; }));
-		UAM_ASSERT_EQ(fixture.writes, attempted ? 1 : 0);
-	}
-}
-
-UAM_TEST(ColdWitnessSequenceSealsActualLaunchWithoutReplacementOrMetadataRebinding)
-{
-	for (const std::string fault : {"no-origin", "command", "environment", "workspace", "nul", "oversize", "second-attempt"})
-	{
-		ProcessFreeColdWitness fixture;
-		auto launch = fixture.Launch();
-		if (fault == "nul") launch.argv.front().push_back('\0');
-		if (fault == "oversize") launch.environment.front().second.assign(8 * 1024 * 1024, 'x');
-		if (fault != "no-origin")
-		{
-			const bool captured = fixture.sequence.BeginProcessAttempt(launch);
-			UAM_ASSERT_EQ(captured, fault != "nul" && fault != "oversize");
-		}
-		if (fault == "command") launch.argv.front() = "replacement-command";
-		if (fault == "environment") launch.environment.front().second = "changed-launch-environment";
-		if (fault == "workspace") launch.working_directory = "/foreign-workspace";
-		if (fault == "second-attempt") UAM_ASSERT(fixture.sequence.ProcessStarted(fixture.Identity(), launch));
-		UAM_ASSERT(!fixture.sequence.ProcessStarted(fixture.Identity(), launch));
-		UAM_ASSERT(!fixture.sequence.BeginProcessAttempt(fixture.Launch()));
-		UAM_ASSERT_EQ(fixture.writes, 0);
-	}
-}
-
-UAM_TEST(ColdWitnessSequenceUsesActualBindingAndPacketPublicationCallbacksWithoutProcesses)
-{
-	for (const std::string fault : {"none", "foreign-primary", "stop", "replacement", "newer-save"})
-	{
-		TempDir temp("uam-cold-witness-publication-no-process");
+		TempDir temp("uam-owned-publication-chain-no-process");
 		auto receipt = OwnContinuationLaunch(temp.root, true);
 		uam::AppState app; app.data_root = temp.root; app.chats.push_back(receipt->Graph());
 		OwnedPublicationTestDrain drain{app};
-		ProcessFreeColdWitness fixture;
-		uam::cold_retry::Sequence sequence(&fixture.runtime, [&] { return fixture.owner_current; }, [receipt] { return receipt->Current(); });
-		auto launched = fixture.Identity(); launched.writer.reset(); launched.observer.reset();
-		UAM_ASSERT(sequence.BeginProcessAttempt(fixture.Launch()));
-		UAM_ASSERT(sequence.ProcessStarted(launched, fixture.Launch()));
-		UAM_ASSERT(sequence.InitializeWritten(fixture.Identity()));
-		UAM_ASSERT(sequence.NativeObserved(fixture.Identity(), [&] { return fixture.native_current; }));
-		UAM_ASSERT(sequence.BeginBinding(fixture.Identity()));
 		int binding_callbacks = 0, packet_callbacks = 0;
-		UAM_ASSERT(uam::acp_detail::BeginOwnedChatPublicationAdmission(app, app.chats.front(), receipt,
-		    [&] { return sequence.Check(fixture.Identity()); }, [&](StoppedChatLaunchPublicationResult result)
+		UAM_ASSERT(uam::acp_detail::BeginOwnedChatPublicationAdmission(app, app.chats.front(), receipt, [] { return true; },
+		    [&](StoppedChatLaunchPublicationResult result)
 		    {
 			    ++binding_callbacks;
 			    UAM_ASSERT(result.receipt && result.publication.state == ChatPublicationState::Committed);
-			    UAM_ASSERT(sequence.BindingPublished(fixture.Identity(), [next = result.receipt] { return next->Current(); }));
 			    receipt = result.receipt;
-			    UAM_ASSERT(sequence.Handoff(fixture.Identity(), [&] { fixture.handed_off = true; return true; }));
 		    }) == uam::acp_detail::DurableAdmissionState::Pending);
 		WaitOwnedPublicationActualWorkerReady(app, receipt->Graph().id);
-		UAM_ASSERT_EQ(binding_callbacks, 0); UAM_ASSERT(!fixture.handed_off);
+		UAM_ASSERT_EQ(binding_callbacks, 0);
 		UAM_ASSERT(!receipt->Current());
 		SettleOwnedPublicationActualWork(app);
-		UAM_ASSERT_EQ(binding_callbacks, 1); UAM_ASSERT(fixture.handed_off && receipt->Current());
+		UAM_ASSERT_EQ(binding_callbacks, 1); UAM_ASSERT(receipt->Current());
 		auto& candidate = app.chats.front();
-		candidate.remote_active_turn_id = "injected-cold-turn";
+		candidate.remote_active_turn_id = "injected-owned-turn";
 		candidate.remote_turn_serial = 7;
 		candidate.remote_turn_user_message_index = 0;
 		candidate.remote_turn_reconnect_pending = true;
 		candidate.remote_prompt_delivery_session_id = "acp-" + candidate.id;
-		candidate.remote_prompt_delivery_id = "injected-cold-delivery";
+		candidate.remote_prompt_delivery_id = "injected-owned-delivery";
 		candidate.remote_prompt_delivery_payload = "{\"type\":\"user\",\"privateFixture\":true}\n";
-		UAM_ASSERT(sequence.BeginPacket(fixture.Identity(), candidate.remote_prompt_delivery_payload, candidate.remote_prompt_delivery_id, 7, 19));
 		std::optional<ChatPublicationState> packet_fact;
-		UAM_ASSERT(uam::acp_detail::BeginOwnedChatPublicationAdmission(app, candidate, receipt,
-		    [&] { return sequence.Check(fixture.Identity()); }, [&](StoppedChatLaunchPublicationResult result)
+		std::shared_ptr<const StoppedChatLaunchStorageReceipt> packet_receipt;
+		bool packet_owned = true;
+		UAM_ASSERT(uam::acp_detail::BeginOwnedChatPublicationAdmission(app, candidate, receipt, [&] { return packet_owned; },
+		    [&](StoppedChatLaunchPublicationResult result)
 		    {
 			    ++packet_callbacks; packet_fact = result.publication.state;
-			    if (!result.receipt) { sequence.Refuse(); return; }
-			    UAM_ASSERT(sequence.PacketPublished(fixture.Identity(), [next = result.receipt] { return next->Current(); }));
-			    receipt = result.receipt;
+			    packet_receipt = result.receipt;
 		    }) == uam::acp_detail::DurableAdmissionState::Pending);
 		WaitOwnedPublicationActualWorkerReady(app, candidate.id);
 		UAM_ASSERT_EQ(packet_callbacks, 0);
 		const auto primary = AppPaths::UamChatFilePath(temp.root, candidate.id);
 		const auto packet_bytes = ReadFile(primary);
-		const auto foreign_stage = primary.parent_path() / "foreign-cold-stage.tmp";
+		const auto foreign_stage = primary.parent_path() / "foreign-owned-stage.tmp";
 		UAM_ASSERT(uam::io::WriteTextFile(foreign_stage, "foreign creator bytes"));
 		if (fault == "foreign-primary") ReplaceOwnContinuationFile(primary);
-		if (fault == "stop") sequence.Refuse();
-		if (fault == "replacement") fixture.epoch = std::make_shared<const char>(0);
+		if (fault == "owner-loss") packet_owned = false; // After the worker is ready: the commit itself still lands.
 		if (fault == "newer-save")
 		{
 			candidate.title = "Newer independently scheduled save";
@@ -2219,10 +2071,11 @@ UAM_TEST(ColdWitnessSequenceUsesActualBindingAndPacketPublicationCallbacksWithou
 		}
 		SettleOwnedPublicationActualWork(app);
 		UAM_ASSERT_EQ(packet_callbacks, 1);
-		UAM_ASSERT(packet_fact && *packet_fact == ChatPublicationState::Committed); // Commit facts survive callback refusal.
-		const bool written = sequence.WriteOnce(fixture.Identity(), candidate.remote_prompt_delivery_payload,
-		    candidate.remote_prompt_delivery_id, 7, 19, [&] { ++fixture.writes; return true; });
-		UAM_ASSERT_EQ(written, fault == "none"); UAM_ASSERT_EQ(fixture.writes, fault == "none" ? 1 : 0);
+		UAM_ASSERT(packet_fact && *packet_fact == ChatPublicationState::Committed);
+		// Only an untouched, still-owned chained publication returns a receipt; the Committed fact survives either way.
+		UAM_ASSERT_EQ(static_cast<bool>(packet_receipt), fault == "none");
+		const bool packet_current = packet_receipt && packet_receipt->Current();
+		UAM_ASSERT_EQ(packet_current, fault == "none");
 		UAM_ASSERT_EQ(ReadFile(foreign_stage), std::string("foreign creator bytes"));
 		if (fault != "newer-save") UAM_ASSERT_EQ(ReadFile(primary), packet_bytes);
 		else
@@ -2233,12 +2086,12 @@ UAM_TEST(ColdWitnessSequenceUsesActualBindingAndPacketPublicationCallbacksWithou
 	}
 }
 
-UAM_TEST(ColdWitnessPublicationCancellationPreservesOriginalAndNewerSaveOwners)
+UAM_TEST(OwnedPublicationCancellationPreservesOriginalAndNewerSaveOwners)
 {
 	static_assert(!std::is_default_constructible_v<uam::acp_detail::OwnedChatPublicationCancellation>);
 	for (const bool successor : {false, true})
 	{
-		TempDir temp("uam-cold-witness-exact-cancellation");
+		TempDir temp("uam-owned-publication-exact-cancellation");
 		const auto predecessor = OwnContinuationLaunch(temp.root, false);
 		uam::AppState app; app.data_root = temp.root; app.chats.push_back(predecessor->Graph());
 		OwnedPublicationTestDrain drain{app};

@@ -250,6 +250,12 @@ class MacTerminalRuntime final : public IPlatformTerminalRuntime
 		}
 	}
 
+	void RequestCliTerminalProcessExit(uam::CliTerminalState& terminal) const override
+	{
+		// A hangup is what closing a terminal window sends; the CLI can save and exit before the shutdown fallback forces it.
+		if (terminal.child_pid > 0) SignalTerminalProcessGroup(terminal.child_pid, SIGHUP);
+	}
+
 	void ResizeCliTerminal(uam::CliTerminalState& terminal) const override
 	{
 		if (terminal.master_fd >= 0)

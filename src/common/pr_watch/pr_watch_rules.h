@@ -53,6 +53,8 @@ namespace uam::pr_watch
 	{
 		std::string id;
 		std::string author;
+		/// GitHub's `author_association`, such as "OWNER" or "NONE"; empty when GitHub did not say.
+		std::string association;
 		std::string body;
 		/// File path for a review comment; empty otherwise.
 		std::string path;
@@ -101,6 +103,11 @@ namespace uam::pr_watch
 		bool operator==(const Reported&) const = default;
 	};
 
+	/// "owner", "member" or "collaborator" for those GitHub associations, and "other" for any other or a missing one.
+	std::string AssociationLabel(std::string_view association);
+	/// Only the repository's owners, members and collaborators have their comment text quoted to the agent.
+	bool QuotesText(const Remark& remark);
+
 	enum class ChangeKind { ChecksFailed, ChecksPassed, ChecksAwaitingApproval, Remarks, NoChecks, Conflicting };
 
 	struct Change
@@ -132,6 +139,8 @@ namespace uam::pr_watch
 		std::string summary;
 		/// failed, completed or updated.
 		std::string outcome;
+		/// Every change is a comment or review from someone who is not an owner, member or collaborator.
+		bool outside_only = false;
 	};
 
 	Message BuildMessage(const Reference& reference, const Detail& detail, const Report& report);
