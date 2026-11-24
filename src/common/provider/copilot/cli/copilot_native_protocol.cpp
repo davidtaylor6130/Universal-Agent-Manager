@@ -11,6 +11,7 @@
 #include "common/chat/chat_ids.h"
 #include "common/paths/workspace_root.h"
 #include "common/platform/platform_services.h"
+#include "common/provider/copilot_sdk_protocol.h"
 #include "common/provider/provider_ids.h"
 #include "common/runtime/acp/acp_goal_loop.h"
 #include "common/runtime/acp/acp_json_rpc.h"
@@ -793,13 +794,18 @@ bool HandleSavedImageResponse(const AppState& app, AcpSessionState& session, con
 	bool valid = false;
 	if (method == "status.get")
 	{
-		const auto protocol = Count(result, "protocolVersion");
-		valid = protocol && *protocol == 3 && StrictImageServerVersion(Text(result, "version"));
+		const auto protocol = uam::copilot::ReportedSdkProtocol(result);
+		if (!uam::copilot::IsVerifiedSdkProtocol(protocol))
+		{
+			RejectSavedImageEvidence(session, *state, uam::copilot::SdkProtocolRefusal(protocol));
+			return true;
+		}
+		valid = StrictImageServerVersion(Text(result, "version"));
 		// Remote input requires this stable server floor; the local version policy stays unchanged.
 		if (valid && Text(JsonObjectValue(*state, "owner"), "executionHostId") != "local")
 			valid = CliProviderVersionAtLeast(Text(result, "version"), "1.0.98");
 		if (valid)
-			parsed = {{"version", Text(result, "version")}, {"protocolVersion", 3}};
+			parsed = {{"version", Text(result, "version")}, {"protocolVersion", *protocol}};
 	}
 	else if (method == "models.list")
 		valid = ParseSavedImageModel(result, model, parsed);
@@ -1303,12 +1309,13 @@ nlohmann::json CopilotCliProviderRuntime::OnAcpBuildInitialize(uam::AcpSessionSt
 
 void CopilotCliProviderRuntime::OnAcpInitializeResult(uam::AcpSessionState& session, const nlohmann::json& result) const
 {
-	const auto version = Count(result, "protocolVersion");
-	if (!version || *version != 3)
+	// Refuse before session.create/resume: an unverified protocol never receives a session, prompt or permission reply.
+	const auto version = uam::copilot::ReportedSdkProtocol(result);
+	if (!uam::copilot::IsVerifiedSdkProtocol(version))
 	{
 		session.initialized = false;
 		session.lifecycle_state = kAcpLifecycleError;
-		session.last_error = "Copilot SDK server protocol 3 is required; update the CLI or UAM before retrying.";
+		session.last_error = uam::copilot::SdkProtocolRefusal(version);
 		return;
 	}
 	session.copilot_native_state["protocolVersion"] = *version;
