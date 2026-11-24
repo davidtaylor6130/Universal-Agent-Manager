@@ -1,7 +1,7 @@
 import { sanitizeStartupNativeImportStatus } from '../../types/startupNativeImports'
 import { sanitizeExecutionRouting } from '../../types/executionRouting'
 import { DEFAULT_CENTRAL_PROVIDER_CONFIGURATION, type CentralProviderConfiguration, type WindowsPowerShellPreference } from './types'
-import { sanitizeCustomIcon } from '../../types/customIcon'
+import { sanitizeCustomIcon, type CustomIcon } from '../../types/customIcon'
 // Sanitiser and normaliser functions for raw C++ state payloads.
 // Extracted from useAppStore.ts (MO-1). Pure functions — no side effects.
 
@@ -164,6 +164,11 @@ export function memoryEnabledForLevel(value: unknown, nativeEnabled = true): boo
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
+}
+
+/** Like isRecord, but rejects arrays, for validators where `[]` must not pass as an object. */
+export function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return isRecord(value) && !Array.isArray(value)
 }
 
 export function isString(value: unknown): value is string {
@@ -998,6 +1003,79 @@ export function resetModelCatalogsForTests(): void {
   modelCatalogsById.clear()
 }
 
+/** Drops field copies of chats a pushed full state no longer lists (pulled snapshots may be overtaken, so not those). */
+export function forgetRetainedChatFieldsExcept(chatIds: readonly string[]): void {
+  const kept = new Set(chatIds.map((chatId) => chatId.trim()))
+  for (const chatId of retainedChatFieldsByChatId.keys()) if (!kept.has(chatId)) retainedChatFieldsByChatId.delete(chatId)
+}
+
+export function resetRetainedChatFieldsForTests(): void {
+  retainedChatFieldsByChatId.clear()
+}
+
+// Native leaves a chat's large fields out of a patch when this page already holds them (#947): a PNG customIcon
+// with its data URL, and the live-session fields below, named 'acpSession.toolCalls' and so on. The chat's
+// reusedFields maps a field to true (unchanged, omitted) or, for an array, to the number of leading entries kept
+// from this page's copy, the patch carrying only the entries after them. reusedFieldsFrom names the copy's
+// revision; retainedFieldsRevision asks the page to keep this patch's values under a new one. Raw values are
+// kept, so a restored chat gives the sanitizer exactly what a patch carrying every field would have.
+const RETAINED_ACP_SESSION_FIELDS = ['toolCalls', 'turnEvents', 'availableCommands', 'availableModes', 'diagnostics',
+  'planEntries', 'nativeModelOptions', 'providerUsage', 'recentStderr'] as const
+const RETAINED_CHAT_FIELDS = new Set<string>(['customIcon', ...RETAINED_ACP_SESSION_FIELDS.map((name) => `acpSession.${name}`)])
+type RetainedChatFields = { revision: number; fields: Record<string, unknown> }
+const retainedChatFieldsByChatId = new Map<string, RetainedChatFields>()
+
+// A patched chat built on a copy this page lacks: the patch applies without it and the store pulls full state.
+const MISSING_RETAINED_COPY = Symbol('missing retained copy')
+
+function restoreRetainedChatFields(chat: unknown): unknown {
+  if (!isRecord(chat) || !isString(chat.id)) return chat
+  const chatId = chat.id.trim()
+  const restored: Record<string, unknown> = { ...chat }
+  const acp: Record<string, unknown> | undefined = isRecord(chat.acpSession) ? { ...chat.acpSession } : undefined
+  if (acp) restored.acpSession = acp
+  const ownerOf = (name: string) => name.startsWith('acpSession.') ? acp : restored
+  const fieldOf = (name: string) => name.startsWith('acpSession.') ? name.slice('acpSession.'.length) : name
+  if (chat.reusedFields !== undefined) {
+    const known = retainedChatFieldsByChatId.get(chatId)
+    // A copy this page never received or has since replaced (a lost patch, say). Native has moved its copy on,
+    // so the page drops its own too; every later patch for this chat then skips it until the full state arrives.
+    if (!isRecord(chat.reusedFields) || !known || known.revision !== chat.reusedFieldsFrom) {
+      retainedChatFieldsByChatId.delete(chatId)
+      return MISSING_RETAINED_COPY
+    }
+    for (const [name, reuse] of Object.entries(chat.reusedFields)) {
+      const owner = ownerOf(name)
+      const previous = known.fields[name]
+      const rest = owner?.[fieldOf(name)]
+      if (owner && RETAINED_CHAT_FIELDS.has(name) && reuse === true && previous !== undefined) {
+        owner[fieldOf(name)] = previous
+      } else if (owner && RETAINED_CHAT_FIELDS.has(name) && typeof reuse === 'number' && Number.isSafeInteger(reuse) && reuse > 0 &&
+          Array.isArray(previous) && reuse <= previous.length && Array.isArray(rest)) {
+        owner[fieldOf(name)] = [...previous.slice(0, reuse), ...rest]
+      } else {
+        retainedChatFieldsByChatId.delete(chatId)
+        return MISSING_RETAINED_COPY
+      }
+    }
+  }
+  delete restored.reusedFields
+  delete restored.reusedFieldsFrom
+  delete restored.retainedFieldsRevision
+  const revision = chat.retainedFieldsRevision
+  if (typeof revision === 'number' && Number.isSafeInteger(revision)) {
+    const fields: Record<string, unknown> = {}
+    for (const name of RETAINED_CHAT_FIELDS) {
+      const value = ownerOf(name)?.[fieldOf(name)]
+      if (value !== undefined) fields[name] = value
+    }
+    retainedChatFieldsByChatId.set(chatId, { revision, fields })
+  } else {
+    retainedChatFieldsByChatId.delete(chatId)
+  }
+  return restored
+}
+
 export function sanitizeCppAcpSession(value: unknown): CppAcpSession | undefined {
   if (!isRecord(value)) return undefined
   const catalog = isString(value.modelCatalogId) ? modelCatalogsById.get(value.modelCatalogId) : undefined
@@ -1158,6 +1236,13 @@ export function sanitizeCppGoal(value: unknown): CppGoal | null {
   }
 }
 
+/** Detected workspace icons are display-only PNG, SVG or ICO data shown through <img>; the value only keys failed-image fallback. */
+function sanitizeProjectIcon(value: unknown, folderId: string): CustomIcon | undefined {
+  return typeof value === 'string' && value.length <= 350000 && /^data:image\/(?:png|svg\+xml|x-icon);base64,[A-Za-z0-9+/]+={0,2}$/.test(value)
+    ? { type: 'png', value: `project-icon:${folderId}`, dataUrl: value }
+    : undefined
+}
+
 export function sanitizeCppFolder(value: unknown): CppFolder | null {
   if (!isRecord(value)) return null
   const id = stringOr(value.id).trim()
@@ -1165,7 +1250,8 @@ export function sanitizeCppFolder(value: unknown): CppFolder | null {
   return {
     id,
     title: stringOr(value.title, 'Untitled'),
-    customIcon: sanitizeCustomIcon(value.customIcon),
+    // A chosen icon wins; otherwise the workspace's own website or app icon (PNG, SVG or ICO), when native found one.
+    customIcon: sanitizeCustomIcon(value.customIcon) ?? sanitizeProjectIcon(value.projectIcon, id),
     directory: stringOr(value.directory),
     collapsed: booleanOr(value.collapsed),
     executionHostId: stringOr(value.executionHostId).trim() || 'local',
@@ -1433,8 +1519,18 @@ export function sanitizeVcsCommitStatus(value: unknown): VcsCommitStatus | null 
     lineStatsReady: typeof value.lineStatsReady === 'boolean' ? value.lineStatsReady : true,
     baselineUnavailable: value.baselineUnavailable === true,
     capabilities: Array.isArray(value.capabilities) ? value.capabilities.filter((capability): capability is string => typeof capability === 'string') : [],
+    localSnapshot: sanitizeVcsLocalSnapshot(value.localSnapshot),
     warning: stringOr(value.warning),
     error: stringOr(value.error),
+  }
+}
+
+function sanitizeVcsLocalSnapshot(value: unknown): VcsCommitStatus['localSnapshot'] {
+  if (!isRecord(value) || (value.sourceKind !== 'svn' && value.sourceKind !== 'folder')) return undefined
+  return {
+    sourceKind: value.sourceKind,
+    sourceDirectory: stringOr(value.sourceDirectory),
+    sourceCapabilities: Array.isArray(value.sourceCapabilities) ? value.sourceCapabilities.filter((capability): capability is string => typeof capability === 'string') : [],
   }
 }
 
@@ -2127,7 +2223,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
     editorFileAssociations: sanitizeEditorFileAssociations(value.editorFileAssociations),
     centralProviderConfiguration: sanitizeCentralProviderConfiguration(value.centralProviderConfiguration),
     mcpServers,
-    executionRouting: sanitizeExecutionRouting(value.executionRouting),
+    ...(SSH_ENABLED ? { executionRouting: sanitizeExecutionRouting(value.executionRouting) } : {}),
     executionHosts,
     favoriteUamAgentIds,
     nativeImportExcludedTitlePrefixes,
@@ -2347,7 +2443,9 @@ function sanitizeShellActions(value: unknown): ShellAction[] {
     const id = stringOr(entry.id).trim()
     const label = stringOr(entry.label).trim()
     if (!id || !label) return []
+    const invalidReason = stringOr(entry.invalidReason).trim()
     return [{
+      ...(invalidReason ? { invalidReason } : {}),
       id,
       label,
       skillPath: stringOr(entry.skillPath),
@@ -2406,14 +2504,22 @@ function sanitizeResourceCollections(value: unknown): ResourceCollection[] {
 export function sanitizeCppStatePatch(value: unknown): CppStatePatch | null {
   if (!isRecord(value)) return null
   rememberModelCatalogs(value.modelCatalogs, value.modelCatalogsReset === true)
+  let skippedChat = false
   const chats = Array.isArray(value.chats)
     ? value.chats.flatMap((chat) => {
-        const sanitized = sanitizeCppChat(chat)
+        const restored = restoreRetainedChatFields(chat)
+        if (restored === MISSING_RETAINED_COPY) {
+          skippedChat = true
+          return []
+        }
+        const sanitized = sanitizeCppChat(restored)
         return sanitized ? [sanitized] : []
       })
     : undefined
   // A catalogue this page never received (a lost patch, say): reject so the store pulls full state.
   if (missingModelCatalog) return null
+  if (Array.isArray(value.removedChatIds))
+    for (const chatId of value.removedChatIds) if (isString(chatId)) retainedChatFieldsByChatId.delete(chatId.trim())
 
   return {
     stateRevision: finiteNumberOr(value.stateRevision, 0),
@@ -2427,6 +2533,8 @@ export function sanitizeCppStatePatch(value: unknown): CppStatePatch | null {
       ? sanitizeResourceCollections(value.resourceCollections)
       : undefined,
     chats,
+    // The other chats and fields still apply, so approvals and turn state do not wait for the pull.
+    ...(skippedChat ? { skippedChats: true as const } : {}),
     removedChatIds: Array.isArray(value.removedChatIds)
       ? value.removedChatIds.filter(isString)
       : undefined,

@@ -715,12 +715,13 @@ std::shared_ptr<UamQueryHandler::NativeHistoryRequest> UamQueryHandler::BeginNat
 	return request;
 }
 
-bool UamQueryHandler::AwaitNativeHistoryRead(const std::string& key, CefRefPtr<Callback> cb, std::function<void()> retry)
+bool UamQueryHandler::AwaitNativeHistoryRead(const std::string& key, CefRefPtr<Callback> cb, std::function<void()> retry, bool replace_older)
 {
 	const auto pending = m_nativeHistoryRequests.find(key);
 	if (pending == m_nativeHistoryRequests.end()) return false;
 	// The newer request replaces delivery, not the read: it retries once the read has saved its result.
-	pending->second->delivery_cancelled = true;
+	if (replace_older)
+		pending->second->delivery_cancelled = true;
 	pending->second->waiters.push_back({m_dispatchingQuery, std::move(cb), std::move(retry)});
 	return true;
 }
