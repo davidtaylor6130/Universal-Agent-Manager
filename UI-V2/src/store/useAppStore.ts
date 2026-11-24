@@ -1,4 +1,4 @@
-import { MOBILE_COMPANION_ENABLED } from '../config/buildFeatures'
+import { MOBILE_COMPANION_ENABLED, SSH_ENABLED } from '../config/buildFeatures'
 import { EMPTY_STARTUP_NATIVE_IMPORT_STATUS } from '../types/startupNativeImports'
 import { createExecutionRoutingSlice } from './slices/executionRoutingSlice'
 import { DEFAULT_CENTRAL_PROVIDER_CONFIGURATION, type CentralProviderConfiguration } from './cpp/types'
@@ -8,6 +8,7 @@ import { Message } from '../types/message'
 import { Provider } from '../types/provider'
 import type { MemoryLevel } from '../types/memory'
 import type { PermissionCommandRule } from '../types/permissionRules'
+import type { Goal } from '../types/goal'
 import { sendToCEF, isCefContext, isCompanionContext } from '../ipc/cefBridge'
 import {
   CLI_TRANSCRIPT_FLUSH_DELAY_MS,
@@ -33,6 +34,7 @@ import {
   sanitizeMemoryActivity,
   defaultEditorFileAssociations,
   DEFAULT_NATIVE_IMPORT_STARTUP_MAX_AGE_DAYS,
+  forgetRetainedChatFieldsExcept,
 } from './cpp/sanitizers'
 export {
   DEFAULT_MEMORY_IDLE_DELAY_SECONDS,
@@ -49,7 +51,7 @@ export {
 // Moved to ./cpp/types.ts (MO-1). Re-exported so existing imports keep working.
 
 export * from './cpp/types'
-import type { WindowsPowerShellPreference, VoiceInputSettings, VcsStorageSettings, ProviderAvailabilityOverride, AcpBinding, CliBinding, CliTranscript, CliVersionManager, CppAppState, CppCliDebugState, CppStatePatch, EditorFileAssociation, MemoryActivity, MemoryWorkerBinding, McpServerConfiguration, ProviderChatDefaults, ProviderModelCatalog, ShellAction } from './cpp/types'
+import type { WindowsPowerShellPreference, VoiceInputSettings, VcsStorageSettings, ProviderAvailabilityOverride, AcpBinding, CliBinding, CliTranscript, CliVersionManager, CppAppState, CppCliDebugState, CppGoal, CppStatePatch, EditorFileAssociation, MemoryActivity, MemoryWorkerBinding, McpServerConfiguration, ProviderChatDefaults, ProviderModelCatalog, ShellAction } from './cpp/types'
 import { acpBindingFromCppChat, applyPendingCodexOptions, appendCliTranscriptChunk, cliBindingFromCppChat, cppPatchRevision, cppStateRevision, decodeCliChunk, folderFromCppFolder, normalizeCliTranscript, cliOutputMatchesBinding, providerFromCppProvider, reconcileCppMessages, reconcileHeldOutboxHistory, queuedPromptsEquivalent, sameArrayEntries, sameRecordEntries, sessionFromCppChat } from './cpp/reconcile'
 import { pendingProviderChatDefaults, withoutDeletedKeys } from './slices/sessionsSlice'
 import { parseUamPushPayload, cliDebugSignature, isNewerStateRevision } from './push/uamPush'
@@ -87,6 +89,36 @@ function mergeAssistantText(durable: string, streamed: string): string {
     }
   }
   return durable + streamed
+}
+
+function mapCppGoal(chatId: string, cppGoal: CppGoal): Goal {
+  return {
+    id: cppGoal.id,
+    chatId,
+    objective: cppGoal.objective,
+    status: cppGoal.status,
+    tokenBudget: cppGoal.tokenBudget,
+    tokensUsed: cppGoal.tokensUsed,
+    blockedTurnCount: cppGoal.blockedTurnCount,
+    lastBlocker: cppGoal.lastBlocker,
+    lastBlockerKind: cppGoal.lastBlockerKind,
+    lastDiagnostic: cppGoal.lastDiagnostic,
+    lastDecisionSource: cppGoal.lastDecisionSource,
+    completedItems: cppGoal.completedItems,
+    remainingItems: cppGoal.remainingItems,
+    pendingContinuation: cppGoal.pendingContinuation,
+    currentStep: cppGoal.currentStep,
+    lastVerification: cppGoal.lastVerification,
+    lastNextPrompt: cppGoal.lastNextPrompt,
+    sameNextPromptCount: cppGoal.sameNextPromptCount,
+    loopCount: cppGoal.loopCount,
+    createdAt: new Date(cppGoal.createdAt || Date.now()),
+    updatedAt: new Date(cppGoal.updatedAt || Date.now()),
+    executionOwner: cppGoal.executionOwner ?? 'uam',
+    providerCommand: cppGoal.providerCommand ?? '',
+    workerModelId: cppGoal.workerModelId ?? '',
+    reviewerModelId: cppGoal.reviewerModelId ?? '',
+  }
 }
 
 function deserializeState(
@@ -147,7 +179,7 @@ function deserializeState(
     editorFileAssociations: EditorFileAssociation[]
     centralProviderConfiguration: CentralProviderConfiguration
     mcpServers: McpServerConfiguration[]
-    executionRouting: AppState['executionRouting']
+    executionRouting?: AppState['executionRouting'] // Absent in builds without SSH.
     executionHosts: AppState['executionHosts']
     favoriteUamAgentIds: string[]
     nativeImportExcludedTitlePrefixes: string[]
@@ -276,41 +308,15 @@ function deserializeState(
 
   const sessionsWithPendingCodexOptions = applyPendingCodexOptions(sessions)
 
-  const goalsByChatId: Record<string, import('../types/goal').Goal[]> = {}
+  const goalsByChatId: Record<string, Goal[]> = {}
   const activeGoalIdByChatId: Record<string, string | null> = {}
   for (const chat of cpp.chats) {
     if (chat.activeGoalId !== undefined) {
       activeGoalIdByChatId[chat.id] = chat.activeGoalId
     }
+    // A full load leaves chats without goals out of the map; applyStatePatch writes [] instead.
     if (Array.isArray(chat.goals) && chat.goals.length > 0) {
-      const goalObjects: import('../types/goal').Goal[] = chat.goals.map((cppGoal) => ({
-        id: cppGoal.id,
-        chatId: chat.id,
-        objective: cppGoal.objective,
-        status: cppGoal.status,
-        tokenBudget: cppGoal.tokenBudget,
-        tokensUsed: cppGoal.tokensUsed,
-        blockedTurnCount: cppGoal.blockedTurnCount,
-        lastBlocker: cppGoal.lastBlocker,
-        lastBlockerKind: cppGoal.lastBlockerKind,
-        lastDiagnostic: cppGoal.lastDiagnostic,
-        lastDecisionSource: cppGoal.lastDecisionSource,
-        completedItems: cppGoal.completedItems,
-        remainingItems: cppGoal.remainingItems,
-        pendingContinuation: cppGoal.pendingContinuation,
-        currentStep: cppGoal.currentStep,
-        lastVerification: cppGoal.lastVerification,
-        lastNextPrompt: cppGoal.lastNextPrompt,
-        sameNextPromptCount: cppGoal.sameNextPromptCount,
-        loopCount: cppGoal.loopCount,
-        createdAt: new Date(cppGoal.createdAt || Date.now()),
-        updatedAt: new Date(cppGoal.updatedAt || Date.now()),
-        executionOwner: cppGoal.executionOwner ?? 'uam',
-        providerCommand: cppGoal.providerCommand ?? '',
-        workerModelId: cppGoal.workerModelId ?? '',
-        reviewerModelId: cppGoal.reviewerModelId ?? '',
-      }))
-      goalsByChatId[chat.id] = goalObjects
+      goalsByChatId[chat.id] = chat.goals.map((cppGoal) => mapCppGoal(chat.id, cppGoal))
     }
   }
 
@@ -392,7 +398,7 @@ function deserializeState(
     httpCacheClearIntervalDays: cpp.settings.httpCacheClearIntervalDays ?? existing.httpCacheClearIntervalDays,
     centralProviderConfiguration: cpp.settings.centralProviderConfiguration ?? DEFAULT_CENTRAL_PROVIDER_CONFIGURATION,
     mcpServers: cpp.settings.mcpServers ?? [],
-    executionRouting: cpp.settings.executionRouting ?? existing.executionRouting,
+    ...(SSH_ENABLED ? { executionRouting: cpp.settings.executionRouting ?? existing.executionRouting } : {}),
     executionHosts: cpp.settings.executionHosts ?? existing.executionHosts,
     favoriteUamAgentIds: cpp.settings.favoriteUamAgentIds ?? [],
     nativeImportExcludedTitlePrefixes: cpp.settings.nativeImportExcludedTitlePrefixes ?? [],
@@ -517,33 +523,8 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     if (chat.activeGoalId !== undefined) {
       activeGoalIdByChatId[chat.id] = chat.activeGoalId
     }
-    goalsByChatId[chat.id] = (chat.goals ?? []).map((cppGoal) => ({
-        id: cppGoal.id,
-        chatId: chat.id,
-        objective: cppGoal.objective,
-        status: cppGoal.status,
-        tokenBudget: cppGoal.tokenBudget,
-        tokensUsed: cppGoal.tokensUsed,
-        blockedTurnCount: cppGoal.blockedTurnCount,
-        lastBlocker: cppGoal.lastBlocker,
-        lastBlockerKind: cppGoal.lastBlockerKind,
-        lastDiagnostic: cppGoal.lastDiagnostic,
-        lastDecisionSource: cppGoal.lastDecisionSource,
-        completedItems: cppGoal.completedItems,
-        remainingItems: cppGoal.remainingItems,
-        pendingContinuation: cppGoal.pendingContinuation,
-        currentStep: cppGoal.currentStep,
-        lastVerification: cppGoal.lastVerification,
-        lastNextPrompt: cppGoal.lastNextPrompt,
-        sameNextPromptCount: cppGoal.sameNextPromptCount,
-        loopCount: cppGoal.loopCount,
-        createdAt: new Date(cppGoal.createdAt || Date.now()),
-        updatedAt: new Date(cppGoal.updatedAt || Date.now()),
-        executionOwner: cppGoal.executionOwner ?? 'uam',
-        providerCommand: cppGoal.providerCommand ?? '',
-        workerModelId: cppGoal.workerModelId ?? '',
-        reviewerModelId: cppGoal.reviewerModelId ?? '',
-    }))
+    // Unlike a full load, a patch records [] for a chat without goals so earlier goals are cleared.
+    goalsByChatId[chat.id] = (chat.goals ?? []).map((cppGoal) => mapCppGoal(chat.id, cppGoal))
   }
 
   const activeSessionId =
@@ -642,7 +623,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     httpCacheClearIntervalDays: patch.settings?.httpCacheClearIntervalDays ?? current.httpCacheClearIntervalDays,
     centralProviderConfiguration: patch.settings?.centralProviderConfiguration ?? current.centralProviderConfiguration,
     mcpServers: patch.settings?.mcpServers ?? current.mcpServers,
-    executionRouting: patch.settings?.executionRouting ?? current.executionRouting,
+    ...(SSH_ENABLED ? { executionRouting: patch.settings?.executionRouting ?? current.executionRouting } : {}),
     executionHosts: patch.settings?.executionHosts ?? current.executionHosts,
     favoriteUamAgentIds: patch.settings?.favoriteUamAgentIds ?? current.favoriteUamAgentIds,
     nativeImportExcludedTitlePrefixes: patch.settings?.nativeImportExcludedTitlePrefixes ?? current.nativeImportExcludedTitlePrefixes,
@@ -917,7 +898,7 @@ export const useAppStore = create<AppState>((set, get) => {
           editorFileAssociations: current.editorFileAssociations,
           centralProviderConfiguration: current.centralProviderConfiguration,
           mcpServers: current.mcpServers,
-          executionRouting: current.executionRouting,
+          ...(SSH_ENABLED ? { executionRouting: current.executionRouting } : {}),
           executionHosts: current.executionHosts,
           favoriteUamAgentIds: current.favoriteUamAgentIds,
           nativeImportExcludedTitlePrefixes: current.nativeImportExcludedTitlePrefixes,
@@ -1235,6 +1216,8 @@ export const useAppStore = create<AppState>((set, get) => {
         case 'stateUpdate':
           if (!isNewerStateRevision(cppStateRevision(msg.data), store.lastAppliedStateRevision)) break
           applyFullState(msg.data)
+          // Pushed full states share the patch channel, so a chat missing here is gone; drop its field copy.
+          forgetRetainedChatFieldsExcept(msg.data.chats.map((chat) => chat.id))
           // Only a full state the store actually took can close the gap for the pull in flight.
           if (stateResyncInFlight && get().lastAppliedStateRevision === cppStateRevision(msg.data)) {
             fullStateRevisionDuringResync = Math.max(fullStateRevisionDuringResync, cppStateRevision(msg.data))
@@ -1242,8 +1225,14 @@ export const useAppStore = create<AppState>((set, get) => {
           break
         case 'statePatch':
           if (stateResyncInFlight) {
-            if (patchesDuringResync.length < STATE_RESYNC_MAX_HELD_PATCHES) patchesDuringResync.push(msg.data)
-            else patchesDuringResyncOverflowed = true
+            // A patch that left out a chat is not kept as a copy: one at or below the snapshot is covered by it (the
+            // pull is what makes native drop its field copies), and one above it leaves a hole, so rebuilds() fails.
+            if (!msg.data.skippedChats) {
+              if (patchesDuringResync.length < STATE_RESYNC_MAX_HELD_PATCHES) patchesDuringResync.push(msg.data)
+              else patchesDuringResyncOverflowed = true
+            }
+          } else if (msg.data.skippedChats && isNewerStateRevision(cppPatchRevision(msg.data), get().lastAppliedStateRevision)) {
+            requestStateResync('patch built on a chat field copy this page lacks')
           }
           applyLivePatch(msg.data)
           break
@@ -1442,7 +1431,7 @@ export const useAppStore = create<AppState>((set, get) => {
       editorFileAssociations: current.editorFileAssociations,
       centralProviderConfiguration: current.centralProviderConfiguration,
           mcpServers: current.mcpServers,
-      executionRouting: current.executionRouting,
+      ...(SSH_ENABLED ? { executionRouting: current.executionRouting } : {}),
       executionHosts: current.executionHosts,
       favoriteUamAgentIds: current.favoriteUamAgentIds,
       nativeImportExcludedTitlePrefixes: current.nativeImportExcludedTitlePrefixes,
@@ -1486,7 +1475,8 @@ export const useAppStore = create<AppState>((set, get) => {
     computerUseAllowlistEnabled: false,
     computerUseAllowedApplications: [],
     ...createSessionsSlice(set, get, inCef),
-    ...createExecutionRoutingSlice(get),
+    // Builds without SSH carry no routing state or actions.
+    ...(SSH_ENABLED ? createExecutionRoutingSlice(get) : {}),
     ...createFoldersSlice(set, get),
     ...createResourceCollectionsSlice(set, get),
     ...createGoalsSlice(set, get),

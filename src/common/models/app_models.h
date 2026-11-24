@@ -463,9 +463,14 @@ inline constexpr char kDecisionSourceModelPrefix[] = "model:";
 inline constexpr char kDecisionSourceFilter[] = "filter";
 inline constexpr char kDecisionSourceFallback[] = "fallback";
 inline constexpr char kDecisionSourceUnknown[] = "unknown";
-std::string ModelDecisionSource(std::string_view model_id);
 /// Unrecognized saved values become "unknown" so they can never read as a model review.
 std::string NormalizeDecisionSource(std::string_view source);
+/// Structured id of the decision backend behind a "model:<id>" source (see app/decision_service.h). The only backend
+/// is the chat provider: the goal's reviewer model answering in a private provider session.
+inline constexpr char kDecisionBackendChatProvider[] = "chat_provider";
+/// The backend id when the source names a model and the id is known; empty for filter, fallback, unknown or none,
+/// so a saved or stale backend can never attach to a decision no model made.
+std::string NormalizeDecisionBackend(std::string_view source, std::string_view backend);
 
 /// <summary>
 /// A thread-level goal that persists the agent across turns until it
@@ -484,6 +489,7 @@ struct Goal
 	std::string last_blocker_kind;           // machine-readable blocker category
 	std::string last_diagnostic;             // durable goal-loop diagnostic reason
 	std::string last_decision_source;        // see kDecisionSource*; empty until an automatic decision exists
+	std::string last_decision_backend;       // see kDecisionBackend*; read through NormalizeDecisionBackend
 	std::vector<std::string> completed_items;
 	std::vector<std::string> remaining_items;
 	std::string current_step;
@@ -837,6 +843,11 @@ struct ChatSession
 	/// <summary>Owned native context locations retained until chat deletion succeeds.</summary>
 	std::vector<ProviderHandoffCliContext> provider_handoff_cli_contexts;
 	std::string agent_run_id;
+	/// Managed child only: the run's root chat and its exact creation time, saved at birth so a finished child stays
+	/// recognisable as that root's after its run record expires. Workspace-cleanup lineage only; never display
+	/// lineage (see subagent_parent_chat_id), native import, resume, permission or execution authority.
+	std::string managed_root_chat_id;
+	std::string managed_root_created_at;
 	// Fresh, bounded transcript owned by a goal on another visible chat.
 	// Empty on ordinary chats and on all legacy data.
 	std::string goal_owner_chat_id;
@@ -918,6 +929,9 @@ struct ChatFolder
 	std::string availability_directory;
 	std::string availability_host_id;
 	bool directory_missing = false;
+	// Detected project icon data URL from the same worker probe; empty when none.
+	// ponytail: copied with the folder list on each 2 s scan; move to a side map if icon bytes grow.
+	std::string project_icon;
 };
 
 struct ResourceReference
@@ -952,6 +966,10 @@ struct ShellAction
 	bool accepts_folders = true;
 	bool enabled = true;
 	bool open_workspace = false;
+	/// Set only for a saved entry that failed validation on load: a one-line reason. The entry stays disabled, read-only and in
+	/// its place, and is written back from `preserved_json` (its saved form) until the user deletes it.
+	std::string invalid_reason;
+	std::string preserved_json;
 };
 
 struct McpSecretReference

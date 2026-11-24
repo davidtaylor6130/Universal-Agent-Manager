@@ -2479,6 +2479,7 @@ def request(value, frame):)PY");
         if option == "old-version": result["version"] = "1.0.59"
         if option == "malformed-version": result["version"] = "not-a-version"
         if option == "wrong-protocol": result["protocolVersion"] = 2
+        if option == "protocol-4": result["protocolVersion"] = 4
     if waiting and method == "session.model.getCurrent" and option == "different-model":
         result["modelId"] = "different-native-model"
     if waiting and method == "models.list":
@@ -2684,7 +2685,7 @@ UAM_TEST(CopilotSavedRetryColdResumeAndOrdinaryTextKeepNativeSetupContracts)
 
 UAM_TEST(CopilotSavedOwnedRetryRequiresNativeEvidenceAndRetiresActualTimeout)
 {
-	for (const std::string variant : {"old-version", "malformed-version", "wrong-protocol", "rpc-error", "vision-false", "vision-missing", "vision-string", "different-model", "disabled-policy", "mime-restricted", "count-restricted", "size-restricted", "malformed-limits", "valid-limits", "timeout"})
+	for (const std::string variant : {"old-version", "malformed-version", "wrong-protocol", "protocol-4", "rpc-error", "vision-false", "vision-missing", "vision-string", "different-model", "disabled-policy", "mime-restricted", "count-restricted", "size-restricted", "malformed-limits", "valid-limits", "timeout"})
 	{
 		CopilotImageSupplementR77 peer(variant);
 		peer.control["hold_status"] = variant == "timeout";
@@ -2705,6 +2706,9 @@ UAM_TEST(CopilotSavedOwnedRetryRequiresNativeEvidenceAndRetiresActualTimeout)
 		else
 		{
 			peer.Reject(variant == "timeout" ? std::chrono::seconds(35) : std::chrono::seconds(5));
+			// Copilot CLI 1.0.113+ reports protocol 4: refused with the shared one-line gate message before any image is sent.
+			if (variant == "protocol-4")
+				UAM_ASSERT(peer.fixture.session->last_error.find("This Copilot CLI uses protocol 4; UAM supports 3.") != std::string::npos);
 			if (variant == "timeout")
 			{
 				UAM_ASSERT(std::chrono::steady_clock::now() - attempt_started >= std::chrono::seconds(30)); // Unchanged real 30s query deadline; no private deadline/clock mutation.

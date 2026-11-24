@@ -10,6 +10,8 @@ Recovery requires a fresh normalized native request before a saved response can 
 
 Copilot native plan decisions persist before delivery, retain the Plan ceiling and exact request and turn ownership until native mode confirmation, and save the confirmed policy before publishing the transition. OpenCode child approvals use the authenticated server belonging to the same provider process, validate ancestry, distinguish the native repeated-call question from a same-name MCP action and preserve uncertain decisions until a confirmed reply or complete pending-request snapshot settles them; an unrelated ACP output acknowledgment cannot settle HTTP delivery.
 
+A [pull request watch](../chat/pull-request-watch.md#untrusted-comments) wake arrives as a turn in the chat and grants no permission. It quotes comment text only from the repository's owners, members and collaborators, marks it as untrusted, and in a YOLO chat holds news that is only comments from other authors until other news arrives or the chat leaves YOLO, with a notification instead of a turn.
+
 [Permission agreement](../providers/permissions/permissions.md) · [Notifications](../ui/notifications.md) · [Recorded decisions](decisions.md).
 
 Computer Use's saved global consent and transient native revocation ownership remain distinct authorities. Settings readbacks, full frontend state and incremental updates expose an aggregate cleanup-pending flag without transferring owned chat or target identities to the control. The settings row reuses native global enable/disable and retries, while OS permission actions remain local and separate; see [Computer Use settings](../settings/computer-use.md).

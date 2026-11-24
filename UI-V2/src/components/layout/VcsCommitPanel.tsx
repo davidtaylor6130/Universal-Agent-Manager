@@ -39,7 +39,7 @@ function statusColor(status: string) {
 }
 
 /** Updates still running, by chat: the panel is per selected chat, but an update outlives a switch to another chat. */
-const updatesInFlight = new Map<string, { requestId: string; result: Promise<VcsUpdateResult> }>()
+const updatesInFlight = new Map<string, { requestId: string; vcsType: VcsType; result: Promise<VcsUpdateResult> }>()
 
 export function VcsCommitPanel() {
   const gitEnabled = useAppStore((s) => s.gitEnabled)
@@ -207,14 +207,21 @@ export function VcsCommitPanel() {
   }
 
   const capabilities = status.available ? status.capabilities ?? [] : []
-  const historyAvailable = systemEnabled && capabilities.includes('history')
-  const updateAvailable = systemEnabled && capabilities.includes('update')
+  // A local snapshot is a hidden Git copy: commits stay in it, while history and update read and update the SVN working copy it came from.
+  const snapshot = status.localSnapshot
+  const snapshotSvn = snapshot?.sourceKind === 'svn' ? snapshot : undefined
+  const sourceVcsType: VcsType = snapshotSvn ? 'svn' : selectedVcsType
+  const sourceCapabilities = snapshotSvn ? snapshotSvn.sourceCapabilities : capabilities
+  const sourceEnabled = snapshotSvn ? svnEnabled : systemEnabled
+  const historyAvailable = sourceEnabled && sourceCapabilities.includes('history')
+  const updateAvailable = sourceEnabled && sourceCapabilities.includes('update')
+  const snapshotSourceName = snapshot?.sourceDirectory.split(/[\\/]/).filter(Boolean).pop() || 'the source folder'
   // A scope the current workspace cannot show falls back to the workspace list instead of an empty panel.
   const scope = (reviewScope === 'history' && !historyAvailable) || (reviewScope === 'recorded' && !CODEX_ENABLED) ? 'workspace' : reviewScope
   const revisionPrefix = selectedVcsType === 'svn' ? 'r' : ''
 
   /** Shows an update's progress and outcome while its chat stays selected; switching away and back picks it up again. */
-  const followUpdate = useCallback(async (sourceSessionId: string, vcsType: VcsType, running: { requestId: string; result: Promise<VcsUpdateResult> }) => {
+  const followUpdate = useCallback(async (sourceSessionId: string, vcsType: VcsType, running: { requestId: string; vcsType: VcsType; result: Promise<VcsUpdateResult> }) => {
     const request = ++latestUpdateRequestRef.current
     updateRequestIdRef.current = running.requestId
     setUpdating(true)
@@ -237,7 +244,7 @@ export function VcsCommitPanel() {
 
   useEffect(() => {
     const running = activeSessionId ? updatesInFlight.get(activeSessionId) : undefined
-    if (running && activeSessionId) void followUpdate(activeSessionId, selectedVcsType, running)
+    if (running && activeSessionId) void followUpdate(activeSessionId, running.vcsType, running)
     // Only on arriving at a chat; followUpdate itself changes with every refresh.
   }, [activeSessionId]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -245,11 +252,11 @@ export function VcsCommitPanel() {
     if (!activeSessionId || updating || committing) return
     const sourceSessionId = activeSessionId
     const requestId = `vcs-update:${sourceSessionId}:${Date.now()}`
-    const running = { requestId, result: updateVcsWorkspace(sourceSessionId, selectedVcsType, requestId) }
+    const running = { requestId, vcsType: sourceVcsType, result: updateVcsWorkspace(sourceSessionId, sourceVcsType, requestId) }
     updatesInFlight.set(sourceSessionId, running)
     void running.result.finally(() => { if (updatesInFlight.get(sourceSessionId) === running) updatesInFlight.delete(sourceSessionId) })
     setNotice('')
-    await followUpdate(sourceSessionId, selectedVcsType, running)
+    await followUpdate(sourceSessionId, sourceVcsType, running)
   }
 
   const shownTone = notice ? noticeTone : status.error ? 'error' : 'warning'
@@ -281,15 +288,15 @@ export function VcsCommitPanel() {
         <Tabs aria-label="Change review scope" variant="underline" className="uam-rv-scopes" value={scope} onChange={(next) => { setReviewScope(next); setDiffSelection(null) }}>
           <Tab value="workspace" icon={<FolderGit2 size={14} aria-hidden />}>Workspace</Tab>
           {CODEX_ENABLED && <Tab value="recorded" icon={<MessageSquareDiff size={14} aria-hidden />}>Recorded chat edits</Tab>}
-          {historyAvailable && <Tab value="history" icon={<History size={14} aria-hidden />}>History</Tab>}
+          {historyAvailable && <Tab value="history" icon={<History size={14} aria-hidden />}>{snapshotSvn ? 'SVN history' : 'History'}</Tab>}
         </Tabs>
       </div>}
       {scope === 'history' && activeSessionId ? (
         <VcsHistory
-          key={JSON.stringify([activeSessionId, session?.workspaceDirectory, session?.workspaceWorktreeDirectory, session?.executionHostId, selectedVcsType, historyEpoch])}
+          key={JSON.stringify([activeSessionId, session?.workspaceDirectory, session?.workspaceWorktreeDirectory, session?.executionHostId, sourceVcsType, historyEpoch])}
           chatId={activeSessionId}
-          vcsType={selectedVcsType}
-          compareOrigin={capabilities.includes('originComparison')}
+          vcsType={sourceVcsType}
+          compareOrigin={sourceCapabilities.includes('originComparison')}
         />
       ) : CODEX_ENABLED && scope === 'recorded' ? (
         /* The constant comes first so builds without Codex drop RecordedChatEdits from the bundle. */
@@ -314,7 +321,9 @@ export function VcsCommitPanel() {
           )}
           {commitOutput && <details className="mb-3 text-xs"><summary className="cursor-pointer" style={{ color: 'var(--text-3)' }}>Command output</summary><pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px]" style={{ color: 'var(--text-2)' }}>{commitOutput}</pre></details>}
           <div className="mb-2 flex items-center gap-2 text-xs" style={{ color: 'var(--text-2)' }}>
-            {status.vcsTypes.length > 1 ? (
+            {snapshot ? (
+              <span className="rounded px-1.5 py-0.5 text-[10px] font-semibold" title={snapshot.sourceDirectory} style={{ background: 'var(--surface-up)', color: 'var(--text-2)' }}>Local snapshot (Git)</span>
+            ) : status.vcsTypes.length > 1 ? (
               <MenuSelect
                 label="VCS"
                 value={selectedVcsType}
@@ -327,10 +336,15 @@ export function VcsCommitPanel() {
             <GitBranch size={13} aria-hidden style={{ color: 'var(--text-3)' }} />
             <span className="min-w-0 flex-1 truncate font-mono" style={{ color: 'var(--text)' }}>{status.branchOrRevision || '-'}</span>
             {updateAvailable && <Button size="sm" variant="secondary" loading={updating} disabled={committing} leadingIcon={<ArrowDownToLine size={14} />} onClick={() => { void update() }}>
-              {updating ? 'Updating…' : 'Update'}
+              {updating ? 'Updating…' : snapshotSvn ? 'Update SVN' : 'Update'}
             </Button>}
             {updateAvailable && updating && <Button size="sm" variant="ghost" onClick={() => cancelVcsRequest(updateRequestIdRef.current)}>Stop</Button>}
           </div>
+          {snapshot && <p className="mb-2 text-xs" style={{ color: 'var(--text-3)' }}>
+            {snapshotSvn
+              ? `Commits stay in this hidden copy. Publishing to SVN happens after you port the chat's changes back to ${snapshotSourceName}${historyAvailable || updateAvailable ? '; SVN history and Update use that working copy' : ''}.`
+              : `Commits stay in this hidden copy. Port the chat's changes back to apply them to ${snapshotSourceName}.`}
+          </p>}
         </div>
 
         <div className="mx-3 flex items-center gap-2 py-2 text-xs" style={{ borderBottom: '1px solid var(--border)', color: 'var(--text-2)' }}>
@@ -402,7 +416,7 @@ export function VcsCommitPanel() {
         </div>
 
         {/* The one heading in the panel: it is what separates the form from the list of files above it. */}
-        <SectionHeader className="uam-rv-section" icon={<GitCommitHorizontal size={14} aria-hidden />} title="Commit" description="Publishes only the selected files" />
+        <SectionHeader className="uam-rv-section" icon={<GitCommitHorizontal size={14} aria-hidden />} title="Commit" description={snapshot ? 'Commits only the selected files to the snapshot copy' : 'Publishes only the selected files'} />
         <div className="flex flex-1 flex-col p-3">
           <div className="mb-2 flex items-center gap-2">
             <input
