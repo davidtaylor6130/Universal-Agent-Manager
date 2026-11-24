@@ -1176,6 +1176,31 @@ namespace uam
 				return result;
 			}
 
+			// Folders before chats: a copied chat must never name a workspace this root has not saved, even if the
+			// copy stops part-way. Folders the ledger already recorded stay out, so user deletions hold.
+			std::vector<ChatFolder> folders = ChatFolderStore::Load(data_root);
+			const std::size_t existing_folder_count = folders.size();
+			for (ChatFolder& folder : ChatFolderStore::Load(legacy_root))
+			{
+				if (!LedgerContains(*imported_folders, folder.id) &&
+				    std::none_of(folders.begin(), folders.end(), [&](const ChatFolder& existing) { return existing.id == folder.id; }))
+					folders.push_back(std::move(folder));
+			}
+			if (folders.size() != existing_folder_count)
+			{
+				if (!ChatFolderStore::Save(data_root, folders))
+				{
+					// Copying chats now would leave them naming workspaces that were not saved; retry at the next start.
+					AppendError(result.errors, "Could not import previous-version chat folders.");
+					return result;
+				}
+				for (std::size_t index = existing_folder_count; index < folders.size(); ++index)
+				{
+					imported_folders->push_back(folders[index].id);
+					result.imported_folders.push_back(folders[index]);
+				}
+			}
+
 			std::error_code ec;
 			for (fs::directory_iterator it(AppPaths::UamChatsRootPath(legacy_root), ec), end; !ec && it != end; it.increment(ec))
 			{
@@ -1209,26 +1234,6 @@ namespace uam
 				result.items.push_back(std::move(item));
 			}
 			if (ec) AppendError(result.errors, "Could not read previous-version chats in " + uam::paths::Utf8PathString(legacy_root) + ": " + ec.message());
-
-			std::vector<ChatFolder> folders = ChatFolderStore::Load(data_root);
-			const std::size_t existing_folder_count = folders.size();
-			for (ChatFolder& folder : ChatFolderStore::Load(legacy_root))
-			{
-				if (!LedgerContains(*imported_folders, folder.id) &&
-				    std::none_of(folders.begin(), folders.end(), [&](const ChatFolder& existing) { return existing.id == folder.id; }))
-					folders.push_back(std::move(folder));
-			}
-			if (folders.size() != existing_folder_count)
-			{
-				if (ChatFolderStore::Save(data_root, folders))
-					for (std::size_t index = existing_folder_count; index < folders.size(); ++index)
-					{
-						imported_folders->push_back(folders[index].id);
-						result.imported_folders.push_back(folders[index]);
-					}
-				else
-					AppendError(result.errors, "Could not import previous-version chat folders.");
-			}
 
 			result.ok = result.errors.empty();
 			if (result.ok) completed->push_back(source_key);
