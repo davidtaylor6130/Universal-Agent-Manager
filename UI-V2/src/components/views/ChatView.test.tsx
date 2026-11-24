@@ -13461,7 +13461,7 @@ describe('ChatView conditional manual compaction offer', () => {
       expect(f.requests.filter(request => request.action === 'compactAcpSession')).toHaveLength(1)
       expect(f.sendAcpPrompt).not.toHaveBeenCalled()
       expect(f.textarea.value).toBe('/compact keep the API notes')
-      expect(reportedText()).toContain('Compaction failed: This provider can compact only chats that run on this computer.')
+      expect(reportedText()).toContain('Compaction failed. This provider can compact only chats that run on this computer.')
       expect(appNotices.some(message => message.includes('yours were not used'))).toBe(false)
     } finally { f.cleanup() }
   })
