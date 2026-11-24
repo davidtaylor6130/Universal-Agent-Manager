@@ -281,6 +281,15 @@ uam::DataFolderSettingsService::Snapshot uam::DataFolderSettingsService::Snapsho
 	state.restart_ready = kTransfersValidated && state.can_change && !state.pending_folder.empty() && !passive_choice;
 	state.state = held ? "publicationUnknown" : !state.pending_folder.empty() ? "awaitingMigration" : "none";
 	state.message = m_externalOverride ? "UAM_DATA_DIR controls this launch. Folder choices are unavailable while the startup override is set." : held ? "The folder-choice or handoff publication is unconfirmed. Further changes remain held for recovery." : passive_choice ? "The source was restored and the passive copy is retained. Cancel this choice before choosing another empty folder." : active ? "The selected data folder is active. The original profile is retained and locked for recovery." : !m_choice.destination.empty() ? (kTransfersValidated ? "Folder choice saved. Stop active provider sessions before requesting a guarded restart." : "Folder choice saved. Transfer is unavailable in this build; restarting will keep the current folder.") : "Choose a separate empty folder. Existing chats stay in the current folder until a verified transfer is available.";
+	if (!held && !m_externalOverride && !state.pending_folder.empty())
+	{
+		if (m_volumeWarningFolder != state.pending_folder)
+		{
+			m_volumeWarningFolder = state.pending_folder;
+			m_volumeWarning = DataFolderVolumeWarning(state.pending_folder);
+		}
+		if (!m_volumeWarning.empty()) state.message += " " + m_volumeWarning;
+	}
 	return state;
 }
 

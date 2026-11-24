@@ -4,8 +4,11 @@
 #include <algorithm>
 #include <filesystem>
 #include <fstream>
+#include <future>
+#include <memory>
 #include <sstream>
 #include <string>
+#include <thread>
 
 #if defined(__APPLE__)
 #include <pthread.h>
@@ -97,10 +100,11 @@ namespace
 	constexpr const char* kLower = "LowerCurrentThreadToBackgroundPriority";
 }
 
-UAM_TEST(DurableSaveAndStopWorkersKeepDefaultPriority)
+UAM_TEST(ChatSaveWorkersRiseForBarriersAndStopWorkersKeepDefaultPriority)
 {
-	// Force/shutdown/exit barriers block the UI on chat-save and terminal-media workers, and stop
-	// workers serve a user stop, so none of them may be lowered (#647).
+	// Chat-save workers run lowered so they cannot starve the UI poll (#526), but force, shutdown and
+	// synchronous-save barriers block the UI on them, so every such barrier raises them first (#647).
+	// Terminal-media and stop workers are waited on by exit settlement and user stops and stay unlowered.
 	// ponytail: source scan, replace with a priority probe if these workers gain an injection seam.
 	const std::string runtime = ReadSource("src/common/runtime/acp/acp_session_runtime.cpp");
 	const std::string lifecycle = ReadSource("src/app/chat_lifecycle_service.cpp");
@@ -121,6 +125,39 @@ UAM_TEST(DurableSaveAndStopWorkersKeepDefaultPriority)
 	}
 	UAM_ASSERT_EQ(lowered, 2);
 
+	// Every chat-save worker starts through the barrier-raisable helper; none is a plain detached thread.
+	for (const char* worker : {"reader", "writer", "worker", "publisher", "queue_writer", "baseline"})
+		UAM_ASSERT(runtime.find(std::string("std::thread(std::move(") + worker + "))") == std::string::npos);
+	int save_workers = 0;
+	for (std::size_t at = runtime.find("StartChatSaveWorker(*task, std::move("); at != std::string::npos;
+	     at = runtime.find("StartChatSaveWorker(*task, std::move(", at + 1)) ++save_workers;
+	UAM_ASSERT_EQ(save_workers, 7);
+	UAM_ASSERT(runtime.find("platform::StartBarrierRaisableBackgroundThread(priority") != std::string::npos);
+	// The barriers: synchronous saves and the force path (through the queued-admission barrier), and the
+	// forced empty-held and owned publications, raise before they wait.
+	const auto body_of = [&runtime](const char* signature)
+	{
+		const std::size_t at = runtime.find(signature);
+		return at == std::string::npos ? std::string{} : LambdaBodyAfter(runtime, at);
+	};
+	// Raises cover every chat's workers: publication holds the process-wide chat save lock.
+	const std::string finish = body_of("void FinishPendingQueuedAdmissionSave(AppState& app");
+	UAM_ASSERT(finish.find("RaiseAllChatSaveWorkersForBarrier(app);") < finish.find("pending_chat_save_tasks.find(chat_id)"));
+	UAM_ASSERT(body_of("static bool PollEmptyHeldSend(").find("if (force) RaiseChatSaveWorkersForBarrier(*task);") != std::string::npos);
+	UAM_ASSERT(body_of("static bool PollOwnedChatPublication(").find("if (force) RaiseChatSaveWorkersForBarrier(*task);") != std::string::npos);
+	const std::string flush = body_of("bool FlushPendingChatSaves(AppState& app, bool force)");
+	UAM_ASSERT(flush.find("if (force) RaiseAllChatSaveWorkersForBarrier(app);") == flush.find_first_not_of("{\n\t"));
+	// The shutdown quiesce loop spins on chat saves settling, so it raises after each flush.
+	const std::string scheduler = ReadSource("src/app/agent_run_scheduler.cpp");
+	const std::size_t quiesce = scheduler.find("bool AgentRunScheduler::QuiesceInitialForShutdown(AppState& app)");
+	UAM_ASSERT(quiesce != std::string::npos);
+	const std::string quiesce_body = LambdaBodyAfter(scheduler, quiesce);
+	const std::size_t quiesce_flush = quiesce_body.find("(void)FlushPendingChatSaves(app, false);");
+	UAM_ASSERT(quiesce_flush != std::string::npos && quiesce_body.find("RaiseAllChatSaveWorkersForBarrier(app);", quiesce_flush) != std::string::npos);
+	const std::size_t force_block = flush.find("if (force)\n");
+	UAM_ASSERT(force_block != std::string::npos);
+	UAM_ASSERT(flush.find("acp_detail::FinishPendingQueuedAdmissionSave(app, chat_id);", force_block) < flush.find("task->published.get()", force_block));
+
 	int stops = 0;
 	for (std::size_t at = runtime.find("StopStdioProcessObserved(service, *owned"); at != std::string::npos;
 	     at = runtime.find("StopStdioProcessObserved(service, *owned", at + 1), ++stops)
@@ -137,4 +174,58 @@ UAM_TEST(DurableSaveAndStopWorkersKeepDefaultPriority)
 		const std::string worker = LambdaBodyAfter(orchestration, orchestration.find("std::thread(", at));
 		UAM_ASSERT(!worker.empty() && worker.find(kLower) == std::string::npos);
 	}
+}
+
+UAM_TEST(BarrierRaisableWorkerRunsLoweredUntilABarrierRaisesIt)
+{
+	const int ui_rank = CurrentThreadPriorityRank();
+	const auto priority = std::make_shared<uam::platform::BarrierRaisableWorkerPriority>();
+	std::promise<int> lowered_rank;
+	std::promise<void> raised;
+	std::promise<int> raised_rank;
+	std::thread worker = uam::platform::StartBarrierRaisableBackgroundThread(priority, [&]()
+	{
+		lowered_rank.set_value(CurrentThreadPriorityRank());
+		raised.get_future().wait();
+		raised_rank.set_value(CurrentThreadPriorityRank());
+	});
+	const int lowered = lowered_rank.get_future().get();
+	UAM_ASSERT(priority->RunningLowered());
+#if defined(_WIN32)
+	UAM_ASSERT(lowered < ui_rank);
+#elif defined(__APPLE__)
+	UAM_ASSERT(lowered < ui_rank || ui_rank <= static_cast<int>(QOS_CLASS_UTILITY) * 100);
+#else
+	UAM_ASSERT(lowered <= ui_rank && lowered <= -10);
+#endif
+	priority->RaiseForBarrier();
+	priority->RaiseForBarrier(); // Idempotent.
+	UAM_ASSERT(!priority->RunningLowered());
+	raised.set_value();
+	const int after = raised_rank.get_future().get();
+	worker.join();
+	UAM_ASSERT(priority->Finished());
+#if defined(_WIN32)
+	// Windows raises the worker's own thread priority back to where it started.
+	UAM_ASSERT_EQ(after, ui_rank);
+#else
+	// macOS raises through a QoS override, which the requested class does not show; Linux needs privilege.
+	(void)after;
+#endif
+	priority->RaiseForBarrier(); // After the worker left: a no-op.
+	UAM_ASSERT(priority->Finished());
+}
+
+UAM_TEST(BarrierRaisedBeforeStartKeepsWorkerAtDefaultPriority)
+{
+	// Compare against a plain thread from the same spawner: macOS does not hand a new thread the
+	// spawner's QoS unchanged (a user-interactive spawner yields user-initiated threads).
+	int default_rank = 0;
+	std::thread([&default_rank]() { default_rank = CurrentThreadPriorityRank(); }).join();
+	const auto priority = std::make_shared<uam::platform::BarrierRaisableWorkerPriority>();
+	priority->RaiseForBarrier();
+	int worker_rank = 0;
+	uam::platform::StartBarrierRaisableBackgroundThread(priority, [&worker_rank]() { worker_rank = CurrentThreadPriorityRank(); }).join();
+	UAM_ASSERT_EQ(worker_rank, default_rank);
+	UAM_ASSERT(priority->Finished() && !priority->RunningLowered());
 }

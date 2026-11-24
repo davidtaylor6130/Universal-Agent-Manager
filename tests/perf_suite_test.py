@@ -20,6 +20,12 @@ lines = {
     'PerformanceSuiteUamRequestOverhead': '[SIZE] uam-control full catalogue: 4000 bytes, 20 tools',
 }
 lines['PerformanceMemoryPollOnLargeInstall'] = '[TIMING] memory poll, 2000 chats, 1000 queued: p50=5e-05 ms'
+refresh = perf_suite.parse_native_output('PerformanceRefreshFullStateFingerprint', [
+    '[SIZE] refresh full state 2000 chats: reply=1234567 bytes',
+    '[TIMING] refresh full state 2000 chats: refresh p50=120.5 ms p95=130 ms; initial load p50=200 ms p95=210.25 ms '
+    '(serialize and dump p50=110 ms, baseline seed p50=80 ms, freeing the rest of the reply p50=60 ms); samples=21'])
+assert refresh == {'refresh_2000_p50_ms': 120.5, 'refresh_2000_p95_ms': 130.0, 'initial_load_state_2000_p50_ms': 200.0,
+                   'initial_load_state_2000_p95_ms': 210.25, 'refresh_2000_reply_bytes': 1234567.0}, refresh
 for case, line in lines.items():
     assert any(name == case and re.search(pattern.replace(r'[\d.]+', perf_suite.NUMBER), line) for name, pattern, _ in perf_suite.NATIVE), case
 
