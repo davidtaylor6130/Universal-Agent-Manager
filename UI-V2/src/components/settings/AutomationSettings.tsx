@@ -3,7 +3,7 @@ import { Plus, RefreshCw, X } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
 import { sendToCEF } from '../../ipc/cefBridge'
 import { useAppStore } from '../../store/useAppStore'
-import { reportAppFailure } from '../../utils/appFailure'
+import { failureDetail, reportAppFailure } from '../../utils/appFailure'
 import { copyTextToClipboard } from '../../utils/copySelection'
 import { Button, ConfirmDialog, IconButton, MenuSelect, Notice, Overlay, Presence, Switch } from '../ui'
 import { SettingRow, SettingsField, SettingsLoading, SettingsSection } from './SettingsPrimitives'
@@ -63,7 +63,7 @@ export function AutomationSettings() {
     void sendToCEF<{ tokens: AutomationToken[] }>({ action: 'getAutomationTokens' }).then(response => {
       if (!current) return
       if (response.ok && response.data) setTokens(response.data.tokens)
-      else { setTokens([]); reportAppFailure(response.error || 'Could not load automation tokens.', 'Try again.') }
+      else { setTokens([]); reportAppFailure('Could not load automation tokens.', failureDetail(response.error, 'Try again.')) }
     })
     void sendToCEF<{ effectiveUrl?: string; state?: string }>({ action: 'getCompanionSettings' }).then(response => {
       if (!current || !response.ok || !response.data?.effectiveUrl) return
@@ -88,13 +88,13 @@ export function AutomationSettings() {
   const revoke = async (token: AutomationToken) => {
     setRevoking(null)
     const response = await sendToCEF({ action: 'revokeAutomationToken', payload: { id: token.id } })
-    if (!response.ok) { reportAppFailure(response.error || 'Could not revoke the token.', 'Try again.'); return }
+    if (!response.ok) { reportAppFailure('Could not revoke the token.', failureDetail(response.error, 'Try again.')); return }
     setTokens(current => current?.filter(value => value.id !== token.id) ?? [])
   }
   const regenerate = async (token: AutomationToken) => {
     setRegenerating(null)
     const response = await sendToCEF<{ secret: string; token: AutomationToken }>({ action: 'regenerateAutomationToken', payload: { id: token.id } })
-    if (!response.ok || !response.data) { reportAppFailure(response.error || 'Could not regenerate the token.', 'Try again.'); return }
+    if (!response.ok || !response.data) { reportAppFailure('Could not regenerate the token.', failureDetail(response.error, 'Try again.')); return }
     const next = response.data.token
     setTokens(current => current?.map(value => value.id === next.id ? next : value) ?? [next])
     setError(''); setCopied(false); setSecret(response.data.secret); setEditing(true)

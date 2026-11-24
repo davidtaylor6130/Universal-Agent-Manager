@@ -4,7 +4,7 @@ import type { ContextReference } from '../../types/contextReference'
 import { sanitizeContextReferences, CONTEXT_REFERENCE_MAX_COUNT } from '../../utils/contextReferences'
 import { readChatComposerDraft, writeChatComposerDraft } from '../../utils/composerDraftStorage'
 import { filePreviewResponse } from '../../types/filePreview'
-import { reportAppFailure, reportDeletionRejections, type DeletionRejection } from '../../utils/appFailure'
+import { failureDetail, isRawBridgeError, reportAppFailure, reportDeletionRejections, type DeletionRejection } from '../../utils/appFailure'
 import { canRouteAutomatically } from '../../types/executionRouting'
 import type { ChatSearchHit, ChatSearchNavigation } from '../../types/chatSearch'
 import { chatSearchPageRequest, sanitizeChatSearchHits } from '../../utils/chatSearchResults'
@@ -20,7 +20,7 @@ import type { MemoryLevel } from '../../types/memory'
 import type { WindowsPowerShellPreference, CreateSessionOptions, VoiceInputMode, VcsStorageSettings, ChatFileChangeReceiptsResponse, McpServerConfiguration } from '../cpp/types'
 import type { CEFResponse } from '../../ipc/cefBridge'
 import { sendWhenRemoteStopSettles, sendToCEF, isCefContext, isCompanionContext, createRequestId } from '../../ipc/cefBridge'
-import { COMPUTER_USE_ENABLED, MOBILE_COMPANION_ENABLED } from '../../config/buildFeatures'
+import { COMPUTER_USE_ENABLED, MOBILE_COMPANION_ENABLED, SSH_ENABLED } from '../../config/buildFeatures'
 import {
   CLAUDE_CLI_PROVIDER_ID,
   CODEX_CLI_PROVIDER_ID,
@@ -137,7 +137,7 @@ function codexOptionsTitle(options: { reasoningEffort?: string; serviceTier?: st
  */
 function reportRefusal(title: string, reason: string | undefined, onFailure?: (reason: string) => void) {
   // The bridge's own failures carry raw exception text; that stays in the console, never in a notice.
-  const shown = reason && !reason.startsWith('Bridge request failed:') && !reason.startsWith('Invalid bridge payload:') ? reason : ''
+  const shown = reason && !isRawBridgeError(reason) ? reason : ''
   if (onFailure) onFailure(shown)
   else reportAppFailure(`${title}. ${shown || 'Try again.'}`, '')
 }
@@ -151,6 +151,25 @@ function makeId(prefix: string, counter: number) {
 }
 
 const computerUseSuccess: ComputerUseActionResult = { ok: true }
+
+/** Native 409 refusal of a status read whose chat workspace or host changed while it ran (vcs_handlers.cpp). */
+const VCS_STATUS_CONTEXT_CHANGED = 'The chat workspace changed while its repository context was loading.'
+
+function vcsCommitStatusFailure(vcsType: VcsType, error: string | undefined, code?: number): VcsCommitStatus {
+  const contextChanged = code === 409 && error?.trim() === VCS_STATUS_CONTEXT_CHANGED
+  return {
+    ...(contextChanged ? { contextChanged: true } : {}),
+    available: false,
+    vcsTypes: [],
+    activeVcsType: vcsType,
+    workspaceDirectory: '',
+    branchOrRevision: '',
+    changedFiles: [],
+    lineStatsReady: true,
+    warning: '',
+    error: error?.trim() || 'UAM could not read the repository status.',
+  }
+}
 
 function computerUseFailure(error?: string): ComputerUseActionResult {
   return error ? { ok: false, error } : { ok: false }
@@ -978,7 +997,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         : current.providers.some((provider) => provider.id === normalizedDefaultProviderId)
           ? normalizedDefaultProviderId
           : DEFAULT_PROVIDER_ID
-      if (routingMode === 'automatic' && !canRouteAutomatically(current.executionRouting, selectedFolder, requestedProviderId)) return false
+      if (routingMode === 'automatic' && (!SSH_ENABLED || !current.executionRouting || !canRouteAutomatically(current.executionRouting, selectedFolder, requestedProviderId))) return false
       const defaults = providerChatDefaultsForNewChat({ ...current, providerChatDefaults: effectiveDefaults.providerChatDefaults }, requestedProviderId)
       if (modelId !== undefined) defaults.modelId = modelId.trim()
 	  if (reasoningEffort !== undefined) defaults.reasoningEffort = normalizeCodexReasoningEffort(reasoningEffort)
@@ -1522,7 +1541,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return response.data
     },
 
-    getVcsCommitStatus: async (id: string, vcsType: VcsType = 'git', options: { includeLineStats?: boolean; contextOnly?: boolean; requestId?: string; comparisonRef?: string } = {}): Promise<VcsCommitStatus | null> => {
+    getVcsCommitStatus: async (id: string, vcsType: VcsType = 'git', options: { includeLineStats?: boolean; contextOnly?: boolean; requestId?: string; comparisonRef?: string; reportFailure?: boolean } = {}): Promise<VcsCommitStatus | null> => {
       if (isCefContext()) {
         const response = await sendToCEF<VcsCommitStatus>({
           action: 'getVcsCommitStatus',
@@ -1537,9 +1556,11 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         })
         if (!response.ok) {
           console.error('[CEF] getVcsCommitStatus failed:', response.error)
-          return null
+          // Callers that must not mistake a failed read (for example a dropped SSH host) for "no changes" get it as an error.
+          return options.reportFailure ? vcsCommitStatusFailure(vcsType, response.error, response.code) : null
         }
-        return sanitizeVcsCommitStatus(response.data)
+        const status = sanitizeVcsCommitStatus(response.data)
+        return status || !options.reportFailure ? status : vcsCommitStatusFailure(vcsType, '')
       }
 
       const session = get().sessions.find((candidate) => candidate.id === id)
@@ -2191,7 +2212,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
 
 		if (isLatestPendingRequest(requestKey, response.requestId)) {
 		  pendingRequestIdsByKey.delete(requestKey)
-		  if (response.error) reportAppFailure(response.error, '')
+		  reportRefusal('The permission mode was not changed', response.error)
         }
 
         return false

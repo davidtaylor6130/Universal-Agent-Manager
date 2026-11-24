@@ -1060,6 +1060,8 @@ namespace uam
 		continuation.turns.push_back(turn);
 		run.managed_continuation = std::move(continuation);
 		transcript.agent_run_id = run.id;
+		transcript.managed_root_chat_id = work->parent.id;
+		transcript.managed_root_created_at = work->parent.created_at;
 		task->transcript_id = transcript.id;
 		app.managed_initial_mentions.emplace(root_id, task);
 		const AgentDefinition selected = *definition;
@@ -3515,6 +3517,8 @@ namespace uam
 		run.updated_at = run.created_at;
 		run.result_delivery_id = run.id;
 		transcript.agent_run_id = run.id;
+		transcript.managed_root_chat_id = root_chat->id;
+		transcript.managed_root_created_at = root_chat->created_at;
 
 		std::string save_error;
 		if (!AgentRunLedger::Save(app.data_root, run, &save_error))
@@ -3758,6 +3762,8 @@ namespace uam
 		run.task = "Continue the interrupted managed task from the durable transcript. "
 		           "Complete only the remaining work and do not repeat work already shown there.";
 		transcript.agent_run_id = run.id;
+		transcript.managed_root_chat_id = root_chat->id;
+		transcript.managed_root_created_at = root_chat->created_at;
 
 		std::string save_error;
 		if (!AgentRunLedger::Save(app.data_root, run, &save_error))

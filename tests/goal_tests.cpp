@@ -963,6 +963,39 @@ UAM_TEST(GoalReviewPromptCarriesCappedWorkspaceChangesAndAcceptedGitReads)
 		UAM_ASSERT(!read(refused));
 }
 
+UAM_TEST(GoalReviewPromptNamesReadsForTheWorkspaceVcs)
+{
+	Goal goal;
+	goal.objective = "Add the parser.";
+	const uam::command_safety::ReadScope scope{.workspace = fs::temp_directory_path() / "uam-goal-review-scope", .resolve_executables = false};
+	const auto read = [&](std::string_view command) { return uam::command_safety::IsReadOnlyCommand(command, scope); };
+	const std::vector<std::string> git = {"git status --short --ignore-submodules", "git diff --no-ext-diff --no-textconv"};
+	const std::vector<std::string> svn = {"svn status", "svn diff --internal-diff"};
+	const auto names = [](const std::string& prompt, const std::vector<std::string>& commands)
+	{
+		return std::ranges::all_of(commands, [&](const std::string& command) { return prompt.find("`" + command + "`") != std::string::npos; });
+	};
+
+	// An SVN working copy is told to use SVN's reads, which pass the reviewer's ceiling exactly as written.
+	const std::string svn_review = uam::GoalService::BuildReviewPrompt(goal, goal.objective, "Done.", 0, false, "M src/parser.cpp\n", uam::VcsType::Svn);
+	UAM_ASSERT(svn_review.find("Accepted SVN reads: ") != std::string::npos);
+	UAM_ASSERT(names(svn_review, svn) && svn_review.find("`git ") == std::string::npos);
+	UAM_ASSERT(svn_review.find("<workspaceChanges>\nM src/parser.cpp") != std::string::npos);
+	for (const std::string& command : svn) UAM_ASSERT(read(command));
+	UAM_ASSERT(read("svn diff --internal-diff --summarize"));
+	UAM_ASSERT(read("svn diff --internal-diff -- src/parser.cpp"));
+	for (const std::string_view refused : {"svn diff", "svn status; svn diff --internal-diff", "svn diff --internal-diff | head"})
+		UAM_ASSERT(!read(refused));
+
+	// Git keeps its reads; an undetected system (an SSH workspace) is given both.
+	const std::string git_review = uam::GoalService::BuildReviewPrompt(goal, goal.objective, "Done.", 0, false, {}, uam::VcsType::Git);
+	UAM_ASSERT(names(git_review, git) && git_review.find("`svn ") == std::string::npos);
+	UAM_ASSERT_EQ(git_review, uam::GoalService::BuildReviewPrompt(goal, goal.objective, "Done."));
+	const std::string unknown_review = uam::GoalService::BuildReviewPrompt(goal, goal.objective, "Done.", 0, false, {}, std::nullopt);
+	UAM_ASSERT(names(unknown_review, git) && names(unknown_review, svn));
+	UAM_ASSERT(unknown_review.find("in an SVN working copy") != std::string::npos);
+}
+
 UAM_TEST(GoalServiceMaintainsOnlyOneActiveGoalPerChat)
 {
 	uam::AppState app;
