@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { SnoozeMenu, customSnoozeUntil, snoozePresets } from './SnoozeMenu'
 import { useAppStore } from '../../store/useAppStore'
+import { APP_FAILURE_EVENT, type AppFailure } from '../../utils/appFailure'
 
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 const save = useAppStore.getState().setChatSnoozedUntil
@@ -46,14 +47,18 @@ describe('snooze menu', () => {
       requests.push(JSON.parse(request)); if (fail) onFailure(409, 'Could not save wake time'); else onSuccess('{}')
     }
     const { host, root, button } = render()
+    const notices: AppFailure[] = []
+    const collect = (event: Event) => notices.push((event as CustomEvent<AppFailure>).detail)
+    window.addEventListener(APP_FAILURE_EVENT, collect)
     try {
       await act(async () => button('1 hour').click())
-      expect(host.querySelector('[role=alert]')?.textContent).toBe('Could not save wake time')
+      expect(notices.at(-1)).toMatchObject({ message: 'Could not snooze the chat.', detail: 'Could not save wake time. Try again.' })
+      expect(host.querySelector('[role=alert]')).toBeNull()
       expect(requests[0]).toMatchObject({ action: 'setChatSnoozedUntil', payload: { chatId: 'chat', untilMs: expect.any(Number) } })
       fail = false; await act(async () => button('1 hour').click())
-      expect(host.querySelector('[role=status]')?.textContent).toContain('Snoozed until')
+      expect(notices.at(-1)).toMatchObject({ message: expect.stringContaining('Snoozed until'), tone: 'success' })
       expect(requests).toHaveLength(2)
-    } finally { act(() => root.unmount()); host.remove() }
+    } finally { window.removeEventListener(APP_FAILURE_EVENT, collect); act(() => root.unmount()); host.remove() }
   })
 
   it('snoozes for a custom amount in the selected unit', async () => {
@@ -106,6 +111,22 @@ describe('snooze menu', () => {
     try {
       expect([...host.querySelectorAll('button')].find((item) => item.textContent?.startsWith('1 hour'))!.disabled).toBe(true)
     } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ sessions: previous }) }
+  })
+
+  it('reports a partial bulk snooze once, by name, without a success notice', async () => {
+    const previous = useAppStore.getState().sessions
+    useAppStore.setState({ sessions: [{ id: 'a', name: 'a' }, { id: 'b', name: 'b' }] as never,
+      setChatSnoozedUntil: vi.fn(async (id: string) => id === 'b' ? { ok: false, error: 'Chat is busy.' } : { ok: true }) as never })
+    const notices: AppFailure[] = []
+    const collect = (event: Event) => notices.push((event as CustomEvent<AppFailure>).detail)
+    window.addEventListener(APP_FAILURE_EVENT, collect)
+    const host = document.createElement('div'); document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<SnoozeMenu chatId="a" familyIds={[]} targets={[{ id: 'a', label: 'a' }, { id: 'b', label: 'b' }]} />))
+    try {
+      await act(async () => [...host.querySelectorAll<HTMLButtonElement>('button')].find((item) => item.textContent?.startsWith('1 hour'))!.click())
+      expect(notices.map(({ message, detail, tone }) => [message, detail, tone])).toEqual([['Could not snooze chats: 1 of 2 failed.', '“b”: Chat is busy.', undefined]])
+    } finally { window.removeEventListener(APP_FAILURE_EVENT, collect); act(() => root.unmount()); host.remove(); useAppStore.setState({ sessions: previous, setChatSnoozedUntil: save }) }
   })
 
   it('rejects an unusable custom amount before contacting native code', async () => {

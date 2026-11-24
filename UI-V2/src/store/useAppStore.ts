@@ -1,4 +1,4 @@
-import { MOBILE_COMPANION_ENABLED } from '../config/buildFeatures'
+import { MOBILE_COMPANION_ENABLED, SSH_ENABLED } from '../config/buildFeatures'
 import { EMPTY_STARTUP_NATIVE_IMPORT_STATUS } from '../types/startupNativeImports'
 import { createExecutionRoutingSlice } from './slices/executionRoutingSlice'
 import { DEFAULT_CENTRAL_PROVIDER_CONFIGURATION, type CentralProviderConfiguration } from './cpp/types'
@@ -32,6 +32,7 @@ import {
   sanitizeMemoryActivity,
   defaultEditorFileAssociations,
   DEFAULT_NATIVE_IMPORT_STARTUP_MAX_AGE_DAYS,
+  forgetRetainedChatFieldsExcept,
 } from './cpp/sanitizers'
 export {
   DEFAULT_MEMORY_IDLE_DELAY_SECONDS,
@@ -144,7 +145,7 @@ function deserializeState(
     editorFileAssociations: EditorFileAssociation[]
     centralProviderConfiguration: CentralProviderConfiguration
     mcpServers: McpServerConfiguration[]
-    executionRouting: AppState['executionRouting']
+    executionRouting?: AppState['executionRouting'] // Absent in builds without SSH.
     executionHosts: AppState['executionHosts']
     favoriteUamAgentIds: string[]
     nativeImportExcludedTitlePrefixes: string[]
@@ -387,7 +388,7 @@ function deserializeState(
     httpCacheClearIntervalDays: cpp.settings.httpCacheClearIntervalDays ?? existing.httpCacheClearIntervalDays,
     centralProviderConfiguration: cpp.settings.centralProviderConfiguration ?? DEFAULT_CENTRAL_PROVIDER_CONFIGURATION,
     mcpServers: cpp.settings.mcpServers ?? [],
-    executionRouting: cpp.settings.executionRouting ?? existing.executionRouting,
+    ...(SSH_ENABLED ? { executionRouting: cpp.settings.executionRouting ?? existing.executionRouting } : {}),
     executionHosts: cpp.settings.executionHosts ?? existing.executionHosts,
     favoriteUamAgentIds: cpp.settings.favoriteUamAgentIds ?? [],
     nativeImportExcludedTitlePrefixes: cpp.settings.nativeImportExcludedTitlePrefixes ?? [],
@@ -670,7 +671,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     httpCacheClearIntervalDays: patch.settings?.httpCacheClearIntervalDays ?? current.httpCacheClearIntervalDays,
     centralProviderConfiguration: patch.settings?.centralProviderConfiguration ?? current.centralProviderConfiguration,
     mcpServers: patch.settings?.mcpServers ?? current.mcpServers,
-    executionRouting: patch.settings?.executionRouting ?? current.executionRouting,
+    ...(SSH_ENABLED ? { executionRouting: patch.settings?.executionRouting ?? current.executionRouting } : {}),
     executionHosts: patch.settings?.executionHosts ?? current.executionHosts,
     favoriteUamAgentIds: patch.settings?.favoriteUamAgentIds ?? current.favoriteUamAgentIds,
     nativeImportExcludedTitlePrefixes: patch.settings?.nativeImportExcludedTitlePrefixes ?? current.nativeImportExcludedTitlePrefixes,
@@ -950,7 +951,7 @@ export const useAppStore = create<AppState>((set, get) => {
           editorFileAssociations: current.editorFileAssociations,
           centralProviderConfiguration: current.centralProviderConfiguration,
           mcpServers: current.mcpServers,
-          executionRouting: current.executionRouting,
+          ...(SSH_ENABLED ? { executionRouting: current.executionRouting } : {}),
           executionHosts: current.executionHosts,
           favoriteUamAgentIds: current.favoriteUamAgentIds,
           nativeImportExcludedTitlePrefixes: current.nativeImportExcludedTitlePrefixes,
@@ -1283,6 +1284,8 @@ export const useAppStore = create<AppState>((set, get) => {
         case 'stateUpdate':
           if (!isNewerStateRevision(cppStateRevision(msg.data), store.lastAppliedStateRevision)) break
           applyFullState(msg.data)
+          // Pushed full states share the patch channel, so a chat missing here is gone; drop its field copy.
+          forgetRetainedChatFieldsExcept(msg.data.chats.map((chat) => chat.id))
           // Only a full state the store actually took can close the gap for the pull in flight.
           if (stateResyncInFlight && get().lastAppliedStateRevision === cppStateRevision(msg.data)) {
             fullStateRevisionDuringResync = Math.max(fullStateRevisionDuringResync, cppStateRevision(msg.data))
@@ -1290,8 +1293,14 @@ export const useAppStore = create<AppState>((set, get) => {
           break
         case 'statePatch':
           if (stateResyncInFlight) {
-            if (patchesDuringResync.length < STATE_RESYNC_MAX_HELD_PATCHES) patchesDuringResync.push(msg.data)
-            else patchesDuringResyncOverflowed = true
+            // A patch that left out a chat is not kept as a copy: one at or below the snapshot is covered by it (the
+            // pull is what makes native drop its field copies), and one above it leaves a hole, so rebuilds() fails.
+            if (!msg.data.skippedChats) {
+              if (patchesDuringResync.length < STATE_RESYNC_MAX_HELD_PATCHES) patchesDuringResync.push(msg.data)
+              else patchesDuringResyncOverflowed = true
+            }
+          } else if (msg.data.skippedChats && isNewerStateRevision(cppPatchRevision(msg.data), get().lastAppliedStateRevision)) {
+            requestStateResync('patch built on a chat field copy this page lacks')
           }
           applyLivePatch(msg.data)
           break
@@ -1491,7 +1500,7 @@ export const useAppStore = create<AppState>((set, get) => {
       editorFileAssociations: current.editorFileAssociations,
       centralProviderConfiguration: current.centralProviderConfiguration,
           mcpServers: current.mcpServers,
-      executionRouting: current.executionRouting,
+      ...(SSH_ENABLED ? { executionRouting: current.executionRouting } : {}),
       executionHosts: current.executionHosts,
       favoriteUamAgentIds: current.favoriteUamAgentIds,
       nativeImportExcludedTitlePrefixes: current.nativeImportExcludedTitlePrefixes,
@@ -1535,7 +1544,8 @@ export const useAppStore = create<AppState>((set, get) => {
     computerUseAllowlistEnabled: false,
     computerUseAllowedApplications: [],
     ...createSessionsSlice(set, get, inCef),
-    ...createExecutionRoutingSlice(get),
+    // Builds without SSH carry no routing state or actions.
+    ...(SSH_ENABLED ? createExecutionRoutingSlice(get) : {}),
     ...createFoldersSlice(set, get),
     ...createResourceCollectionsSlice(set, get),
     ...createGoalsSlice(set, get),
