@@ -244,3 +244,23 @@ UAM_TEST(AccountAllowanceServiceSilentRefreshNeverPromptsAndKeepsCooldown)
 	WaitAccount(service, [](const auto& row) { return row.value("status", "") == "ready"; });
 	UAM_ASSERT_EQ(calls.load(), 2); UAM_ASSERT_EQ(manual_calls.load(), 0);
 }
+
+UAM_TEST(AccountAllowanceServiceCachedRowNeverStartsARead)
+{
+	TempDir temp("uam-account-cached-row"); std::atomic<int> calls{0}; std::atomic<std::int64_t> clock_ms{1000};
+	Service service(temp.root, configs, [&](const auto&, const auto&, std::stop_token, bool) { ++calls; return Snapshot(); },
+	    [&] { return std::chrono::steady_clock::time_point(std::chrono::milliseconds(clock_ms.load())); });
+	WaitAccount(service, [](const auto& row) { return row.value("status", "") == "ready"; });
+	UAM_ASSERT_EQ(calls.load(), 1);
+	// Past the automatic re-read interval, the agent-facing cache read still starts nothing; an ordinary Query does.
+	clock_ms = 1000 + 10 * 60 * 1000;
+	for (int i = 0; i < 20; ++i) UAM_ASSERT_EQ(service.CachedRow("codex-cli")["limits"]["primary"]["usedPercent"], nlohmann::json(29));
+	std::this_thread::sleep_for(std::chrono::milliseconds(50));
+	UAM_ASSERT_EQ(calls.load(), 1);
+	UAM_ASSERT_EQ(service.CachedRow("codex-cli").value("status", ""), std::string("ready"));
+	// A provider that is not turned on here has no row at all.
+	UAM_ASSERT(service.CachedRow("gemini-cli").is_null());
+	UAM_ASSERT(service.CachedRow("unknown").is_null());
+	WaitAccount(service, [&](const auto&) { return calls.load() == 2; });
+	UAM_ASSERT_EQ(calls.load(), 2);
+}

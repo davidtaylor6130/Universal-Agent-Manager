@@ -2,6 +2,7 @@
 
 #include "common/utils/string_utils.h"
 
+#include <cstddef>
 #include <string>
 
 namespace uam::acp_detail
@@ -21,6 +22,35 @@ AcpToolCallState& UpsertToolCall(AcpSessionState& session, const std::string& id
 	tool_call.id = id;
 	session.tool_calls.push_back(std::move(tool_call));
 	return session.tool_calls.back();
+}
+
+AcpToolCallState& RestoreToolCallFromChat(AcpSessionState& session, const ChatSession& chat, const std::string& id)
+{
+	for (AcpToolCallState& tool : session.tool_calls) if (tool.id == id) return tool;
+	AcpToolCallState& tool = UpsertToolCall(session, id);
+	for (std::size_t index = 0; index < chat.messages.size(); ++index)
+	{
+		for (const ToolCall& saved : chat.messages[index].tool_calls)
+		{
+			if (saved.id != id) continue;
+			tool.title = saved.name;
+			tool.kind = saved.kind;
+			tool.status = saved.status;
+			tool.args_json = saved.args_json;
+			tool.content = saved.result_text;
+			tool.is_sub_agent = saved.is_sub_agent;
+			tool.sub_agent_id = saved.sub_agent_id;
+			tool.sub_agent_title = saved.sub_agent_title;
+			tool.sub_agent_children = saved.sub_agent_children;
+			tool.sub_agent_children_authoritative = saved.sub_agent_children_authoritative;
+			tool.approval_status = saved.approval_status;
+			tool.task_id = saved.task_id;
+			tool.child_activity = saved.child_activity;
+			session.tool_call_message_indices[id] = static_cast<int>(index);
+			return tool;
+		}
+	}
+	return tool;
 }
 
 bool LooksLikeSubAgentTool(const nlohmann::json& update, const AcpToolCallState& tool_call, const IProviderRuntime& runtime)

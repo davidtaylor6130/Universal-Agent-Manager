@@ -843,10 +843,43 @@ namespace uam::remote
 		    [](const std::pair<const std::string, Channel>& entry) { return entry.second.expires_at_ms != 0; });
 	}
 
+	void RunnerState::SweepIdleUploads(const std::int64_t now)
+	{
+		std::vector<std::pair<std::string, std::shared_ptr<Upload>>> idle;
+		{
+			std::scoped_lock lock(m_stateMutex);
+			for (const auto& [upload_id, upload] : m_uploads)
+			{
+				// A request holding the upload is using it now, so it is not idle.
+				std::unique_lock upload_lock(upload->mutex, std::try_to_lock);
+				if (!upload_lock.owns_lock() || upload->state != Upload::State::Active ||
+				    now - upload->last_activity_ms < kIdleUploadExpiryMs) continue;
+				// Writes, commits and aborts now refuse it, and the record keeps its id taken until it is gone.
+				upload->state = Upload::State::Finishing;
+				idle.emplace_back(upload_id, upload);
+			}
+		}
+		for (const auto& [upload_id, upload] : idle)
+		{
+			std::error_code remove_error;
+			std::filesystem::remove(upload->temporary, remove_error);
+			{
+				// A removal that failed stays for the next sweep, as a failed file.abort stays for another abort.
+				std::scoped_lock upload_lock(upload->mutex);
+				upload->state = remove_error ? Upload::State::Active : Upload::State::Finished;
+			}
+			if (remove_error) continue;
+			std::scoped_lock lock(m_stateMutex);
+			const auto found = m_uploads.find(upload_id);
+			if (found != m_uploads.end() && found->second == upload) m_uploads.erase(found);
+		}
+	}
+
 	void RunnerState::SweepExpiredTransientProcesses()
 	{
 		std::vector<std::pair<std::string, std::shared_ptr<Process>>> expired;
 		const std::int64_t now = LeaseClockMilliseconds();
+		SweepIdleUploads(now);
 		{
 			std::scoped_lock lock(m_stateMutex);
 			std::erase_if(m_channels, [now](const std::pair<const std::string, Channel>& entry)
@@ -1643,6 +1676,7 @@ namespace uam::remote
 				                   std::filesystem::perms::owner_write,
 				    std::filesystem::perm_options::replace, error);
 				upload->state = Upload::State::Active;
+				upload->last_activity_ms = LeaseClockMilliseconds();
 				return ProcessSuccess(request, {{"uploadId", upload_id}});
 			}
 			const auto found = m_uploads.find(upload_id);
@@ -1717,6 +1751,7 @@ namespace uam::remote
 				uam::hashing::UpdateFnv1a64(upload.digest,
 				    reinterpret_cast<const unsigned char*>(decoded.data()), decoded.size());
 				upload.received_size += decoded.size();
+				upload.last_activity_ms = LeaseClockMilliseconds();
 				return ProcessSuccess(request, {{"acceptedBytes", decoded.size()}});
 			}
 			return ProcessError(request, "unsupported_request", "Unknown runner file request.");

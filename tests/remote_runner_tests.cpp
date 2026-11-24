@@ -37,7 +37,9 @@
 #include <set>
 
 #if defined(__APPLE__)
+#include <signal.h>
 #include <sys/wait.h>
+#include <unistd.h>
 #endif
 #if defined(_WIN32)
 #include "remote/runner_service_windows.h"
@@ -3620,6 +3622,86 @@ namespace
 		           diagnostics.find(outcome + "forced\n") != std::string::npos);
 	}
 }
+
+#if !defined(_WIN32)
+// Over SSH every connection is a new bridge to the one resident helper, so a connection that drops (a lost network,
+// a sleeping laptop, a killed ssh) ends only that bridge, in the middle of whatever it carried. A streamed upload cut
+// off that way left its partial temporary file and upload record on the host, and the attachment batch could not
+// remove the copies it had already committed. The client now reaches the helper again for both.
+UAM_TEST(RemoteStreamedUploadCutOffByADroppedConnectionLeavesNothingOnTheHost)
+{
+	TempDir temp("uam-upload-drop");
+	const ProxyTestHost host(temp.root);
+	// The stand-in bridge records its process id, so the test can end it the way a lost ssh process ends.
+	const fs::path bridge_pid = temp.root / "bridge.pid";
+	std::string script = "#!/bin/sh\necho $$ > " + ShellQuoteForTest(bridge_pid.string()) + "\nexec";
+	for (const std::string& argument : host.bridge) script += " " + ShellQuoteForTest(argument);
+	const fs::path bridge = temp.root / "bridge.sh";
+	UAM_ASSERT(uam::io::WriteTextFile(bridge, script + "\n"));
+	const auto current_bridge = [&bridge_pid] { return static_cast<pid_t>(std::stol(ReadFile(bridge_pid))); };
+	const auto drop_connection = [&current_bridge]
+	{
+		const pid_t pid = current_bridge();
+		const bool killed = pid > 0 && ::kill(pid, SIGKILL) == 0;
+		// Let the killed bridge end before the client writes its next request to it.
+		std::this_thread::sleep_for(std::chrono::milliseconds(200));
+		return killed ? pid : pid_t{0};
+	};
+
+	// Several transfer chunks, not a whole number of them.
+	const std::uintmax_t size = 4 * 256 * 1024 + 123;
+	const fs::path source = temp.root / "clip.bin";
+	{
+		std::ofstream out(source, std::ios::binary);
+		for (std::uintmax_t index = 0; index < size; ++index) out.put(static_cast<char>(index * 31 % 251));
+	}
+	const fs::path folder = temp.root / "workspace" / ".UAM" / "attachments" / "chat-drop";
+	const auto partial = [&folder](const std::string& upload_id) { return folder / (".uam-upload-" + upload_id + ".tmp"); };
+	uam::remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,
+	    std::vector<std::string>{"/bin/sh", bridge.string()}, host.version);
+	std::string error;
+	UAM_ASSERT(client.Connect(&error));
+
+	// The batch's first attachment commits.
+	const fs::path first = folder / "0-first.bin";
+	UAM_ASSERT(client.UploadFileFromPath("attachment-first", first, source, {}, &error));
+	UAM_ASSERT_EQ(fs::file_size(first), size);
+
+	// The connection drops once the second attachment's first chunk is on the host.
+	const fs::path second = folder / "1-second.bin";
+	bool partial_written = false;
+	pid_t dropped = 0;
+	error.clear();
+	UAM_ASSERT(!client.UploadFileFromPath("attachment-second", second, source,
+	    [&](std::uintmax_t, std::uintmax_t)
+	    {
+		    if (dropped != 0) return;
+		    partial_written = fs::exists(partial("attachment-second"));
+		    dropped = drop_connection();
+	    }, &error));
+	UAM_ASSERT(partial_written);
+	UAM_ASSERT(dropped != 0);
+	UAM_ASSERT(!error.empty());
+	// The client reached the helper again through a new bridge and aborted: no partial file and no upload record,
+	// so the same upload id begins afresh instead of being refused as in use.
+	UAM_ASSERT(!fs::exists(partial("attachment-second")));
+	UAM_ASSERT(!fs::exists(second));
+	UAM_ASSERT(client.IsConnected());
+	UAM_ASSERT(current_bridge() != dropped);
+	const fs::path retry = folder / "2-retry.bin";
+	UAM_ASSERT(client.UploadFile("attachment-second", retry, "retry", &error));
+
+	// The batch then removes its committed copy over a connection that has also dropped: the removal reconnects once.
+	UAM_ASSERT(drop_connection() != 0);
+	UAM_ASSERT(client.RemoveFile("cleanup-0", first, &error));
+	UAM_ASSERT(!fs::exists(first));
+	// A removal on a client that is already disconnected connects first.
+	client.Disconnect();
+	UAM_ASSERT(client.RemoveFile("cleanup-1", retry, &error));
+	UAM_ASSERT(!fs::exists(retry));
+	client.Disconnect();
+}
+#endif
 
 UAM_TEST(RemoteRunnerProxyUsesTheConfiguredVersionAndAttachOnlyNeverStartsOrDuplicates)
 {

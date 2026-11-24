@@ -340,11 +340,12 @@ describe('SettingsModal memory settings', () => {
       expect(retry.textContent).toBe('Retrying…')
       expect(retry.disabled).toBe(true)
       await act(async () => rejectRetry!())
-      expect(failures.at(-1)?.message).toContain('Phone access retry failed.')
+      expect(failures.at(-1)?.message).toBe('Could not update phone access.')
+      expect(failures.at(-1)?.detail).toContain('Phone access retry failed.')
       expect(host.textContent).toContain('Retry phone access')
       await act(async () => vi.advanceTimersByTimeAsync(1500))
       expect(loads).toBe(3)
-      expect(failures.at(-1)?.message).toContain('Phone access retry failed.')
+      expect(failures.at(-1)?.message).toBe('Could not update phone access.'); expect(failures.at(-1)?.detail).toContain('Phone access retry failed.')
       act(() => host.querySelector<HTMLButtonElement>('nav button[aria-label="Chat defaults"]')!.click())
       act(() => host.querySelector<HTMLButtonElement>('nav button[aria-label="Phone"]')!.click())
       await act(async () => {})
@@ -921,8 +922,8 @@ describe('SettingsModal memory settings', () => {
 
     await act(async () => {})
     expect(document.body.textContent).not.toContain('Install helper on colima?')
-    expect(failures.at(-1)?.message).toContain('This UAM build does not contain a runner for linux/s390x.')
-    expect(failures.at(-1)?.detail).toBe('')
+    expect(failures.at(-1)?.message).toBe('Remote helper setup failed.')
+    expect(failures.at(-1)?.detail).toBe('This UAM build does not contain a runner for linux/s390x.')
 
     act(() => root.unmount())
     host.remove()
@@ -961,7 +962,8 @@ describe('SettingsModal memory settings', () => {
     expect(document.activeElement).toBe(host.querySelector('[data-host-open="ssh-homelab"]'))
 
     await act(async () => { failInstall?.() })
-    expect(failures.at(-1)?.message).toBe(refusal)
+    expect(failures.at(-1)?.message).toBe('Remote helper setup failed.')
+    expect(failures.at(-1)?.detail).toBe(refusal)
     expect(host.querySelector('[aria-label="Remote host task running on Homelab"]')).toBeNull()
 
     act(() => root.unmount())
@@ -998,7 +1000,8 @@ describe('SettingsModal memory settings', () => {
 
     // The failure arrives first, then the restore push removes the row.
     await act(async () => { failInstall?.() })
-    expect(failures.at(-1)?.detail).toBe('Check the SSH connection and try again.')
+    expect(failures.at(-1)?.message).toBe('Remote helper setup failed.')
+    expect(failures.at(-1)?.detail).toMatch(/Check the SSH connection and try again\.$/)
     act(() => useAppStore.setState({ executionHosts: [local] }))
     expect(document.activeElement).toBe(host.querySelector('input[aria-label="SSH config alias"]'))
 
@@ -1035,8 +1038,8 @@ describe('SettingsModal memory settings', () => {
     })
 
     await act(async () => {})
-    expect(failures.at(-1)?.message).toBe(refusal)
-    expect(failures.at(-1)?.detail).toBe('')
+    expect(failures.at(-1)?.message).toBe('Remote helper setup failed.')
+    expect(failures.at(-1)?.detail).toBe(refusal)
 
     failureCode = 502
     await act(async () => {
@@ -1046,7 +1049,7 @@ describe('SettingsModal memory settings', () => {
       Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Connect and install'))?.click()
     })
     await act(async () => {})
-    expect(failures.at(-1)?.detail).toBe('Check the SSH connection and try again.')
+    expect(failures.at(-1)?.detail).toBe('ssh: connect to host homelab port 22: Connection refused. Check the SSH connection and try again.')
 
     act(() => root.unmount())
     host.remove()
@@ -1151,7 +1154,8 @@ describe('SettingsModal memory settings', () => {
     await act(async () => { remove.click() })
     await act(async () => { Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Remove host')!.click() })
 
-    expect(failures.at(-1)?.message).toContain('Any helper files on that machine were left untouched.')
+    expect(failures.at(-1)?.message).toBe('Colima was removed from UAM.')
+    expect(failures.at(-1)?.detail).toBe('Helper files on that machine were left untouched.')
     expect(host.textContent).not.toContain('The remote helper was left installed.')
 
     act(() => root.unmount())
@@ -2850,12 +2854,13 @@ describe('SettingsModal memory settings', () => {
     const exportButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Export all chats') as HTMLButtonElement
     await act(async () => exportButton.click())
     expect(requests[0]).toMatchObject({ action: 'exportLocalChats', payload: { currentValue: '' } })
-    expect(failures.at(-1)).toMatchObject({ message: 'Exported 2 chats to /tmp/uam-export.', tone: 'success' })
+    expect(failures.at(-1)).toMatchObject({ message: 'Exported 2 chats.', detail: '/tmp/uam-export', tone: 'success' })
 
     const importButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Import chat bundle') as HTMLButtonElement
     await act(async () => importButton.click())
     expect(requests[1]).toMatchObject({ action: 'importLocalChats', payload: { currentValue: '/tmp/uam-export' } })
-    expect(failures.at(-1)?.message).toContain('Imported 1 of 2 chats; 1 were given new IDs. One chat could not be saved.')
+    expect(failures.at(-1)?.message).toBe('Imported 1 of 2 chats; 1 were given new IDs.')
+    expect(failures.at(-1)?.detail).toContain('One chat could not be saved.')
 
     act(() => root.unmount())
     host.remove()
@@ -3000,7 +3005,7 @@ describe('SettingsModal memory settings', () => {
     expect(host.textContent).toContain('Denied')
     expect(host.textContent).not.toContain('Accessibility request granted')
     await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent?.includes('Request Accessibility'))?.click())
-    expect(failures.at(-1)?.message).toContain('Permission is not granted. Opened')
+    expect(failures.at(-1)?.message).toContain('Turn on the permission in')
     expect(requests.some((request) => request.action === 'openComputerUseSystemSettings' && request.payload?.permission === 'accessibility')).toBe(true)
     // Granted permissions offer no request button.
     expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).some((button) => button.textContent === 'Request Screen Recording')).toBe(false)

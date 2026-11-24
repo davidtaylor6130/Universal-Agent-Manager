@@ -8975,6 +8975,7 @@ namespace
         elif evidence == 'status-malformed-version': value['version'] = '1.0.98-not-a-stable-version'
         elif evidence == 'status-old-version': value['version'] = '1.0.97'
         elif evidence == 'status-wrong-protocol': value['protocolVersion'] = 2
+        elif evidence == 'status-protocol-4': value['protocolVersion'] = 4
     elif method == 'session.managedSettings.get' and evidence.startswith('policy-'):
         targeted = True
         if evidence == 'policy-missing-provenance':
@@ -9053,7 +9054,7 @@ namespace
 
 UAM_TEST(ManagedInitialCopilotUnsupportedOrIncompleteReadPolicyRemainsTruthfulOneShot)
 {
-	for (const std::string evidence : {"status-unsupported", "status-missing-version", "status-malformed-version", "status-old-version", "status-wrong-protocol", "policy-missing-provenance", "policy-bypass-enabled"})
+	for (const std::string evidence : {"status-unsupported", "status-missing-version", "status-malformed-version", "status-old-version", "status-wrong-protocol", "status-protocol-4", "policy-missing-provenance", "policy-bypass-enabled"})
 	{
 		ManagedCopilotBindingFixtureR124 fixture;
 		ConfigureCopilotNegativeReadPolicyPeer(fixture, evidence, false);

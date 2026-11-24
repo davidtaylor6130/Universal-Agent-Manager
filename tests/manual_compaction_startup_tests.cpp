@@ -1,6 +1,7 @@
 #include "test_harness.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_polling.h"
+#include "common/runtime/provider_cli_compatibility_service.h"
 
 #include <cstdio>
 #if defined(_WIN32)
@@ -218,6 +219,162 @@ UAM_TEST(ManualCompactionStartingIntentDispatchesOnceAfterReady)
 	UAM_ASSERT(app.chats.front().messages.empty());
 	UAM_ASSERT(session.queued_prompt.empty());
 	UAM_ASSERT(session.queued_user_prompts.empty());
+#endif
+}
+
+UAM_TEST(ManualCompactionRoutesTypedInstructionsOnlyToProvidersThatAcceptThem)
+{
+	struct Case { const char* provider; const char* protocol; std::string instructions; std::string expected; bool used; };
+	std::vector<Case> cases;
+#if UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
+	cases.push_back({"antigravity-cli", "antigravity-stream-json", "  keep the API notes  ", "/compact", false});
+	// Text a provider cannot use is dropped, not refused, however long it is.
+	cases.push_back({"antigravity-cli", "antigravity-stream-json", std::string(5000, 'x'), "/compact", false});
+#endif
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	cases.push_back({"claude-cli", "claude-code-stream-json", "  keep the API notes  ", "/compact keep the API notes", true});
+#endif
+	for (const Case& item : cases)
+	{
+		TempDir temp("uam-compact-instructions");
+		uam::AppState app;
+		app.data_root = temp.root;
+		app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey(item.provider, "local")].installed_version = "1.4.12";
+		ChatSession chat;
+		chat.id = std::string("compact-instructions-") + item.provider;
+		chat.provider_id = item.provider;
+		chat.execution_host_id = "local";
+		chat.native_session_id = "11111111-2222-4333-8444-555555555555";
+		app.chats.push_back(chat);
+		app.acp_sessions.push_back(std::make_unique<uam::AcpSessionState>());
+		uam::AcpSessionState& session = *app.acp_sessions.back();
+		session.chat_id = chat.id;
+		session.provider_id = chat.provider_id;
+		session.protocol_kind = item.protocol;
+		session.session_id = chat.native_session_id;
+		session.claude_manual_compaction_supported = true;
+		session.running = true;
+		session.session_ready = true;
+		CompactionTransport transport(session);
+		std::string error;
+		bool used = !item.used;
+		UAM_ASSERT(uam::CompactAcpSession(app, chat.id, &error, item.instructions, &used));
+		UAM_ASSERT_EQ(used, item.used);
+		UAM_ASSERT(session.manual_compaction_pending);
+		UAM_ASSERT(session.manual_compaction_instructions.empty());
+		UAM_ASSERT(session.stdin_writer->Flush(std::chrono::seconds(1)));
+		const nlohmann::json request = nlohmann::json::parse(transport.captured);
+		UAM_ASSERT_EQ(request["message"]["content"].get<std::string>(), item.expected);
+		UAM_ASSERT(app.chats.front().messages.empty());
+		UAM_ASSERT(session.queued_prompt.empty());
+	}
+}
+
+UAM_TEST(ManualCompactionDeferredRequestKeepsItsInstructionsUntilReady)
+{
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	TempDir temp("uam-compact-deferred-instructions");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession chat;
+	chat.id = "compact-deferred-instructions";
+	chat.provider_id = "claude-cli";
+	chat.execution_host_id = "local";
+	chat.native_session_id = "11111111-2222-4333-8444-555555555555";
+	app.chats.push_back(chat);
+	app.acp_sessions.push_back(std::make_unique<uam::AcpSessionState>());
+	uam::AcpSessionState& session = *app.acp_sessions.back();
+	session.chat_id = chat.id;
+	session.provider_id = chat.provider_id;
+	session.protocol_kind = "claude-code-stream-json";
+	session.claude_manual_compaction_supported = true;
+	session.running = true;
+	session.session_ready = false;
+	CompactionTransport transport(session);
+	std::string error;
+	bool used = false;
+	UAM_ASSERT(uam::CompactAcpSession(app, chat.id, &error, "keep the API notes", &used));
+	UAM_ASSERT(used);
+	UAM_ASSERT(session.pending_compaction != nullptr);
+	UAM_ASSERT(transport.captured.empty());
+	// A second request with other text neither replaces nor cancels the waiting one.
+	UAM_ASSERT(!uam::CompactAcpSession(app, chat.id, &error, "something else", &used));
+	UAM_ASSERT(error.find("already waiting") != std::string::npos);
+	UAM_ASSERT(session.pending_compaction != nullptr);
+	session.session_ready = true;
+	session.session_id = chat.native_session_id;
+	UAM_ASSERT(uam::CompactAcpSession(app, chat.id, &error)); // The readiness poll passes no instructions.
+	UAM_ASSERT(session.stdin_writer->Flush(std::chrono::seconds(1)));
+	UAM_ASSERT_EQ(nlohmann::json::parse(transport.captured)["message"]["content"].get<std::string>(), std::string("/compact keep the API notes"));
+	UAM_ASSERT(session.pending_compaction == nullptr);
+	UAM_ASSERT(app.chats.front().messages.empty());
+#endif
+}
+
+UAM_TEST(ManualCompactionRefusesOldOrRemoteAntigravityAndOverlongClaudeInstructions)
+{
+#if UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
+	{
+		const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById("antigravity-cli");
+		uam::AppState app;
+		UAM_ASSERT(!uam::AcpCompactionVersionSatisfied(app, runtime, "antigravity-cli", "local").has_value());
+		auto& version = app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("antigravity-cli", "local")];
+		version.installed_version = "1.3.4";
+		UAM_ASSERT_EQ(uam::AcpCompactionVersionSatisfied(app, runtime, "antigravity-cli", "local"), std::optional<bool>(false));
+		version.installed_version = "1.3.5";
+		UAM_ASSERT_EQ(uam::AcpCompactionVersionSatisfied(app, runtime, "antigravity-cli", "local"), std::optional<bool>(true));
+		version.installed_version = "1.3.4";
+		ChatSession chat;
+		chat.id = "compact-antigravity-old";
+		chat.provider_id = "antigravity-cli";
+		chat.execution_host_id = "local";
+		chat.native_session_id = "11111111-2222-4333-8444-555555555555";
+		app.chats.push_back(chat);
+		std::string error;
+		UAM_ASSERT(!uam::CompactAcpSession(app, chat.id, &error));
+		UAM_ASSERT(error.find("1.3.5 or later") != std::string::npos);
+		UAM_ASSERT(app.acp_sessions.empty());
+		// An unknown version is refused at send time with its own reason, not as an old CLI.
+		app.runtime_cli_versions_by_provider_id.clear();
+		app.acp_sessions.push_back(std::make_unique<uam::AcpSessionState>());
+		uam::AcpSessionState& ready = *app.acp_sessions.back();
+		ready.chat_id = chat.id;
+		ready.provider_id = chat.provider_id;
+		ready.protocol_kind = "antigravity-stream-json";
+		ready.session_id = chat.native_session_id;
+		ready.running = true;
+		ready.session_ready = true;
+		UAM_ASSERT(!uam::CompactAcpSession(app, chat.id, &error));
+		UAM_ASSERT(error.find("has not checked") != std::string::npos);
+		UAM_ASSERT(!ready.manual_compaction_pending);
+		UAM_ASSERT(ready.pending_request_methods.empty());
+		app.acp_sessions.clear();
+		// clear() invalidated `version`; restore the old CLI through a fresh lookup.
+		app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("antigravity-cli", "local")].installed_version = "1.3.4";
+		app.chats.front().execution_host_id = "remote-fixture";
+		bool used = true;
+		UAM_ASSERT(!uam::CompactAcpSession(app, chat.id, &error, "keep notes", &used));
+		UAM_ASSERT(!used);
+		UAM_ASSERT(error.find("only chats that run on this computer") != std::string::npos);
+		UAM_ASSERT(app.acp_sessions.empty());
+		UAM_ASSERT(app.chats.front().messages.empty());
+	}
+#endif
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	{
+		const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById("claude-cli");
+		uam::AppState app;
+		UAM_ASSERT_EQ(uam::AcpCompactionVersionSatisfied(app, runtime, "claude-cli", "local"), std::optional<bool>(true));
+		ChatSession chat;
+		chat.id = "compact-claude-overlong";
+		chat.provider_id = "claude-cli";
+		chat.execution_host_id = "local";
+		app.chats.push_back(chat);
+		std::string error;
+		UAM_ASSERT(!uam::CompactAcpSession(app, chat.id, &error, std::string(4001, 'x')));
+		UAM_ASSERT(error.find("too long") != std::string::npos);
+		UAM_ASSERT(app.acp_sessions.empty());
+	}
 #endif
 }
 

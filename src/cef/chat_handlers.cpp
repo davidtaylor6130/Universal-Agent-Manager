@@ -578,12 +578,15 @@ void UamQueryHandler::HandleGetChatMessages(CefRefPtr<CefBrowser> browser, const
 			    if (*hydrate_unsent) *unsent_revision = ChatRepository::ChatStorageRevision(data_root, chat_id);
 			    *loaded_revision = ChatRepository::ChatStorageRevision(data_root, chat_id);
 			    *loaded = recover_direct_receipt
-			        ? ChatRepository::LoadLocalChatBounded(data_root, chat_id, 8 * 1024 * 1024)
+			        ? ChatRepository::LoadLocalChatBounded(data_root, chat_id, 8 * 1024 * 1024, &warning)
 			        : ChatRepository::LoadLocalChat(data_root, chat_id, true, &warning);
 			    if (!*loaded && recover_direct_receipt && page)
 			    {
 				    *hydrate_unsent = false;
-				    *indexed = ChatRepository::ReadMessagePage(data_root, expected, page->first, page->second, &warning, [lifetime]() { return lifetime.expired(); });
+				    // Keep the too-large message when the page fallback also fails.
+				    std::string page_warning;
+				    *indexed = ChatRepository::ReadMessagePage(data_root, expected, page->first, page->second, &page_warning, [lifetime]() { return lifetime.expired(); });
+				    if (warning.empty()) warning = std::move(page_warning);
 				    if (*indexed) return uam::query_handler_async::AsyncSuccess(uam::StateSerializer::SerializeDetachedMessagePage(
 				        **indexed, defer_tool_call_content, known_digest, !page->second));
 			    }

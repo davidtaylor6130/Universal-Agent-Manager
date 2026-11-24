@@ -125,6 +125,13 @@ const char* ClaudeCliProviderRuntime::RuntimeId() const
 }
 
 
+/// Claude reads the staged conversation as an appended system prompt file.
+bool ClaudeCliProviderRuntime::StageCliHandoffContext(const ProviderCliHandoffStaging& staging, std::vector<std::string>& argv, std::string&) const
+{
+	argv.insert(argv.end(), {"--append-system-prompt-file", staging.context_path});
+	return true;
+}
+
 std::vector<std::string> ClaudeCliProviderRuntime::BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings) const
 {
 	if (!profile.supports_interactive)
@@ -411,7 +418,7 @@ nlohmann::json ClaudeCliProviderRuntime::OnAcpBuildCompact(const uam::AcpSession
 	if (!session.claude_manual_compaction_supported || session.session_id.empty()) return nullptr;
 	out_method = "claude/compact";
 	return {{"type", "user"}, {"session_id", session.session_id}, {"parent_tool_use_id", nullptr},
-	    {"message", {{"role", "user"}, {"content", "/compact"}}}};
+	    {"message", {{"role", "user"}, {"content", session.manual_compaction_instructions.empty() ? std::string("/compact") : "/compact " + session.manual_compaction_instructions}}}};
 }
 
 nlohmann::json ClaudeCliProviderRuntime::OnAcpBuildPermissionResponse(const uam::AcpSessionState& session, const uam::AcpPendingPermissionState& pending, const std::string& option_id, bool cancelled) const

@@ -10,6 +10,7 @@
 #include "common/provider/codex/cli/codex_session_index.h"
 #include "common/provider/codex/cli/codex_terminal_activity.h"
 #include "common/runtime/terminal/terminal_identity.h"
+#include "common/runtime/terminal/terminal_lifecycle.h"
 #include "common/provider/codex/cli/codex_thread_id.h"
 #include "common/provider/codex/cli/codex_native_children.h"
 #include "common/provider/codex/codex_options.h"
@@ -193,7 +194,18 @@ bool SendDeferredCodexInterruptIfReady(AppState& app, AcpSessionState& session, 
 ProviderTerminalActivity CodexCliProviderRuntime::PollInteractiveActivity(uam::CliTerminalState& terminal,
     std::string_view session_id, const std::filesystem::path& cwd, bool ambiguous) const
 {
-	return uam::PollCodexTerminalActivity(terminal, session_id, cwd, ambiguous);
+	const bool expired_before = terminal.native_turn_receipt_expired;
+	const ProviderTerminalActivity activity = uam::PollCodexTerminalActivity(terminal, session_id, cwd, ambiguous);
+	if (expired_before || !terminal.native_turn_receipt_expired || activity == ProviderTerminalActivity::Busy) return activity;
+	// No turn start was recorded in time. Ready also needs the idle composer drawn since the submission; without it the
+	// turn's end cannot be proven, so the terminal shows Unknown rather than staying busy.
+	if (RecentOutputIndicatesInputPrompt(terminal.current_turn_output_bytes))
+	{
+		terminal.codex_activity_completed = true;
+		return ProviderTerminalActivity::Complete;
+	}
+	uam::MarkCliTerminalTurnUnknown(terminal);
+	return activity;
 }
 
 void CodexCliProviderRuntime::CheckpointInteractiveSubmission(uam::CliTerminalState& terminal) const

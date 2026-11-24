@@ -317,7 +317,22 @@ UAM_TEST(StateSerializerIncludesShellActionConfigurationAndNotification)
 	UAM_ASSERT_EQ(serialized["shellActions"][0].value("modelId", ""), action.model_id);
 	UAM_ASSERT_EQ(serialized["shellActions"][0]["groupPath"].get<std::vector<std::string>>(), action.group_path);
 	UAM_ASSERT(!serialized["shellActions"][0].value("acceptsFolders", true));
+	UAM_ASSERT(!serialized["shellActions"][0].contains("invalidReason"));
 	UAM_ASSERT_EQ(serialized.value("shellActionNotification", ""), app.shell_action_notification);
+
+	// A kept invalid entry reaches the interface disabled with its reason; its saved form stays native-only.
+	ShellAction kept;
+	kept.id = "kept";
+	kept.label = "Kept";
+	kept.enabled = false;
+	kept.invalid_reason = "Its saved 'enabled' value has the wrong type.";
+	kept.preserved_json = R"({"id":"kept","label":"Kept","enabled":"yes"})";
+	app.shell_actions.push_back(kept);
+	const nlohmann::json with_kept = uam_test::SerializeStateInline(app);
+	UAM_ASSERT_EQ(with_kept["shellActions"].size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(with_kept["shellActions"][1].value("invalidReason", ""), kept.invalid_reason);
+	UAM_ASSERT(!with_kept["shellActions"][1].value("enabled", true));
+	UAM_ASSERT(with_kept["shellActions"][1].dump().find("preserved") == std::string::npos);
 	UAM_ASSERT_EQ(serialized.value("statusLine", ""), app.status_line);
 }
 

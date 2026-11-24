@@ -1,7 +1,6 @@
 #include "cef/uam_query_handler.h"
 #include "common/provider/excluded_provider_data.h"
 #include "cef/uam_query_handler_async.h"
-#include "common/utils/diagnostic_log.h"
 
 #include "app/chat_domain_service.h"
 #include "app/local_chat_bundle_service.h"
@@ -10,6 +9,7 @@
 #include "common/chat/chat_repository.h"
 #include "common/paths/app_paths.h"
 #include "common/paths/path_utils.h"
+#include "common/utils/diagnostic_log.h"
 #include "common/platform/platform_services.h"
 
 #include <algorithm>
@@ -301,10 +301,15 @@ void UamQueryHandler::HandleResolveLegacyChatImport(
 		    for (ChatFolder& folder : import_result->imported_folders)
 			    if (std::ranges::none_of(live_app->folders, [&](const ChatFolder& existing) { return existing.id == folder.id; }))
 				    live_app->folders.push_back(std::move(folder));
-		    if (!import_result->imported_folders.empty()) (void)ChatFolderStore::Save(live_app->data_root, live_app->folders);
+		    const bool folders_saved = import_result->imported_folders.empty() || ChatFolderStore::Save(live_app->data_root, live_app->folders);
 		    if (import_result->imported_count > 0)
 			    live_app->status_line = "Copied " + std::to_string(import_result->imported_count) + " chat" +
 			        (import_result->imported_count == 1 ? "" : "s") + " from a previous version and left the original files in place.";
+		    // The worker already saved these folders; a failed re-save matters only if a UI folder save replaced them.
+		    if (!folders_saved)
+			    uam::diagnostics::Write("[workspaces] Re-saving " + std::to_string(import_result->imported_folders.size()) +
+			        " imported previous-version workspace(s) failed; the copy's own save stands unless a folder save since then "
+			        "replaced it, in which case their chats show under Unsorted after a restart.");
 		    uam::PushStateUpdateIfChanged(browser, *live_app);
 	    });
 	if (!posted) pending.push_back(legacy_root);
