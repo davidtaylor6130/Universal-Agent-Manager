@@ -222,9 +222,10 @@ void ScheduleCompletedAcpPromptRecoverySaveIfReady(AppState& app, std::string_vi
 
 // Goal loop helpers
 std::string MessageTextForGoalReview(const ChatSession& chat, int index);
-std::string GoalTextPrefixForDiagnostics(const std::string& text);
 std::string GoalLoopDiagnosticDetail(const AcpSessionState& session, const std::string& goal_id, const std::string& text = "");
 void AppendGoalLoopDiagnostic(AcpSessionState& session, const std::string& reason, const std::string& goal_id, const std::string& text = "");
+/// <summary>A goal-loop diagnostic with a short error cause in its message; never pass a prompt or a model reply.</summary>
+void AppendGoalLoopDiagnosticCause(AcpSessionState& session, const std::string& reason, const std::string& goal_id, const std::string& cause);
 int64_t EstimateGoalTurnTokens(const ChatSession& chat, const AcpSessionState& session);
 void BeginGoalReviewUsage(AcpSessionState& session, bool fresh_session);
 void RecordGoalReviewTurnUsage(AcpSessionState& session, std::int64_t tokens, bool incremental = false);
@@ -398,12 +399,8 @@ bool ValidateCapturedAcpAgentPolicy(const AppState& app, const ChatSession& chat
     std::string* error_out = nullptr);
 bool SavedImageRetrySourceMatches(const AppState& app, const AcpSessionState& session, const ChatSession& chat, const SavedImageRetryPermission& permission);
 void RevokeSavedImageRetry(AcpSessionState& session);
-/// No production Retry caller: explicit invocation plus an own launch publication are prerequisites, never permission minted from metadata.
-std::shared_ptr<ColdRetryBinding> PrepareColdRetryLaunchBinding(AppState&, AcpSessionState&, const ChatSession&,
-    std::shared_ptr<const SavedImageRetryPermission>, std::shared_ptr<const StoppedChatLaunchStorageReceipt>);
-void RevokeColdRetryBinding(AcpSessionState&);
 // Only send admission opts into defer_until_saved; other callers launch and report errors synchronously.
-bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession& chat, std::string* error_out = nullptr, const SavedImageRetryPermission* starting_saved_retry = nullptr, std::shared_ptr<ColdRetryBinding> cold_binding = {},
+bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession& chat, std::string* error_out = nullptr, const SavedImageRetryPermission* starting_saved_retry = nullptr,
     bool defer_until_saved = false);
 /// <summary>Apply the same captured instructions and current MCP authority to initial and replacement setup.</summary>
 bool DecorateAcpSessionSetupRequest(AppState& app, AcpSessionState& session, std::string_view method,
@@ -435,30 +432,7 @@ struct GoalPromptReceiptScope
 std::optional<GoalPromptReceiptScope> CaptureGoalPromptReceiptScope(const AppState& app, const AcpSessionState& session, const ChatSession& chat);
 bool CanStageRemoteGoalPromptAdmission(const AppState& app, const AcpSessionState& session, const ChatSession& chat);
 /// <summary>Writes only a committed stable marker; initial delivery and reconnect share deduplication identity.</summary>
-bool WriteCommittedRemotePrompt(AppState& app, AcpSessionState& session, const ChatSession& chat, std::optional<int> cold_request_id = std::nullopt);
-/// Historical exact sink DATA only; holding or copying this handle never authorizes input/replay.
-class ColdRetryFinalWriteWitness final
-{
-  public:
-	ColdRetryFinalWriteWitness(const ColdRetryFinalWriteWitness&) = delete;
-	ColdRetryFinalWriteWitness& operator=(const ColdRetryFinalWriteWitness&) = delete;
-	std::string_view Wire() const { return m_wire; }
-	platform::AsyncByteWriter::WriteCompletion Completion() const { return m_receipt->Completion(); }
-	bool OriginalWriterCurrent(const AcpSessionState&) const;
-  private:
-	friend bool WriteCommittedRemotePrompt(AppState&, AcpSessionState&, const ChatSession&, std::optional<int>);
-	ColdRetryFinalWriteWitness(const AcpSessionState& session, std::shared_ptr<const platform::AsyncByteWriter::EnqueueReceipt> receipt,
-	    std::string wire, std::string process)
-	    : m_writer(session.stdin_writer), m_epoch(session.permission_review_incarnation), m_receipt(std::move(receipt)),
-	      m_wire(std::move(wire)), m_process(std::move(process)), m_owner(&session) {}
-	const std::weak_ptr<platform::AsyncByteWriter> m_writer;
-	const std::weak_ptr<const void> m_epoch;
-	const std::shared_ptr<const platform::AsyncByteWriter::EnqueueReceipt> m_receipt;
-	const std::string m_wire, m_process;
-	const AcpSessionState* const m_owner;
-	mutable bool m_original_refused = false;
-};
-std::shared_ptr<const ColdRetryFinalWriteWitness> ObserveColdRetryFinalWrite(const AcpSessionState&);
+bool WriteCommittedRemotePrompt(AppState& app, AcpSessionState& session, const ChatSession& chat);
 bool ResumeQueuedUserPromptsAfterSessionSetup(AppState& app, AcpSessionState& session, ChatSession& chat);
 /// <summary>Blocks local prompt transport until the full native-binding receipt commits.</summary>
 bool PollLocalSessionReceipt(AppState& app, AcpSessionState& session, ChatSession& chat);

@@ -10,6 +10,7 @@ import { localBuildLabel } from '../../services/updateCatalog'
 import { SettingsScopeBar } from './SettingsScopeBar'
 import { PhonePairingPanel } from './PhonePairingPanel'
 import { PhoneTokenRegenerateRow } from './PhoneTokenRegenerateRow'
+import { PhoneRestartButton } from './PhoneRestartButton'
 import { AutomationSettings } from './AutomationSettings'
 import { SETTINGS_ALL_ENVIRONMENTS } from '../../utils/settingsScope'
 import { ProviderConnections } from './ProviderConnections'
@@ -65,7 +66,7 @@ import { Button, Card, ConfirmDialog, Disclosure, EXIT_MS, IconButton, MenuItem,
 import { ShellActionsSettings, type ShellActionsHandle } from './ShellActionsSettings'
 import { ComputePoolsSettings } from './ComputePoolsSettings'
 import { MemoryLibraryModal, type MemoryLibraryHandle } from './MemoryLibraryModal'
-import { MarkdownStoreModal } from './MarkdownStoreModal'
+import { MarkdownStoreModal, type MarkdownStoreHandle } from './MarkdownStoreModal'
 import { StatusIndicator } from '../shared/StatusIndicator'
 import {
   CLAUDE_CLI_PROVIDER_ID,
@@ -627,6 +628,17 @@ function customThemeId(name: string, themes: CustomTheme[]) {
   return id
 }
 
+/** "<name> copy", then "<name> copy 2"…, kept within the 64-character theme name limit and unused by saved themes. */
+function importedCopyName(name: string, themes: CustomTheme[]) {
+  const names = new Set(themes.map((theme) => theme.name))
+  if (!names.has(name)) return name
+  for (let index = 1; ; ++index) {
+    const suffix = index === 1 ? ' copy' : ` copy ${index}`
+    const candidate = `${name.slice(0, 64 - suffix.length).trimEnd()}${suffix}`
+    if (!names.has(candidate)) return candidate
+  }
+}
+
 function editorPresetLabel(id: string) {
   return EDITOR_PRESETS.find((preset) => preset.id === id)?.label ?? 'VS Code'
 }
@@ -923,6 +935,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     return () => observer.disconnect()
   }, [selectedSection, visibleSettingsGroups.length])
   const memoryRef = useRef<MemoryLibraryHandle>(null)
+  const markdownStoreRef = useRef<MarkdownStoreHandle>(null)
   const shellRef = useRef<ShellActionsHandle>(null)
   const centralRef = useRef<CentralProviderSettingsHandle>(null)
   const voiceRef = useRef<SettingsDraftHandle>(null)
@@ -972,6 +985,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   }
   const [themeDraft, setThemeDraft] = useState<CustomTheme | null>(null)
   const [pendingDelete, setPendingDelete] = useState<{ kind: 'theme' | 'editor'; id: string; name: string } | null>(null)
+  // An imported theme whose id matches a saved custom theme waits for Replace or Keep both.
+  const [pendingThemeImport, setPendingThemeImport] = useState<{ theme: CustomTheme; existing: CustomTheme } | null>(null)
   const memoryMenuRef = useRef<HTMLDivElement>(null)
   const editorMenuRef = useRef<HTMLDivElement>(null)
   const cliVersionMenuRef = useRef<HTMLDivElement>(null)
@@ -1004,6 +1019,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     }
     else if ((selectedSection === 'provider-summary' || selectedSection.startsWith('provider:')) && providerAvailabilityRef.current) providerAvailabilityRef.current.requestLeave(next)
     else if (selectedSection === 'memory-store' && memoryRef.current) memoryRef.current.requestLeave(next)
+    else if (selectedSection === 'markdown-store' && markdownStoreRef.current) markdownStoreRef.current.requestLeave(next)
     else if (selectedSection === 'shell-actions' && shellRef.current) shellRef.current.requestLeave(next)
     else if ((selectedSection === 'central-configuration' || selectedSection === 'agents') && centralRef.current) centralRef.current.requestLeave(next)
     else if ((selectedSection === 'mcp-servers' && mcpDraftDirty) || (selectedSection === 'chat-data' && importFiltersDirty) || (SSH_ENABLED && selectedSection === 'remote-hosts' && remoteHostOptionsDirty)) { setDiscardExit(() => next); setConfirmDiscard(true) }
@@ -1127,7 +1143,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       reportAppFailure('Remote helper setup failed.', failureDetail(response.error, connectionHint))
       return
     }
-    reportAppNotice(`${host.label} is ready.`, 'success')
+    // Installed with a caveat (for example startup not confirmed) is not a clean "ready".
+    const warning = response.warning?.replace(/\s+/g, ' ').trim()
+    if (warning) reportAppNotice(warning, 'warning')
+    else reportAppNotice('Remote helper is ready.', 'success')
     setRemoteAlias('')
     setRemoteLabel('')
   }
@@ -1429,19 +1448,39 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     } catch { reportAppFailure('Theme could not be deleted.', 'Try again.'); return false }
     finally { themeSaveInFlightRef.current = false; setThemeSaving(false) }
   }
-  const importThemeFile = async (file?: File) => {
-    if (!file) return
+  const saveImportedTheme = async (imported: CustomTheme) => {
     try {
-      const imported = normalizeCustomTheme(JSON.parse(await file.text()))
-      if (!imported) throw new Error('invalid')
       const saved = await saveCustomTheme(imported)
       if (!saved) throw new Error('save')
       setTheme(saved.id)
       setThemeDraft(null)
       reportAppNotice('Theme imported.', 'success')
+      return true
     } catch {
-      reportAppFailure('Theme import failed.', 'Choose a valid UAM theme JSON file.')
+      // The file already passed validation here, so this is a save failure.
+      reportAppFailure('Theme could not be saved.', 'Try again.')
+      return false
     }
+  }
+  const importThemeFile = async (file?: File) => {
+    if (!file) return
+    let imported: CustomTheme | null = null
+    try { imported = normalizeCustomTheme(JSON.parse(await file.text())) } catch { imported = null }
+    if (!imported) { reportAppFailure('Theme import failed.', 'Choose a valid UAM theme JSON file.'); return }
+    // Ids come from the name, so a shared name would silently overwrite the saved theme.
+    const existing = customThemes.find((candidate) => candidate.id === imported.id)
+    if (existing) { setPendingThemeImport({ theme: imported, existing }); return }
+    await saveImportedTheme(imported)
+  }
+  const resolveThemeImport = async (keepBoth: boolean) => {
+    if (!pendingThemeImport || themeSaveInFlightRef.current) return
+    const { theme: imported } = pendingThemeImport
+    const name = keepBoth ? importedCopyName(imported.name, customThemes) : imported.name
+    themeSaveInFlightRef.current = true
+    setThemeSaving(true)
+    try {
+      if (await saveImportedTheme(keepBoth ? { ...imported, name, id: customThemeId(name, customThemes) } : imported)) setPendingThemeImport(null)
+    } finally { themeSaveInFlightRef.current = false; setThemeSaving(false) }
   }
   const exportSelectedTheme = () => {
     if (!selectedCustomTheme) return
@@ -1709,7 +1748,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           status={!companionSettings?.enabled && !failed && !companionLoadError && !companionSettings?.restartRequired && companionBusyAction !== 'setCompanionEnabled' && companionSettings ? undefined : <span role="status" aria-live="polite" className="inline-flex items-center gap-1" style={{ color: failed || companionLoadError ? 'var(--error)' : 'var(--text-2)' }}>{failed || companionLoadError ? <StatusDot tone="error" /> : null}{companionSettings?.restartRequired ? 'Restart Universal Agent Manager to apply this change.' : companionBusyAction === 'setCompanionEnabled' ? 'Updating…' : companionLoadError ? <span className="sr-only">Needs attention</span> : !companionSettings ? 'Checking…' : ready ? 'Ready to connect' : companionSettings.state === 'starting' ? 'Updating…' : failed ? <span className="sr-only">Needs attention</span> : 'Off'}</span>}
           control={<div className="flex flex-wrap gap-2">
             <Reveal open={Boolean(failed || companionLoadError)}><Button size="sm" variant="secondary" disabled={companionBusy} onClick={() => { if (failed) void changeCompanion('restartCompanion'); else void loadCompanionSettings(true) }}>{['restartCompanion', 'reloadCompanion'].includes(companionBusyAction) ? 'Retrying…' : 'Retry phone access'}</Button></Reveal>
-            <Reveal open={Boolean(failed || companionSettings?.restartRequired)}><Button size="sm" variant="secondary" disabled={companionBusy} onClick={() => void restartApplication()}>{companionBusyAction === 'restartApplication' ? 'Restarting Universal Agent Manager…' : 'Restart Universal Agent Manager'}</Button></Reveal>
+            <Reveal open={Boolean(failed || companionSettings?.restartRequired)}><PhoneRestartButton disabled={companionBusy} restarting={companionBusyAction === 'restartApplication'} onRestart={() => void restartApplication()} /></Reveal>
           </div>}
         >{phoneFeedback}</SettingRow>
         <Reveal open={repairAddresses.length > 0}>{repairAddresses.length > 0 && <SettingRow title="Network address changed" description={`${configuredHost} is no longer on this computer.`}
@@ -2826,7 +2865,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
 
     if (selectedSection === 'memory-store') return <MemoryLibraryModal embedded ref={memoryRef}/>
     // The folder setting (choose or type a path) lives inside the Skills card, so the page is just the library.
-    if (selectedSection === 'markdown-store') return <MarkdownStoreModal embedded/>
+    if (selectedSection === 'markdown-store') return <MarkdownStoreModal embedded ref={markdownStoreRef}/>
 
     if (selectedSection === 'goal-loops') {
       return (
@@ -3190,6 +3229,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           if (deleted) setPendingDelete(null)
         }}>
         <p>“{pendingDelete?.name}” will be permanently deleted. This cannot be undone or restored.</p>
+      </ConfirmDialog>
+      <ConfirmDialog open={Boolean(pendingThemeImport)} title={`Replace “${pendingThemeImport?.existing.name ?? ''}”?`} label="Imported theme already exists"
+        confirmLabel="Replace" busy={themeSaving} secondaryAction={{ label: 'Keep both', onClick: () => void resolveThemeImport(true) }}
+        onCancel={() => setPendingThemeImport(null)} onConfirm={() => void resolveThemeImport(false)}>
+        <p>Importing “{pendingThemeImport?.theme.name}” would overwrite your saved theme.</p>
       </ConfirmDialog>
       <Presence open={Boolean(pendingDefaultYolo)}>{pendingDefaultYolo && <ConfirmDialog open title="Use YOLO by default?" confirmLabel="Use YOLO"
         onCancel={() => setPendingDefaultYolo(null)} onConfirm={() => { const pending = pendingDefaultYolo; setPendingDefaultYolo(null); updateProviderDefaults(pending.providerId, pending.defaults) }}>
