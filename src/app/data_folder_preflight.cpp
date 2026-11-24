@@ -2,6 +2,7 @@
 
 #include "common/paths/path_utils.h"
 #include "common/platform/published_file_change_witness.h"
+#include "common/platform/volume_capabilities.h"
 
 #include <utility>
 
@@ -113,6 +114,10 @@ uam::DataFolderPreflightResult uam::InspectDataFolderTransition(const fs::path& 
 	{
 		return Blocked(Blocker::InvalidDestination, "Choose an existing absolute directory without dot components, a linked root or a filesystem root.");
 	}
+	if (uam::platform::QueryVolumeCapabilities(destination).local == false)
+	{
+		return Blocked(Blocker::NetworkVolume, "Choose a folder on a drive in this computer. Network folders cannot hold UAM's data.");
+	}
 	std::error_code error;
 	std::vector<fs::path> protected_roots{source};
 	protected_roots.insert(protected_roots.end(), retained_roots.begin(), retained_roots.end());
@@ -145,4 +150,11 @@ uam::DataFolderPreflightResult uam::InspectDataFolderTransition(const fs::path& 
 	result.destination_root = std::move(destination);
 	result.explanation = "Folder paths inspected only. A stopped, exclusively owned and verified transition is still required before changing data folders.";
 	return result;
+}
+
+std::string uam::DataFolderVolumeWarning(const fs::path& folder)
+{
+	if (folder.empty() || uam::platform::QueryVolumeCapabilities(folder).rename_swap != false)
+		return {};
+	return "This drive cannot replace files in a single step, so a power loss during a save there is riskier.";
 }
