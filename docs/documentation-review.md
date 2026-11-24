@@ -368,3 +368,19 @@ The [UAM tools](providers/uam-tools.md) `usage_report`, `worktree_status` and `m
 - Only the turn Stop control ends a chat's watches; stopping the provider session does not.
 - GitHub Enterprise hosts, GitLab and Azure DevOps are not supported.
 - The phone clients show no linked pull request row and cannot start or stop a watch.
+
+## Decision model
+
+Issue #363's first slice adds the decision interface with only the chat-provider backend, used by the goal review ([Goals](chat/goals.md#decision-source)).
+
+**Resolved by David, 2026-11-23.** The issue's "turn review" is the UAM-managed goal-loop review, which already answers through the interface; the issue does not ask for a separate per-turn review. Sending goal or transcript text to any hosted decision backend, such as Jev, is opt-in only: a hosted decision backend may receive goal or transcript text only after the user opts in. No hosted backend exists yet, so nothing is sent today.
+
+**Resolved by David, 2026-11-23.** [Permission AI Review](providers/permissions/ai-review.md) should later answer through the decision interface for commands that no allow/ask/deny [permission rule](providers/permissions/permissions.md) matches. That is a later slice: this first slice leaves Permission AI Review on its own reviewer.
+
+These questions remain open and await David's decision before the next slices:
+
+- Are hosted Jev early-access credentials available? This blocks only the hosted backend.
+- How would a local Laya backend be packaged and shipped?
+- Where should the backend appear to the user: the goal window's Last decision row, diagnostics only, or both? The goal window is unchanged in this slice.
+
+**Interim interpretation:** the goal window is unchanged and the backend appears in saved goal state and diagnostics only. The Settings backend picker waits until a second backend exists.

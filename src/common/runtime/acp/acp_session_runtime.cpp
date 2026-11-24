@@ -763,7 +763,7 @@ namespace uam
 			{
 				GoalService::RecordBlocker(app, owner_chat_id, active_goal->id, message, kDecisionSourceFallback);
 				(void)GoalService::UpdateGoalStatus(app, owner_chat_id, active_goal->id, GoalStatus::Blocked);
-				AppendGoalLoopDiagnostic(session, "goal_blocked_setup_reconnect_exhausted", active_goal->id, message);
+				AppendGoalLoopDiagnosticCause(session, "goal_blocked_setup_reconnect_exhausted", active_goal->id, message);
 				if (ChatSession* owner = ChatDomainService().FindChatById(app, owner_chat_id);
 				    owner != nullptr)
 					acp_detail::SaveChatQuietly(app, *owner);
@@ -1034,7 +1034,7 @@ namespace uam
 				{
 					GoalService::RecordBlocker(app, owner_chat_id, active_goal->id, session.last_error, kDecisionSourceFallback, "remote_connection");
 					(void)GoalService::UpdateGoalStatus(app, owner_chat_id, active_goal->id, GoalStatus::Blocked);
-					AppendGoalLoopDiagnostic(session, "goal_blocked_process_exit", active_goal->id, session.last_error);
+					AppendGoalLoopDiagnosticCause(session, "goal_blocked_process_exit", active_goal->id, session.last_error);
 					if (ChatSession* owner = ChatDomainService().FindChatById(app, owner_chat_id); owner != nullptr) acp_detail::SaveChatQuietly(app, *owner);
 				}
 				MarkAcpChatUnseenIfBackground(app, chat);
@@ -1134,8 +1134,8 @@ namespace uam
 				GoalService::RecordBlocker(app, owner_chat_id, goal->id, message, kDecisionSourceFallback);
 				(void)GoalService::UpdateGoalStatus(app, owner_chat_id, goal->id,
 				                                    GoalStatus::Blocked);
-				AppendGoalLoopDiagnostic(session, "goal_blocked_turn_inactivity_timeout",
-				                         goal->id, message);
+				AppendGoalLoopDiagnosticCause(session, "goal_blocked_turn_inactivity_timeout",
+				                              goal->id, message);
 				if (ChatSession* owner = ChatDomainService().FindChatById(app, owner_chat_id);
 				    owner != nullptr)
 					acp_detail::SaveChatQuietly(app, *owner);
@@ -1531,6 +1531,10 @@ namespace uam
 			session.goal_review_scheduled = session.goal_review_turn;
 			session.goal_review_goal_id = chat.goal_iteration_goal_id;
 			session.goal_review_repair_attempts = chat.goal_iteration_repair_attempts;
+			// The recovered review's start time was not saved, so its latency is unknown; a recovered repair turn
+			// lost its first turn's cost, so the decision's usage is unknown too.
+			session.goal_review_decision = {};
+			session.goal_review_decision.repaired = session.goal_review_repair_attempts > 0;
 			if (!session.goal_turn_kind.empty()) acp_detail::BeginGoalReviewUsage(session, false);
 			RestoreRemoteAcpTranscript(session, chat);
 			if (chat.remote_source_exit_pending)
@@ -8696,6 +8700,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				const std::string goal_review_goal_id = session.goal_review_goal_id;
 				const std::string goal_review_user_prompt = session.goal_review_user_prompt;
 				const std::string goal_review_assistant_text = session.goal_review_assistant_text;
+				const auto goal_review_decision = session.goal_review_decision;
 
 				if (remote_startup_rejected)
 				{
@@ -8878,6 +8883,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 					session.goal_review_goal_id = goal_review_goal_id;
 					session.goal_review_user_prompt = goal_review_user_prompt;
 					session.goal_review_assistant_text = goal_review_assistant_text;
+					session.goal_review_decision = goal_review_decision;
 					// A replacement process can resume native history; do not infer a zero cumulative baseline.
 					if (!session.goal_turn_kind.empty()) BeginGoalReviewUsage(session, false);
 					session.last_error.clear();
@@ -8931,7 +8937,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 							GoalService::RecordBlocker(app, goal_owner_chat_id, active_goal->id, blocker, kDecisionSourceFallback,
 							                           remote_turn_recovery ? "remote_connection" : "");
 							(void)GoalService::UpdateGoalStatus(app, goal_owner_chat_id, active_goal->id, GoalStatus::Blocked);
-							AppendGoalLoopDiagnostic(session, "goal_blocked_process_exit", active_goal->id, blocker);
+							AppendGoalLoopDiagnosticCause(session, "goal_blocked_process_exit", active_goal->id, blocker);
 							if (ChatSession* owner = ChatDomainService().FindChatById(app, goal_owner_chat_id); owner != nullptr)
 							{
 								acp_detail::SaveChatQuietly(app, *owner);

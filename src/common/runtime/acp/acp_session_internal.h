@@ -222,9 +222,10 @@ void ScheduleCompletedAcpPromptRecoverySaveIfReady(AppState& app, std::string_vi
 
 // Goal loop helpers
 std::string MessageTextForGoalReview(const ChatSession& chat, int index);
-std::string GoalTextPrefixForDiagnostics(const std::string& text);
 std::string GoalLoopDiagnosticDetail(const AcpSessionState& session, const std::string& goal_id, const std::string& text = "");
 void AppendGoalLoopDiagnostic(AcpSessionState& session, const std::string& reason, const std::string& goal_id, const std::string& text = "");
+/// <summary>A goal-loop diagnostic with a short error cause in its message; never pass a prompt or a model reply.</summary>
+void AppendGoalLoopDiagnosticCause(AcpSessionState& session, const std::string& reason, const std::string& goal_id, const std::string& cause);
 int64_t EstimateGoalTurnTokens(const ChatSession& chat, const AcpSessionState& session);
 void BeginGoalReviewUsage(AcpSessionState& session, bool fresh_session);
 void RecordGoalReviewTurnUsage(AcpSessionState& session, std::int64_t tokens, bool incremental = false);

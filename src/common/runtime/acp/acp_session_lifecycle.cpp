@@ -1518,6 +1518,7 @@ void ResetAcpRuntimeState(AppState& app, AcpSessionState& session, ChatSession& 
 	session.goal_review_user_prompt.clear();
 	session.goal_review_assistant_text.clear();
 	session.goal_review_repair_attempts = 0;
+	session.goal_review_decision = {};
 	session.ignore_session_updates_until_ready = false;
 	session.load_replay_quiet_until_s = 0.0;
 	session.codex_resume_fallback_attempted = false;
@@ -2305,6 +2306,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	const std::string goal_review_goal_id = session.goal_review_goal_id;
 	const std::string goal_review_user_prompt = session.goal_review_user_prompt;
 	const std::string goal_review_assistant_text = session.goal_review_assistant_text;
+	const auto goal_review_decision = session.goal_review_decision;
 
 	PlatformServicesFactory::Instance().process_service.CloseStdioProcessHandles(session);
 	if (recovering_remote_turn || recovering_remote_process)
@@ -2356,6 +2358,7 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 		session.goal_review_goal_id = goal_review_goal_id;
 		session.goal_review_user_prompt = goal_review_user_prompt;
 		session.goal_review_assistant_text = goal_review_assistant_text;
+		session.goal_review_decision = goal_review_decision;
 	}
 	session.chat_id = chat.id;
 	session.provider_usage.context_usage = {};
@@ -4826,6 +4829,9 @@ bool QueueGoalInternalPrompt(AppState& app, AcpSessionState& session, ChatSessio
 	if (fresh_session)
 		session.goal_internal_session = review_turn || !ProviderRuntimeRegistry::ResolveById(chat.provider_id).AcpGoalWorkersResumeConversation();
 	session.goal_review_turn = review_turn;
+	// A decision starts when its review is requested; HandleGoalReviewCompletion restores the first request for a repair.
+	session.goal_review_decision = {};
+	if (review_turn) session.goal_review_decision.started_ms = DecisionService::NowMs();
 	if (chat.goal_owner_chat_id.empty() && !chat.active_goal_id.empty())
 	{
 		chat.goal_iteration_goal_id = chat.active_goal_id;
@@ -4949,6 +4955,7 @@ void ClearGoalReviewState(AcpSessionState& session)
 	session.goal_review_user_prompt.clear();
 	session.goal_review_assistant_text.clear();
 	session.goal_review_repair_attempts = 0;
+	session.goal_review_decision = {};
 }
 
 void FailAcpTurnOrSession(AcpSessionState& session, ChatSession* chat,
