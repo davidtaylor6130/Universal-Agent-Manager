@@ -61,9 +61,9 @@ namespace uam::claude_preinput
 		mutable bool m_refused = false;
 	};
 
-	// The opt-in owning launch path arms immediately after actual SendInitialize writes its sole request and
-	// before ANY output dispatch; false is final
-	// for this attempt. Current cold Retry admission stays disabled; ordinary/warm sessions retain a null observation.
+	// Arms immediately after an actual SendInitialize writes its sole request and before ANY output dispatch; false is
+	// final for this attempt. No production launch path arms it since the dormant cold Retry launch binding was removed
+	// (2026-11-23); ordinary/warm sessions retain a null observation.
 	bool Arm(const AppState& app, AcpSessionState& session, const ChatSession& chat);
 	State CurrentState(const AppState& app, AcpSessionState& session, const ChatSession& chat);
 	std::optional<NativeTuple> CurrentTuple(const AppState& app, AcpSessionState& session, const ChatSession& chat);
@@ -72,7 +72,7 @@ namespace uam::claude_preinput
 	std::shared_ptr<const NativeWitness> CurrentWitness(const AppState& app, AcpSessionState& session, const ChatSession& chat);
 
 	/// Process-free fixture sources only. Witnesses from this seam are explicitly synthetic
-	/// and the owning production binding consumer rejects them.
+	/// and any production binding consumer must reject them.
 	struct InjectedTransportForTests
 	{
 		std::function<std::string()> process;

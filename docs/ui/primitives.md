@@ -30,6 +30,7 @@ Import from `components/ui` (index.ts):
 - MenuItem (icon, label, detail with `detailLayout` inline|stacked, `trailing` pill, shortcut, `selected` for a checkable menuitemradio, `checked` for a menuitemcheckbox, danger, disabled with `disabledReason` or `nativeDisabled`; ref and attribute passthrough; menus, context menus and the command palette)
 - SegmentedControl (options with value, label and icon, optional per-option `disabled`, `tooltip`, `ariaLabel` and `iconOnly`; one sliding highlight that stops under reduced motion or Motion Off)
 - RowButton (full-width list row; reset, hover and focus only, so row classes keep their look)
+- `uam-skeleton` class (`index.css`): the shared loading placeholder block. Usage is the one exception: its first-load skeleton keeps its own opacity pulse and 250 ms threshold ([motion](motion.md)). Feature classes only size and round it; they never add their own gradient or shimmer. Its sweep follows [motion](motion.md); the placeholder stays `aria-hidden`, and the surface it fills carries any loading label.
 
 Icons: lucide-react, 14–16px, stroke default. A Notice, or a message row with its own dismiss control, marks an error with a circle alert, so the X there only ever means dismiss; read-only state reports keep StatusDot's cross. A Notice may omit dismissal while it represents an unresolved state that the user cannot dismiss into success; its title remains visible on the bar. Ordinary notices retain their dismissal control.
 

@@ -35,6 +35,12 @@ function summary(modelCount: number): UsageHistory {
 }
 
 describe('usage snapshot transport', () => {
+  it('rejects an array carrying a valid snapshot\'s fields', () => {
+    const window = { startMs: 86400000, endMs: 172800000, days: 1 as const }
+    expect(parseUsageHistory(summary(1), 'local', window).models).toHaveLength(1)
+    expect(() => parseUsageHistory(Object.assign([], summary(1)), 'local', window)).toThrow('incompatible')
+  })
+
   it('reassembles immutable UTF8 pages before exposing totals and preserves more than 20000 models', async () => {
     const original = summary(20001)
     const body = JSON.stringify(original)
