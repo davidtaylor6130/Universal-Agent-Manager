@@ -402,7 +402,7 @@ bool AntigravityCliProviderRuntime::OnAcpValidateGoalResume(const ChatSession& c
 		error = "The saved Antigravity conversation identity is invalid. The goal was not resumed.";
 		return false;
 	}
-	if (!restart && (goal.loop_count < 0 || goal.loop_count >= uam::GoalService::IterationLimit(goal, settings)))
+	if (!restart && (goal.loop_count < 0 || goal.loop_count >= uam::GoalService::IterationLimit(&chat, goal, settings)))
 	{
 		error = "Maximum goal loop iterations reached.";
 		return false;

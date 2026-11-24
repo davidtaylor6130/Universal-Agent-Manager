@@ -6,6 +6,7 @@
 #include <optional>
 #include <tuple>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace uam
@@ -47,6 +48,10 @@ class GoalService
 	static bool IsProviderManaged(const Goal& goal);
 	/// <summary>The stricter of the goal's own ceiling and the Settings cap.</summary>
 	static int IterationLimit(const Goal& goal, AppSettings settings);
+	/// <summary>IterationLimit, also bounded by the automation cap of the chat that owns the goal, so a goal saved without its own ceiling still stops there.</summary>
+	static int IterationLimit(const ChatSession* owner, const Goal& goal, AppSettings settings);
+	/// <summary>The Git policy stated to the agent in every goal of an automation chat; anything but "pr" gets the stricter commit-only text.</summary>
+	static std::string AutomationGitPolicy(std::string_view git_permission);
 	static std::string WorkerModelId(const ChatSession& chat, const Goal& goal);
 	/// <summary>The goal's reviewer model (provider "Goal reviewer model"), else the chat model; a model the session
 	/// does not offer falls back to the chat model rather than failing the review.</summary>

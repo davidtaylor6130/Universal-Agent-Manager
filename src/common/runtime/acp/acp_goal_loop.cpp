@@ -113,7 +113,7 @@ namespace uam::acp_detail
 		bool BlockGoalAtIterationCap(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& owner_chat_id,
 		                             const std::string& goal_id, Goal& goal, CefRefPtr<CefBrowser> browser)
 		{
-			if (goal.loop_count < GoalService::IterationLimit(goal, app.settings))
+			if (goal.loop_count < GoalService::IterationLimit(ChatDomainService().FindChatById(app, owner_chat_id), goal, app.settings))
 			{
 				return false;
 			}
