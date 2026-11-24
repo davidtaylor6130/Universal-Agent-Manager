@@ -1002,6 +1002,11 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 	branch.parent_chat_id = source.id;
 	// A branch keeps chat_create provenance so it cannot bypass the depth-1 rule; the retry key stays with the original.
 	branch.created_by_chat_id = source.created_by_chat_id;
+	// A branch of an automation chat stays under its token, cap and Git policy; the approval hold is never copied.
+	branch.automation_token_id = source.automation_token_id;
+	branch.automation_token_name = source.automation_token_name;
+	branch.automation_max_iterations = source.automation_max_iterations;
+	branch.automation_git_permission = source.automation_git_permission;
 	branch.branch_root_chat_id = uam::strings::NonEmptyOrFallback(source.branch_root_chat_id, source.id);
 	branch.branch_from_message_index = message_index;
 	branch.branch_message_edited = replacement_content.has_value();

@@ -1,7 +1,7 @@
 import type { MemoryLevel } from '../types/memory'
 import type { MemoryWorkerBinding } from './cpp/types'
 import {
-  clampedFiniteNumberOr, normalizeMemoryLevel, normalizeGoalMaxLoopIterations,
+  clampedFiniteNumberOr, isPlainRecord, normalizeMemoryLevel, normalizeGoalMaxLoopIterations,
   normalizeAcpSetupInactivityTimeoutSeconds, normalizeActiveTurnInactivityTimeoutSeconds, normalizeToolCallTimeoutSeconds, normalizeStreamLoopRepeatLimit, normalizeAcpTurnOutputLimitMiB,
   MIN_MEMORY_IDLE_DELAY_SECONDS, MAX_MEMORY_IDLE_DELAY_SECONDS,
   MIN_MEMORY_RECALL_BUDGET_BYTES, MAX_MEMORY_RECALL_BUDGET_BYTES,
@@ -59,7 +59,6 @@ const wireNames: Record<keyof MemorySettingsValues, string> = {
   permissionReviewerProviderId: 'permissionReviewerProviderId', permissionReviewerModelId: 'permissionReviewerModelId',
 }
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
-const record = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value)
 const integer = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value)
 const text = (value: unknown): value is string => typeof value === 'string' && !/[\u0000-\u001f\u007f]/.test(value)
 const within = (value: unknown, min: number, max: number) => integer(value) && value >= min && value <= max
@@ -68,8 +67,8 @@ const bindingEqual = (a: MemoryWorkerBinding | undefined, b: MemoryWorkerBinding
 /** Reject malformed canonical receipts rather than manufacturing values with defaults. */
 export function parseMemorySettingsValues(raw: unknown): MemorySettingsValues | null {
   // ponytail: older native payloads predate goalTokenBudget; default it to 0 instead of rejecting.
-  const value = record(raw) && !Object.prototype.hasOwnProperty.call(raw, 'goalTokenBudget') ? { ...raw, goalTokenBudget: 0 } : raw
-  if (!record(value) || Object.keys(value).length !== fields.length || !fields.every((key) => Object.prototype.hasOwnProperty.call(value, key))) return null
+  const value = isPlainRecord(raw) && !Object.prototype.hasOwnProperty.call(raw, 'goalTokenBudget') ? { ...raw, goalTokenBudget: 0 } : raw
+  if (!isPlainRecord(value) || Object.keys(value).length !== fields.length || !fields.every((key) => Object.prototype.hasOwnProperty.call(value, key))) return null
   if (typeof value.memoryEnabledDefault !== 'boolean' || (typeof value.memoryLevelDefault !== 'string' || !['off', 'readOnly', 'strict', 'balanced', 'open'].includes(value.memoryLevelDefault)) ||
     value.memoryEnabledDefault !== (value.memoryLevelDefault !== 'off') ||
     !within(value.memoryIdleDelaySeconds, MIN_MEMORY_IDLE_DELAY_SECONDS, MAX_MEMORY_IDLE_DELAY_SECONDS) ||
@@ -81,24 +80,24 @@ export function parseMemorySettingsValues(raw: unknown): MemorySettingsValues | 
     !integer(value.streamLoopRepeatLimit) || value.streamLoopRepeatLimit !== normalizeStreamLoopRepeatLimit(value.streamLoopRepeatLimit) ||
     !integer(value.activeTurnInactivityTimeoutSeconds) || value.activeTurnInactivityTimeoutSeconds !== normalizeActiveTurnInactivityTimeoutSeconds(value.activeTurnInactivityTimeoutSeconds) ||
     !integer(value.toolCallTimeoutSeconds) || value.toolCallTimeoutSeconds !== normalizeToolCallTimeoutSeconds(value.toolCallTimeoutSeconds) ||
-    !text(value.permissionReviewerProviderId) || !text(value.permissionReviewerModelId) || !record(value.memoryWorkerBindings)) return null
+    !text(value.permissionReviewerProviderId) || !text(value.permissionReviewerModelId) || !isPlainRecord(value.memoryWorkerBindings)) return null
   const bindings: Record<string, unknown> = value.memoryWorkerBindings
   for (const [key, entry] of Object.entries(bindings)) {
-    if (!key || !text(key) || !record(entry) || Object.keys(entry).length !== 2 || !text(entry.workerProviderId) || !entry.workerProviderId || !text(entry.workerModelId)) return null
+    if (!key || !text(key) || !isPlainRecord(entry) || Object.keys(entry).length !== 2 || !text(entry.workerProviderId) || !entry.workerProviderId || !text(entry.workerModelId)) return null
   }
   // Entries were validated above; construct the typed map only after narrowing unknown input.
   const validatedBindings = Object.fromEntries(Object.entries(bindings).map(([key, entry]) => [key, { ...(entry as MemoryWorkerBinding) }]))
   return { ...value, memoryWorkerBindings: validatedBindings } as unknown as MemorySettingsValues
 }
 export function parseMemorySettingsSnapshot(value: unknown): MemorySettingsSnapshot | null {
-  if (!record(value) || typeof value.scope !== 'string' || !uuid.test(value.scope) || !integer(value.revision) || value.revision < 0 || typeof value.primaryValidated !== 'boolean') return null
+  if (!isPlainRecord(value) || typeof value.scope !== 'string' || !uuid.test(value.scope) || !integer(value.revision) || value.revision < 0 || typeof value.primaryValidated !== 'boolean') return null
   const values = value.primaryValidated ? parseMemorySettingsValues(value.values) : null
   if (value.primaryValidated && !values) return null
   return { scope: value.scope, revision: value.revision, primaryValidated: value.primaryValidated, ...(values ? { values } : {}) }
 }
 export function parseMemorySettingsResult(value: unknown, expected: { memoryRequestId: string; scope: string; revision: number }): MemorySettingsResult | null {
   const snapshot = parseMemorySettingsSnapshot(value)
-  if (!snapshot || !record(value) || value.memoryRequestId !== expected.memoryRequestId || snapshot.scope !== expected.scope ||
+  if (!snapshot || !isPlainRecord(value) || value.memoryRequestId !== expected.memoryRequestId || snapshot.scope !== expected.scope ||
     !['committed', 'rejected', 'unknown'].includes(String(value.outcome))) return null
   const outcome = value.outcome as MemorySettingsResult['outcome']
   if (outcome !== 'unknown' && (!snapshot.primaryValidated || !snapshot.values || snapshot.revision < expected.revision)) return null

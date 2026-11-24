@@ -95,5 +95,8 @@ namespace uam
 		bool m_externalOverride = false;
 		bool m_held = false;
 		const IPlatformProcessService* m_process = nullptr;
+		// The pending folder's volume warning, asked once per chosen folder rather than on every Settings read.
+		mutable std::filesystem::path m_volumeWarningFolder;
+		mutable std::string m_volumeWarning;
 	};
 } // namespace uam
