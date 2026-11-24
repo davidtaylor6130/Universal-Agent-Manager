@@ -72,6 +72,7 @@ void UamQueryHandler::RefreshAllowanceTargets()
 #endif
 		    return uam::usage::FetchCliAccountAllowance(config.provider_id, validated.command, root, stop);
 	    });
+	m_app.account_allowances = m_providerAllowances;
 }
 
 void UamQueryHandler::HandleGetProviderAllowances(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)

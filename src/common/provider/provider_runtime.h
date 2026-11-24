@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <optional>
 #include <stop_token>
@@ -133,6 +134,21 @@ struct ProviderCliPolicy
 	std::string (*protocol_version_refusal)(std::string_view version) = nullptr;
 };
 
+/// <summary>Shared CLI View handoff the terminal launcher has already staged on the executing host.</summary>
+struct ProviderCliHandoffStaging
+{
+	/// Execution host platform, for joining paths on that host.
+	const std::string& host_platform;
+	/// Owned context directory on the executing host.
+	const std::string& directory;
+	/// `conversation.md` inside the directory, already written with the snapshot.
+	const std::string& context_path;
+	/// Exact text written to the context path.
+	const std::string& snapshot;
+	/// Writes one more file on the executing host; false has already set the launcher's error.
+	std::function<bool(const std::string& path, const std::string& content)> stage_file;
+};
+
 /// <summary>
 /// Runtime-polymorphic provider backend contract.
 /// </summary>
@@ -197,6 +213,8 @@ class IProviderRuntime
 	/// Capture optional per-terminal native observation before private launch arguments and environment are staged.
 	virtual bool PrepareInteractiveLaunch(uam::AppState&, uam::CliTerminalState&, const ChatSession&, const ExecutionHost&,
 	    std::vector<std::string>&, std::vector<std::pair<std::string, std::string>>&, std::string*) const { return true; }
+	/// Adds provider-native files or arguments that make a CLI View load the staged handoff. False refuses the launch with the error set.
+	virtual bool StageCliHandoffContext(const ProviderCliHandoffStaging&, std::vector<std::string>&, std::string&) const { return true; }
 	/// <summary>Recognizes the provider's idle prompt in recent native terminal output.</summary>
 	virtual bool RecentOutputIndicatesInputPrompt(std::string_view recent_output) const;
 	/// <summary>Reads bounded native lifecycle changes for a verified local terminal binding.</summary>
@@ -493,6 +511,12 @@ class IProviderRuntime
 	virtual nlohmann::json OnAcpBuildCompact(const uam::AcpSessionState&, int, std::string&) const { return nullptr; }
 	virtual bool SupportsSameLiveParentResultContinuation() const { return false; }
 	virtual bool SupportsAcpCompaction() const { return false; }
+	/// True when OnAcpBuildCompact sends AcpSessionState::manual_compaction_instructions to the provider.
+	virtual bool SupportsAcpCompactionInstructions() const { return false; }
+	/// False when manual compaction is offered only for chats that run on this computer.
+	virtual bool SupportsRemoteAcpCompaction() const { return true; }
+	/// Lowest checked CLI version whose native compaction command UAM uses; null means no version gate.
+	virtual const char* MinimumAcpCompactionVersion() const { return nullptr; }
 
 	/// <summary>True when input can be appended to an active turn without interrupting it.</summary>
 	virtual bool SupportsAcpSteering() const

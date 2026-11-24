@@ -313,6 +313,23 @@ describe('chatSearch', () => {
     expect(model.unfolderedSessionIds).toEqual(['s-missing-folder'])
   })
 
+  it('keeps chats from several missing workspaces in unsorted while searching, without changing their folder IDs', () => {
+    const folders = [makeFolder('general')]
+    const sessions = [
+      makeSession('s-valid', 'Report valid', 'general'),
+      makeSession('s-gone-a', 'Report gone A', 'gone-a'),
+      makeSession('s-gone-b', 'Report gone B', 'gone-b', now, now, true),
+      makeSession('s-other', 'Unrelated', 'gone-a'),
+    ]
+
+    const model = searchModel('report', folders, sessions)
+
+    expect(model.folderRows.map((row) => row.folder.id)).toEqual(['general'])
+    expect(model.unfolderedSessionIds.sort()).toEqual(['s-gone-a', 's-gone-b'])
+    expect(model.pinnedSessionIds).toEqual(['s-gone-b'])
+    expect(sessions.map((session) => session.folderId)).toEqual(['general', 'gone-a', 'gone-b', 'gone-a'])
+  })
+
   it('requires every query token to match', () => {
     const folders = [makeFolder('general')]
     const sessions = [
