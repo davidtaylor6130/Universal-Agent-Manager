@@ -1,7 +1,7 @@
 import { sanitizeStartupNativeImportStatus } from '../../types/startupNativeImports'
 import { sanitizeExecutionRouting } from '../../types/executionRouting'
 import { DEFAULT_CENTRAL_PROVIDER_CONFIGURATION, type CentralProviderConfiguration, type WindowsPowerShellPreference } from './types'
-import { sanitizeCustomIcon } from '../../types/customIcon'
+import { sanitizeCustomIcon, type CustomIcon } from '../../types/customIcon'
 // Sanitiser and normaliser functions for raw C++ state payloads.
 // Extracted from useAppStore.ts (MO-1). Pure functions — no side effects.
 
@@ -163,6 +163,11 @@ export function memoryEnabledForLevel(value: unknown, nativeEnabled = true): boo
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
+}
+
+/** Like isRecord, but rejects arrays, for validators where `[]` must not pass as an object. */
+export function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return isRecord(value) && !Array.isArray(value)
 }
 
 export function isString(value: unknown): value is string {
@@ -1230,6 +1235,13 @@ export function sanitizeCppGoal(value: unknown): CppGoal | null {
   }
 }
 
+/** Detected workspace icons are display-only PNG, SVG or ICO data shown through <img>; the value only keys failed-image fallback. */
+function sanitizeProjectIcon(value: unknown, folderId: string): CustomIcon | undefined {
+  return typeof value === 'string' && value.length <= 350000 && /^data:image\/(?:png|svg\+xml|x-icon);base64,[A-Za-z0-9+/]+={0,2}$/.test(value)
+    ? { type: 'png', value: `project-icon:${folderId}`, dataUrl: value }
+    : undefined
+}
+
 export function sanitizeCppFolder(value: unknown): CppFolder | null {
   if (!isRecord(value)) return null
   const id = stringOr(value.id).trim()
@@ -1237,7 +1249,8 @@ export function sanitizeCppFolder(value: unknown): CppFolder | null {
   return {
     id,
     title: stringOr(value.title, 'Untitled'),
-    customIcon: sanitizeCustomIcon(value.customIcon),
+    // A chosen icon wins; otherwise the workspace's own website or app icon (PNG, SVG or ICO), when native found one.
+    customIcon: sanitizeCustomIcon(value.customIcon) ?? sanitizeProjectIcon(value.projectIcon, id),
     directory: stringOr(value.directory),
     collapsed: booleanOr(value.collapsed),
     executionHostId: stringOr(value.executionHostId).trim() || 'local',

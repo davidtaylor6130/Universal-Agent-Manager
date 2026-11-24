@@ -2304,6 +2304,10 @@ namespace uam
 			{
 				nlohmann::json object = StateSerializer::SerializeFolder(folder, false);
 				uam::icons::AddFrontendAsset(object, data_root, folder.custom_icon);
+				// The worker availability scan finds the icon; use it only while it matches this folder's location.
+				if (folder.custom_icon.type.empty() && !folder.project_icon.empty() && folder.availability_directory == folder.directory &&
+				    folder.availability_host_id == folder.execution_host_id)
+					object["projectIcon"] = folder.project_icon;
 				folders_json.push_back(std::move(object));
 			}
 			return folders_json;

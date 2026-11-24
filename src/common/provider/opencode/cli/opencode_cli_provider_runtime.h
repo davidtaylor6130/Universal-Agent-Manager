@@ -9,7 +9,7 @@ class OpenCodeCliProviderRuntime final : public IProviderRuntime
 	const char* RuntimeId() const override;
 	const ProviderCliPolicy* CliVersionPolicy() const override;
 	std::string LocalCliCompatibilityError(const uam::AppState& app) const override;
-	std::string StructuredCliVersionError(const ProviderProfile&, std::string_view, bool = false, const ChatSession* = nullptr) const override;
+	std::string StructuredCliVersionError(const ProviderProfile&, std::string_view, bool = false, const ChatSession* = nullptr, bool chat_route = false) const override;
 	bool RequiresStructuredCliVersion(const ProviderProfile&) const override;
 	bool PrepareStructuredLaunch(uam::AcpSessionState&, const ProviderProfile&, std::string_view, bool,
 	    std::vector<std::string>&, std::vector<std::pair<std::string, std::string>>&, std::string&) const override;

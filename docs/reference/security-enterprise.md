@@ -28,6 +28,7 @@ This document captures the current security posture for Universal Agent Managerâ
   (see Known Gaps).
 - External `http`, `https`, `mailto`, `ftp`, and `tel` navigation is blocked inside CEF and delegated to the operating system browser or handler.
 - DevTools and view-source shortcuts are blocked in the embedded UI.
+- CEF startup drops Chromium's remote debugging switches (`--remote-debugging-port`, `--remote-debugging-pipe`, `--remote-allow-origins` and the rest of `--remote-debugging-*`) from the command line UAM forwards, so a normal launch opens no DevTools port. Only an explicit test run with `UAM_TEST_ALLOW_REMOTE_DEBUGGING=1`, which the [performance suite](performance-suite.md) sets, keeps them, and `--remote-debugging-address` is always dropped so the port stays on 127.0.0.1.
 - The browser context menu is reduced to a Copy command when selected text is present.
 - Native clipboard writes go through a bridge action with a 1 MiB text limit.
 - Native clipboard writes run off the CEF UI thread; the macOS helper has a two-second process deadline and is terminated and reaped on timeout.
