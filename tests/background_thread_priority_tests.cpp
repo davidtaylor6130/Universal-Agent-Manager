@@ -8,6 +8,7 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <thread>
 
 #if defined(__APPLE__)
 #include <pthread.h>
@@ -217,11 +218,14 @@ UAM_TEST(BarrierRaisableWorkerRunsLoweredUntilABarrierRaisesIt)
 
 UAM_TEST(BarrierRaisedBeforeStartKeepsWorkerAtDefaultPriority)
 {
-	const int ui_rank = CurrentThreadPriorityRank();
+	// Compare against a plain thread from the same spawner: macOS does not hand a new thread the
+	// spawner's QoS unchanged (a user-interactive spawner yields user-initiated threads).
+	int default_rank = 0;
+	std::thread([&default_rank]() { default_rank = CurrentThreadPriorityRank(); }).join();
 	const auto priority = std::make_shared<uam::platform::BarrierRaisableWorkerPriority>();
 	priority->RaiseForBarrier();
 	int worker_rank = 0;
 	uam::platform::StartBarrierRaisableBackgroundThread(priority, [&worker_rank]() { worker_rank = CurrentThreadPriorityRank(); }).join();
-	UAM_ASSERT_EQ(worker_rank, ui_rank);
+	UAM_ASSERT_EQ(worker_rank, default_rank);
 	UAM_ASSERT(priority->Finished() && !priority->RunningLowered());
 }
