@@ -4,7 +4,7 @@ import type { AcpQueuedPrompt } from '../../store/cpp/types'
 import type { Attachment } from '../../types/message'
 import { Button, IconButton, Notice, StatusDot, motionAllowed } from '../ui'
 import { EXIT_MS, scaledMs } from '../ui/Overlay'
-import { reportAppFailure } from '../../utils/appFailure'
+import { failureDetail, reportAppFailure } from '../../utils/appFailure'
 import './InlinePromptQueue.css'
 
 export interface UnsentPrompt {
@@ -98,15 +98,16 @@ export function InlinePromptQueue({ steerUnavailable = false, prompts, unsentPro
     layoutRef.current = { order, tops }
   })
 
-  async function run(operation: () => Promise<boolean>, failure: string, finish?: () => void) {
+  /** `failure` is the one-sentence notice; `hint` (the next step) joins any cause in its detail. */
+  async function run(operation: () => Promise<boolean>, failure: string, hint: string, finish?: () => void) {
     if (blocked || pendingRef.current) return
     pendingRef.current = true
     setPending(true)
     try {
       if (await operation()) finish?.()
-      else reportAppFailure(failure, '')
+      else reportAppFailure(failure, hint)
     } catch (error) {
-      reportAppFailure(failure, error instanceof Error && error.message.trim() ? error.message : '')
+      reportAppFailure(failure, failureDetail(error, hint))
     } finally {
       pendingRef.current = false
       setPending(false)
@@ -118,7 +119,7 @@ export function InlinePromptQueue({ steerUnavailable = false, prompts, unsentPro
     const ordered = expected.map((prompt) => prompt.id)
     const [moved] = ordered.splice(from, 1)
     ordered.splice(to, 0, moved)
-    void run(() => onReorder(expected, ordered), 'Queue changed or could not be reordered. Try again.')
+    void run(() => onReorder(expected, ordered), 'The queue could not be reordered.', 'The queue may have changed. Try again.')
   }
 
   function move(index: number, direction: number) {
@@ -137,7 +138,7 @@ export function InlinePromptQueue({ steerUnavailable = false, prompts, unsentPro
   const saveEdit = () => {
     if (!editing || !editedPrompt) return
     const retainedAttachmentIds = editing.retainedAttachmentIds
-    void run(() => onEdit(editing.id, editing.revision, editing.text, retainedAttachmentIds), 'Queued prompt changed or could not be saved. Your edit is kept.', () => setEditing(null))
+    void run(() => onEdit(editing.id, editing.revision, editing.text, retainedAttachmentIds), 'The queued prompt could not be saved.', 'The queued prompt may have changed. Your edit is kept.', () => setEditing(null))
   }
   return <div className="uam-queue mb-1.5" role="group" aria-label="Queued prompt">
     {prompts.length > 0 && <span className="sr-only" role="status">{prompts.length} queued prompt{prompts.length === 1 ? '' : 's'}</span>}
@@ -148,8 +149,8 @@ export function InlinePromptQueue({ steerUnavailable = false, prompts, unsentPro
           <span className="uam-queue-row__text">{prompt.text}</span>
           <div className="uam-queue-row__actions">
             {onEditUnsent && !prompt.receipt && <IconButton size="sm" icon={<Pencil size={13} />} label="Edit unsent message" disabled={blocked || unsentActionsDisabled || Boolean(prompt.recoveryPending) || Boolean(editing)} onClick={() => onEditUnsent(prompt.messageIndex, prompt.text)} />}
-            {prompt.retryable && onRetryUnsent && <IconButton size="sm" icon={<CornerUpRight size={14} />} label="Retry message" disabled={blocked || unsentActionsDisabled || Boolean(prompt.recoveryPending) || Boolean(editing)} onClick={() => void run(() => onRetryUnsent(prompt.messageIndex), 'Unsent prompt could not be retried. Your input is kept.')} />}
-            {onRemoveUnsent && <IconButton size="sm" icon={<X size={14} />} label="Remove unsent prompt" disabled={blocked || (prompt.receipt ? unsentReceiptDeleteDisabled : unsentActionsDisabled) || Boolean(prompt.sending || (prompt.recoveryPending && !prompt.receipt)) || Boolean(editing)} onClick={() => void run(() => onRemoveUnsent(prompt.messageIndex, prompt.receipt), 'Unsent prompt could not be removed. Your input is kept.')} />}
+            {prompt.retryable && onRetryUnsent && <IconButton size="sm" icon={<CornerUpRight size={14} />} label="Retry message" disabled={blocked || unsentActionsDisabled || Boolean(prompt.recoveryPending) || Boolean(editing)} onClick={() => void run(() => onRetryUnsent(prompt.messageIndex), 'The unsent prompt could not be retried.', 'Your input is kept.')} />}
+            {onRemoveUnsent && <IconButton size="sm" icon={<X size={14} />} label="Remove unsent prompt" disabled={blocked || (prompt.receipt ? unsentReceiptDeleteDisabled : unsentActionsDisabled) || Boolean(prompt.sending || (prompt.recoveryPending && !prompt.receipt)) || Boolean(editing)} onClick={() => void run(() => onRemoveUnsent(prompt.messageIndex, prompt.receipt), 'The unsent prompt could not be removed.', 'Your input is kept.')} />}
           </div>
         </div>
         {prompt.attachments.length > 0 && <div className="uam-queue-row__files" aria-label="Unsent prompt files">
@@ -163,7 +164,7 @@ export function InlinePromptQueue({ steerUnavailable = false, prompts, unsentPro
         <strong>Queue held</strong>
         <span>Resume to send these queued prompts.</span>
       </span>
-      <Button type="button" size="sm" variant="secondary" disabled={blocked || !onResume || !reorderable || prompts.length === 0 || Boolean(editing)} onClick={() => void run(() => onResume!(prompts.map((prompt) => ({ id: prompt.id!, revision: prompt.revision! }))), 'Queue changed or could not be resumed. Your queued prompts are kept.')}>Resume queue</Button>
+      <Button type="button" size="sm" variant="secondary" disabled={blocked || !onResume || !reorderable || prompts.length === 0 || Boolean(editing)} onClick={() => void run(() => onResume!(prompts.map((prompt) => ({ id: prompt.id!, revision: prompt.revision! }))), 'The queue could not be resumed.', 'The queue may have changed. Your queued prompts are kept.')}>Resume queue</Button>
     </div>}
     <div className="uam-queue-list" ref={listRef}>{rows.map(({ prompt, index, leaving: exiting }) => exiting
       ? <div key={`leaving-${prompt.id}`} className="uam-queue-row uam-queued-prompt" data-leaving="" aria-hidden>
@@ -200,8 +201,8 @@ export function InlinePromptQueue({ steerUnavailable = false, prompts, unsentPro
           <IconButton size="sm" icon={<Pencil size={13} />} label="Edit queued prompt" disabled={blocked || !prompt.id || !prompt.revision || prompt.prepared || Boolean(editing)} onClick={() => { setEditing({ id: prompt.id!, revision: prompt.revision!, text: prompt.text }) }} />
           <IconButton size="sm" icon={<ArrowUp size={13} />} label="Move queued prompt up" disabled={blocked || !reorderable || index === 0 || Boolean(editing)} onClick={() => move(index, -1)} />
           <IconButton size="sm" icon={<ArrowDown size={13} />} label="Move queued prompt down" disabled={blocked || !reorderable || index === prompts.length - 1 || Boolean(editing)} onClick={() => move(index, 1)} />
-          <IconButton size="sm" icon={<CornerUpRight size={14} />} label="Steer with this prompt now" disabled={held || steerUnavailable || blocked || prompt.prepared || Boolean(editing)} onClick={() => void run(() => onSteer(index, prompt.id && prompt.revision ? { id: prompt.id, revision: prompt.revision } : undefined), 'Queued prompt could not be sent. Try again.')} />
-          <IconButton size="sm" icon={<X size={14} />} label="Remove queued prompt" disabled={blocked || prompt.prepared || Boolean(editing)} onClick={() => void run(() => onRemove(index, prompt.id && prompt.revision ? { id: prompt.id, revision: prompt.revision } : undefined), 'Queued prompt could not be removed. Try again.')} />
+          <IconButton size="sm" icon={<CornerUpRight size={14} />} label="Steer with this prompt now" disabled={held || steerUnavailable || blocked || prompt.prepared || Boolean(editing)} onClick={() => void run(() => onSteer(index, prompt.id && prompt.revision ? { id: prompt.id, revision: prompt.revision } : undefined), 'The queued prompt could not be sent.', 'Try again.')} />
+          <IconButton size="sm" icon={<X size={14} />} label="Remove queued prompt" disabled={blocked || prompt.prepared || Boolean(editing)} onClick={() => void run(() => onRemove(index, prompt.id && prompt.revision ? { id: prompt.id, revision: prompt.revision } : undefined), 'The queued prompt could not be removed.', 'Try again.')} />
         </div>
       </div>
       {(!editing || editing.id !== prompt.id) && (prompt.attachments.length > 0 || prompt.markdownStoreFiles.length > 0) && <div className="uam-queue-row__files" aria-label={`Queued ${index + 1} files`}>

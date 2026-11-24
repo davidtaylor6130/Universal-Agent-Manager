@@ -62,7 +62,7 @@ it('retains persisted Off after failed revocation and retries only the global di
   expect(toggle()?.disabled).toBe(true)
   expect(host.textContent).toContain('Cleanup pending.')
   expect(host.textContent).not.toContain('Chat access cleared')
-  expect(vi.mocked(reportAppFailure)).toHaveBeenCalledWith('Runtime controls are still stopping.', expect.any(String))
+  expect(vi.mocked(reportAppFailure)).toHaveBeenCalledWith('Could not change Computer Use.', expect.stringContaining('Runtime controls are still stopping.'))
   // Pending ownership survives leaving and reopening the row.
   await act(async () => { root.unmount(); root = createRoot(host); root.render(<ComputerUseSettingRow />) })
   expect(button('Retry disabling')).toBeTruthy()
@@ -82,7 +82,7 @@ it('does not display Off when persistence failed and native state stayed enabled
   vi.mocked(sendToCEF).mockResolvedValueOnce({ ok: false, error: 'Failed to persist Computer Use Settings.' }).mockResolvedValueOnce(receipt(true))
   await act(async () => toggle()!.click())
   expect(toggle()?.checked).toBe(true)
-  expect(vi.mocked(reportAppFailure)).toHaveBeenCalledWith('Failed to persist Computer Use Settings.', expect.any(String))
+  expect(vi.mocked(reportAppFailure)).toHaveBeenCalledWith('Could not change Computer Use.', expect.stringContaining('Failed to persist Computer Use Settings.'))
   expect(host.textContent).not.toContain('Chat access cleared')
 })
 
@@ -92,7 +92,7 @@ it('keeps unknown transport outcomes distinct from cleared consent', async () =>
   expect(toggle()).toBeNull()
   expect(useAppStore.getState().computerUseEnabled).toBeUndefined()
   expect(useAppStore.getState().computerUseRevocationPending).toBeUndefined()
-  expect(vi.mocked(reportAppFailure)).toHaveBeenCalledWith('Connection lost.', 'Status is not confirmed; check before trying again.')
+  expect(vi.mocked(reportAppFailure)).toHaveBeenCalledWith('Could not change Computer Use.', 'Connection lost. Status is not confirmed; check before trying again.')
   vi.mocked(sendToCEF).mockResolvedValueOnce(receipt(false, true))
   await act(async () => button('Check status').click())
   expect(host.textContent).toContain('Cleanup pending.')
@@ -137,7 +137,7 @@ it('serializes a captured Off request across navigation between settings surface
   await act(async () => finish({ ok: false, error: 'The owned runtime has not stopped.' }))
   expect(host.textContent).toContain('Cleanup pending.')
   expect(toggle()?.disabled).toBe(true)
-  expect(vi.mocked(reportAppFailure)).toHaveBeenCalledWith('The owned runtime has not stopped.', expect.any(String))
+  expect(vi.mocked(reportAppFailure)).toHaveBeenCalledWith('Could not change Computer Use.', expect.stringContaining('The owned runtime has not stopped.'))
 })
 
 it('does not let an older readback clear a newer native pending observation', async () => {
@@ -184,7 +184,7 @@ it('retains failure feedback for a native push received before its failure respo
     return { ok: false, error: 'Runtime controls are still stopping.' }
   }).mockResolvedValueOnce(receipt(false, true))
   await act(async () => toggle()!.click())
-  expect(vi.mocked(reportAppFailure)).toHaveBeenCalledWith('Runtime controls are still stopping.', expect.any(String))
+  expect(vi.mocked(reportAppFailure)).toHaveBeenCalledWith('Could not change Computer Use.', expect.stringContaining('Runtime controls are still stopping.'))
 })
 
 it.each(['Retry disabling', 'Check status', 'Turn off'])('returns keyboard focus to the switch when %s recovery disappears', async label => {

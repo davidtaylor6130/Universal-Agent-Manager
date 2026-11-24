@@ -17,6 +17,8 @@ export interface RoutingHostPolicy {
   workspaceMappings: RoutingWorkspaceMapping[]
 }
 export interface ExecutionRoutingSettings { enabled: boolean; hosts: RoutingHostPolicy[]; repositoryMatching?: boolean }
+/** Routing before native reports any settings. Treat as read-only. */
+export const NO_EXECUTION_ROUTING: ExecutionRoutingSettings = { enabled: false, hosts: [] }
 /** Response of `listRepositoryMatches`: each local workspace's repository and its automatic or manual checkout per SSH computer. */
 export interface RepositoryMatch { executionHostId: string; remoteDirectory: string | null; source: 'automatic' | 'manual' }
 export interface WorkspaceRepositoryMatches { folderId: string; repository: { kind: 'git' | 'svn'; identity: string } | null; matches: RepositoryMatch[] }

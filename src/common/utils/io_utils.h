@@ -149,10 +149,17 @@ namespace uam::io
 		return TryReadFile(path, out);
 	}
 
+	/// <summary>Reads a whole file of at most max_bytes; a larger file is refused by its size before any body is read.</summary>
 	inline bool TryReadTextFile(
 	    const std::filesystem::path& path, std::string& out, std::size_t max_bytes)
 	{
 		out.clear();
+		std::filesystem::path native_path;
+		std::string path_error;
+		std::error_code size_error;
+		if (!NativeFilePath(path, native_path, path_error)) return false;
+		const std::uintmax_t size = std::filesystem::file_size(native_path, size_error);
+		if (!size_error && size > max_bytes) return false;
 		std::ifstream file;
 		if (!OpenReadFile(path, file)) return false;
 
@@ -174,6 +181,59 @@ namespace uam::io
 			return false;
 		}
 		return true;
+	}
+
+	enum class BoundedReadStatus
+	{
+		Read,
+		Unreadable,
+		TooLarge,
+	};
+
+	struct BoundedReadResult
+	{
+		BoundedReadStatus status = BoundedReadStatus::Unreadable;
+		// Observed on-disk size; zero when the size could not be read.
+		std::uintmax_t source_bytes = 0;
+	};
+
+	/// <summary>Reads a whole file only when it fits max_bytes, checking its size before allocating any body.</summary>
+	/// <remarks>The bounded reader still enforces the ceiling if the file grows after the size check. The file is never changed.</remarks>
+	inline BoundedReadResult TryReadFileWithinLimit(const std::filesystem::path& path, std::string& out, std::size_t max_bytes)
+	{
+		out.clear();
+		BoundedReadResult result;
+		std::filesystem::path native_path;
+		std::string path_error;
+		std::error_code size_error;
+		if (!NativeFilePath(path, native_path, path_error)) return result;
+		result.source_bytes = std::filesystem::file_size(native_path, size_error);
+		if (size_error)
+		{
+			result.source_bytes = 0;
+			return result;
+		}
+		if (result.source_bytes > max_bytes)
+		{
+			result.status = BoundedReadStatus::TooLarge;
+			return result;
+		}
+		// One allocation of the observed size; the bounded reader keeps capacity across its clear().
+		out.reserve(static_cast<std::size_t>(result.source_bytes));
+		if (TryReadTextFile(path, out, max_bytes))
+		{
+			result.status = BoundedReadStatus::Read;
+			return result;
+		}
+		std::string().swap(out);
+		// The file grew past the ceiling during the read, or the read itself failed.
+		const std::uintmax_t grown = std::filesystem::file_size(native_path, size_error);
+		if (!size_error && grown > max_bytes)
+		{
+			result.source_bytes = grown;
+			result.status = BoundedReadStatus::TooLarge;
+		}
+		return result;
 	}
 
 	inline std::string ReadTextFile(const std::filesystem::path& path)
@@ -275,6 +335,9 @@ namespace uam::io
 		bool primary_committed = false;
 		bool backup_degraded = false;
 		bool interrupted = false;
+		/// POSIX only: the destination's volume refused an exchange rename, so the predecessor was kept by a
+		/// copy before a plain rename replaced the destination (see ReplaceExistingDestination).
+		bool replace_fallback = false;
 		AtomicWriteStage stage = AtomicWriteStage::None;
 		std::string error;
 	};
@@ -355,9 +418,19 @@ namespace uam::io
 		}
 	}
 
+	/// <summary>Guards only the throttled sweep's cached directory listings, never directory reads, removals or writes.</summary>
+	inline std::mutex& AtomicTempListingsMutex()
+	{
+		static std::mutex* listings_mutex = new std::mutex(); // Leaked: a detached writer may still sweep during exit.
+		return *listings_mutex;
+	}
+
 	/// <summary>Removes the abandoned temporaries of one destination, reading its directory at most once per interval.</summary>
-	/// The caller holds the durable writer lock. Only temporaries at least 24 hours old are removed, so one
-	/// that appears after the directory was listed is simply left for a later listing.
+	/// The caller holds that destination's durable writer lock, so no write to this destination (or its backup) is in
+	/// flight. The cached listings have their own small mutex, held only to read or update the cache: directory reads,
+	/// status checks and removals run without it, so writers to unrelated destinations never wait on each other here.
+	/// Only temporaries at least 24 hours old are removed, so one that appears after the directory was listed is
+	/// simply left for a later listing.
 	inline void CleanupAbandonedAtomicTempsThrottled(const std::filesystem::path& path)
 	{
 		struct Listing
@@ -365,17 +438,26 @@ namespace uam::io
 			std::chrono::steady_clock::time_point read_at;
 			std::vector<std::string> temp_names;
 		};
-		static std::unordered_map<std::string, Listing> listings;
+		static auto& listings = *new std::unordered_map<std::string, Listing>(); // Leaked, like its mutex.
 		std::filesystem::path native_parent;
 		std::string normalization_error;
 		if (path.parent_path().empty() || !NativeFilePath(path.parent_path(), native_parent, normalization_error, true)) return;
+		const std::string key = uam::paths::Utf8PathString(native_parent);
 		const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
-		const auto [found, inserted] = listings.try_emplace(uam::paths::Utf8PathString(native_parent));
-		Listing& listing = found->second;
-		if (inserted || now - listing.read_at >= std::chrono::minutes(10))
+		bool refresh = false;
 		{
-			listing.read_at = now;
-			listing.temp_names.clear();
+			std::lock_guard<std::mutex> lock(AtomicTempListingsMutex());
+			const auto [found, inserted] = listings.try_emplace(key);
+			Listing& listing = found->second;
+			// Claim the refresh before listing, so concurrent writers to this directory do not all read it. A writer
+			// that arrives while the first listing is being read sees no names and leaves its temporaries for a later write.
+			refresh = inserted || now - listing.read_at >= std::chrono::minutes(10);
+			if (refresh) listing.read_at = now;
+			else if (listing.temp_names.empty()) return;
+		}
+		if (refresh)
+		{
+			std::vector<std::string> temp_names;
 			std::error_code error;
 			for (std::filesystem::directory_iterator it(native_parent, std::filesystem::directory_options::skip_permission_denied, error), end;
 			     !error && it != end;
@@ -383,21 +465,38 @@ namespace uam::io
 			{
 				++AtomicTempSweepEntriesExamined();
 				std::string name = uam::paths::Utf8PathString(it->path().filename());
-				if (name.find(kTempWritePathSuffix) != std::string::npos) listing.temp_names.push_back(std::move(name));
+				if (name.find(kTempWritePathSuffix) != std::string::npos) temp_names.push_back(std::move(name));
 			}
+			std::lock_guard<std::mutex> lock(AtomicTempListingsMutex());
+			listings[key].temp_names = std::move(temp_names);
+			if (listings[key].temp_names.empty()) return;
 		}
-		if (listing.temp_names.empty()) return;
 		// Same rule as the unthrottled sweep: an existing destination and an existing backup each own their prefix.
+		std::vector<std::string> prefixes;
 		for (const std::filesystem::path& owner : {path, MakeBackupPath(path)})
 		{
 			std::filesystem::path native_owner;
 			if (!NativeFilePath(owner, native_owner, normalization_error) || !uam::paths::PathExistsNoThrow(native_owner)) continue;
-			const std::string prefix = uam::paths::Utf8PathString(owner.filename()) + kTempWritePathSuffix;
-			std::erase_if(listing.temp_names, [&](const std::string& name)
-			{
-				return name.starts_with(prefix) && RemoveAbandonedAtomicTempNoThrow(path.parent_path() / uam::paths::PathFromUtf8(name));
-			});
+			prefixes.push_back(uam::paths::Utf8PathString(owner.filename()) + kTempWritePathSuffix);
 		}
+		if (prefixes.empty()) return;
+		const auto owned = [&prefixes](const std::string& name)
+		{
+			return std::ranges::any_of(prefixes, [&name](const std::string& prefix) { return name.starts_with(prefix); });
+		};
+		std::vector<std::string> candidates;
+		{
+			std::lock_guard<std::mutex> lock(AtomicTempListingsMutex());
+			for (const std::string& name : listings[key].temp_names)
+				if (owned(name)) candidates.push_back(name);
+		}
+		if (candidates.empty()) return;
+		std::vector<std::string> removed;
+		for (std::string& name : candidates)
+			if (RemoveAbandonedAtomicTempNoThrow(path.parent_path() / uam::paths::PathFromUtf8(name))) removed.push_back(std::move(name));
+		if (removed.empty()) return;
+		std::lock_guard<std::mutex> lock(AtomicTempListingsMutex());
+		std::erase_if(listings[key].temp_names, [&removed](const std::string& name) { return std::ranges::find(removed, name) != removed.end(); });
 	}
 
 #if defined(_WIN32)
@@ -615,6 +714,258 @@ namespace uam::io
 		}
 		return synced;
 	}
+
+	/// <summary>Errors with which a volume refuses an exchange rename it does not implement (SMB, exFAT, NFS, some FUSE).</summary>
+	/// <remarks>Same set as provider_setup.h PublishExclusive, plus ENOTTY, which some network clients return.</remarks>
+	inline bool RenameSwapUnsupportedError(int error)
+	{
+		return error == ENOTSUP || error == EOPNOTSUPP || error == EINVAL || error == ENOSYS || error == ENOTTY;
+	}
+
+	// Test-only faults on the calling thread while set: the exchange rename, the fallback's installing rename, the
+	// rename restoring a dropped destination and the rename moving the kept predecessor to the candidate name fail with
+	// these errnos instead of making the system call.
+	inline thread_local int t_rename_swap_errno_for_tests = 0;
+	inline thread_local int t_replace_install_errno_for_tests = 0;
+	inline thread_local int t_replace_restore_errno_for_tests = 0;
+	inline thread_local int t_replace_reshape_errno_for_tests = 0;
+	// Test-only, with an install errno: first remove the destination (a non-atomic network client), first complete
+	// the rename (a client reporting an error after the server finished it), or first put an unrelated file there.
+	inline thread_local bool t_replace_install_drops_destination_for_tests = false;
+	inline thread_local bool t_replace_install_lands_before_error_for_tests = false;
+	inline thread_local bool t_replace_install_substitutes_destination_for_tests = false;
+
+	/// <summary>Volumes (by st_dev) whose exchange rename was refused in this process, so later replacements skip the attempt.</summary>
+	/// <remarks>Only refusals are cached. A supported volume pays one lstat of the destination per replacement for the lookup.</remarks>
+	struct RenameSwapCapabilityCache
+	{
+		std::mutex mutex;
+		std::vector<dev_t> unsupported;
+	};
+	inline RenameSwapCapabilityCache& RenameSwapCapabilities()
+	{
+		static RenameSwapCapabilityCache cache;
+		return cache;
+	}
+	inline bool RenameSwapKnownUnsupported(dev_t device)
+	{
+		auto& cache = RenameSwapCapabilities();
+		std::lock_guard lock(cache.mutex);
+		return std::find(cache.unsupported.begin(), cache.unsupported.end(), device) != cache.unsupported.end();
+	}
+	inline void RecordRenameSwapUnsupported(dev_t device)
+	{
+		auto& cache = RenameSwapCapabilities();
+		std::lock_guard lock(cache.mutex);
+		if (std::find(cache.unsupported.begin(), cache.unsupported.end(), device) == cache.unsupported.end()) cache.unsupported.push_back(device);
+	}
+	inline void ResetRenameSwapCapabilityCacheForTests()
+	{
+		auto& cache = RenameSwapCapabilities();
+		std::lock_guard lock(cache.mutex);
+		cache.unsupported.clear();
+	}
+
+	/// <summary>Copies an existing regular file to a new private sibling, keeping its mode where the volume allows.</summary>
+	/// <remarks>A copy rather than a hard link: a link would change the predecessor's ctime and, after a crash, leave the
+	/// destination with a second link that publication witnesses and data-folder inventory refuse. The copy gets a new
+	/// modification time, so an abandoned one is swept no sooner than 24 hours after the save.</remarks>
+	inline bool CopyPredecessorForReplace(const std::filesystem::path& source, const std::filesystem::path& target, bool sync_to_disk, int& error_out)
+	{
+		const int input = open(source.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+		if (input < 0) { error_out = errno; return false; }
+		struct stat info{};
+		const bool inspected = fstat(input, &info) == 0;
+		if (!inspected || !S_ISREG(info.st_mode))
+		{
+			error_out = inspected ? EINVAL : errno;
+			close(input);
+			return false;
+		}
+		const int output = open(target.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, S_IRUSR | S_IWUSR);
+		if (output < 0) { error_out = errno; close(input); return false; }
+		bool copied = true;
+		std::array<char, 64 * 1024> buffer{};
+		while (copied)
+		{
+			const ssize_t count = read(input, buffer.data(), buffer.size());
+			if (count < 0 && errno == EINTR) continue;
+			if (count < 0) { error_out = errno; copied = false; break; }
+			if (count == 0) break;
+			ssize_t offset = 0;
+			while (offset < count)
+			{
+				const ssize_t written = write(output, buffer.data() + offset, static_cast<std::size_t>(count - offset));
+				if (written < 0 && errno == EINTR) continue;
+				if (written <= 0) { error_out = written < 0 ? errno : EIO; copied = false; break; }
+				offset += written;
+			}
+		}
+		// Mode is fidelity, not durability: exFAT and some shares refuse it, which is not a failure.
+		if (copied) (void)fchmod(output, info.st_mode & 07777);
+#if defined(__APPLE__)
+		if (copied && sync_to_disk && fcntl(output, F_FULLFSYNC) != 0 && fsync(output) != 0) { error_out = errno; copied = false; }
+#else
+		if (copied && sync_to_disk && fsync(output) != 0) { error_out = errno; copied = false; }
+#endif
+		if (close(output) != 0 && copied) { error_out = errno; copied = false; }
+		close(input);
+		if (!copied) unlink(target.c_str());
+		return copied;
+	}
+
+	enum class ReplaceExistingOutcome
+	{
+		Replaced,
+		FailedUnchanged, // The destination still holds its previous file; the candidate may be discarded.
+		FailedHeld       // The destination is missing or cannot be confirmed: the previous file is kept outside any sweep.
+	};
+
+	/// <summary>Replaces an existing destination with candidate, leaving the previous file at predecessor (normally the
+	/// candidate path, exactly where an exchange rename leaves it).</summary>
+	/// <remarks>Prefers the atomic exchange (macOS RENAME_SWAP, Linux RENAME_EXCHANGE). When the destination's volume
+	/// refuses it, the volume is cached as unsupported and the replace falls back to: copy the predecessor to holder
+	/// (synced when sync_directory), sync the directory, rename(candidate, destination), then move holder to the
+	/// candidate name. The caller syncs the directory afterwards as on the exchange path. The fallback is only as atomic
+	/// as the volume's rename-over-existing (an SMB client may delete then rename). After a failed install the
+	/// destination's identity, size and modification time decide the outcome: the previous file removes the copy, the
+	/// candidate counts as replaced, a missing name is restored from the copy, and anything ambiguous is held.
+	/// holder_is_evidence marks a caller-reserved evidence path that keeps a held predecessor; otherwise a held copy
+	/// becomes the ".bak" companion when the name is missing and none exists, else "<name>.held.<token>", which no
+	/// abandoned-temporary sweep matches. See docs/engineering/durable-writes.md.</remarks>
+	inline ReplaceExistingOutcome ReplaceExistingDestination(const std::filesystem::path& candidate, const std::filesystem::path& destination,
+	    const std::filesystem::path& holder, bool holder_is_evidence, bool sync_directory, std::filesystem::path& predecessor, AtomicWriteResult& result)
+	{
+		predecessor = candidate;
+		struct stat destination_info{};
+		const bool device_known = lstat(destination.c_str(), &destination_info) == 0;
+		if (!device_known || !RenameSwapKnownUnsupported(destination_info.st_dev))
+		{
+			int swap_error = t_rename_swap_errno_for_tests;
+			if (swap_error == 0)
+			{
+#if defined(__APPLE__)
+				if (renameatx_np(AT_FDCWD, candidate.c_str(), AT_FDCWD, destination.c_str(), RENAME_SWAP) == 0) return ReplaceExistingOutcome::Replaced;
+#else
+				if (syscall(SYS_renameat2, AT_FDCWD, candidate.c_str(), AT_FDCWD, destination.c_str(), RENAME_EXCHANGE) == 0) return ReplaceExistingOutcome::Replaced;
+#endif
+				swap_error = errno;
+			}
+			if (!RenameSwapUnsupportedError(swap_error))
+			{
+				result.error = "Failed to atomically swap destination: " + AtomicWriteSystemError(swap_error);
+				return ReplaceExistingOutcome::FailedUnchanged;
+			}
+			if (device_known) RecordRenameSwapUnsupported(destination_info.st_dev);
+		}
+		result.replace_fallback = true;
+		const std::filesystem::path parent = destination.parent_path().empty() ? std::filesystem::path(".") : destination.parent_path();
+
+		// 1. Keep the predecessor before the destination name changes.
+		int keep_error = 0;
+		if (!device_known || !CopyPredecessorForReplace(destination, holder, sync_directory, keep_error))
+		{
+			result.error = "Failed to keep the destination's previous file before replacing it: " + AtomicWriteSystemError(device_known ? keep_error : ENOENT);
+			return ReplaceExistingOutcome::FailedUnchanged;
+		}
+		if (sync_directory && !SyncAtomicWriteDirectory(parent, result))
+		{
+			unlink(holder.c_str());
+			return ReplaceExistingOutcome::FailedUnchanged;
+		}
+		struct stat candidate_info{};
+		const bool candidate_known = lstat(candidate.c_str(), &candidate_info) == 0;
+
+		// 2. Install the candidate. POSIX rename replaces atomically where the volume implements it.
+		int install_error = t_replace_install_errno_for_tests;
+		if (install_error != 0 && t_replace_install_drops_destination_for_tests) unlink(destination.c_str());
+		if (install_error != 0 && t_replace_install_lands_before_error_for_tests) (void)rename(candidate.c_str(), destination.c_str());
+		if (install_error != 0 && t_replace_install_substitutes_destination_for_tests)
+		{
+			const std::filesystem::path other = MakeTempWritePath(destination);
+			const int fd = open(other.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, S_IRUSR | S_IWUSR);
+			if (fd >= 0) { (void)!write(fd, "unrelated", 9); close(fd); (void)rename(other.c_str(), destination.c_str()); }
+		}
+		if (install_error == 0 && rename(candidate.c_str(), destination.c_str()) != 0) install_error = errno;
+		if (install_error != 0)
+		{
+			struct stat remaining{};
+			const bool present = lstat(destination.c_str(), &remaining) == 0;
+			// Identity alone is not enough: smbfs without server file IDs and exFAT derive inode numbers from the name
+			// or directory slot, so a renamed file can keep the old number. Size and modification time must agree too.
+			const auto same_file = [&](const struct stat& info)
+			{
+#if defined(__APPLE__)
+				const bool same_time = info.st_mtimespec.tv_sec == remaining.st_mtimespec.tv_sec && info.st_mtimespec.tv_nsec == remaining.st_mtimespec.tv_nsec;
+#else
+				const bool same_time = info.st_mtim.tv_sec == remaining.st_mtim.tv_sec && info.st_mtim.tv_nsec == remaining.st_mtim.tv_nsec;
+#endif
+				return info.st_dev == remaining.st_dev && info.st_ino == remaining.st_ino && info.st_size == remaining.st_size && same_time;
+			};
+			// Moves a held copy to a name no abandoned-temporary sweep matches and says where it is.
+			const auto hold_copy = [&](const std::string& cause)
+			{
+				std::string kept = holder.filename().string();
+				if (!holder_is_evidence)
+				{
+					const std::filesystem::path held = std::filesystem::path(destination) += ".held." + MakeTempWritePath(std::filesystem::path("x")).extension().string().substr(1);
+					if (rename(holder.c_str(), held.c_str()) == 0)
+					{
+						kept = held.filename().string();
+						if (sync_directory) (void)SyncAtomicWriteDirectory(parent, result);
+					}
+				}
+				result.error = cause + "; its previous file is kept beside it as " + kept + ": " + AtomicWriteSystemError(install_error);
+				return ReplaceExistingOutcome::FailedHeld;
+			};
+			if (present && candidate_known && same_file(candidate_info))
+			{
+				// The client reported an error after the rename landed: this is a completed replacement.
+			}
+			else if (present && same_file(destination_info) && !(candidate_known && candidate_info.st_ino == remaining.st_ino && candidate_info.st_dev == remaining.st_dev))
+			{
+				unlink(holder.c_str());
+				result.error = "Failed to replace destination: " + AtomicWriteSystemError(install_error);
+				return ReplaceExistingOutcome::FailedUnchanged;
+			}
+			else if (present)
+			{
+				return hold_copy("Failed to replace destination, which cannot be confirmed unchanged");
+			}
+			else
+			{
+				// A non-atomic client removed the old name before failing: put the kept predecessor back.
+				int restore_error = t_replace_restore_errno_for_tests;
+				if (restore_error == 0 && rename(holder.c_str(), destination.c_str()) != 0) restore_error = errno;
+				if (restore_error == 0)
+				{
+					if (sync_directory) (void)SyncAtomicWriteDirectory(parent, result);
+					result.error = "Failed to replace destination; its previous file was restored: " + AtomicWriteSystemError(install_error);
+					return ReplaceExistingOutcome::FailedUnchanged;
+				}
+				// Recovery readers look for the ".bak" companion. Never overwrite an existing one, and leave a caller's
+				// reserved evidence path where its owner reports it.
+				if (!holder_is_evidence)
+				{
+					const std::filesystem::path backup = MakeBackupPath(destination);
+					struct stat existing{};
+					if (lstat(backup.c_str(), &existing) != 0 && errno == ENOENT && rename(holder.c_str(), backup.c_str()) == 0)
+					{
+						if (sync_directory) (void)SyncAtomicWriteDirectory(parent, result);
+						result.error = "Failed to replace destination; its previous file is kept as its recovery backup: " + AtomicWriteSystemError(install_error);
+						return ReplaceExistingOutcome::FailedHeld;
+					}
+				}
+				return hold_copy("Failed to replace destination, which is missing");
+			}
+		}
+
+		// 3. Match the exchange's shape so callers find the predecessor where they expect it.
+		int reshape_error = t_replace_reshape_errno_for_tests;
+		if (reshape_error == 0 && rename(holder.c_str(), candidate.c_str()) != 0) reshape_error = errno;
+		if (reshape_error != 0) predecessor = holder;
+		return ReplaceExistingOutcome::Replaced;
+	}
 #endif
 
 	/// <summary>Publishes an already synced temporary file with the normal atomic backup contract.</summary>
@@ -818,17 +1169,14 @@ namespace uam::io
 		}
 		result.primary_committed = true;
 #else
+		// After an exchange (or its fallback) the destination's previous file is here, not at temp_path.
+		std::filesystem::path predecessor_path = temp_path;
 		if (destination_exists)
 		{
-#if defined(__APPLE__)
-			const int swapped = renameatx_np(AT_FDCWD, temp_path.c_str(), AT_FDCWD, path.c_str(), RENAME_SWAP);
-#else
-			const long swapped = syscall(SYS_renameat2, AT_FDCWD, temp_path.c_str(), AT_FDCWD, path.c_str(), RENAME_EXCHANGE);
-#endif
-			if (swapped != 0)
+			const ReplaceExistingOutcome replaced = ReplaceExistingDestination(temp_path, path, MakeTempWritePath(path), false, sync_directory, predecessor_path, result);
+			if (replaced != ReplaceExistingOutcome::Replaced)
 			{
-				result.error = "Failed to atomically swap destination: " + AtomicWriteSystemError(errno);
-				RemoveAtomicTempNoThrow(temp_path);
+				if (replaced == ReplaceExistingOutcome::FailedUnchanged) RemoveAtomicTempNoThrow(temp_path);
 				return result;
 			}
 		}
@@ -865,7 +1213,7 @@ namespace uam::io
 			if (!preserve_backup)
 			{
 #if !defined(_WIN32)
-				RemoveAtomicTempNoThrow(temp_path);
+				RemoveAtomicTempNoThrow(predecessor_path);
 #endif
 				result.success = true;
 				result.primary_committed = true;
@@ -890,7 +1238,7 @@ namespace uam::io
 				return result;
 			}
 #else
-			if (rename(temp_path.c_str(), backup_path.c_str()) != 0)
+			if (rename(predecessor_path.c_str(), backup_path.c_str()) != 0)
 			{
 				result.error = "Destination was saved, but its recovery backup could not be installed: " + AtomicWriteSystemError(errno);
 				result.success = true;
@@ -1000,14 +1348,11 @@ namespace uam::io
 		if (!ReplaceAtomicTemp(destination, candidate, evidence, destination_exists, destination_exists, result, sync_replace)) return result;
 		result.primary_committed = true;
 #else
+		// The reserved private evidence path holds a fallback's kept predecessor, so retained evidence covers it.
+		fs::path predecessor = candidate;
 		if (destination_exists)
 		{
-#if defined(__APPLE__)
-			const int swapped = renameatx_np(AT_FDCWD, candidate.c_str(), AT_FDCWD, destination.c_str(), RENAME_SWAP);
-#else
-			const long swapped = syscall(SYS_renameat2, AT_FDCWD, candidate.c_str(), AT_FDCWD, destination.c_str(), RENAME_EXCHANGE);
-#endif
-			if (swapped != 0) { result.error = "Failed to atomically swap destination: " + AtomicWriteSystemError(errno); return result; }
+			if (ReplaceExistingDestination(candidate, destination, evidence, true, sync_directory, predecessor, result) != ReplaceExistingOutcome::Replaced) return result;
 		}
 		else if (rename(candidate.c_str(), destination.c_str()) != 0)
 		{
@@ -1031,12 +1376,12 @@ namespace uam::io
 			if (!preserve_backup)
 			{
 #if defined(_WIN32)
-				const fs::path& predecessor = native_evidence;
+				const fs::path& kept = native_evidence;
 #else
-				const fs::path& predecessor = native_candidate;
+				const fs::path& kept = predecessor;
 #endif
 				std::error_code error;
-				fs::remove(predecessor, error);
+				fs::remove(kept, error);
 				result.success = true;
 				if (error)
 				{
@@ -1057,7 +1402,7 @@ namespace uam::io
 					return result;
 				}
 #else
-				if (rename(candidate.c_str(), backup.c_str()) != 0)
+				if (rename(predecessor.c_str(), backup.c_str()) != 0)
 				{
 					result.error = "Destination committed; recovery backup installation failed: " + AtomicWriteSystemError(errno);
 					result.success = true;
@@ -1078,20 +1423,117 @@ namespace uam::io
 		result.stage = AtomicWriteStage::Complete;
 		return result;
 	}
+	/// <summary>Normalised identity of a durable write destination: one lock per key.</summary>
+	/// Absolute and lexically normal, so "a/./b.json" and "a/b.json" share a lock. Windows and macOS default to
+	/// case-insensitive volumes, so ASCII case is folded there; folding a case-sensitive volume only serialises two
+	/// distinct files, which is safe. Links, non-ASCII case, Unicode normalisation forms and Windows extended-length
+	/// prefixes are not unified: such aliases of one file are not serialised, but every write is still a complete
+	/// temp + rename publication.
+	inline std::string DurableWriteLockKey(const std::filesystem::path& path)
+	{
+		std::error_code error;
+		std::filesystem::path absolute = std::filesystem::absolute(path, error);
+		if (error) absolute = path;
+		std::string key = uam::paths::Utf8PathString(absolute.lexically_normal());
+#if defined(_WIN32) || defined(__APPLE__)
+		std::ranges::transform(key, key.begin(), [](char c) { return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c; });
+#endif
+		return key;
+	}
+
+	/// <summary>Holds the durable writer lock of one destination for its lifetime.</summary>
+	/// The table mutex is held only to find or retire an entry, never while waiting for or holding a
+	/// destination lock, so it is never held across disk I/O, fsync or a caller's stage hook. Entries are
+	/// reference counted and removed when their last user leaves, so the table stays as small as the set of
+	/// destinations being written at once. Destination locks are not recursive and have no ordering, so a stage
+	/// hook must not perform durable writes: writing its own destination self-deadlocks, and two hooks writing
+	/// each other's destinations deadlock. Only AtomicWriteFileDetailed and its wrappers take this lock; prepared
+	/// publications through CommitSyncedAtomicTemp rely on their callers' own ordering.
+	class DurableWriteDestinationLock
+	{
+	public:
+		explicit DurableWriteDestinationLock(const std::filesystem::path& path) : m_key(DurableWriteLockKey(path))
+		{
+			{
+				std::lock_guard<std::mutex> table_lock(TableMutex());
+				Entry& entry = Table()[m_key];
+				++entry.users;
+				m_entry = &entry; // unordered_map nodes stay put until erased, and a counted entry is never erased.
+			}
+			try
+			{
+				m_entry->mutex.lock();
+			}
+			catch (...)
+			{
+				Release();
+				throw;
+			}
+		}
+
+		~DurableWriteDestinationLock()
+		{
+			m_entry->mutex.unlock();
+			Release();
+		}
+
+		DurableWriteDestinationLock(const DurableWriteDestinationLock&) = delete;
+		DurableWriteDestinationLock& operator=(const DurableWriteDestinationLock&) = delete;
+
+		/// <summary>Whether a writer holds or waits for this destination's lock; lets a test confirm entries are retired.</summary>
+		static bool IsTrackedForTests(const std::filesystem::path& path)
+		{
+			const std::string key = DurableWriteLockKey(path);
+			std::lock_guard<std::mutex> table_lock(TableMutex());
+			return Table().contains(key);
+		}
+
+	private:
+		struct Entry
+		{
+			std::mutex mutex;
+			std::size_t users = 0;
+		};
+
+		void Release() noexcept
+		{
+			std::lock_guard<std::mutex> table_lock(TableMutex());
+			if (--m_entry->users == 0) Table().erase(m_key);
+		}
+
+		// Both leaked on purpose: a detached publisher thread may still be writing while statics are destroyed at exit.
+		static std::mutex& TableMutex()
+		{
+			static std::mutex* table_mutex = new std::mutex();
+			return *table_mutex;
+		}
+
+		static std::unordered_map<std::string, Entry>& Table()
+		{
+			static auto* table = new std::unordered_map<std::string, Entry>();
+			return *table;
+		}
+
+		std::string m_key;
+		Entry* m_entry = nullptr;
+	};
+
 	inline AtomicWriteResult AtomicWriteFileDetailed(
 	    const std::filesystem::path& path,
 	    std::string_view content,
 	    const AtomicWriteStageHook& hook = {},
 	    bool preserve_backup = false, bool sync_to_disk = true)
 	{
-		static std::mutex write_mutex;
-		std::lock_guard<std::mutex> lock(write_mutex);
 		AtomicWriteResult result;
 		if (path.empty() || path.filename().empty())
 		{
 			result.error = "Destination path is empty.";
 			return result;
 		}
+		// Serialise writers of this destination only. Unrelated destinations (a settings save on the UI
+		// thread and a large background snapshot, say) sync in parallel, and the caller's stage hooks run
+		// under this destination's lock alone, never under a process-wide one.
+		const DurableWriteDestinationLock destination_lock(path);
 
 		const std::filesystem::path parent = path.parent_path().empty() ? std::filesystem::path(".") : path.parent_path();
 		std::error_code ec;
@@ -1143,7 +1585,7 @@ namespace uam::io
 	inline bool WriteCacheFile(const std::filesystem::path& path, std::string_view content)
 	{
 #if defined(_WIN32)
-		// Still temp+rename, minus the durable writer's global lock, directory probe, second
+		// Still temp+rename, minus the durable writer's per-destination lock, directory probe, second
 		// destination probe and abandoned-temp sweeps: each is a filter-driver round trip on
 		// Windows, and together they doubled cold 1000-chat summary regeneration.
 		const std::filesystem::path temp_path = MakeTempWritePath(path);

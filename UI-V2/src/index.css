@@ -2580,9 +2580,18 @@ input[type="checkbox"]:disabled { opacity: .45; cursor: not-allowed; }
 .uam-icon-cell { display: grid; place-items: center; width: 32px; height: 32px; border-radius: var(--r-md); transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), border-color var(--dur-fast) var(--ease); }
 .uam-icon-cell:hover { background: var(--surface-high); }
 .uam-icon-cell:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
-.uam-icon-skeleton { border-radius: var(--r-md); background: linear-gradient(90deg, var(--surface-up) 0%, var(--surface-high) 50%, var(--surface-up) 100%); background-size: 200% 100%; animation: uam-icon-shimmer calc(1200ms * var(--motion-scale, 1)) ease-in-out infinite; }
-@keyframes uam-icon-shimmer { to { background-position: -200% 0; } }
-@media (prefers-reduced-motion: reduce) { .uam-icon-skeleton { animation: none; } .uam-icon-cell { transition: none; } }
+.uam-icon-skeleton { border-radius: var(--r-md); }
+@media (prefers-reduced-motion: reduce) { .uam-icon-cell { transition: none; } }
+
+/* Loading placeholder (sidebar list, icons, settings rows, transcript history): one shared skeleton. The block is a
+   still --surface-up fill; only its highlight band moves, and it animates transform alone (a compositor-only
+   property), with no script or React work per frame. Only the block itself takes this class, never a container
+   of blocks, or the container's fill and sweep would cover its lines. Motion Off and reduced motion keep the still block. */
+.uam-skeleton { position: relative; overflow: hidden; isolation: isolate; background: var(--surface-up); }
+.uam-skeleton::after { content: ""; position: absolute; inset: 0; pointer-events: none; background: linear-gradient(90deg, transparent 0%, var(--surface-high) 50%, transparent 100%); transform: translateX(-100%); animation: uam-skeleton-sweep calc(1400ms * var(--motion-scale, 1)) ease-in-out infinite; }
+@keyframes uam-skeleton-sweep { to { transform: translateX(100%); } }
+[data-motion="off"] .uam-skeleton::after { animation: none; }
+@media (prefers-reduced-motion: reduce) { .uam-skeleton::after { animation: none; } }
 
 /* Close/dismiss/remove: every X button is neutral at rest and turns red on hover or keyboard focus. */
 button:has(> svg.lucide-x):not(:disabled):not([aria-disabled="true"]):hover,
