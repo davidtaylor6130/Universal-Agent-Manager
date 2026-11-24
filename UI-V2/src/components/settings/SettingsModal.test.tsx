@@ -894,6 +894,46 @@ describe('SettingsModal memory settings', () => {
     host.remove()
   })
 
+  it('reports a helper install that succeeded with a warning as a warning, not as ready', async () => {
+    let installBody = ''
+    window.cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request) as { action: string; payload: { id: string; label: string; sshAlias: string } }
+      if (parsed.action === 'previewRemoteHost') {
+        onSuccess(JSON.stringify({
+          host: { id: parsed.payload.id, label: parsed.payload.label, transport: 'ssh', sshAlias: parsed.payload.sshAlias, runnerStatus: 'uninstalled', runnerVersion: '', platform: '', architecture: '', lastSeenAt: '' },
+          preview: '1. Check remote platform',
+        }))
+        return
+      }
+      onSuccess(parsed.action === 'installRemoteHost' ? installBody : '{}')
+    }
+    const { host, root } = renderModal()
+    openRemoteHostsSection(host)
+    const install = async (body: string) => {
+      installBody = body
+      const alias = host.querySelector('input[aria-label="SSH config alias"]') as HTMLInputElement
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(alias, 'colima')
+        alias.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+      await act(async () => { Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Preview setup'))?.click() })
+      await act(async () => { Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Connect and install'))?.click() })
+      await act(async () => {})
+    }
+
+    failures.length = 0
+    await install(JSON.stringify({ ok: true, warning: "Helper installed. Save this host's options to confirm runner startup.\n  Startup timed out." }))
+    expect(failures).toEqual([expect.objectContaining({ tone: 'warning', message: "Helper installed. Save this host's options to confirm runner startup. Startup timed out." })])
+    expect(failures.some((notice) => notice.message.includes('is ready'))).toBe(false)
+
+    failures.length = 0
+    await install('{"ok":true}')
+    expect(failures).toEqual([expect.objectContaining({ tone: 'success', message: 'Remote helper is ready.' })])
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('dismisses the setup preview so a failed compatibility check is visible', async () => {
     window.cefQuery = ({ request, onSuccess, onFailure }) => {
       const parsed = JSON.parse(request) as { action: string; payload: { id: string; label: string; sshAlias: string } }
@@ -2690,6 +2730,58 @@ describe('SettingsModal memory settings', () => {
     act(() => root.unmount()); host.remove()
   })
 
+  it('guards an embedded skill draft before changing pages or closing Settings', async () => {
+    useAppStore.setState({ createMarkdownStoreEntry: vi.fn(() => Promise.resolve(true)) })
+    const { host, root } = renderModal()
+    openMarkdownStoreSection(host)
+    const find = (text: string) => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === text || button.getAttribute('aria-label') === text)
+    const type = (label: string, value: string) => act(() => {
+      const field = host.querySelector<HTMLInputElement | HTMLTextAreaElement>(`[aria-label="${label}"]`)!
+      Object.getOwnPropertyDescriptor(field.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, 'value')!.set!.call(field, value)
+      field.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    act(() => find('New skill')?.click()); act(() => find('Create')?.click())
+    type('Entry title', 'Unsaved skill'); type('Entry Markdown body', 'Body')
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Editors"]')?.click())
+    expect(host.querySelector('[aria-label="Unsaved skill changes"]')).toBeTruthy()
+    expect(host.querySelector<HTMLInputElement>('[aria-label="Entry title"]')?.value).toBe('Unsaved skill')
+    act(() => find('Keep editing')?.click())
+    act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })))
+    // Escape inside the editor asks the store first; Settings stays open with the draft.
+    expect(useAppStore.getState().setSettingsOpen).not.toHaveBeenCalled()
+    act(() => find('Keep editing')?.click())
+    act(() => find('Back to chats')?.click())
+    expect(useAppStore.getState().setSettingsOpen).not.toHaveBeenCalled()
+    expect(host.querySelector('[aria-label="Unsaved skill changes"]')).toBeTruthy()
+    await act(async () => { find('Save & close')?.click(); await Promise.resolve() })
+    expect(useAppStore.getState().createMarkdownStoreEntry).toHaveBeenCalledWith({ title: 'Unsaved skill', maker: '', review: '', body: 'Body', group: '' })
+    expect(useAppStore.getState().setSettingsOpen).toHaveBeenCalledWith(false)
+    act(() => root.unmount()); host.remove()
+  })
+
+  it('discards an embedded skill draft only when asked and then changes page', () => {
+    useAppStore.setState({ createMarkdownStoreEntry: vi.fn(() => Promise.resolve(true)) })
+    const { host, root } = renderModal()
+    openMarkdownStoreSection(host)
+    const find = (text: string) => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === text || button.getAttribute('aria-label') === text)
+    act(() => find('New skill')?.click()); act(() => find('Create')?.click())
+    act(() => {
+      const field = host.querySelector<HTMLInputElement>('[aria-label="Entry title"]')!
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(field, 'Unsaved skill')
+      field.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    const editors = host.querySelector<HTMLButtonElement>('[aria-label="Editors"]')!
+    act(() => { editors.focus(); editors.click() })
+    expect(host.querySelector('[aria-label="Unsaved skill changes"]')).toBeTruthy()
+    act(() => find('Discard')?.click())
+    expect(host.querySelector('[role="region"][aria-label="Skills"]')).toBeNull()
+    // The prompt that held focus is gone, so focus returns to the page button that asked to leave.
+    expect(document.activeElement).toBe(editors)
+    expect(find('Add group')).toBeTruthy()
+    expect(useAppStore.getState().createMarkdownStoreEntry).not.toHaveBeenCalled()
+    act(() => root.unmount()); host.remove()
+  })
+
   it('disables Save for clean and reverted existing theme drafts', () => {
     const theme = { version: 1 as const, id: 'custom:ocean' as const, name: 'Ocean', base: 'dark' as const, colors: { ...BUILT_IN_THEME_COLORS.dark } }
     useAppStore.setState({ theme: theme.id, customThemes: [theme] })
@@ -2837,6 +2929,98 @@ describe('SettingsModal memory settings', () => {
 
     act(() => root.unmount())
     host.remove()
+  })
+
+  it('asks before an imported theme replaces a saved theme with the same id', async () => {
+    const ocean = {
+      version: 1 as const, id: 'custom:ocean' as const, name: 'Ocean', base: 'dark' as const,
+      colors: { ...BUILT_IN_THEME_COLORS.dark },
+    }
+    useAppStore.setState({ theme: 'focus', customThemes: [ocean] })
+    const { host, root } = renderModal()
+    const save = useAppStore.getState().saveCustomTheme
+    const importJson = async (theme: object) => {
+      const input = host.querySelector('input[aria-label="Import theme JSON"]') as HTMLInputElement
+      const file = new File([], 'theme.json', { type: 'application/json' })
+      Object.defineProperty(file, 'text', { value: () => Promise.resolve(JSON.stringify(theme)) })
+      Object.defineProperty(input, 'files', { configurable: true, value: [file] })
+      await act(async () => { input.dispatchEvent(new Event('change', { bubbles: true })) })
+    }
+    const dialog = () => document.querySelector('[role="alertdialog"][aria-label="Imported theme already exists"]')
+    const choose = async (label: string) => {
+      const target = Array.from(dialog()!.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === label)!
+      await act(async () => { target.click(); await Promise.resolve() })
+    }
+
+    // Same default-derived id, different colours: nothing is saved until the user chooses.
+    await importJson({ ...ocean, colors: { ...ocean.colors, accent: '#ff0000' } })
+    expect(dialog()?.textContent).toContain('Replace “Ocean”?')
+    expect(save).not.toHaveBeenCalled()
+    await choose('Cancel')
+    expect(save).not.toHaveBeenCalled()
+
+    await importJson({ ...ocean, colors: { ...ocean.colors, accent: '#ff0000' } })
+    await choose('Keep both')
+    expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ id: 'custom:ocean-copy', name: 'Ocean copy' }))
+    expect(useAppStore.getState().setTheme).toHaveBeenLastCalledWith('custom:ocean-copy')
+    expect(dialog()).toBeNull()
+
+    await importJson({ ...ocean, colors: { ...ocean.colors, accent: '#00ff00' } })
+    await choose('Replace')
+    expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ id: 'custom:ocean', name: 'Ocean' }))
+    expect(save).toHaveBeenCalledTimes(2)
+
+    // A theme with a new id imports directly.
+    await importJson({ ...ocean, id: 'custom:forest', name: 'Forest' })
+    expect(dialog()).toBeNull()
+    expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ id: 'custom:forest' }))
+    act(() => root.unmount()); host.remove()
+  })
+
+  it('keeps both under a unique name within the theme name limit', async () => {
+    const longName = 'A'.repeat(62)
+    const themes = [
+      { version: 1 as const, id: 'custom:ocean' as const, name: 'Ocean', base: 'dark' as const, colors: { ...BUILT_IN_THEME_COLORS.dark } },
+      { version: 1 as const, id: 'custom:ocean-copy' as const, name: 'Ocean copy', base: 'dark' as const, colors: { ...BUILT_IN_THEME_COLORS.dark } },
+      { version: 1 as const, id: 'custom:long' as const, name: longName, base: 'dark' as const, colors: { ...BUILT_IN_THEME_COLORS.dark } },
+    ]
+    useAppStore.setState({ theme: 'focus', customThemes: themes })
+    const { host, root } = renderModal()
+    const save = useAppStore.getState().saveCustomTheme
+    const keepBoth = async (theme: object) => {
+      const input = host.querySelector('input[aria-label="Import theme JSON"]') as HTMLInputElement
+      const file = new File([], 'theme.json', { type: 'application/json' })
+      Object.defineProperty(file, 'text', { value: () => Promise.resolve(JSON.stringify(theme)) })
+      Object.defineProperty(input, 'files', { configurable: true, value: [file] })
+      await act(async () => { input.dispatchEvent(new Event('change', { bubbles: true })) })
+      const dialog = document.querySelector('[role="alertdialog"][aria-label="Imported theme already exists"]')!
+      await act(async () => { Array.from(dialog.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Keep both')!.click(); await Promise.resolve() })
+    }
+    await keepBoth(themes[0])
+    expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ id: 'custom:ocean-copy-2', name: 'Ocean copy 2' }))
+    await keepBoth(themes[2])
+    const saved = vi.mocked(save).mock.lastCall![0]
+    expect(saved.name).toBe(`${'A'.repeat(59)} copy`)
+    expect(saved.name.length).toBeLessThanOrEqual(64)
+    expect(saved.id).not.toBe('custom:long')
+    act(() => root.unmount()); host.remove()
+  })
+
+  it('keeps a clashing theme import pending when saving it fails', async () => {
+    const ocean = { version: 1 as const, id: 'custom:ocean' as const, name: 'Ocean', base: 'dark' as const, colors: { ...BUILT_IN_THEME_COLORS.dark } }
+    useAppStore.setState({ theme: 'focus', customThemes: [ocean], saveCustomTheme: vi.fn(async () => null) })
+    const { host, root } = renderModal()
+    const input = host.querySelector('input[aria-label="Import theme JSON"]') as HTMLInputElement
+    const file = new File([], 'theme.json', { type: 'application/json' })
+    Object.defineProperty(file, 'text', { value: () => Promise.resolve(JSON.stringify(ocean)) })
+    Object.defineProperty(input, 'files', { configurable: true, value: [file] })
+    await act(async () => { input.dispatchEvent(new Event('change', { bubbles: true })) })
+    const dialog = () => document.querySelector('[role="alertdialog"][aria-label="Imported theme already exists"]')
+    await act(async () => { Array.from(dialog()!.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Keep both')!.click(); await Promise.resolve() })
+    expect(failures.at(-1)).toMatchObject({ message: 'Theme could not be saved.', detail: 'Try again.' })
+    expect(dialog()).toBeTruthy()
+    expect(useAppStore.getState().setTheme).not.toHaveBeenCalled()
+    act(() => root.unmount()); host.remove()
   })
 
   it('exports and imports portable local chat bundles with honest outcomes', async () => {
