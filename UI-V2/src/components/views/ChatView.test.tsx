@@ -871,7 +871,7 @@ describe('ChatView', () => {
       act(() => root.unmount())
       host.remove()
     }
-    expect(appFailures.filter((failure) => failure.detail.includes('Remount history error.'))).toHaveLength(1)
+    expect(appFailures.filter((failure) => `${failure.message} ${failure.detail}`.includes('Remount history error.'))).toHaveLength(1)
   })
 
   it('keeps retry loading isolated when switching chats before completion', async () => {
@@ -5440,7 +5440,7 @@ describe('ChatView', () => {
     expect(reportedText()).toContain('Unsupported permission mode "unrestricted"')
     // Feedback now goes to the shared alert once; the inline dismiss control is gone.
     expect(host.querySelector('button[aria-label="Dismiss command feedback"]')).toBeNull()
-    expect(appFailures.filter((failure) => failure.detail.includes('Unsupported permission mode "unrestricted"'))).toHaveLength(1)
+    expect(appFailures.filter((failure) => `${failure.message} ${failure.detail}`.includes('Unsupported permission mode "unrestricted"'))).toHaveLength(1)
 
     act(() => {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, 'keep /permission yo tail')
@@ -5490,7 +5490,7 @@ describe('ChatView', () => {
     await act(acceptYolo)
     expect(reportedText()).toContain('Native permission update was rejected.')
     expect(host.querySelector('button[aria-label="Dismiss command feedback"]')).toBeNull()
-    expect(appFailures.filter((failure) => failure.detail.includes('Native permission update was rejected.'))).toHaveLength(1)
+    expect(appFailures.filter((failure) => failure.detail.includes('Native permission update was rejected.')).map((failure) => failure.message)).toEqual(['The permission mode was not changed.'])
 
     await act(requestYolo)
     await act(acceptYolo)
@@ -5886,7 +5886,7 @@ describe('ChatView', () => {
     expect(useAppStore.getState().markdownStoreAttachedBySessionId['chat-1']).toEqual([skill])
     expect(useAppStore.getState().messages['chat-1']).toHaveLength(2)
     if (operation === 'failure') expect(reportedText()).toContain('This provider does not support manual compaction.')
-    if (operation === 'not-accepted') expect(reportedText()).toContain('Compaction failed: the request was not accepted.')
+    if (operation === 'not-accepted') expect(appFailures.at(-1)).toMatchObject({ message: 'Compaction failed.', detail: 'The request was not accepted.' })
     act(() => root.unmount())
     host.remove()
     delete window.cefQuery
@@ -9980,7 +9980,7 @@ describe('ChatView', () => {
     await act(async () => { Array.from(menu.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Move chat')!.click() })
     expect(requests.filter((request) => request.action === 'moveChatWorkspace')).toMatchObject([{ action: 'moveChatWorkspace', payload: { chatId: 'chat-1', folderId: 'destination' } }])
     expect(useAppStore.getState().sessions[0]).toMatchObject({ folderId: 'original', nativeSessionId: 'parent-native', workspaceDirectory: '/srv/project' })
-    expect(confirmed ? appNotices.join('\n') : reportedText()).toContain(confirmed ? 'Moved chat.' : 'Stop the chat before moving')
+    expect(confirmed ? appNotices.join('\n') : reportedText()).toContain(confirmed ? 'Moved chat to the selected workspace.' : 'Stop the chat before moving')
     act(() => root.unmount())
     host.remove()
     window.cefQuery = previousCefQuery
@@ -10056,10 +10056,10 @@ describe('ChatView', () => {
       ;(Array.from(document.body.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]')).find((button) => button.textContent?.includes('Open terminal')) as HTMLButtonElement).click()
       await Promise.resolve()
     })
-    expect(reportedText()).toContain('Failed to open terminal.')
+    expect(reportedText()).toContain('Could not open a terminal at the workspace.')
     act(() => vi.advanceTimersByTime(6000))
     // The alert is reported once; the timer expiry of the success notice does not re-report or drop it.
-    expect(reportedText().split('Failed to open terminal.')).toHaveLength(2)
+    expect(reportedText().split('Could not open a terminal at the workspace.')).toHaveLength(2)
     expect(host.querySelector('button[aria-label="Dismiss workspace action message"]')).toBeNull()
 
     act(() => root.unmount())
@@ -11593,11 +11593,10 @@ describe('ChatView', () => {
         if (route !== 'goal') {
           expect(f.host.textContent).not.toContain('Claude Plan mode is read-only')
           if (change !== 'birth') {
-            const refusal = appFailures.find((failure) => failure.detail.includes("so this prompt wasn't sent. Review the selected references, then send again."))
-            expect(refusal).toBeTruthy()
-            expect(refusal!.message).toContain('Message not sent')
+            const refusal = appFailures.find((failure) => failure.message === "The chat's workspace or provider changed, so this prompt wasn't sent.")
+            expect(refusal?.detail).toBe('Review the selected references, then send again.')
             // A prevented send asks for recovery; it must not use the green completion treatment.
-            expect(refusal!.tone ?? 'failure').toBe('failure')
+            expect(refusal!.tone).toBe('warning')
           }
         }
       } finally {
@@ -11617,8 +11616,8 @@ describe('ChatView', () => {
         f.renderCurrentSession()
         await act(async () => f.pending[0].ack())
         expect(reportedText()).toContain('Check the earlier input before sending again.')
-        expect(appFailures.find((failure) => failure.detail.includes('Check the earlier input before sending again.'))?.message).toBe('Check earlier message')
-        expect(reportedText()).not.toContain('Message not sent')
+        expect(appFailures.find((failure) => `${failure.message} ${failure.detail}`.includes('Check the earlier input before sending again.'))).toMatchObject({ message: 'The chat was replaced.', tone: 'warning' })
+        expect(reportedText()).not.toContain("this prompt wasn't sent")
       } finally {
         await act(async () => { for (const request of f.pending) request.ack() })
         f.cleanup()
@@ -11638,7 +11637,7 @@ describe('ChatView', () => {
           ? { ...session, createdAt: new Date(session.createdAt.getTime() + 1000) } : session) })))
         f.renderCurrentSession()
         expect(reportedText()).toContain('Check the earlier input before sending again.')
-        expect(appFailures.find((failure) => failure.detail.includes('Check the earlier input before sending again.'))?.tone ?? 'failure').toBe('failure')
+        expect(appFailures.find((failure) => `${failure.message} ${failure.detail}`.includes('Check the earlier input before sending again.'))?.tone).toBe('warning')
         const fresh = { ...reference, id: 'replacement-ordinary-reference', text: 'Replacement selected context' }
         act(() => writeChatComposerDraft('chat-1', { text, attachments: [attachment], references: [fresh] }))
         await f.send()
@@ -11742,9 +11741,9 @@ describe('ChatView', () => {
         expect(f.sends()).toHaveLength(1)
         expect(f.sends()[0].payload.text).toBe(draft.text + '\n\n' + formatContextReferences([reference]))
         await act(async () => f.pending[0].reject('Synthetic acknowledgement failure'))
-        const recovery = appFailures.find((failure) => failure.detail.includes('Could not confirm the prompt. Check its saved state before retrying.'))
+        const recovery = appFailures.find((failure) => `${failure.message} ${failure.detail}`.includes('Could not confirm the prompt. Check its saved state before retrying.'))
         expect(recovery).toBeTruthy()
-        expect(recovery!.tone ?? 'failure').toBe('failure')
+        expect(recovery!.tone).toBe('warning')
         expect(readChatComposerDraft('chat-1')).toEqual(draft)
         expect(f.host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!.value).toBe(draft.text)
         expect(f.sends()).toHaveLength(1)
