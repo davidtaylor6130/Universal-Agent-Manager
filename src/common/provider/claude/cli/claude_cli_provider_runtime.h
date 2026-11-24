@@ -39,6 +39,7 @@ class ClaudeCliProviderRuntime final : public IProviderRuntime
 	{
 		return true;
 	}
+	bool SupportsAcpCompactionInstructions() const override { return true; }
 	bool SupportsSavedImageRetry(const uam::AcpSessionState& session) const override;
 	bool SupportsRemoteOwnedImageRetry(const uam::AcpSessionState& session) const override;
 	nlohmann::json OnAcpBuildCancel(const uam::AcpSessionState& session, int request_id, std::string& out_method) const override;

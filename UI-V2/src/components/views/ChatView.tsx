@@ -64,6 +64,7 @@ import { ContextChip } from '../chat/ContextChip'
 import { ComposerReferenceChips, useComposerReferences } from '../chat/ComposerContextReferences'
 import { draftFileMentions } from '../../utils/fileContextReferences'
 import { mentionActionToken, replaceSlashAction, slashActionToken } from '../../utils/slashActionToken'
+import { compactCommandInstructions } from '../../utils/compactCommand'
 import { acknowledgeChatComposerDraft, readChatComposerDraft, subscribeComposerDraftAcknowledgements, withoutAcknowledgedComposerDraft, writeChatComposerDraft } from '../../utils/composerDraftStorage'
 import { fromViewportMenu, getTopmostModal, trapModalTab } from '../../utils/modalFocus'
 
@@ -1755,7 +1756,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     return true
   }
 
-  const runCompact = async (commandDraft = draft, closePalette = false) => {
+  // `instructions` is the text after a typed `/compact`; only providers that accept it use it.
+  const runCompact = async (commandDraft = draft, closePalette = false, instructions = '') => {
     if (!mountedRef.current || currentSessionIdRef.current !== session.id || submitInFlightRef.current || goalSubmitting) return
     if (!isCefContext()) {
       setSlashNotice(noticeFor('Manual compaction is unavailable without a connected native runtime.', 'warning'))
@@ -1796,9 +1798,9 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     setCompacting(true)
     setSlashNotice(null)
     try {
-      const response = await sendToCEF<{ accepted?: boolean }>({
+      const response = await sendToCEF<{ accepted?: boolean; instructionsUsed?: boolean }>({
         action: 'compactAcpSession',
-        payload: { chatId: submittedSessionId },
+        payload: instructions ? { chatId: submittedSessionId, instructions } : { chatId: submittedSessionId },
         requestId,
       })
       if (!ownsFeedback()) return
@@ -1808,7 +1810,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
         return
       }
       // Acceptance is not completion; the "Compacting context" strip and the transcript show progress.
-      setDraft((current) => current === commandDraft && current.trim() === '/compact' ? '' : current)
+      setDraft((current) => current === commandDraft && compactCommandInstructions(current) !== null ? '' : current)
+      if (instructions && response.data?.instructionsUsed !== true) setSlashNotice(noticeFor('This provider compacts without instructions, so yours were not used.', 'info'))
     } catch {
       if (ownsFeedback()) setSlashNotice(noticeFor('Failed to request compaction.', 'error'))
     } finally {
@@ -1841,7 +1844,9 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     // Explicit row editing above remains available; a hidden ordinary draft cannot submit.
     if (!showComposerRef.current) return
     const prompt = (promptOverride ?? draft).trim()
-    if (prompt === '/compact') { await runCompact(promptOverride ?? draft); return }
+    // Typed `/compact` and `/compact <instructions>` always take the compact action, never an ordinary send.
+    const compactInstructions = compactCommandInstructions(prompt)
+    if (compactInstructions !== null) { await runCompact(promptOverride ?? draft, false, compactInstructions); return }
     if (!providerSupported || session.importedReadOnly || (!prompt && composerAttachments.length === 0) || submitInFlightRef.current || goalSubmitting || referenceCaptureLoading ||
       useAppStore.getState().sessions.find((chat) => chat.id === session.id)?.createdAt.getTime() !== session.createdAt.getTime() ||
       composerAttachments.some((attachment) => attachment.status !== 'ready')) return

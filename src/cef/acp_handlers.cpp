@@ -478,14 +478,22 @@ namespace
 
 void UamQueryHandler::HandleCompactAcpSession(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
+	// Typed `/compact <instructions>` arrives here too; a non-string value is refused rather than dropped.
+	const auto instructions = payload.find("instructions");
+	if (instructions != payload.end() && !instructions->is_string() && !instructions->is_null())
+	{
+		cb->Failure(400, "Compaction instructions must be text.");
+		return;
+	}
 	std::string error;
-	if (!uam::CompactAcpSession(m_app, payload.value("chatId", ""), &error))
+	bool instructions_used = false;
+	if (!uam::CompactAcpSession(m_app, payload.value("chatId", ""), &error, instructions != payload.end() && instructions->is_string() ? instructions->get<std::string>() : std::string{}, &instructions_used))
 	{
 		cb->Failure(409, FailureDetailOrFallback(error, "Manual compaction could not be requested."));
 		return;
 	}
 	uam::PushStateUpdateIfChanged(browser, m_app);
-	cb->Success(R"({"accepted":true})");
+	cb->Success(nlohmann::json{{"accepted", true}, {"instructionsUsed", instructions_used}}.dump());
 }
 
 void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
