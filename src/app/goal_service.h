@@ -2,10 +2,12 @@
 
 #include "common/models/app_models.h"
 #include "common/state/app_state.h"
+#include "app/vcs_commit_service.h"
 
 #include <optional>
 #include <tuple>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace uam
@@ -47,6 +49,10 @@ class GoalService
 	static bool IsProviderManaged(const Goal& goal);
 	/// <summary>The stricter of the goal's own ceiling and the Settings cap.</summary>
 	static int IterationLimit(const Goal& goal, AppSettings settings);
+	/// <summary>IterationLimit, also bounded by the automation cap of the chat that owns the goal, so a goal saved without its own ceiling still stops there.</summary>
+	static int IterationLimit(const ChatSession* owner, const Goal& goal, AppSettings settings);
+	/// <summary>The Git policy stated to the agent in every goal of an automation chat; anything but "pr" gets the stricter commit-only text.</summary>
+	static std::string AutomationGitPolicy(std::string_view git_permission);
 	static std::string WorkerModelId(const ChatSession& chat, const Goal& goal);
 	/// <summary>The goal's reviewer model (provider "Goal reviewer model"), else the chat model; a model the session
 	/// does not offer falls back to the chat model rather than failing the review.</summary>
@@ -139,9 +145,12 @@ class GoalService
 	static std::string BuildContinuationPrompt(const Goal& goal, int64_t tokens_used, int64_t token_budget,
 	                                           bool small_model_mode = false, const std::string& next_step = "", bool include_objective = true);
 	static std::string BuildReadOnlyTerminalPrompt(const Goal& goal);
+	/// <summary>`workspace_vcs` is the system the reviewer's workspace uses and selects the read commands it is given;
+	/// empty (an SSH workspace, or none detected) lists the Git and SVN reads both.</summary>
 	static std::string BuildReviewPrompt(const Goal& goal, const std::string& recent_user_prompt,
 	                                     const std::string& recent_assistant_text, int repeated_output_count = 0,
-	                                     bool small_model_mode = false, const std::string& workspace_changes = {});
+	                                     bool small_model_mode = false, const std::string& workspace_changes = {},
+	                                     std::optional<VcsType> workspace_vcs = VcsType::Git);
 	/// <summary>A capped `status path +added -deleted` list of changed files for the reviewer; empty when there are none.</summary>
 	static std::string SummarizeWorkspaceChanges(const std::vector<std::tuple<std::string, std::string, int, int>>& files);
 	static std::optional<ReviewDecision> ParseReviewDecision(const std::string& text);

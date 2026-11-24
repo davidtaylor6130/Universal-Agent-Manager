@@ -13,6 +13,9 @@ inline constexpr auto kCliTerminalProcessingLifecycleStates = std::to_array<CliT
 	CliTerminalLifecycleState::ShuttingDown,
 });
 
+/// <summary>How long a submission made while no native turn is tracked waits for the provider to record a turn start.</summary>
+inline constexpr double kCliTerminalTurnReceiptSeconds = 10.0;
+
 inline bool CliTerminalLifecycleStateIsProcessing(const CliTerminalLifecycleState state)
 {
 	return uam::ranges::Contains(kCliTerminalProcessingLifecycleStates, state);

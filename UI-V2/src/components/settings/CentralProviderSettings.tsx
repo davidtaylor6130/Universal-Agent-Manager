@@ -6,7 +6,7 @@ import { Badge, Button, ConfirmDialog, EXIT_MS, IconButton, MenuSelect, Notice, 
 import { SaveButton, SettingRow, SettingsField, SettingsLoading, SettingsSection } from './SettingsPrimitives'
 import './provider-settings.css'
 import { UnsavedChangesDialog } from './UnsavedChangesDialog'
-import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
+import { failureDetail, reportAppFailure, reportAppNotice } from '../../utils/appFailure'
 import { AGENT_SCOPE_LABEL, agentKey, listAgentDefinitions, type AgentDefinition } from './agentDefinitions'
 import type { AgentDefinitionScope } from '../../store/useAppStore'
 
@@ -130,13 +130,14 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle,
 
   const run = async (action: () => Promise<{ ok: boolean; error?: string }>, success: string, save: 'defaults' | 'agent' | null = null) => {
     setBusy(true); setSaving(save)
+    const failedMessage = save === 'defaults' ? 'Provider defaults were not saved.' : save === 'agent' ? 'The agent was not saved.' : 'The change was not saved.'
     try {
       const result = await action()
       if (result.ok) reportAppNotice(success, 'success')
-      else reportAppFailure(result.error || 'Could not save.', 'Your changes are kept. Try again.')
+      else reportAppFailure(failedMessage, failureDetail(result.error, 'Your changes are kept. Try again.'))
       return result.ok
     }
-    catch { reportAppFailure('Could not save.', 'Your changes are kept. Try again.'); return false }
+    catch { reportAppFailure(failedMessage, 'Your changes are kept. Try again.'); return false }
     finally { setBusy(false); setSaving(null) }
   }
   const startEditing = (next: { draft: Agent; isNew: boolean } | null) => { editingOriginal.current = next ? { ...next.draft } : null; setAgentExitPrompt(false); setEditing(next) }

@@ -789,6 +789,8 @@ export interface ShellAction {
   acceptsFolders: boolean
   enabled: boolean
   openWorkspace: boolean
+  /** Set when the saved entry failed validation: it stays disabled and read-only, and saving keeps it as saved. */
+  invalidReason?: string
 }
 
 export interface ProviderAvailabilityOverride {
@@ -1008,10 +1010,21 @@ export interface VcsCommitStatus {
   lineStatsReady: boolean
   /** The chat comparison has no usable baseline, so Retry cannot help. */
   baselineUnavailable?: boolean
+  /** Renderer-only: the read was refused because the chat's workspace or host changed while it ran, so the result is stale rather than a failure. */
+  contextChanged?: boolean
   /** What the active system offers beyond status, diff and commit, such as `history` and `update`. */
   capabilities?: string[]
+  /** Set when the workspace is UAM's hidden Git copy of a plain folder or SVN working copy: commits stay in the copy. */
+  localSnapshot?: VcsLocalSnapshot
   warning: string
   error: string
+}
+
+/** The folder a local snapshot was copied from, and what its own system offers there (`history`, `update`, `originComparison`). */
+export interface VcsLocalSnapshot {
+  sourceKind: 'svn' | 'folder'
+  sourceDirectory: string
+  sourceCapabilities: string[]
 }
 
 /** Where one SVN repository keeps its main line, branches and tags, as repository-relative folders. */
@@ -1161,6 +1174,8 @@ export interface CppCompanionUnchangedState {
 }
 
 export interface CppStatePatch {
+  /** A patched chat named a field copy this page lacks (#947); it was left out and the store pulls full state. */
+  skippedChats?: true
   startupNativeImports?: StartupNativeImportStatus
   stateRevision?: number
   folders?: CppFolder[]

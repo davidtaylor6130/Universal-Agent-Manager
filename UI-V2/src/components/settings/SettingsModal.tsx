@@ -85,7 +85,7 @@ import { buildProviderReasoningOptions, buildCodexSpeedOptions, buildModelOption
 import './settings-motion.css'
 import './settings-shell.css'
 import { isSshHost } from '../../utils/remoteWorkspace'
-import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
+import { failureDetail, reportAppFailure, reportAppNotice } from '../../utils/appFailure'
 
 /** The 15-minute stepper shared by the provider turn timeout and the tool call limit. */
 function TimeoutStepper({ name, value, onChange }: { name: string; value: number; onChange: (seconds: number) => void }) {
@@ -1075,7 +1075,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     })
     setChatDataBusy(null)
     if (!response.ok || !response.data) {
-      reportAppFailure(response.error || `Chat ${operation} failed.`, 'Check the chat data folder and try again.')
+      reportAppFailure(`Chat ${operation} failed.`, failureDetail(response.error, 'Check the chat data folder and try again.'))
       return
     }
     const result = response.data
@@ -1087,17 +1087,17 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     const detail = [...result.errors, ...result.warnings][0]
     if (operation === 'export') {
       const text = result.status === 'complete'
-        ? `Exported ${result.exportedCount ?? 0} chats to ${result.folder}.`
-        : `Exported ${result.exportedCount ?? 0} of ${result.totalCount} chats. ${detail || 'The bundle is incomplete.'}`
-      if (result.status === 'complete') reportAppNotice(text, 'success')
-      else reportAppFailure(text, 'Check the chat data folder and try again.')
+        ? `Exported ${result.exportedCount ?? 0} chats.`
+        : `Exported ${result.exportedCount ?? 0} of ${result.totalCount} chats.`
+      if (result.status === 'complete') reportAppNotice(text, 'success', { detail: result.folder })
+      else reportAppFailure(text, failureDetail(detail || 'The bundle is incomplete.', 'Check the chat data folder and try again.'))
       return
     }
     const text = result.status === 'complete'
       ? `Imported ${result.importedCount ?? 0} chats${result.renamedCount ? `; ${result.renamedCount} were given new IDs` : ''}.`
-      : `Imported ${result.importedCount ?? 0} of ${result.totalCount} chats${result.renamedCount ? `; ${result.renamedCount} were given new IDs` : ''}. ${detail || 'Some chats could not be imported.'}`
+      : `Imported ${result.importedCount ?? 0} of ${result.totalCount} chats${result.renamedCount ? `; ${result.renamedCount} were given new IDs` : ''}.`
     if (result.status === 'complete') reportAppNotice(text, 'success')
-    else reportAppFailure(text, 'Check the chat data folder and try again.')
+    else reportAppFailure(text, failureDetail(detail || 'Some chats could not be imported.', 'Check the chat data folder and try again.'))
   }
 
   const previewRemoteHost = async (existing?: ExecutionHost) => {
@@ -1121,7 +1121,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     const response = await sendToCEF<{ host: ExecutionHost; preview: string }>({ action: 'previewRemoteHost', payload: host })
     setRemoteHostBusy(host.id, false)
     if (!response.ok || !response.data) {
-      reportAppFailure(response.error || 'The remote setup preview could not be created.', 'Check the SSH alias and try again.')
+      reportAppFailure('The remote setup preview could not be created.', failureDetail(response.error, 'Check the SSH alias and try again.'))
       return
     }
     setRemotePreview(response.data)
@@ -1145,7 +1145,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       settleFailedInstallFocus()
       // Only an SSH-stage failure (502) or a lost request without a code is a connection problem; refusals name their own fix.
       const connectionHint = response.code === undefined || response.code === 502 ? 'Check the SSH connection and try again.' : ''
-      reportAppFailure(response.error || 'Remote helper setup failed.', connectionHint)
+      reportAppFailure('Remote helper setup failed.', failureDetail(response.error, connectionHint))
       return
     }
     reportAppNotice(`${host.label} is ready.`, 'success')
@@ -1160,7 +1160,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     const response = await sendToCEF({ action: 'saveRemoteHostOptions', payload: { id: host.id, ...draft } })
     setRemoteHostBusy(host.id, false)
     if (response.ok) reportAppNotice(`${host.label} options saved.`, 'success')
-    else reportAppFailure(response.error || 'SSH host options could not be saved.', 'Try again.')
+    else reportAppFailure('SSH host options could not be saved.', failureDetail(response.error, 'Try again.'))
   }
 
   const checkRemoteHostInstruction = (host: ExecutionHost, instructionFile: string) => {
@@ -1169,7 +1169,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     void sendToCEF<{ bytes: number }>({ action: 'checkRemoteHostInstruction', payload: { id: host.id, instructionFile } }).then((response) => {
       setRemoteHostBusy(host.id, false)
       if (response.ok) reportAppNotice(`Readable on ${host.label}: ${response.data?.bytes ?? 0} bytes.`, 'success')
-      else reportAppFailure(response.error || 'Host instruction file could not be read.', 'Check the instruction file path and try again.')
+      else reportAppFailure('Host instruction file could not be read.', failureDetail(response.error, 'Check the instruction file path and try again.'))
     })
   }
 
@@ -1179,8 +1179,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     setRemoteMessage(null)
     const response = await sendToCEF({ action: 'removeRemoteHost', payload: { id: host.id } })
     setRemoteHostBusy(host.id, false)
-    if (response.ok) reportAppNotice(`${host.label} was removed from UAM. Any helper files on that machine were left untouched.`, 'success')
-    else reportAppFailure(response.error || 'Remote host removal failed.', 'Try again.')
+    if (response.ok) reportAppNotice(`${host.label} was removed from UAM.`, 'success', { detail: 'Helper files on that machine were left untouched.' })
+    else reportAppFailure('Remote host removal failed.', failureDetail(response.error, 'Try again.'))
   }
 
   useEffect(() => {
@@ -1566,7 +1566,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     setComputerUseBusy(true)
     const response = await sendToCEF<{ screenRecording?: { available?: boolean; error?: string }; accessibility?: { available?: boolean; error?: string } }>({ action: 'checkComputerUsePermissions' })
     setComputerUseBusy(false)
-    if (!response.ok) { reportAppFailure(response.error || `Could not check ${computerUseOsLabel} permissions.`, 'Try again.'); return }
+    if (!response.ok) { reportAppFailure(`Could not check ${computerUseOsLabel} permissions.`, failureDetail(response.error, 'Try again.')); return }
     setComputerUseStatus({
       screenRecording: { available: Boolean(response.data?.screenRecording?.available), error: response.data?.screenRecording?.error || '' },
       accessibility: { available: Boolean(response.data?.accessibility?.available), error: response.data?.accessibility?.error || '' },
@@ -1577,7 +1577,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     const response = await sendToCEF<{ granted?: boolean; openSettingsRequired?: boolean }>({ action: 'requestComputerUsePermission', payload: { permission } })
     if (!response.ok) {
       setComputerUseBusy(false)
-      reportAppFailure(response.error || 'Could not request this permission.', 'Try again.')
+      reportAppFailure('Could not request this permission.', failureDetail(response.error, 'Try again.'))
       return
     }
     if (response.data?.granted) {
@@ -1587,16 +1587,16 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     }
     const settingsResponse = await sendToCEF<{ opened?: boolean; error?: string }>({ action: 'openComputerUseSystemSettings', payload: { permission } })
     setComputerUseBusy(false)
-    if (settingsResponse.ok && settingsResponse.data?.opened !== false) reportAppNotice(`Permission is not granted. Opened ${computerUseOsLabel} settings; enable it, then re-check.`)
-    else reportAppFailure(settingsResponse.error || settingsResponse.data?.error || `Permission is not granted. Could not open ${computerUseOsLabel} settings.`, 'Open the settings manually, then re-check.')
+    if (settingsResponse.ok && settingsResponse.data?.opened !== false) reportAppNotice(`Turn on the permission in ${computerUseOsLabel} settings, then re-check.`)
+    else reportAppFailure(`Could not open ${computerUseOsLabel} settings.`, failureDetail(settingsResponse.error || settingsResponse.data?.error, 'The permission is not granted. Open the settings manually, then re-check.'))
   }
   const openComputerUseSystemSettings = async (permission: 'screenRecording' | 'accessibility') => {
     const response = await sendToCEF({ action: 'openComputerUseSystemSettings', payload: { permission } })
-    if (!response.ok) reportAppFailure(response.error || `Could not open ${computerUseOsLabel} settings.`, 'Try again.')
+    if (!response.ok) reportAppFailure(`Could not open ${computerUseOsLabel} settings.`, failureDetail(response.error, 'Try again.'))
   }
   const loadComputerUseApplications = async () => {
     const response = await sendToCEF<{ applications?: Array<{ identityKind?: string; identity?: string; name?: string }> }>({ action: 'listComputerUseApplications' })
-    if (!response.ok) { reportAppFailure(response.error || 'Could not list applications.', 'Try again.'); return }
+    if (!response.ok) { reportAppFailure('Could not list applications.', failureDetail(response.error, 'Try again.')); return }
     setComputerUseApps((response.data?.applications ?? []).flatMap((app) => app.identity && app.name && (app.identityKind === 'bundleId' || app.identityKind === 'executablePath') ? [{ identityKind: app.identityKind, identity: app.identity, name: app.name }] : []))
   }
   const adoptCompanionStatus = (next: PhoneAccessStatus) => {
@@ -1626,7 +1626,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     setCompanionBusyAction(action === 'repairCompanionLanAddress' ? `${action}:${payload.address}` : action)
     try {
       const response = await sendToCEF<PhoneAccessStatus>({ action, payload })
-      if (!response.ok || !response.data) { reportAppFailure(response.error || 'Could not update phone access.', 'Try again.'); return }
+      if (!response.ok || !response.data) { reportAppFailure('Could not update phone access.', failureDetail(response.error, 'Try again.')); return }
       adoptCompanionStatus(response.data)
     } catch { reportAppFailure('Could not update phone access.', 'Try again.') }
     finally { companionInFlight.current = false; setCompanionBusy(false); setCompanionBusyAction('') }
@@ -1639,7 +1639,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     setCompanionBusyAction('restartApplication')
     try {
       const response = await sendToCEF({ action: 'restartApplication' })
-      if (!response.ok) reportAppFailure(response.error || 'Could not restart Universal Agent Manager.', 'Close and open it again.')
+      if (!response.ok) reportAppFailure('Could not restart Universal Agent Manager.', failureDetail(response.error, 'Close and open it again.'))
       else reportAppNotice('Restarting Universal Agent Manager…')
     } catch { reportAppFailure('Could not restart Universal Agent Manager.', 'Close and open it again.') }
     finally { companionInFlight.current = false; setCompanionBusy(false); setCompanionBusyAction('') }
@@ -1655,7 +1655,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       if (kind === 'token') {
         const response = await sendToCEF<{ token?: string }>({ action: 'getCompanionToken' })
         if (!response.ok || !response.data?.token) {
-          reportAppFailure(response.error || 'Phone access token is unavailable.', 'Try again.')
+          reportAppFailure('Phone access token is unavailable.', failureDetail(response.error, 'Try again.'))
           return
         }
         text = response.data.token
@@ -1695,7 +1695,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       const response = await sendToCEF({ action: 'setComputerUseSettings', payload: { allowlistEnabled, allowedApplications } })
       if (!response.ok) {
         useAppStore.setState(previous)
-        reportAppFailure(response.error || 'Could not save Computer Use settings.', 'Try again.')
+        reportAppFailure('Could not save Computer Use settings.', failureDetail(response.error, 'Try again.'))
       }
     } finally {
       computerUseSaveInFlight.current = false
@@ -1796,7 +1796,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   if (!activeSession) return
                   setComputerUseBusy(true)
                   void setSessionComputerUseBackend(activeSession.id, value as ComputerUseBackend).then((result) => {
-                    if (!result.ok) reportAppFailure(result.error || 'Could not change the Computer Use backend.', 'Try again.')
+                    if (!result.ok) reportAppFailure('Could not change the Computer Use backend.', failureDetail(result.error, 'Try again.'))
                   }).finally(() => setComputerUseBusy(false))
                 }}
               />
@@ -3051,7 +3051,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             >
               <Reveal open={customExplorer}><div className="flex gap-2">
                 <input aria-label="File explorer application path" value={explorerDraft} onChange={(event) => setExplorerDraft(event.target.value)} className="uam-field min-w-0 flex-1 font-mono" placeholder="/Applications/Path Finder.app" />
-                <Button size="sm" onClick={async () => { const response = await sendToCEF<{ selectedPath: string }>({ action: 'browseFolderDirectory', payload: { currentValue: explorerDraft, application: true } }); if (!response.ok) reportAppFailure(response.error || 'Application picker could not be opened.', 'Try again.'); else if (response.data?.selectedPath) setExplorerDraft(response.data.selectedPath) }}>Browse</Button>
+                <Button size="sm" onClick={async () => { const response = await sendToCEF<{ selectedPath: string }>({ action: 'browseFolderDirectory', payload: { currentValue: explorerDraft, application: true } }); if (!response.ok) reportAppFailure('Application picker could not be opened.', failureDetail(response.error, 'Try again.')); else if (response.data?.selectedPath) setExplorerDraft(response.data.selectedPath) }}>Browse</Button>
                 <Button size="sm" variant="primary" disabled={!explorerDraft.trim() || explorerDraft.trim() === fileExplorerApplication || editorSaving} onClick={() => void saveExplorer(explorerDraft.trim())}>Save</Button>
               </div></Reveal>
             </SettingRow>
