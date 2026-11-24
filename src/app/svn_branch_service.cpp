@@ -298,7 +298,7 @@ namespace uam
 			std::vector<std::string> parts;
 			for (std::size_t start = 0; start < folder.size();)
 			{
-				const auto end = std::min(folder.find('/', start), folder.size());
+				const auto end = (std::min)(folder.find('/', start), folder.size()); // parenthesised: Windows headers may define min
 				if (end > start) parts.emplace_back(folder.substr(start, end - start));
 				start = end + 1;
 			}
