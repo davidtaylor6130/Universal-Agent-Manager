@@ -278,7 +278,9 @@ namespace uam
 		    current.uuid != expected.uuid || current.repository != expected.repository || !probe.Clean(current))
 		{ result.error = "The working copy changed before SVN switching. Discover the folders again."; return result; }
 		// Deliberate switch only: no checkout, --force, --ignore-ancestry, cleanup or rollback.
-		if (!probe.Run({"switch", "--non-interactive", "--ignore-externals", "--accept", "postpone", "--depth", "infinity", "-r", expected.repository_revision, "--", target + "@" + expected.repository_revision, expected.directory}, output))
+		// switch keeps a destination's "@" suffix as part of the path, so a trailing "/" stops SVN's peg-revision split instead:
+		// on Windows "copy @rev" otherwise loses the space before "@" and names a different folder.
+		if (!probe.Run({"switch", "--non-interactive", "--ignore-externals", "--accept", "postpone", "--depth", "infinity", "-r", expected.repository_revision, "--", target + "@" + expected.repository_revision, expected.directory + "/"}, output))
 		{ result.error = "SVN did not confirm switching. Inspect the working copy before retrying; no automatic rollback was attempted."; return result; }
 		if (!probe.Read(scope, current) || current.url != target || current.uuid != expected.uuid || current.repository != expected.repository ||
 		    current.revision != expected.repository_revision || !probe.Clean(current))

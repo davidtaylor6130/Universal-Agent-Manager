@@ -206,7 +206,7 @@ namespace
 			Check(switched.ok && f.switches == 1 && switched.context.revision == "3", "verified pinned switch");
 			Check(f.url.ends_with("feature%20%26%20fix"), "URL encoding is per path component");
 			Check(f.switch_args[f.switch_args.size() - 2].ends_with("@3"), "target peg revision is pinned with its operative revision");
-			Check(f.switch_args.back() == uam::paths::Utf8PathString(f.directory), "switch destination is a literal local path, not a peg target");
+			Check(f.switch_args.back() == uam::paths::Utf8PathString(f.directory) + "/", "switch destination is a literal local path, not a peg target");
 		}
 		for (const std::string& path : {"branches", "^/../lines", "^/lines/./bad", "^/lines//bad", "^/lines\\bad", "^/lines\n"})
 		{
