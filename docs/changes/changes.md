@@ -8,6 +8,8 @@ Change review lets users inspect the current workspace or recorded chat edits be
 - [File inspection](../files/inspection.md)
 - [Version Control settings](../settings/version-control/version-control.md)
 
+Agents read the same uncommitted status, paths and line counts only, for their own chat through the [UAM tool](../providers/uam-tools.md) `worktree_status`.
+
 **Scope:** David keeps the existing Git/SVN commit panel in V5 (2026-10-25) and asked for SVN history and update in it (2026-11-11). Other new panel features are not approved. See [recorded scope](../architecture/decisions.md#existing-vcs-panel).
 
 [Checkpoints and rollback](../workspaces/checkpoints.md).

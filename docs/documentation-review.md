@@ -328,6 +328,19 @@ A transcript save that fails while UAM is running is reported once through the s
 
 Recorded limits that are not decisions: Claude Code, Gemini and Copilot children on SSH hosts, and Antigravity children, are not imported, for the reasons in the [child session reference](reference/native-child-sessions.md).
 
+## UAM read-only insight tools
+
+The [UAM tools](providers/uam-tools.md) `usage_report`, `worktree_status` and `memory_search` follow the first slices of the V5.2.x scoping review for #967, #964 and #963. They are read-only, carry the read-only hint and are offered to every session that has UAM tools, except goal reviewers, which still get none, and sessions on SSH hosts, which do not get `memory_search`. `log_tail` from the same issue waits for log lines that carry a chat id, because filtering free text by chat could leak other chats' lines.
+
+**Open, pending David's decision.** Interim choices:
+
+- `usage_report` leaves out account money figures (credit balance, spend limit and amount used) and reports only shares, resets and limit flags. Whether agents may see those amounts is undecided.
+- Goal reviewers do not get `worktree_status`, so their prompt still tells them to run shell `git`. Giving a reviewer this one read-only tool is a deliberate change to the reviewer's no-tools rule and waits for a decision.
+- `worktree_status` reports only uncommitted changes against the current commit or checked-out revision; changes since the chat started (the commit panel's chat comparison) are not offered yet.
+- `worktree_status` lists the whole Git repository, as the commit panel does, so a chat whose workspace is a subfolder sees changes made elsewhere in that repository. Limiting it to the workspace folder would also change the panel's shared read and waits for a decision.
+- `memory_search` follows memory's Off setting but not the recall budget: a recall budget of zero stops automatic recall in prompts, while an agent can still search. It is not offered to chats on SSH hosts, where recall reads nothing.
+- `memory_save`, `skill_create`/`skill_update` and `agent_define` from #963, and `commit_propose` and the pull request tools from #964, wait for the decisions recorded on those issues.
+
 ## Pull request watching
 
 [Pull request watching](chat/pull-request-watch.md) follows T3 Code where UAM has an equivalent. David decided on 2026-11-12: the read cadence stands (an unwatched linked pull request every 2 minutes while it is being updated, 5 once quiet for 30 minutes and 15 while closed); a merged or closed pull request wakes the agent once with a final message and then ends the watch; and a chat with an active watch stays in Active Chats between wakes until the watch ends.
