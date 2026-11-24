@@ -619,6 +619,7 @@ add_library(uam_core_objects OBJECT
   src/app/memory_library_service.cpp
   src/app/memory_service.cpp
   src/app/goal_service.cpp
+  src/app/decision_service.cpp
   src/app/native_session_link_service.cpp
   src/app/persistence_coordinator.cpp
   src/app/provider_resolution_service.cpp
@@ -1730,6 +1731,7 @@ if(UAM_BUILD_TESTS)
     tests/git_worktree_pull_tests.cpp
     tests/git_worktree_port_method_tests.cpp
     tests/storage_retention_tests.cpp
+    tests/durable_replace_fallback_tests.cpp
     tests/data_folder_preflight_tests.cpp
     tests/data_folder_settings_tests.cpp
     tests/data_folder_transition_tests.cpp
@@ -1790,6 +1792,7 @@ if(UAM_BUILD_TESTS)
     tests/deleted_active_native_refresh_tests.cpp
     tests/sidechat_context_tests.cpp
     tests/goal_tests.cpp
+    tests/decision_service_tests.cpp
     tests/provider_child_activity_tests.cpp
     tests/theme_tests.cpp
     tests/resource_collection_tests.cpp

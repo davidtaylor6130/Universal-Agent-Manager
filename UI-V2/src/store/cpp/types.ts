@@ -7,7 +7,7 @@ import type { CustomIcon } from '../../types/customIcon'
 // store re-exports everything here so existing imports keep working.
 
 import type { Attachment, MessageBlock, MessageToolCall } from '../../types/message'
-import type { GoalStatus } from '../../types/goal'
+import type { Goal } from '../../types/goal'
 import type { StoredTheme } from '../../utils/themeStorage'
 import type { ResourceCollection } from '../../types/resourceCollection'
 import type { MemoryLevel } from '../../types/memory'
@@ -193,31 +193,10 @@ export interface CppChat {
   goalMode?: boolean
 }
 
-export interface CppGoal {
-  id: string
-  objective: string
-  status: GoalStatus
-  tokenBudget?: number
-  tokensUsed?: number
-  blockedTurnCount?: number
-  lastBlocker?: string
-	lastBlockerKind?: string
-  lastDiagnostic?: string
-  lastDecisionSource?: string
-  pendingContinuation?: boolean
-  completedItems?: string[]
-  remainingItems?: string[]
-  currentStep?: string
-  lastVerification?: string
-  lastNextPrompt?: string
-  sameNextPromptCount?: number
-  loopCount?: number
+/** The native goal record: the frontend Goal before its chat id is attached and its ISO timestamps become Dates. */
+export type CppGoal = Omit<Goal, 'chatId' | 'createdAt' | 'updatedAt'> & {
   createdAt: string
   updatedAt: string
-	executionOwner?: 'uam' | 'provider'
-	workerModelId?: string
-	reviewerModelId?: string
-	providerCommand?: string
 }
 
 export interface GitWorktreeStatus {
