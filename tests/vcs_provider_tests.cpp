@@ -114,7 +114,8 @@ UAM_TEST(VcsProvidersRegisterGitThenSvnWithTheirOwnDeclarations)
 		return uam::ranges::Contains(uam::VcsProviderFor(type).Declaration().capabilities, uam::vcs::VcsCapability::BranchCreate);
 	};
 	UAM_ASSERT(declares_branch_create(uam::VcsType::Git));
-	UAM_ASSERT(!declares_branch_create(uam::VcsType::Svn));
+	// SVN creates a branch as a server-side copy, then switches to it.
+	UAM_ASSERT(declares_branch_create(uam::VcsType::Svn));
 }
 
 UAM_TEST(VcsSelectionFallsBackToTheSystemThatIsActuallyPresent)
