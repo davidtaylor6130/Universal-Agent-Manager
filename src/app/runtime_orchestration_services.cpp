@@ -3871,6 +3871,7 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverPr
 		    { return uam::ImportedWorkspaceMatchesFolder(uam::paths::PathFromUtf8(workspace), uam::paths::PathFromUtf8(folder.directory)); }});
 		for (auto& error : native.errors) discovery.result.Fail(std::move(error));
 		discovery.result.omitted_error_count += native.omitted_error_count;
+		discovery.antigravity_refusals = std::move(native.refusals);
 		for (auto& chat : native.chats)
 		{
 			if (!folder.directory.empty() && !uam::ImportedWorkspaceMatchesFolder(uam::paths::PathFromUtf8(chat.workspace_directory), uam::paths::PathFromUtf8(folder.directory))) continue;
@@ -5658,10 +5659,12 @@ std::optional<ChatSession> ChatHistorySyncService::LoadRemoteNativeTranscript(co
 	return ParseRemoteNativeHistorySnapshot(host, chat, snapshot, error, stop_token);
 }
 
-std::optional<ChatSession> ChatHistorySyncService::LoadLocalNativeTranscript(const ChatSession& chat, std::string* error, std::stop_token stop_token) const
+std::optional<ChatSession> ChatHistorySyncService::LoadLocalNativeTranscript(const ChatSession& chat, std::string* error, std::stop_token stop_token, bool* unsettled_out) const
 {
 	if (error != nullptr)
 		error->clear();
+	if (unsettled_out != nullptr)
+		*unsettled_out = false;
 	const std::string provider = uam::provider_ids::NormalizeCliProviderAliasOrSelf(chat.provider_id);
 	if (!uam::paths::IsControllerLocalWorkspace(chat) || chat.native_session_id.empty() || !uam::chat_ids::IsSafeStorageChatId(chat.native_session_id) || uam::strings::IsBlank(chat.workspace_directory))
 	{
@@ -5690,8 +5693,13 @@ std::optional<ChatSession> ChatHistorySyncService::LoadLocalNativeTranscript(con
 	const auto found = std::ranges::find_if(discovered.chats, [&](const ChatSession& candidate) { return candidate.native_session_id == chat.native_session_id && candidate.provider_id == provider && uam::ImportedWorkspaceMatchesFolder(uam::paths::PathFromUtf8(candidate.workspace_directory), uam::paths::PathFromUtf8(chat.workspace_directory)); });
 	if (found != discovered.chats.end())
 		return std::move(*found);
+	// Antigravity's reader names why it refused this exact conversation (for example a
+	// nested child's inherited parent context); report that plain reason, not a generic one.
+	const auto refusal = std::ranges::find_if(discovered.antigravity_refusals, [&](const auto& candidate) { return candidate.session == chat.native_session_id; });
+	if (refusal != discovered.antigravity_refusals.end() && unsettled_out != nullptr)
+		*unsettled_out = refusal->unsettled;
 	if (error != nullptr)
-		*error = "The exact native transcript is unavailable or contains no readable conversation.";
+		*error = refusal != discovered.antigravity_refusals.end() ? refusal->reason : "The exact native transcript is unavailable or contains no readable conversation.";
 	return std::nullopt;
 }
 
