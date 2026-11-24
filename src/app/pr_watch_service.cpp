@@ -482,7 +482,8 @@ namespace uam
 					{
 						if (pr_watch::Key(link.pr) != result.key || !link.watching) continue;
 						link.watching = false;
-						Notify(link, "Stopped watching " + label + " because GitHub could not be read; check that gh is installed and signed in.", "warning");
+						Notify(link, "Stopped watching " + label + " because GitHub could not be read " + std::to_string(pr_watch::kFailedReadLimit) +
+						             " times in a row; check that gh is installed and signed in.", "warning");
 					}
 				}
 				m_dirty = true;

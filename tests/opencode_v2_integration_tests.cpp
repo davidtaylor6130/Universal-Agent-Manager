@@ -87,7 +87,7 @@ namespace
 			UAM_ASSERT(session.queue_held && chat.acp_queue_held);
 			UAM_ASSERT_EQ(session.lifecycle_state, std::string("error"));
 			UAM_ASSERT(session.last_error.find("held") != std::string::npos);
-			UAM_ASSERT(session.last_error.find("replayed automatically") != std::string::npos);
+			UAM_ASSERT(session.last_error.find("never replayed") != std::string::npos);
 			UAM_ASSERT_EQ(chat.native_session_id, std::string("ses_v2_owned"));
 			UAM_ASSERT_EQ(chat.acp_queued_prompts, expected);
 			UAM_ASSERT_EQ(std::vector<uam::AcpQueuedUserPromptState>(session.queued_user_prompts.begin(), session.queued_user_prompts.end()), expected);

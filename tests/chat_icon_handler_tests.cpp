@@ -3197,7 +3197,7 @@ UAM_TEST(ChatCreateBranchOriginalAckFailurePreservesRealBranchOutcome)
 	acknowledgement_release.Release();
 	UAM_ASSERT_EQ(fixture.AwaitRetainedBranch(callback), branch_id);
 	const auto body = nlohmann::json::parse(callback->body);
-	UAM_ASSERT(body.at("warning").get<std::string>().find("Attached originals were kept, but their save could not be fully confirmed.") != std::string::npos);
+	UAM_ASSERT(body.at("warning").get<std::string>().find("; attached originals were kept, but their save could not be fully confirmed.") != std::string::npos);
 	UAM_ASSERT_EQ(callback->successes, 1);
 	UAM_ASSERT_EQ(callback->failures, 0);
 	UAM_ASSERT_EQ(ReadFile(primary), committed_primary);
@@ -5755,7 +5755,7 @@ UAM_TEST(RemoteNativeHistoryHandlerGeminiAckHeldResponseUsesCurrentOwner)
 		if (replacement_owner)
 		{
 			UAM_ASSERT_EQ(callback->successes, 0); UAM_ASSERT_EQ(callback->failures, 1); UAM_ASSERT_EQ(callback->status, 409);
-			UAM_ASSERT(callback->body.find("already saved") != std::string::npos);
+			UAM_ASSERT(callback->body.find("Remote history was saved") != std::string::npos);
 			UAM_ASSERT(callback->body.find("reopen the chat") != std::string::npos);
 			UAM_ASSERT(callback->body.find(expected.messages.back().content) == std::string::npos);
 			UAM_ASSERT(callback->body.find("PRIVATE_REPLACEMENT_OWNER_AUTHORED_CONTENT") == std::string::npos);

@@ -11189,7 +11189,7 @@ UAM_TEST(AcpQueuedPromptTextCannotGrowWithoutBound)
 	UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, one_mib, {}, {}, false, &error));
 	UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, one_mib, {}, {}, false, &error));
 	UAM_ASSERT(!uam::SendAcpPrompt(app, chat.id, "p", {}, {}, false, &error));
-	UAM_ASSERT(error.find("session limit") != std::string::npos);
+	UAM_ASSERT(error.find("Too many prompts are queued") != std::string::npos);
 	UAM_ASSERT_EQ(app.acp_sessions.front()->queued_user_prompts.size(), static_cast<std::size_t>(2));
 	UAM_ASSERT_EQ(app.acp_sessions.front()->queued_user_prompts.front().text.size(), one_mib.size());
 }
@@ -21192,7 +21192,7 @@ UAM_TEST(AcpRevokedOwnerFailedWriterReportsOnceAcrossFivePollTicks)
 	UAM_ASSERT_EQ(HostBlockedTickReasonCount(session, "async_write_failed"), std::size_t{1});
 	UAM_ASSERT(changed.front());
 	UAM_ASSERT(std::none_of(changed.begin() + 1, changed.end(), [](bool value) { return value; }));
-	UAM_ASSERT(session.last_error.find(failure) != std::string::npos);
+	UAM_ASSERT(session.last_error == "The prompt could not be sent to the provider.");
 	UAM_ASSERT(session.running && session.processing && session.stdin_writer == failed_writer);
 	UAM_ASSERT_EQ(session.last_process_id, process_id);
 	UAM_ASSERT_EQ(uam::acp_detail::AcpProcessHandleLabel(session), process_id);

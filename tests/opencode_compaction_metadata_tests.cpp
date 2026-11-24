@@ -335,7 +335,7 @@ namespace
 			UAM_ASSERT(!app.pending_chat_save_at_by_chat_id.contains(Chat().id));
 		}
 
-		void AwaitPublicFailure(const std::string& cause = "metadata")
+		void AwaitPublicFailure(const std::string& cause = "compaction details")
 		{
 			const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
 			while ((Session().last_turn_outcome != "failed" || Session().last_settled_turn_serial != Session().turn_serial) && std::chrono::steady_clock::now() < deadline)
@@ -509,7 +509,7 @@ UAM_TEST(OpenCodeMetadataRequiresVerifiedSchemaForSupportedVersion)
 	UAM_ASSERT_EQ(sqlite3_exec(fixture.database, "DROP INDEX part_message_id_id_idx", nullptr, nullptr, nullptr), SQLITE_OK);
 	bool failed = false;
 	try { fixture.WaitGate(); }
-	catch (const std::runtime_error& failure) { failed = std::string(failure.what()).find("schema") != std::string::npos; }
+	catch (const std::runtime_error& failure) { failed = std::string(failure.what()).find("Could not verify OpenCode compaction details") != std::string::npos; }
 	UAM_ASSERT(failed);
 }
 
@@ -538,7 +538,7 @@ UAM_TEST(OpenCodeMetadataCapsOwnedPendingRowsWithoutAttributingThemToNextTurn)
 	fixture.Settle(true);
 	bool failed = false;
 	try { fixture.WaitGate(); }
-	catch (const std::runtime_error& failure) { failed = std::string(failure.what()).find("limit") != std::string::npos; }
+	catch (const std::runtime_error& failure) { failed = std::string(failure.what()).find("Could not verify OpenCode compaction details") != std::string::npos; }
 	UAM_ASSERT(failed);
 	UAM_ASSERT(fixture.Boundaries().empty());
 	UAM_ASSERT_EQ(fixture.queries.load(), 2);
@@ -627,7 +627,7 @@ UAM_TEST(OpenCodeMetadataOutputAndTimeoutFailuresHaveExplicitCauses)
 		bool failed = false;
 		try { fixture.WaitGate(); }
 		catch (const std::runtime_error& failure)
-		{ failed = std::string(failure.what()).find(oversized ? "512 KiB" : "timed out") != std::string::npos; }
+		{ failed = std::string(failure.what()).find("Could not read OpenCode compaction details") != std::string::npos; }
 		UAM_ASSERT(failed);
 		UAM_ASSERT_EQ(attempts.load(), oversized ? 1 : 3);
 		UAM_ASSERT(fixture.Boundaries().empty());
@@ -876,7 +876,7 @@ UAM_TEST(OpenCodeMetadataUnverifiedSchemaMismatchDegradesWithoutBlockingChat)
 	UAM_ASSERT_EQ(sqlite3_exec(verified.database, "ALTER TABLE session RENAME COLUMN directory TO folder", nullptr, nullptr, nullptr), SQLITE_OK);
 	bool failed = false;
 	try { verified.WaitGate(); }
-	catch (const std::runtime_error& failure) { failed = std::string(failure.what()).find("no such column") != std::string::npos; }
+	catch (const std::runtime_error& failure) { failed = std::string(failure.what()).find("Could not read OpenCode compaction details") != std::string::npos; }
 	UAM_ASSERT(failed);
 }
 
@@ -1885,7 +1885,7 @@ namespace
 			UAM_ASSERT(!fixture.AwaitBoundary(id, std::chrono::milliseconds(2300)));
 			std::string error;
 			UAM_ASSERT(fixture.service->BeforeDispatch(fixture.app, fixture.Session(), fixture.Chat(), error) == uam::OpenCodeCompactionGateState::Failed);
-			UAM_ASSERT(error.find("invalid metadata identity") != std::string::npos);
+			UAM_ASSERT(error.find("Could not verify OpenCode compaction details") != std::string::npos);
 			UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks.back().type, std::string("assistant_text"));
 			UAM_ASSERT_EQ(fixture.Chat().messages[1].blocks.back().request_id_json, "opencode-message:" + id);
 		}

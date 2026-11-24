@@ -940,7 +940,7 @@ UAM_TEST(RemoteRefreshFeedbackChangedPostcommitOwnerNeverRedrawsOldHistory)
 	fixture.Chat().metadata_incarnation = ChatSession{}.metadata_incarnation;
 	fixture.Complete(2);
 	UAM_ASSERT_EQ(cb->successes, 0); UAM_ASSERT_EQ(cb->failures, 1); UAM_ASSERT_EQ(cb->status, 409);
-	UAM_ASSERT(cb->error.find("already saved") != std::string::npos);
+	UAM_ASSERT(cb->error.find("Remote history was saved") != std::string::npos);
 	UAM_ASSERT(cb->error.find("reopen the chat") != std::string::npos);
 	UAM_ASSERT(cb->error.find("New native answer") == std::string::npos);
 	UAM_ASSERT_EQ(ReadFile(fixture.Primary()), primary); UAM_ASSERT_EQ(ReadFile(fixture.Summary()), summary);

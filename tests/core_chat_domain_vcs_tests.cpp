@@ -868,7 +868,7 @@ UAM_TEST(FinalizeChatSyncSelectionPrunesReferencesAndReportsHydrationFailure)
 	UAM_ASSERT_EQ(app.settings.last_selected_chat_id, std::string("chat-present"));
 	app.chats.front().messages_loaded = false;
 	UAM_ASSERT(!uam::FinalizeChatSyncSelection(app, chat.id, "missing-chat", true));
-	UAM_ASSERT(uam::strings::Contains(app.status_line, "could not load chat history"));
+	UAM_ASSERT(uam::strings::Contains(app.status_line, "Could not refresh the native chat history"));
 	chat.messages.push_back(Message{MessageRole::Assistant, "Recovered history"});
 	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
 	UAM_ASSERT(uam::SyncChatsFromLoadedNative(app, {}, " missing-chat ", true));

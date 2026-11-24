@@ -5899,7 +5899,7 @@ namespace
 			else if (!primary_chat.error.empty())
 			{
 				uam::diagnostics::Write("[chatRepository] Skipped malformed chat file " + path.string() + ": " + primary_chat.error);
-				AppendWarning(warning_out, "A malformed chat file was skipped.");
+				AppendWarning(warning_out, "Skipped malformed chat file " + path.filename().string() + ": " + primary_chat.error + ".");
 			}
 		}
 

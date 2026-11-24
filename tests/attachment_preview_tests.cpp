@@ -360,10 +360,10 @@ UAM_TEST(ClaudeSendPreflightRejectsMissingUnsupportedAndOversizedLocalImages)
 	MessageAttachment image; image.kind = "image"; image.name = "one.png"; image.path = image.name;
 	std::string error;
 	UAM_ASSERT(!uam::attachment_preview::ValidateImageAttachmentFiles(temp.root, {image}, error));
-	UAM_ASSERT(error.find("no longer available") != std::string::npos);
+	UAM_ASSERT(error.find("one.png is missing or empty") != std::string::npos);
 	UAM_ASSERT(uam::io::WriteBinaryFile(temp.root / image.path, "wrong format"));
 	UAM_ASSERT(!uam::attachment_preview::ValidateImageAttachmentFiles(temp.root, {image}, error));
-	UAM_ASSERT(error.find("Unsupported") != std::string::npos);
+	UAM_ASSERT(error.find("must be PNG, JPEG, GIF or WebP") != std::string::npos);
 	UAM_ASSERT(uam::io::WriteBinaryFile(temp.root / image.path, Png(2, 3)));
 	UAM_ASSERT(uam::attachment_preview::ValidateImageAttachmentFiles(temp.root, {image}, error));
 	UAM_ASSERT(error.empty());

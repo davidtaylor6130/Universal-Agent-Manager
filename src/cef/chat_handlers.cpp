@@ -1552,7 +1552,7 @@ void UamQueryHandler::HandleRefreshRemoteGeminiMedia(CefRefPtr<CefBrowser> brows
 					        }
 					        catch (...)
 					        {
-						        ack = AsyncFailure(500, "Remote history was saved, but reopen the chat to see its current history.");
+						        ack = AsyncFailure(500, "Remote history was saved, but its response could not be prepared; reopen the chat to see its current history.");
 					        }
 				        };
 				        bool ack_queued = false;

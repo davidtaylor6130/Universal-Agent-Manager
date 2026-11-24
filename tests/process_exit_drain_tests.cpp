@@ -101,6 +101,8 @@ UAM_TEST(ProcessExitDrainBootstrapStepFailureKeepsFinalDiagnosticWithExitCode)
 	ExitRaceProcess process; process.outputs = {"synthetic permission denied"}; process.exit_code = 3;
 	std::string output, error;
 	const std::filesystem::path log = std::filesystem::temp_directory_path() / ("uam-bootstrap-step-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count())) / "diagnostic.log";
+	std::error_code directory_error;
+	UAM_ASSERT(std::filesystem::create_directories(log.parent_path(), directory_error) && !directory_error);
 	UAM_ASSERT(uam::diagnostics::StartFileLog(log, error, 0));
 	struct StopLog { std::filesystem::path root; ~StopLog() { uam::diagnostics::StopFileLog(); std::error_code ec; std::filesystem::remove_all(root, ec); } } stop{log.parent_path()};
 	UAM_ASSERT(!uam::remote::RunBootstrapStepForTests({"Copy runner", {"ssh", "home-lab", "copy"}, ""}, process, output, error));

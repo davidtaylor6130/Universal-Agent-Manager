@@ -1156,7 +1156,7 @@ UAM_TEST(ImportDiscoveryReportsProviderDiscoveryFailureInsteadOfSuccessfulZero)
 	UAM_ASSERT(!result.partial());
 	UAM_ASSERT_EQ(result.imported_count, 0);
 	UAM_ASSERT(!result.errors.empty());
-	UAM_ASSERT(uam::strings::Contains(result.errors.front(), "not a directory"));
+	UAM_ASSERT(uam::strings::Contains(result.errors.front(), "history could not be found"));
 #endif
 }
 

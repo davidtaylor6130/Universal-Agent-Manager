@@ -1887,7 +1887,7 @@ UAM_TEST(CopilotNativeAutoRoutingUnsupportedActivationAllowsExplicitDefaultAfter
 	UAM_ASSERT_EQ(failed.at("ownership"), fixture.owner);
 	UAM_ASSERT_EQ(failed.at("available"), false);
 	UAM_ASSERT_EQ(failed.at("stateStatus"), "unsupported");
-	UAM_ASSERT(failed.at("lastError").get<std::string>().find("unsupported") != std::string::npos);
+	UAM_ASSERT(failed.at("lastError").get<std::string>().find("does not support Auto routing") != std::string::npos);
 	UAM_ASSERT_EQ(failed.at("effective"), effective);
 	UAM_ASSERT_EQ(failed.at("pending"), staged);
 	UAM_ASSERT_EQ(failed.at("activating"), (nlohmann::json{{"present", false}}));

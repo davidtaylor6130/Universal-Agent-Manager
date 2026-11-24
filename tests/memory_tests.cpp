@@ -3187,7 +3187,7 @@ UAM_TEST(MemoryServiceOversizedColdManualScanRetainsIntentUntilSourceRepair)
 	UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
 	DrainMemoryWork(app);
 	UAM_ASSERT(app.memory_extraction_tasks.empty());
-	UAM_ASSERT(app.memory_last_status.find("cannot be read within the requested size limit") != std::string::npos);
+	UAM_ASSERT(app.memory_last_status.find("Memory scan could not load chat history") != std::string::npos);
 	UAM_ASSERT_EQ(app.memory_failure_count_by_chat_id.at(chat.id), 1);
 	const double retry = app.memory_retry_not_before_by_chat_id.at(chat.id);
 	UAM_ASSERT(retry > uam::GetAppTimeSeconds());
