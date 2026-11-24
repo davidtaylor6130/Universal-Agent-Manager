@@ -48,8 +48,10 @@ set(UAM_HISTORY_PROVIDER_DEFINITIONS
   UAM_ENABLE_RUNTIME_GEMINI_CLI=1 UAM_ENABLE_RUNTIME_CODEX_CLI=1
   UAM_ENABLE_RUNTIME_CLAUDE_CLI=1 UAM_ENABLE_RUNTIME_OPENCODE_CLI=1
   UAM_ENABLE_RUNTIME_COPILOT_CLI=1 UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI=1)
+# build_features.h requires every feature macro; this focused target compiles no feature code.
 target_compile_definitions(uam_antigravity_history_tests PRIVATE
-  UAM_ANTIGRAVITY_HISTORY_STANDALONE=1 ${UAM_HISTORY_PROVIDER_DEFINITIONS})
+  UAM_ANTIGRAVITY_HISTORY_STANDALONE=1 ${UAM_HISTORY_PROVIDER_DEFINITIONS}
+  UAM_ENABLE_COMPUTER_USE=0 UAM_ENABLE_SSH=0 UAM_ENABLE_MOBILE_COMPANION=0)
 target_include_directories(uam_antigravity_history_tests PRIVATE "${UAM_ROOT}/src")
 target_link_libraries(uam_antigravity_history_tests PRIVATE uam_sqlite nlohmann_json::nlohmann_json uam_antigravity_history_crypto)
 # Only the pure inline payload path is used from platform_native_attachment_assets;

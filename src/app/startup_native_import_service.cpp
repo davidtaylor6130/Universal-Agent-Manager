@@ -14,6 +14,7 @@
 #include "common/utils/string_utils.h"
 #include "common/utils/diagnostic_log.h"
 #include "common/utils/time_utils.h"
+#include "common/utils/hash_utils.h"
 
 #include <algorithm>
 #include <chrono>
@@ -46,6 +47,35 @@ namespace uam
 			result.workspace_worktree_directory = chat.workspace_worktree_directory;
 			result.messages_loaded = false;
 			return result;
+		}
+
+		/// <summary>The saved-chat fields startup planning reads, without its transcript.</summary>
+		ChatSession PlanningMetadata(const ChatSession& chat)
+		{
+			ChatSession result = OwnershipMetadata(chat);
+			result.workspace_source_directory = chat.workspace_source_directory;
+			result.imported_read_only = chat.imported_read_only;
+			result.native_parent_session_id = chat.native_parent_session_id;
+			result.subagent_parent_chat_id = chat.subagent_parent_chat_id;
+			result.subagent_parent_created_at = chat.subagent_parent_created_at;
+			result.created_at = chat.created_at;
+			result.updated_at = chat.updated_at;
+			result.persisted_message_count = chat.messages_loaded ? chat.messages.size() : chat.persisted_message_count;
+			return result;
+		}
+
+		void HashText(std::uint64_t& hash, std::string_view text)
+		{
+			hashing::UpdateFnv1a64WithSeparator(hash, text);
+		}
+
+		/// <summary>The ownership fields of a chat that planning reads; any change to them makes a plan stale.</summary>
+		void HashChatOwnership(std::uint64_t& hash, const ChatSession& chat)
+		{
+			for (const std::string* field : {&chat.id, &chat.provider_id, &chat.native_session_id, &chat.execution_host_id, &chat.workspace_directory,
+			         &chat.workspace_worktree_directory, &chat.workspace_source_directory})
+				HashText(hash, *field);
+			HashText(hash, chat.imported_read_only ? "1" : "0");
 		}
 
 		/// <summary>Scans one host's folders in order on one shared client. A connect failure gets one bounded reconnect;
@@ -219,6 +249,245 @@ namespace uam
 		};
 	}
 
+	std::uint64_t StartupNativeImportService::AppPlanningFingerprint(const AppState& app, const std::unordered_set<std::string>* live_chat_ids)
+	{
+		std::uint64_t hash = hashing::kFnv1a64OffsetBasis;
+		HashText(hash, paths::PortablePathString(app.data_root));
+		for (const ChatFolder& folder : app.folders)
+			for (const std::string* field : {&folder.id, &folder.title, &folder.directory, &folder.execution_host_id}) HashText(hash, *field);
+		HashText(hash, "settings");
+		for (const std::string& prefix : app.settings.native_import_excluded_title_prefixes) HashText(hash, prefix);
+		HashText(hash, "directories");
+		for (const std::string& directory : app.settings.native_import_excluded_directories) HashText(hash, directory);
+		HashText(hash, std::to_string(app.settings.native_import_startup_max_age_days));
+		for (const ExecutionHost& host : app.settings.execution_hosts)
+			for (const std::string* field : {&host.id, &host.transport, &host.platform, &host.runner_status}) HashText(hash, *field);
+		HashText(hash, "chats");
+		std::unordered_set<std::string> computed_live;
+		if (live_chat_ids == nullptr) computed_live = ChatHistorySyncService().StartupImportLiveChatIds(app);
+		const std::unordered_set<std::string>& live = live_chat_ids != nullptr ? *live_chat_ids : computed_live;
+		for (const ChatSession& chat : app.chats)
+		{
+			HashChatOwnership(hash, chat);
+			const auto resolved = app.resolved_native_sessions_by_chat_id.find(chat.id);
+			HashText(hash, resolved != app.resolved_native_sessions_by_chat_id.end() ? resolved->second : std::string_view{});
+			HashText(hash, live.contains(chat.id) ? "live" : "idle");
+		}
+		HashText(hash, "excluded");
+		for (const ChatSession& chat : app.excluded_provider_chats) HashChatOwnership(hash, chat);
+		HashText(hash, "hidden");
+		HashText(hash, paths::PortablePathString(app.hidden_agent_chat_ownership.data_root));
+		for (const ChatSession& chat : app.hidden_agent_chat_ownership.chats) HashChatOwnership(hash, chat);
+		return hash;
+	}
+
+	std::uint64_t StartupNativeImportService::PlanningFingerprint(const AppState& app) const
+	{
+		return ReviewPlanningFingerprint(AppPlanningFingerprint(app));
+	}
+
+	std::uint64_t StartupNativeImportService::ReviewPlanningFingerprint(std::uint64_t app_fingerprint) const
+	{
+		std::uint64_t hash = app_fingerprint;
+		HashText(hash, m_include_unregistered_local ? "unregistered" : "registered");
+		HashText(hash, "decisions " + std::to_string(m_decision_revision));
+		HashText(hash, "planned");
+		for (const Candidate& candidate : m_candidates)
+			if (candidate.new_workspace)
+				for (const std::string* field : {&candidate.owner.id, &candidate.owner.title, &candidate.owner.directory, &candidate.owner.execution_host_id}) HashText(hash, *field);
+		return hash;
+	}
+
+	StartupNativeImportPlanningSnapshot StartupNativeImportService::CapturePlanningSnapshot(const AppState& app) const
+	{
+		StartupNativeImportPlanningSnapshot snapshot;
+		snapshot.app.data_root = app.data_root;
+		snapshot.app.folders = app.folders;
+		snapshot.app.settings = app.settings;
+		snapshot.app.chats.reserve(app.chats.size());
+		for (const ChatSession& chat : app.chats) snapshot.app.chats.push_back(PlanningMetadata(chat));
+		for (const ChatSession& chat : app.excluded_provider_chats) snapshot.app.excluded_provider_chats.push_back(PlanningMetadata(chat));
+		snapshot.app.hidden_agent_chat_ownership.data_root = app.hidden_agent_chat_ownership.data_root;
+		for (const ChatSession& chat : app.hidden_agent_chat_ownership.chats) snapshot.app.hidden_agent_chat_ownership.chats.push_back(PlanningMetadata(chat));
+		snapshot.app.resolved_native_sessions_by_chat_id = app.resolved_native_sessions_by_chat_id;
+		snapshot.live_chat_ids = ChatHistorySyncService().StartupImportLiveChatIds(app);
+		for (const Candidate& candidate : m_candidates)
+			if (candidate.new_workspace) snapshot.planned_folders.push_back(candidate.owner);
+		for (const Child& child : m_children)
+		{
+			snapshot.child_named_ids.insert(strings::Trim(child.chat.native_parent_session_id));
+			snapshot.child_named_ids.insert(child.chat.imported_read_only && strings::IsBlank(child.chat.native_session_id) ? child.chat.id : strings::Trim(child.chat.native_session_id));
+		}
+		snapshot.include_unregistered_local = m_include_unregistered_local;
+		snapshot.now = std::time(nullptr);
+		snapshot.app_fingerprint = AppPlanningFingerprint(app, &snapshot.live_chat_ids);
+		snapshot.fingerprint = ReviewPlanningFingerprint(snapshot.app_fingerprint);
+		return snapshot;
+	}
+
+	StartupNativeImportPlan StartupNativeImportService::PlanDiscovery(const StartupNativeImportPlanningSnapshot& snapshot, const ChatHistorySyncService::LocalHistoryDiscovery& discovery,
+	    chat_identity::NativeWorkspaceCache* shared_workspaces)
+	{
+		StartupNativeImportPlan plan;
+		plan.fingerprint = snapshot.fingerprint;
+		plan.app_fingerprint = snapshot.app_fingerprint;
+		const ChatHistorySyncService history;
+		// One pass resolves each distinct workspace and each registered folder once, whatever the candidate count.
+		chat_identity::NativeWorkspaceCache owned_workspaces;
+		chat_identity::NativeWorkspaceCache& workspaces = shared_workspaces != nullptr ? *shared_workspaces : owned_workspaces;
+		const std::size_t chat_count = discovery.chats.size();
+		const auto at = [&](std::size_t source) -> const ChatSession& { return source < chat_count ? discovery.chats[source] : discovery.codex_rollouts[source - chat_count].first; };
+		std::vector<const ChatSession*> parents;
+		std::vector<std::size_t> parent_sources;
+		std::unordered_set<std::string> named = snapshot.child_named_ids;
+		for (std::size_t source = 0; source < chat_count + discovery.codex_rollouts.size(); ++source)
+		{
+			const ChatSession& chat = at(source);
+			// Sub-chats leave the review list: each waits for its parent's decision.
+			if (!chat.native_parent_session_id.empty())
+			{
+				plan.children.push_back({source, chat_identity::NativeChildIdentityKeyForHistoryImport(chat, workspaces), chat_identity::NativeParentIdentityKeyForHistoryImport(chat, workspaces)});
+				named.insert(strings::Trim(chat.native_parent_session_id));
+				named.insert(chat.imported_read_only && strings::IsBlank(chat.native_session_id) ? chat.id : strings::Trim(chat.native_session_id));
+				continue;
+			}
+			parents.push_back(&chat);
+			parent_sources.push_back(source);
+		}
+		// Sub-chats are kept even when the rest of planning fails, as a failed filter keeps them.
+		try
+		{
+			const ImportedWorkspaceFolderIndex registered(snapshot.app.folders);
+			// Keys and owners of saved chats a sub-chat names, for linking and backfill on the app thread.
+			for (std::size_t position = 0; position < snapshot.app.chats.size(); ++position)
+			{
+				const ChatSession& chat = snapshot.app.chats[position];
+				const bool journal = strings::IsBlank(chat.native_session_id);
+				if (journal ? !chat.imported_read_only || !named.contains(chat.id) : !named.contains(strings::Trim(chat.native_session_id))) continue;
+				plan.saved_keys.emplace(position, journal ? chat_identity::NativeChildIdentityKeyForHistoryImport(chat, workspaces) : chat_identity::NativeIdentityKeyForHistoryImport(chat, workspaces));
+				if (!chat.imported_read_only && paths::IsControllerLocalWorkspace(chat))
+				{
+					const ChatFolder* owner = history.StartupImportWorkspaceOwner(snapshot.app, chat, &registered);
+					plan.saved_owners.emplace(position, owner != nullptr ? owner->id : std::string{});
+				}
+			}
+			const ChatHistorySyncService::StartupImportFilterContext context{&snapshot.live_chat_ids, &workspaces, &registered};
+			std::vector<std::optional<std::string>> owners;
+			if (!history.ClassifyStartupImportCandidates(snapshot.app, parents, owners, &plan.filter_error, true, &context))
+			{
+				plan.filter_failed = true;
+				return plan;
+			}
+			// Unmatched local histories share one planned workspace per directory; it is saved only with a selected import.
+			AppState planning;
+			planning.folders = snapshot.app.folders;
+			for (const ChatFolder& folder : snapshot.planned_folders)
+				if (ChatDomainService().FindFolderById(planning, folder.id) == nullptr) planning.folders.push_back(folder);
+			ImportedWorkspaceFolderIndex planning_folders(planning.folders, registered);
+			for (std::size_t index = 0; index < parents.size(); ++index)
+			{
+				if (!owners[index]) continue;
+				const ChatSession& chat = *parents[index];
+				const bool local = paths::IsControllerLocalWorkspace(chat);
+				StartupNativeImportPlan::History entry;
+				entry.source = parent_sources[index];
+				entry.folder_id = *owners[index];
+				if (entry.folder_id.empty() && local)
+				{
+					if (const ChatFolder* planned = history.PlanImportWorkspace(planning, chat, &planning_folders))
+					{
+						entry.folder_id = planned->id;
+						if (ChatDomainService().FindFolderById(snapshot.app, planned->id) == nullptr) entry.new_workspace = *planned;
+					}
+				}
+				if (entry.folder_id.empty() && (!snapshot.include_unregistered_local || !local)) continue;
+				// Startup leaves old and default-named sessions to explicit discovery: local ones are rescanned there, remote ones wait.
+				entry.deferred = !snapshot.include_unregistered_local &&
+				    (chat_import::NativeImportOlderThanStartupLimit(snapshot.app.settings, chat, snapshot.now) || chat_import::NativeImportHasProviderDefaultTitle(chat));
+				if (entry.deferred && local) continue;
+				entry.key = chat_identity::NativeIdentityKeyForHistoryImport(chat, workspaces);
+				plan.histories.push_back(std::move(entry));
+			}
+		}
+		catch (const std::exception& error)
+		{
+			plan.histories.clear();
+			plan.saved_keys.clear();
+			plan.saved_owners.clear();
+			plan.filter_failed = true;
+			plan.filter_error = std::string("History discovery could not be checked against current workspaces: ") + error.what();
+		}
+		return plan;
+	}
+
+	namespace
+	{
+		/// <summary>A planning failure keeps the discovery and is reported when the plan merges, like a failed filter.</summary>
+		StartupNativeImportPlan PlanOrReport(const StartupNativeImportPlanningSnapshot& snapshot, const ChatHistorySyncService::LocalHistoryDiscovery& discovery,
+		    chat_identity::NativeWorkspaceCache* workspaces)
+		try
+		{
+			return StartupNativeImportService::PlanDiscovery(snapshot, discovery, workspaces);
+		}
+		catch (const std::exception& error)
+		{
+			StartupNativeImportPlan failed;
+			failed.fingerprint = snapshot.fingerprint;
+			failed.app_fingerprint = snapshot.app_fingerprint;
+			failed.filter_failed = true;
+			failed.filter_error = std::string("History discovery could not be checked against current workspaces: ") + error.what();
+			return failed;
+		}
+	}
+
+	std::future<StartupNativeImportService::ScanOutcome> StartupNativeImportService::LaunchScan(const AppState& app, StartupNativeImportScanRequest request)
+	{
+		auto snapshot = std::make_shared<const StartupNativeImportPlanningSnapshot>(CapturePlanningSnapshot(app));
+		return std::async(std::launch::async, [scanner = m_scanner, request = std::move(request), stop = m_stop.get_token(), snapshot = std::move(snapshot)]()
+		{
+			uam::platform::LowerCurrentThreadToBackgroundPriority();
+			ScanOutcome outcome;
+			outcome.discovery = scanner(request, stop);
+			// Filtering, owner resolution, identity keys and workspace planning all probe the file system; keep them here.
+			outcome.workspaces = std::make_shared<chat_identity::NativeWorkspaceCache>();
+			if (!stop.stop_requested()) outcome.plan = PlanOrReport(*snapshot, outcome.discovery, outcome.workspaces.get());
+			return outcome;
+		});
+	}
+
+	bool StartupNativeImportService::LaunchReplan(const AppState& app, ScanOutcome outcome)
+	{
+		// Replans are not capped, so a continuously changing app logs the first and then every power-of-two replan.
+		const std::size_t replan = ++outcome.replan_count;
+		if ((replan & (replan - 1)) == 0)
+			diagnostics::Write("Startup native history: workspaces, chats or import settings changed during discovery; checking " +
+			    std::to_string(outcome.discovery.chats.size() + outcome.discovery.codex_rollouts.size()) + " found sessions again before offering them (replan " + std::to_string(replan) + ").");
+		outcome.replanned = true;
+		outcome.plan.reset();
+		auto snapshot = std::make_shared<const StartupNativeImportPlanningSnapshot>(CapturePlanningSnapshot(app));
+		try
+		{
+			m_scan = std::async(std::launch::async, [outcome = std::move(outcome), stop = m_stop.get_token(), snapshot = std::move(snapshot)]() mutable
+			{
+				uam::platform::LowerCurrentThreadToBackgroundPriority();
+				if (!outcome.workspaces) outcome.workspaces = std::make_shared<chat_identity::NativeWorkspaceCache>();
+				if (!stop.stop_requested()) outcome.plan = PlanOrReport(*snapshot, outcome.discovery, outcome.workspaces.get());
+				return std::move(outcome);
+			});
+			return true;
+		}
+		catch (const std::exception& error)
+		{
+			AddError(std::string("History discovery could not be checked against current workspaces; retry the scan: ") + error.what());
+			return false;
+		}
+	}
+
+	bool StartupNativeImportService::PlannedKeysCurrent(const AppState& app) const
+	{
+		return m_saved_keys_fingerprint && *m_saved_keys_fingerprint == AppPlanningFingerprint(app);
+	}
+
 	StartupNativeImportService::~StartupNativeImportService()
 	{
 		Cancel();
@@ -292,11 +561,7 @@ namespace uam
 		m_scan_request = request;
 		try
 		{
-			m_scan = std::async(std::launch::async, [scanner = m_scanner, request = std::move(request), stop = m_stop.get_token()]()
-			{
-				uam::platform::LowerCurrentThreadToBackgroundPriority();
-				return scanner(request, stop);
-			});
+			m_scan = LaunchScan(app, std::move(request));
 		}
 		catch (const std::exception& error)
 		{
@@ -403,11 +668,7 @@ namespace uam
 		m_scan_request = request;
 		try
 		{
-			m_scan = std::async(std::launch::async, [scanner = m_scanner, request = std::move(request), stop = m_stop.get_token()]()
-			{
-				uam::platform::LowerCurrentThreadToBackgroundPriority();
-				return scanner(request, stop);
-			});
+			m_scan = LaunchScan(app, std::move(request));
 		}
 		catch (const std::exception& error)
 		{
@@ -468,109 +729,124 @@ namespace uam
 				const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, scope.host.id);
 				return host != nullptr && host->runner_status == "installing";
 			})) return false;
-			ChatHistorySyncService::LocalHistoryDiscovery discovery;
-			try { discovery = m_scan.get(); }
-			catch (const std::exception& error) { AddError(std::string("History discovery failed: ") + error.what()); }
-			if (m_stop.stop_requested()) return false;
-			if (discovery.open_code_next_offset) app.open_code_history_scan_offset = *discovery.open_code_next_offset;
-			const bool changed_list = m_scan_request.open_code_remaining &&
-			    (discovery.open_code_list_fingerprint != m_scan_request.open_code_list_fingerprint ||
-			     discovery.open_code_session_count < *m_scan_request.open_code_remaining);
-			if (changed_list)
+			ScanOutcome outcome;
+			try { outcome = m_scan.get(); }
+			catch (const std::exception& error)
 			{
-				AddError("OpenCode session list changed during discovery; retry the scan.");
-				discovery.CancelPending();
-				m_phase = m_phase == "scanning" && m_scoped_scanner && RemoteScansOutstanding() ? "scanning" : m_candidates.empty() ? "complete" : "ready";
-				return true;
+				AddError(std::string("History discovery failed: ") + error.what());
+				// Nothing was found, so there is nothing to plan again: an empty plan for the current state merges as nothing.
+				outcome.plan.emplace();
+				outcome.plan->app_fingerprint = AppPlanningFingerprint(app);
+				outcome.plan->fingerprint = ReviewPlanningFingerprint(outcome.plan->app_fingerprint);
+				// Keep keys an earlier plan resolved for this state, so child linking still reads only memory.
+				if (m_saved_keys_fingerprint == outcome.plan->app_fingerprint)
+				{
+					outcome.plan->saved_keys = m_saved_keys;
+					outcome.plan->saved_owners = m_saved_owners;
+				}
+			}
+			if (m_stop.stop_requested()) return false;
+			ChatHistorySyncService::LocalHistoryDiscovery& discovery = outcome.discovery;
+			if (!outcome.replanned)
+			{
+				if (discovery.open_code_next_offset) app.open_code_history_scan_offset = *discovery.open_code_next_offset;
+				const bool changed_list = m_scan_request.open_code_remaining &&
+				    (discovery.open_code_list_fingerprint != m_scan_request.open_code_list_fingerprint ||
+				     discovery.open_code_session_count < *m_scan_request.open_code_remaining);
+				if (changed_list)
+				{
+					AddError("OpenCode session list changed during discovery; retry the scan.");
+					discovery.CancelPending();
+					m_phase = m_phase == "scanning" && m_scoped_scanner && RemoteScansOutstanding() ? "scanning" : m_candidates.empty() ? "complete" : "ready";
+					return true;
+				}
 			}
 			const std::size_t remaining = m_scan_request.open_code_remaining.value_or(discovery.open_code_session_count);
 			const bool continue_scan = discovery.open_code_scanned_count > 0 && discovery.open_code_scanned_count < remaining &&
 			    discovery.open_code_next_offset && !discovery.open_code_list_fingerprint.empty();
-			m_omitted_error_count += discovery.result.omitted_error_count;
-			for (const std::string& error : discovery.result.errors)
+			if (!outcome.replanned)
 			{
-				if (continue_scan && error == "OpenCode history scan stopped before all sessions were read; retry to continue.") continue;
-				AddError(error);
+				m_omitted_error_count += discovery.result.omitted_error_count;
+				for (const std::string& error : discovery.result.errors)
+				{
+					if (continue_scan && error == "OpenCode history scan stopped before all sessions were read; retry to continue.") continue;
+					AddError(error);
+				}
 			}
-			// Sub-chats leave the review list here: each waits for its parent's decision, and a fresh scan replaces an earlier sighting.
-			const auto take_child = [&](ChatSession& chat, std::filesystem::path* rollout)
+			// The worker planned against the app as it was at launch. Merge only while nothing planning read has changed
+			// since; otherwise plan the same discovery again from a fresh snapshot. A stale plan is never merged.
+			if (!outcome.plan || outcome.plan->fingerprint != PlanningFingerprint(app))
 			{
-				if (chat.native_parent_session_id.empty()) return false;
-				Child child{std::move(chat), rollout != nullptr ? std::move(*rollout) : std::filesystem::path{}, {}, {}};
-				child.key = chat_identity::NativeChildIdentityKeyForHistoryImport(child.chat);
-				child.parent_key = chat_identity::NativeParentIdentityKeyForHistoryImport(child.chat);
+				if (LaunchReplan(app, std::move(outcome))) return true;
+				m_phase = m_phase == "scanning" && m_scoped_scanner && RemoteScansOutstanding() ? "scanning" : m_candidates.empty() ? "complete" : "ready";
+				return true;
+			}
+			StartupNativeImportPlan& plan = *outcome.plan;
+			const std::size_t chat_count = discovery.chats.size();
+			// Sub-chats leave the review list here: each waits for its parent's decision, and a fresh scan replaces an earlier sighting.
+			for (StartupNativeImportPlan::Child& found : plan.children)
+			{
+				Child child;
+				if (found.source < chat_count) child.chat = std::move(discovery.chats[found.source]);
+				else
+				{
+					child.chat = std::move(discovery.codex_rollouts[found.source - chat_count].first);
+					child.rollout = std::move(discovery.codex_rollouts[found.source - chat_count].second);
+				}
+				child.key = std::move(found.key);
+				child.parent_key = std::move(found.parent_key);
 				std::erase_if(m_children, [&](const Child& known) { return known.key == child.key; });
 				m_children.push_back(std::move(child));
-				return true;
-			};
-			std::erase_if(discovery.chats, [&](ChatSession& chat) { return take_child(chat, nullptr); });
-			std::erase_if(discovery.codex_rollouts, [&](std::pair<ChatSession, std::filesystem::path>& record) { return take_child(record.first, &record.second); });
-			std::string filter_error;
-			if (!ChatHistorySyncService().FilterStartupImportCandidates(app, discovery, &filter_error, true))
+			}
+			if (plan.filter_failed)
 			{
-				AddError(filter_error);
+				AddError(plan.filter_error);
 				discovery.CancelPending();
 				m_phase = "complete";
 				return true;
 			}
-			LinkOwnedChildren(app);
-			// Identity keys canonicalize workspace paths (a file-system query each); derive each once per pass.
+			m_saved_keys = std::move(plan.saved_keys);
+			m_saved_owners = std::move(plan.saved_owners);
+			m_saved_keys_fingerprint = plan.app_fingerprint;
+			// The plan matched the current state just above, so the keys it resolved are current.
+			LinkOwnedChildren(app, true);
 			std::set<std::pair<std::string, std::string>> candidate_keys;
 			for (const std::vector<Candidate>* staged : {&m_candidates, &m_startup_deferred})
-				for (const Candidate& existing : *staged)
-					candidate_keys.emplace(chat_identity::NativeIdentityKeyForHistoryImport(existing.chat), existing.chat.execution_host_id);
-			const std::time_t now = std::time(nullptr);
-			// Unmatched local histories share one planned workspace per directory; it is saved only with a selected import.
-			AppState plan;
-			plan.folders = app.folders;
-			for (const Candidate& existing : m_candidates)
-				if (existing.new_workspace && ChatDomainService().FindFolderById(plan, existing.owner.id) == nullptr) plan.folders.push_back(existing.owner);
-			const auto add = [&](ChatSession chat, std::filesystem::path rollout)
+				for (const Candidate& existing : *staged) candidate_keys.emplace(existing.key, existing.chat.execution_host_id);
+			for (StartupNativeImportPlan::History& entry : plan.histories)
 			{
-				const ChatFolder* owner = ChatDomainService().FindFolderById(app, chat.folder_id);
-				bool new_workspace = false;
-				if (owner == nullptr && paths::IsControllerLocalWorkspace(chat))
-				{
-					if (const ChatFolder* planned = ChatHistorySyncService().PlanImportWorkspace(plan, chat))
-					{
-						new_workspace = ChatDomainService().FindFolderById(app, planned->id) == nullptr;
-						owner = new_workspace ? planned : ChatDomainService().FindFolderById(app, planned->id);
-						chat.folder_id = owner->id;
-					}
-				}
-				if (owner == nullptr && (!m_include_unregistered_local || !paths::IsControllerLocalWorkspace(chat))) return;
-				const std::string key = chat_identity::NativeIdentityKeyForHistoryImport(chat);
-				if (candidate_keys.contains({key, chat.execution_host_id})) return;
-				// Startup leaves old and default-named sessions to explicit discovery: local ones are rescanned there, remote ones wait below.
-				const bool deferred = !m_include_unregistered_local &&
-				    (chat_import::NativeImportOlderThanStartupLimit(app.settings, chat, now) || chat_import::NativeImportHasProviderDefaultTitle(chat));
-				if (deferred && paths::IsControllerLocalWorkspace(chat)) return;
+				ChatSession& chat = entry.source < chat_count ? discovery.chats[entry.source] : discovery.codex_rollouts[entry.source - chat_count].first;
+				const ChatFolder* owner = ChatDomainService().FindFolderById(app, entry.folder_id);
+				const bool new_workspace = owner == nullptr && entry.new_workspace.has_value();
+				if (new_workspace) owner = &*entry.new_workspace;
+				if (owner == nullptr && (!m_include_unregistered_local || !paths::IsControllerLocalWorkspace(chat))) continue;
+				if (candidate_keys.contains({entry.key, chat.execution_host_id})) continue;
 				Candidate candidate;
 				if (!paths::IsControllerLocalWorkspace(chat))
 				{
 					const auto captured = m_remote_hosts.find(chat.execution_host_id);
 					const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
-					const auto captured_folder = m_remote_folders.find(owner->id);
+					const auto captured_folder = owner != nullptr ? m_remote_folders.find(owner->id) : m_remote_folders.end();
 					if (captured == m_remote_hosts.end() || captured_folder == m_remote_folders.end() || host == nullptr ||
 					    !execution_hosts::SameConnection(captured->second, *host) ||
-					    captured_folder->second.directory != owner->directory || captured_folder->second.execution_host_id != owner->execution_host_id) return;
+					    captured_folder->second.directory != owner->directory || captured_folder->second.execution_host_id != owner->execution_host_id) continue;
 					candidate.host = captured->second;
 				}
+				chat.folder_id = owner != nullptr ? owner->id : std::string{};
 				candidate.summary = {m_generation + ":" + std::to_string(m_candidates.size() + m_startup_deferred.size()), chat.provider_id,
 				    chat.native_session_id, strings::SafeLine(chat.title, 512, true), chat.folder_id, chat.workspace_directory,
 				    strings::NonEmptyOrFallback(chat.execution_host_id, "local"), chat.updated_at};
-				const auto exported = discovery.open_code_exports.find(key);
+				const auto exported = discovery.open_code_exports.find(entry.key);
 				if (exported != discovery.open_code_exports.end()) candidate.open_code_export = std::move(exported->second);
 				candidate.chat = std::move(chat);
-				candidate.rollout = std::move(rollout);
+				if (entry.source >= chat_count) candidate.rollout = std::move(discovery.codex_rollouts[entry.source - chat_count].second);
 				if (owner != nullptr) candidate.owner = *owner;
 				candidate.new_workspace = candidate.summary.new_workspace = new_workspace;
 				candidate.summary.workspace_title = strings::SafeLine(candidate.owner.title, 512, true);
-				candidate_keys.emplace(key, candidate.chat.execution_host_id);
-				(deferred ? m_startup_deferred : m_candidates).push_back(std::move(candidate));
-			};
-			for (ChatSession& chat : discovery.chats) add(std::move(chat), {});
-			for (std::pair<ChatSession, std::filesystem::path>& record : discovery.codex_rollouts) add(std::move(record.first), std::move(record.second));
+				candidate.key = entry.key;
+				candidate_keys.emplace(std::move(entry.key), candidate.chat.execution_host_id);
+				(entry.deferred ? m_startup_deferred : m_candidates).push_back(std::move(candidate));
+			}
 			if (discovery.open_code_scanned_count > remaining)
 				AddError("OpenCode history scan exceeded its remaining session budget.");
 			else if (continue_scan)
@@ -582,11 +858,7 @@ namespace uam
 				m_scan_request.open_code_list_fingerprint = discovery.open_code_list_fingerprint;
 				try
 				{
-					m_scan = std::async(std::launch::async, [scanner = m_scanner, request = m_scan_request, stop = m_stop.get_token()]
-					{
-						uam::platform::LowerCurrentThreadToBackgroundPriority();
-						return scanner(request, stop);
-					});
+					m_scan = LaunchScan(app, m_scan_request);
 					return true;
 				}
 				catch (const std::exception&)
@@ -665,14 +937,19 @@ namespace uam
 		HoldBackIneligibleRemoteCandidates(app);
 		ChatHistorySyncService::LocalHistoryDiscovery metadata;
 		for (const Candidate& candidate : m_candidates) metadata.chats.push_back(OwnershipMetadata(candidate.chat));
-		if (!ChatHistorySyncService().FilterStartupImportCandidates(app, metadata, error_out, true)) return false;
+		// Ownership is rechecked live here; one pass still resolves each folder and distinct workspace once.
+		chat_identity::NativeWorkspaceCache workspaces;
+		const ImportedWorkspaceFolderIndex registered(app.folders);
+		const ChatHistorySyncService::StartupImportFilterContext context{nullptr, &workspaces, &registered};
+		if (!ChatHistorySyncService().FilterStartupImportCandidates(app, metadata, error_out, true, &context)) return false;
 		AppState plan;
 		plan.folders = app.folders;
 		plan.settings.execution_hosts = app.settings.execution_hosts;
 		for (const Candidate& candidate : m_candidates)
 			if (candidate.new_workspace && ChatDomainService().FindFolderById(plan, candidate.owner.id) == nullptr) plan.folders.push_back(candidate.owner);
+		const ImportedWorkspaceFolderIndex plan_folders(plan.folders, registered);
 		std::unordered_set<std::string> eligible;
-		for (const ChatSession& chat : metadata.chats) eligible.insert(chat_identity::NativeIdentityKeyForHistoryImport(chat));
+		for (const ChatSession& chat : metadata.chats) eligible.insert(chat_identity::NativeIdentityKeyForHistoryImport(chat, workspaces));
 		std::erase_if(m_candidates, [&](const Candidate& candidate)
 		{
 			const ChatFolder* owner = ChatDomainService().FindFolderById(app, candidate.owner.id);
@@ -680,13 +957,13 @@ namespace uam
 			const bool installing = host != nullptr && host->runner_status == "installing";
 			const bool staged_or_unassigned = paths::IsControllerLocalWorkspace(candidate.chat) &&
 			    (candidate.new_workspace || (m_include_unregistered_local && candidate.owner.id.empty()));
-			const ChatFolder* resolved = ChatHistorySyncService().StartupImportWorkspaceOwner(plan, candidate.chat);
+			const ChatFolder* resolved = ChatHistorySyncService().StartupImportWorkspaceOwner(plan, candidate.chat, &plan_folders);
 			const bool owner_changed = owner == nullptr ? !staged_or_unassigned
 			    : owner->directory != candidate.owner.directory || owner->execution_host_id != candidate.owner.execution_host_id;
 			const bool staged_conflict = candidate.new_workspace && resolved != nullptr && resolved->id != candidate.owner.id;
 			return (candidate.host && (host == nullptr || (host->runner_status != "ready" && !installing) || !execution_hosts::SameConnection(*candidate.host, *host))) ||
 			    owner_changed || staged_conflict ||
-			    (!installing && !eligible.contains(chat_identity::NativeIdentityKeyForHistoryImport(candidate.chat)));
+			    (!installing && !eligible.contains(chat_identity::NativeIdentityKeyForHistoryImport(candidate.chat, workspaces)));
 		});
 		for (Candidate& candidate : m_candidates)
 		{
@@ -740,10 +1017,11 @@ namespace uam
 		}
 		if (ChatDomainService().FindFolderById(app, assignment.id) == nullptr) assignment.title = name;
 		if (ChatDomainService().FindFolderById(plan, assignment.id) == nullptr) plan.folders.push_back(assignment);
+		const ImportedWorkspaceFolderIndex plan_folders(plan.folders);
 		for (const Candidate& candidate : m_candidates)
 		{
 			if (candidate.owner.id.empty()) continue;
-			const ChatFolder* resolved = ChatHistorySyncService().StartupImportWorkspaceOwner(plan, candidate.chat);
+			const ChatFolder* resolved = ChatHistorySyncService().StartupImportWorkspaceOwner(plan, candidate.chat, &plan_folders);
 			if (resolved == nullptr || resolved->id != candidate.owner.id)
 				return reject("This workspace conflicts with another reviewed assignment. Import that selection first, then discover again.");
 		}
@@ -811,6 +1089,7 @@ namespace uam
 		std::vector<std::string> added_keys;
 		if (!ChatHistorySyncService().AddNativeImportTombstones(app.data_root, declined_chats, added_keys))
 			return reject("Declined history could not be saved. No decisions were applied.");
+		if (!declined_chats.empty()) ++m_decision_revision;
 		const std::unordered_set<std::string> selected(selected_candidates.begin(), selected_candidates.end());
 		m_import.preparation_stop = std::stop_source{};
 		// Sub-chats follow their parent's decision. Collect them nearest level first, each in its parent's reviewed workspace.
@@ -877,10 +1156,11 @@ namespace uam
 		}
 	}
 
-	std::unordered_map<std::string, ChatSession*> StartupNativeImportService::SavedChatsNamedByChildren(AppState& app) const
+	std::unordered_map<std::string, ChatSession*> StartupNativeImportService::SavedChatsNamedByChildren(AppState& app, bool planned_keys_current) const
 	{
-		// This runs on the app thread. An import key resolves the chat's workspace on disk, so only chats whose native
-		// ID a found child carries or names are keyed, each distinct workspace once.
+		// This runs on the app thread. The scan worker keyed these chats while its plan is current; otherwise an import
+		// key resolves the chat's workspace on disk, so only chats whose native ID a found child carries or names are
+		// keyed, each distinct workspace once.
 		std::unordered_set<std::string> named;
 		for (const Child& child : m_children)
 		{
@@ -889,11 +1169,14 @@ namespace uam
 		}
 		chat_identity::NativeWorkspaceCache workspaces;
 		std::unordered_map<std::string, ChatSession*> saved;
-		for (ChatSession& chat : app.chats)
+		for (std::size_t position = 0; position < app.chats.size(); ++position)
 		{
+			ChatSession& chat = app.chats[position];
 			const bool journal = strings::IsBlank(chat.native_session_id);
 			if (journal ? !chat.imported_read_only || !named.contains(chat.id) : !named.contains(strings::Trim(chat.native_session_id))) continue;
-			saved.insert_or_assign(journal ? chat_identity::NativeChildIdentityKeyForHistoryImport(chat) : chat_identity::NativeIdentityKeyForHistoryImport(chat, workspaces), &chat);
+			const auto planned = planned_keys_current ? m_saved_keys.find(position) : m_saved_keys.end();
+			saved.insert_or_assign(planned != m_saved_keys.end() ? planned->second
+			    : journal ? chat_identity::NativeChildIdentityKeyForHistoryImport(chat) : chat_identity::NativeIdentityKeyForHistoryImport(chat, workspaces), &chat);
 		}
 		return saved;
 	}
@@ -903,7 +1186,8 @@ namespace uam
 		// Only a scan the user started brings in sub-chats of chats already in UAM, once, when that scan settles. Startup
 		// never adds chats nobody asked for, and neither does a background remote retry that follows a manual scan.
 		if (!std::exchange(m_backfill_due, false) || m_children.empty() || !m_selected.empty() || m_import.Pending()) return false;
-		const std::unordered_map<std::string, ChatSession*> saved = SavedChatsNamedByChildren(app);
+		const bool planned = PlannedKeysCurrent(app);
+		const std::unordered_map<std::string, ChatSession*> saved = SavedChatsNamedByChildren(app, planned);
 		std::unordered_map<std::string, std::string> folders;
 		std::unordered_map<std::string, std::size_t> saved_children;
 		std::unordered_map<std::string, const ChatFolder*> owners;
@@ -915,6 +1199,12 @@ namespace uam
 			const ChatSession& chat = *parent->second;
 			if (chat.imported_read_only || !paths::IsControllerLocalWorkspace(chat)) continue;
 			// The staged import files a history under the workspace that owns its directory; a parent the user moved elsewhere is left alone.
+			const std::size_t position = static_cast<std::size_t>(parent->second - app.chats.data());
+			if (const auto known = planned ? m_saved_owners.find(position) : m_saved_owners.end(); known != m_saved_owners.end())
+			{
+				if (!known->second.empty() && known->second == chat.folder_id) folders.emplace(child.parent_key, chat.folder_id);
+				continue;
+			}
 			const auto [owner, fresh] = owners.try_emplace(chat.workspace_worktree_directory + '\n' + chat.workspace_directory, nullptr);
 			if (fresh) owner->second = ChatHistorySyncService().StartupImportWorkspaceOwner(app, chat);
 			if (owner->second != nullptr && owner->second->id == chat.folder_id) folders.emplace(child.parent_key, chat.folder_id);
@@ -929,11 +1219,11 @@ namespace uam
 		return true;
 	}
 
-	void StartupNativeImportService::LinkOwnedChildren(AppState& app)
+	void StartupNativeImportService::LinkOwnedChildren(AppState& app, bool planned_keys_current)
 	{
 		// Workspace deletion owns its chats until it finishes; the next scan links them.
 		if (m_children.empty() || !app.worktree_operation_chat_ids.empty()) return;
-		const std::unordered_map<std::string, ChatSession*> saved = SavedChatsNamedByChildren(app);
+		const std::unordered_map<std::string, ChatSession*> saved = SavedChatsNamedByChildren(app, planned_keys_current);
 		for (const Child& found : m_children)
 		{
 			const auto child = saved.find(found.key);
@@ -960,7 +1250,7 @@ namespace uam
 		m_import.expected_hosts.clear();
 		for (Candidate& candidate : m_selected) m_candidates.push_back(std::move(candidate));
 		m_selected.clear();
-		LinkOwnedChildren(app);
+		if (!m_children.empty()) LinkOwnedChildren(app, PlannedKeysCurrent(app));
 		std::string error;
 		if (!Revalidate(app, &error)) AddError(error);
 		m_phase = m_candidates.empty() ? "complete" : "ready";

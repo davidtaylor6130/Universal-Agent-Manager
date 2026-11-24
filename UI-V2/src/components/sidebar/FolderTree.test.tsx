@@ -1,7 +1,7 @@
 import { addOutgoingAttempt, automationPromptRowKey, outgoingScope, resetOutgoingPresentation } from '../../utils/outgoingMessagePresentation'
 import { act } from 'react'
 import { createRoot } from 'react-dom/client'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { useAppStore } from '../../store/useAppStore'
 import { APP_FAILURE_EVENT } from '../../utils/appFailure'
 import type { Folder, Session } from '../../types/session'
@@ -2029,6 +2029,10 @@ describe('FolderTree', () => {
     const renameFolder = vi.fn(async () => false)
     const deleteFolder = vi.fn(async () => false)
     useAppStore.setState({ renameFolder, deleteFolder })
+    const failures: string[] = []
+    const collect = (event: Event) => { const { message, detail } = (event as CustomEvent<{ message: string; detail: string }>).detail; failures.push(`${message} | ${detail}`) }
+    window.addEventListener(APP_FAILURE_EVENT, collect)
+    onTestFinished(() => window.removeEventListener(APP_FAILURE_EVENT, collect))
     const host = document.createElement('div')
     document.body.appendChild(host)
     const root = createRoot(host)
@@ -2043,7 +2047,7 @@ describe('FolderTree', () => {
       directory.dispatchEvent(new Event('input', { bubbles: true }))
     })
     await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Save')!.click())
-    expect(host.textContent).toContain('workspace could not be updated')
+    expect(failures).toContain('The workspace could not be updated. | Finish active work and try again.')
     expect(host.querySelector('input[placeholder="Workspace directory"]')).toBeTruthy()
 
     act(() => (host.querySelector('button[aria-label="Folder actions"]') as HTMLButtonElement).click())
@@ -2249,8 +2253,12 @@ describe('FolderTree', () => {
     host.remove()
   })
 
-  it('keeps a failed native history review visible instead of looking empty', async () => {
+  it('reports a failed native history review instead of looking empty', async () => {
     useAppStore.setState({ rescanFolderChats: vi.fn(() => Promise.resolve(false)) })
+    const failures: string[] = []
+    const collect = (event: Event) => failures.push((event as CustomEvent<{ message: string }>).detail.message)
+    window.addEventListener(APP_FAILURE_EVENT, collect)
+    onTestFinished(() => window.removeEventListener(APP_FAILURE_EVENT, collect))
     const host = document.createElement('div')
     document.body.appendChild(host)
     const root = createRoot(host)
@@ -2260,17 +2268,14 @@ describe('FolderTree', () => {
     const rescan = Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Review chats'))
     await act(async () => { rescan?.click(); await Promise.resolve() })
 
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Could not rescan chats for Project')
-    const dismiss = host.querySelector<HTMLButtonElement>('[aria-label="Dismiss folder action error"]')
-    expect(dismiss).not.toBeNull()
-    act(() => dismiss?.click())
+    expect(failures).toEqual(['Could not rescan chats for Project.'])
     expect(host.querySelector('[role="alert"]')).toBeNull()
 
     act(() => host.querySelector('[data-testid="folder-header-project"]')
       ?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true })))
     const retry = Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Review chats'))
     await act(async () => { retry?.click(); await Promise.resolve() })
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Could not rescan chats for Project')
+    expect(failures).toEqual(['Could not rescan chats for Project.', 'Could not rescan chats for Project.'])
 
 
     act(() => root.unmount())

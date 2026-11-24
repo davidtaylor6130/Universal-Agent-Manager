@@ -6,7 +6,7 @@ import type { CustomIcon } from '../../types/customIcon'
 // store re-exports everything here so existing imports keep working.
 
 import type { Attachment, MessageBlock, MessageToolCall } from '../../types/message'
-import type { GoalStatus } from '../../types/goal'
+import type { Goal } from '../../types/goal'
 import type { StoredTheme } from '../../utils/themeStorage'
 import type { ResourceCollection } from '../../types/resourceCollection'
 import type { MemoryLevel } from '../../types/memory'
@@ -191,31 +191,10 @@ export interface CppChat {
   goalMode?: boolean
 }
 
-export interface CppGoal {
-  id: string
-  objective: string
-  status: GoalStatus
-  tokenBudget?: number
-  tokensUsed?: number
-  blockedTurnCount?: number
-  lastBlocker?: string
-	lastBlockerKind?: string
-  lastDiagnostic?: string
-  lastDecisionSource?: string
-  pendingContinuation?: boolean
-  completedItems?: string[]
-  remainingItems?: string[]
-  currentStep?: string
-  lastVerification?: string
-  lastNextPrompt?: string
-  sameNextPromptCount?: number
-  loopCount?: number
+/** The native goal record: the frontend Goal before its chat id is attached and its ISO timestamps become Dates. */
+export type CppGoal = Omit<Goal, 'chatId' | 'createdAt' | 'updatedAt'> & {
   createdAt: string
   updatedAt: string
-	executionOwner?: 'uam' | 'provider'
-	workerModelId?: string
-	reviewerModelId?: string
-	providerCommand?: string
 }
 
 export interface GitWorktreeStatus {
@@ -789,6 +768,8 @@ export interface ShellAction {
   acceptsFolders: boolean
   enabled: boolean
   openWorkspace: boolean
+  /** Set when the saved entry failed validation: it stays disabled and read-only, and saving keeps it as saved. */
+  invalidReason?: string
 }
 
 export interface ProviderAvailabilityOverride {
@@ -1003,10 +984,21 @@ export interface VcsCommitStatus {
   lineStatsReady: boolean
   /** The chat comparison has no usable baseline, so Retry cannot help. */
   baselineUnavailable?: boolean
+  /** Renderer-only: the read was refused because the chat's workspace or host changed while it ran, so the result is stale rather than a failure. */
+  contextChanged?: boolean
   /** What the active system offers beyond status, diff and commit, such as `history` and `update`. */
   capabilities?: string[]
+  /** Set when the workspace is UAM's hidden Git copy of a plain folder or SVN working copy: commits stay in the copy. */
+  localSnapshot?: VcsLocalSnapshot
   warning: string
   error: string
+}
+
+/** The folder a local snapshot was copied from, and what its own system offers there (`history`, `update`, `originComparison`). */
+export interface VcsLocalSnapshot {
+  sourceKind: 'svn' | 'folder'
+  sourceDirectory: string
+  sourceCapabilities: string[]
 }
 
 /** Where one SVN repository keeps its main line, branches and tags, as repository-relative folders. */
@@ -1156,6 +1148,8 @@ export interface CppCompanionUnchangedState {
 }
 
 export interface CppStatePatch {
+  /** A patched chat named a field copy this page lacks (#947); it was left out and the store pulls full state. */
+  skippedChats?: true
   startupNativeImports?: StartupNativeImportStatus
   stateRevision?: number
   folders?: CppFolder[]

@@ -73,8 +73,9 @@ std::string ToolKey(std::string_view message_id, std::string_view tool_id)
 	return "v2:" + Encode(message_id) + ":" + Encode(tool_id);
 }
 
-Session::Session(Query query, PublishPolicy publish_policy, Emit emit, std::string native_version)
-	: query_(std::move(query)), publish_policy_(std::move(publish_policy)), emit_(std::move(emit)), native_version_(std::move(native_version)) {}
+Session::Session(Query query, PublishPolicy publish_policy, Emit emit, std::string native_version, VerifyPermission verify_permission)
+	: query_(std::move(query)), publish_policy_(std::move(publish_policy)), verify_permission_(std::move(verify_permission)),
+	  emit_(std::move(emit)), native_version_(std::move(native_version)) {}
 
 void Session::Reply(const Json& id, const Json& result)
 {
@@ -112,13 +113,15 @@ void Session::Policy(const Json& params)
 	Json capture = meta; capture["effectiveReadOnly"] = read_only_;
 	if (capture != policy_capture_) session_grants_.clear();
 	policy_capture_ = std::move(capture);
-	publish_policy_(session_id_, cwd_, read_only_, deny_);
+	const bool defer_binding = verify_permission_ && !ready_ && !session_id_.empty();
+	if (!defer_binding) publish_policy_(session_id_, cwd_, read_only_, deny_);
 	if (session_id_.empty()) return;
 	const Json rules = Rules(read_only_, deny_);
 	query_("PATCH", Route(), {{"permissions", rules}});
 	const Json observed = Data(query_("GET", Route(), nullptr));
 	if (observed.value("id", "") != session_id_ || observed.value("location", Json::object()).value("directory", "") != cwd_ || observed.value("permissions", Json{}) != rules)
 		throw std::runtime_error("OpenCode V2 did not confirm the exact session, workspace and UAM permission rules.");
+	if (defer_binding) publish_policy_(session_id_, cwd_, read_only_, deny_);
 }
 
 Json Session::Options()
@@ -181,7 +184,9 @@ Json Session::Setup(const Json& params, bool load)
 	cwd_ = params.at("cwd").get<std::string>();
 	if (cwd_.empty()) throw std::runtime_error("OpenCode V2 requires an exact workspace.");
 	Policy(params); // inactive root denies native work until binding is complete
-	query_("GET", "/api/location?location[directory]=" + Encode(cwd_), nullptr);
+	const auto location = query_("GET", "/api/location?location[directory]=" + Encode(cwd_), nullptr);
+	if (verify_permission_ && (!location.is_object() || !location.contains("directory") || location.at("directory") != cwd_))
+		throw std::runtime_error("OpenCode V2 did not confirm the captured workspace. Input remains held.");
 	// Resolve the plugin service explicitly; location lookup alone is not a
 	// registration receipt. The transport still requires the nonce-bound proof.
 	query_("GET", "/api/plugin?location[directory]=" + Encode(cwd_), nullptr);
@@ -217,14 +222,18 @@ Json Session::Setup(const Json& params, bool load)
 	}
 	else info = Data(query_("POST", "/api/session", {{"location", {{"directory", cwd_}}}, {"agent", read_only_ ? "plan" : "build"}, {"permissions", Rules(read_only_, deny_)}}));
 	session_id_ = info.at("id").get<std::string>();
-	if (!Id(session_id_) || info.value("location", Json::object()).value("directory", "") != cwd_) throw std::runtime_error("OpenCode V2 returned an invalid session binding.");
+	const bool valid_id = Id(session_id_);
+	startup_created_ = verify_permission_ && !load && valid_id;
+	if (!valid_id || info.value("location", Json::object()).value("directory", "") != cwd_) throw std::runtime_error("OpenCode V2 returned an invalid session binding.");
 	const auto native_model = ModelRef(info.value("model", Json::object()));
 	if (native_model.is_object() && native_model.contains("id")) model_ = native_model.value("providerID", "") + "/" + native_model.value("id", "");
 	if (native_model.is_object() && native_model.contains("variant")) model_ += "/" + native_model.at("variant").get<std::string>();
 	mode_ = info.value("agent", "build");
 	if (mode_ != "build" && mode_ != "plan") throw std::runtime_error("OpenCode V2 resume uses an unverified native agent policy.");
 	if (load) RequireEmptyInbox(); // never rewrite policy for pre-existing queued work
+	if (verify_permission_) verify_permission_(session_id_, cwd_, PermissionProbe::Deny);
 	Policy(params); // replace/read back old session grants before readiness
+	if (verify_permission_) verify_permission_(session_id_, cwd_, PermissionProbe::Ask);
 	Json result = Options();
 	result["sessionId"] = session_id_;
 	ready_ = true;
@@ -382,7 +391,20 @@ void Session::Handle(const Json& message)
 			    ". Input is held and is never replayed automatically.");
 			return;
 		}
-		if (!id.is_null()) emit_({{"jsonrpc", "2.0"}, {"id", id}, {"error", {{"code", -32603}, {"message", error.what()}}}});
+		const bool startup_failed = verify_permission_ && !ready_;
+		Json failure{{"code", startup_failed ? kRuntimeVerificationError : -32603}, {"message", error.what()}};
+		if (startup_failed)
+		{
+			try { publish_policy_({}, cwd_, true, {}); } catch (...) {}
+			if (startup_created_)
+			{
+				try { query_("DELETE", Route(), nullptr); session_id_.clear(); } catch (...) {}
+			}
+			if (message.value("method", "") == "session/new" && Id(session_id_))
+				failure["data"] = {{"nativeSessionId", session_id_}};
+			disconnected_ = true;
+		}
+		if (!id.is_null()) emit_({{"jsonrpc", "2.0"}, {"id", id}, {"error", std::move(failure)}});
 	}
 }
 

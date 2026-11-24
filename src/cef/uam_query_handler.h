@@ -29,6 +29,7 @@
 
 #include <string>
 #include <string_view>
+#include <filesystem>
 #include <unordered_map>
 #include <thread>
 #include <vector>
@@ -106,6 +107,10 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	std::unordered_map<std::string, std::shared_ptr<std::stop_source>> m_titleRequests;
 	// History, revision-diff and update requests in flight, by the caller's requestId, so cancelVcsRequest can stop their VCS client.
 	std::unordered_map<std::string, std::shared_ptr<std::stop_source>> m_vcsRequestStops;
+	// Local working copies an update is rewriting, by request id, so no snapshot chat ports changes back into one meanwhile.
+	std::unordered_map<std::string, std::filesystem::path> m_vcsUpdateTargets;
+	/// <summary>The refusal for porting `chat` back while an update rewrites its snapshot's source working copy, or empty.</summary>
+	std::string SnapshotSourceUpdateRefusal(const ChatSession& chat) const;
 #if UAM_ENABLE_MOBILE_COMPANION
 	std::shared_ptr<UamCompanionService> m_companion;
 	// Phone requests that would loosen an agent's permissions, held until the user answers on the desktop.
@@ -178,7 +183,8 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	// Registers the read and wraps cb so a cancelled request receives no history.
 	std::shared_ptr<NativeHistoryRequest> BeginNativeHistoryRead(const std::string& key, CefRefPtr<Callback>& cb,
 	    std::shared_ptr<NativeHistoryRequest> request = std::make_shared<NativeHistoryRequest>());
-	bool AwaitNativeHistoryRead(const std::string& key, CefRefPtr<Callback> cb, std::function<void()> retry);
+	// replace_older=false keeps the pending request's delivery: for reads whose waiters re-read instead of reusing a saved result.
+	bool AwaitNativeHistoryRead(const std::string& key, CefRefPtr<Callback> cb, std::function<void()> retry, bool replace_older = true);
 	void FinishNativeHistoryRead(const std::string& key, const std::shared_ptr<NativeHistoryRequest>& request);
 	// Stops remote refresh reads on a host whose helper connection is being replaced.
 	void StopNativeHistoryReadsOnHost(const std::string& host_id);
@@ -227,7 +233,7 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	void HandleSetVisibleChatIds(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleReleaseChatMessages(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandlePromoteChatHistoryRead(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
-	void HandleRefreshLocalGeminiMedia(CefRefPtr<CefBrowser> browser, const ChatSession& chat,
+	void HandleRefreshLocalNativeMedia(CefRefPtr<CefBrowser> browser, const ChatSession& chat,
 	    const std::string& known_digest, const std::optional<std::pair<std::size_t, std::optional<std::size_t>>>& page,
 	    bool defer_tool_call_content, CefRefPtr<Callback> cb);
 	void HandleRefreshRemoteGeminiMedia(CefRefPtr<CefBrowser> browser, const ChatSession& chat,

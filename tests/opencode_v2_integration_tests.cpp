@@ -185,6 +185,51 @@ UAM_TEST(OpenCodeV2HistoryOverlayPreservesOriginOnlyForSameNativeOwner)
 	UAM_ASSERT(incoming.opencode_v2_session_id == std::optional<std::string>{"ses_owned"});
 }
 
+UAM_TEST(OpenCodeV2RuntimeVerificationFailureDurablyHoldsUndeliveredQueue)
+{
+	for (const std::string method : {"initialize", "session/new", "session/load", "startup-notification"})
+	{
+		HeldV2Turn fixture;
+		auto& session = fixture.Session();
+		const auto expected = fixture.Chat().acp_queued_prompts;
+		session.session_ready = session.processing = false;
+		session.prompt_request_id = 0;
+		// The shared poller can reap the bridge before draining its final error.
+		session.running = true;
+		session.process_exit_observed = session.running;
+		session.observed_process_exit_code = 1;
+		if (session.running) session.last_process_id = "reaped fixture";
+		fixture.Chat().messages.front().content = "Unsent authored input";
+		fixture.Chat().messages.front().acp_prompt_not_sent = true;
+		const Json error{{"code", uam::opencode_v2::kRuntimeVerificationError},
+		    {"message", "OpenCode V2 did not prove that UAM's permission hook denied the probe. Input remains held."}};
+		if (method == "startup-notification")
+		{
+			const auto& runtime = ProviderRuntimeRegistry::ResolveById("opencode-cli");
+			UAM_ASSERT(runtime.OnAcpHandleMessage(fixture.app, session, fixture.Chat(),
+			    {{"jsonrpc", "2.0"}, {"method", uam::opencode_v2::kStartupFailureMethod}, {"params", error}}, nullptr));
+		}
+		else
+		{
+			session.pending_request_methods[7] = method;
+			uam::acp_detail::HandleAcpResponse(fixture.app, session, fixture.Chat(),
+			    {{"jsonrpc", "2.0"}, {"id", 7}, {"error", error}});
+		}
+		UAM_ASSERT(!session.running && !session.session_ready && !session.reconnect_pending);
+		UAM_ASSERT(session.queue_held && fixture.Chat().acp_queue_held);
+		UAM_ASSERT(session.transport_ownership_error.empty() && fixture.app.acp_process_stop_tasks.empty());
+		UAM_ASSERT(session.last_error.find("permission hook denied the probe") != std::string::npos);
+		UAM_ASSERT_EQ(fixture.Chat().acp_queued_prompts, expected);
+		const auto saved = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.Chat().id);
+		UAM_ASSERT(saved && saved->acp_queue_held && saved->acp_queued_prompts == expected);
+		UAM_ASSERT_EQ(saved->native_session_id, std::string("ses_v2_owned"));
+		UAM_ASSERT(!saved->messages.empty());
+		UAM_ASSERT_EQ(saved->messages.front().content, std::string("Unsent authored input"));
+		UAM_ASSERT(saved->messages.front().acp_prompt_not_sent);
+		UAM_ASSERT(!uam::DrainNextQueuedAcpUserPrompt(fixture.app, session, fixture.Chat()));
+	}
+}
+
 UAM_TEST(OpenCodeV2CancelledPromptErrorsHoldQueueThroughSharedDispatch)
 {
 	HeldV2Turn fixture; auto& session = fixture.Session();

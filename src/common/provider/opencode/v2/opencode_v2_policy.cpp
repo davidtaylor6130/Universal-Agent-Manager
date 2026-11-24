@@ -115,10 +115,11 @@ std::string PermissionPluginSource()
 export default {
   id: 'uam.v2.permission-boundary',
   async setup(ctx) {
-    const { policyPath, proofPath, nonce } = ctx.options;
+    const { policyPath, proofPath, nonce, probePath, probeAction } = ctx.options;
     if (typeof policyPath !== 'string' || typeof proofPath !== 'string' || typeof nonce !== 'string')
       throw new Error('UAM V2 permission lease is missing');
     await ctx.permission.hook('evaluate', async event => {
+      const nativeEffect = event.effect;
       let effect = 'deny';
       try {
         const raw = readFileSync(policyPath, 'utf8');
@@ -129,7 +130,7 @@ export default {
         if (policy.nonce === nonce && policy.active === true &&
             policy.sessionID === event.sessionID && policy.directory === ctx.location.directory &&
             typeof policy.readOnly === 'boolean') {
-          effect = event.effect === 'deny' ? 'deny' : 'ask';
+          effect = nativeEffect === 'deny' ? 'deny' : 'ask';
           if (['task', 'subagent'].includes(event.action) || (policy.readOnly && event.action === 'edit')) effect = 'deny';
           // Imported agent denies: an exact action, '*' or a trailing-'*' prefix. Malformed rules deny.
           if (policy.deny !== undefined && !Array.isArray(policy.deny)) throw new Error('Invalid UAM deny rules');
@@ -145,6 +146,14 @@ export default {
         get: () => effect,
         set: value => { if (value === 'deny') effect = 'deny'; }
       });
+      if (typeof probePath === 'string' && event.action === probeAction &&
+          event.resources.length === 1 &&
+          [nonce + ':deny', nonce + ':ask'].includes(event.resources[0])) {
+        writeFileSync(probePath, JSON.stringify({
+          nonce, directory: ctx.location.directory, sessionID: event.sessionID,
+          resource: event.resources[0], nativeEffect, effect
+        }), { mode: 0o600 });
+      }
     });
     writeFileSync(proofPath, JSON.stringify({ nonce, directory: ctx.location.directory }), { mode: 0o600 });
   }
