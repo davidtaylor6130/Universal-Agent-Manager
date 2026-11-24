@@ -2,6 +2,7 @@
 
 #include "common/models/app_models.h"
 #include "common/state/app_state.h"
+#include "app/vcs_commit_service.h"
 
 #include <optional>
 #include <tuple>
@@ -144,9 +145,12 @@ class GoalService
 	static std::string BuildContinuationPrompt(const Goal& goal, int64_t tokens_used, int64_t token_budget,
 	                                           bool small_model_mode = false, const std::string& next_step = "", bool include_objective = true);
 	static std::string BuildReadOnlyTerminalPrompt(const Goal& goal);
+	/// <summary>`workspace_vcs` is the system the reviewer's workspace uses and selects the read commands it is given;
+	/// empty (an SSH workspace, or none detected) lists the Git and SVN reads both.</summary>
 	static std::string BuildReviewPrompt(const Goal& goal, const std::string& recent_user_prompt,
 	                                     const std::string& recent_assistant_text, int repeated_output_count = 0,
-	                                     bool small_model_mode = false, const std::string& workspace_changes = {});
+	                                     bool small_model_mode = false, const std::string& workspace_changes = {},
+	                                     std::optional<VcsType> workspace_vcs = VcsType::Git);
 	/// <summary>A capped `status path +added -deleted` list of changed files for the reviewer; empty when there are none.</summary>
 	static std::string SummarizeWorkspaceChanges(const std::vector<std::tuple<std::string, std::string, int, int>>& files);
 	static std::optional<ReviewDecision> ParseReviewDecision(const std::string& text);

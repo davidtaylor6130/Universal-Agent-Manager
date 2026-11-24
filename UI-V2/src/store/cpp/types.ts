@@ -988,8 +988,17 @@ export interface VcsCommitStatus {
   baselineUnavailable?: boolean
   /** What the active system offers beyond status, diff and commit, such as `history` and `update`. */
   capabilities?: string[]
+  /** Set when the workspace is UAM's hidden Git copy of a plain folder or SVN working copy: commits stay in the copy. */
+  localSnapshot?: VcsLocalSnapshot
   warning: string
   error: string
+}
+
+/** The folder a local snapshot was copied from, and what its own system offers there (`history`, `update`, `originComparison`). */
+export interface VcsLocalSnapshot {
+  sourceKind: 'svn' | 'folder'
+  sourceDirectory: string
+  sourceCapabilities: string[]
 }
 
 /** Where one SVN repository keeps its main line, branches and tags, as repository-relative folders. */

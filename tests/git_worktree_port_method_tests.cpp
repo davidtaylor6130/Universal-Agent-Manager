@@ -893,3 +893,78 @@ UAM_TEST(GitWorktreeManagedSnapshotInterruptedCleanupRetainsRepositoryForRetry)
 		UAM_ASSERT_EQ(fs::exists(source / ".git"), unborn);
 	}
 }
+
+UAM_TEST(GitWorktreePortSnapshotFallsBackToPatchForMergeAndSquash)
+{
+	if (!GitAvailableForTests()) return;
+	// The snapshot reads SVN ignore rules through this clean stand-in for the marked folder below.
+	const ScopedCleanSvnStatus clean_svn;
+	// A plain folder under Merge, a folder marked as an SVN working copy under Squash, and a plain folder below an empty
+	// .git folder (which snapshots ignore, as Git does): none shares history with its snapshot, so each ports back through
+	// the patch path with the one-line notice instead of being refused.
+	for (const int variant : {0, 1, 2})
+	{
+		const bool svn = variant == 1;
+		TempDir temporary{variant == 0 ? "uam-snapshot-port-plain" : svn ? "uam-snapshot-port-svn" : "uam-snapshot-port-empty-git"};
+		const fs::path source = variant == 2 ? temporary.root / "home" / "source" : temporary.root / "source";
+		fs::create_directories(source);
+		if (variant == 2) fs::create_directories(temporary.root / "home" / ".git");
+		if (svn) UAM_ASSERT(uam::io::WriteTextFile(source / ".svn" / "entries", "svn metadata\n"));
+		UAM_ASSERT(uam::io::WriteTextFile(source / "app.txt", "baseline\n"));
+		uam::AppState app;
+		app.data_root = temporary.root / "data";
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		app.settings.git_enabled = true;
+		app.settings.svn_enabled = true;
+		app.settings.git_snapshot_plain_folders = true;
+		app.settings.git_port_method = svn ? GitPortMethod::Squash : GitPortMethod::Merge;
+		app.chats.push_back(ChatDomainService().CreateNewChat("", "codex-cli"));
+		ChatSession& chat = app.chats.front();
+		chat.workspace_directory = source.string();
+		const uam::GitWorktreeOperationResult created = uam::GitWorktreeService().CreateForChat(app, chat);
+		if (!created.ok) uam_test::Fail(created.message.c_str(), __FILE__, __LINE__);
+		UAM_ASSERT(created.status.managed_repository && created.status.is_svn_workspace == svn);
+		const fs::path worktree = uam::paths::PathFromUtf8(chat.workspace_worktree_directory);
+
+		// The commit panel labels the hidden copy and offers SVN reads only for an SVN source.
+		const uam::VcsCommitStatus panel = uam::VcsCommitService().Status(app, chat, uam::VcsType::Git, false);
+		UAM_ASSERT_EQ(panel.snapshot_source_kind, std::string(svn ? "svn" : "folder"));
+		UAM_ASSERT_EQ(uam::paths::NormalizeExistingOrAbsolutePath(uam::paths::PathFromUtf8(panel.snapshot_source_directory)), uam::paths::NormalizeExistingOrAbsolutePath(source));
+		UAM_ASSERT_EQ(panel.snapshot_source_capabilities, (svn ? std::vector<std::string>{"history", "update", "originComparison"} : std::vector<std::string>{}));
+
+		UAM_ASSERT(uam::io::WriteTextFile(worktree / "app.txt", "committed chat change\n"));
+		UAM_ASSERT(RunGitForTest(worktree, "-c user.email=fixture@example.test -c user.name=Fixture commit -am chat"));
+		UAM_ASSERT(uam::io::WriteTextFile(worktree / "new.txt", "uncommitted chat file\n"));
+
+		// The staged route refuses nothing and changes nothing: it only asks for the patch path.
+		std::stop_source never;
+		const uam::GitWorktreeOperationResult staged = uam::GitWorktreeService().PortCommittedChanges(app, chat, never.get_token());
+		UAM_ASSERT(!staged.ok && staged.requires_patch_port);
+		UAM_ASSERT(staged.message.find("Merge and squash require") == std::string::npos);
+		UAM_ASSERT(staged.operation_receipt.empty() && !fs::exists(app.data_root / ".worktree-ports"));
+		UAM_ASSERT_EQ(uam::io::ReadTextFile(source / "app.txt"), "baseline\n");
+		UAM_ASSERT_EQ(chat.workspace_worktree_directory, worktree.string());
+
+		const uam::GitWorktreeOperationResult ported = uam::GitWorktreeService().PortChatChanges(app, chat);
+		if (!ported.ok) uam_test::Fail(ported.message.c_str(), __FILE__, __LINE__);
+		UAM_ASSERT(ported.message.find(uam::kSnapshotPatchPortNotice) != std::string::npos);
+		UAM_ASSERT(ported.port_state.empty() && ported.operation_receipt.empty());
+		UAM_ASSERT_EQ(uam::io::ReadTextFile(source / "app.txt"), "committed chat change\n");
+		UAM_ASSERT_EQ(uam::io::ReadTextFile(source / "new.txt"), "uncommitted chat file\n");
+		UAM_ASSERT(!fs::exists(source / ".git"));
+		if (svn) UAM_ASSERT_EQ(uam::io::ReadTextFile(source / ".svn" / "entries"), "svn metadata\n");
+		UAM_ASSERT(chat.workspace_worktree_directory.empty() && !fs::exists(worktree));
+	}
+}
+
+UAM_TEST(GitWorktreeSvnUpdateDeclinesIsolatedChatThatIsNotSvnSnapshot)
+{
+	if (!GitAvailableForTests()) return;
+	// An ordinary Git worktree has no SVN working copy behind it, so an SVN update is declined before any svn runs.
+	PortFixture fixture("merge");
+	fixture.app.settings.svn_enabled = true;
+	const uam::VcsUpdateResult update = uam::VcsCommitService().Update(fixture.app, fixture.app.chats.front(), uam::VcsType::Svn, {});
+	UAM_ASSERT(!update.ok);
+	UAM_ASSERT_EQ(update.error, std::string("This chat's isolated workspace is not a copy of an SVN working copy."));
+	fixture.AssertRetained();
+}

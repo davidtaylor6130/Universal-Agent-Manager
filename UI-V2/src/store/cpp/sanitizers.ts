@@ -1505,8 +1505,18 @@ export function sanitizeVcsCommitStatus(value: unknown): VcsCommitStatus | null 
     lineStatsReady: typeof value.lineStatsReady === 'boolean' ? value.lineStatsReady : true,
     baselineUnavailable: value.baselineUnavailable === true,
     capabilities: Array.isArray(value.capabilities) ? value.capabilities.filter((capability): capability is string => typeof capability === 'string') : [],
+    localSnapshot: sanitizeVcsLocalSnapshot(value.localSnapshot),
     warning: stringOr(value.warning),
     error: stringOr(value.error),
+  }
+}
+
+function sanitizeVcsLocalSnapshot(value: unknown): VcsCommitStatus['localSnapshot'] {
+  if (!isRecord(value) || (value.sourceKind !== 'svn' && value.sourceKind !== 'folder')) return undefined
+  return {
+    sourceKind: value.sourceKind,
+    sourceDirectory: stringOr(value.sourceDirectory),
+    sourceCapabilities: Array.isArray(value.sourceCapabilities) ? value.sourceCapabilities.filter((capability): capability is string => typeof capability === 'string') : [],
   }
 }
 

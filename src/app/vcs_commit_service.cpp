@@ -1,6 +1,7 @@
 #include "app/vcs_commit_service.h"
 
 #include "app/vcs_provider.h"
+#include "app/git_worktree_service.h"
 #include "app/svn_history.h"
 #include "app/provider_resolution_service.h"
 #include "app/chat_domain_service.h"
@@ -2212,6 +2213,22 @@ namespace uam
 
 	namespace
 	{
+		/// A local chat isolated in a UAM-owned snapshot: the folder it was copied from, and whether it is an SVN working copy.
+		struct LocalSnapshotSource
+		{
+			std::filesystem::path directory;
+			bool svn = false;
+		};
+
+		std::optional<LocalSnapshotSource> FindLocalSnapshotSource(const AppState& app, const ChatSession& chat)
+		{
+			LocalSnapshotSource found;
+			const LocalSnapshotSourceKind kind = DescribeLocalSnapshotSource(app, chat, &found.directory);
+			if (kind == LocalSnapshotSourceKind::None) return std::nullopt;
+			found.svn = kind == LocalSnapshotSourceKind::Svn;
+			return found;
+		}
+
 		/// Gate shared by History, RevisionDiff, Update and Origin: the system's switch, then its declared capability.
 		std::string HistoryGateError(const VcsProvider& provider, const AppSettings& settings, const vcs::VcsCapability capability)
 		{
@@ -2228,7 +2245,9 @@ namespace uam
 		{
 			if (uam::paths::IsControllerLocalWorkspace(chat))
 			{
-				const std::filesystem::path workspace = uam::paths::ResolveWorkspaceRootPath(app, chat);
+				// A local snapshot's copy has no SVN metadata: history and update read and update the source working copy.
+				const std::optional<LocalSnapshotSource> snapshot = FindLocalSnapshotSource(app, chat);
+				const std::filesystem::path workspace = snapshot && snapshot->svn ? snapshot->directory : uam::paths::ResolveWorkspaceRootPath(app, chat);
 				return operation([&](const std::vector<std::string>& args, const int timeout_ms) { return RunSvn(workspace, args, timeout_ms, stop); });
 			}
 			RemoteVcsContext context(app, chat);
@@ -2277,6 +2296,12 @@ namespace uam
 		VcsUpdateResult gated;
 		gated.error = HistoryGateError(provider, app.settings, vcs::VcsCapability::Update);
 		if (!gated.error.empty()) return gated;
+		// An isolated local chat's copy has no SVN metadata; only a snapshot of an SVN working copy has one to update.
+		if (type == VcsType::Svn && uam::paths::IsControllerLocalWorkspace(chat) && uam::paths::IsGitWorktreeIsolated(chat))
+		{
+			const std::optional<LocalSnapshotSource> snapshot = FindLocalSnapshotSource(app, chat);
+			if (!snapshot || !snapshot->svn) { gated.error = "This chat's isolated workspace is not a copy of an SVN working copy."; return gated; }
+		}
 		return WithWorkspaceRunner(app, chat, stop, [&](const VcsCommandRunner& run) { return provider.Update(run); });
 	}
 
@@ -2576,6 +2601,16 @@ namespace uam
 		status.line_stats_ready = include_line_stats;
 		const std::filesystem::path workspace = uam::paths::ResolveWorkspaceRootPath(app, chat);
 		status.workspace_directory = uam::paths::Utf8PathString(workspace);
+		if (const std::optional<LocalSnapshotSource> snapshot = FindLocalSnapshotSource(app, chat))
+		{
+			status.snapshot_source_kind = snapshot->svn ? "svn" : "folder";
+			status.snapshot_source_directory = uam::paths::Utf8PathString(snapshot->directory);
+			const VcsProvider& svn = VcsProviderFor(VcsType::Svn);
+			if (snapshot->svn && svn.Enabled(app.settings))
+				for (const vcs::VcsCapability capability : svn.Declaration().capabilities)
+					if (capability == vcs::VcsCapability::History || capability == vcs::VcsCapability::Update || capability == vcs::VcsCapability::OriginComparison)
+						status.snapshot_source_capabilities.emplace_back(vcs::VcsCapabilityId(capability));
+		}
 		std::map<VcsType, std::filesystem::path> roots;
 
 		PopulateAvailableVcsTypes(status, workspace, roots, context_only, app.settings);
