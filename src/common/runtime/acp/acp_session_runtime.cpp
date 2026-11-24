@@ -114,12 +114,16 @@
 
 namespace uam
 {
+	// Bounds typed /compact instructions; providers receive them inside one stream input line.
+	constexpr std::size_t kMaxManualCompactionInstructionBytes = 4000;
+
 	struct PendingAcpCompaction
 	{
 		std::filesystem::path root;
 		std::shared_ptr<const std::uint8_t> incarnation;
 		nlohmann::json ownership;
 		std::shared_ptr<WorktreeLaunchPreparationTask> workspace_task;
+		std::string instructions;
 	};
 
 	// Inert correlation carried only by an independently owned input continuation.
@@ -760,7 +764,7 @@ namespace uam
 			{
 				GoalService::RecordBlocker(app, owner_chat_id, active_goal->id, message, kDecisionSourceFallback);
 				(void)GoalService::UpdateGoalStatus(app, owner_chat_id, active_goal->id, GoalStatus::Blocked);
-				AppendGoalLoopDiagnostic(session, "goal_blocked_setup_reconnect_exhausted", active_goal->id, message);
+				AppendGoalLoopDiagnosticCause(session, "goal_blocked_setup_reconnect_exhausted", active_goal->id, message);
 				if (ChatSession* owner = ChatDomainService().FindChatById(app, owner_chat_id);
 				    owner != nullptr)
 					acp_detail::SaveChatQuietly(app, *owner);
@@ -1031,7 +1035,7 @@ namespace uam
 				{
 					GoalService::RecordBlocker(app, owner_chat_id, active_goal->id, session.last_error, kDecisionSourceFallback, "remote_connection");
 					(void)GoalService::UpdateGoalStatus(app, owner_chat_id, active_goal->id, GoalStatus::Blocked);
-					AppendGoalLoopDiagnostic(session, "goal_blocked_process_exit", active_goal->id, session.last_error);
+					AppendGoalLoopDiagnosticCause(session, "goal_blocked_process_exit", active_goal->id, session.last_error);
 					if (ChatSession* owner = ChatDomainService().FindChatById(app, owner_chat_id); owner != nullptr) acp_detail::SaveChatQuietly(app, *owner);
 				}
 				MarkAcpChatUnseenIfBackground(app, chat);
@@ -1131,8 +1135,8 @@ namespace uam
 				GoalService::RecordBlocker(app, owner_chat_id, goal->id, message, kDecisionSourceFallback);
 				(void)GoalService::UpdateGoalStatus(app, owner_chat_id, goal->id,
 				                                    GoalStatus::Blocked);
-				AppendGoalLoopDiagnostic(session, "goal_blocked_turn_inactivity_timeout",
-				                         goal->id, message);
+				AppendGoalLoopDiagnosticCause(session, "goal_blocked_turn_inactivity_timeout",
+				                              goal->id, message);
 				if (ChatSession* owner = ChatDomainService().FindChatById(app, owner_chat_id);
 				    owner != nullptr)
 					acp_detail::SaveChatQuietly(app, *owner);
@@ -1528,6 +1532,10 @@ namespace uam
 			session.goal_review_scheduled = session.goal_review_turn;
 			session.goal_review_goal_id = chat.goal_iteration_goal_id;
 			session.goal_review_repair_attempts = chat.goal_iteration_repair_attempts;
+			// The recovered review's start time was not saved, so its latency is unknown; a recovered repair turn
+			// lost its first turn's cost, so the decision's usage is unknown too.
+			session.goal_review_decision = {};
+			session.goal_review_decision.repaired = session.goal_review_repair_attempts > 0;
 			if (!session.goal_turn_kind.empty()) acp_detail::BeginGoalReviewUsage(session, false);
 			RestoreRemoteAcpTranscript(session, chat);
 			if (chat.remote_source_exit_pending)
@@ -1568,7 +1576,7 @@ namespace uam
 			{
 				diagnostics::Write("[remote-restore] chat_id=" + chat.id + " start_returned lifecycle=" + session.lifecycle_state +
 				    " running=" + std::to_string(session.running) + " pending_local_launch=" + std::to_string(static_cast<bool>(session.pending_local_launch)) +
-				    " worktree_pending=" + std::to_string(session.worktree_launch_pending) + " cold_binding=" + std::to_string(static_cast<bool>(session.cold_retry_binding)) +
+				    " worktree_pending=" + std::to_string(session.worktree_launch_pending) +
 				    " reconnect_pending=" + std::to_string(session.reconnect_pending) + " error=" + session.last_error);
 				++restored;
 			}
@@ -2934,7 +2942,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				session.saved_image_retry = saved_retry;
 				session.saved_image_retry_turn_serial = -1;
 			}
-			if (!StartAcpProcessForChat(app, session, chat, error_out, saved_retry.get(), {}, true))
+			if (!StartAcpProcessForChat(app, session, chat, error_out, saved_retry.get(), true))
 			{
 				session.goal_turn_model_id = previous_turn_model;
 				chat.reasoning_effort = previous_reasoning_effort;
@@ -3685,12 +3693,22 @@ For desktop observation and input, use only the provider's built-in controller; 
 		}
 	}
 
-	bool CompactAcpSession(AppState& app, const std::string& chat_id, std::string* error_out)
+	std::optional<bool> AcpCompactionVersionSatisfied(const AppState& app, const IProviderRuntime& runtime, std::string_view provider_id, std::string_view execution_host_id)
+	{
+		const char* minimum = runtime.MinimumAcpCompactionVersion();
+		if (minimum == nullptr) return true;
+		const auto state = app.runtime_cli_versions_by_provider_id.find(CliProviderVersionStateKey(provider_id, execution_host_id));
+		if (state == app.runtime_cli_versions_by_provider_id.end() || state->second.installed_version.empty()) return std::nullopt;
+		return CliProviderVersionAtLeast(state->second.installed_version, minimum);
+	}
+
+	bool CompactAcpSession(AppState& app, const std::string& chat_id, std::string* error_out, const std::string& instructions, bool* instructions_used)
 	{
 		ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
 		AcpSessionState* session = FindAcpSessionForChat(app, chat_id);
 		const std::shared_ptr<PendingAcpCompaction> pending = session ? session->pending_compaction : nullptr;
 		const bool queued = pending != nullptr;
+		if (instructions_used != nullptr) *instructions_used = false;
 		const std::function<bool(const std::string&)> fail = [&](const std::string& error)
 		{
 			if (session) session->pending_compaction.reset();
@@ -3704,6 +3722,24 @@ For desktop observation and input, use only the provider's built-in controller; 
 		if (!runtime.SupportsAcpCompaction())
 			return fail("This provider does not support manual compaction in structured chat. Use its native CLI if available.");
 		const bool remote_compaction = !chat->execution_host_id.empty() && chat->execution_host_id != "local";
+		if (remote_compaction && !runtime.SupportsRemoteAcpCompaction())
+			return fail("This provider can compact only chats that run on this computer.");
+		const std::string typed_instructions = uam::strings::Trim(instructions);
+		const bool accepts_instructions = runtime.SupportsAcpCompactionInstructions();
+		if (queued && accepts_instructions && !typed_instructions.empty() && typed_instructions != pending->instructions)
+		{
+			// The waiting request keeps its own instructions; it is not replaced or cancelled here.
+			if (error_out != nullptr) *error_out = "A compaction is already waiting to start. Try again when it finishes.";
+			return false;
+		}
+		// Instructions reach only runtimes that accept them; others run the plain command and report them unused.
+		const std::string requested_instructions = !accepts_instructions ? std::string{} : queued ? pending->instructions : typed_instructions;
+		if (requested_instructions.size() > kMaxManualCompactionInstructionBytes)
+			return fail("Compaction instructions are too long. Shorten them and try again.");
+		const bool use_instructions = !requested_instructions.empty();
+		if (instructions_used != nullptr) *instructions_used = use_instructions;
+		if (AcpCompactionVersionSatisfied(app, runtime, provider_id, chat->execution_host_id) == std::optional<bool>(false))
+			return fail(std::string("Update the provider CLI to ") + runtime.MinimumAcpCompactionVersion() + " or later to compact this chat.");
 		if (session && !chat->provider_id.empty() && session->provider_id != chat->provider_id)
 			return fail("The provider runtime no longer belongs to this chat. Restart the chat before compacting.");
 		if (chat->imported_read_only || chat->side_cleanup_requested)
@@ -3736,6 +3772,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 			session->pending_compaction->root = app.data_root;
 			session->pending_compaction->incarnation = chat->metadata_incarnation;
 			session->pending_compaction->ownership = CompactOwnership(app, *session, *chat);
+			session->pending_compaction->instructions = requested_instructions;
 		}
 		if (!session->running)
 		{
@@ -3768,7 +3805,19 @@ For desktop observation and input, use only the provider's built-in controller; 
 			return fail("Remote compaction requires a ready owned protocol 3 provider process.");
 		const int request_id = session->next_request_id;
 		std::string method;
+		const std::optional<bool> version_ok = AcpCompactionVersionSatisfied(app, runtime, provider_id, chat->execution_host_id);
+		if (!version_ok)
+		{
+			// A deferred request waits for this provider's running version check; otherwise an unknown version is refused.
+			if (queued && app.runtime_cli_version_check_task.running && app.runtime_cli_version_provider_id == provider_id &&
+			    app.runtime_cli_version_check_task.execution_host.id == chat->execution_host_id) return true;
+			return fail("UAM has not checked this provider's CLI version yet. Check it in Settings and try again.");
+		}
+		if (!*version_ok)
+			return fail(std::string("Update the provider CLI to ") + runtime.MinimumAcpCompactionVersion() + " or later to compact this chat.");
+		session->manual_compaction_instructions = requested_instructions;
 		const nlohmann::json request = runtime.OnAcpBuildCompact(*session, request_id, method);
+		session->manual_compaction_instructions.clear();
 		if (request.is_null() || method.empty()) return fail("The provider context is not ready for manual compaction.");
 		session->pending_compaction.reset();
 		++session->next_request_id;
@@ -8350,7 +8399,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 					session.pending_local_launch.reset();
 					session.pending_referenced_queue_launch_fingerprint.clear();
 				}
-				else if (!acp_detail::StartAcpProcessForChat(app, session, *launch_chat, nullptr, nullptr, {}, true))
+				else if (!acp_detail::StartAcpProcessForChat(app, session, *launch_chat, nullptr, nullptr, true))
 				{
 					session.pending_referenced_queue_launch_fingerprint.clear();
 					if (referenced_launch)
@@ -8652,6 +8701,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				const std::string goal_review_goal_id = session.goal_review_goal_id;
 				const std::string goal_review_user_prompt = session.goal_review_user_prompt;
 				const std::string goal_review_assistant_text = session.goal_review_assistant_text;
+				const auto goal_review_decision = session.goal_review_decision;
 
 				if (remote_startup_rejected)
 				{
@@ -8834,6 +8884,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 					session.goal_review_goal_id = goal_review_goal_id;
 					session.goal_review_user_prompt = goal_review_user_prompt;
 					session.goal_review_assistant_text = goal_review_assistant_text;
+					session.goal_review_decision = goal_review_decision;
 					// A replacement process can resume native history; do not infer a zero cumulative baseline.
 					if (!session.goal_turn_kind.empty()) BeginGoalReviewUsage(session, false);
 					session.last_error.clear();
@@ -8887,7 +8938,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 							GoalService::RecordBlocker(app, goal_owner_chat_id, active_goal->id, blocker, kDecisionSourceFallback,
 							                           remote_turn_recovery ? "remote_connection" : "");
 							(void)GoalService::UpdateGoalStatus(app, goal_owner_chat_id, active_goal->id, GoalStatus::Blocked);
-							AppendGoalLoopDiagnostic(session, "goal_blocked_process_exit", active_goal->id, blocker);
+							AppendGoalLoopDiagnosticCause(session, "goal_blocked_process_exit", active_goal->id, blocker);
 							if (ChatSession* owner = ChatDomainService().FindChatById(app, goal_owner_chat_id); owner != nullptr)
 							{
 								acp_detail::SaveChatQuietly(app, *owner);
@@ -9396,6 +9447,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 
 	struct PendingChatSaveTask
 	{
+		// One entry per started save worker of this chat; a barrier raises the live ones before it blocks (#526).
+		std::vector<std::shared_ptr<platform::BarrierRaisableWorkerPriority>> worker_priorities;
 		std::shared_ptr<PendingEmptyHeldSend> empty_held_send;
 		std::filesystem::path data_root;
 		std::string chat_id;
@@ -9457,6 +9510,32 @@ For desktop observation and input, use only the provider's built-in controller; 
 					catch (...) { diagnostics::Write("Cancelled icon acknowledgement failed."); }
 		}
 	};
+
+	// Chat-save workers run below the UI poll thread so their serialisation, hashing and writes cannot
+	// starve it (#526), and return to their starting priority as soon as a barrier blocks on them (#647).
+	template <typename Work> static void StartChatSaveWorker(PendingChatSaveTask& task, Work&& work)
+	{
+		std::erase_if(task.worker_priorities, [](const std::shared_ptr<platform::BarrierRaisableWorkerPriority>& priority) { return priority->Finished(); });
+		// Reserve first, so recording the priority cannot fail once the worker is running.
+		task.worker_priorities.reserve(task.worker_priorities.size() + 1);
+		auto priority = std::make_shared<platform::BarrierRaisableWorkerPriority>();
+		platform::StartBarrierRaisableBackgroundThread(priority, std::forward<Work>(work)).detach();
+		task.worker_priorities.push_back(std::move(priority));
+	}
+
+	static void RaiseChatSaveWorkersForBarrier(const PendingChatSaveTask& task) noexcept
+	{
+		for (const std::shared_ptr<platform::BarrierRaisableWorkerPriority>& priority : task.worker_priorities)
+			priority->RaiseForBarrier();
+	}
+
+	// Every chat's save workers, not only the waited-on chat's: publication holds the process-wide chat
+	// save lock, and Windows mutexes give a lowered holder no priority inheritance.
+	void RaiseAllChatSaveWorkersForBarrier(AppState& app) noexcept
+	{
+		for (const auto& [chat_id, task] : app.pending_chat_save_tasks)
+			if (task) RaiseChatSaveWorkersForBarrier(*task);
+	}
 
 	// Observes the real preparation future without consuming it or changing save ownership.
 	bool PendingChatSavePreparationForTests(const AppState& app, const std::string& chat_id, bool& ready)
@@ -10141,7 +10220,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		app.pending_chat_save_tasks.emplace(chat.id, task);
 		try { app.pending_chat_save_at_by_chat_id.emplace(chat.id, GetAppTimeSeconds()); }
 		catch (...) { app.pending_chat_save_tasks.erase(chat.id); throw; }
-		try { std::thread(std::move(reader)).detach(); }
+		try { StartChatSaveWorker(*task, std::move(reader)); }
 		catch (...)
 		{
 			app.pending_chat_save_tasks.erase(chat.id); app.pending_chat_save_at_by_chat_id.erase(chat.id);
@@ -10177,6 +10256,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 	{
 		const auto input = task->empty_held_send;
 		if (!input) return false;
+		if (force) RaiseChatSaveWorkersForBarrier(*task);
 		if (force || !EmptyHeldSendOwned(app, task, input)) input->owned->store(false, std::memory_order_release);
 		if (input->continuation_queued) return true;
 		if (input->preparation.valid())
@@ -10196,7 +10276,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 						        [ownership] { return ownership->load(std::memory_order_acquire); });
 					    });
 					input->publication = writer.get_future();
-					std::thread(std::move(writer)).detach();
+					StartChatSaveWorker(*task, std::move(writer));
 					return true;
 				}
 				catch (...) { input->owned->store(false, std::memory_order_release); }
@@ -10449,6 +10529,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 	{
 		const auto own = task->owned_publication;
 		if (!own) return false;
+		if (force) RaiseChatSaveWorkersForBarrier(*task);
 		if (force || !OwnedPublicationSnapshotMatches(app, task, own))
 		{
 			own->retired = true;
@@ -10474,7 +10555,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				    [ownership] { return ownership->load(std::memory_order_acquire); });
 			});
 			own->publication = worker.get_future();
-			std::thread(std::move(worker)).detach();
+			StartChatSaveWorker(*task, std::move(worker));
 			return true;
 		}
 		if (own->publication.valid() && own->publication.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return true;
@@ -10621,6 +10702,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 
 		void FinishPendingQueuedAdmissionSave(AppState& app, const std::string& chat_id)
 		{
+			// Synchronous saves and the force barrier come through here before they wait on save workers,
+			// directly or through the shared chat save lock.
+			RaiseAllChatSaveWorkersForBarrier(app);
 			const std::unordered_map<std::string, std::shared_ptr<PendingChatSaveTask>>::iterator found = app.pending_chat_save_tasks.find(chat_id);
 			if (found == app.pending_chat_save_tasks.end() || !found->second) return;
 			const std::shared_ptr<PendingChatSaveTask> task = found->second;
@@ -10749,6 +10833,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 
 	bool FlushPendingChatSaves(AppState& app, bool force)
 	{
+		if (force) RaiseAllChatSaveWorkersForBarrier(app);
 		const double now = GetAppTimeSeconds();
 		PruneChatSaveRecords(app, now);
 		bool state_changed = false;
@@ -11044,7 +11129,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 						    [ownership, owner_thread]() { return std::this_thread::get_id() != owner_thread && ownership->load(std::memory_order_acquire); });
 					});
 					task->published = publisher.get_future();
-					std::thread(std::move(publisher)).detach();
+					StartChatSaveWorker(*task, std::move(publisher));
 					continue;
 				}
 				else
@@ -11100,7 +11185,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 					return receipt;
 				});
 				task->queued_publication = queue_writer.get_future();
-				std::thread(std::move(queue_writer)).detach();
+				StartChatSaveWorker(*task, std::move(queue_writer));
 				continue;
 			}
 			if (!app.pending_chat_save_at_by_chat_id.contains(chat_id))
@@ -11131,7 +11216,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 						return messages;
 					});
 					task->baseline = baseline.get_future();
-					std::thread(std::move(baseline)).detach();
+					StartChatSaveWorker(*task, std::move(baseline));
 					continue;
 				}
 			}
@@ -11184,7 +11269,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 				return result;
 			});
 			task->prepared = worker.get_future();
-			std::thread(std::move(worker)).detach();
+			StartChatSaveWorker(*task, std::move(worker));
 		}
 		std::erase_if(app.pending_chat_save_tasks, [&](const auto& entry) { return !app.pending_chat_save_at_by_chat_id.contains(entry.first) &&
 		    (!entry.second || (!entry.second->owned_publication && !entry.second->empty_held_send)); });

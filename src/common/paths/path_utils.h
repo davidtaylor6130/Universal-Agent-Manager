@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <optional>
@@ -41,20 +42,31 @@ namespace uam::paths
 		}
 	}
 
+	/// <summary>File-system probes (existence, type and canonical-path queries) this thread made through these helpers.
+	/// Tests read the difference around a call to prove which thread does path resolution; it is never reset.</summary>
+	inline std::size_t& FileSystemProbeCountOnThisThread()
+	{
+		thread_local std::size_t count = 0;
+		return count;
+	}
+
 	inline bool PathExistsNoThrow(const std::filesystem::path& path)
 	{
+		++FileSystemProbeCountOnThisThread();
 		std::error_code error;
 		return std::filesystem::exists(path, error);
 	}
 
 	inline bool IsDirectoryNoThrow(const std::filesystem::path& path)
 	{
+		++FileSystemProbeCountOnThisThread();
 		std::error_code error;
 		return std::filesystem::is_directory(path, error);
 	}
 
 	inline bool IsRegularFileNoThrow(const std::filesystem::path& path)
 	{
+		++FileSystemProbeCountOnThisThread();
 		std::error_code error;
 		return std::filesystem::is_regular_file(path, error);
 	}
@@ -196,6 +208,7 @@ namespace uam::paths
 
 	inline std::filesystem::path NormalizeExistingPath(const std::filesystem::path& path)
 	{
+		++FileSystemProbeCountOnThisThread();
 		std::error_code ec;
 		const std::filesystem::path canonical = std::filesystem::weakly_canonical(path, ec);
 		return LexicallyNormalPath(ec ? path : canonical);
@@ -203,6 +216,7 @@ namespace uam::paths
 
 	inline std::filesystem::path NormalizeExistingOrAbsolutePath(const std::filesystem::path& path)
 	{
+		++FileSystemProbeCountOnThisThread();
 		std::error_code ec;
 		const std::filesystem::path canonical = std::filesystem::weakly_canonical(path, ec);
 		return ec ? AbsolutePathNoThrow(path) : LexicallyNormalPath(canonical);

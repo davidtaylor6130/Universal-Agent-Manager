@@ -1,4 +1,5 @@
 import { ANTIGRAVITY_CLI_PROVIDER_ID, CLAUDE_CLI_PROVIDER_ID, CODEX_CLI_PROVIDER_ID, COPILOT_CLI_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID, SUPPORTED_CLI_PROVIDER_IDS } from '../utils/providerMetadata'
+import { isPlainRecord } from '../store/cpp/sanitizers'
 
 // Excluded providers carry a placeholder id; usage lists only the providers this build includes.
 export const USAGE_PROVIDERS = [CODEX_CLI_PROVIDER_ID, CLAUDE_CLI_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID, COPILOT_CLI_PROVIDER_ID, ANTIGRAVITY_CLI_PROVIDER_ID].filter((id) => SUPPORTED_CLI_PROVIDER_IDS.includes(id))
@@ -114,7 +115,6 @@ export function usageWindow(days: UsageWindowDays, now = Date.now()): UsageWindo
 
 const integer = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
 const money = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0
-const object = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value)
 const provider = (value: unknown): value is UsageProviderId => USAGE_PROVIDERS.includes(value as UsageProviderId)
 const speed = (value: unknown): value is UsageSpeed => value === 'standard' || value === 'fast' || value === 'ultrafast'
 const countFields = ['inputTokens', 'cachedInputTokens', 'cacheWriteTokens', 'outputTokens', 'reasoningTokens', 'totalTokens', 'reportedCostTokens', 'estimatedCostTokens', 'unpricedTokens', 'records', 'sessions'] as const
@@ -125,7 +125,7 @@ function httpsSource(value: unknown): value is string {
   try { const url = new URL(value); return url.protocol === 'https:' && !url.username && !url.password } catch { return false }
 }
 function priceReference(value: unknown): value is UsagePriceReference {
-  if (!object(value) || !['manual', 'reference'].includes(value.kind as string)
+  if (!isPlainRecord(value) || !['manual', 'reference'].includes(value.kind as string)
     || typeof value.referenceModel !== 'string' || !value.referenceModel || value.referenceModel.length > 512
     || (value.kind === 'manual' ? value.source !== '' : !httpsSource(value.source))
     || typeof value.verifiedDate !== 'string' || (value.verifiedDate !== '' && !/^\d{4}-\d{2}-\d{2}$/.test(value.verifiedDate))
@@ -133,7 +133,7 @@ function priceReference(value: unknown): value is UsagePriceReference {
   return ['inputPerMillion', 'cachedInputPerMillion', 'cacheWritePerMillion', 'outputPerMillion'].every(key => value[key] === null || money(value[key]))
 }
 function pricing(value: unknown): value is UsagePricing {
-  return object(value) && typeof value.refreshing === 'boolean' && httpsSource(value.source)
+  return isPlainRecord(value) && typeof value.refreshing === 'boolean' && httpsSource(value.source)
     && ['unavailable', 'cached', 'fresh'].includes(value.status as string)
     && (value.fetchedAtMs === null || timestamp(value.fetchedAtMs))
     && ['error', 'aliasError'].every(key => typeof value[key] === 'string' && (value[key] as string).length <= 1024)
@@ -143,7 +143,7 @@ function coverage(value: unknown, hostId: string): value is UsageCoverage[] {
   if (!Array.isArray(value) || !value.length || value.length > 33 || (hostId !== ALL_MACHINES_HOST_ID && value.length !== 1)) return false
   const seen = new Set<string>()
   return value.every(row => {
-    if (!object(row) || typeof row.executionHostId !== 'string' || !row.executionHostId || row.executionHostId.length > 160 || row.executionHostId === ALL_MACHINES_HOST_ID || seen.has(row.executionHostId)
+    if (!isPlainRecord(row) || typeof row.executionHostId !== 'string' || !row.executionHostId || row.executionHostId.length > 160 || row.executionHostId === ALL_MACHINES_HOST_ID || seen.has(row.executionHostId)
       || (hostId !== ALL_MACHINES_HOST_ID && row.executionHostId !== hostId) || typeof row.label !== 'string' || row.label.length > 128
       || !['ready', 'loading', 'cached', 'unavailable'].includes(row.status as string) || !(row.asOfMs === null || timestamp(row.asOfMs))
       || ((row.status === 'ready' || row.status === 'cached') && row.asOfMs === null) || typeof row.error !== 'string' || row.error.length > 1024) return false
@@ -153,7 +153,7 @@ function coverage(value: unknown, hostId: string): value is UsageCoverage[] {
 }
 
 function totals(value: unknown): value is UsageTotals {
-  if (!object(value) || !countFields.every(key => integer(value[key])) || !['reportedCostUsd', 'estimatedCostUsd', 'estimatedCacheSavingsUsd'].every(key => money(value[key]))) return false
+  if (!isPlainRecord(value) || !countFields.every(key => integer(value[key])) || !['reportedCostUsd', 'estimatedCostUsd', 'estimatedCacheSavingsUsd'].every(key => money(value[key]))) return false
   const row = value as unknown as UsageTotals
   return row.inputTokens + row.cachedInputTokens + row.cacheWriteTokens + row.outputTokens === row.totalTokens
     && row.reportedCostTokens + row.estimatedCostTokens + row.unpricedTokens === row.totalTokens
@@ -163,7 +163,7 @@ function periods(value: unknown, window: UsageWindow, width: number, limit: numb
   if (!Array.isArray(value) || value.length > limit) return false
   const seen = new Set<number>()
   return value.every(row => {
-    if (!totals(row) || !object(row) || !integer(row.startMs) || (row.startMs - Math.floor(window.startMs / 86400000) * 86400000) % width !== 0 || row.startMs < Math.floor(window.startMs / Math.min(width, 86400000)) * Math.min(width, 86400000) || row.startMs >= window.endMs || seen.has(row.startMs)) return false
+    if (!totals(row) || !isPlainRecord(row) || !integer(row.startMs) || (row.startMs - Math.floor(window.startMs / 86400000) * 86400000) % width !== 0 || row.startMs < Math.floor(window.startMs / Math.min(width, 86400000)) * Math.min(width, 86400000) || row.startMs >= window.endMs || seen.has(row.startMs)) return false
     seen.add(row.startMs)
     return true
   })
@@ -172,7 +172,7 @@ function providerPeriods(value: unknown, window: UsageWindow, width: number, lim
   if (!Array.isArray(value) || value.length > limit * USAGE_PROVIDERS.length) return false
   const seen = new Set<string>()
   return value.every(row => {
-    if (!totals(row) || !object(row) || !provider(row.providerId) || !integer(row.startMs) || (row.startMs - Math.floor(window.startMs / 86400000) * 86400000) % width !== 0 || row.startMs < Math.floor(window.startMs / Math.min(width, 86400000)) * Math.min(width, 86400000) || row.startMs >= window.endMs) return false
+    if (!totals(row) || !isPlainRecord(row) || !provider(row.providerId) || !integer(row.startMs) || (row.startMs - Math.floor(window.startMs / 86400000) * 86400000) % width !== 0 || row.startMs < Math.floor(window.startMs / Math.min(width, 86400000)) * Math.min(width, 86400000) || row.startMs >= window.endMs) return false
     const key = JSON.stringify([row.startMs, row.providerId])
     if (seen.has(key)) return false
     seen.add(key)
@@ -196,7 +196,7 @@ function sameTotals(a: UsageTotals, b: UsageTotals): boolean {
 
 /** Reject incompatible, stale or malformed native summaries rather than presenting missing data as zero. */
 export function parseUsageHistory(value: unknown, executionHostId: string, window: UsageWindow): UsageHistory {
-  if (!object(value) || (value.version !== 2 && value.version !== 3)) throw new Error('Usage data is incompatible with this build. Update UAM and its runner.')
+  if (!isPlainRecord(value) || (value.version !== 2 && value.version !== 3)) throw new Error('Usage data is incompatible with this build. Update UAM and its runner.')
   if (value.version === 3) {
     if (!timestamp(value.asOfMs) || value.windowDays !== window.days || typeof value.collecting !== 'boolean'
       || typeof value.collectionError !== 'string' || value.collectionError.length > 1024) throw new Error('Cached usage data is invalid. Refresh to try again.')
@@ -213,20 +213,20 @@ export function parseUsageHistory(value: unknown, executionHostId: string, windo
     if (value.version !== 3 || !integer(value.chartStartMs) || value.chartStartMs % 86400000 !== 0 || value.chartStartMs >= window.endMs
       || !integer(value.chartBucketMs) || value.chartBucketMs < 86400000 || value.chartBucketMs % 86400000 !== 0
       || Math.ceil((window.endMs - value.chartStartMs) / value.chartBucketMs) > 90
-      || !object(value.historyCoverage) || value.historyCoverage.kind !== 'recorded-and-available-history'
+      || !isPlainRecord(value.historyCoverage) || value.historyCoverage.kind !== 'recorded-and-available-history'
       || typeof value.historyCoverage.previouslyPrunedReceiptsMayBeMissing !== 'boolean') throw new Error('Lifetime usage chart coverage is invalid. Refresh to try again.')
     chartWindow = { ...window, startMs: value.chartStartMs }
     chartWidth = value.chartBucketMs
   } else if (value.chartStartMs !== undefined || value.chartBucketMs !== undefined) throw new Error('Usage chart range is invalid. Refresh to try again.')
   const seenProviders = new Set<string>(), seenModels = new Set<string>()
   if (!Array.isArray(value.providers) || value.providers.length !== USAGE_PROVIDERS.length || !value.providers.every(row => {
-    if (!totals(row) || !object(row) || !provider(row.providerId) || seenProviders.has(row.providerId) || typeof row.available !== 'boolean'
+    if (!totals(row) || !isPlainRecord(row) || !provider(row.providerId) || seenProviders.has(row.providerId) || typeof row.available !== 'boolean'
       || !['files', 'errors', 'invalidLines', 'oversizedLines', 'suppressedForkRecords', 'pendingLines'].every(key => integer(row[key]))) return false
     seenProviders.add(row.providerId)
     return true
   })) throw new Error('Usage provider data is invalid. Refresh to try again.')
   if (!Array.isArray(value.models) || !value.models.every(row => {
-    if (!totals(row) || !object(row) || !provider(row.providerId) || typeof row.modelId !== 'string' || !row.modelId || row.modelId.length > 512 || !speed(row.speed) || (row.priceReference !== undefined && !priceReference(row.priceReference))) return false
+    if (!totals(row) || !isPlainRecord(row) || !provider(row.providerId) || typeof row.modelId !== 'string' || !row.modelId || row.modelId.length > 512 || !speed(row.speed) || (row.priceReference !== undefined && !priceReference(row.priceReference))) return false
     const key = JSON.stringify([row.providerId, row.modelId, row.speed])
     if (seenModels.has(key)) return false
     seenModels.add(key)
@@ -266,14 +266,14 @@ export function formatUsageCost(totals: UsageTotals): string {
 
 /** Reassemble one immutable native snapshot before any usage totals become visible. */
 export async function assembleUsageHistory(first: unknown, refreshId: string, next: (snapshotId: string, offset: number) => Promise<unknown>, obsolete: () => boolean): Promise<unknown> {
-  if (!object(first) || !('usagePage' in first)) return first
+  if (!isPlainRecord(first) || !('usagePage' in first)) return first
   let page: unknown = first
   let snapshotId = '', totalBytes = 0, offset = 0
   const chunks: string[] = []
   const encoder = new TextEncoder()
   for (;;) {
     if (obsolete()) throw new Error('Usage history loading was cancelled.')
-    if (!object(page) || page.usagePage !== 1 || page.refreshId !== refreshId || typeof page.snapshotId !== 'string' || !page.snapshotId || page.snapshotId.length > 32
+    if (!isPlainRecord(page) || page.usagePage !== 1 || page.refreshId !== refreshId || typeof page.snapshotId !== 'string' || !page.snapshotId || page.snapshotId.length > 32
       || !Number.isSafeInteger(page.offset) || page.offset !== offset || !Number.isSafeInteger(page.totalBytes) || (page.totalBytes as number) <= 0
       || typeof page.chunk !== 'string' || !page.chunk) throw new Error('Usage snapshot is invalid. Refresh to try again.')
     if (!snapshotId) { snapshotId = page.snapshotId; totalBytes = page.totalBytes as number }

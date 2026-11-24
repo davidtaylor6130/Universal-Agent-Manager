@@ -1,6 +1,7 @@
 #include "data_folder_test_support.h"
 #include "app/data_folder_settings_service.h"
 #include "common/platform/retained_directory_identity.h"
+#include "common/platform/volume_capabilities.h"
 
 using namespace uam_test;
 
@@ -244,4 +245,25 @@ UAM_TEST(DataFolderSettingsRelativeDefaultCanStageExplicitChoice)
 	UAM_ASSERT(service->Choose(destination, service->Read().revision, "relative-default-choice").committed);
 	UAM_ASSERT(service->StartupRoot() == fs::path("data"));
 	UAM_ASSERT(service->Read().pending_folder == destination);
+}
+
+UAM_TEST(DataFolderSettingsRefusesNetworkFolderAndWarnsForNoSwapDrive)
+{
+	struct VolumeAnswer
+	{
+		~VolumeAnswer() { uam::platform::t_volume_capabilities_for_tests.reset(); }
+	} restore;
+	DataFolderFixture fixture;
+	uam::platform::t_volume_capabilities_for_tests = uam::platform::VolumeCapabilities{false, std::nullopt, "smbfs"};
+	const auto network = fixture.service->Choose(fixture.destination, fixture.service->Read().revision, "network-choice");
+	UAM_ASSERT(!network.committed && network.settings.pending_folder.empty() && network.settings.can_change);
+	UAM_ASSERT(network.error.find("Network folders") != std::string::npos);
+	uam::platform::t_volume_capabilities_for_tests = uam::platform::VolumeCapabilities{true, false, "exfat"};
+	const auto saved = fixture.service->Choose(fixture.destination, fixture.service->Read().revision, "exfat-choice");
+	UAM_ASSERT(saved.committed && saved.settings.pending_folder == fs::canonical(fixture.destination));
+	UAM_ASSERT(saved.settings.message.find("cannot replace files in a single step") != std::string::npos);
+	UAM_ASSERT(saved.settings.message.find('\n') == std::string::npos);
+	uam::platform::t_volume_capabilities_for_tests.reset();
+	UAM_ASSERT(fixture.service->Cancel(fixture.service->Read().revision).committed);
+	UAM_ASSERT(fixture.service->Read().message.find("single step") == std::string::npos);
 }

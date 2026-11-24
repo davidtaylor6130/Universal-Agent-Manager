@@ -131,10 +131,10 @@ export function SettingsLoading({ label = 'Loading settings', rows = 3 }: { labe
           <div key={index} className="uam-set-row" aria-hidden>
             <div className="uam-set-row__main">
               <div className="min-w-0 flex-1 grid gap-1.5">
-                <div className="uam-set-skeleton" style={{ width: `${38 + (index * 17) % 30}%` }} />
-                <div className="uam-set-skeleton uam-set-skeleton--thin" style={{ width: `${55 + (index * 23) % 30}%` }} />
+                <div className="uam-skeleton uam-set-skeleton" style={{ width: `${38 + (index * 17) % 30}%` }} />
+                <div className="uam-skeleton uam-set-skeleton uam-set-skeleton--thin" style={{ width: `${55 + (index * 23) % 30}%` }} />
               </div>
-              <div className="uam-set-skeleton uam-set-skeleton--control" />
+              <div className="uam-skeleton uam-set-skeleton uam-set-skeleton--control" />
             </div>
           </div>
         ))}

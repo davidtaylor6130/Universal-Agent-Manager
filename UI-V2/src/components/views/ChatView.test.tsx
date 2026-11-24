@@ -871,7 +871,7 @@ describe('ChatView', () => {
       act(() => root.unmount())
       host.remove()
     }
-    expect(appFailures.filter((failure) => failure.detail.includes('Remount history error.'))).toHaveLength(1)
+    expect(appFailures.filter((failure) => `${failure.message} ${failure.detail}`.includes('Remount history error.'))).toHaveLength(1)
   })
 
   it('keeps retry loading isolated when switching chats before completion', async () => {
@@ -1831,6 +1831,86 @@ describe('ChatView', () => {
     } finally {
       act(() => root.unmount())
       host.remove()
+    }
+  })
+
+  it('keeps the summary with Retry when the repository read fails, such as after an SSH host drops', async () => {
+    const failed = { available: false, vcsTypes: [], activeVcsType: 'git' as const, workspaceDirectory: '', branchOrRevision: '', changedFiles: [], lineStatsReady: true, warning: '', error: 'The remote runner request failed.' }
+    const recovered = { available: true, vcsTypes: ['git' as const], activeVcsType: 'git' as const, workspaceDirectory: '/tmp/project', branchOrRevision: 'main', changedFiles: [{ path: 'src/after.ts', status: 'M', staged: false, additions: 1, deletions: 0, binary: false }], lineStatsReady: true, warning: '', error: '' }
+    let summaryReads = 0
+    // The composer's separate branch read (contextOnly) is not the summary and always succeeds here.
+    const getVcsCommitStatus = vi.fn((_id: string, _type?: string, options?: { contextOnly?: boolean }) =>
+      Promise.resolve(options?.contextOnly ? recovered : summaryReads++ === 0 ? failed : recovered))
+    useAppStore.setState((state) => ({
+      repositoryReviewBySessionId: {},
+      getVcsCommitStatus,
+      sessions: state.sessions.map((session) => ({ ...session, workspaceDirectory: '/tmp/project', workspaceIsolationKind: undefined })),
+      acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false, lifecycleState: 'ready', pendingPermission: null, pendingUserInput: null, processingStartedAtMs: null, turnSerial: 2 } },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => { root.render(<ChatView session={useAppStore.getState().sessions[0]} />); await Promise.resolve() })
+      expect(getVcsCommitStatus).toHaveBeenCalledWith('chat-1', 'git', expect.objectContaining({ comparisonRef: 'chat', reportFailure: true }))
+      const summary = host.querySelector('[aria-label="Review changes"]') as HTMLElement
+      expect(summary).not.toBeNull()
+      expect(summary.querySelector('[role="alert"]')?.textContent).toContain('Could not read changes. The remote runner request failed.')
+      const retry = [...summary.querySelectorAll('button')].find((button) => button.textContent === 'Retry') as HTMLButtonElement
+      await act(async () => { retry.click(); await Promise.resolve() })
+      expect(summaryReads).toBe(2)
+      const refreshed = host.querySelector('[aria-label="Review changes"]') as HTMLElement
+      expect(refreshed.querySelector('[role="alert"]')).toBeNull()
+      expect(refreshed.textContent).toContain('after.ts')
+      expect(refreshed.textContent).toContain('1 changed file')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  it('retries a read refused because the workspace changed under it once, and never shows that race as an error', async () => {
+    const stale = { available: false, vcsTypes: [], activeVcsType: 'git' as const, workspaceDirectory: '', branchOrRevision: '', changedFiles: [], lineStatsReady: true, warning: '', error: 'The chat workspace changed while its repository context was loading.', contextChanged: true }
+    const recovered = { available: true, vcsTypes: ['git' as const], activeVcsType: 'git' as const, workspaceDirectory: '/tmp/project', branchOrRevision: 'main', changedFiles: [{ path: 'src/after.ts', status: 'M', staged: false, additions: 1, deletions: 0, binary: false }], lineStatsReady: true, warning: '', error: '' }
+    const previous = { ...recovered, changedFiles: [{ path: 'src/previous-host.ts', status: 'M', staged: false, additions: 4, deletions: 0, binary: false }] }
+    const run = async (summaryResults: Array<typeof stale | typeof recovered>) => {
+      let summaryReads = 0
+      const getVcsCommitStatus = vi.fn((_id: string, _type?: string, options?: { contextOnly?: boolean }) =>
+        Promise.resolve(options?.contextOnly ? recovered : summaryResults[Math.min(summaryReads++, summaryResults.length - 1)]))
+      useAppStore.setState((state) => ({
+        // Rows from before the host or workspace changed must not survive a read that stays stale.
+        repositoryReviewBySessionId: { 'chat-1': previous },
+        getVcsCommitStatus,
+        sessions: state.sessions.map((session) => ({ ...session, workspaceDirectory: '/tmp/project', workspaceIsolationKind: undefined })),
+        acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false, lifecycleState: 'ready', pendingPermission: null, pendingUserInput: null, processingStartedAtMs: null, turnSerial: 2 } },
+      }))
+      const host = document.createElement('div')
+      document.body.appendChild(host)
+      const root = createRoot(host)
+      await act(async () => { root.render(<ChatView session={useAppStore.getState().sessions[0]} />); await Promise.resolve() })
+      await act(async () => { await Promise.resolve() })
+      return { host, cleanup: () => { act(() => root.unmount()); host.remove() }, reads: () => summaryReads }
+    }
+
+    const recovers = await run([stale, recovered])
+    try {
+      expect(recovers.reads()).toBe(2)
+      const summary = recovers.host.querySelector('[aria-label="Review changes"]') as HTMLElement
+      expect(summary.querySelector('[role="alert"]')).toBeNull()
+      expect(summary.textContent).toContain('after.ts')
+    } finally {
+      recovers.cleanup()
+    }
+
+    const staysStale = await run([stale])
+    try {
+      expect(staysStale.reads()).toBe(2)
+      expect(staysStale.host.querySelector('[aria-label="Review changes"]')).toBeNull()
+      expect(staysStale.host.textContent).not.toContain('repository context was loading')
+      expect(staysStale.host.textContent).not.toContain('previous-host.ts')
+      expect(useAppStore.getState().repositoryReviewBySessionId['chat-1']).toBeUndefined()
+    } finally {
+      staysStale.cleanup()
     }
   })
 
@@ -5440,7 +5520,7 @@ describe('ChatView', () => {
     expect(reportedText()).toContain('Unsupported permission mode "unrestricted"')
     // Feedback now goes to the shared alert once; the inline dismiss control is gone.
     expect(host.querySelector('button[aria-label="Dismiss command feedback"]')).toBeNull()
-    expect(appFailures.filter((failure) => failure.detail.includes('Unsupported permission mode "unrestricted"'))).toHaveLength(1)
+    expect(appFailures.filter((failure) => `${failure.message} ${failure.detail}`.includes('Unsupported permission mode "unrestricted"'))).toHaveLength(1)
 
     act(() => {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, 'keep /permission yo tail')
@@ -5490,7 +5570,7 @@ describe('ChatView', () => {
     await act(acceptYolo)
     expect(reportedText()).toContain('Native permission update was rejected.')
     expect(host.querySelector('button[aria-label="Dismiss command feedback"]')).toBeNull()
-    expect(appFailures.filter((failure) => failure.detail.includes('Native permission update was rejected.'))).toHaveLength(1)
+    expect(appFailures.filter((failure) => failure.detail.includes('Native permission update was rejected.')).map((failure) => failure.message)).toEqual(['The permission mode was not changed.'])
 
     await act(requestYolo)
     await act(acceptYolo)
@@ -5886,7 +5966,7 @@ describe('ChatView', () => {
     expect(useAppStore.getState().markdownStoreAttachedBySessionId['chat-1']).toEqual([skill])
     expect(useAppStore.getState().messages['chat-1']).toHaveLength(2)
     if (operation === 'failure') expect(reportedText()).toContain('This provider does not support manual compaction.')
-    if (operation === 'not-accepted') expect(reportedText()).toContain('Compaction failed: the request was not accepted.')
+    if (operation === 'not-accepted') expect(appFailures.at(-1)).toMatchObject({ message: 'Compaction failed.', detail: 'The request was not accepted.' })
     act(() => root.unmount())
     host.remove()
     delete window.cefQuery
@@ -9300,7 +9380,7 @@ describe('ChatView', () => {
   })
 
   // #278: a settled turn keeps its events while a later user row (failed-reconnect queue, prepared input) is appended.
-  const renderTurnAfterFollowUp = (overrides: { processing?: boolean; turnUserMessageIndex?: number; turnAssistantMessageIndex?: number; assistantContent?: string; assistantStreaming?: boolean; leadingAssistant?: boolean; followUp?: boolean; trailingRows?: Message[]; historyStart?: number; messageCount?: number; turnEvents?: AcpTurnEvent[]; toolCalls?: AcpToolCall[]; pendingPermission?: AcpBinding['pendingPermission'] }) => {
+  const renderTurnAfterFollowUp = (overrides: { processing?: boolean; turnUserMessageIndex?: number; turnAssistantMessageIndex?: number; assistantContent?: string; assistantStreaming?: boolean; leadingAssistant?: boolean; followUp?: boolean; followUpSteer?: boolean; trailingRows?: Message[]; historyStart?: number; messageCount?: number; turnEvents?: AcpTurnEvent[]; toolCalls?: AcpToolCall[]; pendingPermission?: AcpBinding['pendingPermission'] }) => {
     useAppStore.setState((state) => ({
       historyStartIndexBySessionId: overrides.historyStart ? { 'chat-1': overrides.historyStart } : {},
       sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, messageCount: overrides.messageCount } : session),
@@ -9310,7 +9390,7 @@ describe('ChatView', () => {
           ...(overrides.leadingAssistant ? [{ id: 'm-0', sessionId: 'chat-1', role: 'assistant' as const, content: 'Earlier answer', createdAt: new Date(0) }] : []),
           { id: 'm-1', sessionId: 'chat-1', role: 'user', content: 'Please inspect the workspace', createdAt: new Date(0) },
           { id: 'm-2', sessionId: 'chat-1', role: 'assistant', content: overrides.assistantContent ?? 'Status update.\n\nSettled answer.', isStreaming: overrides.assistantStreaming, createdAt: new Date(1) },
-          ...(overrides.followUp === false ? [] : [{ id: 'm-3', sessionId: 'chat-1', role: 'user' as const, content: 'Follow-up row', createdAt: new Date(2) }]),
+          ...(overrides.followUp === false ? [] : [{ id: 'm-3', sessionId: 'chat-1', role: 'user' as const, content: 'Follow-up row', prioritySteer: overrides.followUpSteer, createdAt: new Date(2) }]),
           ...(overrides.trailingRows ?? []),
         ],
       },
@@ -9476,9 +9556,48 @@ describe('ChatView', () => {
     expect(text.indexOf('Settled answer.')).toBeLessThan(text.indexOf('Follow-up row'))
   })
 
+  // #278: a queued or prepared follow-up row must not turn a settled answer's stale anchor into a second copy of it.
   it.each([
     { name: 'stale index on a user row', overrides: { turnAssistantMessageIndex: 2 } },
     { name: 'stale index past the end', overrides: { turnAssistantMessageIndex: 5 } },
+    { name: 'no recorded assistant row', overrides: { turnAssistantMessageIndex: -1 } },
+  ])('renders a settled answer once after its turn user row when a follow-up row follows it with a $name', ({ overrides }) => {
+    const text = renderTurnAfterFollowUp(overrides)
+    expect(text.match(/Settled answer\./g)).toHaveLength(1)
+    expect(text.indexOf('Settled answer.')).toBeLessThan(text.indexOf('Follow-up row'))
+  })
+
+  it('renders a processing answer and its next tool once at a stale-anchored row when a steer row follows it', () => {
+    const text = renderTurnAfterFollowUp({ ...liveAnswerWithTool, turnAssistantMessageIndex: 5, followUpSteer: true })
+    expect(text.match(/Settled answer\./g)).toHaveLength(1)
+    expect(text.match(/Inspect workspace files/g)).toHaveLength(1)
+    expect(text.indexOf('Settled answer.')).toBeLessThan(text.indexOf('Inspect workspace files'))
+    expect(text.indexOf('Inspect workspace files')).toBeLessThan(text.indexOf('Follow-up row'))
+  })
+
+  it('keeps a separate live card when an ordinary row after a same-text answer may be the running turn\'s prompt', () => {
+    // The stale turn user index may sit on an older turn whose answer reads the same; that row must not take this turn.
+    const text = renderTurnAfterFollowUp({ ...liveAnswerWithTool, turnAssistantMessageIndex: 5 })
+    expect(text.match(/Settled answer\./g)).toHaveLength(2)
+    expect(text.indexOf('Follow-up row')).toBeLessThan(text.indexOf('Inspect workspace files'))
+  })
+
+  it.each([false, true])('keeps the turn card when the matching settled row is outside the rendered window (processing %s)', (processing) => {
+    const trailingRows = Array.from({ length: 200 }, (_, index): Message => ({ id: `q-${index}`, sessionId: 'chat-1', role: 'user', content: `Queued row ${index}`, createdAt: new Date(3) }))
+    const text = renderTurnAfterFollowUp({ ...(processing ? liveAnswerWithTool : {}), turnAssistantMessageIndex: 5, trailingRows })
+    expect(text).not.toContain('Please inspect the workspace')
+    expect(text.match(/Settled answer\./g)).toHaveLength(1)
+  })
+
+  it('keeps the live card for a settled answer whose stale row is followed by a pending permission', () => {
+    const text = renderTurnAfterFollowUp({
+      turnAssistantMessageIndex: 5,
+      pendingPermission: { requestId: '5', toolCallId: 'tool-1', title: 'Read file', kind: 'read', status: 'pending', content: 'Read /tmp/project/file.txt', options: [{ id: 'allow-once', name: 'Allow once', kind: 'allow_once' }] },
+    })
+    expect(text.match(/Allow once/g)).toHaveLength(1)
+  })
+
+  it.each([
     { name: 'stale index without a preceding turn user row', overrides: { turnUserMessageIndex: -1 } },
     { name: 'assistant row content that does not contain the turn text', overrides: { assistantContent: 'Unrelated imported row.' } },
     { name: 'turn user index that points at a non-user row', overrides: { leadingAssistant: true, turnUserMessageIndex: 0, turnAssistantMessageIndex: 2 } },
@@ -9980,7 +10099,7 @@ describe('ChatView', () => {
     await act(async () => { Array.from(menu.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Move chat')!.click() })
     expect(requests.filter((request) => request.action === 'moveChatWorkspace')).toMatchObject([{ action: 'moveChatWorkspace', payload: { chatId: 'chat-1', folderId: 'destination' } }])
     expect(useAppStore.getState().sessions[0]).toMatchObject({ folderId: 'original', nativeSessionId: 'parent-native', workspaceDirectory: '/srv/project' })
-    expect(confirmed ? appNotices.join('\n') : reportedText()).toContain(confirmed ? 'Moved chat.' : 'Stop the chat before moving')
+    expect(confirmed ? appNotices.join('\n') : reportedText()).toContain(confirmed ? 'Moved chat to the selected workspace.' : 'Stop the chat before moving')
     act(() => root.unmount())
     host.remove()
     window.cefQuery = previousCefQuery
@@ -10056,10 +10175,10 @@ describe('ChatView', () => {
       ;(Array.from(document.body.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]')).find((button) => button.textContent?.includes('Open terminal')) as HTMLButtonElement).click()
       await Promise.resolve()
     })
-    expect(reportedText()).toContain('Failed to open terminal.')
+    expect(reportedText()).toContain('Could not open a terminal at the workspace.')
     act(() => vi.advanceTimersByTime(6000))
     // The alert is reported once; the timer expiry of the success notice does not re-report or drop it.
-    expect(reportedText().split('Failed to open terminal.')).toHaveLength(2)
+    expect(reportedText().split('Could not open a terminal at the workspace.')).toHaveLength(2)
     expect(host.querySelector('button[aria-label="Dismiss workspace action message"]')).toBeNull()
 
     act(() => root.unmount())
@@ -11593,11 +11712,10 @@ describe('ChatView', () => {
         if (route !== 'goal') {
           expect(f.host.textContent).not.toContain('Claude Plan mode is read-only')
           if (change !== 'birth') {
-            const refusal = appFailures.find((failure) => failure.detail.includes("so this prompt wasn't sent. Review the selected references, then send again."))
-            expect(refusal).toBeTruthy()
-            expect(refusal!.message).toContain('Message not sent')
+            const refusal = appFailures.find((failure) => failure.message === "The chat's workspace or provider changed, so this prompt wasn't sent.")
+            expect(refusal?.detail).toBe('Review the selected references, then send again.')
             // A prevented send asks for recovery; it must not use the green completion treatment.
-            expect(refusal!.tone ?? 'failure').toBe('failure')
+            expect(refusal!.tone).toBe('warning')
           }
         }
       } finally {
@@ -11617,8 +11735,8 @@ describe('ChatView', () => {
         f.renderCurrentSession()
         await act(async () => f.pending[0].ack())
         expect(reportedText()).toContain('Check the earlier input before sending again.')
-        expect(appFailures.find((failure) => failure.detail.includes('Check the earlier input before sending again.'))?.message).toBe('Check earlier message')
-        expect(reportedText()).not.toContain('Message not sent')
+        expect(appFailures.find((failure) => `${failure.message} ${failure.detail}`.includes('Check the earlier input before sending again.'))).toMatchObject({ message: 'The chat was replaced.', tone: 'warning' })
+        expect(reportedText()).not.toContain("this prompt wasn't sent")
       } finally {
         await act(async () => { for (const request of f.pending) request.ack() })
         f.cleanup()
@@ -11638,7 +11756,7 @@ describe('ChatView', () => {
           ? { ...session, createdAt: new Date(session.createdAt.getTime() + 1000) } : session) })))
         f.renderCurrentSession()
         expect(reportedText()).toContain('Check the earlier input before sending again.')
-        expect(appFailures.find((failure) => failure.detail.includes('Check the earlier input before sending again.'))?.tone ?? 'failure').toBe('failure')
+        expect(appFailures.find((failure) => `${failure.message} ${failure.detail}`.includes('Check the earlier input before sending again.'))?.tone).toBe('warning')
         const fresh = { ...reference, id: 'replacement-ordinary-reference', text: 'Replacement selected context' }
         act(() => writeChatComposerDraft('chat-1', { text, attachments: [attachment], references: [fresh] }))
         await f.send()
@@ -11742,9 +11860,9 @@ describe('ChatView', () => {
         expect(f.sends()).toHaveLength(1)
         expect(f.sends()[0].payload.text).toBe(draft.text + '\n\n' + formatContextReferences([reference]))
         await act(async () => f.pending[0].reject('Synthetic acknowledgement failure'))
-        const recovery = appFailures.find((failure) => failure.detail.includes('Could not confirm the prompt. Check its saved state before retrying.'))
+        const recovery = appFailures.find((failure) => `${failure.message} ${failure.detail}`.includes('Could not confirm the prompt. Check its saved state before retrying.'))
         expect(recovery).toBeTruthy()
-        expect(recovery!.tone ?? 'failure').toBe('failure')
+        expect(recovery!.tone).toBe('warning')
         expect(readChatComposerDraft('chat-1')).toEqual(draft)
         expect(f.host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!.value).toBe(draft.text)
         expect(f.sends()).toHaveLength(1)
@@ -13349,6 +13467,53 @@ describe('ChatView conditional manual compaction offer', () => {
       expect(readChatComposerDraft(f.chat.id).attachments).toEqual([f.file])
       expect(useAppStore.getState().markdownStoreAttachedBySessionId[f.chat.id]).toEqual([f.skill])
       expect(useAppStore.getState().messages[f.chat.id]).toHaveLength(2)
+    } finally { f.cleanup() }
+  })
+
+  it.each([false, true] as const)('routes typed /compact instructions through the compact action, saying in one line when they are unused (used %s)', async used => {
+    const f = await unsupportedCompactionFixture('/compact keep the API notes')
+    try {
+      await act(async () => { publishCompactionChat(supportedCompactionChat(f.chat)); f.render() })
+      window.cefQuery = ({ request, onSuccess }) => { f.requests.push(JSON.parse(request)); onSuccess(JSON.stringify({ accepted: true, instructionsUsed: used })) }
+      await act(async () => f.host.querySelector<HTMLButtonElement>('button[aria-label="Send prompt"]')!.click())
+      expect(f.requests.filter(request => request.action === 'compactAcpSession')).toEqual([
+        { action: 'compactAcpSession', payload: { chatId: f.chat.id, instructions: 'keep the API notes' }, requestId: expect.any(String) },
+      ])
+      expect(f.sendAcpPrompt).not.toHaveBeenCalled()
+      expect(f.requests.filter(request => request.action === 'sendAcpPrompt')).toEqual([])
+      expect(f.textarea.value).toBe('')
+      expect(appNotices.filter(message => message === 'This provider compacts without instructions, so yours were not used.')).toHaveLength(used ? 0 : 1)
+    } finally { f.cleanup() }
+  })
+
+  it('keeps the typed /compact draft and reports a backend refusal in one line', async () => {
+    const f = await unsupportedCompactionFixture('/compact keep the API notes')
+    try {
+      await act(async () => { publishCompactionChat(supportedCompactionChat(f.chat)); f.render() })
+      window.cefQuery = ({ request, onSuccess, onFailure }) => {
+        const parsed = JSON.parse(request)
+        f.requests.push(parsed)
+        if (parsed.action === 'compactAcpSession') onFailure(409, 'This provider can compact only chats that run on this computer.')
+        else onSuccess('{}')
+      }
+      await act(async () => f.host.querySelector<HTMLButtonElement>('button[aria-label="Send prompt"]')!.click())
+      expect(f.requests.filter(request => request.action === 'compactAcpSession')).toHaveLength(1)
+      expect(f.sendAcpPrompt).not.toHaveBeenCalled()
+      expect(f.textarea.value).toBe('/compact keep the API notes')
+      expect(reportedText()).toContain('Compaction failed. This provider can compact only chats that run on this computer.')
+      expect(appNotices.some(message => message.includes('yours were not used'))).toBe(false)
+    } finally { f.cleanup() }
+  })
+
+  it('keeps a typed /compact with instructions out of ordinary send when compaction is unavailable', async () => {
+    const f = await unsupportedCompactionFixture('/compact keep the API notes')
+    try {
+      await act(async () => f.host.querySelector<HTMLButtonElement>('button[aria-label="Send prompt"]')!.click())
+      expect(f.requests.filter(request => request.action === 'compactAcpSession')).toEqual([])
+      expect(f.sendAcpPrompt).not.toHaveBeenCalled()
+      expect(f.requests.filter(request => request.action === 'sendAcpPrompt')).toEqual([])
+      expect(f.textarea.value).toBe('/compact keep the API notes')
+      expect(reportedText()).toContain('Manual compaction is unavailable for this chat.')
     } finally { f.cleanup() }
   })
 
