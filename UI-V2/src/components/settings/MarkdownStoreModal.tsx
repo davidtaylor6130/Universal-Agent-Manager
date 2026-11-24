@@ -1,4 +1,4 @@
-import { cloneElement, Fragment, useEffect, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react'
+import { cloneElement, forwardRef, Fragment, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../../store/useAppStore'
 import { Button, Disclosure, IconButton, MenuSelect, Notice, Overlay, ProgressFill, Reveal, RowButton, SegmentedControl, StatusDot, Switch, Tooltip, usePresence, Swap } from '../ui'
@@ -27,8 +27,11 @@ const PROVIDER_OPTIONS = SUPPORTED_TEXT_WORKER_PROVIDER_IDS.map((id) => ({
 }))
 const FOLDER_ACTIONS: MenuSelectOption[] = [{ value: 'choose', label: 'Choose folder…' }, { value: 'enter', label: 'Enter path…' }]
 
+/** Lets Settings (and the standalone close button) ask before an unsaved skill draft is left behind. */
+export interface MarkdownStoreHandle { requestLeave(next: () => void): void }
+
 /** Skills uses the same store actions in Settings and in the standalone library. Add, import and edit steps replace the list inside this dialog. */
-export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } = {}) {
+export const MarkdownStoreModal = forwardRef<MarkdownStoreHandle, { embedded?: boolean }>(function MarkdownStoreModal({ embedded = false }, ref) {
   const activeSessionId = useAppStore((s) => s.activeSessionId)
   const markdownStoreDirectory = useAppStore((s) => s.markdownStoreDirectory)
   const entries = useAppStore(useShallow((s) => s.markdownStoreEntries))
@@ -68,6 +71,15 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
   const initialDraftRef = useRef(EMPTY_DRAFT)
   const editingEntryRef = useRef<MarkdownStoreEntry | null>(null)
   const draftDirty = JSON.stringify(draft) !== JSON.stringify(initialDraftRef.current)
+  // Where to go once the unsaved draft is saved or discarded (leaving the page or closing Skills).
+  const pendingLeaveRef = useRef<(() => void) | null>(null)
+  // The control that asked to leave (a Settings page button, say), focused again if leaving unmounts Skills.
+  const leaveOpenerRef = useRef<HTMLElement | null>(null)
+  const leftRef = useRef(false)
+  useEffect(() => () => {
+    const opener = leaveOpenerRef.current
+    if (leftRef.current && opener?.isConnected && (!document.activeElement || document.activeElement === document.body)) opener.focus()
+  }, [])
   const [addView, setAddView] = useState<'choose' | 'provider' | null>(null)
   const [importProvider, setImportProvider] = useState('')
   const [previewing, setPreviewing] = useState(false)
@@ -123,8 +135,29 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
     setEditing(null)
     setDraft(EMPTY_DRAFT)
     setShowEditorPreview(false)
-    editorTriggerRef.current?.focus()
+    const next = pendingLeaveRef.current
+    pendingLeaveRef.current = null
+    if (next) { leftRef.current = true; next() }
+    else editorTriggerRef.current?.focus()
   }
+
+  function keepEditing() {
+    pendingLeaveRef.current = null
+    setConfirmation(null)
+  }
+
+  // An unsaved draft asks first; Discard or a successful save then carries on with the leave.
+  const requestLeave = useCallback((next: () => void) => {
+    if (submittingRef.current) return
+    leftRef.current = false
+    if (editing && draftDirty) {
+      leaveOpenerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+      pendingLeaveRef.current = next
+      setConfirmation('discard')
+    }
+    else next()
+  }, [editing, draftDirty])
+  useImperativeHandle(ref, () => ({ requestLeave }), [requestLeave])
 
   function requestEditorClose() {
     if (submittingRef.current) return
@@ -171,7 +204,7 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
       event.preventDefault()
       event.stopImmediatePropagation()
       if (submittingRef.current || importingRef.current) return
-      if (confirmation) setConfirmation(null)
+      if (confirmation) keepEditing()
       else if (editing) requestEditorClose()
       else if (imports.length) closeImportReview()
       else if (addView) closeAdd()
@@ -259,6 +292,7 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
     submittingRef.current = false
     setSubmitting(false)
     setConfirmation(null)
+    if (!ok) pendingLeaveRef.current = null
     if (ok) {
       reportAppNotice(`Saved “${clean.title}”.`, 'success')
       cancelEdit()
@@ -388,7 +422,7 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
       {confirmPresence.mounted && <div ref={confirmationRef} role="group" aria-label={lastConfirmation.current === 'discard' ? 'Unsaved skill changes' : 'Overwrite skill'} tabIndex={-1} data-state={confirmPresence.closing ? 'closed' : 'open'} className="uam-presence">
         <Notice tone="warning" dismissible={false} dismissLabel="Dismiss" title={lastConfirmation.current === 'discard' ? 'Discard your changes?' : `Overwrite ${editingEntryRef.current?.title}?`}
           actions={<>
-            <Button size="sm" disabled={submitting} onClick={() => setConfirmation(null)}>Keep editing</Button>
+            <Button size="sm" disabled={submitting} onClick={keepEditing}>Keep editing</Button>
             {lastConfirmation.current === 'discard' ? <><Button variant="danger" size="sm" disabled={submitting} onClick={cancelEdit}>Discard</Button><Button variant="primary" size="sm" disabled={submitting || !draftDirty || !draft.title.trim() || !draft.body.trim()} onClick={() => void saveDraft()}>Save &amp; close</Button></> : <SaveButton variant="danger" saving={submitting} pendingLabel="Saving..." disabled={submitting} onClick={() => void saveDraft(true)}>Overwrite</SaveButton>}
           </>}>
           {lastConfirmation.current === 'overwrite' && 'This replaces the saved entry.'}
@@ -493,7 +527,7 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
 
   // Overlay has no attribute passthrough, so the dialog role stays on the panel.
   const panel = <div role={embedded ? 'region' : 'dialog'} aria-modal={embedded ? undefined : true} aria-label="Skills" tabIndex={-1} className={embedded ? 'h-full min-h-0 w-full flex flex-1 flex-col overflow-hidden' : 'uam-skills-dialog w-full max-w-6xl h-[min(780px,90vh)] flex flex-col overflow-hidden rounded-xl'} style={{ background: 'var(--surface)', color: 'var(--text)' }}>
-      {!embedded && <div className="shrink-0 flex items-center justify-between px-5 py-4" style={{ borderBottom: '1px solid var(--border)' }}><h2 className="text-base font-semibold">Skills</h2><IconButton icon={<X size={16} />} label="Close skills" onClick={close} /></div>}
+      {!embedded && <div className="shrink-0 flex items-center justify-between px-5 py-4" style={{ borderBottom: '1px solid var(--border)' }}><h2 className="text-base font-semibold">Skills</h2><IconButton icon={<X size={16} />} label="Close skills" disabled={submitting} onClick={() => requestLeave(close)} /></div>}
       <div className={`flex min-h-0 flex-1 flex-col${embedded ? '' : ' p-5'}`}>
         <div className="uam-set-card uam-set-card--flush uam-store-card flex min-h-0 flex-1 flex-col">
           {/* The flush card has no side padding, so the row carries its own. */}
@@ -523,7 +557,7 @@ export function MarkdownStoreModal({ embedded = false }: { embedded?: boolean } 
       </div>
     </div>
   return embedded ? <div className="h-full min-h-0 min-w-0 flex flex-1 flex-col overflow-hidden">{panel}</div> : <Overlay open zIndex={50}>{panel}</Overlay>
-}
+})
 
 interface FolderNode { key: string; name: string; count: number; children: FolderNode[] }
 

@@ -23,6 +23,7 @@ namespace
 		bool rpc_error = false;
 		bool interaction = false;
 		bool fragmented = false;
+		nlohmann::json connect_result = {{"protocolVersion", 3}};
 
 		bool SupportsDetachedProcesses() const override { return false; }
 		bool PopulateLocalTime(std::time_t, std::tm*) const override { return false; }
@@ -48,7 +49,7 @@ namespace
 			if (silent || !request.contains("id")) return true;
 			nlohmann::json response{{"jsonrpc", "2.0"}, {"id", request["id"]}};
 			if (request.value("method", "") == "initialize" || request.value("method", "") == "connect")
-				response["result"] = {{"protocolVersion", 3}};
+				response["result"] = connect_result;
 			else if (interaction)
 				response = {{"jsonrpc", "2.0"}, {"id", "permission"}, {"method", "userInput.request"}, {"params", {{"secret", "do-not-leak"}}}};
 			else if (rpc_error)
@@ -240,6 +241,23 @@ UAM_TEST(AccountAllowanceCopilotTransportHandlesFragmentedFramesWithoutCreatingS
 	UAM_ASSERT_EQ(fixture.requests.size(), std::size_t(2));
 	UAM_ASSERT_EQ(fixture.requests[0].at("method"), "connect");
 	UAM_ASSERT_EQ(fixture.requests[1].at("method"), "account.getQuota");
+}
+
+UAM_TEST(AccountAllowanceCopilotRefusesUnverifiedSdkProtocolBeforeAccountRead)
+{
+	const std::vector<std::pair<nlohmann::json, std::string>> cases = {
+	    {{{"ok", true}, {"protocolVersion", 4}, {"version", "1.0.114"}}, "This Copilot CLI uses protocol 4; UAM supports 3."},
+	    {{{"ok", true}, {"version", "1.0.114"}}, "This Copilot CLI did not report a protocol; UAM supports 3."}};
+	for (const auto& [connect_result, message] : cases)
+	{
+		AccountAllowanceProcessFixture fixture; fixture.copilot = true; fixture.connect_result = connect_result;
+		const auto result = uam::usage::FetchCliAccountAllowanceWithProcessService(fixture, "copilot-cli", {"copilot"}, fs::path{});
+		UAM_ASSERT_EQ(result.error, message);
+		UAM_ASSERT(result.limits.empty());
+		UAM_ASSERT_EQ(fixture.requests.size(), std::size_t(1));
+		UAM_ASSERT_EQ(fixture.requests[0].at("method"), "connect");
+		UAM_ASSERT_EQ(fixture.stops, 1);
+	}
 }
 
 UAM_TEST(AccountAllowanceTransportCancellationAndDeadlineAreBoundedAndReapOwnedChild)

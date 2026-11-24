@@ -21,7 +21,7 @@ export function CustomIcon({ icon, secondary, fallback }: { icon?: Icon; seconda
     return (
       <span aria-hidden className="inline-flex shrink-0 items-center justify-center" style={{ width: 16, height: 16 }}>
         {libraryName === null ? usable.value : (
-          <Suspense fallback={<span className="uam-icon-skeleton block" style={{ width: 16, height: 16 }} />}>
+          <Suspense fallback={<span className="uam-skeleton uam-icon-skeleton block" style={{ width: 16, height: 16 }} />}>
             <LazyLucideGlyph name={libraryName} fallback={fallback} />
           </Suspense>
         )}
@@ -35,7 +35,7 @@ function IconLibrarySkeleton() {
   return (
     <div role="status" className="grid gap-1" style={{ gridTemplateColumns: 'repeat(8, 32px)' }}>
       <span className="sr-only">Loading icons</span>
-      {Array.from({ length: 24 }, (_, index) => <span key={index} aria-hidden className="uam-icon-skeleton block h-8 w-8" />)}
+      {Array.from({ length: 24 }, (_, index) => <span key={index} aria-hidden className="uam-skeleton uam-icon-skeleton block h-8 w-8" />)}
     </div>
   )
 }
