@@ -1,6 +1,6 @@
 #include "common/provider/custom_acp/custom_acp_provider_runtime.h"
 
-#include "common/provider/custom_acp/custom_acp_config.h"
+#include "common/provider/custom_acp_config.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_profile_constants.h"
 #include "common/provider/runtime/provider_runtime_internal.h"

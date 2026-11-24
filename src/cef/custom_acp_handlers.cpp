@@ -2,7 +2,7 @@
 
 #include "cef/cef_push.h"
 #include "cef/uam_query_handler_internal.h"
-#include "common/provider/custom_acp/custom_acp_config.h"
+#include "common/provider/custom_acp_config.h"
 #include "common/provider/custom_acp/custom_acp_provider_runtime.h"
 #include "common/paths/path_utils.h"
 

@@ -4,7 +4,7 @@
 //
 // Usage: uam_custom_acp_agent_tests <python3> <tests/fixtures/custom_acp_agent.py>
 #include "common/paths/path_utils.h"
-#include "common/provider/custom_acp/custom_acp_config.h"
+#include "common/provider/custom_acp_config.h"
 #include "common/runtime/acp/acp_json_rpc.h"
 #include "common/runtime/acp/acp_permissions.h"
 #include "common/runtime/acp/acp_protocol_methods.h"

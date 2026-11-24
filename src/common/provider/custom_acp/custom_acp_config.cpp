@@ -1,4 +1,4 @@
-#include "common/provider/custom_acp/custom_acp_config.h"
+#include "common/provider/custom_acp_config.h"
 
 #include "common/paths/path_utils.h"
 #include "common/utils/env_utils.h"

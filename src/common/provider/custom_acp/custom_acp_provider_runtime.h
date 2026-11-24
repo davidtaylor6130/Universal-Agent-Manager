@@ -1,6 +1,6 @@
 #pragma once
 
-#include "common/provider/custom_acp/custom_acp_config.h"
+#include "common/provider/custom_acp_config.h"
 #include "common/provider/provider_profile.h"
 #include "common/provider/provider_runtime.h"
 
