@@ -862,15 +862,15 @@ UAM_TEST(SavedToolCallRestoresEveryPersistedField)
 	chat.messages.push_back(assistant);
 
 	uam::AcpSessionState session;
-	uam::AcpToolCallState& restored = uam::acp_detail::RestoreToolCallFromHistory(session, chat, saved.id);
+	uam::AcpToolCallState& restored = uam::acp_detail::RestoreToolCallFromChat(session, chat, saved.id);
 	UAM_ASSERT(uam::acp_detail::PersistedToolCallFromAcpToolCall(restored) == saved);
 	UAM_ASSERT_EQ(session.tool_call_message_indices.at(saved.id), 1);
 
 	// A live tool wins over its saved copy, and an unknown id starts empty without claiming a message.
 	restored.status = "in_progress";
-	UAM_ASSERT(&uam::acp_detail::RestoreToolCallFromHistory(session, chat, saved.id) == &restored);
+	UAM_ASSERT(&uam::acp_detail::RestoreToolCallFromChat(session, chat, saved.id) == &restored);
 	UAM_ASSERT_EQ(session.tool_calls.front().status, std::string("in_progress"));
-	const uam::AcpToolCallState& unknown = uam::acp_detail::RestoreToolCallFromHistory(session, chat, "missing-tool");
+	const uam::AcpToolCallState& unknown = uam::acp_detail::RestoreToolCallFromChat(session, chat, "missing-tool");
 	UAM_ASSERT(unknown.title.empty() && unknown.status.empty());
 	UAM_ASSERT(!session.tool_call_message_indices.contains("missing-tool"));
 }

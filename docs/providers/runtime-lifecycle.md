@@ -12,7 +12,7 @@ The chat header runtime control gives each state its own icon as well as its col
 
 Stopping a remote runtime is not settled on a deadline. It is finished only by the host's answer and is otherwise shown as unconfirmed and retried; see [stops the host has not confirmed](../remote-environments/ssh.md#stops-the-host-has-not-confirmed). After about two minutes unconfirmed, the chat's error notice offers the user **Treat as stopped**, which settles the chat without that answer after a warning that a process may still be running on the host. UAM never does this by itself.
 
-**Implementation: Partial.** The shared runtime has shutdown projection and stop-handoff guards; independent cold Retry process lifetime and cleanup remain incomplete. Verification, review and acceptance are recorded in the [archived V5 change log](https://github.com/davidtaylor6130/Universal-Agent-Manager/blob/1d4865fcb/V5%20Improvement%20Change%20log.md).
+**Implementation: Partial.** The shared runtime has shutdown projection and stop-handoff guards; cold Retry has no process launch path, because its dormant launch scaffolding was [removed on 2026-11-23](../documentation-review.md#saved-image-retry-over-ssh). Verification, review and acceptance are recorded in the [archived V5 change log](https://github.com/davidtaylor6130/Universal-Agent-Manager/blob/1d4865fcb/V5%20Improvement%20Change%20log.md).
 
 ## Stream watch
 

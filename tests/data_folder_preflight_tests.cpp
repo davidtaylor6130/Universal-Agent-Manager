@@ -1,5 +1,6 @@
 #include "data_folder_test_support.h"
 #include "app/data_folder_preflight.h"
+#include "common/platform/volume_capabilities.h"
 
 using namespace uam_test;
 using PreflightState = uam::DataFolderPreflightState;
@@ -186,4 +187,31 @@ UAM_TEST(DataFolderPreflightExcludesRetainedAncestorsAndDirectoryAliases)
 		UAM_ASSERT(uam::InspectDataFolderTransition(active, case_alias, false, {retained}).blocker == Blocker::OverlappingRoots);
 #endif
 	UAM_ASSERT(fs::is_empty(retained / "empty") && fs::is_empty(bootstrap / ".data-folder-control/empty"));
+}
+
+UAM_TEST(DataFolderPreflightRefusesNetworkVolumesAndWarnsWithoutSwap)
+{
+	struct VolumeAnswer
+	{
+		~VolumeAnswer() { uam::platform::t_volume_capabilities_for_tests.reset(); }
+	} restore;
+	TempDir temp("uam-data-folder-volume");
+	const fs::path source = temp.root / "source";
+	const fs::path destination = temp.root / "destination";
+	fs::create_directories(source);
+	fs::create_directories(destination);
+	uam::platform::t_volume_capabilities_for_tests = uam::platform::VolumeCapabilities{false, std::nullopt, "smbfs"};
+	const auto network = uam::InspectDataFolderTransition(source, destination, false);
+	UAM_ASSERT(network.state == PreflightState::Blocked && network.blocker == Blocker::NetworkVolume);
+	UAM_ASSERT(!network.explanation.empty() && network.explanation.find('\n') == std::string::npos);
+	uam::platform::t_volume_capabilities_for_tests = uam::platform::VolumeCapabilities{true, false, "exfat"};
+	const auto exfat = uam::InspectDataFolderTransition(source, destination, false);
+	UAM_ASSERT(exfat.state == PreflightState::RequiresStoppedValidation && exfat.blocker == Blocker::None);
+	const std::string warning = uam::DataFolderVolumeWarning(destination);
+	UAM_ASSERT(!warning.empty() && warning.find('\n') == std::string::npos);
+	uam::platform::t_volume_capabilities_for_tests = uam::platform::VolumeCapabilities{true, true, "apfs"};
+	UAM_ASSERT(uam::DataFolderVolumeWarning(destination).empty());
+	uam::platform::t_volume_capabilities_for_tests = uam::platform::VolumeCapabilities{}; // An unknown answer neither refuses nor warns.
+	UAM_ASSERT(uam::InspectDataFolderTransition(source, destination, false).blocker == Blocker::None);
+	UAM_ASSERT(uam::DataFolderVolumeWarning(destination).empty());
 }

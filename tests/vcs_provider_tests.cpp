@@ -341,3 +341,68 @@ UAM_TEST(RemoteGitStatusUsesTheWorkspaceWhenTheRootIsReportedEmpty)
 	UAM_ASSERT(ChangedPathStatus(status, "new.txt", "??"));
 }
 #endif
+
+#if !defined(_WIN32) && UAM_ENABLE_SSH
+UAM_TEST(RemoteVcsStatusReportsALostConnectionInsteadOfNoRepository)
+{
+	if (!GitAvailableForTests()) return;
+	// Detection whose probe loses the runner must not read as "no repository": the chat summary would vanish (#310).
+	TempDir tools("uam-vcs-dropped-host");
+	RemoteVcsHost host(tools.root);
+	// The runner's environment is fixed at start, so its pid is written into the wrapper rather than passed in.
+	const fs::path wrapper = tools.root / "git";
+	UAM_ASSERT(uam::io::WriteTextFile(wrapper, "#!/bin/sh\ncase \" $* \" in *\" --show-toplevel \"*) kill -9 " + std::to_string(host.process.child_pid) + "; sleep 2; exit 0;; esac\nexec \"" + ResolvedTool("git") + "\" \"$@\"\n"));
+	fs::permissions(wrapper, fs::perms::owner_all);
+	const fs::path repository = host.temp.root / "repository";
+	fs::create_directories(repository);
+	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(repository.string())));
+	UAM_ASSERT(uam::io::WriteTextFile(repository / "new.txt", "new\n"));
+	host.chat.workspace_directory = repository.string();
+
+	const uam::VcsCommitStatus status = uam::VcsCommitService().Status(host.app, host.chat, uam::VcsType::Git, true, "chat");
+	UAM_ASSERT(!status.available);
+	UAM_ASSERT(status.warning.empty());
+	UAM_ASSERT(status.vcs_types.empty());
+	// One fixed sentence: the runner's own failure text goes to the diagnostic log, not the summary.
+	UAM_ASSERT_EQ(status.error, std::string("Lost the connection to the remote host while reading the repository."));
+}
+
+UAM_TEST(RemoteVcsStatusDoesNotFallBackToSvnWhenTheGitProbeLosesItsConnection)
+{
+	if (!GitAvailableForTests() || !SvnToolsAvailable()) return;
+	// A Git+SVN checkout: the Git probe drops only the bridge, so the reconnect lets the SVN probe succeed. The summary asks
+	// for Git, so whole-working-copy SVN rows must not stand in for the Git read that could not answer.
+	TempDir tools("uam-vcs-mixed-drop");
+	RemoteVcsHost host(tools.root);
+	const fs::path wrapper = tools.root / "git";
+	UAM_ASSERT(uam::io::WriteTextFile(wrapper, "#!/bin/sh\ncase \" $* \" in *\" --show-toplevel \"*) pkill -9 -f " + ShellQuoteForTest("bridge --socket " + host.socket.string()) + "; sleep 2; exit 0;; esac\nexec \"" + ResolvedTool("git") + "\" \"$@\"\n"));
+	fs::permissions(wrapper, fs::perms::owner_all);
+	const fs::path repository = host.temp.root / "repository";
+	const fs::path checkout = host.temp.root / "checkout";
+	UAM_ASSERT(RunTestCommand("svnadmin create " + ShellQuoteForTest(repository.string())));
+	UAM_ASSERT(uam::RunSvn(host.temp.root, {"checkout", "--non-interactive", "file://" + uam::paths::Utf8PathString(repository), checkout.string()}).exit_code == 0);
+	UAM_ASSERT(RunTestCommand("git init " + ShellQuoteForTest(checkout.string())));
+	UAM_ASSERT(uam::io::WriteTextFile(checkout / "new.txt", "new\n"));
+	host.chat.workspace_directory = checkout.string();
+
+	const uam::VcsCommitStatus status = uam::VcsCommitService().Status(host.app, host.chat, uam::VcsType::Git, true, "chat");
+	UAM_ASSERT(!status.available);
+	UAM_ASSERT(status.vcs_types.empty());
+	UAM_ASSERT(status.changed_files.empty());
+	UAM_ASSERT_EQ(status.error, std::string("Lost the connection to the remote host while reading the repository."));
+}
+
+UAM_TEST(RemoteVcsStatusStillReportsAPlainFolderAsHavingNoRepository)
+{
+	RemoteVcsHost host;
+	const fs::path folder = host.temp.root / "plain";
+	fs::create_directories(folder);
+	host.chat.workspace_directory = folder.string();
+
+	// A completed probe that finds nothing (or a runner that cannot start svn) is not a lost connection.
+	const uam::VcsCommitStatus status = uam::VcsCommitService().Status(host.app, host.chat, uam::VcsType::Git);
+	if (!status.error.empty()) throw TestFailure(status.error);
+	UAM_ASSERT(!status.available);
+	UAM_ASSERT_EQ(status.warning, std::string("No Git or SVN repository detected for this remote workspace."));
+}
+#endif

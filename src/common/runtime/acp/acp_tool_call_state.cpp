@@ -2,6 +2,7 @@
 
 #include "common/utils/string_utils.h"
 
+#include <cstddef>
 #include <string>
 
 namespace uam::acp_detail
@@ -23,7 +24,7 @@ AcpToolCallState& UpsertToolCall(AcpSessionState& session, const std::string& id
 	return session.tool_calls.back();
 }
 
-AcpToolCallState& RestoreToolCallFromHistory(AcpSessionState& session, const ChatSession& chat, const std::string& id)
+AcpToolCallState& RestoreToolCallFromChat(AcpSessionState& session, const ChatSession& chat, const std::string& id)
 {
 	for (AcpToolCallState& tool : session.tool_calls) if (tool.id == id) return tool;
 	AcpToolCallState& tool = UpsertToolCall(session, id);

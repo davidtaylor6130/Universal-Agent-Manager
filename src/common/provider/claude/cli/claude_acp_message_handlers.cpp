@@ -266,7 +266,7 @@ namespace uam::acp_detail
 							if (launch.id == tool_id && !launch.task_id.empty() && launch.task_id != task_id) return true;
 				}
 			}
-			AcpToolCallState& tool = RestoreToolCallFromHistory(session, chat, tool_id);
+			AcpToolCallState& tool = RestoreToolCallFromChat(session, chat, tool_id);
 			const bool first_task_event = tool.task_id.empty() && !task_id.empty();
 			if (!task_id.empty()) tool.task_id = task_id;
 			if (tool.title.empty()) tool.title = JsonDiagnosticStringValueOr(message, "description", "Background task");
@@ -343,7 +343,7 @@ namespace uam::acp_detail
 			if (!known_parent) return true;
 			const std::string identity = JsonDiagnosticStringValue(message, "uuid");
 			if (!identity.empty() && !session.claude_seen_child_messages.Insert(identity)) return true;
-			AcpToolCallState& tool = RestoreToolCallFromHistory(session, chat, parent);
+			AcpToolCallState& tool = RestoreToolCallFromChat(session, chat, parent);
 			tool.is_sub_agent = true;
 			if (tool.title.empty()) tool.title = "Sub-agent";
 			const nlohmann::json content = uam::nlohmann_json::ValueOrNull(uam::nlohmann_json::FindField(JsonObjectValue(message, "message"), "content"));
@@ -563,7 +563,7 @@ void HandleClaudeAssistantMessage(AppState& app, AcpSessionState& session, ChatS
 				continue;
 			}
 
-			AcpToolCallState& tool_call = RestoreToolCallFromHistory(session, chat, tool_id);
+			AcpToolCallState& tool_call = RestoreToolCallFromChat(session, chat, tool_id);
 			const std::string tool_name = JsonDiagnosticStringValueOr(item, "name", tool_call.kind);
 			tool_call.kind = uam::claude::ToolKind(tool_name);
 			tool_call.title = uam::claude::ToolTitle(tool_name, JsonObjectValue(item, "input"));
@@ -616,7 +616,7 @@ void HandleClaudeUserMessage(AppState& app, AcpSessionState& session, ChatSessio
 			continue;
 		}
 
-		AcpToolCallState& tool_call = RestoreToolCallFromHistory(session, chat, tool_id);
+		AcpToolCallState& tool_call = RestoreToolCallFromChat(session, chat, tool_id);
 		const std::string native_agent = JsonDiagnosticStringValue(JsonObjectValue(message, "tool_use_result"), "agentId");
 		if (tool_call.is_sub_agent && JsonDiagnosticStringValue(message, "session_id") == session.session_id && session.session_id == chat.native_session_id && uam::uuid::IsCanonicalUuid(session.session_id) && uam::remote::native_history::SafeId(native_agent))
 			tool_call.sub_agent_id = uam::native_agents::BuildHistoryId("claude-cli", session.session_id, native_agent, chat.execution_host_id.empty() ? "local" : chat.execution_host_id);
