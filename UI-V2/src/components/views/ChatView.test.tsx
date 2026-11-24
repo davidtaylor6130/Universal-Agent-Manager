@@ -9380,7 +9380,7 @@ describe('ChatView', () => {
   })
 
   // #278: a settled turn keeps its events while a later user row (failed-reconnect queue, prepared input) is appended.
-  const renderTurnAfterFollowUp = (overrides: { processing?: boolean; turnUserMessageIndex?: number; turnAssistantMessageIndex?: number; assistantContent?: string; assistantStreaming?: boolean; leadingAssistant?: boolean; followUp?: boolean; trailingRows?: Message[]; historyStart?: number; messageCount?: number; turnEvents?: AcpTurnEvent[]; toolCalls?: AcpToolCall[]; pendingPermission?: AcpBinding['pendingPermission'] }) => {
+  const renderTurnAfterFollowUp = (overrides: { processing?: boolean; turnUserMessageIndex?: number; turnAssistantMessageIndex?: number; assistantContent?: string; assistantStreaming?: boolean; leadingAssistant?: boolean; followUp?: boolean; followUpSteer?: boolean; trailingRows?: Message[]; historyStart?: number; messageCount?: number; turnEvents?: AcpTurnEvent[]; toolCalls?: AcpToolCall[]; pendingPermission?: AcpBinding['pendingPermission'] }) => {
     useAppStore.setState((state) => ({
       historyStartIndexBySessionId: overrides.historyStart ? { 'chat-1': overrides.historyStart } : {},
       sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, messageCount: overrides.messageCount } : session),
@@ -9390,7 +9390,7 @@ describe('ChatView', () => {
           ...(overrides.leadingAssistant ? [{ id: 'm-0', sessionId: 'chat-1', role: 'assistant' as const, content: 'Earlier answer', createdAt: new Date(0) }] : []),
           { id: 'm-1', sessionId: 'chat-1', role: 'user', content: 'Please inspect the workspace', createdAt: new Date(0) },
           { id: 'm-2', sessionId: 'chat-1', role: 'assistant', content: overrides.assistantContent ?? 'Status update.\n\nSettled answer.', isStreaming: overrides.assistantStreaming, createdAt: new Date(1) },
-          ...(overrides.followUp === false ? [] : [{ id: 'm-3', sessionId: 'chat-1', role: 'user' as const, content: 'Follow-up row', createdAt: new Date(2) }]),
+          ...(overrides.followUp === false ? [] : [{ id: 'm-3', sessionId: 'chat-1', role: 'user' as const, content: 'Follow-up row', prioritySteer: overrides.followUpSteer, createdAt: new Date(2) }]),
           ...(overrides.trailingRows ?? []),
         ],
       },
@@ -9556,9 +9556,48 @@ describe('ChatView', () => {
     expect(text.indexOf('Settled answer.')).toBeLessThan(text.indexOf('Follow-up row'))
   })
 
+  // #278: a queued or prepared follow-up row must not turn a settled answer's stale anchor into a second copy of it.
   it.each([
     { name: 'stale index on a user row', overrides: { turnAssistantMessageIndex: 2 } },
     { name: 'stale index past the end', overrides: { turnAssistantMessageIndex: 5 } },
+    { name: 'no recorded assistant row', overrides: { turnAssistantMessageIndex: -1 } },
+  ])('renders a settled answer once after its turn user row when a follow-up row follows it with a $name', ({ overrides }) => {
+    const text = renderTurnAfterFollowUp(overrides)
+    expect(text.match(/Settled answer\./g)).toHaveLength(1)
+    expect(text.indexOf('Settled answer.')).toBeLessThan(text.indexOf('Follow-up row'))
+  })
+
+  it('renders a processing answer and its next tool once at a stale-anchored row when a steer row follows it', () => {
+    const text = renderTurnAfterFollowUp({ ...liveAnswerWithTool, turnAssistantMessageIndex: 5, followUpSteer: true })
+    expect(text.match(/Settled answer\./g)).toHaveLength(1)
+    expect(text.match(/Inspect workspace files/g)).toHaveLength(1)
+    expect(text.indexOf('Settled answer.')).toBeLessThan(text.indexOf('Inspect workspace files'))
+    expect(text.indexOf('Inspect workspace files')).toBeLessThan(text.indexOf('Follow-up row'))
+  })
+
+  it('keeps a separate live card when an ordinary row after a same-text answer may be the running turn\'s prompt', () => {
+    // The stale turn user index may sit on an older turn whose answer reads the same; that row must not take this turn.
+    const text = renderTurnAfterFollowUp({ ...liveAnswerWithTool, turnAssistantMessageIndex: 5 })
+    expect(text.match(/Settled answer\./g)).toHaveLength(2)
+    expect(text.indexOf('Follow-up row')).toBeLessThan(text.indexOf('Inspect workspace files'))
+  })
+
+  it.each([false, true])('keeps the turn card when the matching settled row is outside the rendered window (processing %s)', (processing) => {
+    const trailingRows = Array.from({ length: 200 }, (_, index): Message => ({ id: `q-${index}`, sessionId: 'chat-1', role: 'user', content: `Queued row ${index}`, createdAt: new Date(3) }))
+    const text = renderTurnAfterFollowUp({ ...(processing ? liveAnswerWithTool : {}), turnAssistantMessageIndex: 5, trailingRows })
+    expect(text).not.toContain('Please inspect the workspace')
+    expect(text.match(/Settled answer\./g)).toHaveLength(1)
+  })
+
+  it('keeps the live card for a settled answer whose stale row is followed by a pending permission', () => {
+    const text = renderTurnAfterFollowUp({
+      turnAssistantMessageIndex: 5,
+      pendingPermission: { requestId: '5', toolCallId: 'tool-1', title: 'Read file', kind: 'read', status: 'pending', content: 'Read /tmp/project/file.txt', options: [{ id: 'allow-once', name: 'Allow once', kind: 'allow_once' }] },
+    })
+    expect(text.match(/Allow once/g)).toHaveLength(1)
+  })
+
+  it.each([
     { name: 'stale index without a preceding turn user row', overrides: { turnUserMessageIndex: -1 } },
     { name: 'assistant row content that does not contain the turn text', overrides: { assistantContent: 'Unrelated imported row.' } },
     { name: 'turn user index that points at a non-user row', overrides: { leadingAssistant: true, turnUserMessageIndex: 0, turnAssistantMessageIndex: 2 } },
