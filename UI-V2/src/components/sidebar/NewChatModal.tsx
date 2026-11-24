@@ -3,7 +3,7 @@ import { ExecutionRoutingDialog } from '../modals/ExecutionRoutingDialog'
 import { RUNNER_STATUS } from '../settings/ExecutionRoutingSettings'
 import { canRouteAutomatically, sanitizeRepositoryMatches, type WorkspaceRepositoryMatches } from '../../types/executionRouting'
 import { isCefContext, sendToCEF } from '../../ipc/cefBridge'
-import { COMPUTER_USE_ENABLED, SSH_ENABLED } from '../../config/buildFeatures'
+import { COMPUTER_USE_ENABLED, MOBILE_COMPANION_ENABLED, SSH_ENABLED } from '../../config/buildFeatures'
 import { useState, useEffect, useId, useRef, useCallback, useMemo } from 'react'
 import { CircleAlert, FolderPlus, Monitor, RefreshCw, Route, SquareTerminal, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
@@ -400,7 +400,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
         setRemoteBrowserOpen(false)
       }}
       returnFocusTo={returnFocus}
-      className={companion ? 'uam-companion-overlay' : undefined}
+      className={MOBILE_COMPANION_ENABLED && companion ? 'uam-companion-overlay' : undefined}
     />
   }
   if (SSH_ENABLED && routingOpen) return <ExecutionRoutingDialog onClose={() => { setStepReturn('routing'); setRoutingOpen(false) }} />
@@ -408,7 +408,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
   return (
     // label as well as the visible title: scripts/perf_driven.py finds this dialog by [aria-label="New chat"].
     // The phone browser's overlay class keeps its 16px fields once the dialog is portalled out of the companion shell.
-    <Overlay open zIndex={50} label="New chat" labelledBy={`${fieldId}-title`} className={companion ? 'uam-companion-overlay' : undefined} onBackdropMouseDown={requestClose} returnFocusTo={returnFocus}>
+    <Overlay open zIndex={50} label="New chat" labelledBy={`${fieldId}-title`} className={MOBILE_COMPANION_ENABLED && companion ? 'uam-companion-overlay' : undefined} onBackdropMouseDown={requestClose} returnFocusTo={returnFocus}>
       <Card
         elevation={2}
         flush
