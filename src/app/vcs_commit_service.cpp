@@ -14,6 +14,7 @@
 #include "common/provider/provider_runtime.h"
 #include "common/provider/provider_text_worker.h"
 #include "common/utils/io_utils.h"
+#include "common/utils/diagnostic_log.h"
 #include "common/utils/hash_utils.h"
 #include "common/utils/nlohmann_json_utils.h"
 #include "common/utils/parse_utils.h"
@@ -238,6 +239,11 @@ namespace uam
 			    std::filesystem::path(path), nullptr);
 		}
 
+		std::string HostId() const { return m_host != nullptr ? m_host->id : std::string("unknown"); }
+
+		/// <summary>False after a transport failure; a runner that merely refused a command stays connected.</summary>
+		bool Connected() const { return m_client != nullptr && m_client->IsConnected(); }
+
 		std::string NullDevice() const
 		{
 			return m_host != nullptr &&
@@ -254,6 +260,23 @@ namespace uam
 
 	namespace
 	{
+		/// <summary>None when the remote command ran to completion or the runner refused it (for example a missing
+		/// executable) over a live connection. A lost connection outranks a timeout, which outranks None.</summary>
+		void NoteRemoteProbeFailure(const RemoteVcsContext& context, const ProcessExecutionResult& result, RemoteProbeFailure& probe_failure)
+		{
+			RemoteProbeFailure observed = RemoteProbeFailure::None;
+			if (!context.Connected() && !result.ok) observed = RemoteProbeFailure::LostConnection;
+			else if (result.timed_out) observed = RemoteProbeFailure::TimedOut;
+			if (static_cast<int>(observed) > static_cast<int>(probe_failure)) probe_failure = observed;
+		}
+
+		std::string RemoteProbeFailureMessage(const RemoteProbeFailure failure)
+		{
+			return failure == RemoteProbeFailure::TimedOut
+			    ? "Reading the repository on the remote host timed out."
+			    : "Lost the connection to the remote host while reading the repository.";
+		}
+
 		bool RemoteOutput(RemoteVcsContext& context, const std::string& cwd,
 		                  const std::vector<std::string>& argv, std::string* output_out,
 		                  std::string* error_out = nullptr, const bool raw = false)
@@ -1744,9 +1767,16 @@ namespace uam
 				return true;
 			}
 
-			bool DetectRemote(RemoteVcsContext& context, const std::string& workspace, std::string& root) const override
+			bool DetectRemote(RemoteVcsContext& context, const std::string& workspace, std::string& root, RemoteProbeFailure& probe_failure) const override
 			{
-				return RemoteOutput(context, workspace, {"git", "rev-parse", "--show-toplevel"}, &root);
+				const ProcessExecutionResult probe = context.Run(workspace, {"git", "rev-parse", "--show-toplevel"});
+				if (!CommandSucceeded(probe))
+				{
+					NoteRemoteProbeFailure(context, probe, probe_failure);
+					return false;
+				}
+				root = uam::strings::Trim(probe.output);
+				return true;
 			}
 
 			void PopulateLocalStatus(const VcsStatusRequest& request, const std::filesystem::path& workspace, const std::filesystem::path& root, VcsCommitStatus& status) const override
@@ -1991,9 +2021,12 @@ namespace uam
 				return SvnAvailable(workspace, validate);
 			}
 
-			bool DetectRemote(RemoteVcsContext& context, const std::string& workspace, std::string&) const override
+			bool DetectRemote(RemoteVcsContext& context, const std::string& workspace, std::string&, RemoteProbeFailure& probe_failure) const override
 			{
-				return CommandSucceeded(RemoteSvnRunner(context, workspace)({"info", "--non-interactive", "--show-item", "revision", "--", "."}));
+				const ProcessExecutionResult probe = RemoteSvnRunner(context, workspace)({"info", "--non-interactive", "--show-item", "revision", "--", "."});
+				if (CommandSucceeded(probe)) return true;
+				NoteRemoteProbeFailure(context, probe, probe_failure);
+				return false;
 			}
 
 			void PopulateLocalStatus(const VcsStatusRequest& request, const std::filesystem::path& workspace, const std::filesystem::path&, VcsCommitStatus& status) const override
@@ -2079,14 +2112,28 @@ namespace uam
 			if (!context.Ready(&status.error)) return status;
 
 			std::map<VcsType, std::string> roots;
+			RemoteProbeFailure probe_failure = RemoteProbeFailure::None;
 			for (const VcsProvider* provider : VcsProviders())
 			{
 				std::string root;
-				if (!provider->Enabled(settings) || !provider->DetectRemote(context, status.workspace_directory, root)) continue;
+				if (!provider->Enabled(settings) || !provider->DetectRemote(context, status.workspace_directory, root, probe_failure)) continue;
 				status.vcs_types.push_back(provider->Type());
 				roots[provider->Type()] = std::move(root);
 			}
 			status.available = !status.vcs_types.empty();
+			// A probe that could not answer says nothing about the workspace. Report it instead of "no repository", and
+			// also when the requested system is the one that could not be read, rather than falling back to another.
+			if (probe_failure != RemoteProbeFailure::None &&
+			    std::ranges::find(status.vcs_types, requested_type) == status.vcs_types.end())
+			{
+				status.available = false;
+				status.vcs_types.clear();
+				status.error = RemoteProbeFailureMessage(probe_failure);
+				// One line per failed read, by host and kind. Raw runner or tool output can carry paths, so it is not logged.
+				diagnostics::Write("[vcs] remote repository detection on host " + context.HostId() + " failed: " +
+				                   (probe_failure == RemoteProbeFailure::TimedOut ? "timed out" : "connection lost"));
+				return status;
+			}
 			if (!status.available)
 			{
 				status.warning = "No Git or SVN repository detected for this remote workspace.";

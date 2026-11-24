@@ -1834,6 +1834,86 @@ describe('ChatView', () => {
     }
   })
 
+  it('keeps the summary with Retry when the repository read fails, such as after an SSH host drops', async () => {
+    const failed = { available: false, vcsTypes: [], activeVcsType: 'git' as const, workspaceDirectory: '', branchOrRevision: '', changedFiles: [], lineStatsReady: true, warning: '', error: 'The remote runner request failed.' }
+    const recovered = { available: true, vcsTypes: ['git' as const], activeVcsType: 'git' as const, workspaceDirectory: '/tmp/project', branchOrRevision: 'main', changedFiles: [{ path: 'src/after.ts', status: 'M', staged: false, additions: 1, deletions: 0, binary: false }], lineStatsReady: true, warning: '', error: '' }
+    let summaryReads = 0
+    // The composer's separate branch read (contextOnly) is not the summary and always succeeds here.
+    const getVcsCommitStatus = vi.fn((_id: string, _type?: string, options?: { contextOnly?: boolean }) =>
+      Promise.resolve(options?.contextOnly ? recovered : summaryReads++ === 0 ? failed : recovered))
+    useAppStore.setState((state) => ({
+      repositoryReviewBySessionId: {},
+      getVcsCommitStatus,
+      sessions: state.sessions.map((session) => ({ ...session, workspaceDirectory: '/tmp/project', workspaceIsolationKind: undefined })),
+      acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false, lifecycleState: 'ready', pendingPermission: null, pendingUserInput: null, processingStartedAtMs: null, turnSerial: 2 } },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => { root.render(<ChatView session={useAppStore.getState().sessions[0]} />); await Promise.resolve() })
+      expect(getVcsCommitStatus).toHaveBeenCalledWith('chat-1', 'git', expect.objectContaining({ comparisonRef: 'chat', reportFailure: true }))
+      const summary = host.querySelector('[aria-label="Review changes"]') as HTMLElement
+      expect(summary).not.toBeNull()
+      expect(summary.querySelector('[role="alert"]')?.textContent).toContain('Could not read changes. The remote runner request failed.')
+      const retry = [...summary.querySelectorAll('button')].find((button) => button.textContent === 'Retry') as HTMLButtonElement
+      await act(async () => { retry.click(); await Promise.resolve() })
+      expect(summaryReads).toBe(2)
+      const refreshed = host.querySelector('[aria-label="Review changes"]') as HTMLElement
+      expect(refreshed.querySelector('[role="alert"]')).toBeNull()
+      expect(refreshed.textContent).toContain('after.ts')
+      expect(refreshed.textContent).toContain('1 changed file')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  it('retries a read refused because the workspace changed under it once, and never shows that race as an error', async () => {
+    const stale = { available: false, vcsTypes: [], activeVcsType: 'git' as const, workspaceDirectory: '', branchOrRevision: '', changedFiles: [], lineStatsReady: true, warning: '', error: 'The chat workspace changed while its repository context was loading.', contextChanged: true }
+    const recovered = { available: true, vcsTypes: ['git' as const], activeVcsType: 'git' as const, workspaceDirectory: '/tmp/project', branchOrRevision: 'main', changedFiles: [{ path: 'src/after.ts', status: 'M', staged: false, additions: 1, deletions: 0, binary: false }], lineStatsReady: true, warning: '', error: '' }
+    const previous = { ...recovered, changedFiles: [{ path: 'src/previous-host.ts', status: 'M', staged: false, additions: 4, deletions: 0, binary: false }] }
+    const run = async (summaryResults: Array<typeof stale | typeof recovered>) => {
+      let summaryReads = 0
+      const getVcsCommitStatus = vi.fn((_id: string, _type?: string, options?: { contextOnly?: boolean }) =>
+        Promise.resolve(options?.contextOnly ? recovered : summaryResults[Math.min(summaryReads++, summaryResults.length - 1)]))
+      useAppStore.setState((state) => ({
+        // Rows from before the host or workspace changed must not survive a read that stays stale.
+        repositoryReviewBySessionId: { 'chat-1': previous },
+        getVcsCommitStatus,
+        sessions: state.sessions.map((session) => ({ ...session, workspaceDirectory: '/tmp/project', workspaceIsolationKind: undefined })),
+        acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false, lifecycleState: 'ready', pendingPermission: null, pendingUserInput: null, processingStartedAtMs: null, turnSerial: 2 } },
+      }))
+      const host = document.createElement('div')
+      document.body.appendChild(host)
+      const root = createRoot(host)
+      await act(async () => { root.render(<ChatView session={useAppStore.getState().sessions[0]} />); await Promise.resolve() })
+      await act(async () => { await Promise.resolve() })
+      return { host, cleanup: () => { act(() => root.unmount()); host.remove() }, reads: () => summaryReads }
+    }
+
+    const recovers = await run([stale, recovered])
+    try {
+      expect(recovers.reads()).toBe(2)
+      const summary = recovers.host.querySelector('[aria-label="Review changes"]') as HTMLElement
+      expect(summary.querySelector('[role="alert"]')).toBeNull()
+      expect(summary.textContent).toContain('after.ts')
+    } finally {
+      recovers.cleanup()
+    }
+
+    const staysStale = await run([stale])
+    try {
+      expect(staysStale.reads()).toBe(2)
+      expect(staysStale.host.querySelector('[aria-label="Review changes"]')).toBeNull()
+      expect(staysStale.host.textContent).not.toContain('repository context was loading')
+      expect(staysStale.host.textContent).not.toContain('previous-host.ts')
+      expect(useAppStore.getState().repositoryReviewBySessionId['chat-1']).toBeUndefined()
+    } finally {
+      staysStale.cleanup()
+    }
+  })
+
   it('shows no summary for a workspace that simply has no repository', async () => {
     const status = { available: false, vcsTypes: [], activeVcsType: 'git' as const, workspaceDirectory: '/tmp/project', branchOrRevision: '', changedFiles: [], lineStatsReady: true, warning: 'No Git or SVN repository detected for this workspace.', error: '' }
     useAppStore.setState((state) => ({

@@ -1937,6 +1937,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     ? `${latestAssistantMessage?.id ?? ''}:${turnSerial}:${cli?.terminalId ?? ''}`
     : ''
   const [repositoryReviewRetry, setRepositoryReviewRetry] = useState(0)
+  const repositoryContextRetryKeyRef = useRef('')
   useEffect(() => {
     let cancelled = false
     if (!completedTurnKey || !workspaceDirectory) return
@@ -1945,8 +1946,21 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       includeLineStats: true,
       requestId: `chat-summary:${session.id}:${completedTurnKey}:${repositoryReviewRetry}`,
       comparisonRef: repositoryComparisonRef,
+      reportFailure: true,
     }).then((status) => {
       if (cancelled) return
+      // A read refused because the workspace or host changed under it is stale, not a failure: read once more per
+      // completed turn, and drop a repeat silently so the race never shows as an error or loops.
+      if (status?.contextChanged) {
+        if (repositoryContextRetryKeyRef.current === completedTurnKey) {
+          // Rows or an error from before the change would read as current; clear them rather than keep them.
+          setRepositoryReview(session.id, null)
+          return
+        }
+        repositoryContextRetryKeyRef.current = completedTurnKey
+        setRepositoryReviewRetry((count) => count + 1)
+        return
+      }
       // Any read failure, including a lost remote connection, is shown as such, never as whole-workspace rows.
       setRepositoryReview(session.id, status?.error ? { ...status, changedFiles: [] }
         : status?.available && status.changedFiles.length > 0 ? status : null)

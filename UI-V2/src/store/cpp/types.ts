@@ -988,6 +988,8 @@ export interface VcsCommitStatus {
   lineStatsReady: boolean
   /** The chat comparison has no usable baseline, so Retry cannot help. */
   baselineUnavailable?: boolean
+  /** Renderer-only: the read was refused because the chat's workspace or host changed while it ran, so the result is stale rather than a failure. */
+  contextChanged?: boolean
   /** What the active system offers beyond status, diff and commit, such as `history` and `update`. */
   capabilities?: string[]
   /** Set when the workspace is UAM's hidden Git copy of a plain folder or SVN working copy: commits stay in the copy. */
