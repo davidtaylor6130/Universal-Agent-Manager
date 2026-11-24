@@ -415,6 +415,14 @@ const char* GeminiCliProviderRuntime::RuntimeId() const
 }
 
 
+/// Gemini loads memory from an included directory's context file.
+bool GeminiCliProviderRuntime::StageCliHandoffContext(const ProviderCliHandoffStaging& staging, std::vector<std::string>& argv, std::string&) const
+{
+	if (!staging.stage_file(uam::execution_hosts::JoinRemotePath(staging.host_platform, staging.directory, "GEMINI.md"), staging.snapshot)) return false;
+	argv.insert(argv.end(), {"--include-directories", staging.directory});
+	return true;
+}
+
 std::vector<std::string> GeminiCliProviderRuntime::BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings) const
 {
 	if (!profile.supports_interactive)

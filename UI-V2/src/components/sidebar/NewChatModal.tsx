@@ -53,8 +53,9 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
   const initialFolderId = [newChatFolderId, activeFolderId, folders[0]?.id]
     .find((candidate) => candidate !== null && candidate !== undefined && folders.some((folder) => folder.id === candidate)) ?? null
   const initialFolder = folders.find((folder) => folder.id === initialFolderId) ?? null
-  const executionRouting = useAppStore((state) => state.executionRouting)
-  const repositoryMatching = executionRouting.repositoryMatching === true
+  // Builds without SSH have no routing state, so automatic routing stays unavailable.
+  const executionRouting = useAppStore((state) => SSH_ENABLED ? state.executionRouting : undefined)
+  const repositoryMatching = executionRouting?.repositoryMatching === true
   const [repositories, setRepositories] = useState<WorkspaceRepositoryMatches[]>([])
   const [routingOpen, setRoutingOpen] = useState(false)
   const [routingMode, setRoutingMode] = useState<'explicit' | 'automatic'>('explicit')
@@ -167,7 +168,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
 
   const selectedFolder =
     (folderId !== null ? folders.find((f) => f.id === folderId && (f.executionHostId || 'local') === executionHostId) : null) ?? null
-  const automaticAvailable = canRouteAutomatically(executionRouting, selectedFolder ?? undefined, providerId, repositories.find((item) => item.folderId === selectedFolder?.id))
+  const automaticAvailable = executionRouting !== undefined && canRouteAutomatically(executionRouting, selectedFolder ?? undefined, providerId, repositories.find((item) => item.folderId === selectedFolder?.id))
   useEffect(() => { if (!automaticAvailable) setRoutingMode('explicit') }, [automaticAvailable])
   useEffect(() => {
     if (!newChatWorktreeContext) return
