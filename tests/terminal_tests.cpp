@@ -2957,6 +2957,226 @@ UAM_TEST(ProviderSwitchCliContextUsesNativeFilesWithoutSyntheticPrompts)
 	}
 }
 
+namespace
+{
+	struct StagedHandoffFile
+	{
+		std::string path;
+		std::string content;
+	};
+
+	/// Runs one provider's runtime staging against a fixed remote-style context and records what it adds.
+	bool StageHandoffForRuntime(std::string_view provider_id, const std::string& platform, std::vector<StagedHandoffFile>& files,
+	    std::vector<std::string>& argv, std::string& error, bool stage_succeeds = true)
+	{
+		const std::string directory = platform == "windows" ? "C:\\ws\\.UAM\\context\\0123456789abcdef" : "/ws/.UAM/context/0123456789abcdef";
+		const std::string context_path = uam::execution_hosts::JoinRemotePath(platform, directory, "conversation.md");
+		const std::string snapshot = "Use the saved conversation below as context. Do not repeat its tool actions.\n\nUser: kumquat";
+		const ProviderCliHandoffStaging staging{platform, directory, context_path, snapshot,
+		    [&](const std::string& path, const std::string& content)
+		    {
+			    files.push_back({path, content});
+			    if (!stage_succeeds) error = "stage refused";
+			    return stage_succeeds;
+		    }};
+		return ProviderRuntimeRegistry::ResolveById(provider_id).StageCliHandoffContext(staging, argv, error);
+	}
+} // namespace
+
+UAM_TEST(CliHandoffStagingIsOwnedByEachProviderRuntime)
+{
+	const std::string snapshot = "Use the saved conversation below as context. Do not repeat its tool actions.\n\nUser: kumquat";
+	std::vector<StagedHandoffFile> files;
+	std::vector<std::string> argv;
+	std::string error;
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	UAM_ASSERT(StageHandoffForRuntime(uam::provider_ids::kClaudeCli, "macos", files, argv, error));
+	UAM_ASSERT(files.empty());
+	UAM_ASSERT(argv == (std::vector<std::string>{"--append-system-prompt-file", "/ws/.UAM/context/0123456789abcdef/conversation.md"}));
+	UAM_ASSERT(error.empty());
+	argv.clear();
+	UAM_ASSERT(StageHandoffForRuntime(uam::provider_ids::kClaudeCli, "windows", files, argv, error));
+	UAM_ASSERT(argv == (std::vector<std::string>{"--append-system-prompt-file", "C:\\ws\\.UAM\\context\\0123456789abcdef\\conversation.md"}));
+	argv.clear();
+#endif
+#if UAM_ENABLE_RUNTIME_COPILOT_CLI
+	UAM_ASSERT(StageHandoffForRuntime(uam::provider_ids::kCopilotCli, "macos", files, argv, error));
+	UAM_ASSERT(argv.empty());
+	UAM_ASSERT_EQ(files.size(), std::size_t{1});
+	UAM_ASSERT_EQ(files[0].path, std::string("/ws/.UAM/context/0123456789abcdef/.github/instructions/handoff.instructions.md"));
+	UAM_ASSERT_EQ(files[0].content, "---\napplyTo: \"**\"\n---\n" + snapshot);
+	files.clear();
+	UAM_ASSERT(StageHandoffForRuntime(uam::provider_ids::kCopilotCli, "windows", files, argv, error));
+	UAM_ASSERT_EQ(files[0].path, std::string("C:\\ws\\.UAM\\context\\0123456789abcdef\\.github\\instructions\\handoff.instructions.md"));
+	files.clear();
+	UAM_ASSERT(!StageHandoffForRuntime(uam::provider_ids::kCopilotCli, "macos", files, argv, error, false));
+	UAM_ASSERT_EQ(error, std::string("stage refused"));
+	UAM_ASSERT(argv.empty());
+	files.clear();
+	error.clear();
+#endif
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+	UAM_ASSERT(StageHandoffForRuntime(uam::provider_ids::kGeminiCli, "macos", files, argv, error));
+	UAM_ASSERT_EQ(files.size(), std::size_t{1});
+	UAM_ASSERT_EQ(files[0].path, std::string("/ws/.UAM/context/0123456789abcdef/GEMINI.md"));
+	UAM_ASSERT_EQ(files[0].content, snapshot);
+	UAM_ASSERT(argv == (std::vector<std::string>{"--include-directories", "/ws/.UAM/context/0123456789abcdef"}));
+	files.clear();
+	argv.clear();
+	UAM_ASSERT(StageHandoffForRuntime(uam::provider_ids::kGeminiCli, "windows", files, argv, error));
+	UAM_ASSERT_EQ(files[0].path, std::string("C:\\ws\\.UAM\\context\\0123456789abcdef\\GEMINI.md"));
+	UAM_ASSERT(argv == (std::vector<std::string>{"--include-directories", "C:\\ws\\.UAM\\context\\0123456789abcdef"}));
+	files.clear();
+	argv.clear();
+	// A refused file write stops before the include-directory argument is added.
+	UAM_ASSERT(!StageHandoffForRuntime(uam::provider_ids::kGeminiCli, "macos", files, argv, error, false));
+	UAM_ASSERT_EQ(error, std::string("stage refused"));
+	UAM_ASSERT(argv.empty());
+	files.clear();
+	error.clear();
+#endif
+	// Codex imports the shared conversation file into native history and OpenCode reads it from its configuration environment.
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	UAM_ASSERT(StageHandoffForRuntime(uam::provider_ids::kCodexCli, "macos", files, argv, error));
+	UAM_ASSERT(files.empty() && argv.empty() && error.empty());
+#endif
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	UAM_ASSERT(StageHandoffForRuntime(uam::provider_ids::kOpenCodeCli, "macos", files, argv, error));
+	UAM_ASSERT(files.empty() && argv.empty() && error.empty());
+#endif
+#if UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
+	UAM_ASSERT(!StageHandoffForRuntime(uam::provider_ids::kAntigravityCli, "macos", files, argv, error));
+	UAM_ASSERT_EQ(error, std::string("The selected provider does not support conversation context files."));
+	UAM_ASSERT(files.empty() && argv.empty());
+	error.clear();
+#endif
+}
+
+UAM_TEST(CliHandoffLauncherStagesProviderFilesAndArguments)
+{
+	TempDir temp("uam-provider-cli-staging");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ExecutionHost host;
+	host.id = "local";
+	ScopedEnvVar opencode("OPENCODE_CONFIG_CONTENT", "");
+	ScopedEnvVar copilot("COPILOT_CUSTOM_INSTRUCTIONS_DIRS", "");
+	ScopedEnvVar gemini("GEMINI_CLI_SYSTEM_SETTINGS_PATH", (temp.root / "missing-system.json").string());
+	ScopedEnvVar gemini_defaults("GEMINI_CLI_SYSTEM_DEFAULTS_PATH", (temp.root / "missing-defaults.json").string());
+	ScopedEnvVar gemini_home("GEMINI_CLI_HOME", (temp.root / "gemini-home").string());
+	const std::string snapshot = "Use the saved conversation below as context. Do not repeat its tool actions.\n\nUser: My favourite fruit is kumquat.";
+	std::vector<std::string> providers;
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+	providers.push_back(uam::provider_ids::kClaudeCli);
+#endif
+#if UAM_ENABLE_RUNTIME_COPILOT_CLI
+	providers.push_back(uam::provider_ids::kCopilotCli);
+#endif
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+	providers.push_back(uam::provider_ids::kGeminiCli);
+#endif
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	providers.push_back(uam::provider_ids::kOpenCodeCli);
+#endif
+	for (const std::string& provider : providers)
+	{
+		ChatSession chat;
+		chat.id = "staging-" + provider;
+		chat.provider_id = provider;
+		chat.provider_handoff_context = "User: My favourite fruit is kumquat.";
+		std::vector<std::string> argv{provider};
+		std::vector<std::pair<std::string, std::string>> environment;
+		std::string channel;
+		std::string error;
+		UAM_ASSERT(PrepareCliProviderHandoff(app, chat, host, argv, environment, channel, error));
+		UAM_ASSERT(channel.empty());
+		UAM_ASSERT_EQ(chat.provider_handoff_cli_contexts.size(), std::size_t{1});
+		const fs::path directory = uam::paths::PathFromUtf8(chat.provider_handoff_cli_contexts.front().directory);
+		const std::string context_path = uam::paths::Utf8PathString(directory / "conversation.md");
+		UAM_ASSERT_EQ(uam::io::ReadTextFile(directory / "conversation.md"), snapshot);
+		[[maybe_unused]] const bool claude_argument = std::ranges::find(argv, "--append-system-prompt-file") != argv.end();
+		[[maybe_unused]] const bool gemini_argument = std::ranges::find(argv, "--include-directories") != argv.end();
+		[[maybe_unused]] const bool copilot_file = fs::exists(directory / ".github/instructions/handoff.instructions.md");
+		[[maybe_unused]] const bool gemini_file = fs::exists(directory / "GEMINI.md");
+#if UAM_ENABLE_RUNTIME_CLAUDE_CLI
+		if (provider == uam::provider_ids::kClaudeCli)
+		{
+			UAM_ASSERT(argv.size() >= 3);
+			UAM_ASSERT_EQ(argv[1], std::string("--append-system-prompt-file"));
+			// Compare paths: the launcher joins with '/' for an unnamed host platform, which Windows also accepts.
+			UAM_ASSERT(uam::paths::PathFromUtf8(argv[2]) == directory / "conversation.md");
+			UAM_ASSERT(!gemini_argument && !copilot_file && !gemini_file);
+			continue;
+		}
+#endif
+#if UAM_ENABLE_RUNTIME_COPILOT_CLI
+		if (provider == uam::provider_ids::kCopilotCli)
+		{
+			UAM_ASSERT_EQ(uam::io::ReadTextFile(directory / ".github/instructions/handoff.instructions.md"), "---\napplyTo: \"**\"\n---\n" + snapshot);
+			UAM_ASSERT(!environment.empty());
+			UAM_ASSERT_EQ(environment.back().first, std::string("COPILOT_CUSTOM_INSTRUCTIONS_DIRS"));
+			UAM_ASSERT_EQ(environment.back().second, uam::paths::Utf8PathString(directory));
+			UAM_ASSERT(!claude_argument && !gemini_argument && !gemini_file);
+			continue;
+		}
+#endif
+#if UAM_ENABLE_RUNTIME_GEMINI_CLI
+		if (provider == uam::provider_ids::kGeminiCli)
+		{
+			UAM_ASSERT_EQ(uam::io::ReadTextFile(directory / "GEMINI.md"), snapshot);
+			const auto include = std::ranges::find(argv, "--include-directories");
+			UAM_ASSERT(include != argv.end() && include + 1 != argv.end());
+			UAM_ASSERT_EQ(*(include + 1), uam::paths::Utf8PathString(directory));
+			UAM_ASSERT(!claude_argument && !copilot_file);
+			continue;
+		}
+#endif
+		// OpenCode keeps the launcher's shared file only and reads it from its configuration environment.
+		UAM_ASSERT(argv == std::vector<std::string>{provider});
+		UAM_ASSERT(!copilot_file && !gemini_file);
+		UAM_ASSERT(!environment.empty());
+		const nlohmann::json configuration = nlohmann::json::parse(environment.back().second);
+		UAM_ASSERT_EQ(configuration["instructions"].back(), nlohmann::json(context_path));
+	}
+#if UAM_ENABLE_RUNTIME_CODEX_CLI
+	{
+		// A Codex thread that already imported this handoff stages nothing again.
+		ChatSession chat;
+		chat.id = "staging-codex-bound";
+		chat.provider_id = uam::provider_ids::kCodexCli;
+		chat.provider_handoff_context = "User: My favourite fruit is kumquat.";
+		chat.native_session_id = "11111111-2222-4333-8444-555555555555";
+		chat.provider_handoff_session_id = chat.native_session_id;
+		chat.messages_loaded = true;
+		const std::vector<std::string> original{"codex", "resume", chat.native_session_id};
+		std::vector<std::string> argv = original;
+		std::vector<std::pair<std::string, std::string>> environment;
+		std::string channel;
+		std::string error;
+		UAM_ASSERT(PrepareCliProviderHandoff(app, chat, host, argv, environment, channel, error));
+		UAM_ASSERT(argv == original);
+		UAM_ASSERT(environment.empty() && channel.empty());
+		UAM_ASSERT(chat.provider_handoff_cli_contexts.empty());
+	}
+#endif
+#if UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
+	{
+		ChatSession chat;
+		chat.id = "staging-antigravity";
+		chat.provider_id = uam::provider_ids::kAntigravityCli;
+		chat.provider_handoff_context = "User: My favourite fruit is kumquat.";
+		std::vector<std::string> argv{"agy"};
+		std::vector<std::pair<std::string, std::string>> environment;
+		std::string channel;
+		std::string error;
+		UAM_ASSERT(!PrepareCliProviderHandoff(app, chat, host, argv, environment, channel, error));
+		UAM_ASSERT(error.starts_with("Antigravity terminal cannot import another provider's conversation."));
+		UAM_ASSERT(argv == std::vector<std::string>{"agy"});
+		UAM_ASSERT(chat.provider_handoff_cli_contexts.empty());
+	}
+#endif
+}
+
 UAM_TEST(CliViewHandoffWaitsForPriorStructuredProcessExit)
 {
 	uam::AppState app;
