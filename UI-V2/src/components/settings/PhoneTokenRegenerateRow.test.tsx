@@ -37,7 +37,7 @@ describe('phone access token regeneration', () => {
     expect(dialog()!.textContent).toContain('Every paired phone and browser disconnects right away and must pair again')
     await act(async () => dialogButton('Regenerate token').click())
     expect(send).toHaveBeenCalledExactlyOnceWith({ action: 'regenerateCompanionToken' })
-    expect(notice).toHaveBeenCalledWith('New phone access token issued. Pair your phones and browsers again.')
+    expect(notice).toHaveBeenCalledWith('New phone access token issued; pair your devices again.')
   })
 
   it('keeps the old token when cancelled and shows a failure inside the dialog', async () => {

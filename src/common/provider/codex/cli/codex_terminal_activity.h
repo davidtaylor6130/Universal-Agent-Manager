@@ -2,6 +2,8 @@
 
 #include "common/provider/codex/cli/codex_session_index.h"
 #include "common/provider/provider_runtime.h"
+#include "common/runtime/app_time.h"
+#include "common/runtime/terminal/terminal_lifecycle_states.h"
 #include "common/state/app_state.h"
 
 #include <array>
@@ -9,6 +11,28 @@
 
 namespace uam
 {
+
+/// <summary>Ends an expired wait for a submission's turn. Codex records a turn start as it begins one, so an Enter that
+/// recorded none in time (an empty composer, a local slash-command menu) was most likely handled without a turn. A missing
+/// record alone does not prove that, so the caller decides Ready or Unknown from other evidence.</summary>
+inline bool ExpireCodexTerminalTurnReceipt(CliTerminalState& terminal)
+{
+	if (!terminal.codex_activity_awaiting_turn || GetAppTimeSeconds() - terminal.codex_activity_awaiting_since_s < kCliTerminalTurnReceiptSeconds)
+		return false;
+	terminal.codex_activity_awaiting_turn = false;
+	terminal.codex_activity_awaiting_since_s = 0.0;
+	terminal.native_turn_receipt_expired = true;
+	return true;
+}
+
+/// <summary>Expires the receipt only once the verified rollout is fully read with no turn, record or checkpoint tail open;
+/// a record still being written is activity.</summary>
+inline void SettleCodexTerminalTurnReceipt(CliTerminalState& terminal)
+{
+	if (terminal.codex_activity_read_failed || !terminal.codex_activity_turn_id.empty() || !terminal.codex_activity_partial_line.empty() ||
+	    terminal.codex_activity_discard_line || terminal.codex_activity_string_cursor.discard_checkpoint_tail) return;
+	(void)ExpireCodexTerminalTurnReceipt(terminal);
+}
 
 inline void ResetCodexActivityRecord(CliTerminalState& terminal)
 {
@@ -121,7 +145,9 @@ inline bool AppendCodexActivityByte(CliTerminalState& terminal, unsigned char by
 
 inline void CheckpointCodexTerminalSubmission(CliTerminalState& terminal)
 {
-	if (terminal.codex_activity_rollout.empty()) return;
+	// Enter during a tracked turn answers that turn (an approval or a queued message) and starts none. Skipping to the
+	// end of the rollout here would also skip that turn's completion if Codex has already written it.
+	if (terminal.codex_activity_rollout.empty() || !terminal.codex_activity_turn_id.empty()) return;
 	std::error_code error;
 	const std::uintmax_t size = std::filesystem::file_size(terminal.codex_activity_rollout, error);
 	terminal.codex_activity_read_failed = terminal.codex_activity_read_failed || static_cast<bool>(error);
@@ -136,9 +162,10 @@ inline void CheckpointCodexTerminalSubmission(CliTerminalState& terminal)
 		if (!file.get(last_byte)) terminal.codex_activity_read_failed = true;
 		else terminal.codex_activity_string_cursor.discard_checkpoint_tail = last_byte != '\n';
 	}
-	terminal.codex_activity_turn_id.clear();
 	terminal.codex_activity_completed = false;
 	terminal.codex_activity_awaiting_turn = true;
+	terminal.codex_activity_awaiting_since_s = GetAppTimeSeconds();
+	terminal.native_turn_receipt_expired = false;
 }
 
 /// <summary>Consume only appended records from an attached, cwd-verified rollout.
@@ -150,8 +177,12 @@ inline ProviderTerminalActivity PollCodexTerminalActivity(CliTerminalState& term
 	// Remember the controller-local working directory before the owned status reply
 	// attaches its identity, so deferred input can checkpoint before being flushed.
 	if (valid_id.empty() && terminal.codex_activity_session_id.empty()) terminal.codex_activity_cwd = cwd;
+	// Without a verified rollout an expired receipt proves nothing either way: leave the turn to prompt detection.
 	if (ambiguous || valid_id.empty() || cwd.empty())
+	{
+		(void)ExpireCodexTerminalTurnReceipt(terminal);
 		return terminal.codex_activity_awaiting_turn || ambiguous ? ProviderTerminalActivity::Busy : ProviderTerminalActivity::Unavailable;
+	}
 
 	if (terminal.codex_activity_session_id != valid_id || terminal.codex_activity_cwd != cwd)
 	{
@@ -193,7 +224,10 @@ inline ProviderTerminalActivity PollCodexTerminalActivity(CliTerminalState& term
 		}
 	}
 	if (terminal.codex_activity_rollout.empty())
+	{
+		(void)ExpireCodexTerminalTurnReceipt(terminal);
 		return terminal.codex_activity_awaiting_turn ? ProviderTerminalActivity::Busy : ProviderTerminalActivity::Unavailable;
+	}
 
 	std::error_code error;
 	const std::uintmax_t size = std::filesystem::file_size(terminal.codex_activity_rollout, error);
@@ -204,9 +238,12 @@ inline ProviderTerminalActivity PollCodexTerminalActivity(CliTerminalState& term
 	}
 	if (terminal.codex_activity_read_failed) return ProviderTerminalActivity::Busy;
 	if (size == terminal.codex_activity_offset)
+	{
+		SettleCodexTerminalTurnReceipt(terminal);
 		return terminal.codex_activity_awaiting_turn || !terminal.codex_activity_turn_id.empty() ||
 		    !terminal.codex_activity_partial_line.empty() || terminal.codex_activity_discard_line ? ProviderTerminalActivity::Busy :
 		    terminal.codex_activity_completed ? ProviderTerminalActivity::Complete : ProviderTerminalActivity::Unavailable;
+	}
 
 	std::ifstream file(terminal.codex_activity_rollout, std::ios::binary);
 	file.seekg(static_cast<std::streamoff>(terminal.codex_activity_offset));
@@ -298,6 +335,7 @@ inline ProviderTerminalActivity PollCodexTerminalActivity(CliTerminalState& term
 			terminal.codex_activity_completed = true;
 		}
 	}
+	if (terminal.codex_activity_offset == size) SettleCodexTerminalTurnReceipt(terminal);
 	// A later start, partial record, or unread tail must be consumed before declaring idle.
 	if (terminal.codex_activity_read_failed || terminal.codex_activity_awaiting_turn || !terminal.codex_activity_turn_id.empty() ||
 	    !terminal.codex_activity_partial_line.empty() || terminal.codex_activity_discard_line || terminal.codex_activity_offset < size)

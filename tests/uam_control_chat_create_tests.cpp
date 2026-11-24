@@ -1,5 +1,8 @@
 #include "test_harness.h"
 #include "app/uam_control_service.h"
+#include "app/automation_api_service.h"
+#include "app/goal_service.h"
+#include "app/secret_request_service.h"
 #include "cef/state_serializer.h"
 #include "common/chat/chat_repository.h"
 #include "common/paths/workspace_root.h"
@@ -107,6 +110,40 @@ namespace
 		std::size_t CreatedCount() const
 		{
 			return static_cast<std::size_t>(std::ranges::count(app.chats, std::string("caller"), &ChatSession::created_by_chat_id));
+		}
+		/// Turns the caller into a started automation-API chat under a fresh token; returns the token's secret.
+		std::string MakeAutomationCaller(int max_iterations = 4, const std::string& git_permission = "pr")
+		{
+			ChatFolder folder;
+			folder.id = "folder-a";
+			folder.title = "Workspace";
+			folder.directory = workspace.string();
+			app.folders.push_back(folder);
+			std::string error;
+			const auto token = uam::AutomationApiService::CreateToken(app, {{"name", "n8n"}, {"trusted", true}, {"workspaces", {"folder-a"}}, {"maxGitPermission", "pr"}}, &error);
+			UAM_ASSERT(token.has_value());
+			token_id = token->at("token").at("id").get<std::string>();
+			ChatSession& caller = app.chats.front();
+			caller.automation_token_id = token_id;
+			caller.automation_token_name = "n8n";
+			caller.automation_max_iterations = max_iterations;
+			caller.automation_git_permission = git_permission;
+			return token->at("secret").get<std::string>();
+		}
+		std::string token_id;
+		uam::AutomationApiResponse Status(const std::string& secret, const std::string& chat_id)
+		{
+			const auto hash = uam::AutomationApiService::TokenHashFromAuthorization("Bearer " + secret);
+			return uam::AutomationApiService::Handle(app, {.method = "GET", .path = "/automation/chats/" + chat_id, .token_hash = hash.value_or("")});
+		}
+		/// A chat waiting for approval under the caller's token, which counts as open.
+		void AddWaitingTokenChat(const std::string& id)
+		{
+			ChatSession waiting;
+			waiting.id = id;
+			waiting.automation_token_id = token_id;
+			waiting.automation_pending_prompt = "Queued work.";
+			app.chats.push_back(waiting);
 		}
 	};
 }
@@ -406,4 +443,286 @@ UAM_TEST(UamControlChatCreateProvenanceSurvivesDeletedCreatorReload)
 	fixture.app.chats = {*reloaded};
 	const nlohmann::json state = uam::StateSerializer::Serialize(fixture.app, true);
 	UAM_ASSERT_EQ(state["chats"][0].value("createdByChatId", ""), std::string("caller"));
+}
+
+UAM_TEST(UamControlChatCreateFromAutomationChatInheritsTokenCapAndGitPolicy)
+{
+	ChatCreateFixture fixture;
+	const std::string secret = fixture.MakeAutomationCaller(4, "commit");
+	// Automation chats run in Default mode, so the start waits for the user.
+	fixture.app.chats.front().approval_mode = "default";
+	fixture.app.chats.front().command_safety_tier = "off";
+	UAM_ASSERT(fixture.Call("automation-start", {{"task", "Fix the lexer."}}).value("pendingApproval", false));
+	const auto question = uam::UamControlService::PendingApprovalForChat(fixture.app, "caller");
+	UAM_ASSERT(question.has_value());
+	std::string error;
+	UAM_ASSERT(uam::UamControlService::ResolveApproval(fixture.app, "caller", question->request_id_json, {{"chatCreate", {"Allow"}}}, &error));
+	const nlohmann::json created = fixture.Flush("automation-start");
+	UAM_ASSERT(created.value("ok", false));
+	const std::string chat_id = created["result"].value("chatId", "");
+	const ChatSession* chat = fixture.Find(chat_id);
+	UAM_ASSERT(chat != nullptr);
+	UAM_ASSERT_EQ(chat->automation_token_id, fixture.token_id);
+	UAM_ASSERT_EQ(chat->automation_token_name, std::string("n8n"));
+	UAM_ASSERT_EQ(chat->automation_max_iterations, 4);
+	UAM_ASSERT_EQ(chat->automation_git_permission, std::string("commit"));
+	UAM_ASSERT_EQ(chat->approval_mode, std::string("default"));
+	UAM_ASSERT_EQ(chat->command_safety_tier, std::string("off"));
+	// The approval hold is not copied: the first prompt was sent, with the Git policy the token allows.
+	UAM_ASSERT(!chat->AwaitsAutomationApproval());
+	UAM_ASSERT(chat->AutomationLaunchRefusal() == nullptr);
+	UAM_ASSERT_EQ(fixture.sent.size(), std::size_t{1});
+	UAM_ASSERT(fixture.sent.front().second.starts_with("Fix the lexer."));
+	UAM_ASSERT(fixture.sent.front().second.find(uam::GoalService::AutomationGitPolicy("commit")) != std::string::npos);
+	// The link survives a reload, so it cannot be shed by restarting UAM.
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(fixture.app.data_root, chat_id, false);
+	UAM_ASSERT(saved.has_value());
+	UAM_ASSERT_EQ(saved->automation_token_id, fixture.token_id);
+	UAM_ASSERT_EQ(saved->automation_max_iterations, 4);
+	UAM_ASSERT_EQ(saved->automation_git_permission, std::string("commit"));
+	// Like its creator, the new chat cannot ask for secrets and its goals carry the cap and policy.
+	uam::UamControlCapability capability;
+	capability.id = "inherited-probe";
+	capability.chat_id = capability.session_chat_id = chat_id;
+	UAM_ASSERT(uam::SecretRequestService::Refusal(fixture.app, capability).find("Automation chats") != std::string::npos);
+	std::string goal_id;
+	UAM_ASSERT(uam::GoalService::CreateGoal(fixture.app, chat_id, "Finish the lexer.", 0, &goal_id, "uam", "", "model"));
+	const Goal* goal = uam::GoalService::FindGoalById(fixture.app, chat_id, goal_id);
+	UAM_ASSERT(goal != nullptr);
+	UAM_ASSERT_EQ(goal->max_iterations, 4);
+	UAM_ASSERT(goal->objective.find(uam::GoalService::AutomationGitPolicy("commit")) != std::string::npos);
+	// The token's status scope stays the chats it created itself.
+	UAM_ASSERT_EQ(fixture.Status(secret, chat_id).status, 404);
+}
+
+UAM_TEST(UamControlChatCreateFromAutomationChatCountsAgainstTheTokenLimit)
+{
+	ChatCreateFixture fixture;
+	(void)fixture.MakeAutomationCaller();
+	for (int index = 0; index < 16; ++index) fixture.AddWaitingTokenChat("waiting-" + std::to_string(index));
+	const nlohmann::json full = fixture.Call("full", {{"task", "Do work."}});
+	UAM_ASSERT(!full.value("ok", true));
+	UAM_ASSERT(full.value("error", "").find("16 open chats") != std::string::npos);
+	UAM_ASSERT_EQ(fixture.CreatedCount(), std::size_t{0});
+	UAM_ASSERT(fixture.sent.empty());
+
+	std::erase_if(fixture.app.chats, [](const ChatSession& chat) { return chat.id == "waiting-0"; });
+	const nlohmann::json started = fixture.Call("room", {{"task", "Do work."}});
+	UAM_ASSERT(started.value("ok", false));
+	const std::string started_id = started["result"].value("chatId", "");
+	// A started chat holds its place while it exists, even idle, because later wakes do not check the token.
+	const nlohmann::json again = fixture.Call("again", {{"task", "More work."}});
+	UAM_ASSERT(!again.value("ok", true));
+	UAM_ASSERT(again.value("error", "").find("16 open chats") != std::string::npos);
+	// A retry of the call that succeeded still returns its chat rather than a refusal.
+	const nlohmann::json retry = fixture.Call("room-retry", {{"task", "Do work."}});
+	UAM_ASSERT(retry.value("ok", false));
+	UAM_ASSERT(retry["result"].value("reused", false));
+	UAM_ASSERT_EQ(retry["result"].value("chatId", ""), started_id);
+	UAM_ASSERT_EQ(fixture.CreatedCount(), std::size_t{1});
+	// Deleting it frees the place.
+	std::erase_if(fixture.app.chats, [&](const ChatSession& chat) { return chat.id == started_id; });
+	UAM_ASSERT(fixture.Call("after-delete", {{"task", "More work."}}).value("ok", false));
+	UAM_ASSERT_EQ(fixture.CreatedCount(), std::size_t{1});
+}
+
+UAM_TEST(UamControlChatCreateApprovalFromAutomationChatChecksTheTokenFirst)
+{
+	ChatCreateFixture fixture;
+	(void)fixture.MakeAutomationCaller();
+	// Automation chats run in Default mode, so every start goes through the approval request.
+	fixture.app.chats.front().approval_mode = "default";
+	fixture.app.chats.front().command_safety_tier = "off";
+	for (int index = 0; index < 15; ++index) fixture.AddWaitingTokenChat("waiting-" + std::to_string(index));
+	const auto allow = [&](const std::string& request_id)
+	{
+		const auto question = uam::UamControlService::PendingApprovalForChat(fixture.app, "caller");
+		UAM_ASSERT(question.has_value());
+		std::string error;
+		UAM_ASSERT(uam::UamControlService::ResolveApproval(fixture.app, "caller", question->request_id_json, {{"chatCreate", {"Allow"}}}, &error));
+		return fixture.Flush(request_id);
+	};
+	UAM_ASSERT(fixture.Call("first", {{"task", "Do work."}}).value("pendingApproval", false));
+	const nlohmann::json first = allow("first");
+	UAM_ASSERT(first.value("ok", false));
+	// The token is now full: a new start is refused without asking the user.
+	const nlohmann::json full = fixture.Call("second", {{"task", "Other work."}});
+	UAM_ASSERT(!full.value("pendingApproval", false));
+	UAM_ASSERT(full.value("error", "").find("16 open chats") != std::string::npos);
+	UAM_ASSERT(!uam::UamControlService::PendingApprovalForChat(fixture.app, "caller").has_value());
+	// A retry of the start that succeeded still reaches the chat already started.
+	UAM_ASSERT(fixture.Call("first-retry", {{"task", "Do work."}}).value("pendingApproval", false));
+	const nlohmann::json retry = allow("first-retry");
+	UAM_ASSERT(retry.value("ok", false));
+	UAM_ASSERT(retry["result"].value("reused", false));
+	UAM_ASSERT_EQ(retry["result"].value("chatId", ""), first["result"].value("chatId", ""));
+	UAM_ASSERT_EQ(fixture.CreatedCount(), std::size_t{1});
+}
+
+UAM_TEST(AutomationTokenOpenChatsCountRunningTurnsButNotFailedLaunches)
+{
+	ChatCreateFixture fixture;
+	(void)fixture.MakeAutomationCaller();
+	for (int index = 0; index < 15; ++index) fixture.AddWaitingTokenChat("waiting-" + std::to_string(index));
+	// A chat under the token with no goal (such as a branch) counts while a turn is waiting to be sent or running.
+	ChatSession branch;
+	branch.id = "token-branch";
+	branch.parent_chat_id = "caller";
+	branch.automation_token_id = fixture.token_id;
+	fixture.app.chats.push_back(branch);
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "token-branch";
+	session->provider_id = "codex-cli";
+	session->queued_user_prompts.emplace_back();
+	fixture.app.acp_sessions.push_back(std::move(session));
+	const nlohmann::json busy = fixture.Call("busy", {{"task", "Do work."}});
+	UAM_ASSERT(!busy.value("ok", true));
+	UAM_ASSERT(busy.value("error", "").find("16 open chats") != std::string::npos);
+	// A launch that failed after acceptance keeps its queued prompt but waits for the user, not the token.
+	std::ranges::find(fixture.app.chats, std::string("token-branch"), &ChatSession::id)->acp_queue_held = true;
+	UAM_ASSERT(fixture.Call("held", {{"task", "Do work."}}).value("ok", false));
+	UAM_ASSERT_EQ(fixture.CreatedCount(), std::size_t{1});
+}
+
+UAM_TEST(UamControlChatCreateFromAutomationChatRefusesARevokedTokenAndSelfApprovingProvider)
+{
+	{
+		ChatCreateFixture fixture;
+		(void)fixture.MakeAutomationCaller();
+		fixture.app.provider_profiles.push_back(ProviderProfileStore::DefaultAntigravityProfile());
+		fixture.Ready("antigravity-cli");
+		const nlohmann::json refused = fixture.Call("antigravity", {{"task", "Do work."}, {"providerId", "antigravity-cli"}});
+		UAM_ASSERT(!refused.value("ok", true));
+		UAM_ASSERT(refused.value("error", "").find("answers its own permission prompts") != std::string::npos);
+		UAM_ASSERT_EQ(fixture.CreatedCount(), std::size_t{0});
+	}
+	{
+		ChatCreateFixture fixture;
+		(void)fixture.MakeAutomationCaller();
+		std::string error;
+		UAM_ASSERT(uam::AutomationApiService::RevokeToken(fixture.app, fixture.token_id, &error));
+		const nlohmann::json refused = fixture.Call("revoked", {{"task", "Do work."}});
+		UAM_ASSERT(!refused.value("ok", true));
+		UAM_ASSERT(refused.value("error", "").find("revoked") != std::string::npos);
+		UAM_ASSERT_EQ(fixture.CreatedCount(), std::size_t{0});
+	}
+	{
+		ChatCreateFixture fixture;
+		(void)fixture.MakeAutomationCaller();
+		const fs::path store = fixture.app.data_root / "automation_tokens.json";
+		std::string text;
+		UAM_ASSERT(uam::io::TryReadTextFile(store, text));
+		nlohmann::json tokens = nlohmann::json::parse(text);
+		tokens["tokens"][0]["expiresAt"] = 1;
+		UAM_ASSERT(uam::io::WriteTextFile(store, tokens.dump()));
+		const nlohmann::json refused = fixture.Call("expired", {{"task", "Do work."}});
+		UAM_ASSERT(!refused.value("ok", true));
+		UAM_ASSERT(refused.value("error", "").find("expired") != std::string::npos);
+		UAM_ASSERT_EQ(fixture.CreatedCount(), std::size_t{0});
+	}
+	{
+		// An unreadable token store refuses rather than skipping the limit.
+		ChatCreateFixture fixture;
+		(void)fixture.MakeAutomationCaller();
+		UAM_ASSERT(uam::io::WriteTextFile(fixture.app.data_root / "automation_tokens.json", "not json"));
+		UAM_ASSERT(!fixture.Call("unreadable", {{"task", "Do work."}}).value("ok", true));
+		UAM_ASSERT_EQ(fixture.CreatedCount(), std::size_t{0});
+	}
+}
+
+UAM_TEST(UamControlGoalCreateInAutomationChatCarriesTheCapAndGitPolicy)
+{
+	ChatCreateFixture fixture;
+	(void)fixture.MakeAutomationCaller(3, "pr");
+	fixture.app.settings.goal_max_loop_iterations = 50;
+	const nlohmann::json created = uam::UamControlService::HandleRequestForTests(fixture.app, "caller-capability",
+	    {{"requestId", "goal-1"}, {"method", "goal_create"}, {"arguments", {{"objective", "Ship the parser."}, {"idempotencyKey", "goal-key-1"}}}},
+	    uam::time::SystemEpochMillisecondsNow());
+	UAM_ASSERT(created.value("ok", false));
+	const Goal* goal = uam::GoalService::FindActiveGoal(fixture.app, "caller");
+	UAM_ASSERT(goal != nullptr);
+	UAM_ASSERT_EQ(goal->creator, std::string("model"));
+	UAM_ASSERT_EQ(goal->max_iterations, 3);
+	UAM_ASSERT_EQ(uam::GoalService::IterationLimit(*goal, fixture.app.settings), 3);
+	UAM_ASSERT(goal->objective.starts_with("Ship the parser."));
+	UAM_ASSERT(goal->objective.find(uam::GoalService::AutomationGitPolicy("pr")) != std::string::npos);
+	UAM_ASSERT(uam::GoalService::BuildContinuationPrompt(*goal, 0, 0, false, "", true).find("open a pull request") != std::string::npos);
+	// Automation chats run in Default mode, where goal_create waits for the user; the approved goal is capped too.
+	ChatCreateFixture approved;
+	(void)approved.MakeAutomationCaller(2, "commit");
+	approved.app.settings.goal_max_loop_iterations = 50;
+	approved.app.chats.front().approval_mode = "default";
+	approved.app.chats.front().command_safety_tier = "off";
+	UAM_ASSERT(uam::UamControlService::HandleRequestForTests(approved.app, "caller-capability",
+	    {{"requestId", "goal-approval"}, {"method", "goal_create"}, {"arguments", {{"objective", "Ship it."}, {"idempotencyKey", "goal-key-2"}}}},
+	    uam::time::SystemEpochMillisecondsNow()).value("pendingApproval", false));
+	const auto question = uam::UamControlService::PendingApprovalForChat(approved.app, "caller");
+	UAM_ASSERT(question.has_value());
+	std::string error;
+	UAM_ASSERT(uam::UamControlService::ResolveApproval(approved.app, "caller", question->request_id_json, {{"goalCreate", {"Allow"}}}, &error));
+	const Goal* approved_goal = uam::GoalService::FindActiveGoal(approved.app, "caller");
+	UAM_ASSERT(approved_goal != nullptr);
+	UAM_ASSERT_EQ(approved_goal->max_iterations, 2);
+	UAM_ASSERT(approved_goal->objective.find(uam::GoalService::AutomationGitPolicy("commit")) != std::string::npos);
+	// An ordinary chat's goal is unchanged.
+	ChatCreateFixture plain;
+	std::string goal_id;
+	UAM_ASSERT(uam::GoalService::CreateGoal(plain.app, "caller", "Plain goal.", 0, &goal_id, "uam", "", "model"));
+	const Goal* ordinary = uam::GoalService::FindGoalById(plain.app, "caller", goal_id);
+	UAM_ASSERT_EQ(ordinary->objective, std::string("Plain goal."));
+	UAM_ASSERT_EQ(ordinary->max_iterations, 0);
+}
+
+UAM_TEST(AutomationChatGoalsWithoutTheirOwnCeilingStillStopAtTheChatCap)
+{
+	ChatCreateFixture fixture;
+	(void)fixture.MakeAutomationCaller(3, "commit");
+	fixture.app.settings.goal_max_loop_iterations = 50;
+	// A goal saved before goals carried the chat's cap.
+	Goal legacy;
+	UAM_ASSERT_EQ(uam::GoalService::IterationLimit(&fixture.app.chats.front(), legacy, fixture.app.settings), 3);
+	legacy.max_iterations = 2;
+	UAM_ASSERT_EQ(uam::GoalService::IterationLimit(&fixture.app.chats.front(), legacy, fixture.app.settings), 2);
+	// An ordinary chat keeps the Settings cap.
+	ChatSession ordinary;
+	Goal unbounded;
+	UAM_ASSERT_EQ(uam::GoalService::IterationLimit(&ordinary, unbounded, fixture.app.settings), 50);
+	UAM_ASSERT_EQ(uam::GoalService::IterationLimit(nullptr, unbounded, fixture.app.settings), 50);
+	// A side chat of an automation chat gives its goals the parent's cap and policy.
+	ChatSession side;
+	side.id = "side";
+	side.provider_id = "codex-cli";
+	side.temporary_parent_chat_id = "caller";
+	fixture.app.chats.push_back(side);
+	std::string goal_id;
+	UAM_ASSERT(uam::GoalService::CreateGoal(fixture.app, "side", "Look into it.", 0, &goal_id, "uam", "", "model"));
+	const Goal* goal = uam::GoalService::FindGoalById(fixture.app, "side", goal_id);
+	UAM_ASSERT_EQ(goal->max_iterations, 3);
+	UAM_ASSERT(goal->objective.find(uam::GoalService::AutomationGitPolicy("commit")) != std::string::npos);
+}
+
+UAM_TEST(UamControlBranchOfAutomationChatKeepsTheTokenLimits)
+{
+	ChatCreateFixture fixture;
+	const std::string secret = fixture.MakeAutomationCaller(5, "pr");
+	ChatSession& caller = fixture.app.chats.front();
+	caller.messages.push_back(Message{MessageRole::User, "Fix the lexer."});
+	caller.messages.back().created_at = "2026-11-01 10:01:00";
+	caller.messages_loaded = true;
+	UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, caller));
+	fixture.app.acp_sessions.clear(); // Branching waits for an idle source.
+	std::string branch_id;
+	UAM_ASSERT(ChatDomainService().CreateBranchFromMessage(fixture.app, "caller", 0, std::optional<std::string>("Fix it differently."), std::nullopt, nullptr,
+	    std::nullopt, nullptr, nullptr, false, &branch_id));
+	const ChatSession* branch = fixture.Find(branch_id);
+	UAM_ASSERT(branch != nullptr);
+	UAM_ASSERT_EQ(branch->automation_token_id, fixture.token_id);
+	UAM_ASSERT_EQ(branch->automation_max_iterations, 5);
+	UAM_ASSERT_EQ(branch->automation_git_permission, std::string("pr"));
+	UAM_ASSERT(!branch->AwaitsAutomationApproval());
+	std::string goal_id;
+	UAM_ASSERT(uam::GoalService::CreateGoal(fixture.app, branch_id, "Branch goal.", 0, &goal_id, "uam", "", "model"));
+	UAM_ASSERT_EQ(uam::GoalService::FindGoalById(fixture.app, branch_id, goal_id)->max_iterations, 5);
+	UAM_ASSERT_EQ(fixture.Status(secret, branch_id).status, 404);
+	UAM_ASSERT_EQ(fixture.Status(secret, "caller").status, 200);
 }
