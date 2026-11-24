@@ -88,6 +88,33 @@ describe('useUpdateMonitor', () => {
     }
   })
 
+  it('reports a helper update that succeeded with a warning without marking the helper ready', async () => {
+    const previous = useAppStore.getState()
+    const remoteHost = { id: 'homelab', label: 'Homelab', transport: 'ssh' as const, sshAlias: 'homelab', runnerStatus: 'ready' as const, runnerVersion: '4.9.0-beta-32', platform: 'linux', architecture: 'x86_64', lastSeenAt: '', runnerProtocolVersion: 3 }
+    useAppStore.setState({ appVersion: '4.9.0-beta-33', runnerProtocolVersion: 3, updateChecksEnabled: false, executionHosts: [remoteHost] })
+    window.cefQuery = ({ onSuccess }) => onSuccess(JSON.stringify({ ok: true, warning: 'The old remote helper backup\ncould not be removed.' }))
+    const notices: AppFailure[] = []
+    const listen = (event: Event) => notices.push((event as CustomEvent<AppFailure>).detail)
+    window.addEventListener(APP_FAILURE_EVENT, listen)
+    let result: ReturnType<typeof useUpdateMonitor> | undefined
+    function Results() { result = useUpdateMonitor(); return null }
+    const root = createRoot(document.createElement('div'))
+    try {
+      act(() => root.render(<Results />))
+      let response: Awaited<ReturnType<typeof result.applyRemoteHelperUpdate>> | undefined
+      await act(async () => { response = await result!.applyRemoteHelperUpdate('homelab') })
+      expect(response?.ok).toBe(true)
+      expect(notices).toEqual([expect.objectContaining({ tone: 'warning', message: 'The old remote helper backup could not be removed.' })])
+      // The native state push, not this success, decides what the helper's status and version are.
+      expect(useAppStore.getState().executionHosts[0]).toEqual(remoteHost)
+      expect(result!.updates).toHaveLength(1)
+    } finally {
+      window.removeEventListener(APP_FAILURE_EVENT, listen)
+      act(() => root.unmount())
+      useAppStore.setState(previous, true)
+    }
+  })
+
   it.each(['close', 'failure'] as const)('admits independent bulk updates together and preserves their results on %s', async (ending) => {
     const previous = useAppStore.getState()
     const provider = { providerId: 'codex-cli', installedVersion: '1.0.0', selectedVersion: '2.0.0', availableVersions: [], preferredVersion: 'latest', status: 'verified' as const, message: '', running: false, lastCommand: '', lastOutput: '', lastInstallStatus: 'succeeded' as const }

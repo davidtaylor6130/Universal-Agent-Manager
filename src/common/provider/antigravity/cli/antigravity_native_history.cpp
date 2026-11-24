@@ -6,6 +6,7 @@
 #include "common/platform/private_temp_directory.h"
 #include "common/provider/provider_ids.h"
 #include "common/utils/env_utils.h"
+#include "common/utils/protobuf_wire.h"
 #include "common/utils/time_utils.h"
 #include "core/native_import_content.h"
 #include <sqlite3.h>
@@ -36,10 +37,22 @@ namespace uam::antigravity::history
 		{
 			using std::runtime_error::runtime_error;
 		};
+		// The native CLI is still writing this conversation; a later read can succeed unchanged.
+		struct Unsettled : Refused
+		{
+			using Refused::Refused;
+		};
+		constexpr const char* kUnsettled = "Antigravity is still working on this conversation. Retry after it finishes.";
+		constexpr const char* kInherited = "This conversation continues another Antigravity conversation, and UAM cannot read that earlier context completely yet.";
 		void Require(bool value, const char* reason)
 		{
 			if (!value)
 				throw Refused(reason);
+		}
+		void RequireSettled(bool value)
+		{
+			if (!value)
+				throw Unsettled(kUnsettled);
 		}
 		struct Budget
 		{
@@ -70,52 +83,34 @@ namespace uam::antigravity::history
 			}
 			return true;
 		}
-		struct Field
+		using uam::protobuf_wire::Field;
+		Refused ProtoError(uam::protobuf_wire::Error error)
 		{
-			unsigned number = 0, wire = 0;
-			std::uint64_t integer = 0;
-			std::string_view bytes;
-		};
-		std::uint64_t Varint(std::string_view bytes, std::size_t& position)
-		{
-			std::uint64_t value = 0;
-			for (unsigned shift = 0; shift < 70; shift += 7)
+			switch (error)
 			{
-				Require(position < bytes.size(), "Antigravity history contains truncated protobuf data.");
-				const unsigned char part = bytes[position++];
-				Require(shift < 63 || part <= 1, "Antigravity history contains overflowing protobuf data.");
-				value |= static_cast<std::uint64_t>(part & 127) << shift;
-				if (!(part & 128))
-				{
-					Require(shift == 0 || part != 0, "Antigravity history contains noncanonical protobuf integers.");
-					return value;
-				}
+			case uam::protobuf_wire::Error::TruncatedVarint:
+			case uam::protobuf_wire::Error::TruncatedField:
+				return Refused("Antigravity history contains truncated protobuf data.");
+			case uam::protobuf_wire::Error::OverflowingVarint:
+				return Refused("Antigravity history contains overflowing protobuf data.");
+			case uam::protobuf_wire::Error::NoncanonicalVarint:
+				return Refused("Antigravity history contains noncanonical protobuf integers.");
+			case uam::protobuf_wire::Error::InvalidTag:
+				return Refused("Antigravity history has an invalid protobuf tag.");
+			case uam::protobuf_wire::Error::TooManyFields:
+				return Refused("Antigravity native record exceeds the field limit.");
+			case uam::protobuf_wire::Error::UnsupportedWireType:
+				return Refused("Antigravity history has an unsupported protobuf encoding.");
 			}
-			throw Refused("Antigravity history contains invalid protobuf data.");
+			return Refused("Antigravity history contains invalid protobuf data.");
 		}
 		struct Proto
 		{
 			std::vector<Field> fields;
+			// Canonical varints only; One() below also refuses repeated or retyped fields.
 			explicit Proto(std::string_view bytes)
+			    : fields(uam::protobuf_wire::ReadFields(bytes, {.max_fields = kMaxSteps, .reject_noncanonical_varints = true}, ProtoError))
 			{
-				for (std::size_t position = 0; position < bytes.size();)
-				{
-					Require(fields.size() < kMaxSteps, "Antigravity native record exceeds the field limit.");
-					const auto tag = Varint(bytes, position);
-					Require((tag >> 3) > 0 && (tag >> 3) <= 536870911, "Antigravity history has an invalid protobuf tag.");
-					Field field{static_cast<unsigned>(tag >> 3), static_cast<unsigned>(tag & 7)};
-					if (field.wire == 0)
-						field.integer = Varint(bytes, position);
-					else
-					{
-						Require(field.wire == 1 || field.wire == 2 || field.wire == 5, "Antigravity history has an unsupported protobuf encoding.");
-						const auto size = field.wire == 2 ? Varint(bytes, position) : field.wire == 1 ? 8U : 4U;
-						Require(size <= bytes.size() - position, "Antigravity history contains truncated protobuf data.");
-						field.bytes = bytes.substr(position, static_cast<std::size_t>(size));
-						position += static_cast<std::size_t>(size);
-					}
-					fields.push_back(field);
-				}
 			}
 			const Field* One(unsigned number, unsigned wire) const
 			{
@@ -275,7 +270,7 @@ namespace uam::antigravity::history
 			Require(plain != nullptr, "Antigravity legacy history authentication failed; unsupported or incomplete data remains unimported.");
 			const Proto trajectory(plain->bytes);
 			trajectory.Known({1, 2, 3, 4, 5, 6, 7, 8, 9, 10});
-			Require(std::none_of(trajectory.fields.begin(), trajectory.fields.end(), [](const Field& field) { return field.number == 5; }), "Antigravity legacy history has parent context whose completeness is not yet supported.");
+			Require(std::none_of(trajectory.fields.begin(), trajectory.fields.end(), [](const Field& field) { return field.number == 5; }), kInherited);
 			Require(trajectory.One(7, 2) != nullptr, "Antigravity legacy history lacks original workspace metadata.");
 			Require(sqlite3_exec(raw,
 			    "PRAGMA temp_store=MEMORY; PRAGMA user_version=1; CREATE TABLE trajectory_meta(trajectory_id TEXT,cascade_id TEXT,trajectory_type INTEGER,source INTEGER);"
@@ -462,7 +457,8 @@ namespace uam::antigravity::history
 				if (read == SQLITE_ROW)
 				{
 				// The CLI leaves `source` empty on real stores; only a non-empty value that is not ours is foreign.
-				Require((Column(row.get(), 2).empty() || Column(row.get(), 2) == "antigravity-cli") && Column(row.get(), 3).empty() && Column(row.get(), 6).empty() && sqlite3_column_type(row.get(), 4) == SQLITE_INTEGER && sqlite3_column_int64(row.get(), 4) == 0 && sqlite3_column_type(row.get(), 5) == SQLITE_INTEGER && sqlite3_column_int64(row.get(), 5) == 0, "Antigravity workspace index has active, nested or foreign conversation context.");
+				Require((Column(row.get(), 2).empty() || Column(row.get(), 2) == "antigravity-cli") && Column(row.get(), 3).empty() && Column(row.get(), 6).empty() && sqlite3_column_type(row.get(), 4) == SQLITE_INTEGER && sqlite3_column_int64(row.get(), 4) == 0 && sqlite3_column_type(row.get(), 5) == SQLITE_INTEGER, "This conversation belongs to another Antigravity conversation or tool, which UAM cannot read completely yet.");
+					RequireSettled(sqlite3_column_int64(row.get(), 5) == 0);
 					Require(sqlite3_column_type(row.get(), 1) == SQLITE_INTEGER && sqlite3_column_int64(row.get(), 1) >= 0 && sqlite3_column_int64(row.get(), 1) <= static_cast<sqlite3_int64>(kMaxSteps), "Antigravity native workspace index has an invalid step count.");
 					result.steps = static_cast<std::size_t>(sqlite3_column_int64(row.get(), 1));
 					const auto uris = nlohmann::json::parse(Column(row.get(), 0), nullptr, false);
@@ -586,13 +582,13 @@ namespace uam::antigravity::history
 			Require(Uuid(trajectory) && Uuid(session) && trajectory != session && session == path.stem().string() && sqlite3_column_type(identity.get(), 2) == SQLITE_INTEGER && sqlite3_column_type(identity.get(), 3) == SQLITE_INTEGER && sqlite3_column_int64(identity.get(), 2) == 4 && sqlite3_column_int64(identity.get(), 3) == 17, "Antigravity native identity does not attest this CLI conversation.");
 			Require(sqlite3_step(identity.get()) == SQLITE_DONE, "Antigravity conversation has ambiguous trajectory ownership.");
 			auto parents = Query(raw, "SELECT 1 FROM parent_references LIMIT 1");
-			Require(sqlite3_step(parents.get()) == SQLITE_DONE, "Antigravity history references parent context that this reader cannot yet attest completely.");
+			Require(sqlite3_step(parents.get()) == SQLITE_DONE, kInherited);
 			auto metadata_query = Query(raw, "SELECT data FROM trajectory_metadata_blob WHERE id='main'");
 			Require(sqlite3_step(metadata_query.get()) == SQLITE_ROW, "Antigravity original workspace metadata is missing.");
 			const std::string metadata_bytes = Column(metadata_query.get(), 0, true);
 			const Proto metadata(metadata_bytes);
 			Require(metadata.Text(6) == session, "Antigravity native metadata belongs to a different conversation.");
-			Require(metadata.Text(5).empty() && metadata.Number(17) == 0 && metadata.Number(16) == 0 && metadata.Bytes(22).empty(), "Antigravity native metadata identifies inherited or battle context whose complete history is not yet supported.");
+			Require(metadata.Text(5).empty() && metadata.Number(17) == 0 && metadata.Number(16) == 0 && metadata.Bytes(22).empty(), "This conversation continues another Antigravity conversation or compares several, and UAM cannot read that context completely yet.");
 			std::string workspace;
 			const auto admit_workspace = [&](const std::string& uri)
 			{
@@ -639,7 +635,12 @@ namespace uam::antigravity::history
 				const auto native_type = sqlite3_column_int64(rows.get(), 1), native_status = sqlite3_column_int64(rows.get(), 2);
 				Require(native_type >= 0 && native_type <= 2147483647 && native_status >= 0 && native_status <= 2147483647, "Antigravity native step enums exceed their bounds.");
 				const int type = static_cast<int>(native_type), status = static_cast<int>(native_status);
-				Require((status == 3 || status == 6 || status == 7) && sqlite3_column_int64(rows.get(), 3) == 0 && sqlite3_column_int64(rows.get(), 7) == 0, "Antigravity history has unfinished, nested or unsupported steps; retry after the native conversation settles.");
+				Require(sqlite3_column_int64(rows.get(), 3) == 0 && sqlite3_column_int64(rows.get(), 7) == 0, "This conversation has nested or unsupported Antigravity steps that UAM cannot read yet.");
+				// Pinned agy 1.4.4 CortexStepStatus: PENDING 1, RUNNING 2, GENERATING 8, WAITING 9 and
+				// QUEUED 11 are in progress; DONE 3, CANCELED 6 and ERROR 7 are readable terminal states.
+				// Any other value stays an explicit refusal rather than a silent "still running".
+				RequireSettled(status != 1 && status != 2 && status != 8 && status != 9 && status != 11);
+				Require(status == 3 || status == 6 || status == 7, "This conversation has an Antigravity step state that UAM cannot read yet.");
 				const std::string step_meta = Column(rows.get(), 4, true), error = Column(rows.get(), 5, true), payload = Column(rows.get(), 6, true);
 				const std::string permissions = Column(rows.get(), 8, true), task = Column(rows.get(), 9, true), render = Column(rows.get(), 10, true);
 				const bool render_present = sqlite3_column_type(rows.get(), 10) != SQLITE_NULL;
@@ -960,7 +961,8 @@ namespace uam::antigravity::history
 				// unexecuted call; retain it without fabricating output or success.
 				if (call.status == "pending" && response.interrupted)
 					call.status = "cancelled";
-				Require(call.status != "pending", "Antigravity native tool history is unfinished; retry discovery.");
+				// Every step is terminal here, so an unanswered call is incomplete history, not a running turn.
+				Require(call.status != "pending", "This conversation has an Antigravity tool call with no recorded result, so UAM cannot read it completely.");
 			}
 			Require(Revision(path) == revision, "Antigravity native history changed during discovery; retry the scan.");
 			Require(!legacy || !DatabaseSiblingExists(path), "Antigravity legacy history was superseded during discovery; retry the scan.");
@@ -1047,6 +1049,9 @@ namespace uam::antigravity::history
 				}
 				catch (const Refused& failure)
 				{
+					// Scan issues name the file; an exact read reports the bare reason from refusals.
+					if (result.refusals.size() < 20)
+						result.refusals.push_back({file.stem().string(), failure.what(), dynamic_cast<const Unsettled*>(&failure) != nullptr});
 					issue("Antigravity conversation " + file.stem().string() + ": " + failure.what());
 				}
 				catch (const std::exception&)

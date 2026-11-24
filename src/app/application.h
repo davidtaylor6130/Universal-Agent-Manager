@@ -55,7 +55,7 @@ class Application
 	void PollTick();
 	/// Runs the posted poll only when no later reschedule replaced it, so one poll chain runs at a time.
 	void RunScheduledPoll(std::uint64_t generation);
-	void ApplyBundledMarkdownStoreSeed(bool seeded, std::string error, std::vector<ShellAction> shell_actions, const std::string& destination_directory);
+	void ApplyBundledMarkdownStoreSeed(bool seeded, std::string error, std::vector<ShellAction> shell_actions, bool shell_actions_unreadable, const std::string& destination_directory);
 
   private:
 	/// Runs every runtime stage of one poll; PollTick contains its failures so the next poll still runs.
