@@ -736,6 +736,13 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 		}
 		if (session.lifecycle_state == kAcpLifecycleError)
 		{
+			// A follow-up write that failed after a successful initialize (initialized stays set) is a broken transport,
+			// not a refusal: recover it as a disconnect so the undelivered prompt is retried on a fresh process.
+			if (session.initialized)
+			{
+				RecoverDisconnectedRemoteAcpTransport(app, session, chat, session.last_error);
+				return;
+			}
 			// The provider answered and refused (Copilot without SDK protocol 3): the transport is healthy, so this is
 			// not a disconnect. Remote recovery relaunched the same refusal and then read the replacement's reply as
 			// a broken frame, hiding the real message. Unlike an initialize error response, whose undelivered prompt
