@@ -6947,6 +6947,14 @@ bool ChatHistorySyncService::MoveChatToFolder(uam::AppState& app, ChatSession& c
 	}
 	if (current_host != uam::execution_hosts::kLocalHostId)
 	{
+		// A remote worktree chat runs in its managed worktree, not its folder directory, so a folder move
+		// would only relabel it while the provider kept working in the old checkout.
+		if (uam::paths::IsGitWorktreeIsolated(chat) ||
+		    uam::strings::TrimmedEquals(chat.workspace_isolation_kind, uam::paths::kPendingGitWorktreeIsolationKind))
+		{
+			app.status_line = "A chat in its own Git worktree cannot be moved to another workspace. Start a new chat in that workspace instead.";
+			return false;
+		}
 		if (ChatNeedsTranscriptPreserved(app, chat) || uam::ChatHasActiveCliTerminal(app, chat.id))
 		{
 			app.status_line = "Stop the chat before moving its workspace.";
