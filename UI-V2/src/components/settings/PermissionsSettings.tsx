@@ -53,7 +53,7 @@ export function PermissionsSettings() {
         ? request ? 'requestComputerUsePermission' : 'openComputerUseSystemSettings'
         : request ? 'requestAppPermission' : 'openAppPermissionSettings', payload: { permission } })
       if (!response.ok) throw new Error(response.error || 'Could not open permission settings.')
-      if (request) reportAppNotice('Complete any system prompt, then refresh. If no prompt appears, check system settings.')
+      if (request) reportAppNotice('Answer the system prompt, then refresh.', 'info', { detail: 'If no prompt appears, check system settings.' })
     } catch (error) { reportAppFailure(request ? 'Permission could not be requested.' : 'Could not open permission settings.', error instanceof Error ? error.message : 'Try again.') }
     finally { setBusy(false) }
   }
