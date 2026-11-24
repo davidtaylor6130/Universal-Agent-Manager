@@ -1428,7 +1428,9 @@ namespace uam::remote
 			if (!std::filesystem::is_directory(status))
 				return ProcessError(request, "not_directory", "The selected remote path is not a directory.");
 
-			const std::filesystem::path directory = requested.lexically_normal();
+			std::filesystem::path directory = requested.lexically_normal();
+			// "/srv/x/" normalizes to itself; drop the trailing separator so the directory and its parent are distinct.
+			if (directory.has_relative_path() && directory.filename().empty()) directory = directory.parent_path();
 			std::vector<std::pair<std::string, std::string>> directories;
 			bool truncated = false;
 			std::filesystem::directory_iterator iterator(directory, error);

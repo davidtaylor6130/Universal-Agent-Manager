@@ -34,8 +34,9 @@ namespace uam::cli_versions
 
 	/// <summary>Reads the version a CLI printed for --version. Wrappers such as bun or node can print their own
 	/// version first, so only the last non-empty line counts, after removing ANSI colour codes; that line must hold
-	/// exactly one x.y.z, and anything else is treated as unknown.</summary>
-	inline std::optional<std::string> ExtractCliReportedVersion(std::string_view text)
+	/// exactly one x.y.z, and anything else is treated as unknown. The stricter bridge check also refuses
+	/// a suffix attached to that version.</summary>
+	inline std::optional<std::string> ExtractCliReportedVersion(std::string_view text, bool reject_suffix = false)
 	{
 		std::string plain;
 		plain.reserve(text.size());
@@ -64,6 +65,8 @@ namespace uam::cli_versions
 		if (!version) return std::nullopt;
 		// A second x.y.z on the same line ("opencode 2.1.4 (bun 1.1.38)") leaves the CLI's own version ambiguous.
 		const std::size_t after = line.find(*version) + version->size();
-		return ExtractSemverVersion(line.substr(after)) ? std::nullopt : version;
+		const auto suffix = line.substr(after);
+		if (reject_suffix && !suffix.empty() && suffix.front() != ' ' && suffix.front() != '\t') return std::nullopt;
+		return ExtractSemverVersion(suffix) ? std::nullopt : version;
 	}
 }

@@ -54,6 +54,12 @@ function fixture(native = true) {
 }
 
 describe('memory settings action-local write ownership', () => {
+  it('rejects arrays where a snapshot or worker-binding object is expected', () => {
+    expect(parseMemorySettingsSnapshot({ scope, revision: 0, primaryValidated: true, values: base() })).not.toBeNull()
+    expect(parseMemorySettingsSnapshot(Object.assign([], { scope, revision: 0, primaryValidated: false }))).toBeNull()
+    expect(parseMemorySettingsSnapshot({ scope, revision: 0, primaryValidated: true, values: { ...base(), memoryWorkerBindings: [] } })).toBeNull()
+  })
+
   it('uses existing clamps and sends only explicitly requested fields', async () => {
     const f = fixture()
     const save = f.controller.save({ memoryIdleDelaySeconds: -1, memoryRecallBudgetBytes: 999999, goalMaxLoopIterations: -1, acpSetupInactivityTimeoutSeconds: 999999, acpTurnOutputLimitMiB: 999999 })

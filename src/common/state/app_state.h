@@ -40,7 +40,6 @@ struct PreparedMemoryOutput;
 namespace uam
 {
 	namespace claude_preinput { class Observation; }
-	namespace acp_detail { struct ColdRetryBinding; }
 	namespace html_view { class RenderChecker; }
 	namespace usage { class AccountAllowanceService; }
 
@@ -775,8 +774,6 @@ namespace uam
 		const IProviderRuntime* native_pre_dispatch_runtime = nullptr;
 		// Ephemeral native query DATA; never serialized or an input permission.
 		std::shared_ptr<claude_preinput::Observation> claude_preinput_observation;
-		// Invocation-only opt-in provenance; passive loading and current Retry never create it.
-		std::shared_ptr<acp_detail::ColdRetryBinding> cold_retry_binding;
 		bool claude_manual_compaction_supported = false;
 		bool claude_manual_compaction_boundary_seen = false;
 		nlohmann::json copilot_native_state = nlohmann::json::object();
@@ -979,6 +976,15 @@ namespace uam
 		std::string goal_review_user_prompt;
 		std::string goal_review_assistant_text;
 		int goal_review_repair_attempts = 0;
+		// One goal review decision, which can span its single JSON repair turn. Reset whenever no review is pending.
+		struct GoalReviewDecisionTiming
+		{
+			// DecisionService::NowMs() when the review was first queued; 0 when unknown (for example a recovered review).
+			std::int64_t started_ms = 0;
+			// The invalid first turn of a repaired review and its validated tokens; unknown stays unknown.
+			bool repaired = false;
+			std::optional<std::int64_t> earlier_tokens;
+		} goal_review_decision;
 		// Runtime receipt from validated provider usage for the current goal worker or review turn, never reconstructed from turn text.
 		struct GoalReviewUsage
 		{
