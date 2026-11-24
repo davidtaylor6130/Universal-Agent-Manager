@@ -467,8 +467,14 @@ namespace
 		}
 		if (!result.error.empty())
 		{
+			// RemoveFile reconnects after a dropped connection. A host it cannot reach again keeps the rest for the
+			// chat's delete sweep (each was staged above) rather than waiting out a reconnect per file.
 			for (std::size_t cleanup = 0; cleanup < committed.size(); ++cleanup)
-				(void)client.RemoveFile("cleanup-" + std::to_string(cleanup), committed[cleanup]);
+			{
+				if (client.RemoveFile("cleanup-" + std::to_string(cleanup), committed[cleanup]) || client.IsConnected()) continue;
+				uam::diagnostics::Write("[stageChatAttachments] Remote attachment cleanup stopped: host unreachable, copies_left=" + std::to_string(committed.size() - cleanup));
+				break;
+			}
 			return result;
 		}
 		result.ok = true;
