@@ -1389,7 +1389,9 @@ namespace uam
 				terminal_json["active"] = uam::CliTerminalLifecycleIsIdleLive(*terminal);
 				terminal_json["pendingSteer"] = !terminal->pending_steer_prompt.empty();
 				terminal_json["lastError"] = terminal->last_error;
-				if (terminal->running && terminal->lifecycle_state == CliTerminalLifecycleState::Idle && terminal->pending_steer_prompt.empty())
+				// A draft keeps the terminal open (see IsCliTerminalEligibleForBackgroundIdleShutdown), so it shows no countdown.
+				if (terminal->running && terminal->lifecycle_state == CliTerminalLifecycleState::Idle && terminal->pending_steer_prompt.empty() &&
+				    !uam::CliTerminalComposerMayHoldDraft(*terminal))
 					SerializeIdleDeadline(terminal_json, terminal->idle_interaction_started_time_s, app.settings.cli_idle_timeout_seconds);
 				w.Merge(std::move(terminal_json));
 				return;

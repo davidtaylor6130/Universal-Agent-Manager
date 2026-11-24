@@ -179,6 +179,10 @@ namespace uam
 		double last_busy_time_s = 0.0;
 		double shutdown_requested_time_s = 0.0;
 		double inactivity_interrupt_requested_time_s = 0.0;
+		// Input reached the provider composer after the last submitted line, so it may hold an unsent draft.
+		bool composer_may_hold_draft = false;
+		// Last byte of the previous composer input, to recognise a backslash-then-Enter line break.
+		char composer_last_input_byte = 0;
 		bool input_ready = false;
 		double startup_time_s = 0.0;
 		bool generation_in_progress = false;
@@ -201,6 +205,12 @@ namespace uam
 		std::string codex_activity_turn_id;
 		bool codex_activity_discard_line = false;
 		bool codex_activity_awaiting_turn = false;
+		// App time the submission that set codex_activity_awaiting_turn was sent; its receipt deadline runs from here.
+		double codex_activity_awaiting_since_s = 0.0;
+		// A native observer's wait for a submission's turn start just expired; the poll reads and clears it for logging.
+		bool native_turn_receipt_expired = false;
+		// Unknown was set because a turn's end could not be proven; a later idle prompt may still confirm Ready.
+		bool turn_end_unconfirmed = false;
 		bool codex_activity_read_failed = false;
 		bool codex_activity_completed = false;
 		std::string last_native_history_snapshot_digest;
