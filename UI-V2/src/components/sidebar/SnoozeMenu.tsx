@@ -1,10 +1,11 @@
 import { useState } from 'react'
 import type { FormEvent } from 'react'
-import { AlarmClockOff, Check, CircleX } from 'lucide-react'
+import { AlarmClockOff, CircleX } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { Button, MenuItem, usePresence } from '../ui'
 import { useShallow } from 'zustand/react/shallow'
 import { runForEach, type BulkTarget } from '../../utils/runForEach'
+import { failureDetail, reportAppFailure, reportAppNotice } from '../../utils/appFailure'
 
 const MINUTE = 60_000
 const HOUR = 60 * MINUTE
@@ -55,15 +56,15 @@ export function SnoozeMenu({ chatId, familyIds, untilMs = 0, onSnoozed, targets 
   const [amount, setAmount] = useState('1')
   const [unit, setUnit] = useState<SnoozeUnit>('hours')
   const [saving, setSaving] = useState(false)
-  const [feedback, setFeedback] = useState<{ error: boolean; text: string } | null>(null)
+  const [feedback, setFeedback] = useState('')
   const snoozedCount = untilByRow.filter((until) => until > Date.now()).length
   const snoozed = snoozedCount > 0
   const update = async (until: number) => {
     if (saving) return
     if (until !== 0 && (!Number.isSafeInteger(until) || until <= Date.now())) {
-      setFeedback({ error: true, text: 'Choose a future wake time.' }); return
+      setFeedback('Choose a future wake time.'); return
     }
-    setSaving(true); setFeedback(null)
+    setSaving(true); setFeedback('')
     try {
       if (bulk) {
         const chosen = until === 0 ? bulk.filter((_, index) => untilByRow[index] > Date.now()) : bulk
@@ -73,23 +74,23 @@ export function SnoozeMenu({ chatId, familyIds, untilMs = 0, onSnoozed, targets 
           return result.ok ? null : result.error || 'Could not save. Try again.'
         }, until === 0 ? 'Could not wake chats' : 'Could not snooze chats')
         const failed = chosen.length - done.length
-        setFeedback(failed > 0
-          ? { error: true, text: `${failed} of ${chosen.length} chats could not be ${until === 0 ? 'woken' : 'snoozed'}.` }
-          : { error: false, text: until === 0 ? `${done.length} chats awake.` : `${done.length} chats snoozed until ${new Date(until).toLocaleString()}.` })
+        // runForEach has already reported each failure by name in one notice.
+        if (failed === 0) reportAppNotice(until === 0 ? `${done.length} chats awake.` : `${done.length} chats snoozed until ${new Date(until).toLocaleString()}.`, 'success')
         if (failed === 0 && until !== 0) onSnoozed?.()
         return
       }
       const result = await save(chatId, until)
-      setFeedback(result.ok ? { error: false, text: until === 0 ? 'Chat awake.' : `Snoozed until ${new Date(until).toLocaleString()}.` } : { error: true, text: result.error || 'Could not save. Try again.' })
+      if (result.ok) reportAppNotice(until === 0 ? 'Chat awake.' : `Snoozed until ${new Date(until).toLocaleString()}.`, 'success')
+      else reportAppFailure(until === 0 ? 'Could not wake the chat.' : 'Could not snooze the chat.', failureDetail(result.error, 'Try again.'))
       if (result.ok && until !== 0) onSnoozed?.()
-    } catch { setFeedback({ error: true, text: 'Could not save. Try again.' }) }
+    } catch (error) { reportAppFailure(until === 0 ? 'Could not wake the chat.' : 'Could not snooze the chat.', failureDetail(error, 'Try again.')) }
     finally { setSaving(false) }
   }
   const submitCustom = (event: FormEvent) => {
     event.preventDefault()
     if (!customOpen) return
     const until = customSnoozeUntil(Number(amount), unit)
-    if (until === null) { setFeedback({ error: true, text: 'Enter a whole number of minutes, hours or days.' }); return }
+    if (until === null) { setFeedback('Enter a whole number of minutes, hours or days.'); return }
     void update(until)
   }
   const itemClass = 'uam-sb-menu-item'
@@ -116,8 +117,9 @@ export function SnoozeMenu({ chatId, familyIds, untilMs = 0, onSnoozed, targets 
       <Button type="submit" size="sm" variant="primary" className="ml-auto" disabled={presetsBlocked}>Snooze</Button>
       </fieldset>
     </form>}
-    {feedback && <p role={feedback.error ? 'alert' : 'status'} className="flex items-center gap-1.5 px-3 py-1 text-xs" style={{ color: feedback.error ? 'var(--error)' : 'var(--text-2)' }}>
-      {feedback.error ? <CircleX size={12} aria-hidden /> : <Check size={12} aria-hidden />}{feedback.text}
+    {/* Only input validation stays here, beside the custom field; save outcomes go to the shared notifications. */}
+    {feedback && <p role="alert" className="flex items-center gap-1.5 px-3 py-1 text-xs" style={{ color: 'var(--error)' }}>
+      <CircleX size={12} aria-hidden />{feedback}
     </p>}
   </>
 }

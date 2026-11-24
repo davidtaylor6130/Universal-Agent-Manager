@@ -74,6 +74,9 @@ class IPlatformTerminalRuntime
 	virtual void CloseCliTerminalHandles(uam::CliTerminalState& terminal) const = 0;
 	virtual bool WriteToCliTerminal(uam::CliTerminalState& terminal, const char* bytes, std::size_t len) const = 0;
 	virtual void StopCliTerminalProcess(uam::CliTerminalState& terminal, bool fast_exit) const = 0;
+	/// <summary>Asks the terminal's process to end without waiting or closing handles, so the poll still drains its final
+	/// output and observes the exit. Never types into the provider: its composer may hold the user's unsent draft.</summary>
+	virtual void RequestCliTerminalProcessExit(uam::CliTerminalState&) const {}
 	virtual void ResizeCliTerminal(uam::CliTerminalState& terminal) const = 0;
 	// Returns: >0 bytes read, 0 process exited, -2 no data available, -1 read failure.
 	virtual std::ptrdiff_t ReadCliTerminalOutput(uam::CliTerminalState& terminal, char* buffer, std::size_t buffer_size) const = 0;

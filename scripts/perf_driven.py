@@ -4,10 +4,11 @@ deterministic fake ACP provider and the Chrome DevTools Protocol, measured end t
 Each scenario runs alone with --only, so an optimisation can rerun the one metric it touches. No real provider runs: every
 provider executable on PATH is the fake from tests/companion_native_smoke.py, and only OpenCode is turned on.
 
-DevTools: the app already passes its command line to CEF, so Chromium's stock --remote-debugging-port switch works on any
-build; this script passes it with a free loopback port. Chromium binds that port to 127.0.0.1 only. While the app runs, any
-local process can drive it through the port, which is why the app runs on a disposable data root with a hermetic
-environment and is stopped at the end. A normal launch never passes the switch.
+DevTools: the app ignores Chromium's remote debugging switches unless UAM_TEST_ALLOW_REMOTE_DEBUGGING=1 is set, so this
+script sets that test-only variable and passes --remote-debugging-port with a free loopback port. The app always drops
+--remote-debugging-address, so Chromium binds the port to 127.0.0.1 only. While the app runs, any local process can drive it
+through the port, which is why the app runs on a disposable data root with a hermetic environment and is stopped at the end.
+A normal launch never sets the variable, so the switch opens no port there.
 """
 import base64
 import json
@@ -326,7 +327,7 @@ class App:
         environment = suite.hermetic_environment(self.data)
         environment['PATH'] = str(write_shims(self.work / 'bin')) + os.pathsep + environment['PATH']
         environment.update(UAM_FAKE_PROVIDER_LOG=str(self.fake_log), UAM_FAKE_STREAM=f'{STREAM_CHUNK_MS},{stream_chunks}',
-                           UAM_OPENCODE_ZEN_MODELS_PATH=str(self.work / 'zen-models.json'))
+                           UAM_OPENCODE_ZEN_MODELS_PATH=str(self.work / 'zen-models.json'), UAM_TEST_ALLOW_REMOTE_DEBUGGING='1')
         (self.work / 'zen-models.json').write_text('{}')
         self.port = free_port()
         # Chromium's own switches: DevTools on a 127.0.0.1 port, and frames keep coming if another window covers the app,

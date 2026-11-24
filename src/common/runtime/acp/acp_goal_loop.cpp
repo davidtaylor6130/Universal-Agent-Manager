@@ -54,17 +54,28 @@ namespace uam::acp_detail
 			return uam::strings::NonEmptyOrFallback(chat.goal_owner_chat_id, chat.id);
 		}
 
-		/// <summary>Capped changed-file list so the reviewer starts from the worker's actual edits.</summary>
-		std::string ReviewWorkspaceChanges(const AppState& app, const ChatSession& chat)
+		/// <summary>The reviewer workspace's version control system and a capped changed-file list, so the reviewer
+		/// starts from the worker's actual edits with read commands that work there.</summary>
+		struct ReviewWorkspace
 		{
-			// ponytail: synchronous local Git read once per review; SSH reviewers run git themselves. Move it to a
-			// background worker if large repositories stall the goal loop.
-			if (!app.settings.git_enabled || !uam::paths::IsControllerLocalWorkspace(chat)) return {};
-			const VcsCommitStatus status = VcsCommitService().Status(app, chat, VcsType::Git, false); // paths only; the reviewer runs git diff --stat itself
-			if (!status.available || !status.error.empty()) return {};
+			std::optional<VcsType> vcs;
+			std::string changes;
+		};
+
+		ReviewWorkspace ReviewWorkspaceChanges(const AppState& app, const ChatSession& chat)
+		{
+			// ponytail: synchronous local VCS read once per review; SSH reviewers detect and run git or svn themselves.
+			// Move it to a background worker if large repositories stall the goal loop.
+			if (!uam::paths::IsControllerLocalWorkspace(chat)) return {};
+			// Git is preferred where both are present; Status falls back to whichever enabled system the workspace has.
+			const VcsCommitStatus status = VcsCommitService().Status(app, chat, VcsType::Git, false); // paths only; the reviewer runs the diff itself
+			if (!status.available) return {};
+			ReviewWorkspace review{status.active_vcs_type, {}};
+			if (!status.error.empty()) return review;
 			std::vector<std::tuple<std::string, std::string, int, int>> files;
 			for (const VcsChangedFile& file : status.changed_files) files.emplace_back(file.path, file.status, file.additions, file.deletions);
-			return GoalService::SummarizeWorkspaceChanges(files);
+			review.changes = GoalService::SummarizeWorkspaceChanges(files);
+			return review;
 		}
 
 		ChatSession* GoalOwnerChat(AppState& app, const ChatSession& chat)
@@ -113,7 +124,7 @@ namespace uam::acp_detail
 		bool BlockGoalAtIterationCap(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& owner_chat_id,
 		                             const std::string& goal_id, Goal& goal, CefRefPtr<CefBrowser> browser)
 		{
-			if (goal.loop_count < GoalService::IterationLimit(goal, app.settings))
+			if (goal.loop_count < GoalService::IterationLimit(ChatDomainService().FindChatById(app, owner_chat_id), goal, app.settings))
 			{
 				return false;
 			}
@@ -743,9 +754,10 @@ void ScheduleGoalReviewAfterSuccessfulTurn(AppState& app, AcpSessionState& sessi
 	const std::string goal_id = active_goal->id;
 	const ChatSession* model_chat = GoalOwnerChat(app, chat);
 	if (model_chat == nullptr) model_chat = &chat;
+	const ReviewWorkspace review_workspace = ReviewWorkspaceChanges(app, chat);
 	const std::string review_prompt = GoalService::BuildReviewPrompt(
 	    *active_goal, recent_user_prompt, recent_assistant_text,
-	    active_goal->same_assistant_text_count, model_chat->small_model_mode, ReviewWorkspaceChanges(app, chat));
+	    active_goal->same_assistant_text_count, model_chat->small_model_mode, review_workspace.changes, review_workspace.vcs);
 	AppendGoalLoopDiagnostic(session, "schedule_review", goal_id, recent_assistant_text);
 	std::string queue_error;
 	const bool queued = goal_iteration
