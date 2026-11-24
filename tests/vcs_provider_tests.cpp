@@ -345,7 +345,7 @@ UAM_TEST(RemoteVcsStatusReportsALostConnectionInsteadOfNoRepository)
 
 UAM_TEST(RemoteVcsStatusDoesNotFallBackToSvnWhenTheGitProbeLosesItsConnection)
 {
-	if (!GitAvailableForTests() || !SvnToolsAvailable()) return;
+	if (!GitAvailableForTests() || !RealSvnAvailable()) return;
 	// A Git+SVN checkout: the Git probe drops only the bridge, so the reconnect lets the SVN probe succeed. The summary asks
 	// for Git, so whole-working-copy SVN rows must not stand in for the Git read that could not answer.
 	TempDir tools("uam-vcs-mixed-drop");

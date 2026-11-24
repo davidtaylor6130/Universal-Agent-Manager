@@ -292,7 +292,9 @@ UAM_TEST(SvnRealLocksDecideWhoCanCommitAndNeedsLockFilesStayReadOnly)
 	UAM_ASSERT(uam::io::WriteTextFile(copies.checkout / "f.txt", "base\n"));
 	UAM_ASSERT(uam::io::WriteTextFile(copies.checkout / "n.bin", "base\n"));
 	Svn(copies.checkout, {"add", "--", "f.txt", "n.bin"});
-	Svn(copies.checkout, {"propset", "svn:needs-lock", "*", "n.bin"});
+	// Not "*": svn.exe on Windows expands an unquoted wildcard argument against the folder, which set the property on
+	// f.txt as well. svn stores any value of this boolean property as "*".
+	Svn(copies.checkout, {"propset", "svn:needs-lock", "yes", "n.bin"});
 	Svn(copies.checkout, {"commit", "-m", "baseline"});
 	Svn(copies.other, {"update"});
 
@@ -414,7 +416,7 @@ UAM_TEST(SvnRealSnapshotChangesPortBackIntoTheWorkingCopy)
 	UAM_ASSERT(uam::io::WriteTextFile(copies.checkout / "n.bin", "base\n"));
 	Svn(copies.checkout, {"add", "--", "a.txt", "k.txt", "n.bin"});
 	Svn(copies.checkout, {"propset", "svn:keywords", "Revision", "k.txt"});
-	Svn(copies.checkout, {"propset", "svn:needs-lock", "*", "n.bin"});
+	Svn(copies.checkout, {"propset", "svn:needs-lock", "yes", "n.bin"});
 	Svn(copies.checkout, {"commit", "-m", "baseline"});
 	Svn(copies.checkout, {"update"});
 	SvnSnapshotChat snapshot(copies);
