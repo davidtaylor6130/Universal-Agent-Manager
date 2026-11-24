@@ -149,10 +149,17 @@ namespace uam::io
 		return TryReadFile(path, out);
 	}
 
+	/// <summary>Reads a whole file of at most max_bytes; a larger file is refused by its size before any body is read.</summary>
 	inline bool TryReadTextFile(
 	    const std::filesystem::path& path, std::string& out, std::size_t max_bytes)
 	{
 		out.clear();
+		std::filesystem::path native_path;
+		std::string path_error;
+		std::error_code size_error;
+		if (!NativeFilePath(path, native_path, path_error)) return false;
+		const std::uintmax_t size = std::filesystem::file_size(native_path, size_error);
+		if (!size_error && size > max_bytes) return false;
 		std::ifstream file;
 		if (!OpenReadFile(path, file)) return false;
 
@@ -174,6 +181,59 @@ namespace uam::io
 			return false;
 		}
 		return true;
+	}
+
+	enum class BoundedReadStatus
+	{
+		Read,
+		Unreadable,
+		TooLarge,
+	};
+
+	struct BoundedReadResult
+	{
+		BoundedReadStatus status = BoundedReadStatus::Unreadable;
+		// Observed on-disk size; zero when the size could not be read.
+		std::uintmax_t source_bytes = 0;
+	};
+
+	/// <summary>Reads a whole file only when it fits max_bytes, checking its size before allocating any body.</summary>
+	/// <remarks>The bounded reader still enforces the ceiling if the file grows after the size check. The file is never changed.</remarks>
+	inline BoundedReadResult TryReadFileWithinLimit(const std::filesystem::path& path, std::string& out, std::size_t max_bytes)
+	{
+		out.clear();
+		BoundedReadResult result;
+		std::filesystem::path native_path;
+		std::string path_error;
+		std::error_code size_error;
+		if (!NativeFilePath(path, native_path, path_error)) return result;
+		result.source_bytes = std::filesystem::file_size(native_path, size_error);
+		if (size_error)
+		{
+			result.source_bytes = 0;
+			return result;
+		}
+		if (result.source_bytes > max_bytes)
+		{
+			result.status = BoundedReadStatus::TooLarge;
+			return result;
+		}
+		// One allocation of the observed size; the bounded reader keeps capacity across its clear().
+		out.reserve(static_cast<std::size_t>(result.source_bytes));
+		if (TryReadTextFile(path, out, max_bytes))
+		{
+			result.status = BoundedReadStatus::Read;
+			return result;
+		}
+		std::string().swap(out);
+		// The file grew past the ceiling during the read, or the read itself failed.
+		const std::uintmax_t grown = std::filesystem::file_size(native_path, size_error);
+		if (!size_error && grown > max_bytes)
+		{
+			result.source_bytes = grown;
+			result.status = BoundedReadStatus::TooLarge;
+		}
+		return result;
 	}
 
 	inline std::string ReadTextFile(const std::filesystem::path& path)
