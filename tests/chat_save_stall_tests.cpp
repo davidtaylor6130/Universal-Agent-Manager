@@ -5,7 +5,9 @@
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/app_time.h"
 
+#include <atomic>
 #include <cstdio>
+#include <future>
 #include <mutex>
 #if defined(_WIN32)
 #include <io.h>
@@ -339,6 +341,146 @@ UAM_TEST(AtomicWriteRemovesOnlyAbandonedTempsOfItsDestination)
 	UAM_ASSERT(!fs::exists(foreign) && fs::exists(live));
 	UAM_ASSERT_EQ(uam::io::ReadTextFile(target), std::string("first"));
 	UAM_ASSERT_EQ(uam::io::ReadTextFile(uam::io::MakeBackupPath(target)), std::string("seed"));
+}
+
+namespace
+{
+	/// <summary>One-shot gate a stage hook can wait on.</summary>
+	struct StageGate
+	{
+		std::promise<void> entered;
+		std::promise<void> release;
+		std::shared_future<void> released = release.get_future().share();
+		std::atomic<bool> opened{false};
+
+		void Open()
+		{
+			if (!opened.exchange(true)) release.set_value();
+		}
+	};
+
+	/// <summary>Opens a gate on scope exit. Declare it after the futures whose threads wait on the gate: a failed
+	/// assertion then opens the gate before those futures' destructors wait for their threads, so the case fails
+	/// instead of hanging.</summary>
+	struct OpenGateOnExit
+	{
+		StageGate& gate;
+		~OpenGateOnExit() { gate.Open(); }
+	};
+}
+
+UAM_TEST(DurableWriteBlockedInStageHookDoesNotBlockOtherDestination)
+{
+	TempDir temporary{"uam-durable-write-independent"};
+	const fs::path held = temporary.root / "held.json", other = temporary.root / "other.json";
+	StageGate gate;
+	// The holder stops after its temporary is synced: the point where the old process-wide lock was held across F_FULLFSYNC.
+	auto holder = std::async(std::launch::async, [&]
+	{
+		return uam::io::AtomicWriteFileDetailed(held, "held", [&](uam::io::AtomicWriteStage stage)
+		{
+			if (stage == uam::io::AtomicWriteStage::AfterFileSync)
+			{
+				gate.entered.set_value();
+				gate.released.wait();
+			}
+			return true;
+		}, true);
+	});
+	const OpenGateOnExit open_holder{gate};
+	UAM_ASSERT(gate.entered.get_future().wait_for(std::chrono::seconds(10)) == std::future_status::ready);
+	// Same directory as the held write, so both writes share one cached temp-sweep listing.
+	auto unrelated = std::async(std::launch::async, [&] { return uam::io::WriteTextFileWithBackup(other, "other"); });
+	// Before the fix this waited for the held write's hook for as long as it chose to block.
+	const bool completed_while_held = unrelated.wait_for(std::chrono::seconds(10)) == std::future_status::ready;
+	gate.Open();
+	UAM_ASSERT(completed_while_held);
+	UAM_ASSERT(unrelated.get());
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(other), std::string("other"));
+	const uam::io::AtomicWriteResult held_result = holder.get();
+	UAM_ASSERT(held_result.success && held_result.primary_committed);
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(held), std::string("held"));
+}
+
+UAM_TEST(DurableWritesToOneDestinationStaySerialisedAndIntact)
+{
+	TempDir temporary{"uam-durable-write-same-path"};
+	const fs::path target = temporary.root / "target.json";
+	UAM_ASSERT(uam::io::WriteTextFileWithBackup(target, "seed"));
+
+	// A second writer of the same destination, even spelled differently, waits for the first to publish.
+	StageGate gate;
+	std::atomic<bool> second_started{false};
+	auto first = std::async(std::launch::async, [&]
+	{
+		return uam::io::AtomicWriteFileDetailed(target, "first", [&](uam::io::AtomicWriteStage stage)
+		{
+			if (stage == uam::io::AtomicWriteStage::BeforeReplace)
+			{
+				gate.entered.set_value();
+				gate.released.wait();
+			}
+			return true;
+		}, true);
+	});
+	const OpenGateOnExit open_first{gate};
+	UAM_ASSERT(gate.entered.get_future().wait_for(std::chrono::seconds(10)) == std::future_status::ready);
+	auto second = std::async(std::launch::async, [&]
+	{
+		return uam::io::AtomicWriteFileDetailed(temporary.root / "." / "target.json", "second", [&](uam::io::AtomicWriteStage stage)
+		{
+			if (stage == uam::io::AtomicWriteStage::AfterCreate) second_started.store(true);
+			return true;
+		}, true);
+	});
+	const bool second_waited = second.wait_for(std::chrono::milliseconds(300)) == std::future_status::timeout && !second_started.load();
+	gate.Open();
+	UAM_ASSERT(second_waited);
+	UAM_ASSERT(first.get().success);
+	UAM_ASSERT(second.get().success);
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(target), std::string("second"));
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(uam::io::MakeBackupPath(target)), std::string("first"));
+
+	// Many concurrent writers: never two inside one destination's write, and the primary and backup each
+	// hold one complete payload, never a mix or a truncation.
+	constexpr int kThreads = 6, kWrites = 8;
+	constexpr std::size_t kPayloadBytes = 256U * 1024U;
+	std::atomic<int> inside{0}, most_inside{0};
+	std::vector<std::future<bool>> writers;
+	for (int thread = 0; thread < kThreads; ++thread)
+	{
+		writers.push_back(std::async(std::launch::async, [&, thread]
+		{
+			bool all = true;
+			for (int write = 0; write < kWrites; ++write)
+			{
+				const std::string payload(kPayloadBytes, static_cast<char>('a' + (thread * kWrites + write) % 26));
+				all = uam::io::AtomicWriteFileDetailed(target, payload, [&](uam::io::AtomicWriteStage stage)
+				{
+					if (stage == uam::io::AtomicWriteStage::AfterCreate)
+					{
+						const int now_inside = ++inside;
+						for (int seen = most_inside.load(); now_inside > seen && !most_inside.compare_exchange_weak(seen, now_inside);) {}
+					}
+					if (stage == uam::io::AtomicWriteStage::BeforeReplace) --inside;
+					return true;
+				}, true).success && all;
+			}
+			return all;
+		}));
+	}
+	for (std::future<bool>& writer : writers) UAM_ASSERT(writer.get());
+	UAM_ASSERT_EQ(most_inside.load(), 1);
+	for (const fs::path& path : {target, uam::io::MakeBackupPath(target)})
+	{
+		const std::string saved = uam::io::ReadTextFile(path);
+		UAM_ASSERT_EQ(saved.size(), kPayloadBytes);
+		UAM_ASSERT(std::ranges::all_of(saved, [&](char c) { return c == saved.front(); }));
+	}
+	for (const fs::directory_entry& entry : fs::directory_iterator(temporary.root))
+		UAM_ASSERT(entry.path().filename().string().find(uam::io::kTempWritePathSuffix) == std::string::npos);
+	// The last writer to leave retires the destination's lock entry, so the table does not grow with every path ever written.
+	UAM_ASSERT(!uam::io::DurableWriteDestinationLock::IsTrackedForTests(target));
 }
 
 UAM_TEST(LaterScheduleCannotPostponeDueChatSave)

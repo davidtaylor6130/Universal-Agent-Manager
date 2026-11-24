@@ -11,6 +11,7 @@
 #include "common/chat/chat_ids.h"
 #include "common/paths/workspace_root.h"
 #include "common/platform/platform_services.h"
+#include "common/provider/copilot_sdk_protocol.h"
 #include "common/provider/provider_ids.h"
 #include "common/runtime/acp/acp_goal_loop.h"
 #include "common/runtime/acp/acp_json_rpc.h"
@@ -793,13 +794,18 @@ bool HandleSavedImageResponse(const AppState& app, AcpSessionState& session, con
 	bool valid = false;
 	if (method == "status.get")
 	{
-		const auto protocol = Count(result, "protocolVersion");
-		valid = protocol && *protocol == 3 && StrictImageServerVersion(Text(result, "version"));
+		const auto protocol = uam::copilot::ReportedSdkProtocol(result);
+		if (!uam::copilot::IsVerifiedSdkProtocol(protocol))
+		{
+			RejectSavedImageEvidence(session, *state, uam::copilot::SdkProtocolRefusal(protocol));
+			return true;
+		}
+		valid = StrictImageServerVersion(Text(result, "version"));
 		// Remote input requires this stable server floor; the local version policy stays unchanged.
 		if (valid && Text(JsonObjectValue(*state, "owner"), "executionHostId") != "local")
 			valid = CliProviderVersionAtLeast(Text(result, "version"), "1.0.98");
 		if (valid)
-			parsed = {{"version", Text(result, "version")}, {"protocolVersion", 3}};
+			parsed = {{"version", Text(result, "version")}, {"protocolVersion", *protocol}};
 	}
 	else if (method == "models.list")
 		valid = ParseSavedImageModel(result, model, parsed);
@@ -1041,35 +1047,6 @@ void RecordEventReceipt(AcpSessionState& session, ChatSession& chat, const nlohm
 		message->provider_event_ids.push_back(receipt);
 }
 
-AcpToolCallState& TrackedTool(AcpSessionState& session, const ChatSession& chat, const std::string& id)
-{
-	for (AcpToolCallState& tool : session.tool_calls) if (tool.id == id) return tool;
-	AcpToolCallState& tool = UpsertToolCall(session, id);
-	for (std::size_t index = 0; index < chat.messages.size(); ++index)
-	{
-		for (const ToolCall& saved : chat.messages[index].tool_calls)
-		{
-			if (saved.id != id) continue;
-			tool.title = saved.name;
-			tool.kind = saved.kind;
-			tool.status = saved.status;
-			tool.args_json = saved.args_json;
-			tool.content = saved.result_text;
-			tool.is_sub_agent = saved.is_sub_agent;
-			tool.sub_agent_id = saved.sub_agent_id;
-			tool.sub_agent_title = saved.sub_agent_title;
-			tool.sub_agent_children = saved.sub_agent_children;
-			tool.sub_agent_children_authoritative = saved.sub_agent_children_authoritative;
-			tool.approval_status = saved.approval_status;
-			tool.task_id = saved.task_id;
-			tool.child_activity = saved.child_activity;
-			session.tool_call_message_indices[id] = static_cast<int>(index);
-			return tool;
-		}
-	}
-	return tool;
-}
-
 void AppendTrackedToolEvent(AcpSessionState& session, const std::string& id)
 {
 	const auto owner = session.tool_call_message_indices.find(id);
@@ -1124,7 +1101,7 @@ void ApplyToolEvent(AcpSessionState& session, ChatSession& chat, const nlohmann:
 	const std::string id = Text(data, "toolCallId");
 	if (id.empty()) return;
 	if (type == "tool.execution_start") uam::copilot::presentation::Observe(McpPresentationOrigins(session), event, data);
-	AcpToolCallState& tool = TrackedTool(session, chat, id);
+	AcpToolCallState& tool = RestoreToolCallFromChat(session, chat, id);
 	const std::string name = Text(data, "toolName");
 	if (!name.empty())
 	{
@@ -1160,7 +1137,7 @@ void ApplyToolEvent(AcpSessionState& session, ChatSession& chat, const nlohmann:
 	if (!parent.empty())
 	{
 		const std::string activity = tool.title;
-		AcpToolCallState& owner = TrackedTool(session, chat, parent);
+		AcpToolCallState& owner = RestoreToolCallFromChat(session, chat, parent);
 		owner.is_sub_agent = true;
 		if (!agent.empty())
 		{
@@ -1332,12 +1309,13 @@ nlohmann::json CopilotCliProviderRuntime::OnAcpBuildInitialize(uam::AcpSessionSt
 
 void CopilotCliProviderRuntime::OnAcpInitializeResult(uam::AcpSessionState& session, const nlohmann::json& result) const
 {
-	const auto version = Count(result, "protocolVersion");
-	if (!version || *version != 3)
+	// Refuse before session.create/resume: an unverified protocol never receives a session, prompt or permission reply.
+	const auto version = uam::copilot::ReportedSdkProtocol(result);
+	if (!uam::copilot::IsVerifiedSdkProtocol(version))
 	{
 		session.initialized = false;
 		session.lifecycle_state = kAcpLifecycleError;
-		session.last_error = "Copilot SDK server protocol 3 is required; update the CLI or UAM before retrying.";
+		session.last_error = uam::copilot::SdkProtocolRefusal(version);
 		return;
 	}
 	session.copilot_native_state["protocolVersion"] = *version;
@@ -2100,7 +2078,7 @@ bool CopilotCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::AcpS
 		uam::copilot::presentation::AcceptedBoundary(McpPresentationOrigins(session), event, data);
 	if (child && !parent.empty() && !agent.empty())
 	{
-		AcpToolCallState& owner = TrackedTool(session, chat, parent);
+		AcpToolCallState& owner = RestoreToolCallFromChat(session, chat, parent);
 		owner.is_sub_agent = true;
 		owner.task_id = agent;
 		owner.sub_agent_id = BuildCopilotAgentHistoryId(session.session_id, agent, chat.execution_host_id.empty() ? "local" : chat.execution_host_id);
@@ -2251,7 +2229,7 @@ bool CopilotCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::AcpS
 		if (!live.is_object()) live = nlohmann::json::object();
 		if (type == "subagent.started") live[id] = true;
 		else live.erase(id);
-		AcpToolCallState& tool = TrackedTool(session, chat, id);
+		AcpToolCallState& tool = RestoreToolCallFromChat(session, chat, id);
 		tool.is_sub_agent = true;
 		tool.kind = "sub-agent";
 		if (!agent.empty()) tool.task_id = agent;

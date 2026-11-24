@@ -1,5 +1,6 @@
 #include "remote/runner_bootstrap.h"
 #include "remote/runner_client.h"
+#include "remote/runner_protocol.h"
 #include "remote/runner_state.h"
 #include "common/utils/base64.h"
 #include "test_harness.h"
@@ -38,6 +39,17 @@ namespace uam::remote
 			return process;
 		}
 		static fs::path SpoolDirectory(RunnerState& state) { return state.m_spoolDirectory; }
+		/// Moves every upload's last activity back, as if that much time had passed with no write.
+		static void AgeUploads(RunnerState& state, std::int64_t milliseconds)
+		{
+			std::scoped_lock lock(state.m_stateMutex);
+			for (const auto& [upload_id, upload] : state.m_uploads)
+			{
+				(void)upload_id;
+				std::scoped_lock upload_lock(upload->mutex);
+				upload->last_activity_ms -= milliseconds;
+			}
+		}
 		static bool Retiring(RunnerState& state)
 		{
 			std::scoped_lock lock(state.m_stateMutex);
@@ -47,6 +59,51 @@ namespace uam::remote
 }
 using uam::remote::RunnerState;
 using uam::remote::RunnerStateRetirementTestAccess;
+
+// A desktop that ended, or a client that could not reach the resident helper again after its connection dropped,
+// never aborts its upload, and that helper outlives both. It drops an upload left quiet for kIdleUploadExpiryMs,
+// temporary file included, and keeps one that is still being written.
+UAM_TEST(RunnerStateExpiresAQuietUploadWithItsTemporaryFile)
+{
+	TempDir temp("uam-runner-quiet-upload");
+	RunnerState state;
+	const fs::path target = temp.root / "host" / "clip.bin";
+	const fs::path partial = target.parent_path() / ".uam-upload-quiet.tmp";
+	const auto send = [&state](nlohmann::json request)
+	{
+		request["id"] = "1";
+		return uam::remote::HandleRunnerRequest(request, "test-version", &state);
+	};
+	const auto begin = [&] { return send({{"type", "file.begin"}, {"uploadId", "quiet"}, {"path", uam::paths::Utf8PathString(target)}, {"size", 8}, {"digest", "0000000000000000"}}); };
+	const auto write = [&](std::string_view bytes) { return send({{"type", "file.write"}, {"uploadId", "quiet"}, {"dataBase64", uam::base64::Encode(bytes)}}); };
+	// Any request sweeps first; this one names no upload.
+	const auto sweep = [&] { (void)send({{"type", "file.abort"}, {"uploadId", "unrelated"}}); };
+	UAM_ASSERT(begin().value("ok", false));
+	UAM_ASSERT(write("half").value("ok", false));
+	UAM_ASSERT(fs::exists(partial));
+
+	// Short of the limit it stays, and each write starts the wait again.
+	RunnerStateRetirementTestAccess::AgeUploads(state, uam::remote::kIdleUploadExpiryMs - 60000);
+	sweep();
+	UAM_ASSERT(fs::exists(partial));
+	UAM_ASSERT(write("ok").value("ok", false));
+	RunnerStateRetirementTestAccess::AgeUploads(state, uam::remote::kIdleUploadExpiryMs - 60000);
+	sweep();
+	UAM_ASSERT(fs::exists(partial));
+
+	// At the limit the temporary file and the record go.
+	RunnerStateRetirementTestAccess::AgeUploads(state, 60000);
+	sweep();
+	UAM_ASSERT(!fs::exists(partial));
+	const nlohmann::json late = write("no");
+	UAM_ASSERT(!late.value("ok", true));
+	UAM_ASSERT_EQ(late["error"].value("code", ""), std::string("upload_not_found"));
+	UAM_ASSERT(!fs::exists(target));
+	// The id is free again.
+	UAM_ASSERT(begin().value("ok", false));
+	UAM_ASSERT(send({{"type", "file.abort"}, {"uploadId", "quiet"}}).value("ok", false));
+	UAM_ASSERT(!fs::exists(partial));
+}
 
 UAM_TEST(RemoteExpiredWorkerRetiresOnFirstOwnershipQuery)
 {
