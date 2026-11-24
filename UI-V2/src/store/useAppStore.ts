@@ -32,6 +32,7 @@ import {
   sanitizeMemoryActivity,
   defaultEditorFileAssociations,
   DEFAULT_NATIVE_IMPORT_STARTUP_MAX_AGE_DAYS,
+  forgetRetainedChatFieldsExcept,
 } from './cpp/sanitizers'
 export {
   DEFAULT_MEMORY_IDLE_DELAY_SECONDS,
@@ -1226,6 +1227,8 @@ export const useAppStore = create<AppState>((set, get) => {
         case 'stateUpdate':
           if (!isNewerStateRevision(cppStateRevision(msg.data), store.lastAppliedStateRevision)) break
           applyFullState(msg.data)
+          // Pushed full states share the patch channel, so a chat missing here is gone; drop its field copy.
+          forgetRetainedChatFieldsExcept(msg.data.chats.map((chat) => chat.id))
           // Only a full state the store actually took can close the gap for the pull in flight.
           if (stateResyncInFlight && get().lastAppliedStateRevision === cppStateRevision(msg.data)) {
             fullStateRevisionDuringResync = Math.max(fullStateRevisionDuringResync, cppStateRevision(msg.data))
@@ -1233,8 +1236,14 @@ export const useAppStore = create<AppState>((set, get) => {
           break
         case 'statePatch':
           if (stateResyncInFlight) {
-            if (patchesDuringResync.length < STATE_RESYNC_MAX_HELD_PATCHES) patchesDuringResync.push(msg.data)
-            else patchesDuringResyncOverflowed = true
+            // A patch that left out a chat is not kept as a copy: one at or below the snapshot is covered by it (the
+            // pull is what makes native drop its field copies), and one above it leaves a hole, so rebuilds() fails.
+            if (!msg.data.skippedChats) {
+              if (patchesDuringResync.length < STATE_RESYNC_MAX_HELD_PATCHES) patchesDuringResync.push(msg.data)
+              else patchesDuringResyncOverflowed = true
+            }
+          } else if (msg.data.skippedChats && isNewerStateRevision(cppPatchRevision(msg.data), get().lastAppliedStateRevision)) {
+            requestStateResync('patch built on a chat field copy this page lacks')
           }
           applyLivePatch(msg.data)
           break

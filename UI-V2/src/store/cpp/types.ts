@@ -1139,6 +1139,8 @@ export interface CppCompanionUnchangedState {
 }
 
 export interface CppStatePatch {
+  /** A patched chat named a field copy this page lacks (#947); it was left out and the store pulls full state. */
+  skippedChats?: true
   startupNativeImports?: StartupNativeImportStatus
   stateRevision?: number
   folders?: CppFolder[]
