@@ -694,7 +694,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
     setActionError('')
     void addFolder(name, null, directory, executionHost.id).then((created) => {
       if (!created) {
-        setActionError('The workspace could not be created. Check the directory and try again.')
+        reportAppFailure('The workspace could not be created.', 'Check the directory and try again.')
         return
       }
 
@@ -711,7 +711,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
     setActionError('')
     void createResourceCollection(name).then((created) => {
       if (!created) {
-        setActionError('The collection could not be created. Try again.')
+        reportAppFailure('The collection could not be created.', 'Try again.')
         return
       }
       setNewCollectionName('')
@@ -738,7 +738,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
     if (await renameFolder(folderId, name, directory)) {
       setEditingFolderId(null)
     } else {
-      setActionError('The workspace could not be updated. Finish active work and try again.')
+      reportAppFailure('The workspace could not be updated.', 'Finish active work and try again.')
     }
   }
 
@@ -1025,7 +1025,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
       onRescan={() => {
         setActionError('')
         void rescanFolderChats(folder.id).then((rescanned) => {
-          if (!rescanned) setActionError(`Could not rescan chats for ${folder.name}. Try again.`)
+          if (!rescanned) reportAppFailure(`Could not rescan chats for ${folder.name}.`, 'Try again.')
         })
       }}
       onEditNameChange={setEditFolderName}
@@ -1402,7 +1402,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
       {/* Add folder */}
       <div ref={addControlsRef} className="mt-1 px-2.5" style={isCompanionContext() ? { display: 'none' } : undefined}>
         {actionError && (
-          <Notice tone="error" title="Workspace action failed" dismissLabel="Dismiss folder action error" onDismiss={() => setActionError('')}>
+          <Notice tone="error" dismissLabel="Dismiss folder action error" onDismiss={() => setActionError('')}>
             {actionError}
           </Notice>
         )}

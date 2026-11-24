@@ -101,10 +101,14 @@ namespace uam
 			pr_watch::Reported reported;
 			/// News not yet accepted by the chat; saved so a restart delivers it once.
 			std::string pending_wake;
+			/// Everything in `pending_wake` is comments from people outside the repository's collaborators; a YOLO chat holds it.
+			bool pending_outside_only = false;
 			/// The chat's settled time when watching started; a different one later means the user has marked it done since.
 			std::string settled_seen;
 			// This app run only: refused deliveries of the pending wake, and the latest notice for the notifications panel.
 			int wake_refusals = 0;
+			/// The pending wake was held for a YOLO chat, so its release is logged.
+			bool held = false;
 			int notice_serial = 0;
 			std::string notice_message;
 			std::string notice_tone;
@@ -124,7 +128,7 @@ namespace uam
 
 		void Load();
 		bool Save();
-		void Apply(const std::vector<ReadResult>& results, std::int64_t now_ms);
+		void Apply(const AppState& app, const std::vector<ReadResult>& results, std::int64_t now_ms);
 		bool DeliverWakes(AppState& app, std::int64_t now_ms);
 		void StartSweep(const AppState& app, std::int64_t now_ms);
 		Link* FindLink(std::string_view chat_id, const pr_watch::Reference& pr);

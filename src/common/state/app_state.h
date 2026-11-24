@@ -4,6 +4,7 @@
 #include "app/execution_routing_service.h"
 #include "app/repository_route_match_service.h"
 #include "common/models/app_models.h"
+#include "common/memory/memory_worker_failure_pause.h"
 #include "common/paths/workspace_lease.h"
 #include "common/config/frontend_actions.h"
 #include "common/platform/platform_state_fields.h"
@@ -39,8 +40,8 @@ struct PreparedMemoryOutput;
 namespace uam
 {
 	namespace claude_preinput { class Observation; }
-	namespace acp_detail { struct ColdRetryBinding; }
 	namespace html_view { class RenderChecker; }
+	namespace usage { class AccountAllowanceService; }
 
 	class StartupNativeImportService;
 	class StorageRetentionService;
@@ -178,6 +179,10 @@ namespace uam
 		double last_busy_time_s = 0.0;
 		double shutdown_requested_time_s = 0.0;
 		double inactivity_interrupt_requested_time_s = 0.0;
+		// Input reached the provider composer after the last submitted line, so it may hold an unsent draft.
+		bool composer_may_hold_draft = false;
+		// Last byte of the previous composer input, to recognise a backslash-then-Enter line break.
+		char composer_last_input_byte = 0;
 		bool input_ready = false;
 		double startup_time_s = 0.0;
 		bool generation_in_progress = false;
@@ -200,6 +205,12 @@ namespace uam
 		std::string codex_activity_turn_id;
 		bool codex_activity_discard_line = false;
 		bool codex_activity_awaiting_turn = false;
+		// App time the submission that set codex_activity_awaiting_turn was sent; its receipt deadline runs from here.
+		double codex_activity_awaiting_since_s = 0.0;
+		// A native observer's wait for a submission's turn start just expired; the poll reads and clears it for logging.
+		bool native_turn_receipt_expired = false;
+		// Unknown was set because a turn's end could not be proven; a later idle prompt may still confirm Ready.
+		bool turn_end_unconfirmed = false;
 		bool codex_activity_read_failed = false;
 		bool codex_activity_completed = false;
 		std::string last_native_history_snapshot_digest;
@@ -487,6 +498,7 @@ namespace uam
 	};
 
 	struct UamAgentWait;
+	struct UamControlBackgroundRead;
 	struct ControlAuditSaveTicket;
 	struct RemoteOutputAckSaveTicket;
 
@@ -563,6 +575,8 @@ namespace uam
 		};
 		std::vector<PendingAuditedReply> pending_audited_replies;
 		std::shared_ptr<UamAgentWait> pending_agent_wait;
+		/// The one worktree_status or memory_search read this capability has running off the app thread; empty when none.
+		std::string background_read_request_id;
 		// Captured by real setup; wait admission cannot adopt a changed host/workspace selection.
 		std::optional<ExecutionHost> wait_host_at_launch;
 		std::shared_ptr<const std::uint8_t> wait_root_incarnation_at_launch, wait_chat_incarnation_at_launch;
@@ -760,8 +774,6 @@ namespace uam
 		const IProviderRuntime* native_pre_dispatch_runtime = nullptr;
 		// Ephemeral native query DATA; never serialized or an input permission.
 		std::shared_ptr<claude_preinput::Observation> claude_preinput_observation;
-		// Invocation-only opt-in provenance; passive loading and current Retry never create it.
-		std::shared_ptr<acp_detail::ColdRetryBinding> cold_retry_binding;
 		bool claude_manual_compaction_supported = false;
 		bool claude_manual_compaction_boundary_seen = false;
 		nlohmann::json copilot_native_state = nlohmann::json::object();
@@ -781,6 +793,10 @@ namespace uam
 		bool antigravity_turn_has_usage = false;
 		int64_t antigravity_completed_turns = 0;
 		std::unordered_set<int64_t> antigravity_completed_steps;
+		// Owned manual compaction: the native checkpoint step that completed it, or a checkpoint that failed.
+		std::optional<int64_t> antigravity_compaction_checkpoint_step;
+		bool antigravity_compaction_checkpoint_failed = false;
+		bool antigravity_compaction_answered = false;
 		struct AntigravityGoalTurn
 		{
 			std::string owner_chat_id;
@@ -812,6 +828,8 @@ namespace uam
 		std::shared_ptr<PendingAcpCompaction> pending_compaction;
 		bool manual_compaction_pending = false;
 		bool context_compaction_in_progress = false;
+		// Instructions for the compaction request being built; set only while a runtime that accepts them builds it.
+		std::string manual_compaction_instructions;
 		bool recovering_remote_turn = false;
 		bool recovering_remote_process = false;
 		bool waiting_for_permission = false;
@@ -954,6 +972,15 @@ namespace uam
 		std::string goal_review_user_prompt;
 		std::string goal_review_assistant_text;
 		int goal_review_repair_attempts = 0;
+		// One goal review decision, which can span its single JSON repair turn. Reset whenever no review is pending.
+		struct GoalReviewDecisionTiming
+		{
+			// DecisionService::NowMs() when the review was first queued; 0 when unknown (for example a recovered review).
+			std::int64_t started_ms = 0;
+			// The invalid first turn of a repaired review and its validated tokens; unknown stays unknown.
+			bool repaired = false;
+			std::optional<std::int64_t> earlier_tokens;
+		} goal_review_decision;
 		// Runtime receipt from validated provider usage for the current goal worker or review turn, never reconstructed from turn text.
 		struct GoalReviewUsage
 		{
@@ -1513,6 +1540,8 @@ namespace uam
 		std::vector<ChatFolder> folders;
 		std::vector<ResourceCollection> resource_collections;
 		std::vector<ShellAction> shell_actions;
+		/// The saved shell actions file existed but could not be read on the last load, so the next save sets it aside first.
+		bool shell_actions_unreadable = false;
 		std::string shell_action_notification;
 		std::vector<ProviderProfile> provider_profiles;
 		uam::FrontendActionMap frontend_actions;
@@ -1537,6 +1566,8 @@ namespace uam
 		std::uint64_t compute_pool_next_ticket = 0;
 		/// Renders published HTML views to report their runtime errors. Null outside the desktop app.
 		std::shared_ptr<html_view::RenderChecker> html_view_render_checker;
+		/// The desktop's account allowance cache, read by the usage_report tool without starting a read. Empty outside the desktop app.
+		std::weak_ptr<usage::AccountAllowanceService> account_allowances;
 		/// A chat_create whose first prompt is sent after control requests finish; its reply and audit wait for that send.
 		struct UamChatCreateLaunch
 		{
@@ -1548,6 +1579,8 @@ namespace uam
 		};
 		std::vector<UamChatCreateLaunch> uam_chat_create_launches;
 		std::deque<std::shared_ptr<UamAgentWait>> uam_wait_retirements;
+		/// Read-only UAM tool reads running on detached workers; each reply is written once its read finishes.
+		std::vector<std::shared_ptr<UamControlBackgroundRead>> uam_control_background_reads;
 		std::string uam_control_manager_id;
 		std::deque<std::string> queued_agent_run_ids;
 		/// Terminal v2 records whose result card a previous process never wrote; the scheduler delivers each once.
@@ -1644,6 +1677,9 @@ namespace uam
 		std::unordered_map<std::string, double> memory_retry_not_before_by_chat_id;
 		std::unordered_map<std::string, int> memory_failure_count_by_chat_id;
 		std::unordered_map<std::string, MemoryWorkerBackoff> memory_worker_backoff_by_key;
+		// Retries stop after repeated identical failures until the chat's inputs change, a manual scan or a restart.
+		std::unordered_map<std::string, MemoryWorkerFailureStreak> memory_failure_streak_by_chat_id;
+		double memory_failure_pause_recheck_at = 0.0;
 		std::unordered_map<std::string, CliProviderVersionState> runtime_cli_versions_by_provider_id;
 		std::unordered_map<std::string, ComputerUseRuntimeState> computer_use_by_chat_id;
 		std::unordered_set<std::string> computer_use_revocation_pending_chat_ids;
