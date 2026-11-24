@@ -820,11 +820,6 @@ nlohmann::json BuildCodexUserInputResponse(const std::string& request_id_json, c
 	                                                                                    });
 }
 
-bool SendCodexUserInputResponse(AcpSessionState& session, const std::string& request_id_json, const std::map<std::string, std::vector<std::string>>& answers, std::string* error_out)
-{
-	return WriteAcpMessage(session, BuildCodexUserInputResponse(request_id_json, answers), error_out);
-}
-
 void ApplyCommandSafetyDecision(const AppState& app, const ChatSession& chat, AcpPendingPermissionState& pending)
 {
 	pending.safety_risk.clear();
