@@ -116,6 +116,23 @@ UAM_TEST(CefMacOsWebAppShortcutCrashWorkaroundDisablesShortcutFeatures)
 	UAM_ASSERT(disabled_features.find("WebAppUniversalInstall") != std::string::npos);
 }
 
+UAM_TEST(CefRemoteDebuggingSwitchesNeedExplicitTestRun)
+{
+	const std::vector<std::string> switches = {"remote-debugging-port", "remote-debugging-pipe", "remote-debugging-address", "remote-allow-origins", "Remote-Debugging-Port", "disable-renderer-backgrounding", "lang"};
+	const std::vector<std::string> blocked = {"remote-debugging-port", "remote-debugging-pipe", "remote-debugging-address", "remote-allow-origins", "Remote-Debugging-Port"};
+
+	// A normal launch, or any value other than exactly "1", never reaches CEF with a debugging switch.
+	UAM_ASSERT(uam::cef::RemoteDebuggingSwitchesToDrop(switches, nullptr) == blocked);
+	UAM_ASSERT(uam::cef::RemoteDebuggingSwitchesToDrop(switches, "") == blocked);
+	UAM_ASSERT(uam::cef::RemoteDebuggingSwitchesToDrop(switches, "0") == blocked);
+	UAM_ASSERT(uam::cef::RemoteDebuggingSwitchesToDrop(switches, "true") == blocked);
+	UAM_ASSERT(uam::cef::RemoteDebuggingSwitchesToDrop(switches, "1 ") == blocked);
+
+	// An explicit test run keeps the port but never a bind address, so DevTools stays on Chromium's 127.0.0.1 default.
+	UAM_ASSERT(uam::cef::RemoteDebuggingSwitchesToDrop(switches, "1") == std::vector<std::string>{"remote-debugging-address"});
+	UAM_ASSERT(uam::cef::RemoteDebuggingSwitchesToDrop({"disable-renderer-backgrounding", "lang"}, nullptr).empty());
+}
+
 UAM_TEST(CefTrustedUiSchemeServesOnlyRealBundledResources)
 {
 	TempDir bundled("uam-cef-trusted-bundled");

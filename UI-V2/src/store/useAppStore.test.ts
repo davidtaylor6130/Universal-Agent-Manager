@@ -1106,6 +1106,47 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(cefStore.getState().cliVersionManager).toMatchObject({ providers: [], remoteProviders: [] })
   })
 
+  it('maps native goals on a full load and a patch, recording an empty list only from a patch', async () => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.dispatchEvent = vi.fn(() => true)
+    const initial = makeCppState(1)
+    const withoutGoals = { ...initial.chats[0], id: 'chat-2', cliTerminal: { ...initial.chats[0].cliTerminal!, terminalId: 'term-chat-2', sourceChatId: 'chat-2' } }
+    initial.chats[0].goals = [{
+      id: 'goal-1', objective: 'Ship the change', status: 'active', tokensUsed: 5, completedItems: ['read'],
+      createdAt: '2026-01-02T00:00:00.000Z', updatedAt: '2026-01-02T00:00:01.000Z', executionOwner: 'provider', workerModelId: 'worker',
+    }]
+    initial.chats.push(withoutGoals)
+    testWindow.cefQuery = ({ onSuccess }) => onSuccess(JSON.stringify(initial))
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const loaded = cefStore.getState().goalsByChatId
+    expect(Object.keys(loaded)).toEqual(['chat-1'])
+    const [goal] = loaded['chat-1']
+    expect(Object.keys(goal).sort()).toEqual([
+      'blockedTurnCount', 'chatId', 'completedItems', 'createdAt', 'currentStep', 'executionOwner', 'id', 'lastBlocker', 'lastBlockerKind',
+      'lastDecisionSource', 'lastDiagnostic', 'lastNextPrompt', 'lastVerification', 'loopCount', 'objective', 'pendingContinuation',
+      'providerCommand', 'remainingItems', 'reviewerModelId', 'sameNextPromptCount', 'status', 'tokenBudget', 'tokensUsed', 'updatedAt', 'workerModelId',
+    ])
+    expect(goal).toEqual({
+      id: 'goal-1', chatId: 'chat-1', objective: 'Ship the change', status: 'active', tokenBudget: 0, tokensUsed: 5, blockedTurnCount: 0,
+      pendingContinuation: false, completedItems: ['read'], sameNextPromptCount: 0, loopCount: 0,
+      createdAt: new Date('2026-01-02T00:00:00.000Z'), updatedAt: new Date('2026-01-02T00:00:01.000Z'),
+      executionOwner: 'provider', providerCommand: '', workerModelId: 'worker', reviewerModelId: '',
+    })
+
+    testWindow.uamPush?.({ type: 'statePatch', data: { stateRevision: 2, chats: [withoutGoals] } })
+    expect(cefStore.getState().goalsByChatId['chat-2']).toEqual([])
+    expect(cefStore.getState().goalsByChatId['chat-1']).toBe(loaded['chat-1'])
+
+    testWindow.uamPush?.({ type: 'statePatch', data: { stateRevision: 3, chats: [initial.chats[0]] } })
+    const patched = cefStore.getState().goalsByChatId['chat-1']
+    expect(patched).not.toBe(loaded['chat-1'])
+    expect(patched).toEqual([goal])
+    expect(Object.keys(patched[0])).toEqual(Object.keys(goal))
+  })
+
   it('preserves unknown native activity across full state, patches, and binding updates', async () => {
     const testWindow = ensureTestWindow()
     vi.resetModules()
