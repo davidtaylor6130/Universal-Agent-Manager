@@ -13,6 +13,6 @@ export async function runForEach(targets: BulkTarget[], action: (target: BulkTar
     if (error === null) succeeded.push(target.id)
     else failed.push(`“${target.label}”: ${error}`)
   }
-  if (failed.length > 0) reportAppFailure(`${failureMessage} (${failed.length} of ${targets.length})`, failed.join(' · '))
+  if (failed.length > 0) reportAppFailure(`${failureMessage}: ${failed.length} of ${targets.length} failed.`, failed.join(' · '))
   return succeeded
 }
