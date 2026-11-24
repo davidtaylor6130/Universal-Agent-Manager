@@ -26,6 +26,8 @@ namespace uam
 		/// the worker. The owner admits references against them with live runtime state; they grant no authority.
 		std::vector<ChatSession> references;
 		std::vector<AgentRun> reference_runs;
+		/// The read-only ledger read reported no unreadable record, so a run record absent from it has expired.
+		bool reference_runs_complete = false;
 	};
 	struct WorktreeLaunchPreparationTask
 	{
