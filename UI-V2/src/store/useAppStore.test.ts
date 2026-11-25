@@ -7666,6 +7666,34 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(result.status?.changedFiles).toEqual([])
   })
 
+  it('reads update warnings and sends conflict resolution with the chosen side', async () => {
+    const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
+    const testWindow = ensureTestWindow()
+    testWindow.cefQuery = vi.fn(({ request, onSuccess, onFailure }) => {
+      const parsed = JSON.parse(request as string)
+      requests.push({ action: parsed.action, payload: parsed.payload })
+      if (parsed.action === 'updateVcsWorkspace') {
+        onSuccess?.(JSON.stringify({ ok: true, conflicts: true, revision: '2', output: 'C    a.txt', warnings: ["External 'ext' could not be updated.", 7, ''] }))
+        return
+      }
+      if (parsed.action === 'resolveVcsConflict' && parsed.payload.accept === 'mine-full') {
+        onFailure?.(400, 'This path is no longer conflicted. Refresh the changed files.')
+        return
+      }
+      onSuccess?.(JSON.stringify({ ok: true, output: "Resolved conflicted state of 'a.txt'" }))
+    }) as TestWindow['cefQuery']
+
+    const update = await useAppStore.getState().updateVcsWorkspace('chat-1', 'svn', 'update-1')
+    expect(update).toMatchObject({ ok: true, conflicts: true, revision: '2', warnings: ["External 'ext' could not be updated."] })
+
+    const resolved = await useAppStore.getState().resolveVcsConflict('chat-1', 'svn', 'a.txt', 'working')
+    expect(requests.at(-1)).toEqual({ action: 'resolveVcsConflict', payload: { chatId: 'chat-1', vcsType: 'svn', path: 'a.txt', accept: 'working' } })
+    expect(resolved).toEqual({ ok: true, output: "Resolved conflicted state of 'a.txt'", error: '' })
+
+    const refused = await useAppStore.getState().resolveVcsConflict('chat-1', 'svn', 'a.txt', 'mine-full')
+    expect(refused).toEqual({ ok: false, output: '', error: 'This path is no longer conflicted. Refresh the changed files.' })
+  })
+
   it('rejects failed VCS file diff responses instead of rendering the error as a diff', async () => {
     const testWindow = ensureTestWindow()
     testWindow.cefQuery = vi.fn(({ request, onSuccess }) => {
