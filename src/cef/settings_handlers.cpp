@@ -486,7 +486,7 @@ void UamQueryHandler::HandleSetMcpServers(CefRefPtr<CefBrowser> browser, const n
 	}
 	std::vector<McpServerConfiguration> servers = uam::mcp_server_config::Parse(*requested_servers);
 	std::string error;
-	if (!uam::mcp_server_config::NormalizeAndValidate(servers, &error))
+	if (!uam::mcp_server_config::NormalizeAndValidate(servers, &error, &m_app.settings.execution_hosts, scope))
 	{
 		cb->Failure(400, error);
 		return;

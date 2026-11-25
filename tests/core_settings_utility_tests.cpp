@@ -22,6 +22,8 @@
 #include "cef/uam_query_handler_internal.h"
 #include "cef/uam_query_handler_async.h"
 #include "common/config/mcp_server_config.h"
+#include "common/paths/app_paths.h"
+#include "common/utils/launch_argv_redaction.h"
 #include "common/chat/chat_repository.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_goal_loop.h"
@@ -997,6 +999,155 @@ UAM_TEST(McpServerConfigurationIsWorkspaceScopedCapabilityGatedAndSecretSafe)
 	UAM_ASSERT(uam::mcp_server_config::NormalizeAndValidate(servers, &error));
 	servers.front().url = "ftp://example.com/mcp";
 	UAM_ASSERT(!uam::mcp_server_config::NormalizeAndValidate(servers, &error));
+}
+
+UAM_TEST(McpServerPathsFollowTheirExecutionHostsPlatform)
+{
+	using uam::mcp_server_config::IsAbsoluteOnHost;
+	using uam::mcp_server_config::NormalizeAndValidate;
+	ExecutionHost linux_host;
+	linux_host.id = "ssh-linux"; linux_host.transport = "ssh"; linux_host.ssh_alias = "linux-box"; linux_host.platform = "linux";
+	ExecutionHost windows_host = linux_host;
+	windows_host.id = "ssh-windows"; windows_host.ssh_alias = "windows-box"; windows_host.platform = "windows";
+	ExecutionHost unprobed_host = linux_host;
+	unprobed_host.id = "ssh-new"; unprobed_host.ssh_alias = "new-box"; unprobed_host.platform.clear();
+	const std::vector<ExecutionHost> hosts{ExecutionHost{}, linux_host, windows_host, unprobed_host};
+	// A known SSH host uses its own platform, whatever platform UAM runs on.
+	UAM_ASSERT(IsAbsoluteOnHost("/usr/bin/node", "ssh-linux", &hosts));
+	UAM_ASSERT(!IsAbsoluteOnHost("C:\\tools\\node.exe", "ssh-linux", &hosts));
+	UAM_ASSERT(IsAbsoluteOnHost("C:\\tools\\node.exe", "ssh-windows", &hosts));
+	UAM_ASSERT(IsAbsoluteOnHost("\\\\server\\share\\node.exe", "ssh-windows", &hosts));
+	UAM_ASSERT(!IsAbsoluteOnHost("/usr/bin/node", "ssh-windows", &hosts));
+	// An unrecorded platform, an unknown host or every computer accepts either absolute form, never a relative one.
+	for (const std::string_view host : {std::string_view("ssh-new"), std::string_view("missing"), std::string_view()})
+	{
+		UAM_ASSERT(IsAbsoluteOnHost("/usr/bin/node", host, &hosts));
+		UAM_ASSERT(IsAbsoluteOnHost("C:/tools/node.exe", host, &hosts));
+		UAM_ASSERT(!IsAbsoluteOnHost("tools/node", host, &hosts));
+	}
+	UAM_ASSERT(IsAbsoluteOnHost("/usr/bin/node", "ssh-windows", nullptr));
+	// This computer keeps its native rule.
+#if defined(_WIN32)
+	UAM_ASSERT(IsAbsoluteOnHost("C:\\tools\\node.exe", "local", &hosts));
+	UAM_ASSERT(!IsAbsoluteOnHost("/usr/bin/node", "local", &hosts));
+#else
+	UAM_ASSERT(IsAbsoluteOnHost("/usr/bin/node", "local", &hosts));
+	UAM_ASSERT(!IsAbsoluteOnHost("C:\\tools\\node.exe", "local", &hosts));
+#endif
+
+	McpServerConfiguration server;
+	server.id = "node"; server.name = "node"; server.execution_host_id = "ssh-linux";
+	server.command = "/usr/bin/node"; server.workspace_directory = "/home/dev/project/";
+	std::vector<McpServerConfiguration> servers{server};
+	std::string error;
+	UAM_ASSERT(NormalizeAndValidate(servers, &error, &hosts));
+	UAM_ASSERT_EQ(servers.front().workspace_directory, server.workspace_directory);
+	servers = {server};
+	servers.front().execution_host_id = "ssh-windows";
+	UAM_ASSERT(!NormalizeAndValidate(servers, &error, &hosts));
+	// An entry without a host id in a host-scoped list runs on that list's computer.
+	servers = {server};
+	servers.front().execution_host_id.clear();
+	UAM_ASSERT(NormalizeAndValidate(servers, &error, &hosts, "ssh-linux"));
+	UAM_ASSERT(!NormalizeAndValidate(servers, &error, &hosts, "ssh-windows"));
+	servers.front().workspace_directory.clear();
+	servers.front().command = "C:\\tools\\node.exe";
+	UAM_ASSERT(NormalizeAndValidate(servers, &error, &hosts, "ssh-windows"));
+	UAM_ASSERT(!NormalizeAndValidate(servers, &error, &hosts, "ssh-linux"));
+	UAM_ASSERT_EQ(error, std::string("MCP server 'node' needs an absolute executable path."));
+	// An all-computers entry keeps another platform's path as written instead of resolving it locally.
+	servers = {server};
+	servers.front().execution_host_id.clear();
+	UAM_ASSERT(NormalizeAndValidate(servers, &error, &hosts));
+#if defined(_WIN32)
+	UAM_ASSERT_EQ(servers.front().workspace_directory, server.workspace_directory);
+#endif
+}
+
+UAM_TEST(SettingsLoadDropsOnlyInvalidMcpServerEntries)
+{
+	TempDir temp("uam-mcp-load-invalid");
+	const fs::path settings_file = temp.root / "settings.txt";
+	ExecutionHost host;
+	host.id = "ssh-linux"; host.label = "Linux"; host.transport = "ssh"; host.ssh_alias = "linux-box"; host.platform = "linux";
+	McpServerConfiguration valid;
+	valid.id = "docs"; valid.name = "docs"; valid.transport = "http"; valid.url = "http://localhost:5000/mcp";
+	McpServerConfiguration relative = valid;
+	relative.id = "relative"; relative.name = "relative"; relative.transport = "stdio"; relative.url.clear(); relative.command = "bin/server";
+	McpServerConfiguration repeated = valid;
+	repeated.name = "docs-copy";
+	McpServerConfiguration remote = relative;
+	remote.id = "remote-node"; remote.name = "remote-node"; remote.command = "/usr/bin/node";
+	McpServerConfiguration windows_only = remote;
+	windows_only.id = "windows-node"; windows_only.name = "windows-node"; windows_only.command = "C:\\tools\\node.exe";
+	AppSettings settings;
+	settings.execution_hosts = {ExecutionHost{}, host};
+	settings.mcp_servers = {valid, relative, repeated};
+	settings.host_scoped_settings[host.id].mcp_servers = std::vector<McpServerConfiguration>{remote, windows_only};
+	// A save keeps entries it cannot validate, so the next load reports them instead of losing them silently.
+	UAM_ASSERT(SettingsStore::Save(settings_file, settings));
+	const std::string saved = ReadFile(settings_file);
+	UAM_ASSERT(saved.find("docs-copy") != std::string::npos && saved.find("windows-node") != std::string::npos);
+
+	AppSettings loaded;
+	const SettingsLoadResult result = SettingsStore::Load(settings_file, loaded);
+	UAM_ASSERT(result.loaded);
+	// Only the three bad entries go: a relative path, a repeated id and a Windows path for a Linux host.
+	UAM_ASSERT_EQ(result.removed_mcp_servers.size(), static_cast<std::size_t>(3));
+	UAM_ASSERT_EQ(loaded.mcp_servers.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(loaded.mcp_servers.front().id, std::string("docs"));
+	UAM_ASSERT(loaded.host_scoped_settings.contains(host.id) && loaded.host_scoped_settings[host.id].mcp_servers.has_value());
+	const std::vector<McpServerConfiguration>& scoped = *loaded.host_scoped_settings[host.id].mcp_servers;
+	UAM_ASSERT_EQ(scoped.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(scoped.front().id, std::string("remote-node"));
+	UAM_ASSERT(std::ranges::any_of(result.removed_mcp_servers, [](const std::string& reason) { return reason == "MCP server 'docs-copy' repeats another server's id."; }));
+	// Reasons name servers for the log but never carry their paths.
+	for (const std::string& reason : result.removed_mcp_servers)
+		UAM_ASSERT(reason.find("bin/server") == std::string::npos && reason.find("node.exe") == std::string::npos);
+
+	// The following save and load keep the valid entries and report nothing.
+	UAM_ASSERT(SettingsStore::Save(settings_file, loaded));
+	AppSettings reloaded;
+	const SettingsLoadResult second = SettingsStore::Load(settings_file, reloaded);
+	UAM_ASSERT(second.removed_mcp_servers.empty());
+	UAM_ASSERT_EQ(reloaded.mcp_servers.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(reloaded.host_scoped_settings[host.id].mcp_servers.has_value());
+	UAM_ASSERT_EQ(reloaded.host_scoped_settings[host.id].mcp_servers->size(), static_cast<std::size_t>(1));
+}
+
+UAM_TEST(SettingsLoadShowsOneNoticeForDroppedMcpServerEntries)
+{
+	TempDir temp("uam-mcp-load-notice");
+	McpServerConfiguration valid;
+	valid.id = "docs"; valid.name = "docs"; valid.transport = "http"; valid.url = "http://localhost:5000/mcp";
+	McpServerConfiguration relative = valid;
+	relative.id = "relative"; relative.name = "relative"; relative.transport = "stdio"; relative.url.clear(); relative.command = "bin/private-server";
+	AppSettings settings;
+	settings.mcp_servers = {valid, relative};
+	UAM_ASSERT(SettingsStore::Save(AppPaths::SettingsFilePath(temp.root), settings));
+	uam::AppState app;
+	app.data_root = temp.root;
+	UAM_ASSERT(PersistenceCoordinator().LoadSettings(app));
+	UAM_ASSERT_EQ(app.settings.mcp_servers.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(app.status_line, std::string("Could not load 1 saved MCP server entry because it is invalid; other servers are unaffected."));
+	UAM_ASSERT(app.status_line.find("private-server") == std::string::npos);
+	// Startup messages that replace the status line afterwards restore the notice beside them.
+	const std::string application = ReadFile(fs::path(__FILE__).parent_path().parent_path() / "src/app/application.cpp");
+	const std::size_t computer_use = application.find("uam::ComputerUseService::ResetControlsForStartup(m_app)", application.find("void Application::FinishStartupState("));
+	const std::size_t bundled = application.find("\"Could not import bundled skills: \"");
+	UAM_ASSERT(computer_use != std::string::npos && bundled != std::string::npos);
+	UAM_ASSERT(application.find("RestoreSettingsLoadNotice();", computer_use) < application.find("const std::chrono::steady_clock::time_point finish_finished", computer_use));
+	UAM_ASSERT(application.find("RestoreSettingsLoadNotice();", bundled) < application.find("\n}\n", bundled));
+}
+
+UAM_TEST(LaunchArgvRedactionHidesPrivateConfiguration)
+{
+	const std::vector<std::string> argv{"codex", "-c", R"(mcp_servers.docs.env={"API_KEY" = "env-secret"})", "-c", R"(mcp_servers.docs.env_http_headers={"X-Api-Key" = "UAM_CENTRAL_MCP_HEADER_1"})",
+	    "-c", "developer_instructions=\"private\"", "-c", R"(mcp_servers.docs.command="/usr/bin/node")", "--settings", R"({"env":{"TOKEN":"settings-secret"}})", "--settings={}", "--model", "gpt"};
+	const std::vector<std::string> redacted = uam::launch_argv::Redacted(argv);
+	const std::vector<std::string> expected{"codex", "-c", "[private configuration]", "-c", "[private configuration]", "-c", "[private configuration]", "-c",
+	    R"(mcp_servers.docs.command="/usr/bin/node")", "--settings", "[private configuration]", "[private configuration]", "--model", "gpt"};
+	UAM_ASSERT(redacted == expected);
 }
 
 UAM_TEST(SettingsStoreRejectsPartialNumericValuesAndParsesStrictBooleans)
