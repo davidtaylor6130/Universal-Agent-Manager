@@ -131,7 +131,13 @@ namespace uam
 		                           int timeout_ms = kVcsCommandTimeoutMs, std::stop_token cancellation = {})
 		{
 			ProcessExecutionResult result;
-			if (cancellation.stop_requested() || argv.empty() || !Ready(&result.error)) return result;
+			m_lost_connection = false;
+			if (cancellation.stop_requested() || argv.empty()) return result;
+			if (!Ready(&result.error))
+			{
+				m_lost_connection = true;
+				return result;
+			}
 			const std::string session_id = "vcs-" +
 			    PlatformServicesFactory::Instance().process_service.GenerateUuid();
 			// Every remote Git command passes through here, so it always carries the shared Git safety options.
@@ -139,16 +145,22 @@ namespace uam
 			    ? uam::vcs::HardenedGitArgv({argv.begin() + 1, argv.end()}, uam::vcs::IsWindowsHostPlatform(Platform()))
 			    : argv;
 			if (!m_client->StartProcess(session_id, std::filesystem::path(working_directory),
-			                            command, environment, &result.error)) return result;
+			                            command, environment, &result.error))
+			{
+				m_lost_connection = !m_client->IsConnected();
+				return result;
+			}
 			if (!standard_input.empty() &&
 			    !m_client->WriteProcess(session_id, standard_input, &result.error))
 			{
+				m_lost_connection = !m_client->IsConnected();
 				(void)m_client->StopProcess(session_id);
 				(void)m_client->RemoveProcess(session_id);
 				return result;
 			}
 			if (!m_client->CloseProcessInput(session_id, &result.error))
 			{
+				m_lost_connection = !m_client->IsConnected();
 				(void)m_client->StopProcess(session_id);
 				(void)m_client->RemoveProcess(session_id);
 				return result;
@@ -190,6 +202,8 @@ namespace uam
 				result.timed_out = true;
 				result.error = "The remote VCS command timed out.";
 			}
+			// Read before the cleanup below: StopProcess reconnects, so a dropped bridge would otherwise read as connected.
+			m_lost_connection = !m_client->IsConnected();
 			(void)m_client->StopProcess(session_id);
 			(void)m_client->RemoveProcess(session_id);
 			return result;
@@ -213,8 +227,9 @@ namespace uam
 
 		std::string HostId() const { return m_host != nullptr ? m_host->id : std::string("unknown"); }
 
-		/// <summary>False after a transport failure; a runner that merely refused a command stays connected.</summary>
-		bool Connected() const { return m_client != nullptr && m_client->IsConnected(); }
+		/// <summary>True when the last Run could not (re)connect to the runner or lost its connection before it failed. It
+		/// is recorded before Run's cleanup, which reconnects; a runner that merely refused a command was not lost.</summary>
+		bool LastRunLostConnection() const { return m_lost_connection; }
 
 		std::string NullDevice() const
 		{
@@ -228,6 +243,7 @@ namespace uam
 		const ExecutionHost* m_host = nullptr;
 		std::unique_ptr<uam::remote::RunnerClient> m_client;
 		std::string m_error;
+		bool m_lost_connection = false;
 	};
 
 	namespace
@@ -237,7 +253,7 @@ namespace uam
 		void NoteRemoteProbeFailure(const RemoteVcsContext& context, const ProcessExecutionResult& result, RemoteProbeFailure& probe_failure)
 		{
 			RemoteProbeFailure observed = RemoteProbeFailure::None;
-			if (!context.Connected() && !result.ok) observed = RemoteProbeFailure::LostConnection;
+			if (context.LastRunLostConnection() && !result.ok) observed = RemoteProbeFailure::LostConnection;
 			else if (result.timed_out) observed = RemoteProbeFailure::TimedOut;
 			if (static_cast<int>(observed) > static_cast<int>(probe_failure)) probe_failure = observed;
 		}
