@@ -131,7 +131,8 @@ export function uamAgentDisplayName(id: string) {
 }
 
 export function buildUamAgentCycle(agents: UamAgentSummary[], favoriteIds: string[]) {
-  const selectable = new Set(agents.map((agent) => agent.id))
+  // Delegate-only agents are listed in the picker but are never a chat's own agent, so the cycle skips them.
+  const selectable = new Set(agents.filter((agent) => !agent.delegateOnly).map((agent) => agent.id))
   const cycle = ['build', 'plan']
   for (const rawId of favoriteIds) {
     const id = rawId.trim().toLowerCase()
@@ -973,8 +974,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     : repositoryChanges?.workspaceDirectory === workspaceDirectory ? repositoryChanges : null
   const composerBranch = composerRepository
     ? composerRepository.available ? composerRepository.branchOrRevision : ''
-    : session.workspaceBranchName
+    : session.workspaceBranchName ?? ''
   const composerVcsType = composerRepository?.activeVcsType ?? 'git'
+  // Before the first send, a chat's chosen Git base (not the checked-out branch) is what its worktree starts from.
+  const composerChosenBase = composerVcsType === 'git' && session.workspaceIsolationKind === 'pendingGitWorktree'
+    && session.gitBaseBranch && session.gitBaseBranch !== composerBranch ? session.gitBaseBranch : ''
   const branchSwitching = useAppStore((s) => s.branchSwitching === true)
   // The global bridge flag is not a per-workspace capability; native validation remains authoritative.
   const canSwitchComposerBranch = branchSwitching && (session.executionHostId || 'local') === 'local'
@@ -2678,14 +2682,16 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     const byId = new Map(catalogUamAgents.map((agent) => [agent.id, agent]))
     if (!byId.has('build')) byId.set('build', { id: 'build', description: 'Implement changes while obeying the current UAM permission policy.', builtIn: true })
     if (!byId.has('plan')) byId.set('plan', { id: 'plan', description: 'Inspect and plan under a hard read-only workspace ceiling.', builtIn: true })
+    // Chat agents first, then delegate-only agents, each alphabetical.
     return [byId.get('build')!, byId.get('plan')!, ...Array.from(byId.values())
       .filter((agent) => agent.id !== 'build' && agent.id !== 'plan')
-      .sort((left, right) => left.id.localeCompare(right.id))]
+      .sort((left, right) => Number(Boolean(left.delegateOnly)) - Number(Boolean(right.delegateOnly)) || left.id.localeCompare(right.id))]
   }, [catalogUamAgents])
   const uamAgents = useMemo(() => selectableUamAgents.map((agent) => ({
     id: agent.id,
     name: uamAgentDisplayName(agent.id),
     description: agent.description,
+    ...(agent.delegateOnly ? { delegateOnly: true } : {}),
   })), [selectableUamAgents])
   const uamAgentCycle = useMemo(
     () => buildUamAgentCycle(selectableUamAgents, favoriteUamAgentIds),
@@ -4218,11 +4224,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 </div>
                 <span className="inline-flex min-w-0 items-center gap-1 truncate text-xs" title={workspaceDirectory}>
                   <span className="max-w-[12rem] shrink-0 truncate">{workspaceName}</span>
-                  {composerBranch && (canSwitchComposerBranch
+                  {(composerBranch || composerChosenBase) && (canSwitchComposerBranch
                     ? <ChatBranchPicker key={`${composerBranchScope}:${composerVcsType}`} chatId={session.id} branch={composerBranch} vcsType={composerVcsType} disabled={workspaceActionsDisabled} pendingBranch={session.pendingGitBranch} disabledReason="Wait for the agent to finish before switching branches." onSwitched={handleBranchSwitched} />
-                    : <Tooltip label={composerVcsType === 'svn' ? 'SVN folder switching needs a local working copy outside imported, temporary or isolated chats.' : composerBranch}>
-                      <span tabIndex={0} className="inline-flex min-w-0 items-center gap-1 truncate rounded-sm" aria-label={composerVcsType === 'svn' ? `SVN revision ${composerBranch}` : `Branch ${composerBranch}`}>
-                        {composerVcsType !== 'svn' && <GitBranch size={12} aria-hidden />}<span className="truncate font-mono">{composerVcsType === 'svn' ? `SVN r${composerBranch}` : composerBranch}</span>
+                    : <Tooltip label={composerVcsType === 'svn' ? 'SVN folder switching needs a local working copy outside imported, temporary or isolated chats.' : composerChosenBase ? `Starts from ${composerChosenBase}.${composerBranch ? ` Local copy is on ${composerBranch}.` : ''}` : composerBranch}>
+                      <span tabIndex={0} className="inline-flex min-w-0 items-center gap-1 truncate rounded-sm" aria-label={composerVcsType === 'svn' ? `SVN revision ${composerBranch}` : composerChosenBase ? `Base branch ${composerChosenBase}${composerBranch ? `, local copy on ${composerBranch}` : ''}` : `Branch ${composerBranch}`}>
+                        {composerVcsType !== 'svn' && <GitBranch size={12} aria-hidden />}<span className="truncate font-mono">{composerVcsType === 'svn' ? `SVN r${composerBranch}` : composerChosenBase || composerBranch}</span>
                       </span>
                     </Tooltip>)}
                   {isGitWorktree && <span className="uam-composer-workspace-tab__badge">Worktree</span>}

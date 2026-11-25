@@ -4,6 +4,10 @@
 
 namespace uam::copilot::managed_read
 {
+/// Stable Copilot CLI floor for managed continuation and for saved-image input on an SSH host. It must stay at or below
+/// the install fallback in CopilotCliProviderRuntime's CLI policy, or a fallback install would fail its own gate.
+inline constexpr char kStableCliMinimumVersion[] = "1.0.98";
+
 bool HandleResult(AppState&, AcpSessionState&, ChatSession&, const std::string& method,
 	const std::string& request_id, const nlohmann::json& result);
 bool HandleError(AppState&, AcpSessionState&, ChatSession&, const acp_detail::AcpResponseFailureDetails&);

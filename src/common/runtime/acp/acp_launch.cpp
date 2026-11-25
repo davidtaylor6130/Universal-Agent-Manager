@@ -4,6 +4,7 @@
 #include "common/paths/path_utils.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_runtime.h"
+#include "common/utils/launch_argv_redaction.h"
 
 #include <filesystem>
 #include <sstream>
@@ -27,10 +28,8 @@ std::string JoinAcpArgvForDiagnostics(const std::vector<std::string>& argv)
 		{
 			out << ' ';
 		}
-		// Claude --settings can carry auth keys (env, apiKeyHelper) copied from the user's settings.
-		if (argv[i].starts_with("developer_instructions=") || argv[i].find(".env.") != std::string::npos || argv[i].find("http_headers.") != std::string::npos ||
-		    argv[i].starts_with("--settings=") || (i > 0 && argv[i - 1] == "--settings"))
-			out << "[private configuration]";
+		if (uam::launch_argv::IsPrivate(argv, i))
+			out << uam::launch_argv::kRedacted;
 		else out << argv[i];
 	}
 	return out.str();

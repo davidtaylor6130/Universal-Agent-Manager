@@ -570,12 +570,12 @@ namespace uam
 		}
 	}
 
-	void StartupNativeImportService::AddError(const std::string& error)
+	void StartupNativeImportService::AddError(const std::string& error, bool log, bool capped)
 	{
 		if (error.empty()) return;
 		const std::string message = strings::SafeLine(error, 512, true);
-		diagnostics::Write("Startup native history: " + message);
-		if (m_errors.size() < 20) m_errors.push_back(message);
+		if (log) diagnostics::Write("Startup native history: " + message);
+		if (!capped || m_errors.size() < 20) m_errors.push_back(message);
 		else ++m_omitted_error_count;
 	}
 
@@ -767,10 +767,27 @@ namespace uam
 			if (!outcome.replanned)
 			{
 				m_omitted_error_count += discovery.result.omitted_error_count;
+				// An automatic startup scan reports a history in a format the reader cannot read yet
+				// once, then stays quiet until the reader version or that history file changes; the
+				// history is still retried. An explicit Chat Data scan always lists it.
+				const bool startup_scan = !m_include_unregistered_local;
+				const std::unordered_set<std::string> already_reported = startup_scan
+				    ? ChatHistorySyncService().RecordNativeFormatRefusals(app.data_root, discovery.result.format_refusals) : std::unordered_set<std::string>{};
+				std::unordered_set<std::string> detailed;
+				for (const auto& refusal : discovery.result.format_refusals)
+					if (!already_reported.contains(refusal.message))
+					{
+						// The detailed line replaces the plain one in the log.
+						diagnostics::Write("Startup native history: " + strings::SafeLine(refusal.diagnostic, 512, true));
+						detailed.insert(refusal.message);
+					}
 				for (const std::string& error : discovery.result.errors)
 				{
 					if (continue_scan && error == "OpenCode history scan stopped before all sessions were read; retry to continue.") continue;
-					AddError(error);
+					if (already_reported.contains(error)) continue;
+					// Each reported refusal is listed outside the detail cap; there is one per conversation.
+					const bool refusal = detailed.contains(error);
+					AddError(error, !refusal, !refusal);
 				}
 			}
 			// The worker planned against the app as it was at launch. Merge only while nothing planning read has changed
@@ -1191,13 +1208,24 @@ namespace uam
 		std::unordered_map<std::string, std::string> folders;
 		std::unordered_map<std::string, std::size_t> saved_children;
 		std::unordered_map<std::string, const ChatFolder*> owners;
+		// SSH children come from this session's own scan of the parent's host; staging reads them again from that host.
+		std::map<std::string, ExecutionHost> hosts;
 		for (const Child& child : m_children)
 		{
 			if (saved.contains(child.key)) { ++saved_children[child.parent_key]; continue; }
 			const auto parent = saved.find(child.parent_key);
 			if (parent == saved.end() || folders.contains(child.parent_key)) continue;
 			const ChatSession& chat = *parent->second;
-			if (chat.imported_read_only || !paths::IsControllerLocalWorkspace(chat)) continue;
+			if (chat.imported_read_only) continue;
+			const bool local = paths::IsControllerLocalWorkspace(chat);
+			const auto captured = local ? m_remote_hosts.end() : m_remote_hosts.find(chat.execution_host_id);
+			if (!local)
+			{
+				// The host must still be the connection that scan used, and ready now.
+				const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id);
+				if (captured == m_remote_hosts.end() || host == nullptr || host->transport != "ssh" || host->runner_status != "ready" ||
+				    !execution_hosts::SameConnection(captured->second, *host)) continue;
+			}
 			// The staged import files a history under the workspace that owns its directory; a parent the user moved elsewhere is left alone.
 			const std::size_t position = static_cast<std::size_t>(parent->second - app.chats.data());
 			if (const auto known = planned ? m_saved_owners.find(position) : m_saved_owners.end(); known != m_saved_owners.end())
@@ -1205,15 +1233,24 @@ namespace uam
 				if (!known->second.empty() && known->second == chat.folder_id) folders.emplace(child.parent_key, chat.folder_id);
 				continue;
 			}
-			const auto [owner, fresh] = owners.try_emplace(chat.workspace_worktree_directory + '\n' + chat.workspace_directory, nullptr);
+			const auto [owner, fresh] = owners.try_emplace(chat.execution_host_id + '\n' + chat.workspace_worktree_directory + '\n' + chat.workspace_directory, nullptr);
 			if (fresh) owner->second = ChatHistorySyncService().StartupImportWorkspaceOwner(app, chat);
-			if (owner->second != nullptr && owner->second->id == chat.folder_id) folders.emplace(child.parent_key, chat.folder_id);
+			if (owner->second == nullptr || owner->second->id != chat.folder_id) continue;
+			if (!local)
+			{
+				// A remote workspace counts only as the folder that scan read, unchanged since.
+				const auto scanned = m_remote_folders.find(owner->second->id);
+				if (scanned == m_remote_folders.end() || scanned->second.directory != owner->second->directory || scanned->second.execution_host_id != owner->second->execution_host_id) continue;
+				hosts.insert_or_assign(captured->first, captured->second);
+			}
+			folders.emplace(child.parent_key, chat.folder_id);
 		}
 		if (folders.empty()) return false;
 		std::vector<Child> riders = CollectRiders(folders, std::move(saved_children));
-		std::erase_if(riders, [&](const Child& rider) { return saved.contains(rider.key) || !paths::IsControllerLocalWorkspace(rider.chat); });
+		std::erase_if(riders, [&](const Child& rider) { return saved.contains(rider.key) || (!paths::IsControllerLocalWorkspace(rider.chat) && !hosts.contains(rider.chat.execution_host_id)); });
 		if (riders.empty()) return false;
 		m_import.preparation_stop = std::stop_source{};
+		for (const auto& [id, host] : hosts) m_import.expected_hosts[id] = host;
 		QueueRiders(std::move(riders));
 		m_phase = "importing";
 		return true;
