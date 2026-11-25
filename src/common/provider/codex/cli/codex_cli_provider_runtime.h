@@ -19,6 +19,7 @@ class CodexCliProviderRuntime final : public IProviderRuntime
 	std::unordered_map<std::string, std::string> ReadNativeSessionNames() const override;
 	std::string DiscoverInteractiveSessionId(const std::vector<std::string>& before, const std::filesystem::path& workspace, bool* ambiguous_out = nullptr) const override;
 	std::vector<std::string> BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings) const override;
+	bool StageInteractiveAgentInstructions(const ExecutionHost& host, std::string_view instructions, std::vector<std::string>& argv, std::string& staged_context, std::string& error) const override;
 	MessageRole RoleFromNativeType(const ProviderProfile& profile, std::string_view native_type) const override;
 	void ApplyNativeToolMetadata(ToolCall& tool, const nlohmann::json& native_item) const override;
 	void ApplyAcpToolMetadata(uam::AcpToolCallState& tool, const nlohmann::json& native_item) const override;
