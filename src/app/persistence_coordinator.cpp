@@ -219,6 +219,16 @@ bool PersistenceCoordinator::LoadSettings(uam::AppState& app) const
 	{
 		app.status_line = result.warning;
 	}
+	if (!result.removed_mcp_servers.empty())
+	{
+		// The notice gives the count; the log keeps up to five reasons, which name servers but no paths or values.
+		const std::size_t count = result.removed_mcp_servers.size();
+		std::string reasons;
+		for (std::size_t index = 0; index < count && index < 5; ++index) reasons += (index == 0 ? "" : " | ") + result.removed_mcp_servers[index];
+		uam::diagnostics::Write("[Settings] Dropped " + std::to_string(count) + " invalid saved MCP server entr" + (count == 1 ? "y" : "ies") + " at load; the rest loaded. " + reasons);
+		const std::string notice = "Could not load " + std::to_string(count) + " saved MCP server entr" + (count == 1 ? "y" : "ies") + " because " + (count == 1 ? "it is" : "they are") + " invalid; other servers are unaffected.";
+		app.status_line = app.status_line.empty() ? notice : app.status_line + " " + notice;
+	}
 	// Preserve legacy backup-loading semantics, but backup/defaults cannot retire an Unknown primary.
 	if (result.loaded && !result.recovered_from_backup) app.memory_settings_uncertain = false;
 	NormalizeProviderCliSettings(app.settings);

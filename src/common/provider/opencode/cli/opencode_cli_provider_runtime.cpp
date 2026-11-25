@@ -410,7 +410,7 @@ const ProviderCliPolicy* OpenCodeCliProviderRuntime::CliVersionPolicy() const
 		.homebrew_package = "opencode",
 		.preferred_version = "latest",
 		.fallback_version = "1.18.15",
-		.minimum_version = "1.15.13",
+		.minimum_version = uam::opencode::kAcpPermissionMediationMinimumVersion,
 		.version_policy = ProviderCliVersionPolicy::MinimumSemver,
 		.verified_at = "2026-11-12",
 		.verified_protocol_version = [](std::string_view version) { return uam::opencode_v2::IsVerifiedV2(version); },
@@ -854,9 +854,9 @@ AcpRequestPreflight OpenCodeCliProviderRuntime::OnAcpPrepareSetup(uam::AppState&
 	// A later result can clear the check's error while the version stays empty, so the empty version is the test.
 	const auto checked = app.runtime_cli_versions_by_provider_id.find(uam::provider_ids::kOpenCodeCli);
 	if (!session.opencode_v2_native && (chat.execution_host_id.empty() || chat.execution_host_id == uam::execution_hosts::kLocalHostId) &&
-	    checked != app.runtime_cli_versions_by_provider_id.end() && checked->second.installed_version.empty() && !CliProviderVersionAtLeast(session.agent_version, "1.15.13"))
+	    checked != app.runtime_cli_versions_by_provider_id.end() && checked->second.installed_version.empty() && !CliProviderVersionAtLeast(session.agent_version, uam::opencode::kAcpPermissionMediationMinimumVersion))
 	{
-		error = "OpenCode 1.15.13 or newer could not be confirmed; check OpenCode in Settings, then try again.";
+		error = std::string("OpenCode ") + uam::opencode::kAcpPermissionMediationMinimumVersion + " or newer could not be confirmed; check OpenCode in Settings, then try again.";
 		return AcpRequestPreflight::Rejected;
 	}
 	return AcpRequestPreflight::Ready;
@@ -989,7 +989,7 @@ std::string OpenCodeCliProviderRuntime::LocalCliCompatibilityError(const uam::Ap
 	}
 	if (!state.installed_version.empty())
 	{
-		return "OpenCode 1.15.13 or newer is required (installed " + state.installed_version + "); update it in Settings.";
+		return std::string("OpenCode ") + uam::opencode::kAcpPermissionMediationMinimumVersion + " or newer is required (installed " + state.installed_version + "); update it in Settings.";
 	}
 	return uam::strings::NonEmptyOrFallback(state.message, "OpenCode is not installed or its version could not be determined.") + " Open Settings to check or update it.";
 }

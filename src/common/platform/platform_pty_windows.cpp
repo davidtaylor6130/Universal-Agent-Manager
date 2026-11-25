@@ -102,9 +102,9 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 		const WindowsLaunchCommand launch = BuildWindowsLaunchCommand(argv);
 		const std::wstring command_w = WideFromUtf8(launch.command_line);
 
-		if (command_w.empty())
+		if (command_w.empty() || !WindowsLaunchFitsCmdLimit(launch, error_out))
 		{
-			if (error_out != nullptr)
+			if (error_out != nullptr && command_w.empty())
 			{
 				*error_out = "Failed to encode interactive command line.";
 			}
@@ -140,7 +140,7 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 		if (!created)
 		{
 			const DWORD last_error = GetLastError();
-			uam::diagnostics::Write("[terminal] Failed to start provider process: " + FormatWindowsError(last_error) + ". Command: " + launch.command_line + "." + WindowsLaunchDiagnosticSuffix(launch));
+			uam::diagnostics::Write("[terminal] Failed to start provider process: " + FormatWindowsError(last_error) + ". Command: " + launch.diagnostic_command_line + "." + WindowsLaunchDiagnosticSuffix(launch));
 			if (error_out != nullptr)
 			{
 				*error_out = "Could not start the provider process.";
