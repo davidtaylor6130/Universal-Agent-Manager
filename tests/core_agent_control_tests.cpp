@@ -1875,6 +1875,8 @@ UAM_TEST(UamControlToolServerSignsWithTheProviderEnvironmentKeyWhenTheReferenceI
 	// A literal reference used as the key would be refused as unsigned; the inherited key is accepted.
 	UAM_ASSERT_EQ(reply["result"]["isError"], nlohmann::json(false));
 	UAM_ASSERT(nlohmann::json::parse(reply["result"]["content"][0]["text"].get<std::string>()).contains("goal"));
+}
+
 UAM_TEST(UamControlUsageReportCoversOnlyTheCallingChatAndKeepsMoneyOut)
 {
 	TempDir temp("uam-control-usage-report");
