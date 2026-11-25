@@ -54,11 +54,13 @@ class Application
 	void PollTick();
 	/// Runs the posted poll only when no later reschedule replaced it, so one poll chain runs at a time.
 	void RunScheduledPoll(std::uint64_t generation);
-	void ApplyBundledMarkdownStoreSeed(bool seeded, std::string error, std::vector<ShellAction> shell_actions, const std::string& destination_directory);
+	void ApplyBundledMarkdownStoreSeed(bool seeded, std::string error, std::vector<ShellAction> shell_actions, bool shell_actions_unreadable, const std::string& destination_directory);
 
   private:
 	/// Runs every runtime stage of one poll; PollTick contains its failures so the next poll still runs.
-	void PollTickStages(std::chrono::steady_clock::time_point poll_started);
+	/// stages_started ends the work PollTick did before the stages (the startup chat-list apply and held requests,
+	/// and management checks), which the slow-poll line reports as `startup`.
+	void PollTickStages(std::chrono::steady_clock::time_point poll_started, std::chrono::steady_clock::time_point stages_started);
 	void ReportPollTickFailure(const std::string& reason);
 	std::unique_ptr<UamQueryHandler> m_managementHandler;
 	std::unique_ptr<uam::discovery::ManagementAnnouncement> m_managementAnnouncement;
@@ -88,6 +90,9 @@ class Application
 	std::future<std::pair<std::vector<ChatSession>, std::string>> m_startupChats;
 	std::thread m_startupChatLoader;
 	std::vector<std::string> m_startupInterruptedRunIds;
+	/// Status text the settings load produced, restored after later startup messages replace the status line.
+	std::string m_settingsLoadNotice;
+	void RestoreSettingsLoadNotice();
 	void FinishStartupState(std::vector<ChatSession> chats, std::string warning);
 	int m_exitCode = 0;
 	bool PollHistoryDiscovery();

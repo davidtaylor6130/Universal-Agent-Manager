@@ -80,7 +80,7 @@ describe('linked pull request rows', () => {
     await act(async () => button('Unlink acme/app #12')!.click())
     window.removeEventListener(APP_FAILURE_EVENT, listen)
     expect(sendToCEF).toHaveBeenCalledWith({ action: 'managePullRequestWatch', payload: { chatId: 'chat-1', operation: 'unlink', pullRequest: 'acme/app', number: 12 } })
-    expect(failures.map((failure) => failure.message)).toEqual(['Could not unlink acme/app #12. The chat is unavailable.'])
+    expect(failures.map((failure) => [failure.message, failure.detail])).toEqual([['Could not unlink acme/app #12.', 'The chat is unavailable. Try again.']])
   })
 
   it('explains why a merged pull request cannot be watched, and names pauses and read failures', async () => {

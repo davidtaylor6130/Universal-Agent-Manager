@@ -3,8 +3,8 @@ import { ExecutionRoutingDialog } from '../modals/ExecutionRoutingDialog'
 import { RUNNER_STATUS } from '../settings/ExecutionRoutingSettings'
 import { canRouteAutomatically, sanitizeRepositoryMatches, type WorkspaceRepositoryMatches } from '../../types/executionRouting'
 import { isCefContext, sendToCEF } from '../../ipc/cefBridge'
-import { COMPUTER_USE_ENABLED, SSH_ENABLED } from '../../config/buildFeatures'
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { COMPUTER_USE_ENABLED, MOBILE_COMPANION_ENABLED, SSH_ENABLED } from '../../config/buildFeatures'
+import { useState, useEffect, useId, useRef, useCallback, useMemo } from 'react'
 import { CircleAlert, FolderPlus, Monitor, RefreshCw, Route, SquareTerminal, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
@@ -13,17 +13,38 @@ import { SelectionGrid } from '../shared/SelectionGrid'
 import { WorkspacePicker } from './WorkspacePicker'
 import { StatusIndicator } from '../shared/StatusIndicator'
 import { COPILOT_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, OPENCODE_CLI_PROVIDER_ID, providerCapabilities, providerDisabledOn } from '../../utils/providerMetadata'
-import { Button, Card, IconButton, MenuSelect, Notice, useOverlayState } from '../ui'
+import { Button, Card, IconButton, MenuSelect, Notice, Overlay } from '../ui'
 import { buildCodexReasoningOptions, buildModelOptions, modelCatalogForDefaults, modelOptionFor, reasoningEffortForModel, selectedRuntimeModel } from '../chat/modelOptions'
 import { ModelPickerContent } from '../chat/ModelPickerContent'
 import { isAbsoluteRemoteWorkspace, isSshHost } from '../../utils/remoteWorkspace'
 import { RemoteDirectoryBrowser } from './RemoteDirectoryBrowser'
+import { focusableRowWith } from '../../utils/modalFocus'
 import { NewChatBranchPicker } from './NewChatBranchPicker'
 
 const AUTOMATIC_HOST_OPTION = 'uam:auto-routing'
 
+/** Why a remote computer cannot take a new chat, in words rather than its raw runner status. */
+const RUNNER_UNAVAILABLE: Record<Exclude<keyof typeof RUNNER_STATUS, 'ready'>, string> = {
+  installing: 'The remote runner is still setting up.',
+  uninstalled: 'The remote runner is not set up.',
+  offline: 'The computer is offline.',
+  error: 'The remote runner reported an error.',
+}
+const runnerIssue = (status: keyof typeof RUNNER_STATUS) =>
+  status === 'ready' ? '' : `${RUNNER_UNAVAILABLE[status]} Open Settings to configure this computer.`
+
 export function NewChatModal({ companion = false, onCreated }: { companion?: boolean; onCreated?: () => void }) {
-  const overlayState = useOverlayState()
+  // Focus on open (the New chat button, a menu item or the composer), restored on close even after a replaced step.
+  // A row menu item closes with its menu, so the dialog then returns to the workspace it was opened for (its sidebar
+  // header) or the open chat's row.
+  const [returnTarget] = useState(() => {
+    const opener = typeof document !== 'undefined' && document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null
+    const state = useAppStore.getState()
+    return { opener, folderId: state.newChatFolderId, sessionId: state.activeSessionId }
+  })
+  const returnFocus = useCallback(() => returnTarget.opener?.isConnected ? returnTarget.opener
+    : focusableRowWith('data-workspace-id', returnTarget.folderId) ?? focusableRowWith('data-session-id', returnTarget.sessionId), [returnTarget])
+  const fieldId = useId()
   const addSession = useAppStore((s) => s.addSession)
   const setNewChatModalOpen = useAppStore((s) => s.setNewChatModalOpen)
   const folders = useAppStore(useShallow((s) => s.folders))
@@ -53,8 +74,9 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
   const initialFolderId = [newChatFolderId, activeFolderId, folders[0]?.id]
     .find((candidate) => candidate !== null && candidate !== undefined && folders.some((folder) => folder.id === candidate)) ?? null
   const initialFolder = folders.find((folder) => folder.id === initialFolderId) ?? null
-  const executionRouting = useAppStore((state) => state.executionRouting)
-  const repositoryMatching = executionRouting.repositoryMatching === true
+  // Builds without SSH have no routing state, so automatic routing stays unavailable.
+  const executionRouting = useAppStore((state) => SSH_ENABLED ? state.executionRouting : undefined)
+  const repositoryMatching = executionRouting?.repositoryMatching === true
   const [repositories, setRepositories] = useState<WorkspaceRepositoryMatches[]>([])
   const [routingOpen, setRoutingOpen] = useState(false)
   const [routingMode, setRoutingMode] = useState<'explicit' | 'automatic'>('explicit')
@@ -89,6 +111,11 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
   const [workspaceError, setWorkspaceError] = useState('')
   const [remoteBrowserOpen, setRemoteBrowserOpen] = useState(false)
   const nameRef = useRef<HTMLInputElement>(null)
+  const browseRef = useRef<HTMLButtonElement>(null)
+  const remotePathRef = useRef<HTMLInputElement>(null)
+  const moreOptionsRef = useRef<HTMLElement>(null)
+  // The remote browser and SSH routing replace this form; returning from one refocuses the control that opened it.
+  const [stepReturn, setStepReturn] = useState<'browse' | 'routing' | null>(null)
   const creatingChatRef = useRef(false)
   const workspaceChoices = useRef<Record<string, { folderId: string | null; path: string }>>({})
   const providerChoices = useRef<Record<string, { modelId: string; effort: string }>>({})
@@ -102,6 +129,14 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
   useEffect(() => {
     nameRef.current?.focus()
   }, [])
+
+  // A passive effect, so it runs after the remounted form's own children (the model search) take focus on mount.
+  useEffect(() => {
+    if (!stepReturn || remoteBrowserOpen || routingOpen) return
+    const target = stepReturn === 'browse' ? browseRef.current ?? remotePathRef.current : moreOptionsRef.current
+    ;(target ?? nameRef.current)?.focus()
+    setStepReturn(null)
+  }, [stepReturn, remoteBrowserOpen, routingOpen])
 
   // One match request per open: this modal mounts per open, so the list is cached for its lifetime.
   useEffect(() => {
@@ -153,6 +188,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
       if (e.key === 'Escape') {
         if (e.defaultPrevented || (e.target instanceof Element && e.target.closest('[role="listbox"]'))) return
         if (remoteBrowserOpen) {
+          setStepReturn('browse')
           setRemoteBrowserOpen(false)
           return
         }
@@ -167,7 +203,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
 
   const selectedFolder =
     (folderId !== null ? folders.find((f) => f.id === folderId && (f.executionHostId || 'local') === executionHostId) : null) ?? null
-  const automaticAvailable = canRouteAutomatically(executionRouting, selectedFolder ?? undefined, providerId, repositories.find((item) => item.folderId === selectedFolder?.id))
+  const automaticAvailable = executionRouting !== undefined && canRouteAutomatically(executionRouting, selectedFolder ?? undefined, providerId, repositories.find((item) => item.folderId === selectedFolder?.id))
   useEffect(() => { if (!automaticAvailable) setRoutingMode('explicit') }, [automaticAvailable])
   useEffect(() => {
     if (!newChatWorktreeContext) return
@@ -185,7 +221,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
   const isRemote = executionHostId !== 'local'
   const hostIssue = !selectedExecutionHost ? 'This computer is no longer available. Choose another computer.'
     : routingMode !== 'automatic' && isRemote && selectedExecutionHost.runnerStatus !== 'ready'
-      ? `Remote runner is ${selectedExecutionHost.runnerStatus}. Open Settings to configure this computer.` : ''
+      ? runnerIssue(selectedExecutionHost.runnerStatus) : ''
 
   // Use the same availability rules for the picker and the Create action.
   const providerAvailability = (provider: Provider | undefined) => {
@@ -358,32 +394,26 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
     return <RemoteDirectoryBrowser
       host={selectedExecutionHost}
       initialPath={remoteWorkspace}
-      onCancel={() => setRemoteBrowserOpen(false)}
+      onCancel={() => { setStepReturn('browse'); setRemoteBrowserOpen(false) }}
       onSelect={(directory) => {
         setRemoteWorkspace(directory)
+        setStepReturn('browse')
         setRemoteBrowserOpen(false)
       }}
+      returnFocusTo={returnFocus}
+      className={MOBILE_COMPANION_ENABLED && companion ? 'uam-companion-overlay' : undefined}
     />
   }
-  if (SSH_ENABLED && routingOpen) return <ExecutionRoutingDialog onClose={() => setRoutingOpen(false)} />
+  if (SSH_ENABLED && routingOpen) return <ExecutionRoutingDialog onClose={() => { setStepReturn('routing'); setRoutingOpen(false) }} />
 
   return (
-    <div
-      className="uam-overlay fixed inset-0 z-50 flex items-center justify-center"
-      data-state={overlayState}
-      style={{ background: 'rgba(0,0,0,0.48)' }}
-      onClick={(e) => {
-        if (e.target === e.currentTarget) requestClose()
-      }}
-    >
+    // label as well as the visible title: scripts/perf_driven.py finds this dialog by [aria-label="New chat"].
+    // The phone browser's overlay class keeps its 16px fields once the dialog is portalled out of the companion shell.
+    <Overlay open zIndex={50} label="New chat" labelledBy={`${fieldId}-title`} className={MOBILE_COMPANION_ENABLED && companion ? 'uam-companion-overlay' : undefined} onBackdropMouseDown={requestClose} returnFocusTo={returnFocus}>
       <Card
         elevation={2}
         flush
-        role="dialog"
-        aria-modal="true"
-        aria-label="New chat"
-        tabIndex={-1}
-        className="flex max-h-[calc(100vh-32px)] w-full max-w-4xl flex-col overflow-hidden mx-4"
+        className="flex max-h-[calc(100vh-32px)] w-full max-w-4xl flex-col overflow-hidden"
         style={{ borderRadius: 'var(--r-lg)' }}
       >
         {/* Header */}
@@ -391,9 +421,9 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
           className="flex shrink-0 items-center justify-between px-5 py-3"
           style={{ borderBottom: '1px solid var(--border)' }}
         >
-          <span className="text-sm font-semibold" style={{ color: 'var(--text)' }}>
+          <h2 id={`${fieldId}-title`} className="text-sm font-semibold" style={{ color: 'var(--text)' }}>
             New chat
-          </span>
+          </h2>
           <IconButton icon={<X size={16} />} label="Close new chat" disabled={creatingChat} onClick={requestClose} />
         </div>
 
@@ -401,16 +431,17 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
           <div className="min-w-0 space-y-3">
           {/* Name */}
           <div>
+            <label htmlFor={`${fieldId}-name`} className="mb-1.5 block text-xs font-medium" style={{ color: 'var(--text-2)' }}>Chat name</label>
             <input
               ref={nameRef}
-              aria-label="Chat name"
+              id={`${fieldId}-name`}
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') void handleCreate()
               }}
-              placeholder="Chat name"
+              placeholder="New chat"
               className="w-full rounded-md px-3 py-2 text-sm outline-none transition-all duration-150"
               style={{
                 background: 'var(--surface-up)',
@@ -434,9 +465,11 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
               icon: <Monitor size={18} aria-hidden />,
               detail: isSshHost(host) ? host.sshAlias : undefined,
               tone: isSshHost(host) ? RUNNER_STATUS[host.runnerStatus].tone : undefined,
+              // The status words for a ready computer; an unavailable one is described by its issue instead.
+              status: isSshHost(host) && host.runnerStatus === 'ready' ? RUNNER_STATUS.ready.label : undefined,
               disabled: creatingChat || (isSshHost(host) && host.runnerStatus !== 'ready'),
               issues: isSshHost(host) && host.runnerStatus !== 'ready'
-                ? [`Remote runner is ${host.runnerStatus}. Open Settings to configure this computer.`] : [],
+                ? [runnerIssue(host.runnerStatus)] : [],
             }))]}
             onChange={(hostId) => { if (hostId === AUTOMATIC_HOST_OPTION) { if (newChatWorktreeContext) setNewChatModalOpen(true, folderId, null); setSourceContextInvalid(false); setChatError(''); setRoutingMode('automatic') } else { setRoutingMode('explicit'); chooseHost(hostId) } }}
           />
@@ -479,15 +512,16 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
 
           {isRemote && (
             <div>
-              <label className="text-xs font-medium mb-1.5 block" style={{ color: 'var(--text-2)' }}>
+              <label htmlFor={`${fieldId}-remote-path`} className="text-xs font-medium mb-1.5 block" style={{ color: 'var(--text-2)' }}>
                 Remote workspace path
               </label>
               <div className="flex items-center gap-2">
                 <div className="relative min-w-0 flex-1">
                 <input
-                  aria-label="Remote workspace path"
+                  ref={remotePathRef}
+                  id={`${fieldId}-remote-path`}
                   aria-invalid={!canCreate || undefined}
-                  aria-describedby={workspaceError ? 'new-chat-workspace-error' : undefined}
+                  aria-describedby={[`${fieldId}-remote-path-hint`, workspaceError ? 'new-chat-workspace-error' : ''].filter(Boolean).join(' ')}
                   type="text"
                   value={remoteWorkspace}
                   onChange={(event) => setRemoteWorkspace(event.target.value)}
@@ -500,6 +534,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
                 </div>
                 {!selectedFolder && (
                   <Button
+                    ref={browseRef}
                     variant="secondary"
                     size="md"
                     disabled={selectedExecutionHost?.runnerStatus !== 'ready'}
@@ -509,7 +544,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
                   </Button>
                 )}
               </div>
-			  <p className="mt-1 text-xs" style={{ color: 'var(--text-3)' }}>
+			  <p id={`${fieldId}-remote-path-hint`} className="mt-1 text-xs" style={{ color: 'var(--text-3)' }}>
 				{selectedFolder ? 'Owned by the selected workspace.' : `Read only by ${selectedExecutionHost?.label}.`}{COMPUTER_USE_ENABLED && ' Computer Use is off for remote chats.'}
               </p>
             </div>
@@ -523,7 +558,7 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
           {workspaceError && <p id="new-chat-workspace-error" role="alert" className="flex items-center gap-1.5 text-xs" style={{ color: 'var(--error)' }}><CircleAlert size={12} aria-hidden />{workspaceError}</p>}
           {SSH_ENABLED && (
             <details className="-mt-1">
-              <summary className="cursor-pointer select-none text-xs" style={{ color: 'var(--text-3)' }}>More options</summary>
+              <summary ref={moreOptionsRef} className="cursor-pointer select-none text-xs" style={{ color: 'var(--text-3)' }}>More options</summary>
               <div className="mt-2 flex justify-start">
                 <Button variant="ghost" size="sm" leadingIcon={<Route size={13} />} disabled={creatingChat} onClick={() => setRoutingOpen(true)}>Configure SSH routing</Button>
               </div>
@@ -587,8 +622,9 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
             )}
             {reasoningOptions.length > 0 && (
               <div>
-                <div className="mb-1.5 text-xs font-medium" style={{ color: 'var(--text-2)' }}>Reasoning effort</div>
+                <label htmlFor={`${fieldId}-reasoning`} className="mb-1.5 block text-xs font-medium" style={{ color: 'var(--text-2)' }}>Reasoning effort</label>
                 <MenuSelect
+                  id={`${fieldId}-reasoning`}
                   label="Reasoning effort"
                   disabled={routingMode === 'automatic'}
                   value={routingMode === 'automatic' ? '' : reasoningEffortForModel(cachedAcp, selectedModelId, reasoningEffort, providerId === COPILOT_CLI_PROVIDER_ID)}
@@ -621,6 +657,6 @@ export function NewChatModal({ companion = false, onCreated }: { companion?: boo
           </Button>
         </div>
       </Card>
-    </div>
+    </Overlay>
   )
 }

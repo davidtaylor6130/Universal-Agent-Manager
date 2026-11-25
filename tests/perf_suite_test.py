@@ -20,6 +20,12 @@ lines = {
     'PerformanceSuiteUamRequestOverhead': '[SIZE] uam-control full catalogue: 4000 bytes, 20 tools',
 }
 lines['PerformanceMemoryPollOnLargeInstall'] = '[TIMING] memory poll, 2000 chats, 1000 queued: p50=5e-05 ms'
+refresh = perf_suite.parse_native_output('PerformanceRefreshFullStateFingerprint', [
+    '[SIZE] refresh full state 2000 chats: reply=1234567 bytes',
+    '[TIMING] refresh full state 2000 chats: refresh p50=120.5 ms p95=130 ms; initial load p50=200 ms p95=210.25 ms '
+    '(serialize and dump p50=110 ms, baseline seed p50=80 ms, freeing the rest of the reply p50=60 ms); samples=21'])
+assert refresh == {'refresh_2000_p50_ms': 120.5, 'refresh_2000_p95_ms': 130.0, 'initial_load_state_2000_p50_ms': 200.0,
+                   'initial_load_state_2000_p95_ms': 210.25, 'refresh_2000_reply_bytes': 1234567.0}, refresh
 for case, line in lines.items():
     assert any(name == case and re.search(pattern.replace(r'[\d.]+', perf_suite.NUMBER), line) for name, pattern, _ in perf_suite.NATIVE), case
 
@@ -59,11 +65,11 @@ summary = perf_suite.summarize_ui(['\x1b[22m\x1b[39m[TIMING] input 3 to committe
 assert summary['input N to committed draft'] == {'count': 2, 'p50': 3.0, 'p95': 4.0, 'max': 4.0}, summary
 assert 'history response to committed initial page (2000 messages)' in summary
 
-log = ('[performance] PollTick took 812 ms; stages=runtimes:700,terminals:1,push:100,awake:0 ms.\n'
+log = ('[performance] PollTick took 812 ms; stages=startup:600,runtimes:700,side_chats:3,terminals:1,push:100,awake:0 ms.\n'
        '[performance] PollTick took 60 ms; stages=runtimes:5,terminals:1,push:50,awake:0 ms.\n'
        '[performance] statePatch serialization took 160 ms, bytes=10, changedChats=1\n')
 polls = perf_suite.slow_poll_metrics(log)
-assert polls['slow_poll_count'] == 2 and polls['slow_poll_max_ms'] == 812 and polls['slow_poll_stage_runtimes_max_ms'] == 700, polls
+assert polls['slow_poll_count'] == 2 and polls['slow_poll_max_ms'] == 812 and polls['slow_poll_stage_runtimes_max_ms'] == 700 and polls['slow_poll_stage_startup_max_ms'] == 600, polls
 assert polls['slow_patch_max_ms'] == 160 and polls['slow_poll_stage_push_max_ms'] == 100, polls
 
 with tempfile.TemporaryDirectory() as folder:

@@ -277,6 +277,8 @@ namespace uam
 		constexpr std::size_t kMaxRunningAgents = 4;
 		constexpr std::size_t kMaxQueuedAgents = 32;
 		constexpr std::size_t kMaxDirectChildren = 4;
+		// Every live run a chat owns at any depth: four top-level runs with four children each.
+		constexpr std::size_t kMaxLiveRunsPerChat = kMaxDirectChildren + kMaxDirectChildren * kMaxDirectChildren;
 		constexpr std::size_t kMaxResultExcerptBytes = 16U * 1024U;
 		constexpr int64_t kMaxRunElapsedMs = 30LL * 60LL * 1000LL;
 		constexpr int64_t kProviderCrashWindowMs = 60LL * 1000LL;
@@ -1058,6 +1060,8 @@ namespace uam
 		continuation.turns.push_back(turn);
 		run.managed_continuation = std::move(continuation);
 		transcript.agent_run_id = run.id;
+		transcript.managed_root_chat_id = work->parent.id;
+		transcript.managed_root_created_at = work->parent.created_at;
 		task->transcript_id = transcript.id;
 		app.managed_initial_mentions.emplace(root_id, task);
 		const AgentDefinition selected = *definition;
@@ -3247,6 +3251,8 @@ namespace uam
 			(void)PollCompletedAcpProcessStops(app, nullptr);
 			FinalizePendingAcpRemoteStopsForExit(app);
 			(void)FlushPendingChatSaves(app, false);
+			// This loop waits for chat saves to settle, including ones the flush just started (#526, #647).
+			RaiseAllChatSaveWorkersForBarrier(app);
 			settled = app.managed_initial_mentions.empty() && app.managed_followups.empty();
 			bool workers = std::ranges::any_of(app.managed_initial_mentions, [](const auto& entry) { return entry.second && (entry.second->work || !entry.second->retired->load(std::memory_order_acquire)); });
 			workers = workers || std::ranges::any_of(app.managed_followups, [](const auto& entry)
@@ -3359,6 +3365,23 @@ namespace uam
 		if (parent != nullptr && std::ranges::count(app.agent_runs, parent->id, &AgentRun::parent_run_id) >= kMaxDirectChildren)
 		{
 			if (error_out != nullptr) *error_out = "An agent run may create at most four direct children.";
+			return false;
+		}
+		// Per-chat bounds, so one chat cannot fill the shared queue. A child can outlive its finished parent, so every
+		// depth counts toward the total; top-level runs use the same bound as mentions and follow-ups.
+		const auto live_in_chat = [&](bool top_level_only)
+		{
+			return static_cast<std::size_t>(std::ranges::count_if(app.agent_runs, [&](const AgentRun& run)
+			    { return run.root_chat_id == root_chat->id && (!top_level_only || run.parent_run_id.empty()) && !IsTerminal(run.status); }));
+		};
+		if (live_in_chat(false) >= kMaxLiveRunsPerChat)
+		{
+			if (error_out != nullptr) *error_out = "This chat already has 20 agents queued or running; wait for some to finish.";
+			return false;
+		}
+		if (parent == nullptr && live_in_chat(true) >= kMaxDirectChildren)
+		{
+			if (error_out != nullptr) *error_out = "This chat already has four agents queued or running; wait for one to finish.";
 			return false;
 		}
 		for (const AgentRun* ancestor = parent; ancestor != nullptr; ancestor = ancestor->parent_run_id.empty() ? nullptr : FindRun(app, ancestor->parent_run_id))
@@ -3496,6 +3519,8 @@ namespace uam
 		run.updated_at = run.created_at;
 		run.result_delivery_id = run.id;
 		transcript.agent_run_id = run.id;
+		transcript.managed_root_chat_id = root_chat->id;
+		transcript.managed_root_created_at = root_chat->created_at;
 
 		std::string save_error;
 		if (!AgentRunLedger::Save(app.data_root, run, &save_error))
@@ -3739,6 +3764,8 @@ namespace uam
 		run.task = "Continue the interrupted managed task from the durable transcript. "
 		           "Complete only the remaining work and do not repeat work already shown there.";
 		transcript.agent_run_id = run.id;
+		transcript.managed_root_chat_id = root_chat->id;
+		transcript.managed_root_created_at = root_chat->created_at;
 
 		std::string save_error;
 		if (!AgentRunLedger::Save(app.data_root, run, &save_error))

@@ -5,6 +5,7 @@
 #include "common/utils/string_utils.h"
 
 #include <nlohmann/json.hpp>
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <deque>
@@ -58,6 +59,24 @@ namespace uam::companion
 				for (std::size_t at = id.find(sensitive); at != std::string::npos; at = id.find(sensitive, at + 1))
 					if (sensitive != "mode" || at + 4 == id.size() || id[at + 4] != 'l') // "model" is not a mode.
 						return "Change the provider option " + id;
+			return {};
+		}
+		// Allowing a UAM request card grants the agent Computer Use, a new chat or a goal; Deny and question answers apply directly.
+		// Matches the handler, which routes any uam-control: request id to UamControlService::ResolveApproval.
+		if (action == "resolveAcpUserInput")
+		{
+			const auto request = payload.find("requestId");
+			if (request == payload.end() || !request->is_string() || !request->get_ref<const std::string&>().starts_with("uam-control:")) return {};
+			const auto answers = payload.find("answers");
+			if (answers == payload.end() || !answers->is_object()) return {};
+			const auto is_allow = [](const nlohmann::json& value) { return value.is_string() && value.get_ref<const std::string&>() == "Allow"; };
+			for (const auto& [question, description] : {std::pair<const char*, const char*>{"computerUse", "Allow Computer Use for this chat"},
+			         {"chatCreate", "Allow the agent to start a new chat"}, {"goalCreate", "Allow the agent to create a goal"}})
+			{
+				const auto answer = answers->find(question);
+				if (answer != answers->end() && (is_allow(*answer) || (answer->is_array() && std::any_of(answer->begin(), answer->end(), is_allow))))
+					return description;
+			}
 			return {};
 		}
 		if (chat == nullptr) return {};

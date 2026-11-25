@@ -145,7 +145,7 @@ describe('SettingsModal memory settings', () => {
       refreshUamAgents: vi.fn(() => Promise.resolve(true)),
       browseProviderAgentImport: vi.fn(() => Promise.resolve(null)),
       previewProviderAgentImport: vi.fn(() => Promise.resolve(null)),
-      importProviderAgent: vi.fn(() => Promise.resolve(true)),
+      importProviderAgent: vi.fn(() => Promise.resolve({ ok: true as const, id: 'agent', mode: 'primary', scope: 'global' as const })),
       setTheme: vi.fn(),
       refreshCustomThemes: vi.fn(() => Promise.resolve(true)),
       saveCustomTheme: vi.fn((theme) => Promise.resolve(theme)),
@@ -316,6 +316,30 @@ describe('SettingsModal memory settings', () => {
     act(() => root.unmount()); host.remove()
   })
 
+  it('asks before an application restart that would stop a running chat', async () => {
+    const actions: string[] = []
+    window.cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request)
+      actions.push(parsed.action)
+      onSuccess(JSON.stringify(parsed.action === 'getCompanionSettings'
+        ? { configured: true, enabled: true, state: 'failed', reason: 'The secure phone connection could not start.', desiredUrl: 'https://phone.example/companion', effectiveUrl: '', proxyRunning: false, restartRequired: true }
+        : {}))
+    }
+    useAppStore.setState({ acpBindingBySessionId: { 'chat-1': { processing: true } as never } })
+    const { host, root } = renderModal()
+    try {
+      act(() => (host.querySelector('nav button[aria-label="Phone"]') as HTMLButtonElement).click())
+      await act(async () => {})
+      await act(async () => (Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Restart Universal Agent Manager') as HTMLButtonElement).click())
+      const dialog = document.querySelector<HTMLElement>('[role="alertdialog"]')!
+      expect(dialog.textContent).toContain('Restart will stop 1 running chat.')
+      expect(dialog.querySelector('[aria-label="Running chats"]')?.textContent).toBe('Chat')
+      expect(actions).not.toContain('restartApplication')
+      await act(async () => Array.from(dialog.querySelectorAll('button')).find(button => button.textContent === 'Restart')!.click())
+      expect(actions.filter(action => action === 'restartApplication')).toHaveLength(1)
+    } finally { useAppStore.setState({ acpBindingBySessionId: {} }); act(() => root.unmount()); host.remove() }
+  })
+
   it('clears recovered polling errors without hiding a failed phone action', async () => {
     vi.useFakeTimers()
     let loads = 0
@@ -340,11 +364,12 @@ describe('SettingsModal memory settings', () => {
       expect(retry.textContent).toBe('Retrying…')
       expect(retry.disabled).toBe(true)
       await act(async () => rejectRetry!())
-      expect(failures.at(-1)?.message).toContain('Phone access retry failed.')
+      expect(failures.at(-1)?.message).toBe('Could not update phone access.')
+      expect(failures.at(-1)?.detail).toContain('Phone access retry failed.')
       expect(host.textContent).toContain('Retry phone access')
       await act(async () => vi.advanceTimersByTimeAsync(1500))
       expect(loads).toBe(3)
-      expect(failures.at(-1)?.message).toContain('Phone access retry failed.')
+      expect(failures.at(-1)?.message).toBe('Could not update phone access.'); expect(failures.at(-1)?.detail).toContain('Phone access retry failed.')
       act(() => host.querySelector<HTMLButtonElement>('nav button[aria-label="Chat defaults"]')!.click())
       act(() => host.querySelector<HTMLButtonElement>('nav button[aria-label="Phone"]')!.click())
       await act(async () => {})
@@ -893,6 +918,46 @@ describe('SettingsModal memory settings', () => {
     host.remove()
   })
 
+  it('reports a helper install that succeeded with a warning as a warning, not as ready', async () => {
+    let installBody = ''
+    window.cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request) as { action: string; payload: { id: string; label: string; sshAlias: string } }
+      if (parsed.action === 'previewRemoteHost') {
+        onSuccess(JSON.stringify({
+          host: { id: parsed.payload.id, label: parsed.payload.label, transport: 'ssh', sshAlias: parsed.payload.sshAlias, runnerStatus: 'uninstalled', runnerVersion: '', platform: '', architecture: '', lastSeenAt: '' },
+          preview: '1. Check remote platform',
+        }))
+        return
+      }
+      onSuccess(parsed.action === 'installRemoteHost' ? installBody : '{}')
+    }
+    const { host, root } = renderModal()
+    openRemoteHostsSection(host)
+    const install = async (body: string) => {
+      installBody = body
+      const alias = host.querySelector('input[aria-label="SSH config alias"]') as HTMLInputElement
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(alias, 'colima')
+        alias.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+      await act(async () => { Array.from(host.querySelectorAll('button')).find((button) => button.textContent?.includes('Preview setup'))?.click() })
+      await act(async () => { Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Connect and install'))?.click() })
+      await act(async () => {})
+    }
+
+    failures.length = 0
+    await install(JSON.stringify({ ok: true, warning: "Helper installed. Save this host's options to confirm runner startup.\n  Startup timed out." }))
+    expect(failures).toEqual([expect.objectContaining({ tone: 'warning', message: "Helper installed. Save this host's options to confirm runner startup. Startup timed out." })])
+    expect(failures.some((notice) => notice.message.includes('is ready'))).toBe(false)
+
+    failures.length = 0
+    await install('{"ok":true}')
+    expect(failures).toEqual([expect.objectContaining({ tone: 'success', message: 'Remote helper is ready.' })])
+
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('dismisses the setup preview so a failed compatibility check is visible', async () => {
     window.cefQuery = ({ request, onSuccess, onFailure }) => {
       const parsed = JSON.parse(request) as { action: string; payload: { id: string; label: string; sshAlias: string } }
@@ -921,8 +986,8 @@ describe('SettingsModal memory settings', () => {
 
     await act(async () => {})
     expect(document.body.textContent).not.toContain('Install helper on colima?')
-    expect(failures.at(-1)?.message).toContain('This UAM build does not contain a runner for linux/s390x.')
-    expect(failures.at(-1)?.detail).toBe('')
+    expect(failures.at(-1)?.message).toBe('Remote helper setup failed.')
+    expect(failures.at(-1)?.detail).toBe('This UAM build does not contain a runner for linux/s390x.')
 
     act(() => root.unmount())
     host.remove()
@@ -961,7 +1026,8 @@ describe('SettingsModal memory settings', () => {
     expect(document.activeElement).toBe(host.querySelector('[data-host-open="ssh-homelab"]'))
 
     await act(async () => { failInstall?.() })
-    expect(failures.at(-1)?.message).toBe(refusal)
+    expect(failures.at(-1)?.message).toBe('Remote helper setup failed.')
+    expect(failures.at(-1)?.detail).toBe(refusal)
     expect(host.querySelector('[aria-label="Remote host task running on Homelab"]')).toBeNull()
 
     act(() => root.unmount())
@@ -998,7 +1064,8 @@ describe('SettingsModal memory settings', () => {
 
     // The failure arrives first, then the restore push removes the row.
     await act(async () => { failInstall?.() })
-    expect(failures.at(-1)?.detail).toBe('Check the SSH connection and try again.')
+    expect(failures.at(-1)?.message).toBe('Remote helper setup failed.')
+    expect(failures.at(-1)?.detail).toMatch(/Check the SSH connection and try again\.$/)
     act(() => useAppStore.setState({ executionHosts: [local] }))
     expect(document.activeElement).toBe(host.querySelector('input[aria-label="SSH config alias"]'))
 
@@ -1035,8 +1102,8 @@ describe('SettingsModal memory settings', () => {
     })
 
     await act(async () => {})
-    expect(failures.at(-1)?.message).toBe(refusal)
-    expect(failures.at(-1)?.detail).toBe('')
+    expect(failures.at(-1)?.message).toBe('Remote helper setup failed.')
+    expect(failures.at(-1)?.detail).toBe(refusal)
 
     failureCode = 502
     await act(async () => {
@@ -1046,7 +1113,7 @@ describe('SettingsModal memory settings', () => {
       Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent?.includes('Connect and install'))?.click()
     })
     await act(async () => {})
-    expect(failures.at(-1)?.detail).toBe('Check the SSH connection and try again.')
+    expect(failures.at(-1)?.detail).toBe('ssh: connect to host homelab port 22: Connection refused. Check the SSH connection and try again.')
 
     act(() => root.unmount())
     host.remove()
@@ -1151,7 +1218,8 @@ describe('SettingsModal memory settings', () => {
     await act(async () => { remove.click() })
     await act(async () => { Array.from(document.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === 'Remove host')!.click() })
 
-    expect(failures.at(-1)?.message).toContain('Any helper files on that machine were left untouched.')
+    expect(failures.at(-1)?.message).toBe('Colima was removed from UAM.')
+    expect(failures.at(-1)?.detail).toBe('Helper files on that machine were left untouched.')
     expect(host.textContent).not.toContain('The remote helper was left installed.')
 
     act(() => root.unmount())
@@ -1460,7 +1528,7 @@ describe('SettingsModal memory settings', () => {
       error: '',
       supported: true,
     }))
-    const importProviderAgent = vi.fn(() => Promise.resolve(true))
+    const importProviderAgent = vi.fn(() => Promise.resolve({ ok: true as const, id: 'reviewer-native', mode: 'subagent', scope: 'global' as const }))
     useAppStore.setState({ previewProviderAgentImport, importProviderAgent })
     const { host, root } = renderModal()
     openAgentsSection(host)
@@ -1472,6 +1540,7 @@ describe('SettingsModal memory settings', () => {
     })
     const preview = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Preview') as HTMLButtonElement
     await act(async () => preview.click())
+    await vi.waitFor(() => expect(host.querySelector('button[aria-busy="true"]')).toBeNull())
 
     expect(previewProviderAgentImport).toHaveBeenCalledWith('opencode-cli', '/tmp/reviewer.md')
     expect(host.textContent).toContain('Provider-only fields that will be omitted: model')
@@ -1487,10 +1556,218 @@ describe('SettingsModal memory settings', () => {
       sourcePath: '/tmp/reviewer.md',
       canonicalId: 'reviewer-native',
       workspaceAccess: 'read',
-      workspaceScope: true,
+      workspaceScope: false,
       acknowledgeIgnoredFields: true,
     }))
 
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  const supportedPreview = {
+    providerId: 'opencode-cli', sourcePath: '/tmp/reviewer.md', suggestedId: 'reviewer-native', description: 'Reviews changes',
+    mode: 'subagent', securityFields: [], ignoredFields: [], error: '', supported: true,
+  }
+  const storeAgent = (id: string, scope: 'global' | 'workspace', mode = 'primary') =>
+    ({ id, description: `${id} description`, mode, workspaceAccess: 'read', skills: [], delegates: [], instructions: 'Do it.', builtIn: false, scope })
+  /** Answers agent-store listings with `agents`; other bridge calls succeed empty. */
+  const mockAgentStore = (agents: ReturnType<typeof storeAgent>[]) => vi.spyOn(cefBridge, 'sendToCEF').mockImplementation(async (request) =>
+    request.action === 'listAgentDefinitions'
+      ? { ok: true, data: { agents, errors: [] } as never, requestId: 'test' }
+      : { ok: true, data: {} as never, requestId: 'test' })
+  /** Preview and Import stay busy until their bridge calls settle (the saved-agent listing included). */
+  const importSettled = () => vi.waitFor(() => expect(document.body.querySelector('button[aria-busy="true"]')).toBeNull())
+  const buttonNamed = (text: string) => Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === text)
+  async function previewSupportedAgent(host: HTMLElement, settle = true, preview = supportedPreview) {
+    useAppStore.setState({ previewProviderAgentImport: vi.fn(async () => preview) })
+    openAgentsSection(host)
+    const path = host.querySelector('input[aria-label="Native agent Markdown file"]') as HTMLInputElement
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(path, '/tmp/reviewer.md')
+      path.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () => buttonNamed('Preview')!.click())
+    if (settle) await importSettled()
+  }
+
+  it('installs for all workspaces by default, even with no workspace chat open', async () => {
+    mockAgentStore([])
+    const importProviderAgent = vi.fn(async () => ({ ok: true as const, id: 'reviewer-native', mode: 'subagent', scope: 'global' as const }))
+    useAppStore.setState({ importProviderAgent, activeSessionId: null })
+    const { host, root } = renderModal()
+    await previewSupportedAgent(host)
+
+    expect(host.querySelector('button[aria-label="Install scope"]')?.textContent).toContain('All workspaces')
+    expect(host.textContent).not.toContain('Open a workspace chat to import into this workspace')
+    await act(async () => buttonNamed('Import agent')!.click())
+    expect(importProviderAgent).toHaveBeenCalledWith(expect.objectContaining({ chatId: '', workspaceScope: false }))
+    expect(importProviderAgent.mock.calls[0]).not.toContainEqual(expect.objectContaining({ replaceExisting: true }))
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it.each([
+    ['The imported OpenCode permission policy requires read access.', 'Agent reviewer-native was not imported. The imported OpenCode permission policy requires read access.'],
+    ['', 'Agent reviewer-native was not imported. Try again.'],
+  ])('shows the backend reason as one plain notice line (%j)', async (error, message) => {
+    mockAgentStore([])
+    useAppStore.setState({ importProviderAgent: vi.fn(async () => ({ ok: false as const, error })) })
+    const { host, root } = renderModal()
+    await previewSupportedAgent(host)
+    await act(async () => buttonNamed('Import agent')!.click())
+
+    expect(failures.at(-1)).toMatchObject({ message, detail: '' })
+    expect(failures.at(-1)?.message).not.toContain('\n')
+    expect(failures.map((failure) => failure.message)).not.toContain('Import failed.')
+    // The draft stays for a retry; the user is not moved away from the failed import.
+    expect(host.querySelector('input[aria-label="Imported UAM agent ID"]')).not.toBeNull()
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('offers Replace for an existing agent and sends replaceExisting only after confirmation', async () => {
+    const send = mockAgentStore([storeAgent('reviewer-native', 'global')])
+    const importProviderAgent = vi.fn(async () => ({ ok: true as const, id: 'reviewer-native', mode: 'subagent', scope: 'global' as const }))
+    useAppStore.setState({ importProviderAgent })
+    const { host, root } = renderModal()
+    await previewSupportedAgent(host)
+
+    expect(send).toHaveBeenCalledWith({ action: 'listAgentDefinitions', payload: { chatId: 'chat-1' } })
+    expect(host.textContent).toContain('An agent named reviewer-native already exists for all workspaces. Rename it or replace it.')
+    expect(buttonNamed('Import agent')).toBeUndefined()
+    await act(async () => buttonNamed('Replace agent…')!.click())
+    expect(importProviderAgent).not.toHaveBeenCalled()
+    expect(document.body.textContent).toContain('This overwrites the saved reviewer-native agent for all workspaces.')
+    await act(async () => buttonNamed('Cancel')!.click())
+    expect(importProviderAgent).not.toHaveBeenCalled()
+
+    await act(async () => buttonNamed('Replace agent…')!.click())
+    await act(async () => buttonNamed('Replace')!.click())
+    expect(importProviderAgent).toHaveBeenCalledOnce()
+    expect(importProviderAgent).toHaveBeenCalledWith(expect.objectContaining({ canonicalId: 'reviewer-native', workspaceScope: false, replaceExisting: true }))
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('does not offer Replace when only the other scope has that agent', async () => {
+    mockAgentStore([storeAgent('reviewer-native', 'workspace')])
+    const { host, root } = renderModal()
+    await previewSupportedAgent(host)
+    expect(buttonNamed('Import agent')).toBeTruthy()
+    expect(buttonNamed('Replace agent…')).toBeUndefined()
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('opens Central setup on the imported agent and highlights it there', async () => {
+    mockAgentStore([storeAgent('reviewer-native', 'global', 'subagent')])
+    // The target is listed only after the import, so the first listing must not offer Replace.
+    let imported = false
+    vi.mocked(cefBridge.sendToCEF).mockImplementation(async (request) => request.action === 'listAgentDefinitions'
+      ? { ok: true, data: { agents: imported ? [storeAgent('reviewer-native', 'global', 'subagent')] : [], errors: [] } as never, requestId: 'test' }
+      : { ok: true, data: {} as never, requestId: 'test' })
+    useAppStore.setState({ importProviderAgent: vi.fn(async () => { imported = true; return { ok: true as const, id: 'reviewer-native', mode: 'subagent', scope: 'global' as const } }) })
+    HTMLElement.prototype.scrollIntoView = vi.fn()
+    const { host, root } = renderModal()
+    try {
+      await previewSupportedAgent(host)
+      await act(async () => buttonNamed('Import agent')!.click())
+      await vi.waitFor(() => expect(host.querySelector('.uam-central-agent[data-highlighted="true"]')).not.toBeNull())
+
+      expect(failures.at(-1)).toMatchObject({ message: 'Imported reviewer-native as a delegate-only agent for all workspaces.', tone: 'success' })
+      const row = host.querySelector<HTMLElement>('.uam-central-agent[data-highlighted="true"]')
+      expect(row?.textContent).toContain('reviewer-native')
+      expect(row?.textContent).toContain('Delegate-only')
+      expect(document.activeElement?.getAttribute('aria-label')).toBe('Edit reviewer-native')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView
+    }
+  })
+
+  it('names what a replacement would change before overwriting a saved agent', async () => {
+    mockAgentStore([{ ...storeAgent('reviewer-native', 'global'), skills: ['docs'], delegates: ['writer'] }])
+    const { host, root } = renderModal()
+    await previewSupportedAgent(host)
+    act(() => (host.querySelector('button[aria-label="Workspace access"]') as HTMLButtonElement).click())
+    act(() => (Array.from(document.body.querySelectorAll('[role="option"]')).find((option) => option.textContent?.startsWith('Read and write')) as HTMLButtonElement).click())
+    await act(async () => buttonNamed('Replace agent…')!.click())
+
+    const dialog = document.body.textContent ?? ''
+    expect(dialog).toContain('It becomes delegate-only, so chats can no longer select it.')
+    expect(dialog).toContain('It gains write access to the workspace.')
+    expect(dialog).toContain('It loses its skill.')
+    expect(dialog).toContain('It loses the agents it may delegate to.')
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('names a lost delegation role and lost write access when replacing', async () => {
+    mockAgentStore([{ ...storeAgent('reviewer-native', 'global', 'both'), workspaceAccess: 'write' }])
+    const { host, root } = renderModal()
+    await previewSupportedAgent(host, true, { ...supportedPreview, mode: 'primary' })
+    await act(async () => buttonNamed('Replace agent…')!.click())
+    const dialog = document.body.textContent ?? ''
+    expect(dialog).toContain('It changes from being a chat agent that other agents can also use to being a chat agent only.')
+    expect(dialog).toContain('It loses write access to the workspace.')
+    expect(dialog).not.toContain('It loses its')
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('keeps the import action busy until saved agents are listed', async () => {
+    let answer!: (agents: ReturnType<typeof storeAgent>[]) => void
+    vi.spyOn(cefBridge, 'sendToCEF').mockImplementation((request) => request.action === 'listAgentDefinitions'
+      ? new Promise((resolve) => { answer = (agents) => resolve({ ok: true, data: { agents, errors: [] } as never, requestId: 'test' }) })
+      : Promise.resolve({ ok: true, data: {} as never, requestId: 'test' }))
+    const { host, root } = renderModal()
+    await previewSupportedAgent(host, false)
+    expect(buttonNamed('Import agent')?.disabled).toBe(true)
+    await act(async () => answer([storeAgent('reviewer-native', 'global')]))
+    expect(buttonNamed('Import agent')).toBeUndefined()
+    expect(buttonNamed('Replace agent…')?.disabled).toBe(false)
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('does not move a user who left the Agents page while the import was running', async () => {
+    mockAgentStore([])
+    let finish!: () => void
+    useAppStore.setState({ importProviderAgent: vi.fn(() => new Promise((resolve) => {
+      finish = () => resolve({ ok: true as const, id: 'reviewer-native', mode: 'subagent', scope: 'global' as const })
+    })) })
+    const { host, root } = renderModal()
+    await previewSupportedAgent(host)
+    await act(async () => buttonNamed('Import agent')!.click())
+    openEditorsSection(host)
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)) })
+    await act(async () => finish())
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)) })
+
+    expect(failures.at(-1)).toMatchObject({ message: 'Imported reviewer-native as a delegate-only agent for all workspaces.' })
+    expect(host.textContent).not.toContain('Agent store')
+    expect(host.querySelector('.uam-central-agent')).toBeNull()
+    act(() => root.unmount())
+    host.remove()
+  })
+
+  it('keeps delegate-only agents out of the favourite agent choices', () => {
+    useAppStore.setState({
+      favoriteUamAgentIds: ['helper'],
+      uamAgentsBySessionId: { 'chat-1': [
+        { id: 'build', description: '', builtIn: true },
+        { id: 'writer', description: 'Writes', builtIn: false },
+        { id: 'helper', description: 'Helps', builtIn: false, delegateOnly: true },
+      ] },
+    })
+    const { host, root } = renderModal()
+    openAgentsSection(host)
+    act(() => (host.querySelector('button[aria-label="Favourite agent"]') as HTMLButtonElement).click())
+    const choices = Array.from(document.body.querySelectorAll('[role="option"]')).map((option) => option.textContent)
+    expect(choices.some((choice) => choice?.startsWith('writer'))).toBe(true)
+    expect(choices.some((choice) => choice?.startsWith('helper'))).toBe(false)
+    expect(host.textContent).toContain("Delegate-only: chats can't select it")
     act(() => root.unmount())
     host.remove()
   })
@@ -1499,7 +1776,7 @@ describe('SettingsModal memory settings', () => {
     type Preview = Awaited<ReturnType<ReturnType<typeof useAppStore.getState>['previewProviderAgentImport']>>
     const pending: Array<(preview: Preview) => void> = []
     const previewProviderAgentImport = vi.fn(() => new Promise<Preview>(resolve => pending.push(resolve)))
-    const importProviderAgent = vi.fn(async () => true)
+    const importProviderAgent = vi.fn(async () => ({ ok: true as const, id: 'new-agent', mode: 'subagent', scope: 'global' as const }))
     useAppStore.setState({ previewProviderAgentImport, importProviderAgent })
     const { host, root } = renderModal()
     openAgentsSection(host)
@@ -1529,6 +1806,7 @@ describe('SettingsModal memory settings', () => {
       providerId: changedField === 'provider' ? 'copilot-cli' : 'opencode-cli',
       sourcePath: changedField === 'path' ? '/tmp/new.md' : '/tmp/old.md',
     }))
+    await vi.waitFor(() => expect(host.querySelector('button[aria-busy="true"]')).toBeNull())
     const importButton = Array.from(host.querySelectorAll('button')).find(button => button.textContent === 'Import agent') as HTMLButtonElement
     await act(async () => importButton.click())
     expect(importProviderAgent).toHaveBeenCalledWith(expect.objectContaining({
@@ -2686,6 +2964,58 @@ describe('SettingsModal memory settings', () => {
     act(() => root.unmount()); host.remove()
   })
 
+  it('guards an embedded skill draft before changing pages or closing Settings', async () => {
+    useAppStore.setState({ createMarkdownStoreEntry: vi.fn(() => Promise.resolve(true)) })
+    const { host, root } = renderModal()
+    openMarkdownStoreSection(host)
+    const find = (text: string) => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === text || button.getAttribute('aria-label') === text)
+    const type = (label: string, value: string) => act(() => {
+      const field = host.querySelector<HTMLInputElement | HTMLTextAreaElement>(`[aria-label="${label}"]`)!
+      Object.getOwnPropertyDescriptor(field.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, 'value')!.set!.call(field, value)
+      field.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    act(() => find('New skill')?.click()); act(() => find('Create')?.click())
+    type('Entry title', 'Unsaved skill'); type('Entry Markdown body', 'Body')
+    act(() => host.querySelector<HTMLButtonElement>('[aria-label="Editors"]')?.click())
+    expect(host.querySelector('[aria-label="Unsaved skill changes"]')).toBeTruthy()
+    expect(host.querySelector<HTMLInputElement>('[aria-label="Entry title"]')?.value).toBe('Unsaved skill')
+    act(() => find('Keep editing')?.click())
+    act(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })))
+    // Escape inside the editor asks the store first; Settings stays open with the draft.
+    expect(useAppStore.getState().setSettingsOpen).not.toHaveBeenCalled()
+    act(() => find('Keep editing')?.click())
+    act(() => find('Back to chats')?.click())
+    expect(useAppStore.getState().setSettingsOpen).not.toHaveBeenCalled()
+    expect(host.querySelector('[aria-label="Unsaved skill changes"]')).toBeTruthy()
+    await act(async () => { find('Save & close')?.click(); await Promise.resolve() })
+    expect(useAppStore.getState().createMarkdownStoreEntry).toHaveBeenCalledWith({ title: 'Unsaved skill', maker: '', review: '', body: 'Body', group: '' })
+    expect(useAppStore.getState().setSettingsOpen).toHaveBeenCalledWith(false)
+    act(() => root.unmount()); host.remove()
+  })
+
+  it('discards an embedded skill draft only when asked and then changes page', () => {
+    useAppStore.setState({ createMarkdownStoreEntry: vi.fn(() => Promise.resolve(true)) })
+    const { host, root } = renderModal()
+    openMarkdownStoreSection(host)
+    const find = (text: string) => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find(button => button.textContent === text || button.getAttribute('aria-label') === text)
+    act(() => find('New skill')?.click()); act(() => find('Create')?.click())
+    act(() => {
+      const field = host.querySelector<HTMLInputElement>('[aria-label="Entry title"]')!
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(field, 'Unsaved skill')
+      field.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    const editors = host.querySelector<HTMLButtonElement>('[aria-label="Editors"]')!
+    act(() => { editors.focus(); editors.click() })
+    expect(host.querySelector('[aria-label="Unsaved skill changes"]')).toBeTruthy()
+    act(() => find('Discard')?.click())
+    expect(host.querySelector('[role="region"][aria-label="Skills"]')).toBeNull()
+    // The prompt that held focus is gone, so focus returns to the page button that asked to leave.
+    expect(document.activeElement).toBe(editors)
+    expect(find('Add group')).toBeTruthy()
+    expect(useAppStore.getState().createMarkdownStoreEntry).not.toHaveBeenCalled()
+    act(() => root.unmount()); host.remove()
+  })
+
   it('disables Save for clean and reverted existing theme drafts', () => {
     const theme = { version: 1 as const, id: 'custom:ocean' as const, name: 'Ocean', base: 'dark' as const, colors: { ...BUILT_IN_THEME_COLORS.dark } }
     useAppStore.setState({ theme: theme.id, customThemes: [theme] })
@@ -2835,6 +3165,98 @@ describe('SettingsModal memory settings', () => {
     host.remove()
   })
 
+  it('asks before an imported theme replaces a saved theme with the same id', async () => {
+    const ocean = {
+      version: 1 as const, id: 'custom:ocean' as const, name: 'Ocean', base: 'dark' as const,
+      colors: { ...BUILT_IN_THEME_COLORS.dark },
+    }
+    useAppStore.setState({ theme: 'focus', customThemes: [ocean] })
+    const { host, root } = renderModal()
+    const save = useAppStore.getState().saveCustomTheme
+    const importJson = async (theme: object) => {
+      const input = host.querySelector('input[aria-label="Import theme JSON"]') as HTMLInputElement
+      const file = new File([], 'theme.json', { type: 'application/json' })
+      Object.defineProperty(file, 'text', { value: () => Promise.resolve(JSON.stringify(theme)) })
+      Object.defineProperty(input, 'files', { configurable: true, value: [file] })
+      await act(async () => { input.dispatchEvent(new Event('change', { bubbles: true })) })
+    }
+    const dialog = () => document.querySelector('[role="alertdialog"][aria-label="Imported theme already exists"]')
+    const choose = async (label: string) => {
+      const target = Array.from(dialog()!.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === label)!
+      await act(async () => { target.click(); await Promise.resolve() })
+    }
+
+    // Same default-derived id, different colours: nothing is saved until the user chooses.
+    await importJson({ ...ocean, colors: { ...ocean.colors, accent: '#ff0000' } })
+    expect(dialog()?.textContent).toContain('Replace “Ocean”?')
+    expect(save).not.toHaveBeenCalled()
+    await choose('Cancel')
+    expect(save).not.toHaveBeenCalled()
+
+    await importJson({ ...ocean, colors: { ...ocean.colors, accent: '#ff0000' } })
+    await choose('Keep both')
+    expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ id: 'custom:ocean-copy', name: 'Ocean copy' }))
+    expect(useAppStore.getState().setTheme).toHaveBeenLastCalledWith('custom:ocean-copy')
+    expect(dialog()).toBeNull()
+
+    await importJson({ ...ocean, colors: { ...ocean.colors, accent: '#00ff00' } })
+    await choose('Replace')
+    expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ id: 'custom:ocean', name: 'Ocean' }))
+    expect(save).toHaveBeenCalledTimes(2)
+
+    // A theme with a new id imports directly.
+    await importJson({ ...ocean, id: 'custom:forest', name: 'Forest' })
+    expect(dialog()).toBeNull()
+    expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ id: 'custom:forest' }))
+    act(() => root.unmount()); host.remove()
+  })
+
+  it('keeps both under a unique name within the theme name limit', async () => {
+    const longName = 'A'.repeat(62)
+    const themes = [
+      { version: 1 as const, id: 'custom:ocean' as const, name: 'Ocean', base: 'dark' as const, colors: { ...BUILT_IN_THEME_COLORS.dark } },
+      { version: 1 as const, id: 'custom:ocean-copy' as const, name: 'Ocean copy', base: 'dark' as const, colors: { ...BUILT_IN_THEME_COLORS.dark } },
+      { version: 1 as const, id: 'custom:long' as const, name: longName, base: 'dark' as const, colors: { ...BUILT_IN_THEME_COLORS.dark } },
+    ]
+    useAppStore.setState({ theme: 'focus', customThemes: themes })
+    const { host, root } = renderModal()
+    const save = useAppStore.getState().saveCustomTheme
+    const keepBoth = async (theme: object) => {
+      const input = host.querySelector('input[aria-label="Import theme JSON"]') as HTMLInputElement
+      const file = new File([], 'theme.json', { type: 'application/json' })
+      Object.defineProperty(file, 'text', { value: () => Promise.resolve(JSON.stringify(theme)) })
+      Object.defineProperty(input, 'files', { configurable: true, value: [file] })
+      await act(async () => { input.dispatchEvent(new Event('change', { bubbles: true })) })
+      const dialog = document.querySelector('[role="alertdialog"][aria-label="Imported theme already exists"]')!
+      await act(async () => { Array.from(dialog.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Keep both')!.click(); await Promise.resolve() })
+    }
+    await keepBoth(themes[0])
+    expect(save).toHaveBeenLastCalledWith(expect.objectContaining({ id: 'custom:ocean-copy-2', name: 'Ocean copy 2' }))
+    await keepBoth(themes[2])
+    const saved = vi.mocked(save).mock.lastCall![0]
+    expect(saved.name).toBe(`${'A'.repeat(59)} copy`)
+    expect(saved.name.length).toBeLessThanOrEqual(64)
+    expect(saved.id).not.toBe('custom:long')
+    act(() => root.unmount()); host.remove()
+  })
+
+  it('keeps a clashing theme import pending when saving it fails', async () => {
+    const ocean = { version: 1 as const, id: 'custom:ocean' as const, name: 'Ocean', base: 'dark' as const, colors: { ...BUILT_IN_THEME_COLORS.dark } }
+    useAppStore.setState({ theme: 'focus', customThemes: [ocean], saveCustomTheme: vi.fn(async () => null) })
+    const { host, root } = renderModal()
+    const input = host.querySelector('input[aria-label="Import theme JSON"]') as HTMLInputElement
+    const file = new File([], 'theme.json', { type: 'application/json' })
+    Object.defineProperty(file, 'text', { value: () => Promise.resolve(JSON.stringify(ocean)) })
+    Object.defineProperty(input, 'files', { configurable: true, value: [file] })
+    await act(async () => { input.dispatchEvent(new Event('change', { bubbles: true })) })
+    const dialog = () => document.querySelector('[role="alertdialog"][aria-label="Imported theme already exists"]')
+    await act(async () => { Array.from(dialog()!.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Keep both')!.click(); await Promise.resolve() })
+    expect(failures.at(-1)).toMatchObject({ message: 'Theme could not be saved.', detail: 'Try again.' })
+    expect(dialog()).toBeTruthy()
+    expect(useAppStore.getState().setTheme).not.toHaveBeenCalled()
+    act(() => root.unmount()); host.remove()
+  })
+
   it('exports and imports portable local chat bundles with honest outcomes', async () => {
     const requests: Array<{ action: string; payload?: { currentValue?: string } }> = []
     window.cefQuery = ({ request, onSuccess }) => {
@@ -2850,12 +3272,13 @@ describe('SettingsModal memory settings', () => {
     const exportButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Export all chats') as HTMLButtonElement
     await act(async () => exportButton.click())
     expect(requests[0]).toMatchObject({ action: 'exportLocalChats', payload: { currentValue: '' } })
-    expect(failures.at(-1)).toMatchObject({ message: 'Exported 2 chats to /tmp/uam-export.', tone: 'success' })
+    expect(failures.at(-1)).toMatchObject({ message: 'Exported 2 chats.', detail: '/tmp/uam-export', tone: 'success' })
 
     const importButton = Array.from(host.querySelectorAll('button')).find((button) => button.textContent === 'Import chat bundle') as HTMLButtonElement
     await act(async () => importButton.click())
     expect(requests[1]).toMatchObject({ action: 'importLocalChats', payload: { currentValue: '/tmp/uam-export' } })
-    expect(failures.at(-1)?.message).toContain('Imported 1 of 2 chats; 1 were given new IDs. One chat could not be saved.')
+    expect(failures.at(-1)?.message).toBe('Imported 1 of 2 chats; 1 were given new IDs.')
+    expect(failures.at(-1)?.detail).toContain('One chat could not be saved.')
 
     act(() => root.unmount())
     host.remove()
@@ -3000,7 +3423,7 @@ describe('SettingsModal memory settings', () => {
     expect(host.textContent).toContain('Denied')
     expect(host.textContent).not.toContain('Accessibility request granted')
     await act(async () => Array.from(host.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent?.includes('Request Accessibility'))?.click())
-    expect(failures.at(-1)?.message).toContain('Permission is not granted. Opened')
+    expect(failures.at(-1)?.message).toContain('Turn on the permission in')
     expect(requests.some((request) => request.action === 'openComputerUseSystemSettings' && request.payload?.permission === 'accessibility')).toBe(true)
     // Granted permissions offer no request button.
     expect(Array.from(host.querySelectorAll<HTMLButtonElement>('button')).some((button) => button.textContent === 'Request Screen Recording')).toBe(false)
