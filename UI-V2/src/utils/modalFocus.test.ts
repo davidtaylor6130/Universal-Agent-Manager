@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { getTopmostModal, trapModalTab } from './modalFocus'
+import { focusableRowWith, getTopmostModal, trapModalTab } from './modalFocus'
 
 afterEach(() => { document.body.innerHTML = '' })
 
@@ -52,4 +52,13 @@ describe('trapModalTab', () => {
     expect(getTopmostModal()?.id).toBe('open')
   })
 
+})
+
+describe('focusableRowWith', () => {
+  it('skips rows in hidden, inert or aria-hidden parts, such as an inactive phone page', () => {
+    document.body.innerHTML = '<div inert><div data-workspace-id="w" id="inert-row"></div></div><div aria-hidden="true"><div data-workspace-id="w"></div></div><div hidden><div data-workspace-id="w"></div></div><div data-workspace-id="w" id="visible"></div>'
+    expect(focusableRowWith('data-workspace-id', 'w')?.id).toBe('visible')
+    expect(focusableRowWith('data-workspace-id', 'other')).toBeNull()
+    expect(focusableRowWith('data-session-id', null)).toBeNull()
+  })
 })

@@ -1767,6 +1767,7 @@ if(UAM_BUILD_TESTS)
     tests/remote_memory_publication_tests.cpp
     tests/acp_session_tests.cpp
     tests/compute_pool_tests.cpp
+    tests/compute_pool_continuation_tests.cpp
     tests/acp_permission_ceiling_tests.cpp
     tests/acp_permission_provider_boundary_tests.cpp
     tests/codex_captured_permission_tests.cpp

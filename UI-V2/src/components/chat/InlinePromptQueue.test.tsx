@@ -192,6 +192,32 @@ describe('inline queued prompts', () => {
     expect(reportAppFailure).toHaveBeenCalledWith(expect.stringContaining('could not be reordered'), expect.anything())
     expect(button('Move queued prompt up').disabled).toBe(true)
   })
+  it.each([['Default', '', 180], ['Slow', '1.5', 270], ['Fast', '0.67', 120.6], ['Off', '0', 0]])('slides reordered rows for the %s Animation speed', (_speed, scale, duration) => {
+    // Rows sit 30px apart in DOM order, so a reorder gives each row a real offset to slide from.
+    const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const index = this.parentElement ? Array.from(this.parentElement.children).indexOf(this) : 0
+      return { top: index * 30, bottom: index * 30 + 30, left: 0, right: 0, width: 0, height: 30, x: 0, y: index * 30, toJSON: () => ({}) }
+    })
+    const animate = vi.fn()
+    Object.defineProperty(HTMLElement.prototype, 'animate', { value: animate, configurable: true })
+    vi.stubGlobal('matchMedia', (query: string) => ({ matches: false, media: query, addEventListener() {}, removeEventListener() {} }))
+    document.documentElement.style.setProperty('--motion-scale', scale)
+    try {
+      act(() => root.render(<InlinePromptQueue {...props} prompts={[prompt('a'), prompt('b')]} />)) // records the measured positions
+      expect(animate).not.toHaveBeenCalled()
+      act(() => root.render(<InlinePromptQueue {...props} prompts={[prompt('b'), prompt('a')]} />))
+      if (duration === 0) expect(animate).not.toHaveBeenCalled()
+      else {
+        expect(animate).toHaveBeenCalledTimes(2)
+        for (const [, options] of animate.mock.calls) expect(options.duration).toBeCloseTo(duration)
+      }
+    } finally {
+      document.documentElement.style.removeProperty('--motion-scale')
+      delete (HTMLElement.prototype as { animate?: unknown }).animate
+      vi.unstubAllGlobals()
+      rect.mockRestore()
+    }
+  })
   it('drags a queued row onto another and submits the same expected snapshot as the buttons', async () => {
     const dragEvent = (type: string, target: Element) => {
       const event = new Event(type, { bubbles: true, cancelable: true })
