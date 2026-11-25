@@ -200,6 +200,8 @@ bool ConfirmTurnInputReceived(const AcpSessionState& session, ChatSession& chat)
 bool AppendThoughtChunk(ChatSession& chat, AcpSessionState& session, const std::string& chunk);
 std::string AppendAssistantChunk(ChatSession& chat, AcpSessionState& session, const std::string& chunk, const std::string& identity = {});
 ToolCall PersistedToolCallFromAcpToolCall(const AcpToolCallState& tool_call);
+/// The reverse of PersistedToolCallFromAcpToolCall for every saved field; keep the two next to each other.
+void ApplyPersistedToolCall(AcpToolCallState& tool_call, const ToolCall& persisted);
 bool UpsertPersistedToolCall(std::vector<ToolCall>& tool_calls, const AcpToolCallState& tool_call);
 bool SyncAcpToolCallsToAssistantMessage(ChatSession& chat, AcpSessionState& session, bool create_if_missing);
 bool FinalizeActiveAcpToolCallsAsCancelled(ChatSession& chat, AcpSessionState& session);

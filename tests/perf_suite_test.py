@@ -65,11 +65,11 @@ summary = perf_suite.summarize_ui(['\x1b[22m\x1b[39m[TIMING] input 3 to committe
 assert summary['input N to committed draft'] == {'count': 2, 'p50': 3.0, 'p95': 4.0, 'max': 4.0}, summary
 assert 'history response to committed initial page (2000 messages)' in summary
 
-log = ('[performance] PollTick took 812 ms; stages=runtimes:700,terminals:1,push:100,awake:0 ms.\n'
-       '[performance] PollTick summary over 60 s: samples=240 slow(>=50ms)=2; p50/p95/max ms total=4/80/812 stages=runtimes:3/60/700,push:1/50/120.\n'
+log = ('[performance] PollTick took 812 ms; stages=startup:600,runtimes:700,side_chats:3,terminals:1,push:100,awake:0 ms.\n'
+       '[performance] PollTick summary over 60 s: samples=240 slow(>=50ms)=2; p50/p95/max ms total=4/80/812 stages=startup:0/0/600,runtimes:3/60/700,push:1/50/120.\n'
        '[performance] statePatch serialization took 160 ms, bytes=10, changedChats=1\n')
 polls = perf_suite.slow_poll_metrics(log)
-assert polls['slow_poll_count'] == 2 and polls['slow_poll_max_ms'] == 812 and polls['slow_poll_stage_runtimes_max_ms'] == 700, polls
+assert polls['slow_poll_count'] == 2 and polls['slow_poll_max_ms'] == 812 and polls['slow_poll_stage_runtimes_max_ms'] == 700 and polls['slow_poll_stage_startup_max_ms'] == 600, polls
 assert polls['slow_patch_max_ms'] == 160 and polls['slow_poll_stage_push_max_ms'] == 120, polls
 
 with tempfile.TemporaryDirectory() as folder:

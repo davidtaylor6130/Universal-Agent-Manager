@@ -121,7 +121,7 @@ namespace
 	// a line per slow tick filled almost half of the retained log. UI-thread only, like the poll itself.
 	uam::diagnostics::StageTimingSummary& PollTiming()
 	{
-		static uam::diagnostics::StageTimingSummary timing("PollTick", {"runtimes", "terminals", "memory", "controls", "computer_use", "shell_actions",
+		static uam::diagnostics::StageTimingSummary timing("PollTick", {"startup", "runtimes", "side_chats", "terminals", "memory", "controls", "computer_use", "shell_actions",
 		    "workspace_availability", "providers", "history", "retention", "catalogs", "push", "awake"});
 		return timing;
 	}
@@ -473,7 +473,11 @@ void Application::PollTick()
 		m_startupChatLoader.join();
 		auto [chats, warning] = m_startupChats.get();
 		FinishStartupState(std::move(chats), std::move(warning));
+		const std::chrono::steady_clock::time_point apply_finished = std::chrono::steady_clock::now();
 		if (uam_cef_globals::g_client) uam_cef_globals::g_client->ResumeStartupQueries();
+		// The held bridge requests (the UI's first full state among them) run here, outside the poll's stage timings.
+		uam::diagnostics::Write("[performance] startup held bridge requests answered in " +
+		    std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - apply_finished).count()) + " ms.");
 	}
 	if (m_managementNode && g_managementStopRequested)
 	{
@@ -505,7 +509,7 @@ void Application::PollTick()
 
 	try
 	{
-		PollTickStages(poll_started);
+		PollTickStages(poll_started, std::chrono::steady_clock::now());
 	}
 	catch (const std::exception& error)
 	{
@@ -528,10 +532,11 @@ void Application::ReportPollTickFailure(const std::string& reason)
 	uam::diagnostics::Write("[poll] PollTick stage failed and was skipped for this tick: " + reason);
 }
 
-void Application::PollTickStages(std::chrono::steady_clock::time_point poll_started)
+void Application::PollTickStages(std::chrono::steady_clock::time_point poll_started, std::chrono::steady_clock::time_point stages_started)
 {
 	const RuntimeCliCompatibilitySnapshot provider_snapshot_before = CreateCliCompatibilitySnapshot(m_app);
 	const bool side_chats_changed = uam::PollTemporarySideChatCleanup(m_app);
+	const std::chrono::steady_clock::time_point side_chats_finished = std::chrono::steady_clock::now();
 	const bool acp_sessions_changed = uam::PollAllAcpSessions(m_app, m_browser);
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 	const bool compaction_sync_changed = m_openCodeCompactionSync && m_openCodeCompactionSync->Poll(m_app);
@@ -629,7 +634,9 @@ void Application::PollTickStages(std::chrono::steady_clock::time_point poll_star
 		return std::chrono::duration_cast<std::chrono::milliseconds>(end - begin);
 	};
 	for (const std::string& line : PollTiming().Record(poll_finished, poll_duration, {
-	         milliseconds(poll_started, runtimes_finished),
+	         milliseconds(poll_started, stages_started),
+	         milliseconds(stages_started, runtimes_finished),
+	         milliseconds(stages_started, side_chats_finished),
 	         milliseconds(runtimes_finished, terminals_finished),
 	         milliseconds(terminals_finished, memory_finished),
 	         milliseconds(memory_finished, controls_finished),
@@ -761,6 +768,7 @@ void Application::ApplyBundledMarkdownStoreSeed(bool seeded, std::string error, 
 	if (!seeded && !error.empty())
 	{
 		m_app.status_line = "Could not import bundled skills: " + error;
+		RestoreSettingsLoadNotice();
 	}
 	else if (m_app.shell_actions.empty())
 	{
@@ -889,12 +897,14 @@ bool Application::InitializeState()
 	}
 	const std::chrono::steady_clock::time_point agent_runs_finished = std::chrono::steady_clock::now();
 
+	const std::string status_before_settings = m_app.status_line;
 	if (!PersistenceCoordinator().LoadSettings(m_app))
 	{
 		uam::diagnostics::Write(m_app.status_line);
 		m_exitCode = 1;
 		return false;
 	}
+	if (m_app.status_line != status_before_settings) m_settingsLoadNotice = m_app.status_line;
 	m_settingsLoaded = true;
 	m_app.storage_retention_service = std::make_shared<uam::StorageRetentionService>(m_dataRootLock);
 	m_app.pr_watch_service = std::make_shared<uam::PrWatchService>(m_app.data_root);
@@ -1045,6 +1055,13 @@ bool Application::InitializeState()
 	return true;
 }
 
+/// Startup messages replace the status line; keep the settings load notice (such as dropped MCP servers) beside them.
+void Application::RestoreSettingsLoadNotice()
+{
+	if (!m_settingsLoadNotice.empty() && m_app.status_line.find(m_settingsLoadNotice) == std::string::npos)
+		m_app.status_line = m_app.status_line.empty() ? m_settingsLoadNotice : m_app.status_line + " " + m_settingsLoadNotice;
+}
+
 void Application::FinishStartupState(std::vector<ChatSession> chats, std::string warning)
 {
 	const std::chrono::steady_clock::time_point finish_started = std::chrono::steady_clock::now();
@@ -1100,6 +1117,7 @@ void Application::FinishStartupState(std::vector<ChatSession> chats, std::string
 		m_app.status_line =
 		    "A previous computer-use control file could not be stopped. End any orphaned provider process before using computer use.";
 	}
+	RestoreSettingsLoadNotice();
 
 	const std::chrono::steady_clock::time_point finish_finished = std::chrono::steady_clock::now();
 	const auto milliseconds = [](std::chrono::steady_clock::time_point begin, std::chrono::steady_clock::time_point end)

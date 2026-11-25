@@ -8,6 +8,7 @@
 #include <map>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace uam::io
 {
@@ -73,6 +74,8 @@ struct SettingsLoadResult
 	bool recovered_from_backup = false;
 	bool unrecovered_error = false;
 	std::string warning;
+	/// One reason per saved MCP server entry dropped as invalid; the other entries still load.
+	std::vector<std::string> removed_mcp_servers;
 };
 
 /// <summary>

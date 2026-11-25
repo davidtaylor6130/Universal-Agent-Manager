@@ -8,6 +8,8 @@ Memory extraction and recall are optional app services over local Markdown files
 
 After eligible chat activity, `MemoryService` prepares extraction through a configured worker and writes supported entries under the resolved memory root. Recall prepares a bounded preface for a prompt. `MemoryLibraryService` handles browse and scan candidates; workspace-local entries use `<workspace>/.UAM/`. Secret checks and storage guards apply before writes. Preserve user-authored file contents and workspace ownership; never infer permission to overwrite from a successful scan.
 
+Every writer builds entry files through `src/common/memory/memory_entry_format.h`: the field limits (title 160, memory 1,400, evidence 900 bytes, cut at a UTF-8 character boundary), the same-title lookup (ASCII letters and digits; a file holding the whole capped title outranks a longer legacy title sharing its first 160 bytes), the occurrence count, extraction receipts and the file layout. The worker's staged batch, the Memory Library store and the SSH runner's store therefore match and count the same files. Worker-only quality rules (the high/medium/low confidence vocabulary, required evidence and the memory-level filters) stay in `MemoryService`; manual entries keep optional evidence and free confidence text.
+
 Memory settings include recall budget and worker bindings. Keep those limits normalized at load and save boundaries. If file ownership or workspace routing changes, update the focused tests for local and global roots.
 
 ## Policy inheritance
