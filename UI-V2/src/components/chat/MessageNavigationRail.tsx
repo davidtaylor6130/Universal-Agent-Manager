@@ -202,17 +202,17 @@ export function MessageNavigationRail({ userMessageIndices, startIndex, messages
         navigate(target)
       }}>
       <span aria-hidden style={{ position: 'absolute', top: count === 1 ? '50%' : 0, bottom: count === 1 ? undefined : -1, left: 6, width: 14, height: count === 1 ? 1.5 : undefined,
-        background: count === 1 ? 'var(--text-3)' : undefined,
-        backgroundImage: count > 1 ? 'linear-gradient(to bottom, var(--text-3) 1.5px, transparent 1.5px)' : undefined,
+        background: count === 1 ? 'var(--rail-tick, var(--text-3))' : undefined,
+        backgroundImage: count > 1 ? 'linear-gradient(to bottom, var(--rail-tick, var(--text-3)) 1.5px, transparent 1.5px)' : undefined,
         backgroundSize: count > 1 ? `100% calc((100% - 1px) / ${count - 1})` : undefined }} />
       {[...lit].map((position) => <span key={position} aria-hidden data-rail-visible={position} className="conversation-rail-lit pointer-events-none motion-reduce:transition-none"
-        style={{ position: 'absolute', top: markTop(position), left: 6, width: 14, height: 1.5, background: 'var(--text)', transition: 'opacity var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease)' }} />)}
+        style={{ position: 'absolute', top: markTop(position), left: 6, width: 14, height: 1.5, background: 'var(--rail-lit, var(--text))', transition: 'opacity var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease)' }} />)}
       {previewIndex !== null && [-2, -1, 1, 2].map(distance => {
         const neighbor = index + distance
         if (neighbor < 0 || neighbor >= count) return null
-        return <span key={neighbor} aria-hidden data-rail-neighbor={neighbor} className="pointer-events-none motion-reduce:transition-none" style={{ position: 'absolute', top: markTop(neighbor), left: 6, width: 48, height: 1.5, background: lit.has(neighbor) ? 'var(--text)' : 'var(--text-3)', transformOrigin: 'left', transition: 'transform var(--dur-fast) var(--ease)', transform: `scaleX(${Math.abs(distance) === 1 ? 2 / 3 : 5 / 12})` }} />
+        return <span key={neighbor} aria-hidden data-rail-neighbor={neighbor} className="pointer-events-none motion-reduce:transition-none" style={{ position: 'absolute', top: markTop(neighbor), left: 6, width: 48, height: 1.5, background: lit.has(neighbor) ? 'var(--rail-lit, var(--text))' : 'var(--rail-tick, var(--text-3))', transformOrigin: 'left', transition: 'transform var(--dur-fast) var(--ease)', transform: `scaleX(${Math.abs(distance) === 1 ? 2 / 3 : 5 / 12})` }} />
       })}
-      <span aria-hidden data-rail-target={index} className="pointer-events-none motion-reduce:transition-none" style={{ position: 'absolute', top: markTop(index), left: 6, width: 48, height: 4.5, background: 'var(--accent)', transformOrigin: 'left', transition: 'transform var(--dur-fast) var(--ease)', transform: `scaleX(${previewIndex === null ? 22 / 48 : 1})` }} />
+      <span aria-hidden data-rail-target={index} className="pointer-events-none motion-reduce:transition-none" style={{ position: 'absolute', top: markTop(index), left: 6, width: 48, height: 4.5, background: 'var(--rail-target, var(--accent))', transformOrigin: 'left', transition: 'transform var(--dur-fast) var(--ease)', transform: `scaleX(${previewIndex === null ? 22 / 48 : 1})` }} />
       {previewIndex !== null && <div className="conversation-rail-preview" aria-hidden style={{ top: markTop(index) }}>
         <div className="conversation-rail-preview__label">{label}</div>
         {preview !== null

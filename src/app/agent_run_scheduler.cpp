@@ -280,6 +280,8 @@ namespace uam
 		// One parent's agents may hold at most half the running slots, so another parent's agents always find room.
 		constexpr std::size_t kMaxRunningPerParent = kMaxRunningAgents / 2;
 		static_assert(kMaxRunningPerParent >= 1 && kMaxRunningPerParent < kMaxRunningAgents);
+		// Every live run a chat owns at any depth: four top-level runs with four children each.
+		constexpr std::size_t kMaxLiveRunsPerChat = kMaxDirectChildren + kMaxDirectChildren * kMaxDirectChildren;
 		constexpr std::size_t kMaxResultExcerptBytes = 16U * 1024U;
 		constexpr int64_t kMaxRunElapsedMs = 30LL * 60LL * 1000LL;
 		constexpr int64_t kProviderCrashWindowMs = 60LL * 1000LL;
@@ -3390,6 +3392,23 @@ namespace uam
 		if (parent != nullptr && std::ranges::count(app.agent_runs, parent->id, &AgentRun::parent_run_id) >= kMaxDirectChildren)
 		{
 			if (error_out != nullptr) *error_out = "An agent run may create at most four direct children.";
+			return false;
+		}
+		// Per-chat bounds, so one chat cannot fill the shared queue. A child can outlive its finished parent, so every
+		// depth counts toward the total; top-level runs use the same bound as mentions and follow-ups.
+		const auto live_in_chat = [&](bool top_level_only)
+		{
+			return static_cast<std::size_t>(std::ranges::count_if(app.agent_runs, [&](const AgentRun& run)
+			    { return run.root_chat_id == root_chat->id && (!top_level_only || run.parent_run_id.empty()) && !IsTerminal(run.status); }));
+		};
+		if (live_in_chat(false) >= kMaxLiveRunsPerChat)
+		{
+			if (error_out != nullptr) *error_out = "This chat already has 20 agents queued or running; wait for some to finish.";
+			return false;
+		}
+		if (parent == nullptr && live_in_chat(true) >= kMaxDirectChildren)
+		{
+			if (error_out != nullptr) *error_out = "This chat already has four agents queued or running; wait for one to finish.";
 			return false;
 		}
 		for (const AgentRun* ancestor = parent; ancestor != nullptr; ancestor = ancestor->parent_run_id.empty() ? nullptr : FindRun(app, ancestor->parent_run_id))

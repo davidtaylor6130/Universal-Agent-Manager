@@ -169,6 +169,8 @@ UAM_TEST(GitWorktreePullRefusesUnsafeSourceBeforeArtifacts)
 		if (mode == "detached") UAM_ASSERT(RunGitForTest(fixture.source, "checkout --detach"));
 		if (mode == "different")
 		{
+			UAM_ASSERT(RunGitForTest(fixture.source, "branch -M checked-out"));
+			// Renaming keeps the upstream, so the refusal names a predictable checked-out branch.
 			UAM_ASSERT(RunGitForTest(fixture.source, "branch different"));
 			fixture.app.settings.git_default_base_branch = "different";
 		}
@@ -181,6 +183,8 @@ UAM_TEST(GitWorktreePullRefusesUnsafeSourceBeforeArtifacts)
 		const std::shared_ptr<uam::WorktreeLaunchPreparationTask> task = fixture.StartAndWait();
 		(void)uam::PollWorktreeLaunchPreparations(fixture.app);
 		UAM_ASSERT(task->prepared && !task->prepared->operation.ok && !task->merged);
+		// One short line naming both branches (#1029).
+		if (mode == "different") UAM_ASSERT_EQ(task->prepared->operation.message, "Local copy is on checked-out, not different.");
 		UAM_ASSERT(!fs::exists(fixture.app.data_root / "worktrees"));
 		UAM_ASSERT(!fs::exists(fixture.source / "upstream.txt"));
 	}
