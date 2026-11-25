@@ -157,7 +157,9 @@ UAM_TEST(GoalReviewerControlCannotMutateOrStartBroaderChildren)
 		TargetMetadataFixture fixture;
 		uam::AppState& app = fixture.app;
 		app.chats.front().command_safety_tier = "yolo";
-		// Either the live review turn or a reviewer capability whose turn already settled.
+		// Either the live review turn or a reviewer capability whose turn already settled. This capability is built by
+		// hand with no hidden-tool list, so it exercises the read ceiling alone; a real reviewer launch also hides
+		// every tool and the manager refuses them first (UamControlManagerRefusesToolsTheSessionWasNotOffered).
 		if (captured_at_launch) app.uam_control_capabilities.front().read_only_at_launch = true;
 		else app.acp_sessions.front()->goal_review_turn = true;
 		const auto call = [&](const std::string& id, const std::string& method, nlohmann::json arguments)

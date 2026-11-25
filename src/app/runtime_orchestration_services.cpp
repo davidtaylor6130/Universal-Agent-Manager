@@ -350,13 +350,19 @@ namespace
 		target.append(text);
 	}
 
+	// The same record also notes native histories already reported as using a
+	// format the reader cannot read yet. Those entries carry this prefix, are kept
+	// apart from deletion keys and never hide or tombstone a history.
+	constexpr std::string_view kFormatRefusalTombstonePrefix = "format-refusal|";
+
 	struct NativeImportTombstones
 	{
 		bool available = false;
 		std::unordered_set<std::string> keys;
+		std::unordered_set<std::string> format_refusal_keys;
 	};
 
-	bool ParseNativeImportTombstones(const fs::path& path, std::unordered_set<std::string>& keys)
+	bool ParseNativeImportTombstones(const fs::path& path, std::unordered_set<std::string>& keys, std::unordered_set<std::string>& format_refusal_keys)
 	{
 		std::string text;
 		if (!uam::io::TryReadTextFile(path, text)) return false;
@@ -370,9 +376,11 @@ namespace
 			if (!value.is_string() || uam::strings::IsBlank(value.get_ref<const std::string&>()))
 			{
 				keys.clear();
+				format_refusal_keys.clear();
 				return false;
 			}
-			keys.insert(value.get<std::string>());
+			const std::string& key = value.get_ref<const std::string&>();
+			(key.starts_with(kFormatRefusalTombstonePrefix) ? format_refusal_keys : keys).insert(key);
 		}
 		return true;
 	}
@@ -387,18 +395,20 @@ namespace
 			result.available = true;
 			return result;
 		}
-		result.available = ParseNativeImportTombstones(path, result.keys);
+		result.available = ParseNativeImportTombstones(path, result.keys, result.format_refusal_keys);
 		if (!result.available)
 		{
 			result.keys.clear();
-			result.available = ParseNativeImportTombstones(backup_path, result.keys);
+			result.format_refusal_keys.clear();
+			result.available = ParseNativeImportTombstones(backup_path, result.keys, result.format_refusal_keys);
 		}
 		return result;
 	}
 
-	bool SaveNativeImportTombstones(const fs::path& data_root, const std::unordered_set<std::string>& keys)
+	bool SaveNativeImportTombstones(const fs::path& data_root, const NativeImportTombstones& tombstones)
 	{
-		std::vector<std::string> ordered(keys.begin(), keys.end());
+		std::vector<std::string> ordered(tombstones.keys.begin(), tombstones.keys.end());
+		ordered.insert(ordered.end(), tombstones.format_refusal_keys.begin(), tombstones.format_refusal_keys.end());
 		std::ranges::sort(ordered);
 		const fs::path path = data_root / kNativeImportTombstonesFile;
 		return uam::io::WriteTextFileWithBackup(path, nlohmann::json(ordered).dump(2));
@@ -3186,7 +3196,7 @@ bool ChatHistorySyncService::AddNativeImportTombstones(
 			added_keys.push_back(key);
 		}
 	}
-	if (added_keys.empty() || SaveNativeImportTombstones(data_root, keys))
+	if (added_keys.empty() || SaveNativeImportTombstones(data_root, tombstones))
 	{
 		return true;
 	}
@@ -3237,7 +3247,35 @@ bool ChatHistorySyncService::RemoveNativeImportTombstones(
 	{
 		keys.erase(key);
 	}
-	return SaveNativeImportTombstones(data_root, keys);
+	return SaveNativeImportTombstones(data_root, tombstones);
+}
+
+std::unordered_set<std::string> ChatHistorySyncService::RecordNativeFormatRefusals(const fs::path& data_root, const std::vector<ImportResult::FormatRefusal>& refusals) const
+{
+	std::unordered_set<std::string> already_reported;
+	if (refusals.empty()) return already_reported;
+	NativeImportTombstones tombstones = LoadNativeImportTombstones(data_root);
+	// An unreadable record reports everything again rather than hiding a refusal.
+	if (!tombstones.available) return already_reported;
+	bool changed = false;
+	for (const ImportResult::FormatRefusal& refusal : refusals)
+	{
+		if (refusal.identity.empty() || refusal.report_key.empty()) continue;
+		const std::string key = std::string(kFormatRefusalTombstonePrefix) + refusal.report_key;
+		if (tombstones.format_refusal_keys.contains(key))
+		{
+			already_reported.insert(refusal.message);
+			continue;
+		}
+		// One entry per history: a new reader version or file revision replaces the old one.
+		const std::string identity = std::string(kFormatRefusalTombstonePrefix) + refusal.identity + "|";
+		std::erase_if(tombstones.format_refusal_keys, [&](const std::string& existing) { return existing.starts_with(identity); });
+		tombstones.format_refusal_keys.insert(key);
+		changed = true;
+	}
+	// A failed save only means the refusal is reported again on a later scan.
+	if (changed) (void)SaveNativeImportTombstones(data_root, tombstones);
+	return already_reported;
 }
 
 ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChatsToLocal(uam::AppState& app, bool delete_native_after_import, const std::string& target_chat_id, const uam::CliTerminalState* final_terminal) const
@@ -3871,6 +3909,9 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverPr
 		    { return uam::ImportedWorkspaceMatchesFolder(uam::paths::PathFromUtf8(workspace), uam::paths::PathFromUtf8(folder.directory)); }});
 		for (auto& error : native.errors) discovery.result.Fail(std::move(error));
 		discovery.result.omitted_error_count += native.omitted_error_count;
+		for (auto& refusal : native.format_refusals)
+			discovery.result.format_refusals.push_back({std::string(uam::provider_ids::kAntigravityCli) + "|" + refusal.native_session_id,
+			    std::move(refusal.report_key), std::move(refusal.message), std::move(refusal.diagnostic)});
 		discovery.antigravity_refusals = std::move(native.refusals);
 		for (auto& chat : native.chats)
 		{

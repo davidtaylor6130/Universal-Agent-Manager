@@ -85,3 +85,8 @@
     animation: none;
   }
 }
+
+/* Chat header host chip: the chat's computer and its in-use/limit count; details live in its tooltip. */
+.uam-host-chip { padding: 0; border: 0; background: none; color: inherit; font: inherit; border-radius: var(--r-sm); font-variant-numeric: tabular-nums; cursor: default; }
+.uam-host-chip:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
+.uam-host-chip__slots { color: var(--text-2); }

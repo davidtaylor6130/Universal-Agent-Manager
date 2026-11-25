@@ -7,6 +7,7 @@
 #include "common/secrets/secret_keychain.h"
 #include "common/secrets/secret_redactor.h"
 #include "common/utils/diagnostic_log.h"
+#include "common/utils/time_utils.h"
 
 #include <algorithm>
 #include <memory>
@@ -94,7 +95,7 @@ void UamQueryHandler::HandleSubmitSecretRequest(CefRefPtr<CefBrowser> browser, c
 	    },
 	    [this, browser, chat_id, request_id, target, saved, drop](AsyncCefResult& result)
 	    {
-		    if (*saved) (void)uam::SecretRequestService::RecordKeychainAccount(m_app.data_root, target.keychain_account, true);
+		    if (*saved) (void)uam::SecretRequestService::RecordKeychainAccount(m_app.data_root, target.keychain_account, true, uam::time::SystemEpochMillisecondsNow());
 		    std::string finish_error;
 		    const bool delivered = uam::UamControlService::FinishSecretDelivery(m_app, chat_id, request_id, *drop, &finish_error);
 		    // Outcome only: never the value, its length or the host's error text.
@@ -116,7 +117,9 @@ void UamQueryHandler::HandleForgetSavedSecret(CefRefPtr<CefBrowser> browser, con
 {
 	const std::string chat_id = payload.value("chatId", "");
 	const std::string request_id = payload.value("requestId", "");
-	const std::optional<std::string> account = uam::UamControlService::SecretKeychainAccount(m_app, chat_id, request_id);
+	// legacy: the earlier workspace-and-label entry, which is never offered for use and can only be forgotten.
+	const bool legacy = payload.value("legacy", false) == true;
+	const std::optional<std::string> account = uam::UamControlService::SecretKeychainAccount(m_app, chat_id, request_id, legacy);
 	if (!account.has_value())
 	{
 		cb->Failure(409, "This secret request is no longer pending.");

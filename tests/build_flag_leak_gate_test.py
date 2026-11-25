@@ -55,6 +55,22 @@ class BuildFlagLeakGateTests(unittest.TestCase):
             code, output = run('--dist', dist, '--disabled', 'CODEX', '--allowlist', allow)
             self.assertEqual(code, 1, 'Entries without a reason are rejected')
 
+    def test_vite_content_hashes_never_spell_a_disabled_name(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            dist = root / 'dist'
+            (dist / 'assets').mkdir(parents=True)
+            (dist / 'assets/delete-CGP1-aGy.js').write_text('export default 1')
+            (dist / 'assets/LucideIcons-40Az2_ZP.js').write_text('delete:()=>import("./delete-CGP1-aGy.js")')
+            empty = root / 'empty.json'
+            empty.write_text('{"entries": []}')
+            code, output = run('--dist', dist, '--disabled', 'ANTIGRAVITY', '--allowlist', empty)
+            self.assertEqual(code, 0, output)
+            (dist / 'assets/agy-CGP1abcd.js').write_text('export default 1')
+            code, output = run('--dist', dist, '--disabled', 'ANTIGRAVITY', '--allowlist', empty)
+            self.assertEqual(code, 1, 'A provider name before the hash is still a leak')
+            self.assertIn('assets/agy-CGP1abcd.js', output)
+
     def test_build_folder_flags_come_from_the_cache_and_packaging_is_checked(self):
         with tempfile.TemporaryDirectory() as temporary:
             build = Path(temporary) / 'Builds' / 'off'
@@ -137,7 +153,7 @@ class BuildFlagLeakGateTests(unittest.TestCase):
             (build / 'Release').mkdir(parents=True)
             (build / 'UI-V2/dist').mkdir(parents=True)
             (build / 'CMakeCache.txt').write_text('UAM_ENABLE_RUNTIME_GEMINI_CLI:BOOL=OFF\n')
-            (build / 'Release/universal_agent_manager.exe').write_bytes('\x00Sign in to Gemini\x00'.encode('utf-16-le'))
+            (build / 'Release/universal_agent_manager.dll').write_bytes('\x00Sign in to Gemini\x00'.encode('utf-16-le'))
             (build / 'Release/uam-runner.exe').write_bytes(b'\x00geminiRunnerKey\x00')
             empty = Path(temporary) / 'empty.json'
             empty.write_text('{"entries": []}')
@@ -150,12 +166,12 @@ class BuildFlagLeakGateTests(unittest.TestCase):
             self.assertEqual(run('--build-dir', build, '--allowlist', empty, '--residue', first, '--record-residue')[0], 0)
             second = Path(temporary) / 'second.json'
             second.write_text(json.dumps({'reasons': {'GEMINI': 'TODO: replaced text'},
-                                          'artifacts': {'universal_agent_manager.exe': {'GEMINI': {'Sign in to Gemini': 3}}}}))
+                                          'artifacts': {'universal_agent_manager.dll': {'GEMINI': {'Sign in to Gemini': 3}}}}))
             code, output = run('--merge-residue', first, second, '--residue', residue)
             self.assertEqual(code, 0, output)
             merged = json.loads(residue.read_text())
             self.assertEqual(merged['artifacts']['universal_agent_manager'], base['artifacts']['universal_agent_manager'], 'macOS rows are unchanged')
-            self.assertEqual(merged['artifacts']['universal_agent_manager.exe']['GEMINI']['Sign in to Gemini'], 3, 'The highest count wins')
+            self.assertEqual(merged['artifacts']['universal_agent_manager.dll']['GEMINI']['Sign in to Gemini'], 3, 'The highest count wins')
             self.assertEqual(merged['artifacts']['uam-runner.exe']['GEMINI']['geminiRunnerKey'], 1, 'The Windows runner has its own rows')
             self.assertEqual(merged['reasons']['GEMINI'], 'shared settings key', 'A reviewed reason is kept')
             self.assertEqual(run('--build-dir', build, '--allowlist', empty, '--residue', residue)[0], 0, 'Merged rows pass the gate')
@@ -174,15 +190,15 @@ class BuildFlagLeakGateTests(unittest.TestCase):
             (build / 'Release').mkdir(parents=True)
             (build / 'UI-V2/dist').mkdir(parents=True)
             (build / 'CMakeCache.txt').write_text('UAM_ENABLE_RUNTIME_GEMINI_CLI:BOOL=OFF\nUAM_ENABLE_SSH:BOOL=OFF\n')
-            (build / 'Release/universal_agent_manager.exe').write_bytes(b'\x00geminiKey\x00geminiKey\x00geminiKey\x00')
+            (build / 'Release/universal_agent_manager.dll').write_bytes(b'\x00geminiKey\x00geminiKey\x00geminiKey\x00')
             empty = Path(temporary) / 'empty.json'
             empty.write_text('{"entries": []}')
             residue = Path(temporary) / 'residue.json'
-            residue.write_text(json.dumps({'reasons': {'GEMINI': 'shared key'}, 'artifacts': {'universal_agent_manager.exe': {'GEMINI': {'geminiKey': 2}}}}))
+            residue.write_text(json.dumps({'reasons': {'GEMINI': 'shared key'}, 'artifacts': {'universal_agent_manager.dll': {'GEMINI': {'geminiKey': 2}}}}))
             gate = ('--build-dir', build, '--allowlist', empty, '--residue', residue)
             self.assertEqual(run(*gate)[0], 1, 'A third occurrence is not reviewed yet')
             self.assertEqual(run(*gate, '--record-residue')[0], 0)
-            self.assertEqual(json.loads(residue.read_text())['artifacts']['universal_agent_manager.exe']['GEMINI']['geminiKey'], 3)
+            self.assertEqual(json.loads(residue.read_text())['artifacts']['universal_agent_manager.dll']['GEMINI']['geminiKey'], 3)
             self.assertEqual(run(*gate)[0], 0, 'A recorded row passes on its own build')
 
     def test_msvc_anonymous_namespace_hashes_do_not_make_residue_machine_specific(self):
@@ -191,17 +207,17 @@ class BuildFlagLeakGateTests(unittest.TestCase):
             (build / 'Release').mkdir(parents=True)
             (build / 'UI-V2/dist').mkdir(parents=True)
             (build / 'CMakeCache.txt').write_text('UAM_ENABLE_RUNTIME_GEMINI_CLI:BOOL=OFF\nUAM_ENABLE_SSH:BOOL=OFF\n')
-            exe = build / 'Release/universal_agent_manager.exe'
+            exe = build / 'Release/universal_agent_manager.dll'
             exe.write_bytes(b'\x00.?AVGeminiProjection@?A0x0badf00d@usage@uam@@\x00')
             empty = Path(temporary) / 'empty.json'
             empty.write_text('{"entries": []}')
             candidate = Path(temporary) / 'candidate.json'
             candidate.write_text(json.dumps({'reasons': {'GEMINI': 'shared usage scanner'},
-                                             'artifacts': {'universal_agent_manager.exe': {'GEMINI': {'.?AVGeminiProjection@?A0x41c2f6d9@usage@uam@@': 1}}}}))
+                                             'artifacts': {'universal_agent_manager.dll': {'GEMINI': {'.?AVGeminiProjection@?A0x41c2f6d9@usage@uam@@': 1}}}}))
             residue = Path(temporary) / 'residue.json'
             residue.write_text('{}')
             self.assertEqual(run('--merge-residue', candidate, '--residue', residue)[0], 0)
-            self.assertEqual(json.loads(residue.read_text())['artifacts']['universal_agent_manager.exe']['GEMINI'], {'.?AVGeminiProjection@?A0x<hash>@usage@uam@@': 1})
+            self.assertEqual(json.loads(residue.read_text())['artifacts']['universal_agent_manager.dll']['GEMINI'], {'.?AVGeminiProjection@?A0x<hash>@usage@uam@@': 1})
             gate = ('--build-dir', build, '--allowlist', empty, '--residue', residue)
             code, output = run(*gate)
             self.assertEqual(code, 0, f'A string recorded on another machine matches: {output}')
@@ -212,7 +228,7 @@ class BuildFlagLeakGateTests(unittest.TestCase):
             exe.write_bytes(b'\x00.?AV<lambda_1>@?1??GeminiRecords' + tail.format('0badf00d').encode() + b'\x00')
             raw = '.?AV<lambda_1>@?1??GeminiRecords' + tail.format('41c2f6d9')
             candidate.write_text(json.dumps({'reasons': {'GEMINI': 'shared usage scanner'},
-                                             'artifacts': {'universal_agent_manager.exe': {'GEMINI': {raw[:raw.index('Gemini') + 6 + 60]: 1}}}}))
+                                             'artifacts': {'universal_agent_manager.dll': {'GEMINI': {raw[:raw.index('Gemini') + 6 + 60]: 1}}}}))
             residue.write_text('{}')
             self.assertEqual(run('--merge-residue', candidate, '--residue', residue)[0], 0)
             code, output = run(*gate)

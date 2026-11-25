@@ -384,6 +384,11 @@
 }
 .uam-overlay:not([data-state="closed"]) { animation: uam-backdrop-in var(--dur-enter) var(--ease-out-soft); }
 .uam-overlay[data-state="closed"] { animation: uam-backdrop-out var(--dur-exit) var(--ease) forwards; pointer-events: none; }
+/* Phone browser dialogs are portalled out of .uam-companion, so they repeat its field rule (companion.css): 16px text
+   keeps iOS Safari from zooming when a field takes focus. */
+.uam-companion-overlay input { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 10px; font-size: var(--fs-lg); }
+/* An Overlay that is itself the dialog takes programmatic focus on open; the layer is not a control, so it draws no ring. */
+.uam-overlay[role]:focus { outline: none; }
 .uam-overlay:not([data-state="closed"]) > * { animation: uam-dialog-in var(--dur-enter) var(--ease-out-soft) backwards; }
 .uam-overlay[data-state="closed"] > * { animation: uam-dialog-out var(--dur-exit) var(--ease) forwards; }
 
@@ -1670,6 +1675,25 @@ summary,
 .uam-switch input:focus-visible + .uam-switch__track { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 .uam-switch input:disabled + .uam-switch__track, .uam-switch input:disabled ~ .uam-switch__label { opacity: .45; }
 .uam-switch__label { font-size: var(--fs-sm); transition: color var(--dur-fast) var(--ease); }
+/* Forced colours replace the track and thumb fills with Canvas, so the thumb would vanish: draw them in system colours.
+   Off is a ButtonText thumb on a ButtonFace track; on fills the track with Highlight and the thumb with HighlightText. */
+@media (forced-colors: active) {
+  .uam-switch__track { forced-color-adjust: none; background: ButtonFace; border-color: ButtonText; }
+  .uam-switch__thumb { background: ButtonText; box-shadow: none; }
+  .uam-switch input:checked + .uam-switch__track { background: Highlight; border-color: Highlight; }
+  .uam-switch input:checked + .uam-switch__track .uam-switch__thumb { background: HighlightText; }
+  .uam-settings-scope .uam-switch__thumb,
+  .uam-settings-scope .uam-switch input:checked + .uam-switch__track .uam-switch__thumb { background: ButtonFace; box-shadow: 0 0 0 1px ButtonText; }
+  .uam-settings-scope .uam-switch__icon--on, .uam-settings-scope .uam-switch__icon--off { color: ButtonText; }
+  .uam-switch input:disabled + .uam-switch__track,
+  .uam-switch input:disabled:checked + .uam-switch__track { background: ButtonFace; border-color: GrayText; }
+  .uam-switch input:disabled + .uam-switch__track .uam-switch__thumb,
+  .uam-switch input:disabled:checked + .uam-switch__track .uam-switch__thumb,
+  .uam-settings-scope .uam-switch input:disabled + .uam-switch__track .uam-switch__thumb,
+  .uam-settings-scope .uam-switch input:disabled:checked + .uam-switch__track .uam-switch__thumb { background: GrayText; box-shadow: none; }
+  .uam-settings-scope .uam-switch input:disabled + .uam-switch__track .uam-switch__icon { color: ButtonFace; }
+  .uam-switch input:focus-visible + .uam-switch__track { outline-color: Highlight; }
+}
 
 .uam-dictation-wave { display: inline-flex; align-items: center; gap: 2px; height: 14px; }
 .uam-dictation-wave i { display: block; width: 2px; height: 5px; border-radius: 2px; background: currentColor; }
@@ -1871,6 +1895,12 @@ summary,
 @media (prefers-reduced-motion: reduce) {
   .uam-tabs__indicator { transition: none; }
 }
+/* Forced colours drop the underline's fill; mark the selected tab with a system Highlight bar or pill border. */
+@media (forced-colors: active) {
+  .uam-tabs__indicator { forced-color-adjust: none; }
+  .uam-tabs[data-variant="underline"] .uam-tabs__indicator { background: Highlight; }
+  .uam-tabs[data-variant="pill"] .uam-tabs__indicator { background: Canvas; border-color: Highlight; }
+}
 
 /* ── RowButton: reset plus hover and focus; row classes keep their look ── */
 /* :where keeps the reset at zero specificity so a row's own classes still win. */
@@ -1981,11 +2011,14 @@ summary,
 .uam-status-count { font-size: var(--fs-xs); font-weight: 600; border:1px solid currentColor; border-radius:50%; width:18px; height:18px; display:grid; place-items:center; }
 .uam-selection-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(68px,1fr)); gap:6px; }
 .uam-selection-option { position:relative; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px; min-width:0; padding:10px 3px; background:var(--surface); color:var(--text-2); border:1px solid var(--border); border-radius:var(--r-md); cursor:pointer; font-size: var(--fs-xs); letter-spacing:-.01em; transition:background-color var(--dur-fast) var(--ease),border-color var(--dur-fast) var(--ease),color var(--dur-fast) var(--ease),transform var(--dur-fast) var(--ease); }
-.uam-selection-option:active:not(:disabled) { transform:scale(.97); }
+.uam-selection-option:active:not(:disabled, [aria-disabled="true"]) { transform:scale(.97); }
 .uam-selection-option:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-inset); }
 .uam-selection-option:hover { background:var(--surface-up); }
 .uam-selection-option[aria-pressed="true"] { background:color-mix(in srgb, var(--accent) 8%, var(--surface)); border-color:color-mix(in srgb, var(--accent) 70%, transparent); color:var(--text); }
-.uam-selection-option:disabled { opacity:.5; cursor:not-allowed; }
+.uam-selection-option:is(:disabled, [aria-disabled="true"]) { opacity:.5; cursor:not-allowed; }
+.uam-selection-option[aria-disabled="true"]:not([aria-pressed="true"]):hover { background:var(--surface); }
+/* Forced colours turn every card border CanvasText; the chosen card keeps a Highlight border and outline. */
+@media (forced-colors: active) { .uam-selection-option[aria-pressed="true"] { border-color: Highlight; outline: 1px solid Highlight; outline-offset: -2px; } }
 .uam-selection-icon { display:flex; height:24px; align-items:center; justify-content:center; }
 .uam-selection-status { position:absolute; top:2px; right:2px; }
 .uam-search-field:focus-within { outline: var(--focus-ring); outline-offset: var(--focus-inset); }

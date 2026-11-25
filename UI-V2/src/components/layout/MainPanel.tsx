@@ -41,6 +41,7 @@ import {
   type ChatSplitDirection,
 } from '../../utils/chatGridStorage'
 import { SSH_ENABLED } from '../../config/buildFeatures'
+import { HostLoadChip } from '../shared/HostLoadChip'
 
 const PushStatusDot = memo(function PushStatusDot() {
   const pushChannelStatus = useAppStore((s) => s.pushChannelStatus)
@@ -316,16 +317,18 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
         }}
       >
         {/* Session name */}
-        <div className="flex min-w-0 flex-1 flex-col justify-center leading-tight" title={session.name}>
-          <span className="uam-chat-pane__title truncate text-sm font-semibold" style={{ color: 'var(--text)' }}>{session.name}</span>
+        <div className="flex min-w-0 flex-1 flex-col justify-center leading-tight">
+          <span className="uam-chat-pane__title truncate text-sm font-semibold" style={{ color: 'var(--text)' }} title={session.name}>{session.name}</span>
           <span
             data-testid={`chat-workspace-${session.id}`}
             className="uam-chat-pane__workspace flex min-w-0 gap-1 text-[10px] font-normal"
             style={{ color: 'var(--text-3)' }}
-            title={workspaceDirectory ? `${workspaceDirectory} · ${executionHostLabel}` : executionHostLabel}
+            // A remote host is its own chip with its own tooltip, so the native title covers only what the chip does not.
+            title={executionHostIsRemote ? undefined : workspaceDirectory ? `${workspaceDirectory} · ${executionHostLabel}` : executionHostLabel}
           >
-            {workspaceLabel && <span className="min-w-0 truncate">{workspaceLabel}</span>}
-            {executionHostIsRemote && <span data-testid={`chat-host-${session.id}`} className="shrink-0">{workspaceLabel ? ` · ${executionHostLabel}` : executionHostLabel}</span>}
+            {workspaceLabel && <span className="min-w-0 truncate" title={executionHostIsRemote ? workspaceDirectory : undefined}>{workspaceLabel}</span>}
+            {executionHostIsRemote && workspaceLabel && <span className="shrink-0">{' · '}</span>}
+            {executionHostIsRemote && <HostLoadChip hostId={session.executionHostId!} label={executionHostLabel} testId={`chat-host-${session.id}`} />}
           </span>
         </div>
 
