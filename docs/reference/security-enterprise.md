@@ -127,8 +127,17 @@ Before an enterprise release:
     reach `CefExecuteProcess` before UAM loads any delay-loaded library.
   - Signing: the bootstrap verifies that `universal_agent_manager.exe`, `universal_agent_manager.dll`
     and `chrome_elf.dll` are either all unsigned or all signed with the same certificate.
-  - Folder access: Chromium's LPAC sandboxed processes, including the network service, need
-    `ALL RESTRICTED APPLICATION PACKAGES` (`*S-1-15-2-2:(OI)(CI)(RX)`) read access to the app folder.
+  - Network service: Chromium leaves its Windows network service sandbox off by default (Chrome turns
+    it on only through a field trial, which CEF does not use), so UAM enables the `NetworkServiceSandbox`
+    feature in the browser process, merged into any `--enable-features` value. The service then runs in
+    an AppContainer (not LPAC) at low integrity. Chromium does not support this on ARM64, on x64
+    emulated on ARM64 or before Windows 10 20H1 (build 19041), where the service stays unsandboxed, and
+    silently restarts it unsandboxed after a failed sandboxed launch. Chromium reverted enabling it by
+    default over localhost socket errors (crbug 466139402). David chose to turn it on on 2026-11-25;
+    the packaged smoke test is its proof.
+  - Folder access: Chromium's AppContainer sandboxed processes (the network service, and any LPAC
+    process) need `ALL RESTRICTED APPLICATION PACKAGES` (`*S-1-15-2-2:(OI)(CI)(RX)`) read access to
+    the app folder; that group covers ordinary AppContainers as well as LPAC.
     The build grants it on the output folder. ZIP extraction loses it, so at startup the app checks the
     folder, counting split folder and inherit-only entries as Program Files uses, and adds the grant
     only to a folder that holds `libcef.dll` and `universal_agent_manager.dll` and is not the profile,
@@ -138,8 +147,9 @@ Before an enterprise release:
     the first Windows run must still confirm renderers start.
   - Smoke test: fails when a CEF process has `--no-sandbox`, or `--disable-gpu-sandbox` outside
     Chromium's short-lived info-collection GPU process (`--use-gl=disabled`), a renderer runs
-    at medium integrity or above, or the network service lacks `--service-sandbox-type=network` or runs
-    at medium integrity or above.
+    at medium integrity or above, or, where Chromium supports its sandbox, the network service lacks
+    `--service-sandbox-type=network` or runs at medium integrity or above. On ARM64 or before build
+    19041 it reports the network service sandbox as unsupported and skips that part.
   - Entry points: every process without `--type` (the crash supervisor, the stdio MCP and control
     servers, the management node, the OpenCode V2 commands and the discovery CLI) also passes through
     the bootstrap's certificate checks and sandbox broker setup before UAM runs, and starts in the app

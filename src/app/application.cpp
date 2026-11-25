@@ -1165,7 +1165,7 @@ bool Application::InitializeCef(CefMainArgs main_args, void* windows_sandbox_inf
 #else
 		CefString(&settings.resources_dir_path) = uam::paths::NormalizedNativePathString(exe_dir);
 		CefString(&settings.locales_dir_path) = uam::paths::NormalizedNativePathString(exe_dir / "locales");
-		// Windows only: sandboxed LPAC processes must be able to read the app folder, which ZIP extraction loses.
+		// Windows only: AppContainer and LPAC sandboxed processes must be able to read the app folder, which ZIP extraction loses.
 		if (std::string access_error; !uam::platform::EnsureCefSandboxFolderAccess(exe_dir, access_error))
 			uam::diagnostics::Write("[CEF] " + access_error);
 #endif

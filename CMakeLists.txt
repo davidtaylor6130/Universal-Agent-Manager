@@ -1253,7 +1253,7 @@ endif()
 
 # Windows: ship CEF's bootstrap.exe as universal_agent_manager.exe beside universal_agent_manager.dll. The script
 # copies UAM's icon into it, drops the bootstrap's version text, merges the long-path manifest and grants the folder
-# the ALL RESTRICTED APPLICATION PACKAGES access that Chromium's LPAC sandboxed processes need.
+# the ALL RESTRICTED APPLICATION PACKAGES access that Chromium's AppContainer and LPAC sandboxed processes need.
 if(WIN32)
   # The MSVC developer environment puts mt.exe on PATH; Visual Studio generator builds outside it (as in the release
   # workflow) find it in the Windows SDK, preferring the SDK version the generator targets.

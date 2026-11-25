@@ -53,7 +53,7 @@ namespace uam::platform
 
 	/// <summary>
 	/// Ensures the folder holding CEF's binaries grants read and execute to ALL RESTRICTED APPLICATION PACKAGES
-	/// (S-1-15-2-2), inherited by its files and folders. Chromium's LPAC-sandboxed processes need this to load
+	/// (S-1-15-2-2), inherited by its files and folders. Chromium's AppContainer and LPAC sandboxed processes need this to load
 	/// CEF; ZIP extraction does not keep it. UAM adds it only to a folder that holds libcef.dll and
 	/// universal_agent_manager.dll and is not the user's profile, Desktop, Documents or Downloads folder. Returns
 	/// false with a reason when the grant is missing and was not added.

@@ -140,13 +140,27 @@ try {
         $level = [UamProcessIntegrity]::Level([int]$renderer.ProcessId)
         if ($level -lt 0 -or $level -ge 0x2000) { throw "Packaged Windows renderer $($renderer.ProcessId) is not inside the Chromium sandbox (integrity 0x$('{0:X}' -f $level))." }
     }
-    # The network service runs in Chromium's restricted (LPAC) sandbox, which needs the app folder grant.
+    # UAM turns on Chromium's NetworkServiceSandbox feature, which Chromium leaves off by default, so the network service
+    # runs in an AppContainer at low integrity. Chromium does not support it on ARM64 (or x64 emulated there) or before
+    # Windows 10 20H1 (build 19041). After a failed sandboxed launch Chromium silently restarts the service unsandboxed,
+    # without --service-sandbox-type=network, so the switch is checked as well as the integrity.
     $network = @($cefProcesses | Where-Object { $_.CommandLine -match '--utility-sub-type=network\.mojom\.NetworkService' })
     if ($network.Count -eq 0) { throw 'Packaged Windows app has no CEF network service process to check.' }
-    foreach ($service in $network) {
-        $level = [UamProcessIntegrity]::Level([int]$service.ProcessId)
-        if ($service.CommandLine -notmatch '--service-sandbox-type=network' -or $level -lt 0 -or $level -ge 0x2000) {
-            throw "Packaged Windows network service $($service.ProcessId) is not inside its Chromium sandbox (integrity 0x$('{0:X}' -f $level))."
+    $windowsBuild = [Environment]::OSVersion.Version.Build
+    $osArchitecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
+    if ($osArchitecture -eq [System.Runtime.InteropServices.Architecture]::Arm64 -or $env:PROCESSOR_IDENTIFIER -match '\bARM' -or $windowsBuild -lt 19041) {
+        Write-Host "Network service sandbox unsupported on this Windows (build $windowsBuild, $osArchitecture); skipping its check."
+    } else {
+        foreach ($service in $network) {
+            $level = [UamProcessIntegrity]::Level([int]$service.ProcessId)
+            $sandboxType = [regex]::Match($service.CommandLine, '--service-sandbox-type=(\S+)').Groups[1].Value
+            Write-Host ("Network service {0} integrity 0x{1:X}, --service-sandbox-type={2}" -f $service.ProcessId, $level, $sandboxType)
+            if ($sandboxType -ne 'network') {
+                throw "Packaged Windows network service $($service.ProcessId) runs without its Chromium sandbox (--service-sandbox-type=$sandboxType)."
+            }
+            if ($level -lt 0 -or $level -ge 0x2000) {
+                throw "Packaged Windows network service $($service.ProcessId) is not inside its Chromium sandbox (integrity 0x$('{0:X}' -f $level))."
+            }
         }
     }
     # A separate name: $process still holds the launched app, which the cleanup below stops.
