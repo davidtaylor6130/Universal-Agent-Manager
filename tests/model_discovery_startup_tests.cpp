@@ -1089,6 +1089,8 @@ UAM_TEST(PerformanceStartupModelDiscoveryOnLargeInstall)
 	fixture.app.settings.default_new_chat_provider_id = "gemini-cli";
 	fixture.app.runtime_cli_versions_by_provider_id["gemini-cli"].checked = false;
 	fixture.app.runtime_cli_versions_by_provider_id["gemini-cli"].supported = true;
+	// The fixture's Codex check has already finished, so its initial-folder scope would launch during the waiting polls.
+	fixture.app.runtime_cli_versions_by_provider_id["codex-cli"].supported = false;
 	constexpr int kChats = 2400;
 	constexpr int kWorktrees = 300;
 	for (int index = 0; index < kChats - kWorktrees; ++index)
