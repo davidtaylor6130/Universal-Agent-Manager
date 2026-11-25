@@ -6,6 +6,7 @@
 #include <map>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace uam
@@ -70,5 +71,7 @@ namespace uam
 		std::vector<ScopeGroup> m_requeued_groups;
 		std::map<std::string, ExecutionHost> m_hosts;
 		std::map<std::string, std::string> m_noted_cli_versions;
+		/// Scopes already found registered before a version check; a refused check retries without re-testing every chat.
+		std::unordered_set<std::string> m_registered_before_version_check;
 	};
 }
