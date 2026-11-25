@@ -559,6 +559,9 @@ namespace uam
 		// chat_create admissions within the caller's current structured turn.
 		int chat_create_turn_serial = -1;
 		std::size_t chat_create_turn_count = 0;
+		// agent_delegate admissions within the caller's current structured turn.
+		int delegate_turn_serial = -1;
+		std::size_t delegate_turn_count = 0;
 		// Latest successful agent_delegate, to answer a retry whose first reply was never collected.
 		std::string last_delegate_request_id, last_delegate_arguments;
 		nlohmann::json last_delegate_result;
