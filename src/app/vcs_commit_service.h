@@ -57,6 +57,12 @@ namespace uam
 		std::vector<std::string> conflict_leftovers;
 		/// SVN: conflicts exist but their leftover files could not be read, so a commit refuses every unversioned file.
 		bool conflict_leftovers_unknown = false;
+		/// Set when the workspace is a UAM local snapshot: a hidden Git copy of a plain folder (`folder`) or an SVN working
+		/// copy (`svn`). Commits here stay in the copy; SVN history and update run against `snapshot_source_directory`.
+		std::string snapshot_source_kind;
+		std::string snapshot_source_directory;
+		/// The source system's read and update capabilities offered for that source (`history`, `update`, `originComparison`).
+		std::vector<std::string> snapshot_source_capabilities;
 	};
 
 	struct VcsCommitResult

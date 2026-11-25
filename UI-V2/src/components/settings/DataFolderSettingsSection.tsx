@@ -1,7 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import { createRequestId, isCompanionContext, sendToCEF, type CEFRequest, type CEFResponse } from '../../ipc/cefBridge'
 import { Button, ConfirmDialog, Tooltip, usePresence, Reveal } from '../ui'
-import { reportAppFailure } from '../../utils/appFailure'
+import { failureDetail, reportAppFailure } from '../../utils/appFailure'
 import { SettingRow, SettingsLoading, SettingsSection } from './SettingsPrimitives'
 import { observesFolderChoice, parseDataFolderSettings, readUnconfirmedFolderChoice, retainUnconfirmedFolderChoice,
   readUnconfirmedFolderRestart, retainUnconfirmedFolderRestart,
@@ -43,7 +43,8 @@ export const DataFolderSettingsSection = forwardRef<DataFolderSettingsHandle>(fu
     busyRef.current = true; setBusy(true)
     return true
   }
-  const fail = (message: string) => reportAppFailure(message, '')
+  /** One fixed sentence per outcome; the backend's reason and the next step go to the notice detail. */
+  const fail = (message: string, cause?: string, hint = '') => reportAppFailure(message, failureDetail(cause, hint))
   const finish = () => { busyRef.current = false; if (alive.current) setBusy(false) }
   const refresh = async () => {
     if (!start()) return
@@ -51,8 +52,8 @@ export const DataFolderSettingsSection = forwardRef<DataFolderSettingsHandle>(fu
       const response = await folderRequest({ action: 'getDataFolderSettings' })
       const next = response.ok ? parseDataFolderSettings(response.data) : null
       if (next) accept(next)
-      else if (alive.current) fail(response.error || 'The current folder state could not be confirmed. No choice was applied.')
-    } catch { if (alive.current) fail('The current folder state could not be confirmed. No choice was applied.') }
+      else if (alive.current) fail('Could not confirm the data folder.', response.error, 'No choice was applied.')
+    } catch { if (alive.current) fail('Could not confirm the data folder.', '', 'No choice was applied.') }
     finally { finish() }
   }
   useEffect(() => {
@@ -67,7 +68,7 @@ export const DataFolderSettingsSection = forwardRef<DataFolderSettingsHandle>(fu
       // Native pickers may remain open for as long as the user needs; only data operations time out.
       const response = await sendToCEF<{ selectedPath: string }>({ action: 'browseFolderDirectory', payload: { currentValue: settings.currentFolder } }, false)
       if (!alive.current) return
-      if (!response.ok) fail(response.error || 'The folder picker could not be opened.')
+      if (!response.ok) fail('The folder picker could not be opened.', response.error)
       else if (typeof response.data?.selectedPath === 'string' && response.data.selectedPath) setCandidate(response.data.selectedPath)
     } catch { if (alive.current) fail('The folder picker could not be opened.') }
     finally { finish() }
@@ -85,10 +86,10 @@ export const DataFolderSettingsSection = forwardRef<DataFolderSettingsHandle>(fu
         if (next.transitionState !== 'publicationUnknown' && (!response.data.committed || next.lastOperationId === attempt.operationId)) remember(null)
         if (alive.current) {
           if (response.data.committed || next.transitionState === 'publicationUnknown') setCandidate('')
-          else fail(response.data.error || 'The folder choice was not confirmed. Your current folder is still in use.')
+          else fail('The data folder was not changed.', response.data.error, 'Your current folder is still in use.')
         }
-      } else if (alive.current) { setCandidate(''); fail(response.error || 'The save outcome is unknown. Refresh the folder state before another change.') }
-    } catch { if (alive.current) { setCandidate(''); fail('The save outcome is unknown. Refresh the folder state before another change.') } }
+      } else if (alive.current) { setCandidate(''); fail('The data folder change is unconfirmed.', response.error, 'Refresh the folder state before another change.') }
+    } catch { if (alive.current) { setCandidate(''); fail('The data folder change is unconfirmed.', '', 'Refresh the folder state before another change.') } }
     finally { finish() }
   }
   const restart = async () => {
@@ -99,9 +100,9 @@ export const DataFolderSettingsSection = forwardRef<DataFolderSettingsHandle>(fu
       const response = await folderRequest({ action: 'restartToApplyDataFolder', payload: { expectedRevision: attempt.revision } })
       if (alive.current) {
         setRestartConfirmation(false)
-        if (!response.ok) fail(response.error || 'The restart request was not confirmed. Reopen the application before trying again.')
+        if (!response.ok) fail('The restart was not confirmed.', response.error, 'Reopen the application before trying again.')
       }
-    } catch { if (alive.current) { setRestartConfirmation(false); fail('The restart outcome is unknown. Reopen the application before trying again.') } }
+    } catch { if (alive.current) { setRestartConfirmation(false); fail('The restart was not confirmed.', '', 'Reopen the application before trying again.') } }
     finally { finish() }
   }
   // Each note keeps its last text while it fades out, so exit animations never blank the copy.

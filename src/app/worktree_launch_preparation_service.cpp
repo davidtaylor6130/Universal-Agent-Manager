@@ -4,6 +4,7 @@
 #include "app/agent_run_ledger.h"
 #include "app/chat_domain_service.h"
 #include "app/svn_history.h"
+#include "app/managed_subagent_control_service.h"
 #include "app/vcs_commit_service.h"
 #include "common/chat/chat_repository.h"
 #include "common/paths/path_utils.h"
@@ -258,19 +259,29 @@ namespace uam
 
 		/// A finished delegated child of this parent that only names the parent's worktree as its workspace. Lineage comes from the
 		/// run ledger; restart-inert v2 runs are absent from the live ledger, so the worker's read-only observation supplies them.
+		/// Once no readable record names the child, its expired run leaves only the root link saved at its birth.
 		/// Terminal status alone is not settlement: retained input, a runtime, a save or a helper process still protects the worktree.
-		bool SettledChildReference(const AppState& app, const ChatSession& parent, const ChatSession& reference, const std::vector<AgentRun>& observed_runs)
+		bool SettledChildReference(const AppState& app, const ChatSession& parent, const ChatSession& reference, const PreparedLaunchWorktree& prepared)
 		{
 			if (reference.agent_run_id.empty() || reference.execution_host_id != parent.execution_host_id || !reference.workspace_worktree_directory.empty()) return false;
+			const std::vector<AgentRun>& observed_runs = prepared.reference_runs;
 			const auto same_run = [&reference](const AgentRun& run) { return run.id == reference.agent_run_id; };
 			const auto live = std::ranges::find_if(app.agent_runs, same_run);
 			const auto observed = std::ranges::find_if(observed_runs, same_run);
 			const AgentRun* run = live != app.agent_runs.end() ? &*live : observed != observed_runs.end() ? &*observed : nullptr;
-			if (!run || run->root_chat_id != parent.id || run->transcript_chat_id != reference.id ||
+			if (!run)
+			{
+				const auto names_chat = [&reference](const AgentRun& other) { return other.transcript_chat_id == reference.id; };
+				if (!prepared.reference_runs_complete || !ManagedSubagentControlService::SavedRootLinkMatches(parent, reference) ||
+				    std::ranges::any_of(app.agent_runs, names_chat) || std::ranges::any_of(observed_runs, names_chat) ||
+				    app.managed_followups.contains(reference.agent_run_id) || app.managed_initial_runtime_owners.contains(reference.agent_run_id)) return false;
+			}
+			else if (run->root_chat_id != parent.id || run->transcript_chat_id != reference.id ||
 			    (run->status != "completed" && run->status != "failed" && run->status != "cancelled" && run->status != "interrupted")) return false;
 			const ChatSession* live_chat = ChatDomainService().FindChatById(app, reference.id);
 			const ChatSession& chat = live_chat ? *live_chat : reference;
-			if (!chat.acp_queued_prompts.empty() || !chat.acp_unsent_prompt_recoveries.empty() || chat.acp_queue_storage_error ||
+			// The same saved-state settlement Port back and Discard require, plus the live claims only this owner sees.
+			if (!ManagedSubagentControlService::ChildInputSettled(chat) || !chat.acp_queued_prompts.empty() || !chat.acp_unsent_prompt_recoveries.empty() || chat.acp_queue_storage_error ||
 			    chat.remote_process_exists || chat.remote_turn_reconnect_pending || chat.remote_stop_cleanup_pending || chat.remote_restart_pending ||
 			    !chat.remote_pending_requests.empty() || !chat.remote_active_turn_id.empty() || chat.remote_source_exit_pending ||
 			    chat.remote_manual_compaction_pending || !chat.remote_process_control_token.empty() || !chat.remote_interaction_responses.empty() ||
@@ -732,7 +743,7 @@ namespace uam
 					{
 						if (!ReferencesPreparedWorkspace(other, task->prepared->metadata, platform) || std::ranges::find(blockers, other.id) != blockers.end()) return;
 						// Finished children of this chat keep their saved workspace field; they no longer use the worktree.
-						if (task->remote_host && SettledChildReference(app, *chat, other, task->prepared->reference_runs)) return;
+						if (task->remote_host && SettledChildReference(app, *chat, other, *task->prepared)) return;
 						blockers.push_back(other.id);
 					};
 					for (const ChatSession& other : app.chats) admit(other);
@@ -961,7 +972,8 @@ namespace uam
 				GitWorktreeOperationResult operation = PrepareRemoteLaunch(snapshot, metadata, task);
 				if (!operation.ok) return PreparedLaunchWorktree{std::move(operation), std::move(metadata)};
 				// Reference admission runs on the owner, which alone sees live runtimes, queues and saves.
-				return PreparedLaunchWorktree{std::move(operation), std::move(metadata), ChatRepository::LoadLocalChatSummariesReadOnly(root), AgentRunLedger::LoadAllReadOnly(root).runs};
+				auto ledger = AgentRunLedger::LoadAllReadOnly(root);
+				return PreparedLaunchWorktree{std::move(operation), std::move(metadata), ChatRepository::LoadLocalChatSummariesReadOnly(root), std::move(ledger.runs), ledger.errors.empty()};
 			}
 			std::string update_error;
 			if (metadata.svn_update_pending && snapshot.settings.svn_enabled && snapshot.settings.svn_update_before_chat &&

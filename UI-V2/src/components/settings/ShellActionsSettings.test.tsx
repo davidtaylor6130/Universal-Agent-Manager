@@ -187,6 +187,46 @@ describe('ShellActionsSettings', () => {
   })
 
 
+  it('shows a kept invalid entry disabled and read-only, never blocks Save and returns it unchanged', async () => {
+    const kept = {
+      id: 'no-input', label: 'No input', skillPath: '', providerId: '', modelId: '', groupPath: [],
+      acceptsFiles: false, acceptsFolders: false, enabled: false, openWorkspace: true,
+      invalidReason: "Shell action 'No input' must accept files, folders, or both.",
+    }
+    useAppStore.setState({ shellActions: [...useAppStore.getState().shellActions, kept] })
+    const host = document.createElement('div'); document.body.append(host)
+    const root = createRoot(host)
+    await act(async () => root.render(<ShellActionsSettings />))
+    try {
+      expect(host.textContent).toContain("Invalid: Shell action 'No input' must accept files, folders, or both.")
+      // A kept row's summary would describe settings it cannot use, so it shows only the reason.
+      expect(host.textContent).not.toContain('Open as workspace · files only')
+      const toggle = host.querySelector<HTMLInputElement>('input[aria-label="Enable No input"]')!
+      expect(toggle.disabled).toBe(true)
+      expect(toggle.checked).toBe(false)
+      expect(host.querySelector('[aria-label="Expand No input"]')).toBeNull()
+      expect(host.querySelector('[role="alert"]')?.textContent ?? '').toBe('')
+
+      act(() => host.querySelector<HTMLButtonElement>('[aria-label="Expand Review Selection"]')!.click())
+      const label = host.querySelector<HTMLInputElement>('[aria-label="Label for Review Selection"]')!
+      act(() => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(label, 'Review renamed')
+        label.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+      expect(host.querySelector<HTMLButtonElement>('[aria-label="Save shell actions"]')!.disabled).toBe(false)
+      await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Save shell actions"]')!.click())
+      expect(useAppStore.getState().setShellActions).toHaveBeenCalledWith([
+        expect.objectContaining({ id: 'review-selection', label: 'Review renamed' }),
+        expect.objectContaining(kept),
+      ])
+
+      // Only the user's own deletion removes it.
+      act(() => host.querySelector<HTMLButtonElement>('[aria-label="Remove No input"]')!.click())
+      act(() => Array.from(document.body.querySelectorAll('button')).find(button => button.textContent === 'Delete action')!.click())
+      expect(host.textContent).not.toContain('No input')
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
   it('keeps a reverted shell label clean and permits a valid new action', async () => {
     const host = document.createElement('div'); document.body.append(host)
     const root = createRoot(host)

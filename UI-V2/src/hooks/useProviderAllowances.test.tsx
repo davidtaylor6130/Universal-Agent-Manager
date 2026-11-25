@@ -130,6 +130,9 @@ describe('independent provider allowance cache', () => {
     }
     expect(() => parseProviderAllowances({ ...ready, providers: [ready.providers[0], ready.providers[0]] }, 'local')).toThrow('invalid provider')
     for (const scope of [undefined, '', 'x'.repeat(257), 12]) expect(() => parseProviderAllowances({ ...ready, providers: [{ ...ready.providers[0], scope }] }, 'local')).toThrow('invalid provider')
+    // Arrays carrying the right fields are still not objects.
+    expect(() => parseProviderAllowances(Object.assign([], ready), 'local')).toThrow('invalid computer')
+    expect(() => parseProviderAllowances({ ...ready, providers: [Object.assign([], ready.providers[0])] }, 'local')).toThrow('invalid provider')
     window.cefQuery = request => request.onSuccess(JSON.stringify(snapshot('foreign')))
     const view = await mount()
     try { expect(view.state.data).toBeNull(); expect(view.state.error).toContain('invalid computer') } finally { view.close() }

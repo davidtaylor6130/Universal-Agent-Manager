@@ -609,6 +609,61 @@ UAM_TEST(SvnSnapshotSkipsSvnIgnoredItemsAndKeepsThemUntracked)
 	UAM_ASSERT(uam::strings::IsBlank(status.output));
 	UAM_ASSERT_EQ(ReadFile(svn.workspace / "Library" / "cache.bin"), std::string("large generated cache\n"));
 }
+
+UAM_TEST(SvnSnapshotReadsAndUpdatesSourceWorkingCopyAndPortsBackAsPatchUnderMerge)
+{
+	RealSvnCheckout svn;
+	if (!svn.ready || !GitAvailableForTests()) return;
+	UAM_ASSERT(uam::io::WriteTextFile(svn.workspace / "app.txt", "r1\n"));
+	UAM_ASSERT(svn.Svn({"add", "--", "app.txt"}));
+	UAM_ASSERT(svn.Svn({"commit", "-m", "first"}));
+	// A second checkout commits r2, so the snapshot's source working copy is one revision behind.
+	const fs::path other = svn.temporary.root / "other";
+	UAM_ASSERT(svn.Svn(svn.temporary.root, {"checkout", svn.url, "other"}));
+	UAM_ASSERT(uam::io::WriteTextFile(other / "later.txt", "r2\n"));
+	UAM_ASSERT(svn.Svn(other, {"add", "--", "later.txt"}));
+	UAM_ASSERT(svn.Svn(other, {"commit", "-m", "second"}));
+
+	svn.app.settings.git_enabled = true;
+	svn.app.settings.git_port_method = GitPortMethod::Merge;
+	svn.app.data_root = svn.temporary.root / "data";
+	svn.app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	ChatSession chat = ChatDomainService().CreateNewChat("", "codex-cli");
+	chat.workspace_directory = svn.workspace.string();
+	svn.app.chats.push_back(chat);
+	ChatSession& isolated = svn.app.chats.front();
+	const uam::GitWorktreeOperationResult created = uam::GitWorktreeService().CreateForChat(svn.app, isolated);
+	if (!created.ok) std::fprintf(stderr, "snapshot: %s\n", created.message.c_str());
+	UAM_ASSERT(created.ok && created.status.managed_repository && created.status.is_svn_workspace);
+	const fs::path worktree = isolated.workspace_worktree_directory;
+	UAM_ASSERT(!fs::exists(worktree / ".svn"));
+
+	// The panel's SVN history and update use the source working copy, not the hidden Git copy.
+	const uam::VcsCommitStatus panel = uam::VcsCommitService().Status(svn.app, isolated, uam::VcsType::Git, false);
+	UAM_ASSERT(panel.available && panel.active_vcs_type == uam::VcsType::Git);
+	UAM_ASSERT_EQ(panel.snapshot_source_kind, std::string("svn"));
+	const uam::VcsHistoryPage history = uam::VcsCommitService().History(svn.app, isolated, uam::VcsType::Svn, {}, {});
+	if (!history.error.empty()) std::fprintf(stderr, "history: %s\n", history.error.c_str());
+	UAM_ASSERT(history.error.empty() && !history.entries.empty());
+	UAM_ASSERT_EQ(history.entries.front().revision, std::string("2"));
+	const uam::VcsUpdateResult update = uam::VcsCommitService().Update(svn.app, isolated, uam::VcsType::Svn, {});
+	if (!update.ok) std::fprintf(stderr, "update: %s\n", update.error.c_str());
+	UAM_ASSERT(update.ok && !update.conflicts);
+	UAM_ASSERT_EQ(update.revision, std::string("2"));
+	UAM_ASSERT_EQ(ReadFile(svn.workspace / "later.txt"), std::string("r2\n"));
+	UAM_ASSERT(!fs::exists(worktree / "later.txt"));
+
+	// Merge is configured, yet the snapshot ports back as a patch the source working copy can then publish to SVN.
+	UAM_ASSERT(uam::io::WriteTextFile(worktree / "app.txt", "chat change\n"));
+	UAM_ASSERT(RunGitForTest(worktree, "-c user.email=fixture@example.test -c user.name=Fixture commit -am chat"));
+	std::stop_source never;
+	UAM_ASSERT(uam::GitWorktreeService().PortCommittedChanges(svn.app, isolated, never.get_token()).requires_patch_port);
+	const uam::GitWorktreeOperationResult ported = uam::GitWorktreeService().PortChatChanges(svn.app, isolated);
+	if (!ported.ok) std::fprintf(stderr, "port: %s\n", ported.message.c_str());
+	UAM_ASSERT(ported.ok && ported.message.find(uam::kSnapshotPatchPortNotice) != std::string::npos);
+	UAM_ASSERT_EQ(ReadFile(svn.workspace / "app.txt"), std::string("chat change\n"));
+	UAM_ASSERT_EQ(svn.ChangedPaths(), (std::set<std::string>{"app.txt"}));
+}
 #endif
 
 #ifndef _WIN32
