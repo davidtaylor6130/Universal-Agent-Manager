@@ -17,6 +17,8 @@ These pages preserve useful source-level details from the trial base, outside th
 | [Native child sessions](native-child-sessions.md) | How each provider stores sub-agent sessions, what links a child to its parent and how import uses it |
 | [Asynchronous send durability](asynchronous-send-durability.md) | Current admission predicates, remaining publication work and retained ownership barriers |
 | [Chat/workspace services](architecture/chats-imports-workspaces.md) | Imports, ownership, worktrees and deletion |
+| [SVN through a Git mirror](svn-git-mirror-design.md) | Design and spike results for the UAM-owned Git mirror of an SVN checkout (#521); not implemented |
+| [VCS adapter protocol](vcs-adapter-protocol.md) | Version 1 of the JSON-RPC protocol for external version-control adapters, its conformance runner and sample (#522); not wired into UAM |
 | [Persistence](architecture/app-state-persistence.md) | Storage/cache relationships |
 | [Data-folder transition](data-folder-transition.md) | Preference and stopped handoff/rollback implemented in source; live activation gated |
 | [React/CEF](architecture/react-cef-transport.md) | Bridge and history transport |
