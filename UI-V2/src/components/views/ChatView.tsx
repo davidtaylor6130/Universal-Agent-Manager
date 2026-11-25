@@ -131,7 +131,8 @@ export function uamAgentDisplayName(id: string) {
 }
 
 export function buildUamAgentCycle(agents: UamAgentSummary[], favoriteIds: string[]) {
-  const selectable = new Set(agents.map((agent) => agent.id))
+  // Delegate-only agents are listed in the picker but are never a chat's own agent, so the cycle skips them.
+  const selectable = new Set(agents.filter((agent) => !agent.delegateOnly).map((agent) => agent.id))
   const cycle = ['build', 'plan']
   for (const rawId of favoriteIds) {
     const id = rawId.trim().toLowerCase()
@@ -2681,14 +2682,16 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     const byId = new Map(catalogUamAgents.map((agent) => [agent.id, agent]))
     if (!byId.has('build')) byId.set('build', { id: 'build', description: 'Implement changes while obeying the current UAM permission policy.', builtIn: true })
     if (!byId.has('plan')) byId.set('plan', { id: 'plan', description: 'Inspect and plan under a hard read-only workspace ceiling.', builtIn: true })
+    // Chat agents first, then delegate-only agents, each alphabetical.
     return [byId.get('build')!, byId.get('plan')!, ...Array.from(byId.values())
       .filter((agent) => agent.id !== 'build' && agent.id !== 'plan')
-      .sort((left, right) => left.id.localeCompare(right.id))]
+      .sort((left, right) => Number(Boolean(left.delegateOnly)) - Number(Boolean(right.delegateOnly)) || left.id.localeCompare(right.id))]
   }, [catalogUamAgents])
   const uamAgents = useMemo(() => selectableUamAgents.map((agent) => ({
     id: agent.id,
     name: uamAgentDisplayName(agent.id),
     description: agent.description,
+    ...(agent.delegateOnly ? { delegateOnly: true } : {}),
   })), [selectableUamAgents])
   const uamAgentCycle = useMemo(
     () => buildUamAgentCycle(selectableUamAgents, favoriteUamAgentIds),
