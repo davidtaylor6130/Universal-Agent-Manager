@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import { AlertTriangle, ArrowUp, ChevronRight, Folder, Server, X } from 'lucide-react'
 import type { ExecutionHost, RemoteDirectoryListing } from '../../types/session'
 import { useAppStore } from '../../store/useAppStore'
 import { defaultRemoteBrowsePath, isAbsoluteRemoteWorkspace } from '../../utils/remoteWorkspace'
-import { Button, Card, IconButton, Notice, RowButton } from '../ui'
+import { Button, Card, IconButton, Notice, Overlay, RowButton } from '../ui'
 import { StatusIndicator } from '../shared/StatusIndicator'
 
 interface RemoteDirectoryBrowserProps {
@@ -11,9 +11,14 @@ interface RemoteDirectoryBrowserProps {
   initialPath: string
   onCancel: () => void
   onSelect: (path: string) => void
+  /** Focus target on close when the control that opened the browser is gone (for example a replaced form step). */
+  returnFocusTo?: () => HTMLElement | null | undefined
+  /** Extra overlay class, such as the phone browser's `uam-companion-overlay`. */
+  className?: string
 }
 
-export function RemoteDirectoryBrowser({ host, initialPath, onCancel, onSelect }: RemoteDirectoryBrowserProps) {
+export function RemoteDirectoryBrowser({ host, initialPath, onCancel, onSelect, returnFocusTo, className }: RemoteDirectoryBrowserProps) {
+  const fieldId = useId()
   const listRemoteDirectories = useAppStore((state) => state.listRemoteDirectories)
   const [path, setPath] = useState(initialPath.trim() || defaultRemoteBrowsePath(host.platform))
   const [listing, setListing] = useState<RemoteDirectoryListing | null>(null)
@@ -78,17 +83,10 @@ export function RemoteDirectoryBrowser({ host, initialPath, onCancel, onSelect }
   }, [onCancel])
 
   return (
-    <div
-      className="uam-overlay fixed inset-0 z-[70] flex items-center justify-center p-4"
-      style={{ background: 'rgba(0,0,0,0.56)' }}
-      onClick={(event) => { if (event.target === event.currentTarget) onCancel() }}
-    >
+    <Overlay open zIndex={70} className={className} label={`Choose directory on ${host.label}`} describedBy={`${fieldId}-scope`} onBackdropMouseDown={onCancel} returnFocusTo={returnFocusTo}>
       <Card
         elevation={2}
         flush
-        role="dialog"
-        aria-modal="true"
-        aria-label={`Choose directory on ${host.label}`}
         className="flex max-h-[min(680px,calc(100vh-32px))] w-full max-w-xl flex-col overflow-hidden rounded-xl"
       >
         <header className="flex items-center justify-between gap-3 px-5 py-4" style={{ borderBottom: '1px solid var(--border)' }}>
@@ -106,17 +104,17 @@ export function RemoteDirectoryBrowser({ host, initialPath, onCancel, onSelect }
 
         <div className="flex min-h-0 flex-1 flex-col gap-3 p-5">
           <div>
-            <label htmlFor="remote-directory-path" className="sr-only" style={{ color: 'var(--text-2)' }}>
+            <label htmlFor={`${fieldId}-path`} className="sr-only" style={{ color: 'var(--text-2)' }}>
               Directory on {host.label}
             </label>
             <div className="flex items-center gap-2">
               <div className="relative min-w-0 flex-1">
               <input
-                id="remote-directory-path"
+                id={`${fieldId}-path`}
                 ref={pathRef}
                 value={path}
                 aria-invalid={Boolean(error) || undefined}
-                aria-describedby={error ? 'remote-directory-error' : undefined}
+                aria-describedby={error ? `${fieldId}-error` : undefined}
                 onChange={(event) => {
                   requestRef.current++
                   setPath(event.target.value)
@@ -137,7 +135,7 @@ export function RemoteDirectoryBrowser({ host, initialPath, onCancel, onSelect }
           </div>
 
           {error && (
-            <div id="remote-directory-error">
+            <div id={`${fieldId}-error`}>
               <Notice tone="error" dismissLabel="Dismiss directory error" onDismiss={() => setError('')}>{error}</Notice>
             </div>
           )}
@@ -179,7 +177,7 @@ export function RemoteDirectoryBrowser({ host, initialPath, onCancel, onSelect }
             ) : null}
           </div>
           {listing?.truncated && <p className="flex items-center gap-1.5 text-xs" style={{ color: 'var(--warning)' }}><AlertTriangle size={12} aria-hidden />Showing the first 200 directories. Enter a more specific path to continue.</p>}
-          <p className="text-xs" style={{ color: 'var(--text-3)' }}>Read-only: UAM lists directories but does not create, rename, or modify anything on {host.label}.</p>
+          <p id={`${fieldId}-scope`} className="text-xs" style={{ color: 'var(--text-3)' }}>Read-only: UAM lists directories but does not create, rename, or modify anything on {host.label}.</p>
         </div>
 
         <footer className="flex items-center justify-end gap-2 px-5 py-4" style={{ borderTop: '1px solid var(--border)' }}>
@@ -194,6 +192,6 @@ export function RemoteDirectoryBrowser({ host, initialPath, onCancel, onSelect }
           </Button>
         </footer>
       </Card>
-    </div>
+    </Overlay>
   )
 }

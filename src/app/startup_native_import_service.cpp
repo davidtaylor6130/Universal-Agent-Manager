@@ -571,12 +571,12 @@ namespace uam
 		}
 	}
 
-	void StartupNativeImportService::AddError(const std::string& error)
+	void StartupNativeImportService::AddError(const std::string& error, bool log, bool capped)
 	{
 		if (error.empty()) return;
 		const std::string message = strings::SafeLine(error, 512, true);
-		diagnostics::Write("Startup native history: " + message);
-		if (m_errors.size() < 20) m_errors.push_back(message);
+		if (log) diagnostics::Write("Startup native history: " + message);
+		if (!capped || m_errors.size() < 20) m_errors.push_back(message);
 		else ++m_omitted_error_count;
 	}
 
@@ -770,10 +770,27 @@ namespace uam
 			if (!outcome.replanned)
 			{
 				m_omitted_error_count += discovery.result.omitted_error_count;
+				// An automatic startup scan reports a history in a format the reader cannot read yet
+				// once, then stays quiet until the reader version or that history file changes; the
+				// history is still retried. An explicit Chat Data scan always lists it.
+				const bool startup_scan = !m_include_unregistered_local;
+				const std::unordered_set<std::string> already_reported = startup_scan
+				    ? ChatHistorySyncService().RecordNativeFormatRefusals(app.data_root, discovery.result.format_refusals) : std::unordered_set<std::string>{};
+				std::unordered_set<std::string> detailed;
+				for (const auto& refusal : discovery.result.format_refusals)
+					if (!already_reported.contains(refusal.message))
+					{
+						// The detailed line replaces the plain one in the log.
+						diagnostics::Write("Startup native history: " + strings::SafeLine(refusal.diagnostic, 512, true));
+						detailed.insert(refusal.message);
+					}
 				for (const std::string& error : discovery.result.errors)
 				{
 					if (continue_scan && error == "OpenCode history scan stopped before all sessions were read; retry to continue.") continue;
-					AddError(error);
+					if (already_reported.contains(error)) continue;
+					// Each reported refusal is listed outside the detail cap; there is one per conversation.
+					const bool refusal = detailed.contains(error);
+					AddError(error, !refusal, !refusal);
 				}
 			}
 			// The worker planned against the app as it was at launch. Merge only while nothing planning read has changed
