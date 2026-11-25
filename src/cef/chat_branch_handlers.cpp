@@ -6,7 +6,7 @@
 #include "cef/cef_push.h"
 #include "app/chat_domain_service.h"
 #include "app/git_worktree_service.h"
-#include "app/svn_branch_service.h"
+#include "app/vcs_provider.h"
 #include "common/paths/path_utils.h"
 #include "common/config/execution_host_config.h"
 #include "common/runtime/acp/acp_session_runtime.h"
@@ -96,6 +96,8 @@ namespace
 		ChatSession chat;
 		ChatDomainService::BranchHistoryIdentity identity;
 		std::shared_ptr<uam::WorkspaceLeaseGate::Lease> lease;
+		/// Set by the switch worker when the system recorded the branch on `chat`.
+		bool chat_updated = false;
 	};
 
 	std::shared_ptr<BranchRequest> CaptureBranchRequest(uam::AppState& app, const ChatSession& chat)
@@ -132,20 +134,40 @@ namespace
 		return snapshot;
 	}
 
-	uam::SvnBranchScope SvnScope(const BranchRequest& request)
+	/// The picker names the system in `vcsType`; anything else is the default (Git).
+	const uam::VcsProvider& BranchProvider(const nlohmann::json& payload)
 	{
-		return uam::BuildSvnBranchScope(request.settings.svn_enabled, request.chat, request.folders, request.references);
+		return uam::VcsProviderForId(payload.value("vcsType", std::string{}));
 	}
 
-	nlohmann::json SvnContextJson(const uam::SvnBranchContext& c)
+	// A located listing's context travels as `svnContext`, the picker's existing wire name.
+	nlohmann::json BranchContextJson(const uam::VcsBranchContext& c)
 	{
 		return {{"directory", c.directory}, {"url", c.url}, {"repository", c.repository}, {"uuid", c.uuid}, {"revision", c.revision}, {"parent", c.parent}, {"repositoryRevision", c.repository_revision}};
 	}
 
-	uam::SvnBranchContext ParseSvnContext(const nlohmann::json& payload)
+	uam::VcsBranchContext ParseBranchContext(const nlohmann::json& payload)
 	{
 		const auto& c = payload.at("svnContext");
 		return {c.at("directory").get<std::string>(), c.at("url").get<std::string>(), c.at("repository").get<std::string>(), c.at("uuid").get<std::string>(), c.at("revision").get<std::string>(), c.at("parent").get<std::string>(), c.at("repositoryRevision").get<std::string>()};
+	}
+
+	/// Reads the submitted choice; a located listing's context is required.
+	uam::VcsBranchSelection ParseBranchSelection(const uam::VcsProvider& provider, const nlohmann::json& payload)
+	{
+		uam::VcsBranchSelection selection;
+		selection.branch = payload["branch"].get<std::string>();
+		selection.create = payload.value("create", false);
+		if (provider.BranchesAreLocated()) selection.context = ParseBranchContext(payload);
+		return selection;
+	}
+
+	/// Creation is offered only by a system that declares it; the reason names the system.
+	bool RefuseUndeclaredBranchCreation(const uam::VcsProvider& provider, const uam::VcsBranchSelection& selection, const CefRefPtr<CefMessageRouterBrowserSide::Callback>& cb)
+	{
+		if (!selection.create || uam::DeclaresCapability(provider, uam::vcs::VcsCapability::BranchCreate)) return false;
+		cb->Failure(400, std::string(provider.Declaration().display_name) + " selection does not create repository folders.");
+		return true;
 	}
 
 	bool BranchRequestCurrent(const uam::AppState& app, const BranchRequest& request)
@@ -170,27 +192,24 @@ void UamQueryHandler::HandleListChatBranches(CefRefPtr<CefBrowser>, const nlohma
 	ChatSession* chat = uam::query_handler_internal::FindPayloadChatOrFail(m_app, payload, cb);
 	if (!chat) return;
 	const std::shared_ptr<BranchRequest> request = CaptureBranchRequest(m_app, *chat);
-	const bool svn_requested = payload.value("vcsType", std::string{}) == "svn";
+	const uam::VcsProvider* provider = &BranchProvider(payload);
 	const std::string parent = payload.value("svnParent", std::string{});
-	uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner(request->chat), m_asyncLifetime, cb, [request, svn_requested, parent, stop = m_svnBranchDiscoveryStop.get_token()]()
+	uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner(request->chat), m_asyncLifetime, cb, [request, provider, parent, stop = m_svnBranchDiscoveryStop.get_token()]()
 	{
-		if (svn_requested)
-		{
-			const auto result = uam::DiscoverSvnBranches(SvnScope(*request), parent, uam::CreateSvnBranchRunner(stop));
-			if (!result.ok) return uam::query_handler_async::AsyncFailure(400, result.error);
-			nlohmann::json branches = nlohmann::json::array();
-			for (const auto& branch : result.branches) branches.push_back({{"name", branch.name}, {"path", branch.path}, {"current", branch.current}});
-			return uam::query_handler_async::AsyncSuccess({{"vcsType", "svn"}, {"branches", branches}, {"svnContext", SvnContextJson(result.context)}});
-		}
-		uam::AppState snapshot = BranchSnapshot(*request);
-		std::vector<uam::GitChatBranch> branches;
-		bool svn = false;
-		std::string error;
-		if (!uam::GitWorktreeService().ListChatBranches(snapshot, request->chat, branches, svn, error))
-			return uam::query_handler_async::AsyncFailure(400, error);
+		const uam::AppState snapshot = BranchSnapshot(*request);
+		const uam::VcsBranchListing listing = provider->ListBranches(snapshot, request->chat, parent, stop);
+		if (!listing.ok) return uam::query_handler_async::AsyncFailure(400, listing.error);
+		const bool located = provider->BranchesAreLocated();
 		nlohmann::json values = nlohmann::json::array();
-		for (const uam::GitChatBranch& branch : branches) values.push_back({{"name", branch.name}, {"current", branch.current}});
-		return uam::query_handler_async::AsyncSuccess({{"branches", values}, {"vcsType", svn ? "svn" : "git"}});
+		for (const uam::VcsBranch& branch : listing.branches)
+		{
+			nlohmann::json value = {{"name", branch.name}, {"current", branch.current}};
+			if (located) value["path"] = branch.path;
+			values.push_back(std::move(value));
+		}
+		nlohmann::json reply = {{"branches", values}, {"vcsType", uam::VcsTypeToString(listing.type)}};
+		if (located) reply["svnContext"] = BranchContextJson(listing.context);
+		return uam::query_handler_async::AsyncSuccess(std::move(reply));
 	}, [this, request](uam::query_handler_async::AsyncCefResult& result)
 	{
 		if (!BranchRequestCurrent(m_app, *request)) result = uam::query_handler_async::AsyncFailure(409, "The chat workspace changed. Open the branch picker again.");
@@ -207,12 +226,14 @@ void UamQueryHandler::HandleSwitchChatBranch(CefRefPtr<CefBrowser> browser, cons
 	if (!payload.contains("branch") || !payload["branch"].is_string() ||
 	    (payload.contains("create") && !payload["create"].is_boolean()))
 	{ cb->Failure(400, "Choose a valid local Git branch."); return; }
-	const std::string branch = payload["branch"].get<std::string>();
-	const bool create = payload.value("create", false);
-	const bool svn = payload.value("vcsType", std::string{}) == "svn";
-	const auto svn_context = svn ? ParseSvnContext(payload) : uam::SvnBranchContext{};
-	if (svn && create) { cb->Failure(400, "SVN selection does not create repository folders."); return; }
-	if (!svn && !create && !chat->pending_git_branch_name.empty() && branch == chat->workspace_branch_name)
+	const uam::VcsProvider* provider = &BranchProvider(payload);
+	const uam::VcsBranchSelection selection = ParseBranchSelection(*provider, payload);
+	const std::string& branch = selection.branch;
+	const bool create = selection.create;
+	if (RefuseUndeclaredBranchCreation(*provider, selection, cb)) return;
+	// Only a system that creates branches has a pending first-message branch to withdraw. The pending branch is Git's
+	// (pending_git_branch_name, applied through the default provider), the only system that declares BranchCreate today.
+	if (uam::DeclaresCapability(*provider, uam::vcs::VcsCapability::BranchCreate) && !create && !chat->pending_git_branch_name.empty() && branch == chat->workspace_branch_name)
 	{
 		// Withdrawing a pending first-message branch is metadata only, so dirty files cannot trap it.
 		chat->pending_git_branch_name.clear();
@@ -222,26 +243,20 @@ void UamQueryHandler::HandleSwitchChatBranch(CefRefPtr<CefBrowser> browser, cons
 		return;
 	}
 	const std::shared_ptr<BranchRequest> request = CaptureBranchRequest(m_app, *chat);
-	uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner(request->chat), m_asyncLifetime, cb, [request, branch, create, svn, svn_context, stop = m_svnBranchDiscoveryStop.get_token()]()
+	uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner(request->chat), m_asyncLifetime, cb, [request, provider, selection, stop = m_svnBranchDiscoveryStop.get_token()]()
 	{
-		if (svn)
-		{
-			const auto result = uam::DiscoverSvnBranches(SvnScope(*request), svn_context.parent, uam::CreateSvnBranchRunner(stop));
-			if (!result.ok || result.context != svn_context) return uam::query_handler_async::AsyncFailure(409, result.ok ? "The SVN context changed. Discover the folders again." : result.error);
-			return uam::query_handler_async::AsyncSuccess(nlohmann::json::object());
-		}
-		uam::AppState snapshot = BranchSnapshot(*request);
-		std::string error;
-		if (!uam::GitWorktreeService().ValidateChatBranchSelection(snapshot, request->chat, branch, create, error))
-			return uam::query_handler_async::AsyncFailure(400, error);
+		const uam::AppState snapshot = BranchSnapshot(*request);
+		const uam::VcsBranchOutcome checked = provider->CheckBranchSelection(snapshot, request->chat, selection, stop);
+		if (!checked.ok) return uam::query_handler_async::AsyncFailure(checked.conflict ? 409 : 400, checked.error);
 		return uam::query_handler_async::AsyncSuccess(nlohmann::json::object());
-	}, [this, browser, payload, cb, request, branch, create, svn](uam::query_handler_async::AsyncCefResult& result)
+	}, [this, browser, payload, cb, request, branch, create](uam::query_handler_async::AsyncCefResult& result)
 	{
 		if (!result.ok) return;
 		if (!BranchRequestCurrent(m_app, *request))
 		{ result = uam::query_handler_async::AsyncFailure(409, "The chat changed before branch selection."); return; }
 		ChatSession* current = ChatDomainService().FindChatById(m_app, request->chat.id);
-		if (create && !svn && uam::GitWorktreeService::BranchCreationWaitsForFirstMessage(*current) && ChatRuntimeIdleForPendingBranch(m_app, *current))
+		// Creation reaches here only for a system that declares it.
+		if (create && uam::GitWorktreeService::BranchCreationWaitsForFirstMessage(*current) && ChatRuntimeIdleForPendingBranch(m_app, *current))
 		{
 			// Avoid branches for chats that never start; the first send creates it from the same HEAD.
 			current->pending_git_branch_name = branch;
@@ -324,11 +339,9 @@ void UamQueryHandler::ContinueSwitchChatBranch(CefRefPtr<CefBrowser> browser, co
 	}
 	if (!BranchRuntimeSettled(m_app, chat->id) || m_workspaceDeletionPending)
 	{ cb->Failure(409, uam::AcpStopRefusalMessage(m_app, chat->id, "Stop the chat runtime and wait for history to save before switching branches.")); return; }
-	const std::string branch = payload["branch"].get<std::string>();
-	const bool create = payload.value("create", false);
-	const bool svn = payload.value("vcsType", std::string{}) == "svn";
-	const auto svn_context = svn ? ParseSvnContext(payload) : uam::SvnBranchContext{};
-	if (svn && create) { cb->Failure(400, "SVN selection does not create repository folders."); return; }
+	const uam::VcsProvider* provider = &BranchProvider(payload);
+	const uam::VcsBranchSelection selection = ParseBranchSelection(*provider, payload);
+	if (RefuseUndeclaredBranchCreation(*provider, selection, cb)) return;
 	const std::shared_ptr<BranchRequest> request = CaptureBranchRequest(m_app, *chat);
 	// Unlike the shared mutation lease, exclusivity prevents adding a worktree user during checkout.
 	request->lease = m_app.worktree_retention_gate.TryAcquireCleanup();
@@ -336,23 +349,13 @@ void UamQueryHandler::ContinueSwitchChatBranch(CefRefPtr<CefBrowser> browser, co
 	m_app.worktree_operation_chat_ids.insert(chat->id);
 	uam::query_handler_async::DispatchBranchOperation(m_app.worktree_operation_chat_ids, request->chat.id, [&]()
 	{
-		return uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner(request->chat), m_asyncLifetime, cb, [request, svn, svn_context, stop = m_svnBranchDiscoveryStop.get_token()]()
+		return uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner(request->chat), m_asyncLifetime, cb, [request, provider, selection, stop = m_svnBranchDiscoveryStop.get_token()]()
 		{
-			if (svn)
-			{
-				const auto result = uam::DiscoverSvnBranches(SvnScope(*request), svn_context.parent, uam::CreateSvnBranchRunner(stop));
-				if (!result.ok || result.context != svn_context) return uam::query_handler_async::AsyncFailure(409, result.ok ? "The SVN context changed. Discover the folders again." : result.error);
-				return uam::query_handler_async::AsyncSuccess(nlohmann::json::object());
-			}
-			uam::AppState snapshot = BranchSnapshot(*request);
-			std::vector<uam::GitChatBranch> branches;
-			bool detected_svn = false;
-			std::string error;
-			if (!uam::GitWorktreeService().ListChatBranches(snapshot, request->chat, branches, detected_svn, error))
-				return uam::query_handler_async::AsyncFailure(400, error);
-			if (detected_svn) return uam::query_handler_async::AsyncFailure(400, "Open the SVN folder selector for this working copy.");
+			const uam::AppState snapshot = BranchSnapshot(*request);
+			const uam::VcsBranchOutcome checked = provider->CheckBranchSwitch(snapshot, request->chat, selection, stop);
+			if (!checked.ok) return uam::query_handler_async::AsyncFailure(checked.conflict ? 409 : 400, checked.error);
 			return uam::query_handler_async::AsyncSuccess(nlohmann::json::object());
-		}, [this, browser, cb, request, branch, create, svn, svn_context](uam::query_handler_async::AsyncCefResult& result)
+		}, [this, browser, cb, request, provider, selection](uam::query_handler_async::AsyncCefResult& result)
 		{
 			if (!result.ok || !BranchRequestCurrent(m_app, *request) || !BranchRuntimeSettled(m_app, request->chat.id))
 			{
@@ -362,20 +365,20 @@ void UamQueryHandler::ContinueSwitchChatBranch(CefRefPtr<CefBrowser> browser, co
 			}
 			uam::query_handler_async::DispatchBranchOperation(m_app.worktree_operation_chat_ids, request->chat.id, [&]()
 			{
-				return uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner(request->chat), m_asyncLifetime, cb, [request, branch, create, svn, svn_context, stop = m_svnBranchDiscoveryStop.get_token()]()
+				return uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner(request->chat), m_asyncLifetime, cb, [request, provider, selection, stop = m_svnBranchDiscoveryStop.get_token()]()
 				{
-					if (svn)
-					{
-						const auto result = uam::SwitchSvnBranch(SvnScope(*request), svn_context, branch, uam::CreateSvnBranchRunner(stop));
-						if (!result.ok) return uam::query_handler_async::AsyncFailure(409, result.error);
-						return uam::query_handler_async::AsyncSuccess({{"vcsType", "svn"}, {"branch", result.context.revision}, {"svnContext", SvnContextJson(result.context)}});
-					}
 					uam::AppState snapshot = BranchSnapshot(*request);
-					std::string error;
-					if (!uam::GitWorktreeService().SwitchChatBranch(snapshot, request->chat, branch, create, error))
-						return uam::query_handler_async::AsyncFailure(409, error.empty() ? "Branch switching could not be saved." : error);
-					return uam::query_handler_async::AsyncSuccess({{"branch", request->chat.workspace_branch_name}});
-				}, [this, browser, request, svn](uam::query_handler_async::AsyncCefResult& switched)
+					const uam::VcsBranchOutcome outcome = provider->SwitchBranch(snapshot, request->chat, selection, stop);
+					if (!outcome.ok) return uam::query_handler_async::AsyncFailure(409, outcome.error);
+					request->chat_updated = outcome.chat_updated;
+					nlohmann::json reply = {{"branch", outcome.branch}};
+					if (provider->BranchesAreLocated())
+					{
+						reply["vcsType"] = std::string(provider->Declaration().id);
+						reply["svnContext"] = BranchContextJson(outcome.context);
+					}
+					return uam::query_handler_async::AsyncSuccess(std::move(reply));
+				}, [this, browser, request](uam::query_handler_async::AsyncCefResult& switched)
 				{
 					m_app.worktree_operation_chat_ids.erase(request->chat.id);
 					if (!switched.ok) return;
@@ -383,7 +386,7 @@ void UamQueryHandler::ContinueSwitchChatBranch(CefRefPtr<CefBrowser> browser, co
 					if (!current || m_app.data_root != request->root || current->metadata_incarnation != request->chat.metadata_incarnation ||
 					    !ChatDomainService().MatchesBranchHistoryIdentity(*current, request->identity))
 					{ switched = uam::query_handler_async::AsyncFailure(409, "The saved branch changed while the chat workspace was being replaced. Reload this chat."); return; }
-					if (!svn)
+					if (request->chat_updated)
 					{
 						current->workspace_branch_name = request->chat.workspace_branch_name;
 						current->pending_git_branch_name = request->chat.pending_git_branch_name;
