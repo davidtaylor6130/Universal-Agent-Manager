@@ -3827,7 +3827,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 <div data-testid="compute-pool-wait" role="status" className="uam-turn-starting px-4 py-2 text-xs" style={{ color: 'var(--text-3)' }}>
                   <span className="conversation-work__heading">
                     <span className="conversation-work__live" aria-hidden />
-                    <span>Waiting for {acp.computePoolWait.poolName} slot ({acp.computePoolWait.inUse}/{acp.computePoolWait.limit})</span>
+                    <span>Waiting for {acp.computePoolWait.poolName} slot ({acp.computePoolWait.inUse}/{acp.computePoolWait.limit} in use)</span>
                   </span>
                 </div>
               )}

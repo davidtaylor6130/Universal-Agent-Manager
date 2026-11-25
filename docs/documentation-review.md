@@ -344,7 +344,11 @@ A queued-input journal that extends the queue revision carried by its saved chat
 
 ## Chat save failure at quit
 
-A transcript save that fails while UAM is running is reported once through the status line and retried with backoff. The forced save at quit runs after the interface is gone, so a chat that first fails there is only recorded in the diagnostic log. Telling the user needs a decision between a native dialog at quit and a notice at the next launch backed by a small durable marker; neither exists yet. Interim interpretation: keep the diagnostic line and the two forced attempts around provider stop.
+A transcript save that fails while UAM is running is reported once through the status line and retried with backoff. The forced save at quit runs after the interface is gone, so a chat that first fails there is only recorded in the diagnostic log, as one line with its cause. Telling the user needs a decision between a native dialog at quit and a notice at the next launch backed by a small durable marker; neither exists yet. Interim interpretation: keep the diagnostic line and the two forced attempts around provider stop.
+
+## Compute pool wait after a restart
+
+**Decided by David, 2026-11-23.** [Issue #524](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues/524) asks for restart recovery of turns waiting for a [compute pool](settings/compute-pools.md) slot. A wait lives only in the running app. David kept today's behaviour: after a restart, a held turn of a chat on this computer stays in its chat as an unsent message with Retry, and Retry checks it at the pool again as a new turn. Today's SSH behaviour is likewise kept: a held turn of an SSH chat is already saved as prepared remote input, so, like any undelivered remote prompt, it is restarted or reconnected, checked at the pool again and sent by itself. Automatic rejoin after a restart is a later slice: it would decide whether local turns rejoin the line by themselves, whether SSH turns should match, and whether a rejoining turn goes behind or ahead of turns sent since. This approves the product rule, not its implementation, review or acceptance.
 
 ## Paused memory retries notice
 

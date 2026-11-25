@@ -154,6 +154,19 @@ std::string FormatAcpDiagnosticLogLine(const AcpSessionState& session, const Acp
 	return out.str();
 }
 
+bool ShouldWriteAcpDiagnosticLogLine(const AcpSessionState& session, const AcpDiagnosticEntryState& entry)
+{
+	if (!session.model_discovery_only && !session.ephemeral_model_discovery) return true;
+	// Model discovery starts a provider only to list models, many times a day. Its routine protocol traffic
+	// stays in the session's in-memory diagnostics; the file log keeps only what can explain a failure.
+	const bool routine = (entry.event == "write" && entry.reason == "sent") ||
+	    (entry.event == "response" && entry.reason == "jsonrpc_result") ||
+	    (entry.event == "process_launch" && (entry.reason == "starting" || entry.reason == "started")) ||
+	    (entry.event == "process_exit" && entry.reason == "idle" && (!entry.has_code || entry.code == 0)) ||
+	    (entry.event == "session" && entry.reason == "idle_shutdown");
+	return !routine;
+}
+
 void AppendAcpDiagnostic(
     AcpSessionState& session,
     const std::string& event,
@@ -177,7 +190,7 @@ void AppendAcpDiagnostic(
 	entry.detail = CapDiagnosticString(detail, kMaxAcpDiagnosticDetailBytes);
 	entry.lifecycle_state = session.lifecycle_state;
 
-	uam::diagnostics::Write(FormatAcpDiagnosticLogLine(session, entry));
+	if (ShouldWriteAcpDiagnosticLogLine(session, entry)) uam::diagnostics::Write(FormatAcpDiagnosticLogLine(session, entry));
 
 	session.diagnostics.push_back(std::move(entry));
 	if (session.diagnostics.size() > kMaxAcpDiagnosticEntries)

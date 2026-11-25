@@ -1731,6 +1731,7 @@ if(UAM_BUILD_TESTS)
     tests/git_worktree_pull_tests.cpp
     tests/git_worktree_port_method_tests.cpp
     tests/storage_retention_tests.cpp
+    tests/diagnostic_retention_tests.cpp
     tests/durable_replace_fallback_tests.cpp
     tests/data_folder_preflight_tests.cpp
     tests/data_folder_settings_tests.cpp
@@ -1763,6 +1764,7 @@ if(UAM_BUILD_TESTS)
     tests/remote_memory_publication_tests.cpp
     tests/acp_session_tests.cpp
     tests/compute_pool_tests.cpp
+    tests/compute_pool_continuation_tests.cpp
     tests/acp_permission_ceiling_tests.cpp
     tests/acp_permission_provider_boundary_tests.cpp
     tests/codex_captured_permission_tests.cpp

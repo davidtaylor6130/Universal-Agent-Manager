@@ -55,7 +55,7 @@ namespace uam::vcs
 #undef UAM_SVN_COMMON_READ_SWITCHES
 
 	/// <summary>What a system can do. VcsCommitService declines History, Update, OriginComparison and Resolve for a system that does not declare them,
-	/// and the commit panel offers them from the list sent with each status.</summary>
+	/// and the commit panel offers them from the list sent with each status. The chat branch picker refuses creation without BranchCreate.</summary>
 	enum class VcsCapability
 	{
 		Status,
