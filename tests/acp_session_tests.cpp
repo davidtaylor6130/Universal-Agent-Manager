@@ -22640,7 +22640,7 @@ UAM_TEST(AcpRemoteInitializeRefusalIsFinalWithoutRemoteRecovery)
 			fixture.app.provider_model_catalog->MarkDiscoveryLaunchStarted(chat.provider_id,
 			    chat.workspace_directory, chat.execution_host_id);
 		}
-		const std::string refusal = "Copilot SDK server protocol 3 is required; update the CLI or UAM before retrying.";
+		const std::string refusal = "This Copilot CLI uses protocol 2; UAM supports 3.";
 		(void)uam::ProcessAcpLineForTests(fixture.app, session, chat,
 		    nlohmann::json{{"jsonrpc", "2.0"}, {"id", 1}, {"result", {{"protocolVersion", 2}}}}.dump());
 		fixture.FlushWire();
