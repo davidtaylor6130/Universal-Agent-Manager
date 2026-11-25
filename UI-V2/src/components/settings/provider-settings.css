@@ -217,3 +217,22 @@
 /* Discovery issue: provider and reason share one line; the Show IDs disclosure follows on that line. */
 .uam-native-issues > li.uam-native-issue-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--sp-1) var(--sp-3); }
 .uam-native-issue-row > .uam-native-issues__ids { margin-top: 0; }
+
+/* Agent store rows: name with its scope and Delegate-only badges; a just-imported row is tinted briefly (opacity only). */
+.uam-central-agent { position: relative; isolation: isolate; }
+.uam-central-agent::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  inset: 0 calc(-1 * var(--sp-4) + 1px);
+  background: var(--accent-dim);
+  box-shadow: inset 3px 0 0 var(--accent);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--dur-base) var(--ease);
+}
+.uam-central-agent[data-highlighted="true"]::before { opacity: 1; }
+.uam-central-agent__title { display: inline-flex; align-items: center; gap: var(--sp-2); min-width: 0; max-width: 100%; }
+@media (forced-colors: active) {
+  .uam-central-agent::before { background: transparent; box-shadow: inset 3px 0 0 Highlight; forced-color-adjust: none; }
+}
