@@ -2,8 +2,10 @@
 #include "app/execution_routing_service.h"
 #include "common/config/provider_availability.h"
 
+#include <atomic>
 #include <barrier>
 #include <sstream>
+#include <thread>
 
 using namespace uam_test;
 
@@ -259,6 +261,7 @@ UAM_TEST(ExecutionRoutingOnlyOwnedRecoveryBypassesChangedOptInAndFullCapacity)
 }
 
 #include "app/execution_routing_integration.h"
+#include "app/host_load_integration.h"
 #include "common/utils/hash_utils.h"
 #include "remote/runner_protocol.h"
 #include "common/runtime/provider_cli_compatibility_service.h"
@@ -388,7 +391,12 @@ UAM_TEST(ExecutionRoutingMaterializedWorktreeWithoutExactMappingWaitsWithoutMuta
 	UAM_ASSERT_EQ(app.chats.front().folder_id, std::string("source"));
 	UAM_ASSERT(app.chats.front().routing_assigned_connection_identity.empty());
 	UAM_ASSERT(!fs::exists(AppPaths::UamChatFilePath(app.data_root, "automatic-chat")));
-	UAM_ASSERT(!app.execution_routing_waits["automatic-chat"].empty());
+	// One plain line without computer names; the reasons per computer travel beside it.
+	UAM_ASSERT_EQ(app.execution_routing_waits["automatic-chat"], std::string("No computer can take this chat yet: 1 no folder."));
+	UAM_ASSERT_EQ(uam::RoutingWaitHostsForFrontend(app, "automatic-chat"), nlohmann::json::parse(R"([{"hostId":"remote","reason":"noMapping"}])"));
+	// Reasons recorded for an earlier wait are not shown beside a different one.
+	app.execution_routing_waits["automatic-chat"] = "Waiting for routing admission before the first turn.";
+	UAM_ASSERT(uam::RoutingWaitHostsForFrontend(app, "automatic-chat").empty());
 }
 
 UAM_TEST(ExecutionRoutingFailedAssignmentSaveReleasesOnlyPrelaunchReservation)
@@ -1174,5 +1182,79 @@ UAM_TEST(ExecutionRoutingRestoredReservationReleasesOnlyWhenTheHelperReportsNoPr
 	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(restored, restored.chats.back()).status, uam::ExecutionRoutingStatus::Assigned);
 	restored.execution_routing_retry_at_by_chat_id.clear();
 	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(restored, restored.chats.front()).status, uam::ExecutionRoutingStatus::Waiting);
+}
+#endif
+
+#if UAM_ENABLE_SSH
+// Load is read and shown only in builds with SSH.
+UAM_TEST(HostLoadPollSamplesRoutedComputersOffTheAppThreadAndKeepsUnknownLoadUnknown)
+{
+	// Declared before the app, so the sampler threads that read it stop first.
+	std::atomic<bool> supported{true};
+	TempDir temp("uam-routing-host-load");
+	uam::AppState app;
+	ConfigureRoutingFixture(app, temp.root);
+	app.host_load_reader = [&supported](const ExecutionHost& host)
+	{
+		return uam::host_load::ReaderFactory([&supported, local = host.id == "local"]
+		{
+			return uam::host_load::Reader([&supported, local](std::stop_token)
+			{
+				uam::platform::HostLoad load;
+				load.cores = 8;
+				load.load_average_1m = 3.04;
+				load.memory_available_bytes = 5ull << 30U;
+				load.memory_total_bytes = 16ull << 30U;
+				if (!local) load.runner_processes = 3;
+				if (!local && !supported.load()) return uam::host_load::Reading{uam::host_load::SampleStatus::Unsupported, {}};
+				return uam::host_load::Reading{uam::host_load::SampleStatus::Known, load};
+			});
+		});
+	};
+	// Admission does not read load yet, so an idle computer, even one turned on for routing, is not sampled.
+	const auto settle = [&app](const std::string& id, const std::string& status)
+	{
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+		while (std::chrono::steady_clock::now() < deadline)
+		{
+			app.host_load_next_poll_s = 0.0;
+			(void)uam::PollHostLoad(app);
+			if (uam::HostLoadForFrontend(app)["hosts"][id].value("status", std::string()) == status) return true;
+			std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		}
+		return false;
+	};
+	(void)uam::PollHostLoad(app);
+	UAM_ASSERT_EQ(uam::HostLoadForFrontend(app)["hosts"]["remote"].value("status", std::string()), std::string("notSampled"));
+	UAM_ASSERT(!app.host_load_sampler || app.host_load_sampler->Keys().empty());
+
+	// Settings that show load sample every computer.
+	uam::RequestHostLoad(app);
+	UAM_ASSERT(settle("remote", "known"));
+	nlohmann::json state = uam::HostLoadForFrontend(app);
+	const nlohmann::json& remote = state["hosts"]["remote"];
+	UAM_ASSERT_EQ(remote["cores"], nlohmann::json(8));
+	UAM_ASSERT_EQ(remote["loadAverage1m"], nlohmann::json(3.0));
+	UAM_ASSERT_EQ(remote["processes"], nlohmann::json(3));
+	UAM_ASSERT_EQ(remote["inUse"], nlohmann::json(0));
+	UAM_ASSERT_EQ(remote["limit"], nlohmann::json(1));
+	UAM_ASSERT(settle("local", "known"));
+	UAM_ASSERT_EQ(uam::HostLoadForFrontend(app)["hosts"]["local"]["processes"], nlohmann::json(0));
+
+	// A limit is shown only where admission applies it.
+	app.settings.execution_routing.hosts.front().enabled = false;
+	app.host_load_next_poll_s = 0.0;
+	(void)uam::PollHostLoad(app);
+	UAM_ASSERT(uam::HostLoadForFrontend(app)["hosts"]["remote"]["limit"].is_null());
+	app.settings.execution_routing.hosts.front().enabled = true;
+
+	// A helper updated to one without host.load is read afresh and reports unknown, never zero.
+	supported = false;
+	app.settings.execution_hosts.front().runner_version = "older-helper";
+	UAM_ASSERT(settle("remote", "unsupported"));
+	state = uam::HostLoadForFrontend(app);
+	for (const char* figure : {"cores", "loadAverage1m", "cpuPercent", "memoryAvailableBytes", "memoryTotalBytes", "processes"})
+		UAM_ASSERT(state["hosts"]["remote"][figure].is_null());
+	app.host_load_sampler.reset();
 }
 #endif

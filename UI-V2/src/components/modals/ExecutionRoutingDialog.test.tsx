@@ -73,6 +73,29 @@ describe('SSH routing controls', () => {
     expect(document.body.querySelector('[role="alertdialog"] [role="alert"]')?.textContent).toContain('assignment changed')
     expect(query).not.toHaveBeenCalled()
   })
+  it('names each computer the wait passed over with its reason and in-use count, grouping computers that are off', () => {
+    useAppStore.setState((state) => ({
+      executionHosts: [...state.executionHosts, { id: 'ssh-b', label: 'Server B', transport: 'ssh', sshAlias: 'b', runnerStatus: 'error', runnerVersion: '', platform: '', architecture: '', lastSeenAt: '' }],
+      executionHostLoad: { hosts: { 'ssh-a': { status: 'known', cores: 8, loadAverage1m: 7.9, cpuPercent: null, memoryAvailableBytes: null, memoryTotalBytes: null, processes: 8, inUse: 4, waiting: 1, limit: 4 } }, unassignedWaiting: 1 },
+    }))
+    const session: Session = { id: 'chat', name: 'Waiting', viewMode: 'chat', createdAt: new Date(), updatedAt: new Date(), routingMode: 'automatic', routingWaitReason: 'No computer can take this chat yet: 1 full, 1 unreachable, 2 off.',
+      routingWaitHosts: [{ hostId: 'ssh-a', reason: 'full' }, { hostId: 'ssh-b', reason: 'unreachable' }, { hostId: 'ssh-c', reason: 'off' }, { hostId: 'ssh-d', reason: 'off' }] }
+    const host = mount(<ExecutionRoutingWaitNotice session={session} />)
+    const rows = Array.from(host.querySelectorAll('[aria-label="Computers passed over"] li')).map((row) => row.textContent)
+    expect(rows).toEqual(['Server AFull · 4/4', 'Server BUnreachable', '2 computersOff'])
+    // Changing in-use counts stay out of the notice's live region.
+    expect(host.querySelector('[role="status"] [aria-label="Computers passed over"]')).toBeNull()
+    // It follows the notice directly, so it reads as part of the notice it explains.
+    expect(host.querySelector('[role="status"] + [aria-label="Computers passed over"]')?.className).toBe('uam-rt-wait-hosts')
+    expect(host.textContent).toContain('No computer can take this chat yet: 1 full, 1 unreachable, 2 off.')
+  })
+
+  it('shows no computer list for a wait without per-computer reasons', () => {
+    const session: Session = { id: 'chat', name: 'Waiting', viewMode: 'chat', createdAt: new Date(), updatedAt: new Date(), routingWaitReason: 'Waiting for routing admission before the first turn.' }
+    const host = mount(<ExecutionRoutingWaitNotice session={session} />)
+    expect(host.querySelector('[aria-label="Computers passed over"]')).toBeNull()
+  })
+
   it('requires manual reconfirmation after provider configuration changes and leaves a newer dialog focused on unmount', async () => {
     const save = vi.fn().mockResolvedValue(undefined)
     useAppStore.setState((state) => ({

@@ -9,7 +9,9 @@
 #include "remote/runner_client.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <mutex>
+#include <optional>
 
 namespace uam
 {
@@ -50,21 +52,57 @@ namespace uam
 			return data_root / "secrets" / "keychain-accounts.json";
 		}
 
+		struct IndexEntry
+		{
+			std::string account;
+			std::int64_t saved_at_epoch_ms = 0; // 0: saved before UAM recorded dates.
+		};
+
 		// ponytail: one cached index for the app's data root; it changes only through RecordKeychainAccount.
 		std::mutex g_index_mutex;
 		std::filesystem::path g_index_root;
-		std::vector<std::string> g_index;
+		std::vector<IndexEntry> g_index;
 
-		std::vector<std::string> ReadIndexFile(const std::filesystem::path& data_root)
+		/// A plain string is an entry from before dates were recorded; an object carries its account and save time.
+		std::vector<IndexEntry> ReadIndexFile(const std::filesystem::path& data_root)
 		{
 			std::string text;
 			if (!io::TryReadTextFile(IndexPath(data_root), text)) return {};
 			const nlohmann::json parsed = nlohmann::json::parse(text, nullptr, false);
-			std::vector<std::string> accounts;
+			std::vector<IndexEntry> accounts;
 			if (parsed.is_array())
 				for (const nlohmann::json& value : parsed)
-					if (value.is_string()) accounts.push_back(value.get<std::string>());
+				{
+					if (value.is_string()) accounts.push_back({value.get<std::string>()});
+					else if (value.is_object() && value.contains("account") && value["account"].is_string())
+						accounts.push_back({value["account"].get<std::string>(),
+						    value.contains("savedAt") && value["savedAt"].is_number_integer() ? std::max<std::int64_t>(0, value["savedAt"].get<std::int64_t>()) : 0});
+				}
 			return accounts;
+		}
+
+		const std::vector<IndexEntry>& CachedIndex(const std::filesystem::path& data_root)
+		{
+			if (g_index_root != data_root)
+			{
+				g_index = ReadIndexFile(data_root);
+				g_index_root = data_root;
+			}
+			return g_index;
+		}
+	} // namespace
+
+	namespace
+	{
+		/// Whether a saved secret can be offered on this card, who it is saved for and when. A workspace-and-label entry
+		/// from before saved secrets were scoped is reported only so the user can forget it.
+		nlohmann::json KeychainProjection(const AppState& app, const UamControlCapability& capability, const SecretDeliveryTarget& target, bool available)
+		{
+			const std::optional<std::int64_t> saved_at = available ? SecretRequestService::KeychainSavedAt(app.data_root, target.keychain_account) : std::nullopt;
+			return {{"available", available}, {"saved", saved_at.has_value()},
+			        {"savedAt", saved_at.has_value() && *saved_at > 0 ? nlohmann::json(*saved_at) : nlohmann::json(nullptr)},
+			        {"agent", capability.agent_id},
+			        {"legacySaved", available && SecretRequestService::KeychainSaved(app.data_root, target.legacy_keychain_account)}};
 		}
 	} // namespace
 
@@ -131,7 +169,7 @@ namespace uam
 		                        {"placeholder", metadata.value("placeholder", "")}, {"url", metadata.value("url", "")},
 		                        {"provider", provider}, {"host", std::move(host)},
 		                        {"planOptIn", metadata.value("planOptIn", false)},
-		                        {"keychain", {{"available", keychain}, {"saved", keychain && KeychainSaved(app.data_root, target.keychain_account)}}}};
+		                        {"keychain", KeychainProjection(app, capability, target, keychain)}};
 		return input;
 	}
 
@@ -147,8 +185,15 @@ namespace uam
 		const ChatSession* root = ChatDomainService().FindChatById(app, capability.chat_id);
 		const std::string workspace = root == nullptr ? std::string{} : root->workspace_directory;
 		const std::string label = capability.pending_approval ? capability.pending_approval->secret_request.value("label", "") : std::string{};
-		target.keychain_account = workspace + " | " + label;
+		target.keychain_account = KeychainAccount(workspace, capability.provider_id, capability.agent_id, label);
+		target.legacy_keychain_account = workspace + " | " + label;
 		return target;
+	}
+
+	std::string SecretRequestService::KeychainAccount(std::string_view workspace, std::string_view provider_id, std::string_view agent_id, std::string_view label)
+	{
+		// An array keeps the parts unambiguous: an agent-chosen label cannot reproduce another agent's name.
+		return nlohmann::json::array({"uam-secret-v2", workspace, provider_id, agent_id, label}).dump();
 	}
 
 	std::string SecretRequestService::SaveRefusal(const SecretDeliveryTarget& target, bool save, bool use_saved)
@@ -187,24 +232,30 @@ namespace uam
 
 	bool SecretRequestService::KeychainSaved(const std::filesystem::path& data_root, std::string_view account)
 	{
-		std::lock_guard lock(g_index_mutex);
-		if (g_index_root != data_root)
-		{
-			g_index = ReadIndexFile(data_root);
-			g_index_root = data_root;
-		}
-		return std::ranges::find(g_index, account) != g_index.end();
+		return KeychainSavedAt(data_root, account).has_value();
 	}
 
-	bool SecretRequestService::RecordKeychainAccount(const std::filesystem::path& data_root, std::string_view account, bool saved)
+	std::optional<std::int64_t> SecretRequestService::KeychainSavedAt(const std::filesystem::path& data_root, std::string_view account)
 	{
 		std::lock_guard lock(g_index_mutex);
-		std::vector<std::string> accounts = ReadIndexFile(data_root);
-		std::erase(accounts, std::string(account));
-		if (saved) accounts.emplace_back(account);
+		const std::vector<IndexEntry>& index = CachedIndex(data_root);
+		const auto found = std::ranges::find(index, account, &IndexEntry::account);
+		if (found == index.end()) return std::nullopt;
+		return found->saved_at_epoch_ms;
+	}
+
+	bool SecretRequestService::RecordKeychainAccount(const std::filesystem::path& data_root, std::string_view account, bool saved, std::int64_t saved_at_epoch_ms)
+	{
+		std::lock_guard lock(g_index_mutex);
+		std::vector<IndexEntry> accounts = ReadIndexFile(data_root);
+		std::erase_if(accounts, [&](const IndexEntry& entry) { return entry.account == account; });
+		if (saved) accounts.push_back({std::string(account), std::max<std::int64_t>(0, saved_at_epoch_ms)});
+		nlohmann::json file = nlohmann::json::array();
+		for (const IndexEntry& entry : accounts)
+			file.push_back(entry.saved_at_epoch_ms > 0 ? nlohmann::json{{"account", entry.account}, {"savedAt", entry.saved_at_epoch_ms}} : nlohmann::json(entry.account));
 		std::error_code ignored;
 		std::filesystem::create_directories(IndexPath(data_root).parent_path(), ignored);
-		const bool written = io::WriteTextFile(IndexPath(data_root), nlohmann::json(accounts).dump());
+		const bool written = io::WriteTextFile(IndexPath(data_root), file.dump());
 		g_index = std::move(accounts);
 		g_index_root = data_root;
 		return written;

@@ -1178,9 +1178,19 @@ namespace uam
 
 			// Folders before chats: a copied chat must never name a workspace this root has not saved, even if the
 			// copy stops part-way. Folders the ledger already recorded stay out, so user deletions hold.
-			std::vector<ChatFolder> folders = ChatFolderStore::Load(data_root);
+			uam::io::StoreLoadResult current_folders_load;
+			uam::io::StoreLoadResult legacy_folders_load;
+			std::vector<ChatFolder> folders = ChatFolderStore::Load(data_root, &current_folders_load);
+			std::vector<ChatFolder> legacy_folders = ChatFolderStore::Load(legacy_root, &legacy_folders_load);
 			const std::size_t existing_folder_count = folders.size();
-			for (ChatFolder& folder : ChatFolderStore::Load(legacy_root))
+			// A damaged workspace file on either side is reported, never merged from a partial read. No chats are
+			// copied either, since they could name workspaces that were not imported; retry at the next start.
+			if (current_folders_load.Unrecovered() || legacy_folders_load.Unrecovered())
+			{
+				AppendError(result.errors, "Previous-version workspaces were not imported because a workspace file is unreadable or invalid.");
+				return result;
+			}
+			for (ChatFolder& folder : legacy_folders)
 			{
 				if (!LedgerContains(*imported_folders, folder.id) &&
 				    std::none_of(folders.begin(), folders.end(), [&](const ChatFolder& existing) { return existing.id == folder.id; }))

@@ -24,6 +24,33 @@ describe('SSH Routing settings page', () => {
   })
   afterEach(() => { for (const { host, root } of mounted.splice(0)) { act(() => root.unmount()); host.remove() } })
 
+  it('shows live load, in-use and waiting figures per computer and keeps load sampled while shown', () => {
+    vi.useFakeTimers()
+    try {
+      const request = vi.fn()
+      useAppStore.setState({ requestHostLoad: request, executionHostLoad: { hosts: {
+        local: { status: 'known', cores: 10, loadAverage1m: 1.2, cpuPercent: null, memoryAvailableBytes: 8 * 1024 ** 3, memoryTotalBytes: null, processes: 2, inUse: 2, waiting: 0, limit: null },
+        'ssh-a': { status: 'unsupported', cores: null, loadAverage1m: null, cpuPercent: null, memoryAvailableBytes: null, memoryTotalBytes: null, processes: null, inUse: 3, waiting: 1, limit: 4 },
+      }, unassignedWaiting: 2 } })
+      mount(<ExecutionRoutingSettings variant="page" />)
+      const section = Array.from(document.body.querySelectorAll('section, [role="group"], div')).find((element) => element.textContent?.startsWith('Live load'))!
+      expect(section.textContent).toContain('This computer')
+      expect(section.textContent).toContain('2 in use')
+      expect(section.textContent).toContain('Load 1.2 on 10 cores · 8.0 GB free · 2 processes')
+      expect(section.textContent).toContain('3 of 4 in use · 1 waiting')
+      // An older helper's load is unknown, never shown as an idle computer.
+      expect(section.textContent).toContain('Load unknown: update this computer’s helper')
+      expect(section.textContent).toContain('Waiting for any computer')
+      expect(section.textContent).toContain('2 chats')
+      expect(request).toHaveBeenCalledTimes(1)
+      act(() => { vi.advanceTimersByTime(20_000) })
+      expect(request).toHaveBeenCalledTimes(2)
+      for (const { host, root } of mounted.splice(0)) { act(() => root.unmount()); host.remove() }
+      act(() => { vi.advanceTimersByTime(60_000) })
+      expect(request).toHaveBeenCalledTimes(2)
+    } finally { vi.useRealTimers() }
+  })
+
   it('keeps Save and Discard disabled until a draft differs, then saves the routing draft', async () => {
     const save = vi.fn(async (settings: RoutingSettings) => { useAppStore.setState({ executionRouting: settings }) })
     useAppStore.setState({ setExecutionRoutingSettings: save })
