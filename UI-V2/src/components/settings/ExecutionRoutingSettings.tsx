@@ -13,6 +13,8 @@ import '../shared/review.css'
 import '../modals/ExecutionRoutingDialog.css'
 import { isSshHost } from '../../utils/remoteWorkspace'
 import { reportAppFailure } from '../../utils/appFailure'
+import { hostLoadSummary, hostUsageSummary } from '../../types/hostLoad'
+import { useHostLoadInterest } from '../../hooks/useHostLoadInterest'
 
 export const RUNNER_STATUS: Record<ExecutionHost['runnerStatus'], { tone: StatusTone; label: string }> = {
   ready: { tone: 'success', label: 'Ready' },
@@ -49,6 +51,9 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
     const providers = useAppStore((state) => state.providers)
     const readiness = useAppStore((state) => state.cliVersionManager.remoteProviders)
     const save = useAppStore((state) => state.setExecutionRoutingSettings)
+    const hostLoad = useAppStore((state) => state.executionHostLoad)
+    // Every computer is sampled while this page shows its load; routing decisions do not read these figures.
+    useHostLoadInterest()
     const [draft, setDraft] = useState<RoutingSettings>(() => structuredClone(saved))
     const [baseline, setBaseline] = useState(saved)
     const savedRef = useRef(saved)
@@ -303,6 +308,15 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
             </Disclosure></Reveal>
           </SettingsSection>
         </Reveal>
+
+        {/* Observed figures, after the saved routing settings they describe. Unknown load is shown as unknown, never as idle. */}
+        <SettingsSection title="Live load">
+          {[{ id: 'local', label: 'This computer' }, ...sshHosts].map((host) => {
+            const figures = hostLoad.hosts[host.id]
+            return <SettingRow key={host.id} title={host.label} description={hostUsageSummary(figures) || '0 in use'} status={hostLoadSummary(figures)} />
+          })}
+          <Reveal open={hostLoad.unassignedWaiting > 0}><SettingRow title="Waiting for any computer" description={plural(hostLoad.unassignedWaiting, 'chat')} /></Reveal>
+        </SettingsSection>
       </fieldset>
       {variant === 'dialog' && footer}</div></Reveal>
       {/* The dialog never opens a second dialog: the Map folder chooser is an in-place step in the same panel. */}

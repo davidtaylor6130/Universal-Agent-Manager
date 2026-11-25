@@ -499,6 +499,7 @@ struct Goal
 	std::string last_assistant_text;             // trimmed text of the last worker turn
 	int same_assistant_text_count = 0;           // consecutive identical worker outputs
 	int loop_count = 0;
+	int unreviewed_resume_count = 0;         // consecutive stalled-loop auto-resumes; only an applied review (or Restart) resets it
 	int max_iterations = 0;                   // per-goal iteration ceiling; 0 uses only the Settings cap
 	std::string created_at;
 	std::string updated_at;

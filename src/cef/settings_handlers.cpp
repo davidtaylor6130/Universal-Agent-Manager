@@ -4,6 +4,7 @@
 #include "app/central_instruction_file_service.h"
 #include "common/config/voice_input_settings.h"
 #include "app/execution_routing_integration.h"
+#include "app/host_load_integration.h"
 #include "common/config/settings_store.h"
 #include "common/config/svn_repository_layout.h"
 #include "common/config/host_scoped_settings.h"
@@ -1475,6 +1476,15 @@ void UamQueryHandler::HandleReleaseExecutionRoutingReservation(CefRefPtr<CefBrow
 		return;
 	}
 	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleRequestHostLoad(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	(void)browser;
+	if (!payload.is_object() || !payload.empty()) { cb->Failure(400, "Host load takes no arguments."); return; }
+	// Readings arrive with later state pushes; this only keeps every computer sampled for a while.
+	uam::RequestHostLoad(m_app);
 	cb->Success("{}");
 }
 #endif

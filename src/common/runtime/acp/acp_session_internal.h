@@ -23,6 +23,7 @@
 #include <vector>
 
 struct SavedChatPrimaryWitness;
+struct ChatSaveFailure;
 namespace uam { struct ManagedResultPromptInput; }
 class StoppedChatLaunchStorageReceipt;
 struct StoppedChatLaunchPublicationResult;
@@ -74,6 +75,8 @@ void AppendQuotedAcpLogField(std::ostringstream& out, const char* name, const st
 std::string JsonRpcIdToDiagnosticString(const nlohmann::json& id);
 nlohmann::json JsonRpcIdOrNull(const nlohmann::json& message);
 std::string FormatAcpDiagnosticLogLine(const AcpSessionState& session, const AcpDiagnosticEntryState& entry);
+/// <summary>False for a model-discovery session's routine success traffic, which stays in memory only.</summary>
+bool ShouldWriteAcpDiagnosticLogLine(const AcpSessionState& session, const AcpDiagnosticEntryState& entry);
 // clang-format off
 void AppendAcpDiagnostic(
     AcpSessionState& session,
@@ -118,6 +121,7 @@ inline constexpr std::size_t kMinAssistantReplayPrefixBytes = 32;
 inline constexpr double kAcpStaleWaitSeconds = 120.0;
 inline constexpr double kAcpCancelTimeoutSeconds = 5.0;
 inline constexpr double kGoalLoopResumeIdleSeconds = 5.0;
+inline constexpr int kGoalMaxUnreviewedResumes = 3; // consecutive stalled-loop auto-resumes without an applied review
 
 // Goal turn kind labels
 inline constexpr std::string_view kGoalTurnKindNone = "";
@@ -528,8 +532,12 @@ inline constexpr const char* kChatSaveFailedStatus = "Chat history could not be 
 /// <summary>Shown instead when the chat's own content is refused before any write is attempted.</summary>
 inline constexpr const char* kChatSaveRefusedStatus = "Chat history could not be saved because this chat holds input or attachments UAM cannot store. UAM keeps the chat open and retries.";
 /// <summary>Records a failed transcript save and returns the retry delay: 1 s doubling to 60 s.</summary>
-/// The first failure of a streak sets the status line and writes one diagnostic line; later ones stay quiet.
-double NoteChatSaveFailed(AppState& app, const std::string& chat_id);
+/// The first failure of a streak sets the status line and writes one diagnostic line with the cause,
+/// classified "refused" (a deliberate check before writing) or "failed"; later ones stay quiet.
+/// A durable barrier always writes its line, since it may be the last attempt before exit.
+double NoteChatSaveFailed(AppState& app, const std::string& chat_id, const ChatSaveFailure* cause = nullptr, bool at_durable_barrier = false);
+/// <summary>The single diagnostic line for a failed save; the reason is capped and the chat ID is the only identity.</summary>
+std::string ChatSaveFailureLogLine(const std::string& chat_id, const ChatSaveFailure& cause, bool at_durable_barrier);
 void NoteChatSaveSucceeded(AppState& app, const std::string& chat_id);
 /// <summary>Owner-thread due time for a scheduled save; call after NoteChatSaveScheduled.</summary>
 double ArmChatSave(AppState& app, const std::string& chat_id, double delay_seconds, bool append_only);
