@@ -385,6 +385,8 @@ namespace
 				{ result.status = 400; result.error = "Choose an absolute directory on this SSH host."; break; }
 				uam::remote::DirectoryListing listing;
 				if (!client.ListDirectories(uam::paths::PathFromUtf8(path), listing, &result.error)) { result.status = 500; break; }
+				if (!uam::execution_hosts::RemoteDirectoryMatchesRequest(host.platform, path, listing.directory))
+				{ result.status = 502; result.error = "The SSH host returned a different directory for this attachment."; break; }
 				MessageAttachment attachment;
 				attachment.id = uam::nlohmann_json::TrimmedStringValue(item, {attachment_fields::kIdField});
 				if (attachment.id.empty()) attachment.id = AttachmentId();

@@ -23,6 +23,7 @@
 #include "cef/uam_query_handler_async.h"
 #include "common/config/mcp_server_config.h"
 #include "common/chat/chat_repository.h"
+#include "common/paths/workspace_root.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_goal_loop.h"
 #include "common/utils/diagnostic_log.h"
@@ -655,6 +656,47 @@ UAM_TEST(MoveChatToFolderRejectsCrossMachineAndAllowsSafeSameHostMoves)
 	UAM_ASSERT(app.chats.front().native_session_reset_pending);
 	UAM_ASSERT(app.chats.front().provider_handoff_context.find("Keep this conversation") != std::string::npos);
 	UAM_ASSERT(ChatHistorySyncService().MoveChatToFolder(app, app.chats.front(), "homelab-other"));
+}
+
+UAM_TEST(MoveRemoteWorktreeChatRefusesWithoutChangingSavedIdentity)
+{
+	TempDir temp("uam-move-remote-worktree-chat");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.folders = {
+	    {"homelab", "Homelab", "/srv/homelab", false, "ssh-homelab"},
+	    {"homelab-other", "Homelab other", "/srv/other", false, "ssh-homelab"},
+	};
+	ExecutionHost host;
+	host.id = "ssh-homelab"; host.ssh_alias = "homelab"; host.platform = "linux";
+	app.settings.execution_hosts.push_back(host);
+	for (const char* kind : {uam::paths::kGitWorktreeIsolationKind, uam::paths::kPendingGitWorktreeIsolationKind})
+	{
+		app.chats.clear();
+		ChatSession chat;
+		chat.id = "remote-worktree-chat";
+		chat.folder_id = "homelab";
+		chat.execution_host_id = "ssh-homelab";
+		chat.workspace_directory = "/srv/homelab";
+		chat.workspace_isolation_kind = kind;
+		chat.workspace_source_directory = "/srv/homelab";
+		chat.workspace_worktree_directory = "/srv/homelab-worktrees/remote-worktree-chat";
+		chat.native_session_id = "previous-native";
+		chat.messages.push_back({MessageRole::User, "Keep this conversation", "now"});
+		app.chats.push_back(chat);
+		app.status_line.clear();
+
+		UAM_ASSERT(!ChatHistorySyncService().MoveChatToFolder(app, app.chats.front(), "homelab-other"));
+		UAM_ASSERT(app.status_line.find("own Git worktree") != std::string::npos);
+		const ChatSession& kept = app.chats.front();
+		UAM_ASSERT_EQ(kept.folder_id, std::string("homelab"));
+		UAM_ASSERT_EQ(kept.execution_host_id, std::string("ssh-homelab"));
+		UAM_ASSERT_EQ(kept.workspace_directory, std::string("/srv/homelab"));
+		UAM_ASSERT_EQ(kept.workspace_worktree_directory, std::string("/srv/homelab-worktrees/remote-worktree-chat"));
+		UAM_ASSERT_EQ(kept.native_session_id, std::string("previous-native"));
+		UAM_ASSERT(!kept.native_session_reset_pending && kept.provider_handoff_context.empty());
+		UAM_ASSERT(!ChatRepository::LoadLocalChat(temp.root, chat.id).has_value());
+	}
 }
 
 UAM_TEST(MoveRemoteChatWorkspaceReleasesEmptyHoldAndRefusesHeldInput)

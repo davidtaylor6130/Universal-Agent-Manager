@@ -421,7 +421,7 @@ bool GoalService::UpdateGoalStatus(AppState& app, const std::string& chat_id,
 	goal->status = status;
 	goal->updated_at = uam::time::TimestampNow();
 	// The user replaced the last automatic verdict; do not leave it attributed to it.
-	if (user_action && status != GoalStatus::Paused) goal->last_decision_source.clear();
+	if (user_action && status != GoalStatus::Paused) ClearDecision(*goal);
 	if (status == GoalStatus::Complete)
 	{
 		goal->remaining_items.clear();
@@ -873,7 +873,7 @@ void GoalService::RecordTurnCompletion(AppState& app, const std::string& chat_id
 		goal->status = GoalStatus::Blocked;
 		goal->last_blocker = "Token budget exceeded.";
 		goal->last_blocker_kind = "token_budget";
-		goal->last_decision_source = kDecisionSourceFilter;
+		RecordDecision(*goal, DecisionAttribution::Filter());
 		if (chat->active_goal_id == goal_id)
 		{
 			ClearActiveGoal(app, chat->id);
@@ -886,6 +886,15 @@ void GoalService::RecordBlocker(AppState& app, const std::string& chat_id,
 	                            const std::string& goal_id, const std::string& blocker,
 	                            const std::string& decision_source, const std::string& blocker_kind)
 {
+	// A bare string cannot prove a model answered, so anything but a rule is recorded as fallback.
+	RecordBlocker(app, chat_id, goal_id, blocker,
+	              decision_source == kDecisionSourceFilter ? DecisionAttribution::Filter() : DecisionAttribution::Fallback(), blocker_kind);
+}
+
+void GoalService::RecordBlocker(AppState& app, const std::string& chat_id,
+	                            const std::string& goal_id, const std::string& blocker,
+	                            const DecisionAttribution& attribution, const std::string& blocker_kind)
+{
 	Goal* goal = FindGoalById(app, chat_id, goal_id);
 	ChatSession* chat = FindChatMutable(app, chat_id);
 	if (goal == nullptr || chat == nullptr)
@@ -896,7 +905,7 @@ void GoalService::RecordBlocker(AppState& app, const std::string& chat_id,
 	const std::string normalized_blocker = NormalizeBlocker(blocker);
 	const std::string normalized_kind = uam::strings::Trim(blocker_kind);
 	if (!normalized_kind.empty()) goal->last_blocker_kind = normalized_kind;
-	goal->last_decision_source = decision_source;
+	RecordDecision(*goal, attribution);
 
 	if (goal->last_blocker == normalized_blocker)
 	{
@@ -920,6 +929,27 @@ void GoalService::RecordBlocker(AppState& app, const std::string& chat_id,
 	}
 
 	MarkDirty(app, chat->id);
+}
+
+void GoalService::RecordDecision(Goal& goal, const DecisionAttribution& attribution)
+{
+	goal.last_decision_source = attribution.Source();
+	goal.last_decision_backend = attribution.BackendId();
+}
+
+void GoalService::ClearDecision(Goal& goal)
+{
+	goal.last_decision_source.clear();
+	goal.last_decision_backend.clear();
+}
+
+DecisionRequest GoalService::ReviewDecisionRequest()
+{
+	DecisionRequest request = DecisionRequest::Choice("Should the goal continue, is it blocked, or is it complete?", {"continue", "blocked", "complete"});
+	// The review prompt asks for {"decision": ...}; these spellings have always meant complete.
+	request.answer_key = "decision";
+	request.option_aliases = {{"stop", "complete"}, {"done", "complete"}, {"passed", "complete"}, {"yes", "complete"}};
+	return request;
 }
 
 std::string GoalService::BuildContinuationPrompt(const Goal& goal, int64_t tokens_used, int64_t token_budget,
@@ -1122,35 +1152,11 @@ std::string GoalService::SummarizeWorkspaceChanges(const std::vector<std::tuple<
 
 std::optional<GoalService::ReviewDecision> GoalService::ParseReviewDecision(const std::string& text)
 {
-	const std::size_t first = text.find('{');
-	const std::size_t last = text.rfind('}');
-	if (first == std::string::npos || last == std::string::npos || last <= first)
-	{
-		return std::nullopt;
-	}
-
-	std::string json_text = text.substr(first, last - first + 1);
+	const std::optional<nlohmann::json> object = ParseDecisionJsonObject(text);
+	if (!object.has_value()) return std::nullopt;
 	try
 	{
-		nlohmann::json parsed;
-		try
-		{
-			parsed = nlohmann::json::parse(json_text);
-		}
-		catch (const nlohmann::json::parse_error&)
-		{
-			const std::size_t evidence_key = json_text.find("\"evidence\":");
-			if (evidence_key == std::string::npos) return std::nullopt;
-			std::size_t evidence_value = evidence_key + std::string_view("\"evidence\":").size();
-			while (evidence_value < json_text.size() && std::isspace(static_cast<unsigned char>(json_text[evidence_value]))) ++evidence_value;
-			if (evidence_value >= json_text.size() || json_text[evidence_value] != '"' || json_text.find(']', evidence_value) == std::string::npos) return std::nullopt;
-			json_text.insert(evidence_value, "[");
-			parsed = nlohmann::json::parse(json_text);
-		}
-		if (!parsed.is_object())
-		{
-			return std::nullopt;
-		}
+		const nlohmann::json& parsed = *object;
 		ReviewDecision decision;
 		decision.decision = uam::strings::ToLowerAscii(uam::strings::Trim(parsed.value("decision", "")));
 		decision.reason = uam::strings::Trim(parsed.value("reason", ""));
@@ -1165,9 +1171,10 @@ std::optional<GoalService::ReviewDecision> GoalService::ParseReviewDecision(cons
 			decision.current_step = uam::strings::Trim(it->value("currentStep", ""));
 			decision.last_verification = uam::strings::Trim(it->value("lastVerification", ""));
 		}
-		if (decision.decision == "stop" || decision.decision == "done" || decision.decision == "passed" || decision.decision == "yes")
+		// The same spellings the decision interface accepts for the review (ReviewDecisionRequest).
+		for (const auto& [spelling, option] : ReviewDecisionRequest().option_aliases)
 		{
-			decision.decision = "complete";
+			if (decision.decision == uam::strings::ToLowerAscii(uam::strings::Trim(spelling))) decision.decision = option;
 		}
 		if (decision.decision != "complete" && decision.decision != "continue" && decision.decision != "blocked")
 		{

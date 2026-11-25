@@ -246,11 +246,11 @@ export function SubagentHeader({ title, parentName, detail, onBack, onClose, onR
 export function SubagentTranscriptLoading({ label }: { label: string }) {
   return <div role="status" className="conversation-empty">
     <div className="conversation-skeleton" aria-hidden>
-      <span className="conversation-skeleton__bubble" />
+      <span className="uam-skeleton conversation-skeleton__bubble" />
       <div className="conversation-skeleton__text">
-        <span className="conversation-skeleton__line" />
-        <span className="conversation-skeleton__line conversation-skeleton__line--mid" />
-        <span className="conversation-skeleton__line conversation-skeleton__line--short" />
+        <span className="uam-skeleton conversation-skeleton__line" />
+        <span className="uam-skeleton conversation-skeleton__line conversation-skeleton__line--mid" />
+        <span className="uam-skeleton conversation-skeleton__line conversation-skeleton__line--short" />
       </div>
     </div>
     <span>{label}</span>

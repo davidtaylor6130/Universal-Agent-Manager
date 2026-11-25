@@ -685,6 +685,12 @@ bool uam::DataFolderTransition::ActivateStopped(bool confirmed_normal_exit, std:
 	// Check before opening a destination lock: even its marker would mutate a
 	// historical inventory if the chosen directory moved under a protected root.
 	const auto preflight = InspectDestination(Path(m_record, "destination"));
+	// A network destination (possibly chosen before that check existed) is refused like at selection, not held.
+	if (preflight.blocker == DataFolderPreflightBlocker::NetworkVolume)
+	{
+		error = preflight.explanation;
+		return false;
+	}
 	if (preflight.state != DataFolderPreflightState::RequiresStoppedValidation)
 		return Hold(error, preflight.explanation);
 	if (!ValidateHistory(error))
