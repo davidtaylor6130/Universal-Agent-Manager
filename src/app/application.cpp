@@ -17,6 +17,7 @@
 #include <system_error>
 #include <cstdlib>
 #include "common/utils/diagnostic_log.h"
+#include "common/utils/stage_timing_summary.h"
 #include "common/platform/app_crash_supervisor.h"
 #include "cef/companion_server.h"
 
@@ -116,6 +117,20 @@ namespace uam_cef_globals
 
 namespace
 {
+	// One p50/p95/max summary per minute that had a tick of 50 ms or more, plus single lines only from 250 ms;
+	// a line per slow tick filled almost half of the retained log. UI-thread only, like the poll itself.
+	uam::diagnostics::StageTimingSummary& PollTiming()
+	{
+		static uam::diagnostics::StageTimingSummary timing("PollTick", {"startup", "runtimes", "side_chats", "terminals", "memory", "controls", "computer_use", "shell_actions",
+		    "workspace_availability", "providers", "history", "retention", "catalogs", "push", "awake"});
+		return timing;
+	}
+
+	void FlushPollTiming()
+	{
+		if (std::optional<std::string> summary = PollTiming().Flush(std::chrono::steady_clock::now())) uam::diagnostics::Write(*summary);
+	}
+
 	volatile std::sig_atomic_t g_managementStopRequested = 0;
 	void RequestManagementStop(int) { g_managementStopRequested = 1; }
 
@@ -614,33 +629,27 @@ void Application::PollTickStages(std::chrono::steady_clock::time_point poll_star
 
 	const auto poll_finished = std::chrono::steady_clock::now();
 	const auto poll_duration = std::chrono::duration_cast<std::chrono::milliseconds>(poll_finished - poll_started);
-	static auto last_slow_poll_report = std::chrono::steady_clock::time_point::min(); // ponytail: UI-thread rate limit; move to metrics state if telemetry needs aggregation.
-	if (poll_duration >= std::chrono::milliseconds(50) &&
-	    (last_slow_poll_report == std::chrono::steady_clock::time_point::min() || poll_finished - last_slow_poll_report >= std::chrono::seconds(5)))
+	const auto milliseconds = [](std::chrono::steady_clock::time_point begin, std::chrono::steady_clock::time_point end)
 	{
-		const std::function<std::string(std::chrono::steady_clock::time_point, std::chrono::steady_clock::time_point)> milliseconds =
-		    [](std::chrono::steady_clock::time_point begin, std::chrono::steady_clock::time_point end)
-		{
-			return std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count());
-		};
-		uam::diagnostics::Write("[performance] PollTick took " + std::to_string(poll_duration.count()) + " ms; stages=" +
-		    "startup:" + milliseconds(poll_started, stages_started) +
-		    ",runtimes:" + milliseconds(stages_started, runtimes_finished) +
-		    ",side_chats:" + milliseconds(stages_started, side_chats_finished) +
-		    ",terminals:" + milliseconds(runtimes_finished, terminals_finished) +
-		    ",memory:" + milliseconds(terminals_finished, memory_finished) +
-		    ",controls:" + milliseconds(memory_finished, controls_finished) +
-		    ",computer_use:" + milliseconds(memory_finished, computer_use_finished) +
-		    ",shell_actions:" + milliseconds(computer_use_finished, shell_actions_finished) +
-		    ",workspace_availability:" + milliseconds(shell_actions_finished, controls_finished) +
-		    ",providers:" + milliseconds(controls_finished, providers_finished) +
-		    ",history:" + milliseconds(providers_finished, history_finished) +
-		    ",retention:" + milliseconds(history_finished, retention_finished) +
-		    ",catalogs:" + milliseconds(retention_finished, catalogs_finished) +
-		    ",push:" + milliseconds(catalogs_finished, push_finished) +
-		    ",awake:" + milliseconds(push_finished, poll_finished) + " ms.");
-		last_slow_poll_report = poll_finished;
-	}
+		return std::chrono::duration_cast<std::chrono::milliseconds>(end - begin);
+	};
+	for (const std::string& line : PollTiming().Record(poll_finished, poll_duration, {
+	         milliseconds(poll_started, stages_started),
+	         milliseconds(stages_started, runtimes_finished),
+	         milliseconds(stages_started, side_chats_finished),
+	         milliseconds(runtimes_finished, terminals_finished),
+	         milliseconds(terminals_finished, memory_finished),
+	         milliseconds(memory_finished, controls_finished),
+	         milliseconds(memory_finished, computer_use_finished),
+	         milliseconds(computer_use_finished, shell_actions_finished),
+	         milliseconds(shell_actions_finished, controls_finished),
+	         milliseconds(controls_finished, providers_finished),
+	         milliseconds(providers_finished, history_finished),
+	         milliseconds(history_finished, retention_finished),
+	         milliseconds(retention_finished, catalogs_finished),
+	         milliseconds(catalogs_finished, push_finished),
+	         milliseconds(push_finished, poll_finished)}))
+		uam::diagnostics::Write(line);
 }
 
 int Application::NextPollDelay()
@@ -847,6 +856,9 @@ bool Application::InitializeState()
 	(void)uam::env::SetString("UAM_DATA_DIR", uam::paths::Utf8PathString(m_app.data_root));
 	std::string log_error;
 	if (!uam::diagnostics::StartFileLog(m_app.data_root / "uam.log", log_error, 0))
+		uam::diagnostics::Write(log_error);
+	// Deletion and storage audit lines get their own long-retention file; uam.log covers only days.
+	else if (!uam::diagnostics::StartAuditLog(m_app.data_root / "uam-audit.log", log_error))
 		uam::diagnostics::Write(log_error);
 	uam::diagnostics::Write("[storage] data_root=" + uam::paths::Utf8PathString(m_app.data_root));
 	std::string uam_control_error;
@@ -1315,6 +1327,7 @@ void Application::Shutdown()
 		if (m_app.html_view_render_checker && !m_app.html_view_render_checker->Idle())
 		{
 			uam::diagnostics::Write("[HTML view check] A hidden browser did not close before shutdown.");
+			FlushPollTiming();
 			if (m_dataRootLock != nullptr) uam::diagnostics::StopFileLog(); // Writes are queued, and _Exit would drop this one.
 			std::_Exit(uam::platform::ApplicationRestartRequested() ? uam::platform::RequestedRestartExitCode() : m_exitCode);
 		}
@@ -1332,6 +1345,8 @@ void Application::Shutdown()
 			// Saves and provider shutdown above are complete. Process exit releases
 			// the data lock; do not tear CEF down underneath an unconfirmed worker.
 			// Unconfirmed worker teardown must not mint a migration restart marker.
+			FlushPollTiming();
+			if (m_dataRootLock != nullptr) uam::diagnostics::StopFileLog(); // Writes are queued, and _Exit would drop them.
 			std::_Exit(uam::platform::ApplicationRestartRequested() ? uam::platform::RequestedRestartExitCode() : m_exitCode);
 		}
 #endif
@@ -1340,6 +1355,7 @@ void Application::Shutdown()
 	}
 	// Join the cache writer while this instance still owns the data-root lock.
 	m_app.provider_model_catalog.reset();
+	FlushPollTiming(); // The last partial window would otherwise be lost at every quit.
 	if (m_dataRootLock != nullptr) uam::diagnostics::StopFileLog();
 	for (const auto& session : m_app.acp_sessions)
 		if (session && session->running)

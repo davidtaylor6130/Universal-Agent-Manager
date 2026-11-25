@@ -3,6 +3,7 @@
 
 #include "app/vcs_provider.h"
 #include "app/git_worktree_service.h"
+#include "app/svn_branch_service.h"
 #include "app/svn_history.h"
 #include "app/provider_resolution_service.h"
 #include "app/chat_domain_service.h"
@@ -1731,6 +1732,51 @@ namespace uam
 			const vcs::VcsProviderDeclaration& Declaration() const override { return vcs::kGitProviderDeclaration; }
 			bool Enabled(const AppSettings& settings) const override { return settings.git_enabled; }
 
+			bool BranchesAreLocated() const override { return false; }
+
+			VcsBranchListing ListBranches(const AppState& snapshot, const ChatSession& chat, const std::string&) const override
+			{
+				VcsBranchListing listing;
+				std::vector<GitChatBranch> branches;
+				bool svn = false;
+				listing.ok = GitWorktreeService().ListChatBranches(snapshot, chat, branches, svn, listing.error);
+				listing.type = svn ? VcsType::Svn : VcsType::Git;
+				for (const GitChatBranch& branch : branches) listing.branches.push_back({branch.name, {}, branch.current});
+				return listing;
+			}
+
+			VcsBranchOutcome CheckBranchSelection(const AppState& snapshot, const ChatSession& chat, const VcsBranchSelection& selection) const override
+			{
+				VcsBranchOutcome outcome;
+				outcome.ok = GitWorktreeService().ValidateChatBranchSelection(snapshot, chat, selection.branch, selection.create, outcome.error);
+				return outcome;
+			}
+
+			VcsBranchOutcome CheckBranchSwitch(const AppState& snapshot, const ChatSession& chat, const VcsBranchSelection&) const override
+			{
+				VcsBranchOutcome outcome;
+				const VcsBranchListing listing = ListBranches(snapshot, chat, {});
+				if (!listing.ok) outcome.error = listing.error;
+				else if (listing.type != VcsType::Git) outcome.error = "Open the SVN folder selector for this working copy.";
+				else outcome.ok = true;
+				return outcome;
+			}
+
+			VcsBranchOutcome SwitchBranch(AppState& snapshot, ChatSession& chat, const VcsBranchSelection& selection) const override
+			{
+				VcsBranchOutcome outcome;
+				if (!GitWorktreeService().SwitchChatBranch(snapshot, chat, selection.branch, selection.create, outcome.error))
+				{
+					outcome.conflict = true;
+					if (outcome.error.empty()) outcome.error = "Branch switching could not be saved.";
+					return outcome;
+				}
+				outcome.ok = true;
+				outcome.branch = chat.workspace_branch_name;
+				outcome.chat_updated = true;
+				return outcome;
+			}
+
 			bool DetectLocal(const std::filesystem::path& workspace, const bool validate, std::filesystem::path& root) const override
 			{
 				std::string detected;
@@ -1981,12 +2027,64 @@ namespace uam
 			}
 		};
 
+		/// The same ownership projection the composer bridge always used: the chat's paths plus every other local chat's.
+		SvnBranchScope BranchScope(const AppState& snapshot, const ChatSession& chat)
+		{
+			return BuildSvnBranchScope(snapshot.settings.svn_enabled, chat, snapshot.folders, snapshot.chats);
+		}
+
 		class SvnVcsProvider final : public VcsProvider
 		{
 		  public:
 			VcsType Type() const override { return VcsType::Svn; }
 			const vcs::VcsProviderDeclaration& Declaration() const override { return vcs::kSvnProviderDeclaration; }
 			bool Enabled(const AppSettings& settings) const override { return settings.svn_enabled; }
+
+			bool BranchesAreLocated() const override { return true; }
+
+			VcsBranchListing ListBranches(const AppState& snapshot, const ChatSession& chat, const std::string& parent) const override
+			{
+				const SvnBranchResult result = DiscoverSvnBranches(BranchScope(snapshot, chat), parent, CreateSvnBranchRunner());
+				VcsBranchListing listing;
+				listing.ok = result.ok;
+				listing.error = result.error;
+				listing.type = VcsType::Svn;
+				for (const SvnBranchChoice& choice : result.branches) listing.branches.push_back({choice.name, choice.path, choice.current});
+				listing.context = result.context;
+				return listing;
+			}
+
+			/// Rediscovers the listed parent; any change to the pinned working-copy identity is a conflict.
+			VcsBranchOutcome CheckBranchSelection(const AppState& snapshot, const ChatSession& chat, const VcsBranchSelection& selection) const override
+			{
+				const SvnBranchResult result = DiscoverSvnBranches(BranchScope(snapshot, chat), selection.context.parent, CreateSvnBranchRunner());
+				VcsBranchOutcome outcome;
+				outcome.ok = result.ok && result.context == selection.context;
+				outcome.conflict = !outcome.ok;
+				if (!outcome.ok) outcome.error = result.ok ? "The SVN context changed; discover the folders again." : result.error;
+				return outcome;
+			}
+
+			VcsBranchOutcome CheckBranchSwitch(const AppState& snapshot, const ChatSession& chat, const VcsBranchSelection& selection) const override
+			{
+				return CheckBranchSelection(snapshot, chat, selection);
+			}
+
+			/// Switches the working copy only; the chat's saved branch fields stay as they are.
+			VcsBranchOutcome SwitchBranch(AppState& snapshot, ChatSession& chat, const VcsBranchSelection& selection) const override
+			{
+				const SvnBranchResult result = SwitchSvnBranch(BranchScope(snapshot, chat), selection.context, selection.branch, CreateSvnBranchRunner());
+				VcsBranchOutcome outcome;
+				outcome.ok = result.ok;
+				outcome.conflict = !result.ok;
+				outcome.error = result.error;
+				if (result.ok)
+				{
+					outcome.branch = result.context.revision;
+					outcome.context = result.context;
+				}
+				return outcome;
+			}
 
 			bool DetectLocal(const std::filesystem::path& workspace, const bool validate, std::filesystem::path&) const override
 			{
@@ -2203,6 +2301,18 @@ namespace uam
 		return found == providers.end() ? *providers.front() : **found;
 	}
 
+	const VcsProvider& VcsProviderForId(const std::string_view id)
+	{
+		const auto providers = VcsProviders();
+		const auto found = std::ranges::find_if(providers, [&](const VcsProvider* provider) { return provider->Declaration().id == id; });
+		return found == providers.end() ? *providers.front() : **found;
+	}
+
+	bool DeclaresCapability(const VcsProvider& provider, const vcs::VcsCapability capability)
+	{
+		return uam::ranges::Contains(provider.Declaration().capabilities, capability);
+	}
+
 	VcsHistoryPage VcsProvider::History(const VcsCommandRunner&, const VcsHistoryRequest&) const
 	{
 		VcsHistoryPage page;
@@ -2252,7 +2362,7 @@ namespace uam
 		std::string HistoryGateError(const VcsProvider& provider, const AppSettings& settings, const vcs::VcsCapability capability)
 		{
 			if (!provider.Enabled(settings)) return "This version control system is disabled in Settings.";
-			if (!uam::ranges::Contains(provider.Declaration().capabilities, capability))
+			if (!DeclaresCapability(provider, capability))
 				return std::string(provider.Declaration().display_name) + (capability == vcs::VcsCapability::Update ? " update" : capability == vcs::VcsCapability::OriginComparison ? " origin comparison" : " history") + " is not available here yet.";
 			return {};
 		}

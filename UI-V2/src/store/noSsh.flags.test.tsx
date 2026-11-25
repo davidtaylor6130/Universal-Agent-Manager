@@ -86,9 +86,9 @@ describe('builds without SSH', () => {
     const host = document.createElement('div'); document.body.appendChild(host); const root = createRoot(host)
     try {
       act(() => root.render(<NewChatModal />))
-      expect(host.querySelector('button[aria-label="This computer"]')).not.toBeNull()
-      expect(host.querySelector('button[aria-label="Automatic"]')).toBeNull()
-      expect(host.textContent).not.toMatch(/routing/i)
+      expect(document.body.querySelector('button[aria-label="This computer"]')).not.toBeNull()
+      expect(document.body.querySelector('button[aria-label="Automatic"]')).toBeNull()
+      expect(document.body.textContent).not.toMatch(/routing/i)
     } finally { act(() => root.unmount()); host.remove() }
   })
 })

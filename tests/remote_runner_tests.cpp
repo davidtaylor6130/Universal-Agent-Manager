@@ -4475,6 +4475,61 @@ UAM_TEST(RemoteRunnerProxyStopsThroughTheHelperServiceWithAnAcknowledgedOutcome)
 	UAM_ASSERT(error.find("does not exist") != std::string::npos);
 }
 
+// Model discovery stops on its answer before acknowledging the batch that carried it, and a chat can be stopped
+// while a streamed batch waits for its acknowledgement. The stop drain must start after that delivered batch:
+// starting at the last acknowledged cursor wrote the reply again, which the app logged as an unknown id.
+UAM_TEST(RemoteRunnerProxyStopDoesNotReplayADeliveredUnacknowledgedBatch)
+{
+	TempDir temp("uam-proxy-stop-replay");
+	const ProxyTestHost host(temp.root);
+	const std::string token = "proxy-stop-replay-token";
+	auto& service = PlatformServicesFactory::Instance().process_service;
+	uam::platform::StdioProcessPlatformFields proxy;
+	host.StartProxy(proxy, uam::remote::BuildProcessProxySpec(
+	    "acp-proxy-stop-replay", temp.root, ProxyProvider({"echo-lines", "reply:"}), {}, false, token));
+	std::string error;
+	const std::string request = "{\"id\":2}\n";
+	UAM_ASSERT(service.WriteToStdioProcess(proxy, request.data(), request.size(), &error));
+	const std::string reply = "reply:{\"id\":2}\n";
+	const std::string marker = std::string(uam::remote::kRemoteOutputMarkerPrefix) + token + " ";
+	std::string output;
+	std::array<char, 4096> buffer{};
+	const auto marked = [&]
+	{
+		const std::size_t start = output.find(marker);
+		return output.find(reply) != std::string::npos && start != std::string::npos && output.find('\n', start) != std::string::npos;
+	};
+	for (int attempt = 0; attempt < ProxyPollAttempts(500) && !marked(); ++attempt)
+	{
+		const std::ptrdiff_t count = service.ReadStdioProcessStdout(proxy, buffer.data(), buffer.size(), &error);
+		if (count > 0) output.append(buffer.data(), static_cast<std::size_t>(count));
+		else std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT(marked());
+	// No acknowledgement: the app stops first, exactly as discovery does.
+	UAM_ASSERT(service.WriteToStdioProcess(proxy, uam::remote::kRemoteStopControlLine.data(), uam::remote::kRemoteStopControlLine.size(), &error));
+	int exit_code = -1;
+	for (int attempt = 0; attempt < ProxyPollAttempts(500); ++attempt)
+	{
+		const std::ptrdiff_t count = service.ReadStdioProcessStdout(proxy, buffer.data(), buffer.size(), &error);
+		if (count > 0)
+		{
+			output.append(buffer.data(), static_cast<std::size_t>(count));
+			continue;
+		}
+		if (service.PollStdioProcessExited(proxy, &exit_code)) break;
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	for (std::ptrdiff_t count = service.ReadStdioProcessStdout(proxy, buffer.data(), buffer.size(), &error); count > 0;
+	     count = service.ReadStdioProcessStdout(proxy, buffer.data(), buffer.size(), &error))
+		output.append(buffer.data(), static_cast<std::size_t>(count));
+	service.CloseStdioProcessHandles(proxy);
+	UAM_ASSERT_EQ(exit_code, 0);
+	std::size_t replies = 0;
+	for (std::size_t found = output.find(reply); found != std::string::npos; found = output.find(reply, found + reply.size())) ++replies;
+	UAM_ASSERT_EQ(replies, static_cast<std::size_t>(1));
+}
+
 UAM_TEST(RemoteProxyKeepsWindowsDriveAndUncWorkspacePathsIntact)
 {
 	const std::vector<std::string> argv = {"codex", "--version"};

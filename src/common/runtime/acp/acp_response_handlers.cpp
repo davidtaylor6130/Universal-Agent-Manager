@@ -479,6 +479,21 @@ bool SettleAcpLoadReplay(AppState& app, AcpSessionState& session, ChatSession& c
 	return true;
 }
 
+namespace
+{
+	/// A provider that answered and refused to start will refuse a fresh launch too, so nothing may relaunch it on its
+	/// own: on SSH a confirmed stop relaunches for a turn still owed, which looped on the same refusal. A first prompt
+	/// that was waiting for the session returns as an unsent message the user can Retry or Remove, and input queued
+	/// behind it is held for Resume or Remove, as a rejected setup does.
+	void FailRefusedAcpTransport(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& refusal)
+	{
+		if (session.prompt_request_id == 0 && !session.queued_prompt.empty())
+			ReturnUnwrittenRemotePromptAsUnsent(app, session, chat, refusal);
+		if (session.queued_user_prompts.empty()) InvalidateAcpTransport(app, session, chat, refusal);
+		else HoldAcpTransportForExplicitRecovery(app, session, chat, refusal);
+	}
+}
+
 void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message)
 {
 	const nlohmann::json response_id = JsonRpcIdOrNull(message);
@@ -722,7 +737,28 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 		}
 		if (session.lifecycle_state == kAcpLifecycleError)
 		{
-			RecoverDisconnectedRemoteAcpTransport(app, session, chat, session.last_error);
+			// A follow-up write that failed after a successful initialize (initialized stays set) is a broken transport,
+			// not a refusal: recover it as a disconnect so the undelivered prompt is retried on a fresh process.
+			if (session.initialized)
+			{
+				RecoverDisconnectedRemoteAcpTransport(app, session, chat, session.last_error);
+				return;
+			}
+			// The provider answered and refused (Copilot without SDK protocol 3): the transport is healthy, so this is
+			// not a disconnect. Remote recovery relaunched the same refusal and then read the replacement's reply as
+			// a broken frame, hiding the real message. Unlike an initialize error response, whose undelivered prompt
+			// is retried on a fresh process, this refusal is deterministic and nothing relaunches it.
+			const std::string refusal = session.last_error;
+			AppendAcpDiagnostic(session, "response", "initialize_refused", method, request_id, false, 0, refusal);
+			if (session.model_discovery_only)
+			{
+				if (app.provider_model_catalog != nullptr)
+					app.provider_model_catalog->RememberRefreshFailure(session.provider_id, refusal,
+					    DiscoveryWorkspace(app, chat), chat.execution_host_id, session.model_catalog_scope_key);
+				StopBackgroundModelDiscovery(app, session);
+				return;
+			}
+			FailRefusedAcpTransport(app, session, chat, refusal);
 		}
 		return;
 	}

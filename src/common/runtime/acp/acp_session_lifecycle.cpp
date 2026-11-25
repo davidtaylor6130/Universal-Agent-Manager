@@ -4559,8 +4559,9 @@ bool SaveChatQuietly(AppState& app, const ChatSession& chat, AcpChatSavePurpose 
 		active->queue_held = persisted->acp_queue_held;
 	}
 	const ChatSession& actual = persisted == nullptr ? chat : *persisted;
-	const bool saved = own_primary ? ChatRepository::SaveLoadedChatWithPrimaryWitness(app.data_root, actual, *own_primary)
-	    : ChatRepository::SaveChat(app.data_root, actual);
+	ChatSaveFailure save_failure;
+	const bool saved = own_primary ? ChatRepository::SaveLoadedChatWithPrimaryWitness(app.data_root, actual, *own_primary, &save_failure)
+	    : ChatRepository::SaveChat(app.data_root, actual, false, &save_failure);
 	if (recovered)
 	{
 		if (saved && !active->running) active->initialized = active->session_ready = false;
@@ -4588,7 +4589,7 @@ bool SaveChatQuietly(AppState& app, const ChatSession& chat, AcpChatSavePurpose 
 	}
 	else if (persisted != nullptr)
 	{
-		ScheduleChatSave(app, *persisted, NoteChatSaveFailed(app, chat.id));
+		ScheduleChatSave(app, *persisted, NoteChatSaveFailed(app, chat.id, &save_failure));
 	}
 	ResolvePendingChatSaveResults(app, chat.id, saved);
 	return saved;
