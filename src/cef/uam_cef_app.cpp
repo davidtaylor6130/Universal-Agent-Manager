@@ -413,6 +413,23 @@ void UamCefApp::OnBeforeCommandLineProcessing(const CefString& process_type, Cef
 		}
 	}
 
+#if defined(_WIN32)
+	if (process_type.empty())
+	{
+		// Chromium leaves the Windows network service unsandboxed unless NetworkServiceSandbox is on; with it, the service runs
+		// in an AppContainer at low integrity (not on ARM64 or before Windows 10 20H1). Chromium reads one --enable-features
+		// value, so merge into any value already given; appending a switch again replaces the value Chromium reads.
+		// Subprocesses receive the feature from the browser process.
+		const std::string enabled_features = command_line->GetSwitchValue("enable-features").ToString();
+		const std::string merged_features = uam::cef::AddFeatureToList(enabled_features, uam::cef::kNetworkServiceSandboxFeature);
+		if (merged_features != enabled_features)
+		{
+			command_line->AppendSwitchWithValue("enable-features", merged_features);
+		}
+		uam::diagnostics::Write(std::string("[CEF] Requested the Windows network service sandbox (") + uam::cef::kNetworkServiceSandboxFeature + ").");
+	}
+#endif
+
 #if defined(__APPLE__)
 	// Disable Chromium features that trigger an EXC_BREAKPOINT / SIGTRAP crash
 	// on macOS 26.x (beta).  The crash manifests as NSApplication receiving a

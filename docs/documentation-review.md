@@ -93,10 +93,11 @@ The source patch uses a shared captured submission, refuses a changed target cha
 | Account usage | Independent local reads exist for four providers; Gemini eligibility, OpenCode acquisition, custom commands, remote feeds and platform acceptance remain limited | [Allowances](usage/allowances.md), Independent Account Allowance Snapshots |
 | Agent import and store | Imports report their reason, offer a confirmed Replace and reveal the agent in Central Setup; workspace agents are read-only there, and Claude Code, Gemini CLI and Copilot files import as delegate-only pending the importer work; the store's global and workspace list merge lives in the bridge handler until it can move into the agent service after the importer work; the phone pickers still hide delegate-only agents; native handler changes and their connected cases were written without a local compile; two independent Claude review rounds ran and their findings were implemented, to be recorded on the PR; David's acceptance pending | [Agents](settings/central-setup/agents.md#importing-provider-agents) |
 | Cross-platform/SSH | Source routes and fixture receipts do not prove every real CLI, OS or SSH combination | [Provider checklists](providers/providers.md#provider-checklists) |
+| UAM tool signing key | Gemini CLI View, Copilot CLI View and Antigravity still receive the tool server's signing key in a generated configuration file; Claude Code references its environment instead, with live expansion unverified | [Tool connection](providers/uam-tools.md) |
 | Skill library skipped folders | The list reply carries `skippedFolderCount`, but the library view shows no notice yet that some folders could not be opened | [Skill library](settings/central-setup/skill-library.md) |
 | Goal review change list | The reviewer's changed-file list is read with a synchronous local `git status` or `svn status` when the review is scheduled, so a slow or locked working copy delays that step; moving the read to a worker is outstanding | [Goals](chat/goals.md) |
 | Memory entry merging | A same-title observation rewrites the saved entry's body, evidence, confidence and source with the newer writer's, so a worker observation can replace a user-authored entry's text, including a same-title Markdown file without entry headers that the library cannot list; titles compare by ASCII letters and digits only, so non-ASCII titles never merge and titles differing only in non-ASCII letters collide | [Memory store](memory/store.md) |
-| CEF process sandbox | Enabled for macOS app bundles only; Windows needs CEF's `bootstrap.exe` client-DLL layout and Linux desktop builds are not shipped | [Security reference](reference/security-enterprise.md#known-gaps) |
+| CEF process sandbox | Enabled for macOS app bundles; Windows ships CEF's `bootstrap.exe` client-DLL layout, implemented and awaiting Windows verification, and turns on Chromium's network service sandbox (off by default; David's choice on 2026-11-25); Linux desktop builds are not shipped | [Security reference](reference/security-enterprise.md#known-gaps) |
 
 Do not treat these items as fixed from this documentation trial. Statuses are conservative source-level assessments, not a replacement for running a provider implementation audit.
 
@@ -318,7 +319,7 @@ The [stream watch](providers/runtime-lifecycle.md#stream-watch) ships with loop 
 - Both tools report static validation and blocked-content warnings plus a runtime-error check from a hidden render. This error-only preview is the agreed V5.1 slice, and the screenshot in the original issue is deferred past V5.1. The check's own limits remain interim: five second limit, one second wait, three hidden browsers, 2,000 console messages and 20 reported errors of up to 512 bytes each.
 - Save as HTML file uses the existing folder picker and writes a unique title-based name, because no native Save As dialog exists. Open in browser writes a content-addressed copy under the system temporary folder with the restrictive policy prepended. The copy folder is refused if it is a link, not a folder or (outside Windows) owned by another user, and each new copy deletes view copies older than 24 hours.
 - Reduced motion and Motion Off stop the page's CSS animations and transitions; script-driven animation is not controlled.
-- Hardening on 2026-11-12: an agent page loads only after the user chooses Run on its card, remembered per view and exact page, and the hidden runtime check is off, so `runtimeCheck` returns `not_run`. This supersedes the runtime check item above. Since the macOS renderer now runs in the Chromium process sandbox, re-enabling the check on macOS can be reconsidered later; it stays off on every platform for now, and Windows and Linux remain a known sandbox gap. Acceptance of the Run control is pending.
+- Hardening on 2026-11-12: an agent page loads only after the user chooses Run on its card, remembered per view and exact page, and the hidden runtime check is off, so `runtimeCheck` returns `not_run`. This supersedes the runtime check item above. Since the macOS renderer now runs in the Chromium process sandbox, re-enabling the check on macOS can be reconsidered later; it stays off on every platform for now; the Windows renderer sandbox awaits verification on Windows and Linux remains a known sandbox gap. Acceptance of the Run control is pending.
 
 ## Active-turn Send in CLI View
 
@@ -392,6 +393,10 @@ The [UAM tools](providers/uam-tools.md) `usage_report`, `worktree_status` and `m
 - Only the turn Stop control ends a chat's watches; stopping the provider session does not.
 - GitHub Enterprise hosts, GitLab and Azure DevOps are not supported.
 - The phone clients show no linked pull request row and cannot start or stop a watch.
+
+## Routing load admission
+
+**Open, pending David's decision.** UAM now reads live load per computer and shows it, with per-computer wait reasons, but [routing](remote-environments/routing.md#load-and-visibility) still admits by concurrent sessions alone. Before load changes admission, decide: which figure holds or steers work (load per core, available memory, helper processes, or a combination) and at what thresholds; whether unknown load blocks new work, counts as full or is ignored; whether this computer becomes an automatic candidate; and how a computer shared with other desktops or helper versions is counted, since `runnerProcesses` covers only the answering helper's service. Until then unknown load is only displayed as unknown.
 
 ## Extension adapters
 

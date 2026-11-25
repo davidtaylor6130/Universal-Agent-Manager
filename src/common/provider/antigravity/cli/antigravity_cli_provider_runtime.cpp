@@ -405,6 +405,7 @@ bool AntigravityCliProviderRuntime::OnAcpValidateGoalResume(const ChatSession& c
 		error = "The goal was not resumed because the saved Antigravity conversation is invalid.";
 		return false;
 	}
+	// Reviewed iterations only: this also gates each goal prompt send, including the review after an unreviewed resume; the shared cap and watchdog bound unreviewed resumes.
 	if (!restart && (goal.loop_count < 0 || goal.loop_count >= uam::GoalService::IterationLimit(&chat, goal, settings)))
 	{
 		error = "Maximum goal loop iterations reached.";

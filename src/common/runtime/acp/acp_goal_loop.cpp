@@ -132,7 +132,8 @@ namespace uam::acp_detail
 		bool BlockGoalAtIterationCap(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& owner_chat_id,
 		                             const std::string& goal_id, Goal& goal, CefRefPtr<CefBrowser> browser)
 		{
-			if (goal.loop_count < GoalService::IterationLimit(ChatDomainService().FindChatById(app, owner_chat_id), goal, app.settings))
+			// Stalled-loop auto-resumes run worker turns too, so unreviewed ones count until a review applies.
+			if (goal.loop_count + goal.unreviewed_resume_count < GoalService::IterationLimit(ChatDomainService().FindChatById(app, owner_chat_id), goal, app.settings))
 			{
 				return false;
 			}
@@ -366,6 +367,7 @@ bool ResumeGoal(AppState& app, const std::string& chat_id, const std::string& go
 			goal->status = GoalStatus::Paused;
 			goal->tokens_used = 0;
 			goal->loop_count = 0;
+			goal->unreviewed_resume_count = 0;
 			goal->blocked_turn_count = 0;
 			goal->last_blocker.clear();
 			goal->last_blocker_kind.clear();
@@ -453,7 +455,6 @@ bool ResumeGoal(AppState& app, const std::string& chat_id, const std::string& go
 	}
 
 	if (deferred_queue) return true;
-	session->goal_auto_resume_attempts = 0;
 	session->crash_restart_attempts = 0;
 	session->goal_resume_suppressed = false;
 	return true;
@@ -735,11 +736,7 @@ void ScheduleGoalReviewAfterSuccessfulTurn(AppState& app, AcpSessionState& sessi
 		AppendGoalLoopDiagnostic(session, "skip_schedule_empty_turn_text", session.goal_review_goal_id, recent_assistant_text);
 		return;
 	}
-	if (GoalService::ParseReviewDecision(recent_assistant_text).has_value())
-	{
-		AppendGoalLoopDiagnostic(session, "skip_schedule_review_decision_output", session.goal_review_goal_id, recent_assistant_text);
-		return;
-	}
+	// Review turns returned above; a worker reply shaped like a decision is still worker output and gets reviewed.
 
 	const std::string owner_chat_id = GoalOwnerChatId(chat);
 	Goal* active_goal = GoalService::FindActiveGoal(app, owner_chat_id);
@@ -866,10 +863,12 @@ bool ResumeStalledGoalLoopIfNeeded(AppState& app, AcpSessionState& session, Chat
 		return true;
 	}
 
-	if (session.goal_auto_resume_attempts >= 3)
+	// Counted per goal and reset only by an applied review, so turn starts and completions cannot reopen the allowance.
+	if (active_goal->unreviewed_resume_count >= kGoalMaxUnreviewedResumes)
 	{
 		const std::string goal_id = active_goal->id;
-		GoalService::RecordBlocker(app, chat.id, goal_id, "Goal loop stalled and could not be auto-resumed.", kDecisionSourceFallback);
+		active_goal->last_diagnostic = "goal_blocked_auto_resume_exhausted";
+		GoalService::RecordBlocker(app, chat.id, goal_id, "Goal stopped: " + std::to_string(kGoalMaxUnreviewedResumes) + " automatic resumes in a row produced no goal review.", kDecisionSourceFallback);
 		(void)GoalService::UpdateGoalStatus(app, chat.id, goal_id, GoalStatus::Blocked);
 		AppendGoalLoopDiagnostic(session, "goal_blocked_auto_resume_exhausted", goal_id);
 		SaveChatQuietly(app, chat);
@@ -880,7 +879,8 @@ bool ResumeStalledGoalLoopIfNeeded(AppState& app, AcpSessionState& session, Chat
 		return true;
 	}
 
-	session.goal_auto_resume_attempts += 1;
+	active_goal->unreviewed_resume_count += 1;
+	SaveChatQuietly(app, chat);
 	// The session is idle, so any remaining goal-turn flags are leftovers of a
 	// failed queue or write; clear them before resuming.
 	session.goal_turn_kind.clear();
@@ -1235,7 +1235,6 @@ void CompletePromptTurnAndHandleGoalLoop(AppState& app, AcpSessionState& session
 	session.crash_restart_attempts = 0;
 	session.reconnect_attempts = 0;
 	session.reconnect_not_before_time_s = 0.0;
-	session.goal_auto_resume_attempts = 0;
 	if (continue_goal_loop && checkpoint_eligible && ScheduleTurnCheckpointCommit(
 	        app, session, chat, assistant_index, completed_goal_turn_kind, completed_review_turn, goal_id))
 	{

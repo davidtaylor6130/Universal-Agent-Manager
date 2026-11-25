@@ -91,6 +91,9 @@ std::optional<int> DiscoveryCommand(const std::vector<std::string>& arguments)
 #include <string>
 #include <vector>
 
+#include "common/platform/cef_sandbox_folder_access.h"
+#include "include/cef_sandbox_win.h"
+
 namespace
 {
 	std::string Utf8(const wchar_t* value)
@@ -115,39 +118,79 @@ namespace
 		if (values != nullptr) LocalFree(values);
 		return result;
 	}
+
+	/// <summary>
+	/// CEF's bootstrap.exe moves every process without --type into the executable's folder. UAM's own helper
+	/// launches pass the directory they chose; return to it and keep the variable from reaching grandchildren.
+	/// </summary>
+	void RestoreLaunchWorkingDirectory()
+	{
+		const std::wstring name(uam::platform::kLaunchWorkingDirectoryVariable, uam::platform::kLaunchWorkingDirectoryVariable + std::char_traits<char>::length(uam::platform::kLaunchWorkingDirectoryVariable));
+		std::wstring directory(32768, L'\0');
+		const DWORD length = GetEnvironmentVariableW(name.c_str(), directory.data(), static_cast<DWORD>(directory.size()));
+		if (length == 0 || length >= directory.size()) return;
+		directory.resize(length);
+		SetCurrentDirectoryW(directory.c_str());
+		SetEnvironmentVariableW(name.c_str(), nullptr);
+	}
+
+	int RunUam(HINSTANCE instance, void* sandbox_info)
+	{
+		CefMainArgs main_args(instance);
+		CefRefPtr<UamCefRendererApp> cef_app;
+		// Renderer, GPU and utility processes go straight to CEF, which enters the sandbox, before UAM loads
+		// shell32, user32 or any other delay-loaded library.
+		const bool cef_subprocess = uam::platform::IsCefSubprocessCommandLine(GetCommandLineW());
+		if (cef_subprocess)
+		{
+			cef_app = new UamCefRendererApp();
+			const int exit_code = CefExecuteProcess(main_args, cef_app.get(), sandbox_info);
+			if (exit_code >= 0) return exit_code;
+		}
+		else
+		{
+			RestoreLaunchWorkingDirectory();
+		}
+
+		const std::vector<std::string> arguments = LaunchArguments();
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+		if (uam::opencode_v2::IsCommand(arguments))
+			return uam::opencode_v2::RunCommand(arguments, PlatformServicesFactory::Instance().process_service).value_or(1);
+#endif
+		if (const std::optional<int> discovery_exit = DiscoveryCommand(arguments)) return *discovery_exit;
+#if UAM_ENABLE_COMPUTER_USE
+		if (uam::computer_use::IsMcpServerInvocation(arguments))
+			return uam::computer_use::RunMcpServer(arguments);
+#endif
+
+		if (!uam::UamControlService::IsStdioServerInvocation(arguments) &&
+		    std::find(arguments.begin(), arguments.end(), "--management-node") == arguments.end())
+		{
+			if (const std::optional<int> supervisor_exit = uam::platform::RunAppCrashSupervisor(arguments))
+				return *supervisor_exit;
+		}
+		if (!cef_subprocess)
+		{
+			cef_app = new UamCefRendererApp();
+			const int exit_code = CefExecuteProcess(main_args, cef_app.get(), sandbox_info);
+			if (exit_code >= 0)
+				return exit_code;
+		}
+		if (uam::UamControlService::IsStdioServerInvocation(arguments))
+			return uam::UamControlService::RunStdioServerFromEnvironment();
+
+		Application application;
+		return application.Run(main_args, arguments, sandbox_info);
+	}
 }
 
-int WINAPI wWinMain(HINSTANCE /*hInstance*/, HINSTANCE /*hPrevInstance*/, LPWSTR /*lpCmdLine*/, int /*nCmdShow*/)
+/// <summary>
+/// Entry point for every Windows process. universal_agent_manager.exe is CEF's bootstrap.exe: it sets up the
+/// Chromium sandbox, loads this DLL and passes the sandbox information that CefExecuteProcess and CefInitialize need.
+/// </summary>
+CEF_BOOTSTRAP_EXPORT int RunWinMain(HINSTANCE instance, LPWSTR /*command_line*/, int /*show_command*/, void* sandbox_info, cef_version_info_t* /*version_info*/)
 {
-	const std::vector<std::string> arguments = LaunchArguments();
-#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
-	if (uam::opencode_v2::IsCommand(arguments))
-		return uam::opencode_v2::RunCommand(arguments, PlatformServicesFactory::Instance().process_service).value_or(1);
-#endif
-	if (const std::optional<int> discovery_exit = DiscoveryCommand(arguments)) return *discovery_exit;
-#if UAM_ENABLE_COMPUTER_USE
-	if (uam::computer_use::IsMcpServerInvocation(arguments))
-		return uam::computer_use::RunMcpServer(arguments);
-#endif
-
-	CefMainArgs main_args(GetModuleHandle(nullptr));
-
-	// Run CEF sub-process entry point — returns >= 0 for sub-processes.
-	if (!uam::UamControlService::IsStdioServerInvocation(arguments) &&
-	    std::find(arguments.begin(), arguments.end(), "--management-node") == arguments.end())
-	{
-		if (const std::optional<int> supervisor_exit = uam::platform::RunAppCrashSupervisor(arguments))
-			return *supervisor_exit;
-	}
-	auto cef_app = CefRefPtr<UamCefRendererApp>(new UamCefRendererApp());
-	const int exit_code = CefExecuteProcess(main_args, cef_app.get(), nullptr);
-	if (exit_code >= 0)
-		return exit_code;
-	if (uam::UamControlService::IsStdioServerInvocation(arguments))
-		return uam::UamControlService::RunStdioServerFromEnvironment();
-
-	Application application;
-	return application.Run(main_args, arguments);
+	return RunUam(instance, sandbox_info);
 }
 
 #else

@@ -11,6 +11,7 @@
 #include "app/data_folder_transition.h"
 #include "include/cef_request_context.h"
 #include "app/execution_routing_integration.h"
+#include "app/host_load_integration.h"
 #include "application.h"
 #include "remote/runner_client.h"
 #include <thread>
@@ -45,6 +46,7 @@
 #include "common/paths/app_paths.h"
 #include "common/paths/path_utils.h"
 #include "common/paths/workspace_root.h"
+#include "common/platform/cef_sandbox_folder_access.h"
 #include "common/config/custom_icon.h"
 #include "common/chat/chat_branching.h"
 #include "common/chat/chat_folder_store.h"
@@ -356,7 +358,7 @@ Application::~Application()
 	m_platformServices = nullptr;
 }
 
-int Application::Run(CefMainArgs main_args, std::vector<std::string> launch_arguments)
+int Application::Run(CefMainArgs main_args, std::vector<std::string> launch_arguments, void* windows_sandbox_info)
 {
 	m_platformServices = &PlatformServicesFactory::Instance();
 	m_launchArguments = std::move(launch_arguments);
@@ -378,7 +380,7 @@ int Application::Run(CefMainArgs main_args, std::vector<std::string> launch_argu
 	}
 
 	const std::chrono::steady_clock::time_point cef_started = std::chrono::steady_clock::now();
-	if (!InitializeCef(main_args))
+	if (!InitializeCef(main_args, windows_sandbox_info))
 	{
 		return m_exitCode != 0 ? m_exitCode : 1;
 	}
@@ -574,6 +576,7 @@ void Application::PollTickStages(std::chrono::steady_clock::time_point poll_star
 	}
 	ProviderCliCompatibilityService().Poll(m_app);
 	const bool remote_recovery_changed = uam::PollRemoteHostRecovery(m_app);
+	const bool host_load_changed = uam::PollHostLoad(m_app);
 	const bool remote_host_health_changed = m_app.remote_host_health_changed;
 	if (remote_host_health_changed && PersistenceCoordinator().SaveSettings(m_app))
 		m_app.remote_host_health_changed = false;
@@ -604,7 +607,7 @@ void Application::PollTickStages(std::chrono::steady_clock::time_point poll_star
 	const bool provider_compatibility_changed = IsCliCompatibilitySnapshotChanged(provider_snapshot_before, CreateCliCompatibilitySnapshot(m_app));
 	// A memory backlog finishes a chat on almost every poll; publishing each rebuilt the whole state four times a second.
 	const bool memory_push_due = m_memoryPush.Due(memory_changed, catalogs_finished);
-	const bool runtime_state_changed = routing_changed || remote_recovery_changed || side_chats_changed || acp_sessions_changed || compaction_sync_changed || opencode_native_changed || uam_control_changed || pr_watch_changed || agent_runs_changed || cli_terminals_changed || memory_push_due || computer_use_changed || shell_actions_changed || folder_availability_changed || model_discovery_retry_changed || startup_model_discovery_changed || history_discovery_changed || remote_host_health_changed;
+	const bool runtime_state_changed = routing_changed || remote_recovery_changed || host_load_changed || side_chats_changed || acp_sessions_changed || compaction_sync_changed || opencode_native_changed || uam_control_changed || pr_watch_changed || agent_runs_changed || cli_terminals_changed || memory_push_due || computer_use_changed || shell_actions_changed || folder_availability_changed || model_discovery_retry_changed || startup_model_discovery_changed || history_discovery_changed || remote_host_health_changed;
 	const bool ui_relevant_state_changed = runtime_state_changed || chat_saves_changed || provider_compatibility_changed || model_catalog_changed || uam::DeferredStatePushDue() || uam::StateReconciliationDue();
 	for (const DictationEvent& event : m_platformServices->dictation_service.PollEvents())
 	{
@@ -959,7 +962,7 @@ bool Application::InitializeState()
 	// UAM_DATA_DIR now overrides. Nothing is copied until the user answers the startup prompt.
 	m_app.pending_legacy_data_roots = uam::LocalChatBundleService::PendingLegacyDataRoots(
 	    m_app.data_root, m_platformServices->path_service.DefaultDataRootPath(), executable_path);
-	m_app.folders = ChatFolderStore::Load(m_app.data_root);
+	m_app.folders = ChatFolderStore::Load(m_app.data_root, &m_app.folders_load, uam::io::StoreFenceMode::Arm);
 	std::string shell_action_warning;
 	m_app.shell_actions = ShellActionService::Load(m_app.data_root, {}, &shell_action_warning, &m_app.shell_actions_unreadable);
 	if (!shell_action_warning.empty())
@@ -1100,7 +1103,7 @@ void Application::FinishStartupState(std::vector<ChatSession> chats, std::string
 		                    " active goal" + (paused_goals == 1 ? "" : "s") +
 		                    " after the manager restarted.";
 	}
-	m_app.resource_collections = uam::ResourceCollectionService::Load(m_app.data_root);
+	m_app.resource_collections = uam::ResourceCollectionService::Load(m_app.data_root, &m_app.resource_collections_load, uam::io::StoreFenceMode::Arm);
 	const std::chrono::steady_clock::time_point restore_finished = std::chrono::steady_clock::now();
 	m_app.startup_native_import_service = std::make_shared<uam::StartupNativeImportService>();
 	m_app.startup_native_import_service->Initialize(m_app);
@@ -1118,6 +1121,17 @@ void Application::FinishStartupState(std::vector<ChatSession> chats, std::string
 		m_app.status_line =
 		    "Computer use is blocked until a leftover provider process from a previous run is stopped.";
 	}
+	// Store load outcomes outrank earlier startup notices: an unrecovered store has refused its saves.
+	// Both unrecovered warnings share one line; a recovery note only fills an empty status line.
+	std::string unrecovered_notice;
+	for (const uam::io::StoreLoadResult* load : {&m_app.folders_load, &m_app.resource_collections_load})
+	{
+		if (load->warning.empty()) continue;
+		uam::diagnostics::Write("[storage] " + load->warning);
+		if (load->Unrecovered()) unrecovered_notice += (unrecovered_notice.empty() ? "" : " ") + load->warning;
+		else if (m_app.status_line.empty()) m_app.status_line = load->warning;
+	}
+	if (!unrecovered_notice.empty()) m_app.status_line = std::move(unrecovered_notice);
 	RestoreSettingsLoadNotice();
 
 	const std::chrono::steady_clock::time_point finish_finished = std::chrono::steady_clock::now();
@@ -1133,13 +1147,21 @@ void Application::FinishStartupState(std::vector<ChatSession> chats, std::string
 	m_app.startup_state_loading = false;
 }
 
-bool Application::InitializeCef(CefMainArgs main_args)
+bool Application::InitializeCef(CefMainArgs main_args, void* windows_sandbox_info)
 {
 	CefSettings settings;
 #if defined(UAM_CEF_SANDBOX)
+	// macOS helper bundles and Windows bootstrap.exe processes; see docs/reference/security-enterprise.md.
 	settings.no_sandbox = false;
+	// Without bootstrap.exe's sandbox information CEF would silently start unsandboxed on Windows; refuse instead.
+	if (uam::platform::kCefSandboxInfoRequired && windows_sandbox_info == nullptr)
+	{
+		uam::diagnostics::Write("[CEF] The Windows sandbox information is missing; refusing to start CEF without the Chromium sandbox. Start universal_agent_manager.exe, not the DLL.");
+		m_exitCode = 1;
+		return false;
+	}
 #else
-	// Known gap on Windows (CEF's bootstrap.exe client-DLL layout) and Linux; see docs/reference/security-enterprise.md.
+	// Known gap on Linux; see docs/reference/security-enterprise.md.
 	settings.no_sandbox = true;
 #endif
 	const fs::path cef_cache_path = m_app.data_root / "cef";
@@ -1169,6 +1191,9 @@ bool Application::InitializeCef(CefMainArgs main_args)
 #else
 		CefString(&settings.resources_dir_path) = uam::paths::NormalizedNativePathString(exe_dir);
 		CefString(&settings.locales_dir_path) = uam::paths::NormalizedNativePathString(exe_dir / "locales");
+		// Windows only: AppContainer and LPAC sandboxed processes must be able to read the app folder, which ZIP extraction loses.
+		if (std::string access_error; !uam::platform::EnsureCefSandboxFolderAccess(exe_dir, access_error))
+			uam::diagnostics::Write("[CEF] " + access_error);
 #endif
 	}
 
@@ -1205,7 +1230,8 @@ bool Application::InitializeCef(CefMainArgs main_args)
 		// Turning it back on is m_app.html_view_render_checker = uam::cef::CreateHtmlViewRenderChecker().
 	}
 
-	if (!CefInitialize(main_args, settings, cef_app.get(), nullptr))
+	// Only Windows passes sandbox information; macOS sandboxes its helper bundles instead.
+	if (!CefInitialize(main_args, settings, cef_app.get(), windows_sandbox_info))
 	{
 		uam::diagnostics::Write("CefInitialize failed.");
 		m_exitCode = 1;
@@ -1224,6 +1250,8 @@ void Application::Shutdown()
 {
 	// Quit must not wait on a remote host: no remote connection starts from here, and the waits already under way end together
 	uam::remote::BeginRunnerShutdown();
+	// Load readers stop now, while their helper connections fail fast, rather than when the app state is destroyed.
+	m_app.host_load_sampler.reset();
 	if (m_startupChats.valid())
 	{
 		// Quit while the chat list loads: the loader writes summary caches under the data-folder lock released below,

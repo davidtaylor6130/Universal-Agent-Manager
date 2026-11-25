@@ -429,6 +429,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 #if UAM_ENABLE_SSH
 		{"setExecutionRoutingSettings", &UamQueryHandler::HandleSetExecutionRoutingSettings},
 		{"listRepositoryMatches", &UamQueryHandler::HandleListRepositoryMatches},
+		{"requestHostLoad", &UamQueryHandler::HandleRequestHostLoad},
 		{"releaseExecutionRoutingReservation", &UamQueryHandler::HandleReleaseExecutionRoutingReservation},
 #endif
 		{"exportLocalChats", &UamQueryHandler::HandleExportLocalChats},

@@ -2978,7 +2978,6 @@ For desktop observation and input, use only the provider's built-in controller; 
 			session.queued_prompt = std::move(effective_prompt);
 			session.turn_checkpoint_eligible = false;
 			session.crash_restart_attempts = 0;
-			session.goal_auto_resume_attempts = 0;
 			session.goal_resume_suppressed = false;
 			ClearGoalReviewState(session);
 			session.goal_turn_kind.clear();

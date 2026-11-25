@@ -843,6 +843,15 @@ namespace uam::remote
 		    [](const std::pair<const std::string, Channel>& entry) { return entry.second.expires_at_ms != 0; });
 	}
 
+	std::uint32_t RunnerState::LiveProcessCount()
+	{
+		SweepExpiredTransientProcesses();
+		std::scoped_lock lock(m_stateMutex);
+		const auto live = [](const std::pair<const std::string, std::shared_ptr<Process>>& entry)
+		{ return entry.second && !entry.second->exited.load(std::memory_order_acquire); };
+		return static_cast<std::uint32_t>(std::ranges::count_if(m_processes, live) + std::ranges::count_if(m_retiringProcesses, live));
+	}
+
 	void RunnerState::SweepIdleUploads(const std::int64_t now)
 	{
 		std::vector<std::pair<std::string, std::shared_ptr<Upload>>> idle;

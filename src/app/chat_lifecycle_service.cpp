@@ -2179,7 +2179,13 @@ bool uam::RecoverPendingDeletionTransaction(AppState& app)
 	recovery.settings = app.settings;
 	recovery.provider_profiles = app.provider_profiles;
 	recovery.chats = ChatRepository::LoadLocalChats(app.data_root);
-	recovery.folders = ChatFolderStore::Load(app.data_root);
+	uam::io::StoreLoadResult folders_load;
+	recovery.folders = ChatFolderStore::Load(app.data_root, &folders_load, uam::io::StoreFenceMode::Arm);
+	if (folders_load.Unrecovered() && !intent.folder_ids.empty())
+	{
+		app.status_line = "A pending workspace deletion could not be completed. " + folders_load.warning;
+		return false;
+	}
 	std::vector<ChatSession> next_chats;
 	std::vector<ChatFolder> next_folders;
 	std::vector<ChatSession> deleted_chats;
@@ -2210,6 +2216,13 @@ bool uam::PrepareWorkspaceDeletion(AppState& app, const std::vector<std::string>
 	if (app.startup_native_import_service != nullptr && app.startup_native_import_service->ImportPending())
 	{
 		app.status_line = "Wait for native history loading to finish.";
+		return false;
+	}
+	// Refuse before the deletion transaction is written: a committed intent whose folder save is
+	// refused would otherwise be replayed, and refused again, at every startup.
+	if (ChatFolderStore::IsSaveFenced(app.data_root))
+	{
+		app.status_line = "Workspaces can't be deleted until folders.txt is repaired and UAM restarts.";
 		return false;
 	}
 

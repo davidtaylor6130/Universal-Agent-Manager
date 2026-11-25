@@ -404,6 +404,39 @@ namespace uam::provider_setup
 		environment.emplace_back(name, value);
 	}
 
+	/// The UAM tool server's per-session signing key, as its MCP server entry carries it.
+	inline constexpr const char* kUamControlRequestKeyEnvironment = "UAM_CONTROL_REQUEST_KEY";
+	/// Provider-process variable that a generated configuration file references instead of holding the key.
+	inline constexpr const char* kUamControlLaunchKeyEnvironment = "UAM_CONTROL_LAUNCH_KEY";
+
+	/// The servers without the signing key, for a configuration copy no provider reads.
+	inline nlohmann::json WithoutUamControlKeys(nlohmann::json native_servers)
+	{
+		for (auto& [name, server] : native_servers.items())
+			if (server.contains("env") && server["env"].is_object()) server["env"].erase(kUamControlRequestKeyEnvironment);
+		return native_servers;
+	}
+
+	/// Moves the signing key out of servers written to a configuration file and into the provider's own environment.
+	/// The file keeps a ${kUamControlLaunchKeyEnvironment} reference, which the provider expands when it starts the
+	/// server; a provider that passes its environment through instead is covered by the tool server reading that
+	/// variable when the reference reaches it unexpanded.
+	inline bool MoveUamControlKeysToEnvironment(nlohmann::json& native_servers, Environment& environment, std::string& error)
+	{
+		std::optional<std::string> moved;
+		for (auto& [name, server] : native_servers.items())
+		{
+			if (!server.contains("env") || !server["env"].is_object() || !server["env"].contains(kUamControlRequestKeyEnvironment)) continue;
+			const nlohmann::json& key = server["env"][kUamControlRequestKeyEnvironment];
+			if (!key.is_string() || (moved.has_value() && *moved != key.get<std::string>()))
+			{ error = "UAM tool connection settings are invalid."; return false; }
+			moved = key.get<std::string>();
+			server["env"][kUamControlRequestKeyEnvironment] = std::string("${") + kUamControlLaunchKeyEnvironment + "}";
+		}
+		if (moved.has_value()) SetEnvironment(environment, kUamControlLaunchKeyEnvironment, *moved);
+		return true;
+	}
+
 	inline std::string ReplaceRoot(std::string text, const std::string& root)
 	{
 		std::size_t position = 0;
@@ -755,7 +788,10 @@ namespace uam::provider_setup
 			}
 			native_servers[name] = std::move(native);
 		}
-		if (!WriteRuntimeFile(mcp_path, nlohmann::json{{"mcpServers", native_servers}}.dump(), error)) { error = "Could not install central MCP configuration."; return false; }
+		// Only Copilot reads this file as written (Claude rewrites it below); the others get it without the signing key.
+		// Gemini and Antigravity write their own files from native_servers with the key: no verified route lets them
+		// take it from their environment (Gemini's settings expansion and its environment filtering are unverified).
+		if (!WriteRuntimeFile(mcp_path, nlohmann::json{{"mcpServers", provider == uam::provider_ids::kCopilotCli ? native_servers : WithoutUamControlKeys(native_servers)}}.dump(), error)) { error = "Could not install central MCP configuration."; return false; }
 		const std::string instruction_file = uam::paths::Utf8PathString(instruction_path);
 		if (provider == uam::provider_ids::kAntigravityCli)
 		{
@@ -806,6 +842,8 @@ namespace uam::provider_setup
 					if (!native_servers.contains(name)) native_servers[name] = server;
 				argv.erase(argv.begin() + index, argv.begin() + index + 2);
 			}
+			// Claude expands ${VAR} in --mcp-config and passes its environment to stdio servers.
+			if (!MoveUamControlKeysToEnvironment(native_servers, environment, error)) return false;
 			if (!native_servers.empty())
 			{
 				if (!WriteRuntimeFile(mcp_path, nlohmann::json{{"mcpServers", native_servers}}.dump(), error)) return false;

@@ -288,7 +288,7 @@ namespace uam
 			{
 				const Goal* goal = chat->goals.empty() ? nullptr : &chat->goals.back();
 				status = goal == nullptr ? "stopped" : goal->status == GoalStatus::Active ? (LaunchFailedAfterAcceptance(app, *chat) ? "blocked" : "running") : goal->status == GoalStatus::Complete ? "completed" : goal->status == GoalStatus::Blocked ? "blocked" : "paused";
-				if (goal != nullptr) used = goal->loop_count;
+				if (goal != nullptr) used = goal->loop_count + goal->unreviewed_resume_count; // the same count the iteration cap checks
 			}
 			return {.body = {{"chatId", chat->id}, {"status", status}, {"iterationsUsed", used}, {"maxIterations", chat->automation_max_iterations}, {"gitPermission", chat->automation_git_permission}}};
 		}
