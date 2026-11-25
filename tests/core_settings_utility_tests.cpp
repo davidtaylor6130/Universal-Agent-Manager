@@ -3422,6 +3422,20 @@ UAM_TEST(SettingsStorePersistsAndClampsActiveTurnInactivityTimeout)
 	UAM_ASSERT_EQ(loaded.acp_setup_inactivity_timeout_seconds, uam::settings::kMaxAcpSetupInactivityTimeoutSeconds);
 }
 
+UAM_TEST(SettingsFrontendShowsTheSetupTimeoutTheRuntimeUses)
+{
+	// Zero or less means the default at runtime, so the Settings page must not show the minimum instead.
+	for (const int stored : {0, -5, 30, 1200, 999999})
+	{
+		AppSettings settings;
+		settings.acp_setup_inactivity_timeout_seconds = stored;
+		const int shown = uam::settings_frontend_json::SerializeCommonSettingsFields(settings)["acpSetupInactivityTimeoutSeconds"].get<int>();
+		uam::settings::ClampRuntimeTimeoutSettings(settings);
+		UAM_ASSERT_EQ(shown, settings.acp_setup_inactivity_timeout_seconds);
+	}
+	UAM_ASSERT_EQ(uam::settings::NormalizedAcpSetupInactivityTimeoutSeconds(0), uam::settings::kDefaultAcpSetupInactivityTimeoutSeconds);
+}
+
 UAM_TEST(LegacyVoiceInputSettingsAreRestored)
 {
 	TempDir temp("uam-voice-settings");
