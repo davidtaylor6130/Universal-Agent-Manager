@@ -16,6 +16,11 @@ export function createExecutionRoutingSlice(get: ZustandGet) {
       const response = await sendToCEF({ action: 'setExecutionRoutingSettings', payload: settings })
       if (!response.ok) throw new Error(response.error || 'Routing settings could not be saved.')
     },
+    /** Best effort: keeps every computer's load sampled for about 30 seconds; figures arrive with state pushes. */
+    requestHostLoad: (): void => {
+      if (!SSH_ENABLED || !isCefContext()) return
+      void sendToCEF({ action: 'requestHostLoad', payload: {} }, false).catch(() => undefined)
+    },
     releaseExecutionRoutingReservation: async (expected: RoutingReservation): Promise<void> => {
       if (!SSH_ENABLED) return
       const session = get().sessions.find((item) => item.id === expected.chatId)

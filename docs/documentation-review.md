@@ -394,6 +394,10 @@ The [UAM tools](providers/uam-tools.md) `usage_report`, `worktree_status` and `m
 - GitHub Enterprise hosts, GitLab and Azure DevOps are not supported.
 - The phone clients show no linked pull request row and cannot start or stop a watch.
 
+## Routing load admission
+
+**Open, pending David's decision.** UAM now reads live load per computer and shows it, with per-computer wait reasons, but [routing](remote-environments/routing.md#load-and-visibility) still admits by concurrent sessions alone. Before load changes admission, decide: which figure holds or steers work (load per core, available memory, helper processes, or a combination) and at what thresholds; whether unknown load blocks new work, counts as full or is ignored; whether this computer becomes an automatic candidate; and how a computer shared with other desktops or helper versions is counted, since `runnerProcesses` covers only the answering helper's service. Until then unknown load is only displayed as unknown.
+
 ## Extension adapters
 
 **Decided by David, 2026-11-23** ([#522](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues/522)). An adapter's action buttons may only open URLs or files, never run commands. Each adapter executable is registered and approved once by the person in Settings, never taken from a repository or a chat. The first slice is the [version 1 protocol](reference/vcs-adapter-protocol.md), a conformance runner and a sample read-only folder adapter, with no UAM integration. Nothing is wired into UAM or accepted.

@@ -421,7 +421,8 @@ endif()
 set(UAM_PLATFORM_IMPL_SOURCES
   src/common/platform/platform_native_attachment_assets.cpp
   src/common/platform/platform_incremental_sha256.cpp
-  src/common/platform/background_thread_priority.cpp)
+  src/common/platform/background_thread_priority.cpp
+  src/common/platform/host_load.cpp)
 set(UAM_COMPUTER_USE_PLATFORM_SOURCES)
 # Connected handler fixtures replace the PTY, so it stays out of the shared objects.
 if(WIN32)
@@ -497,6 +498,7 @@ add_executable(uam_runner
   src/common/usage/usage_collector.cpp
   src/common/usage/usage_pricing.cpp
   src/common/usage/usage_pricing_cache.cpp
+  src/common/platform/host_load.cpp
   src/remote/runner_main.cpp
   src/remote/runner_client.cpp
   src/remote/runner_protocol.cpp
@@ -657,6 +659,7 @@ add_library(uam_core_objects OBJECT
   src/app/execution_routing_service.cpp
   src/app/repository_route_match_service.cpp
   src/app/execution_routing_integration.cpp
+  src/app/host_load_integration.cpp
   src/app/resource_collection_service.cpp
   src/app/provider_worker_command.cpp
   src/app/chat_title_service.cpp
@@ -733,6 +736,7 @@ add_library(uam_core_objects OBJECT
   src/common/provider/attached_skill_resources.cpp
   src/common/runtime/acp/acp_session_runtime.cpp
   src/common/runtime/acp/compute_pool_gate.cpp
+  src/common/runtime/host_load_sampler.cpp
   src/common/runtime/acp/acp_wait_state.cpp
   src/common/runtime/json_runtime.cpp
   src/common/runtime/terminal_polling.cpp
@@ -1910,6 +1914,8 @@ if(UAM_BUILD_TESTS)
     tests/compaction_handoff_tests.cpp
     tests/remote_worktree_tests.cpp
     tests/remote_path_inspection_tests.cpp
+    tests/host_load_tests.cpp
+    tests/execution_routing_skip_tests.cpp
     tests/claude_projection_tests.cpp
     tests/claude_usage_tests.cpp
     tests/gemini_usage_tests.cpp

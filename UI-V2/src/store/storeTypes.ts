@@ -1,3 +1,4 @@
+import type { ExecutionHostLoad } from '../types/hostLoad'
 import type { ContextReference } from '../types/contextReference'
 import type { WorkspaceFilePreview } from '../types/filePreview'
 import type { StartupNativeImportStatus } from '../types/startupNativeImports'
@@ -175,6 +176,7 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   executionRouting?: ExecutionRoutingSettings
   setExecutionRoutingSettings?: (settings: ExecutionRoutingSettings) => Promise<void>
   releaseExecutionRoutingReservation?: (expected: RoutingReservation) => Promise<void>
+  requestHostLoad?: () => void
   executionHosts: ExecutionHost[]
   favoriteUamAgentIds: string[]
   /** Native sessions whose title starts with one of these (ignoring case) are never offered for import. */
@@ -205,6 +207,8 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   shellActions: ShellAction[]
   computePools: ComputePool[]
   computePoolUsage: ComputePoolUsage
+  /** Live load, in-use and waiting figures per computer; native-owned, observation only. */
+  executionHostLoad: ExecutionHostLoad
   /** Pull requests linked to chats, with their watch state; native-owned. */
   prWatches: PullRequestWatch[]
   shellActionNotification: string
