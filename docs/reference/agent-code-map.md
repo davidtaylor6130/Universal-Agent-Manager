@@ -33,7 +33,7 @@ src/                                 C++ backend (CMake target: universal_agent_
     provider_worker_command.*        Batch worker argv + PATH env (registry dispatch)
     runtime_orchestration_services.* Native history sync and provider request dispatch
     vcs_commit_service.*             VCS status/diff/commit + commit-message generation
-    vcs_provider.h                   Git/SVN provider interface behind vcs_commit_service
+    vcs_provider.h                   Git/SVN provider interface behind vcs_commit_service and the chat branch picker
     svn_history.*                    SVN log paging, per-revision patch, update and branch origin behind the SVN provider
   cef/
     uam_cef_app.*                    Browser-process CefApp, command line switches

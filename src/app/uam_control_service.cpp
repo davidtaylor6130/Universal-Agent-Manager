@@ -184,7 +184,7 @@ namespace uam
 		constexpr const char* kCapabilityDirectoryEnvironment = "UAM_CONTROL_CAPABILITY_DIR";
 		constexpr const char* kHiddenToolsEnvironment = "UAM_CONTROL_HIDDEN_TOOLS";
 		/// Per-capability signing key, delivered only in the MCP server's launch environment, never in the capability directory.
-		constexpr const char* kRequestKeyEnvironment = "UAM_CONTROL_REQUEST_KEY";
+		constexpr const char* kRequestKeyEnvironment = uam::provider_setup::kUamControlRequestKeyEnvironment;
 
 		enum class WaitAbortReason { None, Cancelled, InputClosed, InputError, Deadline };
 
@@ -2395,6 +2395,18 @@ namespace uam
 			if (!SafeRequestId(request_id) || method.empty() || method.size() > 64 ||
 			    !ValidToolArguments(method, arguments))
 				return reject("Control request has an unknown method or invalid arguments.");
+			// The session's tool server already refuses tools it does not list; the manager enforces the same list,
+			// so a request filed without that server (for example with its signing key) cannot reach them either.
+			if (std::ranges::binary_search(capability->hidden_tools, method))
+			{
+				if (!capability->hidden_tool_refusal_logged)
+				{
+					capability->hidden_tool_refusal_logged = true;
+					uam::diagnostics::Write("UAM control: refused " + method + " for chat " + capability->session_chat_id +
+					    "; the tool is not offered to this session.");
+				}
+				return reject("This UAM tool is not available in this session.");
+			}
 			if (method != "agent_delegate" && ReadOnlyAgent(app, *capability) && (IsMutation(method) || method == "computer_use_request" || method == "secret_request"))
 				return reject("This UAM agent has read-only access. Mutation tools are unavailable.");
 			if (!capability->seen_request_ids.insert(request_id).second)
@@ -2740,6 +2752,7 @@ namespace uam
 			if (session.goal_review_turn || capability.read_only_at_launch)
 			{
 				for (const nlohmann::json& tool : Tools()) hidden.push_back(tool.value("name", ""));
+				std::ranges::sort(hidden); // HandleRequest binary-searches this list.
 				return hidden;
 			}
 			// Same rule as ReadOnlyAgent: a missing or unknown workspace access is read-only.
@@ -2766,6 +2779,18 @@ namespace uam
 			std::ranges::sort(hidden);
 			hidden.erase(std::ranges::unique(hidden).begin(), hidden.end());
 			return hidden;
+		}
+
+		/// The signing key this tool server was launched with. A configuration file holds only a reference to the
+		/// provider's variable; a provider that passed the reference through unexpanded still passed its environment.
+		std::string LaunchRequestKey()
+		{
+			const std::string key = uam::env::GetNonEmptyString(kRequestKeyEnvironment).value_or("");
+			const auto hex = [](const std::string& value)
+			{ return value.size() == 64 && std::ranges::all_of(value, [](char ch) { return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'); }); };
+			if (hex(key)) return key;
+			const std::string inherited = uam::env::GetNonEmptyString(uam::provider_setup::kUamControlLaunchKeyEnvironment).value_or("");
+			return hex(inherited) ? inherited : key;
 		}
 
 		std::optional<nlohmann::json> SubmitToManager(const std::filesystem::path& capability,
@@ -2807,7 +2832,7 @@ namespace uam
 			if (request_id_out != nullptr) *request_id_out = id;
 			if (aborted()) return std::nullopt;
 			const nlohmann::json request = SignRequest({{"requestId", id}, {"method", method}, {"arguments", arguments}},
-			    uam::env::GetNonEmptyString(kRequestKeyEnvironment).value_or(""));
+			    LaunchRequestKey());
 			const std::string request_text = request.dump();
 			const std::filesystem::path request_path = capability / "requests" / (id + ".json");
 			if (request_text.size() > RequestLimit(method) || !uam::io::WriteTextFile(request_path, request_text)) return std::nullopt;
@@ -3049,7 +3074,7 @@ namespace uam
 			const std::string id = RandomRequestId();
 			(void)uam::io::WriteTextFile(*capability / "requests" / (id + ".json"),
 			    SignRequest({{"requestId", id}, {"method", "_mcp_disconnected"}, {"arguments", {{"connectionId", connection_id}}}},
-			        uam::env::GetNonEmptyString(kRequestKeyEnvironment).value_or("")).dump());
+			        LaunchRequestKey()).dump());
 		}
 		return input.Failed() ? 2 : exit_code;
 	}
@@ -3192,7 +3217,11 @@ namespace uam
 		    {"args", nlohmann::json::array({std::string(kServerFlag)})},
 		    {"env", std::move(environment)},
 		});
-		HideTools(request["params"]["mcpServers"].back(), UnusableTools(capability, chat, *root_chat, session));
+		capability.hidden_tools = UnusableTools(capability, chat, *root_chat, session);
+		// HandleRequest binary-searches the list, so it must stay sorted and unique whatever UnusableTools returns.
+		std::ranges::sort(capability.hidden_tools);
+		capability.hidden_tools.erase(std::ranges::unique(capability.hidden_tools).begin(), capability.hidden_tools.end());
+		HideTools(request["params"]["mcpServers"].back(), capability.hidden_tools);
 		session.uam_control_capability_id = capability.id;
 		app.uam_control_capabilities.push_back(std::move(capability));
 		return true;
@@ -3219,7 +3248,13 @@ namespace uam
 		if (!AppendSessionMcpServer(app, session, chat, uam::acp_methods::kSessionNew, request, &error)) return false;
 		server = request["params"]["mcpServers"].back();
 		// CLI View has no structured turn to show HTML views in or to hold an agent wait.
-		HideTools(server, {"agent_wait", "html_view_preview", "html_view_publish"});
+		const std::vector<std::string> terminal_hidden{"agent_wait", "html_view_preview", "html_view_publish"};
+		UamControlCapability* capability = FindCapability(app, session.uam_control_capability_id);
+		if (capability == nullptr) { error = "UAM control capability could not be created."; return false; }
+		HideTools(server, terminal_hidden);
+		capability->hidden_tools.insert(capability->hidden_tools.end(), terminal_hidden.begin(), terminal_hidden.end());
+		std::ranges::sort(capability->hidden_tools);
+		capability->hidden_tools.erase(std::ranges::unique(capability->hidden_tools).begin(), capability->hidden_tools.end());
 		return true;
 	}
 
@@ -3508,12 +3543,15 @@ namespace uam
 		return fail("This secret request is no longer pending.");
 	}
 
-	std::optional<std::string> UamControlService::SecretKeychainAccount(const AppState& app, std::string_view chat_id, std::string_view request_id)
+	std::optional<std::string> UamControlService::SecretKeychainAccount(const AppState& app, std::string_view chat_id, std::string_view request_id, bool legacy)
 	{
 		for (const UamControlCapability& capability : app.uam_control_capabilities)
 			if (capability.pending_approval.has_value() && capability.pending_approval->method == "secret_request" &&
 			    ApprovalRequestId(capability) == request_id && ApprovalChatId(capability) == chat_id)
-				return SecretRequestService::Target(app, capability).keychain_account;
+			{
+				SecretDeliveryTarget target = SecretRequestService::Target(app, capability);
+				return legacy ? std::move(target.legacy_keychain_account) : std::move(target.keychain_account);
+			}
 		return std::nullopt;
 	}
 

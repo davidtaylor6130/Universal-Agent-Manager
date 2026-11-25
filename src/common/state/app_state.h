@@ -545,6 +545,10 @@ namespace uam
 		std::vector<std::string> agent_delegates;
 		/// Captured from a goal review launch; the capability can never mutate or start broader children.
 		bool read_only_at_launch = false;
+		/// Tools this session was never offered, fixed at launch (sorted). The manager refuses them itself, so a
+		/// request that bypasses the session's own tool server cannot reach them.
+		std::vector<std::string> hidden_tools;
+		bool hidden_tool_refusal_logged = false; // One diagnostic line per capability, not one per refused request.
 		/// Signing key held only by this capability's MCP server process; a request without its signature is refused.
 		std::string request_key;
 		int64_t expires_at_epoch_ms = 0;
@@ -950,10 +954,6 @@ namespace uam
 		// from reconnect_attempts, which stop retries and exits also count, so the number of launches is exact.
 		int discovery_cleanup_attaches = 0;
 		double discovery_cleanup_last_attach_time_s = 0.0;
-		// Counts watchdog re-queues of a stalled goal loop; the goal is marked
-		// blocked after 3 so a failing provider cannot be retried forever.
-		// Cleared when a turn completes or a new user prompt is sent.
-		int goal_auto_resume_attempts = 0;
 		// Set when the user cancels a turn so the goal-loop watchdog does not
 		// override an explicit stop; cleared on the next user prompt.
 		enum class GoalQueueAdmission { None, Pending, Held, PendingContinuation, HeldContinuation };
@@ -1710,7 +1710,7 @@ namespace uam
 		struct ChatSavePace { double finished_at = 0.0; double cost_seconds = 0.0; };
 		std::unordered_map<std::string, ChatSavePace> chat_save_pace_by_chat_id;
 		// Consecutive failed transcript saves per chat: told to the user once, then retried with backoff.
-		struct ChatSaveFailure { int attempts = 0; double retry_at = 0.0; };
+		struct ChatSaveFailure { int attempts = 0; double retry_at = 0.0; bool barrier_logged = false; };
 		std::unordered_map<std::string, ChatSaveFailure> chat_save_failures_by_chat_id;
 		double chat_save_records_pruned_at = 0.0;
 		// Rows of the most recently saved transcripts, reused as the next save's unchanged prefix so each

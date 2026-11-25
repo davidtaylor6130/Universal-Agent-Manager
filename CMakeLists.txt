@@ -1734,6 +1734,7 @@ if(UAM_BUILD_TESTS)
     tests/git_worktree_pull_tests.cpp
     tests/git_worktree_port_method_tests.cpp
     tests/storage_retention_tests.cpp
+    tests/diagnostic_retention_tests.cpp
     tests/durable_replace_fallback_tests.cpp
     tests/data_folder_preflight_tests.cpp
     tests/data_folder_settings_tests.cpp
