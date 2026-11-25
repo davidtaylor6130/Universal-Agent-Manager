@@ -242,7 +242,7 @@ namespace uam
 			// Pull is optional for a local-only branch. A failed Git lookup never authorizes this bypass.
 			if (uam::strings::Trim(tracking.substr(tracking_prefix.size())).empty()) return true;
 			if (!configured_base.empty() && configured_base != branch)
-			{ error = "Pull before chat requires the default base to be the checked-out branch. Check out that branch or turn off Pull before first chat in Git settings, then retry."; return false; }
+			{ error = "Local copy is on " + branch + ", not " + configured_base + "."; return false; }
 			const auto checked_output = [&](const std::string& arguments, std::string& output)
 			{
 				const ProcessExecutionResult result = RunCommand(BuildGitCommandInDirectory(repository, arguments), kDefaultGitCommandTimeoutMs, stop);
