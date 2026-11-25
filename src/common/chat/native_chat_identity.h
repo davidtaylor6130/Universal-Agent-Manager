@@ -22,6 +22,8 @@ namespace uam::chat_identity
 	using NativeWorkspaceCache = std::unordered_map<std::string, std::string>;
 	/// <summary>Same result as the uncached form, resolving each distinct local workspace once per cache.</summary>
 	std::string NativeIdentityKeyForHistoryImport(const ChatSession& chat, NativeWorkspaceCache& workspaces);
+	std::string NativeChildIdentityKeyForHistoryImport(const ChatSession& chat, NativeWorkspaceCache& workspaces);
+	std::string NativeParentIdentityKeyForHistoryImport(const ChatSession& child, NativeWorkspaceCache& workspaces);
 	/// <summary>Codex writer ownership is per host and thread, independent of its workspace.</summary>
 	std::string CodexWriterIdentityKey(const ChatSession& chat);
 	std::string NativeIdentityKeyHash(std::string_view key);

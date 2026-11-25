@@ -32,6 +32,7 @@
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace uam
@@ -590,6 +591,9 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 	    ? observation_runtime.PollInteractiveActivity(terminal, CliTerminalAttachedSessionId(terminal), uam::paths::ResolveWorkspaceRootPath(app, *terminal_chat), terminal.native_session_discovery_ambiguous)
 	    : ProviderTerminalActivity::Unavailable;
 	changed |= terminal.lifecycle_state != before_native_lifecycle;
+	const bool turn_receipt_expired = std::exchange(terminal.native_turn_receipt_expired, false);
+	if (turn_receipt_expired && before_native_lifecycle == CliTerminalLifecycleState::Busy && terminal.lifecycle_state == CliTerminalLifecycleState::Unknown)
+		uam::LogCliDiagnosticEvent(app, "poll_cli_terminal", "turn_unconfirmed_marked_unknown", &terminal);
 	if (native_activity == ProviderTerminalActivity::Busy)
 	{
 		terminal.prompt_settle_candidate_time_s = 0.0;
@@ -609,7 +613,8 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 			chat->interaction_at = uam::time::InteractionTimestampNow();
 			if (!ChatRepository::SaveLastOpenedAt(app.data_root, *chat, false)) app.pending_chat_save_at_by_chat_id[chat->id] = 0.0;
 		}
-		uam::LogCliDiagnosticEvent(app, "poll_cli_terminal", native_activity == ProviderTerminalActivity::Complete ? "turn_marked_idle_from_native_event" : "turn_marked_idle_from_prompt", &terminal);
+		uam::LogCliDiagnosticEvent(app, "poll_cli_terminal", native_activity != ProviderTerminalActivity::Complete ? "turn_marked_idle_from_prompt" :
+		    turn_receipt_expired ? "turn_unconfirmed_marked_idle_from_prompt" : "turn_marked_idle_from_native_event", &terminal);
 		changed = true;
 	}
 

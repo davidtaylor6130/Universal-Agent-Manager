@@ -132,6 +132,17 @@ namespace uam::chat_identity
 
 	std::string NativeParentIdentityKeyForHistoryImport(const ChatSession& child)
 	{
+		NativeWorkspaceCache workspaces;
+		return NativeParentIdentityKeyForHistoryImport(child, workspaces);
+	}
+
+	std::string NativeChildIdentityKeyForHistoryImport(const ChatSession& chat, NativeWorkspaceCache& workspaces)
+	{
+		return chat.imported_read_only && uam::strings::IsBlank(chat.native_session_id) ? "passive|" + chat.id : NativeIdentityKeyForHistoryImport(chat, workspaces);
+	}
+
+	std::string NativeParentIdentityKeyForHistoryImport(const ChatSession& child, NativeWorkspaceCache& workspaces)
+	{
 		const std::string_view parent_id = uam::strings::TrimAsciiView(child.native_parent_session_id);
 		if (parent_id.empty()) return {};
 		ChatSession parent;
@@ -140,7 +151,7 @@ namespace uam::chat_identity
 		parent.execution_host_id = child.execution_host_id;
 		parent.workspace_directory = child.workspace_directory;
 		parent.workspace_worktree_directory = child.workspace_worktree_directory;
-		return NativeIdentityKeyForHistoryImport(parent);
+		return NativeIdentityKeyForHistoryImport(parent, workspaces);
 	}
 
 	std::string NativeIdentityKeyForHistoryImport(const ChatSession& chat, NativeWorkspaceCache& workspaces)

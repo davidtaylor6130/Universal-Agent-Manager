@@ -95,6 +95,12 @@ std::string ResolveProviderInteractiveResumeId(const AppState& app, const ChatSe
 	return ProviderRuntimeRegistry::Resolve(provider).ResolveInteractiveResumeId(app, chat);
 }
 
+/// Codex already imported this handoff into the bound native thread, so the snapshot is not replayed again.
+static bool ReusesCodexHandoffSession(const ChatSession& chat)
+{
+	return chat.provider_id == uam::provider_ids::kCodexCli && !chat.native_session_id.empty() && chat.provider_handoff_session_id == chat.native_session_id;
+}
+
 /// <summary>False with an empty error means a runtime stop is pending; retry after confirmation.</summary>
 bool PrepareAcpSessionForCliTerminalLaunch(AppState& app, ChatSession& chat, std::string* error_out)
 {
@@ -152,7 +158,7 @@ bool PrepareAcpSessionForCliTerminalLaunch(AppState& app, ChatSession& chat, std
 		return false;
 	}
 	if (!chat.provider_handoff_context.empty() &&
-	    !(chat.provider_id == uam::provider_ids::kCodexCli && !chat.native_session_id.empty() && chat.provider_handoff_session_id == chat.native_session_id) &&
+	    !ReusesCodexHandoffSession(chat) &&
 	    !ValidateProviderHandoffContext(chat, chat.messages.size(), error_out)) return false;
 	if (!PrepareCodexThreadForRuntimeLaunch(app, chat, error_out)) return false;
 	AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
@@ -335,7 +341,7 @@ static bool PrepareUnboundCodexHistory(AppState& app, ChatSession& chat, const s
 {
 	const bool build_history = NeedsUnboundCodexHistory(chat, argv);
 	const bool replay_context = !chat.provider_handoff_context.empty() &&
-	    !(chat.provider_id == uam::provider_ids::kCodexCli && !chat.native_session_id.empty() && chat.provider_handoff_session_id == chat.native_session_id);
+	    !ReusesCodexHandoffSession(chat);
 	if (!build_history && !replay_context) return true;
 	if (stop_token.stop_requested()) { error = "Provider context preparation was cancelled."; return false; }
 	if (!chat.messages_loaded)
@@ -615,7 +621,7 @@ bool PrepareCliProviderConversation(AppState& app, ChatSession& chat, const Exec
 	if (!PrepareUnboundCodexHistory(app, chat, argv, error, stop_token)) return false;
 	if (stop_token.stop_requested()) { error = "Provider context preparation was cancelled."; return false; }
 	if (chat.provider_handoff_context.empty() ||
-	    (chat.provider_id == uam::provider_ids::kCodexCli && !chat.native_session_id.empty() && chat.provider_handoff_session_id == chat.native_session_id)) return true;
+	    ReusesCodexHandoffSession(chat)) return true;
 	const bool remote = host.id != uam::execution_hosts::kLocalHostId;
 	const std::filesystem::path workspace = uam::paths::ResolveWorkspaceRootPath(app, chat);
 	const std::string requested_directory = uam::paths::Utf8PathString(CliProviderContextDirectory(app, chat, host));
@@ -663,25 +669,12 @@ bool PrepareCliProviderConversation(AppState& app, ChatSession& chat, const Exec
 	}
 	else if (!uam::provider_native_context::PrepareOwnedContext(uam::paths::PathFromUtf8(directory), error)) return false;
 	if (!stage(context_path, snapshot)) return false;
-	if (chat.provider_id == uam::provider_ids::kCodexCli)
-	{
-		// The executing host imports the snapshot into owned native thread history.
-	}
-	else if (chat.provider_id == uam::provider_ids::kClaudeCli)
-	{
-		argv.insert(argv.end(), {"--append-system-prompt-file", context_path});
-	}
-	else if (chat.provider_id == uam::provider_ids::kCopilotCli)
-	{
-		const std::string instructions_path = uam::execution_hosts::JoinRemotePath(host.platform, directory, ".github/instructions/handoff.instructions.md");
-		if (!stage(instructions_path, "---\napplyTo: \"**\"\n---\n" + snapshot)) return false;
-	}
-	else if (chat.provider_id == uam::provider_ids::kGeminiCli)
-	{
-		if (!stage(uam::execution_hosts::JoinRemotePath(host.platform, directory, "GEMINI.md"), snapshot)) return false;
-		argv.insert(argv.end(), {"--include-directories", directory});
-	}
-	else if (chat.provider_id != uam::provider_ids::kOpenCodeCli) { error = "The selected provider does not support conversation context files."; return false; }
+	// Only an exact included provider id stages context; an alias or unknown id keeps this refusal.
+	// Codex imports the snapshot into owned native thread history on the executing host, and OpenCode
+	// reads it through its configuration environment, so both keep the runtime's empty default.
+	if (!uam::provider_ids::IsKnownCliProviderId(chat.provider_id)) { error = "The selected provider does not support conversation context files."; return false; }
+	const ProviderCliHandoffStaging staging{host.platform, directory, context_path, snapshot, stage};
+	if (!ProviderRuntimeRegistry::ResolveById(chat.provider_id).StageCliHandoffContext(staging, argv, error)) return false;
 	if (!remote) return uam::provider_native_context::ConfigureEnvironment(chat.provider_id, uam::paths::PathFromUtf8(directory), environment, error, workspace, false, &PlatformServicesFactory::Instance().process_service, &argv, stop_token);
 	// Preserve the terminal proxy's environment trust gate: only its private leased handoff carries overrides.
 	launch_channel = "terminal-context-" + PlatformServicesFactory::Instance().process_service.GenerateUuid();
@@ -786,13 +779,13 @@ static bool PrepareCliProviderHandoffAsyncImpl(AppState& app, CliTerminalState& 
 	    ShouldEnableOpenCodeV1ProgressiveMcp(app.settings.central_provider_configuration, chat.provider_id, host.id, CheckedProviderConfigurationVersion(app, chat.provider_id, host));
 	const bool prepare_history = NeedsUnboundCodexHistory(chat, argv) || (!chat.messages_loaded && !chat.provider_handoff_context.empty());
 	if (chat.messages_loaded && !chat.provider_handoff_context.empty() &&
-	    !(chat.provider_id == uam::provider_ids::kCodexCli && !chat.native_session_id.empty() && chat.provider_handoff_session_id == chat.native_session_id) &&
+	    !ReusesCodexHandoffSession(chat) &&
 	    !ValidateProviderHandoffContext(chat, chat.messages.size(), &error)) return false;
 	const ProviderHandoffCliContext location{host.id,
 	    uam::paths::Utf8PathString(CliProviderContextDirectory(app, chat, host)), ContextConnectionIdentity(host)};
 	const bool prepare_cleanup = !chat.messages_loaded && !chat.provider_handoff_context.empty() &&
 	    !uam::ranges::Contains(chat.provider_handoff_cli_contexts, location);
-	if (!launch_option_override && !uam::execution_hosts::HasInstructions(host) && terminal.context_preparation == nullptr && (host.id == uam::execution_hosts::kLocalHostId || environment.empty()) && (!prepare_history || history_prepared) && !uam::central_configuration::McpEnabled(app.settings.central_provider_configuration, chat.provider_id, host.id, "shared-setup", app.settings.central_provider_configuration.enabled) && uam::mcp_server_config::SelectForWorkspace(uam::host_scoped_settings::McpServers(app.settings, host.id), uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat)), host.id).empty() && (chat.workspace_source_directory.empty() || uam::mcp_server_config::SelectForWorkspace(uam::host_scoped_settings::McpServers(app.settings, host.id), chat.workspace_source_directory, host.id).empty()) && !chat.uam_control_enabled && (chat.provider_handoff_context.empty() || (chat.provider_id == uam::provider_ids::kCodexCli && !chat.native_session_id.empty() && chat.provider_handoff_session_id == chat.native_session_id)))
+	if (!launch_option_override && !uam::execution_hosts::HasInstructions(host) && terminal.context_preparation == nullptr && (host.id == uam::execution_hosts::kLocalHostId || environment.empty()) && (!prepare_history || history_prepared) && !uam::central_configuration::McpEnabled(app.settings.central_provider_configuration, chat.provider_id, host.id, "shared-setup", app.settings.central_provider_configuration.enabled) && uam::mcp_server_config::SelectForWorkspace(uam::host_scoped_settings::McpServers(app.settings, host.id), uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat)), host.id).empty() && (chat.workspace_source_directory.empty() || uam::mcp_server_config::SelectForWorkspace(uam::host_scoped_settings::McpServers(app.settings, host.id), chat.workspace_source_directory, host.id).empty()) && !chat.uam_control_enabled && (chat.provider_handoff_context.empty() || ReusesCodexHandoffSession(chat)))
 		return true;
 	const std::function<std::string()> capture_baseline = [&]() { return nlohmann::json::array({chat.id, chat.provider_id, uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(app, chat)), ContextConnectionIdentity(host), host.instruction_file, host.instruction_text ? nlohmann::json(*host.instruction_text) : nlohmann::json(nullptr), chat.uam_control_enabled, chat.uam_agent_id, chat.provider_handoff_context, chat.native_session_id, chat.provider_handoff_session_id, ChatRepository::ChatMetadataFingerprint(app.data_root, chat), chat.model_id, chat.reasoning_effort, chat.service_tier, chat.service_tier_explicit, CheckedProviderConfigurationVersion(app, chat.provider_id, host), argv, environment, uam::central_configuration::Serialize(app.settings.central_provider_configuration), uam::mcp_server_config::Serialize(uam::host_scoped_settings::McpServers(app.settings, host.id))}).dump(); };
 	const std::string baseline = capture_baseline();
@@ -844,7 +837,7 @@ static bool PrepareCliProviderHandoffAsyncImpl(AppState& app, CliTerminalState& 
 				if (capability.id == terminal.uam_control_session->uam_control_capability_id) capability.provider_configuration_directory = state->provider_configuration_directory;
 		}
 		argv = state->argv;
-		if (chat.provider_id == uam::provider_ids::kCodexCli && host.id == uam::execution_hosts::kLocalHostId && !chat.provider_handoff_context.empty() && (chat.native_session_id.empty() || chat.provider_handoff_session_id != chat.native_session_id))
+		if (chat.provider_id == uam::provider_ids::kCodexCli && host.id == uam::execution_hosts::kLocalHostId && !chat.provider_handoff_context.empty() && !ReusesCodexHandoffSession(chat))
 		{
 			const std::vector<std::string>::const_iterator resume = std::find(argv.cbegin() + 1, argv.cend(), "resume");
 			if (resume == argv.cend() || resume + 1 == argv.cend() || !uam::uuid::IsCanonicalUuid(*(resume + 1))) return false;
@@ -945,7 +938,7 @@ static bool PrepareCliProviderHandoffAsyncImpl(AppState& app, CliTerminalState& 
 				}
 				else
 					state->succeeded = PrepareConfiguredCliProviderHandoff(isolated, snapshot, host, state->argv, state->environment, state->channel, state->error, state->cancellation.get_token(), native_servers, &state->provider_configuration_directory);
-				if (state->succeeded && !state->history_preparation && snapshot.provider_id == uam::provider_ids::kCodexCli && host.id == uam::execution_hosts::kLocalHostId && !snapshot.provider_handoff_context.empty() && (snapshot.native_session_id.empty() || snapshot.provider_handoff_session_id != snapshot.native_session_id))
+				if (state->succeeded && !state->history_preparation && snapshot.provider_id == uam::provider_ids::kCodexCli && host.id == uam::execution_hosts::kLocalHostId && !snapshot.provider_handoff_context.empty() && !ReusesCodexHandoffSession(snapshot))
 				{
 					const std::vector<std::string>::const_iterator resume = std::find(state->argv.cbegin() + 1, state->argv.cend(), "resume");
 					if (resume == state->argv.cend() || resume + 1 == state->argv.cend() || !uam::uuid::IsCanonicalUuid(*(resume + 1)))

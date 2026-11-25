@@ -228,6 +228,45 @@ namespace uam::execution_hosts
 		return NormalizeRemotePath(platform, lhs) == NormalizeRemotePath(platform, rhs);
 	}
 
+	/// Resolves "." and ".." in an absolute remote path without touching the host; other paths are returned trimmed.
+	inline std::string LexicalRemotePath(std::string_view platform, std::string_view value)
+	{
+		const bool windows = platform == "windows" || platform == "Windows";
+		std::string text(uam::strings::TrimAsciiView(value));
+		if (windows) std::ranges::replace(text, '\\', '/');
+		std::string root;
+		if (windows && text.starts_with("//")) root = "//";
+		else if (windows && text.size() >= 3 && std::isalpha(static_cast<unsigned char>(text[0])) != 0 && text[1] == ':' && text[2] == '/') root = text.substr(0, 3);
+		else if (!windows && text.starts_with('/')) root = "/";
+		else return text;
+		std::vector<std::string_view> parts;
+		std::string_view rest(text);
+		rest.remove_prefix(root.size());
+		while (!rest.empty())
+		{
+			const std::size_t slash = rest.find('/');
+			const std::string_view part = rest.substr(0, slash);
+			rest = slash == std::string_view::npos ? std::string_view{} : rest.substr(slash + 1);
+			if (part.empty() || part == ".") continue;
+			if (part == "..") { if (!parts.empty()) parts.pop_back(); continue; }
+			parts.push_back(part);
+		}
+		std::string result = root;
+		for (std::size_t index = 0; index < parts.size(); ++index)
+		{
+			if (index != 0) result.push_back('/');
+			result.append(parts[index]);
+		}
+		return result;
+	}
+
+	/// True when a helper's reported directory is absolute on the host and names the directory that was requested.
+	inline bool RemoteDirectoryMatchesRequest(std::string_view platform, std::string_view requested, std::string_view reported)
+	{
+		return IsAbsoluteRemotePath(platform, requested) && IsAbsoluteRemotePath(platform, reported) &&
+		       RemotePathsMatch(platform, LexicalRemotePath(platform, requested), LexicalRemotePath(platform, reported));
+	}
+
 	inline std::string Bounded(std::string_view value, std::size_t maximum)
 	{
 		std::string result = uam::strings::Trim(value);

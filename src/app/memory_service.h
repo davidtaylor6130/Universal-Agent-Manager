@@ -4,6 +4,8 @@
 
 #include <filesystem>
 #include <map>
+#include <set>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -30,6 +32,30 @@ class MemoryService
 	static std::filesystem::path CategoryPath(const std::filesystem::path& root, const std::string& category);
 	static bool EnsureMemoryLayout(const std::filesystem::path& root);
 	static std::string BuildRecallPreface(const uam::AppState& app, const ChatSession& chat, const std::string& prompt, std::stop_token stop_token = {});
+
+	/// <summary>One memory root recall reads: `global` (this computer's) or `workspace` (the chat's effective workspace).</summary>
+	struct RecallRoot
+	{
+		std::string scope;
+		std::filesystem::path root;
+	};
+	/// <summary>One recalled memory: its bounded fact preview, never the whole file, with the scope it came from.</summary>
+	struct RecallMatch
+	{
+		std::string scope;
+		std::string text;
+		int score = 0;
+	};
+	/// <summary>The roots recall reads for this chat: global, then its workspace when it has one. Empty, with a reason,
+	/// when memory is off for the chat or the chat runs on an SSH host, exactly where recall reads nothing.</summary>
+	static std::vector<RecallRoot> RecallRoots(const uam::AppState& app, const ChatSession& chat, std::string* unavailable_reason = nullptr);
+	/// <summary>Recall's ranking over the given roots: only memories sharing a word with `query`, best first, then by
+	/// text, each text once (case-insensitive). Reads files only, so it may run off the app thread.</summary>
+	static std::vector<RecallMatch> RankRecall(const std::vector<RecallRoot>& roots, std::string_view query, std::stop_token stop_token = {});
+	/// <summary>Words recall matches on: lower-case ASCII letters and digits, at least three long, minus common request words.</summary>
+	static std::set<std::string> RecallTerms(std::string_view text);
+	/// <summary>How many of `terms` appear as whole words in `preview`.</summary>
+	static int RecallScore(const std::string& preview, const std::set<std::string>& terms);
 	/// <summary>Stages scoped memory detail files without changing the caller's resources on failure.</summary>
 	static bool BuildRecallResources(const std::filesystem::path& data_root, const AppSettings& settings, const ChatSession& chat, const std::filesystem::path& workspace, std::map<std::string, std::string>& files, std::string& error);
 	static bool ApplyWorkerOutput(uam::AppState& app, ChatSession& chat, const std::filesystem::path& workspace_root, const std::string& output, int processed_message_count = -1, std::string* error_out = nullptr, bool refresh_counts_async = false);
