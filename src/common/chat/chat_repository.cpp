@@ -65,6 +65,8 @@ namespace
 	namespace attachment_persisted_fields = uam::message_attachment_json::persisted;
 	// Refuse oversized saves before allocating the output or changing existing files.
 	constexpr std::size_t kMaxChatJsonBytes = 256U * 1024U * 1024U;
+	// Zero uses kMaxChatJsonBytes; only tests lower it.
+	std::atomic<std::size_t> g_max_chat_read_bytes_for_tests{0};
 	constexpr std::size_t kMaxQueueJournalBytes = 16U * 1024U * 1024U;
 	constexpr std::size_t kMaxPassiveArchiveBytes = 16U * 1024U * 1024U;
 	constexpr std::size_t kMaxPassiveNativeMetadataBytes = 1024U * 1024U;
@@ -196,6 +198,8 @@ namespace
 	constexpr std::string_view kChatUamAgentIdField = "uam_agent_id";
 	constexpr std::string_view kChatLastPromptAgentDefinitionHashField = "last_prompt_agent_definition_hash";
 	constexpr std::string_view kChatAgentRunIdField = "agent_run_id";
+	constexpr std::string_view kChatManagedRootChatIdField = "managed_root_chat_id";
+	constexpr std::string_view kChatManagedRootCreatedAtField = "managed_root_created_at";
 	constexpr std::string_view kChatManagedFollowupBirthField = "managed_followup_incarnation";
 	constexpr std::string_view kChatGoalOwnerChatIdField = "goal_owner_chat_id";
 	constexpr std::string_view kChatCreatedByChatIdField = "created_by_chat_id";
@@ -1605,7 +1609,8 @@ namespace
 	    lhs.provider_handoff_session_id != rhs.provider_handoff_session_id ||
 	    lhs.host_instructions_delivery != rhs.host_instructions_delivery ||
 	    lhs.provider_handoff_cli_contexts != rhs.provider_handoff_cli_contexts ||
-		    lhs.agent_run_id != rhs.agent_run_id || lhs.command_safety_tier != rhs.command_safety_tier ||
+		    lhs.agent_run_id != rhs.agent_run_id || lhs.managed_root_chat_id != rhs.managed_root_chat_id ||
+		    lhs.managed_root_created_at != rhs.managed_root_created_at || lhs.command_safety_tier != rhs.command_safety_tier ||
 		    lhs.computer_use_backend != rhs.computer_use_backend ||
 		    lhs.goal_owner_chat_id != rhs.goal_owner_chat_id ||
 		    lhs.created_by_chat_id != rhs.created_by_chat_id || lhs.created_by_request_key != rhs.created_by_request_key ||
@@ -1704,6 +1709,8 @@ namespace
 		bool managed_followup_input_unavailable = false;
 		// The document still holds a remote OpenCode server password written by an older build.
 		bool legacy_opencode_native_secret = false;
+		// The file exceeds the chat read limit and was refused without reading its body; it must stay unchanged.
+		bool too_large = false;
 	};
 
 	// Older builds saved the remote OpenCode server password and its port in chat files. Both now stay in memory only.
@@ -2360,6 +2367,8 @@ namespace
 		}
 	}
 		chat.agent_run_id = JsonStringOrEmpty(root.Find(kChatAgentRunIdField));
+		chat.managed_root_chat_id = JsonStringOrEmpty(root.Find(kChatManagedRootChatIdField));
+		chat.managed_root_created_at = JsonStringOrEmpty(root.Find(kChatManagedRootCreatedAtField));
 		if (const auto* birth = root.Find(kChatManagedFollowupBirthField))
 		{
 			if (birth->type == JsonValue::Type::String &&
@@ -2620,6 +2629,8 @@ namespace
 				// Goals saved before sources existed report their earlier verdicts as unknown, never guessed.
 				if (const JsonValue* decision_source = goal_obj.Find("lastDecisionSource"); decision_source != nullptr) goal.last_decision_source = NormalizeDecisionSource(JsonStringOrEmpty(decision_source));
 				else if (goal.status == GoalStatus::Blocked || goal.status == GoalStatus::Complete || !goal.last_blocker.empty() || !goal.last_diagnostic.empty() || !goal.last_next_prompt.empty()) goal.last_decision_source = kDecisionSourceUnknown;
+				// A backend only stays with a model source, so a filter, fallback or edited file cannot claim one.
+				goal.last_decision_backend = NormalizeDecisionBackend(goal.last_decision_source, JsonStringOrEmpty(goal_obj.Find("lastDecisionBackend")));
 				goal.creator = JsonStringOrEmpty(goal_obj.Find("creator")) == "model" ? "model" : "user";
 				goal.creator_provider_id = goal.creator == "model" ? JsonStringOrEmpty(goal_obj.Find("creatorProviderId")) : "";
 				goal.creator_agent_id = goal.creator == "model" ? JsonStringOrEmpty(goal_obj.Find("creatorAgentId")) : "";
@@ -2743,20 +2754,42 @@ namespace
 		return {std::nullopt, "contains invalid attachment metadata"};
 	}
 
+	/// <summary>Writes one diagnostic line per oversized file or legacy folder per run, so retries and rescans do not repeat it.</summary>
+	void LogOversizedOnce(const fs::path& path, const std::string& line)
+	{
+		static std::mutex mutex;
+		static std::unordered_set<std::string> logged;
+		{
+			std::lock_guard<std::mutex> lock(mutex);
+			if (!logged.insert(path.lexically_normal().string()).second) return;
+		}
+		uam::diagnostics::Write(line);
+	}
+
+	void LogOversizedChatFileOnce(const fs::path& path, std::uintmax_t source_bytes, std::size_t limit)
+	{
+		LogOversizedOnce(path, "[chat-storage] Refused to read " + path.filename().string() + ": " + std::to_string(source_bytes) +
+		    " bytes exceeds the " + std::to_string(limit) + "-byte chat read limit. The file was left unchanged.");
+	}
+
 	LoadChatResult ParseLocalChatFile(const fs::path& path, bool include_messages = true, std::uintmax_t expected_source_size = 0, bool publish_summary_cache = true, std::size_t max_read_bytes = 0)
 	{
+		// Every full chat read is bounded: a caller's own limit can only tighten the chat read limit.
+		const std::size_t chat_limit = ChatRepository::MaxChatReadBytes();
+		const std::size_t read_limit = max_read_bytes != 0 ? std::min(max_read_bytes, chat_limit) : chat_limit;
 		std::string file_text;
-		if (max_read_bytes != 0)
+		const uam::io::BoundedReadResult read = uam::io::TryReadFileWithinLimit(path, file_text, read_limit);
+		if (read.status == uam::io::BoundedReadStatus::TooLarge)
 		{
-			// Refuse a known oversize source before allocating its body; the reader
-			// also enforces the ceiling if the file grows after this observation.
-			std::error_code size_error;
-			const std::uintmax_t source_size = fs::file_size(path, size_error);
-			if (size_error || source_size > max_read_bytes ||
-			    !uam::io::TryReadTextFile(path, file_text, max_read_bytes))
+			if (read_limit < chat_limit && read.source_bytes <= chat_limit)
 				return {std::nullopt, "cannot be read within the requested size limit"};
+			LogOversizedChatFileOnce(path, read.source_bytes, chat_limit);
+			LoadChatResult refused{std::nullopt, std::string(ChatRepository::kChatTooLargeToOpenMessage)};
+			refused.too_large = true;
+			return refused;
 		}
-		else file_text = uam::io::ReadTextFile(path);
+		if (read.status != uam::io::BoundedReadStatus::Read && max_read_bytes != 0)
+			return {std::nullopt, "cannot be read within the requested size limit"};
 		if (file_text.empty())
 		{
 			return {std::nullopt, "is empty"};
@@ -2797,6 +2830,8 @@ namespace
 		if (primary_exists)
 		{
 			LoadChatResult primary = ParseLocalChatFile(primary_path, true);
+			// An oversized primary is newer than any backup; never replace it with an older transcript.
+			if (primary.too_large) return {UnloadedTranscriptSource::Unrecoverable, std::nullopt};
 			if (primary.chat && primary.chat->id == expected_chat_id &&
 			    HasTranscriptForUnloadedSave(*primary.chat, expected_message_count))
 			{
@@ -4320,6 +4355,11 @@ try
 	}
 	uam::json::SetValue(root, "provider_handoff_cli_contexts", std::move(contexts));
 	uam::json::SetString(root, kChatAgentRunIdField, chat.agent_run_id);
+	if (!chat.managed_root_chat_id.empty())
+	{
+		uam::json::SetString(root, kChatManagedRootChatIdField, chat.managed_root_chat_id);
+		uam::json::SetString(root, kChatManagedRootCreatedAtField, chat.managed_root_created_at);
+	}
 	if (!chat.managed_followup_incarnation.empty()) uam::json::SetString(root, kChatManagedFollowupBirthField, chat.managed_followup_incarnation);
 	uam::json::SetString(root, kChatGoalOwnerChatIdField, chat.goal_owner_chat_id);
 	if (!chat.created_by_chat_id.empty())
@@ -4411,6 +4451,7 @@ try
 			uam::json::SetString(goal_obj, "lastBlockerKind", goal.last_blocker_kind);
 			uam::json::SetString(goal_obj, "lastDiagnostic", goal.last_diagnostic);
 			uam::json::SetString(goal_obj, "lastDecisionSource", goal.last_decision_source);
+			uam::json::SetString(goal_obj, "lastDecisionBackend", NormalizeDecisionBackend(goal.last_decision_source, goal.last_decision_backend));
 			uam::json::SetValue(goal_obj, "completedItems", StringArrayToJson(goal.completed_items));
 			uam::json::SetValue(goal_obj, "remainingItems", StringArrayToJson(goal.remaining_items));
 			uam::json::SetString(goal_obj, "currentStep", goal.current_step);
@@ -4583,7 +4624,13 @@ try
 				    publication->SourceIndex(candidate, *revision, chat.id, source_index_path) : EnsureMessageIndex(candidate, *revision, chat.id);
 				if (publication == nullptr) source_index_path = uam::chat_pages::IndexPath(candidate);
 				const std::optional<ChatSession> metadata = index ? ReadIndexedMetadata(candidate, *index) : std::nullopt;
-				if (!metadata || metadata->id != chat.id || index->message_count == 0) continue;
+				if (!metadata || metadata->id != chat.id || index->message_count == 0)
+				{
+					// An oversized primary is newer than its backup; refuse the save rather than replace it with the older transcript.
+					std::error_code size_error;
+					if (candidate == file_path && fs::file_size(candidate, size_error) > ChatRepository::MaxChatReadBytes() && !size_error) break;
+					continue;
+				}
 				source_index = index;
 				source_path = candidate;
 				source_revision = *revision;
@@ -5462,17 +5509,35 @@ ChatStorageDeleteResult ChatRepository::DeleteChatStorageFiles(const fs::path& d
 	return DeleteChatStorageFilesLocked(data_root, chat_id, reason);
 }
 
-ChatSession LoadLegacyChatFromDirectory(const fs::path& chat_root)
+ChatSession LoadLegacyChatFromDirectory(const fs::path& chat_root, bool* too_large_out = nullptr)
 {
 	ChatSession chat;
 	chat.id = chat_root.filename().string();
 	chat.title = "Imported Chat";
+	// The whole legacy folder shares the chat read limit; an oversized folder is left unmigrated and unchanged.
+	std::size_t budget = ChatRepository::MaxChatReadBytes();
+	const auto read_within_budget = [&](const fs::path& file, std::string& text)
+	{
+		const uam::io::BoundedReadResult read = uam::io::TryReadFileWithinLimit(file, text, budget);
+		if (read.status == uam::io::BoundedReadStatus::TooLarge) return false;
+		budget -= text.size();
+		return true;
+	};
+	const auto refuse = [&]()
+	{
+		LogOversizedOnce(chat_root, "[chat-storage] Skipped migrating legacy chat folder " + chat_root.filename().string() +
+		    ": it exceeds the " + std::to_string(ChatRepository::MaxChatReadBytes()) + "-byte chat read limit. The folder was left unchanged.");
+		if (too_large_out != nullptr) *too_large_out = true;
+		return ChatSession{};
+	};
 
 	const fs::path meta_file = chat_root / "meta.txt";
 
 	if (uam::paths::PathExistsNoThrow(meta_file))
 	{
-		std::istringstream lines(uam::io::ReadTextFile(meta_file));
+		std::string meta_text;
+		if (!read_within_budget(meta_file, meta_text)) return refuse();
+		std::istringstream lines(std::move(meta_text));
 		std::string line;
 
 		while (std::getline(lines, line))
@@ -5519,7 +5584,7 @@ ChatSession LoadLegacyChatFromDirectory(const fs::path& chat_root)
 		{
 			Message message;
 			message.role = ParseLegacyMessageRoleFromFilename(message_file);
-			message.content = uam::io::ReadTextFile(message_file);
+			if (!read_within_budget(message_file, message.content)) return refuse();
 			message.created_at = chat.updated_at;
 			chat.messages.push_back(std::move(message));
 		}
@@ -5571,7 +5636,13 @@ namespace
 			return false;
 		}
 
-		ChatSession chat = LoadLegacyChatFromDirectory(folder.path());
+		bool too_large = false;
+		ChatSession chat = LoadLegacyChatFromDirectory(folder.path(), &too_large);
+		if (too_large)
+		{
+			AppendWarning(warning_out, "Skipped legacy chat folder " + folder.path().filename().string() + ": it is too large to open.");
+			return false;
+		}
 		if (chat.id.empty())
 		{
 			return false;
@@ -5633,6 +5704,8 @@ namespace
 		hydrated.host_instructions_delivery = summary.host_instructions_delivery;
 		hydrated.provider_handoff_cli_contexts = summary.provider_handoff_cli_contexts;
 		hydrated.agent_run_id = summary.agent_run_id;
+		hydrated.managed_root_chat_id = summary.managed_root_chat_id;
+		hydrated.managed_root_created_at = summary.managed_root_created_at;
 		hydrated.managed_followup_incarnation = summary.managed_followup_incarnation;
 		hydrated.managed_followup_input_unavailable = hydrated.managed_followup_input_unavailable || summary.managed_followup_input_unavailable;
 		hydrated.temporary_parent_chat_id = summary.temporary_parent_chat_id;
@@ -5775,6 +5848,11 @@ namespace
 	                              std::string* warning_out)
 	{
 		const LoadChatResult backup_chat = ParseLocalChatFile(backup_path, include_messages);
+		if (backup_chat.too_large)
+		{
+			AppendWarning(warning_out, "Skipped backup file " + backup_path.filename().string() + ": it is too large to open.");
+			return;
+		}
 		if (!backup_chat.chat)
 		{
 			AppendWarning(warning_out, "Skipped corrupted backup file " + backup_path.string() + ": " + backup_chat.error + ".");
@@ -5953,6 +6031,12 @@ namespace
 				AppendWarning(warning_out, "Skipped unsupported managed input without backup adoption: " + path.string() + ".");
 				continue;
 			}
+			if (primary_chat.too_large)
+			{
+				// Backup recovery would replace the oversized primary; leave both files untouched.
+				AppendWarning(warning_out, "Skipped chat file " + path.filename().string() + ": it is too large to open.");
+				continue;
+			}
 			const fs::path backup_path = uam::io::MakeBackupPath(path);
 			if (uam::paths::PathExistsNoThrow(backup_path))
 			{
@@ -6018,6 +6102,17 @@ namespace
 	}
 } // namespace
 
+std::size_t ChatRepository::MaxChatReadBytes()
+{
+	const std::size_t override_bytes = g_max_chat_read_bytes_for_tests.load(std::memory_order_relaxed);
+	return override_bytes != 0 ? override_bytes : kMaxChatJsonBytes;
+}
+
+void ChatRepository::SetMaxChatReadBytesForTests(std::size_t max_bytes)
+{
+	g_max_chat_read_bytes_for_tests.store(max_bytes, std::memory_order_relaxed);
+}
+
 std::vector<ChatSession> ChatRepository::LoadLocalChats(const std::filesystem::path& data_root, std::string* warning_out)
 {
 	return LoadLocalChatsImpl(data_root, true, warning_out);
@@ -6074,11 +6169,13 @@ std::optional<ChatSession> ChatRepository::LoadLocalChatPrimaryReadOnly(const fs
 }
 
 std::optional<ChatSession> ChatRepository::LoadLocalChatBounded(const fs::path& data_root,
-    std::string_view chat_id, std::size_t max_bytes)
+    std::string_view chat_id, std::size_t max_bytes, std::string* too_large_out)
 {
 	if (!uam::chat_ids::IsSafeStorageChatId(chat_id) || max_bytes == 0) return std::nullopt;
 	const fs::path primary = AppPaths::UamChatFilePath(data_root, chat_id);
 	LoadChatResult loaded = ParseLocalChatFile(primary, true, 0, false, max_bytes);
+	// Only the chat-limit refusal is reported; a file merely above the caller's tighter limit is not.
+	if (loaded.too_large) SetWarning(too_large_out, loaded.error);
 	if (loaded.chat) ApplySummaryOpenedAtToFullChat(primary, *loaded.chat, max_bytes);
 	return std::move(loaded.chat);
 }
@@ -6655,7 +6752,8 @@ try
 	    candidate.workspace_worktree_directory != previous.workspace_worktree_directory ||
 	    candidate.parent_chat_id != previous.parent_chat_id || candidate.branch_root_chat_id != previous.branch_root_chat_id ||
 	    candidate.subagent_parent_chat_id != previous.subagent_parent_chat_id || candidate.subagent_parent_created_at != previous.subagent_parent_created_at ||
-	    candidate.agent_run_id != previous.agent_run_id || candidate.goal_owner_chat_id != previous.goal_owner_chat_id ||
+	    candidate.agent_run_id != previous.agent_run_id || candidate.managed_root_chat_id != previous.managed_root_chat_id ||
+	    candidate.managed_root_created_at != previous.managed_root_created_at || candidate.goal_owner_chat_id != previous.goal_owner_chat_id ||
 	    !candidate.managed_followup_incarnation.empty() || candidate.managed_followup_input_unavailable ||
 	    !candidate.temporary_storage_owner_token.empty() || candidate.temporary_parent_chat_id != previous.temporary_parent_chat_id ||
 	    candidate.remote_process_control_token != previous.remote_process_control_token ||

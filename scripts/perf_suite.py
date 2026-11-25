@@ -61,6 +61,9 @@ NATIVE = [
      ['fingerprint_5000_ms', 'push_5000_unchanged_ms']),
     ('PerformanceStreamingStatePushTick', r'per-rebuild p50=([\d.]+) ms; UI-thread push cost=([\d.]+) ms/s',
      ['streaming_push_rebuild_ms', 'streaming_push_ms_per_s']),
+    ('PerformanceRefreshFullStateFingerprint', r'refresh full state 2000 chats: refresh p50=([\d.]+) ms p95=([\d.]+) ms; initial load p50=([\d.]+) ms p95=([\d.]+) ms',
+     ['refresh_2000_p50_ms', 'refresh_2000_p95_ms', 'initial_load_state_2000_p50_ms', 'initial_load_state_2000_p95_ms']),
+    ('PerformanceRefreshFullStateFingerprint', r'refresh full state 2000 chats: reply=(\d+) bytes', ['refresh_2000_reply_bytes']),
     ('PerformanceMemoryPollOnLargeInstall', r'memory poll, 2000 chats, \d+ queued: p50=([\d.]+) ms', ['memory_poll_2000_ms']),
     ('PerformanceColdHistoryPage10000Messages', r'cold initial history page, 10000 messages: ([\d.]+) ms', ['cold_history_10000_ms']),
     ('PerformanceColdLocalSummaryCatalogue', r'cold 1000-chat summary catalogue with cache regeneration: ([\d.]+) ms', ['cold_catalogue_1000_ms']),
@@ -116,7 +119,8 @@ def git_revision():
 # ---------------------------------------------------------------------------- fixture
 
 def write_fixture(root, chats=2000, long_messages=2000):
-    """Synthetic data root in the on-disk chat format the cold-catalogue test writes; no private content."""
+    """Synthetic data root in the on-disk chat format the cold-catalogue test writes; no private content.
+    WritePerformanceSuiteFixture in tests/interaction_performance_tests.cpp writes the same shape; keep the two in step."""
     root = Path(root)
     (root / 'chats').mkdir(parents=True, exist_ok=True)
     providers = ['claude-cli', 'codex-cli', 'gemini-cli', 'opencode-cli', 'copilot-cli', 'antigravity-cli']

@@ -16,6 +16,7 @@ import {
 import { isSshHost } from '../utils/remoteWorkspace'
 import { SSH_ENABLED } from '../config/buildFeatures'
 import { providerDisabledOn } from '../utils/providerMetadata'
+import { reportAppNotice } from '../utils/appFailure'
 
 function updateCheckErrorIdentity(message: string): string {
   // ponytail: 64-bit FNV-1a keeps settings bounded; collisions are negligible for UI dismissal state.
@@ -127,7 +128,10 @@ export function useUpdateMonitor() {
     setRemoteHelperUpdatingId(hostId)
     try {
       const response = await sendToCEF({ action: 'installRemoteHost', payload: host })
-      if (response.ok) {
+      // A success with a warning leaves the helper's state to the native push instead of claiming it is ready.
+      const warning = response.ok ? response.warning?.replace(/\s+/g, ' ').trim() : ''
+      if (warning) reportAppNotice(warning, 'warning')
+      else if (response.ok) {
         // Native completion can race the pushed state patch; reconcile the card immediately.
         useAppStore.setState((state) => ({
           executionHosts: state.executionHosts.map((candidate) => candidate.id === hostId

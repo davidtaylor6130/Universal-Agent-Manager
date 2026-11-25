@@ -169,9 +169,10 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   editorFileAssociations: EditorFileAssociation[]
   centralProviderConfiguration: CentralProviderConfiguration
   mcpServers: McpServerConfiguration[]
-  executionRouting: ExecutionRoutingSettings
-  setExecutionRoutingSettings: (settings: ExecutionRoutingSettings) => Promise<void>
-  releaseExecutionRoutingReservation: (expected: RoutingReservation) => Promise<void>
+  // Routing state and actions exist only in builds with SSH, so readers must check SSH_ENABLED or presence.
+  executionRouting?: ExecutionRoutingSettings
+  setExecutionRoutingSettings?: (settings: ExecutionRoutingSettings) => Promise<void>
+  releaseExecutionRoutingReservation?: (expected: RoutingReservation) => Promise<void>
   executionHosts: ExecutionHost[]
   favoriteUamAgentIds: string[]
   /** Native sessions whose title starts with one of these (ignoring case) are never offered for import. */
@@ -336,7 +337,8 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   previewChatTurnRollback: (id: string, messageIndex: number) => Promise<GitTurnCheckpointResult | null>
   rollbackChatTurn: (id: string, messageIndex: number) => Promise<GitTurnCheckpointResult | null>
   getChatFileChangeReceipts: (id: string) => Promise<ChatFileChangeReceiptsResponse>
-  getVcsCommitStatus: (id: string, vcsType?: VcsType, options?: { includeLineStats?: boolean; contextOnly?: boolean; requestId?: string; comparisonRef?: string }) => Promise<VcsCommitStatus | null>
+  /** With `reportFailure`, a failed or malformed bridge reply comes back as a status whose `error` is set instead of null. */
+  getVcsCommitStatus: (id: string, vcsType?: VcsType, options?: { includeLineStats?: boolean; contextOnly?: boolean; requestId?: string; comparisonRef?: string; reportFailure?: boolean }) => Promise<VcsCommitStatus | null>
   getWorkspaceFilePreview: (id: string, path: string) => Promise<WorkspaceFilePreview>
   getVcsFileDiff: (id: string, path: string, vcsType: VcsType, comparisonRef?: string) => Promise<string>
   commitVcsChanges: (id: string, vcsType: VcsType, message: string, files: string[]) => Promise<VcsCommitResult>

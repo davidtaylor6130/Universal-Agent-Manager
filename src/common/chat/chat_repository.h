@@ -218,6 +218,12 @@ struct ChatStorageDeleteResult
 class ChatRepository
 {
   public:
+	/// User-facing load failure for a saved chat file above the chat read limit; the size detail goes to the diagnostic log.
+	static constexpr std::string_view kChatTooLargeToOpenMessage = "This chat is too large to open.";
+	/// Largest saved chat file any full read accepts (the same ceiling saves enforce).
+	static std::size_t MaxChatReadBytes();
+	/// Test seam: lowers the chat read limit for the whole process; zero restores the default.
+	static void SetMaxChatReadBytesForTests(std::size_t max_bytes);
 	/// Conditional durable full-primary storage only; does not admit execution or mint identities.
 	static std::shared_ptr<PreparedChatPublication> PrepareChatPublication(
 	    const std::filesystem::path& data_root, const ChatSession& candidate,
@@ -317,7 +323,7 @@ class ChatRepository
 	static std::optional<ChatSession> LoadLocalChatPrimaryReadOnly(const std::filesystem::path&, std::string_view, bool include_messages = false);
 	/// <summary>Reads one primary transcript within a strict byte limit without repairs or cache writes.</summary>
 	static std::optional<ChatSession> LoadLocalChatBounded(const std::filesystem::path& data_root,
-	    std::string_view chat_id, std::size_t max_bytes);
+	    std::string_view chat_id, std::size_t max_bytes, std::string* too_large_out = nullptr);
 	/// <summary>Seeks a bounded page of complete messages, repairing missing derived offsets on a worker.</summary>
 	static std::optional<ChatMessagePage> ReadMessagePage(const std::filesystem::path& data_root,
 	    const ChatSession& expected, std::size_t limit, std::optional<std::size_t> before = {},
