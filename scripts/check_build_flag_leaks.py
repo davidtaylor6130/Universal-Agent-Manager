@@ -62,6 +62,12 @@ PRINTABLE_UTF32 = re.compile(rb'(?:[\x20-\x7e]\x00\x00\x00){4,}')
 MSVC_ANONYMOUS_NAMESPACE = re.compile(r'\?A0x[0-9a-f]{1,8}')
 
 
+# Vite names emitted files <name>-<8-character content hash>.<ext>; the hash is random base64url, so it can spell a
+# provider short name (delete-CGP1-aGy.js matched \bagy\b). UI text reads every such hash as <hash> before matching.
+# ponytail: an unhashed public file whose name ends in a dash and 8 characters is read the same way.
+VITE_CONTENT_HASH = re.compile(r'(?<=-)[A-Za-z0-9_-]{8}(?=\.(?:js|mjs|css|json|map|wasm|woff2?|ttf|svg|png|jpe?g|gif|webp|ico)\b)')
+
+
 def stable_text(text):
     return MSVC_ANONYMOUS_NAMESPACE.sub('?A0x<hash>', text)
 
@@ -154,6 +160,8 @@ def find_leaks(disabled, artifacts, local_folders=(), foreign_folders=()):
             continue
         if local is not None:
             text = local.sub('<local>', text)
+        if scope == 'ui':
+            text = VITE_CONTENT_HASH.sub('<hash>', text)
         for name, pattern in patterns.items():
             for match in pattern.finditer(text):
                 start = max(0, match.start() - 60)

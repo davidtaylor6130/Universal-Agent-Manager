@@ -55,6 +55,22 @@ class BuildFlagLeakGateTests(unittest.TestCase):
             code, output = run('--dist', dist, '--disabled', 'CODEX', '--allowlist', allow)
             self.assertEqual(code, 1, 'Entries without a reason are rejected')
 
+    def test_vite_content_hashes_never_spell_a_disabled_name(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            dist = root / 'dist'
+            (dist / 'assets').mkdir(parents=True)
+            (dist / 'assets/delete-CGP1-aGy.js').write_text('export default 1')
+            (dist / 'assets/LucideIcons-40Az2_ZP.js').write_text('delete:()=>import("./delete-CGP1-aGy.js")')
+            empty = root / 'empty.json'
+            empty.write_text('{"entries": []}')
+            code, output = run('--dist', dist, '--disabled', 'ANTIGRAVITY', '--allowlist', empty)
+            self.assertEqual(code, 0, output)
+            (dist / 'assets/agy-CGP1abcd.js').write_text('export default 1')
+            code, output = run('--dist', dist, '--disabled', 'ANTIGRAVITY', '--allowlist', empty)
+            self.assertEqual(code, 1, 'A provider name before the hash is still a leak')
+            self.assertIn('assets/agy-CGP1abcd.js', output)
+
     def test_build_folder_flags_come_from_the_cache_and_packaging_is_checked(self):
         with tempfile.TemporaryDirectory() as temporary:
             build = Path(temporary) / 'Builds' / 'off'
