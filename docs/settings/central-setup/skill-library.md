@@ -2,4 +2,6 @@
 
 The library lets users search and group installed skills, pin favourites, inspect content/supporting-file identity, reveal files, edit/create entries and attach a selected skill to the intended request. Imports can come from a provider, file or folder and require a review of valid candidates with explicit Skip existing, Replace existing or Keep separate collision handling. Invalid/unsupported candidates cannot silently replace existing resources. Keep title, maker, group, summary and body drafts until save or deliberate discard: leaving the Skills page, closing Settings or closing the standalone Skills window with an unsaved draft asks first, offering Keep editing, Discard or Save & close, and a failed save stays on the draft. Markdown preview is presentation rather than execution. Confirm destructive removal/overwrite and preserve supporting resources and unrelated files.
 
+A subfolder of the library that UAM cannot open is skipped rather than emptying the whole library, and the remaining skills still list. A library folder that cannot be opened or entered itself still fails. The library view does not yet say that folders were skipped ([known gap](../../documentation-review.md#known-gaps-retained)).
+
 [Skill definition](skills.md) · [Delivery](../../providers/skills.md) · [Composer attachments](../../chat/composer/attachments.md).

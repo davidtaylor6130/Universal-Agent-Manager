@@ -5464,6 +5464,24 @@ UAM_TEST(RemoteAcpRetryIgnoresLocalCliCompatibility)
 	}
 }
 
+UAM_TEST(ProviderVersionFloorsStayWithinTheirInstallFallbacks)
+{
+	// A floor above the CLI policy's install fallback would make a fallback install fail its own gate. Tests reach
+	// providers only through the public runtime interface, so the Copilot floor is restated here.
+#if UAM_ENABLE_RUNTIME_COPILOT_CLI
+	const ProviderCliPolicy* copilot = ProviderRuntimeRegistry::ResolveById(uam::provider_ids::kCopilotCli).CliVersionPolicy();
+	UAM_ASSERT(copilot != nullptr && copilot->fallback_version != nullptr);
+	// uam::copilot::managed_read::kStableCliMinimumVersion
+	UAM_ASSERT(CliProviderVersionAtLeast(copilot->fallback_version, "1.0.98"));
+#endif
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI
+	// The OpenCode policy's minimum_version is uam::opencode::kAcpPermissionMediationMinimumVersion.
+	const ProviderCliPolicy* opencode = ProviderRuntimeRegistry::ResolveById(uam::provider_ids::kOpenCodeCli).CliVersionPolicy();
+	UAM_ASSERT(opencode != nullptr && opencode->fallback_version != nullptr && opencode->minimum_version != nullptr);
+	UAM_ASSERT(CliProviderVersionAtLeast(opencode->fallback_version, opencode->minimum_version));
+#endif
+}
+
 UAM_TEST(ProviderAcpRetriesPendingCompatibilityAndPreservesUndeliveredPrompt)
 {
 	for (const std::string provider_id : {uam::provider_ids::kCopilotCli, uam::provider_ids::kOpenCodeCli})

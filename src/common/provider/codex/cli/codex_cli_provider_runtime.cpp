@@ -378,7 +378,7 @@ bool CodexCliProviderRuntime::StageInteractiveAgentInstructions(const ExecutionH
 	constexpr bool controller_windows = false;
 #endif
 	const bool windows = controller_windows || host.platform == "windows" || host.platform == "Windows";
-	const std::string argument = "developer_instructions=" + nlohmann::json(std::string(uam::provider_setup::kAgentInstructionsIntro) + "\n\n" + std::string(instructions)).dump();
+	const std::string argument = "developer_instructions=" + uam::provider_setup::TomlString(std::string(uam::provider_setup::kAgentInstructionsIntro) + "\n\n" + std::string(instructions));
 	if (argument.size() > (windows ? 12U : 64U) * 1024U)
 	{
 		error = "This agent's instructions are too long for Codex CLI View's launch arguments. Use Chat for this agent.";

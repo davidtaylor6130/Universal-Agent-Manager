@@ -9,6 +9,7 @@
 #include "common/config/provider_availability.h"
 #include "common/config/settings_frontend_json.h"
 #include "common/config/settings_normalization.h"
+#include "common/provider/codex/codex_options.h"
 #include <atomic>
 #include <thread>
 #include <utility>
@@ -583,11 +584,7 @@ namespace
 		task.control_root_chat_id = root->id;
 		task.control_root_incarnation = root->metadata_incarnation;
 		task.control_capability_expiry_epoch_ms = control->expires_at_epoch_ms;
-		const int timeout = app.settings.acp_setup_inactivity_timeout_seconds <= 0
-		    ? settings::kDefaultAcpSetupInactivityTimeoutSeconds
-		    : std::clamp(app.settings.acp_setup_inactivity_timeout_seconds,
-		        settings::kMinAcpSetupInactivityTimeoutSeconds, settings::kMaxAcpSetupInactivityTimeoutSeconds);
-		task.control_retention_deadline_s = GetAppTimeSeconds() + timeout;
+		task.control_retention_deadline_s = GetAppTimeSeconds() + settings::NormalizedAcpSetupInactivityTimeoutSeconds(app.settings.acp_setup_inactivity_timeout_seconds);
 	}
 
 	// Creates the provider process on the launch worker. The session keeps this task as its pending
@@ -1266,10 +1263,15 @@ namespace
 		{
 			ChatSession* chat = ChatDomainService().FindChatById(app, session.chat_id);
 			if (chat == nullptr || !UamControlService::EnabledForChat(app.settings, *chat)) return true;
-			// The installed 0.159.2 schema verifies per-thread config on start and resume.
-			if (!CliProviderVersionAtLeast(session.agent_version, "0.159.2"))
+			// Shared code also built without Codex: the reviewed build-flag residue holds this exact message, so it stays
+			// one literal; local constants add no symbol and tie it and the check to codex::kUamControlMinimumVersion.
+			constexpr std::string_view kCodexFloor = "0.159.2";
+			constexpr std::string_view kCodexRefusal = "UAM Control needs Codex 0.159.2 or newer. Update Codex, or turn off UAM Control for this chat.";
+			static_assert(kCodexFloor == codex::kUamControlMinimumVersion && kCodexRefusal.find(kCodexFloor) != std::string_view::npos,
+			    "Update the UAM Control floor and its message together.");
+			if (!CliProviderVersionAtLeast(session.agent_version, kCodexFloor))
 			{
-				session.last_error = "UAM Control needs Codex 0.159.2 or newer. Update Codex, or turn off UAM Control for this chat.";
+				session.last_error = kCodexRefusal;
 				return false;
 			}
 			nlohmann::json control_request = {{"params", {{"mcpServers", nlohmann::json::array()}}}};
@@ -2562,22 +2564,8 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 		task->host = *execution_host;
 		task->ownership = LocalLaunchOwnership(app, session, chat);
 		if (!app.claude_quota_dispatch_id.empty()) task->cold_quota = chat.claude_quota_continuation;
-		const auto control = std::ranges::find(app.uam_control_capabilities, session.uam_control_capability_id, &UamControlCapability::id);
-		if (control != app.uam_control_capabilities.end())
-			if (const ChatSession* root = ChatDomainService().FindChatById(app, control->chat_id))
-			{
-				task->control_session = &session;
-				task->control_capability_id = control->id;
-				task->control_manager_id = app.uam_control_manager_id;
-				task->control_root_chat_id = root->id;
-				task->control_root_incarnation = root->metadata_incarnation;
-				task->control_capability_expiry_epoch_ms = control->expires_at_epoch_ms;
-				const int timeout = app.settings.acp_setup_inactivity_timeout_seconds <= 0
-				    ? settings::kDefaultAcpSetupInactivityTimeoutSeconds
-				    : std::clamp(app.settings.acp_setup_inactivity_timeout_seconds,
-				        settings::kMinAcpSetupInactivityTimeoutSeconds, settings::kMaxAcpSetupInactivityTimeoutSeconds);
-				task->control_retention_deadline_s = GetAppTimeSeconds() + timeout;
-			}
+		task->control_session = &session;
+		CaptureLaunchControlReservation(app, session, *task);
 		const bool central_native = session.active_uam_agent_execution_capability == "uam-central-native-setup";
 		const std::string central_instructions = session.active_uam_agent_instructions;
 		session.pending_local_launch = task;
