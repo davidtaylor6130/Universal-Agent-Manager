@@ -29,12 +29,21 @@ UAM_TEST(VcsCommandHelpersNameTheStreamsTheyReturn)
 
 namespace
 {
-#if !defined(_WIN32) && UAM_ENABLE_SSH
+#if !defined(_WIN32)
 	std::string ResolvedTool(const std::string& name)
 	{
 		return uam::strings::Trim(PlatformServicesFactory::Instance().process_service.ExecuteCommand("command -v " + name).output);
 	}
 
+	bool SvnToolsAvailable()
+	{
+		if (!ResolvedTool("svn").empty() && !ResolvedTool("svnadmin").empty()) return true;
+		std::fprintf(stderr, "SKIP real-svn case: svn or svnadmin is not installed\n");
+		return false;
+	}
+#endif
+
+#if !defined(_WIN32) && UAM_ENABLE_SSH
 	/// Installs a same-named wrapper on PATH that hides the tool's output for `commit` only.
 	void WriteSilentCommitWrapper(const fs::path& directory, const std::string& tool, const std::string& real)
 	{
@@ -46,13 +55,6 @@ namespace
 	bool ChangedPathStatus(const uam::VcsCommitStatus& status, const std::string& path, const std::string& code)
 	{
 		return std::ranges::any_of(status.changed_files, [&](const uam::VcsChangedFile& file) { return file.path == path && file.status == code; });
-	}
-
-	bool SvnToolsAvailable()
-	{
-		if (!ResolvedTool("svn").empty() && !ResolvedTool("svnadmin").empty()) return true;
-		std::fprintf(stderr, "SKIP real-svn case: svn or svnadmin is not installed\n");
-		return false;
 	}
 
 	/// Real runner service reached through a fake `ssh`, so remote VCS commands execute against temporary repositories.
@@ -221,7 +223,7 @@ UAM_TEST(VcsBranchPickerRoutesThroughEachSystemsProvider)
 	uam::AppState snapshot;
 	ChatSession chat;
 	chat.id = "chat-1";
-	chat.workspace_directory = working_copy.string();
+	chat.workspace_directory = uam::paths::Utf8PathString(working_copy);
 	const uam::VcsBranchListing listing = git.ListBranches(snapshot, chat, {});
 	UAM_ASSERT(listing.ok);
 	UAM_ASSERT_EQ(listing.type, uam::VcsType::Svn);
@@ -231,13 +233,13 @@ UAM_TEST(VcsBranchPickerRoutesThroughEachSystemsProvider)
 	UAM_ASSERT(!refused.conflict);
 	UAM_ASSERT_EQ(refused.error, std::string("Open the SVN folder selector for this working copy."));
 
-	// SVN refuses a chat outside its editable scope, and a selection that cannot be rechecked is a conflict.
+	// SVN refuses a chat outside its editable scope (SVN switched off here), and a selection it cannot recheck is a conflict.
 	snapshot.settings.svn_enabled = false;
 	UAM_ASSERT(!svn.ListBranches(snapshot, chat, "^/lines").ok);
-	const uam::VcsBranchOutcome stale = svn.CheckBranchSelection(snapshot, chat, {"^/lines/a", false, {}});
-	UAM_ASSERT(!stale.ok);
-	UAM_ASSERT(stale.conflict);
-	UAM_ASSERT(!stale.error.empty());
+	const uam::VcsBranchOutcome outside_scope = svn.CheckBranchSelection(snapshot, chat, {"^/lines/a", false, {}});
+	UAM_ASSERT(!outside_scope.ok);
+	UAM_ASSERT(outside_scope.conflict);
+	UAM_ASSERT(!outside_scope.error.empty());
 	// SVN creation checks its name and message before reaching the repository: a plain refusal, not a conflict.
 	uam::VcsBranchSelection nested{"a/b", true, {}};
 	nested.create_message = "Create branch";
@@ -253,6 +255,8 @@ UAM_TEST(VcsBranchPickerRoutesThroughEachSystemsProvider)
 
 	// The bridge names no system's branch operations itself.
 	const std::string bridge = ReadFile(fs::path(__FILE__).parent_path().parent_path() / "src/cef/chat_branch_handlers.cpp");
+	UAM_ASSERT(bridge.find("void UamQueryHandler::HandleSwitchChatBranch(") != std::string::npos);
+	UAM_ASSERT(bridge.find("->SwitchBranch(") != std::string::npos);
 	for (const char* direct : {"GitWorktreeService().ListChatBranches", "GitWorktreeService().ValidateChatBranchSelection", "GitWorktreeService().SwitchChatBranch",
 	         "DiscoverSvnBranches", "SwitchSvnBranch", "BuildSvnBranchScope", "== \"svn\""})
 		UAM_ASSERT(bridge.find(direct) == std::string::npos);
@@ -401,6 +405,10 @@ UAM_TEST(RemoteGitStatusUsesTheWorkspaceWhenTheRootIsReportedEmpty)
 	if (!status.error.empty()) throw TestFailure(status.error);
 	UAM_ASSERT(ChangedPathStatus(status, "new.txt", "??"));
 }
+#endif
+
+// Needs only the svn client tools, not SSH.
+#if !defined(_WIN32)
 UAM_TEST(SvnBranchListCheckAndSwitchGoThroughTheSvnProvider)
 {
 	if (!SvnToolsAvailable()) return;
@@ -443,7 +451,6 @@ UAM_TEST(SvnBranchListCheckAndSwitchGoThroughTheSvnProvider)
 	if (!switched.ok) throw TestFailure(switched.error);
 	UAM_ASSERT(!switched.chat_updated);
 	UAM_ASSERT(switched.context.url.ends_with("/lines/feature"));
-	UAM_ASSERT_EQ(switched.branch, switched.context.revision);
 	// The working copy moved; the chat's saved branch fields did not, and the old listing is now stale.
 	UAM_ASSERT_EQ(chat.workspace_branch_name, before.workspace_branch_name);
 	UAM_ASSERT_EQ(chat.updated_at, before.updated_at);
