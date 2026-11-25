@@ -778,6 +778,61 @@ UAM_TEST(EditingImportedOpenCodeAgentPreservesPolicyAndRejectsWidening)
 	UAM_ASSERT_EQ(uam::io::ReadTextFile(target), previous);
 }
 
+UAM_TEST(OpenCodeAgentAdapterLimitsNativeSkillsToTheAgentAllowlist)
+{
+	TempDir temp("uam-opencode-skill-adapter");
+	std::string error;
+	const std::string snapshot = "---\nversion: 1\nname: reviewer\ndescription: Review\nmode: primary\nworkspaceAccess: write\nskills: [alpha, beta-2]\ndelegates: []\n---\nReview code.\n";
+	uam::ProviderAgentRuntimeAdapter adapter;
+	UAM_ASSERT(uam::AgentDefinitionService::PrepareRuntimeAdapter(temp.root, "chat", "opencode", "reviewer", "Review code.", &adapter, &error, &snapshot));
+	const nlohmann::json config = nlohmann::json::parse(uam::io::ReadTextFile(adapter.directory / "opencode.json"));
+	// Native skills outside the allowlist are denied; approved names keep the agent's ordinary ask.
+	UAM_ASSERT_EQ(config["permission"]["skill"], nlohmann::json({{"*", "deny"}, {"alpha", "ask"}, {"beta-2", "ask"}}));
+	UAM_ASSERT_EQ(config["permission"].value("*", ""), std::string("ask"));
+	const std::string agent = uam::io::ReadTextFile(adapter.directory / "agent" / (config.at("default_agent").get<std::string>() + ".md"));
+	UAM_ASSERT(agent.find("  skill:\n    \"*\": deny\n    \"alpha\": ask\n    \"beta-2\": ask\n---\n") != std::string::npos);
+
+	// Without a decodable snapshot no name is approved, so every native skill is denied.
+	UAM_ASSERT(uam::AgentDefinitionService::PrepareRuntimeAdapter(temp.root, "chat-unbound", "opencode", "reviewer", "Review code.", &adapter, &error));
+	const nlohmann::json unbound = nlohmann::json::parse(uam::io::ReadTextFile(adapter.directory / "opencode.json"));
+	UAM_ASSERT_EQ(unbound["permission"]["skill"], nlohmann::json({{"*", "deny"}}));
+
+	// Built-in Build keeps OpenCode's native skills; its central skills are not an allowlist.
+	UAM_ASSERT(uam::AgentDefinitionService::PrepareRuntimeAdapter(temp.root, "chat-build", "opencode", "build", "Implement the requested change and verify it.", &adapter, &error));
+	const nlohmann::json build = nlohmann::json::parse(uam::io::ReadTextFile(adapter.directory / "opencode.json"));
+	UAM_ASSERT(!build["permission"].contains("skill"));
+	UAM_ASSERT(uam::io::ReadTextFile(adapter.directory / "agent" / (build.at("default_agent").get<std::string>() + ".md")).find("skill") == std::string::npos);
+}
+
+UAM_TEST(OpenCodeNativeSkillRuleNeverWidensAnImportedPolicy)
+{
+	const std::string snapshot = "---\nversion: 1\nname: reviewer\ndescription: Review\nmode: primary\nworkspaceAccess: read\nskills: [alpha]\ndelegates: []\n---\nReview code.\n";
+	// Approved names ask even when the agent allows everything; a rule that denies skills or everything keeps them denied.
+	const auto approved = [&](const std::string& permission)
+	{ return nlohmann::json::parse(uam::AgentDefinitionService::OpenCodeNativeSkillRule("reviewer", &snapshot, permission)); };
+	UAM_ASSERT_EQ(approved(R"({"*":"allow"})"), nlohmann::json({{"*", "deny"}, {"alpha", "ask"}}));
+	UAM_ASSERT_EQ(approved(R"({"edit":"deny","bash":"deny"})")["alpha"], nlohmann::json("ask"));
+	UAM_ASSERT_EQ(approved(R"({"skill":"deny"})")["alpha"], nlohmann::json("deny"));
+	UAM_ASSERT_EQ(approved(R"({"*":"deny"})")["alpha"], nlohmann::json("deny"));
+	UAM_ASSERT_EQ(approved(R"({"skill":{"alpha":"allow"}})")["alpha"], nlohmann::json("deny"));
+	UAM_ASSERT_EQ(approved("not json")["alpha"], nlohmann::json("deny"));
+	UAM_ASSERT(uam::AgentDefinitionService::OpenCodeNativeSkillRule("build", &snapshot, "").empty());
+	UAM_ASSERT(uam::AgentDefinitionService::OpenCodeNativeSkillRule("plan", nullptr, "").empty());
+
+	// The imported-policy adapter writes the same rule into its permission object and agent file.
+	TempDir temp("uam-opencode-skill-imported");
+	std::string bound = BoundAgentMarkdown(R"({"edit":"deny","bash":"deny"})");
+	bound.replace(bound.find("skills: []"), 10, "skills: [alpha]");
+	uam::ProviderAgentRuntimeAdapter adapter;
+	std::string error;
+	UAM_ASSERT(uam::AgentDefinitionService::PrepareRuntimeAdapter(temp.root, "chat", "opencode", "reviewer", "Captured instructions.", &adapter, &error, &bound));
+	const nlohmann::ordered_json config = nlohmann::ordered_json::parse(uam::io::ReadTextFile(adapter.directory / "opencode.json"));
+	UAM_ASSERT_EQ(config.at("permission").at("skill"), nlohmann::ordered_json({{"*", "deny"}, {"alpha", "ask"}}));
+	UAM_ASSERT_EQ(config.at("permission").at("bash").get<std::string>(), std::string("deny"));
+	const std::string agent = uam::io::ReadTextFile(adapter.directory / "agent" / (config.at("default_agent").get<std::string>() + ".md"));
+	UAM_ASSERT(agent.find("permission: " + config.at("permission").dump()) != std::string::npos);
+}
+
 UAM_TEST(OpenCodeImportedPolicyAdapterUsesCapturedRulesWithoutBroaderWildcardOverrides)
 {
 	TempDir temp("uam-opencode-policy-adapter");

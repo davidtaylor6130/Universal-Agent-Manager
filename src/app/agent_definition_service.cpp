@@ -892,6 +892,30 @@ namespace uam
 		return true;
 	}
 
+	bool AgentDefinitionService::IsCustomAgentId(std::string_view agent_id)
+	{
+		return !agent_id.empty() && agent_id != "build" && agent_id != "plan";
+	}
+
+	std::string AgentDefinitionService::OpenCodeNativeSkillRule(const std::string& agent_id, const std::string* definition_snapshot,
+	                                                           const std::string& permission_json)
+	{
+		if (!IsCustomAgentId(agent_id)) return {};
+		std::vector<std::string> approved;
+		AgentDefinition definition;
+		if (definition_snapshot != nullptr && DecodeCapturedPrimary(agent_id, *definition_snapshot, definition) && !definition.built_in)
+			approved = definition.skills;
+		// Approved names ask, as every other tool does; an agent rule that could refuse skills or everything keeps them denied.
+		const nlohmann::json permission = permission_json.empty()
+		    ? nlohmann::json::object() : nlohmann::json::parse(permission_json, nullptr, false);
+		std::string approved_decision = permission.is_object() ? "ask" : "deny";
+		for (const char* key : {"skill", "*"})
+			if (permission.is_object() && permission.contains(key) && permission[key] != "ask" && permission[key] != "allow") approved_decision = "deny";
+		nlohmann::ordered_json rule{{"*", "deny"}};
+		for (const std::string& name : approved) rule[name] = approved_decision;
+		return rule.dump();
+	}
+
 	bool AgentDefinitionService::PrepareRuntimeAdapter(const std::filesystem::path& data_root,
 	                                                   const std::string& chat_id,
 	                                                   const std::string& provider_id,
@@ -947,6 +971,16 @@ namespace uam
 				permission["uam-computer_computer_observe"] = "deny";
 				permission["uam-computer_computer_action"] = "deny";
 			}
+			// A custom agent's skill allowlist also covers OpenCode's own skill tool, which "*": ask would otherwise offer.
+			const std::string skill_rule = OpenCodeNativeSkillRule(agent_id, definition_snapshot, captured_permission);
+			std::string skill_yaml;
+			if (!skill_rule.empty())
+			{
+				permission["skill"] = nlohmann::ordered_json::parse(skill_rule);
+				skill_yaml = "  skill:\n";
+				for (const auto& [name, decision] : permission["skill"].items())
+					skill_yaml += "    " + nlohmann::json(name).dump() + ": " + decision.get<std::string>() + "\n";
+			}
 			const nlohmann::ordered_json config{{"$schema", "https://opencode.ai/config.json"},
 			                                    {"default_agent", native_id}, {"subagent_depth", 0},
 			                                    {"experimental", {{"mcp_timeout", 120000}}}, {"permission", permission}};
@@ -955,7 +989,7 @@ namespace uam
 			    !uam::io::WriteCacheFile(adapter.directory / "opencode.json", config_text + "\n") ||
 			    !uam::io::WriteCacheFile(agents / (native_id + ".md"),
 			                            (captured_permission.empty()
-			                                ? "---\ndescription: UAM-managed agent\nmode: primary\npermission:\n  \"*\": ask\n  task: deny\n  uam-computer_computer_observe: allow\n  uam-computer_computer_action: allow\n---\n"
+			                                ? "---\ndescription: UAM-managed agent\nmode: primary\npermission:\n  \"*\": ask\n  task: deny\n  uam-computer_computer_observe: allow\n  uam-computer_computer_action: allow\n" + skill_yaml + "---\n"
 			                                : "---\ndescription: UAM-managed agent\nmode: primary\npermission: " + permission.dump() + "\n---\n") + instructions + "\n"))
 			{
 				if (error_out != nullptr) *error_out = "Could not write the isolated OpenCode agent configuration.";

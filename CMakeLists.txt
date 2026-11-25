@@ -1826,6 +1826,7 @@ if(UAM_BUILD_TESTS)
     tests/native_chat_identity_tests.cpp
     tests/chat_file_change_receipt_tests.cpp
     tests/organization_tests.cpp
+    tests/store_load_fence_tests.cpp
     tests/transcript_retention_tests.cpp
     tests/chat_search_tests.cpp
     tests/interaction_performance_tests.cpp
