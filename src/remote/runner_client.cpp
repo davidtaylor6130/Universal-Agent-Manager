@@ -6,6 +6,7 @@
 #include "common/config/build_features.h"
 #include "remote/memory_protocol.h"
 #include "remote/runner_client.h"
+#include "remote/host_load_protocol.h"
 #include "remote/native_history_snapshot.h"
 
 #include "common/config/execution_host_config.h"
@@ -422,6 +423,10 @@ namespace uam::remote
 		m_openCodeTerminalObservation = response["capabilities"].value("openCodeTerminalObservation", false);
 		m_usageAccounting = response["capabilities"].value("usageAccounting", false);
 		m_usageAccountingStream = response["capabilities"].value("usageAccountingStream", false);
+		// A version, not a flag: zero or absent means the helper cannot report its load.
+		const auto host_load = response["capabilities"].find("hostLoad");
+		m_hostLoadVersion = host_load != response["capabilities"].end() && host_load->is_number_integer() && host_load->get<std::int64_t>() > 0 && host_load->get<std::int64_t>() < 1024
+		    ? static_cast<int>(host_load->get<std::int64_t>()) : 0;
 		m_projectMemory = response["capabilities"].value("projectMemory", false);
 		m_isolatedTextWorkers = response["capabilities"].value("isolatedTextWorkers", false);
 		m_secretDrop = response["capabilities"].value("secretDrop", false);
@@ -1668,6 +1673,27 @@ namespace uam::remote
 		return true;
 	}
 
+	bool RunnerClient::ReadHostLoad(uam::platform::HostLoad& load, bool* unsupported_out, std::string* error_out, std::stop_token stop_token)
+	{
+		load = {};
+		if (unsupported_out != nullptr) *unsupported_out = false;
+		if (!m_connected && !Connect(error_out, stop_token)) return false;
+		if (m_hostLoadVersion < 1)
+		{
+			if (unsupported_out != nullptr) *unsupported_out = true;
+			if (error_out != nullptr) *error_out = "Update this host's UAM runner to report its load.";
+			return false;
+		}
+		nlohmann::json response;
+		if (!Request({{"type", "host.load"}}, response, error_out, [stop_token]() { return stop_token.stop_requested(); })) return false;
+		if (!HostLoadFromJson(response.value("result", nlohmann::json{}), load))
+		{
+			if (error_out != nullptr) *error_out = "The runner returned an invalid host load.";
+			return false;
+		}
+		return true;
+	}
+
 	bool RunnerClient::ReadUsageAccounting(nlohmann::json& snapshot,
 	    std::string* error_out, std::stop_token stop_token)
 	{
@@ -2103,6 +2129,7 @@ namespace uam::remote
 		m_openCodeNativeControl = false;
 		m_openCodeTerminalObservation = false;
 		m_usageAccounting = false; m_usageAccountingStream = false;
+		m_hostLoadVersion = 0;
 		m_projectMemory = false;
 		m_isolatedTextWorkers = false;
 		m_secretDrop = false;

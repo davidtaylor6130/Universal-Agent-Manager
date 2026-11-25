@@ -52,6 +52,8 @@ namespace uam
 		if (app.data_root.empty() || !app.settings.git_enabled || !app.settings.worktree_cleanup_enabled ||
 		    app.settings.worktree_retention_days < 1 || app.settings.worktree_retention_days > 3650 || !app.worktree_operation_chat_ids.empty() ||
 		    (app.startup_native_import_service && app.startup_native_import_service->ImportPending())) return false;
+		// An unrecovered workspace or collection load leaves the protected set incomplete; never prune from it.
+		if (app.folders_load.Unrecovered() || app.resource_collections_load.Unrecovered()) return false;
 		snapshot.data_root = app.data_root;
 		snapshot.retention_days = app.settings.worktree_retention_days;
 		std::unordered_set<std::string> chat_ids;

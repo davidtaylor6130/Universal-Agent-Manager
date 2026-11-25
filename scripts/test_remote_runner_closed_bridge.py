@@ -64,8 +64,11 @@ def check_started_processes_hold_only_standard_streams(service, runner, path, wo
             while os.readlink(f"/proc/{child}/exe") == str(runner):  # Not yet replaced by the started program.
                 assert time.monotonic() < deadline, "A started process never ran its program."
                 time.sleep(0.01)
-            held = sorted(int(name) for name in os.listdir(f"/proc/{child}/fd"))
-            assert held == [0, 1, 2], f"A started process inherited runner descriptors: {held}."
+            # Right after exec the dynamic loader briefly holds library files open (fd 3 upward); an inherited
+            # descriptor never closes, so wait for the program to settle and fail only if one stays.
+            while (held := sorted(int(name) for name in os.listdir(f"/proc/{child}/fd"))) != [0, 1, 2]:
+                assert time.monotonic() < deadline, f"A started process inherited runner descriptors: {held}."
+                time.sleep(0.01)
         for session in ("holder", "later"):
             request("process.stop", session)
             request("process.remove", session)

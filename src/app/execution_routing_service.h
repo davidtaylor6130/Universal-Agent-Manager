@@ -69,11 +69,26 @@ namespace uam
 	enum class ExecutionRoutingStatus { Disabled, Assigned, Waiting, Invalid };
 	enum class ExecutionRoutingReason { None, NoEligibleHost, HostUnavailable, OwnershipChanged, InconsistentSnapshot };
 
+	/// Why one computer could not take a waiting chat, first match in this order: Use this computer is off, the helper
+	/// is not Ready or compatible, the provider is not usable there, its sign-in is not confirmed for the current
+	/// configuration, no folder maps the chat's workspace, or every concurrent session is in use.
+	enum class ExecutionRoutingHostSkip { Off, Unreachable, ProviderUnavailable, Unconfirmed, NoMapping, Full };
+
+	struct ExecutionRoutingSkippedHost
+	{
+		std::string host_id;
+		ExecutionRoutingHostSkip reason = ExecutionRoutingHostSkip::Off;
+		bool operator==(const ExecutionRoutingSkippedHost&) const = default;
+	};
+
 	struct ExecutionRoutingDecision
 	{
 		ExecutionRoutingStatus status = ExecutionRoutingStatus::Waiting;
 		ExecutionRoutingReason reason = ExecutionRoutingReason::NoEligibleHost;
 		ExecutionRoutingAssignment assignment;
+		/// Diagnostics only, for a Waiting decision: each remote computer considered and why it was passed over.
+		/// Filling it never changes which computer is chosen or whether the chat waits.
+		std::vector<ExecutionRoutingSkippedHost> skipped;
 	};
 
 	/// Serializes admission only. The caller must persist assignment before launch and
@@ -105,6 +120,9 @@ namespace uam
 		/// The chats with a ticket, earliest first, including silent ones not yet forgotten. For diagnostics and tests.
 		std::vector<std::string> QueuedChatIds();
 
+		/// Chats occupying each computer exactly as admission counts them: the supplied occupancy plus held reservations.
+		std::unordered_map<std::string, std::size_t> OccupiedCounts(const std::vector<ExecutionRoutingOccupancy>& occupancy) const;
+
 	private:
 		struct Waiter
 		{
@@ -113,7 +131,7 @@ namespace uam
 			std::vector<std::string> hosts;
 		};
 
-		std::mutex m_mutex;
+		mutable std::mutex m_mutex;
 		std::unordered_map<std::string, ExecutionRoutingAssignment> m_reservations;
 		std::unordered_map<std::string, Waiter> m_waiters;
 		std::uint64_t m_next_ticket = 0;

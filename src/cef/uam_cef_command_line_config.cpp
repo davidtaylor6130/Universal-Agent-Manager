@@ -51,4 +51,32 @@ std::vector<std::string> RemoteDebuggingSwitchesToDrop(const std::vector<std::st
 	return dropped;
 }
 
+std::string AddFeatureToList(const std::string& feature_list, const std::string& feature)
+{
+	std::string_view rest(feature_list);
+	while (!rest.empty())
+	{
+		const size_t comma = rest.find(',');
+		std::string_view entry = rest.substr(0, comma);
+		rest = comma == std::string_view::npos ? std::string_view() : rest.substr(comma + 1);
+		// Chromium's entry form is [*]Name[<Trial][:param/value...], with surrounding whitespace ignored.
+		const size_t first = entry.find_first_not_of(" \t");
+		entry = first == std::string_view::npos ? std::string_view() : entry.substr(first);
+		if (!entry.empty() && entry.front() == '*')
+		{
+			entry.remove_prefix(1);
+		}
+		entry = entry.substr(0, entry.find_first_of("<: \t"));
+		if (entry == std::string_view(feature))
+		{
+			return feature_list;
+		}
+	}
+	if (feature_list.find_first_not_of(" \t,") == std::string::npos)
+	{
+		return feature;
+	}
+	return feature_list.back() == ',' ? feature_list + feature : feature_list + "," + feature;
+}
+
 } // namespace uam::cef

@@ -1022,6 +1022,9 @@ $e
 		facts.session_id = session_id;
 		facts.workspace = uam::paths::Utf8PathString(spec->working_directory);
 		std::optional<ProcessPollResult> prefetched_poll;
+		// The newest cursor the app is known to hold: its saved cursor on attach, then each acknowledged batch.
+		// Only durable delivery (a delivery token) keeps it; otherwise the proxy acknowledges output itself.
+		std::optional<ProcessPollResult> delivered_cursor;
 		if (!client.Connect(&error))
 		{
 			std::cerr << (error.empty() ? "Remote process could not start." : error) << '\n';
@@ -1056,6 +1059,7 @@ $e
 				std::cerr << (error.empty() ? "The remote process is no longer available." : error) << '\n';
 				return 70;
 			}
+			if (!spec->delivery_token.empty()) delivered_cursor = persisted;
 			std::cout << R"({"jsonrpc":"2.0","method":"uam/remoteAttached"})" << '\n';
 			std::cout.flush();
 			prefetched_poll = std::move(existing);
@@ -1196,10 +1200,18 @@ $e
 			if (!client.StopProcess(session_id, &error, true, &outcome)) return false;
 			bool drained = false;
 			bool unterminated_stdout = false;
+			// A batch already written to the app but not yet acknowledged (the app stops before it acknowledges,
+			// as model discovery does on its answer) is delivered: the drain starts after it, never at the runner's
+			// last acknowledged cursor, which would write the same lines again. With nothing awaiting, it starts at
+			// the app's own cursor, which after a reattach can be ahead of the runner's (the app saved it but its
+			// acknowledgement never arrived). Every later poll resumes after the previous one, because an empty poll
+			// needs no acknowledgement and would otherwise fall back too.
+			std::optional<ProcessPollResult> drain_cursor = awaiting_output_ack ? awaiting_output_ack : delivered_cursor;
 			for (int batch = 0; batch < 256; ++batch)
 			{
 				ProcessPollResult final_output;
-				if (!client.PollProcess(session_id, final_output, &error)) break;
+				if (!client.PollProcess(session_id, final_output, &error, {}, nullptr,
+				        drain_cursor ? &*drain_cursor : nullptr)) break;
 				std::cout << final_output.standard_output << std::flush;
 				if (!final_output.standard_output.empty())
 					unterminated_stdout = final_output.standard_output.back() != '\n';
@@ -1210,6 +1222,7 @@ $e
 					drained = true;
 					break;
 				}
+				drain_cursor = std::move(final_output);
 			}
 			// Native Stop cleanup projects complete lines, including the final EOF fragment.
 			if (drained && unterminated_stdout) std::cout << '\n' << std::flush;
@@ -1324,6 +1337,7 @@ $e
 						}
 						pending_stdout.erase(0, awaiting_stdout_bytes);
 						pending_stdout_base = awaiting_output_ack->stdout_cursor;
+						delivered_cursor = awaiting_output_ack;
 						pending_stdout_base_set = true;
 						pending_stderr.clear();
 						awaiting_output_ack.reset();

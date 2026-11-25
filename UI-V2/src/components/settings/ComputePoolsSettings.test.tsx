@@ -52,6 +52,13 @@ describe('ComputePoolsSettings', () => {
     expect(document.body.textContent).toContain('2/2 in use · 1 waiting')
   })
 
+  it('says which computer each pool turn runs on', () => {
+    useAppStore.setState({ computePools: [pool], computePoolUsage: { p1: { inUse: 2, waiting: 1, hosts: { local: { inUse: 1, waiting: 0 }, lab: { inUse: 1, waiting: 1 }, gone: { inUse: 0, waiting: 1 } } } },
+      executionHosts: [{ id: 'lab', label: 'Homelab', transport: 'ssh', sshAlias: 'lab', runnerStatus: 'ready', runnerVersion: '', platform: '', architecture: '', lastSeenAt: '' }] })
+    show()
+    expect(document.body.textContent).toContain('2/2 in use · 1 waiting · This computer 1, Homelab 1 (1 waiting), Removed computer 0 (1 waiting)')
+  })
+
   it('refuses a limit outside the range', async () => {
     useAppStore.setState({ computePools: [pool] })
     show()
