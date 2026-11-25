@@ -1991,6 +1991,46 @@ namespace uam
 			return acp_json;
 		}
 
+		/// <summary>Goals as the frontend reads them, for both the sidebar summary push and the full transcript load.</summary>
+		nlohmann::json SerializeGoalsForFrontend(const ChatSession& chat)
+		{
+			nlohmann::json goals_arr = JsonArrayWithCapacity(chat.goals.size());
+			for (const auto& goal : chat.goals)
+			{
+				nlohmann::json goal_json;
+				goal_json["id"] = goal.id;
+				goal_json["objective"] = goal.objective;
+				goal_json["status"] = GoalStatusToString(goal.status);
+				goal_json["tokenBudget"] = goal.token_budget;
+				goal_json["tokensUsed"] = goal.tokens_used;
+				goal_json["blockedTurnCount"] = goal.blocked_turn_count;
+				goal_json["lastBlocker"] = goal.last_blocker.empty() ? nullptr : nlohmann::json(goal.last_blocker);
+				goal_json["lastBlockerKind"] = goal.last_blocker_kind.empty() ? nullptr : nlohmann::json(goal.last_blocker_kind);
+				goal_json["lastDiagnostic"] = goal.last_diagnostic.empty() ? nullptr : nlohmann::json(goal.last_diagnostic);
+				goal_json["lastDecisionSource"] = goal.last_decision_source.empty() ? nullptr : nlohmann::json(goal.last_decision_source);
+				goal_json["pendingContinuation"] = chat.goal_pending_continuation_id == goal.id;
+				goal_json["completedItems"] = goal.completed_items;
+				goal_json["remainingItems"] = goal.remaining_items;
+				goal_json["currentStep"] = goal.current_step;
+				goal_json["lastVerification"] = goal.last_verification;
+				goal_json["lastNextPrompt"] = goal.last_next_prompt;
+				goal_json["sameNextPromptCount"] = goal.same_next_prompt_count;
+				goal_json["loopCount"] = goal.loop_count;
+				goal_json["createdAt"] = goal.created_at;
+				goal_json["updatedAt"] = goal.updated_at;
+				goal_json["executionOwner"] = goal.execution_owner == "provider" ? "provider" : "uam";
+				goal_json["providerCommand"] = goal.execution_owner == "provider" ? goal.provider_command : "";
+				goal_json["workerModelId"] = goal.worker_model_id;
+				goal_json["reviewerModelId"] = goal.reviewer_model_id;
+				goal_json["creator"] = goal.creator == "model" ? "model" : "user";
+				goal_json["creatorProviderId"] = uam::excluded_provider_data::IsExcluded(goal.creator_provider_id) ? "" : goal.creator_provider_id;
+				goal_json["creatorAgentId"] = goal.creator_agent_id;
+				goal_json["creatorRunId"] = goal.creator_run_id;
+				goals_arr.push_back(std::move(goal_json));
+			}
+			return goals_arr;
+		}
+
 		template <class Writer>
 		void WriteFingerprintSession(Writer& w, const AppState& app, const ChatSession& chat,
 		                             CatalogSnapshotCache& cache, bool cache_selected = false)
@@ -2019,45 +2059,7 @@ namespace uam
 			}
 			w.Object("computerUse", [&](auto& computer_use) { WriteComputerUseState(computer_use, app, chat); });
 
-			// Serialize goals for fingerprint
-			if (!chat.goals.empty())
-			{
-				nlohmann::json goals_arr = JsonArrayWithCapacity(chat.goals.size());
-				for (const auto& goal : chat.goals)
-				{
-					nlohmann::json goal_json;
-					goal_json["id"] = goal.id;
-					goal_json["objective"] = goal.objective;
-					goal_json["status"] = GoalStatusToString(goal.status);
-					goal_json["tokenBudget"] = goal.token_budget;
-					goal_json["tokensUsed"] = goal.tokens_used;
-					goal_json["blockedTurnCount"] = goal.blocked_turn_count;
-					goal_json["lastBlocker"] = goal.last_blocker.empty() ? nullptr : nlohmann::json(goal.last_blocker);
-					goal_json["lastBlockerKind"] = goal.last_blocker_kind.empty() ? nullptr : nlohmann::json(goal.last_blocker_kind);
-					goal_json["lastDiagnostic"] = goal.last_diagnostic.empty() ? nullptr : nlohmann::json(goal.last_diagnostic);
-					goal_json["lastDecisionSource"] = goal.last_decision_source.empty() ? nullptr : nlohmann::json(goal.last_decision_source);
-					goal_json["pendingContinuation"] = chat.goal_pending_continuation_id == goal.id;
-					goal_json["completedItems"] = goal.completed_items;
-					goal_json["remainingItems"] = goal.remaining_items;
-					goal_json["currentStep"] = goal.current_step;
-					goal_json["lastVerification"] = goal.last_verification;
-					goal_json["lastNextPrompt"] = goal.last_next_prompt;
-					goal_json["sameNextPromptCount"] = goal.same_next_prompt_count;
-					goal_json["loopCount"] = goal.loop_count;
-					goal_json["createdAt"] = goal.created_at;
-					goal_json["updatedAt"] = goal.updated_at;
-					goal_json["executionOwner"] = goal.execution_owner == "provider" ? "provider" : "uam";
-					goal_json["providerCommand"] = goal.execution_owner == "provider" ? goal.provider_command : "";
-					goal_json["workerModelId"] = goal.worker_model_id;
-					goal_json["reviewerModelId"] = goal.reviewer_model_id;
-					goal_json["creator"] = goal.creator == "model" ? "model" : "user";
-					goal_json["creatorProviderId"] = uam::excluded_provider_data::IsExcluded(goal.creator_provider_id) ? "" : goal.creator_provider_id;
-					goal_json["creatorAgentId"] = goal.creator_agent_id;
-					goal_json["creatorRunId"] = goal.creator_run_id;
-					goals_arr.push_back(std::move(goal_json));
-				}
-				w.Set("goals", std::move(goals_arr));
-			}
+			if (!chat.goals.empty()) w.Set("goals", SerializeGoalsForFrontend(chat));
 		}
 
 		nlohmann::json SerializeFingerprintSession(const AppState& app, const ChatSession& chat,
@@ -2778,45 +2780,7 @@ namespace uam
 		}
 		j["messages"] = std::move(msgs);
 
-		// Serialize goals
-		if (!session.goals.empty())
-		{
-			nlohmann::json goals_arr = JsonArrayWithCapacity(session.goals.size());
-			for (const auto& goal : session.goals)
-			{
-				nlohmann::json goal_json;
-				goal_json["id"] = goal.id;
-				goal_json["objective"] = goal.objective;
-				goal_json["status"] = GoalStatusToString(goal.status);
-				goal_json["tokenBudget"] = goal.token_budget;
-				goal_json["tokensUsed"] = goal.tokens_used;
-				goal_json["blockedTurnCount"] = goal.blocked_turn_count;
-				goal_json["lastBlocker"] = goal.last_blocker.empty() ? nullptr : nlohmann::json(goal.last_blocker);
-				goal_json["lastBlockerKind"] = goal.last_blocker_kind.empty() ? nullptr : nlohmann::json(goal.last_blocker_kind);
-				goal_json["lastDiagnostic"] = goal.last_diagnostic.empty() ? nullptr : nlohmann::json(goal.last_diagnostic);
-				goal_json["lastDecisionSource"] = goal.last_decision_source.empty() ? nullptr : nlohmann::json(goal.last_decision_source);
-					goal_json["pendingContinuation"] = session.goal_pending_continuation_id == goal.id;
-				goal_json["completedItems"] = goal.completed_items;
-				goal_json["remainingItems"] = goal.remaining_items;
-				goal_json["currentStep"] = goal.current_step;
-				goal_json["lastVerification"] = goal.last_verification;
-				goal_json["lastNextPrompt"] = goal.last_next_prompt;
-				goal_json["sameNextPromptCount"] = goal.same_next_prompt_count;
-				goal_json["loopCount"] = goal.loop_count;
-				goal_json["createdAt"] = goal.created_at;
-				goal_json["updatedAt"] = goal.updated_at;
-				goal_json["executionOwner"] = goal.execution_owner == "provider" ? "provider" : "uam";
-				goal_json["providerCommand"] = goal.execution_owner == "provider" ? goal.provider_command : "";
-				goal_json["workerModelId"] = goal.worker_model_id;
-				goal_json["reviewerModelId"] = goal.reviewer_model_id;
-				goal_json["creator"] = goal.creator == "model" ? "model" : "user";
-				goal_json["creatorProviderId"] = uam::excluded_provider_data::IsExcluded(goal.creator_provider_id) ? "" : goal.creator_provider_id;
-				goal_json["creatorAgentId"] = goal.creator_agent_id;
-				goal_json["creatorRunId"] = goal.creator_run_id;
-				goals_arr.push_back(std::move(goal_json));
-			}
-			j["goals"] = std::move(goals_arr);
-		}
+		if (!session.goals.empty()) j["goals"] = SerializeGoalsForFrontend(session);
 
 		return j;
 	}

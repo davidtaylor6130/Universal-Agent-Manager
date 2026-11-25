@@ -2330,8 +2330,9 @@ void UamQueryHandler::HandleSetComputerUseSettings(CefRefPtr<CefBrowser> browser
 		}
 	}
 	const bool globally_enabled = payload.value("computerUseGloballyEnabled", previous.computer_use_globally_enabled);
-	if (globally_enabled && (!m_app.computer_use_revocation_pending_chat_ids.empty() ||
-	    (!previous.computer_use_globally_enabled && !uam::ComputerUseService::ResetControlsForStartup(m_app))))
+	// Only turning the feature on from Off waits for earlier grants to clear; allowlist edits while On never re-enable anything.
+	const bool turning_on = globally_enabled && !previous.computer_use_globally_enabled;
+	if (turning_on && (!m_app.computer_use_revocation_pending_chat_ids.empty() || !uam::ComputerUseService::ResetControlsForStartup(m_app)))
 	{
 		cb->Failure(500, "Computer Use cannot be re-enabled until its previous control grants are cleared.");
 		return;

@@ -145,6 +145,23 @@ ToolCall PersistedToolCallFromAcpToolCall(const AcpToolCallState& tool_call)
 	return persisted;
 }
 
+void ApplyPersistedToolCall(AcpToolCallState& tool_call, const ToolCall& persisted)
+{
+	tool_call.title = persisted.name;
+	tool_call.kind = persisted.kind;
+	tool_call.status = persisted.status;
+	tool_call.args_json = persisted.args_json;
+	tool_call.content = persisted.result_text;
+	tool_call.is_sub_agent = persisted.is_sub_agent;
+	tool_call.sub_agent_id = persisted.sub_agent_id;
+	tool_call.sub_agent_title = persisted.sub_agent_title;
+	tool_call.sub_agent_children = persisted.sub_agent_children;
+	tool_call.sub_agent_children_authoritative = persisted.sub_agent_children_authoritative;
+	tool_call.approval_status = persisted.approval_status;
+	tool_call.task_id = persisted.task_id;
+	tool_call.child_activity = persisted.child_activity;
+}
+
 bool UpsertPersistedToolCall(std::vector<ToolCall>& tool_calls, const AcpToolCallState& tool_call)
 {
 	if (tool_call.id.empty())

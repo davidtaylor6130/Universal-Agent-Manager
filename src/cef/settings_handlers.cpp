@@ -232,7 +232,7 @@ namespace
 			if (!uam::excluded_provider_data::IsExcluded(id) && !uam::excluded_provider_data::IsExcluded(binding.worker_provider_id)) bindings[id] = {{"workerProviderId", binding.worker_provider_id}, {"workerModelId", binding.worker_model_id}};
 		return {{"memoryEnabledDefault", value.memory_enabled_default}, {"memoryLevelDefault", value.memory_level_default},
 		    {"memoryIdleDelaySeconds", value.memory_idle_delay_seconds}, {"memoryRecallBudgetBytes", value.memory_recall_budget_bytes},
-		    {"goalMaxLoopIterations", value.goal_max_loop_iterations}, {"goalTokenBudget", value.goal_token_budget}, {"acpSetupInactivityTimeoutSeconds", value.acp_setup_inactivity_timeout_seconds},
+		    {"goalMaxLoopIterations", value.goal_max_loop_iterations}, {"goalTokenBudget", value.goal_token_budget}, {"acpSetupInactivityTimeoutSeconds", uam::settings::NormalizedAcpSetupInactivityTimeoutSeconds(value.acp_setup_inactivity_timeout_seconds)},
 		    {"acpTurnOutputLimitMiB", value.acp_turn_output_limit_mib}, {"activeTurnInactivityTimeoutSeconds", value.active_turn_inactivity_timeout_seconds}, {"streamLoopRepeatLimit", value.stream_loop_repeat_limit}, {"toolCallTimeoutSeconds", value.tool_call_timeout_seconds}, {"memoryWorkerBindings", std::move(bindings)},
 		    {"permissionReviewerProviderId", value.permission_reviewer_provider_id}, {"permissionReviewerModelId", value.permission_reviewer_model_id}};
 	}
@@ -489,7 +489,7 @@ void UamQueryHandler::HandleSetMcpServers(CefRefPtr<CefBrowser> browser, const n
 	}
 	std::vector<McpServerConfiguration> servers = uam::mcp_server_config::Parse(*requested_servers);
 	std::string error;
-	if (!uam::mcp_server_config::NormalizeAndValidate(servers, &error))
+	if (!uam::mcp_server_config::NormalizeAndValidate(servers, &error, &m_app.settings.execution_hosts, scope))
 	{
 		cb->Failure(400, error);
 		return;

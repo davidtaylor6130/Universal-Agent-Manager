@@ -161,7 +161,7 @@ namespace uam::settings_frontend_json
 		settings_json["streamLoopRepeatLimit"] = uam::stream_watch::NormalizeLoopRepeatLimit(settings.stream_loop_repeat_limit);
 		settings_json["activeTurnInactivityTimeoutSeconds"] = std::clamp(settings.active_turn_inactivity_timeout_seconds, uam::settings::kMinActiveTurnInactivityTimeoutSeconds, uam::settings::kMaxActiveTurnInactivityTimeoutSeconds);
 		settings_json["toolCallTimeoutSeconds"] = std::clamp(settings.tool_call_timeout_seconds, uam::settings::kMinActiveTurnInactivityTimeoutSeconds, uam::settings::kMaxActiveTurnInactivityTimeoutSeconds);
-		settings_json["acpSetupInactivityTimeoutSeconds"] = std::clamp(settings.acp_setup_inactivity_timeout_seconds, uam::settings::kMinAcpSetupInactivityTimeoutSeconds, uam::settings::kMaxAcpSetupInactivityTimeoutSeconds);
+		settings_json["acpSetupInactivityTimeoutSeconds"] = uam::settings::NormalizedAcpSetupInactivityTimeoutSeconds(settings.acp_setup_inactivity_timeout_seconds);
 		settings_json["updateChecksEnabled"] = settings.update_checks_enabled;
 		settings_json["automaticProviderUpdates"] = settings.automatic_provider_updates;
 		settings_json["updateLastCheckedAt"] = settings.update_last_checked_at;
