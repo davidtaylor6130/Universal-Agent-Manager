@@ -223,6 +223,16 @@ describe('MainPanel', () => {
     expect(host.querySelector('[data-testid="chat-workspace-chat-1"]')?.textContent).toBe('Remote · Homelab')
     expect(host.querySelector('[data-testid="chat-host-chat-1"]')?.textContent).toBe('Remote · Homelab')
 
+    // Once native reports figures, the chip adds in-use over the limit and describes the load.
+    act(() => useAppStore.setState({ executionHostLoad: { hosts: { lab: { status: 'known', cores: 8, loadAverage1m: 2.5, cpuPercent: null, memoryAvailableBytes: null, memoryTotalBytes: null, processes: 3, inUse: 3, waiting: 0, limit: 8 } }, unassignedWaiting: 0 } }))
+    const chip = host.querySelector('[data-testid="chat-host-chat-1"]')
+    expect(chip?.textContent).toBe('Remote · Homelab · 3/8')
+    // A focusable button named by its visible text; no native title competes with its tooltip.
+    expect(chip?.tagName).toBe('BUTTON')
+    expect(chip?.hasAttribute('aria-label')).toBe(false)
+    expect(chip?.closest('[title]')).toBeNull()
+    act(() => useAppStore.setState({ executionHostLoad: { hosts: {}, unassignedWaiting: 0 } }))
+
     act(() => useAppStore.setState((state) => ({
       executionHosts: state.executionHosts.map((executionHost) => ({ ...executionHost, label: 'AI Server' })),
     })))

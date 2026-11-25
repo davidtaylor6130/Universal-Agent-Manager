@@ -12,6 +12,7 @@
 #include "common/provider/provider_profile.h"
 #include "common/provider/attached_skill_resources.h"
 #include "common/runtime/terminal/terminal_dimensions.h"
+#include "common/runtime/host_load_sampler.h"
 #include "common/runtime/stream_watch.h"
 #include "common/security/read_only_command.h"
 
@@ -1504,6 +1505,28 @@ namespace uam
 		std::unique_ptr<std::jthread> worker;
 	};
 
+	/// The per-computer reasons behind one routing wait text; shown only while that text is still the chat's wait.
+	struct ExecutionRoutingWaitHosts
+	{
+		std::string text;
+		std::vector<ExecutionRoutingSkippedHost> hosts;
+	};
+	/// How busy one computer is with UAM work, recounted on the app thread about once a second.
+	struct ExecutionHostUsage
+	{
+		/// Chats occupying the computer as routing admission counts them (live work and held reservations).
+		std::size_t in_use = 0;
+		/// Chats on this computer whose turn waits: for routing on their own computer, or for a compute pool slot.
+		std::size_t waiting = 0;
+		/// Concurrent sessions allowed by its routing policy; empty when it has none.
+		std::optional<std::size_t> limit;
+		/// For this computer only: provider processes and terminals UAM is running here.
+		std::uint32_t local_processes = 0;
+		bool operator==(const ExecutionHostUsage&) const = default;
+	};
+	/// Test seam: builds the reader that asks one computer for its load on the sampling thread.
+	using HostLoadReaderFactoryBuilder = std::function<host_load::ReaderFactory(const ExecutionHost&)>;
+
 	struct AppState
 	{
 		/// True while the desktop window is open but the saved chat list is still loading off the app thread.
@@ -1529,6 +1552,20 @@ namespace uam
 		std::string claude_quota_dispatch_id;
 		std::unordered_map<std::string, std::weak_ptr<BranchPreparationOwnership>> branch_preparations;
 		std::unordered_map<std::string, std::string> execution_routing_waits;
+		std::unordered_map<std::string, ExecutionRoutingWaitHosts> execution_routing_wait_hosts;
+		/// Live load per computer, read off the app thread. Null until the first poll that wants a reading.
+		std::shared_ptr<host_load::Sampler> host_load_sampler;
+		HostLoadReaderFactoryBuilder host_load_reader;
+		/// Settings that show load ask for it; until this time every configured computer is sampled.
+		double host_load_interest_until_s = 0.0;
+		double host_load_next_poll_s = 0.0;
+		/// The load figures last published, as the interface sees them; a change here is what pushes state.
+		std::string host_load_published;
+		/// Last logged load status per computer, so a status change is logged once.
+		std::unordered_map<std::string, std::string> host_load_reported_status;
+		std::unordered_map<std::string, ExecutionHostUsage> execution_host_usage;
+		/// Automatic chats waiting for any computer, before one is assigned.
+		std::size_t execution_routing_unassigned_waiting = 0;
 		std::unordered_map<std::string, double> execution_routing_retry_at_by_chat_id;
 		std::unordered_set<std::string> execution_routing_reserved_chat_ids;
 		std::unordered_set<std::string> execution_routing_restored_unresolved_chat_ids;

@@ -9,6 +9,7 @@ import {
   rememberPendingRequest,
 } from '../cpp/reconcile'
 import type { ComputePool, ComputePoolUsage, CppFolder, PullRequestWatch, ShellAction, TimerNotice } from '../cpp/types'
+import { EMPTY_HOST_LOAD, type ExecutionHostLoad } from '../../types/hostLoad'
 import { DEFAULT_PROVIDER_ID } from '../../utils/providerMetadata'
 import type { ZustandSet, ZustandGet } from '../storeTypes'
 import { deleteSessionsFromState } from './sessionsSlice'
@@ -117,6 +118,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
     shellActions: [] as ShellAction[],
     computePools: [] as ComputePool[],
     computePoolUsage: {} as ComputePoolUsage,
+    executionHostLoad: EMPTY_HOST_LOAD as ExecutionHostLoad,
     prWatches: [] as PullRequestWatch[],
     timerNotices: [] as TimerNotice[],
     shellActionNotification: '',
