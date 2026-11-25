@@ -205,6 +205,19 @@ class IProviderRuntime
 	/// Capture optional per-terminal native observation before private launch arguments and environment are staged.
 	virtual bool PrepareInteractiveLaunch(uam::AppState&, uam::CliTerminalState&, const ChatSession&, const ExecutionHost&,
 	    std::vector<std::string>&, std::vector<std::pair<std::string, std::string>>&, std::string*) const { return true; }
+	/// <summary>Carries a custom UAM agent's captured instructions into CLI View on `host` when Central Setup does not.
+	/// A provider either returns the text in `staged_context`, which the shared handoff staging writes through
+	/// this provider's context file route, or adds native launch arguments before any positional `--`. False
+	/// refuses CLI View for that agent with a one-line `error`, so the instructions are never silently dropped.</summary>
+	virtual bool StageInteractiveAgentInstructions(const ExecutionHost&, std::string_view, std::vector<std::string>&, std::string& staged_context, std::string& error) const
+	{
+		staged_context.clear();
+		error = "This provider's CLI View cannot carry a custom agent's instructions. Use Chat for this agent.";
+		return false;
+	}
+	/// <summary>Launch arguments that remove the provider's own skill tool for a custom UAM agent, whose
+	/// approved skills reach it through UAM. Empty when the provider offers no such option.</summary>
+	virtual std::vector<std::string> CustomAgentNativeSkillArgv() const { return {}; }
 	/// Adds provider-native files or arguments that make a CLI View load the staged handoff. False refuses the launch with the error set.
 	virtual bool StageCliHandoffContext(const ProviderCliHandoffStaging&, std::vector<std::string>&, std::string&) const { return true; }
 	/// <summary>Recognizes the provider's idle prompt in recent native terminal output.</summary>
