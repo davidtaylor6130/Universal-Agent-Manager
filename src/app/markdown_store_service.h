@@ -81,7 +81,8 @@ class MarkdownStoreService
 	static std::filesystem::path BundledRootForExecutable(const std::filesystem::path& executable);
 	static bool SeedBundledEntries(const std::filesystem::path& bundled_root, const std::filesystem::path& destination_root, std::string* error_out = nullptr);
 	static bool IsConfiguredRoot(const std::filesystem::path& root, std::string* error_out = nullptr);
-	static std::vector<Entry> ListEntries(const std::filesystem::path& root, std::string* error_out = nullptr);
+	/// <summary>Lists the library's entries. Subfolders that cannot be opened are skipped, logged once per change and returned relative to root in skipped_folders_out.</summary>
+	static std::vector<Entry> ListEntries(const std::filesystem::path& root, std::string* error_out = nullptr, std::vector<std::filesystem::path>* skipped_folders_out = nullptr);
 	static bool CreateEntry(const std::filesystem::path& root, const Draft& draft, Entry* created_entry = nullptr, std::string* error_out = nullptr);
 	static bool UpdateEntry(const std::filesystem::path& root, std::string_view file_path, const Draft& draft, Entry* updated_entry = nullptr, std::string* error_out = nullptr);
 	static bool SetFavorite(const std::filesystem::path& root, std::string_view file_path, bool favorite, Entry* updated_entry = nullptr, std::string* error_out = nullptr);

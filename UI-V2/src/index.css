@@ -1745,6 +1745,25 @@ summary,
 .uam-menu-item__trailing { display: inline-flex; flex: 0 0 auto; align-items: center; margin-left: auto; padding-left: 12px; }
 .uam-menu-item__trailing + .uam-menu-kbd { margin-left: 0; }
 
+/* ── Badge: short read-only label beside a name (agent scope, Delegate-only) ── */
+.uam-badge {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface-up);
+  color: var(--text-2);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  line-height: 1;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+@media (forced-colors: active) { .uam-badge { border-color: CanvasText; } }
+
 /* ── SegmentedControl: one sliding highlight behind the pressed option ── */
 .uam-seg {
   position: relative;

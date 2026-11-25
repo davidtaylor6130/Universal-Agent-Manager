@@ -3,6 +3,12 @@
 #include "common/provider/provider_runtime.h"
 #include <stop_token>
 
+namespace uam::opencode
+{
+	/// Oldest OpenCode release whose ACP permission requests UAM can mediate reliably (the CLI policy minimum).
+	inline constexpr char kAcpPermissionMediationMinimumVersion[] = "1.15.13";
+}
+
 class OpenCodeCliProviderRuntime final : public IProviderRuntime
 {
   public:
