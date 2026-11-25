@@ -200,7 +200,7 @@ bool SupportedVersion(std::string_view version)
 		else if (character == '.' && digit && dots < 2) { ++dots; digit = false; }
 		else return false;
 	}
-	return dots == 2 && digit && CliProviderVersionAtLeast(version, "1.0.98");
+	return dots == 2 && digit && CliProviderVersionAtLeast(version, uam::copilot::managed_read::kStableCliMinimumVersion);
 }
 
 bool SnapshotValid(const Json& result, const Json& state)

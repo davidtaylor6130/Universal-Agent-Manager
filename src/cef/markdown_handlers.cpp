@@ -113,7 +113,8 @@ void UamQueryHandler::HandleListMarkdownStoreEntries(CefRefPtr<CefBrowser> /*bro
 	                 [root, request_id]()
 	                 {
 		                 std::string error;
-		                 std::vector<MarkdownStoreService::Entry> entries = MarkdownStoreService::ListEntries(root, &error);
+		                 std::vector<std::filesystem::path> skipped_folders;
+		                 std::vector<MarkdownStoreService::Entry> entries = MarkdownStoreService::ListEntries(root, &error, &skipped_folders);
 		                 if (!error.empty())
 		                 {
 			                 return AsyncFailure(400, error);
@@ -124,7 +125,8 @@ void UamQueryHandler::HandleListMarkdownStoreEntries(CefRefPtr<CefBrowser> /*bro
 		                 {
 			                 entry_json.push_back(SerializeMarkdownStoreEntry(entry));
 		                 }
-		                 return AsyncSuccess(WithOptionalRequestId(nlohmann::json{{"directory", uam::paths::Utf8PathString(root)}, {"entries", entry_json}}, request_id));
+		                 // Folders the library could not open; the count lets the view say that some skills are not listed.
+		                 return AsyncSuccess(WithOptionalRequestId(nlohmann::json{{"directory", uam::paths::Utf8PathString(root)}, {"entries", entry_json}, {"skippedFolderCount", skipped_folders.size()}}, request_id));
 	                 });
 }
 
