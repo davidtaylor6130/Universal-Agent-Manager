@@ -220,13 +220,7 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 	if (collision != m_app.settings.execution_hosts.end())
 	{
 		previous_host = *collision;
-		host.instruction_file = collision->instruction_file;
-		host.instruction_text = collision->instruction_text;
-		host.startup_enabled = collision->startup_enabled;
-		host.startup_status = collision->startup_status;
-		host.runner_startup_applied.reset();
-		host.runner_startup_error.clear();
-		host.cli_updates_as_admin = collision->cli_updates_as_admin;
+		uam::execution_hosts::CarryUserOwnedHostFields(host, *collision);
 	}
 	uam::remote::BootstrapPlan plan;
 	if (!BuildPlan(host, plan, error))
