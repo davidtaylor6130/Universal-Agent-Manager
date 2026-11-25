@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -105,6 +106,13 @@ namespace uam
 		static bool ValidateCapturedRuntimePolicy(const std::string& agent_id, const std::string& snapshot,
 		                                         const std::string& provider_id, const std::string& execution_capability,
 		                                         std::string* error_out = nullptr);
+		/// <summary>True for a selected agent other than built-in Build (also the empty default) and Plan.</summary>
+		static bool IsCustomAgentId(std::string_view agent_id);
+		/// <summary>A custom agent's native OpenCode `skill` permission rule as JSON: every native skill is denied
+		/// except the agent's approved skill names, which ask (or stay denied when `permission_json` denies skills
+		/// or everything). Without a decodable snapshot no name is approved. Empty for Build and Plan.</summary>
+		static std::string OpenCodeNativeSkillRule(const std::string& agent_id, const std::string* definition_snapshot,
+		                                           const std::string& permission_json);
 		static bool PrepareRuntimeAdapter(const std::filesystem::path& data_root,
 		                                  const std::string& chat_id,
 		                                  const std::string& provider_id,

@@ -14,6 +14,7 @@
 #include "common/platform/async_byte_writer.h"
 #include "common/utils/base64.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
+#include "common/provider/provider_setup.h"
 #include "common/runtime/json_runtime.h"
 #include "common/runtime/acp/acp_protocol_methods.h"
 #include "common/usage/transcript_usage.h"
@@ -419,7 +420,7 @@ const char* GeminiCliProviderRuntime::RuntimeId() const
 bool GeminiCliProviderRuntime::StageCliHandoffContext(const ProviderCliHandoffStaging& staging, std::vector<std::string>& argv, std::string&) const
 {
 	if (!staging.stage_file(uam::execution_hosts::JoinRemotePath(staging.host_platform, staging.directory, "GEMINI.md"), staging.snapshot)) return false;
-	argv.insert(argv.end(), {"--include-directories", staging.directory});
+	uam::provider_setup::InsertLaunchOptions(argv, {"--include-directories", staging.directory});
 	return true;
 }
 
@@ -431,6 +432,14 @@ std::vector<std::string> GeminiCliProviderRuntime::BuildInteractiveArgv(const Pr
 	}
 
 	return uam::provider_runtime_internal::BuildInteractiveArgv(profile, chat, uam::provider_runtime_internal::MergeProviderSettings(profile, settings));
+}
+
+bool GeminiCliProviderRuntime::StageInteractiveAgentInstructions(const ExecutionHost&, std::string_view instructions, std::vector<std::string>&, std::string& staged_context, std::string& error) const
+{
+	// Written ahead of any handoff text in the staged GEMINI.md loaded through --include-directories.
+	staged_context.assign(instructions);
+	error.clear();
+	return true;
 }
 
 MessageRole GeminiCliProviderRuntime::RoleFromNativeType(const ProviderProfile& profile, std::string_view native_type) const
