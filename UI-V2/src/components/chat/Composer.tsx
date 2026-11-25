@@ -124,9 +124,22 @@ function ActiveModeChip({ label, compactLabel = label, icon, onClear }: { label:
     : <Tooltip label={label}><span data-mode-chip={label} className="inline-flex h-[26px] shrink-0 items-center gap-1.5 px-2 text-xs">{icon}<span>{compactLabel}</span></span></Tooltip>
 }
 
+type ComposerUamAgent = { id: string; name: string; description?: string; delegateOnly?: boolean }
+
+/** Picker options: delegate-only agents stay visible with a badge, but only another agent can use them. */
+export function uamAgentMenuOptions(agents: ComposerUamAgent[], icon?: (agent: ComposerUamAgent) => ReactNode) {
+  return agents.map((agent) => ({
+    value: agent.id,
+    label: agent.name,
+    description: agent.delegateOnly ? 'Only other agents can delegate to it.' : agent.description,
+    ...(agent.delegateOnly ? { disabled: true, badge: 'Delegate-only' } : {}),
+    ...(icon ? { icon: icon(agent) } : {}),
+  }))
+}
+
 /** Selected agent precedes the draft without becoming part of submitted text. */
 export function ComposerAgentSelector({ agents, agentId, nextTurn, onSelectUamAgent }: {
-  agents: Array<{ id: string; name: string; description?: string }>
+  agents: ComposerUamAgent[]
   agentId: string
   nextTurn: boolean
   onSelectUamAgent: (agentId: string) => void
@@ -157,7 +170,7 @@ export function ComposerAgentSelector({ agents, agentId, nextTurn, onSelectUamAg
     <MenuSelect
       label={`${nextTurn ? 'Next turn agent' : 'UAM agent'}: ${name}`}
       value={agentId}
-      options={(selected ? agents : [{ id: agentId, name }, ...agents]).map((agent) => ({ value: agent.id, label: agent.name, description: agent.description }))}
+      options={uamAgentMenuOptions(selected ? agents : [{ id: agentId, name }, ...agents])}
       onChange={onSelectUamAgent}
     />
     <span className="uam-composer-agent-separator" aria-hidden />
@@ -266,7 +279,7 @@ export function ComposerToolbar({
   permissionsManagedByUam: boolean
   permissionControlsDisabled: boolean
   providerModes: Array<{ id: string; name: string; description?: string }>
-  uamAgents: Array<{ id: string; name: string; description?: string }>
+  uamAgents: ComposerUamAgent[]
   computerUseMode: boolean
   computerUseAwaitingTarget: boolean
   memoryLevel: MemoryLevel
@@ -564,12 +577,7 @@ export function ComposerToolbar({
                 <MenuSelect
                   label={uamAgentNextTurn ? "Next turn agent" : "UAM agent"}
                   value={uamAgentId}
-                  options={uamAgents.map((agent) => ({
-                    value: agent.id,
-                    label: agent.name,
-                    description: agent.description,
-                    icon: permissionModeIcon(agent.id === 'plan' ? 'plan' : 'default'),
-                  }))}
+                  options={uamAgentMenuOptions(uamAgents, (agent) => permissionModeIcon(agent.id === 'plan' ? 'plan' : 'default'))}
                   onChange={onSelectUamAgent}
                 />
               </div>

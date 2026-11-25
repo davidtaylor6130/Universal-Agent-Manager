@@ -1,3 +1,4 @@
+import type { ExecutionHostLoad } from '../types/hostLoad'
 import type { ContextReference } from '../types/contextReference'
 import type { WorkspaceFilePreview } from '../types/filePreview'
 import type { StartupNativeImportStatus } from '../types/startupNativeImports'
@@ -46,6 +47,8 @@ import type {
   VoiceInputSettingsRequest,
   ProviderModelCatalog,
   ProviderAgentImportPreview,
+  ProviderAgentImportOptions,
+  ProviderAgentImportOutcome,
   UamAgentCycleShortcut,
   UamAgentSummary,
   ShellAction,
@@ -173,6 +176,7 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   executionRouting?: ExecutionRoutingSettings
   setExecutionRoutingSettings?: (settings: ExecutionRoutingSettings) => Promise<void>
   releaseExecutionRoutingReservation?: (expected: RoutingReservation) => Promise<void>
+  requestHostLoad?: () => void
   executionHosts: ExecutionHost[]
   favoriteUamAgentIds: string[]
   /** Native sessions whose title starts with one of these (ignoring case) are never offered for import. */
@@ -203,6 +207,8 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   shellActions: ShellAction[]
   computePools: ComputePool[]
   computePoolUsage: ComputePoolUsage
+  /** Live load, in-use and waiting figures per computer; native-owned, observation only. */
+  executionHostLoad: ExecutionHostLoad
   /** Pull requests linked to chats, with their watch state; native-owned. */
   prWatches: PullRequestWatch[]
   shellActionNotification: string
@@ -284,7 +290,7 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   refreshUamAgents: (id: string) => Promise<boolean>
   browseProviderAgentImport: (currentValue?: string) => Promise<string | null>
   previewProviderAgentImport: (providerId: string, sourcePath: string) => Promise<ProviderAgentImportPreview | null>
-  importProviderAgent: (options: { chatId: string; providerId: string; sourcePath: string; canonicalId: string; workspaceAccess: 'read' | 'write'; workspaceScope: boolean; acknowledgeIgnoredFields: boolean }) => Promise<boolean>
+  importProviderAgent: (options: ProviderAgentImportOptions) => Promise<ProviderAgentImportOutcome>
   setSessionCommandSafetyTier: (id: string, tier: 'off' | 'acceptEdits' | 'aiReview' | 'yolo') => Promise<CommandSafetyTierResult>
 	setSessionComputerUseEnabled: (id: string, enabled: boolean) => Promise<ComputerUseActionResult>
 	setSessionComputerUseBackend: (id: string, backend: ComputerUseBackend) => Promise<ComputerUseActionResult>
@@ -430,7 +436,8 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   resolveAcpUserInput: (sessionId: string, requestId: string, answers: AcpUserInputAnswers) => Promise<boolean>
   /** Sends a typed secret (or the saved one) straight to native; nothing is stored here. Plan opt-in, Deny and Cancel use resolveAcpUserInput. */
   submitSecretRequest: (sessionId: string, requestId: string, submission: SecretSubmission) => Promise<{ ok: boolean; error?: string }>
-  forgetSavedSecret: (sessionId: string, requestId: string) => Promise<{ ok: boolean; error?: string }>
+  /** legacy forgets the entry saved before secrets were scoped to a provider and agent. */
+  forgetSavedSecret: (sessionId: string, requestId: string, legacy?: boolean) => Promise<{ ok: boolean; error?: string }>
   stopAcpSession: (sessionId: string, purpose?: 'interrupt' | 'timeout') => Promise<boolean>
   /** The user's override of a remote stop the host never confirmed; a process may still be running there. */
   treatRemoteStopAsStopped: (sessionId: string) => Promise<boolean>

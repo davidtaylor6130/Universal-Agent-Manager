@@ -20,6 +20,17 @@ namespace uam::paths
 		return counts[static_cast<std::size_t>(kind)];
 	}
 
+	/// <summary>
+	/// Expired entries whose fresh probe returned a different value, on any reader. A [desync] report quotes how
+	/// many changed since the previous report, so a repair caused by a path resolving differently on disk can be
+	/// told apart from a write that bypassed a revision stamp.
+	/// </summary>
+	inline std::atomic<std::size_t>& RecentPathProbeChangeCount()
+	{
+		static std::atomic<std::size_t> count{0};
+		return count;
+	}
+
 	/// <summary>Clock the memo reads, so tests can step its expiry; nullptr restores the real clock.</summary>
 	inline std::chrono::steady_clock::time_point (*&RecentPathProbeClock())()
 	{
@@ -61,6 +72,7 @@ namespace uam::paths
 		std::string value = probe();
 		++RecentPathProbeCount(kind);
 		const std::lock_guard<std::mutex> lock(mutex);
+		if (const auto previous = cache.find(key); previous != cache.end() && previous->second.value != value) ++RecentPathProbeChangeCount();
 		if (cache.size() >= 4096) cache.clear(); // ponytail: wholesale reset bounds the map; LRU only if scope counts grow.
 		cache[key] = Entry{now, value};
 		return value;

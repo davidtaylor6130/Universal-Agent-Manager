@@ -133,6 +133,21 @@ UAM_TEST(CefRemoteDebuggingSwitchesNeedExplicitTestRun)
 	UAM_ASSERT(uam::cef::RemoteDebuggingSwitchesToDrop({"disable-renderer-backgrounding", "lang"}, nullptr).empty());
 }
 
+UAM_TEST(CefNetworkServiceSandboxFeatureMergesIntoEnabledFeatures)
+{
+	const std::string feature = uam::cef::kNetworkServiceSandboxFeature;
+	UAM_ASSERT_EQ(feature, std::string("NetworkServiceSandbox"));
+	UAM_ASSERT_EQ(uam::cef::AddFeatureToList("", feature), feature);
+	UAM_ASSERT_EQ(uam::cef::AddFeatureToList(" , ", feature), feature);
+
+	// Chromium reads one --enable-features value, so an existing value keeps its entries and gains the feature once.
+	UAM_ASSERT_EQ(uam::cef::AddFeatureToList("FeatureA,FeatureB", feature), std::string("FeatureA,FeatureB,NetworkServiceSandbox"));
+	UAM_ASSERT_EQ(uam::cef::AddFeatureToList("FeatureA,", feature), std::string("FeatureA,NetworkServiceSandbox"));
+	UAM_ASSERT_EQ(uam::cef::AddFeatureToList("FeatureA,NetworkServiceSandbox", feature), std::string("FeatureA,NetworkServiceSandbox"));
+	UAM_ASSERT_EQ(uam::cef::AddFeatureToList("FeatureA, *NetworkServiceSandbox<Trial:x/1", feature), std::string("FeatureA, *NetworkServiceSandbox<Trial:x/1"));
+	UAM_ASSERT_EQ(uam::cef::AddFeatureToList("NetworkServiceSandboxExtra", feature), std::string("NetworkServiceSandboxExtra,NetworkServiceSandbox"));
+}
+
 UAM_TEST(CefTrustedUiSchemeServesOnlyRealBundledResources)
 {
 	TempDir bundled("uam-cef-trusted-bundled");

@@ -1,5 +1,6 @@
 import type { StartupNativeImportStatus } from '../../types/startupNativeImports'
 import type { ExecutionRoutingSettings } from '../../types/executionRouting'
+import type { ExecutionHostLoad, RoutingWaitHost } from '../../types/hostLoad'
 import type { CustomIcon } from '../../types/customIcon'
 // C++ state serialisation types (mirrors state_serializer.cpp output) plus the
 // frontend-facing binding/push types. Extracted from useAppStore.ts (MO-1); the
@@ -96,6 +97,7 @@ export interface CppChat {
   routingAssignedConnectionIdentity?: string
   routingAssignedProviderConfigurationIdentity?: string
   routingWaitReason?: string
+  routingWaitHosts?: RoutingWaitHost[]
   routingUnresolvedReservation?: boolean
 
   id: string
@@ -384,7 +386,11 @@ export interface AcpSecretRequest {
   localPlatform: string
   /** The chat is in Plan mode: the user allows this one request before the field appears. */
   planOptIn: boolean
-  keychain: { available: boolean; saved: boolean }
+  /**
+   * Saved secrets are scoped to this workspace, provider, agent and label. savedAt (epoch ms) and agent describe the saved
+   * entry; legacySaved marks an entry from before scoping, which is never offered for use and can only be forgotten.
+   */
+  keychain: { available: boolean; saved: boolean; savedAt?: number; agent?: string; legacySaved?: boolean }
 }
 
 export type SecretSubmission = { value?: string; useSaved?: boolean; save?: boolean }
@@ -732,7 +738,8 @@ export interface ComputePoolWait {
   limit: number
 }
 
-export type ComputePoolUsage = Record<string, { inUse: number; waiting: number }>
+/** Per pool; `hosts` splits the same counts by the computer each turn runs on. */
+export type ComputePoolUsage = Record<string, { inUse: number; waiting: number; hosts?: Record<string, { inUse: number; waiting: number }> }>
 
 /** One pull request linked to one chat. The native watch service owns it; the UI only displays and toggles it. */
 export interface PullRequestWatch {
@@ -890,7 +897,29 @@ export interface UamAgentSummary {
   id: string
   description: string
   builtIn: boolean
+  /** Only other agents can delegate to it: listed for visibility, never selectable as a chat's own agent. */
+  delegateOnly?: boolean
 }
+
+/** Where a saved agent definition lives: every workspace, or only the active chat's workspace. */
+export type AgentDefinitionScope = 'global' | 'workspace'
+
+export interface ProviderAgentImportOptions {
+  chatId: string
+  providerId: string
+  sourcePath: string
+  canonicalId: string
+  workspaceAccess: 'read' | 'write'
+  workspaceScope: boolean
+  acknowledgeIgnoredFields: boolean
+  /** Overwrite an agent with the same ID in the target scope; sent only after the user confirms. */
+  replaceExisting?: boolean
+}
+
+/** A refused import carries the backend's one-line reason, or '' when it gave none. */
+export type ProviderAgentImportOutcome =
+  | { ok: true; id: string; mode: string; scope: AgentDefinitionScope }
+  | { ok: false; error: string }
 
 export interface ProviderAgentCandidate {
   id: string
@@ -1111,6 +1140,7 @@ export interface CppAppState {
   cliVersionManager?: CliVersionManager
   shellActions?: ShellAction[]
   computePoolUsage?: ComputePoolUsage
+  executionHostLoad?: ExecutionHostLoad
   prWatches?: PullRequestWatch[]
   shellActionNotification?: string
   statusLine?: string
@@ -1149,6 +1179,7 @@ export interface CppStatePatch {
   cliVersionManager?: CliVersionManager
   shellActions?: ShellAction[]
   computePoolUsage?: ComputePoolUsage
+  executionHostLoad?: ExecutionHostLoad
   prWatches?: PullRequestWatch[]
   shellActionNotification?: string
   statusLine?: string

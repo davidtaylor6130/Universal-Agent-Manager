@@ -1,5 +1,6 @@
 #include "execution_routing_service.h"
 
+#include <algorithm>
 #include <unordered_set>
 
 namespace uam
@@ -20,6 +21,26 @@ namespace uam
 			    candidate.connection_identity == candidate.confirmed_connection_identity &&
 			    !candidate.provider_configuration_identity.empty() &&
 			    candidate.provider_configuration_identity == candidate.confirmed_provider_configuration_identity;
+		}
+
+		/// The first condition of AutomaticCandidateReady and the capacity and mapping checks that this computer fails.
+		ExecutionRoutingHostSkip SkipReason(const ExecutionRoutingCandidate& candidate, const std::string& source_workspace_identity)
+		{
+			if (!candidate.pool_enabled) return ExecutionRoutingHostSkip::Off;
+			if (!candidate.runner_ready || !candidate.runner_compatible) return ExecutionRoutingHostSkip::Unreachable;
+			if (!candidate.provider_supported) return ExecutionRoutingHostSkip::ProviderUnavailable;
+			if (!candidate.provider_confirmed || candidate.connection_identity.empty() || candidate.connection_identity != candidate.confirmed_connection_identity ||
+			    candidate.provider_configuration_identity.empty() || candidate.provider_configuration_identity != candidate.confirmed_provider_configuration_identity)
+				return ExecutionRoutingHostSkip::Unconfirmed;
+			if (!source_workspace_identity.empty() && std::ranges::none_of(candidate.mappings, [&source_workspace_identity](const ExecutionRoutingMapping& mapping)
+			    { return mapping.source_workspace_identity == source_workspace_identity; }))
+				return ExecutionRoutingHostSkip::NoMapping;
+			return ExecutionRoutingHostSkip::Full;
+		}
+
+		ExecutionRoutingDecision Waiting(ExecutionRoutingReason reason, ExecutionRoutingAssignment assignment, std::string host_id, ExecutionRoutingHostSkip skip)
+		{
+			return {ExecutionRoutingStatus::Waiting, reason, std::move(assignment), {{std::move(host_id), skip}}};
 		}
 	}
 
@@ -73,17 +94,19 @@ namespace uam
 			const std::unordered_map<std::string, const ExecutionRoutingCandidate*>::const_iterator owner = hosts.find(existing.host_id);
 			if (owner == hosts.end() || !owner->second->runner_ready ||
 			    !owner->second->runner_compatible || !owner->second->provider_supported)
-				return {ExecutionRoutingStatus::Waiting, ExecutionRoutingReason::HostUnavailable, existing};
+				return Waiting(ExecutionRoutingReason::HostUnavailable, existing, existing.host_id,
+				    owner != hosts.end() && owner->second->runner_ready && owner->second->runner_compatible ? ExecutionRoutingHostSkip::ProviderUnavailable : ExecutionRoutingHostSkip::Unreachable);
 			if (existing.connection_identity != owner->second->connection_identity ||
 			    existing.provider_configuration_identity != owner->second->provider_configuration_identity)
-				return {ExecutionRoutingStatus::Waiting, ExecutionRoutingReason::OwnershipChanged, existing};
+				return Waiting(ExecutionRoutingReason::OwnershipChanged, existing, existing.host_id, ExecutionRoutingHostSkip::Unconfirmed);
 			if (existing.automatic && !request.recovery_of_owned_work)
 			{
-				if (!request.automatic_enabled || !AutomaticCandidateReady(*owner->second))
-					return {ExecutionRoutingStatus::Waiting, ExecutionRoutingReason::NoEligibleHost, existing};
 				const std::size_t owned_slot = occupied != occupied_hosts.end() ? 1 : 0;
+				if (!request.automatic_enabled || !AutomaticCandidateReady(*owner->second))
+					return Waiting(ExecutionRoutingReason::NoEligibleHost, existing, existing.host_id,
+					    request.automatic_enabled ? SkipReason(*owner->second, {}) : ExecutionRoutingHostSkip::Off);
 				if (counts[existing.host_id] - owned_slot >= owner->second->max_active_turns)
-					return {ExecutionRoutingStatus::Waiting, ExecutionRoutingReason::NoEligibleHost, existing};
+					return Waiting(ExecutionRoutingReason::NoEligibleHost, existing, existing.host_id, ExecutionRoutingHostSkip::Full);
 			}
 			m_reservations[request.chat_id] = existing;
 			return {ExecutionRoutingStatus::Assigned, ExecutionRoutingReason::None, existing};
@@ -124,7 +147,13 @@ namespace uam
 				}
 			}
 		}
-		if (selected == nullptr) return {};
+		if (selected == nullptr)
+		{
+			ExecutionRoutingDecision waiting;
+			for (const ExecutionRoutingCandidate& candidate : candidates)
+				if (candidate.host_id != "local") waiting.skipped.push_back({candidate.host_id, SkipReason(candidate, request.source_workspace_identity)});
+			return waiting;
+		}
 		ExecutionRoutingAssignment assignment{request.chat_id, selected->host_id, selected->connection_identity,
 		    selected->provider_configuration_identity, selected_mapping->destination_folder_id, selected_mapping->destination_directory, true};
 		m_reservations[request.chat_id] = assignment;
@@ -143,6 +172,18 @@ namespace uam
 		}
 		m_reservations = std::move(restored);
 		return true;
+	}
+
+	std::unordered_map<std::string, std::size_t> ExecutionRoutingService::OccupiedCounts(const std::vector<ExecutionRoutingOccupancy>& occupancy) const
+	{
+		std::scoped_lock lock(m_mutex);
+		std::unordered_map<std::string, std::string> occupied_hosts;
+		for (const ExecutionRoutingOccupancy& occupied : occupancy)
+			if (!occupied.chat_id.empty() && !occupied.host_id.empty()) occupied_hosts.emplace(occupied.chat_id, occupied.host_id);
+		for (const std::pair<const std::string, ExecutionRoutingAssignment>& reserved : m_reservations) occupied_hosts.emplace(reserved.first, reserved.second.host_id);
+		std::unordered_map<std::string, std::size_t> counts;
+		for (const std::pair<const std::string, std::string>& occupied : occupied_hosts) ++counts[occupied.second];
+		return counts;
 	}
 
 	bool ExecutionRoutingService::Release(const std::string& chat_id, bool release_authorized)
