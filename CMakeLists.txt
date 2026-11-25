@@ -1514,6 +1514,10 @@ if(UAM_BUILD_TESTS)
   set_tests_properties(uam_runner_binary_stdio PROPERTIES TIMEOUT 40)
   add_test(NAME uam_local_build_version
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/build-configurator/test_local_build_version.py")
+  # The VCS adapter conformance runner against its sample adapter and deliberate faults (#522); no UAM code is involved.
+  add_test(NAME uam_vcs_adapter_conformance
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/vcs-adapter/selftest.py")
+  set_tests_properties(uam_vcs_adapter_conformance PROPERTIES TIMEOUT 300)
   add_test(NAME uam_ui_build_incremental
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/ui_build_incremental_test.py")
   add_test(NAME uam_build_flag_leak_gate
