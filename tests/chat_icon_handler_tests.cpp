@@ -80,6 +80,10 @@ struct ChatIconHandlerTestAccess
 	{
 		handler.HandleSetComputerUseSettings(nullptr, {{"computerUseGloballyEnabled", enabled}}, callback);
 	}
+	static void SaveComputerUseSettings(UamQueryHandler& handler, const nlohmann::json& payload, CefRefPtr<UamQueryHandler::Callback> callback)
+	{
+		handler.HandleSetComputerUseSettings(nullptr, payload, callback);
+	}
 	static void GetComputerUseSettings(UamQueryHandler& handler, CefRefPtr<UamQueryHandler::Callback> callback)
 	{
 		handler.HandleGetComputerUseSettings(nullptr, {}, callback);
@@ -1032,6 +1036,75 @@ UAM_TEST(RemoteHelperInstallLeavesSharedQueueFreeAndStopsOnCancelOrShutdown)
 #endif
 }
 
+UAM_TEST(RemoteHelperReinstallKeepsTheSavedHostIconAndOptions)
+{
+#if !defined(_WIN32)
+	// Same POSIX ssh stand-in as the install-thread case: the install reaches its saved-record replacement, then is cancelled.
+	TempDir temp("uam-remote-reinstall-icon");
+	const fs::path bin = temp.root / "bin";
+	const fs::path pids = temp.root / "ssh.pids";
+	fs::create_directories(bin);
+	UAM_ASSERT(uam::io::WriteTextFile(bin / "ssh", "#!/bin/sh\necho $$ >> \"$UAM_FAKE_SSH_PIDS\"\nexec sleep 600\n"));
+	fs::permissions(bin / "ssh", fs::perms::owner_all, fs::perm_options::replace);
+	const char* inherited_path = std::getenv("PATH");
+	ScopedEnvVar path("PATH", bin.string() + ":" + (inherited_path ? inherited_path : ""));
+	ScopedEnvVar pid_file("UAM_FAKE_SSH_PIDS", pids.string());
+	struct BorrowedArtifacts
+	{
+		fs::path directory;
+		bool owned;
+		~BorrowedArtifacts() { std::error_code error; if (owned) fs::remove_all(directory, error); }
+	} artifacts{uam::remote::PackagedRunnerPath().parent_path() / "linux-x86_64", false};
+	artifacts.owned = !fs::exists(artifacts.directory) || fs::exists(artifacts.directory / "uam-test-fixture");
+	if (artifacts.owned)
+	{
+		fs::create_directories(artifacts.directory);
+		UAM_ASSERT(uam::io::WriteTextFile(artifacts.directory / "uam-test-fixture", ""));
+		UAM_ASSERT(uam::io::WriteTextFile(artifacts.directory / "uam-runner", "fixture runner"));
+		UAM_ASSERT(uam::io::WriteTextFile(artifacts.directory / "uam-runner.sha256", std::string(64, 'a') + "\n"));
+		UAM_ASSERT(uam::io::WriteTextFile(artifacts.directory / "uam-runner.manifest.json",
+		    nlohmann::json{{"sourceFingerprint", std::string(64, 'b')}, {"protocolVersion", uam::remote::kRunnerProtocolVersion}}.dump()));
+	}
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ExecutionHost saved;
+	saved.id = "reinstall-icon";
+	saved.label = "Reinstall icon";
+	saved.transport = "ssh";
+	saved.ssh_alias = "uam-reinstall-icon";
+	saved.platform = "linux";
+	saved.runner_status = "ready";
+	saved.custom_icon = {"text", "H"};
+	saved.instruction_text = "Saved host instructions";
+	saved.cli_updates_as_admin = true;
+	app.settings.execution_hosts = {uam::execution_hosts::LocalHost(), saved};
+	std::unique_ptr<UamQueryHandler> handler = UamQueryHandlerTestAccess::Create(app, "file:///private/index.html");
+	const CefRefPtr<RecordingInstructionCallback> reinstall = new RecordingInstructionCallback;
+	// The Update helper action sends the saved host, which has no icon field in the install payload.
+	ChatIconHandlerTestAccess::InstallRemoteHost(*handler, {{"id", saved.id}, {"label", saved.label}, {"sshAlias", saved.ssh_alias}, {"runnerDirectory", ""}}, reinstall, 61);
+	RunCreationLoopUntil([&pids]() { return fs::exists(pids) && !ReadFile(pids).empty(); }, std::chrono::seconds(10));
+	UAM_ASSERT(fs::exists(pids) && !ReadFile(pids).empty());
+	const ExecutionHost* installing = uam::execution_hosts::Find(app.settings.execution_hosts, saved.id);
+	UAM_ASSERT(installing != nullptr);
+	UAM_ASSERT_EQ(installing->runner_status, std::string("installing"));
+	UAM_ASSERT(installing->custom_icon == saved.custom_icon);
+	UAM_ASSERT(installing->instruction_text == saved.instruction_text);
+	UAM_ASSERT(installing->cli_updates_as_admin);
+	handler->OnQueryCanceled(nullptr, nullptr, 61);
+	RunCreationLoopUntil([reinstall]() { return reinstall->successes + reinstall->failures != 0; }, std::chrono::seconds(5));
+	UAM_ASSERT_EQ(reinstall->failures, 1);
+	std::istringstream started_pids(ReadFile(pids));
+	pid_t ssh_pid = 0;
+	UAM_ASSERT(static_cast<bool>(started_pids >> ssh_pid));
+	RunCreationLoopUntil([ssh_pid]() { return ::kill(ssh_pid, 0) != 0 && errno == ESRCH; }, std::chrono::seconds(5));
+	UAM_ASSERT(::kill(ssh_pid, 0) != 0 && errno == ESRCH);
+	const ExecutionHost* after = uam::execution_hosts::Find(app.settings.execution_hosts, saved.id);
+	UAM_ASSERT(after != nullptr);
+	UAM_ASSERT(after->custom_icon == saved.custom_icon);
+	handler.reset();
+#endif
+}
+
 UAM_TEST(HelperInstallRefusalKeepsRunningBackgroundScan)
 {
 	TempDir temp("uam-remote-install-refusal-scan");
@@ -1141,6 +1214,50 @@ UAM_TEST(ComputerUseGlobalSettingsSaveFailurePreservesCapturedAuthority)
 	const nlohmann::json receipt = nlohmann::json::parse(read->success_message);
 	UAM_ASSERT(receipt.at("computerUseGloballyEnabled").get<bool>());
 	UAM_ASSERT(!receipt.at("computerUseRevocationPending").get<bool>());
+}
+
+UAM_TEST(ComputerUseAllowlistSaveWhileOnIgnoresOneChatsPendingCleanup)
+{
+	TempDir temp("uam-cu-allowlist-pending-chat");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.settings.computer_use_globally_enabled = true;
+	// One chat was turned off while Computer Use stayed on, and its cleanup has not finished.
+	app.computer_use_revocation_pending_chat_ids.insert("chat-cleanup-pending");
+	auto handler = UamQueryHandlerTestAccess::Create(app, "file:///private/index.html");
+	const nlohmann::json text_edit = {{"identityKind", "bundleId"}, {"identity", "com.apple.TextEdit"}};
+	// The Settings page sends only the allowlist fields, as it does after any allowlist edit.
+	for (const nlohmann::json& payload : {
+	         nlohmann::json{{"allowlistEnabled", true}, {"allowedApplications", nlohmann::json::array({text_edit})}},
+	         nlohmann::json{{"allowlistEnabled", true}, {"allowedApplications", nlohmann::json::array()}},
+	         nlohmann::json{{"computerUseGloballyEnabled", true}, {"allowlistEnabled", false}}})
+	{
+		CefRefPtr<RecordingIconCallback> saved = new RecordingIconCallback;
+		ChatIconHandlerTestAccess::SaveComputerUseSettings(*handler, payload, saved);
+		UAM_ASSERT_EQ(saved->failures, 0);
+		UAM_ASSERT_EQ(saved->successes, 1);
+		UAM_ASSERT(app.settings.computer_use_globally_enabled);
+		UAM_ASSERT_EQ(app.settings.computer_use_allowlist_enabled, payload.at("allowlistEnabled").get<bool>());
+		UAM_ASSERT(app.computer_use_revocation_pending_chat_ids.contains("chat-cleanup-pending"));
+		const nlohmann::json receipt = nlohmann::json::parse(saved->success_message);
+		UAM_ASSERT(receipt.at("computerUseRevocationPending").get<bool>());
+		AppSettings persisted;
+		UAM_ASSERT(SettingsStore::Load(AppPaths::SettingsFilePath(temp.root), persisted).loaded);
+		UAM_ASSERT_EQ(persisted.computer_use_allowlist_enabled, payload.at("allowlistEnabled").get<bool>());
+		UAM_ASSERT_EQ(persisted.computer_use_allowed_applications.size(), app.settings.computer_use_allowed_applications.size());
+	}
+	UAM_ASSERT(app.settings.computer_use_allowed_applications.empty());
+
+	// Turning the feature on from Off still waits for that cleanup, and an allowlist save cannot sneak it on.
+	app.settings.computer_use_globally_enabled = false;
+	CefRefPtr<RecordingIconCallback> blocked = new RecordingIconCallback;
+	ChatIconHandlerTestAccess::SaveComputerUseSettings(*handler, {{"computerUseGloballyEnabled", true}, {"allowlistEnabled", true}, {"allowedApplications", nlohmann::json::array({text_edit})}}, blocked);
+	UAM_ASSERT_EQ(blocked->failures, 1);
+	UAM_ASSERT_EQ(blocked->last_failure, 500);
+	UAM_ASSERT_EQ(blocked->successes, 0);
+	UAM_ASSERT(!app.settings.computer_use_globally_enabled);
+	UAM_ASSERT(!app.settings.computer_use_allowlist_enabled);
+	UAM_ASSERT(app.settings.computer_use_allowed_applications.empty());
 }
 
 UAM_TEST(ChoosingAModelAfterSwitchAnywaySucceedsWhileTheHelperRetires)
