@@ -923,8 +923,8 @@ UAM_TEST(UamControlAgentWaitSidebarMergeRejectsChangedOrUnprovenRetirement)
 #if UAM_ENABLE_RUNTIME_CODEX_CLI
 namespace
 {
-	/// Public accepted delegation, actual repository publication and real scheduler retirement.
-	std::string OrdinaryContinuationChild(ControlAgentWaitFixture& fixture)
+	/// A live Codex origin turn whose next delegation stages the same-live-parent continuation on the root.
+	void BeginOrdinaryOrigin(ControlAgentWaitFixture& fixture)
 	{
 		auto& root = fixture.app.chats.front();
 		auto& session = *fixture.app.acp_sessions.front();
@@ -941,6 +941,11 @@ namespace
 		UAM_ASSERT_EQ(session.codex_origin_rpc_turn_id, session.codex_turn_id);
 		UAM_ASSERT_EQ(session.codex_origin_rpc_turn_serial, session.turn_serial);
 		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, root));
+	}
+	/// Public accepted delegation, actual repository publication and real scheduler retirement.
+	std::string OrdinaryContinuationChild(ControlAgentWaitFixture& fixture)
+	{
+		BeginOrdinaryOrigin(fixture);
 		const auto delegated = fixture.Call("ordinary-continuation-child", "agent_delegate",
 		    {{"agentId", "plan"}, {"task", "Return the exact fixture result without tools."}});
 		UAM_ASSERT(delegated.value("ok", false));
@@ -1246,6 +1251,47 @@ UAM_TEST(ManagedParentContinuationUnacknowledgedWriteStaysQuarantinedUntilItsPro
 	UAM_ASSERT_EQ(root->managed_parent_input_receipts, receipts);
 	UAM_ASSERT_EQ(session.next_request_id, allocated);
 	UAM_ASSERT(!session.pending_prompt_delivery);
+}
+
+// #986: a delegation that staged the same-live-parent continuation changed the root, so it keeps the synchronous save
+// and its rollback. The rollback copy no longer holds the transcript: a refused save must still restore every saved
+// field, revoke the continuation, and leave the transcript exactly as it was and unwritten.
+UAM_TEST(UamControlRootMutationRollbackRestoresSavedFieldsAndKeepsTranscript)
+{
+	ControlAgentWaitFixture fixture;
+	BeginOrdinaryOrigin(fixture);
+	ChatSession* root = ChatDomainService().FindChatById(fixture.app, fixture.root_id);
+	UAM_ASSERT(root != nullptr && !root->managed_parent_result);
+	for (int index = 0; index < 40; ++index)
+		root->messages.push_back({.role = MessageRole::Assistant, .content = "Earlier answer " + std::to_string(index)});
+	UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, *root));
+	// Another birth on disk refuses every save of this root, while the ledger and the child transcript still save.
+	ChatSession foreign = *root;
+	foreign.managed_followup_incarnation = "8f1c2b9e-4d3a-4c55-9b0e-000000000986";
+	UAM_ASSERT(foreign.managed_followup_incarnation != root->managed_followup_incarnation);
+	UAM_ASSERT(fs::remove(AppPaths::UamChatFilePath(fixture.app.data_root, root->id)));
+	UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, foreign));
+	UAM_ASSERT(!ChatRepository::SaveChat(fixture.app.data_root, *root));
+	const std::string saved_fields = ChatRepository::ChatMetadataFingerprint(fixture.app.data_root, *root);
+	const auto transcript = root->messages;
+	const std::uint64_t stamp = root->messages.revision();
+	const std::size_t audit = root->uam_control_audit.size();
+	UAM_ASSERT(!fixture.app.acp_sessions.front()->managed_parent_continuation);
+
+	const nlohmann::json refused = fixture.Call("rollback-delegation", "agent_delegate",
+	    {{"agentId", "plan"}, {"task", "Return the exact fixture result without tools."}});
+	UAM_ASSERT(!refused.value("ok", true));
+	UAM_ASSERT_EQ(refused.value("error", std::string()), std::string("Control result could not be durably recorded."));
+	root = ChatDomainService().FindChatById(fixture.app, fixture.root_id);
+	UAM_ASSERT(root != nullptr);
+	UAM_ASSERT(!root->managed_parent_result);
+	UAM_ASSERT_EQ(root->uam_control_audit.size(), audit);
+	UAM_ASSERT_EQ(ChatRepository::ChatMetadataFingerprint(fixture.app.data_root, *root), saved_fields);
+	UAM_ASSERT(root->messages == transcript);
+	UAM_ASSERT_EQ(root->messages.revision(), stamp);
+	// The delegation did stage a continuation on the root before the save failed; the failure revoked it.
+	const auto& lease = fixture.app.acp_sessions.front()->managed_parent_continuation;
+	UAM_ASSERT(lease && lease->revoked && !lease->id.empty());
 }
 
 #endif
@@ -2110,4 +2156,204 @@ UAM_TEST(UamControlReadOnlyReplyWaitsWhileAuditCannotBeSaved)
 	UAM_ASSERT(AwaitPublishedReply(fixture.app, fixture.Reply("blocked-status")).value("ok", false));
 	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(data_root, fixture.root_id, true, nullptr, false);
 	UAM_ASSERT(saved && std::ranges::any_of(saved->uam_control_audit, [](const UamControlAuditRecord& record) { return record.request_id == "blocked-status"; }));
+}
+
+namespace
+{
+	bool AuditOnDisk(const uam::AppState& app, const std::string& root_id, const std::string& request_id)
+	{
+		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(app.data_root, root_id, true, nullptr, false);
+		UAM_ASSERT(saved.has_value());
+		return std::ranges::any_of(saved->uam_control_audit, [&](const UamControlAuditRecord& record) { return record.request_id == request_id; });
+	}
+
+	std::size_t ResultCards(const ChatSession& chat, const std::string& run_id)
+	{
+		std::size_t count = 0;
+		for (const Message& message : chat.messages)
+			count += static_cast<std::size_t>(std::ranges::count(message.tool_calls, "uam-agent-result-" + run_id, &ToolCall::id));
+		return count;
+	}
+}
+
+// #986: a mutating call that changed nothing on the root but its audit record (a rejected agent_cancel and an
+// accepted one) replies like a read-only tool: the poll does not save the root, the reply exists only once the record
+// is durable, and a crash before then leaves no reply. Listed in tests/ci_serial.txt for the rejected call's budget.
+UAM_TEST(UamControlAuditOnlyMutationReplyFollowsDurableAuditOffPoll)
+{
+	StatusPollingFixture fixture;
+	// Calibration: the blocking work this guards against, a synchronous save of the fixture root chat (median of three).
+	std::vector<double> saves;
+	for (int run = 0; run < 3; ++run)
+	{
+		const auto start = std::chrono::steady_clock::now();
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, fixture.Root()));
+		saves.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
+	}
+	std::ranges::sort(saves);
+	const auto transcript = fixture.Root().messages;
+	const struct { const char* id; nlohmann::json arguments; bool ok; } calls[] = {
+	    {"rejected-cancel", {{"runId", "not-a-descendant"}}, false},
+	    {"accepted-cancel", {{"runId", fixture.child_id}}, true}};
+	for (const auto& call : calls)
+	{
+		(void)PublishRequest(fixture.app, fixture.capability_directory, call.id, "agent_cancel", call.arguments);
+		const std::optional<std::string> root_revision = ChatRepository::ChatStorageRevision(fixture.app.data_root, fixture.root_id);
+		const auto start = std::chrono::steady_clock::now();
+		(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+		const double poll = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+		std::fprintf(stderr, "[measure] %s request poll %.2f ms; synchronous root save median %.1f ms\n", call.id, poll, saves[1]);
+		// The poll that ran the call did not write the root chat file.
+		UAM_ASSERT(ChatRepository::ChatStorageRevision(fixture.app.data_root, fixture.root_id) == root_revision);
+		// Per-poll budget below one unit of the guarded work (half the cheapest calibration save), so a synchronous save
+		// fails it. Only for the refused call: an accepted cancel also writes its run ledger durably on this poll.
+		if (!call.ok) UAM_ASSERT(poll < saves.front() / 2.0);
+		const auto in_memory = std::ranges::find(fixture.Root().uam_control_audit, std::string(call.id), &UamControlAuditRecord::request_id);
+		UAM_ASSERT(in_memory != fixture.Root().uam_control_audit.end());
+		UAM_ASSERT_EQ(in_memory->result, std::string(call.ok ? "ok" : "rejected"));
+		// Simulated crash point: the call ran and its record is in memory, but nothing durable yet and no reply.
+		UAM_ASSERT(!AuditOnDisk(fixture.app, fixture.root_id, call.id));
+		UAM_ASSERT(!fs::exists(fixture.Reply(call.id)));
+		const nlohmann::json reply = AwaitPublishedReply(fixture.app, fixture.Reply(call.id));
+		UAM_ASSERT_EQ(reply.value("ok", !call.ok), call.ok);
+		if (!call.ok) UAM_ASSERT_EQ(reply.value("error", std::string()), std::string("Agent run is outside this capability's descendant scope."));
+		else UAM_ASSERT_EQ(reply["result"]["status"], nlohmann::json("cancelled"));
+		UAM_ASSERT(AuditOnDisk(fixture.app, fixture.root_id, call.id));
+	}
+	UAM_ASSERT(fixture.Root().messages == transcript);
+	UAM_ASSERT(fixture.app.uam_control_capabilities.front().pending_audited_replies.empty());
+	// A leftover copy of an answered mutating request is never run or answered again.
+	const fs::path replay = PublishRequest(fixture.app, fixture.capability_directory, "accepted-cancel", "agent_cancel", {{"runId", fixture.child_id}});
+	(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+	UAM_ASSERT(!fs::exists(replay));
+	UAM_ASSERT_EQ(std::ranges::count(fixture.Root().uam_control_audit, std::string("accepted-cancel"), &UamControlAuditRecord::request_id), std::ptrdiff_t{1});
+}
+
+// #986: while a deferred audit save of the root is pending, a finished child's result waits for it and is then
+// delivered exactly once: no second card on later polls, and none after a restart from the saved files.
+UAM_TEST(UamControlDeferredAuditSaveKeepsRootResultDeliveryExactlyOnce)
+{
+	StatusPollingFixture fixture(200, 256);
+	AgentRun& child = fixture.Run(fixture.child_id);
+	child.status = "completed";
+	child.result_excerpt = "Exact child result bytes.";
+	child.deliver_result_to_root_chat = true;
+	child.result_delivery_id = child.id;
+	child.finished_at = uam::time::TimestampNow();
+	child.finished_at_epoch_ms = uam::time::SystemEpochMillisecondsNow();
+	UAM_ASSERT(uam::AgentRunLedger::Save(fixture.app.data_root, child));
+	const std::size_t saved_rows = fixture.Root().messages.size();
+
+	(void)PublishRequest(fixture.app, fixture.capability_directory, "pending-audit", "agent_cancel", {{"runId", "not-a-descendant"}});
+	(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+	UAM_ASSERT(!fs::exists(fixture.Reply("pending-audit")));
+	UAM_ASSERT(!AuditOnDisk(fixture.app, fixture.root_id, "pending-audit"));
+	// The scheduler sees memory ahead of the saved parent and does not deliver over it.
+	std::int64_t clock = 100000;
+	(void)uam::AgentRunScheduler::PollAtForTests(fixture.app, clock);
+	UAM_ASSERT(!fixture.Run(fixture.child_id).root_result_delivered);
+	UAM_ASSERT_EQ(ResultCards(fixture.Root(), fixture.child_id), std::size_t{0});
+
+	// The poll loop runs on: control requests, the scheduler and the save flush.
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+	while ((!fs::exists(fixture.Reply("pending-audit")) || !fixture.Run(fixture.child_id).root_result_delivered) && std::chrono::steady_clock::now() < deadline)
+	{
+		(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+		(void)uam::AgentRunScheduler::PollAtForTests(fixture.app, clock += 50);
+		(void)uam::FlushPendingChatSaves(fixture.app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(2));
+	}
+	UAM_ASSERT(fs::exists(fixture.Reply("pending-audit")));
+	UAM_ASSERT(fixture.Run(fixture.child_id).root_result_delivered);
+	UAM_ASSERT(AuditOnDisk(fixture.app, fixture.root_id, "pending-audit"));
+	for (int poll = 0; poll < 3; ++poll)
+	{
+		(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+		(void)uam::AgentRunScheduler::PollAtForTests(fixture.app, clock += 3000);
+		(void)uam::FlushPendingChatSaves(fixture.app);
+	}
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(fixture.app.data_root, fixture.root_id, true, nullptr, false);
+	UAM_ASSERT(saved.has_value());
+	UAM_ASSERT_EQ(ResultCards(*saved, fixture.child_id), std::size_t{1});
+	UAM_ASSERT_EQ(ResultCards(fixture.Root(), fixture.child_id), std::size_t{1});
+	UAM_ASSERT_EQ(saved->messages.size(), saved_rows + 1);
+
+	// A restart from the saved files finds the delivered card and its receipt, and writes nothing twice.
+	uam::AppState restarted;
+	restarted.data_root = fixture.app.data_root;
+	restarted.chats.push_back(*saved);
+	auto ledger = uam::AgentRunLedger::LoadAllReadOnly(restarted.data_root);
+	UAM_ASSERT(ledger.errors.empty());
+	restarted.agent_runs = std::move(ledger.runs);
+	for (int poll = 0; poll < 3; ++poll)
+		(void)uam::AgentRunScheduler::PollAtForTests(restarted, clock += 3000);
+	const std::optional<ChatSession> after_restart = ChatRepository::LoadLocalChat(restarted.data_root, fixture.root_id, true, nullptr, false);
+	UAM_ASSERT(after_restart.has_value());
+	UAM_ASSERT_EQ(ResultCards(*after_restart, fixture.child_id), std::size_t{1});
+	UAM_ASSERT_EQ(after_restart->messages.size(), saved_rows + 1);
+}
+
+// #986: the calls whose rollback copy leaves the transcript out never write the root's messages when they answer at
+// once (a pending approval or chat creation answers later and never reaches that rollback). The stamp changes on any
+// write access, so an unchanged stamp is the proof the transcript-free copy restores everything the call changed.
+UAM_TEST(UamControlTranscriptFreeRollbackCallsLeaveTheTranscriptUnwritten)
+{
+	ControlAgentWaitFixture fixture;
+	for (int index = 0; index < 20; ++index)
+		ChatDomainService().FindChatById(fixture.app, fixture.root_id)->messages.push_back(
+		    {.role = index % 2 == 0 ? MessageRole::User : MessageRole::Assistant, .content = "Row " + std::to_string(index), .created_at = "2026-11-23 10:00:00"});
+	const struct { const char* method; nlohmann::json arguments; } calls[] = {
+	    {"pr_watch", {{"url", "https://github.com/owner/repo/pull/1"}}},
+	    {"pr_unwatch", {{"url", "https://github.com/owner/repo/pull/1"}}},
+	    {"agent_cancel", {{"runId", "not-a-descendant"}}},
+	    {"goal_create", {{"objective", "Finish the fixture."}, {"idempotencyKey", "transcript-free-goal"}}},
+	    {"agent_delegate", {{"agentId", "plan"}, {"task", "Inspect the private fixture."}}},
+	    {"chat_create", {{"task", "Start a separate fixture chat."}}},
+	    {"html_view_preview", {{"title", "Fixture"}, {"html", "<p>Fixture</p>"}}},
+	    {"user_question", {{"question", "Continue?"}}},
+	    {"computer_use_request", {{"reason", "Inspect the fixture window."}}},
+	    {"secret_request", {{"label", "Fixture token"}, {"reason", "The fixture needs a token."}}}};
+	int index = 0;
+	for (const auto& call : calls)
+	{
+		const std::uint64_t stamp = ChatDomainService().FindChatById(fixture.app, fixture.root_id)->messages.revision();
+		const nlohmann::json reply = fixture.Call("transcript-free-" + std::to_string(index++), call.method, call.arguments);
+		const bool answers_later = reply.value("pendingApproval", false) || reply.value("pendingChatCreate", false) || reply.value("pendingRenderCheck", false);
+		if (!answers_later)
+			UAM_ASSERT_EQ(ChatDomainService().FindChatById(fixture.app, fixture.root_id)->messages.revision(), stamp);
+	}
+}
+
+// #986: goal_create changes the root's goal fields, so it keeps the synchronous save and its rollback. With the root's
+// saves refused, the goal, the audit record and every other saved field are rolled back and the transcript is untouched.
+UAM_TEST(UamControlGoalCreateRollbackRestoresGoalAndKeepsTranscript)
+{
+	ControlAgentWaitFixture fixture;
+	ChatSession* root = ChatDomainService().FindChatById(fixture.app, fixture.root_id);
+	for (int index = 0; index < 40; ++index)
+		root->messages.push_back({.role = MessageRole::Assistant, .content = "Earlier answer " + std::to_string(index)});
+	UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, *root));
+	ChatSession foreign = *root;
+	foreign.managed_followup_incarnation = "8f1c2b9e-4d3a-4c55-9b0e-000000000987";
+	UAM_ASSERT(fs::remove(AppPaths::UamChatFilePath(fixture.app.data_root, root->id)));
+	UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, foreign));
+	UAM_ASSERT(!ChatRepository::SaveChat(fixture.app.data_root, *root));
+	const std::string saved_fields = ChatRepository::ChatMetadataFingerprint(fixture.app.data_root, *root);
+	const auto goals = root->goals.size();
+	const std::string active_goal = root->active_goal_id;
+	const auto transcript = root->messages;
+	const std::uint64_t stamp = root->messages.revision();
+	const std::size_t audit = root->uam_control_audit.size();
+
+	const nlohmann::json refused = fixture.Call("rollback-goal", "goal_create", {{"objective", "Finish the fixture."}, {"idempotencyKey", "rollback-goal-key"}});
+	UAM_ASSERT(!refused.value("ok", true));
+	UAM_ASSERT_EQ(refused.value("error", std::string()), std::string("Control result could not be durably recorded."));
+	root = ChatDomainService().FindChatById(fixture.app, fixture.root_id);
+	UAM_ASSERT(root != nullptr);
+	UAM_ASSERT_EQ(root->goals.size(), goals);
+	UAM_ASSERT_EQ(root->active_goal_id, active_goal);
+	UAM_ASSERT_EQ(root->uam_control_audit.size(), audit);
+	UAM_ASSERT_EQ(ChatRepository::ChatMetadataFingerprint(fixture.app.data_root, *root), saved_fields);
+	UAM_ASSERT(root->messages == transcript);
+	UAM_ASSERT_EQ(root->messages.revision(), stamp);
 }

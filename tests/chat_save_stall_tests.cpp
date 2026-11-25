@@ -1,6 +1,8 @@
 #include "test_harness.h"
 #include <set>
 #include "common/chat/chat_repository.h"
+#include "common/chat/chat_transcript_snapshot.h"
+#include "common/chat/managed_parent_user_boundary.h"
 #include "common/runtime/acp/acp_polling.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/app_time.h"
@@ -872,4 +874,142 @@ UAM_TEST(RemoteOutputAckSaveWhoseCursorsMovedIsDecidedAgain)
 	(void)fixture.PollUntilAcknowledged(waited, std::uintmax_t{100});
 	UAM_ASSERT_EQ(helper.AwaitWrite(ack).bytes, ack);
 	fixture.Drain();
+}
+
+namespace
+{
+	// The #986 poll-thread fixture: a 2,000-message root (6 KiB rows) with a full 64-record audit window.
+	ChatSession PollFixtureChat(int messages = 2000, std::size_t user_bytes = 6 * 1024)
+	{
+		ChatSession chat = ChatDomainService().CreateNewChat("", "codex-cli");
+		for (int index = 0; index < messages; ++index)
+			chat.messages.push_back({.role = index % 2 == 0 ? MessageRole::User : MessageRole::Assistant,
+			    .content = std::string(index % 2 == 0 ? user_bytes : 6 * 1024, static_cast<char>('a' + index % 26)),
+			    .created_at = "2026-11-23 10:00:" + std::to_string(index % 60)});
+		for (int index = 0; index < 64; ++index)
+			chat.uam_control_audit.push_back({.request_id = "audit-" + std::to_string(index), .method = "agent_status", .result = "ok"});
+		return chat;
+	}
+}
+
+// #986: a mutating control call's rollback copy leaves the transcript in place, keeps its revision stamp (the proof
+// that the call did not write it) and restores every other field.
+UAM_TEST(ChatRollbackSnapshotKeepsTranscriptAndRestoresMetadata)
+{
+	ChatSession chat = PollFixtureChat(10, 16);
+	const ChatSession before = chat;
+	const std::uint64_t stamp = chat.messages.revision();
+	ChatSession snapshot = uam::chat_snapshot::CopyWithoutMessages(chat);
+	UAM_ASSERT(snapshot.messages.empty());
+	UAM_ASSERT_EQ(chat.messages.revision(), stamp);
+	UAM_ASSERT(chat.messages == before.messages);
+	chat.title = "Changed by the call";
+	chat.uam_control_audit.push_back({.request_id = "call", .method = "agent_delegate", .result = "ok"});
+	chat.managed_parent_result = ManagedParentResultRecord{};
+	uam::chat_snapshot::RestoreWithoutMessages(chat, std::move(snapshot));
+	UAM_ASSERT_EQ(chat.title, before.title);
+	UAM_ASSERT_EQ(chat.uam_control_audit.size(), before.uam_control_audit.size());
+	UAM_ASSERT(!chat.managed_parent_result.has_value());
+	UAM_ASSERT_EQ(chat.metadata_incarnation, before.metadata_incarnation);
+	UAM_ASSERT(chat.messages == before.messages);
+	UAM_ASSERT_EQ(chat.messages.revision(), stamp);
+	// Any write access to the transcript shows in the stamp.
+	chat.messages.back().content += "!";
+	UAM_ASSERT(chat.messages.revision() != stamp);
+}
+
+// #986: the scheduler's per-poll transcript check sees every write that takes a new stamp at once. A write through an
+// element reference kept from earlier is invisible to the stamp until the next full comparison (at most two seconds
+// later), which is why every publication guard compares in full: that comparison refuses it immediately.
+UAM_TEST(PolledTranscriptMatchSeesStampedWritesAndRechecksInFull)
+{
+	ChatSession live = PollFixtureChat(50, 16);
+	const ChatSession captured = live;
+	uam::chat_snapshot::TranscriptMatchMemo memo;
+	const auto now = std::chrono::steady_clock::now();
+	UAM_ASSERT(uam::chat_snapshot::SameMessagesPolled(live.messages, captured.messages, memo, now));
+	UAM_ASSERT(uam::chat_snapshot::SameMessagesPolled(live.messages, captured.messages, memo, now));
+	live.messages[3].content = "edited";
+	UAM_ASSERT(!uam::chat_snapshot::SameMessagesPolled(live.messages, captured.messages, memo, now));
+	live.messages[3].content = captured.messages[3].content;
+	UAM_ASSERT(uam::chat_snapshot::SameMessagesPolled(live.messages, captured.messages, memo, now));
+	live.messages.push_back({.role = MessageRole::Assistant, .content = "streamed"});
+	UAM_ASSERT(!uam::chat_snapshot::SameMessagesPolled(live.messages, captured.messages, memo, now));
+	live.messages.pop_back();
+	Message& kept = live.messages[5];
+	UAM_ASSERT(uam::chat_snapshot::SameMessagesPolled(live.messages, captured.messages, memo, now));
+	kept.content = "written through a kept reference";
+	UAM_ASSERT(!(live.messages == captured.messages)); // The publication guards' exact comparison.
+	UAM_ASSERT(uam::chat_snapshot::SameMessagesPolled(live.messages, captured.messages, memo, now)); // Within the interval.
+	UAM_ASSERT(!uam::chat_snapshot::SameMessagesPolled(live.messages, captured.messages, memo,
+	    now + uam::chat_snapshot::TranscriptMatchMemo::kFullComparisonInterval));
+}
+
+// #986: the lease's per-poll user-boundary check agrees with the digest it replaces: streamed assistant output and
+// fields outside the digest keep the lease, every digested user-row change ends it.
+UAM_TEST(ManagedParentUserBoundaryComparisonMatchesDigestRules)
+{
+	ChatSession chat = PollFixtureChat(12, 32);
+	chat.messages[2].attachments.push_back({.id = "attachment", .name = "notes.txt", .path = "/tmp/notes.txt", .size_bytes = 3, .content_digest = "digest"});
+	chat.messages[4].markdown_store_files = {"store/file.md"};
+	std::vector<uam::managed_parent_history::UserBoundaryRow> rows;
+	const std::string digest = uam::managed_parent_history::UserBoundaryDigest(chat, &rows);
+	UAM_ASSERT(!digest.empty());
+	using uam::managed_parent_history::UserBoundaryMatches;
+	UAM_ASSERT(UserBoundaryMatches(chat, rows));
+	// Each edit must get the same answer from the row comparison as from comparing the digest it replaces.
+	const auto still = [&](auto edit)
+	{
+		ChatSession copy = chat;
+		edit(copy);
+		const bool matches = UserBoundaryMatches(copy, rows);
+		UAM_ASSERT_EQ(matches, uam::managed_parent_history::UserBoundaryDigest(copy) == digest);
+		return matches;
+	};
+	UAM_ASSERT(still([](ChatSession& c) { c.messages.push_back({.role = MessageRole::Assistant, .content = "streamed"}); }));
+	UAM_ASSERT(still([](ChatSession& c) { c.messages[1].content += " more output"; }));
+	UAM_ASSERT(still([](ChatSession& c) { c.messages[2].thoughts = "not digested"; }));
+	UAM_ASSERT(still([](ChatSession& c) { c.messages[2].attachments[0].preview_key = "not digested"; }));
+	UAM_ASSERT(!still([](ChatSession& c) { c.messages[0].content += "x"; }));
+	UAM_ASSERT(!still([](ChatSession& c) { c.messages[0].created_at += "x"; }));
+	UAM_ASSERT(!still([](ChatSession& c) { c.messages[2].attachments[0].path += "x"; }));
+	UAM_ASSERT(!still([](ChatSession& c) { c.messages[2].attachments[0].source = AttachmentSource::ProviderUri; }));
+	UAM_ASSERT(!still([](ChatSession& c) { c.messages[2].attachments[0].native_asset_key = "key"; }));
+	UAM_ASSERT(!still([](ChatSession& c) { c.messages[4].markdown_store_files.clear(); }));
+	UAM_ASSERT(!still([](ChatSession& c) { c.messages[4].markdown_store_prompt_blocks.push_back("block"); }));
+	UAM_ASSERT(!still([](ChatSession& c) { c.messages[6].acp_prompt_not_sent = true; }));
+	UAM_ASSERT(!still([](ChatSession& c) { c.messages[6].acp_prompt_discarded = true; }));
+	UAM_ASSERT(!still([](ChatSession& c) { c.messages[6].interrupted = true; }));
+	UAM_ASSERT(!still([](ChatSession& c) { c.messages.push_back({.role = MessageRole::User, .content = "new input", .created_at = "later"}); }));
+	UAM_ASSERT(!still([](ChatSession& c) { c.messages.erase(c.messages.begin()); }));
+	UAM_ASSERT(!still([](ChatSession& c) { c.messages_loaded = false; }));
+	UAM_ASSERT(!UserBoundaryMatches(chat, {}));
+}
+
+// #986 same-workload figures for the poll-thread checks this change replaces, on the 2,000-message fixture.
+// Report-only; no budget is asserted for these checks.
+UAM_TEST(ManagedPollCheckMeasurements)
+{
+	ChatSession chat = PollFixtureChat();
+	const auto median = [](auto work)
+	{
+		std::vector<double> runs;
+		for (int run = 0; run < 5; ++run) { const auto start = Clock::now(); work(); runs.push_back(MsSince(start)); }
+		std::ranges::sort(runs);
+		return runs[runs.size() / 2];
+	};
+	const double copy_before = median([&] { const ChatSession copy = chat; UAM_ASSERT(!copy.messages.empty()); });
+	const double copy_after = median([&] { const ChatSession copy = uam::chat_snapshot::CopyWithoutMessages(chat); UAM_ASSERT(copy.messages.empty()); });
+	const ChatSession captured = chat;
+	uam::chat_snapshot::TranscriptMatchMemo memo;
+	UAM_ASSERT(uam::chat_snapshot::SameMessagesPolled(chat.messages, captured.messages, memo));
+	const double compare_before = median([&] { UAM_ASSERT(chat.messages == captured.messages); });
+	const double compare_after = median([&] { UAM_ASSERT(uam::chat_snapshot::SameMessagesPolled(chat.messages, captured.messages, memo)); });
+	ChatSession boundary_chat = PollFixtureChat(2000, 1000);
+	std::vector<uam::managed_parent_history::UserBoundaryRow> rows;
+	const std::string digest = uam::managed_parent_history::UserBoundaryDigest(boundary_chat, &rows);
+	const double boundary_before = median([&] { UAM_ASSERT(uam::managed_parent_history::UserBoundaryDigest(boundary_chat) == digest); });
+	const double boundary_after = median([&] { UAM_ASSERT(uam::managed_parent_history::UserBoundaryMatches(boundary_chat, rows)); });
+	std::fprintf(stderr, "[measure] 2000-message root: rollback copy %.3f -> %.4f ms; prepared-root transcript check %.3f -> %.4f ms; lease user-boundary check (1,000 user rows) %.3f -> %.4f ms\n",
+	    copy_before, copy_after, compare_before, compare_after, boundary_before, boundary_after);
 }

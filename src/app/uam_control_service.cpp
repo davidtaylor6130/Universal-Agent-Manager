@@ -30,6 +30,7 @@
 #include "app/vcs_commit_service.h"
 #include "app/managed_subagent_control_service.h"
 #include "common/chat/chat_repository.h"
+#include "common/chat/chat_transcript_snapshot.h"
 #include "common/chat/html_view.h"
 #include "common/chat/html_view_render_check.h"
 #include "app/secret_request_service.h"
@@ -692,10 +693,12 @@ namespace uam
 			});
 		}
 
-		// A read-only tool changes nothing but its own audit record, so it needs no whole-chat rollback copy. From the
-		// poll loop its reply is sealed now and written by WriteAuditedReplies once a background save has made that
-		// record durable; otherwise (and when an exclusive publication owns the chat's save) the save is synchronous.
-		nlohmann::json ReadOnlyToolReply(AppState& app, const std::string& capability_id, const std::string& request_id,
+		// A call that changed nothing on the root chat but its own audit record (a read-only tool, or a mutating call
+		// HandleRequest proved left the saved chat as it was) needs no whole-chat rollback copy: undoing it is removing
+		// that record. From the poll loop its reply is sealed now and written by WriteAuditedReplies once a background
+		// save has made the record durable; otherwise (and when an exclusive publication owns the chat's save) the save
+		// is synchronous.
+		nlohmann::json AuditOnlyToolReply(AppState& app, const std::string& capability_id, const std::string& request_id,
 		                                 std::string_view method, ToolResult result, bool defer_audit)
 		{
 			const nlohmann::json unrecorded{{"ok", false}, {"error", "Control result could not be durably recorded."}};
@@ -1381,7 +1384,7 @@ namespace uam
 					result = {.error = read->method == "memory_search"
 					                       ? "This chat's memory scope changed while it was being searched, or memory was turned off. Ask again."
 					                       : "This chat's workspace changed while it was being read. Ask again."};
-				const nlohmann::json response = ReadOnlyToolReply(app, read->capability_id, read->request_id, read->method, std::move(result), true);
+				const nlohmann::json response = AuditOnlyToolReply(app, read->capability_id, read->request_id, read->method, std::move(result), true);
 				if (!response.value("pendingAuditSave", false)) (void)WriteResponse(read->directory, read->request_id, response);
 			}
 			return changed;
@@ -1404,14 +1407,15 @@ namespace uam
 				return {.error = "Goal creation idempotency key was already used."};
 			if (GoalService::FindActiveGoal(app, capability.chat_id) != nullptr)
 				return {.error = "This chat already has an active goal."};
-			const ChatSession before = *chat;
+			// Goal creation changes only the chat's goal fields, never its messages, so the undo copy leaves them out (#986).
+			ChatSession before = chat_snapshot::CopyWithoutMessages(*chat);
 			std::string goal_id;
 			if (!GoalService::CreateGoal(app, capability.chat_id, objective, kModelGoalTokenBudget,
 			                             &goal_id, "uam", "", "model", capability.provider_id,
 			                             capability.agent_id, capability.agent_run_id, idempotency_hash) ||
 			    !GoalService::SetActiveGoal(app, capability.chat_id, goal_id))
 			{
-				*chat = before;
+				chat_snapshot::RestoreWithoutMessages(*chat, std::move(before));
 				return {.error = "UAM could not create and activate the goal."};
 			}
 			return {.ok = true, .result = {{"goalId", goal_id}, {"status", "active"},
@@ -2316,6 +2320,29 @@ namespace uam
 			return true;
 		}
 
+		/// Calls checked not to write the root chat's transcript; their rollback copy leaves the transcript out.
+		bool RollbackWithoutTranscript(std::string_view method)
+		{
+			return method == "agent_delegate" || method == "agent_cancel" || method == "goal_create" || method == "pr_watch" ||
+			    method == "pr_unwatch" || method == "chat_create" || method == "user_question" || method == "computer_use_request" ||
+			    method == "secret_request" || method == "html_view_preview";
+		}
+
+		// A mutating call whose reply can wait for the background writer like a read-only one: what it did is final in
+		// memory either way, and the save would carry nothing of it but the audit record. That holds for a rejected call
+		// and for agent_cancel, pr_watch and pr_unwatch, whose effects live outside the root chat, once the root's
+		// transcript stamp and every saved field are as they were before the call. Any other accepted call keeps the
+		// synchronous save and its rollback: agent_delegate's failure path cancels the child it started, an HTML view's
+		// removes the view, and goal_create changed the chat itself.
+		bool AuditOnlyMutation(const AppState& app, const UamControlCapability& capability, std::string_view method, const ToolResult& result,
+		                       const ChatSession& before, std::uint64_t transcript_before, const std::string& saved_fields_before)
+		{
+			if (result.ok && method != "agent_cancel" && method != "pr_watch" && method != "pr_unwatch") return false;
+			const ChatSession* chat = ChatDomainService().FindChatById(app, capability.chat_id);
+			return chat != nullptr && chat->metadata_incarnation == before.metadata_incarnation && chat->messages.revision() == transcript_before &&
+			    ChatRepository::ChatMetadataFingerprint(app.data_root, *chat) == saved_fields_before;
+		}
+
 		nlohmann::json HandleRequest(AppState& app, const std::string& capability_id,
 		                             const nlohmann::json& request, int64_t now_epoch_ms, bool defer_audit = false)
 		{
@@ -2424,8 +2451,20 @@ namespace uam
 				return {{"ok", true}, {"result", capability->last_delegate_result}};
 			}
 
-			const ChatSession* before_chat = ChatDomainService().FindChatById(app, capability->chat_id);
-			const std::optional<ChatSession> rollback = before_chat == nullptr || method == "agent_wait" || ReadOnlyTool(method) ? std::nullopt : std::optional<ChatSession>{*before_chat};
+			ChatSession* before_chat = ChatDomainService().FindChatById(app, capability->chat_id);
+			// The rollback for a mutating call. The calls listed in RollbackWithoutTranscript were checked not to write the
+			// root's transcript, so they copy the chat without it; the transcript's revision stamp, unchanged by the move,
+			// shows afterwards that nothing reached it for writing. Every other call keeps a whole copy (#986).
+			const bool whole_rollback = !RollbackWithoutTranscript(method);
+			std::optional<ChatSession> rollback;
+			std::uint64_t transcript_before = 0;
+			std::string saved_fields_before; // Everything a save writes except the transcript, for the audit-only proof below.
+			if (before_chat != nullptr && method != "agent_wait" && !ReadOnlyTool(method))
+			{
+				rollback = whole_rollback ? *before_chat : chat_snapshot::CopyWithoutMessages(*before_chat);
+				transcript_before = before_chat->messages.revision();
+				if (defer_audit) saved_fields_before = ChatRepository::ChatMetadataFingerprint(app.data_root, *before_chat);
+			}
 			const bool needs_approval = (method == "goal_create" || method == "chat_create") && before_chat != nullptr &&
 			    !MutationsAllowed(*before_chat);
 			ToolResult result = method == "html_view_preview"
@@ -2449,7 +2488,9 @@ namespace uam
 			if (result.deferred) return method == "agent_wait" ? nlohmann::json{{"pendingAgentWait", true}} :
 			    IsBackgroundReadMethod(method) ? nlohmann::json{{"pendingBackgroundRead", true}} :
 			    method == "chat_create" && result.ok ? nlohmann::json{{"pendingChatCreate", true}} : nlohmann::json{{"pendingApproval", true}};
-			if (ReadOnlyTool(method)) return ReadOnlyToolReply(app, capability_id, request_id, method, std::move(result), defer_audit);
+			if (ReadOnlyTool(method)) return AuditOnlyToolReply(app, capability_id, request_id, method, std::move(result), defer_audit);
+			if (!saved_fields_before.empty() && AuditOnlyMutation(app, *capability, method, result, *rollback, transcript_before, saved_fields_before))
+				return AuditOnlyToolReply(app, capability_id, request_id, method, std::move(result), true);
 			const UamControlCapability capability_snapshot = *capability;
 			const bool published_view = result.ok && method == "html_view_publish";
 			ChatSession* view_chat = published_view ? ChatDomainService().FindChatById(app, capability_snapshot.session_chat_id) : nullptr;
@@ -2471,7 +2512,17 @@ namespace uam
 				if (rollback.has_value())
 				{
 					if (ChatSession* chat = ChatDomainService().FindChatById(app, capability_snapshot.chat_id); chat != nullptr)
-						*chat = *rollback;
+					{
+						if (whole_rollback) *chat = std::move(*rollback);
+						else
+						{
+							// These calls were checked not to write the transcript; a new stamp means one now reaches it.
+							if (chat->messages.revision() != transcript_before)
+								uam::diagnostics::Write("UAM Control: " + method + " request " + request_id +
+								    " was rolled back after its save failed, but its chat's messages were opened for writing and were kept.");
+							chat_snapshot::RestoreWithoutMessages(*chat, std::move(*rollback));
+						}
+					}
 				}
 				return reject("Control result could not be durably recorded.");
 			}

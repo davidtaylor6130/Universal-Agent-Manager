@@ -39,6 +39,7 @@
 #include "app/transcript_retention_service.h"
 #include "app/provider_resolution_service.h"
 #include "common/chat/chat_repository.h"
+#include "common/chat/chat_transcript_snapshot.h"
 #include "common/chat/empty_held_queue_recovery.h"
 #include "common/platform/published_file_change_witness.h"
 #include "common/chat/chat_message_page_index.h"
@@ -10157,20 +10158,8 @@ For desktop observation and input, use only the provider's built-in controller; 
 	/// <summary>Copies metadata without temporarily duplicating any transcript bodies.</summary>
 	static ChatSession PendingSaveMetadata(ChatSession& chat)
 	{
-		// Held as the revisioned type so moving it back keeps its stamp; a plain vector took a new one on every save,
-		// and the next state push rehashed the unchanged transcript.
-		uam::RevisionedVector<Message> messages = std::move(chat.messages);
-		try
-		{
-			ChatSession result = chat;
-			chat.messages = std::move(messages);
-			return result;
-		}
-		catch (...)
-		{
-			chat.messages = std::move(messages);
-			throw;
-		}
+		// The transcript keeps its stamp; a new one on every save made the next state push rehash an unchanged transcript.
+		return chat_snapshot::CopyWithoutMessages(chat);
 	}
 
 	static bool HasPendingEmptyHeldSend(const AppState& app, const std::string& chat_id)

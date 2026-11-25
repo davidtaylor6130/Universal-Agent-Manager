@@ -28,6 +28,7 @@
 #include "app/chat_domain_service.h"
 #include "app/runtime_orchestration_services.h"
 #include "common/chat/chat_repository.h"
+#include "common/chat/chat_transcript_snapshot.h"
 #include "common/config/approval_modes.h"
 #include "common/config/mcp_server_config.h"
 #include "common/paths/workspace_root.h"
@@ -161,6 +162,8 @@ namespace uam
 		InitialClock::time_point deadline = InitialClock::now() + std::chrono::seconds(60);
 		bool cancelled = false, accepted = false, completion_settled = false, uncertain_root = false, confirmation_preparing = false;
 		InitialClock::time_point retry_at{};
+		// The per-poll ownership checks compare the idle root with work->before through this memo (#986).
+		mutable chat_snapshot::TranscriptMatchMemo root_transcript_memo;
 	};
 
 	struct ManagedFollowupCompletedOwnerWitness
@@ -637,11 +640,13 @@ namespace uam
 			const auto* session = FindAcpSessionForChat(app, chat.id);
 			return !session || (!AcpSessionHasActiveTurn(*session) && !session->processing && !session->reconnect_pending && !session->remote_stop_pending && !session->remote_stop_unconfirmed && !session->local_stop_pending && !session->pending_agent_input && !session->pending_local_launch && !session->pending_local_session_receipt && !session->pending_prompt_delivery && session->queued_user_prompts.empty() && session->queued_prompt.empty());
 		}
-		bool InitialCreationOwned(const AppState& app, const PendingManagedInitialMention& task)
+		/// A poll repeats this while the root is prepared; a publication guard passes exact, which compares the whole
+		/// transcript. The poll reuses the last equal comparison while both transcript stamps are unchanged (#986).
+		bool InitialCreationOwned(const AppState& app, const PendingManagedInitialMention& task, bool exact = false)
 		{
 			const auto* current = ChatDomainService().FindChatById(app, task.root_id);
 			const auto& work = task.work;
-			return !task.cancelled && work && !work->cancel.load() && InitialClock::now() < task.deadline && app.data_root == task.root && current && InitialRootIdle(app, *current) && std::ranges::count(app.chats, task.root_id, &ChatSession::id) == 1 && std::ranges::count(app.agent_runs, std::string("queued"), &AgentRun::status) < kMaxQueuedAgents && std::ranges::count_if(app.agent_runs, [&](const AgentRun& run) { return run.root_chat_id == task.root_id && run.parent_run_id.empty() && !IsTerminal(run.status); }) < kMaxDirectChildren && current->metadata_incarnation == task.incarnation && current->messages == work->before.messages && current->created_at == work->before.created_at && ChatRepository::ChatMetadataFingerprint(app.data_root, *current) == task.metadata && InitialConfiguration(app, *current) == task.settings && std::ranges::count(app.chats, task.transcript_id, &ChatSession::id) == 0 && std::ranges::count(app.agent_runs, work->run.id, &AgentRun::id) == 0;
+			return !task.cancelled && work && !work->cancel.load() && InitialClock::now() < task.deadline && app.data_root == task.root && current && InitialRootIdle(app, *current) && std::ranges::count(app.chats, task.root_id, &ChatSession::id) == 1 && std::ranges::count(app.agent_runs, std::string("queued"), &AgentRun::status) < kMaxQueuedAgents && std::ranges::count_if(app.agent_runs, [&](const AgentRun& run) { return run.root_chat_id == task.root_id && run.parent_run_id.empty() && !IsTerminal(run.status); }) < kMaxDirectChildren && current->metadata_incarnation == task.incarnation && (exact ? current->messages == work->before.messages : chat_snapshot::SameMessagesPolled(current->messages, work->before.messages, task.root_transcript_memo)) && current->created_at == work->before.created_at && ChatRepository::ChatMetadataFingerprint(app.data_root, *current) == task.metadata && InitialConfiguration(app, *current) == task.settings && std::ranges::count(app.chats, task.transcript_id, &ChatSession::id) == 0 && std::ranges::count(app.agent_runs, work->run.id, &AgentRun::id) == 0;
 		}
 		bool InitialChildPolicyMatches(const AppState& app, const ManagedInitialRuntimeOwner& owner, const ChatSession& chat)
 		{
@@ -1126,7 +1131,7 @@ namespace uam
 					if (!task->work->finished.load(std::memory_order_acquire))
 						continue;
 					auto work = task->work;
-					const auto owned = [&] { return InitialCreationOwned(app, *task); };
+					const auto owned = [&] { return InitialCreationOwned(app, *task, true); };
 					if (!owned() || !work->root_prepared || !work->transcript_prepared || !work->ledger_prepared || !work->error.empty())
 					{
 						task->result.error = work->error.empty() ? "Managed request ownership changed before it was recorded." : work->error;
@@ -1241,12 +1246,14 @@ namespace uam
 						CleanInitialCreation(*task);
 						continue;
 					} // No writes into a replacement namespace.
-					const auto owned_confirmation = [&]
+					// Polled every tick while unconfirmed: the cheap gates run first and the transcript goes through the memo.
+					// The publication guard below compares the whole transcript.
+					const auto owned_confirmation = [&](bool exact)
 					{
 						const auto* current = ChatDomainService().FindChatById(app, task->root_id);
-						return !app.managed_initial_shutdown && app.data_root == task->root && current && current->metadata_incarnation == task->incarnation && current->messages == work->before.messages && ChatRepository::ChatMetadataFingerprint(app.data_root, *current) == task->metadata && InitialRootIdle(app, *current, true, nullptr, true);
+						return !app.managed_initial_shutdown && app.data_root == task->root && current && current->metadata_incarnation == task->incarnation && InitialRootIdle(app, *current, true, nullptr, true) && (exact ? current->messages == work->before.messages : chat_snapshot::SameMessagesPolled(current->messages, work->before.messages, task->root_transcript_memo)) && ChatRepository::ChatMetadataFingerprint(app.data_root, *current) == task->metadata;
 					};
-					if (!owned_confirmation())
+					if (!owned_confirmation(false))
 						continue; // Retain the real ticket/evidence; metadata changes grant no overwrite authority.
 					if (!task->confirmation_preparing)
 					{
@@ -1294,7 +1301,7 @@ namespace uam
 					if (work->root_prepared && work->error.empty())
 					{
 						ChatSession committed = work->parent;
-						const auto confirmation = ChatRepository::PublishPreparedChatPublication(work->root_prepared, owned_confirmation, &committed);
+						const auto confirmation = ChatRepository::PublishPreparedChatPublication(work->root_prepared, [&] { return owned_confirmation(true); }, &committed);
 						if (confirmation.state == ChatPublicationState::Committed)
 						{
 							committed.metadata_incarnation = task->incarnation;

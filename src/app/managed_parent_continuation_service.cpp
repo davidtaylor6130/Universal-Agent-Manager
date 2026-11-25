@@ -30,27 +30,6 @@ namespace
 		    session.active_uam_agent_definition_hash, session.active_uam_agent_definition_snapshot,
 		    session.active_uam_agent_workspace_access, session.active_uam_agent_execution_capability}).dump());
 	}
-	std::string UserBoundary(const ChatSession& chat)
-	{
-		if (!chat.messages_loaded || chat.messages.empty()) return {};
-		nlohmann::json rows = nlohmann::json::array();
-		std::size_t bytes = 0;
-		for (const Message& row : chat.messages)
-		{
-			if (row.role != MessageRole::User) continue;
-			if (row.created_at.empty() || row.acp_prompt_not_sent || row.acp_prompt_discarded || row.interrupted) return {};
-			nlohmann::json attachments = nlohmann::json::array();
-			for (const auto& item : row.attachments)
-				attachments.push_back({item.id, item.name, item.kind, item.mime_type, item.path, item.size_bytes,
-				    static_cast<int>(item.source), item.source_uri, item.content_digest, item.origin_execution_host_id,
-				    item.native_part_key, item.native_tool_call_id, item.native_source_field, item.native_asset_key});
-			nlohmann::json value = {row.created_at, row.content, row.markdown_store_files, row.markdown_store_prompt_blocks, std::move(attachments)};
-			bytes += value.dump().size();
-			if (bytes > 1024 * 1024 || rows.size() >= 4096) return {};
-			rows.push_back(std::move(value));
-		}
-		return rows.empty() ? std::string{} : Digest(rows.dump());
-	}
 	std::string RunBinding(const AgentRun& run)
 	{
 		return Digest(nlohmann::json::array({run.id, run.root_chat_id, run.parent_run_id, run.transcript_chat_id,
@@ -80,7 +59,8 @@ namespace
 		    !lease->process.empty() && lease->process != "0" && lease->native_thread == session.session_id && lease->native_thread == session.codex_thread_id &&
 		    lease->native_thread == chat.native_session_id && lease->expected_serial == session.turn_serial &&
 		    lease->configuration == ExecutionBinding(app, session, chat) &&
-		    lease->user_digest == UserBoundary(chat) && UamControlService::EnabledForChat(app.settings, chat) &&
+		    !lease->user_digest.empty() && managed_parent_history::UserBoundaryMatches(chat, lease->user_rows) &&
+		    UamControlService::EnabledForChat(app.settings, chat) &&
 		    provider_availability::IsEnabled(app.settings, chat.provider_id, chat.execution_host_id) &&
 		    chat.agent_run_id.empty() && chat.active_goal_id.empty() && !chat.imported_read_only &&
 		    ProviderRuntimeRegistry::ResolveById(session.provider_id).SupportsSameLiveParentResultContinuation();
@@ -260,7 +240,8 @@ std::string ManagedParentContinuationService::StageDelegation(AppState& app, con
 	}
 	// Still occupied only by a lease-less record that SlotYields refused; saved data never re-creates authority.
 	if (chat->managed_parent_result) return "held";
-	const std::string boundary = UserBoundary(*chat);
+	std::vector<managed_parent_history::UserBoundaryRow> boundary_rows;
+	const std::string boundary = managed_parent_history::UserBoundaryDigest(*chat, &boundary_rows);
 	const std::string process = acp_detail::AcpProcessHandleLabel(*session);
 	if (boundary.empty() || process.empty() || process == "0" ||
 	    !provider_availability::IsEnabled(app.settings, chat->provider_id, chat->execution_host_id) || !session->running || !session->initialized ||
@@ -276,7 +257,7 @@ std::string ManagedParentContinuationService::StageDelegation(AppState& app, con
 	lease->configuration = ExecutionBinding(app, *session, *chat);
 	if (lease->configuration.size() != 64 || RunBinding(run).size() != 64) return "held";
 	lease->expected_input_receipts = chat->managed_parent_input_receipts;
-	lease->user_digest = boundary; lease->origin_serial = lease->expected_serial = session->turn_serial;
+	lease->user_digest = boundary; lease->user_rows = std::move(boundary_rows); lease->origin_serial = lease->expected_serial = session->turn_serial;
 	lease->origin_native_turn = session->codex_turn_id;
 	lease->id = PlatformServicesFactory::Instance().process_service.GenerateUuid();
 	if (lease->id.empty()) return "held";
