@@ -53,6 +53,26 @@ namespace
 	enum class QueryKind { Baseline, Pending, Page, Text, Identified };
 	constexpr const char* kQueryNames[] = {"baseline", "pending", "page", "text", "identified"};
 
+	/// <summary>The short cause a compaction-details failure names to the user; the full detail goes to the diagnostics log.</summary>
+	enum class FailureCause { Unknown, TimedOut, TooLarge, Format, Identity };
+
+	/// <summary>A rejected metadata response whose cause the user-facing line can name.</summary>
+	struct MetadataRejected : std::runtime_error
+	{
+		FailureCause cause;
+		MetadataRejected(FailureCause failure_cause, const char* detail) : std::runtime_error(detail), cause(failure_cause) {}
+	};
+
+	/// <summary>One plain sentence such as "Could not read OpenCode compaction details because the request timed out."</summary>
+	std::string FailureSentence(const char* action, FailureCause cause)
+	{
+		const char* reason = cause == FailureCause::TimedOut ? " because the request timed out" :
+		    cause == FailureCause::TooLarge ? " because the response was too large" :
+		    cause == FailureCause::Format ? " because the response wasn't in the expected format" :
+		    cause == FailureCause::Identity ? " because they didn't match this chat" : "";
+		return std::string("Could not ") + action + " OpenCode compaction details" + reason + ".";
+	}
+
 	/// <summary>Fixture-verified releases keep fail-closed baseline schema checks.</summary>
 	bool FixtureVerifiedVersion(std::string_view version)
 	{
@@ -922,19 +942,25 @@ struct OpenCodeCompactionSyncService::State
 				if (context.owner && context.owner->pending_deadline != std::chrono::steady_clock::time_point{})
 					context.owner->pending_deadline += backoff;
 			}
-			else if (!((detail.find("no such column") != std::string::npos || detail.find("no such table") != std::string::npos ||
-			    work.result.output.find("no such column") != std::string::npos || work.result.output.find("no such table") != std::string::npos) &&
-			    DegradeUnverifiedBaseline(app, context, work, detail)))
+			else
 			{
-				diagnostics::Write("[OpenCode compaction] Native compaction metadata query failed: " + detail);
-				context.error = "Could not read OpenCode compaction details.";
+				const bool schema_mismatch = detail.find("no such column") != std::string::npos || detail.find("no such table") != std::string::npos ||
+				    work.result.output.find("no such column") != std::string::npos || work.result.output.find("no such table") != std::string::npos;
+				if (!(schema_mismatch && DegradeUnverifiedBaseline(app, context, work, detail)))
+				{
+					const FailureCause cause = work.result.output.size() > kMetadataBytes || work.result.output_truncated ? FailureCause::TooLarge :
+					    work.result.timed_out && !work.result.canceled ? FailureCause::TimedOut :
+					    schema_mismatch ? FailureCause::Format : FailureCause::Unknown;
+					diagnostics::Write("[OpenCode compaction] Native compaction metadata query failed: " + detail);
+					context.error = FailureSentence("read", cause);
+				}
 			}
 			return false;
 		}
 		try
 		{
 			const nlohmann::json result = nlohmann::json::parse(work.result.output);
-			if (!result.is_array() || result.size() != 1) throw std::runtime_error("missing native session");
+			if (!result.is_array() || result.size() != 1) throw MetadataRejected(FailureCause::Identity, "missing native session");
 			const nlohmann::json& envelope = result.front();
 			const std::string directory = envelope.at("directory").get<std::string>();
 			const bool directory_matches = context.identity.host
@@ -942,7 +968,7 @@ struct OpenCodeCompactionSyncService::State
 			    : paths::PathFromUtf8(directory).lexically_normal() == paths::PathFromUtf8(context.identity.workspace).lexically_normal();
 			if (work.kind == QueryKind::Text)
 			{
-				if (envelope.at("sessionId") != context.identity.native || !directory_matches || !context.owner) throw std::runtime_error("summary ownership mismatch");
+				if (envelope.at("sessionId") != context.identity.native || !directory_matches || !context.owner) throw MetadataRejected(FailureCause::Identity, "summary ownership mismatch");
 				Summary& summary = context.owner->completed.at(work.summary_cursor);
 				const std::int64_t characters = envelope.at("characters").get<std::int64_t>();
 				const std::int64_t offset = envelope.at("offset").get<std::int64_t>();
@@ -960,34 +986,34 @@ struct OpenCodeCompactionSyncService::State
 				summary.text += chunk; summary.offset += count; summary.ready = summary.offset == characters;
 				if (summary.ready)
 				{
-					if (static_cast<std::size_t>(prefix_bytes) > summary.text.size()) throw std::runtime_error("invalid native prefix boundary");
+					if (static_cast<std::size_t>(prefix_bytes) > summary.text.size()) throw MetadataRejected(FailureCause::Format, "invalid native prefix boundary");
 					summary.prefix = summary.text.substr(0, static_cast<std::size_t>(prefix_bytes));
 					summary.text.erase(0, static_cast<std::size_t>(prefix_bytes));
 				}
 				std::size_t total = 0;
 				for (const std::pair<const Cursor, Summary>& item : context.owner->completed) total += item.second.text.size() + item.second.prefix.size();
-				if (total > 4 * 1024 * 1024) throw std::runtime_error("turn summary text limit exceeded");
+				if (total > 4 * 1024 * 1024) throw MetadataRejected(FailureCause::TooLarge, "turn summary text limit exceeded");
 				ChatSession* chat = ChatDomainService().FindChatById(app, context.identity.chat_id);
 				AcpSessionState* session = FindAcpSessionForChat(app, context.identity.chat_id);
 				context.query_timeouts = 0; context.retry_at = {};
 				return summary.ready && chat && session ? Publish(app, *session, *chat, context) : false;
 			}
 			if (envelope.at("sessionId") != context.identity.native || !directory_matches)
-				throw std::runtime_error("native session or workspace mismatch");
+				throw MetadataRejected(FailureCause::Identity, "native session or workspace mismatch");
 			if (envelope.at("schemaCompatible") != 1)
 			{
 				if (DegradeUnverifiedBaseline(app, context, work, "schema mismatch")) return false;
-				throw std::runtime_error("native schema mismatch");
+				throw MetadataRejected(FailureCause::Format, "native schema mismatch");
 			}
 			const nlohmann::json rows = nlohmann::json::parse(envelope.at("rows").get<std::string>());
 			if (!rows.is_array() || rows.size() > kPageSize + 1)
-				throw std::runtime_error("metadata page limit exceeded");
+				throw MetadataRejected(FailureCause::TooLarge, "metadata page limit exceeded");
 			if (work.kind == QueryKind::Baseline)
 			{
 				if (!rows.empty()) throw std::runtime_error("baseline returned historical message records");
-				if (!envelope.at("upperTime").is_number_integer()) throw std::runtime_error("invalid baseline time");
+				if (!envelope.at("upperTime").is_number_integer()) throw MetadataRejected(FailureCause::Format, "invalid baseline time");
 				context.cursor = {envelope.at("upperTime").get<std::int64_t>(), envelope.at("upperId").get<std::string>()};
-				if (context.cursor.time < 0 || (!context.cursor.id.empty() && !PortableId(context.cursor.id))) throw std::runtime_error("invalid baseline cursor");
+				if (context.cursor.time < 0 || (!context.cursor.id.empty() && !PortableId(context.cursor.id))) throw MetadataRejected(FailureCause::Format, "invalid baseline cursor");
 				context.baseline = true;
 				context.scope = context.cursor;
 				context.query_timeouts = 0; context.retry_at = {};
@@ -1011,24 +1037,24 @@ struct OpenCodeCompactionSyncService::State
 			for (std::size_t index = 0; index < count; ++index)
 			{
 				const nlohmann::json& row = rows[index];
-				if (!PortableId(row.at("id")) || !row.at("created").is_number_integer()) throw std::runtime_error("invalid metadata identity");
+				if (!PortableId(row.at("id")) || !row.at("created").is_number_integer()) throw MetadataRejected(FailureCause::Identity, "invalid metadata identity");
 				const Cursor cursor{row.at("created").get<std::int64_t>(), row.at("id").get<std::string>()};
 				if (work.kind == QueryKind::Identified)
 				{
-					if (!work.identified.contains(cursor.id)) throw std::runtime_error("unexpected native message identity");
+					if (!work.identified.contains(cursor.id)) throw MetadataRejected(FailureCause::Identity, "unexpected native message identity");
 					context.identified.erase(cursor.id);
 					context.inspected.insert(cursor.id);
 				}
-				if (cursor.time < 0 || (work.kind == QueryKind::Page && !(previous < cursor))) throw std::runtime_error("unordered metadata cursor");
+				if (cursor.time < 0 || (work.kind == QueryKind::Page && !(previous < cursor))) throw MetadataRejected(FailureCause::Format, "unordered metadata cursor");
 				previous = cursor;
 				if (work.kind == QueryKind::Page) context.cursor = cursor;
 				if (row.at("role") != "assistant") continue;
 				const nlohmann::json& summary = row.at("summary");
-				if (!summary.is_null() && !summary.is_number_integer()) throw std::runtime_error("invalid summary metadata");
+				if (!summary.is_null() && !summary.is_number_integer()) throw MetadataRejected(FailureCause::Format, "invalid summary metadata");
 				if (summary != 1) continue;
-				if (!PortableId(row.at("parent"))) throw std::runtime_error("invalid compaction parent");
+				if (!PortableId(row.at("parent"))) throw MetadataRejected(FailureCause::Format, "invalid compaction parent");
 				const nlohmann::json& finish = row.at("finish");
-				if (!finish.is_null() && (!finish.is_string() || finish.get_ref<const std::string&>().size() > 128)) throw std::runtime_error("invalid native finish");
+				if (!finish.is_null() && (!finish.is_string() || finish.get_ref<const std::string&>().size() > 128)) throw MetadataRejected(FailureCause::Format, "invalid native finish");
 				const bool no_error = row.at("errorType").is_null() || row.at("errorType") == "null";
 				const bool finished = finish.is_string() && !finish.get_ref<const std::string&>().empty();
 				if (row.at("parentProof") == 1)
@@ -1050,7 +1076,7 @@ struct OpenCodeCompactionSyncService::State
 					else context.owner->completed.try_emplace(cursor, Summary{.id = cursor.id, .has_text = has_text, .requires_tool = context.adopted});
 				}
 				if (context.pending.size() > kPendingLimit || (context.owner && context.owner->completed.size() > kPendingLimit))
-					throw std::runtime_error("compaction metadata limit exceeded");
+					throw MetadataRejected(FailureCause::TooLarge, "compaction metadata limit exceeded");
 			}
 			if (!context.owner) throw std::runtime_error("settled owner was replaced");
 			context.query_timeouts = 0; context.retry_at = {};
@@ -1108,7 +1134,9 @@ struct OpenCodeCompactionSyncService::State
 			context.pending = work.pending;
 			if (context.owner) context.owner->completed = work.completed;
 			diagnostics::Write(std::string("[OpenCode compaction] Native compaction metadata could not be verified: ") + exception.what());
-			context.error = "Could not verify OpenCode compaction details.";
+			const MetadataRejected* rejected = dynamic_cast<const MetadataRejected*>(&exception);
+			context.error = FailureSentence("verify", rejected ? rejected->cause :
+			    dynamic_cast<const nlohmann::json::exception*>(&exception) ? FailureCause::Format : FailureCause::Unknown);
 			return false;
 		}
 	}
