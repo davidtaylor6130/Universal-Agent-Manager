@@ -4,6 +4,7 @@
 
 #include <functional>
 #include <map>
+#include <unordered_set>
 #include <string>
 #include <vector>
 
@@ -36,5 +37,7 @@ namespace uam
 		LaunchFunction m_launch;
 		std::vector<ModelDiscoveryScope> m_pending_scopes;
 		std::map<std::string, ExecutionHost> m_hosts;
+		/// Scopes already found registered before a version check; a refused check retries without re-testing every chat.
+		std::unordered_set<std::string> m_registered_before_version_check;
 	};
 }

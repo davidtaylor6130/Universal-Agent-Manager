@@ -1,5 +1,6 @@
 #include "test_harness.h"
 #include "app/vcs_provider.h"
+#include "app/vcs_command.h"
 #include "common/constants/app_constants.h"
 #include "common/security/read_only_command.h"
 #include "remote/runner_startup.h"
@@ -9,6 +10,22 @@
 #include <thread>
 
 using namespace uam_test;
+
+UAM_TEST(VcsCommandHelpersNameTheStreamsTheyReturn)
+{
+	ProcessExecutionResult result;
+	result.output = "  committed abc123  \n";
+	result.error = " hint: pushed nothing ";
+	UAM_ASSERT_EQ(uam::vcs_command::CommandOutputAndError(result), std::string("committed abc123\nhint: pushed nothing"));
+	UAM_ASSERT_EQ(uam::vcs_command::CommandStdoutOr(result, "fallback"), std::string("committed abc123"));
+	result.output.clear();
+	UAM_ASSERT_EQ(uam::vcs_command::CommandOutputAndErrorOr(result, "fallback"), std::string("hint: pushed nothing"));
+	UAM_ASSERT_EQ(uam::vcs_command::CommandStdoutOr(result, "fallback"), std::string("fallback"));
+	result.error.clear();
+	UAM_ASSERT_EQ(uam::vcs_command::CommandOutputAndErrorOr(result, "fallback"), std::string("fallback"));
+	UAM_ASSERT(uam::vcs_command::IsGitObjectId(std::string(40, 'a')) && uam::vcs_command::IsGitObjectId(std::string(64, 'F')));
+	UAM_ASSERT(!uam::vcs_command::IsGitObjectId(std::string(39, 'a')) && !uam::vcs_command::IsGitObjectId(std::string(39, 'a') + "g"));
+}
 
 namespace
 {
