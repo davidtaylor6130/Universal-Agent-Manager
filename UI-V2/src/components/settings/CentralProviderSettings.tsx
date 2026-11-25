@@ -2,18 +2,22 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useSta
 import { Bot, FileText, Pencil, Plus, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { sendToCEF } from '../../ipc/cefBridge'
-import { Button, ConfirmDialog, EXIT_MS, IconButton, MenuSelect, Notice, Overlay, Presence, motionAllowed, scaledMs, usePresence, Reveal } from '../ui'
+import { Badge, Button, ConfirmDialog, EXIT_MS, IconButton, MenuSelect, Notice, Overlay, Presence, motionAllowed, scaledMs, usePresence, Reveal } from '../ui'
 import { SaveButton, SettingRow, SettingsField, SettingsLoading, SettingsSection } from './SettingsPrimitives'
 import './provider-settings.css'
 import { UnsavedChangesDialog } from './UnsavedChangesDialog'
 import { failureDetail, reportAppFailure, reportAppNotice } from '../../utils/appFailure'
+import { AGENT_SCOPE_LABEL, agentKey, listAgentDefinitions, type AgentDefinition } from './agentDefinitions'
+import type { AgentDefinitionScope } from '../../store/useAppStore'
 
 const AGENT_NAME = /^[a-z0-9][a-z0-9_-]*$/
 const same = (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right)
 
-type Agent = { id: string; description: string; mode: string; workspaceAccess: string; skills: string[]; delegates: string[]; instructions: string; builtIn: boolean; /** 'read' for an agent imported from a read-only source. */ maxWorkspaceAccess?: string }
+type Agent = AgentDefinition
 type InstructionEditor = { path: string; content: string; original: string; loading: boolean; readFailed: boolean; error: string }
-const blankAgent = (): Agent => ({ id: '', description: '', mode: 'primary', workspaceAccess: 'write', skills: [], delegates: [], instructions: '', builtIn: false })
+const blankAgent = (): Agent => ({ id: '', description: '', mode: 'primary', workspaceAccess: 'write', skills: [], delegates: [], instructions: '', builtIn: false, scope: 'global' })
+/** How long a just-imported agent's row stays highlighted. */
+const HIGHLIGHT_MS = 4000
 const field = 'uam-field w-full'
 type Option = { value: string; label: string; group?: string }
 const USED_AS = [
@@ -51,8 +55,11 @@ function ChipAdd({ label, values, options, onChange, disabled }: { label: string
 
 /** Shared instructions, default agent, default skills and agents, and the agent store. Installed natively at every provider launch, local and SSH. */
 export interface CentralProviderSettingsHandle { requestLeave(next: () => void): void }
-export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>(function CentralProviderSettings(_props, ref) {
+/** A just-imported agent to scroll to, focus and highlight once the list shows it; `nonce` tells repeated imports apart. */
+export type CentralAgentHighlight = { id: string; scope: AgentDefinitionScope; nonce: number }
+export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle, { highlightAgent?: CentralAgentHighlight | null; onHighlightShown?: () => void }>(function CentralProviderSettings({ highlightAgent = null, onHighlightShown }, ref) {
   const saved = useAppStore(state => state.centralProviderConfiguration)
+  const activeSessionId = useAppStore(state => state.activeSessionId)
   const skills = useAppStore(state => state.markdownStoreEntries)
   const [instructionFiles, setInstructionFiles] = useState(saved.instructionFiles ?? [])
   const [defaultAgents, setDefaultAgents] = useState(saved.defaultAgents ?? [])
@@ -89,12 +96,36 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
   }, [instructionFocusRequest])
   const instructionDirty = Boolean(instructionEditor && instructionEditor.content !== instructionEditor.original)
 
+  // The store lists global agents and, when a chat is open, the agents saved in that chat's workspace.
+  const agentsRequest = useRef(0)
   const loadAgents = useCallback(async () => {
-    const response = await sendToCEF<{ agents: Agent[]; errors: string[] }>({ action: 'listAgentDefinitions', payload: {} })
-    if (response.ok && response.data) { setAgents(response.data.agents ?? []); setAgentErrors(response.data.errors ?? []) }
-    else setAgentErrors([response.error || 'Could not load the agent store.'])
+    const request = ++agentsRequest.current
+    const result = await listAgentDefinitions(activeSessionId)
+    if (request !== agentsRequest.current) return
+    if (result.ok) { setAgents(result.agents); setAgentErrors(result.errors) }
+    else setAgentErrors([result.error])
     setAgentsLoaded(true)
-  }, [])
+  }, [activeSessionId])
+  useEffect(() => () => { ++agentsRequest.current }, [])
+  const [highlightedKey, setHighlightedKey] = useState<string | null>(null)
+  const agentRows = useRef(new Map<string, HTMLDivElement>())
+  // Reveal a just-imported agent: scroll to its row, focus its first action and tint the row briefly.
+  useEffect(() => {
+    if (!highlightAgent || !agentsLoaded) return
+    const key = agentKey(highlightAgent)
+    const row = agentRows.current.get(key)
+    onHighlightShown?.()
+    // Not listed (for example a workspace agent while no chat is open): drop the request rather than highlight it later.
+    if (!row) return
+    setHighlightedKey(key)
+    row.scrollIntoView?.({ block: 'center', behavior: motionAllowed() ? 'smooth' : 'auto' })
+    row.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus({ preventScroll: true })
+  }, [highlightAgent?.nonce, agentsLoaded, agents])
+  useEffect(() => {
+    if (!highlightedKey) return
+    const timer = window.setTimeout(() => setHighlightedKey(null), HIGHLIGHT_MS)
+    return () => window.clearTimeout(timer)
+  }, [highlightedKey])
   useEffect(() => { void loadAgents(); void useAppStore.getState().refreshMarkdownStore() }, [loadAgents])
 
   const run = async (action: () => Promise<{ ok: boolean; error?: string }>, success: string, save: 'defaults' | 'agent' | null = null) => {
@@ -111,11 +142,13 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
   }
   const startEditing = (next: { draft: Agent; isNew: boolean } | null) => { editingOriginal.current = next ? { ...next.draft } : null; setAgentExitPrompt(false); setEditing(next) }
   const draftId = editing ? editing.draft.id.trim().toLowerCase() : ''
-  const nameError = !editing?.isNew ? '' : !draftId ? 'Enter a name.' : !AGENT_NAME.test(draftId) ? 'Use lowercase letters, numbers, - or _.' : agents.some(agent => agent.id === draftId) ? `An agent named ${draftId} already exists.` : ''
+  // New agents are saved for all workspaces; a workspace agent with the same name keeps overriding it in that workspace.
+  const nameError = !editing?.isNew ? '' : !draftId ? 'Enter a name.' : !AGENT_NAME.test(draftId) ? 'Use lowercase letters, numbers, - or _.' : agents.some(agent => agent.scope === 'global' && agent.id === draftId) ? `An agent named ${draftId} already exists.` : ''
   const agentDirty = Boolean(editing && !same(editing.draft, editingOriginal.current))
   const saveAgent = async () => {
     if (!editing || nameError) return false
-    const draft = { ...editing.draft, id: draftId, description: editing.draft.description.trim() }
+    const { scope: _scope, ...fields } = editing.draft
+    const draft = { ...fields, id: draftId, description: editing.draft.description.trim() }
     if (!await run(() => sendToCEF({ action: 'saveAgentDefinition', payload: draft }), `Agent ${draft.id} saved.`, 'agent')) return false
     startEditing(null); await loadAgents()
     return true
@@ -129,7 +162,7 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
     finally { setRemovingKeys(current => { const next = new Set(current); next.delete(key); return next }) }
   }
   const deleteAgent = async (id: string) => {
-    const removed = await exitRow(`agent:${id}`, () => run(() => sendToCEF({ action: 'deleteAgentDefinition', payload: { id } }), `Agent ${id} deleted.`))
+    const removed = await exitRow(`agent:${agentKey({ id, scope: 'global' })}`, () => run(() => sendToCEF({ action: 'deleteAgentDefinition', payload: { id } }), `Agent ${id} deleted.`))
     if (removed) {
       if (editing?.draft.id === id) startEditing(null)
       setPendingDelete(null)
@@ -154,10 +187,16 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
     window.addEventListener('beforeunload', guard)
     return () => window.removeEventListener('beforeunload', guard)
   }, [dirty])
-  const primaryAgents = agents.filter(agent => agent.mode !== 'subagent')
+  // Shared defaults apply to every workspace, so they offer only agents saved for all workspaces.
+  const globalAgents = agents.filter(agent => agent.scope === 'global')
+  const primaryAgents = globalAgents.filter(agent => agent.mode !== 'subagent')
+  // A global and a workspace agent can share a name; their action and dialog names then say which scope they belong to.
+  const agentAccessibleName = (agent: Agent) => agents.filter(other => other.id === agent.id).length > 1
+    ? `${agent.id} (${AGENT_SCOPE_LABEL[agent.scope].toLowerCase()})`
+    : agent.id
   const skillName = (entry: typeof skills[number]) => entry.commandName || entry.title
   const skillOptions: Option[] = skills.map(entry => ({ value: skillName(entry), label: entry.title, group: entry.group || 'Ungrouped' }))
-  const agentOptions: Option[] = agents.filter(agent => !agent.builtIn).map(agent => ({ value: agent.id, label: agent.id, group: agent.mode === 'subagent' ? 'Helpers' : 'Chat agents' }))
+  const agentOptions: Option[] = globalAgents.filter(agent => !agent.builtIn).map(agent => ({ value: agent.id, label: agent.id, group: agent.mode === 'subagent' ? 'Helpers' : 'Chat agents' }))
   const defaultAgentChoices = [
     ...primaryAgents.map(agent => ({ value: agent.id, label: agent.id, description: agent.description })),
     ...(primaryAgents.some(agent => agent.id === defaultAgentId) ? [] : [{ value: defaultAgentId, label: `${defaultAgentId} (not found)` }]),
@@ -230,7 +269,7 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
   />}</Presence>
   return <div className="grid gap-0" style={{ color: 'var(--text)' }}>
     {leaveDialog}
-    <ConfirmDialog open={pendingDelete !== null} title="Delete agent?" confirmLabel="Delete" busy={busy} onCancel={() => setPendingDelete(null)} onConfirm={() => { if (pendingDelete) void deleteAgent(pendingDelete) }}>This removes the agent from the UAM agent store.</ConfirmDialog>
+    <ConfirmDialog open={pendingDelete !== null} title={`Delete ${pendingDelete ? agentAccessibleName({ ...blankAgent(), id: pendingDelete }) : 'agent'}?`} confirmLabel="Delete" busy={busy} onCancel={() => setPendingDelete(null)} onConfirm={() => { if (pendingDelete) void deleteAgent(pendingDelete) }}>This removes the agent from the UAM agent store.</ConfirmDialog>
     <SettingsSection title="Shared instructions"
       actions={<Button size="sm" leadingIcon={<Plus size={14} />} disabled={busy} onClick={() => void addInstructionFile()}>Choose file…</Button>}>
       <Reveal open={instructionFiles.length === 0}><p className="uam-prov-sub">No instruction files. Choose an AGENTS.md file to share.</p></Reveal>
@@ -278,14 +317,28 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
       <Reveal open={agentErrors.length > 0}>{agentErrors.map(error => <Notice key={error} tone="error" title="Some agents could not be read" dismissLabel="Dismiss">{error}</Notice>)}</Reveal>
       <Reveal open={agents.length === 0}><p className="uam-prov-sub">No agents yet. Add one to give every provider a helper.</p></Reveal>
       {agents.map(agent => {
+        const key = agentKey(agent)
+        const delegateOnly = agent.mode === 'subagent'
+        // Workspace agents live in that workspace's .uam/agents folder; this store edits only agents saved for all workspaces.
+        const readOnly = agent.builtIn || agent.scope === 'workspace'
         const usedAs = USED_AS.find(option => option.value === agent.mode)
-        return <Reveal key={agent.id} open={!removingKeys.has(`agent:${agent.id}`)}><SettingRow icon={<Bot size={15} aria-hidden />}
-          title={agent.id}
-          description={[usedAs?.label, agent.builtIn ? 'Built in · read only' : agent.description || 'No description yet'].filter(Boolean).join(' · ')}
-          control={<>
-            <IconButton size="sm" icon={<Pencil size={14} />} label={agent.builtIn ? `View ${agent.id}` : `Edit ${agent.id}`} disabled={busy} onClick={() => startEditing({ draft: { ...agent }, isNew: false })} />
-            {!agent.builtIn && <IconButton size="sm" icon={<X size={14} />} label={`Delete agent ${agent.id}`} disabled={busy} onClick={() => setPendingDelete(agent.id)} />}
-          </>} /></Reveal>
+        const name = agentAccessibleName(agent)
+        return <Reveal key={key} open={!removingKeys.has(`agent:${key}`)}>
+          <div className="uam-central-agent" data-highlighted={highlightedKey === key || undefined}
+            ref={element => { if (element) agentRows.current.set(key, element); else agentRows.current.delete(key) }}>
+            <SettingRow icon={<Bot size={15} aria-hidden />}
+              title={<span className="uam-central-agent__title">
+                <span className="truncate">{agent.id}</span>
+                {!agent.builtIn && <Badge>{AGENT_SCOPE_LABEL[agent.scope]}</Badge>}
+                {delegateOnly && <Badge>Delegate-only</Badge>}
+              </span>}
+              description={[delegateOnly ? undefined : usedAs?.label, agent.builtIn ? 'Built in · read only' : agent.description || 'No description yet'].filter(Boolean).join(' · ')}
+              control={<>
+                <IconButton size="sm" icon={<Pencil size={14} />} label={readOnly ? `View ${name}` : `Edit ${name}`} disabled={busy} onClick={() => startEditing({ draft: { ...agent }, isNew: false })} />
+                {!readOnly && <IconButton size="sm" icon={<X size={14} />} label={`Delete agent ${name}`} disabled={busy} onClick={() => setPendingDelete(agent.id)} />}
+              </>} />
+          </div>
+        </Reveal>
       })}
     </SettingsSection>
 
@@ -293,14 +346,16 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle>
       <Overlay open zIndex={60} onBackdropMouseDown={closeEditor}>
         {editing && (() => {
           const { draft, isNew } = editing
-          const builtIn = draft.builtIn
+          // Built-in and workspace agents open read-only: saving here would write an agent for all workspaces instead.
+          const builtIn = draft.builtIn || draft.scope === 'workspace'
           const set = (change: Partial<Agent>) => setEditing(current => current && { ...current, draft: { ...current.draft, ...change } })
-          return <div role="dialog" aria-modal="true" aria-label={isNew ? 'New agent' : `Edit ${draft.id}`} tabIndex={-1} className="uam-mcp-dialog uam-central-dialog"
+          return <div role="dialog" aria-modal="true" aria-label={isNew ? 'New agent' : `${builtIn ? 'View' : 'Edit'} ${agentAccessibleName(draft)}`} tabIndex={-1} className="uam-mcp-dialog uam-central-dialog"
             onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); closeEditor() } }}>
             <header className="uam-central-dialog__head">
               <div className="min-w-0">
                 <span className="text-sm font-semibold">{isNew ? 'New agent' : builtIn ? draft.id : `Edit ${draft.id}`}</span>
                 {!builtIn && <p className="uam-prov-sub">Changes apply to new chats.</p>}
+                {draft.scope === 'workspace' && <p className="uam-prov-sub">Saved in this workspace. Edit its file in the workspace's .uam/agents folder.</p>}
               </div>
               <IconButton size="sm" icon={<X size={14} />} label="Close agent editor" disabled={busy} onClick={closeEditor} />
             </header>

@@ -47,6 +47,7 @@ import type {
   ProviderModelCatalog,
   ProviderAgentImportPreview,
   ProviderAgentDiscovery,
+  ProviderAgentImportOptions,
   ProviderAgentImportOutcome,
   UamAgentCycleShortcut,
   UamAgentSummary,
@@ -287,7 +288,7 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   browseProviderAgentImport: (currentValue?: string) => Promise<string | null>
   discoverProviderAgents: (providerId: string, chatId?: string) => Promise<ProviderAgentDiscovery | null>
   previewProviderAgentImport: (providerId: string, sourcePath: string, sourceEntry?: string) => Promise<ProviderAgentImportPreview | null>
-  importProviderAgent: (options: { chatId: string; providerId: string; sourcePath: string; sourceEntry?: string; canonicalId: string; workspaceAccess: 'read' | 'write'; workspaceScope: boolean; acknowledgeIgnoredFields: boolean }) => Promise<ProviderAgentImportOutcome>
+  importProviderAgent: (options: ProviderAgentImportOptions) => Promise<ProviderAgentImportOutcome>
   setSessionCommandSafetyTier: (id: string, tier: 'off' | 'acceptEdits' | 'aiReview' | 'yolo') => Promise<CommandSafetyTierResult>
 	setSessionComputerUseEnabled: (id: string, enabled: boolean) => Promise<ComputerUseActionResult>
 	setSessionComputerUseBackend: (id: string, backend: ComputerUseBackend) => Promise<ComputerUseActionResult>

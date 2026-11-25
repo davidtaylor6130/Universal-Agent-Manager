@@ -803,7 +803,7 @@ bool HandleSavedImageResponse(const AppState& app, AcpSessionState& session, con
 		valid = StrictImageServerVersion(Text(result, "version"));
 		// Remote input requires this stable server floor; the local version policy stays unchanged.
 		if (valid && Text(JsonObjectValue(*state, "owner"), "executionHostId") != "local")
-			valid = CliProviderVersionAtLeast(Text(result, "version"), "1.0.98");
+			valid = CliProviderVersionAtLeast(Text(result, "version"), uam::copilot::managed_read::kStableCliMinimumVersion);
 		if (valid)
 			parsed = {{"version", Text(result, "version")}, {"protocolVersion", *protocol}};
 	}

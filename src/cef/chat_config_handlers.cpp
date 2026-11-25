@@ -1705,15 +1705,18 @@ void UamQueryHandler::HandleListUamAgents(CefRefPtr<CefBrowser>, const nlohmann:
 	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
 	if (chat == nullptr) return;
 
+	// Delegate-only agents are listed only for callers that show them as unselectable; older clients still get chat agents alone.
+	const bool include_delegate_only = payload.value("includeDelegateOnly", false);
 	const uam::AgentDefinitionCatalog catalog = uam::AgentDefinitionService::Load(
 	    m_app.data_root, uam::paths::ResolveControllerWorkspaceRootPath(m_app, *chat));
 	nlohmann::json agents = nlohmann::json::array();
 	for (const uam::AgentDefinition& agent : catalog.definitions)
 	{
-		if (agent.mode != "primary" && agent.mode != "both") continue;
+		if (!include_delegate_only && agent.mode != "primary" && agent.mode != "both") continue;
 		agents.push_back({
 		    {"id", agent.id},
 		    {"description", agent.description},
+		    {"mode", agent.mode},
 		    {"builtIn", agent.built_in},
 		});
 	}
@@ -1800,15 +1803,40 @@ void UamQueryHandler::HandlePreviewProviderAgentImport(CefRefPtr<CefBrowser>, co
 	});
 }
 
-void UamQueryHandler::HandleListAgentDefinitions(CefRefPtr<CefBrowser>, const nlohmann::json&, CefRefPtr<Callback> cb)
+void UamQueryHandler::HandleListAgentDefinitions(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
-	const uam::AgentDefinitionCatalog catalog = uam::AgentDefinitionService::Load(m_app.data_root, {});
+	// Global definitions always; with an open chat, also the agents saved in that chat's workspace. Each row names its scope,
+	// so a workspace agent with the same name as a global one is listed as well rather than hiding it.
+	const uam::AgentDefinitionCatalog global = uam::AgentDefinitionService::Load(m_app.data_root, {});
+	std::filesystem::path workspace_root;
+	const std::string chat_id = payload.is_object() ? payload.value("chatId", "") : std::string{};
+	if (!chat_id.empty())
+	{
+		if (const ChatSession* chat = ChatDomainService().FindChatById(m_app, chat_id); chat != nullptr)
+			workspace_root = uam::paths::ResolveControllerWorkspaceRootPath(m_app, *chat);
+	}
 	nlohmann::json agents = nlohmann::json::array();
-	for (const uam::AgentDefinition& agent : catalog.definitions)
+	std::vector<std::string> errors = global.errors;
+	const auto append = [&agents](const uam::AgentDefinition& agent, const char* scope)
+	{
 		agents.push_back({{"id", agent.id}, {"description", agent.description}, {"mode", agent.mode}, {"workspaceAccess", agent.workspace_access},
 		                  {"skills", agent.skills}, {"delegates", agent.delegates}, {"instructions", agent.instructions}, {"builtIn", agent.built_in},
-		                  {"maxWorkspaceAccess", agent.max_workspace_access}});
-	cb->Success(nlohmann::json{{"agents", std::move(agents)}, {"errors", catalog.errors}}.dump());
+		                  {"maxWorkspaceAccess", agent.max_workspace_access}, {"scope", scope}});
+	};
+	for (const uam::AgentDefinition& agent : global.definitions) append(agent, "global");
+	if (!workspace_root.empty())
+	{
+		const uam::AgentDefinitionCatalog effective = uam::AgentDefinitionService::Load(m_app.data_root, workspace_root);
+		for (const uam::AgentDefinition& agent : effective.definitions)
+		{
+			if (agent.workspace_override && !agent.built_in) append(agent, "workspace");
+		}
+		for (const std::string& error : effective.errors)
+		{
+			if (std::ranges::find(errors, error) == errors.end()) errors.push_back(error);
+		}
+	}
+	cb->Success(nlohmann::json{{"agents", std::move(agents)}, {"errors", std::move(errors)}}.dump());
 }
 
 void UamQueryHandler::HandleSaveAgentDefinition(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -1853,6 +1881,8 @@ void UamQueryHandler::HandleImportProviderAgent(CefRefPtr<CefBrowser>, const nlo
 		request.skills = payload.value("skills", std::vector<std::string>{});
 		request.workspace_scope = payload.value("workspaceScope", false);
 		request.acknowledge_ignored_fields = payload.value("acknowledgeIgnoredFields", false);
+		// The service still refuses a replacement that would drop or change a saved provider permission policy.
+		request.replace_existing = payload.value("replaceExisting", false);
 		if (request.workspace_scope)
 		{
 			ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Open a workspace chat before importing an agent.");
@@ -1874,7 +1904,8 @@ void UamQueryHandler::HandleImportProviderAgent(CefRefPtr<CefBrowser>, const nlo
 		cb->Failure(400, FailureDetailOrFallback(error, "Provider agent import failed."));
 		return;
 	}
-	cb->Success(nlohmann::json{{"id", imported.id}, {"description", imported.description}, {"mode", imported.mode}}.dump());
+	cb->Success(nlohmann::json{{"id", imported.id}, {"description", imported.description}, {"mode", imported.mode},
+	                           {"scope", request.workspace_scope ? "workspace" : "global"}}.dump());
 }
 
 void UamQueryHandler::HandleGetManagedAgentTranscript(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -2374,8 +2405,9 @@ void UamQueryHandler::HandleSetComputerUseSettings(CefRefPtr<CefBrowser> browser
 		}
 	}
 	const bool globally_enabled = payload.value("computerUseGloballyEnabled", previous.computer_use_globally_enabled);
-	if (globally_enabled && (!m_app.computer_use_revocation_pending_chat_ids.empty() ||
-	    (!previous.computer_use_globally_enabled && !uam::ComputerUseService::ResetControlsForStartup(m_app))))
+	// Only turning the feature on from Off waits for earlier grants to clear; allowlist edits while On never re-enable anything.
+	const bool turning_on = globally_enabled && !previous.computer_use_globally_enabled;
+	if (turning_on && (!m_app.computer_use_revocation_pending_chat_ids.empty() || !uam::ComputerUseService::ResetControlsForStartup(m_app)))
 	{
 		cb->Failure(500, "Computer Use cannot be re-enabled until its previous control grants are cleared.");
 		return;

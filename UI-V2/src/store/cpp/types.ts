@@ -890,7 +890,31 @@ export interface UamAgentSummary {
   id: string
   description: string
   builtIn: boolean
+  /** Only other agents can delegate to it: listed for visibility, never selectable as a chat's own agent. */
+  delegateOnly?: boolean
 }
+
+/** Where a saved agent definition lives: every workspace, or only the active chat's workspace. */
+export type AgentDefinitionScope = 'global' | 'workspace'
+
+export interface ProviderAgentImportOptions {
+  chatId: string
+  providerId: string
+  sourcePath: string
+  canonicalId: string
+  workspaceAccess: 'read' | 'write'
+  workspaceScope: boolean
+  acknowledgeIgnoredFields: boolean
+  /** Agent key inside an OpenCode JSON(C) config; empty or absent for a Markdown agent file. */
+  sourceEntry?: string
+  /** Overwrite an agent with the same ID in the target scope; sent only after the user confirms. */
+  replaceExisting?: boolean
+}
+
+/** A refused import carries the backend's one-line reason, or '' when it gave none. */
+export type ProviderAgentImportOutcome =
+  | { ok: true; id: string; mode: string; scope: AgentDefinitionScope }
+  | { ok: false; error: string }
 
 /** A native agent file or OpenCode JSON(C) entry found in a provider's global or workspace folder. */
 export interface ProviderAgentCandidate {
@@ -931,8 +955,6 @@ export interface ProviderAgentImportPreview {
   error: string
   supported: boolean
 }
-
-export type ProviderAgentImportOutcome = { ok: true } | { ok: false; error: string }
 
 export interface McpSecretReference {
   name: string
