@@ -1493,7 +1493,7 @@ if(UAM_BUILD_TESTS)
       PolicyQueueRequiresBoundedIdentity PolicyQueueExistingEditAndReorderOwnership
       SettingsProviderDefaultsPartialAndScoped SettingsMemoryAndWorkerPartialUpdates SettingsMemoryFenceAndOutcomeProjection SettingsPreferencesStorageAndAvailability
       SettingsRejectPrivilegedAndMalformedUpdates SettingsMcpAndNestedProjectionRedaction SettingsTransferredEnvelopeUsesFinalPolicy
-      DesktopConfirmationGatesOnlyLoosening DesktopConfirmationQueueBoundsAndExpiry)
+      DesktopConfirmationGatesOnlyLoosening DesktopConfirmationHoldsUamApprovalAllow DesktopConfirmationQueueBoundsAndExpiry)
     add_test(NAME uam_companion_${companion_case} COMMAND uam_companion_protocol_tests ${companion_case})
   endforeach()
   add_executable(uam_ui_asset_snapshot_tests tests/ui_asset_snapshot_tests.cpp)

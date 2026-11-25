@@ -1,4 +1,5 @@
 #include "app/vcs_commit_service.h"
+#include "app/vcs_command.h"
 
 #include "app/vcs_provider.h"
 #include "app/git_worktree_service.h"
@@ -66,7 +67,13 @@ namespace uam
 
 	namespace
 	{
-		constexpr int kDefaultCommandTimeoutMs = 120000;
+		using vcs_command::CommandOutputAndError;
+		using vcs_command::CommandOutputAndErrorOr;
+		using vcs_command::CommandStdoutOr;
+		using vcs_command::CommandSucceeded;
+		using vcs_command::IsGitObjectId;
+		using vcs_command::kVcsCommandTimeoutMs;
+		using vcs_command::RunCommand;
 		constexpr std::size_t kGitPorcelainStatusCodeWidth = 2;
 		constexpr std::size_t kGitPorcelainPathOffset = 3;
 		constexpr std::size_t kSvnStatusCodeWidth = 7;
@@ -74,41 +81,6 @@ namespace uam
 		constexpr std::string_view kRemoteVcsUnavailable =
 		    "The remote VCS helper is unavailable.";
 
-		ProcessExecutionResult RunCommand(const std::string& command, int timeout_ms = kDefaultCommandTimeoutMs)
-		{
-			return PlatformServicesFactory::Instance().process_service.ExecuteCommand(command, timeout_ms);
-		}
-
-		bool CommandSucceeded(const ProcessExecutionResult& result)
-		{
-			return result.ok && !result.timed_out && !result.canceled && result.exit_code == 0;
-		}
-
-		std::string CommandOutputOrError(const ProcessExecutionResult& result)
-		{
-			std::string detail = uam::strings::Trim(result.output);
-			const std::string error = uam::strings::Trim(result.error);
-			if (!error.empty())
-			{
-				if (!detail.empty())
-				{
-					detail += "\n";
-				}
-				detail += error;
-			}
-			return detail;
-		}
-
-		std::string CommandOutputOrFallback(const ProcessExecutionResult& result, const std::string& fallback)
-		{
-			const std::string output = uam::strings::Trim(result.output);
-			return uam::strings::NonEmptyOrFallback(output, fallback);
-		}
-
-		std::string CommandErrorOrFallback(const ProcessExecutionResult& result, const std::string& fallback)
-		{
-			return uam::strings::NonEmptyOrFallback(CommandOutputOrError(result), fallback);
-		}
 
 	}
 
@@ -157,7 +129,7 @@ namespace uam
 		                           const std::vector<std::string>& argv,
 		                           const std::vector<std::pair<std::string, std::string>>& environment = {},
 		                           std::string_view standard_input = {},
-		                           int timeout_ms = kDefaultCommandTimeoutMs, std::stop_token cancellation = {})
+		                           int timeout_ms = kVcsCommandTimeoutMs, std::stop_token cancellation = {})
 		{
 			ProcessExecutionResult result;
 			if (cancellation.stop_requested() || argv.empty() || !Ready(&result.error)) return result;
@@ -287,7 +259,7 @@ namespace uam
 			const ProcessExecutionResult result = context.Run(cwd, argv);
 			if (!CommandSucceeded(result))
 			{
-				if (error_out != nullptr) *error_out = CommandOutputOrError(result);
+				if (error_out != nullptr) *error_out = CommandOutputAndError(result);
 				return false;
 			}
 			if (output_out != nullptr)
@@ -387,7 +359,7 @@ namespace uam
 			{
 				if (error_out != nullptr)
 				{
-					*error_out = CommandOutputOrError(result);
+					*error_out = CommandOutputAndError(result);
 				}
 				return false;
 			}
@@ -427,7 +399,7 @@ namespace uam
 			}
 			if (error_out != nullptr)
 			{
-				*error_out = CommandOutputOrError(result);
+				*error_out = CommandOutputAndError(result);
 			}
 			return false;
 		}
@@ -485,11 +457,6 @@ namespace uam
 				files.push_back({path, code, code[0] != ' ' && code[0] != '?'});
 			}
 			return files;
-		}
-
-		bool IsCommitId(std::string_view value)
-		{
-			return (value.size() == 40 || value.size() == 64) && std::ranges::all_of(value, [](unsigned char ch) { return std::isxdigit(ch) != 0; });
 		}
 
 		std::filesystem::path ChatBaselinePath(const AppState& app, const ChatSession& chat)
@@ -573,10 +540,10 @@ namespace uam
 				if (m_remote)
 				{
 					args.insert(args.begin(), "git"); // RemoteVcsContext::Run adds the safety options for the host's platform.
-					return m_remote->Run(uam::paths::Utf8PathString(m_root), args, invocation.environment_overrides, {}, kDefaultCommandTimeoutMs, m_cancellation);
+					return m_remote->Run(uam::paths::Utf8PathString(m_root), args, invocation.environment_overrides, {}, kVcsCommandTimeoutMs, m_cancellation);
 				}
 				invocation.argv = uam::vcs::HardenedGitArgv(args, uam::vcs::kLocalHostIsWindows);
-				return ExecuteProviderWorkerInvocation(invocation, m_root, kDefaultCommandTimeoutMs, m_cancellation);
+				return ExecuteProviderWorkerInvocation(invocation, m_root, kVcsCommandTimeoutMs, m_cancellation);
 			}
 		  private:
 			std::filesystem::path m_root;
@@ -595,7 +562,7 @@ namespace uam
 				return {};
 			}
 			const nlohmann::json saved = nlohmann::json::parse(text, nullptr, false);
-			if (!saved.is_object() || !saved.contains("workspace") || !saved["workspace"].is_string() || !saved.contains("ref") || !saved["ref"].is_string() || saved["workspace"].get<std::string>() != uam::paths::Utf8PathString(root) || !IsCommitId(saved["ref"].get<std::string>()) || saved.value("hostIdentity", std::string("local")) != ChatBaselineHostIdentity(app, chat))
+			if (!saved.is_object() || !saved.contains("workspace") || !saved["workspace"].is_string() || !saved.contains("ref") || !saved["ref"].is_string() || saved["workspace"].get<std::string>() != uam::paths::Utf8PathString(root) || !IsGitObjectId(saved["ref"].get<std::string>()) || saved.value("hostIdentity", std::string("local")) != ChatBaselineHostIdentity(app, chat))
 			{
 				if (error_out) *error_out = "The saved repository baseline does not match this workspace.";
 				return {};
@@ -1286,7 +1253,7 @@ namespace uam
 			{
 				if (error_out != nullptr)
 				{
-					*error_out = CommandOutputOrError(result);
+					*error_out = CommandOutputAndError(result);
 				}
 				return false;
 			}
@@ -1303,7 +1270,7 @@ namespace uam
 		{
 			result.ok = true;
 			result.status = std::move(status);
-			result.message = CommandOutputOrFallback(commit_result, fallback_message);
+			result.message = CommandStdoutOr(commit_result, fallback_message);
 		}
 
 		void PopulateAvailableVcsTypes(VcsCommitStatus& status, const std::filesystem::path& workspace, std::map<VcsType, std::filesystem::path>& roots, bool validate, const AppSettings& settings)
@@ -1405,7 +1372,7 @@ namespace uam
 			if (CommandSucceeded(result)) result = index.Run({"read-tree", ref});
 			if (CommandSucceeded(result)) result = index.Run({"add", "-A", "--", "."});
 			if (CommandSucceeded(result)) return true;
-			if (error_out) *error_out = CommandOutputOrError(result);
+			if (error_out) *error_out = CommandOutputAndError(result);
 			return false;
 		}
 
@@ -1422,7 +1389,7 @@ namespace uam
 			const ProcessExecutionResult names = index.Run({"diff", "--cached", "--no-ext-diff", "--no-textconv", "--name-status", "-z", ref, "--"});
 			if (!CommandSucceeded(names))
 			{
-				status.error = CommandOutputOrError(names);
+				status.error = CommandOutputAndError(names);
 				return;
 			}
 			status.changed_files = ParseGitNameStatus(names.output);
@@ -1440,7 +1407,7 @@ namespace uam
 			const ProcessExecutionResult numstat = index.Run({"diff", "--cached", "--no-ext-diff", "--no-textconv", "--numstat", ref, "--"});
 			if (!CommandSucceeded(numstat))
 			{
-				status.error = CommandOutputOrError(numstat);
+				status.error = CommandOutputAndError(numstat);
 				return;
 			}
 			const std::map<std::string, LineStats> stats = ParseGitNumstat(numstat.output);
@@ -1626,7 +1593,7 @@ namespace uam
 		ProcessExecutionResult RunCommitMessageWorker(const std::filesystem::path& workspace, const ProviderWorkerInvocation& invocation)
 		{
 			const std::filesystem::path cwd = workspace.empty() ? uam::paths::CurrentPathOrDot() : workspace;
-			return uam::ExecuteProviderWorkerInvocation(invocation, cwd, kDefaultCommandTimeoutMs);
+			return uam::ExecuteProviderWorkerInvocation(invocation, cwd, kVcsCommandTimeoutMs);
 		}
 
 		VcsCommitMessageSuggestion SuggestionFromJson(const nlohmann::json& parsed)
@@ -1755,7 +1722,7 @@ namespace uam
 			if (error_out != nullptr)
 				*error_out = IsSvnUnversioned(selected)
 				    ? "This new SVN item could not be compared on the remote host; new folders and hosts without Git have no file diff."
-				    : CommandOutputOrError(result);
+				    : CommandOutputAndError(result);
 			return {};
 		}
 
@@ -1790,7 +1757,7 @@ namespace uam
 			{
 				const std::string ref = uam::strings::Trim(request.comparison_ref);
 				if (ref == "chat") PopulateChatComparisonDetails(request.app, request.chat, status, root, request.include_line_stats);
-				else if (!ref.empty() && !IsCommitId(ref)) status.error = "The saved chat comparison point is invalid.";
+				else if (!ref.empty() && !IsGitObjectId(ref)) status.error = "The saved chat comparison point is invalid.";
 				else if (!ref.empty()) PopulateGitComparisonDetails(status, workspace, root, request.include_line_stats, ref);
 				else PopulateGitStatusDetails(status, workspace, root, request.include_line_stats, request.context_only);
 			}
@@ -1829,7 +1796,7 @@ namespace uam
 					return;
 				}
 
-				if (!IsCommitId(comparison_ref))
+				if (!IsGitObjectId(comparison_ref))
 				{
 					status.error = "The saved chat comparison point is invalid.";
 					return;
@@ -1893,12 +1860,12 @@ namespace uam
 					const ProcessExecutionResult patch = index.Run(std::move(args));
 					if (!CommandSucceeded(patch))
 					{
-						if (error_out) *error_out = CommandOutputOrError(patch);
+						if (error_out) *error_out = CommandOutputAndError(patch);
 						return {};
 					}
 					return patch.output;
 				}
-				if (!ref.empty() && !IsCommitId(ref))
+				if (!ref.empty() && !IsGitObjectId(ref))
 				{
 					if (error_out != nullptr) *error_out = "The saved chat comparison point is invalid.";
 					return "";
@@ -1938,7 +1905,7 @@ namespace uam
 					std::vector<std::string> args = {"--literal-pathspecs", "diff", "--cached", "--no-color", "--no-ext-diff", "--no-textconv", ref, "--", path};
 					if (!selected.previous_path.empty()) args.push_back(selected.previous_path);
 					const ProcessExecutionResult patch = index.Run(std::move(args));
-					if (!CommandSucceeded(patch)) { if (error_out) *error_out = CommandOutputOrError(patch); return {}; }
+					if (!CommandSucceeded(patch)) { if (error_out) *error_out = CommandOutputAndError(patch); return {}; }
 					return patch.output;
 				}
 				if (selected.status == "??" || IsSvnUnversioned(selected)) return RemoteNoIndexDiff(context, cwd, path, selected, error_out);
@@ -1997,7 +1964,7 @@ namespace uam
 				const ProcessExecutionResult added = context.Run(cwd, add);
 				if (!CommandSucceeded(added))
 				{
-					error = CommandOutputOrError(added);
+					error = CommandOutputAndError(added);
 					if (!restore_index()) error += " The previous Git staging area could not be restored.";
 					return false;
 				}
@@ -2007,7 +1974,7 @@ namespace uam
 				committed = context.Run(cwd, commit);
 				if (!CommandSucceeded(committed))
 				{
-					error = CommandOutputOrError(committed);
+					error = CommandOutputAndError(committed);
 					if (!restore_index()) error += " The previous Git staging area could not be restored.";
 					return false;
 				}
@@ -2214,7 +2181,7 @@ namespace uam
 			if (!provider.RemoteCommit(context, result.status.workspace_directory, message, {selected.begin(), selected.end()}, result.status, committed, result.error)) return result;
 			if (!CommandSucceeded(committed))
 			{
-				result.error = CommandOutputOrError(committed);
+				result.error = CommandOutputAndError(committed);
 				return result;
 			}
 			CompleteSuccessfulCommit(result, RemoteStatus(context, app, chat, type, true, {}, false, settings),
@@ -2588,12 +2555,12 @@ namespace uam
 		if (CommandSucceeded(result)) result = index.Run({"add", "-A", "--", "."});
 		if (CommandSucceeded(result)) result = index.Run({"write-tree"});
 		const std::string tree = uam::strings::Trim(result.output);
-		if (CommandSucceeded(result) && IsCommitId(tree)) result = index.Run({"-c", "user.name=UAM", "-c", "user.email=uam@local.invalid", "commit-tree", tree, "-m", "UAM chat review baseline"});
+		if (CommandSucceeded(result) && IsGitObjectId(tree)) result = index.Run({"-c", "user.name=UAM", "-c", "user.email=uam@local.invalid", "commit-tree", tree, "-m", "UAM chat review baseline"});
 		const std::string ref = uam::strings::Trim(result.output);
-		if (CommandSucceeded(result) && IsCommitId(ref)) result = index.Run({"update-ref", "refs/uam/chat-baselines/" + uam::hashing::Hex64(uam::hashing::Fnv1a64(chat.id)) + "/" + ref, ref});
-		if (!CommandSucceeded(result) || !IsCommitId(ref))
+		if (CommandSucceeded(result) && IsGitObjectId(ref)) result = index.Run({"update-ref", "refs/uam/chat-baselines/" + uam::hashing::Hex64(uam::hashing::Fnv1a64(chat.id)) + "/" + ref, ref});
+		if (!CommandSucceeded(result) || !IsGitObjectId(ref))
 		{
-			if (error_out) *error_out = CommandOutputOrError(result);
+			if (error_out) *error_out = CommandOutputAndError(result);
 			return false;
 		}
 		if (cancellation.stop_requested())
@@ -2767,7 +2734,7 @@ namespace uam
 		}
 		if (!CommandSucceeded(result))
 		{
-			suggestion.error = CommandErrorOrFallback(result, "Commit message worker failed.");
+			suggestion.error = CommandOutputAndErrorOr(result, "Commit message worker failed.");
 			return suggestion;
 		}
 
