@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useId, useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent } from 'react'
 import { ChevronRight, Folder, FolderOpen } from 'lucide-react'
 import { Tooltip } from '../ui'
@@ -20,6 +20,19 @@ interface VisibleRow {
 }
 
 const STATUS_TONE: Record<string, string> = { M: 'var(--warning)', A: 'var(--success)', D: 'var(--error)', R: 'var(--info)' }
+/** Words for the status letter, which is otherwise only a coloured glyph. */
+const STATUS_LABEL: Record<string, string> = { M: 'Modified', A: 'Added', D: 'Deleted', R: 'Renamed', C: 'Copied', T: 'Type changed', U: 'Conflicted', '?': 'Untracked', '!': 'Ignored' }
+
+const lines = (count: number, verb: string) => `${count} ${count === 1 ? 'line' : 'lines'} ${verb}`
+
+/** What a screen reader hears after a row's name: the change type for files, then the line counts (or binary). */
+export function changedRowDescription(node: ChangedTreeNode<VcsChangedFile>): string {
+  // Folders are named by their own name, so the description starts with the full path the tooltip shows.
+  if (node.kind === 'folder') return `${node.path !== node.name ? `${node.path}, ` : ''}${lines(node.additions, 'added')}, ${lines(node.deletions, 'removed')}.`
+  const status = (node.file.status.trim().charAt(0) || 'M').toUpperCase()
+  const change = STATUS_LABEL[status] ?? 'Changed'
+  return node.file.binary ? `${change}, binary file.` : `${change}, ${lines(node.file.additions, 'added')}, ${lines(node.file.deletions, 'removed')}.`
+}
 
 const rowKeyOf = (node: ChangedTreeNode<VcsChangedFile>) => `${node.kind}:${node.key}`
 
@@ -40,6 +53,7 @@ export function ChangedFilesTree({ files, selectedPath, onOpenFile }: ChangedFil
   const [overrides, setOverrides] = useState<Record<string, boolean>>({})
   const [activeKey, setActiveKey] = useState<string | null>(null)
   const rowRefs = useRef(new Map<string, HTMLDivElement>())
+  const idPrefix = useId()
 
   const rows = useMemo(() => flatten(tree, (node) => overrides[node.key] ?? defaultOpen.has(node.key), null, []), [tree, overrides, defaultOpen])
   const currentKey = rows.some((row) => row.rowKey === activeKey) ? activeKey : rows[0]?.rowKey ?? null
@@ -91,17 +105,19 @@ export function ChangedFilesTree({ files, selectedPath, onOpenFile }: ChangedFil
 
   return (
     <div role="tree" aria-label="Changed files" className="uam-changes-tree" onKeyDown={onKeyDown}>
-      {rows.map((row) => {
+      {rows.map((row, rowIndex) => {
         const { node } = row
         const active = row.rowKey === currentKey
         const selected = node.kind === 'file' && node.path === selectedPath
         const status = node.kind === 'file' ? (node.file.status.trim().charAt(0) || 'M').toUpperCase() : ''
+        const descriptionId = `${idPrefix}-${rowIndex}`
+        // The letter and counts are visual; the row's description carries them in words.
         const counts = node.kind === 'folder' ? (
-          <span className="uam-tree-counts"><span style={{ color: 'var(--success)' }}>+{node.additions}</span><span style={{ color: 'var(--error)' }}>-{node.deletions}</span></span>
+          <span className="uam-tree-counts" aria-hidden><span style={{ color: 'var(--success)' }}>+{node.additions}</span><span style={{ color: 'var(--error)' }}>-{node.deletions}</span></span>
         ) : node.file.binary ? (
-          <span className="uam-tree-counts" style={{ color: 'var(--text-3)' }}>BIN</span>
+          <span className="uam-tree-counts" aria-hidden style={{ color: 'var(--text-3)' }}>BIN</span>
         ) : (
-          <span className="uam-tree-counts"><span style={{ color: 'var(--success)' }}>+{node.file.additions}</span><span style={{ color: 'var(--error)' }}>-{node.file.deletions}</span></span>
+          <span className="uam-tree-counts" aria-hidden><span style={{ color: 'var(--success)' }}>+{node.file.additions}</span><span style={{ color: 'var(--error)' }}>-{node.file.deletions}</span></span>
         )
         return (
           <Tooltip key={row.rowKey} label={node.path}>
@@ -115,7 +131,8 @@ export function ChangedFilesTree({ files, selectedPath, onOpenFile }: ChangedFil
             aria-level={node.depth + 1}
             aria-expanded={node.kind === 'folder' ? row.expanded : undefined}
             aria-selected={node.kind === 'file' ? selected : undefined}
-            aria-label={node.kind === 'file' ? `Review changes to ${node.path}` : undefined}
+            aria-label={node.kind === 'file' ? `Review changes to ${node.path}` : node.name}
+            aria-describedby={descriptionId}
             className="uam-tree-row uam-choice-button"
             style={{ paddingLeft: node.depth * 12 + 8 }}
             onFocus={() => setActiveKey(row.rowKey)}
@@ -129,11 +146,12 @@ export function ChangedFilesTree({ files, selectedPath, onOpenFile }: ChangedFil
               </>
             ) : (
               <>
-                <span className="uam-tree-status" style={{ color: STATUS_TONE[status] ?? 'var(--text-3)' }}>{status}</span>
+                <span className="uam-tree-status" aria-hidden style={{ color: STATUS_TONE[status] ?? 'var(--text-3)' }}>{status}</span>
                 <span className="uam-tree-name">{node.name}</span>
               </>
             )}
             {counts}
+            <span id={descriptionId} hidden>{changedRowDescription(node)}</span>
           </div>
           </Tooltip>
         )
