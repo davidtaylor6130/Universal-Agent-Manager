@@ -399,6 +399,27 @@ The [UAM tools](providers/uam-tools.md) `usage_report`, `worktree_status` and `m
 - GitHub Enterprise hosts, GitLab and Azure DevOps are not supported.
 - The phone clients show no linked pull request row and cannot start or stop a watch.
 
+## Automation schedules and scheduled follow-ups
+
+[Automation schedules](automation-api.md#schedules) (#518, first slice: schedules only, no webhooks) and the UAM [`schedule`](chat/scheduled-follow-ups.md) and [`notify`](providers/uam-tools.md) tools (#965) share one timer service in the desktop app. **Decided by David, 2026-11-23:**
+
+- Schedules run even while Phone access is off; they are local timers, and Phone access only gates the network API.
+- A schedule uses a non-expiring internal credential that never leaves the app; external automation tokens keep their expiry.
+- In the first release each scheduled run starts a new chat; messaging an existing chat is a later slice.
+- Webhooks (the second slice) keep their HMAC signing secrets in the operating system's keychain where one exists, and signed webhooks are refused where none does. Not built yet.
+- `notify` raises the chat's attention flag and follows the user's bell and notification rules; it never sends a separate push that bypasses them.
+
+**Open, pending David's decision.** These interim choices fill what the issues leave open:
+
+- The internal credential is the schedule itself: its trust, single workspace and Git access are chosen in Settings, and the 16-open-chats limit counts each schedule separately. A schedule does not borrow an external token's workspace list or ceiling.
+- An interval is 15 minutes to 7 days and counts from creation, the last change of its trigger or resuming; a weekday trigger is a local time on chosen days. Editing or resuming never runs the times that passed, and an edit that keeps the trigger keeps the timing. A clock set back more than one period restarts an interval's timing from the new time; a weekday trigger takes its next time from the new clock.
+- A run is missed when it is noticed more than 5 minutes late. "Skip" runs none of the missed times; "run once" runs one for all of them. A schedule that keeps failing for the same reason raises one notification, not one per run.
+- At most 32 schedules. A schedule file that cannot be read is left untouched and no schedule runs until it can be.
+- `schedule` takes 1 to 1440 minutes and a note of up to 500 bytes, allows 3 pending per chat and 200 in total, needs no approval and works in Plan mode, like `pr_watch`. Delivery is at most once: one interrupted by the app stopping is not sent again. There is no list or cancel control beyond Stop, Done and deleting the chat.
+- `notify` takes a message of up to 300 bytes, shown only as the tool call in the chat; it is accepted once a minute per tool connection and carries the read-only hint. Since UAM has no desktop operating-system notification and the phone alerts only for questions and permission requests, the flag currently shows in Active Chats rather than as a push.
+- Schedule notices and follow-up notices are desktop-only: the phone state omits them, as it omits shell action notices.
+- `task_run` and `task_status` from #965 are not part of this slice.
+
 ## Routing load admission
 
 **Open, pending David's decision.** UAM now reads live load per computer and shows it, with per-computer wait reasons, but [routing](remote-environments/routing.md#load-and-visibility) still admits by concurrent sessions alone. Before load changes admission, decide: which figure holds or steers work (load per core, available memory, helper processes, or a combination) and at what thresholds; whether unknown load blocks new work, counts as full or is ignored; whether this computer becomes an automatic candidate; and how a computer shared with other desktops or helper versions is counted, since `runnerProcesses` covers only the answering helper's service. Until then unknown load is only displayed as unknown.

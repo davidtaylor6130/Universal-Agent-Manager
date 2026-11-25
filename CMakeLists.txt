@@ -637,6 +637,8 @@ add_library(uam_core_objects OBJECT
   src/app/storage_retention_service.cpp
   src/app/pr_watch_service.cpp
   src/common/pr_watch/pr_watch_rules.cpp
+  src/app/timer_service.cpp
+  src/common/scheduling/schedule_rules.cpp
   src/app/data_folder_preflight.cpp
   src/app/data_folder_settings_service.cpp
   src/app/data_folder_transition.cpp
@@ -1804,6 +1806,7 @@ if(UAM_BUILD_TESTS)
     tests/uam_control_chat_create_tests.cpp
     tests/pr_watch_tests.cpp
     tests/automation_api_tests.cpp
+    tests/timer_service_tests.cpp
     tests/turn_finalization_ownership_tests.cpp
     tests/checkpoint_staging_tests.cpp
     tests/codex_allowance_ownership_tests.cpp

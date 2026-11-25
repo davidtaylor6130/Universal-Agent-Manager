@@ -55,6 +55,7 @@ import type {
   ComputePool,
   ComputePoolUsage,
   PullRequestWatch,
+  TimerNotice,
   PushChannelStatus,
   VcsCommitMessageSuggestion,
   VcsCommitResult,
@@ -213,6 +214,8 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   executionHostLoad: ExecutionHostLoad
   /** Pull requests linked to chats, with their watch state; native-owned. */
   prWatches: PullRequestWatch[]
+  /** Native timer notices (scheduled follow-ups, automation schedules), reported once each. */
+  timerNotices: TimerNotice[]
   shellActionNotification: string
   statusLine: string
   deletionProgress?: CppDeletionProgress

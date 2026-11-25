@@ -7,6 +7,7 @@ import { sanitizeCustomIcon, type CustomIcon } from '../../types/customIcon'
 // Extracted from useAppStore.ts (MO-1). Pure functions — no side effects.
 
 import type {
+  TimerNotice,
   ManualCompactionAvailability,
   CopilotAutoRoutingProjection,
   CopilotAutoTierDescriptor,
@@ -2328,6 +2329,7 @@ export function sanitizeCppAppState(value: unknown): CppAppState | null {
     computePoolUsage: sanitizeComputePoolUsage(value.computePoolUsage),
     executionHostLoad: sanitizeExecutionHostLoad(value.executionHostLoad),
     prWatches: sanitizePullRequestWatches(value.prWatches),
+    timers: sanitizeTimers(value.timers),
     shellActionNotification: stringOr(value.shellActionNotification),
     statusLine: stringOr(value.statusLine),
     deletionProgress: sanitizeDeletionProgress(value.deletionProgress),
@@ -2426,6 +2428,21 @@ export function sanitizePullRequestWatches(value: unknown): PullRequestWatch[] {
       ...(notice ? { notice } : {}),
     }]
   })
+}
+
+export function sanitizeTimers(value: unknown): { notices: TimerNotice[] } {
+  const notices = isRecord(value) && Array.isArray(value.notices) ? value.notices : []
+  return {
+    notices: notices.flatMap((entry) => {
+      if (!isRecord(entry)) return []
+      const serial = nonNegativeInteger(entry.serial) ?? 0
+      const message = stringOr(entry.message)
+      if (serial < 1 || !message) return []
+      const chatId = stringOr(entry.chatId)
+      const title = stringOr(entry.title).trim()
+      return [{ serial, message, tone: noticeTone(entry.tone), ...(title ? { title } : {}), ...(chatId ? { chatId } : {}) }]
+    }),
+  }
 }
 
 function sanitizeShellActions(value: unknown): ShellAction[] {
@@ -2557,6 +2574,7 @@ export function sanitizeCppStatePatch(value: unknown): CppStatePatch | null {
     computePoolUsage: value.computePoolUsage !== undefined ? sanitizeComputePoolUsage(value.computePoolUsage) : undefined,
     executionHostLoad: value.executionHostLoad !== undefined ? sanitizeExecutionHostLoad(value.executionHostLoad) : undefined,
     prWatches: value.prWatches !== undefined ? sanitizePullRequestWatches(value.prWatches) : undefined,
+    timers: value.timers !== undefined ? sanitizeTimers(value.timers) : undefined,
     shellActionNotification: value.shellActionNotification !== undefined ? stringOr(value.shellActionNotification) : undefined,
     statusLine: value.statusLine !== undefined ? stringOr(value.statusLine) : undefined,
   }

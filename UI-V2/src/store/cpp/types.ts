@@ -764,6 +764,17 @@ export interface PullRequestWatch {
   notice?: { serial: number; message: string; tone: 'info' | 'success' | 'warning' }
 }
 
+/** A one-line message from the native timer service (scheduled follow-ups and automation schedules) for the notifications panel. */
+export interface TimerNotice {
+  serial: number
+  /** Short panel title naming what happened, such as "Follow-up dropped". */
+  title?: string
+  message: string
+  tone: 'info' | 'success' | 'warning'
+  /** The chat it concerns, when there is one. */
+  chatId?: string
+}
+
 export interface ShellAction {
   id: string
   label: string
@@ -1153,6 +1164,7 @@ export interface CppAppState {
   computePoolUsage?: ComputePoolUsage
   executionHostLoad?: ExecutionHostLoad
   prWatches?: PullRequestWatch[]
+  timers?: { notices: TimerNotice[] }
   shellActionNotification?: string
   statusLine?: string
   deletionProgress?: CppDeletionProgress
@@ -1192,6 +1204,7 @@ export interface CppStatePatch {
   computePoolUsage?: ComputePoolUsage
   executionHostLoad?: ExecutionHostLoad
   prWatches?: PullRequestWatch[]
+  timers?: { notices: TimerNotice[] }
   shellActionNotification?: string
   statusLine?: string
 }
