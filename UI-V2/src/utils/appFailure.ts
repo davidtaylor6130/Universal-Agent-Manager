@@ -4,8 +4,9 @@ import { createRequestId } from '../ipc/cefBridge'
 export const APP_FAILURE_EVENT = 'uam-app-failure'
 export const APP_NOTICE_RESOLVED_EVENT = 'uam-app-notice-resolved'
 export type AppNoticeAction = { label: string; run: () => void | Promise<void> }
-/** Absent tone means a failure; info and success notices reuse the same channel. */
-export type AppFailure = { id: string; time: string; message: string; detail: string; tone?: 'info' | 'success' | 'warning'; actions?: AppNoticeAction[] }
+/** Absent tone means a failure; info and success notices reuse the same channel. A failure's `title` names it in the
+ * notifications panel; without one the panel uses its message. */
+export type AppFailure = { id: string; time: string; message: string; detail: string; tone?: 'info' | 'success' | 'warning'; actions?: AppNoticeAction[]; title?: string }
 
 /**
  * A notice's message is one short line read at a glance; anything after its first line (a stack, a log excerpt or
@@ -41,9 +42,9 @@ export function firstSentence(text: string): { message: string; detail: string }
   return match ? { message: match[1], detail: match[2] } : { message: text.trim(), detail: '' }
 }
 
-export function reportAppFailure(message: string, detail: string) {
+export function reportAppFailure(message: string, detail: string, options: { title?: string } = {}) {
   window.dispatchEvent(new CustomEvent<AppFailure>(APP_FAILURE_EVENT, {
-    detail: { id: createRequestId('app-failure'), time: new Date().toISOString(), ...noticeText(message, detail) },
+    detail: { id: createRequestId('app-failure'), time: new Date().toISOString(), ...noticeText(message, detail), ...(options.title ? { title: options.title } : {}) },
   }))
 }
 

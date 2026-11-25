@@ -2463,7 +2463,11 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 			}
 			if (!permission_json.empty())
 			{
-				const nlohmann::ordered_json source_permission = nlohmann::ordered_json::parse(permission_json);
+				nlohmann::ordered_json source_permission = nlohmann::ordered_json::parse(permission_json);
+				// The agent file already holds this rule; the global copy keeps a broader inherited skill rule out too.
+				if (const std::string skill_rule = AgentDefinitionService::OpenCodeNativeSkillRule(session.active_uam_agent_id,
+				        &session.active_uam_agent_definition_snapshot, permission_json); !skill_rule.empty())
+					source_permission["skill"] = nlohmann::ordered_json::parse(skill_rule);
 				const auto permission_entry = std::find_if(launch_environment.rbegin(), launch_environment.rend(),
 				    [](const std::pair<std::string, std::string>& entry) { return entry.first == "OPENCODE_PERMISSION"; });
 				if (permission_entry == launch_environment.rend())
@@ -2485,6 +2489,13 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 				permission_entry->second = permission.dump();
 			}
 		}
+	}
+	// A custom agent's skill allowlist covers UAM's skills; remove the provider's own skill tool where it offers
+	// a launch option. This holds on every route, including SSH and central setup, where no adapter is written.
+	if (!prepared && !session.model_discovery_only && AgentDefinitionService::IsCustomAgentId(session.active_uam_agent_id))
+	{
+		const std::vector<std::string> skill_argv = runtime.CustomAgentNativeSkillArgv();
+		launch_argv.insert(launch_argv.end(), skill_argv.begin(), skill_argv.end());
 	}
 	nlohmann::json launch_control_servers = nlohmann::json::array();
 	std::function<void(AcpSessionState&)> start_control_relay;

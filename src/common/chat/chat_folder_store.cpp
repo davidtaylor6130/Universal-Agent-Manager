@@ -6,6 +6,7 @@
 #include "common/paths/path_utils.h"
 #include "common/utils/io_utils.h"
 #include "common/utils/parse_utils.h"
+#include "common/utils/store_load_fence.h"
 #include "common/utils/string_utils.h"
 
 #include <sstream>
@@ -122,19 +123,14 @@ std::string ChatFolderStore::AllocateId(const std::vector<ChatFolder>& folders)
 	return AllocateId(used_ids);
 }
 
-std::vector<ChatFolder> ChatFolderStore::Load(const std::filesystem::path& data_root)
+std::vector<ChatFolder> ChatFolderStore::Load(const std::filesystem::path& data_root, uam::io::StoreLoadResult* result, uam::io::StoreFenceMode fence)
 {
 	std::vector<ChatFolder> folders;
-	const fs::path file = FolderFilePath(data_root);
-	const fs::path backup = uam::io::MakeBackupPath(file);
-
-	if (!uam::paths::PathExistsNoThrow(file) && !uam::paths::PathExistsNoThrow(backup))
-	{
-		return folders;
-	}
-
-	const std::string primary_text = uam::io::ReadTextFile(file);
-	const std::string text = (IsValidFolderFile(primary_text) || !uam::paths::PathExistsNoThrow(backup)) ? primary_text : uam::io::ReadTextFile(backup);
+	std::string text;
+	const uam::io::StoreLoadResult loaded = uam::io::LoadStoreTextWithBackup(
+	    FolderFilePath(data_root), [](const std::string& candidate) { return IsValidFolderFile(candidate); }, text, "workspaces", fence);
+	if (result != nullptr) *result = loaded;
+	// An unrecovered primary is still parsed for display; saves are fenced only when the caller armed the load.
 	std::istringstream lines(text);
 	std::string line;
 	ChatFolder current;
@@ -216,9 +212,14 @@ PreparedFolderSave::~PreparedFolderSave()
 	uam::io::RemoveAtomicTempNoThrow(temporary);
 }
 
+bool ChatFolderStore::IsSaveFenced(const fs::path& data_root)
+{
+	return uam::io::UnrecoveredStoreFence::IsFenced(FolderFilePath(data_root));
+}
+
 std::shared_ptr<PreparedFolderSave> ChatFolderStore::PrepareSave(const fs::path& data_root, const std::vector<ChatFolder>& folders)
 {
-	if (!uam::paths::CreateDirectoriesNoThrow(data_root)) return nullptr;
+	if (IsSaveFenced(data_root) || !uam::paths::CreateDirectoriesNoThrow(data_root)) return nullptr;
 	std::shared_ptr<PreparedFolderSave> prepared = std::make_shared<PreparedFolderSave>();
 	prepared->destination = FolderFilePath(data_root);
 	prepared->temporary = uam::io::MakeTempWritePath(prepared->destination);
@@ -228,10 +229,11 @@ std::shared_ptr<PreparedFolderSave> ChatFolderStore::PrepareSave(const fs::path&
 
 bool ChatFolderStore::PublishPreparedSave(const std::shared_ptr<PreparedFolderSave>& prepared)
 {
-	return prepared && uam::io::CommitSyncedAtomicTemp(prepared->destination, prepared->temporary, true, {}, false).success;
+	return prepared && !uam::io::UnrecoveredStoreFence::IsFenced(prepared->destination) && uam::io::CommitSyncedAtomicTemp(prepared->destination, prepared->temporary, true, {}, false).success;
 }
 
 bool ChatFolderStore::Save(const fs::path& data_root, const std::vector<ChatFolder>& folders)
 {
+	if (IsSaveFenced(data_root)) return false;
 	return uam::io::WriteTextFileWithBackup(FolderFilePath(data_root), Serialize(folders));
 }

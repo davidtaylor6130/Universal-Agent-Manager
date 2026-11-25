@@ -1,5 +1,6 @@
 import type { StartupNativeImportStatus } from '../../types/startupNativeImports'
 import type { ExecutionRoutingSettings } from '../../types/executionRouting'
+import type { ExecutionHostLoad, RoutingWaitHost } from '../../types/hostLoad'
 import type { CustomIcon } from '../../types/customIcon'
 // C++ state serialisation types (mirrors state_serializer.cpp output) plus the
 // frontend-facing binding/push types. Extracted from useAppStore.ts (MO-1); the
@@ -96,6 +97,7 @@ export interface CppChat {
   routingAssignedConnectionIdentity?: string
   routingAssignedProviderConfigurationIdentity?: string
   routingWaitReason?: string
+  routingWaitHosts?: RoutingWaitHost[]
   routingUnresolvedReservation?: boolean
 
   id: string
@@ -384,7 +386,11 @@ export interface AcpSecretRequest {
   localPlatform: string
   /** The chat is in Plan mode: the user allows this one request before the field appears. */
   planOptIn: boolean
-  keychain: { available: boolean; saved: boolean }
+  /**
+   * Saved secrets are scoped to this workspace, provider, agent and label. savedAt (epoch ms) and agent describe the saved
+   * entry; legacySaved marks an entry from before scoping, which is never offered for use and can only be forgotten.
+   */
+  keychain: { available: boolean; saved: boolean; savedAt?: number; agent?: string; legacySaved?: boolean }
 }
 
 export type SecretSubmission = { value?: string; useSaved?: boolean; save?: boolean }
@@ -732,7 +738,8 @@ export interface ComputePoolWait {
   limit: number
 }
 
-export type ComputePoolUsage = Record<string, { inUse: number; waiting: number }>
+/** Per pool; `hosts` splits the same counts by the computer each turn runs on. */
+export type ComputePoolUsage = Record<string, { inUse: number; waiting: number; hosts?: Record<string, { inUse: number; waiting: number }> }>
 
 /** One pull request linked to one chat. The native watch service owns it; the UI only displays and toggles it. */
 export interface PullRequestWatch {
@@ -755,6 +762,17 @@ export interface PullRequestWatch {
   paused: boolean
   /** Latest news of this app run; a new serial is reported once in the notifications panel. */
   notice?: { serial: number; message: string; tone: 'info' | 'success' | 'warning' }
+}
+
+/** A one-line message from the native timer service (scheduled follow-ups and automation schedules) for the notifications panel. */
+export interface TimerNotice {
+  serial: number
+  /** Short panel title naming what happened, such as "Follow-up dropped". */
+  title?: string
+  message: string
+  tone: 'info' | 'success' | 'warning'
+  /** The chat it concerns, when there is one. */
+  chatId?: string
 }
 
 export interface ShellAction {
@@ -1071,6 +1089,17 @@ export interface VcsUpdateResult {
   conflicts: boolean
   revision: string
   output: string
+  /** The update finished, but something it covers did not, one line each (an external that could not be updated). */
+  warnings?: string[]
+  error: string
+}
+
+/** How `svn resolve` settles a conflicted path: keep the file as it is now, take the repository's version or keep the local one. */
+export type VcsResolveChoice = 'working' | 'theirs-full' | 'mine-full'
+
+export interface VcsResolveResult {
+  ok: boolean
+  output: string
   error: string
 }
 
@@ -1133,7 +1162,9 @@ export interface CppAppState {
   cliVersionManager?: CliVersionManager
   shellActions?: ShellAction[]
   computePoolUsage?: ComputePoolUsage
+  executionHostLoad?: ExecutionHostLoad
   prWatches?: PullRequestWatch[]
+  timers?: { notices: TimerNotice[] }
   shellActionNotification?: string
   statusLine?: string
   deletionProgress?: CppDeletionProgress
@@ -1171,7 +1202,9 @@ export interface CppStatePatch {
   cliVersionManager?: CliVersionManager
   shellActions?: ShellAction[]
   computePoolUsage?: ComputePoolUsage
+  executionHostLoad?: ExecutionHostLoad
   prWatches?: PullRequestWatch[]
+  timers?: { notices: TimerNotice[] }
   shellActionNotification?: string
   statusLine?: string
 }

@@ -19,6 +19,15 @@
 
 namespace uam::provider_setup
 {
+	/// <summary>Opens a custom agent's instructions in CLI View, and marks the Codex developer_instructions value setup may fold.</summary>
+	inline constexpr std::string_view kAgentInstructionsIntro = "Follow these instructions from the UAM agent selected for this chat.";
+
+	/// <summary>Inserts launch options before a bare "--" that extra flags may carry, so prompt text cannot swallow them.</summary>
+	inline void InsertLaunchOptions(std::vector<std::string>& argv, const std::vector<std::string>& options)
+	{
+		const auto positional = std::find(argv.begin() + static_cast<std::ptrdiff_t>(std::min<std::size_t>(1, argv.size())), argv.end(), "--");
+		argv.insert(positional, options.begin(), options.end());
+	}
 	inline constexpr std::size_t kMaxFiles = 4096;
 	inline constexpr std::size_t kMaxFileBytes = 2 * 1024 * 1024;
 	inline constexpr std::size_t kMaxBundleBytes = 32 * 1024 * 1024;
@@ -404,6 +413,39 @@ namespace uam::provider_setup
 		environment.emplace_back(name, value);
 	}
 
+	/// The UAM tool server's per-session signing key, as its MCP server entry carries it.
+	inline constexpr const char* kUamControlRequestKeyEnvironment = "UAM_CONTROL_REQUEST_KEY";
+	/// Provider-process variable that a generated configuration file references instead of holding the key.
+	inline constexpr const char* kUamControlLaunchKeyEnvironment = "UAM_CONTROL_LAUNCH_KEY";
+
+	/// The servers without the signing key, for a configuration copy no provider reads.
+	inline nlohmann::json WithoutUamControlKeys(nlohmann::json native_servers)
+	{
+		for (auto& [name, server] : native_servers.items())
+			if (server.contains("env") && server["env"].is_object()) server["env"].erase(kUamControlRequestKeyEnvironment);
+		return native_servers;
+	}
+
+	/// Moves the signing key out of servers written to a configuration file and into the provider's own environment.
+	/// The file keeps a ${kUamControlLaunchKeyEnvironment} reference, which the provider expands when it starts the
+	/// server; a provider that passes its environment through instead is covered by the tool server reading that
+	/// variable when the reference reaches it unexpanded.
+	inline bool MoveUamControlKeysToEnvironment(nlohmann::json& native_servers, Environment& environment, std::string& error)
+	{
+		std::optional<std::string> moved;
+		for (auto& [name, server] : native_servers.items())
+		{
+			if (!server.contains("env") || !server["env"].is_object() || !server["env"].contains(kUamControlRequestKeyEnvironment)) continue;
+			const nlohmann::json& key = server["env"][kUamControlRequestKeyEnvironment];
+			if (!key.is_string() || (moved.has_value() && *moved != key.get<std::string>()))
+			{ error = "UAM tool connection settings are invalid."; return false; }
+			moved = key.get<std::string>();
+			server["env"][kUamControlRequestKeyEnvironment] = std::string("${") + kUamControlLaunchKeyEnvironment + "}";
+		}
+		if (moved.has_value()) SetEnvironment(environment, kUamControlLaunchKeyEnvironment, *moved);
+		return true;
+	}
+
 	inline std::string ReplaceRoot(std::string text, const std::string& root)
 	{
 		std::size_t position = 0;
@@ -755,7 +797,10 @@ namespace uam::provider_setup
 			}
 			native_servers[name] = std::move(native);
 		}
-		if (!WriteRuntimeFile(mcp_path, nlohmann::json{{"mcpServers", native_servers}}.dump(), error)) { error = "Could not install central MCP configuration."; return false; }
+		// Only Copilot reads this file as written (Claude rewrites it below); the others get it without the signing key.
+		// Gemini and Antigravity write their own files from native_servers with the key: no verified route lets them
+		// take it from their environment (Gemini's settings expansion and its environment filtering are unverified).
+		if (!WriteRuntimeFile(mcp_path, nlohmann::json{{"mcpServers", provider == uam::provider_ids::kCopilotCli ? native_servers : WithoutUamControlKeys(native_servers)}}.dump(), error)) { error = "Could not install central MCP configuration."; return false; }
 		const std::string instruction_file = uam::paths::Utf8PathString(instruction_path);
 		if (provider == uam::provider_ids::kAntigravityCli)
 		{
@@ -776,7 +821,7 @@ namespace uam::provider_setup
 			std::filesystem::permissions(isolated_config.parent_path(), std::filesystem::perms::owner_all, std::filesystem::perm_options::replace, ec);
 			if (ec) { error = "Could not secure private Antigravity configuration directory."; return false; }
 			if (!WriteRuntimeFile(isolated_config, nlohmann::json{{"mcpServers", native_servers}}.dump(), error)) return false;
-			argv.insert(argv.end(), {"--add-dir", uam::paths::Utf8PathString(runtime)});
+			InsertLaunchOptions(argv, {"--add-dir", uam::paths::Utf8PathString(runtime)});
 		}
 		else if (provider == uam::provider_ids::kClaudeCli)
 		{
@@ -791,7 +836,7 @@ namespace uam::provider_setup
 				argv.erase(argv.begin() + index, argv.begin() + index + 2);
 			}
 			if (!WriteRuntimeFile(instruction_path, instructions, error)) return false;
-			if (!mcp_only) argv.insert(argv.end(), {"--append-system-prompt-file", instruction_file});
+			if (!mcp_only) InsertLaunchOptions(argv, {"--append-system-prompt-file", instruction_file});
 			for (std::size_t index = 1; index + 1 < argv.size();)
 			{
 				if (argv[index] != "--mcp-config") { ++index; continue; }
@@ -806,10 +851,12 @@ namespace uam::provider_setup
 					if (!native_servers.contains(name)) native_servers[name] = server;
 				argv.erase(argv.begin() + index, argv.begin() + index + 2);
 			}
+			// Claude expands ${VAR} in --mcp-config and passes its environment to stdio servers.
+			if (!MoveUamControlKeysToEnvironment(native_servers, environment, error)) return false;
 			if (!native_servers.empty())
 			{
 				if (!WriteRuntimeFile(mcp_path, nlohmann::json{{"mcpServers", native_servers}}.dump(), error)) return false;
-				argv.insert(argv.end(), {"--mcp-config", uam::paths::Utf8PathString(mcp_path)});
+				InsertLaunchOptions(argv, {"--mcp-config", uam::paths::Utf8PathString(mcp_path)});
 			}
 		}
 		else if (provider == uam::provider_ids::kCodexCli)
@@ -823,7 +870,28 @@ namespace uam::provider_setup
 			if (!mcp_only && structured_setup) *protocol_instructions = instructions;
 			else if (!mcp_only)
 			{
-				if (instructions.size() > max_instruction_bytes) { error = host_instructions_only ? "Host instructions exceed the OS launch limit for this provider. Shorten them." : "Codex central instructions exceed the OS launch limit. Move reference material into skills."; return false; }
+				// CLI View may already carry a custom agent's developer instructions; a second value would replace
+				// one of them, so fold UAM's marked value in after the central or host text. A user's own value is left as it is.
+				constexpr std::string_view developer_instructions = "developer_instructions=";
+				bool folded_agent = false;
+				bool user_value = false;
+				for (std::size_t index = 1; index + 1 < argv.size() && argv[index] != "--";)
+				{
+					if (argv[index] != "-c" || !argv[index + 1].starts_with(developer_instructions)) { ++index; continue; }
+					const nlohmann::json previous = nlohmann::json::parse(argv[index + 1].substr(developer_instructions.size()), nullptr, false);
+					if (!previous.is_string() || !previous.get_ref<const std::string&>().starts_with(kAgentInstructionsIntro)) { user_value = true; index += 2; continue; }
+					instructions += "\n\n" + previous.get<std::string>();
+					folded_agent = true;
+					argv.erase(argv.begin() + static_cast<std::ptrdiff_t>(index), argv.begin() + static_cast<std::ptrdiff_t>(index) + 2);
+				}
+				// A later user value would replace the combined text, silently dropping the agent's role with it.
+				if (folded_agent && user_value) { error = "A developer_instructions flag in provider settings would replace the selected agent's instructions. Remove it or use Chat."; return false; }
+				if (instructions.size() > max_instruction_bytes)
+				{
+					error = folded_agent ? "Codex instructions, including the selected agent's, exceed the OS launch limit. Shorten the agent or use Chat."
+					    : host_instructions_only ? "Host instructions exceed the OS launch limit for this provider. Shorten them." : "Codex central instructions exceed the OS launch limit. Move reference material into skills.";
+					return false;
+				}
 				argv.insert(argv.begin() + 1, {"-c", "developer_instructions=" + TomlString(instructions)});
 			}
 			// Codex key -> configured name, so two names that share a key are refused instead of merged.
@@ -905,7 +973,7 @@ namespace uam::provider_setup
 		{
 			const std::string existing = EnvironmentValue(environment, "COPILOT_CUSTOM_INSTRUCTIONS_DIRS");
 			if (!mcp_only) SetEnvironment(environment, "COPILOT_CUSTOM_INSTRUCTIONS_DIRS", uam::paths::Utf8PathString(runtime) + (existing.empty() ? "" : "," + existing));
-			if (!servers.empty()) argv.insert(argv.end(), {"--additional-mcp-config", "@" + uam::paths::Utf8PathString(mcp_path)});
+			if (!servers.empty()) InsertLaunchOptions(argv, {"--additional-mcp-config", "@" + uam::paths::Utf8PathString(mcp_path)});
 		}
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 		else if (provider == uam::provider_ids::kOpenCodeCli)
@@ -1061,7 +1129,7 @@ namespace uam::provider_setup
 			if (!WriteRuntimeFile(settings, snapshot, error, false)) { error = "Could not install immutable Gemini configuration. " + error; return false; }
 			PreserveGeminiSystemDefaults(uam::paths::PathFromUtf8(existing), workspace, environment);
 			SetEnvironment(environment, "GEMINI_CLI_SYSTEM_SETTINGS_PATH", uam::paths::Utf8PathString(settings));
-			if (!mcp_only) argv.insert(argv.end(), {"--include-directories", uam::paths::Utf8PathString(runtime)});
+			if (!mcp_only) InsertLaunchOptions(argv, {"--include-directories", uam::paths::Utf8PathString(runtime)});
 		}
 		else { error = "Central configuration does not support this provider."; return false; }
 		return true;

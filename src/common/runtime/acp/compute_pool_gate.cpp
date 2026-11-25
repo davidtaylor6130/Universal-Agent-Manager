@@ -81,7 +81,18 @@ namespace uam
 				{
 					return IsWaiting(*session, now) && InPool(app, *session, pool);
 				}));
-				usage[pool.id] = {{"inUse", InUse(app, pool)}, {"waiting", waiting}};
+				// The same counts split by the computer each turn runs on; a pool still spans every computer.
+				nlohmann::json hosts = nlohmann::json::object();
+				for (const std::unique_ptr<AcpSessionState>& session : app.acp_sessions)
+				{
+					const bool occupies = Occupies(app, *session);
+					const bool held = !occupies && IsWaiting(*session, now);
+					if ((!occupies && !held) || !InPool(app, *session, pool)) continue;
+					nlohmann::json& host = hosts[session->process_execution_host_id.empty() ? std::string("local") : session->process_execution_host_id];
+					if (!host.is_object()) host = {{"inUse", 0}, {"waiting", 0}};
+					host[occupies ? "inUse" : "waiting"] = host[occupies ? "inUse" : "waiting"].get<int>() + 1;
+				}
+				usage[pool.id] = {{"inUse", InUse(app, pool)}, {"waiting", waiting}, {"hosts", std::move(hosts)}};
 			}
 			return usage;
 		}

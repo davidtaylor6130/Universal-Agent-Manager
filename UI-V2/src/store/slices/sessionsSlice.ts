@@ -83,6 +83,8 @@ import type {
   VcsOriginReply,
   VcsOriginView,
   VcsUpdateResult,
+  VcsResolveChoice,
+  VcsResolveResult,
   VcsType,
 } from '../cpp/types'
 import type { AppState, AcceptedHistoryPage, AcpPromptPresentationObserver, ZustandSet, ZustandGet } from '../storeTypes'
@@ -1707,8 +1709,16 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       if (!response.ok) return { ok: false, conflicts: false, revision: '', output: '', error: response.error || 'Failed to update the working copy.' }
       const data = cefPayloadOrRawResponse(response)
       return isRecord(data)
-        ? { ok: true, conflicts: data.conflicts === true, revision: stringOr(data.revision), output: stringOr(data.output), error: '' }
-        : { ok: true, conflicts: false, revision: '', output: '', error: '' }
+        ? { ok: true, conflicts: data.conflicts === true, revision: stringOr(data.revision), output: stringOr(data.output), warnings: Array.isArray(data.warnings) ? data.warnings.filter((line): line is string => typeof line === 'string' && line.length > 0) : [], error: '' }
+        : { ok: true, conflicts: false, revision: '', output: '', warnings: [], error: '' }
+    },
+
+    resolveVcsConflict: async (id: string, vcsType: VcsType, path: string, accept: VcsResolveChoice): Promise<VcsResolveResult> => {
+      if (!isCefContext()) return { ok: true, output: `Resolved conflicted state of '${path}'`, error: '' }
+      const response = await sendToCEF({ action: 'resolveVcsConflict', payload: { chatId: id, vcsType, path, accept } }, false)
+      if (!response.ok) return { ok: false, output: '', error: response.error || 'Failed to resolve the conflict.' }
+      const data = cefPayloadOrRawResponse(response)
+      return { ok: true, output: isRecord(data) ? stringOr(data.output) : '', error: '' }
     },
 
     cancelVcsRequest: (requestId: string) => {
@@ -3519,8 +3529,8 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return response.ok ? { ok: true } : { ok: false, error: response.error || 'The secret was not delivered.' }
     },
 
-    forgetSavedSecret: async (sessionId: string, requestId: string) => {
-      const response = await sendToCEF({ action: 'forgetSavedSecret', payload: { chatId: sessionId, requestId } }, false)
+    forgetSavedSecret: async (sessionId: string, requestId: string, legacy = false) => {
+      const response = await sendToCEF({ action: 'forgetSavedSecret', payload: { chatId: sessionId, requestId, ...(legacy ? { legacy: true } : {}) } }, false)
       return response.ok ? { ok: true } : { ok: false, error: response.error || 'The saved secret was not forgotten.' }
     },
 

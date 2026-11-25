@@ -93,10 +93,11 @@ The source patch uses a shared captured submission, refuses a changed target cha
 | Account usage | Independent local reads exist for four providers; Gemini eligibility, OpenCode acquisition, custom commands, remote feeds and platform acceptance remain limited | [Allowances](usage/allowances.md), Independent Account Allowance Snapshots |
 | Agent import and store | Imports report their reason, offer a confirmed Replace and reveal the agent in Central Setup; workspace agents are read-only there, and Claude Code, Gemini CLI and Copilot files import as delegate-only pending the importer work; the store's global and workspace list merge lives in the bridge handler until it can move into the agent service after the importer work; the phone pickers still hide delegate-only agents; native handler changes and their connected cases were written without a local compile; two independent Claude review rounds ran and their findings were implemented, to be recorded on the PR; David's acceptance pending | [Agents](settings/central-setup/agents.md#importing-provider-agents) |
 | Cross-platform/SSH | Source routes and fixture receipts do not prove every real CLI, OS or SSH combination | [Provider checklists](providers/providers.md#provider-checklists) |
+| UAM tool signing key | Gemini CLI View, Copilot CLI View and Antigravity still receive the tool server's signing key in a generated configuration file; Claude Code references its environment instead, with live expansion unverified | [Tool connection](providers/uam-tools.md) |
 | Skill library skipped folders | The list reply carries `skippedFolderCount`, but the library view shows no notice yet that some folders could not be opened | [Skill library](settings/central-setup/skill-library.md) |
 | Goal review change list | The reviewer's changed-file list is read with a synchronous local `git status` or `svn status` when the review is scheduled, so a slow or locked working copy delays that step; moving the read to a worker is outstanding | [Goals](chat/goals.md) |
 | Memory entry merging | A same-title observation rewrites the saved entry's body, evidence, confidence and source with the newer writer's, so a worker observation can replace a user-authored entry's text, including a same-title Markdown file without entry headers that the library cannot list; titles compare by ASCII letters and digits only, so non-ASCII titles never merge and titles differing only in non-ASCII letters collide | [Memory store](memory/store.md) |
-| CEF process sandbox | Enabled for macOS app bundles only; Windows needs CEF's `bootstrap.exe` client-DLL layout and Linux desktop builds are not shipped | [Security reference](reference/security-enterprise.md#known-gaps) |
+| CEF process sandbox | Enabled for macOS app bundles; Windows ships CEF's `bootstrap.exe` client-DLL layout, implemented and awaiting Windows verification, and turns on Chromium's network service sandbox (off by default; David's choice on 2026-11-25); Linux desktop builds are not shipped | [Security reference](reference/security-enterprise.md#known-gaps) |
 
 Do not treat these items as fixed from this documentation trial. Statuses are conservative source-level assessments, not a replacement for running a provider implementation audit.
 
@@ -122,7 +123,7 @@ The trial merges `uam/v5-improvements` at `e28ba717`, including empty native-cha
 
 ## Remaining scope and source mismatches
 
-- [Existing VCS panel](architecture/decisions.md#existing-vcs-panel): resolved 2026-10-25; David keeps the existing Git/SVN commit panel in V5. On 2026-11-11 he asked for SVN history, update and further SVN actions in it; history and update are implemented and await his acceptance. Other new panel features still need approval. The `AGENTS.md` Release Slice now records both exceptions.
+- [Existing VCS panel](architecture/decisions.md#existing-vcs-panel): resolved 2026-10-25; David keeps the existing Git/SVN commit panel in V5. On 2026-11-11 he asked for SVN history, update and further SVN actions in it; history, update and conflict resolution are implemented and await his acceptance. Other new panel features still need approval. The `AGENTS.md` Release Slice now records both exceptions.
 - Antigravity availability copy now follows the agreed structured Chat and CLI View scope after removing the stale terminal-only description; the [checklist](providers/antigravity/antigravity.md) and the [archived V5 change log](https://github.com/davidtaylor6130/Universal-Agent-Manager/blob/1d4865fcb/V5%20Improvement%20Change%20log.md) retain broader capability and acceptance gaps.
 
 ## System-wide native import
@@ -173,6 +174,7 @@ The provider implementation work preserves all six providers and excludes accoun
 | OpenCode built-in and MCP permissions can both be named doom_loop | The implemented predicate requires the qualified built-in question shape rather than its name alone: tool/input metadata and, on full native snapshots, matching tool patterns without an action tool link. Protocol verification and scoped source review cover the distinction. ACP loses some fields and trusted plugins can imitate metadata, so this is not origin attestation; native delegation limits and live/platform acceptance remain. |
 | A literal read-command filter is not executable or environment isolation | Admitted diff/log/show forms require explicit `--no-ext-diff` and `--no-textconv`; the filter is implemented and protocol-verified. Git status and other admitted forms still trust executable resolution, repository configuration, pager, index-refresh and filesystem-monitor behavior. Optional environment hardening does not become a new admission requirement or an operating-system sandbox. |
 | One native collaboration tool targets several child sessions | Authoritative child vectors and per-child conversation selection are source-integrated; preserve full lineage, control and live GUI acceptance requirements. |
+| Provider-native skills outside a custom agent's allowlist | OpenCode local Chat denies them and Claude Chat and CLI View remove the skill tool; Codex, Gemini, Copilot, Antigravity and OpenCode over SSH, under Central Setup or in CLI View keep their own skills, so the allowlist is UAM-only there. Decide per provider whether to verify a native restriction (for example a Copilot tool exclusion) or accept the documented UAM-only boundary. |
 | Providers expose no verified universal Fast tier | Keep unsupported speed controls hidden and add a route only after native provider, model and authentication metadata prove it. |
 
 Actual Claude source review is recorded in the [archived V5 change log](https://github.com/davidtaylor6130/Universal-Agent-Manager/blob/1d4865fcb/V5%20Improvement%20Change%20log.md); authenticated model turns, live SSH/platform combinations and David’s item-specific acceptance remain separate gates, and no source review or automated check grants Complete.
@@ -318,7 +320,7 @@ The [stream watch](providers/runtime-lifecycle.md#stream-watch) ships with loop 
 - Both tools report static validation and blocked-content warnings plus a runtime-error check from a hidden render. This error-only preview is the agreed V5.1 slice, and the screenshot in the original issue is deferred past V5.1. The check's own limits remain interim: five second limit, one second wait, three hidden browsers, 2,000 console messages and 20 reported errors of up to 512 bytes each.
 - Save as HTML file uses the existing folder picker and writes a unique title-based name, because no native Save As dialog exists. Open in browser writes a content-addressed copy under the system temporary folder with the restrictive policy prepended. The copy folder is refused if it is a link, not a folder or (outside Windows) owned by another user, and each new copy deletes view copies older than 24 hours.
 - Reduced motion and Motion Off stop the page's CSS animations and transitions; script-driven animation is not controlled.
-- Hardening on 2026-11-12: an agent page loads only after the user chooses Run on its card, remembered per view and exact page, and the hidden runtime check is off, so `runtimeCheck` returns `not_run`. This supersedes the runtime check item above. Since the macOS renderer now runs in the Chromium process sandbox, re-enabling the check on macOS can be reconsidered later; it stays off on every platform for now, and Windows and Linux remain a known sandbox gap. Acceptance of the Run control is pending.
+- Hardening on 2026-11-12: an agent page loads only after the user chooses Run on its card, remembered per view and exact page, and the hidden runtime check is off, so `runtimeCheck` returns `not_run`. This supersedes the runtime check item above. Since the macOS renderer now runs in the Chromium process sandbox, re-enabling the check on macOS can be reconsidered later; it stays off on every platform for now; the Windows renderer sandbox awaits verification on Windows and Linux remains a known sandbox gap. Acceptance of the Run control is pending.
 
 ## Active-turn Send in CLI View
 
@@ -333,6 +335,10 @@ The [stream watch](providers/runtime-lifecycle.md#stream-watch) ships with loop 
 ## Phone cancel and the held queue
 
 A desktop **Cancel turn** keeps queued input and holds it behind **Resume queue** ([sending](chat/sending.md)). The native phone shows a held queue but has no Resume control, and Send is refused while the queue is held, so a phone user who cancelled would be stuck until they reached the desktop. Until David decides, a cancel that comes through the phone companion keeps the earlier behaviour and discards the queue. Options: add Resume to the phone; let a phone Send resume the held queue implicitly; or keep the discard on the phone.
+
+## Delivery explanation from the keyboard
+
+The 2026-11 accessibility audit made the outgoing-message delivery marker (Sending, Not sent, Delivery not confirmed) stop being a focus stop and a live region, because every marker was a separate Tab stop that screen readers re-announced ([sending](chat/sending.md)). Screen-reader users now hear the explanation with the message, but the tooltip that shows it visually opens only on hover, so a sighted keyboard-only user can no longer reveal it, and rows with no recovery actions (Sending, Delivery not confirmed) have nothing focusable at all. The visible state word stays. Until David decides, the interim interpretation keeps the marker out of the Tab order. Options: show the explanation while keyboard focus is inside the message's footer or its recovery actions; describe the recovery actions with it; or show it as visible text.
 
 ## First-send gates awaiting a decision
 
@@ -392,6 +398,31 @@ The [UAM tools](providers/uam-tools.md) `usage_report`, `worktree_status` and `m
 - Only the turn Stop control ends a chat's watches; stopping the provider session does not.
 - GitHub Enterprise hosts, GitLab and Azure DevOps are not supported.
 - The phone clients show no linked pull request row and cannot start or stop a watch.
+
+## Automation schedules and scheduled follow-ups
+
+[Automation schedules](automation-api.md#schedules) (#518, first slice: schedules only, no webhooks) and the UAM [`schedule`](chat/scheduled-follow-ups.md) and [`notify`](providers/uam-tools.md) tools (#965) share one timer service in the desktop app. **Decided by David, 2026-11-23:**
+
+- Schedules run even while Phone access is off; they are local timers, and Phone access only gates the network API.
+- A schedule uses a non-expiring internal credential that never leaves the app; external automation tokens keep their expiry.
+- In the first release each scheduled run starts a new chat; messaging an existing chat is a later slice.
+- Webhooks (the second slice) keep their HMAC signing secrets in the operating system's keychain where one exists, and signed webhooks are refused where none does. Not built yet.
+- `notify` raises the chat's attention flag and follows the user's bell and notification rules; it never sends a separate push that bypasses them.
+
+**Open, pending David's decision.** These interim choices fill what the issues leave open:
+
+- The internal credential is the schedule itself: its trust, single workspace and Git access are chosen in Settings, and the 16-open-chats limit counts each schedule separately. A schedule does not borrow an external token's workspace list or ceiling.
+- An interval is 15 minutes to 7 days and counts from creation, the last change of its trigger or resuming; a weekday trigger is a local time on chosen days. Editing or resuming never runs the times that passed, and an edit that keeps the trigger keeps the timing. A clock set back more than one period restarts an interval's timing from the new time; a weekday trigger takes its next time from the new clock.
+- A run is missed when it is noticed more than 5 minutes late. "Skip" runs none of the missed times; "run once" runs one for all of them. A schedule that keeps failing for the same reason raises one notification, not one per run.
+- At most 32 schedules. A schedule file that cannot be read is left untouched and no schedule runs until it can be.
+- `schedule` takes 1 to 1440 minutes and a note of up to 500 bytes, allows 3 pending per chat and 200 in total, needs no approval and works in Plan mode, like `pr_watch`. Delivery is at most once: one interrupted by the app stopping is not sent again. There is no list or cancel control beyond Stop, Done and deleting the chat.
+- `notify` takes a message of up to 300 bytes, shown only as the tool call in the chat; it is accepted once a minute per tool connection and carries the read-only hint. Since UAM has no desktop operating-system notification and the phone alerts only for questions and permission requests, the flag currently shows in Active Chats rather than as a push.
+- Schedule notices and follow-up notices are desktop-only: the phone state omits them, as it omits shell action notices.
+- `task_run` and `task_status` from #965 are not part of this slice.
+
+## Routing load admission
+
+**Open, pending David's decision.** UAM now reads live load per computer and shows it, with per-computer wait reasons, but [routing](remote-environments/routing.md#load-and-visibility) still admits by concurrent sessions alone. Before load changes admission, decide: which figure holds or steers work (load per core, available memory, helper processes, or a combination) and at what thresholds; whether unknown load blocks new work, counts as full or is ignored; whether this computer becomes an automatic candidate; and how a computer shared with other desktops or helper versions is counted, since `runnerProcesses` covers only the answering helper's service. Until then unknown load is only displayed as unknown.
 
 ## Extension adapters
 

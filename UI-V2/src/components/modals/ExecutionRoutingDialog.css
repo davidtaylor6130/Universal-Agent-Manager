@@ -57,3 +57,9 @@
 .uam-rt-chooser__pick { flex: 0 0 280px; min-width: 0; }
 .uam-rt-chooser__note { margin: 0; padding: var(--sp-2) var(--sp-4); border-bottom: 1px solid var(--border); font-size: var(--fs-sm); color: var(--text-3); }
 .uam-rt-dialog__step { display: flex; flex-direction: column; min-height: 0; overflow-y: auto; }
+
+/* Routing wait: one line per computer passed over, name then reason and in-use count. */
+/* It sits below the notice, outside its live region, inset to line up with the notice text (px-2.5, 14px icon, gap-2). */
+.uam-rt-wait-hosts { display: grid; gap: 2px; margin: calc(-1 * var(--sp-1)) 0 var(--sp-2); padding: 0 0 0 calc(10px + 14px + var(--sp-2)); list-style: none; font-size: var(--fs-xs); color: var(--text-2); }
+.uam-rt-wait-hosts li { display: flex; gap: var(--sp-2); min-width: 0; font-variant-numeric: tabular-nums; }
+.uam-rt-wait-hosts__host { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }

@@ -1,4 +1,5 @@
 #include "app/pr_watch_service.h"
+#include "app/timer_service.h"
 #include "app/agent_run_scheduler.h"
 #include "cef/uam_query_handler.h"
 #include "cef/uam_query_handler_async.h"
@@ -1602,6 +1603,7 @@ void UamQueryHandler::HandleCancelAcpTurn(CefRefPtr<CefBrowser> browser, const n
 		if (session != nullptr && (session->remote_stop_pending || (session->remote_stop_unconfirmed && !session->running)))
 		{
 			if (m_app.pr_watch_service != nullptr) (void)m_app.pr_watch_service->EndWatchesForChat(chat_id);
+			if (m_app.timer_service != nullptr) (void)m_app.timer_service->CancelWakesForChat(chat_id);
 			uam::PushStateUpdateIfChanged(browser, m_app);
 			cb->Success(R"({"pending":true})");
 			return;
@@ -1612,8 +1614,9 @@ void UamQueryHandler::HandleCancelAcpTurn(CefRefPtr<CefBrowser> browser, const n
 		return;
 	}
 
-	// Pressing Stop also ends the chat's pull request watches, so a later wake cannot restart the work.
+	// Pressing Stop also ends the chat's pull request watches and scheduled follow-ups, so a later wake cannot restart the work.
 	if (m_app.pr_watch_service != nullptr) (void)m_app.pr_watch_service->EndWatchesForChat(chat_id);
+	if (m_app.timer_service != nullptr) (void)m_app.timer_service->CancelWakesForChat(chat_id);
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }

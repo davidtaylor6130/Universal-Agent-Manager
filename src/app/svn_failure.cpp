@@ -101,9 +101,9 @@ namespace uam
 			// own lead (E155004 leads with "Run 'svn cleanup'", then lists the locked paths).
 			std::size_t chosen = errors.size() - 1;
 			while (chosen > 0 && errors[chosen - 1]->code == errors[chosen]->code) --chosen;
-			// "Could not display info for all targets" and the externals summary only count the warnings above them.
-			const std::string& code = errors[chosen]->code;
-			if ((code == "E200009" || code == "E205011") && first_warning != nullptr) return first_warning;
+			// "Could not display info for all targets" only counts the warnings above it. The externals summary (E205011) is
+			// the error that ended the command, so it is named rather than the warning printed on the way.
+			if (errors[chosen]->code == "E200009" && first_warning != nullptr) return first_warning;
 			return errors[chosen];
 		}
 
