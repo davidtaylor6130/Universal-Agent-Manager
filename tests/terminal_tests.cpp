@@ -3506,7 +3506,7 @@ UAM_TEST(CliHandoffLauncherStagesProviderFilesAndArguments)
 		std::string channel;
 		std::string error;
 		UAM_ASSERT(!PrepareCliProviderHandoff(app, chat, host, argv, environment, channel, error));
-		UAM_ASSERT(error.starts_with("Antigravity terminal cannot import another provider's conversation."));
+		UAM_ASSERT(error.starts_with("Antigravity's terminal cannot import another provider's chat;"));
 		UAM_ASSERT(argv == std::vector<std::string>{"agy"});
 		UAM_ASSERT(chat.provider_handoff_cli_contexts.empty());
 	}

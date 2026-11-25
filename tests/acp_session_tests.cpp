@@ -21704,7 +21704,9 @@ UAM_TEST(AcpRefusedHeldStopKeepsFailedTransportPausedUntilAcceptedStop)
 	UAM_ASSERT(std::none_of(changed.begin(), changed.end(), [](bool value) { return value; }));
 	UAM_ASSERT(fixture.app.pending_chat_save_at_by_chat_id == pending_after_refusal);
 	UAM_ASSERT(ChatRepository::ChatStorageRevision(good_root, chat.id) == revision);
-	UAM_ASSERT(session.last_error.find(failure) != std::string::npos);
+	// The shown line is one plain sentence; the writer's failure stays in the async_write_failed diagnostic.
+	UAM_ASSERT(std::ranges::any_of(session.diagnostics, [&failure](const uam::AcpDiagnosticEntryState& entry)
+	    { return entry.reason == "async_write_failed" && entry.message.find(failure) != std::string::npos; }));
 	UAM_ASSERT_EQ(session.next_request_id, request_id_after_refusal);
 	UAM_ASSERT_EQ(session.turn_serial, 9);
 	UAM_ASSERT_EQ(session.prompt_request_id, 22);

@@ -3915,7 +3915,9 @@ printf '%s' '{"memories":[{"scope":"local","category":"Lessons/User_Lessons","ti
 		}
 		UAM_ASSERT(extraction->hydration_failed);
 		UAM_ASSERT(!extraction->output_prepared && !extraction->prepared_output);
-		UAM_ASSERT(app.memory_last_status.find("history and progress are unchanged") != std::string::npos);
+		// An ordinary exception while reading history shows the history-read line; any other fault says nothing changed.
+		const bool history_read = std::string_view(stage) == "history" && !non_std;
+		UAM_ASSERT(app.memory_last_status.find(history_read ? "could not load chat history" : "history and progress are unchanged") != std::string::npos);
 		UAM_ASSERT_EQ(app.memory_failure_count_by_chat_id.at(chat.id), 1);
 		UAM_ASSERT(app.memory_retry_not_before_by_chat_id.at(chat.id) > uam::GetAppTimeSeconds());
 		UAM_ASSERT_EQ(app.memory_extraction_queue.size(), static_cast<std::size_t>(1));

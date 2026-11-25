@@ -235,7 +235,7 @@ UAM_TEST(RemoteOpenCodeVersionWaitRejectsChangedCentralConfiguration)
 	fixture.Checked();
 	std::string error;
 	UAM_ASSERT(!fixture.Start(&error));
-	UAM_ASSERT(error.find("ownership changed") != std::string::npos);
+	UAM_ASSERT(error.find("The chat changed") != std::string::npos);
 	UAM_ASSERT(fixture.Session().pending_local_launch == nullptr && !fixture.Session().running);
 	UAM_ASSERT(!fixture.app.chats.front().remote_process_exists);
 #endif
@@ -251,7 +251,7 @@ UAM_TEST(RemoteOpenCodeVersionWaitCapturesProgressiveMcpChoice)
 	fixture.Checked();
 	std::string error;
 	UAM_ASSERT(!fixture.Start(&error));
-	UAM_ASSERT(error.find("ownership changed") != std::string::npos);
+	UAM_ASSERT(error.find("The chat changed") != std::string::npos);
 	UAM_ASSERT(fixture.Session().pending_local_launch == nullptr && !fixture.Session().running);
 #endif
 }
@@ -3036,7 +3036,7 @@ UAM_TEST(PreparedVersionWaitExpiredBranchReservationKeepsLaunch)
 		if (condition == "live")
 		{
 			UAM_ASSERT(!session.pending_local_launch);
-			UAM_ASSERT(session.last_error.find("ownership changed") != std::string::npos);
+			UAM_ASSERT(session.last_error.find("The chat changed") != std::string::npos);
 			UAM_ASSERT(owner && !owner->cancellation.stop_requested());
 		}
 		else

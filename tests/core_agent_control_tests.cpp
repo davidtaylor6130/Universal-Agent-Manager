@@ -496,7 +496,7 @@ UAM_TEST(ManualCompactionRejectsUnavailableBusyRemoteAndUnsupportedSessions)
 #endif
 	session.provider_id = "gemini-cli";
 	UAM_ASSERT(!uam::CompactAcpSession(app, chat.id, &error));
-	UAM_ASSERT(error.find("does not support") != std::string::npos);
+	UAM_ASSERT(error.find("can't compact") != std::string::npos);
 	UAM_ASSERT(!session.manual_compaction_pending);
 	UAM_ASSERT(app.chats.front().messages.empty());
 }

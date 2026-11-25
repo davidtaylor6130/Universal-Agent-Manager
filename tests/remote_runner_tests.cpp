@@ -10,6 +10,7 @@
 #include "bootstrap_metadata/windows_command_assertions.h"
 #include "runner_bootstrap_probe_cases.h"
 #include "common/utils/base64.h"
+#include "common/utils/diagnostic_log.h"
 #include "common/utils/hash_utils.h"
 #include "common/platform/platform_incremental_sha256.h"
 #include "common/usage/usage_collector.h"
@@ -2114,9 +2115,15 @@ esac
 	    "linux-lab", "4.9.0-alpha-8", "nonce-1",
 	    {{"linux", "x86_64", runner, std::string(64, 'a')}}, plan, &error,
 	    "tools/uam"));
+	const fs::path log = temp.root / "diagnostic.log";
+	UAM_ASSERT(uam::diagnostics::StartFileLog(log, error, 0));
+	struct StopLog { ~StopLog() { uam::diagnostics::StopFileLog(); } } stop_log;
 	const uam::remote::BootstrapResult result = ExecuteTestBootstrapPlan(plan);
 	UAM_ASSERT(!result.ok);
-	UAM_ASSERT(result.error.find("runner socket path too long") != std::string::npos);
+	// The user sees one line; the helper's own reason stays in the diagnostic log.
+	UAM_ASSERT(result.error.find("Remote setup step failed") != std::string::npos);
+	uam::diagnostics::FlushFileLog();
+	UAM_ASSERT(uam::io::ReadTextFile(log).find("runner socket path too long") != std::string::npos);
 	UAM_ASSERT(!uam::paths::PathExistsNoThrow(copy_log));
 	const std::string commands = uam::io::ReadTextFile(command_log);
 	UAM_ASSERT(commands.find("socket=\"$HOME/tools/uam/") != std::string::npos);
@@ -10905,7 +10912,7 @@ static void VerifyAutomaticRoutedRemoteSend(const AutomaticSendInterruption inte
 		UAM_ASSERT(poll_until([&] { return !launch_pending(); }));
 		uam::FlushPendingChatSaves(app);
 		const uam::AcpSessionState* given_up = uam::FindAcpSessionForChat(app, chat.id);
-		UAM_ASSERT(given_up != nullptr && given_up->last_error.find("given up before it started") != std::string::npos);
+		UAM_ASSERT(given_up != nullptr && given_up->last_error.find("abandoned before it started") != std::string::npos);
 		UAM_ASSERT(!fs::exists(provider_input));
 		if (queue_changed)
 		{

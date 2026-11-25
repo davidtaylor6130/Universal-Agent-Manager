@@ -87,7 +87,7 @@ namespace
 			UAM_ASSERT(session.queue_held && chat.acp_queue_held);
 			UAM_ASSERT_EQ(session.lifecycle_state, std::string("error"));
 			UAM_ASSERT(session.last_error.find("held") != std::string::npos);
-			UAM_ASSERT(session.last_error.find("never replayed") != std::string::npos);
+			UAM_ASSERT(session.last_error.find("will not be resent") != std::string::npos);
 			UAM_ASSERT_EQ(chat.native_session_id, std::string("ses_v2_owned"));
 			UAM_ASSERT_EQ(chat.acp_queued_prompts, expected);
 			UAM_ASSERT_EQ(std::vector<uam::AcpQueuedUserPromptState>(session.queued_user_prompts.begin(), session.queued_user_prompts.end()), expected);
@@ -296,7 +296,9 @@ UAM_TEST(OpenCodeV2TransportLossHoldsQueueThroughSharedPolling)
 			fixture.Session().observed_process_exit_code = 1;
 			fixture.Session().last_runtime_activity_time_s = uam::GetAppTimeSeconds();
 			(void)uam::PollAllAcpSessions(fixture.app);
-			UAM_ASSERT(fixture.Session().last_error.find("The provider exited before UAM could confirm") != std::string::npos);
+			// The shown line is one plain sentence; the exit cause stays in the session diagnostics.
+			UAM_ASSERT(std::ranges::any_of(fixture.Session().diagnostics, [](const uam::AcpDiagnosticEntryState& entry)
+			    { return entry.reason == "opencode_input_held" && entry.message.find("The provider exited before UAM could confirm") != std::string::npos; }));
 		}
 		fixture.AssertHeld(expected);
 	}
