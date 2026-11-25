@@ -973,8 +973,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     : repositoryChanges?.workspaceDirectory === workspaceDirectory ? repositoryChanges : null
   const composerBranch = composerRepository
     ? composerRepository.available ? composerRepository.branchOrRevision : ''
-    : session.workspaceBranchName
+    : session.workspaceBranchName ?? ''
   const composerVcsType = composerRepository?.activeVcsType ?? 'git'
+  // Before the first send, a chat's chosen Git base (not the checked-out branch) is what its worktree starts from.
+  const composerChosenBase = composerVcsType === 'git' && session.workspaceIsolationKind === 'pendingGitWorktree'
+    && session.gitBaseBranch && session.gitBaseBranch !== composerBranch ? session.gitBaseBranch : ''
   const branchSwitching = useAppStore((s) => s.branchSwitching === true)
   // The global bridge flag is not a per-workspace capability; native validation remains authoritative.
   const canSwitchComposerBranch = branchSwitching && (session.executionHostId || 'local') === 'local'
@@ -4218,11 +4221,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 </div>
                 <span className="inline-flex min-w-0 items-center gap-1 truncate text-xs" title={workspaceDirectory}>
                   <span className="max-w-[12rem] shrink-0 truncate">{workspaceName}</span>
-                  {composerBranch && (canSwitchComposerBranch
+                  {(composerBranch || composerChosenBase) && (canSwitchComposerBranch
                     ? <ChatBranchPicker key={`${composerBranchScope}:${composerVcsType}`} chatId={session.id} branch={composerBranch} vcsType={composerVcsType} disabled={workspaceActionsDisabled} pendingBranch={session.pendingGitBranch} disabledReason="Wait for the agent to finish before switching branches." onSwitched={handleBranchSwitched} />
-                    : <Tooltip label={composerVcsType === 'svn' ? 'SVN folder switching needs a local working copy outside imported, temporary or isolated chats.' : composerBranch}>
-                      <span tabIndex={0} className="inline-flex min-w-0 items-center gap-1 truncate rounded-sm" aria-label={composerVcsType === 'svn' ? `SVN revision ${composerBranch}` : `Branch ${composerBranch}`}>
-                        {composerVcsType !== 'svn' && <GitBranch size={12} aria-hidden />}<span className="truncate font-mono">{composerVcsType === 'svn' ? `SVN r${composerBranch}` : composerBranch}</span>
+                    : <Tooltip label={composerVcsType === 'svn' ? 'SVN folder switching needs a local working copy outside imported, temporary or isolated chats.' : composerChosenBase ? `Starts from ${composerChosenBase}.${composerBranch ? ` Local copy is on ${composerBranch}.` : ''}` : composerBranch}>
+                      <span tabIndex={0} className="inline-flex min-w-0 items-center gap-1 truncate rounded-sm" aria-label={composerVcsType === 'svn' ? `SVN revision ${composerBranch}` : composerChosenBase ? `Base branch ${composerChosenBase}${composerBranch ? `, local copy on ${composerBranch}` : ''}` : `Branch ${composerBranch}`}>
+                        {composerVcsType !== 'svn' && <GitBranch size={12} aria-hidden />}<span className="truncate font-mono">{composerVcsType === 'svn' ? `SVN r${composerBranch}` : composerChosenBase || composerBranch}</span>
                       </span>
                     </Tooltip>)}
                   {isGitWorktree && <span className="uam-composer-workspace-tab__badge">Worktree</span>}

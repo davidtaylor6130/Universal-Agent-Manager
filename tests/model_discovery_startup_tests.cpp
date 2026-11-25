@@ -795,3 +795,96 @@ UAM_TEST(StartupModelDiscoveryContainsALaunchExceptionToItsScope)
 	UAM_ASSERT(snapshot.value("modelRefreshError", std::string{}).starts_with("unexpected error: "));
 	UAM_ASSERT(!discovery.Poll(fixture.app));
 }
+
+// #961: startup checked each candidate scope against every chat, canonicalizing both paths on each comparison, so a
+// large install with many worktree chats held the UI thread for tens of seconds while the chat list was applied.
+UAM_TEST(PerformanceStartupModelDiscoveryOnLargeInstall)
+{
+	StartupDiscoveryFixture fixture;
+	fixture.app.runtime_cli_versions_by_provider_id["codex-cli"].checked = false;
+	constexpr int kChats = 2400;
+	constexpr int kWorktrees = 300;
+	for (int index = 0; index < kChats - kWorktrees; ++index)
+	{
+		ChatSession chat;
+		chat.id = "chat-shared-" + std::to_string(index);
+		chat.provider_id = "codex-cli";
+		const ChatFolder& folder = fixture.app.folders[static_cast<std::size_t>(index) % fixture.app.folders.size()];
+		chat.folder_id = folder.id;
+		chat.workspace_directory = folder.directory;
+		fixture.app.chats.push_back(std::move(chat));
+	}
+	// Worktree chats come last, so each of their scopes is found only after the shared chats were compared.
+	for (int index = 0; index < kWorktrees; ++index)
+	{
+		const fs::path worktree = fixture.temp.root / "worktrees" / ("worktree-" + std::to_string(index));
+		fs::create_directories(worktree);
+		ChatSession chat;
+		chat.id = "chat-worktree-" + std::to_string(index);
+		chat.provider_id = "codex-cli";
+		chat.folder_id = fixture.app.folders.front().id;
+		chat.workspace_directory = fixture.app.folders.front().directory;
+		chat.workspace_isolation_kind = uam::paths::kGitWorktreeIsolationKind;
+		chat.workspace_worktree_directory = worktree.string();
+		fixture.app.chats.push_back(std::move(chat));
+	}
+	// Cached scopes for removed workspaces match no folder or chat, so each was compared with every chat.
+	for (int index = 0; index < 20; ++index)
+		UAM_ASSERT(fixture.app.provider_model_catalog->RememberSuccessfulModels("codex-cli", nlohmann::json::array({{{"id", "cached"}}}),
+		    (fixture.temp.root / ("removed-" + std::to_string(index))).string()));
+	fixture.app.selected_chat_index = 0;
+
+	const auto median_ms = [](auto&& work)
+	{
+		std::vector<double> samples;
+		for (int run = 0; run < 3; ++run)
+		{
+			const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+			work();
+			samples.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count());
+		}
+		std::ranges::sort(samples);
+		return samples[1];
+	};
+	std::vector<uam::ModelDiscoveryScope> scopes;
+	const double collect_ms = median_ms([&] { scopes = uam::StartupModelDiscoveryService::CollectScopes(fixture.app); });
+	// Every registered workspace still gets exactly one scope, and removed workspaces none.
+	UAM_ASSERT_EQ(std::ranges::count(scopes, std::string("codex-cli"), &uam::ModelDiscoveryScope::provider_id), static_cast<std::ptrdiff_t>(fixture.app.folders.size() + kWorktrees));
+	for (int index = 0; index < kWorktrees; ++index)
+	{
+		const std::string worktree = uam::paths::PortablePathString(fs::weakly_canonical(fixture.temp.root / "worktrees" / ("worktree-" + std::to_string(index))));
+		UAM_ASSERT_EQ(std::ranges::count(scopes, worktree, &uam::ModelDiscoveryScope::workspace_directory), 1);
+	}
+	UAM_ASSERT(std::ranges::none_of(scopes, [](const uam::ModelDiscoveryScope& scope) { return scope.workspace_directory.find("removed-") != std::string::npos; }));
+
+	// Scopes waiting for a version check skip the registration test, so a worktree chat missing while its scope waits
+	// does not drop the scope; the test runs again before launch.
+	uam::StartupModelDiscoveryService discovery(fixture.Launcher());
+	discovery.Initialize(fixture.app);
+	std::vector<ChatSession> saved_chats = std::move(fixture.app.chats);
+	fixture.app.chats.clear();
+	(void)discovery.Poll(fixture.app);
+	fixture.app.chats = std::move(saved_chats);
+	const double poll_ms = median_ms([&] { (void)discovery.Poll(fixture.app); });
+	UAM_ASSERT(fixture.launched.empty());
+	std::cout << "[TIMING] startup model discovery, " << kChats << " chats, " << kWorktrees << " worktrees: collect p50=" << collect_ms << " ms, waiting poll p50=" << poll_ms << " ms\n";
+	// Fixed limits. Collection runs once, inside the tick that applies the startup chat list; the waiting poll runs on
+	// every tick, so it stays under the 50 ms slow-PollTick threshold. Comparing every scope with every chat took seconds here.
+	constexpr double kCollectBudgetMs = 250.0;
+	constexpr double kWaitingPollBudgetMs = 40.0;
+	if (collect_ms > kCollectBudgetMs || poll_ms > kWaitingPollBudgetMs)
+		throw TestFailure("startup model discovery on " + std::to_string(kChats) + " chats took collect=" + std::to_string(collect_ms) + " ms (limit " +
+		    std::to_string(kCollectBudgetMs) + " ms), waiting poll=" + std::to_string(poll_ms) + " ms (limit " + std::to_string(kWaitingPollBudgetMs) + " ms)");
+
+	// Once the version check finishes, registered scopes still launch, two at a time.
+	fixture.app.runtime_cli_versions_by_provider_id["codex-cli"].checked = true;
+	UAM_ASSERT(discovery.Poll(fixture.app));
+	UAM_ASSERT_EQ(fixture.launched.size(), std::size_t{2});
+	for (const uam::ModelDiscoveryScope& launched : fixture.launched)
+		UAM_ASSERT_EQ(launched.provider_id, std::string("codex-cli"));
+	// The next pair after the three folder scopes reaches the first worktree scope, which the waiting polls kept.
+	for (const std::unique_ptr<uam::AcpSessionState>& session : fixture.app.acp_sessions) session->running = false;
+	UAM_ASSERT(discovery.Poll(fixture.app));
+	UAM_ASSERT_EQ(fixture.launched.size(), std::size_t{4});
+	UAM_ASSERT_EQ(fixture.launched[3].workspace_directory, uam::paths::PortablePathString(fs::weakly_canonical(fixture.temp.root / "worktrees" / "worktree-0")));
+}
