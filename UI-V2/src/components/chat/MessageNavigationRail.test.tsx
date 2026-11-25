@@ -88,6 +88,23 @@ describe('Message navigation rail', () => {
     } finally { act(() => root.unmount()); host.remove(); viewport.remove(); vi.unstubAllGlobals() }
   })
 
+  it('paints every mark from the colours forced-colours mode overrides', () => {
+    const { show } = stubIntersectionObserver()
+    const { viewport, rows, messages, viewportRef } = transcript(['user', 'assistant', 'user', 'assistant', 'user', 'assistant'])
+    const host = document.createElement('div')
+    document.body.append(viewport, host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<MessageNavigationRail startIndex={0} messages={messages} currentIndex={0} viewportRef={viewportRef} busy={false} onNavigate={vi.fn()} />))
+      act(() => show([rows[0], rows[1]]))
+      act(() => host.querySelector<HTMLElement>('[role="slider"]')!.focus()) // focus shows the neighbour marks too
+      const marks = [...host.querySelectorAll<HTMLElement>('.conversation-rail-track > span[aria-hidden]')]
+      expect(marks.some((mark) => mark.hasAttribute('data-rail-neighbor'))).toBe(true)
+      for (const mark of marks) expect(mark.getAttribute('style')).toMatch(/var\(--rail-(tick|lit|target), var\(--(text-3|text|accent)\)\)/)
+      expect(host.querySelector('[data-rail-target]')!.getAttribute('style')).toContain('var(--rail-target, var(--accent))')
+    } finally { act(() => root.unmount()); host.remove(); viewport.remove(); vi.unstubAllGlobals() }
+  })
+
   it('observes rows that mount after the rail and ignores caller position changes while tracking', async () => {
     const { observers, show } = stubIntersectionObserver()
     const { viewport, rows, messages, viewportRef } = transcript(['user', 'assistant', 'user', 'assistant'])
@@ -392,7 +409,7 @@ describe('Message navigation rail', () => {
       const slider = host.querySelector('[role="slider"]')!
       expect(slider.getAttribute('aria-valuemax')).toBe('2')
       expect(slider.getAttribute('aria-valuenow')).toBe('2')
-      expect(host.querySelectorAll('span')[1].style.background).toBe('var(--accent)')
+      expect(host.querySelectorAll('span')[1].style.background).toBe('var(--rail-target, var(--accent))')
       act(() => slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true })))
       expect(onNavigate).toHaveBeenLastCalledWith(50)
       act(() => slider.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true })))
@@ -415,7 +432,7 @@ describe('Message navigation rail', () => {
       expect(slider.getAttribute('aria-valuenow')).toBe('4')
       expect(host.querySelectorAll('[data-rail-neighbor]')).toHaveLength(4)
       expect(host.querySelector<HTMLElement>('[data-rail-target]')!.style.transform).toBe('scaleX(1)')
-      expect(Array.from(host.querySelectorAll<HTMLElement>('span')).filter(mark => mark.style.background === 'var(--accent)')).toHaveLength(1)
+      expect(Array.from(host.querySelectorAll<HTMLElement>('span')).filter(mark => mark.style.background === 'var(--rail-target, var(--accent))')).toHaveLength(1)
       act(() => slider.dispatchEvent(new MouseEvent('click', { bubbles: true, clientY: 170 })))
       expect(onNavigate).toHaveBeenLastCalledWith(15)
       act(() => slider.dispatchEvent(new MouseEvent('mouseout', { bubbles: true })))

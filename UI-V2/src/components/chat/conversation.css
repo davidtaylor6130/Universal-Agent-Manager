@@ -213,6 +213,14 @@
 /* A fixed hairline to the right of the resting marks, beneath every mark; it never moves with hover or scrolling. */
 .conversation-rail-track::before { content: ''; position: absolute; top: 0; bottom: 0; left: 24px; width: 1px; background: var(--border-bright); pointer-events: none; }
 .conversation-rail-lit { animation: conversation-rail-lit-in var(--dur-fast) var(--ease-out-soft) backwards; }
+/* Forced colours would paint the marks' fills as Canvas and drop the tick gradient, so the rail vanished: the marks read
+   their colours from these properties, set to system colours here (off-screen messages GrayText, visible ones CanvasText, the
+   current message Highlight). */
+@media (forced-colors: active) {
+  .conversation-rail-track { --rail-tick: GrayText; --rail-lit: CanvasText; --rail-target: Highlight; }
+  .conversation-rail-track > span { forced-color-adjust: none; }
+  .conversation-rail-track::before { forced-color-adjust: none; background: GrayText; }
+}
 
 .conversation-image-preview { animation: conversation-image-in var(--dur-base) var(--ease-out-soft) backwards; }
 
