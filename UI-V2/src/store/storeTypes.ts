@@ -432,7 +432,8 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   resolveAcpUserInput: (sessionId: string, requestId: string, answers: AcpUserInputAnswers) => Promise<boolean>
   /** Sends a typed secret (or the saved one) straight to native; nothing is stored here. Plan opt-in, Deny and Cancel use resolveAcpUserInput. */
   submitSecretRequest: (sessionId: string, requestId: string, submission: SecretSubmission) => Promise<{ ok: boolean; error?: string }>
-  forgetSavedSecret: (sessionId: string, requestId: string) => Promise<{ ok: boolean; error?: string }>
+  /** legacy forgets the entry saved before secrets were scoped to a provider and agent. */
+  forgetSavedSecret: (sessionId: string, requestId: string, legacy?: boolean) => Promise<{ ok: boolean; error?: string }>
   stopAcpSession: (sessionId: string, purpose?: 'interrupt' | 'timeout') => Promise<boolean>
   /** The user's override of a remote stop the host never confirmed; a process may still be running there. */
   treatRemoteStopAsStopped: (sessionId: string) => Promise<boolean>

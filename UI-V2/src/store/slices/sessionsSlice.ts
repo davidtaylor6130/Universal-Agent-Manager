@@ -3519,8 +3519,8 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return response.ok ? { ok: true } : { ok: false, error: response.error || 'The secret was not delivered.' }
     },
 
-    forgetSavedSecret: async (sessionId: string, requestId: string) => {
-      const response = await sendToCEF({ action: 'forgetSavedSecret', payload: { chatId: sessionId, requestId } }, false)
+    forgetSavedSecret: async (sessionId: string, requestId: string, legacy = false) => {
+      const response = await sendToCEF({ action: 'forgetSavedSecret', payload: { chatId: sessionId, requestId, ...(legacy ? { legacy: true } : {}) } }, false)
       return response.ok ? { ok: true } : { ok: false, error: response.error || 'The saved secret was not forgotten.' }
     },
 
