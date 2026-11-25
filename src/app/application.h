@@ -45,7 +45,8 @@ class Application
 	/// Called from main() once CEF has been initialized.
 	/// Runs CefRunMessageLoop() until the window closes or management mode receives a stop signal.
 	/// </summary>
-	int Run(CefMainArgs main_args, std::vector<std::string> launch_arguments = {});
+	/// windows_sandbox_info is the sandbox information that CEF's bootstrap.exe passes to RunWinMain on Windows.
+	int Run(CefMainArgs main_args, std::vector<std::string> launch_arguments = {}, void* windows_sandbox_info = nullptr);
 
 	/// <summary>
 	/// Called periodically from a CefTask on the UI thread.
@@ -99,7 +100,7 @@ class Application
 
 	// ---- startup / teardown -----------------------------------------------
 	bool InitializeState();
-	bool InitializeCef(CefMainArgs main_args);
+	bool InitializeCef(CefMainArgs main_args, void* windows_sandbox_info);
 	void Shutdown();
 
 	// ---- periodic work (posted to CEF UI thread) --------------------------
