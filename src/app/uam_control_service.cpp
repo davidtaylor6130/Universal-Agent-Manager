@@ -171,6 +171,7 @@ namespace uam
 		constexpr std::size_t kMaxMemorySearchQueryBytes = 512;
 		constexpr std::size_t kMaxChatCreatesPerTurn = 2;
 		constexpr std::size_t kMaxChatCreatesPerCaller = 8;
+		constexpr std::size_t kMaxDelegatesPerTurn = 8;
 		constexpr std::size_t kMaxChatTitleBytes = 256;
 		constexpr std::size_t kMaxWaitActionsPerTick = 2;
 		constexpr std::size_t kMaxCancelledWaitsPerConnection = 8;
@@ -958,6 +959,8 @@ namespace uam
 			return out;
 		}
 
+		const AcpSessionState* WaitSession(const AppState& app, const UamControlCapability& capability);
+
 		ToolResult AgentDelegate(AppState& app, UamControlCapability& capability,
 		                         const nlohmann::json& arguments)
 		{
@@ -966,12 +969,23 @@ namespace uam
 			const std::string provider_id = uam::strings::Trim(arguments.value("providerId", ""));
 			const std::string model_id = uam::strings::Trim(arguments.value("modelId", ""));
 			if (!SafeText(task, kMaxTaskBytes)) return {.error = "Delegation task exceeds the 128 KiB ceiling."};
+			// As with chat_create, a CLI View caller has no structured turn serial, so its limit is per connection.
+			const AcpSessionState* session = WaitSession(app, capability);
+			const int turn = session != nullptr ? session->turn_serial : 0;
+			if (capability.delegate_turn_serial != turn)
+			{
+				capability.delegate_turn_serial = turn;
+				capability.delegate_turn_count = 0;
+			}
+			if (capability.delegate_turn_count >= kMaxDelegatesPerTurn)
+				return {.error = "UAM may start at most 8 agents per turn."};
 			std::string run_id;
 			std::string error;
 			if (!AgentRunScheduler::Enqueue(app, capability.chat_id, capability.agent_run_id,
 			                                agent_id, task, &run_id, &error, provider_id, model_id, ReadOnlyAgent(app, capability),
 		                                arguments.contains("reasoningEffort") ? std::optional<std::string>{arguments["reasoningEffort"].get<std::string>()} : std::nullopt))
 				return {.error = std::move(error)};
+			++capability.delegate_turn_count;
 			capability.owned_agent_run_ids.insert(run_id);
 			const auto child = std::ranges::find(app.agent_runs, run_id, &AgentRun::id);
 			const std::string delivery = child == app.agent_runs.end() ? "cooperative-only" :
@@ -1021,7 +1035,7 @@ namespace uam
 		{
 			const ChatSession* chat = ChatDomainService().FindChatById(app, capability.chat_id);
 			const bool mutations_allowed = chat != nullptr && !ReadOnlyAgent(app, capability) && MutationsAllowed(*chat);
-			const bool goal_creation_allowed = chat != nullptr && !ReadOnlyAgent(app, capability) &&
+			const bool goal_creation_allowed = chat != nullptr && capability.agent_run_id.empty() && !ReadOnlyAgent(app, capability) &&
 			    uam::approval_modes::AppApprovalModeOrEmpty(chat->approval_mode) !=
 			        uam::approval_modes::kPlanApprovalMode;
 			return {.ok = true,
@@ -1032,10 +1046,13 @@ namespace uam
 			                   {"delegationPolicy", "inheritParentPermissions"},
 			                   {"agentGoalManagementEnabled", goal_creation_allowed}, {"lifecycleOwner", "uam"},
 			                   {"modelMayCreateOnly", goal_creation_allowed},
-			                   {"goalCreationPolicy", mutations_allowed ? "yoloAutoApprove" :
-			                       goal_creation_allowed ? "userApproval" : "disabled"}},
+			                   {"goalCreationPolicy", !goal_creation_allowed ? "disabled" :
+			                       mutations_allowed ? "yoloAutoApprove" : "userApproval"}},
 			        .reason = "Read current-chat goal state and immutable ceilings."};
 		}
+
+		// A subagent's capability targets its root chat, so a goal it created would drive the parent chat it does not own.
+		constexpr std::string_view kSubagentGoalRefusal = "Managed subagents cannot create goals.";
 
 		/// <summary>The cached allowance of the calling chat's own provider, reduced to shares, resets and limit flags. Money
 		/// figures (credit balances, spend amounts) stay out, and no account read or Keychain prompt is ever started.</summary>
@@ -1373,6 +1390,7 @@ namespace uam
 		ToolResult GoalCreate(AppState& app, UamControlCapability& capability,
 		                      const nlohmann::json& arguments)
 		{
+			if (!capability.agent_run_id.empty()) return {.error = std::string(kSubagentGoalRefusal)};
 			const std::string objective = uam::strings::Trim(arguments.value("objective", ""));
 			const std::string idempotency_key = uam::strings::Trim(arguments.value("idempotencyKey", ""));
 			if (objective.empty() || !SafeText(objective, kMaxObjectiveBytes))
@@ -1400,8 +1418,6 @@ namespace uam
 			                              {"tokenBudget", kModelGoalTokenBudget}, {"lifecycleOwner", "uam"}},
 			        .reason = "Created one visible bounded UAM-owned goal."};
 		}
-
-		const AcpSessionState* WaitSession(const AppState& app, const UamControlCapability& capability);
 
 		/// <summary>Shared chat_create ceilings for immediate and user-approved creation; YOLO is checked by the caller.</summary>
 		std::string ChatCreateRefusal(const AppState& app, const UamControlCapability& capability, const ChatSession* caller)
@@ -1655,6 +1671,7 @@ namespace uam
 			const ChatSession* chat = ChatDomainService().FindChatById(app, capability.chat_id);
 			if (!ControlEnabled(chat, capability, true))
 				return {.error = "UAM Control is disabled or the owning chat is unavailable."};
+			if (!capability.agent_run_id.empty()) return {.error = std::string(kSubagentGoalRefusal)};
 			if (uam::approval_modes::AppApprovalModeOrEmpty(chat->approval_mode) ==
 			    uam::approval_modes::kPlanApprovalMode)
 				return {.error = "Goals cannot be created in Plan mode."};
@@ -2678,6 +2695,8 @@ namespace uam
 			if (subagent && capability.agent_delegates.empty())
 				hidden.insert(hidden.end(), {"agent_list", "agent_delegate", "agent_status", "agent_wait", "agent_cancel"});
 			if (read_only) hidden.insert(hidden.end(), {"agent_cancel", "goal_create"});
+			// A subagent's goal would land on the parent chat it does not own.
+			if (subagent) hidden.push_back("goal_create");
 			// Only a chat that outlives its turn can be woken by a pull request watch.
 			if (subagent || !chat.temporary_parent_chat_id.empty()) hidden.insert(hidden.end(), {"pr_watch", "pr_unwatch"});
 			if (read_only || subagent || chat.imported_read_only || !chat.temporary_parent_chat_id.empty() ||
