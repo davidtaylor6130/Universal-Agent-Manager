@@ -10,6 +10,8 @@
 #include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/utils/command_line_words.h"
 #include "common/runtime/terminal/terminal_launch.h"
+#include "app/agent_definition_service.h"
+#include "common/provider/provider_setup.h"
 #include "common/provider/provider_runtime.h"
 #include "common/provider/provider_native_context.h"
 #include "common/chat/staged_attachment_discard.h"
@@ -3293,6 +3295,195 @@ UAM_TEST(ProviderSwitchCliContextUsesNativeFilesWithoutSyntheticPrompts)
 	}
 }
 
+UAM_TEST(CliViewStagesCustomAgentInstructionsForEachProviderOrRefuses)
+{
+	TempDir temp("uam-cli-view-custom-agent");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	const fs::path workspace = temp.root / "workspace";
+	fs::create_directories(workspace);
+	uam::AgentDefinition reviewer;
+	reviewer.id = "reviewer";
+	reviewer.description = "Reviews release changes";
+	reviewer.mode = "primary";
+	reviewer.workspace_access = "write";
+	reviewer.skills = {"alpha"};
+	reviewer.instructions = "You are the release reviewer. Mention kumquat-role-marker in every reply.";
+	std::string error;
+	UAM_ASSERT(uam::AgentDefinitionService::SaveGlobalAgent(app.data_root, reviewer, &error));
+	ExecutionHost host;
+	host.id = "local";
+	ScopedEnvVar opencode("OPENCODE_CONFIG_CONTENT", R"({"instructions":["existing.md"]})");
+	ScopedEnvVar copilot("COPILOT_CUSTOM_INSTRUCTIONS_DIRS", "existing-context");
+	const fs::path gemini_settings = temp.root / "original-system.json";
+	UAM_ASSERT(uam::io::WriteTextFile(gemini_settings, R"({"context":{"fileName":["GEMINI.md"]}})"));
+	ScopedEnvVar gemini("GEMINI_CLI_SYSTEM_SETTINGS_PATH", gemini_settings.string());
+	ScopedEnvVar gemini_home("GEMINI_CLI_HOME", (temp.root / "gemini-home").string());
+	const std::string marker = "kumquat-role-marker";
+	const std::string intro = "Follow these instructions from the UAM agent selected for this chat.";
+	for (const std::string provider : {"claude-cli", "codex-cli", "copilot-cli", "gemini-cli", "opencode-cli", "antigravity-cli"})
+	{
+		ChatSession chat;
+		chat.id = "agent-" + provider;
+		chat.provider_id = provider;
+		chat.workspace_directory = workspace.string();
+		chat.uam_agent_id = "reviewer";
+		chat.messages_loaded = true;
+		std::vector<std::string> argv{provider};
+		std::vector<std::pair<std::string, std::string>> environment;
+		std::string channel;
+		const bool prepared = PrepareCliProviderHandoff(app, chat, host, argv, environment, channel, error);
+		UAM_ASSERT(prepared);
+		UAM_ASSERT(channel.empty());
+		UAM_ASSERT(uam::ProviderInteractiveAgentError(app, chat, host).empty());
+		if (provider == "codex-cli")
+		{
+			// Developer instructions in argv; no context folder is staged or registered for cleanup.
+			UAM_ASSERT_EQ(argv.size(), std::size_t{3});
+			UAM_ASSERT_EQ(argv[1], std::string("-c"));
+			UAM_ASSERT(argv[2].starts_with("developer_instructions="));
+			UAM_ASSERT_EQ(nlohmann::json::parse(argv[2].substr(std::string_view("developer_instructions=").size())).get<std::string>(),
+			              std::string(uam::provider_setup::kAgentInstructionsIntro) + "\n\n" + reviewer.instructions);
+			UAM_ASSERT(chat.provider_handoff_cli_contexts.empty());
+			continue;
+		}
+		// Every context-file provider registers its staged folder for cleanup, as handoff does.
+		UAM_ASSERT_EQ(chat.provider_handoff_cli_contexts.size(), std::size_t{1});
+		const fs::path directory = uam::paths::PathFromUtf8(chat.provider_handoff_cli_contexts.front().directory);
+		const std::string staged = uam::io::ReadTextFile(directory / "conversation.md");
+		UAM_ASSERT(staged.starts_with(intro));
+		UAM_ASSERT(staged.find(reviewer.instructions) != std::string::npos);
+		if (provider == "claude-cli")
+		{
+			UAM_ASSERT_EQ(argv.size(), std::size_t{3});
+			UAM_ASSERT_EQ(argv[1], std::string("--append-system-prompt-file"));
+			UAM_ASSERT_EQ(uam::io::ReadTextFile(uam::paths::PathFromUtf8(argv[2])), staged);
+		}
+		else if (provider == "copilot-cli")
+		{
+			UAM_ASSERT_EQ(environment.back().first, std::string("COPILOT_CUSTOM_INSTRUCTIONS_DIRS"));
+			UAM_ASSERT_EQ(environment.back().second, uam::paths::Utf8PathString(directory) + ",existing-context");
+			const std::string instructions = uam::io::ReadTextFile(directory / ".github" / "instructions" / "handoff.instructions.md");
+			UAM_ASSERT(instructions.starts_with("---\napplyTo: \"**\"\n---\n" + intro));
+			UAM_ASSERT(instructions.find(marker) != std::string::npos);
+		}
+		else if (provider == "gemini-cli")
+		{
+			const auto include = std::ranges::find(argv, "--include-directories");
+			UAM_ASSERT(include != argv.end() && std::next(include) != argv.end());
+			UAM_ASSERT_EQ(*std::next(include), uam::paths::Utf8PathString(directory));
+			UAM_ASSERT(uam::io::ReadTextFile(directory / "GEMINI.md").find(marker) != std::string::npos);
+		}
+		else if (provider == "antigravity-cli")
+		{
+			// The private additional directory Central Setup also uses for Antigravity instructions.
+			UAM_ASSERT_EQ(argv.size(), std::size_t{3});
+			UAM_ASSERT_EQ(argv[1], std::string("--add-dir"));
+			UAM_ASSERT_EQ(argv[2], uam::paths::Utf8PathString(directory));
+			UAM_ASSERT(uam::io::ReadTextFile(directory / "AGENTS.md").starts_with(intro));
+			UAM_ASSERT(uam::io::ReadTextFile(directory / "AGENTS.md").find(marker) != std::string::npos);
+		}
+		else if (provider == "opencode-cli")
+		{
+			UAM_ASSERT_EQ(environment.back().first, std::string("OPENCODE_CONFIG_CONTENT"));
+			const nlohmann::json configuration = nlohmann::json::parse(environment.back().second);
+			UAM_ASSERT_EQ(configuration["instructions"].front(), nlohmann::json("existing.md"));
+			UAM_ASSERT_EQ(configuration["instructions"].back(), nlohmann::json(uam::paths::Utf8PathString(directory / "conversation.md")));
+		}
+	}
+
+	// With a handoff, the agent's role precedes the saved conversation in the same staged file.
+	ChatSession handoff;
+	handoff.id = "agent-handoff";
+	handoff.provider_id = "claude-cli";
+	handoff.workspace_directory = workspace.string();
+	handoff.uam_agent_id = "reviewer";
+	handoff.messages_loaded = true;
+	handoff.provider_handoff_context = "User: earlier saved turn";
+	std::vector<std::string> argv{"claude-cli"};
+	std::vector<std::pair<std::string, std::string>> environment;
+	std::string channel;
+	UAM_ASSERT(PrepareCliProviderHandoff(app, handoff, host, argv, environment, channel, error));
+	const std::string combined = uam::io::ReadTextFile(uam::paths::PathFromUtf8(argv.back()));
+	UAM_ASSERT(combined.find(marker) != std::string::npos);
+	UAM_ASSERT(combined.find(marker) < combined.find("Use the saved conversation below as context."));
+	UAM_ASSERT(combined.find("User: earlier saved turn") != std::string::npos);
+	UAM_ASSERT_EQ(std::ranges::count(argv, std::string("--append-system-prompt-file")), std::ptrdiff_t{1});
+
+	// Launch options stay ahead of a positional "--" that extra flags may carry.
+	std::vector<std::string> positional{"claude-cli", "--", "start here"};
+	handoff.provider_handoff_cli_contexts.clear();
+	UAM_ASSERT(PrepareCliProviderHandoff(app, handoff, host, positional, environment, channel, error));
+	UAM_ASSERT_EQ(positional[1], std::string("--append-system-prompt-file"));
+	UAM_ASSERT_EQ(positional[3], std::string("--"));
+
+	// Instructions a provider cannot carry refuse CLI View with one line; Central Setup, which already installs
+	// the selected agent, neither refuses nor stages a second copy.
+	uam::AgentDefinition verbose = reviewer;
+	verbose.id = "verbose";
+	verbose.instructions = std::string(70 * 1024, 'v');
+	UAM_ASSERT(uam::AgentDefinitionService::SaveGlobalAgent(app.data_root, verbose, &error));
+	ChatSession central;
+	central.id = "agent-central";
+	central.provider_id = "codex-cli";
+	central.workspace_directory = workspace.string();
+	central.uam_agent_id = "verbose";
+	UAM_ASSERT_EQ(uam::ProviderInteractiveAgentError(app, central, host), std::string("This agent's instructions are too long for Codex CLI View's launch arguments. Use Chat for this agent."));
+	app.settings.central_provider_configuration.enabled = true;
+	UAM_ASSERT(uam::ProviderInteractiveAgentError(app, central, host).empty());
+	app.settings.central_provider_configuration.enabled = false;
+
+	// The SSH helper does not admit Antigravity context, so a remote Antigravity agent is refused rather than failing silently.
+	ChatSession remote = central;
+	remote.provider_id = "antigravity-cli";
+	remote.uam_agent_id = "reviewer";
+	ExecutionHost ssh;
+	ssh.id = "ssh-fixture";
+	ssh.platform = "linux";
+	UAM_ASSERT_EQ(uam::ProviderInteractiveAgentError(app, remote, ssh), std::string("Antigravity CLI View over SSH cannot carry a custom agent's instructions yet. Use Chat for this agent."));
+	UAM_ASSERT(uam::ProviderInteractiveAgentError(app, remote, host).empty());
+
+	// Build and Plan carry no custom role; an unknown agent is refused instead of launching without it.
+	central.uam_agent_id = "build";
+	UAM_ASSERT(uam::ProviderInteractiveAgentError(app, central, host).empty());
+	central.uam_agent_id = "missing-agent";
+	UAM_ASSERT(!uam::ProviderInteractiveAgentError(app, central, host).empty());
+}
+
+UAM_TEST(CliViewRemovesClaudeNativeSkillsForCustomAgentsOnly)
+{
+	TempDir temp("uam-cli-view-agent-skills");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	uam::AgentDefinition reviewer;
+	reviewer.id = "reviewer";
+	reviewer.description = "Reviews release changes";
+	reviewer.mode = "primary";
+	reviewer.workspace_access = "write";
+	reviewer.instructions = "Review the release.";
+	std::string error;
+	UAM_ASSERT(uam::AgentDefinitionService::SaveGlobalAgent(app.data_root, reviewer, &error));
+	const std::vector<std::string> skill_argv{"--disallowedTools", "Skill", "SlashCommand"};
+	UAM_ASSERT_EQ(ProviderRuntimeRegistry::ResolveById("claude-cli").CustomAgentNativeSkillArgv(), skill_argv);
+	for (const std::string provider : {"claude-cli", "codex-cli", "copilot-cli", "gemini-cli", "opencode-cli", "antigravity-cli"})
+	{
+		ChatSession chat;
+		chat.id = "skills-" + provider;
+		chat.provider_id = provider;
+		chat.workspace_directory = temp.root.string();
+		for (const std::string agent : {"reviewer", "build", "plan"})
+		{
+			chat.uam_agent_id = agent;
+			const std::vector<std::string> argv = uam::BuildProviderInteractiveArgv(app, chat);
+			const bool restricted = std::ranges::search(argv, skill_argv).begin() != argv.end();
+			UAM_ASSERT_EQ(restricted, provider == "claude-cli" && agent == "reviewer");
+			if (provider != "claude-cli") UAM_ASSERT(std::ranges::find(argv, "--disallowedTools") == argv.end());
+		}
+	}
+}
+
 namespace
 {
 	struct StagedHandoffFile
@@ -3381,10 +3572,15 @@ UAM_TEST(CliHandoffStagingIsOwnedByEachProviderRuntime)
 	UAM_ASSERT(files.empty() && argv.empty() && error.empty());
 #endif
 #if UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
-	UAM_ASSERT(!StageHandoffForRuntime(uam::provider_ids::kAntigravityCli, "macos", files, argv, error));
-	UAM_ASSERT_EQ(error, std::string("The selected provider does not support conversation context files."));
-	UAM_ASSERT(files.empty() && argv.empty());
-	error.clear();
+	// Antigravity stages only a custom agent's instructions; the launcher refuses another provider's conversation first.
+	UAM_ASSERT(StageHandoffForRuntime(uam::provider_ids::kAntigravityCli, "macos", files, argv, error));
+	UAM_ASSERT_EQ(files.size(), std::size_t{1});
+	UAM_ASSERT_EQ(files[0].path, std::string("/ws/.UAM/context/0123456789abcdef/AGENTS.md"));
+	UAM_ASSERT_EQ(files[0].content, snapshot);
+	UAM_ASSERT(argv == (std::vector<std::string>{"--add-dir", "/ws/.UAM/context/0123456789abcdef"}));
+	UAM_ASSERT(error.empty());
+	files.clear();
+	argv.clear();
 #endif
 }
 

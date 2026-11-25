@@ -161,6 +161,8 @@ UAM_TEST(ImportedOpenCodePolicyReachesActualChildEnvironment)
 	UAM_ASSERT_EQ(permission["task"], nlohmann::json("deny"));
 	UAM_ASSERT_EQ(permission["uam-computer_computer_observe"], nlohmann::json("deny"));
 	UAM_ASSERT_EQ(permission["uam-computer_computer_action"], nlohmann::json("deny"));
+	// The agent approves no skills, so OpenCode's own skill tool is denied in the global copy too.
+	UAM_ASSERT_EQ(permission["skill"], nlohmann::json({{"*", "deny"}}));
 }
 #endif
 

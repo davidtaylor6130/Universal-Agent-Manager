@@ -521,6 +521,14 @@ std::vector<std::string> CopilotCliProviderRuntime::BuildInteractiveArgv(const P
 	return argv;
 }
 
+bool CopilotCliProviderRuntime::StageInteractiveAgentInstructions(const ExecutionHost&, std::string_view instructions, std::vector<std::string>&, std::string& staged_context, std::string& error) const
+{
+	// Written ahead of any handoff text in the staged applyTo "**" instructions file.
+	staged_context.assign(instructions);
+	error.clear();
+	return true;
+}
+
 MessageRole CopilotCliProviderRuntime::RoleFromNativeType(const ProviderProfile& profile, std::string_view native_type) const
 {
 	return uam::provider_runtime_internal::RoleFromNativeType(profile, native_type);

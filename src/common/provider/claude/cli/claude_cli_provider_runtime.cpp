@@ -13,6 +13,7 @@
 #include "common/provider/provider_ids.h"
 #include "common/state/app_state.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
+#include "common/provider/provider_setup.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_claude_stream.h"
 #include "common/runtime/acp/acp_model_json.h"
@@ -128,7 +129,8 @@ const char* ClaudeCliProviderRuntime::RuntimeId() const
 /// Claude reads the staged conversation as an appended system prompt file.
 bool ClaudeCliProviderRuntime::StageCliHandoffContext(const ProviderCliHandoffStaging& staging, std::vector<std::string>& argv, std::string&) const
 {
-	argv.insert(argv.end(), {"--append-system-prompt-file", staging.context_path});
+	// Ahead of any positional "--" that extra launch flags may carry.
+	uam::provider_setup::InsertLaunchOptions(argv, {"--append-system-prompt-file", staging.context_path});
 	return true;
 }
 
@@ -147,6 +149,22 @@ std::vector<std::string> ClaudeCliProviderRuntime::BuildInteractiveArgv(const Pr
 	uam::provider_runtime_internal::AppendArgs(argv, uam::provider_runtime_internal::BuildProviderFlagsArgv(provider_settings, uam::provider_runtime_internal::LaunchHasReadCeiling(chat)));
 	AppendClaudeTerminalFastMode(argv, chat);
 	return argv;
+}
+
+bool ClaudeCliProviderRuntime::StageInteractiveAgentInstructions(const ExecutionHost&, std::string_view instructions, std::vector<std::string>&, std::string& staged_context, std::string& error) const
+{
+	// Written ahead of any handoff text in the file passed to --append-system-prompt-file.
+	staged_context.assign(instructions);
+	error.clear();
+	return true;
+}
+
+std::vector<std::string> ClaudeCliProviderRuntime::CustomAgentNativeSkillArgv() const
+{
+	// Deny rules outrank allow rules in Claude, so native skills cannot be narrowed to the agent's allowlist;
+	// remove the model's skill and slash-command tools instead. Approved skills reach it only through UAM's skill tools
+	// or Central Setup's skill index, so with both off the agent has no skills at all, which is narrower, not wider.
+	return {"--disallowedTools", "Skill", "SlashCommand"};
 }
 
 MessageRole ClaudeCliProviderRuntime::RoleFromNativeType(const ProviderProfile& profile, std::string_view native_type) const
