@@ -560,6 +560,9 @@ namespace uam
 		// chat_create admissions within the caller's current structured turn.
 		int chat_create_turn_serial = -1;
 		std::size_t chat_create_turn_count = 0;
+		// agent_delegate admissions within the caller's current structured turn.
+		int delegate_turn_serial = -1;
+		std::size_t delegate_turn_count = 0;
 		// Latest successful agent_delegate, to answer a retry whose first reply was never collected.
 		std::string last_delegate_request_id, last_delegate_arguments;
 		nlohmann::json last_delegate_result;
@@ -1556,6 +1559,8 @@ namespace uam
 		uam::FrontendActionMap frontend_actions;
 
 		std::vector<ChatSession> chats;
+		/// The side chat whose cleanup was requested last; its poll removes it ahead of older requests (Dismiss side chat).
+		std::string latest_side_cleanup_chat_id;
 		HiddenAgentChatOwnership hidden_agent_chat_ownership;
 		/// Saved chats of providers this build excludes (see excluded_provider_data.h): never shown or changed, consulted only so
 		/// import and deletion respect the native sessions and workspaces they own. Always empty in a build with every provider.

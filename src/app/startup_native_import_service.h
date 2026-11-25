@@ -239,7 +239,7 @@ namespace uam
 		std::uint64_t m_decision_revision = 0;
 		bool Revalidate(AppState& app, std::string* error_out);
 		void StartScan(const AppState& app, bool include_remote);
-		void AddError(const std::string& error);
+		void AddError(const std::string& error, bool log = true, bool capped = true);
 		void AddHostUnavailableError(const std::string& host_id, const std::string& fallback_name);
 		void FinishImport(AppState& app);
 		std::vector<StartupNativeImportRemoteScope> PendingRemoteScopes(const AppState& app);
