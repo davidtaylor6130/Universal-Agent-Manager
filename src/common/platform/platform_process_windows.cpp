@@ -566,9 +566,9 @@ class WindowsProcessService final : public IPlatformProcessService
 
 		const WindowsLaunchCommand launch = BuildWindowsLaunchCommand(argv);
 		const std::wstring command_w = WideFromUtf8(launch.command_line);
-		if (command_w.empty())
+		if (command_w.empty() || !WindowsLaunchFitsCmdLimit(launch, error_out))
 		{
-			if (error_out != nullptr)
+			if (error_out != nullptr && command_w.empty())
 			{
 				*error_out = "Failed to encode stdio command line.";
 			}
@@ -622,7 +622,7 @@ class WindowsProcessService final : public IPlatformProcessService
 			const DWORD launch_error = GetLastError();
 			if (error_out != nullptr)
 			{
-				*error_out = "Failed to start stdio process. " + FormatWindowsError(launch_error) + ". Command: " + launch.command_line + "." + WindowsLaunchDiagnosticSuffix(launch);
+				*error_out = "Failed to start stdio process. " + FormatWindowsError(launch_error) + ". Command: " + launch.diagnostic_command_line + "." + WindowsLaunchDiagnosticSuffix(launch);
 			}
 			CloseStdioParentPipeEnds(stdin_write, stdout_read, stderr_read);
 			return false;
