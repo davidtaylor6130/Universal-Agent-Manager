@@ -3,6 +3,7 @@
 #include "app/provider_model_catalog_service.h"
 #include "app/execution_routing_service.h"
 #include "app/repository_route_match_service.h"
+#include "common/utils/store_load_fence.h"
 #include "common/models/app_models.h"
 #include "common/memory/memory_worker_failure_pause.h"
 #include "common/paths/workspace_lease.h"
@@ -1583,6 +1584,10 @@ namespace uam
 		bool memory_settings_uncertain = false;
 		std::vector<ChatFolder> folders;
 		std::vector<ResourceCollection> resource_collections;
+		/// Startup load results for the stores above. An Unrecovered result means the in-memory list is
+		/// partial or empty and the store refuses saves until a fresh process reads a valid file.
+		uam::io::StoreLoadResult folders_load;
+		uam::io::StoreLoadResult resource_collections_load;
 		std::vector<ShellAction> shell_actions;
 		/// The saved shell actions file existed but could not be read on the last load, so the next save sets it aside first.
 		bool shell_actions_unreadable = false;
