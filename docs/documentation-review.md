@@ -344,7 +344,7 @@ A queued-input journal that extends the queue revision carried by its saved chat
 
 ## Chat save failure at quit
 
-A transcript save that fails while UAM is running is reported once through the status line and retried with backoff. The forced save at quit runs after the interface is gone, so a chat that first fails there is only recorded in the diagnostic log. Telling the user needs a decision between a native dialog at quit and a notice at the next launch backed by a small durable marker; neither exists yet. Interim interpretation: keep the diagnostic line and the two forced attempts around provider stop.
+A transcript save that fails while UAM is running is reported once through the status line and retried with backoff. The forced save at quit runs after the interface is gone, so a chat that first fails there is only recorded in the diagnostic log, as one line with its cause. Telling the user needs a decision between a native dialog at quit and a notice at the next launch backed by a small durable marker; neither exists yet. Interim interpretation: keep the diagnostic line and the two forced attempts around provider stop.
 
 ## Compute pool wait after a restart
 
