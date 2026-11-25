@@ -53,8 +53,8 @@ namespace uam
 		/// secret_request: claims the pending card for one delivery and says where the read-once drop goes.
 		static bool BeginSecretDelivery(AppState& app, std::string_view chat_id, std::string_view request_id,
 		                                SecretDeliveryTarget& target, std::string* error_out = nullptr);
-		/// The saved-secret account name for a pending secret card (no value).
-		static std::optional<std::string> SecretKeychainAccount(const AppState& app, std::string_view chat_id, std::string_view request_id);
+		/// The saved-secret account name for a pending secret card (no value); legacy names the earlier unscoped entry.
+		static std::optional<std::string> SecretKeychainAccount(const AppState& app, std::string_view chat_id, std::string_view request_id, bool legacy = false);
 		/// Replies to the agent with the drop's path only; a failed drop keeps the card open for Retry.
 		static bool FinishSecretDelivery(AppState& app, std::string_view chat_id, std::string_view request_id,
 		                                 const secrets::DropResult& drop, std::string* error_out = nullptr);

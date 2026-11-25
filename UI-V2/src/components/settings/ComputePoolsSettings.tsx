@@ -1,3 +1,4 @@
+import { SSH_ENABLED } from '../../config/buildFeatures'
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { Cpu, Pencil, Plus, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
@@ -24,6 +25,7 @@ function validLimit(limit: number) {
 export function ComputePoolsSettings() {
   const pools = useAppStore((s) => s.computePools)
   const usage = useAppStore((s) => s.computePoolUsage)
+  const executionHosts = useAppStore((s) => s.executionHosts)
   const providers = useAppStore((s) => s.providers)
   const catalogs = useAppStore((s) => s.providerModelCatalogs)
   const defaultProviderId = useAppStore((s) => s.defaultNewChatProviderId) || DEFAULT_PROVIDER_ID
@@ -51,6 +53,10 @@ export function ComputePoolsSettings() {
   }
 
   const providerName = (id: string) => providerShortName(providers.find((provider) => provider.id === id), id)
+  const hostName = (id: string) => id === 'local' ? 'This computer' : executionHosts.find((host) => host.id === id)?.label || 'Removed computer'
+  // Pools span every computer; with SSH the row also says where its turns run.
+  const byHost = (pool: ComputePool) => SSH_ENABLED ? Object.entries(usage[pool.id]?.hosts ?? {})
+    .map(([id, counts]) => `${hostName(id)} ${counts.inUse}${counts.waiting > 0 ? ` (${counts.waiting} waiting)` : ''}`).join(', ') : ''
   const describe = (pool: ComputePool) => pool.members.map((member) => `${providerName(member.providerId)} · ${member.modelId || 'All models'}`).join(', ')
   const startEditing = (draft: ComputePool, isNew: boolean) => { setExitPrompt(false); setEditing({ draft, isNew, original: JSON.stringify(draft) }) }
 
@@ -91,7 +97,7 @@ export function ComputePoolsSettings() {
         const inUse = usage[pool.id]?.inUse ?? 0
         const waiting = usage[pool.id]?.waiting ?? 0
         return <Reveal key={pool.id} open={!removingIds.has(pool.id)}><SettingRow icon={<Cpu size={15} aria-hidden />} title={pool.name} description={describe(pool)}
-          status={`${inUse}/${pool.limit} in use${waiting > 0 ? ` · ${waiting} waiting` : ''}`}
+          status={`${inUse}/${pool.limit} in use${waiting > 0 ? ` · ${waiting} waiting` : ''}${byHost(pool) ? ` · ${byHost(pool)}` : ''}`}
           control={<>
             <IconButton size="sm" icon={<Pencil size={14} />} label={`Edit ${pool.name}`} disabled={busy} onClick={() => startEditing(pool, false)} />
             <IconButton size="sm" icon={<X size={14} />} label={`Delete ${pool.name}`} disabled={busy} onClick={() => setPendingDelete(pool)} />

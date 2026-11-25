@@ -1171,6 +1171,9 @@ std::optional<GoalService::ReviewDecision> GoalService::ParseReviewDecision(cons
 			decision.current_step = uam::strings::Trim(it->value("currentStep", ""));
 			decision.last_verification = uam::strings::Trim(it->value("lastVerification", ""));
 		}
+		// Only the goal review refuses "stop" (usually meant blocked) and "yes" (names no decision): they get the repair
+		// turn instead of marking the goal achieved. ReviewDecisionRequest keeps both as complete for its other users.
+		if (decision.decision == "stop" || decision.decision == "yes") return std::nullopt;
 		// The same spellings the decision interface accepts for the review (ReviewDecisionRequest).
 		for (const auto& [spelling, option] : ReviewDecisionRequest().option_aliases)
 		{

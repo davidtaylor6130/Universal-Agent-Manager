@@ -421,15 +421,22 @@ def gpu_state(pids):
 
 
 def slow_poll_metrics(log_text):
-    """Existing rate-limited [performance] lines: slow poll ticks (>= 50 ms) and slow state-patch serialization."""
+    """Rate-limited [performance] lines: slow poll ticks (>= 50 ms) and slow state-patch serialization.
+
+    The app writes one PollTick summary per minute that had a slow tick (count, then p50/p95/max per stage) and a
+    single PollTick line only from 250 ms. Summaries give the count; maxima come from both kinds of line."""
+    summaries = re.findall(r'\[performance\] PollTick summary over \d+ s: samples=\d+ slow\(>=\d+ms\)=(\d+); '
+                           r'p50/p95/max ms total=\d+/\d+/(\d+) stages=(\S+)', log_text)
     polls = [(int(ms), stages) for ms, stages in re.findall(r'\[performance\] PollTick took (\d+) ms; stages=(\S+)', log_text)]
     patches = [int(ms) for ms in re.findall(r'\[performance\] statePatch serialization took (\d+) ms', log_text)]
-    metrics = {'slow_poll_count': len(polls), 'slow_poll_max_ms': max((ms for ms, _ in polls), default=0),
+    metrics = {'slow_poll_count': sum(int(count) for count, _, _ in summaries),
+               'slow_poll_max_ms': max([ms for ms, _ in polls] + [int(top) for _, top, _ in summaries], default=0),
                'slow_patch_count': len(patches), 'slow_patch_max_ms': max(patches, default=0)}
-    for _, stages in polls:
-        for name, ms in re.findall(r'(\w+):(\d+)', stages):
-            key = f'slow_poll_stage_{name}_max_ms'
-            metrics[key] = max(metrics.get(key, 0), int(ms))
+    stage_maxima = [(name, int(ms)) for _, stages in polls for name, ms in re.findall(r'(\w+):(\d+)', stages)]
+    stage_maxima += [(name, int(top)) for _, _, stages in summaries for name, top in re.findall(r'(\w+):\d+/\d+/(\d+)', stages)]
+    for name, ms in stage_maxima:
+        key = f'slow_poll_stage_{name}_max_ms'
+        metrics[key] = max(metrics.get(key, 0), ms)
     return metrics
 
 
