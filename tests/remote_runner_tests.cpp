@@ -1,4 +1,5 @@
 #include "common/usage/antigravity_accounting.h"
+#include "common/config/execution_host_config.h"
 #include "remote/remote_workspace_terminal.h"
 #include "remote/runner_startup.h"
 #include "app/chat_lifecycle_service.h"
@@ -922,6 +923,43 @@ UAM_TEST(RemoteRunnerListsOnlyBoundedDirectChildDirectories)
 	    "test-version", &state);
 	UAM_ASSERT(!file.value("ok", true));
 	UAM_ASSERT_EQ(file["error"].value("code", ""), std::string("not_directory"));
+}
+
+UAM_TEST(RemoteDirectoryAttachmentAcceptsOnlyTheRequestedHelperDirectory)
+{
+	TempDir temp("uam-runner-directory-attachment");
+	fs::create_directory(temp.root / "alpha");
+	uam::remote::RunnerState state;
+	(void)uam::remote::HandleRunnerRequest(
+	    {{"id", "hello-attach"}, {"type", "hello"},
+	     {"protocolVersion", uam::remote::kRunnerProtocolVersion}, {"nonce", "attach"}},
+	    "test-version", &state);
+#if defined(_WIN32)
+	const std::string platform = "windows";
+#else
+	const std::string platform = "linux";
+#endif
+	const std::string root = uam::paths::Utf8PathString(temp.root);
+	// A trailing separator names the same directory; the helper reports it without one, with a distinct parent.
+	const std::string requested = uam::paths::Utf8PathString(temp.root / "alpha") + "/";
+	const nlohmann::json listed = uam::remote::HandleRunnerRequest(
+	    {{"id", "list-trailing"}, {"type", "directory.list"}, {"path", requested}}, "test-version", &state);
+	UAM_ASSERT(listed.value("ok", false));
+	const std::string reported = listed["result"].value("directory", "");
+	UAM_ASSERT_EQ(reported, uam::paths::Utf8PathString(temp.root / "alpha"));
+	UAM_ASSERT_EQ(listed["result"].value("parentDirectory", ""), root);
+	UAM_ASSERT(uam::execution_hosts::RemoteDirectoryMatchesRequest(platform, requested, reported));
+	UAM_ASSERT(uam::execution_hosts::RemoteDirectoryMatchesRequest(platform, requested + ".", reported));
+
+	// A helper that answers with a relative or a different folder is refused, so no attachment is recorded.
+	UAM_ASSERT(!uam::execution_hosts::RemoteDirectoryMatchesRequest(platform, requested, "alpha"));
+	UAM_ASSERT(!uam::execution_hosts::RemoteDirectoryMatchesRequest(platform, requested, ""));
+	UAM_ASSERT(!uam::execution_hosts::RemoteDirectoryMatchesRequest(platform, requested, root));
+	UAM_ASSERT(!uam::execution_hosts::RemoteDirectoryMatchesRequest("linux", "/srv/x", "/srv/other"));
+	UAM_ASSERT(uam::execution_hosts::RemoteDirectoryMatchesRequest("linux", "/srv/x/./y/..", "/srv/x"));
+	UAM_ASSERT(uam::execution_hosts::RemoteDirectoryMatchesRequest("windows", "C:/Work/x", "c:\\work\\X\\"));
+	UAM_ASSERT(!uam::execution_hosts::RemoteDirectoryMatchesRequest("windows", "C:/Work/x", "D:\\Work\\x"));
+	UAM_ASSERT_EQ(uam::execution_hosts::LexicalRemotePath("windows", "\\\\srv\\share\\a\\.."), std::string("//srv/share"));
 }
 
 UAM_TEST(RemoteRunnerExecutesOnlyValidatedTypedProcessRequests)

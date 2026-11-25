@@ -6,7 +6,7 @@ import type { CustomIcon } from '../../types/customIcon'
 // store re-exports everything here so existing imports keep working.
 
 import type { Attachment, MessageBlock, MessageToolCall } from '../../types/message'
-import type { GoalStatus } from '../../types/goal'
+import type { Goal } from '../../types/goal'
 import type { StoredTheme } from '../../utils/themeStorage'
 import type { ResourceCollection } from '../../types/resourceCollection'
 import type { MemoryLevel } from '../../types/memory'
@@ -191,31 +191,10 @@ export interface CppChat {
   goalMode?: boolean
 }
 
-export interface CppGoal {
-  id: string
-  objective: string
-  status: GoalStatus
-  tokenBudget?: number
-  tokensUsed?: number
-  blockedTurnCount?: number
-  lastBlocker?: string
-	lastBlockerKind?: string
-  lastDiagnostic?: string
-  lastDecisionSource?: string
-  pendingContinuation?: boolean
-  completedItems?: string[]
-  remainingItems?: string[]
-  currentStep?: string
-  lastVerification?: string
-  lastNextPrompt?: string
-  sameNextPromptCount?: number
-  loopCount?: number
+/** The native goal record: the frontend Goal before its chat id is attached and its ISO timestamps become Dates. */
+export type CppGoal = Omit<Goal, 'chatId' | 'createdAt' | 'updatedAt'> & {
   createdAt: string
   updatedAt: string
-	executionOwner?: 'uam' | 'provider'
-	workerModelId?: string
-	reviewerModelId?: string
-	providerCommand?: string
 }
 
 export interface GitWorktreeStatus {
@@ -911,7 +890,29 @@ export interface UamAgentSummary {
   id: string
   description: string
   builtIn: boolean
+  /** Only other agents can delegate to it: listed for visibility, never selectable as a chat's own agent. */
+  delegateOnly?: boolean
 }
+
+/** Where a saved agent definition lives: every workspace, or only the active chat's workspace. */
+export type AgentDefinitionScope = 'global' | 'workspace'
+
+export interface ProviderAgentImportOptions {
+  chatId: string
+  providerId: string
+  sourcePath: string
+  canonicalId: string
+  workspaceAccess: 'read' | 'write'
+  workspaceScope: boolean
+  acknowledgeIgnoredFields: boolean
+  /** Overwrite an agent with the same ID in the target scope; sent only after the user confirms. */
+  replaceExisting?: boolean
+}
+
+/** A refused import carries the backend's one-line reason, or '' when it gave none. */
+export type ProviderAgentImportOutcome =
+  | { ok: true; id: string; mode: string; scope: AgentDefinitionScope }
+  | { ok: false; error: string }
 
 export interface ProviderAgentCandidate {
   id: string

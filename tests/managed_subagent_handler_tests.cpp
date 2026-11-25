@@ -20,6 +20,18 @@ struct ManagedSubagentHandlerTestAccess
 		else
 			handler.HandleListManagedSubagents(nullptr, payload, callback);
 	}
+	static void Transcript(UamQueryHandler& handler, const nlohmann::json& payload, CefRefPtr<UamQueryHandler::Callback> callback)
+	{
+		handler.HandleGetManagedAgentTranscript(nullptr, payload, callback);
+	}
+	static void Query(UamQueryHandler& handler, int64_t query_id)
+	{
+		handler.m_dispatchingQuery = {-1, "", query_id};
+	}
+	static void CancelQuery(UamQueryHandler& handler, int64_t query_id)
+	{
+		handler.OnQueryCanceled(nullptr, nullptr, query_id);
+	}
 	static void Dispatch(UamQueryHandler& handler, std::function<bool(CefRefPtr<UamQueryHandler::Callback>, std::function<AsyncCefResult()>, std::function<void(AsyncCefResult&)>)> dispatch)
 	{
 		handler.m_managedSubagentDispatcherForTests = std::move(dispatch);
@@ -115,6 +127,22 @@ namespace
 			CefRefPtr<ManagedCallback> cb = new ManagedCallback;
 			ManagedSubagentHandlerTestAccess::Invoke(*handler, false, {{"chatId", "root"}}, cb);
 			return cb;
+		}
+		CefRefPtr<ManagedCallback> Transcript()
+		{
+			CefRefPtr<ManagedCallback> cb = new ManagedCallback;
+			ManagedSubagentHandlerTestAccess::Transcript(*handler, {{"chatId", "root"}, {"transcriptChatId", "owned-transcript"}}, cb);
+			return cb;
+		}
+		// Removes the in-memory transcript and returns a saved copy for the test to write when it chooses.
+		ChatSession DetachTranscript(const std::string& answer)
+		{
+			ChatSession saved = app.chats.back();
+			UAM_ASSERT_EQ(saved.id, std::string("owned-transcript"));
+			app.chats.pop_back();
+			saved.created_at = saved.updated_at = "2026-10-16 10:02:00";
+			saved.messages.push_back(Message{MessageRole::Assistant, answer});
+			return saved;
 		}
 		CefRefPtr<ManagedCallback> Cancel(const std::string& scope)
 		{
@@ -218,6 +246,128 @@ UAM_TEST(ManagedSubagentBridgeKeepsStableScopeAcrossStatusOnlyRefresh)
 	fixture.pending[2].Finish();
 	UAM_ASSERT_EQ(stopped->successes, 1);
 	UAM_ASSERT_EQ(fixture.app.agent_runs.front().status, std::string("cancelled"));
+}
+
+UAM_TEST(ManagedSubagentTranscriptOfUnfinishedRunReadsSavedFileOffTheUiThread)
+{
+	BridgeFixture fixture;
+	const ChatSession saved = fixture.DetachTranscript("Saved unfinished answer");
+	const auto transcript_path = AppPaths::UamChatFilePath(fixture.app.data_root, saved.id);
+	UAM_ASSERT(!std::filesystem::exists(transcript_path));
+	// The run is still queued, so the capture route declines it; the request must still return before any read.
+	UAM_ASSERT(!uam::CaptureManagedAgentTranscriptRead(fixture.app, "root", saved.id));
+	const auto cb = fixture.Transcript();
+	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{1});
+	UAM_ASSERT_EQ(cb->successes + cb->failures, 0);
+	// Written only after the handler returned: a synchronous LoadLocalChat would already have failed with 404.
+	UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, saved));
+	fixture.pending[0].Finish();
+	UAM_ASSERT_EQ(cb->successes, 1);
+	UAM_ASSERT_EQ(cb->body.at("runId").get<std::string>(), fixture.run_id);
+	UAM_ASSERT_EQ(cb->body.at("status").get<std::string>(), std::string("queued"));
+	UAM_ASSERT_EQ(cb->body.at("messages").size(), std::size_t{1});
+	UAM_ASSERT_EQ(cb->body.at("messages")[0].at("content").get<std::string>(), std::string("Saved unfinished answer"));
+	UAM_ASSERT(ChatDomainService().FindChatById(fixture.app, saved.id) == nullptr); // Read for display only, never adopted.
+	const auto again = fixture.Transcript();                                        // The finished read released its slot.
+	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{2});
+	fixture.pending[1].Finish();
+	UAM_ASSERT_EQ(again->successes, 1);
+}
+
+UAM_TEST(ManagedSubagentTranscriptNewerOpenWaitsAndCancelledOpenGetsNoHistory)
+{
+	BridgeFixture fixture;
+	const ChatSession saved = fixture.DetachTranscript("Saved unfinished answer");
+	UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, saved));
+	const auto older = fixture.Transcript();
+	const auto newer = fixture.Transcript(); // Waits for the pending read instead of starting or refusing one.
+	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{1});
+	UAM_ASSERT_EQ(newer->successes + newer->failures, 0);
+	auto first = fixture.pending[0]; // Its completion re-runs the waiter, which appends to pending.
+	first.Finish();
+	UAM_ASSERT_EQ(older->successes, 1);                    // The older open keeps its own checked result.
+	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{2}); // The newer open re-ran and read again.
+	fixture.pending[1].Finish();
+	UAM_ASSERT_EQ(newer->successes, 1);
+	UAM_ASSERT_EQ(newer->body.at("messages")[0].at("content").get<std::string>(), std::string("Saved unfinished answer"));
+
+	ManagedSubagentHandlerTestAccess::Query(*fixture.handler, 76);
+	const auto kept = fixture.Transcript();
+	ManagedSubagentHandlerTestAccess::Query(*fixture.handler, 75);
+	const auto abandoned = fixture.Transcript(); // Waits, then is cancelled before the read finishes.
+	ManagedSubagentHandlerTestAccess::CancelQuery(*fixture.handler, 75);
+	auto second = fixture.pending[2];
+	second.Finish();
+	UAM_ASSERT_EQ(kept->successes, 1); // A cancelled waiter does not strand the request it waited on.
+	UAM_ASSERT_EQ(abandoned->successes + abandoned->failures, 0);
+	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{3});
+
+	ManagedSubagentHandlerTestAccess::Query(*fixture.handler, 77);
+	const auto cancelled = fixture.Transcript();
+	ManagedSubagentHandlerTestAccess::CancelQuery(*fixture.handler, 77);
+	fixture.pending[3].Finish();
+	UAM_ASSERT_EQ(cancelled->successes, 0);
+	UAM_ASSERT_EQ(cancelled->status, 409);
+	ManagedSubagentHandlerTestAccess::Query(*fixture.handler, 78);
+	ManagedSubagentHandlerTestAccess::Dispatch(*fixture.handler,
+	                                           [](auto cb, auto, auto)
+	                                           {
+		                                           cb->Failure(503, "Worker unavailable.");
+		                                           return false;
+	                                           });
+	const auto refused = fixture.Transcript();
+	UAM_ASSERT_EQ(refused->status, 503);
+	ManagedSubagentHandlerTestAccess::Dispatch(*fixture.handler,
+	                                           [&fixture](auto cb, auto worker, auto completion)
+	                                           {
+		                                           fixture.pending.push_back({cb, std::move(worker), std::move(completion)});
+		                                           return true;
+	                                           });
+	const auto after = fixture.Transcript(); // Neither the cancelled read nor the refused dispatch kept the slot.
+	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{5});
+	fixture.pending[4].Finish();
+	UAM_ASSERT_EQ(after->successes, 1);
+}
+
+UAM_TEST(ManagedSubagentTranscriptDetachedReadNeverRepliesWithAnotherRunsTranscript)
+{
+	BridgeFixture fixture;
+	ChatSession saved = fixture.DetachTranscript("Answer from the replaced run");
+	UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, saved));
+	const auto replaced = fixture.Transcript();
+	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{1});
+	fixture.app.agent_runs.front().id = uam::AgentRunLedger::NewRunId(); // A new run took over this transcript id mid-read.
+	fixture.pending[0].Finish();
+	UAM_ASSERT_EQ(replaced->successes, 0);
+	UAM_ASSERT_EQ(replaced->status, 409);
+	const auto foreign = fixture.Transcript(); // The saved file still names the old run.
+	fixture.pending[1].Finish();
+	UAM_ASSERT_EQ(foreign->successes, 0);
+	UAM_ASSERT_EQ(foreign->status, 404);
+	saved.agent_run_id = fixture.app.agent_runs.front().id;
+	UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, saved));
+	const auto adopted = fixture.Transcript();
+	fixture.app.chats.push_back(saved); // A live copy appeared while the saved one was being read.
+	fixture.pending[2].Finish();
+	UAM_ASSERT_EQ(adopted->successes, 0);
+	UAM_ASSERT_EQ(adopted->status, 409);
+	fixture.app.chats.pop_back();
+	const auto status_changed = fixture.Transcript();
+	fixture.app.agent_runs.front().status = "running"; // Same run, but it moved on while the old snapshot was read.
+	fixture.app.agent_runs.front().updated_at = "2026-10-16 10:03:00";
+	fixture.pending[3].Finish();
+	UAM_ASSERT_EQ(status_changed->successes, 0);
+	UAM_ASSERT_EQ(status_changed->status, 409);
+	const auto touched = fixture.Transcript();
+	fixture.app.agent_runs.front().updated_at = "2026-10-16 10:04:00"; // Same status, newer record.
+	fixture.pending[4].Finish();
+	UAM_ASSERT_EQ(touched->successes, 0);
+	UAM_ASSERT_EQ(touched->status, 409);
+	fixture.app.chats.push_back(saved);
+	const auto live = fixture.Transcript(); // A loaded in-memory transcript is answered directly, with no read.
+	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{5});
+	UAM_ASSERT_EQ(live->successes, 1);
+	UAM_ASSERT_EQ(live->body.at("messages")[0].at("content").get<std::string>(), std::string("Answer from the replaced run"));
 }
 
 int main(int argc, char** argv)

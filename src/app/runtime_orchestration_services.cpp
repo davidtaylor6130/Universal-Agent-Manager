@@ -350,13 +350,19 @@ namespace
 		target.append(text);
 	}
 
+	// The same record also notes native histories already reported as using a
+	// format the reader cannot read yet. Those entries carry this prefix, are kept
+	// apart from deletion keys and never hide or tombstone a history.
+	constexpr std::string_view kFormatRefusalTombstonePrefix = "format-refusal|";
+
 	struct NativeImportTombstones
 	{
 		bool available = false;
 		std::unordered_set<std::string> keys;
+		std::unordered_set<std::string> format_refusal_keys;
 	};
 
-	bool ParseNativeImportTombstones(const fs::path& path, std::unordered_set<std::string>& keys)
+	bool ParseNativeImportTombstones(const fs::path& path, std::unordered_set<std::string>& keys, std::unordered_set<std::string>& format_refusal_keys)
 	{
 		std::string text;
 		if (!uam::io::TryReadTextFile(path, text)) return false;
@@ -370,9 +376,11 @@ namespace
 			if (!value.is_string() || uam::strings::IsBlank(value.get_ref<const std::string&>()))
 			{
 				keys.clear();
+				format_refusal_keys.clear();
 				return false;
 			}
-			keys.insert(value.get<std::string>());
+			const std::string& key = value.get_ref<const std::string&>();
+			(key.starts_with(kFormatRefusalTombstonePrefix) ? format_refusal_keys : keys).insert(key);
 		}
 		return true;
 	}
@@ -387,18 +395,20 @@ namespace
 			result.available = true;
 			return result;
 		}
-		result.available = ParseNativeImportTombstones(path, result.keys);
+		result.available = ParseNativeImportTombstones(path, result.keys, result.format_refusal_keys);
 		if (!result.available)
 		{
 			result.keys.clear();
-			result.available = ParseNativeImportTombstones(backup_path, result.keys);
+			result.format_refusal_keys.clear();
+			result.available = ParseNativeImportTombstones(backup_path, result.keys, result.format_refusal_keys);
 		}
 		return result;
 	}
 
-	bool SaveNativeImportTombstones(const fs::path& data_root, const std::unordered_set<std::string>& keys)
+	bool SaveNativeImportTombstones(const fs::path& data_root, const NativeImportTombstones& tombstones)
 	{
-		std::vector<std::string> ordered(keys.begin(), keys.end());
+		std::vector<std::string> ordered(tombstones.keys.begin(), tombstones.keys.end());
+		ordered.insert(ordered.end(), tombstones.format_refusal_keys.begin(), tombstones.format_refusal_keys.end());
 		std::ranges::sort(ordered);
 		const fs::path path = data_root / kNativeImportTombstonesFile;
 		return uam::io::WriteTextFileWithBackup(path, nlohmann::json(ordered).dump(2));
@@ -3186,7 +3196,7 @@ bool ChatHistorySyncService::AddNativeImportTombstones(
 			added_keys.push_back(key);
 		}
 	}
-	if (added_keys.empty() || SaveNativeImportTombstones(data_root, keys))
+	if (added_keys.empty() || SaveNativeImportTombstones(data_root, tombstones))
 	{
 		return true;
 	}
@@ -3237,7 +3247,35 @@ bool ChatHistorySyncService::RemoveNativeImportTombstones(
 	{
 		keys.erase(key);
 	}
-	return SaveNativeImportTombstones(data_root, keys);
+	return SaveNativeImportTombstones(data_root, tombstones);
+}
+
+std::unordered_set<std::string> ChatHistorySyncService::RecordNativeFormatRefusals(const fs::path& data_root, const std::vector<ImportResult::FormatRefusal>& refusals) const
+{
+	std::unordered_set<std::string> already_reported;
+	if (refusals.empty()) return already_reported;
+	NativeImportTombstones tombstones = LoadNativeImportTombstones(data_root);
+	// An unreadable record reports everything again rather than hiding a refusal.
+	if (!tombstones.available) return already_reported;
+	bool changed = false;
+	for (const ImportResult::FormatRefusal& refusal : refusals)
+	{
+		if (refusal.identity.empty() || refusal.report_key.empty()) continue;
+		const std::string key = std::string(kFormatRefusalTombstonePrefix) + refusal.report_key;
+		if (tombstones.format_refusal_keys.contains(key))
+		{
+			already_reported.insert(refusal.message);
+			continue;
+		}
+		// One entry per history: a new reader version or file revision replaces the old one.
+		const std::string identity = std::string(kFormatRefusalTombstonePrefix) + refusal.identity + "|";
+		std::erase_if(tombstones.format_refusal_keys, [&](const std::string& existing) { return existing.starts_with(identity); });
+		tombstones.format_refusal_keys.insert(key);
+		changed = true;
+	}
+	// A failed save only means the refusal is reported again on a later scan.
+	if (changed) (void)SaveNativeImportTombstones(data_root, tombstones);
+	return already_reported;
 }
 
 ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportAllNativeChatsToLocal(uam::AppState& app, bool delete_native_after_import, const std::string& target_chat_id, const uam::CliTerminalState* final_terminal) const
@@ -3871,6 +3909,10 @@ ChatHistorySyncService::LocalHistoryDiscovery ChatHistorySyncService::DiscoverPr
 		    { return uam::ImportedWorkspaceMatchesFolder(uam::paths::PathFromUtf8(workspace), uam::paths::PathFromUtf8(folder.directory)); }});
 		for (auto& error : native.errors) discovery.result.Fail(std::move(error));
 		discovery.result.omitted_error_count += native.omitted_error_count;
+		for (auto& refusal : native.format_refusals)
+			discovery.result.format_refusals.push_back({std::string(uam::provider_ids::kAntigravityCli) + "|" + refusal.native_session_id,
+			    std::move(refusal.report_key), std::move(refusal.message), std::move(refusal.diagnostic)});
+		discovery.antigravity_refusals = std::move(native.refusals);
 		for (auto& chat : native.chats)
 		{
 			if (!folder.directory.empty() && !uam::ImportedWorkspaceMatchesFolder(uam::paths::PathFromUtf8(chat.workspace_directory), uam::paths::PathFromUtf8(folder.directory))) continue;
@@ -5290,86 +5332,113 @@ ChatHistorySyncService::RemoteOpenCodeDiscovery ChatHistorySyncService::ParseRem
 	return result;
 }
 
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI || UAM_ENABLE_RUNTIME_CODEX_CLI
+namespace
+{
+	/// <summary>Imports a remote folder's native sessions. `make_chat` gives a session's id, title, provider and
+	/// timestamps, or nothing to skip it; the folder, host and workspace come from the folder. Each chat's history is read,
+	/// then the workspace and deletion records are checked again before it is saved, in that order, so a workspace that
+	/// changed or a chat deleted meanwhile is never restored. `branch_root_follows_id` keeps a new chat's branch root on
+	/// its final id (Codex).</summary>
+	template <class Session, class MakeChat>
+	ChatHistorySyncService::ImportResult ImportRemoteSessions(uam::AppState& app, const std::string& folder_id, std::string_view provider_label,
+	    const char* provider_id, ProviderProfile (*default_profile)(), const std::vector<Session>& sessions, MakeChat make_chat, bool branch_root_follows_id)
+	{
+		ChatHistorySyncService::ImportResult result;
+		const ChatFolder* matched_folder = ChatDomainService().FindFolderById(
+		    app, uam::strings::Trim(folder_id));
+		if (matched_folder == nullptr || uam::strings::IsBlank(matched_folder->directory) ||
+		    uam::paths::IsControllerLocalWorkspace(*matched_folder))
+		{
+			result.Fail("Remote " + std::string(provider_label) + " history scan requires a remote workspace folder.");
+			return result;
+		}
+		const ExecutionHost* host = uam::execution_hosts::Find(
+		    app.settings.execution_hosts, matched_folder->execution_host_id);
+		if (host == nullptr)
+		{
+			result.Fail("The remote execution host no longer exists.");
+			return result;
+		}
+		const ExecutionHost captured_host = *host;
+		const ChatFolder captured_folder = *matched_folder;
+		const fs::path captured_root = app.data_root;
+		const ProviderProfile* configured = ProviderProfileStore::FindById(app.provider_profiles, provider_id);
+		const ProviderProfile profile = configured ? *configured : default_profile();
+		NativeImportIndex import_index = LoadNativeImportIndex(app);
+		if (!import_index.tombstones_available)
+		{
+			result.Fail("Native-history deletion records could not be read; remote import stopped to avoid restoring deleted chats.");
+			return result;
+		}
+		for (const Session& session : sessions)
+		{
+			if (!uam::execution_hosts::RemotePathsMatch(host->platform, session.directory, matched_folder->directory)) continue;
+			std::optional<ChatSession> made = make_chat(session);
+			if (!made) continue;
+			++result.total_count;
+			ChatSession chat = std::move(*made);
+			chat.folder_id = matched_folder->id;
+			chat.execution_host_id = matched_folder->execution_host_id;
+			chat.workspace_directory = matched_folder->directory;
+			if (branch_root_follows_id) chat.branch_root_chat_id = chat.id;
+			chat.messages_loaded = false;
+			if (!PrepareNativeChatForImport(app.data_root, import_index, chat, "")) continue;
+			std::string error;
+			if (!LoadRemoteImportHistory(captured_host, profile, chat, error))
+			{
+				if (!error.empty()) result.Fail(std::move(error));
+				continue;
+			}
+			const ExecutionHost* current_host = uam::execution_hosts::Find(app.settings.execution_hosts, captured_host.id);
+			const ChatFolder* current_folder = ChatDomainService().FindFolderById(app, captured_folder.id);
+			if (app.data_root != captured_root || current_host == nullptr || current_host->runner_status != "ready" ||
+			    !uam::execution_hosts::SameConnection(captured_host, *current_host) || current_folder == nullptr ||
+			    current_folder->directory != captured_folder.directory || current_folder->execution_host_id != captured_folder.execution_host_id)
+			{ result.Fail("The remote workspace changed while history was being imported."); break; }
+			import_index = LoadNativeImportIndex(app);
+			if (!import_index.tombstones_available)
+			{ result.Fail("Deletion records changed while history was being imported."); break; }
+			const std::optional<std::string> native_key = PrepareNativeChatForImport(app.data_root, import_index, chat, "");
+			if (native_key && branch_root_follows_id) chat.branch_root_chat_id = chat.id;
+			if (native_key && SaveImportedNativeChat(app, import_index, chat, *native_key, {}, false))
+				++result.imported_count;
+			else if (native_key)
+				result.Fail("Failed to save imported " + std::string(provider_label) + " chat " + chat.native_session_id + ".");
+		}
+		return result;
+	}
+}
+#endif
+
 ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportRemoteOpenCodeChatsForFolder(
     uam::AppState& app, const std::string& folder_id,
     const std::vector<RemoteOpenCodeSession>& sessions) const
 {
-	ImportResult result;
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI
-	const ChatFolder* matched_folder = ChatDomainService().FindFolderById(
-	    app, uam::strings::Trim(folder_id));
-	if (matched_folder == nullptr || uam::strings::IsBlank(matched_folder->directory) ||
-	    uam::paths::IsControllerLocalWorkspace(*matched_folder))
-	{
-		result.Fail("Remote OpenCode history scan requires a remote workspace folder.");
-		return result;
-	}
-	const ExecutionHost* host = uam::execution_hosts::Find(
-	    app.settings.execution_hosts, matched_folder->execution_host_id);
-	if (host == nullptr)
-	{
-		result.Fail("The remote execution host no longer exists.");
-		return result;
-	}
-	const ExecutionHost captured_host = *host;
-	const ChatFolder captured_folder = *matched_folder;
-	const fs::path captured_root = app.data_root;
-	const ProviderProfile* configured = ProviderProfileStore::FindById(app.provider_profiles, uam::provider_ids::kOpenCodeCli);
-	const ProviderProfile profile = configured ? *configured : ProviderProfileStore::DefaultOpenCodeProfile();
-	NativeImportIndex import_index = LoadNativeImportIndex(app);
-	if (!import_index.tombstones_available)
-	{
-		result.Fail("Native-history deletion records could not be read; remote import stopped to avoid restoring deleted chats.");
-		return result;
-	}
-	for (const RemoteOpenCodeSession& session : sessions)
-	{
-		if (!uam::execution_hosts::IsPortableId(session.id) ||
-		    !uam::execution_hosts::RemotePathsMatch(host->platform, session.directory,
-		                                             matched_folder->directory))
-			continue;
-		++result.total_count;
-		ChatSession chat;
-		chat.id = session.id;
-		chat.title = uam::execution_hosts::Bounded(session.title, 256);
-		if (chat.title.empty()) chat.title = "OpenCode session " + session.id;
-		chat.provider_id = uam::provider_ids::kOpenCodeCli;
-		chat.native_session_id = session.id;
-		chat.folder_id = matched_folder->id;
-		chat.execution_host_id = matched_folder->execution_host_id;
-		chat.workspace_directory = matched_folder->directory;
-		chat.created_at = IsoTimestampFromEpochMilliseconds(session.created_epoch_ms);
-		chat.updated_at = IsoTimestampFromEpochMilliseconds(session.updated_epoch_ms);
-		chat.messages_loaded = false;
-		if (!PrepareNativeChatForImport(app.data_root, import_index, chat, "")) continue;
-		std::string error;
-		if (!LoadRemoteImportHistory(captured_host, profile, chat, error))
-		{
-			if (!error.empty()) result.Fail(std::move(error));
-			continue;
-		}
-		const ExecutionHost* current_host = uam::execution_hosts::Find(app.settings.execution_hosts, captured_host.id);
-		const ChatFolder* current_folder = ChatDomainService().FindFolderById(app, captured_folder.id);
-		if (app.data_root != captured_root || current_host == nullptr || current_host->runner_status != "ready" ||
-		    !uam::execution_hosts::SameConnection(captured_host, *current_host) || current_folder == nullptr ||
-		    current_folder->directory != captured_folder.directory || current_folder->execution_host_id != captured_folder.execution_host_id)
-		{ result.Fail("The remote workspace changed while history was being imported."); break; }
-		import_index = LoadNativeImportIndex(app);
-		if (!import_index.tombstones_available)
-		{ result.Fail("Deletion records changed while history was being imported."); break; }
-		const std::optional<std::string> native_key = PrepareNativeChatForImport(app.data_root, import_index, chat, "");
-		if (native_key && SaveImportedNativeChat(app, import_index, chat, *native_key, {}, false))
-			++result.imported_count;
-		else if (native_key)
-			result.Fail("Failed to save imported OpenCode chat " + chat.native_session_id + ".");
-	}
+	return ImportRemoteSessions(app, folder_id, "OpenCode", uam::provider_ids::kOpenCodeCli, &ProviderProfileStore::DefaultOpenCodeProfile, sessions,
+	    [](const RemoteOpenCodeSession& session) -> std::optional<ChatSession>
+	    {
+		    if (!uam::execution_hosts::IsPortableId(session.id)) return std::nullopt;
+		    ChatSession chat;
+		    chat.id = session.id;
+		    chat.title = uam::execution_hosts::Bounded(session.title, 256);
+		    if (chat.title.empty()) chat.title = "OpenCode session " + session.id;
+		    chat.provider_id = uam::provider_ids::kOpenCodeCli;
+		    chat.native_session_id = session.id;
+		    chat.created_at = IsoTimestampFromEpochMilliseconds(session.created_epoch_ms);
+		    chat.updated_at = IsoTimestampFromEpochMilliseconds(session.updated_epoch_ms);
+		    return chat;
+	    },
+	    false);
 #else
 	(void)app;
 	(void)folder_id;
 	(void)sessions;
+	ImportResult result;
 	result.Fail("This provider is not included in this build.");
-#endif
 	return result;
+#endif
 }
 
 ChatHistorySyncService::RemoteOpenCodeTranscript
@@ -5658,10 +5727,12 @@ std::optional<ChatSession> ChatHistorySyncService::LoadRemoteNativeTranscript(co
 	return ParseRemoteNativeHistorySnapshot(host, chat, snapshot, error, stop_token);
 }
 
-std::optional<ChatSession> ChatHistorySyncService::LoadLocalNativeTranscript(const ChatSession& chat, std::string* error, std::stop_token stop_token) const
+std::optional<ChatSession> ChatHistorySyncService::LoadLocalNativeTranscript(const ChatSession& chat, std::string* error, std::stop_token stop_token, bool* unsettled_out) const
 {
 	if (error != nullptr)
 		error->clear();
+	if (unsettled_out != nullptr)
+		*unsettled_out = false;
 	const std::string provider = uam::provider_ids::NormalizeCliProviderAliasOrSelf(chat.provider_id);
 	if (!uam::paths::IsControllerLocalWorkspace(chat) || chat.native_session_id.empty() || !uam::chat_ids::IsSafeStorageChatId(chat.native_session_id) || uam::strings::IsBlank(chat.workspace_directory))
 	{
@@ -5690,8 +5761,13 @@ std::optional<ChatSession> ChatHistorySyncService::LoadLocalNativeTranscript(con
 	const auto found = std::ranges::find_if(discovered.chats, [&](const ChatSession& candidate) { return candidate.native_session_id == chat.native_session_id && candidate.provider_id == provider && uam::ImportedWorkspaceMatchesFolder(uam::paths::PathFromUtf8(candidate.workspace_directory), uam::paths::PathFromUtf8(chat.workspace_directory)); });
 	if (found != discovered.chats.end())
 		return std::move(*found);
+	// Antigravity's reader names why it refused this exact conversation (for example a
+	// nested child's inherited parent context); report that plain reason, not a generic one.
+	const auto refusal = std::ranges::find_if(discovered.antigravity_refusals, [&](const auto& candidate) { return candidate.session == chat.native_session_id; });
+	if (refusal != discovered.antigravity_refusals.end() && unsettled_out != nullptr)
+		*unsettled_out = refusal->unsettled;
 	if (error != nullptr)
-		*error = "The exact native transcript is unavailable or contains no readable conversation.";
+		*error = refusal != discovered.antigravity_refusals.end() ? refusal->reason : "The exact native transcript is unavailable or contains no readable conversation.";
 	return std::nullopt;
 }
 
@@ -6009,85 +6085,31 @@ ChatHistorySyncService::ImportResult ChatHistorySyncService::ImportRemoteCodexCh
     uam::AppState& app, const std::string& folder_id,
     const std::vector<RemoteCodexSession>& sessions) const
 {
-	ImportResult result;
 #if UAM_ENABLE_RUNTIME_CODEX_CLI
-	const ChatFolder* matched_folder = ChatDomainService().FindFolderById(
-	    app, uam::strings::Trim(folder_id));
-	if (matched_folder == nullptr || uam::strings::IsBlank(matched_folder->directory) ||
-	    uam::paths::IsControllerLocalWorkspace(*matched_folder))
-	{
-		result.Fail("Remote Codex history scan requires a remote workspace folder.");
-		return result;
-	}
-	const ExecutionHost* host = uam::execution_hosts::Find(
-	    app.settings.execution_hosts, matched_folder->execution_host_id);
-	if (host == nullptr)
-	{
-		result.Fail("The remote execution host no longer exists.");
-		return result;
-	}
-	const ExecutionHost captured_host = *host;
-	const ChatFolder captured_folder = *matched_folder;
-	const fs::path captured_root = app.data_root;
-	const ProviderProfile* configured = ProviderProfileStore::FindById(app.provider_profiles, uam::provider_ids::kCodexCli);
-	const ProviderProfile profile = configured ? *configured : ProviderProfileStore::DefaultCodexProfile();
-	NativeImportIndex import_index = LoadNativeImportIndex(app);
-	if (!import_index.tombstones_available)
-	{
-		result.Fail("Native-history deletion records could not be read; remote import stopped to avoid restoring deleted chats.");
-		return result;
-	}
-	for (const RemoteCodexSession& session : sessions)
-	{
-		const std::string valid_id = uam::codex::ValidThreadIdOrEmpty(session.id);
-		if (valid_id.empty() ||
-		    !uam::execution_hosts::RemotePathsMatch(host->platform, session.directory,
-		                                             matched_folder->directory))
-			continue;
-		++result.total_count;
-		ChatSession chat;
-		chat.id = valid_id;
-		chat.title = uam::execution_hosts::Bounded(session.title, 256);
-		if (chat.title.empty()) chat.title = "Codex session " + valid_id;
-		chat.provider_id = uam::provider_ids::kCodexCli;
-		chat.native_session_id = valid_id;
-		chat.folder_id = matched_folder->id;
-		chat.execution_host_id = matched_folder->execution_host_id;
-		chat.workspace_directory = matched_folder->directory;
-		chat.branch_root_chat_id = chat.id;
-		chat.created_at = IsoTimestampFromEpochSeconds(session.created_epoch_seconds);
-		chat.updated_at = IsoTimestampFromEpochSeconds(session.updated_epoch_seconds);
-		chat.messages_loaded = false;
-		if (!PrepareNativeChatForImport(app.data_root, import_index, chat, "")) continue;
-		std::string error;
-		if (!LoadRemoteImportHistory(captured_host, profile, chat, error))
-		{
-			if (!error.empty()) result.Fail(std::move(error));
-			continue;
-		}
-		const ExecutionHost* current_host = uam::execution_hosts::Find(app.settings.execution_hosts, captured_host.id);
-		const ChatFolder* current_folder = ChatDomainService().FindFolderById(app, captured_folder.id);
-		if (app.data_root != captured_root || current_host == nullptr || current_host->runner_status != "ready" ||
-		    !uam::execution_hosts::SameConnection(captured_host, *current_host) || current_folder == nullptr ||
-		    current_folder->directory != captured_folder.directory || current_folder->execution_host_id != captured_folder.execution_host_id)
-		{ result.Fail("The remote workspace changed while history was being imported."); break; }
-		import_index = LoadNativeImportIndex(app);
-		if (!import_index.tombstones_available)
-		{ result.Fail("Deletion records changed while history was being imported."); break; }
-		const std::optional<std::string> native_key = PrepareNativeChatForImport(app.data_root, import_index, chat, "");
-		if (native_key) chat.branch_root_chat_id = chat.id;
-		if (native_key && SaveImportedNativeChat(app, import_index, chat, *native_key, {}, false))
-			++result.imported_count;
-		else if (native_key)
-			result.Fail("Failed to save imported Codex chat " + chat.native_session_id + ".");
-	}
+	return ImportRemoteSessions(app, folder_id, "Codex", uam::provider_ids::kCodexCli, &ProviderProfileStore::DefaultCodexProfile, sessions,
+	    [](const RemoteCodexSession& session) -> std::optional<ChatSession>
+	    {
+		    const std::string valid_id = uam::codex::ValidThreadIdOrEmpty(session.id);
+		    if (valid_id.empty()) return std::nullopt;
+		    ChatSession chat;
+		    chat.id = valid_id;
+		    chat.title = uam::execution_hosts::Bounded(session.title, 256);
+		    if (chat.title.empty()) chat.title = "Codex session " + valid_id;
+		    chat.provider_id = uam::provider_ids::kCodexCli;
+		    chat.native_session_id = valid_id;
+		    chat.created_at = IsoTimestampFromEpochSeconds(session.created_epoch_seconds);
+		    chat.updated_at = IsoTimestampFromEpochSeconds(session.updated_epoch_seconds);
+		    return chat;
+	    },
+	    true);
 #else
 	(void)app;
 	(void)folder_id;
 	(void)sessions;
+	ImportResult result;
 	result.Fail("This provider is not included in this build.");
-#endif
 	return result;
+#endif
 }
 
 ChatHistorySyncService::RemoteCodexTranscript
@@ -6947,6 +6969,14 @@ bool ChatHistorySyncService::MoveChatToFolder(uam::AppState& app, ChatSession& c
 	}
 	if (current_host != uam::execution_hosts::kLocalHostId)
 	{
+		// A remote worktree chat runs in its managed worktree, not its folder directory, so a folder move
+		// would only relabel it while the provider kept working in the old checkout.
+		if (uam::paths::IsGitWorktreeIsolated(chat) ||
+		    uam::strings::TrimmedEquals(chat.workspace_isolation_kind, uam::paths::kPendingGitWorktreeIsolationKind))
+		{
+			app.status_line = "A chat in its own Git worktree cannot be moved to another workspace. Start a new chat in that workspace instead.";
+			return false;
+		}
 		if (ChatNeedsTranscriptPreserved(app, chat) || uam::ChatHasActiveCliTerminal(app, chat.id))
 		{
 			app.status_line = "Stop the chat before moving its workspace.";

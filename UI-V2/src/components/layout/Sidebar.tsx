@@ -185,8 +185,8 @@ function SidebarLoading() {
       <span className="sr-only">Loading chats…</span>
       {[62, 78, 54, 70, 46, 66].map((width, index) => (
         <div key={index} className="flex items-center gap-2" aria-hidden>
-          <span className="uam-icon-skeleton" style={{ width: 14, height: 14, flexShrink: 0 }} />
-          <span className="uam-icon-skeleton" style={{ width: `${width}%`, height: 10 }} />
+          <span className="uam-skeleton uam-icon-skeleton" style={{ width: 14, height: 14, flexShrink: 0 }} />
+          <span className="uam-skeleton uam-icon-skeleton" style={{ width: `${width}%`, height: 10 }} />
         </div>
       ))}
     </div>

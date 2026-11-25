@@ -50,3 +50,10 @@ export function trapModalTab(event: KeyboardEvent) {
   event.preventDefault()
   focusable[next].focus()
 }
+
+/** The first row carrying `attribute="id"` that can take focus: rows in hidden, inert or aria-hidden parts (a collapsed group, an inactive phone page) are skipped. */
+export function focusableRowWith(attribute: 'data-session-id' | 'data-workspace-id', id: string | null | undefined, doc: Document = document): HTMLElement | null {
+  if (!id) return null
+  return Array.from(doc.querySelectorAll<HTMLElement>(`[${attribute}]`))
+    .find((row) => row.getAttribute(attribute) === id && !row.closest('[hidden], [inert], [aria-hidden="true"]')) ?? null
+}

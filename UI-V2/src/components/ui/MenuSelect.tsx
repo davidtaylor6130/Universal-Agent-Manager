@@ -1,6 +1,7 @@
 import { KeyboardEvent, ReactNode, useEffect, useId, useRef, useState } from 'react'
 import { Check, ChevronDown } from 'lucide-react'
 import { ViewportMenu } from './ViewportMenu'
+import { Badge } from './Badge'
 
 export interface MenuSelectOption {
   value: string
@@ -9,6 +10,8 @@ export interface MenuSelectOption {
   icon?: ReactNode
   disabled?: boolean
   group?: string
+  /** Short read-only label shown after the option label in the list, such as Delegate-only. */
+  badge?: string
 }
 
 export function MenuSelect({
@@ -162,7 +165,9 @@ export function MenuSelect({
             >
               {option.icon && <span data-menu-select-icon aria-hidden className="mt-0.5 shrink-0">{option.icon}</span>}
               <span className="min-w-0 flex-1" style={matchTriggerWidth ? { overflowWrap: 'anywhere' } : undefined}>
-                <span className="block">{option.label}</span>
+                {option.badge
+                  ? <span className="flex min-w-0 items-center gap-2"><span className="min-w-0">{option.label}</span><Badge>{option.badge}</Badge></span>
+                  : <span className="block">{option.label}</span>}
                 {option.description && <span className="block text-[11px]" style={{ color: 'var(--text-3)' }}>{option.description}</span>}
               </span>
               <Check size={13} aria-hidden className="mt-0.5 shrink-0" style={{ opacity: option.value === value ? 1 : 0 }} />
