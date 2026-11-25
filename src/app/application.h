@@ -58,7 +58,9 @@ class Application
 
   private:
 	/// Runs every runtime stage of one poll; PollTick contains its failures so the next poll still runs.
-	void PollTickStages(std::chrono::steady_clock::time_point poll_started);
+	/// stages_started ends the work PollTick did before the stages (the startup chat-list apply and held requests,
+	/// and management checks), which the slow-poll line reports as `startup`.
+	void PollTickStages(std::chrono::steady_clock::time_point poll_started, std::chrono::steady_clock::time_point stages_started);
 	void ReportPollTickFailure(const std::string& reason);
 	std::unique_ptr<UamQueryHandler> m_managementHandler;
 	std::unique_ptr<uam::discovery::ManagementAnnouncement> m_managementAnnouncement;

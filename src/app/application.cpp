@@ -458,7 +458,11 @@ void Application::PollTick()
 		m_startupChatLoader.join();
 		auto [chats, warning] = m_startupChats.get();
 		FinishStartupState(std::move(chats), std::move(warning));
+		const std::chrono::steady_clock::time_point apply_finished = std::chrono::steady_clock::now();
 		if (uam_cef_globals::g_client) uam_cef_globals::g_client->ResumeStartupQueries();
+		// The held bridge requests (the UI's first full state among them) run here, outside the poll's stage timings.
+		uam::diagnostics::Write("[performance] startup held bridge requests answered in " +
+		    std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - apply_finished).count()) + " ms.");
 	}
 	if (m_managementNode && g_managementStopRequested)
 	{
@@ -490,7 +494,7 @@ void Application::PollTick()
 
 	try
 	{
-		PollTickStages(poll_started);
+		PollTickStages(poll_started, std::chrono::steady_clock::now());
 	}
 	catch (const std::exception& error)
 	{
@@ -513,10 +517,11 @@ void Application::ReportPollTickFailure(const std::string& reason)
 	uam::diagnostics::Write("[poll] PollTick stage failed and was skipped for this tick: " + reason);
 }
 
-void Application::PollTickStages(std::chrono::steady_clock::time_point poll_started)
+void Application::PollTickStages(std::chrono::steady_clock::time_point poll_started, std::chrono::steady_clock::time_point stages_started)
 {
 	const RuntimeCliCompatibilitySnapshot provider_snapshot_before = CreateCliCompatibilitySnapshot(m_app);
 	const bool side_chats_changed = uam::PollTemporarySideChatCleanup(m_app);
+	const std::chrono::steady_clock::time_point side_chats_finished = std::chrono::steady_clock::now();
 	const bool acp_sessions_changed = uam::PollAllAcpSessions(m_app, m_browser);
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 	const bool compaction_sync_changed = m_openCodeCompactionSync && m_openCodeCompactionSync->Poll(m_app);
@@ -619,7 +624,9 @@ void Application::PollTickStages(std::chrono::steady_clock::time_point poll_star
 			return std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count());
 		};
 		uam::diagnostics::Write("[performance] PollTick took " + std::to_string(poll_duration.count()) + " ms; stages=" +
-		    "runtimes:" + milliseconds(poll_started, runtimes_finished) +
+		    "startup:" + milliseconds(poll_started, stages_started) +
+		    ",runtimes:" + milliseconds(stages_started, runtimes_finished) +
+		    ",side_chats:" + milliseconds(stages_started, side_chats_finished) +
 		    ",terminals:" + milliseconds(runtimes_finished, terminals_finished) +
 		    ",memory:" + milliseconds(terminals_finished, memory_finished) +
 		    ",controls:" + milliseconds(memory_finished, controls_finished) +
