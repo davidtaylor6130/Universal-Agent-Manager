@@ -100,6 +100,10 @@ UAM_TEST(ComputePoolHoldsThirdTurnWithVisibleStatusAndStartsItWhenASlotFrees)
 	UAM_ASSERT_EQ(held.at("computePoolWait").at("limit").get<int>(), 2);
 	UAM_ASSERT_EQ(state.at("computePoolUsage").at("pool").at("inUse").get<int>(), 2);
 	UAM_ASSERT_EQ(state.at("computePoolUsage").at("pool").at("waiting").get<int>(), 1);
+	// The same counts split by computer; these turns all run on this one.
+	UAM_ASSERT_EQ(state.at("computePoolUsage").at("pool").at("hosts").at("local").at("inUse").get<int>(), 2);
+	UAM_ASSERT_EQ(state.at("computePoolUsage").at("pool").at("hosts").at("local").at("waiting").get<int>(), 1);
+	UAM_ASSERT_EQ(state.at("computePoolUsage").at("pool").at("hosts").size(), std::size_t{1});
 
 	uam::acp_detail::CompletePromptTurn(first, "ready");
 	(void)uam::PollAllAcpSessions(fixture.app); // The ordinary runtime poll starts the held turn; nothing else re-sends it.

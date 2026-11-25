@@ -74,11 +74,26 @@ namespace uam
 	enum class ExecutionRoutingStatus { Disabled, Assigned, Waiting, Invalid };
 	enum class ExecutionRoutingReason { None, NoEligibleHost, HostUnavailable, OwnershipChanged, InconsistentSnapshot };
 
+	/// Why one computer could not take a waiting chat, first match in this order: Use this computer is off, the helper
+	/// is not Ready or compatible, the provider is not usable there, its sign-in is not confirmed for the current
+	/// configuration, no folder maps the chat's workspace, or every concurrent session is in use.
+	enum class ExecutionRoutingHostSkip { Off, Unreachable, ProviderUnavailable, Unconfirmed, NoMapping, Full };
+
+	struct ExecutionRoutingSkippedHost
+	{
+		std::string host_id;
+		ExecutionRoutingHostSkip reason = ExecutionRoutingHostSkip::Off;
+		bool operator==(const ExecutionRoutingSkippedHost&) const = default;
+	};
+
 	struct ExecutionRoutingDecision
 	{
 		ExecutionRoutingStatus status = ExecutionRoutingStatus::Waiting;
 		ExecutionRoutingReason reason = ExecutionRoutingReason::NoEligibleHost;
 		ExecutionRoutingAssignment assignment;
+		/// Diagnostics only, for a Waiting decision: each remote computer considered and why it was passed over.
+		/// Filling it never changes which computer is chosen or whether the chat waits.
+		std::vector<ExecutionRoutingSkippedHost> skipped;
 		/// Set when an unstarted chat was given another computer; the caller must save the new destination.
 		bool moved = false;
 	};
@@ -95,9 +110,11 @@ namespace uam
 		bool RestoreReservations(const std::vector<ExecutionRoutingAssignment>& assignments);
 		/// Release after confirmed settlement/prelaunch failure, or explicit acknowledgement of unresolved ownership.
 		bool Release(const std::string& chat_id, bool release_authorized);
+		/// Chats occupying each computer exactly as admission counts them: the supplied occupancy plus held reservations.
+		std::unordered_map<std::string, std::size_t> OccupiedCounts(const std::vector<ExecutionRoutingOccupancy>& occupancy) const;
 
 	private:
-		std::mutex m_mutex;
+		mutable std::mutex m_mutex;
 		std::unordered_map<std::string, ExecutionRoutingAssignment> m_reservations;
 	};
 }

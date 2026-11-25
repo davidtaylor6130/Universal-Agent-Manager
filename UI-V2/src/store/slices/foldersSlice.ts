@@ -10,6 +10,7 @@ import {
 } from '../cpp/reconcile'
 import type { ComputePool, ComputePoolUsage, CppFolder, HostAdmissionSettings, HostAdmissionUsage, PullRequestWatch, ShellAction } from '../cpp/types'
 import { DEFAULT_HOST_ADMISSION } from '../cpp/sanitizers'
+import { EMPTY_HOST_LOAD, type ExecutionHostLoad } from '../../types/hostLoad'
 import { DEFAULT_PROVIDER_ID } from '../../utils/providerMetadata'
 import type { ZustandSet, ZustandGet } from '../storeTypes'
 import { deleteSessionsFromState } from './sessionsSlice'
@@ -120,6 +121,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
     computePoolUsage: {} as ComputePoolUsage,
     hostAdmission: { ...DEFAULT_HOST_ADMISSION } as HostAdmissionSettings,
     hostAdmissionUsage: {} as HostAdmissionUsage,
+    executionHostLoad: EMPTY_HOST_LOAD as ExecutionHostLoad,
     prWatches: [] as PullRequestWatch[],
     shellActionNotification: '',
     workspaceFolderRecoveryError: '',

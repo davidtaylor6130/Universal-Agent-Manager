@@ -133,7 +133,9 @@ class ProviderModelCatalogService
 	/// catalogue snapshot depends on changed since it last looked. The lock types make that hold without care at
 	/// each site: a const member function sees the mutex as const and can only take Read; any other code (a
 	/// non-const member function, a worker lambda) sees it as non-const, where Read is deleted, and must take Write.
-	/// Const member functions cannot modify the service's state, so every modification happens under a Write.
+	/// Const member functions cannot modify the members snapshots read, so every change to them happens under a Write
+	/// (a const function can still act through a held pointer or write a file, which no snapshot reads, and resolves
+	/// workspace paths through the process-wide RecentPathProbe memo, which snapshots do read: the verifying push covers that).
 	/// </summary>
 	class GenerationMutex
 	{

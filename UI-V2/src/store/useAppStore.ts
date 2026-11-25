@@ -1,5 +1,6 @@
 import { MOBILE_COMPANION_ENABLED, SSH_ENABLED } from '../config/buildFeatures'
 import { EMPTY_STARTUP_NATIVE_IMPORT_STATUS } from '../types/startupNativeImports'
+import { EMPTY_HOST_LOAD } from '../types/hostLoad'
 import { createExecutionRoutingSlice } from './slices/executionRoutingSlice'
 import { DEFAULT_CENTRAL_PROVIDER_CONFIGURATION, type CentralProviderConfiguration } from './cpp/types'
 import { create } from 'zustand'
@@ -195,6 +196,7 @@ function deserializeState(
     computePoolUsage: AppState['computePoolUsage']
     hostAdmission: AppState['hostAdmission']
     hostAdmissionUsage: AppState['hostAdmissionUsage']
+    executionHostLoad: AppState['executionHostLoad']
     prWatches: AppState['prWatches']
     shellActionNotification: string
     statusLine: string
@@ -416,6 +418,7 @@ function deserializeState(
     computePoolUsage: cpp.computePoolUsage ?? {},
     hostAdmission: cpp.settings.hostAdmission ?? existing.hostAdmission,
     hostAdmissionUsage: cpp.hostAdmissionUsage ?? {},
+    executionHostLoad: cpp.executionHostLoad ?? EMPTY_HOST_LOAD,
     prWatches: cpp.prWatches ?? existing.prWatches,
     shellActionNotification: cpp.shellActionNotification ?? existing.shellActionNotification,
     statusLine: cpp.statusLine ?? existing.statusLine,
@@ -642,6 +645,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     computePoolUsage: patch.computePoolUsage ?? current.computePoolUsage,
     hostAdmission: patch.settings?.hostAdmission ?? current.hostAdmission,
     hostAdmissionUsage: patch.hostAdmissionUsage ?? current.hostAdmissionUsage,
+    executionHostLoad: patch.executionHostLoad ?? current.executionHostLoad,
     prWatches: patch.prWatches ?? current.prWatches,
     shellActionNotification: patch.shellActionNotification ?? current.shellActionNotification,
     statusLine: patch.statusLine ?? current.statusLine,
@@ -914,6 +918,7 @@ export const useAppStore = create<AppState>((set, get) => {
           computePoolUsage: current.computePoolUsage,
           hostAdmission: current.hostAdmission,
           hostAdmissionUsage: current.hostAdmissionUsage,
+          executionHostLoad: current.executionHostLoad,
           prWatches: current.prWatches,
           shellActionNotification: current.shellActionNotification,
           statusLine: current.statusLine,
@@ -1447,6 +1452,7 @@ export const useAppStore = create<AppState>((set, get) => {
       computePoolUsage: current.computePoolUsage,
       hostAdmission: current.hostAdmission,
       hostAdmissionUsage: current.hostAdmissionUsage,
+      executionHostLoad: current.executionHostLoad,
       prWatches: current.prWatches,
       shellActionNotification: current.shellActionNotification,
       statusLine: current.statusLine,

@@ -303,30 +303,25 @@ namespace uam
 		}
 	} // namespace
 
-	std::vector<ResourceCollection> ResourceCollectionService::Load(const std::filesystem::path& data_root)
+	std::vector<ResourceCollection> ResourceCollectionService::Load(const std::filesystem::path& data_root, uam::io::StoreLoadResult* result, uam::io::StoreFenceMode fence)
 	{
-		const std::filesystem::path file = FilePath(data_root);
-		if (uam::paths::PathExistsNoThrow(file))
-		{
-			if (const auto parsed = ParseCollections(uam::io::ReadTextFile(file)); parsed.has_value())
-			{
-				return *parsed;
-			}
-		}
-		const std::filesystem::path backup = uam::io::MakeBackupPath(file);
-		if (uam::paths::PathExistsNoThrow(backup))
-		{
-			if (const auto parsed = ParseCollections(uam::io::ReadTextFile(backup)); parsed.has_value())
-			{
-				return *parsed;
-			}
-		}
-		return {};
+		std::optional<std::vector<ResourceCollection>> parsed;
+		std::string text;
+		const uam::io::StoreLoadResult loaded = uam::io::LoadStoreTextWithBackup(
+		    FilePath(data_root), [&](const std::string& candidate) { return (parsed = ParseCollections(candidate)).has_value(); }, text, "collections", fence);
+		if (result != nullptr) *result = loaded;
+		const bool validated = loaded.status == uam::io::StoreLoadStatus::Valid || loaded.status == uam::io::StoreLoadStatus::RecoveredFromBackup;
+		return validated && !text.empty() && parsed.has_value() ? std::move(*parsed) : std::vector<ResourceCollection>{};
+	}
+
+	bool ResourceCollectionService::IsSaveFenced(const std::filesystem::path& data_root)
+	{
+		return uam::io::UnrecoveredStoreFence::IsFenced(FilePath(data_root));
 	}
 
 	bool ResourceCollectionService::Save(const std::filesystem::path& data_root, const std::vector<ResourceCollection>& collections)
 	{
-		if (collections.size() > kMaxCollections || !ValidateHierarchy(collections, nullptr))
+		if (IsSaveFenced(data_root) || collections.size() > kMaxCollections || !ValidateHierarchy(collections, nullptr))
 		{
 			return false;
 		}

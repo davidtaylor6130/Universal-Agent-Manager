@@ -3,6 +3,7 @@
 #include "app/provider_model_catalog_service.h"
 #include "app/execution_routing_service.h"
 #include "app/repository_route_match_service.h"
+#include "common/utils/store_load_fence.h"
 #include "common/models/app_models.h"
 #include "common/memory/memory_worker_failure_pause.h"
 #include "common/paths/workspace_lease.h"
@@ -13,6 +14,7 @@
 #include "common/provider/attached_skill_resources.h"
 #include "common/runtime/host_admission.h"
 #include "common/runtime/terminal/terminal_dimensions.h"
+#include "common/runtime/host_load_sampler.h"
 #include "common/runtime/stream_watch.h"
 #include "common/security/read_only_command.h"
 
@@ -552,6 +554,10 @@ namespace uam
 		std::vector<std::string> agent_delegates;
 		/// Captured from a goal review launch; the capability can never mutate or start broader children.
 		bool read_only_at_launch = false;
+		/// Tools this session was never offered, fixed at launch (sorted). The manager refuses them itself, so a
+		/// request that bypasses the session's own tool server cannot reach them.
+		std::vector<std::string> hidden_tools;
+		bool hidden_tool_refusal_logged = false; // One diagnostic line per capability, not one per refused request.
 		/// Signing key held only by this capability's MCP server process; a request without its signature is refused.
 		std::string request_key;
 		int64_t expires_at_epoch_ms = 0;
@@ -957,10 +963,6 @@ namespace uam
 		// from reconnect_attempts, which stop retries and exits also count, so the number of launches is exact.
 		int discovery_cleanup_attaches = 0;
 		double discovery_cleanup_last_attach_time_s = 0.0;
-		// Counts watchdog re-queues of a stalled goal loop; the goal is marked
-		// blocked after 3 so a failing provider cannot be retried forever.
-		// Cleared when a turn completes or a new user prompt is sent.
-		int goal_auto_resume_attempts = 0;
 		// Set when the user cancels a turn so the goal-loop watchdog does not
 		// override an explicit stop; cleared on the next user prompt.
 		enum class GoalQueueAdmission { None, Pending, Held, PendingContinuation, HeldContinuation };
@@ -1519,6 +1521,28 @@ namespace uam
 		std::unique_ptr<std::jthread> worker;
 	};
 
+	/// The per-computer reasons behind one routing wait text; shown only while that text is still the chat's wait.
+	struct ExecutionRoutingWaitHosts
+	{
+		std::string text;
+		std::vector<ExecutionRoutingSkippedHost> hosts;
+	};
+	/// How busy one computer is with UAM work, recounted on the app thread about once a second.
+	struct ExecutionHostUsage
+	{
+		/// Chats occupying the computer as routing admission counts them (live work and held reservations).
+		std::size_t in_use = 0;
+		/// Chats on this computer whose turn waits: for routing on their own computer, or for a compute pool slot.
+		std::size_t waiting = 0;
+		/// Concurrent sessions allowed by its routing policy; empty when it has none.
+		std::optional<std::size_t> limit;
+		/// For this computer only: provider processes and terminals UAM is running here.
+		std::uint32_t local_processes = 0;
+		bool operator==(const ExecutionHostUsage&) const = default;
+	};
+	/// Test seam: builds the reader that asks one computer for its load on the sampling thread.
+	using HostLoadReaderFactoryBuilder = std::function<host_load::ReaderFactory(const ExecutionHost&)>;
+
 	struct AppState
 	{
 		/// True while the desktop window is open but the saved chat list is still loading off the app thread.
@@ -1551,6 +1575,20 @@ namespace uam
 		std::string claude_quota_dispatch_id;
 		std::unordered_map<std::string, std::weak_ptr<BranchPreparationOwnership>> branch_preparations;
 		std::unordered_map<std::string, std::string> execution_routing_waits;
+		std::unordered_map<std::string, ExecutionRoutingWaitHosts> execution_routing_wait_hosts;
+		/// Live load per computer, read off the app thread. Null until the first poll that wants a reading.
+		std::shared_ptr<host_load::Sampler> host_load_sampler;
+		HostLoadReaderFactoryBuilder host_load_reader;
+		/// Settings that show load ask for it; until this time every configured computer is sampled.
+		double host_load_interest_until_s = 0.0;
+		double host_load_next_poll_s = 0.0;
+		/// The load figures last published, as the interface sees them; a change here is what pushes state.
+		std::string host_load_published;
+		/// Last logged load status per computer, so a status change is logged once.
+		std::unordered_map<std::string, std::string> host_load_reported_status;
+		std::unordered_map<std::string, ExecutionHostUsage> execution_host_usage;
+		/// Automatic chats waiting for any computer, before one is assigned.
+		std::size_t execution_routing_unassigned_waiting = 0;
 		std::unordered_map<std::string, double> execution_routing_retry_at_by_chat_id;
 		std::unordered_set<std::string> execution_routing_reserved_chat_ids;
 		std::unordered_set<std::string> execution_routing_restored_unresolved_chat_ids;
@@ -1573,6 +1611,10 @@ namespace uam
 		bool memory_settings_uncertain = false;
 		std::vector<ChatFolder> folders;
 		std::vector<ResourceCollection> resource_collections;
+		/// Startup load results for the stores above. An Unrecovered result means the in-memory list is
+		/// partial or empty and the store refuses saves until a fresh process reads a valid file.
+		uam::io::StoreLoadResult folders_load;
+		uam::io::StoreLoadResult resource_collections_load;
 		std::vector<ShellAction> shell_actions;
 		/// The saved shell actions file existed but could not be read on the last load, so the next save sets it aside first.
 		bool shell_actions_unreadable = false;
@@ -1732,7 +1774,7 @@ namespace uam
 		struct ChatSavePace { double finished_at = 0.0; double cost_seconds = 0.0; };
 		std::unordered_map<std::string, ChatSavePace> chat_save_pace_by_chat_id;
 		// Consecutive failed transcript saves per chat: told to the user once, then retried with backoff.
-		struct ChatSaveFailure { int attempts = 0; double retry_at = 0.0; };
+		struct ChatSaveFailure { int attempts = 0; double retry_at = 0.0; bool barrier_logged = false; };
 		std::unordered_map<std::string, ChatSaveFailure> chat_save_failures_by_chat_id;
 		double chat_save_records_pruned_at = 0.0;
 		// Rows of the most recently saved transcripts, reused as the next save's unchanged prefix so each

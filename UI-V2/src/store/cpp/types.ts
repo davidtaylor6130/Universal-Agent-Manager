@@ -1,5 +1,6 @@
 import type { StartupNativeImportStatus } from '../../types/startupNativeImports'
 import type { ExecutionRoutingSettings } from '../../types/executionRouting'
+import type { ExecutionHostLoad, RoutingWaitHost } from '../../types/hostLoad'
 import type { CustomIcon } from '../../types/customIcon'
 // C++ state serialisation types (mirrors state_serializer.cpp output) plus the
 // frontend-facing binding/push types. Extracted from useAppStore.ts (MO-1); the
@@ -96,6 +97,7 @@ export interface CppChat {
   routingAssignedConnectionIdentity?: string
   routingAssignedProviderConfigurationIdentity?: string
   routingWaitReason?: string
+  routingWaitHosts?: RoutingWaitHost[]
   routingUnresolvedReservation?: boolean
 
   id: string
@@ -386,7 +388,11 @@ export interface AcpSecretRequest {
   localPlatform: string
   /** The chat is in Plan mode: the user allows this one request before the field appears. */
   planOptIn: boolean
-  keychain: { available: boolean; saved: boolean }
+  /**
+   * Saved secrets are scoped to this workspace, provider, agent and label. savedAt (epoch ms) and agent describe the saved
+   * entry; legacySaved marks an entry from before scoping, which is never offered for use and can only be forgotten.
+   */
+  keychain: { available: boolean; saved: boolean; savedAt?: number; agent?: string; legacySaved?: boolean }
 }
 
 export type SecretSubmission = { value?: string; useSaved?: boolean; save?: boolean }
@@ -755,7 +761,8 @@ export type HostAdmissionHealth = 'ready' | 'degraded' | 'overloaded' | 'unreach
 /** Live work per computer by class, keyed by host id. */
 export type HostAdmissionUsage = Record<string, { label: string; interactive: number; agent: number; background: number; waiting: number; slotLimit: number; backgroundBudget: number; health: HostAdmissionHealth }>
 
-export type ComputePoolUsage = Record<string, { inUse: number; waiting: number }>
+/** Per pool; `hosts` splits the same counts by the computer each turn runs on. */
+export type ComputePoolUsage = Record<string, { inUse: number; waiting: number; hosts?: Record<string, { inUse: number; waiting: number }> }>
 
 /** One pull request linked to one chat. The native watch service owns it; the UI only displays and toggles it. */
 export interface PullRequestWatch {
@@ -1158,6 +1165,7 @@ export interface CppAppState {
   shellActions?: ShellAction[]
   computePoolUsage?: ComputePoolUsage
   hostAdmissionUsage?: HostAdmissionUsage
+  executionHostLoad?: ExecutionHostLoad
   prWatches?: PullRequestWatch[]
   shellActionNotification?: string
   statusLine?: string
@@ -1197,6 +1205,7 @@ export interface CppStatePatch {
   shellActions?: ShellAction[]
   computePoolUsage?: ComputePoolUsage
   hostAdmissionUsage?: HostAdmissionUsage
+  executionHostLoad?: ExecutionHostLoad
   prWatches?: PullRequestWatch[]
   shellActionNotification?: string
   statusLine?: string
