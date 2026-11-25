@@ -228,6 +228,14 @@ namespace
 		return result;
 	}
 #endif
+
+	nlohmann::json ManagedTranscriptResponse(const AgentRun& run, const std::string& title, nlohmann::json messages, std::optional<nlohmann::json> followup)
+	{
+		nlohmann::json response{{"runId", run.id}, {"agentId", run.agent_id}, {"status", run.status}, {"providerId", run.provider_id}, {"executionCapability", run.execution_capability}, {"resumedFromRunId", run.resumed_from_run_id}, {"title", title}, {"messages", std::move(messages)}};
+		if (followup)
+			response["followup"] = std::move(*followup);
+		return response;
+	}
 }
 
 using namespace uam::query_handler_internal;
@@ -1702,15 +1710,18 @@ void UamQueryHandler::HandleListUamAgents(CefRefPtr<CefBrowser>, const nlohmann:
 	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
 	if (chat == nullptr) return;
 
+	// Delegate-only agents are listed only for callers that show them as unselectable; older clients still get chat agents alone.
+	const bool include_delegate_only = payload.value("includeDelegateOnly", false);
 	const uam::AgentDefinitionCatalog catalog = uam::AgentDefinitionService::Load(
 	    m_app.data_root, uam::paths::ResolveControllerWorkspaceRootPath(m_app, *chat));
 	nlohmann::json agents = nlohmann::json::array();
 	for (const uam::AgentDefinition& agent : catalog.definitions)
 	{
-		if (agent.mode != "primary" && agent.mode != "both") continue;
+		if (!include_delegate_only && agent.mode != "primary" && agent.mode != "both") continue;
 		agents.push_back({
 		    {"id", agent.id},
 		    {"description", agent.description},
+		    {"mode", agent.mode},
 		    {"builtIn", agent.built_in},
 		});
 	}
@@ -1756,14 +1767,40 @@ void UamQueryHandler::HandlePreviewProviderAgentImport(CefRefPtr<CefBrowser>, co
 	cb->Success(SerializeProviderAgentImportPreview(preview).dump());
 }
 
-void UamQueryHandler::HandleListAgentDefinitions(CefRefPtr<CefBrowser>, const nlohmann::json&, CefRefPtr<Callback> cb)
+void UamQueryHandler::HandleListAgentDefinitions(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
-	const uam::AgentDefinitionCatalog catalog = uam::AgentDefinitionService::Load(m_app.data_root, {});
+	// Global definitions always; with an open chat, also the agents saved in that chat's workspace. Each row names its scope,
+	// so a workspace agent with the same name as a global one is listed as well rather than hiding it.
+	const uam::AgentDefinitionCatalog global = uam::AgentDefinitionService::Load(m_app.data_root, {});
+	std::filesystem::path workspace_root;
+	const std::string chat_id = payload.is_object() ? payload.value("chatId", "") : std::string{};
+	if (!chat_id.empty())
+	{
+		if (const ChatSession* chat = ChatDomainService().FindChatById(m_app, chat_id); chat != nullptr)
+			workspace_root = uam::paths::ResolveControllerWorkspaceRootPath(m_app, *chat);
+	}
 	nlohmann::json agents = nlohmann::json::array();
-	for (const uam::AgentDefinition& agent : catalog.definitions)
+	std::vector<std::string> errors = global.errors;
+	const auto append = [&agents](const uam::AgentDefinition& agent, const char* scope)
+	{
 		agents.push_back({{"id", agent.id}, {"description", agent.description}, {"mode", agent.mode}, {"workspaceAccess", agent.workspace_access},
-		                  {"skills", agent.skills}, {"delegates", agent.delegates}, {"instructions", agent.instructions}, {"builtIn", agent.built_in}});
-	cb->Success(nlohmann::json{{"agents", std::move(agents)}, {"errors", catalog.errors}}.dump());
+		                  {"skills", agent.skills}, {"delegates", agent.delegates}, {"instructions", agent.instructions}, {"builtIn", agent.built_in},
+		                  {"scope", scope}});
+	};
+	for (const uam::AgentDefinition& agent : global.definitions) append(agent, "global");
+	if (!workspace_root.empty())
+	{
+		const uam::AgentDefinitionCatalog effective = uam::AgentDefinitionService::Load(m_app.data_root, workspace_root);
+		for (const uam::AgentDefinition& agent : effective.definitions)
+		{
+			if (agent.workspace_override && !agent.built_in) append(agent, "workspace");
+		}
+		for (const std::string& error : effective.errors)
+		{
+			if (std::ranges::find(errors, error) == errors.end()) errors.push_back(error);
+		}
+	}
+	cb->Success(nlohmann::json{{"agents", std::move(agents)}, {"errors", std::move(errors)}}.dump());
 }
 
 void UamQueryHandler::HandleSaveAgentDefinition(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -1806,6 +1843,8 @@ void UamQueryHandler::HandleImportProviderAgent(CefRefPtr<CefBrowser>, const nlo
 		request.skills = payload.value("skills", std::vector<std::string>{});
 		request.workspace_scope = payload.value("workspaceScope", false);
 		request.acknowledge_ignored_fields = payload.value("acknowledgeIgnoredFields", false);
+		// The service still refuses a replacement that would drop or change a saved provider permission policy.
+		request.replace_existing = payload.value("replaceExisting", false);
 		if (request.workspace_scope)
 		{
 			ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Open a workspace chat before importing an agent.");
@@ -1827,10 +1866,11 @@ void UamQueryHandler::HandleImportProviderAgent(CefRefPtr<CefBrowser>, const nlo
 		cb->Failure(400, FailureDetailOrFallback(error, "Provider agent import failed."));
 		return;
 	}
-	cb->Success(nlohmann::json{{"id", imported.id}, {"description", imported.description}, {"mode", imported.mode}}.dump());
+	cb->Success(nlohmann::json{{"id", imported.id}, {"description", imported.description}, {"mode", imported.mode},
+	                           {"scope", request.workspace_scope ? "workspace" : "global"}}.dump());
 }
 
-void UamQueryHandler::HandleGetManagedAgentTranscript(CefRefPtr<CefBrowser> /*browser*/, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+void UamQueryHandler::HandleGetManagedAgentTranscript(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	using namespace uam::query_handler_async;
 	const std::string root_chat_id = payload.value("chatId", "");
@@ -1974,36 +2014,70 @@ void UamQueryHandler::HandleGetManagedAgentTranscript(CefRefPtr<CefBrowser> /*br
 		cb->Failure(409, "Managed agent transcript is active or changed. Retry after it settles.");
 		return;
 	}
-	std::string hydrate_warning;
-	std::optional<ChatSession> loaded_transcript;
 	if (transcript == nullptr)
 	{
-		loaded_transcript = ChatRepository::LoadLocalChat(m_app.data_root, transcript_chat_id, true, &hydrate_warning);
-		if (!loaded_transcript)
-		{
-			cb->Failure(404, FailureDetailOrFallback(hydrate_warning, "Managed agent transcript is unavailable."));
+		// Not in memory (for example an unfinished run whose transcript was never adopted): read, hydrate and
+		// serialize the saved file on a worker, then revalidate the run before replying.
+		// A newer open waits for the pending read and then re-runs this handler. The older request keeps its own
+		// validated result, so concurrent viewers both receive history and a cancelled waiter strands nobody.
+		// The key is the bare chat id on purpose: other chat-id history reads and deletion checks see this read.
+		if (AwaitNativeHistoryRead(transcript_chat_id, cb, [this, browser, payload, cb]() { HandleGetManagedAgentTranscript(browser, payload, cb); }, false))
 			return;
-		}
-		transcript = &*loaded_transcript;
-		if (transcript->agent_run_id != run->id)
-		{
-			cb->Failure(404, "Managed agent transcript is unavailable.");
-			return;
-		}
-	}
-	if (!transcript->messages_loaded && !ChatRepository::HydrateChatMessages(m_app.data_root, *transcript, &hydrate_warning))
-	{
-		cb->Failure(500, FailureDetailOrFallback(hydrate_warning, "Failed to load the managed agent transcript."));
+		const auto request = BeginNativeHistoryRead(transcript_chat_id, cb);
+		const std::filesystem::path data_root = m_app.data_root;
+		const std::string run_id = run->id;
+		const std::string run_status = run->status;
+		const std::string run_updated_at = run->updated_at;
+		const std::optional<std::uint64_t> run_revision = run->managed_continuation ? std::optional<std::uint64_t>(run->managed_continuation->state_revision) : std::nullopt;
+		auto saved = std::make_shared<ChatSession>();
+		auto messages = std::make_shared<nlohmann::json>();
+		if (!DispatchManagedSubagentQuery(
+		        cb,
+		        [data_root, transcript_chat_id, run_id, request, saved, messages]()
+		        {
+			        if (request->stop_requested())
+				        return AsyncFailure(409, "A newer transcript history request was made.");
+			        std::string warning;
+			        std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(data_root, transcript_chat_id, true, &warning);
+			        if (!loaded)
+				        return AsyncFailure(404, FailureDetailOrFallback(warning, "Managed agent transcript is unavailable."));
+			        if (loaded->agent_run_id != run_id)
+				        return AsyncFailure(404, "Managed agent transcript is unavailable.");
+			        // LoadLocalChat with messages normally returns them loaded; hydrate defensively if a capped read did not.
+			        if (!loaded->messages_loaded && !ChatRepository::HydrateChatMessages(data_root, *loaded, &warning))
+				        return AsyncFailure(500, FailureDetailOrFallback(warning, "Failed to load the managed agent transcript."));
+			        *messages = uam::StateSerializer::SerializeSession(*loaded).value("messages", nlohmann::json::array());
+			        *saved = std::move(*loaded);
+			        return AsyncSuccess({});
+		        },
+		        [this, root_chat_id, transcript_chat_id, run_id, run_status, run_updated_at, run_revision, data_root, request, saved, messages](AsyncCefResult& response)
+		        {
+			        const auto pending = m_nativeHistoryRequests.find(transcript_chat_id);
+			        if (pending == m_nativeHistoryRequests.end() || pending->second != request)
+			        {
+				        response = AsyncFailure(409, "Managed agent transcript changed while it was loading.");
+				        return;
+			        }
+			        FinishNativeHistoryRead(transcript_chat_id, request);
+			        if (!response.ok)
+				        return;
+			        // The same run, unchanged since the read began, must still own this transcript, and nothing may have
+			        // adopted a newer copy meanwhile; otherwise the status and messages could disagree.
+			        const ChatSession* current_root = ChatDomainService().FindChatById(m_app, root_chat_id);
+			        const auto current_run = std::ranges::find_if(m_app.agent_runs, [&](const AgentRun& candidate) { return candidate.root_chat_id == root_chat_id && candidate.transcript_chat_id == transcript_chat_id; });
+			        if (m_app.data_root != data_root || current_root == nullptr || !current_root->agent_run_id.empty() || current_run == m_app.agent_runs.end() || current_run->id != run_id || current_run->status != run_status || current_run->updated_at != run_updated_at || (current_run->managed_continuation ? std::optional<std::uint64_t>(current_run->managed_continuation->state_revision) : std::nullopt) != run_revision || ChatDomainService().FindChatById(m_app, transcript_chat_id) != nullptr || (m_workspaceDeletionPending && m_app.worktree_operation_chat_ids.contains(transcript_chat_id)))
+			        {
+				        response = AsyncFailure(409, "Managed agent transcript changed while it was loading.");
+				        return;
+			        }
+			        response = AsyncSuccess(ManagedTranscriptResponse(*current_run, saved->title, std::move(*messages), ManagedFollowupHint(root_chat_id, run_id, saved.get())));
+		        }))
+			FinishNativeHistoryRead(transcript_chat_id, request);
 		return;
 	}
-	const nlohmann::json serialized = uam::StateSerializer::SerializeSession(*transcript);
-	nlohmann::json response{
-	    {"runId", run->id}, {"agentId", run->agent_id}, {"status", run->status},
-	    {"providerId", run->provider_id}, {"executionCapability", run->execution_capability},
-	    {"resumedFromRunId", run->resumed_from_run_id},
-	    {"title", transcript->title}, {"messages", serialized.value("messages", nlohmann::json::array())}};
-	if (const auto hint = ManagedFollowupHint(root_chat_id, run->id, transcript)) response["followup"] = *hint;
-	cb->Success(response.dump());
+	// Loaded in memory: an unloaded in-memory transcript was handled above, so no file is read here.
+	nlohmann::json messages = uam::StateSerializer::SerializeSession(*transcript).value("messages", nlohmann::json::array());
+	cb->Success(ManagedTranscriptResponse(*run, transcript->title, std::move(messages), ManagedFollowupHint(root_chat_id, run->id, transcript)).dump());
 }
 
 void UamQueryHandler::HandleResumeAgentRun(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -2293,8 +2367,9 @@ void UamQueryHandler::HandleSetComputerUseSettings(CefRefPtr<CefBrowser> browser
 		}
 	}
 	const bool globally_enabled = payload.value("computerUseGloballyEnabled", previous.computer_use_globally_enabled);
-	if (globally_enabled && (!m_app.computer_use_revocation_pending_chat_ids.empty() ||
-	    (!previous.computer_use_globally_enabled && !uam::ComputerUseService::ResetControlsForStartup(m_app))))
+	// Only turning the feature on from Off waits for earlier grants to clear; allowlist edits while On never re-enable anything.
+	const bool turning_on = globally_enabled && !previous.computer_use_globally_enabled;
+	if (turning_on && (!m_app.computer_use_revocation_pending_chat_ids.empty() || !uam::ComputerUseService::ResetControlsForStartup(m_app)))
 	{
 		cb->Failure(500, "Computer Use cannot be re-enabled until its previous control grants are cleared.");
 		return;

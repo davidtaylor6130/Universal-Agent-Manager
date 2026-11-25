@@ -52,7 +52,6 @@ import {
 import { pendingModelByChatId, pendingRequestIdsByKey, pendingViewModeBySessionId } from '../push/pushBuffers'
 import type {
   AcpBinding,
-  AcpLifecycleState,
   AcpUserInputAnswers,
   SecretSubmission,
   ChatAttachmentInput,
@@ -73,6 +72,8 @@ import type {
   OpenWorkspaceEditorResponse,
   ProviderChatDefaults,
   ProviderAgentImportPreview,
+  ProviderAgentImportOptions,
+  ProviderAgentImportOutcome,
   ProviderModelCatalog,
   VcsCommitMessageSuggestion,
   VcsCommitResult,
@@ -142,6 +143,12 @@ function reportRefusal(title: string, reason: string | undefined, onFailure?: (r
   else reportAppFailure(`${title}. ${shown || 'Try again.'}`, '')
 }
 
+/** A backend refusal as one plain line; raw bridge failures give ''. */
+function oneLineRefusalReason(reason: string | undefined) {
+  if (!reason || isRawBridgeError(reason)) return ''
+  return reason.replace(/\s+/g, ' ').trim()
+}
+
 type AcceptedModel = Pick<Session, 'modelId' | 'reasoningEffort' | 'serviceTier' | 'serviceTierExplicit' | 'updatedAt'>
 /** Per chat, the model state the backend last accepted while model changes are in flight; a refusal rolls back to it. */
 const acceptedModelByChatId = new Map<string, AcceptedModel>()
@@ -173,6 +180,47 @@ function vcsCommitStatusFailure(vcsType: VcsType, error: string | undefined, cod
 
 function computerUseFailure(error?: string): ComputerUseActionResult {
   return error ? { ok: false, error } : { ok: false }
+}
+
+type AcpBindingPlaceholder = Omit<AcpBinding, 'providerId' | 'protocolKind' | 'threadId'> & Partial<Pick<AcpBinding, 'providerId' | 'protocolKind' | 'threadId'>>
+
+/**
+ * The idle binding local actions write when no native binding exists yet. Each caller
+ * states its own identity and lifecycle; provider fields appear only when passed.
+ */
+function createAcpBindingPlaceholder(
+  state: Pick<AppState, 'sessions'>,
+  sessionId: string,
+  overrides: Pick<AcpBinding, 'sessionId' | 'running' | 'lifecycleState'> & Partial<AcpBinding>,
+): AcpBindingPlaceholder {
+  const session = state.sessions.find((candidate) => candidate.id === sessionId)
+  return {
+    processing: false,
+    readySinceLastSelect: false,
+    processingStartedAtMs: null,
+    lastError: '',
+    recentStderr: '',
+    lastExitCode: null,
+    diagnostics: [],
+    toolCalls: [],
+    planSummary: '',
+    planEntries: [],
+    availableModes: [],
+    currentModeId: session?.approvalMode ?? 'default',
+    availableModels: [],
+    currentModelId: session?.modelId ?? '',
+    turnEvents: [],
+    turnUserMessageIndex: -1,
+    turnAssistantMessageIndex: -1,
+    turnSerial: 0,
+    waitIsStale: false,
+    waitStaleReason: '',
+    waitSeconds: 0,
+    pendingPermission: null,
+    pendingUserInput: null,
+    agentInfo: null,
+    ...overrides,
+  }
 }
 
 /** Validate the optional bounded navigation index from current and legacy bridges. */
@@ -2303,7 +2351,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       rememberPendingRequest(requestKey, requestId)
       const response = await sendToCEF<{ agents?: unknown[] }>({
         action: 'listUamAgents',
-        payload: { chatId: id },
+        payload: { chatId: id, includeDelegateOnly: true },
         requestId,
       })
       if (!response.ok) {
@@ -2314,9 +2362,10 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         ? response.data.agents.flatMap((entry): UamAgentSummary[] => {
             if (!isRecord(entry)) return []
             const agentId = stringOr(entry.id).trim().toLowerCase()
-            const mode = stringOr(entry.mode)
-            if (!agentId || mode === 'subagent') return []
-            return [{ id: agentId, description: stringOr(entry.description), builtIn: Boolean(entry.builtIn) }]
+            if (!agentId) return []
+            const agent: UamAgentSummary = { id: agentId, description: stringOr(entry.description), builtIn: Boolean(entry.builtIn) }
+            // Listed so an imported helper is visible; the picker shows it as unselectable and the backend refuses it as a chat agent.
+            return [stringOr(entry.mode) === 'subagent' ? { ...agent, delegateOnly: true } : agent]
           })
         : builtIns
       if (isLatestPendingRequest(requestKey, response.requestId)) {
@@ -2347,15 +2396,18 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return response.ok ? response.data ?? null : null
     },
 
-    importProviderAgent: async (options: { chatId: string; providerId: string; sourcePath: string; canonicalId: string; workspaceAccess: 'read' | 'write'; workspaceScope: boolean; acknowledgeIgnoredFields: boolean }) => {
-      if (!isCefContext()) return false
-      const response = await sendToCEF<{ id?: string }>({
+    importProviderAgent: async (options: ProviderAgentImportOptions): Promise<ProviderAgentImportOutcome> => {
+      if (!isCefContext()) return { ok: false, error: '' }
+      const response = await sendToCEF<{ id?: string; mode?: string; scope?: string }>({
         action: 'importProviderAgent',
         payload: options,
       })
-      if (!response.ok) return false
+      if (!response.ok) return { ok: false, error: oneLineRefusalReason(response.error) }
       if (options.chatId) await get().refreshUamAgents(options.chatId)
-      return true
+      const scope = response.data?.scope === 'workspace' || response.data?.scope === 'global'
+        ? response.data.scope
+        : options.workspaceScope ? 'workspace' : 'global'
+      return { ok: true, id: stringOr(response.data?.id).trim() || options.canonicalId.trim().toLowerCase(), mode: stringOr(response.data?.mode), scope }
     },
 
     setSessionCommandSafetyTier: async (id: string, tier: 'off' | 'acceptEdits' | 'aiReview' | 'yolo') => {
@@ -3051,38 +3103,17 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
             acpBindingBySessionId: {
               ...state.acpBindingBySessionId,
               [sessionId]: {
-                ...(state.acpBindingBySessionId[sessionId] ?? {
+                ...(state.acpBindingBySessionId[sessionId] ?? createAcpBindingPlaceholder(state, sessionId, {
                   sessionId: '',
                   providerId: state.sessions.find((session) => session.id === sessionId)?.providerId ?? DEFAULT_PROVIDER_ID,
                   protocolKind: inputRecorded ? '' : providerMetadataForId(DEFAULT_PROVIDER_ID).structuredProtocol,
                   threadId: '',
                   running: false,
-                  lifecycleState: (inputRecorded ? 'stopped' : 'error') as AcpLifecycleState,
-                  processing: false,
-                  readySinceLastSelect: false,
-                  processingStartedAtMs: null,
-                  lastError: '',
-                  recentStderr: '',
-                  lastExitCode: null,
-                  diagnostics: [],
-                  toolCalls: [],
-                  planSummary: '',
-                  planEntries: [],
-                  availableModes: [],
+                  lifecycleState: inputRecorded ? 'stopped' : 'error',
+                  // This failure path has always used the neutral mode and model, not the chat's.
                   currentModeId: 'default',
-                  availableModels: [],
                   currentModelId: '',
-                  turnEvents: [],
-                  turnUserMessageIndex: -1,
-                  turnAssistantMessageIndex: -1,
-                  turnSerial: 0,
-                  waitIsStale: false,
-                  waitStaleReason: '',
-                  waitSeconds: 0,
-                  pendingPermission: null,
-                  pendingUserInput: null,
-                  agentInfo: null,
-                }),
+                })),
                 promptActionError: { id: actionErrorId, message: message },
               },
             },
@@ -3170,37 +3201,17 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
           ...state.acpBindingBySessionId,
           [sessionId]: {
             ...(state.acpBindingBySessionId[sessionId] ?? {}),
-            sessionId: state.acpBindingBySessionId[sessionId]?.sessionId ?? '',
-            providerId: state.sessions.find((session) => session.id === sessionId)?.providerId ?? DEFAULT_PROVIDER_ID,
-            protocolKind: providerMetadataForId(DEFAULT_PROVIDER_ID).structuredProtocol,
-            threadId: state.acpBindingBySessionId[sessionId]?.threadId ?? '',
-            running: false,
-            lifecycleState: 'error',
-            processing: false,
-            readySinceLastSelect: false,
-            processingStartedAtMs: null,
-            promptActionError: { id: actionErrorId, message: 'Structured chat requires the desktop app.' },
-            lastError: '',
-            recentStderr: '',
-            lastExitCode: null,
-            diagnostics: [],
-            toolCalls: [],
-            planSummary: '',
-            planEntries: [],
-            availableModes: [],
-            currentModeId: state.sessions.find((session) => session.id === sessionId)?.approvalMode ?? 'default',
-            availableModels: [],
-            currentModelId: state.sessions.find((session) => session.id === sessionId)?.modelId ?? '',
-            turnEvents: [],
-            turnUserMessageIndex: -1,
-            turnAssistantMessageIndex: -1,
-            turnSerial: state.acpBindingBySessionId[sessionId]?.turnSerial ?? 0,
-            waitIsStale: false,
-            waitStaleReason: '',
-            waitSeconds: 0,
-            pendingPermission: null,
-            pendingUserInput: null,
-            agentInfo: state.acpBindingBySessionId[sessionId]?.agentInfo ?? null,
+            ...createAcpBindingPlaceholder(state, sessionId, {
+              sessionId: state.acpBindingBySessionId[sessionId]?.sessionId ?? '',
+              providerId: state.sessions.find((session) => session.id === sessionId)?.providerId ?? DEFAULT_PROVIDER_ID,
+              protocolKind: providerMetadataForId(DEFAULT_PROVIDER_ID).structuredProtocol,
+              threadId: state.acpBindingBySessionId[sessionId]?.threadId ?? '',
+              running: false,
+              lifecycleState: 'error',
+              promptActionError: { id: actionErrorId, message: 'Structured chat requires the desktop app.' },
+              turnSerial: state.acpBindingBySessionId[sessionId]?.turnSerial ?? 0,
+              agentInfo: state.acpBindingBySessionId[sessionId]?.agentInfo ?? null,
+            }),
           },
         },
       }))
@@ -3416,35 +3427,11 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         acpBindingBySessionId: {
           ...state.acpBindingBySessionId,
           [sessionId]: {
-            ...(state.acpBindingBySessionId[sessionId] ?? {
+            ...(state.acpBindingBySessionId[sessionId] ?? createAcpBindingPlaceholder(state, sessionId, {
               sessionId: 'dev-acp-session',
               running: true,
-              lifecycleState: 'ready' as AcpLifecycleState,
-              processing: false,
-              readySinceLastSelect: false,
-              processingStartedAtMs: null,
-              lastError: '',
-              recentStderr: '',
-              lastExitCode: null,
-              diagnostics: [],
-              toolCalls: [],
-              planSummary: '',
-              planEntries: [],
-              availableModes: [],
-              currentModeId: state.sessions.find((session) => session.id === sessionId)?.approvalMode ?? 'default',
-              availableModels: [],
-              currentModelId: state.sessions.find((session) => session.id === sessionId)?.modelId ?? '',
-              turnEvents: [],
-              turnUserMessageIndex: -1,
-              turnAssistantMessageIndex: -1,
-              turnSerial: 0,
-              waitIsStale: false,
-              waitStaleReason: '',
-              waitSeconds: 0,
-              pendingPermission: null,
-              pendingUserInput: null,
-              agentInfo: null,
-            }),
+              lifecycleState: 'ready',
+            })),
             lifecycleState: 'ready',
             processing: false,
             processingStartedAtMs: null,
@@ -3476,35 +3463,11 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         acpBindingBySessionId: {
           ...state.acpBindingBySessionId,
           [sessionId]: {
-            ...(state.acpBindingBySessionId[sessionId] ?? {
+            ...(state.acpBindingBySessionId[sessionId] ?? createAcpBindingPlaceholder(state, sessionId, {
               sessionId: 'dev-acp-session',
               running: true,
-              lifecycleState: 'ready' as AcpLifecycleState,
-              processing: false,
-              readySinceLastSelect: false,
-              processingStartedAtMs: null,
-              lastError: '',
-              recentStderr: '',
-              lastExitCode: null,
-              diagnostics: [],
-              toolCalls: [],
-              planSummary: '',
-              planEntries: [],
-              availableModes: [],
-              currentModeId: state.sessions.find((session) => session.id === sessionId)?.approvalMode ?? 'default',
-              availableModels: [],
-              currentModelId: state.sessions.find((session) => session.id === sessionId)?.modelId ?? '',
-              turnEvents: [],
-              turnUserMessageIndex: -1,
-              turnAssistantMessageIndex: -1,
-              turnSerial: 0,
-              waitIsStale: false,
-              waitStaleReason: '',
-              waitSeconds: 0,
-              pendingPermission: null,
-              pendingUserInput: null,
-              agentInfo: null,
-            }),
+              lifecycleState: 'ready',
+            })),
             lifecycleState: 'processing',
             attentionKind: null,
             pendingPermission: null,
@@ -3532,38 +3495,14 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         acpBindingBySessionId: {
           ...state.acpBindingBySessionId,
           [sessionId]: {
-            ...(state.acpBindingBySessionId[sessionId] ?? {
+            ...(state.acpBindingBySessionId[sessionId] ?? createAcpBindingPlaceholder(state, sessionId, {
               sessionId: 'dev-acp-session',
               providerId: state.sessions.find((session) => session.id === sessionId)?.providerId ?? DEFAULT_PROVIDER_ID,
               protocolKind: providerMetadataForId(DEFAULT_PROVIDER_ID).structuredProtocol,
               threadId: '',
               running: true,
-              lifecycleState: 'ready' as AcpLifecycleState,
-              processing: false,
-              readySinceLastSelect: false,
-              processingStartedAtMs: null,
-              lastError: '',
-              recentStderr: '',
-              lastExitCode: null,
-              diagnostics: [],
-              toolCalls: [],
-              planSummary: '',
-              planEntries: [],
-              availableModes: [],
-              currentModeId: state.sessions.find((session) => session.id === sessionId)?.approvalMode ?? 'default',
-              availableModels: [],
-              currentModelId: state.sessions.find((session) => session.id === sessionId)?.modelId ?? '',
-              turnEvents: [],
-              turnUserMessageIndex: -1,
-              turnAssistantMessageIndex: -1,
-              turnSerial: 0,
-              waitIsStale: false,
-              waitStaleReason: '',
-              waitSeconds: 0,
-              pendingPermission: null,
-              pendingUserInput: null,
-              agentInfo: null,
-            }),
+              lifecycleState: 'ready',
+            })),
             lifecycleState: 'processing',
             processing: true,
             attentionKind: null,
@@ -3606,35 +3545,11 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
         acpBindingBySessionId: {
           ...state.acpBindingBySessionId,
           [sessionId]: {
-            ...(state.acpBindingBySessionId[sessionId] ?? {
+            ...(state.acpBindingBySessionId[sessionId] ?? createAcpBindingPlaceholder(state, sessionId, {
               sessionId: '',
               running: false,
-              lifecycleState: 'stopped' as AcpLifecycleState,
-              processing: false,
-              readySinceLastSelect: false,
-              processingStartedAtMs: null,
-              lastError: '',
-              recentStderr: '',
-              lastExitCode: null,
-              diagnostics: [],
-              toolCalls: [],
-              planSummary: '',
-              planEntries: [],
-              availableModes: [],
-              currentModeId: state.sessions.find((session) => session.id === sessionId)?.approvalMode ?? 'default',
-              availableModels: [],
-              currentModelId: state.sessions.find((session) => session.id === sessionId)?.modelId ?? '',
-              turnEvents: [],
-              turnUserMessageIndex: -1,
-              turnAssistantMessageIndex: -1,
-              turnSerial: 0,
-              waitIsStale: false,
-              waitStaleReason: '',
-              waitSeconds: 0,
-              pendingPermission: null,
-              pendingUserInput: null,
-              agentInfo: null,
-            }),
+              lifecycleState: 'stopped',
+            })),
             running: false,
             lifecycleState: 'stopped',
             processing: false,

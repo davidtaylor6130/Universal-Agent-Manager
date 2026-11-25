@@ -1,6 +1,7 @@
 #include "test_harness.h"
 #include <future>
 #include "common/provider/provider_text_worker.h"
+#include "common/memory/memory_entry_format.h"
 #include "common/memory/memory_levels.h"
 #include "common/memory/memory_policy.h"
 #include "common/memory/memory_worker_failure_pause.h"
@@ -223,6 +224,89 @@ UAM_TEST(MemoryEntryIndexPreservesBatchDeduplicationScopesAndFreshFiles)
 	const std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(app.data_root, chat.id);
 	UAM_ASSERT(loaded && loaded->messages == chat.messages);
 	UAM_ASSERT_EQ(loaded->memory_last_processed_message_count, 2);
+}
+
+UAM_TEST(MemoryWorkerAndLibraryEntriesWithALongTitleShareOneFile)
+{
+	TempDir temp("uam-memory-long-title");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ChatFolder folder;
+	folder.id = "folder-long-title";
+	folder.title = "Workspace";
+	folder.directory = (temp.root / "workspace").string();
+	app.folders.push_back(folder);
+	fs::create_directories(folder.directory);
+	ChatSession chat;
+	chat.id = "chat-long-title";
+	chat.folder_id = folder.id;
+	chat.memory_level = "open";
+	chat.workspace_directory = folder.directory;
+	chat.messages.push_back({MessageRole::User, "Remember the native build cache convention.", "now"});
+	app.chats.push_back(chat);
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+
+	std::string long_title;
+	while (long_title.size() < 300) long_title += "Native targets reuse the shared build cache folder ";
+	const fs::path category = MemoryService::CategoryPath(MemoryService::LocalMemoryRoot(folder.directory), "Lessons/User_Lessons");
+	const auto memory_files = [&category]()
+	{
+		std::vector<fs::path> files;
+		for (const fs::directory_entry& item : fs::directory_iterator(category)) if (item.path().extension() == ".md") files.push_back(item.path());
+		return files;
+	};
+
+	// A worker entry and a Memory Library entry with the same over-long title are one memory.
+	const nlohmann::json memories = nlohmann::json::array({{{"scope", "local"}, {"category", "Lessons/User_Lessons"}, {"title", long_title},
+	    {"memory", "Reuse the shared native build cache."}, {"evidence", "The user stated the convention."}, {"confidence", "high"}}});
+	std::string error;
+	UAM_ASSERT(MemoryService::ApplyWorkerOutput(app, app.chats.front(), folder.directory, nlohmann::json{{"memories", memories}}.dump(), 1, &error));
+	UAM_ASSERT_EQ(memory_files().size(), static_cast<std::size_t>(1));
+	MemoryLibraryService::Scope folder_scope;
+	UAM_ASSERT(MemoryLibraryService::ResolveScope(app, "folder", folder.id, folder_scope, &error));
+	MemoryLibraryService::Draft draft;
+	draft.category = "Lessons/User_Lessons";
+	draft.title = long_title;
+	draft.memory = "Reuse the shared native build cache.";
+	draft.source_chat_id = chat.id;
+	MemoryLibraryService::Entry created;
+	UAM_ASSERT(MemoryLibraryService::CreateEntry(folder_scope, draft, &created, &error));
+	const std::vector<fs::path> files = memory_files();
+	UAM_ASSERT_EQ(files.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT_EQ(created.file_path, files.front());
+	UAM_ASSERT_EQ(created.occurrence_count, 2);
+	UAM_ASSERT(created.title.size() <= uam::memory::kEntryTitleMaxChars && long_title.starts_with(created.title));
+
+	// An entry saved before the shared cap, with its full title, still takes the next observation.
+	fs::remove(files.front());
+	const fs::path legacy = category / "legacy-long-title.md";
+	UAM_ASSERT(uam::io::WriteTextFile(legacy, "# " + uam::strings::Trim(long_title) + "\n\nCategory: Lessons/User_Lessons\nOccurrence count: 4\n\n## Memory\nReuse the shared native build cache.\n"));
+	UAM_ASSERT(MemoryService::ApplyWorkerOutput(app, app.chats.front(), folder.directory, nlohmann::json{{"memories", memories}}.dump(), 1, &error));
+	UAM_ASSERT_EQ(memory_files(), std::vector<fs::path>{legacy});
+	UAM_ASSERT(ReadFile(legacy).find("Occurrence count: 5") != std::string::npos);
+
+	// A file holding the capped title itself wins over a longer legacy title that only shares its first 160 bytes,
+	// whatever the directory order: the legacy file is put back to its full title and no receipt first.
+	const std::string legacy_text = "# " + uam::strings::Trim(long_title) + "\n\nCategory: Lessons/User_Lessons\nOccurrence count: 5\n\n## Memory\nReuse the shared native build cache.\n";
+	UAM_ASSERT(uam::io::WriteTextFile(legacy, legacy_text));
+	const fs::path exact = category / "exact-capped-title.md";
+	UAM_ASSERT(uam::io::WriteTextFile(exact, "# " + uam::strings::SafeLine(long_title, uam::memory::kEntryTitleMaxChars) + "\n\nCategory: Lessons/User_Lessons\nOccurrence count: 2\n\n## Memory\nReuse the shared native build cache.\n"));
+	UAM_ASSERT(MemoryService::ApplyWorkerOutput(app, app.chats.front(), folder.directory, nlohmann::json{{"memories", memories}}.dump(), 1, &error));
+	UAM_ASSERT(ReadFile(exact).find("Occurrence count: 3") != std::string::npos);
+	UAM_ASSERT_EQ(ReadFile(legacy), legacy_text);
+
+	// The Memory Library never matches a same-title file it cannot list (no supported Category header).
+	const fs::path unlisted = category / "unlisted-note.md";
+	const std::string unlisted_text = "# Shared cache note\n\nA hand-written note without entry headers.\n";
+	UAM_ASSERT(uam::io::WriteTextFile(unlisted, unlisted_text));
+	MemoryLibraryService::Draft note;
+	note.category = "Lessons/User_Lessons";
+	note.title = "Shared cache note";
+	note.memory = "Reuse the shared native build cache.";
+	MemoryLibraryService::Entry note_entry;
+	UAM_ASSERT(MemoryLibraryService::CreateEntry(folder_scope, note, &note_entry, &error));
+	UAM_ASSERT(note_entry.file_path != unlisted);
+	UAM_ASSERT_EQ(ReadFile(unlisted), unlisted_text);
 }
 
 UAM_TEST(MemoryServiceRetriesDoNotApplyTheSameExtractionTwice)

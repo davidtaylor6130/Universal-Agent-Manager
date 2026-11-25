@@ -7,6 +7,7 @@ import { Session, Folder } from '../types/session'
 import { Message } from '../types/message'
 import { Provider } from '../types/provider'
 import type { MemoryLevel } from '../types/memory'
+import type { Goal } from '../types/goal'
 import { sendToCEF, isCefContext, isCompanionContext } from '../ipc/cefBridge'
 import {
   CLI_TRANSCRIPT_FLUSH_DELAY_MS,
@@ -49,7 +50,7 @@ export {
 // Moved to ./cpp/types.ts (MO-1). Re-exported so existing imports keep working.
 
 export * from './cpp/types'
-import type { WindowsPowerShellPreference, VoiceInputSettings, VcsStorageSettings, ProviderAvailabilityOverride, AcpBinding, CliBinding, CliTranscript, CliVersionManager, CppAppState, CppCliDebugState, CppStatePatch, EditorFileAssociation, MemoryActivity, MemoryWorkerBinding, McpServerConfiguration, ProviderChatDefaults, ProviderModelCatalog, ShellAction } from './cpp/types'
+import type { WindowsPowerShellPreference, VoiceInputSettings, VcsStorageSettings, ProviderAvailabilityOverride, AcpBinding, CliBinding, CliTranscript, CliVersionManager, CppAppState, CppCliDebugState, CppGoal, CppStatePatch, EditorFileAssociation, MemoryActivity, MemoryWorkerBinding, McpServerConfiguration, ProviderChatDefaults, ProviderModelCatalog, ShellAction } from './cpp/types'
 import { acpBindingFromCppChat, applyPendingCodexOptions, appendCliTranscriptChunk, cliBindingFromCppChat, cppPatchRevision, cppStateRevision, decodeCliChunk, folderFromCppFolder, normalizeCliTranscript, cliOutputMatchesBinding, providerFromCppProvider, reconcileCppMessages, reconcileHeldOutboxHistory, queuedPromptsEquivalent, sameArrayEntries, sameRecordEntries, sessionFromCppChat } from './cpp/reconcile'
 import { pendingProviderChatDefaults, withoutDeletedKeys } from './slices/sessionsSlice'
 import { parseUamPushPayload, cliDebugSignature, isNewerStateRevision } from './push/uamPush'
@@ -87,6 +88,36 @@ function mergeAssistantText(durable: string, streamed: string): string {
     }
   }
   return durable + streamed
+}
+
+function mapCppGoal(chatId: string, cppGoal: CppGoal): Goal {
+  return {
+    id: cppGoal.id,
+    chatId,
+    objective: cppGoal.objective,
+    status: cppGoal.status,
+    tokenBudget: cppGoal.tokenBudget,
+    tokensUsed: cppGoal.tokensUsed,
+    blockedTurnCount: cppGoal.blockedTurnCount,
+    lastBlocker: cppGoal.lastBlocker,
+    lastBlockerKind: cppGoal.lastBlockerKind,
+    lastDiagnostic: cppGoal.lastDiagnostic,
+    lastDecisionSource: cppGoal.lastDecisionSource,
+    completedItems: cppGoal.completedItems,
+    remainingItems: cppGoal.remainingItems,
+    pendingContinuation: cppGoal.pendingContinuation,
+    currentStep: cppGoal.currentStep,
+    lastVerification: cppGoal.lastVerification,
+    lastNextPrompt: cppGoal.lastNextPrompt,
+    sameNextPromptCount: cppGoal.sameNextPromptCount,
+    loopCount: cppGoal.loopCount,
+    createdAt: new Date(cppGoal.createdAt || Date.now()),
+    updatedAt: new Date(cppGoal.updatedAt || Date.now()),
+    executionOwner: cppGoal.executionOwner ?? 'uam',
+    providerCommand: cppGoal.providerCommand ?? '',
+    workerModelId: cppGoal.workerModelId ?? '',
+    reviewerModelId: cppGoal.reviewerModelId ?? '',
+  }
 }
 
 function deserializeState(
@@ -276,41 +307,15 @@ function deserializeState(
 
   const sessionsWithPendingCodexOptions = applyPendingCodexOptions(sessions)
 
-  const goalsByChatId: Record<string, import('../types/goal').Goal[]> = {}
+  const goalsByChatId: Record<string, Goal[]> = {}
   const activeGoalIdByChatId: Record<string, string | null> = {}
   for (const chat of cpp.chats) {
     if (chat.activeGoalId !== undefined) {
       activeGoalIdByChatId[chat.id] = chat.activeGoalId
     }
+    // A full load leaves chats without goals out of the map; applyStatePatch writes [] instead.
     if (Array.isArray(chat.goals) && chat.goals.length > 0) {
-      const goalObjects: import('../types/goal').Goal[] = chat.goals.map((cppGoal) => ({
-        id: cppGoal.id,
-        chatId: chat.id,
-        objective: cppGoal.objective,
-        status: cppGoal.status,
-        tokenBudget: cppGoal.tokenBudget,
-        tokensUsed: cppGoal.tokensUsed,
-        blockedTurnCount: cppGoal.blockedTurnCount,
-        lastBlocker: cppGoal.lastBlocker,
-        lastBlockerKind: cppGoal.lastBlockerKind,
-        lastDiagnostic: cppGoal.lastDiagnostic,
-        lastDecisionSource: cppGoal.lastDecisionSource,
-        completedItems: cppGoal.completedItems,
-        remainingItems: cppGoal.remainingItems,
-        pendingContinuation: cppGoal.pendingContinuation,
-        currentStep: cppGoal.currentStep,
-        lastVerification: cppGoal.lastVerification,
-        lastNextPrompt: cppGoal.lastNextPrompt,
-        sameNextPromptCount: cppGoal.sameNextPromptCount,
-        loopCount: cppGoal.loopCount,
-        createdAt: new Date(cppGoal.createdAt || Date.now()),
-        updatedAt: new Date(cppGoal.updatedAt || Date.now()),
-        executionOwner: cppGoal.executionOwner ?? 'uam',
-        providerCommand: cppGoal.providerCommand ?? '',
-        workerModelId: cppGoal.workerModelId ?? '',
-        reviewerModelId: cppGoal.reviewerModelId ?? '',
-      }))
-      goalsByChatId[chat.id] = goalObjects
+      goalsByChatId[chat.id] = chat.goals.map((cppGoal) => mapCppGoal(chat.id, cppGoal))
     }
   }
 
@@ -517,33 +522,8 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     if (chat.activeGoalId !== undefined) {
       activeGoalIdByChatId[chat.id] = chat.activeGoalId
     }
-    goalsByChatId[chat.id] = (chat.goals ?? []).map((cppGoal) => ({
-        id: cppGoal.id,
-        chatId: chat.id,
-        objective: cppGoal.objective,
-        status: cppGoal.status,
-        tokenBudget: cppGoal.tokenBudget,
-        tokensUsed: cppGoal.tokensUsed,
-        blockedTurnCount: cppGoal.blockedTurnCount,
-        lastBlocker: cppGoal.lastBlocker,
-        lastBlockerKind: cppGoal.lastBlockerKind,
-        lastDiagnostic: cppGoal.lastDiagnostic,
-        lastDecisionSource: cppGoal.lastDecisionSource,
-        completedItems: cppGoal.completedItems,
-        remainingItems: cppGoal.remainingItems,
-        pendingContinuation: cppGoal.pendingContinuation,
-        currentStep: cppGoal.currentStep,
-        lastVerification: cppGoal.lastVerification,
-        lastNextPrompt: cppGoal.lastNextPrompt,
-        sameNextPromptCount: cppGoal.sameNextPromptCount,
-        loopCount: cppGoal.loopCount,
-        createdAt: new Date(cppGoal.createdAt || Date.now()),
-        updatedAt: new Date(cppGoal.updatedAt || Date.now()),
-        executionOwner: cppGoal.executionOwner ?? 'uam',
-        providerCommand: cppGoal.providerCommand ?? '',
-        workerModelId: cppGoal.workerModelId ?? '',
-        reviewerModelId: cppGoal.reviewerModelId ?? '',
-    }))
+    // Unlike a full load, a patch records [] for a chat without goals so earlier goals are cleared.
+    goalsByChatId[chat.id] = (chat.goals ?? []).map((cppGoal) => mapCppGoal(chat.id, cppGoal))
   }
 
   const activeSessionId =

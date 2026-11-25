@@ -33,19 +33,7 @@ AcpToolCallState& RestoreToolCallFromChat(AcpSessionState& session, const ChatSe
 		for (const ToolCall& saved : chat.messages[index].tool_calls)
 		{
 			if (saved.id != id) continue;
-			tool.title = saved.name;
-			tool.kind = saved.kind;
-			tool.status = saved.status;
-			tool.args_json = saved.args_json;
-			tool.content = saved.result_text;
-			tool.is_sub_agent = saved.is_sub_agent;
-			tool.sub_agent_id = saved.sub_agent_id;
-			tool.sub_agent_title = saved.sub_agent_title;
-			tool.sub_agent_children = saved.sub_agent_children;
-			tool.sub_agent_children_authoritative = saved.sub_agent_children_authoritative;
-			tool.approval_status = saved.approval_status;
-			tool.task_id = saved.task_id;
-			tool.child_activity = saved.child_activity;
+			ApplyPersistedToolCall(tool, saved);
 			session.tool_call_message_indices[id] = static_cast<int>(index);
 			return tool;
 		}

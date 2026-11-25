@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <exception>
 #include <filesystem>
+#include <unordered_map>
 #include <unordered_set>
 
 namespace uam
@@ -51,14 +52,49 @@ namespace uam
 			    ? strings::ToLowerAscii(normalized) : normalized;
 		}
 
-		bool RegisteredWorkspace(const AppState& app, const ModelDiscoveryScope& scope)
+		// A local identity canonicalizes the path (a file-system call per component); thousands of chats share a few
+		// hundred workspaces. Resolve each distinct host and path once per call, and every registered workspace once,
+		// so a scope check is a set lookup instead of canonicalizing every chat again (#961).
+		class RegisteredWorkspaces
 		{
-			for (const ChatFolder& folder : app.folders)
-				if (HostId(folder.execution_host_id) == scope.execution_host_id && !strings::IsBlank(folder.directory) && WorkspaceIdentity(app, folder.directory, scope.execution_host_id) == WorkspaceIdentity(app, scope.workspace_directory, scope.execution_host_id)) return true;
-			for (const ChatSession& chat : app.chats)
-				if (!chat.imported_read_only && chat.temporary_parent_chat_id.empty() && HostId(chat.execution_host_id) == scope.execution_host_id && WorkspaceIdentity(app, paths::PortablePathString(paths::ResolveWorkspaceRootPath(app, chat)), scope.execution_host_id) == WorkspaceIdentity(app, scope.workspace_directory, scope.execution_host_id)) return true;
-			return false;
-		}
+		public:
+			explicit RegisteredWorkspaces(const AppState& app) : m_app(app) {}
+
+			const std::string& Identity(const std::string& path, const std::string& host_id)
+			{
+				const std::string key = host_id + '\n' + path;
+				const std::unordered_map<std::string, std::string>::const_iterator found = m_identities.find(key);
+				if (found != m_identities.end()) return found->second;
+				return m_identities.emplace(key, WorkspaceIdentity(m_app, path, host_id)).first->second;
+			}
+
+			bool Contains(const ModelDiscoveryScope& scope)
+			{
+				if (!m_built)
+				{
+					m_built = true;
+					for (const ChatFolder& folder : m_app.folders)
+						if (!strings::IsBlank(folder.directory))
+						{
+							const std::string host_id = HostId(folder.execution_host_id);
+							m_registered.insert(host_id + '\n' + Identity(folder.directory, host_id));
+						}
+					for (const ChatSession& chat : m_app.chats)
+						if (!chat.imported_read_only && chat.temporary_parent_chat_id.empty())
+						{
+							const std::string host_id = HostId(chat.execution_host_id);
+							m_registered.insert(host_id + '\n' + Identity(paths::PortablePathString(paths::ResolveWorkspaceRootPath(m_app, chat)), host_id));
+						}
+				}
+				return m_registered.contains(scope.execution_host_id + '\n' + Identity(scope.workspace_directory, scope.execution_host_id));
+			}
+
+		private:
+			const AppState& m_app;
+			bool m_built = false;
+			std::unordered_map<std::string, std::string> m_identities;
+			std::unordered_set<std::string> m_registered;
+		};
 	}
 
 	StartupModelDiscoveryService::StartupModelDiscoveryService(LaunchFunction launch)
@@ -72,6 +108,7 @@ namespace uam
 		std::vector<ModelDiscoveryScope> scopes;
 		// Thousands of chats share a few workspaces, and resolving each one costs filesystem calls on every launch.
 		std::unordered_set<std::string> seen;
+		RegisteredWorkspaces registered(app);
 		const std::function<void(const std::string&, const std::string&, const std::string&)> add = [&](const std::string& provider_id, const std::string& directory, const std::string& host_id)
 		{
 			if (strings::IsBlank(directory) || !seen.insert(provider_id + '\n' + host_id + '\n' + directory).second) return;
@@ -80,10 +117,10 @@ namespace uam
 			if (!provider_availability::IsEnabled(app.settings, scope.provider_id, scope.execution_host_id)) return;
 			scope.workspace_directory = Workspace(app, directory, scope.execution_host_id);
 			const ProviderProfile* provider = ProviderProfileStore::FindById(app.provider_profiles, scope.provider_id);
-			if (provider == nullptr || !provider->supports_structured || !RegisteredWorkspace(app, scope)) return;
+			if (provider == nullptr || !provider->supports_structured || !registered.Contains(scope)) return;
 			if (std::ranges::find_if(scopes, [&](const ModelDiscoveryScope& existing) {
 			    return existing.provider_id == scope.provider_id && existing.execution_host_id == scope.execution_host_id &&
-			           WorkspaceIdentity(app, existing.workspace_directory, existing.execution_host_id) == WorkspaceIdentity(app, scope.workspace_directory, scope.execution_host_id);
+			           registered.Identity(existing.workspace_directory, existing.execution_host_id) == registered.Identity(scope.workspace_directory, scope.execution_host_id);
 			}) == scopes.end()) scopes.push_back(std::move(scope));
 		};
 		if (app.provider_model_catalog != nullptr)
@@ -122,6 +159,9 @@ namespace uam
 		});
 		active += app.provider_model_catalog->ActiveNativeModelDiscoveries();
 		bool changed = false;
+		// Built only when a scope is about to start a check or a launch; a scope that only waits for its host or version
+		// check this tick skips the registration test, so a long wait does not resolve every chat's workspace per tick.
+		RegisteredWorkspaces registered(app);
 		for (std::vector<ModelDiscoveryScope>::iterator item = m_pending_scopes.begin(); item != m_pending_scopes.end() && active < kMaxConcurrentDiscoveries;)
 		{
 			const ModelDiscoveryScope scope = *item;
@@ -129,7 +169,7 @@ namespace uam
 			const std::map<std::string, ExecutionHost>::const_iterator captured_host = m_hosts.find(scope.execution_host_id);
 			const ProviderProfile* provider = ProviderProfileStore::FindById(app.provider_profiles, scope.provider_id);
 			if (host == nullptr || captured_host == m_hosts.end() || !execution_hosts::SameConnection(*host, captured_host->second) ||
-			    provider == nullptr || !provider->supports_structured || !RegisteredWorkspace(app, scope) || !provider_availability::IsEnabled(app.settings, scope.provider_id, scope.execution_host_id))
+			    provider == nullptr || !provider->supports_structured || !provider_availability::IsEnabled(app.settings, scope.provider_id, scope.execution_host_id))
 			{
 				item = m_pending_scopes.erase(item);
 				continue;
@@ -146,6 +186,18 @@ namespace uam
 			const std::unordered_map<std::string, CliProviderVersionState>::const_iterator version = app.runtime_cli_versions_by_provider_id.find(version_key);
 			if (version == app.runtime_cli_versions_by_provider_id.end())
 			{
+				// A version check covers the provider on that host, not the workspace, and the launch path tests
+				// registration again, so a scope found registered once need not repeat the test while checks are refused.
+				const std::string scope_key = scope.provider_id + '\n' + scope.execution_host_id + '\n' + scope.workspace_directory;
+				if (!m_registered_before_version_check.contains(scope_key))
+				{
+					if (!registered.Contains(scope))
+					{
+						item = m_pending_scopes.erase(item);
+						continue;
+					}
+					m_registered_before_version_check.insert(scope_key);
+				}
 				std::string check_error;
 				if (AdmitBackgroundStart(app, "version-check:" + scope.provider_id + "@" + scope.execution_host_id, scope.execution_host_id, false).admitted)
 					changed = ProviderCliCompatibilityService().StartProviderVersionCheck(app, scope.provider_id, false, scope.execution_host_id, &check_error) || changed;
@@ -153,6 +205,11 @@ namespace uam
 				continue;
 			}
 			if (!ProviderCliLaunchBlockReason(app, scope.provider_id, scope.execution_host_id).empty() || (version != app.runtime_cli_versions_by_provider_id.end() && !version->second.checked)) { ++item; continue; }
+			if (!registered.Contains(scope))
+			{
+				item = m_pending_scopes.erase(item);
+				continue;
+			}
 			const std::string compatibility_error = host->transport == "local" ? ProviderRuntimeRegistry::ResolveById(scope.provider_id).LocalCliCompatibilityError(app) : std::string{};
 			// A failed local check says nothing about the installation; launch applies the same rule.
 			const bool local_check_failed = host->transport == "local" && !version->second.check_error.empty();

@@ -80,6 +80,10 @@ struct ChatIconHandlerTestAccess
 	{
 		handler.HandleSetComputerUseSettings(nullptr, {{"computerUseGloballyEnabled", enabled}}, callback);
 	}
+	static void SaveComputerUseSettings(UamQueryHandler& handler, const nlohmann::json& payload, CefRefPtr<UamQueryHandler::Callback> callback)
+	{
+		handler.HandleSetComputerUseSettings(nullptr, payload, callback);
+	}
 	static void GetComputerUseSettings(UamQueryHandler& handler, CefRefPtr<UamQueryHandler::Callback> callback)
 	{
 		handler.HandleGetComputerUseSettings(nullptr, {}, callback);
@@ -87,6 +91,14 @@ struct ChatIconHandlerTestAccess
 	static void ImportAgent(UamQueryHandler& handler, const nlohmann::json& payload, CefRefPtr<UamQueryHandler::Callback> callback)
 	{
 		handler.HandleImportProviderAgent(nullptr, payload, callback);
+	}
+	static void ListUamAgents(UamQueryHandler& handler, const nlohmann::json& payload, CefRefPtr<UamQueryHandler::Callback> callback)
+	{
+		handler.HandleListUamAgents(nullptr, payload, callback);
+	}
+	static void ListAgentDefinitions(UamQueryHandler& handler, const nlohmann::json& payload, CefRefPtr<UamQueryHandler::Callback> callback)
+	{
+		handler.HandleListAgentDefinitions(nullptr, payload, callback);
 	}
 #if UAM_ENABLE_RUNTIME_GEMINI_CLI
 	static void ListGeminiChildren(UamQueryHandler& handler, const nlohmann::json& payload, CefRefPtr<UamQueryHandler::Callback> callback)
@@ -1032,6 +1044,75 @@ UAM_TEST(RemoteHelperInstallLeavesSharedQueueFreeAndStopsOnCancelOrShutdown)
 #endif
 }
 
+UAM_TEST(RemoteHelperReinstallKeepsTheSavedHostIconAndOptions)
+{
+#if !defined(_WIN32)
+	// Same POSIX ssh stand-in as the install-thread case: the install reaches its saved-record replacement, then is cancelled.
+	TempDir temp("uam-remote-reinstall-icon");
+	const fs::path bin = temp.root / "bin";
+	const fs::path pids = temp.root / "ssh.pids";
+	fs::create_directories(bin);
+	UAM_ASSERT(uam::io::WriteTextFile(bin / "ssh", "#!/bin/sh\necho $$ >> \"$UAM_FAKE_SSH_PIDS\"\nexec sleep 600\n"));
+	fs::permissions(bin / "ssh", fs::perms::owner_all, fs::perm_options::replace);
+	const char* inherited_path = std::getenv("PATH");
+	ScopedEnvVar path("PATH", bin.string() + ":" + (inherited_path ? inherited_path : ""));
+	ScopedEnvVar pid_file("UAM_FAKE_SSH_PIDS", pids.string());
+	struct BorrowedArtifacts
+	{
+		fs::path directory;
+		bool owned;
+		~BorrowedArtifacts() { std::error_code error; if (owned) fs::remove_all(directory, error); }
+	} artifacts{uam::remote::PackagedRunnerPath().parent_path() / "linux-x86_64", false};
+	artifacts.owned = !fs::exists(artifacts.directory) || fs::exists(artifacts.directory / "uam-test-fixture");
+	if (artifacts.owned)
+	{
+		fs::create_directories(artifacts.directory);
+		UAM_ASSERT(uam::io::WriteTextFile(artifacts.directory / "uam-test-fixture", ""));
+		UAM_ASSERT(uam::io::WriteTextFile(artifacts.directory / "uam-runner", "fixture runner"));
+		UAM_ASSERT(uam::io::WriteTextFile(artifacts.directory / "uam-runner.sha256", std::string(64, 'a') + "\n"));
+		UAM_ASSERT(uam::io::WriteTextFile(artifacts.directory / "uam-runner.manifest.json",
+		    nlohmann::json{{"sourceFingerprint", std::string(64, 'b')}, {"protocolVersion", uam::remote::kRunnerProtocolVersion}}.dump()));
+	}
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	ExecutionHost saved;
+	saved.id = "reinstall-icon";
+	saved.label = "Reinstall icon";
+	saved.transport = "ssh";
+	saved.ssh_alias = "uam-reinstall-icon";
+	saved.platform = "linux";
+	saved.runner_status = "ready";
+	saved.custom_icon = {"text", "H"};
+	saved.instruction_text = "Saved host instructions";
+	saved.cli_updates_as_admin = true;
+	app.settings.execution_hosts = {uam::execution_hosts::LocalHost(), saved};
+	std::unique_ptr<UamQueryHandler> handler = UamQueryHandlerTestAccess::Create(app, "file:///private/index.html");
+	const CefRefPtr<RecordingInstructionCallback> reinstall = new RecordingInstructionCallback;
+	// The Update helper action sends the saved host, which has no icon field in the install payload.
+	ChatIconHandlerTestAccess::InstallRemoteHost(*handler, {{"id", saved.id}, {"label", saved.label}, {"sshAlias", saved.ssh_alias}, {"runnerDirectory", ""}}, reinstall, 61);
+	RunCreationLoopUntil([&pids]() { return fs::exists(pids) && !ReadFile(pids).empty(); }, std::chrono::seconds(10));
+	UAM_ASSERT(fs::exists(pids) && !ReadFile(pids).empty());
+	const ExecutionHost* installing = uam::execution_hosts::Find(app.settings.execution_hosts, saved.id);
+	UAM_ASSERT(installing != nullptr);
+	UAM_ASSERT_EQ(installing->runner_status, std::string("installing"));
+	UAM_ASSERT(installing->custom_icon == saved.custom_icon);
+	UAM_ASSERT(installing->instruction_text == saved.instruction_text);
+	UAM_ASSERT(installing->cli_updates_as_admin);
+	handler->OnQueryCanceled(nullptr, nullptr, 61);
+	RunCreationLoopUntil([reinstall]() { return reinstall->successes + reinstall->failures != 0; }, std::chrono::seconds(5));
+	UAM_ASSERT_EQ(reinstall->failures, 1);
+	std::istringstream started_pids(ReadFile(pids));
+	pid_t ssh_pid = 0;
+	UAM_ASSERT(static_cast<bool>(started_pids >> ssh_pid));
+	RunCreationLoopUntil([ssh_pid]() { return ::kill(ssh_pid, 0) != 0 && errno == ESRCH; }, std::chrono::seconds(5));
+	UAM_ASSERT(::kill(ssh_pid, 0) != 0 && errno == ESRCH);
+	const ExecutionHost* after = uam::execution_hosts::Find(app.settings.execution_hosts, saved.id);
+	UAM_ASSERT(after != nullptr);
+	UAM_ASSERT(after->custom_icon == saved.custom_icon);
+	handler.reset();
+#endif
+}
+
 UAM_TEST(HelperInstallRefusalKeepsRunningBackgroundScan)
 {
 	TempDir temp("uam-remote-install-refusal-scan");
@@ -1141,6 +1222,50 @@ UAM_TEST(ComputerUseGlobalSettingsSaveFailurePreservesCapturedAuthority)
 	const nlohmann::json receipt = nlohmann::json::parse(read->success_message);
 	UAM_ASSERT(receipt.at("computerUseGloballyEnabled").get<bool>());
 	UAM_ASSERT(!receipt.at("computerUseRevocationPending").get<bool>());
+}
+
+UAM_TEST(ComputerUseAllowlistSaveWhileOnIgnoresOneChatsPendingCleanup)
+{
+	TempDir temp("uam-cu-allowlist-pending-chat");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.settings.computer_use_globally_enabled = true;
+	// One chat was turned off while Computer Use stayed on, and its cleanup has not finished.
+	app.computer_use_revocation_pending_chat_ids.insert("chat-cleanup-pending");
+	auto handler = UamQueryHandlerTestAccess::Create(app, "file:///private/index.html");
+	const nlohmann::json text_edit = {{"identityKind", "bundleId"}, {"identity", "com.apple.TextEdit"}};
+	// The Settings page sends only the allowlist fields, as it does after any allowlist edit.
+	for (const nlohmann::json& payload : {
+	         nlohmann::json{{"allowlistEnabled", true}, {"allowedApplications", nlohmann::json::array({text_edit})}},
+	         nlohmann::json{{"allowlistEnabled", true}, {"allowedApplications", nlohmann::json::array()}},
+	         nlohmann::json{{"computerUseGloballyEnabled", true}, {"allowlistEnabled", false}}})
+	{
+		CefRefPtr<RecordingIconCallback> saved = new RecordingIconCallback;
+		ChatIconHandlerTestAccess::SaveComputerUseSettings(*handler, payload, saved);
+		UAM_ASSERT_EQ(saved->failures, 0);
+		UAM_ASSERT_EQ(saved->successes, 1);
+		UAM_ASSERT(app.settings.computer_use_globally_enabled);
+		UAM_ASSERT_EQ(app.settings.computer_use_allowlist_enabled, payload.at("allowlistEnabled").get<bool>());
+		UAM_ASSERT(app.computer_use_revocation_pending_chat_ids.contains("chat-cleanup-pending"));
+		const nlohmann::json receipt = nlohmann::json::parse(saved->success_message);
+		UAM_ASSERT(receipt.at("computerUseRevocationPending").get<bool>());
+		AppSettings persisted;
+		UAM_ASSERT(SettingsStore::Load(AppPaths::SettingsFilePath(temp.root), persisted).loaded);
+		UAM_ASSERT_EQ(persisted.computer_use_allowlist_enabled, payload.at("allowlistEnabled").get<bool>());
+		UAM_ASSERT_EQ(persisted.computer_use_allowed_applications.size(), app.settings.computer_use_allowed_applications.size());
+	}
+	UAM_ASSERT(app.settings.computer_use_allowed_applications.empty());
+
+	// Turning the feature on from Off still waits for that cleanup, and an allowlist save cannot sneak it on.
+	app.settings.computer_use_globally_enabled = false;
+	CefRefPtr<RecordingIconCallback> blocked = new RecordingIconCallback;
+	ChatIconHandlerTestAccess::SaveComputerUseSettings(*handler, {{"computerUseGloballyEnabled", true}, {"allowlistEnabled", true}, {"allowedApplications", nlohmann::json::array({text_edit})}}, blocked);
+	UAM_ASSERT_EQ(blocked->failures, 1);
+	UAM_ASSERT_EQ(blocked->last_failure, 500);
+	UAM_ASSERT_EQ(blocked->successes, 0);
+	UAM_ASSERT(!app.settings.computer_use_globally_enabled);
+	UAM_ASSERT(!app.settings.computer_use_allowlist_enabled);
+	UAM_ASSERT(app.settings.computer_use_allowed_applications.empty());
 }
 
 UAM_TEST(ChoosingAModelAfterSwitchAnywaySucceedsWhileTheHelperRetires)
@@ -1444,6 +1569,124 @@ UAM_TEST(ChatAgentImportGlobalWithoutChatRetainsSelectedSkills)
 	UAM_ASSERT_EQ(malformed->failures, 1); UAM_ASSERT_EQ(malformed->successes, 0);
 	UAM_ASSERT_EQ(malformed->last_failure, 400);
 	UAM_ASSERT_EQ(ReadFile(target), previous);
+}
+
+namespace
+{
+	std::string HandlerAgentMarkdown(const std::string& id, const std::string& mode)
+	{
+		return "---\nversion: 1\nname: " + id + "\ndescription: \"" + id + " agent\"\nmode: " + mode +
+		       "\nworkspaceAccess: read\nskills: []\ndelegates: []\n---\nHelp with " + id + ".\n";
+	}
+
+	void WriteHandlerAgent(const fs::path& directory, const std::string& id, const std::string& mode)
+	{
+		fs::create_directories(directory);
+		UAM_ASSERT(uam::io::WriteTextFile(directory / (id + ".md"), HandlerAgentMarkdown(id, mode)));
+	}
+
+	bool HasHandlerAgentRow(const nlohmann::json& agents, const std::string& id, const std::string& key, const std::string& value)
+	{
+		return std::ranges::any_of(agents, [&](const nlohmann::json& row) { return row.value("id", std::string{}) == id && row.value(key, std::string{}) == value; });
+	}
+
+	nlohmann::json CallAgentList(UamQueryHandler& handler, void (*invoke)(UamQueryHandler&, const nlohmann::json&, CefRefPtr<UamQueryHandler::Callback>), const nlohmann::json& payload)
+	{
+		CefRefPtr<RecordingIconCallback> callback = new RecordingIconCallback;
+		invoke(handler, payload, callback);
+		UAM_ASSERT_EQ(callback->failures, 0);
+		UAM_ASSERT_EQ(callback->successes, 1);
+		return nlohmann::json::parse(callback->success_message);
+	}
+}
+
+UAM_TEST(ChatAgentListsAddDelegateOnlyAndWorkspaceAgentsOnRequest)
+{
+	TempDir temp("uam-handler-agent-lists");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	const fs::path workspace = temp.root / "workspace";
+	WriteHandlerAgent(app.data_root / "agents", "writer", "primary");
+	WriteHandlerAgent(app.data_root / "agents", "helper", "subagent");
+	WriteHandlerAgent(workspace / ".uam" / "agents", "writer", "primary");
+	WriteHandlerAgent(workspace / ".uam" / "agents", "local-reviewer", "primary");
+	UAM_ASSERT(uam::io::WriteTextFile(app.data_root / "agents" / "broken.md", "not an agent\n"));
+	ChatSession chat = HandlerChat("chat");
+	chat.workspace_directory = workspace.string();
+	app.chats.push_back(chat);
+	auto handler_owner = UamQueryHandlerTestAccess::Create(app, "file:///private/index.html");
+	auto& handler = *handler_owner;
+
+	// Older clients (the phone app) get chat agents only; the desktop opts in to delegate-only agents.
+	const nlohmann::json chat_agents = CallAgentList(handler, &ChatIconHandlerTestAccess::ListUamAgents, {{"chatId", "chat"}}).at("agents");
+	UAM_ASSERT(HasHandlerAgentRow(chat_agents, "writer", "mode", "primary"));
+	UAM_ASSERT(HasHandlerAgentRow(chat_agents, "local-reviewer", "mode", "primary"));
+	UAM_ASSERT(!HasHandlerAgentRow(chat_agents, "helper", "mode", "subagent"));
+	const nlohmann::json all_agents = CallAgentList(handler, &ChatIconHandlerTestAccess::ListUamAgents, {{"chatId", "chat"}, {"includeDelegateOnly", true}}).at("agents");
+	UAM_ASSERT(HasHandlerAgentRow(all_agents, "helper", "mode", "subagent"));
+
+	// Without a chat (or with an unknown one) the store lists global agents only.
+	for (const nlohmann::json& payload : {nlohmann::json::object(), nlohmann::json{{"chatId", "missing"}}})
+	{
+		const nlohmann::json global_only = CallAgentList(handler, &ChatIconHandlerTestAccess::ListAgentDefinitions, payload).at("agents");
+		UAM_ASSERT(std::ranges::all_of(global_only, [](const nlohmann::json& row) { return row.value("scope", std::string{}) == "global"; }));
+		UAM_ASSERT(HasHandlerAgentRow(global_only, "helper", "mode", "subagent"));
+		UAM_ASSERT(!HasHandlerAgentRow(global_only, "local-reviewer", "scope", "global"));
+	}
+
+	// With the chat, workspace agents are added with their scope; a same-named global agent stays listed.
+	const nlohmann::json listed = CallAgentList(handler, &ChatIconHandlerTestAccess::ListAgentDefinitions, {{"chatId", "chat"}});
+	const nlohmann::json& rows = listed.at("agents");
+	UAM_ASSERT(HasHandlerAgentRow(rows, "writer", "scope", "global"));
+	UAM_ASSERT(HasHandlerAgentRow(rows, "writer", "scope", "workspace"));
+	UAM_ASSERT(HasHandlerAgentRow(rows, "local-reviewer", "scope", "workspace"));
+	UAM_ASSERT(!HasHandlerAgentRow(rows, "helper", "scope", "workspace"));
+	UAM_ASSERT(!HasHandlerAgentRow(rows, "build", "scope", "workspace"));
+	// The broken global file is reported once although both catalogues read it.
+	const std::ptrdiff_t broken_errors = std::ranges::count_if(listed.at("errors"), [](const nlohmann::json& error) {
+		return error.get<std::string>().find("broken.md") != std::string::npos;
+	});
+	UAM_ASSERT_EQ(broken_errors, static_cast<std::ptrdiff_t>(1));
+}
+
+UAM_TEST(ChatAgentImportReplacesOnlyWhenRequested)
+{
+	TempDir temp("uam-handler-agent-replace");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	const fs::path source = temp.root / "agent.md";
+	UAM_ASSERT(uam::io::WriteTextFile(source, "---\ndescription: Reviews code\n---\nReview.\n"));
+	auto handler_owner = UamQueryHandlerTestAccess::Create(app, "file:///private/index.html");
+	auto& handler = *handler_owner;
+	const nlohmann::json payload = {{"providerId", "opencode"}, {"sourcePath", source.string()}, {"workspaceAccess", "read"}, {"workspaceScope", false}};
+
+	CefRefPtr<RecordingIconCallback> first = new RecordingIconCallback;
+	ChatIconHandlerTestAccess::ImportAgent(handler, payload, first);
+	UAM_ASSERT_EQ(first->successes, 1);
+	const nlohmann::json imported = nlohmann::json::parse(first->success_message);
+	UAM_ASSERT_EQ(imported.value("id", std::string{}), std::string("agent"));
+	UAM_ASSERT_EQ(imported.value("scope", std::string{}), std::string("global"));
+
+	const fs::path target = app.data_root / "agents" / "agent.md";
+	const std::string previous = ReadFile(target);
+	UAM_ASSERT(uam::io::WriteTextFile(source, "---\ndescription: Reviews code carefully\n---\nReview.\n"));
+	CefRefPtr<RecordingIconCallback> refused = new RecordingIconCallback;
+	ChatIconHandlerTestAccess::ImportAgent(handler, payload, refused);
+	UAM_ASSERT_EQ(refused->failures, 1);
+	UAM_ASSERT_EQ(refused->last_failure, 400);
+	UAM_ASSERT(refused->failure_message.find("already exists") != std::string::npos);
+	UAM_ASSERT_EQ(ReadFile(target), previous);
+
+	nlohmann::json replace = payload;
+	replace["replaceExisting"] = true;
+	CefRefPtr<RecordingIconCallback> replaced = new RecordingIconCallback;
+	ChatIconHandlerTestAccess::ImportAgent(handler, replace, replaced);
+	UAM_ASSERT_EQ(replaced->failures, 0);
+	UAM_ASSERT_EQ(replaced->successes, 1);
+	const uam::AgentDefinitionCatalog catalog = uam::AgentDefinitionService::Load(app.data_root, {});
+	const auto agent = std::ranges::find(catalog.definitions, std::string("agent"), &uam::AgentDefinition::id);
+	UAM_ASSERT(agent != catalog.definitions.end());
+	UAM_ASSERT_EQ(agent->description, std::string("Reviews code carefully"));
 }
 
 UAM_TEST(ChatAgentImportWorkspaceWithoutChatDoesNotPublish)

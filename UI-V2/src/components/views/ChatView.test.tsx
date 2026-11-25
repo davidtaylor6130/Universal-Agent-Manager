@@ -1106,6 +1106,10 @@ describe('ChatView', () => {
     expect(buildUamAgentCycle(agents, ['writer', 'reviewer', 'writer', 'missing', 'plan'])).toEqual([
       'build', 'plan', 'writer', 'reviewer',
     ])
+    // A delegate-only agent is listed in the picker but never becomes the chat's agent through the cycle.
+    expect(buildUamAgentCycle([...agents, { id: 'helper', description: '', builtIn: false, delegateOnly: true }], ['helper', 'writer'])).toEqual([
+      'build', 'plan', 'writer',
+    ])
     expect(matchesUamAgentCycleShortcut('shift+tab', { key: 'Tab', shiftKey: true, ctrlKey: false, altKey: false, metaKey: false })).toBe(true)
     expect(matchesUamAgentCycleShortcut('shift+tab', { key: 'Tab', shiftKey: true, ctrlKey: true, altKey: false, metaKey: false })).toBe(false)
     expect(matchesUamAgentCycleShortcut('control+shift+tab', { key: 'Tab', shiftKey: true, ctrlKey: true, altKey: false, metaKey: false })).toBe(true)
@@ -8041,6 +8045,32 @@ describe('ChatView', () => {
     useAppStore.setState({ branchSwitching: undefined })
   })
 
+  it.each([
+    { label: 'shows the chosen base that differs from the checked-out branch', gitBaseBranch: 'build/x', shown: 'build/x', aria: 'Base branch build/x, local copy on main' },
+    { label: 'keeps the checked-out branch without a base override', gitBaseBranch: null, shown: 'main', aria: 'Branch main' },
+    { label: 'keeps the checked-out branch when the base matches it', gitBaseBranch: 'main', shown: 'main', aria: 'Branch main' },
+    { label: 'keeps the checked-out branch for an explicit HEAD base', gitBaseBranch: '', shown: 'main', aria: 'Branch main' },
+    { label: 'shows the chosen base while the branch read has failed', gitBaseBranch: 'build/x', shown: 'build/x', aria: 'Base branch build/x', readFails: true },
+    { label: 'shows no branch while the read has failed without a base override', gitBaseBranch: null, shown: undefined, aria: undefined, readFails: true },
+  ])('$label before the first message (#1029)', async ({ gitBaseBranch, shown, aria, readFails }) => {
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, workspaceDirectory: '/tmp/project', workspaceIsolationKind: 'pendingGitWorktree', workspaceBranchName: '', gitBaseBranch } : session),
+      getVcsCommitStatus: vi.fn(async (): Promise<VcsCommitStatus> => readFails
+        ? { available: false, vcsTypes: [], activeVcsType: 'git', workspaceDirectory: '/tmp/project', branchOrRevision: '', changedFiles: [], lineStatsReady: true, warning: '', error: 'read failed' }
+        : { available: true, vcsTypes: ['git'], activeVcsType: 'git', workspaceDirectory: '/tmp/project', branchOrRevision: 'main', changedFiles: [], lineStatsReady: true, warning: '', error: '' }),
+      branchSwitching: true,
+    }))
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => { root.render(<ChatView session={useAppStore.getState().sessions[0]} />) })
+      const branch = host.querySelector('.uam-composer-workspace-tab [aria-label^="B"]')
+      expect(branch?.getAttribute('aria-label') ?? undefined).toBe(aria)
+      expect(branch?.textContent ?? undefined).toBe(shown)
+    } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ branchSwitching: undefined }) }
+  })
+
   it('reads the repository branch for the composer tab once when the chat opens', async () => {
     const getVcsCommitStatus = vi.fn(() => Promise.resolve({
       available: true, vcsTypes: ['git'], activeVcsType: 'git', workspaceDirectory: '/tmp/project',
@@ -9410,7 +9440,7 @@ describe('ChatView', () => {
   })
 
   // #278: a settled turn keeps its events while a later user row (failed-reconnect queue, prepared input) is appended.
-  const renderTurnAfterFollowUp = (overrides: { processing?: boolean; turnUserMessageIndex?: number; turnAssistantMessageIndex?: number; assistantContent?: string; assistantStreaming?: boolean; leadingAssistant?: boolean; followUp?: boolean; trailingRows?: Message[]; historyStart?: number; messageCount?: number; turnEvents?: AcpTurnEvent[]; toolCalls?: AcpToolCall[]; pendingPermission?: AcpBinding['pendingPermission'] }) => {
+  const renderTurnAfterFollowUp = (overrides: { processing?: boolean; turnUserMessageIndex?: number; turnAssistantMessageIndex?: number; assistantContent?: string; assistantStreaming?: boolean; leadingAssistant?: boolean; followUp?: boolean; followUpSteer?: boolean; trailingRows?: Message[]; historyStart?: number; messageCount?: number; turnEvents?: AcpTurnEvent[]; toolCalls?: AcpToolCall[]; pendingPermission?: AcpBinding['pendingPermission'] }) => {
     useAppStore.setState((state) => ({
       historyStartIndexBySessionId: overrides.historyStart ? { 'chat-1': overrides.historyStart } : {},
       sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, messageCount: overrides.messageCount } : session),
@@ -9420,7 +9450,7 @@ describe('ChatView', () => {
           ...(overrides.leadingAssistant ? [{ id: 'm-0', sessionId: 'chat-1', role: 'assistant' as const, content: 'Earlier answer', createdAt: new Date(0) }] : []),
           { id: 'm-1', sessionId: 'chat-1', role: 'user', content: 'Please inspect the workspace', createdAt: new Date(0) },
           { id: 'm-2', sessionId: 'chat-1', role: 'assistant', content: overrides.assistantContent ?? 'Status update.\n\nSettled answer.', isStreaming: overrides.assistantStreaming, createdAt: new Date(1) },
-          ...(overrides.followUp === false ? [] : [{ id: 'm-3', sessionId: 'chat-1', role: 'user' as const, content: 'Follow-up row', createdAt: new Date(2) }]),
+          ...(overrides.followUp === false ? [] : [{ id: 'm-3', sessionId: 'chat-1', role: 'user' as const, content: 'Follow-up row', prioritySteer: overrides.followUpSteer, createdAt: new Date(2) }]),
           ...(overrides.trailingRows ?? []),
         ],
       },
@@ -9586,9 +9616,48 @@ describe('ChatView', () => {
     expect(text.indexOf('Settled answer.')).toBeLessThan(text.indexOf('Follow-up row'))
   })
 
+  // #278: a queued or prepared follow-up row must not turn a settled answer's stale anchor into a second copy of it.
   it.each([
     { name: 'stale index on a user row', overrides: { turnAssistantMessageIndex: 2 } },
     { name: 'stale index past the end', overrides: { turnAssistantMessageIndex: 5 } },
+    { name: 'no recorded assistant row', overrides: { turnAssistantMessageIndex: -1 } },
+  ])('renders a settled answer once after its turn user row when a follow-up row follows it with a $name', ({ overrides }) => {
+    const text = renderTurnAfterFollowUp(overrides)
+    expect(text.match(/Settled answer\./g)).toHaveLength(1)
+    expect(text.indexOf('Settled answer.')).toBeLessThan(text.indexOf('Follow-up row'))
+  })
+
+  it('renders a processing answer and its next tool once at a stale-anchored row when a steer row follows it', () => {
+    const text = renderTurnAfterFollowUp({ ...liveAnswerWithTool, turnAssistantMessageIndex: 5, followUpSteer: true })
+    expect(text.match(/Settled answer\./g)).toHaveLength(1)
+    expect(text.match(/Inspect workspace files/g)).toHaveLength(1)
+    expect(text.indexOf('Settled answer.')).toBeLessThan(text.indexOf('Inspect workspace files'))
+    expect(text.indexOf('Inspect workspace files')).toBeLessThan(text.indexOf('Follow-up row'))
+  })
+
+  it('keeps a separate live card when an ordinary row after a same-text answer may be the running turn\'s prompt', () => {
+    // The stale turn user index may sit on an older turn whose answer reads the same; that row must not take this turn.
+    const text = renderTurnAfterFollowUp({ ...liveAnswerWithTool, turnAssistantMessageIndex: 5 })
+    expect(text.match(/Settled answer\./g)).toHaveLength(2)
+    expect(text.indexOf('Follow-up row')).toBeLessThan(text.indexOf('Inspect workspace files'))
+  })
+
+  it.each([false, true])('keeps the turn card when the matching settled row is outside the rendered window (processing %s)', (processing) => {
+    const trailingRows = Array.from({ length: 200 }, (_, index): Message => ({ id: `q-${index}`, sessionId: 'chat-1', role: 'user', content: `Queued row ${index}`, createdAt: new Date(3) }))
+    const text = renderTurnAfterFollowUp({ ...(processing ? liveAnswerWithTool : {}), turnAssistantMessageIndex: 5, trailingRows })
+    expect(text).not.toContain('Please inspect the workspace')
+    expect(text.match(/Settled answer\./g)).toHaveLength(1)
+  })
+
+  it('keeps the live card for a settled answer whose stale row is followed by a pending permission', () => {
+    const text = renderTurnAfterFollowUp({
+      turnAssistantMessageIndex: 5,
+      pendingPermission: { requestId: '5', toolCallId: 'tool-1', title: 'Read file', kind: 'read', status: 'pending', content: 'Read /tmp/project/file.txt', options: [{ id: 'allow-once', name: 'Allow once', kind: 'allow_once' }] },
+    })
+    expect(text.match(/Allow once/g)).toHaveLength(1)
+  })
+
+  it.each([
     { name: 'stale index without a preceding turn user row', overrides: { turnUserMessageIndex: -1 } },
     { name: 'assistant row content that does not contain the turn text', overrides: { assistantContent: 'Unrelated imported row.' } },
     { name: 'turn user index that points at a non-user row', overrides: { leadingAssistant: true, turnUserMessageIndex: 0, turnAssistantMessageIndex: 2 } },
@@ -13491,7 +13560,7 @@ describe('ChatView conditional manual compaction offer', () => {
       expect(f.requests.filter(request => request.action === 'compactAcpSession')).toHaveLength(1)
       expect(f.sendAcpPrompt).not.toHaveBeenCalled()
       expect(f.textarea.value).toBe('/compact keep the API notes')
-      expect(reportedText()).toContain('Compaction failed: This provider can compact only chats that run on this computer.')
+      expect(reportedText()).toContain('Compaction failed. This provider can compact only chats that run on this computer.')
       expect(appNotices.some(message => message.includes('yours were not used'))).toBe(false)
     } finally { f.cleanup() }
   })

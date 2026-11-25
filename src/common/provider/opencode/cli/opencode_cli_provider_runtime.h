@@ -3,13 +3,19 @@
 #include "common/provider/provider_runtime.h"
 #include <stop_token>
 
+namespace uam::opencode
+{
+	/// Oldest OpenCode release whose ACP permission requests UAM can mediate reliably (the CLI policy minimum).
+	inline constexpr char kAcpPermissionMediationMinimumVersion[] = "1.15.13";
+}
+
 class OpenCodeCliProviderRuntime final : public IProviderRuntime
 {
   public:
 	const char* RuntimeId() const override;
 	const ProviderCliPolicy* CliVersionPolicy() const override;
 	std::string LocalCliCompatibilityError(const uam::AppState& app) const override;
-	std::string StructuredCliVersionError(const ProviderProfile&, std::string_view, bool = false, const ChatSession* = nullptr) const override;
+	std::string StructuredCliVersionError(const ProviderProfile&, std::string_view, bool = false, const ChatSession* = nullptr, bool chat_route = false) const override;
 	bool RequiresStructuredCliVersion(const ProviderProfile&) const override;
 	bool PrepareStructuredLaunch(uam::AcpSessionState&, const ProviderProfile&, std::string_view, bool,
 	    std::vector<std::string>&, std::vector<std::pair<std::string, std::string>>&, std::string&) const override;

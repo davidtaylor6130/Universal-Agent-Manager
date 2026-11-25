@@ -172,6 +172,8 @@ bool PrepareCodexThreadForRuntimeLaunch(AppState& app, const ChatSession& chat, 
 std::size_t RestoreRemoteAcpSessionsAfterRestart(AppState& app, bool initial_restore = true);
 std::size_t RetryPendingRemoteAcpSessionHydration(AppState& app);
 bool FlushPendingChatSaves(AppState& app, bool force = false);
+/// <summary>Returns every live chat-save worker to its starting priority; call before blocking or spinning on chat saves (#526, #647).</summary>
+void RaiseAllChatSaveWorkersForBarrier(AppState& app) noexcept;
 /// <summary>After normal hydration, settle only proven stopped direct receipts without replay.</summary>
 bool SettleStoppedDirectAcpAdmissions(AppState& app, ChatSession& chat);
 /// Full-primary publication facts are distinct from current caller eligibility.

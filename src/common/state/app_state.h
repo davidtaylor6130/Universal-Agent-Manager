@@ -41,7 +41,6 @@ struct PreparedMemoryOutput;
 namespace uam
 {
 	namespace claude_preinput { class Observation; }
-	namespace acp_detail { struct ColdRetryBinding; }
 	namespace html_view { class RenderChecker; }
 	namespace usage { class AccountAllowanceService; }
 
@@ -568,6 +567,9 @@ namespace uam
 		// chat_create admissions within the caller's current structured turn.
 		int chat_create_turn_serial = -1;
 		std::size_t chat_create_turn_count = 0;
+		// agent_delegate admissions within the caller's current structured turn.
+		int delegate_turn_serial = -1;
+		std::size_t delegate_turn_count = 0;
 		// Latest successful agent_delegate, to answer a retry whose first reply was never collected.
 		std::string last_delegate_request_id, last_delegate_arguments;
 		nlohmann::json last_delegate_result;
@@ -783,8 +785,6 @@ namespace uam
 		const IProviderRuntime* native_pre_dispatch_runtime = nullptr;
 		// Ephemeral native query DATA; never serialized or an input permission.
 		std::shared_ptr<claude_preinput::Observation> claude_preinput_observation;
-		// Invocation-only opt-in provenance; passive loading and current Retry never create it.
-		std::shared_ptr<acp_detail::ColdRetryBinding> cold_retry_binding;
 		bool claude_manual_compaction_supported = false;
 		bool claude_manual_compaction_boundary_seen = false;
 		nlohmann::json copilot_native_state = nlohmann::json::object();
@@ -995,6 +995,15 @@ namespace uam
 		std::string goal_review_user_prompt;
 		std::string goal_review_assistant_text;
 		int goal_review_repair_attempts = 0;
+		// One goal review decision, which can span its single JSON repair turn. Reset whenever no review is pending.
+		struct GoalReviewDecisionTiming
+		{
+			// DecisionService::NowMs() when the review was first queued; 0 when unknown (for example a recovered review).
+			std::int64_t started_ms = 0;
+			// The invalid first turn of a repaired review and its validated tokens; unknown stays unknown.
+			bool repaired = false;
+			std::optional<std::int64_t> earlier_tokens;
+		} goal_review_decision;
 		// Runtime receipt from validated provider usage for the current goal worker or review turn, never reconstructed from turn text.
 		struct GoalReviewUsage
 		{
@@ -1572,6 +1581,8 @@ namespace uam
 		uam::FrontendActionMap frontend_actions;
 
 		std::vector<ChatSession> chats;
+		/// The side chat whose cleanup was requested last; its poll removes it ahead of older requests (Dismiss side chat).
+		std::string latest_side_cleanup_chat_id;
 		HiddenAgentChatOwnership hidden_agent_chat_ownership;
 		/// Saved chats of providers this build excludes (see excluded_provider_data.h): never shown or changed, consulted only so
 		/// import and deletion respect the native sessions and workspaces they own. Always empty in a build with every provider.
