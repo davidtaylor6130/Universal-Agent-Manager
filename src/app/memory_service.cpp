@@ -1,6 +1,7 @@
 #include "app/agent_run_scheduler.h"
 #include "common/platform/background_thread_priority.h"
 #include "common/memory/extraction_receipts.h"
+#include "common/memory/memory_entry_format.h"
 #include "common/memory/memory_storage_guard.h"
 #include "common/memory/memory_worker_failure_pause.h"
 #include "remote/runner_client.h"
@@ -567,11 +568,6 @@ namespace
 		return uam::strings::SafeLine(uam::nlohmann_json::StringViewOrEmpty(entry, key), max_chars);
 	}
 
-	std::string MemoryEntryLineOr(const nlohmann::json& entry, const char* key, std::string_view fallback, std::size_t max_chars)
-	{
-		return uam::strings::SafeLine(uam::nlohmann_json::TrimmedStringValueOr(entry, key, fallback), max_chars);
-	}
-
 	bool ShouldSaveWorkerMemoryEntry(const nlohmann::json& entry, std::string_view memory_level)
 	{
 		static constexpr std::string_view kRequiredFields[] = {"scope", "category", "title", "memory", "evidence", "confidence"};
@@ -660,92 +656,21 @@ namespace
 		return "[truncated to last " + std::to_string(kMaxWorkerLogBytes) + " bytes]\n" + std::string(uam::strings::Utf8Suffix(value, kMaxWorkerLogBytes));
 	}
 
-	std::string ReadFirstTitle(const fs::path& path)
+	/// <summary>The shared store draft for a worker entry that passed ShouldSaveWorkerMemoryEntry, capped like every
+	/// other memory entry; empty when it looks sensitive, which the worker skips instead of failing the batch.</summary>
+	std::optional<MemoryLibraryStore::Draft> WorkerEntryDraft(const nlohmann::json& entry, const std::string& chat_id, std::string extraction_key)
 	{
-		std::ifstream in;
-		if (!uam::io::OpenReadFile(path, in)) return "";
-		std::string line;
-		while (std::getline(in, line))
-		{
-			if (uam::strings::StartsWith(line, "# "))
-			{
-				return uam::strings::NormalizeComparableKey(line.substr(2));
-			}
-		}
-		return "";
-	}
-
-	using MemoryFileIndex = std::map<fs::path, std::map<std::string, fs::path>>;
-
-	fs::path FindExistingMemoryFile(const fs::path& category_path, const std::string& title, MemoryFileIndex& indexes)
-	{
-		const std::string wanted = uam::strings::NormalizeComparableKey(title);
-		if (wanted.empty() || !uam::paths::IsDirectoryNoThrow(category_path))
-		{
-			return {};
-		}
-
-		const std::pair<MemoryFileIndex::iterator, bool> category = indexes.try_emplace(category_path);
-		if (category.second)
-		{
-			std::error_code ec;
-			for (fs::directory_iterator it(category_path, ec), end; !ec && it != end; it.increment(ec))
-			{
-				const fs::directory_entry& item = *it;
-				if (uam::paths::IsRegularFileWithExtensionNoThrow(item, ".md"))
-					category.first->second.try_emplace(ReadFirstTitle(item.path()), item.path());
-			}
-		}
-		const std::map<std::string, fs::path>::const_iterator found = category.first->second.find(wanted);
-		return found == category.first->second.end() ? fs::path{} : found->second;
-	}
-
-	int ExistingCount(const std::string& text)
-	{
-		const std::string marker = "Occurrence count: ";
-		const std::size_t at = text.find(marker);
-		if (at == std::string::npos)
-		{
-			return 0;
-		}
-
-		const std::size_t value_start = at + marker.size();
-		const std::size_t value_end = text.find_first_of("\r\n", value_start);
-		return uam::parse::IntOr(text.substr(value_start, value_end == std::string::npos ? std::string::npos : value_end - value_start), 0);
-	}
-
-
-	struct MemoryMarkdownFields
-	{
-		std::string title;
-		std::string scope;
-		std::string category;
-		std::string confidence;
-		std::string source_chat_id;
-		std::string body;
-		std::string evidence;
-		std::vector<std::string> extraction_keys;
-		int occurrence_count = 1;
-	};
-
-	std::string BuildMemoryMarkdown(const MemoryMarkdownFields& fields)
-	{
-		std::string markdown = "# " + fields.title + "\n\n";
-		markdown += "Scope: " + fields.scope + "\n";
-		markdown += "Category: " + fields.category + "\n";
-		markdown += "Confidence: " + fields.confidence + "\n";
-		markdown += "Source chat: " + fields.source_chat_id + "\n";
-		for (const std::string& key : fields.extraction_keys) markdown += "Extraction key: " + key + "\n";
-		markdown += "Last observed: " + uam::time::TimestampNow() + "\n";
-		markdown += "Occurrence count: " + std::to_string(std::max(1, fields.occurrence_count)) + "\n\n";
-		markdown += "## Memory\n";
-		markdown += fields.body + "\n\n";
-		if (!fields.evidence.empty())
-		{
-			markdown += "## Evidence\n";
-			markdown += fields.evidence + "\n";
-		}
-		return markdown;
+		MemoryLibraryStore::Draft input;
+		input.category = MemoryEntryCategory(entry);
+		input.title = uam::nlohmann_json::StringViewOrEmpty(entry, "title");
+		input.memory = uam::nlohmann_json::StringViewOrEmpty(entry, "memory");
+		input.evidence = uam::nlohmann_json::StringViewOrEmpty(entry, "evidence");
+		input.confidence = uam::nlohmann_json::TrimmedStringValueOr(entry, "confidence", "medium");
+		input.source_chat_id = chat_id;
+		input.extraction_key = std::move(extraction_key);
+		MemoryLibraryStore::Draft draft;
+		if (!uam::memory::SanitizeEntryDraft(std::move(input), draft, nullptr)) return std::nullopt;
+		return draft;
 	}
 
 	bool IsMemoryPayload(const nlohmann::json& value)
@@ -959,7 +884,7 @@ namespace
 		prepared->processed_message_count = processed_message_count;
 		prepared->message_count = MessageCount(chat);
 		prepared->stop_token = stop_token;
-		MemoryFileIndex indexes;
+		std::map<fs::path, uam::memory::EntryTitleIndex> indexes;
 		const std::string extraction_key = processed_message_count < 0 ? "" :
 		    chat.id + ":" + std::to_string(std::min(processed_message_count, MessageCount(chat)));
 		for (const nlohmann::json& entry : parsed["memories"])
@@ -970,21 +895,14 @@ namespace
 			if (scope != "global" && workspace_root.empty()) continue;
 			const fs::path root = scope == "global" ? MemoryService::GlobalMemoryRoot(data_root) : MemoryService::LocalMemoryRoot(workspace_root);
 			if (root.empty()) continue;
-			const std::string category = MemoryEntryCategory(entry);
-			const std::string title = MemoryEntryLine(entry, "title", 700);
-			const std::string body = MemoryEntryLine(entry, "memory", 1400);
-			const std::string evidence = MemoryEntryLine(entry, "evidence", 900);
-			if (!uam::memory::IsSupportedCategory(category) || title.empty() || body.empty())
-			{
-				SetError(error_out, "Memory worker returned an entry with missing title/body or unsupported category."); return nullptr;
-			}
-			if (uam::sensitive::LooksSensitiveText(title + "\n" + body + "\n" + evidence)) continue;
+			const std::optional<MemoryLibraryStore::Draft> draft = WorkerEntryDraft(entry, chat.id, extraction_key);
+			if (!draft) continue;
 			if (!prepared->bindings.contains(root))
 			{
 				prepared->bindings.emplace(root, uam::paths::NormalizeExistingPath(root));
 				if (!MemoryService::EnsureMemoryLayout(root)) { SetError(error_out, "Failed to create memory layout."); return nullptr; }
 			}
-			const fs::path category_path = MemoryService::CategoryPath(root, category);
+			const fs::path category_path = MemoryService::CategoryPath(root, draft->category);
 			if (!prepared->categories.contains(category_path))
 			{
 				prepared->bindings.emplace(category_path, uam::paths::NormalizeExistingPath(category_path));
@@ -992,7 +910,9 @@ namespace
 				if (!revisions) { SetError(error_out, "Could not inspect saved memory entries."); return nullptr; }
 				prepared->categories.emplace(category_path, *revisions);
 			}
-			fs::path target = FindExistingMemoryFile(category_path, title, indexes);
+			const auto [index, fresh_index] = indexes.try_emplace(category_path);
+			if (fresh_index) index->second = uam::memory::IndexEntryTitles(category_path);
+			fs::path target = uam::memory::FindEntryFile(index->second, draft->title);
 			int count = 1;
 			std::vector<std::string> keys;
 			if (!target.empty())
@@ -1002,27 +922,16 @@ namespace
 				if (staged != prepared->entries.end()) existing = staged->second.content;
 				else if (!uam::io::TryReadTextFile(target, existing)) { SetError(error_out, "Failed to read existing memory entry."); return nullptr; }
 				keys = uam::memory::ExistingExtractionKeys(existing);
-				if (!extraction_key.empty() && uam::ranges::Contains(keys, extraction_key)) continue;
-				const int previous_count = ExistingCount(existing);
-				if (previous_count == std::numeric_limits<int>::max()) { SetError(error_out, "Memory occurrence count is too large."); return nullptr; }
-				count = previous_count + 1;
+				if (!draft->extraction_key.empty() && uam::ranges::Contains(keys, draft->extraction_key)) continue;
+				const std::optional<int> next = uam::memory::NextOccurrenceCount(existing);
+				if (!next) { SetError(error_out, "Memory occurrence count is too large."); return nullptr; }
+				count = *next;
 			}
 			else
-			{
-				const std::string slug = uam::strings::AsciiSlug(title, 72, "memory");
-				target = category_path / (slug + ".md");
-				for (int suffix = 2; uam::paths::PathExistsNoThrow(target) || prepared->entries.contains(target); ++suffix)
-					target = category_path / (slug + "-" + std::to_string(suffix) + ".md");
-			}
-			MemoryMarkdownFields fields;
-			fields.title = title; fields.scope = scope == "global" ? "global" : "local"; fields.category = category;
-			fields.confidence = MemoryEntryLineOr(entry, "confidence", "medium", 80); fields.source_chat_id = chat.id;
-			fields.body = body; fields.evidence = evidence; fields.occurrence_count = count;
-			if (!extraction_key.empty()) keys.push_back(extraction_key);
-			if (keys.size() > 32) keys.erase(keys.begin(), keys.end() - 32);
-			fields.extraction_keys = std::move(keys);
-			prepared->entries[target].content = BuildMemoryMarkdown(fields);
-			indexes[category_path].try_emplace(uam::strings::NormalizeComparableKey(title), target);
+				target = uam::memory::NewEntryPath(category_path, draft->title, [&prepared](const fs::path& path) { return uam::paths::PathExistsNoThrow(path) || prepared->entries.contains(path); });
+			uam::memory::AppendExtractionKey(keys, draft->extraction_key);
+			prepared->entries[target].content = uam::memory::BuildEntryMarkdown(*draft, scope == "global" ? "global" : "local", count, keys);
+			index->second.try_emplace(uam::memory::EntryTitleKey(draft->title), target);
 			++prepared->wrote_count;
 		}
 		if (!MemoryPreparationStorageMatches(*prepared)) { SetError(error_out, "Saved memory changed during preparation."); return nullptr; }
@@ -1670,14 +1579,10 @@ namespace
 		{
 			if (stop_token.stop_requested()) { result.ok = false; result.canceled = true; result.error = "Memory scan canceled."; return result; }
 			if (!ShouldSaveWorkerMemoryEntry(entry, MemoryLevel(chat)) || uam::nlohmann_json::TrimmedStringValueOr(entry, "scope", "local") != "local") continue;
-			MemoryLibraryStore::Draft draft;
-			draft.category = MemoryEntryCategory(entry); draft.title = MemoryEntryLine(entry, "title", 160);
-			draft.memory = MemoryEntryLine(entry, "memory", 1400); draft.evidence = MemoryEntryLine(entry, "evidence", 900);
-			draft.confidence = MemoryEntryLineOr(entry, "confidence", "medium", 80); draft.source_chat_id = chat.id;
-			draft.extraction_key = chat.id + ":" + std::to_string(MessageCount(chat));
-			if (uam::sensitive::LooksSensitiveText(draft.title + "\n" + draft.memory + "\n" + draft.evidence)) continue;
+			const std::optional<MemoryLibraryStore::Draft> draft = WorkerEntryDraft(entry, chat.id, chat.id + ":" + std::to_string(MessageCount(chat)));
+			if (!draft) continue;
 			MemoryLibraryStore::Entry created;
-			if (!client.CreateMemoryEntry(uam::paths::PathFromUtf8(workspace), draft, created, &result.error, stop_token)) { result.ok = false; result.canceled = stop_token.stop_requested(); return result; }
+			if (!client.CreateMemoryEntry(uam::paths::PathFromUtf8(workspace), *draft, created, &result.error, stop_token)) { result.ok = false; result.canceled = stop_token.stop_requested(); return result; }
 			++extraction.remote_entry_count;
 		}
 		extraction.remote_applied = true;

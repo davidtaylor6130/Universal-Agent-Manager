@@ -475,3 +475,137 @@ UAM_TEST(OpenCodeUnmappedOrPartialEmptyStreamsAreNotConfirmedEmpty)
 		UAM_ASSERT(!error.empty());
 	}
 }
+
+UAM_TEST(ManualScanBackfillsRemoteSubchatsOfSavedParentsThroughTheRunner)
+{
+#if UAM_ENABLE_RUNTIME_OPENCODE_CLI && UAM_ENABLE_RUNTIME_CODEX_CLI
+	RemoteEmptyImportFixture fixture;
+	const ExecutionHost host = fixture.app.settings.execution_hosts.front();
+	const std::string directory = fixture.app.folders.front().directory;
+	const std::string child_thread = "22222222-2222-4222-8222-222222222222";
+	const auto text = [](const char* role, const std::string& value)
+	{
+		return nlohmann::json{{"info", {{"role", role}}}, {"parts", nlohmann::json::array({{{"type", "text"}, {"text", value}}})}};
+	};
+	const auto exported = [&](const std::string& id, const std::string& parent, nlohmann::json messages)
+	{
+		nlohmann::json info{{"id", id}, {"directory", directory}};
+		if (!parent.empty()) info["parentID"] = parent;
+		return nlohmann::json{{"info", info}, {"messages", std::move(messages)}};
+	};
+	const auto turn = [](const std::string& value)
+	{
+		return nlohmann::json{{"items", nlohmann::json::array({{{"type", "userMessage"}, {"content", nlohmann::json::array({{{"type", "text"}, {"text", value}}})}}})}};
+	};
+	const nlohmann::json task{{"info", {{"role", "assistant"}}}, {"parts", nlohmann::json::array({{{"type", "tool"}, {"callID", "call_child"}, {"tool", "task"},
+	    {"state", {{"status", "completed"}, {"title", "Delegate"}, {"output", "Done"}, {"metadata", {{"sessionId", "ses_child"}}}}}}})}};
+	fixture.data["openCodeList"] = nlohmann::json::array({{{"id", "ses_parent"}, {"title", "Parent"}, {"directory", directory}, {"created", 1}, {"updated", 2}}});
+	fixture.data["openCodeExports"] = {
+	    {"ses_parent", exported("ses_parent", "", nlohmann::json::array({text("user", "Parent request"), task}))},
+	    {"ses_child", exported("ses_child", "ses_parent", nlohmann::json::array({text("user", "Child request")}))}};
+	fixture.data["codexList"] = nlohmann::json::array({{{"id", fixture.codex_id}, {"preview", "Parent"}, {"cwd", directory}, {"createdAt", 1}, {"updatedAt", 2}}});
+	fixture.data["codexSubagentList"] = nlohmann::json::array({{{"id", child_thread}, {"preview", "Child"}, {"cwd", directory}, {"createdAt", 1}, {"updatedAt", 2},
+	    {"parentThreadId", fixture.codex_id}, {"source", {{"subAgent", {{"thread_spawn", {{"parent_thread_id", fixture.codex_id}, {"depth", 1}}}}}}}}});
+	fixture.data["codexReads"] = {
+	    {fixture.codex_id, {{"thread", {{"id", fixture.codex_id}, {"cwd", directory}, {"turns", nlohmann::json::array({turn("Parent question")})}}}}},
+	    {child_thread, {{"thread", {{"id", child_thread}, {"cwd", directory}, {"turns", nlohmann::json::array({turn("Child question")})}}}}}};
+	fixture.Write();
+
+	// Both parents are already UAM chats on the SSH host, imported earlier or started in UAM.
+	for (const auto& [id, native, provider] : {std::tuple<std::string, std::string, std::string>{"chat-remote-opencode", "ses_parent", "opencode-cli"}, {"chat-remote-codex", fixture.codex_id, "codex-cli"}})
+	{
+		ChatSession parent;
+		parent.id = parent.branch_root_chat_id = id;
+		parent.native_session_id = native;
+		parent.provider_id = provider;
+		parent.execution_host_id = host.id;
+		parent.workspace_directory = directory;
+		parent.folder_id = fixture.app.folders.front().id;
+		parent.title = "Saved " + provider;
+		parent.created_at = parent.updated_at = "2026-11-01T10:00:00Z";
+		parent.messages.push_back(Message{MessageRole::User, "Saved request"});
+		parent.messages.push_back(Message{MessageRole::Assistant, "Saved answer"});
+		UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, parent));
+	}
+	ChatHistorySyncService().LoadSidebarChats(fixture.app);
+	UAM_ASSERT_EQ(fixture.app.chats.size(), std::size_t{2});
+
+	// The scanner reads the host through the runner fixture only when asked for remote scopes; a manual scan asks for none.
+	const ProviderProfile profile = ProviderProfileStore::DefaultOpenCodeProfile();
+	uam::StartupNativeImportService service([profile](const uam::StartupNativeImportScanRequest& request, std::stop_token)
+	{
+		ChatHistorySyncService::LocalHistoryDiscovery discovery;
+		for (const uam::StartupNativeImportRemoteScope& scope : request.remote_scopes)
+		{
+			auto found = ChatHistorySyncService().DiscoverRemoteProviderChatsForFolder(scope.folder, scope.host, &profile);
+			for (ChatSession& chat : found.chats)
+				if (!chat.native_parent_session_id.empty()) discovery.chats.push_back(std::move(chat));
+		}
+		return discovery;
+	});
+	const auto wait = [&]()
+	{
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+		while (service.Snapshot().phase == "scanning" || service.ImportPending())
+		{
+			UAM_ASSERT(std::chrono::steady_clock::now() < deadline);
+			service.Poll(fixture.app);
+			std::this_thread::yield();
+		}
+	};
+	// The startup scan finds both children on the host but never adds them.
+	service.Initialize(fixture.app);
+	wait();
+	UAM_ASSERT_EQ(service.Snapshot().total_count, std::size_t{0});
+	UAM_ASSERT_EQ(fixture.app.chats.size(), std::size_t{2});
+
+	// A host whose connection changed since that scan is not read for its children.
+	fixture.app.settings.execution_hosts.front().ssh_alias += "-changed";
+	std::string error;
+	UAM_ASSERT(service.DiscoverLocalHistory(fixture.app, &error));
+	wait();
+	UAM_ASSERT_EQ(fixture.app.chats.size(), std::size_t{2});
+	fixture.app.settings.execution_hosts.front() = host;
+
+	// The same connection whose helper is no longer ready is not read either; runner status is not part of the connection.
+	fixture.app.settings.execution_hosts.front().runner_status = "error";
+	UAM_ASSERT(service.DiscoverLocalHistory(fixture.app, &error));
+	wait();
+	UAM_ASSERT_EQ(fixture.app.chats.size(), std::size_t{2});
+	fixture.app.settings.execution_hosts.front() = host;
+
+	// A workspace folder whose directory changed since that scan still owns the parents (a trailing slash matches the
+	// same remote path), but it is not the folder the scan read, so its children wait for a fresh scan of the host.
+	fixture.app.folders.front().directory = directory + "/";
+	UAM_ASSERT(service.DiscoverLocalHistory(fixture.app, &error));
+	wait();
+	UAM_ASSERT_EQ(fixture.app.chats.size(), std::size_t{2});
+	fixture.app.folders.front().directory = directory;
+
+	for (int pass = 0; pass < 2; ++pass)
+	{
+		// A scan the user starts brings in the saved parents' missing children from that host; a second one changes nothing.
+		UAM_ASSERT(service.DiscoverLocalHistory(fixture.app, &error));
+		wait();
+		const auto done = service.Snapshot();
+		UAM_ASSERT_EQ(done.imported_count, 0);
+		UAM_ASSERT_EQ(fixture.app.chats.size(), std::size_t{4});
+		const auto saved = ChatRepository::LoadLocalChats(fixture.app.data_root);
+		UAM_ASSERT_EQ(saved.size(), std::size_t{4});
+		const auto by_native = [&](const std::string& id) -> const ChatSession&
+		{
+			const auto found = std::ranges::find(saved, id, &ChatSession::native_session_id);
+			UAM_ASSERT(found != saved.end());
+			return *found;
+		};
+		for (const auto& [child, parent] : {std::pair<std::string, std::string>{"ses_child", "chat-remote-opencode"}, {child_thread, "chat-remote-codex"}})
+		{
+			UAM_ASSERT_EQ(by_native(child).subagent_parent_chat_id, parent);
+			UAM_ASSERT_EQ(by_native(child).execution_host_id, host.id);
+			UAM_ASSERT_EQ(by_native(child).folder_id, fixture.app.folders.front().id);
+		}
+		UAM_ASSERT_EQ(ChatRepository::LoadLocalChat(fixture.app.data_root, by_native("ses_child").id)->messages.front().content, std::string("Child request"));
+		UAM_ASSERT_EQ(ChatRepository::LoadLocalChat(fixture.app.data_root, by_native(child_thread).id)->messages.front().content, std::string("Child question"));
+	}
+#endif
+}
