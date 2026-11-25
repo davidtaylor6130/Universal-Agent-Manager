@@ -946,10 +946,9 @@ void GoalService::ClearDecision(Goal& goal)
 DecisionRequest GoalService::ReviewDecisionRequest()
 {
 	DecisionRequest request = DecisionRequest::Choice("Should the goal continue, is it blocked, or is it complete?", {"continue", "blocked", "complete"});
-	// The review prompt asks for {"decision": ...}; these spellings mean complete. "stop" usually means blocked and
-	// "yes" names no decision, so both stay invalid and get the repair turn.
+	// The review prompt asks for {"decision": ...}; these spellings have always meant complete.
 	request.answer_key = "decision";
-	request.option_aliases = {{"done", "complete"}, {"passed", "complete"}};
+	request.option_aliases = {{"stop", "complete"}, {"done", "complete"}, {"passed", "complete"}, {"yes", "complete"}};
 	return request;
 }
 
@@ -1172,6 +1171,9 @@ std::optional<GoalService::ReviewDecision> GoalService::ParseReviewDecision(cons
 			decision.current_step = uam::strings::Trim(it->value("currentStep", ""));
 			decision.last_verification = uam::strings::Trim(it->value("lastVerification", ""));
 		}
+		// Only the goal review refuses "stop" (usually meant blocked) and "yes" (names no decision): they get the repair
+		// turn instead of marking the goal achieved. ReviewDecisionRequest keeps both as complete for its other users.
+		if (decision.decision == "stop" || decision.decision == "yes") return std::nullopt;
 		// The same spellings the decision interface accepts for the review (ReviewDecisionRequest).
 		for (const auto& [spelling, option] : ReviewDecisionRequest().option_aliases)
 		{

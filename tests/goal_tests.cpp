@@ -2637,6 +2637,29 @@ UAM_TEST(AcpGoalReviewRepairKeepsOneDecisionTimeAndCost)
 	UAM_ASSERT_EQ(fixture.Session().goal_review_decision.started_ms, static_cast<std::int64_t>(0));
 }
 
+UAM_TEST(AcpGoalReviewRepairsStopAndYesThatTheSharedDecisionStepStillAccepts)
+{
+	for (const char* spelling : {"stop", "yes"})
+	{
+		const std::string reply = std::string(R"({"decision":")") + spelling + R"(","reason":"Verified.","evidence":["Tests passed"]})";
+		// Another user of the shared review decision step still reads both spellings as complete.
+		const auto shared = uam::DecisionService::FromReply(uam::DecisionService::ChatProviderBackend(), uam::GoalService::ReviewDecisionRequest(), reply,
+		    uam::DecisionRun{"reviewer-model", 1000, 1250, 42});
+		UAM_ASSERT(shared.has_value());
+		UAM_ASSERT_EQ(shared->choice, std::string("complete"));
+
+		// The goal review sends the same reply to its repair turn and leaves the goal active.
+		TempDir temp(std::string("uam-review-repair-") + spelling);
+		GoalReviewBudgetFixture fixture(temp.root);
+		fixture.ReviewedGoal().token_budget = 0;
+		fixture.Output(reply);
+		fixture.Reply(10, GoalReviewUsageResult(12, 8));
+		UAM_ASSERT_EQ(fixture.Session().goal_review_repair_attempts, 1);
+		UAM_ASSERT(fixture.Session().queued_prompt.find("only repair attempt") != std::string::npos);
+		UAM_ASSERT_EQ(fixture.ReviewedGoal().status, GoalStatus::Active);
+	}
+}
+
 UAM_TEST(AcpGoalReviewSecondRepairKeepsEveryEarlierTurnCost)
 {
 	// After a restart reset the repair count, a decision already repaired once can be repaired again; its cost must
