@@ -28,6 +28,9 @@ namespace uam::usage
 		~AccountAllowanceService();
 		// allow_prompt=false keeps an explicit refresh silent, as for phone requests when Phone settings disallow Keychain prompts.
 		nlohmann::json Query(std::string_view execution_host_id = "local", bool refresh = false, bool allow_prompt = true);
+		/// One provider's cached row on this computer, exactly as Query reports it, without requesting a read. Null when the
+		/// provider is unknown or not turned on here, so an agent tool never starts an account read or a Keychain prompt.
+		nlohmann::json CachedRow(std::string_view provider_id);
 		void SetProviders(std::vector<AccountAllowanceProviderConfig> providers);
 		const std::filesystem::path& DataRoot() const { return m_dataRoot; }
 

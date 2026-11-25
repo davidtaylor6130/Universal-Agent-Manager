@@ -315,6 +315,8 @@ export function buildChatSearchSessionGroups(
       pinnedSessionIds.push(session.id)
     }
 
+    // A folder ID with no saved workspace stays grouped here; buildChatSearchModelFromGroups moves it to
+    // Unsorted, matching native IsUnsortedChat, so the chat and workspace recovery stay reachable.
     if (session.folderId === null) {
       unfolderedSessionIds.push(session.id)
       continue

@@ -10,6 +10,7 @@ import { localBuildLabel } from '../../services/updateCatalog'
 import { SettingsScopeBar } from './SettingsScopeBar'
 import { PhonePairingPanel } from './PhonePairingPanel'
 import { PhoneTokenRegenerateRow } from './PhoneTokenRegenerateRow'
+import { PhoneRestartButton } from './PhoneRestartButton'
 import { AutomationSettings } from './AutomationSettings'
 import { SETTINGS_ALL_ENVIRONMENTS } from '../../utils/settingsScope'
 import { ProviderConnections } from './ProviderConnections'
@@ -64,7 +65,7 @@ import { Button, Card, ConfirmDialog, Disclosure, EXIT_MS, IconButton, MenuItem,
 import { ShellActionsSettings, type ShellActionsHandle } from './ShellActionsSettings'
 import { ComputePoolsSettings } from './ComputePoolsSettings'
 import { MemoryLibraryModal, type MemoryLibraryHandle } from './MemoryLibraryModal'
-import { MarkdownStoreModal } from './MarkdownStoreModal'
+import { MarkdownStoreModal, type MarkdownStoreHandle } from './MarkdownStoreModal'
 import { StatusIndicator } from '../shared/StatusIndicator'
 import {
   CLAUDE_CLI_PROVIDER_ID,
@@ -84,7 +85,7 @@ import { buildProviderReasoningOptions, buildCodexSpeedOptions, buildModelOption
 import './settings-motion.css'
 import './settings-shell.css'
 import { isSshHost } from '../../utils/remoteWorkspace'
-import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
+import { failureDetail, reportAppFailure, reportAppNotice } from '../../utils/appFailure'
 
 /** The 15-minute stepper shared by the provider turn timeout and the tool call limit. */
 function TimeoutStepper({ name, value, onChange }: { name: string; value: number; onChange: (seconds: number) => void }) {
@@ -625,6 +626,17 @@ function customThemeId(name: string, themes: CustomTheme[]) {
   return id
 }
 
+/** "<name> copy", then "<name> copy 2"…, kept within the 64-character theme name limit and unused by saved themes. */
+function importedCopyName(name: string, themes: CustomTheme[]) {
+  const names = new Set(themes.map((theme) => theme.name))
+  if (!names.has(name)) return name
+  for (let index = 1; ; ++index) {
+    const suffix = index === 1 ? ' copy' : ` copy ${index}`
+    const candidate = `${name.slice(0, 64 - suffix.length).trimEnd()}${suffix}`
+    if (!names.has(candidate)) return candidate
+  }
+}
+
 function editorPresetLabel(id: string) {
   return EDITOR_PRESETS.find((preset) => preset.id === id)?.label ?? 'VS Code'
 }
@@ -921,6 +933,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     return () => observer.disconnect()
   }, [selectedSection, visibleSettingsGroups.length])
   const memoryRef = useRef<MemoryLibraryHandle>(null)
+  const markdownStoreRef = useRef<MarkdownStoreHandle>(null)
   const shellRef = useRef<ShellActionsHandle>(null)
   const centralRef = useRef<CentralProviderSettingsHandle>(null)
   const voiceRef = useRef<SettingsDraftHandle>(null)
@@ -969,6 +982,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   }
   const [themeDraft, setThemeDraft] = useState<CustomTheme | null>(null)
   const [pendingDelete, setPendingDelete] = useState<{ kind: 'theme' | 'editor'; id: string; name: string } | null>(null)
+  // An imported theme whose id matches a saved custom theme waits for Replace or Keep both.
+  const [pendingThemeImport, setPendingThemeImport] = useState<{ theme: CustomTheme; existing: CustomTheme } | null>(null)
   const memoryMenuRef = useRef<HTMLDivElement>(null)
   const editorMenuRef = useRef<HTMLDivElement>(null)
   const cliVersionMenuRef = useRef<HTMLDivElement>(null)
@@ -997,6 +1012,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     else if (selectedSection === 'voice-input' && voiceRef.current) voiceRef.current.requestLeave(next)
     else if ((selectedSection === 'provider-summary' || selectedSection.startsWith('provider:')) && providerAvailabilityRef.current) providerAvailabilityRef.current.requestLeave(next)
     else if (selectedSection === 'memory-store' && memoryRef.current) memoryRef.current.requestLeave(next)
+    else if (selectedSection === 'markdown-store' && markdownStoreRef.current) markdownStoreRef.current.requestLeave(next)
     else if (selectedSection === 'shell-actions' && shellRef.current) shellRef.current.requestLeave(next)
     else if ((selectedSection === 'central-configuration' || selectedSection === 'agents') && centralRef.current) centralRef.current.requestLeave(next)
     else if ((selectedSection === 'mcp-servers' && mcpDraftDirty) || (selectedSection === 'chat-data' && importFiltersDirty) || (SSH_ENABLED && selectedSection === 'remote-hosts' && remoteHostOptionsDirty)) { setDiscardExit(() => next); setConfirmDiscard(true) }
@@ -1047,7 +1063,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     })
     setChatDataBusy(null)
     if (!response.ok || !response.data) {
-      reportAppFailure(response.error || `Chat ${operation} failed.`, 'Check the chat data folder and try again.')
+      reportAppFailure(`Chat ${operation} failed.`, failureDetail(response.error, 'Check the chat data folder and try again.'))
       return
     }
     const result = response.data
@@ -1059,17 +1075,17 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     const detail = [...result.errors, ...result.warnings][0]
     if (operation === 'export') {
       const text = result.status === 'complete'
-        ? `Exported ${result.exportedCount ?? 0} chats to ${result.folder}.`
-        : `Exported ${result.exportedCount ?? 0} of ${result.totalCount} chats. ${detail || 'The bundle is incomplete.'}`
-      if (result.status === 'complete') reportAppNotice(text, 'success')
-      else reportAppFailure(text, 'Check the chat data folder and try again.')
+        ? `Exported ${result.exportedCount ?? 0} chats.`
+        : `Exported ${result.exportedCount ?? 0} of ${result.totalCount} chats.`
+      if (result.status === 'complete') reportAppNotice(text, 'success', { detail: result.folder })
+      else reportAppFailure(text, failureDetail(detail || 'The bundle is incomplete.', 'Check the chat data folder and try again.'))
       return
     }
     const text = result.status === 'complete'
       ? `Imported ${result.importedCount ?? 0} chats${result.renamedCount ? `; ${result.renamedCount} were given new IDs` : ''}.`
-      : `Imported ${result.importedCount ?? 0} of ${result.totalCount} chats${result.renamedCount ? `; ${result.renamedCount} were given new IDs` : ''}. ${detail || 'Some chats could not be imported.'}`
+      : `Imported ${result.importedCount ?? 0} of ${result.totalCount} chats${result.renamedCount ? `; ${result.renamedCount} were given new IDs` : ''}.`
     if (result.status === 'complete') reportAppNotice(text, 'success')
-    else reportAppFailure(text, 'Check the chat data folder and try again.')
+    else reportAppFailure(text, failureDetail(detail || 'Some chats could not be imported.', 'Check the chat data folder and try again.'))
   }
 
   const previewRemoteHost = async (existing?: ExecutionHost) => {
@@ -1093,7 +1109,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     const response = await sendToCEF<{ host: ExecutionHost; preview: string }>({ action: 'previewRemoteHost', payload: host })
     setRemoteHostBusy(host.id, false)
     if (!response.ok || !response.data) {
-      reportAppFailure(response.error || 'The remote setup preview could not be created.', 'Check the SSH alias and try again.')
+      reportAppFailure('The remote setup preview could not be created.', failureDetail(response.error, 'Check the SSH alias and try again.'))
       return
     }
     setRemotePreview(response.data)
@@ -1117,10 +1133,13 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       settleFailedInstallFocus()
       // Only an SSH-stage failure (502) or a lost request without a code is a connection problem; refusals name their own fix.
       const connectionHint = response.code === undefined || response.code === 502 ? 'Check the SSH connection and try again.' : ''
-      reportAppFailure(response.error || 'Remote helper setup failed.', connectionHint)
+      reportAppFailure('Remote helper setup failed.', failureDetail(response.error, connectionHint))
       return
     }
-    reportAppNotice(`${host.label} is ready.`, 'success')
+    // Installed with a caveat (for example startup not confirmed) is not a clean "ready".
+    const warning = response.warning?.replace(/\s+/g, ' ').trim()
+    if (warning) reportAppNotice(warning, 'warning')
+    else reportAppNotice('Remote helper is ready.', 'success')
     setRemoteAlias('')
     setRemoteLabel('')
   }
@@ -1132,7 +1151,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     const response = await sendToCEF({ action: 'saveRemoteHostOptions', payload: { id: host.id, ...draft } })
     setRemoteHostBusy(host.id, false)
     if (response.ok) reportAppNotice(`${host.label} options saved.`, 'success')
-    else reportAppFailure(response.error || 'SSH host options could not be saved.', 'Try again.')
+    else reportAppFailure('SSH host options could not be saved.', failureDetail(response.error, 'Try again.'))
   }
 
   const checkRemoteHostInstruction = (host: ExecutionHost, instructionFile: string) => {
@@ -1141,7 +1160,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     void sendToCEF<{ bytes: number }>({ action: 'checkRemoteHostInstruction', payload: { id: host.id, instructionFile } }).then((response) => {
       setRemoteHostBusy(host.id, false)
       if (response.ok) reportAppNotice(`Readable on ${host.label}: ${response.data?.bytes ?? 0} bytes.`, 'success')
-      else reportAppFailure(response.error || 'Host instruction file could not be read.', 'Check the instruction file path and try again.')
+      else reportAppFailure('Host instruction file could not be read.', failureDetail(response.error, 'Check the instruction file path and try again.'))
     })
   }
 
@@ -1151,8 +1170,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     setRemoteMessage(null)
     const response = await sendToCEF({ action: 'removeRemoteHost', payload: { id: host.id } })
     setRemoteHostBusy(host.id, false)
-    if (response.ok) reportAppNotice(`${host.label} was removed from UAM. Any helper files on that machine were left untouched.`, 'success')
-    else reportAppFailure(response.error || 'Remote host removal failed.', 'Try again.')
+    if (response.ok) reportAppNotice(`${host.label} was removed from UAM.`, 'success', { detail: 'Helper files on that machine were left untouched.' })
+    else reportAppFailure('Remote host removal failed.', failureDetail(response.error, 'Try again.'))
   }
 
   useEffect(() => {
@@ -1422,19 +1441,39 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     } catch { reportAppFailure('Theme could not be deleted.', 'Try again.'); return false }
     finally { themeSaveInFlightRef.current = false; setThemeSaving(false) }
   }
-  const importThemeFile = async (file?: File) => {
-    if (!file) return
+  const saveImportedTheme = async (imported: CustomTheme) => {
     try {
-      const imported = normalizeCustomTheme(JSON.parse(await file.text()))
-      if (!imported) throw new Error('invalid')
       const saved = await saveCustomTheme(imported)
       if (!saved) throw new Error('save')
       setTheme(saved.id)
       setThemeDraft(null)
       reportAppNotice('Theme imported.', 'success')
+      return true
     } catch {
-      reportAppFailure('Theme import failed.', 'Choose a valid UAM theme JSON file.')
+      // The file already passed validation here, so this is a save failure.
+      reportAppFailure('Theme could not be saved.', 'Try again.')
+      return false
     }
+  }
+  const importThemeFile = async (file?: File) => {
+    if (!file) return
+    let imported: CustomTheme | null = null
+    try { imported = normalizeCustomTheme(JSON.parse(await file.text())) } catch { imported = null }
+    if (!imported) { reportAppFailure('Theme import failed.', 'Choose a valid UAM theme JSON file.'); return }
+    // Ids come from the name, so a shared name would silently overwrite the saved theme.
+    const existing = customThemes.find((candidate) => candidate.id === imported.id)
+    if (existing) { setPendingThemeImport({ theme: imported, existing }); return }
+    await saveImportedTheme(imported)
+  }
+  const resolveThemeImport = async (keepBoth: boolean) => {
+    if (!pendingThemeImport || themeSaveInFlightRef.current) return
+    const { theme: imported } = pendingThemeImport
+    const name = keepBoth ? importedCopyName(imported.name, customThemes) : imported.name
+    themeSaveInFlightRef.current = true
+    setThemeSaving(true)
+    try {
+      if (await saveImportedTheme(keepBoth ? { ...imported, name, id: customThemeId(name, customThemes) } : imported)) setPendingThemeImport(null)
+    } finally { themeSaveInFlightRef.current = false; setThemeSaving(false) }
   }
   const exportSelectedTheme = () => {
     if (!selectedCustomTheme) return
@@ -1538,7 +1577,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     setComputerUseBusy(true)
     const response = await sendToCEF<{ screenRecording?: { available?: boolean; error?: string }; accessibility?: { available?: boolean; error?: string } }>({ action: 'checkComputerUsePermissions' })
     setComputerUseBusy(false)
-    if (!response.ok) { reportAppFailure(response.error || `Could not check ${computerUseOsLabel} permissions.`, 'Try again.'); return }
+    if (!response.ok) { reportAppFailure(`Could not check ${computerUseOsLabel} permissions.`, failureDetail(response.error, 'Try again.')); return }
     setComputerUseStatus({
       screenRecording: { available: Boolean(response.data?.screenRecording?.available), error: response.data?.screenRecording?.error || '' },
       accessibility: { available: Boolean(response.data?.accessibility?.available), error: response.data?.accessibility?.error || '' },
@@ -1549,7 +1588,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     const response = await sendToCEF<{ granted?: boolean; openSettingsRequired?: boolean }>({ action: 'requestComputerUsePermission', payload: { permission } })
     if (!response.ok) {
       setComputerUseBusy(false)
-      reportAppFailure(response.error || 'Could not request this permission.', 'Try again.')
+      reportAppFailure('Could not request this permission.', failureDetail(response.error, 'Try again.'))
       return
     }
     if (response.data?.granted) {
@@ -1559,16 +1598,16 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     }
     const settingsResponse = await sendToCEF<{ opened?: boolean; error?: string }>({ action: 'openComputerUseSystemSettings', payload: { permission } })
     setComputerUseBusy(false)
-    if (settingsResponse.ok && settingsResponse.data?.opened !== false) reportAppNotice(`Permission is not granted. Opened ${computerUseOsLabel} settings; enable it, then re-check.`)
-    else reportAppFailure(settingsResponse.error || settingsResponse.data?.error || `Permission is not granted. Could not open ${computerUseOsLabel} settings.`, 'Open the settings manually, then re-check.')
+    if (settingsResponse.ok && settingsResponse.data?.opened !== false) reportAppNotice(`Turn on the permission in ${computerUseOsLabel} settings, then re-check.`)
+    else reportAppFailure(`Could not open ${computerUseOsLabel} settings.`, failureDetail(settingsResponse.error || settingsResponse.data?.error, 'The permission is not granted. Open the settings manually, then re-check.'))
   }
   const openComputerUseSystemSettings = async (permission: 'screenRecording' | 'accessibility') => {
     const response = await sendToCEF({ action: 'openComputerUseSystemSettings', payload: { permission } })
-    if (!response.ok) reportAppFailure(response.error || `Could not open ${computerUseOsLabel} settings.`, 'Try again.')
+    if (!response.ok) reportAppFailure(`Could not open ${computerUseOsLabel} settings.`, failureDetail(response.error, 'Try again.'))
   }
   const loadComputerUseApplications = async () => {
     const response = await sendToCEF<{ applications?: Array<{ identityKind?: string; identity?: string; name?: string }> }>({ action: 'listComputerUseApplications' })
-    if (!response.ok) { reportAppFailure(response.error || 'Could not list applications.', 'Try again.'); return }
+    if (!response.ok) { reportAppFailure('Could not list applications.', failureDetail(response.error, 'Try again.')); return }
     setComputerUseApps((response.data?.applications ?? []).flatMap((app) => app.identity && app.name && (app.identityKind === 'bundleId' || app.identityKind === 'executablePath') ? [{ identityKind: app.identityKind, identity: app.identity, name: app.name }] : []))
   }
   const adoptCompanionStatus = (next: PhoneAccessStatus) => {
@@ -1598,7 +1637,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     setCompanionBusyAction(action === 'repairCompanionLanAddress' ? `${action}:${payload.address}` : action)
     try {
       const response = await sendToCEF<PhoneAccessStatus>({ action, payload })
-      if (!response.ok || !response.data) { reportAppFailure(response.error || 'Could not update phone access.', 'Try again.'); return }
+      if (!response.ok || !response.data) { reportAppFailure('Could not update phone access.', failureDetail(response.error, 'Try again.')); return }
       adoptCompanionStatus(response.data)
     } catch { reportAppFailure('Could not update phone access.', 'Try again.') }
     finally { companionInFlight.current = false; setCompanionBusy(false); setCompanionBusyAction('') }
@@ -1611,7 +1650,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     setCompanionBusyAction('restartApplication')
     try {
       const response = await sendToCEF({ action: 'restartApplication' })
-      if (!response.ok) reportAppFailure(response.error || 'Could not restart Universal Agent Manager.', 'Close and open it again.')
+      if (!response.ok) reportAppFailure('Could not restart Universal Agent Manager.', failureDetail(response.error, 'Close and open it again.'))
       else reportAppNotice('Restarting Universal Agent Manager…')
     } catch { reportAppFailure('Could not restart Universal Agent Manager.', 'Close and open it again.') }
     finally { companionInFlight.current = false; setCompanionBusy(false); setCompanionBusyAction('') }
@@ -1627,7 +1666,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       if (kind === 'token') {
         const response = await sendToCEF<{ token?: string }>({ action: 'getCompanionToken' })
         if (!response.ok || !response.data?.token) {
-          reportAppFailure(response.error || 'Phone access token is unavailable.', 'Try again.')
+          reportAppFailure('Phone access token is unavailable.', failureDetail(response.error, 'Try again.'))
           return
         }
         text = response.data.token
@@ -1667,7 +1706,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
       const response = await sendToCEF({ action: 'setComputerUseSettings', payload: { allowlistEnabled, allowedApplications } })
       if (!response.ok) {
         useAppStore.setState(previous)
-        reportAppFailure(response.error || 'Could not save Computer Use settings.', 'Try again.')
+        reportAppFailure('Could not save Computer Use settings.', failureDetail(response.error, 'Try again.'))
       }
     } finally {
       computerUseSaveInFlight.current = false
@@ -1702,7 +1741,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           status={!companionSettings?.enabled && !failed && !companionLoadError && !companionSettings?.restartRequired && companionBusyAction !== 'setCompanionEnabled' && companionSettings ? undefined : <span role="status" aria-live="polite" className="inline-flex items-center gap-1" style={{ color: failed || companionLoadError ? 'var(--error)' : 'var(--text-2)' }}>{failed || companionLoadError ? <StatusDot tone="error" /> : null}{companionSettings?.restartRequired ? 'Restart Universal Agent Manager to apply this change.' : companionBusyAction === 'setCompanionEnabled' ? 'Updating…' : companionLoadError ? <span className="sr-only">Needs attention</span> : !companionSettings ? 'Checking…' : ready ? 'Ready to connect' : companionSettings.state === 'starting' ? 'Updating…' : failed ? <span className="sr-only">Needs attention</span> : 'Off'}</span>}
           control={<div className="flex flex-wrap gap-2">
             <Reveal open={Boolean(failed || companionLoadError)}><Button size="sm" variant="secondary" disabled={companionBusy} onClick={() => { if (failed) void changeCompanion('restartCompanion'); else void loadCompanionSettings(true) }}>{['restartCompanion', 'reloadCompanion'].includes(companionBusyAction) ? 'Retrying…' : 'Retry phone access'}</Button></Reveal>
-            <Reveal open={Boolean(failed || companionSettings?.restartRequired)}><Button size="sm" variant="secondary" disabled={companionBusy} onClick={() => void restartApplication()}>{companionBusyAction === 'restartApplication' ? 'Restarting Universal Agent Manager…' : 'Restart Universal Agent Manager'}</Button></Reveal>
+            <Reveal open={Boolean(failed || companionSettings?.restartRequired)}><PhoneRestartButton disabled={companionBusy} restarting={companionBusyAction === 'restartApplication'} onRestart={() => void restartApplication()} /></Reveal>
           </div>}
         >{phoneFeedback}</SettingRow>
         <Reveal open={repairAddresses.length > 0}>{repairAddresses.length > 0 && <SettingRow title="Network address changed" description={`${configuredHost} is no longer on this computer.`}
@@ -1768,7 +1807,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   if (!activeSession) return
                   setComputerUseBusy(true)
                   void setSessionComputerUseBackend(activeSession.id, value as ComputerUseBackend).then((result) => {
-                    if (!result.ok) reportAppFailure(result.error || 'Could not change the Computer Use backend.', 'Try again.')
+                    if (!result.ok) reportAppFailure('Could not change the Computer Use backend.', failureDetail(result.error, 'Try again.'))
                   }).finally(() => setComputerUseBusy(false))
                 }}
               />
@@ -2817,7 +2856,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
 
     if (selectedSection === 'memory-store') return <MemoryLibraryModal embedded ref={memoryRef}/>
     // The folder setting (choose or type a path) lives inside the Skills card, so the page is just the library.
-    if (selectedSection === 'markdown-store') return <MarkdownStoreModal embedded/>
+    if (selectedSection === 'markdown-store') return <MarkdownStoreModal embedded ref={markdownStoreRef}/>
 
     if (selectedSection === 'goal-loops') {
       return (
@@ -2979,7 +3018,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
             >
               <Reveal open={customExplorer}><div className="flex gap-2">
                 <input aria-label="File explorer application path" value={explorerDraft} onChange={(event) => setExplorerDraft(event.target.value)} className="uam-field min-w-0 flex-1 font-mono" placeholder="/Applications/Path Finder.app" />
-                <Button size="sm" onClick={async () => { const response = await sendToCEF<{ selectedPath: string }>({ action: 'browseFolderDirectory', payload: { currentValue: explorerDraft, application: true } }); if (!response.ok) reportAppFailure(response.error || 'Application picker could not be opened.', 'Try again.'); else if (response.data?.selectedPath) setExplorerDraft(response.data.selectedPath) }}>Browse</Button>
+                <Button size="sm" onClick={async () => { const response = await sendToCEF<{ selectedPath: string }>({ action: 'browseFolderDirectory', payload: { currentValue: explorerDraft, application: true } }); if (!response.ok) reportAppFailure('Application picker could not be opened.', failureDetail(response.error, 'Try again.')); else if (response.data?.selectedPath) setExplorerDraft(response.data.selectedPath) }}>Browse</Button>
                 <Button size="sm" variant="primary" disabled={!explorerDraft.trim() || explorerDraft.trim() === fileExplorerApplication || editorSaving} onClick={() => void saveExplorer(explorerDraft.trim())}>Save</Button>
               </div></Reveal>
             </SettingRow>
@@ -3181,6 +3220,11 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           if (deleted) setPendingDelete(null)
         }}>
         <p>“{pendingDelete?.name}” will be permanently deleted. This cannot be undone or restored.</p>
+      </ConfirmDialog>
+      <ConfirmDialog open={Boolean(pendingThemeImport)} title={`Replace “${pendingThemeImport?.existing.name ?? ''}”?`} label="Imported theme already exists"
+        confirmLabel="Replace" busy={themeSaving} secondaryAction={{ label: 'Keep both', onClick: () => void resolveThemeImport(true) }}
+        onCancel={() => setPendingThemeImport(null)} onConfirm={() => void resolveThemeImport(false)}>
+        <p>Importing “{pendingThemeImport?.theme.name}” would overwrite your saved theme.</p>
       </ConfirmDialog>
       <Presence open={Boolean(pendingDefaultYolo)}>{pendingDefaultYolo && <ConfirmDialog open title="Use YOLO by default?" confirmLabel="Use YOLO"
         onCancel={() => setPendingDefaultYolo(null)} onConfirm={() => { const pending = pendingDefaultYolo; setPendingDefaultYolo(null); updateProviderDefaults(pending.providerId, pending.defaults) }}>
