@@ -4,6 +4,7 @@
 #include "common/chat/chat_message_page_index.h"
 #include "app/startup_native_import_service.h"
 #include "app/pr_watch_service.h"
+#include "app/timer_service.h"
 #include "app/worktree_launch_preparation_service.h"
 #include "app/execution_routing_integration.h"
 #include "app/host_load_integration.h"
@@ -1710,6 +1711,7 @@ namespace uam
 			permission_json["safetyRisk"] = permission.safety_risk;
 			permission_json["safetyTier"] = permission.safety_tier;
 			permission_json["safetyRequiresApproval"] = permission.safety_requires_approval;
+			if (!permission.command_rule_notice.empty()) permission_json["ruleNotice"] = permission.command_rule_notice;
 
 			nlohmann::json options = JsonArrayWithCapacity(permission.options.size());
 			for (const AcpPermissionOptionState& option : permission.options)
@@ -2598,6 +2600,7 @@ namespace uam
 		j["computePoolUsage"] = uam::compute_pools::UsageForFrontend(app);
 		j["executionHostLoad"] = uam::HostLoadForFrontend(app);
 		j["prWatches"] = app.pr_watch_service != nullptr ? app.pr_watch_service->SerializeForFrontend() : nlohmann::json::array();
+		j["timers"] = app.timer_service != nullptr ? app.timer_service->SerializeForFrontend() : nlohmann::json{{"notices", nlohmann::json::array()}};
 		j["shellActionNotification"] = app.shell_action_notification;
 		j["statusLine"] = app.status_line;
 		if (app.deletion_progress)
@@ -2739,6 +2742,7 @@ namespace uam
 		j["computePoolUsage"] = uam::compute_pools::UsageForFrontend(app);
 		j["executionHostLoad"] = uam::HostLoadForFrontend(app);
 		j["prWatches"] = app.pr_watch_service != nullptr ? app.pr_watch_service->SerializeForFrontend() : nlohmann::json::array();
+		j["timers"] = app.timer_service != nullptr ? app.timer_service->SerializeForFrontend() : nlohmann::json{{"notices", nlohmann::json::array()}};
 		j["shellActionNotification"] = app.shell_action_notification;
 		j["statusLine"] = app.status_line;
 		if (app.deletion_progress)

@@ -1,4 +1,5 @@
 #include "app/pr_watch_service.h"
+#include "app/timer_service.h"
 #include "app/agent_run_scheduler.h"
 #include "cef/uam_query_handler.h"
 #include "cef/uam_query_handler_async.h"
@@ -1110,6 +1111,8 @@ void UamQueryHandler::HandleDiscoverProviderModels(CefRefPtr<CefBrowser> browser
 	// A request the UI makes by itself (opening a model menu, showing a chat on the phone) is skipped while the cached
 	// models are current or were already refreshed this run. Refresh and Retry always ask the provider.
 	const bool automatic = payload.value("automatic", false);
+	// Refresh and Retry are also the user's manual retry of an account refusal recorded for this provider and computer.
+	if (!automatic) (void)m_app.provider_model_catalog->ClearAccountRefusal(provider_id, execution_host_id);
 	const bool should_start = automatic
 	    ? m_app.provider_model_catalog->BeginDiscoveryIfStale(provider_id, workspace_directory, execution_host_id)
 	    : m_app.provider_model_catalog->BeginDiscovery(provider_id, workspace_directory, execution_host_id);
@@ -1602,6 +1605,7 @@ void UamQueryHandler::HandleCancelAcpTurn(CefRefPtr<CefBrowser> browser, const n
 		if (session != nullptr && (session->remote_stop_pending || (session->remote_stop_unconfirmed && !session->running)))
 		{
 			if (m_app.pr_watch_service != nullptr) (void)m_app.pr_watch_service->EndWatchesForChat(chat_id);
+			if (m_app.timer_service != nullptr) (void)m_app.timer_service->CancelWakesForChat(chat_id);
 			uam::PushStateUpdateIfChanged(browser, m_app);
 			cb->Success(R"({"pending":true})");
 			return;
@@ -1612,8 +1616,9 @@ void UamQueryHandler::HandleCancelAcpTurn(CefRefPtr<CefBrowser> browser, const n
 		return;
 	}
 
-	// Pressing Stop also ends the chat's pull request watches, so a later wake cannot restart the work.
+	// Pressing Stop also ends the chat's pull request watches and scheduled follow-ups, so a later wake cannot restart the work.
 	if (m_app.pr_watch_service != nullptr) (void)m_app.pr_watch_service->EndWatchesForChat(chat_id);
+	if (m_app.timer_service != nullptr) (void)m_app.timer_service->CancelWakesForChat(chat_id);
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }

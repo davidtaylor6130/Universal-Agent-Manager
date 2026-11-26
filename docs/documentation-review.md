@@ -89,11 +89,13 @@ The source patch uses a shared captured submission, refuses a changed target cha
 | Native phone provider controls | Auto routing and scoped managed-child workflows have snapshot-qualified simulator/shared evidence; substantive Claude GUI review identified touch-target, row-action, option-explanation and workspace-spelling gaps, whose source fixes and focused fixtures await changed-input execution and review; live/physical/user acceptance remains pending | [Native phone](phone-native.md#connections-and-settings), Provider Phone Contract Integration |
 | Sending | Direct input/queue separation and reported Unsent flash retain outstanding acceptance | [Sending](chat/sending.md), Send Flashes Unsent |
 | Sidebar | Active Chats restoration was user-confirmed; other sidebar controls and wake-time overlap remain separately pending | [Active Chats](sidebar/active/active.md), Restore Active Chats Section, Snoozed Wake Time Overlap (#552) |
+| Sidebar failure status | Rows' status sources drop the provider `error` attention kind, so no sidebar row or announcement shows a failed chat although [activity status](sidebar/active/activity-status.md) distinguishes failure; the row's spoken status would read “failed” once a failure reaches it | [Activity status](sidebar/active/activity-status.md), `acpRuntimeStatus` in `FolderTree.tsx` and `displayedChatStatus` in `chatSearch.ts` |
 | Notifications and undo | Shared notification system and organization-undo removal are implemented; review and user testing remain pending | [Recorded decisions](architecture/decisions.md), Single Notification System and Remove Organization Undo |
 | Account usage | Independent local reads exist for four providers; Gemini eligibility, OpenCode acquisition, custom commands, remote feeds and platform acceptance remain limited | [Allowances](usage/allowances.md), Independent Account Allowance Snapshots |
 | Agent import and store | Imports report their reason, offer a confirmed Replace and reveal the agent in Central Setup; workspace agents are read-only there, and Claude Code, Gemini CLI and Copilot files import as delegate-only pending the importer work; the store's global and workspace list merge lives in the bridge handler until it can move into the agent service after the importer work; the phone pickers still hide delegate-only agents; native handler changes and their connected cases were written without a local compile; two independent Claude review rounds ran and their findings were implemented, to be recorded on the PR; David's acceptance pending | [Agents](settings/central-setup/agents.md#importing-provider-agents) |
 | Cross-platform/SSH | Source routes and fixture receipts do not prove every real CLI, OS or SSH combination | [Provider checklists](providers/providers.md#provider-checklists) |
 | Provider agent import | Discovery and the field-mapping parser have synthetic fixture coverage only; agents with deny rules beyond read access still refuse Central Setup, SSH and OpenCode 2.x (whose custom-agent launch gate is separate), linked agent folders and files are skipped, Claude Code, Gemini CLI and Copilot CLI tool lists keep only the read ceiling after acknowledgment, a typed OpenCode path outside an agent folder inherits only the global config's rules, OpenCode's search for configs in parent folders up to the repository root is not reproduced, import itself (unlike discovery and preview) still reads and writes on the UI thread, and preview cannot refuse OpenCode 2.x before a version check has reported a version. Live import on macOS and Windows and David's GUI acceptance remain pending | [Agents](settings/central-setup/agents.md#importing-provider-agents), [import reference](reference/architecture/permissions-notifications.md#provider-bound-agent-imports) |
+| Browser companion attachments | The companion protocol advertises byte attachment staging and the desktop app accepts bytes without paths, but the browser companion composer currently refuses every attachment with "Add attachments from the desktop app."; whether it should stage bytes awaits David's decision | [Composer context](chat/composer/attachments.md), [companion protocol](reference/companion-protocol.md) |
 | UAM tool signing key | Gemini CLI View, Copilot CLI View and Antigravity still receive the tool server's signing key in a generated configuration file; Claude Code references its environment instead, with live expansion unverified | [Tool connection](providers/uam-tools.md) |
 | Skill library skipped folders | The list reply carries `skippedFolderCount`, but the library view shows no notice yet that some folders could not be opened | [Skill library](settings/central-setup/skill-library.md) |
 | Goal review change list | The reviewer's changed-file list is read with a synchronous local `git status` or `svn status` when the review is scheduled, so a slow or locked working copy delays that step; moving the read to a worker is outstanding | [Goals](chat/goals.md) |
@@ -114,6 +116,14 @@ Do not treat these items as fixed from this documentation trial. Statuses are co
 
 The local checker validates navigation, heading targets, reachability and one explicit row for each required capability in every provider checklist. The trial passes six negative scenarios: omitted capability, acceptance used as implementation status, duplicate capability, missing local target, missing heading and unreachable feature page. A manual reading check traced provider completeness, memory Off semantics, editor actions, waking chats and build exclusion to their owning agreements. This is documentation validation, not an independent user study or application acceptance.
 
+## Remote commits always ask
+
+**Decided by David, 2026-11-23.** By default every non-local permanent committing action requires explicit user approval, even when the chat is in YOLO, full-auto or bypass mode: at least `git push` in any form (including force pushes, refspecs and pushes through aliases), creating or deleting remote branches or tags, `gh pr merge` and merging `gh api` calls, `svn commit`/`ci`, `svn copy`, `mkdir`, `delete`, `move` and `import` on a URL, and `svn propset --revprop`. It is implemented as a built-in, non-removable ask rule evaluated before any permission-level bypass, with a hidden advanced override (settings-file key `permission_remote_commits_without_approval`, off by default, not shown in Settings) that restores the previous behaviour. See [Permission rules](providers/permissions/rules.md#remote-commits-always-ask). Because the rule is always on, commands whose program UAM cannot read now also ask under YOLO. Open: remote commits that are not typed shell commands (MCP tools such as a GitHub server's merge or push-files actions) and pushes started indirectly (hooks or scripts the agent wrote, `core.sshCommand`, `git fetch --upload-pack`) are not covered; whether to hold MCP tools by name needs David's decision. Live-provider and user acceptance remain pending.
+
+## Permission rule defaults under YOLO
+
+**Open, for David.** The default [permission rules](providers/permissions/rules.md) seeded into existing settings files include ask rules for deletion commands and `.env` files. Ask outranks every level, so a YOLO chat that used to run `rm`, `Remove-Item`, `cat *` or a command with a variable argument such as `echo $HOME` without a prompt now asks, because an expanded argument might reach a `.env` file. Interim interpretation: keep the defaults, because the request asked for destructive commands to be denied or always asked and rules must never relax enforcement; users can disable a default. Confirm whether YOLO should keep this, or whether ask defaults should apply only below YOLO.
+
 ## Decision status
 
 Both questions raised by the trial are resolved above. David approved retaining the guide and requested its merge into `uam/v5-improvements` on 2026-10-17. Independent documentation review remains pending; implementation gaps and runtime acceptance remain tracked separately.
@@ -124,7 +134,7 @@ The trial merges `uam/v5-improvements` at `e28ba717`, including empty native-cha
 
 ## Remaining scope and source mismatches
 
-- [Existing VCS panel](architecture/decisions.md#existing-vcs-panel): resolved 2026-10-25; David keeps the existing Git/SVN commit panel in V5. On 2026-11-11 he asked for SVN history, update and further SVN actions in it; history and update are implemented and await his acceptance. Other new panel features still need approval. The `AGENTS.md` Release Slice now records both exceptions.
+- [Existing VCS panel](architecture/decisions.md#existing-vcs-panel): resolved 2026-10-25; David keeps the existing Git/SVN commit panel in V5. On 2026-11-11 he asked for SVN history, update and further SVN actions in it; history, update and conflict resolution are implemented and await his acceptance. Other new panel features still need approval. The `AGENTS.md` Release Slice now records both exceptions.
 - Antigravity availability copy now follows the agreed structured Chat and CLI View scope after removing the stale terminal-only description; the [checklist](providers/antigravity/antigravity.md) and the [archived V5 change log](https://github.com/davidtaylor6130/Universal-Agent-Manager/blob/1d4865fcb/V5%20Improvement%20Change%20log.md) retain broader capability and acceptance gaps.
 
 ## System-wide native import
@@ -399,6 +409,27 @@ The [UAM tools](providers/uam-tools.md) `usage_report`, `worktree_status` and `m
 - Only the turn Stop control ends a chat's watches; stopping the provider session does not.
 - GitHub Enterprise hosts, GitLab and Azure DevOps are not supported.
 - The phone clients show no linked pull request row and cannot start or stop a watch.
+
+## Automation schedules and scheduled follow-ups
+
+[Automation schedules](automation-api.md#schedules) (#518, first slice: schedules only, no webhooks) and the UAM [`schedule`](chat/scheduled-follow-ups.md) and [`notify`](providers/uam-tools.md) tools (#965) share one timer service in the desktop app. **Decided by David, 2026-11-23:**
+
+- Schedules run even while Phone access is off; they are local timers, and Phone access only gates the network API.
+- A schedule uses a non-expiring internal credential that never leaves the app; external automation tokens keep their expiry.
+- In the first release each scheduled run starts a new chat; messaging an existing chat is a later slice.
+- Webhooks (the second slice) keep their HMAC signing secrets in the operating system's keychain where one exists, and signed webhooks are refused where none does. Not built yet.
+- `notify` raises the chat's attention flag and follows the user's bell and notification rules; it never sends a separate push that bypasses them.
+
+**Open, pending David's decision.** These interim choices fill what the issues leave open:
+
+- The internal credential is the schedule itself: its trust, single workspace and Git access are chosen in Settings, and the 16-open-chats limit counts each schedule separately. A schedule does not borrow an external token's workspace list or ceiling.
+- An interval is 15 minutes to 7 days and counts from creation, the last change of its trigger or resuming; a weekday trigger is a local time on chosen days. Editing or resuming never runs the times that passed, and an edit that keeps the trigger keeps the timing. A clock set back more than one period restarts an interval's timing from the new time; a weekday trigger takes its next time from the new clock.
+- A run is missed when it is noticed more than 5 minutes late. "Skip" runs none of the missed times; "run once" runs one for all of them. A schedule that keeps failing for the same reason raises one notification, not one per run.
+- At most 32 schedules. A schedule file that cannot be read is left untouched and no schedule runs until it can be.
+- `schedule` takes 1 to 1440 minutes and a note of up to 500 bytes, allows 3 pending per chat and 200 in total, needs no approval and works in Plan mode, like `pr_watch`. Delivery is at most once: one interrupted by the app stopping is not sent again. There is no list or cancel control beyond Stop, Done and deleting the chat.
+- `notify` takes a message of up to 300 bytes, shown only as the tool call in the chat; it is accepted once a minute per tool connection and carries the read-only hint. Since UAM has no desktop operating-system notification and the phone alerts only for questions and permission requests, the flag currently shows in Active Chats rather than as a push.
+- Schedule notices and follow-up notices are desktop-only: the phone state omits them, as it omits shell action notices.
+- `task_run` and `task_status` from #965 are not part of this slice.
 
 ## Routing load admission
 

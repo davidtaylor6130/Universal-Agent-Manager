@@ -51,6 +51,57 @@
 /* Hover and selected share one box (same inset, radius and height from Tailwind classes on the row); only the paint differs. */
 .uam-sb-row:hover { background: var(--sidebar-item-hover); }
 .uam-sb-row:focus-visible { outline-offset: var(--focus-inset); }
+/* A chat row's one interactive element (role="button") sits beside its action buttons inside the visual row,
+   so the row draws the focus ring for it and the element itself draws none. */
+.uam-sb-row__open:focus-visible { outline: none; }
+.uam-sb-row:has(> .uam-sb-row__open:focus-visible) { outline: var(--focus-ring); outline-offset: var(--focus-inset); }
+
+/* Sidebar icon controls are IconButtons with a 24px hit area (WCAG 2.5.8). Each keeps its earlier painted
+   size (--sb-paint) on a ::before layer, so rows look as before; --inline variants also keep their earlier
+   footprint in the row's flow through negative margins, so the larger hit area changes no layout. */
+.uam-iconbtn.uam-sb-iconbtn {
+  --sb-paint: 20px;
+  position: relative;
+  isolation: isolate;
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-3);
+}
+.uam-iconbtn.uam-sb-iconbtn:hover:not(:disabled):not([aria-disabled="true"]) { background: transparent; color: var(--text-2); }
+.uam-sb-iconbtn::before {
+  content: '';
+  position: absolute;
+  inset: calc((24px - var(--sb-paint)) / 2);
+  z-index: -1;
+  border-radius: 4px;
+  background: transparent;
+  transition: background var(--dur-fast) var(--ease);
+}
+.uam-sb-iconbtn:hover:not(:disabled):not([aria-disabled="true"])::before { background: var(--sidebar-item-hover); }
+.uam-iconbtn.uam-sb-iconbtn--inline { margin: calc((var(--sb-paint) - 24px) / 2); }
+/* Chat row pin and more-actions chips: a 20px tile that is always painted. */
+.uam-sb-iconbtn--chip::before { background: var(--sidebar-item-hover); }
+/* Workspace actions: a 22px framed tile. */
+.uam-iconbtn.uam-sb-iconbtn--framed { --sb-paint: 22px; }
+.uam-sb-iconbtn--framed::before,
+.uam-sb-iconbtn--framed:hover:not(:disabled):not([aria-disabled="true"])::before { background: var(--surface-up); border: 1px solid var(--border); }
+.uam-iconbtn.uam-sb-iconbtn--framed:hover:not(:disabled):not([aria-disabled="true"]) { color: var(--text-3); }
+/* The shared close rule (index.css) turns X buttons red on hover and focus; here the red paints the tile, not the 24px box. */
+.uam-iconbtn.uam-sb-iconbtn:has(> svg.lucide-x):not(:disabled):not([aria-disabled="true"]):is(:hover, :focus-visible) { background: transparent; color: color-mix(in srgb, var(--error) 72%, var(--text)); }
+.uam-sb-iconbtn:has(> svg.lucide-x):not(:disabled):not([aria-disabled="true"]):is(:hover, :focus-visible)::before { background: var(--error-dim); }
+@media (forced-colors: active) {
+  .uam-sb-iconbtn--framed::before { border-color: ButtonText; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .uam-sb-iconbtn::before { transition: none; }
+}
+/* Small text actions keep their look; an invisible layer extends the hit area to 24px tall. */
+.uam-sb-target { position: relative; }
+.uam-sb-target::after { content: ''; position: absolute; left: 0; right: 0; top: 50%; height: max(24px, 100%); transform: translateY(-50%); }
 /* One light accent tint for selected or active rows; a selected row keeps its tint while hovered. */
 .uam-sb-row--selected,
 .uam-sb-row--selected:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
