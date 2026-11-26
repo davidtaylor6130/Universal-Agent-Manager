@@ -51,6 +51,7 @@ import { FILE_MANAGER_NAME, matchShortcut, shortcutLabel } from '../../utils/sho
 import { focusActiveInput } from '../../utils/activeInputFocus'
 import { APP_FAILURE_EVENT, APP_NOTICE_RESOLVED_EVENT, reportAppFailure, type AppFailure } from '../../utils/appFailure'
 import { reportPullRequestWatchNotices } from '../../utils/prWatchNotices'
+import { reportTimerNotices } from '../../utils/timerNotices'
 import { useNotificationClock, useNotificationTimes } from '../../hooks/useNotificationTimes'
 import { notificationTimeGroup } from '../../utils/notificationTime'
 import { useRowLeave } from './useRowLeave'
@@ -556,8 +557,9 @@ function NotificationsPanel({
     }] : []),
     ...failures.map((failure): Notification => failure.tone
       ? { id: failure.id, title: failure.message, detail: failure.detail, warning: failure.tone === 'warning', notice: failure.tone === 'warning' ? undefined : failure.tone, actions: failure.actions }
-      // The row title is the failure's own one-line message; its detail is what the row expands to.
-      : { id: failure.id, title: failure.message, detail: failure.detail, failure: true }),
+      // The row title is the failure's own one-line message, or the caller's title that names what happened, which then
+      // moves the message into the detail the row expands to.
+      : { id: failure.id, title: failure.title || failure.message, detail: failure.title ? [failure.message, failure.detail].filter(Boolean).join(' · ') : failure.detail, failure: true }),
     ...remoteNotifications,
     ...(updates.length > 0 ? [{
       id: updateNotificationId(updates),
@@ -919,6 +921,11 @@ export function AppShell() {
   useEffect(() => {
     reportPullRequestWatchNotices(prWatches, (chatId) => useAppStore.getState().sessions.find((candidate) => candidate.id === chatId)?.name)
   }, [prWatches])
+  // Scheduled follow-ups and automation schedules report through the same panel.
+  const timerNotices = useAppStore((s) => s.timerNotices)
+  useEffect(() => {
+    reportTimerNotices(timerNotices, (chatId) => useAppStore.getState().sessions.find((candidate) => candidate.id === chatId)?.name)
+  }, [timerNotices])
 
   const [dismissedNotificationIds, setDismissedNotificationIds] = useState<Set<string>>(() => new Set())
   const [updatesOpen, setUpdatesOpen] = useState(false)

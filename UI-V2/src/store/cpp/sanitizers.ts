@@ -1,11 +1,13 @@
 import { sanitizeStartupNativeImportStatus } from '../../types/startupNativeImports'
 import { sanitizeExecutionRouting } from '../../types/executionRouting'
+import { sanitizeExecutionHostLoad, sanitizeRoutingWaitHosts } from '../../types/hostLoad'
 import { DEFAULT_CENTRAL_PROVIDER_CONFIGURATION, type CentralProviderConfiguration, type WindowsPowerShellPreference } from './types'
 import { sanitizeCustomIcon, type CustomIcon } from '../../types/customIcon'
 // Sanitiser and normaliser functions for raw C++ state payloads.
 // Extracted from useAppStore.ts (MO-1). Pure functions — no side effects.
 
 import type {
+  TimerNotice,
   ManualCompactionAvailability,
   CopilotAutoRoutingProjection,
   CopilotAutoTierDescriptor,
@@ -689,11 +691,16 @@ export function sanitizeSecretRequest(value: unknown): AcpSecretRequest | undefi
   }
   if (host !== null && !(isRecord(host) && isString(host.name) && host.name.trim() && isString(host.platform))) return undefined
   if (!isRecord(keychain) || typeof keychain.available !== 'boolean' || typeof keychain.saved !== 'boolean') return undefined
+  const savedAt = typeof keychain.savedAt === 'number' && Number.isFinite(keychain.savedAt) && keychain.savedAt > 0 ? keychain.savedAt : undefined
+  const agent = isString(keychain.agent) && keychain.agent.trim() ? keychain.agent : undefined
   return {
     label, reason, placeholder, url, provider, planOptIn,
     localPlatform: localPlatform === 'windows' ? 'windows' : 'macos',
     host: host === null ? null : { name: host.name as string, platform: host.platform as string },
-    keychain: { available: keychain.available, saved: keychain.saved },
+    keychain: {
+      available: keychain.available, saved: keychain.saved,
+      ...(savedAt !== undefined ? { savedAt } : {}), ...(agent ? { agent } : {}), ...(keychain.legacySaved === true ? { legacySaved: true } : {}),
+    },
   }
 }
 
@@ -1337,6 +1344,7 @@ export function sanitizeCppChat(value: unknown): CppChat | null {
     routingAssignedConnectionIdentity: isString(value.routingAssignedConnectionIdentity) ? value.routingAssignedConnectionIdentity : undefined,
     routingAssignedProviderConfigurationIdentity: isString(value.routingAssignedProviderConfigurationIdentity) ? value.routingAssignedProviderConfigurationIdentity : undefined,
     routingWaitReason: isString(value.routingWaitReason) ? value.routingWaitReason : undefined,
+    routingWaitHosts: sanitizeRoutingWaitHosts(value.routingWaitHosts),
     routingReservationPending: booleanOr(value.routingReservationPending),
     routingUnresolvedReservation: booleanOr(value.routingUnresolvedReservation),
 
@@ -2319,7 +2327,9 @@ export function sanitizeCppAppState(value: unknown): CppAppState | null {
     cliVersionManager: sanitizeCliVersionManager(value.cliVersionManager),
     shellActions,
     computePoolUsage: sanitizeComputePoolUsage(value.computePoolUsage),
+    executionHostLoad: sanitizeExecutionHostLoad(value.executionHostLoad),
     prWatches: sanitizePullRequestWatches(value.prWatches),
+    timers: sanitizeTimers(value.timers),
     shellActionNotification: stringOr(value.shellActionNotification),
     statusLine: stringOr(value.statusLine),
     deletionProgress: sanitizeDeletionProgress(value.deletionProgress),
@@ -2388,8 +2398,9 @@ function sanitizeComputePools(value: unknown): ComputePool[] {
 
 function sanitizeComputePoolUsage(value: unknown): ComputePoolUsage {
   if (!isRecord(value)) return {}
+  const counts = (entry: Record<string, unknown>) => ({ inUse: nonNegativeInteger(entry.inUse) ?? 0, waiting: nonNegativeInteger(entry.waiting) ?? 0 })
   return Object.fromEntries(Object.entries(value).flatMap(([id, entry]) => isRecord(entry)
-    ? [[id, { inUse: nonNegativeInteger(entry.inUse) ?? 0, waiting: nonNegativeInteger(entry.waiting) ?? 0 }]]
+    ? [[id, { ...counts(entry), ...(isRecord(entry.hosts) ? { hosts: Object.fromEntries(Object.entries(entry.hosts).flatMap(([host, figures]) => isRecord(figures) ? [[host, counts(figures)]] : [])) } : {}) }]]
     : []))
 }
 
@@ -2417,6 +2428,21 @@ export function sanitizePullRequestWatches(value: unknown): PullRequestWatch[] {
       ...(notice ? { notice } : {}),
     }]
   })
+}
+
+export function sanitizeTimers(value: unknown): { notices: TimerNotice[] } {
+  const notices = isRecord(value) && Array.isArray(value.notices) ? value.notices : []
+  return {
+    notices: notices.flatMap((entry) => {
+      if (!isRecord(entry)) return []
+      const serial = nonNegativeInteger(entry.serial) ?? 0
+      const message = stringOr(entry.message)
+      if (serial < 1 || !message) return []
+      const chatId = stringOr(entry.chatId)
+      const title = stringOr(entry.title).trim()
+      return [{ serial, message, tone: noticeTone(entry.tone), ...(title ? { title } : {}), ...(chatId ? { chatId } : {}) }]
+    }),
+  }
 }
 
 function sanitizeShellActions(value: unknown): ShellAction[] {
@@ -2546,7 +2572,9 @@ export function sanitizeCppStatePatch(value: unknown): CppStatePatch | null {
     cliVersionManager: value.cliVersionManager !== undefined ? sanitizeCliVersionManager(value.cliVersionManager) : undefined,
     shellActions: value.shellActions !== undefined ? sanitizeShellActions(value.shellActions) : undefined,
     computePoolUsage: value.computePoolUsage !== undefined ? sanitizeComputePoolUsage(value.computePoolUsage) : undefined,
+    executionHostLoad: value.executionHostLoad !== undefined ? sanitizeExecutionHostLoad(value.executionHostLoad) : undefined,
     prWatches: value.prWatches !== undefined ? sanitizePullRequestWatches(value.prWatches) : undefined,
+    timers: value.timers !== undefined ? sanitizeTimers(value.timers) : undefined,
     shellActionNotification: value.shellActionNotification !== undefined ? stringOr(value.shellActionNotification) : undefined,
     statusLine: value.statusLine !== undefined ? stringOr(value.statusLine) : undefined,
   }

@@ -3,6 +3,7 @@
 
 #include "app/agent_run_ledger.h"
 #include "app/chat_domain_service.h"
+#include "app/svn_history.h"
 #include "app/managed_subagent_control_service.h"
 #include "app/vcs_commit_service.h"
 #include "common/chat/chat_repository.h"
@@ -100,19 +101,24 @@ namespace uam
 			if (!paths::IsDirectoryNoThrow(source) || paths::IsLinkOrReparsePointNoThrow(checkout / ".svn"))
 			{ error = "The SVN workspace is unavailable or unsafe."; return false; }
 			bool command_uncertain = false;
-			const auto command = [&](std::vector<std::string> arguments, std::string& output, int timeout = 10000)
+			ProcessExecutionResult last;
+			// Reads get the same two-minute bound as the commit panel: ten seconds was too short for a large working copy.
+			// `step` names the command in the message, so a slow status is not reported as a slow update.
+			const auto command = [&](const char* step, const std::filesystem::path& cwd, std::vector<std::string> arguments, std::string& output, const int timeout = svn_history::kReadTimeoutMs)
 			{
 				arguments.insert(arguments.end(), {"--non-interactive", "--", "."});
-				const ProcessExecutionResult result = RunSvn(checkout, arguments, timeout, stop);
+				const ProcessExecutionResult& result = last = RunSvn(cwd, arguments, timeout, stop);
 				command_uncertain = stop.stop_requested() || result.canceled || result.timed_out || result.output_truncated;
-				if (stop.stop_requested() || result.canceled) { error = "SVN update was canceled. Retry opening the chat."; return false; }
-				if (result.timed_out) { error = "SVN update timed out. Retry after checking the working copy."; return false; }
-				if (!result.ok || result.exit_code != 0 || result.output_truncated)
+				if (stop.stop_requested() || result.canceled) { error = std::string(step) + " was canceled. Retry opening the chat."; return false; }
+				if (result.timed_out) { error = std::string(step) + " timed out. Retry after checking the working copy and the connection to the repository."; return false; }
+				// A broken svn:externals definition fails the update (E205011) after the working copy itself was updated.
+				const bool finished = arguments.front() == "update" ? svn_history::UpdateFinished(result) : result.ok && result.exit_code == 0;
+				if (!finished || result.output_truncated)
 				{
 					// Carry svn's own E-code (for example E155004, which needs svn cleanup) through the existing error.
 					const std::string detail = SvnFailureSummary(result);
-					error = detail.empty() ? "SVN preparation failed. Check the working copy and authentication, then retry."
-					    : "SVN preparation failed (" + detail + "). Check the working copy and authentication, then retry.";
+					error = detail.empty() ? std::string(step) + " failed. Check the working copy and authentication, then retry."
+					    : std::string(step) + " failed (" + detail + "). Check the working copy and authentication, then retry.";
 					return false;
 				}
 				// Status columns are positional, so leading spaces must survive; info values are trimmed below.
@@ -122,7 +128,7 @@ namespace uam
 			std::string checkout_root, url, uuid;
 			const auto info = [&](const char* item, std::string& value)
 			{
-				const bool ok = command({"info", "--show-item", item}, value);
+				const bool ok = command("SVN info", checkout, {"info", "--show-item", item}, value);
 				value = strings::Trim(value);
 				return ok;
 			};
@@ -131,16 +137,22 @@ namespace uam
 			{ if (error.empty()) error = "SVN checkout ownership could not be verified."; return false; }
 			if (paths::IsLinkOrReparsePointNoThrow(root) || paths::IsLinkOrReparsePointNoThrow(directory) || paths::IsLinkOrReparsePointNoThrow(receipt))
 			{ error = "SVN update ownership storage is unsafe."; return false; }
+			// Status and update cover the chat's folder, as the commit panel's Update does, not the whole checkout around it:
+			// other chats may be working elsewhere in the same checkout.
+			// svn reports an untracked folder as updated ("At revision N.") without changing anything, so it is refused.
+			std::string kind;
+			if (!command("SVN info", source, {"info", "--show-item", "kind"}, kind))
+			{
+				if (svn_history::NotVersioned(last))
+					error = "The chat's folder is not under version control in this SVN checkout, so it cannot be updated. Add it to SVN or turn off Update before new chat.";
+				return false;
+			}
 			std::string status;
 			const auto conflicts = [](const std::string& value)
 			{
-				std::istringstream lines(value);
-				std::string line;
-				while (std::getline(lines, line))
-					if ((!line.empty() && line[0] == 'C') || (line.size() > 1 && line[1] == 'C') || (line.size() > 6 && line[6] == 'C')) return true;
-				return false;
+				return std::ranges::any_of(ParseSvnStatusOutput(value), [](const VcsChangedFile& file) { return svn_history::IsConflicted(file); });
 			};
-			if (!command({"status"}, status)) return false;
+			if (!command("SVN status", source, {"status"}, status)) return false;
 			if (conflicts(status)) { error = "Resolve SVN conflicts before starting the chat."; return false; }
 			const auto locked = [](const std::string& value)
 			{
@@ -184,12 +196,15 @@ namespace uam
 			if (stop.stop_requested()) { error = "SVN update was canceled."; return false; }
 			if (!save_receipt("started")) { error = "Could not record SVN update ownership."; return false; }
 			std::string output;
-			if (!command({"update", "--accept", "postpone"}, output, 120000))
+			if (!command("SVN update", source, {"update", "--accept", "postpone"}, output, svn_history::kUpdateTimeoutMs))
 			{
 				if (!command_uncertain) (void)save_receipt("failed");
 				return false;
 			}
-			if (!command({"status"}, status)) return false;
+			// Externals that could not be updated do not stop the chat; the commit panel's Update names them.
+			if (const std::size_t externals = svn_history::ExternalUpdateWarnings(output).size(); externals > 0)
+				diagnostics::Write("[worktree-prep] chat_id=" + metadata.id + " event=svn_update_externals_skipped count=" + std::to_string(externals));
+			if (!command("SVN status", source, {"status"}, status)) return false;
 			if (conflicts(status))
 			{ (void)save_receipt("failed"); error = "SVN update left conflicts. Resolve them before starting the chat."; return false; }
 			if (!save_receipt("complete"))

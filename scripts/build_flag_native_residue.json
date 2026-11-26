@@ -966,7 +966,7 @@
         "computerUse": 1
       }
     },
-    "universal_agent_manager.exe": {
+    "universal_agent_manager.dll": {
       "CLAUDE": {
         ".?AV<lambda_1>@?1??Build@claude_input@uam@@YA?AV?$basic_json@Vmap@std@@Vvector@2@V?$basic_s": 1,
         ".?AV<lambda_2>@?2??BuildSavedImageRetry@claude_input@uam@@YA?AV?$basic_json@Vmap@std@@Vvector@2@V?$basic_s": 1,

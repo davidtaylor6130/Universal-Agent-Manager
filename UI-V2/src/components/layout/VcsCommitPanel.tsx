@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowDownToLine, CheckCircle2, ChevronRight, Circle, FolderGit2, GitBranch, GitCommitHorizontal, History, LoaderCircle, MessageSquareDiff, PanelRightClose, RotateCw, Sparkles, TriangleAlert } from 'lucide-react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
+import { ArrowDownToLine, CheckCircle2, ChevronRight, Circle, FileCheck2, FolderGit2, GitBranch, GitCommitHorizontal, GitMerge, History, LoaderCircle, MessageSquareDiff, PanelRightClose, RotateCw, Sparkles, TriangleAlert, Undo2, Download } from 'lucide-react'
 import { useAppStore, type VcsChangedFile, type VcsCommitStatus, type VcsType } from '../../store/useAppStore'
-import type { VcsUpdateResult } from '../../store/cpp/types'
-import { Button, IconButton, MenuSelect, Presence, RowButton, SectionHeader, Tab, Tabs } from '../ui'
+import type { VcsResolveChoice, VcsUpdateResult } from '../../store/cpp/types'
+import { Button, ConfirmDialog, IconButton, MenuItem, MenuSelect, Presence, RowButton, SectionHeader, Tab, Tabs, Tooltip, ViewportMenu, usePresence } from '../ui'
 import { RepositoryDiffDialog } from '../shared/RepositoryDiffDialog'
 import { RecordedChatEdits } from './RecordedChatEdits'
 import { VcsHistory } from './VcsHistory'
@@ -38,6 +38,105 @@ function statusColor(status: string) {
   return code === 'A' || code === '?' ? 'var(--success)' : code === 'D' ? 'var(--error)' : code === 'R' ? 'var(--info)' : 'var(--warning)'
 }
 
+/** SVN marks a conflict in the item (first), property (second) or tree (seventh) status column; Git codes never mean one. */
+export function svnConflict(vcsType: VcsType, status: string): { content: boolean; tree: boolean } | null {
+  if (vcsType !== 'svn') return null
+  const content = status.charAt(0) === 'C' || status.charAt(1) === 'C'
+  const tree = status.charAt(6) === 'C'
+  return content || tree ? { content, tree } : null
+}
+
+const CONFLICT_TOOLTIP = 'SVN could not merge the update into your changes here. Resolve the conflict before committing; the copies SVN left beside it (.mine, .rN, .prej) are hidden and cannot be committed.'
+
+type ConflictKind = 'text' | 'property' | 'tree'
+
+/** A text conflict (first column) takes whole-file wording; a property-only one (second) and a tree conflict (seventh) their own. */
+function conflictKind(conflict: { content: boolean; tree: boolean }, status: string): ConflictKind {
+  return status.charAt(0) === 'C' ? 'text' : conflict.content ? 'property' : 'tree'
+}
+
+/** What each `svn resolve --accept` choice does, worded per conflict kind for its menu line and confirmation. A tree conflict accepts only `working`. */
+const RESOLVE_CHOICES: { accept: VcsResolveChoice; label: string; tone: 'primary' | 'danger'; icon: ReactNode; detail: Record<ConflictKind, string>; confirm: Record<ConflictKind, string> }[] = [
+  {
+    accept: 'working', label: 'Mark resolved', tone: 'primary', icon: <FileCheck2 size={14} aria-hidden />,
+    detail: { text: 'Keep the file as it is now', property: 'Keep the properties as they are now', tree: 'Keep the working copy as it is now' },
+    confirm: {
+      text: 'Keeps the file exactly as it is now and marks the conflict resolved. Remove any conflict markers (<<<<<<<) first, or they will be committed.',
+      property: 'Keeps the properties exactly as they are now and marks the conflict resolved. Check the rejected changes in the .prej file first.',
+      tree: 'Keeps the working copy exactly as it is now and marks the tree conflict resolved. Check that the files are where you want them first.',
+    },
+  },
+  {
+    accept: 'theirs-full', label: 'Use the repository version', tone: 'danger', icon: <Download size={14} aria-hidden />,
+    detail: { text: 'Discards your local changes to this file', property: 'Discards your local property changes', tree: '' },
+    confirm: {
+      text: 'Replaces the whole file with the version from the repository. Your local changes to this file are lost.',
+      property: 'Takes the properties from the repository. Your local property changes are lost.',
+      tree: '',
+    },
+  },
+  {
+    accept: 'mine-full', label: 'Keep my version', tone: 'danger', icon: <Undo2 size={14} aria-hidden />,
+    detail: { text: 'Discards the incoming changes to this file', property: 'Discards the incoming property changes', tree: '' },
+    confirm: {
+      text: 'Keeps your local version of the whole file and discards the incoming changes to it. Committing this file afterwards undoes them in the repository.',
+      property: 'Keeps your local properties and discards the incoming property changes. Committing afterwards undoes them in the repository.',
+      tree: '',
+    },
+  },
+]
+
+/** Resolve menu for one conflicted row; the panel owns the confirmation so it outlives the menu. */
+function ConflictActions({ file, kind, disabledReason, onChoose }: { file: VcsChangedFile; kind: ConflictKind; disabledReason: string; onChoose: (accept: VcsResolveChoice) => void }) {
+  const [open, setOpen] = useState(false)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const presence = usePresence(open)
+  const name = file.path.split(/[\\/]/).pop() || file.path
+  const menuId = useId()
+  const choices = kind === 'tree' ? RESOLVE_CHOICES.filter((choice) => choice.accept === 'working') : RESOLVE_CHOICES
+  return <>
+    <IconButton
+      ref={triggerRef}
+      icon={<GitMerge size={14} aria-hidden />}
+      label={`Resolve conflict in ${name}`}
+      size="sm"
+      disabled={Boolean(disabledReason)}
+      disabledReason={disabledReason || undefined}
+      aria-haspopup="menu"
+      aria-expanded={open}
+      aria-controls={open ? menuId : undefined}
+      onClick={() => setOpen((value) => !value)}
+    />
+    {presence.mounted && (
+      <ViewportMenu
+        anchorRef={triggerRef}
+        align="end"
+        id={menuId}
+        role="menu"
+        aria-label={`Resolve conflict in ${name}`}
+        data-state={presence.closing ? 'closed' : 'open'}
+        onRequestClose={() => setOpen(false)}
+        // The same raised surface as the other menus, so its items never draw over the rows below.
+        className="rounded-md p-1"
+        style={{ minWidth: 240, background: 'var(--surface)', border: '1px solid var(--border-bright)', boxShadow: 'var(--elev-3)' }}
+      >
+        {choices.map((choice) => (
+          <MenuItem
+            key={choice.accept}
+            icon={choice.icon}
+            label={choice.label}
+            detail={choice.detail[kind]}
+            detailLayout="stacked"
+            danger={choice.tone === 'danger'}
+            // Focus goes back to the trigger first, so the confirmation returns there rather than to the closed menu.
+            onSelect={() => { setOpen(false); triggerRef.current?.focus(); onChoose(choice.accept) }}
+          />
+        ))}
+      </ViewportMenu>
+    )}
+  </>
+}
+
 /** Updates still running, by chat: the panel is per selected chat, but an update outlives a switch to another chat. */
 const updatesInFlight = new Map<string, { requestId: string; vcsType: VcsType; result: Promise<VcsUpdateResult> }>()
 
@@ -52,6 +151,7 @@ export function VcsCommitPanel() {
   const setCommitPanelOpen = useAppStore((s) => s.setCommitPanelOpen)
   const getVcsFileDiff = useAppStore((s) => s.getVcsFileDiff)
   const updateVcsWorkspace = useAppStore((s) => s.updateVcsWorkspace)
+  const resolveVcsConflict = useAppStore((s) => s.resolveVcsConflict)
   const cancelVcsRequest = useAppStore((s) => s.cancelVcsRequest)
   const [diffSelection, setDiffSelection] = useState<{ file: VcsChangedFile; chatId: string; workspaceDirectory: string | undefined; workspaceWorktreeDirectory: string | undefined; executionHostId: string | undefined } | null>(null)
   const [reviewScope, setReviewScope] = useState<'workspace' | 'recorded' | 'history'>('workspace')
@@ -65,6 +165,10 @@ export function VcsCommitPanel() {
   const [generating, setGenerating] = useState(false)
   const [notice, setNotice] = useState('')
   const [noticeTone, setNoticeTone] = useState<'success' | 'warning' | 'error'>('error')
+  // Extra lines under the notice, one each, such as externals an update could not reach.
+  const [noticeLines, setNoticeLines] = useState<string[]>([])
+  const [resolving, setResolving] = useState<{ chatId: string; path: string; kind: ConflictKind; accept: VcsResolveChoice; busy: boolean; error: string } | null>(null)
+  const latestResolveRequestRef = useRef(0)
   const [updating, setUpdating] = useState(false)
   // Bumped after an update so History reloads against the new working-copy revision.
   const [historyEpoch, setHistoryEpoch] = useState(0)
@@ -90,6 +194,9 @@ export function VcsCommitPanel() {
     setTitle('')
     setDescription('')
     setNotice('')
+    setNoticeLines([])
+    latestResolveRequestRef.current += 1
+    setResolving(null)
     setCommitOutput('')
     setLoading(false)
     setGenerating(false)
@@ -119,7 +226,7 @@ export function VcsCommitPanel() {
     const effective = next ?? emptyStatus(session?.workspaceDirectory ?? '')
     setStatus(effective)
     setSelectedVcsType(effective.activeVcsType)
-    setSelectedFiles((current) => current.filter((file) => effective.changedFiles.some((changed) => changed.path === file)))
+    setSelectedFiles((current) => current.filter((file) => effective.changedFiles.some((changed) => changed.path === file && !svnConflict(effective.activeVcsType, changed.status))))
     if (!includeLineStats && effective.available && effective.changedFiles.length > 0 && !effective.lineStatsReady) {
       const detailed = await getVcsCommitStatus(activeSessionId, effective.activeVcsType, {
         includeLineStats: true,
@@ -142,7 +249,9 @@ export function VcsCommitPanel() {
   const commitDisabled = !systemEnabled || committing || updating || !status.available || selectedFiles.length === 0 || title.trim().length === 0
   const generateDisabled = !systemEnabled || generating || !status.available || selectedFiles.length === 0
   const selectedFileSet = useMemo(() => new Set(selectedFiles), [selectedFiles])
-  const allSelected = status.changedFiles.length > 0 && status.changedFiles.every((file) => selectedFileSet.has(file.path))
+  // A conflicted path cannot be committed until it is resolved, so it is never selected.
+  const selectableFiles = useMemo(() => status.changedFiles.filter((file) => !svnConflict(status.activeVcsType, file.status)), [status.changedFiles, status.activeVcsType])
+  const allSelected = selectableFiles.length > 0 && selectableFiles.every((file) => selectedFileSet.has(file.path))
   const lineStatsReady = status.lineStatsReady !== false
   const maxChange = Math.max(1, ...status.changedFiles.map((file) => file.additions + file.deletions))
 
@@ -153,7 +262,7 @@ export function VcsCommitPanel() {
   }
 
   const toggleAllFiles = () => {
-    setSelectedFiles(allSelected ? [] : status.changedFiles.map((file) => file.path))
+    setSelectedFiles(allSelected ? [] : selectableFiles.map((file) => file.path))
   }
 
   const generateMessage = async () => {
@@ -163,6 +272,7 @@ export function VcsCommitPanel() {
     const draftRevision = draftRevisionRef.current
     setGenerating(true)
     setNotice('')
+    setNoticeLines([])
     const suggestion = await generateVcsCommitMessage(sourceSessionId, selectedVcsType, selectedFiles)
     if (latestGenerateRequestRef.current !== request || useAppStore.getState().activeSessionId !== sourceSessionId) return
     setGenerating(false)
@@ -185,6 +295,7 @@ export function VcsCommitPanel() {
     const draftRevision = draftRevisionRef.current
     setCommitting(true)
     setNotice('')
+    setNoticeLines([])
     const result = await commitVcsChanges(sourceSessionId, selectedVcsType, commitMessage, selectedFiles)
     if (latestCommitRequestRef.current !== request || useAppStore.getState().activeSessionId !== sourceSessionId) return
     setCommitting(false)
@@ -219,6 +330,10 @@ export function VcsCommitPanel() {
   // A scope the current workspace cannot show falls back to the workspace list instead of an empty panel.
   const scope = (reviewScope === 'history' && !historyAvailable) || (reviewScope === 'recorded' && !CODEX_ENABLED) ? 'workspace' : reviewScope
   const revisionPrefix = selectedVcsType === 'svn' ? 'r' : ''
+  // svnversion reports `3:5` when the working copy's items sit at different revisions.
+  const mixedRevision = status.activeVcsType === 'svn' && /^\d+:\d+$/.test(status.branchOrRevision)
+  const shownRevision = status.activeVcsType === 'svn' && /^\d/.test(status.branchOrRevision) ? `r${status.branchOrRevision}` : status.branchOrRevision
+  const resolveAvailable = systemEnabled && capabilities.includes('resolve')
 
   /** Shows an update's progress and outcome while its chat stays selected; switching away and back picks it up again. */
   const followUpdate = useCallback(async (sourceSessionId: string, vcsType: VcsType, running: { requestId: string; vcsType: VcsType; result: Promise<VcsUpdateResult> }) => {
@@ -233,10 +348,13 @@ export function VcsCommitPanel() {
     if (!result.ok) {
       setNoticeTone('error')
       setNotice(result.error || 'Failed to update the working copy.')
+      setNoticeLines([])
     } else {
-      setNoticeTone(result.conflicts ? 'warning' : 'success')
+      const warnings = result.warnings ?? []
+      setNoticeTone(result.conflicts || warnings.length > 0 ? 'warning' : 'success')
       const reached = result.revision ? ` to ${vcsType === 'svn' ? 'r' : ''}${result.revision}` : ''
       setNotice(result.conflicts ? `Updated${reached} with conflicts. Resolve them before committing.` : `Updated${reached}.`)
+      setNoticeLines(warnings)
     }
     setHistoryEpoch((epoch) => epoch + 1)
     await refresh(vcsType, true)
@@ -256,7 +374,36 @@ export function VcsCommitPanel() {
     updatesInFlight.set(sourceSessionId, running)
     void running.result.finally(() => { if (updatesInFlight.get(sourceSessionId) === running) updatesInFlight.delete(sourceSessionId) })
     setNotice('')
+    setNoticeLines([])
     await followUpdate(sourceSessionId, sourceVcsType, running)
+  }
+
+  const resolveChoice = resolving ? RESOLVE_CHOICES.find((choice) => choice.accept === resolving.accept) : undefined
+  const findRow = (path: string) => [...document.querySelectorAll<HTMLElement>('[data-vcs-row]')].find((row) => row.dataset.vcsRow === path)
+  const confirmResolve = async () => {
+    if (!resolving || resolving.busy || resolving.chatId !== activeSessionId) return
+    const target = resolving
+    const request = ++latestResolveRequestRef.current
+    setResolving({ ...target, busy: true, error: '' })
+    const result = await resolveVcsConflict(target.chatId, selectedVcsType, target.path, target.accept)
+    if (useAppStore.getState().activeSessionId !== target.chatId) return
+    // A result for a dialog since replaced must not close or fill the current one, but a success still changed the list.
+    if (latestResolveRequestRef.current !== request) {
+      if (result.ok) await refresh(selectedVcsType, true)
+      return
+    }
+    if (!result.ok) {
+      setResolving({ ...target, busy: false, error: result.error || 'Failed to resolve the conflict.' })
+      return
+    }
+    setResolving(null)
+    setNoticeTone('success')
+    setNotice(`Marked ${target.path} resolved.`)
+    setNoticeLines([])
+    setCommitOutput(result.output)
+    await refresh(selectedVcsType, true)
+    // The row's resolve button is gone once the conflict is; keep the user's place on the row itself.
+    if (!document.activeElement || document.activeElement === document.body) findRow(target.path)?.focus()
   }
 
   const shownTone = notice ? noticeTone : status.error ? 'error' : 'warning'
@@ -316,7 +463,10 @@ export function VcsCommitPanel() {
               {shownTone === 'success'
                 ? <CheckCircle2 size={14} aria-hidden className="mt-0.5 shrink-0" style={{ color: 'var(--success)' }} />
                 : <TriangleAlert size={14} aria-hidden className="mt-0.5 shrink-0" style={{ color: `var(--${shownTone})` }} />}
-              <span>{notice || status.error || status.warning}</span>
+              <span>
+                {notice || status.error || status.warning}
+                {notice && noticeLines.map((line) => <span key={line} className="block">{line}</span>)}
+              </span>
             </div>
           )}
           {commitOutput && <details className="mb-3 text-xs"><summary className="cursor-pointer" style={{ color: 'var(--text-3)' }}>Command output</summary><pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap break-words font-mono text-[11px]" style={{ color: 'var(--text-2)' }}>{commitOutput}</pre></details>}
@@ -334,7 +484,9 @@ export function VcsCommitPanel() {
               <span className="rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold" style={{ background: 'var(--surface-up)', color: 'var(--text-2)' }}>{status.available ? status.activeVcsType.toUpperCase() : 'NONE'}</span>
             )}
             <GitBranch size={13} aria-hidden style={{ color: 'var(--text-3)' }} />
-            <span className="min-w-0 flex-1 truncate font-mono" style={{ color: 'var(--text)' }}>{status.branchOrRevision || '-'}</span>
+            <Tooltip label={mixedRevision ? `This working copy holds items from ${shownRevision.split(':').join(' to r')}. Update brings them all to the newest revision.` : undefined}>
+              <span className="min-w-0 flex-1 truncate font-mono" style={{ color: 'var(--text)' }} tabIndex={mixedRevision ? 0 : undefined}>{shownRevision || '-'}</span>
+            </Tooltip>
             {updateAvailable && <Button size="sm" variant="secondary" loading={updating} disabled={committing} leadingIcon={<ArrowDownToLine size={14} />} onClick={() => { void update() }}>
               {updating ? 'Updating…' : snapshotSvn ? 'Update SVN' : 'Update'}
             </Button>}
@@ -354,7 +506,7 @@ export function VcsCommitPanel() {
             role="checkbox"
             aria-label="Select all changed files"
             aria-checked={allSelected}
-            disabled={status.changedFiles.length === 0}
+            disabled={selectableFiles.length === 0}
             onClick={toggleAllFiles}
             className="uam-rv-check-btn"
           >
@@ -370,28 +522,19 @@ export function VcsCommitPanel() {
             <div className="px-3 py-6 text-center text-xs" style={{ color: 'var(--text-3)' }}>No changed files.</div>
           ) : status.changedFiles.map((file) => {
             const selected = selectedFileSet.has(file.path)
-            return (
-              <div key={file.path} className="uam-rv-file group" data-selected={selected} style={{ color: selected ? 'var(--text)' : 'var(--text-2)' }}>
-                {/* ui: raw button kept — role=checkbox icon toggle; IconButton adds uam-iconbtn chrome over uam-rv-check-btn */}
-                <button
-                  type="button"
-                  role="checkbox"
-                  aria-checked={selected}
-                  aria-label={`${selected ? 'Deselect' : 'Select'} ${file.path}`}
-                  onClick={() => toggleFile(file.path)}
-                  className="uam-rv-check-btn"
-                >
-                  {selected ? <CheckCircle2 size={15} aria-hidden style={{ color: 'var(--accent)' }} /> : <Circle size={15} aria-hidden style={{ color: 'var(--text-3)' }} />}
-                </button>
+            const conflict = svnConflict(status.activeVcsType, file.status)
+            const row = (
                 <RowButton
                   type="button"
-                  aria-label={`Review changes to ${file.path}`}
+                  aria-label={conflict ? `Review conflict in ${file.path}` : `Review changes to ${file.path}`}
                   onClick={() => { if (activeSessionId) setDiffSelection({ file, chatId: activeSessionId, workspaceDirectory: session?.workspaceDirectory, workspaceWorktreeDirectory: session?.workspaceWorktreeDirectory, executionHostId: session?.executionHostId }) }}
                   className="uam-rv-file__open"
+                  data-vcs-row={file.path}
+                  data-conflict={conflict ? '' : undefined}
                   style={{ color: 'inherit' }}
                 >
-                  <span className="uam-rv-file__status" style={{ color: statusColor(file.status) }}>{file.status.trim() || 'M'}</span>
-                  <span className="uam-rv-file__path" title={file.path}>
+                  <span className="uam-rv-file__status" data-conflict={conflict ? '' : undefined} style={{ color: conflict ? 'var(--warning)' : statusColor(file.status) }}>{conflict ? 'Conflict' : file.status.trim() || 'M'}</span>
+                  <span className="uam-rv-file__path" title={conflict ? undefined : file.path}>
                     <span className="uam-rv-file__name">{file.path.split('/').pop()}</span>
                     {file.path.includes('/') && <span className="uam-rv-file__dir">{file.path.slice(0, file.path.lastIndexOf('/'))}</span>}
                   </span>
@@ -410,6 +553,31 @@ export function VcsCommitPanel() {
                   </span>
                   <ChevronRight size={13} aria-hidden className="uam-rv-file__chevron" style={{ color: 'var(--text-3)' }} />
                 </RowButton>
+            )
+            return (
+              <div key={file.path} className="uam-rv-file group" data-selected={selected} style={{ color: selected ? 'var(--text)' : 'var(--text-2)' }}>
+                {/* ui: raw button kept — role=checkbox icon toggle; IconButton adds uam-iconbtn chrome over uam-rv-check-btn */}
+                <button
+                  type="button"
+                  role="checkbox"
+                  aria-checked={selected}
+                  aria-label={conflict ? `Resolve the conflict in ${file.path} before selecting it` : `${selected ? 'Deselect' : 'Select'} ${file.path}`}
+                  // Focusable while unavailable, so keyboard users still hear why it cannot be selected.
+                  aria-disabled={conflict ? true : undefined}
+                  onClick={() => { if (!conflict) toggleFile(file.path) }}
+                  className="uam-rv-check-btn"
+                >
+                  {selected ? <CheckCircle2 size={15} aria-hidden style={{ color: 'var(--accent)' }} /> : <Circle size={15} aria-hidden style={{ color: 'var(--text-3)' }} />}
+                </button>
+                {conflict ? <Tooltip label={CONFLICT_TOOLTIP}>{row}</Tooltip> : row}
+                {conflict && resolveAvailable && activeSessionId && (
+                  <ConflictActions
+                    file={file}
+                    kind={conflictKind(conflict, file.status)}
+                    disabledReason={updating ? 'Wait for the update to finish.' : committing ? 'Wait for the commit to finish.' : resolving ? 'Finish the open resolve first.' : ''}
+                    onChoose={(accept) => { latestResolveRequestRef.current += 1; setResolving({ chatId: activeSessionId, path: file.path, kind: conflictKind(conflict, file.status), accept, busy: false, error: '' }) }}
+                  />
+                )}
               </div>
             )
           })}
@@ -455,6 +623,21 @@ export function VcsCommitPanel() {
           onClose={() => setDiffSelection(null)}
         />
       )}</Presence> })()}
+      <ConfirmDialog
+        open={Boolean(resolving && resolveChoice && resolving.chatId === activeSessionId)}
+        title={resolveChoice ? `${resolveChoice.label}?` : 'Resolve conflict?'}
+        label="Resolve conflict"
+        confirmLabel={resolveChoice?.label ?? 'Resolve'}
+        tone={resolveChoice?.tone ?? 'primary'}
+        busy={resolving?.busy}
+        error={resolving?.error || undefined}
+        onConfirm={() => { void confirmResolve() }}
+        onCancel={() => { if (!resolving?.busy) setResolving(null) }}
+        returnFocusTo={() => (resolving ? findRow(resolving.path) : undefined)}
+      >
+        <span className="block font-mono text-xs" style={{ color: 'var(--text)' }}>{resolving?.path}</span>
+        <span className="mt-2 block">{resolving && resolveChoice ? resolveChoice.confirm[resolving.kind] : ''}</span>
+      </ConfirmDialog>
     </aside>
   )
 }
