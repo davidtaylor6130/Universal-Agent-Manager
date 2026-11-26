@@ -1,5 +1,6 @@
 #pragma once
 
+#include "app/svn_failure.h"
 #include "common/state/app_state.h"
 
 #include <filesystem>
@@ -181,8 +182,8 @@ namespace uam
 	std::string VcsTypeToString(VcsType type);
 	VcsType VcsTypeFromString(std::string_view value);
 
-	inline constexpr std::string_view kSvnClientMissing = "The svn command-line client was not found. Install Subversion and make sure svn is on PATH.";
-	/// <summary>Runs `svn args...` as argv (no shell) in `cwd` with a UTF-8 locale; a missing client gets a clear error.</summary>
+	/// <summary>Runs `svn args...` as argv (no shell) in `cwd` with uam::vcs::SvnEnvironment (a UTF-8 locale, and batch-mode ssh
+	/// unless SVN_SSH is set); a missing client gets a clear error.</summary>
 	ProcessExecutionResult RunSvn(const std::filesystem::path& cwd, const std::vector<std::string>& args, int timeout_ms = 120000, std::stop_token stop = {});
 	/// <summary>Runs `svnversion args...` the same way; it reports the working copy's revision range (`3:5` when mixed).</summary>
 	ProcessExecutionResult RunSvnVersion(const std::filesystem::path& cwd, const std::vector<std::string>& args, int timeout_ms = 120000, std::stop_token stop = {});

@@ -115,7 +115,14 @@ namespace uam
 				const bool finished = arguments.front() == "update" ? svn_history::UpdateFinished(result) : result.ok && result.exit_code == 0;
 				if (!finished || result.output_truncated)
 				{
-					// Carry svn's own E-code (for example E155004, which needs svn cleanup) through the existing error.
+					// Carry svn's own E-code (for example E155004, which needs svn cleanup) through the existing error; missing
+					// credentials get the shared advice on saving them, which a Finder launch cannot prompt for.
+					LogSvnFailure(result, arguments.front(), paths::Utf8PathString(checkout));
+					if (const std::string message = SvnFailureMessage(result, {}); message.starts_with("SVN needs your credentials."))
+					{
+						error = "SVN preparation failed. " + message;
+						return false;
+					}
 					const std::string detail = SvnFailureSummary(result);
 					error = detail.empty() ? std::string(step) + " failed. Check the working copy and authentication, then retry."
 					    : std::string(step) + " failed (" + detail + "). Check the working copy and authentication, then retry.";

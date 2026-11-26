@@ -678,6 +678,7 @@ add_library(uam_core_objects OBJECT
   src/app/svn_branch_service.cpp
   src/app/svn_history.cpp
   src/app/svn_branch_process.cpp
+  src/app/svn_failure.cpp
   src/cef/uam_cef_command_line_config.cpp
   src/cef/uam_bridge_request.cpp
   src/cef/state_serializer.cpp
@@ -1762,6 +1763,7 @@ if(UAM_BUILD_TESTS)
     tests/claude_model_metadata_tests.cpp
     tests/svn_commit_scheduling_tests.cpp
     tests/svn_history_tests.cpp
+    tests/svn_failure_tests.cpp
     tests/native_import_failure_tests.cpp
     tests/empty_native_import_tests.cpp
     tests/opencode_import_stream_tests.cpp

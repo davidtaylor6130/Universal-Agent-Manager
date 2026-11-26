@@ -7,7 +7,6 @@
 #include <charconv>
 #include <cstdint>
 #include <functional>
-#include <sstream>
 #include <system_error>
 
 namespace uam::svn_history
@@ -118,14 +117,11 @@ namespace uam::svn_history
 			return result.output_truncated || result.error.find(uam::platform::kCapturedCommandOutputLimitError) != std::string::npos;
 		}
 
-		std::string Failure(const ProcessExecutionResult& result, std::string_view fallback)
+		/// Every history, patch, update and origin failure reads the same way as the rest of the panel; each is shown, so logged.
+		std::string Failure(const ProcessExecutionResult& result, std::string_view fallback, std::string_view operation)
 		{
-			if (result.canceled) return "Canceled.";
-			if (result.timed_out) return "SVN did not answer in time. Check the connection to the repository, then retry.";
-			const std::string summary = SvnFailureSummary(result);
-			if (!summary.empty()) return summary;
-			const std::string detail = uam::strings::Trim(result.error.empty() ? result.output : result.error);
-			return detail.empty() ? std::string(fallback) : detail.substr(0, 400);
+			LogSvnFailure(result, operation);
+			return SvnFailureMessage(result, fallback);
 		}
 
 		bool Succeeded(const ProcessExecutionResult& result)
@@ -288,7 +284,7 @@ namespace uam::svn_history
 		const bool limited = OutputLimited(result);
 		if (!Succeeded(result) && !limited)
 		{
-			page.error = Failure(result, "SVN could not read this working copy's history.");
+			page.error = Failure(result, "SVN could not read this working copy's history.", "log");
 			return page;
 		}
 		page.entries = ParseLogXml(result.output);
@@ -302,7 +298,7 @@ namespace uam::svn_history
 				const ProcessExecutionResult brief = run(from, false, 1);
 				if (!Succeeded(brief))
 				{
-					page.error = Failure(brief, "SVN could not read this working copy's history.");
+					page.error = Failure(brief, "SVN could not read this working copy's history.", "log");
 					return page;
 				}
 				page.entries = ParseLogXml(brief.output);
@@ -350,12 +346,12 @@ namespace uam::svn_history
 			if (Succeeded(result)) return result.output;
 			if (result.canceled || result.timed_out)
 			{
-				error = Failure(result, "");
+				error = Failure(result, "", "diff");
 				return {};
 			}
 			if (peg == number) first = result;
 		}
-		error = Failure(first, "SVN could not produce this change.");
+		error = Failure(first, "SVN could not produce this change.", "diff");
 		return {};
 	}
 
@@ -436,7 +432,7 @@ namespace uam::svn_history
 		const ProcessExecutionResult kind = svn({"info", "--non-interactive", "--show-item", "kind", "--", "."}, kReadTimeoutMs);
 		if (!Succeeded(kind))
 		{
-			update.error = kind.canceled ? "Canceled." : NotVersioned(kind) ? std::string(kNotVersionedFolder) : Failure(kind, "SVN could not read this working copy.");
+			update.error = kind.canceled ? "Canceled." : NotVersioned(kind) ? std::string(kNotVersionedFolder) : Failure(kind, "SVN could not read this working copy.", "info");
 			return update;
 		}
 		const ProcessExecutionResult result = svn({"update", "--non-interactive", "--accept", "postpone", "--", "."}, kUpdateTimeoutMs);
@@ -444,7 +440,7 @@ namespace uam::svn_history
 		if (!UpdateFinished(result))
 		{
 			update.error = result.canceled ? "The update was stopped. Run it again to finish; a locked working copy needs svn cleanup first."
-			    : Failure(result, "SVN could not update this working copy.");
+			    : Failure(result, "SVN could not update this working copy.", "update");
 			return update;
 		}
 		update.ok = true;
@@ -554,7 +550,7 @@ namespace uam::svn_history
 			const ProcessExecutionResult result = svn(args, kReadTimeoutMs);
 			if (!Succeeded(result))
 			{
-				error = Failure(result, "SVN could not read its conflict details.");
+				error = Failure(result, "SVN could not read its conflict details.", "info");
 				return false;
 			}
 			for (std::string& path : ParseConflictLeftovers(result.output)) named.push_back(std::move(path));
@@ -571,7 +567,7 @@ namespace uam::svn_history
 		if (!SafeRelativePath(path)) return "Select a conflicted path in this workspace.";
 		const std::string target = std::string(path) + "@";
 		const ProcessExecutionResult state = svn({"status", "--non-interactive", "--depth", "empty", "--", target}, kReadTimeoutMs);
-		if (!Succeeded(state)) return Failure(state, "SVN could not read this path's status.");
+		if (!Succeeded(state)) return Failure(state, "SVN could not read this path's status.", "status");
 		const std::vector<VcsChangedFile> rows = ParseSvnStatusOutput(state.output);
 		if (rows.empty() || !IsConflicted(rows.front())) return "This path is no longer conflicted. Refresh the changed files.";
 		const std::string& code = rows.front().status;
@@ -580,7 +576,7 @@ namespace uam::svn_history
 		if (!content_conflict && accept != "working") return "A tree conflict can only be marked resolved with the working copy as it is.";
 		const ProcessExecutionResult result = svn({"resolve", "--non-interactive", "--accept", std::string(accept), "--", target}, kReadTimeoutMs);
 		output = uam::strings::Trim(result.output);
-		if (!Succeeded(result)) return result.canceled ? "Canceled." : Failure(result, "SVN could not resolve this conflict.");
+		if (!Succeeded(result)) return result.canceled ? "Canceled." : Failure(result, "SVN could not resolve this conflict.", "resolve");
 		return {};
 	}
 
@@ -637,7 +633,7 @@ namespace uam::svn_history
 			}
 			if (!Succeeded(result) && !OutputLimited(result))
 			{
-				error = Failure(result, "SVN could not read where this working copy was copied from.");
+				error = Failure(result, "SVN could not read where this working copy was copied from.", "log");
 				return false;
 			}
 			const std::vector<VcsHistoryEntry> entries = ParseLogXml(result.output, kMaxCopyEntryPaths);
@@ -810,7 +806,7 @@ namespace uam::svn_history
 			}
 			if (!Succeeded(result))
 			{
-				reply.error = Failure(result, "SVN could not read the origin's history.");
+				reply.error = Failure(result, "SVN could not read the origin's history.", "log");
 				return reply;
 			}
 			reply.page.entries = ParseLogXml(result.output);
@@ -830,36 +826,6 @@ namespace uam
 		constexpr std::size_t kSvnStatusCodeWidth = 7;
 		constexpr std::size_t kSvnStatusPathOffset = 8;
 	} // namespace
-
-	std::string SvnFailureSummary(const ProcessExecutionResult& result)
-	{
-		if (result.error == kSvnClientMissing) return result.error;
-		// The error that ended the command, not a warning printed on the way: a broken external prints
-		// "W205011: Error handling externals definition for 'x':" long before its E205011.
-		std::string warning;
-		std::istringstream lines(result.output + "\n" + result.error);
-		std::string line;
-		while (std::getline(lines, line))
-		{
-			std::size_t code = line.find("svn: E");
-			const bool error = code != std::string::npos;
-			if (error) code += 5;
-			else if ((code = line.find("svn: warning: W")) != std::string::npos && warning.empty()) code += 14;
-			else continue;
-			std::string summary = uam::strings::Trim(line.substr(code));
-			constexpr std::size_t kMaxSummaryBytes = 240;
-			if (summary.size() > kMaxSummaryBytes)
-			{
-				std::size_t end = kMaxSummaryBytes;
-				while (end > 0 && (static_cast<unsigned char>(summary[end]) & 0xc0) == 0x80) --end;
-				summary.resize(end);
-			}
-			while (!summary.empty() && (summary.back() == '.' || summary.back() == ':')) summary.pop_back();
-			if (error) return summary;
-			warning = std::move(summary);
-		}
-		return warning;
-	}
 
 	std::vector<VcsChangedFile> ParseSvnStatusOutput(std::string_view output, std::string_view workspace)
 	{

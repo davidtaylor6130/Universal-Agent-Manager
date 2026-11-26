@@ -35,6 +35,8 @@ src/                                 C++ backend (CMake target: universal_agent_
     vcs_commit_service.*             VCS status/diff/commit + commit-message generation
     vcs_provider.h                   Git/SVN provider interface behind vcs_commit_service and the chat branch picker
     svn_history.*                    SVN log paging, per-revision patch, update, conflict leftovers and resolve, status parsing and branch origin behind the SVN provider
+    svn_failure.*                    One-line SVN failure messages (credentials, out of date, most specific E line); sanitised svn error lines to the log
+    svn_branch_service.* / svn_branch_process.cpp  Composer SVN folder discovery and switch; RunSvn-backed runner
   cef/
     uam_cef_app.*                    Browser-process CefApp, command line switches
     uam_cef_renderer_app.*           Subprocess CefApp, renderer router (window.cefQuery)

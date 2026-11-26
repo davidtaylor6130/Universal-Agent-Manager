@@ -65,9 +65,6 @@ namespace uam::svn_history
 
 namespace uam
 {
-	/// <summary>Bounded failure detail: the missing-client notice, svn's first "E<code>: ..." line, or else its first
-	/// "W<code>: ..." line, without a trailing colon or full stop; empty when neither exists.</summary>
-	std::string SvnFailureSummary(const ProcessExecutionResult& result);
 	/// <summary>Strict `svn status` text parser. Rows need seven valid status columns and a separator; headers and
 	/// tree-conflict details are skipped. Codes keep their column positions (right-trimmed). Absolute paths under
 	/// `workspace` become workspace-relative.</summary>

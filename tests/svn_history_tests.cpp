@@ -1,4 +1,5 @@
 #include "test_harness.h"
+#include "app/svn_branch_service.h"
 #include "app/svn_history.h"
 #include "app/vcs_provider.h"
 #include "common/platform/platform_services.h"
@@ -910,3 +911,25 @@ UAM_TEST(DirectoriesOverlapComparesPathsAsTheirHostWould)
 	UAM_ASSERT(DirectoriesOverlap("/Users/x/Repo", "/Users/x/repo", true));
 }
 
+UAM_TEST(SvnBranchRunnerReadsANonAsciiWorkingCopyWithoutALaunchLocale)
+{
+	if (!SvnToolsAvailableForHistory()) return;
+	// A Finder launch has no locale; the composer's SVN folder runner must still let svn read a non-ASCII path.
+	ScopedEnvVar no_all("LC_ALL", ""), no_lang("LANG", ""), no_ctype("LC_CTYPE", "");
+	TempDir temp{"uam-svn-branch-locale"};
+	const fs::path root = fs::canonical(temp.root);
+	const fs::path repository = root / "repository";
+	UAM_ASSERT(RunTestCommand("svnadmin create " + ShellQuoteForTest(uam::paths::Utf8PathString(repository))));
+	const std::string generic = repository.generic_string();
+	const std::string url = "file://" + std::string(generic.starts_with('/') ? "" : "/") + generic;
+	const fs::path checkout = root / uam::paths::PathFromUtf8("wc\xC3\xA9");
+	Svn(root, {"mkdir", url + "/lines", url + "/lines/main", url + "/lines/feature", "-m", "layout"});
+	Svn(root, {"checkout", url + "/lines/main", uam::paths::Utf8PathString(checkout)});
+	const uam::SvnBranchScope scope{checkout, checkout, {}, true};
+	const uam::SvnBranchResult found = uam::DiscoverSvnBranches(scope, "^/lines", uam::CreateSvnBranchRunner());
+	if (!found.ok) throw TestFailure("discovery failed: " + found.error);
+	UAM_ASSERT_EQ(found.branches.size(), std::size_t{2});
+	const uam::SvnBranchResult switched = uam::SwitchSvnBranch(scope, found.context, "^/lines/feature", uam::CreateSvnBranchRunner());
+	if (!switched.ok) throw TestFailure("switch failed: " + switched.error);
+	UAM_ASSERT(switched.context.url.ends_with("/lines/feature"));
+}
