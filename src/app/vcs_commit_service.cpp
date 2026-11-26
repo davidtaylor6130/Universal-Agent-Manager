@@ -1784,6 +1784,7 @@ namespace uam
 			bool Enabled(const AppSettings& settings) const override { return settings.git_enabled; }
 
 			bool BranchesAreLocated() const override { return false; }
+			bool DefersBranchCreation() const override { return true; }
 
 			VcsBranchListing ListBranches(const AppState& snapshot, const ChatSession& chat, const std::string&, std::stop_token) const override
 			{
@@ -2084,6 +2085,24 @@ namespace uam
 			return BuildSvnBranchScope(snapshot.settings.svn_enabled, chat, snapshot.folders, snapshot.chats);
 		}
 
+		SvnBranchCreateRequest CreateRequest(const VcsBranchSelection& selection)
+		{
+			return {selection.branch, selection.create_source, selection.create_message};
+		}
+
+		/// A creation can commit to the repository: record each outcome without names, paths or the message.
+		void LogSvnBranchCreation(const SvnBranchCreateOutcome outcome)
+		{
+			switch (outcome)
+			{
+			case SvnBranchCreateOutcome::Refused: diagnostics::Write("[svn] Branch creation refused before anything was committed."); break;
+			case SvnBranchCreateOutcome::NotCreated: diagnostics::Write("[svn] Branch creation failed; the branch is confirmed absent."); break;
+			case SvnBranchCreateOutcome::NeedsInspection: diagnostics::Write("[svn] Branch creation needs inspection: the repository commit was not confirmed."); break;
+			case SvnBranchCreateOutcome::CreatedNotSwitched: diagnostics::Write("[svn] Created a branch on the server; the working copy was not switched."); break;
+			case SvnBranchCreateOutcome::CreatedAndSwitched: diagnostics::Write("[svn] Created a branch on the server and switched the working copy to it."); break;
+			}
+		}
+
 		class SvnVcsProvider final : public VcsProvider
 		{
 		  public:
@@ -2092,6 +2111,7 @@ namespace uam
 			bool Enabled(const AppSettings& settings) const override { return settings.svn_enabled; }
 
 			bool BranchesAreLocated() const override { return true; }
+			bool DefersBranchCreation() const override { return false; }
 
 			VcsBranchListing ListBranches(const AppState& snapshot, const ChatSession& chat, const std::string& parent, const std::stop_token stop) const override
 			{
@@ -2102,17 +2122,20 @@ namespace uam
 				listing.type = VcsType::Svn;
 				for (const SvnBranchChoice& choice : result.branches) listing.branches.push_back({choice.name, choice.path, choice.current});
 				listing.context = result.context;
+				if (result.ok) listing.create_locations = SvnBranchLocationsFor(result.context, snapshot.settings.svn_repository_layouts);
 				return listing;
 			}
 
-			/// Rediscovers the listed parent; any change to the pinned working-copy identity is a conflict.
+			/// Rediscovers the listed parent; any change to the pinned working-copy identity is a conflict. Creation needs no
+			/// listed parent, so it checks the name and message, then only the working copy's own identity.
 			VcsBranchOutcome CheckBranchSelection(const AppState& snapshot, const ChatSession& chat, const VcsBranchSelection& selection, const std::stop_token stop) const override
 			{
-				const SvnBranchResult result = DiscoverSvnBranches(BranchScope(snapshot, chat), selection.context.parent, CreateSvnBranchRunner(stop));
 				VcsBranchOutcome outcome;
-				outcome.ok = result.ok && result.context == selection.context;
+				if (selection.create && !ValidSvnBranchCreate(CreateRequest(selection), outcome.error)) return outcome;
+				const SvnBranchResult result = DiscoverSvnBranches(BranchScope(snapshot, chat), selection.create ? std::string{} : selection.context.parent, CreateSvnBranchRunner(stop));
+				outcome.ok = result.ok && (selection.create ? SameSvnWorkingCopy(result.context, selection.context) : result.context == selection.context);
 				outcome.conflict = !outcome.ok;
-				if (!outcome.ok) outcome.error = result.ok ? "The SVN context changed. Discover the folders again." : result.error;
+				if (!outcome.ok) outcome.error = !result.ok ? result.error : selection.create ? "The SVN working copy changed. Open the branch picker again." : "The SVN context changed. Discover the folders again.";
 				return outcome;
 			}
 
@@ -2121,10 +2144,18 @@ namespace uam
 				return CheckBranchSelection(snapshot, chat, selection, stop);
 			}
 
-			/// Switches the working copy only; the chat's saved branch fields stay as they are.
+			/// Switches the working copy only, or creates a branch on the server and then switches to it; the chat's saved
+			/// branch fields stay as they are. `stop` ends only the reads: the runner lets the copy commit and the switch finish.
 			VcsBranchOutcome SwitchBranch(AppState& snapshot, ChatSession& chat, const VcsBranchSelection& selection, const std::stop_token stop) const override
 			{
-				const SvnBranchResult result = SwitchSvnBranch(BranchScope(snapshot, chat), selection.context, selection.branch, CreateSvnBranchRunner(stop));
+				SvnBranchResult result;
+				if (selection.create)
+				{
+					const SvnBranchCreateResult created = CreateSvnBranch(BranchScope(snapshot, chat), selection.context, CreateRequest(selection), snapshot.settings.svn_repository_layouts, CreateSvnBranchRunner(stop));
+					LogSvnBranchCreation(created.outcome);
+					result = created;
+				}
+				else result = SwitchSvnBranch(BranchScope(snapshot, chat), selection.context, selection.branch, CreateSvnBranchRunner(stop));
 				VcsBranchOutcome outcome;
 				outcome.ok = result.ok;
 				outcome.conflict = !result.ok;

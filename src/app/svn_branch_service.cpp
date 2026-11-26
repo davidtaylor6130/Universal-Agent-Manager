@@ -1,4 +1,5 @@
 #include "app/svn_branch_service.h"
+#include "common/config/svn_layout_lookup.h"
 #include "common/models/app_models.h"
 #include "common/paths/path_utils.h"
 
@@ -8,6 +9,7 @@
 #include <regex>
 #include <sstream>
 #include <string_view>
+#include <type_traits>
 
 namespace uam
 {
@@ -308,6 +310,376 @@ namespace uam
 		result.context = current;
 		result.ok = true;
 		result.error.clear();
+		return result;
+	}
+
+	namespace
+	{
+		std::vector<std::string> SplitFolder(std::string_view folder)
+		{
+			std::vector<std::string> parts;
+			for (std::size_t start = 0; start < folder.size();)
+			{
+				const auto end = (std::min)(folder.find('/', start), folder.size()); // parenthesised: Windows headers may define min
+				if (end > start) parts.emplace_back(folder.substr(start, end - start));
+				start = end + 1;
+			}
+			return parts;
+		}
+
+		std::string JoinFolder(const std::vector<std::string>& parts)
+		{
+			std::string joined;
+			for (const auto& part : parts) joined += "/" + part;
+			return joined;
+		}
+
+		int HexValue(char c)
+		{
+			if (c >= '0' && c <= '9') return c - '0';
+			if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+			if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+			return -1;
+		}
+
+		/// The working copy's decoded repository path segments (`^/a/b` gives a, b); false for a URL outside the repository.
+		bool RepositorySegments(const SvnBranchContext& context, std::vector<std::string>& segments)
+		{
+			segments.clear();
+			if (context.repository.empty() || context.url.empty()) return false;
+			if (context.url == context.repository) return true;
+			if (!context.url.starts_with(context.repository + "/")) return false;
+			const std::string_view encoded = std::string_view(context.url).substr(context.repository.size() + 1);
+			std::string decoded;
+			for (std::size_t i = 0; i < encoded.size(); ++i)
+			{
+				if (encoded[i] != '%') { decoded += encoded[i]; continue; }
+				if (i + 2 >= encoded.size()) return false;
+				const int high = HexValue(encoded[i + 1]), low = HexValue(encoded[i + 2]);
+				if (high < 0 || low < 0) return false;
+				decoded += static_cast<char>(high * 16 + low);
+				i += 2;
+			}
+			segments = SplitFolder(decoded);
+			return !segments.empty() && "^" + JoinFolder(segments) == "^/" + decoded && RelativePath("^" + JoinFolder(segments));
+		}
+
+		bool DecodeXmlText(std::string_view text, std::string& decoded)
+		{
+			decoded.clear();
+			for (std::size_t i = 0; i < text.size(); ++i)
+			{
+				if (text[i] != '&') { decoded += text[i]; continue; }
+				const auto end = text.find(';', i);
+				if (end == std::string_view::npos) return false;
+				const auto entity = text.substr(i, end - i + 1);
+				if (entity == "&amp;") decoded += '&'; else if (entity == "&lt;") decoded += '<'; else if (entity == "&gt;") decoded += '>';
+				else if (entity == "&quot;") decoded += '"'; else if (entity == "&apos;") decoded += '\''; else return false;
+				i = end;
+			}
+			return true;
+		}
+
+		/// One attribute of a start tag, decoded; false when it is missing or malformed.
+		bool Attribute(const std::string& tag, const std::string& name, std::string& value)
+		{
+			const std::string key = name + "=\"";
+			for (std::size_t at = tag.find(key); at != std::string::npos; at = tag.find(key, at + 1))
+			{
+				if (at == 0 || !std::isspace(static_cast<unsigned char>(tag[at - 1]))) continue;
+				const auto start = at + key.size(), end = tag.find('"', start);
+				return end != std::string::npos && DecodeXmlText(std::string_view(tag).substr(start, end - start), value);
+			}
+			return false;
+		}
+
+		/// Every node of `svn info --xml --depth infinity` is at `revision`, so the working copy's URL@revision is what it holds.
+		bool SingleRevision(const std::string& xml, const std::string& revision)
+		{
+			if (xml.size() > kOutputLimit || xml.find("<!") != std::string::npos) return false;
+			std::size_t position = 0, count = 0;
+			while ((position = xml.find("<entry", position)) != std::string::npos)
+			{
+				const auto end = xml.find('>', position);
+				if (end == std::string::npos || ++count > 4096) return false;
+				const std::string tag = xml.substr(position, end - position + 1);
+				std::string value;
+				if (!Attribute(tag, "revision", value) || value != revision) return false;
+				position = end;
+			}
+			return count > 0;
+		}
+
+		/// A one-entry `svn log --xml --verbose` records `target` as added by copying `source` at `revision`; `committed` is that entry's revision.
+		bool CopyCommitted(const std::string& xml, const std::string& target, const std::string& source, const std::string& revision, std::string& committed)
+		{
+			if (xml.size() > kOutputLimit || xml.find("<!") != std::string::npos) return false;
+			const auto entry = xml.find("<logentry"), entry_end = entry == std::string::npos ? entry : xml.find('>', entry);
+			if (entry_end == std::string::npos || xml.find("<logentry", entry_end) != std::string::npos ||
+			    !Attribute(xml.substr(entry, entry_end - entry + 1), "revision", committed) || !Probe::Numeric(committed)) return false;
+			std::size_t position = entry_end;
+			while ((position = xml.find("<path", position)) != std::string::npos)
+			{
+				const auto tag_end = xml.find('>', position);
+				if (tag_end == std::string::npos) return false;
+				const char after = position + 5 < xml.size() ? xml[position + 5] : '\0';
+				if (after != '>' && !std::isspace(static_cast<unsigned char>(after))) { position = tag_end; continue; } // <paths>
+				const auto close = xml.find("</path>", tag_end);
+				if (close == std::string::npos) return false;
+				const std::string tag = xml.substr(position, tag_end - position + 1);
+				std::string path, action, from_path, from_revision;
+				if (DecodeXmlText(std::string_view(xml).substr(tag_end + 1, close - tag_end - 1), path) && path == target &&
+				    Attribute(tag, "action", action) && action == "A" && Attribute(tag, "copyfrom-path", from_path) && from_path == source &&
+				    Attribute(tag, "copyfrom-rev", from_revision) && from_revision == revision)
+					return true;
+				position = close;
+			}
+			return false;
+		}
+
+		bool ValidBranchName(const std::string& name)
+		{
+			if (name.empty() || name.size() > 128 || name.front() == '.' || name.front() == '-' || name.back() == '.' || name.find("..") != std::string::npos) return false;
+			return std::all_of(name.begin(), name.end(), [](unsigned char c) { return std::isalnum(c) || c == '.' || c == '_' || c == '-'; });
+		}
+
+		std::string Revisioned(const std::string& path, const std::string& revision) { return path + " r" + revision; }
+	}
+
+	SvnBranchLocations SvnBranchLocationsFor(const SvnBranchContext& context, const std::vector<SvnRepositoryLayout>& layouts)
+	{
+		SvnBranchLocations locations;
+		std::vector<std::string> segments;
+		if (!RepositorySegments(context, segments)) return locations;
+		SvnRepositoryLayout layout;
+		if (const SvnRepositoryLayout* saved = svn_layout::Find(layouts, context.repository, context.uuid)) layout = *saved;
+		const auto trunk = SplitFolder(layout.trunk), branches = SplitFolder(layout.branches), tags = SplitFolder(layout.tags);
+		if (trunk.empty() || branches.empty()) return locations;
+		const auto starts = [&](std::size_t index, const std::vector<std::string>& folder)
+		{ return !folder.empty() && index + folder.size() <= segments.size() && std::equal(folder.begin(), folder.end(), segments.begin() + static_cast<std::ptrdiff_t>(index)); };
+		// Same reading as the history view: the first trunk, or branches/tags folder followed by a name, ends the project folder.
+		std::size_t project = 0;
+		for (std::size_t index = 0; index < segments.size(); ++index)
+			if (starts(index, trunk) || (starts(index, branches) && index + branches.size() < segments.size()) || (starts(index, tags) && index + tags.size() < segments.size()))
+			{ project = index; break; }
+		std::vector<std::string> base(segments.begin(), segments.begin() + static_cast<std::ptrdiff_t>(project));
+		auto under = [&](const std::vector<std::string>& folder) { auto path = base; path.insert(path.end(), folder.begin(), folder.end()); return "^" + JoinFolder(path); };
+		locations.branches = under(branches);
+		locations.main_line = under(trunk);
+		locations.ok = RelativePath(locations.branches) && RelativePath(locations.main_line);
+		if (!locations.ok) locations.branches.clear(), locations.main_line.clear();
+		return locations;
+	}
+
+	bool SameSvnWorkingCopy(const SvnBranchContext& a, const SvnBranchContext& b)
+	{
+		return a.directory == b.directory && a.url == b.url && a.repository == b.repository && a.uuid == b.uuid && a.revision == b.revision;
+	}
+
+	bool ValidSvnBranchCreate(const SvnBranchCreateRequest& request, std::string& error)
+	{
+		error.clear();
+		if (!ValidBranchName(request.name))
+			error = "Name the SVN branch with letters, digits, dots, dashes or underscores, starting with a letter or digit.";
+		else if (!CleanText(request.message) || std::all_of(request.message.begin(), request.message.end(), [](unsigned char c) { return std::isspace(c); }))
+			error = "Write a one-line commit message for the new SVN branch.";
+		return error.empty();
+	}
+
+	bool SvnCommandChangesRepository(const std::vector<std::string>& args)
+	{
+		return !args.empty() && (args.front() == "copy" || args.front() == "switch");
+	}
+
+	namespace
+	{
+		constexpr int kCopyTimeoutMs = 120000;
+		constexpr int kSwitchTimeoutMs = 600000;
+
+		/// A command allowed longer than a probe's 10-second reads: the commit and the switch. Works with either runner shape
+		/// (with or without the trailing failure line).
+		template <typename Runner>
+		bool RunLong(const Runner& runner, const std::vector<std::string>& args, const int timeout_ms, std::string& output)
+		{
+			output.clear();
+			bool ok = false;
+			if constexpr (std::is_invocable_v<const Runner&, const std::vector<std::string>&, int, std::string&>) ok = runner(args, timeout_ms, output);
+			else
+			{
+				std::string failure;
+				ok = runner(args, timeout_ms, output, failure);
+			}
+			return ok && output.size() <= kOutputLimit;
+		}
+
+		/// The revision svn printed for its commit ("Committed revision N."); empty when the client's language differs.
+		std::string PrintedRevision(const std::string& output)
+		{
+			static const std::regex committed(R"(Committed revision (\d+)\.)");
+			std::smatch match;
+			return std::regex_search(output, match, committed) ? match[1].str() : std::string{};
+		}
+
+		/// Paths a later commit deleted or replaced under `base` (a decoded repository path), from `svn log --xml --verbose`.
+		bool RemovedPaths(const std::string& xml, const std::string& base, std::vector<std::string>& relative)
+		{
+			if (xml.size() > kOutputLimit || xml.find("<!") != std::string::npos || xml.find("<log") == std::string::npos) return false;
+			std::size_t position = 0;
+			while ((position = xml.find("<path", position)) != std::string::npos)
+			{
+				const auto tag_end = xml.find('>', position);
+				if (tag_end == std::string::npos) return false;
+				const char after = position + 5 < xml.size() ? xml[position + 5] : '\0';
+				if (after != '>' && !std::isspace(static_cast<unsigned char>(after))) { position = tag_end; continue; } // <paths>
+				const auto close = xml.find("</path>", tag_end);
+				if (close == std::string::npos) return false;
+				std::string path, action;
+				if (!DecodeXmlText(std::string_view(xml).substr(tag_end + 1, close - tag_end - 1), path) || !Attribute(xml.substr(position, tag_end - position + 1), "action", action)) return false;
+				if ((action == "D" || action == "R") && path.starts_with(base + "/")) relative.push_back(path.substr(base.size() + 1));
+				position = close;
+			}
+			return true;
+		}
+	}
+
+	SvnBranchCreateResult CreateSvnBranch(const SvnBranchScope& scope, const SvnBranchContext& expected, const SvnBranchCreateRequest& request,
+	    const std::vector<SvnRepositoryLayout>& layouts, const SvnBranchRunner& runner)
+	{
+		SvnBranchCreateResult result;
+		const auto refuse = [&](std::string error) { result.error = std::move(error); return result; };
+		if (!ValidSvnBranchCreate(request, result.error)) return result;
+		// Each phase has its own time budget, so slow checks never leave the commit or its confirmation without time.
+		Probe checks(runner);
+		SvnBranchResult found = Discover(scope, {}, checks);
+		if (!found.ok) return refuse(found.error);
+		const SvnBranchContext working = found.context;
+		if (!SameSvnWorkingCopy(working, expected)) return refuse("The SVN working copy changed. Open the branch picker again.");
+		const SvnBranchLocations locations = SvnBranchLocationsFor(working, layouts);
+		if (!locations.ok) return refuse("UAM cannot place a branch for this repository path. Check the repository's layout in Settings.");
+		// The new branch is switched to straight after it is created, so anything that would refuse that switch refuses first.
+		if (!checks.Clean(working)) return refuse("Resolve changes, ignored/untracked paths, conflicts, externals and switched children before creating an SVN branch.");
+		if (!checks.NoExternals(working.directory)) return refuse("Resolve SVN external definitions before creating a branch.");
+		std::string head, uuid, kind;
+		if (!checks.Info("revision", working.repository, head, "HEAD") || !Probe::Numeric(head)) return refuse("Could not read the SVN repository's newest revision.");
+		const std::string branches_url = working.repository + UrlPath(locations.branches.substr(1));
+		if (!checks.Info("repos-uuid", branches_url, uuid, head) || uuid != working.uuid || !checks.Info("kind", branches_url, kind, head) || kind != "dir")
+			return refuse("This repository has no " + locations.branches + " folder. Set its branches folder in Settings, under SVN repository layouts.");
+		const std::string target = locations.branches + "/" + request.name;
+		const std::string target_url = working.repository + UrlPath(target.substr(1));
+		// Copying onto an existing folder would nest the copy inside it, so the name must be shown absent, not merely unreadable.
+		// `--search` keeps the reply to the matching names however large the folder is; it matches regardless of letter case,
+		// and a name differing only in case is refused too, since it collides in checkouts on macOS and Windows.
+		const auto name_taken = [&](Probe& probe, const std::string& revision, bool& taken)
+		{
+			std::string listing;
+			if (!probe.Run({"list", "--non-interactive", "--search", request.name, "--", branches_url + "@" + revision}, listing)) return false;
+			taken = false;
+			std::istringstream lines(listing);
+			const auto folded = [](std::string value) { for (char& c : value) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c))); return value; };
+			for (std::string line; std::getline(lines, line);)
+			{
+				while (!line.empty() && (line.back() == '\r' || line.back() == '/')) line.pop_back();
+				taken = taken || folded(line) == folded(request.name);
+			}
+			return true;
+		};
+		bool taken = false;
+		if (!name_taken(checks, head, taken)) return refuse("Could not check whether " + target + " exists. Check your access to the repository, then retry.");
+		if (taken) return refuse("A branch named " + request.name + " already exists in " + locations.branches + ". Choose another name.");
+
+		std::string source, source_url, source_revision;
+		if (request.source == SvnBranchSource::WorkingCopy)
+		{
+			std::vector<std::string> segments;
+			if (!RepositorySegments(working, segments) || segments.empty()) return refuse("A branch cannot be created from the repository root. Copy from the main line instead.");
+			source = "^" + JoinFolder(segments);
+			source_url = working.url;
+			source_revision = working.revision;
+			std::string inventory;
+			if (!checks.Run({"info", "--non-interactive", "--xml", "--depth", "infinity", "--", working.directory + "@"}, inventory) || !SingleRevision(inventory, working.revision))
+				return refuse("Parts of this working copy are at other revisions. Update it first, or copy from the main line.");
+			// A deletion committed from this working copy leaves no trace in it, yet URL@revision still has the file. A later
+			// commit's deletion that is also missing on disk is that case; someone else's deletion is still on disk here.
+			if (working.revision != head)
+			{
+				std::string log;
+				std::vector<std::string> removed;
+				if (!checks.Run({"log", "--non-interactive", "--xml", "--verbose", "--quiet", "-r", std::to_string(std::stoull(working.revision) + 1) + ":" + head, "--", working.url + "@" + head}, log) ||
+				    !RemovedPaths(log, source.substr(1), removed))
+					return refuse("This working copy is far behind " + source + ". Update it first, or copy from the main line.");
+				for (const std::string& path : removed)
+				{
+					std::error_code ec;
+					if (!std::filesystem::exists(std::filesystem::symlink_status(paths::PathFromUtf8(working.directory) / paths::PathFromUtf8(path), ec)))
+						return refuse("This working copy deleted files in a later commit than its revision. Update it first, or copy from the main line.");
+				}
+			}
+		}
+		else
+		{
+			source = locations.main_line;
+			source_url = working.repository + UrlPath(locations.main_line.substr(1));
+			source_revision = head;
+			if (!checks.Info("repos-uuid", source_url, uuid, head) || uuid != working.uuid || !checks.Info("kind", source_url, kind, head) || kind != "dir")
+				return refuse("This repository has no " + locations.main_line + " folder. Set its trunk folder in Settings, under SVN repository layouts.");
+			// The working copy's own externals were checked locally; the main line is read from the server, which can be slow.
+			std::string properties;
+			if (!RunLong(runner, {"propget", "--non-interactive", "--xml", "--recursive", "svn:externals", "-r", head, "--", source_url + "@" + head}, kCopyTimeoutMs, properties))
+				return refuse("Could not check external definitions in " + source + ". Check your access to the repository, then retry.");
+			static const std::regex empty_properties(R"(\s*<\?xml[^?]*\?>\s*<properties>\s*</properties>\s*)");
+			if (!std::regex_match(properties, empty_properties)) return refuse("Resolve SVN external definitions in " + source + " before branching from it.");
+		}
+		if (target.starts_with(source + "/")) return refuse("A branch cannot be created inside the folder it copies. Check the repository's layout in Settings.");
+
+		// One server-side commit; no --parents, so a missing branches folder can never be created by accident. A stoppable
+		// runner must let it finish (SvnCommandChangesRepository).
+		std::string output;
+		const bool copied = RunLong(runner, {"copy", "--non-interactive", "--force-log", "-m", request.message, "--", source_url + "@" + source_revision, target_url}, kCopyTimeoutMs, output);
+		const std::string printed = copied ? PrintedRevision(output) : std::string{};
+		// The oldest revision of the new path, however many commits follow it, is the copy that created it. This runs even
+		// when the copy reported failure: a server can finish a commit after the client gave up.
+		Probe confirm(runner);
+		std::string log, committed;
+		const bool confirmed = confirm.Run({"log", "--non-interactive", "--xml", "--verbose", "--stop-on-copy", "--limit", "1", "-r", "1:HEAD", "--", target_url + "@HEAD"}, log) &&
+		    CopyCommitted(log, target.substr(1), source.substr(1), source_revision, committed) && (printed.empty() || printed == committed);
+		if (!confirmed)
+		{
+			const std::string nested = target + "/" + SplitFolder(source).back();
+			result.outcome = SvnBranchCreateOutcome::NeedsInspection;
+			if (confirm.Info("kind", working.repository + UrlPath(nested.substr(1)), kind, "HEAD"))
+				return refuse(target + " appeared while it was being created, so the copy went inside it as " + nested + ". Inspect the repository.");
+			if (copied) return refuse("Created " + target + ", but the repository log does not confirm it was copied from " + Revisioned(source, source_revision) + ". Inspect it before switching.");
+			bool exists = true;
+			if (name_taken(confirm, "HEAD", exists) && !exists)
+			{
+				result.outcome = SvnBranchCreateOutcome::NotCreated;
+				return refuse("SVN did not create " + target + ". Check the commit message and your access to the repository, then retry.");
+			}
+			return refuse("SVN did not confirm creating " + target + ". Inspect the repository before retrying.");
+		}
+		// From here the branch exists; a refusal says so and keeps the working copy where it was.
+		result.outcome = SvnBranchCreateOutcome::CreatedNotSwitched;
+		result.branches = {{request.name, target, false}};
+		const std::string created = "Created " + Revisioned(target, committed) + " from " + Revisioned(source, source_revision) + ", but the working copy was not switched. ";
+
+		// The same guarded switch as folder selection, aimed at the commit just made rather than a fresh listing.
+		Probe settle(runner);
+		SvnBranchContext current;
+		std::string scope_error;
+		if (!VerifyScope(scope, scope_error) || !settle.Read(scope, current) || !SameSvnWorkingCopy(current, working) || !settle.Clean(current))
+			return refuse(created + "The working copy changed meanwhile. Switch to the branch from the picker once it is clean.");
+		if (!RunLong(runner, {"switch", "--non-interactive", "--ignore-externals", "--accept", "postpone", "--depth", "infinity", "-r", committed, "--", target_url + "@" + committed, working.directory}, kSwitchTimeoutMs, output))
+			return refuse(created + "SVN did not confirm switching. Inspect the working copy before retrying; no automatic rollback was attempted.");
+		std::vector<std::string> segments;
+		// svn leaves characters such as + and @ unescaped in its URLs, so the final URL is compared as a decoded path.
+		Probe verify(runner);
+		if (!verify.Read(scope, current) || !RepositorySegments(current, segments) || "^" + JoinFolder(segments) != target || current.uuid != working.uuid ||
+		    current.repository != working.repository || current.revision != committed || !verify.Clean(current))
+			return refuse(created + "SVN switching needs inspection: its final URL, revision or clean state was not confirmed.");
+		result.ok = true;
+		result.outcome = SvnBranchCreateOutcome::CreatedAndSwitched;
+		result.context = current;
+		result.branches = {{request.name, target, true}};
 		return result;
 	}
 }

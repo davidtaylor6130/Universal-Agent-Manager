@@ -925,3 +925,21 @@ UAM_TEST(SvnBranchRunnerReadsANonAsciiWorkingCopyWithoutALaunchLocale)
 	if (!switched.ok) throw TestFailure("switch failed: " + switched.error);
 	UAM_ASSERT(switched.context.url.ends_with("/lines/feature"));
 }
+
+UAM_TEST(SvnBranchRunnerNeverStartsACommandThatChangesTheRepositoryAfterAStop)
+{
+	// The stoppable runner never stops a copy commit or a switch once started, so a stop that came first means it never
+	// starts; no svn is needed, because neither command reaches the client.
+	std::stop_source stopped;
+	stopped.request_stop();
+	const uam::SvnBranchRunner run = uam::CreateSvnBranchRunner(stopped.get_token());
+	for (const std::vector<std::string>& args : {std::vector<std::string>{"copy", "--non-interactive", "--", "^/a@1", "^/b"}, std::vector<std::string>{"switch", "--non-interactive", "--", "^/b@2", "."}})
+	{
+		UAM_ASSERT(uam::SvnCommandChangesRepository(args));
+		std::string output = "stale", failure;
+		UAM_ASSERT(!run(args, 1000, output, failure));
+		UAM_ASSERT(output.empty());
+		UAM_ASSERT_EQ(failure, std::string("Canceled."));
+	}
+	UAM_ASSERT(!uam::SvnCommandChangesRepository({"info", "--show-item", "revision"}));
+}
