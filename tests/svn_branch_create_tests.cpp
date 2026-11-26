@@ -80,7 +80,7 @@ namespace
 				const bool local = !target.starts_with("file:");
 				if (args[0] == "info" && args[2] == "--xml")
 				{
-					output = "<?xml version=\"1.0\"?><info><entry kind=\"dir\" path=\"copy\" revision=\"" + revision + "\"><wc-info><depth>infinity</depth></wc-info></entry>"
+					output = "<?xml version=\"1.0\"?><info><entry kind=\"dir\" path=\"copy\" revision=\"" + revision + "\"><wc-info><wcroot-abspath>" + uam::paths::Utf8PathString(directory) + "</wcroot-abspath><depth>infinity</depth></wc-info></entry>"
 					    "<entry kind=\"file\" path=\"copy/file\" revision=\"" + (mixed_revision.empty() ? revision : mixed_revision) + "\"><wc-info><depth>infinity</depth></wc-info></entry></info>";
 					return true;
 				}
@@ -89,8 +89,7 @@ namespace
 					const std::string& field = args[3];
 					if (local)
 					{
-						if (field == "wc-root") output = uam::paths::Utf8PathString(directory);
-						else if (field == "depth") output = "infinity";
+						if (field == "depth") output = "infinity";
 						else if (field == "url") output = url;
 						else if (field == "repos-root-url") output = root;
 						else if (field == "repos-uuid") output = uuid;

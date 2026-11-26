@@ -99,20 +99,31 @@ namespace uam
 			error.clear();
 			return true;
 		}
-		bool DecodeName(std::string text, std::string& name)
+		bool DecodeText(std::string_view text, std::string& decoded)
 		{
-			name.clear();
+			decoded.clear();
 			for (std::size_t i = 0; i < text.size(); ++i)
 			{
-				if (text[i] != '&') { name += text[i]; continue; }
+				if (text[i] != '&') { decoded += text[i]; continue; }
 				const auto end = text.find(';', i);
-				if (end == std::string::npos) return false;
+				if (end == std::string_view::npos) return false;
 				const auto entity = text.substr(i, end - i + 1);
-				if (entity == "&amp;") name += '&'; else if (entity == "&lt;") name += '<'; else if (entity == "&gt;") name += '>';
-				else if (entity == "&quot;") name += '"'; else if (entity == "&apos;") name += '\''; else return false;
+				if (entity == "&amp;") decoded += '&'; else if (entity == "&lt;") decoded += '<'; else if (entity == "&gt;") decoded += '>';
+				else if (entity == "&quot;") decoded += '"'; else if (entity == "&apos;") decoded += '\''; else return false;
 				i = end;
 			}
-			return CleanText(name) && name != "." && name != ".." && name.find_first_of("/\\") == std::string::npos;
+			return CleanText(decoded);
+		}
+		bool DecodeName(std::string text, std::string& name)
+		{
+			return DecodeText(text, name) && name != "." && name != ".." && name.find_first_of("/\\") == std::string::npos;
+		}
+		/// The first entry's `<wcroot-abspath>` from `svn info --xml`. The XML is UTF-8 everywhere, while Windows svn writes
+		/// `--show-item wc-root` in the ANSI code page, which a non-ASCII path cannot be read back from.
+		bool WorkingCopyRoot(std::string_view xml, std::string& root)
+		{
+			const auto start = xml.find("<wcroot-abspath>"), end = xml.find("</wcroot-abspath>");
+			return start != std::string_view::npos && end != std::string_view::npos && start + 16 < end && DecodeText(xml.substr(start + 16, end - start - 16), root);
 		}
 		bool ParseDirectories(const std::string& xml, std::vector<std::string>& names)
 		{
@@ -208,12 +219,12 @@ namespace uam
 			{
 				context.directory = paths::Utf8PathString(scope.directory.lexically_normal());
 				std::string root, depth;
-				if (!Info("wc-root", context.directory, root) || !Info("depth", context.directory, depth) || depth != "infinity") return false;
-				std::error_code ec;
-				if (!std::filesystem::equivalent(paths::PathFromUtf8(root), scope.directory, ec) || ec) return false;
+				if (!Info("depth", context.directory, depth) || depth != "infinity") return false;
 				// Recursive info includes excluded nodes; root depth/status alone miss sticky sparse children.
 				std::string inventory;
 				if (!Run({"info", "--non-interactive", "--xml", "--depth", "infinity", "--", context.directory + "@"}, inventory) || !FullDepthInventory(inventory)) return false;
+				std::error_code ec;
+				if (!WorkingCopyRoot(inventory, root) || !std::filesystem::equivalent(paths::PathFromUtf8(root), scope.directory, ec) || ec) return false;
 				return Info("url", context.directory, context.url) && Info("repos-root-url", context.directory, context.repository) &&
 				    Info("repos-uuid", context.directory, context.uuid) && Info("revision", context.directory, context.revision) && Numeric(context.revision) &&
 				    (context.repository.starts_with("https://") || context.repository.starts_with("http://") || context.repository.starts_with("svn://") || context.repository.starts_with("svn+ssh://") || context.repository.starts_with("file://"));

@@ -120,12 +120,11 @@ namespace
 					{
 						++inventory_reads;
 						const auto depth = sparse_inventory_read == inventory_reads ? "empty" : inventory_depth;
-						output = inventory_xml.empty() ? "<?xml version=\"1.0\"?><info><entry kind=\"dir\" path=\"copy\"><wc-info><depth>infinity</depth></wc-info></entry><entry kind=\"dir\" path=\"copy/child\"><wc-info><depth>" + depth + "</depth></wc-info></entry></info>" : inventory_xml;
+						output = inventory_xml.empty() ? "<?xml version=\"1.0\"?><info><entry kind=\"dir\" path=\"copy\"><wc-info><wcroot-abspath>" + uam::paths::Utf8PathString(directory) + "</wcroot-abspath><depth>infinity</depth></wc-info></entry><entry kind=\"dir\" path=\"copy/child\"><wc-info><depth>" + depth + "</depth></wc-info></entry></info>" : inventory_xml;
 						return true;
 					}
 					const auto& field = args[3];
-					if (field == "wc-root") output = uam::paths::Utf8PathString(directory);
-					else if (field == "depth") output = "infinity";
+					if (field == "depth") output = "infinity";
 					else if (field == "url") output = url;
 					else if (field == "repos-root-url") output = "file:///private/repository";
 					else if (field == "repos-uuid") output = uuid;
@@ -211,7 +210,7 @@ namespace
 		const std::string credentials = "SVN needs your credentials. Run svn info svn://repository.invalid/lines once in a terminal to save them, then retry.";
 		{
 			Fixture f; f.failure_text = "E155007: '/private/copy' is not a working copy";
-			f.fails = [](const std::vector<std::string>& args) { return args[0] == "info" && args[3] == "wc-root"; };
+			f.fails = [](const std::vector<std::string>& args) { return args[0] == "info" && args[3] == "depth"; };
 			const auto result = uam::DiscoverSvnBranches(f.scope, "^/lines", f.Runner());
 			Check(!result.ok && result.error == "Could not verify the full SVN working-copy root. E155007: '/private/copy' is not a working copy.", "working-copy read failure carries svn's reason: " + result.error);
 		}
