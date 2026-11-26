@@ -382,8 +382,9 @@ namespace
 #ifdef _WIN32
 			(void)shared_environment;
 			// _popen runs `cmd /c` without /S: a line starting with a quote and holding more than two loses its first and
-			// last quote. One extra outer pair is what cmd strips, leaving every argument's own quotes intact.
-			line = "\"" + uam::shell::JoinEscapedArgs(command) + "\"";
+			// last quote. One extra outer pair is what cmd strips, leaving every argument's own quotes intact. svn's errors
+			// are on stderr, which _popen does not capture, so they join the output as they do through popen below.
+			line = "\"" + uam::shell::JoinEscapedArgs(command) + " 2>&1\"";
 			FILE* pipe = _popen(line.c_str(), "r");
 #else
 			if (shared_environment)
