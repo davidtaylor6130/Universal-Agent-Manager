@@ -1,4 +1,5 @@
 #include "common/provider/opencode_v2_session.h"
+#include <algorithm>
 #include <stdexcept>
 #include <utility>
 
@@ -6,14 +7,27 @@ namespace uam::opencode_v2
 {
 namespace
 {
-Json Rules(bool read_only)
+Json Rules(bool read_only, const std::vector<std::string>& deny = {})
 {
 	// Remove prior session allowances without overriding native agent denials.
 	// Force-ask is imposed after saved grants by the process-local hook.
 	Json rules = Json::array({{{"action", "subagent"}, {"resource", "*"}, {"effect", "deny"}}, {{"action", "task"}, {"resource", "*"}, {"effect", "deny"}}});
 	if (read_only)
 		rules.push_back({{"action", "edit"}, {"resource", "*"}, {"effect", "deny"}});
+	// Imported agent denies as native rules too; wildcard actions are enforced only by the process-local hook.
+	for (const auto& action : deny)
+		if (action.find('*') == std::string::npos && action != "subagent" && action != "task" && !(read_only && action == "edit"))
+			rules.push_back({{"action", action}, {"resource", "*"}, {"effect", "deny"}});
 	return rules;
+}
+/// An exact action, `*`, or a prefix ending in `*`; anything else is refused rather than guessed.
+bool ValidDenyAction(const Json& action)
+{
+	if (!action.is_string()) return false;
+	const auto& text = action.get_ref<const std::string&>();
+	const auto star = text.find('*');
+	return !text.empty() && text.size() <= 64 && (star == std::string::npos || star == text.size() - 1) &&
+	    text.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-./*") == std::string::npos;
 }
 Json Data(const Json& response)
 {
@@ -86,19 +100,28 @@ void Session::Policy(const Json& params)
 	const Json meta = params.value("_meta", Json::object()).value("uamPolicy", Json{});
 	if (!meta.is_object() || !meta.contains("readOnly") || !meta["readOnly"].is_boolean())
 		throw std::runtime_error("OpenCode V2 input has no captured UAM permission policy.");
+	std::vector<std::string> deny;
+	if (meta.contains("deny"))
+	{
+		const Json& list = meta.at("deny");
+		if (!list.is_array() || list.size() > 128 || !std::ranges::all_of(list, ValidDenyAction))
+			throw std::runtime_error("OpenCode V2 input has invalid captured agent deny rules.");
+		for (const auto& action : list) deny.push_back(action.get<std::string>());
+	}
 	read_only_ = meta.at("readOnly").get<bool>() || mode_ == "plan";
+	deny_ = std::move(deny);
 	Json capture = meta; capture["effectiveReadOnly"] = read_only_;
 	if (capture != policy_capture_) session_grants_.clear();
 	policy_capture_ = std::move(capture);
 	const bool defer_binding = verify_permission_ && !ready_ && !session_id_.empty();
-	if (!defer_binding) publish_policy_(session_id_, cwd_, read_only_);
+	if (!defer_binding) publish_policy_(session_id_, cwd_, read_only_, deny_);
 	if (session_id_.empty()) return;
-	const Json rules = Rules(read_only_);
+	const Json rules = Rules(read_only_, deny_);
 	query_("PATCH", Route(), {{"permissions", rules}});
 	const Json observed = Data(query_("GET", Route(), nullptr));
 	if (observed.value("id", "") != session_id_ || observed.value("location", Json::object()).value("directory", "") != cwd_ || observed.value("permissions", Json{}) != rules)
 		throw std::runtime_error("OpenCode V2 did not confirm the exact session, workspace and UAM permission rules.");
-	if (defer_binding) publish_policy_(session_id_, cwd_, read_only_);
+	if (defer_binding) publish_policy_(session_id_, cwd_, read_only_, deny_);
 }
 
 Json Session::Options()
@@ -197,7 +220,7 @@ Json Session::Setup(const Json& params, bool load)
 		if (info.value("id", "") != id || info.value("location", Json::object()).value("directory", "") != cwd_)
 			throw std::runtime_error("OpenCode V2 resume identity or workspace does not match.");
 	}
-	else info = Data(query_("POST", "/api/session", {{"location", {{"directory", cwd_}}}, {"agent", read_only_ ? "plan" : "build"}, {"permissions", Rules(read_only_)}}));
+	else info = Data(query_("POST", "/api/session", {{"location", {{"directory", cwd_}}}, {"agent", read_only_ ? "plan" : "build"}, {"permissions", Rules(read_only_, deny_)}}));
 	session_id_ = info.at("id").get<std::string>();
 	const bool valid_id = Id(session_id_);
 	startup_created_ = verify_permission_ && !load && valid_id;
@@ -372,7 +395,7 @@ void Session::Handle(const Json& message)
 		Json failure{{"code", startup_failed ? kRuntimeVerificationError : -32603}, {"message", error.what()}};
 		if (startup_failed)
 		{
-			try { publish_policy_({}, cwd_, true); } catch (...) {}
+			try { publish_policy_({}, cwd_, true, {}); } catch (...) {}
 			if (startup_created_)
 			{
 				try { query_("DELETE", Route(), nullptr); session_id_.clear(); } catch (...) {}

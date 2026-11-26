@@ -72,6 +72,7 @@ import type {
   OpenWorkspaceEditorResponse,
   ProviderChatDefaults,
   ProviderAgentImportPreview,
+  ProviderAgentDiscovery,
   ProviderAgentImportOptions,
   ProviderAgentImportOutcome,
   ProviderModelCatalog,
@@ -2397,11 +2398,20 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       return selected || null
     },
 
-    previewProviderAgentImport: async (providerId: string, sourcePath: string) => {
+    discoverProviderAgents: async (providerId: string, chatId = '') => {
+      if (!isCefContext()) return null
+      const response = await sendToCEF<ProviderAgentDiscovery>({
+        action: 'discoverProviderAgents',
+        payload: { providerId, chatId },
+      })
+      return response.ok ? response.data ?? null : null
+    },
+
+    previewProviderAgentImport: async (providerId: string, sourcePath: string, sourceEntry = '') => {
       if (!isCefContext()) return null
       const response = await sendToCEF<ProviderAgentImportPreview>({
         action: 'previewProviderAgentImport',
-        payload: { providerId, sourcePath },
+        payload: { providerId, sourcePath, sourceEntry },
       })
       return response.ok ? response.data ?? null : null
     },
@@ -2410,7 +2420,7 @@ export function createSessionsSlice(set: ZustandSet, get: ZustandGet, inCef: boo
       if (!isCefContext()) return { ok: false, error: '' }
       const response = await sendToCEF<{ id?: string; mode?: string; scope?: string }>({
         action: 'importProviderAgent',
-        payload: options,
+        payload: { ...options, sourceEntry: options.sourceEntry ?? '' },
       })
       if (!response.ok) return { ok: false, error: oneLineRefusalReason(response.error) }
       if (options.chatId) await get().refreshUamAgents(options.chatId)
