@@ -451,8 +451,14 @@ jobs:
       - name: Install the SVN client
         shell: pwsh
         run: |
-          choco install sliksvn -y --no-progress
-          if ($LASTEXITCODE -notin 0, 1641, 3010) { throw 'SlikSVN install failed.' }
+          # Chocolatey's feed sometimes answers 503 or 504, so the install gets three attempts about 30 seconds apart.
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            choco install sliksvn -y --no-progress
+            if ($LASTEXITCODE -in 0, 1641, 3010) { break }
+            if ($attempt -eq 3) { throw "SlikSVN install failed after 3 attempts (last exit code $LASTEXITCODE)." }
+            Write-Host "SlikSVN install attempt $attempt failed with exit code $LASTEXITCODE; retrying in 30 seconds."
+            Start-Sleep -Seconds 30
+          }
           $tool = Get-ChildItem 'C:\Program Files\SlikSvn', 'C:\Program Files (x86)\SlikSvn' -Recurse -Filter svnadmin.exe -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not $tool) { throw 'SlikSVN did not install svnadmin.exe.' }
           Add-Content -Path $env:GITHUB_PATH -Value $tool.DirectoryName
@@ -577,8 +583,14 @@ jobs:
       - name: Install the SVN client
         shell: pwsh
         run: |
-          choco install sliksvn -y --no-progress
-          if ($LASTEXITCODE -notin 0, 1641, 3010) { throw 'SlikSVN install failed.' }
+          # Chocolatey's feed sometimes answers 503 or 504, so the install gets three attempts about 30 seconds apart.
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            choco install sliksvn -y --no-progress
+            if ($LASTEXITCODE -in 0, 1641, 3010) { break }
+            if ($attempt -eq 3) { throw "SlikSVN install failed after 3 attempts (last exit code $LASTEXITCODE)." }
+            Write-Host "SlikSVN install attempt $attempt failed with exit code $LASTEXITCODE; retrying in 30 seconds."
+            Start-Sleep -Seconds 30
+          }
           $tool = Get-ChildItem 'C:\Program Files\SlikSvn', 'C:\Program Files (x86)\SlikSvn' -Recurse -Filter svnadmin.exe -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not $tool) { throw 'SlikSVN did not install svnadmin.exe.' }
           Add-Content -Path $env:GITHUB_PATH -Value $tool.DirectoryName
