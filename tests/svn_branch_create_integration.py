@@ -37,7 +37,9 @@ with tempfile.TemporaryDirectory(prefix="uam-svn-create-") as temporary:
 
     url = repository.as_uri()
     run("mkdir", url + "/trunk", url + "/branches", url + "/tags", "-m", "standard layout")
-    run("checkout", url + "/trunk", str(working_copy))
+    # SVN 1.14 reads "@" in a checkout destination as a peg revision, so check out to a plain name and rename.
+    run("checkout", url + "/trunk", str(root / "copy"))
+    (root / "copy").rename(working_copy)
     (working_copy / "tracked.txt").write_text("trunk content\n")
     run("add", str(working_copy / "tracked.txt") + "@")
     run("commit", str(working_copy) + "@", "-m", "trunk content")
