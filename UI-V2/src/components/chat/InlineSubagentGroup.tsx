@@ -8,6 +8,7 @@ import { useAppStore, type AcpToolCall } from '../../store/useAppStore'
 import { Button, motionAllowed } from '../ui'
 import { managedLaunchRunId } from './inlineSubagents'
 import './InlineSubagentGroup.css'
+import { useNow } from '../../hooks/useNow'
 
 type Run = ManagedSubagentRun & { controlScopeId: string }
 type Feed = { runs: Map<string, Run>; loading: boolean; error: boolean; readError: boolean; stopping: string; feedback: string; now: number; register: (ids: string[]) => () => void; stop: (id: string) => Promise<void>; open?: (id: string) => void }
@@ -26,7 +27,6 @@ export function InlineSubagentProvider({ sourceChatId, onOpenManagedRun, childre
   const [readingSourceChatId, setReadingSourceChatId] = useState('')
   const [stopping, setStopping] = useState('')
   const [feedback, setFeedback] = useState('')
-  const [now, setNow] = useState(Date.now)
   const mutating = useRef(false)
   const generation = useRef(0)
   const [failures, setFailures] = useState(0)
@@ -63,7 +63,7 @@ export function InlineSubagentProvider({ sourceChatId, onOpenManagedRun, childre
         if (!Number.isSafeInteger(page.nextOffset) || page.nextOffset <= offset || page.nextOffset >= page.totalCount) throw new Error('Invalid page')
         offset = page.nextOffset
       } while (offset < 10000)
-      if (!cancelled && readGeneration === generation.current) { setFailures(0); setReadError(false); setFeedback(''); setRuns(next); setNow(Date.now()); setError(false); setReadingSourceChatId('') }
+      if (!cancelled && readGeneration === generation.current) { setFailures(0); setReadError(false); setFeedback(''); setRuns(next); setError(false); setReadingSourceChatId('') }
     })().catch(() => { if (!cancelled && readGeneration === generation.current) { setFailures(value => value + 1); setReadError(true); setError(true); setReadingSourceChatId(''); setRuns(previous => new Map([...previous].map(([id, run]) => [id, { ...run, lastReported: true, canCancel: false }]))) } })
     return () => { cancelled = true; controller.abort(); ++generation.current }
   }, [sourceChatId, expectedKey, revision, attempt])
@@ -82,11 +82,7 @@ export function InlineSubagentProvider({ sourceChatId, onOpenManagedRun, childre
     const visible = () => { if (document.visibilityState === 'visible' && registered.current.size) refresh() }
     document.addEventListener('visibilitychange', visible); return () => document.removeEventListener('visibilitychange', visible)
   }, [refresh])
-  useEffect(() => {
-    if (!expectedKey || ![...runs.values()].some(active)) return
-    const timer = window.setInterval(() => { if (document.visibilityState !== 'hidden') setNow(Date.now()) }, 1000)
-    return () => window.clearInterval(timer)
-  }, [runs, expectedKey])
+  const now = useNow(Boolean(expectedKey) && [...runs.values()].some(active))
   const stop = async (id: string) => {
     const run = firstLevelRun(runs.get(id))
     if (!isCefContext() || mutating.current || error || !run?.canCancel || run.lastReported) return

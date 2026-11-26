@@ -38,7 +38,7 @@ it('commits chat selection within 250ms with 1,000 mounted sidebar rows', () => 
       expectWithinBudget('large sidebar selection to committed state', INTERACTION_BUDGET_MS, () => {
         act(() => row.click())
         expect(useAppStore.getState().activeSessionId).toBe(id)
-        expect(row.classList.contains('uam-sb-row--selected')).toBe(true)
+        expect(row.closest('.uam-sb-row')!.classList.contains('uam-sb-row--selected')).toBe(true)
       })
     }
   } finally {

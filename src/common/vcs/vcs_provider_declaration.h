@@ -54,7 +54,7 @@ namespace uam::vcs
 	}};
 #undef UAM_SVN_COMMON_READ_SWITCHES
 
-	/// <summary>What a system can do. VcsCommitService declines History, Update and OriginComparison for a system that does not declare them,
+	/// <summary>What a system can do. VcsCommitService declines History, Update, OriginComparison and Resolve for a system that does not declare them,
 	/// and the commit panel offers them from the list sent with each status. The chat branch picker refuses creation without BranchCreate.</summary>
 	enum class VcsCapability
 	{
@@ -73,6 +73,8 @@ namespace uam::vcs
 		Update,
 		/// Relate a branch or tag to the path it was copied from, for the history graph: the copy point, its own revisions and the origin's.
 		OriginComparison,
+		/// Mark a conflicted path resolved, keeping the working file, the repository's version or the local version.
+		Resolve,
 	};
 
 	/// <summary>Stable bridge name for a capability.</summary>
@@ -92,6 +94,7 @@ namespace uam::vcs
 		case VcsCapability::History: return "history";
 		case VcsCapability::Update: return "update";
 		case VcsCapability::OriginComparison: return "originComparison";
+		case VcsCapability::Resolve: return "resolve";
 		}
 		return "";
 	}
@@ -100,11 +103,11 @@ namespace uam::vcs
 	    VcsCapability::Status, VcsCapability::Diff, VcsCapability::Commit, VcsCapability::ChatComparison, VcsCapability::RevisionComparison,
 	    VcsCapability::BranchList, VcsCapability::BranchCreate, VcsCapability::BranchSwitch, VcsCapability::WorkspaceIsolation};
 	// SVN has no chat or revision comparison in the panel and cannot create a branch. Its branch listing and switching are local-only,
-	// and its isolation is a managed local Git snapshot. Git has no History, Update or origin comparison in the panel yet.
-	inline constexpr std::array<VcsCapability, 9> kSvnCapabilities = {
+	// and its isolation is a managed local Git snapshot. Git has no History, Update, origin comparison or Resolve in the panel yet.
+	inline constexpr std::array<VcsCapability, 10> kSvnCapabilities = {
 	    VcsCapability::Status, VcsCapability::Diff, VcsCapability::Commit,
 	    VcsCapability::BranchList, VcsCapability::BranchSwitch, VcsCapability::WorkspaceIsolation,
-	    VcsCapability::History, VcsCapability::Update, VcsCapability::OriginComparison};
+	    VcsCapability::History, VcsCapability::Update, VcsCapability::OriginComparison, VcsCapability::Resolve};
 
 	/// <summary>Static facts about one version-control system. Lives below the application layer so the
 	/// command filter can read each system's allow-list.</summary>

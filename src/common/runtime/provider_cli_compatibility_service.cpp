@@ -1,5 +1,6 @@
 #include "app/host_admission_integration.h"
 #include "common/platform/background_thread_priority.h"
+#include "common/platform/child_process_priority.h"
 #include "provider_cli_compatibility_service.h"
 #include "common/runtime/cli_version_parser.h"
 
@@ -226,6 +227,8 @@ namespace
 		    [host, provider_id, command, installing, timeout_ms, previous_probe, install_manager, additional_probes, state, allow_interactive_elevation](std::stop_token stop_token)
 		    {
 		    	uam::platform::LowerCurrentThreadToBackgroundPriority();
+			    // A version check is background work; an install or update the user started keeps normal priority.
+			    const uam::platform::ScopedChildProcessClass check_children(installing ? uam::platform::ChildProcessClass::UserTurn : uam::platform::ChildProcessClass::Background);
 			    state->result = RunCliCommand(host, provider_id, command, installing, timeout_ms,
 			        stop_token, previous_probe, install_manager, additional_probes, &state->remote_helper_connected, allow_interactive_elevation);
 

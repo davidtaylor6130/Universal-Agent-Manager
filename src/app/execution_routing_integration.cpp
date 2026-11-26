@@ -460,6 +460,7 @@ namespace uam
 				occupancy.push_back({other.id, other.execution_host_id});
 		ExecutionRoutingRequest request;
 		request.chat_id = chat.id;
+		request.now_seconds = now;
 		request.automatic_enabled = app.settings.execution_routing.enabled;
 		request.recovery_of_owned_work = ExecutionRoutingOwnsWork(app, chat) && !ExecutionRoutingStartHeld(app, chat);
 		if (!chat.routing_assigned_connection_identity.empty()) request.assigned = AssignmentForChat(chat);
@@ -690,6 +691,9 @@ namespace uam
 			if (ChatSession* chat = ChatDomainService().FindChatById(app, id); chat != nullptr)
 				if (AcpSessionState* session = FindAcpSessionForChat(app, id); session != nullptr)
 					changed = DrainNextQueuedAcpUserPrompt(app, *session, *chat) || changed;
+		// A deleted chat gives up its place in the admission queue now rather than after it ages out.
+		for (const std::string& id : app.execution_routing_service->QueuedChatIds())
+			if (ChatDomainService().FindChatById(app, id) == nullptr) (void)app.execution_routing_service->Withdraw(id);
 		const std::unordered_set<std::string> reserved_ids = app.execution_routing_reserved_chat_ids;
 		for (const std::string& id : reserved_ids)
 		{

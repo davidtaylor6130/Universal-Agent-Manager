@@ -8,7 +8,7 @@ import {
   isLatestPendingRequest,
   rememberPendingRequest,
 } from '../cpp/reconcile'
-import type { ComputePool, ComputePoolUsage, CppFolder, HostAdmissionSettings, HostAdmissionUsage, PullRequestWatch, ShellAction } from '../cpp/types'
+import type { ComputePool, ComputePoolUsage, CppFolder, HostAdmissionSettings, HostAdmissionUsage, PullRequestWatch, ShellAction, TimerNotice } from '../cpp/types'
 import { DEFAULT_HOST_ADMISSION } from '../cpp/sanitizers'
 import { EMPTY_HOST_LOAD, type ExecutionHostLoad } from '../../types/hostLoad'
 import { DEFAULT_PROVIDER_ID } from '../../utils/providerMetadata'
@@ -123,6 +123,7 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
     hostAdmissionUsage: {} as HostAdmissionUsage,
     executionHostLoad: EMPTY_HOST_LOAD as ExecutionHostLoad,
     prWatches: [] as PullRequestWatch[],
+    timerNotices: [] as TimerNotice[],
     shellActionNotification: '',
     workspaceFolderRecoveryError: '',
     workspaceDeletionError: '',

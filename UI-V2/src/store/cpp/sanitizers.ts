@@ -3,10 +3,12 @@ import { sanitizeExecutionRouting } from '../../types/executionRouting'
 import { sanitizeExecutionHostLoad, sanitizeRoutingWaitHosts } from '../../types/hostLoad'
 import { DEFAULT_CENTRAL_PROVIDER_CONFIGURATION, type CentralProviderConfiguration, type WindowsPowerShellPreference } from './types'
 import { sanitizeCustomIcon, type CustomIcon } from '../../types/customIcon'
+import { sanitizePermissionCommandRules } from '../../types/permissionRules'
 // Sanitiser and normaliser functions for raw C++ state payloads.
 // Extracted from useAppStore.ts (MO-1). Pure functions — no side effects.
 
 import type {
+  TimerNotice,
   ManualCompactionAvailability,
   CopilotAutoRoutingProjection,
   CopilotAutoTierDescriptor,
@@ -648,6 +650,7 @@ export function sanitizePendingPermission(value: unknown): AcpPendingPermission 
     safetyRisk: value.safetyRisk === 'allowed' || value.safetyRisk === 'warn' || value.safetyRisk === 'warn_high' ? value.safetyRisk : undefined,
     safetyTier: value.safetyTier === 'low' || value.safetyTier === 'medium' || value.safetyTier === 'high' ? value.safetyTier : undefined,
     safetyRequiresApproval: booleanOr(value.safetyRequiresApproval),
+    ruleNotice: typeof value.ruleNotice === 'string' && value.ruleNotice.trim() ? value.ruleNotice.trim().slice(0, 300) : undefined,
     options: Array.isArray(value.options)
       ? value.options.flatMap((option) => {
           const sanitized = sanitizePermissionOption(option)
@@ -980,6 +983,8 @@ type ModelCatalogEntry = { availableModels: AcpModel[]; configOptions: AcpConfig
 // Native bounds it: a patch with modelCatalogsReset clears it first, keeping it equal to what native believes was sent.
 const modelCatalogsById = new Map<string, ModelCatalogEntry>()
 let missingModelCatalog = false
+// The first catalogue id the last state sanitised referenced without having it, for the rejection log.
+let missingModelCatalogId = ''
 
 function sanitizeAcpModels(value: unknown): AcpModel[] {
   return Array.isArray(value)
@@ -1001,6 +1006,7 @@ function sanitizeAcpConfigOptions(value: unknown): AcpConfigOption[] {
 
 function rememberModelCatalogs(value: unknown, reset: boolean): void {
   missingModelCatalog = false
+  missingModelCatalogId = ''
   if (reset) modelCatalogsById.clear()
   if (!isRecord(value)) return
   for (const [id, entry] of Object.entries(value)) {
@@ -1008,6 +1014,10 @@ function rememberModelCatalogs(value: unknown, reset: boolean): void {
     if (!isRecord(entry) || modelCatalogsById.has(id)) continue
     modelCatalogsById.set(id, { availableModels: sanitizeAcpModels(entry.availableModels), configOptions: sanitizeAcpConfigOptions(entry.configOptions) })
   }
+}
+
+export function lastMissingModelCatalogId(): string {
+  return missingModelCatalog ? missingModelCatalogId : ''
 }
 
 export function resetModelCatalogsForTests(): void {
@@ -1090,7 +1100,10 @@ function restoreRetainedChatFields(chat: unknown): unknown {
 export function sanitizeCppAcpSession(value: unknown): CppAcpSession | undefined {
   if (!isRecord(value)) return undefined
   const catalog = isString(value.modelCatalogId) ? modelCatalogsById.get(value.modelCatalogId) : undefined
-  if (isString(value.modelCatalogId) && !catalog) missingModelCatalog = true
+  if (isString(value.modelCatalogId) && !catalog) {
+    if (!missingModelCatalog) missingModelCatalogId = value.modelCatalogId
+    missingModelCatalog = true
+  }
 
   return {
     sessionId: isString(value.sessionId) ? value.sessionId : undefined,
@@ -2036,6 +2049,8 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
       sidebarPinnedChatOrder: [],
       sidebarActiveChatOrder: [],
       steerActiveTurnOnSend: false,
+      permissionCommandRules: [],
+      permissionAiReviewEnabled: true,
       gitEnabled: true,
       svnEnabled: true,
       memoryEnabledDefault: true,
@@ -2210,6 +2225,8 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
     sidebarPinnedChatOrder: sidebarChatOrder(value.sidebarPinnedChatOrder),
     sidebarActiveChatOrder: sidebarChatOrder(value.sidebarActiveChatOrder),
     steerActiveTurnOnSend: booleanOr(value.steerActiveTurnOnSend, false),
+    permissionCommandRules: sanitizePermissionCommandRules(value.permissionCommandRules),
+    permissionAiReviewEnabled: booleanOr(value.permissionAiReviewEnabled, true),
     gitEnabled: booleanOr(value.gitEnabled, true),
     svnEnabled: booleanOr(value.svnEnabled, true),
     memoryEnabledDefault: normalizeMemoryLevel(value.memoryLevelDefault, booleanOr(value.memoryEnabledDefault, true), false) !== 'off',
@@ -2342,6 +2359,7 @@ export function sanitizeCppAppState(value: unknown): CppAppState | null {
     hostAdmissionUsage: sanitizeHostAdmissionUsage(value.hostAdmissionUsage),
     executionHostLoad: sanitizeExecutionHostLoad(value.executionHostLoad),
     prWatches: sanitizePullRequestWatches(value.prWatches),
+    timers: sanitizeTimers(value.timers),
     shellActionNotification: stringOr(value.shellActionNotification),
     statusLine: stringOr(value.statusLine),
     deletionProgress: sanitizeDeletionProgress(value.deletionProgress),
@@ -2486,6 +2504,21 @@ export function sanitizePullRequestWatches(value: unknown): PullRequestWatch[] {
   })
 }
 
+export function sanitizeTimers(value: unknown): { notices: TimerNotice[] } {
+  const notices = isRecord(value) && Array.isArray(value.notices) ? value.notices : []
+  return {
+    notices: notices.flatMap((entry) => {
+      if (!isRecord(entry)) return []
+      const serial = nonNegativeInteger(entry.serial) ?? 0
+      const message = stringOr(entry.message)
+      if (serial < 1 || !message) return []
+      const chatId = stringOr(entry.chatId)
+      const title = stringOr(entry.title).trim()
+      return [{ serial, message, tone: noticeTone(entry.tone), ...(title ? { title } : {}), ...(chatId ? { chatId } : {}) }]
+    }),
+  }
+}
+
 function sanitizeShellActions(value: unknown): ShellAction[] {
   if (!Array.isArray(value)) return []
   return value.flatMap((entry) => {
@@ -2616,6 +2649,7 @@ export function sanitizeCppStatePatch(value: unknown): CppStatePatch | null {
     hostAdmissionUsage: value.hostAdmissionUsage !== undefined ? sanitizeHostAdmissionUsage(value.hostAdmissionUsage) : undefined,
     executionHostLoad: value.executionHostLoad !== undefined ? sanitizeExecutionHostLoad(value.executionHostLoad) : undefined,
     prWatches: value.prWatches !== undefined ? sanitizePullRequestWatches(value.prWatches) : undefined,
+    timers: value.timers !== undefined ? sanitizeTimers(value.timers) : undefined,
     shellActionNotification: value.shellActionNotification !== undefined ? stringOr(value.shellActionNotification) : undefined,
     statusLine: value.statusLine !== undefined ? stringOr(value.statusLine) : undefined,
   }

@@ -49,6 +49,7 @@ namespace uam
 	class StartupNativeImportService;
 	class StorageRetentionService;
 	class PrWatchService;
+	class TimerService;
 	class DataFolderSettingsService;
 	class OpenCodeNativeActivityService;
 	class ManagedSubagentCancellationReceipt;
@@ -466,6 +467,11 @@ namespace uam
 		std::string execution_command;
 		// Captured from the chat when the request arrives: where admitted reads and automatic edits may reach.
 		command_safety::ReadScope read_scope;
+		// Transient: an ask rule (or an unresolvable program name) keeps this request for the user, so neither
+		// automatic approval nor AI review may answer it.
+		bool command_rule_hold = false;
+		// One-line notice shown on the approval card when a rule holds the request (a push waiting for approval).
+		std::string command_rule_notice;
 	};
 
 	struct AcpUserInputOptionState
@@ -561,6 +567,8 @@ namespace uam
 		/// Signing key held only by this capability's MCP server process; a request without its signature is refused.
 		std::string request_key;
 		int64_t expires_at_epoch_ms = 0;
+		/// When this session last raised its chat's attention flag through `notify`; bounds it to once a minute.
+		int64_t last_notify_epoch_ms = 0;
 		std::deque<int64_t> request_times_epoch_ms;
 		std::unordered_set<std::string> seen_request_ids;
 		std::deque<std::string> seen_request_order; // Insertion order, so eviction drops the oldest ID.
@@ -1334,6 +1342,10 @@ namespace uam
 		std::string request_id_json;
 		std::string command_preview;
 		std::string requested_model_id;
+		// Session cache key for this exact reviewer input; empty when the verdict must not be cached.
+		std::string cache_key;
+		// "approve" or "deny" when this task replays a cached verdict instead of running a worker.
+		std::string cached_decision;
 		std::shared_ptr<AsyncProcessTaskState> state;
 		std::unique_ptr<std::jthread> worker;
 	};
@@ -1552,6 +1564,8 @@ namespace uam
 		std::shared_ptr<StorageRetentionService> storage_retention_service;
 		/// Pull request watches for every chat; null in tools and tests that do not create it.
 		std::shared_ptr<PrWatchService> pr_watch_service;
+		/// Chat follow-up wakes and automation schedules; null in tools and tests that do not create it.
+		std::shared_ptr<TimerService> timer_service;
 		std::shared_ptr<DataFolderSettingsService> data_folder_settings;
 		std::shared_ptr<ExecutionRoutingService> execution_routing_service;
 		/// The gate every process start asks before it runs on a computer; null in tools and tests that do not create it.
@@ -1748,6 +1762,10 @@ namespace uam
 		bool remote_host_health_changed = false;
 		std::vector<AsyncMemoryExtractionTask> memory_extraction_tasks;
 		std::vector<AsyncPermissionReviewTask> permission_review_tasks;
+		// In-memory, this run only: approve/deny verdicts keyed by the exact reviewer input, reviewer, provider and
+		// workspace. Never persisted or logged; bounded by kPermissionReviewCacheLimit, oldest first out.
+		std::unordered_map<std::string, std::string> permission_review_cache;
+		std::deque<std::string> permission_review_cache_order;
 		std::vector<AsyncTurnCheckpointTask> turn_checkpoint_tasks;
 		std::deque<PendingGoalIterationState> pending_goal_iterations;
 		std::deque<QueuedMemoryExtractionTask> memory_extraction_queue;
