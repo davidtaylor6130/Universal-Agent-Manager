@@ -430,6 +430,39 @@ function deserializeState(
   }
 }
 
+type HistoryReadMaps = Pick<AppState, 'chatHistoryPageBySessionId' | 'chatHistoryReadBySessionId' | 'chatHistoryErrorBySessionId' | 'chatHistoryErrorWasRefreshBySessionId'>
+
+// Saved history pages, reads and read errors of chats native removed; empty when none, so unchanged maps keep their identity.
+function historyReadMapsWithout(current: HistoryReadMaps, removedChatIds: Set<string>): Partial<HistoryReadMaps> {
+  if (removedChatIds.size === 0) return {}
+  const prune = <T,>(values: Record<string, T> | undefined) => {
+    const next = withoutDeletedKeys(values ?? {}, removedChatIds)
+    return values && sameRecordEntries(values, next) ? values : next
+  }
+  return {
+    chatHistoryPageBySessionId: prune(current.chatHistoryPageBySessionId),
+    chatHistoryReadBySessionId: prune(current.chatHistoryReadBySessionId),
+    chatHistoryErrorBySessionId: prune(current.chatHistoryErrorBySessionId),
+    chatHistoryErrorWasRefreshBySessionId: prune(current.chatHistoryErrorWasRefreshBySessionId),
+  }
+}
+
+// A full state lists every chat, so entries for any other id belong to removed chats. deserializeState keeps page starts
+// for chats it does not list, so they are pruned here too.
+function historyReadMapsForChats(current: HistoryReadMaps, chats: ReadonlyArray<{ id: string }>, historyStartIndexBySessionId: AppState['historyStartIndexBySessionId']): Partial<HistoryReadMaps & Pick<AppState, 'historyStartIndexBySessionId'>> {
+  const liveChatIds = new Set(chats.map((chat) => chat.id))
+  const removedChatIds = new Set<string>()
+  for (const values of [current.chatHistoryPageBySessionId, current.chatHistoryReadBySessionId, current.chatHistoryErrorBySessionId, current.chatHistoryErrorWasRefreshBySessionId, historyStartIndexBySessionId]) {
+    for (const chatId of Object.keys(values ?? {})) if (!liveChatIds.has(chatId)) removedChatIds.add(chatId)
+  }
+  if (removedChatIds.size === 0) return {}
+  const pageStarts = withoutDeletedKeys(historyStartIndexBySessionId, removedChatIds)
+  return {
+    ...historyReadMapsWithout(current, removedChatIds),
+    historyStartIndexBySessionId: sameRecordEntries(historyStartIndexBySessionId, pageStarts) ? historyStartIndexBySessionId : pageStarts,
+  }
+}
+
 function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppState> | null {
   const nextRevision = cppPatchRevision(patch)
   if (!isNewerStateRevision(nextRevision, current.lastAppliedStateRevision)) return null
@@ -548,6 +581,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
   const markdownStoreAttachedBySessionId = withoutDeletedKeys(current.markdownStoreAttachedBySessionId, removedChatIds)
   const repositoryReviewBySessionId = withoutDeletedKeys(current.repositoryReviewBySessionId, removedChatIds)
   const uamAgentsBySessionId = withoutDeletedKeys(current.uamAgentsBySessionId, removedChatIds)
+  const historyReadMaps = historyReadMapsWithout(current, removedChatIds)
 
   return {
     folders,
@@ -555,6 +589,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     sessions: sameArrayEntries(current.sessions, sessionsWithPendingCodexOptions) ? current.sessions : sessionsWithPendingCodexOptions,
     messages: sameRecordEntries(current.messages, messages) ? current.messages : messages,
     historyStartIndexBySessionId,
+    ...historyReadMaps,
     chatSearchNavigation: current.chatSearchNavigation && removedChatIds.has(current.chatSearchNavigation.chatId) ? null : current.chatSearchNavigation,
     goalsByChatId: sameRecordEntries(current.goalsByChatId, goalsByChatId) ? current.goalsByChatId : goalsByChatId,
     activeGoalIdByChatId: sameRecordEntries(current.activeGoalIdByChatId, activeGoalIdByChatId) ? current.activeGoalIdByChatId : activeGoalIdByChatId,
@@ -729,6 +764,9 @@ export const useAppStore = create<AppState>((set, get) => {
       for (const [chatId, pending] of entries) {
         if (!liveSessionIds.has(chatId)) continue
         if (state.chatSearchNavigation?.chatId === chatId) continue
+        // An unopened chat with saved history stays unloaded: a fragment would make streamDone read and keep its
+        // latest page for the rest of the session. Opening it reads history, which already holds the streamed text.
+        if (nextMessages[chatId] === undefined && (state.sessions.find((session) => session.id === chatId)?.messageCount ?? 0) > 0) continue
         const existingMessages = nextMessages[chatId] ?? []
         let lastMessage = existingMessages[existingMessages.length - 1]
         const token = pending.token
@@ -798,6 +836,10 @@ export const useAppStore = create<AppState>((set, get) => {
   // reply and pushes travel separate IPC paths, so a diff-only patch can overtake the
   // snapshot. Until a full state hydrates, re-pull a stale snapshot (#622).
   let bootstrapHydrated = false
+  // Resync waits for hydration, so a state push rejected before it is remembered here: the highest rejected revision,
+  // Infinity when a rejection's revision is unknown, -1 for none. Hydration re-pulls unless its snapshot covers it.
+  let rejectedStateRevisionBeforeHydration = -1
+  let resyncAfterHydration: ((reason: string) => void) | null = null
   let bootstrapRetryTimer: ReturnType<typeof setTimeout> | null = null
   // A newer store instance (module reload) owns window.uamPush; this one must stop re-pulling.
   let ownedUamPush: unknown = null
@@ -928,13 +970,16 @@ export const useAppStore = create<AppState>((set, get) => {
           shellActionNotification: current.shellActionNotification,
           statusLine: current.statusLine,
         })
-        set({ ...current.reconcileMemorySettingsProjection(deserialized, sanitized.settings), bootstrapStateError: '', bootstrapStateLoading: false, bootstrapPending: false })
+        set({ ...current.reconcileMemorySettingsProjection(deserialized, sanitized.settings), ...historyReadMapsForChats(current, sanitized.chats, deserialized.historyStartIndexBySessionId), bootstrapStateError: '', bootstrapStateLoading: false, bootstrapPending: false })
         // Only after the state applied: a throw above must still reach failBootstrap.
         bootstrapHydrated = true
         // Native writes "[UI startup]" console lines to the diagnostic log; the packaged smoke tests wait for this one.
         console.info('[UI startup] Initial state loaded through the native bridge.')
         if (bootstrapRetryTimer !== null) clearTimeout(bootstrapRetryTimer)
         bootstrapRetryTimer = null
+        // A snapshot at revision R holds every patch up to R; a rejected newer one is only restored by another pull.
+        if (rejectedStateRevisionBeforeHydration > nextRevision) resyncAfterHydration?.('state push rejected before startup state loaded')
+        rejectedStateRevisionBeforeHydration = -1
         // Sync theme to DOM
         if (deserialized.theme) {
           persistTheme(deserialized.theme, get().customThemes)
@@ -1080,6 +1125,7 @@ export const useAppStore = create<AppState>((set, get) => {
       const delay = Math.max(STATE_RESYNC_COALESCE_MS, lastStateResyncAt + stateResyncSpacingMs - now)
       stateResyncTimer = setTimeout(pullStateResync, delay)
     }
+    resyncAfterHydration = requestStateResync
 
     const settleStateResync = (generation: number, snapshot: CppAppState | null) => {
       if (generation !== stateResyncGeneration || !stateResyncInFlight) return
@@ -1192,7 +1238,18 @@ export const useAppStore = create<AppState>((set, get) => {
           pushChannelError: parsed.error,
           lastPushAtMs: state.lastPushAtMs,
         }))
-        console.error('[uamPush] Rejected payload:', parsed.error, payload)
+        // One short line: native writes console arguments to its log, where the payload was only [object Object].
+        // Companion pages never run the desktop bootstrap, so only a desktop window waits for hydration.
+        const beforeHydration = Boolean(parsed.mayHaveCarriedState) && !bootstrapHydrated && !isCompanionContext()
+        const detail = [
+          parsed.stateRevision === undefined ? '' : `revision ${parsed.stateRevision}`,
+          parsed.missingModelCatalogId ? `missing model catalogue ${parsed.missingModelCatalogId}` : '',
+          beforeHydration ? 'before startup state loaded' : '',
+        ].filter(Boolean).join(', ')
+        console.error(`[uamPush] Rejected payload${detail ? ` (${detail})` : ''}: ${parsed.error}`)
+        if (beforeHydration) {
+          rejectedStateRevisionBeforeHydration = Math.max(rejectedStateRevisionBeforeHydration, parsed.stateRevision ?? Number.POSITIVE_INFINITY)
+        }
         if (parsed.mayHaveCarriedState) requestStateResync('rejected state push')
         return
       }
@@ -1286,6 +1343,8 @@ export const useAppStore = create<AppState>((set, get) => {
             const { chatId, token, messageIndex } = msg
             const session = get().sessions.find((s) => s.id === chatId)
             if (!session) break
+            // Not buffered either: a history page arriving before the flush already holds this text and would show it twice.
+            if (get().messages[chatId] === undefined && (session.messageCount ?? 0) > 0) break
 
             const pending = pendingStreamTokensByChatId.get(chatId)
             if (pending && pending.messageIndex !== messageIndex) {
@@ -1308,8 +1367,9 @@ export const useAppStore = create<AppState>((set, get) => {
 
             if (lastMessage && lastMessage.role === 'assistant' && lastMessage.isStreaming) {
               const binding = get().acpBindingBySessionId[chatId]
-              const currentAssistantIndex = binding?.turnAssistantMessageIndex ?? -1
-              const currentAssistant = existingMessages[currentAssistantIndex]
+              // The native index counts the whole transcript; a loaded page starts at historyStartIndex.
+              const currentAssistantIndex = (binding?.turnAssistantMessageIndex ?? -1) - (get().historyStartIndexBySessionId[chatId] ?? 0)
+              const currentAssistant = currentAssistantIndex >= 0 ? existingMessages[currentAssistantIndex] : undefined
               const turnAssistantText = (binding?.turnEvents ?? []).reduce(
                 (text, event) => event.type === 'assistant_text' ? text + event.text : text,
                 ''
@@ -1463,7 +1523,7 @@ export const useAppStore = create<AppState>((set, get) => {
       shellActionNotification: current.shellActionNotification,
       statusLine: current.statusLine,
     })
-    return current.reconcileMemorySettingsProjection(deserialized, sanitized.settings)
+    return { ...current.reconcileMemorySettingsProjection(deserialized, sanitized.settings), ...historyReadMapsForChats(current, sanitized.chats, deserialized.historyStartIndexBySessionId) }
   }
 
   const inCef = isCefContext()

@@ -2,12 +2,21 @@
 // parseUamPushPayload is the sole entry point for all C++ → frontend pushes.
 
 import { MOBILE_COMPANION_ENABLED } from '../../config/buildFeatures'
-import { isRecord, isString, sanitizeCppAppState, sanitizeCppStatePatch } from '../cpp/sanitizers'
+import { isRecord, isString, lastMissingModelCatalogId, sanitizeCppAppState, sanitizeCppStatePatch } from '../cpp/sanitizers'
 import type { CompanionConfirmation, CppCliDebugState, ParsedPushResult } from '../cpp/types'
 
 function isCompanionConfirmation(item: unknown): item is CompanionConfirmation {
   return isRecord(item) && isString(item.id) && isString(item.chatId) && isString(item.chatTitle) && isString(item.description) &&
     typeof item.expiresAt === 'number' && Number.isFinite(item.expiresAt)
+}
+
+// What a rejected state message can still say about itself, so the rejection log is short and specific.
+function rejectedStateDetail(data: unknown): { stateRevision?: number; missingModelCatalogId?: string } {
+  // A non-object never reached the sanitiser's catalogue check, so an earlier message's missing id must not be reported.
+  if (!isRecord(data)) return {}
+  const stateRevision = typeof data.stateRevision === 'number' && Number.isFinite(data.stateRevision) ? data.stateRevision : undefined
+  const missingModelCatalogId = lastMissingModelCatalogId()
+  return { ...(stateRevision === undefined ? {} : { stateRevision }), ...(missingModelCatalogId ? { missingModelCatalogId } : {}) }
 }
 
 export function parseUamPushPayload(payload: unknown): ParsedPushResult {
@@ -34,7 +43,7 @@ export function parseUamPushPayload(payload: unknown): ParsedPushResult {
   if (type === 'stateUpdate') {
     const sanitized = sanitizeCppAppState(raw.data)
     if (!sanitized) {
-      return { ok: false, status: 'invalid-message', error: 'stateUpdate.data does not match CppAppState shape.', mayHaveCarriedState: true }
+      return { ok: false, status: 'invalid-message', error: 'stateUpdate.data does not match CppAppState shape.', mayHaveCarriedState: true, ...rejectedStateDetail(raw.data) }
     }
     return { ok: true, message: { type, data: sanitized } }
   }
@@ -42,7 +51,7 @@ export function parseUamPushPayload(payload: unknown): ParsedPushResult {
   if (type === 'statePatch') {
     const sanitized = sanitizeCppStatePatch(raw.data)
     if (!sanitized) {
-      return { ok: false, status: 'invalid-message', error: 'statePatch.data does not match CppStatePatch shape.', mayHaveCarriedState: true }
+      return { ok: false, status: 'invalid-message', error: 'statePatch.data does not match CppStatePatch shape.', mayHaveCarriedState: true, ...rejectedStateDetail(raw.data) }
     }
     return { ok: true, message: { type, data: sanitized } }
   }

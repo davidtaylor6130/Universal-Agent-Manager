@@ -977,6 +977,8 @@ type ModelCatalogEntry = { availableModels: AcpModel[]; configOptions: AcpConfig
 // Native bounds it: a patch with modelCatalogsReset clears it first, keeping it equal to what native believes was sent.
 const modelCatalogsById = new Map<string, ModelCatalogEntry>()
 let missingModelCatalog = false
+// The first catalogue id the last state sanitised referenced without having it, for the rejection log.
+let missingModelCatalogId = ''
 
 function sanitizeAcpModels(value: unknown): AcpModel[] {
   return Array.isArray(value)
@@ -998,6 +1000,7 @@ function sanitizeAcpConfigOptions(value: unknown): AcpConfigOption[] {
 
 function rememberModelCatalogs(value: unknown, reset: boolean): void {
   missingModelCatalog = false
+  missingModelCatalogId = ''
   if (reset) modelCatalogsById.clear()
   if (!isRecord(value)) return
   for (const [id, entry] of Object.entries(value)) {
@@ -1005,6 +1008,10 @@ function rememberModelCatalogs(value: unknown, reset: boolean): void {
     if (!isRecord(entry) || modelCatalogsById.has(id)) continue
     modelCatalogsById.set(id, { availableModels: sanitizeAcpModels(entry.availableModels), configOptions: sanitizeAcpConfigOptions(entry.configOptions) })
   }
+}
+
+export function lastMissingModelCatalogId(): string {
+  return missingModelCatalog ? missingModelCatalogId : ''
 }
 
 export function resetModelCatalogsForTests(): void {
@@ -1087,7 +1094,10 @@ function restoreRetainedChatFields(chat: unknown): unknown {
 export function sanitizeCppAcpSession(value: unknown): CppAcpSession | undefined {
   if (!isRecord(value)) return undefined
   const catalog = isString(value.modelCatalogId) ? modelCatalogsById.get(value.modelCatalogId) : undefined
-  if (isString(value.modelCatalogId) && !catalog) missingModelCatalog = true
+  if (isString(value.modelCatalogId) && !catalog) {
+    if (!missingModelCatalog) missingModelCatalogId = value.modelCatalogId
+    missingModelCatalog = true
+  }
 
   return {
     sessionId: isString(value.sessionId) ? value.sessionId : undefined,
