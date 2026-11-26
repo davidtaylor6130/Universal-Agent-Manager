@@ -133,7 +133,9 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
   const [nativeFollowupOwner, setNativeFollowupOwner] = useState<string | null>(null)
   const nativeFollowupOpen = nativeFollowupAllowed && nativeFollowupOwner === nativeFollowupOwnerKey
   useLayoutEffect(() => { setNativeFollowupOwner(null) }, [nativeFollowupOwnerKey, nativeFollowupAllowed])
-  const view = session.importedReadOnly || lineage ? 'chat' : session.viewMode
+  // A provider with no native CLI (the Custom ACP agent) has only structured Chat.
+  const providerLacksCli = useAppStore((state) => state.providers.find((provider) => provider.id === session.providerId)?.supportsCli === false)
+  const view = session.importedReadOnly || lineage || providerLacksCli ? 'chat' : session.viewMode
   const setView = (requestedView: 'chat' | 'cli') => {
     const nextView = session.importedReadOnly ? 'chat' : requestedView
     useAppStore.setState((state) => ({ sessions: state.sessions.map((current) =>
@@ -344,7 +346,7 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
               if (next === 'chat') {
                 if (view === 'cli') void loadSessionMessages(session.id, true, true)
                 setView('chat')
-              } else if (!session.importedReadOnly && !cliSwitchLocked) {
+              } else if (!session.importedReadOnly && !providerLacksCli && !cliSwitchLocked) {
                 setView('cli')
               }
             }}
@@ -355,8 +357,8 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
                 label: 'Terminal fallback',
                 icon: <SquareTerminal size={14} aria-hidden />,
                 iconOnly: true,
-                disabled: session.importedReadOnly || (cliSwitchLocked && view !== 'cli'),
-                tooltip: session.importedReadOnly ? 'Imported transcripts are read-only' : cliSwitchLocked && view !== 'cli' ? 'Wait for current output to finish' : 'Terminal fallback',
+                disabled: session.importedReadOnly || providerLacksCli || (cliSwitchLocked && view !== 'cli'),
+                tooltip: session.importedReadOnly ? 'Imported transcripts are read-only' : providerLacksCli ? 'This provider has no CLI View' : cliSwitchLocked && view !== 'cli' ? 'Wait for current output to finish' : 'Terminal fallback',
               },
             ]}
           />

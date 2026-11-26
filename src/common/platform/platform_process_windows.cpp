@@ -184,6 +184,23 @@ namespace uam::platform_windows_impl
 class WindowsProcessService final : public IPlatformProcessService
 {
   public:
+	std::vector<std::string> ExecutableSearchDirectories() const override
+	{
+		// The refreshed Win32 PATH that BuildWindowsLaunchCommand resolves against, not the CRT's ANSI copy.
+		RefreshProcessPathFromRegistry();
+		std::vector<std::string> directories;
+		const std::string path = GetWindowsEnvironmentVariableUtf8(L"PATH");
+		for (std::size_t start = 0; start <= path.size();)
+		{
+			const std::size_t end = path.find(';', start);
+			std::string entry = path.substr(start, end == std::string::npos ? std::string::npos : end - start);
+			if (!entry.empty()) directories.push_back(std::move(entry));
+			if (end == std::string::npos) break;
+			start = end + 1;
+		}
+		return directories;
+	}
+
 	bool EmbeddedBrowserUsesMockKeychain() const override
 	{
 		return false;

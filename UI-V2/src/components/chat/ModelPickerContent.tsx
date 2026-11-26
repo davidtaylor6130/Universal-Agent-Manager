@@ -6,7 +6,7 @@ import type { ProviderModelCatalog } from '../../store/cpp/types'
 import { useAppStore } from '../../store/useAppStore'
 import { readAppearance } from '../../utils/appearancePreferences'
 import { useModelPickerStore } from '../../store/modelPickerStore'
-import { COPILOT_CLI_PROVIDER_ID, normalizeCliProviderIdAlias, providerShortName } from '../../utils/providerMetadata'
+import { COPILOT_CLI_PROVIDER_ID, normalizeCliProviderIdAlias, providerIsBestEffort, providerShortName } from '../../utils/providerMetadata'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import '../layout/panels.css'
 import { buildModelOptions, searchModelOptions, type ModelOption } from './modelOptions'
@@ -236,7 +236,7 @@ export function ModelPickerContent({ providers, providerId, currentModelId, acti
         railRefs.current.get(id)?.focus()
       }}>
       <span aria-hidden className="uam-np-rail__glide" />
-      {[{ id: 'favorites', label: 'Favorites' }, ...providers.map((provider) => ({ id: provider.id, label: providerShortName(provider, provider.id) }))].map((entry) => {
+      {[{ id: 'favorites', label: 'Favorites' }, ...providers.map((provider) => ({ id: provider.id, label: providerShortName(provider, provider.id) + (providerIsBestEffort(provider.id) ? ' (best effort)' : '') }))].map((entry) => {
         const locked = entry.id !== 'favorites' && entry.id !== providerId && !canChangeProvider
         return <IconButton key={entry.id}
           ref={(element) => { if (element) railRefs.current.set(entry.id, element); else railRefs.current.delete(entry.id) }}
@@ -256,7 +256,7 @@ export function ModelPickerContent({ providers, providerId, currentModelId, acti
           onChange={(event) => { setQuery(event.target.value); setHighlight(0); setScrollTop(0); if (listRef.current) listRef.current.scrollTop = 0 }} />
       </div>
       {!grouped && <div className="flex items-center justify-between gap-2">
-        <div className="uam-np-group">{providerLabel(selectedProvider)}</div>
+        <div className="uam-np-group">{providerLabel(selectedProvider)}{providerIsBestEffort(selectedProvider) && <span className="uam-np-group__note"> · Best effort</span>}</div>
         {(selectedProvider !== providerId || onRefreshActive) && <Button type="button" variant="ghost" size="sm"
           leadingIcon={<RefreshCw size={13} aria-hidden />} loading={loading} disabled={modelDisabled}
           aria-label={`${error ? 'Retry' : 'Refresh'} models for ${providerLabel(selectedProvider)}`}

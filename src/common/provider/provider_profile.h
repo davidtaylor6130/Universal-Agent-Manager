@@ -52,6 +52,11 @@ class ProviderProfileStore
 	static std::vector<ProviderProfile> BuiltInProfiles();
 	/// <summary>Returns the native structured Antigravity CLI profile with terminal fallback.</summary>
 	static ProviderProfile DefaultAntigravityProfile();
+	/// <summary>Returns the opt-in, best-effort Custom ACP agent profile: structured Chat only, launched from the
+	/// Settings configuration rather than a built-in command.</summary>
+#if UAM_ENABLE_RUNTIME_CUSTOM_ACP
+	static ProviderProfile DefaultCustomAcpProfile();
+#endif
 	/// <summary>Ensures enabled built-in provider profiles exist in the profile list.</summary>
 	static void EnsureDefaultProfile(std::vector<ProviderProfile>& profiles);
 

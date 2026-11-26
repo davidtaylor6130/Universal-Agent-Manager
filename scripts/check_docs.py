@@ -13,7 +13,8 @@ import re
 import sys
 from urllib.parse import unquote, urlsplit
 
-PROVIDERS = ('gemini', 'codex', 'claude-code', 'opencode', 'copilot', 'antigravity')
+# The opt-in Custom ACP agent (#523) has a seventh checklist held to the same rows.
+PROVIDERS = ('gemini', 'codex', 'claude-code', 'opencode', 'copilot', 'antigravity', 'custom-acp')
 STATUSES = {'Implemented', 'Partial', 'Not implemented', 'Needs verification', 'Not applicable'}
 DELIVERY = {'Provider', 'UAM', 'Both', 'None', 'Unverified'}
 LINK = re.compile(r'(?<!!)\[[^\]\n]+\]\((<[^>\n]+>|[^\s)]+)(?:\s+"[^"\n]*")?\)')

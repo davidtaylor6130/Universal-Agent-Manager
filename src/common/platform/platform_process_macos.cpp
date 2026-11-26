@@ -18,6 +18,11 @@ namespace uam::platform_macos_impl
 class MacProcessService final : public IPlatformProcessService
 {
   public:
+	std::vector<std::string> ExecutableSearchDirectories() const override
+	{
+		return CollectTerminalPathSearchDirs(); // The same folders StartStdioProcess resolves argv[0] in.
+	}
+
 	bool EmbeddedBrowserUsesMockKeychain() const override
 	{
 		return true;

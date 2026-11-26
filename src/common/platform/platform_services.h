@@ -95,6 +95,9 @@ class IPlatformProcessService
   public:
 	virtual ~IPlatformProcessService() = default;
 	virtual bool SupportsDetachedProcesses() const = 0;
+	/// <summary>The folders StartStdioProcess searches for a bare program name, in order, as UTF-8 paths. Empty means the
+	/// platform searches only this process's PATH.</summary>
+	virtual std::vector<std::string> ExecutableSearchDirectories() const { return {}; }
 	virtual bool PopulateLocalTime(std::time_t timestamp, std::tm* tm_out) const = 0;
 	virtual std::string BuildShellCommandWithWorkingDirectory(const std::filesystem::path& working_directory, const std::string& command) const = 0;
 	virtual bool CaptureCommandOutput(const std::string& command, std::string* output_out, int* raw_status_out, std::string* error_out = nullptr) const = 0;

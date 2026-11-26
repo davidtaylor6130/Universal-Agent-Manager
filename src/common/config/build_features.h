@@ -14,6 +14,12 @@
       UAM_ENABLE_RUNTIME_COPILOT_CLI || UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI)
 #error "At least one provider runtime must be enabled."
 #endif
+// The best-effort Custom ACP agent (#523) is opt-in and off by default. Its one exception to the rule above is safe:
+// a translation unit compiled without the definition excludes it, so a missing flag can never include it by accident.
+#ifndef UAM_ENABLE_RUNTIME_CUSTOM_ACP
+#define UAM_ENABLE_RUNTIME_CUSTOM_ACP 0
+#endif
 // A full build rejects unknown provider ids in saved data; a build that excludes providers keeps them inert.
+// The opt-in Custom ACP agent is not one of the six release providers, so it does not change this.
 #define UAM_ALL_PROVIDERS_INCLUDED (UAM_ENABLE_RUNTIME_GEMINI_CLI && UAM_ENABLE_RUNTIME_CODEX_CLI && UAM_ENABLE_RUNTIME_CLAUDE_CLI && \
     UAM_ENABLE_RUNTIME_OPENCODE_CLI && UAM_ENABLE_RUNTIME_COPILOT_CLI && UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI)

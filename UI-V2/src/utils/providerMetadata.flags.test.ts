@@ -2,7 +2,7 @@ import { expect, it, vi } from 'vitest'
 
 // A build with Gemini and Codex excluded: their ids, aliases and metadata must not be reachable.
 vi.mock('../config/buildFeatures', async (importOriginal) => ({
-  ...await importOriginal<typeof import('../config/buildFeatures')>(), GEMINI_ENABLED: false, CODEX_ENABLED: false,
+  ...await importOriginal<typeof import('../config/buildFeatures')>(), GEMINI_ENABLED: false, CODEX_ENABLED: false, CUSTOM_ACP_ENABLED: false,
 }))
 
 it('builds provider registries only from the providers this build includes', async () => {
