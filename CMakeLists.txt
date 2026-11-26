@@ -341,7 +341,6 @@ if(UAM_ENABLE_RUNTIME_GEMINI_CLI)
     src/common/provider/gemini/cli/gemini_native_agent_history.cpp
     src/common/provider/gemini/base/gemini_history_loader.cpp
   )
-  list(APPEND UAM_PROVIDER_APP_SOURCES src/core/gemini_cli_compat.cpp)
 endif()
 if(UAM_ENABLE_RUNTIME_GEMINI_CLI OR UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI)
   # Google account allowance reads serve Gemini and Antigravity.
@@ -693,6 +692,7 @@ add_library(uam_core_objects OBJECT
   src/app/execution_routing_service.cpp
   src/app/repository_route_match_service.cpp
   src/app/execution_routing_integration.cpp
+  src/app/host_admission_integration.cpp
   src/app/host_load_integration.cpp
   src/app/resource_collection_service.cpp
   src/app/provider_worker_command.cpp
@@ -772,6 +772,7 @@ add_library(uam_core_objects OBJECT
   src/common/provider/attached_skill_resources.cpp
   src/common/runtime/acp/acp_session_runtime.cpp
   src/common/runtime/acp/compute_pool_gate.cpp
+  src/common/runtime/host_admission.cpp
   src/common/runtime/host_load_sampler.cpp
   src/common/runtime/acp/acp_wait_state.cpp
   src/common/runtime/json_runtime.cpp
@@ -1762,7 +1763,6 @@ if(UAM_BUILD_TESTS)
     src/common/provider/codex/cli/codex_cli_provider_runtime.cpp
     src/common/runtime/acp/claude_quota_continuation.cpp
     src/app/opencode_import_stream.cpp
-    src/core/gemini_cli_compat.cpp
   )
   list(REMOVE_ITEM UAM_CORE_TEST_UNSHARED_PROVIDER_SOURCES ${UAM_PROVIDER_SOURCES} ${UAM_PROVIDER_APP_SOURCES} ${UAM_RUNNER_PROVIDER_SOURCES})
   add_executable(uam_core_tests
@@ -1849,6 +1849,7 @@ if(UAM_BUILD_TESTS)
     tests/codex_permission_tests.cpp
     tests/memory_workspace_ownership_tests.cpp
     tests/execution_routing_tests.cpp
+    tests/host_admission_tests.cpp
     tests/child_process_priority_tests.cpp
     tests/routing_default_scope_tests.cpp
     tests/model_discovery_startup_tests.cpp

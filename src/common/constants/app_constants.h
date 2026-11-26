@@ -28,9 +28,4 @@ namespace uam::constants
 	/// </summary>
 	inline constexpr const char* kAppCopyright = "(c) 2026 David Taylor (davidtaylor6130). All rights reserved.";
 
-	/// <summary>
-	/// Supported Gemini CLI version expected by this build.
-	/// </summary>
-	inline constexpr const char* kSupportedGeminiVersion = "0.55.1";
-
 } // namespace uam::constants

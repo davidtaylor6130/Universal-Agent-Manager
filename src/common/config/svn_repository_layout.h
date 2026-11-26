@@ -10,7 +10,8 @@
 #include <vector>
 
 /// <summary>Per-repository SVN layouts: which folders hold the main line, branches and tags when a repository does
-/// not use `trunk`/`branches`/`tags`. The interface uses them to name what a path is; no action reads them.</summary>
+/// not use `trunk`/`branches`/`tags`. The interface uses them to name what a path is; SVN branch creation reads the
+/// branches and main-line folders (through svn_layout_lookup.h) to place and start a new branch.</summary>
 namespace uam::svn_layout
 {
 	inline constexpr std::size_t kMaxLayouts = 64;

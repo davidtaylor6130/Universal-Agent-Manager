@@ -55,6 +55,8 @@ import type {
   ShellAction,
   ComputePool,
   ComputePoolUsage,
+  HostAdmissionSettings,
+  HostAdmissionUsage,
   PullRequestWatch,
   TimerNotice,
   PushChannelStatus,
@@ -215,6 +217,8 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   shellActions: ShellAction[]
   computePools: ComputePool[]
   computePoolUsage: ComputePoolUsage
+  hostAdmission: HostAdmissionSettings
+  hostAdmissionUsage: HostAdmissionUsage
   /** Live load, in-use and waiting figures per computer; native-owned, observation only. */
   executionHostLoad: ExecutionHostLoad
   /** Pull requests linked to chats, with their watch state; native-owned. */
@@ -322,6 +326,10 @@ export interface AppState extends VoiceInputSettings, VcsStorageSettings {
   setNativeImportFilters: (filters: { titlePrefixes: string[]; directories: string[]; startupMaxAgeDays: number }) => Promise<boolean>
   setShellActions: (actions: ShellAction[]) => Promise<boolean>
   setComputePools: (pools: ComputePool[]) => Promise<boolean>
+  /** Resolves to '' when saved, otherwise the error to show beside the form. */
+  setHostAdmission: (settings: HostAdmissionSettings) => Promise<string>
+  /** Run anyway for a chat turn or CLI View held because its computer is full or overloaded. */
+  runHeldWorkAnyway: (chatId: string) => Promise<boolean>
   applyShellActions: () => Promise<boolean>
   dismissShellActionNotification: () => Promise<void>
   refreshCliProviderVersion: (providerId?: string, executionHostId?: string) => Promise<boolean>

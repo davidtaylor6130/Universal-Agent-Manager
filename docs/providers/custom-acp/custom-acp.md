@@ -40,7 +40,7 @@ Capabilities follow strictly what the agent reports in `initialize` and `session
 | `central-setup` | None | Not implemented | Central launch configuration writes files for named CLIs and is skipped here. |
 | `remote-execution` | None | Not implemented | SSH launches are refused with one plain error; a later slice. |
 | `stream-watch` | UAM | Needs verification | Shared stream watch sees the same turn events as other ACP providers; untested. |
-| `compute-pools` | UAM | Needs verification | Shared prompt gate applies to structured Chat turns; untested. |
+| `compute-pools` | UAM | Needs verification | Structured Chat turns are held at the shared prompt gate (host admission, then pools), and the agent's process start waits for a slot on this computer like other providers' starts; untested with this provider. |
 | `automation-api` | UAM | Needs verification | The shared automation route has not been checked with this provider. |
 
 **Source:** [configuration and launch checks](../../../src/common/provider/custom_acp/custom_acp_config.cpp), [provider runtime](../../../src/common/provider/custom_acp/custom_acp_provider_runtime.cpp), [Settings bridge](../../../src/cef/custom_acp_handlers.cpp), [focused test](../../../tests/custom_acp_agent_tests.cpp) and [scripted fixture](../../../tests/fixtures/custom_acp_agent.py).

@@ -5,7 +5,6 @@
 
 #include "common/paths/app_paths.h"
 #include "common/paths/path_utils.h"
-#include "common/config/frontend_actions.h"
 #include "common/config/settings_normalization.h"
 #include "common/config/settings_store.h"
 #include "common/provider/provider_ids.h"
@@ -234,28 +233,4 @@ bool PersistenceCoordinator::LoadSettings(uam::AppState& app) const
 	NormalizeProviderCliSettings(app.settings);
 	if (app.provider_model_catalog != nullptr) app.provider_model_catalog->SetExecutionHostContext(app.settings.execution_hosts);
 	return true;
-}
-
-void PersistenceCoordinator::LoadFrontendActions(uam::AppState& app) const
-{
-	std::string error;
-	const fs::path action_map_path = app.data_root / "frontend_actions.txt";
-
-	if (!uam::LoadFrontendActionMap(action_map_path, app.frontend_actions, &error))
-	{
-		app.frontend_actions = uam::DefaultFrontendActionMap();
-
-		if (!uam::SaveFrontendActionMap(action_map_path, app.frontend_actions, &error) && !error.empty())
-		{
-			app.status_line = "Frontend action map reset, but saving failed: " + error;
-		}
-		else if (!error.empty())
-		{
-			app.status_line = "Frontend action map was invalid and has been reset.";
-		}
-
-		return;
-	}
-
-	uam::NormalizeFrontendActionMap(app.frontend_actions);
 }

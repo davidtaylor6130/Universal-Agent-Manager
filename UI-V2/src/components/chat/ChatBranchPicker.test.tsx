@@ -518,3 +518,146 @@ it('shows a pending branch and withdraws it when the checked-out branch is chose
   expect(onSwitched).toHaveBeenCalledWith('main')
   cleanup()
 })
+
+const trunkContext = { ...svnContext, url: 'file:///repository/trunk', parent: '', repositoryRevision: '' }
+const branchedContext = { ...trunkContext, url: 'file:///repository/branches/feature-x', revision: '50' }
+
+function svnCreateResponses(switchReply: { ok: boolean; data?: unknown; error?: string } = { ok: true, data: { vcsType: 'svn', branch: '50', svnContext: branchedContext } }) {
+  send.mockImplementation(async (request) => request.action === 'listChatBranches'
+    ? { ok: true, data: { vcsType: 'svn', branches: [], svnContext: trunkContext, svnBranchLocations: { branches: '^/branches', mainLine: '^/trunk' } } }
+    : switchReply)
+}
+
+/** The SVN create form's inputs are named by their visible labels. */
+const labelled = (label: string) => Array.from(document.body.querySelectorAll('label')).find((item) => item.firstChild?.textContent === label)?.querySelector('input') ?? undefined
+
+async function typeInto(label: string, value: string) {
+  const input = labelled(label)!
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, value)
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+}
+
+const inputValue = (label: string) => labelled(label)?.value
+
+function captureNotices() {
+  const notices: { message: string; tone?: string }[] = []
+  const listener = (event: Event) => notices.push((event as CustomEvent<{ message: string; tone?: string }>).detail)
+  window.addEventListener('uam-app-failure', listener)
+  return { notices, stop: () => window.removeEventListener('uam-app-failure', listener) }
+}
+
+it('offers SVN branch creation only where native placed the new branch', async () => {
+  svnResponses()
+  const { host, cleanup } = render({ vcsType: 'svn', branch: '42' })
+  try {
+    await open(host)
+    expect(buttonNamed('Create SVN branch…')).toBeUndefined()
+  } finally { cleanup() }
+})
+
+it('creates an SVN branch from the working copy by default with an editable UAM message, then reports the switch', async () => {
+  svnCreateResponses()
+  const { notices, stop } = captureNotices()
+  const { host, onSwitched, cleanup } = render({ vcsType: 'svn', branch: '42' })
+  try {
+    await open(host)
+    await act(async () => buttonNamed('Create SVN branch…').click())
+    await typeInto('New SVN branch name', 'feature-x')
+    expect(document.body.querySelector('[role="group"][aria-label="Copy the new branch from"] [aria-pressed="true"]')?.textContent).toBe('Working copy')
+    expect(inputValue('Commit message')).toBe('Create branch feature-x from ^/trunk r42')
+    expect(document.body.textContent).toContain('^/branches/feature-x')
+    await act(async () => buttonNamed('Create and switch').click())
+    await flush()
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ action: 'switchChatBranch', payload: {
+      chatId: 'chat-1', vcsType: 'svn', branch: 'feature-x', create: true, svnContext: trunkContext, svnSource: 'workingCopy', svnMessage: 'Create branch feature-x from ^/trunk r42',
+    } }))
+    expect(onSwitched).toHaveBeenCalledWith('50', 'svn')
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull()
+    expect(trigger(host).textContent).toContain('^/branches/feature-x r50')
+    expect(notices).toEqual([expect.objectContaining({ tone: 'success', message: 'Created SVN branch ^/branches/feature-x and switched this working copy to it.' })])
+  } finally { stop(); cleanup() }
+})
+
+it('asks for the SVN source each time and keeps a message the person edited', async () => {
+  svnCreateResponses()
+  const { host, cleanup } = render({ vcsType: 'svn', branch: '42' })
+  try {
+    await open(host)
+    await act(async () => buttonNamed('Create SVN branch…').click())
+    await typeInto('New SVN branch name', 'feature-x')
+    await act(async () => buttonNamed('Trunk HEAD').click())
+    expect(inputValue('Commit message')).toBe('Create branch feature-x from ^/trunk at HEAD')
+    await typeInto('Commit message', 'Start the tabs work')
+    await act(async () => buttonNamed('Working copy').click())
+    await typeInto('New SVN branch name', 'tabs')
+    expect(inputValue('Commit message')).toBe('Start the tabs work')
+    await act(async () => buttonNamed('Trunk HEAD').click())
+    await act(async () => buttonNamed('Create and switch').click())
+    await flush()
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ action: 'switchChatBranch', payload: expect.objectContaining({ branch: 'tabs', svnSource: 'mainLine', svnMessage: 'Start the tabs work' }) }))
+    // The next creation asks again from the working-copy default.
+    await open(host)
+    await act(async () => buttonNamed('Create SVN branch…').click())
+    expect(document.body.querySelector('[role="group"][aria-label="Copy the new branch from"] [aria-pressed="true"]')?.textContent).toBe('Working copy')
+    expect(inputValue('New SVN branch name')).toBe('')
+  } finally { cleanup() }
+})
+
+it('reports a refused SVN creation as one notification and keeps the form to adjust', async () => {
+  svnCreateResponses({ ok: false, error: 'This repository has no ^/branches folder. Set its branches folder in Settings, under SVN repository layouts.' })
+  const { notices, stop } = captureNotices()
+  const { host, onSwitched, cleanup } = render({ vcsType: 'svn', branch: '42' })
+  try {
+    await open(host)
+    await act(async () => buttonNamed('Create SVN branch…').click())
+    await typeInto('New SVN branch name', 'feature-x')
+    await act(async () => buttonNamed('Create and switch').click())
+    await flush()
+    expect(notices).toEqual([expect.objectContaining({ message: 'SVN branch feature-x: This repository has no ^/branches folder. Set its branches folder in Settings, under SVN repository layouts.' })])
+    expect(notices[0].tone).toBeUndefined()
+    expect(onSwitched).not.toHaveBeenCalled()
+    expect(inputValue('New SVN branch name')).toBe('feature-x')
+    expect(document.body.querySelector('[role="dialog"] [role="alert"]')).toBeNull()
+    await act(async () => labelled('New SVN branch name')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })))
+    expect(document.body.querySelector('[role="dialog"]')).toBeTruthy()
+    expect(inputValue('New SVN branch name')).toBeUndefined()
+    // Reopening the form without closing the picker starts again from the defaults.
+    await act(async () => buttonNamed('Create SVN branch…').click())
+    expect(inputValue('New SVN branch name')).toBe('')
+  } finally { stop(); cleanup() }
+})
+
+it('writes the default SVN message with readable paths and names a custom main line', async () => {
+  send.mockImplementation(async (request) => request.action === 'listChatBranches'
+    ? { ok: true, data: { vcsType: 'svn', branches: [], svnContext: { ...trunkContext, url: 'file:///repository/my%20shop/lines/main' }, svnBranchLocations: { branches: '^/my shop/lines/dev', mainLine: '^/my shop/lines/main' } } }
+    : { ok: true, data: { vcsType: 'svn', branch: '50', svnContext: branchedContext } })
+  const { host, cleanup } = render({ vcsType: 'svn', branch: '42' })
+  try {
+    await open(host)
+    await act(async () => buttonNamed('Create SVN branch…').click())
+    await typeInto('New SVN branch name', 'tabs')
+    expect(inputValue('Commit message')).toBe('Create branch tabs from ^/my shop/lines/main r42')
+    expect(buttonNamed('main HEAD')).toBeTruthy()
+    expect(buttonNamed('Trunk HEAD')).toBeUndefined()
+  } finally { cleanup() }
+})
+
+it('copies only the main line from a repository-root working copy, saying why', async () => {
+  send.mockImplementation(async (request) => request.action === 'listChatBranches'
+    ? { ok: true, data: { vcsType: 'svn', branches: [], svnContext: { ...trunkContext, url: trunkContext.repository }, svnBranchLocations: { branches: '^/branches', mainLine: '^/trunk' } } }
+    : { ok: true, data: { vcsType: 'svn', branch: '50', svnContext: branchedContext } })
+  const { host, cleanup } = render({ vcsType: 'svn', branch: '42' })
+  try {
+    await open(host)
+    await act(async () => buttonNamed('Create SVN branch…').click())
+    expect(buttonNamed('Working copy').disabled).toBe(true)
+    expect(document.body.querySelector('[role="group"][aria-label="Copy the new branch from"] [aria-pressed="true"]')?.textContent).toBe('Trunk HEAD')
+    await typeInto('New SVN branch name', 'tabs')
+    expect(inputValue('Commit message')).toBe('Create branch tabs from ^/trunk at HEAD')
+    await act(async () => buttonNamed('Create and switch').click())
+    await flush()
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ action: 'switchChatBranch', payload: expect.objectContaining({ svnSource: 'mainLine' }) }))
+  } finally { cleanup() }
+})

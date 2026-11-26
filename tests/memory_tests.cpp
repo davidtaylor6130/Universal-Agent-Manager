@@ -4077,3 +4077,38 @@ UAM_TEST(MemoryFailureDiagnosticsWithholdRawWorkerErrorText)
 	for (const char* secret : {"private-user", "private-host", "private-second-line", "private-token-value", "/home/", "corp-box", "10.0.0.5", "nodename"})
 		UAM_ASSERT(text.find(secret) == std::string::npos);
 }
+
+UAM_TEST(MemoryWorkerWaitsForHostAdmissionAndKeepsItsPlace)
+{
+	TempDir temp("uam-memory-host-admission");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	app.host_admission = std::make_shared<uam::host_admission::HostAdmission>();
+	// This computer is over the soft limit: background work such as a memory scan waits.
+	app.host_load_sample = [](const std::string&)
+	{
+		uam::host_admission::LoadSample load;
+		load.known = true;
+		load.cpu_percent = 80.0;
+		load.free_memory_percent = 50.0;
+		return load;
+	};
+	ChatSession chat = ChatDomainService().CreateNewChat("", "gemini-cli");
+	chat.workspace_directory = uam::paths::Utf8PathString(temp.root);
+	chat.memory_enabled = true;
+	chat.messages.push_back({MessageRole::User, "Remember this.", "now"});
+	app.chats.push_back(chat);
+	int queued_count = 0;
+	std::string error;
+	UAM_ASSERT(MemoryService::QueueManualScan(app, {chat.id}, &queued_count, &error));
+	UAM_ASSERT(MemoryService::ProcessDueMemoryWork(app));
+	UAM_ASSERT_EQ(app.memory_extraction_queue.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(app.memory_extraction_tasks.empty());
+	UAM_ASSERT(app.memory_failure_count_by_chat_id.empty());
+	UAM_ASSERT_EQ(app.memory_last_status, std::string("Waiting for this computer: busy (CPU 80%)"));
+	// Asking again while still busy changes nothing and starts no worker.
+	(void)MemoryService::ProcessDueMemoryWork(app);
+	UAM_ASSERT_EQ(app.memory_extraction_queue.size(), static_cast<std::size_t>(1));
+	UAM_ASSERT(app.memory_extraction_tasks.empty());
+}

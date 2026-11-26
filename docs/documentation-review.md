@@ -10,6 +10,8 @@ Task-1230’s initial read-only revision patch left this requirement open. David
 
 **Decided by David, 2026-11-23** ([#520](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues/520)). Creating an SVN branch asks each time whether to copy from the working copy's URL at its revision or from trunk HEAD, defaulting to the working copy, and UAM writes a default commit message the person can edit. The [SVN-through-Git design](reference/svn-git-mirror-design.md#publishing-a-new-branch) relies on this for publishing a Git branch. This decides the product rule, not its implementation or acceptance.
 
+The first slice implements this in the composer picker for local working copies: the branch is placed from the repository's layout and the working copy is switched to it ([composer agreement](chat/composer/workspace-actions.md)). Merging, SVN parity in the new-chat selector, greyed-out reasons and branch methods for remote hosts remain later #520 slices. The picker form is new UI and awaits Claude review and David's approval. The stoppable SVN runner exempts every command `SvnCommandChangesRepository` names (the copy as well as the switch) from stopping once started, so a stop never interrupts the branch commit.
+
 ## SVN through Git
 
 **Decided by David, 2026-11-23** ([#521](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues/521)). UAM builds and owns the Git mirror of an SVN checkout, with no dependency on `git svn`. Pulling SVN changes into the mirror is always explicit and one-way. The first slice is a design note and a throwaway spike, not product code: see the [design note](reference/svn-git-mirror-design.md). Nothing in the mode is implemented or accepted.
@@ -38,6 +40,14 @@ Task-1230’s initial read-only revision patch left this requirement open. David
 ## Antigravity scope
 
 **Resolved by David, 2026-10-16.** Antigravity is fully included in structured Chat and native CLI View, with the same shared provider requirements as the other five. Its existing structured adapter uses native stream JSON, not ACP on the wire. Remove the previous terminal-only exception from repository instructions, provider agreements and diagrams; keep actual capability gaps and unverified platform combinations explicit. This scope decision is not acceptance of every implementation. [Antigravity checklist](providers/antigravity/antigravity.md).
+
+## Host admission policy
+
+**Resolved by David, 2026-11-23.** As given: (1) Explicit (pinned) chats are admitted against their host's limit too; at the limit they queue, with a one-line message like "Waiting for host A (8/8)" and a "Run anyway" button. (2) Work that hasn't started yet (queued, no session, no saved assignment) may move between eligible remote hosts with a matching workspace when its host is full, down or overloaded; it never moves silently onto the local Mac; started work stays pinned. (3) The local Mac gets its own slot limit for local work (default cores minus 2, user-configurable), but it is not an automatic-routing candidate. (4) Priority: user turns, then agents (sub-agents, goals, automation), then background (model discovery, memory workers, history import, version and repository checks); background work waits while a machine is over a soft limit (for example CPU > 70%, or free memory < 15%); over a hard limit (for example CPU > 90% for 10 s, or free memory < 10%) new agent and background work waits, and user turns wait with "Run anyway". [Host limits](settings/compute-pools.md#host-limits) · [Routing](remote-environments/routing.md).
+
+**Open: interpretation awaiting David's confirmation.** Routing saves an automatic chat's assignment before its first launch, so a chat waiting on a down host always has a saved assignment. The implementation reads "no saved assignment" as no settled ownership: a chat may move while it has no provider session, process, terminal, delivered input or reservation restored without its work; its own pending reservation does not count. If David meant only chats that never received an assignment, nothing would move and decision 2 could not fix a chat waiting on a down host.
+
+**Open: interim choices awaiting review.** The remote default of 8 slots; two-minute agent aging; the 10-second back-off doubling to five minutes; a 30-second slot reservation for a starting provider process; counting an open CLI View as a slot; a background budget range of 1 to 4; counting remote history-scan retries against this computer's background budget (the scan is driven from here); and leaving user-started history discovery, version rechecks and the launch-time checkout check outside the background budget.
 
 ## Data root
 

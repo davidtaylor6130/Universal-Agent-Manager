@@ -1,8 +1,8 @@
 import { SSH_ENABLED } from '../../config/buildFeatures'
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
-import { Cpu, Pencil, Plus, X } from 'lucide-react'
+import { Cpu, Pencil, Plus, Server, X } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
-import type { ComputePool, ComputePoolMember } from '../../store/cpp/types'
+import type { ComputePool, ComputePoolMember, HostAdmissionSettings } from '../../store/cpp/types'
 import { buildModelOptions } from '../chat/modelOptions'
 import { DEFAULT_PROVIDER_ID, providerShortName } from '../../utils/providerMetadata'
 import { Button, ConfirmDialog, EXIT_MS, IconButton, MenuSelect, Overlay, Presence, Reveal, motionAllowed, scaledMs } from '../ui'
@@ -20,6 +20,73 @@ function newPool(providerId: string): ComputePool {
 
 function validLimit(limit: number) {
   return Number.isInteger(limit) && limit >= MIN_LIMIT && limit <= MAX_LIMIT
+}
+
+type LimitField = { key: keyof HostAdmissionSettings; label: string; min: number; max: number; hint?: string }
+
+const HOST_LIMIT_FIELDS: LimitField[] = [
+  { key: 'localSlotLimit', label: 'This computer', min: 0, max: 256, hint: 'User turns and agents at once. 0 uses processors minus two.' },
+  { key: 'remoteSlotLimit', label: 'Remote computers', min: 1, max: 256, hint: 'Used when routing sets no slot count for that computer.' },
+  { key: 'backgroundBudget', label: 'Background work per computer', min: 1, max: 4, hint: 'Model lists, memory, history import and checks.' },
+]
+
+const LOAD_FIELDS: LimitField[] = [
+  { key: 'softCpuPercent', label: 'Pause background above CPU %', min: 10, max: 100 },
+  { key: 'softFreeMemoryPercent', label: 'Pause background below free memory %', min: 1, max: 90 },
+  { key: 'hardCpuPercent', label: 'Hold new work above CPU %', min: 10, max: 100 },
+  { key: 'hardCpuSeconds', label: 'For at least (seconds)', min: 1, max: 300 },
+  { key: 'hardFreeMemoryPercent', label: 'Hold new work below free memory %', min: 1, max: 90 },
+]
+
+function hostLimitsError(draft: HostAdmissionSettings) {
+  for (const field of [...HOST_LIMIT_FIELDS, ...LOAD_FIELDS]) {
+    const value = draft[field.key]
+    if (!Number.isInteger(value) || value < field.min || value > field.max) return `${field.label} must be from ${field.min} to ${field.max}.`
+  }
+  if (draft.hardCpuPercent < draft.softCpuPercent) return 'The hold CPU limit must be at least the pause limit.'
+  if (draft.hardFreeMemoryPercent > draft.softFreeMemoryPercent) return 'The hold memory limit must be at most the pause limit.'
+  return ''
+}
+
+/** Per-computer limits for host admission: slots, background budget and load thresholds, with live use per computer. */
+function HostLimitsSettings() {
+  const saved = useAppStore((s) => s.hostAdmission)
+  const usage = useAppStore((s) => s.hostAdmissionUsage)
+  const save = useAppStore((s) => s.setHostAdmission)
+  const [draft, setDraft] = useState<HostAdmissionSettings>(saved)
+  const [busy, setBusy] = useState(false)
+  const [saveError, setSaveError] = useState('')
+  const savedKey = JSON.stringify(saved)
+  useEffect(() => { setDraft(saved); setSaveError('') }, [savedKey]) // eslint-disable-line react-hooks/exhaustive-deps
+  const dirty = JSON.stringify(draft) !== savedKey
+  const error = hostLimitsError(draft)
+  const field = (spec: LimitField) => <SettingsField key={spec.key} label={spec.label} hint={spec.hint}>
+    <input className="uam-field w-full" aria-label={spec.label} type="number" min={spec.min} max={spec.max} step={1} disabled={busy}
+      value={Number.isNaN(draft[spec.key]) ? '' : draft[spec.key]} onChange={(event) => { const value = event.currentTarget.valueAsNumber; setSaveError(''); setDraft((current) => ({ ...current, [spec.key]: value })) }} />
+  </SettingsField>
+  const persist = async () => {
+    if (!dirty || error) return
+    setBusy(true)
+    try { setSaveError(await save(draft)) } finally { setBusy(false) }
+  }
+  const hosts = Object.entries(usage)
+  return <>
+    <SettingsSection title="Host limits">
+      <div className="uam-set-fields">{HOST_LIMIT_FIELDS.map(field)}</div>
+      <div className="uam-set-fields">{LOAD_FIELDS.map(field)}</div>
+      <p className="uam-prov-sub">Load limits apply once live load readings are available; until then only the slot counts apply.</p>
+      <div className="uam-set-actions flex items-center justify-end gap-2">
+        {(error || saveError) && <p className="mr-auto text-sm" role="alert">{error || saveError}</p>}
+        <Button size="sm" disabled={busy || !dirty} onClick={() => setDraft(saved)}>Discard</Button>
+        <SaveButton saving={busy} loading={busy} disabled={busy || !dirty || Boolean(error)} onClick={() => void persist()}>Save limits</SaveButton>
+      </div>
+    </SettingsSection>
+    {hosts.length > 0 && <SettingsSection title="Computers">
+      {hosts.map(([id, host]) => <SettingRow key={id} icon={<Server size={15} aria-hidden />} title={host.label}
+        description={host.health === 'ready' ? undefined : host.health === 'degraded' ? 'Busy: background work waits' : host.health === 'overloaded' ? 'Overloaded: new work waits' : 'Unreachable'}
+        status={`${host.interactive + host.agent}/${host.slotLimit || '∞'} running · ${host.background}/${host.backgroundBudget} background${host.waiting > 0 ? ` · ${host.waiting} waiting` : ''}`} />)}
+    </SettingsSection>}
+  </>
 }
 
 export function ComputePoolsSettings() {
@@ -89,6 +156,7 @@ export function ComputePoolsSettings() {
   }
 
   return <div className="grid gap-0">
+    <HostLimitsSettings />
     <ConfirmDialog open={pendingDelete !== null} title="Delete compute pool?" confirmLabel="Delete" busy={busy} onCancel={() => setPendingDelete(null)} onConfirm={() => void deletePool()}>Chats using this pool stop waiting for its slots.</ConfirmDialog>
     <SettingsSection title="Pools"
       actions={<Button size="sm" leadingIcon={<Plus size={14} />} disabled={busy} onClick={() => startEditing(newPool(defaultProviderId), true)}>Add pool</Button>}>
