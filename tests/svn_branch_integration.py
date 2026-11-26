@@ -9,6 +9,13 @@ import sys
 import tempfile
 import time
 
+if shutil.which("svn") is None or shutil.which("svnadmin") is None:
+    if os.environ.get("UAM_REQUIRE_SVN") == "1":
+        print("FAIL: UAM_REQUIRE_SVN=1 but svn or svnadmin is not installed", file=sys.stderr)
+        sys.exit(1)
+    print("SKIP: svn or svnadmin is not installed")
+    sys.exit(77)
+
 binary = pathlib.Path(sys.argv[1]).resolve()
 posix = os.name != "nt"
 # The fixture's own svn calls need a UTF-8 locale for the non-ASCII copy; the binary under test does not get one.
@@ -32,12 +39,24 @@ with tempfile.TemporaryDirectory(prefix="uam-svn-composer-@") as temporary:
     subprocess.run(["svnadmin", "create", str(repository)], check=True, timeout=30)
     svn = ["svn", "--config-dir", str(config), "--no-auth-cache", "--non-interactive"]
 
-    def run(*args):
-        subprocess.run(svn + list(args), check=True, timeout=30, stdout=subprocess.DEVNULL, env=fixture_environment)
+    def run(*args, cwd=None):
+        subprocess.run(svn + list(args), check=True, timeout=30, stdout=subprocess.DEVNULL, cwd=cwd, env=fixture_environment)
+
+    def revisions(path):
+        """Lowest and highest working revision of every node, from svn's own recursive info."""
+        found = set()
+        output = subprocess.check_output(svn + ["info", "--depth", "infinity", "--show-item", "revision", str(path) + "@"], text=True, timeout=30)
+        for line in output.splitlines():
+            value = line.split()[0] if line.split() else ""
+            if value.isdigit():
+                found.add(int(value))
+        return min(found), max(found)
 
     url = repository.as_uri()
     run("mkdir", url + "/lines", url + "/lines/main", "-m", "fixture layout")
-    run("checkout", url + "/lines/main", str(working_copy))
+    # SVN 1.14 reads "@" in a checkout destination as a peg revision, so check out to a plain relative name and rename.
+    run("checkout", url + "/lines/main", "copy", cwd=root)
+    (root / "copy").rename(working_copy)
     (working_copy / "tracked.txt").write_text("fixture content\n")
     (working_copy / "child").mkdir()
     (working_copy / "child" / "retained.txt").write_text("nested fixture content\n")
@@ -46,7 +65,7 @@ with tempfile.TemporaryDirectory(prefix="uam-svn-composer-@") as temporary:
     run("commit", str(working_copy) + "@", "-m", "fixture content")
     run("copy", url + "/lines/main", url + "/lines/feature%20a", "-m", "fixture branch")
     branch_copy = root / "branch-edit"
-    run("checkout", url + "/lines/feature%20a", str(branch_copy))
+    run("checkout", url + "/lines/feature%20a", "branch-edit", cwd=root)
     (branch_copy / "tracked.txt").write_text("branch content\n")
     run("commit", str(branch_copy) + "@", "-m", "fixture branch content")
     for depth in ("empty", "files", "immediates", "exclude"):
@@ -56,13 +75,23 @@ with tempfile.TemporaryDirectory(prefix="uam-svn-composer-@") as temporary:
         after_url = subprocess.check_output(svn + ["info", "--show-item", "url", str(working_copy) + "@"], text=True, timeout=30)
         assert after_url == before_url, "refusal must preserve the selected working-copy URL"
         run("update", "--set-depth", "infinity", str(working_copy / "child") + "@")
+    # A commit leaves a mixed-revision working copy: the committed file is newer than the root. It is clean, so the
+    # switch may proceed, and the pinned switch must bring every node to one revision.
+    run("update", str(working_copy) + "@")
+    (working_copy / "child" / "retained.txt").write_text("nested fixture content\nmixed revision edit\n")
+    run("commit", str(working_copy) + "@", "-m", "mixed revision commit")
+    lowest, highest = revisions(working_copy)
+    assert lowest < highest, "the fixture must start from a mixed-revision working copy"
     subprocess.run([str(binary), "--integration", str(working_copy), str(config)], check=True, timeout=120)
+    lowest, highest = revisions(working_copy)
+    assert lowest == highest, "the pinned switch must leave one revision across the working copy, not %d to %d" % (lowest, highest)
 
     if posix:
         # A non-ASCII working copy with no locale in the launch environment: it fails without the shared SVN environment
         # (the control), then discovers, switches and refuses exactly like the ASCII copy with it.
         accented = root / "wcé @literal"
-        run("checkout", url + "/lines/main", str(accented))
+        run("checkout", url + "/lines/main", "accented", cwd=root)
+        (root / "accented").rename(accented)
         subprocess.run([str(binary), "--locale-off-integration", str(accented), str(config)], check=True, timeout=120, env=bare_environment)
         subprocess.run([str(binary), "--integration", str(accented), str(config)], check=True, timeout=120, env=bare_environment)
 

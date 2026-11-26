@@ -66,7 +66,7 @@ namespace uam::svn_history
 namespace uam
 {
 	/// <summary>Strict `svn status` text parser. Rows need seven valid status columns and a separator; headers and
-	/// tree-conflict details are skipped. Codes keep their column positions (right-trimmed). Absolute paths under
+	/// tree-conflict details are skipped, as are rows that report only a lock. Codes keep their column positions (right-trimmed). Absolute paths under
 	/// `workspace` become workspace-relative.</summary>
 	std::vector<VcsChangedFile> ParseSvnStatusOutput(std::string_view output, std::string_view workspace = {});
 } // namespace uam

@@ -46,14 +46,6 @@ namespace
 		       "</url>\r\n<relative-url>" + relative_url + "</relative-url>\r\n<repository>\r\n<root>" + root + "</root>\r\n<uuid>d7397596-24e3-4444-990a-c95097028d41</uuid>\r\n</repository>\r\n<commit\r\n   revision=\"3\">\r\n</commit>\r\n</entry>\r\n</info>\r\n";
 	}
 
-	/// Real-repository cases need both client tools; hosted CI runners have neither.
-	bool SvnToolsAvailableForHistory()
-	{
-		if (RunTestCommand("svn --version --quiet") && RunTestCommand("svnadmin --version --quiet")) return true;
-		std::fprintf(stderr, "SKIP real-svn history case: svn or svnadmin is not installed\n");
-		return false;
-	}
-
 	void Svn(const fs::path& cwd, std::vector<std::string> args)
 	{
 		args.insert(args.begin() + 1, "--non-interactive");
@@ -461,7 +453,7 @@ UAM_TEST(VcsHistoryAndUpdateAreDeclinedForSystemsThatDoNotDeclareThem)
 
 UAM_TEST(SvnHistoryPagesARealRepositoryAcrossItsBranchPoint)
 {
-	if (!SvnToolsAvailableForHistory()) return;
+	if (!RealSvnAvailable()) return;
 	SvnHistoryRepository repository;
 	const uam::VcsCommitService vcs;
 
@@ -507,7 +499,7 @@ UAM_TEST(SvnHistoryPagesARealRepositoryAcrossItsBranchPoint)
 
 UAM_TEST(SvnRevisionDiffShowsEditsAdditionsDeletionsAndOddNames)
 {
-	if (!SvnToolsAvailableForHistory()) return;
+	if (!RealSvnAvailable()) return;
 	SvnHistoryRepository repository;
 	const uam::VcsCommitService vcs;
 	const auto diff = [&](const std::string& revision, const std::string& path)
@@ -532,7 +524,7 @@ UAM_TEST(SvnRevisionDiffShowsEditsAdditionsDeletionsAndOddNames)
 
 UAM_TEST(SvnUpdateBringsInNewRevisionsAndPostponesAConflict)
 {
-	if (!SvnToolsAvailableForHistory()) return;
+	if (!RealSvnAvailable()) return;
 	SvnHistoryRepository repository;
 	const uam::VcsCommitService vcs;
 	const uam::VcsUpdateResult clean = vcs.Update(repository.app, repository.chat, uam::VcsType::Svn);
@@ -559,7 +551,7 @@ UAM_TEST(SvnUpdateBringsInNewRevisionsAndPostponesAConflict)
 
 UAM_TEST(SvnUpdatePastABrokenExternalHidesConflictLeftoversAndResolves)
 {
-	if (!SvnToolsAvailableForHistory()) return;
+	if (!RealSvnAvailable()) return;
 	TempDir temp("uam-svn-conflicts");
 	const fs::path repository = temp.root / "repository";
 	UAM_ASSERT(RunTestCommand("svnadmin create " + ShellQuoteForTest(uam::paths::Utf8PathString(repository))));
@@ -596,7 +588,14 @@ UAM_TEST(SvnUpdatePastABrokenExternalHidesConflictLeftoversAndResolves)
 	UAM_ASSERT(update.warnings[0].ends_with("ext' could not be updated."));
 
 	uam::VcsCommitStatus status = vcs.Status(app, chat, uam::VcsType::Svn, false);
-	const auto row = [&](const std::string& path) { return std::ranges::find(status.changed_files, path, &uam::VcsChangedFile::path); };
+	// Rows keep svn's own spelling, which uses `\` on Windows.
+	const auto row = [&](std::string path)
+	{
+#if defined(_WIN32)
+		std::ranges::replace(path, '/', '\\');
+#endif
+		return std::ranges::find(status.changed_files, path, &uam::VcsChangedFile::path);
+	};
 	UAM_ASSERT(row("a.txt") != status.changed_files.end() && row("a.txt")->status == "C");
 	UAM_ASSERT(row("d/x.txt") != status.changed_files.end() && uam::svn_history::IsConflicted(*row("d/x.txt")) && row("d/x.txt")->status.front() != 'C');
 	for (const char* leftover : {"a.txt.mine", "a.txt.r1", "a.txt.r2"})
@@ -800,7 +799,7 @@ UAM_TEST(SvnOriginBehindPageKeepsOnlyTheRequestedRevisions)
 
 UAM_TEST(SvnOriginComparesARealBranchWithItsTrunk)
 {
-	if (!SvnToolsAvailableForHistory()) return;
+	if (!RealSvnAvailable()) return;
 	SvnHistoryRepository repository;
 	const uam::VcsCommitService vcs;
 	// Trunk moves on after the copy.
@@ -913,7 +912,7 @@ UAM_TEST(DirectoriesOverlapComparesPathsAsTheirHostWould)
 
 UAM_TEST(SvnBranchRunnerReadsANonAsciiWorkingCopyWithoutALaunchLocale)
 {
-	if (!SvnToolsAvailableForHistory()) return;
+	if (!RealSvnAvailable()) return;
 	// A Finder launch has no locale; the composer's SVN folder runner must still let svn read a non-ASCII path.
 	ScopedEnvVar no_all("LC_ALL", ""), no_lang("LANG", ""), no_ctype("LC_CTYPE", "");
 	TempDir temp{"uam-svn-branch-locale"};
@@ -923,7 +922,9 @@ UAM_TEST(SvnBranchRunnerReadsANonAsciiWorkingCopyWithoutALaunchLocale)
 	const std::string generic = repository.generic_string();
 	const std::string url = "file://" + std::string(generic.starts_with('/') ? "" : "/") + generic;
 	const fs::path checkout = root / uam::paths::PathFromUtf8("wc\xC3\xA9");
-	Svn(root, {"mkdir", url + "/lines", url + "/lines/main", url + "/lines/feature", "-m", "layout"});
+	Svn(root, {"mkdir", url + "/lines", url + "/lines/main", "-m", "layout"});
+	// A branch copied from the main line: svn refuses to switch between two folders made separately (E195012, no common ancestry).
+	Svn(root, {"copy", url + "/lines/main", url + "/lines/feature", "-m", "branch"});
 	Svn(root, {"checkout", url + "/lines/main", uam::paths::Utf8PathString(checkout)});
 	const uam::SvnBranchScope scope{checkout, checkout, {}, true};
 	const uam::SvnBranchResult found = uam::DiscoverSvnBranches(scope, "^/lines", uam::CreateSvnBranchRunner());

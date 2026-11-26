@@ -184,6 +184,8 @@ UAM_TEST(SvnStatusParserAcceptsOnlyValidStatusRows)
 	    "A  +    copied.txt\n"
 	    "      C tree.txt\n"
 	    "      >   local file edit, incoming file delete or move upon update\n"
+	    "     K  lock-only.txt\n"
+	    "M    K  locked-edit.txt\n"
 	    "\n--- Changelist 'review':\n"
 	    "M       in-list.txt\n"
 	    "X       vendor\n"
@@ -196,7 +198,7 @@ UAM_TEST(SvnStatusParserAcceptsOnlyValidStatusRows)
 	    "?       /workspace/root/absolute.txt\n";
 	const std::vector<uam::VcsChangedFile> files = uam::ParseSvnStatusOutput(output, "/workspace/root");
 	const std::vector<std::pair<std::string, std::string>> expected = {
-	    {"plain.txt", "M"}, {"props-only", " M"}, {"copied.txt", "A  +"}, {"tree.txt", "      C"}, {"in-list.txt", "M"},
+	    {"plain.txt", "M"}, {"props-only", " M"}, {"copied.txt", "A  +"}, {"tree.txt", "      C"}, {"locked-edit.txt", "M    K"}, {"in-list.txt", "M"},
 	    {"vendor", "X"}, {"vendor/lib.c", "M"}, {"caf\xC3\xA9 name.txt", "?"}, {"absolute.txt", "?"}};
 	UAM_ASSERT_EQ(files.size(), expected.size());
 	for (std::size_t index = 0; index < expected.size(); ++index)
@@ -420,11 +422,7 @@ namespace
 
 		RealSvnCheckout()
 		{
-			if (!RunTestCommand("svn --version --quiet") || !RunTestCommand("svnadmin --version --quiet"))
-			{
-				std::fprintf(stderr, "SKIP real-svn case: svn or svnadmin is not installed\n");
-				return;
-			}
+			if (!RealSvnAvailable()) return;
 			UAM_ASSERT(RunTestCommand("svnadmin create " + ShellQuoteForTest(repository.string())));
 			url = "file://" + uam::paths::Utf8PathString(repository);
 			UAM_ASSERT(Svn(temporary.root, {"checkout", url, "checkout"}));

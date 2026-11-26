@@ -120,12 +120,11 @@ namespace
 					{
 						++inventory_reads;
 						const auto depth = sparse_inventory_read == inventory_reads ? "empty" : inventory_depth;
-						output = inventory_xml.empty() ? "<?xml version=\"1.0\"?><info><entry kind=\"dir\" path=\"copy\"><wc-info><depth>infinity</depth></wc-info></entry><entry kind=\"dir\" path=\"copy/child\"><wc-info><depth>" + depth + "</depth></wc-info></entry></info>" : inventory_xml;
+						output = inventory_xml.empty() ? "<?xml version=\"1.0\"?><info><entry kind=\"dir\" path=\"copy\"><wc-info><wcroot-abspath>" + uam::paths::Utf8PathString(directory) + "</wcroot-abspath><depth>infinity</depth></wc-info></entry><entry kind=\"dir\" path=\"copy/child\"><wc-info><depth>" + depth + "</depth></wc-info></entry></info>" : inventory_xml;
 						return true;
 					}
 					const auto& field = args[3];
-					if (field == "wc-root") output = uam::paths::Utf8PathString(directory);
-					else if (field == "depth") output = "infinity";
+					if (field == "depth") output = "infinity";
 					else if (field == "url") output = url;
 					else if (field == "repos-root-url") output = "file:///private/repository";
 					else if (field == "repos-uuid") output = uuid;
@@ -211,7 +210,7 @@ namespace
 		const std::string credentials = "SVN needs your credentials. Run svn info svn://repository.invalid/lines once in a terminal to save them, then retry.";
 		{
 			Fixture f; f.failure_text = "E155007: '/private/copy' is not a working copy";
-			f.fails = [](const std::vector<std::string>& args) { return args[0] == "info" && args[3] == "wc-root"; };
+			f.fails = [](const std::vector<std::string>& args) { return args[0] == "info" && args[3] == "depth"; };
 			const auto result = uam::DiscoverSvnBranches(f.scope, "^/lines", f.Runner());
 			Check(!result.ok && result.error == "Could not verify the full SVN working-copy root. E155007: '/private/copy' is not a working copy.", "working-copy read failure carries svn's reason: " + result.error);
 		}
@@ -318,7 +317,7 @@ namespace
 			Check(switched.ok && f.switches == 1 && switched.context.revision == "3", "verified pinned switch");
 			Check(f.url.ends_with("feature%20%26%20fix"), "URL encoding is per path component");
 			Check(f.switch_args[f.switch_args.size() - 2].ends_with("@3"), "target peg revision is pinned with its operative revision");
-			Check(f.switch_args.back() == uam::paths::Utf8PathString(f.directory), "switch destination is a literal local path, not a peg target");
+			Check(f.switch_args.back() == uam::paths::Utf8PathString(f.directory) + "/", "switch destination is a literal local path, not a peg target");
 		}
 		for (const std::string& path : {"branches", "^/../lines", "^/lines/./bad", "^/lines//bad", "^/lines\\bad", "^/lines\n"})
 		{
@@ -381,7 +380,10 @@ namespace
 			std::string line;
 #ifdef _WIN32
 			(void)shared_environment;
-			line = uam::shell::JoinEscapedArgs(command);
+			// _popen runs `cmd /c` without /S: a line starting with a quote and holding more than two loses its first and
+			// last quote. One extra outer pair is what cmd strips, leaving every argument's own quotes intact. svn's errors
+			// are on stderr, which _popen does not capture, so they join the output as they do through popen below.
+			line = "\"" + uam::shell::JoinEscapedArgs(command) + " 2>&1\"";
 			FILE* pipe = _popen(line.c_str(), "r");
 #else
 			if (shared_environment)

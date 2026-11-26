@@ -35,12 +35,6 @@ namespace
 		return uam::strings::Trim(PlatformServicesFactory::Instance().process_service.ExecuteCommand("command -v " + name).output);
 	}
 
-	bool SvnToolsAvailable()
-	{
-		if (!ResolvedTool("svn").empty() && !ResolvedTool("svnadmin").empty()) return true;
-		std::fprintf(stderr, "SKIP real-svn case: svn or svnadmin is not installed\n");
-		return false;
-	}
 #endif
 
 #if !defined(_WIN32) && UAM_ENABLE_SSH
@@ -285,7 +279,7 @@ UAM_TEST(VcsCommitNoticeNamesGitWhenTheToolPrintsNothing)
 
 UAM_TEST(VcsCommitNoticeNamesSvnWhenTheToolPrintsNothing)
 {
-	if (!SvnToolsAvailable()) return;
+	if (!RealSvnAvailable()) return;
 	TempDir wrappers("uam-vcs-tools");
 	WriteSilentCommitWrapper(wrappers.root, "svn", ResolvedTool("svn"));
 	RemoteVcsHost host(wrappers.root);
@@ -311,7 +305,7 @@ UAM_TEST(VcsCommitNoticeNamesSvnWhenTheToolPrintsNothing)
 
 UAM_TEST(RemoteSvnStatusDiffAndCommitGoThroughTheSvnProvider)
 {
-	if (!GitAvailableForTests() || !SvnToolsAvailable()) return;
+	if (!GitAvailableForTests() || !RealSvnAvailable()) return;
 	RemoteVcsHost host;
 	const fs::path repository = host.temp.root / "repository";
 	const fs::path checkout = host.temp.root / "checkout";
@@ -411,7 +405,7 @@ UAM_TEST(RemoteGitStatusUsesTheWorkspaceWhenTheRootIsReportedEmpty)
 #if !defined(_WIN32)
 UAM_TEST(SvnBranchListCheckAndSwitchGoThroughTheSvnProvider)
 {
-	if (!SvnToolsAvailable()) return;
+	if (!RealSvnAvailable()) return;
 	TempDir temp("uam-vcs-svn-branches");
 	// SVN selection refuses linked ancestors (such as macOS /var), so work under the resolved path.
 	const fs::path root = fs::canonical(temp.root);
@@ -488,7 +482,7 @@ UAM_TEST(RemoteVcsStatusReportsALostConnectionInsteadOfNoRepository)
 
 UAM_TEST(RemoteVcsStatusDoesNotFallBackToSvnWhenTheGitProbeLosesItsConnection)
 {
-	if (!GitAvailableForTests() || !SvnToolsAvailable()) return;
+	if (!GitAvailableForTests() || !RealSvnAvailable()) return;
 	// A Git+SVN checkout: the Git probe drops only the bridge, so the reconnect lets the SVN probe succeed. The summary asks
 	// for Git, so whole-working-copy SVN rows must not stand in for the Git read that could not answer.
 	TempDir tools("uam-vcs-mixed-drop");

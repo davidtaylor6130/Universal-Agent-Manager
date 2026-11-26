@@ -845,6 +845,8 @@ namespace uam
 			for (std::size_t column = 0; column < kSvnStatusCodeWidth && valid; ++column)
 				valid = columns[column].find(line[column]) != std::string_view::npos;
 			if (!valid || line.substr(0, kSvnStatusCodeWidth) == "       ") continue;
+			// A lock alone (sixth column) is not a change: committing it would publish nothing.
+			if (line.substr(0, 5) == "     " && line[6] == ' ') continue;
 			std::string code(line.substr(0, kSvnStatusCodeWidth));
 			while (!code.empty() && code.back() == ' ') code.pop_back();
 			std::string path(line.substr(kSvnStatusPathOffset));
