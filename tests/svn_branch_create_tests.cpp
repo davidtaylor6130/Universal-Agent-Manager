@@ -257,6 +257,8 @@ namespace
 			const std::vector<std::string> expected{"copy", "--non-interactive", "--force-log", "-m", "Create branch", "--", "file:///repo/trunk@5", "file:///repo/branches/feature-1"};
 			Check(r.copy_args == expected, "copy is a server-side URL copy of the working copy's URL pinned at its revision, without --parents");
 			Check(r.url == "file:///repo/branches/feature-1" && created.context.url == r.url && created.context.revision == "8", "the working copy is switched to the new branch at its commit");
+			const auto switched = std::ranges::find_if(r.commands, [](const std::vector<std::string>& command) { return command[0] == "switch"; });
+			Check(switched != r.commands.end() && switched->back() == uam::paths::Utf8PathString(r.directory) + "/", "switch destination is a literal local path, not a peg target");
 			Check(created.branches.size() == 1 && created.branches[0].path == "^/branches/feature-1" && created.branches[0].current, "the new branch is reported as current");
 		}
 		{

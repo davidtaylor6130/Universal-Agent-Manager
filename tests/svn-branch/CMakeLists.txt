@@ -11,7 +11,7 @@ target_compile_definitions(uam_svn_branch_tests PRIVATE
   UAM_ENABLE_RUNTIME_COPILOT_CLI=1 UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI=1
   UAM_ENABLE_COMPUTER_USE=1 UAM_ENABLE_SSH=1 UAM_ENABLE_MOBILE_COMPANION=1 NOMINMAX)
 # SVN branch creation (#520): its own program, so its fake-repository cases and its real-svn script stay apart from switching.
-# The script uses disposable file:// repositories only and reports Skipped (77) without svn and svnadmin.
+# The script uses disposable file:// repositories only and reports Skipped (77) without svn and svnadmin, or fails under UAM_REQUIRE_SVN=1.
 add_executable(uam_svn_branch_create_tests ../svn_branch_create_tests.cpp ../../src/app/svn_branch_service.cpp)
 target_include_directories(uam_svn_branch_create_tests PRIVATE ../../src)
 target_compile_features(uam_svn_branch_create_tests PRIVATE cxx_std_20)

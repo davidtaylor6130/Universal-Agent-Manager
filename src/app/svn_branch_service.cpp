@@ -668,7 +668,8 @@ namespace uam
 		std::string scope_error;
 		if (!VerifyScope(scope, scope_error) || !settle.Read(scope, current) || !SameSvnWorkingCopy(current, working) || !settle.Clean(current))
 			return refuse(created + "The working copy changed meanwhile. Switch to the branch from the picker once it is clean.");
-		if (!RunLong(runner, {"switch", "--non-interactive", "--ignore-externals", "--accept", "postpone", "--depth", "infinity", "-r", committed, "--", target_url + "@" + committed, working.directory}, kSwitchTimeoutMs, output))
+		// The trailing "/" stops SVN's peg-revision split on the destination, as in folder selection's switch.
+		if (!RunLong(runner, {"switch", "--non-interactive", "--ignore-externals", "--accept", "postpone", "--depth", "infinity", "-r", committed, "--", target_url + "@" + committed, working.directory + "/"}, kSwitchTimeoutMs, output))
 			return refuse(created + "SVN did not confirm switching. Inspect the working copy before retrying; no automatic rollback was attempted.");
 		std::vector<std::string> segments;
 		// svn leaves characters such as + and @ unescaped in its URLs, so the final URL is compared as a decoded path.
