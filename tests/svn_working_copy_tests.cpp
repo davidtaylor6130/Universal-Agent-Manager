@@ -227,7 +227,7 @@ UAM_TEST(SvnRealUpdateBeforeNewChatStopsAtATreeConflictAndKeepsTheEdit)
 
 	// The incoming deletion meets the local edit: svn postpones it as a tree conflict and the chat does not start.
 	const auto task = launch.Run();
-	UAM_ASSERT_EQ(task->error, std::string("SVN update left conflicts. Resolve them before starting the chat."));
+	UAM_ASSERT_EQ(task->error, std::string("Resolve the conflicts left by the SVN update before starting the chat."));
 	const uam::WorktreeLaunchPreparationResult refused = uam::PrepareWorktreeForLaunch(copies.app, launch.Chat());
 	UAM_ASSERT_EQ(refused.state, uam::WorktreeLaunchPreparationState::Failed);
 	UAM_ASSERT(launch.Chat().svn_update_pending);
@@ -487,7 +487,7 @@ UAM_TEST(SvnRealSnapshotPortBackRefusesWhenTheWorkingCopyMovedOn)
 			continue;
 		}
 		UAM_ASSERT(!ported.ok);
-		UAM_ASSERT_EQ(ported.message, std::string("Source changed after the isolation baseline at k.txt. Resolve that conflict before porting chat changes."));
+		UAM_ASSERT_EQ(ported.message, std::string("Source changed after the isolation baseline at k.txt; resolve that conflict before porting."));
 		// Nothing was applied: the working copy is as the update left it and the chat keeps its snapshot and edit.
 		UAM_ASSERT_EQ(ReadFile(copies.checkout / "k.txt"), updated);
 		UAM_ASSERT(!snapshot.Chat().workspace_worktree_directory.empty());

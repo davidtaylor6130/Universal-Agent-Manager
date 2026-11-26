@@ -11,7 +11,7 @@ namespace uam::chat_storage
 	{
 		const auto refuse = [&error]()
 		{
-			error = "Saved execution ownership is unresolved. Settle prepared input, managed work and remote recovery in the current folder before transferring it.";
+			error = "Finish pending input, managed work and remote recovery before moving this data folder.";
 			return false;
 		};
 		if (!record.is_object())

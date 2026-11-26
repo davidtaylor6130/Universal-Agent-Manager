@@ -14,6 +14,7 @@
 #include "common/platform/app_crash_supervisor.h"
 #include "app/data_folder_settings_service.h"
 #include "cef/uam_query_handler_async.h"
+#include "common/utils/diagnostic_log.h"
 
 #include "include/cef_task.h"
 #include "include/views/cef_browser_view.h"
@@ -76,7 +77,7 @@ namespace
 		{
 			if (!uam::platform::RequestApplicationRestart())
 			{
-				callback->Failure(409, "Automatic restart is unavailable. Close and open Universal Agent Manager again.");
+				callback->Failure(409, "Automatic restart is unavailable; close and reopen Universal Agent Manager.");
 				return;
 			}
 			callback->Success("{}");
@@ -128,7 +129,7 @@ void UamQueryHandler::HandleRestartToApplyDataFolder(CefRefPtr<CefBrowser> brows
 	const auto revision = payload["expectedRevision"].get<std::string>();
 	if (std::any_of(m_app.acp_sessions.begin(), m_app.acp_sessions.end(), [](const auto& session) { return session && session->running; }) || std::any_of(m_app.cli_terminals.begin(), m_app.cli_terminals.end(), [](const auto& terminal) { return terminal && terminal->running; }))
 	{
-		cb->Failure(409, "Stop active provider sessions before requesting a data-folder transfer. Their teardown has no generic confirmed-stop receipt.");
+		cb->Failure(409, "Stop active provider sessions before transferring the data folder.");
 		return;
 	}
 	(void)uam::query_handler_async::RunAsyncCefQuery(
@@ -144,7 +145,7 @@ void UamQueryHandler::HandleRestartToApplyDataFolder(CefRefPtr<CefBrowser> brows
 			    return;
 		    if (!uam::platform::RequestApplicationRestart(true))
 		    {
-			    result = uam::query_handler_async::AsyncFailure(409, "Supervised restart is unavailable. The folder choice remains pending; no transfer occurred.");
+			    result = uam::query_handler_async::AsyncFailure(409, "Restart is unavailable, so no transfer happened and the folder choice is still pending.");
 			    return;
 		    }
 		    CefPostTask(TID_UI, new CloseWindowTask(window));
@@ -216,7 +217,7 @@ bool UamQueryHandler::StartCompanion(CefRefPtr<CefBrowser> browser)
 		if (request.value("action", std::string{}) == "getLegacyChatImports" || request.value("action", std::string{}) == "resolveLegacyChatImport")
 		{ callback->Failure(403, "Previous-version chat history is decided on the desktop."); return; }
 		if (lifetime.expired()) { callback->Failure(503, "UAM is shutting down."); return; }
-		if (m_app.startup_state_loading) { callback->Failure(503, "UAM is still loading its chats. Try again in a moment."); return; }
+		if (m_app.startup_state_loading) { callback->Failure(503, "UAM is still loading its chats; try again in a moment."); return; }
 		const std::string action = request.at("action").get<std::string>();
 		nlohmann::json payload = request.value("payload", nlohmann::json::object());
 		if (action == "getProviderAllowances") uam::companion::ApplyKeychainPromptPolicy(action, payload, CompanionAllowsKeychainPrompts());
@@ -246,11 +247,11 @@ bool UamQueryHandler::HoldCompanionLoosening(CefRefPtr<CefBrowser> browser, std:
 	const auto now = uam::companion::DesktopConfirmations::Clock::now();
 	if (!m_companionConfirmations.Add({"", std::string(action), chat_id, chat == nullptr ? std::string{} : chat->title, std::move(description), payload, {}}, now))
 	{
-		callback->Failure(429, "Too many phone changes are waiting for confirmation on the desktop. Answer them there first.");
+		callback->Failure(429, "Too many phone changes are waiting on the desktop; answer them there first.");
 		return true;
 	}
 	uam::PushCompanionConfirmations(browser, m_companionConfirmations.ToJson());
-	callback->Failure(428, "Confirm this change on the desktop. It waits there for 5 minutes.");
+	callback->Failure(428, "Confirm this change on the desktop within 5 minutes.");
 	return true;
 }
 
@@ -288,7 +289,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		std::shared_ptr<uam::WorkspaceLeaseGate::Lease> lease = m_app.worktree_retention_gate.TryAcquireMutation();
 		if (!lease)
 		{
-			cb->Failure(409, "Workspace cleanup is finishing. Try again shortly.");
+			cb->Failure(409, "Workspace cleanup is finishing; try again shortly.");
 			return true;
 		}
 		cb = new WorkspaceMutationCallback(cb, std::move(lease));
@@ -654,7 +655,8 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 		    browser ? browser->GetIdentifier() : -1, frame ? frame->GetIdentifier().ToString() : "", query_id);
 		if (!DispatchAction(action, browser, payload, callback))
 		{
-			callback->Failure(404, "Unknown action: " + action);
+			uam::diagnostics::Write("[bridge] Unknown action: " + action);
+			callback->Failure(404, "This action is not supported.");
 		}
 		if (!port_chat_id.empty())
 		{

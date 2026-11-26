@@ -306,7 +306,7 @@ UAM_TEST(OpenCodeV2SelectsOwnedLocalBridgeAndCapturesInputRestrictions)
 	UAM_ASSERT(runtime.StructuredCliVersionError(profile, "1.19.4", false, &chat).empty());
 	UAM_ASSERT(runtime.OnAcpPrepareSetup(app, session, chat, "/workspace", error) == AcpRequestPreflight::Ready);
 	UAM_ASSERT(!runtime.PrepareStructuredLaunch(session, profile, "2.1.2", true, argv, environment, error));
-	UAM_ASSERT(error.find("SSH helper") != std::string::npos);
+	UAM_ASSERT(error.find("SSH host cannot run OpenCode V2") != std::string::npos);
 	argv = {"opencode", "acp"};
 	UAM_ASSERT(runtime.PrepareStructuredLaunch(session, profile, "1.19.4", false, argv, environment, error));
 	UAM_ASSERT(!session.opencode_v2_native);

@@ -517,7 +517,7 @@ bool uam::platform::DataFolderTree::CopyEntry(const Entry& entry, const DataFold
 	             }) ||
 	    read != entry.bytes || hash.Finish() != entry.sha256 || Stamp(*source, false) != entry.object || !Current() || !destination.Current())
 	{
-		error = "Copy verification failed. The destination remains passive.";
+		error = "Copy verification failed, so the new data folder was not activated.";
 		return false;
 	}
 #if !defined(_WIN32)

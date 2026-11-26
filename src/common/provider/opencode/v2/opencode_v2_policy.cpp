@@ -9,7 +9,7 @@ namespace uam::opencode_v2
 std::string WorkerVersionError(bool checked, bool same_host, std::string_view version, std::string_view check_error)
 {
 	if (!checked || !same_host || version.empty() || !check_error.empty())
-		return "OpenCode text worker is held until the executing local host's version check succeeds. Check OpenCode in Settings, then retry; no V1 fallback was launched.";
+		return "The OpenCode text worker did not start because its version check has not succeeded; check OpenCode in Settings.";
 	if (uam::cli_versions::ExtractSemverVersion(version) != std::optional<std::string>{version} ||
 	    (!version.starts_with("1.") && !IsVerifiedV2(version)))
 		return "This OpenCode text-worker protocol has not been verified. " + UnverifiedV2Message(version, "text worker") +

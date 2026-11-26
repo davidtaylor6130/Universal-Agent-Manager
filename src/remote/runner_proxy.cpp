@@ -645,7 +645,7 @@ namespace uam::remote
 		if (!claimed)
 		{
 			// Never echo the private launch payload or retry a possibly consumed handoff.
-			std::cerr << "Remote terminal launch could not be claimed. Start the terminal again.\n";
+			std::cerr << "Remote terminal launch could not be claimed; start the terminal again.\n";
 			return 70;
 		}
 		return RunTerminalProcessInternal(encoded_spec, true);

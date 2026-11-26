@@ -82,6 +82,6 @@ namespace uam::provider_availability
 
 	inline std::string DisabledReason()
 	{
-		return "This provider is disabled on the selected host. Enable it in Settings to continue.";
+		return "This provider is disabled on the selected host; enable it in Settings to continue.";
 	}
 }

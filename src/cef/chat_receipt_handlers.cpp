@@ -28,7 +28,7 @@ namespace
 void UamQueryHandler::HandleGetChatFileChangeReceipts(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string id = payload.value("chatId", "");
-	ChatSession* chat = uam::query_handler_internal::FindChatOrFail(m_app, id, cb, "Chat not found: " + id);
+	ChatSession* chat = uam::query_handler_internal::FindChatOrFail(m_app, id, cb, "Chat not found.");
 	if (chat == nullptr) return;
 	const std::string workspace = uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(m_app, *chat));
 	if (chat->messages_loaded)
@@ -45,7 +45,7 @@ void UamQueryHandler::HandleGetChatFileChangeReceipts(CefRefPtr<CefBrowser>, con
 			if (!current || m_app.data_root != data_root || current->execution_host_id != host ||
 			    uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(m_app, *current)) != workspace ||
 			    !current->messages_loaded || !uam::ChatFileChangeReceiptService::Matches(*current, *snapshot))
-				response = uam::query_handler_async::AsyncFailure(409, "Chat edits changed while loading. Refresh to retry.");
+				response = uam::query_handler_async::AsyncFailure(409, "Chat edits changed while loading; refresh to try again.");
 		});
 		return;
 	}
@@ -61,7 +61,7 @@ void UamQueryHandler::HandleGetChatFileChangeReceipts(CefRefPtr<CefBrowser>, con
 		    uam::query_handler_internal::FailureDetailOrFallback(warning, "Failed to load recorded chat edits."));
 		if (loaded->execution_host_id != host ||
 		    !uam::ChatFileChangeReceiptService::MatchesPersistedSnapshot(*loaded, id, count, digest))
-			return uam::query_handler_async::AsyncFailure(409, "Saved chat history changed while loading recorded edits. Refresh to retry.");
+			return uam::query_handler_async::AsyncFailure(409, "Saved chat history changed while loading recorded edits; refresh to try again.");
 		return uam::query_handler_async::AsyncSuccess(SerializeReceipts(*loaded, workspace));
 	}, [this, id, workspace, host, count, digest, data_root, payload, cb](uam::query_handler_async::AsyncCefResult& response)
 	{
@@ -75,7 +75,7 @@ void UamQueryHandler::HandleGetChatFileChangeReceipts(CefRefPtr<CefBrowser>, con
 		if (m_app.data_root != data_root || current->execution_host_id != host ||
 		    uam::paths::Utf8PathString(uam::paths::ResolveWorkspaceRootPath(m_app, *current)) != workspace)
 		{
-			response = uam::query_handler_async::AsyncFailure(409, "Chat workspace changed while loading recorded edits. Refresh to retry.");
+			response = uam::query_handler_async::AsyncFailure(409, "The chat workspace changed while loading recorded edits; refresh to try again.");
 			return;
 		}
 		if (current->messages_loaded)
@@ -84,6 +84,6 @@ void UamQueryHandler::HandleGetChatFileChangeReceipts(CefRefPtr<CefBrowser>, con
 			response.callback_deferred = true;
 		}
 		else if (current->persisted_message_count != count || current->persisted_messages_digest != digest)
-			response = uam::query_handler_async::AsyncFailure(409, "Chat history changed while loading recorded edits. Refresh to retry.");
+			response = uam::query_handler_async::AsyncFailure(409, "Chat history changed while loading recorded edits; refresh to try again.");
 	});
 }

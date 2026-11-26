@@ -56,7 +56,7 @@ void UamQueryHandler::HandleStartDictation(CefRefPtr<CefBrowser> /*browser*/, co
 			const char* key = std::getenv(m_app.settings.voice_input_api_key_env.c_str());
 			if (key == nullptr || *key == '\0')
 			{
-				cb->Failure(409, "Voice API credential environment variable is not set: " + m_app.settings.voice_input_api_key_env);
+				cb->Failure(409, "The voice API key variable " + m_app.settings.voice_input_api_key_env + " is not set.");
 				return;
 			}
 			if (std::string_view(key).size() > 8192 || uam::voice_input::HasControlCharacters(key))

@@ -350,7 +350,7 @@ namespace uam
 		const std::vector<RepositoryRouteWorkspace> expected = assignment == app.repository_route_assignments.end()
 		    ? std::vector<RepositoryRouteWorkspace>{} : assignment->second;
 		if (expected.size() != 2 || !expected[0].repository || expected[0].repository != expected[1].repository)
-		{ error = "The assigned checkout no longer matches the source repository. Review its routing mapping."; return RepositoryRouteLaunchState::Failed; }
+		{ error = "The assigned checkout no longer matches the source repository; review its routing mapping."; return RepositoryRouteLaunchState::Failed; }
 		const std::vector<RepositoryRouteWorkspace> current = CaptureRepositoryRouteWorkspaces(app.folders, app.settings.execution_hosts);
 		for (const RepositoryRouteWorkspace& workspace : expected)
 			if (std::ranges::none_of(current, [&](const RepositoryRouteWorkspace& item)
@@ -368,10 +368,10 @@ namespace uam
 			{
 				// Sending again after this starts a new read instead of repeating the old answer.
 				if (now - task->completed_at_s > 2.0) continue;
-				error = "The assigned checkout could not be read before launch. Check the computer's connection, then send again.";
+				error = "The assigned checkout could not be read; check the computer's connection and send again.";
 				return RepositoryRouteLaunchState::Failed;
 			}
-			if (!task->matches) { error = "The assigned repository changed during launch preparation. Review its routing mapping."; return RepositoryRouteLaunchState::Failed; }
+			if (!task->matches) { error = "The assigned repository changed before launch; review its routing mapping."; return RepositoryRouteLaunchState::Failed; }
 			if (now - task->completed_at_s <= 2.0) return RepositoryRouteLaunchState::Ready;
 		}
 		if (std::ranges::count_if(app.repository_route_tasks, [](const std::shared_ptr<RepositoryRouteTask>& active)

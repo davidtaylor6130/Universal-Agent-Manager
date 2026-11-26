@@ -85,6 +85,15 @@ namespace uam::remote
 		std::chrono::steady_clock::time_point m_previous;
 	};
 
+	inline constexpr const char* kRunnerConnectUnavailableInBuild = "Remote execution is not included in this build.";
+	inline constexpr const char* kRunnerConnectNeedsSetup = "Set up the SSH helper again in Settings to use this host.";
+
+	/// <summary>Connect's own fixed refusals tell the user what to do; anything else is transport detail for the log.</summary>
+	inline std::string RunnerConnectErrorForUser(const std::string& error, const char* fallback)
+	{
+		return error == kRunnerConnectUnavailableInBuild || error == kRunnerConnectNeedsSetup ? error : std::string(fallback);
+	}
+
 	class RunnerClient
 	{
 	  public:

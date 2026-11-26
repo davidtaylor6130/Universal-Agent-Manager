@@ -1,6 +1,7 @@
 #include "common/runtime/acp/acp_goal_loop.h"
 #include "common/provider/provider_ids.h"
 #include "common/runtime/acp/acp_session_internal.h"
+#include "common/utils/diagnostic_log.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 
 #include "app/chat_domain_service.h"
@@ -188,7 +189,8 @@ namespace uam::acp_detail
 				}
 				catch (const std::exception& exception)
 				{
-					state->message = std::string("Automatic checkpoint preflight failed: ") + exception.what();
+					uam::diagnostics::Write(std::string("[checkpoint] Automatic checkpoint preflight failed: ") + exception.what());
+					state->message = "The automatic checkpoint check failed.";
 				}
 				catch (...)
 				{
@@ -199,7 +201,8 @@ namespace uam::acp_detail
 		}
 		catch (const std::exception& exception)
 		{
-			app.status_line = std::string("Could not start automatic checkpoint preflight: ") + exception.what();
+			uam::diagnostics::Write(std::string("[checkpoint] Could not start automatic checkpoint preflight: ") + exception.what());
+			app.status_line = "Could not start the automatic checkpoint check.";
 			return false;
 		}
 		session.turn_checkpoint_preflight_pending = true;
@@ -251,7 +254,8 @@ namespace uam::acp_detail
 					}
 					catch (const std::exception& exception)
 					{
-						state->message = std::string("Automatic checkpoint failed: ") + exception.what();
+						uam::diagnostics::Write(std::string("[checkpoint] Automatic checkpoint failed: ") + exception.what());
+						state->message = "Automatic turn checkpoint failed.";
 					}
 					catch (...)
 					{
@@ -262,7 +266,8 @@ namespace uam::acp_detail
 			}
 			catch (const std::exception& exception)
 			{
-				app.status_line = std::string("Could not start automatic checkpoint: ") + exception.what();
+				uam::diagnostics::Write(std::string("[checkpoint] Could not start automatic checkpoint: ") + exception.what());
+				app.status_line = "Could not start the automatic checkpoint.";
 				return false;
 			}
 			app.pending_chat_save_at_by_chat_id.erase(chat.id);
@@ -279,7 +284,7 @@ bool ResumeGoal(AppState& app, const std::string& chat_id, const std::string& go
 {
 	if (stage == GoalResumeStage::AfterReceipt && (!admitted_owner || !admitted_owner()))
 	{
-		if (error_out != nullptr) *error_out = "Goal durability ownership expired.";
+		if (error_out != nullptr) *error_out = "The goal changed before it could be saved.";
 		return false;
 	}
 	ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
@@ -292,7 +297,7 @@ bool ResumeGoal(AppState& app, const std::string& chat_id, const std::string& go
 	}
 	if (chat->imported_read_only)
 	{
-		if (error_out != nullptr) *error_out = "Imported transcripts are read-only. Create a new chat in a workspace to continue.";
+		if (error_out != nullptr) *error_out = "Imported transcripts are read-only; create a new chat in a workspace to continue.";
 		return false;
 	}
 	if (goal->status == GoalStatus::Complete && !restart)
@@ -330,7 +335,7 @@ bool ResumeGoal(AppState& app, const std::string& chat_id, const std::string& go
 		if (workspace.state != WorktreeLaunchPreparationState::Ready)
 		{
 			if (error_out) *error_out = workspace.state == WorktreeLaunchPreparationState::Pending
-			    ? "Workspace preparation is still running. Retry Resume after it finishes." : workspace.error;
+			    ? "Workspace preparation is still running; resume after it finishes." : workspace.error;
 			return false;
 		}
 	}
@@ -1070,7 +1075,7 @@ bool PollTurnCheckpointTasks(AppState& app, CefRefPtr<CefBrowser> browser)
 			{
 				message.checkpoint_sha = previous_sha;
 				message.checkpoint_parent_sha = previous_parent;
-				if (retry_metadata("Checkpoint metadata could not be saved. Waiting to retry.")) continue;
+				if (retry_metadata("Checkpoint details could not be saved; UAM will retry.")) continue;
 				app.status_line = "Automatic turn checkpoint failed.";
 			}
 		}

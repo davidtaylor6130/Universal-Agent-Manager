@@ -280,7 +280,7 @@ UAM_TEST(RemoteHostOnlyCodexCliViewNamesHostInstructionsWhenOverTheLaunchLimit)
 	std::vector<std::string> argv{"codex"};
 	uam::provider_setup::Environment environment;
 	UAM_ASSERT(!uam::provider_setup::Apply(chat.provider_id, bundle.local_directory, temp.root, argv, environment, error));
-	UAM_ASSERT_EQ(error, std::string("Host instructions exceed the OS launch limit for this provider. Shorten them."));
+	UAM_ASSERT_EQ(error, std::string("Host instructions are too long for this provider to launch; shorten them."));
 }
 
 UAM_TEST(ManagedWorkspaceResourceAcceptsAWorkspaceWithAFinalSeparator)

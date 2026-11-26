@@ -221,7 +221,7 @@ namespace uam
 	std::string SvnFailureMessage(const ProcessExecutionResult& result, std::string_view fallback, std::string_view workspace)
 	{
 		if (result.canceled) return "Canceled.";
-		if (result.timed_out) return "SVN did not answer in time. Check the connection to the repository, then retry.";
+		if (result.timed_out) return "SVN did not answer in time; check the connection to the repository.";
 		if (result.error == kSvnClientMissing) return result.error;
 		const std::vector<SvnLine> lines = ParseLines(result);
 		if (NeedsCredentials(lines, result)) return CredentialsMessage(lines);

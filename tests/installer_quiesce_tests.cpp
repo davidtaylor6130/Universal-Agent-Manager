@@ -922,9 +922,9 @@ UAM_TEST(InstallerRealTurnStillBlocksWithNamedReason)
 	UAM_ASSERT(uam::remote_install::HostHasActiveRuntimeWork(app, host, true, &reason, &chat_id));
 	UAM_ASSERT_EQ(chat_id, app.chats.front().id);
 	const std::string message = uam::remote_install::HostRuntimeBlockMessage(app, reason, chat_id);
-	UAM_ASSERT(message.find("\xE2\x80\x9CHomelab notes\xE2\x80\x9D has a turn in progress on this host. Stop it or let it finish") != std::string::npos);
+	UAM_ASSERT(message.find("\xE2\x80\x9CHomelab notes\xE2\x80\x9D has a turn in progress on this host; stop it or let it finish") != std::string::npos);
 	UAM_ASSERT(message.find("SSH") == std::string::npos);
-	UAM_ASSERT(message.find("(chat-process)") != std::string::npos);
+	UAM_ASSERT(message.find("(chat-process)") == std::string::npos);
 	UAM_ASSERT_EQ(uam::remote_install::QuiesceRetainedProcessesOnHost(app, host), std::size_t{0});
 	UAM_ASSERT(session.running);
 	UAM_ASSERT(app.chats.front().remote_process_exists);
@@ -1070,7 +1070,7 @@ UAM_TEST(InstallerUnconfirmedStopIsRetriedOnceThenSetAsideAndReconnectWaitsForIn
 	blocked_with("has a turn in progress on this host");
 	chat.remote_restart_pending = false;
 	chat.acp_queued_prompts.emplace_back();
-	blocked_with("has queued or unsent input for this host, and UAM could not confirm that its earlier process stopped. Remove that input");
+	blocked_with("has queued or unsent input and an unconfirmed stop on this host; remove that input");
 	chat.acp_queued_prompts.clear();
 	for (const char* state : {"waiting", "claimed"})
 	{
@@ -1117,14 +1117,14 @@ UAM_TEST(InstallerUnconfirmedStopIsRetriedOnceThenSetAsideAndReconnectWaitsForIn
 		UAM_ASSERT(wait_blocks(&probes, false, &reason, &chat_id));
 		return uam::remote_install::HostRuntimeBlockMessage(app, reason, chat_id);
 	};
-	UAM_ASSERT(refusal().find("Check that the host is reachable") != std::string::npos);
+	UAM_ASSERT(refusal().find("check the host is reachable") != std::string::npos);
 	created->recent_stderr = "The remote process does not exist.\n" + std::string(uam::remote::kRemoteSessionProcessRunningLine) + "\n";
-	UAM_ASSERT(refusal().find("a process is still running in its folder there, or something else is working in that folder") != std::string::npos);
+	UAM_ASSERT(refusal().find("because something is still using its folder there") != std::string::npos);
 	UAM_ASSERT(refusal().find("reachable") == std::string::npos);
 	created->recent_stderr += "Remote process could not start.\n" + std::string(uam::remote::kRemoteHelperUnreachableLine) + "\n";
-	UAM_ASSERT(refusal().find("its helper is running there but does not answer") != std::string::npos);
+	UAM_ASSERT(refusal().find("because its helper there does not answer") != std::string::npos);
 	created->recent_stderr += std::string(uam::remote::kRemoteProcessUncheckedLine) + "\n";
-	UAM_ASSERT(refusal().find("the processes running there could not be checked") != std::string::npos);
+	UAM_ASSERT(refusal().find("because its processes there could not be checked") != std::string::npos);
 	created->recent_stderr.clear();
 	// A runtime that lost its own flag still has the chat's saved stop: the refusal stays specific.
 	created->remote_stop_unconfirmed = false;
@@ -1242,7 +1242,7 @@ UAM_TEST(InstallerUnsentRecoveryBlocksOnlyWhileItsRowCanBeSentOrRemoved)
 	Reason reason = Reason::None;
 	std::string chat_id;
 	UAM_ASSERT(uam::remote_install::HostHasActiveRuntimeWork(app, host, true, &reason, &chat_id));
-	UAM_ASSERT(uam::remote_install::HostRuntimeBlockMessage(app, reason, chat_id).find("has queued or unsent input for this host. Send or remove it") != std::string::npos);
+	UAM_ASSERT(uam::remote_install::HostRuntimeBlockMessage(app, reason, chat_id).find("has queued or unsent input for this host; send or remove it") != std::string::npos);
 	// The answer reads saved rows only: a reconnect or stop retry covering that row does not change it.
 	uam::AcpSessionState& session = InstallerRetainedSession(app, chat);
 	session.turn_user_message_index = 0;
@@ -1255,7 +1255,7 @@ UAM_TEST(InstallerUnsentRecoveryBlocksOnlyWhileItsRowCanBeSentOrRemoved)
 	// With an unconfirmed stop the chat cannot send, so the refusal offers removal only.
 	chat.remote_stop_cleanup_pending = true;
 	UAM_ASSERT(uam::remote_install::HostHasActiveRuntimeWork(app, host, true, &reason, &chat_id));
-	UAM_ASSERT(uam::remote_install::HostRuntimeBlockMessage(app, reason, chat_id).find("Remove that input in the chat") != std::string::npos);
+	UAM_ASSERT(uam::remote_install::HostRuntimeBlockMessage(app, reason, chat_id).find("remove that input in the chat first") != std::string::npos);
 	chat.remote_stop_cleanup_pending = false;
 	// History that is not loaded cannot show which rows exist, so the record still counts.
 	chat.messages_loaded = false;

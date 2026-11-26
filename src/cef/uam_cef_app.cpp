@@ -226,7 +226,7 @@ namespace
 			title->SetEnabled(false);
 			title->SetTextColor(CEF_BUTTON_STATE_DISABLED, 0xFFFFFFFF);
 			m_recoveryPanel->AddChildView(title);
-			CefRefPtr<CefLabelButton> detail = CefLabelButton::CreateLabelButton(this, "Active sessions keep running. Unsaved drafts may be lost when reloading.");
+			CefRefPtr<CefLabelButton> detail = CefLabelButton::CreateLabelButton(this, "Active sessions keep running, but reloading may lose unsaved drafts.");
 			detail->SetEnabled(false);
 			detail->SetTextColor(CEF_BUTTON_STATE_DISABLED, 0xFFFFFFFF);
 			m_recoveryPanel->AddChildView(detail);

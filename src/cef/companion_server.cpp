@@ -282,7 +282,7 @@ std::optional<std::string> UamCompanionService::RotateToken(const std::filesyste
 {
 	const auto fail = [&](const char* message) { if (error) *error = message; return std::nullopt; };
 	if (uam::env::GetNonEmptyString("UAM_COMPANION_TOKEN_FILE"))
-		return fail("Phone access uses the token file named by UAM_COMPANION_TOKEN_FILE. Replace that file and restart instead.");
+		return fail("Phone access uses the UAM_COMPANION_TOKEN_FILE token file; replace that file and restart instead.");
 	(void)MigrateLegacyToken(data_root);
 	std::string text;
 	if (data_root.empty() || !uam::io::TryReadTextFile(data_root / "companion.json", text, 64 * 1024)) return fail("Phone access is not configured.");
@@ -811,7 +811,7 @@ void UamCompanionServer::HandleAutomationRequest(CefRefPtr<CefRequest> request, 
 	}
 	// A bodyless status poll still occupies an admission slot.
 	const auto admission = m_request_admission.Acquire(std::max<std::size_t>(body.size(), 1));
-	if (!admission) { reply->Failure(503, "Companion request capacity exhausted. Wait for current actions to finish."); return; }
+	if (!admission) { reply->Failure(503, "Too many phone requests are in progress; wait for current actions to finish."); return; }
 	reply = new AdmittedReply(reply, admission);
 	nlohmann::json envelope = {{"action", "automationHttpRequest"}, {"payload", {{"method", request->GetMethod().ToString()}, {"path", path}, {"tokenHash", *token_hash}, {"body", std::move(body)}}}};
 	CefRefPtr<UamCompanionServer> self = this;
@@ -888,7 +888,7 @@ void UamCompanionServer::ProcessApiRequest(std::string body, CefRefPtr<Callback>
 	const auto admission = m_request_admission.Acquire(request_bytes);
 	if (!admission)
 	{
-		reply->Failure(503, "Companion request capacity exhausted. Wait for current actions to finish.");
+		reply->Failure(503, "Too many phone requests are in progress; wait for current actions to finish.");
 		return;
 	}
 	reply = new AdmittedReply(reply, admission);
@@ -941,9 +941,9 @@ void UamCompanionServer::DispatchCompanion(nlohmann::json envelope, CefRefPtr<Ca
 		JsonReply::FailureHandler failure = [reply, action](int status)
 		{
 			reply->Failure(status, action == "getProviderMcpStatus"
-			    ? "MCP status could not be read. Refresh or check the main device."
-			    : status == 428 ? "Confirm this change on the desktop. It waits there for 5 minutes."
-			    : "Settings could not be saved. Refresh current values and check the main device.");
+			    ? "MCP status could not be read; refresh or check the main device."
+			    : status == 428 ? "Confirm this change on the desktop within 5 minutes."
+			    : "Settings could not be saved; refresh them and check the main device.");
 		};
 		JsonReply::SuccessHandler prepare = [self, reply, action, envelope = std::move(envelope), failure](nlohmann::json state) mutable
 		{
@@ -988,7 +988,7 @@ void UamCompanionServer::DispatchCompanion(nlohmann::json envelope, CefRefPtr<Ca
 			const nlohmann::json scope = uam::companion::ChatAttachmentScope(state, chat_id);
 			if (action == "sendAcpPrompt" && payload.contains("attachments") && !self->m_staged_attachments.Allows(chat_id, payload["attachments"], scope))
 			{
-				reply->Failure(403, "Attachments must exactly match this chat's companion staging results and workspace. Stage client bytes first.");
+				reply->Failure(403, "Attachments do not match the files uploaded for this chat; attach them again.");
 				return;
 			}
 			CefRefPtr<Callback> target = reply;
@@ -998,7 +998,7 @@ void UamCompanionServer::DispatchCompanion(nlohmann::json envelope, CefRefPtr<Ca
 				{
 					if (!result.contains("attachments") || !self->m_staged_attachments.Remember(chat_id, result["attachments"], scope))
 					{
-						reply->Failure(503, "Companion attachment descriptor capacity exhausted. Restage after expiry.");
+						reply->Failure(503, "Too many uploaded attachments are pending; attach them again in a few minutes.");
 						return;
 					}
 					reply->Success(result.dump());

@@ -505,7 +505,7 @@ UAM_TEST(WorktreeLaunchPreparationRestartRejectsChangedOwnership)
 			UAM_ASSERT(uam::io::WriteTextFile(interrupted->receipt_file, receipt.dump() + std::string(64 * 1024, ' ')));
 			std::string validation_error;
 			UAM_ASSERT(!uam::GitWorktreeService().ValidatePreparedWorkspace(fixture.app.data_root, interrupted->receipt_file, prepared.metadata, validation_error));
-			UAM_ASSERT(validation_error.find("size limit") != std::string::npos);
+			UAM_ASSERT(validation_error.find("Could not read the prepared workspace record") != std::string::npos);
 		}
 		if (change == "created") chat.created_at += "-replacement";
 		if (change == "source") chat.workspace_directory = fixture.foreign.string();
@@ -540,7 +540,7 @@ UAM_TEST(WorktreeLaunchPreparationRestartRejectsChangedOwnership)
 		fixture.WaitForWorker(rejected);
 		const uam::WorktreeLaunchPreparationResult refusal = uam::PrepareWorktreeForLaunch(fixture.app, chat);
 		UAM_ASSERT_EQ(refusal.state, uam::WorktreeLaunchPreparationState::Failed);
-		if (change == "oversized") UAM_ASSERT(refusal.error.find("size limit") != std::string::npos);
+		if (change == "oversized") UAM_ASSERT(refusal.error.find("workspace record, so the workspace was kept") != std::string::npos);
 		if (change == "policy")
 		{
 			// The refusal names the setting that changed and the way out.
@@ -855,7 +855,7 @@ UAM_TEST(SvnUpdateBeforeChatCancellationAndStaleSourceCannotPublish)
 			const auto locked = fixture.Start();
 			fixture.Wait(locked);
 			UAM_ASSERT(!locked->merged);
-			UAM_ASSERT(locked->error.find("Run svn cleanup") != std::string::npos);
+			UAM_ASSERT(locked->error.find("run svn cleanup") != std::string::npos);
 			UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, fixture.app.chats.front()).state, uam::WorktreeLaunchPreparationState::Failed);
 			UAM_ASSERT_EQ(uam::io::ReadTextFile(fixture.log), "update\n");
 			// A consistent working copy recovers the interrupted receipt by retrying the update once.
@@ -1307,7 +1307,7 @@ UAM_TEST(WorktreeLaunchOlderSshHelperRefusesWithUpdateActionAndNeverDropsIsolati
 	{
 		const uam::WorktreeLaunchPreparationResult refused = uam::PrepareWorktreeForLaunch(app, app.chats.front());
 		UAM_ASSERT_EQ(refused.state, uam::WorktreeLaunchPreparationState::Failed);
-		UAM_ASSERT(refused.error.find("Update the SSH helper on Build box, then retry") != std::string::npos);
+		UAM_ASSERT(refused.error.find("The SSH helper on Build box is too old for isolated worktrees; update it, then retry") != std::string::npos);
 		// The chat keeps its isolation request and nothing about the refusal is stored on it.
 		UAM_ASSERT_EQ(app.chats.front().workspace_isolation_kind, uam::paths::kPendingGitWorktreeIsolationKind);
 		UAM_ASSERT(app.worktree_launch_preparations.empty() && app.worktree_operation_chat_ids.empty());
@@ -1450,7 +1450,7 @@ UAM_TEST(WorktreeLaunchEarlierSessionCreationStillRunningIsNotDuplicated)
 		const auto waiting = launch.Retry();
 		const uam::WorktreeLaunchPreparationResult refusal = uam::PrepareWorktreeForLaunch(launch.fixture.app, chat);
 		UAM_ASSERT_EQ(refusal.state, uam::WorktreeLaunchPreparationState::Failed);
-		UAM_ASSERT(refusal.error.find("Wait a minute, then retry") != std::string::npos);
+		UAM_ASSERT(refusal.error.find("wait a minute and retry") != std::string::npos);
 		// No second worktree or branch, and the journal still owns whatever the earlier session finishes.
 		UAM_ASSERT_EQ(ReadFile(launch.receipt), receipt);
 		UAM_ASSERT_EQ(launch.BranchCount(), branches);

@@ -255,7 +255,7 @@ namespace uam::provider_mcp_settings
 			if (bytes.size() > provider_setup::kMaxFileBytes || total_bytes > provider_setup::kMaxFileBytes - bytes.size()) throw std::runtime_error("OpenCode configuration exceeds the 2 MiB import limit.");
 			total_bytes += bytes.size();
 			const nlohmann::json config = nlohmann::json::parse(JsoncText(std::move(bytes)), nullptr, false);
-			if (!config.is_object()) throw std::runtime_error("The selected OpenCode configuration is not valid JSON or JSONC. Check its quotes, commas and comments.");
+			if (!config.is_object()) throw std::runtime_error("The selected OpenCode configuration is not valid JSON; check its quotes, commas and comments.");
 			if (config.contains("mcp"))
 			{
 				if (!config["mcp"].is_object()) throw std::runtime_error("OpenCode mcp settings must be an object.");
@@ -283,13 +283,13 @@ namespace uam::provider_mcp_settings
 			{
 				for (const char* name : {"config.json", "opencode.json", "opencode.jsonc"})
 					if (paths::PathExistsNoThrow(path / name)) read(path / name);
-				if (sources.empty()) throw std::runtime_error("The selected directory contains no opencode.jsonc, opencode.json or config.json. Select the global OpenCode configuration directory or its file.");
+				if (sources.empty()) throw std::runtime_error("The selected folder has no opencode.jsonc, opencode.json or config.json file.");
 			}
 			else read(path);
 		}
 		nlohmann::json result = Preview(combined, "local", workspace, search);
 		result["sources"] = std::move(sources);
-		if (fallback) result["warnings"].push_back("No global OpenCode configuration directory was found. This preview uses the explicitly listed environment configuration instead.");
+		if (fallback) result["warnings"].push_back("No global OpenCode configuration folder was found, so this preview uses the environment configuration.");
 		return result;
 	}
 
@@ -369,8 +369,8 @@ namespace uam::provider_mcp_settings
 			for (const std::unique_ptr<CliTerminalState>& terminal : app.cli_terminals)
 				if (terminal != nullptr && terminal->uam_control_session != nullptr) observe(*terminal->uam_control_session, terminal->running);
 			const std::string state = live > 0 ? "connected" : connected > 0 ? "handshake-confirmed" : configured > 0 ? "configured-unverified" : !enabled || (selected != nullptr && selected->uam_control_explicitly_disabled) ? "disabled" : active == 0 || active == setting_up ? "configured-unverified" : "missing";
-			const std::string detail = state == "disabled" ? (no_uam_control ? "This provider is never offered UAM tools." : "UAM tools are disabled for this scope.") : state == "connected" ? "The running provider MCP connection has a current heartbeat." : state == "handshake-confirmed" ? "UAM MCP handshake confirmed for this running session. Waiting for a current connection heartbeat." :
-			    state == "configured-unverified" ? (configured > 0 ? "UAM MCP is installed for a running session. No handshake has been confirmed." : setting_up > 0 ? "UAM MCP setup is in progress. No connection has been confirmed." : "UAM MCP is enabled for the next provider session. No connection has been confirmed.") : provider_failed ? "The provider session failed. Check its chat error; an MCP failure has not been established." : "UAM MCP is installed when the next enabled session starts.";
+			const std::string detail = state == "disabled" ? (no_uam_control ? "This provider is never offered UAM tools." : "UAM tools are disabled for this scope.") : state == "connected" ? "The running provider MCP connection has a current heartbeat." : state == "handshake-confirmed" ? "UAM MCP connected to this running session and is waiting for a fresh heartbeat." :
+			    state == "configured-unverified" ? (configured > 0 ? "UAM MCP is installed for a running session but has not connected yet." : setting_up > 0 ? "UAM MCP setup is in progress and has not connected yet." : "UAM MCP is enabled for the next provider session and has not connected yet.") : provider_failed ? "The provider session failed; check its chat error, as UAM MCP may not be the cause." : "UAM MCP is installed when the next enabled session starts.";
 			nlohmann::json server_settings = nlohmann::json::array();
 			for (const McpServerConfiguration& server : host_scoped_settings::McpServers(app.settings, host))
 				if (server.execution_host_id.empty() || server.execution_host_id == host)

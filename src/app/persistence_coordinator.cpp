@@ -92,7 +92,7 @@ bool PersistenceCoordinator::AdvanceSettingsPublication(uam::AppState& app) cons
 {
 	if (app.settings_publication_revision >= kMaxSettingsPublicationRevision)
 	{
-		app.status_line = "Settings publication revision is exhausted. Restart the app before changing settings.";
+		app.status_line = "Restart UAM before changing settings again.";
 		return false;
 	}
 	if (!EnsureSettingsPublicationScope(app)) return false;

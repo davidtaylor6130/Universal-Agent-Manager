@@ -103,11 +103,11 @@ namespace uam::attachment_payload
 			if (count <= 0) break;
 			output.write(buffer.data(), count);
 			if (!output)
-				return fail("The attachment could not be written. Check the free space in the workspace and try again.", "write_failed", copied);
+				return fail("The attachment could not be written; check the workspace's free space.", "write_failed", copied);
 			copied += static_cast<std::uintmax_t>(count);
 			// A source that is still growing must not run past the size the free-space check allowed for.
 			if (copied > size)
-				return fail("The attachment changed while it was being copied, so the copy was removed. Attach it again.", "source_grew", copied);
+				return fail("The attachment changed while copying, so the copy was removed; attach it again.", "source_grew", copied);
 			if (canceled && canceled())
 				return fail("The attachment copy was canceled.", "canceled", copied);
 			if (progress) progress(copied, size);
@@ -115,7 +115,7 @@ namespace uam::attachment_payload
 		output.close();
 		std::error_code size_error;
 		if (input.bad() || !output || copied != size || std::filesystem::file_size(target, size_error) != size || size_error)
-			return fail("The attachment was copied incompletely, so the copy was removed. Attach it again.", "size_mismatch", copied);
+			return fail("The attachment copied incompletely, so the copy was removed; attach it again.", "size_mismatch", copied);
 		return true;
 	}
 
@@ -144,12 +144,12 @@ namespace uam::attachment_payload
 			const std::filesystem::path source = PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(source_path_text);
 			const std::optional<std::uintmax_t> size = uam::paths::FileSizeNoThrow(source);
 			if (!size || !uam::paths::IsRegularFileNoThrow(source))
-				return fail(400, "File attachment does not exist: " + source_path_text, "source_missing", 0);
+				return fail(400, "The attached file no longer exists.", "source_missing", 0);
 			if (*size > kMaxBytes)
 				return fail(413, "Attachment is larger than the 25 MB limit.", "over_limit", *size);
 			expected = *size; // The file on disk is the authority for a path attachment.
 			if (!uam::io::TryReadBinaryFile(source, bytes))
-				return fail(500, "Failed to read attachment: " + source_path_text, "read_failed", *size);
+				return fail(500, "Could not read the attached file.", "read_failed", *size);
 		}
 		else
 		{
@@ -159,9 +159,9 @@ namespace uam::attachment_payload
 			return fail(413, "Attachment is larger than the 25 MB limit.", "over_limit", expected.value_or(0));
 		// A file that really is empty may be attached; an empty payload for anything else is a failed read.
 		if (bytes.empty() && expected != std::uintmax_t{0})
-			return fail(400, "The attachment arrived empty, so it was not copied. A file too large for the app to read arrives this way; attach a smaller file.", "empty_payload", expected.value_or(0));
+			return fail(400, "The attachment arrived empty and was not copied; if it is very large, attach a smaller file.", "empty_payload", expected.value_or(0));
 		if (expected && *expected != bytes.size())
-			return fail(400, "The attachment was read incompletely, so it was not copied. Attach it again.", "size_mismatch", *expected);
+			return fail(400, "The attachment was read incompletely and not copied; attach it again.", "size_mismatch", *expected);
 		return true;
 	}
 } // namespace uam::attachment_payload

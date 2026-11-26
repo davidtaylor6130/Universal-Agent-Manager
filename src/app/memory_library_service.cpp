@@ -163,7 +163,7 @@ bool MemoryLibraryService::ResolveScope(const uam::AppState& app, std::string_vi
 		const ChatFolder* folder = ChatDomainService().FindFolderById(app, normalized_folder_id);
 		if (folder == nullptr)
 		{
-			SetError(error_out, "Folder not found: " + normalized_folder_id);
+			SetError(error_out, "Folder not found.");
 			return false;
 		}
 		if (!uam::paths::IsControllerLocalWorkspace(*folder))

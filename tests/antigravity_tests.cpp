@@ -206,7 +206,7 @@ UAM_TEST(AntigravityProviderOwnedGoalCannotFallThroughToOrdinaryPrompt)
 	{
 		std::string error;
 		UAM_ASSERT(!uam::acp_detail::ResumeGoal(app, chat.id, goal.id, &error, restart));
-		UAM_ASSERT_EQ(error, std::string("Antigravity native Goal control is unavailable in structured Chat. Use a UAM-managed goal for bounded continuation."));
+		UAM_ASSERT_EQ(error, std::string("Antigravity's own Goal command is not available in Chat; use a UAM goal instead."));
 		const ChatSession& retained = app.chats.front();
 		UAM_ASSERT_EQ(retained.active_goal_id, chat.active_goal_id);
 		UAM_ASSERT_EQ(retained.goal_command_revision, chat.goal_command_revision);
@@ -1542,7 +1542,7 @@ UAM_TEST(AntigravityCapturedPermissionDenialPreservesOtherSuccessAndReportsAmbig
 				{
 					++summaries;
 					UAM_ASSERT_EQ(tool.status, std::string("failed"));
-					UAM_ASSERT(tool.result_text.find("cannot identify") != std::string::npos);
+					UAM_ASSERT(tool.result_text.find("which tool step it was is unknown") != std::string::npos);
 					UAM_ASSERT(tool.result_text.size() < 256);
 				}
 			}

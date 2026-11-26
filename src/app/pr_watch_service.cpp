@@ -233,12 +233,12 @@ namespace uam
 		if (chat == nullptr) return fail("The chat is unavailable.");
 		// Their turn ends with their task, so nothing would be there to wake.
 		if (!chat->agent_run_id.empty() || !chat->subagent_parent_chat_id.empty() || !chat->temporary_parent_chat_id.empty())
-			return fail("Subagents and temporary side chats cannot watch pull requests. Ask the chat that delegated to you to watch it.");
+			return fail("Subagents and side chats cannot watch pull requests; ask the parent chat to watch it.");
 		Link* link = FindLink(chat_id, pr);
 		if (link == nullptr)
 		{
 			if (m_links.size() >= kMaxLinks || static_cast<std::size_t>(std::ranges::count_if(m_links, [&](const Link& other) { return other.chat_id == chat_id; })) >= kMaxLinksPerChat)
-				return fail("UAM links at most " + std::to_string(kMaxLinksPerChat) + " pull requests to a chat and " + std::to_string(kMaxLinks) + " in total. Unlink one first.");
+				return fail("UAM links at most " + std::to_string(kMaxLinksPerChat) + " pull requests to a chat and " + std::to_string(kMaxLinks) + " in total; unlink one first.");
 			m_links.push_back({.chat_id = std::string(chat_id), .pr = pr});
 			link = &m_links.back();
 		}
@@ -526,8 +526,8 @@ namespace uam
 					{
 						if (pr_watch::Key(link.pr) != result.key || !link.watching) continue;
 						link.watching = false;
-						Notify(link, "Stopped watching " + label + ": GitHub could not be read " + std::to_string(pr_watch::kFailedReadLimit) +
-						             " times in a row. Check that gh is installed and signed in, then watch it again.", "warning");
+						Notify(link, "Stopped watching " + label + " because GitHub could not be read " + std::to_string(pr_watch::kFailedReadLimit) +
+						             " times in a row; check that gh is installed and signed in.", "warning");
 					}
 				}
 				m_dirty = true;
@@ -615,7 +615,7 @@ namespace uam
 			link.pending_outside_only = false;
 			link.held = false;
 			link.wake_refusals = 0;
-			Notify(link, "Stopped watching " + link.pr.repository + " #" + std::to_string(link.pr.number) + ": the chat did not accept its updates. Open the chat in Chat view and watch it again.", "warning");
+			Notify(link, "Stopped watching " + link.pr.repository + " #" + std::to_string(link.pr.number) + " because the chat did not accept its updates; open the chat and watch it again.", "warning");
 			delivered = true;
 		}
 		if (delivered)

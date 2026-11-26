@@ -1,4 +1,5 @@
 #include "platform_speech_output.h"
+#include "common/utils/diagnostic_log.h"
 #include "common/utils/string_utils.h"
 
 #if defined(_WIN32)
@@ -144,7 +145,8 @@ namespace uam
 			player.PlaybackSession().PlaybackRate(options.rate);
 			player.MediaEnded([generation](const MediaPlayer&, const winrt::Windows::Foundation::IInspectable&) { CompleteSpeech(generation); });
 			player.MediaFailed([generation](const MediaPlayer&, const winrt::Windows::Media::Playback::MediaPlayerFailedEventArgs& args) {
-				CompleteSpeech(generation, "Speech playback failed: " + winrt::to_string(args.ErrorMessage()));
+				uam::diagnostics::Write("[speech] Speech playback failed: " + winrt::to_string(args.ErrorMessage()));
+				CompleteSpeech(generation, "Speech playback failed.");
 			});
 			player.Source(winrt::Windows::Media::Core::MediaSource::CreateFromStream(stream, stream.ContentType()));
 			{
@@ -161,7 +163,8 @@ namespace uam
 		}
 		catch (const winrt::hresult_error& error)
 		{
-			const std::string message = "Speech playback failed: " + winrt::to_string(error.message());
+			uam::diagnostics::Write("[speech] Speech playback failed: " + winrt::to_string(error.message()));
+			const std::string message = "Speech playback failed.";
 			CompleteSpeech(generation, message);
 			if (error_out) *error_out = message;
 			return false;

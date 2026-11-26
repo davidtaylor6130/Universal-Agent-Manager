@@ -7,7 +7,7 @@
 
 namespace uam::chat
 {
-	inline constexpr const char* kAmbiguousCompactionHistory = "The interrupted compaction history cannot be safely reconstructed. The saved summary and input are retained.";
+	inline constexpr const char* kAmbiguousCompactionHistory = "The interrupted compaction cannot be rebuilt safely, so the saved summary and input are kept.";
 
 	inline bool HandoffHasQuarantinedSummary(const Message& message)
 	{
@@ -77,7 +77,7 @@ namespace uam::chat
 			}
 			if (snapshot.size() > 256 * 1024)
 			{
-				if (error != nullptr) *error = "The conversation is too large to move safely. Compact it before moving.";
+				if (error != nullptr) *error = "The conversation is too large to move safely; compact it first.";
 				return false;
 			}
 		}

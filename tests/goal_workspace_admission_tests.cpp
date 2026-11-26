@@ -91,7 +91,7 @@ UAM_TEST(AcpGoalWorkspacePendingResumePreservesBlockedGoalAndSibling)
 		GoalWorkspaceFixture fixture;
 		std::string error;
 		UAM_ASSERT(!uam::acp_detail::ResumeGoal(fixture.app, fixture.app.chats.front().id, "private-blocked-goal", &error, false, true, false, stage));
-		UAM_ASSERT(error.find("Workspace preparation") != std::string::npos && error.find("Retry") != std::string::npos);
+		UAM_ASSERT(error.find("Workspace preparation") != std::string::npos && error.find("resume after it finishes") != std::string::npos);
 		fixture.AssertBlockedEvidence();
 		UAM_ASSERT(fixture.app.acp_sessions.empty() && fixture.app.cli_terminals.empty());
 		UAM_ASSERT(fixture.app.pending_chat_save_at_by_chat_id.empty());

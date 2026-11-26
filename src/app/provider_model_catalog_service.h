@@ -116,6 +116,19 @@ class ProviderModelCatalogService
 	/// Start a user-requested discovery even when the cache is fresh.
 	bool BeginDiscovery(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local");
 	bool BeginDiscoveryIfMissing(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local");
+	/// <summary>Records the CLI version last checked on a computer; later successful discoveries there store it with their models.</summary>
+	void NoteCheckedCliVersion(const std::string& provider_id, std::string_view execution_host_id, std::string_view version);
+	/// <summary>True when the scope holds models under seven days old that the given, known CLI version fetched.</summary>
+	bool IsCacheFreshForCliVersion(const std::string& provider_id, std::string_view workspace_directory, std::string_view execution_host_id, std::string_view cli_version) const;
+	/// <summary>The scope's stored catalogue entry, or null; startup compares it to tell whether a discovery stored a new result.</summary>
+	nlohmann::json GetPersistentCatalogEntry(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local") const;
+	/// <summary>
+	/// Copies one workspace's stored models, options, refresh time and CLI version to other workspaces of the same provider
+	/// and computer, for providers whose model list does not depend on the workspace. Nothing is copied when the source has
+	/// no models, a refresh error, or still equals unchanged_source (its refresh stored nothing new). A target with a pending
+	/// discovery, or its own result at least as new from the same CLI version, keeps it. Returns the number of workspaces updated; one cache write covers all.
+	/// </summary>
+	std::size_t ShareAccountWideCatalog(const std::string& provider_id, std::string_view execution_host_id, std::string_view source_workspace, const std::vector<std::string>& target_workspaces, const nlohmann::json& unchanged_source = nullptr);
 	bool IsDiscoveryPending(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local") const;
 	void MarkDiscoveryLaunchStarted(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local");
 	void RememberDiscoveryCompatibilityBlocked(const std::string& provider_id, std::string error, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local");
@@ -219,6 +232,8 @@ class ProviderModelCatalogService
 	std::map<std::string, nlohmann::json> m_scope_by_catalog_key;
 	std::set<std::string> m_pending_discovery_provider_ids;
 	std::set<std::string> m_refresh_attempted_provider_ids;
+	// Last checked CLI version per provider and computer ("provider\nhost"); kept across Initialize like the installation it describes.
+	std::map<std::string, std::string> m_checked_cli_version_by_provider_host;
 
 	struct ConfiguredOpenCodeSnapshot
 	{

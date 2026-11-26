@@ -23,7 +23,7 @@
 namespace
 {
 	constexpr const char* kAntigravityGoalStopDeclineReason = "UAM stopped this turn for goal control before this request was answered.";
-	constexpr const char* kAntigravityNativeGoalUnavailable = "Antigravity native Goal control is unavailable in structured Chat. Use a UAM-managed goal for bounded continuation.";
+	constexpr const char* kAntigravityNativeGoalUnavailable = "Antigravity's own Goal command is not available in Chat; use a UAM goal instead.";
 
 	/// <summary>Recognizes a native Goal command without treating prose mentions or longer names as commands.</summary>
 	bool IsAntigravityGoalCommand(std::string_view prompt)
@@ -314,7 +314,7 @@ namespace
 				if (tool.status != "failed") tool.status = matches.size() == 1 ? "failed" : "unknown";
 				const std::string evidence = matches.size() == 1
 				    ? "Antigravity denied this MCP action."
-				    : "Antigravity reported a denied MCP action but cannot identify which tool step. Outcome unknown.";
+				    : "Antigravity denied an MCP action, but which tool step it was is unknown.";
 				tool.content = uam::strings::JoinNonEmpty(std::vector<std::string>{tool.content, evidence}, "\n");
 			}
 			if (matches.size() != 1)
@@ -324,8 +324,7 @@ namespace
 				evidence.title = "Antigravity permission result";
 				evidence.kind = "permission";
 				evidence.status = "failed";
-				evidence.content = "Antigravity reported a denied action: " + (name.empty() ? kind : name) +
-				    ". The native result cannot identify an individual tool step.";
+				evidence.content = "Antigravity denied " + (name.empty() ? kind : name) + ", but which tool step it was is unknown.";
 				uam::acp_detail::AppendToolTurnEventIfNeeded(session, id);
 			}
 		}
@@ -418,12 +417,12 @@ bool AntigravityCliProviderRuntime::OnAcpValidateGoalResume(const ChatSession& c
 	}
 	if (goal.token_budget < 0 || goal.token_budget > uam::usage::kMaxExactTokenCount || (!restart && (goal.tokens_used < 0 || goal.tokens_used > uam::usage::kMaxExactTokenCount || (goal.token_budget > 0 && goal.tokens_used >= goal.token_budget))))
 	{
-		error = "The goal has no verified remaining token budget. Restart explicitly to begin a new budget.";
+		error = "The goal's token budget is used up or unverified; restart the goal to begin a new budget.";
 		return false;
 	}
 	if (!chat.native_session_id.empty() && OnAcpValidateResumeId(chat).empty())
 	{
-		error = "The saved Antigravity conversation identity is invalid. The goal was not resumed.";
+		error = "The goal was not resumed because the saved Antigravity conversation is invalid.";
 		return false;
 	}
 	// Reviewed iterations only: this also gates each goal prompt send, including the review after an unreviewed resume; the shared cap and watchdog bound unreviewed resumes.
@@ -437,7 +436,7 @@ bool AntigravityCliProviderRuntime::OnAcpValidateGoalResume(const ChatSession& c
 	const bool unstarted = goal.last_diagnostic.empty() && goal.tokens_used == 0 && goal.loop_count == 0;
 	if (!restart && goal.token_budget > 0 && !unstarted && goal.last_diagnostic != "antigravity_goal_usage_observed")
 	{
-		error = "The goal has no retained Antigravity usage receipt. Restart explicitly to begin a new budget.";
+		error = "The goal's Antigravity usage record is missing; restart the goal to begin a new budget.";
 		return false;
 	}
 	return true;
@@ -472,7 +471,7 @@ bool AntigravityCliProviderRuntime::OnAcpPreparePrompt(uam::AppState& app, uam::
 	}
 	if ((!chat.native_session_id.empty() && OnAcpValidateResumeId(chat).empty()) || (!session.goal_internal_session && !session.session_id.empty() && !chat.native_session_id.empty() && session.session_id != OnAcpValidateResumeId(chat)))
 	{
-		error = "The Antigravity goal conversation identity is unverified. The prompt was not sent.";
+		error = "The prompt was not sent because the Antigravity goal conversation could not be verified.";
 		return false;
 	}
 	const auto& previous = session.antigravity_goal_turn;
@@ -485,7 +484,7 @@ bool AntigravityCliProviderRuntime::OnAcpPreparePrompt(uam::AppState& app, uam::
 	if (!uam::acp_detail::SaveChatQuietly(app, *owner))
 	{
 		goal->last_diagnostic = diagnostic;
-		error = "The goal usage boundary could not be saved. The prompt was not sent.";
+		error = "The prompt was not sent because the goal's usage could not be saved.";
 		return false;
 	}
 	session.antigravity_goal_turn = {owner->id, goal->id, owner->goal_command_revision, owner->execution_host_id, owner->native_session_id, app.data_root, owner->metadata_incarnation, session.turn_serial, 0, std::nullopt, false};
@@ -527,7 +526,7 @@ bool AntigravityCliProviderRuntime::OnAcpPersistGoalControl(uam::AppState& app, 
 	session.goal_resume_suppressed = true;
 	if (!uam::acp_detail::SaveChatQuietly(app, chat, uam::acp_detail::AcpChatSavePurpose::PreserveQueuedIntent))
 	{
-		error = "The goal control could not be saved. The owned Antigravity turn was not cancelled.";
+		error = "The goal control could not be saved, so the Antigravity turn was not cancelled.";
 		return false;
 	}
 	return true;
@@ -639,7 +638,7 @@ bool AntigravityCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::
 		if (event != "init" && event != "step_update" && event != "result") return true;
 		if (!session.antigravity_goal_turn.goal_id.empty() && session.antigravity_goal_turn.turn_serial == session.turn_serial && !session.antigravity_goal_turn.settled && !BoundAntigravityGoal(app, session, false))
 		{
-			HoldAntigravityGoal(app, session, chat, "antigravity_goal_usage_unknown", "Antigravity goal ownership changed. UAM requested the old owned turn to stop.", kDecisionSourceFallback);
+			HoldAntigravityGoal(app, session, chat, "antigravity_goal_usage_unknown", "Antigravity goal ownership changed, so UAM asked the old turn to stop.", kDecisionSourceFallback);
 			return true;
 		}
 		const std::string identity = JsonDiagnosticStringValue(payload, "conversation_id");
@@ -647,7 +646,7 @@ bool AntigravityCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::
 		{
 			if (BoundAntigravityGoal(app, session))
 			{
-				HoldAntigravityGoal(app, session, chat, "antigravity_goal_usage_unknown", "Antigravity returned a different goal conversation. Continuing work is held.", kDecisionSourceFallback);
+				HoldAntigravityGoal(app, session, chat, "antigravity_goal_usage_unknown", "Antigravity returned a different goal conversation, so the goal is on hold.", kDecisionSourceFallback);
 				return true;
 			}
 			// A changed identity ends an owned compaction too; it can never complete it.
@@ -670,7 +669,7 @@ bool AntigravityCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::
 				SyncResolvedNativeSessionIdForChat(app, chat, identity, previous);
 				if (!SaveChatQuietly(app, chat) && BoundAntigravityGoal(app, session))
 				{
-					HoldAntigravityGoal(app, session, chat, "antigravity_goal_usage_unknown", "The Antigravity goal conversation identity could not be saved. Continuing work is held.", kDecisionSourceFallback);
+					HoldAntigravityGoal(app, session, chat, "antigravity_goal_usage_unknown", "The Antigravity goal conversation could not be saved, so the goal is on hold.", kDecisionSourceFallback);
 					return true;
 				}
 			}
@@ -783,7 +782,7 @@ bool AntigravityCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::
 			{
 				const Goal* goal = BoundAntigravityGoal(app, session);
 				const bool exhausted = goal && goal->token_budget > 0 && goal->tokens_used >= goal->token_budget;
-				HoldAntigravityGoal(app, session, chat, exhausted ? "antigravity_goal_budget_reached" : "antigravity_goal_usage_unknown", exhausted ? "The Antigravity goal token budget was reached. UAM requested the owned turn to stop." : "Antigravity goal usage exceeded the exact accounting range. Continuing work is held.", kDecisionSourceFilter);
+				HoldAntigravityGoal(app, session, chat, exhausted ? "antigravity_goal_budget_reached" : "antigravity_goal_usage_unknown", exhausted ? "The Antigravity goal reached its token budget, so UAM asked the turn to stop." : "Antigravity goal usage is too large to count exactly, so the goal is on hold.", kDecisionSourceFilter);
 				if (browser)
 					uam::PushStreamDone(browser, chat.id);
 			}
@@ -809,7 +808,7 @@ bool AntigravityCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::
 		{
 			if (status != "SUCCESS" || (goal->token_budget > 0 && !session.provider_usage.token_usage.last_available))
 			{
-				HoldAntigravityGoal(app, session, chat, "antigravity_goal_usage_unknown", "Antigravity did not confirm complete goal-turn usage. Continuing work is held.", status != "SUCCESS" ? kDecisionSourceFallback : kDecisionSourceFilter);
+				HoldAntigravityGoal(app, session, chat, "antigravity_goal_usage_unknown", "Antigravity did not report the turn's full usage, so the goal is on hold.", status != "SUCCESS" ? kDecisionSourceFallback : kDecisionSourceFilter);
 				if (browser)
 					uam::PushStreamDone(browser, chat.id);
 				return true;
@@ -817,14 +816,14 @@ bool AntigravityCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::
 			if (session.antigravity_goal_turn.result_tokens && AccountAntigravityGoalDelta(app, session, *goal, *session.antigravity_goal_turn.result_tokens - session.antigravity_goal_turn.accounted_tokens))
 			{
 				const bool exhausted = goal->token_budget > 0 && goal->tokens_used >= goal->token_budget;
-				HoldAntigravityGoal(app, session, chat, exhausted ? "antigravity_goal_budget_reached" : "antigravity_goal_usage_unknown", exhausted ? "The Antigravity goal token budget was reached. Continuing work is held." : "Antigravity goal usage could not be reconciled. Continuing work is held.", kDecisionSourceFilter);
+				HoldAntigravityGoal(app, session, chat, exhausted ? "antigravity_goal_budget_reached" : "antigravity_goal_usage_unknown", exhausted ? "The Antigravity goal reached its token budget, so the goal is on hold." : "Antigravity goal usage could not be reconciled, so the goal is on hold.", kDecisionSourceFilter);
 				return true;
 			}
 			goal->last_diagnostic = session.provider_usage.token_usage.last_available ? "antigravity_goal_usage_observed" : "antigravity_goal_usage_partial";
 			ChatSession* owner = ChatDomainService().FindChatById(app, session.antigravity_goal_turn.owner_chat_id);
 			if (!owner || !SaveChatQuietly(app, *owner))
 			{
-				HoldAntigravityGoal(app, session, chat, "antigravity_goal_usage_unknown", "The Antigravity goal usage receipt could not be saved. Continuing work is held.", kDecisionSourceFallback);
+				HoldAntigravityGoal(app, session, chat, "antigravity_goal_usage_unknown", "The Antigravity goal usage record could not be saved, so the goal is on hold.", kDecisionSourceFallback);
 				return true;
 			}
 			session.antigravity_goal_turn.settled = true;
@@ -857,7 +856,8 @@ bool AntigravityCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::
 	}
 	catch (const std::exception& error)
 	{
-		InvalidateAcpTransport(app, session, chat, std::string("Antigravity stream message failed: ") + error.what());
+		uam::acp_detail::AppendAcpDiagnostic(session, "parse", "antigravity_message_parse_error", "", "", false, 0, error.what());
+		InvalidateAcpTransport(app, session, chat, "Antigravity sent a message UAM could not read.");
 	}
 	return true;
 }

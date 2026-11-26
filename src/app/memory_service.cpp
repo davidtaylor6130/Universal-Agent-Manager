@@ -135,7 +135,7 @@ namespace
 		return uam::memory_levels::IsEnabled(MemoryLevel(app, chat));
 	}
 
-	constexpr const char* kMemoryInputPreparationError = "Memory scan input could not be prepared safely. History and progress are unchanged.";
+	constexpr const char* kMemoryInputPreparationError = "Memory scan input could not be prepared safely, so history and progress are unchanged.";
 	std::size_t MemoryWorkerStartIndex(const ChatSession& chat, int start_override);
 
 	void AddMemoryInputBytes(std::size_t& used, std::size_t amount)
@@ -944,7 +944,8 @@ namespace
 			uam::io::AtomicWriteResult result;
 			if (!uam::io::WriteAndSyncAtomicTemp(entry.second.temporary, entry.second.content, {}, result))
 			{
-				SetError(error_out, "Failed to prepare memory entry: " + result.error); return nullptr;
+				uam::diagnostics::Write("[memory] Failed to prepare memory entry: " + result.error);
+				SetError(error_out, "Could not prepare a memory entry."); return nullptr;
 			}
 			std::string().swap(entry.second.content);
 		}
@@ -1280,7 +1281,7 @@ namespace
 		}
 		if (result.exit_code == 127)
 		{
-			return "Memory worker command was not found. Check the configured CLI install and PATH.";
+			return "Memory worker command was not found; check the CLI install and PATH.";
 		}
 		if (result.exit_code >= 0)
 		{
@@ -1461,7 +1462,7 @@ namespace
 			state.result.ok = false;
 			try
 			{
-				state.result.error = "Memory scan stopped after an internal error. History and progress are unchanged.";
+				state.result.error = "Memory scan stopped after an internal error, so history and progress are unchanged.";
 			}
 			catch (...)
 			{
@@ -1482,7 +1483,7 @@ namespace
 		// An ordinary preparation exception must not escape the worker thread.
 		// Allocator hard traps are not catchable; the input ceiling prevents the
 		// known unbounded full-file read rather than claiming to rescue a trap.
-		error = "Memory scan input could not be prepared safely. History and progress are unchanged.";
+		error = "Memory scan input could not be prepared safely, so history and progress are unchanged.";
 		return false;
 	}
 
@@ -1532,7 +1533,8 @@ namespace
 				    if (!HydrateMemoryWorkerInput(data_root, worker_chat, error))
 				    {
 					    extraction_state->hydration_failed = true;
-					    state->result.error = "Memory scan could not load chat history: " + error;
+					    uam::diagnostics::Write("[memory] Memory scan could not load chat history: " + error);
+					    state->result.error = "Memory scan could not load chat history.";
 				    }
 				    else
 				    {
@@ -1672,7 +1674,8 @@ namespace
 					    if (!HydrateMemoryWorkerInput(data_root, worker_chat, error))
 					    {
 						    extraction_state->hydration_failed = true;
-						    state->result.error = "Memory scan could not load chat history: " + error;
+						    uam::diagnostics::Write("[memory] Memory scan could not load chat history: " + error);
+						    state->result.error = "Memory scan could not load chat history.";
 						    return;
 					    }
 				    }
@@ -2116,7 +2119,12 @@ bool MemoryService::PublishPreparedWorkerOutput(uam::AppState& app, ChatSession&
 	for (const std::pair<const fs::path, PreparedMemoryOutput::Entry>& entry : prepared->entries)
 	{
 		const uam::io::AtomicWriteResult result = uam::io::CommitSyncedAtomicTemp(entry.first, entry.second.temporary);
-		if (!result.success) { SetError(error_out, "Failed to publish memory entry: " + result.error); return false; }
+		if (!result.success)
+		{
+			uam::diagnostics::Write("[memory] Failed to publish memory entry: " + result.error);
+			SetError(error_out, "Could not save a memory entry.");
+			return false;
+		}
 	}
 	if (!SaveMemoryProgress(app, chat, prepared->processed_message_count))
 	{

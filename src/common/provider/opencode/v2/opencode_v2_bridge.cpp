@@ -252,7 +252,7 @@ public:
 			if (proof.is_object() && proof.value("nonce", Json{}) == nonce && proof.value("directory", Json{}) == cwd) return;
 			std::this_thread::sleep_for(std::chrono::milliseconds(10));
 		}
-		throw std::runtime_error("OpenCode V2 did not load UAM's process-local permission guard. Input remains held.");
+		throw std::runtime_error("OpenCode V2 did not load UAM's permission guard, so input is held.");
 	}
 	template <typename Receive>
 	std::ptrdiff_t DrainEvents(Receive receive)
@@ -277,7 +277,7 @@ public:
 			const auto event = Json::parse(std::exchange(frame, {}), nullptr, false);
 			if (!event.is_object()) throw std::runtime_error("Invalid OpenCode V2 event frame.");
 			if (event.value("type", "") == "location.shutdown")
-				throw EventLeaseLost("OpenCode V2 reloaded its native policy. This process lease must be restarted explicitly.", true);
+				throw EventLeaseLost("OpenCode V2 reloaded its policy, so this session must be restarted.", true);
 			if (event.value("type", "") == "server.connected") connected = true;
 			if (!receive(event)) return count;
 		}
@@ -593,7 +593,7 @@ int Bridge(const std::vector<std::string>& command, IPlatformProcessService& pro
 	catch (const std::exception& cause)
 	{
 		if (runtime_verification && !session.Ready()) report_startup_failure(cause.what());
-		else session.Disconnected("OpenCode V2 returned an unverified event or transport response. Input is held and is never replayed automatically.");
+		else session.Disconnected("OpenCode V2 sent an unexpected event or response; input is held and never replayed.");
 		return 1;
 	}
 }

@@ -1134,7 +1134,7 @@ UAM_TEST(SettingsLoadShowsOneNoticeForDroppedMcpServerEntries)
 	// Startup messages that replace the status line afterwards restore the notice beside them.
 	const std::string application = ReadFile(fs::path(__FILE__).parent_path().parent_path() / "src/app/application.cpp");
 	const std::size_t computer_use = application.find("uam::ComputerUseService::ResetControlsForStartup(m_app)", application.find("void Application::FinishStartupState("));
-	const std::size_t bundled = application.find("\"Could not import bundled skills: \"");
+	const std::size_t bundled = application.find("\"Could not import bundled skills.\"");
 	UAM_ASSERT(computer_use != std::string::npos && bundled != std::string::npos);
 	UAM_ASSERT(application.find("RestoreSettingsLoadNotice();", computer_use) < application.find("const std::chrono::steady_clock::time_point finish_finished", computer_use));
 	UAM_ASSERT(application.find("RestoreSettingsLoadNotice();", bundled) < application.find("\n}\n", bundled));

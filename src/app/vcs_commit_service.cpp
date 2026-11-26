@@ -15,6 +15,7 @@
 #include "common/provider/provider_profile.h"
 #include "common/provider/provider_runtime.h"
 #include "common/provider/provider_text_worker.h"
+#include "common/utils/diagnostic_log.h"
 #include "common/utils/io_utils.h"
 #include "common/utils/diagnostic_log.h"
 #include "common/utils/hash_utils.h"
@@ -103,7 +104,7 @@ namespace uam
 			}
 			if (!uam::remote::CanAttemptRunnerConnection(*m_host))
 			{
-				m_error = "The selected remote runner is not ready. Recheck it in Settings.";
+				m_error = "The selected remote runner is not ready; recheck it in Settings.";
 				return;
 			}
 			m_client = std::make_unique<uam::remote::RunnerClient>(
@@ -538,7 +539,11 @@ namespace uam
 				std::filesystem::copy_file(absolute, m_index, std::filesystem::copy_options::none, error);
 				result.ok = !error;
 				result.exit_code = error ? 1 : 0;
-				if (error) result.error = "Failed to copy the repository index for review: " + error.message();
+				if (error)
+				{
+					uam::diagnostics::Write("[vcs] Failed to copy the repository index for review: " + error.message());
+					result.error = "Could not copy the repository index for review.";
+				}
 				return result;
 			}
 			ProcessExecutionResult Run(std::vector<std::string> args, bool use_index = true) const
@@ -2135,7 +2140,7 @@ namespace uam
 				const SvnBranchResult result = DiscoverSvnBranches(BranchScope(snapshot, chat), selection.create ? std::string{} : selection.context.parent, CreateSvnBranchRunner(stop));
 				outcome.ok = result.ok && (selection.create ? SameSvnWorkingCopy(result.context, selection.context) : result.context == selection.context);
 				outcome.conflict = !outcome.ok;
-				if (!outcome.ok) outcome.error = !result.ok ? result.error : selection.create ? "The SVN working copy changed. Open the branch picker again." : "The SVN context changed. Discover the folders again.";
+				if (!outcome.ok) outcome.error = !result.ok ? result.error : selection.create ? "The SVN working copy changed. Open the branch picker again." : "The SVN context changed; discover the folders again.";
 				return outcome;
 			}
 
@@ -2763,7 +2768,7 @@ namespace uam
 		if (uam::paths::PathExistsNoThrow(ChatBaselinePath(app, chat))) return !SavedChatBaseline(app, chat, workspace, error_out).empty();
 		if (chat.imported_read_only || !chat.messages.empty() || chat.persisted_message_count != 0)
 		{
-			if (error_out) *error_out = "The original baseline is unavailable for an existing conversation. Create a new chat to record its changes.";
+			if (error_out) *error_out = "This chat has no original baseline; start a new chat to record its changes.";
 			return false;
 		}
 		GitReviewIndex index(workspace, cancellation, remote.get());

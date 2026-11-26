@@ -93,7 +93,7 @@ std::string Session::Route(const std::string& suffix) const
 void Session::RequireEmptyInbox()
 {
 	const Json inbox = Data(query_("GET", Route("/inbox"), nullptr));
-	if (!inbox.is_array() || !inbox.empty()) throw std::runtime_error("OpenCode V2 has unverified or pre-existing queued native work. Exact resume/input remains held for explicit recovery.");
+	if (!inbox.is_array() || !inbox.empty()) throw std::runtime_error("OpenCode V2 already has queued work, so input is held until you recover it.");
 }
 void Session::Policy(const Json& params)
 {
@@ -256,7 +256,7 @@ void Session::Handle(const Json& message)
 	const Json id = message.value("id", Json{});
 	try
 	{
-		if (disconnected_) throw std::runtime_error("OpenCode V2 event transport lost ownership. Restart explicitly before sending input.");
+		if (disconnected_) throw std::runtime_error("The OpenCode V2 connection was lost; restart it before sending input.");
 		if (!message.contains("method"))
 		{
 			if (!id.is_string()) throw std::runtime_error("Invalid OpenCode V2 approval identity.");
@@ -373,15 +373,15 @@ void Session::Handle(const Json& message)
 		if (id.is_string() && forms_.contains(id.get<std::string>()))
 		{
 			try { query_("DELETE", Route("/form/" + Encode(forms_.at(id.get<std::string>()).at("id").get<std::string>())), nullptr); } catch (...) {}
-			forms_.erase(id.get<std::string>()); Disconnected("OpenCode V2 did not confirm the question reply. This turn is held without automatic replay."); return;
+			forms_.erase(id.get<std::string>()); Disconnected("OpenCode V2 did not confirm the question reply; input is held and never replayed."); return;
 		}
 		if (id.is_string() && permissions_.contains(id.get<std::string>()))
 		{
-			Disconnected("OpenCode V2 did not confirm the approval reply. This turn is held without automatic replay."); return;
+			Disconnected("OpenCode V2 did not confirm the approval reply; input is held and never replayed."); return;
 		}
 		if (message.value("method", "") == "session/cancel")
 		{
-			Disconnected("OpenCode V2 did not confirm cancellation. This turn is held until explicit recovery; input is not replayed."); return;
+			Disconnected("OpenCode V2 did not confirm cancellation; input is held and never replayed."); return;
 		}
 		if (!prompt_id_.is_null() && id == prompt_id_)
 		{
@@ -563,7 +563,7 @@ try
 }
 catch (const std::exception&)
 {
-	Disconnected("OpenCode V2 returned an unverified event shape or control response. Input is held and is never replayed automatically.");
+	Disconnected("OpenCode V2 sent an unexpected response; input is held and never replayed.");
 }
 
 void Session::InterruptCancelledTurn()
@@ -583,7 +583,7 @@ void Session::InterruptCancelledTurn()
 void Session::CheckDeadlines(std::chrono::steady_clock::time_point now)
 {
 	if (cancel_requested_ && !prompt_id_.is_null() && now >= cancel_deadline_)
-		Disconnected("OpenCode V2 cancellation was not confirmed by the owned native event. Input is held and is never replayed automatically.");
+		Disconnected("OpenCode V2 did not confirm the cancellation event; input is held and never replayed.");
 }
 
 void Session::Disconnected(std::string reason)

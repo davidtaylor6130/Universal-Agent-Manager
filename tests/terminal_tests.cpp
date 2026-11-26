@@ -866,7 +866,7 @@ UAM_TEST(CliSilentTurnInterruptsThenStopsWithoutReplayingPrompt)
 	UAM_ASSERT(terminal.running);
 	UAM_ASSERT_EQ(terminal.inactivity_interrupt_requested_time_s, 601.0);
 	UAM_ASSERT(uam::strings::Contains(terminal.last_error, "10-minute tool call limit"));
-	UAM_ASSERT(uam::strings::Contains(terminal.last_error, "will not be replayed"));
+	UAM_ASSERT(uam::strings::Contains(terminal.last_error, "without replaying the prompt"));
 	// A tool call limit set below the turn timeout does not shorten the ceiling.
 	app.settings.tool_call_timeout_seconds = 60;
 	app.settings.active_turn_inactivity_timeout_seconds = 900;
@@ -1699,7 +1699,7 @@ UAM_TEST(UnknownNativeActivityDoesNotReportReadyOrAllowAutomaticInterruption)
 	UAM_ASSERT(uam::RuntimeShouldKeepSystemAwake(app));
 	std::string error;
 	UAM_ASSERT(!uam::PrepareCliTerminalForAcpLaunch(app, chat.id, &error));
-	UAM_ASSERT(error.find("Exit the native CLI") != std::string::npos && terminal.running);
+	UAM_ASSERT(error.find("exit the native CLI") != std::string::npos && terminal.running);
 	UAM_ASSERT(!uam::RequestCliTerminalSteer(terminal, "new instructions", false, &error));
 	UAM_ASSERT(terminal.pending_steer_prompt.empty());
 	terminal.pending_steer_prompt = "retain pending prompt";
@@ -2959,7 +2959,7 @@ UAM_TEST(NativeTerminalRefreshRetriesTheSameSnapshotAfterStorageRecovers)
 	uam::StopCliTerminal(terminal, true, uam::CliTerminalStopMode::FastExit);
 	uam::platform::ResetAsyncNativeChatLoadTasks(app.native_chat_load_tasks);
 	UAM_ASSERT_EQ(failed_digest, std::string("previous"));
-	UAM_ASSERT(uam::strings::Contains(failure, "could not save"));
+	UAM_ASSERT(uam::strings::Contains(failure, "Could not refresh the native chat history"));
 	UAM_ASSERT_EQ(retained_messages, static_cast<std::size_t>(1));
 	UAM_ASSERT_EQ(final_digest, digest);
 	UAM_ASSERT(save_failure_cleared);
@@ -3057,7 +3057,7 @@ UAM_TEST(NativeHistorySyncClearsOnlyRecoveredTargetFailures)
 	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
 	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "native-import-tombstones.json", "{"));
 	UAM_ASSERT(!uam::SyncChatsFromNative(app, "native-chat", true));
-	UAM_ASSERT(uam::strings::Contains(app.status_line, "deletion records could not be read"));
+	UAM_ASSERT(uam::strings::Contains(app.status_line, "Could not refresh the native chat history"));
 	const std::string failure = app.status_line;
 	fs::remove(temp.root / "native-import-tombstones.json");
 	UAM_ASSERT(uam::SyncChatsFromLoadedNative(app, {}, "other-chat", true));
@@ -3685,7 +3685,7 @@ UAM_TEST(CliHandoffLauncherStagesProviderFilesAndArguments)
 		std::string channel;
 		std::string error;
 		UAM_ASSERT(!PrepareCliProviderHandoff(app, chat, host, argv, environment, channel, error));
-		UAM_ASSERT(error.starts_with("Antigravity terminal cannot import another provider's conversation."));
+		UAM_ASSERT(error.starts_with("Antigravity's terminal cannot import another provider's chat;"));
 		UAM_ASSERT(argv == std::vector<std::string>{"agy"});
 		UAM_ASSERT(chat.provider_handoff_cli_contexts.empty());
 	}

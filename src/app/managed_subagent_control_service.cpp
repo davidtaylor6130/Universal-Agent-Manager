@@ -1008,7 +1008,7 @@ namespace uam
 			    !chat || !TranscriptMatches(index, *chat, *run) || chat->execution_host_id != index.root->execution_host_id ||
 			    chat->workspace_directory != index.root->workspace_worktree_directory ||
 			    !chat->workspace_worktree_directory.empty() || chat->workspace_source_directory != index.root->workspace_source_directory)
-			{ Fail(error, "A managed child is active or its workspace ownership is uncertain. Stop it and resolve its workspace before cleanup."); return {}; }
+			{ Fail(error, "Stop the active child agent and settle its workspace before cleanup."); return {}; }
 			members.push_back(chat);
 		}
 		// A finished child whose run record has expired keeps its saved root link. It joins on the same workspace terms;
@@ -1194,7 +1194,7 @@ namespace uam
 		const auto request = family.operation.lock();
 		const auto result = ChatRepository::PublishPreparedChatPublication(prepared, [&] { return ValidateWorktreeFamily(family, error); });
 		if (result.state != ChatPublicationState::Committed)
-			return Fail(error, "Cleanup metadata publication failed or is uncertain. Inspect saved isolation and Git state before retrying.");
+			return Fail(error, "Cleanup could not be confirmed as saved; check the worktree and Git state before retrying.");
 		// Cancellation after this acknowledgement cannot make the publication disappear.
 		// Retain only the committed workspace projection so the serialized owner can reconcile
 		// it even when a canceled query has no completion callback.

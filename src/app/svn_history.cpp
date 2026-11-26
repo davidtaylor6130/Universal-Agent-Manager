@@ -439,7 +439,7 @@ namespace uam::svn_history
 		update.output = uam::strings::Trim(result.output);
 		if (!UpdateFinished(result))
 		{
-			update.error = result.canceled ? "The update was stopped. Run it again to finish; a locked working copy needs svn cleanup first."
+			update.error = result.canceled ? "The update was stopped; run it again, after svn cleanup if the working copy is locked."
 			    : Failure(result, "SVN could not update this working copy.", "update");
 			return update;
 		}

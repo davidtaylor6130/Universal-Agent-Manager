@@ -1,4 +1,5 @@
 #include "common/platform/file_explorer_application.h"
+#include "common/utils/diagnostic_log.h"
 #include "platform_services_windows_impl_internal.h"
 
 using namespace uam::platform_windows_impl;
@@ -35,7 +36,7 @@ class WindowsFileDialogService final : public IPlatformFileDialogService
 		{
 			if (!uam::platform::IsFileExplorerApplication(uam::paths::Utf8PathString(application_path), true))
 			{
-				if (error_out != nullptr) *error_out = "Configured file explorer application is unavailable. Choose another application or reset to system default.";
+				if (error_out != nullptr) *error_out = "The chosen file manager is unavailable; pick another or reset to the system default.";
 				return false;
 			}
 			const std::wstring argument = WideFromUtf8(QuoteWindowsArg(uam::paths::Utf8PathString(folder_path)));
@@ -48,9 +49,10 @@ class WindowsFileDialogService final : public IPlatformFileDialogService
 		std::error_code ec;
 		if (!uam::paths::CreateDirectoriesNoThrow(folder_path, &ec))
 		{
+			uam::diagnostics::Write("[platform] Could not create folder for file manager: " + ec.message());
 			if (error_out != nullptr)
 			{
-				*error_out = "Failed to create folder: " + ec.message();
+				*error_out = "Could not create the folder.";
 			}
 
 			return false;

@@ -1,6 +1,7 @@
 #include "theme_service.h"
 
 #include "common/paths/path_utils.h"
+#include "common/utils/diagnostic_log.h"
 #include "common/utils/io_utils.h"
 #include "common/utils/string_utils.h"
 
@@ -255,7 +256,8 @@ bool ThemeService::Delete(const fs::path& data_root, std::string_view id, std::s
 	std::error_code error;
 	if (!uam::paths::RemoveFileNoThrow(file_path, &error))
 	{
-		SetError(error_out, error ? "Failed to delete theme: " + error.message() : "Theme does not exist.");
+		if (error) uam::diagnostics::Write("[themes] Failed to delete theme: " + error.message());
+		SetError(error_out, error ? "Could not delete the theme." : "Theme does not exist.");
 		return false;
 	}
 	return true;

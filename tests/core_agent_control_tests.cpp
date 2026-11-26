@@ -491,12 +491,12 @@ UAM_TEST(ManualCompactionRejectsUnavailableBusyRemoteAndUnsupportedSessions)
 #if UAM_ENABLE_RUNTIME_CODEX_CLI
 	app.chats.front().execution_host_id = "remote";
 	UAM_ASSERT(!uam::CompactAcpSession(app, chat.id, &error));
-	UAM_ASSERT(error.find("protocol 3") != std::string::npos);
+	UAM_ASSERT(error.find("up-to-date SSH helper") != std::string::npos);
 	app.chats.front().execution_host_id = "local";
 #endif
 	session.provider_id = "gemini-cli";
 	UAM_ASSERT(!uam::CompactAcpSession(app, chat.id, &error));
-	UAM_ASSERT(error.find("does not support") != std::string::npos);
+	UAM_ASSERT(error.find("can't compact") != std::string::npos);
 	UAM_ASSERT(!session.manual_compaction_pending);
 	UAM_ASSERT(app.chats.front().messages.empty());
 }

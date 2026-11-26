@@ -17,6 +17,7 @@
 #include "common/paths/app_paths.h"
 #include "common/config/central_provider_configuration.h"
 #include "cef/uam_query_handler.h"
+#include "common/utils/diagnostic_log.h"
 #include "common/companion/connection_lifecycle.h"
 #include "common/companion/pairing_certificate.h"
 #include "common/companion/token_store.h"
@@ -334,7 +335,7 @@ void UamQueryHandler::HandleSetMemorySettings(CefRefPtr<CefBrowser> browser, con
 	const bool typed_outcomes = scope_supplied && !request_id.empty();
 	const auto reject = [&]()
 	{
-		if (!typed_outcomes) { cb->Failure(409, "Settings were not confirmed saved. Refresh current values before retrying."); return; }
+		if (!typed_outcomes) { cb->Failure(409, "Settings may not have saved; refresh them before trying again."); return; }
 		auto response = MemorySettingsPrimarySnapshot(m_app);
 		response["memoryRequestId"] = request_id;
 		response["outcome"] = "rejected";
@@ -344,7 +345,7 @@ void UamQueryHandler::HandleSetMemorySettings(CefRefPtr<CefBrowser> browser, con
 	    payload["expectedSettingsRevision"].get<std::uint64_t>() != m_app.settings_publication_revision)) { reject(); return; }
 	if (!PersistenceCoordinator().ResolveMemorySettingsUncertainty(m_app))
 	{
-		if (!typed_outcomes) { cb->Failure(500, "Settings were not confirmed saved. Refresh current values before retrying."); return; }
+		if (!typed_outcomes) { cb->Failure(500, "Settings may not have saved; refresh them before trying again."); return; }
 		auto response = nlohmann::json{{"memoryRequestId", request_id}, {"outcome", "unknown"},
 		    {"scope", m_app.settings_publication_scope}, {"revision", m_app.settings_publication_revision}, {"primaryValidated", false}};
 		cb->Success(response.dump());
@@ -474,7 +475,7 @@ void UamQueryHandler::HandleSetMemorySettings(CefRefPtr<CefBrowser> browser, con
 	try
 	{
 		if (committed || typed_outcomes) cb->Success(terminal_response);
-		else cb->Failure(500, "Settings were not confirmed saved. Refresh current values before retrying.");
+		else cb->Failure(500, "Settings may not have saved; refresh them before trying again.");
 	}
 	catch (...) {}
 
@@ -670,7 +671,7 @@ void UamQueryHandler::HandleSetProviderChatDefaults(CefRefPtr<CefBrowser> browse
 		const ProviderProfile* provider = ProviderProfileStore::FindById(m_app.provider_profiles, requested_default_provider_id);
 		if (provider == nullptr || !ProviderRuntime::IsRuntimeEnabled(*provider))
 		{
-			cb->Failure(400, "Unsupported default provider: " + requested_default_provider_id);
+			cb->Failure(400, "This default provider is not supported.");
 			return;
 		}
 		if (payload.contains("defaultProviderId"))
@@ -990,7 +991,7 @@ void UamQueryHandler::HandleRefreshCliProviderVersion(CefRefPtr<CefBrowser> brow
 	const std::string provider_id = CliVersionProviderFromPayloadOrSelection(m_app, payload);
 	if (ProviderProfileStore::FindById(m_app.provider_profiles, provider_id) == nullptr)
 	{
-		cb->Failure(400, "Unsupported provider: " + provider_id);
+		cb->Failure(400, "This provider is not supported.");
 		return;
 	}
 
@@ -1026,7 +1027,7 @@ void UamQueryHandler::HandleApplyCliProviderVersion(CefRefPtr<CefBrowser> browse
 	const std::string provider_id = CliVersionProviderFromPayloadOrSelection(m_app, payload);
 	if (provider_id.empty() || ProviderProfileStore::FindById(m_app.provider_profiles, provider_id) == nullptr)
 	{
-		cb->Failure(400, "Unsupported provider: " + provider_id);
+		cb->Failure(400, "This provider is not supported.");
 		return;
 	}
 
@@ -1301,7 +1302,11 @@ void UamQueryHandler::HandleOpenAppPermissionSettings(CefRefPtr<CefBrowser>, con
 	else { cb->Failure(400, "Unknown permission."); return; }
 	std::string error;
 	if (!uam::platform::OpenExternalUrl("x-apple.systempreferences:com.apple.preference.security?" + pane, &error))
-	{ cb->Failure(500, error); return; }
+	{
+		uam::diagnostics::Write("[openPrivacySettings] Could not open System Settings: " + error);
+		cb->Failure(500, "Could not open System Settings.");
+		return;
+	}
 	cb->Success("{}");
 #else
 	(void)permission;
@@ -1316,7 +1321,7 @@ void UamQueryHandler::HandleRepairCompanionLanAddress(CefRefPtr<CefBrowser> brow
 	const std::string address = uam::nlohmann_json::TrimmedStringValue(payload, {"address"});
 	const std::vector<std::string> addresses = uam::platform::MacLocalIpv4Addresses();
 	if (std::ranges::find(addresses, address) == addresses.end())
-	{ cb->Failure(409, "That network address is no longer available. Refresh and try again."); return; }
+	{ cb->Failure(409, "That network address is no longer available; refresh and try again."); return; }
 	nlohmann::json config;
 	if (!ReadCompanionConfig(m_app, config) || !config.contains("origin") || !config["origin"].is_string() ||
 	    !config.contains("proxy_config") || !config["proxy_config"].is_string())
@@ -1332,7 +1337,7 @@ void UamQueryHandler::HandleRepairCompanionLanAddress(CefRefPtr<CefBrowser> brow
 	if (!WriteCompanionConfig(m_app, config))
 	{
 		(void)uam::io::WriteTextFileWithBackup(proxy_path, proxy_text);
-		cb->Failure(500, "Cannot save phone URL. The proxy configuration was restored."); return;
+		cb->Failure(500, "Cannot save the phone URL, so the proxy configuration was restored."); return;
 	}
 	uam::platform::RequestMacLocalNetworkAccess();
 	ApplyCompanionConfiguration(browser, config);
@@ -1354,7 +1359,7 @@ void UamQueryHandler::HandleReadCentralInstructionFile(CefRefPtr<CefBrowser>, co
 	if (!uam::central_instruction_files::Authorized(configuration, path))
 	{ cb->Failure(403, "Save this instruction path in Shared setup before editing it."); return; }
 	if (m_pendingCentralInstructionFiles >= 4)
-	{ cb->Failure(429, "Instruction files are busy. Try again shortly."); return; }
+	{ cb->Failure(429, "Instruction files are busy; try again shortly."); return; }
 	if (!m_instructionQueries) m_instructionQueries = CefThread::CreateThread("uam-instruction-files");
 	if (!m_instructionQueries) { cb->Failure(503, "The instruction file worker is unavailable."); return; }
 	++m_pendingCentralInstructionFiles;
@@ -1368,7 +1373,7 @@ void UamQueryHandler::HandleReadCentralInstructionFile(CefRefPtr<CefBrowser>, co
 	    {
 		    --m_pendingCentralInstructionFiles;
 		    if (result.ok && !uam::central_instruction_files::Authorized(m_app.settings.central_provider_configuration, path))
-			    result = AsyncFailure(409, "The configured instruction paths changed. Save Shared setup and reopen the file.");
+			    result = AsyncFailure(409, "The instruction paths changed; save Shared setup and reopen the file.");
 	    })))
 	{
 		--m_pendingCentralInstructionFiles;
@@ -1391,7 +1396,7 @@ void UamQueryHandler::HandleSaveCentralInstructionFile(CefRefPtr<CefBrowser>, co
 	if (content.size() > uam::provider_setup::kMaxFileBytes || expected_content.size() > uam::provider_setup::kMaxFileBytes)
 	{ cb->Failure(400, "Instruction files are limited to 2 MiB."); return; }
 	if (m_pendingCentralInstructionFiles >= 4)
-	{ cb->Failure(429, "Instruction files are busy. Try again shortly."); return; }
+	{ cb->Failure(429, "Instruction files are busy; try again shortly."); return; }
 	const std::shared_ptr<std::shared_ptr<uam::central_instruction_files::PreparedSave>> prepared =
 	    std::make_shared<std::shared_ptr<uam::central_instruction_files::PreparedSave>>();
 	if (!m_instructionQueries) m_instructionQueries = CefThread::CreateThread("uam-instruction-files");
@@ -1410,7 +1415,7 @@ void UamQueryHandler::HandleSaveCentralInstructionFile(CefRefPtr<CefBrowser>, co
 		    if (!result.ok) return;
 		    if (!uam::central_instruction_files::Authorized(m_app.settings.central_provider_configuration, path))
 		    {
-			    result = AsyncFailure(409, "The configured instruction paths changed. Save Shared setup and reopen the file.");
+			    result = AsyncFailure(409, "The instruction paths changed; save Shared setup and reopen the file.");
 			    return;
 		    }
 		    // Final bounded reread, atomic replacement and directory sync stay in this settings-owning UI turn.
@@ -1595,7 +1600,7 @@ void UamQueryHandler::HandlePreviewOpenCodeMcpImport(CefRefPtr<CefBrowser> brows
 		const std::string host = payload.value("executionHostId", std::string("local"));
 		if (host != "local")
 		{
-			cb->Failure(400, "OpenCode file import is available on this computer. For an SSH host, paste its MCP JSON and use executable paths from that host."); return;
+			cb->Failure(400, "OpenCode file import works only on this computer; for an SSH host, paste its MCP JSON instead."); return;
 		}
 		const std::string workspace = payload.value("workspaceDirectory", std::string{});
 		if (!workspace.empty() && !uam::paths::PathFromUtf8(workspace).is_absolute())
@@ -1644,7 +1649,7 @@ void UamQueryHandler::HandleDataFolderSettings(std::string_view action, const nl
 	const auto service = m_app.data_folder_settings;
 	if (!service || service->StartupRoot() != m_app.data_root)
 	{
-		cb->Failure(409, "The data-folder owner is unavailable or changed. Restart UAM before changing its profile.");
+		cb->Failure(409, "The data folder changed or is unavailable; restart UAM before changing its profile.");
 		return;
 	}
 	const bool read = action == "getDataFolderSettings";
@@ -1704,7 +1709,7 @@ void UamQueryHandler::HandleSetStorageSettings(CefRefPtr<CefBrowser> browser, co
 		    if (!saved) { cb->Failure(500, error); return; }
 		    uam::PushStateUpdateIfChanged(browser, m_app);
 		    cb->Success("{}");
-	    })) cb->Failure(409, "Storage policy publication is busy or still loading. Retry shortly.");
+	    })) cb->Failure(409, "Storage settings are busy or still loading; try again shortly.");
 }
 
 void UamQueryHandler::HandleSetVcsSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -1768,7 +1773,7 @@ void UamQueryHandler::HandleSetVcsSettings(CefRefPtr<CefBrowser> browser, const 
 	if (policy_changed)
 	{
 		lease = m_app.worktree_retention_gate.TryAcquireMutation();
-		if (!lease) { cb->Failure(409, "Worktree cleanup is finishing. Retry the settings change."); return; }
+		if (!lease) { cb->Failure(409, "Worktree cleanup is finishing; change the setting again shortly."); return; }
 	}
 	const AppSettings previous = m_app.settings;
 	m_app.settings.git_enabled = *git_enabled;

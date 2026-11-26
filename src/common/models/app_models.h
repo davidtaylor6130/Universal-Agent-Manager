@@ -653,7 +653,7 @@ struct ManagedParentInputReceipt
 	bool operator==(const ManagedParentInputReceipt&) const = default;
 };
 
-inline constexpr const char* kAwaitingAutomationApprovalError = "This automation chat is waiting for approval. Start it from the chat first.";
+inline constexpr const char* kAwaitingAutomationApprovalError = "This automation chat is waiting for approval; start it from the chat first.";
 inline constexpr const char* kAutomationWorktreeRequiredError = "This automation chat needs its own worktree, so it was not started in a shared folder.";
 
 struct ChatSession

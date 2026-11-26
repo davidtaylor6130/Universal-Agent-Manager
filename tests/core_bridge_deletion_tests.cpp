@@ -1771,7 +1771,7 @@ UAM_TEST(ChatFencedByARejectedDeletionSaysItIsDeletedAtRestart)
 UAM_TEST(UnfinishedDeletionRefusesOnlyAnotherDeletionAndSaysToRestart)
 {
 	using uam::cef::UnfinishedDeletionRefusal;
-	const std::string_view restart = "An earlier deletion is unfinished and completes when UAM restarts. Restart UAM first, then try again.";
+	const std::string_view restart = "An earlier deletion finishes when UAM restarts; restart UAM before trying again.";
 	for (const std::string_view action : {"deleteSession", "deleteSessions", "deleteFolder", "deleteFolders", "rescanFolderChats"})
 	{
 		UAM_ASSERT_EQ(UnfinishedDeletionRefusal(action, true), restart);

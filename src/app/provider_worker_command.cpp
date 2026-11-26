@@ -10,6 +10,7 @@
 #include "common/provider/runtime/provider_runtime_internal.h"
 #include "common/runtime/provider_cli_compatibility_service.h"
 #include "common/state/app_state.h"
+#include "common/utils/diagnostic_log.h"
 #include "common/utils/io_utils.h"
 #include "remote/runner_client.h"
 
@@ -116,7 +117,8 @@ namespace
 
 		if (!preserve_existing_error)
 		{
-			result.error = "Failed to read provider worker output: " + uam::strings::NonEmptyOrFallback(read_error, "unknown error") + ".";
+			uam::diagnostics::Write("[provider-worker] Failed to read provider worker output: " + uam::strings::NonEmptyOrFallback(read_error, "unknown error"));
+			result.error = "Could not read the provider's output.";
 		}
 		return ProviderWorkerReadStatus::Error;
 	}
@@ -401,7 +403,7 @@ namespace uam
 		if (remote_host == nullptr) return ExecuteProviderWorkerInvocation(invocation, {}, timeout_ms, stop_token);
 		ProcessExecutionResult result;
 		if (stop_token.stop_requested()) { result.canceled = true; return result; }
-		if (!uam::remote::CanAttemptRunnerConnection(*remote_host)) { result.error = "The selected remote runner is not ready. Recheck it in Settings."; return result; }
+		if (!uam::remote::CanAttemptRunnerConnection(*remote_host)) { result.error = "The selected remote runner is not ready; recheck it in Settings."; return result; }
 		if (!invocation.direct_process || invocation.argv.empty()) { result.error = "This provider cannot run an isolated remote text worker."; return result; }
 		IPlatformProcessService& service = PlatformServicesFactory::Instance().process_service;
 		uam::remote::RunnerClient client(service, *remote_host);

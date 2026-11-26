@@ -381,7 +381,7 @@ namespace uam::remote_install
 		return HostHasRuntimeWork(app, host_id, allow_quiesce ? HostWorkScope::InstallAdmission : HostWorkScope::Strict, reason_out, chat_id_out);
 	}
 
-	/// <summary>User-facing refusal that names the blocking chat and how to clear it; the fixed code stays last for support.</summary>
+	/// <summary>User-facing refusal that names the blocking chat and how to clear it; callers log the fixed reason code.</summary>
 	inline std::string HostRuntimeBlockMessage(const AppState& app, HostRuntimeBlockReason reason, const std::string& chat_id)
 	{
 		const auto chat = chat_id.empty() ? app.chats.end() : std::ranges::find(app.chats, chat_id, &ChatSession::id);
@@ -398,35 +398,35 @@ namespace uam::remote_install
 		const auto chat_hold = [&]() -> std::string
 		{
 			if (discovery && AcpStopInProgress(app, chat_id))
-				return "Model discovery is still stopping on this host. UAM is confirming the stop; update the helper once the host answers.";
+				return "Model discovery is still stopping on this host; update the helper once the host confirms it.";
 			// A stop the host never confirmed, with nothing running now. It is named only after every more specific hold below.
 			const bool unconfirmed_stop = !chat_id.empty() && !ChatStopInFlight(app, chat_id) &&
 			    (session == nullptr || !session->running) &&
 			    ((session != nullptr && session->remote_stop_unconfirmed) || (chat != app.chats.end() && chat->remote_stop_cleanup_pending));
 			if (!chat_id.empty() && !unconfirmed_stop && AcpStopInProgress(app, chat_id))
-				return name + " is still stopping on this host. UAM is confirming the stop; update the helper once the host answers.";
+				return name + " is still stopping on this host; update the helper once the host confirms it.";
 			if (session != nullptr && (session->processing || AcpSessionIsWaitingForInput(*session) || session->prompt_request_id != 0 ||
 			    // A stop retry marks its reattach as a turn recovery; a turn it still holds keeps processing set.
 			    !session->queued_prompt.empty() || (session->recovering_remote_turn && !unconfirmed_stop)))
-				return name + " has a turn in progress on this host. Stop it or let it finish, then update the helper.";
+				return name + " has a turn in progress on this host; stop it or let it finish before updating the helper.";
 			if (chat != app.chats.end() && (chat->claude_quota_continuation.state == "waiting" || chat->claude_quota_continuation.state == "held"))
-				return name + " is waiting to continue after a usage limit. Cancel that continuation in the chat or let it run, then update the helper.";
+				return name + " is waiting to continue after a usage limit; cancel it in the chat or let it run first.";
 			if (chat != app.chats.end() && ChatHasQuotaContinuation(*chat))
-				return name + " is continuing after a usage limit on this host. Let that turn finish or stop it in the chat, then update the helper.";
+				return name + " is continuing after a usage limit on this host; let that turn finish or stop it first.";
 			if ((session != nullptr && (session->queue_held || !session->queued_user_prompts.empty())) ||
 			    (chat != app.chats.end() && (chat->acp_queue_held || !chat->acp_queued_prompts.empty() || ChatHasActionableUnsentRecovery(*chat))))
 				// Sending is refused until the stop is confirmed, so only removal is offered then.
-				return unconfirmed_stop ? name + " has queued or unsent input for this host, and UAM could not confirm that its earlier process stopped. Remove that input in the chat, then update the helper."
-				                        : name + " has queued or unsent input for this host. Send or remove it in that chat, then update the helper.";
+				return unconfirmed_stop ? name + " has queued or unsent input and an unconfirmed stop on this host; remove that input in the chat first."
+				                        : name + " has queued or unsent input for this host; send or remove it in that chat first.";
 			if (session != nullptr && (!session->claude_live_background_task_ids.empty() || ProviderRuntimeRegistry::ResolveById(session->provider_id).AcpBackgroundTaskCount(*session) > 0))
-				return name + " has background tasks running on this host. Let them finish or stop the chat, then update the helper.";
+				return name + " has background tasks running on this host; let them finish or stop the chat first.";
 			if ((chat != app.chats.end() && !chat->goal_pending_continuation_id.empty()) ||
 			    (session != nullptr && session->goal_queue_admission != AcpSessionState::GoalQueueAdmission::None))
-				return name + " has a goal continuation waiting to run on this host. Let it run or pause the goal, then update the helper.";
+				return name + " has a goal continuation waiting to run on this host; let it run or pause the goal first.";
 			if (chat != app.chats.end() && ChatAdmittingInput(app, chat_id))
-				return name + " is saving or preparing input on this host. Try the update again in a moment.";
+				return name + " is saving or preparing input on this host; try the update again in a moment.";
 			if (unconfirmed_stop && chat != app.chats.end() && ChatHasRemoteTurnState(*chat))
-				return name + " has a turn in progress on this host. Stop it or let it finish, then update the helper.";
+				return name + " has a turn in progress on this host; stop it or let it finish before updating the helper.";
 			if (unconfirmed_stop)
 			{
 				// The last attempt's closing line says why the host gave no answer; each update attempt asks again.
@@ -438,31 +438,31 @@ namespace uam::remote_install
 				const auto latest = [&](std::size_t value) { return value != std::string_view::npos && std::ranges::all_of(std::array{survivor, helper, unchecked},
 				    [value](std::size_t other) { return other == std::string_view::npos || other <= value; }); };
 				if (latest(survivor))
-					return intro + ": a process is still running in its folder there, or something else is working in that folder. Close whatever is using the folder on the host, then try the update again.";
+					return intro + " because something is still using its folder there; close it on the host and try again.";
 				if (latest(helper))
-					return intro + ": its helper is running there but does not answer. Check the helper on the host, then try the update again.";
+					return intro + " because its helper there does not answer; check the helper on the host and try again.";
 				if (latest(unchecked))
-					return intro + ": the processes running there could not be checked. Try the update again; if it keeps refusing, look on the host for a process still using this chat's folder.";
-				return intro + ", and this update would replace the helper that ran it. Check that the host is reachable, then try the update again; UAM asks that helper again each time.";
+					return intro + " because its processes there could not be checked; try again or look for a process using its folder.";
+				return intro + ", and this update would replace the helper that ran it; check the host is reachable and try again.";
 			}
 			if (session != nullptr && !session->running && session->reconnect_pending)
-				return "UAM is reconnecting to the process for " + inner_name + " on this host before updating its helper. Try the update again in a moment.";
+				return "UAM is reconnecting to the process for " + inner_name + " on this host; try the update again in a moment.";
 			if (session != nullptr && session->running && (session->recovering_remote_process || !session->session_ready))
-				return name + " is still connecting to its process on this host. Try the update again in a moment; if it keeps connecting, check the SSH connection or stop its runtime in that chat.";
+				return name + " is still connecting to its process on this host; try again soon or check the SSH connection.";
 			if (chat != app.chats.end() && ChatHasRemoteTurnState(*chat))
-				return name + " has a turn in progress on this host. Stop it or let it finish, then update the helper.";
-			return name + " still has work on this host. Stop it in that chat, then update the helper.";
+				return name + " has a turn in progress on this host; stop it or let it finish before updating the helper.";
+			return name + " still has work on this host; stop it in that chat before updating the helper.";
 		};
 		std::string text;
 		switch (reason)
 		{
 		case HostRuntimeBlockReason::None: return {};
 		case HostRuntimeBlockReason::VcsLease:
-			text = "A Git operation is running on this host. Wait for it to finish, then update the helper.";
+			text = "A Git operation is running on this host; update the helper after it finishes.";
 			break;
 		case HostRuntimeBlockReason::ChatReconnect:
 		case HostRuntimeBlockReason::SessionRecoverTurn:
-			text = name + " has a turn on this host that UAM is reconnecting to. Let it finish or stop it in that chat, then update the helper.";
+			text = name + " has a turn UAM is reconnecting to on this host; let it finish or stop it first.";
 			break;
 		case HostRuntimeBlockReason::ChatStopCleanup:
 		case HostRuntimeBlockReason::SessionUnconfirmedStop:
@@ -473,10 +473,10 @@ namespace uam::remote_install
 		case HostRuntimeBlockReason::PendingRemoteStop:
 		case HostRuntimeBlockReason::PhysicalStop:
 		case HostRuntimeBlockReason::UnknownStopOwner:
-			text = name + " is still stopping on this host. UAM is confirming the stop; update the helper once the host answers.";
+			text = name + " is still stopping on this host; update the helper once the host confirms it.";
 			break;
 		case HostRuntimeBlockReason::ChatRestart:
-			text = name + " is restarting on this host. Let the restart finish, then update the helper.";
+			text = name + " is restarting on this host; update the helper after the restart finishes.";
 			break;
 		case HostRuntimeBlockReason::SessionReconnect:
 		case HostRuntimeBlockReason::ChatProcess:
@@ -494,21 +494,21 @@ namespace uam::remote_install
 		case HostRuntimeBlockReason::CliInstall:
 		case HostRuntimeBlockReason::CliUpdate:
 		case HostRuntimeBlockReason::CliVerification:
-			text = "A provider CLI check or update is running on this host. Wait for it to finish, then update the helper.";
+			text = "A provider CLI check or update is running on this host; update the helper after it finishes.";
 			break;
 		case HostRuntimeBlockReason::SelectedImport:
 		case HostRuntimeBlockReason::BackgroundScan:
-			text = "A chat history import from this host is running. Wait for it to finish, then update the helper.";
+			text = "A chat history import from this host is running; update the helper after it finishes.";
 			break;
 		case HostRuntimeBlockReason::TerminalRunning:
 		case HostRuntimeBlockReason::TerminalLaunch:
 		case HostRuntimeBlockReason::TerminalWorktree:
 		case HostRuntimeBlockReason::TerminalSessionSetup:
 		case HostRuntimeBlockReason::TerminalContext:
-			text = "A terminal for " + inner_name + " is open on this host. Close it, then update the helper.";
+			text = "A terminal for " + inner_name + " is open on this host; close it before updating the helper.";
 			break;
 		}
-		return text + " (" + HostRuntimeBlockReasonCode(reason) + ")";
+		return text; // The reason code is written to the diagnostics log by each caller.
 	}
 
 	/// <summary>Before a helper update: confirmed-stops idle kept-alive provider processes. Saved chat fields and unreachable

@@ -911,8 +911,8 @@ SettingsLoadResult SettingsStore::LoadInternal(const std::filesystem::path& sett
 		if (!allow_backup)
 		{
 			result.unrecovered_error = primary_exists;
-			result.warning = primary_exists ? "The primary settings file is invalid or unreadable. No backup was loaded."
-			                                : "The primary settings file is missing. No backup was loaded.";
+			result.warning = primary_exists ? "The settings file is invalid or unreadable, and no backup was loaded."
+			                                : "The settings file is missing, and no backup was loaded.";
 			return result;
 		}
 		const std::filesystem::path backup = uam::io::MakeBackupPath(settings_file);
@@ -932,7 +932,7 @@ SettingsLoadResult SettingsStore::LoadInternal(const std::filesystem::path& sett
 			result.unrecovered_error = primary_exists || backup_exists;
 			if (result.unrecovered_error)
 			{
-				result.warning = "The primary settings file and its recovery backup are invalid. UAM did not overwrite either file.";
+				result.warning = "The settings file and its backup are both invalid, so UAM left them unchanged.";
 			}
 			return result;
 		}

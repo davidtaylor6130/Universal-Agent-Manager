@@ -292,7 +292,7 @@ void UamQueryHandler::StartPreparedDeletion(CefRefPtr<CefBrowser> browser,
 		    } release{unlock};
 		    if (m_workspaceDeletionTask.lock() != task || m_app.data_root != data_root)
 		    {
-			    response = uam::query_handler_async::AsyncFailure(409, "Deletion ownership changed. Recovery evidence was preserved.");
+			    response = uam::query_handler_async::AsyncFailure(409, "The deletion changed before it finished, so its recovery data was kept.");
 			    return;
 		    }
 		    if (!response.ok) return;
@@ -324,13 +324,13 @@ void UamQueryHandler::StartPreparedDeletion(CefRefPtr<CefBrowser> browser,
 			        if (m_workspaceDeletionTask.lock() != task || m_app.data_root != data_root)
 			        {
 				        unlock();
-				        cb->Failure(409, "Deletion ownership changed. Recovery evidence was preserved.");
+				        cb->Failure(409, "The deletion changed before it finished, so its recovery data was kept.");
 				        return;
 			        }
 			        m_app.status_line = result.ok ? task->snapshot.status_line
 			            : (task->deleting_chats
-			                ? "Chat deletion is committed. Disk cleanup will finish safely on restart."
-			                : "Workspace deletion is committed. Disk cleanup will finish safely on restart.");
+			                ? "The chat was deleted; disk cleanup will finish when UAM restarts."
+			                : "The workspace was deleted; disk cleanup will finish when UAM restarts.");
 			        unlock();
 			        cb->Success(result_body);
 		        })))
@@ -341,8 +341,8 @@ void UamQueryHandler::StartPreparedDeletion(CefRefPtr<CefBrowser> browser,
 		    else
 		    {
 			    m_app.status_line = task->deleting_chats
-			        ? "Chat deletion is committed. Disk cleanup will finish safely on restart."
-			        : "Workspace deletion is committed. Disk cleanup will finish safely on restart.";
+			        ? "The chat was deleted; disk cleanup will finish when UAM restarts."
+			        : "The workspace was deleted; disk cleanup will finish when UAM restarts.";
 			    response = uam::query_handler_async::AsyncSuccess(nlohmann::json::parse(result_body));
 		    }
 	    })) unlock();
@@ -355,7 +355,7 @@ void UamQueryHandler::HandleToggleFolder(CefRefPtr<CefBrowser> browser, const nl
 	ChatFolder* folder = ChatDomainService().FindFolderById(m_app, folder_id);
 	if (!folder)
 	{
-		cb->Failure(404, "Folder not found: " + folder_id);
+		cb->Failure(404, "Folder not found.");
 		return;
 	}
 
@@ -453,7 +453,7 @@ void UamQueryHandler::HandleRescanFolderChats(CefRefPtr<CefBrowser> /*browser*/,
 	const std::string folder_id = uam::strings::Trim(payload.value("folderId", ""));
 	if (ChatDomainService().FindFolderById(m_app, folder_id) == nullptr)
 	{
-		cb->Failure(404, "Folder not found: " + folder_id);
+		cb->Failure(404, "Folder not found.");
 		return;
 	}
 	// Review the startup snapshot. This action never scans a provider or imports a chat.

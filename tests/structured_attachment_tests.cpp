@@ -380,7 +380,7 @@ UAM_TEST(AntigravityRefusesImagesItCouldNotOpenAndLeavesTheRequestUnchanged)
 		auto request = AntigravityRequest();
 		std::string error;
 		UAM_ASSERT(!uam::structured_attachments::AppendNative(request, session, {StagedImage(path)}, root, platform, remote, error));
-		UAM_ASSERT(error.find("inside this chat's workspace") != std::string::npos);
+		UAM_ASSERT(error.find("in this chat's workspace") != std::string::npos);
 		UAM_ASSERT_EQ(request, AntigravityRequest());
 	};
 	refused(outside.string(), workspace.string(), "", false);

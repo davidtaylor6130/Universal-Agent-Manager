@@ -3576,7 +3576,7 @@ try
 {
 	const std::function<std::optional<ChatMessagePage>()> failure = [&]()
 	{
-		if (warning_out) *warning_out = "Could not read chat history. Retry to refresh it.";
+		if (warning_out) *warning_out = "Could not read chat history; refresh to retry.";
 		return std::optional<ChatMessagePage>{};
 	};
 	if (!uam::chat_ids::IsSafeStorageChatId(expected.id) || expected.messages_loaded || limit > 200) return failure();
@@ -3627,7 +3627,7 @@ try
 catch (const std::exception& error)
 {
 	uam::diagnostics::Write(std::string("History page read rejected: ") + error.what());
-	if (warning_out) *warning_out = "Could not read chat history. Retry to refresh it.";
+	if (warning_out) *warning_out = "Could not read chat history; refresh to retry.";
 	return std::nullopt;
 }
 
@@ -5652,7 +5652,8 @@ namespace
 
 		if (!ChatRepository::SaveChat(data_root, chat))
 		{
-			AppendWarning(warning_out, "Failed to migrate legacy chat folder: " + folder.path().string());
+			uam::diagnostics::Write("[chatRepository] Failed to migrate legacy chat folder: " + folder.path().string());
+			AppendWarning(warning_out, "A legacy chat folder could not be migrated.");
 			return true;
 		}
 
@@ -5857,7 +5858,8 @@ namespace
 		}
 		if (!backup_chat.chat)
 		{
-			AppendWarning(warning_out, "Skipped corrupted backup file " + backup_path.string() + ": " + backup_chat.error + ".");
+			uam::diagnostics::Write("[chatRepository] Skipped corrupted backup file " + backup_path.string() + ": " + backup_chat.error);
+			AppendWarning(warning_out, "A corrupted chat backup was skipped.");
 			return;
 		}
 
@@ -5875,7 +5877,8 @@ namespace
 
 		if (!ChatRepository::SaveChat(data_root, recovered))
 		{
-			AppendWarning(warning_out, "Recovered backup file " + backup_path.string() + ", but failed to save " + restored_primary_path.string() + ".");
+			uam::diagnostics::Write("[chatRepository] Recovered backup file " + backup_path.string() + ", but failed to save " + restored_primary_path.string());
+			AppendWarning(warning_out, "A chat was recovered from backup but could not be saved.");
 			return;
 		}
 
@@ -6030,7 +6033,8 @@ namespace
 
 			if (primary_chat.managed_followup_input_unavailable)
 			{
-				AppendWarning(warning_out, "Skipped unsupported managed input without backup adoption: " + path.string() + ".");
+				uam::diagnostics::Write("[chatRepository] Skipped unsupported managed input without backup adoption: " + path.string());
+				AppendWarning(warning_out, "A chat with unsupported managed input was skipped.");
 				continue;
 			}
 			if (primary_chat.too_large)
@@ -6046,7 +6050,8 @@ namespace
 			}
 			else if (!primary_chat.error.empty())
 			{
-				AppendWarning(warning_out, "Skipped malformed chat file " + path.string() + ": " + primary_chat.error + ".");
+				uam::diagnostics::Write("[chatRepository] Skipped malformed chat file " + path.string() + ": " + primary_chat.error);
+				AppendWarning(warning_out, "Skipped malformed chat file " + path.filename().string() + ": " + primary_chat.error + ".");
 			}
 		}
 
@@ -6210,7 +6215,7 @@ bool ChatRepository::HydrateChatMessages(const std::filesystem::path& data_root,
 	    (chat.imported_read_only != hydrated.imported_read_only ||
 	     (chat.passive_queued_prompt_archive && !SamePassiveArchive(chat.passive_queued_prompt_archive, hydrated.passive_queued_prompt_archive))))
 	{
-		SetWarning(warning_out, "Passive attachment archive changed while history was loading. Reload before saving.");
+		SetWarning(warning_out, "The attachment archive changed while history loaded; reload before saving.");
 		return false;
 	}
 	if (hydrated.managed_followup_incarnation != chat.managed_followup_incarnation ||
@@ -6218,7 +6223,7 @@ bool ChatRepository::HydrateChatMessages(const std::filesystem::path& data_root,
 	    hydrated.acp_queue_storage_revision != chat.acp_queue_storage_revision ||
 	    hydrated.acp_queue_storage_error != chat.acp_queue_storage_error)
 	{
-		SetWarning(warning_out, "Queued inputs changed while history was loading. Reload the chat before continuing.");
+		SetWarning(warning_out, "Queued inputs changed while history loaded; reload the chat before continuing.");
 		return false;
 	}
 	CarrySummaryFieldsIntoHydratedChat(hydrated, chat);
