@@ -783,6 +783,8 @@ UAM_TEST(SvnUpdateBeforeChatUpdatesOnlyTheChatsFolderPastABrokenExternal)
 	UAM_ASSERT(uam::io::WriteTextFile(checkout / "sub" / "f.txt", "one\n"));
 	svn(checkout, {"add", "--non-interactive", "--", "top.txt", "sub"});
 	svn(checkout, {"commit", "--non-interactive", "-m", "start"});
+	// A commit leaves the checkout root at its checkout revision 0; updating puts the whole checkout at revision 1.
+	svn(checkout, {"update", "--non-interactive"});
 	// Revision 2 changes both folders and adds an external on the chat's folder that cannot be reached.
 	svn(fixture.temporary.root, {"checkout", "--non-interactive", url, other.string()});
 	UAM_ASSERT(uam::io::WriteTextFile(other / "top.txt", "top 2\n"));
