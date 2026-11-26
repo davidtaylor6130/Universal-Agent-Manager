@@ -451,7 +451,7 @@ std::optional<nlohmann::json> ProviderModelCatalogService::ParseAntigravityEffor
 }
 
 bool ProviderModelCatalogService::StartAntigravityEffortDiscovery(const ProviderProfile& profile,
-	const ExecutionHost& host, const std::string& workspace, const std::string& model_id, std::string* error_out)
+	const ExecutionHost& host, const std::string& workspace, const std::string& model_id, std::string* error_out, uam::host_admission::HeldLease admission)
 {
 	const auto fail = [&](const std::string& error) { if (error_out) *error_out = error; return false; };
 	if (!uam::provider_ids::IsCliProviderAliasOf(profile.id, uam::provider_ids::kAntigravityCli) ||
@@ -477,8 +477,9 @@ bool ProviderModelCatalogService::StartAntigravityEffortDiscovery(const Provider
 	task->scope_key = scope; task->workspace = workspace; task->host_id = host.id; task->metadata_only = true;
 	task->state = std::make_shared<NativeModelDiscoveryState>();
 	const auto state = task->state;
-	task->worker = std::make_unique<std::jthread>([state, host, argv, workspace, model_id](std::stop_token stop)
+	task->worker = std::make_unique<std::jthread>([state, host, argv, workspace, model_id, admission = std::move(admission)](std::stop_token stop)
 	{
+		(void)admission; // Released when this worker ends.
 		uam::platform::LowerCurrentThreadToBackgroundPriority();
 		const uam::platform::ScopedChildProcessClass background_children(uam::platform::ChildProcessClass::Background);
 		try
@@ -511,7 +512,7 @@ std::size_t ProviderModelCatalogService::ActiveNativeModelDiscoveries() const
 }
 
 bool ProviderModelCatalogService::StartAntigravityModelDiscovery(const ProviderProfile& profile,
-	const ExecutionHost& host, const std::string& workspace, std::string* error_out)
+	const ExecutionHost& host, const std::string& workspace, std::string* error_out, uam::host_admission::HeldLease admission)
 {
 	const auto fail = [&](const std::string& error) { if (error_out) *error_out = error; return false; };
 	if (!uam::provider_ids::IsCliProviderAliasOf(profile.id, uam::provider_ids::kAntigravityCli) || uam::strings::IsBlank(workspace))
@@ -537,8 +538,9 @@ bool ProviderModelCatalogService::StartAntigravityModelDiscovery(const ProviderP
 	task->host_id = host.id;
 	task->state = std::make_shared<NativeModelDiscoveryState>();
 	const auto state = task->state;
-	task->worker = std::make_unique<std::jthread>([state, host, argv, workspace](std::stop_token stop)
+	task->worker = std::make_unique<std::jthread>([state, host, argv, workspace, admission = std::move(admission)](std::stop_token stop)
 	{
+		(void)admission; // Released when this worker ends.
 		uam::platform::LowerCurrentThreadToBackgroundPriority();
 		const uam::platform::ScopedChildProcessClass background_children(uam::platform::ChildProcessClass::Background);
 		try

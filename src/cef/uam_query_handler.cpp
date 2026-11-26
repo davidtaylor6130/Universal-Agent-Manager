@@ -365,6 +365,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"listUamAgents", &UamQueryHandler::HandleListUamAgents},
 		{"browseProviderAgentImport", &UamQueryHandler::HandleBrowseProviderAgentImport},
 		{"previewProviderAgentImport", &UamQueryHandler::HandlePreviewProviderAgentImport},
+		{"discoverProviderAgents", &UamQueryHandler::HandleDiscoverProviderAgents},
 		{"importProviderAgent", &UamQueryHandler::HandleImportProviderAgent},
 		{"listAgentDefinitions", &UamQueryHandler::HandleListAgentDefinitions},
 		{"saveAgentDefinition", &UamQueryHandler::HandleSaveAgentDefinition},
@@ -423,6 +424,11 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 		{"previewOpenCodeMcpImport", &UamQueryHandler::HandlePreviewOpenCodeMcpImport},
 #endif
+#if UAM_ENABLE_RUNTIME_CUSTOM_ACP
+		{"getCustomAcpAgent", &UamQueryHandler::HandleGetCustomAcpAgent},
+		{"setCustomAcpAgent", &UamQueryHandler::HandleSetCustomAcpAgent},
+		{"allowCustomAcpAgent", &UamQueryHandler::HandleAllowCustomAcpAgent},
+#endif
 		{"setUamAgentPreferences", &UamQueryHandler::HandleSetUamAgentPreferences},
 		{"setSidebarSettings", &UamQueryHandler::HandleSetSidebarSettings},
 		{"setSidebarChatOrder", &UamQueryHandler::HandleSetSidebarChatOrder},
@@ -448,6 +454,8 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"resolveLegacyChatImport", &UamQueryHandler::HandleResolveLegacyChatImport},
 		{"setShellActions", &UamQueryHandler::HandleSetShellActions},
 		{"setComputePools", &UamQueryHandler::HandleSetComputePools},
+		{"setHostAdmission", &UamQueryHandler::HandleSetHostAdmission},
+		{"runHeldWorkAnyway", &UamQueryHandler::HandleRunHeldWorkAnyway},
 		{"applyShellActions", &UamQueryHandler::HandleApplyShellActions},
 		{"dismissShellActionNotification", &UamQueryHandler::HandleDismissShellActionNotification},
 		{"managePullRequestWatch", &UamQueryHandler::HandleManagePullRequestWatch},

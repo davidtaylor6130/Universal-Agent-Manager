@@ -187,6 +187,14 @@ class IProviderRuntime
 	/// Provider-owned generation selection after captured setup, before process creation.
 	virtual bool PrepareStructuredLaunch(uam::AcpSessionState&, const ProviderProfile&, std::string_view, bool,
 	    std::vector<std::string>&, std::vector<std::pair<std::string, std::string>>&, std::string&) const { return true; }
+	/// <summary>False when the provider has no UAM central launch configuration route (shared instructions, skills and MCP
+	/// files written for a named CLI), so a launch skips that preparation instead of being refused by it.</summary>
+	virtual bool UsesCentralLaunchConfiguration() const { return true; }
+	/// <summary>True when the launch arguments are user-typed values that may hold private data, so diagnostics keep only
+	/// the program and an argument count.</summary>
+	virtual bool LaunchArgumentsArePrivate() const { return false; }
+	/// <summary>False when the provider must never be offered the UAM tool connection (uam-control MCP server).</summary>
+	virtual bool SupportsUamControl() const { return true; }
 	/// <summary>Returns whether this runtime backend is enabled in the current build.</summary>
 	virtual bool IsEnabled() const { return true; }
 	/// <summary>Returns a concise reason when runtime is disabled in this build.</summary>

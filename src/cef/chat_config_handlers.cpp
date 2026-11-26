@@ -1,3 +1,4 @@
+#include "app/host_admission_integration.h"
 #include "cef/uam_query_handler.h"
 #include "cef/uam_query_handler_internal.h"
 #include "cef/uam_query_handler_async.h"
@@ -1213,7 +1214,11 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 		const std::string native_model = model_id.empty() && selected_model != nullptr ? selected_model->id : model_id;
 		const auto* host = uam::execution_hosts::Find(m_app.settings.execution_hosts, chat->execution_host_id.empty() ? "local" : chat->execution_host_id);
 		std::string discovery_error;
-		if (host != nullptr && !native_model.empty() && !m_app.provider_model_catalog->StartAntigravityEffortDiscovery(ProviderResolutionService().ProviderForChatOrDefault(m_app, *chat), *host, scope_workspace, native_model, &discovery_error))
+		// Background work: when the computer is at its background budget or busy, the startup discovery poll asks
+		// again for the selected chat's model once it is admitted.
+		uam::BackgroundAdmission admission = host != nullptr && !native_model.empty()
+		    ? uam::AdmitBackgroundStart(m_app, "effort-discovery:" + host->id + ":" + scope_workspace + ":" + native_model, host->id) : uam::BackgroundAdmission{};
+		if (admission.admitted && !m_app.provider_model_catalog->StartAntigravityEffortDiscovery(ProviderResolutionService().ProviderForChatOrDefault(m_app, *chat), *host, scope_workspace, native_model, &discovery_error, std::move(admission.lease)))
 			m_app.provider_model_catalog->RememberRefreshFailure(chat->provider_id, discovery_error, scope_workspace, host->id);
 	}
 	const auto& option_runtime = ProviderRuntimeRegistry::ResolveById(chat->provider_id);
@@ -1730,15 +1735,51 @@ namespace
 		return {
 		    {"providerId", preview.provider_id},
 		    {"sourcePath", uam::paths::Utf8PathString(preview.source_path)},
+		    {"sourceEntry", preview.source_entry},
 		    {"suggestedId", preview.suggested_id},
 		    {"description", preview.description},
 		    {"mode", preview.mode},
 		    {"securityFields", preview.security_fields},
 		    {"ignoredFields", preview.ignored_fields},
+		    {"notes", preview.notes},
+		    {"providerBound", preview.provider_bound},
+		    {"maxWorkspaceAccess", preview.max_workspace_access},
+		    {"suggestedWorkspaceAccess", preview.suggested_workspace_access},
 		    {"error", preview.error},
 		    {"supported", preview.supported},
 		};
 	}
+
+	/// The checked local OpenCode version; empty until a check has reported one.
+	std::string CheckedLocalAgentImportCliVersion(const uam::AppState& app)
+	{
+		const auto found = app.runtime_cli_versions_by_provider_id.find(uam::provider_ids::kOpenCodeCli);
+		return found != app.runtime_cli_versions_by_provider_id.end() && found->second.checked ? found->second.installed_version : std::string{};
+	}
+}
+
+void UamQueryHandler::HandleDiscoverProviderAgents(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	// A chat only adds its workspace folders; global folders are listed without one.
+	std::filesystem::path workspace_root;
+	if (const ChatSession* chat = ChatDomainService().FindChatById(m_app, payload.value("chatId", "")); chat != nullptr)
+		workspace_root = uam::paths::ResolveControllerWorkspaceRootPath(m_app, *chat);
+	// Folder scans and file reads stay off the UI thread; only captured values cross.
+	uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb,
+	    [provider_id = payload.value("providerId", ""), data_root = m_app.data_root, workspace_root]
+	{
+		const uam::ProviderAgentDiscovery discovery = uam::AgentDefinitionService::DiscoverProviderAgents(provider_id, data_root, workspace_root);
+		nlohmann::json candidates = nlohmann::json::array();
+		for (const uam::ProviderAgentCandidate& candidate : discovery.candidates)
+			candidates.push_back({{"providerId", candidate.provider_id}, {"id", candidate.id}, {"description", candidate.description},
+			                      {"sourcePath", uam::paths::Utf8PathString(candidate.source_path)}, {"sourceEntry", candidate.source_entry},
+			                      {"scope", candidate.scope}, {"alreadyImported", candidate.already_imported}});
+		nlohmann::json searched = nlohmann::json::array();
+		for (const std::filesystem::path& path : discovery.searched) searched.push_back(uam::paths::Utf8PathString(path));
+		// Source text may hold invalid UTF-8; replace it rather than fail the whole reply.
+		return uam::query_handler_async::AsyncCefResult{true, 200, nlohmann::json{{"candidates", std::move(candidates)}, {"searched", std::move(searched)},
+		                           {"errors", discovery.errors}, {"unsupported", discovery.unsupported}}.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace), ""};
+	});
 }
 
 void UamQueryHandler::HandleBrowseProviderAgentImport(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -1757,9 +1798,14 @@ void UamQueryHandler::HandleBrowseProviderAgentImport(CefRefPtr<CefBrowser>, con
 
 void UamQueryHandler::HandlePreviewProviderAgentImport(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
-	const auto preview = uam::AgentDefinitionService::PreviewProviderAgentImport(
-	    payload.value("providerId", ""), uam::paths::PathFromUtf8(payload.value("sourcePath", "")));
-	cb->Success(SerializeProviderAgentImportPreview(preview).dump());
+	uam::query_handler_async::RunAsyncCefQuery(m_asyncLifetime, cb,
+	    [provider_id = payload.value("providerId", ""), source = uam::paths::PathFromUtf8(payload.value("sourcePath", "")),
+	     entry = payload.value("sourceEntry", ""), version = CheckedLocalAgentImportCliVersion(m_app)]
+	{
+		const auto preview = uam::AgentDefinitionService::PreviewProviderAgentImport(provider_id, source, entry, version);
+		// Source text may hold invalid UTF-8; replace it rather than fail the whole reply.
+		return uam::query_handler_async::AsyncCefResult{true, 200, SerializeProviderAgentImportPreview(preview).dump(-1, ' ', false, nlohmann::json::error_handler_t::replace), ""};
+	});
 }
 
 void UamQueryHandler::HandleListAgentDefinitions(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -1780,7 +1826,7 @@ void UamQueryHandler::HandleListAgentDefinitions(CefRefPtr<CefBrowser>, const nl
 	{
 		agents.push_back({{"id", agent.id}, {"description", agent.description}, {"mode", agent.mode}, {"workspaceAccess", agent.workspace_access},
 		                  {"skills", agent.skills}, {"delegates", agent.delegates}, {"instructions", agent.instructions}, {"builtIn", agent.built_in},
-		                  {"scope", scope}});
+		                  {"maxWorkspaceAccess", agent.max_workspace_access}, {"scope", scope}});
 	};
 	for (const uam::AgentDefinition& agent : global.definitions) append(agent, "global");
 	if (!workspace_root.empty())
@@ -1833,6 +1879,8 @@ void UamQueryHandler::HandleImportProviderAgent(CefRefPtr<CefBrowser>, const nlo
 		const std::string chat_id = payload.value("chatId", "");
 		request.provider_id = payload.value("providerId", "");
 		request.source_path = uam::paths::PathFromUtf8(payload.value("sourcePath", ""));
+		request.source_entry = payload.value("sourceEntry", "");
+		request.local_opencode_version = CheckedLocalAgentImportCliVersion(m_app);
 		request.canonical_id = payload.value("canonicalId", "");
 		request.workspace_access = payload.value("workspaceAccess", "");
 		request.skills = payload.value("skills", std::vector<std::string>{});

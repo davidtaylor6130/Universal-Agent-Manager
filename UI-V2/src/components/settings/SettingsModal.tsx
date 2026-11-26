@@ -15,6 +15,7 @@ import { PhoneRestartButton } from './PhoneRestartButton'
 import { AutomationSettings } from './AutomationSettings'
 import { SETTINGS_ALL_ENVIRONMENTS } from '../../utils/settingsScope'
 import { ProviderConnections } from './ProviderConnections'
+import { CustomAcpAgentSettings, type CustomAcpAgentSettingsHandle } from './CustomAcpAgentSettings'
 import { CentralProviderSettings, type CentralAgentHighlight, type CentralProviderSettingsHandle } from './CentralProviderSettings'
 import { AGENT_SCOPE_LABEL, agentKey, listAgentDefinitions, type AgentDefinition } from './agentDefinitions'
 import { McpServerSetup } from './McpServerSetup'
@@ -22,7 +23,7 @@ import { ComputerUseSettingRow } from './ComputerUseSettingRow'
 import { ExecutionRoutingSettings, type ExecutionRoutingSettingsHandle } from './ExecutionRoutingSettings'
 import { UnsavedChangesDialog } from './UnsavedChangesDialog'
 import { NumberField } from './NumberField'
-import { ANTIGRAVITY_ENABLED, CLAUDE_ENABLED, CODEX_ENABLED, COMPUTER_USE_ENABLED, COPILOT_ENABLED, GEMINI_ENABLED, MOBILE_COMPANION_ENABLED, OPENCODE_ENABLED, SSH_ENABLED } from '../../config/buildFeatures'
+import { ANTIGRAVITY_ENABLED, CLAUDE_ENABLED, CODEX_ENABLED, COMPUTER_USE_ENABLED, COPILOT_ENABLED, CUSTOM_ACP_ENABLED, GEMINI_ENABLED, MOBILE_COMPANION_ENABLED, OPENCODE_ENABLED, SSH_ENABLED } from '../../config/buildFeatures'
 import { copyTextToClipboard } from '../../utils/copySelection'
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import {
@@ -37,6 +38,7 @@ import {
   type MemoryWorkerBinding,
   type ProviderChatDefaults,
   type ProviderAgentImportPreview,
+  type ProviderAgentDiscovery,
   type UamAgentCycleShortcut,
   type ComputerUseAllowedApplication,
   type WindowsPowerShellPreference,
@@ -73,6 +75,7 @@ import {
   CLAUDE_CLI_PROVIDER_ID,
   CODEX_CLI_PROVIDER_ID,
   COPILOT_CLI_PROVIDER_ID,
+  CUSTOM_ACP_PROVIDER_ID,
   DEFAULT_PROVIDER_ID,
   GEMINI_CLI_PROVIDER_ID,
   OPENCODE_CLI_PROVIDER_ID,
@@ -854,6 +857,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const refreshUamAgents = useAppStore((s) => s.refreshUamAgents)
   const browseProviderAgentImport = useAppStore((s) => s.browseProviderAgentImport)
   const previewProviderAgentImport = useAppStore((s) => s.previewProviderAgentImport)
+  const discoverProviderAgents = useAppStore((s) => s.discoverProviderAgents)
   const importProviderAgent = useAppStore((s) => s.importProviderAgent)
   const refreshCliProviderVersion = useAppStore((s) => s.refreshCliProviderVersion)
   const applyCliProviderVersion = useAppStore((s) => s.applyCliProviderVersion)
@@ -909,6 +913,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const [favoriteAgentCandidate, setFavoriteAgentCandidate] = useState('')
   const [agentImportProvider, setAgentImportProvider] = useState(AGENT_IMPORT_PROVIDER_OPTIONS[0]?.value ?? '')
   const [agentImportPath, setAgentImportPath] = useState('')
+  /** OpenCode JSON(C) agent key chosen from discovery; a typed path clears it. */
+  const [agentImportEntry, setAgentImportEntry] = useState('')
+  const [agentImportDiscovery, setAgentImportDiscovery] = useState<ProviderAgentDiscovery | null>(null)
+  const [agentImportDiscovering, setAgentImportDiscovering] = useState(false)
   const [agentImportId, setAgentImportId] = useState('')
   const [agentImportAccess, setAgentImportAccess] = useState<'read' | 'write'>('read')
   // All workspaces by default: the agent store and every chat list it, with or without a workspace chat open.
@@ -921,6 +929,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const [confirmAgentReplace, setConfirmAgentReplace] = useState(false)
   const [agentHighlight, setAgentHighlight] = useState<CentralAgentHighlight | null>(null)
   const agentImportRequest = useRef(0)
+  const agentImportProviderRef = useRef(agentImportProvider)
   const agentImportTargetsRequest = useRef(0)
   const invalidateAgentImport = () => {
     agentImportRequest.current += 1
@@ -967,6 +976,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const cleanupRef = useRef<SettingsDraftHandle>(null)
   const dataFolderRef = useRef<DataFolderSettingsHandle>(null)
   const providerAvailabilityRef = useRef<SettingsDraftHandle>(null)
+  const customAcpRef = useRef<CustomAcpAgentSettingsHandle>(null)
   const [rawEditorNames, setRawEditorNames] = useState<Record<string, string>>({})
   const [rawExtensions, setRawExtensions] = useState<Record<string, string>>({})
   const [editorExit, setEditorExit] = useState<(() => void) | null>(null)
@@ -1035,6 +1045,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     }
     else if (selectedSection === 'routing' && routingRef.current) routingRef.current.requestLeave(next)
     else if (selectedSection === 'voice-input' && voiceRef.current) voiceRef.current.requestLeave(next)
+    else if (CUSTOM_ACP_ENABLED && selectedSection === `provider:${CUSTOM_ACP_PROVIDER_ID}` && customAcpRef.current) {
+      const leaveAvailability = () => providerAvailabilityRef.current ? providerAvailabilityRef.current.requestLeave(next) : next()
+      customAcpRef.current.requestLeave(leaveAvailability)
+    }
     else if ((selectedSection === 'provider-summary' || selectedSection.startsWith('provider:')) && providerAvailabilityRef.current) providerAvailabilityRef.current.requestLeave(next)
     else if (selectedSection === 'memory-store' && memoryRef.current) memoryRef.current.requestLeave(next)
     else if (selectedSection === 'markdown-store' && markdownStoreRef.current) markdownStoreRef.current.requestLeave(next)
@@ -1944,6 +1958,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     if (selectedSection === 'provider-summary') return <div className="grid">{availability('Provider availability')}<ProviderConnections selectedHostId={effectiveProviderSettingsHostId} onProviderSelect={id => changeSection(`provider:${id}`)} onMcpSelect={() => changeSection('mcp-servers')} onPreferencesSelect={() => changeSection('central-configuration')} /></div>
     if (selectedSection.startsWith('provider:')) {
       const providerId = selectedSection.slice('provider:'.length)
+      // The Custom ACP agent has no CLI to version and no central launch setup; its page is its launch configuration.
+      if (CUSTOM_ACP_ENABLED && providerId === CUSTOM_ACP_PROVIDER_ID) return <div className="grid">{availability('Availability', [providerId])}<CustomAcpAgentSettings ref={customAcpRef} />{renderSectionContent('defaults', providerId)}</div>
       return <div className="grid">{availability('Availability', [providerId])}{renderSectionContent('cli-version', providerId)}{renderSectionContent('defaults', providerId)}<ProviderConnections providerId={providerId} selectedHostId={effectiveProviderSettingsHostId} onMcpSelect={() => changeSection('mcp-servers')} onPreferencesSelect={() => changeSection('central-configuration')} /></div>
     }
     if (selectedSection === 'permissions') return <PermissionsSettings />
@@ -2338,22 +2354,48 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
         ;[next[index], next[target]] = [next[target], next[index]]
         updatePreferences(next)
       }
-      const previewImport = async () => {
-        if (agentImportBusy || !agentImportPath.trim()) return
+      // A picked candidate supersedes any preview still loading, whose result is then ignored.
+      const previewImport = async (path = agentImportPath.trim(), entry = agentImportEntry, supersede = false) => {
+        if ((agentImportBusy && !supersede) || !path) return
         const requestId = ++agentImportRequest.current
         setAgentImportPreview(null)
         setAgentImportBusy(true)
-        const preview = await previewProviderAgentImport(agentImportProvider, agentImportPath.trim())
+        const preview = await previewProviderAgentImport(agentImportProvider, path, entry)
         if (requestId !== agentImportRequest.current) return
         setAgentImportPreview(preview)
         setAgentImportId(preview?.suggestedId ?? '')
+        setAgentImportAccess(preview?.suggestedWorkspaceAccess === 'write' && preview.maxWorkspaceAccess !== 'read' ? 'write' : 'read')
         setAgentImportAcknowledged(false)
-        if (!preview) reportAppFailure('Preview failed.', agentImportPath.trim())
+        if (!preview) reportAppFailure('Preview failed.', path)
         // Stay busy until saved agents are listed, so Import never turns into Replace under the pointer.
         if (preview?.supported) await refreshAgentImportTargets()
         if (requestId !== agentImportRequest.current) return
         setAgentImportBusy(false)
       }
+      const findAgents = async () => {
+        if (agentImportDiscovering) return
+        const provider = agentImportProvider
+        setAgentImportDiscovering(true)
+        const discovery = await discoverProviderAgents(provider, activeSessionId ?? '')
+        setAgentImportDiscovering(false)
+        if (provider !== agentImportProviderRef.current) return
+        setAgentImportDiscovery(discovery)
+        if (!discovery) reportAppFailure('Finding agents failed.', 'Enter a file path instead.')
+      }
+      const candidateKey = (candidate: { sourcePath: string; sourceEntry: string }) => `${candidate.sourcePath}\u0000${candidate.sourceEntry}`
+      const selectedCandidateKey = agentImportDiscovery?.candidates.some((candidate) => candidate.sourcePath === agentImportPath && candidate.sourceEntry === agentImportEntry)
+        ? candidateKey({ sourcePath: agentImportPath, sourceEntry: agentImportEntry })
+        : ''
+      const chooseCandidate = (key: string) => {
+        const candidate = agentImportDiscovery?.candidates.find((item) => candidateKey(item) === key)
+        if (!candidate) return
+        invalidateAgentImport()
+        setAgentImportPath(candidate.sourcePath)
+        setAgentImportEntry(candidate.sourceEntry)
+        void previewImport(candidate.sourcePath, candidate.sourceEntry, true)
+      }
+      const readOnlySource = agentImportPreview?.maxWorkspaceAccess === 'read'
+      const importNotes = agentImportPreview?.notes ?? []
       // Only a workspace-scoped import needs a chat; a global import is admitted without one.
       const importNeedsChat = agentImportWorkspaceScope && !activeSessionId
       const importTargetId = agentImportId.trim().toLowerCase()
@@ -2382,6 +2424,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
           chatId: activeSessionId ?? '',
           providerId: agentImportProvider,
           sourcePath: agentImportPath.trim(),
+          sourceEntry: agentImportEntry,
           canonicalId: agentImportId.trim(),
           workspaceAccess: agentImportAccess,
           workspaceScope: agentImportWorkspaceScope,
@@ -2492,13 +2535,51 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                   options={AGENT_IMPORT_PROVIDER_OPTIONS}
                   onChange={(value) => {
                     setAgentImportProvider(value)
+                    agentImportProviderRef.current = value
+                    setAgentImportDiscovery(null)
+                    setAgentImportEntry('')
                     invalidateAgentImport()
                   }}
                 />
               }
             />
+            <SettingRow
+              title="Native agent"
+              description={!agentImportDiscovery
+                ? 'Lists agents in the provider’s global and workspace folders.'
+                : agentImportDiscovery.unsupported || (agentImportDiscovery.candidates.length === 0
+                  ? 'None found in the provider’s agent folders.'
+                  : `${agentImportDiscovery.candidates.length} found`)}
+              htmlFor="agent-import-candidate"
+              control={
+                <div className="flex gap-2" style={{ width: 440, maxWidth: '100%' }}>
+                  {agentImportDiscovery && agentImportDiscovery.candidates.length > 0 && <div className="min-w-0 flex-1">
+                    <MenuSelect
+                      id="agent-import-candidate"
+                      label="Native agent"
+                      value={selectedCandidateKey}
+                      placeholder="Choose an agent"
+                      options={agentImportDiscovery.candidates.map((candidate) => ({
+                        value: candidateKey(candidate),
+                        label: candidate.alreadyImported ? `${candidate.id || candidate.sourceEntry} (imported)` : candidate.id || candidate.sourceEntry,
+                        description: `${candidate.scope === 'workspace' ? 'This workspace' : 'All projects'}${candidate.description ? ` · ${candidate.description}` : ''}`,
+                      }))}
+                      onChange={chooseCandidate}
+                    />
+                  </div>}
+                  <Button size="sm" variant="secondary" aria-busy={agentImportDiscovering || undefined} disabled={agentImportDiscovering} onClick={() => void findAgents()}>
+                    {agentImportDiscovery ? 'Refresh' : 'Find agents'}
+                  </Button>
+                </div>
+              }
+            />
+            <Reveal open={(agentImportDiscovery?.errors.length ?? 0) > 0}>
+              <Notice tone="warning" dismissible={false} dismissLabel="Dismiss" title="Some agent files were skipped">
+                {agentImportDiscovery?.errors.join(' ')}
+              </Notice>
+            </Reveal>
             <div className="grid gap-0">
-              <SettingRow title="Native Markdown file" htmlFor="agent-import-path" control={
+              <SettingRow title="Or a file path" htmlFor="agent-import-path" control={
                 <div className="flex gap-2" style={{ width: 440, maxWidth: '100%' }}>
                   <input
                     id="agent-import-path"
@@ -2506,6 +2587,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                     value={agentImportPath}
                     onChange={(event) => {
                       setAgentImportPath(event.target.value)
+                      setAgentImportEntry('')
                       invalidateAgentImport()
                     }}
                     className="uam-field min-w-0 flex-1 font-mono"
@@ -2516,6 +2598,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                     void browseProviderAgentImport(agentImportPath).then((path) => {
                       if (!path || requestId !== agentImportRequest.current) return
                       setAgentImportPath(path)
+                      setAgentImportEntry('')
                     })
                   }}>Browse</Button>
                   <Button size="sm" variant={agentImportPath.trim() ? 'primary' : 'secondary'} aria-busy={agentImportBusy || undefined} disabled={agentImportBusy || !agentImportPath.trim()} onClick={() => void previewImport()}>Preview</Button>
@@ -2530,7 +2613,14 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                     description={agentImportPreview.mode || 'Unknown mode'}
                   />
                   <Reveal open={agentImportPreview.securityFields.length > 0}>
-                    <Notice tone="error" dismissible={false} dismissLabel="Dismiss">Blocked security/tool fields: {agentImportPreview.securityFields.join(', ')}</Notice>
+                    <Notice tone="error" dismissible={false} dismissLabel="Dismiss">Blocked fields: {agentImportPreview.securityFields.join(', ')}</Notice>
+                  </Reveal>
+                  <Reveal open={importNotes.length > 0}>
+                    <Notice tone="info" dismissible={false} dismissLabel="Dismiss" title="How this agent maps">
+                      <ul className="grid gap-1">
+                        {importNotes.map((note) => <li key={note}>{note}</li>)}
+                      </ul>
+                    </Notice>
                   </Reveal>
                   <Reveal open={agentImportPreview.ignoredFields.length > 0}>
                     <Notice tone="warning" dismissible={false} dismissLabel="Dismiss">Provider-only fields that will be omitted: {agentImportPreview.ignoredFields.join(', ')}</Notice>
@@ -2555,7 +2645,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
                             value={agentImportAccess}
                             options={[
                               { value: 'read', label: 'Read only', description: 'The imported agent cannot approve writes.' },
-                              { value: 'write', label: 'Read and write', description: 'The imported agent may request workspace changes.' },
+                              { value: 'write', label: 'Read and write', description: readOnlySource ? 'The source agent is read-only.' : 'The imported agent may request workspace changes.', disabled: readOnlySource },
                             ]}
                             onChange={(value) => setAgentImportAccess(value === 'write' ? 'write' : 'read')}
                           />

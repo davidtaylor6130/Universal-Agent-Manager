@@ -149,7 +149,8 @@ inline void ApplyProviderDefaultsToChat(const AppSettings& settings, ChatSession
 	{
 		chat.uam_agent_id = settings.central_provider_configuration.default_agent_id;
 	}
-	chat.uam_control_enabled = uam::central_configuration::McpEnabled(settings.central_provider_configuration, chat.provider_id, chat.execution_host_id, "uam-mcp", settings.central_provider_configuration.uam_control_enabled);
+	chat.uam_control_enabled = ProviderRuntimeRegistry::ResolveById(chat.provider_id).SupportsUamControl() &&
+	    uam::central_configuration::McpEnabled(settings.central_provider_configuration, chat.provider_id, chat.execution_host_id, "uam-mcp", settings.central_provider_configuration.uam_control_enabled);
 	if (chat.routing_mode == "automatic")
 	{
 		chat.routing_inherited_default_fields.clear();

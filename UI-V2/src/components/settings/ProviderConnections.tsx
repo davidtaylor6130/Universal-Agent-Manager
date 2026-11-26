@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import { useShallow } from 'zustand/react/shallow'
 import { useAppStore } from '../../store/useAppStore'
-import { OPENCODE_CLI_PROVIDER_ID, SUPPORTED_CLI_PROVIDER_IDS, providerMetadataForId } from '../../utils/providerMetadata'
+import { OPENCODE_CLI_PROVIDER_ID, SUPPORTED_CLI_PROVIDER_IDS, providerIsBestEffort, providerMetadataForId } from '../../utils/providerMetadata'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import { sendToCEF } from '../../ipc/cefBridge'
 import { reportAppFailure } from '../../utils/appFailure'
@@ -162,6 +162,8 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
   }
   /** Read-only availability: state is shown, not set here. */
   const glyph = (label: string, available: boolean | undefined, title: string) => <span role="img" aria-label={available === undefined ? `${label} (unknown)` : `${label} ${available ? 'on' : 'off'}`} title={title}>{available === undefined ? <StatusDot tone="neutral" /> : <StatusDot tone={available ? 'success' : 'error'} />}</span>
+  /** A feature the provider does not have by design: a neutral dot, neither an off switch nor an error. */
+  const notApplicable = (label: string) => <span role="img" aria-label={`${label} not available for this provider`} title="Not available for this provider"><StatusDot tone="neutral" /></span>
   const reportedProgressiveDiscovery = status?.executionHostId === activeHostId ? status.providers.find(item => item.providerId === OPENCODE_CLI_PROVIDER_ID)?.progressiveMcpDiscoveryEnabled : undefined
   const progressiveDiscovery = typeof reportedProgressiveDiscovery === 'boolean' ? reportedProgressiveDiscovery : undefined
   /** Failed discovery saves keep the chosen value in the row for Retry or Discard (settings.md feedback near the control). */
@@ -205,7 +207,9 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
           const health = status?.executionHostId === activeHostId ? status.providers.find(item => item.providerId === id) : undefined
           const healthLabel = health?.status === 'connected' && status?.connectedProofAvailable ? 'Connected' : health?.status === 'handshake-confirmed' && status?.handshakeProofAvailable ? 'Responding' : health?.status === 'configured-unverified' ? 'Set up, not checked' : health?.status === 'failed' ? 'Failed' : health?.status === 'missing' ? 'Not configured' : health?.status === 'disabled' ? 'Disabled' : 'Unknown'
           const healthTone: StatusTone = terminalOnly ? 'neutral' : healthLabel === 'Connected' ? 'success' : healthLabel === 'Failed' ? 'error' : healthLabel === 'Not configured' ? 'warning' : 'neutral'
-          const cli = version?.installedVersion || (version?.status === 'checking' ? 'Checking' : version?.status === 'unavailable' ? 'Not installed' : 'Not checked')
+          // The best-effort Custom ACP agent has no CLI to version, no UAM tool connection and no shared launch setup.
+          const bestEffort = providerIsBestEffort(id)
+          const cli = bestEffort ? 'No CLI' : version?.installedVersion || (version?.status === 'checking' ? 'Checking' : version?.status === 'unavailable' ? 'Not installed' : 'Not checked')
           const uamOn = health?.uamControlEnabled === undefined ? undefined : !terminalOnly && health.uamControlEnabled
           const computerUse = status?.executionHostId === activeHostId && typeof status.computerUseBuiltInAvailable === 'boolean' ? !terminalOnly && status.computerUseBuiltInAvailable : undefined
           const computerUseKnown = typeof computerUseEnabled === 'boolean' && computerUseRevocationPending === false
@@ -221,9 +225,9 @@ export function ProviderConnections({ providerId, selectedHostId, onProviderSele
             <td className="uam-prov-sticky uam-prov-provider-cell px-3 py-2"><button type="button" className="uam-prov-provider" title={cli} onClick={() => onProviderSelect?.(id)} disabled={!onProviderSelect}><ProviderLogo providerId={id}/><span className="grid min-w-0"><span className="uam-prov-provider__name">{metadata.shortName}</span></span></button></td>
             <td className="px-2 py-2"><span className="uam-prov-status" data-tone={healthTone} title={health?.detail}><StatusMark tone={healthTone} label={terminalOnly ? 'Terminal only' : healthLabel} /></span>
               <Reveal open={!terminalOnly && health?.status === 'failed' && !!health.detail}>{!terminalOnly && health?.status === 'failed' && health.detail && <div className="uam-prov-detail uam-prov-detail--clip mt-0.5" title={health.detail}>{health.detail}</div>}</Reveal></td>
-            <td className="uam-prov-glyph-cell px-1 py-2">{glyph(`${metadata.shortName} UAM MCP`, uamOn, terminalOnly ? 'Not used in terminal mode' : uamOn ? 'On. Managed in the UAM MCP service section.' : uamOn === false ? 'Off for this provider.' : 'Not known yet')}</td>
+            <td className="uam-prov-glyph-cell px-1 py-2">{bestEffort ? notApplicable(`${metadata.shortName} UAM MCP`) : glyph(`${metadata.shortName} UAM MCP`, uamOn, terminalOnly ? 'Not used in terminal mode' : uamOn ? 'On. Managed in the UAM MCP service section.' : uamOn === false ? 'Off for this provider.' : 'Not known yet')}</td>
             {COMPUTER_USE_ENABLED && <td className="uam-prov-glyph-cell px-1 py-2">{glyph(`${metadata.shortName} Computer Use`, computerUseState, computerUseDetail)}</td>}
-            <td className="uam-prov-glyph-cell px-1 py-2">{configSwitch(`${metadata.shortName} Shared setup`, health?.sharedSetupEnabled, terminalOnly ? undefined : () => void setConfiguration(id, 'shared-setup', !health?.sharedSetupEnabled), configurationKey(activeHostId, id, 'server', 'shared-setup'))}</td>
+            <td className="uam-prov-glyph-cell px-1 py-2">{bestEffort ? notApplicable(`${metadata.shortName} Shared setup`) : configSwitch(`${metadata.shortName} Shared setup`, health?.sharedSetupEnabled, terminalOnly ? undefined : () => void setConfiguration(id, 'shared-setup', !health?.sharedSetupEnabled), configurationKey(activeHostId, id, 'server', 'shared-setup'))}</td>
             {collapseServers
               ? <td className="px-2 py-2">{mcpChip(id, terminalOnly, health)}</td>
               : servers.map(server => {

@@ -287,6 +287,16 @@ it('keeps new agent Save disabled for invalid names and allows a valid new draft
   expect(save.disabled).toBe(false)
 })
 
+it('keeps read and write unavailable for an agent imported from a read-only source', async () => {
+  vi.mocked(bridge.sendToCEF).mockResolvedValue({ ok: true, data: { agents: [{ id: 'reader', description: 'Reads', mode: 'subagent', workspaceAccess: 'read', maxWorkspaceAccess: 'read', skills: [], delegates: [], instructions: '', builtIn: false }], errors: [] } })
+  await act(async () => root.render(<CentralProviderSettings ref={handle} />))
+  await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Edit reader"]')!.click())
+  await act(async () => document.querySelector<HTMLButtonElement>('button[aria-label="Workspace access"]')!.click())
+  const write = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(option => option.textContent?.includes('Read and write'))!
+  expect(write.getAttribute('aria-disabled') === 'true' || (write as HTMLButtonElement).disabled).toBe(true)
+  expect(write.textContent).toContain('Imported from a read-only source.')
+})
+
 const storeAgent = (id: string, scope: 'global' | 'workspace', mode = 'primary', builtIn = false) =>
   ({ id, description: `${id} description`, mode, workspaceAccess: 'read', skills: [], delegates: [], instructions: 'Do it.', builtIn, scope })
 const listedAgents = [

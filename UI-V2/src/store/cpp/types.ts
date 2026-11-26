@@ -187,6 +187,8 @@ export interface CppChat {
     active?: boolean
     pendingSteer?: boolean
     lastError: string
+    /** Host admission hold on this CLI View's launch. */
+    hostAdmissionWait?: { message: string; runAnyway: boolean }
   }
   acpSession?: CppAcpSession
   activeGoalId?: string | null
@@ -739,7 +741,28 @@ export interface ComputePoolWait {
   poolName: string
   inUse: number
   limit: number
+  /** Host admission hold: one plain line, for example "Waiting for host A (8/8)". Absent for a compute pool wait. */
+  message?: string
+  /** The hold may be skipped by the user (their own turn on a full or overloaded computer). */
+  runAnyway?: boolean
 }
+
+/** Host admission limits; see docs/settings/compute-pools.md#host-limits. A local limit of 0 means processors minus two. */
+export interface HostAdmissionSettings {
+  localSlotLimit: number
+  remoteSlotLimit: number
+  backgroundBudget: number
+  softCpuPercent: number
+  softFreeMemoryPercent: number
+  hardCpuPercent: number
+  hardCpuSeconds: number
+  hardFreeMemoryPercent: number
+}
+
+export type HostAdmissionHealth = 'ready' | 'degraded' | 'overloaded' | 'unreachable'
+
+/** Live work per computer by class, keyed by host id. */
+export type HostAdmissionUsage = Record<string, { label: string; interactive: number; agent: number; background: number; waiting: number; slotLimit: number; backgroundBudget: number; health: HostAdmissionHealth }>
 
 /** Per pool; `hosts` splits the same counts by the computer each turn runs on. */
 export type ComputePoolUsage = Record<string, { inUse: number; waiting: number; hosts?: Record<string, { inUse: number; waiting: number }> }>
@@ -862,6 +885,7 @@ export interface CppSettings extends VoiceInputSettings, Partial<VcsStorageSetti
   toolCallTimeoutSeconds?: number
   streamLoopRepeatLimit?: number
   computePools?: ComputePool[]
+  hostAdmission?: HostAdmissionSettings
   acpTurnOutputLimitMiB?: number
   updateChecksEnabled: boolean
   automaticProviderUpdates: boolean
@@ -928,6 +952,8 @@ export interface ProviderAgentImportOptions {
   workspaceAccess: 'read' | 'write'
   workspaceScope: boolean
   acknowledgeIgnoredFields: boolean
+  /** Agent key inside an OpenCode JSON(C) config; empty or absent for a Markdown agent file. */
+  sourceEntry?: string
   /** Overwrite an agent with the same ID in the target scope; sent only after the user confirms. */
   replaceExisting?: boolean
 }
@@ -937,27 +963,42 @@ export type ProviderAgentImportOutcome =
   | { ok: true; id: string; mode: string; scope: AgentDefinitionScope }
   | { ok: false; error: string }
 
+/** A native agent file or OpenCode JSON(C) entry found in a provider's global or workspace folder. */
 export interface ProviderAgentCandidate {
+  providerId: string
   id: string
-  name: string
-  description?: string
+  description: string
   sourcePath: string
-  alreadyImported?: boolean
+  /** Agent key inside an OpenCode JSON(C) config; empty for a Markdown agent file. */
+  sourceEntry: string
+  scope: 'global' | 'workspace'
+  alreadyImported: boolean
 }
 
-export interface ProviderAgentImportResult {
-  imported: number
-  failed?: Array<{ id: string; error: string }>
+export interface ProviderAgentDiscovery {
+  candidates: ProviderAgentCandidate[]
+  searched: string[]
+  errors: string[]
+  /** Set when the provider has no native agent files to import. */
+  unsupported: string
 }
 
 export interface ProviderAgentImportPreview {
   providerId: string
   sourcePath: string
+  sourceEntry?: string
   suggestedId: string
   description: string
   mode: string
   securityFields: string[]
   ignoredFields: string[]
+  /** One line per mapped restriction, shortened text or runtime limit. */
+  notes?: string[]
+  /** The rules hold a deny that workspace access cannot express, so the agent runs only on local OpenCode 1.x. */
+  providerBound?: boolean
+  /** A read-only source never imports with write access. */
+  maxWorkspaceAccess?: 'read' | 'write'
+  suggestedWorkspaceAccess?: 'read' | 'write'
   error: string
   supported: boolean
 }
@@ -1167,6 +1208,7 @@ export interface CppAppState {
   cliVersionManager?: CliVersionManager
   shellActions?: ShellAction[]
   computePoolUsage?: ComputePoolUsage
+  hostAdmissionUsage?: HostAdmissionUsage
   executionHostLoad?: ExecutionHostLoad
   prWatches?: PullRequestWatch[]
   timers?: { notices: TimerNotice[] }
@@ -1207,6 +1249,7 @@ export interface CppStatePatch {
   cliVersionManager?: CliVersionManager
   shellActions?: ShellAction[]
   computePoolUsage?: ComputePoolUsage
+  hostAdmissionUsage?: HostAdmissionUsage
   executionHostLoad?: ExecutionHostLoad
   prWatches?: PullRequestWatch[]
   timers?: { notices: TimerNotice[] }
@@ -1230,6 +1273,7 @@ export interface CliBinding {
   active: boolean
   pendingSteer?: boolean
   lastError: string
+  hostAdmissionWait?: { message: string; runAnyway: boolean }
 }
 
 /** Native verdict on states the user cannot clear; every value except `none` and `warn` also lifts the provider lock. */

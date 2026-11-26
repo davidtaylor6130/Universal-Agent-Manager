@@ -2541,6 +2541,36 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  it('shows a host admission wait as one line with Run anyway', () => {
+    const runHeldWorkAnyway = vi.fn(async () => true)
+    useAppStore.setState((state) => ({
+      runHeldWorkAnyway,
+      acpBindingBySessionId: {
+        ...state.acpBindingBySessionId,
+        'chat-1': {
+          ...state.acpBindingBySessionId['chat-1'],
+          lifecycleState: 'processing',
+          processing: true,
+          turnEvents: [],
+          turnAssistantMessageIndex: -1,
+          computePoolWait: { poolName: 'host A', inUse: 8, limit: 8, message: 'Waiting for host A (8/8)', runAnyway: true },
+        },
+      },
+      messages: { ...state.messages, 'chat-1': [{ id: 'held', role: 'user', content: 'Held question', createdAt: new Date(), acpPromptNotSent: true }] },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+    const wait = host.querySelector('[data-testid="compute-pool-wait"]')
+    expect(wait?.textContent).toBe('Waiting for host A (8/8)Run anyway')
+    const button = Array.from(wait?.querySelectorAll('button') ?? []).find((candidate) => candidate.textContent === 'Run anyway')
+    act(() => button?.click())
+    expect(runHeldWorkAnyway).toHaveBeenCalledWith('chat-1')
+    act(() => root.unmount())
+    host.remove()
+  })
+
   it('keeps the working clock out of the live region and announces only the reply starting, finishing and failing', () => {
     vi.useFakeTimers()
     const binding = (patch: Partial<AcpBinding>, chatId = 'chat-1') => useAppStore.setState((state) => ({

@@ -11,6 +11,8 @@ export type AgentDefinition = {
   delegates: string[]
   instructions: string
   builtIn: boolean
+  /** 'read' for an agent imported from a read-only source. */
+  maxWorkspaceAccess?: string
   scope: AgentDefinitionScope
 }
 

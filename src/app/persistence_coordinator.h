@@ -26,5 +26,4 @@ class PersistenceCoordinator
 	bool SaveSettings(uam::AppState& app, SettingsMemoryWriteReceipt* memory_receipt,
 	    const std::function<bool(uam::io::AtomicWriteStage)>& stage_gate = {}) const;
 	bool LoadSettings(uam::AppState& app) const;
-	void LoadFrontendActions(uam::AppState& app) const;
 };

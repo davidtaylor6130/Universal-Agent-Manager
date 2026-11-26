@@ -19,8 +19,10 @@ std::vector<std::string> BuildAcpLaunchArgv(const ProviderProfile& provider, con
 	return ProviderRuntimeRegistry::Resolve(provider).BuildStructuredLaunchArgv(provider, chat);
 }
 
-std::string JoinAcpArgvForDiagnostics(const std::vector<std::string>& argv)
+std::string JoinAcpArgvForDiagnostics(const std::vector<std::string>& argv, bool private_arguments)
 {
+	if (private_arguments && !argv.empty())
+		return argv.front() + (argv.size() > 1 ? " [" + std::to_string(argv.size() - 1) + " private arguments]" : std::string{});
 	std::ostringstream out;
 	for (std::size_t i = 0; i < argv.size(); ++i)
 	{
@@ -44,7 +46,8 @@ std::string AcpWorkingDirectoryString(const std::filesystem::path& workspace_roo
 std::string BuildAcpLaunchDetail(const ProviderProfile& provider, const AppState& app, const std::filesystem::path& workspace_root, const ChatSession& chat)
 {
 	const std::vector<std::string> argv = BuildAcpLaunchArgv(provider, chat);
-	return "cwd=" + AcpWorkingDirectoryString(workspace_root) + ", argv=" + JoinAcpArgvForDiagnostics(argv) + ", nativeSessionId=" + ResolvedAcpResumeIdForChat(app, chat);
+	const bool private_arguments = ProviderRuntimeRegistry::Resolve(provider).LaunchArgumentsArePrivate();
+	return "cwd=" + AcpWorkingDirectoryString(workspace_root) + ", argv=" + JoinAcpArgvForDiagnostics(argv, private_arguments) + ", nativeSessionId=" + ResolvedAcpResumeIdForChat(app, chat);
 }
 
 std::string BuildAcpLaunchDetail(const AppState& app, const std::filesystem::path& workspace_root, const ChatSession& chat)

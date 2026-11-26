@@ -371,7 +371,7 @@ export const CentralProviderSettings = forwardRef<CentralProviderSettingsHandle,
                   <MenuSelect label="Used as" value={draft.mode} disabled={busy || builtIn} options={USED_AS.map(option => ({ value: option.value, label: option.label, description: option.detail }))} onChange={mode => set({ mode })} />
                 </SettingsField>
                 <SettingsField label="Workspace access">
-                  <MenuSelect label="Workspace access" value={draft.workspaceAccess} disabled={busy || builtIn} options={[{ value: 'write', label: 'Read and write' }, { value: 'read', label: 'Read only' }]} onChange={workspaceAccess => set({ workspaceAccess })} />
+                  <MenuSelect label="Workspace access" value={draft.workspaceAccess} disabled={busy || builtIn} options={[{ value: 'write', label: 'Read and write', disabled: draft.maxWorkspaceAccess === 'read', description: draft.maxWorkspaceAccess === 'read' ? 'Imported from a read-only source.' : undefined }, { value: 'read', label: 'Read only' }]} onChange={workspaceAccess => set({ workspaceAccess })} />
                 </SettingsField>
               </div>
               <SettingsField label="Skills for this agent">

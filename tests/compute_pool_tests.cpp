@@ -435,3 +435,103 @@ UAM_TEST(ComputePoolHeldOpenCodeTurnIsNotTreatedAsUnconfirmedInput)
 	fixture.Tick(held);
 	UAM_ASSERT(!uam::compute_pools::HeldBeforeDelivery(held));
 }
+
+namespace
+{
+	/// Host admission on: no compute pools, this computer limited to the given number of user turns and agents.
+	void EnableHostAdmission(PoolFixture& fixture, int local_limit)
+	{
+		fixture.app.settings.compute_pools.clear();
+		fixture.app.settings.host_admission.local_slot_limit = local_limit;
+		fixture.app.host_admission = std::make_shared<uam::host_admission::HostAdmission>();
+	}
+}
+
+UAM_TEST(HostAdmissionHoldsAnExplicitTurnAtTheLocalLimitAndRunAnywayStartsIt)
+{
+	PoolFixture fixture;
+	EnableHostAdmission(fixture, 2);
+	uam::AcpSessionState& first = fixture.AddTurn("one");
+	uam::AcpSessionState& second = fixture.AddTurn("two");
+	uam::AcpSessionState& third = fixture.AddTurn("three");
+	fixture.Tick(first);
+	fixture.Tick(second);
+	fixture.Tick(third);
+	UAM_ASSERT(PoolFixture::Delivered(first));
+	UAM_ASSERT(PoolFixture::Delivered(second));
+	// An explicit chat on this computer queues at its limit; its prompt has not reached the provider.
+	UAM_ASSERT(!PoolFixture::Delivered(third));
+	UAM_ASSERT_EQ(third.queued_prompt, std::string("Hello"));
+	const nlohmann::json state = uam::StateSerializer::Serialize(fixture.app);
+	const nlohmann::json held = AcpJson(state, "three").at("computePoolWait");
+	UAM_ASSERT_EQ(held.at("message").get<std::string>(), std::string("Waiting for this computer (2/2)"));
+	UAM_ASSERT(held.at("runAnyway").get<bool>());
+	UAM_ASSERT_EQ(state.at("hostAdmissionUsage").at("local").at("interactive").get<int>(), 2);
+	UAM_ASSERT_EQ(state.at("hostAdmissionUsage").at("local").at("waiting").get<int>(), 1);
+	UAM_ASSERT_EQ(state.at("hostAdmissionUsage").at("local").at("slotLimit").get<int>(), 2);
+	// Run anyway starts this turn over the limit, once.
+	third.host_admission_run_anyway = true;
+	fixture.Tick(third);
+	UAM_ASSERT(PoolFixture::Delivered(third));
+	UAM_ASSERT(!third.host_admission_run_anyway);
+	UAM_ASSERT(!AcpJson(uam::StateSerializer::Serialize(fixture.app), "three").contains("computePoolWait"));
+}
+
+UAM_TEST(HostAdmissionServesUserTurnsBeforeAgentsAndOffersAgentsNoRunAnyway)
+{
+	PoolFixture fixture;
+	EnableHostAdmission(fixture, 1);
+	uam::AcpSessionState& busy = fixture.AddTurn("busy");
+	uam::AcpSessionState& agent = fixture.AddTurn("agent");
+	fixture.Chat("agent").automation_token_id = "automation-token";
+	uam::AcpSessionState& user = fixture.AddTurn("user");
+	fixture.Tick(busy);
+	fixture.Tick(agent);
+	fixture.Tick(user);
+	UAM_ASSERT(PoolFixture::Delivered(busy));
+	UAM_ASSERT(!PoolFixture::Delivered(agent));
+	UAM_ASSERT(!PoolFixture::Delivered(user));
+	const nlohmann::json agent_wait = AcpJson(uam::StateSerializer::Serialize(fixture.app), "agent").at("computePoolWait");
+	UAM_ASSERT_EQ(agent_wait.at("message").get<std::string>(), std::string("Waiting for this computer (1/1)"));
+	UAM_ASSERT(!agent_wait.at("runAnyway").get<bool>());
+	uam::acp_detail::CompletePromptTurn(busy, "ready");
+	// The agent asked first, but the freed slot goes to the user's own turn.
+	fixture.Tick(agent);
+	UAM_ASSERT(!PoolFixture::Delivered(agent));
+	fixture.Tick(user);
+	UAM_ASSERT(PoolFixture::Delivered(user));
+	uam::acp_detail::CompletePromptTurn(user, "ready");
+	fixture.Tick(agent);
+	UAM_ASSERT(PoolFixture::Delivered(agent));
+}
+
+UAM_TEST(HostAdmissionHardLoadHoldsAgentsAndUserTurnsWaitWithRunAnyway)
+{
+	PoolFixture fixture;
+	EnableHostAdmission(fixture, 8);
+	// Free memory under the hard limit is overloaded at once; no ten-second CPU wait is needed.
+	fixture.app.host_load_sample = [](const std::string&)
+	{
+		uam::host_admission::LoadSample load;
+		load.known = true;
+		load.cpu_percent = 20.0;
+		load.free_memory_percent = 5.0;
+		return load;
+	};
+	uam::AcpSessionState& agent = fixture.AddTurn("agent");
+	fixture.Chat("agent").automation_token_id = "automation-token";
+	uam::AcpSessionState& user = fixture.AddTurn("user");
+	fixture.Tick(agent);
+	fixture.Tick(user);
+	UAM_ASSERT(!PoolFixture::Delivered(agent));
+	UAM_ASSERT(!PoolFixture::Delivered(user));
+	const nlohmann::json state = uam::StateSerializer::Serialize(fixture.app);
+	UAM_ASSERT_EQ(AcpJson(state, "user").at("computePoolWait").at("message").get<std::string>(), std::string("Waiting for this computer: overloaded (5% memory free)"));
+	UAM_ASSERT(AcpJson(state, "user").at("computePoolWait").at("runAnyway").get<bool>());
+	UAM_ASSERT(!AcpJson(state, "agent").at("computePoolWait").at("runAnyway").get<bool>());
+	UAM_ASSERT_EQ(state.at("hostAdmissionUsage").at("local").at("health").get<std::string>(), std::string("overloaded"));
+	user.host_admission_run_anyway = true;
+	fixture.Tick(user);
+	UAM_ASSERT(PoolFixture::Delivered(user));
+	UAM_ASSERT(!PoolFixture::Delivered(agent));
+}

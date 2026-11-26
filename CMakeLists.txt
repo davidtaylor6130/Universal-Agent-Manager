@@ -50,8 +50,8 @@ if(CMAKE_GENERATOR MATCHES "Makefiles|Ninja")
   endif()
 endif()
 
-# The isolated SVN branch service tests need no CEF, so CI also runs them on Linux.
-if(NOT WIN32 AND NOT APPLE AND NOT UAM_RUNNER_ONLY AND NOT UAM_SVN_BRANCH_TESTS_ONLY)
+# The isolated SVN branch service tests and Custom ACP agent tests build no app, so CI also runs them on Linux.
+if(NOT WIN32 AND NOT APPLE AND NOT UAM_RUNNER_ONLY AND NOT UAM_SVN_BRANCH_TESTS_ONLY AND NOT UAM_CUSTOM_ACP_TESTS_ONLY)
   message(FATAL_ERROR "universal_agent_manager supports only Windows and macOS builds.")
 endif()
 
@@ -61,7 +61,7 @@ endif()
 if(UAM_PACKAGE_REMOTE_RUNNERS AND NOT UAM_ENABLE_SSH)
   message(FATAL_ERROR "UAM_PACKAGE_REMOTE_RUNNERS requires UAM_ENABLE_SSH=ON. Disable runner packaging for a local-only build.")
 endif()
-if(NOT UAM_RUNNER_ONLY AND UAM_PACKAGE_REMOTE_RUNNERS)
+if(NOT UAM_RUNNER_ONLY AND NOT UAM_CUSTOM_ACP_TESTS_ONLY AND UAM_PACKAGE_REMOTE_RUNNERS)
   include("${CMAKE_SOURCE_DIR}/cmake/validate_remote_runners.cmake")
 endif()
 
@@ -129,12 +129,32 @@ endif()
 
 option(UAM_BUILD_TESTS "Build UAM core tests executable." OFF)
 option(UAM_SVN_BRANCH_TESTS_ONLY "Configure only the isolated SVN branch service tests, without CEF or provider processes." OFF)
+option(UAM_CUSTOM_ACP_TESTS_ONLY "Configure only the isolated Custom ACP agent tests, without CEF or provider CLIs." OFF)
 if(UAM_SVN_BRANCH_TESTS_ONLY)
   if(NOT UAM_BUILD_TESTS)
     message(FATAL_ERROR "UAM_SVN_BRANCH_TESTS_ONLY requires UAM_BUILD_TESTS=ON.")
   endif()
   enable_testing()
   add_subdirectory(tests/svn-branch)
+  return()
+endif()
+
+if(UAM_CUSTOM_ACP_TESTS_ONLY)
+  if(NOT UAM_BUILD_TESTS)
+    message(FATAL_ERROR "UAM_CUSTOM_ACP_TESTS_ONLY requires UAM_BUILD_TESTS=ON.")
+  endif()
+  enable_testing()
+  include(FetchContent)
+  FetchContent_Declare(
+    nlohmann_json
+    URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
+    URL_HASH SHA256=d6c65aca6b1ed68e7a182f4757257b107ae403032760ed6ef121c9d55e81757d
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+  )
+  set(JSON_BuildTests OFF CACHE INTERNAL "")
+  set(JSON_Install OFF CACHE INTERNAL "")
+  FetchContent_MakeAvailable(nlohmann_json)
+  add_subdirectory(tests/custom_acp)
   return()
 endif()
 
@@ -321,7 +341,6 @@ if(UAM_ENABLE_RUNTIME_GEMINI_CLI)
     src/common/provider/gemini/cli/gemini_native_agent_history.cpp
     src/common/provider/gemini/base/gemini_history_loader.cpp
   )
-  list(APPEND UAM_PROVIDER_APP_SOURCES src/core/gemini_cli_compat.cpp)
 endif()
 if(UAM_ENABLE_RUNTIME_GEMINI_CLI OR UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI)
   # Google account allowance reads serve Gemini and Antigravity.
@@ -386,6 +405,14 @@ if(UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI)
   )
 endif()
 
+if(UAM_ENABLE_RUNTIME_CUSTOM_ACP)
+  # Opt-in best-effort Custom ACP agent (#523): local structured Chat only, so nothing for the runner.
+  list(APPEND UAM_PROVIDER_SOURCES
+    src/common/provider/custom_acp/custom_acp_config.cpp
+    src/common/provider/custom_acp/custom_acp_provider_runtime.cpp
+  )
+endif()
+
 # Display-only helper build label: one source, so a new local counter rebuilds one file and never changes the runner binary.
 set_property(SOURCE src/cef/remote_host_handlers.cpp APPEND PROPERTY COMPILE_DEFINITIONS UAM_LOCAL_BUILD_LABEL="${UAM_LOCAL_BUILD_VERSION}")
 set(UAM_FEATURE_APP_SOURCES)
@@ -406,6 +433,9 @@ if(UAM_ENABLE_MOBILE_COMPANION)
 endif()
 if(UAM_ENABLE_COMPUTER_USE)
   list(APPEND UAM_FEATURE_APP_SOURCES src/computer_use/computer_use_mcp_server.cpp)
+endif()
+if(UAM_ENABLE_RUNTIME_CUSTOM_ACP)
+  list(APPEND UAM_FEATURE_APP_SOURCES src/cef/custom_acp_handlers.cpp)
 endif()
 
 # ---------------------------------------------------------------------------
@@ -620,6 +650,7 @@ add_library(uam_core_objects OBJECT
   ${UAM_COMPUTER_USE_PLATFORM_SOURCES}
   src/computer_use/computer_use_mcp_config.cpp
   src/app/agent_definition_service.cpp
+  src/app/provider_agent_import.cpp
   src/app/agent_run_ledger.cpp
   src/app/agent_run_scheduler.cpp
   src/app/managed_parent_continuation_service.cpp
@@ -662,6 +693,7 @@ add_library(uam_core_objects OBJECT
   src/app/execution_routing_service.cpp
   src/app/repository_route_match_service.cpp
   src/app/execution_routing_integration.cpp
+  src/app/host_admission_integration.cpp
   src/app/host_load_integration.cpp
   src/app/resource_collection_service.cpp
   src/app/provider_worker_command.cpp
@@ -741,6 +773,7 @@ add_library(uam_core_objects OBJECT
   src/common/provider/attached_skill_resources.cpp
   src/common/runtime/acp/acp_session_runtime.cpp
   src/common/runtime/acp/compute_pool_gate.cpp
+  src/common/runtime/host_admission.cpp
   src/common/runtime/host_load_sampler.cpp
   src/common/runtime/acp/acp_wait_state.cpp
   src/common/runtime/json_runtime.cpp
@@ -1704,6 +1737,7 @@ if(UAM_BUILD_TESTS)
   endif()
   add_executable(uam_companion_connection_tests tests/companion_connection_lifecycle_tests.cpp src/common/platform/companion_network_platform.cpp)
   add_subdirectory(tests/svn-branch)
+  add_subdirectory(tests/custom_acp)
   target_include_directories(uam_companion_connection_tests PRIVATE "${CMAKE_SOURCE_DIR}/src")
   target_link_libraries(uam_companion_connection_tests PRIVATE nlohmann_json::nlohmann_json)
   if(WIN32)
@@ -1730,7 +1764,6 @@ if(UAM_BUILD_TESTS)
     src/common/provider/codex/cli/codex_cli_provider_runtime.cpp
     src/common/runtime/acp/claude_quota_continuation.cpp
     src/app/opencode_import_stream.cpp
-    src/core/gemini_cli_compat.cpp
   )
   list(REMOVE_ITEM UAM_CORE_TEST_UNSHARED_PROVIDER_SOURCES ${UAM_PROVIDER_SOURCES} ${UAM_PROVIDER_APP_SOURCES} ${UAM_RUNNER_PROVIDER_SOURCES})
   add_executable(uam_core_tests
@@ -1808,6 +1841,7 @@ if(UAM_BUILD_TESTS)
     tests/acp_workspace_launch_tests.cpp
     tests/queued_prompt_hold_tests.cpp
     tests/agent_target_metadata_tests.cpp
+    tests/provider_agent_import_tests.cpp
     tests/uam_control_chat_create_tests.cpp
     tests/pr_watch_tests.cpp
     tests/automation_api_tests.cpp
@@ -1818,6 +1852,7 @@ if(UAM_BUILD_TESTS)
     tests/codex_permission_tests.cpp
     tests/memory_workspace_ownership_tests.cpp
     tests/execution_routing_tests.cpp
+    tests/host_admission_tests.cpp
     tests/child_process_priority_tests.cpp
     tests/routing_default_scope_tests.cpp
     tests/model_discovery_startup_tests.cpp

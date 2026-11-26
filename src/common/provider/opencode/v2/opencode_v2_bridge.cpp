@@ -176,9 +176,9 @@ public:
 		events.service.StopStdioProcess(events.fields, true);
 		std::error_code ignored; std::filesystem::remove_all(directory, ignored);
 	}
-	void WritePolicy(const std::string& id, const std::string& cwd, bool read_only)
+	void WritePolicy(const std::string& id, const std::string& cwd, bool read_only, const std::vector<std::string>& deny = {})
 	{
-		if (!io::AtomicWriteFile(policy_path, Json{{"nonce", nonce}, {"active", !id.empty()}, {"sessionID", id}, {"directory", cwd}, {"readOnly", read_only}}.dump())) throw std::runtime_error("Could not publish the captured OpenCode V2 policy.");
+		if (!io::AtomicWriteFile(policy_path, Json{{"nonce", nonce}, {"active", !id.empty()}, {"sessionID", id}, {"directory", cwd}, {"readOnly", read_only}, {"deny", deny}}.dump())) throw std::runtime_error("Could not publish the captured OpenCode V2 policy.");
 		captured_directory = cwd;
 	}
 	void DrainNativeLogs()
@@ -498,11 +498,11 @@ int Bridge(const std::vector<std::string>& command, IPlatformProcessService& pro
 			else if (route.starts_with("/api/model")) operation = "startup model catalogue";
 			throw std::runtime_error(std::string("OpenCode V2 ") + operation + " failed. " + cause.what());
 		}
-	}, [&](const auto& id, const auto& cwd, bool read_only)
+	}, [&](const auto& id, const auto& cwd, bool read_only, const auto& deny)
 	{
 		// Text-only workers keep this policy inactive: every native permission
 		// evaluates to deny, including pre-existing saved/project allowances.
-		service.WritePolicy(worker_model ? std::string{} : id, cwd, read_only);
+		service.WritePolicy(worker_model ? std::string{} : id, cwd, read_only, deny);
 	}, [&](const Json& value)
 	{
 		if (!worker_model) { Output(value); return; }
