@@ -915,7 +915,9 @@ UAM_TEST(SvnBranchRunnerReadsANonAsciiWorkingCopyWithoutALaunchLocale)
 	const std::string generic = repository.generic_string();
 	const std::string url = "file://" + std::string(generic.starts_with('/') ? "" : "/") + generic;
 	const fs::path checkout = root / uam::paths::PathFromUtf8("wc\xC3\xA9");
-	Svn(root, {"mkdir", url + "/lines", url + "/lines/main", url + "/lines/feature", "-m", "layout"});
+	Svn(root, {"mkdir", url + "/lines", url + "/lines/main", "-m", "layout"});
+	// A branch copied from the main line: svn refuses to switch between two folders made separately (E195012, no common ancestry).
+	Svn(root, {"copy", url + "/lines/main", url + "/lines/feature", "-m", "branch"});
 	Svn(root, {"checkout", url + "/lines/main", uam::paths::Utf8PathString(checkout)});
 	const uam::SvnBranchScope scope{checkout, checkout, {}, true};
 	const uam::SvnBranchResult found = uam::DiscoverSvnBranches(scope, "^/lines", uam::CreateSvnBranchRunner());
