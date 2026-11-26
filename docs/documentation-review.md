@@ -10,6 +10,8 @@ Task-1230’s initial read-only revision patch left this requirement open. David
 
 **Decided by David, 2026-11-23** ([#520](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues/520)). Creating an SVN branch asks each time whether to copy from the working copy's URL at its revision or from trunk HEAD, defaulting to the working copy, and UAM writes a default commit message the person can edit. The [SVN-through-Git design](reference/svn-git-mirror-design.md#publishing-a-new-branch) relies on this for publishing a Git branch. This decides the product rule, not its implementation or acceptance.
 
+The first slice implements this in the composer picker for local working copies: the branch is placed from the repository's layout and the working copy is switched to it ([composer agreement](chat/composer/workspace-actions.md)). Merging, SVN parity in the new-chat selector, greyed-out reasons and branch methods for remote hosts remain later #520 slices. The picker form is new UI and awaits Claude review and David's approval. The stoppable SVN runner exempts every command `SvnCommandChangesRepository` names (the copy as well as the switch) from stopping once started, so a stop never interrupts the branch commit.
+
 ## SVN through Git
 
 **Decided by David, 2026-11-23** ([#521](https://github.com/davidtaylor6130/Universal-Agent-Manager/issues/521)). UAM builds and owns the Git mirror of an SVN checkout, with no dependency on `git svn`. Pulling SVN changes into the mirror is always explicit and one-way. The first slice is a design note and a throwaway spike, not product code: see the [design note](reference/svn-git-mirror-design.md). Nothing in the mode is implemented or accepted.

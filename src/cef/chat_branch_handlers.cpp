@@ -152,6 +152,19 @@ namespace
 		return {c.at("directory").get<std::string>(), c.at("url").get<std::string>(), c.at("repository").get<std::string>(), c.at("uuid").get<std::string>(), c.at("revision").get<std::string>(), c.at("parent").get<std::string>(), c.at("repositoryRevision").get<std::string>()};
 	}
 
+	/// Creation in a located listing carries the source and commit message the person confirmed, as `svnSource`
+	/// (`workingCopy` or `mainLine`) and `svnMessage`. Empty when the request needs neither or both are well formed.
+	std::string BranchCreateFieldsRefusal(const uam::VcsProvider& provider, const nlohmann::json& payload)
+	{
+		if (!provider.BranchesAreLocated() || !payload.value("create", false)) return {};
+		const auto source = payload.find("svnSource");
+		if (source == payload.end() || !source->is_string() || (*source != "workingCopy" && *source != "mainLine"))
+			return "Choose whether the new branch copies the working copy or the main line.";
+		const auto message = payload.find("svnMessage");
+		if (message == payload.end() || !message->is_string()) return "Write a one-line commit message for the new branch.";
+		return {};
+	}
+
 	/// Reads the submitted choice; a located listing's context is required.
 	uam::VcsBranchSelection ParseBranchSelection(const uam::VcsProvider& provider, const nlohmann::json& payload)
 	{
@@ -159,6 +172,11 @@ namespace
 		selection.branch = payload["branch"].get<std::string>();
 		selection.create = payload.value("create", false);
 		if (provider.BranchesAreLocated()) selection.context = ParseBranchContext(payload);
+		if (provider.BranchesAreLocated() && selection.create)
+		{
+			selection.create_source = payload.at("svnSource").get<std::string>() == "mainLine" ? uam::SvnBranchSource::MainLine : uam::SvnBranchSource::WorkingCopy;
+			selection.create_message = payload.at("svnMessage").get<std::string>();
+		}
 		return selection;
 	}
 
@@ -209,6 +227,9 @@ void UamQueryHandler::HandleListChatBranches(CefRefPtr<CefBrowser>, const nlohma
 		}
 		nlohmann::json reply = {{"branches", values}, {"vcsType", uam::VcsTypeToString(listing.type)}};
 		if (located) reply["svnContext"] = BranchContextJson(listing.context);
+		// Offered only when this system creates branches and can place one for this working copy.
+		if (located && listing.create_locations.ok && uam::DeclaresCapability(*provider, uam::vcs::VcsCapability::BranchCreate))
+			reply["svnBranchLocations"] = {{"branches", listing.create_locations.branches}, {"mainLine", listing.create_locations.main_line}};
 		return uam::query_handler_async::AsyncSuccess(std::move(reply));
 	}, [this, request](uam::query_handler_async::AsyncCefResult& result)
 	{
@@ -227,13 +248,13 @@ void UamQueryHandler::HandleSwitchChatBranch(CefRefPtr<CefBrowser> browser, cons
 	    (payload.contains("create") && !payload["create"].is_boolean()))
 	{ cb->Failure(400, "Choose a valid local Git branch."); return; }
 	const uam::VcsProvider* provider = &BranchProvider(payload);
+	if (const std::string refusal = BranchCreateFieldsRefusal(*provider, payload); !refusal.empty()) { cb->Failure(400, refusal); return; }
 	const uam::VcsBranchSelection selection = ParseBranchSelection(*provider, payload);
 	const std::string& branch = selection.branch;
 	const bool create = selection.create;
 	if (RefuseUndeclaredBranchCreation(*provider, selection, cb)) return;
-	// Only a system that creates branches has a pending first-message branch to withdraw. The pending branch is Git's
-	// (pending_git_branch_name, applied through the default provider), the only system that declares BranchCreate today.
-	if (uam::DeclaresCapability(*provider, uam::vcs::VcsCapability::BranchCreate) && !create && !chat->pending_git_branch_name.empty() && branch == chat->workspace_branch_name)
+	// Only a system that defers creation to the first message has a pending first-message branch to withdraw.
+	if (provider->DefersBranchCreation() && !create && !chat->pending_git_branch_name.empty() && branch == chat->workspace_branch_name)
 	{
 		// Withdrawing a pending first-message branch is metadata only, so dirty files cannot trap it.
 		chat->pending_git_branch_name.clear();
@@ -249,14 +270,14 @@ void UamQueryHandler::HandleSwitchChatBranch(CefRefPtr<CefBrowser> browser, cons
 		const uam::VcsBranchOutcome checked = provider->CheckBranchSelection(snapshot, request->chat, selection, stop);
 		if (!checked.ok) return uam::query_handler_async::AsyncFailure(checked.conflict ? 409 : 400, checked.error);
 		return uam::query_handler_async::AsyncSuccess(nlohmann::json::object());
-	}, [this, browser, payload, cb, request, branch, create](uam::query_handler_async::AsyncCefResult& result)
+	}, [this, browser, payload, cb, request, provider, branch, create](uam::query_handler_async::AsyncCefResult& result)
 	{
 		if (!result.ok) return;
 		if (!BranchRequestCurrent(m_app, *request))
 		{ result = uam::query_handler_async::AsyncFailure(409, "The chat changed before branch selection."); return; }
 		ChatSession* current = ChatDomainService().FindChatById(m_app, request->chat.id);
-		// Creation reaches here only for a system that declares it.
-		if (create && uam::GitWorktreeService::BranchCreationWaitsForFirstMessage(*current) && ChatRuntimeIdleForPendingBranch(m_app, *current))
+		// Creation reaches here only for a system that declares it; only a deferring system (Git) waits for the first message.
+		if (create && provider->DefersBranchCreation() && uam::GitWorktreeService::BranchCreationWaitsForFirstMessage(*current) && ChatRuntimeIdleForPendingBranch(m_app, *current))
 		{
 			// Avoid branches for chats that never start; the first send creates it from the same HEAD.
 			current->pending_git_branch_name = branch;
@@ -340,6 +361,7 @@ void UamQueryHandler::ContinueSwitchChatBranch(CefRefPtr<CefBrowser> browser, co
 	if (!BranchRuntimeSettled(m_app, chat->id) || m_workspaceDeletionPending)
 	{ cb->Failure(409, uam::AcpStopRefusalMessage(m_app, chat->id, "Stop the chat runtime and wait for history to save before switching branches.")); return; }
 	const uam::VcsProvider* provider = &BranchProvider(payload);
+	if (const std::string refusal = BranchCreateFieldsRefusal(*provider, payload); !refusal.empty()) { cb->Failure(400, refusal); return; }
 	const uam::VcsBranchSelection selection = ParseBranchSelection(*provider, payload);
 	if (RefuseUndeclaredBranchCreation(*provider, selection, cb)) return;
 	const std::shared_ptr<BranchRequest> request = CaptureBranchRequest(m_app, *chat);
