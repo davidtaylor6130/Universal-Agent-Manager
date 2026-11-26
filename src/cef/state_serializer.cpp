@@ -1711,6 +1711,7 @@ namespace uam
 			permission_json["safetyRisk"] = permission.safety_risk;
 			permission_json["safetyTier"] = permission.safety_tier;
 			permission_json["safetyRequiresApproval"] = permission.safety_requires_approval;
+			if (!permission.command_rule_notice.empty()) permission_json["ruleNotice"] = permission.command_rule_notice;
 
 			nlohmann::json options = JsonArrayWithCapacity(permission.options.size());
 			for (const AcpPermissionOptionState& option : permission.options)

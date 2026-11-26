@@ -20,6 +20,7 @@ import {
 import { DEFAULT_NATIVE_IMPORT_STARTUP_MAX_AGE_DAYS, sanitizeVcsStorageSettings, sanitizeProviderAvailability, sanitizeVoiceInputSettings } from '../cpp/sanitizers'
 import type { NewChatWorktreeContext, VcsSettingsRequest, StorageSettingsRequest, ProviderAvailabilityRequest, VoiceInputSettingsRequest } from '../cpp/types'
 import type { AppState, ZustandSet, ZustandGet } from '../storeTypes'
+import type { PermissionCommandRule, PermissionRuleTestResult } from '../../types/permissionRules'
 
 export function readDocumentTheme(): StoredTheme {
   const stored = readStoredTheme()
@@ -150,6 +151,8 @@ export function createUiSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) 
     sidebarPinnedChatOrder: [] as string[],
     sidebarActiveChatOrder: [] as string[],
     steerActiveTurnOnSend: false,
+    permissionCommandRules: [],
+    permissionAiReviewEnabled: true,
     nativeImportExcludedTitlePrefixes: [] as string[],
     nativeImportExcludedDirectories: [] as string[],
     nativeImportStartupMaxAgeDays: DEFAULT_NATIVE_IMPORT_STARTUP_MAX_AGE_DAYS,
@@ -358,6 +361,36 @@ export function createUiSlice(set: ZustandSet, get: ZustandGet, inCef: boolean) 
       const response = await sendToCEF({ action: 'setComposerSettings', payload: { steerActiveTurnOnSend: steer }, requestId: createRequestId('setComposerSettings') })
       if (!response.ok) set(latestOptimisticRollback(previous, optimisticRevision))
       return response.ok
+    },
+
+    setPermissionCommandRules: async (patch: { rules?: PermissionCommandRule[]; aiReviewEnabled?: boolean }) => {
+      if (!isCefContext()) {
+        set({
+          ...(patch.rules ? { permissionCommandRules: patch.rules } : {}),
+          ...(patch.aiReviewEnabled !== undefined ? { permissionAiReviewEnabled: patch.aiReviewEnabled } : {}),
+        })
+        return { ok: true }
+      }
+      const payload: Record<string, unknown> = {}
+      if (patch.rules) payload.rules = patch.rules
+      if (patch.aiReviewEnabled !== undefined) payload.aiReviewEnabled = patch.aiReviewEnabled
+      const response = await sendToCEF({ action: 'setPermissionCommandRules', payload, requestId: createRequestId('setPermissionCommandRules') })
+      if (!response.ok) return { ok: false, error: response.error ?? 'Could not save the permission rules.' }
+      set({
+        ...(patch.rules ? { permissionCommandRules: patch.rules } : {}),
+        ...(patch.aiReviewEnabled !== undefined ? { permissionAiReviewEnabled: patch.aiReviewEnabled } : {}),
+      })
+      return { ok: true }
+    },
+
+    testPermissionCommandRules: async (rules: PermissionCommandRule[], command: string): Promise<PermissionRuleTestResult | { error: string }> => {
+      if (!isCefContext()) return { error: 'Rule testing needs the desktop app.' }
+      const response = await sendToCEF<unknown>({ action: 'testPermissionCommandRules', payload: { rules, command }, requestId: createRequestId('testPermissionCommandRules') }, false)
+      if (!response.ok) return { error: response.error ?? 'Could not test the command.' }
+      const data = response.data as Partial<PermissionRuleTestResult> | null
+      const outcome = data?.outcome
+      if (outcome !== 'allow' && outcome !== 'ask' && outcome !== 'deny' && outcome !== 'none') return { error: 'Unexpected test result.' }
+      return { outcome, ruleId: typeof data?.ruleId === 'string' ? data.ruleId : '', reason: typeof data?.reason === 'string' ? data.reason : '', readOnly: data?.readOnly === true }
     },
 
     setNativeImportFilters: async (filters: { titlePrefixes: string[]; directories: string[]; startupMaxAgeDays: number }) => {

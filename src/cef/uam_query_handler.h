@@ -107,6 +107,8 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	std::unordered_map<std::string, std::shared_ptr<std::stop_source>> m_titleRequests;
 	// History, revision-diff and update requests in flight, by the caller's requestId, so cancelVcsRequest can stop their VCS client.
 	std::unordered_map<std::string, std::shared_ptr<std::stop_source>> m_vcsRequestStops;
+	// Stops SVN folder discovery and the reads before a switch at shutdown; the svn switch command itself is left to finish.
+	std::stop_source m_svnBranchDiscoveryStop;
 	// Local working copies an update is rewriting, by request id, so no snapshot chat ports changes back into one meanwhile.
 	std::unordered_map<std::string, std::filesystem::path> m_vcsUpdateTargets;
 	/// <summary>The refusal for porting `chat` back while an update rewrites its snapshot's source working copy, or empty.</summary>
@@ -378,6 +380,8 @@ class UamQueryHandler : public CefMessageRouterBrowserSide::Handler
 	void HandleSetSidebarSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleSetSidebarChatOrder(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleSetComposerSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleSetPermissionCommandRules(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
+	void HandleTestPermissionCommandRules(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleSetNativeImportFilters(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleSetUpdateSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);
 	void HandleSetProviderChatDefaults(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb);

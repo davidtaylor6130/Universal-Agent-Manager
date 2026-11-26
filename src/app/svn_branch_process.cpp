@@ -1,16 +1,38 @@
 #include "app/svn_branch_service.h"
-#include "common/platform/platform_services.h"
-#include "common/utils/shell_escape.h"
+#include "app/vcs_commit_service.h"
+
+#include <filesystem>
+#include <system_error>
 
 namespace uam
 {
-	SvnBranchRunner CreateSvnBranchRunner()
+	SvnBranchRunner CreateSvnBranchRunner(std::stop_token stop)
 	{
-		return [](const std::vector<std::string>& args, int timeout, std::string& output)
+		return [stop](const std::vector<std::string>& args, const int timeout_ms, std::string& output, std::string& failure)
 		{
-			const auto result = PlatformServicesFactory::Instance().process_service.ExecuteCommand("svn " + shell::JoinEscapedArgs(args), timeout);
+			// Every target is absolute or a URL, so the directory only has to exist; RunSvn adds the shared SVN environment.
+			std::error_code error;
+			std::filesystem::path directory = std::filesystem::temp_directory_path(error);
+			if (error) directory = std::filesystem::current_path(error);
+			// Stopping the copy commit or the switch midway would leave an unconfirmed commit or a locked, half-switched working
+			// copy (SvnCommandChangesRepository); only the reads stop, and a stop that came first means it never starts.
+			const bool changes_repository = SvnCommandChangesRepository(args);
+			if (changes_repository && stop.stop_requested())
+			{
+				output.clear();
+				failure = "Canceled.";
+				return false;
+			}
+			const ProcessExecutionResult result = RunSvn(directory, args, timeout_ms, changes_repository ? std::stop_token{} : stop);
 			output = result.output;
-			return result.ok && result.exit_code == 0 && !result.timed_out && !result.canceled && !result.output_truncated && result.error.empty();
+			const bool succeeded = result.ok && result.exit_code == 0 && !result.timed_out && !result.canceled && !result.output_truncated && result.error.empty();
+			if (succeeded) failure.clear();
+			else
+			{
+				failure = SvnFailureMessage(result, {});
+				LogSvnFailure(result, args.empty() ? "command" : args.front());
+			}
+			return succeeded;
 		};
 	}
 }

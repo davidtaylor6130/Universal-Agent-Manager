@@ -1464,6 +1464,54 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(cefStore.getState().messages['chat-2']?.at(-1)?.content).toBe('Background answer')
   })
 
+  it('keeps an unopened chat with saved history unloaded while it streams, then streams into it once opened', async () => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.dispatchEvent = vi.fn(() => true)
+    const initial = makeCppState(1)
+    initial.chats.push({
+      id: 'chat-2', title: 'Background chat', folderId: 'default', providerId: 'codex-cli',
+      createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:01.000Z',
+      messageCount: 30, messagesDigest: 'thirty',
+      acpSession: { sessionId: 'acp-chat-2', running: true, processing: true, lifecycleState: 'processing', turnAssistantMessageIndex: 29, turnSerial: 1 },
+    })
+    const historyReads: unknown[] = []
+    let answerHistory: () => void = () => { throw new Error('No history read started') }
+    testWindow.cefQuery = ({ request, onSuccess }) => {
+      const parsed = JSON.parse(request)
+      if (parsed.action === 'getInitialState') onSuccess(JSON.stringify(initial))
+      else if (parsed.action === 'getChatMessages') {
+        historyReads.push(parsed.payload)
+        answerHistory = () => onSuccess(JSON.stringify({ chatId: 'chat-2', startIndex: 0, totalCount: 30, messagesDigest: 'thirty', messages: Array.from({ length: 30 }, (_, index) => ({
+          role: index % 2 === 0 ? 'user' : 'assistant', content: index === 29 ? 'Background answer' : `saved ${index}`, createdAt: '2026-01-01T00:00:00Z',
+        })) }))
+      } else onSuccess('{}')
+    }
+
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    testWindow.uamPush?.({ type: 'streamToken', chatId: 'chat-2', messageIndex: 29, token: ' answer' })
+    await new Promise((resolve) => setTimeout(resolve, 80))
+    testWindow.uamPush?.({ type: 'streamDone', chatId: 'chat-2' })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(cefStore.getState().messages['chat-2']).toBeUndefined()
+    expect(historyReads).toEqual([])
+
+    // Opening it mid-turn reads the saved page, which holds the text streamed so far, then live tokens continue it.
+    // A token that arrives while the read is in flight is already in the page, so the page must not be extended by it.
+    const opening = cefStore.getState().loadSessionMessages('chat-2')
+    expect(historyReads).toHaveLength(1)
+    testWindow.uamPush?.({ type: 'streamToken', chatId: 'chat-2', messageIndex: 29, token: ' answer' })
+    answerHistory()
+    await opening
+    await new Promise((resolve) => setTimeout(resolve, 80))
+    expect(cefStore.getState().messages['chat-2'].at(-1)?.content).toBe('Background answer')
+    testWindow.uamPush?.({ type: 'streamToken', chatId: 'chat-2', messageIndex: 29, token: ' continued' })
+    await new Promise((resolve) => setTimeout(resolve, 80))
+    expect(cefStore.getState().messages['chat-2']).toHaveLength(30)
+    expect(cefStore.getState().messages['chat-2'].at(-1)).toMatchObject({ content: 'Background answer continued', isStreaming: true })
+  })
+
   it('accepts an authoritative empty selected transcript and drops buffered tokens', async () => {
     const testWindow = ensureTestWindow()
     vi.resetModules()
@@ -2073,6 +2121,40 @@ describe('useAppStore Gemini CLI slice', () => {
       content: 'Initial text. Final text.',
     })
     expect(cefStore.getState().messages['chat-1'][1].isStreaming).toBe(false)
+  })
+
+  it('removes a duplicate stream placeholder from a long chat whose loaded page starts after message 0', async () => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.dispatchEvent = vi.fn(() => true)
+    const initial = makeCppState(1)
+    delete initial.chats[0].messages
+    initial.chats[0].cliTerminal = undefined
+    initial.chats[0].messageCount = 110
+    initial.chats[0].acpSession = {
+      sessionId: 'acp-chat-1', running: true, processing: true, lifecycleState: 'processing',
+      turnSerial: 1, turnUserMessageIndex: 108, turnAssistantMessageIndex: 109,
+      turnEvents: [{ type: 'tool_call', toolCallId: 'tool-1' }, { type: 'assistant_text', text: ' Final text.' }],
+    }
+    // The reload streamDone starts stays pending, so the assertions see what streamDone itself wrote.
+    testWindow.cefQuery = ({ request, onSuccess }) => { if (JSON.parse(request).action === 'getInitialState') onSuccess(JSON.stringify(initial)) }
+
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    const page: Message[] = Array.from({ length: 50 }, (_, index) => ({
+      id: `saved-${60 + index}`, sessionId: 'chat-1', role: index % 2 === 0 ? 'user' : 'assistant',
+      content: index === 49 ? 'Initial text.' : `saved ${60 + index}`, createdAt: new Date(0), nativeMessageIndex: 60 + index,
+    }))
+    cefStore.setState({
+      historyStartIndexBySessionId: { 'chat-1': 60 },
+      messages: { 'chat-1': [...page, { id: 'stream-chat-1', sessionId: 'chat-1', role: 'assistant', content: ' Final text.', createdAt: new Date(1), isStreaming: true }] },
+    })
+
+    testWindow.uamPush?.({ type: 'streamDone', chatId: 'chat-1' })
+
+    const messages = cefStore.getState().messages['chat-1']
+    expect(messages).toHaveLength(50)
+    expect(messages[49]).toMatchObject({ id: 'saved-109', content: 'Initial text. Final text.', isStreaming: false })
   })
 
   it('preserves the active runtime when a delayed queued prompt is rejected', async () => {

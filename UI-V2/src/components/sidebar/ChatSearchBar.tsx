@@ -3,6 +3,7 @@ import { Check, Search, X, SlidersHorizontal } from 'lucide-react'
 import type { ChatSearchFilters, ChatStatusFilterId } from './chatSearch'
 import { IconButton, MenuItem, Tooltip, ViewportMenu } from '../ui'
 import { ProviderLogo } from '../shared/ProviderLogo'
+import { sidebarIconPaint } from './sidebarIconPaint'
 
 /** Columns for the provider grid: at most 6 per row, at least 3, rows as even as possible. */
 export function providerGridColumns(count: number): number {
@@ -119,33 +120,15 @@ export function ChatSearchBar({
           />
 
           {value && (
-            <Tooltip label="Clear search" side="top">
-              {/* ui: raw button kept — 18px inline clear chip with JS hover handlers; IconButton has no 18px size */}<button
-                type="button"
-                aria-label="Clear search"
-                className="flex items-center justify-center rounded transition-colors duration-100"
-                style={{
-                  width: 18,
-                  height: 18,
-                  background: 'transparent',
-                  border: 'none',
-                  color: 'var(--text-3)',
-                  cursor: 'pointer',
-                  flexShrink: 0,
-                }}
-                onMouseEnter={(event) => {
-                  event.currentTarget.style.background = 'var(--sidebar-item-hover)'
-                  event.currentTarget.style.color = 'var(--text-2)'
-                }}
-                onMouseLeave={(event) => {
-                  event.currentTarget.style.background = 'transparent'
-                  event.currentTarget.style.color = 'var(--text-3)'
-                }}
-                onClick={onClear}
-              >
-                <X size={13} aria-hidden />
-              </button>
-            </Tooltip>
+            // Keeps the 18px clear chip's place in the field; the hit area is 24px.
+            <IconButton
+              size="sm"
+              label="Clear search"
+              icon={<X size={13} aria-hidden />}
+              className="uam-sb-iconbtn uam-sb-iconbtn--inline"
+              style={sidebarIconPaint(18)}
+              onClick={onClear}
+            />
           )}
         </div>
         <div className="relative" ref={popoverRef}>
@@ -196,11 +179,11 @@ export function ChatSearchBar({
                 <span className="font-semibold" style={{ color: 'var(--text-2)' }}>Filters</span>
                 {(activeFilterCount > 0) && (
                   
-                  // ui: raw button kept — small bordered text pill with menuitem role; Chip is a choice button, not a menu item
+                  // ui: raw button kept — small bordered text pill with menuitem role; Chip is a choice button, not a menu item. uam-sb-target gives it a 24px hit area.
                   <button
                     type="button"
                     role="menuitem"
-                    className="rounded px-1.5 py-0.5 text-xs"
+                    className="uam-sb-target rounded px-1.5 py-0.5 text-xs"
                     style={{ border: '1px solid var(--border)', color: 'var(--text-3)' }}
                     onClick={() => {
                       if (deepSearch) onToggleDeepSearch()

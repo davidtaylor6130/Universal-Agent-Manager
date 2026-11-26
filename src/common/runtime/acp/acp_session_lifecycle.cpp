@@ -1,5 +1,6 @@
 #include "app/managed_parent_continuation_service.h"
 #include "common/platform/background_thread_priority.h"
+#include "common/chat/chat_process_class.h"
 #include "app/agent_run_scheduler.h"
 #include "common/chat/acp_prompt_recovery.h"
 #include "common/chat/message_attachment_sources.h"
@@ -183,6 +184,13 @@ namespace uam
 
 namespace uam::acp_detail
 {
+
+platform::ChildProcessClass ProviderProcessClass(const AcpSessionState& session, const ChatSession& chat)
+{
+	if (session.model_discovery_only || session.ephemeral_model_discovery) return platform::ChildProcessClass::Background;
+	if (!session.managed_agent_run_id.empty()) return platform::ChildProcessClass::Agent;
+	return ChatWorkProcessClass(chat);
+}
 
 namespace
 {
@@ -594,7 +602,7 @@ namespace
 	    const std::filesystem::path& working_directory, const std::vector<std::string>& argv,
 	    const std::vector<std::pair<std::string, std::string>>& environment,
 	    std::function<bool(AppState&, AcpSessionState&, ChatSession&, bool, std::string, std::string*)> started,
-	    std::string* error_out)
+	    std::string* error_out, platform::ChildProcessClass process_class)
 	{
 		const auto task = std::make_shared<PendingLocalAcpLaunch>();
 		task->incarnation = chat.metadata_incarnation;
@@ -608,12 +616,13 @@ namespace
 		PendingLocalAcpLaunch* result = task.get();
 		try
 		{
-			task->worker = std::make_unique<std::jthread>([result, working_directory, argv, environment](std::stop_token)
+			task->worker = std::make_unique<std::jthread>([result, working_directory, argv, environment, process_class](std::stop_token)
 			{
 				if (const int delay = g_acp_process_start_delay_ms_for_tests.load(std::memory_order_relaxed); delay > 0)
 					std::this_thread::sleep_for(std::chrono::milliseconds(delay));
 				try
 				{
+					const platform::ScopedChildProcessClass spawn_class(process_class);
 					result->process_created = PlatformServicesFactory::Instance().process_service.StartStdioProcess(
 					    *result->process, working_directory, argv, &result->error, environment);
 				}
@@ -2089,6 +2098,14 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	{
 		return true;
 	}
+	// A provider that refused the account or client on this computer is not relaunched until the refusal expires or
+	// the user retries from the model menu. An authentication refusal never holds a chat launch: signing in fixes it.
+	if (const std::string refusal = attach_only_to_stop || app.provider_model_catalog == nullptr ? std::string{} : app.provider_model_catalog->GetChatLaunchRefusalNotice(provider.id, chat.execution_host_id);
+	    !refusal.empty())
+	{
+		if (error_out != nullptr) *error_out = refusal + " Use Retry in the model menu to ask again.";
+		return false;
+	}
 	if (!attach_only_to_stop && !provider_availability::IsEnabled(app.settings, provider.id, chat.execution_host_id))
 	{
 		if (error_out != nullptr) *error_out = provider_availability::DisabledReason();
@@ -2779,6 +2796,8 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 			                "--directory", uam::execution_hosts::RunnerDirectory(
 			                    execution_host->platform, execution_host->runner_directory),
 			                "--protocol", std::to_string(runner_protocol_version)};
+			// The spec carries the provider's class, so the helper starts the remote process at the same priority.
+			const platform::ScopedChildProcessClass spec_class(ProviderProcessClass(session, chat));
 			process_environment = {{uam::remote::kRemoteProcessSpecEnvironment, uam::remote::BuildProcessProxySpec("acp-" + chat.id, workspace_root, proxy_provider_argv, launch_environment, session.recovering_remote_turn || session.recovering_remote_process, session.remote_output_delivery_token, (session.recovering_remote_turn || session.recovering_remote_process) ? chat.remote_delivered_stdout_cursor : 0, (session.recovering_remote_turn || session.recovering_remote_process) ? chat.remote_delivered_stderr_cursor : 0, {}, {}, configuration_bundle.local_directory.empty() ? "" : provider.id, uam::paths::Utf8PathString(configuration_bundle.local_directory), launch_control_servers, session.model_discovery_only && session.ephemeral_model_discovery)}};
 		}
 	}
@@ -2928,11 +2947,16 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 		if (startup_error.empty() && !session.managed_agent_run_id.empty()) session.managed_launch_attempted = true;
 		if (startup_error.empty()) session.permission_review_incarnation = std::make_shared<const char>(0);
 		if (!startup_error.empty()) return process_started(app, session, chat, false, startup_error, error_out);
+		const platform::ChildProcessClass process_class = ProviderProcessClass(session, chat);
 		if (start_off_poll)
-			return StartAcpProcessOffPoll(app, session, chat, process_working_directory, process_argv, process_environment, process_started, error_out);
+			return StartAcpProcessOffPoll(app, session, chat, process_working_directory, process_argv, process_environment, process_started, error_out, process_class);
 		std::string error;
-		const bool created = PlatformServicesFactory::Instance().process_service.StartStdioProcess(
-		    session, process_working_directory, process_argv, &error, process_environment);
+		bool created = false;
+		{
+			const platform::ScopedChildProcessClass spawn_class(process_class);
+			created = PlatformServicesFactory::Instance().process_service.StartStdioProcess(
+			    session, process_working_directory, process_argv, &error, process_environment);
+		}
 		return process_started(app, session, chat, created, std::move(error), error_out);
 	};
 	if (defer_cold_launch && startup_error.empty())

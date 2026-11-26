@@ -4,6 +4,7 @@
 // Include only from those four TUs and platform_services_windows_impl.cpp.
 
 #include "platform_services_windows_impl.h"
+#include "common/platform/child_process_priority.h"
 #include "common/paths/app_paths.h"
 #include "common/paths/path_utils.h"
 #include "common/state/app_state.h"
@@ -42,6 +43,12 @@
 
 namespace uam::platform_windows_impl
 {
+
+/// Agent and background children start below normal priority, which their own children inherit; a user turn keeps the default.
+inline DWORD ChildProcessPriorityCreationFlags()
+{
+	return uam::platform::SpawnPriorityFor(uam::platform::CurrentChildProcessClass()).windows_below_normal ? BELOW_NORMAL_PRIORITY_CLASS : 0;
+}
 
 constexpr auto kDirectWindowsExecutableExtensions = std::to_array<std::string_view>({
     ".exe",

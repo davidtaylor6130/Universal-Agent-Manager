@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <mutex>
 #include <string>
 #include <unordered_map>
@@ -55,6 +56,8 @@ namespace uam
 		std::string explicit_folder_id;
 		std::string explicit_directory;
 		ExecutionRoutingAssignment assigned;
+		/// Monotonic time of this attempt. It orders nothing by itself: it only lets a waiter that stopped asking age out of the queue.
+		double now_seconds = 0.0;
 	};
 
 	struct ExecutionRoutingOccupancy
@@ -90,9 +93,21 @@ namespace uam
 
 	/// Serializes admission only. The caller must persist assignment before launch and
 	/// supply active turns, workers and uncertain outboxes as a deduplicated snapshot.
+	///
+	/// Automatic chats that wait for capacity keep a ticket, so a freed slot goes to the chat that has waited
+	/// longest on that computer rather than to whichever chat asks first. Each ticket names the computers its chat
+	/// can use: an assigned chat only its own, a new chat every ready computer mapped for its workspace. A slot on a
+	/// computer is open to a request only once every earlier waiter that can use it has been given one, earliest
+	/// first, so an earlier waiter that fits elsewhere does not keep a computer idle. A waiter that stops asking
+	/// ages out: after kQueueStaleSeconds it no longer holds a place, and after kQueueForgetSeconds its ticket is gone.
 	class ExecutionRoutingService
 	{
 	public:
+		/// Waiters re-ask about once a second; one silent this long (stopped, deleted, disabled) holds no slot.
+		static constexpr double kQueueStaleSeconds = 5.0;
+		/// A waiter silent this long loses its ticket and joins the back of the queue when it asks again.
+		static constexpr double kQueueForgetSeconds = 60.0;
+
 		ExecutionRoutingDecision Admit(const ExecutionRoutingRequest& request,
 		    const std::vector<ExecutionRoutingCandidate>& candidates,
 		    const std::vector<ExecutionRoutingOccupancy>& occupancy);
@@ -100,11 +115,25 @@ namespace uam
 		bool RestoreReservations(const std::vector<ExecutionRoutingAssignment>& assignments);
 		/// Release after confirmed settlement/prelaunch failure, or explicit acknowledgement of unresolved ownership.
 		bool Release(const std::string& chat_id, bool release_authorized);
+		/// Drops a chat's place in the admission queue, for a chat that no longer exists. Returns whether it had one.
+		bool Withdraw(const std::string& chat_id);
+		/// The chats with a ticket, earliest first, including silent ones not yet forgotten. For diagnostics and tests.
+		std::vector<std::string> QueuedChatIds();
+
 		/// Chats occupying each computer exactly as admission counts them: the supplied occupancy plus held reservations.
 		std::unordered_map<std::string, std::size_t> OccupiedCounts(const std::vector<ExecutionRoutingOccupancy>& occupancy) const;
 
 	private:
+		struct Waiter
+		{
+			std::uint64_t ticket = 0;
+			double last_seen_s = 0.0;
+			std::vector<std::string> hosts;
+		};
+
 		mutable std::mutex m_mutex;
 		std::unordered_map<std::string, ExecutionRoutingAssignment> m_reservations;
+		std::unordered_map<std::string, Waiter> m_waiters;
+		std::uint64_t m_next_ticket = 0;
 	};
 }

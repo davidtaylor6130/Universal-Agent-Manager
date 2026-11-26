@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <functional>
+#include <stop_token>
 #include <string>
 #include <vector>
 
@@ -39,9 +40,12 @@ namespace uam
 		std::string error;
 	};
 
-	/// The adapter executes a bounded argv command through the platform process service.
-	using SvnBranchRunner = std::function<bool(const std::vector<std::string>&, int, std::string&)>;
-	SvnBranchRunner CreateSvnBranchRunner();
+	/// The adapter runs `svn args...` (argv only) within `timeout_ms`, fills `output` and returns true on success. On failure
+	/// it may set `failure` to one line for the person, which the service adds to its own refusal.
+	using SvnBranchRunner = std::function<bool(const std::vector<std::string>& args, int timeout_ms, std::string& output, std::string& failure)>;
+	/// RunSvn-backed adapter: the shared SVN environment, `stop` ends a read in flight (never a command
+	/// SvnCommandChangesRepository names once started), failures read as SvnFailureMessage and are logged.
+	SvnBranchRunner CreateSvnBranchRunner(std::stop_token stop = {});
 
 	/// Captures local workspace ownership using the same projection as the composer bridge.
 	SvnBranchScope BuildSvnBranchScope(bool enabled, const ChatSession&, const std::vector<ChatFolder>&,

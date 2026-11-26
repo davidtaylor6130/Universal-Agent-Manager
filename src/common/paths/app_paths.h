@@ -39,3 +39,6 @@ bool FolderDirectoryMatches(const std::filesystem::path& lhs, const std::filesys
 /// <summary>Resolved comparison form; FolderDirectoryMatches(a, b) equals FolderDirectoryKeysMatch(FolderDirectoryCompareKey(a), FolderDirectoryCompareKey(b)).</summary>
 std::filesystem::path FolderDirectoryCompareKey(const std::filesystem::path& directory);
 bool FolderDirectoryKeysMatch(const std::filesystem::path& lhs_key, const std::filesystem::path& rhs_key);
+/// <summary>Returns the subpath of `path` below the directory `root` (empty when they name the same directory), or nothing when `path` is outside `root`.
+/// Compares spelled paths first, keeping the recorded subpath spelling, then their resolved forms.</summary>
+std::optional<std::filesystem::path> FolderDirectoryRelativeSubpath(const std::filesystem::path& path, const std::filesystem::path& root);

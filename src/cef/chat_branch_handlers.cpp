@@ -212,10 +212,10 @@ void UamQueryHandler::HandleListChatBranches(CefRefPtr<CefBrowser>, const nlohma
 	const std::shared_ptr<BranchRequest> request = CaptureBranchRequest(m_app, *chat);
 	const uam::VcsProvider* provider = &BranchProvider(payload);
 	const std::string parent = payload.value("svnParent", std::string{});
-	uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner(request->chat), m_asyncLifetime, cb, [request, provider, parent]()
+	uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner(request->chat), m_asyncLifetime, cb, [request, provider, parent, stop = m_svnBranchDiscoveryStop.get_token()]()
 	{
 		const uam::AppState snapshot = BranchSnapshot(*request);
-		const uam::VcsBranchListing listing = provider->ListBranches(snapshot, request->chat, parent);
+		const uam::VcsBranchListing listing = provider->ListBranches(snapshot, request->chat, parent, stop);
 		if (!listing.ok) return uam::query_handler_async::AsyncFailure(400, listing.error);
 		const bool located = provider->BranchesAreLocated();
 		nlohmann::json values = nlohmann::json::array();
@@ -264,10 +264,10 @@ void UamQueryHandler::HandleSwitchChatBranch(CefRefPtr<CefBrowser> browser, cons
 		return;
 	}
 	const std::shared_ptr<BranchRequest> request = CaptureBranchRequest(m_app, *chat);
-	uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner(request->chat), m_asyncLifetime, cb, [request, provider, selection]()
+	uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner(request->chat), m_asyncLifetime, cb, [request, provider, selection, stop = m_svnBranchDiscoveryStop.get_token()]()
 	{
 		const uam::AppState snapshot = BranchSnapshot(*request);
-		const uam::VcsBranchOutcome checked = provider->CheckBranchSelection(snapshot, request->chat, selection);
+		const uam::VcsBranchOutcome checked = provider->CheckBranchSelection(snapshot, request->chat, selection, stop);
 		if (!checked.ok) return uam::query_handler_async::AsyncFailure(checked.conflict ? 409 : 400, checked.error);
 		return uam::query_handler_async::AsyncSuccess(nlohmann::json::object());
 	}, [this, browser, payload, cb, request, provider, branch, create](uam::query_handler_async::AsyncCefResult& result)
@@ -371,10 +371,10 @@ void UamQueryHandler::ContinueSwitchChatBranch(CefRefPtr<CefBrowser> browser, co
 	m_app.worktree_operation_chat_ids.insert(chat->id);
 	uam::query_handler_async::DispatchBranchOperation(m_app.worktree_operation_chat_ids, request->chat.id, [&]()
 	{
-		return uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner(request->chat), m_asyncLifetime, cb, [request, provider, selection]()
+		return uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner(request->chat), m_asyncLifetime, cb, [request, provider, selection, stop = m_svnBranchDiscoveryStop.get_token()]()
 		{
 			const uam::AppState snapshot = BranchSnapshot(*request);
-			const uam::VcsBranchOutcome checked = provider->CheckBranchSwitch(snapshot, request->chat, selection);
+			const uam::VcsBranchOutcome checked = provider->CheckBranchSwitch(snapshot, request->chat, selection, stop);
 			if (!checked.ok) return uam::query_handler_async::AsyncFailure(checked.conflict ? 409 : 400, checked.error);
 			return uam::query_handler_async::AsyncSuccess(nlohmann::json::object());
 		}, [this, browser, cb, request, provider, selection](uam::query_handler_async::AsyncCefResult& result)
@@ -387,10 +387,10 @@ void UamQueryHandler::ContinueSwitchChatBranch(CefRefPtr<CefBrowser> browser, co
 			}
 			uam::query_handler_async::DispatchBranchOperation(m_app.worktree_operation_chat_ids, request->chat.id, [&]()
 			{
-				return uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner(request->chat), m_asyncLifetime, cb, [request, provider, selection]()
+				return uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner(request->chat), m_asyncLifetime, cb, [request, provider, selection, stop = m_svnBranchDiscoveryStop.get_token()]()
 				{
 					uam::AppState snapshot = BranchSnapshot(*request);
-					const uam::VcsBranchOutcome outcome = provider->SwitchBranch(snapshot, request->chat, selection);
+					const uam::VcsBranchOutcome outcome = provider->SwitchBranch(snapshot, request->chat, selection, stop);
 					if (!outcome.ok) return uam::query_handler_async::AsyncFailure(409, outcome.error);
 					request->chat_updated = outcome.chat_updated;
 					nlohmann::json reply = {{"branch", outcome.branch}};

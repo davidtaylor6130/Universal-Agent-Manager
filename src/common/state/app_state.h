@@ -461,6 +461,11 @@ namespace uam
 		std::string execution_command;
 		// Captured from the chat when the request arrives: where admitted reads and automatic edits may reach.
 		command_safety::ReadScope read_scope;
+		// Transient: an ask rule (or an unresolvable program name) keeps this request for the user, so neither
+		// automatic approval nor AI review may answer it.
+		bool command_rule_hold = false;
+		// One-line notice shown on the approval card when a rule holds the request (a push waiting for approval).
+		std::string command_rule_notice;
 	};
 
 	struct AcpUserInputOptionState
@@ -1319,6 +1324,10 @@ namespace uam
 		std::string request_id_json;
 		std::string command_preview;
 		std::string requested_model_id;
+		// Session cache key for this exact reviewer input; empty when the verdict must not be cached.
+		std::string cache_key;
+		// "approve" or "deny" when this task replays a cached verdict instead of running a worker.
+		std::string cached_decision;
 		std::shared_ptr<AsyncProcessTaskState> state;
 		std::unique_ptr<std::jthread> worker;
 	};
@@ -1726,6 +1735,10 @@ namespace uam
 		bool remote_host_health_changed = false;
 		std::vector<AsyncMemoryExtractionTask> memory_extraction_tasks;
 		std::vector<AsyncPermissionReviewTask> permission_review_tasks;
+		// In-memory, this run only: approve/deny verdicts keyed by the exact reviewer input, reviewer, provider and
+		// workspace. Never persisted or logged; bounded by kPermissionReviewCacheLimit, oldest first out.
+		std::unordered_map<std::string, std::string> permission_review_cache;
+		std::deque<std::string> permission_review_cache_order;
 		std::vector<AsyncTurnCheckpointTask> turn_checkpoint_tasks;
 		std::deque<PendingGoalIterationState> pending_goal_iterations;
 		std::deque<QueuedMemoryExtractionTask> memory_extraction_queue;
