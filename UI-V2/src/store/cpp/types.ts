@@ -11,6 +11,7 @@ import type { Goal } from '../../types/goal'
 import type { StoredTheme } from '../../utils/themeStorage'
 import type { ResourceCollection } from '../../types/resourceCollection'
 import type { MemoryLevel } from '../../types/memory'
+import type { PermissionCommandRule } from '../../types/permissionRules'
 
 /** Which PowerShell hosts UAM's Windows terminal windows; auto prefers built-in Windows PowerShell 5.1. */
 export type WindowsPowerShellPreference = 'auto' | 'windows-powershell' | 'pwsh'
@@ -344,6 +345,8 @@ export interface AcpPendingPermission {
   safetyRisk?: 'allowed' | 'warn' | 'warn_high'
   safetyTier?: 'low' | 'medium' | 'high'
   safetyRequiresApproval?: boolean
+  /** One-line reason a permission rule holds this request, such as a push waiting for approval. */
+  ruleNotice?: string
   options: AcpPermissionOption[]
 }
 
@@ -844,6 +847,8 @@ export interface CppSettings extends VoiceInputSettings, Partial<VcsStorageSetti
   sidebarPinnedChatOrder?: string[]
   sidebarActiveChatOrder?: string[]
   steerActiveTurnOnSend?: boolean
+  permissionCommandRules?: PermissionCommandRule[]
+  permissionAiReviewEnabled?: boolean
   gitEnabled?: boolean
   svnEnabled?: boolean
   memoryEnabledDefault: boolean

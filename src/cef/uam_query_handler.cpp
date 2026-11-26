@@ -426,6 +426,8 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"setSidebarSettings", &UamQueryHandler::HandleSetSidebarSettings},
 		{"setSidebarChatOrder", &UamQueryHandler::HandleSetSidebarChatOrder},
 		{"setComposerSettings", &UamQueryHandler::HandleSetComposerSettings},
+		{"setPermissionCommandRules", &UamQueryHandler::HandleSetPermissionCommandRules},
+		{"testPermissionCommandRules", &UamQueryHandler::HandleTestPermissionCommandRules},
 		{"setNativeImportFilters", &UamQueryHandler::HandleSetNativeImportFilters},
 		{"setVcsSettings", &UamQueryHandler::HandleSetVcsSettings},
 		{"setStorageSettings", &UamQueryHandler::HandleSetStorageSettings},

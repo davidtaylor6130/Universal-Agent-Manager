@@ -3,6 +3,7 @@ import { sanitizeExecutionRouting } from '../../types/executionRouting'
 import { sanitizeExecutionHostLoad, sanitizeRoutingWaitHosts } from '../../types/hostLoad'
 import { DEFAULT_CENTRAL_PROVIDER_CONFIGURATION, type CentralProviderConfiguration, type WindowsPowerShellPreference } from './types'
 import { sanitizeCustomIcon, type CustomIcon } from '../../types/customIcon'
+import { sanitizePermissionCommandRules } from '../../types/permissionRules'
 // Sanitiser and normaliser functions for raw C++ state payloads.
 // Extracted from useAppStore.ts (MO-1). Pure functions — no side effects.
 
@@ -643,6 +644,7 @@ export function sanitizePendingPermission(value: unknown): AcpPendingPermission 
     safetyRisk: value.safetyRisk === 'allowed' || value.safetyRisk === 'warn' || value.safetyRisk === 'warn_high' ? value.safetyRisk : undefined,
     safetyTier: value.safetyTier === 'low' || value.safetyTier === 'medium' || value.safetyTier === 'high' ? value.safetyTier : undefined,
     safetyRequiresApproval: booleanOr(value.safetyRequiresApproval),
+    ruleNotice: typeof value.ruleNotice === 'string' && value.ruleNotice.trim() ? value.ruleNotice.trim().slice(0, 300) : undefined,
     options: Array.isArray(value.options)
       ? value.options.flatMap((option) => {
           const sanitized = sanitizePermissionOption(option)
@@ -2025,6 +2027,8 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
       sidebarPinnedChatOrder: [],
       sidebarActiveChatOrder: [],
       steerActiveTurnOnSend: false,
+      permissionCommandRules: [],
+      permissionAiReviewEnabled: true,
       gitEnabled: true,
       svnEnabled: true,
       memoryEnabledDefault: true,
@@ -2199,6 +2203,8 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
     sidebarPinnedChatOrder: sidebarChatOrder(value.sidebarPinnedChatOrder),
     sidebarActiveChatOrder: sidebarChatOrder(value.sidebarActiveChatOrder),
     steerActiveTurnOnSend: booleanOr(value.steerActiveTurnOnSend, false),
+    permissionCommandRules: sanitizePermissionCommandRules(value.permissionCommandRules),
+    permissionAiReviewEnabled: booleanOr(value.permissionAiReviewEnabled, true),
     gitEnabled: booleanOr(value.gitEnabled, true),
     svnEnabled: booleanOr(value.svnEnabled, true),
     memoryEnabledDefault: normalizeMemoryLevel(value.memoryLevelDefault, booleanOr(value.memoryEnabledDefault, true), false) !== 'off',
