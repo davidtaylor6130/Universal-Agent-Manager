@@ -3,7 +3,7 @@ import { SnoozeMenu } from './SnoozeMenu'
 import { RowSubmenu } from './RowSubmenu'
 import { isCompanionContext, isCefContext, sendToCEF } from '../../ipc/cefBridge'
 import { useState, useRef, useEffect, useLayoutEffect, useSyncExternalStore, memo, useContext } from 'react'
-import type { FocusEvent as ReactFocusEvent, MouseEvent as ReactMouseEvent, RefObject } from 'react'
+import type { FocusEvent as ReactFocusEvent, KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, RefObject } from 'react'
 import { ChatSortContext, type ChatSortList } from './sortableDrag'
 import { automationStartPending, subscribeOutgoingAttempts } from '../../utils/outgoingMessagePresentation'
 import {
@@ -16,7 +16,7 @@ import { useAppStore, type AcpAttentionKind } from '../../store/useAppStore'
 import { useShallow } from 'zustand/react/shallow'
 import { shallow } from 'zustand/shallow'
 import type { Session } from '../../types/session'
-import { IconButton, MenuItem, Presence, Tooltip, ViewportMenu } from '../ui'
+import { IconButton, MenuItem, Presence, ViewportMenu } from '../ui'
 import { DeleteConfirmDialog, chatDeleteFailure, relatedBranchContents } from './DeleteConfirmDialog'
 import { ProviderLogo } from '../shared/ProviderLogo'
 import {
@@ -37,24 +37,17 @@ import { displayedChatStatus, type DisplayedChatStatus } from './chatSearch'
 import { CustomIcon, useCustomIconPicker } from '../shared/CustomIcon'
 import { resolveCustomIcon } from '../../types/customIcon'
 import { failureDetail, reportAppFailure, reportAppNotice } from '../../utils/appFailure'
+import { sidebarIconPaint } from './sidebarIconPaint'
+import { ATTENTION_LABELS, chatRowStatusText } from './chatRowStatus'
 import type { CustomIcon as CustomIconValue } from '../../types/customIcon'
 import { SSH_ENABLED } from '../../config/buildFeatures'
+import { formatElapsed } from '../../utils/elapsed'
+import { useNow } from '../../hooks/useNow'
 
-export function formatWorkingDuration(elapsedMs: number): string {
-  const seconds = Math.max(0, Math.floor(elapsedMs / 1000))
-  if (seconds < 60) return `${seconds}s`
-  const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${minutes}m`
-  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`
-}
-
+/** Sidebar rows are one dense line, so they drop seconds from one minute on; the chat shows the same time with seconds. */
 function WorkingDuration({ startedAtMs }: { startedAtMs: number }) {
-  const [now, setNow] = useState(() => Date.now())
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 1000)
-    return () => window.clearInterval(timer)
-  }, [])
-  return <span className="tabular-nums">{formatWorkingDuration(now - startedAtMs)}</span>
+  const now = useNow(true)
+  return <span className="tabular-nums">{formatElapsed(now - startedAtMs, { seconds: 'under-minute' })}</span>
 }
 
 const branchCache = new Map<string, string>()
@@ -186,16 +179,6 @@ interface SessionItemProps {
   sortList?: ChatSortList
 }
 
-const ATTENTION_LABELS: Record<AcpAttentionKind, string> = {
-  question: 'Needs answer',
-  plan: 'Plan needs review',
-  memory: 'Memory input needed',
-  permission: 'Permission needed',
-  command: 'Command approval needed',
-  file: 'File approval needed',
-  error: 'Needs attention',
-  generic: 'Input needed',
-}
 
 export function sidebarStatusIcon(kind: AcpAttentionKind, size = 12) {
   const props = { size, 'aria-hidden': true } as const
@@ -507,6 +490,8 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
   const inputRef = useRef<HTMLInputElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
   const rowRef = useRef<HTMLDivElement>(null)
+  // The visual row around the chat's one interactive element and its sibling action buttons.
+  const frameRef = useRef<HTMLDivElement>(null)
   // Hover or focus intent warms a cold chat's history; a quick pass across the list starts nothing.
   const prefetchTimer = useRef<ReturnType<typeof setTimeout>>(undefined)
   const schedulePrefetch = () => {
@@ -528,6 +513,13 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
   // Attention outranks the watch; a finished turn does not, because the chat is still waiting on its pull request.
   const activityStatus = !activityLayout ? null : sessionSummary.automationHeld ? AUTOMATION_HELD_STATUS
     : watchingPullRequest && lifecycleStatus?.type !== 'attention' ? WATCHING_STATUS : activityStatusLabel(lifecycleStatus)
+  // The row's name carries what its icons and colours show: status, snooze and bulk selection.
+  const rowLabel = [
+    `Open chat ${sessionName}`,
+    chatRowStatusText(lifecycleStatus, { automationHeld: sessionSummary.automationHeld, watchingPullRequest: activityLayout && watchingPullRequest }),
+    !activityLayout && isSnoozed ? `snoozed until ${formatWakeTime(snoozedUntilMs)}` : '',
+    selected ? 'selected for bulk actions' : '',
+  ].filter(Boolean).join(', ')
   const lastOpenedTitle = formatSidebarTimeTitle(activityDate)
   const gridLeaves = chatGridLeaves(gridLayout.root)
   const paneIndexes = gridLeaves.flatMap((leaf, index) => familySessionIds.includes(leaf.sessionId) ? [index] : [])
@@ -620,6 +612,46 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
     }
   }
 
+  // The chat's one interactive element: it opens the chat and owns the row's keyboard shortcuts. Its action
+  // buttons are siblings inside the visual row, never descendants, and it drops its role while renaming.
+  const openProps = {
+    ref: rowRef,
+    role: editing ? undefined : 'button',
+    tabIndex: editing ? undefined : 0,
+    'aria-current': isSelectedChat ? 'page' as const : undefined,
+    'aria-label': editing ? undefined : rowLabel,
+    'data-testid': `session-row-${sessionId}`,
+    'data-session-id': sessionId,
+    'data-selected': Boolean(selected),
+    'aria-keyshortcuts': sortable ? 'ArrowUp ArrowDown' : undefined,
+    onKeyDown: (event: ReactKeyboardEvent<HTMLDivElement>) => {
+      if (event.target !== event.currentTarget || editing) return
+      if (sortable && (event.key === 'ArrowUp' || event.key === 'ArrowDown') && !event.shiftKey && !event.altKey && !event.metaKey && !event.ctrlKey) {
+        event.preventDefault()
+        chatSort!.move(sortList!, sessionId, event.key === 'ArrowUp' ? -1 : 1)
+      } else if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault()
+        selectChat()
+      } else if (!isCompanionContext() && (event.key === 'Delete' || (event.key === 'Backspace' && (event.metaKey || event.ctrlKey)))) {
+        event.preventDefault()
+        if (selectionIds().length > 0) { chatSelection?.deleteSelected(); return }
+        setDeleteError('')
+        setConfirmDelete(true)
+      } else if (!isCompanionContext() && event.key === 'F2') {
+        event.preventDefault()
+        // Rename is single-chat only; it never silently renames one row of a multi-selection.
+        if (selectionIds().length > 0) return
+        setEditing(true)
+        setEditValue(sessionName)
+      } else if (!isCompanionContext() && (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10'))) {
+        event.preventDefault()
+        const rect = (frameRef.current ?? event.currentTarget).getBoundingClientRect()
+        menuReturnFocusRef.current = event.currentTarget
+        openMenu({ x: rect.left + 16, y: rect.bottom })
+      }
+    },
+  }
+
   return (
     <div
       className="relative group"
@@ -634,14 +666,7 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
       }}
     >
       <div
-        ref={rowRef}
-        role="button"
-        tabIndex={0}
-        aria-current={isSelectedChat ? 'page' : undefined}
-        aria-label={`Open chat ${sessionName}`}
-        data-testid={`session-row-${sessionId}`}
-        data-session-id={sessionId}
-        data-selected={Boolean(selected)}
+        ref={frameRef}
         className={`uam-sb-row relative flex ${activityLayout ? 'gap-2 px-2.5 py-1.5' : 'min-h-[26px] gap-1.5 px-2.5 py-1'} items-center rounded-md mx-1 cursor-pointer${selected || childSelected || (isActive && !hasNavigationRoute) ? ' uam-sb-row--selected' : ''}${selected ? ' uam-selected-item' : ''}`}
         style={{
           // Running activity rows recede a touch so chats that need the user stand out.
@@ -652,112 +677,44 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
         onPointerLeave={(event) => { if (!event.currentTarget.contains(document.activeElement)) cancelPrefetch() }}
         onFocus={(event) => { if (crossesRow(event)) schedulePrefetch() }}
         onBlur={(event) => { if (crossesRow(event) && !event.currentTarget.matches(':hover')) cancelPrefetch() }}
+        // Pointer conveniences for the whole visual row; the keyboard reaches the same actions through the row's button.
         onClick={(event) => {
           if (editing || onSessionClick?.(sessionId, event)) return
           selectChat()
         }}
         onDoubleClick={() => {
-          if (isCompanionContext()) return
+          if (isCompanionContext() || editing) return
           setEditing(true)
           setEditValue(sessionName)
         }}
-        aria-keyshortcuts={sortable ? 'ArrowUp ArrowDown' : undefined}
-        onKeyDown={(event) => {
-          if (event.target !== event.currentTarget || editing) return
-          if (sortable && (event.key === 'ArrowUp' || event.key === 'ArrowDown') && !event.shiftKey && !event.altKey && !event.metaKey && !event.ctrlKey) {
-            event.preventDefault()
-            chatSort!.move(sortList!, sessionId, event.key === 'ArrowUp' ? -1 : 1)
-          } else if (event.key === 'Enter' || event.key === ' ') {
-            event.preventDefault()
-            selectChat()
-          } else if (!isCompanionContext() && (event.key === 'Delete' || (event.key === 'Backspace' && (event.metaKey || event.ctrlKey)))) {
-            event.preventDefault()
-            if (selectionIds().length > 0) { chatSelection?.deleteSelected(); return }
-            setDeleteError('')
-            setConfirmDelete(true)
-          } else if (!isCompanionContext() && event.key === 'F2') {
-            event.preventDefault()
-            // Rename is single-chat only; it never silently renames one row of a multi-selection.
-            if (selectionIds().length > 0) return
-            setEditing(true)
-            setEditValue(sessionName)
-          } else if (!isCompanionContext() && (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10'))) {
-            event.preventDefault()
-            const rect = event.currentTarget.getBoundingClientRect()
-            menuReturnFocusRef.current = event.currentTarget
-            openMenu({ x: rect.left + 16, y: rect.bottom })
-          }
-        }}
         onContextMenu={(e) => {
+          // The rename field keeps its own text menu.
+          if (editing) return
           e.preventDefault()
           if (isCompanionContext()) return
-          menuReturnFocusRef.current = e.currentTarget
+          menuReturnFocusRef.current = rowRef.current
           openMenu({ x: e.clientX, y: e.clientY })
         }}
       >
-        {activityLayout && !editing ? (
-          <div className="uam-sb-activity flex min-w-0 flex-1 flex-col gap-0.5">
+        {activityLayout && !editing ? (<>
+          <div {...openProps} className="uam-sb-row__open uam-sb-activity flex min-w-0 flex-1 flex-col gap-0.5">
             <div className="flex min-w-0 items-center gap-2 [&>img]:h-4">
               <CustomIcon icon={sessionSummary.customIcon} fallback={null} />
               <span className="block min-w-0 flex-1 truncate text-[13px] leading-5" style={{ color: isActive || selected ? 'var(--text)' : 'var(--text-2)' }}>{sessionName}</span>
               {lifecycleStatus?.type === 'processing' ? (
                 <span className="inline-flex shrink-0 items-center gap-1 text-[11px] font-medium tabular-nums" style={{ color: 'var(--info)' }}>
                   <CircleDashed size={12} className="uam-working-ring shrink-0" aria-hidden />
-                  <span role="status">Working</span>
+                  <span>Working</span>
                   {workingStartedAtMs !== null && <span aria-hidden><WorkingDuration startedAtMs={workingStartedAtMs} /></span>}
                 </span>
+              ) : activityStatus ? (
+                // Done and Snooze (siblings below) overlay the status/time on hover so the row never reflows.
+                <span className={`inline-flex shrink-0 items-center gap-1 text-[11px] font-medium transition-opacity duration-100${sessionSummary.automationHeld ? '' : ' group-hover:opacity-0 group-focus-within:opacity-0'}`} style={{ color: activityStatus.color }}>
+                  <activityStatus.Icon size={12} className="shrink-0" aria-hidden />
+                  <span>{activityStatus.label}</span>
+                </span>
               ) : (
-                <>
-                  {/* Done overlays the status/time on hover so the row never reflows. */}
-                  <span className="relative flex shrink-0 items-center justify-end">
-                  {activityStatus ? (
-                    <span className={`inline-flex shrink-0 items-center gap-1 text-[11px] font-medium transition-opacity duration-100${sessionSummary.automationHeld ? '' : ' group-hover:opacity-0 group-focus-within:opacity-0'}`} style={{ color: activityStatus.color }}>
-                      <activityStatus.Icon size={12} className="shrink-0" aria-hidden />
-                      <span role="status">{activityStatus.label}</span>
-                    </span>
-                  ) : (
-                    <span className="shrink-0 text-[11px] tabular-nums transition-opacity duration-100 group-hover:opacity-0 group-focus-within:opacity-0" style={{ color: 'var(--text-3)' }} title={`Updated ${activityDate?.toLocaleString() ?? ''}`}>{formatActivityAge(activityDate)}</span>
-                  )}
-                  {!isCompanionContext() && !sessionSummary.automationHeld && (
-                    <span className="absolute right-0 top-1/2 -translate-y-1/2 inline-flex shrink-0 items-center gap-0.5 opacity-0 pointer-events-none transition-opacity duration-100 group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto">
-                      {/* ui: raw button kept — inline-styled text action with its own colours; Button would restyle it */}
-                      <button
-                        type="button"
-                        aria-label={multiSelected ? 'Mark selected chats done' : `Mark ${sessionName} done`}
-                        className="inline-flex shrink-0 items-center gap-1 rounded px-1 hover:bg-[var(--sidebar-item-hover)]"
-                        style={{ color: 'var(--text-2)', background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 'var(--fs-xs)', lineHeight: 1.4 }}
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          const ids = selectionIds()
-                          if (ids.length > 0) { void markChatsDone(ids); return }
-                          if (sessionSummary.attentionRevision) void useAppStore.getState().acknowledgeChatAttention(sessionId, sessionSummary.attentionRevision)
-                          void setChatSettled(sessionId, true)
-                        }}
-                        onDoubleClick={(e) => e.stopPropagation()}
-                      >
-                        <Check size={12} aria-hidden />
-                        Done
-                      </button>
-                      <IconButton
-                        size="sm"
-                        label={multiSelected ? 'Snooze selected chats' : `Snooze ${sessionName}`}
-                        tooltip={multiSelected ? 'Snooze selected chats' : 'Snooze'}
-                        icon={<Clock size={12} aria-hidden />}
-                        aria-haspopup="menu"
-                        aria-expanded={snoozePos !== null}
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          if (snoozePos) { setSnoozePos(null); return }
-                          const r = e.currentTarget.getBoundingClientRect()
-                          setSnoozeTargets(selectionTargets(selectionIds()))
-                          setSnoozePos({ x: r.right, y: r.bottom + 4 })
-                        }}
-                        onDoubleClick={(e) => e.stopPropagation()}
-                      />
-                    </span>
-                  )}
-                  </span>
-                </>
+                <span className="shrink-0 text-[11px] tabular-nums transition-opacity duration-100 group-hover:opacity-0 group-focus-within:opacity-0" style={{ color: 'var(--text-3)' }} title={`Updated ${activityDate?.toLocaleString() ?? ''}`}>{formatActivityAge(activityDate)}</span>
               )}
             </div>
             <div className="flex min-w-0 items-center gap-1.5 text-[11px] leading-4" style={{ color: 'var(--text-3)' }}>
@@ -777,7 +734,46 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
               )}
             </div>
           </div>
-        ) : (<>
+          {lifecycleStatus?.type !== 'processing' && !isCompanionContext() && !sessionSummary.automationHeld && (
+            // Lines up with the title line's status cell, which it covers while the row is hovered or focused.
+            <span data-testid={`session-actions-${sessionId}`} className="absolute right-2.5 top-1.5 inline-flex h-5 shrink-0 items-center gap-0.5 opacity-0 pointer-events-none transition-opacity duration-100 group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto">
+              {/* ui: raw button kept — inline-styled text action with its own colours; Button would restyle it. uam-sb-target gives it a 24px hit area. */}
+              <button
+                type="button"
+                aria-label={multiSelected ? 'Mark selected chats done' : `Mark ${sessionName} done`}
+                className="uam-sb-target inline-flex shrink-0 items-center gap-1 rounded px-1 hover:bg-[var(--sidebar-item-hover)]"
+                style={{ color: 'var(--text-2)', background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 'var(--fs-xs)', lineHeight: 1.4 }}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  const ids = selectionIds()
+                  if (ids.length > 0) { void markChatsDone(ids); return }
+                  if (sessionSummary.attentionRevision) void useAppStore.getState().acknowledgeChatAttention(sessionId, sessionSummary.attentionRevision)
+                  void setChatSettled(sessionId, true)
+                }}
+                onDoubleClick={(e) => e.stopPropagation()}
+              >
+                <Check size={12} aria-hidden />
+                Done
+              </button>
+              <IconButton
+                size="sm"
+                label={multiSelected ? 'Snooze selected chats' : `Snooze ${sessionName}`}
+                tooltip={multiSelected ? 'Snooze selected chats' : 'Snooze'}
+                icon={<Clock size={12} aria-hidden />}
+                aria-haspopup="menu"
+                aria-expanded={snoozePos !== null}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  if (snoozePos) { setSnoozePos(null); return }
+                  const r = e.currentTarget.getBoundingClientRect()
+                  setSnoozeTargets(selectionTargets(selectionIds()))
+                  setSnoozePos({ x: r.right, y: r.bottom + 4 })
+                }}
+                onDoubleClick={(e) => e.stopPropagation()}
+              />
+            </span>
+          )}
+        </>) : (<>
         {(selected || (isCompanionContext() && isSelectedChat)) && (
           <span role="img" aria-label={selected ? 'Selected for bulk actions' : 'Selected chat'} className="inline-flex shrink-0" style={{ color: 'var(--accent)' }}>
             <Check size={12} aria-hidden />
@@ -805,29 +801,32 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
           </span>
         )}
         {!editing && isPinned && (
-          <Tooltip label={multiSelected ? 'Unpin selected chats' : 'Unpin chat'} side="top">
-            {/* ui: raw button kept — inline-styled icon control with drag/double-click guards; IconButton would restyle it */}
-            <button
-              type="button"
-              aria-label={multiSelected ? 'Unpin selected chats' : `Unpin ${sessionName}`}
-              draggable={false}
-              className="inline-flex shrink-0 cursor-pointer rounded hover:bg-[var(--sidebar-item-hover)]"
-              style={{ color: 'var(--accent)' }}
-              onPointerDown={(event) => event.stopPropagation()}
-              onMouseDown={(event) => event.stopPropagation()}
-              onDragStart={(event) => { event.preventDefault(); event.stopPropagation() }}
-              onDoubleClick={(event) => event.stopPropagation()}
-              onClick={(event) => { event.stopPropagation(); setPinnedFromRow(false) }}
-            >
-              <Pin size={12} fill="currentColor" aria-hidden />
-            </button>
-          </Tooltip>
+          // Keeps the 12px pin's place in the row; the 24px hit area overlaps only the gaps either side. On the desktop
+          // it is a pointer shortcut out of the Tab order, since the row's pin chip and menu cover it by keyboard; the
+          // phone companion has neither, so there it stays a Tab stop.
+          <IconButton
+            tabIndex={isCompanionContext() ? undefined : -1}
+            size="sm"
+            label={multiSelected ? 'Unpin selected chats' : `Unpin ${sessionName}`}
+            tooltip={multiSelected ? 'Unpin selected chats' : 'Unpin chat'}
+            icon={<Pin size={12} fill="currentColor" aria-hidden />}
+            draggable={false}
+            className="uam-sb-iconbtn uam-sb-iconbtn--inline"
+            style={{ ...sidebarIconPaint(12), color: 'var(--accent)' }}
+            onPointerDown={(event) => event.stopPropagation()}
+            onMouseDown={(event) => event.stopPropagation()}
+            onDragStart={(event) => { event.preventDefault(); event.stopPropagation() }}
+            onDoubleClick={(event) => event.stopPropagation()}
+            onClick={(event) => { event.stopPropagation(); setPinnedFromRow(false) }}
+          />
         )}
 
+        <div {...openProps} className="uam-sb-row__open flex min-w-0 flex-1 items-center gap-1.5 self-stretch">
         {/* Name or edit input */}
         {editing ? (
           <input
             ref={inputRef}
+            aria-label={`Rename ${sessionName}`}
             value={editValue}
             onChange={(e) => setEditValue(e.target.value)}
             onBlur={commitRename}
@@ -870,8 +869,8 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
             {!activityLayout && <div className={`ml-auto flex items-center gap-1 ${restingFade}`}>
               {lastOpenedLabel && (
                 <span
-                  className={`${activityLayout ? 'max-w-[100px]' : `max-w-[58px] ${HOVER_FADE}`} truncate text-[10px] tabular-nums`}
-                  title={activityLayout ? `Updated ${activityDate?.toLocaleString() ?? ''}` : lastOpenedTitle}
+                  className={`max-w-[58px] ${HOVER_FADE} truncate text-[10px] tabular-nums`}
+                  title={lastOpenedTitle}
                   style={{
                     color: isActive ? 'var(--text-2)' : 'var(--text-3)',
                     lineHeight: 1,
@@ -880,104 +879,85 @@ export const SessionItem = memo(function SessionItem({ sessionId, session, famil
                   {lastOpenedLabel}
                 </span>
               )}
-              {!activityLayout && lifecycleStatus?.type === 'processing' && (
+              {lifecycleStatus?.type === 'processing' && (
                 <span role="img" className="session-status session-status--processing" aria-label="Agent running" title="Agent running">
                   <span />
                 </span>
               )}
-              {!activityLayout && lifecycleStatus?.type === 'attention' && (
+              {lifecycleStatus?.type === 'attention' && (
                 <span className={`session-status session-status--attention session-status--${lifecycleStatus.kind}`} aria-label={ATTENTION_LABELS[lifecycleStatus.kind]} title={ATTENTION_LABELS[lifecycleStatus.kind]}>
                   {sidebarStatusIcon(lifecycleStatus.kind)}
                 </span>
               )}
-              {!activityLayout && lifecycleStatus?.type === 'done' && (
+              {lifecycleStatus?.type === 'done' && (
                 <span role="img" className="session-status session-status--idle" aria-label="Done" title="Done">
                   <CircleCheck size={12} aria-hidden style={{ color: 'var(--success)' }} />
                 </span>
               )}
             </div>}
-            {!activityLayout && <div
-              data-testid={`session-actions-${sessionId}`}
-              style={isCompanionContext() ? { display: 'none' } : undefined}
-              className={`absolute ${!activityLayout && lifecycleStatus ? 'right-[30px]' : 'right-2.5'} flex items-center gap-0.5 transition-opacity duration-100 ${
-                menuPos
-                  ? 'opacity-100 pointer-events-auto'
-                  : 'opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto'
-              }`}
-            >
-              {isSnoozed && (
-                <IconButton
-                  size="sm"
-                  label={multiSelected ? 'Wake selected chats' : `Unsnooze ${sessionName}`}
-                  tooltip={multiSelected ? 'Wake selected chats now' : `Wake now · snoozed until ${formatWakeTime(snoozedUntilMs)}`}
-                  icon={<AlarmClockOff size={13} aria-hidden />}
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    const ids = selectionIds()
-                    if (ids.length > 0) { void wakeChats(ids); return }
-                    void setChatSnoozedUntil(sessionId, 0).then((result) => {
-                      if (!result.ok) reportAppFailure(`Could not wake "${sessionName}".`, result.error || 'Wake request failed.')
-                    })
-                  }}
-                  onDoubleClick={(e) => e.stopPropagation()}
-                />
-              )}
-              <Tooltip label={`${isPinned ? 'Unpin' : 'Pin'} ${multiSelected ? 'selected chats' : 'chat'}`} side="top">
-                {/* ui: raw button kept — inline-styled icon control with drag/double-click guards; IconButton would restyle it */}
-                <button
-                  type="button"
-                  aria-label={`${isPinned ? 'Unpin' : 'Pin'} ${multiSelected ? 'selected chats' : 'chat'}`}
-                  className="flex flex-shrink-0 items-center justify-center rounded"
-                  style={{
-                    width: 20,
-                    height: 20,
-                    background: 'var(--sidebar-item-hover)',
-                    color: isPinned ? 'var(--accent)' : 'var(--text-3)',
-                    border: 'none',
-                    cursor: 'pointer',
-                    padding: 0,
-                    outlineColor: 'var(--accent)',
-                  }}
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    setPinnedFromRow(!isPinned)
-                  }}
-                  onDoubleClick={(e) => e.stopPropagation()}
-                >
-                  <Pin size={13} fill={isPinned ? 'currentColor' : 'none'} aria-hidden />
-                </button>
-              </Tooltip>
-              <Tooltip label="More actions" side="top">
-                {/* ui: raw button kept — inline-styled icon control with drag/double-click guards; IconButton would restyle it */}
-                <button
-                  type="button"
-                  aria-label="More actions"
-                  aria-haspopup="menu"
-                  aria-expanded={showMenu}
-                  className="flex flex-shrink-0 items-center justify-center rounded"
-                  style={{
-                    width: 20,
-                    height: 20,
-                    background: 'var(--sidebar-item-hover)',
-                    color: 'var(--text-3)',
-                    border: 'none',
-                    cursor: 'pointer',
-                    outlineColor: 'var(--accent)',
-                  }}
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    if (menuPos) { setMenuPos(null); return }
-                    const r = e.currentTarget.getBoundingClientRect()
-                    menuReturnFocusRef.current = e.currentTarget
-                    openMenu({ x: r.right, y: r.bottom + 4 })
-                  }}
-                >
-                  <MoreHorizontal size={14} aria-hidden />
-                </button>
-              </Tooltip>
-            </div>}
           </>
         )}
+        </div>
+
+        {!editing && !activityLayout && <div
+          data-testid={`session-actions-${sessionId}`}
+          style={isCompanionContext() ? { display: 'none' } : undefined}
+          // The 24px hit areas reach 2px past the chips' painted tiles, so the group sits 2px further right and the
+          // more-actions tile keeps its place; the tiles themselves are now 4px apart (2px before).
+          className={`absolute ${lifecycleStatus ? 'right-[28px]' : 'right-2'} flex items-center transition-opacity duration-100 ${
+            menuPos
+              ? 'opacity-100 pointer-events-auto'
+              : 'opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto'
+          }`}
+        >
+          {isSnoozed && (
+            <IconButton
+              size="sm"
+              label={multiSelected ? 'Wake selected chats' : `Unsnooze ${sessionName}`}
+              tooltip={multiSelected ? 'Wake selected chats now' : `Wake now · snoozed until ${formatWakeTime(snoozedUntilMs)}`}
+              icon={<AlarmClockOff size={13} aria-hidden />}
+              onClick={(e) => {
+                e.stopPropagation()
+                const ids = selectionIds()
+                if (ids.length > 0) { void wakeChats(ids); return }
+                void setChatSnoozedUntil(sessionId, 0).then((result) => {
+                  if (!result.ok) reportAppFailure(`Could not wake "${sessionName}".`, result.error || 'Wake request failed.')
+                })
+              }}
+              onDoubleClick={(e) => e.stopPropagation()}
+            />
+          )}
+          <IconButton
+            size="sm"
+            label={`${isPinned ? 'Unpin' : 'Pin'} ${multiSelected ? 'selected chats' : sessionName}`}
+            tooltip={`${isPinned ? 'Unpin' : 'Pin'} ${multiSelected ? 'selected chats' : 'chat'}`}
+            icon={<Pin size={13} fill={isPinned ? 'currentColor' : 'none'} aria-hidden />}
+            className="uam-sb-iconbtn uam-sb-iconbtn--chip"
+            style={isPinned ? { color: 'var(--accent)' } : undefined}
+            onClick={(e) => {
+              e.stopPropagation()
+              setPinnedFromRow(!isPinned)
+            }}
+            onDoubleClick={(e) => e.stopPropagation()}
+          />
+          <IconButton
+            size="sm"
+            label={multiSelected ? 'More actions for selected chats' : `More actions for ${sessionName}`}
+            tooltip="More actions"
+            icon={<MoreHorizontal size={14} aria-hidden />}
+            aria-haspopup="menu"
+            aria-expanded={showMenu}
+            className="uam-sb-iconbtn uam-sb-iconbtn--chip"
+            onClick={(e) => {
+              e.stopPropagation()
+              if (menuPos) { setMenuPos(null); return }
+              const r = e.currentTarget.getBoundingClientRect()
+              menuReturnFocusRef.current = e.currentTarget
+              openMenu({ x: r.right - 2, y: r.bottom + 2 })
+            }}
+            onDoubleClick={(e) => e.stopPropagation()}
+          />
+        </div>}
         </>)}
       </div>
 

@@ -246,7 +246,8 @@
   cursor: pointer;
 }
 
-.uam-rv-check-btn:disabled { cursor: default; opacity: 0.5; }
+.uam-rv-check-btn:disabled,
+.uam-rv-check-btn[aria-disabled="true"] { cursor: default; opacity: 0.5; }
 .uam-rv-check-btn:focus-visible { outline: var(--focus-ring); outline-offset: var(--focus-offset); }
 
 /* Changed files list: fixed 28px rows. Columns: checkbox | status | name + muted dir | stats | chevron. */
@@ -288,6 +289,16 @@
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
   font-weight: 600;
+}
+
+/* An SVN conflict is spelled out, so its column takes the word's width; the tone is not the only cue. */
+.uam-rv-file__open[data-conflict] { grid-template-columns: auto minmax(0, 1fr) 140px 14px; }
+.uam-rv-file__status[data-conflict] {
+  width: auto;
+  padding: 0 var(--sp-1);
+  border-radius: var(--r-sm);
+  background: var(--warning-dim);
+  font-family: inherit;
 }
 
 /* Name and muted directory share one cell; the directory truncates first. */

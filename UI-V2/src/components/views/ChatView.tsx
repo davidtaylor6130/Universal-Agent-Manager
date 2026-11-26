@@ -41,7 +41,7 @@ import { GoalBanner } from '../shared/GoalBanner'
 import { CODEX_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, normalizeCliProviderIdAlias, fallbackProviderForId, isClaudeProvider, isCodexProvider, isCopilotProvider, isOpenCodeProvider, permissionTierForProvider, providerCapabilities, providerDisabledOn, providerMetadataForId, providerShortName } from '../../utils/providerMetadata'
 import { buildCodexReasoningOptions, buildCodexSpeedOptions, CODEX_SPEED_INHERIT_ID, buildModelOptions, modelOptionFor, providerRuntimeLabel, selectedRuntimeModel } from '../chat/modelOptions'
 import { CompactingScene, RefreshingScene, SleepingScene } from '../chat/StatusScenes'
-import { buildAcpErrorCopyText, ChatStatusStrip, CopyTextButton, statusColor, statusLabel } from '../chat/StatusHelpers'
+import { buildAcpErrorCopyText, ChatAnnouncer, ChatStatusStrip, CopyTextButton, ReplyAnnouncement, statusColor, statusLabel } from '../chat/StatusHelpers'
 import { restartWithRaisedTimeout, TIMEOUT_RESTART_STEP_SECONDS, TimeoutStopNotice, type TimeoutRestartOutcome } from '../chat/TimeoutStopNotice'
 import { SubAgentDisclosureProvider, WorkSectionContext, ConversationWork, type WorkTraceDisclosureState } from '../chat/ConversationWork'
 import { MessageFrame, ToolCallModal, UserInputInlineCard } from '../chat/ToolCallViews'
@@ -1537,9 +1537,59 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     }
   }, [modelOpen, workspaceMenuOpen])
 
+  // Both staging paths share this prefix: the browser companion stages no attachments here (no paths or bytes);
+  // see "Browser companion attachments" in docs/documentation-review.md.
+  const canStageAttachments = () => {
+    if (!showComposerRef.current) return false
+    if (isCompanionContext()) { setAttachmentError('Add attachments from the desktop app.'); return false }
+    return true
+  }
+
+  const beginStagingAttachments = (pending: LocalAttachment[]) => {
+    setAttachmentError('')
+    setComposerAttachments((current) => [...current, ...pending])
+  }
+
+  /** Swap staged chips for their copies, or write them into the draft of the chat they were added to. */
+  const applyStagedAttachments = (stagingSessionId: string, staged: Awaited<ReturnType<typeof stageChatAttachments>>) => {
+    if (!mountedRef.current || currentSessionIdRef.current !== stagingSessionId) {
+      if (!useAppStore.getState().sessions.some((candidate) => candidate.id === stagingSessionId)) return
+      const stored = readChatComposerDraft(stagingSessionId)
+      writeChatComposerDraft(stagingSessionId, {
+        ...stored,
+        attachments: [...stored.attachments, ...staged.filter((candidate) =>
+          !removedAttachmentIdsRef.current.has(candidate.id) &&
+          !stored.attachments.some((attachment) => attachment.id === candidate.id)
+        )],
+      })
+      return
+    }
+    setComposerAttachments((current) =>
+      current.map((attachment) => {
+        const replacement = staged.find((candidate) => candidate.id === attachment.id)
+        return replacement
+          ? { ...replacement, status: 'ready' as LocalAttachmentStatus }
+          : attachment
+      })
+    )
+  }
+
+  const failStagedAttachments = (stagingSessionId: string, pending: LocalAttachment[], err: unknown, fallback: string) => {
+    if (!mountedRef.current || currentSessionIdRef.current !== stagingSessionId) return
+    // Every chip of this request was removed while copying: the copy was canceled on purpose, so nothing to report.
+    if (pending.every((attachment) => removedAttachmentIdsRef.current.has(attachment.id))) return
+    const message = err instanceof Error ? err.message : fallback
+    setAttachmentError(message)
+    const failedIds = new Set(pending.map((attachment) => attachment.id))
+    setComposerAttachments((current) =>
+      current.map((attachment) =>
+        failedIds.has(attachment.id) ? { ...attachment, status: 'failed', error: message } : attachment
+      )
+    )
+  }
+
   const stageFiles = async (files: File[], nativeEntries: NativeFileEntry[] = []) => {
-    if (!showComposerRef.current) return
-    if (isCompanionContext()) { setAttachmentError('Add attachments from the desktop app.'); return }
+    if (!canStageAttachments()) return
     const stagingSessionId = session.id
     // A dropped File pairs with the native path of the same name and size; picked files arrive as paths only.
     const unpaired = [...nativeEntries]
@@ -1561,8 +1611,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       path: source.path,
       status: 'staging',
     }))
-    setAttachmentError('')
-    setComposerAttachments((current) => [...current, ...pending])
+    beginStagingAttachments(pending)
 
     try {
       const items: ChatAttachmentInput[] = []
@@ -1579,45 +1628,14 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
           dataBase64: source.path || !source.file ? undefined : await readFileBase64(source.file),
         })
       }
-
-      const staged = await stageChatAttachments(stagingSessionId, items)
-      if (!mountedRef.current || currentSessionIdRef.current !== stagingSessionId) {
-        if (!useAppStore.getState().sessions.some((candidate) => candidate.id === stagingSessionId)) return
-        const stored = readChatComposerDraft(stagingSessionId)
-        writeChatComposerDraft(stagingSessionId, {
-          ...stored,
-          attachments: [...stored.attachments, ...staged.filter((candidate) =>
-            !removedAttachmentIdsRef.current.has(candidate.id) &&
-            !stored.attachments.some((attachment) => attachment.id === candidate.id)
-          )],
-        })
-        return
-      }
-      setComposerAttachments((current) =>
-        current.map((attachment) => {
-          const replacement = staged.find((candidate) => candidate.id === attachment.id)
-          return replacement
-            ? { ...replacement, status: 'ready' as LocalAttachmentStatus }
-            : attachment
-        })
-      )
+      applyStagedAttachments(stagingSessionId, await stageChatAttachments(stagingSessionId, items))
     } catch (err) {
-      if (!mountedRef.current || currentSessionIdRef.current !== stagingSessionId) return
-      // Every chip of this request was removed while copying: the copy was canceled on purpose, so nothing to report.
-      if (pending.every((attachment) => removedAttachmentIdsRef.current.has(attachment.id))) return
-      const message = err instanceof Error ? err.message : 'Failed to stage attachments.'
-      setAttachmentError(message)
-      const failedIds = new Set(pending.map((attachment) => attachment.id))
-      setComposerAttachments((current) =>
-        current.map((attachment) =>
-          failedIds.has(attachment.id) ? { ...attachment, status: 'failed', error: message } : attachment
-        )
-      )
+      failStagedAttachments(stagingSessionId, pending, err, 'Failed to stage attachments.')
     }
   }
 
   const stageDirectoryPaths = async (paths: string[]) => {
-    if (!showComposerRef.current) return
+    if (!canStageAttachments()) return
     const stagingSessionId = session.id
     const uniquePaths = Array.from(new Set(paths.map((path) => path.trim()).filter(Boolean)))
     if (uniquePaths.length === 0) return
@@ -1630,46 +1648,17 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       path,
       status: 'staging',
     }))
-    setAttachmentError('')
-    setComposerAttachments((current) => [...current, ...pending])
+    beginStagingAttachments(pending)
 
     try {
-      const staged = await stageChatAttachments(stagingSessionId, pending.map((attachment) => ({
+      applyStagedAttachments(stagingSessionId, await stageChatAttachments(stagingSessionId, pending.map((attachment) => ({
         id: attachment.id,
         name: attachment.name,
         kind: 'directory',
         path: attachment.path,
-      })))
-      if (!mountedRef.current || currentSessionIdRef.current !== stagingSessionId) {
-        if (!useAppStore.getState().sessions.some((candidate) => candidate.id === stagingSessionId)) return
-        const stored = readChatComposerDraft(stagingSessionId)
-        writeChatComposerDraft(stagingSessionId, {
-          ...stored,
-          attachments: [...stored.attachments, ...staged.filter((candidate) =>
-            !removedAttachmentIdsRef.current.has(candidate.id) &&
-            !stored.attachments.some((attachment) => attachment.id === candidate.id)
-          )],
-        })
-        return
-      }
-      setComposerAttachments((current) =>
-        current.map((attachment) => {
-          const replacement = staged.find((candidate) => candidate.id === attachment.id)
-          return replacement
-            ? { ...replacement, status: 'ready' as LocalAttachmentStatus }
-            : attachment
-        })
-      )
+      }))))
     } catch (err) {
-      if (!mountedRef.current || currentSessionIdRef.current !== stagingSessionId) return
-      const message = err instanceof Error ? err.message : 'Failed to stage directory references.'
-      setAttachmentError(message)
-      const failedIds = new Set(pending.map((attachment) => attachment.id))
-      setComposerAttachments((current) =>
-        current.map((attachment) =>
-          failedIds.has(attachment.id) ? { ...attachment, status: 'failed', error: message } : attachment
-        )
-      )
+      failStagedAttachments(stagingSessionId, pending, err, 'Failed to stage directory references.')
     }
   }
 
@@ -3780,6 +3769,24 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                   openSubagentView(parent, { kind: 'managed', runId })
                 }
               }}>
+              {/* One polite region per open chat, outside the busy message list: state changes only, never ticking time. */}
+              <ChatAnnouncer key={session.id}>
+              <ReplyAnnouncement
+                working={Boolean(acp?.processing)}
+                turnSerial={turnSerial}
+                waitingFor={pendingPermission ? 'permission' : pendingUserInput ? 'answer' : undefined}
+                failed={Boolean(currentAcpError) || acp?.lifecycleState === 'error'}
+                stopReason={acp?.lastStopReason}
+                // A turn with no reply (Cancel turn before any text) did not finish. Reply evidence comes from the
+                // binding's own turn facts, which arrive with processing=false, before the reply row may be loaded.
+                interrupted={!(latestAssistantMessageIndex > latestUserMessageIndex ||
+                  (acp?.turnAssistantMessageIndex ?? -1) > (acp?.turnUserMessageIndex ?? -1) ||
+                  turnEvents.some((event) => event.type === 'tool_call' || (event.type === 'assistant_text' && Boolean(event.text.trim())))) ||
+                  (latestAssistantMessageIndex > latestUserMessageIndex && Boolean(latestAssistantMessage?.interrupted))}
+                // The composer error alert (when it actually shows) and the stopped divider announce themselves.
+                alertKey={currentAcpError && !timeoutStop && (currentAcpErrorKey !== dismissedAcpErrorKey || remoteStopForceAvailable) ? currentAcpErrorKey : ''}
+                stoppedNotice={Boolean(stoppedStatusLabel)}
+              />
               <SubAgentDisclosureProvider expandedTools={subagentDisclosures}>
               <div ref={messageListRef} className="uam-message-list space-y-1.5" aria-busy={historyLoading} data-message-motion={messageMotion}>
               {historyLoading && <div role="status" className="conversation-empty">
@@ -3834,7 +3841,6 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               {acp?.processing && !acp.computePoolWait && turnEvents.length === 0 && (activeWorkMessageIndex < 0 || unsentProjection.hiddenIndices.has(activeWorkMessageIndex)) && (
                 <div
                   data-testid="turn-starting"
-                  role="status"
                   className="uam-turn-starting px-4 py-2 text-xs"
                   style={{ color: 'var(--text-3)' }}
                 >
@@ -3952,6 +3958,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               )}
               </div>
               </SubAgentDisclosureProvider>
+              </ChatAnnouncer>
               </InlineSubagentProvider>
             </div>
             {/* Follow the padded end so the latest output clears the floating composer. */}

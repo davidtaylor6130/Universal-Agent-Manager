@@ -8,6 +8,9 @@ import type { Session } from '../../types/session'
 
 ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
+/** The visual row around a chat's interactive element: it carries the tint and the leading icons. */
+const rowFrame = (host: ParentNode, id: string) => host.querySelector<HTMLElement>(`[data-session-id="${id}"]`)?.closest<HTMLElement>('.uam-sb-row') ?? null
+
 it('does not commit an unrelated real sidebar row when selection moves between two other chats', () => {
   const initial = useAppStore.getState()
   const values = new Map<string, string>()
@@ -21,7 +24,7 @@ it('does not commit an unrelated real sidebar row when selection moves between t
     act(() => root.render(<>{sessions.map(session => <Profiler key={session.id} id={session.id} onRender={id => commits.set(id, (commits.get(id) || 0) + 1)}><SessionItem sessionId={session.id} session={session} familySessionIds={[session.id]} /></Profiler>)}</>))
     const before = commits.get('select-unrelated')
     act(() => useAppStore.getState().setActiveSession('select-b'))
-    expect(host.querySelector('[data-session-id="select-b"]')!.classList.contains('uam-sb-row--selected')).toBe(true)
+    expect(rowFrame(host, 'select-b')!.classList.contains('uam-sb-row--selected')).toBe(true)
     expect(commits.get('select-unrelated')).toBe(before)
     act(() => useAppStore.getState().setActiveSession('select-a'))
     expect(commits.get('select-unrelated')).toBe(before)
@@ -54,10 +57,10 @@ it('derives the robot from verified native lineage on any sidebar path, while un
   try {
     // No subagentRow prop: an ungrouped/active-list entry still shows the robot because the lineage is verified.
     act(() => root.render(<><SessionItem sessionId={child.id} session={child} /><SessionItem sessionId={base.id} session={base} /></>))
-    expect(host.querySelector('[data-session-id="lineage-child"] [aria-label="Subagent"] svg.lucide-bot')).not.toBeNull()
-    expect(host.querySelector('[data-session-id="lineage-child"] [aria-label^="Provider:"]')).toBeNull()
-    expect(host.querySelector('[data-session-id="lineage-parent"] [aria-label^="Provider:"]')).not.toBeNull()
-    expect(host.querySelector('[data-session-id="lineage-parent"] [aria-label="Subagent"]')).toBeNull()
+    expect(rowFrame(host, 'lineage-child')!.querySelector('[aria-label="Subagent"] svg.lucide-bot')).not.toBeNull()
+    expect(rowFrame(host, 'lineage-child')!.querySelector('[aria-label^="Provider:"]')).toBeNull()
+    expect(rowFrame(host, 'lineage-parent')!.querySelector('[aria-label^="Provider:"]')).not.toBeNull()
+    expect(rowFrame(host, 'lineage-parent')!.querySelector('[aria-label="Subagent"]')).toBeNull()
   } finally { act(() => root.unmount()); host.remove(); useAppStore.setState(initial, true) }
 })
 
@@ -70,13 +73,14 @@ it('renders multi-selected rows with the shared Settings selected-item style ins
   try {
     act(() => root.render(<>{sessions.map(session => <SessionItem key={session.id} sessionId={session.id} session={session} familySessionIds={[session.id]} selected={session.id === 'multi-active' ? false : 'multi'} />)}</>))
     for (const id of ['multi-a', 'multi-b']) {
-      const row = host.querySelector<HTMLElement>(`[data-session-id="${id}"]`)!
+      const row = rowFrame(host, id)!
+      expect(host.querySelector(`[data-session-id="${id}"]`)!.getAttribute('aria-label')).toBe(`Open chat ${id}, selected for bulk actions`)
       expect(row.classList.contains('uam-selected-item')).toBe(true)
       expect(row.style.boxShadow).toBe('')
       expect(row.querySelector('[aria-label="Selected for bulk actions"]')).not.toBeNull()
     }
     // The open (single) chat keeps its lighter active tint and has no selection line or bulk marker.
-    const active = host.querySelector<HTMLElement>('[data-session-id="multi-active"]')!
+    const active = rowFrame(host, 'multi-active')!
     expect(active.classList.contains('uam-sb-row--selected')).toBe(true)
     expect(active.classList.contains('uam-selected-item')).toBe(false)
     expect(active.querySelector('[aria-label="Selected for bulk actions"]')).toBeNull()

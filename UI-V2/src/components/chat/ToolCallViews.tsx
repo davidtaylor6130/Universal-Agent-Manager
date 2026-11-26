@@ -240,6 +240,9 @@ export function PermissionInlineCard({
           {permission.content}
         </pre>
       )}
+      {permission.ruleNotice && (
+        <p className="mb-2 text-[11px]" data-testid="permission-rule-notice" style={{ color: 'var(--text-2)' }}>{permission.ruleNotice}</p>
+      )}
       {permission.safetyRequiresApproval && (
         <div
           role="alert"

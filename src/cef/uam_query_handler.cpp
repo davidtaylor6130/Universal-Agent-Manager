@@ -1,5 +1,6 @@
 #include "common/config/build_features.h"
 #include "cef/uam_query_handler.h"
+#include "app/timer_service.h"
 #include "cef/uam_bridge_request.h"
 #include "cef/pending_operation_gate.h"
 #include "cef/uam_cef_security.h"
@@ -190,18 +191,22 @@ UamQueryHandler::~UamQueryHandler()
 	uam::attachment_payload::ShuttingDown().store(true);
 	for (const std::pair<const std::string, std::shared_ptr<std::stop_source>>& request : m_titleRequests) request.second->request_stop();
 	for (const auto& request : m_vcsRequestStops) request.second->request_stop();
+	m_svnBranchDiscoveryStop.request_stop();
 	for (const auto& request : m_nativeHistoryRequests) request.second->request_stop();
 	m_remoteRefreshReadThreads.clear(); // Joins the stopped reads; each read is also bounded by its own deadline.
 	for (const auto& install : m_remoteInstallStops)
 		if (const std::shared_ptr<std::stop_source> stop = install.second.lock()) stop->request_stop();
 #if UAM_ENABLE_MOBILE_COMPANION
 	if (m_companion) m_companion->Stop();
+	if (m_app.timer_service != nullptr) m_app.timer_service->SetLauncher({});
 #endif
 }
 
 bool UamQueryHandler::StartCompanion(CefRefPtr<CefBrowser> browser)
 {
 #if UAM_ENABLE_MOBILE_COMPANION
+	// Schedules are local timers: their launcher exists whether or not Phone access is on.
+	RegisterAutomationScheduleLauncher(browser);
 	const std::weak_ptr<void> lifetime = m_asyncLifetime;
 	m_companion = UamCompanionService::Create(m_app.data_root, [this, lifetime, browser](const nlohmann::json& request, CefRefPtr<Callback> callback) {
 		if (request.value("action", std::string{}) == "discoverSystemNativeImports" || request.value("action", std::string{}) == "assignSystemNativeImportWorkspace")
@@ -396,6 +401,10 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"createAutomationToken", &UamQueryHandler::HandleCreateAutomationToken},
 		{"revokeAutomationToken", &UamQueryHandler::HandleRevokeAutomationToken},
 		{"regenerateAutomationToken", &UamQueryHandler::HandleRegenerateAutomationToken},
+		{"getAutomationSchedules", &UamQueryHandler::HandleGetAutomationSchedules},
+		{"saveAutomationSchedule", &UamQueryHandler::HandleSaveAutomationSchedule},
+		{"setAutomationSchedulePaused", &UamQueryHandler::HandleSetAutomationSchedulePaused},
+		{"deleteAutomationSchedule", &UamQueryHandler::HandleDeleteAutomationSchedule},
 #endif
 		{"setChatMemoryEnabled", &UamQueryHandler::HandleSetChatMemoryEnabled},
 		{"setChatSmallModelMode", &UamQueryHandler::HandleSetChatSmallModelMode},
@@ -423,6 +432,8 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"setSidebarSettings", &UamQueryHandler::HandleSetSidebarSettings},
 		{"setSidebarChatOrder", &UamQueryHandler::HandleSetSidebarChatOrder},
 		{"setComposerSettings", &UamQueryHandler::HandleSetComposerSettings},
+		{"setPermissionCommandRules", &UamQueryHandler::HandleSetPermissionCommandRules},
+		{"testPermissionCommandRules", &UamQueryHandler::HandleTestPermissionCommandRules},
 		{"setNativeImportFilters", &UamQueryHandler::HandleSetNativeImportFilters},
 		{"setVcsSettings", &UamQueryHandler::HandleSetVcsSettings},
 		{"setStorageSettings", &UamQueryHandler::HandleSetStorageSettings},
@@ -519,6 +530,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"cancelVcsRequest", &UamQueryHandler::HandleCancelVcsRequest},
 		{"getWorkspaceFilePreview", &UamQueryHandler::HandleGetWorkspaceFilePreview},
 		{"commitVcsChanges", &UamQueryHandler::HandleCommitVcsChanges},
+		{"resolveVcsConflict", &UamQueryHandler::HandleResolveVcsConflict},
 		{"generateVcsCommitMessage", &UamQueryHandler::HandleGenerateVcsCommitMessage},
 		{"listMemoryScanCandidates", &UamQueryHandler::HandleListMemoryScanCandidates},
 		{"scanCurrentChats", &UamQueryHandler::HandleScanCurrentChats},

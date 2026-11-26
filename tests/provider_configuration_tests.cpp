@@ -608,6 +608,117 @@ UAM_TEST(OpenCodeTerminalControlOnlySetupRetainsProgressiveMcpChoice)
 	}
 }
 
+namespace
+{
+	/// Drives asynchronous CLI View preparation to completion, joining each worker it starts.
+	bool FinishCliViewPreparation(uam::AppState& app, uam::CliTerminalState& terminal, ChatSession& chat, const ExecutionHost& host,
+	    std::vector<std::string>& argv, uam::provider_setup::Environment& environment, std::string& channel, std::string& error)
+	{
+		for (int pass = 0; pass < 4; ++pass)
+		{
+			if (uam::PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error)) return true;
+			if (!error.empty() || terminal.context_preparation == nullptr) return false;
+			app.cli_context_preparation_tasks.back().worker->join();
+		}
+		return false;
+	}
+
+	void SaveCliViewReviewer(const fs::path& data_root)
+	{
+		uam::AgentDefinition reviewer;
+		reviewer.id = "reviewer";
+		reviewer.description = "Reviews release changes";
+		reviewer.mode = "primary";
+		reviewer.workspace_access = "write";
+		reviewer.instructions = "Async role marker for the release reviewer.";
+		std::string error;
+		UAM_ASSERT(uam::AgentDefinitionService::SaveGlobalAgent(data_root, reviewer, &error));
+	}
+}
+
+UAM_TEST(AsyncCliViewCarriesCustomAgentThroughEveryPreparationRoute)
+{
+	TempDir temp("uam-async-cli-view-agent");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	SaveCliViewReviewer(app.data_root);
+	const ExecutionHost host;
+	const std::string marker = "Async role marker for the release reviewer.";
+
+	// Unloaded messages: the agent-only context folder is registered through the history-preparation pass.
+	{
+		ChatSession chat;
+		chat.id = "async-agent-claude";
+		chat.provider_id = "claude-cli";
+		chat.workspace_directory = temp.root.string();
+		chat.uam_agent_id = "reviewer";
+		chat.messages_loaded = true;
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		chat.messages_loaded = false;
+		uam::CliTerminalState terminal;
+		std::vector<std::string> argv{"claude"};
+		uam::provider_setup::Environment environment;
+		std::string channel, error;
+		UAM_ASSERT(FinishCliViewPreparation(app, terminal, chat, host, argv, environment, channel, error));
+		UAM_ASSERT_EQ(chat.provider_handoff_cli_contexts.size(), std::size_t{1});
+		const auto flag = std::ranges::find(argv, "--append-system-prompt-file");
+		UAM_ASSERT(flag != argv.end() && std::next(flag) != argv.end());
+		const std::string staged = ReadFile(uam::paths::PathFromUtf8(*std::next(flag)));
+		UAM_ASSERT(staged.starts_with(uam::provider_setup::kAgentInstructionsIntro));
+		UAM_ASSERT(staged.find(marker) != std::string::npos);
+	}
+
+	// Codex: the worker's developer instructions reach the launch argv, ahead of a positional "--".
+	{
+		ChatSession chat;
+		chat.id = "async-agent-codex";
+		chat.provider_id = "codex-cli";
+		chat.workspace_directory = temp.root.string();
+		chat.uam_agent_id = "reviewer";
+		chat.messages_loaded = true;
+		uam::CliTerminalState terminal;
+		std::vector<std::string> argv{"codex", "--", "start here"};
+		uam::provider_setup::Environment environment;
+		std::string channel, error;
+		UAM_ASSERT(FinishCliViewPreparation(app, terminal, chat, host, argv, environment, channel, error));
+		UAM_ASSERT_EQ(argv.size(), std::size_t{5});
+		UAM_ASSERT_EQ(argv[1], std::string("-c"));
+		const std::string value = nlohmann::json::parse(argv[2].substr(std::string_view("developer_instructions=").size())).get<std::string>();
+		UAM_ASSERT(value.starts_with(uam::provider_setup::kAgentInstructionsIntro));
+		UAM_ASSERT(value.find(marker) != std::string::npos);
+		UAM_ASSERT_EQ(argv[3], std::string("--"));
+		UAM_ASSERT(chat.provider_handoff_cli_contexts.empty());
+	}
+
+	// UAM tools on and Central Setup off: the control-only setup installs the agent, so no second copy is staged.
+	{
+		ChatSession chat;
+		chat.id = "async-agent-control";
+		chat.provider_id = "claude-cli";
+		chat.workspace_directory = temp.root.string();
+		chat.uam_agent_id = "reviewer";
+		chat.uam_control_enabled = true;
+		chat.messages_loaded = true;
+		app.chats.push_back(chat);
+		std::string channel, error;
+		UAM_ASSERT(uam::UamControlService::Initialize(app, &error));
+		UAM_ASSERT(uam::ProviderInteractiveAgentError(app, chat, host).empty());
+		uam::CliTerminalState terminal;
+		std::vector<std::string> argv{"claude"};
+		uam::provider_setup::Environment environment;
+		UAM_ASSERT(FinishCliViewPreparation(app, terminal, chat, host, argv, environment, channel, error));
+		UAM_ASSERT(chat.provider_handoff_cli_contexts.empty());
+		UAM_ASSERT_EQ(std::ranges::count(argv, std::string("--append-system-prompt-file")), std::ptrdiff_t{1});
+		const auto flag = std::ranges::find(argv, "--append-system-prompt-file");
+		UAM_ASSERT(std::next(flag) != argv.end());
+		const std::string installed = ReadFile(uam::paths::PathFromUtf8(*std::next(flag)));
+		UAM_ASSERT(installed.find(marker) != std::string::npos);
+		UAM_ASSERT_EQ(installed.find(marker), installed.rfind(marker));
+		uam::UamControlService::Shutdown(app);
+	}
+}
+
 UAM_TEST(OpenCodeTerminalProgressiveMcpChoiceDoesNotNeedOtherSetup)
 {
 	constexpr const char* flag = "OPENCODE_EXPERIMENTAL_CODE_MODE";
@@ -979,6 +1090,44 @@ UAM_TEST(CentralLaunchContractsCoverAllFiveProvidersAndPreserveOpenCodeConfig)
 			UAM_ASSERT_EQ(configuration["permission"]["edit"], nlohmann::json("deny"));
 			UAM_ASSERT_EQ(configuration["instructions"].size(), std::size_t{2});
 		}
+	}
+}
+
+UAM_TEST(CodexSetupFoldsCliViewAgentDeveloperInstructionsInsteadOfReplacingThem)
+{
+	TempDir temp("uam-codex-agent-developer-instructions");
+	AppSettings settings;
+	settings.central_provider_configuration.enabled = true;
+	settings.central_provider_configuration.instructions = "Shared central preference";
+	ChatSession chat;
+	chat.provider_id = uam::provider_ids::kCodexCli;
+	ExecutionHost host;
+	uam::ProviderConfigurationBundle bundle;
+	std::string error;
+	UAM_ASSERT(uam::PrepareProviderConfiguration(temp.root / "data", settings, chat, host, temp.root, bundle, error));
+	// CLI View's custom agent value arrives first; a second developer_instructions would replace one of them.
+	const std::string agent_value = std::string(uam::provider_setup::kAgentInstructionsIntro) + "\n\nAgent role marker";
+	std::vector<std::string> argv{"codex", "-c", "developer_instructions=" + nlohmann::json(agent_value).dump()};
+	uam::provider_setup::Environment environment;
+	UAM_ASSERT(uam::provider_setup::Apply(chat.provider_id, bundle.local_directory, temp.root, argv, environment, error));
+	const auto developer = std::ranges::count_if(argv, [](const std::string& argument) { return argument.starts_with("developer_instructions="); });
+	UAM_ASSERT_EQ(developer, std::ptrdiff_t{1});
+	const auto value = std::ranges::find_if(argv, [](const std::string& argument) { return argument.starts_with("developer_instructions="); });
+	const std::string text = nlohmann::json::parse(value->substr(std::string_view("developer_instructions=").size())).get<std::string>();
+	const std::size_t central = text.find("Shared central preference");
+	const std::size_t agent_role = text.find("Agent role marker");
+	UAM_ASSERT(central != std::string::npos && agent_role != std::string::npos && central < agent_role);
+	// A user's own value after the agent's would replace the combined text, dropping the agent's role: refused.
+	argv = {"codex", "-c", "developer_instructions=" + nlohmann::json(agent_value).dump(), "-c", "developer_instructions='Be terse'"};
+	UAM_ASSERT(!uam::provider_setup::Apply(chat.provider_id, bundle.local_directory, temp.root, argv, environment, error));
+	UAM_ASSERT(error.find("would replace the selected agent's instructions") != std::string::npos);
+	// Without an agent, a user's own value, TOML or raw text, is left as written rather than folded or refused.
+	for (const std::string& user_value : std::vector<std::string>{"developer_instructions='Be terse'", "developer_instructions=" + nlohmann::json("Be terse").dump()})
+	{
+		argv = {"codex", "-c", user_value};
+		UAM_ASSERT(uam::provider_setup::Apply(chat.provider_id, bundle.local_directory, temp.root, argv, environment, error));
+		UAM_ASSERT(std::ranges::find(argv, user_value) != argv.end());
+		UAM_ASSERT_EQ(std::ranges::count_if(argv, [](const std::string& argument) { return argument.starts_with("developer_instructions="); }), std::ptrdiff_t{2});
 	}
 }
 

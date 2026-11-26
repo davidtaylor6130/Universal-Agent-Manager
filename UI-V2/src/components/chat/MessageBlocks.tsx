@@ -29,6 +29,7 @@ import {
   ToolCallInlineRows,
 } from './ToolCallViews'
 import { ContextMeter } from './StatusHelpers'
+import { formatElapsed } from '../../utils/elapsed'
 import { CODEX_ENABLED } from '../../config/buildFeatures'
 import { DEFAULT_PROVIDER_ID, fallbackProviderForId, providerShortName } from '../../utils/providerMetadata'
 
@@ -278,13 +279,9 @@ export function ThinkingBlock({
 
 export type WorkingDisplayMode = 'compact' | 'verbose'
 
+/** Saved turn durations arrive in seconds; the text is the shared elapsed format. */
 export function formatWorkedDuration(seconds = 0) {
-  const wholeSeconds = Math.max(0, Math.round(seconds))
-  const minutes = Math.floor(wholeSeconds / 60)
-  const remainder = wholeSeconds % 60
-  if (minutes === 0) return `${remainder}s`
-  if (remainder === 0) return `${minutes}m`
-  return `${minutes}m ${remainder}s`
+  return formatElapsed(seconds * 1000)
 }
 
 function CompactWorkingSummary({

@@ -669,6 +669,8 @@ add_library(uam_core_objects OBJECT
   src/app/storage_retention_service.cpp
   src/app/pr_watch_service.cpp
   src/common/pr_watch/pr_watch_rules.cpp
+  src/app/timer_service.cpp
+  src/common/scheduling/schedule_rules.cpp
   src/app/data_folder_preflight.cpp
   src/app/data_folder_settings_service.cpp
   src/app/data_folder_transition.cpp
@@ -708,6 +710,7 @@ add_library(uam_core_objects OBJECT
   src/app/svn_branch_service.cpp
   src/app/svn_history.cpp
   src/app/svn_branch_process.cpp
+  src/app/svn_failure.cpp
   src/cef/uam_cef_command_line_config.cpp
   src/cef/uam_bridge_request.cpp
   src/cef/state_serializer.cpp
@@ -742,6 +745,7 @@ add_library(uam_core_objects OBJECT
   src/common/chat/chat_folder_data_folder.cpp
   src/common/utils/command_line_words.cpp
   src/common/config/frontend_actions.cpp
+  src/common/provider/provider_account_refusal.cpp
   src/common/provider/provider_profile.cpp
   src/common/provider/runtime/provider_runtime_facade.cpp
   src/common/provider/runtime/provider_runtime_registry.cpp
@@ -1793,6 +1797,7 @@ if(UAM_BUILD_TESTS)
     tests/claude_model_metadata_tests.cpp
     tests/svn_commit_scheduling_tests.cpp
     tests/svn_history_tests.cpp
+    tests/svn_failure_tests.cpp
     tests/native_import_failure_tests.cpp
     tests/empty_native_import_tests.cpp
     tests/opencode_import_stream_tests.cpp
@@ -1837,14 +1842,17 @@ if(UAM_BUILD_TESTS)
     tests/uam_control_chat_create_tests.cpp
     tests/pr_watch_tests.cpp
     tests/automation_api_tests.cpp
+    tests/timer_service_tests.cpp
     tests/turn_finalization_ownership_tests.cpp
     tests/checkpoint_staging_tests.cpp
     tests/codex_allowance_ownership_tests.cpp
     tests/codex_permission_tests.cpp
     tests/memory_workspace_ownership_tests.cpp
     tests/execution_routing_tests.cpp
+    tests/child_process_priority_tests.cpp
     tests/routing_default_scope_tests.cpp
     tests/model_discovery_startup_tests.cpp
+    tests/provider_account_refusal_tests.cpp
     tests/remote_delivery_exit_tests.cpp
     tests/agent_provider_inheritance_tests.cpp
     tests/workspace_import_policy_tests.cpp
@@ -1857,6 +1865,7 @@ if(UAM_BUILD_TESTS)
     tests/native_chat_identity_tests.cpp
     tests/chat_file_change_receipt_tests.cpp
     tests/organization_tests.cpp
+    tests/store_load_fence_tests.cpp
     tests/transcript_retention_tests.cpp
     tests/chat_search_tests.cpp
     tests/interaction_performance_tests.cpp
@@ -1937,6 +1946,8 @@ if(UAM_BUILD_TESTS)
     tests/acp_permission_command_provenance_tests.cpp
     tests/copilot_captured_question_replay_tests.cpp
     tests/read_only_command_tests.cpp
+    tests/command_rules_tests.cpp
+    tests/acp_permission_rule_tests.cpp
     tests/compaction_runtime_sync_tests.cpp
     tests/installer_quiesce_tests.cpp
     tests/durable_retry_worktree_tests.cpp
