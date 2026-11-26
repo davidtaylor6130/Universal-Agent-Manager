@@ -90,8 +90,9 @@ describe('David subagent catalogue and pane navigation', () => {
       expect(toggles[0].getAttribute('aria-expanded')).toBe('true')
       const nativeRow = host.querySelector('#all-chat-list [data-session-id="passive-native"]')!
       expect(nativeRow).not.toBeNull()
-      expect(nativeRow.querySelector('[aria-label="Subagent"]')).not.toBeNull()
-      expect(nativeRow.querySelector('[aria-label^="Provider:"]')).toBeNull()
+      // The robot is a leading icon in the chat's visual row, beside its interactive element.
+      expect(nativeRow.closest('.uam-sb-row')!.querySelector('[aria-label="Subagent"]')).not.toBeNull()
+      expect(nativeRow.closest('.uam-sb-row')!.querySelector('[aria-label^="Provider:"]')).toBeNull()
       const group = host.querySelector('[role="group"][aria-label="Subagents of Main task"]')!
       const managed = group.querySelector('[aria-label="Open managed conversation for Review worker"]')!
       expect(managed).not.toBeNull()
@@ -575,7 +576,7 @@ describe('David subagent catalogue and pane navigation', () => {
     expect(host.querySelector('button.uam-subagent-toggle')!.getAttribute('aria-expanded')).toBe('false')
     await reveal()
     expect(host.querySelector('[aria-label="Subagents of Restored root"] [data-session-id="native-parent"]')).not.toBeNull()
-    expect(host.querySelector('[aria-label="Subagents of Native parent"] [data-session-id="native-grandchild"] [aria-label="Subagent"]')).not.toBeNull()
+    expect(host.querySelector('[aria-label="Subagents of Native parent"] [data-session-id="native-grandchild"]')?.closest('.uam-sb-row')?.querySelector('[aria-label="Subagent"]')).not.toBeNull()
     const nativeGroup = host.querySelector('[role="group"][aria-label="Subagents of Native parent"]')!
     expect(nativeGroup.querySelector('[data-session-id="native-grandchild"]')).not.toBeNull()
     expect(requests.filter(query => query.action === 'listManagedSubagents').map(query => query.payload.chatId)).toEqual([child.id])

@@ -43,6 +43,36 @@ describe('ChatSearchBar', () => {
     act(() => root.unmount())
     host.remove()
   })
+
+  it('clears the search from an IconButton with a 24px hit area that keeps its 18px place in the field', () => {
+    const onClear = vi.fn()
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    act(() => root.render(
+      <ChatSearchBar
+        value="parser"
+        deepSearch={false}
+        filters={{ providerIds: [], statusIds: [] }}
+        providerOptions={[]}
+        onChange={vi.fn()}
+        onClear={onClear}
+        onToggleDeepSearch={vi.fn()}
+        onToggleProviderFilter={vi.fn()}
+        onToggleStatusFilter={vi.fn()}
+        onClearFilters={vi.fn()}
+      />,
+    ))
+    const clear = host.querySelector<HTMLButtonElement>('button[aria-label="Clear search"]')!
+    expect(clear.classList.contains('uam-iconbtn')).toBe(true)
+    expect(clear.classList.contains('uam-sb-iconbtn')).toBe(true)
+    expect(clear.classList.contains('uam-sb-iconbtn--inline')).toBe(true)
+    expect(clear.style.getPropertyValue('--sb-paint')).toBe('18px')
+    act(() => clear.click())
+    expect(onClear).toHaveBeenCalledTimes(1)
+    act(() => root.unmount())
+    host.remove()
+  })
 })
 
 describe('providerGridColumns', () => {
