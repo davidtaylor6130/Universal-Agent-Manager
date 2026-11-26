@@ -660,6 +660,7 @@ add_library(uam_core_objects OBJECT
   src/app/execution_routing_service.cpp
   src/app/repository_route_match_service.cpp
   src/app/execution_routing_integration.cpp
+  src/app/host_admission_integration.cpp
   src/app/host_load_integration.cpp
   src/app/resource_collection_service.cpp
   src/app/provider_worker_command.cpp
@@ -739,6 +740,7 @@ add_library(uam_core_objects OBJECT
   src/common/provider/attached_skill_resources.cpp
   src/common/runtime/acp/acp_session_runtime.cpp
   src/common/runtime/acp/compute_pool_gate.cpp
+  src/common/runtime/host_admission.cpp
   src/common/runtime/host_load_sampler.cpp
   src/common/runtime/acp/acp_wait_state.cpp
   src/common/runtime/json_runtime.cpp
@@ -1814,6 +1816,7 @@ if(UAM_BUILD_TESTS)
     tests/codex_permission_tests.cpp
     tests/memory_workspace_ownership_tests.cpp
     tests/execution_routing_tests.cpp
+    tests/host_admission_tests.cpp
     tests/child_process_priority_tests.cpp
     tests/routing_default_scope_tests.cpp
     tests/model_discovery_startup_tests.cpp

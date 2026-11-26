@@ -12,6 +12,7 @@
 #include "common/platform/observed_process_stop.h"
 #include "common/provider/provider_profile.h"
 #include "common/provider/attached_skill_resources.h"
+#include "common/runtime/host_admission.h"
 #include "common/runtime/terminal/terminal_dimensions.h"
 #include "common/runtime/host_load_sampler.h"
 #include "common/runtime/stream_watch.h"
@@ -165,6 +166,11 @@ namespace uam
 		int rows = kCliTerminalDefaultRows;
 		int cols = kCliTerminalDefaultCols;
 		bool should_launch = false;
+		/// Host admission hold on this CLI View's launch: one plain line, and whether Run anyway is offered.
+		std::string host_admission_wait;
+		bool host_admission_run_anyway_offered = false;
+		bool host_admission_run_anyway = false;
+		double host_admission_retry_at_s = 0.0;
 		bool worktree_launch_pending = false;
 		std::shared_ptr<std::stop_source> worktree_launch_cancellation;
 		std::shared_ptr<CliContextPreparation> context_preparation;
@@ -503,6 +509,8 @@ namespace uam
 		std::string provider_id;
 		std::string workspace_directory;
 		std::string execution_host_id = "local";
+		/// Held by host admission (background budget or load) rather than a compatibility check; retried each poll.
+		bool admission_wait = false;
 	};
 
 	struct UamAgentWait;
@@ -837,6 +845,8 @@ namespace uam
 		bool session_ready = false;
 		bool model_discovery_only = false;
 		bool ephemeral_model_discovery = false;
+		/// Host admission place of a model discovery process; released when the session is removed.
+		std::shared_ptr<host_admission::HeldLease> host_admission_lease;
 		bool load_session_supported = false;
 		bool resume_session_supported = false;
 		bool mcp_http_supported = false;
@@ -974,6 +984,12 @@ namespace uam
 		std::string compute_pool_wait_name;
 		int compute_pool_wait_in_use = 0;
 		int compute_pool_wait_limit = 0;
+		// Host admission holds share the compute pool ticket and wait fields; these add its one-line message and
+		// whether the user may choose Run anyway. See host_admission_integration.h.
+		std::string compute_pool_wait_message;
+		bool compute_pool_wait_run_anyway = false;
+		// The user chose Run anyway for the held turn; consumed when a turn is admitted, cleared by Stop.
+		bool host_admission_run_anyway = false;
 		std::string goal_queue_admission_revision;
 		bool goal_resume_suppressed = false;
 		std::string goal_turn_kind;
@@ -1298,6 +1314,8 @@ namespace uam
 
 	struct AsyncMemoryExtractionTask
 	{
+		/// Host admission place of this background worker; released when the finished task is removed.
+		std::shared_ptr<host_admission::HeldLease> host_admission_lease;
 		bool running = false;
 		std::filesystem::path data_root;
 		std::string chat_id;
@@ -1550,6 +1568,15 @@ namespace uam
 		std::shared_ptr<TimerService> timer_service;
 		std::shared_ptr<DataFolderSettingsService> data_folder_settings;
 		std::shared_ptr<ExecutionRoutingService> execution_routing_service;
+		/// The gate every process start asks before it runs on a computer; null in tools and tests that do not create it.
+		std::shared_ptr<host_admission::HostAdmission> host_admission;
+		/// Load reading per computer from the host load signal. Unset, or an unknown reading, means slot counts only.
+		std::function<host_admission::LoadSample(const std::string& host_id)> host_load_sample;
+		/// One-line waits of starts that have no chat status line (background lanes), by admission key, for diagnostics.
+		/// Each entry is the wait's message and when it was last asked; PollHostAdmission drops stale ones.
+		std::unordered_map<std::string, std::pair<std::string, double>> host_admission_waits;
+		double host_admission_next_refresh_s = 0.0;
+		std::string host_admission_health_snapshot;
 		std::vector<RepositoryRouteWorkspace> repository_route_workspaces;
 		std::filesystem::path repository_route_data_root;
 		double repository_route_observed_at_s = -1.0;

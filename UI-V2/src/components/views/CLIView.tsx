@@ -89,8 +89,9 @@ export function CLIView({ session }: CLIViewProps) {
   )
   const cliBinding = useAppStore(useShallow((s) => {
     const binding = s.cliBindingBySessionId[session.id]
-    return { terminalId: binding?.terminalId, running: binding?.running, lastError: binding?.lastError }
+    return { terminalId: binding?.terminalId, running: binding?.running, lastError: binding?.lastError, hostAdmissionWait: binding?.hostAdmissionWait }
   }))
+  const runHeldWorkAnyway = useAppStore((s) => s.runHeldWorkAnyway)
   const pendingUserInput = useAppStore(s => s.acpBindingBySessionId[session.id]?.pendingUserInput)
   const resolveAcpUserInput = useAppStore(s => s.resolveAcpUserInput)
   const setCliBinding = useAppStore((s) => s.setCliBinding)
@@ -484,6 +485,19 @@ export function CLIView({ session }: CLIViewProps) {
 
   return (
     <div className="flex flex-col h-full overflow-hidden">
+      {cliBinding?.hostAdmissionWait && !cliBinding.running && (
+        <div className="flex-shrink-0 px-3 pt-2" data-testid="cli-host-admission-wait">
+          <Notice
+            tone="info"
+            dismissible={false}
+            actions={cliBinding.hostAdmissionWait.runAnyway
+              ? <Button size="sm" onClick={() => void runHeldWorkAnyway(session.id)}>Run anyway</Button>
+              : undefined}
+          >
+            {cliBinding.hostAdmissionWait.message}
+          </Notice>
+        </div>
+      )}
       {!!visibleTerminalError && (
         <div className="flex-shrink-0 px-3 pt-2">
           <Notice

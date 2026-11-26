@@ -1,6 +1,7 @@
 #include "execution_routing_service.h"
 
 #include <algorithm>
+#include <optional>
 #include <unordered_set>
 
 namespace uam
@@ -21,6 +22,34 @@ namespace uam
 			    candidate.connection_identity == candidate.confirmed_connection_identity &&
 			    !candidate.provider_configuration_identity.empty() &&
 			    candidate.provider_configuration_identity == candidate.confirmed_provider_configuration_identity;
+		}
+
+		/// The least occupied automatic candidate with a free slot and a mapping for the workspace, other than
+		/// excluded_host. Overloaded computers take no new work, and the local computer is never a candidate.
+		std::pair<const ExecutionRoutingCandidate*, const ExecutionRoutingMapping*> SelectAutomaticHost(
+		    const std::vector<ExecutionRoutingCandidate>& candidates, std::unordered_map<std::string, std::size_t>& counts,
+		    const std::string& source_workspace_identity, const std::string& excluded_host)
+		{
+			const ExecutionRoutingCandidate* selected = nullptr;
+			const ExecutionRoutingMapping* selected_mapping = nullptr;
+			std::size_t selected_count = 0;
+			for (const ExecutionRoutingCandidate& candidate : candidates)
+			{
+				if (!AutomaticCandidateReady(candidate) || candidate.overloaded || candidate.full || candidate.host_id == excluded_host) continue;
+				const std::size_t count = counts[candidate.host_id];
+				if (count >= candidate.max_active_turns) continue;
+				for (const ExecutionRoutingMapping& mapping : candidate.mappings)
+				{
+					if (mapping.source_workspace_identity != source_workspace_identity) continue;
+					if (selected == nullptr || count < selected_count || (count == selected_count && candidate.host_id < selected->host_id))
+					{
+						selected = &candidate;
+						selected_mapping = &mapping;
+						selected_count = count;
+					}
+				}
+			}
+			return {selected, selected_mapping};
 		}
 
 		using HostCandidates = std::unordered_map<std::string, const ExecutionRoutingCandidate*>;
@@ -140,11 +169,33 @@ namespace uam
 			const std::unordered_map<std::string, std::string>::const_iterator occupied = occupied_hosts.find(request.chat_id);
 			if (occupied != occupied_hosts.end() && occupied->second != existing.host_id) return InvalidSnapshot();
 			if (request.recovery_of_owned_work) m_reservations[request.chat_id] = existing;
+			// Work that has not started may move to another eligible remote computer when its own is full, down or
+			// overloaded. It keeps its workspace (the mapping must match), never moves to the local computer, and
+			// started work never moves.
+			const auto move_unstarted = [&]() -> std::optional<ExecutionRoutingDecision>
+			{
+				if (!request.movable || !existing.automatic || request.recovery_of_owned_work || !request.automatic_enabled ||
+				    request.source_workspace_identity.empty()) return std::nullopt;
+				// The caller's snapshot is the evidence of running work; this service's own reservation is not.
+				if (std::ranges::any_of(occupancy, [&request](const ExecutionRoutingOccupancy& work) { return work.chat_id == request.chat_id; })) return std::nullopt;
+				const auto [target, mapping] = SelectAutomaticHost(candidates, counts, request.source_workspace_identity, existing.host_id);
+				if (target == nullptr) return std::nullopt;
+				ExecutionRoutingAssignment moved{request.chat_id, target->host_id, target->connection_identity,
+				    target->provider_configuration_identity, mapping->destination_folder_id, mapping->destination_directory, true};
+				m_reservations[request.chat_id] = moved;
+				m_waiters.erase(request.chat_id);
+				ExecutionRoutingDecision decision{ExecutionRoutingStatus::Assigned, ExecutionRoutingReason::None, moved};
+				decision.moved = true;
+				return decision;
+			};
 			const std::unordered_map<std::string, const ExecutionRoutingCandidate*>::const_iterator owner = hosts.find(existing.host_id);
 			if (owner == hosts.end() || !owner->second->runner_ready ||
 			    !owner->second->runner_compatible || !owner->second->provider_supported)
+			{
+				if (std::optional<ExecutionRoutingDecision> moved = move_unstarted()) return *moved;
 				return Waiting(ExecutionRoutingReason::HostUnavailable, existing, existing.host_id,
 				    owner != hosts.end() && owner->second->runner_ready && owner->second->runner_compatible ? ExecutionRoutingHostSkip::ProviderUnavailable : ExecutionRoutingHostSkip::Unreachable);
+			}
 			if (existing.connection_identity != owner->second->connection_identity ||
 			    existing.provider_configuration_identity != owner->second->provider_configuration_identity)
 				return Waiting(ExecutionRoutingReason::OwnershipChanged, existing, existing.host_id, ExecutionRoutingHostSkip::Unconfirmed);
@@ -154,9 +205,14 @@ namespace uam
 				if (!request.automatic_enabled || !AutomaticCandidateReady(*owner->second))
 					return Waiting(ExecutionRoutingReason::NoEligibleHost, existing, existing.host_id,
 					    request.automatic_enabled ? SkipReason(*owner->second, {}) : ExecutionRoutingHostSkip::Off);
+				// Host admission's full or overloaded view only offers unstarted work a move. Otherwise the chat stays
+				// assigned and waits in its computer's host admission line, with its one-line wait (and Run anyway).
+				if (owner->second->overloaded || owner->second->full)
+					if (std::optional<ExecutionRoutingDecision> moved = move_unstarted()) return *moved;
 				if (counts[existing.host_id] - owned_slot >= owner->second->max_active_turns)
 				{
-					// An assigned chat can only ever run on its own computer, so it queues for that one alone.
+					if (std::optional<ExecutionRoutingDecision> moved = move_unstarted()) return *moved;
+					// An assigned chat that cannot move can only ever run on its own computer, so it queues for that one alone.
 					wait_in_queue({existing.host_id});
 					return Waiting(ExecutionRoutingReason::NoEligibleHost, existing, existing.host_id, ExecutionRoutingHostSkip::Full);
 				}
@@ -182,27 +238,13 @@ namespace uam
 		if (!request.automatic_enabled)
 			return {ExecutionRoutingStatus::Disabled, ExecutionRoutingReason::None, {}};
 		if (request.source_workspace_identity.empty()) return InvalidSnapshot();
-		const ExecutionRoutingCandidate* selected = nullptr;
-		const ExecutionRoutingMapping* selected_mapping = nullptr;
-		std::size_t selected_count = 0;
 		std::vector<std::string> eligible;
+		// Every ready computer with a mapping can take the chat later, even one host admission holds full or overloaded now.
 		for (const ExecutionRoutingCandidate& candidate : candidates)
-		{
-			if (!AutomaticCandidateReady(candidate)) continue;
-			const std::size_t count = counts[candidate.host_id];
-			for (const ExecutionRoutingMapping& mapping : candidate.mappings)
-			{
-				if (mapping.source_workspace_identity != request.source_workspace_identity) continue;
-				if (eligible.empty() || eligible.back() != candidate.host_id) eligible.push_back(candidate.host_id);
-				if (count >= candidate.max_active_turns) continue;
-				if (selected == nullptr || count < selected_count || (count == selected_count && candidate.host_id < selected->host_id))
-				{
-					selected = &candidate;
-					selected_mapping = &mapping;
-					selected_count = count;
-				}
-			}
-		}
+			if (AutomaticCandidateReady(candidate) && std::ranges::any_of(candidate.mappings, [&request](const ExecutionRoutingMapping& mapping)
+			    { return mapping.source_workspace_identity == request.source_workspace_identity; }))
+				eligible.push_back(candidate.host_id);
+		const auto [selected, selected_mapping] = SelectAutomaticHost(candidates, counts, request.source_workspace_identity, {});
 		if (selected == nullptr)
 		{
 			// Only a chat some ready computer could take is waiting for capacity; one with none keeps no new place.

@@ -1,6 +1,7 @@
 #include "common/runtime/acp/compute_pool_gate.h"
 
 #include "app/chat_domain_service.h"
+#include "app/host_admission_integration.h"
 #include "common/config/compute_pools.h"
 #include "common/runtime/acp/acp_session_internal.h"
 
@@ -40,6 +41,12 @@ namespace uam
 			});
 		}
 
+		/// A turn held by host admission waits for its computer, not for a pool: it must not hold a pool's place.
+		bool HeldByHost(const AcpSessionState& session)
+		{
+			return !session.compute_pool_wait_message.empty();
+		}
+
 		bool Occupies(const AppState& app, const AcpSessionState& session)
 		{
 			// A remote turn being reconnected is still running on its host, unless the user has already stopped it.
@@ -59,11 +66,21 @@ namespace uam
 
 	namespace compute_pools
 	{
+		bool OccupiesTurnSlot(const AppState& app, const AcpSessionState& session)
+		{
+			return Occupies(app, session);
+		}
+
 		bool IsWaiting(const AcpSessionState& session, double now_seconds)
 		{
 			return session.compute_pool_ticket != 0 && session.compute_pool_ticket_turn_serial == session.turn_serial &&
 			    session.compute_pool_admitted_turn_serial != session.turn_serial && session.running && session.processing &&
 			    !session.queued_prompt.empty() && !session.queue_held && now_seconds - session.compute_pool_ticket_seen_s < kStaleWaiterSeconds;
+		}
+
+		bool HostStartHeld(const AcpSessionState& session, double now_seconds)
+		{
+			return !session.running && !session.compute_pool_wait_message.empty() && now_seconds - session.compute_pool_ticket_seen_s < kStaleWaiterSeconds;
 		}
 
 		bool HeldBeforeDelivery(const AcpSessionState& session)
@@ -79,7 +96,7 @@ namespace uam
 			{
 				const int waiting = static_cast<int>(std::ranges::count_if(app.acp_sessions, [&](const std::unique_ptr<AcpSessionState>& session)
 				{
-					return IsWaiting(*session, now) && InPool(app, *session, pool);
+					return IsWaiting(*session, now) && !HeldByHost(*session) && InPool(app, *session, pool);
 				}));
 				// The same counts split by the computer each turn runs on; a pool still spans every computer.
 				nlohmann::json hosts = nlohmann::json::object();
@@ -102,8 +119,10 @@ namespace uam
 	{
 		bool AdmitTurnToComputePools(AppState& app, AcpSessionState& session, const ChatSession& chat, bool& status_changed)
 		{
+			if (session.compute_pool_admitted_turn_serial == session.turn_serial) return true;
+			const bool host_gate = app.host_admission != nullptr;
 			// A turn held when the last pool was removed still needs the admission below, which resets its inactivity clocks.
-			if ((app.settings.compute_pools.empty() && session.compute_pool_wait_name.empty()) || session.compute_pool_admitted_turn_serial == session.turn_serial) return true;
+			if (!host_gate && app.settings.compute_pools.empty() && session.compute_pool_wait_name.empty()) return true;
 			const double now = GetAppTimeSeconds();
 			const bool continuing = session.compute_pool_ticket != 0 && session.compute_pool_ticket_turn_serial == session.turn_serial;
 			const double previous_seen = continuing ? session.compute_pool_ticket_seen_s : now;
@@ -114,6 +133,37 @@ namespace uam
 			}
 			session.compute_pool_ticket_seen_s = now;
 
+			const auto hold = [&](const std::string& name, int in_use, int limit, const std::string& message, bool run_anyway)
+			{
+				status_changed = !continuing || session.compute_pool_wait_name != name || session.compute_pool_wait_in_use != in_use || session.compute_pool_wait_limit != limit ||
+				    session.compute_pool_wait_message != message || session.compute_pool_wait_run_anyway != run_anyway;
+				session.compute_pool_wait_name = name;
+				session.compute_pool_wait_in_use = in_use;
+				session.compute_pool_wait_limit = limit;
+				session.compute_pool_wait_message = message;
+				session.compute_pool_wait_run_anyway = run_anyway;
+				// Time spent held is not time spent running: a sub-agent's run limit starts counting once it is admitted.
+				if (const auto deadline = app.agent_run_deadline_steady_ms.find(session.managed_agent_run_id); deadline != app.agent_run_deadline_steady_ms.end())
+					deadline->second += static_cast<std::int64_t>((now - previous_seen) * 1000.0);
+				return false;
+			};
+
+			// Host admission first: the chat's computer, whatever routing chose it, applies its slot cap and load limits.
+			// A refused turn takes its place in that computer's line. One the computer would admit is only looked at
+			// here and admitted after the pools, so a turn a pool holds keeps no host slot it cannot use.
+			host_admission::Request host_request;
+			if (host_gate)
+			{
+				RefreshHostAdmission(app, now);
+				host_request = HostAdmissionTurnRequest(app, &session, chat, now);
+				if (!app.host_admission->Peek(host_request).admitted)
+				{
+					const host_admission::Decision decision = app.host_admission->Admit(host_request);
+					if (!decision.admitted)
+						return hold(HostAdmissionLabel(app, host_request.host_id), static_cast<int>(decision.in_use), static_cast<int>(decision.limit), decision.message, decision.run_anyway_offered);
+				}
+			}
+
 			const std::string model_id = TurnModelId(session, chat);
 			for (const ComputePool& pool : app.settings.compute_pools)
 			{
@@ -121,19 +171,26 @@ namespace uam
 				const int in_use = InUse(app, pool);
 				const int ahead = static_cast<int>(std::ranges::count_if(app.acp_sessions, [&](const std::unique_ptr<AcpSessionState>& other)
 				{
-					return other.get() != &session && compute_pools::IsWaiting(*other, now) && other->compute_pool_ticket < session.compute_pool_ticket && InPool(app, *other, pool);
+					return other.get() != &session && compute_pools::IsWaiting(*other, now) && !HeldByHost(*other) && other->compute_pool_ticket < session.compute_pool_ticket && InPool(app, *other, pool);
 				}));
 				if (in_use + ahead < pool.limit) continue;
+				// A turn a pool holds keeps no host slot or place: its start reservation and host waiter are dropped,
+				// and it asks the host again once the pool admits it.
+				if (host_gate)
+				{
+					(void)app.host_admission->Release(host_request.key);
+					(void)app.host_admission->Withdraw(host_request.key);
+				}
 				// A slot promised to an earlier waiter is as unavailable as one in use.
-				const int shown = std::min(in_use + ahead, pool.limit);
-				status_changed = !continuing || session.compute_pool_wait_name != pool.name || session.compute_pool_wait_in_use != shown || session.compute_pool_wait_limit != pool.limit;
-				session.compute_pool_wait_name = pool.name;
-				session.compute_pool_wait_in_use = shown;
-				session.compute_pool_wait_limit = pool.limit;
-				// Time spent held is not time spent running: a sub-agent's run limit starts counting once it is admitted.
-				if (const auto deadline = app.agent_run_deadline_steady_ms.find(session.managed_agent_run_id); deadline != app.agent_run_deadline_steady_ms.end())
-					deadline->second += static_cast<std::int64_t>((now - previous_seen) * 1000.0);
-				return false;
+				return hold(pool.name, std::min(in_use + ahead, pool.limit), pool.limit, std::string(), false);
+			}
+			if (host_gate)
+			{
+				const host_admission::Decision decision = app.host_admission->Admit(host_request);
+				if (!decision.admitted)
+					return hold(HostAdmissionLabel(app, host_request.host_id), static_cast<int>(decision.in_use), static_cast<int>(decision.limit), decision.message, decision.run_anyway_offered);
+				// The turn is live from now on; the reservation its provider start held is no longer needed.
+				(void)app.host_admission->Release(host_request.key);
 			}
 
 			// The inactivity limits measure provider silence, which starts now for a turn that was held.
@@ -141,6 +198,9 @@ namespace uam
 			session.compute_pool_admitted_turn_serial = session.turn_serial;
 			session.compute_pool_ticket = 0;
 			session.compute_pool_wait_name.clear();
+			session.compute_pool_wait_message.clear();
+			session.compute_pool_wait_run_anyway = false;
+			session.host_admission_run_anyway = false;
 			return true;
 		}
 	}
