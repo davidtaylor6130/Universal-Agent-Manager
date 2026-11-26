@@ -62,7 +62,11 @@ bool ReorderQueuedAcpPrompts(AppState& app, const std::string& chat_id, const st
 /// <summary>Durably resumes only the exact observed held queue before scheduling delivery.</summary>
 bool ResumeQueuedAcpPrompts(AppState& app, const std::string& chat_id, const std::vector<std::pair<std::string, int>>& expected, std::string* error_out = nullptr);
 bool StartAcpModelDiscovery(AppState& app, const std::string& chat_id, std::string* error_out = nullptr, bool stop_when_complete = false);
-bool StartEphemeralAcpModelDiscovery(AppState& app, const std::string& provider_id, const std::string& workspace_directory, const std::string& execution_host_id = "local", std::string* error_out = nullptr);
+/// Host admission may hold the start (background budget or load on that computer): it then returns false with
+/// admission_held set and the one-line wait in error_out; queue it with QueueAcpModelDiscoveryAdmissionRetry.
+bool StartEphemeralAcpModelDiscovery(AppState& app, const std::string& provider_id, const std::string& workspace_directory, const std::string& execution_host_id = "local", std::string* error_out = nullptr, bool* admission_held = nullptr);
+/// Keeps a discovery held by host admission and starts it once its computer admits it.
+void QueueAcpModelDiscoveryAdmissionRetry(AppState& app, const std::string& provider_id, const std::string& workspace_directory, const std::string& execution_host_id);
 bool QueueAcpModelDiscoveryCompatibilityRetry(AppState& app, const std::string& chat_id, const std::string& provider_id, const std::string& workspace_directory, const std::string& execution_host_id, const std::string& blocked_reason);
 bool RetryCompatibilityBlockedAcpModelDiscoveries(AppState& app);
 bool RetryLastAcpPrompt(AppState& app, const std::string& chat_id, std::string* error_out = nullptr);

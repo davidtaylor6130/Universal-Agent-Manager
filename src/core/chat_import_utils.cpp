@@ -378,27 +378,4 @@ namespace uam
 		return uam::strings::NonEmptyOrFallback(title, "Imported Gemini");
 	}
 
-	bool ImportedProjectRootExists(const std::filesystem::path& project_root)
-	{
-		if (project_root.empty())
-		{
-			return false;
-		}
-		const std::filesystem::path normalized = uam::paths::LexicallyNormalPath(project_root);
-		return uam::paths::IsDirectoryNoThrow(normalized);
-	}
-
-	std::filesystem::path ResolveImportedProjectRootOrFallback(const std::filesystem::path& project_root, const std::filesystem::path& fallback_root)
-	{
-		if (ImportedProjectRootExists(project_root))
-		{
-			return uam::paths::LexicallyNormalPath(project_root);
-		}
-		if (fallback_root.empty())
-		{
-			return {};
-		}
-		return uam::paths::LexicallyNormalPath(fallback_root);
-	}
-
 } // namespace uam

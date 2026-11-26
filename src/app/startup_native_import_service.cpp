@@ -1,3 +1,4 @@
+#include "app/host_admission_integration.h"
 #include "common/platform/background_thread_priority.h"
 #include "common/platform/child_process_priority.h"
 #include "app/startup_native_import_service.h"
@@ -716,7 +717,9 @@ namespace uam
 	{
 		const bool settled = m_phase == "ready" || m_phase == "complete";
 		// An unreachable host's workspaces are retried in the background while the review stays open.
-		if (settled && m_scoped_scanner && !m_scan.valid() && !m_stop.stop_requested() && RemoteRetryDue()) (void)StartPendingRemoteScans(app);
+		// A retry is background work: it waits while this computer is at its background budget or busy.
+		if (settled && m_scoped_scanner && !m_scan.valid() && !m_stop.stop_requested() && RemoteRetryDue() &&
+		    AdmitBackgroundStart(app, "history-import:start", std::string(execution_hosts::kLocalHostId), false).admitted) (void)StartPendingRemoteScans(app);
 		if (m_phase == "scanning" || (settled && m_scan.valid()))
 		{
 			if (!m_scan.valid())

@@ -1,3 +1,4 @@
+#include "app/host_admission_integration.h"
 #include "cef/uam_query_handler.h"
 #include "cef/uam_query_handler_internal.h"
 #include "cef/uam_query_handler_async.h"
@@ -1228,7 +1229,11 @@ void UamQueryHandler::HandleSetChatModel(CefRefPtr<CefBrowser> browser, const nl
 		const std::string native_model = model_id.empty() && selected_model != nullptr ? selected_model->id : model_id;
 		const auto* host = uam::execution_hosts::Find(m_app.settings.execution_hosts, chat->execution_host_id.empty() ? "local" : chat->execution_host_id);
 		std::string discovery_error;
-		if (host != nullptr && !native_model.empty() && !m_app.provider_model_catalog->StartAntigravityEffortDiscovery(ProviderResolutionService().ProviderForChatOrDefault(m_app, *chat), *host, scope_workspace, native_model, &discovery_error))
+		// Background work: when the computer is at its background budget or busy, the startup discovery poll asks
+		// again for the selected chat's model once it is admitted.
+		uam::BackgroundAdmission admission = host != nullptr && !native_model.empty()
+		    ? uam::AdmitBackgroundStart(m_app, "effort-discovery:" + host->id + ":" + scope_workspace + ":" + native_model, host->id) : uam::BackgroundAdmission{};
+		if (admission.admitted && !m_app.provider_model_catalog->StartAntigravityEffortDiscovery(ProviderResolutionService().ProviderForChatOrDefault(m_app, *chat), *host, scope_workspace, native_model, &discovery_error, std::move(admission.lease)))
 			m_app.provider_model_catalog->RememberRefreshFailure(chat->provider_id, discovery_error, scope_workspace, host->id);
 	}
 	const auto& option_runtime = ProviderRuntimeRegistry::ResolveById(chat->provider_id);

@@ -65,6 +65,9 @@ import type {
   ShellAction,
   ComputePool,
   ComputePoolUsage,
+  HostAdmissionHealth,
+  HostAdmissionSettings,
+  HostAdmissionUsage,
   PullRequestWatch,
   VcsCommitResult,
   VcsCommitStatus,
@@ -600,6 +603,9 @@ export function sanitizeCppCliTerminal(value: unknown): CppChat['cliTerminal'] |
     active: typeof value.active === 'boolean' ? value.active : undefined,
     pendingSteer: typeof value.pendingSteer === 'boolean' ? value.pendingSteer : undefined,
     lastError: stringOr(value.lastError),
+    hostAdmissionWait: isRecord(value.hostAdmissionWait) && isString(value.hostAdmissionWait.message) && value.hostAdmissionWait.message
+      ? { message: value.hostAdmissionWait.message, runAnyway: value.hostAdmissionWait.runAnyway === true }
+      : undefined,
   }
 }
 
@@ -1120,7 +1126,13 @@ export function sanitizeCppAcpSession(value: unknown): CppAcpSession | undefined
     lastStopReason: isString(value.lastStopReason) ? value.lastStopReason : undefined,
     remoteStopForceAvailable: value.remoteStopForceAvailable === true || undefined,
     computePoolWait: isRecord(value.computePoolWait) && isString(value.computePoolWait.poolName)
-      ? { poolName: value.computePoolWait.poolName, inUse: nonNegativeInteger(value.computePoolWait.inUse) ?? 0, limit: nonNegativeInteger(value.computePoolWait.limit) ?? 0 }
+      ? {
+          poolName: value.computePoolWait.poolName,
+          inUse: nonNegativeInteger(value.computePoolWait.inUse) ?? 0,
+          limit: nonNegativeInteger(value.computePoolWait.limit) ?? 0,
+          message: isString(value.computePoolWait.message) && value.computePoolWait.message ? value.computePoolWait.message : undefined,
+          runAnyway: value.computePoolWait.runAnyway === true || undefined,
+        }
       : undefined,
     timeoutStop: isRecord(value.timeoutStop) && isString(value.timeoutStop.label) && value.timeoutStop.label
       ? {
@@ -2228,6 +2240,7 @@ export function sanitizeCppSettings(value: unknown): CppSettings {
     toolCallTimeoutSeconds: normalizeToolCallTimeoutSeconds(value.toolCallTimeoutSeconds),
     streamLoopRepeatLimit: normalizeStreamLoopRepeatLimit(value.streamLoopRepeatLimit),
     computePools: sanitizeComputePools(value.computePools),
+    hostAdmission: sanitizeHostAdmissionSettings(value.hostAdmission),
     acpTurnOutputLimitMiB: normalizeAcpTurnOutputLimitMiB(value.acpTurnOutputLimitMiB),
     updateChecksEnabled: booleanOr(value.updateChecksEnabled, true),
     automaticProviderUpdates: booleanOr(value.automaticProviderUpdates, false),
@@ -2343,6 +2356,7 @@ export function sanitizeCppAppState(value: unknown): CppAppState | null {
     cliVersionManager: sanitizeCliVersionManager(value.cliVersionManager),
     shellActions,
     computePoolUsage: sanitizeComputePoolUsage(value.computePoolUsage),
+    hostAdmissionUsage: sanitizeHostAdmissionUsage(value.hostAdmissionUsage),
     executionHostLoad: sanitizeExecutionHostLoad(value.executionHostLoad),
     prWatches: sanitizePullRequestWatches(value.prWatches),
     timers: sanitizeTimers(value.timers),
@@ -2417,6 +2431,50 @@ function sanitizeComputePoolUsage(value: unknown): ComputePoolUsage {
   const counts = (entry: Record<string, unknown>) => ({ inUse: nonNegativeInteger(entry.inUse) ?? 0, waiting: nonNegativeInteger(entry.waiting) ?? 0 })
   return Object.fromEntries(Object.entries(value).flatMap(([id, entry]) => isRecord(entry)
     ? [[id, { ...counts(entry), ...(isRecord(entry.hosts) ? { hosts: Object.fromEntries(Object.entries(entry.hosts).flatMap(([host, figures]) => isRecord(figures) ? [[host, counts(figures)]] : [])) } : {}) }]]
+    : []))
+}
+
+export const DEFAULT_HOST_ADMISSION: HostAdmissionSettings = {
+  localSlotLimit: 0,
+  remoteSlotLimit: 8,
+  backgroundBudget: 2,
+  softCpuPercent: 70,
+  softFreeMemoryPercent: 15,
+  hardCpuPercent: 90,
+  hardCpuSeconds: 10,
+  hardFreeMemoryPercent: 10,
+}
+
+export function sanitizeHostAdmissionSettings(value: unknown): HostAdmissionSettings {
+  if (!isRecord(value)) return { ...DEFAULT_HOST_ADMISSION }
+  const read = (key: keyof HostAdmissionSettings) => nonNegativeInteger(value[key]) ?? DEFAULT_HOST_ADMISSION[key]
+  return {
+    localSlotLimit: read('localSlotLimit'),
+    remoteSlotLimit: read('remoteSlotLimit'),
+    backgroundBudget: read('backgroundBudget'),
+    softCpuPercent: read('softCpuPercent'),
+    softFreeMemoryPercent: read('softFreeMemoryPercent'),
+    hardCpuPercent: read('hardCpuPercent'),
+    hardCpuSeconds: read('hardCpuSeconds'),
+    hardFreeMemoryPercent: read('hardFreeMemoryPercent'),
+  }
+}
+
+const HOST_HEALTH: readonly HostAdmissionHealth[] = ['ready', 'degraded', 'overloaded', 'unreachable']
+
+function sanitizeHostAdmissionUsage(value: unknown): HostAdmissionUsage {
+  if (!isRecord(value)) return {}
+  return Object.fromEntries(Object.entries(value).flatMap(([id, entry]) => isRecord(entry)
+    ? [[id, {
+        label: stringOr(entry.label) || id,
+        interactive: nonNegativeInteger(entry.interactive) ?? 0,
+        agent: nonNegativeInteger(entry.agent) ?? 0,
+        background: nonNegativeInteger(entry.background) ?? 0,
+        waiting: nonNegativeInteger(entry.waiting) ?? 0,
+        slotLimit: nonNegativeInteger(entry.slotLimit) ?? 0,
+        backgroundBudget: nonNegativeInteger(entry.backgroundBudget) ?? 0,
+        health: HOST_HEALTH.includes(entry.health as HostAdmissionHealth) ? entry.health as HostAdmissionHealth : 'ready',
+      }]]
     : []))
 }
 
@@ -2588,6 +2646,7 @@ export function sanitizeCppStatePatch(value: unknown): CppStatePatch | null {
     cliVersionManager: value.cliVersionManager !== undefined ? sanitizeCliVersionManager(value.cliVersionManager) : undefined,
     shellActions: value.shellActions !== undefined ? sanitizeShellActions(value.shellActions) : undefined,
     computePoolUsage: value.computePoolUsage !== undefined ? sanitizeComputePoolUsage(value.computePoolUsage) : undefined,
+    hostAdmissionUsage: value.hostAdmissionUsage !== undefined ? sanitizeHostAdmissionUsage(value.hostAdmissionUsage) : undefined,
     executionHostLoad: value.executionHostLoad !== undefined ? sanitizeExecutionHostLoad(value.executionHostLoad) : undefined,
     prWatches: value.prWatches !== undefined ? sanitizePullRequestWatches(value.prWatches) : undefined,
     timers: value.timers !== undefined ? sanitizeTimers(value.timers) : undefined,

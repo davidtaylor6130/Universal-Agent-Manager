@@ -1,3 +1,4 @@
+#include "app/host_admission_integration.h"
 #include "common/runtime/acp/compute_pool_gate.h"
 #include "common/provider/provider_setup.h"
 #include "app/managed_parent_continuation_service.h"
@@ -5082,8 +5083,9 @@ For desktop observation and input, use only the provider's built-in controller; 
 
 	bool StartEphemeralAcpModelDiscovery(AppState& app, const std::string& provider_id,
 		const std::string& workspace_directory, const std::string& execution_host_id,
-		std::string* error_out)
+		std::string* error_out, bool* admission_held)
 	{
+		if (admission_held != nullptr) *admission_held = false;
 		if (!provider_availability::IsEnabled(app.settings, provider_id, execution_host_id))
 		{
 			if (error_out != nullptr) *error_out = provider_availability::DisabledReason();
@@ -5132,7 +5134,15 @@ For desktop observation and input, use only the provider's built-in controller; 
 					*error_out = "The model catalogue execution host is unavailable.";
 				return false;
 			}
-			return app.provider_model_catalog->StartAntigravityModelDiscovery(*provider, *host, workspace, error_out);
+			// Background work: the computer's background budget and load limits apply before the CLI is run.
+			BackgroundAdmission admission = AdmitBackgroundStart(app, "discovery:" + provider->id + "@" + host_id + ":" + workspace, host_id);
+			if (!admission.admitted)
+			{
+				if (error_out) *error_out = admission.message;
+				if (admission_held != nullptr) *admission_held = true;
+				return false;
+			}
+			return app.provider_model_catalog->StartAntigravityModelDiscovery(*provider, *host, workspace, error_out, std::move(admission.lease));
 		}
 
 		ChatSession chat;
@@ -5142,6 +5152,16 @@ For desktop observation and input, use only the provider's built-in controller; 
 		chat.workspace_directory = workspace;
 		chat.execution_host_id = uam::strings::NonEmptyOrFallback(
 		    uam::strings::Trim(execution_host_id), std::string(uam::execution_hosts::kLocalHostId));
+		// Background work: the computer's background budget and load limits apply before a provider process starts.
+		// The waiter is keyed by scope, so retries keep their place; the place is held by a lease on the session,
+		// which counts it while the process runs and releases it when the finished session is removed.
+		BackgroundAdmission admission = AdmitBackgroundStart(app, "discovery:" + provider->id + "@" + chat.execution_host_id + ":" + workspace, chat.execution_host_id);
+		if (!admission.admitted)
+		{
+			if (error_out != nullptr) *error_out = admission.message;
+			if (admission_held != nullptr) *admission_held = true;
+			return false;
+		}
 		chat.approval_mode = "default";
 		chat.command_safety_tier = "off";
 		chat.memory_enabled = false;
@@ -5150,6 +5170,7 @@ For desktop observation and input, use only the provider's built-in controller; 
 		AcpSessionState& session = EnsureAcpSessionForChat(app, discovery_chat);
 		session.model_discovery_only = true;
 		session.ephemeral_model_discovery = true;
+		if (admission.lease.Holds()) session.host_admission_lease = std::make_shared<host_admission::HeldLease>(std::move(admission.lease));
 		if (StartAcpProcessForChat(app, session, discovery_chat, error_out)) return true;
 
 		const std::string failed_id = discovery_chat.id;
@@ -5181,11 +5202,42 @@ For desktop observation and input, use only the provider's built-in controller; 
 		return true;
 	}
 
+	void QueueAcpModelDiscoveryAdmissionRetry(AppState& app, const std::string& provider_id, const std::string& workspace_directory, const std::string& execution_host_id)
+	{
+		const std::string normalized_provider_id = uam::provider_ids::NormalizeCliProviderAliasOrSelf(provider_id);
+		const std::string host = uam::strings::NonEmptyOrFallback(uam::strings::Trim(execution_host_id), std::string(uam::execution_hosts::kLocalHostId));
+		const bool queued = std::ranges::any_of(app.pending_model_discovery_retries, [&](const PendingModelDiscoveryRetry& retry)
+		{
+			return retry.provider_id == normalized_provider_id && retry.workspace_directory == workspace_directory && retry.execution_host_id == host;
+		});
+		if (!queued) app.pending_model_discovery_retries.push_back({{}, normalized_provider_id, workspace_directory, host, true});
+	}
+
 	bool RetryCompatibilityBlockedAcpModelDiscoveries(AppState& app)
 	{
 		bool changed = false;
 		for (auto retry = app.pending_model_discovery_retries.begin(); retry != app.pending_model_discovery_retries.end();)
 		{
+			if (retry->admission_wait)
+			{
+				// Held by host admission: it starts once its computer admits it, and keeps its place until then.
+				std::string launch_error;
+				bool held = false;
+				const bool started = StartEphemeralAcpModelDiscovery(app, retry->provider_id, retry->workspace_directory, retry->execution_host_id, &launch_error, &held);
+				if (held)
+				{
+					++retry;
+					continue;
+				}
+				if (app.provider_model_catalog != nullptr)
+				{
+					if (started) app.provider_model_catalog->MarkDiscoveryLaunchStarted(retry->provider_id, retry->workspace_directory, retry->execution_host_id);
+					else app.provider_model_catalog->RememberRefreshFailure(retry->provider_id, uam::strings::NonEmptyOrFallback(launch_error, "Provider model discovery failed to start."), retry->workspace_directory, retry->execution_host_id);
+				}
+				retry = app.pending_model_discovery_retries.erase(retry);
+				changed = true;
+				continue;
+			}
 			if (IsLocalCliCompatibilityCheckPending(app, retry->provider_id))
 			{
 				++retry;
@@ -6831,6 +6883,16 @@ For desktop observation and input, use only the provider's built-in controller; 
 			session->cancel_requested = false;
 			session->cancel_requested_time_s = 0.0;
 			session->lifecycle_state = kAcpLifecycleStopped;
+			// A start held by host admission leaves the line, and a Run anyway chosen for it does not carry over.
+			session->compute_pool_wait_name.clear();
+			session->compute_pool_wait_message.clear();
+			session->compute_pool_wait_run_anyway = false;
+			session->host_admission_run_anyway = false;
+			if (app.host_admission)
+			{
+				(void)app.host_admission->Withdraw("turn:" + chat_id);
+				(void)app.host_admission->Release("turn:" + chat_id);
+			}
 			return true;
 		}
 
@@ -6841,6 +6903,14 @@ For desktop observation and input, use only the provider's built-in controller; 
 			session->cancel_requested_time_s = 0.0;
 			session->compute_pool_ticket = 0;
 			session->compute_pool_wait_name.clear();
+			session->compute_pool_wait_message.clear();
+			session->compute_pool_wait_run_anyway = false;
+			session->host_admission_run_anyway = false;
+			if (app.host_admission)
+			{
+				(void)app.host_admission->Withdraw("turn:" + chat_id);
+				(void)app.host_admission->Release("turn:" + chat_id);
+			}
 			return true;
 		}
 

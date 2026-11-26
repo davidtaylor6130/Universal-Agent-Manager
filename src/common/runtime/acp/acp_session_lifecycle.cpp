@@ -1,3 +1,4 @@
+#include "app/host_admission_integration.h"
 #include "app/managed_parent_continuation_service.h"
 #include "common/platform/background_thread_priority.h"
 #include "common/chat/chat_process_class.h"
@@ -1508,6 +1509,9 @@ void ResetAcpRuntimeState(AppState& app, AcpSessionState& session, ChatSession& 
 	session.compute_pool_ticket = 0;
 	session.compute_pool_admitted_turn_serial = -1;
 	session.compute_pool_wait_name.clear();
+	session.compute_pool_wait_message.clear();
+	session.compute_pool_wait_run_anyway = false;
+	session.host_admission_run_anyway = false;
 	session.queued_prompt.clear();
 	session.queued_skill_spans.clear();
 	if (session.attached_skill_preparation != nullptr) session.attached_skill_preparation->cancel.request_stop();
@@ -2047,6 +2051,42 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 		}
 	}
 
+	// Host admission: a chat's provider process starts only when its computer has room, so a full or overloaded
+	// computer is not given another process. Every chat launch asks (a queued turn, a direct send, a retry, a model
+	// list), except attaching to stop, model discovery (its own background gate) and reattaching to running work.
+	// The admitted start holds its slot for a short while, until its turn is admitted at the prompt gate
+	// (compute_pool_gate.cpp), so a burst of starts cannot all take the last slot.
+	if (!attach_only_to_stop && !session.model_discovery_only && !session.running && !session.recovering_remote_turn && !session.recovering_remote_process && app.host_admission)
+	{
+		constexpr double kStartReservationSeconds = 30.0;
+		const double now = GetAppTimeSeconds();
+		RefreshHostAdmission(app, now);
+		host_admission::Request request = HostAdmissionTurnRequest(app, &session, chat, now);
+		request.hold = true;
+		request.hold_seconds = kStartReservationSeconds;
+		const host_admission::Decision decision = app.host_admission->Admit(request);
+		if (!decision.admitted)
+		{
+			// Time spent held is not time spent running, as at the turn gate: a sub-agent's run limit waits too.
+			const bool continuing = !session.compute_pool_wait_message.empty() && now - session.compute_pool_ticket_seen_s < 5.0;
+			if (const auto deadline = app.agent_run_deadline_steady_ms.find(session.managed_agent_run_id); continuing && deadline != app.agent_run_deadline_steady_ms.end())
+				deadline->second += static_cast<std::int64_t>((now - session.compute_pool_ticket_seen_s) * 1000.0);
+			session.compute_pool_wait_name = HostAdmissionLabel(app, request.host_id);
+			session.compute_pool_wait_in_use = static_cast<int>(decision.in_use);
+			session.compute_pool_wait_limit = static_cast<int>(decision.limit);
+			session.compute_pool_wait_message = decision.message;
+			session.compute_pool_wait_run_anyway = decision.run_anyway_offered;
+			session.compute_pool_ticket_seen_s = now;
+			session.lifecycle_state = "waiting_routing";
+			session.reconnect_pending = true;
+			session.reconnect_not_before_time_s = now + 1.0;
+			return true;
+		}
+		session.compute_pool_wait_name.clear();
+		session.compute_pool_wait_message.clear();
+		session.compute_pool_wait_run_anyway = false;
+	}
+
 	if (!session.model_discovery_only && !session.running && !session.recovering_remote_turn && !session.recovering_remote_process)
 	{
 		std::string repository_error;
@@ -2348,7 +2388,10 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	}
 	else if (!prepared)
 	{
+		// Run anyway admitted this start; its turn must be admitted over the limit too, not offered it again.
+		const bool run_anyway = session.host_admission_run_anyway;
 		ResetAcpRuntimeState(app, session, chat);
+		session.host_admission_run_anyway = run_anyway;
 		// Preserve this invocation across its own launch reset, never create a second permission.
 		if (saved_retry && SavedImageRetrySourceMatches(app, session, chat, *saved_retry))
 		{

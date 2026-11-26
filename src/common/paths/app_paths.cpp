@@ -259,16 +259,6 @@ std::filesystem::path AppPaths::GeminiHomePath()
 	return uam::gemini::HistoryHomePath();
 }
 
-std::filesystem::path AppPaths::DefaultGeminiUniversalRootPath()
-{
-	if (const std::optional<std::filesystem::path> home = uam::env::GetUserHomePath())
-	{
-		return *home / ".Gemini_universal_agent_manager";
-	}
-
-	return uam::paths::CurrentPathOrDot() / ".Gemini_universal_agent_manager";
-}
-
 std::optional<std::filesystem::path> AppPaths::ResolveGeminiProjectTmpDir(const std::filesystem::path& project_root)
 {
 	namespace fs = std::filesystem;

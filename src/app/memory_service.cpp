@@ -1,3 +1,4 @@
+#include "app/host_admission_integration.h"
 #include "app/agent_run_scheduler.h"
 #include "common/platform/background_thread_priority.h"
 #include "common/platform/child_process_priority.h"
@@ -2618,6 +2619,19 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 				continue;
 			}
 
+			// Background work: the worker's computer must have background budget and no load over the soft limit.
+			// A held scan goes back in the queue and is asked again; scans for other computers continue meanwhile.
+			const std::string worker_host = uam::paths::IsControllerLocalWorkspace(chat) ? std::string(uam::execution_hosts::kLocalHostId) : chat.execution_host_id;
+			uam::BackgroundAdmission admission = uam::AdmitBackgroundStart(app, "memory:" + chat.id, worker_host);
+			if (!admission.admitted)
+			{
+				const bool status_changed = app.memory_last_status != admission.message;
+				app.memory_last_status = admission.message;
+				RequeueMemoryWork(app, std::move(queued));
+				changed = changed || status_changed;
+				continue;
+			}
+			const std::size_t tasks_before = app.memory_extraction_tasks.size();
 			bool started_task = StartWorkerTask(app, chat, uam::paths::ResolveControllerWorkspaceRootPath(app, chat), queued.scan_start_message_index);
 			if (!started_task && !chat.messages_loaded)
 			{
@@ -2625,6 +2639,8 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 			}
 			if (started_task)
 			{
+				if (app.memory_extraction_tasks.size() > tasks_before && admission.lease.Holds())
+					app.memory_extraction_tasks.back().host_admission_lease = std::make_shared<uam::host_admission::HeldLease>(std::move(admission.lease));
 				started = true;
 				changed = true;
 			}
