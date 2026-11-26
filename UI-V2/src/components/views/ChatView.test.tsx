@@ -10739,6 +10739,50 @@ describe('ChatView', () => {
     host.remove()
   })
 
+  const dropUriList = async (host: HTMLElement, uriList: string) => {
+    const drop = new Event('drop', { bubbles: true, cancelable: true })
+    Object.defineProperty(drop, 'dataTransfer', { value: { files: [], getData: (type: string) => type === 'text/uri-list' ? uriList : '' } })
+    await act(async () => { host.querySelector('.uam-composer-surface')!.dispatchEvent(drop); await Promise.resolve() })
+  }
+
+  it('reports nothing when a folder chip removed while staging then fails', async () => {
+    let fail!: (error: Error) => void
+    const stageChatAttachments = vi.fn((_sessionId: string, _items: Array<{ id: string }>) => new Promise<never>((_resolve, reject) => { fail = reject }))
+    useAppStore.setState({ stageChatAttachments })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      await dropUriList(host, 'file:///Users/me/notes\n')
+      expect(stageChatAttachments).toHaveBeenCalledWith('chat-1', [expect.objectContaining({ kind: 'directory', path: '/Users/me/notes' })])
+      act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Remove notes attachment"]')!.click())
+      await act(async () => { fail(new Error('The notes folder could not be added.')); await Promise.resolve() })
+      expect(reportedText()).not.toContain('The notes folder could not be added.')
+      expect(host.querySelector('button[aria-label="Remove notes attachment"]')).toBeNull()
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it('does not send folder paths dropped on the browser companion to the desktop app', async () => {
+    const previousPath = window.location.pathname
+    window.history.pushState({}, '', '/companion')
+    const stageChatAttachments = vi.fn(async () => [])
+    useAppStore.setState({ stageChatAttachments })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      await dropUriList(host, 'file:///Users/me/secrets\n')
+      expect(stageChatAttachments).not.toHaveBeenCalled()
+      expect(reportedText()).toContain('Add attachments from the desktop app.')
+      expect(host.querySelector('button[aria-label="Remove secrets attachment"]')).toBeNull()
+    } finally {
+      act(() => root.unmount()); host.remove()
+      window.history.pushState({}, '', previousPath)
+    }
+  })
+
   it('does not block normal text paste in the composer', async () => {
     const stageChatAttachments = vi.fn((_sessionId, items) => Promise.resolve([
       {

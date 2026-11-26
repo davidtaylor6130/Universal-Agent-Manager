@@ -1086,6 +1086,31 @@ describe('SessionItem status icons', () => {
     } finally { act(() => root.unmount()); host.remove() }
   })
 
+  it('shows the working time in the shared format, drops seconds after a minute and stops ticking while hidden', () => {
+    vi.useFakeTimers()
+    let view: ReturnType<typeof renderSessionItem> | undefined
+    try {
+      useAppStore.setState({ acpBindingBySessionId: { 'chat-1': makeAcpBinding({ processing: true, lifecycleState: 'processing', processingStartedAtMs: Date.now() - 3_725_000 }) } })
+      view = renderSessionItem(true)
+      const host = view.host
+      const time = () => host.querySelector('.uam-sb-activity [aria-hidden] > .tabular-nums')?.textContent
+      expect(time()).toBe('1h 2m')
+      act(() => useAppStore.setState({ acpBindingBySessionId: { 'chat-1': makeAcpBinding({ processing: true, lifecycleState: 'processing', processingStartedAtMs: Date.now() - 90_000 }) } }))
+      expect(time()).toBe('1m')
+      Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' })
+      act(() => { document.dispatchEvent(new Event('visibilitychange')) })
+      act(() => { vi.advanceTimersByTime(60_000) })
+      expect(time()).toBe('1m')
+      Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' })
+      act(() => { document.dispatchEvent(new Event('visibilitychange')) })
+      expect(time()).toBe('2m')
+    } finally {
+      Reflect.deleteProperty(document, 'visibilityState')
+      if (view) { const { root, host } = view; act(() => root.unmount()); host.remove() }
+      vi.useRealTimers()
+    }
+  })
+
   it('shows the chat custom icon in place of the provider glyph and before the activity title', () => {
     const icon = { type: 'text' as const, value: '🧪' }
     useAppStore.setState({ sessions: [{ ...makeSession(), providerId: 'gemini-cli', customIcon: icon }], showProviderIconsInSidebar: true })
