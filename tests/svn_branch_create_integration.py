@@ -80,7 +80,9 @@ with tempfile.TemporaryDirectory(prefix="uam-svn-create-") as temporary:
     # project's trunk, and the switch is confirmed although svn's URL differs from UAM's encoding of it.
     project = url + "/" + urllib.parse.quote("shop+@ x", safe="")
     run("mkdir", "--parents", project + "/trunk", project + "/branches", "-m", "project layout")
-    run("switch", "--ignore-ancestry", project + "/trunk@", str(working_copy))
+    # switch keeps a trailing "@" in its destination as part of the path, and on Windows a bare "copy @literal" loses the space
+    # before "@"; a trailing "/" stops the peg-revision split, as in the service's own switch.
+    run("switch", "--ignore-ancestry", project + "/trunk@", str(working_copy) + "/")
     switched_url, switched_revision = create("working-copy", "in-project")
     assert switched_url is not None, "creation under a project folder must confirm its switch"
     relative = urllib.parse.unquote(read("info", "--show-item", "relative-url", str(working_copy) + "@"))
