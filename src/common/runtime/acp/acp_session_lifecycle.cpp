@@ -2098,6 +2098,14 @@ bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession
 	{
 		return true;
 	}
+	// A provider that refused the account or client on this computer is not relaunched until the refusal expires or
+	// the user retries from the model menu. An authentication refusal never holds a chat launch: signing in fixes it.
+	if (const std::string refusal = attach_only_to_stop || app.provider_model_catalog == nullptr ? std::string{} : app.provider_model_catalog->GetChatLaunchRefusalNotice(provider.id, chat.execution_host_id);
+	    !refusal.empty())
+	{
+		if (error_out != nullptr) *error_out = refusal + " Use Retry in the model menu to ask again.";
+		return false;
+	}
 	if (!attach_only_to_stop && !provider_availability::IsEnabled(app.settings, provider.id, chat.execution_host_id))
 	{
 		if (error_out != nullptr) *error_out = provider_availability::DisabledReason();

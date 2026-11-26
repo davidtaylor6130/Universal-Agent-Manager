@@ -713,6 +713,7 @@ add_library(uam_core_objects OBJECT
   src/common/chat/chat_folder_data_folder.cpp
   src/common/utils/command_line_words.cpp
   src/common/config/frontend_actions.cpp
+  src/common/provider/provider_account_refusal.cpp
   src/common/provider/provider_profile.cpp
   src/common/provider/runtime/provider_runtime_facade.cpp
   src/common/provider/runtime/provider_runtime_registry.cpp
@@ -1818,6 +1819,7 @@ if(UAM_BUILD_TESTS)
     tests/child_process_priority_tests.cpp
     tests/routing_default_scope_tests.cpp
     tests/model_discovery_startup_tests.cpp
+    tests/provider_account_refusal_tests.cpp
     tests/remote_delivery_exit_tests.cpp
     tests/agent_provider_inheritance_tests.cpp
     tests/workspace_import_policy_tests.cpp

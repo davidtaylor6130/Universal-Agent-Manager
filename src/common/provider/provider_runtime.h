@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/models/app_models.h"
+#include "common/provider/provider_account_refusal.h"
 #include "common/provider/provider_profile.h"
 
 #include "include/internal/cef_ptr.h"
@@ -399,6 +400,12 @@ class IProviderRuntime
 
 	/// <summary>Display name for this provider in ACP mode.</summary>
 	virtual const char* GetAcpDisplayName() const { return RuntimeId(); }
+
+	/// <summary>One plain line shown on the provider while an account-level refusal is recorded for a computer.</summary>
+	virtual std::string AccountRefusalNotice(uam::account_refusal::Kind kind, std::string_view provider_title, std::string_view /*provider_message*/) const
+	{
+		return uam::account_refusal::GenericNotice(provider_title, kind);
+	}
 
 	/// <summary>
 	/// Build the initialize request. May set session fields if skipping wire (Claude).
