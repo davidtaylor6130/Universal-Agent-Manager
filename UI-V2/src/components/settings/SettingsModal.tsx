@@ -15,6 +15,7 @@ import { PhoneRestartButton } from './PhoneRestartButton'
 import { AutomationSettings } from './AutomationSettings'
 import { SETTINGS_ALL_ENVIRONMENTS } from '../../utils/settingsScope'
 import { ProviderConnections } from './ProviderConnections'
+import { CustomAcpAgentSettings, type CustomAcpAgentSettingsHandle } from './CustomAcpAgentSettings'
 import { CentralProviderSettings, type CentralAgentHighlight, type CentralProviderSettingsHandle } from './CentralProviderSettings'
 import { AGENT_SCOPE_LABEL, agentKey, listAgentDefinitions, type AgentDefinition } from './agentDefinitions'
 import { McpServerSetup } from './McpServerSetup'
@@ -22,7 +23,7 @@ import { ComputerUseSettingRow } from './ComputerUseSettingRow'
 import { ExecutionRoutingSettings, type ExecutionRoutingSettingsHandle } from './ExecutionRoutingSettings'
 import { UnsavedChangesDialog } from './UnsavedChangesDialog'
 import { NumberField } from './NumberField'
-import { ANTIGRAVITY_ENABLED, CLAUDE_ENABLED, CODEX_ENABLED, COMPUTER_USE_ENABLED, COPILOT_ENABLED, GEMINI_ENABLED, MOBILE_COMPANION_ENABLED, OPENCODE_ENABLED, SSH_ENABLED } from '../../config/buildFeatures'
+import { ANTIGRAVITY_ENABLED, CLAUDE_ENABLED, CODEX_ENABLED, COMPUTER_USE_ENABLED, COPILOT_ENABLED, CUSTOM_ACP_ENABLED, GEMINI_ENABLED, MOBILE_COMPANION_ENABLED, OPENCODE_ENABLED, SSH_ENABLED } from '../../config/buildFeatures'
 import { copyTextToClipboard } from '../../utils/copySelection'
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import {
@@ -74,6 +75,7 @@ import {
   CLAUDE_CLI_PROVIDER_ID,
   CODEX_CLI_PROVIDER_ID,
   COPILOT_CLI_PROVIDER_ID,
+  CUSTOM_ACP_PROVIDER_ID,
   DEFAULT_PROVIDER_ID,
   GEMINI_CLI_PROVIDER_ID,
   OPENCODE_CLI_PROVIDER_ID,
@@ -974,6 +976,7 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
   const cleanupRef = useRef<SettingsDraftHandle>(null)
   const dataFolderRef = useRef<DataFolderSettingsHandle>(null)
   const providerAvailabilityRef = useRef<SettingsDraftHandle>(null)
+  const customAcpRef = useRef<CustomAcpAgentSettingsHandle>(null)
   const [rawEditorNames, setRawEditorNames] = useState<Record<string, string>>({})
   const [rawExtensions, setRawExtensions] = useState<Record<string, string>>({})
   const [editorExit, setEditorExit] = useState<(() => void) | null>(null)
@@ -1042,6 +1045,10 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     }
     else if (selectedSection === 'routing' && routingRef.current) routingRef.current.requestLeave(next)
     else if (selectedSection === 'voice-input' && voiceRef.current) voiceRef.current.requestLeave(next)
+    else if (CUSTOM_ACP_ENABLED && selectedSection === `provider:${CUSTOM_ACP_PROVIDER_ID}` && customAcpRef.current) {
+      const leaveAvailability = () => providerAvailabilityRef.current ? providerAvailabilityRef.current.requestLeave(next) : next()
+      customAcpRef.current.requestLeave(leaveAvailability)
+    }
     else if ((selectedSection === 'provider-summary' || selectedSection.startsWith('provider:')) && providerAvailabilityRef.current) providerAvailabilityRef.current.requestLeave(next)
     else if (selectedSection === 'memory-store' && memoryRef.current) memoryRef.current.requestLeave(next)
     else if (selectedSection === 'markdown-store' && markdownStoreRef.current) markdownStoreRef.current.requestLeave(next)
@@ -1951,6 +1958,8 @@ export const SettingsModal = forwardRef<SettingsHandle>(function SettingsModal(_
     if (selectedSection === 'provider-summary') return <div className="grid">{availability('Provider availability')}<ProviderConnections selectedHostId={effectiveProviderSettingsHostId} onProviderSelect={id => changeSection(`provider:${id}`)} onMcpSelect={() => changeSection('mcp-servers')} onPreferencesSelect={() => changeSection('central-configuration')} /></div>
     if (selectedSection.startsWith('provider:')) {
       const providerId = selectedSection.slice('provider:'.length)
+      // The Custom ACP agent has no CLI to version and no central launch setup; its page is its launch configuration.
+      if (CUSTOM_ACP_ENABLED && providerId === CUSTOM_ACP_PROVIDER_ID) return <div className="grid">{availability('Availability', [providerId])}<CustomAcpAgentSettings ref={customAcpRef} />{renderSectionContent('defaults', providerId)}</div>
       return <div className="grid">{availability('Availability', [providerId])}{renderSectionContent('cli-version', providerId)}{renderSectionContent('defaults', providerId)}<ProviderConnections providerId={providerId} selectedHostId={effectiveProviderSettingsHostId} onMcpSelect={() => changeSection('mcp-servers')} onPreferencesSelect={() => changeSection('central-configuration')} /></div>
     }
     if (selectedSection === 'permissions') return <PermissionsSettings />
