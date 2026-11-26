@@ -1,4 +1,5 @@
 #include "common/platform/background_thread_priority.h"
+#include "common/platform/child_process_priority.h"
 #include "app/startup_native_import_service.h"
 
 #include "app/chat_domain_service.h"
@@ -235,7 +236,7 @@ namespace uam
 				// ponytail: fixed at four hosts at once; a slot count from settings waits until someone runs more dead hosts than that.
 				for (std::size_t worker = 1; worker < std::min<std::size_t>(hosts.size(), 4); ++worker)
 				{
-					try { workers.emplace_back([&drain]() { uam::platform::LowerCurrentThreadToBackgroundPriority(); drain(); }); }
+					try { workers.emplace_back([&drain]() { uam::platform::LowerCurrentThreadToBackgroundPriority(); const uam::platform::ScopedChildProcessClass background_children(uam::platform::ChildProcessClass::Background); drain(); }); }
 					catch (const std::system_error&) { break; } // This thread still drains every host.
 				}
 				drain();
@@ -446,6 +447,7 @@ namespace uam
 		return std::async(std::launch::async, [scanner = m_scanner, request = std::move(request), stop = m_stop.get_token(), snapshot = std::move(snapshot)]()
 		{
 			uam::platform::LowerCurrentThreadToBackgroundPriority();
+			const uam::platform::ScopedChildProcessClass background_children(uam::platform::ChildProcessClass::Background);
 			ScanOutcome outcome;
 			outcome.discovery = scanner(request, stop);
 			// Filtering, owner resolution, identity keys and workspace planning all probe the file system; keep them here.

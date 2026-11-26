@@ -233,6 +233,8 @@ namespace uam
 		RegisteredWorkspaces registered(app);
 		for (std::vector<ScopeGroup>::iterator group = m_pending_groups.begin(); group != m_pending_groups.end() && active < kMaxConcurrentDiscoveries;)
 		{
+			// An account refusal on this computer answers every workspace; keep the group until it expires or is retried.
+			if (app.provider_model_catalog->IsAccountRefusalActive(group->provider_id, group->execution_host_id)) { ++group; continue; }
 			const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, group->execution_host_id);
 			const std::map<std::string, ExecutionHost>::const_iterator captured_host = m_hosts.find(group->execution_host_id);
 			const ProviderProfile* provider = ProviderProfileStore::FindById(app.provider_profiles, group->provider_id);

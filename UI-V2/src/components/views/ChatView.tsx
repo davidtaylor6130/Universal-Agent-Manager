@@ -1537,9 +1537,59 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     }
   }, [modelOpen, workspaceMenuOpen])
 
+  // Both staging paths share this prefix: the browser companion stages no attachments here (no paths or bytes);
+  // see "Browser companion attachments" in docs/documentation-review.md.
+  const canStageAttachments = () => {
+    if (!showComposerRef.current) return false
+    if (isCompanionContext()) { setAttachmentError('Add attachments from the desktop app.'); return false }
+    return true
+  }
+
+  const beginStagingAttachments = (pending: LocalAttachment[]) => {
+    setAttachmentError('')
+    setComposerAttachments((current) => [...current, ...pending])
+  }
+
+  /** Swap staged chips for their copies, or write them into the draft of the chat they were added to. */
+  const applyStagedAttachments = (stagingSessionId: string, staged: Awaited<ReturnType<typeof stageChatAttachments>>) => {
+    if (!mountedRef.current || currentSessionIdRef.current !== stagingSessionId) {
+      if (!useAppStore.getState().sessions.some((candidate) => candidate.id === stagingSessionId)) return
+      const stored = readChatComposerDraft(stagingSessionId)
+      writeChatComposerDraft(stagingSessionId, {
+        ...stored,
+        attachments: [...stored.attachments, ...staged.filter((candidate) =>
+          !removedAttachmentIdsRef.current.has(candidate.id) &&
+          !stored.attachments.some((attachment) => attachment.id === candidate.id)
+        )],
+      })
+      return
+    }
+    setComposerAttachments((current) =>
+      current.map((attachment) => {
+        const replacement = staged.find((candidate) => candidate.id === attachment.id)
+        return replacement
+          ? { ...replacement, status: 'ready' as LocalAttachmentStatus }
+          : attachment
+      })
+    )
+  }
+
+  const failStagedAttachments = (stagingSessionId: string, pending: LocalAttachment[], err: unknown, fallback: string) => {
+    if (!mountedRef.current || currentSessionIdRef.current !== stagingSessionId) return
+    // Every chip of this request was removed while copying: the copy was canceled on purpose, so nothing to report.
+    if (pending.every((attachment) => removedAttachmentIdsRef.current.has(attachment.id))) return
+    const message = err instanceof Error ? err.message : fallback
+    setAttachmentError(message)
+    const failedIds = new Set(pending.map((attachment) => attachment.id))
+    setComposerAttachments((current) =>
+      current.map((attachment) =>
+        failedIds.has(attachment.id) ? { ...attachment, status: 'failed', error: message } : attachment
+      )
+    )
+  }
+
   const stageFiles = async (files: File[], nativeEntries: NativeFileEntry[] = []) => {
-    if (!showComposerRef.current) return
-    if (isCompanionContext()) { setAttachmentError('Add attachments from the desktop app.'); return }
+    if (!canStageAttachments()) return
     const stagingSessionId = session.id
     // A dropped File pairs with the native path of the same name and size; picked files arrive as paths only.
     const unpaired = [...nativeEntries]
@@ -1561,8 +1611,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       path: source.path,
       status: 'staging',
     }))
-    setAttachmentError('')
-    setComposerAttachments((current) => [...current, ...pending])
+    beginStagingAttachments(pending)
 
     try {
       const items: ChatAttachmentInput[] = []
@@ -1579,45 +1628,14 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
           dataBase64: source.path || !source.file ? undefined : await readFileBase64(source.file),
         })
       }
-
-      const staged = await stageChatAttachments(stagingSessionId, items)
-      if (!mountedRef.current || currentSessionIdRef.current !== stagingSessionId) {
-        if (!useAppStore.getState().sessions.some((candidate) => candidate.id === stagingSessionId)) return
-        const stored = readChatComposerDraft(stagingSessionId)
-        writeChatComposerDraft(stagingSessionId, {
-          ...stored,
-          attachments: [...stored.attachments, ...staged.filter((candidate) =>
-            !removedAttachmentIdsRef.current.has(candidate.id) &&
-            !stored.attachments.some((attachment) => attachment.id === candidate.id)
-          )],
-        })
-        return
-      }
-      setComposerAttachments((current) =>
-        current.map((attachment) => {
-          const replacement = staged.find((candidate) => candidate.id === attachment.id)
-          return replacement
-            ? { ...replacement, status: 'ready' as LocalAttachmentStatus }
-            : attachment
-        })
-      )
+      applyStagedAttachments(stagingSessionId, await stageChatAttachments(stagingSessionId, items))
     } catch (err) {
-      if (!mountedRef.current || currentSessionIdRef.current !== stagingSessionId) return
-      // Every chip of this request was removed while copying: the copy was canceled on purpose, so nothing to report.
-      if (pending.every((attachment) => removedAttachmentIdsRef.current.has(attachment.id))) return
-      const message = err instanceof Error ? err.message : 'Failed to stage attachments.'
-      setAttachmentError(message)
-      const failedIds = new Set(pending.map((attachment) => attachment.id))
-      setComposerAttachments((current) =>
-        current.map((attachment) =>
-          failedIds.has(attachment.id) ? { ...attachment, status: 'failed', error: message } : attachment
-        )
-      )
+      failStagedAttachments(stagingSessionId, pending, err, 'Failed to stage attachments.')
     }
   }
 
   const stageDirectoryPaths = async (paths: string[]) => {
-    if (!showComposerRef.current) return
+    if (!canStageAttachments()) return
     const stagingSessionId = session.id
     const uniquePaths = Array.from(new Set(paths.map((path) => path.trim()).filter(Boolean)))
     if (uniquePaths.length === 0) return
@@ -1630,46 +1648,17 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       path,
       status: 'staging',
     }))
-    setAttachmentError('')
-    setComposerAttachments((current) => [...current, ...pending])
+    beginStagingAttachments(pending)
 
     try {
-      const staged = await stageChatAttachments(stagingSessionId, pending.map((attachment) => ({
+      applyStagedAttachments(stagingSessionId, await stageChatAttachments(stagingSessionId, pending.map((attachment) => ({
         id: attachment.id,
         name: attachment.name,
         kind: 'directory',
         path: attachment.path,
-      })))
-      if (!mountedRef.current || currentSessionIdRef.current !== stagingSessionId) {
-        if (!useAppStore.getState().sessions.some((candidate) => candidate.id === stagingSessionId)) return
-        const stored = readChatComposerDraft(stagingSessionId)
-        writeChatComposerDraft(stagingSessionId, {
-          ...stored,
-          attachments: [...stored.attachments, ...staged.filter((candidate) =>
-            !removedAttachmentIdsRef.current.has(candidate.id) &&
-            !stored.attachments.some((attachment) => attachment.id === candidate.id)
-          )],
-        })
-        return
-      }
-      setComposerAttachments((current) =>
-        current.map((attachment) => {
-          const replacement = staged.find((candidate) => candidate.id === attachment.id)
-          return replacement
-            ? { ...replacement, status: 'ready' as LocalAttachmentStatus }
-            : attachment
-        })
-      )
+      }))))
     } catch (err) {
-      if (!mountedRef.current || currentSessionIdRef.current !== stagingSessionId) return
-      const message = err instanceof Error ? err.message : 'Failed to stage directory references.'
-      setAttachmentError(message)
-      const failedIds = new Set(pending.map((attachment) => attachment.id))
-      setComposerAttachments((current) =>
-        current.map((attachment) =>
-          failedIds.has(attachment.id) ? { ...attachment, status: 'failed', error: message } : attachment
-        )
-      )
+      failStagedAttachments(stagingSessionId, pending, err, 'Failed to stage directory references.')
     }
   }
 

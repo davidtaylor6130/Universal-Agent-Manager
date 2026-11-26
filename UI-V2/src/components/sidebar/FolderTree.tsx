@@ -14,6 +14,8 @@ import type { AppState } from '../../store/storeTypes'
 import { useShallow } from 'zustand/react/shallow'
 import { shallow } from 'zustand/shallow'
 import { SessionItem } from './SessionItem'
+import { chatRowStatusText } from './chatRowStatus'
+import { sidebarIconPaint } from './sidebarIconPaint'
 import { DeleteConfirmDialog, chatDeleteFailure, countLabel, relatedBranchContents } from './DeleteConfirmDialog'
 import './sidebar.css'
 import { Button, ConfirmDialog, IconButton, MenuItem, MenuSelect, Notice, ProgressFill, RowButton, Tooltip, ViewportMenu } from '../ui'
@@ -23,6 +25,7 @@ import {
   buildChatSearchIndex,
   buildChatSearchModel,
   tokenizeChatSearchQuery,
+  displayedChatStatus,
 } from './chatSearch'
 import type { Folder, Session, WorkspaceFolderRecoveryPreview } from '../../types/session'
 import { chatGridLeaves, chatPaneColors, readChatGridLayout, setChatInLeaf, subscribeChatGridLayout, writeChatGridLayout } from '../../utils/chatGridStorage'
@@ -401,6 +404,38 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
     return families
   }, [sessions, nativeChildIds])
   useLayoutEffect(() => { previousFamiliesRef.current = familySessionIdsByRootId }, [familySessionIdsByRootId])
+  // Rows carry their status in their names, not in a live region each; the sidebar's one polite region
+  // announces an Active row whose spoken status changes to waiting or done. Each row's status is worked out
+  // as SessionItem does for its name (branch family bindings, held automation, pull request watch). Running
+  // starts and the first render are not announced; nor are chats the sidebar had not listed before (newly
+  // created or reloaded), except a new chat held for automation approval once the sidebar has loaded.
+  // Only Active rows are evaluated, so the status reads stay proportional to the Active list.
+  const announcedStatusesRef = useRef<{ known: Set<string>; spoken: Map<string, string> } | null>(null)
+  useEffect(() => {
+    const state = useAppStore.getState()
+    const speak = (ownerId: string, ids: readonly string[]) => {
+      const owner = sessionsById.get(ownerId)
+      if (owner?.automationPendingPrompt) return chatRowStatusText(null, { automationHeld: true })
+      let status = displayedChatStatus(ids.map((id) => state.cliBindingBySessionId[id]), ids.map((id) => state.acpBindingBySessionId[id]))
+      if ((!status || status.type === 'done') && owner && automationStartPending(owner, state.acpBindingBySessionId[ownerId]?.pendingDirectPrompts)) status = { type: 'processing' }
+      return chatRowStatusText(status, { watchingPullRequest: status?.type !== 'attention' && ids.some((id) => watchingSessionIds.has(id)) })
+    }
+    // Roots speak for their branch family; a branch row shown while searching speaks for itself.
+    const spoken = new Map(searchModel.activeSessionIds.map((id) => [id, speak(id, familySessionIdsByRootId.get(id) ?? [id])]))
+    const previous = announcedStatusesRef.current
+    // A search hides Active rows without changing them: keep their last status, so clearing it is silent.
+    if (previous && searchModel.isSearching) for (const [id, text] of previous.spoken) if (!spoken.has(id)) spoken.set(id, text)
+    announcedStatusesRef.current = { known: new Set(sessionsById.keys()), spoken }
+    if (!previous) return
+    const changes = [...spoken].flatMap(([id, text]) => {
+      // Only states the user acts on: waiting, failed or done. Running and a pull request watch stay silent.
+      if (!/^(waiting|failed|done)/.test(text) || previous.spoken.get(id) === text) return []
+      if (!previous.known.has(id) && !(previous.known.size > 0 && text === 'waiting for approval')) return []
+      return [`${sessionsById.get(id)?.name || 'Chat'}: ${text}`]
+    })
+    if (changes.length === 0) return
+    setMoveAnnouncement(changes.length > 3 ? `${changes.slice(0, 3).join('; ')}; and ${changes.length - 3} more` : changes.join('; '))
+  }, [familySessionIdsByRootId, runtimeStatusBySessionId, searchModel.activeSessionIds, searchModel.isSearching, sessionsById, watchingSessionIds])
   // Each selected row stands for its branch family, matching single-row deletion.
   const pendingBulkDeleteFamilyIds = useMemo(() => pendingBulkDeleteIds
     ? [...new Set(pendingBulkDeleteIds.flatMap((id) => familySessionIdsByRootId.get(id) ?? [id]))]
@@ -435,12 +470,16 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
     .map((row) => row.dataset.sessionId ?? '').filter(Boolean), [visibleSessionRows])
 
   const handleSessionClick = useCallback((sessionId: string, event: ReactMouseEvent<HTMLDivElement>) => {
+    // Pointer clicks arrive on a chat's visual row; its focusable element inside carries data-session-id.
+    const clickedRow = event.currentTarget.matches('[data-session-id]')
+      ? event.currentTarget
+      : event.currentTarget.querySelector<HTMLElement>('[data-session-id]') ?? event.currentTarget
     setSelectedFolderIds((current) => current.size ? new Set<string>() : current)
     setSelectedCollectionIds((current) => current.size ? new Set<string>() : current)
     collectionSelectionAnchorRef.current = null
     folderSelectionAnchorRef.current = null
     if (isCompanionContext() || !event.shiftKey) {
-      selectionAnchorRowRef.current = event.currentTarget
+      selectionAnchorRowRef.current = clickedRow
       setSelectedSessionIds((current) => current.size ? new Set<string>() : current)
       return false
     }
@@ -450,9 +489,9 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
     const anchorIndex = selectionAnchorRowRef.current
       ? rows.indexOf(selectionAnchorRowRef.current)
       : -1
-    const targetIndex = rows.indexOf(event.currentTarget)
+    const targetIndex = rows.indexOf(clickedRow)
     if (anchorIndex < 0 || targetIndex < 0) {
-      selectionAnchorRowRef.current = event.currentTarget
+      selectionAnchorRowRef.current = clickedRow
       setSelectedSessionIds(new Set([sessionId]))
       return true
     }
@@ -1097,11 +1136,11 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
             onToggle={() => setActiveCollapsed((collapsed) => !collapsed)}
             action={!isCompanionContext() && (
               
-              // ui: raw button kept — compact 10px chip styled inline in the section header
+              // ui: raw button kept — compact 10px chip styled inline in the section header; uam-sb-target gives it a 24px hit area
               <button
                 type="button"
                 aria-label="Clear all active chats"
-                className="rounded px-1.5 text-[10px] hover:bg-[var(--sidebar-item-hover)]"
+                className="uam-sb-target rounded px-1.5 text-[10px] hover:bg-[var(--sidebar-item-hover)]"
                 style={{ background: 'var(--surface)', border: 'none', color: 'var(--text-2)', cursor: 'pointer' }}
                 onClick={() => {
                   const { setChatSettled } = useAppStore.getState()
@@ -1257,27 +1296,26 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
                 {searchModel.unfolderedSessionIds.length}
               </span>
             </RowButton>
-            {!isCompanionContext() && <Tooltip label="Unsorted actions">
-              {/* ui: raw button kept — 22px inline trigger; IconButton sizes are 26px and 30px */}<button
+            {!isCompanionContext() && <IconButton
                 ref={unsortedMenuTriggerRef}
-                type="button"
-                aria-label="Actions for Unsorted"
+                size="sm"
+                label="Actions for Unsorted"
+                tooltip="Unsorted actions"
+                icon={<MoreHorizontal size={14} aria-hidden />}
                 aria-haspopup="menu"
                 aria-expanded={unsortedMenuPoint !== null}
-                className="mr-1 flex h-[22px] w-[22px] items-center justify-center rounded"
-                style={{ background: 'transparent', border: 'none', color: 'var(--text-3)', cursor: 'pointer' }}
+                // Keeps the 22px trigger's footprint and painted size; the hit area is 24px.
+                className="uam-sb-iconbtn uam-sb-iconbtn--inline"
+                style={{ ...sidebarIconPaint(22), marginRight: 3 }}
                 onClick={(event) => {
                   if (unsortedMenuPoint) {
                     setUnsortedMenuPoint(null)
                     return
                   }
                   const rect = event.currentTarget.getBoundingClientRect()
-                  setUnsortedMenuPoint({ x: rect.right, y: rect.bottom + 4 })
+                  setUnsortedMenuPoint({ x: rect.right - 1, y: rect.bottom + 3 })
                 }}
-              >
-                <MoreHorizontal size={14} aria-hidden />
-              </button>
-            </Tooltip>}
+              />}
           </div>
           {unsortedMenuPoint && (
             <ViewportMenu
@@ -1555,6 +1593,7 @@ export function FolderTree({ searchQuery, deepSearchSessionIds, filters, onSessi
         {workspaceDeleteChatCount > 0 && <p className="mt-2 text-xs" style={{ color: 'var(--error)' }}>Deleted chats cannot be restored from this app.</p>}
         {deletingFolder && <DeletionProgressBar label={workspaceDeleteCount === 1 ? 'Deleting workspace' : 'Deleting workspaces'} className="mt-2" />}
       </DeleteConfirmDialog>
+      {/* The sidebar's one polite live region: reorder results and Active chat status changes. */}
       <div ref={moveStatusRef} className="sr-only" role="status" aria-live="polite" data-testid="sidebar-move-status" />
     </div>
     </ChatSortContext.Provider>
@@ -1758,18 +1797,17 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
           setMenuOpen(true)
         }}
       >
-        <Tooltip label={collection.collapsed ? `Expand ${collection.name}` : `Collapse ${collection.name}`}>
-          {/* ui: raw button kept — unsized inline chevron that must keep its layout; IconButton imposes 26px */}<button
-            type="button"
-            aria-label={collection.collapsed ? `Expand ${collection.name}` : `Collapse ${collection.name}`}
-            aria-expanded={!collection.collapsed}
-            aria-controls={`collection-children-${collection.id}`}
-            onClick={() => { void toggle(collection.id) }}
-            style={{ display: 'flex', background: 'transparent', border: 'none', color: 'var(--text-3)', cursor: 'pointer', padding: 0 }}
-          >
-            <ChevronRight size={14} className="transition-transform duration-200 ease-out motion-reduce:transition-none" style={{ transform: collection.collapsed ? 'rotate(0deg)' : 'rotate(90deg)' }} />
-          </button>
-        </Tooltip>
+        {/* Keeps the 14px chevron's place in the header; the 24px hit area overlaps only the gaps around it. */}
+        <IconButton
+          size="sm"
+          label={collection.collapsed ? `Expand ${collection.name}` : `Collapse ${collection.name}`}
+          icon={<ChevronRight size={14} className="transition-transform duration-200 ease-out motion-reduce:transition-none" style={{ transform: collection.collapsed ? 'rotate(0deg)' : 'rotate(90deg)' }} aria-hidden />}
+          aria-expanded={!collection.collapsed}
+          aria-controls={`collection-children-${collection.id}`}
+          className="uam-sb-iconbtn uam-sb-iconbtn--inline"
+          style={sidebarIconPaint(14)}
+          onClick={() => { void toggle(collection.id) }}
+        />
         {selected ? <Check size={14} style={{ color: 'var(--accent)', flexShrink: 0 }} aria-hidden /> : <CustomIcon icon={collection.customIcon} fallback={<PaneColorIcon Icon={Library} colors={collection.collapsed ? hiddenPaneColors : []} testId={`collection-icon-${collection.id}`} />} />}
         {editing ? (
           <input
@@ -1793,11 +1831,9 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
           </Tooltip>
         )}
         <span data-testid={`collection-count-${collection.id}`} className="text-[10px]" style={{ color: 'var(--text-3)' }}>{folderCount + childCount}</span>
-        {!isCompanionContext() && <Tooltip label="Collection actions">
-          {/* ui: raw button kept — unsized inline trigger that must keep its layout; IconButton imposes 26px */}<button ref={menuTriggerRef} type="button" aria-label={`Actions for ${collection.name}`} aria-haspopup="menu" aria-expanded={menuOpen} onClick={() => { setMenuPoint(null); setMenuOpen((open) => !open) }} style={{ background: 'transparent', border: 'none', color: 'var(--text-3)', cursor: 'pointer', padding: 0 }}>
-            <MoreHorizontal size={14} />
-          </button>
-        </Tooltip>}
+        {!isCompanionContext() && <IconButton ref={menuTriggerRef} size="sm" label={`Actions for ${collection.name}`} tooltip="Collection actions" icon={<MoreHorizontal size={14} aria-hidden />}
+          aria-haspopup="menu" aria-expanded={menuOpen} className="uam-sb-iconbtn uam-sb-iconbtn--inline" style={sidebarIconPaint(14)}
+          onClick={() => { setMenuPoint(null); setMenuOpen((open) => !open) }} />}
       </div>
       </Tooltip>
       {menuOpen && (
@@ -1866,7 +1902,7 @@ function FolderCollection({ collection, folderCount, hiddenPaneColors, selected,
               </div>
             )}
             {children}
-            {collection.references.filter((reference) => reference.type === 'desktop-app').map((reference) => <div key={reference.id} className="flex items-center gap-2 px-3 py-1 text-xs" onContextMenu={(event) => { event.preventDefault(); iconPicker.open('desktop-app', reference.id, reference.label) }}><CustomIcon icon={reference.customIcon} fallback={<Monitor size={14} aria-hidden />} /><span className="min-w-0 flex-1 truncate" title={reference.target}>{reference.label}</span><Tooltip label={`Change icon for ${reference.label}`}>{/* ui: raw button kept — nested inside its own Tooltip; inline icon chip */}<button type="button" aria-label={`Change icon for ${reference.label}`} className="uam-icon-button" onClick={() => iconPicker.open('desktop-app', reference.id, reference.label)}><Pencil size={12} /></button></Tooltip></div>)}
+            {collection.references.filter((reference) => reference.type === 'desktop-app').map((reference) => <div key={reference.id} className="flex items-center gap-2 px-3 py-1 text-xs" onContextMenu={(event) => { event.preventDefault(); iconPicker.open('desktop-app', reference.id, reference.label) }}><CustomIcon icon={reference.customIcon} fallback={<Monitor size={14} aria-hidden />} /><span className="min-w-0 flex-1 truncate" title={reference.target}>{reference.label}</span><IconButton size="sm" label={`Change icon for ${reference.label}`} icon={<Pencil size={12} aria-hidden />} className="uam-sb-iconbtn uam-sb-iconbtn--inline" style={sidebarIconPaint(12)} onClick={() => iconPicker.open('desktop-app', reference.id, reference.label)} /></div>)}
             {folderCount === 0 && childCount === 0 && <div className="px-3 py-2 text-xs" style={{ color: 'var(--text-3)' }}>Drag a workspace here</div>}
           </div>
         </div>
@@ -2260,25 +2296,23 @@ const FolderRow = memo(function FolderRow({
         <div
           className={`absolute inset-y-0 right-3 flex items-center transition-opacity duration-100 ${menuPos ? 'opacity-100' : 'opacity-0 group-hover:opacity-100 group-has-[:focus-visible]:opacity-100'}`}
         >
-          {!isCompanionContext() && <Tooltip label="Folder actions" side="top">
-            {/* ui: raw button kept — inline 22px trigger; IconButton sizes are 26px and 30px */}<button
+          {!isCompanionContext() && <IconButton
               ref={menuTriggerRef}
-              type="button"
-              aria-label="Folder actions"
+              size="sm"
+              label={`Actions for ${folder.name}`}
+              tooltip="Folder actions"
+              icon={<MoreHorizontal size={14} aria-hidden />}
               aria-haspopup="menu"
               aria-expanded={Boolean(menuPos)}
-              className="flex items-center justify-center rounded focus-visible:[outline-offset:var(--focus-inset)]"
-              style={{ width: 22, height: 22, background: 'var(--surface-up)', color: 'var(--text-3)', border: '1px solid var(--border)', cursor: 'pointer' }}
+              // A 22px framed tile inside a 24px hit area; the group sits 1px further right to keep the tile in place.
+              className="uam-sb-iconbtn uam-sb-iconbtn--framed -mr-px focus-visible:[outline-offset:var(--focus-inset)]"
               onClick={(e) => {
                 e.stopPropagation()
                 if (menuPos) { setMenuPos(null); return }
                 const r = e.currentTarget.getBoundingClientRect()
-                setMenuPos({ x: r.right - 168, y: r.bottom + 4 })
+                setMenuPos({ x: r.right - 1 - 168, y: r.bottom + 3 })
               }}
-            >
-              <MoreHorizontal size={14} aria-hidden />
-            </button>
-          </Tooltip>}
+            />}
         </div>
       </div>
 
@@ -2420,11 +2454,11 @@ const FolderRow = memo(function FolderRow({
                 ))
               )}
               {shouldLimitSessions && (
-                // ui: raw button kept — inline text link with its own text-xs size and JS hover colour; Button asLink is a 26px pill
+                // ui: raw button kept — inline text link with its own text-xs size and JS hover colour; Button asLink is a 26px pill. uam-sb-target gives it a 24px hit area.
                 <button
                   type="button"
                   onClick={() => setShowAllSessions((value) => !value)}
-                  className="mx-3 mt-0.5 inline-flex items-center px-2 py-0.5 text-xs transition-colors duration-100"
+                  className="uam-sb-target mx-3 mt-0.5 inline-flex items-center px-2 py-0.5 text-xs transition-colors duration-100"
                   style={{
                     background: 'transparent',
                     color: 'var(--text-3)',
