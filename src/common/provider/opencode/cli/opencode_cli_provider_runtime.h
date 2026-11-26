@@ -3,13 +3,19 @@
 #include "common/provider/provider_runtime.h"
 #include <stop_token>
 
+namespace uam::opencode
+{
+	/// Oldest OpenCode release whose ACP permission requests UAM can mediate reliably (the CLI policy minimum).
+	inline constexpr char kAcpPermissionMediationMinimumVersion[] = "1.15.13";
+}
+
 class OpenCodeCliProviderRuntime final : public IProviderRuntime
 {
   public:
 	const char* RuntimeId() const override;
 	const ProviderCliPolicy* CliVersionPolicy() const override;
 	std::string LocalCliCompatibilityError(const uam::AppState& app) const override;
-	std::string StructuredCliVersionError(const ProviderProfile&, std::string_view, bool = false, const ChatSession* = nullptr) const override;
+	std::string StructuredCliVersionError(const ProviderProfile&, std::string_view, bool = false, const ChatSession* = nullptr, bool chat_route = false) const override;
 	bool RequiresStructuredCliVersion(const ProviderProfile&) const override;
 	bool PrepareStructuredLaunch(uam::AcpSessionState&, const ProviderProfile&, std::string_view, bool,
 	    std::vector<std::string>&, std::vector<std::pair<std::string, std::string>>&, std::string&) const override;
@@ -26,6 +32,7 @@ class OpenCodeCliProviderRuntime final : public IProviderRuntime
 	std::string InteractiveConfigurationError(const ProviderProfile& profile, const AppSettings& settings) const override;
 	bool PrepareInteractiveSession(uam::AppState& app, ChatSession& chat, const ProviderProfile& profile, const std::string& resume_id, const ExecutionHost& host, std::string* error_out) const override;
 	std::vector<std::string> BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings) const override;
+	bool StageInteractiveAgentInstructions(const ExecutionHost& host, std::string_view instructions, std::vector<std::string>& argv, std::string& staged_context, std::string& error) const override;
 	bool PrepareInteractiveLaunch(uam::AppState&, uam::CliTerminalState&, const ChatSession&, const ExecutionHost&,
 	    std::vector<std::string>&, std::vector<std::pair<std::string, std::string>>&, std::string*) const override;
 	ProviderTerminalActivity PollInteractiveActivity(uam::CliTerminalState&, std::string_view, const std::filesystem::path&, bool) const override;

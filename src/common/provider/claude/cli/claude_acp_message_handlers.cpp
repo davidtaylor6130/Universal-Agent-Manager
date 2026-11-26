@@ -188,36 +188,6 @@ namespace uam::acp_detail
 			return type.empty() ? content.dump(2) : "[" + type + "]";
 		}
 
-		/// <summary>Late task/child events update their original message even after the next turn starts.</summary>
-		AcpToolCallState& RestoreClaudeTool(AcpSessionState& session, const ChatSession& chat, const std::string& id)
-		{
-			for (AcpToolCallState& tool : session.tool_calls) if (tool.id == id) return tool;
-			AcpToolCallState& tool = UpsertToolCall(session, id);
-			for (std::size_t index = 0; index < chat.messages.size(); ++index)
-			{
-				for (const ToolCall& saved : chat.messages[index].tool_calls)
-				{
-					if (saved.id != id) continue;
-					tool.title = saved.name;
-					tool.kind = saved.kind;
-					tool.status = saved.status;
-					tool.args_json = saved.args_json;
-					tool.content = saved.result_text;
-					tool.is_sub_agent = saved.is_sub_agent;
-					tool.sub_agent_id = saved.sub_agent_id;
-					tool.sub_agent_title = saved.sub_agent_title;
-					tool.sub_agent_children = saved.sub_agent_children;
-					tool.sub_agent_children_authoritative = saved.sub_agent_children_authoritative;
-					tool.approval_status = saved.approval_status;
-					tool.task_id = saved.task_id;
-					tool.child_activity = saved.child_activity;
-					session.tool_call_message_indices[id] = static_cast<int>(index);
-					return tool;
-				}
-			}
-			return tool;
-		}
-
 		/// <summary>Only an attested native child can supply its own terminal duration.</summary>
 		void ApplyClaudeChildDuration(const AcpSessionState& session, const ChatSession& chat,
 		    AcpToolCallState& tool, const nlohmann::json& message, const std::string& subtype)
@@ -296,7 +266,7 @@ namespace uam::acp_detail
 							if (launch.id == tool_id && !launch.task_id.empty() && launch.task_id != task_id) return true;
 				}
 			}
-			AcpToolCallState& tool = RestoreClaudeTool(session, chat, tool_id);
+			AcpToolCallState& tool = RestoreToolCallFromChat(session, chat, tool_id);
 			const bool first_task_event = tool.task_id.empty() && !task_id.empty();
 			if (!task_id.empty()) tool.task_id = task_id;
 			if (tool.title.empty()) tool.title = JsonDiagnosticStringValueOr(message, "description", "Background task");
@@ -373,7 +343,7 @@ namespace uam::acp_detail
 			if (!known_parent) return true;
 			const std::string identity = JsonDiagnosticStringValue(message, "uuid");
 			if (!identity.empty() && !session.claude_seen_child_messages.Insert(identity)) return true;
-			AcpToolCallState& tool = RestoreClaudeTool(session, chat, parent);
+			AcpToolCallState& tool = RestoreToolCallFromChat(session, chat, parent);
 			tool.is_sub_agent = true;
 			if (tool.title.empty()) tool.title = "Sub-agent";
 			const nlohmann::json content = uam::nlohmann_json::ValueOrNull(uam::nlohmann_json::FindField(JsonObjectValue(message, "message"), "content"));
@@ -593,7 +563,7 @@ void HandleClaudeAssistantMessage(AppState& app, AcpSessionState& session, ChatS
 				continue;
 			}
 
-			AcpToolCallState& tool_call = RestoreClaudeTool(session, chat, tool_id);
+			AcpToolCallState& tool_call = RestoreToolCallFromChat(session, chat, tool_id);
 			const std::string tool_name = JsonDiagnosticStringValueOr(item, "name", tool_call.kind);
 			tool_call.kind = uam::claude::ToolKind(tool_name);
 			tool_call.title = uam::claude::ToolTitle(tool_name, JsonObjectValue(item, "input"));
@@ -646,7 +616,7 @@ void HandleClaudeUserMessage(AppState& app, AcpSessionState& session, ChatSessio
 			continue;
 		}
 
-		AcpToolCallState& tool_call = RestoreClaudeTool(session, chat, tool_id);
+		AcpToolCallState& tool_call = RestoreToolCallFromChat(session, chat, tool_id);
 		const std::string native_agent = JsonDiagnosticStringValue(JsonObjectValue(message, "tool_use_result"), "agentId");
 		if (tool_call.is_sub_agent && JsonDiagnosticStringValue(message, "session_id") == session.session_id && session.session_id == chat.native_session_id && uam::uuid::IsCanonicalUuid(session.session_id) && uam::remote::native_history::SafeId(native_agent))
 			tool_call.sub_agent_id = uam::native_agents::BuildHistoryId("claude-cli", session.session_id, native_agent, chat.execution_host_id.empty() ? "local" : chat.execution_host_id);

@@ -30,6 +30,7 @@
 
 #include <nlohmann/json.hpp>
 #include <algorithm>
+#include <array>
 #include <sstream>
 
 namespace uam
@@ -71,15 +72,58 @@ namespace uam
 			return *app.execution_routing_service;
 		}
 
-		std::string WaitReason(ExecutionRoutingReason reason)
+		const char* SkipLabel(ExecutionRoutingHostSkip skip)
 		{
-			switch (reason)
+			switch (skip)
 			{
-			case ExecutionRoutingReason::HostUnavailable: return "The assigned host is unavailable.";
+			case ExecutionRoutingHostSkip::Off: return "off";
+			case ExecutionRoutingHostSkip::Unreachable: return "unreachable";
+			case ExecutionRoutingHostSkip::ProviderUnavailable: return "provider unavailable";
+			case ExecutionRoutingHostSkip::Unconfirmed: return "not confirmed";
+			case ExecutionRoutingHostSkip::NoMapping: return "no folder";
+			case ExecutionRoutingHostSkip::Full: return "full";
+			}
+			return "unavailable";
+		}
+
+		/// One plain line without computer names; the per-computer reasons travel beside it for the interface to name.
+		std::string WaitReason(const ExecutionRoutingDecision& decision)
+		{
+			const ExecutionRoutingHostSkip assigned_skip = decision.skipped.size() == 1 ? decision.skipped.front().reason : ExecutionRoutingHostSkip::Unreachable;
+			switch (decision.reason)
+			{
+			case ExecutionRoutingReason::HostUnavailable:
+				return assigned_skip == ExecutionRoutingHostSkip::ProviderUnavailable ? "The provider is not available on this chat's computer." : "This chat's computer is unreachable.";
 			case ExecutionRoutingReason::OwnershipChanged: return "The assigned host or provider configuration changed. Confirm the provider for this computer in Routing settings; the chat then continues by itself.";
 			case ExecutionRoutingReason::InconsistentSnapshot: return "Routing ownership is inconsistent. Review the chat before retrying.";
-			default: return "Waiting for an eligible host with a matching workspace and available slot.";
+			default: break;
 			}
+			if (!decision.assignment.host_id.empty())
+			{
+				switch (assigned_skip)
+				{
+				case ExecutionRoutingHostSkip::Full: return "Waiting for a free slot on this chat's computer.";
+				case ExecutionRoutingHostSkip::Off: return "Automatic routing or this chat's computer is turned off.";
+				case ExecutionRoutingHostSkip::Unconfirmed: return "Confirm the provider for this chat's computer in Routing settings.";
+				case ExecutionRoutingHostSkip::ProviderUnavailable: return "The provider is not available on this chat's computer.";
+				default: return "This chat's computer is unreachable.";
+				}
+			}
+			if (decision.skipped.empty()) return "No computer is set up for automatic routing.";
+			std::array<std::size_t, 6> counts{};
+			for (const ExecutionRoutingSkippedHost& skipped : decision.skipped) ++counts[static_cast<std::size_t>(skipped.reason)];
+			std::string summary = "No computer can take this chat yet:";
+			const char* separator = " ";
+			// Reasons that clear by themselves first, then the ones that need the user.
+			for (const ExecutionRoutingHostSkip skip : {ExecutionRoutingHostSkip::Full, ExecutionRoutingHostSkip::Unreachable, ExecutionRoutingHostSkip::Unconfirmed,
+			         ExecutionRoutingHostSkip::NoMapping, ExecutionRoutingHostSkip::ProviderUnavailable, ExecutionRoutingHostSkip::Off})
+			{
+				const std::size_t count = counts[static_cast<std::size_t>(skip)];
+				if (count == 0) continue;
+				summary += separator + std::to_string(count) + " " + SkipLabel(skip);
+				separator = ", ";
+			}
+			return summary + ".";
 		}
 
 		/// Version state is runtime-only, so routing starts the check it waits on. Only a check that never ran or
@@ -441,13 +485,15 @@ namespace uam
 		ExecutionRoutingDecision decision = RoutingService(app).Admit(request, candidates, occupancy);
 		if (decision.status == ExecutionRoutingStatus::Waiting || decision.status == ExecutionRoutingStatus::Invalid)
 		{
-			app.execution_routing_waits[chat.id] = decision.reason != ExecutionRoutingReason::OwnershipChanged || !connection_held ? WaitReason(decision.reason)
+			const std::string& text = app.execution_routing_waits[chat.id] = decision.reason != ExecutionRoutingReason::OwnershipChanged || !connection_held ? WaitReason(decision)
 			    : saved_before_format_change ? "This chat still has a turn from before its computer's configuration changed. Stop the turn, then confirm the provider for this computer in Routing settings."
 			    : "This chat still has work or a kept provider process on its host's previous connection. Stop the turn and let the provider close, or restore the host's previous SSH settings, then retry.";
+			app.execution_routing_wait_hosts[chat.id] = {text, decision.skipped};
 			app.execution_routing_retry_at_by_chat_id[chat.id] = now + 1.0;
 			return decision;
 		}
 		app.execution_routing_waits.erase(chat.id);
+		app.execution_routing_wait_hosts.erase(chat.id);
 		app.execution_routing_retry_at_by_chat_id.erase(chat.id);
 		if (decision.status == ExecutionRoutingStatus::Assigned) app.execution_routing_reserved_chat_ids.insert(chat.id);
 		if (!automatic || decision.status != ExecutionRoutingStatus::Assigned) return decision;
@@ -592,6 +638,7 @@ namespace uam
 				(void)app.execution_routing_service->Release(id, true);
 				app.execution_routing_reserved_chat_ids.erase(id);
 				app.execution_routing_waits.erase(id);
+				app.execution_routing_wait_hosts.erase(id);
 				app.execution_routing_retry_at_by_chat_id.erase(id);
 			}
 		}
@@ -669,6 +716,7 @@ namespace uam
 		app.execution_routing_restored_unresolved_chat_ids.erase(chat->id);
 		app.execution_routing_reserved_chat_ids.erase(chat->id);
 		app.execution_routing_waits.erase(chat->id);
+		app.execution_routing_wait_hosts.erase(chat->id);
 		app.execution_routing_retry_at_by_chat_id.erase(chat->id);
 		error.clear();
 		return true;

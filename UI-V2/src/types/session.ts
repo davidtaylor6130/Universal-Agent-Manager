@@ -1,5 +1,6 @@
 import type { CustomIcon } from './customIcon'
 import type { MemoryLevel } from './memory'
+import type { RoutingWaitHost } from './hostLoad'
 
 export type ViewMode = 'chat' | 'cli'
 
@@ -81,6 +82,8 @@ export interface Session {
   routingAssignedConnectionIdentity?: string
   routingAssignedProviderConfigurationIdentity?: string
   routingWaitReason?: string
+  /** Each computer automatic routing passed over for the current wait, and why. */
+  routingWaitHosts?: RoutingWaitHost[]
   routingUnresolvedReservation?: boolean
 
   id: string

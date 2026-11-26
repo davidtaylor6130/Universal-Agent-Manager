@@ -496,6 +496,13 @@ bool CopilotCliProviderRuntime::PrepareInteractiveSession(uam::AppState& app, Ch
 }
 
 
+/// Copilot loads a repository-style instruction file that applies to every path.
+bool CopilotCliProviderRuntime::StageCliHandoffContext(const ProviderCliHandoffStaging& staging, std::vector<std::string>&, std::string&) const
+{
+	const std::string instructions_path = uam::execution_hosts::JoinRemotePath(staging.host_platform, staging.directory, ".github/instructions/handoff.instructions.md");
+	return staging.stage_file(instructions_path, "---\napplyTo: \"**\"\n---\n" + staging.snapshot);
+}
+
 std::vector<std::string> CopilotCliProviderRuntime::BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings) const
 {
 	if (!profile.supports_interactive)
@@ -511,6 +518,14 @@ std::vector<std::string> CopilotCliProviderRuntime::BuildInteractiveArgv(const P
 	AppendCopilotModeArgs(argv, chat);
 	uam::provider_runtime_internal::AppendArgs(argv, uam::provider_runtime_internal::BuildProviderFlagsArgv(provider_settings, uam::provider_runtime_internal::LaunchHasReadCeiling(chat)));
 	return argv;
+}
+
+bool CopilotCliProviderRuntime::StageInteractiveAgentInstructions(const ExecutionHost&, std::string_view instructions, std::vector<std::string>&, std::string& staged_context, std::string& error) const
+{
+	// Written ahead of any handoff text in the staged applyTo "**" instructions file.
+	staged_context.assign(instructions);
+	error.clear();
+	return true;
 }
 
 MessageRole CopilotCliProviderRuntime::RoleFromNativeType(const ProviderProfile& profile, std::string_view native_type) const

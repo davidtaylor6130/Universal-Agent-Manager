@@ -1,5 +1,6 @@
 #pragma once
 
+#include "common/platform/host_load.h"
 #include "common/platform/platform_state_fields.h"
 #include "remote/runner_protocol.h"
 #include "common/memory/memory_library_store.h"
@@ -184,6 +185,7 @@ namespace uam::remote
 		                        const std::filesystem::path& source,
 		                        const std::function<void(std::uintmax_t, std::uintmax_t)>& progress = {},
 		                        std::string* error_out = nullptr, std::stop_token stop_token = {});
+		/// Reconnects within the cleanup budget when the connection is already down, and once more if it drops during the request.
 		bool RemoveFile(const std::string& request_id,
 		                const std::filesystem::path& remote_path,
 		                std::string* error_out = nullptr);
@@ -220,6 +222,11 @@ namespace uam::remote
 		/// <summary>Fetches one immutable accounting snapshot; pending collection returns a pending object.</summary>
 		bool ReadUsageAccountingFile(const std::filesystem::path& path, nlohmann::json& progress, std::string* error_out = nullptr, std::stop_token stop_token = {});
 		bool ReadUsageAccounting(nlohmann::json& snapshot, std::string* error_out = nullptr, std::stop_token stop_token = {});
+		/// <summary>Reads the host's processor count, load, memory and this helper's live process count.</summary>
+		/// <remarks>A helper without the `hostLoad` capability sets <paramref name="unsupported_out"/> and returns false
+		/// without a request: its load is unknown, never idle.</remarks>
+		bool ReadHostLoad(uam::platform::HostLoad& load, bool* unsupported_out = nullptr, std::string* error_out = nullptr, std::stop_token stop_token = {});
+		int HostLoadVersion() const { return m_hostLoadVersion; }
 		bool ReadTextFile(const std::filesystem::path& remote_path, std::string& text,
 		                  std::string* error_out = nullptr, std::stop_token stop_token = {}, bool allow_linked_ancestors = false);
 		/// Reads one exact immutable native transcript, releasing its bounded runner snapshot on success or cancellation.
@@ -256,6 +263,11 @@ namespace uam::remote
 		bool AddProcessControlToken(nlohmann::json& request,
 		                            const std::string& session_id,
 		                            std::string* error_out);
+		/// The connection lost to a failed request comes back first: a transfer that failed on the transport has
+		/// already disconnected. Bounded by the cleanup budget rather than a user's cancel, so a cancel still cleans up.
+		bool ReconnectForCleanup(std::string* error_out = nullptr);
+		/// Asks the helper to drop a partial upload's temporary file, reconnecting first when needed.
+		void AbortUpload(const std::string& upload_id);
 
 		IPlatformProcessService& m_processService;
 		std::vector<std::string> m_bridgeArgv;
@@ -290,6 +302,7 @@ namespace uam::remote
 		bool m_openCodeTerminalObservation = false;
 		bool m_usageAccounting = false;
 		bool m_usageAccountingStream = false;
+		int m_hostLoadVersion = 0;
 		bool m_projectMemory = false;
 		bool m_isolatedTextWorkers = false;
 		bool m_secretDrop = false;

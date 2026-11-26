@@ -5,6 +5,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -17,7 +18,10 @@ namespace uam
 	{
 		std::optional<ExecutionHost> remote_host; // Empty: this computer.
 		std::filesystem::path local_directory;
+		/// Saved-secret name scoped to the workspace, provider, agent and label: only that agent is offered it.
 		std::string keychain_account;
+		/// The earlier workspace-and-label name. It does not record who saved it, so it is never loaded, only forgotten.
+		std::string legacy_keychain_account;
 	};
 
 	/// The `secret_request` UAM tool: arguments, who may ask, the card the user sees and the read-once delivery.
@@ -38,8 +42,11 @@ namespace uam
 		/// Blocking (SSH): run off the UI thread.
 		static secrets::DropResult Deliver(const SecretDeliveryTarget& target, std::string_view value);
 		static std::filesystem::path LocalDropDirectory(const std::filesystem::path& data_root);
-		/// Saved-secret index: account names only, never values.
+		static std::string KeychainAccount(std::string_view workspace, std::string_view provider_id, std::string_view agent_id, std::string_view label);
+		/// Saved-secret index: account names and when UAM saved them, never values.
 		static bool KeychainSaved(const std::filesystem::path& data_root, std::string_view account);
-		static bool RecordKeychainAccount(const std::filesystem::path& data_root, std::string_view account, bool saved);
+		/// When a saved account was saved (epoch ms), 0 for an entry from before dates were recorded; nullopt when not saved.
+		static std::optional<std::int64_t> KeychainSavedAt(const std::filesystem::path& data_root, std::string_view account);
+		static bool RecordKeychainAccount(const std::filesystem::path& data_root, std::string_view account, bool saved, std::int64_t saved_at_epoch_ms = 0);
 	};
 } // namespace uam

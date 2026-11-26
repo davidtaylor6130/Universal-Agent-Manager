@@ -197,7 +197,7 @@ namespace
 		Require(capabilities["restrictions"]["settingsReadOnly"] == false && capabilities["restrictions"]["configurationDefinitionsReadOnly"] == true && capabilities["restrictions"]["connectionAdministrationReadOnly"] == true && capabilities["restrictions"]["desktopSelectionReadOnly"] == true && capabilities["restrictions"]["automaticReplay"] == false, "Capabilities must explicitly declare restricted ownership and no replay");
 		for (const auto& entry : capabilities["actions"])
 			Require(FindAction(entry["action"].get<std::string>()) || IsRequestTransferAction(entry["action"].get<std::string>()), "Every advertised action must exist in the companion policy");
-		for (const char* action : {"getCompanionToken", "setCompanionEnabled", "setCompanionKeychainPrompts", "setMcpServers", "setCentralProviderConfiguration", "writeClipboardText", "selectSession", "setVisibleChatIds", "releaseChatMessages", "deleteSessions", "applyOrganizationAction", "startCli", "saveAgentDefinition", "automationHttpRequest", "approveAutomationChat", "getAutomationTokens", "createAutomationToken", "revokeAutomationToken", "regenerateAutomationToken", "resolveCompanionConfirmation", "regenerateCompanionToken", "notAnAction"})
+		for (const char* action : {"getCompanionToken", "setCompanionEnabled", "setCompanionKeychainPrompts", "setMcpServers", "setCentralProviderConfiguration", "writeClipboardText", "selectSession", "setVisibleChatIds", "releaseChatMessages", "deleteSessions", "applyOrganizationAction", "startCli", "saveAgentDefinition", "automationHttpRequest", "approveAutomationChat", "getAutomationTokens", "createAutomationToken", "revokeAutomationToken", "regenerateAutomationToken", "getAutomationSchedules", "saveAutomationSchedule", "setAutomationSchedulePaused", "deleteAutomationSchedule", "resolveCompanionConfirmation", "regenerateCompanionToken", "notAnAction"})
 		{
 			Json payload = {{"chatId", "chat-one"}};
 			Require(PrepareRequest(action, payload).status == 403, "Dangerous/global/selection actions must remain unavailable");
@@ -783,6 +783,29 @@ namespace
 			Require(!gated(action, {{"commandSafetyTier", "yolo"}, {"enabled", true}}), "Other actions are not gated");
 	}
 
+	void DesktopConfirmationHoldsUamApprovalAllow()
+	{
+		const ConfirmationChatState chat{"off", "default", "build", true};
+		const auto answer = [](const char* request, const char* question, const Json& value)
+		{ return Json{{"chatId", "c"}, {"requestId", request}, {"answers", {{question, value}}}}; };
+		const auto held = [&](const Json& payload) { return LooseningRequest("resolveAcpUserInput", payload, &chat); };
+		// An Allow on a UAM request card grants the agent more, so the phone must wait for the desktop.
+		Require(held(answer("uam-control:cap:req", "computerUse", "Allow")) == "Allow Computer Use for this chat", "Phone Allow for Computer Use waits for the desktop");
+		Require(held(answer("uam-control:cap:req", "chatCreate", "Allow")) == "Allow the agent to start a new chat", "Phone Allow for a new chat waits for the desktop");
+		Require(held(answer("uam-control:cap:req", "goalCreate", "Allow")) == "Allow the agent to create a goal", "Phone Allow for a goal waits for the desktop");
+		Require(!held(answer("uam-control:cap:req", "goalCreate", Json::array({"Allow"}))).empty(), "The handler's list form is held too");
+		Require(!LooseningRequest("resolveAcpUserInput", answer("uam-control:cap:req", "computerUse", "Allow"), nullptr).empty(), "An unknown chat cannot skip the hold");
+		Require(!held({{"chatId", "c"}, {"requestId", "uam-control:cap:req"}, {"answers", {{"goalCreate", "Allow"}, {"userQuestion", "yes"}}}}).empty(),
+		    "Mixing an Allow with another answer is still held");
+		// Deny, question answers and provider-owned requests apply from the phone.
+		for (const char* question : {"computerUse", "chatCreate", "goalCreate"})
+			Require(held(answer("uam-control:cap:req", question, "Deny")).empty(), "A phone Deny applies directly");
+		Require(held(answer("uam-control:cap:req", "userQuestion", "Allow")).empty(), "A question answer applies directly, whatever its text");
+		Require(held(answer("acp-request-7", "computerUse", "Allow")).empty() && held(answer("UAM-CONTROL:cap:req", "computerUse", "Allow")).empty(),
+		    "Only ids the handler routes to UAM Control are held");
+		Require(held({{"chatId", "c"}, {"requestId", "uam-control:cap:req"}, {"answers", "Allow"}}).empty(), "Malformed answers fail in the handler instead");
+	}
+
 	void DesktopConfirmationQueueBoundsAndExpiry()
 	{
 		using Clock = DesktopConfirmations::Clock;
@@ -836,6 +859,7 @@ int main(int argc, char** argv)
 	    {"PolicyProviderTransferredActionsUseFinalPolicy", PolicyProviderTransferredActionsUseFinalPolicy},
 	    {"TransferredEnvelopeFinalAllowlist", TransferredEnvelopeFinalAllowlist},
 	    {"DesktopConfirmationGatesOnlyLoosening", DesktopConfirmationGatesOnlyLoosening},
+	    {"DesktopConfirmationHoldsUamApprovalAllow", DesktopConfirmationHoldsUamApprovalAllow},
 	    {"DesktopConfirmationQueueBoundsAndExpiry", DesktopConfirmationQueueBoundsAndExpiry},
 	};
 	// clang-format on

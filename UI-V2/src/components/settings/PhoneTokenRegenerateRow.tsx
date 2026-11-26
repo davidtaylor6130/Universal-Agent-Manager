@@ -25,7 +25,7 @@ export function PhoneTokenRegenerateRow({ configured, disabled = false }: PhoneT
       const response = await sendToCEF({ action: 'regenerateCompanionToken' })
       if (!response.ok) { setError(response.error || 'Could not regenerate the phone access token. Try again.'); return }
       setOpen(false)
-      reportAppNotice('New phone access token issued. Pair your phones and browsers again.')
+      reportAppNotice('New phone access token issued; pair your devices again.')
     } catch {
       setError('Could not regenerate the phone access token. Try again.')
     } finally {

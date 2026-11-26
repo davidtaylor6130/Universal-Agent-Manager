@@ -24,6 +24,7 @@
 #include "cef/uam_query_handler_async.h"
 #include "common/config/mcp_server_config.h"
 #include "common/chat/chat_repository.h"
+#include "common/paths/workspace_root.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_goal_loop.h"
 #include "common/utils/diagnostic_log.h"
@@ -40,6 +41,8 @@
 #include <windows.h>
 #include <io.h>
 #include <versionhelpers.h>
+#else
+#include <unistd.h>
 #endif
 
 #if defined(__APPLE__)
@@ -383,6 +386,62 @@ UAM_TEST(BundledMarkdownStoreEntriesParseFromNestedFolders)
 	UAM_ASSERT(std::ranges::any_of(actions, [](const ShellAction& action) { return action.group_path == std::vector<std::string>{"GitHub"}; }));
 }
 
+#if !defined(_WIN32)
+UAM_TEST(SkillsLibraryListsReadableSkillsPastAnUnreadableSubfolder)
+{
+	if (::geteuid() == 0) return; // Root opens folders without read permission.
+	TempDir temp("uam-skills-unreadable-folder");
+	const fs::path root = temp.root / "store";
+	const fs::path locked = root / "locked";
+	const fs::path listable = root / "listable";
+	fs::create_directories(locked);
+	fs::create_directories(listable);
+	UAM_ASSERT(uam::io::WriteTextFile(listable / "listed.uam", "---\ntitle: Listed\ncommandName: listed\n---\n\n# Listed\n"));
+	fs::create_directories(root / "readable" / "nested");
+	UAM_ASSERT(uam::io::WriteTextFile(root / "top.uam", "---\ntitle: Top\ncommandName: top\n---\n\n# Top\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(root / "readable" / "nested" / "deep.uam", "---\ntitle: Deep\ncommandName: deep\n---\n\n# Deep\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(locked / "hidden.uam", "---\ntitle: Hidden\ncommandName: hidden\n---\n\n# Hidden\n"));
+	struct RestoreAccess
+	{
+		std::vector<fs::path> paths;
+		~RestoreAccess()
+		{
+			for (const fs::path& path : paths) { std::error_code ec; fs::permissions(path, fs::perms::owner_all, fs::perm_options::replace, ec); }
+		}
+	} restore{{root, locked, listable}}; // Root first, so its folders can be reached again.
+	fs::permissions(locked, fs::perms::none, fs::perm_options::replace);
+	fs::permissions(listable, fs::perms::owner_read, fs::perm_options::replace); // Listed but not entered.
+
+	std::string error = "stale";
+	std::vector<fs::path> skipped{"stale"};
+	const std::vector<MarkdownStoreService::Entry> entries = MarkdownStoreService::ListEntries(root, &error, &skipped);
+	UAM_ASSERT(error.empty());
+	std::vector<std::string> titles;
+	for (const MarkdownStoreService::Entry& entry : entries) titles.push_back(entry.title);
+	std::ranges::sort(titles);
+	UAM_ASSERT(titles == (std::vector<std::string>{"Deep", "Top"}));
+	UAM_ASSERT(skipped == (std::vector<fs::path>{fs::path("listable"), fs::path("locked")}));
+	// Creating a skill walks the same folders and still succeeds.
+	MarkdownStoreService::Draft draft;
+	draft.title = "Fresh";
+	draft.body = "# Fresh";
+	MarkdownStoreService::Entry created;
+	UAM_ASSERT(MarkdownStoreService::CreateEntry(root, draft, &created, &error));
+	UAM_ASSERT(error.empty());
+	UAM_ASSERT_EQ(MarkdownStoreService::ListEntries(root, &error).size(), static_cast<std::size_t>(3));
+
+	// An unreadable library root, or one that can be listed but not entered, still fails instead of showing an empty library.
+	for (const fs::perms access : {fs::perms::none, fs::perms::owner_read})
+	{
+		fs::permissions(root, access, fs::perm_options::replace);
+		error.clear();
+		UAM_ASSERT(MarkdownStoreService::ListEntries(root, &error, &skipped).empty());
+		UAM_ASSERT(!error.empty());
+		UAM_ASSERT(skipped.empty());
+	}
+}
+#endif
+
 UAM_TEST(MarkdownStoreCreatesListsAndValidatesUamFiles)
 {
 	TempDir temp("uam-markdown-store");
@@ -656,6 +715,47 @@ UAM_TEST(MoveChatToFolderRejectsCrossMachineAndAllowsSafeSameHostMoves)
 	UAM_ASSERT(app.chats.front().native_session_reset_pending);
 	UAM_ASSERT(app.chats.front().provider_handoff_context.find("Keep this conversation") != std::string::npos);
 	UAM_ASSERT(ChatHistorySyncService().MoveChatToFolder(app, app.chats.front(), "homelab-other"));
+}
+
+UAM_TEST(MoveRemoteWorktreeChatRefusesWithoutChangingSavedIdentity)
+{
+	TempDir temp("uam-move-remote-worktree-chat");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.folders = {
+	    {"homelab", "Homelab", "/srv/homelab", false, "ssh-homelab"},
+	    {"homelab-other", "Homelab other", "/srv/other", false, "ssh-homelab"},
+	};
+	ExecutionHost host;
+	host.id = "ssh-homelab"; host.ssh_alias = "homelab"; host.platform = "linux";
+	app.settings.execution_hosts.push_back(host);
+	for (const char* kind : {uam::paths::kGitWorktreeIsolationKind, uam::paths::kPendingGitWorktreeIsolationKind})
+	{
+		app.chats.clear();
+		ChatSession chat;
+		chat.id = "remote-worktree-chat";
+		chat.folder_id = "homelab";
+		chat.execution_host_id = "ssh-homelab";
+		chat.workspace_directory = "/srv/homelab";
+		chat.workspace_isolation_kind = kind;
+		chat.workspace_source_directory = "/srv/homelab";
+		chat.workspace_worktree_directory = "/srv/homelab-worktrees/remote-worktree-chat";
+		chat.native_session_id = "previous-native";
+		chat.messages.push_back({MessageRole::User, "Keep this conversation", "now"});
+		app.chats.push_back(chat);
+		app.status_line.clear();
+
+		UAM_ASSERT(!ChatHistorySyncService().MoveChatToFolder(app, app.chats.front(), "homelab-other"));
+		UAM_ASSERT(app.status_line.find("own Git worktree") != std::string::npos);
+		const ChatSession& kept = app.chats.front();
+		UAM_ASSERT_EQ(kept.folder_id, std::string("homelab"));
+		UAM_ASSERT_EQ(kept.execution_host_id, std::string("ssh-homelab"));
+		UAM_ASSERT_EQ(kept.workspace_directory, std::string("/srv/homelab"));
+		UAM_ASSERT_EQ(kept.workspace_worktree_directory, std::string("/srv/homelab-worktrees/remote-worktree-chat"));
+		UAM_ASSERT_EQ(kept.native_session_id, std::string("previous-native"));
+		UAM_ASSERT(!kept.native_session_reset_pending && kept.provider_handoff_context.empty());
+		UAM_ASSERT(!ChatRepository::LoadLocalChat(temp.root, chat.id).has_value());
+	}
 }
 
 UAM_TEST(MoveRemoteChatWorkspaceReleasesEmptyHoldAndRefusesHeldInput)

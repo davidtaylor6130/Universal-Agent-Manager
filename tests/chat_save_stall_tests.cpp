@@ -4,13 +4,18 @@
 #include "common/runtime/acp/acp_polling.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/app_time.h"
+#include "common/utils/diagnostic_log.h"
 
+#include <atomic>
 #include <cstdio>
+#include <future>
 #include <mutex>
 #if defined(_WIN32)
 #include <io.h>
 #else
+#include <csignal>
 #include <fcntl.h>
+#include <sys/resource.h>
 #include <unistd.h>
 #endif
 
@@ -341,6 +346,146 @@ UAM_TEST(AtomicWriteRemovesOnlyAbandonedTempsOfItsDestination)
 	UAM_ASSERT_EQ(uam::io::ReadTextFile(uam::io::MakeBackupPath(target)), std::string("seed"));
 }
 
+namespace
+{
+	/// <summary>One-shot gate a stage hook can wait on.</summary>
+	struct StageGate
+	{
+		std::promise<void> entered;
+		std::promise<void> release;
+		std::shared_future<void> released = release.get_future().share();
+		std::atomic<bool> opened{false};
+
+		void Open()
+		{
+			if (!opened.exchange(true)) release.set_value();
+		}
+	};
+
+	/// <summary>Opens a gate on scope exit. Declare it after the futures whose threads wait on the gate: a failed
+	/// assertion then opens the gate before those futures' destructors wait for their threads, so the case fails
+	/// instead of hanging.</summary>
+	struct OpenGateOnExit
+	{
+		StageGate& gate;
+		~OpenGateOnExit() { gate.Open(); }
+	};
+}
+
+UAM_TEST(DurableWriteBlockedInStageHookDoesNotBlockOtherDestination)
+{
+	TempDir temporary{"uam-durable-write-independent"};
+	const fs::path held = temporary.root / "held.json", other = temporary.root / "other.json";
+	StageGate gate;
+	// The holder stops after its temporary is synced: the point where the old process-wide lock was held across F_FULLFSYNC.
+	auto holder = std::async(std::launch::async, [&]
+	{
+		return uam::io::AtomicWriteFileDetailed(held, "held", [&](uam::io::AtomicWriteStage stage)
+		{
+			if (stage == uam::io::AtomicWriteStage::AfterFileSync)
+			{
+				gate.entered.set_value();
+				gate.released.wait();
+			}
+			return true;
+		}, true);
+	});
+	const OpenGateOnExit open_holder{gate};
+	UAM_ASSERT(gate.entered.get_future().wait_for(std::chrono::seconds(10)) == std::future_status::ready);
+	// Same directory as the held write, so both writes share one cached temp-sweep listing.
+	auto unrelated = std::async(std::launch::async, [&] { return uam::io::WriteTextFileWithBackup(other, "other"); });
+	// Before the fix this waited for the held write's hook for as long as it chose to block.
+	const bool completed_while_held = unrelated.wait_for(std::chrono::seconds(10)) == std::future_status::ready;
+	gate.Open();
+	UAM_ASSERT(completed_while_held);
+	UAM_ASSERT(unrelated.get());
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(other), std::string("other"));
+	const uam::io::AtomicWriteResult held_result = holder.get();
+	UAM_ASSERT(held_result.success && held_result.primary_committed);
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(held), std::string("held"));
+}
+
+UAM_TEST(DurableWritesToOneDestinationStaySerialisedAndIntact)
+{
+	TempDir temporary{"uam-durable-write-same-path"};
+	const fs::path target = temporary.root / "target.json";
+	UAM_ASSERT(uam::io::WriteTextFileWithBackup(target, "seed"));
+
+	// A second writer of the same destination, even spelled differently, waits for the first to publish.
+	StageGate gate;
+	std::atomic<bool> second_started{false};
+	auto first = std::async(std::launch::async, [&]
+	{
+		return uam::io::AtomicWriteFileDetailed(target, "first", [&](uam::io::AtomicWriteStage stage)
+		{
+			if (stage == uam::io::AtomicWriteStage::BeforeReplace)
+			{
+				gate.entered.set_value();
+				gate.released.wait();
+			}
+			return true;
+		}, true);
+	});
+	const OpenGateOnExit open_first{gate};
+	UAM_ASSERT(gate.entered.get_future().wait_for(std::chrono::seconds(10)) == std::future_status::ready);
+	auto second = std::async(std::launch::async, [&]
+	{
+		return uam::io::AtomicWriteFileDetailed(temporary.root / "." / "target.json", "second", [&](uam::io::AtomicWriteStage stage)
+		{
+			if (stage == uam::io::AtomicWriteStage::AfterCreate) second_started.store(true);
+			return true;
+		}, true);
+	});
+	const bool second_waited = second.wait_for(std::chrono::milliseconds(300)) == std::future_status::timeout && !second_started.load();
+	gate.Open();
+	UAM_ASSERT(second_waited);
+	UAM_ASSERT(first.get().success);
+	UAM_ASSERT(second.get().success);
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(target), std::string("second"));
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(uam::io::MakeBackupPath(target)), std::string("first"));
+
+	// Many concurrent writers: never two inside one destination's write, and the primary and backup each
+	// hold one complete payload, never a mix or a truncation.
+	constexpr int kThreads = 6, kWrites = 8;
+	constexpr std::size_t kPayloadBytes = 256U * 1024U;
+	std::atomic<int> inside{0}, most_inside{0};
+	std::vector<std::future<bool>> writers;
+	for (int thread = 0; thread < kThreads; ++thread)
+	{
+		writers.push_back(std::async(std::launch::async, [&, thread]
+		{
+			bool all = true;
+			for (int write = 0; write < kWrites; ++write)
+			{
+				const std::string payload(kPayloadBytes, static_cast<char>('a' + (thread * kWrites + write) % 26));
+				all = uam::io::AtomicWriteFileDetailed(target, payload, [&](uam::io::AtomicWriteStage stage)
+				{
+					if (stage == uam::io::AtomicWriteStage::AfterCreate)
+					{
+						const int now_inside = ++inside;
+						for (int seen = most_inside.load(); now_inside > seen && !most_inside.compare_exchange_weak(seen, now_inside);) {}
+					}
+					if (stage == uam::io::AtomicWriteStage::BeforeReplace) --inside;
+					return true;
+				}, true).success && all;
+			}
+			return all;
+		}));
+	}
+	for (std::future<bool>& writer : writers) UAM_ASSERT(writer.get());
+	UAM_ASSERT_EQ(most_inside.load(), 1);
+	for (const fs::path& path : {target, uam::io::MakeBackupPath(target)})
+	{
+		const std::string saved = uam::io::ReadTextFile(path);
+		UAM_ASSERT_EQ(saved.size(), kPayloadBytes);
+		UAM_ASSERT(std::ranges::all_of(saved, [&](char c) { return c == saved.front(); }));
+	}
+	for (const fs::directory_entry& entry : fs::directory_iterator(temporary.root))
+		UAM_ASSERT(entry.path().filename().string().find(uam::io::kTempWritePathSuffix) == std::string::npos);
+	// The last writer to leave retires the destination's lock entry, so the table does not grow with every path ever written.
+	UAM_ASSERT(!uam::io::DurableWriteDestinationLock::IsTrackedForTests(target));
+}
+
 UAM_TEST(LaterScheduleCannotPostponeDueChatSave)
 {
 	SaveStallFixture fixture(4, 64);
@@ -502,6 +647,115 @@ UAM_TEST(ChatSaveRefusalIsNotReportedAsStorageFailure)
 	fixture.Chat().managed_followup_incarnation.clear();
 	UAM_ASSERT(uam::acp_detail::SaveChatQuietly(fixture.app, fixture.Chat()));
 	UAM_ASSERT(fixture.app.status_line.empty() && fixture.app.chat_save_failures_by_chat_id.empty());
+}
+
+UAM_TEST(ChatSaveReturnsItsRefusalOrWriteErrorCause)
+{
+	SaveStallFixture fixture(4, 64);
+	ChatSession& chat = fixture.Chat();
+	ChatSaveFailure failure{"stale", true};
+	UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, chat, false, &failure));
+	UAM_ASSERT(failure.reason.empty() && !failure.refused);
+
+	chat.managed_followup_incarnation = "not-a-uuid";
+	UAM_ASSERT(!ChatRepository::SaveChat(fixture.app.data_root, chat, false, &failure));
+	UAM_ASSERT(failure.refused);
+	UAM_ASSERT_EQ(failure.reason, std::string("content_not_storable"));
+	chat.managed_followup_incarnation.clear();
+
+	// A journal UAM cannot read is held for the user, never overwritten: a refusal, not a storage failure.
+	const fs::path journal = fixture.app.data_root / "queue-outboxes" / "stall-chat.json";
+	fs::create_directories(journal.parent_path());
+	UAM_ASSERT(uam::io::WriteTextFile(journal, "{broken"));
+	UAM_ASSERT(!ChatRepository::SaveChat(fixture.app.data_root, chat, false, &failure));
+	UAM_ASSERT(failure.refused);
+	UAM_ASSERT_EQ(failure.reason, std::string("queue_journal_unreadable"));
+	fs::remove(journal);
+
+	// A primary UAM cannot read (here a directory in its place) is a storage failure, not a refusal.
+	const fs::path primary = AppPaths::UamChatFilePath(fixture.app.data_root, "stall-chat");
+	fs::rename(primary, fixture.temporary.root / "preserved.json"); fs::create_directory(primary);
+	UAM_ASSERT(!ChatRepository::SaveChat(fixture.app.data_root, chat, false, &failure));
+	UAM_ASSERT(!failure.refused);
+	UAM_ASSERT_EQ(failure.reason, std::string("primary_unreadable"));
+	SavedChatPrimaryWitness witness;
+	UAM_ASSERT(!ChatRepository::SaveLoadedChatWithPrimaryWitness(fixture.app.data_root, chat, witness, &failure));
+	UAM_ASSERT(!failure.refused && failure.reason == "primary_unreadable");
+	fs::remove(primary); fs::rename(fixture.temporary.root / "preserved.json", primary);
+	UAM_ASSERT(ChatRepository::SaveLoadedChatWithPrimaryWitness(fixture.app.data_root, chat, witness, &failure));
+	UAM_ASSERT(failure.reason.empty());
+#if !defined(_WIN32)
+	// A failed write carries the atomic writer's own text (the step and OS error), never a path.
+	{
+		struct FileSizeLimit
+		{
+			rlimit previous{};
+			void (*previous_handler)(int) = SIG_DFL;
+			FileSizeLimit()
+			{
+				UAM_ASSERT(getrlimit(RLIMIT_FSIZE, &previous) == 0);
+				previous_handler = std::signal(SIGXFSZ, SIG_IGN);
+				rlimit small = previous;
+				small.rlim_cur = 16;
+				UAM_ASSERT(setrlimit(RLIMIT_FSIZE, &small) == 0);
+			}
+			~FileSizeLimit() { (void)setrlimit(RLIMIT_FSIZE, &previous); std::signal(SIGXFSZ, previous_handler); }
+		} limit;
+		chat.messages.back().content += " grows past the limit";
+		UAM_ASSERT(!ChatRepository::SaveChat(fixture.app.data_root, chat, false, &failure));
+	}
+	UAM_ASSERT(!failure.refused);
+	UAM_ASSERT(failure.reason.rfind("write: Failed to write temporary file: ", 0) == 0);
+	UAM_ASSERT(failure.reason.find(fixture.app.data_root.filename().string()) == std::string::npos);
+	UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, chat, false, &failure));
+#endif
+}
+
+UAM_TEST(BackgroundChatSavePreparationReturnsItsCause)
+{
+	// The streaming save prepares on a worker; its refusal must reach the log as a refusal, not a storage failure.
+	SaveStallFixture fixture(4, 64);
+	const fs::path journal = fixture.app.data_root / "queue-outboxes" / "stall-chat.json";
+	fs::create_directories(journal.parent_path());
+	UAM_ASSERT(uam::io::WriteTextFile(journal, "{broken"));
+	ChatSaveFailure failure;
+	UAM_ASSERT(ChatRepository::PrepareChatSave(fixture.app.data_root, fixture.Chat(), {}, &failure) == nullptr);
+	UAM_ASSERT(failure.refused && failure.reason == "queue_journal_unreadable");
+	fs::remove(journal);
+	UAM_ASSERT(ChatRepository::PrepareChatSave(fixture.app.data_root, fixture.Chat(), "not-the-revision", &failure) == nullptr);
+	UAM_ASSERT(failure.refused && failure.reason == "primary_changed_since_capture");
+	UAM_ASSERT(ChatRepository::PrepareChatSave(fixture.app.data_root, fixture.Chat(), {}, &failure) != nullptr);
+	UAM_ASSERT(failure.reason.empty());
+}
+
+UAM_TEST(ChatSaveFailureLogsOneLineWithItsCauseAtDurableBarrier)
+{
+	SaveStallFixture fixture(4, 64);
+	std::string error;
+	UAM_ASSERT(uam::diagnostics::StartFileLog(fixture.temporary.root / "uam.log", error, 0));
+	struct StopLog { ~StopLog() { uam::diagnostics::StopFileLog(); } } stop_log;
+	const fs::path primary = AppPaths::UamChatFilePath(fixture.app.data_root, "stall-chat");
+	fs::rename(primary, fixture.temporary.root / "preserved.json"); fs::create_directory(primary);
+	fixture.Chat().messages.back().content += " unsaved output";
+	// Not yet due, so only the quit barrier attempts it: the case that logged two reasonless lines per chat.
+	uam::acp_detail::ScheduleChatSave(fixture.app, fixture.Chat(), 100.0);
+	uam::FlushPendingChatSaves(fixture.app, true);
+	uam::FlushPendingChatSaves(fixture.app, true); // Quit runs two forced barriers; the second must stay quiet.
+	uam::diagnostics::FlushFileLog();
+	const std::string text = uam::io::ReadTextFile(fixture.temporary.root / "uam.log");
+	std::size_t lines = 0;
+	for (std::size_t at = text.find("chat_id=stall-chat"); at != std::string::npos; at = text.find("chat_id=stall-chat", at + 1)) ++lines;
+	UAM_ASSERT_EQ(lines, std::size_t{1});
+	UAM_ASSERT(uam::strings::Contains(text, "Chat save failed at the durable barrier: chat_id=stall-chat, reason=primary_unreadable; the chat stays unsaved until a later save succeeds."));
+	UAM_ASSERT(!uam::strings::Contains(text, "Chat history was not saved"));
+	UAM_ASSERT(fixture.app.pending_chat_save_at_by_chat_id.contains("stall-chat"));
+	fs::remove(primary); fs::rename(fixture.temporary.root / "preserved.json", primary);
+
+	const std::string refused = uam::acp_detail::ChatSaveFailureLogLine("held-chat", {"queue_journal_revision_changed", true}, false);
+	UAM_ASSERT_EQ(refused, std::string("Chat save refused before writing: chat_id=held-chat, reason=queue_journal_revision_changed; retrying with backoff up to 60 s while UAM runs."));
+	UAM_ASSERT(uam::strings::Contains(uam::acp_detail::ChatSaveFailureLogLine("chat", {}, false), "Chat save failed: chat_id=chat, reason=unclassified;"));
+	UAM_ASSERT(uam::acp_detail::ChatSaveFailureLogLine("chat", {std::string(5000, 'x'), false}, false).size() < 400);
+	UAM_ASSERT(uam::strings::Contains(uam::acp_detail::ChatSaveFailureLogLine("../outside", {"content_not_storable", true}, false), "chat_id=unsafe chat id,"));
 }
 
 UAM_TEST(ZeroDelayUpdatesRewriteTranscriptAtMostTwiceASecond)

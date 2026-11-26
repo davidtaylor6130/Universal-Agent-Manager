@@ -541,6 +541,27 @@ describe('AppShell', () => {
     }
   })
 
+  it('titles a failure with its own title when the caller gives one', () => {
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
+    useAppStore.setState({ updateChecksEnabled: false, statusLine: '' })
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    try {
+      act(() => root.render(<AppShell />))
+      act(() => reportAppFailure('Chat “Parser work”: A scheduled follow-up was dropped.', '', { title: 'Follow-up dropped' }))
+      act(() => reportAppFailure('The chat was not renamed.', ''))
+      act(() => (host.querySelector('[aria-label="2 alerts"]') as HTMLButtonElement).click())
+      const panel = host.querySelector('[data-testid="notifications-panel"]')!
+      expect(Array.from(panel.querySelectorAll('.uam-np-row__title span:first-child'), (title) => title.textContent).sort()).toEqual(['Follow-up dropped', 'The chat was not renamed.'])
+      expect(panel.textContent).toContain('A scheduled follow-up was dropped.')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('groups dated notices newest first and refreshes across midnight without reannouncing', () => {
     vi.useFakeTimers()
     vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} })
@@ -559,7 +580,7 @@ describe('AppShell', () => {
       const panel = host.querySelector('[data-testid="notifications-panel"]')!
       const groups = () => Array.from(panel.querySelectorAll('.uam-np-group'), (group) => group.textContent)
       expect(groups()).toEqual(['Today', 'Earlier'])
-      expect(Array.from(panel.querySelectorAll('.uam-np-row__title span:first-child'), (title) => title.textContent)).toEqual(['Change not saved', 'Application status', 'Change not saved'])
+      expect(Array.from(panel.querySelectorAll('.uam-np-row__title span:first-child'), (title) => title.textContent)).toEqual(['recent failure', 'Application status', 'older failure'])
       const times = Array.from(panel.querySelectorAll('time'))
       expect(times.map((time) => time.dateTime)).toEqual([
         new Date(2026, 9, 23, 23, 59).toISOString(), new Date(2026, 9, 23, 23, 58).toISOString(), new Date(2026, 9, 22, 23, 59).toISOString(),
@@ -568,7 +589,7 @@ describe('AppShell', () => {
       const announcer = host.querySelector('[data-testid="transient-alert-announcer"]')!
       const announcement = announcer.innerHTML
       const transcriptRenders = mainPanelRenderCount.value
-      const focusedDismiss = panel.querySelector<HTMLButtonElement>('[aria-label="Dismiss Change not saved"]')!
+      const focusedDismiss = panel.querySelector<HTMLButtonElement>('[aria-label="Dismiss recent failure"]')!
       act(() => focusedDismiss.focus())
       act(() => vi.advanceTimersByTime(60_000))
       expect(groups()).toEqual(['Earlier'])
@@ -1452,7 +1473,7 @@ describe('AppShell', () => {
       expect(panel.textContent).toContain('Transport closed')
       act(() => useAppStore.setState({ statusLine: 'Another status' }))
       expect(panel.querySelectorAll('time')).toHaveLength(3)
-      act(() => (panel.querySelector('[aria-label="Dismiss Change not saved"]') as HTMLButtonElement).click())
+      act(() => (panel.querySelector(`[aria-label='Dismiss Could not move "Workspace".']`) as HTMLButtonElement).click())
       expect(panel.querySelectorAll('time')).toHaveLength(2)
       act(() => (panel.querySelector('[aria-label="Close notifications"]') as HTMLButtonElement).click())
       act(() => (host.querySelector('[aria-label="2 alerts"]') as HTMLButtonElement).click())
@@ -1943,7 +1964,7 @@ describe('AppShell', () => {
       const panelCopy = host.querySelector('[data-testid="notifications-panel"]')!.querySelectorAll<HTMLButtonElement>('[aria-label="Copy message"]')
       expect(panelCopy).toHaveLength(1)
       await act(async () => panelCopy[0].click())
-      expect(writeText).toHaveBeenLastCalledWith('Change not saved\nChat history did not load. · Disk read failed')
+      expect(writeText).toHaveBeenLastCalledWith('Chat history did not load.\nDisk read failed')
     } finally {
       cleanup()
       Reflect.deleteProperty(navigator, 'clipboard')
@@ -2067,7 +2088,7 @@ describe('AppShell', () => {
       expect(Number.parseFloat(text.style.maxHeight)).toBe(80)
       expect(text.style.overflowY).toBe('auto')
       expect(text.tabIndex).toBe(0)
-      expect(text.textContent).toBe(message)
+      expect(text.textContent).toBe(message.trim())
       expect([...surface.querySelectorAll('button')].every(button => !button.disabled)).toBe(true)
       act(() => text.focus())
       settle(9000)

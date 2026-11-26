@@ -3,7 +3,9 @@
 #include "app/provider_model_catalog_service.h"
 #include "app/execution_routing_service.h"
 #include "app/repository_route_match_service.h"
+#include "common/utils/store_load_fence.h"
 #include "common/models/app_models.h"
+#include "common/memory/memory_worker_failure_pause.h"
 #include "common/paths/workspace_lease.h"
 #include "common/config/frontend_actions.h"
 #include "common/platform/platform_state_fields.h"
@@ -11,6 +13,7 @@
 #include "common/provider/provider_profile.h"
 #include "common/provider/attached_skill_resources.h"
 #include "common/runtime/terminal/terminal_dimensions.h"
+#include "common/runtime/host_load_sampler.h"
 #include "common/runtime/stream_watch.h"
 #include "common/security/read_only_command.h"
 
@@ -39,12 +42,13 @@ struct PreparedMemoryOutput;
 namespace uam
 {
 	namespace claude_preinput { class Observation; }
-	namespace acp_detail { struct ColdRetryBinding; }
 	namespace html_view { class RenderChecker; }
+	namespace usage { class AccountAllowanceService; }
 
 	class StartupNativeImportService;
 	class StorageRetentionService;
 	class PrWatchService;
+	class TimerService;
 	class DataFolderSettingsService;
 	class OpenCodeNativeActivityService;
 	class ManagedSubagentCancellationReceipt;
@@ -178,6 +182,10 @@ namespace uam
 		double last_busy_time_s = 0.0;
 		double shutdown_requested_time_s = 0.0;
 		double inactivity_interrupt_requested_time_s = 0.0;
+		// Input reached the provider composer after the last submitted line, so it may hold an unsent draft.
+		bool composer_may_hold_draft = false;
+		// Last byte of the previous composer input, to recognise a backslash-then-Enter line break.
+		char composer_last_input_byte = 0;
 		bool input_ready = false;
 		double startup_time_s = 0.0;
 		bool generation_in_progress = false;
@@ -200,6 +208,12 @@ namespace uam
 		std::string codex_activity_turn_id;
 		bool codex_activity_discard_line = false;
 		bool codex_activity_awaiting_turn = false;
+		// App time the submission that set codex_activity_awaiting_turn was sent; its receipt deadline runs from here.
+		double codex_activity_awaiting_since_s = 0.0;
+		// A native observer's wait for a submission's turn start just expired; the poll reads and clears it for logging.
+		bool native_turn_receipt_expired = false;
+		// Unknown was set because a turn's end could not be proven; a later idle prompt may still confirm Ready.
+		bool turn_end_unconfirmed = false;
 		bool codex_activity_read_failed = false;
 		bool codex_activity_completed = false;
 		std::string last_native_history_snapshot_digest;
@@ -447,6 +461,11 @@ namespace uam
 		std::string execution_command;
 		// Captured from the chat when the request arrives: where admitted reads and automatic edits may reach.
 		command_safety::ReadScope read_scope;
+		// Transient: an ask rule (or an unresolvable program name) keeps this request for the user, so neither
+		// automatic approval nor AI review may answer it.
+		bool command_rule_hold = false;
+		// One-line notice shown on the approval card when a rule holds the request (a push waiting for approval).
+		std::string command_rule_notice;
 	};
 
 	struct AcpUserInputOptionState
@@ -487,6 +506,7 @@ namespace uam
 	};
 
 	struct UamAgentWait;
+	struct UamControlBackgroundRead;
 	struct ControlAuditSaveTicket;
 	struct RemoteOutputAckSaveTicket;
 
@@ -532,9 +552,15 @@ namespace uam
 		std::vector<std::string> agent_delegates;
 		/// Captured from a goal review launch; the capability can never mutate or start broader children.
 		bool read_only_at_launch = false;
+		/// Tools this session was never offered, fixed at launch (sorted). The manager refuses them itself, so a
+		/// request that bypasses the session's own tool server cannot reach them.
+		std::vector<std::string> hidden_tools;
+		bool hidden_tool_refusal_logged = false; // One diagnostic line per capability, not one per refused request.
 		/// Signing key held only by this capability's MCP server process; a request without its signature is refused.
 		std::string request_key;
 		int64_t expires_at_epoch_ms = 0;
+		/// When this session last raised its chat's attention flag through `notify`; bounds it to once a minute.
+		int64_t last_notify_epoch_ms = 0;
 		std::deque<int64_t> request_times_epoch_ms;
 		std::unordered_set<std::string> seen_request_ids;
 		std::deque<std::string> seen_request_order; // Insertion order, so eviction drops the oldest ID.
@@ -547,6 +573,9 @@ namespace uam
 		// chat_create admissions within the caller's current structured turn.
 		int chat_create_turn_serial = -1;
 		std::size_t chat_create_turn_count = 0;
+		// agent_delegate admissions within the caller's current structured turn.
+		int delegate_turn_serial = -1;
+		std::size_t delegate_turn_count = 0;
 		// Latest successful agent_delegate, to answer a retry whose first reply was never collected.
 		std::string last_delegate_request_id, last_delegate_arguments;
 		nlohmann::json last_delegate_result;
@@ -563,6 +592,8 @@ namespace uam
 		};
 		std::vector<PendingAuditedReply> pending_audited_replies;
 		std::shared_ptr<UamAgentWait> pending_agent_wait;
+		/// The one worktree_status or memory_search read this capability has running off the app thread; empty when none.
+		std::string background_read_request_id;
 		// Captured by real setup; wait admission cannot adopt a changed host/workspace selection.
 		std::optional<ExecutionHost> wait_host_at_launch;
 		std::shared_ptr<const std::uint8_t> wait_root_incarnation_at_launch, wait_chat_incarnation_at_launch;
@@ -760,8 +791,6 @@ namespace uam
 		const IProviderRuntime* native_pre_dispatch_runtime = nullptr;
 		// Ephemeral native query DATA; never serialized or an input permission.
 		std::shared_ptr<claude_preinput::Observation> claude_preinput_observation;
-		// Invocation-only opt-in provenance; passive loading and current Retry never create it.
-		std::shared_ptr<acp_detail::ColdRetryBinding> cold_retry_binding;
 		bool claude_manual_compaction_supported = false;
 		bool claude_manual_compaction_boundary_seen = false;
 		nlohmann::json copilot_native_state = nlohmann::json::object();
@@ -781,6 +810,10 @@ namespace uam
 		bool antigravity_turn_has_usage = false;
 		int64_t antigravity_completed_turns = 0;
 		std::unordered_set<int64_t> antigravity_completed_steps;
+		// Owned manual compaction: the native checkpoint step that completed it, or a checkpoint that failed.
+		std::optional<int64_t> antigravity_compaction_checkpoint_step;
+		bool antigravity_compaction_checkpoint_failed = false;
+		bool antigravity_compaction_answered = false;
 		struct AntigravityGoalTurn
 		{
 			std::string owner_chat_id;
@@ -812,6 +845,8 @@ namespace uam
 		std::shared_ptr<PendingAcpCompaction> pending_compaction;
 		bool manual_compaction_pending = false;
 		bool context_compaction_in_progress = false;
+		// Instructions for the compaction request being built; set only while a runtime that accepts them builds it.
+		std::string manual_compaction_instructions;
 		bool recovering_remote_turn = false;
 		bool recovering_remote_process = false;
 		bool waiting_for_permission = false;
@@ -926,10 +961,6 @@ namespace uam
 		// from reconnect_attempts, which stop retries and exits also count, so the number of launches is exact.
 		int discovery_cleanup_attaches = 0;
 		double discovery_cleanup_last_attach_time_s = 0.0;
-		// Counts watchdog re-queues of a stalled goal loop; the goal is marked
-		// blocked after 3 so a failing provider cannot be retried forever.
-		// Cleared when a turn completes or a new user prompt is sent.
-		int goal_auto_resume_attempts = 0;
 		// Set when the user cancels a turn so the goal-loop watchdog does not
 		// override an explicit stop; cleared on the next user prompt.
 		enum class GoalQueueAdmission { None, Pending, Held, PendingContinuation, HeldContinuation };
@@ -958,6 +989,15 @@ namespace uam
 		std::string goal_review_user_prompt;
 		std::string goal_review_assistant_text;
 		int goal_review_repair_attempts = 0;
+		// One goal review decision, which can span its single JSON repair turn. Reset whenever no review is pending.
+		struct GoalReviewDecisionTiming
+		{
+			// DecisionService::NowMs() when the review was first queued; 0 when unknown (for example a recovered review).
+			std::int64_t started_ms = 0;
+			// The invalid first turn of a repaired review and its validated tokens; unknown stays unknown.
+			bool repaired = false;
+			std::optional<std::int64_t> earlier_tokens;
+		} goal_review_decision;
 		// Runtime receipt from validated provider usage for the current goal worker or review turn, never reconstructed from turn text.
 		struct GoalReviewUsage
 		{
@@ -1284,6 +1324,10 @@ namespace uam
 		std::string request_id_json;
 		std::string command_preview;
 		std::string requested_model_id;
+		// Session cache key for this exact reviewer input; empty when the verdict must not be cached.
+		std::string cache_key;
+		// "approve" or "deny" when this task replays a cached verdict instead of running a worker.
+		std::string cached_decision;
 		std::shared_ptr<AsyncProcessTaskState> state;
 		std::unique_ptr<std::jthread> worker;
 	};
@@ -1471,6 +1515,28 @@ namespace uam
 		std::unique_ptr<std::jthread> worker;
 	};
 
+	/// The per-computer reasons behind one routing wait text; shown only while that text is still the chat's wait.
+	struct ExecutionRoutingWaitHosts
+	{
+		std::string text;
+		std::vector<ExecutionRoutingSkippedHost> hosts;
+	};
+	/// How busy one computer is with UAM work, recounted on the app thread about once a second.
+	struct ExecutionHostUsage
+	{
+		/// Chats occupying the computer as routing admission counts them (live work and held reservations).
+		std::size_t in_use = 0;
+		/// Chats on this computer whose turn waits: for routing on their own computer, or for a compute pool slot.
+		std::size_t waiting = 0;
+		/// Concurrent sessions allowed by its routing policy; empty when it has none.
+		std::optional<std::size_t> limit;
+		/// For this computer only: provider processes and terminals UAM is running here.
+		std::uint32_t local_processes = 0;
+		bool operator==(const ExecutionHostUsage&) const = default;
+	};
+	/// Test seam: builds the reader that asks one computer for its load on the sampling thread.
+	using HostLoadReaderFactoryBuilder = std::function<host_load::ReaderFactory(const ExecutionHost&)>;
+
 	struct AppState
 	{
 		/// True while the desktop window is open but the saved chat list is still loading off the app thread.
@@ -1480,6 +1546,8 @@ namespace uam
 		std::shared_ptr<StorageRetentionService> storage_retention_service;
 		/// Pull request watches for every chat; null in tools and tests that do not create it.
 		std::shared_ptr<PrWatchService> pr_watch_service;
+		/// Chat follow-up wakes and automation schedules; null in tools and tests that do not create it.
+		std::shared_ptr<TimerService> timer_service;
 		std::shared_ptr<DataFolderSettingsService> data_folder_settings;
 		std::shared_ptr<ExecutionRoutingService> execution_routing_service;
 		std::vector<RepositoryRouteWorkspace> repository_route_workspaces;
@@ -1494,6 +1562,20 @@ namespace uam
 		std::string claude_quota_dispatch_id;
 		std::unordered_map<std::string, std::weak_ptr<BranchPreparationOwnership>> branch_preparations;
 		std::unordered_map<std::string, std::string> execution_routing_waits;
+		std::unordered_map<std::string, ExecutionRoutingWaitHosts> execution_routing_wait_hosts;
+		/// Live load per computer, read off the app thread. Null until the first poll that wants a reading.
+		std::shared_ptr<host_load::Sampler> host_load_sampler;
+		HostLoadReaderFactoryBuilder host_load_reader;
+		/// Settings that show load ask for it; until this time every configured computer is sampled.
+		double host_load_interest_until_s = 0.0;
+		double host_load_next_poll_s = 0.0;
+		/// The load figures last published, as the interface sees them; a change here is what pushes state.
+		std::string host_load_published;
+		/// Last logged load status per computer, so a status change is logged once.
+		std::unordered_map<std::string, std::string> host_load_reported_status;
+		std::unordered_map<std::string, ExecutionHostUsage> execution_host_usage;
+		/// Automatic chats waiting for any computer, before one is assigned.
+		std::size_t execution_routing_unassigned_waiting = 0;
 		std::unordered_map<std::string, double> execution_routing_retry_at_by_chat_id;
 		std::unordered_set<std::string> execution_routing_reserved_chat_ids;
 		std::unordered_set<std::string> execution_routing_restored_unresolved_chat_ids;
@@ -1516,12 +1598,20 @@ namespace uam
 		bool memory_settings_uncertain = false;
 		std::vector<ChatFolder> folders;
 		std::vector<ResourceCollection> resource_collections;
+		/// Startup load results for the stores above. An Unrecovered result means the in-memory list is
+		/// partial or empty and the store refuses saves until a fresh process reads a valid file.
+		uam::io::StoreLoadResult folders_load;
+		uam::io::StoreLoadResult resource_collections_load;
 		std::vector<ShellAction> shell_actions;
+		/// The saved shell actions file existed but could not be read on the last load, so the next save sets it aside first.
+		bool shell_actions_unreadable = false;
 		std::string shell_action_notification;
 		std::vector<ProviderProfile> provider_profiles;
 		uam::FrontendActionMap frontend_actions;
 
 		std::vector<ChatSession> chats;
+		/// The side chat whose cleanup was requested last; its poll removes it ahead of older requests (Dismiss side chat).
+		std::string latest_side_cleanup_chat_id;
 		HiddenAgentChatOwnership hidden_agent_chat_ownership;
 		/// Saved chats of providers this build excludes (see excluded_provider_data.h): never shown or changed, consulted only so
 		/// import and deletion respect the native sessions and workspaces they own. Always empty in a build with every provider.
@@ -1541,6 +1631,8 @@ namespace uam
 		std::uint64_t compute_pool_next_ticket = 0;
 		/// Renders published HTML views to report their runtime errors. Null outside the desktop app.
 		std::shared_ptr<html_view::RenderChecker> html_view_render_checker;
+		/// The desktop's account allowance cache, read by the usage_report tool without starting a read. Empty outside the desktop app.
+		std::weak_ptr<usage::AccountAllowanceService> account_allowances;
 		/// A chat_create whose first prompt is sent after control requests finish; its reply and audit wait for that send.
 		struct UamChatCreateLaunch
 		{
@@ -1552,6 +1644,8 @@ namespace uam
 		};
 		std::vector<UamChatCreateLaunch> uam_chat_create_launches;
 		std::deque<std::shared_ptr<UamAgentWait>> uam_wait_retirements;
+		/// Read-only UAM tool reads running on detached workers; each reply is written once its read finishes.
+		std::vector<std::shared_ptr<UamControlBackgroundRead>> uam_control_background_reads;
 		std::string uam_control_manager_id;
 		std::deque<std::string> queued_agent_run_ids;
 		/// Terminal v2 records whose result card a previous process never wrote; the scheduler delivers each once.
@@ -1641,6 +1735,10 @@ namespace uam
 		bool remote_host_health_changed = false;
 		std::vector<AsyncMemoryExtractionTask> memory_extraction_tasks;
 		std::vector<AsyncPermissionReviewTask> permission_review_tasks;
+		// In-memory, this run only: approve/deny verdicts keyed by the exact reviewer input, reviewer, provider and
+		// workspace. Never persisted or logged; bounded by kPermissionReviewCacheLimit, oldest first out.
+		std::unordered_map<std::string, std::string> permission_review_cache;
+		std::deque<std::string> permission_review_cache_order;
 		std::vector<AsyncTurnCheckpointTask> turn_checkpoint_tasks;
 		std::deque<PendingGoalIterationState> pending_goal_iterations;
 		std::deque<QueuedMemoryExtractionTask> memory_extraction_queue;
@@ -1648,6 +1746,9 @@ namespace uam
 		std::unordered_map<std::string, double> memory_retry_not_before_by_chat_id;
 		std::unordered_map<std::string, int> memory_failure_count_by_chat_id;
 		std::unordered_map<std::string, MemoryWorkerBackoff> memory_worker_backoff_by_key;
+		// Retries stop after repeated identical failures until the chat's inputs change, a manual scan or a restart.
+		std::unordered_map<std::string, MemoryWorkerFailureStreak> memory_failure_streak_by_chat_id;
+		double memory_failure_pause_recheck_at = 0.0;
 		std::unordered_map<std::string, CliProviderVersionState> runtime_cli_versions_by_provider_id;
 		std::unordered_map<std::string, ComputerUseRuntimeState> computer_use_by_chat_id;
 		std::unordered_set<std::string> computer_use_revocation_pending_chat_ids;
@@ -1664,7 +1765,7 @@ namespace uam
 		struct ChatSavePace { double finished_at = 0.0; double cost_seconds = 0.0; };
 		std::unordered_map<std::string, ChatSavePace> chat_save_pace_by_chat_id;
 		// Consecutive failed transcript saves per chat: told to the user once, then retried with backoff.
-		struct ChatSaveFailure { int attempts = 0; double retry_at = 0.0; };
+		struct ChatSaveFailure { int attempts = 0; double retry_at = 0.0; bool barrier_logged = false; };
 		std::unordered_map<std::string, ChatSaveFailure> chat_save_failures_by_chat_id;
 		double chat_save_records_pruned_at = 0.0;
 		// Rows of the most recently saved transcripts, reused as the next save's unchanged prefix so each

@@ -24,10 +24,11 @@ This document captures the current security posture for Universal Agent Managerâ
 - On macOS, renderer, GPU and utility processes run inside the Chromium sandbox. The helper bundles
   hold a separate `uam_cef_helper` executable that enters the sandbox before anything else runs, then
   loads the CEF framework at runtime; it links no application or platform services. The main
-  executable still links the framework directly and is not sandboxed. Windows and Linux are known gaps
-  (see Known Gaps).
+  executable still links the framework directly and is not sandboxed. Windows is implemented and
+  awaiting verification, and Linux is a gap (see Known Gaps).
 - External `http`, `https`, `mailto`, `ftp`, and `tel` navigation is blocked inside CEF and delegated to the operating system browser or handler.
 - DevTools and view-source shortcuts are blocked in the embedded UI.
+- CEF startup drops Chromium's remote debugging switches (`--remote-debugging-port`, `--remote-debugging-pipe`, `--remote-allow-origins` and the rest of `--remote-debugging-*`) from the command line UAM forwards, so a normal launch opens no DevTools port. Only an explicit test run with `UAM_TEST_ALLOW_REMOTE_DEBUGGING=1`, which the [performance suite](performance-suite.md) sets, keeps them, and `--remote-debugging-address` is always dropped so the port stays on 127.0.0.1.
 - The browser context menu is reduced to a Copy command when selected text is present.
 - Native clipboard writes go through a bridge action with a 1 MiB text limit.
 - Native clipboard writes run off the CEF UI thread; the macOS helper has a two-second process deadline and is terminated and reaped on timeout.
@@ -106,16 +107,55 @@ Before an enterprise release:
 - Local macOS packaging uses ad hoc signing before the final bundle verification; enterprise distribution should use the organization's signing, notarization, and deployment process.
 - Windows CI packages are unsigned review artifacts. Enterprise/public distribution must apply and
   verify the organization's Authenticode signature after packaging; the repository does not contain
-  or request a signing certificate.
-- The Chromium process sandbox is enabled only in macOS app bundles. Windows and Linux still run CEF
-  with `no_sandbox`. The CEF 156 Windows distribution ships no `cef_sandbox.lib`; its sandbox requires
-  the `bootstrap.exe` layout, where the app is rebuilt as a DLL exporting `RunWinMain` and the shipped
-  `.exe` is CEF's renamed bootstrap. That changes every Windows entry point (crash supervisor, stdio MCP
-  and control servers, discovery CLI) and can only be verified on Windows, so it is a separate change.
-  The Windows build sets CEF's `USE_SANDBOX` option off until then, because that option compiles the
-  CEF wrapper for the bootstrap layout. Linux desktop builds are not shipped or built in CI, so the
-  CEF 156 Linux pin is unverified; their sandbox (SUID `chrome-sandbox` or user namespaces) is out of
-  scope until a Linux desktop package is.
+  or request a signing certificate. Sign `universal_agent_manager.exe`, `universal_agent_manager.dll`
+  and `chrome_elf.dll` with the same certificate (sign the rest as usual): CEF's bootstrap refuses to
+  start when only some of them are signed or their certificates differ.
+- The Chromium process sandbox is verified only in macOS app bundles. Linux still runs CEF with
+  `no_sandbox`. Linux desktop builds are not shipped or built in CI, so the CEF 156 Linux pin is
+  unverified; their sandbox (SUID `chrome-sandbox` or user namespaces) is out of scope until a Linux
+  desktop package is.
+- Windows sandbox: implemented, awaiting Windows verification. It counts as a present control only
+  once the Windows build, CTest, the core shards and `scripts/smoke_packaged_windows.ps1` pass there.
+  - Layout: CEF 156 ships no `cef_sandbox.lib` for Windows, so the shipped
+    `universal_agent_manager.exe` is CEF's `bootstrap.exe`, renamed. It sets up the sandbox, loads
+    `universal_agent_manager.dll` (all of UAM's code) and calls its `RunWinMain` export with the
+    sandbox information that `CefExecuteProcess` and `CefInitialize` receive. CEF silently starts
+    unsandboxed when that information is missing, so UAM refuses to start CEF without it.
+  - Load-time imports: the DLL loads into every renderer, GPU and utility process, possibly after
+    lockdown, so it delay-loads every system library except `kernel32`, `ntdll` and
+    `api-ms-win-core-*`. The build runs `dumpbin /imports` on it and fails otherwise. CEF subprocesses
+    reach `CefExecuteProcess` before UAM loads any delay-loaded library.
+  - Signing: the bootstrap verifies that `universal_agent_manager.exe`, `universal_agent_manager.dll`
+    and `chrome_elf.dll` are either all unsigned or all signed with the same certificate.
+  - Network service: Chromium leaves its Windows network service sandbox off by default (Chrome turns
+    it on only through a field trial, which CEF does not use), so UAM enables the `NetworkServiceSandbox`
+    feature in the browser process, merged into any `--enable-features` value. The service then runs in
+    an AppContainer (not LPAC) at low integrity. Chromium does not support this on ARM64, on x64
+    emulated on ARM64 or before Windows 10 20H1 (build 19041), where the service stays unsandboxed, and
+    silently restarts it unsandboxed after a failed sandboxed launch. Chromium reverted enabling it by
+    default over localhost socket errors (crbug 466139402). David chose to turn it on on 2026-11-25;
+    the packaged smoke test is its proof.
+  - Folder access: Chromium's AppContainer sandboxed processes (the network service, and any LPAC
+    process) need `ALL RESTRICTED APPLICATION PACKAGES` (`*S-1-15-2-2:(OI)(CI)(RX)`) read access to
+    the app folder; that group covers ordinary AppContainers as well as LPAC.
+    The build grants it on the output folder. ZIP extraction loses it, so at startup the app checks the
+    folder, counting split folder and inherit-only entries as Program Files uses, and adds the grant
+    only to a folder that holds `libcef.dll` and `universal_agent_manager.dll` and is not the profile,
+    Desktop, Documents or Downloads folder. Otherwise it logs why.
+  - Static initialisers: the import check cannot see a namespace-scope initialiser that calls a
+    delay-loaded library while the DLL loads. A source search on 2026-11-23 found none in UAM's code;
+    the first Windows run must still confirm renderers start.
+  - Smoke test: fails when a CEF process has `--no-sandbox`, or `--disable-gpu-sandbox` outside
+    Chromium's short-lived info-collection GPU process (`--use-gl=disabled`), a renderer runs
+    at medium integrity or above, or, where Chromium supports its sandbox, the network service lacks
+    `--service-sandbox-type=network` or runs at medium integrity or above. On ARM64 or before build
+    19041 it reports the network service sandbox as unsupported and skips that part.
+  - Entry points: every process without `--type` (the crash supervisor, the stdio MCP and control
+    servers, the management node, the OpenCode V2 commands and the discovery CLI) also passes through
+    the bootstrap's certificate checks and sandbox broker setup before UAM runs, and starts in the app
+    folder. UAM's stdio and terminal launchers name the chosen working directory for UAM's own helpers,
+    which restore it. A shell command line that changes directory and then starts UAM, and MCP servers
+    that a provider starts itself, stay in the app folder; none of them depend on it.
 
 ## Repository publication
 

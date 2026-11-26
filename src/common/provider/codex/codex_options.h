@@ -10,6 +10,9 @@
 
 namespace uam::codex
 {
+	/// Oldest Codex whose thread start/resume schema verifies UAM Control's per-thread configuration.
+	inline constexpr char kUamControlMinimumVersion[] = "0.159.2";
+
 	/// <summary>Only recognized native reviewer values can suppress UAM fallback review.</summary>
 	inline std::string NormalizeApprovalsReviewer(std::string_view value)
 	{

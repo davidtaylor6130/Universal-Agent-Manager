@@ -12,6 +12,8 @@
 #include "common/platform/platform_services.h"
 #include "common/provider/provider_ids.h"
 #include "common/runtime/acp/acp_session_runtime.h"
+#include "common/runtime/acp/acp_session_state_helpers.h"
+#include "common/runtime/terminal/terminal_chat_sync.h"
 #include "common/state/app_state.h"
 #include "common/utils/diagnostic_log.h"
 #include "common/utils/io_utils.h"
@@ -57,6 +59,8 @@ namespace uam
 			std::string created_at;
 			int lifetime_days = kDefaultLifetimeDays;
 			std::int64_t expires_at = 0; // Epoch seconds; checked on every request.
+			/// What refusals call this credential: an external "token" or an internal "schedule".
+			std::string kind = "token";
 		};
 
 		std::filesystem::path TokenFile(const AppState& app)
@@ -193,36 +197,77 @@ namespace uam
 			return chat.acp_queue_held || (session != nullptr && session->lifecycle_state == "error");
 		}
 
+		/// <summary>Counts against the token's open-chat limit.</summary>
 		bool ChatIsOpen(const AppState& app, const ChatSession& chat)
 		{
-			return chat.AwaitsAutomationApproval() || (GoalService::FindActiveGoal(app, chat.id) != nullptr && !LaunchFailedAfterAcceptance(app, chat));
+			if (chat.AwaitsAutomationApproval()) return true;
+			// A chat an automation chat started holds its place for as long as it exists, like the 8-per-caller
+			// allowance, because later wakes such as a pull request watch do not check the token.
+			if (!chat.created_by_chat_id.empty()) return true;
+			const AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
+			if (ChatHasBusyCliTerminal(app, chat) || (session != nullptr && (session->processing || AcpSessionIsWaitingForInput(*session)))) return true;
+			// A launch that failed after acceptance keeps its goal and queued prompt but waits for the user, not the token.
+			if (LaunchFailedAfterAcceptance(app, chat)) return false;
+			// A branch has no goal of its own, so a turn waiting to be sent also counts.
+			return GoalService::FindActiveGoal(app, chat.id) != nullptr || (session != nullptr && AcpSessionHasActiveTurn(*session));
 		}
 
-		AutomationApiResponse CreateChat(AppState& app, const AutomationApiRequest& request, const TokenRecord& token)
+		std::size_t OpenChatCount(const AppState& app, std::string_view token_id)
 		{
-			const nlohmann::json body = nlohmann::json::parse(request.body, nullptr, false);
-			if (!body.is_object()) return Refuse(400, "The request body must be a JSON object.");
+			return static_cast<std::size_t>(std::ranges::count_if(app.chats, [&](const ChatSession& chat) { return chat.automation_token_id == token_id && ChatIsOpen(app, chat); }));
+		}
+
+		/// <summary>A chat started directly through the API, as opposed to one an automation chat started or branched; only those report status.</summary>
+		bool CreatedThroughApi(const ChatSession& chat)
+		{
+			return chat.created_by_chat_id.empty() && chat.parent_chat_id.empty();
+		}
+
+		/// <summary>The fields of a chat request after the same validation every caller gets.</summary>
+		struct ChatRequest
+		{
 			std::string prompt, workspace_id, provider, model, title, git_permission;
-			if (!ReadField(body, "prompt", kMaxPromptBytes, prompt) || prompt.empty()) return Refuse(400, "prompt is required and must be between 1 byte and 128 KiB.");
-			if (!ReadField(body, "workspaceId", kMaxFieldBytes, workspace_id) || workspace_id.empty()) return Refuse(400, "workspaceId is required.");
-			if (!ReadField(body, "providerId", kMaxFieldBytes, provider) || provider.empty()) return Refuse(400, "providerId is required.");
+			int max_iterations = 0;
+		};
+
+		/// <summary>Reads and bounds a chat request body. Returns the refusal when a field is missing or invalid.</summary>
+		std::optional<AutomationApiResponse> ReadChatRequest(const nlohmann::json& body, ChatRequest& out)
+		{
+			if (!body.is_object()) return Refuse(400, "The request body must be a JSON object.");
+			if (!ReadField(body, "prompt", kMaxPromptBytes, out.prompt) || out.prompt.empty()) return Refuse(400, "prompt is required and must be between 1 byte and 128 KiB.");
+			if (!ReadField(body, "workspaceId", kMaxFieldBytes, out.workspace_id) || out.workspace_id.empty()) return Refuse(400, "workspaceId is required.");
+			if (!ReadField(body, "providerId", kMaxFieldBytes, out.provider) || out.provider.empty()) return Refuse(400, "providerId is required.");
 			// A model ID reaches a provider command line, so it may not look like a flag.
-			if (!ReadField(body, "modelId", kMaxFieldBytes, model) || model.starts_with('-') ||
-			    !std::ranges::all_of(model, [](unsigned char ch) { return std::isalnum(ch) != 0 || std::string_view("-_./:[]").find(static_cast<char>(ch)) != std::string_view::npos; }))
+			if (!ReadField(body, "modelId", kMaxFieldBytes, out.model) || out.model.starts_with('-') ||
+			    !std::ranges::all_of(out.model, [](unsigned char ch) { return std::isalnum(ch) != 0 || std::string_view("-_./:[]").find(static_cast<char>(ch)) != std::string_view::npos; }))
 				return Refuse(400, "modelId must be a plain model name.");
-			if (!ReadField(body, "title", kMaxFieldBytes, title)) return Refuse(400, "title must be a short string.");
+			if (!ReadField(body, "title", kMaxFieldBytes, out.title)) return Refuse(400, "title must be a short string.");
 			const auto cap = body.find("maxIterations");
 			if (cap == body.end() || !cap->is_number_integer() || cap->get<std::int64_t>() < 1 || cap->get<std::int64_t>() > kMaxIterations)
 				return Refuse(400, "maxIterations is required and must be an integer from 1 to 200.");
-			if (!ReadField(body, "gitPermission", kMaxFieldBytes, git_permission) || GitRank(git_permission) == 0)
+			out.max_iterations = cap->get<int>();
+			if (!ReadField(body, "gitPermission", kMaxFieldBytes, out.git_permission) || GitRank(out.git_permission) == 0)
 				return Refuse(400, "gitPermission is required and must be \"commit\" or \"pr\".");
+			return std::nullopt;
+		}
+
+		AutomationApiResponse CreateChat(AppState& app, const nlohmann::json& body, const TokenRecord& token)
+		{
+			ChatRequest request;
+			if (std::optional<AutomationApiResponse> refusal = ReadChatRequest(body, request)) return *refusal;
+			const std::string& prompt = request.prompt;
+			const std::string& workspace_id = request.workspace_id;
+			const std::string& provider = request.provider;
+			const std::string& model = request.model;
+			const std::string& title = request.title;
+			const std::string& git_permission = request.git_permission;
 
 			if (std::ranges::find(token.workspaces, workspace_id) == token.workspaces.end()) return Refuse(403, "This token may not use that workspace.");
 			if (GitRank(git_permission) > GitRank(token.max_git_permission)) return Refuse(403, "This token may not request that Git permission.");
 			const ChatFolder* folder = ChatDomainService().FindFolderById(app, workspace_id);
 			if (folder == nullptr || uam::strings::IsBlank(folder->directory)) return Refuse(404, "That workspace no longer exists.");
-			if (static_cast<std::size_t>(std::ranges::count_if(app.chats, [&](const ChatSession& chat) { return chat.automation_token_id == token.id && ChatIsOpen(app, chat); })) >= kMaxOpenChatsPerToken)
-				return Refuse(429, "This token already has 16 open chats. Finish or delete one first.");
+			if (OpenChatCount(app, token.id) >= kMaxOpenChatsPerToken)
+				return Refuse(429, "This " + token.kind + " already has 16 open chats. Finish or delete one first; a chat an automation chat started counts until it is deleted.");
 
 			ChatSession chat = ChatDomainService().CreateNewChat(folder->id, provider_ids::NormalizeCliProviderAliasOrSelf(provider), true);
 			chat.execution_host_id = uam::strings::NonEmptyOrFallback(folder->execution_host_id, execution_hosts::kLocalHostId);
@@ -241,7 +286,7 @@ namespace uam
 			chat.automation_token_id = token.id;
 			chat.automation_token_name = token.name;
 			chat.automation_pending_prompt = prompt;
-			chat.automation_max_iterations = cap->get<int>();
+			chat.automation_max_iterations = request.max_iterations;
 			chat.automation_git_permission = git_permission;
 			if (!ChatRepository::SaveChat(app.data_root, chat)) return Refuse(500, "The chat could not be saved.");
 
@@ -257,14 +302,15 @@ namespace uam
 		{
 			const auto chat = std::ranges::find_if(app.chats, [&](const ChatSession& value) { return value.id == chat_id; });
 			// A chat from another token is indistinguishable from a missing one.
-			if (chat == app.chats.end() || chat->automation_token_id != token.id) return Refuse(404, "Chat not found.");
+			// So is a chat an automation chat started or branched: the token's read scope stays the chats it created.
+			if (chat == app.chats.end() || chat->automation_token_id != token.id || !CreatedThroughApi(*chat)) return Refuse(404, "Chat not found.");
 			std::string status = "awaitingApproval";
 			int used = 0;
 			if (!chat->AwaitsAutomationApproval())
 			{
 				const Goal* goal = chat->goals.empty() ? nullptr : &chat->goals.back();
 				status = goal == nullptr ? "stopped" : goal->status == GoalStatus::Active ? (LaunchFailedAfterAcceptance(app, *chat) ? "blocked" : "running") : goal->status == GoalStatus::Complete ? "completed" : goal->status == GoalStatus::Blocked ? "blocked" : "paused";
-				if (goal != nullptr) used = goal->loop_count;
+				if (goal != nullptr) used = goal->loop_count + goal->unreviewed_resume_count; // the same count the iteration cap checks
 			}
 			return {.body = {{"chatId", chat->id}, {"status", status}, {"iterationsUsed", used}, {"maxIterations", chat->automation_max_iterations}, {"gitPermission", chat->automation_git_permission}}};
 		}
@@ -308,10 +354,50 @@ namespace uam
 		if (token == nullptr || request.token_hash.empty()) response = Refuse(401, "Invalid automation token.");
 		else if (uam::time::TimestampNowSec() >= token->expires_at) response = Refuse(401, "This automation token has expired. Regenerate it in UAM Settings.");
 		else if (request.body.size() > kMaxBodyBytes) response = Refuse(413, "Request exceeds 256 KiB.");
-		else if (request.method == "POST" && request.path == kChatsPath) response = CreateChat(app, request, *token);
+		else if (request.method == "POST" && request.path == kChatsPath)
+		{
+			const nlohmann::json body = nlohmann::json::parse(request.body, nullptr, false);
+			response = CreateChat(app, body, *token);
+		}
 		else if (request.method == "GET" && IsApiPath(request.path) && request.path != kChatsPath) response = ChatStatus(app, std::string_view(request.path).substr(kChatsPath.size() + 1), *token);
 		else response = Refuse(404, "Unknown automation endpoint.");
 		LogRequest(request, response.status == 401 ? nullptr : token, response.status, response.body.value("chatId", std::string{}));
+		return response;
+	}
+
+	std::string AutomationApiService::ScheduledRequestRefusal(const AppState& app, const nlohmann::json& body)
+	{
+		ChatRequest request;
+		if (std::optional<AutomationApiResponse> refusal = ReadChatRequest(body, request)) return refusal->body.value("error", "The request is not valid.");
+		const ChatFolder* folder = ChatDomainService().FindFolderById(app, request.workspace_id);
+		if (folder == nullptr || uam::strings::IsBlank(folder->directory)) return "That workspace no longer exists.";
+		if (uam::provider_chat_defaults::ProviderManagesOwnPermissions(provider_ids::NormalizeCliProviderAliasOrSelf(request.provider)))
+			return "That provider answers its own permission prompts, so UAM cannot hold it to a Git permission.";
+		// The run's own checks, made now too, so a schedule that could never start is not saved.
+		ChatSession probe = ChatDomainService().CreateNewChat(folder->id, provider_ids::NormalizeCliProviderAliasOrSelf(request.provider), true);
+		probe.execution_host_id = uam::strings::NonEmptyOrFallback(folder->execution_host_id, execution_hosts::kLocalHostId);
+		probe.workspace_directory = folder->directory;
+		probe.automation_token_id = "schedule-check";
+		if (std::string refusal = UamControlService::ChatWorktreeIsolationRefusal(app, probe); !refusal.empty()) return refusal;
+		if (!ProviderResolutionService().ChatProviderIsAvailable(app, probe)) return ProviderResolutionService().ChatProviderUnavailableReason(app, probe);
+		return {};
+	}
+
+	AutomationApiResponse AutomationApiService::CreateScheduledChat(AppState& app, const AutomationScheduleCredential& credential, const nlohmann::json& body)
+	{
+		// The schedule is its own credential: the user chose its workspace, Git access and trust in desktop Settings, it
+		// never leaves UAM and it does not expire. Every other check is the one POST /automation/chats gets.
+		TokenRecord token;
+		token.id = credential.id;
+		token.name = credential.name;
+		token.trusted = credential.trusted;
+		token.kind = "schedule";
+		if (body.is_object() && body.contains("workspaceId") && body["workspaceId"].is_string()) token.workspaces = {body["workspaceId"].get<std::string>()};
+		if (body.is_object() && body.contains("gitPermission") && body["gitPermission"].is_string()) token.max_git_permission = body["gitPermission"].get<std::string>();
+		AutomationApiResponse response = CreateChat(app, body, token);
+		// Status, route and chat only: never the prompt.
+		uam::diagnostics::Write("Automation schedule: " + credential.id + " run status=" + std::to_string(response.status) +
+		                        (response.body.contains("chatId") ? " chat=" + response.body.value("chatId", std::string{}) : std::string{}) + ".");
 		return response;
 	}
 
@@ -386,6 +472,19 @@ namespace uam
 		return true;
 	}
 
+	std::string AutomationApiService::StartedChatRefusal(const AppState& app, const ChatSession& caller)
+	{
+		if (caller.automation_token_id.empty()) return {};
+		const std::optional<std::vector<TokenRecord>> tokens = ReadTokens(app);
+		if (!tokens) return "Automation tokens are unavailable, so this automation chat cannot start another chat.";
+		const auto token = std::ranges::find(*tokens, caller.automation_token_id, &TokenRecord::id);
+		// A revoked or expired token creates nothing, through the API or through its chats.
+		if (token == tokens->end()) return "This automation chat's token was revoked, so it cannot start another chat.";
+		if (uam::time::TimestampNowSec() >= token->expires_at) return "This automation chat's token has expired, so it cannot start another chat.";
+		if (OpenChatCount(app, token->id) >= kMaxOpenChatsPerToken) return "This automation chat's token already has 16 open chats. Chats started from automation chats count until they are deleted, so ask the user to delete one, or wait for another chat to finish.";
+		return {};
+	}
+
 	std::optional<AutomationChatLaunch> AutomationApiService::BeginLaunch(AppState& app, const std::string& chat_id, std::string* error_out)
 	{
 		const auto fail = [&](std::string message) { if (error_out != nullptr) *error_out = std::move(message); return std::nullopt; };
@@ -395,17 +494,13 @@ namespace uam
 		const ChatSession before = *chat;
 		AutomationChatLaunch launch;
 		launch.text = chat->automation_pending_prompt;
-		// ponytail: an instruction, not a block; Default approval is what stops a push, and a Git-aware command gate would make this enforceable.
-		// In the goal rather than the message, so the transcript shows what was asked and every continuation repeats the policy.
-		const std::string objective = launch.text + (chat->automation_git_permission == "pr"
-		                   ? "\n\nAutomation policy: you may commit to this chat's branch and open a pull request. Do not push anywhere else."
-		                   : "\n\nAutomation policy: commit to this chat's branch only. Do not push or open a pull request.");
-		if (!GoalService::CreateGoal(app, chat_id, objective, app.settings.goal_token_budget, &launch.goal_id) || !GoalService::SetActiveGoal(app, chat_id, launch.goal_id, nullptr, nullptr, true))
+		// CreateGoal adds the Git policy and iteration cap to every goal of an automation chat. The policy goes in the goal
+		// rather than the message, so the transcript shows what was asked and every continuation repeats it.
+		if (!GoalService::CreateGoal(app, chat_id, launch.text, app.settings.goal_token_budget, &launch.goal_id) || !GoalService::SetActiveGoal(app, chat_id, launch.goal_id, nullptr, nullptr, true))
 		{
 			*chat = before;
 			return fail("The chat's goal could not be created.");
 		}
-		GoalService::FindGoalById(app, chat_id, launch.goal_id)->max_iterations = chat->automation_max_iterations;
 		chat->automation_pending_prompt.clear();
 		if (!ChatRepository::SaveChat(app.data_root, *chat))
 		{

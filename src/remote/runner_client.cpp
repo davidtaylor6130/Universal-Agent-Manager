@@ -5,6 +5,7 @@
 #include "common/config/build_features.h"
 #include "remote/memory_protocol.h"
 #include "remote/runner_client.h"
+#include "remote/host_load_protocol.h"
 #include "remote/native_history_snapshot.h"
 
 #include "common/config/execution_host_config.h"
@@ -421,6 +422,10 @@ namespace uam::remote
 		m_openCodeTerminalObservation = response["capabilities"].value("openCodeTerminalObservation", false);
 		m_usageAccounting = response["capabilities"].value("usageAccounting", false);
 		m_usageAccountingStream = response["capabilities"].value("usageAccountingStream", false);
+		// A version, not a flag: zero or absent means the helper cannot report its load.
+		const auto host_load = response["capabilities"].find("hostLoad");
+		m_hostLoadVersion = host_load != response["capabilities"].end() && host_load->is_number_integer() && host_load->get<std::int64_t>() > 0 && host_load->get<std::int64_t>() < 1024
+		    ? static_cast<int>(host_load->get<std::int64_t>()) : 0;
 		m_projectMemory = response["capabilities"].value("projectMemory", false);
 		m_isolatedTextWorkers = response["capabilities"].value("isolatedTextWorkers", false);
 		m_secretDrop = response["capabilities"].value("secretDrop", false);
@@ -1179,12 +1184,8 @@ namespace uam::remote
 		if (file.bad() || hashed != size) return fail("The file changed or could not be read while preparing the upload.");
 		file.clear();
 		file.seekg(0);
-		// Also after a cancel, so the helper drops the partial temporary file; bounded by the request deadline.
-		const auto abort = [&]
-		{
-			nlohmann::json ignored;
-			if (m_connected) (void)Request({{"type", "file.abort"}, {"uploadId", upload_id}}, ignored, nullptr);
-		};
+		// Also after a cancel or a dropped connection, so the helper drops the partial temporary file.
+		const auto abort = [&] { AbortUpload(upload_id); };
 		nlohmann::json response;
 		if (!Request({{"type", "file.begin"}, {"uploadId", upload_id}, {"path", uam::paths::Utf8PathString(remote_path)},
 		              {"size", size}, {"digest", uam::hashing::Hex64Padded(digest)}}, response, error_out, interrupt))
@@ -1211,7 +1212,12 @@ namespace uam::remote
 		}
 		if (!Request({{"type", "file.commit"}, {"uploadId", upload_id}}, response, error_out, interrupt))
 		{
+			const bool reply_lost = !m_connected;
 			abort();
+			// A commit whose reply was lost may have published the file. The helper refused a target that already
+			// existed at begin, so whatever is there now can only be this copy.
+			// Only when the abort reached the host again: another reconnect straight after would fail the same way.
+			if (reply_lost && m_connected) (void)RemoveFile(upload_id, remote_path);
 			return false;
 		}
 		const nlohmann::json& committed = response["result"];
@@ -1236,13 +1242,40 @@ namespace uam::remote
 		return Request({{"type", "context.remove"}, {"directory", uam::paths::Utf8PathString(directory)}}, response, error_out, [stop_token] { return stop_token.stop_requested(); });
 	}
 
+	bool RunnerClient::ReconnectForCleanup(std::string* error_out)
+	{
+		if (m_connected) return true;
+		const auto budget_spent = [deadline = std::chrono::steady_clock::now() + m_cleanupLimit]
+		{ return std::chrono::steady_clock::now() >= deadline; };
+		if (Connect(error_out, {}, budget_spent)) return true;
+		// A spent budget reads as an interruption, which is not what happened.
+		if (error_out != nullptr && budget_spent()) *error_out = "The host could not be reached again to clean up.";
+		return false;
+	}
+
+	void RunnerClient::AbortUpload(const std::string& upload_id)
+	{
+		// A host that cannot be reached again in time is left to the helper, which expires a quiet upload itself.
+		if (!ReconnectForCleanup()) return;
+		nlohmann::json ignored;
+		// Bounded by the request deadline, not the cancel that may have ended the transfer.
+		(void)Request({{"type", "file.abort"}, {"uploadId", upload_id}}, ignored, nullptr);
+	}
+
 	bool RunnerClient::RemoveFile(const std::string& request_id,
 	                              const std::filesystem::path& remote_path,
 	                              std::string* error_out)
 	{
+		if (!ReconnectForCleanup(error_out)) return false;
+		nlohmann::json request = {{"type", "file.remove"}, {"uploadId", request_id},
+		                          {"path", uam::paths::Utf8PathString(remote_path)}};
 		nlohmann::json response;
-		return Request({{"type", "file.remove"}, {"uploadId", request_id},
-		                {"path", uam::paths::Utf8PathString(remote_path)}}, response, error_out);
+		bool removed = Request(request, response, error_out);
+		// Only a transport failure is retried; the reply's error is kept when the host cannot be reached again. A
+		// removal that ran before its reply was lost reports remove_failed on the retry, as any failed transport did.
+		if (!removed && !m_connected && ReconnectForCleanup())
+			removed = Request(std::move(request), response, error_out);
+		return removed;
 	}
 
 	bool RunnerClient::SweepChatAttachments(const std::string& request_id, const std::filesystem::path& folder, const std::set<std::string>& keep,
@@ -1633,6 +1666,27 @@ namespace uam::remote
 		if (cancelled()) { if (error_out) *error_out = "Usage accounting loading was cancelled."; return false; }
 		const uam::io::AtomicWriteResult published = uam::io::CommitSyncedAtomicTemp(path, temporary);
 		if (!published.success) { if (error_out) *error_out = "Could not publish usage cache."; return false; }
+		return true;
+	}
+
+	bool RunnerClient::ReadHostLoad(uam::platform::HostLoad& load, bool* unsupported_out, std::string* error_out, std::stop_token stop_token)
+	{
+		load = {};
+		if (unsupported_out != nullptr) *unsupported_out = false;
+		if (!m_connected && !Connect(error_out, stop_token)) return false;
+		if (m_hostLoadVersion < 1)
+		{
+			if (unsupported_out != nullptr) *unsupported_out = true;
+			if (error_out != nullptr) *error_out = "Update this host's UAM runner to report its load.";
+			return false;
+		}
+		nlohmann::json response;
+		if (!Request({{"type", "host.load"}}, response, error_out, [stop_token]() { return stop_token.stop_requested(); })) return false;
+		if (!HostLoadFromJson(response.value("result", nlohmann::json{}), load))
+		{
+			if (error_out != nullptr) *error_out = "The runner returned an invalid host load.";
+			return false;
+		}
 		return true;
 	}
 
@@ -2071,6 +2125,7 @@ namespace uam::remote
 		m_openCodeNativeControl = false;
 		m_openCodeTerminalObservation = false;
 		m_usageAccounting = false; m_usageAccountingStream = false;
+		m_hostLoadVersion = 0;
 		m_projectMemory = false;
 		m_isolatedTextWorkers = false;
 		m_secretDrop = false;

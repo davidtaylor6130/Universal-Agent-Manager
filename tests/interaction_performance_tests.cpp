@@ -1,4 +1,5 @@
 #include "test_harness.h"
+#include "app/persistence_coordinator.h"
 #include "app/transcript_retention_service.h"
 #include "app/uam_control_service.h"
 #include "computer_use/computer_use_mcp_server.h"
@@ -1182,6 +1183,212 @@ UAM_TEST(PerformanceStatePushModelCatalogueCost)
 		throw TestFailure("2000-chat catalogue push tick p50 exceeded " + std::to_string(kInteractionBudget.count()) + " ms");
 }
 
+namespace
+{
+	/// <summary>
+	/// The performance suite's synthetic data root, as `scripts/perf_suite.py fixture` writes it (keep the two in step):
+	/// chat_count chats across 20 workspace folders and six providers, twelve messages each and one long_messages-message
+	/// chat, with every provider turned off on this computer. No private content.
+	/// </summary>
+	void WritePerformanceSuiteFixture(const fs::path& root, int chat_count, int long_messages)
+	{
+		const fs::path chats = AppPaths::UamChatsRootPath(root);
+		fs::create_directories(chats);
+		const std::array<const char*, 6> providers{"claude-cli", "codex-cli", "gemini-cli", "opencode-cli", "copilot-cli", "antigravity-cli"};
+		std::string folders = "folders_format_version=1\n\n";
+		for (int index = 0; index < 20; ++index)
+		{
+			const fs::path workspace = root / "workspaces" / ("folder-" + std::to_string(index));
+			fs::create_directories(workspace);
+			folders += "[folder]\nid=perf-folder-" + std::to_string(index) + "\ntitle=Workspace " + std::to_string(index) +
+			    "\ndirectory=" + workspace.generic_string() + "\ncollapsed=0\nexecution_host_id=local\n\n";
+		}
+		UAM_ASSERT(uam::io::WriteTextFile(root / "folders.txt", folders + "folders_complete=1\n"));
+		nlohmann::json availability = nlohmann::json::array();
+		for (const char* provider : providers) availability.push_back({{"providerId", provider}, {"executionHostId", "local"}, {"enabled", false}});
+		UAM_ASSERT(uam::io::WriteTextFile(root / "settings.txt", "provider_availability=" + availability.dump() + "\n"));
+		std::string body;
+		for (int repeat = 0; repeat < 8; ++repeat) body += "Synthetic transcript text for the performance fixture. ";
+		for (int index = 0; index < chat_count; ++index)
+		{
+			char id[32];
+			std::snprintf(id, sizeof(id), "perf-chat-%04d", index);
+			char updated[32];
+			std::snprintf(updated, sizeof(updated), "2026-10-%02d 10:00:00", 1 + index % 28);
+			nlohmann::json messages = nlohmann::json::array();
+			for (int message = 0; message < (index == 0 ? long_messages : 12); ++message)
+				messages.push_back({{"role", message % 2 == 0 ? "user" : "assistant"}, {"content", "Message " + std::to_string(message) + ": " + body}});
+			const nlohmann::json chat{{"id", id}, {"title", "Fixture chat " + std::to_string(index)}, {"provider_id", providers[index % providers.size()]},
+			    {"folder_id", "perf-folder-" + std::to_string(index % 20)}, {"created_at", "2026-10-01 10:00:00"}, {"updated_at", updated},
+			    {"messages", std::move(messages)}};
+			UAM_ASSERT(uam::io::WriteTextFile(chats / (std::string(id) + ".json"), chat.dump()));
+		}
+	}
+
+	/// <summary>
+	/// Loads a data root through the calls desktop startup uses for what a state reply reads: settings, folders, the model
+	/// catalogue service, the chat summaries and the selection. Startup work that adds nothing to this fixture's reply
+	/// (shell actions, resource collections, native import, workspace ownership migration) is left out.
+	/// </summary>
+	void LoadStartupState(uam::AppState& app, const fs::path& root)
+	{
+		app.data_root = root;
+		UAM_ASSERT(PersistenceCoordinator().LoadSettings(app));
+		app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+		app.folders = ChatFolderStore::Load(root);
+		app.provider_model_catalog = std::make_unique<uam::ProviderModelCatalogService>();
+		app.provider_model_catalog->Initialize(root, app.provider_profiles, app.settings.provider_extra_flags);
+		app.provider_model_catalog->SetExecutionHostContext(app.settings.execution_hosts);
+		ChatHistorySyncService().LoadSidebarChats(app);
+		ChatDomainService().SelectRememberedOrFirstChat(app);
+	}
+
+	/// <summary>Times of the parts of one desktop summary pull, in milliseconds, and the push baseline a first load keeps.</summary>
+	struct PullTimes
+	{
+		double serialize = 0.0;
+		double baseline = 0.0;
+		double release = 0.0;
+		std::unordered_map<std::string, nlohmann::json> baseline_summaries;
+		std::unordered_map<std::string, std::uint64_t> baseline_digests;
+	};
+
+	/// <summary>
+	/// The native work of a desktop summary pull, as UamQueryHandler::HandleGetInitialState does it for Refresh, a page
+	/// reload, a resync and the initial load: one exact pass that serializes and dumps the full state, then frees what
+	/// it keeps of the reply tree on the same thread. With seed_baseline, the first load also seeds the push baseline
+	/// as cef_push's ResetPatchBaselines does: it keeps every chat summary, without the wait counter, rather than freeing
+	/// it, and digests every chat again (SerializeChatFingerprintDigests). Production also keeps the other, small slices;
+	/// here they are freed with the rest of the reply. The kept baseline is freed by the caller, outside the timings.
+	/// </summary>
+	std::string DesktopSummaryPull(const uam::AppState& app, bool seed_baseline, PullTimes* times = nullptr)
+	{
+		PullTimes local;
+		PullTimes& out = times != nullptr ? *times : local;
+		const auto elapsed = [](std::chrono::steady_clock::time_point since) { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - since).count(); };
+		const uam::StateSerializer::ScopedStampedCacheMode exact(uam::StateSerializer::StampedCacheMode::Exact);
+		const uam::StateSerializer::StablePass stable_pass;
+		uam::StateSerializer::CaptureCatalogInputs(app);
+		std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+		std::optional<nlohmann::json> state = uam::StateSerializer::Serialize(app, true);
+		std::string body = state->dump();
+		out.serialize = elapsed(started);
+		if (seed_baseline)
+		{
+			started = std::chrono::steady_clock::now();
+			for (nlohmann::json& chat : (*state)["chats"])
+			{
+				if (const nlohmann::json::iterator acp = chat.find("acpSession"); acp != chat.end() && acp->is_object()) acp->erase("waitSeconds");
+				const std::string chat_id = chat.value("id", "");
+				out.baseline_summaries[chat_id] = std::move(chat);
+			}
+			for (const uam::StateSerializer::ChatSummaryDigest& entry : uam::StateSerializer::SerializeChatFingerprintDigests(app))
+				out.baseline_digests[entry.chat->id] = entry.digest;
+			out.baseline = elapsed(started);
+			UAM_ASSERT_EQ(out.baseline_digests.size(), out.baseline_summaries.size());
+		}
+		started = std::chrono::steady_clock::now();
+		state.reset();
+		out.release = elapsed(started);
+		return body;
+	}
+}
+
+// Issue #356: the Refresh and initial-load path. Every desktop summary pull (Refresh, a page reload, a resync after a lost
+// patch and the first load) serializes the whole state in one exact pass, without the revision stamps pushes trust, and
+// the first load also scans every chat again to seed the push baseline. Measured on the performance suite's synthetic
+// 2,000-chat data root, loaded as startup loads it, with its 2,000-message chat open. The printed p50/p95 figures are
+// the measurement; the assertions are the regression check for work that must not grow with the chat count: a pull
+// builds the catalogue slice once, hashes the open chat's history at most once and no transcript on a repeated pull,
+// and resolves each workspace path through the path-probe memo once per kind.
+UAM_TEST(PerformanceRefreshFullStateFingerprint)
+{
+	const WithoutStateCacheVerification unverified;
+	FakeStatePushClock clock;
+	FakePathProbeClock probe_clock;
+	TempDir temp("uam-performance-refresh-fingerprint");
+	constexpr int kChats = 2000;
+	WritePerformanceSuiteFixture(temp.root, kChats, 2000);
+	uam::AppState app;
+	LoadStartupState(app, temp.root);
+	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(kChats));
+	UAM_ASSERT_EQ(app.folders.size(), std::size_t{20});
+	UAM_ASSERT(std::ranges::none_of(app.chats, [](const ChatSession& chat) { return chat.messages_loaded; }));
+	// A Refresh usually comes with a chat open: open the 2,000-message chat, as selecting it and reading its history does.
+	const int long_chat = ChatDomainService().FindChatIndexById(app, "perf-chat-0000");
+	UAM_ASSERT(long_chat >= 0);
+	std::optional<ChatSession> opened = ChatRepository::LoadLocalChat(temp.root, "perf-chat-0000", true);
+	UAM_ASSERT(opened.has_value() && opened->messages_loaded);
+	UAM_ASSERT_EQ(opened->messages.size(), std::size_t{2000});
+	app.chats[static_cast<std::size_t>(long_chat)] = std::move(*opened);
+	ChatDomainService().SetSelectedChatIndexOrNearest(app, long_chat);
+	UAM_ASSERT_EQ(ChatDomainService().SelectedChatId(app), std::string("perf-chat-0000"));
+
+	// Correctness of the reply this measures: every chat, each referencing a catalogue the reply carries, and the same
+	// bytes on a repeated pull of unchanged state. The first pull hashes the open chat's history once.
+	std::size_t hashed_before = uam::StateSerializer::HashedTranscriptMessageCountForTests();
+	const std::string first = DesktopSummaryPull(app, false);
+	UAM_ASSERT_EQ(uam::StateSerializer::HashedTranscriptMessageCountForTests() - hashed_before, std::size_t{2000});
+	const nlohmann::json reply = nlohmann::json::parse(first);
+	UAM_ASSERT_EQ(reply["chats"].size(), static_cast<std::size_t>(kChats));
+	for (const nlohmann::json& chat : reply["chats"])
+		UAM_ASSERT(reply["modelCatalogs"].contains(chat["acpSession"]["modelCatalogId"].get<std::string>()));
+	UAM_ASSERT_EQ(DesktopSummaryPull(app, false), first);
+
+	// The regression check: per-reply work that must not grow with the chat count. Expire every path-probe memo first,
+	// so the counts include the disk probes a cold pull pays.
+	using uam::paths::RecentPathProbeCount;
+	using uam::paths::RecentPathProbeKind;
+	const auto probes = [] { return RecentPathProbeCount(RecentPathProbeKind::CatalogWorkspace) + RecentPathProbeCount(RecentPathProbeKind::WorkspaceOwnership); };
+	clock.Advance(std::chrono::seconds(10));
+	const std::size_t probes_before = probes();
+	const std::size_t slices_before = uam::StateSerializer::CatalogSliceBuildCountForTests();
+	hashed_before = uam::StateSerializer::HashedTranscriptMessageCountForTests();
+	(void)DesktopSummaryPull(app, true);
+	UAM_ASSERT_EQ(uam::StateSerializer::CatalogSliceBuildCountForTests() - slices_before, std::size_t{1});
+	// Later pulls reuse the open chat's history digest (its cached prefix hashes) and hash no transcript, in the reply
+	// or in the baseline seed; unopened chats carry their saved digest.
+	UAM_ASSERT_EQ(uam::StateSerializer::HashedTranscriptMessageCountForTests() - hashed_before, std::size_t{0});
+	const std::size_t cold_probes = probes() - probes_before;
+	std::cout << "[COUNT] refresh full state " << kChats << " chats: path probes on a cold pull=" << cold_probes << " for " << app.folders.size() << " folders\n";
+	// The memo counts its misses: a cold pull misses once per folder workspace and kind (catalogue scope and ownership).
+	// Fewer means a reader that probes the disk without the memo; more means memo keys that differ per chat or scope.
+	if (cold_probes != 2 * app.folders.size())
+		throw TestFailure("a cold " + std::to_string(kChats) + "-chat pull made " + std::to_string(cold_probes) + " memo path probes for " +
+		    std::to_string(app.folders.size()) + " folders; expected one per folder and kind");
+
+	std::vector<double> refreshes, initial_loads, serializes, baselines, releases, refresh_releases;
+	std::size_t bytes = 0;
+	for (int iteration = 0; iteration < 21; ++iteration)
+	{
+		// Each sample is a cold pull: the path-probe memo has expired, as it has for a Refresh a few seconds after the last push.
+		clock.Advance(std::chrono::seconds(10));
+		PullTimes parts;
+		std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
+		bytes = DesktopSummaryPull(app, true, &parts).size();
+		initial_loads.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count());
+		serializes.push_back(parts.serialize);
+		baselines.push_back(parts.baseline);
+		releases.push_back(parts.release);
+		clock.Advance(std::chrono::seconds(10));
+		PullTimes refresh_parts;
+		started = std::chrono::steady_clock::now();
+		(void)DesktopSummaryPull(app, false, &refresh_parts);
+		refresh_releases.push_back(refresh_parts.release);
+		refreshes.push_back(std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count());
+	}
+	std::cout << "[SIZE] refresh full state " << kChats << " chats: reply=" << bytes << " bytes\n";
+	std::cout << "[TIMING] refresh full state " << kChats << " chats: refresh p50=" << Median(refreshes) << " ms p95=" << Percentile95(refreshes)
+	          << " ms; initial load p50=" << Median(initial_loads) << " ms p95=" << Percentile95(initial_loads)
+	          << " ms (serialize and dump p50=" << Median(serializes) << " ms, baseline seed p50=" << Median(baselines)
+	          << " ms, freeing the rest of the reply p50=" << Median(releases) << " ms; a Refresh frees its whole reply tree in p50="
+	          << Median(refresh_releases) << " ms); samples=21\n";
+	// The printed figures are the regression signal; the budget only catches gross regressions, such as the 0.5-1.1 s
+	// the issue reported for 643 chats.
+	if (std::max(Median(refreshes), Median(initial_loads)) > static_cast<double>(kHistoryPageBudget.count()))
+		throw TestFailure(std::to_string(kChats) + "-chat Refresh or initial-load pull p50 exceeded " + std::to_string(kHistoryPageBudget.count()) + " ms");
+}
+
 UAM_TEST(LiveModelCatalogueProjectionPreservesChoiceAuthorityAndScopeStatus)
 {
 	for (const char* provider : {"claude-cli", "codex-cli", "gemini-cli", "opencode-cli", "copilot-cli", "antigravity-cli"})
@@ -1420,9 +1627,20 @@ UAM_TEST(PerformanceMemoryPollOnLargeInstall)
 	{
 		ChatSession& chat = app.chats[index];
 		chat.memory_level = uam::memory_levels::kBalanced;
-		// Half wait out a failed scan's retry; the other half are queued behind a failing worker's backoff.
+		// Half wait out a failed scan's retry, a quarter of all chats paused after repeated identical failures;
+		// the other half are queued behind a failing worker's backoff.
 		if (index % 2 == 0)
+		{
 			app.memory_retry_not_before_by_chat_id[chat.id] = now + 3600.0;
+			if (index % 4 == 0)
+			{
+				uam::MemoryWorkerFailureStreak& streak = app.memory_failure_streak_by_chat_id[chat.id];
+				streak.signature = "exit code=1";
+				streak.count = 3;
+				streak.paused = true;
+				streak.message_count = static_cast<int>(chat.messages_loaded ? chat.messages.size() : chat.persisted_message_count);
+			}
+		}
 		else
 		{
 			app.memory_extraction_queue.push_back({chat.id, -1, false});
@@ -1438,11 +1656,14 @@ UAM_TEST(PerformanceMemoryPollOnLargeInstall)
 	terminal->turn_state = uam::CliTerminalTurnState::Busy;
 	app.cli_terminals.push_back(std::move(terminal));
 	const std::size_t queued = app.memory_extraction_queue.size();
+	// Paused chats' inputs are rebuilt every 30 seconds, not per poll; this measures the per-poll path.
+	app.memory_failure_pause_recheck_at = now + 3600.0;
 	const double poll = MedianMs(11, [&] { UAM_ASSERT(!MemoryService::ProcessDueMemoryWork(app)); });
 	// Nothing was due: every chat stays blocked and the queue keeps its order.
 	UAM_ASSERT_EQ(app.memory_extraction_queue.size(), queued);
 	UAM_ASSERT_EQ(app.memory_extraction_queue.front().chat_id, app.chats[1].id);
 	UAM_ASSERT(app.memory_extraction_tasks.empty());
+	UAM_ASSERT_EQ(app.memory_failure_streak_by_chat_id.size(), std::size_t{500});
 	std::cout << "[TIMING] memory poll, 2000 chats, " << queued << " queued: p50=" << poll << " ms\n";
 	constexpr double kMemoryPollBudgetMs = 25.0;
 	if (poll > kMemoryPollBudgetMs)
@@ -1798,8 +2019,17 @@ UAM_TEST(StatePushSerializesLiveToolCallsOnlyWhenTheyChange)
 		UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
 		const nlohmann::json patch = nlohmann::json::parse(g_observed_state_patch)["data"];
 		UAM_ASSERT_EQ(patch["chats"].size(), std::size_t{3});
-		// The published summary still carries every tool call.
-		UAM_ASSERT_EQ(patch["chats"][0]["acpSession"]["toolCalls"].size(), app.acp_sessions[0]->tool_calls.size());
+		// The first patch after the full state carries every tool call; later ones name the page's copy instead (#947).
+		if (token == 0)
+		{
+			UAM_ASSERT(!patch["chats"][0].contains("reusedFields"));
+			UAM_ASSERT_EQ(patch["chats"][0]["acpSession"]["toolCalls"].size(), app.acp_sessions[0]->tool_calls.size());
+		}
+		else
+		{
+			UAM_ASSERT(!patch["chats"][0]["acpSession"].contains("toolCalls"));
+			UAM_ASSERT_EQ(patch["chats"][0]["reusedFields"]["acpSession.toolCalls"], true);
+		}
 	}
 	UAM_ASSERT_EQ(uam::StateSerializer::LiveToolCallSerializationCountForTests(), serialized);
 
@@ -1814,6 +2044,214 @@ UAM_TEST(StatePushSerializesLiveToolCallsOnlyWhenTheyChange)
 	UAM_ASSERT_EQ(patch["chats"][0]["acpSession"]["toolCalls"].back()["status"], "failed");
 	UAM_ASSERT(uam::StateSerializer::LiveToolCallSerializationCountForTests() > serialized);
 	UAM_ASSERT(uam::StateSerializer::LiveToolCallSerializationCountForTests() <= serialized + 3);
+}
+
+namespace
+{
+	constexpr const char* kRetainedPatchMetadata[] = {"reusedFields", "reusedFieldsFrom", "retainedFieldsRevision"};
+
+	/// <summary>
+	/// What the page does with a patched chat (sanitizers.ts restoreRetainedChatFields): restores what reusedFields
+	/// names from its copy, then keeps the restored fields when the patch gives a retainedFieldsRevision.
+	/// </summary>
+	struct PageChatFieldCopies
+	{
+		struct Copy
+		{
+			std::uint64_t revision = 0;
+			nlohmann::json chat;
+		};
+		std::unordered_map<std::string, Copy> by_chat_id;
+
+		static nlohmann::json& Field(nlohmann::json& chat, const std::string& name)
+		{
+			return name.starts_with("acpSession.") ? chat["acpSession"][name.substr(11)] : chat[name];
+		}
+
+		nlohmann::json Restore(nlohmann::json chat)
+		{
+			const std::string chat_id = chat.at("id").get<std::string>();
+			if (chat.contains("reusedFields"))
+			{
+				const auto known = by_chat_id.find(chat_id);
+				if (known == by_chat_id.end() || known->second.revision != chat["reusedFieldsFrom"].get<std::uint64_t>())
+					throw TestFailure("patch for " + chat_id + " reuses a copy the page does not hold");
+				for (const auto& [name, reuse] : chat["reusedFields"].items())
+				{
+					const nlohmann::json& previous = Field(known->second.chat, name);
+					if (reuse.is_boolean()) Field(chat, name) = previous;
+					else
+					{
+						nlohmann::json restored(previous.begin(), previous.begin() + reuse.get<std::ptrdiff_t>());
+						for (const nlohmann::json& entry : Field(chat, name)) restored.push_back(entry);
+						Field(chat, name) = std::move(restored);
+					}
+				}
+			}
+			const bool keep = chat.contains("retainedFieldsRevision");
+			const std::uint64_t revision = keep ? chat["retainedFieldsRevision"].get<std::uint64_t>() : 0;
+			for (const char* name : kRetainedPatchMetadata) chat.erase(name);
+			if (keep) by_chat_id[chat_id] = Copy{revision, chat};
+			else by_chat_id.erase(chat_id);
+			return chat;
+		}
+	};
+
+	/// <summary>Bytes each top-level patch field and each acpSession field takes, summed over the patched chats.</summary>
+	std::map<std::string, std::size_t> PatchBytesByField(const nlohmann::json& patch)
+	{
+		std::map<std::string, std::size_t> bytes;
+		for (const auto& [name, value] : patch.items())
+			if (name != "chats") bytes[name] += value.dump().size();
+		for (const nlohmann::json& chat : patch.value("chats", nlohmann::json::array()))
+			for (const auto& [name, value] : chat.items())
+			{
+				if (name != "acpSession") bytes["chat." + name] += value.dump().size();
+				else
+					for (const auto& [field, field_value] : value.items()) bytes["acpSession." + field] += field_value.dump().size();
+			}
+		return bytes;
+	}
+
+	void PrintPatchBytesByField(const std::string& label, const std::string& message)
+	{
+		std::cout << "[SIZE] " << label << ": total=" << message.size() << " bytes";
+		std::vector<std::pair<std::size_t, std::string>> largest;
+		for (const auto& [name, bytes] : PatchBytesByField(nlohmann::json::parse(message)["data"])) largest.emplace_back(bytes, name);
+		std::ranges::sort(largest, std::greater<>());
+		for (std::size_t index = 0; index < largest.size() && index < 8; ++index) std::cout << ", " << largest[index].second << "=" << largest[index].first;
+		std::cout << '\n';
+	}
+}
+
+// Issue #947: live chats resent every tool call (each with up to 64 KB of content), turn event, command and usage
+// object with each streamed token. Patches now carry only what the page lacks, and the page rebuilds exactly the
+// summary a full patch would have carried. Fixture: 63 chats with PNG icons, three streaming chats with 30, 5 and 5
+// tool calls of 50 KB, plus 2,000 stopped chats.
+UAM_TEST(StatePushLiveSessionPatchCarriesOnlyWhatThePageLacks)
+{
+	const WithoutStateCacheVerification unverified;
+	FakeStatePushClock clock;
+	StatePatchObserver observer;
+	TempDir temp("uam-live-field-reuse");
+	uam::AppState app;
+	BuildStreamingPushFixture(app, temp.root);
+	for (int index = 0; index < 2000; ++index)
+	{
+		ChatSession chat;
+		chat.id = "stopped-chat-" + std::to_string(index);
+		chat.title = chat.id;
+		chat.provider_id = "claude-cli";
+		chat.folder_id = "folder-" + std::to_string(index % 8);
+		chat.messages_loaded = false;
+		app.chats.push_back(std::move(chat));
+	}
+	for (std::size_t index = 0; index < 3; ++index)
+	{
+		uam::AcpSessionState& session = *app.acp_sessions[index];
+		for (int command = 0; command < 60; ++command)
+			session.available_commands.push_back({"command-" + std::to_string(command), std::string(160, 'c'), "argument"});
+	}
+	PageChatFieldCopies page;
+	const auto SessionFor = [&](const nlohmann::json& chat) -> const uam::AcpSessionState*
+	{
+		for (const auto& session : app.acp_sessions)
+			if (session->chat_id == chat["id"].get<std::string>()) return session.get();
+		throw TestFailure("no live session for " + chat["id"].get<std::string>());
+	};
+	const auto check_restored = [&](const nlohmann::json& patch)
+	{
+		nlohmann::json table = nlohmann::json::object();
+		for (const nlohmann::json& chat : patch.value("chats", nlohmann::json::array()))
+		{
+			nlohmann::json restored = page.Restore(chat);
+			const ChatSession* source = nullptr;
+			for (const ChatSession& candidate : app.chats)
+				if (candidate.id == chat["id"].get<std::string>()) source = &candidate;
+			UAM_ASSERT(source != nullptr);
+			// The page rebuilds every field a patch used to carry in full.
+			nlohmann::json expected = uam::StateSerializer::SerializeChatSummary(app, *source, &table)["acpSession"];
+			for (const char* name : {"toolCalls", "turnEvents", "availableCommands", "availableModes", "diagnostics", "planEntries",
+			         "nativeModelOptions", "providerUsage", "recentStderr"})
+				UAM_ASSERT_EQ(restored["acpSession"].value(name, nlohmann::json()), expected.value(name, nlohmann::json()));
+			UAM_ASSERT(restored["customIcon"].value("dataUrl", "").starts_with("data:image/png;base64,"));
+		}
+	};
+	const auto publish = [&](const std::function<void()>& change)
+	{
+		clock.Advance(std::chrono::milliseconds(120));
+		change();
+		g_observed_state_patch.clear();
+		UAM_ASSERT(uam::PushStateUpdateIfChanged(nullptr, app));
+		const nlohmann::json patch = nlohmann::json::parse(g_observed_state_patch)["data"];
+		check_restored(patch);
+		return patch;
+	};
+
+	uam::PushStateUpdate(nullptr, app);
+	// After a full state each live chat's fields travel whole once.
+	nlohmann::json patch = publish([&] { AppendStreamToken(app, 0); });
+	const std::size_t first_bytes = g_observed_state_patch.size();
+	PrintPatchBytesByField("live fields 3 streaming of 2063 chats, first token patch", g_observed_state_patch);
+	UAM_ASSERT_EQ(patch["chats"].size(), std::size_t{3});
+	for (const nlohmann::json& chat : patch["chats"])
+	{
+		UAM_ASSERT(!chat.contains("reusedFields"));
+		UAM_ASSERT(chat.contains("retainedFieldsRevision"));
+		UAM_ASSERT_EQ(chat["acpSession"]["toolCalls"].size(), SessionFor(chat)->tool_calls.size());
+		UAM_ASSERT(chat["customIcon"].value("dataUrl", "").starts_with("data:image/png;base64,"));
+	}
+
+	// A streamed token: the page keeps every tool call, command and earlier turn event; only the growing last
+	// turn event travels, after the entries the page keeps.
+	std::size_t token_bytes = 0;
+	for (int token = 1; token < 6; ++token)
+	{
+		patch = publish([&] { AppendStreamToken(app, token); });
+		token_bytes = std::max(token_bytes, g_observed_state_patch.size());
+		UAM_ASSERT_EQ(patch["chats"].size(), std::size_t{3});
+		for (const nlohmann::json& chat : patch["chats"])
+		{
+			const nlohmann::json& acp = chat["acpSession"];
+			const uam::AcpSessionState& session = *SessionFor(chat);
+			UAM_ASSERT(!acp.contains("toolCalls") && !acp.contains("availableCommands") && !chat.contains("customIcon"));
+			UAM_ASSERT_EQ(chat["reusedFields"]["acpSession.toolCalls"], true);
+			UAM_ASSERT_EQ(chat["reusedFields"]["acpSession.availableCommands"], true);
+			UAM_ASSERT_EQ(chat["reusedFields"]["customIcon"], true);
+			UAM_ASSERT_EQ(chat["reusedFields"]["acpSession.turnEvents"].get<std::size_t>(), session.turn_events.size() - 1);
+			UAM_ASSERT_EQ(acp["turnEvents"].size(), std::size_t{1});
+		}
+	}
+	PrintPatchBytesByField("live fields 3 streaming of 2063 chats, steady token patch", g_observed_state_patch);
+	std::cout << "[SIZE] live fields token patch: before reuse=" << first_bytes << " bytes, with reuse=" << token_bytes << " bytes\n";
+	// Regression bound: about 2 MB of tool calls before this change; the token patch is now a few KB.
+	if (token_bytes > 16 * 1024) throw TestFailure("a streamed-token patch for three live chats carried " + std::to_string(token_bytes) + " bytes");
+
+	// One finished tool call travels alone, after the tool calls before it.
+	patch = publish([&] { app.acp_sessions[1]->tool_calls.back().status = "failed"; });
+	UAM_ASSERT_EQ(patch["chats"].size(), std::size_t{1});
+	const nlohmann::json& changed = patch["chats"][0]["acpSession"];
+	UAM_ASSERT_EQ(patch["chats"][0]["reusedFields"]["acpSession.toolCalls"].get<std::size_t>(), app.acp_sessions[1]->tool_calls.size() - 1);
+	UAM_ASSERT_EQ(changed["toolCalls"].size(), std::size_t{1});
+	UAM_ASSERT_EQ(changed["toolCalls"][0]["status"], "failed");
+	if (g_observed_state_patch.size() > 80 * 1024) throw TestFailure("one changed tool call carried " + std::to_string(g_observed_state_patch.size()) + " bytes");
+
+	// A desktop pull may come from a reloaded page with no copies: the next patch sends each field whole again.
+	uam::ForgetSentModelCatalogs();
+	page.by_chat_id.clear();
+	patch = publish([&] { AppendStreamToken(app, 6); });
+	for (const nlohmann::json& chat : patch["chats"])
+	{
+		UAM_ASSERT(!chat.contains("reusedFields"));
+		UAM_ASSERT_EQ(chat["acpSession"]["toolCalls"].size(), SessionFor(chat)->tool_calls.size());
+	}
+
+	// A stopped session's empty fields are sent as they are; the PNG icon is still the page's.
+	patch = publish([&] { app.acp_sessions.erase(app.acp_sessions.begin() + 2); });
+	UAM_ASSERT_EQ(patch["chats"].size(), std::size_t{1});
+	UAM_ASSERT_EQ(patch["chats"][0]["reusedFields"], nlohmann::json({{"customIcon", true}}));
+	UAM_ASSERT(patch["chats"][0]["acpSession"]["toolCalls"].empty());
+	UAM_ASSERT_EQ(page.by_chat_id.at(app.chats[2].id).chat["acpSession"]["toolCalls"], nlohmann::json::array());
 }
 
 UAM_TEST(StatePushReconciliationRepairsABypassedToolCallStampAndCatalogueMemo)
@@ -1898,6 +2336,67 @@ UAM_TEST(StatePushReconciliationRepairsABypassedToolCallStampAndCatalogueMemo)
 		    catalog["availableModels"].size() == 1 && catalog["availableModels"][0]["id"] == "fixture/second";
 	}));
 #endif
+}
+
+// A chat whose host id carries stray whitespace shares its trimmed scope's memo key, so it must read the same
+// value: the checked CLI version of that trimmed host. Before the fix it looked its host up untrimmed, so a
+// trusting push that met the chat first memoised a catalogue without Gemini's reasoning levels, and the
+// verifying push (which builds the catalogue list, with trimmed hosts, first) reported a [desync] every time.
+UAM_TEST(StatePushCatalogueMemoReadsTheTrimmedHostOfAChat)
+{
+	FakeStatePushClock clock;
+	FakePathProbeClock probe_clock;
+	StatePatchObserver observer;
+	TempDir temp("uam-catalogue-trimmed-host");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	app.provider_model_catalog = std::make_unique<uam::ProviderModelCatalogService>();
+	app.provider_model_catalog->Initialize(app.data_root);
+	ChatFolder folder;
+	folder.id = "folder-gemini";
+	folder.title = folder.id;
+	folder.directory = (temp.root / "workspace").generic_string();
+	fs::create_directories(temp.root / "workspace");
+	app.folders.push_back(folder);
+	UAM_ASSERT(app.provider_model_catalog->RememberSuccessfulModels("gemini-cli", nlohmann::json::array({{{"id", "gemini-3.1-pro-preview"}}}), folder.directory));
+	uam::CliProviderVersionState& version = app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("gemini-cli", "local")];
+	version.provider_id = "gemini-cli";
+	version.execution_host = *uam::execution_hosts::Find(app.settings.execution_hosts, "local");
+	version.checked = true;
+	version.supported = true;
+	version.installed_version = "0.64.0";
+
+	// A full push; the verification after it memoises the catalogue list for these inputs.
+	clock.Advance(std::chrono::seconds(10));
+	uam::PushStateUpdate(nullptr, app);
+
+	// A new chat in that scope changes no catalogue input, so the next (trusting) push reuses the list and
+	// builds this scope's fingerprint from the chat; the verification after it rebuilds the list first.
+	ChatSession chat;
+	chat.id = "gemini-untrimmed-host";
+	chat.title = chat.id;
+	chat.provider_id = "gemini-cli";
+	chat.folder_id = folder.id;
+	chat.execution_host_id = "local ";
+	chat.updated_at = "2026-10-25T10:00:00Z";
+	chat.messages_loaded = false;
+	app.chats.push_back(std::move(chat));
+	clock.Advance(std::chrono::milliseconds(120));
+	const std::size_t divergences = uam::StateSerializer::CacheDivergenceCount();
+	const std::size_t trusted = uam::StateSerializer::TrustedCacheReadCount();
+	(void)uam::PushStateUpdateIfChanged(nullptr, app);
+	// The push trusted the memoised list, so the chat built its scope's value before any list did.
+	UAM_ASSERT(uam::StateSerializer::TrustedCacheReadCount() > trusted);
+	UAM_ASSERT_EQ(uam::StateSerializer::CacheDivergenceCount(), divergences);
+	// Not vacuous: the checked version does decorate this model, so the two host lookups disagreed before the fix.
+	nlohmann::json catalogs = nlohmann::json::object();
+	const nlohmann::json summary = uam::StateSerializer::SerializeChatSummary(app, app.chats.back(), &catalogs);
+	const nlohmann::json& models = catalogs.at(summary.at("acpSession").at("modelCatalogId").get<std::string>()).at("availableModels");
+	UAM_ASSERT(std::ranges::any_of(models, [](const nlohmann::json& model)
+	{
+		return model.value("id", "") == "gemini-3.1-pro-preview" && model.value("supportedReasoningEfforts", nlohmann::json::array()).size() == 3;
+	}));
 }
 
 namespace
@@ -1995,8 +2494,12 @@ UAM_TEST(PerformanceSuiteUamRequestOverhead)
 				if (context == "goal_reviewer") UAM_ASSERT(tools.empty());
 				if (context == "ssh_root" || context == "read_only_agent" || !UAM_ENABLE_COMPUTER_USE) UAM_ASSERT(!has("computer_use_request"));
 				if (context == "read_only_agent") UAM_ASSERT(!has("goal_create") && !has("agent_cancel") && !has("chat_create"));
+				// Read-only insight tools stay listed wherever any UAM tool is.
+				if (context != "goal_reviewer") UAM_ASSERT(has("usage_report") && has("worktree_status"));
+				// Recall reads nothing on an SSH host, so memory_search is offered only locally.
+				if (context != "goal_reviewer") UAM_ASSERT(has("memory_search") == (context != "ssh_root"));
 				if (context == "child_without_delegates") UAM_ASSERT(!has("agent_list") && !has("agent_delegate") && !has("agent_wait"));
-				if (context == "temporary_side_chat") UAM_ASSERT(!has("pr_watch") && !has("pr_unwatch") && !has("secret_request"));
+				if (context == "temporary_side_chat") UAM_ASSERT(!has("pr_watch") && !has("pr_unwatch") && !has("schedule") && !has("notify") && !has("secret_request"));
 				if (view == "cli") UAM_ASSERT(!has("agent_wait") && !has("html_view_preview") && !has("html_view_publish"));
 				std::cout << "[SIZE] " << provider << " " << view << " " << context << " uam-control exposure: " << tools.dump().size() << " bytes, " << tools.size() << " tools\n";
 			};

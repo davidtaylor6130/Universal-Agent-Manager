@@ -2,7 +2,7 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 're
 import { ArrowRight, LoaderCircle, Pencil, Plus, RotateCcw, Unlink } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { boundedRead, sendToCEF, type CEFResponse } from '../../ipc/cefBridge'
-import { routingConfigurationError, routingFolderRows, sanitizeRepositoryMatches, shortRepositoryIdentity, type ExecutionRoutingSettings as RoutingSettings, type RoutingFolderGroup, type RoutingHostPolicy, type RoutingWorkspaceMapping, type WorkspaceRepositoryMatches } from '../../types/executionRouting'
+import { NO_EXECUTION_ROUTING, routingConfigurationError, routingFolderRows, sanitizeRepositoryMatches, shortRepositoryIdentity, type ExecutionRoutingSettings as RoutingSettings, type RoutingFolderGroup, type RoutingHostPolicy, type RoutingWorkspaceMapping, type WorkspaceRepositoryMatches } from '../../types/executionRouting'
 import type { ExecutionHost, Folder } from '../../types/session'
 import { Button, Disclosure, IconButton, Presence, Switch, type StatusTone, Reveal } from '../ui'
 import { NumberField } from './NumberField'
@@ -13,6 +13,8 @@ import '../shared/review.css'
 import '../modals/ExecutionRoutingDialog.css'
 import { isSshHost } from '../../utils/remoteWorkspace'
 import { reportAppFailure } from '../../utils/appFailure'
+import { hostLoadSummary, hostUsageSummary } from '../../types/hostLoad'
+import { useHostLoadInterest } from '../../hooks/useHostLoadInterest'
 
 export const RUNNER_STATUS: Record<ExecutionHost['runnerStatus'], { tone: StatusTone; label: string }> = {
   ready: { tone: 'success', label: 'Ready' },
@@ -42,12 +44,16 @@ function savePayload(settings: RoutingSettings) {
  */
 export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRoutingSettingsHandle, { variant: 'dialog' | 'page'; onClose?: () => void; onBusyChange?: (busy: boolean) => void; onAddComputer?: () => void }>(
   function ExecutionRoutingSettings({ variant, onClose, onBusyChange, onAddComputer }, ref) {
-    const saved = useAppStore((state) => state.executionRouting)
+    // This page exists only in builds with SSH, where the store always holds routing settings.
+    const saved = useAppStore((state) => state.executionRouting) ?? NO_EXECUTION_ROUTING
     const hosts = useAppStore((state) => state.executionHosts)
     const folders = useAppStore((state) => state.folders)
     const providers = useAppStore((state) => state.providers)
     const readiness = useAppStore((state) => state.cliVersionManager.remoteProviders)
     const save = useAppStore((state) => state.setExecutionRoutingSettings)
+    const hostLoad = useAppStore((state) => state.executionHostLoad)
+    // Every computer is sampled while this page shows its load; routing decisions do not read these figures.
+    useHostLoadInterest()
     const [draft, setDraft] = useState<RoutingSettings>(() => structuredClone(saved))
     const [baseline, setBaseline] = useState(saved)
     const savedRef = useRef(saved)
@@ -129,18 +135,18 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
     async function submit(next?: () => void) {
       if (busyRef.current || !dirty) return
       const validation = routingConfigurationError(draft, hosts, folders)
-      if (validation) return
-      const beforeSave = useAppStore.getState().executionRouting
+      if (validation || !save) return
+      const beforeSave = useAppStore.getState().executionRouting ?? NO_EXECUTION_ROUTING
       busyRef.current = true; setBusy(true); onBusyChange?.(true)
       try {
         await save(savePayload(draft))
         // Keep the acknowledged confirmation intent while native replaces it with connection identities.
-        savedRef.current = useAppStore.getState().executionRouting
+        savedRef.current = useAppStore.getState().executionRouting ?? NO_EXECUTION_ROUTING
         setBaseline(draft)
         setExit(null); next?.()
       }
       catch (failure) {
-        const currentSaved = useAppStore.getState().executionRouting
+        const currentSaved = useAppStore.getState().executionRouting ?? NO_EXECUTION_ROUTING
         if (JSON.stringify(currentSaved) !== JSON.stringify(beforeSave)) setBaseline(currentSaved)
         reportAppFailure('Routing settings could not be saved.', failure instanceof Error ? failure.message : 'Try again.')
       }
@@ -302,6 +308,15 @@ export const ExecutionRoutingSettings = /* @__PURE__ */ forwardRef<ExecutionRout
             </Disclosure></Reveal>
           </SettingsSection>
         </Reveal>
+
+        {/* Observed figures, after the saved routing settings they describe. Unknown load is shown as unknown, never as idle. */}
+        <SettingsSection title="Live load">
+          {[{ id: 'local', label: 'This computer' }, ...sshHosts].map((host) => {
+            const figures = hostLoad.hosts[host.id]
+            return <SettingRow key={host.id} title={host.label} description={hostUsageSummary(figures) || '0 in use'} status={hostLoadSummary(figures)} />
+          })}
+          <Reveal open={hostLoad.unassignedWaiting > 0}><SettingRow title="Waiting for any computer" description={plural(hostLoad.unassignedWaiting, 'chat')} /></Reveal>
+        </SettingsSection>
       </fieldset>
       {variant === 'dialog' && footer}</div></Reveal>
       {/* The dialog never opens a second dialog: the Map folder chooser is an in-place step in the same panel. */}
