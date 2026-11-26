@@ -249,7 +249,7 @@ namespace uam::usage
 					m_wake.wait(wait_lock, stop, [this] { return SteadyNow() - m_lastDemandMs.load(std::memory_order_acquire) < m_idleAfter.count(); });
 			}
 		}
-		catch (const std::exception&) { std::lock_guard<std::mutex> lock(m_mutex); m_error = "Usage collection failed. Background collection will restart with UAM."; m_collecting = false; }
+		catch (const std::exception&) { std::lock_guard<std::mutex> lock(m_mutex); m_error = "Usage collection failed and will resume when UAM restarts."; m_collecting = false; }
 		if (m_scratchReady.wait_for(std::chrono::seconds(0)) != std::future_status::ready) m_scratchSwept.set_value();
 	}
 
@@ -264,7 +264,7 @@ namespace uam::usage
 			if (!m_accountingBytes) return m_receipts ? nlohmann::json{{"error", "Update the usage client to load streamed lifetime receipts."}} : nlohmann::json{{"pending", true}, {"collectionError", m_error}};
 			bytes = m_accountingBytes; current_fingerprint = m_accountingFingerprint;
 		}
-		if ((!fingerprint.empty() && fingerprint != current_fingerprint) || offset > bytes->size()) return {{"error", "Usage accounting changed while loading. Try again."}};
+		if ((!fingerprint.empty() && fingerprint != current_fingerprint) || offset > bytes->size()) return {{"error", "Usage accounting changed while loading."}};
 		const std::string_view chunk(bytes->data() + offset, std::min<std::size_t>(512 * 1024, bytes->size() - offset));
 		return {{"dataBase64", base64::Encode(chunk)}, {"offset", offset}, {"totalBytes", bytes->size()}, {"fingerprint", current_fingerprint}};
 	}
@@ -295,13 +295,13 @@ namespace uam::usage
 				if (offset != 0) return {{"error", "Choose the accounting snapshot before loading receipts."}};
 				snapshot = m_receipts;
 				if (!snapshot) return {{"pending", true}, {"collectionError", m_error}};
-				if (!m_receiptExports.contains(snapshot->fingerprint) && m_receiptExports.size() >= 32) return {{"error", "Accounting export is busy. Try again shortly."}};
+				if (!m_receiptExports.contains(snapshot->fingerprint) && m_receiptExports.size() >= 32) return {{"error", "Accounting export is busy; try again shortly."}};
 				m_receiptExports[snapshot->fingerprint] = {snapshot, now + std::chrono::minutes(2)};
 			}
 			else
 			{
 				const std::map<std::string, std::pair<std::shared_ptr<const ReceiptSnapshot>, std::chrono::steady_clock::time_point>>::iterator found = m_receiptExports.find(std::string(fingerprint));
-				if (found == m_receiptExports.end()) return {{"error", "Usage accounting snapshot expired. Try again."}};
+				if (found == m_receiptExports.end()) return {{"error", "The usage accounting snapshot expired."}};
 				snapshot = found->second.first; found->second.second = now + std::chrono::minutes(2);
 			}
 		}

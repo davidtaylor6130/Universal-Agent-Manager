@@ -1,5 +1,6 @@
 #include "platform_services_windows_impl_internal.h"
 #include "common/platform/cef_sandbox_folder_access.h"
+#include "common/utils/diagnostic_log.h"
 
 using namespace uam::platform_windows_impl;
 
@@ -35,7 +36,7 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 		{
 			if (error_out != nullptr)
 			{
-				*error_out = "Failed to create ConPTY pipes.";
+				*error_out = "Could not create the terminal connection.";
 			}
 
 			CloseConPtyPipeHandles(pipe_pty_in, pipe_pty_out, pipe_con_in, pipe_con_out);
@@ -51,7 +52,7 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 		{
 			if (error_out != nullptr)
 			{
-				*error_out = "CreatePseudoConsole failed.";
+				*error_out = "Could not create the terminal console.";
 			}
 
 			CloseConPtyPipeHandles(pipe_pty_in, pipe_pty_out, pipe_con_in, pipe_con_out);
@@ -143,9 +144,10 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 		if (!created)
 		{
 			const DWORD last_error = GetLastError();
+			uam::diagnostics::Write("[terminal] Failed to start provider process: " + FormatWindowsError(last_error) + ". Command: " + launch.diagnostic_command_line + "." + WindowsLaunchDiagnosticSuffix(launch));
 			if (error_out != nullptr)
 			{
-				*error_out = "Failed to start provider process. " + FormatWindowsError(last_error) + ". Command: " + launch.diagnostic_command_line + "." + WindowsLaunchDiagnosticSuffix(launch);
+				*error_out = "Could not start the provider process.";
 			}
 
 			DeleteProcThreadAttributeList(terminal.attr_list);
@@ -160,9 +162,10 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 		std::string job_error;
 		if (!CreateKillOnCloseJobForProcess(pi.hProcess, &job, &job_error))
 		{
+			uam::diagnostics::Write("[terminal] Failed to protect provider process tree: " + job_error);
 			if (error_out != nullptr)
 			{
-				*error_out = uam::strings::NonEmptyOrFallback(job_error, "Failed to protect provider process tree.");
+				*error_out = "Could not protect the provider process tree.";
 			}
 
 			TerminateProcessAndWaitBriefly(pi.hProcess, 1);
@@ -178,6 +181,7 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 		if (ResumeThread(pi.hThread) == static_cast<DWORD>(-1))
 		{
 			const DWORD resume_error = GetLastError();
+			uam::diagnostics::Write("[terminal] Failed to resume provider process: " + FormatWindowsError(resume_error) + ".");
 			TerminateProcessTreeAndWaitBriefly(job, pi.hProcess, 1);
 			CloseHandle(job);
 			CloseInvalidHandleIfOpen(pi.hThread);
@@ -189,7 +193,7 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 			CloseConPtyAppPipeHandles(pipe_pty_in, pipe_pty_out);
 			if (error_out != nullptr)
 			{
-				*error_out = "Failed to resume provider process: " + FormatWindowsError(resume_error) + ".";
+				*error_out = "Could not resume the provider process.";
 			}
 			return false;
 		}

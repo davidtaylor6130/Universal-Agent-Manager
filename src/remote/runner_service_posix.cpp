@@ -538,7 +538,7 @@ namespace uam::remote
 		    !ConnectWithinTenSeconds(service.Get(), address))
 		{
 			if (service_is_gone()) return 0;
-			std::cerr << "The runner service is running but does not answer. Check its sessions before replacing it.\n";
+			std::cerr << "The runner service is running but does not answer; check its sessions before replacing it.\n";
 			return 2;
 		}
 		// The shutdown reply is immediate. A socket nobody serves must fail this stop instead of holding an install open.
@@ -549,7 +549,7 @@ namespace uam::remote
 		    ReadSocketFrame(service.Get(), response, error) != FrameReadResult::Ok)
 		{
 			if (service_is_gone()) return 0;
-			std::cerr << "The runner shutdown reply was not confirmed. Retry after checking its sessions.\n";
+			std::cerr << "The runner shutdown reply was not confirmed; check its sessions and retry.\n";
 			return 2;
 		}
 		if (!response.value("ok", false))

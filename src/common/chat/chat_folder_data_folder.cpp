@@ -29,7 +29,7 @@ bool ChatFolderStore::ValidateDataFolderReferences(std::string_view text, const 
 		path = std::filesystem::absolute(path, path_error);
 		if (path_error || uam::paths::IsSameOrInsideRoot(source, path))
 		{
-			error = "A workspace folder points into the current data profile. Its owning workspace service must settle relocation first.";
+			error = "A workspace folder is inside the current data folder and must be relocated first.";
 			return false;
 		}
 		return true;

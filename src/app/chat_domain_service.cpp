@@ -18,6 +18,7 @@
 #include "common/runtime/terminal_common.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "common/runtime/terminal/terminal_chat_sync.h"
+#include "common/utils/diagnostic_log.h"
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
 #include "common/utils/history_timestamp_order.h"
@@ -869,7 +870,7 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 			source_messages = &prepared_source->messages.items();
 		else
 		{
-			app.status_line = "Branch source history changed while loading. Retry the branch.";
+			app.status_line = "The source chat changed while loading; retry the branch.";
 			return false;
 		}
 	}
@@ -905,7 +906,7 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 	}
 	if (retained_markdown_store_files && prepared_source != nullptr && source.messages_loaded && (prepared_source->id != source.id || !prepared_source->messages_loaded || !BranchSkillPrefixMatches(*source_messages, prepared_source->messages, message_index, selected_message.markdown_store_files, selected_message.markdown_store_prompt_blocks)))
 	{
-		app.status_line = "Branch source skill snapshots changed while preparing. Retry the branch.";
+		app.status_line = "The source chat's skills changed while preparing; retry the branch.";
 		return false;
 	}
 	std::vector<MessageAttachment> selected_attachments = selected_message.attachments;
@@ -939,7 +940,7 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 						existing_history = prepared_existing_branch;
 					else
 					{
-						app.status_line = "The existing branch history changed while loading. Retry the branch.";
+						app.status_line = "The existing branch changed while loading; retry the branch.";
 						return false;
 					}
 				}
@@ -992,7 +993,7 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 
 	if (prepared_originals && (!prepared_originals->MatchesRequest(app.data_root, source.id, message_index, retained_attachment_ids, retained_markdown_store_files) || FindChatById(app, prepared_originals->FinalBranchId()) != nullptr || ChatRepository::ChatStorageRevision(app.data_root, prepared_originals->FinalBranchId()) != std::optional<std::string>("missing")))
 	{
-		app.status_line = "The prepared branch owner changed. Retry the branch.";
+		app.status_line = "The prepared branch changed; retry the branch.";
 		return false;
 	}
 	ChatSession branch = CreateNewChat(source.folder_id, source.provider_id);
@@ -1091,7 +1092,7 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 	}
 	if (prepared_originals && !prepared_originals->MatchesSource(asset_source))
 	{
-		app.status_line = "Branch source originals or skill snapshots changed while preparing. Retry the branch.";
+		app.status_line = "The source chat's attachments or skills changed while preparing; retry the branch.";
 		return false;
 	}
 	if (prepared_originals && !prepared_originals->ApplyTo(branch, app.status_line))
@@ -1128,7 +1129,8 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 		std::string cleanup_error;
 		if (branch_from_git_worktree && !uam::GitWorktreeService().RemoveUnusedBranchWorktree(app, branch, &cleanup_error))
 		{
-			app.status_line = "Failed to save branch chat; its isolated worktree was preserved: " + cleanup_error;
+			uam::diagnostics::Write("[chat-branch] Could not remove the unsaved branch's worktree: " + cleanup_error);
+			app.status_line = "Failed to save branch chat; its isolated worktree was kept.";
 		}
 		else app.status_line = "Failed to save branch chat.";
 		return false;
@@ -1153,7 +1155,8 @@ bool ChatDomainService::CreateBranchFromMessage(uam::AppState& app, const std::s
 		std::string cleanup_error;
 		if (branch_from_git_worktree && !uam::GitWorktreeService().RemoveUnusedBranchWorktree(app, branch, &cleanup_error))
 		{
-			app.status_line = "Failed to persist branch selection; the branch was kept because its worktree could not be removed: " + cleanup_error;
+			uam::diagnostics::Write("[chat-branch] Could not remove the unselected branch's worktree: " + cleanup_error);
+			app.status_line = "Could not save the branch selection, and the branch was kept because its worktree could not be removed.";
 			return false;
 		}
 		std::erase_if(app.chats, [&branch](const ChatSession& chat) { return chat.id == branch.id; });
@@ -1282,7 +1285,7 @@ bool ChatDomainService::SetChatSnoozedUntil(uam::AppState& app, const std::strin
 		chat->snoozed_until_ms = previous;
 		chat->settled_at = previous_settled;
 		chat->interaction_at = previous_interaction;
-		if (error_out != nullptr) *error_out = "Could not save the wake time. Try again.";
+		if (error_out != nullptr) *error_out = "Could not save the wake time.";
 		return false;
 	}
 	return true;

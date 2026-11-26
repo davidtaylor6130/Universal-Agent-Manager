@@ -99,7 +99,7 @@ UAM_TEST(SvnFailureMessageCoversStopsTimeoutsAndUamErrors)
 	UAM_ASSERT_EQ(uam::SvnFailureMessage(canceled, "fallback"), std::string("Canceled."));
 	ProcessExecutionResult timed_out = Failed("svn: E170013: Unable to connect to a repository at URL 'svn://h/r'\n");
 	timed_out.timed_out = true;
-	UAM_ASSERT_EQ(uam::SvnFailureMessage(timed_out, {}), std::string("SVN did not answer in time. Check the connection to the repository, then retry."));
+	UAM_ASSERT_EQ(uam::SvnFailureMessage(timed_out, {}), std::string("SVN did not answer in time; check the connection to the repository."));
 	UAM_ASSERT_EQ(uam::SvnFailureMessage(Failed({}, std::string(uam::kSvnClientMissing)), {}), std::string(uam::kSvnClientMissing));
 	// Output cut at the capture limit is never read as svn's errors, even when a cut line starts like one.
 	ProcessExecutionResult limited = Failed("Index: notes.txt\nsvn: E170001: Can't get password\n", "Command output exceeded the 4 MiB safety limit.");

@@ -1817,10 +1817,10 @@ UAM_TEST(RemoteCliUpdateReportsBlockingPidsWithoutTrustingRemoteText)
 	const std::string probe = "[UAM CLI PATH] /usr/bin/codex|../lib/node_modules/@openai/codex/bin/codex.js\n[UAM CLI RUNNING] 1\n";
 	std::string error;
 	UAM_ASSERT(!ValidateRemoteCliInstallProbeForTests(probe, probe + "[UAM CLI PIDS] 123,456\n", "linux", &error));
-	UAM_ASSERT(error.find("Blocking PIDs: 123,456") != std::string::npos);
+	UAM_ASSERT(error.find("(PIDs 123,456)") != std::string::npos);
 	UAM_ASSERT(!ValidateRemoteCliInstallProbeForTests(probe, probe + "[UAM CLI PIDS] untrusted text\n", "linux", &error));
 	UAM_ASSERT(error.find("untrusted text") == std::string::npos);
-	UAM_ASSERT(error.find("idle background session") != std::string::npos);
+	UAM_ASSERT(error.find("Stop the provider CLI still running on the remote host") != std::string::npos);
 }
 
 UAM_TEST(CliProviderVersionRemoteUpdateRequiresUnchangedIdentifiedInstallation)
@@ -1839,7 +1839,7 @@ UAM_TEST(CliProviderVersionRemoteUpdateRequiresUnchangedIdentifiedInstallation)
 	UAM_ASSERT(!ValidateRemoteCliInstallProbeForTests(shim, standalone, "windows", &error));
 	UAM_ASSERT(ValidateRemoteCliInstallProbeForTests(npm, npm, "linux", &error));
 	UAM_ASSERT(!ValidateRemoteCliInstallProbeForTests(npm, "[UAM CLI PATH] /usr/local/bin/codex|../lib/node_modules/@openai/codex/bin/codex.js\n[UAM CLI RUNNING] 1\n0.148.0", "linux", &error));
-	UAM_ASSERT(error.find("Stop it before updating") != std::string::npos);
+	UAM_ASSERT(error.find("still running on the remote host") != std::string::npos);
 	UAM_ASSERT(!ValidateRemoteCliInstallProbeForTests(npm, "[UAM CLI PATH] /usr/local/bin/codex|../lib/node_modules/@openai/codex/bin/codex.js\n0.148.0", "linux", &error));
 	const std::string windows_probe = BuildInstallAwareCliProbeForTests("codex-cli", "windows");
 	std::string encoded_script;
@@ -2202,9 +2202,9 @@ UAM_TEST(CliProviderVersionInstallRejectsUnknownProvider)
 	std::string error;
 
 	UAM_ASSERT(!ProviderCliCompatibilityService().StartInstallProviderVersion(app, "unknown-provider", "0.38.1", &error));
-	UAM_ASSERT_EQ(error, std::string("Unsupported provider: unknown-provider"));
+	UAM_ASSERT_EQ(error, std::string("This provider does not support CLI updates."));
 	UAM_ASSERT(!ProviderCliCompatibilityService().StartInstallProviderVersion(app, " UNKNOWN-PROVIDER ", "0.38.1", &error));
-	UAM_ASSERT_EQ(error, std::string("Unsupported provider: unknown-provider"));
+	UAM_ASSERT_EQ(error, std::string("This provider does not support CLI updates."));
 	UAM_ASSERT(std::ranges::none_of(app.runtime_cli_install_tasks, [](const auto& entry) { return entry.second.running; }));
 }
 
@@ -2221,7 +2221,7 @@ UAM_TEST(CliProviderVersionInstallBlocksActiveProviderAliases)
 	app.acp_sessions.push_back(std::move(session));
 
 	UAM_ASSERT(!ProviderCliCompatibilityService().StartInstallProviderVersion(app, uam::provider_ids::kCodexCli, "0.124.0", &error));
-	UAM_ASSERT_EQ(error, std::string("Provider sessions are running. Stop the affected sessions and retry the update."));
+	UAM_ASSERT_EQ(error, std::string("Provider sessions are running; stop them and retry the update."));
 #elif UAM_ENABLE_RUNTIME_GEMINI_CLI
 	auto session = std::make_unique<uam::AcpSessionState>();
 	session->provider_id = " GEMINI ";
@@ -2229,7 +2229,7 @@ UAM_TEST(CliProviderVersionInstallBlocksActiveProviderAliases)
 	app.acp_sessions.push_back(std::move(session));
 
 	UAM_ASSERT(!ProviderCliCompatibilityService().StartInstallProviderVersion(app, uam::provider_ids::kGeminiCli, "latest", &error));
-	UAM_ASSERT_EQ(error, std::string("Provider sessions are running. Stop the affected sessions and retry the update."));
+	UAM_ASSERT_EQ(error, std::string("Provider sessions are running; stop them and retry the update."));
 #else
 	(void)app;
 	(void)error;
@@ -2292,7 +2292,7 @@ UAM_TEST(CliProviderVersionInstallBlocksTerminalsMatchedByNativeSession)
 
 	const std::string version = ProviderCliCompatibilityService().PreferredVersionForProvider(provider_id);
 	UAM_ASSERT(!ProviderCliCompatibilityService().StartInstallProviderVersion(app, provider_id, version, &error));
-	UAM_ASSERT_EQ(error, std::string("Provider sessions are running. Stop the affected sessions and retry the update."));
+	UAM_ASSERT_EQ(error, std::string("Provider sessions are running; stop them and retry the update."));
 
 	app.cli_terminals.clear();
 	app.chats.clear();
@@ -2309,7 +2309,7 @@ UAM_TEST(CliProviderVersionInstallBlocksTerminalsMatchedByNativeSession)
 
 	error.clear();
 	UAM_ASSERT(!ProviderCliCompatibilityService().StartInstallProviderVersion(app, provider_id, version, &error));
-	UAM_ASSERT_EQ(error, std::string("Provider sessions are running. Stop the affected sessions and retry the update."));
+	UAM_ASSERT_EQ(error, std::string("Provider sessions are running; stop them and retry the update."));
 #else
 	(void)app;
 	(void)error;

@@ -10,6 +10,7 @@
 #include "bootstrap_metadata/windows_command_assertions.h"
 #include "runner_bootstrap_probe_cases.h"
 #include "common/utils/base64.h"
+#include "common/utils/diagnostic_log.h"
 #include "common/utils/hash_utils.h"
 #include "common/platform/platform_incremental_sha256.h"
 #include "common/usage/usage_collector.h"
@@ -1542,7 +1543,7 @@ UAM_TEST(RemoteEphemeralDiscoveryLeasePreservesOwnedAuthorityAndDurableChats)
 		} guard{session};
 		if (kind == 4)
 		{
-			UAM_ASSERT(!started && error.find("Update the helper") != std::string::npos);
+			UAM_ASSERT(!started && error.find("Update the SSH helper") != std::string::npos);
 			UAM_ASSERT(!session.running && !fs::exists(log));
 			continue;
 		}
@@ -2114,9 +2115,15 @@ esac
 	    "linux-lab", "4.9.0-alpha-8", "nonce-1",
 	    {{"linux", "x86_64", runner, std::string(64, 'a')}}, plan, &error,
 	    "tools/uam"));
+	const fs::path log = temp.root / "diagnostic.log";
+	UAM_ASSERT(uam::diagnostics::StartFileLog(log, error, 0));
+	struct StopLog { ~StopLog() { uam::diagnostics::StopFileLog(); } } stop_log;
 	const uam::remote::BootstrapResult result = ExecuteTestBootstrapPlan(plan);
 	UAM_ASSERT(!result.ok);
-	UAM_ASSERT(result.error.find("runner socket path too long") != std::string::npos);
+	// The user sees one line; the helper's own reason stays in the diagnostic log.
+	UAM_ASSERT(result.error.find("Remote setup step failed") != std::string::npos);
+	uam::diagnostics::FlushFileLog();
+	UAM_ASSERT(uam::io::ReadTextFile(log).find("runner socket path too long") != std::string::npos);
 	UAM_ASSERT(!uam::paths::PathExistsNoThrow(copy_log));
 	const std::string commands = uam::io::ReadTextFile(command_log);
 	UAM_ASSERT(commands.find("socket=\"$HOME/tools/uam/") != std::string::npos);
@@ -2587,7 +2594,7 @@ UAM_TEST(LargeAttachmentStreamsFromDiskCompleteWithProgressOrFailsVisibly)
 		UAM_ASSERT(client.Connect(&error));
 		error.clear();
 		UAM_ASSERT(!client.UploadFileFromPath("attachment-legacy", "/remote/clip.MOV", source, {}, &error));
-		UAM_ASSERT(error.find("Update the helper") != std::string::npos);
+		UAM_ASSERT(error.find("Update the SSH helper") != std::string::npos);
 		UAM_ASSERT(uam_test::ReadFile(requests).find("file.begin") == std::string::npos);
 	}
 #endif
@@ -7275,7 +7282,7 @@ UAM_TEST(AcpRemoteUnconfirmedReceiptReturnsThePromptUnsentWithoutAHeldQueue)
 		std::this_thread::yield();
 	}
 	UAM_ASSERT(!session.pending_prompt_delivery);
-	UAM_ASSERT_EQ(session.last_error, std::string("Remote prompt was not sent because its owned durable receipt was not confirmed."));
+	UAM_ASSERT_EQ(session.last_error, std::string("The remote prompt was not sent because UAM could not confirm it was saved."));
 	UAM_ASSERT(fixture.input.Bytes().empty());
 	UAM_ASSERT(chat.messages.back().acp_prompt_not_sent && chat.messages.back().interrupted);
 	UAM_ASSERT(chat.acp_queued_prompts.empty() && chat.acp_dispatched_queued_prompt_count == 0);
@@ -9291,7 +9298,7 @@ UAM_TEST(AcpRemoteStagedPromptReturnsUnsentWhenItsBridgeCloses)
 		UAM_ASSERT(std::ranges::any_of(session.diagnostics, [](const uam::AcpDiagnosticEntryState& entry) { return entry.reason == "staged_prompt_requeued"; }));
 		PollUntilRemoteTurnSettles(app, session, true);
 		UAM_ASSERT(std::ranges::none_of(session.diagnostics, [](const uam::AcpDiagnosticEntryState& entry)
-		    { return entry.reason == "retry_scheduled" && entry.message == "Remote prompt is waiting for its owned durable receipt."; }));
+		    { return entry.reason == "retry_scheduled" && entry.message == "The remote prompt is waiting to be saved."; }));
 		UAM_ASSERT(!session.running && !session.processing && !session.reconnect_pending && !session.pending_prompt_delivery);
 		UAM_ASSERT_EQ(session.lifecycle_state, std::string("error"));
 		UAM_ASSERT(!session.last_error.empty());
@@ -10493,7 +10500,7 @@ UAM_TEST(AcpRemoteNativeMarkerFailurePreservesUnrelatedRpcRequest)
 				std::this_thread::yield();
 			}
 			UAM_ASSERT(!session.pending_prompt_delivery);
-			UAM_ASSERT_EQ(session.last_error, std::string("Remote prompt was not sent because its owned durable receipt was not confirmed."));
+			UAM_ASSERT_EQ(session.last_error, std::string("The remote prompt was not sent because UAM could not confirm it was saved."));
 			UAM_ASSERT(chat.messages.back().acp_prompt_not_sent);
 		}
 		UAM_ASSERT_EQ(chat.remote_pending_requests, prior_requests);
@@ -10652,7 +10659,7 @@ static void VerifyProviderSwitchStopsTheOldHelper(const bool automatic, const bo
 	// A prompt cannot launch or deliver until the old helper is confirmed gone.
 	std::string error;
 	UAM_ASSERT(!uam::SendAcpPrompt(app, chat.id, "Too early for the new provider.", &error));
-	UAM_ASSERT(error.find("stopping the previous process") != std::string::npos);
+	UAM_ASSERT(error.find("UAM stops the previous process") != std::string::npos);
 	error.clear();
 	// The target being disabled on this host must not stop the old helper being attached and stopped.
 	const auto settings_availability = app.settings.provider_availability;
@@ -10771,7 +10778,7 @@ UAM_TEST(RemovingTheLastHeldPromptKeepsRetiringTheHelperUntilTheHostReturns)
 	// Resume could only turn the prompt into an interrupted row now, so it refuses and keeps it.
 	std::string error;
 	UAM_ASSERT(!uam::ResumeQueuedAcpPrompts(app, chat.id, {{visible.id, visible.revision}}, &error));
-	UAM_ASSERT(error.find("stopping the previous process") != std::string::npos);
+	UAM_ASSERT(error.find("UAM stops the previous process") != std::string::npos);
 	UAM_ASSERT_EQ(chat.acp_queued_prompts.size(), std::size_t{1});
 	UAM_ASSERT(chat.acp_queue_held);
 	error.clear();
@@ -10960,7 +10967,7 @@ static void VerifyAutomaticRoutedRemoteSend(const AutomaticSendInterruption inte
 		UAM_ASSERT(poll_until([&] { return !launch_pending(); }));
 		uam::FlushPendingChatSaves(app);
 		const uam::AcpSessionState* given_up = uam::FindAcpSessionForChat(app, chat.id);
-		UAM_ASSERT(given_up != nullptr && given_up->last_error.find("given up before it started") != std::string::npos);
+		UAM_ASSERT(given_up != nullptr && given_up->last_error.find("abandoned before it started") != std::string::npos);
 		UAM_ASSERT(!fs::exists(provider_input));
 		if (queue_changed)
 		{
@@ -11200,7 +11207,7 @@ namespace
 		UAM_ASSERT(uam::acp_detail::SendQueuedPromptIfReady(app, session, chat));
 		// Unique target-branch error: no authored unsent-row pre-save is involved
 		// because the real internal queue gave this continuation indices -1.
-		UAM_ASSERT_EQ(session.last_error, std::string("Prompt is waiting for its remote recovery marker to be saved."));
+		UAM_ASSERT_EQ(session.last_error, std::string("The prompt is waiting to be saved before it is sent."));
 		UAM_ASSERT_EQ(session.next_request_id, next_request + 1);
 		UAM_ASSERT(!session.pending_prompt_delivery && session.prompt_request_id == 0);
 		UAM_ASSERT_EQ(chat.remote_pending_requests, requests);

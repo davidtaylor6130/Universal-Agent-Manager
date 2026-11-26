@@ -1421,7 +1421,7 @@ UAM_TEST(CopilotNativeAutoRoutingAckAndEventsKeepCommitmentHonest)
 	UAM_ASSERT(runtime.OnAcpHandleMessage(app, session, chat,
 	    CopilotEvent("session.auto_tier_switch_failed", {{"requestedAutoTier", nullptr}, {"effectiveAutoTier", "balance"}, {"reason", "policy_rejected"}}, "routing-failed", chat.native_session_id), nullptr));
 	UAM_ASSERT_EQ(session.copilot_native_state.at("autoRouting").at("effective").at("value"), "balance");
-	UAM_ASSERT(session.copilot_native_state.at("autoRouting").at("lastError").get<std::string>().find("policy_rejected") != std::string::npos);
+	UAM_ASSERT(session.copilot_native_state.at("autoRouting").at("lastError").get<std::string>().find("Copilot policy did not allow Auto routing.") != std::string::npos);
 	const auto before_child = session.copilot_native_state.at("autoRouting");
 	auto child = CopilotEvent("session.model_change", {{"autoTier", "intelligence"}}, "routing-child", chat.native_session_id);
 	child["params"]["event"]["agentId"] = "child-only";
@@ -1963,7 +1963,7 @@ UAM_TEST(CopilotNativeAutoRoutingUnsupportedActivationAllowsExplicitDefaultAfter
 	UAM_ASSERT_EQ(failed.at("ownership"), fixture.owner);
 	UAM_ASSERT_EQ(failed.at("available"), false);
 	UAM_ASSERT_EQ(failed.at("stateStatus"), "unsupported");
-	UAM_ASSERT(failed.at("lastError").get<std::string>().find("unsupported") != std::string::npos);
+	UAM_ASSERT(failed.at("lastError").get<std::string>().find("does not support Auto routing") != std::string::npos);
 	UAM_ASSERT_EQ(failed.at("effective"), effective);
 	UAM_ASSERT_EQ(failed.at("pending"), staged);
 	UAM_ASSERT_EQ(failed.at("activating"), (nlohmann::json{{"present", false}}));

@@ -131,7 +131,8 @@ namespace uam
 		try { uam::platform::StartBackgroundThread(std::move(work)).detach(); }
 		catch (const std::system_error& exception)
 		{
-			Record failure; failure.error = "Storage retention worker could not start: " + std::string(exception.what());
+			uam::diagnostics::Write("[storage retention] Storage retention worker could not start: " + std::string(exception.what()));
+			Record failure; failure.error = "Storage cleanup could not start.";
 			std::promise<Record> ready; task->worker = ready.get_future(); ready.set_value(std::move(failure));
 		}
 	}

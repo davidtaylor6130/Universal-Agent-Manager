@@ -45,15 +45,15 @@ namespace uam::usage
 		const std::filesystem::path alias_path = directory / "reference-models-v1.json";
 		path_error.clear();
 		const bool alias_exists = std::filesystem::exists(alias_path, path_error);
-		if (path_error) m_aliasError = "Could not inspect reference-model mappings. Previous mappings were kept.";
+		if (path_error) m_aliasError = "Could not inspect reference-model mappings, so the previous ones were kept.";
 		else if (!alias_exists) m_aliases.clear();
 		else if (io::TryReadTextFile(alias_path, encoded, 256 * 1024))
 		{
 			const std::optional<ModelAliases> aliases = RateCatalog::ParseAliases(nlohmann::json::parse(encoded, nullptr, false));
 			if (aliases) m_aliases = *aliases;
-			else m_aliasError = "Reference-model mappings are invalid. Previous mappings were kept.";
+			else m_aliasError = "Reference-model mappings are invalid, so the previous ones were kept.";
 		}
-		else m_aliasError = "Could not read reference-model mappings. Previous mappings were kept.";
+		else m_aliasError = "Could not read reference-model mappings, so the previous ones were kept.";
 		const std::filesystem::path cache_path = directory / "rates-v1.json";
 		if (!m_restored)
 		{
@@ -78,12 +78,12 @@ namespace uam::usage
 		m_lastAttemptMs = now_ms;
 		std::optional<std::string> fetched;
 		try { fetched = m_fetcher(stop); }
-		catch (const std::exception&) { m_error = "Could not refresh the public rate catalog. Saved reference rates were kept."; return; }
+		catch (const std::exception&) { m_error = "Could not refresh the public rate catalog, so saved rates were kept."; return; }
 		if (stop.stop_requested()) return;
-		if (!fetched || fetched->size() > kDocumentLimit) { m_error = "Could not refresh the public rate catalog. Saved reference rates were kept."; return; }
+		if (!fetched || fetched->size() > kDocumentLimit) { m_error = "Could not refresh the public rate catalog, so saved rates were kept."; return; }
 		const nlohmann::json document = nlohmann::json::parse(*fetched, nullptr, false);
 		RateCatalog catalog = RateCatalog::Parse(document);
-		if (catalog.Size() == 0) { m_error = "The public rate catalog is invalid. Saved reference rates were kept."; return; }
+		if (catalog.Size() == 0) { m_error = "The public rate catalog is invalid, so saved rates were kept."; return; }
 		catalog.AddVerifiedReferences(); m_catalog = std::make_shared<const RateCatalog>(std::move(catalog)); m_fetchedAtMs = now_ms; m_fromDisk = false; m_error.clear();
 		if (!paths::CreateDirectoriesNoThrow(directory) || !io::AtomicWriteFile(cache_path, nlohmann::json({{"version", 1}, {"fetchedAtMs", now_ms}, {"document", document}}).dump()))
 			m_error = "Reference rates are available, but could not be saved for offline use.";

@@ -94,7 +94,7 @@ namespace uam
 			{
 				if (!other.is_absolute()) return false;
 				const auto resolved = std::filesystem::weakly_canonical(other, ec);
-				if (ec || Overlaps(directory, resolved)) { error = "Another chat references this SVN working copy. Use a separate working copy before switching."; return false; }
+				if (ec || Overlaps(directory, resolved)) { error = "Another chat uses this SVN working copy; use a separate working copy before switching."; return false; }
 			}
 			error.clear();
 			return true;
@@ -278,7 +278,7 @@ namespace uam
 		auto result = Discover(scope, expected.parent, probe);
 		if (!result.ok) return result;
 		result.ok = false;
-		if (expected.parent.empty() || result.context != expected) { result.error = "The SVN working copy or repository changed. Discover the folders again."; return result; }
+		if (expected.parent.empty() || result.context != expected) { result.error = "The SVN working copy or repository changed; discover the folders again."; return result; }
 		const auto choice = std::find_if(result.branches.begin(), result.branches.end(), [&](const auto& item) { return item.path == path; });
 		if (choice == result.branches.end()) { result.error = "Choose a directory from the current SVN discovery."; return result; }
 		if (!probe.Clean(result.context)) { result.error = probe.Explain("Resolve changes, ignored/untracked paths, conflicts, externals and switched children before switching SVN folders.", "Could not read the working copy's status."); return result; }
@@ -293,18 +293,18 @@ namespace uam
 		SvnBranchContext current;
 		if (!VerifyScope(scope, result.error) || !probe.Read(scope, current) || current.url != expected.url || current.revision != expected.revision ||
 		    current.uuid != expected.uuid || current.repository != expected.repository || !probe.Clean(current))
-		{ result.error = probe.Explain("The working copy changed before SVN switching. Discover the folders again.", "Could not recheck the working copy before SVN switching."); return result; }
+		{ result.error = probe.Explain("The working copy changed before switching; discover the folders again.", "Could not recheck the working copy before switching."); return result; }
 		// Deliberate switch only: no checkout, --force, --ignore-ancestry, cleanup or rollback.
 		if (!probe.Run({"switch", "--non-interactive", "--ignore-externals", "--accept", "postpone", "--depth", "infinity", "-r", expected.repository_revision, "--", target + "@" + expected.repository_revision, expected.directory}, output))
 		{
-			result.error = "SVN did not confirm switching.";
+			result.error = "SVN did not confirm the switch.";
 			if (!probe.Failure().empty()) result.error += " " + probe.Failure() + (probe.Failure().back() == '.' ? "" : ".");
-			result.error += " Inspect the working copy before retrying; no automatic rollback was attempted.";
+			result.error += " Nothing was rolled back; inspect the working copy before retrying.";
 			return result;
 		}
 		if (!probe.Read(scope, current) || current.url != target || current.uuid != expected.uuid || current.repository != expected.repository ||
 		    current.revision != expected.repository_revision || !probe.Clean(current))
-		{ result.error = probe.Explain("SVN switching needs inspection: its final URL, revision or clean state was not confirmed."); return result; }
+		{ result.error = probe.Explain("SVN could not confirm the switch finished cleanly; inspect the working copy."); return result; }
 		result.context = current;
 		result.ok = true;
 		result.error.clear();

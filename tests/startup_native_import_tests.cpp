@@ -1407,7 +1407,7 @@ UAM_TEST(StartupNativeChooserRejectsCrossWorkspaceSelectionsAndDeclinesWithoutMu
 		std::string error;
 		UAM_ASSERT(!service.Decide(app, target.generation, decline ? std::vector<std::string>{} : ids,
 		    decline ? ids : std::vector<std::string>{}, &error, "known"));
-		UAM_ASSERT_EQ(error, std::string("A history candidate belongs to another workspace. Review the current list."));
+		UAM_ASSERT_EQ(error, std::string("A history belongs to another workspace; review the current list."));
 		UAM_ASSERT_EQ(service.Snapshot().total_count, std::size_t{2});
 		UAM_ASSERT_EQ(service.Snapshot().phase, std::string("ready"));
 		UAM_ASSERT(!service.ImportPending());
@@ -1518,8 +1518,8 @@ UAM_TEST(StartupRemoteScanReconnectsOnceThenDefersAnUnreachableHostAndKeepsOther
 	UAM_ASSERT_EQ(snapshot.total_count, std::size_t{1});
 	const auto notices = std::ranges::count_if(snapshot.errors, [](const std::string& error)
 	{
-		return error.find("Remote history on dead could not be reached (The remote runner bridge closed.)") != std::string::npos &&
-		    error.find("retry automatically") != std::string::npos && error.find("Dead A, Dead B") != std::string::npos;
+		return error.find("Remote history on dead could not be reached;") != std::string::npos &&
+		    error.find("UAM will retry") != std::string::npos && error.find("The remote runner bridge closed.") == std::string::npos && error.find("Dead A, Dead B") != std::string::npos;
 	});
 	UAM_ASSERT_EQ(notices, std::ptrdiff_t{1});
 	// The deferred workspaces are retried automatically once the host answers, without a new startup scan.

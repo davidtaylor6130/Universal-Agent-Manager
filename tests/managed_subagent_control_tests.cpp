@@ -1941,7 +1941,7 @@ UAM_TEST(AgentRunQueueFailsInvalidRoutingAndBoundsRoutingWaits)
 		const AgentRun& run = fixture.app.agent_runs.front();
 		UAM_ASSERT_EQ(run.status, std::string("failed"));
 		UAM_ASSERT_EQ(run.diagnostic_code, std::string("routing_wait_timeout"));
-		UAM_ASSERT(run.diagnostic.find("unresolved ownership") != std::string::npos);
+		UAM_ASSERT(run.diagnostic.find("previous run may still be active") != std::string::npos);
 		UAM_ASSERT(fixture.app.queued_agent_run_ids.empty());
 	}
 }

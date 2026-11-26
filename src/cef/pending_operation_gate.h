@@ -35,6 +35,6 @@ namespace uam::cef
 	{
 		return deletion_awaits_restart && (action == "deleteSession" || action == "deleteSessions" || action == "deleteFolder" ||
 		        action == "deleteFolders" || action == "rescanFolderChats")
-		    ? "An earlier deletion is unfinished and completes when UAM restarts. Restart UAM first, then try again." : std::string_view{};
+		    ? "An earlier deletion finishes when UAM restarts; restart UAM before trying again." : std::string_view{};
 	}
 }

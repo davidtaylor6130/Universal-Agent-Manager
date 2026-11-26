@@ -235,7 +235,7 @@ UAM_TEST(RemoteOpenCodeVersionWaitRejectsChangedCentralConfiguration)
 	fixture.Checked();
 	std::string error;
 	UAM_ASSERT(!fixture.Start(&error));
-	UAM_ASSERT(error.find("ownership changed") != std::string::npos);
+	UAM_ASSERT(error.find("The chat changed") != std::string::npos);
 	UAM_ASSERT(fixture.Session().pending_local_launch == nullptr && !fixture.Session().running);
 	UAM_ASSERT(!fixture.app.chats.front().remote_process_exists);
 #endif
@@ -251,7 +251,7 @@ UAM_TEST(RemoteOpenCodeVersionWaitCapturesProgressiveMcpChoice)
 	fixture.Checked();
 	std::string error;
 	UAM_ASSERT(!fixture.Start(&error));
-	UAM_ASSERT(error.find("ownership changed") != std::string::npos);
+	UAM_ASSERT(error.find("The chat changed") != std::string::npos);
 	UAM_ASSERT(fixture.Session().pending_local_launch == nullptr && !fixture.Session().running);
 #endif
 }
@@ -323,7 +323,7 @@ UAM_TEST(RemoteOpenCodePublicLaunchFailureRestoresSelectedModelOptions)
 	fixture.Session().available_models = {model};
 	std::string error;
 	UAM_ASSERT(!uam::SendAcpPrompt(fixture.app, chat.id, "Private authored input", &error));
-	UAM_ASSERT_EQ(error, std::string("The selected remote runner is not ready. Recheck it in Settings."));
+	UAM_ASSERT_EQ(error, std::string("The selected remote runner is not ready; recheck it in Settings."));
 	UAM_ASSERT_EQ(fixture.Session().last_error, error);
 	UAM_ASSERT_EQ(fixture.Session().lifecycle_state, std::string(uam::acp_detail::kAcpLifecycleError));
 	UAM_ASSERT_EQ(fixture.Session().goal_turn_model_id, std::string("private/previous-model"));
@@ -3388,7 +3388,7 @@ UAM_TEST(PreparedVersionWaitExpiredBranchReservationKeepsLaunch)
 		if (condition == "live")
 		{
 			UAM_ASSERT(!session.pending_local_launch);
-			UAM_ASSERT(session.last_error.find("ownership changed") != std::string::npos);
+			UAM_ASSERT(session.last_error.find("The chat changed") != std::string::npos);
 			UAM_ASSERT(owner && !owner->cancellation.stop_requested());
 		}
 		else

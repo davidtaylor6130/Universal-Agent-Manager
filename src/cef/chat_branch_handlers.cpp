@@ -4,6 +4,7 @@
 #include "cef/uam_query_handler_async.h"
 #include "cef/branch_operation_dispatch.h"
 #include "cef/cef_push.h"
+#include "common/utils/diagnostic_log.h"
 #include "app/chat_domain_service.h"
 #include "app/git_worktree_service.h"
 #include "app/vcs_provider.h"
@@ -47,7 +48,10 @@ namespace
 		void Success(const CefString&) override { Resume(); }
 		void Success(const void*, size_t) override { Resume(); }
 		void Failure(int code, const CefString& message) override
-		{ m_callback->Failure(code, "Branch " + m_branch + " could not be created before the chat started. " + message.ToString()); }
+		{
+			uam::diagnostics::Write("[pendingBranch] Branch could not be created before the chat started: " + message.ToString());
+			m_callback->Failure(code, "Branch " + m_branch + " could not be created, so the chat did not start.");
+		}
 
 	  private:
 		void Resume()
@@ -233,7 +237,7 @@ void UamQueryHandler::HandleListChatBranches(CefRefPtr<CefBrowser>, const nlohma
 		return uam::query_handler_async::AsyncSuccess(std::move(reply));
 	}, [this, request](uam::query_handler_async::AsyncCefResult& result)
 	{
-		if (!BranchRequestCurrent(m_app, *request)) result = uam::query_handler_async::AsyncFailure(409, "The chat workspace changed. Open the branch picker again.");
+		if (!BranchRequestCurrent(m_app, *request)) result = uam::query_handler_async::AsyncFailure(409, "The chat workspace changed; open the branch picker again.");
 	});
 }
 
@@ -350,12 +354,12 @@ void UamQueryHandler::ContinueSwitchChatBranch(CefRefPtr<CefBrowser> browser, co
 		    [this, browser, payload, cb, waiting](bool expired)
 		    {
 			if (expired || !BranchRequestCurrent(m_app, *waiting))
-			{ cb->Failure(409, expired ? uam::AcpStopRefusalMessage(m_app, waiting->chat.id, "The idle runtime is still stopping. Retry after it exits.") : "The chat changed while its idle runtime was stopping. Open the branch picker again."); return true; }
+			{ cb->Failure(409, expired ? uam::AcpStopRefusalMessage(m_app, waiting->chat.id, "The idle runtime is still stopping; try again after it exits.") : "The chat changed while its idle runtime was stopping; open the branch picker again."); return true; }
 			if (!BranchRuntimeSettled(m_app, waiting->chat.id)) return false;
 			ContinueSwitchChatBranch(browser, payload, cb);
 			return true;
 		    });
-		if (!CefPostDelayedTask(TID_UI, task, 50)) cb->Failure(409, "The runtime stop queue is unavailable. Retry after it exits.");
+		if (!CefPostDelayedTask(TID_UI, task, 50)) cb->Failure(409, "The runtime stop queue is unavailable; try again after the runtime exits.");
 		return;
 	}
 	if (!BranchRuntimeSettled(m_app, chat->id) || m_workspaceDeletionPending)
@@ -367,7 +371,7 @@ void UamQueryHandler::ContinueSwitchChatBranch(CefRefPtr<CefBrowser> browser, co
 	const std::shared_ptr<BranchRequest> request = CaptureBranchRequest(m_app, *chat);
 	// Unlike the shared mutation lease, exclusivity prevents adding a worktree user during checkout.
 	request->lease = m_app.worktree_retention_gate.TryAcquireCleanup();
-	if (!request->lease) { cb->Failure(409, "A workspace operation is finishing. Try again shortly."); return; }
+	if (!request->lease) { cb->Failure(409, "A workspace operation is finishing; try again shortly."); return; }
 	m_app.worktree_operation_chat_ids.insert(chat->id);
 	uam::query_handler_async::DispatchBranchOperation(m_app.worktree_operation_chat_ids, request->chat.id, [&]()
 	{
@@ -407,7 +411,7 @@ void UamQueryHandler::ContinueSwitchChatBranch(CefRefPtr<CefBrowser> browser, co
 					ChatSession* current = ChatDomainService().FindChatById(m_app, request->chat.id);
 					if (!current || m_app.data_root != request->root || current->metadata_incarnation != request->chat.metadata_incarnation ||
 					    !ChatDomainService().MatchesBranchHistoryIdentity(*current, request->identity))
-					{ switched = uam::query_handler_async::AsyncFailure(409, "The saved branch changed while the chat workspace was being replaced. Reload this chat."); return; }
+					{ switched = uam::query_handler_async::AsyncFailure(409, "The saved branch changed while the chat workspace was being replaced; reload this chat."); return; }
 					if (request->chat_updated)
 					{
 						current->workspace_branch_name = request->chat.workspace_branch_name;

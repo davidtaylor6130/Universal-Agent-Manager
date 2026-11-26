@@ -25,14 +25,14 @@ namespace uam::powershell
 		};
 		if (preference == kPowerShell7)
 		{
-			return pwsh_available ? std::string("pwsh.exe") : fail("PowerShell 7 (pwsh.exe) was not found. Install PowerShell 7 or choose Windows PowerShell in Settings > Editors.");
+			return pwsh_available ? std::string("pwsh.exe") : fail("PowerShell 7 (pwsh.exe) was not found; install it or choose Windows PowerShell in Settings > Editors.");
 		}
 		if (preference == kWindowsPowerShell)
 		{
-			return windows_powershell_available ? std::string("powershell.exe") : fail("Windows PowerShell (powershell.exe) was not found. Choose PowerShell 7 or Automatic in Settings > Editors.");
+			return windows_powershell_available ? std::string("powershell.exe") : fail("Windows PowerShell (powershell.exe) was not found; choose PowerShell 7 or Automatic in Settings > Editors.");
 		}
 		if (windows_powershell_available) return "powershell.exe";
 		if (pwsh_available) return "pwsh.exe";
-		return fail("No PowerShell was found. Windows PowerShell (powershell.exe) or PowerShell 7 (pwsh.exe) is required to open this terminal.");
+		return fail("No PowerShell was found; install Windows PowerShell or PowerShell 7 to open this terminal.");
 	}
 }

@@ -3533,7 +3533,7 @@ UAM_TEST(GeminiTerminalPendingFinalBlocksWorkspaceMoveWithoutMutation)
 	UAM_ASSERT_EQ(app.move_chat_show_missing_session_warning, warning_before);
 	UAM_ASSERT(private_files() == files_before);
 	UAM_ASSERT(!moved);
-	UAM_ASSERT(app.status_line.find("history") != std::string::npos && app.status_line.find("Retry") != std::string::npos);
+	UAM_ASSERT(app.status_line.find("Wait for the terminal history to finish saving") != std::string::npos);
 	live = ChatDomainService().FindChatById(app, fixture.local.id);
 	UAM_ASSERT(live && live->messages == messages_before);
 	UAM_ASSERT_EQ(ChatRepository::ChatMetadataFingerprint(app.data_root, *live), metadata_before);
@@ -3714,7 +3714,7 @@ UAM_TEST(GeminiTerminalColdFinalDefersMetadataSaveUntilOriginalsSettle)
 			live->updated_at = previous_updated;
 			UAM_ASSERT_EQ(ChatRepository::ChatMetadataFingerprint(app.data_root, *live), cold_metadata);
 		}
-		UAM_ASSERT(app.status_line.find("history") != std::string::npos && app.status_line.find("Retry") != std::string::npos);
+		UAM_ASSERT(app.status_line.find("Wait for the terminal history to finish saving") != std::string::npos);
 		UAM_ASSERT_EQ(uam::io::ReadTextFile(primary), primary_before);
 		UAM_ASSERT(ChatRepository::ChatStorageRevision(app.data_root, fixture.local.id) == revision_before);
 		UAM_ASSERT(app.native_chat_refresh_error_status.empty() && app.native_chat_refresh_error_target_id.empty());

@@ -34,7 +34,7 @@ namespace uam::usage
 			Prune(now);
 			const std::map<int, Snapshot>::iterator found = m_snapshots.find(browser);
 			if (found == m_snapshots.end() || found->second.owner != owner || found->second.id != id || found->second.next != offset)
-				throw std::runtime_error("Usage snapshot expired or changed. Refresh to try again.");
+				throw std::runtime_error("The usage snapshot expired or changed; refresh to try again.");
 			Snapshot& snapshot = found->second;
 			std::size_t end = std::min(offset + kChunkBytes, snapshot.body.size());
 			while (end < snapshot.body.size() && (static_cast<unsigned char>(snapshot.body[end]) & 0xc0) == 0x80) --end;

@@ -107,7 +107,7 @@ UAM_TEST(ManualCompactionUnsupportedProviderDoesNotCreateRuntime)
 	app.chats.push_back(chat);
 	std::string error;
 	UAM_ASSERT(!uam::CompactAcpSession(app, chat.id, &error));
-	UAM_ASSERT(error.find("does not support") != std::string::npos);
+	UAM_ASSERT(error.find("can't compact structured chats") != std::string::npos);
 	UAM_ASSERT(app.acp_sessions.empty());
 	UAM_ASSERT(app.chats.front().messages.empty());
 }
@@ -173,7 +173,7 @@ UAM_TEST(ManualCompactionDeferredOwnershipChangesRejectWithoutPromptDelivery)
 		if (mutation == 3) app.chats.front().metadata_incarnation = std::make_shared<const std::uint8_t>(0);
 		if (mutation == 4) app.data_root = temp.root / "foreign-root";
 		UAM_ASSERT(!uam::CompactAcpSession(app, chat.id, &error));
-		UAM_ASSERT(error.find("ownership") != std::string::npos);
+		UAM_ASSERT(error.find("chat changed") != std::string::npos);
 		UAM_ASSERT(!app.acp_sessions.front()->running);
 		UAM_ASSERT(app.acp_sessions.front()->queued_prompt.empty());
 		UAM_ASSERT(app.chats.front().messages.empty());
@@ -492,7 +492,7 @@ UAM_TEST(RemoteManualCompactionRejectsUnsavedReceiptsBeforeDelivery)
 	CompactionTransport transport(session);
 	std::string error;
 	UAM_ASSERT(!uam::CompactAcpSession(app, chat.id, &error));
-	UAM_ASSERT(error.find("receipt") != std::string::npos);
+	UAM_ASSERT(error.find("delivery record") != std::string::npos);
 	UAM_ASSERT(session.pending_request_methods.empty());
 	UAM_ASSERT(!session.manual_compaction_pending && !session.processing);
 	UAM_ASSERT(app.chats.front().remote_pending_requests.empty());
@@ -873,7 +873,7 @@ UAM_TEST(ManualCompactionExpiredBranchReservationKeepsPendingIntent)
 		if (condition == BranchReservationR69::Live)
 		{
 			UAM_ASSERT(!session.pending_compaction);
-			UAM_ASSERT(error.find("ownership") != std::string::npos);
+			UAM_ASSERT(error.find("chat changed") != std::string::npos);
 			UAM_ASSERT(owner && !owner->cancellation.stop_requested());
 		}
 		else

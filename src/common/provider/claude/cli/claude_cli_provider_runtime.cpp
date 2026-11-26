@@ -318,7 +318,7 @@ bool ClaudeCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::AcpSe
 		const std::string error_message = std::string("Claude stream-json message handling failed: ") + ex.what();
 		AppendAcpDiagnostic(session, "parse", "claude_message_parse_error", "", "", false, 0,
 		                    error_message, CapDiagnosticString(message.dump(), kMaxAcpDiagnosticDetailBytes));
-		InvalidateAcpTransport(app, session, chat, error_message);
+		InvalidateAcpTransport(app, session, chat, "Claude sent a message UAM could not read.");
 	}
 	return true;
 }
@@ -390,7 +390,7 @@ bool ClaudeCliProviderRuntime::OnAcpHandleResult(uam::AppState& app, uam::AcpSes
 		{
 			session.initialized = false;
 			session.session_ready = false;
-			session.last_error = "The selected Claude model did not advertise fast mode. Choose Default speed or a supported model.";
+			session.last_error = "The selected Claude model does not support fast mode; choose Default speed or another model.";
 			session.lifecycle_state = uam::acp_detail::kAcpLifecycleError;
 			return true;
 		}

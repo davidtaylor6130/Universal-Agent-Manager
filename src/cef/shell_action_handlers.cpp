@@ -62,7 +62,7 @@ void UamQueryHandler::HandleSetShellActions(CefRefPtr<CefBrowser> browser, const
 	// The file now holds exactly what was just written, so a reload blocked by a transient lock keeps that list instead of an empty one.
 	m_app.shell_actions = reload_unreadable ? std::move(actions) : std::move(reloaded);
 	m_app.shell_actions_unreadable = false;
-	m_app.shell_action_notification = "Shell action settings saved. Choose Apply to update Finder or Explorer.";
+	m_app.shell_action_notification = "Shell action settings saved; choose Apply to update Finder or Explorer.";
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }

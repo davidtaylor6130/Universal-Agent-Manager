@@ -227,7 +227,7 @@ namespace uam::usage
 		const std::filesystem::file_time_type final_modified = std::filesystem::last_write_time(native_path, error);
 		if (error || final_size != size || final_modified != modified)
 		{
-			Reset(); result.reset = true; result.error = "Gemini history changed during scanning. Refresh to retry."; return result;
+			Reset(); result.reset = true; result.error = "Gemini history changed while it was read; refresh to retry."; return result;
 		}
 		const nlohmann::json event = nlohmann::json::parse(m_pendingLine, nullptr, false);
 		m_pendingLine.clear();
@@ -286,7 +286,7 @@ namespace uam::usage
 			{ result.cancelled = cancelled && cancelled(); if (!result.cancelled && result.error.empty()) result.error = "Gemini history is incomplete or invalid."; return result; }
 			const std::uintmax_t final_size = std::filesystem::file_size(path, error);
 			const std::filesystem::file_time_type final_modified = std::filesystem::last_write_time(path, error);
-			if (error || final_size != size || final_modified != modified) { result.error = "Gemini history changed during scanning. Refresh to retry."; return result; }
+			if (error || final_size != size || final_modified != modified) { result.error = "Gemini history changed while it was read; refresh to retry."; return result; }
 			m_seenSize = size; m_lastWriteTime = modified; m_readOffset = size; result.bytes_read = size; result.complete = true;
 			return result;
 		}

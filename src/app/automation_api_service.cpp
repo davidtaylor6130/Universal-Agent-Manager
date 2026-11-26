@@ -267,7 +267,7 @@ namespace uam
 			const ChatFolder* folder = ChatDomainService().FindFolderById(app, workspace_id);
 			if (folder == nullptr || uam::strings::IsBlank(folder->directory)) return Refuse(404, "That workspace no longer exists.");
 			if (OpenChatCount(app, token.id) >= kMaxOpenChatsPerToken)
-				return Refuse(429, "This " + token.kind + " already has 16 open chats. Finish or delete one first; a chat an automation chat started counts until it is deleted.");
+				return Refuse(429, "This " + token.kind + " already has 16 open chats, counting chats its automation chats started; finish or delete one first.");
 
 			ChatSession chat = ChatDomainService().CreateNewChat(folder->id, provider_ids::NormalizeCliProviderAliasOrSelf(provider), true);
 			chat.execution_host_id = uam::strings::NonEmptyOrFallback(folder->execution_host_id, execution_hosts::kLocalHostId);
@@ -352,7 +352,7 @@ namespace uam
 			if (ConstantTimeEquals(candidate.hash, request.token_hash)) token = &candidate;
 		AutomationApiResponse response;
 		if (token == nullptr || request.token_hash.empty()) response = Refuse(401, "Invalid automation token.");
-		else if (uam::time::TimestampNowSec() >= token->expires_at) response = Refuse(401, "This automation token has expired. Regenerate it in UAM Settings.");
+		else if (uam::time::TimestampNowSec() >= token->expires_at) response = Refuse(401, "This automation token has expired; regenerate it in UAM Settings.");
 		else if (request.body.size() > kMaxBodyBytes) response = Refuse(413, "Request exceeds 256 KiB.");
 		else if (request.method == "POST" && request.path == kChatsPath)
 		{
@@ -419,7 +419,7 @@ namespace uam
 		const auto fail = [&](std::string message) { if (error_out != nullptr) *error_out = std::move(message); return std::nullopt; };
 		std::optional<std::vector<TokenRecord>> tokens = ReadTokens(app);
 		if (!tokens) return fail("The automation token file could not be read, so no token was created.");
-		if (tokens->size() >= kMaxTokens) return fail("At most 32 automation tokens can exist. Revoke one first.");
+		if (tokens->size() >= kMaxTokens) return fail("Revoke a token first; at most 32 automation tokens can exist.");
 		TokenRecord record;
 		record.name = uam::strings::SafeLine(uam::strings::Trim(spec.value("name", "")), kMaxTokenNameChars, true);
 		if (record.name.empty()) return fail("Enter a token name.");
@@ -455,7 +455,7 @@ namespace uam
 		const std::optional<std::string> secret = IssueSecret(*token);
 		if (!secret) return fail("The token could not be generated.");
 		// Every request reads this file, so a completed write retires the old secret, including for later status polls.
-		if (!WriteTokens(app, *tokens)) return fail("The token could not be regenerated; the old token still works. Try again.");
+		if (!WriteTokens(app, *tokens)) return fail("The token could not be regenerated, so the old token still works.");
 		uam::diagnostics::Write("Automation API: regenerated token " + token->id + ".");
 		return nlohmann::json{{"secret", *secret}, {"token", TokenMetadata(*token)}};
 	}
@@ -467,7 +467,7 @@ namespace uam
 		if (!tokens) return fail("The automation token file could not be read, so the token was not revoked.");
 		if (std::erase_if(*tokens, [&](const TokenRecord& token) { return token.id == token_id; }) == 0) return fail("That token no longer exists.");
 		// Every request reads this file, so a completed write is the revocation.
-		if (!WriteTokens(app, *tokens)) return fail("The token could not be revoked and still works. Try again.");
+		if (!WriteTokens(app, *tokens)) return fail("The token could not be revoked and still works.");
 		uam::diagnostics::Write("Automation API: revoked token " + std::string(token_id) + ".");
 		return true;
 	}

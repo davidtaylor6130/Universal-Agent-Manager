@@ -410,7 +410,7 @@ bool CapturedReadCeilingAllowsPermissionResponse(const AcpSessionState& session,
 		if (choice == ProviderPermissionChoice::Denied) return true;
 		if (choice == ProviderPermissionChoice::AllowedOnce && PermissionFitsPlanCeiling(session, pending)) return true;
 	}
-	if (error_out) *error_out = "This response exceeds the captured read-only access ceiling. Only supported one-time read approvals are available.";
+	if (error_out) *error_out = "In read-only mode, only one-time read approvals are allowed.";
 	return false;
 }
 
@@ -580,7 +580,7 @@ bool SendPermissionResponse(AcpSessionState& session, const std::string& request
 	{
 		if (error_out != nullptr)
 		{
-			*error_out = "ACP permission option is not offered by the active request.";
+			*error_out = "That option is not offered for this permission request.";
 		}
 		return false;
 	}
@@ -887,8 +887,8 @@ void QueueAcpPermission(AppState& app, AcpSessionState& session, ChatSession& ch
 		if (session.queued_permissions.size() >= kMaxQueuedPermissions)
 		{
 			const std::string message = session.queued_user_prompts.empty()
-			    ? "The provider exceeded UAM's 64-request permission queue limit."
-			    : "The provider exceeded UAM's 64-request permission queue limit. Queued follow-up prompts were not sent; resend them.";
+			    ? "The provider sent too many permission requests at once."
+			    : "The provider sent too many permission requests, so queued follow-up prompts were not sent; resend them.";
 			AppendAcpDiagnostic(session, "permission", "queue_limit_exceeded",
 			                    pending.provider_request_method, pending.request_id_json,
 			                    false, 0, message);

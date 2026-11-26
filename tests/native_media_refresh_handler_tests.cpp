@@ -10031,7 +10031,7 @@ UAM_TEST(ClaudePendingControlDropsStaleCanceledExpiredAndUnreservedOwners)
 				UAM_ASSERT(!session->running && session->child_pid <= 0);
 				if (session->pending_local_launch) std::this_thread::sleep_for(std::chrono::milliseconds(1));
 			}
-			UAM_ASSERT(!session->pending_local_launch && session->last_error.find("UAM control setup expired") != std::string::npos);
+			UAM_ASSERT(!session->pending_local_launch && session->last_error.find("UAM Control setup expired") != std::string::npos);
 		}
 		UAM_ASSERT(app.agent_runs.empty());
 		const auto* remaining = uam::FindAcpSessionForChat(app, fixture.root_id);
@@ -10060,7 +10060,7 @@ UAM_TEST(ClaudeFailedPendingConfigurationDropsControlAndNeverStartsNativeProcess
 	UAM_ASSERT(session && chat && session->pending_local_launch && !session->running);
 	std::string error;
 	UAM_ASSERT(!uam::acp_detail::StartAcpProcessForChat(fixture.app, *session, *chat, &error));
-	UAM_ASSERT(!error.empty() && error.find("UAM control setup expired") == std::string::npos);
+	UAM_ASSERT(!error.empty() && error.find("UAM Control setup expired") == std::string::npos);
 	UAM_ASSERT(!session->pending_local_launch && !session->running && session->child_pid <= 0);
 	UAM_ASSERT(fixture.app.agent_runs.empty());
 }

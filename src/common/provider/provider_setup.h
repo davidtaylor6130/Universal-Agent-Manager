@@ -885,11 +885,11 @@ namespace uam::provider_setup
 					argv.erase(argv.begin() + static_cast<std::ptrdiff_t>(index), argv.begin() + static_cast<std::ptrdiff_t>(index) + 2);
 				}
 				// A later user value would replace the combined text, silently dropping the agent's role with it.
-				if (folded_agent && user_value) { error = "A developer_instructions flag in provider settings would replace the selected agent's instructions. Remove it or use Chat."; return false; }
+				if (folded_agent && user_value) { error = "A developer_instructions flag in provider settings would replace the selected agent's instructions; remove it or use Chat."; return false; }
 				if (instructions.size() > max_instruction_bytes)
 				{
-					error = folded_agent ? "Codex instructions, including the selected agent's, exceed the OS launch limit. Shorten the agent or use Chat."
-					    : host_instructions_only ? "Host instructions exceed the OS launch limit for this provider. Shorten them." : "Codex central instructions exceed the OS launch limit. Move reference material into skills.";
+					error = folded_agent ? "Codex instructions, including the selected agent's, are too long to launch; shorten the agent or use Chat."
+					    : host_instructions_only ? "Host instructions are too long for this provider to launch; shorten them." : "Codex central instructions are too long to launch; move reference material into skills.";
 					return false;
 				}
 				argv.insert(argv.begin() + 1, {"-c", "developer_instructions=" + TomlString(instructions)});
@@ -914,7 +914,7 @@ namespace uam::provider_setup
 				{
 					if (key == "type")
 					{
-						if (value == "sse") { error = "Codex does not support SSE MCP servers. Use HTTP or stdio."; return false; }
+						if (value == "sse") { error = "Codex does not support SSE MCP servers; use HTTP or stdio."; return false; }
 						continue;
 					}
 					if (key == "env")

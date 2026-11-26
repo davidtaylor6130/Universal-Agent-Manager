@@ -1210,7 +1210,7 @@ UAM_TEST(QueueJournalCorruptionHoldsRecoveryWithoutProviderDispatch)
 	UAM_ASSERT(!uam::DrainNextQueuedAcpUserPrompt(app, *holder, app.chats.front()));
 	std::string error;
 	UAM_ASSERT(!uam::SendAcpPrompt(app, chat.id, "New user request", &error));
-	UAM_ASSERT(error.find("journal") != std::string::npos);
+	UAM_ASSERT(error.find("saved recovery data") != std::string::npos);
 	UAM_ASSERT_EQ(ReadFile(journal), "{broken");
 }
 

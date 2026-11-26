@@ -9,7 +9,7 @@ namespace uam
 {
 	/// <summary>RunSvn's error when the svn client could not be started at all.</summary>
 	inline constexpr std::string_view kSvnClientMissing =
-	    "The svn command-line client was not found. Install Subversion and make sure svn is on PATH.";
+	    "The svn command was not found; install Subversion and make sure svn is on PATH.";
 
 	/// <summary>Bounded failure detail: the missing-client notice, or svn's most specific "E<code>: ..." line (the first line
 	/// of the innermost error in svn's first chain, past lead lines that only introduce the next error), or the first

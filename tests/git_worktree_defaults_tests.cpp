@@ -295,7 +295,7 @@ UAM_TEST(ManagedSnapshotClassificationKeepsGitPrecedenceAndStrictMarkers)
 		const std::string locked_message = uam::GitWorktreeService().CreateForChat(app, locked_chat).message;
 		fs::permissions(locked, fs::perms::owner_all);
 		UAM_ASSERT_EQ(locked_reason, std::string{});
-		UAM_ASSERT(locked_message.find("Source workspace is not an available directory") != std::string::npos);
+		UAM_ASSERT(locked_message.find("The source folder is unavailable") != std::string::npos);
 
 		// An existing .git that cannot be listed still counts as Git and keeps strict validation.
 		const fs::path unreadable_git = temp.root / "unreadable-git";

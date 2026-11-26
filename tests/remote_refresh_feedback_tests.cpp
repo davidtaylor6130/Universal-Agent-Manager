@@ -80,7 +80,7 @@ namespace
 {
 	const std::string kPng = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
 	const std::string kPriorWarning = "Earlier warning must remain";
-	const std::string kCommittedWarning = "History and attached files were kept, but UAM could not confirm the final save. Reopen the chat to check it.";
+	const std::string kCommittedWarning = "History and attached files were kept, but the final save is unconfirmed; reopen the chat to check it.";
 
 	class FeedbackCallback final : public UamQueryHandler::Callback
 	{
@@ -241,7 +241,7 @@ UAM_TEST(RemoteRefreshFeedbackCleanGuardRefusalRetainsHistoryAndFreshRetry)
 	query.Finish(std::move(result));
 	UAM_ASSERT_EQ(cb->successes, 0); UAM_ASSERT_EQ(cb->failures, 1); UAM_ASSERT_EQ(cb->status, 409);
 	UAM_ASSERT(cb->error.find("refresh was not saved") != std::string::npos);
-	UAM_ASSERT(cb->error.find("Try refreshing again") != std::string::npos);
+	UAM_ASSERT(cb->error.find("current history was kept") != std::string::npos);
 	UAM_ASSERT(cb->error.find("Reopen") == std::string::npos);
 	UAM_ASSERT_EQ(ReadFile(fixture.Primary()), primary); UAM_ASSERT_EQ(ReadFile(fixture.Summary()), summary);
 	UAM_ASSERT_EQ(ReadFile(journal), journal_bytes); UAM_ASSERT_EQ(fixture.Chat().messages, messages);
@@ -268,8 +268,8 @@ UAM_TEST(RemoteRefreshFeedbackUnconfirmedPrimaryRequiresReopenBeforeRetry)
 			RemoteRefreshFeedbackTestAccess::Fault(*fixture.handler, stage, throws);
 			const auto cb = fixture.Start(); fixture.Complete(0); fixture.Complete(1);
 			UAM_ASSERT_EQ(cb->successes, 0); UAM_ASSERT_EQ(cb->failures, 1); UAM_ASSERT_EQ(cb->status, 500);
-			UAM_ASSERT(cb->error.find("could not confirm that the refreshed history was saved") != std::string::npos);
-			UAM_ASSERT(cb->error.find("Reopen the chat before retrying") != std::string::npos);
+			UAM_ASSERT(cb->error.find("could not confirm the refreshed history was saved") != std::string::npos);
+			UAM_ASSERT(cb->error.find("reopen the chat before retrying") != std::string::npos);
 			UAM_ASSERT(cb->error.find("not saved") == std::string::npos);
 			UAM_ASSERT_EQ(fixture.Chat().messages, messages); UAM_ASSERT_EQ(ReadFile(fixture.Summary()), summary);
 			UAM_ASSERT_EQ(ReadFile(fixture.Primary()) == primary, stage == uam::io::AtomicWriteStage::BeforeReplace);
@@ -755,7 +755,7 @@ UAM_TEST(RemoteRefreshFeedbackLegacySavedLineagePublishesNormalizedLineage)
 		if (!alias)
 		{
 			UAM_ASSERT_EQ(cb->failures, 1); UAM_ASSERT_EQ(cb->status, 409);
-			UAM_ASSERT(cb->error.find("differs from its current view") != std::string::npos);
+			UAM_ASSERT(cb->error.find("differs from this view") != std::string::npos);
 			UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{1});
 			UAM_ASSERT_EQ(ReadFile(fixture.Primary()), primary); UAM_ASSERT_EQ(ReadFile(fixture.Summary()), summary);
 			fixture.AssertDraft();
@@ -940,8 +940,8 @@ UAM_TEST(RemoteRefreshFeedbackChangedPostcommitOwnerNeverRedrawsOldHistory)
 	fixture.Chat().metadata_incarnation = ChatSession{}.metadata_incarnation;
 	fixture.Complete(2);
 	UAM_ASSERT_EQ(cb->successes, 0); UAM_ASSERT_EQ(cb->failures, 1); UAM_ASSERT_EQ(cb->status, 409);
-	UAM_ASSERT(cb->error.find("already saved") != std::string::npos);
-	UAM_ASSERT(cb->error.find("Reopen the chat") != std::string::npos);
+	UAM_ASSERT(cb->error.find("Remote history was saved") != std::string::npos);
+	UAM_ASSERT(cb->error.find("reopen the chat") != std::string::npos);
 	UAM_ASSERT(cb->error.find("New native answer") == std::string::npos);
 	UAM_ASSERT_EQ(ReadFile(fixture.Primary()), primary); UAM_ASSERT_EQ(ReadFile(fixture.Summary()), summary);
 	UAM_ASSERT_EQ(fixture.app.status_line, kPriorWarning); fixture.AssertDraft();

@@ -218,8 +218,17 @@ namespace
 		result.canceled = stop.stop_requested();
 		result.timed_out = !exited && !result.canceled && std::chrono::steady_clock::now() >= deadline;
 		std::string cleanup;
-		if (!exited && !client.StopProcess(id, &cleanup)) result.error += " Model discovery stop failed.";
-		if (!client.RemoveProcess(id, &cleanup)) result.error += " Model discovery cleanup failed.";
+		if (!exited && !client.StopProcess(id, &cleanup))
+		{
+			uam::diagnostics::Write("[model-discovery] Remote stop failed: " + cleanup);
+			cleanup.clear();
+			if (result.error.empty()) result.error = "Model discovery could not be stopped.";
+		}
+		if (!client.RemoveProcess(id, &cleanup))
+		{
+			uam::diagnostics::Write("[model-discovery] Remote cleanup failed: " + cleanup);
+			if (result.error.empty()) result.error = "Model discovery could not be cleaned up.";
+		}
 		result.ok = exited && result.exit_code == 0 && result.error.empty() && !result.canceled && !result.timed_out && !result.output_truncated;
 		return result;
 	}
@@ -496,7 +505,7 @@ bool ProviderModelCatalogService::StartAntigravityEffortDiscovery(const Provider
 			const auto result = ReadAntigravityCatalogueCommand(host, argv, workspace, stop, deadline);
 			const auto metadata = result.ok && result.exit_code == 0 && !result.output_truncated && !stop.stop_requested() ? ParseAntigravityEffort(result.output, model_id) : std::nullopt;
 			if (metadata) state->models = nlohmann::json::array({*metadata});
-			else state->error = "The CLI could not verify this model's reasoning options. Update Antigravity CLI or retry discovery.";
+			else state->error = "The CLI could not verify this model's reasoning options; update Antigravity CLI or retry discovery.";
 		}
 		catch (...) { state->error = "Antigravity reasoning discovery failed; previous model metadata was retained."; }
 		state->completed.store(true, std::memory_order_release);
@@ -567,11 +576,11 @@ bool ProviderModelCatalogService::StartAntigravityModelDiscovery(const ProviderP
 					const auto effort = ReadAntigravityCatalogueCommand(host, query, workspace, stop, deadline);
 					const auto metadata = effort.ok && effort.exit_code == 0 && !effort.output_truncated ? ParseAntigravityEffort(effort.output, id) : std::nullopt;
 					if (metadata) for (auto field = metadata->begin(); field != metadata->end(); ++field) (*selected)[field.key()] = field.value();
-					else state->error = "The CLI could not verify this model's reasoning options. Update Antigravity CLI or retry discovery.";
+					else state->error = "The CLI could not verify this model's reasoning options; update Antigravity CLI or retry discovery.";
 					(*selected)["isDefault"] = true;
 					std::rotate(state->models->begin(), selected, std::next(selected));
 				}
-				else state->error = "The CLI did not expose its current model identity. Update Antigravity CLI to discover reasoning options.";
+				else state->error = "Update Antigravity CLI so UAM can read its current model and reasoning options.";
 			}
 
 			if (!state->models) state->error = stop.stop_requested() || result.canceled ? "Antigravity model discovery was cancelled." :

@@ -202,7 +202,7 @@ namespace
 			f.sparse_inventory_read = f.inventory_reads + changed_read;
 			const auto result = uam::SwitchSvnBranch(f.scope, found.context, "^/lines/feature & fix", f.Runner());
 			Check(!result.ok && f.switches == (changed_read == 2 ? 0 : 1), "inventory rechecked before mutation and before confirmed success");
-			if (changed_read == 3) Check(result.error.find("inspection") != std::string::npos, "post-switch sparsity remains uncertain and requires inspection");
+			if (changed_read == 3) Check(result.error.find("inspect") != std::string::npos, "post-switch sparsity remains uncertain and requires inspection");
 		}
 	}
 	/// svn's own reason reaches the person instead of a bare "could not": the service adds the runner's failure line.
@@ -240,7 +240,7 @@ namespace
 			f.failure_text = "E155004: Run 'svn cleanup' to remove locks (type 'svn help cleanup' for details)";
 			f.fails = [](const std::vector<std::string>& args) { return args[0] == "switch"; };
 			const auto result = uam::SwitchSvnBranch(f.scope, found.context, found.branches[1].path, f.Runner());
-			Check(!result.ok && result.error == "SVN did not confirm switching. E155004: Run 'svn cleanup' to remove locks (type 'svn help cleanup' for details). Inspect the working copy before retrying; no automatic rollback was attempted.", "switch failure keeps the inspection warning and adds svn's reason: " + result.error);
+			Check(!result.ok && result.error == "SVN did not confirm the switch. E155004: Run 'svn cleanup' to remove locks (type 'svn help cleanup' for details). Nothing was rolled back; inspect the working copy before retrying.", "switch failure keeps the inspection warning and adds svn's reason: " + result.error);
 			Check(result.error.find('\n') == std::string::npos, "one line");
 		}
 		{

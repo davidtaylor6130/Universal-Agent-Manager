@@ -1275,7 +1275,7 @@ namespace uam::remote
 			const std::size_t offset = request.value("offset", std::size_t{0});
 			const std::string fingerprint = uam::hashing::Hex64Padded(uam::hashing::Fnv1a64(file.text));
 			if (request.contains("fingerprint") && (!request["fingerprint"].is_string() || request["fingerprint"] != fingerprint))
-				return ProcessError(request, "file_preview_changed", "The file changed while loading. Try again.");
+				return ProcessError(request, "file_preview_changed", "The file changed while loading.");
 			// Base64 chunks stay inside the existing frame limit, even for JSON-escaped source text.
 			const std::string_view chunk(file.text.data() + offset, std::min<std::size_t>(512 * 1024, file.text.size() - offset));
 			return ProcessSuccess(request, {{"dataBase64", uam::base64::Encode(chunk)}, {"path", file.path},
@@ -1323,7 +1323,7 @@ namespace uam::remote
 			if (!token.empty())
 			{
 				const auto found = m_nativeHistorySnapshots.find(token);
-				if (found == m_nativeHistorySnapshots.end()) return ProcessError(request, "snapshot_expired", "The native history snapshot expired. Retry refresh.");
+				if (found == m_nativeHistorySnapshots.end()) return ProcessError(request, "snapshot_expired", "The native history snapshot expired; refresh to retry.");
 				snapshot = found->second;
 				if (snapshot->provider != provider || snapshot->session_id != session || snapshot->agent_id != agent || !native_history::SameWorkspace(snapshot->workspace, workspace))
 					return ProcessError(request, "identity_mismatch", "Native history snapshot ownership does not match.");
@@ -1340,7 +1340,7 @@ namespace uam::remote
 			if (!snapshot)
 			{
 				if (offset != 0 || !native_history::String(request, "fingerprint").empty()) return ProcessError(request, "invalid_request", "A new native snapshot starts at offset zero.");
-				if (m_nativeHistorySnapshots.size() >= native_history::kMaxSnapshots) return ProcessError(request, "history_busy", "Two native history snapshots are already active. Retry shortly.");
+				if (m_nativeHistorySnapshots.size() >= native_history::kMaxSnapshots) return ProcessError(request, "history_busy", "Two native history reads are already running; retry shortly.");
 				token = ProcessService().GenerateUuid();
 				if (!native_history::SafeId(token)) return ProcessError(request, "snapshot_failed", "Could not allocate a native history snapshot.");
 				snapshot = std::make_shared<native_history::Snapshot>();
@@ -1817,7 +1817,7 @@ namespace uam::remote
 				{
 					const std::string& epoch = request["desktopEpoch"].get_ref<const std::string&>();
 					if (epoch == state.desktop_epoch && state.desktop_fenced)
-						return ProcessError(request, "channel_fenced", "This desktop connection was replaced. Reconnect with a new tool server.");
+						return ProcessError(request, "channel_fenced", "This desktop connection was replaced; reconnect with a new tool server.");
 					if (epoch != state.desktop_epoch)
 					{
 						// A new desktop tool server never receives what was sent to the previous one, and a reply the
@@ -1863,7 +1863,7 @@ namespace uam::remote
 			// The desktop reads remoteToDesktop and writes desktopToRemote; the shim does the opposite.
 			const bool desktop_request = (direction == "desktopToRemote") == (type == "channel.write");
 			if (desktop_request && found->second.desktop_fenced)
-				return ProcessError(request, "channel_fenced", "This desktop connection was replaced. Reconnect with a new tool server.");
+				return ProcessError(request, "channel_fenced", "This desktop connection was replaced; reconnect with a new tool server.");
 			if (desktop_request) found->second.desktop_seen_ms = LeaseClockMilliseconds();
 			const auto with_desktop = [&](nlohmann::json result)
 			{

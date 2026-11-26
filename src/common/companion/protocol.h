@@ -255,7 +255,7 @@ namespace uam::companion
 		if (operation == "discardUnsent") return {}; // Existing transcript index/digest guard owns this operation.
 		const auto session = chat.find("acpSession");
 		if (session == chat.end() || !session->is_object() || !session->contains("queuedPrompts") || !(*session)["queuedPrompts"].is_array())
-			return {409, "Queued prompt is no longer visible. Refresh the queue."};
+			return {409, "The queued prompt is no longer visible; refresh the queue."};
 		if (operation == "steer" && session->value("queueHeld", false)) return {409, "Resume the held queue before steering."};
 		const auto& queue = (*session)["queuedPrompts"];
 		const auto current_identity = [&](const nlohmann::json& identity)
@@ -271,14 +271,14 @@ namespace uam::companion
 		};
 		if (operation == "reorder")
 		{
-			if (payload["expected"].size() != queue.size()) return {409, "Queue changed. Refresh before reordering."};
+			if (payload["expected"].size() != queue.size()) return {409, "The queue changed; refresh it before reordering."};
 			for (std::size_t index = 0; index < queue.size(); ++index)
 				if (!current_identity(payload["expected"][index]) || queue[index]["id"] != payload["expected"][index]["id"])
-					return {409, "Queue changed. Refresh before reordering."};
+					return {409, "The queue changed; refresh it before reordering."};
 			return {};
 		}
 		const auto identity = operation == "edit" ? nlohmann::json{{"id", payload["promptId"]}, {"revision", payload["expectedRevision"]}} : payload["expected"];
-		return current_identity(identity) ? PolicyResult{} : PolicyResult{409, "Queued prompt changed or left the visible queue. Refresh the queue."};
+		return current_identity(identity) ? PolicyResult{} : PolicyResult{409, "The queued prompt changed or left the queue; refresh the queue."};
 	}
 
 	inline PolicyResult ValidateTransferPayload(std::string_view action, const nlohmann::json& payload, bool transferred = false)

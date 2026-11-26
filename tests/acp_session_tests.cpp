@@ -978,11 +978,11 @@ UAM_TEST(CliProviderInstallBlocksMatchingRuntimeStarts)
 	session.running = true;
 	std::string error;
 	UAM_ASSERT(!uam::acp_detail::StartAcpProcessForChat(app, session, chat, &error));
-	UAM_ASSERT_EQ(error, std::string("This provider is being updated on this machine. Retry when the update finishes."));
+	UAM_ASSERT_EQ(error, std::string("This provider is being updated on this machine; retry when it finishes."));
 	UAM_ASSERT(session.running);
 	error.clear();
 	UAM_ASSERT(!uam::PrepareAcpSessionForCliTerminalLaunch(app, chat, &error));
-	UAM_ASSERT_EQ(error, std::string("This provider is being updated on this machine. Retry when the update finishes."));
+	UAM_ASSERT_EQ(error, std::string("This provider is being updated on this machine; retry when it finishes."));
 	app.chats.push_back(chat);
 	std::unique_ptr<uam::CliTerminalState> terminal = std::make_unique<uam::CliTerminalState>();
 	terminal->frontend_chat_id = chat.id;
@@ -1404,7 +1404,7 @@ UAM_TEST(StoppingDisconnectedRemoteTurnDoesNotClaimSuccessOrClearRecovery)
 	UAM_ASSERT(!uam::CancelAcpTurn(app, chat.id, &error));
 	UAM_ASSERT(app.acp_sessions.front()->remote_stop_unconfirmed);
 	UAM_ASSERT(app.chats.front().remote_stop_cleanup_pending);
-	UAM_ASSERT(error.find("Reconnecting to confirm") != std::string::npos);
+	UAM_ASSERT(error.find("reconnecting to confirm") != std::string::npos);
 	UAM_ASSERT(!uam::StopAcpSession(app, chat.id));
 	UAM_ASSERT(app.chats.front().remote_turn_reconnect_pending);
 	UAM_ASSERT(app.acp_sessions.front()->reconnect_pending);
@@ -2307,7 +2307,7 @@ UAM_TEST(AcpTimeoutStoppedTurnRestartsItsOutputLessDeliveredPrompt)
 		session->provider_id = chat.provider_id;
 		session->session_id = chat.native_session_id;
 		session->lifecycle_state = "error";
-		session->last_error = "Codex turn timed out after 60 seconds without provider activity. The delivered prompt was not replayed.";
+		session->last_error = "Codex turn timed out after 60 seconds without provider activity; the delivered prompt was not replayed.";
 		if (scenario != "plain-stop") session->timeout_stop_error = session->last_error;
 		if (scenario == "stopping") session->local_stop_pending = true;
 		app.acp_sessions.push_back(std::move(session));
@@ -2929,7 +2929,7 @@ UAM_TEST(AcpPromptMarkerSaveFailurePreservesRetryAffordanceBeforeWrite)
 	UAM_ASSERT(app.chats.front().messages.front().interrupted);
 	UAM_ASSERT(app.chats.front().messages.front().acp_prompt_not_sent);
 	UAM_ASSERT_EQ(raw_session->last_error,
-	              std::string("Prompt is waiting for its delivery intent to be saved."));
+	              std::string("The prompt is waiting to be saved before it is sent."));
 	UAM_ASSERT_EQ(raw_session->prompt_request_id, 0);
 	UAM_ASSERT(raw_session->pending_request_methods.empty());
 	PlatformServicesFactory::Instance().process_service.StopStdioProcess(*raw_session, true);
@@ -8075,7 +8075,7 @@ UAM_TEST(ProviderModelDiscoveryCompatibilityBlockRetriesOnceWithoutAStartupLoop)
 	UAM_ASSERT(uam::RetryCompatibilityBlockedAcpModelDiscoveries(app));
 	UAM_ASSERT(app.pending_model_discovery_retries.empty());
 	UAM_ASSERT(!app.provider_model_catalog->IsDiscoveryPending(uam::provider_ids::kOpenCodeCli, workspace));
-	UAM_ASSERT(app.provider_model_catalog->GetProviderRefreshError(uam::provider_ids::kOpenCodeCli, workspace).find("Structured provider not found") != std::string::npos);
+	UAM_ASSERT(app.provider_model_catalog->GetProviderRefreshError(uam::provider_ids::kOpenCodeCli, workspace).find("This provider isn't available for structured chat.") != std::string::npos);
 	UAM_ASSERT(!uam::RetryCompatibilityBlockedAcpModelDiscoveries(app));
 	// The pre-launch failure did not consume the stale-discovery attempt forever.
 	UAM_ASSERT(app.provider_model_catalog->BeginDiscoveryIfStale(uam::provider_ids::kOpenCodeCli, workspace));
@@ -10445,7 +10445,7 @@ UAM_TEST(AcpPermissionFloodStopsTheProviderAtTheBoundedQueueLimit)
 	UAM_ASSERT(!raw_session->processing);
 	UAM_ASSERT(raw_session->queued_permissions.empty());
 	UAM_ASSERT(raw_session->queued_user_prompts.empty());
-	UAM_ASSERT(raw_session->last_error.find("64-request") != std::string::npos);
+	UAM_ASSERT(raw_session->last_error.find("too many permission requests") != std::string::npos);
 	UAM_ASSERT(raw_session->last_error.find("resend") != std::string::npos);
 	UAM_ASSERT_EQ(raw_session->tool_calls.front().status, std::string("failed"));
 	const std::vector<ChatSession> reloaded = ChatRepository::LoadLocalChats(temp.root);
@@ -11209,7 +11209,7 @@ UAM_TEST(AcpQueuedPromptTextCannotGrowWithoutBound)
 	UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, one_mib, {}, {}, false, &error));
 	UAM_ASSERT(uam::SendAcpPrompt(app, chat.id, one_mib, {}, {}, false, &error));
 	UAM_ASSERT(!uam::SendAcpPrompt(app, chat.id, "p", {}, {}, false, &error));
-	UAM_ASSERT(error.find("session limit") != std::string::npos);
+	UAM_ASSERT(error.find("Too many prompts are queued") != std::string::npos);
 	UAM_ASSERT_EQ(app.acp_sessions.front()->queued_user_prompts.size(), static_cast<std::size_t>(2));
 	UAM_ASSERT_EQ(app.acp_sessions.front()->queued_user_prompts.front().text.size(), one_mib.size());
 }
@@ -11856,7 +11856,7 @@ UAM_TEST(AcpCancelTurnOnDisconnectedSshTurnHoldsQueueUntilStopIsConfirmed)
 
 			std::string error;
 			UAM_ASSERT(!uam::CancelAcpTurn(app, chat.id, &error, true, true, true));
-			UAM_ASSERT_EQ(error, std::string("The remote turn is disconnected. Reconnecting to confirm it stops."));
+			UAM_ASSERT_EQ(error, std::string("The remote turn is disconnected; UAM is reconnecting to confirm it stops."));
 			uam::AcpSessionState* session = uam::FindAcpSessionForChat(app, chat.id);
 			UAM_ASSERT(session != nullptr);
 			UAM_ASSERT(session->remote_stop_unconfirmed);
@@ -11871,7 +11871,7 @@ UAM_TEST(AcpCancelTurnOnDisconnectedSshTurnHoldsQueueUntilStopIsConfirmed)
 			{
 				const std::vector<std::pair<std::string, int>> expected = {{"Remote queued one", 1}, {"Remote queued two", 1}};
 				UAM_ASSERT(!uam::ResumeQueuedAcpPrompts(app, chat.id, expected, &error));
-				UAM_ASSERT_EQ(error, std::string("UAM is stopping the previous process on this host. Resume these messages once the host is reachable and that has finished."));
+				UAM_ASSERT_EQ(error, std::string("Resume these messages after UAM stops the previous process on this host."));
 				UAM_ASSERT(session->queue_held && app.chats.front().acp_queue_held);
 				UAM_ASSERT_EQ(session->queued_user_prompts.size(), std::size_t{2});
 			}
@@ -12999,7 +12999,7 @@ UAM_TEST(AcpOptInRestartRecoveryBlocksMissingTurnWithoutReplayingAndRetainsGoal)
 		(void)uam::PollAllAcpSessions(app);
 		std::this_thread::sleep_for(std::chrono::milliseconds(10));
 	}
-	UAM_ASSERT(session->last_error.find("exact provider turn is gone") != std::string::npos);
+	UAM_ASSERT(session->last_error.find("The runner lost this turn on restart") != std::string::npos);
 	UAM_ASSERT_EQ(app.chats.front().remote_recovery_state, std::string("blocked"));
 	UAM_ASSERT(!session->reconnect_pending);
 	const Goal* retained = uam::GoalService::FindGoalById(app, chat.id, goal_id);
@@ -13174,18 +13174,20 @@ UAM_TEST(AcpConfirmedRemoteConfigurationFailurePreservesCauseWithoutReattach)
 		owned_session->turn_user_message_index = 0;
 		owned_session->turn_first_user_message_index = 0;
 		uam::AcpSessionState* session = owned_session.get();
+		// Older runners print the previous two-sentence text; UAM still recognizes it and shows the current one line.
+		const std::string legacy_stderr = "Codex central instructions exceed the OS launch limit. Move reference material into skills.";
 		const std::string expected_error = legacy
-		    ? "Codex central instructions exceed the OS launch limit. Move reference material into skills."
+		    ? "Codex central instructions are too long to launch; move reference material into skills."
 		    : rejection == "workspace" ? "Central resource folder does not belong to this workspace."
 		    : rejection == "apply" ? "Central resource manifest is invalid."
 		    : "Update the SSH helper before using central provider configuration.";
 		const int expected_exit = legacy ? 70 : 71;
 #if defined(_WIN32)
 		const std::vector<std::string> argv = {"cmd.exe", "/d", "/s", "/c",
-		    "echo " + expected_error + " 1>&2" + (legacy ? "" : " & echo UAM_REMOTE_STARTUP_FAILURE never-launched-authority configuration 1>&2") + " & exit /b " + std::to_string(expected_exit)};
+		    "echo " + (legacy ? legacy_stderr : expected_error) + " 1>&2" + (legacy ? "" : " & echo UAM_REMOTE_STARTUP_FAILURE never-launched-authority configuration 1>&2") + " & exit /b " + std::to_string(expected_exit)};
 #else
 		const std::vector<std::string> argv = {"/bin/sh", "-c",
-		    "printf '" + expected_error + "\\n" + (legacy ? "" : "UAM_REMOTE_STARTUP_FAILURE never-launched-authority configuration\\n") + "' >&2; exit " + std::to_string(expected_exit)};
+		    "printf '" + (legacy ? legacy_stderr : expected_error) + "\\n" + (legacy ? "" : "UAM_REMOTE_STARTUP_FAILURE never-launched-authority configuration\\n") + "' >&2; exit " + std::to_string(expected_exit)};
 #endif
 		std::string error;
 		UAM_ASSERT(PlatformServicesFactory::Instance().process_service.StartStdioProcess(*session, temp.root, argv, &error));
@@ -14343,7 +14345,7 @@ UAM_TEST(AcpLegacyRemoteHelperCannotSilentlyResumeAnActiveTurn)
 		std::string error;
 		UAM_ASSERT(!uam::acp_detail::StartAcpProcessForChat(
 		    app, session, app.chats.front(), &error));
-		UAM_ASSERT(uam::strings::Contains(error, "Update the helper"));
+		UAM_ASSERT(uam::strings::Contains(error, "Update the SSH helper"));
 		UAM_ASSERT_EQ(app.chats.front().remote_delivered_stdout_cursor,
 		              static_cast<std::uintmax_t>(123));
 		UAM_ASSERT(app.chats.front().remote_turn_reconnect_pending);
@@ -16331,7 +16333,7 @@ UAM_TEST(SendIsRefusedDuringRetirementEvenWhileTheBaselineIsPending)
 	UAM_ASSERT(uam::PrepareChatRepositoryBaseline(fixture.app, chat, &error) == uam::ChatBaselineReadiness::Pending);
 	error.clear();
 	UAM_ASSERT(!uam::SendAcpPrompt(fixture.app, chat.id, "Too early.", &error));
-	UAM_ASSERT(error.find("stopping the previous process") != std::string::npos);
+	UAM_ASSERT(error.find("UAM stops the previous process") != std::string::npos);
 	// No receipt to turn into an interrupted row later, so a further switch needs no warning either.
 	UAM_ASSERT(chat.acp_queued_prompts.empty());
 	const uam::AcpSessionState* retiring = uam::FindAcpSessionForChat(fixture.app, chat.id);
@@ -21210,7 +21212,7 @@ UAM_TEST(AcpRevokedOwnerFailedWriterReportsOnceAcrossFivePollTicks)
 	UAM_ASSERT_EQ(HostBlockedTickReasonCount(session, "async_write_failed"), std::size_t{1});
 	UAM_ASSERT(changed.front());
 	UAM_ASSERT(std::none_of(changed.begin() + 1, changed.end(), [](bool value) { return value; }));
-	UAM_ASSERT(session.last_error.find(failure) != std::string::npos);
+	UAM_ASSERT(session.last_error == "The prompt could not be sent to the provider.");
 	UAM_ASSERT(session.running && session.processing && session.stdin_writer == failed_writer);
 	UAM_ASSERT_EQ(session.last_process_id, process_id);
 	UAM_ASSERT_EQ(uam::acp_detail::AcpProcessHandleLabel(session), process_id);
@@ -21722,7 +21724,9 @@ UAM_TEST(AcpRefusedHeldStopKeepsFailedTransportPausedUntilAcceptedStop)
 	UAM_ASSERT(std::none_of(changed.begin(), changed.end(), [](bool value) { return value; }));
 	UAM_ASSERT(fixture.app.pending_chat_save_at_by_chat_id == pending_after_refusal);
 	UAM_ASSERT(ChatRepository::ChatStorageRevision(good_root, chat.id) == revision);
-	UAM_ASSERT(session.last_error.find(failure) != std::string::npos);
+	// The shown line is one plain sentence; the writer's failure stays in the async_write_failed diagnostic.
+	UAM_ASSERT(std::ranges::any_of(session.diagnostics, [&failure](const uam::AcpDiagnosticEntryState& entry)
+	    { return entry.reason == "async_write_failed" && entry.message.find(failure) != std::string::npos; }));
 	UAM_ASSERT_EQ(session.next_request_id, request_id_after_refusal);
 	UAM_ASSERT_EQ(session.turn_serial, 9);
 	UAM_ASSERT_EQ(session.prompt_request_id, 22);
@@ -21754,7 +21758,7 @@ UAM_TEST(AcpRefusedHeldStopKeepsFailedTransportPausedUntilAcceptedStop)
 		std::string send_error;
 		UAM_ASSERT(!uam::SendAcpPrompt(fixture.app, chat.id, "Private rejected follow-up", &send_error));
 		UAM_ASSERT_EQ(send_error, empty_display
-		    ? std::string("The message was not sent because provider connection ownership could not be verified.")
+		    ? std::string("The message was not sent because UAM could not verify the provider connection.")
 		    : displayed_failure);
 		UAM_ASSERT_EQ(session.last_error, empty_display ? std::string{} : displayed_failure);
 		UAM_ASSERT_EQ(session.transport_ownership_error, latched_ownership);
@@ -24744,7 +24748,7 @@ UAM_TEST(AcpPendingWorkspaceDiagnosticSeparatesSavedBytesFromPolicyOwnership)
 	UAM_ASSERT_EQ(fixture.Session().queued_user_prompts, (std::deque<uam::AcpQueuedUserPromptState>{captured}));
 	UAM_ASSERT_EQ(fixture.Chat().acp_queued_prompts, (std::vector<uam::AcpQueuedUserPromptState>{captured}));
 	UAM_ASSERT_EQ(fixture.Chat().messages, fixture.rows_before);
-	UAM_ASSERT_EQ(fixture.Session().last_error, std::string("Direct input is held because its owned admission was not confirmed."));
+	UAM_ASSERT_EQ(fixture.Session().last_error, std::string("This message is held because UAM could not confirm it was accepted."));
 	UAM_ASSERT_EQ(log.HeldLines(), (std::vector<std::string>{
 	    "[acp-direct-admission] event=held save_callback_saved=1 admission_owned_evaluated=1 admission_owned=0 completion_owned_evaluated=0 completion_owned=0 failure_phase=admission failing_clause=policy"}));
 	for (int tick = 0; tick < 16; ++tick)
