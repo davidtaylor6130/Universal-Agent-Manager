@@ -1,5 +1,6 @@
 #pragma once
 
+#include "app/svn_failure.h"
 #include "common/state/app_state.h"
 
 #include <filesystem>
@@ -52,6 +53,11 @@ namespace uam
 		std::string error;
 		/// The chat comparison has no usable baseline: Retry cannot help, unlike any other read failure in `error`.
 		bool baseline_unavailable = false;
+		/// SVN: unversioned files svn left beside a conflict (`.mine`, `.rN`, `.prej`), in status spelling. They are left
+		/// out of `changed_files` and a commit refuses them.
+		std::vector<std::string> conflict_leftovers;
+		/// SVN: conflicts exist but their leftover files could not be read, so a commit refuses every unversioned file.
+		bool conflict_leftovers_unknown = false;
 		/// Set when the workspace is a UAM local snapshot: a hidden Git copy of a plain folder (`folder`) or an SVN working
 		/// copy (`svn`). Commits here stay in the copy; SVN history and update run against `snapshot_source_directory`.
 		std::string snapshot_source_kind;
@@ -158,6 +164,15 @@ namespace uam
 		bool conflicts = false;
 		std::string revision;
 		std::string output;
+		/// The update finished but something it touches did not, such as an external that could not be updated.
+		std::vector<std::string> warnings;
+		std::string error;
+	};
+
+	struct VcsResolveResult
+	{
+		bool ok = false;
+		std::string output;
 		std::string error;
 	};
 
@@ -167,15 +182,11 @@ namespace uam
 	std::string VcsTypeToString(VcsType type);
 	VcsType VcsTypeFromString(std::string_view value);
 
-	/// <summary>Runs `svn args...` as argv (no shell) in `cwd` with a UTF-8 locale; a missing client gets a clear error.</summary>
+	/// <summary>Runs `svn args...` as argv (no shell) in `cwd` with uam::vcs::SvnEnvironment (a UTF-8 locale, and batch-mode ssh
+	/// unless SVN_SSH is set); a missing client gets a clear error.</summary>
 	ProcessExecutionResult RunSvn(const std::filesystem::path& cwd, const std::vector<std::string>& args, int timeout_ms = 120000, std::stop_token stop = {});
-	/// <summary>Bounded failure detail: the missing-client notice or svn's first "E<code>: ..." or "W<code>: ..." line; empty when neither exists.</summary>
-	std::string SvnFailureSummary(const ProcessExecutionResult& result);
-	/// <summary>Strict `svn status` text parser. Rows need seven valid status columns and a separator; headers and
-	/// tree-conflict details are skipped, as are rows that report only a lock. Codes keep their column positions (right-trimmed). Absolute paths under
-	/// `workspace` become workspace-relative.</summary>
-	std::vector<VcsChangedFile> ParseSvnStatusOutput(std::string_view output, std::string_view workspace = {});
-
+	/// <summary>Runs `svnversion args...` the same way; it reports the working copy's revision range (`3:5` when mixed).</summary>
+	ProcessExecutionResult RunSvnVersion(const std::filesystem::path& cwd, const std::vector<std::string>& args, int timeout_ms = 120000, std::stop_token stop = {});
 	class VcsCommitService
 	{
 	  public:
@@ -189,6 +200,9 @@ namespace uam
 		std::string RevisionDiff(const AppState& app, const ChatSession& chat, VcsType type, const std::string& revision, const std::string& path, std::string* error_out = nullptr, std::stop_token stop = {}) const;
 		/// <summary>Updates the working copy to the newest revision, postponing conflicts; never commits or discards local changes.</summary>
 		VcsUpdateResult Update(const AppState& app, const ChatSession& chat, VcsType type, std::stop_token stop = {}) const;
+		/// <summary>Marks one conflicted workspace-relative path resolved: `working` keeps the file as it is now, `theirs-full`
+		/// takes the repository's version and `mine-full` keeps the local version, each for the whole file.</summary>
+		VcsResolveResult Resolve(const AppState& app, const ChatSession& chat, VcsType type, const std::string& path, const std::string& accept, std::stop_token stop = {}) const;
 		/// <summary>Compares the workspace's branch or tag with the path it was copied from; see VcsOriginRequest.</summary>
 		VcsOriginReply Origin(const AppState& app, const ChatSession& chat, VcsType type, const VcsOriginRequest& request, std::stop_token stop = {}) const;
 		VcsCommitMessageSuggestion GenerateMessage(const AppState& app, const ChatSession& chat, VcsType type, const std::vector<std::string>& files) const;

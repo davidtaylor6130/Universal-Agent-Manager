@@ -294,7 +294,7 @@ namespace uam::provider_native_context
 			return false;
 		}
 		const nlohmann::json owner{{"owner", uam::paths::Utf8PathString(directory.filename())},
-		    {"files", {"conversation.md", "GEMINI.md", ".github/instructions/handoff.instructions.md"}}};
+		    {"files", {"conversation.md", "GEMINI.md", "AGENTS.md", ".github/instructions/handoff.instructions.md"}}};
 		std::filesystem::path temporary;
 		if (!WritePrivateSettings(directory, owner.dump(), temporary))
 		{

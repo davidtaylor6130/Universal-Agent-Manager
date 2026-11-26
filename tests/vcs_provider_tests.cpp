@@ -35,12 +35,6 @@ namespace
 		return uam::strings::Trim(PlatformServicesFactory::Instance().process_service.ExecuteCommand("command -v " + name).output);
 	}
 
-	bool SvnToolsAvailable()
-	{
-		if (!ResolvedTool("svn").empty() && !ResolvedTool("svnadmin").empty()) return true;
-		std::fprintf(stderr, "SKIP real-svn case: svn or svnadmin is not installed\n");
-		return false;
-	}
 #endif
 
 #if !defined(_WIN32) && UAM_ENABLE_SSH
@@ -395,7 +389,7 @@ UAM_TEST(RemoteGitStatusUsesTheWorkspaceWhenTheRootIsReportedEmpty)
 #if !defined(_WIN32)
 UAM_TEST(SvnBranchListCheckAndSwitchGoThroughTheSvnProvider)
 {
-	if (!SvnToolsAvailable()) return;
+	if (!RealSvnAvailable()) return;
 	TempDir temp("uam-vcs-svn-branches");
 	// SVN selection refuses linked ancestors (such as macOS /var), so work under the resolved path.
 	const fs::path root = fs::canonical(temp.root);

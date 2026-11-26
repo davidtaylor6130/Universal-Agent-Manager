@@ -17,7 +17,7 @@ Remote memory publication and context policy are separate from local memory stor
 - Routing and host configuration: `src/app/execution_routing_service.*`, `src/app/execution_routing_integration.*`, `src/common/config/execution_host_config.h`.
 - Remote protocol/client/runner: `src/remote/runner_protocol.*`, `src/remote/runner_client.*`, `src/remote/runner_state.*`, `src/remote/runner_main.cpp`.
 - Frontend routing: `UI-V2/src/store/slices/executionRoutingSlice.ts`, `UI-V2/src/components/modals/ExecutionRoutingDialog.tsx`, `UI-V2/src/components/settings/ExecutionRoutingSettings.tsx` (folder rows from `routingFolderRows` in `UI-V2/src/types/executionRouting.ts`), `UI-V2/src/components/settings/MapFolderChooser.tsx`.
-- Focused checks: `tests/execution_routing_tests.cpp`, `tests/remote_runner_tests.cpp`, `tests/remote_delivery_exit_tests.cpp`, `tests/remote_context_policy_tests.cpp`, `tests/multi_host_history_tests.cpp`.
+- Focused checks: `tests/execution_routing_tests.cpp`, `tests/child_process_priority_tests.cpp`, `tests/remote_runner_tests.cpp`, `tests/remote_delivery_exit_tests.cpp`, `tests/remote_context_policy_tests.cpp`, `tests/multi_host_history_tests.cpp`.
 
 Spool caps and process timeouts are defined by the runner and operation; this page sets no additional budget. Preserve bounded buffering and report the actual remote exit result.
 
@@ -28,6 +28,14 @@ Hidden ephemeral model-discovery processes use the runner's token-owned 60-secon
 Repository matching reads VCS identity on background workers for saved workspace folders. Git matches normalized remote identity and relative workspace location; SVN matches the normalized repository root URL and checkout path. Automatic matching requires exactly one destination on a host; ambiguous matches need a manual mapping. Configured manual mappings remain available when discovery cannot establish a match. Inventory snapshots belong to the data root, folders and host connection identities, expire after 30 seconds, and are discarded when those inputs change.
 
 An automatic assignment is rechecked against fresh source and destination identity before launch. The check belongs to the chat incarnation and assigned connection; a changed or failed match blocks launch rather than silently using another repository. A successful launch check is reusable for two seconds, with at most four concurrent checks.
+
+## Admission queue
+
+`ExecutionRoutingService::Admit` keeps a ticket for every automatic chat that waits for capacity, with the computers it can use (an assigned chat's own; otherwise each ready, confirmed computer with a mapping for its workspace). Before placing a request it gives each earlier, still-asking waiter a slot on the least occupied computer it can use, earliest ticket first and by the same tie-break as placement, and admits the request only into what remains. The caller passes `now_seconds`: a waiter silent for `kQueueStaleSeconds` (5) holds nothing, and one silent for `kQueueForgetSeconds` (60) loses its ticket. `AdmitExecutionRouting` retries a waiting chat at most once a second, and `PollExecutionRouting` withdraws the tickets of deleted chats. Explicit launches and owned-work recovery bypass the queue. Managed agent runs additionally hold their transcript's ticket only while the agent scheduler offers them a running slot, so agents queued behind the four running agents do not hold computers.
+
+## Child process priority
+
+`uam::platform::ScopedChildProcessClass` (`src/common/platform/child_process_priority.h`) sets the class a thread's spawns use. macOS clamps agent and background children to utility QoS with `posix_spawnattr_set_qos_class_np` and sets nice 10 while the child is still suspended; Windows adds `BELOW_NORMAL_PRIORITY_CLASS` to the creation flags; the Linux helper sets nice 10 in the forked child. `acp_detail::ProviderProcessClass` classifies a provider launch and `ChatWorkProcessClass` (`src/common/chat/chat_process_class.h`) a chat's own work, such as its repository launch check. Remote launches send the class as the optional `processClass` field of `process.start` and of the proxy spec; a user turn sends nothing, and an older helper ignores the field.
 
 ## Cached health and connection attempts
 

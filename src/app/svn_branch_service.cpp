@@ -177,7 +177,21 @@ namespace uam
 			{
 				const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(m_deadline - std::chrono::steady_clock::now()).count();
 				output.clear();
-				return left > 0 && m_runner(args, static_cast<int>(std::min<long long>(left, 10000)), output) && output.size() <= kOutputLimit;
+				m_failure.clear();
+				if (left <= 0) { m_failure = "SVN did not answer in time. Check the connection to the repository, then retry."; return false; }
+				return m_runner(args, static_cast<int>(std::min<long long>(left, 10000)), output, m_failure) && output.size() <= kOutputLimit;
+			}
+			/// Why the latest command failed, when svn said; empty after a success or a refusal based on its output.
+			const std::string& Failure() const { return m_failure; }
+			/// The refusal, or, when the command itself failed, `failed` followed by svn's reason.
+			std::string Explain(std::string_view refused, std::string_view failed = {}) const
+			{
+				if (m_failure.empty()) return std::string(refused);
+				std::string message(failed.empty() ? refused : failed);
+				message += ' ';
+				message += m_failure;
+				if (message.back() != '.') message += '.';
+				return message;
 			}
 			bool Info(const std::string& field, const std::string& target, std::string& output, const std::string& revision = {})
 			{
@@ -222,13 +236,14 @@ namespace uam
 			static bool Numeric(const std::string& value) { return !value.empty() && value.size() <= 20 && std::all_of(value.begin(), value.end(), [](unsigned char c) { return c >= '0' && c <= '9'; }); }
 		  private:
 			const SvnBranchRunner& m_runner;
+			std::string m_failure;
 			std::chrono::steady_clock::time_point m_deadline;
 		};
 		SvnBranchResult Discover(const SvnBranchScope& scope, const std::string& parent, Probe& probe)
 		{
 			SvnBranchResult result;
 			if (!VerifyScope(scope, result.error)) return result;
-			if (!probe.Read(scope, result.context)) { result.error = "Could not verify the full SVN working-copy root."; return result; }
+			if (!probe.Read(scope, result.context)) { result.error = probe.Explain("Could not verify the full SVN working-copy root."); return result; }
 			if (parent.empty()) { result.ok = true; return result; }
 			if (!RelativePath(parent)) { result.error = "Enter an explicit repository folder such as ^/project/lines, without dot segments."; return result; }
 			result.context.parent = parent;
@@ -237,7 +252,7 @@ namespace uam
 			if (!probe.Info("repos-uuid", url, uuid) || uuid != result.context.uuid || !probe.Info("kind", url, kind) || kind != "dir" ||
 			    !probe.Info("revision", url, result.context.repository_revision, "HEAD") || !Probe::Numeric(result.context.repository_revision) ||
 			    !probe.Run({"list", "--non-interactive", "--xml", "--depth", "immediates", "-r", result.context.repository_revision, "--", url + "@" + result.context.repository_revision}, xml))
-			{ result.error = "Could not discover directories in that SVN repository folder."; return result; }
+			{ result.error = probe.Explain("Could not discover directories in that SVN repository folder."); return result; }
 			std::vector<std::string> names;
 			if (!ParseDirectories(xml, names)) { result.error = "SVN directory discovery exceeded its supported format or 256-entry limit."; return result; }
 			for (const auto& name : names)
@@ -264,27 +279,32 @@ namespace uam
 		if (expected.parent.empty() || result.context != expected) { result.error = "The SVN working copy or repository changed. Discover the folders again."; return result; }
 		const auto choice = std::find_if(result.branches.begin(), result.branches.end(), [&](const auto& item) { return item.path == path; });
 		if (choice == result.branches.end()) { result.error = "Choose a directory from the current SVN discovery."; return result; }
-		if (!probe.Clean(result.context)) { result.error = "Resolve changes, ignored/untracked paths, conflicts, externals and switched children before switching SVN folders."; return result; }
+		if (!probe.Clean(result.context)) { result.error = probe.Explain("Resolve changes, ignored/untracked paths, conflicts, externals and switched children before switching SVN folders.", "Could not read the working copy's status."); return result; }
 		if (choice->current) { result.ok = true; return result; }
 		const auto target = result.context.repository + UrlPath(path.substr(1));
 		std::string uuid, kind, output;
 		if (!probe.NoExternals(expected.directory) || !probe.NoExternals(target, expected.repository_revision))
-		{ result.error = "Resolve SVN external definitions before switching folders."; return result; }
+		{ result.error = probe.Explain("Resolve SVN external definitions before switching folders.", "Could not check SVN external definitions."); return result; }
 		if (!probe.Info("repos-uuid", target, uuid, expected.repository_revision) || uuid != expected.uuid ||
 		    !probe.Info("kind", target, kind, expected.repository_revision) || kind != "dir")
-		{ result.error = "The selected SVN folder no longer belongs to this repository."; return result; }
+		{ result.error = probe.Explain("The selected SVN folder no longer belongs to this repository.", "Could not read the selected SVN folder."); return result; }
 		SvnBranchContext current;
 		if (!VerifyScope(scope, result.error) || !probe.Read(scope, current) || current.url != expected.url || current.revision != expected.revision ||
 		    current.uuid != expected.uuid || current.repository != expected.repository || !probe.Clean(current))
-		{ result.error = "The working copy changed before SVN switching. Discover the folders again."; return result; }
+		{ result.error = probe.Explain("The working copy changed before SVN switching. Discover the folders again.", "Could not recheck the working copy before SVN switching."); return result; }
 		// Deliberate switch only: no checkout, --force, --ignore-ancestry, cleanup or rollback.
 		// switch keeps a destination's "@" suffix as part of the path, so a trailing "/" stops SVN's peg-revision split instead:
 		// on Windows "copy @rev" otherwise loses the space before "@" and names a different folder.
 		if (!probe.Run({"switch", "--non-interactive", "--ignore-externals", "--accept", "postpone", "--depth", "infinity", "-r", expected.repository_revision, "--", target + "@" + expected.repository_revision, expected.directory + "/"}, output))
-		{ result.error = "SVN did not confirm switching. Inspect the working copy before retrying; no automatic rollback was attempted."; return result; }
+		{
+			result.error = "SVN did not confirm switching.";
+			if (!probe.Failure().empty()) result.error += " " + probe.Failure() + (probe.Failure().back() == '.' ? "" : ".");
+			result.error += " Inspect the working copy before retrying; no automatic rollback was attempted.";
+			return result;
+		}
 		if (!probe.Read(scope, current) || current.url != target || current.uuid != expected.uuid || current.repository != expected.repository ||
 		    current.revision != expected.repository_revision || !probe.Clean(current))
-		{ result.error = "SVN switching needs inspection: its final URL, revision or clean state was not confirmed."; return result; }
+		{ result.error = probe.Explain("SVN switching needs inspection: its final URL, revision or clean state was not confirmed."); return result; }
 		result.context = current;
 		result.ok = true;
 		result.error.clear();

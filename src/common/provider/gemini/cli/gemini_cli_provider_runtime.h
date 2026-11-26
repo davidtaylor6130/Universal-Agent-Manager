@@ -2,6 +2,7 @@
 
 #include "common/provider/provider_runtime.h"
 #include "common/provider/gemini_options.h"
+#include "common/utils/string_utils.h"
 
 /// <summary>UAM admin-tier Gemini Plan policy installed beside the executable resources.</summary>
 std::filesystem::path GeminiPlanCeilingPolicyPath();
@@ -13,6 +14,16 @@ class GeminiCliProviderRuntime final : public IProviderRuntime
 	bool DeliversHostInstructionsInFirstPrompt() const override { return true; }
 	const char* AcpProtocolKind() const override { return "gemini-acp"; }
 	const char* GetAcpDisplayName() const override { return "Gemini ACP"; }
+	std::string AccountRefusalNotice(uam::account_refusal::Kind kind, std::string_view provider_title, std::string_view provider_message) const override
+	{
+		if (kind == uam::account_refusal::Kind::UnsupportedClient)
+			// Google answers Gemini Code Assist for individuals with a migration notice instead of a model list.
+			return uam::strings::ContainsCaseInsensitive(provider_message, "for individuals")
+			    ? "Google no longer supports this Gemini client for personal accounts."
+			    : "Google no longer supports this Gemini client for the signed-in account.";
+		if (kind == uam::account_refusal::Kind::Entitlement) return "Google says this account is not eligible for Gemini Code Assist.";
+		return uam::account_refusal::GenericNotice(provider_title, kind);
+	}
 	bool IsGenericAcpSession() const override
 	{
 		return true;
@@ -33,6 +44,7 @@ class GeminiCliProviderRuntime final : public IProviderRuntime
 	bool EncodePreparedSavedImageRetry(nlohmann::json&, const nlohmann::json&, std::string&, const std::vector<MessageAttachment>& = {}, const nlohmann::json& = nullptr) const override;
 	const ProviderCliPolicy* CliVersionPolicy() const override;
 	std::vector<std::string> BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings) const override;
+	bool StageInteractiveAgentInstructions(const ExecutionHost& host, std::string_view instructions, std::vector<std::string>& argv, std::string& staged_context, std::string& error) const override;
 	bool StageCliHandoffContext(const ProviderCliHandoffStaging& staging, std::vector<std::string>& argv, std::string& error) const override;
 	MessageRole RoleFromNativeType(const ProviderProfile& profile, std::string_view native_type) const override;
 	std::vector<ChatSession> LoadHistory(const ProviderProfile& profile, const std::filesystem::path& data_root, const std::filesystem::path& native_history_chats_dir, const ProviderRuntimeHistoryLoadOptions& options) const override;

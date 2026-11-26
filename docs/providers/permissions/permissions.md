@@ -42,5 +42,6 @@ Recovery must validate a saved answer against the fresh native request and curre
 - [Accept Edits](auto-accept.md)
 - [AI Review](ai-review.md)
 - [YOLO](yolo.md)
+- [Permission rules](rules.md): the user's allow, ask and deny list, checked before automatic approval and AI review under every level; rules only narrow.
 
 [Permission settings](../../settings/permission-defaults.md) define configuration. [Permission architecture](../../architecture/permissions-notifications.md) and the [provider checklists](../providers.md#provider-checklists) record implementation routes and limitations.
