@@ -191,7 +191,7 @@ namespace uam::structured_attachments
 	{
 		if (!ValidateDeliverySources(attachments, error)) return false;
 		using namespace provider_profile_constants;
-		const bool acp = session.protocol_kind == kProtocolGeminiAcp || session.protocol_kind == kProtocolOpenCodeAcp || session.protocol_kind == kProtocolCopilotAcp;
+		const bool acp = IsStandardAcpProtocol(session.protocol_kind);
 		const bool codex = session.protocol_kind == kProtocolCodexAppServer;
 		const bool copilot = session.protocol_kind == "copilot-sdk";
 		const bool claude = session.protocol_kind == kProtocolClaudeCodeStreamJson;

@@ -22,6 +22,9 @@
 #if UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
 #include "common/provider/antigravity/cli/antigravity_cli_provider_runtime.h"
 #endif
+#if UAM_ENABLE_RUNTIME_CUSTOM_ACP
+#include "common/provider/custom_acp/custom_acp_provider_runtime.h"
+#endif
 
 namespace
 {
@@ -120,6 +123,12 @@ namespace
 		if (normalized == uam::provider_ids::kAntigravityCli)
 		{
 			return &GetAntigravityCliProviderRuntime();
+		}
+#endif
+#if UAM_ENABLE_RUNTIME_CUSTOM_ACP
+		if (normalized == uam::provider_ids::kCustomAcp)
+		{
+			return &GetCustomAcpProviderRuntime();
 		}
 #endif
 		return nullptr;

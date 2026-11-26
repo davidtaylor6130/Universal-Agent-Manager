@@ -14,3 +14,4 @@ declare const __UAM_FEATURE_CLAUDE__: boolean
 declare const __UAM_FEATURE_OPENCODE__: boolean
 declare const __UAM_FEATURE_COPILOT__: boolean
 declare const __UAM_FEATURE_ANTIGRAVITY__: boolean
+declare const __UAM_FEATURE_CUSTOM_ACP__: boolean

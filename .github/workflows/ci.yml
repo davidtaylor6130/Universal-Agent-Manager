@@ -86,6 +86,16 @@ jobs:
           node-version: 20
       - run: node tests/opencode_v2/permission_plugin.test.mjs src/common/provider/opencode/v2/opencode_v2_policy.cpp
 
+  custom-acp:
+    name: Custom ACP agent (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The opt-in agent's configuration checks and a real stdio session with the scripted ACP agent; no app or CEF.
+      - run: cmake -S . -B Builds/custom-acp-tests -DUAM_BUILD_TESTS=ON -DUAM_CUSTOM_ACP_TESTS_ONLY=ON -DUAM_PACKAGE_REMOTE_RUNNERS=OFF -DCMAKE_BUILD_TYPE=Release
+      - run: cmake --build Builds/custom-acp-tests --target uam_custom_acp_agent_tests --parallel 2
+      - run: ctest --test-dir Builds/custom-acp-tests --output-on-failure
+
   frontend:
     name: Frontend
     runs-on: ubuntu-latest

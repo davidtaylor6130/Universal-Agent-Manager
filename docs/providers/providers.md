@@ -54,4 +54,6 @@ Shared [account refusals](models.md#account-refusals) can hold a provider's mode
 - [Copilot](copilot/copilot.md)
 - [Antigravity](antigravity/antigravity.md)
 
+The opt-in [Custom ACP agent](custom-acp/custom-acp.md) is a seventh, best-effort checklist for a user-configured generic ACP agent behind its own build flag. It accounts for every capability like the others, but it is not a release provider and its rows do not change the six providers' scope.
+
 **Full implementation** means the applicable agreements are delivered, including UAM equivalents, with relevant verification and outstanding acceptance honestly reported. A checklist with Partial, Not implemented or Needs verification rows cannot support an unqualified full-implementation claim. Not applicable requires an explicit scope or conditional-capability reason. “Implemented” records a source route, not David's approval. [Status definitions](../documentation-rules.md#agreements-and-implementation) apply throughout.

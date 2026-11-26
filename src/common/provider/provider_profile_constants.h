@@ -21,6 +21,8 @@ namespace uam::provider_profile_constants
 	inline constexpr const char* kProtocolOpenCodeAcp = "opencode-acp";
 	inline constexpr const char* kProtocolCopilotAcp = "copilot-acp";
 	inline constexpr const char* kProtocolCopilotSdk = "copilot-sdk";
+	/// <summary>Standard ACP over stdio, spoken by a user-configured Custom ACP agent (#523).</summary>
+	inline constexpr const char* kProtocolCustomAcp = "custom-acp";
 
 	inline constexpr const char* kHistoryAdapterGeminiCliJson = "gemini-cli-json";
 	inline constexpr const char* kHistoryAdapterLocalJson = "local-json";
@@ -34,6 +36,12 @@ namespace uam::provider_profile_constants
 	{
 		const std::string_view trimmed = uam::strings::TrimAsciiView(protocol);
 		return trimmed.empty() ? std::string(kProtocolGeminiAcp) : std::string(trimmed);
+	}
+
+	/// <summary>True for the ACP wire protocols whose prompt content and attachments follow the shared ACP schema.</summary>
+	inline bool IsStandardAcpProtocol(std::string_view protocol)
+	{
+		return protocol == kProtocolGeminiAcp || protocol == kProtocolOpenCodeAcp || protocol == kProtocolCopilotAcp || protocol == kProtocolCustomAcp;
 	}
 
 	inline bool IsGeminiJsonHistoryAdapter(std::string_view adapter)

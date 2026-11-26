@@ -1,5 +1,5 @@
 import type { Provider } from '../types/provider'
-import { ANTIGRAVITY_ENABLED, CLAUDE_ENABLED, CODEX_ENABLED, COPILOT_ENABLED, GEMINI_ENABLED, OPENCODE_ENABLED } from '../config/buildFeatures'
+import { ANTIGRAVITY_ENABLED, CLAUDE_ENABLED, CODEX_ENABLED, COPILOT_ENABLED, CUSTOM_ACP_ENABLED, GEMINI_ENABLED, OPENCODE_ENABLED } from '../config/buildFeatures'
 
 // ponytail: a provider excluded by its build flag gets an id no chat or setting can carry, so shared
 // comparisons stay valid while the bundler drops the real id, metadata and every branch guarded by its flag.
@@ -10,6 +10,8 @@ export const CLAUDE_CLI_PROVIDER_ID = CLAUDE_ENABLED ? 'claude-cli' : EXCLUDED_P
 export const OPENCODE_CLI_PROVIDER_ID = OPENCODE_ENABLED ? 'opencode-cli' : EXCLUDED_PROVIDER_ID
 export const COPILOT_CLI_PROVIDER_ID = COPILOT_ENABLED ? 'copilot-cli' : EXCLUDED_PROVIDER_ID
 export const ANTIGRAVITY_CLI_PROVIDER_ID = ANTIGRAVITY_ENABLED ? 'antigravity-cli' : EXCLUDED_PROVIDER_ID
+/** The opt-in, best-effort Custom ACP agent (#523); never the default provider. */
+export const CUSTOM_ACP_PROVIDER_ID = CUSTOM_ACP_ENABLED ? 'custom-acp' : EXCLUDED_PROVIDER_ID
 /** First provider in canonical order that this build includes (CMake requires at least one). */
 export const DEFAULT_PROVIDER_ID = GEMINI_ENABLED ? GEMINI_CLI_PROVIDER_ID
   : CODEX_ENABLED ? CODEX_CLI_PROVIDER_ID
@@ -44,6 +46,8 @@ export interface ProviderMetadata {
   structuredProtocol: string
   runtimeDescription: string
   npmPackage: string
+  /** UAM drives it through generic ACP with no guarantee: features follow only what the agent reports. */
+  bestEffort?: boolean
   capabilities: ProviderCapabilities
 }
 
@@ -297,6 +301,35 @@ const PROVIDER_METADATA_BY_ID: Record<string, ProviderMetadata> = {
       },
     }
   } : {}),
+  ...(CUSTOM_ACP_ENABLED ? {
+    [CUSTOM_ACP_PROVIDER_ID]: {
+      id: CUSTOM_ACP_PROVIDER_ID,
+      name: 'Custom ACP agent',
+      shortName: 'Custom ACP',
+      structuredProtocol: 'custom-acp',
+      runtimeDescription: 'Generic ACP (best effort)',
+      npmPackage: '',
+      bestEffort: true,
+      capabilities: {
+        supportsTextWorkers: false,
+        hasReasoningEffort: false,
+        hasServiceTier: false,
+        hasAcceptEditsMode: false,
+        structuredPermissionControl: 'uam',
+        terminalPermissionControl: 'provider',
+        usesFriendlyModelLabels: false,
+        showPlanActionButtons: false,
+        autoLabel: 'Default',
+        acceptEditsLabel: undefined,
+        defaultModelLabels: {},
+        memoryModelIds: [],
+        memoryModelLabels: {},
+        memoryModelDefaultId: '',
+        reasoningOptions: [],
+        speedOptions: [],
+      },
+    }
+  } : {}),
 }
 
 export const SUPPORTED_CLI_PROVIDER_IDS = Object.keys(PROVIDER_METADATA_BY_ID)
@@ -317,6 +350,7 @@ const PROVIDER_ID_ALIASES: Record<string, string> = {
   ...(CLAUDE_ENABLED ? { claude: CLAUDE_CLI_PROVIDER_ID, 'claude-code': CLAUDE_CLI_PROVIDER_ID, [CLAUDE_CLI_PROVIDER_ID]: CLAUDE_CLI_PROVIDER_ID } : {}),
   ...(OPENCODE_ENABLED ? { opencode: OPENCODE_CLI_PROVIDER_ID, 'open-code': OPENCODE_CLI_PROVIDER_ID, [OPENCODE_CLI_PROVIDER_ID]: OPENCODE_CLI_PROVIDER_ID } : {}),
   ...(COPILOT_ENABLED ? { copilot: COPILOT_CLI_PROVIDER_ID, 'github-copilot': COPILOT_CLI_PROVIDER_ID, [COPILOT_CLI_PROVIDER_ID]: COPILOT_CLI_PROVIDER_ID } : {}),
+  ...(CUSTOM_ACP_ENABLED ? { [CUSTOM_ACP_PROVIDER_ID]: CUSTOM_ACP_PROVIDER_ID } : {}),
 }
 
 /** Like a build-excluded provider, one disabled on a computer is shown only in Settings, where it is turned back on. */
@@ -417,6 +451,11 @@ export function isCopilotProvider(provider?: Provider, providerId = ''): boolean
 
 export function isOpenCodeProvider(provider?: Provider, providerId = ''): boolean {
   return OPENCODE_ENABLED && providerUsesProtocol(provider, providerId, OPENCODE_CLI_PROVIDER_ID)
+}
+
+/** True for a provider UAM supports only on a best-effort basis (the Custom ACP agent). */
+export function providerIsBestEffort(providerId: string): boolean {
+  return CUSTOM_ACP_ENABLED && PROVIDER_METADATA_BY_ID[normalizeCliProviderIdAlias(providerId)]?.bestEffort === true
 }
 
 export function providerNpmPackageName(providerId: string, provider?: Provider): string {

@@ -8,3 +8,4 @@ export const CLAUDE_ENABLED: boolean = __UAM_FEATURE_CLAUDE__
 export const OPENCODE_ENABLED: boolean = __UAM_FEATURE_OPENCODE__
 export const COPILOT_ENABLED: boolean = __UAM_FEATURE_COPILOT__
 export const ANTIGRAVITY_ENABLED: boolean = __UAM_FEATURE_ANTIGRAVITY__
+export const CUSTOM_ACP_ENABLED: boolean = __UAM_FEATURE_CUSTOM_ACP__

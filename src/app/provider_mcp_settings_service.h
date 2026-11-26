@@ -338,7 +338,10 @@ namespace uam::provider_mcp_settings
 			for (McpServerConfiguration& server : candidates)
 				server.enabled = central_configuration::McpEnabled(app.settings.central_provider_configuration, provider, host, server.id, server.enabled);
 			const std::vector<McpServerConfiguration> servers = mcp_server_config::SelectForWorkspace(candidates, workspace, host);
-			const bool enabled = (selected == nullptr || !selected->uam_control_explicitly_disabled) && central_configuration::McpEnabled(app.settings.central_provider_configuration, provider, host, "uam-mcp", selected != nullptr ? selected->uam_control_enabled : app.settings.central_provider_configuration.uam_control_enabled);
+			// The opt-in Custom ACP agent never gets the UAM tool connection (its runtime has no UAM control); this header
+			// stays free of the runtime registry, so the id is compared directly.
+			const bool no_uam_control = std::string_view(provider) == provider_ids::kCustomAcp;
+			const bool enabled = !no_uam_control && (selected == nullptr || !selected->uam_control_explicitly_disabled) && central_configuration::McpEnabled(app.settings.central_provider_configuration, provider, host, "uam-mcp", selected != nullptr ? selected->uam_control_enabled : app.settings.central_provider_configuration.uam_control_enabled);
 			std::size_t active = 0, setting_up = 0, configured = 0, connected = 0, live = 0;
 			bool provider_failed = false;
 			const auto observe = [&](const AcpSessionState& session, bool running)
@@ -366,7 +369,7 @@ namespace uam::provider_mcp_settings
 			for (const std::unique_ptr<CliTerminalState>& terminal : app.cli_terminals)
 				if (terminal != nullptr && terminal->uam_control_session != nullptr) observe(*terminal->uam_control_session, terminal->running);
 			const std::string state = live > 0 ? "connected" : connected > 0 ? "handshake-confirmed" : configured > 0 ? "configured-unverified" : !enabled || (selected != nullptr && selected->uam_control_explicitly_disabled) ? "disabled" : active == 0 || active == setting_up ? "configured-unverified" : "missing";
-			const std::string detail = state == "disabled" ? "UAM tools are disabled for this scope." : state == "connected" ? "The running provider MCP connection has a current heartbeat." : state == "handshake-confirmed" ? "UAM MCP connected to this running session and is waiting for a fresh heartbeat." :
+			const std::string detail = state == "disabled" ? (no_uam_control ? "This provider is never offered UAM tools." : "UAM tools are disabled for this scope.") : state == "connected" ? "The running provider MCP connection has a current heartbeat." : state == "handshake-confirmed" ? "UAM MCP connected to this running session and is waiting for a fresh heartbeat." :
 			    state == "configured-unverified" ? (configured > 0 ? "UAM MCP is installed for a running session but has not connected yet." : setting_up > 0 ? "UAM MCP setup is in progress and has not connected yet." : "UAM MCP is enabled for the next provider session and has not connected yet.") : provider_failed ? "The provider session failed; check its chat error, as UAM MCP may not be the cause." : "UAM MCP is installed when the next enabled session starts.";
 			nlohmann::json server_settings = nlohmann::json::array();
 			for (const McpServerConfiguration& server : host_scoped_settings::McpServers(app.settings, host))

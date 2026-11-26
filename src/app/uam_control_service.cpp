@@ -2916,8 +2916,8 @@ namespace uam
 
 	bool UamControlService::EnabledForChat(const AppSettings& settings, const ChatSession& chat)
 	{
-		return !chat.uam_control_explicitly_disabled && central_configuration::McpEnabled(
-		    settings.central_provider_configuration, chat.provider_id, chat.execution_host_id, "uam-mcp", chat.uam_control_enabled);
+		return !chat.uam_control_explicitly_disabled && ProviderRuntimeRegistry::ResolveById(chat.provider_id).SupportsUamControl() &&
+		    central_configuration::McpEnabled(settings.central_provider_configuration, chat.provider_id, chat.execution_host_id, "uam-mcp", chat.uam_control_enabled);
 	}
 
 	bool UamControlService::RequiresSessionStopForEnable(const AcpSessionState* session, bool apply_on_next_launch)
