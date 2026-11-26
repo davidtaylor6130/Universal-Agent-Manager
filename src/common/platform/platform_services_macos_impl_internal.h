@@ -5,6 +5,7 @@
 
 #include "platform_services_macos_impl.h"
 #include "common/platform/platform_application_macos.h"
+#include "common/platform/child_process_priority.h"
 #include "common/paths/app_paths.h"
 #include "common/paths/path_utils.h"
 #include "common/state/app_state.h"
@@ -37,6 +38,8 @@
 #include <mach-o/dyld.h>
 #include <signal.h>
 #include <poll.h>
+#include <sys/qos.h>
+#include <pthread/spawn.h>
 #include <spawn.h>
 #include <sys/event.h>
 #include <sys/file.h>
@@ -222,10 +225,22 @@ inline bool SpawnSuspendedProcess(
 		spawn_error = posix_spawnattr_setflags(&attributes, flags);
 		if (spawn_error == 0 && !new_session) spawn_error = posix_spawnattr_setpgroup(&attributes, 0);
 	}
+	// Agent and background children run clamped to utility QoS; a user turn keeps the default. Best effort:
+	// a child that cannot be lowered still starts.
+	const uam::platform::ChildProcessSpawnPriority priority = uam::platform::SpawnPriorityFor(uam::platform::CurrentChildProcessClass());
+	if (spawn_error == 0 && priority.macos_utility_qos) (void)posix_spawnattr_set_qos_class_np(&attributes, QOS_CLASS_UTILITY);
 	if (spawn_error == 0)
 	{
 		RaiseFdLimitBestEffort();
 		spawn_error = posix_spawn(&pid, executable.c_str(), &actions, &attributes, argv, environment);
+	}
+	// Still suspended, so the niceness, which the child's own children inherit, applies before it runs.
+	if (spawn_error == 0 && priority.unix_nice != 0)
+	{
+		// Never raise a child of a manager that already runs at or below this niceness.
+		errno = 0;
+		const int current_nice = getpriority(PRIO_PROCESS, 0);
+		if (errno != 0 || current_nice < priority.unix_nice) (void)setpriority(PRIO_PROCESS, pid, priority.unix_nice);
 	}
 	if (attributes_initialized) (void)posix_spawnattr_destroy(&attributes);
 	if (actions_initialized) (void)posix_spawn_file_actions_destroy(&actions);

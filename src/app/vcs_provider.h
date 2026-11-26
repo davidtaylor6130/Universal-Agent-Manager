@@ -6,6 +6,7 @@
 
 #include <filesystem>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -110,22 +111,25 @@ namespace uam
 		virtual VcsHistoryPage History(const VcsCommandRunner& run, const VcsHistoryRequest& request) const;
 		virtual std::string RevisionDiff(const VcsCommandRunner& run, const std::string& revision, const std::string& path, std::string& error) const;
 		virtual VcsUpdateResult Update(const VcsCommandRunner& run) const;
+		/// <summary>Marks one conflicted path resolved with `accept`; empty on success, otherwise the reason.</summary>
+		virtual std::string Resolve(const VcsCommandRunner& run, const std::string& path, const std::string& accept, std::string& output) const;
 		virtual VcsOriginReply Origin(const VcsCommandRunner& run, const VcsOriginRequest& request) const;
 
 		// Chat branch picker operations. `snapshot` is a worker-owned copy of the settings, folders and chat references;
-		// `chat` is the captured chat. Each runs on a worker thread and never touches live app state.
+		// `chat` is the captured chat. Each runs on a worker thread and never touches live app state. `stop` ends the system's
+		// reads in flight at shutdown; a system never stops a switch command itself once it has started.
 
 		/// <summary>True when choices are repository paths under an explicit parent and a selection must carry the
 		/// listing's context (SVN). False when choices are the repository's named branches (Git).</summary>
 		virtual bool BranchesAreLocated() const = 0;
 		/// <summary>Lists the choices for the chat's workspace; `parent` is the explicit location for a located listing.</summary>
-		virtual VcsBranchListing ListBranches(const AppState& snapshot, const ChatSession& chat, const std::string& parent) const = 0;
+		virtual VcsBranchListing ListBranches(const AppState& snapshot, const ChatSession& chat, const std::string& parent, std::stop_token stop = {}) const = 0;
 		/// <summary>Checks a choice when the picker submits it, before any runtime is stopped.</summary>
-		virtual VcsBranchOutcome CheckBranchSelection(const AppState& snapshot, const ChatSession& chat, const VcsBranchSelection& selection) const = 0;
+		virtual VcsBranchOutcome CheckBranchSelection(const AppState& snapshot, const ChatSession& chat, const VcsBranchSelection& selection, std::stop_token stop = {}) const = 0;
 		/// <summary>Rechecks the workspace under the exclusive workspace lease, after the chat's runtime has settled.</summary>
-		virtual VcsBranchOutcome CheckBranchSwitch(const AppState& snapshot, const ChatSession& chat, const VcsBranchSelection& selection) const = 0;
+		virtual VcsBranchOutcome CheckBranchSwitch(const AppState& snapshot, const ChatSession& chat, const VcsBranchSelection& selection, std::stop_token stop = {}) const = 0;
 		/// <summary>Switches, or creates and switches. `chat` is updated in place when the system records the branch on the chat.</summary>
-		virtual VcsBranchOutcome SwitchBranch(AppState& snapshot, ChatSession& chat, const VcsBranchSelection& selection) const = 0;
+		virtual VcsBranchOutcome SwitchBranch(AppState& snapshot, ChatSession& chat, const VcsBranchSelection& selection, std::stop_token stop = {}) const = 0;
 	};
 
 	/// <summary>Registered providers in detection order; the first is the default selection.</summary>

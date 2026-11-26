@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
+import { createContext, useContext, useState, type ReactNode } from 'react'
 import { Brain, ChevronRight, Clock3, FileText, LoaderCircle, MessageSquare, Search, Terminal, Users, Wrench } from 'lucide-react'
 import type { AcpToolCall, AcpTurnEvent } from '../../store/useAppStore'
 import { useAppStore } from '../../store/useAppStore'
@@ -7,6 +7,8 @@ import { RowButton, StatusDot } from '../ui'
 import { usePresence } from '../ui/Overlay'
 import { toolDisplayTitle } from './StatusHelpers'
 import './conversation.css'
+import { formatElapsed } from '../../utils/elapsed'
+import { useNow } from '../../hooks/useNow'
 
 const SubAgentDisclosureContext = createContext<Set<string> | null>(null)
 
@@ -28,15 +30,8 @@ export function useSubAgentDisclosure(toolId: string) {
 
 /** One clock for the currently rendered turn header; transcript rows never tick. */
 export function WorkingHeading({ active, duration = '0s', startedAt }: { active: boolean; duration?: string; startedAt?: number }) {
-  const [now, setNow] = useState(Date.now)
-  useEffect(() => {
-    if (!active) return
-    setNow(Date.now())
-    const timer = window.setInterval(() => setNow(Date.now()), 1000)
-    return () => window.clearInterval(timer)
-  }, [active, startedAt])
-  const seconds = Math.max(0, Math.floor((now - (startedAt ?? now)) / 1000))
-  const elapsed = startedAt == null ? duration : seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`
+  const now = useNow(active && startedAt != null)
+  const elapsed = startedAt == null ? duration : formatElapsed(now - startedAt)
   return <span>{active ? `Working ${elapsed}` : `Worked ${duration}`}</span>
 }
 

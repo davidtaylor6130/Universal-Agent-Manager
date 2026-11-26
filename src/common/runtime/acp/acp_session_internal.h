@@ -7,6 +7,7 @@
 #include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/state/app_state.h"
 #include "common/platform/async_byte_writer.h"
+#include "common/platform/child_process_priority.h"
 #include "common/provider/provider_profile.h"
 
 #include <nlohmann/json.hpp>
@@ -31,6 +32,13 @@ namespace uam::platform { class PublishedFileChangeWitness; }
 
 namespace uam::acp_detail
 {
+/// <summary>
+/// The scheduling class a provider process starts at. Model discovery is background work; a sub-agent, a goal
+/// iteration transcript and an automation chat are agent work; every other chat serves its user's own turns and
+/// keeps normal priority. Fixed at launch: the process keeps its class for its lifetime.
+/// </summary>
+platform::ChildProcessClass ProviderProcessClass(const AcpSessionState& session, const ChatSession& chat);
+
 bool BeginManagedResultPrompt(AppState&, AcpSessionState&, ChatSession&,
     std::shared_ptr<const ManagedResultPromptInput>, const SavedChatPrimaryWitness&);
 
@@ -173,6 +181,9 @@ struct PermissionReviewDecision
 std::optional<PermissionReviewDecision> ParsePermissionReviewOutput(std::string_view output);
 /// <summary>Return a complete bounded review request, or an empty prompt when safe review is unavailable.</summary>
 std::string BuildPermissionReviewPrompt(const AcpPendingPermissionState& pending);
+/// <summary>Key for this run's in-memory AI review verdict cache: reviewer, model, chat provider, ceiling, kind,
+/// workspace, working directory and the typed command. Empty for requests that must not be cached.</summary>
+std::string PermissionReviewCacheKey(const AppState& app, const AcpSessionState& session, const ChatSession& chat, std::string_view reviewer_provider_id);
 bool TryAutoApprovePendingPermission(AppState& app, AcpSessionState& session, const ChatSession& chat, std::string* error_out = nullptr);
 void QueueAcpPermission(AppState& app, AcpSessionState& session, ChatSession& chat, AcpPendingPermissionState pending);
 void AdvanceAcpPermissionQueue(AppState& app, AcpSessionState& session, const ChatSession& chat, std::string* error_out = nullptr);

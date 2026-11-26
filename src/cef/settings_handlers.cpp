@@ -30,6 +30,9 @@
 #include "common/config/companion_network.h"
 #include "common/config/settings_normalization.h"
 #include "common/config/mcp_server_config.h"
+#include "common/config/permission_command_rules_json.h"
+#include "common/security/command_rules.h"
+#include "common/security/read_only_command.h"
 #include "common/memory/memory_levels.h"
 #include "common/paths/path_utils.h"
 #include "common/platform/file_explorer_application.h"
@@ -755,6 +758,73 @@ void UamQueryHandler::HandleSetComposerSettings(CefRefPtr<CefBrowser> browser, c
 
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleSetPermissionCommandRules(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const AppSettings previous = m_app.settings;
+	if (payload.contains("rules"))
+	{
+		std::vector<uam::command_rules::Rule> rules;
+		std::string error;
+		if (!uam::permission_command_rules::ParseStrict(payload["rules"], rules, error))
+		{
+			cb->Failure(400, error);
+			return;
+		}
+		m_app.settings.permission_command_rules = std::move(rules);
+	}
+	if (payload.contains("aiReviewEnabled"))
+	{
+		const std::optional<bool> enabled = uam::nlohmann_json::BoolFieldStrict(payload, "aiReviewEnabled");
+		if (!enabled)
+		{
+			cb->Failure(400, "aiReviewEnabled must be a boolean.");
+			return;
+		}
+		m_app.settings.permission_ai_review_enabled = *enabled;
+	}
+	if (!PersistenceCoordinator().SaveSettings(m_app))
+	{
+		m_app.settings = previous;
+		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to save the permission rules."));
+		return;
+	}
+	// Verdicts were reached under the previous rules and switch; start the next ones fresh.
+	m_app.permission_review_cache.clear();
+	m_app.permission_review_cache_order.clear();
+
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleTestPermissionCommandRules(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	std::vector<uam::command_rules::Rule> rules;
+	std::string error;
+	if (!payload.contains("rules") || !uam::permission_command_rules::ParseStrict(payload["rules"], rules, error))
+	{
+		cb->Failure(400, error.empty() ? "rules must be a list." : error);
+		return;
+	}
+	const nlohmann::json* command = uam::nlohmann_json::FindStringField(payload, "command");
+	if (command == nullptr || command->get_ref<const std::string&>().size() > uam::command_rules::kMaxCommandBytes)
+	{
+		cb->Failure(400, "command must be text of at most 64 KiB.");
+		return;
+	}
+	const std::string& text = command->get_ref<const std::string&>();
+	// The read filter is checked as if relative paths were inside a chat's workspace; the live check uses the real one.
+	uam::command_safety::ReadScope scope;
+	scope.workspace = std::filesystem::path(m_app.data_root).parent_path() / "uam-rule-test-workspace";
+	scope.local = false;
+	scope.resolve_executables = false;
+	const bool read_only = uam::command_safety::IsReadOnlyCommand(text, scope);
+	const uam::command_rules::Decision decision = uam::command_rules::TestCommand(rules, text, read_only, m_app.settings.permission_remote_commits_without_approval);
+	const char* outcome = decision.outcome == uam::command_rules::Outcome::Approve ? "allow"
+	    : decision.outcome == uam::command_rules::Outcome::Deny ? "deny"
+	    : decision.outcome == uam::command_rules::Outcome::AskUser ? "ask" : "none";
+	cb->Success(nlohmann::json{{"outcome", outcome}, {"ruleId", decision.rule_id}, {"reason", decision.reason}, {"readOnly", read_only}, {"remoteCommit", decision.remote_commit}}.dump());
 }
 
 void UamQueryHandler::HandleSetUpdateSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)

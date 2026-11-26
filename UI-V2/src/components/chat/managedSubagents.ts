@@ -1,4 +1,5 @@
 import { isCefContext, sendToCEF, type CEFResponse } from '../../ipc/cefBridge'
+import { formatElapsed } from '../../utils/elapsed'
 
 export type ManagedSubagentRun = {
   runId: string; parentRunId: string; agentId: string; transcriptChatId: string
@@ -101,8 +102,7 @@ export function managedElapsed(run: ManagedRunTiming, now: number): string {
   const active = managedRunActive(run.status, run.lastReported)
   const end = active ? now : finished
   if (!Number.isFinite(started) || started <= 0 || !Number.isFinite(end) || end < started) return active ? 'Timing unavailable' : 'Duration not recorded'
-  const seconds = Math.floor((end - started) / 1000)
-  return seconds < 60 ? `${seconds}s` : seconds < 3600 ? `${Math.floor(seconds / 60)}m ${seconds % 60}s` : `${Math.floor(seconds / 3600)}h ${Math.floor(seconds % 3600 / 60)}m`
+  return formatElapsed(end - started)
 }
 
 

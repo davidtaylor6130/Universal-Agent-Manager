@@ -1,5 +1,6 @@
 #include "app/agent_run_scheduler.h"
 #include "common/platform/background_thread_priority.h"
+#include "common/platform/child_process_priority.h"
 #include "common/memory/extraction_receipts.h"
 #include "common/memory/memory_entry_format.h"
 #include "common/memory/memory_storage_guard.h"
@@ -1447,6 +1448,8 @@ namespace
 	// with backoff. Completion is always published so the UI thread can join the worker.
 	template <typename Body> void RunGuardedMemoryWorker(AsyncProcessTaskState& state, uam::AsyncMemoryExtractionState& extraction, Body&& body) noexcept
 	{
+		// Memory workers are background work: the provider they start runs below the user's own turns.
+		const uam::platform::ScopedChildProcessClass background_children(uam::platform::ChildProcessClass::Background);
 		try
 		{
 			body();

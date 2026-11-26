@@ -347,7 +347,7 @@ class WindowsProcessService final : public IPlatformProcessService
 		startup_info.lpAttributeList = attribute_list.Get();
 
 		PROCESS_INFORMATION process_info{};
-		const DWORD creation_flags = CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT;
+		const DWORD creation_flags = CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT | ChildProcessPriorityCreationFlags();
 		const BOOL created = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, TRUE, creation_flags, environment_block.data(), nullptr, &startup_info.StartupInfo, &process_info);
 		CloseInvalidHandleIfOpen(stdout_write);
 
@@ -611,7 +611,7 @@ class WindowsProcessService final : public IPlatformProcessService
 		startup_info.lpAttributeList = attribute_list.Get();
 
 		PROCESS_INFORMATION process_info{};
-		const DWORD creation_flags = CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT;
+		const DWORD creation_flags = CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT | ChildProcessPriorityCreationFlags();
 		const wchar_t* working_directory_arg = working_directory.empty() ? nullptr : working_directory_w.c_str();
 		const BOOL created = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, TRUE, creation_flags, environment_block.empty() ? nullptr : environment_block.data(), working_directory_arg, &startup_info.StartupInfo, &process_info);
 

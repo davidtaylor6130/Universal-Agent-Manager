@@ -1,16 +1,30 @@
 #include "app/svn_branch_service.h"
+#include "app/svn_failure.h"
 #include "common/models/app_models.h"
 #include "common/paths/path_utils.h"
 #include "common/paths/workspace_lease.h"
 #include "common/utils/shell_escape.h"
+#include "common/vcs/svn_environment.h"
 #include "cef/branch_operation_dispatch.h"
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <iterator>
 #include <stdexcept>
+#include <string_view>
+#ifndef _WIN32
+#include <sys/wait.h>
+#endif
+
+// This isolated program does not link the diagnostic writer; the stub keeps what SvnFailureMessage logs for the checks.
+namespace uam::diagnostics
+{
+	std::string g_log;
+	void Write(std::string_view message) { g_log.append(message).push_back('\n'); }
+}
 
 namespace
 {
@@ -83,6 +97,9 @@ namespace
 		bool switch_ok = true, verify_switch = true;
 		int switches = 0, reads = 0;
 		std::vector<std::string> switch_args;
+		/// Set to make one command fail the way RunSvn reports it: no output, and svn's reason as the failure line.
+		std::function<bool(const std::vector<std::string>&)> fails;
+		std::string failure_text;
 		Fixture()
 		{
 			std::filesystem::create_directories(directory / ".svn");
@@ -92,10 +109,11 @@ namespace
 		~Fixture() { std::error_code ec; std::filesystem::remove_all(directory, ec); }
 		uam::SvnBranchRunner Runner()
 		{
-			return [this](const std::vector<std::string>& args, int timeout, std::string& output)
+			return [this](const std::vector<std::string>& args, int timeout, std::string& output, std::string& failure)
 			{
 				++reads;
 				Check(timeout > 0 && timeout <= 10000, "command timeout is bounded");
+				if (fails && fails(args)) { failure = failure_text; return false; }
 				if (args[0] == "info")
 				{
 					if (args[2] == "--xml")
@@ -187,8 +205,102 @@ namespace
 			if (changed_read == 3) Check(result.error.find("inspect") != std::string::npos, "post-switch sparsity remains uncertain and requires inspection");
 		}
 	}
+	/// svn's own reason reaches the person instead of a bare "could not": the service adds the runner's failure line.
+	void FailureCarryThroughCases()
+	{
+		const std::string credentials = "SVN needs your credentials. Run svn info svn://repository.invalid/lines once in a terminal to save them, then retry.";
+		{
+			Fixture f; f.failure_text = "E155007: '/private/copy' is not a working copy";
+			f.fails = [](const std::vector<std::string>& args) { return args[0] == "info" && args[3] == "wc-root"; };
+			const auto result = uam::DiscoverSvnBranches(f.scope, "^/lines", f.Runner());
+			Check(!result.ok && result.error == "Could not verify the full SVN working-copy root. E155007: '/private/copy' is not a working copy.", "working-copy read failure carries svn's reason: " + result.error);
+		}
+		{
+			Fixture f; f.failure_text = credentials;
+			f.fails = [](const std::vector<std::string>& args) { return args[0] == "info" && args.back().starts_with("file:"); };
+			const auto result = uam::DiscoverSvnBranches(f.scope, "^/lines", f.Runner());
+			Check(!result.ok && result.error == "Could not discover directories in that SVN repository folder. " + credentials, "repository discovery carries the credentials message: " + result.error);
+		}
+		{
+			Fixture f; const auto found = uam::DiscoverSvnBranches(f.scope, "^/lines", f.Runner());
+			f.failure_text = "E155004: Run 'svn cleanup' to remove locks (type 'svn help cleanup' for details)";
+			f.fails = [](const std::vector<std::string>& args) { return args[0] == "status"; };
+			const auto result = uam::SwitchSvnBranch(f.scope, found.context, found.branches[1].path, f.Runner());
+			Check(!result.ok && f.switches == 0 && result.error.starts_with("Could not read the working copy's status. E155004: Run 'svn cleanup'"), "a failed status read is not reported as a dirty working copy: " + result.error);
+		}
+		{
+			Fixture f; const auto found = uam::DiscoverSvnBranches(f.scope, "^/lines", f.Runner());
+			f.failure_text = credentials;
+			f.fails = [](const std::vector<std::string>& args) { return args[0] == "propget"; };
+			const auto result = uam::SwitchSvnBranch(f.scope, found.context, found.branches[1].path, f.Runner());
+			Check(!result.ok && f.switches == 0 && result.error == "Could not check SVN external definitions. " + credentials, "a failed externals read is not reported as externals: " + result.error);
+		}
+		{
+			Fixture f; const auto found = uam::DiscoverSvnBranches(f.scope, "^/lines", f.Runner());
+			f.failure_text = "E155004: Run 'svn cleanup' to remove locks (type 'svn help cleanup' for details)";
+			f.fails = [](const std::vector<std::string>& args) { return args[0] == "switch"; };
+			const auto result = uam::SwitchSvnBranch(f.scope, found.context, found.branches[1].path, f.Runner());
+			Check(!result.ok && result.error == "SVN did not confirm the switch. E155004: Run 'svn cleanup' to remove locks (type 'svn help cleanup' for details). Nothing was rolled back; inspect the working copy before retrying.", "switch failure keeps the inspection warning and adds svn's reason: " + result.error);
+			Check(result.error.find('\n') == std::string::npos, "one line");
+		}
+		{
+			Fixture f; f.fails = [](const std::vector<std::string>& args) { return args[0] == "list"; };
+			const auto result = uam::DiscoverSvnBranches(f.scope, "^/lines", f.Runner());
+			Check(!result.ok && result.error == "Could not discover directories in that SVN repository folder.", "a failure without a reason keeps the service's sentence");
+		}
+		std::cout << "PASS: SVN failure reasons carried into discovery and switch refusals\n";
+	}
+	/// The log keeps svn's own error lines only: no command output, workspace paths shortened, URL user names removed,
+	/// and one entry per operation and code at a time.
+	void LogSanitisingCases()
+	{
+		uam::diagnostics::g_log.clear();
+		ProcessExecutionResult limited;
+		limited.exit_code = 1;
+		limited.output = "Index: secret.c\n+password = hunter2\n";
+		limited.error = "Command output exceeded the 4 MiB safety limit.";
+		uam::LogSvnFailure(limited, "diff", "/w");
+		Check(uam::diagnostics::g_log.find("exceeded") != std::string::npos && uam::diagnostics::g_log.find("hunter2") == std::string::npos && uam::diagnostics::g_log.find("Index:") == std::string::npos, "an output-limited failure logs UAM's reason, never the output: " + uam::diagnostics::g_log);
+		uam::diagnostics::g_log.clear();
+		ProcessExecutionResult refused;
+		refused.exit_code = 1;
+		refused.output = "Sending        sub/file.txt\nsvn: E170013: Unable to connect to a repository at URL 'svn+ssh://alice@repository.invalid/r'\nsvn: E000013: Can't open file '/w/sub/.svn/wc.db': Permission denied\n";
+		uam::LogSvnFailure(refused, "commit", "/w");
+		const std::string first = uam::diagnostics::g_log;
+		Check(first.find("svn+ssh://repository.invalid/r") != std::string::npos && first.find("alice") == std::string::npos, "URL user names are removed: " + first);
+		Check(first.find("'sub/.svn/wc.db'") != std::string::npos && first.find("/w/") == std::string::npos && first.find("Sending") == std::string::npos, "workspace paths are relative and output lines are left out: " + first);
+		uam::LogSvnFailure(refused, "commit", "/w");
+		Check(uam::diagnostics::g_log == first, "the same failure is logged once in five minutes");
+		uam::LogSvnFailure(refused, "update", "/w");
+		Check(uam::diagnostics::g_log.size() > first.size(), "another operation's failure is logged");
+		ProcessExecutionResult canceled = refused;
+		canceled.canceled = true;
+		const std::size_t before = uam::diagnostics::g_log.size();
+		uam::LogSvnFailure(canceled, "status", "/w");
+		Check(uam::diagnostics::g_log.size() == before, "a stop is not a failure");
+		uam::diagnostics::g_log.clear();
+		ProcessExecutionResult quoted;
+		quoted.exit_code = 1;
+		quoted.output = "+note: svn: E170001: Can't get password; token=sk-fixture\nsvn: E000013: Can't open file '/w2/x': Permission denied\n";
+		uam::LogSvnFailure(quoted, "diff", "/w2");
+		Check(uam::diagnostics::g_log.find("sk-fixture") == std::string::npos && uam::diagnostics::g_log.find("E000013") != std::string::npos, "svn's prefix inside content is not logged: " + uam::diagnostics::g_log);
+#ifndef _WIN32
+		uam::diagnostics::g_log.clear();
+		const char* previous_home = std::getenv("HOME");
+		const std::string saved_home = previous_home != nullptr ? previous_home : "";
+		setenv("HOME", "/home/fixture/", 1);
+		ProcessExecutionResult homed;
+		homed.exit_code = 1;
+		homed.output = "svn: E000013: Can't open file '/home/fixture/other/x' or '/home/fixturebeta/y': Permission denied\n";
+		uam::LogSvnFailure(homed, "status", "/w3");
+		if (previous_home != nullptr) setenv("HOME", saved_home.c_str(), 1); else unsetenv("HOME");
+		Check(uam::diagnostics::g_log.find("'~/other/x'") != std::string::npos && uam::diagnostics::g_log.find("'/home/fixturebeta/y'") != std::string::npos, "only the whole home folder is shortened: " + uam::diagnostics::g_log);
+#endif
+		std::cout << "PASS: SVN failure log keeps svn's lines only, sanitised and rate limited\n";
+	}
 	void InjectedCases()
 	{
+		LogSanitisingCases();
 		BranchDispatchFailureCases();
 		SourceOwnershipCases();
 		SparseDescendantCases();
@@ -250,33 +362,82 @@ namespace
 		}
 		{
 			Fixture f; const auto result = uam::DiscoverSvnBranches(f.scope, "^/lines", f.Runner()); f.externals = true;
-			Check(!uam::SwitchSvnBranch(f.scope, result.context, result.branches[1].path, f.Runner()).ok && f.switches == 0, "external properties refuse before mutation");
+			const auto refused = uam::SwitchSvnBranch(f.scope, result.context, result.branches[1].path, f.Runner());
+			Check(!refused.ok && f.switches == 0, "external properties refuse before mutation");
+			Check(refused.error == "Resolve SVN external definitions before switching folders.", "a refusal read from svn's output keeps its own wording");
 		}
+		FailureCarryThroughCases();
 		std::cout << "PASS: original SVN scenarios, real scope-builder ownership, descendant inventory and folder-remap lease regressions\n";
 	}
-	void RealWorkingCopy(const std::filesystem::path& directory, const std::string& config, bool sparse = false)
+	/// Real svn with the app's SVN environment (unless `shared_environment` is false, as a launch without a locale would be) and
+	/// the app's failure message. The test shell form stands in for RunSvn's argv launch; the variables are the same.
+	uam::SvnBranchRunner RealRunner(const std::string& config, bool shared_environment, int* switches = nullptr)
 	{
-		Check(directory.filename() == "copy @literal" && directory.parent_path().filename().string().starts_with("uam-svn-composer-") && uam::paths::PathFromUtf8(config) == directory.parent_path() / "config", "integration requires the disposable harness working copy and config");
-		uam::SvnBranchScope scope{directory, directory, {}, true};
-		int switches = 0;
-		const uam::SvnBranchRunner run = [&](const std::vector<std::string>& args, int, std::string& output)
+		return [=](const std::vector<std::string>& args, int, std::string& output, std::string& failure)
 		{
-			if (args[0] == "switch") ++switches;
+			if (switches != nullptr && args[0] == "switch") ++*switches;
 			std::vector<std::string> command{"svn", "--config-dir", config, "--no-auth-cache"};
 			command.insert(command.end(), args.begin(), args.end());
+			std::string line;
 #ifdef _WIN32
-			FILE* pipe = _popen(uam::shell::JoinEscapedArgs(command).c_str(), "r");
+			(void)shared_environment;
+			line = uam::shell::JoinEscapedArgs(command);
+			FILE* pipe = _popen(line.c_str(), "r");
 #else
-			FILE* pipe = popen(uam::shell::JoinEscapedArgs(command).c_str(), "r");
+			if (shared_environment)
+				for (const auto& [variable, value] : uam::vcs::SvnEnvironment({})) line += variable + "=" + uam::shell::EscapeArg(value) + " ";
+			line += uam::shell::JoinEscapedArgs(command) + " 2>&1";
+			FILE* pipe = popen(line.c_str(), "r");
 #endif
 			if (!pipe) return false;
 			char buffer[4096]; output.clear(); while (std::fgets(buffer, sizeof(buffer), pipe)) output += buffer;
+			ProcessExecutionResult result;
 #ifdef _WIN32
-			return _pclose(pipe) == 0;
+			result.exit_code = _pclose(pipe);
 #else
-			return pclose(pipe) == 0;
+			const int status = pclose(pipe);
+			result.exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 #endif
+			result.ok = result.exit_code == 0;
+			result.output = output;
+			failure = result.ok ? std::string{} : uam::SvnFailureMessage(result, {});
+			if (!result.ok) uam::LogSvnFailure(result, args[0]);
+			return result.ok;
 		};
+	}
+	/// Without the shared environment a non-ASCII working copy cannot even be read, and svn's reason reaches the refusal.
+	void LocaleOffWorkingCopy(const std::filesystem::path& directory, const std::string& config)
+	{
+		uam::SvnBranchScope scope{directory, directory, {}, true};
+		const auto found = uam::DiscoverSvnBranches(scope, "^/lines", RealRunner(config, false));
+		Check(!found.ok && found.error.starts_with("Could not verify the full SVN working-copy root. E"), "without a UTF-8 locale the read fails with svn's code: " + found.error);
+		std::cout << "PASS: control run without the shared SVN environment fails on the non-ASCII working copy: " << found.error << "\n";
+	}
+	/// A repository that refuses anonymous access: the person is told to save credentials, svn's chain stays in the log.
+	void CredentialsWorkingCopy(const std::filesystem::path& directory, const std::string& config)
+	{
+		uam::SvnBranchScope scope{directory, directory, {}, true};
+		const auto found = uam::DiscoverSvnBranches(scope, "^/lines", RealRunner(config, true));
+		Check(!found.ok && found.error.starts_with("Could not discover directories in that SVN repository folder. SVN needs your credentials. Run svn info svn://") && found.error.ends_with(" once in a terminal to save them, then retry."), "credentials message: " + found.error);
+		Check(found.error.find("E170013") == std::string::npos && found.error.find('\n') == std::string::npos, "one line without the connection wrapper");
+		Check(uam::diagnostics::g_log.find("E170001") != std::string::npos, "svn's own lines go to the log");
+		std::cout << "PASS: real svnserve without anonymous access asks for credentials: " << found.error << "\n";
+	}
+	/// svn+ssh through the shared environment: ssh runs in batch mode and its refusal reads as missing credentials.
+	void SshProbe(const std::string& config, const std::string& url)
+	{
+		std::string output, failure;
+		const bool ok = RealRunner(config, true)({"info", "--non-interactive", "--", url}, 10000, output, failure);
+		Check(!ok && failure.starts_with("SVN needs your credentials. Run svn info " + url), "batch ssh refusal asks for credentials: " + failure);
+		std::cout << "PASS: svn+ssh refusal asks for credentials: " << failure << "\n";
+	}
+	void RealWorkingCopy(const std::filesystem::path& directory, const std::string& config, bool sparse = false)
+	{
+		const auto name = uam::paths::Utf8PathString(directory.filename());
+		Check((name == "copy @literal" || name == "wc\xC3\xA9 @literal") && directory.parent_path().filename().string().starts_with("uam-svn-composer-") && uam::paths::PathFromUtf8(config) == directory.parent_path() / "config", "integration requires the disposable harness working copy and config");
+		uam::SvnBranchScope scope{directory, directory, {}, true};
+		int switches = 0;
+		const uam::SvnBranchRunner run = RealRunner(config, true, &switches);
 		auto found = uam::DiscoverSvnBranches(scope, "^/lines", run);
 		if (sparse)
 		{
@@ -306,6 +467,9 @@ int main(int argc, char** argv)
 	{
 		if (argc == 4 && std::string(argv[1]) == "--integration") RealWorkingCopy(uam::paths::PathFromUtf8(argv[2]), argv[3]);
 		else if (argc == 4 && std::string(argv[1]) == "--sparse-integration") RealWorkingCopy(uam::paths::PathFromUtf8(argv[2]), argv[3], true);
+		else if (argc == 4 && std::string(argv[1]) == "--locale-off-integration") LocaleOffWorkingCopy(uam::paths::PathFromUtf8(argv[2]), argv[3]);
+		else if (argc == 4 && std::string(argv[1]) == "--credentials-integration") CredentialsWorkingCopy(uam::paths::PathFromUtf8(argv[2]), argv[3]);
+		else if (argc == 4 && std::string(argv[1]) == "--ssh-probe") SshProbe(argv[2], argv[3]);
 		else if (argc == 2 && std::string(argv[1]) == "--ownership-regression") SourceOwnershipCases();
 		else if (argc == 2 && std::string(argv[1]) == "--depth-regression") SparseDescendantCases();
 		else if (argc == 2 && std::string(argv[1]) == "--dispatch-regression") BranchDispatchFailureCases();

@@ -4420,6 +4420,8 @@ namespace
 		std::shared_ptr<AsyncProcessTaskState> unfinished = std::make_shared<AsyncProcessTaskState>();
 		ManagedInitialFirstFixture fixture;
 		std::string other_root_id;
+		// A second independent parent: one parent's agents may hold only half the running slots.
+		std::string third_root_id;
 
 		std::string SentinelScript() const
 		{
@@ -4456,21 +4458,30 @@ namespace
 			UAM_ASSERT(ProviderResolutionService().ChatProviderIsAvailable(fixture.app, *root));
 			UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, *root));
 			AssertInvocationFileAbsent("constructor:root-save");
-			ChatSession other = ChatDomainService().CreateNewChat({}, "opencode-cli");
-			AssertInvocationFileAbsent("constructor:other-created");
-			other_root_id = other.id;
-			other.execution_host_id = root->execution_host_id;
-			other.routing_mode = root->routing_mode;
-			other.workspace_directory = root->workspace_directory;
-			other.model_id = root->model_id;
-			ChatDomainService().AddMessage(other, MessageRole::User, "Independent legacy capacity parent.");
-			ChatDomainService().AddMessage(other, MessageRole::Assistant, "Earlier saved parent answer.");
-			fixture.app.chats.push_back(std::move(other));
-			UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, fixture.app.chats.back()));
-			AssertInvocationFileAbsent("constructor:other-save");
-			const auto saved = ChatRepository::LoadLocalChatBounded(fixture.app.data_root, other_root_id, 4 * 1024 * 1024);
-			UAM_ASSERT(saved && saved->messages == fixture.app.chats.back().messages);
-			AssertInvocationFileAbsent("constructor:other-reload");
+			const auto add_parent = [&](const std::string& request)
+			{
+				ChatSession other = ChatDomainService().CreateNewChat({}, "opencode-cli");
+				AssertInvocationFileAbsent("constructor:other-created");
+				const std::string id = other.id;
+				other.execution_host_id = root->execution_host_id;
+				other.routing_mode = root->routing_mode;
+				other.workspace_directory = root->workspace_directory;
+				other.model_id = root->model_id;
+				ChatDomainService().AddMessage(other, MessageRole::User, request);
+				ChatDomainService().AddMessage(other, MessageRole::Assistant, "Earlier saved parent answer.");
+				fixture.app.chats.push_back(std::move(other));
+				UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, fixture.app.chats.back()));
+				AssertInvocationFileAbsent("constructor:other-save");
+				const auto saved = ChatRepository::LoadLocalChatBounded(fixture.app.data_root, id, 4 * 1024 * 1024);
+				UAM_ASSERT(saved && saved->messages == fixture.app.chats.back().messages);
+				AssertInvocationFileAbsent("constructor:other-reload");
+				return id;
+			};
+			other_root_id = add_parent("Independent legacy capacity parent.");
+			// The push above may move chats; look the fixture root up again before the second parent copies it.
+			root = ChatDomainService().FindChatById(fixture.app, fixture.root_id);
+			UAM_ASSERT(root);
+			third_root_id = add_parent("Second independent legacy capacity parent.");
 			auto& version = fixture.app.runtime_cli_versions_by_provider_id["opencode-cli"];
 			version.provider_id = "opencode-cli";
 			version.execution_host = uam::execution_hosts::LocalHost();
@@ -4592,8 +4603,9 @@ UAM_TEST(ManagedPureLegacyVersionWaitRetainsFourRunningAdmissionLimit)
 {
 	ManagedCapacityVersionWaitFixture capacity;
 	std::vector<std::string> first_four;
+	// Two parents with two agents each: the per-parent share is full for both and the global limit is reached.
 	for (int index = 0; index < 4; ++index)
-		first_four.push_back(capacity.Enqueue(capacity.other_root_id, "Legacy held admission " + std::to_string(index)));
+		first_four.push_back(capacity.Enqueue(index < 2 ? capacity.other_root_id : capacity.third_root_id, "Legacy held admission " + std::to_string(index)));
 	const auto fifth = capacity.Enqueue(capacity.fixture.root_id, "Fifth legacy admission must wait.");
 	capacity.Pulse();
 	for (const auto& id : first_four)
@@ -4618,8 +4630,9 @@ UAM_TEST(ManagedMixedInitialLegacyVersionWaitSharesFourRunningAdmissionSlots)
 {
 	ManagedCapacityVersionWaitFixture capacity;
 	std::vector<std::string> initial_legacy;
+	// Two parents share the first three slots, so the competitor's parent below is still under its own share.
 	for (int index = 0; index < 3; ++index)
-		initial_legacy.push_back(capacity.Enqueue(capacity.other_root_id, "Existing legacy held admission " + std::to_string(index)));
+		initial_legacy.push_back(capacity.Enqueue(index < 2 ? capacity.other_root_id : capacity.third_root_id, "Existing legacy held admission " + std::to_string(index)));
 	capacity.Pulse();
 	for (const auto& id : initial_legacy)
 		capacity.AssertRunningIsPersistedVersionWait(id);
@@ -4642,7 +4655,7 @@ UAM_TEST(ManagedMixedInitialLegacyVersionWaitSharesFourRunningAdmissionSlots)
 		                  ++completion->calls;
 		                  completion->result = result;
 		                  if (result.delegation_state == uam::ManagedInitialDelegationState::Committed)
-			                  completion->competitor_enqueued = uam::AgentRunScheduler::Enqueue(capacity.fixture.app, capacity.other_root_id, {}, capacity.fixture.definition.id, "Legacy competitor queued from the genuine committed creation callback.", &completion->competitor_id, &completion->error);
+			                  completion->competitor_enqueued = uam::AgentRunScheduler::Enqueue(capacity.fixture.app, capacity.third_root_id, {}, capacity.fixture.definition.id, "Legacy competitor queued from the genuine committed creation callback.", &completion->competitor_id, &completion->error);
 		                  return true; // Genuine classified delivery ACK; no fabricated ledger or runtime owner.
 	                  },
 	                  &error),
@@ -4658,7 +4671,7 @@ UAM_TEST(ManagedMixedInitialLegacyVersionWaitSharesFourRunningAdmissionSlots)
 	const std::string transcript_id = completion->result->transcript_chat_id;
 	UAM_ASSERT(!initial_id.empty() && !transcript_id.empty());
 	UAM_ASSERT_EQ(capacity.Run(initial_id).root_chat_id, capacity.fixture.root_id);
-	UAM_ASSERT_EQ(capacity.Run(completion->competitor_id).root_chat_id, capacity.other_root_id);
+	UAM_ASSERT_EQ(capacity.Run(completion->competitor_id).root_chat_id, capacity.third_root_id);
 	UAM_ASSERT(capacity.Run(initial_id).managed_continuation && !capacity.Run(completion->competitor_id).managed_continuation);
 	const auto saved_root = ChatRepository::LoadLocalChatBounded(capacity.fixture.app.data_root, capacity.fixture.root_id, 4 * 1024 * 1024);
 	UAM_ASSERT(saved_root && uam::uuid::IsCanonicalUuid(saved_root->managed_followup_incarnation));
