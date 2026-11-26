@@ -2228,7 +2228,7 @@ UAM_TEST(CliProviderVersionInstallBlocksActiveProviderAliases)
 	session->prompt_request_id = 42;
 	app.acp_sessions.push_back(std::move(session));
 
-	UAM_ASSERT(!ProviderCliCompatibilityService().StartInstallProviderVersion(app, uam::provider_ids::kGeminiCli, std::string(uam::PreferredGeminiCliVersion()), &error));
+	UAM_ASSERT(!ProviderCliCompatibilityService().StartInstallProviderVersion(app, uam::provider_ids::kGeminiCli, "latest", &error));
 	UAM_ASSERT_EQ(error, std::string("Provider sessions are running. Stop the affected sessions and retry the update."));
 #else
 	(void)app;

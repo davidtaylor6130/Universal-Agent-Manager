@@ -133,7 +133,8 @@ UAM_TEST(VcsProvidersRegisterGitThenSvnWithTheirOwnDeclarations)
 		return uam::ranges::Contains(uam::VcsProviderFor(type).Declaration().capabilities, uam::vcs::VcsCapability::BranchCreate);
 	};
 	UAM_ASSERT(declares_branch_create(uam::VcsType::Git));
-	UAM_ASSERT(!declares_branch_create(uam::VcsType::Svn));
+	// SVN creates a branch as a server-side copy, then switches to it.
+	UAM_ASSERT(declares_branch_create(uam::VcsType::Svn));
 }
 
 UAM_TEST(VcsSelectionFallsBackToTheSystemThatIsActuallyPresent)
@@ -210,7 +211,10 @@ UAM_TEST(VcsBranchPickerRoutesThroughEachSystemsProvider)
 	UAM_ASSERT(!git.BranchesAreLocated());
 	UAM_ASSERT(svn.BranchesAreLocated());
 	UAM_ASSERT(uam::DeclaresCapability(git, uam::vcs::VcsCapability::BranchCreate));
-	UAM_ASSERT(!uam::DeclaresCapability(svn, uam::vcs::VcsCapability::BranchCreate));
+	UAM_ASSERT(uam::DeclaresCapability(svn, uam::vcs::VcsCapability::BranchCreate));
+	// Only Git records a new branch for an unused chat and creates it on the first message; SVN creation is a commit made now.
+	UAM_ASSERT(git.DefersBranchCreation());
+	UAM_ASSERT(!svn.DefersBranchCreation());
 
 	// Git's listing answers SVN for an SVN working copy, and its switch check sends the picker to the SVN selector.
 	TempDir temp("uam-vcs-branches");
@@ -236,6 +240,18 @@ UAM_TEST(VcsBranchPickerRoutesThroughEachSystemsProvider)
 	UAM_ASSERT(!outside_scope.ok);
 	UAM_ASSERT(outside_scope.conflict);
 	UAM_ASSERT(!outside_scope.error.empty());
+	// SVN creation checks its name and message before reaching the repository: a plain refusal, not a conflict.
+	uam::VcsBranchSelection nested{"a/b", true, {}};
+	nested.create_message = "Create branch";
+	const uam::VcsBranchOutcome named = svn.CheckBranchSelection(snapshot, chat, nested);
+	UAM_ASSERT(!named.ok);
+	UAM_ASSERT(!named.conflict);
+	UAM_ASSERT(named.error.find("letters, digits") != std::string::npos);
+	uam::VcsBranchSelection unexplained{"feature", true, {}};
+	const uam::VcsBranchOutcome silent = svn.CheckBranchSelection(snapshot, chat, unexplained);
+	UAM_ASSERT(!silent.ok);
+	UAM_ASSERT(!silent.conflict);
+	UAM_ASSERT(silent.error.find("commit message") != std::string::npos);
 
 	// The bridge names no system's branch operations itself.
 	const std::string bridge = ReadFile(fs::path(__FILE__).parent_path().parent_path() / "src/cef/chat_branch_handlers.cpp");

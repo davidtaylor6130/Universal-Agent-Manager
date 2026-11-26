@@ -95,7 +95,6 @@
 #include "cef/state_serializer.h"
 #include "common/companion/protocol.h"
 #include "core/chat_import_utils.h"
-#include "core/gemini_cli_compat.h"
 #include "remote/runner_protocol.h"
 #include "remote/runner_proxy.h"
 #include "remote/runner_client.h"

@@ -1078,6 +1078,58 @@ UAM_TEST(StartupModelDiscoveryPrefersTheNewestCacheAsTheSharedSource)
 	UAM_ASSERT_EQ(catalog.GetCachedProviderModels("codex-cli", empty)[0].value("id", ""), std::string("newer"));
 }
 
+UAM_TEST(StartupModelDiscoveryWaitsForTheBackgroundBudgetInOrder)
+{
+	StartupDiscoveryFixture fixture;
+	// Gemini's model request carries the workspace, so its three folders need three processes.
+	fixture.app.provider_profiles.push_back(ProviderProfileStore::DefaultGeminiProfile());
+	fixture.app.provider_model_catalog->Initialize(fixture.app.data_root, fixture.app.provider_profiles);
+	fixture.app.settings.default_new_chat_provider_id = "gemini-cli";
+	fixture.app.runtime_cli_versions_by_provider_id["gemini-cli"].checked = true;
+	fixture.app.runtime_cli_versions_by_provider_id["gemini-cli"].supported = true;
+	fixture.app.runtime_cli_versions_by_provider_id["codex-cli"].supported = false;
+	fixture.app.settings.host_admission.background_budget = 1;
+	fixture.app.host_admission = std::make_shared<uam::host_admission::HostAdmission>();
+	uam::StartupModelDiscoveryService discovery(fixture.Launcher());
+	discovery.Initialize(fixture.app);
+	UAM_ASSERT(discovery.Poll(fixture.app));
+	// One background process at a time on this computer: the other scopes keep their places.
+	UAM_ASSERT_EQ(fixture.launched.size(), std::size_t{1});
+	const std::string first = fixture.launched.front().workspace_directory;
+	UAM_ASSERT(!discovery.Poll(fixture.app));
+	UAM_ASSERT_EQ(fixture.launched.size(), std::size_t{1});
+	fixture.app.acp_sessions.front()->running = false;
+	UAM_ASSERT(discovery.Poll(fixture.app));
+	UAM_ASSERT_EQ(fixture.launched.size(), std::size_t{2});
+	UAM_ASSERT(fixture.launched.back().workspace_directory != first);
+	fixture.app.acp_sessions.back()->running = false;
+	UAM_ASSERT(discovery.Poll(fixture.app));
+	UAM_ASSERT_EQ(fixture.launched.size(), std::size_t{3});
+}
+
+UAM_TEST(StartupModelDiscoveryWaitsWhileThisComputerIsOverTheSoftLimit)
+{
+	StartupDiscoveryFixture fixture;
+	fixture.app.host_admission = std::make_shared<uam::host_admission::HostAdmission>();
+	fixture.app.host_load_sample = [](const std::string&)
+	{
+		uam::host_admission::LoadSample load;
+		load.known = true;
+		load.cpu_percent = 85.0;
+		load.free_memory_percent = 60.0;
+		return load;
+	};
+	uam::StartupModelDiscoveryService discovery(fixture.Launcher());
+	discovery.Initialize(fixture.app);
+	UAM_ASSERT(!discovery.Poll(fixture.app));
+	UAM_ASSERT(fixture.launched.empty());
+	UAM_ASSERT_EQ(fixture.app.host_admission->HealthOf("local"), uam::host_admission::Health::Degraded);
+	// Unknown load is not idle: the held state keeps its back-off rather than clearing at once.
+	fixture.app.host_load_sample = {};
+	UAM_ASSERT(!discovery.Poll(fixture.app));
+	UAM_ASSERT(fixture.launched.empty());
+}
+
 // #961: startup checked each candidate scope against every chat, canonicalizing both paths on each comparison, so a
 // large install with many worktree chats held the UI thread for tens of seconds while the chat list was applied.
 UAM_TEST(PerformanceStartupModelDiscoveryOnLargeInstall)

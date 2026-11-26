@@ -1,5 +1,7 @@
 #include "app/model_discovery_service.h"
 
+#include "app/host_admission_integration.h"
+
 #include "app/provider_model_catalog_service.h"
 #include "app/chat_domain_service.h"
 #include "common/config/execution_host_config.h"
@@ -104,7 +106,8 @@ namespace uam
 	}
 
 	StartupModelDiscoveryService::StartupModelDiscoveryService(LaunchFunction launch)
-	    : m_launch(launch ? std::move(launch) : LaunchFunction(StartEphemeralAcpModelDiscovery))
+	    : m_launch(launch ? std::move(launch) : LaunchFunction([](AppState& app, const std::string& provider_id, const std::string& workspace, const std::string& host_id, std::string* error)
+	      { return StartEphemeralAcpModelDiscovery(app, provider_id, workspace, host_id, error); }))
 	{
 	}
 
@@ -274,7 +277,8 @@ namespace uam
 					continue;
 				}
 				std::string check_error;
-				changed = ProviderCliCompatibilityService().StartProviderVersionCheck(app, group->provider_id, false, group->execution_host_id, &check_error) || changed;
+				if (AdmitBackgroundStart(app, "version-check:" + group->provider_id + "@" + group->execution_host_id, group->execution_host_id, false).admitted)
+					changed = ProviderCliCompatibilityService().StartProviderVersionCheck(app, group->provider_id, false, group->execution_host_id, &check_error) || changed;
 				++group;
 				continue;
 			}
@@ -337,6 +341,14 @@ namespace uam
 			std::vector<std::string> targets(stale.begin() + 1, stale.end());
 			const int attempts = scopes.attempts + 1;
 			const nlohmann::json source_before = app.provider_model_catalog->GetPersistentCatalogEntry(scopes.provider_id, workspace, scopes.execution_host_id);
+			// Background work: a computer at its background budget or over its load limit keeps the group waiting in its
+			// place, in order, while groups for other computers continue. Sharing a fresh cache above starts no process.
+			if (!AdmitBackgroundStart(app, "startup-discovery:" + scopes.provider_id + "@" + scopes.execution_host_id + ":" + workspace, scopes.execution_host_id, false).admitted)
+			{
+				group = m_pending_groups.insert(group, scopes);
+				++group;
+				continue;
+			}
 			// Keep cached choices visible while the scope is attempted once; an already pending explicit refresh owns it,
 			// and its result is shared the same way when it ends.
 			if (!app.provider_model_catalog->BeginDiscovery(scopes.provider_id, workspace, scopes.execution_host_id))
@@ -389,7 +401,9 @@ namespace uam
 			{
 				const auto before = app.provider_model_catalog->ActiveNativeModelDiscoveries();
 				std::string error;
-				(void)app.provider_model_catalog->StartAntigravityEffortDiscovery(*provider, *host, workspace, model, &error);
+				BackgroundAdmission admission = AdmitBackgroundStart(app, "effort-discovery:" + host_id + ":" + workspace + ":" + model, host_id);
+				if (admission.admitted)
+					(void)app.provider_model_catalog->StartAntigravityEffortDiscovery(*provider, *host, workspace, model, &error, std::move(admission.lease));
 				changed = app.provider_model_catalog->ActiveNativeModelDiscoveries() > before || changed;
 			}
 		}

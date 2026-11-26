@@ -38,11 +38,6 @@
 namespace uam
 {
 
-double LatestCliTransportActivityTime(const uam::CliTerminalState& terminal)
-{
-	return std::max(terminal.last_user_input_time_s, terminal.last_ai_output_time_s);
-}
-
 std::string AsyncNativeChatLoadTaskKey(std::string_view provider_id, const std::filesystem::path& chats_dir)
 {
 	std::string key(provider_id);
@@ -798,6 +793,27 @@ bool PollAllCliTerminals(CefRefPtr<CefBrowser> browser, uam::AppState& app, bool
 				if (ChatSession* chat = FindChatForCliTerminal(app, *terminal); chat != nullptr)
 					(void)StartCliTerminalForChat(app, *terminal, *chat, terminal->rows, terminal->cols);
 			changed = true;
+		}
+		// A launch held by host admission or by routing asks again about once a second, which keeps its place in
+		// line; Run anyway brings the next attempt forward. Only a change of the visible wait is a state change.
+		if (!terminal->running && terminal->should_launch && !terminal->worktree_launch_pending && terminal->context_preparation == nullptr &&
+		    now >= terminal->host_admission_retry_at_s)
+		{
+			ChatSession* chat = FindChatForCliTerminal(app, *terminal);
+			const bool routing_wait = chat != nullptr && app.execution_routing_waits.contains(chat->id);
+			if (!terminal->host_admission_wait.empty() || routing_wait)
+			{
+				terminal->host_admission_retry_at_s = now + 1.0;
+				const std::string wait_before = terminal->host_admission_wait;
+				if (chat != nullptr) (void)StartCliTerminalForChat(app, *terminal, *chat, terminal->rows, terminal->cols);
+				else
+				{
+					terminal->should_launch = false;
+					terminal->host_admission_wait.clear();
+					terminal->host_admission_run_anyway_offered = false;
+				}
+				changed = changed || terminal->running || terminal->host_admission_wait != wait_before;
+			}
 		}
 		if (!terminal->running)
 		{

@@ -448,6 +448,8 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"resolveLegacyChatImport", &UamQueryHandler::HandleResolveLegacyChatImport},
 		{"setShellActions", &UamQueryHandler::HandleSetShellActions},
 		{"setComputePools", &UamQueryHandler::HandleSetComputePools},
+		{"setHostAdmission", &UamQueryHandler::HandleSetHostAdmission},
+		{"runHeldWorkAnyway", &UamQueryHandler::HandleRunHeldWorkAnyway},
 		{"applyShellActions", &UamQueryHandler::HandleApplyShellActions},
 		{"dismissShellActionNotification", &UamQueryHandler::HandleDismissShellActionNotification},
 		{"managePullRequestWatch", &UamQueryHandler::HandleManagePullRequestWatch},

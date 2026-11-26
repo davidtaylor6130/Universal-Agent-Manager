@@ -30,6 +30,8 @@ Do not open `UI-V2/dist/index.html` directly. The frontend expects the native CE
 
 For the isolated SVN composer service fixtures, configure the same root project with `-DUAM_BUILD_TESTS=ON -DUAM_SVN_BRANCH_TESTS_ONLY=ON -DUAM_PACKAGE_REMOTE_RUNNERS=OFF`, then build `uam_svn_branch_tests` and run CTest. This avoids CEF downloads and provider/runner processes; CTest also registers `uam_svn_branch_integration` (`tests/svn_branch_integration.py`), which uses disposable `file://` repositories and a private SVN configuration, when `svn` and `svnadmin` are installed. Set `UAM_SVN_BRANCH_TESTS_ONLY=OFF` before using that build folder for normal native targets.
 
+The same configuration builds `uam_svn_branch_create_tests` for SVN branch creation; CTest runs its fake-repository cases as `uam_svn_branch_create` and its real-svn script `tests/svn_branch_create_integration.py` (disposable `file://` repositories only) as `uam_svn_branch_create_integration`, which reports Skipped without `svn` and `svnadmin`.
+
 ### Local development build
 
 Disable remote-helper packaging when you only need a local development build:

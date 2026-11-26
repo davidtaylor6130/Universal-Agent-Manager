@@ -447,11 +447,6 @@ std::optional<std::string> NativeSessionLinkService::MatchNativeSessionIdForLoca
 	return std::nullopt;
 }
 
-std::optional<std::string> NativeSessionLinkService::InferNativeSessionIdForLocalDraft(const ChatSession& local_chat, const std::vector<ChatSession>& native_chats) const
-{
-	return MatchNativeSessionIdForLocalDraft(local_chat, native_chats);
-}
-
 std::vector<std::string> NativeSessionLinkService::CollectNewSessionIds(const std::vector<ChatSession>& loaded_chats, const std::vector<std::string>& existing_ids) const
 {
 	std::unordered_set<std::string> seen;

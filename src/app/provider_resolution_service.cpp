@@ -193,12 +193,6 @@ std::string ProviderResolutionService::ChatProviderUnavailableReason(const uam::
 	return "Provider '" + preferred + "' is not supported in this build.";
 }
 
-bool ProviderResolutionService::ActiveProviderUsesNativeOverlayHistory(const uam::AppState& app) const
-{
-	const ProviderProfile* profile = ActiveProvider(app);
-	return profile != nullptr && ProviderRuntime::UsesNativeOverlayHistory(*profile);
-}
-
 bool ProviderResolutionService::ChatUsesNativeOverlayHistory(const uam::AppState& app, const ChatSession& chat) const
 {
 	return ProviderForChatMatches(app, chat, [](const ProviderProfile& profile) { return ProviderRuntime::UsesNativeOverlayHistory(profile); });

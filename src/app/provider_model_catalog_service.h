@@ -1,5 +1,6 @@
 #pragma once
 
+#include "common/runtime/host_admission.h"
 #include "common/models/app_models.h"
 #include "common/provider/provider_account_refusal.h"
 #include "common/provider/provider_profile.h"
@@ -45,8 +46,9 @@ class ProviderModelCatalogService
 	/// Start an explicit background read of local OpenCode configuration, retaining the current cache.
 	bool StartConfiguredOpenCodeRefresh();
 	/// <summary>Lists the native Antigravity catalogue without opening a conversation on the selected host.</summary>
-	bool StartAntigravityModelDiscovery(const ProviderProfile& profile, const ExecutionHost& host, const std::string& workspace, std::string* error_out = nullptr);
-	bool StartAntigravityEffortDiscovery(const ProviderProfile& profile, const ExecutionHost& host, const std::string& workspace, const std::string& model_id, std::string* error_out = nullptr);
+	/// <summary>admission is the host admission place the caller took for this background work; the worker holds it until it ends.</summary>
+	bool StartAntigravityModelDiscovery(const ProviderProfile& profile, const ExecutionHost& host, const std::string& workspace, std::string* error_out = nullptr, uam::host_admission::HeldLease admission = {});
+	bool StartAntigravityEffortDiscovery(const ProviderProfile& profile, const ExecutionHost& host, const std::string& workspace, const std::string& model_id, std::string* error_out = nullptr, uam::host_admission::HeldLease admission = {});
 	static std::optional<nlohmann::json> ParseAntigravityEffort(std::string_view output, const std::string& model_id);
 	std::size_t ActiveNativeModelDiscoveries() const;
 	/// <summary>Accepts only the bounded native ID-tab-name catalogue; no model-specific effort support is inferred.</summary>

@@ -742,17 +742,6 @@ Goal* GoalService::FindGoalById(AppState& app, const std::string& chat_id, const
 	return const_cast<Goal*>(FindGoalById(static_cast<const AppState&>(app), chat_id, goal_id));
 }
 
-std::vector<Goal> GoalService::GetGoalsForChat(const AppState& app, const std::string& chat_id)
-{
-	const ChatSession* chat = FindChatConst(app, chat_id);
-	if (chat == nullptr)
-	{
-		return {};
-	}
-
-	return chat->goals;
-}
-
 bool GoalService::RemoveGoal(AppState& app, const std::string& chat_id, const std::string& goal_id,
                              std::string* error_out, bool* work_changed_out, GoalRemovalStage stage,
                              GoalRemovalPreparation* preparation, std::function<bool()> admitted_owner)
