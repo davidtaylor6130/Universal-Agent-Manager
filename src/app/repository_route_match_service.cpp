@@ -1,4 +1,6 @@
 #include "common/platform/background_thread_priority.h"
+#include "common/platform/child_process_priority.h"
+#include "common/chat/chat_process_class.h"
 #include "app/repository_route_match_service.h"
 #include "common/utils/string_utils.h"
 #include "app/execution_routing_integration.h"
@@ -241,6 +243,7 @@ namespace uam
 			for (const std::pair<const std::string, std::vector<RepositoryRouteWorkspace*>>& group : by_host)
 				readers.emplace_back([&read_host, &group, &unfinished, &workspaces]
 				{
+					const uam::platform::ScopedChildProcessClass background_children(uam::platform::ChildProcessClass::Background);
 					try { read_host(group.second); }
 					catch (...)
 					{
@@ -311,6 +314,7 @@ namespace uam
 		task->worker = std::make_unique<std::jthread>([state = task.get(), hosts = app.settings.execution_hosts](std::stop_token stop)
 		{
 			uam::platform::LowerCurrentThreadToBackgroundPriority();
+			const uam::platform::ScopedChildProcessClass background_children(uam::platform::ChildProcessClass::Background);
 			try { state->observed = ReadRepositoryRouteInventory(state->captured, hosts, stop, &state->unread); }
 			catch (...) { state->observed = state->captured; state->unread.clear(); }
 			state->completed_at_s = GetAppTimeSeconds();
@@ -380,9 +384,11 @@ namespace uam
 		task->chat_incarnation = chat.metadata_incarnation;
 		task->started_at_s = now;
 		app.repository_route_tasks.push_back(task);
-		task->worker = std::make_unique<std::jthread>([state = task.get(), hosts = app.settings.execution_hosts](std::stop_token stop)
+		task->worker = std::make_unique<std::jthread>([state = task.get(), hosts = app.settings.execution_hosts, process_class = ChatWorkProcessClass(chat)](std::stop_token stop)
 		{
 			uam::platform::LowerCurrentThreadToBackgroundPriority();
+			// The launch check gates this chat's own turn, so its reads run at the chat's class, not as background work.
+			const uam::platform::ScopedChildProcessClass launch_children(process_class);
 			try
 			{
 				// The reader discards the expected identities it is handed, so a match is always a fresh read.

@@ -1813,6 +1813,7 @@ if(UAM_BUILD_TESTS)
     tests/codex_permission_tests.cpp
     tests/memory_workspace_ownership_tests.cpp
     tests/execution_routing_tests.cpp
+    tests/child_process_priority_tests.cpp
     tests/routing_default_scope_tests.cpp
     tests/model_discovery_startup_tests.cpp
     tests/remote_delivery_exit_tests.cpp
