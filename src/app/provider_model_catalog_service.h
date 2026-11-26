@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/models/app_models.h"
+#include "common/provider/provider_account_refusal.h"
 #include "common/provider/provider_profile.h"
 
 #include <string>
@@ -70,6 +71,23 @@ class ProviderModelCatalogService
 	/// Record a refresh failure while retaining the last successful provider cache.
 	void RememberRefreshFailure(const std::string& provider_id, std::string error, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local", std::optional<std::string_view> expected_scope_key = std::nullopt);
 
+	/// <summary>
+	/// Records a refusal that applies to the provider's account on one computer, not to a workspace, and persists it
+	/// with the catalogue so a restart does not relaunch the provider for every workspace. recorded_at_sec 0 is now.
+	/// </summary>
+	bool RememberAccountRefusal(const std::string& provider_id, std::string_view execution_host_id, account_refusal::Kind kind, std::string notice, std::int64_t recorded_at_sec = 0);
+	/// <summary>The recorded notice, active or expired, until a retry succeeds or the user retries; empty when none.</summary>
+	std::string GetAccountRefusalNotice(const std::string& provider_id, std::string_view execution_host_id = "local") const;
+	/// <summary>
+	/// True while a recorded refusal's TTL has not expired; automatic discovery skips the provider on that computer.
+	/// for_chat_launch asks whether a chat launch is also held, which an authentication refusal never does.
+	/// </summary>
+	bool IsAccountRefusalActive(const std::string& provider_id, std::string_view execution_host_id = "local", bool for_chat_launch = false) const;
+	/// <summary>The notice of an active refusal that holds chat launches, read under one lock; empty when launches may proceed.</summary>
+	std::string GetChatLaunchRefusalNotice(const std::string& provider_id, std::string_view execution_host_id = "local") const;
+	/// <summary>A manual retry forgets the refusal so the next request asks the provider again. Returns whether one was recorded.</summary>
+	bool ClearAccountRefusal(const std::string& provider_id, std::string_view execution_host_id = "local");
+
 	/// Return the isolated persistent cache for the provider's current configuration.
 	nlohmann::json GetCachedProviderModels(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local") const;
 	/// Return at most 32 exact same-scope advertised IDs, native model-config choices take precedence, without local/global fallbacks.
@@ -131,7 +149,9 @@ class ProviderModelCatalogService
 	/// catalogue snapshot depends on changed since it last looked. The lock types make that hold without care at
 	/// each site: a const member function sees the mutex as const and can only take Read; any other code (a
 	/// non-const member function, a worker lambda) sees it as non-const, where Read is deleted, and must take Write.
-	/// Const member functions cannot modify the service's state, so every modification happens under a Write.
+	/// Const member functions cannot modify the members snapshots read, so every change to them happens under a Write
+	/// (a const function can still act through a held pointer or write a file, which no snapshot reads, and resolves
+	/// workspace paths through the process-wide RecentPathProbe memo, which snapshots do read: the verifying push covers that).
 	/// </summary>
 	class GenerationMutex
 	{
@@ -189,6 +209,8 @@ class ProviderModelCatalogService
 	std::string m_configured_open_code_default_model;
 	nlohmann::json m_cached_codex_models;
 	nlohmann::json m_persistent_catalogs;
+	// Account-level refusals by provider configuration and computer (a catalogue key without a workspace).
+	nlohmann::json m_account_refusals = nlohmann::json::object();
 	std::map<std::string, std::string> m_catalog_key_by_provider_id;
 	std::map<std::string, std::string> m_connection_key_by_host_id;
 	std::map<std::string, std::string> m_refresh_error_by_provider_id;
@@ -252,6 +274,11 @@ class ProviderModelCatalogService
 	/// recent_workspace reuses a two-second-old canonical workspace; only the per-push display readers pass it.
 	std::string CatalogKey(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local", bool recent_workspace = false) const;
 	void LoadPersistentCatalogs();
+	// Caller holds m_mutex.
+	const nlohmann::json* AccountRefusalLocked(const std::string& provider_id, std::string_view execution_host_id) const;
+	// Caller holds m_mutex for writing. A new attempt or failure replaces an expired refusal's notice; a failure also
+	// replaces an authentication refusal, which never holds the chat launch that produced it.
+	void EraseExpiredAccountRefusalLocked(const std::string& provider_id, std::string_view execution_host_id);
 	bool WritePersistentCatalogs() const;
 
 	void StartRefreshTask();

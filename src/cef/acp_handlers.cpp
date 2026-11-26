@@ -1,4 +1,5 @@
 #include "app/pr_watch_service.h"
+#include "app/timer_service.h"
 #include "app/agent_run_scheduler.h"
 #include "cef/uam_query_handler.h"
 #include "cef/uam_query_handler_async.h"
@@ -385,6 +386,8 @@ namespace
 				{ result.status = 400; result.error = "Choose an absolute directory on this SSH host."; break; }
 				uam::remote::DirectoryListing listing;
 				if (!client.ListDirectories(uam::paths::PathFromUtf8(path), listing, &result.error)) { result.status = 500; break; }
+				if (!uam::execution_hosts::RemoteDirectoryMatchesRequest(host.platform, path, listing.directory))
+				{ result.status = 502; result.error = "The SSH host returned a different directory for this attachment."; break; }
 				MessageAttachment attachment;
 				attachment.id = uam::nlohmann_json::TrimmedStringValue(item, {attachment_fields::kIdField});
 				if (attachment.id.empty()) attachment.id = AttachmentId();
@@ -467,8 +470,14 @@ namespace
 		}
 		if (!result.error.empty())
 		{
+			// RemoveFile reconnects after a dropped connection. A host it cannot reach again keeps the rest for the
+			// chat's delete sweep (each was staged above) rather than waiting out a reconnect per file.
 			for (std::size_t cleanup = 0; cleanup < committed.size(); ++cleanup)
-				(void)client.RemoveFile("cleanup-" + std::to_string(cleanup), committed[cleanup]);
+			{
+				if (client.RemoveFile("cleanup-" + std::to_string(cleanup), committed[cleanup]) || client.IsConnected()) continue;
+				uam::diagnostics::Write("[stageChatAttachments] Remote attachment cleanup stopped: host unreachable, copies_left=" + std::to_string(committed.size() - cleanup));
+				break;
+			}
 			return result;
 		}
 		result.ok = true;
@@ -478,14 +487,22 @@ namespace
 
 void UamQueryHandler::HandleCompactAcpSession(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
+	// Typed `/compact <instructions>` arrives here too; a non-string value is refused rather than dropped.
+	const auto instructions = payload.find("instructions");
+	if (instructions != payload.end() && !instructions->is_string() && !instructions->is_null())
+	{
+		cb->Failure(400, "Compaction instructions must be text.");
+		return;
+	}
 	std::string error;
-	if (!uam::CompactAcpSession(m_app, payload.value("chatId", ""), &error))
+	bool instructions_used = false;
+	if (!uam::CompactAcpSession(m_app, payload.value("chatId", ""), &error, instructions != payload.end() && instructions->is_string() ? instructions->get<std::string>() : std::string{}, &instructions_used))
 	{
 		cb->Failure(409, FailureDetailOrFallback(error, "Manual compaction could not be requested."));
 		return;
 	}
 	uam::PushStateUpdateIfChanged(browser, m_app);
-	cb->Success(R"({"accepted":true})");
+	cb->Success(nlohmann::json{{"accepted", true}, {"instructionsUsed", instructions_used}}.dump());
 }
 
 void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -1094,6 +1111,8 @@ void UamQueryHandler::HandleDiscoverProviderModels(CefRefPtr<CefBrowser> browser
 	// A request the UI makes by itself (opening a model menu, showing a chat on the phone) is skipped while the cached
 	// models are current or were already refreshed this run. Refresh and Retry always ask the provider.
 	const bool automatic = payload.value("automatic", false);
+	// Refresh and Retry are also the user's manual retry of an account refusal recorded for this provider and computer.
+	if (!automatic) (void)m_app.provider_model_catalog->ClearAccountRefusal(provider_id, execution_host_id);
 	const bool should_start = automatic
 	    ? m_app.provider_model_catalog->BeginDiscoveryIfStale(provider_id, workspace_directory, execution_host_id)
 	    : m_app.provider_model_catalog->BeginDiscovery(provider_id, workspace_directory, execution_host_id);
@@ -1586,6 +1605,7 @@ void UamQueryHandler::HandleCancelAcpTurn(CefRefPtr<CefBrowser> browser, const n
 		if (session != nullptr && (session->remote_stop_pending || (session->remote_stop_unconfirmed && !session->running)))
 		{
 			if (m_app.pr_watch_service != nullptr) (void)m_app.pr_watch_service->EndWatchesForChat(chat_id);
+			if (m_app.timer_service != nullptr) (void)m_app.timer_service->CancelWakesForChat(chat_id);
 			uam::PushStateUpdateIfChanged(browser, m_app);
 			cb->Success(R"({"pending":true})");
 			return;
@@ -1596,8 +1616,9 @@ void UamQueryHandler::HandleCancelAcpTurn(CefRefPtr<CefBrowser> browser, const n
 		return;
 	}
 
-	// Pressing Stop also ends the chat's pull request watches, so a later wake cannot restart the work.
+	// Pressing Stop also ends the chat's pull request watches and scheduled follow-ups, so a later wake cannot restart the work.
 	if (m_app.pr_watch_service != nullptr) (void)m_app.pr_watch_service->EndWatchesForChat(chat_id);
+	if (m_app.timer_service != nullptr) (void)m_app.timer_service->CancelWakesForChat(chat_id);
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }

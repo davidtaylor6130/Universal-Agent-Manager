@@ -4,10 +4,12 @@
 // Include only from those four TUs and platform_services_windows_impl.cpp.
 
 #include "platform_services_windows_impl.h"
+#include "common/platform/child_process_priority.h"
 #include "common/paths/app_paths.h"
 #include "common/paths/path_utils.h"
 #include "common/state/app_state.h"
 #include "common/utils/env_utils.h"
+#include "common/utils/launch_argv_redaction.h"
 #include "common/utils/range_utils.h"
 #include "common/utils/shell_escape.h"
 #include "common/utils/string_utils.h"
@@ -41,6 +43,12 @@
 
 namespace uam::platform_windows_impl
 {
+
+/// Agent and background children start below normal priority, which their own children inherit; a user turn keeps the default.
+inline DWORD ChildProcessPriorityCreationFlags()
+{
+	return uam::platform::SpawnPriorityFor(uam::platform::CurrentChildProcessClass()).windows_below_normal ? BELOW_NORMAL_PRIORITY_CLASS : 0;
+}
 
 constexpr auto kDirectWindowsExecutableExtensions = std::to_array<std::string_view>({
     ".exe",
@@ -631,13 +639,19 @@ struct WindowsLaunchCommand
 	std::string original_command_line;
 	std::string resolved_command;
 	bool uses_cmd_wrapper = false;
+	/// command_line and original_command_line with private arguments (such as MCP env tables) replaced, for error text and logs.
+	std::string diagnostic_command_line;
+	std::string diagnostic_original_command_line;
 };
 
 inline WindowsLaunchCommand BuildWindowsLaunchCommand(const std::vector<std::string>& argv)
 {
 	RefreshProcessPathFromRegistry();
 	WindowsLaunchCommand launch;
+	// Error text and logs use the same command built from a redacted copy, so private values never reach them.
+	std::vector<std::string> redacted = uam::launch_argv::Redacted(argv);
 	launch.original_command_line = BuildWindowsCommandLine(argv);
+	launch.diagnostic_original_command_line = BuildWindowsCommandLine(redacted);
 
 	if (argv.empty())
 	{
@@ -648,6 +662,7 @@ inline WindowsLaunchCommand BuildWindowsLaunchCommand(const std::vector<std::str
 	if (!resolved_command)
 	{
 		launch.command_line = launch.original_command_line;
+		launch.diagnostic_command_line = launch.diagnostic_original_command_line;
 		return launch;
 	}
 
@@ -656,14 +671,31 @@ inline WindowsLaunchCommand BuildWindowsLaunchCommand(const std::vector<std::str
 	if (IsWindowsCommandScriptExtension(extension))
 	{
 		launch.uses_cmd_wrapper = true;
-		launch.command_line = QuoteWindowsArg(ResolveComSpecPath()) + " /D /V:OFF /S /C " + BuildCmdScriptInvocation(launch.resolved_command, argv);
+		const std::string wrapper = QuoteWindowsArg(ResolveComSpecPath()) + " /D /V:OFF /S /C ";
+		launch.command_line = wrapper + BuildCmdScriptInvocation(launch.resolved_command, argv);
+		launch.diagnostic_command_line = wrapper + BuildCmdScriptInvocation(launch.resolved_command, redacted);
 		return launch;
 	}
 
 	std::vector<std::string> resolved_argv = argv;
 	resolved_argv.front() = launch.resolved_command;
 	launch.command_line = BuildWindowsCommandLine(resolved_argv);
+	redacted.front() = launch.resolved_command;
+	launch.diagnostic_command_line = BuildWindowsCommandLine(redacted);
 	return launch;
+}
+
+/// <summary>cmd.exe refuses a command over 8,191 characters ("The command line is too long."), so a .cmd/.bat launch
+/// over it fails here with a clear, redacted message. The UTF-8 length after /C never undercounts cmd's characters.</summary>
+inline bool WindowsLaunchFitsCmdLimit(const WindowsLaunchCommand& launch, std::string* error_out)
+{
+	constexpr std::size_t kCmdCommandLimit = 8191;
+	const std::size_t command_at = launch.command_line.find(" /C ");
+	if (!launch.uses_cmd_wrapper || command_at == std::string::npos || launch.command_line.size() - command_at - 4 <= kCmdCommandLimit) return true;
+	if (error_out != nullptr)
+		*error_out = "The launch command is too long for cmd.exe (" + std::to_string(launch.command_line.size() - command_at - 4) +
+		             " characters; the limit is 8,191). Shorten MCP server settings or instructions. Command: " + launch.diagnostic_command_line + ".";
+	return false;
 }
 
 inline std::string WindowsLaunchDiagnosticSuffix(const WindowsLaunchCommand& launch)
@@ -671,7 +703,7 @@ inline std::string WindowsLaunchDiagnosticSuffix(const WindowsLaunchCommand& lau
 	std::ostringstream out;
 	if (!launch.original_command_line.empty())
 	{
-		out << " Original command: " << launch.original_command_line << ".";
+		out << " Original command: " << launch.diagnostic_original_command_line << ".";
 	}
 	if (!launch.resolved_command.empty())
 	{

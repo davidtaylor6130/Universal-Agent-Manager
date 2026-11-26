@@ -1,3 +1,4 @@
+#include "common/platform/cef_sandbox_folder_access.h"
 #include "common/platform/data_root_lock.h"
 #include "platform_services_windows_impl_internal.h"
 
@@ -346,7 +347,7 @@ class WindowsProcessService final : public IPlatformProcessService
 		startup_info.lpAttributeList = attribute_list.Get();
 
 		PROCESS_INFORMATION process_info{};
-		const DWORD creation_flags = CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT;
+		const DWORD creation_flags = CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT | ChildProcessPriorityCreationFlags();
 		const BOOL created = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, TRUE, creation_flags, environment_block.data(), nullptr, &startup_info.StartupInfo, &process_info);
 		CloseInvalidHandleIfOpen(stdout_write);
 
@@ -565,9 +566,9 @@ class WindowsProcessService final : public IPlatformProcessService
 
 		const WindowsLaunchCommand launch = BuildWindowsLaunchCommand(argv);
 		const std::wstring command_w = WideFromUtf8(launch.command_line);
-		if (command_w.empty())
+		if (command_w.empty() || !WindowsLaunchFitsCmdLimit(launch, error_out))
 		{
-			if (error_out != nullptr)
+			if (error_out != nullptr && command_w.empty())
 			{
 				*error_out = "Failed to encode stdio command line.";
 			}
@@ -578,8 +579,12 @@ class WindowsProcessService final : public IPlatformProcessService
 		std::vector<wchar_t> command_line(command_w.begin(), command_w.end());
 		command_line.push_back(L'\0');
 		const std::wstring working_directory_w = working_directory.empty() ? std::wstring() : working_directory.wstring();
+		// CEF's bootstrap.exe moves UAM's own helper processes into the app folder before UAM's code runs, so name
+		// the chosen directory for the helper's entry point to restore (see cef_sandbox_folder_access.h).
+		std::vector<std::pair<std::string, std::string>> launch_environment = environment_overrides;
+		uam::platform::AddLaunchWorkingDirectory(launch_environment, argv.front(), working_directory, ResolveCurrentExecutablePath());
 		std::vector<wchar_t> environment_block;
-		if (!BuildEnvironmentBlock(environment_overrides, environment_block, error_out, true))
+		if (!BuildEnvironmentBlock(launch_environment, environment_block, error_out, true))
 		{
 			CloseStdioPipeHandles(stdin_read, stdin_write, stdout_read, stdout_write, stderr_read, stderr_write);
 			return false;
@@ -606,7 +611,7 @@ class WindowsProcessService final : public IPlatformProcessService
 		startup_info.lpAttributeList = attribute_list.Get();
 
 		PROCESS_INFORMATION process_info{};
-		const DWORD creation_flags = CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT;
+		const DWORD creation_flags = CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT | ChildProcessPriorityCreationFlags();
 		const wchar_t* working_directory_arg = working_directory.empty() ? nullptr : working_directory_w.c_str();
 		const BOOL created = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, TRUE, creation_flags, environment_block.empty() ? nullptr : environment_block.data(), working_directory_arg, &startup_info.StartupInfo, &process_info);
 
@@ -617,7 +622,7 @@ class WindowsProcessService final : public IPlatformProcessService
 			const DWORD launch_error = GetLastError();
 			if (error_out != nullptr)
 			{
-				*error_out = "Failed to start stdio process. " + FormatWindowsError(launch_error) + ". Command: " + launch.command_line + "." + WindowsLaunchDiagnosticSuffix(launch);
+				*error_out = "Failed to start stdio process. " + FormatWindowsError(launch_error) + ". Command: " + launch.diagnostic_command_line + "." + WindowsLaunchDiagnosticSuffix(launch);
 			}
 			CloseStdioParentPipeEnds(stdin_write, stdout_read, stderr_read);
 			return false;

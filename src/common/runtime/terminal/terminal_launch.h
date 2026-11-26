@@ -181,6 +181,13 @@ namespace uam
 		{
 			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, ceiling_error);
 		}
+		// A custom agent's instructions must reach the provider; refuse before worktree, baseline or SSH work when they cannot.
+		// A re-entry while that work is pending already passed this check, so the agent sources are not rescanned each poll.
+		const bool agent_checked = terminal.worktree_launch_pending || terminal.repository_baseline_pending || terminal.context_preparation != nullptr;
+		if (const std::string agent_error = agent_checked ? std::string{} : ProviderInteractiveAgentError(app, chat, *execution_host); !agent_error.empty())
+		{
+			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, agent_error);
+		}
 		// Without its created native session this launch is refused anyway; refuse before worktree,
 		// baseline or SSH work. HandleStartCli creates the session (after the baseline) before calling here.
 		if (std::string session_error; runtime.RequiresNativeSessionCreation() &&
@@ -338,6 +345,8 @@ namespace uam
 		terminal.native_identity_deferred_input.clear();
 		terminal.native_identity_query_phase = 0;
 		terminal.native_identity_query_time_s = launch_time_s;
+		terminal.composer_may_hold_draft = false;
+		terminal.composer_last_input_byte = 0;
 		const std::string version_key = CliProviderVersionStateKey(provider.id, execution_host->id);
 		if (terminal.attached_session_id.empty())
 		{

@@ -181,7 +181,7 @@ The following mutate only the requested chat or create a chat. Their responses r
 | `setChatMemoryEnabled` | `{chatId,enabled,memoryLevel?}` |
 | `setChatSmallModelMode` | `{chatId,enabled}` |
 | `setAcpConfigOption` | `{chatId,configId,value}`; existing provider session option validation |
-| `compactAcpSession` | `{chatId}` |
+| `compactAcpSession` | `{chatId,instructions?}`; replies `{accepted,instructionsUsed}` |
 | `manageQueuedAcpPrompt` | `{chatId,operation,...existing revision-bound queue fields}`; `remove`/`steer` require `{index,expected:{id,revision}}`; other operations `edit`, `reorder`, `discardUnsent` retain their existing schemas |
 | `stageChatAttachments` | Byte staging schema below |
 | `sendAcpPrompt` | `{chatId,text,attachments?,goalMode?,goalId?,computerUseMode?,steerNow?}`; attachments must be unchanged staging results; host `markdownStoreFiles` are unavailable |
@@ -247,7 +247,7 @@ Commit consumes the ID **before** parsing, policy checks or action dispatch. Inc
 | 404 | Unknown, expired or consumed transfer ID / missing chat |
 | 409 | Noncontiguous offset, incomplete consumed commit, or existing handler revision/runtime conflict |
 | 413 | Wire body over 64 KiB, declared total/chunk/attachment too large or chunk overruns total |
-| 428 | Held for [desktop confirmation](../phone-access.md): a raise above Default, leaving Plan, agent change, enabling UAM Control or provider-default change; not applied yet |
+| 428 | Held for [desktop confirmation](../phone-access.md): a raise above Default, leaving Plan, agent change, enabling UAM Control, provider-default change, or `resolveAcpUserInput` answering Allow to a `uam-control:` Computer Use, chat or goal request; not applied yet |
 | 429 | Eight such requests already wait for desktop confirmation |
 | 503 | Upload count/aggregate capacity, UUID generation/collision, attachment descriptor capacity or shutdown |
 
@@ -261,7 +261,7 @@ Live chat state continues to use `getInitialState` with known boot ID/state revi
 
 ## Source and verification entry points
 
-[Server](../../src/cef/companion_server.cpp), [pure policy and staged-descriptor guard](../../src/common/companion/protocol.h), [selective settings policy](../../src/common/companion/settings_protocol.h), [pure request transfer store](../../src/common/companion/request_transfer.h), [focused protocol cases](../../tests/companion_protocol_tests.cpp), [native lifecycle cases](../../tests/companion_lifecycle_tests.cpp) and [opt-in HTTP smoke test](../../tests/companion_protocol_http.py). Build `uam_companion_protocol_tests` in the existing `Builds/agent` configuration; CTest names start `uam_companion_`. The pure target uses the existing bridge parser without CEF/Foundation linkage. Full app build, live HTTPS/browser/native-device checks, simultaneous desktop-selection/usage acceptance, Claude review where applicable and David's approval remain separate parent-task gates.
+[Server](../../src/cef/companion_server.cpp), [pure policy and staged-descriptor guard](../../src/common/companion/protocol.h), [selective settings policy](../../src/common/companion/settings_protocol.h), [pure request transfer store](../../src/common/companion/request_transfer.h), [focused protocol cases](../../tests/companion_protocol_tests.cpp), [native lifecycle cases](../../tests/companion_lifecycle_tests.cpp) and [opt-in HTTP smoke test](../../tests/companion_protocol_http.py). The browser companion's request upload is in [its bridge](../../UI-V2/src/ipc/cefBridge.ts), with [mocked-server cases](../../UI-V2/src/ipc/companionRequestUpload.test.ts); the native client's is in [CompanionClient.swift](../../Mobile/iOS/UAMKit/Sources/UAMKit/CompanionClient.swift). Build `uam_companion_protocol_tests` in the existing `Builds/agent` configuration; CTest names start `uam_companion_`. The pure target uses the existing bridge parser without CEF/Foundation linkage. Full app build, live HTTPS/browser/native-device checks, simultaneous desktop-selection/usage acceptance, Claude review where applicable and David's approval remain separate parent-task gates.
 
 Provider model-option and managed-child actions use the same central action policy, explicit parent chat identity and final transferred-envelope authorization as other companion requests. Unknown fields, malformed ownership and read-only mutation targets are rejected before native dispatch; successful admission does not replace native lifetime, listing-scope, permission or save-before-delivery checks. These API routes do not establish that the currently installed native iPhone UI exposes the new provider controls.
 

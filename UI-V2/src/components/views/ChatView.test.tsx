@@ -199,7 +199,10 @@ describe('ChatView', () => {
       expect(open()).toBeNull() // A refresh that answers quickly never flashes the divider.
       act(() => { vi.advanceTimersByTime(400) })
       const strip = open()
-      expect(strip?.getAttribute('role')).toBe('status')
+      // The divider is not live; its title is announced once through the chat's polite region.
+      expect(strip?.getAttribute('role')).toBeNull()
+      expect(strip?.closest('[aria-live]')).toBeNull()
+      expect(host.querySelector('[data-testid="chat-announcement"]')?.textContent).toBe('Refreshing history')
       expect(strip?.textContent).toContain('Refreshing history')
       expect(host.textContent).toContain('Already loaded answer')
       expect(host.querySelector('.conversation-skeleton')).toBeNull()
@@ -871,7 +874,7 @@ describe('ChatView', () => {
       act(() => root.unmount())
       host.remove()
     }
-    expect(appFailures.filter((failure) => failure.detail.includes('Remount history error.'))).toHaveLength(1)
+    expect(appFailures.filter((failure) => `${failure.message} ${failure.detail}`.includes('Remount history error.'))).toHaveLength(1)
   })
 
   it('keeps retry loading isolated when switching chats before completion', async () => {
@@ -1105,6 +1108,10 @@ describe('ChatView', () => {
     ]
     expect(buildUamAgentCycle(agents, ['writer', 'reviewer', 'writer', 'missing', 'plan'])).toEqual([
       'build', 'plan', 'writer', 'reviewer',
+    ])
+    // A delegate-only agent is listed in the picker but never becomes the chat's agent through the cycle.
+    expect(buildUamAgentCycle([...agents, { id: 'helper', description: '', builtIn: false, delegateOnly: true }], ['helper', 'writer'])).toEqual([
+      'build', 'plan', 'writer',
     ])
     expect(matchesUamAgentCycleShortcut('shift+tab', { key: 'Tab', shiftKey: true, ctrlKey: false, altKey: false, metaKey: false })).toBe(true)
     expect(matchesUamAgentCycleShortcut('shift+tab', { key: 'Tab', shiftKey: true, ctrlKey: true, altKey: false, metaKey: false })).toBe(false)
@@ -1834,6 +1841,86 @@ describe('ChatView', () => {
     }
   })
 
+  it('keeps the summary with Retry when the repository read fails, such as after an SSH host drops', async () => {
+    const failed = { available: false, vcsTypes: [], activeVcsType: 'git' as const, workspaceDirectory: '', branchOrRevision: '', changedFiles: [], lineStatsReady: true, warning: '', error: 'The remote runner request failed.' }
+    const recovered = { available: true, vcsTypes: ['git' as const], activeVcsType: 'git' as const, workspaceDirectory: '/tmp/project', branchOrRevision: 'main', changedFiles: [{ path: 'src/after.ts', status: 'M', staged: false, additions: 1, deletions: 0, binary: false }], lineStatsReady: true, warning: '', error: '' }
+    let summaryReads = 0
+    // The composer's separate branch read (contextOnly) is not the summary and always succeeds here.
+    const getVcsCommitStatus = vi.fn((_id: string, _type?: string, options?: { contextOnly?: boolean }) =>
+      Promise.resolve(options?.contextOnly ? recovered : summaryReads++ === 0 ? failed : recovered))
+    useAppStore.setState((state) => ({
+      repositoryReviewBySessionId: {},
+      getVcsCommitStatus,
+      sessions: state.sessions.map((session) => ({ ...session, workspaceDirectory: '/tmp/project', workspaceIsolationKind: undefined })),
+      acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false, lifecycleState: 'ready', pendingPermission: null, pendingUserInput: null, processingStartedAtMs: null, turnSerial: 2 } },
+    }))
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => { root.render(<ChatView session={useAppStore.getState().sessions[0]} />); await Promise.resolve() })
+      expect(getVcsCommitStatus).toHaveBeenCalledWith('chat-1', 'git', expect.objectContaining({ comparisonRef: 'chat', reportFailure: true }))
+      const summary = host.querySelector('[aria-label="Review changes"]') as HTMLElement
+      expect(summary).not.toBeNull()
+      expect(summary.querySelector('[role="alert"]')?.textContent).toContain('Could not read changes. The remote runner request failed.')
+      const retry = [...summary.querySelectorAll('button')].find((button) => button.textContent === 'Retry') as HTMLButtonElement
+      await act(async () => { retry.click(); await Promise.resolve() })
+      expect(summaryReads).toBe(2)
+      const refreshed = host.querySelector('[aria-label="Review changes"]') as HTMLElement
+      expect(refreshed.querySelector('[role="alert"]')).toBeNull()
+      expect(refreshed.textContent).toContain('after.ts')
+      expect(refreshed.textContent).toContain('1 changed file')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+    }
+  })
+
+  it('retries a read refused because the workspace changed under it once, and never shows that race as an error', async () => {
+    const stale = { available: false, vcsTypes: [], activeVcsType: 'git' as const, workspaceDirectory: '', branchOrRevision: '', changedFiles: [], lineStatsReady: true, warning: '', error: 'The chat workspace changed while its repository context was loading.', contextChanged: true }
+    const recovered = { available: true, vcsTypes: ['git' as const], activeVcsType: 'git' as const, workspaceDirectory: '/tmp/project', branchOrRevision: 'main', changedFiles: [{ path: 'src/after.ts', status: 'M', staged: false, additions: 1, deletions: 0, binary: false }], lineStatsReady: true, warning: '', error: '' }
+    const previous = { ...recovered, changedFiles: [{ path: 'src/previous-host.ts', status: 'M', staged: false, additions: 4, deletions: 0, binary: false }] }
+    const run = async (summaryResults: Array<typeof stale | typeof recovered>) => {
+      let summaryReads = 0
+      const getVcsCommitStatus = vi.fn((_id: string, _type?: string, options?: { contextOnly?: boolean }) =>
+        Promise.resolve(options?.contextOnly ? recovered : summaryResults[Math.min(summaryReads++, summaryResults.length - 1)]))
+      useAppStore.setState((state) => ({
+        // Rows from before the host or workspace changed must not survive a read that stays stale.
+        repositoryReviewBySessionId: { 'chat-1': previous },
+        getVcsCommitStatus,
+        sessions: state.sessions.map((session) => ({ ...session, workspaceDirectory: '/tmp/project', workspaceIsolationKind: undefined })),
+        acpBindingBySessionId: { ...state.acpBindingBySessionId, 'chat-1': { ...state.acpBindingBySessionId['chat-1'], processing: false, lifecycleState: 'ready', pendingPermission: null, pendingUserInput: null, processingStartedAtMs: null, turnSerial: 2 } },
+      }))
+      const host = document.createElement('div')
+      document.body.appendChild(host)
+      const root = createRoot(host)
+      await act(async () => { root.render(<ChatView session={useAppStore.getState().sessions[0]} />); await Promise.resolve() })
+      await act(async () => { await Promise.resolve() })
+      return { host, cleanup: () => { act(() => root.unmount()); host.remove() }, reads: () => summaryReads }
+    }
+
+    const recovers = await run([stale, recovered])
+    try {
+      expect(recovers.reads()).toBe(2)
+      const summary = recovers.host.querySelector('[aria-label="Review changes"]') as HTMLElement
+      expect(summary.querySelector('[role="alert"]')).toBeNull()
+      expect(summary.textContent).toContain('after.ts')
+    } finally {
+      recovers.cleanup()
+    }
+
+    const staysStale = await run([stale])
+    try {
+      expect(staysStale.reads()).toBe(2)
+      expect(staysStale.host.querySelector('[aria-label="Review changes"]')).toBeNull()
+      expect(staysStale.host.textContent).not.toContain('repository context was loading')
+      expect(staysStale.host.textContent).not.toContain('previous-host.ts')
+      expect(useAppStore.getState().repositoryReviewBySessionId['chat-1']).toBeUndefined()
+    } finally {
+      staysStale.cleanup()
+    }
+  })
+
   it('shows no summary for a workspace that simply has no repository', async () => {
     const status = { available: false, vcsTypes: [], activeVcsType: 'git' as const, workspaceDirectory: '/tmp/project', branchOrRevision: '', changedFiles: [], lineStatsReady: true, warning: 'No Git or SVN repository detected for this workspace.', error: '' }
     useAppStore.setState((state) => ({
@@ -2447,11 +2534,88 @@ describe('ChatView', () => {
     document.body.appendChild(host)
     const root = createRoot(host)
     act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
-    expect(host.querySelector('[data-testid="compute-pool-wait"]')?.textContent).toBe('Waiting for InferDeck slot (2/2)')
+    expect(host.querySelector('[data-testid="compute-pool-wait"]')?.textContent).toBe('Waiting for InferDeck slot (2/2 in use)')
     expect(host.textContent).not.toContain('Delivery not confirmed')
     expect(host.querySelector('[data-testid="turn-starting"]')).toBeNull()
     act(() => root.unmount())
     host.remove()
+  })
+
+  it('keeps the working clock out of the live region and announces only the reply starting, finishing and failing', () => {
+    vi.useFakeTimers()
+    const binding = (patch: Partial<AcpBinding>, chatId = 'chat-1') => useAppStore.setState((state) => ({
+      acpBindingBySessionId: { ...state.acpBindingBySessionId, [chatId]: { ...state.acpBindingBySessionId['chat-1'], turnEvents: [], turnAssistantMessageIndex: -1, ...patch } },
+    }))
+    const question: Message = { id: 'question', sessionId: 'chat-1', role: 'user', content: 'Question', createdAt: new Date(0) } as Message
+    const answer: Message = { id: 'answer', sessionId: 'chat-1', role: 'assistant', content: 'Answer', createdAt: new Date(1) } as Message
+    const history = (messages: Message[]) => useAppStore.setState((state) => ({ messages: { ...state.messages, 'chat-1': messages } }))
+    history([question])
+    binding({ lifecycleState: 'processing', processing: true, running: true, lastError: '', lastStopReason: undefined })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    const region = () => host.querySelector('[data-testid="chat-announcement"]')!
+    try {
+      act(() => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      expect(region().getAttribute('aria-live')).toBe('polite')
+      expect(region().classList.contains('select-none')).toBe(true)
+      expect(host.querySelectorAll('[data-testid="chat-announcement"]')).toHaveLength(1)
+      const starting = host.querySelector('[data-testid="turn-starting"]')!
+      expect(starting.getAttribute('role')).toBeNull()
+      expect(starting.closest('[aria-live],[role="status"]')).toBeNull()
+      expect(starting.querySelector('[aria-live],[role="status"]')).toBeNull()
+      // The state the chat opened in is not announced, and the ticking clock never is.
+      expect(region().textContent).toBe('')
+      act(() => vi.advanceTimersByTime(3000))
+      expect(starting.textContent).toContain('Working 3s')
+      expect(region().textContent).toBe('')
+      // Cancel turn before any reply text: processing ends with no stop reason and no reply row.
+      act(() => binding({ lifecycleState: 'ready', processing: false }))
+      expect(region().textContent).toBe('Reply stopped.')
+      act(() => binding({ lifecycleState: 'processing', processing: true }))
+      expect(region().textContent).toBe('Reply started.')
+      act(() => vi.advanceTimersByTime(2000))
+      expect(region().textContent).toBe('Reply started.')
+      // A reply whose row has not loaded yet is judged from the turn's own events, not read as stopped.
+      act(() => binding({ lifecycleState: 'ready', processing: false, turnEvents: [{ type: 'assistant_text', text: 'Answer' }] }))
+      expect(region().textContent).toBe('Reply finished.')
+      act(() => binding({ lifecycleState: 'processing', processing: true }))
+      act(() => { history([question, answer]); binding({ lifecycleState: 'ready', processing: false }) })
+      expect(region().textContent).toBe('Reply finished.')
+      // The line clears later, so reading the transcript afterwards finds no stale state.
+      act(() => vi.advanceTimersByTime(7000))
+      expect(region().textContent).toBe('')
+      // A failure whose error alert announces itself is not read a second time.
+      act(() => { history([question, answer, { ...question, id: 'second' }]); binding({ lifecycleState: 'processing', processing: true }) })
+      act(() => binding({ lifecycleState: 'error', processing: false, lastError: 'Provider exited.' }))
+      expect(Array.from(host.querySelectorAll('[role="alert"]')).some((alert) => alert.textContent?.includes('Provider exited.'))).toBe(true)
+      expect(region().textContent).toBe('Reply started.')
+      // A dismissed alert does not come back for the same error text, so that failure gets its line.
+      act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Dismiss composer error"]')!.click())
+      act(() => binding({ lifecycleState: 'processing', processing: true }))
+      act(() => binding({ lifecycleState: 'error', processing: false, lastError: 'Provider exited.' }))
+      expect(Array.from(host.querySelectorAll('[role="alert"]')).some((alert) => alert.textContent?.includes('Provider exited.'))).toBe(false)
+      expect(region().textContent).toBe('Reply failed.')
+      // A failure with no error text still gets its one line.
+      act(() => binding({ lifecycleState: 'processing', processing: true, lastError: '' }))
+      expect(region().textContent).toBe('Reply started.')
+      act(() => binding({ lifecycleState: 'error', processing: false, lastError: '' }))
+      expect(region().textContent).toBe('Reply failed.')
+      // Switching from a working chat to an idle one announces nothing for either chat.
+      const first = useAppStore.getState().sessions[0]
+      const second = { ...first, id: 'chat-2', name: 'Second chat' }
+      useAppStore.setState((state) => ({ sessions: [first, second], messages: { ...state.messages, 'chat-2': [answer] } }))
+      binding({ lifecycleState: 'processing', processing: true })
+      binding({ lifecycleState: 'ready', processing: false }, 'chat-2')
+      act(() => root.render(<ChatView session={first} />))
+      expect(region().textContent).toBe('Reply started.')
+      act(() => root.render(<ChatView session={second} />))
+      expect(region().textContent).toBe('')
+    } finally {
+      act(() => root.unmount())
+      host.remove()
+      vi.useRealTimers()
+    }
   })
 
   it('starts one working clock immediately and keeps time when the first turn event arrives', async () => {
@@ -5440,7 +5604,7 @@ describe('ChatView', () => {
     expect(reportedText()).toContain('Unsupported permission mode "unrestricted"')
     // Feedback now goes to the shared alert once; the inline dismiss control is gone.
     expect(host.querySelector('button[aria-label="Dismiss command feedback"]')).toBeNull()
-    expect(appFailures.filter((failure) => failure.detail.includes('Unsupported permission mode "unrestricted"'))).toHaveLength(1)
+    expect(appFailures.filter((failure) => `${failure.message} ${failure.detail}`.includes('Unsupported permission mode "unrestricted"'))).toHaveLength(1)
 
     act(() => {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(textarea, 'keep /permission yo tail')
@@ -5490,7 +5654,7 @@ describe('ChatView', () => {
     await act(acceptYolo)
     expect(reportedText()).toContain('Native permission update was rejected.')
     expect(host.querySelector('button[aria-label="Dismiss command feedback"]')).toBeNull()
-    expect(appFailures.filter((failure) => failure.detail.includes('Native permission update was rejected.'))).toHaveLength(1)
+    expect(appFailures.filter((failure) => failure.detail.includes('Native permission update was rejected.')).map((failure) => failure.message)).toEqual(['The permission mode was not changed.'])
 
     await act(requestYolo)
     await act(acceptYolo)
@@ -5886,7 +6050,7 @@ describe('ChatView', () => {
     expect(useAppStore.getState().markdownStoreAttachedBySessionId['chat-1']).toEqual([skill])
     expect(useAppStore.getState().messages['chat-1']).toHaveLength(2)
     if (operation === 'failure') expect(reportedText()).toContain('This provider does not support manual compaction.')
-    if (operation === 'not-accepted') expect(reportedText()).toContain('Compaction failed: the request was not accepted.')
+    if (operation === 'not-accepted') expect(appFailures.at(-1)).toMatchObject({ message: 'Compaction failed.', detail: 'The request was not accepted.' })
     act(() => root.unmount())
     host.remove()
     delete window.cefQuery
@@ -7931,6 +8095,32 @@ describe('ChatView', () => {
     useAppStore.setState({ branchSwitching: undefined })
   })
 
+  it.each([
+    { label: 'shows the chosen base that differs from the checked-out branch', gitBaseBranch: 'build/x', shown: 'build/x', aria: 'Base branch build/x, local copy on main' },
+    { label: 'keeps the checked-out branch without a base override', gitBaseBranch: null, shown: 'main', aria: 'Branch main' },
+    { label: 'keeps the checked-out branch when the base matches it', gitBaseBranch: 'main', shown: 'main', aria: 'Branch main' },
+    { label: 'keeps the checked-out branch for an explicit HEAD base', gitBaseBranch: '', shown: 'main', aria: 'Branch main' },
+    { label: 'shows the chosen base while the branch read has failed', gitBaseBranch: 'build/x', shown: 'build/x', aria: 'Base branch build/x', readFails: true },
+    { label: 'shows no branch while the read has failed without a base override', gitBaseBranch: null, shown: undefined, aria: undefined, readFails: true },
+  ])('$label before the first message (#1029)', async ({ gitBaseBranch, shown, aria, readFails }) => {
+    useAppStore.setState((state) => ({
+      sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, workspaceDirectory: '/tmp/project', workspaceIsolationKind: 'pendingGitWorktree', workspaceBranchName: '', gitBaseBranch } : session),
+      getVcsCommitStatus: vi.fn(async (): Promise<VcsCommitStatus> => readFails
+        ? { available: false, vcsTypes: [], activeVcsType: 'git', workspaceDirectory: '/tmp/project', branchOrRevision: '', changedFiles: [], lineStatsReady: true, warning: '', error: 'read failed' }
+        : { available: true, vcsTypes: ['git'], activeVcsType: 'git', workspaceDirectory: '/tmp/project', branchOrRevision: 'main', changedFiles: [], lineStatsReady: true, warning: '', error: '' }),
+      branchSwitching: true,
+    }))
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => { root.render(<ChatView session={useAppStore.getState().sessions[0]} />) })
+      const branch = host.querySelector('.uam-composer-workspace-tab [aria-label^="B"]')
+      expect(branch?.getAttribute('aria-label') ?? undefined).toBe(aria)
+      expect(branch?.textContent ?? undefined).toBe(shown)
+    } finally { act(() => root.unmount()); host.remove(); useAppStore.setState({ branchSwitching: undefined }) }
+  })
+
   it('reads the repository branch for the composer tab once when the chat opens', async () => {
     const getVcsCommitStatus = vi.fn(() => Promise.resolve({
       available: true, vcsTypes: ['git'], activeVcsType: 'git', workspaceDirectory: '/tmp/project',
@@ -9300,7 +9490,7 @@ describe('ChatView', () => {
   })
 
   // #278: a settled turn keeps its events while a later user row (failed-reconnect queue, prepared input) is appended.
-  const renderTurnAfterFollowUp = (overrides: { processing?: boolean; turnUserMessageIndex?: number; turnAssistantMessageIndex?: number; assistantContent?: string; assistantStreaming?: boolean; leadingAssistant?: boolean; followUp?: boolean; trailingRows?: Message[]; historyStart?: number; messageCount?: number; turnEvents?: AcpTurnEvent[]; toolCalls?: AcpToolCall[]; pendingPermission?: AcpBinding['pendingPermission'] }) => {
+  const renderTurnAfterFollowUp = (overrides: { processing?: boolean; turnUserMessageIndex?: number; turnAssistantMessageIndex?: number; assistantContent?: string; assistantStreaming?: boolean; leadingAssistant?: boolean; followUp?: boolean; followUpSteer?: boolean; trailingRows?: Message[]; historyStart?: number; messageCount?: number; turnEvents?: AcpTurnEvent[]; toolCalls?: AcpToolCall[]; pendingPermission?: AcpBinding['pendingPermission'] }) => {
     useAppStore.setState((state) => ({
       historyStartIndexBySessionId: overrides.historyStart ? { 'chat-1': overrides.historyStart } : {},
       sessions: state.sessions.map((session) => session.id === 'chat-1' ? { ...session, messageCount: overrides.messageCount } : session),
@@ -9310,7 +9500,7 @@ describe('ChatView', () => {
           ...(overrides.leadingAssistant ? [{ id: 'm-0', sessionId: 'chat-1', role: 'assistant' as const, content: 'Earlier answer', createdAt: new Date(0) }] : []),
           { id: 'm-1', sessionId: 'chat-1', role: 'user', content: 'Please inspect the workspace', createdAt: new Date(0) },
           { id: 'm-2', sessionId: 'chat-1', role: 'assistant', content: overrides.assistantContent ?? 'Status update.\n\nSettled answer.', isStreaming: overrides.assistantStreaming, createdAt: new Date(1) },
-          ...(overrides.followUp === false ? [] : [{ id: 'm-3', sessionId: 'chat-1', role: 'user' as const, content: 'Follow-up row', createdAt: new Date(2) }]),
+          ...(overrides.followUp === false ? [] : [{ id: 'm-3', sessionId: 'chat-1', role: 'user' as const, content: 'Follow-up row', prioritySteer: overrides.followUpSteer, createdAt: new Date(2) }]),
           ...(overrides.trailingRows ?? []),
         ],
       },
@@ -9476,9 +9666,48 @@ describe('ChatView', () => {
     expect(text.indexOf('Settled answer.')).toBeLessThan(text.indexOf('Follow-up row'))
   })
 
+  // #278: a queued or prepared follow-up row must not turn a settled answer's stale anchor into a second copy of it.
   it.each([
     { name: 'stale index on a user row', overrides: { turnAssistantMessageIndex: 2 } },
     { name: 'stale index past the end', overrides: { turnAssistantMessageIndex: 5 } },
+    { name: 'no recorded assistant row', overrides: { turnAssistantMessageIndex: -1 } },
+  ])('renders a settled answer once after its turn user row when a follow-up row follows it with a $name', ({ overrides }) => {
+    const text = renderTurnAfterFollowUp(overrides)
+    expect(text.match(/Settled answer\./g)).toHaveLength(1)
+    expect(text.indexOf('Settled answer.')).toBeLessThan(text.indexOf('Follow-up row'))
+  })
+
+  it('renders a processing answer and its next tool once at a stale-anchored row when a steer row follows it', () => {
+    const text = renderTurnAfterFollowUp({ ...liveAnswerWithTool, turnAssistantMessageIndex: 5, followUpSteer: true })
+    expect(text.match(/Settled answer\./g)).toHaveLength(1)
+    expect(text.match(/Inspect workspace files/g)).toHaveLength(1)
+    expect(text.indexOf('Settled answer.')).toBeLessThan(text.indexOf('Inspect workspace files'))
+    expect(text.indexOf('Inspect workspace files')).toBeLessThan(text.indexOf('Follow-up row'))
+  })
+
+  it('keeps a separate live card when an ordinary row after a same-text answer may be the running turn\'s prompt', () => {
+    // The stale turn user index may sit on an older turn whose answer reads the same; that row must not take this turn.
+    const text = renderTurnAfterFollowUp({ ...liveAnswerWithTool, turnAssistantMessageIndex: 5 })
+    expect(text.match(/Settled answer\./g)).toHaveLength(2)
+    expect(text.indexOf('Follow-up row')).toBeLessThan(text.indexOf('Inspect workspace files'))
+  })
+
+  it.each([false, true])('keeps the turn card when the matching settled row is outside the rendered window (processing %s)', (processing) => {
+    const trailingRows = Array.from({ length: 200 }, (_, index): Message => ({ id: `q-${index}`, sessionId: 'chat-1', role: 'user', content: `Queued row ${index}`, createdAt: new Date(3) }))
+    const text = renderTurnAfterFollowUp({ ...(processing ? liveAnswerWithTool : {}), turnAssistantMessageIndex: 5, trailingRows })
+    expect(text).not.toContain('Please inspect the workspace')
+    expect(text.match(/Settled answer\./g)).toHaveLength(1)
+  })
+
+  it('keeps the live card for a settled answer whose stale row is followed by a pending permission', () => {
+    const text = renderTurnAfterFollowUp({
+      turnAssistantMessageIndex: 5,
+      pendingPermission: { requestId: '5', toolCallId: 'tool-1', title: 'Read file', kind: 'read', status: 'pending', content: 'Read /tmp/project/file.txt', options: [{ id: 'allow-once', name: 'Allow once', kind: 'allow_once' }] },
+    })
+    expect(text.match(/Allow once/g)).toHaveLength(1)
+  })
+
+  it.each([
     { name: 'stale index without a preceding turn user row', overrides: { turnUserMessageIndex: -1 } },
     { name: 'assistant row content that does not contain the turn text', overrides: { assistantContent: 'Unrelated imported row.' } },
     { name: 'turn user index that points at a non-user row', overrides: { leadingAssistant: true, turnUserMessageIndex: 0, turnAssistantMessageIndex: 2 } },
@@ -9980,7 +10209,7 @@ describe('ChatView', () => {
     await act(async () => { Array.from(menu.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === 'Move chat')!.click() })
     expect(requests.filter((request) => request.action === 'moveChatWorkspace')).toMatchObject([{ action: 'moveChatWorkspace', payload: { chatId: 'chat-1', folderId: 'destination' } }])
     expect(useAppStore.getState().sessions[0]).toMatchObject({ folderId: 'original', nativeSessionId: 'parent-native', workspaceDirectory: '/srv/project' })
-    expect(confirmed ? appNotices.join('\n') : reportedText()).toContain(confirmed ? 'Moved chat.' : 'Stop the chat before moving')
+    expect(confirmed ? appNotices.join('\n') : reportedText()).toContain(confirmed ? 'Moved chat to the selected workspace.' : 'Stop the chat before moving')
     act(() => root.unmount())
     host.remove()
     window.cefQuery = previousCefQuery
@@ -10056,10 +10285,10 @@ describe('ChatView', () => {
       ;(Array.from(document.body.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]')).find((button) => button.textContent?.includes('Open terminal')) as HTMLButtonElement).click()
       await Promise.resolve()
     })
-    expect(reportedText()).toContain('Failed to open terminal.')
+    expect(reportedText()).toContain('Could not open a terminal at the workspace.')
     act(() => vi.advanceTimersByTime(6000))
     // The alert is reported once; the timer expiry of the success notice does not re-report or drop it.
-    expect(reportedText().split('Failed to open terminal.')).toHaveLength(2)
+    expect(reportedText().split('Could not open a terminal at the workspace.')).toHaveLength(2)
     expect(host.querySelector('button[aria-label="Dismiss workspace action message"]')).toBeNull()
 
     act(() => root.unmount())
@@ -10508,6 +10737,50 @@ describe('ChatView', () => {
     expect(readChatComposerDraft(first.id).attachments).toEqual([])
     act(() => root.unmount())
     host.remove()
+  })
+
+  const dropUriList = async (host: HTMLElement, uriList: string) => {
+    const drop = new Event('drop', { bubbles: true, cancelable: true })
+    Object.defineProperty(drop, 'dataTransfer', { value: { files: [], getData: (type: string) => type === 'text/uri-list' ? uriList : '' } })
+    await act(async () => { host.querySelector('.uam-composer-surface')!.dispatchEvent(drop); await Promise.resolve() })
+  }
+
+  it('reports nothing when a folder chip removed while staging then fails', async () => {
+    let fail!: (error: Error) => void
+    const stageChatAttachments = vi.fn((_sessionId: string, _items: Array<{ id: string }>) => new Promise<never>((_resolve, reject) => { fail = reject }))
+    useAppStore.setState({ stageChatAttachments })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      await dropUriList(host, 'file:///Users/me/notes\n')
+      expect(stageChatAttachments).toHaveBeenCalledWith('chat-1', [expect.objectContaining({ kind: 'directory', path: '/Users/me/notes' })])
+      act(() => host.querySelector<HTMLButtonElement>('button[aria-label="Remove notes attachment"]')!.click())
+      await act(async () => { fail(new Error('The notes folder could not be added.')); await Promise.resolve() })
+      expect(reportedText()).not.toContain('The notes folder could not be added.')
+      expect(host.querySelector('button[aria-label="Remove notes attachment"]')).toBeNull()
+    } finally { act(() => root.unmount()); host.remove() }
+  })
+
+  it('does not send folder paths dropped on the browser companion to the desktop app', async () => {
+    const previousPath = window.location.pathname
+    window.history.pushState({}, '', '/companion')
+    const stageChatAttachments = vi.fn(async () => [])
+    useAppStore.setState({ stageChatAttachments })
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    try {
+      await act(async () => root.render(<ChatView session={useAppStore.getState().sessions[0]} />))
+      await dropUriList(host, 'file:///Users/me/secrets\n')
+      expect(stageChatAttachments).not.toHaveBeenCalled()
+      expect(reportedText()).toContain('Add attachments from the desktop app.')
+      expect(host.querySelector('button[aria-label="Remove secrets attachment"]')).toBeNull()
+    } finally {
+      act(() => root.unmount()); host.remove()
+      window.history.pushState({}, '', previousPath)
+    }
   })
 
   it('does not block normal text paste in the composer', async () => {
@@ -11593,11 +11866,10 @@ describe('ChatView', () => {
         if (route !== 'goal') {
           expect(f.host.textContent).not.toContain('Claude Plan mode is read-only')
           if (change !== 'birth') {
-            const refusal = appFailures.find((failure) => failure.detail.includes("so this prompt wasn't sent. Review the selected references, then send again."))
-            expect(refusal).toBeTruthy()
-            expect(refusal!.message).toContain('Message not sent')
+            const refusal = appFailures.find((failure) => failure.message === "The chat's workspace or provider changed, so this prompt wasn't sent.")
+            expect(refusal?.detail).toBe('Review the selected references, then send again.')
             // A prevented send asks for recovery; it must not use the green completion treatment.
-            expect(refusal!.tone ?? 'failure').toBe('failure')
+            expect(refusal!.tone).toBe('warning')
           }
         }
       } finally {
@@ -11617,8 +11889,8 @@ describe('ChatView', () => {
         f.renderCurrentSession()
         await act(async () => f.pending[0].ack())
         expect(reportedText()).toContain('Check the earlier input before sending again.')
-        expect(appFailures.find((failure) => failure.detail.includes('Check the earlier input before sending again.'))?.message).toBe('Check earlier message')
-        expect(reportedText()).not.toContain('Message not sent')
+        expect(appFailures.find((failure) => `${failure.message} ${failure.detail}`.includes('Check the earlier input before sending again.'))).toMatchObject({ message: 'The chat was replaced.', tone: 'warning' })
+        expect(reportedText()).not.toContain("this prompt wasn't sent")
       } finally {
         await act(async () => { for (const request of f.pending) request.ack() })
         f.cleanup()
@@ -11638,7 +11910,7 @@ describe('ChatView', () => {
           ? { ...session, createdAt: new Date(session.createdAt.getTime() + 1000) } : session) })))
         f.renderCurrentSession()
         expect(reportedText()).toContain('Check the earlier input before sending again.')
-        expect(appFailures.find((failure) => failure.detail.includes('Check the earlier input before sending again.'))?.tone ?? 'failure').toBe('failure')
+        expect(appFailures.find((failure) => `${failure.message} ${failure.detail}`.includes('Check the earlier input before sending again.'))?.tone).toBe('warning')
         const fresh = { ...reference, id: 'replacement-ordinary-reference', text: 'Replacement selected context' }
         act(() => writeChatComposerDraft('chat-1', { text, attachments: [attachment], references: [fresh] }))
         await f.send()
@@ -11742,9 +12014,9 @@ describe('ChatView', () => {
         expect(f.sends()).toHaveLength(1)
         expect(f.sends()[0].payload.text).toBe(draft.text + '\n\n' + formatContextReferences([reference]))
         await act(async () => f.pending[0].reject('Synthetic acknowledgement failure'))
-        const recovery = appFailures.find((failure) => failure.detail.includes('Could not confirm the prompt. Check its saved state before retrying.'))
+        const recovery = appFailures.find((failure) => `${failure.message} ${failure.detail}`.includes('Could not confirm the prompt. Check its saved state before retrying.'))
         expect(recovery).toBeTruthy()
-        expect(recovery!.tone ?? 'failure').toBe('failure')
+        expect(recovery!.tone).toBe('warning')
         expect(readChatComposerDraft('chat-1')).toEqual(draft)
         expect(f.host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!.value).toBe(draft.text)
         expect(f.sends()).toHaveLength(1)
@@ -11928,7 +12200,7 @@ describe('ChatView', () => {
         expect(first.isConnected).toBe(true)
         expect(first.querySelector('article')?.getAttribute('data-delivery')).toBe('unconfirmed')
         expect(first.textContent).toContain(outgoing.content)
-        const explanation = first.querySelector('.conversation-turn__delivery')?.getAttribute('aria-label') ?? ''
+        const explanation = first.querySelector('.conversation-turn__delivery')?.textContent ?? ''
         expect(explanation).toContain('retained here')
         expect(explanation).not.toMatch(/draft.*unchanged/i)
         expect(f.host.querySelector('[data-message-index="2"]')).not.toBe(first)
@@ -11957,7 +12229,7 @@ describe('ChatView', () => {
         expect(f.host.querySelector('[data-outgoing-message]')).toBe(row)
         expect(row.querySelector('article')).toBe(attempt)
         expect(attempt!.getAttribute('data-delivery')).toBe('sending')
-        expect(row.querySelector('.conversation-turn__delivery')?.getAttribute('aria-label')).toContain('waiting for the provider to confirm delivery')
+        expect(row.querySelector('.conversation-turn__delivery')?.textContent).toContain('waiting for the provider to confirm delivery')
         expect(f.occurrences()).toBe(1)
         expect(f.host.querySelector<HTMLTextAreaElement>('.uam-composer-textarea')!.value).toBe('')
         push([...history, { ...outgoing, ...f.inputIdentity() }])
@@ -11994,8 +12266,11 @@ describe('ChatView', () => {
         expect(article!.getAttribute('data-delivery')).toBe('unsent')
         expect(slot.querySelector<HTMLButtonElement>('[aria-label="Retry message"]')?.disabled).toBe(false)
         const status = slot.querySelector<HTMLElement>('.conversation-turn__delivery')!
-        expect(status.tabIndex).toBe(0)
-        expect(status.getAttribute('aria-label')).toContain('never resent automatically')
+        // The marker is neither a focus stop nor live; the failure is announced once through the chat's region.
+        expect(status.tabIndex).toBe(-1)
+        expect(status.closest('[aria-live],[role="status"]')).toBeNull()
+        expect(status.textContent).toContain('never resent automatically')
+        expect(f.host.querySelector('[data-testid="chat-announcement"]')?.textContent).toBe('Message not sent.')
         push([...history, { ...outgoing, ...f.inputIdentity() }, { role: 'assistant', content: 'Delivered answer', createdAt: '2026-01-02T00:00:01.000Z' }])
         expect(f.host.querySelector('[data-message-index="2"]')).toBe(slot)
         expect(slot.querySelector('article')).toBe(article)
@@ -12275,7 +12550,7 @@ describe('ChatView', () => {
         const user = host.querySelector('article.conversation-turn--user')!
         expect(user).not.toBeNull()
         return { body: normalize(user.querySelector('.conversation-turn__body')!.outerHTML), delivery: user.getAttribute('data-delivery'),
-          explanation: user.querySelector('.conversation-turn__delivery')?.getAttribute('aria-label') ?? null,
+          explanation: user.querySelector('.conversation-turn__delivery')?.textContent ?? null,
           answer: normalize(host.querySelector('article.conversation-turn--assistant .conversation-turn__body')!.outerHTML) }
       }
       const same = capture(main)
@@ -12288,7 +12563,7 @@ describe('ChatView', () => {
       if (expected === 'unconfirmed') for (const host of [main, managed, passive]) {
         const user = host.querySelector('article.conversation-turn--user')!
         expect(user.querySelector('[aria-label="Retry message"],[aria-label="Edit message in new branch"],[aria-label="Revert to message in new branch"]')).toBeNull()
-        expect(user.querySelector<HTMLElement>('.conversation-turn__delivery')?.tabIndex).toBe(0)
+        expect(user.querySelector<HTMLElement>('.conversation-turn__delivery')?.tabIndex).toBe(-1)
       }
       expect(native).not.toHaveBeenCalled()
       expect(requests.filter(action => /sendAcpPrompt|retry|resume|discard|remove|edit|openSubAgent|Preview|Image/i.test(action))).toEqual([])
@@ -13349,6 +13624,53 @@ describe('ChatView conditional manual compaction offer', () => {
       expect(readChatComposerDraft(f.chat.id).attachments).toEqual([f.file])
       expect(useAppStore.getState().markdownStoreAttachedBySessionId[f.chat.id]).toEqual([f.skill])
       expect(useAppStore.getState().messages[f.chat.id]).toHaveLength(2)
+    } finally { f.cleanup() }
+  })
+
+  it.each([false, true] as const)('routes typed /compact instructions through the compact action, saying in one line when they are unused (used %s)', async used => {
+    const f = await unsupportedCompactionFixture('/compact keep the API notes')
+    try {
+      await act(async () => { publishCompactionChat(supportedCompactionChat(f.chat)); f.render() })
+      window.cefQuery = ({ request, onSuccess }) => { f.requests.push(JSON.parse(request)); onSuccess(JSON.stringify({ accepted: true, instructionsUsed: used })) }
+      await act(async () => f.host.querySelector<HTMLButtonElement>('button[aria-label="Send prompt"]')!.click())
+      expect(f.requests.filter(request => request.action === 'compactAcpSession')).toEqual([
+        { action: 'compactAcpSession', payload: { chatId: f.chat.id, instructions: 'keep the API notes' }, requestId: expect.any(String) },
+      ])
+      expect(f.sendAcpPrompt).not.toHaveBeenCalled()
+      expect(f.requests.filter(request => request.action === 'sendAcpPrompt')).toEqual([])
+      expect(f.textarea.value).toBe('')
+      expect(appNotices.filter(message => message === 'This provider compacts without instructions, so yours were not used.')).toHaveLength(used ? 0 : 1)
+    } finally { f.cleanup() }
+  })
+
+  it('keeps the typed /compact draft and reports a backend refusal in one line', async () => {
+    const f = await unsupportedCompactionFixture('/compact keep the API notes')
+    try {
+      await act(async () => { publishCompactionChat(supportedCompactionChat(f.chat)); f.render() })
+      window.cefQuery = ({ request, onSuccess, onFailure }) => {
+        const parsed = JSON.parse(request)
+        f.requests.push(parsed)
+        if (parsed.action === 'compactAcpSession') onFailure(409, 'This provider can compact only chats that run on this computer.')
+        else onSuccess('{}')
+      }
+      await act(async () => f.host.querySelector<HTMLButtonElement>('button[aria-label="Send prompt"]')!.click())
+      expect(f.requests.filter(request => request.action === 'compactAcpSession')).toHaveLength(1)
+      expect(f.sendAcpPrompt).not.toHaveBeenCalled()
+      expect(f.textarea.value).toBe('/compact keep the API notes')
+      expect(reportedText()).toContain('Compaction failed. This provider can compact only chats that run on this computer.')
+      expect(appNotices.some(message => message.includes('yours were not used'))).toBe(false)
+    } finally { f.cleanup() }
+  })
+
+  it('keeps a typed /compact with instructions out of ordinary send when compaction is unavailable', async () => {
+    const f = await unsupportedCompactionFixture('/compact keep the API notes')
+    try {
+      await act(async () => f.host.querySelector<HTMLButtonElement>('button[aria-label="Send prompt"]')!.click())
+      expect(f.requests.filter(request => request.action === 'compactAcpSession')).toEqual([])
+      expect(f.sendAcpPrompt).not.toHaveBeenCalled()
+      expect(f.requests.filter(request => request.action === 'sendAcpPrompt')).toEqual([])
+      expect(f.textarea.value).toBe('/compact keep the API notes')
+      expect(reportedText()).toContain('Manual compaction is unavailable for this chat.')
     } finally { f.cleanup() }
   })
 

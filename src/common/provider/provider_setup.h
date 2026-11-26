@@ -8,6 +8,7 @@
 #include "common/platform/native_user_home.h"
 #include "common/utils/hash_utils.h"
 #include "common/utils/io_utils.h"
+#include "common/utils/shell_escape.h"
 #include <algorithm>
 #include <array>
 #include <fstream>
@@ -18,6 +19,15 @@
 
 namespace uam::provider_setup
 {
+	/// <summary>Opens a custom agent's instructions in CLI View, and marks the Codex developer_instructions value setup may fold.</summary>
+	inline constexpr std::string_view kAgentInstructionsIntro = "Follow these instructions from the UAM agent selected for this chat.";
+
+	/// <summary>Inserts launch options before a bare "--" that extra flags may carry, so prompt text cannot swallow them.</summary>
+	inline void InsertLaunchOptions(std::vector<std::string>& argv, const std::vector<std::string>& options)
+	{
+		const auto positional = std::find(argv.begin() + static_cast<std::ptrdiff_t>(std::min<std::size_t>(1, argv.size())), argv.end(), "--");
+		argv.insert(positional, options.begin(), options.end());
+	}
 	inline constexpr std::size_t kMaxFiles = 4096;
 	inline constexpr std::size_t kMaxFileBytes = 2 * 1024 * 1024;
 	inline constexpr std::size_t kMaxBundleBytes = 32 * 1024 * 1024;
@@ -181,6 +191,84 @@ namespace uam::provider_setup
 
 	inline std::string Digest(std::string_view bytes) { return uam::hashing::Hex64Padded(uam::hashing::Fnv1a64(bytes)); }
 
+	/// <summary>A TOML basic string for a Codex -c value; JSON escapes are valid TOML except a raw DEL, which TOML requires escaped.</summary>
+	inline std::string TomlString(const std::string& text)
+	{
+		std::string quoted = nlohmann::json(text).dump();
+		for (std::size_t at = quoted.find('\x7f'); at != std::string::npos; at = quoted.find('\x7f', at + 6)) quoted.replace(at, 1, "\\u007F");
+		return quoted;
+	}
+
+	/// <summary>Codex splits a -c key path on every dot and keeps quote marks, so only a bare TOML key survives intact.</summary>
+	inline bool IsCodexBareKey(std::string_view name)
+	{
+		return !name.empty() && std::ranges::all_of(name, [](unsigned char c) { return (c < 0x80 && std::isalnum(c) != 0) || c == '-' || c == '_'; });
+	}
+
+	/// <summary>The Codex key for a server: its name when bare, otherwise a safe slug plus a digest of the full name.</summary>
+	inline std::string CodexServerKey(std::string_view name)
+	{
+		if (IsCodexBareKey(name)) return std::string(name);
+		std::string slug;
+		for (const unsigned char c : name.substr(0, 40)) slug.push_back((c < 0x80 && std::isalnum(c) != 0) || c == '-' ? static_cast<char>(c) : '_');
+		return slug + "-" + Digest(name).substr(0, 8);
+	}
+
+	/// <summary>The identity of an environment variable name: Windows names ignore case.</summary>
+	inline std::string CodexVariableKey(std::string_view variable)
+	{
+#if defined(_WIN32)
+		std::string key(variable);
+		std::ranges::transform(key, key.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+		return key;
+#else
+		return std::string(variable);
+#endif
+	}
+
+	/// <summary>Names a user's MCP server may not place in Codex's environment, even when Codex lacks them: they would
+	/// redirect or inject code into Codex (its Node launcher, loaders, shells and command lookup) and every shell command
+	/// it runs, change its home or settings, or impersonate UAM's own launch variables.</summary>
+	inline bool IsReservedCodexVariable(std::string_view variable)
+	{
+		std::string upper(variable);
+		std::ranges::transform(upper, upper.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+		for (const std::string_view name : {"PATH", "PATHEXT", "HOME", "USERPROFILE", "SHELL", "COMSPEC", "ENV", "BASH_ENV", "NODE_OPTIONS", "NODE_PATH"})
+			if (upper == name) return true;
+		for (const std::string_view prefix : {"CODEX_", "UAM_", "LD_", "DYLD_"})
+			if (upper.starts_with(prefix)) return true;
+		return false;
+	}
+
+	/// <summary>A TOML value for a Codex -c override; tables are inline, so quoted keys keep any name intact, unlike a dotted -c path.</summary>
+	inline std::string TomlValue(const nlohmann::json& value)
+	{
+		if (value.is_string()) return TomlString(value.get<std::string>());
+		if (!value.is_structured()) return value.dump();
+		std::string text = value.is_object() ? "{" : "[";
+		bool first = true;
+		for (const auto& [key, entry] : value.items())
+		{
+			text += (first ? "" : ", ") + (value.is_object() ? TomlString(key) + " = " : std::string{}) + TomlValue(entry);
+			first = false;
+		}
+		return text + (value.is_object() ? "}" : "]");
+	}
+
+	/// <summary>Whether a Codex launch fits the OS limit: Windows CreateProcess takes 32,767 characters for the whole
+	/// escaped command line (the platform launcher also refuses a .cmd shim over cmd.exe's 8,191); Linux limits each
+	/// argument to 128 KiB, and other POSIX systems use the same conservative per-argument rule.</summary>
+	inline bool WithinCodexLaunchLimit(const std::vector<std::string>& argv)
+	{
+#if defined(_WIN32)
+		std::size_t command_line = 0;
+		for (const std::string& argument : argv) command_line += uam::shell::EscapedArgSize(argument) + 1;
+		return command_line < 32767;
+#else
+		return std::ranges::all_of(argv, [](const std::string& argument) { return argument.size() < 128 * 1024; });
+#endif
+	}
+
 	/// OpenCode's built-in provider request timeout; UAM never configures a value at or below it.
 	inline constexpr std::int64_t kOpenCodeDefaultRequestTimeoutMilliseconds = 300000;
 
@@ -323,6 +411,39 @@ namespace uam::provider_setup
 	{
 		std::erase_if(environment, [&](const std::pair<std::string, std::string>& entry) { return entry.first == name; });
 		environment.emplace_back(name, value);
+	}
+
+	/// The UAM tool server's per-session signing key, as its MCP server entry carries it.
+	inline constexpr const char* kUamControlRequestKeyEnvironment = "UAM_CONTROL_REQUEST_KEY";
+	/// Provider-process variable that a generated configuration file references instead of holding the key.
+	inline constexpr const char* kUamControlLaunchKeyEnvironment = "UAM_CONTROL_LAUNCH_KEY";
+
+	/// The servers without the signing key, for a configuration copy no provider reads.
+	inline nlohmann::json WithoutUamControlKeys(nlohmann::json native_servers)
+	{
+		for (auto& [name, server] : native_servers.items())
+			if (server.contains("env") && server["env"].is_object()) server["env"].erase(kUamControlRequestKeyEnvironment);
+		return native_servers;
+	}
+
+	/// Moves the signing key out of servers written to a configuration file and into the provider's own environment.
+	/// The file keeps a ${kUamControlLaunchKeyEnvironment} reference, which the provider expands when it starts the
+	/// server; a provider that passes its environment through instead is covered by the tool server reading that
+	/// variable when the reference reaches it unexpanded.
+	inline bool MoveUamControlKeysToEnvironment(nlohmann::json& native_servers, Environment& environment, std::string& error)
+	{
+		std::optional<std::string> moved;
+		for (auto& [name, server] : native_servers.items())
+		{
+			if (!server.contains("env") || !server["env"].is_object() || !server["env"].contains(kUamControlRequestKeyEnvironment)) continue;
+			const nlohmann::json& key = server["env"][kUamControlRequestKeyEnvironment];
+			if (!key.is_string() || (moved.has_value() && *moved != key.get<std::string>()))
+			{ error = "UAM tool connection settings are invalid."; return false; }
+			moved = key.get<std::string>();
+			server["env"][kUamControlRequestKeyEnvironment] = std::string("${") + kUamControlLaunchKeyEnvironment + "}";
+		}
+		if (moved.has_value()) SetEnvironment(environment, kUamControlLaunchKeyEnvironment, *moved);
+		return true;
 	}
 
 	inline std::string ReplaceRoot(std::string text, const std::string& root)
@@ -656,7 +777,8 @@ namespace uam::provider_setup
 			if (!NoSymlinks(path)) { error = "Central runtime file contains a symbolic link."; return false; }
 		if (ec || !WriteRuntimeFile(instruction_path, instructions, error)) { error = "Could not install central instructions."; return false; }
 		std::vector<McpServerConfiguration> configured = uam::mcp_server_config::Parse(manifest.value("mcpServers", nlohmann::json::array()));
-		if (!uam::mcp_server_config::NormalizeAndValidate(configured, &error)) return false;
+		// The manifest holds only this computer's servers, with host ids cleared: check paths by its native rule.
+		if (!uam::mcp_server_config::NormalizeAndValidate(configured, &error, nullptr, uam::execution_hosts::kLocalHostId)) return false;
 		nlohmann::json servers = uam::mcp_server_config::ResolveForWorkspace(configured, uam::paths::Utf8PathString(workspace), true, true, &error);
 		if (!servers.is_array()) return false;
 		for (const nlohmann::json& server : session_servers) servers.push_back(server);
@@ -675,7 +797,10 @@ namespace uam::provider_setup
 			}
 			native_servers[name] = std::move(native);
 		}
-		if (!WriteRuntimeFile(mcp_path, nlohmann::json{{"mcpServers", native_servers}}.dump(), error)) { error = "Could not install central MCP configuration."; return false; }
+		// Only Copilot reads this file as written (Claude rewrites it below); the others get it without the signing key.
+		// Gemini and Antigravity write their own files from native_servers with the key: no verified route lets them
+		// take it from their environment (Gemini's settings expansion and its environment filtering are unverified).
+		if (!WriteRuntimeFile(mcp_path, nlohmann::json{{"mcpServers", provider == uam::provider_ids::kCopilotCli ? native_servers : WithoutUamControlKeys(native_servers)}}.dump(), error)) { error = "Could not install central MCP configuration."; return false; }
 		const std::string instruction_file = uam::paths::Utf8PathString(instruction_path);
 		if (provider == uam::provider_ids::kAntigravityCli)
 		{
@@ -696,7 +821,7 @@ namespace uam::provider_setup
 			std::filesystem::permissions(isolated_config.parent_path(), std::filesystem::perms::owner_all, std::filesystem::perm_options::replace, ec);
 			if (ec) { error = "Could not secure private Antigravity configuration directory."; return false; }
 			if (!WriteRuntimeFile(isolated_config, nlohmann::json{{"mcpServers", native_servers}}.dump(), error)) return false;
-			argv.insert(argv.end(), {"--add-dir", uam::paths::Utf8PathString(runtime)});
+			InsertLaunchOptions(argv, {"--add-dir", uam::paths::Utf8PathString(runtime)});
 		}
 		else if (provider == uam::provider_ids::kClaudeCli)
 		{
@@ -711,7 +836,7 @@ namespace uam::provider_setup
 				argv.erase(argv.begin() + index, argv.begin() + index + 2);
 			}
 			if (!WriteRuntimeFile(instruction_path, instructions, error)) return false;
-			if (!mcp_only) argv.insert(argv.end(), {"--append-system-prompt-file", instruction_file});
+			if (!mcp_only) InsertLaunchOptions(argv, {"--append-system-prompt-file", instruction_file});
 			for (std::size_t index = 1; index + 1 < argv.size();)
 			{
 				if (argv[index] != "--mcp-config") { ++index; continue; }
@@ -726,10 +851,12 @@ namespace uam::provider_setup
 					if (!native_servers.contains(name)) native_servers[name] = server;
 				argv.erase(argv.begin() + index, argv.begin() + index + 2);
 			}
+			// Claude expands ${VAR} in --mcp-config and passes its environment to stdio servers.
+			if (!MoveUamControlKeysToEnvironment(native_servers, environment, error)) return false;
 			if (!native_servers.empty())
 			{
 				if (!WriteRuntimeFile(mcp_path, nlohmann::json{{"mcpServers", native_servers}}.dump(), error)) return false;
-				argv.insert(argv.end(), {"--mcp-config", uam::paths::Utf8PathString(mcp_path)});
+				InsertLaunchOptions(argv, {"--mcp-config", uam::paths::Utf8PathString(mcp_path)});
 			}
 		}
 		else if (provider == uam::provider_ids::kCodexCli)
@@ -743,12 +870,46 @@ namespace uam::provider_setup
 			if (!mcp_only && structured_setup) *protocol_instructions = instructions;
 			else if (!mcp_only)
 			{
-				if (instructions.size() > max_instruction_bytes) { error = host_instructions_only ? "Host instructions exceed the OS launch limit for this provider. Shorten them." : "Codex central instructions exceed the OS launch limit. Move reference material into skills."; return false; }
-				argv.insert(argv.begin() + 1, {"-c", "developer_instructions=" + nlohmann::json(instructions).dump()});
+				// CLI View may already carry a custom agent's developer instructions; a second value would replace
+				// one of them, so fold UAM's marked value in after the central or host text. A user's own value is left as it is.
+				constexpr std::string_view developer_instructions = "developer_instructions=";
+				bool folded_agent = false;
+				bool user_value = false;
+				for (std::size_t index = 1; index + 1 < argv.size() && argv[index] != "--";)
+				{
+					if (argv[index] != "-c" || !argv[index + 1].starts_with(developer_instructions)) { ++index; continue; }
+					const nlohmann::json previous = nlohmann::json::parse(argv[index + 1].substr(developer_instructions.size()), nullptr, false);
+					if (!previous.is_string() || !previous.get_ref<const std::string&>().starts_with(kAgentInstructionsIntro)) { user_value = true; index += 2; continue; }
+					instructions += "\n\n" + previous.get<std::string>();
+					folded_agent = true;
+					argv.erase(argv.begin() + static_cast<std::ptrdiff_t>(index), argv.begin() + static_cast<std::ptrdiff_t>(index) + 2);
+				}
+				// A later user value would replace the combined text, silently dropping the agent's role with it.
+				if (folded_agent && user_value) { error = "A developer_instructions flag in provider settings would replace the selected agent's instructions. Remove it or use Chat."; return false; }
+				if (instructions.size() > max_instruction_bytes)
+				{
+					error = folded_agent ? "Codex instructions, including the selected agent's, exceed the OS launch limit. Shorten the agent or use Chat."
+					    : host_instructions_only ? "Host instructions exceed the OS launch limit for this provider. Shorten them." : "Codex central instructions exceed the OS launch limit. Move reference material into skills.";
+					return false;
+				}
+				argv.insert(argv.begin() + 1, {"-c", "developer_instructions=" + TomlString(instructions)});
 			}
+			// Codex key -> configured name, so two names that share a key are refused instead of merged.
+			std::map<std::string, std::string> codex_keys;
+			std::string largest_server;
+			std::size_t largest_bytes = 0;
+			// Variable -> (server, value) across all servers, and UAM's own session servers, which may use UAM_ names.
+			std::map<std::string, std::pair<std::string, std::string>> codex_variables;
+			std::set<std::string> uam_owned_servers;
+			for (const nlohmann::json& server : session_servers)
+				if (server.is_object() && server.contains("name") && server["name"].is_string()) uam_owned_servers.insert(server["name"].get<std::string>());
 			for (const auto& [name, server] : native_servers.items())
 			{
-				const std::string prefix = "mcp_servers." + nlohmann::json(name).dump() + ".";
+				const std::string codex_key = CodexServerKey(name);
+				if (const auto [existing, inserted] = codex_keys.emplace(codex_key, name); !inserted)
+				{ error = "Codex cannot tell MCP servers '" + existing->second + "' and '" + name + "' apart. Rename one using letters, digits, '-' or '_'."; return false; }
+				const std::string prefix = "mcp_servers." + codex_key + ".";
+				const std::size_t arguments_before = argv.size();
 				for (const auto& [key, value] : server.items())
 				{
 					if (key == "type")
@@ -758,38 +919,61 @@ namespace uam::provider_setup
 					}
 					if (key == "env")
 					{
+						// Codex reads each value by name from its own environment (env_vars), so no value appears on its
+						// command line, which other processes can list. env_vars cannot rename a variable, so a name two
+						// servers set differently, or one that would change Codex's own environment, is refused.
 						std::vector<std::string> names;
 						for (const auto& [variable, text] : value.items())
 						{
-							SetEnvironment(environment, variable, text.get<std::string>());
+							const std::string text_value = text.get<std::string>();
+							const bool user_server = !uam_owned_servers.contains(name);
+							if (user_server && IsReservedCodexVariable(variable))
+							{ error = "MCP server '" + name + "' cannot set " + variable + " for Codex: Codex passes MCP variables through its own environment, so this would change Codex and its shell commands."; return false; }
+							const auto [owner, first] = codex_variables.emplace(CodexVariableKey(variable), std::pair<std::string, std::string>{name, text_value});
+							if (!first && owner->second.second != text_value)
+							{ error = "MCP servers '" + owner->second.first + "' and '" + name + "' set " + variable + " to different values. Codex passes MCP variables by name, so they must match for Codex."; return false; }
+							const std::string current = EnvironmentValue(environment, variable);
+							if (user_server && first && !current.empty() && current != text_value)
+							{ error = "MCP server '" + name + "' sets " + variable + ", which UAM's environment already has with another value. Codex passes MCP variables through its own environment, so use the same value, start UAM without " + variable + ", or have the server's command set it."; return false; }
+							SetEnvironment(environment, variable, text_value);
 							names.push_back(variable);
 						}
-						argv.insert(argv.begin() + 1, {"-c", prefix + "env_vars=" + nlohmann::json(names).dump()});
+						if (!names.empty()) argv.insert(argv.begin() + 1, {"-c", prefix + "env_vars=" + TomlValue(names)});
 						continue;
 					}
 					if (key == "headers")
 					{
+						nlohmann::json variables = nlohmann::json::object();
 						for (const auto& [header, text] : value.items())
 						{
 							const std::string variable = "UAM_CENTRAL_MCP_HEADER_" + Digest(name + header);
 							SetEnvironment(environment, variable, text.get<std::string>());
-							argv.insert(argv.begin() + 1, {"-c", prefix + "env_http_headers." + nlohmann::json(header).dump() + "=" + nlohmann::json(variable).dump()});
+							variables[header] = variable;
 						}
+						// One inline table: a dotted header key would keep its quote marks in the header name.
+						if (!variables.empty()) argv.insert(argv.begin() + 1, {"-c", prefix + "env_http_headers=" + TomlValue(variables)});
 						continue;
 					}
-					if (value.is_object())
-					{
-						for (const auto& [entry, text] : value.items()) argv.insert(argv.begin() + 1, {"-c", prefix + key + "." + nlohmann::json(entry).dump() + "=" + text.dump()});
-					}
-					else argv.insert(argv.begin() + 1, {"-c", prefix + key + "=" + value.dump()});
+					argv.insert(argv.begin() + 1, {"-c", prefix + key + "=" + TomlValue(value)});
 				}
+				std::size_t bytes = 0;
+				for (std::size_t index = 1; index <= argv.size() - arguments_before; ++index) bytes += argv[index].size();
+				if (bytes > largest_bytes) { largest_bytes = bytes; largest_server = name; }
+			}
+			// Env values that used to sit in the environment block now count against the command line; refuse clearly
+			// instead of an opaque launch failure, naming only the server that adds the most (never its values).
+			if (!WithinCodexLaunchLimit(argv))
+			{
+				error = "The Codex launch command is too long for this computer" + (largest_server.empty() ? std::string(".") : "; MCP server '" + largest_server + "' adds the most.") +
+				        " Shorten MCP arguments, remove servers, or shorten instructions.";
+				return false;
 			}
 		}
 		else if (provider == uam::provider_ids::kCopilotCli)
 		{
 			const std::string existing = EnvironmentValue(environment, "COPILOT_CUSTOM_INSTRUCTIONS_DIRS");
 			if (!mcp_only) SetEnvironment(environment, "COPILOT_CUSTOM_INSTRUCTIONS_DIRS", uam::paths::Utf8PathString(runtime) + (existing.empty() ? "" : "," + existing));
-			if (!servers.empty()) argv.insert(argv.end(), {"--additional-mcp-config", "@" + uam::paths::Utf8PathString(mcp_path)});
+			if (!servers.empty()) InsertLaunchOptions(argv, {"--additional-mcp-config", "@" + uam::paths::Utf8PathString(mcp_path)});
 		}
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 		else if (provider == uam::provider_ids::kOpenCodeCli)
@@ -945,7 +1129,7 @@ namespace uam::provider_setup
 			if (!WriteRuntimeFile(settings, snapshot, error, false)) { error = "Could not install immutable Gemini configuration. " + error; return false; }
 			PreserveGeminiSystemDefaults(uam::paths::PathFromUtf8(existing), workspace, environment);
 			SetEnvironment(environment, "GEMINI_CLI_SYSTEM_SETTINGS_PATH", uam::paths::Utf8PathString(settings));
-			if (!mcp_only) argv.insert(argv.end(), {"--include-directories", uam::paths::Utf8PathString(runtime)});
+			if (!mcp_only) InsertLaunchOptions(argv, {"--include-directories", uam::paths::Utf8PathString(runtime)});
 		}
 		else { error = "Central configuration does not support this provider."; return false; }
 		return true;

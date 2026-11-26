@@ -1,7 +1,10 @@
 #include "app/agent_run_scheduler.h"
 #include "common/platform/background_thread_priority.h"
+#include "common/platform/child_process_priority.h"
 #include "common/memory/extraction_receipts.h"
+#include "common/memory/memory_entry_format.h"
 #include "common/memory/memory_storage_guard.h"
+#include "common/memory/memory_worker_failure_pause.h"
 #include "remote/runner_client.h"
 #include "common/config/execution_host_config.h"
 #include "app/memory_service.h"
@@ -566,11 +569,6 @@ namespace
 		return uam::strings::SafeLine(uam::nlohmann_json::StringViewOrEmpty(entry, key), max_chars);
 	}
 
-	std::string MemoryEntryLineOr(const nlohmann::json& entry, const char* key, std::string_view fallback, std::size_t max_chars)
-	{
-		return uam::strings::SafeLine(uam::nlohmann_json::TrimmedStringValueOr(entry, key, fallback), max_chars);
-	}
-
 	bool ShouldSaveWorkerMemoryEntry(const nlohmann::json& entry, std::string_view memory_level)
 	{
 		static constexpr std::string_view kRequiredFields[] = {"scope", "category", "title", "memory", "evidence", "confidence"};
@@ -659,92 +657,21 @@ namespace
 		return "[truncated to last " + std::to_string(kMaxWorkerLogBytes) + " bytes]\n" + std::string(uam::strings::Utf8Suffix(value, kMaxWorkerLogBytes));
 	}
 
-	std::string ReadFirstTitle(const fs::path& path)
+	/// <summary>The shared store draft for a worker entry that passed ShouldSaveWorkerMemoryEntry, capped like every
+	/// other memory entry; empty when it looks sensitive, which the worker skips instead of failing the batch.</summary>
+	std::optional<MemoryLibraryStore::Draft> WorkerEntryDraft(const nlohmann::json& entry, const std::string& chat_id, std::string extraction_key)
 	{
-		std::ifstream in;
-		if (!uam::io::OpenReadFile(path, in)) return "";
-		std::string line;
-		while (std::getline(in, line))
-		{
-			if (uam::strings::StartsWith(line, "# "))
-			{
-				return uam::strings::NormalizeComparableKey(line.substr(2));
-			}
-		}
-		return "";
-	}
-
-	using MemoryFileIndex = std::map<fs::path, std::map<std::string, fs::path>>;
-
-	fs::path FindExistingMemoryFile(const fs::path& category_path, const std::string& title, MemoryFileIndex& indexes)
-	{
-		const std::string wanted = uam::strings::NormalizeComparableKey(title);
-		if (wanted.empty() || !uam::paths::IsDirectoryNoThrow(category_path))
-		{
-			return {};
-		}
-
-		const std::pair<MemoryFileIndex::iterator, bool> category = indexes.try_emplace(category_path);
-		if (category.second)
-		{
-			std::error_code ec;
-			for (fs::directory_iterator it(category_path, ec), end; !ec && it != end; it.increment(ec))
-			{
-				const fs::directory_entry& item = *it;
-				if (uam::paths::IsRegularFileWithExtensionNoThrow(item, ".md"))
-					category.first->second.try_emplace(ReadFirstTitle(item.path()), item.path());
-			}
-		}
-		const std::map<std::string, fs::path>::const_iterator found = category.first->second.find(wanted);
-		return found == category.first->second.end() ? fs::path{} : found->second;
-	}
-
-	int ExistingCount(const std::string& text)
-	{
-		const std::string marker = "Occurrence count: ";
-		const std::size_t at = text.find(marker);
-		if (at == std::string::npos)
-		{
-			return 0;
-		}
-
-		const std::size_t value_start = at + marker.size();
-		const std::size_t value_end = text.find_first_of("\r\n", value_start);
-		return uam::parse::IntOr(text.substr(value_start, value_end == std::string::npos ? std::string::npos : value_end - value_start), 0);
-	}
-
-
-	struct MemoryMarkdownFields
-	{
-		std::string title;
-		std::string scope;
-		std::string category;
-		std::string confidence;
-		std::string source_chat_id;
-		std::string body;
-		std::string evidence;
-		std::vector<std::string> extraction_keys;
-		int occurrence_count = 1;
-	};
-
-	std::string BuildMemoryMarkdown(const MemoryMarkdownFields& fields)
-	{
-		std::string markdown = "# " + fields.title + "\n\n";
-		markdown += "Scope: " + fields.scope + "\n";
-		markdown += "Category: " + fields.category + "\n";
-		markdown += "Confidence: " + fields.confidence + "\n";
-		markdown += "Source chat: " + fields.source_chat_id + "\n";
-		for (const std::string& key : fields.extraction_keys) markdown += "Extraction key: " + key + "\n";
-		markdown += "Last observed: " + uam::time::TimestampNow() + "\n";
-		markdown += "Occurrence count: " + std::to_string(std::max(1, fields.occurrence_count)) + "\n\n";
-		markdown += "## Memory\n";
-		markdown += fields.body + "\n\n";
-		if (!fields.evidence.empty())
-		{
-			markdown += "## Evidence\n";
-			markdown += fields.evidence + "\n";
-		}
-		return markdown;
+		MemoryLibraryStore::Draft input;
+		input.category = MemoryEntryCategory(entry);
+		input.title = uam::nlohmann_json::StringViewOrEmpty(entry, "title");
+		input.memory = uam::nlohmann_json::StringViewOrEmpty(entry, "memory");
+		input.evidence = uam::nlohmann_json::StringViewOrEmpty(entry, "evidence");
+		input.confidence = uam::nlohmann_json::TrimmedStringValueOr(entry, "confidence", "medium");
+		input.source_chat_id = chat_id;
+		input.extraction_key = std::move(extraction_key);
+		MemoryLibraryStore::Draft draft;
+		if (!uam::memory::SanitizeEntryDraft(std::move(input), draft, nullptr)) return std::nullopt;
+		return draft;
 	}
 
 	bool IsMemoryPayload(const nlohmann::json& value)
@@ -958,7 +885,7 @@ namespace
 		prepared->processed_message_count = processed_message_count;
 		prepared->message_count = MessageCount(chat);
 		prepared->stop_token = stop_token;
-		MemoryFileIndex indexes;
+		std::map<fs::path, uam::memory::EntryTitleIndex> indexes;
 		const std::string extraction_key = processed_message_count < 0 ? "" :
 		    chat.id + ":" + std::to_string(std::min(processed_message_count, MessageCount(chat)));
 		for (const nlohmann::json& entry : parsed["memories"])
@@ -969,21 +896,14 @@ namespace
 			if (scope != "global" && workspace_root.empty()) continue;
 			const fs::path root = scope == "global" ? MemoryService::GlobalMemoryRoot(data_root) : MemoryService::LocalMemoryRoot(workspace_root);
 			if (root.empty()) continue;
-			const std::string category = MemoryEntryCategory(entry);
-			const std::string title = MemoryEntryLine(entry, "title", 700);
-			const std::string body = MemoryEntryLine(entry, "memory", 1400);
-			const std::string evidence = MemoryEntryLine(entry, "evidence", 900);
-			if (!uam::memory::IsSupportedCategory(category) || title.empty() || body.empty())
-			{
-				SetError(error_out, "Memory worker returned an entry with missing title/body or unsupported category."); return nullptr;
-			}
-			if (uam::sensitive::LooksSensitiveText(title + "\n" + body + "\n" + evidence)) continue;
+			const std::optional<MemoryLibraryStore::Draft> draft = WorkerEntryDraft(entry, chat.id, extraction_key);
+			if (!draft) continue;
 			if (!prepared->bindings.contains(root))
 			{
 				prepared->bindings.emplace(root, uam::paths::NormalizeExistingPath(root));
 				if (!MemoryService::EnsureMemoryLayout(root)) { SetError(error_out, "Failed to create memory layout."); return nullptr; }
 			}
-			const fs::path category_path = MemoryService::CategoryPath(root, category);
+			const fs::path category_path = MemoryService::CategoryPath(root, draft->category);
 			if (!prepared->categories.contains(category_path))
 			{
 				prepared->bindings.emplace(category_path, uam::paths::NormalizeExistingPath(category_path));
@@ -991,7 +911,9 @@ namespace
 				if (!revisions) { SetError(error_out, "Could not inspect saved memory entries."); return nullptr; }
 				prepared->categories.emplace(category_path, *revisions);
 			}
-			fs::path target = FindExistingMemoryFile(category_path, title, indexes);
+			const auto [index, fresh_index] = indexes.try_emplace(category_path);
+			if (fresh_index) index->second = uam::memory::IndexEntryTitles(category_path);
+			fs::path target = uam::memory::FindEntryFile(index->second, draft->title);
 			int count = 1;
 			std::vector<std::string> keys;
 			if (!target.empty())
@@ -1001,27 +923,16 @@ namespace
 				if (staged != prepared->entries.end()) existing = staged->second.content;
 				else if (!uam::io::TryReadTextFile(target, existing)) { SetError(error_out, "Failed to read existing memory entry."); return nullptr; }
 				keys = uam::memory::ExistingExtractionKeys(existing);
-				if (!extraction_key.empty() && uam::ranges::Contains(keys, extraction_key)) continue;
-				const int previous_count = ExistingCount(existing);
-				if (previous_count == std::numeric_limits<int>::max()) { SetError(error_out, "Memory occurrence count is too large."); return nullptr; }
-				count = previous_count + 1;
+				if (!draft->extraction_key.empty() && uam::ranges::Contains(keys, draft->extraction_key)) continue;
+				const std::optional<int> next = uam::memory::NextOccurrenceCount(existing);
+				if (!next) { SetError(error_out, "Memory occurrence count is too large."); return nullptr; }
+				count = *next;
 			}
 			else
-			{
-				const std::string slug = uam::strings::AsciiSlug(title, 72, "memory");
-				target = category_path / (slug + ".md");
-				for (int suffix = 2; uam::paths::PathExistsNoThrow(target) || prepared->entries.contains(target); ++suffix)
-					target = category_path / (slug + "-" + std::to_string(suffix) + ".md");
-			}
-			MemoryMarkdownFields fields;
-			fields.title = title; fields.scope = scope == "global" ? "global" : "local"; fields.category = category;
-			fields.confidence = MemoryEntryLineOr(entry, "confidence", "medium", 80); fields.source_chat_id = chat.id;
-			fields.body = body; fields.evidence = evidence; fields.occurrence_count = count;
-			if (!extraction_key.empty()) keys.push_back(extraction_key);
-			if (keys.size() > 32) keys.erase(keys.begin(), keys.end() - 32);
-			fields.extraction_keys = std::move(keys);
-			prepared->entries[target].content = BuildMemoryMarkdown(fields);
-			indexes[category_path].try_emplace(uam::strings::NormalizeComparableKey(title), target);
+				target = uam::memory::NewEntryPath(category_path, draft->title, [&prepared](const fs::path& path) { return uam::paths::PathExistsNoThrow(path) || prepared->entries.contains(path); });
+			uam::memory::AppendExtractionKey(keys, draft->extraction_key);
+			prepared->entries[target].content = uam::memory::BuildEntryMarkdown(*draft, scope == "global" ? "global" : "local", count, keys);
+			index->second.try_emplace(uam::memory::EntryTitleKey(draft->title), target);
 			++prepared->wrote_count;
 		}
 		if (!MemoryPreparationStorageMatches(*prepared)) { SetError(error_out, "Saved memory changed during preparation."); return nullptr; }
@@ -1111,9 +1022,16 @@ namespace
 		return found != app.memory_retry_not_before_by_chat_id.end() && found->second > now;
 	}
 
+	bool MemoryRetriesPaused(const uam::AppState& app, const std::string& chat_id)
+	{
+		if (app.memory_failure_streak_by_chat_id.empty()) return false;
+		const auto found = app.memory_failure_streak_by_chat_id.find(chat_id);
+		return found != app.memory_failure_streak_by_chat_id.end() && found->second.paused;
+	}
+
 	bool MemoryRetryDue(const uam::AppState& app, const std::string& chat_id, double now)
 	{
-		return !MemoryRetryScheduledForFuture(app, chat_id, now);
+		return !MemoryRetryScheduledForFuture(app, chat_id, now) && !MemoryRetriesPaused(app, chat_id);
 	}
 
 	// Pure checks, cheapest first: a chat waiting out a failed scan's retry must not pay for the busy check.
@@ -1214,7 +1132,7 @@ namespace
 		return detail == std::string::npos ? summary : summary + ": [details withheld]";
 	}
 
-	void RecordMemoryFailure(uam::AppState& app, const std::string& chat_id, const std::string& reason)
+	void RecordMemoryFailure(uam::AppState& app, const std::string& chat_id, const std::string& reason, std::string_view log_detail = {})
 	{
 		const int failure_count = ++app.memory_failure_count_by_chat_id[chat_id];
 		app.memory_retry_not_before_by_chat_id[chat_id] = uam::GetAppTimeSeconds() + RetryDelayForFailureCount(failure_count);
@@ -1222,13 +1140,107 @@ namespace
 		app.memory_activity.last_created_count = 0;
 		app.memory_activity.last_status = app.memory_last_status;
 		app.memory_activity.last_worker_status = app.memory_last_status;
-		uam::diagnostics::Write("memory: chat=" + chat_id + " " + MemoryFailureLogSummary(app.memory_last_status));
+		std::string line = "memory: chat=" + chat_id + " " + MemoryFailureLogSummary(app.memory_last_status);
+		if (!log_detail.empty()) line.append(" (").append(log_detail).append(")");
+		uam::diagnostics::Write(line);
+	}
+
+	/// <summary>Everything a retry of the same chat would feed the worker except its messages: a change resumes paused retries.</summary>
+	std::string MemoryWorkerInputsFingerprint(const uam::AppState& app, const ChatSession& chat)
+	{
+		const ProviderResolutionService::WorkerProviderSelection worker = ProviderResolutionService().WorkerProviderSelectionForChat(app, chat);
+		const std::string_view host = uam::paths::IsControllerLocalWorkspace(chat) ? std::string_view(uam::execution_hosts::kLocalHostId) : std::string_view(chat.execution_host_id);
+		std::string inputs = MemoryLevel(app, chat);
+		inputs.append("\n").append(host);
+		const ChatFolder* folder = uam::paths::FindWorkspaceFolderById(app, chat.folder_id);
+		inputs.append("\n").append(chat.workspace_directory).append("\n").append(chat.folder_id).append("\n").append(folder != nullptr ? std::string_view(folder->directory) : std::string_view{});
+		inputs.append("\n").append(worker.provider != nullptr ? worker.provider->id : chat.provider_id).append("\n").append(worker.model_id);
+		if (worker.provider == nullptr) return inputs;
+		inputs.append("\n").append(worker.provider->interactive_command);
+		for (const std::string& flag : worker.provider->runtime_flags) inputs.append("\n").append(flag);
+		// The version check keys SSH hosts as "<host>/<provider>", so a remote CLI change resumes only that host's chats.
+		const auto version = app.runtime_cli_versions_by_provider_id.find(CliProviderVersionStateKey(worker.provider->id, host));
+		if (version != app.runtime_cli_versions_by_provider_id.end())
+			inputs.append("\n").append(version->second.installed_version).append("\n").append(version->second.selected_version).append(version->second.supported ? "\n1" : "\n0");
+		return inputs;
+	}
+
+	std::string MemoryRetriesPausedStatus(const uam::AppState& app)
+	{
+		const auto paused = std::ranges::count_if(app.memory_failure_streak_by_chat_id, [](const auto& entry) { return entry.second.paused; });
+		return "Memory paused for " + std::to_string(paused) + (paused == 1 ? " chat" : " chats") +
+		       " after the same failure repeated; new messages, a provider or settings change, a restart or Scan chats resumes it.";
+	}
+
+	/// <summary>Records a failure that will repeat while nothing changes. After a few identical ones for the same inputs,
+	/// retries for the chat pause and the shared memory status says so once, instead of retrying hourly for ever.
+	/// Transient categories keep only the ordinary backoff.</summary>
+	void RecordRepeatableMemoryFailure(uam::AppState& app, const ChatSession& chat, const std::string& reason, std::string_view category, int exit_code, int message_count)
+	{
+		const std::string signature = uam::memory::WorkerFailureSignature(category, exit_code);
+		RecordMemoryFailure(app, chat.id, reason, "category=" + signature);
+		if (uam::memory::IsTransientWorkerFailure(category)) return;
+		if (message_count < 0) message_count = MessageCount(chat);
+		uam::MemoryWorkerFailureStreak& streak = app.memory_failure_streak_by_chat_id[chat.id];
+		if (!uam::memory::RecordWorkerFailure(streak, signature, MemoryWorkerInputsFingerprint(app, chat), message_count)) return;
+		const int count = streak.count;
+		app.memory_last_status = MemoryRetriesPausedStatus(app);
+		app.memory_activity.last_status = app.memory_last_status;
+		uam::diagnostics::Write("memory: chat=" + chat.id + " retries paused after " + std::to_string(count) + " identical failures (category=" + signature + ")");
+	}
+
+	/// <summary>Lets a paused chat retry and gives back a manual scan the pause took off the queue. New messages keep
+	/// the streak, so the same failure on them pauses again at once, and keep the pending retry time and failure count,
+	/// so the chat still waits out its growing backoff. Changed inputs may fix the failure, so they retry after the idle delay.</summary>
+	bool ResumeMemoryRetries(uam::AppState& app, std::unordered_map<std::string, uam::MemoryWorkerFailureStreak>::iterator streak, bool keep_streak)
+	{
+		const std::string chat_id = streak->first;
+		const int parked_start = std::exchange(streak->second.parked_manual_scan_start, -1);
+		if (keep_streak)
+			streak->second.paused = false;
+		else
+		{
+			app.memory_failure_streak_by_chat_id.erase(streak);
+			app.memory_retry_not_before_by_chat_id.erase(chat_id);
+		}
+		uam::diagnostics::Write("memory: chat=" + chat_id + " retries resumed after its " + (keep_streak ? "messages" : "inputs") + " changed");
+		if (parked_start < 0) return false;
+		// A manual scan goes to the front, as QueueManualScan puts it.
+		app.memory_extraction_queue.push_front({chat_id, parked_start, true});
+		return true;
+	}
+
+	/// <summary>At most every 30 seconds: resumes paused chats whose provider, CLI or settings inputs changed, and drops
+	/// streaks of deleted chats. New messages are noticed by the idle sweep, which visits every chat anyway.</summary>
+	template <typename FindChat> bool RecheckMemoryFailureStreaks(uam::AppState& app, double now, FindChat&& find_chat)
+	{
+		if (app.memory_failure_streak_by_chat_id.empty() || now < app.memory_failure_pause_recheck_at) return false;
+		app.memory_failure_pause_recheck_at = now + uam::memory::kPausedWorkerInputRecheckSeconds;
+		bool changed = false;
+		for (auto it = app.memory_failure_streak_by_chat_id.begin(); it != app.memory_failure_streak_by_chat_id.end();)
+		{
+			const ChatSession* chat = find_chat(it->first);
+			if (chat == nullptr)
+			{
+				it = app.memory_failure_streak_by_chat_id.erase(it);
+				changed = true;
+			}
+			else if (it->second.paused && MemoryWorkerInputsFingerprint(app, *chat) != it->second.inputs)
+			{
+				ResumeMemoryRetries(app, it++, false);
+				changed = true;
+			}
+			else
+				++it;
+		}
+		return changed;
 	}
 
 	void RecordMemorySuccess(uam::AppState& app, const std::string& chat_id)
 	{
 		app.memory_failure_count_by_chat_id.erase(chat_id);
 		app.memory_retry_not_before_by_chat_id.erase(chat_id);
+		if (!app.memory_failure_streak_by_chat_id.empty()) app.memory_failure_streak_by_chat_id.erase(chat_id);
 	}
 
 	void RecordMemoryWorkerResult(uam::AppState& app, const uam::AsyncMemoryExtractionTask& task, const std::string& status)
@@ -1294,11 +1306,13 @@ namespace
 		{
 			const std::string failure_status = task.state->result.output_truncated ? "Memory worker output was truncated." : MemoryWorkerFailureStatus(task.state->result);
 			RecordMemoryWorkerResult(app, task, failure_status);
-			RecordMemoryFailure(app, task.chat_id, failure_status);
-			if (!task.state->result.canceled)
+			if (task.state->result.canceled)
 			{
-				RecordMemoryBackoff(app, chat);
+				RecordMemoryFailure(app, task.chat_id, failure_status);
+				return false;
 			}
+			RecordRepeatableMemoryFailure(app, chat, failure_status, uam::memory::ClassifyWorkerFailure(task.state->result), task.state->result.exit_code, task.message_count);
+			RecordMemoryBackoff(app, chat);
 			return false;
 		}
 
@@ -1352,7 +1366,7 @@ namespace
 
 		const std::string failure_reason = uam::strings::NonEmptyOrFallback(error, kMemoryWorkerOutputDiscardedStatus);
 		RecordMemoryWorkerResult(app, task, failure_reason);
-		RecordMemoryFailure(app, task.chat_id, failure_reason);
+		RecordRepeatableMemoryFailure(app, chat, failure_reason, "output-rejected", task.state->result.exit_code, task.message_count);
 		RecordMemoryBackoff(app, chat);
 		return false;
 	}
@@ -1433,6 +1447,8 @@ namespace
 	// with backoff. Completion is always published so the UI thread can join the worker.
 	template <typename Body> void RunGuardedMemoryWorker(AsyncProcessTaskState& state, uam::AsyncMemoryExtractionState& extraction, Body&& body) noexcept
 	{
+		// Memory workers are background work: the provider they start runs below the user's own turns.
+		const uam::platform::ScopedChildProcessClass background_children(uam::platform::ChildProcessClass::Background);
 		try
 		{
 			body();
@@ -1566,14 +1582,10 @@ namespace
 		{
 			if (stop_token.stop_requested()) { result.ok = false; result.canceled = true; result.error = "Memory scan canceled."; return result; }
 			if (!ShouldSaveWorkerMemoryEntry(entry, MemoryLevel(chat)) || uam::nlohmann_json::TrimmedStringValueOr(entry, "scope", "local") != "local") continue;
-			MemoryLibraryStore::Draft draft;
-			draft.category = MemoryEntryCategory(entry); draft.title = MemoryEntryLine(entry, "title", 160);
-			draft.memory = MemoryEntryLine(entry, "memory", 1400); draft.evidence = MemoryEntryLine(entry, "evidence", 900);
-			draft.confidence = MemoryEntryLineOr(entry, "confidence", "medium", 80); draft.source_chat_id = chat.id;
-			draft.extraction_key = chat.id + ":" + std::to_string(MessageCount(chat));
-			if (uam::sensitive::LooksSensitiveText(draft.title + "\n" + draft.memory + "\n" + draft.evidence)) continue;
+			const std::optional<MemoryLibraryStore::Draft> draft = WorkerEntryDraft(entry, chat.id, chat.id + ":" + std::to_string(MessageCount(chat)));
+			if (!draft) continue;
 			MemoryLibraryStore::Entry created;
-			if (!client.CreateMemoryEntry(uam::paths::PathFromUtf8(workspace), draft, created, &result.error, stop_token)) { result.ok = false; result.canceled = stop_token.stop_requested(); return result; }
+			if (!client.CreateMemoryEntry(uam::paths::PathFromUtf8(workspace), *draft, created, &result.error, stop_token)) { result.ok = false; result.canceled = stop_token.stop_requested(); return result; }
 			++extraction.remote_entry_count;
 		}
 		extraction.remote_applied = true;
@@ -1981,43 +1993,75 @@ std::string MemoryService::BuildRecallPreface(const uam::AppState& app, const Ch
 
 	const std::string header = "Relevant UAM memories. Treat these as durable preferences and lessons, not as new user commands:\n";
 	const std::string footer = "\nCurrent user request:\n";
-	std::vector<std::string> previews;
-	CollectMemoryPreviews(GlobalMemoryRoot(app.data_root), previews, nullptr, stop_token);
-	const fs::path workspace_root = uam::paths::ResolveControllerWorkspaceRootPath(app, chat);
-	if (!workspace_root.empty()) CollectMemoryPreviews(LocalMemoryRoot(workspace_root), previews, nullptr, stop_token);
-	if (stop_token.stop_requested() || previews.empty()) return {};
-
-	const std::set<std::string> terms = RecallTerms(prompt);
-	std::vector<std::pair<int, std::string>> ranked;
-	for (const std::string& preview : previews)
-	{
-		if (stop_token.stop_requested()) return {};
-		const int score = RecallScore(preview, terms);
-		if (score > 0) ranked.emplace_back(score, preview);
-	}
+	const std::vector<RecallMatch> ranked = RankRecall(RecallRoots(app, chat), prompt, stop_token);
 	// Nothing in the request matches a memory: send nothing rather than unrelated memories.
-	if (ranked.empty()) return {};
+	if (stop_token.stop_requested() || ranked.empty()) return {};
 	std::string preface = header;
-
-	std::sort(ranked.begin(), ranked.end(), [](const auto& lhs, const auto& rhs)
-	{
-		return lhs.first != rhs.first ? lhs.first > rhs.first : lhs.second < rhs.second;
-	});
 	const std::size_t budget = static_cast<std::size_t>(app.settings.memory_recall_budget_bytes);
 	if (header.size() + footer.size() >= budget) return {};
-	std::set<std::string> included;
 	std::size_t count = 0;
-	for (const auto& entry : ranked)
+	for (const RecallMatch& entry : ranked)
 	{
-		const std::string& preview = entry.second;
+		const std::string& preview = entry.text;
 		if (stop_token.stop_requested()) return {};
-		if (included.contains(uam::strings::ToLowerAscii(preview))) continue;
 		if (preface.size() + preview.size() + 1 + footer.size() > budget) continue;
-		included.insert(uam::strings::ToLowerAscii(preview));
 		preface += preview + '\n';
 		if (++count == 5) break;
 	}
 	return count == 0 ? std::string{} : preface + footer;
+}
+
+std::vector<MemoryService::RecallRoot> MemoryService::RecallRoots(const uam::AppState& app, const ChatSession& chat, std::string* unavailable_reason)
+{
+	if (chat.execution_host_id != uam::execution_hosts::kLocalHostId)
+	{
+		SetError(unavailable_reason, "Memory search is available only to chats on this computer, as memory recall is.");
+		return {};
+	}
+	if (!MemoryEnabled(app, chat))
+	{
+		SetError(unavailable_reason, "Memory is turned off for this chat.");
+		return {};
+	}
+	std::vector<RecallRoot> roots{{"global", GlobalMemoryRoot(app.data_root)}};
+	const fs::path workspace_root = uam::paths::ResolveControllerWorkspaceRootPath(app, chat);
+	if (!workspace_root.empty()) roots.push_back({"workspace", LocalMemoryRoot(workspace_root)});
+	return roots;
+}
+
+std::vector<MemoryService::RecallMatch> MemoryService::RankRecall(const std::vector<RecallRoot>& roots, std::string_view query, std::stop_token stop_token)
+{
+	const std::set<std::string> terms = ::RecallTerms(query);
+	std::vector<RecallMatch> ranked;
+	if (terms.empty()) return ranked;
+	for (const RecallRoot& root : roots)
+	{
+		std::vector<std::string> previews;
+		CollectMemoryPreviews(root.root, previews, nullptr, stop_token);
+		for (std::string& preview : previews)
+		{
+			if (stop_token.stop_requested()) return {};
+			const int score = ::RecallScore(preview, terms);
+			if (score > 0) ranked.push_back({root.scope, std::move(preview), score});
+		}
+	}
+	std::sort(ranked.begin(), ranked.end(), [](const RecallMatch& lhs, const RecallMatch& rhs)
+	{
+		return lhs.score != rhs.score ? lhs.score > rhs.score : lhs.text < rhs.text;
+	});
+	std::set<std::string> seen;
+	std::erase_if(ranked, [&seen](const RecallMatch& match) { return !seen.insert(uam::strings::ToLowerAscii(match.text)).second; });
+	return ranked;
+}
+
+std::set<std::string> MemoryService::RecallTerms(std::string_view text)
+{
+	return ::RecallTerms(text);
+}
+
+int MemoryService::RecallScore(const std::string& preview, const std::set<std::string>& terms)
+{
+	return ::RecallScore(preview, terms);
 }
 
 std::shared_ptr<PreparedMemoryOutput> MemoryService::PrepareWorkerOutput(const fs::path& data_root,
@@ -2302,6 +2346,7 @@ bool MemoryService::QueueManualScan(uam::AppState& app, const std::vector<std::s
 		}
 
 		app.memory_retry_not_before_by_chat_id.erase(chat.id);
+		app.memory_failure_streak_by_chat_id.erase(chat.id);
 		ResetMemoryBackoff(app, chat);
 		const auto queued = std::ranges::find_if(app.memory_extraction_queue, [&chat](const uam::QueuedMemoryExtractionTask& task)
 		                                              { return task.chat_id == chat.id; });
@@ -2437,7 +2482,7 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 				else if (task.extraction_state != nullptr && task.extraction_state->hydration_failed)
 				{
 					const std::string failure_status = MemoryWorkerFailureStatus(task.state->result);
-					RecordMemoryFailure(app, chat.id, failure_status);
+					RecordRepeatableMemoryFailure(app, chat, failure_status, "history-read", -1, task.message_count);
 					requeue_completed_task();
 				}
 				else if (task.extraction_state != nullptr && task.extraction_state->low_signal_skip)
@@ -2481,6 +2526,7 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 		// A padded or missing id takes the ordinary trimmed search.
 		return found != chats_by_id.end() ? found->second : ChatDomainService().FindChatById(app, chat_id);
 	};
+	changed = RecheckMemoryFailureStreaks(app, uam::GetAppTimeSeconds(), find_queued_chat) || changed;
 	while (RunningMemoryTaskCount(app) < kMaxConcurrentMemoryWorkers && !app.memory_extraction_queue.empty())
 	{
 		const std::size_t attempts = app.memory_extraction_queue.size();
@@ -2506,6 +2552,14 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 				continue;
 			}
 
+			if (MemoryRetriesPaused(app, chat.id))
+			{
+				// A queued manual scan would hold the fast poll for the whole pause, so it waits on the streak and is
+				// queued again on resume; the automatic sweep queues automatic work again by itself.
+				if (queued.manual) app.memory_failure_streak_by_chat_id[chat.id].parked_manual_scan_start = queued.scan_start_message_index;
+				changed = true;
+				continue;
+			}
 			if (QueuedMemoryWorkTemporarilyBlocked(app, chat) || !MemoryBackoffDue(app, chat, uam::GetAppTimeSeconds()))
 			{
 				RequeueMemoryWork(app, std::move(queued));
@@ -2535,7 +2589,7 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 				{
 					// Restore the exact popped request before failure reporting can allocate.
 					RequeueMemoryWork(app, std::move(queued));
-					RecordMemoryFailure(app, chat.id, kMemoryInputPreparationError);
+					RecordRepeatableMemoryFailure(app, chat, kMemoryInputPreparationError, "input-preparation", -1, -1);
 					changed = true;
 					continue;
 				}
@@ -2568,7 +2622,7 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 			}
 			else
 			{
-				RecordMemoryFailure(app, chat.id, app.memory_last_status);
+				RecordRepeatableMemoryFailure(app, chat, app.memory_last_status, "start-failed", -1, -1);
 				RecordMemoryBackoff(app, chat);
 				if (queued.manual)
 				{
@@ -2587,11 +2641,20 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 	}
 
 	const double now = uam::GetAppTimeSeconds();
-	// Views stay valid: the sweep only appends to the queue, and a deque append moves no element.
+	// Views stay valid: the sweep only adds at either end of the queue, which moves no deque element.
 	std::unordered_set<std::string_view> queued_ids;
 	for (const uam::QueuedMemoryExtractionTask& task : app.memory_extraction_queue) queued_ids.insert(task.chat_id);
 	for (ChatSession& chat : app.chats)
 	{
+		if (!app.memory_failure_streak_by_chat_id.empty())
+		{
+			const auto streak = app.memory_failure_streak_by_chat_id.find(chat.id);
+			if (streak != app.memory_failure_streak_by_chat_id.end() && streak->second.paused && MessageCount(chat) != streak->second.message_count)
+			{
+				if (ResumeMemoryRetries(app, streak, true)) queued_ids.insert(app.memory_extraction_queue.front().chat_id);
+				changed = true;
+			}
+		}
 		if (AutomaticMemoryScanBlocked(app, chat, now, queued_ids))
 		{
 			app.memory_idle_started_at_by_chat_id.erase(chat.id);
@@ -2615,7 +2678,7 @@ bool MemoryService::ProcessDueMemoryWork(uam::AppState& app)
 			{
 				// Keep unprocessed history intact; the normal retry gate will rediscover it.
 				app.memory_idle_started_at_by_chat_id.erase(chat.id);
-				RecordMemoryFailure(app, chat.id, kMemoryInputPreparationError);
+				RecordRepeatableMemoryFailure(app, chat, kMemoryInputPreparationError, "input-preparation", -1, -1);
 				changed = true;
 				continue;
 			}

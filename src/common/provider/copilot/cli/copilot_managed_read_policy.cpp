@@ -3,6 +3,7 @@
 
 #include "app/agent_run_scheduler.h"
 #include "common/config/approval_modes.h"
+#include "common/provider/copilot_sdk_protocol.h"
 #include "common/runtime/acp/acp_json_rpc.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/provider_cli_compatibility_service.h"
@@ -199,7 +200,7 @@ bool SupportedVersion(std::string_view version)
 		else if (character == '.' && digit && dots < 2) { ++dots; digit = false; }
 		else return false;
 	}
-	return dots == 2 && digit && CliProviderVersionAtLeast(version, "1.0.98");
+	return dots == 2 && digit && CliProviderVersionAtLeast(version, uam::copilot::managed_read::kStableCliMinimumVersion);
 }
 
 bool SnapshotValid(const Json& result, const Json& state)
@@ -343,8 +344,10 @@ bool HandleResult(AppState& app, AcpSessionState& session, ChatSession& chat, co
 	if (method == kStatus)
 	{
 		const auto version = Text(result, "version");
-		if (nlohmann_json::IntFieldStrict(result, "protocolVersion") != std::optional<int>(3) || !SupportedVersion(version))
-			Reject(app, session, chat, *state, "Managed Copilot continuation requires this process to report SDK protocol 3 and stable CLI 1.0.98 or newer.");
+		if (!uam::copilot::IsVerifiedSdkProtocolResult(result))
+			Reject(app, session, chat, *state, uam::copilot::SdkProtocolRefusalForResult(result));
+		else if (!SupportedVersion(version))
+			Reject(app, session, chat, *state, "Managed Copilot continuation requires stable Copilot CLI 1.0.98 or newer.");
 		else { (*state)["supported"] = true; (*state)["phase"] = "setup"; }
 		return true;
 	}

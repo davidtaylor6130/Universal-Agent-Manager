@@ -1,4 +1,5 @@
 #include "common/platform/platform_services.h"
+#include "common/platform/child_process_priority.h"
 #include "common/platform/platform_state_fields.h"
 #include "common/utils/uuid.h"
 
@@ -176,6 +177,12 @@ namespace uam::platform_linux_impl
 					}
 					return false;
 				}
+				// Read before fork: the child may only make async-signal-safe calls.
+				// Never raise: a helper already running at or below this niceness passes its own on unchanged.
+				int child_nice = uam::platform::SpawnPriorityFor(uam::platform::CurrentChildProcessClass()).unix_nice;
+				errno = 0;
+				const int current_nice = getpriority(PRIO_PROCESS, 0);
+				if (child_nice != 0 && errno == 0 && current_nice >= child_nice) child_nice = 0;
 				const pid_t child = fork();
 				if (child < 0)
 				{
@@ -190,6 +197,8 @@ namespace uam::platform_linux_impl
 				if (child == 0)
 				{
 					(void)setpgid(0, 0);
+					// Agent and background work runs niced; the provider's own children inherit it. Best effort.
+					if (child_nice != 0) (void)setpriority(PRIO_PROCESS, 0, child_nice);
 					(void)std::signal(SIGPIPE, SIG_DFL); // The runner service ignores SIGPIPE; an ignored signal would survive exec.
 					if ((!working_directory.empty() && chdir(working_directory.c_str()) != 0) ||
 					    dup2(input[0], STDIN_FILENO) < 0 ||

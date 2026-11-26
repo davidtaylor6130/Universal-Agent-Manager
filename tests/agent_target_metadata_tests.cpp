@@ -157,7 +157,9 @@ UAM_TEST(GoalReviewerControlCannotMutateOrStartBroaderChildren)
 		TargetMetadataFixture fixture;
 		uam::AppState& app = fixture.app;
 		app.chats.front().command_safety_tier = "yolo";
-		// Either the live review turn or a reviewer capability whose turn already settled.
+		// Either the live review turn or a reviewer capability whose turn already settled. This capability is built by
+		// hand with no hidden-tool list, so it exercises the read ceiling alone; a real reviewer launch also hides
+		// every tool and the manager refuses them first (UamControlManagerRefusesToolsTheSessionWasNotOffered).
 		if (captured_at_launch) app.uam_control_capabilities.front().read_only_at_launch = true;
 		else app.acp_sessions.front()->goal_review_turn = true;
 		const auto call = [&](const std::string& id, const std::string& method, nlohmann::json arguments)
@@ -230,6 +232,88 @@ UAM_TEST(WriteCallersAndGoalWorkersKeepTheirPermissions)
 	UAM_ASSERT(delegated.value("ok", false));
 	UAM_ASSERT_EQ(app.agent_runs.back().provider_id, std::string("claude-cli"));
 	UAM_ASSERT_EQ(app.agent_runs.back().effective_workspace_access, std::string("write"));
+}
+
+UAM_TEST(DelegationLimitsLiveAgentsPerChatAndPerTurn)
+{
+	TargetMetadataFixture fixture;
+	uam::AppState& app = fixture.app;
+	ChatSession other = app.chats.front();
+	other.id = "other-root";
+	app.chats.push_back(other);
+	int serial = 0;
+	const auto delegate = [&]
+	{
+		const std::string id = "delegate-" + std::to_string(++serial);
+		// Distinct tasks, so no call is answered as a retry of the one before.
+		return uam::UamControlService::HandleRequestForTests(app, "target-capability",
+		    {{"requestId", id}, {"method", "agent_delegate"}, {"arguments", {{"agentId", "worker"}, {"task", "Task " + id + "."}}}}, 1001);
+	};
+	const auto live_root_runs = [&]
+	{
+		return std::ranges::count_if(app.agent_runs, [](const AgentRun& run) { return run.root_chat_id == "root" && run.status == "queued"; });
+	};
+	const auto settle_root_runs = [&]
+	{
+		for (AgentRun& run : app.agent_runs)
+			if (run.root_chat_id == "root") run.status = "completed";
+	};
+
+	// One chat holds at most four live top-level agents, so it cannot fill the shared 32-run queue.
+	for (int index = 0; index < 4; ++index) UAM_ASSERT(delegate().value("ok", false));
+	const nlohmann::json full = delegate();
+	UAM_ASSERT(!full.value("ok", true));
+	UAM_ASSERT_EQ(full.value("error", ""), std::string("This chat already has four agents queued or running; wait for one to finish."));
+	UAM_ASSERT_EQ(live_root_runs(), std::ptrdiff_t{4});
+	std::string run_id, error;
+	UAM_ASSERT(!uam::AgentRunScheduler::Enqueue(app, "root", "", "worker", "Direct scheduler call.", &run_id, &error));
+	UAM_ASSERT(error.find("four agents") != std::string::npos);
+	// Another chat still has room in the shared queue.
+	UAM_ASSERT(uam::AgentRunScheduler::Enqueue(app, "other-root", "", "worker", "Other chat.", &run_id, &error));
+	// A finished agent frees its place.
+	app.agent_runs.front().status = "completed";
+	UAM_ASSERT(delegate().value("ok", false));
+
+	// Five agents started this turn; settling them all does not lift the per-turn limit of eight.
+	for (int started = 5; started < 8; ++started)
+	{
+		settle_root_runs();
+		UAM_ASSERT(delegate().value("ok", false));
+	}
+	settle_root_runs();
+	const nlohmann::json turn_full = delegate();
+	UAM_ASSERT(!turn_full.value("ok", true));
+	UAM_ASSERT_EQ(turn_full.value("error", ""), std::string("UAM may start at most 8 agents per turn."));
+	UAM_ASSERT_EQ(live_root_runs(), std::ptrdiff_t{0});
+	// The next turn starts a fresh allowance.
+	++app.acp_sessions.front()->turn_serial;
+	UAM_ASSERT(delegate().value("ok", false));
+
+	// Children can outlive a finished parent, so every live run in the chat counts toward its total of 20.
+	settle_root_runs();
+	for (int index = 0; index < 20; ++index)
+	{
+		AgentRun orphan = app.agent_runs.front();
+		orphan.id = "orphan-" + std::to_string(index);
+		orphan.parent_run_id = "finished-parent";
+		orphan.depth = 2;
+		orphan.status = "queued";
+		app.agent_runs.push_back(std::move(orphan));
+	}
+	UAM_ASSERT(!uam::AgentRunScheduler::Enqueue(app, "root", "", "worker", "Over the chat total.", &run_id, &error));
+	UAM_ASSERT_EQ(error, std::string("This chat already has 20 agents queued or running; wait for some to finish."));
+	// A live parent's child counts toward the same total.
+	app.agent_runs.back().status = "completed";
+	AgentRun parent = app.agent_runs.front();
+	parent.id = "live-parent";
+	parent.parent_run_id.clear();
+	parent.depth = 1;
+	parent.status = "running";
+	app.agent_runs.push_back(std::move(parent));
+	UAM_ASSERT(!uam::AgentRunScheduler::Enqueue(app, "root", "live-parent", "worker", "Child over the chat total.", &run_id, &error));
+	UAM_ASSERT_EQ(error, std::string("This chat already has 20 agents queued or running; wait for some to finish."));
+	// The other chat keeps its own allowance.
+	UAM_ASSERT(uam::AgentRunScheduler::Enqueue(app, "other-root", "", "worker", "Other chat again.", &run_id, &error));
 }
 
 UAM_TEST(BuiltinCapturedDefinitionsRoundTripWithoutPromotingLegacySnapshots)
@@ -664,6 +748,61 @@ UAM_TEST(EditingImportedOpenCodeAgentPreservesPolicyAndRejectsWidening)
 	edited.open_code_permission_json = R"({"edit":"deny","bash":"deny"})";
 	UAM_ASSERT(!uam::AgentDefinitionService::SaveGlobalAgent(temp.root, edited, &error));
 	UAM_ASSERT_EQ(uam::io::ReadTextFile(target), previous);
+}
+
+UAM_TEST(OpenCodeAgentAdapterLimitsNativeSkillsToTheAgentAllowlist)
+{
+	TempDir temp("uam-opencode-skill-adapter");
+	std::string error;
+	const std::string snapshot = "---\nversion: 1\nname: reviewer\ndescription: Review\nmode: primary\nworkspaceAccess: write\nskills: [alpha, beta-2]\ndelegates: []\n---\nReview code.\n";
+	uam::ProviderAgentRuntimeAdapter adapter;
+	UAM_ASSERT(uam::AgentDefinitionService::PrepareRuntimeAdapter(temp.root, "chat", "opencode", "reviewer", "Review code.", &adapter, &error, &snapshot));
+	const nlohmann::json config = nlohmann::json::parse(uam::io::ReadTextFile(adapter.directory / "opencode.json"));
+	// Native skills outside the allowlist are denied; approved names keep the agent's ordinary ask.
+	UAM_ASSERT_EQ(config["permission"]["skill"], nlohmann::json({{"*", "deny"}, {"alpha", "ask"}, {"beta-2", "ask"}}));
+	UAM_ASSERT_EQ(config["permission"].value("*", ""), std::string("ask"));
+	const std::string agent = uam::io::ReadTextFile(adapter.directory / "agent" / (config.at("default_agent").get<std::string>() + ".md"));
+	UAM_ASSERT(agent.find("  skill:\n    \"*\": deny\n    \"alpha\": ask\n    \"beta-2\": ask\n---\n") != std::string::npos);
+
+	// Without a decodable snapshot no name is approved, so every native skill is denied.
+	UAM_ASSERT(uam::AgentDefinitionService::PrepareRuntimeAdapter(temp.root, "chat-unbound", "opencode", "reviewer", "Review code.", &adapter, &error));
+	const nlohmann::json unbound = nlohmann::json::parse(uam::io::ReadTextFile(adapter.directory / "opencode.json"));
+	UAM_ASSERT_EQ(unbound["permission"]["skill"], nlohmann::json({{"*", "deny"}}));
+
+	// Built-in Build keeps OpenCode's native skills; its central skills are not an allowlist.
+	UAM_ASSERT(uam::AgentDefinitionService::PrepareRuntimeAdapter(temp.root, "chat-build", "opencode", "build", "Implement the requested change and verify it.", &adapter, &error));
+	const nlohmann::json build = nlohmann::json::parse(uam::io::ReadTextFile(adapter.directory / "opencode.json"));
+	UAM_ASSERT(!build["permission"].contains("skill"));
+	UAM_ASSERT(uam::io::ReadTextFile(adapter.directory / "agent" / (build.at("default_agent").get<std::string>() + ".md")).find("skill") == std::string::npos);
+}
+
+UAM_TEST(OpenCodeNativeSkillRuleNeverWidensAnImportedPolicy)
+{
+	const std::string snapshot = "---\nversion: 1\nname: reviewer\ndescription: Review\nmode: primary\nworkspaceAccess: read\nskills: [alpha]\ndelegates: []\n---\nReview code.\n";
+	// Approved names ask even when the agent allows everything; a rule that denies skills or everything keeps them denied.
+	const auto approved = [&](const std::string& permission)
+	{ return nlohmann::json::parse(uam::AgentDefinitionService::OpenCodeNativeSkillRule("reviewer", &snapshot, permission)); };
+	UAM_ASSERT_EQ(approved(R"({"*":"allow"})"), nlohmann::json({{"*", "deny"}, {"alpha", "ask"}}));
+	UAM_ASSERT_EQ(approved(R"({"edit":"deny","bash":"deny"})")["alpha"], nlohmann::json("ask"));
+	UAM_ASSERT_EQ(approved(R"({"skill":"deny"})")["alpha"], nlohmann::json("deny"));
+	UAM_ASSERT_EQ(approved(R"({"*":"deny"})")["alpha"], nlohmann::json("deny"));
+	UAM_ASSERT_EQ(approved(R"({"skill":{"alpha":"allow"}})")["alpha"], nlohmann::json("deny"));
+	UAM_ASSERT_EQ(approved("not json")["alpha"], nlohmann::json("deny"));
+	UAM_ASSERT(uam::AgentDefinitionService::OpenCodeNativeSkillRule("build", &snapshot, "").empty());
+	UAM_ASSERT(uam::AgentDefinitionService::OpenCodeNativeSkillRule("plan", nullptr, "").empty());
+
+	// The imported-policy adapter writes the same rule into its permission object and agent file.
+	TempDir temp("uam-opencode-skill-imported");
+	std::string bound = BoundAgentMarkdown(R"({"edit":"deny","bash":"deny"})");
+	bound.replace(bound.find("skills: []"), 10, "skills: [alpha]");
+	uam::ProviderAgentRuntimeAdapter adapter;
+	std::string error;
+	UAM_ASSERT(uam::AgentDefinitionService::PrepareRuntimeAdapter(temp.root, "chat", "opencode", "reviewer", "Captured instructions.", &adapter, &error, &bound));
+	const nlohmann::ordered_json config = nlohmann::ordered_json::parse(uam::io::ReadTextFile(adapter.directory / "opencode.json"));
+	UAM_ASSERT_EQ(config.at("permission").at("skill"), nlohmann::ordered_json({{"*", "deny"}, {"alpha", "ask"}}));
+	UAM_ASSERT_EQ(config.at("permission").at("bash").get<std::string>(), std::string("deny"));
+	const std::string agent = uam::io::ReadTextFile(adapter.directory / "agent" / (config.at("default_agent").get<std::string>() + ".md"));
+	UAM_ASSERT(agent.find("permission: " + config.at("permission").dump()) != std::string::npos);
 }
 
 UAM_TEST(OpenCodeImportedPolicyAdapterUsesCapturedRulesWithoutBroaderWildcardOverrides)

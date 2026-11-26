@@ -9,6 +9,9 @@
 #include "common/chat/chat_message_page_index.h"
 #include "common/runtime/native_refresh_lifetime.h"
 #include "include/cef_api_hash.h"
+#if UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
+#include "antigravity_history_fixture.h"
+#endif
 #include <future>
 
 using namespace uam_test;
@@ -323,6 +326,174 @@ UAM_TEST(NativeMediaRefreshHandlerShortSnapshotNeverPublishesOrAcknowledges)
 	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{1});
 	UAM_ASSERT_EQ(fixture.Primary(), before);
 	UAM_ASSERT(!fs::exists(fixture.app.data_root / std::string(uam::native_assets::kStoreDirectory)));
+}
+
+#endif
+
+#if UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
+namespace
+{
+	using namespace uam_test::antigravity_fixture;
+	// Own callback/query doubles: these cases must not depend on the Gemini build flag.
+	class AgRefreshCallback final : public UamQueryHandler::Callback
+	{
+	  public:
+		int successes = 0, failures = 0, status = 0;
+		std::string failure;
+		void Success(const CefString&) override { ++successes; }
+		void Success(const void*, size_t) override { ++successes; }
+		void Failure(int code, const CefString& error) override
+		{
+			++failures;
+			status = code;
+			failure = error.ToString();
+		}
+
+	  private:
+		IMPLEMENT_REFCOUNTING(AgRefreshCallback);
+	};
+	struct AgRefreshQuery
+	{
+		CefRefPtr<UamQueryHandler::Callback> cb;
+		std::function<AsyncCefResult()> worker;
+		std::function<void(AsyncCefResult&)> completion;
+	};
+	std::string AntigravityWorkspaceUri(const fs::path& workspace)
+	{
+		std::string uri = workspace.generic_string(), encoded;
+		for (const char c : uri) encoded += c == ' ' ? std::string("%20") : std::string(1, c);
+		return encoded.front() == '/' ? "file://" + encoded : "file:///" + encoded;
+	}
+	// The Terminal-to-Chat refresh reads the documented CLI store under HOME, so the
+	// synthetic conversation is copied there; no real profile or provider runs.
+	struct AntigravityRefreshFixture
+	{
+		TempDir temp{"uam-antigravity-refresh-handler"};
+		ScopedEnvVar home{"HOME", (temp.root / "home").string()};
+		ScopedEnvVar profile{"USERPROFILE", (temp.root / "home").string()};
+		uam::AppState app;
+		std::unique_ptr<UamQueryHandler> handler;
+		std::vector<AgRefreshQuery> pending;
+		AgFixture native;
+		explicit AntigravityRefreshFixture(const std::string& host = "local", bool nested = false, bool unfinished = false)
+		{
+			app.data_root = temp.root / "data";
+			const fs::path workspace = temp.root / "workspace";
+			fs::create_directories(workspace);
+			native.Metadata(AntigravityWorkspaceUri(workspace));
+			native.User("Recorded text");
+			native.Step(1, 15, 20, AgBytes(1, "Native terminal answer"), 2, {}, unfinished ? 2 : 3);
+			if (nested) native.Sql("INSERT INTO parent_references VALUES(0,X'0801')");
+			native.db.reset();
+			const fs::path store = temp.root / "home" / ".gemini" / "antigravity-cli" / "conversations";
+			fs::create_directories(store);
+			fs::copy_file(native.file, store / native.file.filename());
+			ChatSession chat;
+			chat.id = "saved-UAM-antigravity";
+			chat.provider_id = uam::provider_ids::kAntigravityCli;
+			chat.native_session_id = kSession;
+			chat.workspace_directory = workspace.string();
+			chat.execution_host_id = host;
+			chat.created_at = chat.updated_at = "2026-10-16T12:00:00Z";
+			Message row;
+			row.role = MessageRole::User;
+			row.content = "Recorded text";
+			row.created_at = chat.created_at;
+			chat.messages.push_back(row);
+			app.chats.push_back(chat);
+			UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats.front()));
+			handler = UamQueryHandlerTestAccess::Create(app, "file:///private/index.html");
+			NativeMediaRefreshHandlerTestAccess::Dispatch(*handler, [this](auto cb, auto worker, auto completion)
+			{
+				pending.push_back({cb, std::move(worker), std::move(completion)});
+				return true;
+			});
+		}
+		~AntigravityRefreshFixture()
+		{
+			pending.clear();
+			handler.reset();
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+			while (uam::native_history::detail::refresh_owners.load() != 0 && std::chrono::steady_clock::now() < deadline)
+				std::this_thread::yield();
+		}
+		CefRefPtr<AgRefreshCallback> Start()
+		{
+			CefRefPtr<AgRefreshCallback> cb = new AgRefreshCallback;
+			NativeMediaRefreshHandlerTestAccess::Invoke(*handler, app.chats.front().id, cb);
+			return cb;
+		}
+		void Complete(std::size_t index)
+		{
+			auto query = std::move(pending.at(index));
+			auto result = std::async(std::launch::async, query.worker).get();
+			CompleteAsyncCefQuery(query.cb, result, query.completion);
+		}
+		std::string Primary()
+		{
+			return ReadFile(AppPaths::UamChatFilePath(app.data_root, app.chats.front().id));
+		}
+	};
+} // namespace
+
+UAM_TEST(AntigravityTerminalRefreshPublishesExactLocalNativeConversation)
+{
+	AntigravityRefreshFixture fixture;
+	const auto cb = fixture.Start();
+	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{1});
+	fixture.Complete(0);
+	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{2});
+	UAM_ASSERT_EQ(cb->successes, 0);
+	fixture.Complete(1);
+	UAM_ASSERT_EQ(cb->failures, 0);
+	UAM_ASSERT_EQ(cb->successes, 1);
+	const auto& current = fixture.app.chats.front();
+	UAM_ASSERT_EQ(current.native_session_id, std::string(kSession));
+	UAM_ASSERT_EQ(current.messages.size(), std::size_t{2});
+	UAM_ASSERT_EQ(current.messages[1].role, MessageRole::Assistant);
+	UAM_ASSERT_EQ(current.messages[1].content, std::string("Native terminal answer"));
+	UAM_ASSERT(fixture.Primary().find("Native terminal answer") != std::string::npos);
+}
+
+UAM_TEST(AntigravityTerminalRefreshRefusesNestedChildAndRetainsSavedHistory)
+{
+	AntigravityRefreshFixture fixture("local", true);
+	const auto before = fixture.Primary();
+	const auto cb = fixture.Start();
+	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{1});
+	fixture.Complete(0);
+	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{1});
+	UAM_ASSERT_EQ(cb->successes, 0);
+	UAM_ASSERT_EQ(cb->failures, 1);
+	UAM_ASSERT_EQ(cb->status, 502);
+	UAM_ASSERT_EQ(cb->failure, std::string("This conversation continues another Antigravity conversation, and UAM cannot read that earlier context completely yet."));
+	UAM_ASSERT_EQ(fixture.Primary(), before);
+	UAM_ASSERT_EQ(fixture.app.chats.front().messages.size(), std::size_t{1});
+}
+
+UAM_TEST(AntigravityTerminalRefreshOfUnfinishedConversationServesSavedHistory)
+{
+	// CLI View to Chat while a terminal turn is still running: not a failure, nothing published.
+	AntigravityRefreshFixture fixture("local", false, true);
+	const auto before = fixture.Primary();
+	const auto cb = fixture.Start();
+	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{1});
+	fixture.Complete(0);
+	UAM_ASSERT_EQ(fixture.pending.size(), std::size_t{1});
+	UAM_ASSERT_EQ(cb->failures, 0);
+	UAM_ASSERT_EQ(cb->successes, 1);
+	UAM_ASSERT_EQ(fixture.Primary(), before);
+	UAM_ASSERT_EQ(fixture.app.chats.front().messages.size(), std::size_t{1});
+}
+
+UAM_TEST(AntigravityTerminalRefreshOnSshHostServesSavedHistoryWithoutNativeRead)
+{
+	AntigravityRefreshFixture fixture("ssh-host");
+	const auto cb = fixture.Start();
+	UAM_ASSERT(fixture.pending.empty());
+	UAM_ASSERT_EQ(cb->successes, 1);
+	UAM_ASSERT_EQ(cb->failures, 0);
+	UAM_ASSERT_EQ(fixture.app.chats.front().messages.size(), std::size_t{1});
 }
 #endif
 
@@ -4249,6 +4420,8 @@ namespace
 		std::shared_ptr<AsyncProcessTaskState> unfinished = std::make_shared<AsyncProcessTaskState>();
 		ManagedInitialFirstFixture fixture;
 		std::string other_root_id;
+		// A second independent parent: one parent's agents may hold only half the running slots.
+		std::string third_root_id;
 
 		std::string SentinelScript() const
 		{
@@ -4285,21 +4458,30 @@ namespace
 			UAM_ASSERT(ProviderResolutionService().ChatProviderIsAvailable(fixture.app, *root));
 			UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, *root));
 			AssertInvocationFileAbsent("constructor:root-save");
-			ChatSession other = ChatDomainService().CreateNewChat({}, "opencode-cli");
-			AssertInvocationFileAbsent("constructor:other-created");
-			other_root_id = other.id;
-			other.execution_host_id = root->execution_host_id;
-			other.routing_mode = root->routing_mode;
-			other.workspace_directory = root->workspace_directory;
-			other.model_id = root->model_id;
-			ChatDomainService().AddMessage(other, MessageRole::User, "Independent legacy capacity parent.");
-			ChatDomainService().AddMessage(other, MessageRole::Assistant, "Earlier saved parent answer.");
-			fixture.app.chats.push_back(std::move(other));
-			UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, fixture.app.chats.back()));
-			AssertInvocationFileAbsent("constructor:other-save");
-			const auto saved = ChatRepository::LoadLocalChatBounded(fixture.app.data_root, other_root_id, 4 * 1024 * 1024);
-			UAM_ASSERT(saved && saved->messages == fixture.app.chats.back().messages);
-			AssertInvocationFileAbsent("constructor:other-reload");
+			const auto add_parent = [&](const std::string& request)
+			{
+				ChatSession other = ChatDomainService().CreateNewChat({}, "opencode-cli");
+				AssertInvocationFileAbsent("constructor:other-created");
+				const std::string id = other.id;
+				other.execution_host_id = root->execution_host_id;
+				other.routing_mode = root->routing_mode;
+				other.workspace_directory = root->workspace_directory;
+				other.model_id = root->model_id;
+				ChatDomainService().AddMessage(other, MessageRole::User, request);
+				ChatDomainService().AddMessage(other, MessageRole::Assistant, "Earlier saved parent answer.");
+				fixture.app.chats.push_back(std::move(other));
+				UAM_ASSERT(ChatRepository::SaveChat(fixture.app.data_root, fixture.app.chats.back()));
+				AssertInvocationFileAbsent("constructor:other-save");
+				const auto saved = ChatRepository::LoadLocalChatBounded(fixture.app.data_root, id, 4 * 1024 * 1024);
+				UAM_ASSERT(saved && saved->messages == fixture.app.chats.back().messages);
+				AssertInvocationFileAbsent("constructor:other-reload");
+				return id;
+			};
+			other_root_id = add_parent("Independent legacy capacity parent.");
+			// The push above may move chats; look the fixture root up again before the second parent copies it.
+			root = ChatDomainService().FindChatById(fixture.app, fixture.root_id);
+			UAM_ASSERT(root);
+			third_root_id = add_parent("Second independent legacy capacity parent.");
 			auto& version = fixture.app.runtime_cli_versions_by_provider_id["opencode-cli"];
 			version.provider_id = "opencode-cli";
 			version.execution_host = uam::execution_hosts::LocalHost();
@@ -4421,8 +4603,9 @@ UAM_TEST(ManagedPureLegacyVersionWaitRetainsFourRunningAdmissionLimit)
 {
 	ManagedCapacityVersionWaitFixture capacity;
 	std::vector<std::string> first_four;
+	// Two parents with two agents each: the per-parent share is full for both and the global limit is reached.
 	for (int index = 0; index < 4; ++index)
-		first_four.push_back(capacity.Enqueue(capacity.other_root_id, "Legacy held admission " + std::to_string(index)));
+		first_four.push_back(capacity.Enqueue(index < 2 ? capacity.other_root_id : capacity.third_root_id, "Legacy held admission " + std::to_string(index)));
 	const auto fifth = capacity.Enqueue(capacity.fixture.root_id, "Fifth legacy admission must wait.");
 	capacity.Pulse();
 	for (const auto& id : first_four)
@@ -4447,8 +4630,9 @@ UAM_TEST(ManagedMixedInitialLegacyVersionWaitSharesFourRunningAdmissionSlots)
 {
 	ManagedCapacityVersionWaitFixture capacity;
 	std::vector<std::string> initial_legacy;
+	// Two parents share the first three slots, so the competitor's parent below is still under its own share.
 	for (int index = 0; index < 3; ++index)
-		initial_legacy.push_back(capacity.Enqueue(capacity.other_root_id, "Existing legacy held admission " + std::to_string(index)));
+		initial_legacy.push_back(capacity.Enqueue(index < 2 ? capacity.other_root_id : capacity.third_root_id, "Existing legacy held admission " + std::to_string(index)));
 	capacity.Pulse();
 	for (const auto& id : initial_legacy)
 		capacity.AssertRunningIsPersistedVersionWait(id);
@@ -4471,7 +4655,7 @@ UAM_TEST(ManagedMixedInitialLegacyVersionWaitSharesFourRunningAdmissionSlots)
 		                  ++completion->calls;
 		                  completion->result = result;
 		                  if (result.delegation_state == uam::ManagedInitialDelegationState::Committed)
-			                  completion->competitor_enqueued = uam::AgentRunScheduler::Enqueue(capacity.fixture.app, capacity.other_root_id, {}, capacity.fixture.definition.id, "Legacy competitor queued from the genuine committed creation callback.", &completion->competitor_id, &completion->error);
+			                  completion->competitor_enqueued = uam::AgentRunScheduler::Enqueue(capacity.fixture.app, capacity.third_root_id, {}, capacity.fixture.definition.id, "Legacy competitor queued from the genuine committed creation callback.", &completion->competitor_id, &completion->error);
 		                  return true; // Genuine classified delivery ACK; no fabricated ledger or runtime owner.
 	                  },
 	                  &error),
@@ -4487,7 +4671,7 @@ UAM_TEST(ManagedMixedInitialLegacyVersionWaitSharesFourRunningAdmissionSlots)
 	const std::string transcript_id = completion->result->transcript_chat_id;
 	UAM_ASSERT(!initial_id.empty() && !transcript_id.empty());
 	UAM_ASSERT_EQ(capacity.Run(initial_id).root_chat_id, capacity.fixture.root_id);
-	UAM_ASSERT_EQ(capacity.Run(completion->competitor_id).root_chat_id, capacity.other_root_id);
+	UAM_ASSERT_EQ(capacity.Run(completion->competitor_id).root_chat_id, capacity.third_root_id);
 	UAM_ASSERT(capacity.Run(initial_id).managed_continuation && !capacity.Run(completion->competitor_id).managed_continuation);
 	const auto saved_root = ChatRepository::LoadLocalChatBounded(capacity.fixture.app.data_root, capacity.fixture.root_id, 4 * 1024 * 1024);
 	UAM_ASSERT(saved_root && uam::uuid::IsCanonicalUuid(saved_root->managed_followup_incarnation));
@@ -8975,6 +9159,7 @@ namespace
         elif evidence == 'status-malformed-version': value['version'] = '1.0.98-not-a-stable-version'
         elif evidence == 'status-old-version': value['version'] = '1.0.97'
         elif evidence == 'status-wrong-protocol': value['protocolVersion'] = 2
+        elif evidence == 'status-protocol-4': value['protocolVersion'] = 4
     elif method == 'session.managedSettings.get' and evidence.startswith('policy-'):
         targeted = True
         if evidence == 'policy-missing-provenance':
@@ -9053,7 +9238,7 @@ namespace
 
 UAM_TEST(ManagedInitialCopilotUnsupportedOrIncompleteReadPolicyRemainsTruthfulOneShot)
 {
-	for (const std::string evidence : {"status-unsupported", "status-missing-version", "status-malformed-version", "status-old-version", "status-wrong-protocol", "policy-missing-provenance", "policy-bypass-enabled"})
+	for (const std::string evidence : {"status-unsupported", "status-missing-version", "status-malformed-version", "status-old-version", "status-wrong-protocol", "status-protocol-4", "policy-missing-provenance", "policy-bypass-enabled"})
 	{
 		ManagedCopilotBindingFixtureR124 fixture;
 		ConfigureCopilotNegativeReadPolicyPeer(fixture, evidence, false);

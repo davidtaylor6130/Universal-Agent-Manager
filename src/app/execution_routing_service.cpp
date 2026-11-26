@@ -1,5 +1,6 @@
 #include "execution_routing_service.h"
 
+#include <algorithm>
 #include <unordered_set>
 
 namespace uam
@@ -20,6 +21,44 @@ namespace uam
 			    candidate.connection_identity == candidate.confirmed_connection_identity &&
 			    !candidate.provider_configuration_identity.empty() &&
 			    candidate.provider_configuration_identity == candidate.confirmed_provider_configuration_identity;
+		}
+
+		using HostCandidates = std::unordered_map<std::string, const ExecutionRoutingCandidate*>;
+		using HostCounts = std::unordered_map<std::string, std::size_t>;
+
+		/// The least occupied of these computers that still has a slot, by the same rule a new chat is placed with.
+		const ExecutionRoutingCandidate* LeastOccupiedWithSlot(const std::vector<std::string>& names, const HostCandidates& hosts, HostCounts& counts)
+		{
+			const ExecutionRoutingCandidate* chosen = nullptr;
+			for (const std::string& name : names)
+			{
+				const HostCandidates::const_iterator host = hosts.find(name);
+				// A computer that is off or not ready cannot take the waiter, so it holds nothing there.
+				if (host == hosts.end() || !host->second->pool_enabled || !host->second->runner_ready || counts[name] >= host->second->max_active_turns) continue;
+				if (chosen == nullptr || counts[name] < counts[chosen->host_id] || (counts[name] == counts[chosen->host_id] && name < chosen->host_id))
+					chosen = host->second;
+			}
+			return chosen;
+		}
+
+		/// The first condition of AutomaticCandidateReady and the capacity and mapping checks that this computer fails.
+		ExecutionRoutingHostSkip SkipReason(const ExecutionRoutingCandidate& candidate, const std::string& source_workspace_identity)
+		{
+			if (!candidate.pool_enabled) return ExecutionRoutingHostSkip::Off;
+			if (!candidate.runner_ready || !candidate.runner_compatible) return ExecutionRoutingHostSkip::Unreachable;
+			if (!candidate.provider_supported) return ExecutionRoutingHostSkip::ProviderUnavailable;
+			if (!candidate.provider_confirmed || candidate.connection_identity.empty() || candidate.connection_identity != candidate.confirmed_connection_identity ||
+			    candidate.provider_configuration_identity.empty() || candidate.provider_configuration_identity != candidate.confirmed_provider_configuration_identity)
+				return ExecutionRoutingHostSkip::Unconfirmed;
+			if (!source_workspace_identity.empty() && std::ranges::none_of(candidate.mappings, [&source_workspace_identity](const ExecutionRoutingMapping& mapping)
+			    { return mapping.source_workspace_identity == source_workspace_identity; }))
+				return ExecutionRoutingHostSkip::NoMapping;
+			return ExecutionRoutingHostSkip::Full;
+		}
+
+		ExecutionRoutingDecision Waiting(ExecutionRoutingReason reason, ExecutionRoutingAssignment assignment, std::string host_id, ExecutionRoutingHostSkip skip)
+		{
+			return {ExecutionRoutingStatus::Waiting, reason, std::move(assignment), {{std::move(host_id), skip}}};
 		}
 	}
 
@@ -56,6 +95,37 @@ namespace uam
 		}
 		std::unordered_map<std::string, std::size_t> counts;
 		for (const std::pair<const std::string, std::string>& occupied : occupied_hosts) ++counts[occupied.second];
+		// Admission queue: drop waiters long gone, then give each earlier waiter that is still asking a slot on the
+		// least occupied computer it can use, earliest ticket first. Automatic admission sees only what is left.
+		const double now = request.now_seconds;
+		std::erase_if(m_waiters, [now](const std::pair<const std::string, Waiter>& waiter) { return now - waiter.second.last_seen_s > kQueueForgetSeconds; });
+		{
+			const std::unordered_map<std::string, Waiter>::const_iterator own_ticket = m_waiters.find(request.chat_id);
+			std::vector<const Waiter*> earlier;
+			for (const std::pair<const std::string, Waiter>& waiter : m_waiters)
+				if (waiter.first != request.chat_id && !occupied_hosts.contains(waiter.first) && now - waiter.second.last_seen_s <= kQueueStaleSeconds &&
+				    (own_ticket == m_waiters.end() || waiter.second.ticket < own_ticket->second.ticket))
+					earlier.push_back(&waiter.second);
+			std::ranges::sort(earlier, {}, &Waiter::ticket);
+			for (const Waiter* waiter : earlier)
+				if (const ExecutionRoutingCandidate* held = LeastOccupiedWithSlot(waiter->hosts, hosts, counts); held != nullptr)
+					++counts[held->host_id];
+		}
+		const auto wait_in_queue = [this, &request, now](std::vector<std::string> eligible)
+		{
+			const std::pair<std::unordered_map<std::string, Waiter>::iterator, bool> entry = m_waiters.try_emplace(request.chat_id);
+			if (entry.second)
+			{
+				if (eligible.empty())
+				{
+					m_waiters.erase(entry.first);
+					return;
+				}
+				entry.first->second.ticket = ++m_next_ticket;
+			}
+			entry.first->second.last_seen_s = now;
+			entry.first->second.hosts = std::move(eligible);
+		};
 		ExecutionRoutingAssignment existing = request.assigned;
 		const std::unordered_map<std::string, ExecutionRoutingAssignment>::const_iterator reserved = m_reservations.find(request.chat_id);
 		if (reserved != m_reservations.end())
@@ -73,19 +143,26 @@ namespace uam
 			const std::unordered_map<std::string, const ExecutionRoutingCandidate*>::const_iterator owner = hosts.find(existing.host_id);
 			if (owner == hosts.end() || !owner->second->runner_ready ||
 			    !owner->second->runner_compatible || !owner->second->provider_supported)
-				return {ExecutionRoutingStatus::Waiting, ExecutionRoutingReason::HostUnavailable, existing};
+				return Waiting(ExecutionRoutingReason::HostUnavailable, existing, existing.host_id,
+				    owner != hosts.end() && owner->second->runner_ready && owner->second->runner_compatible ? ExecutionRoutingHostSkip::ProviderUnavailable : ExecutionRoutingHostSkip::Unreachable);
 			if (existing.connection_identity != owner->second->connection_identity ||
 			    existing.provider_configuration_identity != owner->second->provider_configuration_identity)
-				return {ExecutionRoutingStatus::Waiting, ExecutionRoutingReason::OwnershipChanged, existing};
+				return Waiting(ExecutionRoutingReason::OwnershipChanged, existing, existing.host_id, ExecutionRoutingHostSkip::Unconfirmed);
 			if (existing.automatic && !request.recovery_of_owned_work)
 			{
-				if (!request.automatic_enabled || !AutomaticCandidateReady(*owner->second))
-					return {ExecutionRoutingStatus::Waiting, ExecutionRoutingReason::NoEligibleHost, existing};
 				const std::size_t owned_slot = occupied != occupied_hosts.end() ? 1 : 0;
+				if (!request.automatic_enabled || !AutomaticCandidateReady(*owner->second))
+					return Waiting(ExecutionRoutingReason::NoEligibleHost, existing, existing.host_id,
+					    request.automatic_enabled ? SkipReason(*owner->second, {}) : ExecutionRoutingHostSkip::Off);
 				if (counts[existing.host_id] - owned_slot >= owner->second->max_active_turns)
-					return {ExecutionRoutingStatus::Waiting, ExecutionRoutingReason::NoEligibleHost, existing};
+				{
+					// An assigned chat can only ever run on its own computer, so it queues for that one alone.
+					wait_in_queue({existing.host_id});
+					return Waiting(ExecutionRoutingReason::NoEligibleHost, existing, existing.host_id, ExecutionRoutingHostSkip::Full);
+				}
 			}
 			m_reservations[request.chat_id] = existing;
+			m_waiters.erase(request.chat_id);
 			return {ExecutionRoutingStatus::Assigned, ExecutionRoutingReason::None, existing};
 		}
 		if (request.recovery_of_owned_work || occupied_hosts.contains(request.chat_id)) return InvalidSnapshot();
@@ -108,14 +185,16 @@ namespace uam
 		const ExecutionRoutingCandidate* selected = nullptr;
 		const ExecutionRoutingMapping* selected_mapping = nullptr;
 		std::size_t selected_count = 0;
+		std::vector<std::string> eligible;
 		for (const ExecutionRoutingCandidate& candidate : candidates)
 		{
 			if (!AutomaticCandidateReady(candidate)) continue;
 			const std::size_t count = counts[candidate.host_id];
-			if (count >= candidate.max_active_turns) continue;
 			for (const ExecutionRoutingMapping& mapping : candidate.mappings)
 			{
 				if (mapping.source_workspace_identity != request.source_workspace_identity) continue;
+				if (eligible.empty() || eligible.back() != candidate.host_id) eligible.push_back(candidate.host_id);
+				if (count >= candidate.max_active_turns) continue;
 				if (selected == nullptr || count < selected_count || (count == selected_count && candidate.host_id < selected->host_id))
 				{
 					selected = &candidate;
@@ -124,10 +203,19 @@ namespace uam
 				}
 			}
 		}
-		if (selected == nullptr) return {};
+		if (selected == nullptr)
+		{
+			// Only a chat some ready computer could take is waiting for capacity; one with none keeps no new place.
+			wait_in_queue(std::move(eligible));
+			ExecutionRoutingDecision waiting;
+			for (const ExecutionRoutingCandidate& candidate : candidates)
+				if (candidate.host_id != "local") waiting.skipped.push_back({candidate.host_id, SkipReason(candidate, request.source_workspace_identity)});
+			return waiting;
+		}
 		ExecutionRoutingAssignment assignment{request.chat_id, selected->host_id, selected->connection_identity,
 		    selected->provider_configuration_identity, selected_mapping->destination_folder_id, selected_mapping->destination_directory, true};
 		m_reservations[request.chat_id] = assignment;
+		m_waiters.erase(request.chat_id);
 		return {ExecutionRoutingStatus::Assigned, ExecutionRoutingReason::None, assignment};
 	}
 
@@ -145,10 +233,39 @@ namespace uam
 		return true;
 	}
 
+	std::unordered_map<std::string, std::size_t> ExecutionRoutingService::OccupiedCounts(const std::vector<ExecutionRoutingOccupancy>& occupancy) const
+	{
+		std::scoped_lock lock(m_mutex);
+		std::unordered_map<std::string, std::string> occupied_hosts;
+		for (const ExecutionRoutingOccupancy& occupied : occupancy)
+			if (!occupied.chat_id.empty() && !occupied.host_id.empty()) occupied_hosts.emplace(occupied.chat_id, occupied.host_id);
+		for (const std::pair<const std::string, ExecutionRoutingAssignment>& reserved : m_reservations) occupied_hosts.emplace(reserved.first, reserved.second.host_id);
+		std::unordered_map<std::string, std::size_t> counts;
+		for (const std::pair<const std::string, std::string>& occupied : occupied_hosts) ++counts[occupied.second];
+		return counts;
+	}
+
 	bool ExecutionRoutingService::Release(const std::string& chat_id, bool release_authorized)
 	{
 		if (!release_authorized) return false;
 		std::scoped_lock lock(m_mutex);
 		return m_reservations.erase(chat_id) != 0;
+	}
+
+	bool ExecutionRoutingService::Withdraw(const std::string& chat_id)
+	{
+		std::scoped_lock lock(m_mutex);
+		return m_waiters.erase(chat_id) != 0;
+	}
+
+	std::vector<std::string> ExecutionRoutingService::QueuedChatIds()
+	{
+		std::scoped_lock lock(m_mutex);
+		std::vector<std::pair<std::uint64_t, std::string>> queued;
+		for (const std::pair<const std::string, Waiter>& waiter : m_waiters) queued.emplace_back(waiter.second.ticket, waiter.first);
+		std::ranges::sort(queued);
+		std::vector<std::string> ids;
+		for (std::pair<std::uint64_t, std::string>& entry : queued) ids.push_back(std::move(entry.second));
+		return ids;
 	}
 }

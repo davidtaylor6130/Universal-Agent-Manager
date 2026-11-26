@@ -1,4 +1,5 @@
 #include "platform_services_windows_impl_internal.h"
+#include "common/platform/cef_sandbox_folder_access.h"
 
 using namespace uam::platform_windows_impl;
 
@@ -101,9 +102,9 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 		const WindowsLaunchCommand launch = BuildWindowsLaunchCommand(argv);
 		const std::wstring command_w = WideFromUtf8(launch.command_line);
 
-		if (command_w.empty())
+		if (command_w.empty() || !WindowsLaunchFitsCmdLimit(launch, error_out))
 		{
-			if (error_out != nullptr)
+			if (error_out != nullptr && command_w.empty())
 			{
 				*error_out = "Failed to encode interactive command line.";
 			}
@@ -119,7 +120,10 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 		std::vector<wchar_t> command_line(command_w.begin(), command_w.end());
 		command_line.push_back(L'\0');
 		std::vector<wchar_t> environment_block;
-		if (!BuildEnvironmentBlock(environment_overrides, environment_block, error_out, true))
+		// CEF's bootstrap.exe would otherwise move a UAM helper started here into the app folder.
+		std::vector<std::pair<std::string, std::string>> launch_environment = environment_overrides;
+		uam::platform::AddLaunchWorkingDirectory(launch_environment, argv.front(), working_directory);
+		if (!BuildEnvironmentBlock(launch_environment, environment_block, error_out, true))
 		{
 			DeleteProcThreadAttributeList(terminal.attr_list);
 			HeapFree(GetProcessHeap(), 0, terminal.attr_list);
@@ -129,7 +133,7 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 			return false;
 		}
 		const std::wstring working_directory_w = working_directory.empty() ? std::wstring() : working_directory.wstring();
-		const DWORD creation_flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED;
+		const DWORD creation_flags = EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED | ChildProcessPriorityCreationFlags();
 		const wchar_t* working_directory_arg = working_directory.empty() ? nullptr : working_directory_w.c_str();
 		void* environment_arg = environment_block.empty() ? nullptr : environment_block.data();
 		const BOOL created = CreateProcessW(nullptr, command_line.data(), nullptr, nullptr, FALSE, creation_flags, environment_arg, working_directory_arg, &si.StartupInfo, &pi);
@@ -141,7 +145,7 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 			const DWORD last_error = GetLastError();
 			if (error_out != nullptr)
 			{
-				*error_out = "Failed to start provider process. " + FormatWindowsError(last_error) + ". Command: " + launch.command_line + "." + WindowsLaunchDiagnosticSuffix(launch);
+				*error_out = "Failed to start provider process. " + FormatWindowsError(last_error) + ". Command: " + launch.diagnostic_command_line + "." + WindowsLaunchDiagnosticSuffix(launch);
 			}
 
 			DeleteProcThreadAttributeList(terminal.attr_list);
@@ -275,21 +279,16 @@ class WindowsTerminalRuntime final : public IPlatformTerminalRuntime
 			return;
 		}
 
-		if (terminal.running && terminal.pipe_input != INVALID_HANDLE_VALUE)
-		{
-			static constexpr char kQuitCommand[] = "/quit\r\n";
-			(void)WriteToCliTerminal(terminal, kQuitCommand, sizeof(kQuitCommand) - 1);
-		}
+		// Never type a quit command: the composer may hold the user's unsent draft, and the command's Enter would submit
+		// both as one live prompt. ConPTY children have no console close signal UAM can send, so the tree is terminated.
+		TerminateProcessTree(terminal.job_object, terminal.process_info.hProcess, 1);
+		if (WaitForSingleObject(terminal.process_info.hProcess, 250) == WAIT_OBJECT_0) CloseCliTerminalHandles(terminal);
+	}
 
-		DWORD wait_result = WaitForSingleObject(terminal.process_info.hProcess, 250);
-
-		if (wait_result == WAIT_TIMEOUT)
-		{
-			TerminateProcessTree(terminal.job_object, terminal.process_info.hProcess, 1);
-			wait_result = WaitForSingleObject(terminal.process_info.hProcess, 250);
-		}
-
-		if (wait_result == WAIT_OBJECT_0) CloseCliTerminalHandles(terminal);
+	void RequestCliTerminalProcessExit(uam::CliTerminalState& terminal) const override
+	{
+		// Terminate without waiting or closing handles: the poll drains the final output and observes the exit.
+		if (terminal.process_info.hProcess != INVALID_HANDLE_VALUE) TerminateProcessTree(terminal.job_object, terminal.process_info.hProcess, 1);
 	}
 
 	void ResizeCliTerminal(uam::CliTerminalState& terminal) const override

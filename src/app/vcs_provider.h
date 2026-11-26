@@ -1,10 +1,12 @@
 #pragma once
 
+#include "app/svn_branch_service.h"
 #include "app/vcs_commit_service.h"
 #include "common/vcs/vcs_provider_declaration.h"
 
 #include <filesystem>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -12,6 +14,14 @@
 namespace uam
 {
 	class RemoteVcsContext;
+
+	/// <summary>Why a remote detection probe could not say whether a system is present.</summary>
+	enum class RemoteProbeFailure
+	{
+		None,
+		TimedOut,
+		LostConnection,
+	};
 
 	struct VcsStatusRequest
 	{
@@ -22,7 +32,51 @@ namespace uam
 		bool context_only;
 	};
 
-	/// <summary>One version-control system behind VcsCommitService. To add a system, declare it in
+	/// <summary>Identity of the place a located branch listing was read from. A later selection echoes it back, and the
+	/// system refuses it when the working copy has moved since. Only SVN locates its listing today.</summary>
+	using VcsBranchContext = SvnBranchContext;
+
+	struct VcsBranch
+	{
+		std::string name;
+		/// Repository path of the choice in a located listing; empty for a named branch.
+		std::string path;
+		bool current = false;
+	};
+
+	struct VcsBranchListing
+	{
+		bool ok = false;
+		std::string error;
+		/// The system that answered. Git's listing answers SVN, with no branches, for an SVN working copy so the picker can switch selector.
+		VcsType type = VcsType::Git;
+		std::vector<VcsBranch> branches;
+		VcsBranchContext context;
+	};
+
+	/// <summary>One branch choice: a branch name, or a repository path from a located listing with the context it was listed in.</summary>
+	struct VcsBranchSelection
+	{
+		std::string branch;
+		bool create = false;
+		VcsBranchContext context;
+	};
+
+	struct VcsBranchOutcome
+	{
+		bool ok = false;
+		std::string error;
+		/// The failure is repository state that moved after the listing, not an unusable choice.
+		bool conflict = false;
+		/// After a switch: what the picker shows as the current choice.
+		std::string branch;
+		/// After a switch in a located listing: the working copy's new identity.
+		VcsBranchContext context;
+		/// After a switch: the chat's saved branch fields were rewritten, so the live chat takes them over.
+		bool chat_updated = false;
+	};
+
+	/// <summary>One version-control system behind VcsCommitService and the chat branch picker. To add a system, declare it in
 	/// vcs_provider_declaration.h, implement this interface and register it in VcsProviders(). Implementations currently
 	/// live in vcs_commit_service.cpp, which alone defines RemoteVcsContext.</summary>
 	class VcsProvider
@@ -36,7 +90,9 @@ namespace uam
 
 		/// <summary>`root` arrives as the workspace and is replaced only when a repository root is known.</summary>
 		virtual bool DetectLocal(const std::filesystem::path& workspace, bool validate, std::filesystem::path& root) const = 0;
-		virtual bool DetectRemote(RemoteVcsContext& context, const std::string& workspace, std::string& root) const = 0;
+		/// <summary>`probe_failure` is raised (never lowered) only when the probe could not answer: it timed out or the
+		/// connection was lost, so the workspace is not mistaken for one without this system.</summary>
+		virtual bool DetectRemote(RemoteVcsContext& context, const std::string& workspace, std::string& root, RemoteProbeFailure& probe_failure) const = 0;
 
 		/// <summary>Fills branch or revision and changed files for an already detected and selected system.</summary>
 		virtual void PopulateLocalStatus(const VcsStatusRequest& request, const std::filesystem::path& workspace, const std::filesystem::path& root, VcsCommitStatus& status) const = 0;
@@ -55,10 +111,31 @@ namespace uam
 		virtual VcsHistoryPage History(const VcsCommandRunner& run, const VcsHistoryRequest& request) const;
 		virtual std::string RevisionDiff(const VcsCommandRunner& run, const std::string& revision, const std::string& path, std::string& error) const;
 		virtual VcsUpdateResult Update(const VcsCommandRunner& run) const;
+		/// <summary>Marks one conflicted path resolved with `accept`; empty on success, otherwise the reason.</summary>
+		virtual std::string Resolve(const VcsCommandRunner& run, const std::string& path, const std::string& accept, std::string& output) const;
 		virtual VcsOriginReply Origin(const VcsCommandRunner& run, const VcsOriginRequest& request) const;
+
+		// Chat branch picker operations. `snapshot` is a worker-owned copy of the settings, folders and chat references;
+		// `chat` is the captured chat. Each runs on a worker thread and never touches live app state. `stop` ends the system's
+		// reads in flight at shutdown; a system never stops a switch command itself once it has started.
+
+		/// <summary>True when choices are repository paths under an explicit parent and a selection must carry the
+		/// listing's context (SVN). False when choices are the repository's named branches (Git).</summary>
+		virtual bool BranchesAreLocated() const = 0;
+		/// <summary>Lists the choices for the chat's workspace; `parent` is the explicit location for a located listing.</summary>
+		virtual VcsBranchListing ListBranches(const AppState& snapshot, const ChatSession& chat, const std::string& parent, std::stop_token stop = {}) const = 0;
+		/// <summary>Checks a choice when the picker submits it, before any runtime is stopped.</summary>
+		virtual VcsBranchOutcome CheckBranchSelection(const AppState& snapshot, const ChatSession& chat, const VcsBranchSelection& selection, std::stop_token stop = {}) const = 0;
+		/// <summary>Rechecks the workspace under the exclusive workspace lease, after the chat's runtime has settled.</summary>
+		virtual VcsBranchOutcome CheckBranchSwitch(const AppState& snapshot, const ChatSession& chat, const VcsBranchSelection& selection, std::stop_token stop = {}) const = 0;
+		/// <summary>Switches, or creates and switches. `chat` is updated in place when the system records the branch on the chat.</summary>
+		virtual VcsBranchOutcome SwitchBranch(AppState& snapshot, ChatSession& chat, const VcsBranchSelection& selection, std::stop_token stop = {}) const = 0;
 	};
 
 	/// <summary>Registered providers in detection order; the first is the default selection.</summary>
 	std::span<const VcsProvider* const> VcsProviders();
 	const VcsProvider& VcsProviderFor(VcsType type);
+	/// <summary>The provider whose declared id is exactly `id`; the default selection otherwise.</summary>
+	const VcsProvider& VcsProviderForId(std::string_view id);
+	bool DeclaresCapability(const VcsProvider& provider, vcs::VcsCapability capability);
 } // namespace uam

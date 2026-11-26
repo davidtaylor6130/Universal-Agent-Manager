@@ -130,6 +130,14 @@ namespace uam::paths
 		return uam::paths::AbsolutePathNoThrow(workspace_root);
 	}
 
+	/// <summary>The folder a controller-local isolated chat was prepared from, or empty. Path arithmetic only, so a UI-thread
+	/// caller can fence it; a UAM local snapshot leaves the source's SVN metadata behind, so SVN commands for the chat run here.</summary>
+	inline std::filesystem::path LocalIsolationSourcePath(const ChatSession& chat)
+	{
+		if (!IsControllerLocalWorkspace(chat) || !HasGitWorktreeSource(chat)) return {};
+		return uam::paths::AbsolutePathNoThrow(ExpandTrimmedWorkspacePath(chat.workspace_source_directory));
+	}
+
 	/// Where a worktree chat's attachments were staged before its worktree existed. The Git
 	/// source directory is only a fallback: it is the repository top level, not the workspace.
 	inline std::string PreIsolationWorkspaceDirectory(const uam::AppState& app, const ChatSession& chat)

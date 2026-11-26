@@ -158,6 +158,30 @@ describe('SecretRequestCard', () => {
         await render({ ...pending({ keychain: { available: true, saved: true } }), requestId: 'uam-control:cap:req-3' })
         await click('Forget saved')
         expect(sent).toMatchObject([{ action: 'forgetSavedSecret', payload: { chatId: 'chat-1', requestId: 'uam-control:cap:req-3' } }])
+        expect((sent[0] as { payload: object }).payload).not.toHaveProperty('legacy')
+    })
+
+    it('says who a saved secret is kept for and when, and offers an unscoped older value only for forgetting', async () => {
+        const sent: unknown[] = []
+        window.cefQuery = ({ request, onSuccess }) => { sent.push(JSON.parse(request)); onSuccess('{}') }
+        const savedAt = Date.UTC(2026, 10, 20, 12)
+        await render(pending({ keychain: { available: true, saved: true, savedAt, agent: 'build' } }))
+        const date = new Date(savedAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
+        const saved = host.querySelector('.secret-card__saved')
+        expect(saved?.textContent).toBe(`Saved for Codex (build agent) on ${date}. Other agents are not offered it.`)
+        expect(button('Use saved secret').getAttribute('aria-describedby')).toBe(saved?.id)
+        expect(host.textContent).not.toContain('older saved value')
+
+        await render({ ...pending({ keychain: { available: true, saved: false, legacySaved: true } }), requestId: 'uam-control:cap:req-4' })
+        expect(host.querySelector('.secret-card__saved')).toBeNull()
+        expect(() => button('Use saved secret')).toThrow()
+        expect(host.textContent).toContain("An older saved value isn't offered.")
+        await click('Forget it')
+        expect(sent).toMatchObject([{ action: 'forgetSavedSecret', payload: { chatId: 'chat-1', requestId: 'uam-control:cap:req-4', legacy: true } }])
+
+        // Saving is not offered for SSH hosts or Windows, so neither is the older value.
+        await render({ ...pending({ host: { name: 'build-box', platform: 'linux' }, keychain: { available: false, saved: false, legacySaved: true } }), requestId: 'uam-control:cap:req-5' })
+        expect(host.textContent).not.toContain('older saved value')
     })
 
     it('keeps the typed value and shows the error as an alert when delivery fails', async () => {
@@ -225,6 +249,11 @@ describe('sanitizePendingUserInput secretRequest', () => {
         expect(sanitizePendingUserInput(raw(base))?.secretRequest).toEqual(base)
         const remote = { ...base, url: 'https://github.com/settings/tokens', host: { name: 'build-box', platform: 'linux' } }
         expect(sanitizePendingUserInput(raw(remote))?.secretRequest).toEqual(remote)
+        const saved = { ...base, keychain: { available: true, saved: true, savedAt: 1795000000000, agent: 'build', legacySaved: true } }
+        expect(sanitizePendingUserInput(raw(saved))?.secretRequest).toEqual(saved)
+        // Native sends null for an undated entry; unusable details are dropped without dropping the request.
+        const undated = { ...base, keychain: { available: true, saved: true, savedAt: null, agent: '', legacySaved: false } }
+        expect(sanitizePendingUserInput(raw(undated))?.secretRequest?.keychain).toStrictEqual({ available: true, saved: true })
     })
     it('drops malformed requests', () => {
         for (const bad of [null, 'x', { ...base, label: '' }, { ...base, url: 'http://example.com' }, { ...base, url: 'javascript:alert(1)' },

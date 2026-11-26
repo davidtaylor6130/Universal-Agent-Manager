@@ -23,6 +23,11 @@ namespace uam::usage { class Collector; }
 
 namespace uam::remote
 {
+	/// An upload with no write for this long is dropped with its temporary file. A connected client sends its next
+	/// chunk within a request deadline, so only an upload whose client is gone (a dropped connection it could not
+	/// reach again to abort, or a desktop that ended) stays quiet this long.
+	inline constexpr std::int64_t kIdleUploadExpiryMs = 10 * 60 * 1000;
+
 	class RunnerState
 	{
 	  public:
@@ -34,6 +39,8 @@ namespace uam::remote
 		nlohmann::json HandleProcessRequest(const nlohmann::json& request);
 		nlohmann::json HandleStartupRequest(const nlohmann::json& request, std::string_view runner_version);
 		bool HasManagedProcesses();
+		/// <summary>Processes this helper started that have not exited yet, for every desktop connected to it. Retiring processes count until they exit.</summary>
+		std::uint32_t LiveProcessCount();
 		/// <summary>Removes sibling spools whose owning helper is provably gone. Call with the service endpoint lock held; failures are tolerated.</summary>
 		void RemoveOrphanedSpools();
 		/// <summary>Call after a response frame was written: a written exit report stops the exit counting as owed.</summary>
@@ -122,11 +129,14 @@ namespace uam::remote
 			std::uint64_t digest = 0;
 			std::string expected_digest;
 			State state = State::Starting;
+			/// Lease-clock time of the begin or the last write, for kIdleUploadExpiryMs.
+			std::int64_t last_activity_ms = 0;
 		};
 
 	  private:
 		friend struct RunnerStateRetirementTestAccess;
 		void SweepExpiredTransientProcesses();
+		void SweepIdleUploads(std::int64_t now);
 		std::mutex m_stateMutex;
 		std::shared_ptr<uam::usage::Collector> m_usageHistory;
 		std::mutex m_memoryMutex;

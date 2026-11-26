@@ -1,3 +1,4 @@
+#include "common/platform/child_process_priority.h"
 #include "common/provider/provider_setup_location.h"
 #include "common/provider/provider_setup.h"
 #include "remote/runner_proxy.h"
@@ -99,6 +100,7 @@ namespace uam::remote
 			std::filesystem::path context_directory;
 			bool attach_only = false;
 			bool transient_process = false;
+			uam::platform::ChildProcessClass process_class = uam::platform::ChildProcessClass::UserTurn;
 			std::string delivery_token;
 			std::uintmax_t delivered_stdout_cursor = 0;
 			std::uintmax_t delivered_stderr_cursor = 0;
@@ -175,6 +177,8 @@ namespace uam::remote
 				result.context_directory = uam::paths::PathFromUtf8(spec.value("contextDirectory", ""));
 				result.attach_only = spec.value("attachOnly", false);
 				result.transient_process = spec.value("transientProcess", false);
+				if (spec.contains("processClass") && spec["processClass"].is_string())
+					result.process_class = uam::platform::ParseChildProcessClass(spec["processClass"].get_ref<const std::string&>());
 				result.delivery_token = spec.value("deliveryToken", "");
 				result.delivered_stdout_cursor = spec.value(
 				    "deliveredStdoutCursor", static_cast<std::uintmax_t>(0));
@@ -410,7 +414,7 @@ namespace uam::remote
 	{
 		nlohmann::json environment_json = nlohmann::json::object();
 		for (const auto& [name, value] : environment) environment_json[name] = value;
-		return uam::base64::Encode(nlohmann::json{
+		nlohmann::json spec{
 		    {"sessionId", session_id}, {"cwd", uam::paths::Utf8PathString(working_directory)}, {"argv", argv},
 		    {"environment", std::move(environment_json)}, {"attachOnly", attach_only},
 		    {"transientProcess", transient_process},
@@ -419,7 +423,11 @@ namespace uam::remote
 		    {"deliveredStderrCursor", delivered_stderr_cursor},
 		    {"sessionMcpServers", session_mcp_servers}, {"configurationProvider", configuration_provider}, {"configurationDirectory", configuration_directory},
 		    {"contextProviderId", context_provider_id}, {"contextDirectory", context_directory},
-		}.dump());
+		};
+		// Built where the provider is launched, so the scope that lowers the local proxy also lowers the remote process.
+		if (const uam::platform::ChildProcessClass process_class = uam::platform::CurrentChildProcessClass(); process_class != uam::platform::ChildProcessClass::UserTurn)
+			spec["processClass"] = std::string(uam::platform::ChildProcessClassName(process_class));
+		return uam::base64::Encode(spec.dump());
 	}
 
 	std::vector<std::string> BuildRemoteTerminalSshArgv(
@@ -995,6 +1003,8 @@ $e
 			std::cerr << "Remote process specification is missing or invalid.\n";
 			return 2;
 		}
+		// The process the controller asked for keeps its class on the remote computer as well.
+		const uam::platform::ScopedChildProcessClass process_class(spec->process_class);
 		if (spec->transient_process && protocol_version < 3)
 		{
 			std::cerr << "Transient remote processes require runner protocol 3.\n";
@@ -1012,6 +1022,9 @@ $e
 		facts.session_id = session_id;
 		facts.workspace = uam::paths::Utf8PathString(spec->working_directory);
 		std::optional<ProcessPollResult> prefetched_poll;
+		// The newest cursor the app is known to hold: its saved cursor on attach, then each acknowledged batch.
+		// Only durable delivery (a delivery token) keeps it; otherwise the proxy acknowledges output itself.
+		std::optional<ProcessPollResult> delivered_cursor;
 		if (!client.Connect(&error))
 		{
 			std::cerr << (error.empty() ? "Remote process could not start." : error) << '\n';
@@ -1046,6 +1059,7 @@ $e
 				std::cerr << (error.empty() ? "The remote process is no longer available." : error) << '\n';
 				return 70;
 			}
+			if (!spec->delivery_token.empty()) delivered_cursor = persisted;
 			std::cout << R"({"jsonrpc":"2.0","method":"uam/remoteAttached"})" << '\n';
 			std::cout.flush();
 			prefetched_poll = std::move(existing);
@@ -1186,10 +1200,18 @@ $e
 			if (!client.StopProcess(session_id, &error, true, &outcome)) return false;
 			bool drained = false;
 			bool unterminated_stdout = false;
+			// A batch already written to the app but not yet acknowledged (the app stops before it acknowledges,
+			// as model discovery does on its answer) is delivered: the drain starts after it, never at the runner's
+			// last acknowledged cursor, which would write the same lines again. With nothing awaiting, it starts at
+			// the app's own cursor, which after a reattach can be ahead of the runner's (the app saved it but its
+			// acknowledgement never arrived). Every later poll resumes after the previous one, because an empty poll
+			// needs no acknowledgement and would otherwise fall back too.
+			std::optional<ProcessPollResult> drain_cursor = awaiting_output_ack ? awaiting_output_ack : delivered_cursor;
 			for (int batch = 0; batch < 256; ++batch)
 			{
 				ProcessPollResult final_output;
-				if (!client.PollProcess(session_id, final_output, &error)) break;
+				if (!client.PollProcess(session_id, final_output, &error, {}, nullptr,
+				        drain_cursor ? &*drain_cursor : nullptr)) break;
 				std::cout << final_output.standard_output << std::flush;
 				if (!final_output.standard_output.empty())
 					unterminated_stdout = final_output.standard_output.back() != '\n';
@@ -1200,6 +1222,7 @@ $e
 					drained = true;
 					break;
 				}
+				drain_cursor = std::move(final_output);
 			}
 			// Native Stop cleanup projects complete lines, including the final EOF fragment.
 			if (drained && unterminated_stdout) std::cout << '\n' << std::flush;
@@ -1314,6 +1337,7 @@ $e
 						}
 						pending_stdout.erase(0, awaiting_stdout_bytes);
 						pending_stdout_base = awaiting_output_ack->stdout_cursor;
+						delivered_cursor = awaiting_output_ack;
 						pending_stdout_base_set = true;
 						pending_stderr.clear();
 						awaiting_output_ack.reset();

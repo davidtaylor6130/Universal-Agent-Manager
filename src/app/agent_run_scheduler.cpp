@@ -14,6 +14,7 @@
 #include "common/config/provider_chat_defaults.h"
 #include "common/memory/memory_policy.h"
 #include "common/config/settings_frontend_json.h"
+#include "common/config/permission_command_rules_json.h"
 #include "common/platform/platform_services.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_model_json.h"
@@ -277,6 +278,11 @@ namespace uam
 		constexpr std::size_t kMaxRunningAgents = 4;
 		constexpr std::size_t kMaxQueuedAgents = 32;
 		constexpr std::size_t kMaxDirectChildren = 4;
+		// One parent's agents may hold at most half the running slots, so another parent's agents always find room.
+		constexpr std::size_t kMaxRunningPerParent = kMaxRunningAgents / 2;
+		static_assert(kMaxRunningPerParent >= 1 && kMaxRunningPerParent < kMaxRunningAgents);
+		// Every live run a chat owns at any depth: four top-level runs with four children each.
+		constexpr std::size_t kMaxLiveRunsPerChat = kMaxDirectChildren + kMaxDirectChildren * kMaxDirectChildren;
 		constexpr std::size_t kMaxResultExcerptBytes = 16U * 1024U;
 		constexpr int64_t kMaxRunElapsedMs = 30LL * 60LL * 1000LL;
 		constexpr int64_t kProviderCrashWindowMs = 60LL * 1000LL;
@@ -305,6 +311,25 @@ namespace uam
 			{
 				const bool reserved = owner && ((owner->transition && owner->action == ManagedInitialRuntimeOwner::Action::Running) || (owner->uncertain_candidate && owner->uncertain_candidate->status == "running"));
 				if (reserved && std::ranges::none_of(app.agent_runs, [&](const AgentRun& run) { return run.id == id && run.status == "running"; }))
+					++running;
+			}
+			return running;
+		}
+
+		/// The parent whose share a run uses: the agent run that started it, or the chat for a top-level agent.
+		std::string RunParentKey(const AgentRun& run)
+		{
+			return run.parent_run_id.empty() ? "chat:" + run.root_chat_id : "run:" + run.parent_run_id;
+		}
+
+		/// Running slots held by one parent's agents, counted the same way as RunningAgentSlots.
+		std::size_t RunningSlotsOfParent(const AppState& app, const std::string& parent)
+		{
+			std::size_t running = static_cast<std::size_t>(std::ranges::count_if(app.agent_runs, [&](const AgentRun& run) { return run.status == "running" && RunParentKey(run) == parent; }));
+			for (const auto& [id, owner] : app.managed_initial_runtime_owners)
+			{
+				const bool reserved = owner && ((owner->transition && owner->action == ManagedInitialRuntimeOwner::Action::Running) || (owner->uncertain_candidate && owner->uncertain_candidate->status == "running"));
+				if (reserved && RunParentKey(owner->expected) == parent && std::ranges::none_of(app.agent_runs, [&](const AgentRun& run) { return run.id == id && run.status == "running"; }))
 					++running;
 			}
 			return running;
@@ -598,7 +623,7 @@ namespace uam
 			for (const auto& rule : settings.computer_use_allowed_applications)
 				application_rules.push_back({rule.identity_kind, rule.identity});
 			// Execution policy is independent of presentation, update observations and other UI preferences.
-			const auto execution_settings = nlohmann::json::array({provider_availability::IsEnabled(settings, provider->id, host->id), settings.provider_extra_flags, provider_ids::NormalizeCliProviderAliasOrSelf(settings.permission_reviewer_provider_id), strings::Trim(settings.permission_reviewer_model_id), settings_frontend_json::SerializeMarkdownStoreDirectory(settings), central_configuration::Serialize(settings.central_provider_configuration), mcp_server_config::Serialize(host_scoped_settings::McpServers(settings, host->id)), nlohmann::json::array({defaults.model_id, defaults.approval_mode, defaults.command_safety_tier, defaults.reasoning_effort, defaults.service_tier, defaults.small_model_mode, defaults.memory_enabled, defaults.memory_level, defaults.feature_preference}), settings.git_enabled, settings.git_auto_worktree, settings.git_snapshot_svn, settings.git_snapshot_plain_folders, settings.git_pull_before_chat, settings.git_default_base_branch, settings.svn_enabled, settings.svn_update_before_chat, memory_policy::Resolve(settings, chat), settings.memory_recall_budget_bytes, settings.computer_use_globally_enabled, settings.computer_use_allowlist_enabled, application_rules, settings.acp_turn_output_limit_mib, settings.active_turn_inactivity_timeout_seconds, settings.acp_setup_inactivity_timeout_seconds});
+			const auto execution_settings = nlohmann::json::array({provider_availability::IsEnabled(settings, provider->id, host->id), settings.provider_extra_flags, provider_ids::NormalizeCliProviderAliasOrSelf(settings.permission_reviewer_provider_id), strings::Trim(settings.permission_reviewer_model_id), permission_command_rules::Serialize(settings.permission_command_rules), settings.permission_ai_review_enabled, settings.permission_remote_commits_without_approval, settings_frontend_json::SerializeMarkdownStoreDirectory(settings), central_configuration::Serialize(settings.central_provider_configuration), mcp_server_config::Serialize(host_scoped_settings::McpServers(settings, host->id)), nlohmann::json::array({defaults.model_id, defaults.approval_mode, defaults.command_safety_tier, defaults.reasoning_effort, defaults.service_tier, defaults.small_model_mode, defaults.memory_enabled, defaults.memory_level, defaults.feature_preference}), settings.git_enabled, settings.git_auto_worktree, settings.git_snapshot_svn, settings.git_snapshot_plain_folders, settings.git_pull_before_chat, settings.git_default_base_branch, settings.svn_enabled, settings.svn_update_before_chat, memory_policy::Resolve(settings, chat), settings.memory_recall_budget_bytes, settings.computer_use_globally_enabled, settings.computer_use_allowlist_enabled, application_rules, settings.acp_turn_output_limit_mib, settings.active_turn_inactivity_timeout_seconds, settings.acp_setup_inactivity_timeout_seconds});
 			return nlohmann::json::array({execution_settings, host->id, host->transport, host->ssh_alias, host->platform, host->architecture, host->runner_version, host->runner_protocol_version, host->runner_directory, host->instruction_file, host->instruction_text ? nlohmann::json(*host->instruction_text) : nlohmann::json(nullptr), provider->id, provider->interactive_command, provider->runtime_flags, provider->resume_argument, provider->supports_structured, provider->structured_protocol, provider->execution_mode, provider->output_mode, provider->prompt_bootstrap, provider->prompt_bootstrap_path}).dump();
 		}
 		std::string InitialChildPolicy(const ChatSession& chat, const std::string* comparison_model = nullptr)
@@ -1058,6 +1083,8 @@ namespace uam
 		continuation.turns.push_back(turn);
 		run.managed_continuation = std::move(continuation);
 		transcript.agent_run_id = run.id;
+		transcript.managed_root_chat_id = work->parent.id;
+		transcript.managed_root_created_at = work->parent.created_at;
 		task->transcript_id = transcript.id;
 		app.managed_initial_mentions.emplace(root_id, task);
 		const AgentDefinition selected = *definition;
@@ -2837,9 +2864,14 @@ namespace uam
 		bool PollInitialRuntimes(AppState& app, int64_t now_epoch_ms, int64_t now_steady_ms)
 		{
 			bool changed = false;
-			std::vector<std::string> ids;
+			// Oldest first, so a freed running slot goes to the agent that has waited longest.
+			std::vector<std::pair<std::string, std::string>> ordered;
 			for (const auto& [id, owner] : app.managed_initial_runtime_owners)
-				ids.push_back(id);
+				ordered.emplace_back(owner ? owner->expected.created_at : std::string(), id);
+			std::ranges::sort(ordered);
+			std::vector<std::string> ids;
+			for (auto& entry : ordered)
+				ids.push_back(std::move(entry.second));
 			for (const auto& id : ids)
 			{
 				const auto found = app.managed_initial_runtime_owners.find(id);
@@ -2962,7 +2994,7 @@ namespace uam
 				if (owner->phase == ManagedInitialRuntimeOwner::Phase::Queued)
 				{
 					const auto running = RunningAgentSlots(app);
-					if (!owner->completion_acked || running >= kMaxRunningAgents)
+					if (!owner->completion_acked || running >= kMaxRunningAgents || RunningSlotsOfParent(app, RunParentKey(owner->expected)) >= kMaxRunningPerParent)
 						continue;
 					auto* routed = ChatDomainService().FindChatById(app, owner->transcript_id);
 					const ChatSession before_routing = *routed;
@@ -3247,6 +3279,8 @@ namespace uam
 			(void)PollCompletedAcpProcessStops(app, nullptr);
 			FinalizePendingAcpRemoteStopsForExit(app);
 			(void)FlushPendingChatSaves(app, false);
+			// This loop waits for chat saves to settle, including ones the flush just started (#526, #647).
+			RaiseAllChatSaveWorkersForBarrier(app);
 			settled = app.managed_initial_mentions.empty() && app.managed_followups.empty();
 			bool workers = std::ranges::any_of(app.managed_initial_mentions, [](const auto& entry) { return entry.second && (entry.second->work || !entry.second->retired->load(std::memory_order_acquire)); });
 			workers = workers || std::ranges::any_of(app.managed_followups, [](const auto& entry)
@@ -3359,6 +3393,23 @@ namespace uam
 		if (parent != nullptr && std::ranges::count(app.agent_runs, parent->id, &AgentRun::parent_run_id) >= kMaxDirectChildren)
 		{
 			if (error_out != nullptr) *error_out = "An agent run may create at most four direct children.";
+			return false;
+		}
+		// Per-chat bounds, so one chat cannot fill the shared queue. A child can outlive its finished parent, so every
+		// depth counts toward the total; top-level runs use the same bound as mentions and follow-ups.
+		const auto live_in_chat = [&](bool top_level_only)
+		{
+			return static_cast<std::size_t>(std::ranges::count_if(app.agent_runs, [&](const AgentRun& run)
+			    { return run.root_chat_id == root_chat->id && (!top_level_only || run.parent_run_id.empty()) && !IsTerminal(run.status); }));
+		};
+		if (live_in_chat(false) >= kMaxLiveRunsPerChat)
+		{
+			if (error_out != nullptr) *error_out = "This chat already has 20 agents queued or running; wait for some to finish.";
+			return false;
+		}
+		if (parent == nullptr && live_in_chat(true) >= kMaxDirectChildren)
+		{
+			if (error_out != nullptr) *error_out = "This chat already has four agents queued or running; wait for one to finish.";
 			return false;
 		}
 		for (const AgentRun* ancestor = parent; ancestor != nullptr; ancestor = ancestor->parent_run_id.empty() ? nullptr : FindRun(app, ancestor->parent_run_id))
@@ -3496,6 +3547,8 @@ namespace uam
 		run.updated_at = run.created_at;
 		run.result_delivery_id = run.id;
 		transcript.agent_run_id = run.id;
+		transcript.managed_root_chat_id = root_chat->id;
+		transcript.managed_root_created_at = root_chat->created_at;
 
 		std::string save_error;
 		if (!AgentRunLedger::Save(app.data_root, run, &save_error))
@@ -3739,6 +3792,8 @@ namespace uam
 		run.task = "Continue the interrupted managed task from the durable transcript. "
 		           "Complete only the remaining work and do not repeat work already shown there.";
 		transcript.agent_run_id = run.id;
+		transcript.managed_root_chat_id = root_chat->id;
+		transcript.managed_root_created_at = root_chat->created_at;
 
 		std::string save_error;
 		if (!AgentRunLedger::Save(app.data_root, run, &save_error))
@@ -4021,6 +4076,8 @@ namespace uam
 
 		std::size_t running = RunningAgentSlots(app);
 		std::size_t remaining_queued = app.queued_agent_run_ids.size();
+		// Runs that stay queued keep their place ahead of runs not yet visited, so the queue stays first in, first out.
+		std::vector<std::string> held;
 		while (running < kMaxRunningAgents && remaining_queued > 0 && !app.queued_agent_run_ids.empty())
 		{
 			--remaining_queued;
@@ -4031,12 +4088,18 @@ namespace uam
 				continue;
 			if (run->managed_continuation)
 			{
-				app.queued_agent_run_ids.push_back(id);
+				held.push_back(id);
 				continue;
 			}
 			if (app.pending_agent_run_cancellation_ids.contains(id))
 			{
-				app.queued_agent_run_ids.push_back(id);
+				held.push_back(id);
+				continue;
+			}
+			// A parent already using its share waits; the slot stays free for another parent's agent.
+			if (RunningSlotsOfParent(app, RunParentKey(*run)) >= kMaxRunningPerParent)
+			{
+				held.push_back(id);
 				continue;
 			}
 			ChatSession* transcript = ChatDomainService().FindChatById(app, run->transcript_chat_id);
@@ -4050,7 +4113,7 @@ namespace uam
 			{
 				FinishRun(app, *run, "failed", "provider_crash_circuit_open",
 				          "The provider crashed three times within one minute; managed launches are paused for five minutes.");
-				if (run->status == "queued") app.queued_agent_run_ids.push_back(id); // The terminal save failed; retry next tick.
+				if (run->status == "queued") held.push_back(id); // The terminal save failed; retry next tick.
 				changed = true;
 				continue;
 			}
@@ -4065,11 +4128,11 @@ namespace uam
 					const bool invalid = hold == RoutingHold::Invalid;
 					FinishRun(app, *run, "failed", invalid ? "routing_invalid" : "routing_wait_timeout",
 					          RoutingWaitReason(app, run->transcript_chat_id, invalid ? "No execution host can run this agent." : "No execution host became available in time."));
-					if (run->status == "queued") app.queued_agent_run_ids.push_back(id); // The terminal save failed; retry next tick.
+					if (run->status == "queued") held.push_back(id); // The terminal save failed; retry next tick.
 					changed = true;
 					continue;
 				}
-				app.queued_agent_run_ids.push_back(id);
+				held.push_back(id);
 				changed = began || changed; // Only the start of a wait is a state change.
 				continue;
 			}
@@ -4077,7 +4140,7 @@ namespace uam
 			if (!AgentRunScheduler::ValidateRequestedReasoningEffort(app, *transcript, nullptr, &effort_error))
 			{
 				FinishRun(app, *run, "failed", "reasoning_effort_unsupported", effort_error);
-				if (run->status == "queued") app.queued_agent_run_ids.push_back(id);
+				if (run->status == "queued") held.push_back(id);
 				changed = true;
 				continue;
 			}
@@ -4114,6 +4177,23 @@ namespace uam
 			}
 			++running;
 			changed = true;
+		}
+		app.queued_agent_run_ids.insert(app.queued_agent_run_ids.begin(), held.begin(), held.end());
+		// A queued agent that did not ask routing on this poll (no running slot, or its parent's share is full) gives up
+		// its place in the routing queue at once, so it never holds a computer it cannot use yet.
+		if (app.execution_routing_service)
+		{
+			// The retry gate goes too, so the next offer of a slot asks routing at once and takes a fresh ticket.
+			const auto withdraw = [&app](const std::string& transcript_id)
+			{
+				if (app.execution_routing_service->Withdraw(transcript_id)) app.execution_routing_retry_at_by_chat_id.erase(transcript_id);
+			};
+			for (const AgentRun& queued : app.agent_runs)
+				if (queued.status == "queued" && !app.agent_routing_held_this_poll.contains(queued.id))
+					withdraw(queued.transcript_chat_id);
+			for (const auto& [id, owner] : app.managed_initial_runtime_owners)
+				if (owner && owner->phase == ManagedInitialRuntimeOwner::Phase::Queued && !app.agent_routing_held_this_poll.contains(id))
+					withdraw(owner->transcript_id);
 		}
 		// A run that routing did not refuse on this poll is no longer waiting for routing.
 		std::erase_if(app.agent_routing_wait_since_steady_ms, [&](const auto& entry) { return !app.agent_routing_held_this_poll.contains(entry.first); });

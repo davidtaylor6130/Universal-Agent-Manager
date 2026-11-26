@@ -1,5 +1,6 @@
-import { MOBILE_COMPANION_ENABLED } from '../config/buildFeatures'
+import { MOBILE_COMPANION_ENABLED, SSH_ENABLED } from '../config/buildFeatures'
 import { EMPTY_STARTUP_NATIVE_IMPORT_STATUS } from '../types/startupNativeImports'
+import { EMPTY_HOST_LOAD } from '../types/hostLoad'
 import { createExecutionRoutingSlice } from './slices/executionRoutingSlice'
 import { DEFAULT_CENTRAL_PROVIDER_CONFIGURATION, type CentralProviderConfiguration } from './cpp/types'
 import { create } from 'zustand'
@@ -7,6 +8,8 @@ import { Session, Folder } from '../types/session'
 import { Message } from '../types/message'
 import { Provider } from '../types/provider'
 import type { MemoryLevel } from '../types/memory'
+import type { PermissionCommandRule } from '../types/permissionRules'
+import type { Goal } from '../types/goal'
 import { sendToCEF, isCefContext, isCompanionContext } from '../ipc/cefBridge'
 import {
   CLI_TRANSCRIPT_FLUSH_DELAY_MS,
@@ -32,6 +35,7 @@ import {
   sanitizeMemoryActivity,
   defaultEditorFileAssociations,
   DEFAULT_NATIVE_IMPORT_STARTUP_MAX_AGE_DAYS,
+  forgetRetainedChatFieldsExcept,
 } from './cpp/sanitizers'
 export {
   DEFAULT_MEMORY_IDLE_DELAY_SECONDS,
@@ -48,7 +52,7 @@ export {
 // Moved to ./cpp/types.ts (MO-1). Re-exported so existing imports keep working.
 
 export * from './cpp/types'
-import type { WindowsPowerShellPreference, VoiceInputSettings, VcsStorageSettings, ProviderAvailabilityOverride, AcpBinding, CliBinding, CliTranscript, CliVersionManager, CppAppState, CppCliDebugState, CppStatePatch, EditorFileAssociation, MemoryActivity, MemoryWorkerBinding, McpServerConfiguration, ProviderChatDefaults, ProviderModelCatalog, ShellAction } from './cpp/types'
+import type { WindowsPowerShellPreference, VoiceInputSettings, VcsStorageSettings, ProviderAvailabilityOverride, AcpBinding, CliBinding, CliTranscript, CliVersionManager, CppAppState, CppCliDebugState, CppGoal, CppStatePatch, EditorFileAssociation, MemoryActivity, MemoryWorkerBinding, McpServerConfiguration, ProviderChatDefaults, ProviderModelCatalog, ShellAction } from './cpp/types'
 import { acpBindingFromCppChat, applyPendingCodexOptions, appendCliTranscriptChunk, cliBindingFromCppChat, cppPatchRevision, cppStateRevision, decodeCliChunk, folderFromCppFolder, normalizeCliTranscript, cliOutputMatchesBinding, providerFromCppProvider, reconcileCppMessages, reconcileHeldOutboxHistory, queuedPromptsEquivalent, sameArrayEntries, sameRecordEntries, sessionFromCppChat } from './cpp/reconcile'
 import { pendingProviderChatDefaults, withoutDeletedKeys } from './slices/sessionsSlice'
 import { parseUamPushPayload, cliDebugSignature, isNewerStateRevision } from './push/uamPush'
@@ -88,6 +92,36 @@ function mergeAssistantText(durable: string, streamed: string): string {
   return durable + streamed
 }
 
+function mapCppGoal(chatId: string, cppGoal: CppGoal): Goal {
+  return {
+    id: cppGoal.id,
+    chatId,
+    objective: cppGoal.objective,
+    status: cppGoal.status,
+    tokenBudget: cppGoal.tokenBudget,
+    tokensUsed: cppGoal.tokensUsed,
+    blockedTurnCount: cppGoal.blockedTurnCount,
+    lastBlocker: cppGoal.lastBlocker,
+    lastBlockerKind: cppGoal.lastBlockerKind,
+    lastDiagnostic: cppGoal.lastDiagnostic,
+    lastDecisionSource: cppGoal.lastDecisionSource,
+    completedItems: cppGoal.completedItems,
+    remainingItems: cppGoal.remainingItems,
+    pendingContinuation: cppGoal.pendingContinuation,
+    currentStep: cppGoal.currentStep,
+    lastVerification: cppGoal.lastVerification,
+    lastNextPrompt: cppGoal.lastNextPrompt,
+    sameNextPromptCount: cppGoal.sameNextPromptCount,
+    loopCount: cppGoal.loopCount,
+    createdAt: new Date(cppGoal.createdAt || Date.now()),
+    updatedAt: new Date(cppGoal.updatedAt || Date.now()),
+    executionOwner: cppGoal.executionOwner ?? 'uam',
+    providerCommand: cppGoal.providerCommand ?? '',
+    workerModelId: cppGoal.workerModelId ?? '',
+    reviewerModelId: cppGoal.reviewerModelId ?? '',
+  }
+}
+
 function deserializeState(
   cpp: CppAppState,
   existing: VoiceInputSettings & VcsStorageSettings & {
@@ -123,6 +157,8 @@ function deserializeState(
     sidebarPinnedChatOrder: string[]
     sidebarActiveChatOrder: string[]
     steerActiveTurnOnSend: boolean
+    permissionCommandRules: PermissionCommandRule[]
+    permissionAiReviewEnabled: boolean
     gitEnabled?: boolean
     svnEnabled?: boolean
     updateChecksEnabled: boolean
@@ -144,7 +180,7 @@ function deserializeState(
     editorFileAssociations: EditorFileAssociation[]
     centralProviderConfiguration: CentralProviderConfiguration
     mcpServers: McpServerConfiguration[]
-    executionRouting: AppState['executionRouting']
+    executionRouting?: AppState['executionRouting'] // Absent in builds without SSH.
     executionHosts: AppState['executionHosts']
     favoriteUamAgentIds: string[]
     nativeImportExcludedTitlePrefixes: string[]
@@ -161,7 +197,9 @@ function deserializeState(
     shellActions: ShellAction[]
     computePools: AppState['computePools']
     computePoolUsage: AppState['computePoolUsage']
+    executionHostLoad: AppState['executionHostLoad']
     prWatches: AppState['prWatches']
+    timerNotices: AppState['timerNotices']
     shellActionNotification: string
     statusLine: string
   }
@@ -273,41 +311,15 @@ function deserializeState(
 
   const sessionsWithPendingCodexOptions = applyPendingCodexOptions(sessions)
 
-  const goalsByChatId: Record<string, import('../types/goal').Goal[]> = {}
+  const goalsByChatId: Record<string, Goal[]> = {}
   const activeGoalIdByChatId: Record<string, string | null> = {}
   for (const chat of cpp.chats) {
     if (chat.activeGoalId !== undefined) {
       activeGoalIdByChatId[chat.id] = chat.activeGoalId
     }
+    // A full load leaves chats without goals out of the map; applyStatePatch writes [] instead.
     if (Array.isArray(chat.goals) && chat.goals.length > 0) {
-      const goalObjects: import('../types/goal').Goal[] = chat.goals.map((cppGoal) => ({
-        id: cppGoal.id,
-        chatId: chat.id,
-        objective: cppGoal.objective,
-        status: cppGoal.status,
-        tokenBudget: cppGoal.tokenBudget,
-        tokensUsed: cppGoal.tokensUsed,
-        blockedTurnCount: cppGoal.blockedTurnCount,
-        lastBlocker: cppGoal.lastBlocker,
-        lastBlockerKind: cppGoal.lastBlockerKind,
-        lastDiagnostic: cppGoal.lastDiagnostic,
-        lastDecisionSource: cppGoal.lastDecisionSource,
-        completedItems: cppGoal.completedItems,
-        remainingItems: cppGoal.remainingItems,
-        pendingContinuation: cppGoal.pendingContinuation,
-        currentStep: cppGoal.currentStep,
-        lastVerification: cppGoal.lastVerification,
-        lastNextPrompt: cppGoal.lastNextPrompt,
-        sameNextPromptCount: cppGoal.sameNextPromptCount,
-        loopCount: cppGoal.loopCount,
-        createdAt: new Date(cppGoal.createdAt || Date.now()),
-        updatedAt: new Date(cppGoal.updatedAt || Date.now()),
-        executionOwner: cppGoal.executionOwner ?? 'uam',
-        providerCommand: cppGoal.providerCommand ?? '',
-        workerModelId: cppGoal.workerModelId ?? '',
-        reviewerModelId: cppGoal.reviewerModelId ?? '',
-      }))
-      goalsByChatId[chat.id] = goalObjects
+      goalsByChatId[chat.id] = chat.goals.map((cppGoal) => mapCppGoal(chat.id, cppGoal))
     }
   }
 
@@ -347,6 +359,8 @@ function deserializeState(
     sidebarPinnedChatOrder: cpp.settings.sidebarPinnedChatOrder ?? [],
     sidebarActiveChatOrder: cpp.settings.sidebarActiveChatOrder ?? [],
     steerActiveTurnOnSend: cpp.settings.steerActiveTurnOnSend ?? false,
+    permissionCommandRules: cpp.settings.permissionCommandRules ?? [],
+    permissionAiReviewEnabled: cpp.settings.permissionAiReviewEnabled ?? true,
     gitEnabled: typeof cpp.settings.gitEnabled === 'boolean' ? cpp.settings.gitEnabled : true,
     svnEnabled: typeof cpp.settings.svnEnabled === 'boolean' ? cpp.settings.svnEnabled : true,
     updateChecksEnabled: cpp.settings.updateChecksEnabled,
@@ -387,7 +401,7 @@ function deserializeState(
     httpCacheClearIntervalDays: cpp.settings.httpCacheClearIntervalDays ?? existing.httpCacheClearIntervalDays,
     centralProviderConfiguration: cpp.settings.centralProviderConfiguration ?? DEFAULT_CENTRAL_PROVIDER_CONFIGURATION,
     mcpServers: cpp.settings.mcpServers ?? [],
-    executionRouting: cpp.settings.executionRouting ?? existing.executionRouting,
+    ...(SSH_ENABLED ? { executionRouting: cpp.settings.executionRouting ?? existing.executionRouting } : {}),
     executionHosts: cpp.settings.executionHosts ?? existing.executionHosts,
     favoriteUamAgentIds: cpp.settings.favoriteUamAgentIds ?? [],
     nativeImportExcludedTitlePrefixes: cpp.settings.nativeImportExcludedTitlePrefixes ?? [],
@@ -406,11 +420,46 @@ function deserializeState(
     shellActions: cpp.shellActions ?? existing.shellActions,
     computePools: cpp.settings.computePools ?? [],
     computePoolUsage: cpp.computePoolUsage ?? {},
+    executionHostLoad: cpp.executionHostLoad ?? EMPTY_HOST_LOAD,
     prWatches: cpp.prWatches ?? existing.prWatches,
+    timerNotices: cpp.timers?.notices ?? existing.timerNotices,
     shellActionNotification: cpp.shellActionNotification ?? existing.shellActionNotification,
     statusLine: cpp.statusLine ?? existing.statusLine,
     // Full-state only: absent means no deletion is running, so do not keep the previous value.
     deletionProgress: cpp.deletionProgress,
+  }
+}
+
+type HistoryReadMaps = Pick<AppState, 'chatHistoryPageBySessionId' | 'chatHistoryReadBySessionId' | 'chatHistoryErrorBySessionId' | 'chatHistoryErrorWasRefreshBySessionId'>
+
+// Saved history pages, reads and read errors of chats native removed; empty when none, so unchanged maps keep their identity.
+function historyReadMapsWithout(current: HistoryReadMaps, removedChatIds: Set<string>): Partial<HistoryReadMaps> {
+  if (removedChatIds.size === 0) return {}
+  const prune = <T,>(values: Record<string, T> | undefined) => {
+    const next = withoutDeletedKeys(values ?? {}, removedChatIds)
+    return values && sameRecordEntries(values, next) ? values : next
+  }
+  return {
+    chatHistoryPageBySessionId: prune(current.chatHistoryPageBySessionId),
+    chatHistoryReadBySessionId: prune(current.chatHistoryReadBySessionId),
+    chatHistoryErrorBySessionId: prune(current.chatHistoryErrorBySessionId),
+    chatHistoryErrorWasRefreshBySessionId: prune(current.chatHistoryErrorWasRefreshBySessionId),
+  }
+}
+
+// A full state lists every chat, so entries for any other id belong to removed chats. deserializeState keeps page starts
+// for chats it does not list, so they are pruned here too.
+function historyReadMapsForChats(current: HistoryReadMaps, chats: ReadonlyArray<{ id: string }>, historyStartIndexBySessionId: AppState['historyStartIndexBySessionId']): Partial<HistoryReadMaps & Pick<AppState, 'historyStartIndexBySessionId'>> {
+  const liveChatIds = new Set(chats.map((chat) => chat.id))
+  const removedChatIds = new Set<string>()
+  for (const values of [current.chatHistoryPageBySessionId, current.chatHistoryReadBySessionId, current.chatHistoryErrorBySessionId, current.chatHistoryErrorWasRefreshBySessionId, historyStartIndexBySessionId]) {
+    for (const chatId of Object.keys(values ?? {})) if (!liveChatIds.has(chatId)) removedChatIds.add(chatId)
+  }
+  if (removedChatIds.size === 0) return {}
+  const pageStarts = withoutDeletedKeys(historyStartIndexBySessionId, removedChatIds)
+  return {
+    ...historyReadMapsWithout(current, removedChatIds),
+    historyStartIndexBySessionId: sameRecordEntries(historyStartIndexBySessionId, pageStarts) ? historyStartIndexBySessionId : pageStarts,
   }
 }
 
@@ -512,33 +561,8 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     if (chat.activeGoalId !== undefined) {
       activeGoalIdByChatId[chat.id] = chat.activeGoalId
     }
-    goalsByChatId[chat.id] = (chat.goals ?? []).map((cppGoal) => ({
-        id: cppGoal.id,
-        chatId: chat.id,
-        objective: cppGoal.objective,
-        status: cppGoal.status,
-        tokenBudget: cppGoal.tokenBudget,
-        tokensUsed: cppGoal.tokensUsed,
-        blockedTurnCount: cppGoal.blockedTurnCount,
-        lastBlocker: cppGoal.lastBlocker,
-        lastBlockerKind: cppGoal.lastBlockerKind,
-        lastDiagnostic: cppGoal.lastDiagnostic,
-        lastDecisionSource: cppGoal.lastDecisionSource,
-        completedItems: cppGoal.completedItems,
-        remainingItems: cppGoal.remainingItems,
-        pendingContinuation: cppGoal.pendingContinuation,
-        currentStep: cppGoal.currentStep,
-        lastVerification: cppGoal.lastVerification,
-        lastNextPrompt: cppGoal.lastNextPrompt,
-        sameNextPromptCount: cppGoal.sameNextPromptCount,
-        loopCount: cppGoal.loopCount,
-        createdAt: new Date(cppGoal.createdAt || Date.now()),
-        updatedAt: new Date(cppGoal.updatedAt || Date.now()),
-        executionOwner: cppGoal.executionOwner ?? 'uam',
-        providerCommand: cppGoal.providerCommand ?? '',
-        workerModelId: cppGoal.workerModelId ?? '',
-        reviewerModelId: cppGoal.reviewerModelId ?? '',
-    }))
+    // Unlike a full load, a patch records [] for a chat without goals so earlier goals are cleared.
+    goalsByChatId[chat.id] = (chat.goals ?? []).map((cppGoal) => mapCppGoal(chat.id, cppGoal))
   }
 
   const activeSessionId =
@@ -557,6 +581,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
   const markdownStoreAttachedBySessionId = withoutDeletedKeys(current.markdownStoreAttachedBySessionId, removedChatIds)
   const repositoryReviewBySessionId = withoutDeletedKeys(current.repositoryReviewBySessionId, removedChatIds)
   const uamAgentsBySessionId = withoutDeletedKeys(current.uamAgentsBySessionId, removedChatIds)
+  const historyReadMaps = historyReadMapsWithout(current, removedChatIds)
 
   return {
     folders,
@@ -564,6 +589,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     sessions: sameArrayEntries(current.sessions, sessionsWithPendingCodexOptions) ? current.sessions : sessionsWithPendingCodexOptions,
     messages: sameRecordEntries(current.messages, messages) ? current.messages : messages,
     historyStartIndexBySessionId,
+    ...historyReadMaps,
     chatSearchNavigation: current.chatSearchNavigation && removedChatIds.has(current.chatSearchNavigation.chatId) ? null : current.chatSearchNavigation,
     goalsByChatId: sameRecordEntries(current.goalsByChatId, goalsByChatId) ? current.goalsByChatId : goalsByChatId,
     activeGoalIdByChatId: sameRecordEntries(current.activeGoalIdByChatId, activeGoalIdByChatId) ? current.activeGoalIdByChatId : activeGoalIdByChatId,
@@ -595,6 +621,8 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     sidebarPinnedChatOrder: patch.settings?.sidebarPinnedChatOrder ?? current.sidebarPinnedChatOrder,
     sidebarActiveChatOrder: patch.settings?.sidebarActiveChatOrder ?? current.sidebarActiveChatOrder,
     steerActiveTurnOnSend: patch.settings?.steerActiveTurnOnSend ?? current.steerActiveTurnOnSend,
+    permissionCommandRules: patch.settings?.permissionCommandRules ?? current.permissionCommandRules,
+    permissionAiReviewEnabled: patch.settings?.permissionAiReviewEnabled ?? current.permissionAiReviewEnabled,
     gitEnabled: typeof patch.settings?.gitEnabled === 'boolean' ? patch.settings.gitEnabled : current.gitEnabled,
     svnEnabled: typeof patch.settings?.svnEnabled === 'boolean' ? patch.settings.svnEnabled : current.svnEnabled,
     updateChecksEnabled: patch.settings?.updateChecksEnabled ?? current.updateChecksEnabled,
@@ -635,7 +663,7 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     httpCacheClearIntervalDays: patch.settings?.httpCacheClearIntervalDays ?? current.httpCacheClearIntervalDays,
     centralProviderConfiguration: patch.settings?.centralProviderConfiguration ?? current.centralProviderConfiguration,
     mcpServers: patch.settings?.mcpServers ?? current.mcpServers,
-    executionRouting: patch.settings?.executionRouting ?? current.executionRouting,
+    ...(SSH_ENABLED ? { executionRouting: patch.settings?.executionRouting ?? current.executionRouting } : {}),
     executionHosts: patch.settings?.executionHosts ?? current.executionHosts,
     favoriteUamAgentIds: patch.settings?.favoriteUamAgentIds ?? current.favoriteUamAgentIds,
     nativeImportExcludedTitlePrefixes: patch.settings?.nativeImportExcludedTitlePrefixes ?? current.nativeImportExcludedTitlePrefixes,
@@ -655,7 +683,9 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     shellActions: patch.shellActions ?? current.shellActions,
     computePools: patch.settings?.computePools ?? current.computePools,
     computePoolUsage: patch.computePoolUsage ?? current.computePoolUsage,
+    executionHostLoad: patch.executionHostLoad ?? current.executionHostLoad,
     prWatches: patch.prWatches ?? current.prWatches,
+    timerNotices: patch.timers?.notices ?? current.timerNotices,
     shellActionNotification: patch.shellActionNotification ?? current.shellActionNotification,
     statusLine: patch.statusLine ?? current.statusLine,
   }
@@ -734,6 +764,9 @@ export const useAppStore = create<AppState>((set, get) => {
       for (const [chatId, pending] of entries) {
         if (!liveSessionIds.has(chatId)) continue
         if (state.chatSearchNavigation?.chatId === chatId) continue
+        // An unopened chat with saved history stays unloaded: a fragment would make streamDone read and keep its
+        // latest page for the rest of the session. Opening it reads history, which already holds the streamed text.
+        if (nextMessages[chatId] === undefined && (state.sessions.find((session) => session.id === chatId)?.messageCount ?? 0) > 0) continue
         const existingMessages = nextMessages[chatId] ?? []
         let lastMessage = existingMessages[existingMessages.length - 1]
         const token = pending.token
@@ -803,6 +836,10 @@ export const useAppStore = create<AppState>((set, get) => {
   // reply and pushes travel separate IPC paths, so a diff-only patch can overtake the
   // snapshot. Until a full state hydrates, re-pull a stale snapshot (#622).
   let bootstrapHydrated = false
+  // Resync waits for hydration, so a state push rejected before it is remembered here: the highest rejected revision,
+  // Infinity when a rejection's revision is unknown, -1 for none. Hydration re-pulls unless its snapshot covers it.
+  let rejectedStateRevisionBeforeHydration = -1
+  let resyncAfterHydration: ((reason: string) => void) | null = null
   let bootstrapRetryTimer: ReturnType<typeof setTimeout> | null = null
   // A newer store instance (module reload) owns window.uamPush; this one must stop re-pulling.
   let ownedUamPush: unknown = null
@@ -868,6 +905,8 @@ export const useAppStore = create<AppState>((set, get) => {
           sidebarPinnedChatOrder: current.sidebarPinnedChatOrder,
           sidebarActiveChatOrder: current.sidebarActiveChatOrder,
           steerActiveTurnOnSend: current.steerActiveTurnOnSend,
+          permissionCommandRules: current.permissionCommandRules,
+          permissionAiReviewEnabled: current.permissionAiReviewEnabled,
         gitEnabled: current.gitEnabled,
         svnEnabled: current.svnEnabled,
           updateChecksEnabled: current.updateChecksEnabled,
@@ -908,7 +947,7 @@ export const useAppStore = create<AppState>((set, get) => {
           editorFileAssociations: current.editorFileAssociations,
           centralProviderConfiguration: current.centralProviderConfiguration,
           mcpServers: current.mcpServers,
-          executionRouting: current.executionRouting,
+          ...(SSH_ENABLED ? { executionRouting: current.executionRouting } : {}),
           executionHosts: current.executionHosts,
           favoriteUamAgentIds: current.favoriteUamAgentIds,
           nativeImportExcludedTitlePrefixes: current.nativeImportExcludedTitlePrefixes,
@@ -925,17 +964,22 @@ export const useAppStore = create<AppState>((set, get) => {
           shellActions: current.shellActions,
           computePools: current.computePools,
           computePoolUsage: current.computePoolUsage,
+          executionHostLoad: current.executionHostLoad,
           prWatches: current.prWatches,
+          timerNotices: current.timerNotices,
           shellActionNotification: current.shellActionNotification,
           statusLine: current.statusLine,
         })
-        set({ ...current.reconcileMemorySettingsProjection(deserialized, sanitized.settings), bootstrapStateError: '', bootstrapStateLoading: false, bootstrapPending: false })
+        set({ ...current.reconcileMemorySettingsProjection(deserialized, sanitized.settings), ...historyReadMapsForChats(current, sanitized.chats, deserialized.historyStartIndexBySessionId), bootstrapStateError: '', bootstrapStateLoading: false, bootstrapPending: false })
         // Only after the state applied: a throw above must still reach failBootstrap.
         bootstrapHydrated = true
         // Native writes "[UI startup]" console lines to the diagnostic log; the packaged smoke tests wait for this one.
         console.info('[UI startup] Initial state loaded through the native bridge.')
         if (bootstrapRetryTimer !== null) clearTimeout(bootstrapRetryTimer)
         bootstrapRetryTimer = null
+        // A snapshot at revision R holds every patch up to R; a rejected newer one is only restored by another pull.
+        if (rejectedStateRevisionBeforeHydration > nextRevision) resyncAfterHydration?.('state push rejected before startup state loaded')
+        rejectedStateRevisionBeforeHydration = -1
         // Sync theme to DOM
         if (deserialized.theme) {
           persistTheme(deserialized.theme, get().customThemes)
@@ -1081,6 +1125,7 @@ export const useAppStore = create<AppState>((set, get) => {
       const delay = Math.max(STATE_RESYNC_COALESCE_MS, lastStateResyncAt + stateResyncSpacingMs - now)
       stateResyncTimer = setTimeout(pullStateResync, delay)
     }
+    resyncAfterHydration = requestStateResync
 
     const settleStateResync = (generation: number, snapshot: CppAppState | null) => {
       if (generation !== stateResyncGeneration || !stateResyncInFlight) return
@@ -1193,7 +1238,18 @@ export const useAppStore = create<AppState>((set, get) => {
           pushChannelError: parsed.error,
           lastPushAtMs: state.lastPushAtMs,
         }))
-        console.error('[uamPush] Rejected payload:', parsed.error, payload)
+        // One short line: native writes console arguments to its log, where the payload was only [object Object].
+        // Companion pages never run the desktop bootstrap, so only a desktop window waits for hydration.
+        const beforeHydration = Boolean(parsed.mayHaveCarriedState) && !bootstrapHydrated && !isCompanionContext()
+        const detail = [
+          parsed.stateRevision === undefined ? '' : `revision ${parsed.stateRevision}`,
+          parsed.missingModelCatalogId ? `missing model catalogue ${parsed.missingModelCatalogId}` : '',
+          beforeHydration ? 'before startup state loaded' : '',
+        ].filter(Boolean).join(', ')
+        console.error(`[uamPush] Rejected payload${detail ? ` (${detail})` : ''}: ${parsed.error}`)
+        if (beforeHydration) {
+          rejectedStateRevisionBeforeHydration = Math.max(rejectedStateRevisionBeforeHydration, parsed.stateRevision ?? Number.POSITIVE_INFINITY)
+        }
         if (parsed.mayHaveCarriedState) requestStateResync('rejected state push')
         return
       }
@@ -1226,6 +1282,8 @@ export const useAppStore = create<AppState>((set, get) => {
         case 'stateUpdate':
           if (!isNewerStateRevision(cppStateRevision(msg.data), store.lastAppliedStateRevision)) break
           applyFullState(msg.data)
+          // Pushed full states share the patch channel, so a chat missing here is gone; drop its field copy.
+          forgetRetainedChatFieldsExcept(msg.data.chats.map((chat) => chat.id))
           // Only a full state the store actually took can close the gap for the pull in flight.
           if (stateResyncInFlight && get().lastAppliedStateRevision === cppStateRevision(msg.data)) {
             fullStateRevisionDuringResync = Math.max(fullStateRevisionDuringResync, cppStateRevision(msg.data))
@@ -1233,8 +1291,14 @@ export const useAppStore = create<AppState>((set, get) => {
           break
         case 'statePatch':
           if (stateResyncInFlight) {
-            if (patchesDuringResync.length < STATE_RESYNC_MAX_HELD_PATCHES) patchesDuringResync.push(msg.data)
-            else patchesDuringResyncOverflowed = true
+            // A patch that left out a chat is not kept as a copy: one at or below the snapshot is covered by it (the
+            // pull is what makes native drop its field copies), and one above it leaves a hole, so rebuilds() fails.
+            if (!msg.data.skippedChats) {
+              if (patchesDuringResync.length < STATE_RESYNC_MAX_HELD_PATCHES) patchesDuringResync.push(msg.data)
+              else patchesDuringResyncOverflowed = true
+            }
+          } else if (msg.data.skippedChats && isNewerStateRevision(cppPatchRevision(msg.data), get().lastAppliedStateRevision)) {
+            requestStateResync('patch built on a chat field copy this page lacks')
           }
           applyLivePatch(msg.data)
           break
@@ -1279,6 +1343,8 @@ export const useAppStore = create<AppState>((set, get) => {
             const { chatId, token, messageIndex } = msg
             const session = get().sessions.find((s) => s.id === chatId)
             if (!session) break
+            // Not buffered either: a history page arriving before the flush already holds this text and would show it twice.
+            if (get().messages[chatId] === undefined && (session.messageCount ?? 0) > 0) break
 
             const pending = pendingStreamTokensByChatId.get(chatId)
             if (pending && pending.messageIndex !== messageIndex) {
@@ -1301,8 +1367,9 @@ export const useAppStore = create<AppState>((set, get) => {
 
             if (lastMessage && lastMessage.role === 'assistant' && lastMessage.isStreaming) {
               const binding = get().acpBindingBySessionId[chatId]
-              const currentAssistantIndex = binding?.turnAssistantMessageIndex ?? -1
-              const currentAssistant = existingMessages[currentAssistantIndex]
+              // The native index counts the whole transcript; a loaded page starts at historyStartIndex.
+              const currentAssistantIndex = (binding?.turnAssistantMessageIndex ?? -1) - (get().historyStartIndexBySessionId[chatId] ?? 0)
+              const currentAssistant = currentAssistantIndex >= 0 ? existingMessages[currentAssistantIndex] : undefined
               const turnAssistantText = (binding?.turnEvents ?? []).reduce(
                 (text, event) => event.type === 'assistant_text' ? text + event.text : text,
                 ''
@@ -1391,6 +1458,8 @@ export const useAppStore = create<AppState>((set, get) => {
       sidebarPinnedChatOrder: current.sidebarPinnedChatOrder,
       sidebarActiveChatOrder: current.sidebarActiveChatOrder,
       steerActiveTurnOnSend: current.steerActiveTurnOnSend,
+      permissionCommandRules: current.permissionCommandRules,
+      permissionAiReviewEnabled: current.permissionAiReviewEnabled,
       gitEnabled: current.gitEnabled,
       svnEnabled: current.svnEnabled,
       updateChecksEnabled: current.updateChecksEnabled,
@@ -1431,7 +1500,7 @@ export const useAppStore = create<AppState>((set, get) => {
       editorFileAssociations: current.editorFileAssociations,
       centralProviderConfiguration: current.centralProviderConfiguration,
           mcpServers: current.mcpServers,
-      executionRouting: current.executionRouting,
+      ...(SSH_ENABLED ? { executionRouting: current.executionRouting } : {}),
       executionHosts: current.executionHosts,
       favoriteUamAgentIds: current.favoriteUamAgentIds,
       nativeImportExcludedTitlePrefixes: current.nativeImportExcludedTitlePrefixes,
@@ -1448,11 +1517,13 @@ export const useAppStore = create<AppState>((set, get) => {
       shellActions: current.shellActions,
       computePools: current.computePools,
       computePoolUsage: current.computePoolUsage,
+      executionHostLoad: current.executionHostLoad,
       prWatches: current.prWatches,
+      timerNotices: current.timerNotices,
       shellActionNotification: current.shellActionNotification,
       statusLine: current.statusLine,
     })
-    return current.reconcileMemorySettingsProjection(deserialized, sanitized.settings)
+    return { ...current.reconcileMemorySettingsProjection(deserialized, sanitized.settings), ...historyReadMapsForChats(current, sanitized.chats, deserialized.historyStartIndexBySessionId) }
   }
 
   const inCef = isCefContext()
@@ -1475,7 +1546,8 @@ export const useAppStore = create<AppState>((set, get) => {
     computerUseAllowlistEnabled: false,
     computerUseAllowedApplications: [],
     ...createSessionsSlice(set, get, inCef),
-    ...createExecutionRoutingSlice(get),
+    // Builds without SSH carry no routing state or actions.
+    ...(SSH_ENABLED ? createExecutionRoutingSlice(get) : {}),
     ...createFoldersSlice(set, get),
     ...createResourceCollectionsSlice(set, get),
     ...createGoalsSlice(set, get),

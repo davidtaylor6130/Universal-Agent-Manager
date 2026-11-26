@@ -1,5 +1,6 @@
 #include "remote/runner_protocol.h"
 
+#include "remote/host_load_protocol.h"
 #include "remote/runner_state.h"
 
 #include <nlohmann/json.hpp>
@@ -149,6 +150,14 @@ namespace uam::remote
 
 		const std::string type = request["type"].get<std::string>();
 		if ((type == "startup.configure" || type == "startup.observe") && state != nullptr) return state->HandleStartupRequest(request, runner_version);
+		if (type == "host.load")
+		{
+			// Without process state the helper cannot count its processes, so it does not offer the request at all.
+			if (state == nullptr) return ErrorResponse(request, "unsupported_request", "Host load is unavailable in this context.");
+			uam::platform::HostLoad load = uam::platform::ReadCurrentHostLoad();
+			load.runner_processes = state->LiveProcessCount();
+			return {{"id", request["id"]}, {"type", "host.load"}, {"ok", true}, {"result", HostLoadToJson(load)}};
+		}
 		if (type != "hello")
 			return state != nullptr
 			    ? state->HandleProcessRequest(request)
@@ -181,6 +190,7 @@ namespace uam::remote
 #endif
 			                          {"usageAccounting", state != nullptr},
 			                          {"usageAccountingStream", state != nullptr},
+			                          {"hostLoad", state != nullptr ? kHostLoadVersion : 0},
 		                          {"projectMemory", state != nullptr},
 		                          {"isolatedTextWorkers", state != nullptr},
 		                          {"secretDrop", state != nullptr},

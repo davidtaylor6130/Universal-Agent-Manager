@@ -16,6 +16,7 @@
 #include "app/transcript_retention_service.h"
 #include "app/startup_native_import_service.h"
 #include "app/runtime_orchestration_internal.h"
+#include "common/paths/workspace_root.h"
 #include "app/uam_control_service.h"
 #include "cef/state_serializer.h"
 #include "cef/uam_cef_client.h"
@@ -23,6 +24,7 @@
 #include "cef/uam_query_handler_async.h"
 #include "common/config/mcp_server_config.h"
 #include "common/chat/chat_repository.h"
+#include "common/paths/workspace_root.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_goal_loop.h"
 #include "common/utils/diagnostic_log.h"
@@ -39,6 +41,8 @@
 #include <windows.h>
 #include <io.h>
 #include <versionhelpers.h>
+#else
+#include <unistd.h>
 #endif
 
 #if defined(__APPLE__)
@@ -382,6 +386,62 @@ UAM_TEST(BundledMarkdownStoreEntriesParseFromNestedFolders)
 	UAM_ASSERT(std::ranges::any_of(actions, [](const ShellAction& action) { return action.group_path == std::vector<std::string>{"GitHub"}; }));
 }
 
+#if !defined(_WIN32)
+UAM_TEST(SkillsLibraryListsReadableSkillsPastAnUnreadableSubfolder)
+{
+	if (::geteuid() == 0) return; // Root opens folders without read permission.
+	TempDir temp("uam-skills-unreadable-folder");
+	const fs::path root = temp.root / "store";
+	const fs::path locked = root / "locked";
+	const fs::path listable = root / "listable";
+	fs::create_directories(locked);
+	fs::create_directories(listable);
+	UAM_ASSERT(uam::io::WriteTextFile(listable / "listed.uam", "---\ntitle: Listed\ncommandName: listed\n---\n\n# Listed\n"));
+	fs::create_directories(root / "readable" / "nested");
+	UAM_ASSERT(uam::io::WriteTextFile(root / "top.uam", "---\ntitle: Top\ncommandName: top\n---\n\n# Top\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(root / "readable" / "nested" / "deep.uam", "---\ntitle: Deep\ncommandName: deep\n---\n\n# Deep\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(locked / "hidden.uam", "---\ntitle: Hidden\ncommandName: hidden\n---\n\n# Hidden\n"));
+	struct RestoreAccess
+	{
+		std::vector<fs::path> paths;
+		~RestoreAccess()
+		{
+			for (const fs::path& path : paths) { std::error_code ec; fs::permissions(path, fs::perms::owner_all, fs::perm_options::replace, ec); }
+		}
+	} restore{{root, locked, listable}}; // Root first, so its folders can be reached again.
+	fs::permissions(locked, fs::perms::none, fs::perm_options::replace);
+	fs::permissions(listable, fs::perms::owner_read, fs::perm_options::replace); // Listed but not entered.
+
+	std::string error = "stale";
+	std::vector<fs::path> skipped{"stale"};
+	const std::vector<MarkdownStoreService::Entry> entries = MarkdownStoreService::ListEntries(root, &error, &skipped);
+	UAM_ASSERT(error.empty());
+	std::vector<std::string> titles;
+	for (const MarkdownStoreService::Entry& entry : entries) titles.push_back(entry.title);
+	std::ranges::sort(titles);
+	UAM_ASSERT(titles == (std::vector<std::string>{"Deep", "Top"}));
+	UAM_ASSERT(skipped == (std::vector<fs::path>{fs::path("listable"), fs::path("locked")}));
+	// Creating a skill walks the same folders and still succeeds.
+	MarkdownStoreService::Draft draft;
+	draft.title = "Fresh";
+	draft.body = "# Fresh";
+	MarkdownStoreService::Entry created;
+	UAM_ASSERT(MarkdownStoreService::CreateEntry(root, draft, &created, &error));
+	UAM_ASSERT(error.empty());
+	UAM_ASSERT_EQ(MarkdownStoreService::ListEntries(root, &error).size(), static_cast<std::size_t>(3));
+
+	// An unreadable library root, or one that can be listed but not entered, still fails instead of showing an empty library.
+	for (const fs::perms access : {fs::perms::none, fs::perms::owner_read})
+	{
+		fs::permissions(root, access, fs::perm_options::replace);
+		error.clear();
+		UAM_ASSERT(MarkdownStoreService::ListEntries(root, &error, &skipped).empty());
+		UAM_ASSERT(!error.empty());
+		UAM_ASSERT(skipped.empty());
+	}
+}
+#endif
+
 UAM_TEST(MarkdownStoreCreatesListsAndValidatesUamFiles)
 {
 	TempDir temp("uam-markdown-store");
@@ -657,6 +717,47 @@ UAM_TEST(MoveChatToFolderRejectsCrossMachineAndAllowsSafeSameHostMoves)
 	UAM_ASSERT(ChatHistorySyncService().MoveChatToFolder(app, app.chats.front(), "homelab-other"));
 }
 
+UAM_TEST(MoveRemoteWorktreeChatRefusesWithoutChangingSavedIdentity)
+{
+	TempDir temp("uam-move-remote-worktree-chat");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.folders = {
+	    {"homelab", "Homelab", "/srv/homelab", false, "ssh-homelab"},
+	    {"homelab-other", "Homelab other", "/srv/other", false, "ssh-homelab"},
+	};
+	ExecutionHost host;
+	host.id = "ssh-homelab"; host.ssh_alias = "homelab"; host.platform = "linux";
+	app.settings.execution_hosts.push_back(host);
+	for (const char* kind : {uam::paths::kGitWorktreeIsolationKind, uam::paths::kPendingGitWorktreeIsolationKind})
+	{
+		app.chats.clear();
+		ChatSession chat;
+		chat.id = "remote-worktree-chat";
+		chat.folder_id = "homelab";
+		chat.execution_host_id = "ssh-homelab";
+		chat.workspace_directory = "/srv/homelab";
+		chat.workspace_isolation_kind = kind;
+		chat.workspace_source_directory = "/srv/homelab";
+		chat.workspace_worktree_directory = "/srv/homelab-worktrees/remote-worktree-chat";
+		chat.native_session_id = "previous-native";
+		chat.messages.push_back({MessageRole::User, "Keep this conversation", "now"});
+		app.chats.push_back(chat);
+		app.status_line.clear();
+
+		UAM_ASSERT(!ChatHistorySyncService().MoveChatToFolder(app, app.chats.front(), "homelab-other"));
+		UAM_ASSERT(app.status_line.find("own Git worktree") != std::string::npos);
+		const ChatSession& kept = app.chats.front();
+		UAM_ASSERT_EQ(kept.folder_id, std::string("homelab"));
+		UAM_ASSERT_EQ(kept.execution_host_id, std::string("ssh-homelab"));
+		UAM_ASSERT_EQ(kept.workspace_directory, std::string("/srv/homelab"));
+		UAM_ASSERT_EQ(kept.workspace_worktree_directory, std::string("/srv/homelab-worktrees/remote-worktree-chat"));
+		UAM_ASSERT_EQ(kept.native_session_id, std::string("previous-native"));
+		UAM_ASSERT(!kept.native_session_reset_pending && kept.provider_handoff_context.empty());
+		UAM_ASSERT(!ChatRepository::LoadLocalChat(temp.root, chat.id).has_value());
+	}
+}
+
 UAM_TEST(MoveRemoteChatWorkspaceReleasesEmptyHoldAndRefusesHeldInput)
 {
 	TempDir temp("uam-move-chat-queue-hold");
@@ -736,6 +837,217 @@ UAM_TEST(RenameRemoteFolderDirectoryReleasesEmptyHoldAndRefusesHeldInput)
 	UAM_ASSERT(app.chats.front().native_session_reset_pending && !app.chats.front().acp_queue_held);
 	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(temp.root, chat.id);
 	UAM_ASSERT(saved.has_value() && !saved->acp_queue_held && saved->native_session_reset_pending);
+}
+
+namespace
+{
+	ChatSession WorkspaceMoveChat(const std::string& id, const std::string& folder_id, const std::string& directory)
+	{
+		ChatSession chat;
+		chat.id = id;
+		chat.title = id;
+		chat.provider_id = "gemini-cli";
+		chat.folder_id = folder_id;
+		chat.workspace_directory = directory;
+		chat.created_at = "2026-01-01T00:00:00.000Z";
+		chat.updated_at = "2026-01-01T00:00:00.000Z";
+		return chat;
+	}
+
+	std::string SavedWorkspaceDirectory(const fs::path& data_root, const std::string& chat_id)
+	{
+		const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(data_root, chat_id);
+		UAM_ASSERT(saved.has_value());
+		return saved.has_value() ? saved->workspace_directory : std::string();
+	}
+} // namespace
+
+UAM_TEST(WorkspaceDirectoryChangeRepointsOnlyChatsUnderTheOldRoot)
+{
+	TempDir temp("uam-workspace-move-prefix");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	const fs::path old_root = temp.root / "old";
+	const fs::path new_root = temp.root / "new";
+	fs::create_directories(old_root / "sub" / "deeper");
+	fs::create_directories(new_root);
+	fs::create_directories(temp.root / "old-sibling");
+	fs::create_directories(temp.root / "elsewhere");
+	fs::create_directories(temp.root / "other");
+	app.folders = {{"ws", "Workspace", old_root.string(), false, "local"}, {"other", "Other", (temp.root / "other").string(), false, "local"}};
+	UAM_ASSERT(ChatFolderStore::Save(app.data_root, app.folders));
+
+	app.chats = {
+	    WorkspaceMoveChat("exact", "ws", old_root.string()), WorkspaceMoveChat("nested", "ws", (old_root / "sub" / "deeper").string()), WorkspaceMoveChat("trailing", "ws", old_root.string() + "/sub/"), WorkspaceMoveChat("follows-folder", "ws", ""), WorkspaceMoveChat("sibling", "ws", (temp.root / "old-sibling").string()), WorkspaceMoveChat("elsewhere", "ws", (temp.root / "elsewhere").string()), WorkspaceMoveChat("other-folder", "other", (old_root / "sub").string()),
+	};
+	for (const ChatSession& chat : app.chats)
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+	// Unrelated chats that can no longer be saved must not block the change: one outside the old root in
+	// this workspace and one in another workspace. A directory at the chat file path refuses every save.
+	app.chats.push_back(WorkspaceMoveChat("unsaveable-elsewhere", "ws", (temp.root / "elsewhere").string()));
+	app.chats.push_back(WorkspaceMoveChat("unsaveable-other", "other", (old_root / "sub").string()));
+	fs::create_directories(AppPaths::UamChatFilePath(app.data_root, "unsaveable-elsewhere"));
+	fs::create_directories(AppPaths::UamChatFilePath(app.data_root, "unsaveable-other"));
+
+	UAM_ASSERT(RenameFolderById(app, "ws", "Workspace", new_root.string()));
+	UAM_ASSERT_EQ(app.folders.front().directory, new_root.string());
+	UAM_ASSERT_EQ(ChatFolderStore::Load(app.data_root).front().directory, new_root.string());
+	const auto directory_of = [&app](const std::string& id) { return ChatDomainService().FindChatById(app, id)->workspace_directory; };
+	UAM_ASSERT_EQ(directory_of("exact"), new_root.string());
+	UAM_ASSERT_EQ(directory_of("nested"), (new_root / "sub" / "deeper").string());
+	UAM_ASSERT_EQ(directory_of("trailing"), (new_root / "sub").string());
+	UAM_ASSERT_EQ(directory_of("follows-folder"), std::string());
+	UAM_ASSERT_EQ(directory_of("sibling"), (temp.root / "old-sibling").string());
+	UAM_ASSERT_EQ(directory_of("elsewhere"), (temp.root / "elsewhere").string());
+	UAM_ASSERT_EQ(directory_of("other-folder"), (old_root / "sub").string());
+	UAM_ASSERT_EQ(directory_of("unsaveable-other"), (old_root / "sub").string());
+	UAM_ASSERT_EQ(SavedWorkspaceDirectory(app.data_root, "exact"), new_root.string());
+	UAM_ASSERT_EQ(SavedWorkspaceDirectory(app.data_root, "nested"), (new_root / "sub" / "deeper").string());
+	UAM_ASSERT_EQ(SavedWorkspaceDirectory(app.data_root, "trailing"), (new_root / "sub").string());
+	UAM_ASSERT_EQ(SavedWorkspaceDirectory(app.data_root, "other-folder"), (old_root / "sub").string());
+	UAM_ASSERT_EQ(SavedWorkspaceDirectory(app.data_root, "sibling"), (temp.root / "old-sibling").string());
+	UAM_ASSERT_EQ(app.status_line, std::string("Folder settings saved. 3 chats in this workspace use directories outside the old folder and were left unchanged."));
+
+	// Chats already inside the new root are not reported as left behind, and are not saved again.
+	UAM_ASSERT(RenameFolderById(app, "ws", "Workspace", (temp.root / "elsewhere").string()));
+	UAM_ASSERT_EQ(directory_of("elsewhere"), (temp.root / "elsewhere").string());
+	UAM_ASSERT_EQ(directory_of("nested"), (temp.root / "elsewhere" / "sub" / "deeper").string());
+	UAM_ASSERT_EQ(directory_of("other-folder"), (old_root / "sub").string());
+	UAM_ASSERT_EQ(app.status_line, std::string("Folder settings saved. 1 chat in this workspace uses a directory outside the old folder and was left unchanged."));
+}
+
+UAM_TEST(WorkspaceDirectoryChangeRollsBackWhenAnAffectedChatCannotBeSaved)
+{
+	TempDir temp("uam-workspace-move-rollback");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	const fs::path old_root = temp.root / "old";
+	const fs::path new_root = temp.root / "new";
+	fs::create_directories(old_root / "api");
+	fs::create_directories(new_root);
+	app.folders = {{"ws", "Workspace", old_root.string(), false, "local"}};
+	UAM_ASSERT(ChatFolderStore::Save(app.data_root, app.folders));
+	app.chats = {
+	    WorkspaceMoveChat("saved-first", "ws", old_root.string()),
+	    WorkspaceMoveChat("blocked", "ws", (old_root / "api").string()),
+	    WorkspaceMoveChat("untouched", "ws", (temp.root / "elsewhere").string()),
+	};
+	app.chats[1].title = "Blocked API chat";
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats[0]));
+	UAM_ASSERT(ChatRepository::SaveChat(app.data_root, app.chats[2]));
+	fs::create_directories(AppPaths::UamChatFilePath(app.data_root, "blocked"));
+
+	UAM_ASSERT(!RenameFolderById(app, "ws", "Workspace", new_root.string()));
+	UAM_ASSERT_EQ(app.status_line, std::string("The workspace was kept because the chat \"Blocked API chat\" could not be saved with the new directory."));
+	UAM_ASSERT_EQ(app.folders.front().directory, old_root.string());
+	UAM_ASSERT_EQ(ChatFolderStore::Load(app.data_root).front().directory, old_root.string());
+	UAM_ASSERT_EQ(app.chats[0].workspace_directory, old_root.string());
+	UAM_ASSERT_EQ(app.chats[1].workspace_directory, (old_root / "api").string());
+	UAM_ASSERT_EQ(app.chats[2].workspace_directory, (temp.root / "elsewhere").string());
+	// The chat saved before the failure is written back with its original directory.
+	UAM_ASSERT_EQ(SavedWorkspaceDirectory(app.data_root, "saved-first"), old_root.string());
+	UAM_ASSERT_EQ(SavedWorkspaceDirectory(app.data_root, "untouched"), (temp.root / "elsewhere").string());
+
+	fs::remove_all(AppPaths::UamChatFilePath(app.data_root, "blocked"));
+	UAM_ASSERT(RenameFolderById(app, "ws", "Workspace", new_root.string()));
+	UAM_ASSERT_EQ(SavedWorkspaceDirectory(app.data_root, "saved-first"), new_root.string());
+	UAM_ASSERT_EQ(SavedWorkspaceDirectory(app.data_root, "blocked"), (new_root / "api").string());
+}
+
+UAM_TEST(WorkspaceDirectoryChangeLeavesChatsAlreadyInsideTheNewRoot)
+{
+	TempDir temp("uam-workspace-move-nested");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	const fs::path project = temp.root / "proj";
+	const fs::path app_root = project / "app";
+	fs::create_directories(app_root / "src");
+	fs::create_directories(project / "lib");
+	app.folders = {{"ws", "Workspace", project.string(), false, "local"}};
+	UAM_ASSERT(ChatFolderStore::Save(app.data_root, app.folders));
+	ChatSession worktree = WorkspaceMoveChat("worktree", "ws", (temp.root / "worktrees" / "feature").string());
+	worktree.workspace_isolation_kind = uam::paths::kGitWorktreeIsolationKind;
+	worktree.workspace_worktree_directory = (temp.root / "worktrees" / "feature").string();
+	worktree.workspace_source_directory = project.string();
+	app.chats = {
+	    WorkspaceMoveChat("root", "ws", project.string()), WorkspaceMoveChat("in-app", "ws", app_root.string()), WorkspaceMoveChat("in-app-src", "ws", (app_root / "src").string()), WorkspaceMoveChat("lib", "ws", (project / "lib").string()), worktree,
+	};
+	// Narrowing: only the old root itself follows; nothing is nested or invented below the new root.
+	UAM_ASSERT(RenameFolderById(app, "ws", "Workspace", app_root.string()));
+	const auto directory_of = [&app](const std::string& id) { return ChatDomainService().FindChatById(app, id)->workspace_directory; };
+	const auto source_of = [&app](const std::string& id) { return ChatDomainService().FindChatById(app, id)->workspace_source_directory; };
+	UAM_ASSERT_EQ(directory_of("root"), app_root.string());
+	UAM_ASSERT_EQ(directory_of("in-app"), app_root.string());
+	UAM_ASSERT_EQ(directory_of("in-app-src"), (app_root / "src").string());
+	UAM_ASSERT_EQ(directory_of("lib"), (project / "lib").string());
+	UAM_ASSERT_EQ(directory_of("worktree"), (temp.root / "worktrees" / "feature").string());
+	UAM_ASSERT_EQ(source_of("worktree"), app_root.string());
+	UAM_ASSERT(!ChatRepository::LoadLocalChat(app.data_root, "in-app").has_value());
+	UAM_ASSERT(!ChatRepository::LoadLocalChat(app.data_root, "in-app-src").has_value());
+	UAM_ASSERT(!ChatRepository::LoadLocalChat(app.data_root, "lib").has_value());
+	// The worktree chat follows through its source directory; only the chat outside the narrowed root is reported.
+	UAM_ASSERT_EQ(app.status_line, std::string("Folder settings saved. 1 chat in this workspace uses a directory outside the old folder and was left unchanged."));
+
+	// Widening back reverses the move for chats at the root; chats below it are already inside the new root.
+	UAM_ASSERT(RenameFolderById(app, "ws", "Workspace", project.string()));
+	UAM_ASSERT_EQ(directory_of("root"), project.string());
+	UAM_ASSERT_EQ(directory_of("in-app"), project.string());
+	UAM_ASSERT_EQ(directory_of("in-app-src"), (app_root / "src").string());
+	UAM_ASSERT_EQ(directory_of("lib"), (project / "lib").string());
+	UAM_ASSERT_EQ(source_of("worktree"), project.string());
+	UAM_ASSERT_EQ(app.status_line, std::string("Folder settings saved."));
+}
+
+UAM_TEST(WorkspaceDirectoryChangeReportsWorktreeChatWhoseSourceIsElsewhere)
+{
+	TempDir temp("uam-workspace-move-worktree-elsewhere");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	fs::create_directories(temp.root / "old");
+	fs::create_directories(temp.root / "new");
+	app.folders = {{"ws", "Workspace", (temp.root / "old").string(), false, "local"}};
+	UAM_ASSERT(ChatFolderStore::Save(app.data_root, app.folders));
+	ChatSession worktree = WorkspaceMoveChat("worktree", "ws", (temp.root / "worktrees" / "feature").string());
+	worktree.workspace_isolation_kind = uam::paths::kGitWorktreeIsolationKind;
+	worktree.workspace_worktree_directory = worktree.workspace_directory;
+	worktree.workspace_source_directory = (temp.root / "unrelated-repo").string();
+	app.chats = {worktree};
+	UAM_ASSERT(RenameFolderById(app, "ws", "Workspace", (temp.root / "new").string()));
+	UAM_ASSERT_EQ(app.chats.front().workspace_source_directory, (temp.root / "unrelated-repo").string());
+	UAM_ASSERT_EQ(app.status_line, std::string("Folder settings saved. 1 chat in this workspace uses a directory outside the old folder and was left unchanged."));
+}
+
+UAM_TEST(RemoteWorkspaceDirectoryChangeRepointsSubdirectoryChatsWithNativeReset)
+{
+	TempDir temp("uam-remote-workspace-move-prefix");
+	uam::AppState app;
+	app.data_root = temp.root;
+	app.folders = {{"homelab", "Homelab", "/srv/homelab/", false, "ssh-homelab"}};
+	ExecutionHost host;
+	host.id = "ssh-homelab";
+	host.ssh_alias = "homelab";
+	host.platform = "linux";
+	app.settings.execution_hosts.push_back(host);
+	ChatSession nested = WorkspaceMoveChat("remote-nested", "homelab", "/srv/homelab//api/");
+	nested.provider_id.clear();
+	nested.execution_host_id = "ssh-homelab";
+	nested.native_session_id = "previous-native";
+	nested.messages.push_back({MessageRole::User, "Keep this conversation", "now"});
+	ChatSession sibling = nested;
+	sibling.id = "remote-sibling";
+	sibling.workspace_directory = "/srv/homelab-old";
+	app.chats = {nested, sibling};
+
+	UAM_ASSERT(RenameFolderById(app, "homelab", "Homelab", "/srv/moved"));
+	UAM_ASSERT_EQ(app.chats[0].workspace_directory, std::string("/srv/moved/api"));
+	UAM_ASSERT(app.chats[0].native_session_id.empty() && app.chats[0].native_session_reset_pending);
+	UAM_ASSERT_EQ(app.chats[1].workspace_directory, std::string("/srv/homelab-old"));
+	UAM_ASSERT_EQ(app.chats[1].native_session_id, std::string("previous-native"));
+	UAM_ASSERT(!app.chats[1].native_session_reset_pending);
+	UAM_ASSERT(!ChatRepository::LoadLocalChat(temp.root, sibling.id).has_value());
+	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(temp.root, nested.id);
+	UAM_ASSERT(saved.has_value() && saved->workspace_directory == "/srv/moved/api" && saved->native_session_reset_pending);
+	UAM_ASSERT_EQ(app.status_line, std::string("Folder settings saved. 1 chat in this workspace uses a directory outside the old folder and was left unchanged."));
 }
 
 UAM_TEST(RenameRemoteFolderDirectoryKeepsHoldOfWorktreeChatWithPendingReset)

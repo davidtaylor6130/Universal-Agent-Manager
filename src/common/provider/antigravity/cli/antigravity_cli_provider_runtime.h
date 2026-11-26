@@ -10,6 +10,8 @@ class AntigravityCliProviderRuntime final : public IProviderRuntime
 	const ProviderCliPolicy* CliVersionPolicy() const override;
 	bool SupportsTextWorkers() const override { return false; }
 	std::vector<std::string> BuildInteractiveArgv(const ProviderProfile&, const ChatSession&, const AppSettings&) const override;
+	bool StageInteractiveAgentInstructions(const ExecutionHost& host, std::string_view instructions, std::vector<std::string>& argv, std::string& staged_context, std::string& error) const override;
+	bool StageCliHandoffContext(const ProviderCliHandoffStaging& staging, std::vector<std::string>& argv, std::string& error) const override;
 	bool SupportsInteractivePromptTracking() const override { return false; }
 	MessageRole RoleFromNativeType(const ProviderProfile&, std::string_view) const override;
 	std::vector<ChatSession> LoadHistory(const ProviderProfile&, const std::filesystem::path&, const std::filesystem::path&, const ProviderRuntimeHistoryLoadOptions&) const override;
@@ -21,6 +23,11 @@ class AntigravityCliProviderRuntime final : public IProviderRuntime
 	nlohmann::json OnAcpBuildSetupRequest(int, const ChatSession&, const std::string&, bool, std::string&) const override;
 	nlohmann::json OnAcpBuildPrompt(uam::AcpSessionState&, int, const std::string&, const ChatSession&, std::string&) const override;
 	nlohmann::json OnAcpBuildCancel(const uam::AcpSessionState&, int, std::string&) const override;
+	nlohmann::json OnAcpBuildCompact(const uam::AcpSessionState&, int, std::string&) const override;
+	bool SupportsAcpCompaction() const override { return true; }
+	bool SupportsRemoteAcpCompaction() const override { return false; }
+	// Native /compact arrived in agy 1.3.5; older print modes refuse it or, before 1.1.11, pass it to the model.
+	const char* MinimumAcpCompactionVersion() const override { return "1.3.5"; }
 	bool OnAcpHandleMessage(uam::AppState&, uam::AcpSessionState&, ChatSession&, const nlohmann::json&, const CefRefPtr<CefBrowser>&) const override;
 	std::string OnAcpValidateResumeId(const ChatSession&) const override;
 	bool OnAcpValidateGoalResume(const ChatSession&, const Goal&, const AppSettings&, bool, std::string&) const override;

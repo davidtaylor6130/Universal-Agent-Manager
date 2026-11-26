@@ -4,6 +4,7 @@
 #include "app/central_instruction_file_service.h"
 #include "common/config/voice_input_settings.h"
 #include "app/execution_routing_integration.h"
+#include "app/host_load_integration.h"
 #include "common/config/settings_store.h"
 #include "common/config/svn_repository_layout.h"
 #include "common/config/host_scoped_settings.h"
@@ -28,6 +29,9 @@
 #include "common/config/companion_network.h"
 #include "common/config/settings_normalization.h"
 #include "common/config/mcp_server_config.h"
+#include "common/config/permission_command_rules_json.h"
+#include "common/security/command_rules.h"
+#include "common/security/read_only_command.h"
 #include "common/memory/memory_levels.h"
 #include "common/paths/path_utils.h"
 #include "common/platform/file_explorer_application.h"
@@ -229,7 +233,7 @@ namespace
 			if (!uam::excluded_provider_data::IsExcluded(id) && !uam::excluded_provider_data::IsExcluded(binding.worker_provider_id)) bindings[id] = {{"workerProviderId", binding.worker_provider_id}, {"workerModelId", binding.worker_model_id}};
 		return {{"memoryEnabledDefault", value.memory_enabled_default}, {"memoryLevelDefault", value.memory_level_default},
 		    {"memoryIdleDelaySeconds", value.memory_idle_delay_seconds}, {"memoryRecallBudgetBytes", value.memory_recall_budget_bytes},
-		    {"goalMaxLoopIterations", value.goal_max_loop_iterations}, {"goalTokenBudget", value.goal_token_budget}, {"acpSetupInactivityTimeoutSeconds", value.acp_setup_inactivity_timeout_seconds},
+		    {"goalMaxLoopIterations", value.goal_max_loop_iterations}, {"goalTokenBudget", value.goal_token_budget}, {"acpSetupInactivityTimeoutSeconds", uam::settings::NormalizedAcpSetupInactivityTimeoutSeconds(value.acp_setup_inactivity_timeout_seconds)},
 		    {"acpTurnOutputLimitMiB", value.acp_turn_output_limit_mib}, {"activeTurnInactivityTimeoutSeconds", value.active_turn_inactivity_timeout_seconds}, {"streamLoopRepeatLimit", value.stream_loop_repeat_limit}, {"toolCallTimeoutSeconds", value.tool_call_timeout_seconds}, {"memoryWorkerBindings", std::move(bindings)},
 		    {"permissionReviewerProviderId", value.permission_reviewer_provider_id}, {"permissionReviewerModelId", value.permission_reviewer_model_id}};
 	}
@@ -486,7 +490,7 @@ void UamQueryHandler::HandleSetMcpServers(CefRefPtr<CefBrowser> browser, const n
 	}
 	std::vector<McpServerConfiguration> servers = uam::mcp_server_config::Parse(*requested_servers);
 	std::string error;
-	if (!uam::mcp_server_config::NormalizeAndValidate(servers, &error))
+	if (!uam::mcp_server_config::NormalizeAndValidate(servers, &error, &m_app.settings.execution_hosts, scope))
 	{
 		cb->Failure(400, error);
 		return;
@@ -753,6 +757,73 @@ void UamQueryHandler::HandleSetComposerSettings(CefRefPtr<CefBrowser> browser, c
 
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleSetPermissionCommandRules(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const AppSettings previous = m_app.settings;
+	if (payload.contains("rules"))
+	{
+		std::vector<uam::command_rules::Rule> rules;
+		std::string error;
+		if (!uam::permission_command_rules::ParseStrict(payload["rules"], rules, error))
+		{
+			cb->Failure(400, error);
+			return;
+		}
+		m_app.settings.permission_command_rules = std::move(rules);
+	}
+	if (payload.contains("aiReviewEnabled"))
+	{
+		const std::optional<bool> enabled = uam::nlohmann_json::BoolFieldStrict(payload, "aiReviewEnabled");
+		if (!enabled)
+		{
+			cb->Failure(400, "aiReviewEnabled must be a boolean.");
+			return;
+		}
+		m_app.settings.permission_ai_review_enabled = *enabled;
+	}
+	if (!PersistenceCoordinator().SaveSettings(m_app))
+	{
+		m_app.settings = previous;
+		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to save the permission rules."));
+		return;
+	}
+	// Verdicts were reached under the previous rules and switch; start the next ones fresh.
+	m_app.permission_review_cache.clear();
+	m_app.permission_review_cache_order.clear();
+
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleTestPermissionCommandRules(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	std::vector<uam::command_rules::Rule> rules;
+	std::string error;
+	if (!payload.contains("rules") || !uam::permission_command_rules::ParseStrict(payload["rules"], rules, error))
+	{
+		cb->Failure(400, error.empty() ? "rules must be a list." : error);
+		return;
+	}
+	const nlohmann::json* command = uam::nlohmann_json::FindStringField(payload, "command");
+	if (command == nullptr || command->get_ref<const std::string&>().size() > uam::command_rules::kMaxCommandBytes)
+	{
+		cb->Failure(400, "command must be text of at most 64 KiB.");
+		return;
+	}
+	const std::string& text = command->get_ref<const std::string&>();
+	// The read filter is checked as if relative paths were inside a chat's workspace; the live check uses the real one.
+	uam::command_safety::ReadScope scope;
+	scope.workspace = std::filesystem::path(m_app.data_root).parent_path() / "uam-rule-test-workspace";
+	scope.local = false;
+	scope.resolve_executables = false;
+	const bool read_only = uam::command_safety::IsReadOnlyCommand(text, scope);
+	const uam::command_rules::Decision decision = uam::command_rules::TestCommand(rules, text, read_only, m_app.settings.permission_remote_commits_without_approval);
+	const char* outcome = decision.outcome == uam::command_rules::Outcome::Approve ? "allow"
+	    : decision.outcome == uam::command_rules::Outcome::Deny ? "deny"
+	    : decision.outcome == uam::command_rules::Outcome::AskUser ? "ask" : "none";
+	cb->Success(nlohmann::json{{"outcome", outcome}, {"ruleId", decision.rule_id}, {"reason", decision.reason}, {"readOnly", read_only}, {"remoteCommit", decision.remote_commit}}.dump());
 }
 
 void UamQueryHandler::HandleSetUpdateSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -1405,6 +1476,15 @@ void UamQueryHandler::HandleReleaseExecutionRoutingReservation(CefRefPtr<CefBrow
 		return;
 	}
 	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleRequestHostLoad(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	(void)browser;
+	if (!payload.is_object() || !payload.empty()) { cb->Failure(400, "Host load takes no arguments."); return; }
+	// Readings arrive with later state pushes; this only keeps every computer sampled for a while.
+	uam::RequestHostLoad(m_app);
 	cb->Success("{}");
 }
 #endif

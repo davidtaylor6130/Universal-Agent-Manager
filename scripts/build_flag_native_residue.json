@@ -651,7 +651,6 @@
         "d33SerializeExecutionRoutingSettingsERK24ExecutionRoutingSettings": 2,
         "d9ParseExecutionRoutingSettingsERKN8nlohmann16json_abi_v3_11_310basic_jsonINSt3__13": 1,
         "dmitExecutionRoutingERNS_8AppStateER11ChatSessionb": 1,
-        "executionRouting": 1,
         "execution_routing": 1,
         "g33SerializeExecutionRoutingSettingsERK24ExecutionRoutingSettings": 2,
         "g9ParseExecutionRoutingSettingsERKN8nlohmann16json_abi_v3_11_310basic_jsonINSt3__13": 1,
@@ -967,7 +966,7 @@
         "computerUse": 1
       }
     },
-    "universal_agent_manager.exe": {
+    "universal_agent_manager.dll": {
       "CLAUDE": {
         ".?AV<lambda_1>@?1??Build@claude_input@uam@@YA?AV?$basic_json@Vmap@std@@Vvector@2@V?$basic_s": 1,
         ".?AV<lambda_2>@?2??BuildSavedImageRetry@claude_input@uam@@YA?AV?$basic_json@Vmap@std@@Vvector@2@V?$basic_s": 1,
@@ -1517,7 +1516,6 @@
         "[SSH worktree] ": 1,
         "[SSH worktree] Workspace receipt is settled, but its exited help": 1,
         "before switching to the SDK server. Reconnect or update its SSH helper first.": 1,
-        "executionRouting": 1,
         "execution_routing": 1,
         "host is too old to receive secrets. Update it in Settings > Remote hosts.": 1,
         "ini child snapshot is unavailable, cancelled or exceeds its SSH transport limit.": 1,

@@ -10,7 +10,10 @@
 #include "app/chat_domain_service.h"
 #include "common/chat/chat_repository.h"
 #include "common/paths/workspace_root.h"
+#include "common/provider/provider_account_refusal.h"
 #include "common/provider/provider_ids.h"
+#include "common/provider/provider_profile.h"
+#include "common/utils/diagnostic_log.h"
 #include "common/runtime/acp/acp_model_json.h"
 
 #include <cstring>
@@ -478,6 +481,21 @@ bool SettleAcpLoadReplay(AppState& app, AcpSessionState& session, ChatSession& c
 	return true;
 }
 
+namespace
+{
+	/// A provider that answered and refused to start will refuse a fresh launch too, so nothing may relaunch it on its
+	/// own: on SSH a confirmed stop relaunches for a turn still owed, which looped on the same refusal. A first prompt
+	/// that was waiting for the session returns as an unsent message the user can Retry or Remove, and input queued
+	/// behind it is held for Resume or Remove, as a rejected setup does.
+	void FailRefusedAcpTransport(AppState& app, AcpSessionState& session, ChatSession& chat, const std::string& refusal)
+	{
+		if (session.prompt_request_id == 0 && !session.queued_prompt.empty())
+			ReturnUnwrittenRemotePromptAsUnsent(app, session, chat, refusal);
+		if (session.queued_user_prompts.empty()) InvalidateAcpTransport(app, session, chat, refusal);
+		else HoldAcpTransportForExplicitRecovery(app, session, chat, refusal);
+	}
+}
+
 void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message)
 {
 	const nlohmann::json response_id = JsonRpcIdOrNull(message);
@@ -601,6 +619,26 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 		const AcpResponseFailureDetails details{failure, error_data, detail_text, formatted_error};
 		if (ProviderRuntimeRegistry::ResolveById(session.provider_id).OnAcpHandleError(
 		        app, session, chat, details)) return;
+		// A refusal of the account or client is the same for every workspace on this computer: record it once for the
+		// provider and host so automatic launches stop asking until it expires or the user retries. Recorded only once
+		// the provider's own handler has declined the error, so a recovery it owns leaves no block behind.
+		if (const account_refusal::Kind refusal = account_refusal::ClassifyAcpError(method, has_code, code, error_message);
+		    refusal != account_refusal::Kind::None && app.provider_model_catalog != nullptr)
+		{
+			const ProviderProfile* profile = ProviderProfileStore::FindById(app.provider_profiles, session.provider_id);
+			const std::string notice = ProviderRuntimeRegistry::ResolveById(session.provider_id).AccountRefusalNotice(
+			    refusal, profile != nullptr && !profile->title.empty() ? std::string_view(profile->title) : std::string_view(session.provider_id), error_message);
+			const std::string host_id = uam::strings::NonEmptyOrFallback(chat.execution_host_id, "local");
+			if (app.provider_model_catalog->RememberAccountRefusal(session.provider_id, host_id, refusal, notice))
+			{
+				// The raw provider text is already in this error's [acp-diag] entry; this line records the decision.
+				diagnostics::Write("Account refusal recorded for " + session.provider_id + " on " + host_id + " (" + account_refusal::KindName(refusal) +
+				    ", " + method + ", code=" + std::to_string(code) + "); automatic launches skip it for " + std::to_string(account_refusal::TtlSeconds(refusal) / 60) +
+				    " minutes unless retried: " + account_refusal::DiagnosticMessage(error_message));
+				// Sign-in errors already carry the provider's own instruction (for example `copilot login`).
+				if (refusal != account_refusal::Kind::Authentication) formatted_error = notice + " " + formatted_error;
+			}
+		}
 		if (session.model_discovery_only && (model_discovery_request || method == uam::acp_methods::kInitialize))
 		{
 			StopBackgroundModelDiscovery(app, session);
@@ -721,7 +759,28 @@ void HandleAcpResponse(AppState& app, AcpSessionState& session, ChatSession& cha
 		}
 		if (session.lifecycle_state == kAcpLifecycleError)
 		{
-			RecoverDisconnectedRemoteAcpTransport(app, session, chat, session.last_error);
+			// A follow-up write that failed after a successful initialize (initialized stays set) is a broken transport,
+			// not a refusal: recover it as a disconnect so the undelivered prompt is retried on a fresh process.
+			if (session.initialized)
+			{
+				RecoverDisconnectedRemoteAcpTransport(app, session, chat, session.last_error);
+				return;
+			}
+			// The provider answered and refused (Copilot without SDK protocol 3): the transport is healthy, so this is
+			// not a disconnect. Remote recovery relaunched the same refusal and then read the replacement's reply as
+			// a broken frame, hiding the real message. Unlike an initialize error response, whose undelivered prompt
+			// is retried on a fresh process, this refusal is deterministic and nothing relaunches it.
+			const std::string refusal = session.last_error;
+			AppendAcpDiagnostic(session, "response", "initialize_refused", method, request_id, false, 0, refusal);
+			if (session.model_discovery_only)
+			{
+				if (app.provider_model_catalog != nullptr)
+					app.provider_model_catalog->RememberRefreshFailure(session.provider_id, refusal,
+					    DiscoveryWorkspace(app, chat), chat.execution_host_id, session.model_catalog_scope_key);
+				StopBackgroundModelDiscovery(app, session);
+				return;
+			}
+			FailRefusedAcpTransport(app, session, chat, refusal);
 		}
 		return;
 	}

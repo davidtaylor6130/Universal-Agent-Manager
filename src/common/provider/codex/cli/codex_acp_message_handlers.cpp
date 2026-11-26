@@ -921,7 +921,7 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 			{
 				goal->native_binding.reset();
 				goal->last_diagnostic = "native_goal_binding_replaced";
-				goal->last_decision_source = kDecisionSourceFallback;
+				GoalService::RecordDecision(*goal, DecisionAttribution::Fallback());
 			}
 			session.goal_resume_suppressed = true;
 			SaveChatQuietly(app, chat);
@@ -950,7 +950,7 @@ void HandleCodexMessage(AppState& app, AcpSessionState& session, ChatSession& ch
 			{
 				goal->native_binding.reset();
 				goal->last_diagnostic = "native_goal_cleared";
-				goal->last_decision_source = kDecisionSourceFallback;
+				GoalService::RecordDecision(*goal, DecisionAttribution::Fallback());
 			}
 			session.codex_goal_owner = {};
 			SaveChatQuietly(app, chat);

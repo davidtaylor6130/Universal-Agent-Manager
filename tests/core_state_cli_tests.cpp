@@ -317,7 +317,22 @@ UAM_TEST(StateSerializerIncludesShellActionConfigurationAndNotification)
 	UAM_ASSERT_EQ(serialized["shellActions"][0].value("modelId", ""), action.model_id);
 	UAM_ASSERT_EQ(serialized["shellActions"][0]["groupPath"].get<std::vector<std::string>>(), action.group_path);
 	UAM_ASSERT(!serialized["shellActions"][0].value("acceptsFolders", true));
+	UAM_ASSERT(!serialized["shellActions"][0].contains("invalidReason"));
 	UAM_ASSERT_EQ(serialized.value("shellActionNotification", ""), app.shell_action_notification);
+
+	// A kept invalid entry reaches the interface disabled with its reason; its saved form stays native-only.
+	ShellAction kept;
+	kept.id = "kept";
+	kept.label = "Kept";
+	kept.enabled = false;
+	kept.invalid_reason = "Its saved 'enabled' value has the wrong type.";
+	kept.preserved_json = R"({"id":"kept","label":"Kept","enabled":"yes"})";
+	app.shell_actions.push_back(kept);
+	const nlohmann::json with_kept = uam_test::SerializeStateInline(app);
+	UAM_ASSERT_EQ(with_kept["shellActions"].size(), static_cast<std::size_t>(2));
+	UAM_ASSERT_EQ(with_kept["shellActions"][1].value("invalidReason", ""), kept.invalid_reason);
+	UAM_ASSERT(!with_kept["shellActions"][1].value("enabled", true));
+	UAM_ASSERT(with_kept["shellActions"][1].dump().find("preserved") == std::string::npos);
 	UAM_ASSERT_EQ(serialized.value("statusLine", ""), app.status_line);
 }
 
@@ -1448,6 +1463,57 @@ UAM_TEST(RemoteHelperRollbackRestoresPreviousChecksumAndConnectionIdentity)
 	UAM_ASSERT(uam::execution_hosts::SameConnection(restored, reinstalled));
 	reinstalled.runner_sha256 = std::string(64, 'b');
 	UAM_ASSERT(!uam::execution_hosts::SameConnection(restored, reinstalled));
+}
+
+UAM_TEST(RemoteHelperReinstallCarriesEveryUserOwnedHostField)
+{
+	ExecutionHost saved;
+	// Naming every member fails to compile when ExecutionHost gains or loses a field: classify the new one below,
+	// and carry it in CarryUserOwnedHostFields when the user owns it.
+	auto& [id, label, transport, ssh_alias, runner_status, runner_version, platform, architecture, last_seen_at, runner_directory, runner_protocol_version,
+	    instruction_file, startup_enabled, startup_status, custom_icon, cli_updates_as_admin, instruction_text, runner_startup_applied, runner_startup_error,
+	    runner_install_unresolved, runner_install_nonce, runner_install_identity, runner_sha256, runner_build_label] = saved;
+	// Connection fields: the install form sends them.
+	id = "homelab"; label = "Saved label"; transport = "ssh"; ssh_alias = "uam-homelab"; runner_directory = "saved-helper";
+	// Helper observations and install bookkeeping: the install owns them.
+	runner_status = "ready"; runner_version = "5.0.0"; platform = "linux"; architecture = "x86_64"; last_seen_at = "2026-11-01T00:00:00Z";
+	runner_protocol_version = 2; runner_install_unresolved = true; runner_install_nonce = "earlier"; runner_install_identity = "earlier-identity";
+	runner_sha256 = std::string(64, 'a'); runner_build_label = "5.0.0-alpha-1";
+	// The saved startup confirmation belongs to the old helper and is cleared.
+	runner_startup_applied = "enabled"; runner_startup_error = "Old startup error";
+	// Options the user set on this host: carried.
+	instruction_file = "HOST.md"; instruction_text = "Saved host instructions"; startup_enabled = true; startup_status = "enabled";
+	custom_icon = {"text", "H"}; cli_updates_as_admin = true;
+
+	ExecutionHost form;
+	form.id = "homelab"; form.label = "Form label"; form.transport = "ssh"; form.ssh_alias = "uam-homelab";
+	form.runner_directory = "form-helper"; form.runner_status = "uninstalled";
+	ExecutionHost request = form;
+	uam::execution_hosts::CarryUserOwnedHostFields(request, saved);
+
+	ExecutionHost expected = form;
+	expected.instruction_file = instruction_file;
+	expected.instruction_text = instruction_text;
+	expected.startup_enabled = startup_enabled;
+	expected.startup_status = startup_status;
+	expected.custom_icon = custom_icon;
+	expected.cli_updates_as_admin = cli_updates_as_admin;
+	UAM_ASSERT(request == expected);
+	UAM_ASSERT_EQ(request.custom_icon.value, std::string("H"));
+	UAM_ASSERT(!request.runner_startup_applied.has_value() && request.runner_startup_error.empty());
+	UAM_ASSERT_EQ(request.label, std::string("Form label"));
+	UAM_ASSERT_EQ(request.runner_directory, std::string("form-helper"));
+	UAM_ASSERT(request.runner_sha256.empty() && !uam::execution_hosts::HasInstallFence(request));
+
+	// Cleared options carry as cleared, including explicitly disabled host instructions.
+	ExecutionHost cleared = saved;
+	cleared.custom_icon = {};
+	cleared.instruction_text = "";
+	ExecutionHost cleared_request = form;
+	cleared_request.custom_icon = {"text", "X"};
+	uam::execution_hosts::CarryUserOwnedHostFields(cleared_request, cleared);
+	UAM_ASSERT(cleared_request.custom_icon == CustomIcon{});
+	UAM_ASSERT(cleared_request.instruction_text.has_value() && cleared_request.instruction_text->empty());
 }
 
 UAM_TEST(StateSerializerProjectsBundledHelperChecksumForSshHostsOnly)
