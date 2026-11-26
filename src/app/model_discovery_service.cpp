@@ -13,19 +13,27 @@
 #include "common/runtime/provider_cli_compatibility_service.h"
 #include "common/state/app_state.h"
 #include "common/utils/diagnostic_log.h"
+#include "common/utils/nlohmann_json_utils.h"
 #include "common/utils/string_utils.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <exception>
 #include <filesystem>
+#include <functional>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
+#include <vector>
 
 namespace uam
 {
 	namespace
 	{
 		constexpr std::size_t kMaxConcurrentDiscoveries = 2;
+		// One account-wide list may be tried from this many workspaces per run before the rest wait for their own Refresh.
+		constexpr int kMaxSourceAttemptsPerGroup = 3;
 
 		std::string HostId(const std::string& id)
 		{
@@ -147,109 +155,233 @@ namespace uam
 	{
 		if (m_initialized) return;
 		m_initialized = true;
-		m_pending_scopes = CollectScopes(app);
+		for (ModelDiscoveryScope& scope : CollectScopes(app))
+		{
+			// One discovery answers every workspace of an account-wide provider on the same computer.
+			const bool account_wide = ProviderRuntimeRegistry::ResolveById(scope.provider_id).ModelListIsAccountWide();
+			const std::vector<ScopeGroup>::iterator group = !account_wide ? m_pending_groups.end() : std::ranges::find_if(m_pending_groups, [&](const ScopeGroup& existing) {
+				return existing.provider_id == scope.provider_id && existing.execution_host_id == scope.execution_host_id;
+			});
+			if (group != m_pending_groups.end()) group->workspaces.push_back(std::move(scope.workspace_directory));
+			else m_pending_groups.push_back({scope.provider_id, scope.execution_host_id, {std::move(scope.workspace_directory)}});
+		}
 		for (const ExecutionHost& host : app.settings.execution_hosts) m_hosts.emplace(host.id, host);
+	}
+
+	void StartupModelDiscoveryService::NoteCheckedCliVersions(AppState& app)
+	{
+		// Successful discoveries store the version that fetched them, so a later restart can tell whether the CLI changed.
+		for (const auto& [key, state] : app.runtime_cli_versions_by_provider_id)
+		{
+			const std::size_t separator = key.rfind('/');
+			const std::string provider = separator == std::string::npos ? key : key.substr(separator + 1);
+			const std::string host = separator == std::string::npos ? std::string(execution_hosts::kLocalHostId) : key.substr(0, separator);
+			std::string version = state.checked && state.check_error.empty() ? strings::Trim(state.installed_version) : std::string{};
+			// A remote check made before the host was re-pointed says nothing about the computer it names now.
+			if (separator != std::string::npos)
+				if (const ExecutionHost* current = execution_hosts::Find(app.settings.execution_hosts, host); current == nullptr || !execution_hosts::SameConnection(state.execution_host, *current)) version.clear();
+			const auto noted = m_noted_cli_versions.find(key);
+			if (noted != m_noted_cli_versions.end() && noted->second == version) continue;
+			m_noted_cli_versions[key] = version;
+			app.provider_model_catalog->NoteCheckedCliVersion(provider, host, version);
+		}
+	}
+
+	bool StartupModelDiscoveryService::ShareFinishedDiscoveries(AppState& app)
+	{
+		bool changed = false;
+		for (std::vector<PendingShare>::iterator share = m_pending_shares.begin(); share != m_pending_shares.end();)
+		{
+			if (app.provider_model_catalog->IsDiscoveryPending(share->provider_id, share->source_workspace, share->execution_host_id)) { ++share; continue; }
+			const nlohmann::json source = app.provider_model_catalog->GetPersistentCatalogEntry(share->provider_id, share->source_workspace, share->execution_host_id);
+			const nlohmann::json* source_models = source.is_object() ? nlohmann_json::FindArrayField(source, "models") : nullptr;
+			// An error, nothing stored, or a store without models (options only) all leave nothing to share.
+			const bool source_failed = !app.provider_model_catalog->GetProviderRefreshError(share->provider_id, share->source_workspace, share->execution_host_id).empty() ||
+			                           source == share->source_before || source_models == nullptr || source_models->empty();
+			if (source_failed)
+			{
+				// A failed or empty discovery shares nothing; another workspace may still answer for the rest.
+				diagnostics::Write("Startup model discovery source failed for " + share->provider_id + "; " + std::to_string(share->target_workspaces.size()) + " workspace(s) wait for another source.");
+				RequeueAfterFailedSource(share->provider_id, share->execution_host_id, std::move(share->target_workspaces), share->attempts);
+				changed = true;
+			}
+			else
+			{
+				const std::size_t shared = app.provider_model_catalog->ShareAccountWideCatalog(share->provider_id, share->execution_host_id, share->source_workspace, share->target_workspaces, share->source_before);
+				diagnostics::Write("Startup model discovery shared " + share->provider_id + " models with " + std::to_string(shared) + " workspace(s).");
+				changed = shared > 0 || changed;
+			}
+			share = m_pending_shares.erase(share);
+		}
+		return changed;
+	}
+
+	void StartupModelDiscoveryService::RequeueAfterFailedSource(const std::string& provider_id, const std::string& execution_host_id, std::vector<std::string> workspaces, int attempts)
+	{
+		if (workspaces.empty() || attempts >= kMaxSourceAttemptsPerGroup) return;
+		m_requeued_groups.push_back({provider_id, execution_host_id, std::move(workspaces), attempts});
 	}
 
 	bool StartupModelDiscoveryService::Poll(AppState& app)
 	{
 		if (!m_initialized || app.provider_model_catalog == nullptr) return false;
+		NoteCheckedCliVersions(app);
+		bool changed = ShareFinishedDiscoveries(app);
 		std::size_t active = std::ranges::count_if(app.acp_sessions, [](const std::unique_ptr<AcpSessionState>& session) {
 			return session != nullptr && session->ephemeral_model_discovery && session->running;
 		});
 		active += app.provider_model_catalog->ActiveNativeModelDiscoveries();
-		bool changed = false;
 		// Built only when a scope is about to start a check or a launch; a scope that only waits for its host or version
 		// check this tick skips the registration test, so a long wait does not resolve every chat's workspace per tick.
 		RegisteredWorkspaces registered(app);
-		for (std::vector<ModelDiscoveryScope>::iterator item = m_pending_scopes.begin(); item != m_pending_scopes.end() && active < kMaxConcurrentDiscoveries;)
+		for (std::vector<ScopeGroup>::iterator group = m_pending_groups.begin(); group != m_pending_groups.end() && active < kMaxConcurrentDiscoveries;)
 		{
-			const ModelDiscoveryScope scope = *item;
-			// An account refusal on this computer answers every workspace; keep the scope until it expires or is retried.
-			if (app.provider_model_catalog->IsAccountRefusalActive(scope.provider_id, scope.execution_host_id)) { ++item; continue; }
-			const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, scope.execution_host_id);
-			const std::map<std::string, ExecutionHost>::const_iterator captured_host = m_hosts.find(scope.execution_host_id);
-			const ProviderProfile* provider = ProviderProfileStore::FindById(app.provider_profiles, scope.provider_id);
+			// An account refusal on this computer answers every workspace; keep the group until it expires or is retried.
+			if (app.provider_model_catalog->IsAccountRefusalActive(group->provider_id, group->execution_host_id)) { ++group; continue; }
+			const ExecutionHost* host = execution_hosts::Find(app.settings.execution_hosts, group->execution_host_id);
+			const std::map<std::string, ExecutionHost>::const_iterator captured_host = m_hosts.find(group->execution_host_id);
+			const ProviderProfile* provider = ProviderProfileStore::FindById(app.provider_profiles, group->provider_id);
 			if (host == nullptr || captured_host == m_hosts.end() || !execution_hosts::SameConnection(*host, captured_host->second) ||
-			    provider == nullptr || !provider->supports_structured || !provider_availability::IsEnabled(app.settings, scope.provider_id, scope.execution_host_id))
+			    provider == nullptr || !provider->supports_structured || !provider_availability::IsEnabled(app.settings, group->provider_id, group->execution_host_id))
 			{
-				item = m_pending_scopes.erase(item);
+				group = m_pending_groups.erase(group);
 				continue;
 			}
-			if (host->transport == "ssh" && host->runner_status != "ready") { ++item; continue; }
-			std::error_code path_error;
-			if ((host->transport == "ssh" && !execution_hosts::IsAbsoluteRemotePath(host->platform, scope.workspace_directory)) ||
-			    (host->transport == "local" && !std::filesystem::is_directory(paths::PathFromUtf8(scope.workspace_directory), path_error)))
+			if (host->transport == "ssh" && host->runner_status != "ready") { ++group; continue; }
+			std::erase_if(group->workspaces, [&](const std::string& workspace) {
+				std::error_code path_error;
+				return (host->transport == "ssh" && !execution_hosts::IsAbsoluteRemotePath(host->platform, workspace)) ||
+				       (host->transport == "local" && !std::filesystem::is_directory(paths::PathFromUtf8(workspace), path_error));
+			});
+			if (group->workspaces.empty())
 			{
-				item = m_pending_scopes.erase(item);
+				group = m_pending_groups.erase(group);
 				continue;
 			}
-			const std::string version_key = CliProviderVersionStateKey(scope.provider_id, scope.execution_host_id);
+			const std::string version_key = CliProviderVersionStateKey(group->provider_id, group->execution_host_id);
 			const std::unordered_map<std::string, CliProviderVersionState>::const_iterator version = app.runtime_cli_versions_by_provider_id.find(version_key);
 			if (version == app.runtime_cli_versions_by_provider_id.end())
 			{
 				// A version check covers the provider on that host, not the workspace, and the launch path tests
 				// registration again, so a scope found registered once need not repeat the test while checks are refused.
-				const std::string scope_key = scope.provider_id + '\n' + scope.execution_host_id + '\n' + scope.workspace_directory;
-				if (!m_registered_before_version_check.contains(scope_key))
-				{
-					if (!registered.Contains(scope))
-					{
-						item = m_pending_scopes.erase(item);
-						continue;
-					}
+				std::erase_if(group->workspaces, [&](const std::string& workspace) {
+					const std::string scope_key = group->provider_id + '\n' + group->execution_host_id + '\n' + workspace;
+					if (m_registered_before_version_check.contains(scope_key)) return false;
+					if (!registered.Contains({group->provider_id, workspace, group->execution_host_id})) return true;
 					m_registered_before_version_check.insert(scope_key);
+					return false;
+				});
+				if (group->workspaces.empty())
+				{
+					group = m_pending_groups.erase(group);
+					continue;
 				}
 				std::string check_error;
-				if (AdmitBackgroundStart(app, "version-check:" + scope.provider_id + "@" + scope.execution_host_id, scope.execution_host_id, false).admitted)
-					changed = ProviderCliCompatibilityService().StartProviderVersionCheck(app, scope.provider_id, false, scope.execution_host_id, &check_error) || changed;
-				++item;
+				if (AdmitBackgroundStart(app, "version-check:" + group->provider_id + "@" + group->execution_host_id, group->execution_host_id, false).admitted)
+					changed = ProviderCliCompatibilityService().StartProviderVersionCheck(app, group->provider_id, false, group->execution_host_id, &check_error) || changed;
+				++group;
 				continue;
 			}
-			if (!ProviderCliLaunchBlockReason(app, scope.provider_id, scope.execution_host_id).empty() || (version != app.runtime_cli_versions_by_provider_id.end() && !version->second.checked)) { ++item; continue; }
-			if (!registered.Contains(scope))
+			if (!ProviderCliLaunchBlockReason(app, group->provider_id, group->execution_host_id).empty() || !version->second.checked) { ++group; continue; }
+			std::erase_if(group->workspaces, [&](const std::string& workspace) { return !registered.Contains({group->provider_id, workspace, group->execution_host_id}); });
+			if (group->workspaces.empty())
 			{
-				item = m_pending_scopes.erase(item);
+				group = m_pending_groups.erase(group);
 				continue;
 			}
-			const std::string compatibility_error = host->transport == "local" ? ProviderRuntimeRegistry::ResolveById(scope.provider_id).LocalCliCompatibilityError(app) : std::string{};
+			const std::string compatibility_error = host->transport == "local" ? ProviderRuntimeRegistry::ResolveById(group->provider_id).LocalCliCompatibilityError(app) : std::string{};
 			// A failed local check says nothing about the installation; launch applies the same rule.
 			const bool local_check_failed = host->transport == "local" && !version->second.check_error.empty();
 			if (!compatibility_error.empty() || (!version->second.supported && !local_check_failed))
 			{
-				diagnostics::Write("Startup model discovery skipped an incompatible provider: " + scope.provider_id);
-				item = m_pending_scopes.erase(item);
+				diagnostics::Write("Startup model discovery skipped an incompatible provider: " + group->provider_id);
+				group = m_pending_groups.erase(group);
 				continue;
 			}
-			// Background work: a computer at its background budget or over its load limit keeps the scope waiting here,
-			// in order, while scopes for other computers continue.
-			if (!AdmitBackgroundStart(app, "startup-discovery:" + scope.provider_id + "@" + scope.execution_host_id + ":" + scope.workspace_directory, scope.execution_host_id, false).admitted)
+			const ScopeGroup scopes = std::move(*group);
+			group = m_pending_groups.erase(group);
+			// A cache under seven days old that this CLI version fetched is kept; Refresh and Retry still ask the provider.
+			// The same rule as the stamp: a remote check counts only for the connection it was made on.
+			const bool same_connection = host->transport == "local" || execution_hosts::SameConnection(version->second.execution_host, *host);
+			const std::string checked_version = version->second.check_error.empty() && same_connection ? strings::Trim(version->second.installed_version) : std::string{};
+			std::vector<std::string> fresh;
+			std::vector<std::string> stale;
+			for (const std::string& workspace : scopes.workspaces)
+				(app.provider_model_catalog->IsCacheFreshForCliVersion(scopes.provider_id, workspace, scopes.execution_host_id, checked_version) ? fresh : stale).push_back(workspace);
+			// The newest cache is the most likely to answer again: prefer it as the source.
+			const auto newest_first = [&](std::vector<std::string>& candidates) {
+				std::vector<std::pair<std::int64_t, std::string>> dated;
+				for (std::string& candidate : candidates)
+				{
+					const nlohmann::json entry = app.provider_model_catalog->GetPersistentCatalogEntry(scopes.provider_id, candidate, scopes.execution_host_id);
+					const std::int64_t updated_at = entry.is_object() ? entry.value("updatedAtSec", static_cast<std::int64_t>(0)) : 0;
+					dated.emplace_back(updated_at, std::move(candidate));
+				}
+				std::ranges::stable_sort(dated, std::ranges::greater{}, &std::pair<std::int64_t, std::string>::first);
+				candidates.clear();
+				for (auto& entry : dated) candidates.push_back(std::move(entry.second));
+			};
+			if (stale.empty())
 			{
-				++item;
+				// One line per account-wide group; a per-workspace group keeping its cache stays silent.
+				if (fresh.size() > 1) diagnostics::Write("Startup model discovery kept " + std::to_string(fresh.size()) + " fresh " + scopes.provider_id + " caches.");
 				continue;
 			}
-			item = m_pending_scopes.erase(item);
-			// Restart refreshes even a recent cache. Keep its choices visible while the
-			// startup scope is attempted once; an already pending explicit refresh owns it.
-			if (!app.provider_model_catalog->BeginDiscovery(scope.provider_id, scope.workspace_directory, scope.execution_host_id)) continue;
+			if (!fresh.empty())
+			{
+				// Account-wide only: another workspace already holds a current list, so no process is needed.
+				newest_first(fresh);
+				const std::size_t shared = app.provider_model_catalog->ShareAccountWideCatalog(scopes.provider_id, scopes.execution_host_id, fresh.front(), stale);
+				diagnostics::Write("Startup model discovery shared a fresh " + scopes.provider_id + " cache with " + std::to_string(shared) + " workspace(s) without a process.");
+				changed = shared > 0 || changed;
+				continue;
+			}
+			newest_first(stale);
+			const std::string workspace = stale.front();
+			std::vector<std::string> targets(stale.begin() + 1, stale.end());
+			const int attempts = scopes.attempts + 1;
+			const nlohmann::json source_before = app.provider_model_catalog->GetPersistentCatalogEntry(scopes.provider_id, workspace, scopes.execution_host_id);
+			// Background work: a computer at its background budget or over its load limit keeps the group waiting in its
+			// place, in order, while groups for other computers continue. Sharing a fresh cache above starts no process.
+			if (!AdmitBackgroundStart(app, "startup-discovery:" + scopes.provider_id + "@" + scopes.execution_host_id + ":" + workspace, scopes.execution_host_id, false).admitted)
+			{
+				group = m_pending_groups.insert(group, scopes);
+				++group;
+				continue;
+			}
+			// Keep cached choices visible while the scope is attempted once; an already pending explicit refresh owns it,
+			// and its result is shared the same way when it ends.
+			if (!app.provider_model_catalog->BeginDiscovery(scopes.provider_id, workspace, scopes.execution_host_id))
+			{
+				if (app.provider_model_catalog->IsDiscoveryPending(scopes.provider_id, workspace, scopes.execution_host_id))
+				{
+					if (!targets.empty()) m_pending_shares.push_back({scopes.provider_id, scopes.execution_host_id, workspace, std::move(targets), source_before, attempts});
+				}
+				else RequeueAfterFailedSource(scopes.provider_id, scopes.execution_host_id, std::move(targets), attempts);
+				continue;
+			}
 			std::string error;
 			bool launched = false;
 			// One unusable saved workspace fails its own scope, never the whole startup poll.
-			try { launched = m_launch(app, scope.provider_id, scope.workspace_directory, scope.execution_host_id, &error); }
+			try { launched = m_launch(app, scopes.provider_id, workspace, scopes.execution_host_id, &error); }
 			catch (const std::exception& exception) { error = std::string("unexpected error: ") + exception.what(); }
 			catch (...) { error = "unexpected error."; }
 			if (launched)
 			{
-				app.provider_model_catalog->MarkDiscoveryLaunchStarted(scope.provider_id, scope.workspace_directory, scope.execution_host_id);
+				app.provider_model_catalog->MarkDiscoveryLaunchStarted(scopes.provider_id, workspace, scopes.execution_host_id);
+				if (!targets.empty()) m_pending_shares.push_back({scopes.provider_id, scopes.execution_host_id, workspace, std::move(targets), source_before, attempts});
 				++active;
 			}
 			else
 			{
-				app.provider_model_catalog->RememberRefreshFailure(scope.provider_id, strings::NonEmptyOrFallback(error, "Provider model discovery failed to start."), scope.workspace_directory, scope.execution_host_id);
-				diagnostics::Write("Startup model discovery launch failed for " + scope.provider_id + ": " + error);
+				app.provider_model_catalog->RememberRefreshFailure(scopes.provider_id, strings::NonEmptyOrFallback(error, "Provider model discovery failed to start."), workspace, scopes.execution_host_id);
+				diagnostics::Write("Startup model discovery launch failed for " + scopes.provider_id + ": " + error);
+				RequeueAfterFailedSource(scopes.provider_id, scopes.execution_host_id, std::move(targets), attempts);
 			}
 			changed = true;
 		}
+		for (ScopeGroup& requeued : m_requeued_groups) m_pending_groups.push_back(std::move(requeued));
+		m_requeued_groups.clear();
 		// Query only the visible saved Antigravity model; native /effort is a read-only builtin, never a model turn.
 		// The catalogue deduplicates attempts and retains scoped metadata so idle polling cannot spawn repeated probes.
 		const ChatSession* selected = ChatDomainService().SelectedChat(app);

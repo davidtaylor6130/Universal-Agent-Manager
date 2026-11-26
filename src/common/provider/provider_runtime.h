@@ -596,6 +596,11 @@ class IProviderRuntime
 	virtual std::vector<std::string> ModelReasoningEfforts(std::string_view, std::string_view) const { return {}; }
 	/// <summary>Launch-only model options require an idle process restart before taking effect.</summary>
 	virtual bool ModelOptionsRequireRestart() const { return false; }
+	/// <summary>
+	/// True when model discovery never gives the provider the workspace, so every workspace on one computer gets the same
+	/// list and startup can ask once and share it. False keeps one discovery per workspace (see docs/providers/models.md).
+	/// </summary>
+	virtual bool ModelListIsAccountWide() const { return false; }
 	/// <summary>Compare the actual launch request, never a provider-reported alias, for launch-only option changes.</summary>
 	bool AcpLaunchOptionsNeedModelRestart(const uam::AcpSessionState& session, std::string_view model) const;
 
