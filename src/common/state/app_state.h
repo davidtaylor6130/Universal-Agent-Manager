@@ -1607,7 +1607,6 @@ namespace uam
 		bool shell_actions_unreadable = false;
 		std::string shell_action_notification;
 		std::vector<ProviderProfile> provider_profiles;
-		uam::FrontendActionMap frontend_actions;
 
 		std::vector<ChatSession> chats;
 		/// The side chat whose cleanup was requested last; its poll removes it ahead of older requests (Dismiss side chat).

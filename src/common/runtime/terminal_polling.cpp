@@ -38,11 +38,6 @@
 namespace uam
 {
 
-double LatestCliTransportActivityTime(const uam::CliTerminalState& terminal)
-{
-	return std::max(terminal.last_user_input_time_s, terminal.last_ai_output_time_s);
-}
-
 std::string AsyncNativeChatLoadTaskKey(std::string_view provider_id, const std::filesystem::path& chats_dir)
 {
 	std::string key(provider_id);
