@@ -1,6 +1,7 @@
 #include "common/provider/opencode_v2_session.h"
 #include "common/runtime/cli_version_parser.h"
 #include "common/utils/string_utils.h"
+#include <algorithm>
 #include <stdexcept>
 
 namespace uam::opencode_v2
@@ -14,6 +15,31 @@ std::string WorkerVersionError(bool checked, bool same_host, std::string_view ve
 		return "This OpenCode text-worker protocol has not been verified. " + UnverifiedV2Message(version, "text worker") +
 		       " OpenCode 1.x also works. Choose another worker provider in Settings or install a verified OpenCode version.";
 	return {};
+}
+
+std::vector<std::string> ImportedDenyActions(const std::string& permission_json)
+{
+	const Json rules = Json::parse(permission_json, nullptr, false);
+	if (!rules.is_object()) throw std::runtime_error("The imported OpenCode agent rules are invalid.");
+	std::vector<std::string> deny;
+	const auto add = [&](const std::string& action) { if (std::ranges::find(deny, action) == deny.end()) deny.push_back(action); };
+	for (const auto& [action, effect] : rules.items())
+	{
+		if (!effect.is_string() || (effect != "ask" && effect != "deny")) throw std::runtime_error("The imported OpenCode agent rules are invalid.");
+		if (effect != "deny") continue;
+		add(action);
+		// A V1 rule that names or matches a renamed tool must also deny its V2 action.
+		const auto covers = [&](std::string_view name)
+		{
+			if (action == name) return true;
+			const auto star = action.find('*');
+			return star != std::string::npos && star == action.size() - 1 && name.starts_with(std::string_view(action).substr(0, star));
+		};
+		if (covers("bash")) add("shell");
+		if (covers("task")) add("subagent");
+		if (covers("write") || covers("patch") || covers("multiedit") || covers("apply_patch") || covers("edit")) add("edit");
+	}
+	return deny;
 }
 
 std::vector<std::string> ServeArgv(std::vector<std::string> command)
@@ -106,6 +132,10 @@ export default {
             typeof policy.readOnly === 'boolean') {
           effect = nativeEffect === 'deny' ? 'deny' : 'ask';
           if (['task', 'subagent'].includes(event.action) || (policy.readOnly && event.action === 'edit')) effect = 'deny';
+          // Imported agent denies: an exact action, '*' or a trailing-'*' prefix. Malformed rules deny.
+          if (policy.deny !== undefined && !Array.isArray(policy.deny)) throw new Error('Invalid UAM deny rules');
+          if ((policy.deny || []).some(rule => typeof rule !== 'string' || rule === '*' || rule === event.action ||
+              (rule.endsWith('*') && String(event.action).startsWith(rule.slice(0, -1))))) effect = 'deny';
         }
       } catch { effect = 'deny'; }
       // OpenCode invokes hooks after composing saved/project/session grants.

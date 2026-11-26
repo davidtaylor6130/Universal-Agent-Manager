@@ -618,6 +618,7 @@ add_library(uam_core_objects OBJECT
   ${UAM_COMPUTER_USE_PLATFORM_SOURCES}
   src/computer_use/computer_use_mcp_config.cpp
   src/app/agent_definition_service.cpp
+  src/app/provider_agent_import.cpp
   src/app/agent_run_ledger.cpp
   src/app/agent_run_scheduler.cpp
   src/app/managed_parent_continuation_service.cpp
@@ -1806,6 +1807,7 @@ if(UAM_BUILD_TESTS)
     tests/acp_workspace_launch_tests.cpp
     tests/queued_prompt_hold_tests.cpp
     tests/agent_target_metadata_tests.cpp
+    tests/provider_agent_import_tests.cpp
     tests/uam_control_chat_create_tests.cpp
     tests/pr_watch_tests.cpp
     tests/automation_api_tests.cpp
