@@ -588,7 +588,14 @@ UAM_TEST(SvnUpdatePastABrokenExternalHidesConflictLeftoversAndResolves)
 	UAM_ASSERT(update.warnings[0].ends_with("ext' could not be updated."));
 
 	uam::VcsCommitStatus status = vcs.Status(app, chat, uam::VcsType::Svn, false);
-	const auto row = [&](const std::string& path) { return std::ranges::find(status.changed_files, path, &uam::VcsChangedFile::path); };
+	// Rows keep svn's own spelling, which uses `\` on Windows.
+	const auto row = [&](std::string path)
+	{
+#if defined(_WIN32)
+		std::ranges::replace(path, '/', '\\');
+#endif
+		return std::ranges::find(status.changed_files, path, &uam::VcsChangedFile::path);
+	};
 	UAM_ASSERT(row("a.txt") != status.changed_files.end() && row("a.txt")->status == "C");
 	UAM_ASSERT(row("d/x.txt") != status.changed_files.end() && uam::svn_history::IsConflicted(*row("d/x.txt")) && row("d/x.txt")->status.front() != 'C');
 	for (const char* leftover : {"a.txt.mine", "a.txt.r1", "a.txt.r2"})
