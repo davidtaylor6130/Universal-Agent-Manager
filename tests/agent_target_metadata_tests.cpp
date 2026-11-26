@@ -499,6 +499,7 @@ UAM_TEST(AgentListRejectsStaleHostVersionAndUnreadyOrUpdatingTargetMetadata)
 UAM_TEST(OpenCodeAgentImportDefaultsOmittedModeToBoth)
 {
 	TempDir temp("uam-opencode-agent-default-mode");
+	ScopedEnvVar isolated_config("XDG_CONFIG_HOME", (temp.root / "xdg").string());
 	const fs::path source_root = temp.root / "native";
 	fs::create_directories(source_root);
 	const fs::path source = source_root / "reviewer.md";
@@ -536,6 +537,7 @@ UAM_TEST(OpenCodeAgentImportDefaultsOmittedModeToBoth)
 UAM_TEST(ProviderAgentImportRejectsDuplicateSkillsWithoutCreatingInvalidFile)
 {
 	TempDir temp("uam-agent-import-duplicate-skills");
+	ScopedEnvVar isolated_config("XDG_CONFIG_HOME", (temp.root / "xdg").string());
 	const fs::path source = temp.root / "agent.md";
 	UAM_ASSERT(uam::io::WriteTextFile(source, "---\ndescription: Reviews code\n---\nReview.\n"));
 	uam::ProviderAgentImportRequest request;
@@ -552,6 +554,7 @@ UAM_TEST(ProviderAgentImportRejectsDuplicateSkillsWithoutCreatingInvalidFile)
 UAM_TEST(ProviderAgentImportFailedReplacementPreservesPreviousBytes)
 {
 	TempDir temp("uam-agent-import-preserve-replacement");
+	ScopedEnvVar isolated_config("XDG_CONFIG_HOME", (temp.root / "xdg").string());
 	const fs::path source = temp.root / "agent.md";
 	UAM_ASSERT(uam::io::WriteTextFile(source, "---\ndescription: Reviews code\n---\nReview.\n"));
 	uam::ProviderAgentImportRequest request;
@@ -572,6 +575,7 @@ UAM_TEST(ProviderAgentImportFailedReplacementPreservesPreviousBytes)
 UAM_TEST(ProviderAgentImportExpandsDirectHomeMarkdownPath)
 {
 	TempDir temp("uam-agent-import-home-path");
+	ScopedEnvVar isolated_config("XDG_CONFIG_HOME", (temp.root / "xdg").string());
 	const std::optional<fs::path> home = PlatformServicesFactory::Instance().path_service.ResolveUserHomePath();
 	UAM_ASSERT(home.has_value());
 	const fs::path source = temp.root / "agent.md";
@@ -594,6 +598,7 @@ UAM_TEST(ProviderAgentImportExpandsDirectHomeMarkdownPath)
 UAM_TEST(ProviderAgentAliasesImportGloballyWithSelectedSkillsAndExplicitAccess)
 {
 	TempDir temp("uam-agent-import-aliases");
+	ScopedEnvVar isolated_config("XDG_CONFIG_HOME", (temp.root / "xdg").string());
 	const fs::path source = temp.root / "agent.md";
 	UAM_ASSERT(uam::io::WriteTextFile(source,
 	    "---\nname: agent\ndescription: Reviews code\n---\nReview.\n"));
@@ -628,14 +633,17 @@ namespace
 UAM_TEST(OpenCodePermissionImportPreservesSourceRulesAndRequiresExplicitReadAccess)
 {
 	TempDir temp("uam-opencode-policy-import");
+	ScopedEnvVar isolated_config("XDG_CONFIG_HOME", (temp.root / "xdg").string());
 	const fs::path source = temp.root / "reviewer.md";
-	const std::string original = "---\nname: read-only\ndescription: Reviews code\nmode: primary\npermission:\n  bash: ask\n  edit: deny\n---\nReview code.\n";
+	const std::string original = "---\nname: read-only\ndescription: Reviews code\nmode: primary\npermission:\n  bash: ask\n  edit: deny\n  webfetch: deny\n---\nReview code.\n";
 	UAM_ASSERT(uam::io::WriteTextFile(source, original));
 	const uam::ProviderAgentImportPreview preview = uam::AgentDefinitionService::PreviewProviderAgentImport("opencode", source);
 	UAM_ASSERT(preview.supported);
 	UAM_ASSERT(preview.security_fields.empty());
+	UAM_ASSERT(preview.provider_bound);
+	UAM_ASSERT_EQ(preview.max_workspace_access, std::string("read"));
 	UAM_ASSERT_EQ(preview.ignored_fields, std::vector<std::string>{"name"});
-	UAM_ASSERT_EQ(preview.open_code_permission_json, std::string(R"({"bash":"ask","edit":"deny"})"));
+	UAM_ASSERT_EQ(preview.open_code_permission_json, std::string(R"({"bash":"ask","edit":"deny","webfetch":"deny"})"));
 	uam::ProviderAgentImportRequest request;
 	request.provider_id = "opencode";
 	request.source_path = source;
@@ -645,6 +653,7 @@ UAM_TEST(OpenCodePermissionImportPreservesSourceRulesAndRequiresExplicitReadAcce
 	request.acknowledge_ignored_fields = true;
 	request.workspace_access = "write";
 	UAM_ASSERT(!uam::AgentDefinitionService::ImportProviderAgent(temp.root / "data", {}, request, nullptr, &error));
+	UAM_ASSERT(error.starts_with("workspaceAccess: permission.edit is deny"));
 	UAM_ASSERT(!fs::exists(temp.root / "data" / "agents" / "reviewer.md"));
 	request.workspace_access = "read";
 	uam::AgentDefinition imported;
@@ -669,32 +678,51 @@ UAM_TEST(OpenCodePermissionImportPreservesSourceRulesAndRequiresExplicitReadAcce
 UAM_TEST(OpenCodePermissionImportRejectsUnsupportedYamlAndOtherSecurityFields)
 {
 	TempDir temp("uam-opencode-policy-rejections");
+	ScopedEnvVar isolated_config("XDG_CONFIG_HOME", (temp.root / "xdg").string());
 	const fs::path source = temp.root / "reviewer.md";
-	const std::vector<std::string> rules{
-	    "permission:\n  edit: allow", "permission:\n  bash: deny", "permission: deny",
-	    "permission:\n  edit: deny\n  edit: allow", "permission:\n  edit:\n    '*': deny",
-	    "permission:\n  edit: deny\n  bash:\n    '*': ask", "permission:\n  edit: deny\n  bash: allow",
-	    "permission: &policy\n  edit: deny", "permission: *policy", "permission:\n  <<: *policy\n  edit: deny",
-	    "permission:\n  edit: deny\n  task: deny", "permission:\n\tedit: deny", "permission:\n    edit: deny",
-	    "permission:\n  edit: deny # unsupported comments", "permission:\n  edit: deny\ntools: [read]",
-	    "  permission:\n    edit: deny", "'permission': deny",
-	    R"("\u0070ermission": { edit: deny })", R"("\u0074ools": [read])",
-	    R"("permission\u002dmode": plan)"};
-	for (const std::string& rule : rules)
+	// Each rejection names the field that caused it.
+	const std::vector<std::pair<std::string, std::string>> rejected{
+	    {"permission: &policy\n  edit: deny", "permission:"}, {"permission: *policy", "permission:"},
+	    {"permission:\n  <<: *policy\n  edit: deny", "permission:"}, {"permission:\n  edit: deny\n  edit: allow", "permission.edit: duplicate key"},
+	    {"permission:\n  edit: maybe", "permission.edit:"}, {"permission:\n\tedit: deny", "permission:"},
+	    {"permission:\n  edit: deny\ntools: [read]", "tools:"}, {"  permission:\n    edit: deny", "description:"},
+	    {"\"\\u0070ermission\": { edit: deny }", "frontmatter line"}, {"\"\\u0074ools\": [read]", "frontmatter line"},
+	    {"hooks:\n  Stop: []", "hooks:"}};
+	for (const auto& [rule, field] : rejected)
 	{
 		UAM_ASSERT(uam::io::WriteTextFile(source, "---\ndescription: Review\n" + rule + "\n---\nReview.\n"));
 		const uam::ProviderAgentImportPreview blocked = uam::AgentDefinitionService::PreviewProviderAgentImport("opencode", source);
 		UAM_ASSERT(!blocked.supported);
-		if (rule.starts_with("permission:"))
-		{
-			UAM_ASSERT(!blocked.security_fields.empty());
-			UAM_ASSERT(blocked.error.find("security/tool fields") != std::string::npos);
-		}
+		UAM_ASSERT(blocked.error.starts_with(field));
 	}
-	UAM_ASSERT(uam::io::WriteTextFile(source, "---\ndescription: Review\npermission:\n  edit: deny\n---\nReview.\n"));
-	UAM_ASSERT(uam::AgentDefinitionService::PreviewProviderAgentImport("opencode", source).supported);
+	// Shapes the earlier flat subset refused are kept, with denies preserved and allow mediated as ask.
+	const std::vector<std::string> accepted{
+	    "permission:\n  edit: allow", "permission:\n  bash: deny", "permission: deny", "'permission': deny",
+	    "permission:\n  edit:\n    '*': deny", "permission:\n  edit: deny\n  bash:\n    '*': ask", "permission:\n  edit: deny\n  bash: allow",
+	    "permission:\n  edit: deny\n  task: deny", "permission:\n    edit: deny", "permission:\n  edit: deny # comment"};
+	for (const std::string& rule : accepted)
+	{
+		UAM_ASSERT(uam::io::WriteTextFile(source, "---\ndescription: Review\n" + rule + "\n---\nReview.\n"));
+		const uam::ProviderAgentImportPreview preview = uam::AgentDefinitionService::PreviewProviderAgentImport("opencode", source);
+		UAM_ASSERT(preview.supported);
+		UAM_ASSERT(preview.open_code_permission_json.find("allow") == std::string::npos);
+		if (rule.find("deny") != std::string::npos && rule.find("edit: deny") == std::string::npos && rule.find("bash: deny") != std::string::npos)
+			UAM_ASSERT(preview.provider_bound);
+	}
+	// A plan permission mode caps any provider's import at read access.
+	UAM_ASSERT(uam::io::WriteTextFile(source, "---\ndescription: Review\npermission-mode: plan\n---\nReview.\n"));
+	const uam::ProviderAgentImportPreview planned = uam::AgentDefinitionService::PreviewProviderAgentImport("opencode", source);
+	UAM_ASSERT(planned.supported);
+	UAM_ASSERT_EQ(planned.max_workspace_access, std::string("read"));
+	UAM_ASSERT_EQ(planned.read_only_reason, std::string("permission-mode is plan"));
+	// OpenCode rules in another provider's file are omitted only with acknowledgment.
+	UAM_ASSERT(uam::io::WriteTextFile(source, "---\nname: reviewer\ndescription: Review\npermission:\n  edit: deny\n---\nReview.\n"));
 	for (const std::string& provider : {"claude", "copilot", "gemini"})
-		UAM_ASSERT(!uam::AgentDefinitionService::PreviewProviderAgentImport(provider, source).supported);
+	{
+		const uam::ProviderAgentImportPreview preview = uam::AgentDefinitionService::PreviewProviderAgentImport(provider, source);
+		UAM_ASSERT(preview.supported);
+		UAM_ASSERT(std::ranges::find(preview.ignored_fields, "permission") != preview.ignored_fields.end());
+	}
 }
 
 UAM_TEST(CapturedOpenCodePermissionFailsClosedForMalformedSnapshotsAndIncompatibleRoutes)

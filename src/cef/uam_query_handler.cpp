@@ -366,6 +366,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"listUamAgents", &UamQueryHandler::HandleListUamAgents},
 		{"browseProviderAgentImport", &UamQueryHandler::HandleBrowseProviderAgentImport},
 		{"previewProviderAgentImport", &UamQueryHandler::HandlePreviewProviderAgentImport},
+		{"discoverProviderAgents", &UamQueryHandler::HandleDiscoverProviderAgents},
 		{"importProviderAgent", &UamQueryHandler::HandleImportProviderAgent},
 		{"listAgentDefinitions", &UamQueryHandler::HandleListAgentDefinitions},
 		{"saveAgentDefinition", &UamQueryHandler::HandleSaveAgentDefinition},

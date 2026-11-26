@@ -2796,6 +2796,7 @@ UAM_TEST(GlobalAgentEditorSavesValidDefinitionsAndRejectsInvalidOnes)
 UAM_TEST(ProviderMarkdownAgentImportIsProviderNeutralAndNeverSilentlyDropsSecurity)
 {
 	TempDir temp("uam-provider-agent-import");
+	ScopedEnvVar isolated_config("XDG_CONFIG_HOME", (temp.root / "xdg").string());
 	const fs::path sources = temp.root / "native";
 	fs::create_directories(sources);
 	const fs::path opencode = sources / "reviewer.md";
@@ -2828,30 +2829,47 @@ UAM_TEST(ProviderMarkdownAgentImportIsProviderNeutralAndNeverSilentlyDropsSecuri
 	UAM_ASSERT(imported.markdown_snapshot.find("opencode") == std::string::npos);
 	UAM_ASSERT_EQ(uam::io::ReadTextFile(opencode), opencode_text);
 
-	const std::vector<std::pair<std::string, std::string>> unsafe = {
-	    {uam::provider_ids::kOpenCodeCli,
-	     "---\ndescription: Restricted\nmode: subagent\npermission:\n  edit:\n    '*': deny\n---\nReview.\n"},
-	    {uam::provider_ids::kCopilotCli,
-	     "---\nname: copilot-reviewer\ndescription: Restricted\ntools: [read]\n---\nReview.\n"},
-	    {uam::provider_ids::kGeminiCli,
-	     "---\nname: gemini-reviewer\ndescription: Restricted\nkind: local\nmax_turns: 4\ntimeout_mins: 2\n---\nReview.\n"},
-	    {uam::provider_ids::kClaudeCli,
-	     "---\nname: claude-reviewer\ndescription: Restricted\ndisallowedTools: [Edit]\n---\nReview.\n"},
+	// Fields whose loss would change what the agent may do are blocked and named.
+	const std::vector<std::tuple<std::string, std::string, std::string>> blocked_sources = {
+	    {uam::provider_ids::kOpenCodeCli, "---\ndescription: Restricted\nmode: subagent\nhooks:\n  Stop: []\n---\nReview.\n", "hooks"},
+	    {uam::provider_ids::kCopilotCli, "---\nname: copilot-reviewer\ndescription: Restricted\nhooks:\n  PreToolUse: []\n---\nReview.\n", "hooks"},
+	    {uam::provider_ids::kGeminiCli, "---\nname: gemini-reviewer\ndescription: Restricted\nkind: remote\n---\nReview.\n", "kind"},
+	    {uam::provider_ids::kClaudeCli, "---\nname: claude-reviewer\ndescription: Restricted\nisolation: worktree\n---\nReview.\n", "isolation"},
 	};
-	for (std::size_t index = 0; index < unsafe.size(); ++index)
+	for (std::size_t index = 0; index < blocked_sources.size(); ++index)
 	{
-		const fs::path source = sources / ("unsafe-" + std::to_string(index) + ".md");
-		UAM_ASSERT(uam::io::WriteTextFile(source, unsafe[index].second));
-		const auto blocked = uam::AgentDefinitionService::PreviewProviderAgentImport(unsafe[index].first, source);
+		const auto& [provider, text, field] = blocked_sources[index];
+		const fs::path source = sources / ("blocked-" + std::to_string(index) + ".md");
+		UAM_ASSERT(uam::io::WriteTextFile(source, text));
+		const auto blocked = uam::AgentDefinitionService::PreviewProviderAgentImport(provider, source);
 		UAM_ASSERT(!blocked.supported);
-		UAM_ASSERT(!blocked.security_fields.empty());
-		UAM_ASSERT(blocked.error.find("security/tool fields") != std::string::npos);
-		if (unsafe[index].first == uam::provider_ids::kGeminiCli)
-		{
-			UAM_ASSERT(std::ranges::find(blocked.security_fields, "max_turns") != blocked.security_fields.end());
-			UAM_ASSERT(std::ranges::find(blocked.security_fields, "timeout_mins") != blocked.security_fields.end());
-		}
+		UAM_ASSERT_EQ(blocked.security_fields, std::vector<std::string>{field});
+		UAM_ASSERT(blocked.error.starts_with(field + ":"));
 	}
+	// Restrictions UAM can only approximate require acknowledgment, never silent omission.
+	const std::vector<std::tuple<std::string, std::string, std::string>> acknowledged = {
+	    {uam::provider_ids::kCopilotCli, "---\nname: copilot-reviewer\ndescription: Restricted\ntools: [read]\n---\nReview.\n", "tools"},
+	    {uam::provider_ids::kGeminiCli, "---\nname: gemini-reviewer\ndescription: Restricted\nkind: local\nmax_turns: 4\ntimeout_mins: 2\n---\nReview.\n", "max_turns"},
+	    {uam::provider_ids::kClaudeCli, "---\nname: claude-reviewer\ndescription: Restricted\ndisallowedTools: [Edit]\n---\nReview.\n", "disallowedTools"},
+	};
+	for (std::size_t index = 0; index < acknowledged.size(); ++index)
+	{
+		const auto& [provider, text, field] = acknowledged[index];
+		const fs::path source = sources / ("acknowledged-" + std::to_string(index) + ".md");
+		UAM_ASSERT(uam::io::WriteTextFile(source, text));
+		const auto preview = uam::AgentDefinitionService::PreviewProviderAgentImport(provider, source);
+		UAM_ASSERT(preview.supported);
+		UAM_ASSERT(std::ranges::find(preview.ignored_fields, field) != preview.ignored_fields.end());
+		UAM_ASSERT(!preview.notes.empty());
+		uam::ProviderAgentImportRequest acknowledged_request;
+		acknowledged_request.provider_id = provider;
+		acknowledged_request.source_path = source;
+		acknowledged_request.workspace_access = "read";
+		UAM_ASSERT(!uam::AgentDefinitionService::ImportProviderAgent(temp.root / "data", {}, acknowledged_request, nullptr, &error));
+		UAM_ASSERT(error.find("acknowledge") != std::string::npos);
+	}
+	const fs::path copilot_read_only = sources / "acknowledged-0.md";
+	UAM_ASSERT_EQ(uam::AgentDefinitionService::PreviewProviderAgentImport(uam::provider_ids::kCopilotCli, copilot_read_only).max_workspace_access, std::string("read"));
 }
 
 UAM_TEST(CopilotGeminiAndClaudeAgentImportsRemainSubagentsWithExplicitUamAccess)

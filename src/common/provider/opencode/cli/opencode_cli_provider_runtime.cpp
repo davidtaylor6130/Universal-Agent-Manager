@@ -7,6 +7,7 @@
 #include "common/runtime/provider_cli_compatibility_service.h"
 #include "common/provider/opencode_v2_session.h"
 #include "app/opencode_native_activity_service.h"
+#include "app/agent_definition_service.h"
 #include "app/attachment_preview_service.h"
 #include "common/provider/structured_attachments.h"
 #include "common/utils/base64.h"
@@ -931,7 +932,17 @@ namespace
 {
 nlohmann::json CapturedV2Policy(const uam::AcpSessionState& session, const ChatSession& chat)
 {
-	return {{"readOnly", session.goal_review_turn || session.active_uam_agent_workspace_access != "write" || chat.approval_mode == "plan"}, {"approvalMode", chat.approval_mode}, {"commandSafetyTier", chat.command_safety_tier}, {"agentDefinition", session.active_uam_agent_definition_hash}, {"agent", session.active_uam_agent_id}};
+	nlohmann::json policy{{"readOnly", session.goal_review_turn || session.active_uam_agent_workspace_access != "write" || chat.approval_mode == "plan"}, {"approvalMode", chat.approval_mode}, {"commandSafetyTier", chat.command_safety_tier}, {"agentDefinition", session.active_uam_agent_definition_hash}, {"agent", session.active_uam_agent_id}};
+	// Imported OpenCode agent denies travel to the V2 guard; an unreadable capture denies every action.
+	std::string permission;
+	std::vector<std::string> deny{"*"};
+	if (uam::AgentDefinitionService::CapturedOpenCodePermission(session.active_uam_agent_id, session.active_uam_agent_definition_snapshot, permission))
+	{
+		try { deny = permission.empty() ? std::vector<std::string>{} : uam::opencode_v2::ImportedDenyActions(permission); }
+		catch (const std::exception&) { deny = {"*"}; }
+	}
+	if (!deny.empty()) policy["deny"] = deny;
+	return policy;
 }
 std::vector<std::string> LocalHistoryCommand(const ProviderProfile& profile, const std::string& operation, const std::string& id)
 {

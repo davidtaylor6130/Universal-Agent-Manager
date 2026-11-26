@@ -380,7 +380,7 @@ UAM_TEST(OpenCodeV2AmbiguousAdmissionHoldsThroughProductionEngineAndSharedDispat
 				return {{"data", {{"id", "msg_admitted"}, {"sessionID", "ses_other"}}}};
 			}
 			throw std::runtime_error("Unexpected mocked native route");
-		}, [&](const std::string& id, const std::string& directory, bool)
+		}, [&](const std::string& id, const std::string& directory, bool, const std::vector<std::string>&)
 		{
 			UAM_ASSERT(id.empty() || id == owned);
 			UAM_ASSERT_EQ(directory, cwd);

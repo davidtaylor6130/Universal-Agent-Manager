@@ -17,7 +17,7 @@ struct Native
 	bool queued_native_input = false, lose_prompt_receipt = false, lose_cancel_receipt = false, lose_delete_receipt = false, interrupt_idle = false, fail_event_control = false;
 	Session session;
 	Native() : session([&](const auto& method, const auto& route, const auto& body) { return Query(method, route, body); },
-		[&](const auto& id, const auto& cwd, bool read) { policies.push_back({{"id", id}, {"cwd", cwd}, {"read", read}}); },
+		[&](const auto& id, const auto& cwd, bool read, const auto& deny) { policies.push_back({{"id", id}, {"cwd", cwd}, {"read", read}, {"deny", deny}}); },
 		[&](const auto& message) { output.push_back(message); }) {}
 	Json Query(const std::string& method, const std::string& route, const Json& body)
 	{
@@ -137,6 +137,36 @@ int main(int argc, char** argv)
 			Check(native.output.back()["result"]["models"]["availableModels"][0]["contextWindowTokens"] == 200000 && native.output.back()["result"]["models"]["availableModels"][0]["maxOutputTokens"] == 32000, "observed model limits were dropped");
 			Check(native.policies.size() == 2 && native.policies.front()["id"] == "" && native.policies.back()["id"] == "ses_owned", "policy root not bound");
 			for (const auto& rule : native.info["permissions"]) Check(rule["effect"] == "deny", "session permissions weakened native agent denials");
+		});
+		Run("ImportedAgentDeniesBecomeNativeRulesAndGuardPolicy", []
+		{
+			Check(ImportedDenyActions(R"({"bash":"deny","edit":"deny","read":"ask","write":"deny","mcp_*":"deny"})") ==
+			          std::vector<std::string>({"bash", "shell", "edit", "mcp_*", "write"}), "V1 rules were not translated to V2 action names");
+			Check(ImportedDenyActions(R"({"task":"deny"})") == std::vector<std::string>({"task", "subagent"}), "task deny lost its V2 name");
+			Check(ImportedDenyActions(R"({"read":"ask"})").empty(), "ask became a deny");
+			Check(ImportedDenyActions(R"({"b*":"deny"})") == std::vector<std::string>({"b*", "shell"}), "a wildcard covering bash did not deny shell");
+			Check(ImportedDenyActions(R"({"ed*":"deny"})") == std::vector<std::string>({"ed*", "edit"}), "a wildcard covering edit did not deny edit");
+			for (const std::string invalid : {"[]", "broken", R"({"bash":"allow"})", R"({"bash":{"*":"deny"}})"})
+			{
+				bool refused = false; try { (void)ImportedDenyActions(invalid); } catch (const std::exception&) { refused = true; }
+				Check(refused, "invalid imported rules were translated");
+			}
+			Native native;
+			const Json policy{{"readOnly", true}, {"deny", Json::array({"bash", "shell", "webfetch", "mcp_*"})}};
+			native.Send(1, "session/new", {{"cwd", "/workspace"}, {"_meta", {{"uamPolicy", policy}}}});
+			Check(native.output.back().contains("result"), "setup with imported denies failed");
+			Check(native.policies.back()["deny"] == Json::array({"bash", "shell", "webfetch", "mcp_*"}), "guard policy lost imported denies");
+			std::vector<std::string> actions;
+			for (const auto& rule : native.info["permissions"]) { Check(rule["effect"] == "deny", "imported rule weakened"); actions.push_back(rule["action"].get<std::string>()); }
+			for (const std::string expected : {"bash", "shell", "webfetch", "edit", "task", "subagent"})
+				Check(std::ranges::find(actions, expected) != actions.end(), "imported deny missing from native rules");
+			Check(std::ranges::find(actions, "mcp_*") == actions.end(), "wildcard deny was sent as an unverified native rule");
+			for (const Json bad : {Json("bash"), Json::array({"ba*sh"}), Json::array({1}), Json::array({""})})
+			{
+				Native refused;
+				refused.Send(1, "session/new", {{"cwd", "/workspace"}, {"_meta", {{"uamPolicy", {{"readOnly", false}, {"deny", bad}}}}}});
+				Check(refused.output.back().contains("error"), "malformed imported deny rules were admitted");
+			}
 		});
 		Run("ResumeReplacesNativeSessionGrantsWithoutCreating", []
 		{
@@ -366,7 +396,7 @@ int main(int argc, char** argv)
 			native.Prompt(5); Check(!native.output.back().contains("error"), "base model input was refused after default readback");
 			Native resumed; resumed.info["model"] = {{"providerID", "mock"}, {"id", "model/with/slash"}, {"variant", "default"}}; resumed.Setup(true);
 			Check(resumed.output.back()["result"]["models"]["currentModelId"] == "mock/model/with/slash", "resumed native default variant became an unknown model");
-			Session reported([](const auto&, const auto&, const auto&) { return Json::object(); }, [](const auto&, const auto&, bool) {}, [&](const Json& value) { resumed.output.push_back(value); }, "2.2.6");
+			Session reported([](const auto&, const auto&, const auto&) { return Json::object(); }, [](const auto&, const auto&, bool, const auto&) {}, [&](const Json& value) { resumed.output.push_back(value); }, "2.2.6");
 			reported.Handle({{"id", 1}, {"method", "initialize"}, {"params", Json::object()}});
 			Check(resumed.output.back()["result"]["agentInfo"]["version"] == "2.2.6", "bridge did not report the running native version");
 		});
