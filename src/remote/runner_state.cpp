@@ -843,6 +843,15 @@ namespace uam::remote
 		    [](const std::pair<const std::string, Channel>& entry) { return entry.second.expires_at_ms != 0; });
 	}
 
+	std::uint32_t RunnerState::LiveProcessCount()
+	{
+		SweepExpiredTransientProcesses();
+		std::scoped_lock lock(m_stateMutex);
+		const auto live = [](const std::pair<const std::string, std::shared_ptr<Process>>& entry)
+		{ return entry.second && !entry.second->exited.load(std::memory_order_acquire); };
+		return static_cast<std::uint32_t>(std::ranges::count_if(m_processes, live) + std::ranges::count_if(m_retiringProcesses, live));
+	}
+
 	void RunnerState::SweepIdleUploads(const std::int64_t now)
 	{
 		std::vector<std::pair<std::string, std::shared_ptr<Upload>>> idle;
@@ -1428,7 +1437,9 @@ namespace uam::remote
 			if (!std::filesystem::is_directory(status))
 				return ProcessError(request, "not_directory", "The selected remote path is not a directory.");
 
-			const std::filesystem::path directory = requested.lexically_normal();
+			std::filesystem::path directory = requested.lexically_normal();
+			// "/srv/x/" normalizes to itself; drop the trailing separator so the directory and its parent are distinct.
+			if (directory.has_relative_path() && directory.filename().empty()) directory = directory.parent_path();
 			std::vector<std::pair<std::string, std::string>> directories;
 			bool truncated = false;
 			std::filesystem::directory_iterator iterator(directory, error);

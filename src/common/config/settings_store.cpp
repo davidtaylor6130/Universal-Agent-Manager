@@ -9,6 +9,7 @@
 #include "common/config/approval_modes.h"
 #include "common/config/line_value_codec.h"
 #include "common/config/mcp_server_config.h"
+#include "common/config/permission_command_rules_json.h"
 #include "common/config/provider_chat_defaults.h"
 #include "common/config/host_scoped_settings.h"
 #include "common/config/provider_availability.h"
@@ -98,6 +99,9 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 	constexpr std::string_view kMemoryWorkerBindingsKey = "memory_worker_bindings";
 	constexpr std::string_view kPermissionReviewerProviderIdKey = "permission_reviewer_provider_id";
 	constexpr std::string_view kPermissionReviewerModelIdKey = "permission_reviewer_model_id";
+	constexpr std::string_view kPermissionCommandRulesKey = "permission_command_rules";
+	constexpr std::string_view kPermissionAiReviewEnabledKey = "permission_ai_review_enabled";
+	constexpr std::string_view kPermissionRemoteCommitsWithoutApprovalKey = "permission_remote_commits_without_approval";
 	constexpr std::string_view kDefaultNewChatProviderIdKey = "default_new_chat_provider_id";
 	constexpr std::string_view kProviderChatDefaultsKey = "provider_chat_defaults";
 	constexpr std::string_view kMarkdownStoreDirectoryKey = "markdown_store_directory";
@@ -581,7 +585,8 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 		settings.provider_chat_defaults[provider_key] = NormalizeProviderChatDefaults(settings.provider_chat_defaults[provider_key], provider_key);
 	}
 
-	void ClampSettings(AppSettings& settings)
+	/// <param name="removed_mcp_servers">Load only: receives the reason for each invalid MCP entry it drops.</param>
+	void ClampSettings(AppSettings& settings, std::vector<std::string>* removed_mcp_servers = nullptr)
 	{
 		settings.voice_input_mode = uam::voice_input::NormalizeMode(settings.voice_input_mode);
 		settings.voice_input_server_base_url = uam::strings::Trim(settings.voice_input_server_base_url);
@@ -603,10 +608,13 @@ constexpr std::string_view kActiveProviderIdKey = "active_provider_id";
 		uam::settings::ClampAcpOutputSettings(settings);
 		settings.default_editor_preset_id = uam::editor_file_associations::NormalizeEditorPresetId(settings.default_editor_preset_id);
 		uam::editor_file_associations::NormalizeEditorFileAssociations(settings.editor_file_associations);
-		if (!uam::mcp_server_config::NormalizeAndValidate(settings.mcp_servers)) settings.mcp_servers.clear();
 		uam::execution_hosts::Normalize(settings.execution_hosts);
 		uam::compute_pools::Normalize(settings.compute_pools);
 		std::erase_if(settings.host_scoped_settings, [&](const std::pair<const std::string, HostScopedSettings>& entry) { const ExecutionHost* host = uam::execution_hosts::Find(settings.execution_hosts, entry.first); return host == nullptr || host->transport != "ssh"; });
+		// Per entry, after hosts: one bad server must not clear the rest, and each path is checked on its own computer.
+		uam::mcp_server_config::NormalizeEach(settings.mcp_servers, &settings.execution_hosts, {}, removed_mcp_servers);
+		for (auto& [host_id, scoped] : settings.host_scoped_settings)
+			if (scoped.mcp_servers) uam::mcp_server_config::NormalizeEach(*scoped.mcp_servers, &settings.execution_hosts, host_id, removed_mcp_servers);
 		uam::provider_availability::Normalize(settings.provider_availability);
 		std::string routing_error;
 		ExecutionRoutingSettings validated_routing;
@@ -732,6 +740,10 @@ bool SettingsStore::SaveInternal(const std::filesystem::path& settings_file, con
 		WriteRawSetting(lines, kMemoryWorkerBindingsKey, EncodeMemoryWorkerBindings(normalized.memory_worker_bindings));
 		WriteEncodedSetting(lines, kPermissionReviewerProviderIdKey, SavedProviderSelection(normalized, kPermissionReviewerProviderIdKey, normalized.permission_reviewer_provider_id));
 		WriteEncodedSetting(lines, kPermissionReviewerModelIdKey, normalized.permission_reviewer_model_id);
+		WriteEncodedSetting(lines, kPermissionCommandRulesKey, uam::permission_command_rules::Serialize(uam::command_rules::Normalize(normalized.permission_command_rules)).dump());
+		WriteBoolSetting(lines, kPermissionAiReviewEnabledKey, normalized.permission_ai_review_enabled);
+		// Hidden advanced override: written only once someone sets it, so ordinary files never show it.
+		if (normalized.permission_remote_commits_without_approval) WriteBoolSetting(lines, kPermissionRemoteCommitsWithoutApprovalKey, true);
 		WriteEncodedSetting(lines, kDefaultNewChatProviderIdKey, SavedProviderSelection(normalized, kDefaultNewChatProviderIdKey, normalized.default_new_chat_provider_id));
 		WriteRawSetting(lines, kProviderChatDefaultsKey, EncodeProviderChatDefaults(normalized.provider_chat_defaults));
 		nlohmann::json host_settings = nlohmann::json::object();
@@ -910,6 +922,8 @@ SettingsLoadResult SettingsStore::LoadInternal(const std::filesystem::path& sett
 		}
 		else
 		{
+			// A first run starts with the safe default rules; unreadable files are not overwritten here.
+			if (!primary_exists && !backup_exists) settings.permission_command_rules = uam::command_rules::DefaultRules();
 			ClampSettings(settings);
 			result.unrecovered_error = primary_exists || backup_exists;
 			if (result.unrecovered_error)
@@ -921,6 +935,7 @@ SettingsLoadResult SettingsStore::LoadInternal(const std::filesystem::path& sett
 	}
 	result.loaded = true;
 	settings.excluded_provider_selections.clear(); // Only this file's choices may be remembered.
+	bool saw_permission_command_rules = false;
 
 	std::istringstream lines(text);
 	std::string line;
@@ -1153,6 +1168,37 @@ SettingsLoadResult SettingsStore::LoadInternal(const std::filesystem::path& sett
 		{
 			settings.permission_reviewer_model_id = decoded_value;
 		}
+		else if (key == kPermissionCommandRulesKey)
+		{
+			// Validated at load: invalid or excess rules are dropped, never widened. An unreadable list falls back to
+			// the safe defaults rather than to no rules, and either case is reported.
+			const nlohmann::json parsed = nlohmann::json::parse(decoded_value, nullptr, false);
+			const auto append_warning = [&](std::string_view text)
+			{
+				if (!result.warning.empty()) result.warning += ' ';
+				result.warning += text;
+			};
+			if (!parsed.is_array())
+			{
+				settings.permission_command_rules = uam::command_rules::DefaultRules();
+				append_warning("The saved permission rules could not be read; the default rules apply until you save new ones.");
+			}
+			else
+			{
+				settings.permission_command_rules = uam::permission_command_rules::ParseLenient(parsed);
+				if (settings.permission_command_rules.size() != parsed.size())
+					append_warning("Some saved permission rules were invalid, duplicated or over the 200-rule limit and were ignored.");
+			}
+			saw_permission_command_rules = true;
+		}
+		else if (key == kPermissionRemoteCommitsWithoutApprovalKey)
+		{
+			settings.permission_remote_commits_without_approval = uam::parse::BoolOr(value, false);
+		}
+		else if (key == kPermissionAiReviewEnabledKey)
+		{
+			settings.permission_ai_review_enabled = uam::parse::BoolOr(value, settings.permission_ai_review_enabled);
+		}
 		else if (key == kDefaultNewChatProviderIdKey)
 		{
 			settings.default_new_chat_provider_id = decoded_value;
@@ -1207,11 +1253,9 @@ SettingsLoadResult SettingsStore::LoadInternal(const std::filesystem::path& sett
 						if (uam::provider_ids::IsRetainedExcludedProviderId(NormalizeStoredProviderId(saved))) (void)SelectIncludedProvider(settings, "host:" + entry.key(), saved, "");
 						else next.default_new_chat_provider_id = NormalizeProviderId(saved);
 					}
+					// Validated per entry once hosts are loaded (ClampSettings), since they are saved after this key.
 					if (entry.value().contains("servers") && entry.value()["servers"].is_array())
-					{
-						std::vector<McpServerConfiguration> servers = uam::mcp_server_config::Parse(entry.value()["servers"]);
-						if (uam::mcp_server_config::NormalizeAndValidate(servers)) next.mcp_servers = std::move(servers);
-					}
+						next.mcp_servers = uam::mcp_server_config::Parse(entry.value()["servers"]);
 					settings.host_scoped_settings[entry.key()] = std::move(next);
 				}
 			}
@@ -1295,7 +1339,9 @@ SettingsLoadResult SettingsStore::LoadInternal(const std::filesystem::path& sett
 	{
 		settings.provider_extra_flags = legacy_extra_flags;
 	}
-	ClampSettings(settings);
+	// Files written before command rules existed start with the safe defaults; a saved empty list stays empty.
+	if (!saw_permission_command_rules) settings.permission_command_rules = uam::command_rules::DefaultRules();
+	ClampSettings(settings, &result.removed_mcp_servers);
 	if (legacy_yolo)
 	{
 		for (auto& [provider_id, defaults] : settings.provider_chat_defaults)

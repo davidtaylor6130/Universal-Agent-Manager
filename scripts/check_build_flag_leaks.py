@@ -44,7 +44,7 @@ TEXT_SUFFIXES = {'.js', '.mjs', '.css', '.html', '.json', '.webmanifest', '.svg'
 # Third-party runtime files that UAM does not author; scanning them would only find Chromium text.
 SKIP_NAMES = {'Chromium Embedded Framework.framework', 'locales', 'swiftshader', 'UI-V2', 'CMakeFiles', '_deps'}
 # Packaged copies of binaries that are scanned once in their own scope.
-SKIP_FILES = {'uam-runner', 'uam-runner.exe', 'universal_agent_manager.exe'}
+SKIP_FILES = {'uam-runner', 'uam-runner.exe', 'universal_agent_manager.exe', 'universal_agent_manager.dll'}
 SKIP_SUFFIXES = {'.pdb', '.obj', '.pak', '.dat', '.bin', '.dll', '.icns', '.png', '.woff', '.woff2', '.ttf', '.bmp', '.ico', '.lib'}
 # A pattern entry is tested against the token around a match (up to whitespace, quotes, commas, semicolons or
 # brackets), so text from a neighbouring statement in a minified bundle cannot excuse it.
@@ -60,6 +60,12 @@ PRINTABLE_UTF32 = re.compile(rb'(?:[\x20-\x7e]\x00\x00\x00){4,}')
 # the tag (or a tag the cut ended inside) as ?A0x<hash>, so recorded residue stays valid wherever it was built.
 # ponytail: a cut that starts inside a tag keeps its hex tail; strings are 60 characters either side, so that is rare.
 MSVC_ANONYMOUS_NAMESPACE = re.compile(r'\?A0x[0-9a-f]{1,8}')
+
+
+# Vite names emitted files <name>-<8-character content hash>.<ext>; the hash is random base64url, so it can spell a
+# provider short name (delete-CGP1-aGy.js matched \bagy\b). UI text reads every such hash as <hash> before matching.
+# ponytail: an unhashed public file whose name ends in a dash and 8 characters is read the same way.
+VITE_CONTENT_HASH = re.compile(r'(?<=-)[A-Za-z0-9_-]{8}(?=\.(?:js|mjs|css|json|map|wasm|woff2?|ttf|svg|png|jpe?g|gif|webp|ico)\b)')
 
 
 def stable_text(text):
@@ -154,6 +160,8 @@ def find_leaks(disabled, artifacts, local_folders=(), foreign_folders=()):
             continue
         if local is not None:
             text = local.sub('<local>', text)
+        if scope == 'ui':
+            text = VITE_CONTENT_HASH.sub('<hash>', text)
         for name, pattern in patterns.items():
             for match in pattern.finditer(text):
                 start = max(0, match.start() - 60)
@@ -219,11 +227,13 @@ def native_artifacts(build_dir, values):
                 for part in (app / 'Contents' / 'Resources', app / 'Contents' / 'Info.plist'):
                     if part.exists():
                         found.append(('resources', part))
-    for candidate in (build_dir / 'Release' / 'universal_agent_manager.exe', build_dir / 'universal_agent_manager.exe'):
+    # On Windows the product code is universal_agent_manager.dll; universal_agent_manager.exe beside it is CEF's
+    # bootstrap.exe (the Chromium sandbox layout), which UAM does not author.
+    for candidate in (build_dir / 'Release' / 'universal_agent_manager.dll', build_dir / 'universal_agent_manager.dll'):
         if candidate.is_file():
             found.append(('native', candidate))
-            # The executable's folder is the Windows package: scan it as one resource tree (paths such as
-            # markdown-store/... match their allowlist globs) without rescanning the executables.
+            # The DLL's folder is the Windows package: scan it as one resource tree (paths such as
+            # markdown-store/... match their allowlist globs) without rescanning the binaries.
             found.append(('resources', candidate.parent))
     for runner in (build_dir / 'uam-runner', build_dir / 'Release' / 'uam-runner.exe', build_dir / 'Release' / 'uam-runner'):
         if runner.is_file() and cmake_bool(values.get('UAM_ENABLE_SSH', 'ON')):

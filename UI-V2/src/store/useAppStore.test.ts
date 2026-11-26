@@ -1106,6 +1106,47 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(cefStore.getState().cliVersionManager).toMatchObject({ providers: [], remoteProviders: [] })
   })
 
+  it('maps native goals on a full load and a patch, recording an empty list only from a patch', async () => {
+    const testWindow = ensureTestWindow()
+    vi.resetModules()
+    testWindow.dispatchEvent = vi.fn(() => true)
+    const initial = makeCppState(1)
+    const withoutGoals = { ...initial.chats[0], id: 'chat-2', cliTerminal: { ...initial.chats[0].cliTerminal!, terminalId: 'term-chat-2', sourceChatId: 'chat-2' } }
+    initial.chats[0].goals = [{
+      id: 'goal-1', objective: 'Ship the change', status: 'active', tokensUsed: 5, completedItems: ['read'],
+      createdAt: '2026-01-02T00:00:00.000Z', updatedAt: '2026-01-02T00:00:01.000Z', executionOwner: 'provider', workerModelId: 'worker',
+    }]
+    initial.chats.push(withoutGoals)
+    testWindow.cefQuery = ({ onSuccess }) => onSuccess(JSON.stringify(initial))
+    const { useAppStore: cefStore } = await import('./useAppStore')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const loaded = cefStore.getState().goalsByChatId
+    expect(Object.keys(loaded)).toEqual(['chat-1'])
+    const [goal] = loaded['chat-1']
+    expect(Object.keys(goal).sort()).toEqual([
+      'blockedTurnCount', 'chatId', 'completedItems', 'createdAt', 'currentStep', 'executionOwner', 'id', 'lastBlocker', 'lastBlockerKind',
+      'lastDecisionSource', 'lastDiagnostic', 'lastNextPrompt', 'lastVerification', 'loopCount', 'objective', 'pendingContinuation',
+      'providerCommand', 'remainingItems', 'reviewerModelId', 'sameNextPromptCount', 'status', 'tokenBudget', 'tokensUsed', 'updatedAt', 'workerModelId',
+    ])
+    expect(goal).toEqual({
+      id: 'goal-1', chatId: 'chat-1', objective: 'Ship the change', status: 'active', tokenBudget: 0, tokensUsed: 5, blockedTurnCount: 0,
+      pendingContinuation: false, completedItems: ['read'], sameNextPromptCount: 0, loopCount: 0,
+      createdAt: new Date('2026-01-02T00:00:00.000Z'), updatedAt: new Date('2026-01-02T00:00:01.000Z'),
+      executionOwner: 'provider', providerCommand: '', workerModelId: 'worker', reviewerModelId: '',
+    })
+
+    testWindow.uamPush?.({ type: 'statePatch', data: { stateRevision: 2, chats: [withoutGoals] } })
+    expect(cefStore.getState().goalsByChatId['chat-2']).toEqual([])
+    expect(cefStore.getState().goalsByChatId['chat-1']).toBe(loaded['chat-1'])
+
+    testWindow.uamPush?.({ type: 'statePatch', data: { stateRevision: 3, chats: [initial.chats[0]] } })
+    const patched = cefStore.getState().goalsByChatId['chat-1']
+    expect(patched).not.toBe(loaded['chat-1'])
+    expect(patched).toEqual([goal])
+    expect(Object.keys(patched[0])).toEqual(Object.keys(goal))
+  })
+
   it('preserves unknown native activity across full state, patches, and binding updates', async () => {
     const testWindow = ensureTestWindow()
     vi.resetModules()
@@ -7048,7 +7089,7 @@ describe('useAppStore Gemini CLI slice', () => {
     })
   })
 
-  it('loads only primary-capable UAM agents for a chat catalog', async () => {
+  it('lists chat agents and marks sub-agents delegate-only for a chat catalog', async () => {
     useAppStore.getState().loadFromCef(makeCppState(1))
     const requests: Array<{ action: string; payload?: unknown }> = []
     window.cefQuery = ({ request, onSuccess }) => {
@@ -7061,8 +7102,37 @@ describe('useAppStore Gemini CLI slice', () => {
     }
 
     await expect(useAppStore.getState().refreshUamAgents('chat-1')).resolves.toBe(true)
-    expect(requests[0]).toMatchObject({ action: 'listUamAgents', payload: { chatId: 'chat-1' } })
-    expect(useAppStore.getState().uamAgentsBySessionId['chat-1'].map((agent) => agent.id)).toEqual(['build', 'reviewer'])
+    expect(requests[0]).toMatchObject({ action: 'listUamAgents', payload: { chatId: 'chat-1', includeDelegateOnly: true } })
+    expect(useAppStore.getState().uamAgentsBySessionId['chat-1']).toEqual([
+      { id: 'build', description: 'Build', builtIn: true },
+      { id: 'reviewer', description: 'Review', builtIn: false },
+      { id: 'helper', description: 'Help', builtIn: false, delegateOnly: true },
+    ])
+  })
+
+  it('returns the backend reason in one line when a provider agent import is refused', async () => {
+    useAppStore.getState().loadFromCef(makeCppState(1))
+    const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
+    window.cefQuery = ({ request, onFailure }) => {
+      requests.push(JSON.parse(request))
+      onFailure(400, 'Import source is already managed\nor the target agent already exists.')
+    }
+    const options = { chatId: '', providerId: 'claude-cli', sourcePath: '/tmp/reviewer.md', canonicalId: 'reviewer', workspaceAccess: 'read' as const, workspaceScope: false, acknowledgeIgnoredFields: false, replaceExisting: true }
+    await expect(useAppStore.getState().importProviderAgent(options)).resolves.toEqual({
+      ok: false,
+      error: 'Import source is already managed or the target agent already exists.',
+    })
+    expect(requests[0]).toMatchObject({ action: 'importProviderAgent', payload: { replaceExisting: true, workspaceScope: false } })
+  })
+
+  it('reports the imported agent, its mode and scope', async () => {
+    useAppStore.getState().loadFromCef(makeCppState(1))
+    window.cefQuery = ({ request, onSuccess }) => {
+      const { action } = JSON.parse(request)
+      onSuccess(JSON.stringify(action === 'importProviderAgent' ? { id: 'reviewer', description: 'Review', mode: 'subagent', scope: 'workspace' } : { agents: [] }))
+    }
+    await expect(useAppStore.getState().importProviderAgent({ chatId: 'chat-1', providerId: 'gemini-cli', sourcePath: '/tmp/reviewer.md', canonicalId: 'Reviewer', workspaceAccess: 'read', workspaceScope: true, acknowledgeIgnoredFields: false }))
+      .resolves.toEqual({ ok: true, id: 'reviewer', mode: 'subagent', scope: 'workspace' })
   })
 
   it('reconciles and persists sidebar display settings through CEF', async () => {
@@ -7676,6 +7746,34 @@ describe('useAppStore Gemini CLI slice', () => {
     expect(result.message).toBe('Git commit created locally.')
     expect(result.error).toBe('')
     expect(result.status?.changedFiles).toEqual([])
+  })
+
+  it('reads update warnings and sends conflict resolution with the chosen side', async () => {
+    const requests: Array<{ action: string; payload?: Record<string, unknown> }> = []
+    const testWindow = ensureTestWindow()
+    testWindow.cefQuery = vi.fn(({ request, onSuccess, onFailure }) => {
+      const parsed = JSON.parse(request as string)
+      requests.push({ action: parsed.action, payload: parsed.payload })
+      if (parsed.action === 'updateVcsWorkspace') {
+        onSuccess?.(JSON.stringify({ ok: true, conflicts: true, revision: '2', output: 'C    a.txt', warnings: ["External 'ext' could not be updated.", 7, ''] }))
+        return
+      }
+      if (parsed.action === 'resolveVcsConflict' && parsed.payload.accept === 'mine-full') {
+        onFailure?.(400, 'This path is no longer conflicted. Refresh the changed files.')
+        return
+      }
+      onSuccess?.(JSON.stringify({ ok: true, output: "Resolved conflicted state of 'a.txt'" }))
+    }) as TestWindow['cefQuery']
+
+    const update = await useAppStore.getState().updateVcsWorkspace('chat-1', 'svn', 'update-1')
+    expect(update).toMatchObject({ ok: true, conflicts: true, revision: '2', warnings: ["External 'ext' could not be updated."] })
+
+    const resolved = await useAppStore.getState().resolveVcsConflict('chat-1', 'svn', 'a.txt', 'working')
+    expect(requests.at(-1)).toEqual({ action: 'resolveVcsConflict', payload: { chatId: 'chat-1', vcsType: 'svn', path: 'a.txt', accept: 'working' } })
+    expect(resolved).toEqual({ ok: true, output: "Resolved conflicted state of 'a.txt'", error: '' })
+
+    const refused = await useAppStore.getState().resolveVcsConflict('chat-1', 'svn', 'a.txt', 'mine-full')
+    expect(refused).toEqual({ ok: false, output: '', error: 'This path is no longer conflicted. Refresh the changed files.' })
   })
 
   it('rejects failed VCS file diff responses instead of rendering the error as a diff', async () => {

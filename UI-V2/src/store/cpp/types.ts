@@ -1,15 +1,17 @@
 import type { StartupNativeImportStatus } from '../../types/startupNativeImports'
 import type { ExecutionRoutingSettings } from '../../types/executionRouting'
+import type { ExecutionHostLoad, RoutingWaitHost } from '../../types/hostLoad'
 import type { CustomIcon } from '../../types/customIcon'
 // C++ state serialisation types (mirrors state_serializer.cpp output) plus the
 // frontend-facing binding/push types. Extracted from useAppStore.ts (MO-1); the
 // store re-exports everything here so existing imports keep working.
 
 import type { Attachment, MessageBlock, MessageToolCall } from '../../types/message'
-import type { GoalStatus } from '../../types/goal'
+import type { Goal } from '../../types/goal'
 import type { StoredTheme } from '../../utils/themeStorage'
 import type { ResourceCollection } from '../../types/resourceCollection'
 import type { MemoryLevel } from '../../types/memory'
+import type { PermissionCommandRule } from '../../types/permissionRules'
 
 /** Which PowerShell hosts UAM's Windows terminal windows; auto prefers built-in Windows PowerShell 5.1. */
 export type WindowsPowerShellPreference = 'auto' | 'windows-powershell' | 'pwsh'
@@ -96,6 +98,7 @@ export interface CppChat {
   routingAssignedConnectionIdentity?: string
   routingAssignedProviderConfigurationIdentity?: string
   routingWaitReason?: string
+  routingWaitHosts?: RoutingWaitHost[]
   routingUnresolvedReservation?: boolean
 
   id: string
@@ -191,31 +194,10 @@ export interface CppChat {
   goalMode?: boolean
 }
 
-export interface CppGoal {
-  id: string
-  objective: string
-  status: GoalStatus
-  tokenBudget?: number
-  tokensUsed?: number
-  blockedTurnCount?: number
-  lastBlocker?: string
-	lastBlockerKind?: string
-  lastDiagnostic?: string
-  lastDecisionSource?: string
-  pendingContinuation?: boolean
-  completedItems?: string[]
-  remainingItems?: string[]
-  currentStep?: string
-  lastVerification?: string
-  lastNextPrompt?: string
-  sameNextPromptCount?: number
-  loopCount?: number
+/** The native goal record: the frontend Goal before its chat id is attached and its ISO timestamps become Dates. */
+export type CppGoal = Omit<Goal, 'chatId' | 'createdAt' | 'updatedAt'> & {
   createdAt: string
   updatedAt: string
-	executionOwner?: 'uam' | 'provider'
-	workerModelId?: string
-	reviewerModelId?: string
-	providerCommand?: string
 }
 
 export interface GitWorktreeStatus {
@@ -363,6 +345,8 @@ export interface AcpPendingPermission {
   safetyRisk?: 'allowed' | 'warn' | 'warn_high'
   safetyTier?: 'low' | 'medium' | 'high'
   safetyRequiresApproval?: boolean
+  /** One-line reason a permission rule holds this request, such as a push waiting for approval. */
+  ruleNotice?: string
   options: AcpPermissionOption[]
 }
 
@@ -405,7 +389,11 @@ export interface AcpSecretRequest {
   localPlatform: string
   /** The chat is in Plan mode: the user allows this one request before the field appears. */
   planOptIn: boolean
-  keychain: { available: boolean; saved: boolean }
+  /**
+   * Saved secrets are scoped to this workspace, provider, agent and label. savedAt (epoch ms) and agent describe the saved
+   * entry; legacySaved marks an entry from before scoping, which is never offered for use and can only be forgotten.
+   */
+  keychain: { available: boolean; saved: boolean; savedAt?: number; agent?: string; legacySaved?: boolean }
 }
 
 export type SecretSubmission = { value?: string; useSaved?: boolean; save?: boolean }
@@ -753,7 +741,8 @@ export interface ComputePoolWait {
   limit: number
 }
 
-export type ComputePoolUsage = Record<string, { inUse: number; waiting: number }>
+/** Per pool; `hosts` splits the same counts by the computer each turn runs on. */
+export type ComputePoolUsage = Record<string, { inUse: number; waiting: number; hosts?: Record<string, { inUse: number; waiting: number }> }>
 
 /** One pull request linked to one chat. The native watch service owns it; the UI only displays and toggles it. */
 export interface PullRequestWatch {
@@ -776,6 +765,17 @@ export interface PullRequestWatch {
   paused: boolean
   /** Latest news of this app run; a new serial is reported once in the notifications panel. */
   notice?: { serial: number; message: string; tone: 'info' | 'success' | 'warning' }
+}
+
+/** A one-line message from the native timer service (scheduled follow-ups and automation schedules) for the notifications panel. */
+export interface TimerNotice {
+  serial: number
+  /** Short panel title naming what happened, such as "Follow-up dropped". */
+  title?: string
+  message: string
+  tone: 'info' | 'success' | 'warning'
+  /** The chat it concerns, when there is one. */
+  chatId?: string
 }
 
 export interface ShellAction {
@@ -847,6 +847,8 @@ export interface CppSettings extends VoiceInputSettings, Partial<VcsStorageSetti
   sidebarPinnedChatOrder?: string[]
   sidebarActiveChatOrder?: string[]
   steerActiveTurnOnSend?: boolean
+  permissionCommandRules?: PermissionCommandRule[]
+  permissionAiReviewEnabled?: boolean
   gitEnabled?: boolean
   svnEnabled?: boolean
   memoryEnabledDefault: boolean
@@ -911,7 +913,29 @@ export interface UamAgentSummary {
   id: string
   description: string
   builtIn: boolean
+  /** Only other agents can delegate to it: listed for visibility, never selectable as a chat's own agent. */
+  delegateOnly?: boolean
 }
+
+/** Where a saved agent definition lives: every workspace, or only the active chat's workspace. */
+export type AgentDefinitionScope = 'global' | 'workspace'
+
+export interface ProviderAgentImportOptions {
+  chatId: string
+  providerId: string
+  sourcePath: string
+  canonicalId: string
+  workspaceAccess: 'read' | 'write'
+  workspaceScope: boolean
+  acknowledgeIgnoredFields: boolean
+  /** Overwrite an agent with the same ID in the target scope; sent only after the user confirms. */
+  replaceExisting?: boolean
+}
+
+/** A refused import carries the backend's one-line reason, or '' when it gave none. */
+export type ProviderAgentImportOutcome =
+  | { ok: true; id: string; mode: string; scope: AgentDefinitionScope }
+  | { ok: false; error: string }
 
 export interface ProviderAgentCandidate {
   id: string
@@ -1070,6 +1094,17 @@ export interface VcsUpdateResult {
   conflicts: boolean
   revision: string
   output: string
+  /** The update finished, but something it covers did not, one line each (an external that could not be updated). */
+  warnings?: string[]
+  error: string
+}
+
+/** How `svn resolve` settles a conflicted path: keep the file as it is now, take the repository's version or keep the local one. */
+export type VcsResolveChoice = 'working' | 'theirs-full' | 'mine-full'
+
+export interface VcsResolveResult {
+  ok: boolean
+  output: string
   error: string
 }
 
@@ -1132,7 +1167,9 @@ export interface CppAppState {
   cliVersionManager?: CliVersionManager
   shellActions?: ShellAction[]
   computePoolUsage?: ComputePoolUsage
+  executionHostLoad?: ExecutionHostLoad
   prWatches?: PullRequestWatch[]
+  timers?: { notices: TimerNotice[] }
   shellActionNotification?: string
   statusLine?: string
   deletionProgress?: CppDeletionProgress
@@ -1170,7 +1207,9 @@ export interface CppStatePatch {
   cliVersionManager?: CliVersionManager
   shellActions?: ShellAction[]
   computePoolUsage?: ComputePoolUsage
+  executionHostLoad?: ExecutionHostLoad
   prWatches?: PullRequestWatch[]
+  timers?: { notices: TimerNotice[] }
   shellActionNotification?: string
   statusLine?: string
 }

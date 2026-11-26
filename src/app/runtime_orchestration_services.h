@@ -13,6 +13,7 @@
 #include <future>
 #include "common/chat/chat_repository.h"
 #include "common/chat/chat_folder_store.h"
+#include "common/provider/antigravity_native_history.h"
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -105,6 +106,19 @@ class ChatHistorySyncService
 		// Exact rows saved by the partial local importer, eligible for sidebar adoption.
 		std::vector<std::string> published_chat_ids;
 		std::size_t omitted_error_count = 0;
+		/// A history refused because the reader does not know one of its fields yet.
+		/// Its message is also in errors; callers may report each one once.
+		struct FormatRefusal
+		{
+			/// Provider and native session, stable across reader versions and file changes.
+			std::string identity;
+			/// Changes when the reader version or the native file changes.
+			std::string report_key;
+			std::string message;
+			/// Detailed log line naming the message kind, field number and wire type.
+			std::string diagnostic;
+		};
+		std::vector<FormatRefusal> format_refusals;
 
 		bool partial() const { return imported_count > 0 && !success; }
 		void Fail(std::string error)
@@ -122,6 +136,7 @@ class ChatHistorySyncService
 			errors.insert(errors.end(), other.errors.begin(), other.errors.end());
 			confirmed_empty_native_keys.insert(confirmed_empty_native_keys.end(), other.confirmed_empty_native_keys.begin(), other.confirmed_empty_native_keys.end());
 			published_chat_ids.insert(published_chat_ids.end(), other.published_chat_ids.begin(), other.published_chat_ids.end());
+			format_refusals.insert(format_refusals.end(), other.format_refusals.begin(), other.format_refusals.end());
 		}
 	};
 	/// Final reconciliation may supply its still-attached terminal; ownership is revalidated before publication.
@@ -181,6 +196,8 @@ class ChatHistorySyncService
 		std::map<std::string, uam::opencode_import::Spool> open_code_exports;
 		std::vector<std::pair<ChatSession, std::filesystem::path>> codex_rollouts;
 		ImportResult result;
+		/// Antigravity's per-conversation refusals, so an exact read can report its plain reason.
+		std::vector<uam::antigravity::history::Refusal> antigravity_refusals;
 		std::shared_future<std::shared_ptr<PreparedHistoryBatch>> preparation;
 		std::shared_future<bool> publication_sync;
 		std::optional<std::size_t> open_code_next_offset;
@@ -241,7 +258,9 @@ class ChatHistorySyncService
 	    uam::AppState& app, const std::string& folder_id,
 	    const std::vector<RemoteCodexSession>& sessions) const;
 	/// Reads a local rollout without touching application state; run off the GUI thread.
-	std::optional<ChatSession> LoadLocalNativeTranscript(const ChatSession& chat, std::string* error = nullptr, std::stop_token stop_token = {}) const;
+	/// unsettled_out is set when the provider is still writing the exact conversation, so a
+	/// passive refresh can keep saved history instead of reporting a failure.
+	std::optional<ChatSession> LoadLocalNativeTranscript(const ChatSession& chat, std::string* error = nullptr, std::stop_token stop_token = {}, bool* unsettled_out = nullptr) const;
 	/// <summary>Reads exact Gemini, Claude or Copilot native history through an authenticated immutable runner snapshot.</summary>
 	std::optional<ChatSession> LoadRemoteNativeTranscript(const ExecutionHost& host, const ChatSession& chat, std::string* error = nullptr, std::stop_token stop_token = {}) const;
 	/// <summary>Validates snapshot ownership and reuses provider-native parsers without changing environment variables.</summary>
@@ -259,6 +278,9 @@ class ChatHistorySyncService
 	// Exact deletion keys (NativeIdentityKeyForHistoryImport); nullopt when the records cannot be read.
 	std::optional<std::unordered_set<std::string>> NativeImportTombstoneKeys(const std::filesystem::path& data_root) const;
 	bool RemoveNativeImportTombstones(const std::filesystem::path& data_root, const std::vector<std::string>& keys) const;
+	/// Notes unknown-format refusals in the import tombstone record, apart from deletion keys.
+	/// Returns the messages of refusals already reported for the same reader version and file revision.
+	std::unordered_set<std::string> RecordNativeFormatRefusals(const std::filesystem::path& data_root, const std::vector<ImportResult::FormatRefusal>& refusals) const;
 	/// <summary>Save a validated native transcript before replacing the live chat; keep active or unsaved work.</summary>
 	/// Build a loaded detached candidate without storage or live-runtime access; false preserves a longer baseline.
 	bool BuildNativeTranscriptCandidate(ChatSession& detached, std::vector<Message> messages) const;

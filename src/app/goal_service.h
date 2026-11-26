@@ -1,5 +1,6 @@
 #pragma once
 
+#include "app/decision_service.h"
 #include "common/models/app_models.h"
 #include "common/state/app_state.h"
 #include "app/vcs_commit_service.h"
@@ -23,8 +24,8 @@ class GoalService
 	struct ReviewDecision
 	{
 		std::string decision;
-		/// Stamped by the caller from the turn that produced the text; parsing alone proves nothing.
-		std::string source;
+		/// Set by the caller from DecisionService once the reply is validated; parsing alone proves nothing.
+		DecisionAttribution attribution = DecisionAttribution::Fallback();
 		std::string reason;
 		std::string next_prompt;
 		std::string blocker_kind;
@@ -133,10 +134,21 @@ class GoalService
 	/// Record a blocker for the goal. After >= 3 consecutive turns at the same
 	/// blocker, the goal is auto-marked as blocked (per Codex behavior).
 	/// Every caller states who decided: see kDecisionSource* in app_models.h.
+	/// A source naming a model is recorded as fallback: only a DecisionAttribution from DecisionService can name one.
 	/// </summary>
 	static void RecordBlocker(AppState& app, const std::string& chat_id,
 	                          const std::string& goal_id, const std::string& blocker,
 	                          const std::string& decision_source, const std::string& blocker_kind = {});
+	/// <summary>Record a blocker decided through the decision interface, with its backend.</summary>
+	static void RecordBlocker(AppState& app, const std::string& chat_id,
+	                          const std::string& goal_id, const std::string& blocker,
+	                          const DecisionAttribution& attribution, const std::string& blocker_kind = {});
+	/// <summary>Save who made the goal's latest automatic decision: its source string and, for a model, the backend.</summary>
+	static void RecordDecision(Goal& goal, const DecisionAttribution& attribution);
+	/// <summary>The user replaced the automatic verdict (Mark complete, marking blocked, Restart): no source, no backend.</summary>
+	static void ClearDecision(Goal& goal);
+	/// <summary>The goal review as a Choice: continue, blocked or complete.</summary>
+	static DecisionRequest ReviewDecisionRequest();
 
 	/// <summary>
 	/// Build the continuation prompt text to inject before the next provider turn.

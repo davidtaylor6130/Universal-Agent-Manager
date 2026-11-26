@@ -1,4 +1,5 @@
 #include "app/pr_watch_service.h"
+#include "app/timer_service.h"
 #include "app/agent_run_scheduler.h"
 #include "cef/uam_query_handler.h"
 #include "cef/uam_query_handler_async.h"
@@ -385,6 +386,8 @@ namespace
 				{ result.status = 400; result.error = "Choose an absolute directory on this SSH host."; break; }
 				uam::remote::DirectoryListing listing;
 				if (!client.ListDirectories(uam::paths::PathFromUtf8(path), listing, &result.error)) { result.status = 500; break; }
+				if (!uam::execution_hosts::RemoteDirectoryMatchesRequest(host.platform, path, listing.directory))
+				{ result.status = 502; result.error = "The SSH host returned a different directory for this attachment."; break; }
 				MessageAttachment attachment;
 				attachment.id = uam::nlohmann_json::TrimmedStringValue(item, {attachment_fields::kIdField});
 				if (attachment.id.empty()) attachment.id = AttachmentId();
@@ -1600,6 +1603,7 @@ void UamQueryHandler::HandleCancelAcpTurn(CefRefPtr<CefBrowser> browser, const n
 		if (session != nullptr && (session->remote_stop_pending || (session->remote_stop_unconfirmed && !session->running)))
 		{
 			if (m_app.pr_watch_service != nullptr) (void)m_app.pr_watch_service->EndWatchesForChat(chat_id);
+			if (m_app.timer_service != nullptr) (void)m_app.timer_service->CancelWakesForChat(chat_id);
 			uam::PushStateUpdateIfChanged(browser, m_app);
 			cb->Success(R"({"pending":true})");
 			return;
@@ -1610,8 +1614,9 @@ void UamQueryHandler::HandleCancelAcpTurn(CefRefPtr<CefBrowser> browser, const n
 		return;
 	}
 
-	// Pressing Stop also ends the chat's pull request watches, so a later wake cannot restart the work.
+	// Pressing Stop also ends the chat's pull request watches and scheduled follow-ups, so a later wake cannot restart the work.
 	if (m_app.pr_watch_service != nullptr) (void)m_app.pr_watch_service->EndWatchesForChat(chat_id);
+	if (m_app.timer_service != nullptr) (void)m_app.timer_service->CancelWakesForChat(chat_id);
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }

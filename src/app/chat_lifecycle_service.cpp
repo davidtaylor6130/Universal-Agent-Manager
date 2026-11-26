@@ -1281,6 +1281,7 @@ bool uam::RequestTemporarySideChatCleanup(AppState& app, const std::string& chat
 		return false;
 	}
 	chat->side_cleanup_retry_time_s = 0.0;
+	app.latest_side_cleanup_chat_id = chat_id;
 	return true;
 }
 
@@ -1291,9 +1292,18 @@ bool uam::PollTemporarySideChatCleanup(AppState& app)
 	for (const ChatSession& chat : app.chats)
 		if (!chat.temporary_parent_chat_id.empty() && chat.side_cleanup_requested && chat.side_cleanup_retry_time_s <= now)
 			pending.push_back(chat.id);
+	// The latest request goes first, so Dismiss side chat removes the dismissed chat even while startup leftovers drain.
+	if (const std::vector<std::string>::iterator latest = std::ranges::find(pending, app.latest_side_cleanup_chat_id); latest != pending.end())
+		std::rotate(pending.begin(), latest, latest + 1);
 	bool changed = false;
+	// Each removal is a whole deletion transaction (several passes over every chat, staging and durable writes).
+	// Startup flags every leftover side chat at once, so remove one per poll; the rest keep their due time and
+	// are taken on later polls (#961).
+	constexpr std::size_t kMaxSideChatRemovalsPerPoll = 1;
+	std::size_t removals = 0;
 	for (const std::string& id : pending)
 	{
+		if (removals >= kMaxSideChatRemovalsPerPoll) break;
 		ChatSession* chat = ChatDomainService().FindChatById(app, id);
 		if (chat == nullptr) continue;
 		chat->side_cleanup_retry_time_s = now + 5.0;
@@ -1334,6 +1344,7 @@ bool uam::PollTemporarySideChatCleanup(AppState& app)
 		}
 		uam::StopAndEraseCliTerminalForChat(app, id, false);
 		if (ChatHasDeletionBlockingRuntime(app, id)) continue;
+		++removals;
 		changed = RemoveChatById(app, id) || changed;
 	}
 	return changed;
@@ -2165,7 +2176,13 @@ bool uam::RecoverPendingDeletionTransaction(AppState& app)
 	recovery.settings = app.settings;
 	recovery.provider_profiles = app.provider_profiles;
 	recovery.chats = ChatRepository::LoadLocalChats(app.data_root);
-	recovery.folders = ChatFolderStore::Load(app.data_root);
+	uam::io::StoreLoadResult folders_load;
+	recovery.folders = ChatFolderStore::Load(app.data_root, &folders_load, uam::io::StoreFenceMode::Arm);
+	if (folders_load.Unrecovered() && !intent.folder_ids.empty())
+	{
+		app.status_line = "A pending workspace deletion could not be completed. " + folders_load.warning;
+		return false;
+	}
 	std::vector<ChatSession> next_chats;
 	std::vector<ChatFolder> next_folders;
 	std::vector<ChatSession> deleted_chats;
@@ -2195,6 +2212,13 @@ bool uam::PrepareWorkspaceDeletion(AppState& app, const std::vector<std::string>
 	if (app.startup_native_import_service != nullptr && app.startup_native_import_service->ImportPending())
 	{
 		app.status_line = "Wait for native history loading to finish.";
+		return false;
+	}
+	// Refuse before the deletion transaction is written: a committed intent whose folder save is
+	// refused would otherwise be replayed, and refused again, at every startup.
+	if (ChatFolderStore::IsSaveFenced(app.data_root))
+	{
+		app.status_line = "Workspaces can't be deleted until folders.txt is repaired and UAM restarts.";
 		return false;
 	}
 

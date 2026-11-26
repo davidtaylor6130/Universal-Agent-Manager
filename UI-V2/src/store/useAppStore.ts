@@ -1,5 +1,6 @@
 import { MOBILE_COMPANION_ENABLED, SSH_ENABLED } from '../config/buildFeatures'
 import { EMPTY_STARTUP_NATIVE_IMPORT_STATUS } from '../types/startupNativeImports'
+import { EMPTY_HOST_LOAD } from '../types/hostLoad'
 import { createExecutionRoutingSlice } from './slices/executionRoutingSlice'
 import { DEFAULT_CENTRAL_PROVIDER_CONFIGURATION, type CentralProviderConfiguration } from './cpp/types'
 import { create } from 'zustand'
@@ -7,6 +8,8 @@ import { Session, Folder } from '../types/session'
 import { Message } from '../types/message'
 import { Provider } from '../types/provider'
 import type { MemoryLevel } from '../types/memory'
+import type { PermissionCommandRule } from '../types/permissionRules'
+import type { Goal } from '../types/goal'
 import { sendToCEF, isCefContext, isCompanionContext } from '../ipc/cefBridge'
 import {
   CLI_TRANSCRIPT_FLUSH_DELAY_MS,
@@ -49,7 +52,7 @@ export {
 // Moved to ./cpp/types.ts (MO-1). Re-exported so existing imports keep working.
 
 export * from './cpp/types'
-import type { WindowsPowerShellPreference, VoiceInputSettings, VcsStorageSettings, ProviderAvailabilityOverride, AcpBinding, CliBinding, CliTranscript, CliVersionManager, CppAppState, CppCliDebugState, CppStatePatch, EditorFileAssociation, MemoryActivity, MemoryWorkerBinding, McpServerConfiguration, ProviderChatDefaults, ProviderModelCatalog, ShellAction } from './cpp/types'
+import type { WindowsPowerShellPreference, VoiceInputSettings, VcsStorageSettings, ProviderAvailabilityOverride, AcpBinding, CliBinding, CliTranscript, CliVersionManager, CppAppState, CppCliDebugState, CppGoal, CppStatePatch, EditorFileAssociation, MemoryActivity, MemoryWorkerBinding, McpServerConfiguration, ProviderChatDefaults, ProviderModelCatalog, ShellAction } from './cpp/types'
 import { acpBindingFromCppChat, applyPendingCodexOptions, appendCliTranscriptChunk, cliBindingFromCppChat, cppPatchRevision, cppStateRevision, decodeCliChunk, folderFromCppFolder, normalizeCliTranscript, cliOutputMatchesBinding, providerFromCppProvider, reconcileCppMessages, reconcileHeldOutboxHistory, queuedPromptsEquivalent, sameArrayEntries, sameRecordEntries, sessionFromCppChat } from './cpp/reconcile'
 import { pendingProviderChatDefaults, withoutDeletedKeys } from './slices/sessionsSlice'
 import { parseUamPushPayload, cliDebugSignature, isNewerStateRevision } from './push/uamPush'
@@ -89,6 +92,36 @@ function mergeAssistantText(durable: string, streamed: string): string {
   return durable + streamed
 }
 
+function mapCppGoal(chatId: string, cppGoal: CppGoal): Goal {
+  return {
+    id: cppGoal.id,
+    chatId,
+    objective: cppGoal.objective,
+    status: cppGoal.status,
+    tokenBudget: cppGoal.tokenBudget,
+    tokensUsed: cppGoal.tokensUsed,
+    blockedTurnCount: cppGoal.blockedTurnCount,
+    lastBlocker: cppGoal.lastBlocker,
+    lastBlockerKind: cppGoal.lastBlockerKind,
+    lastDiagnostic: cppGoal.lastDiagnostic,
+    lastDecisionSource: cppGoal.lastDecisionSource,
+    completedItems: cppGoal.completedItems,
+    remainingItems: cppGoal.remainingItems,
+    pendingContinuation: cppGoal.pendingContinuation,
+    currentStep: cppGoal.currentStep,
+    lastVerification: cppGoal.lastVerification,
+    lastNextPrompt: cppGoal.lastNextPrompt,
+    sameNextPromptCount: cppGoal.sameNextPromptCount,
+    loopCount: cppGoal.loopCount,
+    createdAt: new Date(cppGoal.createdAt || Date.now()),
+    updatedAt: new Date(cppGoal.updatedAt || Date.now()),
+    executionOwner: cppGoal.executionOwner ?? 'uam',
+    providerCommand: cppGoal.providerCommand ?? '',
+    workerModelId: cppGoal.workerModelId ?? '',
+    reviewerModelId: cppGoal.reviewerModelId ?? '',
+  }
+}
+
 function deserializeState(
   cpp: CppAppState,
   existing: VoiceInputSettings & VcsStorageSettings & {
@@ -124,6 +157,8 @@ function deserializeState(
     sidebarPinnedChatOrder: string[]
     sidebarActiveChatOrder: string[]
     steerActiveTurnOnSend: boolean
+    permissionCommandRules: PermissionCommandRule[]
+    permissionAiReviewEnabled: boolean
     gitEnabled?: boolean
     svnEnabled?: boolean
     updateChecksEnabled: boolean
@@ -162,7 +197,9 @@ function deserializeState(
     shellActions: ShellAction[]
     computePools: AppState['computePools']
     computePoolUsage: AppState['computePoolUsage']
+    executionHostLoad: AppState['executionHostLoad']
     prWatches: AppState['prWatches']
+    timerNotices: AppState['timerNotices']
     shellActionNotification: string
     statusLine: string
   }
@@ -274,41 +311,15 @@ function deserializeState(
 
   const sessionsWithPendingCodexOptions = applyPendingCodexOptions(sessions)
 
-  const goalsByChatId: Record<string, import('../types/goal').Goal[]> = {}
+  const goalsByChatId: Record<string, Goal[]> = {}
   const activeGoalIdByChatId: Record<string, string | null> = {}
   for (const chat of cpp.chats) {
     if (chat.activeGoalId !== undefined) {
       activeGoalIdByChatId[chat.id] = chat.activeGoalId
     }
+    // A full load leaves chats without goals out of the map; applyStatePatch writes [] instead.
     if (Array.isArray(chat.goals) && chat.goals.length > 0) {
-      const goalObjects: import('../types/goal').Goal[] = chat.goals.map((cppGoal) => ({
-        id: cppGoal.id,
-        chatId: chat.id,
-        objective: cppGoal.objective,
-        status: cppGoal.status,
-        tokenBudget: cppGoal.tokenBudget,
-        tokensUsed: cppGoal.tokensUsed,
-        blockedTurnCount: cppGoal.blockedTurnCount,
-        lastBlocker: cppGoal.lastBlocker,
-        lastBlockerKind: cppGoal.lastBlockerKind,
-        lastDiagnostic: cppGoal.lastDiagnostic,
-        lastDecisionSource: cppGoal.lastDecisionSource,
-        completedItems: cppGoal.completedItems,
-        remainingItems: cppGoal.remainingItems,
-        pendingContinuation: cppGoal.pendingContinuation,
-        currentStep: cppGoal.currentStep,
-        lastVerification: cppGoal.lastVerification,
-        lastNextPrompt: cppGoal.lastNextPrompt,
-        sameNextPromptCount: cppGoal.sameNextPromptCount,
-        loopCount: cppGoal.loopCount,
-        createdAt: new Date(cppGoal.createdAt || Date.now()),
-        updatedAt: new Date(cppGoal.updatedAt || Date.now()),
-        executionOwner: cppGoal.executionOwner ?? 'uam',
-        providerCommand: cppGoal.providerCommand ?? '',
-        workerModelId: cppGoal.workerModelId ?? '',
-        reviewerModelId: cppGoal.reviewerModelId ?? '',
-      }))
-      goalsByChatId[chat.id] = goalObjects
+      goalsByChatId[chat.id] = chat.goals.map((cppGoal) => mapCppGoal(chat.id, cppGoal))
     }
   }
 
@@ -348,6 +359,8 @@ function deserializeState(
     sidebarPinnedChatOrder: cpp.settings.sidebarPinnedChatOrder ?? [],
     sidebarActiveChatOrder: cpp.settings.sidebarActiveChatOrder ?? [],
     steerActiveTurnOnSend: cpp.settings.steerActiveTurnOnSend ?? false,
+    permissionCommandRules: cpp.settings.permissionCommandRules ?? [],
+    permissionAiReviewEnabled: cpp.settings.permissionAiReviewEnabled ?? true,
     gitEnabled: typeof cpp.settings.gitEnabled === 'boolean' ? cpp.settings.gitEnabled : true,
     svnEnabled: typeof cpp.settings.svnEnabled === 'boolean' ? cpp.settings.svnEnabled : true,
     updateChecksEnabled: cpp.settings.updateChecksEnabled,
@@ -407,7 +420,9 @@ function deserializeState(
     shellActions: cpp.shellActions ?? existing.shellActions,
     computePools: cpp.settings.computePools ?? [],
     computePoolUsage: cpp.computePoolUsage ?? {},
+    executionHostLoad: cpp.executionHostLoad ?? EMPTY_HOST_LOAD,
     prWatches: cpp.prWatches ?? existing.prWatches,
+    timerNotices: cpp.timers?.notices ?? existing.timerNotices,
     shellActionNotification: cpp.shellActionNotification ?? existing.shellActionNotification,
     statusLine: cpp.statusLine ?? existing.statusLine,
     // Full-state only: absent means no deletion is running, so do not keep the previous value.
@@ -546,33 +561,8 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     if (chat.activeGoalId !== undefined) {
       activeGoalIdByChatId[chat.id] = chat.activeGoalId
     }
-    goalsByChatId[chat.id] = (chat.goals ?? []).map((cppGoal) => ({
-        id: cppGoal.id,
-        chatId: chat.id,
-        objective: cppGoal.objective,
-        status: cppGoal.status,
-        tokenBudget: cppGoal.tokenBudget,
-        tokensUsed: cppGoal.tokensUsed,
-        blockedTurnCount: cppGoal.blockedTurnCount,
-        lastBlocker: cppGoal.lastBlocker,
-        lastBlockerKind: cppGoal.lastBlockerKind,
-        lastDiagnostic: cppGoal.lastDiagnostic,
-        lastDecisionSource: cppGoal.lastDecisionSource,
-        completedItems: cppGoal.completedItems,
-        remainingItems: cppGoal.remainingItems,
-        pendingContinuation: cppGoal.pendingContinuation,
-        currentStep: cppGoal.currentStep,
-        lastVerification: cppGoal.lastVerification,
-        lastNextPrompt: cppGoal.lastNextPrompt,
-        sameNextPromptCount: cppGoal.sameNextPromptCount,
-        loopCount: cppGoal.loopCount,
-        createdAt: new Date(cppGoal.createdAt || Date.now()),
-        updatedAt: new Date(cppGoal.updatedAt || Date.now()),
-        executionOwner: cppGoal.executionOwner ?? 'uam',
-        providerCommand: cppGoal.providerCommand ?? '',
-        workerModelId: cppGoal.workerModelId ?? '',
-        reviewerModelId: cppGoal.reviewerModelId ?? '',
-    }))
+    // Unlike a full load, a patch records [] for a chat without goals so earlier goals are cleared.
+    goalsByChatId[chat.id] = (chat.goals ?? []).map((cppGoal) => mapCppGoal(chat.id, cppGoal))
   }
 
   const activeSessionId =
@@ -631,6 +621,8 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     sidebarPinnedChatOrder: patch.settings?.sidebarPinnedChatOrder ?? current.sidebarPinnedChatOrder,
     sidebarActiveChatOrder: patch.settings?.sidebarActiveChatOrder ?? current.sidebarActiveChatOrder,
     steerActiveTurnOnSend: patch.settings?.steerActiveTurnOnSend ?? current.steerActiveTurnOnSend,
+    permissionCommandRules: patch.settings?.permissionCommandRules ?? current.permissionCommandRules,
+    permissionAiReviewEnabled: patch.settings?.permissionAiReviewEnabled ?? current.permissionAiReviewEnabled,
     gitEnabled: typeof patch.settings?.gitEnabled === 'boolean' ? patch.settings.gitEnabled : current.gitEnabled,
     svnEnabled: typeof patch.settings?.svnEnabled === 'boolean' ? patch.settings.svnEnabled : current.svnEnabled,
     updateChecksEnabled: patch.settings?.updateChecksEnabled ?? current.updateChecksEnabled,
@@ -691,7 +683,9 @@ function applyStatePatch(patch: CppStatePatch, current: AppState): Partial<AppSt
     shellActions: patch.shellActions ?? current.shellActions,
     computePools: patch.settings?.computePools ?? current.computePools,
     computePoolUsage: patch.computePoolUsage ?? current.computePoolUsage,
+    executionHostLoad: patch.executionHostLoad ?? current.executionHostLoad,
     prWatches: patch.prWatches ?? current.prWatches,
+    timerNotices: patch.timers?.notices ?? current.timerNotices,
     shellActionNotification: patch.shellActionNotification ?? current.shellActionNotification,
     statusLine: patch.statusLine ?? current.statusLine,
   }
@@ -911,6 +905,8 @@ export const useAppStore = create<AppState>((set, get) => {
           sidebarPinnedChatOrder: current.sidebarPinnedChatOrder,
           sidebarActiveChatOrder: current.sidebarActiveChatOrder,
           steerActiveTurnOnSend: current.steerActiveTurnOnSend,
+          permissionCommandRules: current.permissionCommandRules,
+          permissionAiReviewEnabled: current.permissionAiReviewEnabled,
         gitEnabled: current.gitEnabled,
         svnEnabled: current.svnEnabled,
           updateChecksEnabled: current.updateChecksEnabled,
@@ -968,7 +964,9 @@ export const useAppStore = create<AppState>((set, get) => {
           shellActions: current.shellActions,
           computePools: current.computePools,
           computePoolUsage: current.computePoolUsage,
+          executionHostLoad: current.executionHostLoad,
           prWatches: current.prWatches,
+          timerNotices: current.timerNotices,
           shellActionNotification: current.shellActionNotification,
           statusLine: current.statusLine,
         })
@@ -1460,6 +1458,8 @@ export const useAppStore = create<AppState>((set, get) => {
       sidebarPinnedChatOrder: current.sidebarPinnedChatOrder,
       sidebarActiveChatOrder: current.sidebarActiveChatOrder,
       steerActiveTurnOnSend: current.steerActiveTurnOnSend,
+      permissionCommandRules: current.permissionCommandRules,
+      permissionAiReviewEnabled: current.permissionAiReviewEnabled,
       gitEnabled: current.gitEnabled,
       svnEnabled: current.svnEnabled,
       updateChecksEnabled: current.updateChecksEnabled,
@@ -1517,7 +1517,9 @@ export const useAppStore = create<AppState>((set, get) => {
       shellActions: current.shellActions,
       computePools: current.computePools,
       computePoolUsage: current.computePoolUsage,
+      executionHostLoad: current.executionHostLoad,
       prWatches: current.prWatches,
+      timerNotices: current.timerNotices,
       shellActionNotification: current.shellActionNotification,
       statusLine: current.statusLine,
     })

@@ -14,6 +14,7 @@
 #include "common/config/provider_chat_defaults.h"
 #include "common/memory/memory_policy.h"
 #include "common/config/settings_frontend_json.h"
+#include "common/config/permission_command_rules_json.h"
 #include "common/platform/platform_services.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_model_json.h"
@@ -277,6 +278,8 @@ namespace uam
 		constexpr std::size_t kMaxRunningAgents = 4;
 		constexpr std::size_t kMaxQueuedAgents = 32;
 		constexpr std::size_t kMaxDirectChildren = 4;
+		// Every live run a chat owns at any depth: four top-level runs with four children each.
+		constexpr std::size_t kMaxLiveRunsPerChat = kMaxDirectChildren + kMaxDirectChildren * kMaxDirectChildren;
 		constexpr std::size_t kMaxResultExcerptBytes = 16U * 1024U;
 		constexpr int64_t kMaxRunElapsedMs = 30LL * 60LL * 1000LL;
 		constexpr int64_t kProviderCrashWindowMs = 60LL * 1000LL;
@@ -598,7 +601,7 @@ namespace uam
 			for (const auto& rule : settings.computer_use_allowed_applications)
 				application_rules.push_back({rule.identity_kind, rule.identity});
 			// Execution policy is independent of presentation, update observations and other UI preferences.
-			const auto execution_settings = nlohmann::json::array({provider_availability::IsEnabled(settings, provider->id, host->id), settings.provider_extra_flags, provider_ids::NormalizeCliProviderAliasOrSelf(settings.permission_reviewer_provider_id), strings::Trim(settings.permission_reviewer_model_id), settings_frontend_json::SerializeMarkdownStoreDirectory(settings), central_configuration::Serialize(settings.central_provider_configuration), mcp_server_config::Serialize(host_scoped_settings::McpServers(settings, host->id)), nlohmann::json::array({defaults.model_id, defaults.approval_mode, defaults.command_safety_tier, defaults.reasoning_effort, defaults.service_tier, defaults.small_model_mode, defaults.memory_enabled, defaults.memory_level, defaults.feature_preference}), settings.git_enabled, settings.git_auto_worktree, settings.git_snapshot_svn, settings.git_snapshot_plain_folders, settings.git_pull_before_chat, settings.git_default_base_branch, settings.svn_enabled, settings.svn_update_before_chat, memory_policy::Resolve(settings, chat), settings.memory_recall_budget_bytes, settings.computer_use_globally_enabled, settings.computer_use_allowlist_enabled, application_rules, settings.acp_turn_output_limit_mib, settings.active_turn_inactivity_timeout_seconds, settings.acp_setup_inactivity_timeout_seconds});
+			const auto execution_settings = nlohmann::json::array({provider_availability::IsEnabled(settings, provider->id, host->id), settings.provider_extra_flags, provider_ids::NormalizeCliProviderAliasOrSelf(settings.permission_reviewer_provider_id), strings::Trim(settings.permission_reviewer_model_id), permission_command_rules::Serialize(settings.permission_command_rules), settings.permission_ai_review_enabled, settings.permission_remote_commits_without_approval, settings_frontend_json::SerializeMarkdownStoreDirectory(settings), central_configuration::Serialize(settings.central_provider_configuration), mcp_server_config::Serialize(host_scoped_settings::McpServers(settings, host->id)), nlohmann::json::array({defaults.model_id, defaults.approval_mode, defaults.command_safety_tier, defaults.reasoning_effort, defaults.service_tier, defaults.small_model_mode, defaults.memory_enabled, defaults.memory_level, defaults.feature_preference}), settings.git_enabled, settings.git_auto_worktree, settings.git_snapshot_svn, settings.git_snapshot_plain_folders, settings.git_pull_before_chat, settings.git_default_base_branch, settings.svn_enabled, settings.svn_update_before_chat, memory_policy::Resolve(settings, chat), settings.memory_recall_budget_bytes, settings.computer_use_globally_enabled, settings.computer_use_allowlist_enabled, application_rules, settings.acp_turn_output_limit_mib, settings.active_turn_inactivity_timeout_seconds, settings.acp_setup_inactivity_timeout_seconds});
 			return nlohmann::json::array({execution_settings, host->id, host->transport, host->ssh_alias, host->platform, host->architecture, host->runner_version, host->runner_protocol_version, host->runner_directory, host->instruction_file, host->instruction_text ? nlohmann::json(*host->instruction_text) : nlohmann::json(nullptr), provider->id, provider->interactive_command, provider->runtime_flags, provider->resume_argument, provider->supports_structured, provider->structured_protocol, provider->execution_mode, provider->output_mode, provider->prompt_bootstrap, provider->prompt_bootstrap_path}).dump();
 		}
 		std::string InitialChildPolicy(const ChatSession& chat, const std::string* comparison_model = nullptr)
@@ -3249,6 +3252,8 @@ namespace uam
 			(void)PollCompletedAcpProcessStops(app, nullptr);
 			FinalizePendingAcpRemoteStopsForExit(app);
 			(void)FlushPendingChatSaves(app, false);
+			// This loop waits for chat saves to settle, including ones the flush just started (#526, #647).
+			RaiseAllChatSaveWorkersForBarrier(app);
 			settled = app.managed_initial_mentions.empty() && app.managed_followups.empty();
 			bool workers = std::ranges::any_of(app.managed_initial_mentions, [](const auto& entry) { return entry.second && (entry.second->work || !entry.second->retired->load(std::memory_order_acquire)); });
 			workers = workers || std::ranges::any_of(app.managed_followups, [](const auto& entry)
@@ -3361,6 +3366,23 @@ namespace uam
 		if (parent != nullptr && std::ranges::count(app.agent_runs, parent->id, &AgentRun::parent_run_id) >= kMaxDirectChildren)
 		{
 			if (error_out != nullptr) *error_out = "An agent run may create at most four direct children.";
+			return false;
+		}
+		// Per-chat bounds, so one chat cannot fill the shared queue. A child can outlive its finished parent, so every
+		// depth counts toward the total; top-level runs use the same bound as mentions and follow-ups.
+		const auto live_in_chat = [&](bool top_level_only)
+		{
+			return static_cast<std::size_t>(std::ranges::count_if(app.agent_runs, [&](const AgentRun& run)
+			    { return run.root_chat_id == root_chat->id && (!top_level_only || run.parent_run_id.empty()) && !IsTerminal(run.status); }));
+		};
+		if (live_in_chat(false) >= kMaxLiveRunsPerChat)
+		{
+			if (error_out != nullptr) *error_out = "This chat already has 20 agents queued or running; wait for some to finish.";
+			return false;
+		}
+		if (parent == nullptr && live_in_chat(true) >= kMaxDirectChildren)
+		{
+			if (error_out != nullptr) *error_out = "This chat already has four agents queued or running; wait for one to finish.";
 			return false;
 		}
 		for (const AgentRun* ancestor = parent; ancestor != nullptr; ancestor = ancestor->parent_run_id.empty() ? nullptr : FindRun(app, ancestor->parent_run_id))

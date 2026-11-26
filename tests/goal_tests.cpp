@@ -1636,6 +1636,10 @@ UAM_TEST(RemoteRestartRestoresRootGoalReviewIdentity)
 	UAM_ASSERT(session->goal_review_scheduled);
 	UAM_ASSERT_EQ(session->goal_review_goal_id, std::string("goal-review"));
 	UAM_ASSERT_EQ(session->goal_review_repair_attempts, 1);
+	// The recovered repair lost its first turn's start and cost, so the decision's latency and usage are unknown.
+	UAM_ASSERT(session->goal_review_decision.repaired);
+	UAM_ASSERT(!session->goal_review_decision.earlier_tokens.has_value());
+	UAM_ASSERT_EQ(session->goal_review_decision.started_ms, static_cast<std::int64_t>(0));
 }
 
 UAM_TEST(GoalServiceCancellationMatchesPaddedLegacyIterationIds)
@@ -1826,6 +1830,7 @@ UAM_TEST(AcpResumeGoalPersistsActiveStateBeforeQueueingWork)
 	Goal& goal = app.chats.front().goals.front();
 	goal.status = GoalStatus::Paused;
 	goal.last_next_prompt = "Run the focused regression tests.";
+	goal.unreviewed_resume_count = 3;
 	goal.worker_model_id.clear();
 	goal.reviewer_model_id.clear();
 	app.settings.provider_chat_defaults[chat.provider_id].model_id = "fast-worker";
@@ -1835,7 +1840,6 @@ UAM_TEST(AcpResumeGoalPersistsActiveStateBeforeQueueingWork)
 	session->chat_id = chat.id;
 	session->session_ready = true;
 	session->goal_resume_suppressed = true;
-	session->goal_auto_resume_attempts = 2;
 	session->turn_serial = 4;
 	uam::AcpSessionState* raw_session = session.get();
 	app.acp_sessions.push_back(std::move(session));
@@ -1853,7 +1857,8 @@ UAM_TEST(AcpResumeGoalPersistsActiveStateBeforeQueueingWork)
 	UAM_ASSERT_EQ(app.chats.front().goals.front().worker_model_id, std::string("fast-worker"));
 	UAM_ASSERT_EQ(app.chats.front().goals.front().reviewer_model_id, std::string("smart-reviewer"));
 	UAM_ASSERT(!raw_session->goal_resume_suppressed);
-	UAM_ASSERT_EQ(raw_session->goal_auto_resume_attempts, 0);
+	// Only an applied review or Restart clears the unreviewed-resume count; an ordinary Resume keeps it.
+	UAM_ASSERT_EQ(app.chats.front().goals.front().unreviewed_resume_count, 3);
 	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
 	UAM_ASSERT(app.chats.front().messages.empty());
 	const std::optional<ChatSession> persisted = ChatRepository::LoadLocalChat(app.data_root, chat.id);
@@ -2592,6 +2597,108 @@ UAM_TEST(AcpGoalReviewRepairUsageAddsOnceBeforeBudgetAdmission)
 	UAM_ASSERT(fixture.Session().queued_prompt.empty());
 }
 
+UAM_TEST(AcpGoalReviewRepairKeepsOneDecisionTimeAndCost)
+{
+	TempDir temp("uam-review-repair-decision");
+	GoalReviewBudgetFixture fixture(temp.root);
+	fixture.ReviewedGoal().token_budget = 0;
+	const std::int64_t started = uam::DecisionService::NowMs() - 2000;
+	fixture.Session().goal_review_decision.started_ms = started;
+	fixture.Output("Invalid first review");
+	fixture.Reply(10, GoalReviewUsageResult(12, 8));
+	// The repair is queued as part of the same decision: first request time and first-turn cost carried over.
+	UAM_ASSERT_EQ(fixture.Session().goal_review_repair_attempts, 1);
+	UAM_ASSERT(fixture.Session().queued_prompt.find("only repair attempt") != std::string::npos);
+	UAM_ASSERT_EQ(fixture.Session().goal_review_decision.started_ms, started);
+	UAM_ASSERT(fixture.Session().goal_review_decision.repaired);
+	UAM_ASSERT(fixture.Session().goal_review_decision.earlier_tokens.has_value() && *fixture.Session().goal_review_decision.earlier_tokens == 20);
+	for (const uam::AcpDiagnosticEntryState& entry : fixture.Session().diagnostics)
+	{
+		UAM_ASSERT(entry.reason != "goal_review_decision");
+		UAM_ASSERT(entry.detail.find("Invalid first review") == std::string::npos);
+	}
+
+	fixture.Session().queued_prompt.clear();
+	fixture.Session().prompt_request_id = 11;
+	fixture.Session().pending_request_methods[11] = uam::acp_methods::kSessionPrompt;
+	fixture.Output(R"({"decision":"complete","reason":"Verified.","evidence":["Tests passed"]})");
+	fixture.Reply(11, GoalReviewUsageResult(30, 15));
+	UAM_ASSERT_EQ(fixture.ReviewedGoal().status, GoalStatus::Complete);
+	UAM_ASSERT_EQ(fixture.ReviewedGoal().last_decision_backend, std::string("chat_provider"));
+	std::string detail;
+	for (const uam::AcpDiagnosticEntryState& entry : fixture.Session().diagnostics)
+		if (entry.reason == "goal_review_decision") detail = entry.detail;
+	UAM_ASSERT(detail.find("decisionChoice=complete") != std::string::npos);
+	UAM_ASSERT(detail.find("decisionUsageTokens=65") != std::string::npos);
+	const std::size_t latency_at = detail.find("decisionLatencyMs=");
+	UAM_ASSERT(latency_at != std::string::npos);
+	UAM_ASSERT(detail.find("decisionLatencyMs=unknown") == std::string::npos);
+	UAM_ASSERT(std::stoll(detail.substr(latency_at + std::string_view("decisionLatencyMs=").size())) >= 2000);
+	UAM_ASSERT_EQ(fixture.Session().goal_review_decision.started_ms, static_cast<std::int64_t>(0));
+}
+
+UAM_TEST(AcpGoalReviewRepairsStopAndYesThatTheSharedDecisionStepStillAccepts)
+{
+	for (const char* spelling : {"stop", "yes"})
+	{
+		const std::string reply = std::string(R"({"decision":")") + spelling + R"(","reason":"Verified.","evidence":["Tests passed"]})";
+		// Another user of the shared review decision step still reads both spellings as complete.
+		const auto shared = uam::DecisionService::FromReply(uam::DecisionService::ChatProviderBackend(), uam::GoalService::ReviewDecisionRequest(), reply,
+		    uam::DecisionRun{"reviewer-model", 1000, 1250, 42});
+		UAM_ASSERT(shared.has_value());
+		UAM_ASSERT_EQ(shared->choice, std::string("complete"));
+
+		// The goal review sends the same reply to its repair turn and leaves the goal active.
+		TempDir temp(std::string("uam-review-repair-") + spelling);
+		GoalReviewBudgetFixture fixture(temp.root);
+		fixture.ReviewedGoal().token_budget = 0;
+		fixture.Output(reply);
+		fixture.Reply(10, GoalReviewUsageResult(12, 8));
+		UAM_ASSERT_EQ(fixture.Session().goal_review_repair_attempts, 1);
+		UAM_ASSERT(fixture.Session().queued_prompt.find("only repair attempt") != std::string::npos);
+		UAM_ASSERT_EQ(fixture.ReviewedGoal().status, GoalStatus::Active);
+	}
+}
+
+UAM_TEST(AcpGoalReviewSecondRepairKeepsEveryEarlierTurnCost)
+{
+	// After a restart reset the repair count, a decision already repaired once can be repaired again; its cost must
+	// still include every earlier turn.
+	TempDir temp("uam-review-second-repair");
+	GoalReviewBudgetFixture fixture(temp.root);
+	fixture.ReviewedGoal().token_budget = 0;
+	fixture.Session().goal_review_decision.repaired = true;
+	fixture.Session().goal_review_decision.earlier_tokens = 20;
+	UAM_ASSERT_EQ(fixture.Session().goal_review_repair_attempts, 0);
+	fixture.Output("Invalid again after restart");
+	fixture.Reply(10, GoalReviewUsageResult(12, 8));
+	UAM_ASSERT(fixture.Session().queued_prompt.find("only repair attempt") != std::string::npos);
+	UAM_ASSERT(fixture.Session().goal_review_decision.repaired);
+	UAM_ASSERT(fixture.Session().goal_review_decision.earlier_tokens.has_value() && *fixture.Session().goal_review_decision.earlier_tokens == 40);
+}
+
+UAM_TEST(GoalLoopDiagnosticKeepsFailureCauseButNotConversationText)
+{
+	uam::AcpSessionState session;
+	session.chat_id = "diagnostic-cause";
+	const std::string cause = "Provider exited: " + std::string(400, 'x');
+	uam::acp_detail::AppendGoalLoopDiagnosticCause(session, "goal_blocked_process_exit", "goal-1", cause);
+	UAM_ASSERT(!session.diagnostics.empty());
+	const uam::AcpDiagnosticEntryState& failure = session.diagnostics.back();
+	UAM_ASSERT_EQ(failure.reason, std::string("goal_blocked_process_exit"));
+	UAM_ASSERT(failure.message.starts_with("Provider exited: "));
+	// Capped at 160 bytes of the cause plus the truncation marker.
+	UAM_ASSERT(failure.message.find("[truncated") != std::string::npos);
+	UAM_ASSERT(failure.message.size() < 200);
+	UAM_ASSERT(failure.detail.find("textBytes") == std::string::npos);
+
+	uam::acp_detail::AppendGoalLoopDiagnostic(session, "complete_review_turn", "goal-1", "Private model reply text");
+	const uam::AcpDiagnosticEntryState& reply = session.diagnostics.back();
+	UAM_ASSERT(reply.detail.find("Private model reply text") == std::string::npos);
+	UAM_ASSERT(reply.detail.find("textBytes=24") != std::string::npos);
+	UAM_ASSERT(reply.message.empty());
+}
+
 UAM_TEST(AcpGoalReviewUsagePreservesUnknownAndObservedZero)
 {
 	for (const nlohmann::json& result : std::vector<nlohmann::json>{nlohmann::json::object(),
@@ -3225,7 +3332,7 @@ UAM_TEST(AcpGoalReviewTurnWithLostReviewBoolDoesNotScheduleReviewOfReviewOutput)
 	UAM_ASSERT_EQ(app.chats.front().goals.front().blocked_turn_count, 1);
 }
 
-UAM_TEST(AcpGoalSchedulerSkipsMissingUserIndexAndReviewDecisionOutput)
+UAM_TEST(AcpGoalSchedulerSkipsMissingUserIndex)
 {
 	TempDir temp("uam-goal-scheduler-guards");
 	uam::AppState app;
@@ -3256,23 +3363,6 @@ UAM_TEST(AcpGoalSchedulerSkipsMissingUserIndexAndReviewDecisionOutput)
 
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Normal worker output."}}}})"));
 	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":10,"result":{}})"));
-	UAM_ASSERT(!raw_session->goal_review_scheduled);
-	UAM_ASSERT(raw_session->queued_prompt.empty());
-	UAM_ASSERT_EQ(app.chats.front().goals.front().tokens_used, 0);
-
-	Message user;
-	user.role = MessageRole::User;
-	user.content = "Worker prompt";
-	app.chats.front().messages.push_back(std::move(user));
-	raw_session->processing = true;
-	raw_session->prompt_request_id = 11;
-	raw_session->pending_request_methods[11] = uam::acp_methods::kSessionPrompt;
-	raw_session->turn_user_message_index = static_cast<int>(app.chats.front().messages.size()) - 1;
-	raw_session->current_assistant_message_index = -1;
-	raw_session->turn_assistant_message_index = -1;
-
-	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"{\"decision\":\"continue\",\"reason\":\"Still going.\",\"nextPrompt\":\"Repeat this review.\",\"evidence\":[\"review output\"],\"progressUpdate\":{\"remaining\":[\"Repeat this review.\"],\"currentStep\":\"Repeat this review.\"}}"}}}})"));
-	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":11,"result":{}})"));
 	UAM_ASSERT(!raw_session->goal_review_scheduled);
 	UAM_ASSERT(raw_session->queued_prompt.empty());
 	UAM_ASSERT_EQ(app.chats.front().goals.front().tokens_used, 0);
@@ -3427,19 +3517,219 @@ UAM_TEST(AcpGoalWatchdogResumesStalledLoopAndBlocksAfterRepeatedResumes)
 	UAM_ASSERT(!raw_session->queued_prompt.empty());
 	UAM_ASSERT_EQ(raw_session->goal_turn_kind, std::string("worker_continuation"));
 	UAM_ASSERT(raw_session->goal_internal_session);
-	UAM_ASSERT_EQ(raw_session->goal_auto_resume_attempts, 1);
+	UAM_ASSERT_EQ(app.chats.front().goals.front().unreviewed_resume_count, 1);
 	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Active);
 	UAM_ASSERT_EQ(app.chats.size(), static_cast<std::size_t>(1));
 	(void)uam::StopAcpSession(app, "chat-1");
 
 	// A loop that keeps stalling is blocked visibly instead of retried forever.
 	raw_session->session_ready = true;
-	raw_session->goal_auto_resume_attempts = 3;
+	raw_session->queued_prompt.clear();
+	app.chats.front().goals.front().unreviewed_resume_count = 3;
 	raw_session->last_runtime_activity_time_s = 1.0;
 	UAM_ASSERT(uam::ResumeStalledGoalLoopForTests(app, *raw_session, app.chats.front(), 100.0));
 	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Blocked);
+	UAM_ASSERT_EQ(app.chats.front().goals.front().last_diagnostic, std::string("goal_blocked_auto_resume_exhausted"));
 	UAM_ASSERT_EQ(app.chats.front().goals.front().last_decision_source, std::string("fallback"));
 	UAM_ASSERT(app.chats.front().active_goal_id.empty());
+}
+
+namespace
+{
+	/// <summary>Finishes the current turn without assistant text, as a tool-only turn does, and leaves the session idle.</summary>
+	void CompleteTurnWithoutReviewableText(uam::AppState& app, uam::AcpSessionState& session, ChatSession& chat)
+	{
+		session.turn_assistant_message_index = -1;
+		session.current_assistant_message_index = -1;
+		uam::acp_detail::CompletePromptTurnAndHandleGoalLoop(app, session, chat, "ready", nullptr);
+		UAM_ASSERT(!session.processing);
+		UAM_ASSERT(!session.goal_review_turn);
+		(void)uam::StopAcpSession(app, chat.id);
+		session.queued_prompt.clear();
+		session.prompt_request_id = 0;
+		session.session_ready = true;
+		session.last_runtime_activity_time_s = 1.0;
+	}
+}
+
+UAM_TEST(AcpGoalWatchdogStopsUnreviewedResumesAcrossTurnCompletionsAndSkippedReviews)
+{
+	TempDir temp("uam-goal-unreviewed-resumes");
+	ScopedEnvVar scoped_path("PATH", InstallSilentGoalProviderShims(temp));
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.provider_id = "opencode-cli";
+	Goal goal;
+	goal.id = "goal-1";
+	goal.objective = "Keep the loop bounded.";
+	goal.status = GoalStatus::Active;
+	goal.loop_count = 1;
+	chat.active_goal_id = goal.id;
+	chat.goals.push_back(goal);
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-1";
+	session->running = false;
+	session->session_ready = true;
+	session->last_runtime_activity_time_s = 1.0;
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	for (int resume = 1; resume <= 3; ++resume)
+	{
+		// Resume: the watchdog queues a worker continuation.
+		UAM_ASSERT(uam::ResumeStalledGoalLoopForTests(app, *raw_session, app.chats.front(), 100.0));
+		UAM_ASSERT_EQ(raw_session->goal_turn_kind, std::string("worker_continuation"));
+		UAM_ASSERT_EQ(app.chats.front().goals.front().unreviewed_resume_count, resume);
+		if (resume == 1)
+		{
+			const std::optional<ChatSession> persisted = ChatRepository::LoadLocalChat(app.data_root, "chat-1");
+			UAM_ASSERT(persisted.has_value());
+			UAM_ASSERT_EQ(persisted->goals.front().unreviewed_resume_count, 1);
+		}
+		// The resumed worker turn ends without reviewable text, so no review runs.
+		CompleteTurnWithoutReviewableText(app, *raw_session, app.chats.front());
+
+		// A user turn (its start state set directly, not through the queue dispatcher) also ends without reviewable text; neither may reopen the allowance.
+		Message user;
+		user.role = MessageRole::User;
+		user.content = "Queued note " + std::to_string(resume);
+		app.chats.front().messages.push_back(std::move(user));
+		raw_session->processing = true;
+		raw_session->goal_turn_kind.clear();
+		raw_session->goal_command_revision = app.chats.front().goal_command_revision;
+		raw_session->turn_user_message_index = static_cast<int>(app.chats.front().messages.size()) - 1;
+		CompleteTurnWithoutReviewableText(app, *raw_session, app.chats.front());
+		UAM_ASSERT_EQ(app.chats.front().goals.front().unreviewed_resume_count, resume);
+		UAM_ASSERT_EQ(app.chats.front().goals.front().loop_count, 1);
+		UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Active);
+	}
+
+	// The fourth stall stops the goal with a one-line blocker instead of resuming again.
+	UAM_ASSERT(uam::ResumeStalledGoalLoopForTests(app, *raw_session, app.chats.front(), 100.0));
+	const Goal& stopped = app.chats.front().goals.front();
+	UAM_ASSERT_EQ(stopped.status, GoalStatus::Blocked);
+	UAM_ASSERT_EQ(stopped.unreviewed_resume_count, 3);
+	UAM_ASSERT_EQ(stopped.last_diagnostic, std::string("goal_blocked_auto_resume_exhausted"));
+	UAM_ASSERT(stopped.last_blocker.find("3 automatic resumes in a row produced no goal review") != std::string::npos);
+	UAM_ASSERT(stopped.last_blocker.find('\n') == std::string::npos);
+	UAM_ASSERT(raw_session->queued_prompt.empty());
+	UAM_ASSERT(app.chats.front().active_goal_id.empty());
+	(void)uam::StopAcpSession(app, "chat-1");
+}
+
+UAM_TEST(AcpGoalUnreviewedResumesCountTowardIterationCapUntilAReviewApplies)
+{
+	TempDir temp("uam-goal-resume-cap");
+	ScopedEnvVar scoped_path("PATH", InstallSilentGoalProviderShims(temp));
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.provider_id = "opencode-cli";
+	Goal goal;
+	goal.id = "goal-1";
+	goal.objective = "Stay inside two iterations.";
+	goal.status = GoalStatus::Active;
+	goal.loop_count = 1;
+	goal.max_iterations = 2;
+	chat.active_goal_id = goal.id;
+	chat.goals.push_back(goal);
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-1";
+	session->running = false;
+	session->session_ready = true;
+	session->last_runtime_activity_time_s = 1.0;
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	// An applied review clears the unreviewed count without changing its own iteration accounting.
+	Goal& live = app.chats.front().goals.front();
+	live.unreviewed_resume_count = 2;
+	uam::GoalService::ReviewDecision reviewed;
+	reviewed.decision = "continue";
+	uam::acp_detail::ApplyGoalProgressUpdate(live, reviewed);
+	UAM_ASSERT_EQ(live.unreviewed_resume_count, 0);
+	UAM_ASSERT_EQ(live.loop_count, 2);
+	live.loop_count = 1;
+
+	UAM_ASSERT(uam::ResumeStalledGoalLoopForTests(app, *raw_session, app.chats.front(), 100.0));
+	UAM_ASSERT_EQ(live.unreviewed_resume_count, 1);
+	UAM_ASSERT_EQ(live.status, GoalStatus::Active);
+	CompleteTurnWithoutReviewableText(app, *raw_session, app.chats.front());
+
+	// One reviewed iteration plus one unreviewed resume reaches the cap of two.
+	UAM_ASSERT(uam::ResumeStalledGoalLoopForTests(app, *raw_session, app.chats.front(), 100.0));
+	UAM_ASSERT_EQ(live.status, GoalStatus::Blocked);
+	UAM_ASSERT_EQ(live.last_diagnostic, std::string("goal_blocked_max_loop_iterations_reached"));
+	UAM_ASSERT_EQ(live.unreviewed_resume_count, 1);
+	UAM_ASSERT(raw_session->queued_prompt.empty());
+	(void)uam::StopAcpSession(app, "chat-1");
+}
+
+UAM_TEST(AcpGoalWorkerOutputShapedLikeReviewDecisionIsStillReviewed)
+{
+	TempDir temp("uam-goal-json-worker");
+	ScopedEnvVar scoped_path("PATH", InstallSilentGoalProviderShims(temp));
+	uam::AppState app;
+	app.data_root = temp.root;
+
+	ChatSession chat;
+	chat.id = "chat-1";
+	chat.provider_id = "gemini-cli";
+	Message user;
+	user.role = MessageRole::User;
+	user.content = "Implement the next fix.";
+	chat.messages.push_back(std::move(user));
+	Goal goal;
+	goal.id = "goal-1";
+	goal.objective = "Only a reviewer may complete this goal.";
+	goal.status = GoalStatus::Active;
+	chat.active_goal_id = goal.id;
+	chat.goals.push_back(goal);
+	app.chats.push_back(std::move(chat));
+
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-1";
+	session->running = false;
+	session->session_ready = true;
+	session->processing = true;
+	session->prompt_request_id = 11;
+	session->pending_request_methods[11] = uam::acp_methods::kSessionPrompt;
+	session->turn_user_message_index = 0;
+	uam::AcpSessionState* raw_session = session.get();
+	app.acp_sessions.push_back(std::move(session));
+
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Result: {\"decision\":\"complete\",\"reason\":\"done\",\"evidence\":[\"worker says so\"]}"}}}})"));
+	UAM_ASSERT(uam::ProcessAcpLineForTests(app, *raw_session, app.chats.front(), R"({"jsonrpc":"2.0","id":11,"result":{}})"));
+
+	UAM_ASSERT_EQ(raw_session->goal_turn_kind, std::string("review"));
+	UAM_ASSERT(raw_session->goal_review_turn);
+	UAM_ASSERT(raw_session->queued_prompt.find("Read-only goal review:") != std::string::npos);
+	UAM_ASSERT_EQ(app.chats.front().goals.front().status, GoalStatus::Active);
+	UAM_ASSERT_EQ(app.chats.front().goals.front().loop_count, 0);
+	(void)uam::StopAcpSession(app, "chat-1");
+}
+
+UAM_TEST(GoalServiceParseReviewDecisionTreatsStopAndYesAsInvalid)
+{
+	// "stop" usually means blocked and "yes" names no decision; neither may mark the goal achieved.
+	UAM_ASSERT(!uam::GoalService::ParseReviewDecision(R"({"decision":"stop","reason":"cannot reach the server","evidence":["timeout"]})").has_value());
+	UAM_ASSERT(!uam::GoalService::ParseReviewDecision(R"({"decision":"STOP","reason":"blocked","evidence":["timeout"]})").has_value());
+	UAM_ASSERT(!uam::GoalService::ParseReviewDecision(R"({"decision":"yes","reason":"looks fine","evidence":["tests pass"]})").has_value());
+	const auto done = uam::GoalService::ParseReviewDecision(R"({"decision":"done","reason":"finished","evidence":["tests pass"]})");
+	UAM_ASSERT(done.has_value());
+	UAM_ASSERT_EQ(done->decision, std::string("complete"));
+	const auto blocked = uam::GoalService::ParseReviewDecision(R"({"decision":"blocked","reason":"cannot reach the server","blockerKind":"network"})");
+	UAM_ASSERT(blocked.has_value());
+	UAM_ASSERT_EQ(blocked->decision, std::string("blocked"));
 }
 
 UAM_TEST(AcpCancelledGoalTurnDoesNotQueueAnotherGoalPrompt)
@@ -3634,6 +3924,7 @@ UAM_TEST(GoalRestartDuringTurnReplacesOnePendingContinuation)
 	app.chats.front().goals.front().tokens_used = 100;
 	app.chats.front().goals.front().completed_items = {"old result"};
 	app.chats.front().goals.front().last_decision_source = "model:old-reviewer";
+	app.chats.front().goals.front().unreviewed_resume_count = 2;
 	auto session = std::make_unique<uam::AcpSessionState>();
 	session->chat_id = chat.id;
 	session->processing = true;
@@ -3645,6 +3936,7 @@ UAM_TEST(GoalRestartDuringTurnReplacesOnePendingContinuation)
 	UAM_ASSERT_EQ(app.chats.front().goals.front().tokens_used, 0);
 	UAM_ASSERT(app.chats.front().goals.front().completed_items.empty());
 	UAM_ASSERT(app.chats.front().goals.front().last_decision_source.empty());
+	UAM_ASSERT_EQ(app.chats.front().goals.front().unreviewed_resume_count, 0);
 	UAM_ASSERT_EQ(app.chats.front().goal_pending_continuation_id, goal_id);
 	const std::string first = app.chats.front().goal_command_revision;
 	UAM_ASSERT(uam::acp_detail::ResumeGoal(app, chat.id, goal_id, &error, true));
@@ -4371,7 +4663,8 @@ UAM_TEST(GoalPromptCompactionPreservesDistinctTasksAndVerificationRules)
 namespace
 {
 	/// Runs one completed review turn and returns the goal it left behind.
-	Goal RunReviewForDecisionSource(const TempDir& temp, const std::string& review, const std::function<void(uam::AppState&, ChatSession&, Goal&)>& prepare = {}, const std::string& turn_model = {})
+	Goal RunReviewForDecisionSource(const TempDir& temp, const std::string& review, const std::function<void(uam::AppState&, ChatSession&, Goal&)>& prepare = {}, const std::string& turn_model = {},
+	                                std::int64_t review_started_ms = 0, std::vector<uam::AcpDiagnosticEntryState>* diagnostics_out = nullptr)
 	{
 		uam::AppState app;
 		app.data_root = temp.root;
@@ -4396,7 +4689,10 @@ namespace
 		session.goal_turn_model_id = turn_model;
 		session.goal_review_repair_attempts = 1; // No further repair: an invalid reply must stop here.
 		session.turn_assistant_message_index = 0;
+		session.goal_review_decision.started_ms = review_started_ms;
 		UAM_ASSERT(uam::acp_detail::HandleGoalReviewCompletion(app, session, app.chats.front(), nullptr));
+		UAM_ASSERT_EQ(session.goal_review_decision.started_ms, static_cast<std::int64_t>(0));
+		if (diagnostics_out != nullptr) *diagnostics_out = session.diagnostics;
 		return app.chats.front().goals.front();
 	}
 
@@ -4409,9 +4705,11 @@ UAM_TEST(GoalDecisionSourceNamesAModelOnlyForAParsedReview)
 	const Goal complete = RunReviewForDecisionSource(temp, R"({"decision":"complete","reason":"Verified.","evidence":["Tests passed"]})");
 	UAM_ASSERT_EQ(complete.status, GoalStatus::Complete);
 	UAM_ASSERT_EQ(complete.last_decision_source, std::string("model:worker-model"));
+	UAM_ASSERT_EQ(complete.last_decision_backend, std::string("chat_provider"));
 
 	const Goal blocked = RunReviewForDecisionSource(temp, R"({"decision":"blocked","reason":"Needs access.","blockerKind":"user_permission_approval"})");
 	UAM_ASSERT_EQ(blocked.last_decision_source, std::string("model:worker-model"));
+	UAM_ASSERT_EQ(blocked.last_decision_backend, std::string("chat_provider"));
 
 	const Goal small_model = RunReviewForDecisionSource(temp, R"({"decision":"complete","reason":"Verified.","evidence":["Tests passed"]})", [](uam::AppState&, ChatSession& chat, Goal& goal) {
 		chat.small_model_mode = true;
@@ -4430,6 +4728,7 @@ UAM_TEST(GoalDecisionSourceNamesAModelOnlyForAParsedReview)
 	});
 	UAM_ASSERT_EQ(capped.last_diagnostic, std::string("goal_blocked_max_loop_iterations_reached"));
 	UAM_ASSERT_EQ(capped.last_decision_source, std::string("filter"));
+	UAM_ASSERT(capped.last_decision_backend.empty());
 
 	const Goal repeated = RunReviewForDecisionSource(temp, kContinueReview, [](uam::AppState&, ChatSession&, Goal& goal) {
 		goal.last_next_prompt = "Do the next step.";
@@ -4437,10 +4736,53 @@ UAM_TEST(GoalDecisionSourceNamesAModelOnlyForAParsedReview)
 	});
 	UAM_ASSERT_EQ(repeated.status, GoalStatus::Blocked);
 	UAM_ASSERT_EQ(repeated.last_decision_source, std::string("filter"));
+	UAM_ASSERT(repeated.last_decision_backend.empty());
 
 	const Goal invalid = RunReviewForDecisionSource(temp, "Not a review at all.");
 	UAM_ASSERT_EQ(invalid.status, GoalStatus::Blocked);
 	UAM_ASSERT_EQ(invalid.last_decision_source, std::string("fallback"));
+	UAM_ASSERT(invalid.last_decision_backend.empty());
+
+	// The review parser accepts a blocked verdict with no reason, but the decision interface needs a reason or
+	// evidence, so the reply is not a model decision and the goal falls back.
+	const Goal no_reason = RunReviewForDecisionSource(temp, R"({"decision":"blocked","reason":"","blockerKind":"transient"})");
+	UAM_ASSERT_EQ(no_reason.status, GoalStatus::Blocked);
+	UAM_ASSERT_EQ(no_reason.last_decision_source, std::string("fallback"));
+	UAM_ASSERT(no_reason.last_decision_backend.empty());
+}
+
+UAM_TEST(GoalReviewDecisionDiagnosticReportsBackendLatencyAndUsage)
+{
+	TempDir temp("uam-decision-latency");
+	const auto decision_detail = [](const std::vector<uam::AcpDiagnosticEntryState>& diagnostics) {
+		for (const uam::AcpDiagnosticEntryState& entry : diagnostics)
+			if (entry.event == "goal_loop" && entry.reason == "goal_review_decision") return entry.detail;
+		return std::string{};
+	};
+
+	std::vector<uam::AcpDiagnosticEntryState> diagnostics;
+	const std::int64_t started = uam::DecisionService::NowMs() - 1500;
+	const Goal complete = RunReviewForDecisionSource(temp, R"({"decision":"complete","reason":"Private verdict text.","evidence":["Tests passed"]})", {}, {}, started, &diagnostics);
+	UAM_ASSERT_EQ(complete.status, GoalStatus::Complete);
+	const std::string detail = decision_detail(diagnostics);
+	UAM_ASSERT(detail.find("decisionChoice=complete") != std::string::npos);
+	UAM_ASSERT(detail.find("decisionSource=model:worker-model") != std::string::npos);
+	UAM_ASSERT(detail.find("decisionBackend=chat_provider") != std::string::npos);
+	UAM_ASSERT(detail.find("decisionLatencyMs=unknown") == std::string::npos);
+	const std::size_t latency_at = detail.find("decisionLatencyMs=");
+	UAM_ASSERT(latency_at != std::string::npos);
+	UAM_ASSERT(std::stoll(detail.substr(latency_at + std::string_view("decisionLatencyMs=").size())) >= 1500);
+	// No validated usage receipt in this fixture, so usage stays unknown instead of being estimated.
+	UAM_ASSERT(detail.find("decisionUsageTokens=unknown") != std::string::npos);
+	UAM_ASSERT(detail.find("Private verdict text.") == std::string::npos);
+
+	// A review with no recorded start reports unknown latency; an invalid one reports a fallback with no backend.
+	diagnostics.clear();
+	(void)RunReviewForDecisionSource(temp, "Not a review at all.", {}, {}, 0, &diagnostics);
+	const std::string fallback = decision_detail(diagnostics);
+	UAM_ASSERT(fallback.find("decisionSource=fallback") != std::string::npos);
+	UAM_ASSERT(fallback.find("decisionBackend=none") != std::string::npos);
+	UAM_ASSERT(fallback.find("decisionLatencyMs=unknown") != std::string::npos);
 }
 
 UAM_TEST(GoalDecisionSourceLeavesManualVerdictsUnattributed)
@@ -4475,6 +4817,7 @@ UAM_TEST(GoalDecisionSourcePersistsAndOlderSavesClaimNoSource)
 	goal.status = GoalStatus::Blocked;
 	goal.last_blocker = "Stopped.";
 	goal.last_decision_source = "model:reviewer";
+	goal.last_decision_backend = "chat_provider";
 	chat.goals.push_back(goal);
 	chat.attention_revision = "attention-1";
 	chat.attention_source = "filter";
@@ -4482,6 +4825,7 @@ UAM_TEST(GoalDecisionSourcePersistsAndOlderSavesClaimNoSource)
 	const std::optional<ChatSession> saved = ChatRepository::LoadLocalChat(temp.root, chat.id);
 	UAM_ASSERT(saved.has_value());
 	UAM_ASSERT_EQ(saved->goals.front().last_decision_source, std::string("model:reviewer"));
+	UAM_ASSERT_EQ(saved->goals.front().last_decision_backend, std::string("chat_provider"));
 	UAM_ASSERT_EQ(saved->attention_source, std::string("filter"));
 
 	// A turn-end flag normally reaches disk through the summary overlay alone.
@@ -4542,7 +4886,19 @@ UAM_TEST(GoalDecisionSourcePersistsAndOlderSavesClaimNoSource)
 		document["attention_source"] = "ai";
 	});
 	UAM_ASSERT_EQ(tampered.goals.front().last_decision_source, std::string("unknown"));
+	UAM_ASSERT(tampered.goals.front().last_decision_backend.empty());
 	UAM_ASSERT_EQ(tampered.attention_source, std::string("unknown"));
+
+	// A saved backend beside a rule or fallback source, or an unknown backend id, is dropped on load.
+	const ChatSession filter_with_backend = load_edited([](nlohmann::json& document) { document["goals"][0]["lastDecisionSource"] = "filter"; });
+	UAM_ASSERT_EQ(filter_with_backend.goals.front().last_decision_source, std::string("filter"));
+	UAM_ASSERT(filter_with_backend.goals.front().last_decision_backend.empty());
+	const ChatSession unknown_backend = load_edited([](nlohmann::json& document) { document["goals"][0]["lastDecisionBackend"] = "hosted"; });
+	UAM_ASSERT_EQ(unknown_backend.goals.front().last_decision_source, std::string("model:reviewer"));
+	UAM_ASSERT(unknown_backend.goals.front().last_decision_backend.empty());
+	const ChatSession no_backend_key = load_edited([](nlohmann::json& document) { document["goals"][0].erase("lastDecisionBackend"); });
+	UAM_ASSERT_EQ(no_backend_key.goals.front().last_decision_source, std::string("model:reviewer"));
+	UAM_ASSERT(no_backend_key.goals.front().last_decision_backend.empty());
 
 	const ChatSession user_cleared = load_edited([](nlohmann::json& document) { document["goals"][0]["lastDecisionSource"] = ""; });
 	UAM_ASSERT(user_cleared.goals.front().last_decision_source.empty());

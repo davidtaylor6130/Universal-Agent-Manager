@@ -1,6 +1,7 @@
 #pragma once
 
 #include "common/models/app_models.h"
+#include "common/utils/store_load_fence.h"
 
 #include <filesystem>
 #include <vector>
@@ -30,8 +31,14 @@ class ChatFolderStore
 	static bool ValidateDataFolderReferences(std::string_view text, const std::filesystem::path& source, std::string& error);
 	static std::shared_ptr<PreparedFolderSave> PrepareSave(const std::filesystem::path& data_root, const std::vector<ChatFolder>& folders);
 	static bool PublishPreparedSave(const std::shared_ptr<PreparedFolderSave>& prepared);
-	/// <summary>Loads folder definitions from the data root.</summary>
-	static std::vector<ChatFolder> Load(const std::filesystem::path& data_root);
-	/// <summary>Saves folder definitions into the data root.</summary>
+	/// <summary>Loads folder definitions from the data root, falling back to the validated backup.</summary>
+	/// An unreadable or invalid file with no valid backup reports Unrecovered. With StoreFenceMode::Arm,
+	/// used only where the result becomes the live saved state, it also fences every later save to this
+	/// data root for the rest of the process, so partial state cannot overwrite it.
+	static std::vector<ChatFolder> Load(const std::filesystem::path& data_root, uam::io::StoreLoadResult* result = nullptr,
+	    uam::io::StoreFenceMode fence = uam::io::StoreFenceMode::Observe);
+	/// <summary>True while a failed load fences saves of this data root's folder file.</summary>
+	static bool IsSaveFenced(const std::filesystem::path& data_root);
+	/// <summary>Saves folder definitions into the data root; refused while the store is fenced.</summary>
 	static bool Save(const std::filesystem::path& data_root, const std::vector<ChatFolder>& folders);
 };

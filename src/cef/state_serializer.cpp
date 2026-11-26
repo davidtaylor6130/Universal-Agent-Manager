@@ -4,8 +4,10 @@
 #include "common/chat/chat_message_page_index.h"
 #include "app/startup_native_import_service.h"
 #include "app/pr_watch_service.h"
+#include "app/timer_service.h"
 #include "app/worktree_launch_preparation_service.h"
 #include "app/execution_routing_integration.h"
+#include "app/host_load_integration.h"
 #include "cef/state_serializer.h"
 #include "common/config/custom_icon.h"
 
@@ -61,6 +63,7 @@
 #include <functional>
 #include <map>
 #include <optional>
+#include <utility>
 #include <tuple>
 #include <unordered_set>
 #include <vector>
@@ -213,6 +216,10 @@ namespace uam
 		// Found by the current verifying pass; FlushCacheDivergenceReport writes them as one log line.
 		thread_local std::vector<std::string> g_unreported_divergences;
 		thread_local std::size_t g_unreported_divergence_count = 0;
+		// How many of them were of each kind, so a report shows what the total is made of beyond the five names.
+		thread_local std::map<std::string, std::size_t, std::less<>> g_unreported_divergence_kinds;
+		// RecentPathProbeChangeCount at this thread's previous verifying pass; empty before its first one.
+		thread_local std::optional<std::size_t> g_reported_path_probe_changes;
 		// Transcripts whose stamp moved while their digest did not: a non-const read restamped them and they were rehashed for nothing.
 		thread_local std::size_t g_restamped_unchanged_transcripts = 0;
 
@@ -220,6 +227,9 @@ namespace uam
 		{
 			++g_cache_divergences;
 			++g_unreported_divergence_count;
+			const auto kind = g_unreported_divergence_kinds.find(what);
+			if (kind != g_unreported_divergence_kinds.end()) ++kind->second;
+			else g_unreported_divergence_kinds.emplace(std::string(what), std::size_t{1});
 			// Identifiers only: the diverged content is private.
 			if (g_unreported_divergences.size() < 5) g_unreported_divergences.push_back(std::string(what) + " of " + std::string(owner));
 		}
@@ -271,13 +281,18 @@ namespace uam
 			    uam::paths::ResolveWorkspaceRootPath(app, chat)).first->second;
 		}
 
+		/// <summary>The host a catalogue scope belongs to: trimmed, with an empty id meaning the local host.</summary>
+		std::string CatalogSnapshotHost(std::string_view execution_host_id)
+		{
+			return uam::strings::NonEmptyOrFallback(
+			    uam::strings::Trim(std::string(execution_host_id)), std::string(uam::execution_hosts::kLocalHostId));
+		}
+
 		std::string CatalogSnapshotKey(const std::string& provider_id,
 		                              std::string_view workspace,
 		                              std::string_view execution_host_id)
 		{
-			const std::string host = uam::strings::NonEmptyOrFallback(
-			    uam::strings::Trim(std::string(execution_host_id)), std::string(uam::execution_hosts::kLocalHostId));
-			return provider_id + "\n" + std::string(workspace) + "\n" + host;
+			return provider_id + "\n" + std::string(workspace) + "\n" + CatalogSnapshotHost(execution_host_id);
 		}
 
 		std::string FallbackAcpCurrentModelForChat(const AppState& app, const ChatSession& chat)
@@ -304,7 +319,8 @@ namespace uam
 				auto snapshot = app.provider_model_catalog->GetCatalogSnapshot(chat.provider_id, workspace, chat.execution_host_id, include_models, include_config_options);
 				if (include_models)
 				{
-					const auto* host = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id.empty() ? "local" : chat.execution_host_id);
+					// The same trimmed host the key uses: an untrimmed id must not decorate one scope two ways.
+					const auto* host = execution_hosts::Find(app.settings.execution_hosts, CatalogSnapshotHost(chat.execution_host_id));
 					ProviderModelCatalogService::ApplyLaunchOptionMetadata(snapshot["availableModels"], chat.provider_id, host != nullptr ? CheckedProviderConfigurationVersion(app, chat.provider_id, *host) : std::string{});
 				}
 				return cache.catalogs.emplace(key, std::move(snapshot)).first->second;
@@ -1695,6 +1711,7 @@ namespace uam
 			permission_json["safetyRisk"] = permission.safety_risk;
 			permission_json["safetyTier"] = permission.safety_tier;
 			permission_json["safetyRequiresApproval"] = permission.safety_requires_approval;
+			if (!permission.command_rule_notice.empty()) permission_json["ruleNotice"] = permission.command_rule_notice;
 
 			nlohmann::json options = JsonArrayWithCapacity(permission.options.size());
 			for (const AcpPermissionOptionState& option : permission.options)
@@ -1955,7 +1972,7 @@ namespace uam
 				acp_json["availableModels"] = SerializeAcpModels(session->available_models);
 			else
 				acp_json["availableModels"] = ProviderModelCatalogService::MergeAcpModelArrays(std::move(acp_json["availableModels"]), SerializeAcpModels(session->available_models), true);
-			const auto* model_host = execution_hosts::Find(app.settings.execution_hosts, chat.execution_host_id.empty() ? "local" : chat.execution_host_id);
+			const auto* model_host = execution_hosts::Find(app.settings.execution_hosts, CatalogSnapshotHost(chat.execution_host_id));
 			ProviderModelCatalogService::ApplyLaunchOptionMetadata(acp_json["availableModels"], chat.provider_id, model_host != nullptr ? CheckedProviderConfigurationVersion(app, chat.provider_id, *model_host) : std::string{});
 			if (session_owns_config) acp_json["configOptions"] = SerializeAcpConfigOptions(session->available_config_options);
 			acp_json["nativeModelOptions"] = ProviderRuntimeRegistry::ResolveById(session->provider_id).OnAcpNativeModelOptionsForFrontend(*session);
@@ -1990,6 +2007,46 @@ namespace uam
 			return acp_json;
 		}
 
+		/// <summary>Goals as the frontend reads them, for both the sidebar summary push and the full transcript load.</summary>
+		nlohmann::json SerializeGoalsForFrontend(const ChatSession& chat)
+		{
+			nlohmann::json goals_arr = JsonArrayWithCapacity(chat.goals.size());
+			for (const auto& goal : chat.goals)
+			{
+				nlohmann::json goal_json;
+				goal_json["id"] = goal.id;
+				goal_json["objective"] = goal.objective;
+				goal_json["status"] = GoalStatusToString(goal.status);
+				goal_json["tokenBudget"] = goal.token_budget;
+				goal_json["tokensUsed"] = goal.tokens_used;
+				goal_json["blockedTurnCount"] = goal.blocked_turn_count;
+				goal_json["lastBlocker"] = goal.last_blocker.empty() ? nullptr : nlohmann::json(goal.last_blocker);
+				goal_json["lastBlockerKind"] = goal.last_blocker_kind.empty() ? nullptr : nlohmann::json(goal.last_blocker_kind);
+				goal_json["lastDiagnostic"] = goal.last_diagnostic.empty() ? nullptr : nlohmann::json(goal.last_diagnostic);
+				goal_json["lastDecisionSource"] = goal.last_decision_source.empty() ? nullptr : nlohmann::json(goal.last_decision_source);
+				goal_json["pendingContinuation"] = chat.goal_pending_continuation_id == goal.id;
+				goal_json["completedItems"] = goal.completed_items;
+				goal_json["remainingItems"] = goal.remaining_items;
+				goal_json["currentStep"] = goal.current_step;
+				goal_json["lastVerification"] = goal.last_verification;
+				goal_json["lastNextPrompt"] = goal.last_next_prompt;
+				goal_json["sameNextPromptCount"] = goal.same_next_prompt_count;
+				goal_json["loopCount"] = goal.loop_count;
+				goal_json["createdAt"] = goal.created_at;
+				goal_json["updatedAt"] = goal.updated_at;
+				goal_json["executionOwner"] = goal.execution_owner == "provider" ? "provider" : "uam";
+				goal_json["providerCommand"] = goal.execution_owner == "provider" ? goal.provider_command : "";
+				goal_json["workerModelId"] = goal.worker_model_id;
+				goal_json["reviewerModelId"] = goal.reviewer_model_id;
+				goal_json["creator"] = goal.creator == "model" ? "model" : "user";
+				goal_json["creatorProviderId"] = uam::excluded_provider_data::IsExcluded(goal.creator_provider_id) ? "" : goal.creator_provider_id;
+				goal_json["creatorAgentId"] = goal.creator_agent_id;
+				goal_json["creatorRunId"] = goal.creator_run_id;
+				goals_arr.push_back(std::move(goal_json));
+			}
+			return goals_arr;
+		}
+
 		template <class Writer>
 		void WriteFingerprintSession(Writer& w, const AppState& app, const ChatSession& chat,
 		                             CatalogSnapshotCache& cache, bool cache_selected = false)
@@ -1998,6 +2055,8 @@ namespace uam
 			w.Set("memoryEnabled", uam::memory_levels::IsEnabled(uam::memory_policy::Resolve(app.settings, chat)));
 			const std::unordered_map<std::string, std::string>::const_iterator routing_wait = app.execution_routing_waits.find(chat.id);
 			w.Set("routingWaitReason", routing_wait == app.execution_routing_waits.end() ? "" : routing_wait->second);
+			// Almost always empty, so the key is sent only with reasons; the interface reads a missing key as none.
+			if (nlohmann::json wait_hosts = uam::RoutingWaitHostsForFrontend(app, chat.id); !wait_hosts.empty()) w.Set("routingWaitHosts", std::move(wait_hosts));
 			w.Set("routingUnresolvedReservation", app.execution_routing_restored_unresolved_chat_ids.contains(chat.id));
 			w.Set("attentionRevision", AttentionRevisionForChat(app, chat, cache));
 			w.Set("attentionSource", chat.attention_source);
@@ -2018,45 +2077,7 @@ namespace uam
 			}
 			w.Object("computerUse", [&](auto& computer_use) { WriteComputerUseState(computer_use, app, chat); });
 
-			// Serialize goals for fingerprint
-			if (!chat.goals.empty())
-			{
-				nlohmann::json goals_arr = JsonArrayWithCapacity(chat.goals.size());
-				for (const auto& goal : chat.goals)
-				{
-					nlohmann::json goal_json;
-					goal_json["id"] = goal.id;
-					goal_json["objective"] = goal.objective;
-					goal_json["status"] = GoalStatusToString(goal.status);
-					goal_json["tokenBudget"] = goal.token_budget;
-					goal_json["tokensUsed"] = goal.tokens_used;
-					goal_json["blockedTurnCount"] = goal.blocked_turn_count;
-					goal_json["lastBlocker"] = goal.last_blocker.empty() ? nullptr : nlohmann::json(goal.last_blocker);
-					goal_json["lastBlockerKind"] = goal.last_blocker_kind.empty() ? nullptr : nlohmann::json(goal.last_blocker_kind);
-					goal_json["lastDiagnostic"] = goal.last_diagnostic.empty() ? nullptr : nlohmann::json(goal.last_diagnostic);
-					goal_json["lastDecisionSource"] = goal.last_decision_source.empty() ? nullptr : nlohmann::json(goal.last_decision_source);
-					goal_json["pendingContinuation"] = chat.goal_pending_continuation_id == goal.id;
-					goal_json["completedItems"] = goal.completed_items;
-					goal_json["remainingItems"] = goal.remaining_items;
-					goal_json["currentStep"] = goal.current_step;
-					goal_json["lastVerification"] = goal.last_verification;
-					goal_json["lastNextPrompt"] = goal.last_next_prompt;
-					goal_json["sameNextPromptCount"] = goal.same_next_prompt_count;
-					goal_json["loopCount"] = goal.loop_count;
-					goal_json["createdAt"] = goal.created_at;
-					goal_json["updatedAt"] = goal.updated_at;
-					goal_json["executionOwner"] = goal.execution_owner == "provider" ? "provider" : "uam";
-					goal_json["providerCommand"] = goal.execution_owner == "provider" ? goal.provider_command : "";
-					goal_json["workerModelId"] = goal.worker_model_id;
-					goal_json["reviewerModelId"] = goal.reviewer_model_id;
-					goal_json["creator"] = goal.creator == "model" ? "model" : "user";
-					goal_json["creatorProviderId"] = uam::excluded_provider_data::IsExcluded(goal.creator_provider_id) ? "" : goal.creator_provider_id;
-					goal_json["creatorAgentId"] = goal.creator_agent_id;
-					goal_json["creatorRunId"] = goal.creator_run_id;
-					goals_arr.push_back(std::move(goal_json));
-				}
-				w.Set("goals", std::move(goals_arr));
-			}
+			if (!chat.goals.empty()) w.Set("goals", SerializeGoalsForFrontend(chat));
 		}
 
 		nlohmann::json SerializeFingerprintSession(const AppState& app, const ChatSession& chat,
@@ -2304,6 +2325,10 @@ namespace uam
 			{
 				nlohmann::json object = StateSerializer::SerializeFolder(folder, false);
 				uam::icons::AddFrontendAsset(object, data_root, folder.custom_icon);
+				// The worker availability scan finds the icon; use it only while it matches this folder's location.
+				if (folder.custom_icon.type.empty() && !folder.project_icon.empty() && folder.availability_directory == folder.directory &&
+				    folder.availability_host_id == folder.execution_host_id)
+					object["projectIcon"] = folder.project_icon;
 				folders_json.push_back(std::move(object));
 			}
 			return folders_json;
@@ -2528,13 +2553,24 @@ namespace uam
 
 	void StateSerializer::FlushCacheDivergenceReport()
 	{
+		// Taken at every verifying pass, so a report counts only probes since the pass before it.
+		const std::size_t path_changes = uam::paths::RecentPathProbeChangeCount().load();
+		const std::optional<std::size_t> previous_path_changes = std::exchange(g_reported_path_probe_changes, path_changes);
 		if (g_unreported_divergence_count == 0) return;
 		std::string names;
 		for (const std::string& name : g_unreported_divergences) names += (names.empty() ? "" : ", ") + name;
+		std::string kinds;
+		for (const auto& [kind, count] : g_unreported_divergence_kinds) kinds += (kinds.empty() ? "" : ", ") + kind + " " + std::to_string(count);
+		// Catalogue values also depend on how workspace paths resolve on disk, which no stamp covers.
+		const bool catalogues = g_unreported_divergence_kinds.contains("model catalogue") || g_unreported_divergence_kinds.contains("model catalogues");
+		const std::string path_cause = !catalogues ? std::string{} :
+		    ", or a workspace path resolved differently on disk (memoised path probes whose value changed since the previous verifying pass: " +
+		    (previous_path_changes ? std::to_string(path_changes - *previous_path_changes) : std::string("not yet measured")) + ")";
 		uam::diagnostics::Write("[desync] " + std::to_string(g_unreported_divergence_count) + " cached value(s) differed from their source and were repaired (" +
-		    names + (g_unreported_divergence_count > g_unreported_divergences.size() ? ", ..." : "") +
-		    "); a write bypassed a revision stamp. Total so far: " + std::to_string(g_cache_divergences.load()) + ".");
+		    names + (g_unreported_divergence_count > g_unreported_divergences.size() ? ", ..." : "") + "; by kind: " + kinds +
+		    "); a write bypassed a revision stamp" + path_cause + ". Total so far: " + std::to_string(g_cache_divergences.load()) + ".");
 		g_unreported_divergences.clear();
+		g_unreported_divergence_kinds.clear();
 		g_unreported_divergence_count = 0;
 	}
 
@@ -2562,7 +2598,9 @@ namespace uam
 		j["resourceCollections"] = SerializeResourceCollectionsForFrontend(app.resource_collections, app.data_root);
 		j["shellActions"] = SerializeShellActionsForFrontend(app.shell_actions);
 		j["computePoolUsage"] = uam::compute_pools::UsageForFrontend(app);
+		j["executionHostLoad"] = uam::HostLoadForFrontend(app);
 		j["prWatches"] = app.pr_watch_service != nullptr ? app.pr_watch_service->SerializeForFrontend() : nlohmann::json::array();
+		j["timers"] = app.timer_service != nullptr ? app.timer_service->SerializeForFrontend() : nlohmann::json{{"notices", nlohmann::json::array()}};
 		j["shellActionNotification"] = app.shell_action_notification;
 		j["statusLine"] = app.status_line;
 		if (app.deletion_progress)
@@ -2592,6 +2630,7 @@ namespace uam
 				chat_json["memoryEnabled"] = uam::memory_levels::IsEnabled(uam::memory_policy::Resolve(app.settings, chat));
 				const std::unordered_map<std::string, std::string>::const_iterator routing_wait = app.execution_routing_waits.find(chat.id);
 				chat_json["routingWaitReason"] = routing_wait == app.execution_routing_waits.end() ? "" : routing_wait->second;
+				if (nlohmann::json wait_hosts = uam::RoutingWaitHostsForFrontend(app, chat.id); !wait_hosts.empty()) chat_json["routingWaitHosts"] = std::move(wait_hosts);
 			chat_json["routingUnresolvedReservation"] = app.execution_routing_restored_unresolved_chat_ids.contains(chat.id);
 			if (!chat.imported_read_only || chat.subagent_parent_chat_id.empty() || chat.subagent_parent_created_at.empty())
 				chat_json["workspaceDirectory"] = uam::paths::Utf8PathString(WorkspaceSnapshotForChat(app, chat, catalog_cache));
@@ -2701,7 +2740,9 @@ namespace uam
 		j["resourceCollections"] = SerializeResourceCollectionsForFrontend(app.resource_collections, app.data_root);
 		j["shellActions"] = SerializeShellActionsForFrontend(app.shell_actions);
 		j["computePoolUsage"] = uam::compute_pools::UsageForFrontend(app);
+		j["executionHostLoad"] = uam::HostLoadForFrontend(app);
 		j["prWatches"] = app.pr_watch_service != nullptr ? app.pr_watch_service->SerializeForFrontend() : nlohmann::json::array();
+		j["timers"] = app.timer_service != nullptr ? app.timer_service->SerializeForFrontend() : nlohmann::json{{"notices", nlohmann::json::array()}};
 		j["shellActionNotification"] = app.shell_action_notification;
 		j["statusLine"] = app.status_line;
 		if (app.deletion_progress)
@@ -2773,45 +2814,7 @@ namespace uam
 		}
 		j["messages"] = std::move(msgs);
 
-		// Serialize goals
-		if (!session.goals.empty())
-		{
-			nlohmann::json goals_arr = JsonArrayWithCapacity(session.goals.size());
-			for (const auto& goal : session.goals)
-			{
-				nlohmann::json goal_json;
-				goal_json["id"] = goal.id;
-				goal_json["objective"] = goal.objective;
-				goal_json["status"] = GoalStatusToString(goal.status);
-				goal_json["tokenBudget"] = goal.token_budget;
-				goal_json["tokensUsed"] = goal.tokens_used;
-				goal_json["blockedTurnCount"] = goal.blocked_turn_count;
-				goal_json["lastBlocker"] = goal.last_blocker.empty() ? nullptr : nlohmann::json(goal.last_blocker);
-				goal_json["lastBlockerKind"] = goal.last_blocker_kind.empty() ? nullptr : nlohmann::json(goal.last_blocker_kind);
-				goal_json["lastDiagnostic"] = goal.last_diagnostic.empty() ? nullptr : nlohmann::json(goal.last_diagnostic);
-				goal_json["lastDecisionSource"] = goal.last_decision_source.empty() ? nullptr : nlohmann::json(goal.last_decision_source);
-					goal_json["pendingContinuation"] = session.goal_pending_continuation_id == goal.id;
-				goal_json["completedItems"] = goal.completed_items;
-				goal_json["remainingItems"] = goal.remaining_items;
-				goal_json["currentStep"] = goal.current_step;
-				goal_json["lastVerification"] = goal.last_verification;
-				goal_json["lastNextPrompt"] = goal.last_next_prompt;
-				goal_json["sameNextPromptCount"] = goal.same_next_prompt_count;
-				goal_json["loopCount"] = goal.loop_count;
-				goal_json["createdAt"] = goal.created_at;
-				goal_json["updatedAt"] = goal.updated_at;
-				goal_json["executionOwner"] = goal.execution_owner == "provider" ? "provider" : "uam";
-				goal_json["providerCommand"] = goal.execution_owner == "provider" ? goal.provider_command : "";
-				goal_json["workerModelId"] = goal.worker_model_id;
-				goal_json["reviewerModelId"] = goal.reviewer_model_id;
-				goal_json["creator"] = goal.creator == "model" ? "model" : "user";
-				goal_json["creatorProviderId"] = uam::excluded_provider_data::IsExcluded(goal.creator_provider_id) ? "" : goal.creator_provider_id;
-				goal_json["creatorAgentId"] = goal.creator_agent_id;
-				goal_json["creatorRunId"] = goal.creator_run_id;
-				goals_arr.push_back(std::move(goal_json));
-			}
-			j["goals"] = std::move(goals_arr);
-		}
+		if (!session.goals.empty()) j["goals"] = SerializeGoalsForFrontend(session);
 
 		return j;
 	}

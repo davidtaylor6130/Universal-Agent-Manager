@@ -3,7 +3,9 @@
 #include "app/chat_domain_service.h"
 #include "common/config/approval_modes.h"
 #include "common/provider/provider_ids.h"
+#include "common/config/execution_host_config.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
+#include "common/provider/provider_setup.h"
 
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_goal_loop.h"
@@ -88,10 +90,13 @@ const char* AntigravityCliProviderRuntime::RuntimeId() const
 }
 
 /// The terminal refuses Antigravity handoff before staging; this keeps that refusal if a caller ever reaches staging.
-bool AntigravityCliProviderRuntime::StageCliHandoffContext(const ProviderCliHandoffStaging&, std::vector<std::string>&, std::string& error) const
+bool AntigravityCliProviderRuntime::StageCliHandoffContext(const ProviderCliHandoffStaging& staging, std::vector<std::string>& argv, std::string&) const
 {
-	error = "The selected provider does not support conversation context files.";
-	return false;
+	// Only a custom agent's instructions reach here: the launcher refuses another provider's conversation for Antigravity
+	// first. They go in the private additional directory Central Setup also uses.
+	if (!staging.stage_file(uam::execution_hosts::JoinRemotePath(staging.host_platform, staging.directory, "AGENTS.md"), staging.snapshot)) return false;
+	uam::provider_setup::InsertLaunchOptions(argv, {"--add-dir", staging.directory});
+	return true;
 }
 
 std::vector<std::string> AntigravityCliProviderRuntime::BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings) const
@@ -105,6 +110,21 @@ std::vector<std::string> AntigravityCliProviderRuntime::BuildInteractiveArgv(con
 	AppendAntigravityEffort(argv, chat);
 	AppendAntigravityModeArgs(argv, chat);
 	return argv;
+}
+
+bool AntigravityCliProviderRuntime::StageInteractiveAgentInstructions(const ExecutionHost& host, std::string_view instructions, std::vector<std::string>&, std::string& staged_context, std::string& error) const
+{
+	staged_context.clear();
+	// The SSH helper does not admit Antigravity provider context, so a remote launch would fail without a reason.
+	if (host.id != uam::execution_hosts::kLocalHostId)
+	{
+		error = "Antigravity CLI View over SSH cannot carry a custom agent's instructions yet. Use Chat for this agent.";
+		return false;
+	}
+	// Written as AGENTS.md in a private --add-dir directory, the route Central Setup uses for its instructions.
+	staged_context.assign(instructions);
+	error.clear();
+	return true;
 }
 
 MessageRole AntigravityCliProviderRuntime::RoleFromNativeType(const ProviderProfile& profile, std::string_view type) const
@@ -226,7 +246,8 @@ namespace
 		{
 			const std::string id = goal->id;
 			goal->last_diagnostic = diagnostic;
-			goal->last_decision_source = decision_source;
+			// Antigravity holds are UAM rules or fallbacks; neither may carry a model backend.
+			uam::GoalService::RecordDecision(*goal, std::string_view(decision_source) == kDecisionSourceFilter ? uam::DecisionAttribution::Filter() : uam::DecisionAttribution::Fallback());
 			goal->last_blocker = reason;
 			goal->last_blocker_kind = diagnostic == "antigravity_goal_budget_reached" ? "token_budget" : "usage_unknown";
 			(void)uam::GoalService::UpdateGoalStatus(app, session.antigravity_goal_turn.owner_chat_id, id, GoalStatus::Blocked, false, true);
@@ -405,6 +426,7 @@ bool AntigravityCliProviderRuntime::OnAcpValidateGoalResume(const ChatSession& c
 		error = "The saved Antigravity conversation identity is invalid. The goal was not resumed.";
 		return false;
 	}
+	// Reviewed iterations only: this also gates each goal prompt send, including the review after an unreviewed resume; the shared cap and watchdog bound unreviewed resumes.
 	if (!restart && (goal.loop_count < 0 || goal.loop_count >= uam::GoalService::IterationLimit(&chat, goal, settings)))
 	{
 		error = "Maximum goal loop iterations reached.";
@@ -488,7 +510,7 @@ void AntigravityCliProviderRuntime::OnAcpTurnStopping(uam::AppState& app, uam::A
 	}
 	if (goal->status == GoalStatus::Active)
 	{
-		if (goal->last_diagnostic == "antigravity_goal_usage_unknown") goal->last_decision_source = kDecisionSourceFilter;
+		if (goal->last_diagnostic == "antigravity_goal_usage_unknown") uam::GoalService::RecordDecision(*goal, uam::DecisionAttribution::Filter());
 		(void)uam::GoalService::UpdateGoalStatus(app, owner_id, goal->id, GoalStatus::Paused, false, true);
 	}
 	session.antigravity_goal_turn.settled = true;

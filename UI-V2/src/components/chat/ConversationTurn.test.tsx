@@ -3,7 +3,8 @@ import { createRoot } from 'react-dom/client'
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { ConversationTurn } from './ConversationTurn'
+import { ConversationTurn, type ConversationDelivery } from './ConversationTurn'
+import { ChatAnnouncer } from './StatusHelpers'
 import { OutgoingRecoveryActions } from './OutgoingMessageRow'
 
 // Vitest empties CSS imports, so read the source tokens (runner cwd is UI-V2).
@@ -32,12 +33,59 @@ describe('ConversationTurn actions', () => {
     const root = createRoot(host)
     act(() => root.render(<ConversationTurn role="user" assistantLabel="Claude" delivery={{ state: 'unsent', label: 'Never reached the provider.' }}
       deliveryActions={<OutgoingRecoveryActions onEdit={() => {}} onRemove={async () => true} />}>Hi</ConversationTurn>))
-    const status = host.querySelector('[role="status"]')!
-    expect(status.textContent).toBe('Not sent')
+    const status = host.querySelector<HTMLElement>('.conversation-turn__delivery')!
+    expect(status.firstChild?.textContent).toBe('Not sent')
     expect(status.querySelector('svg')).toBeNull()
-    expect(status.getAttribute('aria-label')).toBe('Not sent. Never reached the provider.')
+    expect(status.textContent).toBe('Not sent. Never reached the provider.')
+    expect(status.querySelector('.sr-only')?.textContent).toBe('. Never reached the provider.')
     expect(host.querySelector('.conversation-turn__actions button[aria-label="Edit unsent message"]')).not.toBeNull()
     act(() => root.unmount())
+  })
+
+  it('keeps the delivery marker out of the Tab order and out of live regions', () => {
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    for (const state of ['sending', 'unsent', 'unconfirmed', 'waiting'] as const) {
+      act(() => root.render(<ConversationTurn role="user" assistantLabel="Claude" delivery={{ state, label: 'Explanation.' }}>Hi</ConversationTurn>))
+      const status = host.querySelector<HTMLElement>('.conversation-turn__delivery')!
+      expect(status.tabIndex).toBe(-1)
+      expect(status.hasAttribute('tabindex')).toBe(false)
+      expect(status.getAttribute('role')).toBeNull()
+      expect(host.querySelector('[role="status"], [aria-live]')).toBeNull()
+    }
+    act(() => root.unmount())
+  })
+
+  it('announces only an in-flight message becoming definitely unsent, once', () => {
+    const host = document.createElement('div')
+    const root = createRoot(host)
+    const lines: string[] = []
+    const render = (delivery?: ConversationDelivery) => act(() => root.render(<ChatAnnouncer>
+      <ConversationTurn role="user" assistantLabel="Claude" delivery={delivery}>Hi</ConversationTurn>
+    </ChatAnnouncer>))
+    const region = () => host.querySelector('[data-testid="chat-announcement"]')!
+    const read = () => { if (region().textContent) lines.push(region().textContent!) }
+    // A row that is already unsent when the chat opens is not announced.
+    render({ state: 'unsent', label: 'Never reached the provider.' })
+    read()
+    expect(lines).toEqual([])
+    act(() => root.unmount())
+    const second = createRoot(host)
+    const renderSecond = (delivery?: ConversationDelivery) => act(() => second.render(<ChatAnnouncer>
+      <ConversationTurn role="user" assistantLabel="Claude" delivery={delivery}>Hi</ConversationTurn>
+    </ChatAnnouncer>))
+    renderSecond({ state: 'sending', label: 'Waiting.' })
+    read()
+    renderSecond({ state: 'unconfirmed', label: 'Not confirmed.' })
+    read() // Uncertain delivery is never presented as a failure.
+    expect(lines).toEqual([])
+    renderSecond({ state: 'unsent', label: 'Never reached the provider.' })
+    read()
+    expect(lines).toEqual(['Message not sent.'])
+    const announced = region().firstChild
+    renderSecond({ state: 'unsent', label: 'Edit or remove it.' })
+    expect(region().firstChild).toBe(announced) // A changed explanation is not a second announcement.
+    act(() => second.unmount())
   })
 
   it('fades hover actions without collapsing them, so the delivery label never shifts', () => {

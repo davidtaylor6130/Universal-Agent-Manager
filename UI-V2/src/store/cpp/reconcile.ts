@@ -1,3 +1,4 @@
+import { sameRoutingWaitHosts } from '../../types/hostLoad'
 import { customIconsEqual } from '../../types/customIcon'
 // Equivalence checkers, binding builders, message reconciler, and request-clear
 // helpers. Extracted from useAppStore.ts (MO-1). Module-level mutable state
@@ -164,6 +165,7 @@ export function sessionsEquivalent(previous: Session, next: Session): boolean {
     previous.routingAssignedConnectionIdentity === next.routingAssignedConnectionIdentity &&
     previous.routingAssignedProviderConfigurationIdentity === next.routingAssignedProviderConfigurationIdentity &&
     previous.routingWaitReason === next.routingWaitReason &&
+    sameRoutingWaitHosts(previous.routingWaitHosts, next.routingWaitHosts) &&
     previous.routingReservationPending === next.routingReservationPending &&
     previous.routingUnresolvedReservation === next.routingUnresolvedReservation &&
     previous.name === next.name &&
@@ -294,6 +296,7 @@ export function sessionFromCppChat(
     routingAssignedConnectionIdentity: chat.routingAssignedConnectionIdentity,
     routingAssignedProviderConfigurationIdentity: chat.routingAssignedProviderConfigurationIdentity,
     routingWaitReason: chat.routingWaitReason,
+    routingWaitHosts: chat.routingWaitHosts,
     routingReservationPending: chat.routingReservationPending,
     routingUnresolvedReservation: chat.routingUnresolvedReservation,
 
@@ -536,6 +539,7 @@ function pendingPermissionEquivalent(existing: AcpPendingPermission | null, next
     existing.safetyRisk === next.safetyRisk &&
     existing.safetyTier === next.safetyTier &&
     existing.safetyRequiresApproval === next.safetyRequiresApproval &&
+    existing.ruleNotice === next.ruleNotice &&
     existing.options.length === next.options.length &&
     existing.options.every((option, index) => {
       const other = next.options[index]

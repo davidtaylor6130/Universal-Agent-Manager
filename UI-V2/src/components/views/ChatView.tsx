@@ -41,7 +41,7 @@ import { GoalBanner } from '../shared/GoalBanner'
 import { CODEX_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, normalizeCliProviderIdAlias, fallbackProviderForId, isClaudeProvider, isCodexProvider, isCopilotProvider, isOpenCodeProvider, permissionTierForProvider, providerCapabilities, providerDisabledOn, providerMetadataForId, providerShortName } from '../../utils/providerMetadata'
 import { buildCodexReasoningOptions, buildCodexSpeedOptions, CODEX_SPEED_INHERIT_ID, buildModelOptions, modelOptionFor, providerRuntimeLabel, selectedRuntimeModel } from '../chat/modelOptions'
 import { CompactingScene, RefreshingScene, SleepingScene } from '../chat/StatusScenes'
-import { buildAcpErrorCopyText, ChatStatusStrip, CopyTextButton, statusColor, statusLabel } from '../chat/StatusHelpers'
+import { buildAcpErrorCopyText, ChatAnnouncer, ChatStatusStrip, CopyTextButton, ReplyAnnouncement, statusColor, statusLabel } from '../chat/StatusHelpers'
 import { restartWithRaisedTimeout, TIMEOUT_RESTART_STEP_SECONDS, TimeoutStopNotice, type TimeoutRestartOutcome } from '../chat/TimeoutStopNotice'
 import { SubAgentDisclosureProvider, WorkSectionContext, ConversationWork, type WorkTraceDisclosureState } from '../chat/ConversationWork'
 import { MessageFrame, ToolCallModal, UserInputInlineCard } from '../chat/ToolCallViews'
@@ -131,7 +131,8 @@ export function uamAgentDisplayName(id: string) {
 }
 
 export function buildUamAgentCycle(agents: UamAgentSummary[], favoriteIds: string[]) {
-  const selectable = new Set(agents.map((agent) => agent.id))
+  // Delegate-only agents are listed in the picker but are never a chat's own agent, so the cycle skips them.
+  const selectable = new Set(agents.filter((agent) => !agent.delegateOnly).map((agent) => agent.id))
   const cycle = ['build', 'plan']
   for (const rawId of favoriteIds) {
     const id = rawId.trim().toLowerCase()
@@ -973,8 +974,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     : repositoryChanges?.workspaceDirectory === workspaceDirectory ? repositoryChanges : null
   const composerBranch = composerRepository
     ? composerRepository.available ? composerRepository.branchOrRevision : ''
-    : session.workspaceBranchName
+    : session.workspaceBranchName ?? ''
   const composerVcsType = composerRepository?.activeVcsType ?? 'git'
+  // Before the first send, a chat's chosen Git base (not the checked-out branch) is what its worktree starts from.
+  const composerChosenBase = composerVcsType === 'git' && session.workspaceIsolationKind === 'pendingGitWorktree'
+    && session.gitBaseBranch && session.gitBaseBranch !== composerBranch ? session.gitBaseBranch : ''
   const branchSwitching = useAppStore((s) => s.branchSwitching === true)
   // The global bridge flag is not a per-workspace capability; native validation remains authoritative.
   const canSwitchComposerBranch = branchSwitching && (session.executionHostId || 'local') === 'local'
@@ -1253,12 +1257,20 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     messages[recordedTurnAssistantMessageIndex]?.role === 'assistant'
   // A live turn whose index no longer resolves still owns the latest assistant row when that row holds its text; the
   // timeline replaces the row in place, keeping live tools and controls without a second card.
+  // A steer, queued or prepared user row can follow the answer (#278); the turn's own user row still places it then.
+  // While the turn runs, only priority steers may follow it: an ordinary row there may be this turn's own prompt, with
+  // the stale index left on an older turn whose answer reads the same.
+  const latestAssistantShown = latestAssistantMessageIndex >= earliestRenderedMessageIndex
+  const latestAssistantFollowsLatestUser = latestAssistantShown && latestAssistantMessageIndex > latestUserMessageIndex
+  const latestAssistantFollowsTurnUser = latestAssistantFollowsLatestUser ||
+    (latestAssistantShown && latestAssistantMessageIndex > turnUserMessageIndex && messages[turnUserMessageIndex]?.role === 'user')
+  const onlySteersFollowLatestAssistant = latestAssistantFollowsLatestUser ||
+    (latestAssistantFollowsTurnUser && messages.slice(latestAssistantMessageIndex + 1).every((message) => message.role !== 'user' || message.prioritySteer))
   const liveTurnOwnsLatestAssistant =
     !recordedTurnAssistantMatches && Boolean(acp?.processing) &&
     historyStartIndex + messages.length >= (session.messageCount ?? 0) &&
-    latestAssistantMessageIndex >= earliestRenderedMessageIndex &&
-    latestAssistantMessageIndex > latestUserMessageIndex &&
-    contentIsExactlyTurnText(messages[latestAssistantMessageIndex].content, turnEvents, messages[latestAssistantMessageIndex].isStreaming)
+    onlySteersFollowLatestAssistant &&
+    contentIsExactlyTurnText(messages[latestAssistantMessageIndex]?.content ?? '', turnEvents, messages[latestAssistantMessageIndex]?.isStreaming)
   const turnAssistantMessageIndex = liveTurnOwnsLatestAssistant ? latestAssistantMessageIndex : recordedTurnAssistantMessageIndex
   const turnAssistantMessageMatches = recordedTurnAssistantMatches || liveTurnOwnsLatestAssistant
   const turnUserMessageMatches =
@@ -1269,7 +1281,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       (turnAssistantMessageMatches && turnUserMessageIndex < turnAssistantMessageIndex))
   const completedFallbackAlreadyPersisted =
     !acp?.processing &&
-    latestAssistantMessageIndex > latestUserMessageIndex &&
+    latestAssistantFollowsTurnUser &&
     contentIsExactlyTurnText(messages[latestAssistantMessageIndex]?.content ?? '', turnEvents)
   // Bind only a confirmed assistant; steering can put user messages between turn rows.
   const disclosureAssistant = turnAssistantMessageMatches
@@ -2670,14 +2682,16 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     const byId = new Map(catalogUamAgents.map((agent) => [agent.id, agent]))
     if (!byId.has('build')) byId.set('build', { id: 'build', description: 'Implement changes while obeying the current UAM permission policy.', builtIn: true })
     if (!byId.has('plan')) byId.set('plan', { id: 'plan', description: 'Inspect and plan under a hard read-only workspace ceiling.', builtIn: true })
+    // Chat agents first, then delegate-only agents, each alphabetical.
     return [byId.get('build')!, byId.get('plan')!, ...Array.from(byId.values())
       .filter((agent) => agent.id !== 'build' && agent.id !== 'plan')
-      .sort((left, right) => left.id.localeCompare(right.id))]
+      .sort((left, right) => Number(Boolean(left.delegateOnly)) - Number(Boolean(right.delegateOnly)) || left.id.localeCompare(right.id))]
   }, [catalogUamAgents])
   const uamAgents = useMemo(() => selectableUamAgents.map((agent) => ({
     id: agent.id,
     name: uamAgentDisplayName(agent.id),
     description: agent.description,
+    ...(agent.delegateOnly ? { delegateOnly: true } : {}),
   })), [selectableUamAgents])
   const uamAgentCycle = useMemo(
     () => buildUamAgentCycle(selectableUamAgents, favoriteUamAgentIds),
@@ -3766,21 +3780,39 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                   openSubagentView(parent, { kind: 'managed', runId })
                 }
               }}>
+              {/* One polite region per open chat, outside the busy message list: state changes only, never ticking time. */}
+              <ChatAnnouncer key={session.id}>
+              <ReplyAnnouncement
+                working={Boolean(acp?.processing)}
+                turnSerial={turnSerial}
+                waitingFor={pendingPermission ? 'permission' : pendingUserInput ? 'answer' : undefined}
+                failed={Boolean(currentAcpError) || acp?.lifecycleState === 'error'}
+                stopReason={acp?.lastStopReason}
+                // A turn with no reply (Cancel turn before any text) did not finish. Reply evidence comes from the
+                // binding's own turn facts, which arrive with processing=false, before the reply row may be loaded.
+                interrupted={!(latestAssistantMessageIndex > latestUserMessageIndex ||
+                  (acp?.turnAssistantMessageIndex ?? -1) > (acp?.turnUserMessageIndex ?? -1) ||
+                  turnEvents.some((event) => event.type === 'tool_call' || (event.type === 'assistant_text' && Boolean(event.text.trim())))) ||
+                  (latestAssistantMessageIndex > latestUserMessageIndex && Boolean(latestAssistantMessage?.interrupted))}
+                // The composer error alert (when it actually shows) and the stopped divider announce themselves.
+                alertKey={currentAcpError && !timeoutStop && (currentAcpErrorKey !== dismissedAcpErrorKey || remoteStopForceAvailable) ? currentAcpErrorKey : ''}
+                stoppedNotice={Boolean(stoppedStatusLabel)}
+              />
               <SubAgentDisclosureProvider expandedTools={subagentDisclosures}>
               <div ref={messageListRef} className="uam-message-list space-y-1.5" aria-busy={historyLoading} data-message-motion={messageMotion}>
               {historyLoading && <div role="status" className="conversation-empty">
                 <div className="conversation-skeleton" aria-hidden>
-                  <span className="conversation-skeleton__bubble" />
+                  <span className="uam-skeleton conversation-skeleton__bubble" />
                   <div className="conversation-skeleton__text">
-                    <span className="conversation-skeleton__line" />
-                    <span className="conversation-skeleton__line" />
-                    <span className="conversation-skeleton__line conversation-skeleton__line--mid" />
-                    <span className="conversation-skeleton__line conversation-skeleton__line--short" />
+                    <span className="uam-skeleton conversation-skeleton__line" />
+                    <span className="uam-skeleton conversation-skeleton__line" />
+                    <span className="uam-skeleton conversation-skeleton__line conversation-skeleton__line--mid" />
+                    <span className="uam-skeleton conversation-skeleton__line conversation-skeleton__line--short" />
                   </div>
-                  <span className="conversation-skeleton__bubble conversation-skeleton__bubble--short" />
+                  <span className="uam-skeleton conversation-skeleton__bubble conversation-skeleton__bubble--short" />
                   <div className="conversation-skeleton__text">
-                    <span className="conversation-skeleton__line" />
-                    <span className="conversation-skeleton__line conversation-skeleton__line--short" />
+                    <span className="uam-skeleton conversation-skeleton__line" />
+                    <span className="uam-skeleton conversation-skeleton__line conversation-skeleton__line--short" />
                   </div>
                 </div>
                 <span>Loading chat history…</span>
@@ -3813,14 +3845,13 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 <div data-testid="compute-pool-wait" role="status" className="uam-turn-starting px-4 py-2 text-xs" style={{ color: 'var(--text-3)' }}>
                   <span className="conversation-work__heading">
                     <span className="conversation-work__live" aria-hidden />
-                    <span>Waiting for {acp.computePoolWait.poolName} slot ({acp.computePoolWait.inUse}/{acp.computePoolWait.limit})</span>
+                    <span>Waiting for {acp.computePoolWait.poolName} slot ({acp.computePoolWait.inUse}/{acp.computePoolWait.limit} in use)</span>
                   </span>
                 </div>
               )}
               {acp?.processing && !acp.computePoolWait && turnEvents.length === 0 && (activeWorkMessageIndex < 0 || unsentProjection.hiddenIndices.has(activeWorkMessageIndex)) && (
                 <div
                   data-testid="turn-starting"
-                  role="status"
                   className="uam-turn-starting px-4 py-2 text-xs"
                   style={{ color: 'var(--text-3)' }}
                 >
@@ -3938,6 +3969,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               )}
               </div>
               </SubAgentDisclosureProvider>
+              </ChatAnnouncer>
               </InlineSubagentProvider>
             </div>
             {/* Follow the padded end so the latest output clears the floating composer. */}
@@ -4210,11 +4242,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 </div>
                 <span className="inline-flex min-w-0 items-center gap-1 truncate text-xs" title={workspaceDirectory}>
                   <span className="max-w-[12rem] shrink-0 truncate">{workspaceName}</span>
-                  {composerBranch && (canSwitchComposerBranch
+                  {(composerBranch || composerChosenBase) && (canSwitchComposerBranch
                     ? <ChatBranchPicker key={`${composerBranchScope}:${composerVcsType}`} chatId={session.id} branch={composerBranch} vcsType={composerVcsType} disabled={workspaceActionsDisabled} pendingBranch={session.pendingGitBranch} disabledReason="Wait for the agent to finish before switching branches." onSwitched={handleBranchSwitched} />
-                    : <Tooltip label={composerVcsType === 'svn' ? 'SVN folder switching needs a local working copy outside imported, temporary or isolated chats.' : composerBranch}>
-                      <span tabIndex={0} className="inline-flex min-w-0 items-center gap-1 truncate rounded-sm" aria-label={composerVcsType === 'svn' ? `SVN revision ${composerBranch}` : `Branch ${composerBranch}`}>
-                        {composerVcsType !== 'svn' && <GitBranch size={12} aria-hidden />}<span className="truncate font-mono">{composerVcsType === 'svn' ? `SVN r${composerBranch}` : composerBranch}</span>
+                    : <Tooltip label={composerVcsType === 'svn' ? 'SVN folder switching needs a local working copy outside imported, temporary or isolated chats.' : composerChosenBase ? `Starts from ${composerChosenBase}.${composerBranch ? ` Local copy is on ${composerBranch}.` : ''}` : composerBranch}>
+                      <span tabIndex={0} className="inline-flex min-w-0 items-center gap-1 truncate rounded-sm" aria-label={composerVcsType === 'svn' ? `SVN revision ${composerBranch}` : composerChosenBase ? `Base branch ${composerChosenBase}${composerBranch ? `, local copy on ${composerBranch}` : ''}` : `Branch ${composerBranch}`}>
+                        {composerVcsType !== 'svn' && <GitBranch size={12} aria-hidden />}<span className="truncate font-mono">{composerVcsType === 'svn' ? `SVN r${composerBranch}` : composerChosenBase || composerBranch}</span>
                       </span>
                     </Tooltip>)}
                   {isGitWorktree && <span className="uam-composer-workspace-tab__badge">Worktree</span>}
