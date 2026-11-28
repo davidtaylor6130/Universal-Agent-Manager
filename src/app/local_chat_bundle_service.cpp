@@ -116,6 +116,13 @@ namespace uam
 			}
 		}
 
+		/// Shows the fixed message and keeps the identifying detail in the diagnostic log only.
+		void AppendLoggedError(std::vector<std::string>& errors, std::string message, std::string_view detail)
+		{
+			uam::diagnostics::Write("[chat-bundle] " + message + " (" + std::string(detail) + ")");
+			AppendError(errors, std::move(message));
+		}
+
 		bool ReadRequiredString(const nlohmann::json& object, std::string_view field, std::string& value_out)
 		{
 			const auto it = object.find(std::string(field));
@@ -238,13 +245,13 @@ namespace uam
 			const auto archive = ChatRepository::ParseArchivalQueuedPrompts(canonical, chat.id);
 			if (!archive)
 			{
-				AppendError(errors, "Canonical queued attachment archive is invalid: " + chat.id);
+				AppendLoggedError(errors, "A chat has invalid queued attachments.", chat.id);
 				return false;
 			}
 			chat.acp_queued_prompts = *archive;
 			if (!NativeMetadataWithinBounds(document, chat, metadata_bytes))
 			{
-				AppendError(errors, "Canonical native attachment metadata exceeds the archive bounds: " + chat.id);
+				AppendLoggedError(errors, "A chat's attachment details are too large for the bundle.", chat.id);
 				return false;
 			}
 			std::unordered_set<std::string> seen;
@@ -265,7 +272,7 @@ namespace uam
 				originals.push_back({reference, std::move(payload)});
 				return true;
 			});
-			if (!valid) AppendError(errors, "A native original is missing, invalid or exceeds the operation budget: " + chat.id);
+			if (!valid) AppendLoggedError(errors, "A chat attachment is missing, invalid or too large.", chat.id);
 			return valid;
 		}
 
@@ -277,7 +284,7 @@ namespace uam
 			for (const auto& original : originals) payloads.push_back(original.payload);
 			std::string error;
 			prepared = native_assets::PreparedBatch::Prepare(fs::absolute(root), final_owner, payloads, error);
-			if (!prepared) AppendError(errors, "Could not prepare portable native originals: " + error);
+			if (!prepared) AppendLoggedError(errors, "Could not prepare the chat attachments.", error);
 			return prepared != nullptr;
 		}
 
@@ -363,7 +370,7 @@ namespace uam
 			const bool exists = fs::exists(bundle_path, ec);
 			if (ec)
 			{
-				AppendError(errors, "Could not inspect the export folder: " + ec.message());
+				AppendLoggedError(errors, "Could not check the export folder.", ec.message());
 				return false;
 			}
 			if (!exists)
@@ -378,12 +385,12 @@ namespace uam
 			const bool empty = fs::is_empty(bundle_path, ec);
 			if (ec)
 			{
-				AppendError(errors, "Could not inspect the export folder contents: " + ec.message());
+				AppendLoggedError(errors, "Could not check the export folder contents.", ec.message());
 				return false;
 			}
 			if (!empty)
 			{
-				AppendError(errors, "The local chat export destination is not empty. Choose a new or empty folder.");
+				AppendError(errors, "The export folder is not empty; choose a new or empty folder.");
 				return false;
 			}
 			return true;
@@ -409,8 +416,8 @@ namespace uam
 				const fs::directory_entry& entry = *it;
 				if (uam::paths::IsDirectoryEntryNoThrow(entry))
 				{
-					AppendError(errors, "Legacy local chat storage must be migrated before export: " +
-					                        uam::paths::Utf8PathString(entry.path()));
+					AppendLoggedError(errors, "Legacy local chat storage must be migrated before export.",
+					    uam::paths::Utf8PathString(entry.path().filename()));
 					return false;
 				}
 				if (!uam::paths::IsRegularFileNoThrow(entry.path()))
@@ -437,14 +444,14 @@ namespace uam
 
 				if (!uam::chat_ids::IsSafeStorageChatId(id))
 				{
-					AppendError(errors, "Local chat storage contains an invalid chat id: " + id);
+					AppendLoggedError(errors, "Local chat storage contains an invalid chat file.", id);
 					return false;
 				}
 				std::error_code size_error;
 				const std::uintmax_t size = fs::file_size(entry.path(), size_error);
 				if (size_error || size > kMaxChatBytes)
 				{
-					AppendError(errors, "Local chat storage exceeds the safe bundle data limit: " + id);
+					AppendLoggedError(errors, "Local chat storage exceeds the safe bundle data limit.", id);
 					return false;
 				}
 				auto [stored_it, inserted] = stored.try_emplace(id);
@@ -458,7 +465,7 @@ namespace uam
 			}
 			if (iteration_error)
 			{
-				AppendError(errors, "Could not inspect every local chat before export: " + iteration_error.message());
+				AppendLoggedError(errors, "Could not check every local chat before export.", iteration_error.message());
 				return false;
 			}
 			std::size_t total_bytes = 0;
@@ -474,7 +481,7 @@ namespace uam
 				const std::size_t size = static_cast<std::size_t>(sizes.primary.value_or(sizes.backup.value_or(0)));
 				if (total_bytes > kMaxTotalChatBytes - size)
 				{
-					AppendError(errors, "Local chat storage exceeds the safe bundle data limit: " + id);
+					AppendLoggedError(errors, "Local chat storage exceeds the safe bundle data limit.", id);
 					return false;
 				}
 				total_bytes += size;
@@ -530,8 +537,8 @@ namespace uam
 				}
 				if (!validated || validated->id != chat_id)
 				{
-					AppendError(errors, "Canonical chat failed validation before export: " + chat_id +
-					                        (validation_warning.empty() ? std::string{} : " (" + validation_warning + ")"));
+					AppendLoggedError(errors, "A chat failed validation, so the export stopped.",
+					    chat_id + (validation_warning.empty() ? std::string{} : ": " + validation_warning));
 					return {};
 				}
 
@@ -540,14 +547,13 @@ namespace uam
 				if (!uam::paths::IsRegularFileNoThrow(canonical_path) ||
 				    !uam::io::TryReadTextFile(canonical_path, canonical_text, kMaxChatBytes) || canonical_text.empty())
 				{
-					AppendError(errors, "Could not read canonical chat file for export: " +
-					                        uam::paths::Utf8PathString(canonical_path));
+					AppendLoggedError(errors, "Could not read a chat file for export.", chat_id);
 					return {};
 				}
 				if (canonical_text.size() > kMaxChatBytes ||
 				    total_bytes > kMaxTotalChatBytes - canonical_text.size())
 				{
-					AppendError(errors, "Local chat storage exceeds the safe bundle data limit: " + chat_id);
+					AppendLoggedError(errors, "Local chat storage exceeds the safe bundle data limit.", chat_id);
 					return {};
 				}
 				total_bytes += canonical_text.size();
@@ -557,13 +563,13 @@ namespace uam
 					// This rejects inert numbers that the portable codec would round.
 					if (!ChatRepository::ParsePassiveQueuedPromptArchive(canonical_text, chat_id))
 					{
-						AppendError(errors, "Canonical queued archive cannot be preserved losslessly: " + chat_id);
+						AppendLoggedError(errors, "A chat's queued messages cannot be exported without loss.", chat_id);
 						return {};
 					}
 					auto portable = nlohmann::json::parse(canonical_text, nullptr, false);
 					if (!portable.is_object())
 					{
-						AppendError(errors, "Could not remove private process authority from the exported transcript: " + chat_id);
+						AppendLoggedError(errors, "Could not remove private session details from an exported chat.", chat_id);
 						return {};
 					}
 					const bool has_authority =
@@ -694,7 +700,7 @@ namespace uam
 				const fs::path chat_path = AppPaths::UamChatFilePath(bundle_path, id);
 				if (!fs::is_regular_file(fs::symlink_status(chat_path, link_error)) || link_error)
 				{
-					AppendError(errors, "The local chat bundle is missing canonical chat file: " + relative_file);
+					AppendLoggedError(errors, "The chat bundle is missing a chat file.", relative_file);
 					return false;
 				}
 				const auto byte_size_it = entry.find("byteSize");
@@ -703,7 +709,7 @@ namespace uam
 				if (!declared_size || *declared_size > kMaxChatBytes ||
 				    declared_total_bytes > kMaxTotalChatBytes - *declared_size)
 				{
-					AppendError(errors, "Canonical chat data exceeds the safe import limit: " + relative_file);
+					AppendLoggedError(errors, "A chat in the bundle exceeds the safe import limit.", relative_file);
 					return false;
 				}
 				declared_total_bytes += *declared_size;
@@ -711,22 +717,22 @@ namespace uam
 				const std::uintmax_t actual_size = fs::file_size(chat_path, size_error);
 				if (!declared_size || size_error || actual_size != *declared_size)
 				{
-					AppendError(errors, "Canonical chat file size does not match the bundle manifest: " + relative_file);
+					AppendLoggedError(errors, "A chat file's size does not match the bundle manifest.", relative_file);
 					return false;
 				}
 
 				std::string canonical;
 				if (!uam::io::TryReadTextFile(chat_path, canonical, *declared_size) || canonical.size() != *declared_size)
 				{
-					AppendError(errors, "Canonical chat changed or could not be read within its declared bound: " + relative_file);
+					AppendLoggedError(errors, "A chat file in the bundle changed or could not be read.", relative_file);
 					return false;
 				}
 				std::string validation_warning;
 				std::optional<ChatSession> chat = ChatRepository::LoadLocalChatBounded(bundle_path, id, *declared_size);
 				if (!chat || chat->id != id || !chat->messages_loaded)
 				{
-					AppendError(errors, "Canonical chat failed validation: " + relative_file +
-					                        (validation_warning.empty() ? std::string{} : " (" + validation_warning + ")"));
+					AppendLoggedError(errors, "A chat in the bundle failed validation.",
+					    relative_file + (validation_warning.empty() ? std::string{} : ": " + validation_warning));
 					return false;
 				}
 				ImportCandidate candidate;
@@ -739,7 +745,7 @@ namespace uam
 				        budget, metadata_bytes, candidate.originals, errors)) return false;
 				if (!ValidateOriginalInventory(entry, *version, candidate.originals))
 				{
-					AppendError(errors, "Canonical native originals do not match the versioned bundle inventory: " + relative_file);
+					AppendLoggedError(errors, "A chat's attachments do not match the bundle inventory.", relative_file);
 					return false;
 				}
 				validated.push_back(std::move(candidate));
@@ -757,13 +763,13 @@ namespace uam
 				const std::string relative_file = CanonicalRelativeChatPath(entry.path().stem().string());
 				if (!declared_files.contains(relative_file))
 				{
-					AppendError(errors, "The local chat bundle contains an undeclared canonical chat file: " + relative_file);
+					AppendLoggedError(errors, "The chat bundle contains a chat file its manifest does not list.", relative_file);
 					return false;
 				}
 			}
 			if (iteration_error)
 			{
-				AppendError(errors, "Could not inspect every canonical chat in the bundle: " + iteration_error.message());
+				AppendLoggedError(errors, "Could not check every chat in the bundle.", iteration_error.message());
 				return false;
 			}
 
@@ -887,6 +893,8 @@ namespace uam
 			chat.approval_mode = "default";
 			chat.uam_agent_id = "build";
 			chat.agent_run_id.clear();
+			chat.managed_root_chat_id.clear();
+			chat.managed_root_created_at.clear();
 			chat.goal_owner_chat_id.clear();
 			chat.goal_iteration_goal_id.clear();
 			chat.goal_iteration_turn_kind.clear();
@@ -929,7 +937,7 @@ namespace uam
 			std::error_code directory_error;
 			if (!uam::paths::CreateDirectoriesNoThrow(bundle_path / kChatsDirectoryName, &directory_error))
 			{
-				AppendError(result.errors, "Could not create the local chat bundle folder: " + directory_error.message());
+				AppendLoggedError(result.errors, "Could not create the chat bundle folder.", directory_error.message());
 				return result;
 			}
 			std::size_t total_chat_bytes = 0;
@@ -980,12 +988,12 @@ namespace uam
 				std::string receipt_error;
 				if (candidate.prepared && !candidate.prepared->MarkPublicationAttempted(receipt_error))
 				{
-					AppendError(result.errors, "Could not retain exported originals before publication: " + receipt_error);
+					AppendLoggedError(result.errors, "Could not keep a chat's exported attachments, so it was skipped.", receipt_error);
 					continue;
 				}
 				if (!uam::io::WriteTextFile(destination, candidate.canonical_text))
 				{
-					AppendError(result.errors, "Failed to export canonical chat file: " + relative_file);
+					AppendLoggedError(result.errors, "Could not export a chat file.", relative_file);
 					continue;
 				}
 				++result.exported_count;
@@ -1036,7 +1044,7 @@ namespace uam
 			if (!candidates.empty())
 			{
 				result.warnings.push_back(
-				    "Imported chats are passive transcripts. Reconnect workspaces, provider sessions, agents, goals, attachments, and command permissions explicitly before running them.");
+				    "Imported chats are read-only transcripts until you reconnect their workspaces, providers and permissions.");
 			}
 
 			std::unordered_set<std::string> used_ids;
@@ -1124,7 +1132,8 @@ namespace uam
 				else
 				{
 					++result.failed_count;
-					item.error = "Could not save imported chat without overwriting destination storage: " + candidate.imported_id;
+					uam::diagnostics::Write("[chat-bundle] Could not save imported chat without overwriting destination storage: " + candidate.imported_id);
+					item.error = "Could not save an imported chat without overwriting an existing one.";
 					result.errors.push_back(item.error);
 				}
 				result.items.push_back(std::move(item));
@@ -1174,6 +1183,41 @@ namespace uam
 				return result;
 			}
 
+			// Folders before chats: a copied chat must never name a workspace this root has not saved, even if the
+			// copy stops part-way. Folders the ledger already recorded stay out, so user deletions hold.
+			uam::io::StoreLoadResult current_folders_load;
+			uam::io::StoreLoadResult legacy_folders_load;
+			std::vector<ChatFolder> folders = ChatFolderStore::Load(data_root, &current_folders_load);
+			std::vector<ChatFolder> legacy_folders = ChatFolderStore::Load(legacy_root, &legacy_folders_load);
+			const std::size_t existing_folder_count = folders.size();
+			// A damaged workspace file on either side is reported, never merged from a partial read. No chats are
+			// copied either, since they could name workspaces that were not imported; retry at the next start.
+			if (current_folders_load.Unrecovered() || legacy_folders_load.Unrecovered())
+			{
+				AppendError(result.errors, "Previous-version workspaces were not imported because a workspace file is unreadable or invalid.");
+				return result;
+			}
+			for (ChatFolder& folder : legacy_folders)
+			{
+				if (!LedgerContains(*imported_folders, folder.id) &&
+				    std::none_of(folders.begin(), folders.end(), [&](const ChatFolder& existing) { return existing.id == folder.id; }))
+					folders.push_back(std::move(folder));
+			}
+			if (folders.size() != existing_folder_count)
+			{
+				if (!ChatFolderStore::Save(data_root, folders))
+				{
+					// Copying chats now would leave them naming workspaces that were not saved; retry at the next start.
+					AppendError(result.errors, "Could not import previous-version chat folders.");
+					return result;
+				}
+				for (std::size_t index = existing_folder_count; index < folders.size(); ++index)
+				{
+					imported_folders->push_back(folders[index].id);
+					result.imported_folders.push_back(folders[index]);
+				}
+			}
+
 			std::error_code ec;
 			for (fs::directory_iterator it(AppPaths::UamChatsRootPath(legacy_root), ec), end; !ec && it != end; it.increment(ec))
 			{
@@ -1201,32 +1245,13 @@ namespace uam
 				else
 				{
 					++result.failed_count;
-					item.error = "Could not import previous-version chat " + id + " from " + uam::paths::Utf8PathString(legacy_root);
+					uam::diagnostics::Write("[legacy-import] Could not import previous-version chat " + id + " from " + uam::paths::Utf8PathString(legacy_root));
+					item.error = "Could not import a previous-version chat.";
 					result.errors.push_back(item.error);
 				}
 				result.items.push_back(std::move(item));
 			}
-			if (ec) AppendError(result.errors, "Could not read previous-version chats in " + uam::paths::Utf8PathString(legacy_root) + ": " + ec.message());
-
-			std::vector<ChatFolder> folders = ChatFolderStore::Load(data_root);
-			const std::size_t existing_folder_count = folders.size();
-			for (ChatFolder& folder : ChatFolderStore::Load(legacy_root))
-			{
-				if (!LedgerContains(*imported_folders, folder.id) &&
-				    std::none_of(folders.begin(), folders.end(), [&](const ChatFolder& existing) { return existing.id == folder.id; }))
-					folders.push_back(std::move(folder));
-			}
-			if (folders.size() != existing_folder_count)
-			{
-				if (ChatFolderStore::Save(data_root, folders))
-					for (std::size_t index = existing_folder_count; index < folders.size(); ++index)
-					{
-						imported_folders->push_back(folders[index].id);
-						result.imported_folders.push_back(folders[index]);
-					}
-				else
-					AppendError(result.errors, "Could not import previous-version chat folders.");
-			}
+			if (ec) AppendLoggedError(result.errors, "Could not read every previous-version chat.", uam::paths::Utf8PathString(legacy_root) + ": " + ec.message());
 
 			result.ok = result.errors.empty();
 			if (result.ok) completed->push_back(source_key);

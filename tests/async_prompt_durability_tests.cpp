@@ -399,7 +399,7 @@ UAM_TEST(AcpStagedDeliveryRejectsChangedMemoryPolicy)
 	UAM_ASSERT_EQ(session.prompt_request_id, 0);
 	UAM_ASSERT(!session.processing);
 	UAM_ASSERT(session.pending_prompt_delivery == nullptr);
-	UAM_ASSERT(session.last_error.find("ownership changed") != std::string::npos);
+	UAM_ASSERT(session.last_error.find("chat changed") != std::string::npos);
 	UAM_ASSERT(app.chats.front().messages.back().acp_prompt_not_sent);
 	UAM_ASSERT(app.chats.front().messages.back().interrupted);
 	AwaitSave(app);
@@ -1932,8 +1932,8 @@ done
 		UAM_ASSERT(!fs::exists(provider_input));
 		UAM_ASSERT(!fs::exists(prompt_log));
 		if (variation == "failure" || variation == "agentfailure") UAM_ASSERT(!app.acp_sessions.front()->last_error.empty());
-		else if (variation == "source") UAM_ASSERT(app.acp_sessions.front()->last_error.find("sources changed") != std::string::npos);
-		else if (variation != "cancel" && variation != "stop") UAM_ASSERT(app.acp_sessions.front()->last_error.find("ownership changed") != std::string::npos);
+		else if (variation == "source") UAM_ASSERT(app.acp_sessions.front()->last_error.find("files changed") != std::string::npos);
+		else if (variation != "cancel" && variation != "stop") UAM_ASSERT(app.acp_sessions.front()->last_error.find("chat changed") != std::string::npos);
 		UAM_ASSERT_EQ(app.chats.front().messages[199].content, std::to_string(199) + std::string(128 * 1024, 'x'));
 		if (variation == "agentfailure" || variation == "source")
 		{
@@ -2054,7 +2054,7 @@ done
 			{
 				if (variation == "receiptroot") app.data_root = temp.root / "replacement-data";
 				else app.chats.front().metadata_incarnation = std::make_shared<const std::uint8_t>(0);
-				while (app.acp_sessions.front()->last_error.find("ownership changed") == std::string::npos &&
+				while (app.acp_sessions.front()->last_error.find("chat changed") == std::string::npos &&
 				    std::chrono::steady_clock::now() < deadline)
 				{
 					const std::chrono::steady_clock::time_point tick = std::chrono::steady_clock::now();
@@ -2063,7 +2063,7 @@ done
 					UAM_ASSERT(std::chrono::steady_clock::now() - tick <= input_budget);
 					std::this_thread::sleep_for(std::chrono::milliseconds(5));
 				}
-				UAM_ASSERT(app.acp_sessions.front()->last_error.find("ownership changed") != std::string::npos);
+				UAM_ASSERT(app.acp_sessions.front()->last_error.find("chat changed") != std::string::npos);
 				UAM_ASSERT(!fs::exists(prompt_log));
 				UAM_ASSERT_EQ(app.chats.front().messages[200].content, std::string("Launch with the private cold configuration"));
 				return;
@@ -2217,7 +2217,7 @@ done
 			{
 				UAM_ASSERT(queued_primary->messages[202].acp_prompt_not_sent && queued_primary->messages[202].interrupted);
 				UAM_ASSERT(app.acp_sessions.front()->queued_user_prompts.empty());
-				if (variation == "busysource") UAM_ASSERT(app.acp_sessions.front()->last_error.find("sources changed") != std::string::npos);
+				if (variation == "busysource") UAM_ASSERT(app.acp_sessions.front()->last_error.find("files changed") != std::string::npos);
 				if (variation == "busyfailure") UAM_ASSERT(!app.acp_sessions.front()->last_error.empty());
 				return;
 			}

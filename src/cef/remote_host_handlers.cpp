@@ -220,13 +220,7 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 	if (collision != m_app.settings.execution_hosts.end())
 	{
 		previous_host = *collision;
-		host.instruction_file = collision->instruction_file;
-		host.instruction_text = collision->instruction_text;
-		host.startup_enabled = collision->startup_enabled;
-		host.startup_status = collision->startup_status;
-		host.runner_startup_applied.reset();
-		host.runner_startup_error.clear();
-		host.cli_updates_as_admin = collision->cli_updates_as_admin;
+		uam::execution_hosts::CarryUserOwnedHostFields(host, *collision);
 	}
 	uam::remote::BootstrapPlan plan;
 	if (!BuildPlan(host, plan, error))
@@ -301,7 +295,7 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 				{
 					(void)restore();
 					g_remote_install_reattach_probes.erase(reserved.id);
-					cb->Failure(409, "The remote host changed while its background work was stopping. Retry the helper installation.");
+					cb->Failure(409, "The remote host changed while its background work was stopping; install the helper again.");
 					return true;
 				}
 				if (stop->stop_requested())
@@ -323,7 +317,7 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 					uam::diagnostics::Write(std::string("[remote-install] wait expired host_id=") + reserved.id + " reason=" + uam::remote_install::HostRuntimeBlockReasonCode(wait_block_reason) +
 					    " chat_id=" + wait_block_chat_id);
 					const std::string named = uam::remote_install::HostRuntimeBlockMessage(m_app, wait_block_reason, wait_block_chat_id);
-					cb->Failure(409, named.empty() ? std::string("Work on this host has not finished stopping. Try the update again in a moment.") : named);
+					cb->Failure(409, named.empty() ? std::string("Work on this host has not finished stopping; try the update again in a moment.") : named);
 					return true;
 				}
 				// A reattach that became idle during the wait is stopped too.
@@ -333,7 +327,7 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 				if (!restore())
 				{
 					g_remote_install_reattach_probes.erase(reserved.id);
-					cb->Failure(409, "The remote host reservation changed. Retry the helper installation.");
+					cb->Failure(409, "The remote host changed; install the helper again.");
 					return true;
 				}
 				// Revalidate and reserve synchronously, before another UI poll can admit discovery.
@@ -351,14 +345,14 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 			{
 				(void)restore();
 				g_remote_install_reattach_probes.erase(reserved.id);
-				cb->Failure(503, "The helper installation queue is unavailable. Retry after background work exits.");
+				cb->Failure(503, "The helper installation queue is unavailable; try again after background work stops.");
 			}
 		}
 		catch (...)
 		{
 			(void)restore();
 			g_remote_install_reattach_probes.erase(reserved.id);
-			cb->Failure(500, "The helper installation could not pause background work. Retry after it exits.");
+			cb->Failure(500, "The helper installation could not pause background work; try again after it stops.");
 		}
 		return;
 	}
@@ -419,11 +413,16 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 			    {
 				    std::string rollback_error;
 				    result->ok = false;
+				    uam::diagnostics::Write("[remote-install] New helper did not answer: " + result->error);
+				    result->error = "The new helper did not answer after installation.";
 				    const bool rolled_back = uam::remote::FinalizeBootstrapPlan(
 				        plan, *result, false, &rollback_error);
 				    result->rollback_confirmed = rolled_back;
 				    if (!rolled_back && !rollback_error.empty())
-					    result->error += " Rollback failed: " + rollback_error;
+				    {
+					    uam::diagnostics::Write("[remote-install] Rollback failed: " + rollback_error);
+					    result->error = "The new helper did not answer and could not be rolled back.";
+				    }
 				    else if (!plan.previous_version.empty())
 				    {
 					    uam::remote::RunnerClient previous_client(
@@ -434,8 +433,10 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 					            plan.previous_protocol_version),
 					        plan.previous_version, plan.previous_protocol_version);
 					    if (!previous_client.Connect(&rollback_error))
-						    result->error += " Previous helper verification failed: " +
-						                     rollback_error;
+					    {
+						    uam::diagnostics::Write("[remote-install] Previous helper verification failed: " + rollback_error);
+						    result->error = "The new helper did not answer, and the previous helper did not answer either.";
+					    }
 				    }
 			    }
 		    }
@@ -498,15 +499,15 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 				        if (!keep_new_runner) result->rollback_confirmed = *finalized;
 				        if (!*finalized)
 				        {
+					        if (!error.empty()) uam::diagnostics::Write("[remote-install] Helper finalization failed: " + error);
 					        if (keep_new_runner && *committed)
 						        return uam::query_handler_async::AsyncSuccess({
-						            {"ok", true}, {"warning", error.empty()
-						                ? "The old remote helper backup could not be removed." : error}});
+						            {"ok", true}, {"warning", "The old remote helper backup could not be removed."}});
 					        if (keep_new_runner)
 						        return uam::query_handler_async::AsyncFailure(500,
-						            "The helper installation commit could not be confirmed. Retry setup to reconcile it. " + error);
-					        outcome.error += " Remote helper rollback failed." +
-					            (error.empty() ? std::string{} : " " + error);
+						            "The helper installation could not be confirmed; run setup again to fix it.");
+					        if (!outcome.error.empty()) uam::diagnostics::Write("[remote-install] Setup failed before rollback: " + outcome.error);
+					        outcome.error = "Setup failed and the remote helper could not be rolled back.";
 				        }
 				        if (*finalized && startup_needed)
 				        {
@@ -514,7 +515,11 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 					            uam::remote::SshBridgeArgv(install_plan->ssh_alias, result->platform, install_plan->version,
 					                install_plan->runner_directory, uam::remote::kRunnerProtocolVersion), install_plan->version, uam::remote::kRunnerProtocolVersion);
 					        *startup_confirmed = client.ConfigureStartup(true, &error);
-					        if (!**startup_confirmed) return uam::query_handler_async::AsyncSuccess({{"ok", true}, {"warning", "Helper installed. Save this host's options to confirm runner startup. " + error}});
+					        if (!**startup_confirmed)
+					        {
+						        uam::diagnostics::Write("[remote-install] Runner startup could not be confirmed: " + error);
+						        return uam::query_handler_async::AsyncSuccess({{"ok", true}, {"warning", "The helper was installed; save this host's options to confirm runner startup."}});
+					        }
 				        }
 				        return outcome;
 			        },
@@ -533,7 +538,7 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 					        if (!PersistenceCoordinator().SaveSettings(m_app))
 					        {
 						        if (current != m_app.settings.execution_hosts.end()) uam::execution_hosts::RequireInstallReconciliation(*current);
-						        final_response = uam::query_handler_async::AsyncFailure(500, "Remote setup could not save its final status. Retry setup to reconcile it.");
+						        final_response = uam::query_handler_async::AsyncFailure(500, "Remote setup could not save its final status; run setup again to fix it.");
 					        }
 				        }
 				        if (restore_previous && operation != g_remote_install_tokens.end() &&
@@ -546,7 +551,10 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 						        if (current != m_app.settings.execution_hosts.end()) current->runner_status = "error";
 					        }
 					        if (!PersistenceCoordinator().SaveSettings(m_app))
-						        final_response.error += " The previous host status also could not be saved.";
+					        {
+						        uam::diagnostics::Write("[remote-install] The previous host status could not be saved after: " + final_response.error);
+						        final_response.error = "Setup failed and the previous host status could not be saved.";
+					        }
 				        }
 				        if (!restore_previous && startup_confirmed->has_value())
 				        {
@@ -565,7 +573,7 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 							        current->runner_startup_applied.reset();
 							        current->runner_startup_error.clear();
 						        }
-						        final_response = uam::query_handler_async::AsyncFailure(500, "Helper installed, but startup confirmation could not be saved. Save this host's options again.");
+						        final_response = uam::query_handler_async::AsyncFailure(500, "The helper was installed, but save this host's options again to confirm startup.");
 					        }
 				        }
 				        release_install();
@@ -647,7 +655,7 @@ void UamQueryHandler::HandleInstallRemoteHost(CefRefPtr<CefBrowser> browser,
 			    else
 			    {
 				    if (!PersistenceCoordinator().SaveSettings(m_app))
-					    response.error += " The previous host status also could not be saved.";
+					    response.error = "Remote setup could not save its status or the previous host status.";
 				    finalize_remote(false, false);
 			    }
 			    return;
@@ -733,7 +741,7 @@ void UamQueryHandler::HandleCheckRemoteHostInstruction(CefRefPtr<CefBrowser>, co
 	if (host == nullptr || host->id == "local" || !uam::execution_hosts::IsAbsoluteRemotePath(host->platform, path))
 	{ cb->Failure(400, "Use an absolute instruction file path on this SSH host."); return; }
 	if (host->runner_install_unresolved)
-	{ cb->Failure(409, "Retry helper setup to reconcile the unfinished installation first."); return; }
+	{ cb->Failure(409, "Run helper setup again to finish the unfinished helper installation."); return; }
 	uam::query_handler_async::RunAsyncCefQuery(SlowQueryRunner(host->id), m_asyncLifetime, cb, [host = *host, path]()
 	{
 		uam::remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,
@@ -800,7 +808,7 @@ void UamQueryHandler::HandleSaveRemoteHostOptions(CefRefPtr<CefBrowser> browser,
 	const ExecutionHost observed = *host;
 	const bool configure_startup = uam::execution_hosts::NeedsStartupConfiguration(updated, observed);
 	if (configure_startup && observed.runner_install_unresolved)
-	{ cb->Failure(409, "Retry helper setup to reconcile the unfinished installation first."); return; }
+	{ cb->Failure(409, "Run helper setup again to finish the unfinished helper installation."); return; }
 	updated.startup_status = configure_startup ? "pending" : observed.startup_status;
 	if (configure_startup)
 	{
@@ -838,14 +846,14 @@ void UamQueryHandler::HandleSaveRemoteHostOptions(CefRefPtr<CefBrowser> browser,
 		    g_remote_install_tokens.erase(operation);
 		    const auto current = FindMutableHost(m_app.settings.execution_hosts, updated.id);
 		    if (current == m_app.settings.execution_hosts.end() || *current != updated)
-		        { response = uam::query_handler_async::AsyncFailure(409, "The SSH host changed while its options were being saved. Save its options again to confirm startup."); return; }
+		        { response = uam::query_handler_async::AsyncFailure(409, "The SSH host changed while saving its options; save them again to confirm startup."); return; }
 		    uam::execution_hosts::ApplyStartupConfigurationResult(*current, observed, response.ok, response.error);
 		    if (!PersistenceCoordinator().SaveSettings(m_app))
 		    {
 			    current->startup_status = "pending";
 			    current->runner_startup_applied.reset();
 			    current->runner_startup_error.clear();
-			    response = uam::query_handler_async::AsyncFailure(500, "Startup changed on the host, but its confirmed status could not be saved. Save host options again to confirm it.");
+			    response = uam::query_handler_async::AsyncFailure(500, "Startup changed on the host but could not be recorded; save host options again to confirm it.");
 		    }
 		    RefreshUsageTargets();
 		    uam::PushStateUpdateIfChanged(browser, m_app);
@@ -955,8 +963,10 @@ void UamQueryHandler::HandleListRemoteDirectories(CefRefPtr<CefBrowser> browser,
 		    PlatformServicesFactory::Instance().process_service,
 		    host);
 		if (!client.Connect(&result->error))
-			return uam::query_handler_async::AsyncFailure(
-			    502, result->error.empty() ? "The remote helper could not be reached." : result->error);
+		{
+			if (!result->error.empty()) uam::diagnostics::Write("[browseRemoteDirectories] Remote helper connection failed: " + result->error);
+			return uam::query_handler_async::AsyncFailure(502, uam::remote::RunnerConnectErrorForUser(result->error, "The remote helper could not be reached."));
+		}
 		result->connected = true;
 		(void)client.ObserveStartup(result->startup_status, &result->startup_error);
 		if (!client.ListDirectories(uam::paths::PathFromUtf8(directory), result->listing, &result->error))
@@ -981,7 +991,7 @@ void UamQueryHandler::HandleListRemoteDirectories(CefRefPtr<CefBrowser> browser,
 		                                                      uam::time::IsoUtcTimestampNow()))
 		    {
 			    response = uam::query_handler_async::AsyncFailure(
-			        409, "The remote helper changed while browsing. Try again.");
+			        409, "The remote helper changed while browsing; try again.");
 			    return;
 		    }
 		    if (!result->startup_status.empty())

@@ -7,6 +7,7 @@
 #include "common/secrets/secret_keychain.h"
 #include "common/secrets/secret_redactor.h"
 #include "common/utils/diagnostic_log.h"
+#include "common/utils/time_utils.h"
 
 #include <algorithm>
 #include <memory>
@@ -74,7 +75,8 @@ void UamQueryHandler::HandleSubmitSecretRequest(CefRefPtr<CefBrowser> browser, c
 			    std::optional<std::string> loaded = uam::secrets::keychain::Load(target.keychain_account, &failure);
 			    if (!loaded.has_value())
 			    {
-				    drop->error = failure.empty() ? "No saved secret was found. Type it instead." : "The saved secret could not be read: " + failure;
+				    if (!failure.empty()) uam::diagnostics::Write("[secret_request] The saved secret could not be read: " + failure);
+				    drop->error = failure.empty() ? "No saved secret was found; type it instead." : "The saved secret could not be read.";
 				    return AsyncSuccess(nlohmann::json::object());
 			    }
 			    *value = std::move(*loaded);
@@ -84,7 +86,8 @@ void UamQueryHandler::HandleSubmitSecretRequest(CefRefPtr<CefBrowser> browser, c
 		    if (save_here && !uam::secrets::keychain::Save(target.keychain_account, *value, &failure))
 		    {
 			    Wipe(*value);
-			    drop->error = "The secret could not be saved: " + failure + " Turn off Save and submit again.";
+			    uam::diagnostics::Write("[secret_request] The secret could not be saved: " + failure);
+			    drop->error = "The secret could not be saved; turn off Save and submit again.";
 			    return AsyncSuccess(nlohmann::json::object());
 		    }
 		    *saved = save_here;
@@ -94,7 +97,7 @@ void UamQueryHandler::HandleSubmitSecretRequest(CefRefPtr<CefBrowser> browser, c
 	    },
 	    [this, browser, chat_id, request_id, target, saved, drop](AsyncCefResult& result)
 	    {
-		    if (*saved) (void)uam::SecretRequestService::RecordKeychainAccount(m_app.data_root, target.keychain_account, true);
+		    if (*saved) (void)uam::SecretRequestService::RecordKeychainAccount(m_app.data_root, target.keychain_account, true, uam::time::SystemEpochMillisecondsNow());
 		    std::string finish_error;
 		    const bool delivered = uam::UamControlService::FinishSecretDelivery(m_app, chat_id, request_id, *drop, &finish_error);
 		    // Outcome only: never the value, its length or the host's error text.
@@ -107,7 +110,7 @@ void UamQueryHandler::HandleSubmitSecretRequest(CefRefPtr<CefBrowser> browser, c
 	{
 		Wipe(*value);
 		uam::secrets::DropResult failed;
-		failed.error = "The secret could not be delivered. Try again.";
+		failed.error = "The secret could not be delivered.";
 		(void)uam::UamControlService::FinishSecretDelivery(m_app, chat_id, request_id, failed);
 	}
 }
@@ -116,7 +119,9 @@ void UamQueryHandler::HandleForgetSavedSecret(CefRefPtr<CefBrowser> browser, con
 {
 	const std::string chat_id = payload.value("chatId", "");
 	const std::string request_id = payload.value("requestId", "");
-	const std::optional<std::string> account = uam::UamControlService::SecretKeychainAccount(m_app, chat_id, request_id);
+	// legacy: the earlier workspace-and-label entry, which is never offered for use and can only be forgotten.
+	const bool legacy = payload.value("legacy", false) == true;
+	const std::optional<std::string> account = uam::UamControlService::SecretKeychainAccount(m_app, chat_id, request_id, legacy);
 	if (!account.has_value())
 	{
 		cb->Failure(409, "This secret request is no longer pending.");
@@ -128,8 +133,9 @@ void UamQueryHandler::HandleForgetSavedSecret(CefRefPtr<CefBrowser> browser, con
 	    [account = *account]()
 	    {
 		    std::string error;
-		    return uam::secrets::keychain::Forget(account, &error) ? AsyncSuccess(nlohmann::json::object())
-		                                                           : AsyncFailure(500, "The saved secret could not be removed: " + error);
+		    if (uam::secrets::keychain::Forget(account, &error)) return AsyncSuccess(nlohmann::json::object());
+		    uam::diagnostics::Write("[secret_request] The saved secret could not be removed: " + error);
+		    return AsyncFailure(500, "The saved secret could not be removed.");
 	    },
 	    [this, browser, account = *account](AsyncCefResult& result)
 	    {

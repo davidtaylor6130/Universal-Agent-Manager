@@ -53,7 +53,7 @@ bool ApplyOrganizationAction(AppState& app, const nlohmann::json& payload, std::
 			if (collection == app.resource_collections.end()) return reject("Collection no longer exists.");
 			for (const ResourceReference& reference : collection->references) current.push_back(reference.id);
 		}
-		if (payload["expected"] != nlohmann::json(current)) return reject("Organization order changed. Refresh before undoing.");
+		if (payload["expected"] != nlohmann::json(current)) return reject("The organization order changed; refresh before undoing.");
 		if (!payload["replacement"].is_array() || payload["replacement"].size() != current.size() ||
 		    std::ranges::any_of(payload["replacement"], [](const nlohmann::json& id) { return !id.is_string(); }))
 			return reject("Invalid organization order.");
@@ -79,7 +79,7 @@ bool ApplyOrganizationAction(AppState& app, const nlohmann::json& payload, std::
 	if (target.empty() || target.size() > 4096) return reject("Invalid resource target.");
 	if (type == "chat" && std::ranges::none_of(app.chats, [&](const ChatSession& chat) { return chat.id == target; })) return reject("Chat no longer exists.");
 	if (type == "workspace-folder" && std::ranges::none_of(app.folders, [&](const ChatFolder& folder) { return folder.id == target; })) return reject("Workspace no longer exists.");
-	if (Memberships(app, type, target) != payload["expected"]) return reject("Resource membership changed. Refresh before undoing.");
+	if (Memberships(app, type, target) != payload["expected"]) return reject("Collection membership changed; refresh before undoing.");
 	if (!payload["replacement"].is_array() || payload["replacement"].size() > 200) return reject("Invalid resource memberships.");
 	std::vector<ResourceCollection> changed = app.resource_collections;
 	for (ResourceCollection& collection : changed)
@@ -106,7 +106,7 @@ bool ApplyOrganizationAction(AppState& app, const nlohmann::json& payload, std::
 		const auto collection = std::find_if(changed.begin(), changed.end(), [&](const ResourceCollection& entry) { return entry.id == item["collectionId"].get<std::string>(); });
 		if (collection == changed.end() || collection->references.size() >= 500) return reject("Destination collection is missing or full.");
 		const std::size_t index = item["index"].get<std::size_t>();
-		if (index > collection->references.size()) return reject("Collection contents changed. Refresh before undoing.");
+		if (index > collection->references.size()) return reject("Collection contents changed; refresh before undoing.");
 		collection->references.insert(collection->references.begin() + static_cast<std::ptrdiff_t>(index), std::move(reference));
 	}
 	if (!ResourceCollectionService::Save(app.data_root, changed)) return reject("Could not persist resource organization.");

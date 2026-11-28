@@ -1,5 +1,6 @@
 #include "common/config/build_features.h"
 #include "cef/uam_query_handler.h"
+#include "app/timer_service.h"
 #include "cef/uam_bridge_request.h"
 #include "cef/pending_operation_gate.h"
 #include "cef/uam_cef_security.h"
@@ -13,6 +14,7 @@
 #include "common/platform/app_crash_supervisor.h"
 #include "app/data_folder_settings_service.h"
 #include "cef/uam_query_handler_async.h"
+#include "common/utils/diagnostic_log.h"
 
 #include "include/cef_task.h"
 #include "include/views/cef_browser_view.h"
@@ -75,7 +77,7 @@ namespace
 		{
 			if (!uam::platform::RequestApplicationRestart())
 			{
-				callback->Failure(409, "Automatic restart is unavailable. Close and open Universal Agent Manager again.");
+				callback->Failure(409, "Automatic restart is unavailable; close and reopen Universal Agent Manager.");
 				return;
 			}
 			callback->Success("{}");
@@ -127,7 +129,7 @@ void UamQueryHandler::HandleRestartToApplyDataFolder(CefRefPtr<CefBrowser> brows
 	const auto revision = payload["expectedRevision"].get<std::string>();
 	if (std::any_of(m_app.acp_sessions.begin(), m_app.acp_sessions.end(), [](const auto& session) { return session && session->running; }) || std::any_of(m_app.cli_terminals.begin(), m_app.cli_terminals.end(), [](const auto& terminal) { return terminal && terminal->running; }))
 	{
-		cb->Failure(409, "Stop active provider sessions before requesting a data-folder transfer. Their teardown has no generic confirmed-stop receipt.");
+		cb->Failure(409, "Stop active provider sessions before transferring the data folder.");
 		return;
 	}
 	(void)uam::query_handler_async::RunAsyncCefQuery(
@@ -143,7 +145,7 @@ void UamQueryHandler::HandleRestartToApplyDataFolder(CefRefPtr<CefBrowser> brows
 			    return;
 		    if (!uam::platform::RequestApplicationRestart(true))
 		    {
-			    result = uam::query_handler_async::AsyncFailure(409, "Supervised restart is unavailable. The folder choice remains pending; no transfer occurred.");
+			    result = uam::query_handler_async::AsyncFailure(409, "Restart is unavailable, so no transfer happened and the folder choice is still pending.");
 			    return;
 		    }
 		    CefPostTask(TID_UI, new CloseWindowTask(window));
@@ -190,18 +192,22 @@ UamQueryHandler::~UamQueryHandler()
 	uam::attachment_payload::ShuttingDown().store(true);
 	for (const std::pair<const std::string, std::shared_ptr<std::stop_source>>& request : m_titleRequests) request.second->request_stop();
 	for (const auto& request : m_vcsRequestStops) request.second->request_stop();
+	m_svnBranchDiscoveryStop.request_stop();
 	for (const auto& request : m_nativeHistoryRequests) request.second->request_stop();
 	m_remoteRefreshReadThreads.clear(); // Joins the stopped reads; each read is also bounded by its own deadline.
 	for (const auto& install : m_remoteInstallStops)
 		if (const std::shared_ptr<std::stop_source> stop = install.second.lock()) stop->request_stop();
 #if UAM_ENABLE_MOBILE_COMPANION
 	if (m_companion) m_companion->Stop();
+	if (m_app.timer_service != nullptr) m_app.timer_service->SetLauncher({});
 #endif
 }
 
 bool UamQueryHandler::StartCompanion(CefRefPtr<CefBrowser> browser)
 {
 #if UAM_ENABLE_MOBILE_COMPANION
+	// Schedules are local timers: their launcher exists whether or not Phone access is on.
+	RegisterAutomationScheduleLauncher(browser);
 	const std::weak_ptr<void> lifetime = m_asyncLifetime;
 	m_companion = UamCompanionService::Create(m_app.data_root, [this, lifetime, browser](const nlohmann::json& request, CefRefPtr<Callback> callback) {
 		if (request.value("action", std::string{}) == "discoverSystemNativeImports" || request.value("action", std::string{}) == "assignSystemNativeImportWorkspace")
@@ -211,7 +217,7 @@ bool UamQueryHandler::StartCompanion(CefRefPtr<CefBrowser> browser)
 		if (request.value("action", std::string{}) == "getLegacyChatImports" || request.value("action", std::string{}) == "resolveLegacyChatImport")
 		{ callback->Failure(403, "Previous-version chat history is decided on the desktop."); return; }
 		if (lifetime.expired()) { callback->Failure(503, "UAM is shutting down."); return; }
-		if (m_app.startup_state_loading) { callback->Failure(503, "UAM is still loading its chats. Try again in a moment."); return; }
+		if (m_app.startup_state_loading) { callback->Failure(503, "UAM is still loading its chats; try again in a moment."); return; }
 		const std::string action = request.at("action").get<std::string>();
 		nlohmann::json payload = request.value("payload", nlohmann::json::object());
 		if (action == "getProviderAllowances") uam::companion::ApplyKeychainPromptPolicy(action, payload, CompanionAllowsKeychainPrompts());
@@ -241,11 +247,11 @@ bool UamQueryHandler::HoldCompanionLoosening(CefRefPtr<CefBrowser> browser, std:
 	const auto now = uam::companion::DesktopConfirmations::Clock::now();
 	if (!m_companionConfirmations.Add({"", std::string(action), chat_id, chat == nullptr ? std::string{} : chat->title, std::move(description), payload, {}}, now))
 	{
-		callback->Failure(429, "Too many phone changes are waiting for confirmation on the desktop. Answer them there first.");
+		callback->Failure(429, "Too many phone changes are waiting on the desktop; answer them there first.");
 		return true;
 	}
 	uam::PushCompanionConfirmations(browser, m_companionConfirmations.ToJson());
-	callback->Failure(428, "Confirm this change on the desktop. It waits there for 5 minutes.");
+	callback->Failure(428, "Confirm this change on the desktop within 5 minutes.");
 	return true;
 }
 
@@ -283,7 +289,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		std::shared_ptr<uam::WorkspaceLeaseGate::Lease> lease = m_app.worktree_retention_gate.TryAcquireMutation();
 		if (!lease)
 		{
-			cb->Failure(409, "Workspace cleanup is finishing. Try again shortly.");
+			cb->Failure(409, "Workspace cleanup is finishing; try again shortly.");
 			return true;
 		}
 		cb = new WorkspaceMutationCallback(cb, std::move(lease));
@@ -360,6 +366,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"listUamAgents", &UamQueryHandler::HandleListUamAgents},
 		{"browseProviderAgentImport", &UamQueryHandler::HandleBrowseProviderAgentImport},
 		{"previewProviderAgentImport", &UamQueryHandler::HandlePreviewProviderAgentImport},
+		{"discoverProviderAgents", &UamQueryHandler::HandleDiscoverProviderAgents},
 		{"importProviderAgent", &UamQueryHandler::HandleImportProviderAgent},
 		{"listAgentDefinitions", &UamQueryHandler::HandleListAgentDefinitions},
 		{"saveAgentDefinition", &UamQueryHandler::HandleSaveAgentDefinition},
@@ -396,6 +403,10 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"createAutomationToken", &UamQueryHandler::HandleCreateAutomationToken},
 		{"revokeAutomationToken", &UamQueryHandler::HandleRevokeAutomationToken},
 		{"regenerateAutomationToken", &UamQueryHandler::HandleRegenerateAutomationToken},
+		{"getAutomationSchedules", &UamQueryHandler::HandleGetAutomationSchedules},
+		{"saveAutomationSchedule", &UamQueryHandler::HandleSaveAutomationSchedule},
+		{"setAutomationSchedulePaused", &UamQueryHandler::HandleSetAutomationSchedulePaused},
+		{"deleteAutomationSchedule", &UamQueryHandler::HandleDeleteAutomationSchedule},
 #endif
 		{"setChatMemoryEnabled", &UamQueryHandler::HandleSetChatMemoryEnabled},
 		{"setChatSmallModelMode", &UamQueryHandler::HandleSetChatSmallModelMode},
@@ -414,10 +425,17 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 		{"previewOpenCodeMcpImport", &UamQueryHandler::HandlePreviewOpenCodeMcpImport},
 #endif
+#if UAM_ENABLE_RUNTIME_CUSTOM_ACP
+		{"getCustomAcpAgent", &UamQueryHandler::HandleGetCustomAcpAgent},
+		{"setCustomAcpAgent", &UamQueryHandler::HandleSetCustomAcpAgent},
+		{"allowCustomAcpAgent", &UamQueryHandler::HandleAllowCustomAcpAgent},
+#endif
 		{"setUamAgentPreferences", &UamQueryHandler::HandleSetUamAgentPreferences},
 		{"setSidebarSettings", &UamQueryHandler::HandleSetSidebarSettings},
 		{"setSidebarChatOrder", &UamQueryHandler::HandleSetSidebarChatOrder},
 		{"setComposerSettings", &UamQueryHandler::HandleSetComposerSettings},
+		{"setPermissionCommandRules", &UamQueryHandler::HandleSetPermissionCommandRules},
+		{"testPermissionCommandRules", &UamQueryHandler::HandleTestPermissionCommandRules},
 		{"setNativeImportFilters", &UamQueryHandler::HandleSetNativeImportFilters},
 		{"setVcsSettings", &UamQueryHandler::HandleSetVcsSettings},
 		{"setStorageSettings", &UamQueryHandler::HandleSetStorageSettings},
@@ -428,6 +446,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 #if UAM_ENABLE_SSH
 		{"setExecutionRoutingSettings", &UamQueryHandler::HandleSetExecutionRoutingSettings},
 		{"listRepositoryMatches", &UamQueryHandler::HandleListRepositoryMatches},
+		{"requestHostLoad", &UamQueryHandler::HandleRequestHostLoad},
 		{"releaseExecutionRoutingReservation", &UamQueryHandler::HandleReleaseExecutionRoutingReservation},
 #endif
 		{"exportLocalChats", &UamQueryHandler::HandleExportLocalChats},
@@ -436,6 +455,8 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"resolveLegacyChatImport", &UamQueryHandler::HandleResolveLegacyChatImport},
 		{"setShellActions", &UamQueryHandler::HandleSetShellActions},
 		{"setComputePools", &UamQueryHandler::HandleSetComputePools},
+		{"setHostAdmission", &UamQueryHandler::HandleSetHostAdmission},
+		{"runHeldWorkAnyway", &UamQueryHandler::HandleRunHeldWorkAnyway},
 		{"applyShellActions", &UamQueryHandler::HandleApplyShellActions},
 		{"dismissShellActionNotification", &UamQueryHandler::HandleDismissShellActionNotification},
 		{"managePullRequestWatch", &UamQueryHandler::HandleManagePullRequestWatch},
@@ -513,6 +534,7 @@ bool UamQueryHandler::DispatchAction(std::string_view action, CefRefPtr<CefBrows
 		{"cancelVcsRequest", &UamQueryHandler::HandleCancelVcsRequest},
 		{"getWorkspaceFilePreview", &UamQueryHandler::HandleGetWorkspaceFilePreview},
 		{"commitVcsChanges", &UamQueryHandler::HandleCommitVcsChanges},
+		{"resolveVcsConflict", &UamQueryHandler::HandleResolveVcsConflict},
 		{"generateVcsCommitMessage", &UamQueryHandler::HandleGenerateVcsCommitMessage},
 		{"listMemoryScanCandidates", &UamQueryHandler::HandleListMemoryScanCandidates},
 		{"scanCurrentChats", &UamQueryHandler::HandleScanCurrentChats},
@@ -633,7 +655,8 @@ bool UamQueryHandler::OnQuery(CefRefPtr<CefBrowser> browser, CefRefPtr<CefFrame>
 		    browser ? browser->GetIdentifier() : -1, frame ? frame->GetIdentifier().ToString() : "", query_id);
 		if (!DispatchAction(action, browser, payload, callback))
 		{
-			callback->Failure(404, "Unknown action: " + action);
+			uam::diagnostics::Write("[bridge] Unknown action: " + action);
+			callback->Failure(404, "This action is not supported.");
 		}
 		if (!port_chat_id.empty())
 		{
@@ -707,12 +730,13 @@ std::shared_ptr<UamQueryHandler::NativeHistoryRequest> UamQueryHandler::BeginNat
 	return request;
 }
 
-bool UamQueryHandler::AwaitNativeHistoryRead(const std::string& key, CefRefPtr<Callback> cb, std::function<void()> retry)
+bool UamQueryHandler::AwaitNativeHistoryRead(const std::string& key, CefRefPtr<Callback> cb, std::function<void()> retry, bool replace_older)
 {
 	const auto pending = m_nativeHistoryRequests.find(key);
 	if (pending == m_nativeHistoryRequests.end()) return false;
 	// The newer request replaces delivery, not the read: it retries once the read has saved its result.
-	pending->second->delivery_cancelled = true;
+	if (replace_older)
+		pending->second->delivery_cancelled = true;
 	pending->second->waiters.push_back({m_dispatchingQuery, std::move(cb), std::move(retry)});
 	return true;
 }

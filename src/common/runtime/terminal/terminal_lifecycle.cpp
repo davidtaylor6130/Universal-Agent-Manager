@@ -39,6 +39,39 @@ void FailCliTerminalTransport(CliTerminalState& terminal, std::string_view messa
 	terminal.last_error.assign(message);
 }
 
+namespace
+{
+	/// <summary>xterm focus reports and SGR or X10 mouse reports, which never reach the composer as text.</summary>
+	bool IsTerminalFocusOrMouseReport(std::string_view bytes)
+	{
+		if (bytes == "\x1b[I" || bytes == "\x1b[O") return true;
+		if (bytes.size() == 6 && bytes.starts_with("\x1b[M")) return true;
+		if (bytes.size() < 5 || !bytes.starts_with("\x1b[<") || (bytes.back() != 'M' && bytes.back() != 'm')) return false;
+		return std::ranges::all_of(bytes.substr(3, bytes.size() - 4), [](char character) { return (character >= '0' && character <= '9') || character == ';'; });
+	}
+} // namespace
+
+void NoteCliTerminalComposerInput(CliTerminalState& terminal, std::string_view bytes)
+{
+	if (bytes.empty() || IsNativeTerminalResponse(bytes) || IsTerminalFocusOrMouseReport(bytes) || bytes == "\x03" || bytes == "\x1b") return;
+	const char previous_byte = terminal.composer_last_input_byte;
+	terminal.composer_last_input_byte = bytes.back();
+	// Enter arrives as CR; a phone or UAM write may follow it with LF. A bare LF (Ctrl-J) inserts a line break.
+	std::string_view line = bytes;
+	if (line.size() >= 2 && line.ends_with("\r\n")) line.remove_suffix(1);
+	if (!line.ends_with('\r'))
+	{
+		terminal.composer_may_hold_draft = true;
+		return;
+	}
+	line.remove_suffix(1);
+	// Alt+Enter (ESC CR) and backslash then Enter insert a line break, and a CR inside an unclosed bracketed paste is pasted text.
+	const char before_enter = line.empty() ? previous_byte : line.back();
+	const std::size_t paste_start = line.rfind("\x1b[200~");
+	const bool inside_paste = paste_start != std::string_view::npos && line.find("\x1b[201~", paste_start) == std::string_view::npos;
+	terminal.composer_may_hold_draft = before_enter == '\x1b' || before_enter == '\\' || inside_paste;
+}
+
 bool WriteToCliTerminal(CliTerminalState& terminal, const char* bytes, std::size_t len)
 {
 	const bool terminal_response = bytes != nullptr && IsNativeTerminalResponse(std::string_view(bytes, len));
@@ -52,7 +85,7 @@ bool WriteToCliTerminal(CliTerminalState& terminal, const char* bytes, std::size
 			terminal.native_identity_query_phase = 0;
 			terminal.native_identity_output.clear();
 			terminal.native_identity_deferred_input.clear();
-			terminal.last_error = "Terminal input exceeded the native startup buffer. Retry after startup completes.";
+			terminal.last_error = "Terminal input exceeded the startup buffer; retry after startup completes.";
 			return false;
 		}
 		terminal.native_identity_deferred_input.append(bytes, len);
@@ -67,6 +100,7 @@ bool WriteToCliTerminal(CliTerminalState& terminal, const char* bytes, std::size
 	const bool wrote = PlatformServicesFactory::Instance().terminal_runtime.WriteToCliTerminal(terminal, bytes, len);
 	if (wrote && !terminal_response && bytes != nullptr && len > 0)
 	{
+		NoteCliTerminalComposerInput(terminal, std::string_view(bytes, len));
 		const double now = GetAppTimeSeconds();
 		terminal.last_activity_time_s = now;
 		terminal.last_user_input_time_s = now;
@@ -107,7 +141,7 @@ bool RequestCliTerminalSteer(CliTerminalState& terminal, std::string_view prompt
 	}
 	if (terminal.lifecycle_state == CliTerminalLifecycleState::Unknown)
 	{
-		if (error_out != nullptr) *error_out = "Terminal activity is unavailable. Send or interrupt prompts in the native CLI.";
+		if (error_out != nullptr) *error_out = "Terminal activity is unavailable; send or interrupt prompts in the native CLI.";
 		return false;
 	}
 	if (!terminal.pending_steer_prompt.empty() && !retry)
@@ -226,8 +260,10 @@ bool CliTerminalLifecycleIsIdleLive(const CliTerminalState& terminal)
 
 bool CliTerminalPromptConfirmsTurnIdle(CliTerminalState& terminal, bool prompt_detected, bool received_output, double now_seconds)
 {
+	// An Unknown set by MarkCliTerminalTurnUnknown still leaves the turn to prompt evidence.
+	const bool unconfirmed_unknown = terminal.lifecycle_state == CliTerminalLifecycleState::Unknown && terminal.turn_end_unconfirmed;
 	if (!terminal.running || !terminal.uses_prompt_activity_tracking ||
-	    terminal.lifecycle_state != CliTerminalLifecycleState::Busy)
+	    (terminal.lifecycle_state != CliTerminalLifecycleState::Busy && !unconfirmed_unknown))
 	{
 		return false;
 	}
@@ -274,10 +310,17 @@ bool CliTerminalPromptConfirmsTurnIdle(CliTerminalState& terminal, bool prompt_d
 
 void MarkCliTerminalTurnBusy(CliTerminalState& terminal, bool settle_first_prompt)
 {
-	terminal.codex_activity_turn_id.clear();
-	terminal.codex_activity_awaiting_turn = settle_first_prompt;
-	terminal.codex_activity_completed = false;
 	const double now = GetAppTimeSeconds();
+	// Input during a tracked native turn (an approval or a queued message) answers that turn: keep it, so its own
+	// completion still ends the busy state. Only a submission with no tracked turn waits for a new one.
+	if (terminal.codex_activity_turn_id.empty())
+	{
+		terminal.codex_activity_awaiting_turn = settle_first_prompt;
+		terminal.codex_activity_awaiting_since_s = settle_first_prompt ? now : 0.0;
+		terminal.native_turn_receipt_expired = false;
+	}
+	terminal.codex_activity_completed = false;
+	terminal.turn_end_unconfirmed = false;
 	terminal.current_turn_output_bytes.clear();
 	terminal.prompt_settle_required = terminal.uses_prompt_activity_tracking && settle_first_prompt;
 	terminal.prompt_settle_candidate_time_s = 0.0;
@@ -292,7 +335,9 @@ void MarkCliTerminalTurnBusy(CliTerminalState& terminal, bool settle_first_promp
 void MarkCliTerminalTurnIdle(CliTerminalState& terminal)
 {
 	terminal.codex_activity_awaiting_turn = false;
+	terminal.codex_activity_awaiting_since_s = 0.0;
 	terminal.codex_activity_completed = false;
+	terminal.turn_end_unconfirmed = false;
 	const double now = GetAppTimeSeconds();
 	terminal.prompt_settle_required = false;
 	terminal.prompt_settle_candidate_time_s = 0.0;
@@ -302,6 +347,21 @@ void MarkCliTerminalTurnIdle(CliTerminalState& terminal)
 	terminal.last_idle_confirmed_time_s = now;
 	terminal.inactivity_interrupt_requested_time_s = 0.0;
 	terminal.shutdown_requested_time_s = 0.0;
+}
+
+void MarkCliTerminalTurnUnknown(CliTerminalState& terminal)
+{
+	if (!terminal.running || terminal.lifecycle_state != CliTerminalLifecycleState::Busy) return;
+	terminal.prompt_settle_required = false;
+	terminal.prompt_settle_candidate_time_s = 0.0;
+	terminal.lifecycle_state = CliTerminalLifecycleState::Unknown;
+	terminal.turn_state = CliTerminalTurnState::Unknown;
+	terminal.generation_in_progress = false;
+	terminal.last_busy_time_s = 0.0;
+	terminal.inactivity_interrupt_requested_time_s = 0.0;
+	// Only output drawn from now on counts, so a running turn's earlier status line cannot hide a later idle prompt.
+	terminal.current_turn_output_bytes.clear();
+	terminal.turn_end_unconfirmed = true;
 }
 
 bool IsCliTerminalTurnBusy(const CliTerminalState& terminal)
@@ -331,6 +391,9 @@ void MarkCliTerminalStopped(CliTerminalState& terminal)
 	terminal.codex_activity_string_cursor = {};
 	terminal.codex_activity_turn_id.clear();
 	terminal.codex_activity_awaiting_turn = false;
+	terminal.codex_activity_awaiting_since_s = 0.0;
+	terminal.native_turn_receipt_expired = false;
+	terminal.turn_end_unconfirmed = false;
 	terminal.codex_activity_read_failed = false;
 	terminal.codex_activity_completed = false;
 	terminal.codex_activity_discard_line = false;
@@ -365,12 +428,9 @@ void ClearCliReadyForChat(AppState& app, std::string_view chat_id)
 
 void RequestCliTerminalQuit(CliTerminalState& terminal)
 {
-	if (!terminal.running || !platform::CliTerminalHasWritableInput(terminal))
-	{
-		return;
-	}
-
-	(void)WriteToCliTerminal(terminal, kCliTerminalQuitCommand.data(), kCliTerminalQuitCommand.size());
+	if (!terminal.running) return;
+	// The shutdown fallback still forces the process if this request does not end it.
+	PlatformServicesFactory::Instance().terminal_runtime.RequestCliTerminalProcessExit(terminal);
 }
 
 void BeginCliTerminalIdleShutdown(CliTerminalState& terminal)
@@ -388,8 +448,10 @@ bool IsCliTerminalEligibleForBackgroundIdleShutdown(const AppState& app,
                                                     double now)
 {
 	(void)selected_chat_id;
+	// A likely unsent draft is the user's pending intent: keep its terminal open rather than discard it.
 	return terminal.running && terminal.lifecycle_state == CliTerminalLifecycleState::Idle &&
 	       !CliTerminalPrimaryChatId(terminal).empty() && terminal.pending_steer_prompt.empty() &&
+	       !CliTerminalComposerMayHoldDraft(terminal) &&
 	       terminal.idle_interaction_started_time_s > 0.0 &&
 	       now - terminal.idle_interaction_started_time_s >= 60.0 + app.settings.cli_idle_timeout_seconds;
 }
@@ -418,7 +480,7 @@ void StopCliTerminal(CliTerminalState& terminal, bool clear_identity, CliTermina
 	if (!PlatformServicesFactory::Instance().terminal_runtime.PollCliTerminalProcessExited(terminal))
 	{
 		terminal.running = true;
-		terminal.last_error = "Terminal stop is not confirmed. Cleanup will retry.";
+		terminal.last_error = "Terminal stop is not confirmed yet; UAM will retry cleanup.";
 		MarkCliTerminalShuttingDown(terminal);
 		return;
 	}
@@ -430,6 +492,8 @@ void StopCliTerminal(CliTerminalState& terminal, bool clear_identity, CliTermina
 	terminal.native_identity_output.clear();
 	terminal.native_identity_deferred_input.clear();
 	terminal.native_session_discovery_ambiguous = false;
+	terminal.composer_may_hold_draft = false;
+	terminal.composer_last_input_byte = 0;
 	terminal.input_ready = false;
 	// Retain the launch identity for final output; the next launch assigns a new timestamp.
 	MarkCliTerminalStopped(terminal);
@@ -501,7 +565,7 @@ bool PrepareCliTerminalForAcpLaunch(AppState& app, std::string_view chat_id, std
 
 	if (terminal->lifecycle_state == CliTerminalLifecycleState::Unknown)
 	{
-		if (error_out != nullptr) *error_out = "Terminal activity is unavailable. Exit the native CLI before starting structured chat.";
+		if (error_out != nullptr) *error_out = "Terminal activity is unavailable; exit the native CLI before starting structured chat.";
 		return false;
 	}
 	if (CliTerminalBlocksAcpHandoff(*terminal))
@@ -517,7 +581,7 @@ bool PrepareCliTerminalForAcpLaunch(AppState& app, std::string_view chat_id, std
 	DiscoverCliTerminalNativeSession(app, *terminal);
 	if (terminal->native_session_discovery_ambiguous)
 	{
-		if (error_out != nullptr) *error_out = "The native CLI session identity could not be verified. Keep the CLI open until its identity is available.";
+		if (error_out != nullptr) *error_out = "Could not verify the native CLI session yet; keep the CLI open until it is identified.";
 		return false;
 	}
 	StopCliTerminal(*terminal, false, CliTerminalStopMode::FastExit);

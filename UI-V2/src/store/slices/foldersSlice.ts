@@ -8,7 +8,9 @@ import {
   isLatestPendingRequest,
   rememberPendingRequest,
 } from '../cpp/reconcile'
-import type { ComputePool, ComputePoolUsage, CppFolder, PullRequestWatch, ShellAction } from '../cpp/types'
+import type { ComputePool, ComputePoolUsage, CppFolder, HostAdmissionSettings, HostAdmissionUsage, PullRequestWatch, ShellAction, TimerNotice } from '../cpp/types'
+import { DEFAULT_HOST_ADMISSION } from '../cpp/sanitizers'
+import { EMPTY_HOST_LOAD, type ExecutionHostLoad } from '../../types/hostLoad'
 import { DEFAULT_PROVIDER_ID } from '../../utils/providerMetadata'
 import type { ZustandSet, ZustandGet } from '../storeTypes'
 import { deleteSessionsFromState } from './sessionsSlice'
@@ -117,7 +119,11 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
     shellActions: [] as ShellAction[],
     computePools: [] as ComputePool[],
     computePoolUsage: {} as ComputePoolUsage,
+    hostAdmission: { ...DEFAULT_HOST_ADMISSION } as HostAdmissionSettings,
+    hostAdmissionUsage: {} as HostAdmissionUsage,
+    executionHostLoad: EMPTY_HOST_LOAD as ExecutionHostLoad,
     prWatches: [] as PullRequestWatch[],
+    timerNotices: [] as TimerNotice[],
     shellActionNotification: '',
     workspaceFolderRecoveryError: '',
     workspaceDeletionError: '',
@@ -404,6 +410,26 @@ export function createFoldersSlice(set: ZustandSet, get: ZustandGet) {
         }
       }
       set({ computePools })
+      return true
+    },
+
+    setHostAdmission: async (hostAdmission: HostAdmissionSettings): Promise<string> => {
+      if (isCefContext()) {
+        const response = await sendToCEF({ action: 'setHostAdmission', payload: { hostAdmission } })
+        // The page shows a failed save beside the form and keeps the draft.
+        if (!response.ok) return response.error || 'Host limits could not be saved. Try again.'
+      }
+      set({ hostAdmission })
+      return ''
+    },
+
+    runHeldWorkAnyway: async (chatId: string) => {
+      if (!isCefContext()) return false
+      const response = await sendToCEF({ action: 'runHeldWorkAnyway', payload: { chatId } })
+      if (!response.ok) {
+        reportAppFailure('Could not run anyway.', response.error ?? 'Try again.')
+        return false
+      }
       return true
     },
 

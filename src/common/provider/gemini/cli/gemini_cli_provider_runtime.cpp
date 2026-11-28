@@ -14,6 +14,7 @@
 #include "common/platform/async_byte_writer.h"
 #include "common/utils/base64.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
+#include "common/provider/provider_setup.h"
 #include "common/runtime/json_runtime.h"
 #include "common/runtime/acp/acp_protocol_methods.h"
 #include "common/usage/transcript_usage.h"
@@ -180,8 +181,8 @@ SavedImageRetryPreflight GeminiCliProviderRuntime::PrepareSavedImageRetry(uam::A
 	if (images.empty() || images.size() > 32 || GeminiSavedImageOwner(session, settings).is_null())
 	{
 		error = session.saved_image_retry && session.saved_image_retry->remote_scope
-		    ? "Gemini saved-image Retry requires current negotiated ACP image support in its same ready SSH native session. The prompt was not sent."
-		    : "Gemini saved-image Retry requires current negotiated ACP image support in its ready local native session. The prompt was not sent.";
+		    ? "Gemini image retry needs the same ready SSH session with image support, so the prompt was not sent."
+		    : "Gemini image retry needs a ready session with image support, so the prompt was not sent.";
 		return SavedImageRetryPreflight::Rejected;
 	}
 	error.clear();
@@ -206,7 +207,7 @@ try
 	};
 	const auto fail = [&error]()
 	{
-		error = "Gemini could not retain complete negotiated image input. The prompt was not sent.";
+		error = "Gemini could not keep the full image input, so the prompt was not sent.";
 		return false;
 	};
 	const auto limit = uam::platform::kAsyncInputMaxQueuedBytes;
@@ -266,7 +267,7 @@ try
 }
 catch (...)
 {
-	error = "Gemini image input or its negotiated session evidence is invalid. The prompt was not sent.";
+	error = "Gemini image input is invalid, so the prompt was not sent.";
 	return false;
 }
 
@@ -415,6 +416,14 @@ const char* GeminiCliProviderRuntime::RuntimeId() const
 }
 
 
+/// Gemini loads memory from an included directory's context file.
+bool GeminiCliProviderRuntime::StageCliHandoffContext(const ProviderCliHandoffStaging& staging, std::vector<std::string>& argv, std::string&) const
+{
+	if (!staging.stage_file(uam::execution_hosts::JoinRemotePath(staging.host_platform, staging.directory, "GEMINI.md"), staging.snapshot)) return false;
+	uam::provider_setup::InsertLaunchOptions(argv, {"--include-directories", staging.directory});
+	return true;
+}
+
 std::vector<std::string> GeminiCliProviderRuntime::BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings) const
 {
 	if (!profile.supports_interactive)
@@ -423,6 +432,14 @@ std::vector<std::string> GeminiCliProviderRuntime::BuildInteractiveArgv(const Pr
 	}
 
 	return uam::provider_runtime_internal::BuildInteractiveArgv(profile, chat, uam::provider_runtime_internal::MergeProviderSettings(profile, settings));
+}
+
+bool GeminiCliProviderRuntime::StageInteractiveAgentInstructions(const ExecutionHost&, std::string_view instructions, std::vector<std::string>&, std::string& staged_context, std::string& error) const
+{
+	// Written ahead of any handoff text in the staged GEMINI.md loaded through --include-directories.
+	staged_context.assign(instructions);
+	error.clear();
+	return true;
 }
 
 MessageRole GeminiCliProviderRuntime::RoleFromNativeType(const ProviderProfile& profile, std::string_view native_type) const
@@ -620,8 +637,8 @@ bool GeminiCliProviderRuntime::PrepareStructuredLaunch(uam::AcpSessionState& ses
 	if (!remote && policy != argv.end() && std::next(policy) != argv.end() &&
 	    std::filesystem::is_regular_file(uam::paths::PathFromUtf8(*std::next(policy)), ec)) return true;
 	error = remote
-	    ? "Gemini Plan and read-only turns cannot start on an SSH host: UAM cannot install its Plan policy there, so project or user Gemini settings could approve edits or commands. Use a local workspace or Default mode."
-	    : "Gemini Plan and read-only turns need UAM's Gemini Plan policy file, which is missing from this installation. Reinstall UAM.";
+	    ? "Gemini Plan and read-only modes cannot run safely over SSH; use a local workspace or Default mode."
+	    : "UAM's Gemini Plan policy file is missing; reinstall UAM to use Plan or read-only mode.";
 	return false;
 }
 

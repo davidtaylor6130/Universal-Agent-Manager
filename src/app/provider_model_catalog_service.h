@@ -1,6 +1,8 @@
 #pragma once
 
+#include "common/runtime/host_admission.h"
 #include "common/models/app_models.h"
+#include "common/provider/provider_account_refusal.h"
 #include "common/provider/provider_profile.h"
 
 #include <string>
@@ -44,8 +46,9 @@ class ProviderModelCatalogService
 	/// Start an explicit background read of local OpenCode configuration, retaining the current cache.
 	bool StartConfiguredOpenCodeRefresh();
 	/// <summary>Lists the native Antigravity catalogue without opening a conversation on the selected host.</summary>
-	bool StartAntigravityModelDiscovery(const ProviderProfile& profile, const ExecutionHost& host, const std::string& workspace, std::string* error_out = nullptr);
-	bool StartAntigravityEffortDiscovery(const ProviderProfile& profile, const ExecutionHost& host, const std::string& workspace, const std::string& model_id, std::string* error_out = nullptr);
+	/// <summary>admission is the host admission place the caller took for this background work; the worker holds it until it ends.</summary>
+	bool StartAntigravityModelDiscovery(const ProviderProfile& profile, const ExecutionHost& host, const std::string& workspace, std::string* error_out = nullptr, uam::host_admission::HeldLease admission = {});
+	bool StartAntigravityEffortDiscovery(const ProviderProfile& profile, const ExecutionHost& host, const std::string& workspace, const std::string& model_id, std::string* error_out = nullptr, uam::host_admission::HeldLease admission = {});
 	static std::optional<nlohmann::json> ParseAntigravityEffort(std::string_view output, const std::string& model_id);
 	std::size_t ActiveNativeModelDiscoveries() const;
 	/// <summary>Accepts only the bounded native ID-tab-name catalogue; no model-specific effort support is inferred.</summary>
@@ -69,6 +72,23 @@ class ProviderModelCatalogService
 
 	/// Record a refresh failure while retaining the last successful provider cache.
 	void RememberRefreshFailure(const std::string& provider_id, std::string error, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local", std::optional<std::string_view> expected_scope_key = std::nullopt);
+
+	/// <summary>
+	/// Records a refusal that applies to the provider's account on one computer, not to a workspace, and persists it
+	/// with the catalogue so a restart does not relaunch the provider for every workspace. recorded_at_sec 0 is now.
+	/// </summary>
+	bool RememberAccountRefusal(const std::string& provider_id, std::string_view execution_host_id, account_refusal::Kind kind, std::string notice, std::int64_t recorded_at_sec = 0);
+	/// <summary>The recorded notice, active or expired, until a retry succeeds or the user retries; empty when none.</summary>
+	std::string GetAccountRefusalNotice(const std::string& provider_id, std::string_view execution_host_id = "local") const;
+	/// <summary>
+	/// True while a recorded refusal's TTL has not expired; automatic discovery skips the provider on that computer.
+	/// for_chat_launch asks whether a chat launch is also held, which an authentication refusal never does.
+	/// </summary>
+	bool IsAccountRefusalActive(const std::string& provider_id, std::string_view execution_host_id = "local", bool for_chat_launch = false) const;
+	/// <summary>The notice of an active refusal that holds chat launches, read under one lock; empty when launches may proceed.</summary>
+	std::string GetChatLaunchRefusalNotice(const std::string& provider_id, std::string_view execution_host_id = "local") const;
+	/// <summary>A manual retry forgets the refusal so the next request asks the provider again. Returns whether one was recorded.</summary>
+	bool ClearAccountRefusal(const std::string& provider_id, std::string_view execution_host_id = "local");
 
 	/// Return the isolated persistent cache for the provider's current configuration.
 	nlohmann::json GetCachedProviderModels(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local") const;
@@ -96,6 +116,19 @@ class ProviderModelCatalogService
 	/// Start a user-requested discovery even when the cache is fresh.
 	bool BeginDiscovery(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local");
 	bool BeginDiscoveryIfMissing(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local");
+	/// <summary>Records the CLI version last checked on a computer; later successful discoveries there store it with their models.</summary>
+	void NoteCheckedCliVersion(const std::string& provider_id, std::string_view execution_host_id, std::string_view version);
+	/// <summary>True when the scope holds models under seven days old that the given, known CLI version fetched.</summary>
+	bool IsCacheFreshForCliVersion(const std::string& provider_id, std::string_view workspace_directory, std::string_view execution_host_id, std::string_view cli_version) const;
+	/// <summary>The scope's stored catalogue entry, or null; startup compares it to tell whether a discovery stored a new result.</summary>
+	nlohmann::json GetPersistentCatalogEntry(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local") const;
+	/// <summary>
+	/// Copies one workspace's stored models, options, refresh time and CLI version to other workspaces of the same provider
+	/// and computer, for providers whose model list does not depend on the workspace. Nothing is copied when the source has
+	/// no models, a refresh error, or still equals unchanged_source (its refresh stored nothing new). A target with a pending
+	/// discovery, or its own result at least as new from the same CLI version, keeps it. Returns the number of workspaces updated; one cache write covers all.
+	/// </summary>
+	std::size_t ShareAccountWideCatalog(const std::string& provider_id, std::string_view execution_host_id, std::string_view source_workspace, const std::vector<std::string>& target_workspaces, const nlohmann::json& unchanged_source = nullptr);
 	bool IsDiscoveryPending(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local") const;
 	void MarkDiscoveryLaunchStarted(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local");
 	void RememberDiscoveryCompatibilityBlocked(const std::string& provider_id, std::string error, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local");
@@ -131,7 +164,9 @@ class ProviderModelCatalogService
 	/// catalogue snapshot depends on changed since it last looked. The lock types make that hold without care at
 	/// each site: a const member function sees the mutex as const and can only take Read; any other code (a
 	/// non-const member function, a worker lambda) sees it as non-const, where Read is deleted, and must take Write.
-	/// Const member functions cannot modify the service's state, so every modification happens under a Write.
+	/// Const member functions cannot modify the members snapshots read, so every change to them happens under a Write
+	/// (a const function can still act through a held pointer or write a file, which no snapshot reads, and resolves
+	/// workspace paths through the process-wide RecentPathProbe memo, which snapshots do read: the verifying push covers that).
 	/// </summary>
 	class GenerationMutex
 	{
@@ -189,12 +224,16 @@ class ProviderModelCatalogService
 	std::string m_configured_open_code_default_model;
 	nlohmann::json m_cached_codex_models;
 	nlohmann::json m_persistent_catalogs;
+	// Account-level refusals by provider configuration and computer (a catalogue key without a workspace).
+	nlohmann::json m_account_refusals = nlohmann::json::object();
 	std::map<std::string, std::string> m_catalog_key_by_provider_id;
 	std::map<std::string, std::string> m_connection_key_by_host_id;
 	std::map<std::string, std::string> m_refresh_error_by_provider_id;
 	std::map<std::string, nlohmann::json> m_scope_by_catalog_key;
 	std::set<std::string> m_pending_discovery_provider_ids;
 	std::set<std::string> m_refresh_attempted_provider_ids;
+	// Last checked CLI version per provider and computer ("provider\nhost"); kept across Initialize like the installation it describes.
+	std::map<std::string, std::string> m_checked_cli_version_by_provider_host;
 
 	struct ConfiguredOpenCodeSnapshot
 	{
@@ -252,6 +291,11 @@ class ProviderModelCatalogService
 	/// recent_workspace reuses a two-second-old canonical workspace; only the per-push display readers pass it.
 	std::string CatalogKey(const std::string& provider_id, std::string_view workspace_directory = {}, std::string_view execution_host_id = "local", bool recent_workspace = false) const;
 	void LoadPersistentCatalogs();
+	// Caller holds m_mutex.
+	const nlohmann::json* AccountRefusalLocked(const std::string& provider_id, std::string_view execution_host_id) const;
+	// Caller holds m_mutex for writing. A new attempt or failure replaces an expired refusal's notice; a failure also
+	// replaces an authentication refusal, which never holds the chat launch that produced it.
+	void EraseExpiredAccountRefusalLocked(const std::string& provider_id, std::string_view execution_host_id);
 	bool WritePersistentCatalogs() const;
 
 	void StartRefreshTask();

@@ -3,7 +3,8 @@ import { AlertTriangle, Check, GitBranch, GitBranchPlus, LoaderCircle, Plus, Sea
 import { createRequestId, sendToCEF } from '../../ipc/cefBridge'
 import { useAppStore } from '../../store/useAppStore'
 import { chatWorktreeBranches, rankBranches } from '../../utils/branchRecency'
-import { Button, RowButton, Tooltip, ViewportMenu } from '../ui'
+import { reportAppFailure, reportAppNotice } from '../../utils/appFailure'
+import { Button, RowButton, SegmentedControl, Tooltip, ViewportMenu } from '../ui'
 
 export interface ChatBranch {
   name: string
@@ -27,10 +28,37 @@ function svnDisplayPath(context?: SvnBranchContext): string {
   return context && context.url.startsWith(`${context.repository}/`) ? `^/${context.url.slice(context.repository.length + 1)}` : ''
 }
 
+/** Where native places a new SVN branch for this working copy and the main line it can copy, from the repository's layout. */
+interface SvnBranchLocations {
+  branches: string
+  mainLine: string
+}
+
+type SvnBranchSource = 'workingCopy' | 'mainLine'
+
 interface ListChatBranchesResponse {
   branches: ChatBranch[]
   vcsType: 'git' | 'svn'
   svnContext?: SvnBranchContext
+  /** Present only when native can create an SVN branch here. */
+  svnBranchLocations?: SvnBranchLocations
+}
+
+/** A repository path as people read it: svn's URL escapes (`%20`) decoded; left as is when it is not valid escaping. */
+function readableSvnPath(path: string): string {
+  try { return decodeURIComponent(path) } catch { return path }
+}
+
+/** The source option's label names the layout's main line folder, so a custom layout does not read as `trunk`. */
+function mainLineLabel(mainLine: string): string {
+  const folder = mainLine.split('/').filter(Boolean).pop() || 'trunk'
+  return `${folder === 'trunk' ? 'Trunk' : folder} HEAD`
+}
+
+/** UAM's default message for a new SVN branch; the person can edit it before creating. */
+export function svnBranchMessage(name: string, source: SvnBranchSource, workingCopy: string, revision: string, mainLine: string): string {
+  if (!name) return ''
+  return `Create branch ${name} from ${source === 'mainLine' ? `${mainLine} at HEAD` : `${readableSvnPath(workingCopy) || 'the working copy'} r${revision}`}`
 }
 
 /** Composer branch tab that opens a branch picker. Only rendered when the backend advertises branchSwitching. */
@@ -57,6 +85,10 @@ export function ChatBranchPicker({ chatId, branch, pendingBranch, disabled, disa
   const [svnContext, setSvnContext] = useState<SvnBranchContext | null>(null)
   const [svnSelection, setSvnSelection] = useState<ChatBranch | null>(null)
   const [svnContextError, setSvnContextError] = useState('')
+  const [svnLocations, setSvnLocations] = useState<SvnBranchLocations | null>(null)
+  const [svnSource, setSvnSource] = useState<SvnBranchSource>('workingCopy')
+  const [svnMessage, setSvnMessage] = useState('')
+  const [svnMessageEdited, setSvnMessageEdited] = useState(false)
   const requestEpoch = useRef(0)
   const busyRef = useRef(false)
   const mountedRef = useRef(true)
@@ -143,9 +175,13 @@ export function ChatBranchPicker({ chatId, branch, pendingBranch, disabled, disa
     setQuery('')
     setCreating(false)
     setNewName('')
+    setSvnSource('workingCopy')
+    setSvnMessage('')
+    setSvnMessageEdited(false)
     setHighlight(0)
     setSvnSelection(null)
     setSvnContext(null)
+    setSvnLocations(null)
     setBranches([])
     const response = await sendToCEF<ListChatBranchesResponse>({ action: 'listChatBranches', payload: vcsType === 'svn' ? { chatId, vcsType: 'svn', svnParent: parent.trim() } : { chatId }, requestId: createRequestId('list-branches') })
     if (epoch !== requestEpoch.current) return
@@ -168,6 +204,7 @@ export function ChatBranchPicker({ chatId, branch, pendingBranch, disabled, disa
       : response.data.branches ?? [])
     setVcsType(response.data.vcsType)
     setSvnContext(response.data.svnContext ?? null)
+    setSvnLocations(response.data.svnBranchLocations ?? null)
     if (response.data.vcsType === 'svn') {
       setSvnPath(svnDisplayPath(response.data.svnContext))
       setSvnRevision(response.data.svnContext?.revision || '')
@@ -212,6 +249,56 @@ export function ChatBranchPicker({ chatId, branch, pendingBranch, disabled, disa
     else onSwitched(response.data?.branch || name)
   }
 
+  // The source is asked each time (working copy by default) and the commit message is UAM's editable default.
+  // A working copy of the repository root cannot be copied into its own branches folder, so only the main line is offered.
+  const svnRootCopy = svnPath === '^/'
+  const svnEffectiveSource: SvnBranchSource = svnRootCopy ? 'mainLine' : svnSource
+  const svnDefaultMessage = svnBranchMessage(newName.trim(), svnEffectiveSource, svnPath, svnContext?.revision || svnRevision, svnLocations?.mainLine || '')
+  const svnMessageValue = svnMessageEdited ? svnMessage : svnDefaultMessage
+
+  /** Each creation starts from the working-copy default, an empty name and UAM's message. */
+  const resetSvnCreate = () => {
+    setNewName('')
+    setSvnSource('workingCopy')
+    setSvnMessage('')
+    setSvnMessageEdited(false)
+  }
+
+  const closeSvnCreate = () => {
+    resetSvnCreate()
+    setCreating(false)
+  }
+
+  const createSvnBranch = async (name: string) => {
+    const message = svnMessageValue.trim()
+    if (busyRef.current || disabled || !svnContext || !svnLocations || !name || !message) return
+    const hadDialogFocus = menuRef.current?.contains(document.activeElement) ?? false
+    busyRef.current = true
+    setBusy(true)
+    setSwitchError('')
+    const response = await sendToCEF<{ branch: string; vcsType?: 'git' | 'svn'; svnContext?: SvnBranchContext }>({
+      action: 'switchChatBranch',
+      payload: { chatId, vcsType: 'svn', branch: name, create: true, svnContext, svnSource: svnEffectiveSource, svnMessage: message },
+      requestId: createRequestId('create-svn-branch'),
+    })
+    busyRef.current = false
+    if (!mountedRef.current) return
+    setBusy(false)
+    if (!response.ok) {
+      // Reported through the shared notification system; the form keeps its values so the person can adjust and retry.
+      reportAppFailure(`SVN branch ${name}: ${response.error || 'It could not be created. Try again.'}`, '')
+      return
+    }
+    const focusStillInPicker = document.activeElement === document.body || Boolean(menuRef.current?.contains(document.activeElement))
+    restoreFocusRef.current = hadDialogFocus && focusStillInPicker
+    setOpen(false)
+    const created = `${svnLocations.branches}/${name}`
+    reportAppNotice(`Created SVN branch ${created} and switched this working copy to it.`, 'success')
+    setSvnPath(svnDisplayPath(response.data?.svnContext) || created)
+    setSvnRevision(response.data?.branch || '')
+    onSwitched(response.data?.branch || '', 'svn')
+  }
+
   const chooseBranch = (choice: ChatBranch) => {
     if (busyRef.current || disabled) return
     if (vcsType === 'svn' && !choice.current) setSvnSelection(choice)
@@ -235,7 +322,7 @@ export function ChatBranchPicker({ chatId, branch, pendingBranch, disabled, disa
     }
   }
 
-  const canCreate = vcsType === 'git' && !loading && !loadError
+  const canCreate = !loading && (vcsType === 'git' ? !loadError : Boolean(svnContext && svnLocations))
 
   const displayedRevision = svnRevision || branch
   const pendingHint = pendingBranch ? `Created from ${branch} on first send. Select ${branch} to cancel.` : ''
@@ -376,7 +463,53 @@ export function ChatBranchPicker({ chatId, branch, pendingBranch, disabled, disa
               </div>}
               {canCreate && (
                 <div className="mt-1 border-t pt-1" style={{ borderColor: 'var(--border)' }}>
-                  {creating ? (
+                  {creating && vcsType === 'svn' && svnLocations ? (
+                    <div
+                      className="space-y-2 px-2 py-2 text-xs"
+                      style={{ color: 'var(--text-2)' }}
+                      onKeyDown={(event) => { if (event.key === 'Escape' && !busy) { event.stopPropagation(); closeSvnCreate() } }}
+                    >
+                      <label className="block">New SVN branch name
+                        <input
+                          type="text"
+                          autoFocus
+                          placeholder="new-branch-name"
+                          value={newName}
+                          disabled={busy}
+                          onChange={(event) => setNewName(event.target.value)}
+                          onKeyDown={(event) => { if (event.key === 'Enter' && newName.trim() && svnMessageValue.trim()) { event.preventDefault(); void createSvnBranch(newName.trim()) } }}
+                          className="uam-field mt-1 block w-full font-mono"
+                        />
+                      </label>
+                      <SegmentedControl<SvnBranchSource>
+                        aria-label="Copy the new branch from"
+                        value={svnEffectiveSource}
+                        disabled={busy}
+                        onChange={setSvnSource}
+                        options={[
+                          { value: 'workingCopy', label: 'Working copy', disabled: svnRootCopy, tooltip: svnRootCopy ? 'The repository root cannot be copied into its own branches folder.' : `${readableSvnPath(svnPath) || 'This working copy'} at r${svnContext?.revision || svnRevision}` },
+                          { value: 'mainLine', label: mainLineLabel(svnLocations.mainLine), tooltip: `${svnLocations.mainLine} at its newest revision` },
+                        ]}
+                      />
+                      <p className="break-all" id={`${dialogId}-svn-create-hint`}>
+                        Copies {svnEffectiveSource === 'mainLine' ? <span className="font-mono">{svnLocations.mainLine}</span> : <span className="font-mono">{readableSvnPath(svnPath) || 'the working copy'} r{svnContext?.revision || svnRevision}</span>} to <span className="font-mono">{svnLocations.branches}/{newName.trim() || '…'}</span> in one commit, then switches this working copy to it.
+                      </p>
+                      <label className="block">Commit message
+                        <input
+                          type="text"
+                          value={svnMessageValue}
+                          disabled={busy}
+                          onChange={(event) => { setSvnMessageEdited(true); setSvnMessage(event.target.value) }}
+                          onKeyDown={(event) => { if (event.key === 'Enter' && newName.trim() && svnMessageValue.trim()) { event.preventDefault(); void createSvnBranch(newName.trim()) } }}
+                          className="uam-field mt-1 block w-full"
+                        />
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <Button size="sm" variant="secondary" aria-describedby={`${dialogId}-svn-create-hint`} disabled={!newName.trim() || !svnMessageValue.trim() || busy} loading={busy} onClick={() => void createSvnBranch(newName.trim())}>Create and switch</Button>
+                        <Button size="sm" variant="ghost" disabled={busy} onClick={closeSvnCreate}>Cancel</Button>
+                      </div>
+                    </div>
+                  ) : creating ? (
                     <div className="flex items-center gap-2 px-1 py-1">
                       <input
                         type="text"
@@ -396,11 +529,11 @@ export function ChatBranchPicker({ chatId, branch, pendingBranch, disabled, disa
                     </div>
                   ) : (
                     <>
-                      <RowButton type="button" disabled={busy} onClick={() => setCreating(true)} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] disabled:opacity-50" style={{ color: 'var(--text-2)' }}>
+                      <RowButton type="button" disabled={busy} onClick={() => { if (vcsType === 'svn') resetSvnCreate(); setCreating(true) }} className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] disabled:opacity-50" style={{ color: 'var(--text-2)' }}>
                         <Plus size={14} aria-hidden />
-                        Create branch from current…
+                        {vcsType === 'svn' ? 'Create SVN branch…' : 'Create branch from current…'}
                       </RowButton>
-                      {pendingBranch && <div id={`${dialogId}-pending-hint`} className="break-words pb-1 pl-[30px] pr-2" style={{ color: 'var(--text-2)', fontSize: 'var(--fs-sm)' }}>{pendingHint}</div>}
+                      {pendingBranch && vcsType !== 'svn' && <div id={`${dialogId}-pending-hint`} className="break-words pb-1 pl-[30px] pr-2" style={{ color: 'var(--text-2)', fontSize: 'var(--fs-sm)' }}>{pendingHint}</div>}
                     </>
                   )}
                 </div>

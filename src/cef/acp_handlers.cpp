@@ -1,4 +1,5 @@
 #include "app/pr_watch_service.h"
+#include "app/timer_service.h"
 #include "app/agent_run_scheduler.h"
 #include "cef/uam_query_handler.h"
 #include "cef/uam_query_handler_async.h"
@@ -316,7 +317,7 @@ namespace
 			return true;
 		const auto reject = [&error]()
 		{
-			error = "Recorded or invalid attachment sources cannot be sent as file paths. Remove them and attach files from the execution host again.";
+			error = "Recorded or invalid attachments cannot be sent as files; remove them and attach the files again.";
 			return false;
 		};
 		if (!items->is_array())
@@ -335,7 +336,7 @@ namespace
 			const std::string path = uam::nlohmann_json::TrimmedStringValue(item, {attachment_fields::kPathField});
 			if (path.empty() || path.find('\0') != std::string::npos)
 			{
-				error = "An attached resource has an invalid path. Remove it and attach it again.";
+				error = "An attached resource has an invalid path; remove it and attach it again.";
 				return false;
 			}
 		}
@@ -385,6 +386,8 @@ namespace
 				{ result.status = 400; result.error = "Choose an absolute directory on this SSH host."; break; }
 				uam::remote::DirectoryListing listing;
 				if (!client.ListDirectories(uam::paths::PathFromUtf8(path), listing, &result.error)) { result.status = 500; break; }
+				if (!uam::execution_hosts::RemoteDirectoryMatchesRequest(host.platform, path, listing.directory))
+				{ result.status = 502; result.error = "The SSH host returned a different directory for this attachment."; break; }
 				MessageAttachment attachment;
 				attachment.id = uam::nlohmann_json::TrimmedStringValue(item, {attachment_fields::kIdField});
 				if (attachment.id.empty()) attachment.id = AttachmentId();
@@ -467,8 +470,14 @@ namespace
 		}
 		if (!result.error.empty())
 		{
+			// RemoveFile reconnects after a dropped connection. A host it cannot reach again keeps the rest for the
+			// chat's delete sweep (each was staged above) rather than waiting out a reconnect per file.
 			for (std::size_t cleanup = 0; cleanup < committed.size(); ++cleanup)
-				(void)client.RemoveFile("cleanup-" + std::to_string(cleanup), committed[cleanup]);
+			{
+				if (client.RemoveFile("cleanup-" + std::to_string(cleanup), committed[cleanup]) || client.IsConnected()) continue;
+				uam::diagnostics::Write("[stageChatAttachments] Remote attachment cleanup stopped: host unreachable, copies_left=" + std::to_string(committed.size() - cleanup));
+				break;
+			}
 			return result;
 		}
 		result.ok = true;
@@ -478,14 +487,22 @@ namespace
 
 void UamQueryHandler::HandleCompactAcpSession(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
+	// Typed `/compact <instructions>` arrives here too; a non-string value is refused rather than dropped.
+	const auto instructions = payload.find("instructions");
+	if (instructions != payload.end() && !instructions->is_string() && !instructions->is_null())
+	{
+		cb->Failure(400, "Compaction instructions must be text.");
+		return;
+	}
 	std::string error;
-	if (!uam::CompactAcpSession(m_app, payload.value("chatId", ""), &error))
+	bool instructions_used = false;
+	if (!uam::CompactAcpSession(m_app, payload.value("chatId", ""), &error, instructions != payload.end() && instructions->is_string() ? instructions->get<std::string>() : std::string{}, &instructions_used))
 	{
 		cb->Failure(409, FailureDetailOrFallback(error, "Manual compaction could not be requested."));
 		return;
 	}
 	uam::PushStateUpdateIfChanged(browser, m_app);
-	cb->Success(R"({"accepted":true})");
+	cb->Success(nlohmann::json{{"accepted", true}, {"instructionsUsed", instructions_used}}.dump());
 }
 
 void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -502,7 +519,7 @@ void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const n
 	const std::string chat_id = payload.value("chatId", "");
 	const std::string text = payload.value("text", "");
 	const int missing_chat_status = chat_id.empty() || text.empty() ? 400 : 404;
-	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id, missing_chat_status);
+	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found.", missing_chat_status);
 	if (chat == nullptr)
 	{
 		return;
@@ -525,7 +542,7 @@ void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const n
 	const auto pending = m_app.branch_preparations.find(chat_id);
 	if (pending != m_app.branch_preparations.end() && !pending->second.expired())
 	{
-		cb->Failure(409, "Chat preparation is still running. Wait before sending another prompt.");
+		cb->Failure(409, "Wait for chat preparation to finish before sending another prompt.");
 		return;
 	}
 	if (!chat->messages_loaded)
@@ -533,7 +550,7 @@ void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const n
 		const std::shared_ptr<ChatDomainService::ColdHistoryPreparation> preparation = domain.BeginColdHistoryPreparation(m_app, chat_id);
 		if (!preparation)
 		{
-			cb->Failure(409, "Chat history is changing. Retry after it settles.");
+			cb->Failure(409, "Chat history is changing; retry after it settles.");
 			return;
 		}
 		const bool queued = RunAsyncCefQuery(m_asyncLifetime, cb,
@@ -553,7 +570,7 @@ void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const n
 			    }
 			    if (!domain.CompleteColdHistoryPreparation(m_app, *preparation))
 			    {
-				    result = AsyncFailure(409, "Chat history changed or preparation was stopped. Retry the prompt.");
+				    result = AsyncFailure(409, "Chat history changed or preparation was stopped; retry the prompt.");
 				    return;
 			    }
 			    HandleSendAcpPrompt(browser, payload, cb);
@@ -589,7 +606,7 @@ void UamQueryHandler::HandleSendAcpPrompt(CefRefPtr<CefBrowser> browser, const n
 		const auto claim = m_recentSendIds.Begin(chat_id, send_idempotency_id, payload.value("_uamOriginRequestId", std::string{}));
 		if (claim.claim == uam::cef::SendIdempotencyWindow::Claim::InProgress)
 		{
-			cb->Failure(409, "This message is still being sent. Check the chat before sending it again.");
+			cb->Failure(409, "This message is still being sent; check the chat before sending it again.");
 			return;
 		}
 		if (claim.claim == uam::cef::SendIdempotencyWindow::Claim::Admitted)
@@ -741,7 +758,7 @@ void UamQueryHandler::HandleManageQueuedAcpPrompt(CefRefPtr<CefBrowser> browser,
 			const auto preparation = domain.BeginColdHistoryPreparation(m_app, chat_id);
 			if (!preparation)
 			{
-				cb->Failure(409, "This chat is being saved or prepared. Your input is kept; try again when it finishes.");
+				cb->Failure(409, "This chat is being saved or prepared, so your input is kept; try again when it finishes.");
 				return;
 			}
 			const auto incarnation = chat->metadata_incarnation;
@@ -751,7 +768,7 @@ void UamQueryHandler::HandleManageQueuedAcpPrompt(CefRefPtr<CefBrowser> browser,
 				std::string error;
 				return domain.LoadColdHistoryPreparation(*preparation, error)
 				    ? AsyncSuccess(nlohmann::json::object())
-				    : AsyncFailure(409, "Saved history could not be checked for this action. Your input is kept; try again.");
+				    : AsyncFailure(409, "Saved history could not be checked, so your input is kept; try again.");
 			};
 			const auto complete = [this, browser, payload, cb, domain, preparation, incarnation, queue](AsyncCefResult& result)
 			{
@@ -760,12 +777,12 @@ void UamQueryHandler::HandleManageQueuedAcpPrompt(CefRefPtr<CefBrowser> browser,
 				    ChatRepository::QueueAdmissionFingerprint(*current) != queue)
 				{
 					(void)domain.ConsumeBranchPreparation(m_app, preparation->identity.chat_id, preparation->ownership);
-					if (result.ok) result = AsyncFailure(409, "The retained message changed while it was being checked. Your input is kept.");
+					if (result.ok) result = AsyncFailure(409, "The kept message changed while it was being checked, so your input is kept.");
 					return;
 				}
 				if (!domain.CompleteColdHistoryPreparation(m_app, *preparation))
 				{
-					result = AsyncFailure(409, "Chat history changed while it was being checked. Your input is kept; try again.");
+					result = AsyncFailure(409, "Chat history changed while it was being checked, so your input is kept; try again.");
 					return;
 				}
 				HandleManageQueuedAcpPrompt(browser, payload, cb);
@@ -820,7 +837,7 @@ void UamQueryHandler::HandleManageQueuedAcpPrompt(CefRefPtr<CefBrowser> browser,
 		const ChatSession* committed = ChatDomainService().FindChatById(m_app, chat_id);
 		if (!committed)
 		{
-			cb->Failure(409, "The saved chat changed. Refresh before editing again.");
+			cb->Failure(409, "The saved chat changed; refresh before editing again.");
 			return;
 		}
 		auto page = uam::StateSerializer::SerializeMessagePage(*committed, 1, static_cast<std::size_t>(index) + 1, true);
@@ -1002,7 +1019,7 @@ void UamQueryHandler::HandleResumeQueuedAcpPrompts(CefRefPtr<CefBrowser> browser
 void UamQueryHandler::HandleDiscoverProviderModels(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const std::string chat_id = uam::strings::Trim(payload.value("chatId", ""));
-	ChatSession* chat = chat_id.empty() ? nullptr : FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
+	ChatSession* chat = chat_id.empty() ? nullptr : FindChatOrFail(m_app, chat_id, cb, "Chat not found.");
 	if (!chat_id.empty() && chat == nullptr) return;
 	if (chat != nullptr && !ChatProviderAvailableOrFail(m_app, *chat, cb)) return;
 
@@ -1094,6 +1111,8 @@ void UamQueryHandler::HandleDiscoverProviderModels(CefRefPtr<CefBrowser> browser
 	// A request the UI makes by itself (opening a model menu, showing a chat on the phone) is skipped while the cached
 	// models are current or were already refreshed this run. Refresh and Retry always ask the provider.
 	const bool automatic = payload.value("automatic", false);
+	// Refresh and Retry are also the user's manual retry of an account refusal recorded for this provider and computer.
+	if (!automatic) (void)m_app.provider_model_catalog->ClearAccountRefusal(provider_id, execution_host_id);
 	const bool should_start = automatic
 	    ? m_app.provider_model_catalog->BeginDiscoveryIfStale(provider_id, workspace_directory, execution_host_id)
 	    : m_app.provider_model_catalog->BeginDiscovery(provider_id, workspace_directory, execution_host_id);
@@ -1112,8 +1131,17 @@ void UamQueryHandler::HandleDiscoverProviderModels(CefRefPtr<CefBrowser> browser
 		return;
 	}
 	std::string error;
+	bool admission_held = false;
 	const bool started = uam::StartEphemeralAcpModelDiscovery(
-	    m_app, provider_id, workspace_directory, execution_host_id, &error);
+	    m_app, provider_id, workspace_directory, execution_host_id, &error, &admission_held);
+	if (!started && admission_held)
+	{
+		// The computer is at its background budget or busy: the discovery keeps its place and starts by itself.
+		uam::QueueAcpModelDiscoveryAdmissionRetry(m_app, provider_id, workspace_directory, execution_host_id);
+		uam::PushStateUpdateIfChanged(browser, m_app);
+		cb->Success(nlohmann::json{{"started", false}, {"pending", true}, {"waiting", error}}.dump());
+		return;
+	}
 	if (!started)
 	{
 		if (uam::QueueAcpModelDiscoveryCompatibilityRetry(
@@ -1198,13 +1226,13 @@ void UamQueryHandler::HandleNativeModelOptions(CefRefPtr<CefBrowser> browser, co
 		option_id = option->get<std::string>();
 	}
 	const std::string chat_id = expected["chatId"].get<std::string>();
-	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
+	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found.");
 	if (chat == nullptr)
 		return;
 	uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat_id);
 	if (chat->imported_read_only || session == nullptr || session->model_discovery_only || session->goal_internal_session || !session->managed_agent_run_id.empty() || session->provider_id != chat->provider_id || session->session_id != expected["nativeSessionId"].get_ref<const std::string&>() || session->process_execution_host_id != expected["executionHostId"].get_ref<const std::string&>())
 	{
-		cb->Failure(409, "The native model option session changed. Refresh the chat and retry.");
+		cb->Failure(409, "The model options changed; refresh the chat and try again.");
 		return;
 	}
 	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(session->provider_id);
@@ -1219,7 +1247,7 @@ void UamQueryHandler::HandleNativeModelOptions(CefRefPtr<CefBrowser> browser, co
 			}
 	if (!owned)
 	{
-		cb->Failure(409, "The native model option ownership changed or is unavailable. Refresh the chat and retry.");
+		cb->Failure(409, "The model options changed or are unavailable; refresh the chat and try again.");
 		return;
 	}
 	std::string error;
@@ -1242,7 +1270,7 @@ void UamQueryHandler::HandleStageChatAttachments(CefRefPtr<CefBrowser> browser, 
 		return;
 	}
 
-	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
+	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found.");
 	if (chat == nullptr)
 	{
 		return;
@@ -1381,7 +1409,8 @@ void UamQueryHandler::HandleStageChatAttachments(CefRefPtr<CefBrowser> browser, 
 				const std::filesystem::path source_path = PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(source_path_text);
 				if (!uam::paths::IsDirectoryNoThrow(source_path))
 				{
-					return fail(400, "Directory attachment does not exist: " + source_path_text);
+					uam::diagnostics::Write("[stageChatAttachments] Directory attachment does not exist: " + source_path_text);
+					return fail(400, "The attached folder no longer exists.");
 				}
 				attachment.path = PathForPrompt(workspace_root, source_path);
 				attachment.copied = false;
@@ -1517,7 +1546,7 @@ void UamQueryHandler::HandleDiscardStagedChatAttachment(CefRefPtr<CefBrowser> br
 	(void)browser;
 	const std::string chat_id = payload.value("chatId", "");
 	const std::string path = payload.value("path", "");
-	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found: " + chat_id);
+	ChatSession* chat = FindChatOrFail(m_app, chat_id, cb, "Chat not found.");
 	if (chat == nullptr)
 	{
 		return;
@@ -1572,7 +1601,7 @@ void UamQueryHandler::HandleCancelAcpTurn(CefRefPtr<CefBrowser> browser, const n
 		// A refusal that names its own cause wins over the flags below: this call stopped nothing.
 		if (error == "Could not save quota continuation cancellation.")
 		{
-			cb->Failure(500, "The quota wait could not be cancelled because its state could not be saved. Try again.");
+			cb->Failure(500, "The quota wait could not be cancelled because its state could not be saved.");
 			return;
 		}
 		if (error.starts_with("Held prompts could not be discarded because ") ||
@@ -1586,18 +1615,20 @@ void UamQueryHandler::HandleCancelAcpTurn(CefRefPtr<CefBrowser> browser, const n
 		if (session != nullptr && (session->remote_stop_pending || (session->remote_stop_unconfirmed && !session->running)))
 		{
 			if (m_app.pr_watch_service != nullptr) (void)m_app.pr_watch_service->EndWatchesForChat(chat_id);
+			if (m_app.timer_service != nullptr) (void)m_app.timer_service->CancelWakesForChat(chat_id);
 			uam::PushStateUpdateIfChanged(browser, m_app);
 			cb->Success(R"({"pending":true})");
 			return;
 		}
 		// Transport errors and the status line can carry OS text; only fixed runtime wording reaches the notice.
 		uam::diagnostics::Write("[cancelAcpTurn] Cancel was refused; the runtime diagnostics hold the cause.");
-		cb->Failure(500, "The turn could not be cancelled. Try again.");
+		cb->Failure(500, "The turn could not be cancelled.");
 		return;
 	}
 
-	// Pressing Stop also ends the chat's pull request watches, so a later wake cannot restart the work.
+	// Pressing Stop also ends the chat's pull request watches and scheduled follow-ups, so a later wake cannot restart the work.
 	if (m_app.pr_watch_service != nullptr) (void)m_app.pr_watch_service->EndWatchesForChat(chat_id);
+	if (m_app.timer_service != nullptr) (void)m_app.timer_service->CancelWakesForChat(chat_id);
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
@@ -1665,15 +1696,15 @@ static std::string StopRefusalReason(uam::AppState& app, const std::string& chat
 	const uam::AcpSessionState* session = uam::FindAcpSessionForChat(app, chat_id);
 	const ChatSession* chat = ChatDomainService().FindChatById(app, chat_id);
 	if (session != nullptr && session->restart_marker_save_pending)
-		return "The remote restart is waiting for its recovery data to be saved. Try again shortly.";
+		return "The remote restart is waiting for its recovery data to be saved; try again shortly.";
 	if (session != nullptr && !session->running && chat != nullptr && chat->execution_host_id != uam::execution_hosts::kLocalHostId &&
 	    (chat->remote_turn_reconnect_pending || chat->remote_process_exists))
-		return "The remote host is disconnected. Reconnect it before stopping, so UAM can confirm the turn ended.";
+		return "The remote host is disconnected; reconnect it so UAM can confirm the turn stopped.";
 	if (session != nullptr && session->queue_held)
-		return "Held prompts could not be discarded, so the runtime was not stopped. Try again.";
+		return "Held prompts could not be discarded, so the runtime was not stopped.";
 	if (session != nullptr && session->running && chat != nullptr && chat->execution_host_id != uam::execution_hosts::kLocalHostId)
-		return "The remote stop could not be recorded before it was sent, so nothing was stopped. Try again.";
-	return "The runtime could not be stopped. Try again.";
+		return "The remote stop could not be recorded, so nothing was stopped.";
+	return "The runtime could not be stopped.";
 }
 
 void UamQueryHandler::HandleStopAcpSession(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)

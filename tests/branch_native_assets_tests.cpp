@@ -1414,7 +1414,7 @@ UAM_TEST(ClaudeSavedOwnedRetryRetainsUnboundPermissionAndRejectsChangedRowBefore
 	fixture.Branch().messages[2].attachments.front().native_part_key += ":changed-before-workspace";
 	const auto changed_declarations = fixture.Branch().messages[2].attachments;
 	UAM_ASSERT(!uam::acp_detail::StartAcpProcessForChat(fixture.app, *fixture.session, fixture.Branch(), &error));
-	UAM_ASSERT_EQ(error, std::string("Saved image Retry ownership changed. Retry the saved message again."));
+	UAM_ASSERT_EQ(error, std::string("The saved-image retry was interrupted; retry the saved message again."));
 	UAM_ASSERT(!fixture.session->saved_image_retry && fixture.session->saved_image_retry_turn_serial == -1);
 	UAM_ASSERT_EQ(fixture.session->queued_user_prompts.size(), std::size_t{1});
 	UAM_ASSERT_EQ(fixture.session->queued_user_prompts.front().id, queued.id);
@@ -2390,7 +2390,7 @@ UAM_TEST(CopilotSavedBranchRetryDeliversOwnedPngThroughParsedSdkAndBoundedWorker
 	if (!accepted)
 	{
 		std::cerr << "Copilot Retry startup refusal: " << error << std::endl;
-		UAM_ASSERT_EQ(error, std::string("Recorded image Retry requires valid local originals and a supported provider. Remove unsupported sources or attach files again."));
+		UAM_ASSERT_EQ(error, std::string("Image retry needs the original local files and a supported provider; reattach the files."));
 		throw uam_test::TestFailure("Copilot accepted-Retry prerequisite after parsed SDK setup and durable reload: " + error); // Intended current-source RED.
 	}
 	peer.ObserveWriter();
@@ -2479,6 +2479,7 @@ def request(value, frame):)PY");
         if option == "old-version": result["version"] = "1.0.59"
         if option == "malformed-version": result["version"] = "not-a-version"
         if option == "wrong-protocol": result["protocolVersion"] = 2
+        if option == "protocol-4": result["protocolVersion"] = 4
     if waiting and method == "session.model.getCurrent" and option == "different-model":
         result["modelId"] = "different-native-model"
     if waiting and method == "models.list":
@@ -2684,7 +2685,7 @@ UAM_TEST(CopilotSavedRetryColdResumeAndOrdinaryTextKeepNativeSetupContracts)
 
 UAM_TEST(CopilotSavedOwnedRetryRequiresNativeEvidenceAndRetiresActualTimeout)
 {
-	for (const std::string variant : {"old-version", "malformed-version", "wrong-protocol", "rpc-error", "vision-false", "vision-missing", "vision-string", "different-model", "disabled-policy", "mime-restricted", "count-restricted", "size-restricted", "malformed-limits", "valid-limits", "timeout"})
+	for (const std::string variant : {"old-version", "malformed-version", "wrong-protocol", "protocol-4", "rpc-error", "vision-false", "vision-missing", "vision-string", "different-model", "disabled-policy", "mime-restricted", "count-restricted", "size-restricted", "malformed-limits", "valid-limits", "timeout"})
 	{
 		CopilotImageSupplementR77 peer(variant);
 		peer.control["hold_status"] = variant == "timeout";
@@ -2705,6 +2706,9 @@ UAM_TEST(CopilotSavedOwnedRetryRequiresNativeEvidenceAndRetiresActualTimeout)
 		else
 		{
 			peer.Reject(variant == "timeout" ? std::chrono::seconds(35) : std::chrono::seconds(5));
+			// Copilot CLI 1.0.113+ reports protocol 4: refused with the shared one-line gate message before any image is sent.
+			if (variant == "protocol-4")
+				UAM_ASSERT(peer.fixture.session->last_error.find("This Copilot CLI uses protocol 4; UAM supports 3.") != std::string::npos);
 			if (variant == "timeout")
 			{
 				UAM_ASSERT(std::chrono::steady_clock::now() - attempt_started >= std::chrono::seconds(30)); // Unchanged real 30s query deadline; no private deadline/clock mutation.
@@ -3606,7 +3610,7 @@ UAM_TEST(OpenCodeSavedBranchRetryDeliversOwnedPngThroughActualAcpAndNativeEviden
 		const bool accepted = fixture.BeginRetry(error);
 		if (!accepted)
 		{
-			if (error != "Recorded image Retry requires valid local originals and a supported provider. Remove unsupported sources or attach files again.") throw uam_test::TestFailure("OpenCode saved-image prerequisite failed with another error: " + error);
+			if (error != "Image retry needs the original local files and a supported provider; reattach the files.") throw uam_test::TestFailure("OpenCode saved-image prerequisite failed with another error: " + error);
 			throw uam_test::TestFailure("OpenCode accepted-Retry prerequisite after actual ACP/native bootstrap and durable reload: " + error); // Intended current unsupported-route RED, warm arm first.
 		}
 		peer.ObserveWriter();
@@ -4287,7 +4291,7 @@ UAM_TEST(GeminiSavedBranchRetryDeliversOwnedPngThroughNegotiatedAcp)
 	// Baseline should refuse here: Gemini inherits SupportsSavedImageRetry == false.
 	if (!uam::RetryLastAcpPrompt(peer.app, peer.branch_id, &error))
 	{
-		if (error != "Recorded image Retry requires valid local originals and a supported provider. Remove unsupported sources or attach files again.")
+		if (error != "Image retry needs the original local files and a supported provider; reattach the files.")
 			throw uam_test::TestFailure("Gemini saved-image Retry failed at a different prerequisite: " + error);
 		throw uam_test::TestFailure("Gemini saved-image Retry unsupported after actual ACP image negotiation and branch-owned PNG reload: " + error);
 	}
@@ -4933,7 +4937,7 @@ store('peer-exit.json', dict(pid=os.getpid(), eof=True))
 		const auto error_class = [](const std::string& value)
 		{
 			if (value.empty()) return "empty";
-			if (value == "Remote prompt was not sent because its owned durable receipt was not confirmed.") return "owned_durable_receipt_not_confirmed";
+			if (value == "The remote prompt was not sent because UAM could not confirm it was saved.") return "owned_durable_receipt_not_confirmed";
 			if (value == "Prompt was not sent because chat history could not be saved.") return "chat_history_save_failed";
 			return "other_nonempty";
 		};
@@ -5267,7 +5271,7 @@ store('peer-exit.json', dict(pid=os.getpid(), eof=True))
 		const auto error_class = [](const std::string& value)
 		{
 			if (value.empty()) return "empty";
-			if (value == "Remote prompt was not sent because its owned durable receipt was not confirmed.") return "owned_durable_receipt_not_confirmed";
+			if (value == "The remote prompt was not sent because UAM could not confirm it was saved.") return "owned_durable_receipt_not_confirmed";
 			if (value == "Prompt was not sent because chat history could not be saved.") return "chat_history_save_failed";
 			return "other_nonempty";
 		};
@@ -5507,7 +5511,7 @@ store('peer-exit.json', dict(pid=os.getpid(), eof=True))
 		// prerequisite above. Qualify the current specific local-only refusal.
 		if (control == RemoteOwnedRetryControl::Healthy)
 		{
-			UAM_ASSERT_EQ(retry_error, std::string("Recorded image Retry requires valid local originals and a supported provider. Remove unsupported sources or attach files again."));
+			UAM_ASSERT_EQ(retry_error, std::string("Image retry needs the original local files and a supported provider; reattach the files."));
 		}
 		else
 		{
@@ -6313,7 +6317,7 @@ store('exit.json', dict(pid=os.getpid(), eof=True))
 	if (!accepted)
 	{
 		// Intended pre-opt-in RED is qualified only after every real Send/ACK/native/store/eligibility prerequisite.
-		UAM_ASSERT_EQ(retry_error, std::string("Saved image Retry needs this chat's existing ready SSH session. Reopen it or attach the files again."));
+		UAM_ASSERT_EQ(retry_error, std::string("Reopen this chat's SSH session or reattach the files to retry saved images."));
 		UAM_ASSERT_EQ(live().messages[static_cast<std::size_t>(index)], authored);
 		UAM_ASSERT_EQ(uam_test::ReadFile(AppPaths::UamChatFilePath(app.data_root, chat.id)), primary);
 		UAM_ASSERT_EQ(uam_test::ReadFile(temp.root / "stdin.jsonl"), stdin_before); UAM_ASSERT_EQ(count_turns(), std::size_t{1});
@@ -6694,7 +6698,7 @@ store('peer-resume-exit.json' if resumed else 'peer-exit.json', dict(pid=os.getp
 		const auto error_class = [](const std::string& value)
 		{
 			if (value.empty()) return "empty";
-			if (value == "Remote prompt was not sent because its owned durable receipt was not confirmed.") return "owned_durable_receipt_not_confirmed";
+			if (value == "The remote prompt was not sent because UAM could not confirm it was saved.") return "owned_durable_receipt_not_confirmed";
 			if (value == "Prompt was not sent because chat history could not be saved.") return "chat_history_save_failed";
 			return "other_nonempty";
 		};
@@ -6888,7 +6892,7 @@ store('peer-resume-exit.json' if resumed else 'peer-exit.json', dict(pid=os.getp
 	{
 		// Honest intended baseline: classify only after independent cold TEXT
 		// control passes and every stopped-owner/original/index prerequisite above.
-		UAM_ASSERT_EQ(resume_error, std::string("Saved image Retry needs this chat's existing ready SSH session. Reopen it or attach the files again."));
+		UAM_ASSERT_EQ(resume_error, std::string("Reopen this chat's SSH session or reattach the files to retry saved images."));
 		UAM_ASSERT_EQ(uam_test::ReadFile(AppPaths::UamChatFilePath(app.data_root, chat.id)), stopped_primary);
 		UAM_ASSERT_EQ(owner->messages, before_resume_messages);
 		UAM_ASSERT(!session->saved_image_retry && !session->pending_prompt_delivery && !session->running);
@@ -7400,7 +7404,7 @@ store('peer-exit.json', dict(pid=os.getpid(), eof=True))
 		const auto image_task_count = app.claude_input_tasks.size();
 		std::string unsupported;
 		UAM_ASSERT(!uam::RetryFailedAcpMessage(app, chat.id, index, &unsupported));
-		UAM_ASSERT_EQ(unsupported, std::string("Saved image Retry needs this chat's existing ready SSH session. Reopen it or attach the files again."));
+		UAM_ASSERT_EQ(unsupported, std::string("Reopen this chat's SSH session or reattach the files to retry saved images."));
 		UAM_ASSERT_EQ(uam_test::ReadFile(primary), before_primary); UAM_ASSERT_EQ(uam_test::ReadFile(summary), before_summary);
 		UAM_ASSERT_EQ(owner->messages, before_messages); UAM_ASSERT_EQ(uam_test::ReadFile(temp.root / "peer-stdin.jsonl"), before_stdin);
 		UAM_ASSERT(!session->saved_image_retry && !session->claude_input_preparation && !session->pending_prompt_delivery && !session->processing);
@@ -7427,7 +7431,7 @@ store('peer-exit.json', dict(pid=os.getpid(), eof=True))
 	const bool accepted = uam::RetryFailedAcpMessage(app, chat.id, index, &retry_error);
 	if (!accepted)
 	{
-		UAM_ASSERT_EQ(retry_error, std::string("Saved image Retry needs this chat's existing ready SSH session. Reopen it or attach the files again."));
+		UAM_ASSERT_EQ(retry_error, std::string("Reopen this chat's SSH session or reattach the files to retry saved images."));
 		UAM_ASSERT_EQ(uam_test::ReadFile(primary), before_primary); UAM_ASSERT_EQ(uam_test::ReadFile(summary), before_summary);
 		UAM_ASSERT_EQ(owner->messages, before_messages); UAM_ASSERT_EQ(uam_test::ReadFile(temp.root / "peer-stdin.jsonl"), before_stdin);
 		UAM_ASSERT(!session->saved_image_retry && !session->claude_input_preparation && !session->pending_prompt_delivery && !session->processing);
@@ -8044,7 +8048,7 @@ while True:
 	if (!accepted)
 	{
 		// Only this specific Capture refusal AFTER real ordinary/native/store/eligible-row prerequisites is intended RED.
-		UAM_ASSERT_EQ(retry_error,std::string("Saved image Retry needs this chat's existing ready SSH session. Reopen it or attach the files again."));
+		UAM_ASSERT_EQ(retry_error,std::string("Reopen this chat's SSH session or reattach the files to retry saved images."));
 		UAM_ASSERT_EQ(live().messages[static_cast<std::size_t>(index)],authored); UAM_ASSERT_EQ(uam_test::ReadFile(AppPaths::UamChatFilePath(app.data_root,chat.id)),primary);
 		UAM_ASSERT_EQ(uam_test::ReadFile(temp.root / "stdin.jsonl"),stdin_before); UAM_ASSERT_EQ(sends().size(),std::size_t{1});
 		UAM_ASSERT_EQ(uam_test::ReadFile(temp.root / "stdin-raw.bin"),raw_before);

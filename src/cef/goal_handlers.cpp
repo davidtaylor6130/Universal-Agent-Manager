@@ -59,7 +59,7 @@ namespace
 			goals.push_back({goal.id, goal.objective, static_cast<int>(goal.status), goal.token_budget, goal.tokens_used,
 			    goal.blocked_turn_count, goal.last_blocker, goal.last_blocker_kind, goal.last_diagnostic, goal.last_decision_source,
 			    goal.completed_items, goal.remaining_items, goal.current_step, goal.last_verification, goal.last_next_prompt,
-			    goal.same_next_prompt_count, goal.last_assistant_text, goal.same_assistant_text_count, goal.loop_count, goal.max_iterations,
+			    goal.same_next_prompt_count, goal.last_assistant_text, goal.same_assistant_text_count, goal.loop_count, goal.unreviewed_resume_count, goal.max_iterations,
 			    goal.created_at, goal.updated_at, goal.execution_owner, goal.provider_command, binding,
 			    goal.worker_model_id, goal.reviewer_model_id, goal.creator, goal.creator_provider_id,
 			    goal.creator_agent_id, goal.creator_run_id, goal.creator_request_key_hash});
@@ -278,7 +278,7 @@ void UamQueryHandler::HandleUpdateGoalStatus(CefRefPtr<CefBrowser> browser, cons
 	}
 	else
 	{
-		cb->Failure(400, "Invalid goal status: " + status_str);
+		cb->Failure(400, "Invalid goal status.");
 		return;
 	}
 
@@ -362,7 +362,7 @@ void UamQueryHandler::HandleSetActiveGoal(CefRefPtr<CefBrowser> browser, const n
 	if (!updated)
 	{
 		previous.Restore(*chat);
-		cb->Failure(error.empty() ? 404 : 409, uam::strings::NonEmptyOrFallback(error, "Failed to set active goal. Goal may not exist or is not in this chat."));
+		cb->Failure(error.empty() ? 404 : 409, uam::strings::NonEmptyOrFallback(error, "Could not set the active goal because it is not in this chat."));
 		return;
 	}
 	// A queued continuation cannot outrun this control's owned FULL publication.

@@ -21,7 +21,6 @@ class ProviderResolutionService
 	std::string WorkerModelForChat(const uam::AppState& app, const ChatSession& chat) const;
 	bool ChatProviderIsAvailable(const uam::AppState& app, const ChatSession& chat) const;
 	std::string ChatProviderUnavailableReason(const uam::AppState& app, const ChatSession& chat) const;
-	bool ActiveProviderUsesNativeOverlayHistory(const uam::AppState& app) const;
 	bool ChatUsesNativeOverlayHistory(const uam::AppState& app, const ChatSession& chat) const;
 	bool ChatUsesCliOutput(const uam::AppState& app, const ChatSession& chat) const;
 };

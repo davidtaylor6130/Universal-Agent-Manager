@@ -85,6 +85,43 @@ namespace
 		return true;
 	}
 
+	fs::path WithoutTrailingSeparators(fs::path path)
+	{
+		while (path.has_relative_path() && path.filename().empty())
+		{
+			path = path.parent_path();
+		}
+		return path;
+	}
+
+	std::optional<fs::path> SubpathBelow(const fs::path& path, const fs::path& root)
+	{
+		if (path.empty() || root.empty() || path.has_root_path() != root.has_root_path() || !PathHasPrefix(path, root))
+		{
+			return std::nullopt;
+		}
+		auto path_it = path.begin();
+		for (auto root_it = root.begin(); root_it != root.end(); ++root_it)
+		{
+			++path_it;
+		}
+		fs::path relative;
+		for (; path_it != path.end(); ++path_it)
+		{
+			if (!path_it->empty())
+			{
+				relative /= *path_it;
+			}
+		}
+		return relative;
+	}
+
+	fs::path LexicalPathForCompare(const fs::path& path)
+	{
+		const fs::path expanded = PlatformServicesFactory::Instance().path_service.ExpandLeadingTildePath(uam::paths::PortablePathString(path));
+		return WithoutTrailingSeparators(uam::paths::AbsolutePathNoThrow(expanded).lexically_normal());
+	}
+
 	std::size_t SharedPathDepth(const fs::path& lhs, const fs::path& rhs)
 	{
 		auto lhs_it = lhs.begin();
@@ -220,16 +257,6 @@ std::filesystem::path AppPaths::DefaultDataRootPath()
 std::filesystem::path AppPaths::GeminiHomePath()
 {
 	return uam::gemini::HistoryHomePath();
-}
-
-std::filesystem::path AppPaths::DefaultGeminiUniversalRootPath()
-{
-	if (const std::optional<std::filesystem::path> home = uam::env::GetUserHomePath())
-	{
-		return *home / ".Gemini_universal_agent_manager";
-	}
-
-	return uam::paths::CurrentPathOrDot() / ".Gemini_universal_agent_manager";
 }
 
 std::optional<std::filesystem::path> AppPaths::ResolveGeminiProjectTmpDir(const std::filesystem::path& project_root)
@@ -368,4 +395,17 @@ std::filesystem::path FolderDirectoryCompareKey(const std::filesystem::path& dir
 bool FolderDirectoryKeysMatch(const std::filesystem::path& lhs_key, const std::filesystem::path& rhs_key)
 {
 	return PathsEquivalent(lhs_key, rhs_key);
+}
+
+std::optional<std::filesystem::path> FolderDirectoryRelativeSubpath(const std::filesystem::path& path, const std::filesystem::path& root)
+{
+	if (path.empty() || root.empty())
+	{
+		return std::nullopt;
+	}
+	if (std::optional<fs::path> relative = SubpathBelow(LexicalPathForCompare(path), LexicalPathForCompare(root)))
+	{
+		return relative;
+	}
+	return SubpathBelow(WithoutTrailingSeparators(NormalizePathForCompare(path)), WithoutTrailingSeparators(NormalizePathForCompare(root)));
 }

@@ -2,6 +2,7 @@
 #pragma once
 
 #include "app/execution_routing_integration.h"
+#include "app/host_admission_integration.h"
 #include "app/repository_route_match_service.h"
 
 #include <filesystem>
@@ -82,7 +83,7 @@ namespace uam
 			chat.native_session_id.clear();
 			chat.native_session_reset_pending = previous_reset_pending;
 			chat.remote_claude_session_unstarted = true;
-			error = "Could not save the Claude session ID. Retry when storage is available.";
+			error = "Could not save the Claude session ID; retry when storage is available.";
 			return false;
 		}
 		argv.push_back("--session-id");
@@ -119,7 +120,7 @@ namespace uam
 		if (chat.imported_read_only)
 		{
 			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Disabled,
-			                            "Imported transcripts are read-only. Create a new chat in a workspace to continue.");
+			                            "Imported transcripts are read-only; create a new chat in a workspace to continue.");
 		}
 		if (chat.routing_mode == "automatic")
 		{
@@ -134,6 +135,31 @@ namespace uam
 		else if (app.settings.execution_routing.enabled)
 		{
 			(void)AdmitExecutionRouting(app, chat, true);
+		}
+		// Host admission: a CLI View is a live provider process for as long as it is open, so it takes a slot on its
+		// computer like a running turn. At the limit it waits with one line and Run anyway.
+		if (app.host_admission)
+		{
+			const double now = GetAppTimeSeconds();
+			RefreshHostAdmission(app, now);
+			host_admission::Request request;
+			request.key = "cli:" + chat.id;
+			request.host_id = HostAdmissionHostId(chat.execution_host_id);
+			request.work_class = HostAdmissionClassForChat(nullptr, chat);
+			request.run_anyway = terminal.host_admission_run_anyway;
+			request.now_s = now;
+			const host_admission::Decision admission = app.host_admission->Admit(request);
+			if (!admission.admitted)
+			{
+				terminal.host_admission_wait = admission.message;
+				terminal.host_admission_run_anyway_offered = admission.run_anyway_offered;
+				terminal.last_error.clear();
+				terminal.should_launch = true;
+				return true;
+			}
+			terminal.host_admission_wait.clear();
+			terminal.host_admission_run_anyway_offered = false;
+			terminal.host_admission_run_anyway = false;
 		}
 		std::string repository_error;
 		const RepositoryRouteLaunchState repository = PrepareRepositoryRouteLaunch(app, chat, repository_error);
@@ -152,7 +178,7 @@ namespace uam
 		if (execution_host == nullptr || (remote && !uam::remote::CanAttemptRunnerConnection(*execution_host)))
 		{
 			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped,
-			                            remote ? "The selected remote runner is not ready. Recheck it in Settings."
+			                            remote ? "The selected remote runner is not ready; recheck it in Settings."
 			                                   : "The selected execution host no longer exists.");
 		}
 		const ProviderProfile& provider = ProviderResolutionService().ProviderForChatOrDefault(app, chat);
@@ -180,6 +206,13 @@ namespace uam
 		if (const std::string ceiling_error = ProviderInteractiveCeilingError(app, chat); !ceiling_error.empty())
 		{
 			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, ceiling_error);
+		}
+		// A custom agent's instructions must reach the provider; refuse before worktree, baseline or SSH work when they cannot.
+		// A re-entry while that work is pending already passed this check, so the agent sources are not rescanned each poll.
+		const bool agent_checked = terminal.worktree_launch_pending || terminal.repository_baseline_pending || terminal.context_preparation != nullptr;
+		if (const std::string agent_error = agent_checked ? std::string{} : ProviderInteractiveAgentError(app, chat, *execution_host); !agent_error.empty())
+		{
+			return FailCliTerminalStart(terminal, CliTerminalLifecycleState::Stopped, agent_error);
 		}
 		// Without its created native session this launch is refused anyway; refuse before worktree,
 		// baseline or SSH work. HandleStartCli creates the session (after the baseline) before calling here.
@@ -338,6 +371,8 @@ namespace uam
 		terminal.native_identity_deferred_input.clear();
 		terminal.native_identity_query_phase = 0;
 		terminal.native_identity_query_time_s = launch_time_s;
+		terminal.composer_may_hold_draft = false;
+		terminal.composer_last_input_byte = 0;
 		const std::string version_key = CliProviderVersionStateKey(provider.id, execution_host->id);
 		if (terminal.attached_session_id.empty())
 		{

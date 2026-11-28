@@ -442,7 +442,7 @@ UAM_TEST(SshPermissionReanswerAfterFailedSendExplainsTheSavedAnswer)
 	UAM_ASSERT_EQ(fixture.app.chats.front().remote_interaction_responses.size(), std::size_t(1));
 	error.clear();
 	UAM_ASSERT(!fixture.Resolve(7, "reject_once", false, error));
-	UAM_ASSERT(error.starts_with("An earlier answer to this permission request is saved for delivery to the remote computer"));
+	UAM_ASSERT(error.starts_with("An earlier answer to this permission request is still being delivered"));
 	UAM_ASSERT(error.find("reused") == std::string::npos);
 	UAM_ASSERT_EQ(fixture.session->pending_permission.request_id_json, std::string("7"));
 }
@@ -465,7 +465,7 @@ UAM_TEST(LateUserDecisionAfterGoalReviewKeepsTheReadOnlyLimitUntilTheNextTurn)
 	UAM_ASSERT_EQ(fixture.session->pending_permission.request_id_json, std::string("7"));
 	std::string error;
 	UAM_ASSERT(!fixture.Resolve(7, "allow_once", false, error));
-	UAM_ASSERT(error.find("captured read-only access ceiling") != std::string::npos);
+	UAM_ASSERT(error.find("only one-time read approvals are allowed") != std::string::npos);
 	UAM_ASSERT_EQ(fixture.session->pending_permission.request_id_json, std::string("7"));
 	UAM_ASSERT(fixture.Resolve(7, "reject_once", false, error));
 	AssertDecision(fixture.sink->ReadThroughResponse(7, "reject").back(), 7, "reject");

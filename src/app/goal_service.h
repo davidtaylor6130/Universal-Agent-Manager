@@ -1,11 +1,14 @@
 #pragma once
 
+#include "app/decision_service.h"
 #include "common/models/app_models.h"
 #include "common/state/app_state.h"
+#include "app/vcs_commit_service.h"
 
 #include <optional>
 #include <tuple>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace uam
@@ -21,8 +24,8 @@ class GoalService
 	struct ReviewDecision
 	{
 		std::string decision;
-		/// Stamped by the caller from the turn that produced the text; parsing alone proves nothing.
-		std::string source;
+		/// Set by the caller from DecisionService once the reply is validated; parsing alone proves nothing.
+		DecisionAttribution attribution = DecisionAttribution::Fallback();
 		std::string reason;
 		std::string next_prompt;
 		std::string blocker_kind;
@@ -47,6 +50,10 @@ class GoalService
 	static bool IsProviderManaged(const Goal& goal);
 	/// <summary>The stricter of the goal's own ceiling and the Settings cap.</summary>
 	static int IterationLimit(const Goal& goal, AppSettings settings);
+	/// <summary>IterationLimit, also bounded by the automation cap of the chat that owns the goal, so a goal saved without its own ceiling still stops there.</summary>
+	static int IterationLimit(const ChatSession* owner, const Goal& goal, AppSettings settings);
+	/// <summary>The Git policy stated to the agent in every goal of an automation chat; anything but "pr" gets the stricter commit-only text.</summary>
+	static std::string AutomationGitPolicy(std::string_view git_permission);
 	static std::string WorkerModelId(const ChatSession& chat, const Goal& goal);
 	/// <summary>The goal's reviewer model (provider "Goal reviewer model"), else the chat model; a model the session
 	/// does not offer falls back to the chat model rather than failing the review.</summary>
@@ -90,11 +97,6 @@ class GoalService
 	/// </summary>
 	static Goal* FindGoalById(AppState& app, const std::string& chat_id, const std::string& goal_id);
 	static const Goal* FindGoalById(const AppState& app, const std::string& chat_id, const std::string& goal_id);
-	/// <summary>
-	/// Get all goals for a chat session.
-	/// </summary>
-	static std::vector<Goal> GetGoalsForChat(const AppState& app, const std::string& chat_id);
-
 	enum class GoalRemovalStage { Normal, PrepareOnly, AfterReceipt };
 	/// Metadata captured before removal; an absent goal alone never authorizes cancellation.
 	struct GoalRemovalPreparation
@@ -127,10 +129,21 @@ class GoalService
 	/// Record a blocker for the goal. After >= 3 consecutive turns at the same
 	/// blocker, the goal is auto-marked as blocked (per Codex behavior).
 	/// Every caller states who decided: see kDecisionSource* in app_models.h.
+	/// A source naming a model is recorded as fallback: only a DecisionAttribution from DecisionService can name one.
 	/// </summary>
 	static void RecordBlocker(AppState& app, const std::string& chat_id,
 	                          const std::string& goal_id, const std::string& blocker,
 	                          const std::string& decision_source, const std::string& blocker_kind = {});
+	/// <summary>Record a blocker decided through the decision interface, with its backend.</summary>
+	static void RecordBlocker(AppState& app, const std::string& chat_id,
+	                          const std::string& goal_id, const std::string& blocker,
+	                          const DecisionAttribution& attribution, const std::string& blocker_kind = {});
+	/// <summary>Save who made the goal's latest automatic decision: its source string and, for a model, the backend.</summary>
+	static void RecordDecision(Goal& goal, const DecisionAttribution& attribution);
+	/// <summary>The user replaced the automatic verdict (Mark complete, marking blocked, Restart): no source, no backend.</summary>
+	static void ClearDecision(Goal& goal);
+	/// <summary>The goal review as a Choice: continue, blocked or complete.</summary>
+	static DecisionRequest ReviewDecisionRequest();
 
 	/// <summary>
 	/// Build the continuation prompt text to inject before the next provider turn.
@@ -139,9 +152,12 @@ class GoalService
 	static std::string BuildContinuationPrompt(const Goal& goal, int64_t tokens_used, int64_t token_budget,
 	                                           bool small_model_mode = false, const std::string& next_step = "", bool include_objective = true);
 	static std::string BuildReadOnlyTerminalPrompt(const Goal& goal);
+	/// <summary>`workspace_vcs` is the system the reviewer's workspace uses and selects the read commands it is given;
+	/// empty (an SSH workspace, or none detected) lists the Git and SVN reads both.</summary>
 	static std::string BuildReviewPrompt(const Goal& goal, const std::string& recent_user_prompt,
 	                                     const std::string& recent_assistant_text, int repeated_output_count = 0,
-	                                     bool small_model_mode = false, const std::string& workspace_changes = {});
+	                                     bool small_model_mode = false, const std::string& workspace_changes = {},
+	                                     std::optional<VcsType> workspace_vcs = VcsType::Git);
 	/// <summary>A capped `status path +added -deleted` list of changed files for the reviewer; empty when there are none.</summary>
 	static std::string SummarizeWorkspaceChanges(const std::vector<std::tuple<std::string, std::string, int, int>>& files);
 	static std::optional<ReviewDecision> ParseReviewDecision(const std::string& text);

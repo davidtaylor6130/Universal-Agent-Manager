@@ -234,7 +234,7 @@ UAM_TEST(UsageGeminiSnapshotResumesBoundedReadsAndReportsMalformedRewrites)
 		}
 		return false;
 	});
-	UAM_ASSERT(result.error.find("changed during scanning") != std::string::npos);
+	UAM_ASSERT(result.error.find("changed while it was read") != std::string::npos);
 	UAM_ASSERT(scan.Records().empty());
 }
 

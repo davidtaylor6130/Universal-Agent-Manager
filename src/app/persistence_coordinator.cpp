@@ -5,11 +5,11 @@
 
 #include "common/paths/app_paths.h"
 #include "common/paths/path_utils.h"
-#include "common/config/frontend_actions.h"
 #include "common/config/settings_normalization.h"
 #include "common/config/settings_store.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/runtime/provider_build_config.h"
+#include "common/utils/diagnostic_log.h"
 #include "common/utils/string_utils.h"
 #include "common/platform/platform_services.h"
 
@@ -92,7 +92,7 @@ bool PersistenceCoordinator::AdvanceSettingsPublication(uam::AppState& app) cons
 {
 	if (app.settings_publication_revision >= kMaxSettingsPublicationRevision)
 	{
-		app.status_line = "Settings publication revision is exhausted. Restart the app before changing settings.";
+		app.status_line = "Restart UAM before changing settings again.";
 		return false;
 	}
 	if (!EnsureSettingsPublicationScope(app)) return false;
@@ -218,33 +218,19 @@ bool PersistenceCoordinator::LoadSettings(uam::AppState& app) const
 	{
 		app.status_line = result.warning;
 	}
+	if (!result.removed_mcp_servers.empty())
+	{
+		// The notice gives the count; the log keeps up to five reasons, which name servers but no paths or values.
+		const std::size_t count = result.removed_mcp_servers.size();
+		std::string reasons;
+		for (std::size_t index = 0; index < count && index < 5; ++index) reasons += (index == 0 ? "" : " | ") + result.removed_mcp_servers[index];
+		uam::diagnostics::Write("[Settings] Dropped " + std::to_string(count) + " invalid saved MCP server entr" + (count == 1 ? "y" : "ies") + " at load; the rest loaded. " + reasons);
+		const std::string notice = "Could not load " + std::to_string(count) + " saved MCP server entr" + (count == 1 ? "y" : "ies") + " because " + (count == 1 ? "it is" : "they are") + " invalid; other servers are unaffected.";
+		app.status_line = app.status_line.empty() ? notice : app.status_line + " " + notice;
+	}
 	// Preserve legacy backup-loading semantics, but backup/defaults cannot retire an Unknown primary.
 	if (result.loaded && !result.recovered_from_backup) app.memory_settings_uncertain = false;
 	NormalizeProviderCliSettings(app.settings);
 	if (app.provider_model_catalog != nullptr) app.provider_model_catalog->SetExecutionHostContext(app.settings.execution_hosts);
 	return true;
-}
-
-void PersistenceCoordinator::LoadFrontendActions(uam::AppState& app) const
-{
-	std::string error;
-	const fs::path action_map_path = app.data_root / "frontend_actions.txt";
-
-	if (!uam::LoadFrontendActionMap(action_map_path, app.frontend_actions, &error))
-	{
-		app.frontend_actions = uam::DefaultFrontendActionMap();
-
-		if (!uam::SaveFrontendActionMap(action_map_path, app.frontend_actions, &error) && !error.empty())
-		{
-			app.status_line = "Frontend action map reset, but saving failed: " + error;
-		}
-		else if (!error.empty())
-		{
-			app.status_line = "Frontend action map was invalid and has been reset.";
-		}
-
-		return;
-	}
-
-	uam::NormalizeFrontendActionMap(app.frontend_actions);
 }

@@ -14,7 +14,7 @@ void UamQueryHandler::HandleRegenerateChatTitle(CefRefPtr<CefBrowser> browser, c
 	if (m_titleRequests.contains(chat_id)) { cb->Failure(409, "A title is already being generated for this chat."); return; }
 	if (m_titleRequests.size() >= 8) { cb->Failure(429, "Wait for another title request to finish."); return; }
 	if (m_app.pending_chat_save_at_by_chat_id.contains(chat_id) || m_app.pending_chat_save_tasks.contains(chat_id))
-	{ cb->Failure(409, "The chat is still being saved. Try again shortly."); return; }
+	{ cb->Failure(409, "The chat is still being saved; try again shortly."); return; }
 	if (!m_titleQueries) m_titleQueries = CefThread::CreateThread("uam-chat-titles");
 	if (!m_titleQueries) { cb->Failure(503, "The title worker is unavailable."); return; }
 	const uam::ChatTitleIdentity identity = uam::ChatTitleIdentity::Capture(*chat);
@@ -33,7 +33,7 @@ void UamQueryHandler::HandleRegenerateChatTitle(CefRefPtr<CefBrowser> browser, c
 	    {
 		    if (cancellation->stop_requested()) return AsyncFailure(409, "Title generation was cancelled.");
 		    const std::optional<ChatSession> persisted = ChatRepository::LoadLocalChat(snapshot->data_root, identity.id, true, nullptr, false);
-		    if (!persisted || !identity.Matches(*persisted)) return AsyncFailure(409, "The chat changed. Try regenerating its title again.");
+		    if (!persisted || !identity.Matches(*persisted)) return AsyncFailure(409, "The chat changed; regenerate its title again.");
 		    const uam::ChatTitleResult generated = uam::ChatTitleService::Generate(*snapshot, *persisted, cancellation->get_token());
 		    if (!generated.ok) return AsyncFailure(502, generated.error);
 		    *update = uam::ChatTitleService::PrepareUpdate(snapshot->data_root, identity, generated.title, cancellation->get_token());
@@ -52,9 +52,9 @@ void UamQueryHandler::HandleRegenerateChatTitle(CefRefPtr<CefBrowser> browser, c
 		    if (m_app.data_root != snapshot->data_root || current == nullptr || !update->identity.Matches(*current) ||
 		        m_workspaceDeletionPending || m_app.worktree_operation_chat_ids.contains(identity.id) ||
 		        m_app.pending_chat_save_at_by_chat_id.contains(identity.id) || m_app.pending_chat_save_tasks.contains(identity.id))
-		    { result = AsyncFailure(409, "The chat changed. Its current name was kept. Try again."); return; }
+		    { result = AsyncFailure(409, "The chat changed, so its current name was kept."); return; }
 		    if (!ChatRepository::PublishPreparedChatSave(update->save, true, current))
-		    { result = AsyncFailure(409, "The chat changed or could not be saved. Its current name was kept."); return; }
+		    { result = AsyncFailure(409, "The chat changed or could not be saved, so its current name was kept."); return; }
 		    current->title = update->title;
 		    current->updated_at = update->updated_at;
 		    uam::PushStateUpdateIfChanged(browser, m_app);

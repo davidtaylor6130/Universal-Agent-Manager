@@ -40,5 +40,14 @@ try {
   policy({ nonce: 'foreign' }); assert.equal((await evaluate()).effect, 'deny');
   policy({ active: false }); assert.equal((await evaluate()).effect, 'deny');
   writeFileSync(policyPath, '{malformed'); assert.equal((await evaluate()).effect, 'deny');
-  console.log('PASS 15 process-local permission boundaries and load proof');
+  // Imported agent denies: exact action, trailing-* prefix and *; malformed lists deny.
+  policy({ deny: ['shell', 'mcp_*'] });
+  assert.equal((await evaluate({ action: 'shell' })).effect, 'deny');
+  assert.equal((await evaluate({ action: 'mcp_github' })).effect, 'deny');
+  assert.equal((await evaluate({ action: 'read' }, 'allow')).effect, 'ask');
+  policy({ deny: ['*'] }); assert.equal((await evaluate({ action: 'read' })).effect, 'deny');
+  policy({ deny: 'shell' }); assert.equal((await evaluate({ action: 'read' })).effect, 'deny');
+  policy({ deny: [7] }); assert.equal((await evaluate({ action: 'read' })).effect, 'deny');
+  policy({ deny: [] }); assert.equal((await evaluate({ action: 'read' }, 'allow')).effect, 'ask');
+  console.log('PASS 22 process-local permission boundaries and load proof');
 } finally { rmSync(directory, { recursive: true, force: true }); }

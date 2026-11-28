@@ -13,15 +13,19 @@
 #include <future>
 #include "common/chat/chat_repository.h"
 #include "common/chat/chat_folder_store.h"
+#include "common/provider/antigravity_native_history.h"
 #include <stop_token>
 #include <string>
 #include <string_view>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
 namespace uam
 {
 	class PreparedNativeMediaChatSave;
+	class ImportedWorkspaceFolderIndex;
 }
 
 namespace uam::remote { class RunnerClient; }
@@ -102,6 +106,19 @@ class ChatHistorySyncService
 		// Exact rows saved by the partial local importer, eligible for sidebar adoption.
 		std::vector<std::string> published_chat_ids;
 		std::size_t omitted_error_count = 0;
+		/// A history refused because the reader does not know one of its fields yet.
+		/// Its message is also in errors; callers may report each one once.
+		struct FormatRefusal
+		{
+			/// Provider and native session, stable across reader versions and file changes.
+			std::string identity;
+			/// Changes when the reader version or the native file changes.
+			std::string report_key;
+			std::string message;
+			/// Detailed log line naming the message kind, field number and wire type.
+			std::string diagnostic;
+		};
+		std::vector<FormatRefusal> format_refusals;
 
 		bool partial() const { return imported_count > 0 && !success; }
 		void Fail(std::string error)
@@ -119,6 +136,7 @@ class ChatHistorySyncService
 			errors.insert(errors.end(), other.errors.begin(), other.errors.end());
 			confirmed_empty_native_keys.insert(confirmed_empty_native_keys.end(), other.confirmed_empty_native_keys.begin(), other.confirmed_empty_native_keys.end());
 			published_chat_ids.insert(published_chat_ids.end(), other.published_chat_ids.begin(), other.published_chat_ids.end());
+			format_refusals.insert(format_refusals.end(), other.format_refusals.begin(), other.format_refusals.end());
 		}
 	};
 	/// Final reconciliation may supply its still-attached terminal; ownership is revalidated before publication.
@@ -178,6 +196,8 @@ class ChatHistorySyncService
 		std::map<std::string, uam::opencode_import::Spool> open_code_exports;
 		std::vector<std::pair<ChatSession, std::filesystem::path>> codex_rollouts;
 		ImportResult result;
+		/// Antigravity's per-conversation refusals, so an exact read can report its plain reason.
+		std::vector<uam::antigravity::history::Refusal> antigravity_refusals;
 		std::shared_future<std::shared_ptr<PreparedHistoryBatch>> preparation;
 		std::shared_future<bool> publication_sync;
 		std::optional<std::size_t> open_code_next_offset;
@@ -195,12 +215,31 @@ class ChatHistorySyncService
 	LocalHistoryDiscovery DiscoverRemoteProviderChatsForFolder(const ChatFolder& folder, const ExecutionHost& host, const ProviderProfile* open_code_profile, std::stop_token stop_token = {}, RemoteHistoryScanContext* scan = nullptr) const;
 	/// Read provider transcripts without accessing live app state or writing local history.
 	LocalHistoryDiscovery DiscoverProviderChatsForFolder(const ChatFolder& folder, const ProviderProfile* open_code_profile = nullptr, std::stop_token stop_token = {}, std::size_t open_code_scan_offset = 0, bool open_code_only = false, std::optional<std::size_t> open_code_remaining = {}, const std::string& open_code_list_fingerprint = {}, const std::string& provider_filter = {}, const std::string& native_session_filter = {}, const std::filesystem::path& native_history_root = {}) const;
-	/// <summary>Resolves existing workspace ownership without creating folders.</summary>
-	const ChatFolder* StartupImportWorkspaceOwner(const uam::AppState& app, const ChatSession& chat) const;
-	/// <summary>Finds or plans (unsaved, in plan.folders) a workspace for an unmatched local history whose absolute directory exists; remote and other paths return null.</summary>
-	const ChatFolder* PlanImportWorkspace(uam::AppState& plan, const ChatSession& chat) const;
-	/// <summary>Removes owned, declined and duplicate candidates; explicit local review may retain unmatched absolute workspaces.</summary>
-	bool FilterStartupImportCandidates(const uam::AppState& app, LocalHistoryDiscovery& discovery, std::string* error_out = nullptr, bool include_unregistered_local = false) const;
+	/// <summary>Resolves existing workspace ownership without creating folders. A local_folders index of app.folders resolves
+	/// each registered folder once for a whole pass; an index of another folder list is ignored.</summary>
+	const ChatFolder* StartupImportWorkspaceOwner(const uam::AppState& app, const ChatSession& chat, const uam::ImportedWorkspaceFolderIndex* local_folders = nullptr) const;
+	/// <summary>Finds or plans (unsaved, in plan.folders) a workspace for an unmatched local history whose absolute directory exists; remote and other paths return null.
+	/// An index of plan.folders is kept current as planned folders are appended.</summary>
+	const ChatFolder* PlanImportWorkspace(uam::AppState& plan, const ChatSession& chat, uam::ImportedWorkspaceFolderIndex* local_folders = nullptr) const;
+	/// <summary>What a startup filter pass may share or take from a snapshot instead of the live app.</summary>
+	struct StartupImportFilterContext
+	{
+		/// <summary>Chats with a live terminal or running ACP session when the snapshot was taken; null reads the live app.</summary>
+		const std::unordered_set<std::string>* live_chat_ids = nullptr;
+		/// <summary>Resolved local workspaces shared across the pass (chat_identity::NativeWorkspaceCache).</summary>
+		std::unordered_map<std::string, std::string>* workspaces = nullptr;
+		/// <summary>An index of the filtered app's folders, shared across the pass.</summary>
+		const uam::ImportedWorkspaceFolderIndex* local_folders = nullptr;
+	};
+	/// <summary>Chat IDs with a live terminal or running ACP session, for a StartupImportFilterContext snapshot. Reads memory only.</summary>
+	std::unordered_set<std::string> StartupImportLiveChatIds(const uam::AppState& app) const;
+	/// <summary>FilterStartupImportCandidates without changing anything: for each chat, in order, the owner folder ID it would
+	/// keep ("" for a retained unregistered local workspace), or nullopt when the filter would remove it.</summary>
+	bool ClassifyStartupImportCandidates(const uam::AppState& app, const std::vector<const ChatSession*>& chats, std::vector<std::optional<std::string>>& owners,
+	    std::string* error_out = nullptr, bool include_unregistered_local = false, const StartupImportFilterContext* context = nullptr) const;
+	/// <summary>Removes owned, declined and duplicate candidates; explicit local review may retain unmatched absolute workspaces.
+	/// Each registered folder and distinct workspace is resolved once per call (or once per shared context).</summary>
+	bool FilterStartupImportCandidates(const uam::AppState& app, LocalHistoryDiscovery& discovery, std::string* error_out = nullptr, bool include_unregistered_local = false, const StartupImportFilterContext* context = nullptr) const;
 	/// Revalidate and merge a completed scan on the app thread.
 	ImportResult ImportDiscoveredProviderChatsForFolder(uam::AppState& app, const ChatFolder& folder, LocalHistoryDiscovery discovery, bool sidebar_is_complete = false) const;
 	ImportResult ImportDiscoveredProviderChatsBatch(uam::AppState& app, const ChatFolder& folder, LocalHistoryDiscovery& discovery, std::size_t max_chats = 8, ImportPolicy policy = ImportPolicy::ExplicitImport) const;
@@ -219,7 +258,9 @@ class ChatHistorySyncService
 	    uam::AppState& app, const std::string& folder_id,
 	    const std::vector<RemoteCodexSession>& sessions) const;
 	/// Reads a local rollout without touching application state; run off the GUI thread.
-	std::optional<ChatSession> LoadLocalNativeTranscript(const ChatSession& chat, std::string* error = nullptr, std::stop_token stop_token = {}) const;
+	/// unsettled_out is set when the provider is still writing the exact conversation, so a
+	/// passive refresh can keep saved history instead of reporting a failure.
+	std::optional<ChatSession> LoadLocalNativeTranscript(const ChatSession& chat, std::string* error = nullptr, std::stop_token stop_token = {}, bool* unsettled_out = nullptr) const;
 	/// <summary>Reads exact Gemini, Claude or Copilot native history through an authenticated immutable runner snapshot.</summary>
 	std::optional<ChatSession> LoadRemoteNativeTranscript(const ExecutionHost& host, const ChatSession& chat, std::string* error = nullptr, std::stop_token stop_token = {}) const;
 	/// <summary>Validates snapshot ownership and reuses provider-native parsers without changing environment variables.</summary>
@@ -237,6 +278,9 @@ class ChatHistorySyncService
 	// Exact deletion keys (NativeIdentityKeyForHistoryImport); nullopt when the records cannot be read.
 	std::optional<std::unordered_set<std::string>> NativeImportTombstoneKeys(const std::filesystem::path& data_root) const;
 	bool RemoveNativeImportTombstones(const std::filesystem::path& data_root, const std::vector<std::string>& keys) const;
+	/// Notes unknown-format refusals in the import tombstone record, apart from deletion keys.
+	/// Returns the messages of refusals already reported for the same reader version and file revision.
+	std::unordered_set<std::string> RecordNativeFormatRefusals(const std::filesystem::path& data_root, const std::vector<ImportResult::FormatRefusal>& refusals) const;
 	/// <summary>Save a validated native transcript before replacing the live chat; keep active or unsaved work.</summary>
 	/// Build a loaded detached candidate without storage or live-runtime access; false preserves a longer baseline.
 	bool BuildNativeTranscriptCandidate(ChatSession& detached, std::vector<Message> messages) const;

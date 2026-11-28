@@ -157,7 +157,7 @@ namespace
 	    const std::string& version, const OpenCodeNativeActivityService::ExecuteQuery& execute, std::stop_token cancel)
 	{
 		ImageResult result;
-		result.error = "OpenCode could not confirm the selected model's image support. The prompt was not sent.";
+		result.error = "OpenCode could not confirm the model supports images, so the prompt was not sent.";
 		const auto started = Clock::now();
 		const auto query = [&](const char* operation, Json& value)
 		{
@@ -369,9 +369,9 @@ OpenCodeNativeGateState OpenCodeNativeActivityService::PrepareSavedImageRetry(Ac
 	const auto captured = CaptureImageOwner(session, settings, images);
 	if (!captured)
 	{
-		error = "OpenCode saved-image Retry requires the owned local session, acknowledged model settings and a supported ordinary prompt. The prompt was not sent.";
+		error = "This OpenCode image message cannot be retried in its current session, so it was not sent.";
 		if (session.opencode_native_companion && session.opencode_native_companion->state && session.opencode_native_companion->state->image)
-			RejectImage(*session.opencode_native_companion->state->image, "OpenCode image ownership changed. Retry the saved message again.");
+			RejectImage(*session.opencode_native_companion->state->image, "The OpenCode image session changed; retry the saved message.");
 		return OpenCodeNativeGateState::Failed;
 	}
 	auto& state = *session.opencode_native_companion->state;
@@ -384,10 +384,10 @@ OpenCodeNativeGateState OpenCodeNativeActivityService::PrepareSavedImageRetry(Ac
 		image.deadline = Clock::now() + std::chrono::seconds(10);
 		state.image = std::move(image);
 	}
-	if (!(state.image->owner == *captured)) RejectImage(*state.image, "OpenCode image ownership or model settings changed. Retry the saved message again.");
-	if (state.image->service_cancel.stop_requested()) RejectImage(*state.image, "OpenCode image verification was stopped. Retry the saved message again.");
+	if (!(state.image->owner == *captured)) RejectImage(*state.image, "The OpenCode image session or model settings changed; retry the saved message.");
+	if (state.image->service_cancel.stop_requested()) RejectImage(*state.image, "OpenCode image check was stopped; retry the saved message.");
 	if (state.image->phase == ImageEvidence::Phase::Pending && Clock::now() >= state.image->deadline)
-		RejectImage(*state.image, "OpenCode image verification timed out. Retry the saved message again.");
+		RejectImage(*state.image, "OpenCode image check timed out; retry the saved message.");
 	if (state.image->phase == ImageEvidence::Phase::Rejected)
 	{ error = state.image->result.error; return OpenCodeNativeGateState::Failed; }
 	return state.image->phase == ImageEvidence::Phase::Ready ? OpenCodeNativeGateState::Ready : OpenCodeNativeGateState::Pending;
@@ -565,11 +565,11 @@ bool OpenCodeNativeActivityService::Poll(AppState& app)
 		{
 			iterator->stop.request_stop();
 			if (owner->image && owner->image->generation == iterator->generation && owner->image->phase != ImageEvidence::Phase::Rejected)
-			{ RejectImage(*owner->image, "OpenCode image verification expired or lost its saved message. Retry the saved message again."); changed = true; }
+			{ RejectImage(*owner->image, "OpenCode image check expired or lost its message; retry the saved message."); changed = true; }
 		}
 		if (iterator->future.wait_for(std::chrono::seconds(0)) != std::future_status::ready) { ++iterator; continue; }
 		ImageResult result;
-		try { result = iterator->future.get(); } catch (...) { result.error = "OpenCode image verification failed. The prompt was not sent."; }
+		try { result = iterator->future.get(); } catch (...) { result.error = "OpenCode image check failed, so the prompt was not sent."; }
 		if (owner->image && owner->image->generation == iterator->generation)
 		{
 			owner->image->in_flight = false;
@@ -677,7 +677,7 @@ bool OpenCodeNativeActivityService::Poll(AppState& app)
 		if (!chat || !ImageSourceMatches(app, *session_pointer, *chat, image.owner) ||
 		    (image.phase == ImageEvidence::Phase::Pending && Clock::now() >= image.deadline))
 		{
-			RejectImage(image, "OpenCode image ownership changed or verification expired. Retry the saved message again.");
+			RejectImage(image, "The OpenCode image session changed or the check expired; retry the saved message.");
 			for (auto& job : m_state->image_jobs) if (job.owner == owner && job.generation == image.generation) job.stop.request_stop();
 			changed = true; continue;
 		}
@@ -699,7 +699,7 @@ bool OpenCodeNativeActivityService::Poll(AppState& app)
 		{
 			m_state->image_jobs.back().stop.request_stop(); m_state->image_jobs.pop_back();
 			image.in_flight = false;
-			RejectImage(image, "OpenCode image verification could not start. The prompt was not sent."); changed = true;
+			RejectImage(image, "OpenCode image check could not start, so the prompt was not sent."); changed = true;
 		}
 	}
 	for (const auto& session_pointer : app.acp_sessions)
@@ -721,9 +721,11 @@ bool OpenCodeNativeActivityService::Poll(AppState& app)
 				    "", "", false, 0, gate_error, "failures=" + std::to_string(owner->failures));
 				(void)StopAcpSession(app, session.chat_id, AcpStopPurpose::Interrupt, true);
 				const bool timed_out = owner->failure_reason == "turn_timeout";
+				std::string gate_reason = gate_error.empty() ? std::string("OpenCode activity could not be verified") : gate_error;
+				if (gate_reason.ends_with('.')) gate_reason.pop_back();
 				acp_detail::FailAcpTurnOrSession(session, chat, timed_out
-				    ? "OpenCode stayed busy past the provider turn timeout, so UAM stopped the turn. Saved messages were kept."
-				    : gate_error + " UAM stopped sending approvals and requested the provider stop.");
+				    ? "OpenCode stayed busy past the turn timeout, so UAM stopped the turn and kept saved messages."
+				    : gate_reason + ", so UAM stopped approvals and asked the provider to stop.");
 				if (timed_out) acp_detail::MarkAcpTimeoutStop(session, "Provider turn timeout", app.settings.active_turn_inactivity_timeout_seconds);
 				acp_detail::SaveChatQuietly(app, *chat);
 				changed = true;
@@ -953,7 +955,7 @@ void OpenCodeNativeActivityService::Stop()
 	for (auto& job : m_state->image_jobs)
 	{
 		job.stop.request_stop();
-		if (job.owner->image && job.owner->image->generation == job.generation) RejectImage(*job.owner->image, "OpenCode image verification was stopped. Retry the saved message again.");
+		if (job.owner->image && job.owner->image->generation == job.generation) RejectImage(*job.owner->image, "OpenCode image check was stopped; retry the saved message.");
 	}
 	m_state->image_jobs.clear();
 }

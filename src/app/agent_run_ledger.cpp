@@ -1258,7 +1258,7 @@ namespace uam
 				interrupted.finished_at = interrupted.updated_at = now;
 				interrupted.finished_at_epoch_ms = now_epoch_ms;
 				interrupted.diagnostic_code = std::string(diagnostic_code);
-				interrupted.diagnostic = "UAM restarted while this run was unfinished. It was not relaunched, and its provider process was not observed.";
+				interrupted.diagnostic = "UAM restarted before this run finished, so it was not relaunched and its provider process was not checked.";
 				ManagedRunTurnReceipt& turn = interrupted.managed_continuation->turns.back();
 				turn.status = ManagedRunTurnStatus::Interrupted;
 				turn.finished_at_epoch_ms = now_epoch_ms;

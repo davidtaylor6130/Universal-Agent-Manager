@@ -4,6 +4,7 @@
 #include "app/runtime_orchestration_services.h"
 #include "common/provider/copilot_native_history.h"
 #include "common/provider/copilot_protocol.h"
+#include "common/provider/copilot_sdk_protocol.h"
 #include "common/runtime/acp/acp_goal_loop.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_session_runtime.h"
@@ -191,7 +192,7 @@ UAM_TEST(CopilotNativeUnsupportedProtocolAndFailedCompactionRemainExplicit)
 	ChatSession chat;
 	runtime.OnAcpInitializeResult(session, {{"protocolVersion", 99}});
 	UAM_ASSERT_EQ(session.lifecycle_state, std::string("error"));
-	UAM_ASSERT(!session.last_error.empty());
+	UAM_ASSERT_EQ(session.last_error, std::string("This Copilot CLI uses protocol 99; UAM supports 3."));
 	session.manual_compaction_pending = true;
 	session.processing = true;
 	UAM_ASSERT(runtime.OnAcpHandleResult(app, session, chat, "session.history.compact", "5", {{"success", false}}));
@@ -199,6 +200,81 @@ UAM_TEST(CopilotNativeUnsupportedProtocolAndFailedCompactionRemainExplicit)
 	UAM_ASSERT(!session.processing);
 	UAM_ASSERT(!session.last_error.empty());
 	UAM_ASSERT(chat.messages.empty());
+}
+
+UAM_TEST(CopilotSdkProtocolGateAdmitsOnlyVerifiedProtocolsWithOnePlainLine)
+{
+	using namespace uam::copilot;
+	UAM_ASSERT_EQ(VerifiedSdkProtocolsText(), std::string("3"));
+	UAM_ASSERT(IsVerifiedSdkProtocolResult({{"message", "pong"}, {"protocolVersion", 3}}));
+	// Copilot CLI 1.0.113 and 1.0.114 answer ping, connect and status.get with protocol 4.
+	for (const nlohmann::json& result : {
+	         nlohmann::json{{"message", "pong"}, {"timestamp", "2026-11-23T13:52:29.000Z"}, {"protocolVersion", 4}},
+	         nlohmann::json{{"ok", true}, {"protocolVersion", 4}, {"version", "1.0.114"}},
+	         nlohmann::json{{"version", "1.0.114"}, {"protocolVersion", 4}}})
+	{
+		UAM_ASSERT(!IsVerifiedSdkProtocolResult(result));
+		UAM_ASSERT_EQ(SdkProtocolRefusalForResult(result), std::string("This Copilot CLI uses protocol 4; UAM supports 3."));
+	}
+	for (const nlohmann::json& result : {nlohmann::json::object(), nlohmann::json{{"protocolVersion", "3"}}, nlohmann::json{{"protocolVersion", 3.0}},
+	         nlohmann::json{{"protocolVersion", -3}}, nlohmann::json{{"protocolVersion", nullptr}}, nlohmann::json{{"protocolVersion", true}},
+	         nlohmann::json{{"protocolVersion", std::numeric_limits<std::uint64_t>::max()}}, nlohmann::json::array({3}), nlohmann::json(3)})
+	{
+		UAM_ASSERT(!IsVerifiedSdkProtocolResult(result));
+		UAM_ASSERT_EQ(SdkProtocolRefusalForResult(result), std::string("This Copilot CLI did not report a protocol; UAM supports 3."));
+	}
+	for (const std::int64_t protocol : {0, 2, 4, 5})
+		UAM_ASSERT(!IsVerifiedSdkProtocol(protocol));
+	const std::string refusal = SdkProtocolRefusal(std::optional<std::int64_t>(4));
+	UAM_ASSERT(refusal.find('\n') == std::string::npos);
+	UAM_ASSERT(refusal.find("update") == std::string::npos);
+}
+
+UAM_TEST(CopilotNativeProtocolFourPingIsRefusedBeforeAnyFurtherWireMessage)
+{
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById(uam::provider_ids::kCopilotCli);
+	for (const int protocol : {4, 3})
+	{
+		uam::AcpSessionState session;
+		session.chat_id = "chat-protocol";
+		session.provider_id = uam::provider_ids::kCopilotCli;
+		session.running = true;
+		CopilotPrivateWriter writer(session);
+		const nlohmann::json ping = runtime.OnAcpBuildInitialize(session, 1);
+		UAM_ASSERT_EQ(ping.at("method"), "ping");
+		// The exact wire reply the 1.0.114 SDK server sends to ping.
+		const nlohmann::json pong = {{"message", "pong"}, {"timestamp", "2026-11-23T13:52:29.000Z"}, {"protocolVersion", protocol}};
+		session.initialized = true;
+		runtime.OnAcpInitializeResult(session, pong);
+		const auto wire = [&]
+		{
+			if (session.stdin_writer) UAM_ASSERT(session.stdin_writer->Flush(std::chrono::seconds(2)));
+			std::string bytes = *writer.written;
+			std::fflush(writer.file);
+			std::rewind(writer.file);
+			for (int c; (c = std::fgetc(writer.file)) != EOF;) bytes.push_back(static_cast<char>(c));
+			return bytes;
+		};
+		if (protocol == 4)
+		{
+			UAM_ASSERT(!session.initialized);
+			UAM_ASSERT_EQ(session.lifecycle_state, std::string("error"));
+			UAM_ASSERT_EQ(session.last_error, std::string("This Copilot CLI uses protocol 4; UAM supports 3."));
+			UAM_ASSERT(!session.copilot_native_state.contains("protocolVersion"));
+			UAM_ASSERT(session.pending_request_methods.empty());
+			// Nothing reaches the CLI after the refused ping. SendSessionSetupIfReady only sends
+			// session.create/resume for an initialized runtime, and the refusal cleared that above.
+			UAM_ASSERT(wire().empty());
+			UAM_ASSERT_EQ(session.session_setup_request_id, 0);
+		}
+		else
+		{
+			UAM_ASSERT(session.initialized);
+			UAM_ASSERT(session.last_error.empty());
+			UAM_ASSERT_EQ(session.copilot_native_state.at("protocolVersion"), 3);
+			UAM_ASSERT(wire().find("\"models.list\"") != std::string::npos);
+		}
+	}
 }
 
 UAM_TEST(CopilotNativeFramedUnicodeAndRemoteMarkersReachAdapter)
@@ -1345,7 +1421,7 @@ UAM_TEST(CopilotNativeAutoRoutingAckAndEventsKeepCommitmentHonest)
 	UAM_ASSERT(runtime.OnAcpHandleMessage(app, session, chat,
 	    CopilotEvent("session.auto_tier_switch_failed", {{"requestedAutoTier", nullptr}, {"effectiveAutoTier", "balance"}, {"reason", "policy_rejected"}}, "routing-failed", chat.native_session_id), nullptr));
 	UAM_ASSERT_EQ(session.copilot_native_state.at("autoRouting").at("effective").at("value"), "balance");
-	UAM_ASSERT(session.copilot_native_state.at("autoRouting").at("lastError").get<std::string>().find("policy_rejected") != std::string::npos);
+	UAM_ASSERT(session.copilot_native_state.at("autoRouting").at("lastError").get<std::string>().find("Copilot policy did not allow Auto routing.") != std::string::npos);
 	const auto before_child = session.copilot_native_state.at("autoRouting");
 	auto child = CopilotEvent("session.model_change", {{"autoTier", "intelligence"}}, "routing-child", chat.native_session_id);
 	child["params"]["event"]["agentId"] = "child-only";
@@ -1887,7 +1963,7 @@ UAM_TEST(CopilotNativeAutoRoutingUnsupportedActivationAllowsExplicitDefaultAfter
 	UAM_ASSERT_EQ(failed.at("ownership"), fixture.owner);
 	UAM_ASSERT_EQ(failed.at("available"), false);
 	UAM_ASSERT_EQ(failed.at("stateStatus"), "unsupported");
-	UAM_ASSERT(failed.at("lastError").get<std::string>().find("unsupported") != std::string::npos);
+	UAM_ASSERT(failed.at("lastError").get<std::string>().find("does not support Auto routing") != std::string::npos);
 	UAM_ASSERT_EQ(failed.at("effective"), effective);
 	UAM_ASSERT_EQ(failed.at("pending"), staged);
 	UAM_ASSERT_EQ(failed.at("activating"), (nlohmann::json{{"present", false}}));

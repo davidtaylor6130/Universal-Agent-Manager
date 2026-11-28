@@ -17,6 +17,7 @@
 #include "common/provider/provider_ids.h"
 #include "common/provider/native_agent_history.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
+#include "common/utils/diagnostic_log.h"
 #include "common/utils/env_utils.h"
 #include "common/utils/io_utils.h"
 #include "common/utils/nlohmann_json_utils.h"
@@ -496,6 +497,13 @@ bool CopilotCliProviderRuntime::PrepareInteractiveSession(uam::AppState& app, Ch
 }
 
 
+/// Copilot loads a repository-style instruction file that applies to every path.
+bool CopilotCliProviderRuntime::StageCliHandoffContext(const ProviderCliHandoffStaging& staging, std::vector<std::string>&, std::string&) const
+{
+	const std::string instructions_path = uam::execution_hosts::JoinRemotePath(staging.host_platform, staging.directory, ".github/instructions/handoff.instructions.md");
+	return staging.stage_file(instructions_path, "---\napplyTo: \"**\"\n---\n" + staging.snapshot);
+}
+
 std::vector<std::string> CopilotCliProviderRuntime::BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings) const
 {
 	if (!profile.supports_interactive)
@@ -511,6 +519,14 @@ std::vector<std::string> CopilotCliProviderRuntime::BuildInteractiveArgv(const P
 	AppendCopilotModeArgs(argv, chat);
 	uam::provider_runtime_internal::AppendArgs(argv, uam::provider_runtime_internal::BuildProviderFlagsArgv(provider_settings, uam::provider_runtime_internal::LaunchHasReadCeiling(chat)));
 	return argv;
+}
+
+bool CopilotCliProviderRuntime::StageInteractiveAgentInstructions(const ExecutionHost&, std::string_view instructions, std::vector<std::string>&, std::string& staged_context, std::string& error) const
+{
+	// Written ahead of any handoff text in the staged applyTo "**" instructions file.
+	staged_context.assign(instructions);
+	error.clear();
+	return true;
 }
 
 MessageRole CopilotCliProviderRuntime::RoleFromNativeType(const ProviderProfile& profile, std::string_view native_type) const
@@ -603,7 +619,8 @@ std::vector<ChatSession> LoadCopilotSessionStateChats(
 	const bool root_exists = std::filesystem::exists(session_state_root, error);
 	if (error)
 	{
-		if (error_out != nullptr) *error_out = "Could not inspect Copilot history: " + error.message();
+		uam::diagnostics::Write("[copilot] Could not inspect Copilot history: " + error.message());
+		if (error_out != nullptr) *error_out = "Could not read Copilot history.";
 		return chats;
 	}
 	if (!root_exists)
@@ -612,7 +629,8 @@ std::vector<ChatSession> LoadCopilotSessionStateChats(
 	}
 	if (!std::filesystem::is_directory(session_state_root, error) || error)
 	{
-		if (error_out != nullptr) *error_out = error ? "Could not inspect Copilot history: " + error.message() : "Copilot history path is not a directory.";
+		if (error) uam::diagnostics::Write("[copilot] Could not inspect Copilot history: " + error.message());
+		if (error_out != nullptr) *error_out = error ? "Could not read Copilot history." : "Copilot history path is not a directory.";
 		return chats;
 	}
 
@@ -632,7 +650,11 @@ std::vector<ChatSession> LoadCopilotSessionStateChats(
 		}
 		if (error_out && error_out->empty() && !session_error.empty()) *error_out = std::move(session_error);
 	}
-	if (error && error_out != nullptr) *error_out = "Could not finish scanning Copilot history: " + error.message();
+	if (error)
+	{
+		uam::diagnostics::Write("[copilot] Could not finish scanning Copilot history: " + error.message());
+		if (error_out != nullptr) *error_out = "Could not finish reading Copilot history.";
+	}
 	return chats;
 }
 
@@ -759,7 +781,8 @@ std::string CopilotCliProviderRuntime::LocalCliCompatibilityError(const uam::App
 	const uam::CliProviderVersionState& state = state_it->second;
 	if (!state.checked)
 	{
-		return "Checking GitHub Copilot CLI compatibility. Try again in a moment.";
+		// CLI View retries automatically while the refusal starts with this exact sentence.
+		return "Checking GitHub Copilot CLI compatibility.";
 	}
 	// A failed or timed-out check says nothing about the installation; only a confirmed result blocks.
 	if (state.supported || !state.check_error.empty())
@@ -768,7 +791,7 @@ std::string CopilotCliProviderRuntime::LocalCliCompatibilityError(const uam::App
 	}
 	if (!state.installed_version.empty())
 	{
-		return "GitHub Copilot CLI 1.0.60 or newer is required (installed " + state.installed_version + "). Update it in Settings.";
+		return "GitHub Copilot CLI 1.0.60 or newer is required (installed " + state.installed_version + "); update it in Settings.";
 	}
 	return uam::strings::NonEmptyOrFallback(state.message, "GitHub Copilot CLI is not installed or its version could not be determined.") + " Open Settings to check or update it.";
 }

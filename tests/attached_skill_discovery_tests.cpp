@@ -252,7 +252,7 @@ UAM_TEST(AttachedSkillStalePreparationCannotFallBackOrSend)
 		UAM_ASSERT(uam::acp_detail::SendQueuedPromptIfReady(fixture.app, *fixture.session, chat));
 		UAM_ASSERT(state->cancel.stop_requested());
 		UAM_ASSERT_EQ(fixture.session->prompt_request_id, 0);
-		UAM_ASSERT(fixture.session->last_error.find("ownership changed") != std::string::npos);
+		UAM_ASSERT(fixture.session->last_error.find("attached skills changed") != std::string::npos);
 		UAM_ASSERT_EQ(chat.messages.back().content, std::string("Retain this authored input."));
 		UAM_ASSERT_EQ(chat.messages.back().markdown_store_prompt_blocks, std::vector<std::string>{fixture.block});
 		UAM_ASSERT(ReadFile(fixture.output).empty());

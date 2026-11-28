@@ -162,7 +162,23 @@ namespace uam::mcp_server_config
 		return result;
 	}
 
-	inline bool NormalizeAndValidate(std::vector<McpServerConfiguration>& servers, std::string* error_out = nullptr)
+	/// <summary>Whether a path is absolute on the computer that runs the server, by that computer's platform.</summary>
+	/// <remarks>This computer uses its native rule. A known SSH host uses its recorded platform, so a Windows UAM accepts
+	/// /usr/bin/node for a Linux host. An empty host id (every computer), an unknown host or an unrecorded platform
+	/// accepts either absolute form; the launch on the executing computer still requires the file to exist.</remarks>
+	inline bool IsAbsoluteOnHost(std::string_view path, std::string_view host_id, const std::vector<ExecutionHost>* hosts)
+	{
+		const std::string trimmed = uam::strings::Trim(path);
+		if (host_id == uam::execution_hosts::kLocalHostId) return !trimmed.empty() && uam::paths::PathFromUtf8(trimmed).is_absolute();
+		const ExecutionHost* host = hosts != nullptr && !host_id.empty() ? uam::execution_hosts::Find(*hosts, host_id) : nullptr;
+		if (host != nullptr && !host->platform.empty()) return uam::execution_hosts::IsAbsoluteRemotePath(host->platform, trimmed);
+		return uam::execution_hosts::IsAbsoluteRemotePath("windows", trimmed) || uam::execution_hosts::IsAbsoluteRemotePath("linux", trimmed);
+	}
+
+	/// <param name="hosts">Configured computers, for each server's platform; null treats every SSH host's platform as unknown.</param>
+	/// <param name="scope_host_id">The computer a host-scoped list belongs to; its entries without a host id run there.</param>
+	inline bool NormalizeAndValidate(std::vector<McpServerConfiguration>& servers, std::string* error_out = nullptr,
+	                                 const std::vector<ExecutionHost>* hosts = nullptr, std::string_view scope_host_id = {})
 	{
 		std::set<std::string> ids;
 		for (McpServerConfiguration& server : servers)
@@ -170,13 +186,16 @@ namespace uam::mcp_server_config
 			server.execution_host_id = uam::strings::Trim(server.execution_host_id);
 			server.id = uam::strings::Trim(server.id);
 			server.name = uam::strings::Trim(server.name);
-			const std::filesystem::path workspace_path = uam::paths::PathFromUtf8(uam::strings::Trim(server.workspace_directory));
-			if (!workspace_path.empty() && !workspace_path.is_absolute() && !uam::execution_hosts::IsAbsoluteRemotePath("windows", server.workspace_directory))
+			const std::string_view host_id = server.execution_host_id.empty() ? scope_host_id : std::string_view(server.execution_host_id);
+			const std::string workspace = uam::strings::Trim(server.workspace_directory);
+			if (!workspace.empty() && !IsAbsoluteOnHost(workspace, host_id, hosts))
 			{
 				if (error_out) *error_out = "Every MCP server needs a unique id, a name, and an absolute workspace directory or an empty global scope.";
 				return false;
 			}
-			server.workspace_directory = server.execution_host_id.empty() || server.execution_host_id == "local" ? WorkspaceKey(server.workspace_directory) : uam::strings::Trim(server.workspace_directory);
+			// A path in another platform's form stays as written; local normalization would rewrite /home/x as C:/home/x on Windows.
+			const bool local_form = uam::paths::PathFromUtf8(workspace).is_absolute() || uam::execution_hosts::IsAbsoluteRemotePath("windows", workspace);
+			server.workspace_directory = (server.execution_host_id.empty() || server.execution_host_id == "local") && local_form ? WorkspaceKey(workspace) : workspace;
 			server.transport = uam::strings::TrimAndLowerAscii(server.transport);
 			server.command = uam::strings::Trim(server.command);
 			server.url = uam::strings::Trim(server.url);
@@ -197,7 +216,7 @@ namespace uam::mcp_server_config
 			}
 			if (server.transport == "stdio")
 			{
-				if (server.command.empty() || (!uam::paths::PathFromUtf8(server.command).is_absolute() && !uam::execution_hosts::IsAbsoluteRemotePath("windows", server.command)))
+				if (server.command.empty() || !IsAbsoluteOnHost(server.command, host_id, hosts))
 				{
 					if (error_out) *error_out = "MCP server '" + server.name + "' needs an absolute executable path.";
 					return false;
@@ -242,6 +261,27 @@ namespace uam::mcp_server_config
 		return true;
 	}
 
+	/// <summary>Normalizes each saved entry on its own, so one bad entry never empties the whole list.</summary>
+	/// <param name="removed">On load, receives one reason per dropped entry (invalid, or repeating an earlier id); the
+	/// reasons name servers but carry no paths, URLs or values. Null keeps such entries unchanged, so a save never
+	/// deletes what the next load can report.</param>
+	inline void NormalizeEach(std::vector<McpServerConfiguration>& servers, const std::vector<ExecutionHost>* hosts,
+	                          std::string_view scope_host_id, std::vector<std::string>* removed)
+	{
+		std::vector<McpServerConfiguration> kept;
+		std::set<std::string> ids;
+		for (McpServerConfiguration& server : servers)
+		{
+			std::vector<McpServerConfiguration> one{server};
+			std::string error;
+			const bool valid = NormalizeAndValidate(one, &error, hosts, scope_host_id);
+			if (valid && ids.insert(one.front().id).second) kept.push_back(std::move(one.front()));
+			else if (removed == nullptr) kept.push_back(std::move(server));
+			else removed->push_back(valid ? "MCP server '" + one.front().name + "' repeats another server's id." : error);
+		}
+		servers = std::move(kept);
+	}
+
 	/// <summary>Workspace and host overrides replace global entries by server name without duplicate connections.</summary>
 	inline std::vector<McpServerConfiguration> SelectForWorkspace(const std::vector<McpServerConfiguration>& configured, std::string_view workspace_directory, std::string_view host_id = "local")
 	{
@@ -284,7 +324,7 @@ namespace uam::mcp_server_config
 			{
 				if (!uam::paths::IsRegularFileNoThrow(uam::paths::PathFromUtf8(server.command)))
 				{
-					if (error_out) *error_out = "MCP server executable is missing: " + server.command;
+					if (error_out) *error_out = "MCP server '" + server.name + "' executable is missing.";
 					return nullptr;
 				}
 				resolved["command"] = server.command;

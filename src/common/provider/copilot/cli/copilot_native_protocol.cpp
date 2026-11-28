@@ -11,6 +11,7 @@
 #include "common/chat/chat_ids.h"
 #include "common/paths/workspace_root.h"
 #include "common/platform/platform_services.h"
+#include "common/provider/copilot_sdk_protocol.h"
 #include "common/provider/provider_ids.h"
 #include "common/runtime/acp/acp_goal_loop.h"
 #include "common/runtime/acp/acp_json_rpc.h"
@@ -643,7 +644,7 @@ bool PollSavedImageEvidence(const AppState& app, AcpSessionState& session, const
 		return false;
 	if (!SavedImageOwnerMatches(app, session, *state, chat))
 	{
-		RejectSavedImageEvidence(session, *state, "Copilot saved-image ownership changed. Retry the saved message again.");
+		RejectSavedImageEvidence(session, *state, "The saved Copilot image message changed; retry it.");
 		return true;
 	}
 	const auto& requests = (*state)["requests"];
@@ -653,7 +654,7 @@ bool PollSavedImageEvidence(const AppState& app, AcpSessionState& session, const
 			const auto deadline = record.find("deadline");
 			if (deadline == record.end() || !deadline->is_number() || deadline->get<double>() <= GetAppTimeSeconds())
 			{
-				RejectSavedImageEvidence(session, *state, "Copilot image-support verification timed out. Retry the saved message again.");
+				RejectSavedImageEvidence(session, *state, "Copilot's image-support check timed out; retry the saved message.");
 				return true;
 			}
 		}
@@ -780,12 +781,13 @@ bool HandleSavedImageResponse(const AppState& app, AcpSessionState& session, con
 	const auto deadline = record.find("deadline");
 	if (Text(*state, "phase") != "querying" || !SavedImageOwnerMatches(app, session, *state, chat) || JsonObjectValue(record, "owner") != JsonObjectValue(*state, "owner") || record["generation"] != (*state)["generation"] || deadline == record.end() || !deadline->is_number() || deadline->get<double>() <= GetAppTimeSeconds())
 	{
-		RejectSavedImageEvidence(session, *state, "Copilot image-support response ownership changed or expired. Retry the saved message again.");
+		RejectSavedImageEvidence(session, *state, "Copilot's image-support reply expired; retry the saved message.");
 		return true;
 	}
 	if (failure != nullptr)
 	{
-		RejectSavedImageEvidence(session, *state, "Copilot could not verify image support: " + *failure);
+		AppendAcpDiagnostic(session, "response", "copilot_image_support_failed", method, key, false, 0, *failure);
+		RejectSavedImageEvidence(session, *state, "Copilot could not verify image support; retry the saved message.");
 		return true;
 	}
 	const std::string model = Text(JsonObjectValue(*state, "owner"), "model");
@@ -793,13 +795,18 @@ bool HandleSavedImageResponse(const AppState& app, AcpSessionState& session, con
 	bool valid = false;
 	if (method == "status.get")
 	{
-		const auto protocol = Count(result, "protocolVersion");
-		valid = protocol && *protocol == 3 && StrictImageServerVersion(Text(result, "version"));
+		const auto protocol = uam::copilot::ReportedSdkProtocol(result);
+		if (!uam::copilot::IsVerifiedSdkProtocol(protocol))
+		{
+			RejectSavedImageEvidence(session, *state, uam::copilot::SdkProtocolRefusal(protocol));
+			return true;
+		}
+		valid = StrictImageServerVersion(Text(result, "version"));
 		// Remote input requires this stable server floor; the local version policy stays unchanged.
 		if (valid && Text(JsonObjectValue(*state, "owner"), "executionHostId") != "local")
-			valid = CliProviderVersionAtLeast(Text(result, "version"), "1.0.98");
+			valid = CliProviderVersionAtLeast(Text(result, "version"), uam::copilot::managed_read::kStableCliMinimumVersion);
 		if (valid)
-			parsed = {{"version", Text(result, "version")}, {"protocolVersion", 3}};
+			parsed = {{"version", Text(result, "version")}, {"protocolVersion", *protocol}};
 	}
 	else if (method == "models.list")
 		valid = ParseSavedImageModel(result, model, parsed);
@@ -811,7 +818,7 @@ bool HandleSavedImageResponse(const AppState& app, AcpSessionState& session, con
 	}
 	if (!valid)
 	{
-		RejectSavedImageEvidence(session, *state, "Copilot did not confirm a compatible running server and the selected vision model. Choose an explicit vision model and retry.");
+		RejectSavedImageEvidence(session, *state, "Copilot could not confirm image support; choose a vision model and retry.");
 		return true;
 	}
 	(*state)["results"][method] = std::move(parsed);
@@ -886,7 +893,7 @@ bool HandleAutoRoutingResult(AppState& app, AcpSessionState& session, const Chat
 		uam::copilot::managed_read::ObserveModel(app, session, chat, Text(result, "modelId"));
 		const auto* image = SavedImageState(session);
 		if (image != nullptr && Text(*image, "phase") != "rejected" && Text(result, "modelId") != Text(JsonObjectValue(*image, "owner"), "model"))
-			InvalidateSavedImageEvidence(session, "The native Copilot model changed before image delivery. Retry the saved message again.");
+			InvalidateSavedImageEvidence(session, "The Copilot model changed before the images were sent; retry the saved message.");
 	}
 	if (method == kAutoRoutingList)
 	{
@@ -974,7 +981,8 @@ bool HandleAutoRoutingEvent(AcpSessionState& session, const ChatSession& chat, c
 		const std::string reason = Text(data, "reason");
 		if (!Flag(requested, "present") || (reason != "policy_rejected" && reason != "request_failed" && reason != "setup_failed" && reason != "unsupported")) valid = false;
 		if (!valid) { AutoRoutingError(*routing, kAutoRoutingCurrent, "invalid", "Copilot returned a malformed Auto routing failure event."); return true; }
-		(*routing)["lastError"] = "Copilot Auto routing preference did not activate: " + reason;
+		(*routing)["lastError"] = reason == "policy_rejected" ? "Copilot policy did not allow Auto routing."
+		    : reason == "unsupported" ? "This Copilot session does not support Auto routing." : "Copilot could not turn on Auto routing.";
 		if (!AdvanceAutoRoutingRevision(*routing)) return true;
 		(*routing)["stateStatus"] = reason == "unsupported" ? "unsupported" : "unknown";
 		(*routing)["refreshState"] = reason != "unsupported";
@@ -1041,35 +1049,6 @@ void RecordEventReceipt(AcpSessionState& session, ChatSession& chat, const nlohm
 		message->provider_event_ids.push_back(receipt);
 }
 
-AcpToolCallState& TrackedTool(AcpSessionState& session, const ChatSession& chat, const std::string& id)
-{
-	for (AcpToolCallState& tool : session.tool_calls) if (tool.id == id) return tool;
-	AcpToolCallState& tool = UpsertToolCall(session, id);
-	for (std::size_t index = 0; index < chat.messages.size(); ++index)
-	{
-		for (const ToolCall& saved : chat.messages[index].tool_calls)
-		{
-			if (saved.id != id) continue;
-			tool.title = saved.name;
-			tool.kind = saved.kind;
-			tool.status = saved.status;
-			tool.args_json = saved.args_json;
-			tool.content = saved.result_text;
-			tool.is_sub_agent = saved.is_sub_agent;
-			tool.sub_agent_id = saved.sub_agent_id;
-			tool.sub_agent_title = saved.sub_agent_title;
-			tool.sub_agent_children = saved.sub_agent_children;
-			tool.sub_agent_children_authoritative = saved.sub_agent_children_authoritative;
-			tool.approval_status = saved.approval_status;
-			tool.task_id = saved.task_id;
-			tool.child_activity = saved.child_activity;
-			session.tool_call_message_indices[id] = static_cast<int>(index);
-			return tool;
-		}
-	}
-	return tool;
-}
-
 void AppendTrackedToolEvent(AcpSessionState& session, const std::string& id)
 {
 	const auto owner = session.tool_call_message_indices.find(id);
@@ -1124,7 +1103,7 @@ void ApplyToolEvent(AcpSessionState& session, ChatSession& chat, const nlohmann:
 	const std::string id = Text(data, "toolCallId");
 	if (id.empty()) return;
 	if (type == "tool.execution_start") uam::copilot::presentation::Observe(McpPresentationOrigins(session), event, data);
-	AcpToolCallState& tool = TrackedTool(session, chat, id);
+	AcpToolCallState& tool = RestoreToolCallFromChat(session, chat, id);
 	const std::string name = Text(data, "toolName");
 	if (!name.empty())
 	{
@@ -1160,7 +1139,7 @@ void ApplyToolEvent(AcpSessionState& session, ChatSession& chat, const nlohmann:
 	if (!parent.empty())
 	{
 		const std::string activity = tool.title;
-		AcpToolCallState& owner = TrackedTool(session, chat, parent);
+		AcpToolCallState& owner = RestoreToolCallFromChat(session, chat, parent);
 		owner.is_sub_agent = true;
 		if (!agent.empty())
 		{
@@ -1332,12 +1311,13 @@ nlohmann::json CopilotCliProviderRuntime::OnAcpBuildInitialize(uam::AcpSessionSt
 
 void CopilotCliProviderRuntime::OnAcpInitializeResult(uam::AcpSessionState& session, const nlohmann::json& result) const
 {
-	const auto version = Count(result, "protocolVersion");
-	if (!version || *version != 3)
+	// Refuse before session.create/resume: an unverified protocol never receives a session, prompt or permission reply.
+	const auto version = uam::copilot::ReportedSdkProtocol(result);
+	if (!uam::copilot::IsVerifiedSdkProtocol(version))
 	{
 		session.initialized = false;
 		session.lifecycle_state = kAcpLifecycleError;
-		session.last_error = "Copilot SDK server protocol 3 is required; update the CLI or UAM before retrying.";
+		session.last_error = uam::copilot::SdkProtocolRefusal(version);
 		return;
 	}
 	session.copilot_native_state["protocolVersion"] = *version;
@@ -1401,8 +1381,8 @@ SavedImageRetryPreflight CopilotCliProviderRuntime::PrepareSavedImageRetry(uam::
 	if (owner.is_null() || images.empty() || images.size() > 32 || strings::ToLowerAscii(chat.model_id) == "auto")
 	{
 		error = session.saved_image_retry && session.saved_image_retry->remote_scope
-		    ? "Copilot saved-image Retry requires the same ready SSH session and an explicit vision model. Choose a model and retry."
-		    : "Copilot saved-image Retry requires a ready local session and an explicit vision model. Choose a model and retry.";
+		    ? "Copilot image retry needs the same ready SSH session and a chosen vision model."
+		    : "Copilot image retry needs a ready session and a chosen vision model.";
 		return SavedImageRetryPreflight::Rejected;
 	}
 	auto* state = SavedImageState(session);
@@ -1411,7 +1391,7 @@ SavedImageRetryPreflight CopilotCliProviderRuntime::PrepareSavedImageRetry(uam::
 		const auto generation = state == nullptr ? std::optional<std::int64_t>(0) : Count(*state, "generation");
 		if (!generation || *generation == std::numeric_limits<std::int64_t>::max())
 		{
-			error = "Copilot image-support observation generation is invalid. Reconnect before retrying.";
+			error = "Copilot's image-support state is invalid; reconnect before retrying.";
 			return SavedImageRetryPreflight::Rejected;
 		}
 		if (state != nullptr)
@@ -1421,12 +1401,12 @@ SavedImageRetryPreflight CopilotCliProviderRuntime::PrepareSavedImageRetry(uam::
 		for (const auto method : {"status.get", "models.list", kAutoRoutingCurrent})
 			if (!IssueSavedImageQuery(session, *state, method))
 			{
-				RejectSavedImageEvidence(session, *state, "Copilot image-support query could not be sent. Retry the saved message again.");
+				RejectSavedImageEvidence(session, *state, "Could not ask Copilot about image support; retry the saved message.");
 				break;
 			}
 	}
 	if (JsonObjectValue(*state, "owner") != owner)
-		RejectSavedImageEvidence(session, *state, "Copilot saved-image ownership or native settings changed. Retry the saved message again.");
+		RejectSavedImageEvidence(session, *state, "The saved Copilot message or its settings changed; retry it.");
 	if (Text(*state, "phase") == "rejected")
 	{
 		error = Text(*state, "error");
@@ -1438,7 +1418,7 @@ SavedImageRetryPreflight CopilotCliProviderRuntime::PrepareSavedImageRetry(uam::
 	for (const auto& image : images)
 		if (!SavedImageFormatAllowed(model, strings::ToLowerAscii(image.mime_type), image.size_bytes, images.size()))
 		{
-			RejectSavedImageEvidence(session, *state, "The selected Copilot model does not support these image formats, count or sizes. The prompt was not sent.");
+			RejectSavedImageEvidence(session, *state, "The selected Copilot model does not support these images, so the prompt was not sent.");
 			error = Text(*state, "error");
 			return SavedImageRetryPreflight::Rejected;
 		}
@@ -1459,7 +1439,7 @@ try
 {
 	const auto fail = [&error]()
 	{
-		error = "Copilot saved-image Retry could not retain complete supported image input. The prompt was not sent.";
+		error = "Copilot could not keep the full image input, so the prompt was not sent.";
 		return false;
 	};
 	if (!request.is_object() || Text(request, "method") != "session.send" || !request.contains("params") || !request["params"].is_object() || !prepared.is_object() || !prepared.contains("message") || !prepared["message"].is_object() || !prepared["message"].contains("content") || !prepared["message"]["content"].is_array() || images.empty() || images.size() > 32 || Text(native_metadata, "phase") != "ready")
@@ -1493,7 +1473,7 @@ try
 }
 catch (...)
 {
-	error = "Copilot saved-image Retry has invalid native image evidence. The prompt was not sent.";
+	error = "Copilot's saved image data is invalid, so the prompt was not sent.";
 	return false;
 }
 
@@ -2045,7 +2025,7 @@ bool CopilotCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::AcpS
 		const auto seen = JsonObjectValue(session.copilot_native_state, "events");
 		const bool recorded = !id.empty() && (seen.contains(id) || std::ranges::any_of(chat.messages, [&](const Message& row) { return std::ranges::find(row.provider_event_ids, session.session_id + ":" + id) != row.provider_event_ids.end(); }));
 		if (!recorded)
-			InvalidateSavedImageEvidence(session, "Native Copilot model or session state changed before image delivery. Retry the saved message again.");
+			InvalidateSavedImageEvidence(session, "The Copilot model or session changed before the images were sent; retry the saved message.");
 	}
 	if (HandleAutoRoutingEvent(session, chat, event))
 		return true;
@@ -2100,7 +2080,7 @@ bool CopilotCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::AcpS
 		uam::copilot::presentation::AcceptedBoundary(McpPresentationOrigins(session), event, data);
 	if (child && !parent.empty() && !agent.empty())
 	{
-		AcpToolCallState& owner = TrackedTool(session, chat, parent);
+		AcpToolCallState& owner = RestoreToolCallFromChat(session, chat, parent);
 		owner.is_sub_agent = true;
 		owner.task_id = agent;
 		owner.sub_agent_id = BuildCopilotAgentHistoryId(session.session_id, agent, chat.execution_host_id.empty() ? "local" : chat.execution_host_id);
@@ -2116,7 +2096,7 @@ bool CopilotCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::AcpS
 		{
 			const int request_id = NextAcpRequestId(session, "session.abort");
 			(void)WriteAcpMessage(session, uam::acp_json_rpc::Request(request_id, "session.abort", {{"sessionId", session.session_id}}));
-			FailAcpTurnOrSession(session, &chat, "Copilot exceeded the native event receipt limit for this turn. The turn was stopped to preserve reliable recovery.");
+			FailAcpTurnOrSession(session, &chat, "Copilot sent too many events in this turn, so UAM stopped the turn.");
 			return true;
 		}
 	}
@@ -2251,7 +2231,7 @@ bool CopilotCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::AcpS
 		if (!live.is_object()) live = nlohmann::json::object();
 		if (type == "subagent.started") live[id] = true;
 		else live.erase(id);
-		AcpToolCallState& tool = TrackedTool(session, chat, id);
+		AcpToolCallState& tool = RestoreToolCallFromChat(session, chat, id);
 		tool.is_sub_agent = true;
 		tool.kind = "sub-agent";
 		if (!agent.empty()) tool.task_id = agent;

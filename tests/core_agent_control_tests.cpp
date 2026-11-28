@@ -30,6 +30,7 @@
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_goal_loop.h"
 #include "common/utils/diagnostic_log.h"
+#include "common/usage/account_allowance_service.h"
 #include "common/utils/time_utils.h"
 #include "common/utils/uuid.h"
 
@@ -490,12 +491,12 @@ UAM_TEST(ManualCompactionRejectsUnavailableBusyRemoteAndUnsupportedSessions)
 #if UAM_ENABLE_RUNTIME_CODEX_CLI
 	app.chats.front().execution_host_id = "remote";
 	UAM_ASSERT(!uam::CompactAcpSession(app, chat.id, &error));
-	UAM_ASSERT(error.find("protocol 3") != std::string::npos);
+	UAM_ASSERT(error.find("up-to-date SSH helper") != std::string::npos);
 	app.chats.front().execution_host_id = "local";
 #endif
 	session.provider_id = "gemini-cli";
 	UAM_ASSERT(!uam::CompactAcpSession(app, chat.id, &error));
-	UAM_ASSERT(error.find("does not support") != std::string::npos);
+	UAM_ASSERT(error.find("can't compact") != std::string::npos);
 	UAM_ASSERT(!session.manual_compaction_pending);
 	UAM_ASSERT(app.chats.front().messages.empty());
 }
@@ -1145,6 +1146,9 @@ UAM_TEST(UamControlCapabilityBoundsGoalAuthorityReplayRateCancellationAndRestart
 	    {"agent_delegate", {{"agentId", "agent"}, {"task", "task"}, {"maxDepth", "999"}}},
 	    {"agent_cancel", {{"runId", "run"}, {"unexpected", "value"}}},
 	    {"goal_get", {{"unexpected", "value"}}},
+	    {"usage_report", {{"chatId", "another-chat"}}},
+	    {"worktree_status", {{"path", "/"}}},
+	    {"memory_search", {{"query", "widget"}, {"chatId", "another-chat"}}},
 	    {"goal_create", {{"objective", "goal"}, {"idempotencyKey", "strict"}, {"maxTurns", "999"}}},
 	};
 	for (std::size_t index = 0; index < strict_arguments.size(); ++index)
@@ -1179,12 +1183,12 @@ UAM_TEST(UamControlCapabilityBoundsGoalAuthorityReplayRateCancellationAndRestart
 	{
 		const std::string name = tool.value("name", "");
 		const bool read_only = name == "agent_list" || name == "agent_status" || name == "agent_wait" || name == "skill_list" ||
-		    name == "skill_read" || name == "goal_get" || name == "user_question" ||
-		    name == "html_view_preview" || name == "html_view_publish";
+		    name == "skill_read" || name == "goal_get" || name == "user_question" || name == "notify" || name == "usage_report" ||
+		    name == "worktree_status" || name == "memory_search" || name == "html_view_preview" || name == "html_view_publish";
 		UAM_ASSERT_EQ(tool.contains("annotations") && tool["annotations"].value("readOnlyHint", false), read_only);
 		hinted += read_only ? 1 : 0;
 	}
-	UAM_ASSERT_EQ(hinted, std::size_t{9});
+	UAM_ASSERT_EQ(hinted, std::size_t{13});
 	const nlohmann::json read_only_goal = call(capability, "policy-read", "goal_get");
 	UAM_ASSERT(read_only_goal.value("ok", false));
 	UAM_ASSERT(!read_only_goal["result"].value("mutationToolsEnabled", true));
@@ -1461,7 +1465,8 @@ UAM_TEST(UamControlComputerUseRequiresVisibleGuiApproval)
 	    {{"requestId", "remote-computer-use"}, {"method", "computer_use_request"},
      {"arguments", {{"reason", "Remote must be rejected."}}}}, now);
 	UAM_ASSERT(!remote_rejected.value("ok", true));
-	UAM_ASSERT(remote_rejected.value("error", "").find("unavailable") != std::string::npos);
+	// SSH chats are never offered Computer Use, so the manager refuses it before evaluating the request.
+	UAM_ASSERT_EQ(remote_rejected.value("error", ""), std::string("This UAM tool is not available in this session."));
 	UAM_ASSERT(!remote_app.chats.front().computer_use_enabled);
 
 	uam::UamControlService::Shutdown(remote_app);
@@ -1591,6 +1596,84 @@ UAM_TEST(UamControlGoalApprovalAndChildComputerUseScope)
 	uam::UamControlService::Shutdown(app);
 }
 
+UAM_TEST(UamControlRefusesGoalCreationFromManagedSubagents)
+{
+	TempDir temp("uam-control-subagent-goal");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession root = ChatDomainService().CreateNewChat("", "opencode-cli");
+	root.id = "chat-subagent-goal-root";
+	root.uam_control_enabled = true;
+	root.execution_host_id = "local";
+	const std::string root_id = root.id;
+	app.chats.push_back(std::move(root));
+	ChatSession child = ChatDomainService().CreateNewChat("", "opencode-cli");
+	child.id = "chat-subagent-goal-child";
+	child.uam_control_enabled = true;
+	child.execution_host_id = "local";
+	child.agent_run_id = "subagent-goal-run";
+	app.chats.push_back(std::move(child));
+	AgentRun run;
+	run.id = "subagent-goal-run";
+	run.root_chat_id = root_id;
+	run.transcript_chat_id = "chat-subagent-goal-child";
+	run.status = "running";
+	app.agent_runs.push_back(std::move(run));
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = "chat-subagent-goal-child";
+	session->provider_id = "opencode-cli";
+	session->running = session->processing = true;
+	session->turn_serial = 1;
+	// A write agent, so only the subagent rule can refuse it.
+	session->active_uam_agent_workspace_access = "write";
+	uam::AcpSessionState& raw = *session;
+	app.acp_sessions.push_back(std::move(session));
+	std::string error;
+	UAM_ASSERT(uam::UamControlService::Initialize(app, &error));
+	nlohmann::json setup{{"params", {{"mcpServers", nlohmann::json::array()}}}};
+	UAM_ASSERT(uam::UamControlService::AppendSessionMcpServer(app, raw, app.chats.back(), "session/new", setup, &error));
+	uam::UamControlCapability& capability = app.uam_control_capabilities.back();
+	// The capability acts on the root chat, which is why a subagent goal would land on the parent.
+	UAM_ASSERT_EQ(capability.chat_id, root_id);
+	UAM_ASSERT(uam::UamControlService::HiddenToolsForTests(setup["params"]["mcpServers"].back()).find("goal_create") != std::string::npos);
+	const std::string capability_id = capability.id;
+	const int64_t now = uam::time::SystemEpochMillisecondsNow();
+	const auto find_capability = [&]() -> uam::UamControlCapability&
+	{ return *std::ranges::find(app.uam_control_capabilities, capability_id, &uam::UamControlCapability::id); };
+	const auto call = [&](const std::string& id, const std::string& method, nlohmann::json arguments)
+	{ return uam::UamControlService::HandleRequestForTests(app, capability_id, {{"requestId", id}, {"method", method}, {"arguments", std::move(arguments)}}, now); };
+
+	// Refused before an approval card is shown, and refused in YOLO, where it would otherwise run at once. The session
+	// does not list goal_create, so the manager refuses it as a hidden tool before the subagent rule is reached.
+	for (const std::string tier : {"off", "yolo"})
+	{
+		app.chats.front().command_safety_tier = tier;
+		const nlohmann::json refused = call("subagent-goal-" + tier, "goal_create", {{"objective", "Drive the parent."}, {"idempotencyKey", "subagent-" + tier}});
+		UAM_ASSERT(!refused.value("ok", true) && !refused.value("pendingApproval", false));
+		UAM_ASSERT_EQ(refused.value("error", ""), std::string("This UAM tool is not available in this session."));
+		UAM_ASSERT(!uam::UamControlService::PendingApprovalForChat(app, root_id).has_value());
+		UAM_ASSERT(app.chats.front().goals.empty());
+		const nlohmann::json goal = call("subagent-goal-get-" + tier, "goal_get", nlohmann::json::object());
+		UAM_ASSERT(!goal["result"].value("agentGoalManagementEnabled", true));
+		UAM_ASSERT_EQ(goal["result"].value("goalCreationPolicy", ""), std::string("disabled"));
+	}
+
+	// An approval queued before this rule cannot create the goal either: Allow answers the agent with the refusal.
+	app.chats.front().command_safety_tier = "off";
+	find_capability().pending_approval =
+	    uam::UamControlCapability::PendingApproval{.request_id = "queued-subagent-goal", .method = "goal_create", .objective = "Drive the parent.", .idempotency_key = "queued-subagent-goal"};
+	const std::optional<uam::AcpPendingUserInputState> question = uam::UamControlService::PendingApprovalForChat(app, root_id);
+	UAM_ASSERT(question.has_value());
+	UAM_ASSERT(uam::UamControlService::ResolveApproval(app, root_id, question->request_id_json, {{"goalCreate", {"Allow"}}}, &error));
+	UAM_ASSERT(app.chats.front().goals.empty());
+	UAM_ASSERT(uam::GoalService::FindActiveGoal(app, root_id) == nullptr);
+	std::string response;
+	UAM_ASSERT(uam::io::TryReadTextFile(find_capability().directory / "responses" / "queued-subagent-goal.json", response));
+	UAM_ASSERT_EQ(nlohmann::json::parse(response).value("error", ""), std::string("Managed subagents cannot create goals."));
+
+	uam::UamControlService::Shutdown(app);
+}
+
 UAM_TEST(UamControlListsOnlyToolsTheSessionCanUse)
 {
 	TempDir temp("uam-control-tool-gating");
@@ -1628,7 +1711,7 @@ UAM_TEST(UamControlListsOnlyToolsTheSessionCanUse)
 
 	// A local root build chat keeps every tool.
 	UAM_ASSERT_EQ(hidden_for(raw), std::string(UAM_ENABLE_COMPUTER_USE ? "" : "computer_use_request"));
-	UAM_ASSERT_EQ(uam::UamControlService::ToolDefinitionsForTests("").size(), std::size_t{17});
+	UAM_ASSERT_EQ(uam::UamControlService::ToolDefinitionsForTests("").size(), std::size_t{22});
 
 	// A chat started by another chat cannot start chats, so chat_create is not offered.
 	app.chats.front().created_by_chat_id = "creator";
@@ -1643,6 +1726,9 @@ UAM_TEST(UamControlListsOnlyToolsTheSessionCanUse)
 	for (const std::string name : {"agent_cancel", "goal_create", "chat_create", "computer_use_request", "secret_request"})
 		UAM_ASSERT(hidden.find(name) != std::string::npos);
 	UAM_ASSERT(hidden.find("agent_delegate") == std::string::npos);
+	// Read-only insight stays available to a read-only agent.
+	UAM_ASSERT(hidden.find("usage_report") == std::string::npos && hidden.find("worktree_status") == std::string::npos &&
+	           hidden.find("memory_search") == std::string::npos);
 	// A missing workspace access counts as read-only too.
 	raw.active_uam_agent_workspace_access.clear();
 	UAM_ASSERT(hidden_for(raw).find("goal_create") != std::string::npos);
@@ -1700,12 +1786,13 @@ UAM_TEST(UamControlListsOnlyToolsTheSessionCanUse)
 	UAM_ASSERT_EQ(refused["error"]["message"].get<std::string>(), std::string("This UAM tool is not available in this session."));
 	UAM_ASSERT(fs::is_empty(app.uam_control_capabilities.back().directory / "requests"));
 	raw.goal_review_turn = false;
-	UAM_ASSERT_EQ(uam::UamControlService::ToolDefinitionsForTests(hidden_for(raw)).size(), std::size_t{UAM_ENABLE_COMPUTER_USE ? 17 : 16});
+	UAM_ASSERT_EQ(uam::UamControlService::ToolDefinitionsForTests(hidden_for(raw)).size(), std::size_t{UAM_ENABLE_COMPUTER_USE ? 22 : 21});
 
-	// A temporary side chat cannot watch pull requests, so it is not offered the watch tools.
+	// A temporary side chat cannot watch pull requests, schedule follow-ups or notify, so it is not offered those tools.
 	app.chats.front().temporary_parent_chat_id = "parent";
 	hidden = hidden_for(raw);
 	UAM_ASSERT(hidden.find("pr_watch") != std::string::npos && hidden.find("pr_unwatch") != std::string::npos);
+	UAM_ASSERT(hidden.find("schedule") != std::string::npos && hidden.find("notify") != std::string::npos);
 	UAM_ASSERT(hidden.find("secret_request") != std::string::npos);
 	app.chats.front().temporary_parent_chat_id.clear();
 
@@ -1726,6 +1813,575 @@ UAM_TEST(UamControlListsOnlyToolsTheSessionCanUse)
 		UAM_ASSERT(!uam::ranges::Contains(cli_tools, name));
 	UAM_ASSERT(uam::ranges::Contains(cli_tools, "user_question"));
 	uam::UamControlService::Shutdown(app);
+}
+
+UAM_TEST(UamControlManagerRefusesToolsTheSessionWasNotOffered)
+{
+	TempDir temp("uam-control-manager-hidden-tools");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession root = ChatDomainService().CreateNewChat("", "opencode-cli");
+	root.id = "chat-manager-hidden-tools";
+	root.uam_control_enabled = true;
+	root.execution_host_id = "local";
+	root.approval_mode = "default";
+	app.chats.push_back(std::move(root));
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = app.chats.front().id;
+	session->provider_id = "opencode-cli";
+	session->running = true;
+	session->active_uam_agent_workspace_access = "write";
+	uam::AcpSessionState& raw = *session;
+	app.acp_sessions.push_back(std::move(session));
+	std::string error;
+	UAM_ASSERT(uam::UamControlService::Initialize(app, &error));
+	const int64_t now = uam::time::SystemEpochMillisecondsNow();
+	const std::string refusal = "This UAM tool is not available in this session.";
+	const auto call = [&](const std::string& capability, const std::string& id, const std::string& method, nlohmann::json arguments)
+	{
+		return uam::UamControlService::HandleRequestForTests(app, capability, {{"requestId", id}, {"method", method}, {"arguments", std::move(arguments)}}, now);
+	};
+	const nlohmann::json html = {{"title", "Check"}, {"html", "<!doctype html><title>x</title><p>x</p>"}};
+	const auto issue = [&]()
+	{
+		nlohmann::json setup{{"params", {{"mcpServers", nlohmann::json::array()}}}};
+		UAM_ASSERT(uam::UamControlService::AppendSessionMcpServer(app, raw, app.chats.front(), "session/new", setup, &error));
+		return raw.uam_control_capability_id;
+	};
+
+	// A goal reviewer is offered no tools. Requests that bypass its tool server (for example signed with its key)
+	// are refused by the manager too, including tools the read-only ceiling alone would have let through.
+	raw.goal_review_turn = true;
+	const std::string reviewer = issue();
+	UAM_ASSERT_EQ(call(reviewer, "reviewer-delegate", "agent_delegate", {{"agentId", "plan"}, {"task", "Read the workspace."}}).value("error", ""), refusal);
+	UAM_ASSERT_EQ(call(reviewer, "reviewer-question", "user_question", {{"question", "Proceed?"}}).value("error", ""), refusal);
+	UAM_ASSERT_EQ(call(reviewer, "reviewer-preview", "html_view_preview", html).value("error", ""), refusal);
+	UAM_ASSERT_EQ(call(reviewer, "reviewer-publish", "html_view_publish", html).value("error", ""), refusal);
+	UAM_ASSERT_EQ(call(reviewer, "reviewer-list", "agent_list", nlohmann::json::object()).value("error", ""), refusal);
+	UAM_ASSERT(app.agent_runs.empty());
+	UAM_ASSERT(!uam::UamControlService::PendingApprovalForChat(app, app.chats.front().id).has_value());
+	// Transport receipts are not tools and still reach the manager.
+	UAM_ASSERT(call(reviewer, "reviewer-initialized", "_mcp_initialized", {{"connectionId", "reviewer-connection"}}).value("ok", false));
+	// The list is fixed at launch: the review turn settling does not restore tools to the same capability.
+	raw.goal_review_turn = false;
+	UAM_ASSERT_EQ(call(reviewer, "reviewer-after", "html_view_preview", html).value("error", ""), refusal);
+
+	// The worker's next session is offered its tools again and the manager serves them.
+	const std::string worker = issue();
+	UAM_ASSERT(worker != reviewer);
+	UAM_ASSERT(call(worker, "worker-preview", "html_view_preview", html).value("ok", false));
+	UAM_ASSERT(call(worker, "worker-question", "user_question", {{"question", "Proceed?"}}).value("pendingApproval", false));
+
+	// A read-only agent is not offered goal_create, so the manager refuses it as unavailable rather than evaluating it.
+	raw.active_uam_agent_workspace_access = "read";
+	const std::string read_only = issue();
+	UAM_ASSERT_EQ(call(read_only, "read-goal", "goal_create", {{"objective", "Change files"}, {"idempotencyKey", "read-goal"}}).value("error", ""), refusal);
+	raw.active_uam_agent_workspace_access = "write";
+
+	// CLI View hides the HTML view and wait tools; the manager refuses them for that terminal's capability.
+	app.cli_terminals.push_back(std::make_unique<uam::CliTerminalState>());
+	uam::CliTerminalState& terminal = *app.cli_terminals.back();
+	nlohmann::json server;
+	UAM_ASSERT(uam::UamControlService::PrepareTerminalMcpServer(app, terminal, app.chats.front(), server, error));
+	terminal.running = true;
+	const std::string cli = terminal.uam_control_session->uam_control_capability_id;
+	UAM_ASSERT_EQ(call(cli, "cli-preview", "html_view_preview", html).value("error", ""), refusal);
+	UAM_ASSERT_EQ(call(cli, "cli-wait", "agent_wait", {{"runId", "run-1"}}).value("error", ""), refusal);
+	UAM_ASSERT(call(cli, "cli-skills", "skill_list", nlohmann::json::object()).value("ok", false));
+	uam::UamControlService::Shutdown(app);
+}
+
+UAM_TEST(UamControlToolServerSignsWithTheProviderEnvironmentKeyWhenTheReferenceIsNotExpanded)
+{
+	TempDir temp("uam-control-launch-key");
+	uam::AppState app;
+	app.data_root = temp.root;
+	ChatSession root = ChatDomainService().CreateNewChat("", "opencode-cli");
+	root.id = "chat-launch-key";
+	root.uam_control_enabled = true;
+	root.execution_host_id = "local";
+	app.chats.push_back(std::move(root));
+	auto session = std::make_unique<uam::AcpSessionState>();
+	session->chat_id = app.chats.front().id;
+	session->provider_id = "opencode-cli";
+	session->running = true;
+	session->active_uam_agent_workspace_access = "write";
+	uam::AcpSessionState& raw = *session;
+	app.acp_sessions.push_back(std::move(session));
+	std::string error;
+	UAM_ASSERT(uam::UamControlService::Initialize(app, &error));
+	struct ShutdownManager
+	{
+		uam::AppState& app;
+		~ShutdownManager() { uam::UamControlService::Shutdown(app); }
+	} shutdown{app};
+	nlohmann::json setup{{"params", {{"mcpServers", nlohmann::json::array()}}}};
+	UAM_ASSERT(uam::UamControlService::AppendSessionMcpServer(app, raw, app.chats.front(), "session/new", setup, &error));
+	// What a provider that passes its environment through, but does not expand the configuration's reference, starts.
+	std::vector<std::pair<std::string, std::string>> environment;
+	for (const auto& entry : setup["params"]["mcpServers"].back()["env"])
+		environment.emplace_back(entry.value("name", ""), entry.value("name", "") == "UAM_CONTROL_REQUEST_KEY" ? std::string("${UAM_CONTROL_LAUNCH_KEY}") : entry.value("value", ""));
+	environment.emplace_back("UAM_CONTROL_LAUNCH_KEY", app.uam_control_capabilities.back().request_key);
+	auto& process_service = PlatformServicesFactory::Instance().process_service;
+	uam::platform::StdioProcessPlatformFields process;
+	UAM_ASSERT(process_service.StartStdioProcess(process, temp.root,
+	    {process_service.ResolveCurrentExecutablePath().string(), "--uam-test-control-mcp"}, &error, environment));
+	struct StopServer
+	{
+		uam::platform::StdioProcessPlatformFields& process;
+		~StopServer()
+		{
+			auto& service = PlatformServicesFactory::Instance().process_service;
+			service.StopStdioProcess(process, true);
+			service.CloseStdioProcessHandles(process);
+		}
+	} stop_server{process};
+	const std::string input = nlohmann::json{{"jsonrpc", "2.0"}, {"id", 1}, {"method", "tools/call"},
+	                                         {"params", {{"name", "goal_get"}, {"arguments", nlohmann::json::object()}}}}.dump() + "\n";
+	UAM_ASSERT(process_service.WriteToStdioProcess(process, input.data(), input.size(), &error));
+	std::string output;
+	char buffer[4096];
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+	while (output.find('\n') == std::string::npos && std::chrono::steady_clock::now() < deadline)
+	{
+		(void)uam::UamControlService::ProcessPendingRequests(app);
+		const auto read = process_service.ReadStdioProcessStdout(process, buffer, sizeof(buffer), &error);
+		if (read > 0) output.append(buffer, static_cast<std::size_t>(read));
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	}
+	UAM_ASSERT(output.find('\n') != std::string::npos);
+	const nlohmann::json reply = nlohmann::json::parse(output.substr(0, output.find('\n')));
+	// A literal reference used as the key would be refused as unsigned; the inherited key is accepted.
+	UAM_ASSERT_EQ(reply["result"]["isError"], nlohmann::json(false));
+	UAM_ASSERT(nlohmann::json::parse(reply["result"]["content"][0]["text"].get<std::string>()).contains("goal"));
+}
+
+UAM_TEST(UamControlUsageReportCoversOnlyTheCallingChatAndKeepsMoneyOut)
+{
+	TempDir temp("uam-control-usage-report");
+	uam::AppState app;
+	app.data_root = temp.root;
+	const auto message = [](MessageRole role, int input, int output, double cost)
+	{
+		Message value;
+		value.role = role;
+		value.tokens_input = input;
+		value.tokens_output = output;
+		value.estimated_cost_usd = cost;
+		return value;
+	};
+	ChatSession chat = ChatDomainService().CreateNewChat("", "gemini-cli");
+	chat.id = "usage-caller";
+	chat.uam_control_enabled = true;
+	chat.uam_agent_id = "plan";
+	chat.execution_host_id = "local";
+	chat.messages = {message(MessageRole::User, 0, 0, 0.0), message(MessageRole::Assistant, 1000, 200, 0.25),
+	                 message(MessageRole::User, 0, 0, 0.0), message(MessageRole::Assistant, 3000, 400, 0.5)};
+	app.chats.push_back(std::move(chat));
+	// Neither an unrelated chat nor a child the caller delegated to is counted.
+	ChatSession other = ChatDomainService().CreateNewChat("", "gemini-cli");
+	other.id = "usage-other";
+	other.messages = {message(MessageRole::Assistant, 900000, 900000, 99.0)};
+	app.chats.push_back(std::move(other));
+	ChatSession child = ChatDomainService().CreateNewChat("", "gemini-cli");
+	child.id = "usage-child";
+	child.uam_control_enabled = true;
+	child.agent_run_id = "usage-run";
+	child.messages = {message(MessageRole::Assistant, 70000, 7000, 7.0)};
+	app.chats.push_back(std::move(child));
+	AgentRun run;
+	run.id = "usage-run";
+	run.root_chat_id = "usage-caller";
+	run.transcript_chat_id = "usage-child";
+	run.status = "running";
+	app.agent_runs.push_back(run);
+
+	const auto start_session = [&](const std::string& chat_id)
+	{
+		auto session = std::make_unique<uam::AcpSessionState>();
+		session->chat_id = chat_id;
+		session->provider_id = "gemini-cli";
+		session->running = true;
+		session->active_uam_agent_id = "plan";
+		session->active_uam_agent_workspace_access = "read";
+		app.acp_sessions.push_back(std::move(session));
+		return app.acp_sessions.back().get();
+	};
+	uam::AcpSessionState* root_session = start_session("usage-caller");
+	std::string error;
+	UAM_ASSERT(uam::UamControlService::Initialize(app, &error));
+	const auto issue = [&](uam::AcpSessionState& session, const std::string& chat_id)
+	{
+		nlohmann::json setup{{"params", {{"mcpServers", nlohmann::json::array()}}}};
+		UAM_ASSERT(uam::UamControlService::AppendSessionMcpServer(app, session, *ChatDomainService().FindChatById(app, chat_id), "session/new", setup, &error));
+		// A read-only (Plan) session is still offered the tool.
+		UAM_ASSERT(uam::UamControlService::HiddenToolsForTests(setup["params"]["mcpServers"].back()).find("usage_report") == std::string::npos);
+		return session.uam_control_capability_id;
+	};
+	const std::string capability = issue(*root_session, "usage-caller");
+	const auto call = [&](const std::string& id, const std::string& request_id)
+	{
+		return uam::UamControlService::HandleRequestForTests(app, id,
+		    {{"requestId", request_id}, {"method", "usage_report"}, {"arguments", nlohmann::json::object()}}, 1000000);
+	};
+
+	// No allowance service: totals still come back and the allowance says why it is missing.
+	nlohmann::json report = call(capability, "usage-1");
+	UAM_ASSERT(report.value("ok", false));
+	const nlohmann::json& totals = report["result"];
+	UAM_ASSERT_EQ(totals["tokens"]["input"].get<std::int64_t>(), std::int64_t{4000});
+	UAM_ASSERT_EQ(totals["tokens"]["output"].get<std::int64_t>(), std::int64_t{600});
+	UAM_ASSERT_EQ(totals["tokens"]["total"].get<std::int64_t>(), std::int64_t{4600});
+	UAM_ASSERT_EQ(totals["messagesWithUsage"].get<std::size_t>(), std::size_t{2});
+	UAM_ASSERT(std::abs(totals["estimatedCostUsd"].get<double>() - 0.75) < 1e-9);
+	UAM_ASSERT_EQ(totals.value("costBasis", ""), std::string("estimate"));
+	UAM_ASSERT_EQ(totals["accountAllowance"].value("status", ""), std::string("unavailable"));
+	UAM_ASSERT(!totals["accountAllowance"].value("reason", "").empty());
+	// The call is audited like the other read-only tools, and changes nothing else.
+	UAM_ASSERT_EQ(ChatDomainService().FindChatById(app, "usage-caller")->uam_control_audit.back().method, std::string("usage_report"));
+	UAM_ASSERT_EQ(ChatDomainService().FindChatById(app, "usage-caller")->messages.size(), std::size_t{4});
+
+	// The cached allowance of this chat's provider is reported as shares and resets; money figures stay out.
+	uam::usage::AccountAllowanceFetchResult fetched;
+	fetched.limits = {{"updatedAt", 1700000000000LL}, {"planType", "pro"},
+	                  {"primary", {{"usedPercent", 40}, {"resetsAt", 1800000000LL}, {"windowDurationMinutes", 300}}},
+	                  {"credits", {{"hasCredits", true}, {"unlimited", false}, {"balance", "$12.34"}}},
+	                  {"individualLimit", {{"limit", "$100.00"}, {"used", "$60.00"}, {"remainingPercent", 40}, {"resetsAt", 1800000000LL}}}};
+	fetched.windows = nlohmann::json::array({{{"id", "daily"}, {"label", "Daily requests"}, {"usedPercent", 10}}});
+	fetched.primary_label = "5-hour";
+	std::atomic<int> reads{0};
+	auto allowances = std::make_shared<uam::usage::AccountAllowanceService>(temp.root,
+	    std::vector<uam::usage::AccountAllowanceProviderConfig>{{"gemini-cli", {"gemini"}}, {"codex-cli", {"codex"}}},
+	    [&](const uam::usage::AccountAllowanceProviderConfig&, const std::filesystem::path&, std::stop_token, bool) { ++reads; return fetched; });
+	app.account_allowances = allowances;
+	const auto ready_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+	// Both providers read once at start; wait for both, so a late read cannot be mistaken for one the tool started.
+	while ((allowances->CachedRow("gemini-cli").value("status", "") != "ready" || allowances->CachedRow("codex-cli").value("status", "") != "ready") &&
+	       std::chrono::steady_clock::now() < ready_deadline)
+		std::this_thread::sleep_for(std::chrono::milliseconds(2));
+	const int reads_before = reads.load();
+	report = call(capability, "usage-2");
+	UAM_ASSERT(report.value("ok", false));
+	const nlohmann::json& allowance = report["result"]["accountAllowance"];
+	UAM_ASSERT_EQ(allowance.value("status", ""), std::string("ready"));
+	UAM_ASSERT_EQ(allowance.value("providerId", ""), std::string("gemini-cli"));
+	UAM_ASSERT_EQ(allowance["primary"]["usedPercent"], nlohmann::json(40));
+	UAM_ASSERT_EQ(allowance["primary"]["label"], nlohmann::json("5-hour"));
+	UAM_ASSERT_EQ(allowance["windows"].size(), std::size_t{1});
+	UAM_ASSERT_EQ(allowance["spendLimitRemainingPercent"], nlohmann::json(40));
+	const std::string dumped = report.dump();
+	for (const std::string hidden : {"$12.34", "$100.00", "$60.00", "codex-cli", "usage-other", "usage-child"})
+		UAM_ASSERT(dumped.find(hidden) == std::string::npos);
+	UAM_ASSERT_EQ(reads.load(), reads_before);
+
+	// An SSH chat's account lives on its host, which UAM does not read.
+	ChatDomainService().FindChatById(app, "usage-caller")->execution_host_id = "ssh-host";
+	report = call(capability, "usage-3");
+	UAM_ASSERT_EQ(report["result"]["accountAllowance"].value("status", ""), std::string("unavailable"));
+	ChatDomainService().FindChatById(app, "usage-caller")->execution_host_id = "local";
+
+	// A delegated child reports its own transcript, never its parent's.
+	uam::AcpSessionState* child_session = start_session("usage-child");
+	const std::string child_capability = issue(*child_session, "usage-child");
+	report = call(child_capability, "usage-child-1");
+	UAM_ASSERT(report.value("ok", false));
+	UAM_ASSERT_EQ(report["result"]["tokens"]["total"].get<std::int64_t>(), std::int64_t{77000});
+
+	// A transcript that is not loaded is not reported as zero.
+	ChatDomainService().FindChatById(app, "usage-caller")->messages_loaded = false;
+	report = call(capability, "usage-4");
+	UAM_ASSERT(!report.value("ok", true));
+	ChatDomainService().FindChatById(app, "usage-caller")->messages_loaded = true;
+	uam::UamControlService::Shutdown(app);
+}
+
+namespace
+{
+	/// A read-only (Plan) structured session for one chat, with its UAM capability, for the background-read tools.
+	struct ReadToolFixture
+	{
+		TempDir temp;
+		uam::AppState app;
+		std::string error;
+
+		explicit ReadToolFixture(const std::string& name) : temp(name)
+		{
+			app.data_root = temp.root / "data";
+			fs::create_directories(app.data_root);
+		}
+
+		~ReadToolFixture() { uam::UamControlService::Shutdown(app); }
+
+		ChatSession& AddChat(const std::string& id, const fs::path& workspace)
+		{
+			ChatSession chat = ChatDomainService().CreateNewChat("", "gemini-cli");
+			chat.id = id;
+			chat.uam_control_enabled = true;
+			chat.uam_agent_id = "plan";
+			chat.execution_host_id = "local";
+			chat.workspace_directory = uam::paths::Utf8PathString(workspace);
+			app.chats.push_back(std::move(chat));
+			return app.chats.back();
+		}
+
+		std::string Issue(const std::string& chat_id)
+		{
+			auto session = std::make_unique<uam::AcpSessionState>();
+			session->chat_id = chat_id;
+			session->provider_id = "gemini-cli";
+			session->running = true;
+			session->active_uam_agent_id = "plan";
+			session->active_uam_agent_workspace_access = "read";
+			uam::AcpSessionState& raw = *session;
+			app.acp_sessions.push_back(std::move(session));
+			if (app.uam_control_manager_id.empty()) UAM_ASSERT(uam::UamControlService::Initialize(app, &error));
+			nlohmann::json setup{{"params", {{"mcpServers", nlohmann::json::array()}}}};
+			UAM_ASSERT(uam::UamControlService::AppendSessionMcpServer(app, raw, *ChatDomainService().FindChatById(app, chat_id), "session/new", setup, &error));
+			return raw.uam_control_capability_id;
+		}
+
+		nlohmann::json Call(const std::string& capability, const std::string& request_id, const std::string& method, nlohmann::json arguments = nlohmann::json::object())
+		{
+			return uam::UamControlService::HandleRequestForTests(app, capability,
+			    {{"requestId", request_id}, {"method", method}, {"arguments", std::move(arguments)}}, uam::time::SystemEpochMillisecondsNow());
+		}
+
+		/// Runs the ordinary poll until the read's reply file is written, then reads and removes it.
+		nlohmann::json AwaitReply(const std::string& capability, const std::string& request_id)
+		{
+			const auto owner = std::ranges::find(app.uam_control_capabilities, capability, &uam::UamControlCapability::id);
+			UAM_ASSERT(owner != app.uam_control_capabilities.end());
+			const fs::path reply = owner->directory / "responses" / (request_id + ".json");
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+			while (!fs::exists(reply) && std::chrono::steady_clock::now() < deadline)
+			{
+				(void)uam::UamControlService::ProcessPendingRequests(app);
+				std::this_thread::sleep_for(std::chrono::milliseconds(5));
+			}
+			std::string text;
+			UAM_ASSERT(uam::io::TryReadTextFile(reply, text));
+			fs::remove(reply);
+			return nlohmann::json::parse(text);
+		}
+	};
+}
+
+UAM_TEST(UamControlWorktreeStatusReadsTheCallingChatsGitWorkspaceOffTheAppThread)
+{
+	if (!GitAvailableForTests())
+	{
+		std::fprintf(stderr, "SKIP worktree_status Git case: git is not installed\n");
+		return;
+	}
+	ReadToolFixture fixture("uam-control-worktree-git");
+	const fs::path repo = fixture.temp.root / "repo";
+	const fs::path other_repo = fixture.temp.root / "other";
+	for (const fs::path& path : {repo, other_repo})
+	{
+		fs::create_directories(path);
+		UAM_ASSERT(RunGitForTest(path, "init -q"));
+		UAM_ASSERT(RunGitForTest(path, "config user.email uam@example.invalid"));
+		UAM_ASSERT(RunGitForTest(path, "config user.name UAM"));
+		UAM_ASSERT(RunGitForTest(path, "checkout -q -b feature-status"));
+		UAM_ASSERT(uam::io::WriteTextFile(path / "tracked.txt", "one\ntwo\n"));
+		UAM_ASSERT(RunGitForTest(path, "add tracked.txt"));
+		UAM_ASSERT(RunGitForTest(path, "commit -q -m initial"));
+	}
+	UAM_ASSERT(uam::io::WriteTextFile(repo / "tracked.txt", "one\ntwo\nprivate-content-marker\nfour\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(repo / "new.txt", "a\nb\nc\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(other_repo / "unrelated-change.txt", "x\n"));
+	fixture.AddChat("worktree-caller", repo);
+	fixture.AddChat("worktree-other", other_repo);
+	const std::string capability = fixture.Issue("worktree-caller");
+
+	// The read runs on a worker; the request itself only starts it, and the poll writes the audited reply.
+	UAM_ASSERT(fixture.Call(capability, "status-1", "worktree_status").value("pendingBackgroundRead", false));
+	// One read at a time per chat: a second request before the reply is refused at once.
+	const nlohmann::json busy = fixture.Call(capability, "status-busy", "worktree_status");
+	UAM_ASSERT(!busy.value("ok", true));
+	UAM_ASSERT(busy.value("error", "").find("still running") != std::string::npos);
+	const nlohmann::json reply = fixture.AwaitReply(capability, "status-1");
+	UAM_ASSERT(reply.value("ok", false));
+	const nlohmann::json& result = reply["result"];
+	UAM_ASSERT_EQ(result.value("vcs", ""), std::string("git"));
+	UAM_ASSERT_EQ(result.value("branch", ""), std::string("feature-status"));
+	UAM_ASSERT(result.value("lineCountsComplete", false));
+	UAM_ASSERT(!result.value("truncated", true));
+	UAM_ASSERT_EQ(result["summary"]["files"].get<std::size_t>(), std::size_t{2});
+	std::map<std::string, nlohmann::json> files;
+	for (const nlohmann::json& file : result["changedFiles"]) files[file.value("path", "")] = file;
+	UAM_ASSERT(files.contains("tracked.txt") && files.contains("new.txt"));
+	UAM_ASSERT_EQ(files["tracked.txt"]["additions"].get<int>(), 2);
+	UAM_ASSERT_EQ(files["new.txt"]["additions"].get<int>(), 3);
+	UAM_ASSERT_EQ(result["summary"]["additions"].get<std::int64_t>(), std::int64_t{5});
+	// Paths and counts only: file contents, the absolute workspace and another chat's changes never appear.
+	const std::string dumped = reply.dump();
+	for (const std::string& hidden : {std::string("private-content-marker"), std::string("unrelated-change"), uam::paths::Utf8PathString(fixture.temp.root)})
+		UAM_ASSERT(dumped.find(hidden) == std::string::npos);
+	UAM_ASSERT_EQ(ChatDomainService().FindChatById(fixture.app, "worktree-caller")->uam_control_audit.back().method, std::string("worktree_status"));
+
+	// A chat moved to another workspace while its read ran is answered with an error, not the old workspace.
+	UAM_ASSERT(fixture.Call(capability, "status-moved", "worktree_status").value("pendingBackgroundRead", false));
+	ChatDomainService().FindChatById(fixture.app, "worktree-caller")->workspace_directory = uam::paths::Utf8PathString(other_repo);
+	const nlohmann::json moved = fixture.AwaitReply(capability, "status-moved");
+	UAM_ASSERT(!moved.value("ok", true));
+	UAM_ASSERT(moved.value("error", "").find("changed") != std::string::npos);
+	ChatDomainService().FindChatById(fixture.app, "worktree-caller")->workspace_directory = uam::paths::Utf8PathString(repo);
+
+	// A cancelled read writes no reply. Its slot stays taken until the read really ends, so cancelling and
+	// retrying cannot pile up git processes.
+	const fs::path responses = std::ranges::find(fixture.app.uam_control_capabilities, capability, &uam::UamControlCapability::id)->directory / "responses";
+	UAM_ASSERT(fixture.Call(capability, "status-connect", "_mcp_initialized", {{"connectionId", "connection-a"}}).value("ok", false));
+	UAM_ASSERT(fixture.Call(capability, "status-cancelled", "worktree_status").value("pendingBackgroundRead", false));
+	UAM_ASSERT(fixture.Call(capability, "status-cancel", "_mcp_cancel_request", {{"connectionId", "connection-a"}, {"requestId", "status-cancelled"}}).value("ok", false));
+	UAM_ASSERT(!fixture.Call(capability, "status-during-cancel", "worktree_status").value("ok", true));
+	const auto drain_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+	while (!fixture.app.uam_control_background_reads.empty() && std::chrono::steady_clock::now() < drain_deadline)
+	{
+		(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	}
+	UAM_ASSERT(fixture.app.uam_control_background_reads.empty());
+	(void)uam::UamControlService::ProcessPendingRequests(fixture.app);
+	UAM_ASSERT(!fs::exists(responses / "status-cancelled.json"));
+	UAM_ASSERT(fixture.Call(capability, "status-after-cancel", "worktree_status").value("pendingBackgroundRead", false));
+	UAM_ASSERT(fixture.AwaitReply(capability, "status-after-cancel").value("ok", false));
+
+	// A long change list stays under the 64 KiB transport with an explicit marker, and skips line counts.
+	for (int index = 0; index < 1500; ++index)
+		UAM_ASSERT(uam::io::WriteTextFile(repo / ("generated-file-with-a-deliberately-long-name-for-the-budget-" + std::to_string(index) + ".txt"), "x\n"));
+	UAM_ASSERT(fixture.Call(capability, "status-large", "worktree_status").value("pendingBackgroundRead", false));
+	const nlohmann::json large = fixture.AwaitReply(capability, "status-large");
+	UAM_ASSERT(large.value("ok", false));
+	UAM_ASSERT(large["result"].value("truncated", false));
+	UAM_ASSERT_EQ(large["result"]["summary"]["files"].get<std::size_t>(), std::size_t{1502});
+	UAM_ASSERT_EQ(large["result"]["changedFiles"].size() + large["result"]["omittedFiles"].get<std::size_t>(), std::size_t{1502});
+	UAM_ASSERT(!large["result"].value("lineCountsComplete", true));
+	UAM_ASSERT(large["result"]["summary"]["additions"].is_null());
+	UAM_ASSERT(nlohmann::json(large.dump()).dump().size() + 256 <= 64U * 1024U);
+
+	// Not a repository: an ordinary answer that says so.
+	fixture.AddChat("worktree-plain", fixture.temp.root / "plain");
+	fs::create_directories(fixture.temp.root / "plain");
+	const std::string plain_capability = fixture.Issue("worktree-plain");
+	UAM_ASSERT(fixture.Call(plain_capability, "status-plain", "worktree_status").value("pendingBackgroundRead", false));
+	const nlohmann::json plain = fixture.AwaitReply(plain_capability, "status-plain");
+	UAM_ASSERT(plain.value("ok", false));
+	UAM_ASSERT(!plain["result"].value("available", true));
+}
+
+#ifndef _WIN32
+UAM_TEST(UamControlWorktreeStatusReadsAnSvnWorkingCopy)
+{
+	if (!RunTestCommand("svn --version --quiet") || !RunTestCommand("svnadmin --version --quiet"))
+	{
+		std::fprintf(stderr, "SKIP worktree_status SVN case: svn or svnadmin is not installed\n");
+		return;
+	}
+	ReadToolFixture fixture("uam-control-worktree-svn");
+	const fs::path repository = fixture.temp.root / "repository";
+	const fs::path checkout = fixture.temp.root / "checkout";
+	UAM_ASSERT(RunTestCommand("svnadmin create " + ShellQuoteForTest(repository.string())));
+	const auto svn = [&](const fs::path& cwd, std::vector<std::string> args)
+	{
+		args.insert(args.begin() + 1, "--non-interactive");
+		const ProcessExecutionResult result = uam::RunSvn(cwd, args);
+		return result.ok && result.exit_code == 0;
+	};
+	UAM_ASSERT(svn(fixture.temp.root, {"checkout", "file://" + uam::paths::Utf8PathString(repository), "checkout"}));
+	UAM_ASSERT(uam::io::WriteTextFile(checkout / "tracked.txt", "one\n"));
+	UAM_ASSERT(svn(checkout, {"add", "tracked.txt"}));
+	UAM_ASSERT(svn(checkout, {"commit", "-m", "initial"}));
+	UAM_ASSERT(uam::io::WriteTextFile(checkout / "tracked.txt", "one\ntwo\n"));
+	fixture.AddChat("worktree-svn", checkout);
+	const std::string capability = fixture.Issue("worktree-svn");
+	UAM_ASSERT(fixture.Call(capability, "status-svn", "worktree_status").value("pendingBackgroundRead", false));
+	const nlohmann::json reply = fixture.AwaitReply(capability, "status-svn");
+	UAM_ASSERT(reply.value("ok", false));
+	UAM_ASSERT_EQ(reply["result"].value("vcs", ""), std::string("svn"));
+	UAM_ASSERT(reply["result"].contains("revision"));
+	UAM_ASSERT_EQ(reply["result"]["changedFiles"].size(), std::size_t{1});
+	UAM_ASSERT_EQ(reply["result"]["changedFiles"][0].value("path", ""), std::string("tracked.txt"));
+}
+#endif
+
+UAM_TEST(UamControlMemorySearchUsesOnlyTheCallingChatsRecallScopes)
+{
+	ReadToolFixture fixture("uam-control-memory-search");
+	const fs::path workspace = fixture.temp.root / "workspace";
+	const fs::path other_workspace = fixture.temp.root / "other-workspace";
+	fs::create_directories(workspace);
+	fs::create_directories(other_workspace);
+	const std::string category = uam::memory::SupportedCategories().front();
+	const auto remember = [&](const fs::path& root, const std::string& name, const std::string& fact)
+	{
+		const fs::path directory = MemoryService::CategoryPath(root, category);
+		fs::create_directories(directory);
+		UAM_ASSERT(uam::io::WriteTextFile(directory / (name + ".md"), "# " + name + "\n\n## Memory\n" + fact + "\n"));
+	};
+	remember(MemoryService::GlobalMemoryRoot(fixture.app.data_root), "global-widget", "Widget builds use tabs for indentation.");
+	remember(MemoryService::LocalMemoryRoot(workspace), "workspace-widget", "The widget workspace keeps release notes in docs.");
+	remember(MemoryService::LocalMemoryRoot(other_workspace), "other-widget", "Another widget indentation release note-marker-other-workspace.");
+	fixture.AddChat("memory-caller", workspace);
+	fixture.AddChat("memory-other", other_workspace);
+	const std::string capability = fixture.Issue("memory-caller");
+	const auto search = [&](const std::string& request_id, const std::string& query)
+	{
+		const nlohmann::json started = fixture.Call(capability, request_id, "memory_search", {{"query", query}});
+		return started.value("pendingBackgroundRead", false) ? fixture.AwaitReply(capability, request_id) : started;
+	};
+
+	// Global and this chat's workspace memories match; another workspace's never does.
+	nlohmann::json reply = search("memory-1", "widget indentation release");
+	UAM_ASSERT(reply.value("ok", false));
+	const nlohmann::json& results = reply["result"]["results"];
+	UAM_ASSERT_EQ(results.size(), std::size_t{2});
+	std::set<std::string> scopes;
+	for (const nlohmann::json& result : results) scopes.insert(result.value("scope", ""));
+	UAM_ASSERT(scopes == std::set<std::string>({"global", "workspace"}));
+	UAM_ASSERT(reply.dump().find("note-marker-other-workspace") == std::string::npos);
+	// The order is recall's own ranking for the same chat and words.
+	const ChatSession& caller = *ChatDomainService().FindChatById(fixture.app, "memory-caller");
+	const std::vector<MemoryService::RecallMatch> ranked = MemoryService::RankRecall(MemoryService::RecallRoots(fixture.app, caller), "widget indentation release");
+	UAM_ASSERT_EQ(ranked.size(), std::size_t{2});
+	UAM_ASSERT_EQ("- " + results[0].value("text", ""), ranked[0].text);
+	UAM_ASSERT_EQ(ChatDomainService().FindChatById(fixture.app, "memory-caller")->uam_control_audit.back().method, std::string("memory_search"));
+
+	// A query without searchable words answers at once with no results.
+	reply = fixture.Call(capability, "memory-empty", "memory_search", {{"query", "the and to"}});
+	UAM_ASSERT(reply.value("ok", false));
+	UAM_ASSERT(reply["result"]["results"].empty());
+
+	// Many matches: at most ten, with an explicit marker for the rest.
+	for (int index = 0; index < 25; ++index)
+		remember(MemoryService::GlobalMemoryRoot(fixture.app.data_root), "bulk-" + std::to_string(index), "Bulk widget fact number " + std::to_string(index) + ".");
+	reply = search("memory-many", "widget");
+	UAM_ASSERT(reply.value("ok", false));
+	UAM_ASSERT_EQ(reply["result"]["results"].size(), std::size_t{10});
+	UAM_ASSERT_EQ(reply["result"]["matches"].get<std::size_t>(), std::size_t{27});
+	UAM_ASSERT(reply["result"].value("truncated", false));
+	UAM_ASSERT_EQ(reply["result"]["omittedMatches"].get<std::size_t>(), std::size_t{17});
+	UAM_ASSERT(nlohmann::json(reply.dump()).dump().size() + 256 <= 64U * 1024U);
+
+	// Where recall reads nothing, search refuses: memory off for the chat, or a chat on an SSH host.
+	ChatDomainService().FindChatById(fixture.app, "memory-caller")->memory_level = "off";
+	reply = fixture.Call(capability, "memory-off", "memory_search", {{"query", "widget"}});
+	UAM_ASSERT(!reply.value("ok", true));
+	UAM_ASSERT(reply.value("error", "").find("turned off") != std::string::npos);
+	ChatDomainService().FindChatById(fixture.app, "memory-caller")->memory_level = "strict";
+	ChatDomainService().FindChatById(fixture.app, "memory-caller")->execution_host_id = "ssh-host";
+	reply = fixture.Call(capability, "memory-ssh", "memory_search", {{"query", "widget"}});
+	UAM_ASSERT(!reply.value("ok", true));
+	ChatDomainService().FindChatById(fixture.app, "memory-caller")->execution_host_id = "local";
+
+	// Arguments are a single bounded, non-blank query.
+	const std::vector<nlohmann::json> invalid = {nlohmann::json::object(), nlohmann::json{{"query", "   "}}, nlohmann::json{{"query", std::string(513, 'w')}},
+	                                             nlohmann::json{{"query", "widget"}, {"scope", "all"}}, nlohmann::json{{"query", 1}}};
+	for (std::size_t index = 0; index < invalid.size(); ++index)
+	{
+		const nlohmann::json refused = fixture.Call(capability, "memory-bad-" + std::to_string(index), "memory_search", invalid[index]);
+		UAM_ASSERT(!refused.value("ok", true) && refused.value("error", "").find("invalid arguments") != std::string::npos);
+	}
 }
 
 UAM_TEST(UamControlUserQuestionRoutesThroughTheExistingGuiInput)
@@ -2140,6 +2796,7 @@ UAM_TEST(GlobalAgentEditorSavesValidDefinitionsAndRejectsInvalidOnes)
 UAM_TEST(ProviderMarkdownAgentImportIsProviderNeutralAndNeverSilentlyDropsSecurity)
 {
 	TempDir temp("uam-provider-agent-import");
+	ScopedEnvVar isolated_config("XDG_CONFIG_HOME", (temp.root / "xdg").string());
 	const fs::path sources = temp.root / "native";
 	fs::create_directories(sources);
 	const fs::path opencode = sources / "reviewer.md";
@@ -2172,30 +2829,47 @@ UAM_TEST(ProviderMarkdownAgentImportIsProviderNeutralAndNeverSilentlyDropsSecuri
 	UAM_ASSERT(imported.markdown_snapshot.find("opencode") == std::string::npos);
 	UAM_ASSERT_EQ(uam::io::ReadTextFile(opencode), opencode_text);
 
-	const std::vector<std::pair<std::string, std::string>> unsafe = {
-	    {uam::provider_ids::kOpenCodeCli,
-	     "---\ndescription: Restricted\nmode: subagent\npermission:\n  edit:\n    '*': deny\n---\nReview.\n"},
-	    {uam::provider_ids::kCopilotCli,
-	     "---\nname: copilot-reviewer\ndescription: Restricted\ntools: [read]\n---\nReview.\n"},
-	    {uam::provider_ids::kGeminiCli,
-	     "---\nname: gemini-reviewer\ndescription: Restricted\nkind: local\nmax_turns: 4\ntimeout_mins: 2\n---\nReview.\n"},
-	    {uam::provider_ids::kClaudeCli,
-	     "---\nname: claude-reviewer\ndescription: Restricted\ndisallowedTools: [Edit]\n---\nReview.\n"},
+	// Fields whose loss would change what the agent may do are blocked and named.
+	const std::vector<std::tuple<std::string, std::string, std::string>> blocked_sources = {
+	    {uam::provider_ids::kOpenCodeCli, "---\ndescription: Restricted\nmode: subagent\nhooks:\n  Stop: []\n---\nReview.\n", "hooks"},
+	    {uam::provider_ids::kCopilotCli, "---\nname: copilot-reviewer\ndescription: Restricted\nhooks:\n  PreToolUse: []\n---\nReview.\n", "hooks"},
+	    {uam::provider_ids::kGeminiCli, "---\nname: gemini-reviewer\ndescription: Restricted\nkind: remote\n---\nReview.\n", "kind"},
+	    {uam::provider_ids::kClaudeCli, "---\nname: claude-reviewer\ndescription: Restricted\nisolation: worktree\n---\nReview.\n", "isolation"},
 	};
-	for (std::size_t index = 0; index < unsafe.size(); ++index)
+	for (std::size_t index = 0; index < blocked_sources.size(); ++index)
 	{
-		const fs::path source = sources / ("unsafe-" + std::to_string(index) + ".md");
-		UAM_ASSERT(uam::io::WriteTextFile(source, unsafe[index].second));
-		const auto blocked = uam::AgentDefinitionService::PreviewProviderAgentImport(unsafe[index].first, source);
+		const auto& [provider, text, field] = blocked_sources[index];
+		const fs::path source = sources / ("blocked-" + std::to_string(index) + ".md");
+		UAM_ASSERT(uam::io::WriteTextFile(source, text));
+		const auto blocked = uam::AgentDefinitionService::PreviewProviderAgentImport(provider, source);
 		UAM_ASSERT(!blocked.supported);
-		UAM_ASSERT(!blocked.security_fields.empty());
-		UAM_ASSERT(blocked.error.find("security/tool fields") != std::string::npos);
-		if (unsafe[index].first == uam::provider_ids::kGeminiCli)
-		{
-			UAM_ASSERT(std::ranges::find(blocked.security_fields, "max_turns") != blocked.security_fields.end());
-			UAM_ASSERT(std::ranges::find(blocked.security_fields, "timeout_mins") != blocked.security_fields.end());
-		}
+		UAM_ASSERT_EQ(blocked.security_fields, std::vector<std::string>{field});
+		UAM_ASSERT(blocked.error.starts_with(field + ":"));
 	}
+	// Restrictions UAM can only approximate require acknowledgment, never silent omission.
+	const std::vector<std::tuple<std::string, std::string, std::string>> acknowledged = {
+	    {uam::provider_ids::kCopilotCli, "---\nname: copilot-reviewer\ndescription: Restricted\ntools: [read]\n---\nReview.\n", "tools"},
+	    {uam::provider_ids::kGeminiCli, "---\nname: gemini-reviewer\ndescription: Restricted\nkind: local\nmax_turns: 4\ntimeout_mins: 2\n---\nReview.\n", "max_turns"},
+	    {uam::provider_ids::kClaudeCli, "---\nname: claude-reviewer\ndescription: Restricted\ndisallowedTools: [Edit]\n---\nReview.\n", "disallowedTools"},
+	};
+	for (std::size_t index = 0; index < acknowledged.size(); ++index)
+	{
+		const auto& [provider, text, field] = acknowledged[index];
+		const fs::path source = sources / ("acknowledged-" + std::to_string(index) + ".md");
+		UAM_ASSERT(uam::io::WriteTextFile(source, text));
+		const auto preview = uam::AgentDefinitionService::PreviewProviderAgentImport(provider, source);
+		UAM_ASSERT(preview.supported);
+		UAM_ASSERT(std::ranges::find(preview.ignored_fields, field) != preview.ignored_fields.end());
+		UAM_ASSERT(!preview.notes.empty());
+		uam::ProviderAgentImportRequest acknowledged_request;
+		acknowledged_request.provider_id = provider;
+		acknowledged_request.source_path = source;
+		acknowledged_request.workspace_access = "read";
+		UAM_ASSERT(!uam::AgentDefinitionService::ImportProviderAgent(temp.root / "data", {}, acknowledged_request, nullptr, &error));
+		UAM_ASSERT(error.find("acknowledge") != std::string::npos);
+	}
+	const fs::path copilot_read_only = sources / "acknowledged-0.md";
+	UAM_ASSERT_EQ(uam::AgentDefinitionService::PreviewProviderAgentImport(uam::provider_ids::kCopilotCli, copilot_read_only).max_workspace_access, std::string("read"));
 }
 
 UAM_TEST(CopilotGeminiAndClaudeAgentImportsRemainSubagentsWithExplicitUamAccess)

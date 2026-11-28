@@ -33,6 +33,8 @@ id_ed25519
 
 # React frontend generated output
 /UI-V2/node_modules
+# Package and test caches at any depth, such as a Vitest cache written from the repository root.
+node_modules/
 /UI-V2/dist/
 /UI-V2/*.tsbuildinfo
 /UI-V2/.vite/

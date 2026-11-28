@@ -1,4 +1,5 @@
 #include "common/usage/antigravity_accounting.h"
+#include "common/config/execution_host_config.h"
 #include "remote/remote_workspace_terminal.h"
 #include "remote/runner_startup.h"
 #include "app/chat_lifecycle_service.h"
@@ -9,6 +10,7 @@
 #include "bootstrap_metadata/windows_command_assertions.h"
 #include "runner_bootstrap_probe_cases.h"
 #include "common/utils/base64.h"
+#include "common/utils/diagnostic_log.h"
 #include "common/utils/hash_utils.h"
 #include "common/platform/platform_incremental_sha256.h"
 #include "common/usage/usage_collector.h"
@@ -37,7 +39,9 @@
 #include <set>
 
 #if defined(__APPLE__)
+#include <signal.h>
 #include <sys/wait.h>
+#include <unistd.h>
 #endif
 #if defined(_WIN32)
 #include "remote/runner_service_windows.h"
@@ -922,6 +926,43 @@ UAM_TEST(RemoteRunnerListsOnlyBoundedDirectChildDirectories)
 	UAM_ASSERT_EQ(file["error"].value("code", ""), std::string("not_directory"));
 }
 
+UAM_TEST(RemoteDirectoryAttachmentAcceptsOnlyTheRequestedHelperDirectory)
+{
+	TempDir temp("uam-runner-directory-attachment");
+	fs::create_directory(temp.root / "alpha");
+	uam::remote::RunnerState state;
+	(void)uam::remote::HandleRunnerRequest(
+	    {{"id", "hello-attach"}, {"type", "hello"},
+	     {"protocolVersion", uam::remote::kRunnerProtocolVersion}, {"nonce", "attach"}},
+	    "test-version", &state);
+#if defined(_WIN32)
+	const std::string platform = "windows";
+#else
+	const std::string platform = "linux";
+#endif
+	const std::string root = uam::paths::Utf8PathString(temp.root);
+	// A trailing separator names the same directory; the helper reports it without one, with a distinct parent.
+	const std::string requested = uam::paths::Utf8PathString(temp.root / "alpha") + "/";
+	const nlohmann::json listed = uam::remote::HandleRunnerRequest(
+	    {{"id", "list-trailing"}, {"type", "directory.list"}, {"path", requested}}, "test-version", &state);
+	UAM_ASSERT(listed.value("ok", false));
+	const std::string reported = listed["result"].value("directory", "");
+	UAM_ASSERT_EQ(reported, uam::paths::Utf8PathString(temp.root / "alpha"));
+	UAM_ASSERT_EQ(listed["result"].value("parentDirectory", ""), root);
+	UAM_ASSERT(uam::execution_hosts::RemoteDirectoryMatchesRequest(platform, requested, reported));
+	UAM_ASSERT(uam::execution_hosts::RemoteDirectoryMatchesRequest(platform, requested + ".", reported));
+
+	// A helper that answers with a relative or a different folder is refused, so no attachment is recorded.
+	UAM_ASSERT(!uam::execution_hosts::RemoteDirectoryMatchesRequest(platform, requested, "alpha"));
+	UAM_ASSERT(!uam::execution_hosts::RemoteDirectoryMatchesRequest(platform, requested, ""));
+	UAM_ASSERT(!uam::execution_hosts::RemoteDirectoryMatchesRequest(platform, requested, root));
+	UAM_ASSERT(!uam::execution_hosts::RemoteDirectoryMatchesRequest("linux", "/srv/x", "/srv/other"));
+	UAM_ASSERT(uam::execution_hosts::RemoteDirectoryMatchesRequest("linux", "/srv/x/./y/..", "/srv/x"));
+	UAM_ASSERT(uam::execution_hosts::RemoteDirectoryMatchesRequest("windows", "C:/Work/x", "c:\\work\\X\\"));
+	UAM_ASSERT(!uam::execution_hosts::RemoteDirectoryMatchesRequest("windows", "C:/Work/x", "D:\\Work\\x"));
+	UAM_ASSERT_EQ(uam::execution_hosts::LexicalRemotePath("windows", "\\\\srv\\share\\a\\.."), std::string("//srv/share"));
+}
+
 UAM_TEST(RemoteRunnerExecutesOnlyValidatedTypedProcessRequests)
 {
 	uam::remote::RunnerState state;
@@ -1502,7 +1543,7 @@ UAM_TEST(RemoteEphemeralDiscoveryLeasePreservesOwnedAuthorityAndDurableChats)
 		} guard{session};
 		if (kind == 4)
 		{
-			UAM_ASSERT(!started && error.find("Update the helper") != std::string::npos);
+			UAM_ASSERT(!started && error.find("Update the SSH helper") != std::string::npos);
 			UAM_ASSERT(!session.running && !fs::exists(log));
 			continue;
 		}
@@ -2074,9 +2115,15 @@ esac
 	    "linux-lab", "4.9.0-alpha-8", "nonce-1",
 	    {{"linux", "x86_64", runner, std::string(64, 'a')}}, plan, &error,
 	    "tools/uam"));
+	const fs::path log = temp.root / "diagnostic.log";
+	UAM_ASSERT(uam::diagnostics::StartFileLog(log, error, 0));
+	struct StopLog { ~StopLog() { uam::diagnostics::StopFileLog(); } } stop_log;
 	const uam::remote::BootstrapResult result = ExecuteTestBootstrapPlan(plan);
 	UAM_ASSERT(!result.ok);
-	UAM_ASSERT(result.error.find("runner socket path too long") != std::string::npos);
+	// The user sees one line; the helper's own reason stays in the diagnostic log.
+	UAM_ASSERT(result.error.find("Remote setup step failed") != std::string::npos);
+	uam::diagnostics::FlushFileLog();
+	UAM_ASSERT(uam::io::ReadTextFile(log).find("runner socket path too long") != std::string::npos);
 	UAM_ASSERT(!uam::paths::PathExistsNoThrow(copy_log));
 	const std::string commands = uam::io::ReadTextFile(command_log);
 	UAM_ASSERT(commands.find("socket=\"$HOME/tools/uam/") != std::string::npos);
@@ -2547,7 +2594,7 @@ UAM_TEST(LargeAttachmentStreamsFromDiskCompleteWithProgressOrFailsVisibly)
 		UAM_ASSERT(client.Connect(&error));
 		error.clear();
 		UAM_ASSERT(!client.UploadFileFromPath("attachment-legacy", "/remote/clip.MOV", source, {}, &error));
-		UAM_ASSERT(error.find("Update the helper") != std::string::npos);
+		UAM_ASSERT(error.find("Update the SSH helper") != std::string::npos);
 		UAM_ASSERT(uam_test::ReadFile(requests).find("file.begin") == std::string::npos);
 	}
 #endif
@@ -3621,6 +3668,86 @@ namespace
 	}
 }
 
+#if !defined(_WIN32)
+// Over SSH every connection is a new bridge to the one resident helper, so a connection that drops (a lost network,
+// a sleeping laptop, a killed ssh) ends only that bridge, in the middle of whatever it carried. A streamed upload cut
+// off that way left its partial temporary file and upload record on the host, and the attachment batch could not
+// remove the copies it had already committed. The client now reaches the helper again for both.
+UAM_TEST(RemoteStreamedUploadCutOffByADroppedConnectionLeavesNothingOnTheHost)
+{
+	TempDir temp("uam-upload-drop");
+	const ProxyTestHost host(temp.root);
+	// The stand-in bridge records its process id, so the test can end it the way a lost ssh process ends.
+	const fs::path bridge_pid = temp.root / "bridge.pid";
+	std::string script = "#!/bin/sh\necho $$ > " + ShellQuoteForTest(bridge_pid.string()) + "\nexec";
+	for (const std::string& argument : host.bridge) script += " " + ShellQuoteForTest(argument);
+	const fs::path bridge = temp.root / "bridge.sh";
+	UAM_ASSERT(uam::io::WriteTextFile(bridge, script + "\n"));
+	const auto current_bridge = [&bridge_pid] { return static_cast<pid_t>(std::stol(ReadFile(bridge_pid))); };
+	const auto drop_connection = [&current_bridge]
+	{
+		const pid_t pid = current_bridge();
+		const bool killed = pid > 0 && ::kill(pid, SIGKILL) == 0;
+		// Let the killed bridge end before the client writes its next request to it.
+		std::this_thread::sleep_for(std::chrono::milliseconds(200));
+		return killed ? pid : pid_t{0};
+	};
+
+	// Several transfer chunks, not a whole number of them.
+	const std::uintmax_t size = 4 * 256 * 1024 + 123;
+	const fs::path source = temp.root / "clip.bin";
+	{
+		std::ofstream out(source, std::ios::binary);
+		for (std::uintmax_t index = 0; index < size; ++index) out.put(static_cast<char>(index * 31 % 251));
+	}
+	const fs::path folder = temp.root / "workspace" / ".UAM" / "attachments" / "chat-drop";
+	const auto partial = [&folder](const std::string& upload_id) { return folder / (".uam-upload-" + upload_id + ".tmp"); };
+	uam::remote::RunnerClient client(PlatformServicesFactory::Instance().process_service,
+	    std::vector<std::string>{"/bin/sh", bridge.string()}, host.version);
+	std::string error;
+	UAM_ASSERT(client.Connect(&error));
+
+	// The batch's first attachment commits.
+	const fs::path first = folder / "0-first.bin";
+	UAM_ASSERT(client.UploadFileFromPath("attachment-first", first, source, {}, &error));
+	UAM_ASSERT_EQ(fs::file_size(first), size);
+
+	// The connection drops once the second attachment's first chunk is on the host.
+	const fs::path second = folder / "1-second.bin";
+	bool partial_written = false;
+	pid_t dropped = 0;
+	error.clear();
+	UAM_ASSERT(!client.UploadFileFromPath("attachment-second", second, source,
+	    [&](std::uintmax_t, std::uintmax_t)
+	    {
+		    if (dropped != 0) return;
+		    partial_written = fs::exists(partial("attachment-second"));
+		    dropped = drop_connection();
+	    }, &error));
+	UAM_ASSERT(partial_written);
+	UAM_ASSERT(dropped != 0);
+	UAM_ASSERT(!error.empty());
+	// The client reached the helper again through a new bridge and aborted: no partial file and no upload record,
+	// so the same upload id begins afresh instead of being refused as in use.
+	UAM_ASSERT(!fs::exists(partial("attachment-second")));
+	UAM_ASSERT(!fs::exists(second));
+	UAM_ASSERT(client.IsConnected());
+	UAM_ASSERT(current_bridge() != dropped);
+	const fs::path retry = folder / "2-retry.bin";
+	UAM_ASSERT(client.UploadFile("attachment-second", retry, "retry", &error));
+
+	// The batch then removes its committed copy over a connection that has also dropped: the removal reconnects once.
+	UAM_ASSERT(drop_connection() != 0);
+	UAM_ASSERT(client.RemoveFile("cleanup-0", first, &error));
+	UAM_ASSERT(!fs::exists(first));
+	// A removal on a client that is already disconnected connects first.
+	client.Disconnect();
+	UAM_ASSERT(client.RemoveFile("cleanup-1", retry, &error));
+	UAM_ASSERT(!fs::exists(retry));
+	client.Disconnect();
+}
+#endif
+
 UAM_TEST(RemoteRunnerProxyUsesTheConfiguredVersionAndAttachOnlyNeverStartsOrDuplicates)
 {
 	TempDir temp("uam-runner-proxy-reattach");
@@ -4346,6 +4473,61 @@ UAM_TEST(RemoteRunnerProxyStopsThroughTheHelperServiceWithAnAcknowledgedOutcome)
 	uam::remote::ProcessPollResult removed;
 	UAM_ASSERT(!client.PollProcess(session, removed, &error));
 	UAM_ASSERT(error.find("does not exist") != std::string::npos);
+}
+
+// Model discovery stops on its answer before acknowledging the batch that carried it, and a chat can be stopped
+// while a streamed batch waits for its acknowledgement. The stop drain must start after that delivered batch:
+// starting at the last acknowledged cursor wrote the reply again, which the app logged as an unknown id.
+UAM_TEST(RemoteRunnerProxyStopDoesNotReplayADeliveredUnacknowledgedBatch)
+{
+	TempDir temp("uam-proxy-stop-replay");
+	const ProxyTestHost host(temp.root);
+	const std::string token = "proxy-stop-replay-token";
+	auto& service = PlatformServicesFactory::Instance().process_service;
+	uam::platform::StdioProcessPlatformFields proxy;
+	host.StartProxy(proxy, uam::remote::BuildProcessProxySpec(
+	    "acp-proxy-stop-replay", temp.root, ProxyProvider({"echo-lines", "reply:"}), {}, false, token));
+	std::string error;
+	const std::string request = "{\"id\":2}\n";
+	UAM_ASSERT(service.WriteToStdioProcess(proxy, request.data(), request.size(), &error));
+	const std::string reply = "reply:{\"id\":2}\n";
+	const std::string marker = std::string(uam::remote::kRemoteOutputMarkerPrefix) + token + " ";
+	std::string output;
+	std::array<char, 4096> buffer{};
+	const auto marked = [&]
+	{
+		const std::size_t start = output.find(marker);
+		return output.find(reply) != std::string::npos && start != std::string::npos && output.find('\n', start) != std::string::npos;
+	};
+	for (int attempt = 0; attempt < ProxyPollAttempts(500) && !marked(); ++attempt)
+	{
+		const std::ptrdiff_t count = service.ReadStdioProcessStdout(proxy, buffer.data(), buffer.size(), &error);
+		if (count > 0) output.append(buffer.data(), static_cast<std::size_t>(count));
+		else std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	UAM_ASSERT(marked());
+	// No acknowledgement: the app stops first, exactly as discovery does.
+	UAM_ASSERT(service.WriteToStdioProcess(proxy, uam::remote::kRemoteStopControlLine.data(), uam::remote::kRemoteStopControlLine.size(), &error));
+	int exit_code = -1;
+	for (int attempt = 0; attempt < ProxyPollAttempts(500); ++attempt)
+	{
+		const std::ptrdiff_t count = service.ReadStdioProcessStdout(proxy, buffer.data(), buffer.size(), &error);
+		if (count > 0)
+		{
+			output.append(buffer.data(), static_cast<std::size_t>(count));
+			continue;
+		}
+		if (service.PollStdioProcessExited(proxy, &exit_code)) break;
+		std::this_thread::sleep_for(std::chrono::milliseconds(10));
+	}
+	for (std::ptrdiff_t count = service.ReadStdioProcessStdout(proxy, buffer.data(), buffer.size(), &error); count > 0;
+	     count = service.ReadStdioProcessStdout(proxy, buffer.data(), buffer.size(), &error))
+		output.append(buffer.data(), static_cast<std::size_t>(count));
+	service.CloseStdioProcessHandles(proxy);
+	UAM_ASSERT_EQ(exit_code, 0);
+	std::size_t replies = 0;
+	for (std::size_t found = output.find(reply); found != std::string::npos; found = output.find(reply, found + reply.size())) ++replies;
+	UAM_ASSERT_EQ(replies, static_cast<std::size_t>(1));
 }
 
 UAM_TEST(RemoteProxyKeepsWindowsDriveAndUncWorkspacePathsIntact)
@@ -7100,7 +7282,7 @@ UAM_TEST(AcpRemoteUnconfirmedReceiptReturnsThePromptUnsentWithoutAHeldQueue)
 		std::this_thread::yield();
 	}
 	UAM_ASSERT(!session.pending_prompt_delivery);
-	UAM_ASSERT_EQ(session.last_error, std::string("Remote prompt was not sent because its owned durable receipt was not confirmed."));
+	UAM_ASSERT_EQ(session.last_error, std::string("The remote prompt was not sent because UAM could not confirm it was saved."));
 	UAM_ASSERT(fixture.input.Bytes().empty());
 	UAM_ASSERT(chat.messages.back().acp_prompt_not_sent && chat.messages.back().interrupted);
 	UAM_ASSERT(chat.acp_queued_prompts.empty() && chat.acp_dispatched_queued_prompt_count == 0);
@@ -9116,7 +9298,7 @@ UAM_TEST(AcpRemoteStagedPromptReturnsUnsentWhenItsBridgeCloses)
 		UAM_ASSERT(std::ranges::any_of(session.diagnostics, [](const uam::AcpDiagnosticEntryState& entry) { return entry.reason == "staged_prompt_requeued"; }));
 		PollUntilRemoteTurnSettles(app, session, true);
 		UAM_ASSERT(std::ranges::none_of(session.diagnostics, [](const uam::AcpDiagnosticEntryState& entry)
-		    { return entry.reason == "retry_scheduled" && entry.message == "Remote prompt is waiting for its owned durable receipt."; }));
+		    { return entry.reason == "retry_scheduled" && entry.message == "The remote prompt is waiting to be saved."; }));
 		UAM_ASSERT(!session.running && !session.processing && !session.reconnect_pending && !session.pending_prompt_delivery);
 		UAM_ASSERT_EQ(session.lifecycle_state, std::string("error"));
 		UAM_ASSERT(!session.last_error.empty());
@@ -10318,7 +10500,7 @@ UAM_TEST(AcpRemoteNativeMarkerFailurePreservesUnrelatedRpcRequest)
 				std::this_thread::yield();
 			}
 			UAM_ASSERT(!session.pending_prompt_delivery);
-			UAM_ASSERT_EQ(session.last_error, std::string("Remote prompt was not sent because its owned durable receipt was not confirmed."));
+			UAM_ASSERT_EQ(session.last_error, std::string("The remote prompt was not sent because UAM could not confirm it was saved."));
 			UAM_ASSERT(chat.messages.back().acp_prompt_not_sent);
 		}
 		UAM_ASSERT_EQ(chat.remote_pending_requests, prior_requests);
@@ -10477,7 +10659,7 @@ static void VerifyProviderSwitchStopsTheOldHelper(const bool automatic, const bo
 	// A prompt cannot launch or deliver until the old helper is confirmed gone.
 	std::string error;
 	UAM_ASSERT(!uam::SendAcpPrompt(app, chat.id, "Too early for the new provider.", &error));
-	UAM_ASSERT(error.find("stopping the previous process") != std::string::npos);
+	UAM_ASSERT(error.find("UAM stops the previous process") != std::string::npos);
 	error.clear();
 	// The target being disabled on this host must not stop the old helper being attached and stopped.
 	const auto settings_availability = app.settings.provider_availability;
@@ -10596,7 +10778,7 @@ UAM_TEST(RemovingTheLastHeldPromptKeepsRetiringTheHelperUntilTheHostReturns)
 	// Resume could only turn the prompt into an interrupted row now, so it refuses and keeps it.
 	std::string error;
 	UAM_ASSERT(!uam::ResumeQueuedAcpPrompts(app, chat.id, {{visible.id, visible.revision}}, &error));
-	UAM_ASSERT(error.find("stopping the previous process") != std::string::npos);
+	UAM_ASSERT(error.find("UAM stops the previous process") != std::string::npos);
 	UAM_ASSERT_EQ(chat.acp_queued_prompts.size(), std::size_t{1});
 	UAM_ASSERT(chat.acp_queue_held);
 	error.clear();
@@ -10785,7 +10967,7 @@ static void VerifyAutomaticRoutedRemoteSend(const AutomaticSendInterruption inte
 		UAM_ASSERT(poll_until([&] { return !launch_pending(); }));
 		uam::FlushPendingChatSaves(app);
 		const uam::AcpSessionState* given_up = uam::FindAcpSessionForChat(app, chat.id);
-		UAM_ASSERT(given_up != nullptr && given_up->last_error.find("given up before it started") != std::string::npos);
+		UAM_ASSERT(given_up != nullptr && given_up->last_error.find("abandoned before it started") != std::string::npos);
 		UAM_ASSERT(!fs::exists(provider_input));
 		if (queue_changed)
 		{
@@ -11025,7 +11207,7 @@ namespace
 		UAM_ASSERT(uam::acp_detail::SendQueuedPromptIfReady(app, session, chat));
 		// Unique target-branch error: no authored unsent-row pre-save is involved
 		// because the real internal queue gave this continuation indices -1.
-		UAM_ASSERT_EQ(session.last_error, std::string("Prompt is waiting for its remote recovery marker to be saved."));
+		UAM_ASSERT_EQ(session.last_error, std::string("The prompt is waiting to be saved before it is sent."));
 		UAM_ASSERT_EQ(session.next_request_id, next_request + 1);
 		UAM_ASSERT(!session.pending_prompt_delivery && session.prompt_request_id == 0);
 		UAM_ASSERT_EQ(chat.remote_pending_requests, requests);

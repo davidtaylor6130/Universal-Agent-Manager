@@ -206,7 +206,7 @@ UAM_TEST(AntigravityProviderOwnedGoalCannotFallThroughToOrdinaryPrompt)
 	{
 		std::string error;
 		UAM_ASSERT(!uam::acp_detail::ResumeGoal(app, chat.id, goal.id, &error, restart));
-		UAM_ASSERT_EQ(error, std::string("Antigravity native Goal control is unavailable in structured Chat. Use a UAM-managed goal for bounded continuation."));
+		UAM_ASSERT_EQ(error, std::string("Antigravity's own Goal command is not available in Chat; use a UAM goal instead."));
 		const ChatSession& retained = app.chats.front();
 		UAM_ASSERT_EQ(retained.active_goal_id, chat.active_goal_id);
 		UAM_ASSERT_EQ(retained.goal_command_revision, chat.goal_command_revision);
@@ -1542,7 +1542,7 @@ UAM_TEST(AntigravityCapturedPermissionDenialPreservesOtherSuccessAndReportsAmbig
 				{
 					++summaries;
 					UAM_ASSERT_EQ(tool.status, std::string("failed"));
-					UAM_ASSERT(tool.result_text.find("cannot identify") != std::string::npos);
+					UAM_ASSERT(tool.result_text.find("which tool step it was is unknown") != std::string::npos);
 					UAM_ASSERT(tool.result_text.size() < 256);
 				}
 			}
@@ -2145,6 +2145,160 @@ UAM_TEST(AntigravityUamGoalChangedConversationHoldIsNotAUsageRule)
 	UAM_ASSERT(fixture.runtime.OnAcpHandleMessage(fixture.app, fixture.Session(), fixture.Chat(), {{"event", "init"}, {"conversation_id", "99999999-2222-4333-8444-555555555555"}}, nullptr));
 	UAM_ASSERT_EQ(fixture.CurrentGoal().status, GoalStatus::Blocked);
 	UAM_ASSERT_EQ(fixture.CurrentGoal().last_decision_source, std::string("fallback"));
+}
+
+
+namespace
+{
+	/// Owned manual compaction on an existing local conversation; no process or wire is involved.
+	struct AntigravityCompactionFixture
+	{
+		TempDir temp{"uam-antigravity-compaction"};
+		uam::AppState app;
+		uam::AcpSessionState session;
+		const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById("antigravity-cli");
+		const std::string conversation = "11111111-2222-4333-8444-555555555555";
+		AntigravityCompactionFixture()
+		{
+			app.data_root = temp.root;
+			ChatSession chat;
+			chat.id = "antigravity-compaction";
+			chat.provider_id = "antigravity-cli";
+			chat.execution_host_id = "local";
+			chat.native_session_id = conversation;
+			chat.active_goal_id = "existing-goal";
+			chat.messages = {{MessageRole::User, "Existing request", "before"}, {MessageRole::Assistant, "Existing answer", "before"}};
+			app.chats.push_back(chat);
+			session.chat_id = chat.id;
+			session.provider_id = chat.provider_id;
+			session.protocol_kind = "antigravity-stream-json";
+			session.session_id = conversation;
+			session.running = true;
+			session.session_ready = true;
+			session.processing = true;
+			session.manual_compaction_pending = true;
+			session.pending_request_methods[42] = "antigravity/compact";
+			session.antigravity_completed_turns = 1;
+			session.turn_serial = 7;
+		}
+		ChatSession& Chat() { return app.chats.front(); }
+		void Step(const std::string& kind, int index, const std::string& state, nlohmann::json extra = nlohmann::json::object())
+		{
+			extra["conversation_id"] = conversation;
+			extra["step_type"] = kind;
+			extra["step_index"] = index;
+			extra["state"] = state;
+			UAM_ASSERT(runtime.OnAcpHandleMessage(app, session, Chat(), {{"event", "step_update"}, {"step_update", extra}}, nullptr));
+		}
+		void Result(const std::string& status, int turns = 2, const std::string& response = "")
+		{
+			UAM_ASSERT(runtime.OnAcpHandleMessage(app, session, Chat(), {{"event", "result"}, {"result", {{"conversation_id", conversation}, {"status", status}, {"num_turns", turns}, {"response", response}}}}, nullptr));
+		}
+		void AssertSettled()
+		{
+			UAM_ASSERT(!session.manual_compaction_pending);
+			UAM_ASSERT(!session.processing);
+			UAM_ASSERT(!session.context_compaction_in_progress);
+			UAM_ASSERT(session.pending_request_methods.empty());
+			UAM_ASSERT(!session.antigravity_compaction_checkpoint_step.has_value());
+			UAM_ASSERT_EQ(session.turn_serial, 7);
+			UAM_ASSERT_EQ(Chat().active_goal_id, std::string("existing-goal"));
+		}
+	};
+}
+
+UAM_TEST(AntigravityManualCompactionSendsNativeCommandOnlyForLocalConversation)
+{
+	const IProviderRuntime& runtime = ProviderRuntimeRegistry::ResolveById("antigravity-cli");
+	UAM_ASSERT(runtime.SupportsAcpCompaction());
+	UAM_ASSERT(!runtime.SupportsAcpCompactionInstructions());
+	UAM_ASSERT(!runtime.SupportsRemoteAcpCompaction());
+	uam::AcpSessionState session;
+	std::string method = "stale";
+	UAM_ASSERT(runtime.OnAcpBuildCompact(session, 42, method).is_null());
+	UAM_ASSERT(method.empty());
+	session.session_id = "not-a-conversation";
+	UAM_ASSERT(runtime.OnAcpBuildCompact(session, 42, method).is_null());
+	session.session_id = "11111111-2222-4333-8444-555555555555";
+	session.manual_compaction_instructions = "never sent: Antigravity reads text after /compact as a new message";
+	UAM_ASSERT_EQ(runtime.OnAcpBuildCompact(session, 42, method), (nlohmann::json{{"event", "user"}, {"message", {{"content", "/compact"}}}}));
+	UAM_ASSERT_EQ(method, std::string("antigravity/compact"));
+	session.process_execution_host_id = "remote-fixture";
+	UAM_ASSERT(runtime.OnAcpBuildCompact(session, 42, method).is_null());
+	UAM_ASSERT(method.empty());
+}
+
+UAM_TEST(AntigravityManualCompactionRecordsSummaryLessMarkerFromCheckpoint)
+{
+	AntigravityCompactionFixture fixture;
+	fixture.Step("user_input", 2, "DONE");
+	fixture.Step("system_message", 3, "DONE");
+	fixture.Step("checkpoint", 4, "ACTIVE");
+	UAM_ASSERT(fixture.session.context_compaction_in_progress);
+	fixture.Step("checkpoint", 4, "DONE", {{"usage", {{"input_tokens", 3000}, {"output_tokens", 700}}}});
+	fixture.Step("agent_response", 5, "DONE", {{"text_delta", "maintenance chatter"}});
+	UAM_ASSERT_EQ(fixture.Chat().messages.size(), std::size_t{2});
+	fixture.Result("SUCCESS");
+	fixture.AssertSettled();
+	UAM_ASSERT(fixture.session.last_error.empty());
+	UAM_ASSERT_EQ(fixture.session.lifecycle_state, std::string("ready"));
+	UAM_ASSERT_EQ(fixture.session.antigravity_completed_turns, std::int64_t{1}); // Maintenance never advances ordinary turn counting.
+	UAM_ASSERT_EQ(fixture.session.antigravity_input_tokens, std::int64_t{0});
+	UAM_ASSERT_EQ(fixture.Chat().messages.size(), std::size_t{3});
+	const Message& marker = fixture.Chat().messages.back();
+	UAM_ASSERT_EQ(marker.blocks.size(), std::size_t{1});
+	UAM_ASSERT_EQ(marker.blocks.front().type, std::string("context_compaction"));
+	UAM_ASSERT(marker.blocks.front().text.empty());
+	UAM_ASSERT_EQ(marker.blocks.front().request_id_json, "antigravity-compaction:" + fixture.conversation + ":4");
+	UAM_ASSERT(marker.content.find("maintenance chatter") == std::string::npos);
+}
+
+UAM_TEST(AntigravityManualCompactionNoOpAndFailuresRecordNoMarker)
+{
+	for (const std::string outcome : {"no-checkpoint", "result-error", "checkpoint-error", "answered-as-message", "answered-in-result", "foreign-conversation"})
+	{
+		AntigravityCompactionFixture fixture;
+		if (outcome == "foreign-conversation")
+		{
+			// Another conversation's checkpoint cannot complete this request.
+			nlohmann::json foreign{{"conversation_id", "99999999-2222-4333-8444-555555555555"}, {"step_type", "checkpoint"}, {"step_index", 4}, {"state", "DONE"}};
+			UAM_ASSERT(fixture.runtime.OnAcpHandleMessage(fixture.app, fixture.session, fixture.Chat(), {{"event", "step_update"}, {"step_update", foreign}}, nullptr));
+			UAM_ASSERT(!fixture.session.manual_compaction_pending);
+			UAM_ASSERT(!fixture.session.processing);
+			UAM_ASSERT(fixture.session.pending_request_methods.empty());
+			UAM_ASSERT(!fixture.session.antigravity_compaction_checkpoint_step.has_value());
+			UAM_ASSERT(!fixture.session.last_error.empty());
+			UAM_ASSERT_EQ(fixture.Chat().messages.size(), std::size_t{2});
+			continue;
+		}
+		if (outcome == "result-error") fixture.Step("checkpoint", 4, "DONE");
+		if (outcome == "checkpoint-error") fixture.Step("checkpoint", 4, "ERROR");
+		if (outcome == "answered-as-message") fixture.Step("agent_response", 3, "DONE", {{"text_delta", "I cannot run /compact."}});
+		fixture.Result(outcome == "result-error" ? "ERROR" : "SUCCESS", 2, outcome == "answered-in-result" ? "I cannot run /compact." : "");
+		fixture.AssertSettled();
+		UAM_ASSERT(!fixture.session.last_error.empty());
+		UAM_ASSERT(fixture.session.last_error.find('\n') == std::string::npos);
+		UAM_ASSERT_EQ(fixture.Chat().messages.size(), std::size_t{2});
+		UAM_ASSERT_EQ(fixture.session.lifecycle_state, std::string(outcome == "no-checkpoint" ? "ready" : "error"));
+		UAM_ASSERT(!fixture.session.antigravity_compaction_answered);
+		if (outcome.starts_with("answered")) UAM_ASSERT(fixture.session.last_error.find("answered /compact as a message") != std::string::npos);
+		else UAM_ASSERT(fixture.session.last_error.find("I cannot") == std::string::npos);
+	}
+}
+
+UAM_TEST(AntigravityNewProcessClearsAStaleCompactionReceipt)
+{
+	AntigravityCompactionFixture fixture;
+	fixture.Step("checkpoint", 4, "ACTIVE");
+	fixture.Step("checkpoint", 4, "DONE");
+	fixture.Step("agent_response", 5, "DONE", {{"text_delta", "stray"}});
+	UAM_ASSERT(fixture.session.antigravity_compaction_checkpoint_step.has_value());
+	// A stop or exit before the result restarts the process; the next request must not inherit this receipt.
+	UAM_ASSERT(fixture.runtime.OnAcpBuildInitialize(fixture.session, 1).is_null());
+	UAM_ASSERT(!fixture.session.antigravity_compaction_checkpoint_step.has_value());
+	UAM_ASSERT(!fixture.session.antigravity_compaction_checkpoint_failed);
+	UAM_ASSERT(!fixture.session.antigravity_compaction_answered);
+	UAM_ASSERT_EQ(fixture.Chat().messages.size(), std::size_t{2});
 }
 
 #endif

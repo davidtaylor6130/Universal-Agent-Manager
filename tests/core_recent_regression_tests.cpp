@@ -1241,6 +1241,54 @@ UAM_TEST(CustomIconsKeepPortableReferencesBoundedAssetsAndLocalHostMetadata)
 	fs::create_directories(temp.root / "icons");
 	UAM_ASSERT(uam::io::WriteBinaryFile(temp.root / "icons" / png.value, bytes));
 	UAM_ASSERT(uam::icons::PngDataUrl(temp.root, png).starts_with("data:image/png;base64,"));
+	const fs::path project = temp.root / "project";
+	UAM_ASSERT(uam::icons::ProjectIconDataUrl(project).empty());
+	const fs::path website = temp.root / "website";
+	fs::create_directories(website / "public");
+	UAM_ASSERT(uam::io::WriteBinaryFile(website / "public" / "favicon.png", bytes));
+	UAM_ASSERT(uam::icons::ProjectIconDataUrl(website).starts_with("data:image/png;base64,"));
+	const fs::path svg_site = temp.root / "svg-site";
+	fs::create_directories(svg_site / "public");
+	UAM_ASSERT(uam::io::WriteBinaryFile(svg_site / "public" / "favicon.svg", std::string("<?xml version=\"1.0\"?><svg xmlns=\"http://www.w3.org/2000/svg\"/>")));
+	UAM_ASSERT(uam::icons::ProjectIconDataUrl(svg_site).starts_with("data:image/svg+xml;base64,"));
+	const fs::path ico_site = temp.root / "ico-site";
+	fs::create_directories(ico_site / "src" / "app");
+	// One directory entry (size at byte 14, offset at byte 18) pointing at the image after the 22-byte header.
+	const auto make_ico = [](const std::string& image) {
+		std::string ico("\0\0\1\0\1\0", 6);
+		ico.append(16, '\0');
+		ico[14] = static_cast<char>(image.size() & 0xff);
+		ico[15] = static_cast<char>((image.size() >> 8) & 0xff);
+		ico[18] = 22;
+		return ico + image;
+	};
+	UAM_ASSERT(uam::io::WriteBinaryFile(ico_site / "src" / "app" / "favicon.ico", make_ico(std::string(40, 'b'))));
+	UAM_ASSERT(uam::icons::ProjectIconDataUrl(ico_site).starts_with("data:image/x-icon;base64,"));
+	UAM_ASSERT(!uam::icons::HasBoundedIcoHeader(std::string("\0\0\1\0\5\0", 6) + std::string(16, '\0')));
+	std::string past_end = make_ico(std::string(40, 'b'));
+	past_end[14] = 41;
+	UAM_ASSERT(!uam::icons::HasBoundedIcoHeader(past_end));
+	std::string huge_png = bytes;
+	huge_png[18] = 0x3e; // 15873 pixels wide, far over 256
+	UAM_ASSERT(uam::icons::HasBoundedIcoHeader(make_ico(bytes)));
+	UAM_ASSERT(!uam::icons::HasBoundedIcoHeader(make_ico(huge_png)));
+	std::string zero_size = make_ico(huge_png);
+	zero_size[14] = 0;
+	zero_size[15] = 0;
+	UAM_ASSERT(!uam::icons::HasBoundedIcoHeader(zero_size));
+	std::string inside_directory = make_ico(std::string(40, 'b'));
+	inside_directory[18] = 6;
+	UAM_ASSERT(!uam::icons::HasBoundedIcoHeader(inside_directory));
+	UAM_ASSERT(!uam::icons::IsBoundedSvg("<html><script></script></html>"));
+	UAM_ASSERT(!uam::icons::IsBoundedSvg(std::string(1100, ' ') + "<svg/>"));
+	// A transparent SVG favicon wins over the solid apple-touch tile and the ICO in the same project.
+	const fs::path both_site = temp.root / "both-site";
+	fs::create_directories(both_site / "public");
+	fs::create_directories(both_site / "src" / "app");
+	UAM_ASSERT(uam::io::WriteBinaryFile(both_site / "src" / "app" / "favicon.ico", make_ico(std::string(40, 'b'))));
+	UAM_ASSERT(uam::io::WriteBinaryFile(both_site / "public" / "apple-touch-icon.png", bytes));
+	UAM_ASSERT(uam::io::WriteBinaryFile(both_site / "public" / "favicon.svg", std::string("<svg/>")));
+	UAM_ASSERT(uam::icons::ProjectIconDataUrl(both_site).starts_with("data:image/svg+xml;base64,"));
 	bytes[18] = 1;
 	bytes[19] = 1;
 	UAM_ASSERT(!uam::icons::HasBoundedPngHeader(bytes));
@@ -1488,7 +1536,7 @@ UAM_TEST(AntigravityTerminalAliasesAndCapabilitiesRemainDistinct)
 	UAM_ASSERT(!state["cliVersionManager"]["providers"][0]["canInstall"].get<bool>());
 	std::string error;
 	UAM_ASSERT(!ProviderCliCompatibilityService().StartInstallProviderVersion(app, profile.id, "latest", &error));
-	UAM_ASSERT(error.find("existing installer") != std::string::npos);
+	UAM_ASSERT(error.find("its own installer") != std::string::npos);
 	UAM_ASSERT(app.runtime_cli_install_tasks.empty());
 }
 

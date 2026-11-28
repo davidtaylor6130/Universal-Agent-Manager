@@ -32,15 +32,11 @@
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace uam
 {
-
-double LatestCliTransportActivityTime(const uam::CliTerminalState& terminal)
-{
-	return std::max(terminal.last_user_input_time_s, terminal.last_ai_output_time_s);
-}
 
 std::string AsyncNativeChatLoadTaskKey(std::string_view provider_id, const std::filesystem::path& chats_dir)
 {
@@ -406,8 +402,8 @@ bool HandleCliTerminalInactivityTimeout(uam::AppState& app, uam::CliTerminalStat
 	{
 		constexpr char interrupt = '\x03';
 		terminal.inactivity_interrupt_requested_time_s = now_seconds;
-		const std::string message = "Provider terminal turn exceeded the " + (busy_limit_seconds % 60 == 0 ? std::to_string(busy_limit_seconds / 60) + "-minute " : std::to_string(busy_limit_seconds) + "-second ") +
-		    (app.settings.tool_call_timeout_seconds >= app.settings.active_turn_inactivity_timeout_seconds ? "tool call limit" : "provider turn timeout") + ". Interrupting it now; the delivered prompt will not be replayed.";
+		const std::string message = "The terminal turn exceeded the " + (busy_limit_seconds % 60 == 0 ? std::to_string(busy_limit_seconds / 60) + "-minute " : std::to_string(busy_limit_seconds) + "-second ") +
+		    (app.settings.tool_call_timeout_seconds >= app.settings.active_turn_inactivity_timeout_seconds ? "tool call limit" : "provider turn timeout") + "; interrupting it without replaying the prompt.";
 		if (!WriteToCliTerminal(terminal, &interrupt, 1))
 		{
 			StopCliTerminal(terminal, false, CliTerminalStopMode::FastExit);
@@ -419,7 +415,7 @@ bool HandleCliTerminalInactivityTimeout(uam::AppState& app, uam::CliTerminalStat
 		return true;
 	}
 
-	const std::string message = "Provider terminal stopped after the inactivity interrupt grace period. The delivered prompt was not replayed.";
+	const std::string message = "Provider terminal stopped after ignoring the interrupt; the prompt was not replayed.";
 	uam::LogCliDiagnosticEvent(app, "poll_all_cli_terminals", "turn_inactivity_force_stop", &terminal, message);
 	StopCliTerminal(terminal, false, CliTerminalStopMode::FastExit);
 	terminal.should_launch = false;
@@ -460,7 +456,7 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 	if (terminal.input_writer != nullptr && terminal.input_writer->FailureOrStall(&input_error))
 	{
 		uam::LogCliDiagnosticEvent(app, "poll_cli_terminal", "async_input_failed", &terminal, input_error);
-		uam::FailCliTerminalTransport(terminal, "Provider terminal input failed: " + uam::strings::NonEmptyOrFallback(input_error, "unknown transport error"));
+		uam::FailCliTerminalTransport(terminal, "Provider terminal input failed.");
 		app.status_line = terminal.last_error;
 		return true;
 	}
@@ -590,6 +586,9 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 	    ? observation_runtime.PollInteractiveActivity(terminal, CliTerminalAttachedSessionId(terminal), uam::paths::ResolveWorkspaceRootPath(app, *terminal_chat), terminal.native_session_discovery_ambiguous)
 	    : ProviderTerminalActivity::Unavailable;
 	changed |= terminal.lifecycle_state != before_native_lifecycle;
+	const bool turn_receipt_expired = std::exchange(terminal.native_turn_receipt_expired, false);
+	if (turn_receipt_expired && before_native_lifecycle == CliTerminalLifecycleState::Busy && terminal.lifecycle_state == CliTerminalLifecycleState::Unknown)
+		uam::LogCliDiagnosticEvent(app, "poll_cli_terminal", "turn_unconfirmed_marked_unknown", &terminal);
 	if (native_activity == ProviderTerminalActivity::Busy)
 	{
 		terminal.prompt_settle_candidate_time_s = 0.0;
@@ -609,7 +608,8 @@ bool PollCliTerminal(CefRefPtr<CefBrowser> browser, uam::AppState& app, uam::Cli
 			chat->interaction_at = uam::time::InteractionTimestampNow();
 			if (!ChatRepository::SaveLastOpenedAt(app.data_root, *chat, false)) app.pending_chat_save_at_by_chat_id[chat->id] = 0.0;
 		}
-		uam::LogCliDiagnosticEvent(app, "poll_cli_terminal", native_activity == ProviderTerminalActivity::Complete ? "turn_marked_idle_from_native_event" : "turn_marked_idle_from_prompt", &terminal);
+		uam::LogCliDiagnosticEvent(app, "poll_cli_terminal", native_activity != ProviderTerminalActivity::Complete ? "turn_marked_idle_from_prompt" :
+		    turn_receipt_expired ? "turn_unconfirmed_marked_idle_from_prompt" : "turn_marked_idle_from_native_event", &terminal);
 		changed = true;
 	}
 
@@ -793,6 +793,27 @@ bool PollAllCliTerminals(CefRefPtr<CefBrowser> browser, uam::AppState& app, bool
 				if (ChatSession* chat = FindChatForCliTerminal(app, *terminal); chat != nullptr)
 					(void)StartCliTerminalForChat(app, *terminal, *chat, terminal->rows, terminal->cols);
 			changed = true;
+		}
+		// A launch held by host admission or by routing asks again about once a second, which keeps its place in
+		// line; Run anyway brings the next attempt forward. Only a change of the visible wait is a state change.
+		if (!terminal->running && terminal->should_launch && !terminal->worktree_launch_pending && terminal->context_preparation == nullptr &&
+		    now >= terminal->host_admission_retry_at_s)
+		{
+			ChatSession* chat = FindChatForCliTerminal(app, *terminal);
+			const bool routing_wait = chat != nullptr && app.execution_routing_waits.contains(chat->id);
+			if (!terminal->host_admission_wait.empty() || routing_wait)
+			{
+				terminal->host_admission_retry_at_s = now + 1.0;
+				const std::string wait_before = terminal->host_admission_wait;
+				if (chat != nullptr) (void)StartCliTerminalForChat(app, *terminal, *chat, terminal->rows, terminal->cols);
+				else
+				{
+					terminal->should_launch = false;
+					terminal->host_admission_wait.clear();
+					terminal->host_admission_run_anyway_offered = false;
+				}
+				changed = changed || terminal->running || terminal->host_admission_wait != wait_before;
+			}
 		}
 		if (!terminal->running)
 		{

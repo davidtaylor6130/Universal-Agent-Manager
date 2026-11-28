@@ -21,6 +21,7 @@
 #include "common/runtime/terminal/terminal_lifecycle.h"
 #include "common/runtime/terminal/terminal_lifecycle_states.h"
 #include "common/state/app_state.h"
+#include "common/utils/diagnostic_log.h"
 #include "common/utils/string_utils.h"
 
 #include <algorithm>
@@ -33,14 +34,17 @@ namespace uam
 {
 namespace
 {
-	constexpr std::string_view kNativeRefreshFailurePrefix = "Native chat refresh failed: ";
+	constexpr std::string_view kNativeRefreshFailureMessage = "Could not refresh the native chat history.";
 
 	void UpdateNativeChatRefreshError(AppState& app, std::string_view target_id, std::string_view error)
 	{
 		if (!error.empty())
 		{
+			// Log once per failing target so repeated polls do not flood diagnostics.
+			if (app.native_chat_refresh_error_target_id != target_id || app.native_chat_refresh_error_status.empty())
+				uam::diagnostics::Write("[native-refresh] Native chat refresh failed: " + std::string(error));
 			app.native_chat_refresh_error_target_id = target_id;
-			app.native_chat_refresh_error_status = std::string(kNativeRefreshFailurePrefix) + std::string(error);
+			app.native_chat_refresh_error_status = std::string(kNativeRefreshFailureMessage);
 			app.status_line = app.native_chat_refresh_error_status;
 		}
 		else if (app.native_chat_refresh_error_target_id == target_id)

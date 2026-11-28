@@ -77,7 +77,7 @@ namespace uam
 		    ((!metadata.display_parent_chat_id.empty() || !metadata.display_parent_created_at.empty()) &&
 		     !(metadata.display_parent_chat_id == chat.subagent_parent_chat_id && metadata.display_parent_created_at == chat.subagent_parent_created_at) &&
 		     !(metadata.display_parent_chat_id == admitted.m_source_id && metadata.display_parent_created_at == admitted.m_source_birth)))
-		{ Fail(error, "The original images no longer match this child history. Reopen it and try again."); return {}; }
+		{ Fail(error, "The original images no longer match this child history; reopen it and try again."); return {}; }
 		chat.metadata_incarnation = metadata.incarnation;
 		chat.subagent_parent_chat_id = metadata.display_parent_chat_id;
 		chat.subagent_parent_created_at = metadata.display_parent_created_at;

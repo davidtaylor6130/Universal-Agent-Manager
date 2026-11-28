@@ -28,7 +28,11 @@ npm --prefix UI-V2 run build
 
 Do not open `UI-V2/dist/index.html` directly. The frontend expects the native CEF bridge.
 
-For the isolated SVN composer service fixtures, configure the same root project with `-DUAM_BUILD_TESTS=ON -DUAM_SVN_BRANCH_TESTS_ONLY=ON -DUAM_PACKAGE_REMOTE_RUNNERS=OFF`, then build `uam_svn_branch_tests` and run CTest. This avoids CEF downloads and provider/runner processes; CTest also registers `uam_svn_branch_integration` (`tests/svn_branch_integration.py`), which uses disposable `file://` repositories and a private SVN configuration, when `svn` and `svnadmin` are installed. Set `UAM_SVN_BRANCH_TESTS_ONLY=OFF` before using that build folder for normal native targets.
+For the isolated SVN composer service fixtures, configure the same root project with `-DUAM_BUILD_TESTS=ON -DUAM_SVN_BRANCH_TESTS_ONLY=ON -DUAM_PACKAGE_REMOTE_RUNNERS=OFF`, then build `uam_svn_branch_tests` and run CTest. This avoids CEF downloads and provider/runner processes, so it also configures on Linux; CTest also registers `uam_svn_branch_integration` (`tests/svn_branch_integration.py`), which uses disposable `file://` repositories and a private SVN configuration. Without `svn` and `svnadmin` it reports Skipped, or fails when `UAM_REQUIRE_SVN=1`, as in CI. Set `UAM_SVN_BRANCH_TESTS_ONLY=OFF` before using that build folder for normal native targets.
+
+The same configuration builds `uam_svn_branch_create_tests` for SVN branch creation; CTest runs its fake-repository cases as `uam_svn_branch_create` and its real-svn script `tests/svn_branch_create_integration.py` (disposable `file://` repositories only) as `uam_svn_branch_create_integration`, which reports Skipped without `svn` and `svnadmin`.
+
+The opt-in Custom ACP agent's tests build the same way with `-DUAM_BUILD_TESTS=ON -DUAM_CUSTOM_ACP_TESTS_ONLY=ON -DUAM_PACKAGE_REMOTE_RUNNERS=OFF`, also on Linux: build `uam_custom_acp_agent_tests` and run CTest, which starts `tests/fixtures/custom_acp_agent.py` with the found Python 3 as a real stdio agent. No CEF, app or provider CLI is involved. Full test builds run the same case through `tests/custom_acp`. Configure the app with `-DUAM_ENABLE_RUNTIME_CUSTOM_ACP=ON` to include the agent itself.
 
 ### Local development build
 
@@ -57,6 +61,8 @@ npm --prefix UI-V2 ci
 cmake -S . -B Builds\dev -A x64 -DUAM_BUILD_TESTS=OFF -DUAM_PACKAGE_REMOTE_RUNNERS=OFF
 cmake --build Builds\dev --config Release --parallel 4
 ```
+
+The Windows app runs inside the Chromium sandbox through CEF's `bootstrap.exe` layout: UAM builds as `universal_agent_manager.dll`, and `universal_agent_manager.exe` beside it is CEF's bootstrap, renamed, which loads that DLL. Run the `.exe` as before. The build needs `mt.exe` from the Windows SDK; CMake takes it from the MSVC developer environment or finds it in the installed SDK. Sign the `.exe`, the `.dll` and `chrome_elf.dll` with one certificate or leave all three unsigned; see [security](reference/security-enterprise.md#known-gaps).
 
 ### Complete macOS package
 

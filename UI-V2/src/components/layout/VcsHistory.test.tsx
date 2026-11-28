@@ -3,7 +3,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { VcsCommitStatus, VcsHistoryEntry, VcsHistoryPage, VcsOriginReply } from '../../store/cpp/types'
 import { useAppStore } from '../../store/useAppStore'
-import { VcsCommitPanel } from './VcsCommitPanel'
+import { VcsCommitPanel, svnConflict } from './VcsCommitPanel'
 import { VcsHistory } from './VcsHistory'
 import { sanitizeSvnRepositoryLayouts, sanitizeVcsOriginReply } from '../../store/cpp/sanitizers'
 import { svnLayoutFor, svnLayoutLabel } from '../../utils/svnLayout'
@@ -417,6 +417,143 @@ describe('commit panel SVN actions', () => {
     expect(host.querySelector('[role="status"]')!.textContent).toContain('Stop the active chat runtime')
   })
 
+  it('shows each external the update could not reach on its own line', async () => {
+    await act(async () => { useAppStore.setState({ updateVcsWorkspace: vi.fn(async () => ({ ok: true, conflicts: true, revision: '2', output: '', warnings: ["External 'ext' could not be updated.", "External 'lib' could not be updated."], error: '' })) }) })
+    await act(async () => root.render(<VcsCommitPanel />))
+    await act(async () => button('Update').click())
+    const notice = host.querySelector('[role="status"]')!
+    expect(notice.textContent).toContain('Updated to r2 with conflicts. Resolve them before committing.')
+    expect([...notice.querySelectorAll('.block')].map((line) => line.textContent)).toEqual(["External 'ext' could not be updated.", "External 'lib' could not be updated."])
+  })
+
+  it('shows a mixed-revision working copy as a range', async () => {
+    await act(async () => { useAppStore.setState({ getVcsCommitStatus: vi.fn(async () => ({ ...svnStatus, branchOrRevision: '3:5' })) }) })
+    await act(async () => root.render(<VcsCommitPanel />))
+    expect(host.textContent).toContain('r3:5')
+    await act(async () => { useAppStore.setState({ getVcsCommitStatus: vi.fn(async () => ({ ...svnStatus, branchOrRevision: '5' })) }) })
+    await act(async () => button('Refresh VCS status').click())
+    expect(host.textContent).toContain('r5')
+    expect(host.textContent).not.toContain('r3:5')
+  })
+
+  describe('conflicts', () => {
+    const conflicted: VcsCommitStatus = {
+      ...svnStatus,
+      capabilities: [...svnStatus.capabilities!, 'resolve'],
+      changedFiles: [
+        { path: 'a.txt', status: 'C', staged: false, additions: 1, deletions: 1, binary: false },
+        { path: 'd/x.txt', status: 'A  +  C', staged: false, additions: 0, deletions: 0, binary: false },
+        { path: 'b.txt', status: 'M', staged: false, additions: 1, deletions: 0, binary: false },
+      ],
+    }
+
+    beforeEach(() => {
+      useAppStore.setState({
+        getVcsCommitStatus: vi.fn(async () => conflicted),
+        resolveVcsConflict: vi.fn(async () => ({ ok: true, output: "Resolved conflicted state of 'a.txt'", error: '' })),
+      })
+    })
+
+    it('reads SVN conflict columns and never a Git code', () => {
+      expect(svnConflict('svn', 'C')).toEqual({ content: true, tree: false })
+      expect(svnConflict('svn', ' C')).toEqual({ content: true, tree: false })
+      expect(svnConflict('svn', 'A  +  C')).toEqual({ content: false, tree: true })
+      expect(svnConflict('svn', 'M')).toBeNull()
+      expect(svnConflict('git', ' C')).toBeNull()
+    })
+
+    it('labels conflicted rows and keeps them out of the commit selection', async () => {
+      await act(async () => root.render(<VcsCommitPanel />))
+      const labels = [...host.querySelectorAll('.uam-rv-file__status')].map((node) => node.textContent)
+      expect(labels).toEqual(['Conflict', 'Conflict', 'M'])
+      // Still focusable, so keyboard users hear why it cannot be selected; clicking it selects nothing.
+      expect(button('Resolve the conflict in a.txt before selecting it').getAttribute('aria-disabled')).toBe('true')
+      await act(async () => button('Resolve the conflict in a.txt before selecting it').click())
+      expect(host.textContent).toContain('0 selected')
+      await act(async () => button('Select all changed files').click())
+      expect(host.textContent).toContain('1 selected')
+      expect(button('Deselect b.txt')).toBeTruthy()
+    })
+
+    it('offers whole-file choices for a text conflict and only Mark resolved for a tree conflict', async () => {
+      await act(async () => root.render(<VcsCommitPanel />))
+      await act(async () => button('Resolve conflict in a.txt').click())
+      // The menu has its own raised surface, like the other menus, rather than showing the rows through it.
+      const menu = document.body.querySelector<HTMLElement>('[role="menu"][aria-label="Resolve conflict in a.txt"]')!
+      expect(menu.style.background).toBe('var(--surface)')
+      expect(menu.style.border).toBe('1px solid var(--border-bright)')
+      expect(menu.style.boxShadow).toBe('var(--elev-3)')
+      const items = () => [...document.body.querySelectorAll('[role="menuitem"]')].map((item) => item.textContent)
+      expect(items().map((text) => text?.split(/(?=Keep|Discards)/)[0])).toEqual(['Mark resolved', 'Use the repository version', 'Keep my version'])
+      await act(async () => button('Resolve conflict in a.txt').click())
+      await act(async () => button('Resolve conflict in x.txt').click())
+      expect(items()).toHaveLength(1)
+      expect(items()[0]).toContain('Mark resolved')
+    })
+
+    it('resolves only after confirmation, then refreshes the changed files', async () => {
+      await act(async () => root.render(<VcsCommitPanel />))
+      await act(async () => button('Resolve conflict in a.txt').click())
+      await act(async () => [...document.body.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find((item) => item.textContent?.startsWith('Use the repository version'))!.click())
+      expect(useAppStore.getState().resolveVcsConflict).not.toHaveBeenCalled()
+      const dialog = document.body.querySelector('[role="dialog"], [role="alertdialog"]')!
+      expect(dialog.textContent).toContain('Your local changes to this file are lost.')
+      const refreshes = (useAppStore.getState().getVcsCommitStatus as ReturnType<typeof vi.fn>).mock.calls.length
+      await act(async () => [...dialog.querySelectorAll<HTMLButtonElement>('button')].find((candidate) => candidate.textContent === 'Use the repository version')!.click())
+      expect(useAppStore.getState().resolveVcsConflict).toHaveBeenCalledWith('chat-a', 'svn', 'a.txt', 'theirs-full')
+      expect(host.querySelector('[role="status"]')!.textContent).toContain('Marked a.txt resolved.')
+      expect((useAppStore.getState().getVcsCommitStatus as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(refreshes)
+    })
+
+    it('words a property-only conflict for properties and returns focus to the resolve button on cancel', async () => {
+      useAppStore.setState({ getVcsCommitStatus: vi.fn(async () => ({ ...conflicted, changedFiles: [{ path: 'dir', status: ' C', staged: false, additions: 0, deletions: 0, binary: false }] })) })
+      await act(async () => root.render(<VcsCommitPanel />))
+      await act(async () => button('Resolve conflict in dir').click())
+      const items = [...document.body.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')]
+      expect(items.map((item) => item.textContent)).toEqual(['Mark resolvedKeep the properties as they are now', 'Use the repository versionDiscards your local property changes', 'Keep my versionDiscards the incoming property changes'])
+      await act(async () => items[1].click())
+      const dialog = document.body.querySelector('[role="dialog"], [role="alertdialog"]')!
+      expect(dialog.textContent).toContain('Takes the properties from the repository.')
+      await act(async () => [...dialog.querySelectorAll<HTMLButtonElement>('button')].find((candidate) => candidate.textContent === 'Cancel')!.click())
+      await act(async () => new Promise((resolve) => setTimeout(resolve, 400)))
+      expect(document.activeElement).toBe(button('Resolve conflict in dir'))
+    })
+
+    it('ignores a resolve result once its dialog was replaced', async () => {
+      const first = deferred<{ ok: boolean; output: string; error: string }>()
+      const resolveVcsConflict = vi.fn().mockReturnValueOnce(first.promise).mockResolvedValue({ ok: false, output: '', error: 'second failed' })
+      useAppStore.setState({ resolveVcsConflict })
+      await act(async () => root.render(<VcsCommitPanel />))
+      const choose = async (file: string, label: string) => {
+        await act(async () => button(`Resolve conflict in ${file}`).click())
+        await act(async () => [...document.body.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find((item) => item.textContent?.startsWith(label))!.click())
+      }
+      const dialog = () => document.body.querySelector('[role="dialog"], [role="alertdialog"]')
+      await choose('a.txt', 'Mark resolved')
+      await act(async () => [...dialog()!.querySelectorAll<HTMLButtonElement>('button')].find((candidate) => candidate.textContent === 'Mark resolved')!.click())
+      // Leaving and returning to the chat abandons the first request; a new one then opens.
+      await act(async () => { useAppStore.setState({ activeSessionId: 'chat-b' }) })
+      await act(async () => { useAppStore.setState({ activeSessionId: 'chat-a' }) })
+      await choose('x.txt', 'Mark resolved')
+      const refreshes = (useAppStore.getState().getVcsCommitStatus as ReturnType<typeof vi.fn>).mock.calls.length
+      await act(async () => first.resolve({ ok: true, output: '', error: '' }))
+      expect(dialog()!.textContent).toContain('d/x.txt')
+      // The superseded success still refreshes the changed files.
+      expect((useAppStore.getState().getVcsCommitStatus as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(refreshes)
+      expect(host.querySelector('[role="status"]')?.textContent ?? '').not.toContain('Marked a.txt resolved.')
+    })
+
+    it('keeps the confirmation open with svn\'s reason when resolving fails', async () => {
+      useAppStore.setState({ resolveVcsConflict: vi.fn(async () => ({ ok: false, output: '', error: 'This path is no longer conflicted. Refresh the changed files.' })) })
+      await act(async () => root.render(<VcsCommitPanel />))
+      await act(async () => button('Resolve conflict in a.txt').click())
+      await act(async () => [...document.body.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')].find((item) => item.textContent?.startsWith('Mark resolved'))!.click())
+      const dialog = () => document.body.querySelector('[role="dialog"], [role="alertdialog"]')
+      await act(async () => [...dialog()!.querySelectorAll<HTMLButtonElement>('button')].find((candidate) => candidate.textContent === 'Mark resolved')!.click())
+      expect(dialog()!.textContent).toContain('This path is no longer conflicted.')
+    })
+  })
+
   it('offers Stop while an update runs and stops that request', async () => {
     const pending = deferred<{ ok: boolean; conflicts: boolean; revision: string; output: string; error: string }>()
     const updateVcsWorkspace = vi.fn((_id: string, _type: string, _requestId?: string) => pending.promise)
@@ -451,5 +588,65 @@ describe('commit panel SVN actions', () => {
     await act(async () => pending.resolve({ ok: true, conflicts: false, revision: '7', output: '', error: '' }))
     expect(host.querySelector('[role="status"]')!.textContent).toContain('Updated to r7.')
     expect(updateVcsWorkspace).toHaveBeenCalledTimes(1)
+  })
+
+  it('resumes a snapshot chat\'s SVN update as SVN after switching chats', async () => {
+    const snapshotStatus = {
+      available: true, vcsTypes: ['git'], activeVcsType: 'git', workspaceDirectory: '/data/worktrees/x/chat', branchOrRevision: 'uam/chat',
+      changedFiles: [], lineStatsReady: true, capabilities: [], warning: '', error: '',
+      localSnapshot: { sourceKind: 'svn', sourceDirectory: '/work/checkout', sourceCapabilities: ['history', 'update'] },
+    } as VcsCommitStatus
+    const pending = deferred<{ ok: boolean; conflicts: boolean; revision: string; output: string; error: string }>()
+    const updateVcsWorkspace = vi.fn((_id: string, _type: string, _requestId?: string) => pending.promise)
+    const getVcsCommitStatus = vi.fn(async () => snapshotStatus)
+    await act(async () => { useAppStore.setState({
+      sessions: [
+        { id: 'chat-a', name: 'A', viewMode: 'chat', folderId: null, workspaceDirectory: '/tmp/a', createdAt: new Date(), updatedAt: new Date() },
+        { id: 'chat-b', name: 'B', viewMode: 'chat', folderId: null, workspaceDirectory: '/tmp/b', createdAt: new Date(), updatedAt: new Date() },
+      ],
+      updateVcsWorkspace, getVcsCommitStatus,
+    }) })
+    await act(async () => root.render(<VcsCommitPanel />))
+    await act(async () => button('Update SVN').click())
+    await act(async () => { useAppStore.setState({ activeSessionId: 'chat-b' }) })
+    await act(async () => { useAppStore.setState({ activeSessionId: 'chat-a' }) })
+    await act(async () => pending.resolve({ ok: true, conflicts: false, revision: '7', output: '', error: '' }))
+    expect(updateVcsWorkspace).toHaveBeenCalledWith('chat-a', 'svn', expect.any(String))
+    expect(host.querySelector('[role="status"]')!.textContent).toContain('Updated to r7.')
+    expect(getVcsCommitStatus).toHaveBeenLastCalledWith('chat-a', 'svn', expect.anything())
+  })
+
+  it('labels a local snapshot as its Git copy and runs SVN history and update against the source working copy', async () => {
+    const snapshotStatus: VcsCommitStatus = {
+      available: true, vcsTypes: ['git'], activeVcsType: 'git', workspaceDirectory: '/data/worktrees/x/chat', branchOrRevision: 'uam/chat',
+      changedFiles: [], lineStatsReady: true, capabilities: [], warning: '', error: '',
+      localSnapshot: { sourceKind: 'svn', sourceDirectory: '/work/checkout', sourceCapabilities: ['history', 'update', 'originComparison'] },
+    }
+    await act(async () => { useAppStore.setState({ getVcsCommitStatus: vi.fn(async () => snapshotStatus) }) })
+    await act(async () => root.render(<VcsCommitPanel />))
+    expect(host.textContent).toContain('Local snapshot (Git)')
+    expect(host.textContent).not.toContain('GIT')
+    expect(host.textContent).toContain('Publishing to SVN happens after you port the chat\'s changes back to checkout; SVN history and Update use that working copy.')
+    expect(host.textContent).toContain('Commits only the selected files to the snapshot copy')
+
+    await act(async () => button('Update SVN').click())
+    expect(useAppStore.getState().updateVcsWorkspace).toHaveBeenCalledWith('chat-a', 'svn', expect.stringContaining('vcs-update:chat-a'))
+    expect(host.querySelector('[role="status"]')!.textContent).toContain('Updated to r7.')
+
+    await act(async () => [...host.querySelectorAll<HTMLButtonElement>('[role="tab"]')].find((tab) => tab.textContent === 'SVN history')!.click())
+    expect(useAppStore.getState().getVcsHistory).toHaveBeenCalledWith('chat-a', 'svn', expect.objectContaining({ limit: 50 }))
+
+    // With SVN off, the copy keeps its label but offers no SVN actions; a plain-folder snapshot never does.
+    await act(async () => { useAppStore.setState({ svnEnabled: false }) })
+    await act(async () => button('Refresh VCS status').click())
+    expect(host.textContent).toContain('Local snapshot (Git)')
+    expect(host.textContent).toContain('Publishing to SVN happens after you port the chat\'s changes back to checkout.')
+    expect(host.textContent).not.toContain('use that working copy')
+    expect([...host.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent)).not.toContain('SVN history')
+    expect([...host.querySelectorAll('button')].some((candidate) => candidate.textContent === 'Update SVN')).toBe(false)
+    await act(async () => { useAppStore.setState({ svnEnabled: true, getVcsCommitStatus: vi.fn(async () => ({ ...snapshotStatus, localSnapshot: { sourceKind: 'folder', sourceDirectory: '/work/notes', sourceCapabilities: [] } }) as VcsCommitStatus) }) })
+    await act(async () => button('Refresh VCS status').click())
+    expect(host.textContent).toContain('Port the chat\'s changes back to apply them to notes.')
+    expect([...host.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent)).not.toContain('SVN history')
   })
 })

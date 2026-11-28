@@ -2,8 +2,10 @@
 #include "app/execution_routing_service.h"
 #include "common/config/provider_availability.h"
 
+#include <atomic>
 #include <barrier>
 #include <sstream>
+#include <thread>
 
 using namespace uam_test;
 
@@ -226,12 +228,190 @@ UAM_TEST(ExecutionRoutingAssignedIdleAutomaticChatWaitsForItsOwnHostCapacity)
 	const uam::ExecutionRoutingDecision full = service.Admit(next_turn, {RoutingHost("a"), RoutingHost("b")}, {{"another-chat", "a"}});
 	UAM_ASSERT_EQ(full.status, uam::ExecutionRoutingStatus::Waiting);
 	UAM_ASSERT_EQ(full.assignment.host_id, std::string("a"));
-	const uam::ExecutionRoutingDecision unrelated = service.Admit(RoutingRequest("unrelated"), {RoutingHost("a")}, {});
-	UAM_ASSERT_EQ(unrelated.status, uam::ExecutionRoutingStatus::Assigned);
-	UAM_ASSERT(service.Release("unrelated", true));
+	// The assigned chat queued first on its computer, so a newer chat cannot take the slot freed there.
+	const uam::ExecutionRoutingDecision newer = service.Admit(RoutingRequest("unrelated"), {RoutingHost("a")}, {});
+	UAM_ASSERT_EQ(newer.status, uam::ExecutionRoutingStatus::Waiting);
 	const uam::ExecutionRoutingDecision available = service.Admit(next_turn, {RoutingHost("a")}, {});
 	UAM_ASSERT_EQ(available.status, uam::ExecutionRoutingStatus::Assigned);
 	UAM_ASSERT_EQ(available.assignment, initial.assignment);
+	UAM_ASSERT(service.Release("idle", true));
+	const uam::ExecutionRoutingDecision unrelated = service.Admit(RoutingRequest("unrelated"), {RoutingHost("a")}, {});
+	UAM_ASSERT_EQ(unrelated.status, uam::ExecutionRoutingStatus::Assigned);
+}
+
+UAM_TEST(ExecutionRoutingFreedSlotGoesToTheLongestWaitingChatNotTheNewestArrival)
+{
+	uam::ExecutionRoutingService service;
+	const std::vector<uam::ExecutionRoutingCandidate> host{RoutingHost("a")};
+	const auto request = [](const std::string& chat, double now)
+	{
+		uam::ExecutionRoutingRequest value = RoutingRequest(chat);
+		value.now_seconds = now;
+		return value;
+	};
+	// The only slot is taken; two chats wait in the order they asked.
+	UAM_ASSERT_EQ(service.Admit(request("first", 10.0), host, {{"busy", "a"}}).status, uam::ExecutionRoutingStatus::Waiting);
+	UAM_ASSERT_EQ(service.Admit(request("second", 10.5), host, {{"busy", "a"}}).status, uam::ExecutionRoutingStatus::Waiting);
+	UAM_ASSERT_EQ(service.QueuedChatIds(), (std::vector<std::string>{"first", "second"}));
+	// The slot frees. A chat arriving now, and the second waiter retrying first, both stay behind the first waiter.
+	UAM_ASSERT_EQ(service.Admit(request("third", 11.0), host, {}).status, uam::ExecutionRoutingStatus::Waiting);
+	UAM_ASSERT_EQ(service.Admit(request("second", 11.2), host, {}).status, uam::ExecutionRoutingStatus::Waiting);
+	const uam::ExecutionRoutingDecision first = service.Admit(request("first", 11.5), host, {});
+	UAM_ASSERT_EQ(first.status, uam::ExecutionRoutingStatus::Assigned);
+	UAM_ASSERT_EQ(service.QueuedChatIds(), (std::vector<std::string>{"second", "third"}));
+	// Retrying does not move a waiter back: when the next slot frees, the second waiter is still ahead of the third.
+	UAM_ASSERT(service.Release("first", true));
+	UAM_ASSERT_EQ(service.Admit(request("third", 12.0), host, {}).status, uam::ExecutionRoutingStatus::Waiting);
+	UAM_ASSERT_EQ(service.Admit(request("second", 12.1), host, {}).status, uam::ExecutionRoutingStatus::Assigned);
+	UAM_ASSERT(service.Release("second", true));
+	UAM_ASSERT_EQ(service.Admit(request("third", 12.2), host, {}).status, uam::ExecutionRoutingStatus::Assigned);
+	UAM_ASSERT(service.QueuedChatIds().empty());
+}
+
+UAM_TEST(ExecutionRoutingEarlierWaiterHoldsOneSlotAndLeavesOtherComputersUsable)
+{
+	uam::ExecutionRoutingService service;
+	const std::vector<uam::ExecutionRoutingCandidate> hosts{RoutingHost("a"), RoutingHost("b")};
+	UAM_ASSERT_EQ(service.Admit(RoutingRequest("waiter"), hosts, {{"busy-a", "a"}, {"busy-b", "b"}}).status, uam::ExecutionRoutingStatus::Waiting);
+	// One slot frees: it is the earlier waiter's, whichever computer it is on.
+	UAM_ASSERT_EQ(service.Admit(RoutingRequest("newer"), hosts, {{"busy-a", "a"}}).status, uam::ExecutionRoutingStatus::Waiting);
+	// With both free the earlier waiter needs only one of them, so the newer chat runs at once on the other.
+	const uam::ExecutionRoutingDecision newer = service.Admit(RoutingRequest("newer"), hosts, {});
+	UAM_ASSERT_EQ(newer.status, uam::ExecutionRoutingStatus::Assigned);
+	UAM_ASSERT_EQ(newer.assignment.host_id, std::string("b"));
+	const uam::ExecutionRoutingDecision waiter = service.Admit(RoutingRequest("waiter"), hosts, {});
+	UAM_ASSERT_EQ(waiter.status, uam::ExecutionRoutingStatus::Assigned);
+	UAM_ASSERT_EQ(waiter.assignment.host_id, std::string("a"));
+}
+
+UAM_TEST(ExecutionRoutingQueueOnlyHoldsComputersTheWaiterCanUse)
+{
+	uam::ExecutionRoutingService service;
+	uam::ExecutionRoutingCandidate other_repository = RoutingHost("b");
+	other_repository.mappings = {{"local:/other", "folder-b-other", "/mapped/other"}};
+	uam::ExecutionRoutingRequest unmapped = RoutingRequest("other-workspace");
+	unmapped.source_workspace_identity = "local:/other";
+	// This chat's workspace is mapped only on b, which is full; it queues for b alone.
+	UAM_ASSERT_EQ(service.Admit(unmapped, {RoutingHost("a"), other_repository}, {{"busy-b", "b"}}).status, uam::ExecutionRoutingStatus::Waiting);
+	// A chat for the repository mapped on a is not held up by a waiter that could never run there.
+	const uam::ExecutionRoutingDecision mapped = service.Admit(RoutingRequest("repository"), {RoutingHost("a"), other_repository}, {{"busy-b", "b"}});
+	UAM_ASSERT_EQ(mapped.status, uam::ExecutionRoutingStatus::Assigned);
+	UAM_ASSERT_EQ(mapped.assignment.host_id, std::string("a"));
+	// A chat no ready computer can take is not waiting for capacity and takes no place in the queue.
+	uam::ExecutionRoutingRequest nowhere = RoutingRequest("nowhere");
+	nowhere.source_workspace_identity = "local:/unmapped";
+	UAM_ASSERT_EQ(service.Admit(nowhere, {RoutingHost("a")}, {}).status, uam::ExecutionRoutingStatus::Waiting);
+	UAM_ASSERT_EQ(service.QueuedChatIds(), (std::vector<std::string>{"other-workspace"}));
+}
+
+UAM_TEST(ExecutionRoutingWaiterThatStopsAskingAgesOutOfTheQueue)
+{
+	uam::ExecutionRoutingService service;
+	const std::vector<uam::ExecutionRoutingCandidate> host{RoutingHost("a")};
+	const auto request = [](const std::string& chat, double now)
+	{
+		uam::ExecutionRoutingRequest value = RoutingRequest(chat);
+		value.now_seconds = now;
+		return value;
+	};
+	UAM_ASSERT_EQ(service.Admit(request("gone", 100.0), host, {{"busy", "a"}}).status, uam::ExecutionRoutingStatus::Waiting);
+	// The slot frees, but the waiter has not asked again yet: within the stale limit it keeps its place.
+	UAM_ASSERT_EQ(service.Admit(request("newer", 100.0 + uam::ExecutionRoutingService::kQueueStaleSeconds), host, {}).status, uam::ExecutionRoutingStatus::Waiting);
+	// Silent past the stale limit (stopped, disabled, deleted), it no longer keeps the computer idle.
+	UAM_ASSERT_EQ(service.Admit(request("newer", 100.5 + uam::ExecutionRoutingService::kQueueStaleSeconds), host, {}).status, uam::ExecutionRoutingStatus::Assigned);
+	UAM_ASSERT(service.Release("newer", true));
+	// A waiter that comes back within the forget limit still has its original place ahead of later chats.
+	UAM_ASSERT_EQ(service.Admit(request("later", 110.0), host, {{"busy", "a"}}).status, uam::ExecutionRoutingStatus::Waiting);
+	UAM_ASSERT_EQ(service.Admit(request("gone", 110.5), host, {{"busy", "a"}}).status, uam::ExecutionRoutingStatus::Waiting);
+	UAM_ASSERT_EQ(service.QueuedChatIds(), (std::vector<std::string>{"gone", "later"}));
+	UAM_ASSERT_EQ(service.Admit(request("later", 111.0), host, {}).status, uam::ExecutionRoutingStatus::Waiting);
+	UAM_ASSERT_EQ(service.Admit(request("gone", 111.5), host, {}).status, uam::ExecutionRoutingStatus::Assigned);
+	UAM_ASSERT(service.Release("gone", true));
+	// Silent past the forget limit, a waiter loses its ticket: asking again joins the back of the queue.
+	const double forgotten = 111.0 + uam::ExecutionRoutingService::kQueueForgetSeconds + 1.0;
+	UAM_ASSERT_EQ(service.Admit(request("gone", forgotten), host, {{"busy", "a"}}).status, uam::ExecutionRoutingStatus::Waiting);
+	UAM_ASSERT_EQ(service.Admit(request("later", forgotten + 0.5), host, {{"busy", "a"}}).status, uam::ExecutionRoutingStatus::Waiting);
+	UAM_ASSERT_EQ(service.QueuedChatIds(), (std::vector<std::string>{"gone", "later"}));
+	UAM_ASSERT(service.Withdraw("gone"));
+	UAM_ASSERT(service.Withdraw("later"));
+	UAM_ASSERT(!service.Withdraw("later"));
+	UAM_ASSERT(service.QueuedChatIds().empty());
+}
+
+UAM_TEST(ExecutionRoutingMovesUnstartedWorkToAnotherRemoteHostWhenItsHostIsDownFullOrOverloaded)
+{
+	for (int cause = 0; cause < 3; ++cause)
+	{
+		uam::ExecutionRoutingService service;
+		const uam::ExecutionRoutingDecision initial = service.Admit(RoutingRequest("queued"), {RoutingHost("a"), RoutingHost("b")}, {});
+		UAM_ASSERT_EQ(initial.assignment.host_id, std::string("a"));
+		UAM_ASSERT(service.Release("queued", true));
+		uam::ExecutionRoutingCandidate a = RoutingHost("a");
+		std::vector<uam::ExecutionRoutingOccupancy> occupancy;
+		if (cause == 0) a.runner_ready = false;
+		if (cause == 1) occupancy.push_back({"busy-chat", "a"});
+		if (cause == 2) a.overloaded = true;
+		uam::ExecutionRoutingRequest request = RoutingRequest("queued");
+		request.assigned = initial.assignment;
+		// Started work stays pinned: without the unstarted flag the chat stays on its own computer. There it waits
+		// for routing's count, or (overloaded) stays assigned and waits in that computer's host admission line.
+		const uam::ExecutionRoutingDecision pinned = service.Admit(request, {a, RoutingHost("b")}, occupancy);
+		UAM_ASSERT_EQ(pinned.status, cause == 2 ? uam::ExecutionRoutingStatus::Assigned : uam::ExecutionRoutingStatus::Waiting);
+		UAM_ASSERT_EQ(pinned.assignment.host_id, std::string("a"));
+		UAM_ASSERT(!pinned.moved);
+		request.movable = true;
+		const uam::ExecutionRoutingDecision moved = service.Admit(request, {a, RoutingHost("b")}, occupancy);
+		UAM_ASSERT_EQ(moved.status, uam::ExecutionRoutingStatus::Assigned);
+		UAM_ASSERT(moved.moved);
+		UAM_ASSERT_EQ(moved.assignment.host_id, std::string("b"));
+		UAM_ASSERT_EQ(moved.assignment.destination_folder_id, std::string("folder-b"));
+		UAM_ASSERT_EQ(moved.assignment.connection_identity, std::string("connection-b"));
+		UAM_ASSERT(moved.assignment.automatic);
+		// The reservation follows the move, so the old computer's slot is free again.
+		request.assigned = moved.assignment;
+		request.movable = false;
+		UAM_ASSERT_EQ(service.Admit(request, {a, RoutingHost("b")}, occupancy).assignment.host_id, std::string("b"));
+	}
+}
+
+UAM_TEST(ExecutionRoutingNeverMovesUnstartedWorkToTheLocalComputerOrAnUnmappedHost)
+{
+	uam::ExecutionRoutingService service;
+	const uam::ExecutionRoutingDecision initial = service.Admit(RoutingRequest("queued"), {RoutingHost("a")}, {});
+	UAM_ASSERT(service.Release("queued", true));
+	uam::ExecutionRoutingCandidate down = RoutingHost("a");
+	down.runner_ready = false;
+	// A local candidate fully confirmed and mapped is still never chosen automatically.
+	uam::ExecutionRoutingCandidate local = RoutingHost("local", 8);
+	uam::ExecutionRoutingCandidate unmapped = RoutingHost("c", 8);
+	unmapped.mappings.front().source_workspace_identity = "local:/other";
+	uam::ExecutionRoutingCandidate overloaded = RoutingHost("d", 8);
+	overloaded.overloaded = true;
+	uam::ExecutionRoutingRequest request = RoutingRequest("queued");
+	request.assigned = initial.assignment;
+	request.movable = true;
+	const uam::ExecutionRoutingDecision waiting = service.Admit(request, {down, local, unmapped, overloaded}, {});
+	UAM_ASSERT_EQ(waiting.status, uam::ExecutionRoutingStatus::Waiting);
+	UAM_ASSERT_EQ(waiting.reason, uam::ExecutionRoutingReason::HostUnavailable);
+	UAM_ASSERT_EQ(waiting.assignment.host_id, std::string("a"));
+	// Work the caller reports as running is started work, whatever the flag says.
+	const uam::ExecutionRoutingDecision running = service.Admit(request, {down, RoutingHost("b")}, {{"queued", "a"}});
+	UAM_ASSERT_EQ(running.status, uam::ExecutionRoutingStatus::Waiting);
+	UAM_ASSERT_EQ(running.assignment.host_id, std::string("a"));
+	// Recovery of owned work never moves either.
+	request.recovery_of_owned_work = true;
+	UAM_ASSERT_EQ(service.Admit(request, {down, RoutingHost("b")}, {}).assignment.host_id, std::string("a"));
+}
+
+UAM_TEST(ExecutionRoutingPlacesNewWorkOnlyOnHostsThatAreNotOverloaded)
+{
+	uam::ExecutionRoutingService service;
+	uam::ExecutionRoutingCandidate busy = RoutingHost("a", 4);
+	busy.overloaded = true;
+	const uam::ExecutionRoutingDecision placed = service.Admit(RoutingRequest("new"), {busy, RoutingHost("b", 4)}, {{"x", "b"}, {"y", "b"}});
+	UAM_ASSERT_EQ(placed.assignment.host_id, std::string("b"));
+	UAM_ASSERT(!placed.moved);
+	UAM_ASSERT_EQ(service.Admit(RoutingRequest("only-overloaded"), {busy}, {}).status, uam::ExecutionRoutingStatus::Waiting);
 }
 
 UAM_TEST(ExecutionRoutingOnlyOwnedRecoveryBypassesChangedOptInAndFullCapacity)
@@ -259,9 +439,24 @@ UAM_TEST(ExecutionRoutingOnlyOwnedRecoveryBypassesChangedOptInAndFullCapacity)
 }
 
 #include "app/execution_routing_integration.h"
+#include "app/host_load_integration.h"
 #include "common/utils/hash_utils.h"
 #include "remote/runner_protocol.h"
 #include "common/runtime/provider_cli_compatibility_service.h"
+
+UAM_TEST(ExecutionRoutingPollWithdrawsTheQueuePlaceOfADeletedChat)
+{
+	uam::AppState app;
+	app.execution_routing_service = std::make_shared<uam::ExecutionRoutingService>();
+	ChatSession kept;
+	kept.id = "kept";
+	app.chats.push_back(kept);
+	UAM_ASSERT_EQ(app.execution_routing_service->Admit(RoutingRequest("deleted"), {RoutingHost("a")}, {{"busy", "a"}}).status, uam::ExecutionRoutingStatus::Waiting);
+	UAM_ASSERT_EQ(app.execution_routing_service->Admit(RoutingRequest("kept"), {RoutingHost("a")}, {{"busy", "a"}}).status, uam::ExecutionRoutingStatus::Waiting);
+	(void)uam::PollExecutionRouting(app);
+	// The deleted chat's place goes at once; an existing chat keeps its own.
+	UAM_ASSERT_EQ(app.execution_routing_service->QueuedChatIds(), (std::vector<std::string>{"kept"}));
+}
 
 namespace
 {
@@ -375,6 +570,47 @@ UAM_TEST(ExecutionRoutingPersistsRemoteAssignmentWithExplicitSshWorktreeParity)
 	UAM_ASSERT(app.cli_terminals.empty());
 }
 
+UAM_TEST(ExecutionRoutingMovesAQueuedChatWithItsPendingReservationOffADownHost)
+{
+	TempDir temp("uam-routing-move-unstarted");
+	uam::AppState app;
+	ConfigureRoutingFixture(app, temp.root);
+	ExecutionHost second = *std::ranges::find(app.settings.execution_hosts, std::string("remote"), &ExecutionHost::id);
+	second.id = "remote-b";
+	second.ssh_alias = "fixture-no-ssh-b";
+	app.settings.execution_hosts.push_back(second);
+	uam::CliProviderVersionState version = app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("codex-cli", "remote")];
+	version.execution_host = second;
+	app.runtime_cli_versions_by_provider_id[CliProviderVersionStateKey("codex-cli", second.id)] = version;
+	app.folders.push_back({"destination-b", "Destination B", "/mapped/repo-b", false, "remote-b"});
+	ExecutionRoutingHostPolicy policy = app.settings.execution_routing.hosts.front();
+	policy.host_id = "remote-b";
+	policy.provider_confirmations = {{"codex-cli", uam::ExecutionRoutingConnectionIdentity(second), uam::ExecutionRoutingProviderIdentity(app, app.provider_profiles.front(), "remote-b")}};
+	policy.workspace_mappings = {{"source", (temp.root / "repo").string(), "destination-b"}};
+	app.settings.execution_routing.hosts.push_back(policy);
+	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(app, app.chats.front()).status, uam::ExecutionRoutingStatus::Assigned);
+	UAM_ASSERT_EQ(app.chats.front().execution_host_id, std::string("remote"));
+	// The chat is still queued: its reservation is pending and nothing has started. Its computer then fails its check.
+	UAM_ASSERT(app.chats.front().routing_reservation_pending);
+	const auto host = [&app](const std::string& id) -> ExecutionHost& { return *std::ranges::find(app.settings.execution_hosts, id, &ExecutionHost::id); };
+	host("remote").runner_status = "error";
+	const uam::ExecutionRoutingDecision moved = uam::AdmitExecutionRouting(app, app.chats.front());
+	UAM_ASSERT_EQ(moved.status, uam::ExecutionRoutingStatus::Assigned);
+	UAM_ASSERT(moved.moved);
+	UAM_ASSERT_EQ(app.chats.front().execution_host_id, std::string("remote-b"));
+	UAM_ASSERT_EQ(app.chats.front().folder_id, std::string("destination-b"));
+	UAM_ASSERT_EQ(app.chats.front().workspace_directory, std::string("/mapped/repo-b"));
+	const std::optional<ChatSession> persisted = ChatRepository::LoadLocalChat(app.data_root, "automatic-chat");
+	UAM_ASSERT(persisted.has_value() && persisted->execution_host_id == "remote-b" && persisted->routing_reservation_pending);
+	// Once the chat has a provider session it has started, and it stays on its computer.
+	host("remote-b").runner_status = "error";
+	host("remote").runner_status = "ready";
+	app.chats.front().native_session_id = "native-started";
+	const uam::ExecutionRoutingDecision pinned = uam::AdmitExecutionRouting(app, app.chats.front());
+	UAM_ASSERT(!pinned.moved);
+	UAM_ASSERT_EQ(app.chats.front().execution_host_id, std::string("remote-b"));
+}
+
 UAM_TEST(ExecutionRoutingMaterializedWorktreeWithoutExactMappingWaitsWithoutMutation)
 {
 	TempDir temp("uam-routing-worktree-mapping");
@@ -388,7 +624,12 @@ UAM_TEST(ExecutionRoutingMaterializedWorktreeWithoutExactMappingWaitsWithoutMuta
 	UAM_ASSERT_EQ(app.chats.front().folder_id, std::string("source"));
 	UAM_ASSERT(app.chats.front().routing_assigned_connection_identity.empty());
 	UAM_ASSERT(!fs::exists(AppPaths::UamChatFilePath(app.data_root, "automatic-chat")));
-	UAM_ASSERT(!app.execution_routing_waits["automatic-chat"].empty());
+	// One plain line without computer names; the reasons per computer travel beside it.
+	UAM_ASSERT_EQ(app.execution_routing_waits["automatic-chat"], std::string("No computer can take this chat yet: 1 no folder."));
+	UAM_ASSERT_EQ(uam::RoutingWaitHostsForFrontend(app, "automatic-chat"), nlohmann::json::parse(R"([{"hostId":"remote","reason":"noMapping"}])"));
+	// Reasons recorded for an earlier wait are not shown beside a different one.
+	app.execution_routing_waits["automatic-chat"] = "Waiting for routing admission before the first turn.";
+	UAM_ASSERT(uam::RoutingWaitHostsForFrontend(app, "automatic-chat").empty());
 }
 
 UAM_TEST(ExecutionRoutingFailedAssignmentSaveReleasesOnlyPrelaunchReservation)
@@ -1174,5 +1415,79 @@ UAM_TEST(ExecutionRoutingRestoredReservationReleasesOnlyWhenTheHelperReportsNoPr
 	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(restored, restored.chats.back()).status, uam::ExecutionRoutingStatus::Assigned);
 	restored.execution_routing_retry_at_by_chat_id.clear();
 	UAM_ASSERT_EQ(uam::AdmitExecutionRouting(restored, restored.chats.front()).status, uam::ExecutionRoutingStatus::Waiting);
+}
+#endif
+
+#if UAM_ENABLE_SSH
+// Load is read and shown only in builds with SSH.
+UAM_TEST(HostLoadPollSamplesRoutedComputersOffTheAppThreadAndKeepsUnknownLoadUnknown)
+{
+	// Declared before the app, so the sampler threads that read it stop first.
+	std::atomic<bool> supported{true};
+	TempDir temp("uam-routing-host-load");
+	uam::AppState app;
+	ConfigureRoutingFixture(app, temp.root);
+	app.host_load_reader = [&supported](const ExecutionHost& host)
+	{
+		return uam::host_load::ReaderFactory([&supported, local = host.id == "local"]
+		{
+			return uam::host_load::Reader([&supported, local](std::stop_token)
+			{
+				uam::platform::HostLoad load;
+				load.cores = 8;
+				load.load_average_1m = 3.04;
+				load.memory_available_bytes = 5ull << 30U;
+				load.memory_total_bytes = 16ull << 30U;
+				if (!local) load.runner_processes = 3;
+				if (!local && !supported.load()) return uam::host_load::Reading{uam::host_load::SampleStatus::Unsupported, {}};
+				return uam::host_load::Reading{uam::host_load::SampleStatus::Known, load};
+			});
+		});
+	};
+	// Admission does not read load yet, so an idle computer, even one turned on for routing, is not sampled.
+	const auto settle = [&app](const std::string& id, const std::string& status)
+	{
+		const std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+		while (std::chrono::steady_clock::now() < deadline)
+		{
+			app.host_load_next_poll_s = 0.0;
+			(void)uam::PollHostLoad(app);
+			if (uam::HostLoadForFrontend(app)["hosts"][id].value("status", std::string()) == status) return true;
+			std::this_thread::sleep_for(std::chrono::milliseconds(5));
+		}
+		return false;
+	};
+	(void)uam::PollHostLoad(app);
+	UAM_ASSERT_EQ(uam::HostLoadForFrontend(app)["hosts"]["remote"].value("status", std::string()), std::string("notSampled"));
+	UAM_ASSERT(!app.host_load_sampler || app.host_load_sampler->Keys().empty());
+
+	// Settings that show load sample every computer.
+	uam::RequestHostLoad(app);
+	UAM_ASSERT(settle("remote", "known"));
+	nlohmann::json state = uam::HostLoadForFrontend(app);
+	const nlohmann::json& remote = state["hosts"]["remote"];
+	UAM_ASSERT_EQ(remote["cores"], nlohmann::json(8));
+	UAM_ASSERT_EQ(remote["loadAverage1m"], nlohmann::json(3.0));
+	UAM_ASSERT_EQ(remote["processes"], nlohmann::json(3));
+	UAM_ASSERT_EQ(remote["inUse"], nlohmann::json(0));
+	UAM_ASSERT_EQ(remote["limit"], nlohmann::json(1));
+	UAM_ASSERT(settle("local", "known"));
+	UAM_ASSERT_EQ(uam::HostLoadForFrontend(app)["hosts"]["local"]["processes"], nlohmann::json(0));
+
+	// A limit is shown only where admission applies it.
+	app.settings.execution_routing.hosts.front().enabled = false;
+	app.host_load_next_poll_s = 0.0;
+	(void)uam::PollHostLoad(app);
+	UAM_ASSERT(uam::HostLoadForFrontend(app)["hosts"]["remote"]["limit"].is_null());
+	app.settings.execution_routing.hosts.front().enabled = true;
+
+	// A helper updated to one without host.load is read afresh and reports unknown, never zero.
+	supported = false;
+	app.settings.execution_hosts.front().runner_version = "older-helper";
+	UAM_ASSERT(settle("remote", "unsupported"));
+	state = uam::HostLoadForFrontend(app);
+	for (const char* figure : {"cores", "loadAverage1m", "cpuPercent", "memoryAvailableBytes", "memoryTotalBytes", "processes"})
+		UAM_ASSERT(state["hosts"]["remote"][figure].is_null());
+	app.host_load_sampler.reset();
 }
 #endif

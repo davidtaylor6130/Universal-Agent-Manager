@@ -1,6 +1,7 @@
 #include "common/provider/opencode_v2_session.h"
 #include "common/runtime/cli_version_parser.h"
 #include "common/utils/string_utils.h"
+#include <algorithm>
 #include <stdexcept>
 
 namespace uam::opencode_v2
@@ -8,12 +9,37 @@ namespace uam::opencode_v2
 std::string WorkerVersionError(bool checked, bool same_host, std::string_view version, std::string_view check_error)
 {
 	if (!checked || !same_host || version.empty() || !check_error.empty())
-		return "OpenCode text worker is held until the executing local host's version check succeeds. Check OpenCode in Settings, then retry; no V1 fallback was launched.";
+		return "The OpenCode text worker did not start because its version check has not succeeded; check OpenCode in Settings.";
 	if (uam::cli_versions::ExtractSemverVersion(version) != std::optional<std::string>{version} ||
 	    (!version.starts_with("1.") && !IsVerifiedV2(version)))
 		return "This OpenCode text-worker protocol has not been verified. " + UnverifiedV2Message(version, "text worker") +
 		       " OpenCode 1.x also works. Choose another worker provider in Settings or install a verified OpenCode version.";
 	return {};
+}
+
+std::vector<std::string> ImportedDenyActions(const std::string& permission_json)
+{
+	const Json rules = Json::parse(permission_json, nullptr, false);
+	if (!rules.is_object()) throw std::runtime_error("The imported OpenCode agent rules are invalid.");
+	std::vector<std::string> deny;
+	const auto add = [&](const std::string& action) { if (std::ranges::find(deny, action) == deny.end()) deny.push_back(action); };
+	for (const auto& [action, effect] : rules.items())
+	{
+		if (!effect.is_string() || (effect != "ask" && effect != "deny")) throw std::runtime_error("The imported OpenCode agent rules are invalid.");
+		if (effect != "deny") continue;
+		add(action);
+		// A V1 rule that names or matches a renamed tool must also deny its V2 action.
+		const auto covers = [&](std::string_view name)
+		{
+			if (action == name) return true;
+			const auto star = action.find('*');
+			return star != std::string::npos && star == action.size() - 1 && name.starts_with(std::string_view(action).substr(0, star));
+		};
+		if (covers("bash")) add("shell");
+		if (covers("task")) add("subagent");
+		if (covers("write") || covers("patch") || covers("multiedit") || covers("apply_patch") || covers("edit")) add("edit");
+	}
+	return deny;
 }
 
 std::vector<std::string> ServeArgv(std::vector<std::string> command)
@@ -89,10 +115,11 @@ std::string PermissionPluginSource()
 export default {
   id: 'uam.v2.permission-boundary',
   async setup(ctx) {
-    const { policyPath, proofPath, nonce } = ctx.options;
+    const { policyPath, proofPath, nonce, probePath, probeAction } = ctx.options;
     if (typeof policyPath !== 'string' || typeof proofPath !== 'string' || typeof nonce !== 'string')
       throw new Error('UAM V2 permission lease is missing');
     await ctx.permission.hook('evaluate', async event => {
+      const nativeEffect = event.effect;
       let effect = 'deny';
       try {
         const raw = readFileSync(policyPath, 'utf8');
@@ -103,8 +130,12 @@ export default {
         if (policy.nonce === nonce && policy.active === true &&
             policy.sessionID === event.sessionID && policy.directory === ctx.location.directory &&
             typeof policy.readOnly === 'boolean') {
-          effect = event.effect === 'deny' ? 'deny' : 'ask';
+          effect = nativeEffect === 'deny' ? 'deny' : 'ask';
           if (['task', 'subagent'].includes(event.action) || (policy.readOnly && event.action === 'edit')) effect = 'deny';
+          // Imported agent denies: an exact action, '*' or a trailing-'*' prefix. Malformed rules deny.
+          if (policy.deny !== undefined && !Array.isArray(policy.deny)) throw new Error('Invalid UAM deny rules');
+          if ((policy.deny || []).some(rule => typeof rule !== 'string' || rule === '*' || rule === event.action ||
+              (rule.endsWith('*') && String(event.action).startsWith(rule.slice(0, -1))))) effect = 'deny';
         }
       } catch { effect = 'deny'; }
       // OpenCode invokes hooks after composing saved/project/session grants.
@@ -115,6 +146,14 @@ export default {
         get: () => effect,
         set: value => { if (value === 'deny') effect = 'deny'; }
       });
+      if (typeof probePath === 'string' && event.action === probeAction &&
+          event.resources.length === 1 &&
+          [nonce + ':deny', nonce + ':ask'].includes(event.resources[0])) {
+        writeFileSync(probePath, JSON.stringify({
+          nonce, directory: ctx.location.directory, sessionID: event.sessionID,
+          resource: event.resources[0], nativeEffect, effect
+        }), { mode: 0o600 });
+      }
     });
     writeFileSync(proofPath, JSON.stringify({ nonce, directory: ctx.location.directory }), { mode: 0o600 });
   }

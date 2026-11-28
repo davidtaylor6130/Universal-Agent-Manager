@@ -9,157 +9,22 @@
 #include "common/chat/native_attachment_assets.h"
 #include "common/memory/memory_storage_guard.h"
 #include "common/platform/private_temp_directory.h"
-#include "antigravity_history/legacy_golden.h"
+#include "antigravity_history_fixture.h"
 #include <sqlite3.h>
 #include <nlohmann/json.hpp>
 #include <iomanip>
 #include <sstream>
 #if !defined(UAM_ANTIGRAVITY_HISTORY_STANDALONE)
 #include "app/startup_native_import_service.h"
+#include "app/runtime_orchestration_services.h"
 #include "common/chat/message_attachment_sources.h"
 #endif
 
 #if defined(UAM_ANTIGRAVITY_HISTORY_STANDALONE) || UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
 using namespace uam_test;
+using namespace uam_test::antigravity_fixture;
 namespace
 {
-	constexpr const char* kSession = "3dc412af-b91a-4d9d-82f0-6cd3f991ce2c";
-	constexpr const char* kTrajectory = "fe61a3f1-c177-49aa-ab0b-e266e7ec5be6";
-	std::string AgWorkspace()
-	{
-#if defined(_WIN32)
-		return "C:/synthetic/native workspace";
-#else
-		return "/synthetic/native workspace";
-#endif
-	}
-	std::string AgVarint(std::uint64_t value)
-	{
-		std::string result;
-		do
-		{
-			result += static_cast<char>((value & 127) | (value > 127 ? 128 : 0));
-			value >>= 7;
-		} while (value);
-		return result;
-	}
-	std::string AgNumber(unsigned field, std::uint64_t value)
-	{
-		return AgVarint(field * 8) + AgVarint(value);
-	}
-	std::string AgBytes(unsigned field, std::string_view bytes)
-	{
-		return AgVarint(field * 8 + 2) + AgVarint(bytes.size()) + std::string(bytes);
-	}
-	std::string AgStamp()
-	{
-		return AgNumber(1, 1792756800) + AgNumber(2, 123456789);
-	}
-	struct AgFixture
-	{
-		TempDir temp{"uam-antigravity-history-fixture"};
-		fs::path file;
-		std::unique_ptr<sqlite3, decltype(&sqlite3_close_v2)> db{nullptr, sqlite3_close_v2};
-		std::string workspace = "file:///synthetic/native%20workspace";
-		std::string session, trajectory;
-		explicit AgFixture(std::string session_id = kSession, std::string trajectory_id = kTrajectory) : session(std::move(session_id)), trajectory(std::move(trajectory_id))
-		{
-#if defined(_WIN32)
-			workspace = "file:///C:/synthetic/native%20workspace";
-#endif
-			fs::create_directories(temp.root / "conversations");
-			file = temp.root / "conversations" / (session + ".db");
-			sqlite3* raw = nullptr;
-			UAM_ASSERT_EQ(sqlite3_open(file.string().c_str(), &raw), SQLITE_OK);
-			db.reset(raw);
-			Sql("PRAGMA user_version=1; CREATE TABLE trajectory_meta(trajectory_id TEXT,cascade_id TEXT,trajectory_type INTEGER,source INTEGER); CREATE TABLE trajectory_metadata_blob(id TEXT PRIMARY KEY,data BLOB); CREATE TABLE parent_references(idx INTEGER PRIMARY KEY,data BLOB); CREATE TABLE steps(idx INTEGER PRIMARY KEY,step_type INTEGER,status INTEGER,has_subtrajectory INTEGER,metadata BLOB,error_details BLOB,step_payload BLOB,step_format INTEGER,permissions BLOB,task_details BLOB,render_info BLOB)");
-			Sql(("INSERT INTO trajectory_meta VALUES('" + trajectory + "','" + session + "',4,17)").c_str());
-			Metadata(workspace);
-		}
-		void Sql(const char* text)
-		{
-			UAM_ASSERT_EQ(sqlite3_exec(db.get(), text, nullptr, nullptr, nullptr), SQLITE_OK);
-		}
-		void Metadata(const std::string& uri, const std::string& id = {}, const std::string& second = {}, const std::string& extra = {})
-		{
-			const std::string data = AgBytes(1, AgBytes(1, uri) + AgBytes(2, second.empty() ? uri : second)) + AgBytes(2, AgStamp()) + AgBytes(6, id.empty() ? session : id) + AgBytes(7, uri) + extra;
-			sqlite3_stmt* raw = nullptr;
-			UAM_ASSERT_EQ(sqlite3_prepare_v2(db.get(), "INSERT OR REPLACE INTO trajectory_metadata_blob VALUES('main',?1)", -1, &raw, nullptr), SQLITE_OK);
-			const std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> statement(raw, sqlite3_finalize);
-			UAM_ASSERT_EQ(sqlite3_bind_blob(raw, 1, data.data(), static_cast<int>(data.size()), SQLITE_TRANSIENT), SQLITE_OK);
-			UAM_ASSERT_EQ(sqlite3_step(raw), SQLITE_DONE);
-		}
-		void Legacy(bool equal_identity = false)
-		{
-#if defined(_WIN32)
-			const auto& bytes = equal_identity ? legacy_golden::equal_windows : legacy_golden::windows;
-#else
-			const auto& bytes = equal_identity ? legacy_golden::equal_posix : legacy_golden::posix;
-#endif
-			LegacyBytes(bytes);
-		}
-		template <std::size_t N> void LegacyBytes(const std::array<unsigned char, N>& bytes)
-		{
-			db.reset();
-			UAM_ASSERT(fs::remove(file));
-			file.replace_extension(".pb");
-			std::ofstream out(file, std::ios::binary);
-			out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
-			UAM_ASSERT(out.good());
-		}
-		void Step(int index, int type, unsigned body_field, const std::string& body, int source, const std::string& call = {}, int status = 3, bool metadata_present = true)
-		{
-			const std::string meta = AgBytes(1, AgStamp()) + AgNumber(3, source) + (call.empty() ? "" : AgBytes(4, call)) + AgBytes(20, AgBytes(1, trajectory) + AgNumber(2, index) + AgBytes(4, session));
-			const std::string payload = AgNumber(1, type) + AgNumber(4, status) + (metadata_present ? AgBytes(5, meta) : "") + AgBytes(body_field, body);
-			sqlite3_stmt* raw = nullptr;
-			UAM_ASSERT_EQ(sqlite3_prepare_v2(db.get(), "INSERT INTO steps VALUES(?1,?2,?3,0,?4,X'',?5,0,NULL,NULL,NULL)", -1, &raw, nullptr), SQLITE_OK);
-			const std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> statement(raw, sqlite3_finalize);
-			sqlite3_bind_int(raw, 1, index);
-			sqlite3_bind_int(raw, 2, type);
-			sqlite3_bind_int(raw, 3, status);
-			if (metadata_present)
-				sqlite3_bind_blob(raw, 4, meta.data(), static_cast<int>(meta.size()), SQLITE_TRANSIENT);
-			else
-				sqlite3_bind_null(raw, 4);
-			sqlite3_bind_blob(raw, 5, payload.data(), static_cast<int>(payload.size()), SQLITE_TRANSIENT);
-			UAM_ASSERT_EQ(sqlite3_step(raw), SQLITE_DONE);
-		}
-		void User(const std::string& text = "Read the synthetic fixture", const std::string& extra = {})
-		{
-			Step(0, 14, 19, AgBytes(2, text) + AgBytes(3, AgBytes(1, text)) + extra, 4);
-		}
-		void Render(int index, const std::optional<std::string>& bytes)
-		{
-			sqlite3_stmt* raw = nullptr;
-			UAM_ASSERT_EQ(sqlite3_prepare_v2(db.get(), "UPDATE steps SET render_info=?1 WHERE idx=?2", -1, &raw, nullptr), SQLITE_OK);
-			const std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> statement(raw, sqlite3_finalize);
-			if (bytes) sqlite3_bind_blob(raw, 1, bytes->data(), static_cast<int>(bytes->size()), SQLITE_TRANSIENT);
-			else sqlite3_bind_null(raw, 1);
-			sqlite3_bind_int(raw, 2, index);
-			UAM_ASSERT_EQ(sqlite3_step(raw), SQLITE_DONE);
-		}
-		void Summary(int steps, const std::string& uri, const std::string& source = "antigravity-cli")
-		{
-			sqlite3* raw = nullptr;
-			const auto path = temp.root / "conversation_summaries.db";
-			UAM_ASSERT_EQ(sqlite3_open(path.string().c_str(), &raw), SQLITE_OK);
-			const std::unique_ptr<sqlite3, decltype(&sqlite3_close_v2)> index(raw, sqlite3_close_v2);
-			UAM_ASSERT_EQ(sqlite3_exec(raw, "CREATE TABLE IF NOT EXISTS conversation_summaries(conversation_id TEXT,workspace_uris TEXT,step_count INTEGER,source TEXT,parent_conversation_id TEXT,nesting_depth INTEGER,not_fully_idle INTEGER,battle_id TEXT); DELETE FROM conversation_summaries", nullptr, nullptr, nullptr), SQLITE_OK);
-			sqlite3_stmt* statement = nullptr;
-			UAM_ASSERT_EQ(sqlite3_prepare_v2(raw, "INSERT INTO conversation_summaries VALUES(?1,?2,?3,?4,'',0,0,'')", -1, &statement, nullptr), SQLITE_OK);
-			const std::unique_ptr<sqlite3_stmt, decltype(&sqlite3_finalize)> insert(statement, sqlite3_finalize);
-			const auto uris = "[\"" + uri + "\"]";
-			sqlite3_bind_text(statement, 1, session.c_str(), -1, SQLITE_TRANSIENT);
-			sqlite3_bind_text(statement, 2, uris.c_str(), -1, SQLITE_TRANSIENT);
-			sqlite3_bind_int(statement, 3, steps);
-			sqlite3_bind_text(statement, 4, source.c_str(), -1, SQLITE_TRANSIENT);
-			UAM_ASSERT_EQ(sqlite3_step(statement), SQLITE_DONE);
-		}
-		uam::antigravity::history::Discovery Read()
-		{
-			return uam::antigravity::history::Discover(temp.root);
-		}
-	};
 	std::string AgCall()
 	{
 		return AgBytes(1, "native-call-exact") + AgBytes(2, "run_command") + AgBytes(3, "{\"command\":\"synthetic-only\"}");
@@ -605,6 +470,95 @@ UAM_TEST(AntigravityNativeHistoryPreservesSourceQualifiedPlannerIdentityAndOpaqu
 	UAM_ASSERT(!observed.contains("effectiveModel") && !observed.contains("approvalPolicy"));
 }
 
+UAM_TEST(AntigravityNativeHistoryUnknownFieldRefusalNamesKindFieldAndWireWithoutContent)
+{
+	AgFixture fixture;
+	fixture.User();
+	fixture.Step(1, 15, 20, AgBytes(1, "Visible synthetic reply") + AgBytes(20, "private-media-sentinel"), 2);
+	const auto refused = fixture.Read();
+	UAM_ASSERT(refused.chats.empty());
+	UAM_ASSERT_EQ(refused.format_refusals.size(), std::size_t{1});
+	const auto& refusal = refused.format_refusals[0];
+	UAM_ASSERT_EQ(refusal.native_session_id, std::string(kSession));
+	UAM_ASSERT_EQ(refusal.message, "Antigravity conversation " + std::string(kSession) + ": Antigravity added a history field UAM can't read yet.");
+	UAM_ASSERT_EQ(refused.errors, std::vector<std::string>{refusal.message});
+	UAM_ASSERT(refusal.diagnostic.find("reader v" + std::to_string(uam::antigravity::history::kReaderVersion)) != std::string::npos);
+	UAM_ASSERT(refusal.diagnostic.find("unknown field 20 (wire type 2, length-delimited) in CortexStepPlannerResponse") != std::string::npos);
+	UAM_ASSERT(refusal.report_key.starts_with("antigravity-cli|" + std::string(kSession) + "|reader-"));
+	for (const std::string* text : {&refusal.message, &refusal.diagnostic, &refusal.report_key})
+	{
+		UAM_ASSERT(text->find("private-media-sentinel") == std::string::npos);
+		UAM_ASSERT(text->find("Visible synthetic reply") == std::string::npos);
+	}
+	// The same file keeps its key; any change to the file gives a new one.
+	UAM_ASSERT_EQ(fixture.Read().format_refusals.at(0).report_key, refusal.report_key);
+	fixture.Step(2, 14, 19, AgBytes(2, "Later synthetic input"), 4);
+	UAM_ASSERT(fixture.Read().format_refusals.at(0).report_key != refusal.report_key);
+
+	AgFixture varint;
+	varint.User("Read the synthetic fixture", AgNumber(99, 7));
+	const auto unknown_varint = varint.Read();
+	UAM_ASSERT_EQ(unknown_varint.format_refusals.size(), std::size_t{1});
+	UAM_ASSERT(unknown_varint.format_refusals[0].diagnostic.find("unknown field 99 (wire type 0, varint) in CortexStepUserInput") != std::string::npos);
+
+	// Other refusals keep their own reasons and are not unknown-format refusals.
+	AgFixture corrupt;
+	corrupt.User();
+	corrupt.Sql("UPDATE steps SET step_payload=CAST(step_payload||X'80' AS BLOB)");
+	const auto truncated = corrupt.Read();
+	UAM_ASSERT(truncated.format_refusals.empty());
+	UAM_ASSERT_EQ(truncated.errors.size(), std::size_t{1});
+}
+
+UAM_TEST(AntigravityNativeHistoryReadsNewerClientMessageIdAndRunCommandEnvironmentFields)
+{
+	// agy 1.5.1 adds CortexStepUserInput.client_message_id (19) and agy 1.5.13 adds
+	// CortexStepRunCommand.environment_id (38), both plain strings.
+	AgFixture fixture;
+	fixture.User("Read the synthetic fixture", AgBytes(19, "synthetic-client-message-id"));
+	fixture.Step(1, 15, 20, AgBytes(1, "I will inspect it.") + AgBytes(7, AgCall()), 2);
+	fixture.Step(2, 21, 28, AgBytes(21, AgBytes(1, "synthetic output")) + AgBytes(38, "synthetic-environment"), 2, AgCall());
+	const auto result = fixture.Read();
+	UAM_ASSERT(result.errors.empty());
+	UAM_ASSERT(result.format_refusals.empty());
+	UAM_ASSERT_EQ(result.chats.size(), std::size_t(1));
+	const auto& user = result.chats[0].messages.at(0);
+	UAM_ASSERT_EQ(user.content, std::string("Read the synthetic fixture"));
+	UAM_ASSERT(!user.native_input_id && !user.input_write_completed);
+	const auto metadata = std::ranges::find_if(user.blocks, [](const auto& block) { return block.type == "native_input_metadata"; });
+	UAM_ASSERT(metadata != user.blocks.end());
+	UAM_ASSERT_EQ(nlohmann::json::parse(metadata->text)["clientMessageId"].get<std::string>(), std::string("synthetic-client-message-id"));
+	const auto& call = result.chats[0].messages.at(1).tool_calls.at(0);
+	UAM_ASSERT_EQ(call.result_text, std::string("synthetic output"));
+	UAM_ASSERT_EQ(call.status, std::string("completed"));
+
+	// A known field with the wrong wire type still refuses the conversation.
+	for (const auto& extra : {AgNumber(19, 1), AgBytes(19, std::string("\xff", 1))})
+	{
+		AgFixture wrong;
+		wrong.User("Read the synthetic fixture", extra);
+		const auto refused = wrong.Read();
+		UAM_ASSERT(refused.chats.empty());
+		UAM_ASSERT(!refused.errors.empty());
+	}
+	AgFixture environment;
+	environment.User();
+	environment.Step(1, 15, 20, AgBytes(7, AgCall()), 2);
+	environment.Step(2, 21, 28, AgBytes(21, AgBytes(1, "synthetic output")) + AgNumber(38, 1), 2, AgCall());
+	UAM_ASSERT(environment.Read().chats.empty());
+
+	// Newer media and structured result fields stay refused rather than guessed.
+	AgFixture media;
+	media.User();
+	media.Step(1, 15, 20, AgBytes(1, "Reply with media") + AgBytes(20, "synthetic media"), 2);
+	UAM_ASSERT(media.Read().format_refusals.at(0).diagnostic.find("field 20") != std::string::npos);
+	AgFixture value;
+	value.User();
+	value.Step(1, 15, 20, AgBytes(7, AgCall()), 2);
+	value.Step(2, 132, 140, AgBytes(2, AgBytes(1, "Generic result text") + AgBytes(11, "synthetic value")), 2, AgCall());
+	UAM_ASSERT(value.Read().format_refusals.at(0).diagnostic.find("unknown field 11 (wire type 2, length-delimited) in GenericStepResult") != std::string::npos);
+}
+
 UAM_TEST(AntigravityNativeHistoryReadsAuthenticatedLegacyAndRejectsCorruptionAndSQLiteSupersession)
 {
 	AgFixture fixture;
@@ -824,6 +778,65 @@ UAM_TEST(AntigravityNativeHistorySnapshotsSummaryOnceAcrossFiftyConversationsAnd
 	const auto refused = uam::antigravity::history::Discover(store.root);
 	UAM_ASSERT_EQ(refused.errors.size(), std::size_t{20});
 	UAM_ASSERT_EQ(refused.omitted_error_count, std::size_t{30});
+}
+
+UAM_TEST(AntigravityNativeHistoryUnknownFieldRefusalsDoNotUseTheDetailCap)
+{
+	AgFixture fixture;
+	fixture.db.reset();
+	fs::remove(fixture.file);
+	for (unsigned i = 0; i < 25; ++i)
+	{
+		std::ostringstream id;
+		id << "3dc412af-b91a-4d9d-82f0-" << std::setfill('0') << std::setw(12) << i;
+		if (i < 13)
+		{
+			AgFixture refused(id.str());
+			refused.User("Read the synthetic fixture", AgNumber(99, 1));
+			refused.db.reset();
+			fs::copy_file(refused.file, fixture.file.parent_path() / (id.str() + ".db"));
+		}
+		else
+			std::ofstream(fixture.file.parent_path() / (id.str() + ".db")) << "Synthetic refused database";
+	}
+	const auto result = uam::antigravity::history::Discover(fixture.temp.root);
+	UAM_ASSERT_EQ(result.format_refusals.size(), std::size_t{13});
+	UAM_ASSERT_EQ(result.errors.size(), std::size_t{25});
+	UAM_ASSERT_EQ(result.omitted_error_count, std::size_t{0});
+}
+
+UAM_TEST(AntigravityNativeHistoryRecordsPlainRefusalReasonAndUnsettledSource)
+{
+	AgFixture nested;
+	nested.User();
+	nested.Sql("INSERT INTO parent_references VALUES(0,X'0801')");
+	const auto refused = nested.Read();
+	UAM_ASSERT(refused.chats.empty());
+	UAM_ASSERT_EQ(refused.refusals.size(), std::size_t(1));
+	UAM_ASSERT_EQ(refused.refusals[0].session, std::string(kSession));
+	UAM_ASSERT_EQ(refused.refusals[0].reason, std::string("This conversation continues another Antigravity conversation, and UAM cannot read that earlier context completely yet."));
+	UAM_ASSERT(!refused.refusals[0].unsettled);
+	UAM_ASSERT_EQ(refused.errors.size(), std::size_t(1));
+	UAM_ASSERT(refused.errors[0].find(kSession) != std::string::npos);
+
+	AgFixture running;
+	running.User();
+	running.Step(1, 15, 20, AgBytes(1, "Still streaming"), 2, {}, 2);
+	const auto unsettled = running.Read();
+	UAM_ASSERT(unsettled.chats.empty());
+	UAM_ASSERT_EQ(unsettled.refusals.size(), std::size_t(1));
+	UAM_ASSERT(unsettled.refusals[0].unsettled);
+	UAM_ASSERT_EQ(unsettled.refusals[0].reason, std::string("Antigravity is still working on this conversation. Retry after it finishes."));
+
+	// INTERRUPTED (12) is not an in-progress state: refused with a reason, never silent.
+	AgFixture interrupted;
+	interrupted.User();
+	interrupted.Step(1, 15, 20, AgBytes(1, "Stopped"), 2, {}, 12);
+	const auto unknown = interrupted.Read();
+	UAM_ASSERT(unknown.chats.empty());
+	UAM_ASSERT_EQ(unknown.refusals.size(), std::size_t(1));
+	UAM_ASSERT(!unknown.refusals[0].unsettled);
+	UAM_ASSERT_EQ(unknown.refusals[0].reason, std::string("This conversation has an Antigravity step state that UAM cannot read yet."));
 }
 
 #if !defined(UAM_ANTIGRAVITY_HISTORY_STANDALONE) && UAM_ENABLE_RUNTIME_ANTIGRAVITY_CLI
@@ -1067,6 +1080,70 @@ UAM_TEST(SettingsAntigravityNativeHiddenOwnerAndLateTombstonePreventPublication)
 	UAM_ASSERT_EQ(ReadFile(AppPaths::UamChatFilePath(other.data_root, hidden.id)), before);
 }
 
+UAM_TEST(SettingsAntigravityUnknownFieldRefusalIsReportedOnceAtStartupUntilTheFileChanges)
+{
+	AgFixture fixture;
+	fixture.User();
+	fixture.Step(1, 15, 20, AgBytes(1, "Visible synthetic reply") + AgBytes(20, "synthetic media"), 2);
+	uam::AppState app;
+	app.data_root = fixture.temp.root / "uam-data";
+	fs::create_directories(app.data_root);
+	const std::vector<std::string> reported{"Antigravity conversation " + std::string(kSession) + ": Antigravity added a history field UAM can't read yet."};
+	// Each automatic startup scan runs in a fresh service, as after an app restart.
+	const auto startup = [&]
+	{
+		uam::StartupNativeImportService service([&](const auto&, std::stop_token) { return AgApplicationDiscovery(fixture); });
+		service.Initialize(app);
+		AgWait(service, app);
+		return service.Snapshot();
+	};
+	uam::StartupNativeImportService explicit_service([&](const auto&, std::stop_token) { return AgApplicationDiscovery(fixture); });
+	const auto discover = [&]
+	{
+		UAM_ASSERT(explicit_service.DiscoverLocalHistory(app));
+		AgWait(explicit_service, app);
+		return explicit_service.Snapshot();
+	};
+	const auto first = startup();
+	UAM_ASSERT_EQ(first.errors, reported);
+	UAM_ASSERT_EQ(first.total_count, std::size_t{0});
+	const fs::path record = app.data_root / "native-import-tombstones.json";
+	const auto entries = [&] { return nlohmann::json::parse(ReadFile(record)); };
+	UAM_ASSERT_EQ(entries().size(), std::size_t{1});
+	UAM_ASSERT(entries()[0].get<std::string>().starts_with("format-refusal|antigravity-cli|" + std::string(kSession) + "|reader-"));
+	// The note never acts as a deletion tombstone.
+	const auto deleted = ChatHistorySyncService().NativeImportTombstoneKeys(app.data_root);
+	UAM_ASSERT(deleted && deleted->empty());
+	// Later startup scans still read the conversation but do not report it again.
+	UAM_ASSERT(startup().errors.empty());
+	UAM_ASSERT(startup().errors.empty());
+	// An explicit Chat Data scan always lists it and leaves the note alone.
+	const auto before = entries()[0].get<std::string>();
+	UAM_ASSERT_EQ(discover().errors, reported);
+	UAM_ASSERT_EQ(entries()[0].get<std::string>(), before);
+	// Deletion bookkeeping keeps the note.
+	UAM_ASSERT(ChatHistorySyncService().RemoveNativeImportTombstones(app.data_root, {"unrelated-key"}));
+	UAM_ASSERT_EQ(entries().size(), std::size_t{1});
+	UAM_ASSERT(startup().errors.empty());
+	// A changed file is reported once more at startup and replaces the earlier note.
+	fixture.Step(2, 14, 19, AgBytes(2, "Later synthetic input"), 4);
+	UAM_ASSERT_EQ(startup().errors, reported);
+	UAM_ASSERT_EQ(entries().size(), std::size_t{1});
+	UAM_ASSERT(entries()[0].get<std::string>() != before);
+	UAM_ASSERT(startup().errors.empty());
+	// A different reader version is a different key for the same conversation.
+	ChatHistorySyncService::ImportResult::FormatRefusal newer{"antigravity-cli|" + std::string(kSession), "antigravity-cli|" + std::string(kSession) + "|reader-999|0", "synthetic", "synthetic"};
+	UAM_ASSERT(ChatHistorySyncService().RecordNativeFormatRefusals(app.data_root, {newer}).empty());
+	UAM_ASSERT(ChatHistorySyncService().RecordNativeFormatRefusals(app.data_root, {newer}).contains("synthetic"));
+	UAM_ASSERT_EQ(entries().size(), std::size_t{1});
+	// Once the unknown field is gone the conversation is offered normally.
+	fixture.Sql("DELETE FROM steps WHERE idx>=1");
+	fixture.Step(1, 15, 20, AgBytes(1, "Visible synthetic reply"), 2);
+	const auto readable = discover();
+	UAM_ASSERT(readable.errors.empty());
+	UAM_ASSERT_EQ(readable.total_count, std::size_t{1});
+}
+
 UAM_TEST(SettingsAntigravityLegacyDiscoveryAssignmentAndSelectedPublication)
 {
 	AgFixture fixture;
@@ -1099,6 +1176,77 @@ UAM_TEST(SettingsAntigravityLegacyDiscoveryAssignmentAndSelectedPublication)
 	UAM_ASSERT(service.DiscoverLocalHistory(app));
 	AgWait(service, app);
 	UAM_ASSERT_EQ(service.Snapshot().total_count, std::size_t(0));
+}
+
+namespace
+{
+	// The exact local transcript read used by Terminal-to-Chat refresh, against the
+	// documented CLI store under a synthetic HOME.
+	struct AgExactReadFixture
+	{
+		ScopedNativeHistoryHome home;
+		TempDir workspace_root{"uam-antigravity-exact-read"};
+		AgFixture native;
+		ChatSession chat;
+		AgExactReadFixture()
+		{
+			const fs::path workspace = workspace_root.root / "workspace";
+			fs::create_directories(workspace);
+			std::string uri;
+			for (const char c : workspace.generic_string()) uri += c == ' ' ? std::string("%20") : std::string(1, c);
+			native.Metadata(uri.front() == '/' ? "file://" + uri : "file:///" + uri);
+			native.User("Recorded text");
+			chat.id = "saved-UAM-antigravity";
+			chat.provider_id = uam::provider_ids::kAntigravityCli;
+			chat.native_session_id = kSession;
+			chat.workspace_directory = workspace.string();
+			chat.execution_host_id = "local";
+		}
+		std::optional<ChatSession> Load(std::string& error, bool& unsettled)
+		{
+			native.db.reset();
+			const fs::path store = home.directory.root / ".gemini" / "antigravity-cli" / "conversations";
+			fs::create_directories(store);
+			fs::copy_file(native.file, store / native.file.filename(), fs::copy_options::overwrite_existing);
+			return ChatHistorySyncService().LoadLocalNativeTranscript(chat, &error, {}, &unsettled);
+		}
+	};
+} // namespace
+
+UAM_TEST(AntigravityExactLocalTranscriptReadsSettledConversation)
+{
+	AgExactReadFixture fixture;
+	fixture.native.Step(1, 15, 20, AgBytes(1, "Native terminal answer"), 2);
+	std::string error;
+	bool unsettled = true;
+	const auto loaded = fixture.Load(error, unsettled);
+	UAM_ASSERT(loaded.has_value());
+	UAM_ASSERT(!unsettled);
+	UAM_ASSERT(error.empty());
+	UAM_ASSERT_EQ(loaded->messages.size(), std::size_t(2));
+	UAM_ASSERT_EQ(loaded->messages[1].content, std::string("Native terminal answer"));
+}
+
+UAM_TEST(AntigravityExactLocalTranscriptReportsPlainRefusalReason)
+{
+	AgExactReadFixture fixture;
+	fixture.native.Sql("INSERT INTO parent_references VALUES(0,X'0801')");
+	std::string error;
+	bool unsettled = true;
+	UAM_ASSERT(!fixture.Load(error, unsettled));
+	UAM_ASSERT(!unsettled);
+	UAM_ASSERT_EQ(error, std::string("This conversation continues another Antigravity conversation, and UAM cannot read that earlier context completely yet."));
+}
+
+UAM_TEST(AntigravityExactLocalTranscriptMarksUnfinishedConversation)
+{
+	AgExactReadFixture fixture;
+	fixture.native.Step(1, 15, 20, AgBytes(1, "Still streaming"), 2, {}, 2);
+	std::string error;
+	bool unsettled = false;
+	UAM_ASSERT(!fixture.Load(error, unsettled));
+	UAM_ASSERT(unsettled);
+	UAM_ASSERT_EQ(error, std::string("Antigravity is still working on this conversation. Retry after it finishes."));
 }
 #endif
 

@@ -1,4 +1,9 @@
+#include "app/host_admission_integration.h"
 #include <charconv>
+#include "common/config/build_features.h"
+#if UAM_ENABLE_RUNTIME_CUSTOM_ACP
+#include "common/provider/custom_acp/custom_acp_provider_runtime.h"
+#endif
 #include "common/platform/background_thread_priority.h"
 #include "include/cef_parser.h"
 #include "common/discovery/management_discovery.h"
@@ -6,17 +11,20 @@
 #include "app/local_chat_bundle_service.h"
 #include "app/storage_retention_service.h"
 #include "app/pr_watch_service.h"
+#include "app/timer_service.h"
 #include "app/secret_request_service.h"
 #include "app/data_folder_settings_service.h"
 #include "app/data_folder_transition.h"
 #include "include/cef_request_context.h"
 #include "app/execution_routing_integration.h"
+#include "app/host_load_integration.h"
 #include "application.h"
 #include "remote/runner_client.h"
 #include <thread>
 #include <system_error>
 #include <cstdlib>
 #include "common/utils/diagnostic_log.h"
+#include "common/utils/stage_timing_summary.h"
 #include "common/platform/app_crash_supervisor.h"
 #include "cef/companion_server.h"
 
@@ -44,11 +52,12 @@
 #include "common/paths/app_paths.h"
 #include "common/paths/path_utils.h"
 #include "common/paths/workspace_root.h"
+#include "common/platform/cef_sandbox_folder_access.h"
+#include "common/config/custom_icon.h"
 #include "common/chat/chat_branching.h"
 #include "common/chat/chat_folder_store.h"
 #include "common/chat/chat_repository.h"
 #include "common/provider/excluded_provider_data.h"
-#include "common/config/frontend_actions.h"
 #include "common/config/settings_normalization.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/provider_profile.h"
@@ -115,6 +124,20 @@ namespace uam_cef_globals
 
 namespace
 {
+	// One p50/p95/max summary per minute that had a tick of 50 ms or more, plus single lines only from 250 ms;
+	// a line per slow tick filled almost half of the retained log. UI-thread only, like the poll itself.
+	uam::diagnostics::StageTimingSummary& PollTiming()
+	{
+		static uam::diagnostics::StageTimingSummary timing("PollTick", {"startup", "runtimes", "side_chats", "terminals", "memory", "controls", "computer_use", "shell_actions",
+		    "workspace_availability", "providers", "history", "retention", "catalogs", "push", "awake"});
+		return timing;
+	}
+
+	void FlushPollTiming()
+	{
+		if (std::optional<std::string> summary = PollTiming().Flush(std::chrono::steady_clock::now())) uam::diagnostics::Write(*summary);
+	}
+
 	volatile std::sig_atomic_t g_managementStopRequested = 0;
 	void RequestManagementStop(int) { g_managementStopRequested = 1; }
 
@@ -267,15 +290,15 @@ namespace
 	class AppApplySeedMarkdownTask : public CefTask
 	{
 	  public:
-		AppApplySeedMarkdownTask(Application* app, std::shared_ptr<std::atomic_bool> lifetime_token, bool seeded, std::string error, std::vector<ShellAction> shell_actions, std::string destination_directory)
-		    : m_app(app), m_lifetime_token(std::move(lifetime_token)), m_seeded(seeded), m_error(std::move(error)), m_shell_actions(std::move(shell_actions)), m_destination_directory(std::move(destination_directory))
+		AppApplySeedMarkdownTask(Application* app, std::shared_ptr<std::atomic_bool> lifetime_token, bool seeded, std::string error, std::vector<ShellAction> shell_actions, bool shell_actions_unreadable, std::string destination_directory)
+		    : m_app(app), m_lifetime_token(std::move(lifetime_token)), m_seeded(seeded), m_error(std::move(error)), m_shell_actions(std::move(shell_actions)), m_shell_actions_unreadable(shell_actions_unreadable), m_destination_directory(std::move(destination_directory))
 		{
 		}
 		void Execute() override
 		{
 			if (m_app != nullptr && m_lifetime_token != nullptr && m_lifetime_token->load())
 			{
-				m_app->ApplyBundledMarkdownStoreSeed(m_seeded, std::move(m_error), std::move(m_shell_actions), m_destination_directory);
+				m_app->ApplyBundledMarkdownStoreSeed(m_seeded, std::move(m_error), std::move(m_shell_actions), m_shell_actions_unreadable, m_destination_directory);
 			}
 		}
 
@@ -285,6 +308,7 @@ namespace
 		bool m_seeded;
 		std::string m_error;
 		std::vector<ShellAction> m_shell_actions;
+		bool m_shell_actions_unreadable;
 		std::string m_destination_directory;
 		IMPLEMENT_REFCOUNTING(AppApplySeedMarkdownTask);
 	};
@@ -304,9 +328,10 @@ namespace
 				const std::filesystem::path destination_root = MarkdownStoreService::NormalizeRoot(m_destination_directory);
 				const bool seeded = MarkdownStoreService::SeedBundledEntries(m_bundled_root, destination_root, &error);
 				if (!m_lifetime_token->load()) return;
-				std::vector<ShellAction> shell_actions = ShellActionService::Load(m_data_root, seeded ? destination_root : std::filesystem::path{});
+				bool shell_actions_unreadable = false;
+				std::vector<ShellAction> shell_actions = ShellActionService::Load(m_data_root, seeded ? destination_root : std::filesystem::path{}, nullptr, &shell_actions_unreadable);
 				if (!m_lifetime_token->load()) return;
-				CefPostTask(TID_UI, new AppApplySeedMarkdownTask(m_app, m_lifetime_token, seeded, std::move(error), std::move(shell_actions), m_destination_directory));
+				CefPostTask(TID_UI, new AppApplySeedMarkdownTask(m_app, m_lifetime_token, seeded, std::move(error), std::move(shell_actions), shell_actions_unreadable, m_destination_directory));
 			}
 		}
 
@@ -338,7 +363,7 @@ Application::~Application()
 	m_platformServices = nullptr;
 }
 
-int Application::Run(CefMainArgs main_args, std::vector<std::string> launch_arguments)
+int Application::Run(CefMainArgs main_args, std::vector<std::string> launch_arguments, void* windows_sandbox_info)
 {
 	m_platformServices = &PlatformServicesFactory::Instance();
 	m_launchArguments = std::move(launch_arguments);
@@ -360,7 +385,7 @@ int Application::Run(CefMainArgs main_args, std::vector<std::string> launch_argu
 	}
 
 	const std::chrono::steady_clock::time_point cef_started = std::chrono::steady_clock::now();
-	if (!InitializeCef(main_args))
+	if (!InitializeCef(main_args, windows_sandbox_info))
 	{
 		return m_exitCode != 0 ? m_exitCode : 1;
 	}
@@ -383,7 +408,11 @@ int Application::Run(CefMainArgs main_args, std::vector<std::string> launch_argu
 
 bool Application::PollHistoryDiscovery()
 {
-	return m_app.startup_native_import_service != nullptr && m_app.startup_native_import_service->Poll(m_app);
+	if (m_app.startup_native_import_service == nullptr) return false;
+	// A startup scan held by host admission starts here once this computer admits background work.
+	if (!m_app.startup_native_import_service->Initialized() && uam::AdmitBackgroundStart(m_app, "history-import:start", "local", false).admitted)
+		m_app.startup_native_import_service->Initialize(m_app);
+	return m_app.startup_native_import_service->Poll(m_app);
 }
 
 bool Application::PollWorkspaceAvailability()
@@ -393,12 +422,13 @@ bool Application::PollWorkspaceAvailability()
 	{
 		try
 		{
-			for (const ChatFolder& result : m_workspaceAvailabilityScan.get())
+			for (ChatFolder& result : m_workspaceAvailabilityScan.get())
 			{
 				const std::vector<ChatFolder>::iterator current = std::ranges::find(m_app.folders, result.id, &ChatFolder::id);
 				if (current == m_app.folders.end() || current->directory != result.directory || current->execution_host_id != result.execution_host_id) continue;
-				changed = changed || current->directory_missing != result.directory_missing;
+				changed = changed || current->directory_missing != result.directory_missing || current->project_icon != result.project_icon;
 				current->directory_missing = result.directory_missing;
+				current->project_icon = std::move(result.project_icon);
 				current->availability_directory = result.directory;
 				current->availability_host_id = result.execution_host_id;
 			}
@@ -412,10 +442,18 @@ bool Application::PollWorkspaceAvailability()
 			for (ChatFolder& folder : folders)
 			{
 				folder.directory_missing = false;
+				folder.project_icon.clear();
 				if (!folder.directory.empty() && uam::paths::IsControllerLocalWorkspace(folder))
 				{
 					const fs::path directory = uam::paths::PathFromUtf8(folder.directory);
 					folder.directory_missing = PlatformServicesFactory::Instance().path_service.CanProbeDirectoryWithoutPrompt(directory) && !uam::paths::IsDirectoryNoThrow(directory);
+#if defined(_WIN32) || defined(__APPLE__)
+					// Read even under Documents/Desktop/Downloads: agents already run in these user-chosen folders,
+					// so macOS asks for that access once anyway. Kept off the UI thread because slow mounts can block.
+					// Probed even with a custom icon, so removing it shows the project icon at once; the serializer hides it meanwhile.
+					if (!folder.directory_missing)
+						folder.project_icon = uam::icons::ProjectIconDataUrl(directory);
+#endif
 				}
 			}
 			return folders;
@@ -446,7 +484,11 @@ void Application::PollTick()
 		m_startupChatLoader.join();
 		auto [chats, warning] = m_startupChats.get();
 		FinishStartupState(std::move(chats), std::move(warning));
+		const std::chrono::steady_clock::time_point apply_finished = std::chrono::steady_clock::now();
 		if (uam_cef_globals::g_client) uam_cef_globals::g_client->ResumeStartupQueries();
+		// The held bridge requests (the UI's first full state among them) run here, outside the poll's stage timings.
+		uam::diagnostics::Write("[performance] startup held bridge requests answered in " +
+		    std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - apply_finished).count()) + " ms.");
 	}
 	if (m_managementNode && g_managementStopRequested)
 	{
@@ -478,7 +520,7 @@ void Application::PollTick()
 
 	try
 	{
-		PollTickStages(poll_started);
+		PollTickStages(poll_started, std::chrono::steady_clock::now());
 	}
 	catch (const std::exception& error)
 	{
@@ -501,10 +543,11 @@ void Application::ReportPollTickFailure(const std::string& reason)
 	uam::diagnostics::Write("[poll] PollTick stage failed and was skipped for this tick: " + reason);
 }
 
-void Application::PollTickStages(std::chrono::steady_clock::time_point poll_started)
+void Application::PollTickStages(std::chrono::steady_clock::time_point poll_started, std::chrono::steady_clock::time_point stages_started)
 {
 	const RuntimeCliCompatibilitySnapshot provider_snapshot_before = CreateCliCompatibilitySnapshot(m_app);
 	const bool side_chats_changed = uam::PollTemporarySideChatCleanup(m_app);
+	const std::chrono::steady_clock::time_point side_chats_finished = std::chrono::steady_clock::now();
 	const bool acp_sessions_changed = uam::PollAllAcpSessions(m_app, m_browser);
 #if UAM_ENABLE_RUNTIME_OPENCODE_CLI
 	const bool compaction_sync_changed = m_openCodeCompactionSync && m_openCodeCompactionSync->Poll(m_app);
@@ -518,6 +561,7 @@ void Application::PollTickStages(std::chrono::steady_clock::time_point poll_star
 	const bool chat_saves_changed = uam::FlushPendingChatSaves(m_app);
 	const std::chrono::steady_clock::time_point runtimes_finished = std::chrono::steady_clock::now();
 	const bool cli_terminals_changed = uam::PollAllCliTerminals(m_browser, m_app, TerminalUiVisible(m_browser));
+	const bool host_admission_changed = uam::PollHostAdmission(m_app);
 	const bool routing_changed = uam::PollExecutionRouting(m_app);
 	const std::chrono::steady_clock::time_point terminals_finished = std::chrono::steady_clock::now();
 	const bool memory_changed = MemoryService::ProcessDueMemoryWork(m_app);
@@ -525,6 +569,8 @@ void Application::PollTickStages(std::chrono::steady_clock::time_point poll_star
 	const bool computer_use_changed = m_computerUseService.PollInBackground(m_app);
 	const std::chrono::steady_clock::time_point computer_use_finished = std::chrono::steady_clock::now();
 	const bool pr_watch_changed = m_app.pr_watch_service != nullptr && m_app.pr_watch_service->Poll(m_app);
+	// Local timers: they run whether or not Phone access is on.
+	const bool timers_changed = m_app.timer_service != nullptr && m_app.timer_service->Poll(m_app);
 	const bool shell_actions_changed = ShellActionService::ProcessPendingRequests(m_app);
 	const std::chrono::steady_clock::time_point shell_actions_finished = std::chrono::steady_clock::now();
 	const bool folder_availability_changed = PollWorkspaceAvailability();
@@ -542,6 +588,7 @@ void Application::PollTickStages(std::chrono::steady_clock::time_point poll_star
 	}
 	ProviderCliCompatibilityService().Poll(m_app);
 	const bool remote_recovery_changed = uam::PollRemoteHostRecovery(m_app);
+	const bool host_load_changed = uam::PollHostLoad(m_app);
 	const bool remote_host_health_changed = m_app.remote_host_health_changed;
 	if (remote_host_health_changed && PersistenceCoordinator().SaveSettings(m_app))
 		m_app.remote_host_health_changed = false;
@@ -572,7 +619,7 @@ void Application::PollTickStages(std::chrono::steady_clock::time_point poll_star
 	const bool provider_compatibility_changed = IsCliCompatibilitySnapshotChanged(provider_snapshot_before, CreateCliCompatibilitySnapshot(m_app));
 	// A memory backlog finishes a chat on almost every poll; publishing each rebuilt the whole state four times a second.
 	const bool memory_push_due = m_memoryPush.Due(memory_changed, catalogs_finished);
-	const bool runtime_state_changed = routing_changed || remote_recovery_changed || side_chats_changed || acp_sessions_changed || compaction_sync_changed || opencode_native_changed || uam_control_changed || pr_watch_changed || agent_runs_changed || cli_terminals_changed || memory_push_due || computer_use_changed || shell_actions_changed || folder_availability_changed || model_discovery_retry_changed || startup_model_discovery_changed || history_discovery_changed || remote_host_health_changed;
+	const bool runtime_state_changed = routing_changed || remote_recovery_changed || host_load_changed || side_chats_changed || acp_sessions_changed || compaction_sync_changed || opencode_native_changed || uam_control_changed || pr_watch_changed || timers_changed || agent_runs_changed || cli_terminals_changed || memory_push_due || computer_use_changed || shell_actions_changed || folder_availability_changed || model_discovery_retry_changed || startup_model_discovery_changed || history_discovery_changed || remote_host_health_changed || host_admission_changed;
 	const bool ui_relevant_state_changed = runtime_state_changed || chat_saves_changed || provider_compatibility_changed || model_catalog_changed || uam::DeferredStatePushDue() || uam::StateReconciliationDue();
 	for (const DictationEvent& event : m_platformServices->dictation_service.PollEvents())
 	{
@@ -597,31 +644,27 @@ void Application::PollTickStages(std::chrono::steady_clock::time_point poll_star
 
 	const auto poll_finished = std::chrono::steady_clock::now();
 	const auto poll_duration = std::chrono::duration_cast<std::chrono::milliseconds>(poll_finished - poll_started);
-	static auto last_slow_poll_report = std::chrono::steady_clock::time_point::min(); // ponytail: UI-thread rate limit; move to metrics state if telemetry needs aggregation.
-	if (poll_duration >= std::chrono::milliseconds(50) &&
-	    (last_slow_poll_report == std::chrono::steady_clock::time_point::min() || poll_finished - last_slow_poll_report >= std::chrono::seconds(5)))
+	const auto milliseconds = [](std::chrono::steady_clock::time_point begin, std::chrono::steady_clock::time_point end)
 	{
-		const std::function<std::string(std::chrono::steady_clock::time_point, std::chrono::steady_clock::time_point)> milliseconds =
-		    [](std::chrono::steady_clock::time_point begin, std::chrono::steady_clock::time_point end)
-		{
-			return std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count());
-		};
-		uam::diagnostics::Write("[performance] PollTick took " + std::to_string(poll_duration.count()) + " ms; stages=" +
-		    "runtimes:" + milliseconds(poll_started, runtimes_finished) +
-		    ",terminals:" + milliseconds(runtimes_finished, terminals_finished) +
-		    ",memory:" + milliseconds(terminals_finished, memory_finished) +
-		    ",controls:" + milliseconds(memory_finished, controls_finished) +
-		    ",computer_use:" + milliseconds(memory_finished, computer_use_finished) +
-		    ",shell_actions:" + milliseconds(computer_use_finished, shell_actions_finished) +
-		    ",workspace_availability:" + milliseconds(shell_actions_finished, controls_finished) +
-		    ",providers:" + milliseconds(controls_finished, providers_finished) +
-		    ",history:" + milliseconds(providers_finished, history_finished) +
-		    ",retention:" + milliseconds(history_finished, retention_finished) +
-		    ",catalogs:" + milliseconds(retention_finished, catalogs_finished) +
-		    ",push:" + milliseconds(catalogs_finished, push_finished) +
-		    ",awake:" + milliseconds(push_finished, poll_finished) + " ms.");
-		last_slow_poll_report = poll_finished;
-	}
+		return std::chrono::duration_cast<std::chrono::milliseconds>(end - begin);
+	};
+	for (const std::string& line : PollTiming().Record(poll_finished, poll_duration, {
+	         milliseconds(poll_started, stages_started),
+	         milliseconds(stages_started, runtimes_finished),
+	         milliseconds(stages_started, side_chats_finished),
+	         milliseconds(runtimes_finished, terminals_finished),
+	         milliseconds(terminals_finished, memory_finished),
+	         milliseconds(memory_finished, controls_finished),
+	         milliseconds(memory_finished, computer_use_finished),
+	         milliseconds(computer_use_finished, shell_actions_finished),
+	         milliseconds(shell_actions_finished, controls_finished),
+	         milliseconds(controls_finished, providers_finished),
+	         milliseconds(providers_finished, history_finished),
+	         milliseconds(history_finished, retention_finished),
+	         milliseconds(retention_finished, catalogs_finished),
+	         milliseconds(catalogs_finished, push_finished),
+	         milliseconds(push_finished, poll_finished)}))
+		uam::diagnostics::Write(line);
 }
 
 int Application::NextPollDelay()
@@ -673,7 +716,7 @@ void Application::OnRuntimeReady(CefRefPtr<CefBrowser> browser)
 		    !m_markdownSeedWorker->GetTaskRunner()->PostTask(
 		        new AppSeedMarkdownTask(this, m_lifetimeToken, m_app.data_root, std::move(m_pendingBundledMarkdownRoot), std::move(m_pendingMarkdownStoreDirectory))))
 		{
-			ApplyBundledMarkdownStoreSeed(false, "Background worker is unavailable.", {}, destination_directory);
+			ApplyBundledMarkdownStoreSeed(false, "Background worker is unavailable.", {}, true, destination_directory);
 		}
 	}
 	// Both desktop and management mode share state polling and persistence.
@@ -729,7 +772,7 @@ void Application::OnManagementReady()
 	OnRuntimeReady(nullptr);
 }
 
-void Application::ApplyBundledMarkdownStoreSeed(bool seeded, std::string error, std::vector<ShellAction> shell_actions, const std::string& destination_directory)
+void Application::ApplyBundledMarkdownStoreSeed(bool seeded, std::string error, std::vector<ShellAction> shell_actions, bool shell_actions_unreadable, const std::string& destination_directory)
 {
 	CEF_REQUIRE_UI_THREAD();
 	if (m_done || m_app.settings.markdown_store_directory != destination_directory)
@@ -739,11 +782,19 @@ void Application::ApplyBundledMarkdownStoreSeed(bool seeded, std::string error, 
 
 	if (!seeded && !error.empty())
 	{
-		m_app.status_line = "Could not import bundled skills: " + error;
+		uam::diagnostics::Write("[skills] Could not import bundled skills: " + error);
+		m_app.status_line = "Could not import bundled skills.";
+		RestoreSettingsLoadNotice();
 	}
 	else if (m_app.shell_actions.empty())
 	{
 		m_app.shell_actions = std::move(shell_actions);
+		// A later read can succeed where the startup read did not; the list on screen then matches the file again.
+		if (m_app.shell_actions_unreadable && !shell_actions_unreadable)
+		{
+			m_app.shell_actions_unreadable = false;
+			if (m_app.shell_action_notification == ShellActionService::kUnreadableWarning) m_app.shell_action_notification.clear();
+		}
 	}
 	// While the chat list loads, the waiting initial-state request carries this change instead.
 	if (m_browser && !m_app.startup_state_loading)
@@ -821,6 +872,9 @@ bool Application::InitializeState()
 	std::string log_error;
 	if (!uam::diagnostics::StartFileLog(m_app.data_root / "uam.log", log_error, 0))
 		uam::diagnostics::Write(log_error);
+	// Deletion and storage audit lines get their own long-retention file; uam.log covers only days.
+	else if (!uam::diagnostics::StartAuditLog(m_app.data_root / "uam-audit.log", log_error))
+		uam::diagnostics::Write(log_error);
 	uam::diagnostics::Write("[storage] data_root=" + uam::paths::Utf8PathString(m_app.data_root));
 	std::string uam_control_error;
 	if (!uam::UamControlService::Initialize(m_app, &uam_control_error))
@@ -859,15 +913,18 @@ bool Application::InitializeState()
 	}
 	const std::chrono::steady_clock::time_point agent_runs_finished = std::chrono::steady_clock::now();
 
+	const std::string status_before_settings = m_app.status_line;
 	if (!PersistenceCoordinator().LoadSettings(m_app))
 	{
 		uam::diagnostics::Write(m_app.status_line);
 		m_exitCode = 1;
 		return false;
 	}
+	if (m_app.status_line != status_before_settings) m_settingsLoadNotice = m_app.status_line;
 	m_settingsLoaded = true;
 	m_app.storage_retention_service = std::make_shared<uam::StorageRetentionService>(m_dataRootLock);
 	m_app.pr_watch_service = std::make_shared<uam::PrWatchService>(m_app.data_root);
+	m_app.timer_service = std::make_shared<uam::TimerService>(m_app.data_root);
 	bool settings_dirty = false;
 	const fs::path bundled_skills_root = MarkdownStoreService::BundledRootForExecutable(executable_path);
 	if (m_app.settings.markdown_store_directory.empty())
@@ -889,6 +946,20 @@ bool Application::InitializeState()
 	// built-in set on every startup and never persisted, so any per-profile "store" plumbing
 	// (e.g. EnsureDefaultProfile) is belt-and-suspenders unless profiles later become editable.
 	m_app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+#if UAM_ENABLE_RUNTIME_CUSTOM_ACP
+	{
+		// The custom agent's launch comes only from the file its Settings form writes in this data folder.
+		uam::custom_acp::AgentConfig custom_acp;
+		std::string custom_acp_error;
+		if (!uam::custom_acp::Load(m_app.data_root, custom_acp, &custom_acp_error))
+		{
+			custom_acp = {};
+			m_app.status_line = custom_acp_error;
+			uam::custom_acp::SetActiveLoadError(custom_acp_error + " Saving it in Settings replaces the file.");
+		}
+		ApplyCustomAcpConfiguration(m_app.provider_profiles, std::move(custom_acp));
+	}
+#endif
 	if (!uam::RecoverPendingDeletionTransaction(m_app))
 	{
 		uam::diagnostics::Write(m_app.status_line);
@@ -918,8 +989,15 @@ bool Application::InitializeState()
 	// UAM_DATA_DIR now overrides. Nothing is copied until the user answers the startup prompt.
 	m_app.pending_legacy_data_roots = uam::LocalChatBundleService::PendingLegacyDataRoots(
 	    m_app.data_root, m_platformServices->path_service.DefaultDataRootPath(), executable_path);
-	m_app.folders = ChatFolderStore::Load(m_app.data_root);
-	m_app.shell_actions = ShellActionService::Load(m_app.data_root, {});
+	m_app.folders = ChatFolderStore::Load(m_app.data_root, &m_app.folders_load, uam::io::StoreFenceMode::Arm);
+	std::string shell_action_warning;
+	m_app.shell_actions = ShellActionService::Load(m_app.data_root, {}, &shell_action_warning, &m_app.shell_actions_unreadable);
+	if (!shell_action_warning.empty())
+	{
+		// The warning names no action, label or path.
+		m_app.shell_action_notification = shell_action_warning;
+		uam::diagnostics::Write("Shell actions: " + shell_action_warning);
+	}
 
 	const std::chrono::steady_clock::time_point folders_finished = std::chrono::steady_clock::now();
 	// Initialize the provider model catalog service (async refresh for OpenCode Zen models).
@@ -1008,6 +1086,13 @@ bool Application::InitializeState()
 	return true;
 }
 
+/// Startup messages replace the status line; keep the settings load notice (such as dropped MCP servers) beside them.
+void Application::RestoreSettingsLoadNotice()
+{
+	if (!m_settingsLoadNotice.empty() && m_app.status_line.find(m_settingsLoadNotice) == std::string::npos)
+		m_app.status_line = m_app.status_line.empty() ? m_settingsLoadNotice : m_app.status_line + " " + m_settingsLoadNotice;
+}
+
 void Application::FinishStartupState(std::vector<ChatSession> chats, std::string warning)
 {
 	const std::chrono::steady_clock::time_point finish_started = std::chrono::steady_clock::now();
@@ -1019,6 +1104,8 @@ void Application::FinishStartupState(std::vector<ChatSession> chats, std::string
 		if (!chat.temporary_parent_chat_id.empty())
 			(void)uam::RequestTemporarySideChatCleanup(m_app, chat.id);
 	uam::MigrateWorkspaceFolderOwnership(m_app);
+	// Once per start, after the split above has had its chance to add any destination it saved earlier.
+	(void)uam::LogDanglingWorkspaceFolderReferences(m_app);
 
 	if (uam::MigrateExecutionRoutingIdentities(m_app)) (void)PersistenceCoordinator().SaveSettings(m_app);
 	(void)uam::RestoreExecutionRoutingReservations(m_app);
@@ -1043,10 +1130,12 @@ void Application::FinishStartupState(std::vector<ChatSession> chats, std::string
 		                    " active goal" + (paused_goals == 1 ? "" : "s") +
 		                    " after the manager restarted.";
 	}
-	m_app.resource_collections = uam::ResourceCollectionService::Load(m_app.data_root);
+	m_app.resource_collections = uam::ResourceCollectionService::Load(m_app.data_root, &m_app.resource_collections_load, uam::io::StoreFenceMode::Arm);
 	const std::chrono::steady_clock::time_point restore_finished = std::chrono::steady_clock::now();
 	m_app.startup_native_import_service = std::make_shared<uam::StartupNativeImportService>();
-	m_app.startup_native_import_service->Initialize(m_app);
+	// Every process start asks host admission first; the startup history scan is background work and starts once admitted.
+	if (!m_app.host_admission) m_app.host_admission = std::make_shared<uam::host_admission::HostAdmission>();
+	if (uam::AdmitBackgroundStart(m_app, "history-import:start", "local", false).admitted) m_app.startup_native_import_service->Initialize(m_app);
 	const std::chrono::steady_clock::time_point native_import_finished = std::chrono::steady_clock::now();
 	// Counting memory entries probes every chat's workspace; the poll applies the count when it is ready.
 	MemoryService::RefreshMemoryActivityAsync(m_app);
@@ -1059,8 +1148,20 @@ void Application::FinishStartupState(std::vector<ChatSession> chats, std::string
 	if (!uam::ComputerUseService::ResetControlsForStartup(m_app))
 	{
 		m_app.status_line =
-		    "A previous computer-use control file could not be stopped. End any orphaned provider process before using computer use.";
+		    "Computer use is blocked until a leftover provider process from a previous run is stopped.";
 	}
+	// Store load outcomes outrank earlier startup notices: an unrecovered store has refused its saves.
+	// Both unrecovered warnings share one line; a recovery note only fills an empty status line.
+	std::string unrecovered_notice;
+	for (const uam::io::StoreLoadResult* load : {&m_app.folders_load, &m_app.resource_collections_load})
+	{
+		if (load->warning.empty()) continue;
+		uam::diagnostics::Write("[storage] " + load->warning);
+		if (load->Unrecovered()) unrecovered_notice += (unrecovered_notice.empty() ? "" : " ") + load->warning;
+		else if (m_app.status_line.empty()) m_app.status_line = load->warning;
+	}
+	if (!unrecovered_notice.empty()) m_app.status_line = std::move(unrecovered_notice);
+	RestoreSettingsLoadNotice();
 
 	const std::chrono::steady_clock::time_point finish_finished = std::chrono::steady_clock::now();
 	const auto milliseconds = [](std::chrono::steady_clock::time_point begin, std::chrono::steady_clock::time_point end)
@@ -1075,13 +1176,21 @@ void Application::FinishStartupState(std::vector<ChatSession> chats, std::string
 	m_app.startup_state_loading = false;
 }
 
-bool Application::InitializeCef(CefMainArgs main_args)
+bool Application::InitializeCef(CefMainArgs main_args, void* windows_sandbox_info)
 {
 	CefSettings settings;
 #if defined(UAM_CEF_SANDBOX)
+	// macOS helper bundles and Windows bootstrap.exe processes; see docs/reference/security-enterprise.md.
 	settings.no_sandbox = false;
+	// Without bootstrap.exe's sandbox information CEF would silently start unsandboxed on Windows; refuse instead.
+	if (uam::platform::kCefSandboxInfoRequired && windows_sandbox_info == nullptr)
+	{
+		uam::diagnostics::Write("[CEF] The Windows sandbox information is missing; refusing to start CEF without the Chromium sandbox. Start universal_agent_manager.exe, not the DLL.");
+		m_exitCode = 1;
+		return false;
+	}
 #else
-	// Known gap on Windows (CEF's bootstrap.exe client-DLL layout) and Linux; see docs/reference/security-enterprise.md.
+	// Known gap on Linux; see docs/reference/security-enterprise.md.
 	settings.no_sandbox = true;
 #endif
 	const fs::path cef_cache_path = m_app.data_root / "cef";
@@ -1111,6 +1220,9 @@ bool Application::InitializeCef(CefMainArgs main_args)
 #else
 		CefString(&settings.resources_dir_path) = uam::paths::NormalizedNativePathString(exe_dir);
 		CefString(&settings.locales_dir_path) = uam::paths::NormalizedNativePathString(exe_dir / "locales");
+		// Windows only: AppContainer and LPAC sandboxed processes must be able to read the app folder, which ZIP extraction loses.
+		if (std::string access_error; !uam::platform::EnsureCefSandboxFolderAccess(exe_dir, access_error))
+			uam::diagnostics::Write("[CEF] " + access_error);
 #endif
 	}
 
@@ -1147,7 +1259,8 @@ bool Application::InitializeCef(CefMainArgs main_args)
 		// Turning it back on is m_app.html_view_render_checker = uam::cef::CreateHtmlViewRenderChecker().
 	}
 
-	if (!CefInitialize(main_args, settings, cef_app.get(), nullptr))
+	// Only Windows passes sandbox information; macOS sandboxes its helper bundles instead.
+	if (!CefInitialize(main_args, settings, cef_app.get(), windows_sandbox_info))
 	{
 		uam::diagnostics::Write("CefInitialize failed.");
 		m_exitCode = 1;
@@ -1166,6 +1279,8 @@ void Application::Shutdown()
 {
 	// Quit must not wait on a remote host: no remote connection starts from here, and the waits already under way end together
 	uam::remote::BeginRunnerShutdown();
+	// Load readers stop now, while their helper connections fail fast, rather than when the app state is destroyed.
+	m_app.host_load_sampler.reset();
 	if (m_startupChats.valid())
 	{
 		// Quit while the chat list loads: the loader writes summary caches under the data-folder lock released below,
@@ -1231,6 +1346,8 @@ void Application::Shutdown()
 		uam::StopAsyncPermissionReviewTask(task);
 	}
 	m_app.permission_review_tasks.clear();
+	m_app.permission_review_cache.clear();
+	m_app.permission_review_cache_order.clear();
 	uam::platform::ResetAsyncNativeChatLoadTask(m_app.native_chat_load_task);
 	uam::platform::ResetAsyncNativeChatLoadTasks(m_app.native_chat_load_tasks);
 	folder_shutdown_confirmed = uam::AgentRunScheduler::InterruptForShutdown(m_app) && folder_shutdown_confirmed;
@@ -1269,6 +1386,7 @@ void Application::Shutdown()
 		if (m_app.html_view_render_checker && !m_app.html_view_render_checker->Idle())
 		{
 			uam::diagnostics::Write("[HTML view check] A hidden browser did not close before shutdown.");
+			FlushPollTiming();
 			if (m_dataRootLock != nullptr) uam::diagnostics::StopFileLog(); // Writes are queued, and _Exit would drop this one.
 			std::_Exit(uam::platform::ApplicationRestartRequested() ? uam::platform::RequestedRestartExitCode() : m_exitCode);
 		}
@@ -1286,6 +1404,8 @@ void Application::Shutdown()
 			// Saves and provider shutdown above are complete. Process exit releases
 			// the data lock; do not tear CEF down underneath an unconfirmed worker.
 			// Unconfirmed worker teardown must not mint a migration restart marker.
+			FlushPollTiming();
+			if (m_dataRootLock != nullptr) uam::diagnostics::StopFileLog(); // Writes are queued, and _Exit would drop them.
 			std::_Exit(uam::platform::ApplicationRestartRequested() ? uam::platform::RequestedRestartExitCode() : m_exitCode);
 		}
 #endif
@@ -1294,6 +1414,7 @@ void Application::Shutdown()
 	}
 	// Join the cache writer while this instance still owns the data-root lock.
 	m_app.provider_model_catalog.reset();
+	FlushPollTiming(); // The last partial window would otherwise be lost at every quit.
 	if (m_dataRootLock != nullptr) uam::diagnostics::StopFileLog();
 	for (const auto& session : m_app.acp_sessions)
 		if (session && session->running)

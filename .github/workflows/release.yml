@@ -147,6 +147,9 @@ jobs:
     permissions:
       contents: read
       actions: read
+    # Real-svn cases fail instead of skipping when the SVN client is missing, as in CI.
+    env:
+      UAM_REQUIRE_SVN: '1'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -230,6 +233,34 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE", "$env:RUNNER_TEMP", "$env:TEMP"
+
+      - name: Install the SVN client (macOS)
+        if: steps.candidate.outputs.passed != 'true' && runner.os == 'macOS'
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+          HOMEBREW_NO_INSTALL_CLEANUP: '1'
+        run: brew install subversion && svn --version --quiet && svnadmin --version --quiet
+
+      # SlikSVN's installer changes the machine PATH, which this job's later steps do not see, so add its folder here.
+      - name: Install the SVN client (Windows)
+        if: steps.candidate.outputs.passed != 'true' && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # Chocolatey's feed sometimes answers 503 or 504, so the install gets three attempts about 30 seconds apart.
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            choco install sliksvn -y --no-progress
+            if ($LASTEXITCODE -in 0, 1641, 3010) { break }
+            if ($attempt -eq 3) { throw "SlikSVN install failed after 3 attempts (last exit code $LASTEXITCODE)." }
+            Write-Host "SlikSVN install attempt $attempt failed with exit code $LASTEXITCODE; retrying in 30 seconds."
+            Start-Sleep -Seconds 30
+          }
+          $tool = Get-ChildItem 'C:\Program Files\SlikSvn', 'C:\Program Files (x86)\SlikSvn' -Recurse -Filter svnadmin.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $tool) { throw 'SlikSVN did not install svnadmin.exe.' }
+          Add-Content -Path $env:GITHUB_PATH -Value $tool.DirectoryName
+          & (Join-Path $tool.DirectoryName 'svn.exe') --version --quiet
+          if ($LASTEXITCODE -ne 0) { throw 'svn did not start.' }
+          & $tool.FullName --version --quiet
+          if ($LASTEXITCODE -ne 0) { throw 'svnadmin did not start.' }
 
       - name: Test native Release build
         if: steps.candidate.outputs.passed != 'true'

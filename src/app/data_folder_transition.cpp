@@ -584,7 +584,7 @@ uam::DataFolderPreflightResult uam::DataFolderTransition::InspectDestination(con
 	{
 		DataFolderPreflightResult result;
 		result.blocker = DataFolderPreflightBlocker::InspectionFailed;
-		result.explanation = "The bootstrap or a retained data-folder identity changed. Folder selection remains held for recovery.";
+		result.explanation = "A data folder changed unexpectedly, so folder selection is on hold for recovery.";
 		return result;
 	};
 	if (!identities_current())
@@ -685,6 +685,12 @@ bool uam::DataFolderTransition::ActivateStopped(bool confirmed_normal_exit, std:
 	// Check before opening a destination lock: even its marker would mutate a
 	// historical inventory if the chosen directory moved under a protected root.
 	const auto preflight = InspectDestination(Path(m_record, "destination"));
+	// A network destination (possibly chosen before that check existed) is refused like at selection, not held.
+	if (preflight.blocker == DataFolderPreflightBlocker::NetworkVolume)
+	{
+		error = preflight.explanation;
+		return false;
+	}
 	if (preflight.state != DataFolderPreflightState::RequiresStoppedValidation)
 		return Hold(error, preflight.explanation);
 	if (!ValidateHistory(error))
@@ -884,7 +890,7 @@ bool uam::DataFolderTransition::ValidateRetained(std::string& error)
 	if (!ValidateHistory(error))
 		return false;
 	if (!m_sourceWriters || !m_sourceWriters->Current() || (m_record["phase"].get_ref<const std::string&>() != "active" && (!m_destinationWriters || !m_destinationWriters->Current())) || !m_sourceLease || !m_sourceLease->Current() || !m_destinationLease || !m_destinationLease->Current() || !m_source || !m_destination || !m_source->Current() || !m_destination->Current() || m_source->Identity() != m_record["sourceIdentity"].get_ref<const std::string&>() || m_destination->Identity() != m_record["destinationIdentity"].get_ref<const std::string&>() || !m_source->Scan(inventory, error) || Tree::Digest(inventory) != m_record["sourceDigest"].get_ref<const std::string&>() || Tree::ObjectDigest(inventory) != m_record["sourceObjects"].get_ref<const std::string&>() || !PlainReceipt(m_source, m_record, "source", source, error) || !PlainReceipt(m_destination, m_record, "destination", destination, error) || source.value("phase", "") != (m_record["phase"].get_ref<const std::string&>() == "active" ? "active" : "prepared") || destination.value("phase", "") != (m_record["phase"].get_ref<const std::string&>() == "active" ? "active" : "prepared") || source.value("destinationDigest", "") != m_record["destinationDigest"].get_ref<const std::string&>() || destination.value("destinationDigest", "") != m_record["destinationDigest"].get_ref<const std::string&>() || (m_record["phase"].get_ref<const std::string&>() != "active" && (!m_destination->Scan(destination_inventory, error) || Tree::Digest(destination_inventory) != m_record["destinationDigest"].get_ref<const std::string&>() || Tree::ObjectDigest(destination_inventory) != m_record["destinationObjects"].get_ref<const std::string&>())))
-		return Hold(error, "Source authority, root identities or matching handoff receipts changed. Neither image was merged or replaced.");
+		return Hold(error, "The data folders changed unexpectedly, so neither folder was merged or replaced.");
 	return true;
 }
 bool uam::DataFolderTransition::ConfirmDestinationOwner(std::string& error, const Fault& fault)
@@ -906,13 +912,13 @@ bool uam::DataFolderTransition::RollbackBeforeActivation(std::string& error, con
 	if (!m_sourceLease || !m_sourceLease->Current() || !m_source || !m_source->Current() || m_source->Identity() != m_record["sourceIdentity"].get_ref<const std::string&>() || !ValidateHistory(error))
 		return Hold(error, "The original source ownership cannot be confirmed for rollback.");
 	if (m_destinationOwner || m_record["phase"].get_ref<const std::string&>() == "starting" || m_record["phase"].get_ref<const std::string&>() == "active")
-		return Hold(error, "Destination ownership may have begun. Automatic rollback would discard newer work; a reverse transaction is required.");
+		return Hold(error, "The new folder may already be in use, so it cannot be rolled back automatically without losing newer work.");
 	if (m_record["phase"].get_ref<const std::string&>() == "rolledBack")
 		return (!m_held && RestoredSourceAcknowledged(m_source, m_record, error)) || Hold(error, "The restored source receipt no longer confirms completed rollback.");
 	if (m_record["phase"] == "armed")
 	{
 		if (!ArmedSourceUnchanged(m_source, m_record, error))
-			return Hold(error, "Source fencing may have begun. Armed cancellation cannot infer passivity.");
+			return Hold(error, "The transfer may have started, so it cannot be canceled safely.");
 		// A follow-up retains an older active/restored receipt. Publish the exact
 		// cancellation identity before final acknowledgement, without touching any
 		// historical/passive receipt. First-ever cancellation keeps a plain root plain.
@@ -925,10 +931,10 @@ bool uam::DataFolderTransition::RollbackBeforeActivation(std::string& error, con
 			return Hold(error, "Both stopped writer leases are required for passive rollback.");
 		Tree::Inventory source;
 		if (!m_source->Scan(source, error) || (Tree::Digest(source) != m_record["sourceDigest"].get_ref<const std::string&>() || Tree::ObjectDigest(source) != m_record["sourceObjects"].get_ref<const std::string&>()))
-			return Hold(error, "The stopped source changed. Rollback cannot validate its authority.");
+			return Hold(error, "The original folder changed after stopping, so rollback cannot be confirmed.");
 		Json receipt;
 		if (!m_destinationLease || !m_destinationLease->Current() || !PlainReceipt(m_destination, m_record, "destination", receipt, error) || (receipt.value("phase", "") != "passive" && receipt.value("phase", "") != "prepared"))
-			return Hold(error, "Destination passivity or ownership is unconfirmed. Rollback remains held.");
+			return Hold(error, "The new folder's state is unconfirmed, so rollback is on hold.");
 		Tree::Inventory passive;
 		if (!m_destination->Scan(passive, error))
 			return Hold(error, "The passive image cannot be retained safely for rollback.");

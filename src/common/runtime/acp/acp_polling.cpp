@@ -447,7 +447,7 @@ namespace uam::acp_detail
 		return AcpSessionHasPendingCancel(session) && session.cancel_requested_time_s > 0.0 &&
 		    now_seconds - session.cancel_requested_time_s >= kAcpCancelTimeoutSeconds &&
 		    ProviderRuntimeRegistry::ResolveById(session.provider_id).OnAcpHoldUnconfirmedInput(app, session, chat,
-		        "Cancellation was not confirmed by the owned provider before its deadline.");
+		        "The provider did not confirm the cancellation in time.");
 	}
 
 std::size_t ProcessBufferedAcpStdoutForTests(AppState& app, AcpSessionState& session, ChatSession& chat, CefRefPtr<CefBrowser> browser, std::size_t max_lines)
@@ -541,8 +541,8 @@ bool ProcessAcpLine(AppState& app, AcpSessionState& session, ChatSession& chat, 
 		{
 			return StopForAcpOutputSafety(
 			    app, session, chat, "turn_output_limit_exceeded",
-			    "The provider exceeded UAM's configured " + std::to_string(limit_mib) +
-			        " MiB cumulative turn-output safety ceiling.");
+			    "The provider exceeded UAM's " + std::to_string(limit_mib) +
+			        " MiB output limit for one turn.");
 		}
 		session.turn_protocol_bytes += bytes;
 		if (TurnOutputFlooded(session, bytes))
@@ -667,7 +667,7 @@ bool ProcessAcpLine(AppState& app, AcpSessionState& session, ChatSession& chat, 
 				const std::string error_message = std::string("ACP protocol message handling failed: ") + ex.what();
 				AppendAcpDiagnostic(session, "parse", "protocol_message_error", method, "", false, 0,
 				                    error_message, CapDiagnosticString(message.dump(), kMaxAcpDiagnosticDetailBytes));
-				InvalidateAcpTransport(app, session, chat, error_message);
+				InvalidateAcpTransport(app, session, chat, "UAM could not handle a message from the provider.");
 			}
 			return true;
 		}
@@ -686,7 +686,7 @@ bool ProcessAcpLine(AppState& app, AcpSessionState& session, ChatSession& chat, 
 				const std::string error_message = std::string("ACP response handling failed: ") + ex.what();
 				AppendAcpDiagnostic(session, "parse", "protocol_response_error", "", JsonRpcIdToDiagnosticString(message["id"]), false, 0,
 				                    error_message, CapDiagnosticString(message.dump(), kMaxAcpDiagnosticDetailBytes));
-				InvalidateAcpTransport(app, session, chat, error_message);
+				InvalidateAcpTransport(app, session, chat, "UAM could not handle a response from the provider.");
 			}
 			return true;
 		}
@@ -744,7 +744,7 @@ bool DrainStdout(AppState& app, AcpSessionState& session, ChatSession& chat, Cef
 			chat.remote_prompt_delivery_id = old_delivery_id;
 			chat.remote_prompt_delivery_payload = old_payload;
 			chat.remote_prompt_delivery_input_ids = input_ids;
-			app.status_line = "Remote prompt receipt is waiting for a successful local save.";
+			app.status_line = "The remote prompt is waiting to be saved locally.";
 			return true;
 		}
 	}
@@ -886,7 +886,7 @@ bool DrainStdout(AppState& app, AcpSessionState& session, ChatSession& chat, Cef
 			    uam::strings::NonEmptyOrFallback(write_error, "unknown transport error");
 			AppendAcpDiagnostic(session, "write", "remote_output_ack_failed", "", "",
 			                    false, 0, message);
-			RecoverDisconnectedRemoteAcpTransport(app, session, chat, message);
+			RecoverDisconnectedRemoteAcpTransport(app, session, chat, "Lost the remote connection while confirming saved output.");
 			return true;
 		}
 		session.pending_remote_output_ack_line.clear();
@@ -908,9 +908,10 @@ bool DrainStdout(AppState& app, AcpSessionState& session, ChatSession& chat, Cef
 		        session, session.pending_remote_source_exit_ack_line.data(),
 		        session.pending_remote_source_exit_ack_line.size(), &write_error))
 		{
-			RecoverDisconnectedRemoteAcpTransport(app, session, chat,
+			AppendAcpDiagnostic(session, "write", "remote_completion_ack_failed", "", "", false, 0,
 			    "Failed to acknowledge persisted remote completion: " +
 			    uam::strings::NonEmptyOrFallback(write_error, "unknown transport error"));
+			RecoverDisconnectedRemoteAcpTransport(app, session, chat, "Lost the remote connection while confirming the turn finished.");
 			return true;
 		}
 		session.pending_remote_source_exit_ack_line.clear();

@@ -566,7 +566,7 @@ namespace uam::usage
 		catch (const std::exception&)
 		{
 			std::lock_guard<std::mutex> lock(m_mutex);
-			const std::string error = "Background machine accounting failed. Restart UAM to retry.";
+			const std::string error = "Background machine accounting failed; restart UAM to retry.";
 			for (std::pair<const std::string, View>& entry : m_views)
 			{
 				entry.second.metadata["complete"] = false; entry.second.metadata["collecting"] = false;

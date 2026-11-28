@@ -6,6 +6,8 @@
 #include <string>
 #include <string_view>
 
+struct ChatSession;
+
 namespace uam
 {
 	struct AppState;
@@ -34,6 +36,15 @@ namespace uam
 		std::string goal_id;
 	};
 
+	/// <summary>The credential an automation schedule runs under. It is the schedule itself: chosen in desktop Settings,
+	/// kept only inside UAM and never expiring, unlike external tokens.</summary>
+	struct AutomationScheduleCredential
+	{
+		std::string id;
+		std::string name;
+		bool trusted = false;
+	};
+
 	/// <summary>Token-scoped automation API. Tokens live only as hashes in one file, read per request, so revocation needs no cache invalidation.</summary>
 	class AutomationApiService
 	{
@@ -47,6 +58,12 @@ namespace uam
 		/// <summary>Authorizes and serves one request. Every refusal returns before any chat is created.</summary>
 		static AutomationApiResponse Handle(AppState& app, const AutomationApiRequest& request);
 
+		/// <summary>Checks a schedule's stored chat request without creating anything; empty when it is valid. One line for Settings.</summary>
+		static std::string ScheduledRequestRefusal(const AppState& app, const nlohmann::json& body);
+		/// <summary>Creates one scheduled run's chat through the same checks as POST /automation/chats. A trusted
+		/// schedule's response carries launch_chat_id for the caller to start; every refusal creates nothing.</summary>
+		static AutomationApiResponse CreateScheduledChat(AppState& app, const AutomationScheduleCredential& credential, const nlohmann::json& body);
+
 		/// <summary>Token metadata for Settings; never contains a secret or its hash.</summary>
 		static std::optional<nlohmann::json> ListTokens(const AppState& app, std::string* error_out);
 		/// <summary>Creates a token. The result's "secret" is the only time the plaintext exists outside the caller.</summary>
@@ -55,6 +72,9 @@ namespace uam
 		/// <summary>Replaces one token's secret, keeping its settings and restarting its expiry. The old secret stops working at once.</summary>
 		static std::optional<nlohmann::json> RegenerateToken(const AppState& app, std::string_view token_id, std::string* error_out);
 
+		/// <summary>Why a chat linked to an automation token may not start another chat: the token is unreadable, revoked or
+		/// expired, or already has 16 open chats. Empty for an ordinary chat or when the start is allowed.</summary>
+		static std::string StartedChatRefusal(const AppState& app, const ChatSession& caller);
 		/// <summary>Creates the capped goal and releases the approval hold. Only an awaiting chat can launch.</summary>
 		static std::optional<AutomationChatLaunch> BeginLaunch(AppState& app, const std::string& chat_id, std::string* error_out);
 		/// <summary>Restores the approval hold after a refused send, so the chat waits instead of being lost. Returns false when the prompt may already have been delivered.</summary>

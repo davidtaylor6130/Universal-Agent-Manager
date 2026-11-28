@@ -235,7 +235,7 @@ UAM_TEST(RemoteOpenCodeVersionWaitRejectsChangedCentralConfiguration)
 	fixture.Checked();
 	std::string error;
 	UAM_ASSERT(!fixture.Start(&error));
-	UAM_ASSERT(error.find("ownership changed") != std::string::npos);
+	UAM_ASSERT(error.find("The chat changed") != std::string::npos);
 	UAM_ASSERT(fixture.Session().pending_local_launch == nullptr && !fixture.Session().running);
 	UAM_ASSERT(!fixture.app.chats.front().remote_process_exists);
 #endif
@@ -251,7 +251,7 @@ UAM_TEST(RemoteOpenCodeVersionWaitCapturesProgressiveMcpChoice)
 	fixture.Checked();
 	std::string error;
 	UAM_ASSERT(!fixture.Start(&error));
-	UAM_ASSERT(error.find("ownership changed") != std::string::npos);
+	UAM_ASSERT(error.find("The chat changed") != std::string::npos);
 	UAM_ASSERT(fixture.Session().pending_local_launch == nullptr && !fixture.Session().running);
 #endif
 }
@@ -323,7 +323,7 @@ UAM_TEST(RemoteOpenCodePublicLaunchFailureRestoresSelectedModelOptions)
 	fixture.Session().available_models = {model};
 	std::string error;
 	UAM_ASSERT(!uam::SendAcpPrompt(fixture.app, chat.id, "Private authored input", &error));
-	UAM_ASSERT_EQ(error, std::string("The selected remote runner is not ready. Recheck it in Settings."));
+	UAM_ASSERT_EQ(error, std::string("The selected remote runner is not ready; recheck it in Settings."));
 	UAM_ASSERT_EQ(fixture.Session().last_error, error);
 	UAM_ASSERT_EQ(fixture.Session().lifecycle_state, std::string(uam::acp_detail::kAcpLifecycleError));
 	UAM_ASSERT_EQ(fixture.Session().goal_turn_model_id, std::string("private/previous-model"));
@@ -604,6 +604,117 @@ UAM_TEST(OpenCodeTerminalControlOnlySetupRetainsProgressiveMcpChoice)
 		UAM_ASSERT(!directory.empty());
 		UAM_ASSERT(ReadFile(directory / "AGENTS.md").find("Disabled shared resources must stay out") == std::string::npos);
 		UAM_ASSERT(!app.settings.central_provider_configuration.enabled);
+		uam::UamControlService::Shutdown(app);
+	}
+}
+
+namespace
+{
+	/// Drives asynchronous CLI View preparation to completion, joining each worker it starts.
+	bool FinishCliViewPreparation(uam::AppState& app, uam::CliTerminalState& terminal, ChatSession& chat, const ExecutionHost& host,
+	    std::vector<std::string>& argv, uam::provider_setup::Environment& environment, std::string& channel, std::string& error)
+	{
+		for (int pass = 0; pass < 4; ++pass)
+		{
+			if (uam::PrepareCliProviderHandoffAsync(app, terminal, chat, host, argv, environment, channel, error)) return true;
+			if (!error.empty() || terminal.context_preparation == nullptr) return false;
+			app.cli_context_preparation_tasks.back().worker->join();
+		}
+		return false;
+	}
+
+	void SaveCliViewReviewer(const fs::path& data_root)
+	{
+		uam::AgentDefinition reviewer;
+		reviewer.id = "reviewer";
+		reviewer.description = "Reviews release changes";
+		reviewer.mode = "primary";
+		reviewer.workspace_access = "write";
+		reviewer.instructions = "Async role marker for the release reviewer.";
+		std::string error;
+		UAM_ASSERT(uam::AgentDefinitionService::SaveGlobalAgent(data_root, reviewer, &error));
+	}
+}
+
+UAM_TEST(AsyncCliViewCarriesCustomAgentThroughEveryPreparationRoute)
+{
+	TempDir temp("uam-async-cli-view-agent");
+	uam::AppState app;
+	app.data_root = temp.root / "data";
+	app.provider_profiles = ProviderProfileStore::BuiltInProfiles();
+	SaveCliViewReviewer(app.data_root);
+	const ExecutionHost host;
+	const std::string marker = "Async role marker for the release reviewer.";
+
+	// Unloaded messages: the agent-only context folder is registered through the history-preparation pass.
+	{
+		ChatSession chat;
+		chat.id = "async-agent-claude";
+		chat.provider_id = "claude-cli";
+		chat.workspace_directory = temp.root.string();
+		chat.uam_agent_id = "reviewer";
+		chat.messages_loaded = true;
+		UAM_ASSERT(ChatRepository::SaveChat(app.data_root, chat));
+		chat.messages_loaded = false;
+		uam::CliTerminalState terminal;
+		std::vector<std::string> argv{"claude"};
+		uam::provider_setup::Environment environment;
+		std::string channel, error;
+		UAM_ASSERT(FinishCliViewPreparation(app, terminal, chat, host, argv, environment, channel, error));
+		UAM_ASSERT_EQ(chat.provider_handoff_cli_contexts.size(), std::size_t{1});
+		const auto flag = std::ranges::find(argv, "--append-system-prompt-file");
+		UAM_ASSERT(flag != argv.end() && std::next(flag) != argv.end());
+		const std::string staged = ReadFile(uam::paths::PathFromUtf8(*std::next(flag)));
+		UAM_ASSERT(staged.starts_with(uam::provider_setup::kAgentInstructionsIntro));
+		UAM_ASSERT(staged.find(marker) != std::string::npos);
+	}
+
+	// Codex: the worker's developer instructions reach the launch argv, ahead of a positional "--".
+	{
+		ChatSession chat;
+		chat.id = "async-agent-codex";
+		chat.provider_id = "codex-cli";
+		chat.workspace_directory = temp.root.string();
+		chat.uam_agent_id = "reviewer";
+		chat.messages_loaded = true;
+		uam::CliTerminalState terminal;
+		std::vector<std::string> argv{"codex", "--", "start here"};
+		uam::provider_setup::Environment environment;
+		std::string channel, error;
+		UAM_ASSERT(FinishCliViewPreparation(app, terminal, chat, host, argv, environment, channel, error));
+		UAM_ASSERT_EQ(argv.size(), std::size_t{5});
+		UAM_ASSERT_EQ(argv[1], std::string("-c"));
+		const std::string value = nlohmann::json::parse(argv[2].substr(std::string_view("developer_instructions=").size())).get<std::string>();
+		UAM_ASSERT(value.starts_with(uam::provider_setup::kAgentInstructionsIntro));
+		UAM_ASSERT(value.find(marker) != std::string::npos);
+		UAM_ASSERT_EQ(argv[3], std::string("--"));
+		UAM_ASSERT(chat.provider_handoff_cli_contexts.empty());
+	}
+
+	// UAM tools on and Central Setup off: the control-only setup installs the agent, so no second copy is staged.
+	{
+		ChatSession chat;
+		chat.id = "async-agent-control";
+		chat.provider_id = "claude-cli";
+		chat.workspace_directory = temp.root.string();
+		chat.uam_agent_id = "reviewer";
+		chat.uam_control_enabled = true;
+		chat.messages_loaded = true;
+		app.chats.push_back(chat);
+		std::string channel, error;
+		UAM_ASSERT(uam::UamControlService::Initialize(app, &error));
+		UAM_ASSERT(uam::ProviderInteractiveAgentError(app, chat, host).empty());
+		uam::CliTerminalState terminal;
+		std::vector<std::string> argv{"claude"};
+		uam::provider_setup::Environment environment;
+		UAM_ASSERT(FinishCliViewPreparation(app, terminal, chat, host, argv, environment, channel, error));
+		UAM_ASSERT(chat.provider_handoff_cli_contexts.empty());
+		UAM_ASSERT_EQ(std::ranges::count(argv, std::string("--append-system-prompt-file")), std::ptrdiff_t{1});
+		const auto flag = std::ranges::find(argv, "--append-system-prompt-file");
+		UAM_ASSERT(std::next(flag) != argv.end());
+		const std::string installed = ReadFile(uam::paths::PathFromUtf8(*std::next(flag)));
+		UAM_ASSERT(installed.find(marker) != std::string::npos);
+		UAM_ASSERT_EQ(installed.find(marker), installed.rfind(marker));
 		uam::UamControlService::Shutdown(app);
 	}
 }
@@ -979,6 +1090,44 @@ UAM_TEST(CentralLaunchContractsCoverAllFiveProvidersAndPreserveOpenCodeConfig)
 			UAM_ASSERT_EQ(configuration["permission"]["edit"], nlohmann::json("deny"));
 			UAM_ASSERT_EQ(configuration["instructions"].size(), std::size_t{2});
 		}
+	}
+}
+
+UAM_TEST(CodexSetupFoldsCliViewAgentDeveloperInstructionsInsteadOfReplacingThem)
+{
+	TempDir temp("uam-codex-agent-developer-instructions");
+	AppSettings settings;
+	settings.central_provider_configuration.enabled = true;
+	settings.central_provider_configuration.instructions = "Shared central preference";
+	ChatSession chat;
+	chat.provider_id = uam::provider_ids::kCodexCli;
+	ExecutionHost host;
+	uam::ProviderConfigurationBundle bundle;
+	std::string error;
+	UAM_ASSERT(uam::PrepareProviderConfiguration(temp.root / "data", settings, chat, host, temp.root, bundle, error));
+	// CLI View's custom agent value arrives first; a second developer_instructions would replace one of them.
+	const std::string agent_value = std::string(uam::provider_setup::kAgentInstructionsIntro) + "\n\nAgent role marker";
+	std::vector<std::string> argv{"codex", "-c", "developer_instructions=" + nlohmann::json(agent_value).dump()};
+	uam::provider_setup::Environment environment;
+	UAM_ASSERT(uam::provider_setup::Apply(chat.provider_id, bundle.local_directory, temp.root, argv, environment, error));
+	const auto developer = std::ranges::count_if(argv, [](const std::string& argument) { return argument.starts_with("developer_instructions="); });
+	UAM_ASSERT_EQ(developer, std::ptrdiff_t{1});
+	const auto value = std::ranges::find_if(argv, [](const std::string& argument) { return argument.starts_with("developer_instructions="); });
+	const std::string text = nlohmann::json::parse(value->substr(std::string_view("developer_instructions=").size())).get<std::string>();
+	const std::size_t central = text.find("Shared central preference");
+	const std::size_t agent_role = text.find("Agent role marker");
+	UAM_ASSERT(central != std::string::npos && agent_role != std::string::npos && central < agent_role);
+	// A user's own value after the agent's would replace the combined text, dropping the agent's role: refused.
+	argv = {"codex", "-c", "developer_instructions=" + nlohmann::json(agent_value).dump(), "-c", "developer_instructions='Be terse'"};
+	UAM_ASSERT(!uam::provider_setup::Apply(chat.provider_id, bundle.local_directory, temp.root, argv, environment, error));
+	UAM_ASSERT(error.find("would replace the selected agent's instructions") != std::string::npos);
+	// Without an agent, a user's own value, TOML or raw text, is left as written rather than folded or refused.
+	for (const std::string& user_value : std::vector<std::string>{"developer_instructions='Be terse'", "developer_instructions=" + nlohmann::json("Be terse").dump()})
+	{
+		argv = {"codex", "-c", user_value};
+		UAM_ASSERT(uam::provider_setup::Apply(chat.provider_id, bundle.local_directory, temp.root, argv, environment, error));
+		UAM_ASSERT(std::ranges::find(argv, user_value) != argv.end());
+		UAM_ASSERT_EQ(std::ranges::count_if(argv, [](const std::string& argument) { return argument.starts_with("developer_instructions="); }), std::ptrdiff_t{2});
 	}
 }
 
@@ -1648,6 +1797,82 @@ UAM_TEST(SavedMcpSettingsReachAllFiveRuntimesWithoutEnablingCentralInstructions)
 	}
 }
 
+UAM_TEST(UamControlSigningKeyStaysOutOfConfigurationFilesWhereTheProviderCanTakeItFromItsEnvironment)
+{
+	TempDir temp("uam-control-key-files");
+	AppSettings settings;
+	McpServerConfiguration shared;
+	shared.id = "shared-http";
+	shared.name = "shared-http";
+	shared.transport = "http";
+	shared.url = "http://localhost:5000/mcp";
+	settings.mcp_servers = {shared};
+	const std::string key = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+	const nlohmann::json session_servers = nlohmann::json::array({{{"name", "uam-control"}, {"command", "private-owned-uam"},
+	    {"args", {"--uam-control-mcp"}}, {"env", nlohmann::json::array({{{"name", "UAM_CONTROL_CAPABILITY_DIR"}, {"value", "/private/capability"}},
+	                                                                   {{"name", "UAM_CONTROL_REQUEST_KEY"}, {"value", key}}})}}});
+	const auto files_hold_key = [&](const fs::path& root)
+	{
+		std::error_code ignored;
+		for (const auto& entry : fs::recursive_directory_iterator(root, ignored))
+			if (entry.is_regular_file(ignored) && ReadFile(entry.path()).find(key) != std::string::npos) return true;
+		return false;
+	};
+	for (const std::string& provider : {"claude-cli", "gemini-cli", "codex-cli", "opencode-cli"})
+	{
+		const bool gemini = provider == "gemini-cli";
+		ChatSession chat;
+		chat.id = "key-" + provider;
+		chat.provider_id = provider;
+		chat.uam_control_enabled = true;
+		uam::ProviderConfigurationBundle bundle;
+		std::string error;
+		UAM_ASSERT(uam::PrepareProviderConfiguration(temp.root / provider, settings, chat, uam::execution_hosts::LocalHost(), temp.root, bundle, error, nullptr, {}, true));
+		UAM_ASSERT(!bundle.local_directory.empty());
+		std::vector<std::string> argv{provider == "claude-cli" ? "claude" : provider == "gemini-cli" ? "gemini" : provider == "codex-cli" ? "codex" : "opencode"};
+		uam::provider_setup::Environment environment;
+		UAM_ASSERT(uam::provider_setup::Apply(provider, bundle.local_directory, temp.root, argv, environment, error, session_servers));
+		if (gemini)
+		{
+			// No verified route lets Gemini take the key from its environment, so only its own settings file holds it
+			// (documented residual); the shared mcp.json copy it never reads does not.
+			const std::string settings_path = uam::provider_setup::EnvironmentValue(environment, "GEMINI_CLI_SYSTEM_SETTINGS_PATH");
+			const nlohmann::json config = nlohmann::json::parse(ReadFile(uam::paths::PathFromUtf8(settings_path)));
+			UAM_ASSERT_EQ(config["mcpServers"]["uam-control"]["env"]["UAM_CONTROL_REQUEST_KEY"], nlohmann::json(key));
+			UAM_ASSERT(uam::provider_setup::EnvironmentValue(environment, "UAM_CONTROL_LAUNCH_KEY").empty());
+			UAM_ASSERT(fs::remove(uam::paths::PathFromUtf8(settings_path)));
+			UAM_ASSERT(!files_hold_key(bundle.local_directory));
+			continue;
+		}
+		// No generated file holds the key, including the shared mcp.json copy these providers never read.
+		UAM_ASSERT(!files_hold_key(bundle.local_directory));
+		if (provider == "codex-cli")
+		{
+			// Codex forwards the named variable from its own environment.
+			UAM_ASSERT_EQ(uam::provider_setup::EnvironmentValue(environment, "UAM_CONTROL_REQUEST_KEY"), key);
+			UAM_ASSERT(std::ranges::none_of(argv, [&](const std::string& arg) { return arg.find(key) != std::string::npos; }));
+			continue;
+		}
+		if (provider == "opencode-cli")
+		{
+			// OpenCode's inline configuration is itself an environment variable, never a file.
+			const nlohmann::json config = nlohmann::json::parse(uam::provider_setup::EnvironmentValue(environment, "OPENCODE_CONFIG_CONTENT"));
+			UAM_ASSERT_EQ(config["mcp"]["uam-control"]["environment"]["UAM_CONTROL_REQUEST_KEY"], nlohmann::json(key));
+			continue;
+		}
+		// Claude reads a file: it references the provider's variable, which holds the key.
+		UAM_ASSERT_EQ(uam::provider_setup::EnvironmentValue(environment, "UAM_CONTROL_LAUNCH_KEY"), key);
+		const auto flag = std::ranges::find(argv, "--mcp-config");
+		UAM_ASSERT(flag != argv.end() && flag + 1 != argv.end());
+		const std::string configuration_path = *(flag + 1);
+		const nlohmann::json config = nlohmann::json::parse(ReadFile(uam::paths::PathFromUtf8(configuration_path)));
+		const nlohmann::json& env = config["mcpServers"]["uam-control"]["env"];
+		UAM_ASSERT_EQ(env["UAM_CONTROL_REQUEST_KEY"], nlohmann::json("${UAM_CONTROL_LAUNCH_KEY}"));
+		UAM_ASSERT_EQ(env["UAM_CONTROL_CAPABILITY_DIR"], nlohmann::json("/private/capability"));
+		UAM_ASSERT_EQ(config["mcpServers"]["shared-http"]["url"], nlohmann::json(shared.url));
+	}
+}
+
 UAM_TEST(SharedMcpFollowsSourceWorkspaceIntoAnIsolatedWorktree)
 {
 	TempDir temp("uam-mcp-worktree-scope");
@@ -1679,6 +1904,133 @@ UAM_TEST(SharedMcpFollowsSourceWorkspaceIntoAnIsolatedWorktree)
 	}
 	bundle.manifest["mcpOnly"] = "yes";
 	UAM_ASSERT(!uam::provider_setup::ValidateManifest(bundle.manifest, error));
+}
+
+UAM_TEST(CodexMcpEnvironmentValuesNeverReachItsCommandLine)
+{
+	TempDir temp("uam-codex-mcp-env");
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "server", "#!/bin/sh\n"));
+	const std::string command = uam::paths::Utf8PathString(temp.root / "server");
+	const std::string key = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+	const nlohmann::json session_servers = nlohmann::json::array({{{"name", "uam-control"}, {"command", "private-owned-uam"}, {"args", {"--uam-control-mcp"}},
+	    {"env", nlohmann::json::array({{{"name", "UAM_CONTROL_REQUEST_KEY"}, {"value", key}}})}}});
+	McpServerConfiguration alpha;
+	alpha.id = "alpha"; alpha.name = "alpha"; alpha.command = command;
+	alpha.environment = {{"MCPTEST_API_KEY", "", "shared-secret"}, {"MCPTEST_ALPHA_TOKEN", "", "alpha-secret"}};
+	McpServerConfiguration beta = alpha;
+	beta.id = "beta"; beta.name = "beta";
+	beta.environment = {{"MCPTEST_API_KEY", "", "shared-secret"}, {"MCPTEST_BETA_TOKEN", "", "beta \"secret\""}};
+	int launch_count = 0;
+	std::vector<std::string> argv;
+	uam::provider_setup::Environment environment;
+	std::string error;
+	const auto launch = [&](const std::vector<McpServerConfiguration>& servers) {
+		AppSettings settings;
+		settings.mcp_servers = servers;
+		ChatSession chat;
+		chat.id = "codex-mcp-env";
+		ExecutionHost host;
+		uam::ProviderConfigurationBundle bundle;
+		UAM_ASSERT(uam::PrepareProviderConfiguration(temp.root / ("data-" + std::to_string(++launch_count)), settings, chat, host, temp.root, bundle, error));
+		argv = {"codex"};
+		environment.clear();
+		return uam::provider_setup::Apply("codex-cli", bundle.local_directory, temp.root, argv, environment, error, session_servers);
+	};
+	UAM_ASSERT(launch({alpha, beta}));
+	// Codex forwards each value by name from its own environment; UAM's signing key travels the same way.
+	UAM_ASSERT_EQ(uam::provider_setup::EnvironmentValue(environment, "MCPTEST_API_KEY"), std::string("shared-secret"));
+	UAM_ASSERT_EQ(uam::provider_setup::EnvironmentValue(environment, "MCPTEST_ALPHA_TOKEN"), std::string("alpha-secret"));
+	UAM_ASSERT_EQ(uam::provider_setup::EnvironmentValue(environment, "MCPTEST_BETA_TOKEN"), std::string("beta \"secret\""));
+	UAM_ASSERT_EQ(uam::provider_setup::EnvironmentValue(environment, "UAM_CONTROL_REQUEST_KEY"), key);
+	for (const std::string& expected : {std::string(R"(mcp_servers.alpha.env_vars=["MCPTEST_ALPHA_TOKEN", "MCPTEST_API_KEY"])"), std::string(R"(mcp_servers.beta.env_vars=["MCPTEST_API_KEY", "MCPTEST_BETA_TOKEN"])"),
+	         std::string(R"(mcp_servers.uam-control.env_vars=["UAM_CONTROL_REQUEST_KEY"])")})
+		UAM_ASSERT(std::ranges::find(argv, expected) != argv.end());
+	// No MCP env value appears anywhere on Codex's command line, which other processes can list, or in its launch log.
+	const std::string logged = uam::acp_detail::JoinAcpArgvForDiagnostics(argv);
+	for (const std::string& secret : {std::string("shared-secret"), std::string("alpha-secret"), std::string("beta \"secret\""), std::string("secret\\\""), key})
+	{
+		UAM_ASSERT(std::ranges::none_of(argv, [&](const std::string& arg) { return arg.find(secret) != std::string::npos; }));
+		UAM_ASSERT(logged.find(secret) == std::string::npos);
+	}
+	UAM_ASSERT(std::ranges::none_of(argv, [](const std::string& arg) { return arg.find(".env=") != std::string::npos; }));
+
+	// env_vars cannot rename a variable, so one name set to two values is refused without echoing either value.
+	McpServerConfiguration clash = beta;
+	clash.environment = {{"MCPTEST_API_KEY", "", "other-secret"}};
+	UAM_ASSERT(!launch({alpha, clash}));
+	UAM_ASSERT(error.find("MCPTEST_API_KEY") != std::string::npos && error.find("'alpha'") != std::string::npos && error.find("'beta'") != std::string::npos);
+	UAM_ASSERT(error.find("secret") == std::string::npos);
+	// A user server may not put loader, shell or Codex variables into Codex's environment, even when Codex lacks them,
+	// impersonate UAM's launch variables, or change a variable Codex already has.
+	ScopedEnvVar existing("MCP_TEST_EXISTING_VALUE", "host-value");
+	ScopedEnvVar node_options("NODE_OPTIONS", "");
+	for (const char* variable : {"PATH", "NODE_OPTIONS", "LD_PRELOAD", "CODEX_HOME", "UAM_CONTROL_REQUEST_KEY", "MCP_TEST_EXISTING_VALUE"})
+	{
+		McpServerConfiguration reserved = alpha;
+		reserved.environment = {{variable, "", "/changed"}};
+		UAM_ASSERT(!launch({reserved}));
+		UAM_ASSERT(error.find(variable) != std::string::npos && error.find("/changed") == std::string::npos);
+	}
+	UAM_ASSERT(error.find("already has") != std::string::npos);
+	McpServerConfiguration same = alpha;
+	same.environment = {{"MCP_TEST_EXISTING_VALUE", "", "host-value"}};
+	UAM_ASSERT(launch({same}));
+	// The reserved check comes first, so a server sorting after uam-control is never told to match UAM's signing key.
+	McpServerConfiguration zeta = alpha;
+	zeta.id = "zeta"; zeta.name = "zeta"; zeta.environment = {{"UAM_CONTROL_REQUEST_KEY", "", "/changed"}};
+	UAM_ASSERT(!launch({zeta}));
+	UAM_ASSERT(error.find("'zeta' cannot set UAM_CONTROL_REQUEST_KEY") != std::string::npos && error.find("uam-control") == std::string::npos);
+
+	// A launch command that no longer fits is refused by server name, without echoing its arguments.
+	McpServerConfiguration large = alpha;
+	large.id = "large"; large.name = "large"; large.environment.clear();
+	large.args = {std::string(60000, 'a'), std::string(60000, 'b'), std::string(60000, 'c')};
+	UAM_ASSERT(!launch({large}));
+	UAM_ASSERT(error.find("'large'") != std::string::npos && error.find("too long") != std::string::npos && error.find("aaaa") == std::string::npos);
+}
+
+UAM_TEST(CodexMcpOverridesUseBareServerKeysAndInlineTables)
+{
+	TempDir temp("uam-codex-mcp-keys");
+	UAM_ASSERT(uam::io::WriteTextFile(temp.root / "server", "#!/bin/sh\n"));
+	const std::string command = uam::paths::Utf8PathString(temp.root / "server");
+	McpServerConfiguration plain;
+	plain.id = "plain"; plain.name = "plain-name_1"; plain.command = command; plain.args = {"--port", "7"};
+	McpServerConfiguration spaced;
+	spaced.id = "spaced"; spaced.name = "my server.v2"; spaced.transport = "http"; spaced.url = "http://localhost:5000/mcp";
+	spaced.headers = {{"X-Api-Key", "", "header-secret"}};
+	const std::string spaced_key = uam::provider_setup::CodexServerKey(spaced.name);
+	UAM_ASSERT_EQ(uam::provider_setup::CodexServerKey(plain.name), plain.name);
+	UAM_ASSERT(spaced_key.starts_with("my_server_v2-") && uam::provider_setup::IsCodexBareKey(spaced_key));
+	UAM_ASSERT_EQ(uam::provider_setup::CodexServerKey(spaced.name), spaced_key);
+	const auto apply = [&](const std::vector<McpServerConfiguration>& servers, std::vector<std::string>& argv, uam::provider_setup::Environment& environment, std::string& error) {
+		AppSettings settings;
+		settings.mcp_servers = servers;
+		ChatSession chat;
+		chat.id = "codex-mcp-keys";
+		ExecutionHost host;
+		uam::ProviderConfigurationBundle bundle;
+		UAM_ASSERT(uam::PrepareProviderConfiguration(temp.root / ("data-" + std::to_string(servers.size())), settings, chat, host, temp.root, bundle, error));
+		argv = {"codex"};
+		return uam::provider_setup::Apply("codex-cli", bundle.local_directory, temp.root, argv, environment, error);
+	};
+	std::vector<std::string> argv;
+	uam::provider_setup::Environment environment;
+	std::string error;
+	UAM_ASSERT(apply({plain, spaced}, argv, environment, error));
+	const std::string variable = "UAM_CENTRAL_MCP_HEADER_" + uam::provider_setup::Digest(spaced.name + "X-Api-Key");
+	for (const std::string& expected : {"mcp_servers.plain-name_1.command=" + nlohmann::json(command).dump(), std::string(R"(mcp_servers.plain-name_1.args=["--port", "7"])"),
+	         "mcp_servers." + spaced_key + R"(.url="http://localhost:5000/mcp")", "mcp_servers." + spaced_key + R"(.env_http_headers={"X-Api-Key" = ")" + variable + "\"}"})
+		UAM_ASSERT(std::ranges::find(argv, expected) != argv.end());
+	// Codex keeps quote marks and splits on dots in -c key paths, so no generated key may contain either.
+	UAM_ASSERT(std::ranges::none_of(argv, [](const std::string& arg) { return arg.starts_with("mcp_servers.") && arg.substr(0, arg.find('=')).find('"') != std::string::npos; }));
+	UAM_ASSERT_EQ(uam::provider_setup::EnvironmentValue(environment, variable), std::string("header-secret"));
+	// A configured name equal to another server's derived key is refused rather than merged into it.
+	McpServerConfiguration clash = plain;
+	clash.id = "clash"; clash.name = spaced_key;
+	environment.clear();
+	UAM_ASSERT(!apply({plain, spaced, clash}, argv, environment, error));
+	UAM_ASSERT(error.find("apart") != std::string::npos);
 }
 
 UAM_TEST(McpOnlySetupPreservesGeminiContextConfiguration)
@@ -3036,7 +3388,7 @@ UAM_TEST(PreparedVersionWaitExpiredBranchReservationKeepsLaunch)
 		if (condition == "live")
 		{
 			UAM_ASSERT(!session.pending_local_launch);
-			UAM_ASSERT(session.last_error.find("ownership changed") != std::string::npos);
+			UAM_ASSERT(session.last_error.find("The chat changed") != std::string::npos);
 			UAM_ASSERT(owner && !owner->cancellation.stop_requested());
 		}
 		else

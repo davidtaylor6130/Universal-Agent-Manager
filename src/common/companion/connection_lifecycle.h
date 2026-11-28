@@ -45,14 +45,14 @@ namespace uam::companion
 		if (code == "disabled") return "Phone access is turned off.";
 		if (code == "starting") return "Universal Agent Manager is starting phone access.";
 		if (code == "stopping") return "Universal Agent Manager is turning off phone access.";
-		if (code == "ready") return "Phone access is ready on this computer. The iPhone must use the same network and trust its HTTPS certificate.";
-		if (code == "addressUnavailable") return "The saved network address is no longer on this computer. Choose a current LAN address and repair phone access.";
-		if (code == "proxyStartFailed") return "Universal Agent Manager could not start its HTTPS service. Restart phone access and check the connection settings.";
-		if (code == "proxyExited") return "The HTTPS service stopped. Restart phone access to reconnect.";
-		if (code == "loopbackFailed") return "Universal Agent Manager could not open its local phone connection. Another instance may be using the port.";
-		if (code == "readinessTimeout") return "The phone connection did not become ready. Check the LAN address and ports, then restart phone access.";
-		if (code == "stopTimeout") return "The previous phone connection is still closing. Try restarting phone access again.";
-		return "Phone access configuration is invalid or unavailable. Repair the connection settings in Universal Agent Manager.";
+		if (code == "ready") return "Phone access is ready; the iPhone must be on the same network and trust the HTTPS certificate.";
+		if (code == "addressUnavailable") return "The saved network address is gone; choose a current LAN address to repair phone access.";
+		if (code == "proxyStartFailed") return "Could not start the HTTPS service; restart phone access and check the connection settings.";
+		if (code == "proxyExited") return "The HTTPS service stopped; restart phone access to reconnect.";
+		if (code == "loopbackFailed") return "Could not open the local phone connection; another app may be using the port.";
+		if (code == "readinessTimeout") return "The phone connection did not become ready; check the LAN address and ports.";
+		if (code == "stopTimeout") return "The previous phone connection is still closing; restart phone access again.";
+		return "Phone access settings are invalid or unavailable; repair the connection settings.";
 	}
 
 	inline nlohmann::json ConnectionStatus(const ConnectionDesired& desired, const std::string& status, const std::string& reason,

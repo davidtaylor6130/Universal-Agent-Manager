@@ -5,6 +5,7 @@
 #include "remote/memory_protocol.h"
 #include "remote/runner_protocol.h"
 #include "remote/runner_state.h"
+#include "common/platform/child_process_priority.h"
 #include "common/platform/observed_process_stop.h"
 
 #include "common/paths/path_utils.h"
@@ -843,10 +844,52 @@ namespace uam::remote
 		    [](const std::pair<const std::string, Channel>& entry) { return entry.second.expires_at_ms != 0; });
 	}
 
+	std::uint32_t RunnerState::LiveProcessCount()
+	{
+		SweepExpiredTransientProcesses();
+		std::scoped_lock lock(m_stateMutex);
+		const auto live = [](const std::pair<const std::string, std::shared_ptr<Process>>& entry)
+		{ return entry.second && !entry.second->exited.load(std::memory_order_acquire); };
+		return static_cast<std::uint32_t>(std::ranges::count_if(m_processes, live) + std::ranges::count_if(m_retiringProcesses, live));
+	}
+
+	void RunnerState::SweepIdleUploads(const std::int64_t now)
+	{
+		std::vector<std::pair<std::string, std::shared_ptr<Upload>>> idle;
+		{
+			std::scoped_lock lock(m_stateMutex);
+			for (const auto& [upload_id, upload] : m_uploads)
+			{
+				// A request holding the upload is using it now, so it is not idle.
+				std::unique_lock upload_lock(upload->mutex, std::try_to_lock);
+				if (!upload_lock.owns_lock() || upload->state != Upload::State::Active ||
+				    now - upload->last_activity_ms < kIdleUploadExpiryMs) continue;
+				// Writes, commits and aborts now refuse it, and the record keeps its id taken until it is gone.
+				upload->state = Upload::State::Finishing;
+				idle.emplace_back(upload_id, upload);
+			}
+		}
+		for (const auto& [upload_id, upload] : idle)
+		{
+			std::error_code remove_error;
+			std::filesystem::remove(upload->temporary, remove_error);
+			{
+				// A removal that failed stays for the next sweep, as a failed file.abort stays for another abort.
+				std::scoped_lock upload_lock(upload->mutex);
+				upload->state = remove_error ? Upload::State::Active : Upload::State::Finished;
+			}
+			if (remove_error) continue;
+			std::scoped_lock lock(m_stateMutex);
+			const auto found = m_uploads.find(upload_id);
+			if (found != m_uploads.end() && found->second == upload) m_uploads.erase(found);
+		}
+	}
+
 	void RunnerState::SweepExpiredTransientProcesses()
 	{
 		std::vector<std::pair<std::string, std::shared_ptr<Process>>> expired;
 		const std::int64_t now = LeaseClockMilliseconds();
+		SweepIdleUploads(now);
 		{
 			std::scoped_lock lock(m_stateMutex);
 			std::erase_if(m_channels, [now](const std::pair<const std::string, Channel>& entry)
@@ -1232,7 +1275,7 @@ namespace uam::remote
 			const std::size_t offset = request.value("offset", std::size_t{0});
 			const std::string fingerprint = uam::hashing::Hex64Padded(uam::hashing::Fnv1a64(file.text));
 			if (request.contains("fingerprint") && (!request["fingerprint"].is_string() || request["fingerprint"] != fingerprint))
-				return ProcessError(request, "file_preview_changed", "The file changed while loading. Try again.");
+				return ProcessError(request, "file_preview_changed", "The file changed while loading.");
 			// Base64 chunks stay inside the existing frame limit, even for JSON-escaped source text.
 			const std::string_view chunk(file.text.data() + offset, std::min<std::size_t>(512 * 1024, file.text.size() - offset));
 			return ProcessSuccess(request, {{"dataBase64", uam::base64::Encode(chunk)}, {"path", file.path},
@@ -1280,7 +1323,7 @@ namespace uam::remote
 			if (!token.empty())
 			{
 				const auto found = m_nativeHistorySnapshots.find(token);
-				if (found == m_nativeHistorySnapshots.end()) return ProcessError(request, "snapshot_expired", "The native history snapshot expired. Retry refresh.");
+				if (found == m_nativeHistorySnapshots.end()) return ProcessError(request, "snapshot_expired", "The native history snapshot expired; refresh to retry.");
 				snapshot = found->second;
 				if (snapshot->provider != provider || snapshot->session_id != session || snapshot->agent_id != agent || !native_history::SameWorkspace(snapshot->workspace, workspace))
 					return ProcessError(request, "identity_mismatch", "Native history snapshot ownership does not match.");
@@ -1297,7 +1340,7 @@ namespace uam::remote
 			if (!snapshot)
 			{
 				if (offset != 0 || !native_history::String(request, "fingerprint").empty()) return ProcessError(request, "invalid_request", "A new native snapshot starts at offset zero.");
-				if (m_nativeHistorySnapshots.size() >= native_history::kMaxSnapshots) return ProcessError(request, "history_busy", "Two native history snapshots are already active. Retry shortly.");
+				if (m_nativeHistorySnapshots.size() >= native_history::kMaxSnapshots) return ProcessError(request, "history_busy", "Two native history reads are already running; retry shortly.");
 				token = ProcessService().GenerateUuid();
 				if (!native_history::SafeId(token)) return ProcessError(request, "snapshot_failed", "Could not allocate a native history snapshot.");
 				snapshot = std::make_shared<native_history::Snapshot>();
@@ -1395,7 +1438,9 @@ namespace uam::remote
 			if (!std::filesystem::is_directory(status))
 				return ProcessError(request, "not_directory", "The selected remote path is not a directory.");
 
-			const std::filesystem::path directory = requested.lexically_normal();
+			std::filesystem::path directory = requested.lexically_normal();
+			// "/srv/x/" normalizes to itself; drop the trailing separator so the directory and its parent are distinct.
+			if (directory.has_relative_path() && directory.filename().empty()) directory = directory.parent_path();
 			std::vector<std::pair<std::string, std::string>> directories;
 			bool truncated = false;
 			std::filesystem::directory_iterator iterator(directory, error);
@@ -1643,6 +1688,7 @@ namespace uam::remote
 				                   std::filesystem::perms::owner_write,
 				    std::filesystem::perm_options::replace, error);
 				upload->state = Upload::State::Active;
+				upload->last_activity_ms = LeaseClockMilliseconds();
 				return ProcessSuccess(request, {{"uploadId", upload_id}});
 			}
 			const auto found = m_uploads.find(upload_id);
@@ -1717,6 +1763,7 @@ namespace uam::remote
 				uam::hashing::UpdateFnv1a64(upload.digest,
 				    reinterpret_cast<const unsigned char*>(decoded.data()), decoded.size());
 				upload.received_size += decoded.size();
+				upload.last_activity_ms = LeaseClockMilliseconds();
 				return ProcessSuccess(request, {{"acceptedBytes", decoded.size()}});
 			}
 			return ProcessError(request, "unsupported_request", "Unknown runner file request.");
@@ -1770,7 +1817,7 @@ namespace uam::remote
 				{
 					const std::string& epoch = request["desktopEpoch"].get_ref<const std::string&>();
 					if (epoch == state.desktop_epoch && state.desktop_fenced)
-						return ProcessError(request, "channel_fenced", "This desktop connection was replaced. Reconnect with a new tool server.");
+						return ProcessError(request, "channel_fenced", "This desktop connection was replaced; reconnect with a new tool server.");
 					if (epoch != state.desktop_epoch)
 					{
 						// A new desktop tool server never receives what was sent to the previous one, and a reply the
@@ -1816,7 +1863,7 @@ namespace uam::remote
 			// The desktop reads remoteToDesktop and writes desktopToRemote; the shim does the opposite.
 			const bool desktop_request = (direction == "desktopToRemote") == (type == "channel.write");
 			if (desktop_request && found->second.desktop_fenced)
-				return ProcessError(request, "channel_fenced", "This desktop connection was replaced. Reconnect with a new tool server.");
+				return ProcessError(request, "channel_fenced", "This desktop connection was replaced; reconnect with a new tool server.");
 			if (desktop_request) found->second.desktop_seen_ms = LeaseClockMilliseconds();
 			const auto with_desktop = [&](nlohmann::json result)
 			{
@@ -2032,6 +2079,9 @@ namespace uam::remote
 			// The marker is launch-only: the saved environment still compares equal to a repeated start request.
 			auto marked_environment = environment;
 			marked_environment.emplace_back(std::string(kRemoteSessionEnvironment), session_id);
+			// Agent and background work from the controller starts lowered here too; anything else keeps normal priority.
+			const uam::platform::ScopedChildProcessClass process_class(uam::platform::ParseChildProcessClass(
+			    request.contains("processClass") && request["processClass"].is_string() ? request["processClass"].get_ref<const std::string&>() : std::string_view()));
 			if (!ProcessService().StartStdioProcess(process->fields, working_directory,
 			                                                arguments, &error, marked_environment))
 			{

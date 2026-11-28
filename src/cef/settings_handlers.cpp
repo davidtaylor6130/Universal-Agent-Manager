@@ -1,9 +1,13 @@
 #include "app/storage_retention_service.h"
 #include "common/config/compute_pools.h"
+#include "common/config/host_admission_config.h"
+#include "common/runtime/acp/acp_session_runtime.h"
+#include "common/utils/diagnostic_log.h"
 #include "app/data_folder_settings_service.h"
 #include "app/central_instruction_file_service.h"
 #include "common/config/voice_input_settings.h"
 #include "app/execution_routing_integration.h"
+#include "app/host_load_integration.h"
 #include "common/config/settings_store.h"
 #include "common/config/svn_repository_layout.h"
 #include "common/config/host_scoped_settings.h"
@@ -13,6 +17,7 @@
 #include "common/paths/app_paths.h"
 #include "common/config/central_provider_configuration.h"
 #include "cef/uam_query_handler.h"
+#include "common/utils/diagnostic_log.h"
 #include "common/companion/connection_lifecycle.h"
 #include "common/companion/pairing_certificate.h"
 #include "common/companion/token_store.h"
@@ -28,6 +33,9 @@
 #include "common/config/companion_network.h"
 #include "common/config/settings_normalization.h"
 #include "common/config/mcp_server_config.h"
+#include "common/config/permission_command_rules_json.h"
+#include "common/security/command_rules.h"
+#include "common/security/read_only_command.h"
 #include "common/memory/memory_levels.h"
 #include "common/paths/path_utils.h"
 #include "common/platform/file_explorer_application.h"
@@ -229,7 +237,7 @@ namespace
 			if (!uam::excluded_provider_data::IsExcluded(id) && !uam::excluded_provider_data::IsExcluded(binding.worker_provider_id)) bindings[id] = {{"workerProviderId", binding.worker_provider_id}, {"workerModelId", binding.worker_model_id}};
 		return {{"memoryEnabledDefault", value.memory_enabled_default}, {"memoryLevelDefault", value.memory_level_default},
 		    {"memoryIdleDelaySeconds", value.memory_idle_delay_seconds}, {"memoryRecallBudgetBytes", value.memory_recall_budget_bytes},
-		    {"goalMaxLoopIterations", value.goal_max_loop_iterations}, {"goalTokenBudget", value.goal_token_budget}, {"acpSetupInactivityTimeoutSeconds", value.acp_setup_inactivity_timeout_seconds},
+		    {"goalMaxLoopIterations", value.goal_max_loop_iterations}, {"goalTokenBudget", value.goal_token_budget}, {"acpSetupInactivityTimeoutSeconds", uam::settings::NormalizedAcpSetupInactivityTimeoutSeconds(value.acp_setup_inactivity_timeout_seconds)},
 		    {"acpTurnOutputLimitMiB", value.acp_turn_output_limit_mib}, {"activeTurnInactivityTimeoutSeconds", value.active_turn_inactivity_timeout_seconds}, {"streamLoopRepeatLimit", value.stream_loop_repeat_limit}, {"toolCallTimeoutSeconds", value.tool_call_timeout_seconds}, {"memoryWorkerBindings", std::move(bindings)},
 		    {"permissionReviewerProviderId", value.permission_reviewer_provider_id}, {"permissionReviewerModelId", value.permission_reviewer_model_id}};
 	}
@@ -327,7 +335,7 @@ void UamQueryHandler::HandleSetMemorySettings(CefRefPtr<CefBrowser> browser, con
 	const bool typed_outcomes = scope_supplied && !request_id.empty();
 	const auto reject = [&]()
 	{
-		if (!typed_outcomes) { cb->Failure(409, "Settings were not confirmed saved. Refresh current values before retrying."); return; }
+		if (!typed_outcomes) { cb->Failure(409, "Settings may not have saved; refresh them before trying again."); return; }
 		auto response = MemorySettingsPrimarySnapshot(m_app);
 		response["memoryRequestId"] = request_id;
 		response["outcome"] = "rejected";
@@ -337,7 +345,7 @@ void UamQueryHandler::HandleSetMemorySettings(CefRefPtr<CefBrowser> browser, con
 	    payload["expectedSettingsRevision"].get<std::uint64_t>() != m_app.settings_publication_revision)) { reject(); return; }
 	if (!PersistenceCoordinator().ResolveMemorySettingsUncertainty(m_app))
 	{
-		if (!typed_outcomes) { cb->Failure(500, "Settings were not confirmed saved. Refresh current values before retrying."); return; }
+		if (!typed_outcomes) { cb->Failure(500, "Settings may not have saved; refresh them before trying again."); return; }
 		auto response = nlohmann::json{{"memoryRequestId", request_id}, {"outcome", "unknown"},
 		    {"scope", m_app.settings_publication_scope}, {"revision", m_app.settings_publication_revision}, {"primaryValidated", false}};
 		cb->Success(response.dump());
@@ -467,7 +475,7 @@ void UamQueryHandler::HandleSetMemorySettings(CefRefPtr<CefBrowser> browser, con
 	try
 	{
 		if (committed || typed_outcomes) cb->Success(terminal_response);
-		else cb->Failure(500, "Settings were not confirmed saved. Refresh current values before retrying.");
+		else cb->Failure(500, "Settings may not have saved; refresh them before trying again.");
 	}
 	catch (...) {}
 
@@ -486,7 +494,7 @@ void UamQueryHandler::HandleSetMcpServers(CefRefPtr<CefBrowser> browser, const n
 	}
 	std::vector<McpServerConfiguration> servers = uam::mcp_server_config::Parse(*requested_servers);
 	std::string error;
-	if (!uam::mcp_server_config::NormalizeAndValidate(servers, &error))
+	if (!uam::mcp_server_config::NormalizeAndValidate(servers, &error, &m_app.settings.execution_hosts, scope))
 	{
 		cb->Failure(400, error);
 		return;
@@ -536,6 +544,61 @@ void UamQueryHandler::HandleSetComputePools(CefRefPtr<CefBrowser> browser, const
 	}
 	cb->Success(nlohmann::json{{"computePools", uam::compute_pools::Serialize(m_app.settings.compute_pools)}}.dump());
 	uam::PushStateUpdateIfChanged(browser, m_app);
+}
+
+void UamQueryHandler::HandleSetHostAdmission(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const nlohmann::json::const_iterator requested = payload.find("hostAdmission");
+	if (requested == payload.end() || !requested->is_object())
+	{
+		cb->Failure(400, "hostAdmission must be an object.");
+		return;
+	}
+	const HostAdmissionSettings settings = uam::host_admission_config::Parse(*requested);
+	if (!uam::host_admission_config::IsValid(settings))
+	{
+		cb->Failure(400, "Limits are out of range, or a hard limit is looser than its soft limit.");
+		return;
+	}
+	const AppSettings previous = m_app.settings;
+	m_app.settings.host_admission = settings;
+	if (!PersistenceCoordinator().SaveSettings(m_app))
+	{
+		m_app.settings = previous;
+		cb->Failure(500, "Failed to save host limits.");
+		return;
+	}
+	cb->Success(nlohmann::json{{"hostAdmission", uam::host_admission_config::Serialize(m_app.settings.host_admission)}}.dump());
+	uam::PushStateUpdateIfChanged(browser, m_app);
+}
+
+/// Run anyway for a chat turn or CLI View that host admission holds because its computer is full or overloaded.
+/// It applies to the start held now only, and only where the hold offered it.
+void UamQueryHandler::HandleRunHeldWorkAnyway(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const std::string chat_id = payload.value("chatId", std::string());
+	bool applied = false;
+	if (uam::AcpSessionState* session = uam::FindAcpSessionForChat(m_app, chat_id); session != nullptr && session->compute_pool_wait_run_anyway)
+	{
+		session->host_admission_run_anyway = true;
+		session->reconnect_not_before_time_s = 0.0;
+		applied = true;
+	}
+	for (const std::unique_ptr<uam::CliTerminalState>& terminal : m_app.cli_terminals)
+		if (terminal && (terminal->attached_chat_id == chat_id || terminal->frontend_chat_id == chat_id) && terminal->host_admission_run_anyway_offered)
+		{
+			terminal->host_admission_run_anyway = true;
+			terminal->host_admission_retry_at_s = 0.0; // The next poll tries once more, now.
+			applied = true;
+		}
+	if (!applied)
+	{
+		cb->Failure(409, "This chat is no longer waiting for its computer.");
+		return;
+	}
+	uam::diagnostics::Write("Host admission: Run anyway chosen for a held start");
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success("{}");
 }
 
 void UamQueryHandler::HandleSetUamAgentPreferences(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -608,7 +671,7 @@ void UamQueryHandler::HandleSetProviderChatDefaults(CefRefPtr<CefBrowser> browse
 		const ProviderProfile* provider = ProviderProfileStore::FindById(m_app.provider_profiles, requested_default_provider_id);
 		if (provider == nullptr || !ProviderRuntime::IsRuntimeEnabled(*provider))
 		{
-			cb->Failure(400, "Unsupported default provider: " + requested_default_provider_id);
+			cb->Failure(400, "This default provider is not supported.");
 			return;
 		}
 		if (payload.contains("defaultProviderId"))
@@ -755,6 +818,73 @@ void UamQueryHandler::HandleSetComposerSettings(CefRefPtr<CefBrowser> browser, c
 	cb->Success("{}");
 }
 
+void UamQueryHandler::HandleSetPermissionCommandRules(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	const AppSettings previous = m_app.settings;
+	if (payload.contains("rules"))
+	{
+		std::vector<uam::command_rules::Rule> rules;
+		std::string error;
+		if (!uam::permission_command_rules::ParseStrict(payload["rules"], rules, error))
+		{
+			cb->Failure(400, error);
+			return;
+		}
+		m_app.settings.permission_command_rules = std::move(rules);
+	}
+	if (payload.contains("aiReviewEnabled"))
+	{
+		const std::optional<bool> enabled = uam::nlohmann_json::BoolFieldStrict(payload, "aiReviewEnabled");
+		if (!enabled)
+		{
+			cb->Failure(400, "aiReviewEnabled must be a boolean.");
+			return;
+		}
+		m_app.settings.permission_ai_review_enabled = *enabled;
+	}
+	if (!PersistenceCoordinator().SaveSettings(m_app))
+	{
+		m_app.settings = previous;
+		cb->Failure(500, FailureDetailOrFallback(m_app.status_line, "Failed to save the permission rules."));
+		return;
+	}
+	// Verdicts were reached under the previous rules and switch; start the next ones fresh.
+	m_app.permission_review_cache.clear();
+	m_app.permission_review_cache_order.clear();
+
+	uam::PushStateUpdateIfChanged(browser, m_app);
+	cb->Success("{}");
+}
+
+void UamQueryHandler::HandleTestPermissionCommandRules(CefRefPtr<CefBrowser>, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	std::vector<uam::command_rules::Rule> rules;
+	std::string error;
+	if (!payload.contains("rules") || !uam::permission_command_rules::ParseStrict(payload["rules"], rules, error))
+	{
+		cb->Failure(400, error.empty() ? "rules must be a list." : error);
+		return;
+	}
+	const nlohmann::json* command = uam::nlohmann_json::FindStringField(payload, "command");
+	if (command == nullptr || command->get_ref<const std::string&>().size() > uam::command_rules::kMaxCommandBytes)
+	{
+		cb->Failure(400, "command must be text of at most 64 KiB.");
+		return;
+	}
+	const std::string& text = command->get_ref<const std::string&>();
+	// The read filter is checked as if relative paths were inside a chat's workspace; the live check uses the real one.
+	uam::command_safety::ReadScope scope;
+	scope.workspace = std::filesystem::path(m_app.data_root).parent_path() / "uam-rule-test-workspace";
+	scope.local = false;
+	scope.resolve_executables = false;
+	const bool read_only = uam::command_safety::IsReadOnlyCommand(text, scope);
+	const uam::command_rules::Decision decision = uam::command_rules::TestCommand(rules, text, read_only, m_app.settings.permission_remote_commits_without_approval);
+	const char* outcome = decision.outcome == uam::command_rules::Outcome::Approve ? "allow"
+	    : decision.outcome == uam::command_rules::Outcome::Deny ? "deny"
+	    : decision.outcome == uam::command_rules::Outcome::AskUser ? "ask" : "none";
+	cb->Success(nlohmann::json{{"outcome", outcome}, {"ruleId", decision.rule_id}, {"reason", decision.reason}, {"readOnly", read_only}, {"remoteCommit", decision.remote_commit}}.dump());
+}
+
 void UamQueryHandler::HandleSetUpdateSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
 {
 	const AppSettings previous = m_app.settings;
@@ -861,7 +991,7 @@ void UamQueryHandler::HandleRefreshCliProviderVersion(CefRefPtr<CefBrowser> brow
 	const std::string provider_id = CliVersionProviderFromPayloadOrSelection(m_app, payload);
 	if (ProviderProfileStore::FindById(m_app.provider_profiles, provider_id) == nullptr)
 	{
-		cb->Failure(400, "Unsupported provider: " + provider_id);
+		cb->Failure(400, "This provider is not supported.");
 		return;
 	}
 
@@ -897,7 +1027,7 @@ void UamQueryHandler::HandleApplyCliProviderVersion(CefRefPtr<CefBrowser> browse
 	const std::string provider_id = CliVersionProviderFromPayloadOrSelection(m_app, payload);
 	if (provider_id.empty() || ProviderProfileStore::FindById(m_app.provider_profiles, provider_id) == nullptr)
 	{
-		cb->Failure(400, "Unsupported provider: " + provider_id);
+		cb->Failure(400, "This provider is not supported.");
 		return;
 	}
 
@@ -1172,7 +1302,11 @@ void UamQueryHandler::HandleOpenAppPermissionSettings(CefRefPtr<CefBrowser>, con
 	else { cb->Failure(400, "Unknown permission."); return; }
 	std::string error;
 	if (!uam::platform::OpenExternalUrl("x-apple.systempreferences:com.apple.preference.security?" + pane, &error))
-	{ cb->Failure(500, error); return; }
+	{
+		uam::diagnostics::Write("[openPrivacySettings] Could not open System Settings: " + error);
+		cb->Failure(500, "Could not open System Settings.");
+		return;
+	}
 	cb->Success("{}");
 #else
 	(void)permission;
@@ -1187,7 +1321,7 @@ void UamQueryHandler::HandleRepairCompanionLanAddress(CefRefPtr<CefBrowser> brow
 	const std::string address = uam::nlohmann_json::TrimmedStringValue(payload, {"address"});
 	const std::vector<std::string> addresses = uam::platform::MacLocalIpv4Addresses();
 	if (std::ranges::find(addresses, address) == addresses.end())
-	{ cb->Failure(409, "That network address is no longer available. Refresh and try again."); return; }
+	{ cb->Failure(409, "That network address is no longer available; refresh and try again."); return; }
 	nlohmann::json config;
 	if (!ReadCompanionConfig(m_app, config) || !config.contains("origin") || !config["origin"].is_string() ||
 	    !config.contains("proxy_config") || !config["proxy_config"].is_string())
@@ -1203,7 +1337,7 @@ void UamQueryHandler::HandleRepairCompanionLanAddress(CefRefPtr<CefBrowser> brow
 	if (!WriteCompanionConfig(m_app, config))
 	{
 		(void)uam::io::WriteTextFileWithBackup(proxy_path, proxy_text);
-		cb->Failure(500, "Cannot save phone URL. The proxy configuration was restored."); return;
+		cb->Failure(500, "Cannot save the phone URL, so the proxy configuration was restored."); return;
 	}
 	uam::platform::RequestMacLocalNetworkAccess();
 	ApplyCompanionConfiguration(browser, config);
@@ -1225,7 +1359,7 @@ void UamQueryHandler::HandleReadCentralInstructionFile(CefRefPtr<CefBrowser>, co
 	if (!uam::central_instruction_files::Authorized(configuration, path))
 	{ cb->Failure(403, "Save this instruction path in Shared setup before editing it."); return; }
 	if (m_pendingCentralInstructionFiles >= 4)
-	{ cb->Failure(429, "Instruction files are busy. Try again shortly."); return; }
+	{ cb->Failure(429, "Instruction files are busy; try again shortly."); return; }
 	if (!m_instructionQueries) m_instructionQueries = CefThread::CreateThread("uam-instruction-files");
 	if (!m_instructionQueries) { cb->Failure(503, "The instruction file worker is unavailable."); return; }
 	++m_pendingCentralInstructionFiles;
@@ -1239,7 +1373,7 @@ void UamQueryHandler::HandleReadCentralInstructionFile(CefRefPtr<CefBrowser>, co
 	    {
 		    --m_pendingCentralInstructionFiles;
 		    if (result.ok && !uam::central_instruction_files::Authorized(m_app.settings.central_provider_configuration, path))
-			    result = AsyncFailure(409, "The configured instruction paths changed. Save Shared setup and reopen the file.");
+			    result = AsyncFailure(409, "The instruction paths changed; save Shared setup and reopen the file.");
 	    })))
 	{
 		--m_pendingCentralInstructionFiles;
@@ -1262,7 +1396,7 @@ void UamQueryHandler::HandleSaveCentralInstructionFile(CefRefPtr<CefBrowser>, co
 	if (content.size() > uam::provider_setup::kMaxFileBytes || expected_content.size() > uam::provider_setup::kMaxFileBytes)
 	{ cb->Failure(400, "Instruction files are limited to 2 MiB."); return; }
 	if (m_pendingCentralInstructionFiles >= 4)
-	{ cb->Failure(429, "Instruction files are busy. Try again shortly."); return; }
+	{ cb->Failure(429, "Instruction files are busy; try again shortly."); return; }
 	const std::shared_ptr<std::shared_ptr<uam::central_instruction_files::PreparedSave>> prepared =
 	    std::make_shared<std::shared_ptr<uam::central_instruction_files::PreparedSave>>();
 	if (!m_instructionQueries) m_instructionQueries = CefThread::CreateThread("uam-instruction-files");
@@ -1281,7 +1415,7 @@ void UamQueryHandler::HandleSaveCentralInstructionFile(CefRefPtr<CefBrowser>, co
 		    if (!result.ok) return;
 		    if (!uam::central_instruction_files::Authorized(m_app.settings.central_provider_configuration, path))
 		    {
-			    result = AsyncFailure(409, "The configured instruction paths changed. Save Shared setup and reopen the file.");
+			    result = AsyncFailure(409, "The instruction paths changed; save Shared setup and reopen the file.");
 			    return;
 		    }
 		    // Final bounded reread, atomic replacement and directory sync stay in this settings-owning UI turn.
@@ -1407,6 +1541,15 @@ void UamQueryHandler::HandleReleaseExecutionRoutingReservation(CefRefPtr<CefBrow
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
+
+void UamQueryHandler::HandleRequestHostLoad(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
+{
+	(void)browser;
+	if (!payload.is_object() || !payload.empty()) { cb->Failure(400, "Host load takes no arguments."); return; }
+	// Readings arrive with later state pushes; this only keeps every computer sampled for a while.
+	uam::RequestHostLoad(m_app);
+	cb->Success("{}");
+}
 #endif
 
 void UamQueryHandler::HandleSetProviderMcpConfiguration(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -1457,7 +1600,7 @@ void UamQueryHandler::HandlePreviewOpenCodeMcpImport(CefRefPtr<CefBrowser> brows
 		const std::string host = payload.value("executionHostId", std::string("local"));
 		if (host != "local")
 		{
-			cb->Failure(400, "OpenCode file import is available on this computer. For an SSH host, paste its MCP JSON and use executable paths from that host."); return;
+			cb->Failure(400, "OpenCode file import works only on this computer; for an SSH host, paste its MCP JSON instead."); return;
 		}
 		const std::string workspace = payload.value("workspaceDirectory", std::string{});
 		if (!workspace.empty() && !uam::paths::PathFromUtf8(workspace).is_absolute())
@@ -1506,7 +1649,7 @@ void UamQueryHandler::HandleDataFolderSettings(std::string_view action, const nl
 	const auto service = m_app.data_folder_settings;
 	if (!service || service->StartupRoot() != m_app.data_root)
 	{
-		cb->Failure(409, "The data-folder owner is unavailable or changed. Restart UAM before changing its profile.");
+		cb->Failure(409, "The data folder changed or is unavailable; restart UAM before changing its profile.");
 		return;
 	}
 	const bool read = action == "getDataFolderSettings";
@@ -1566,7 +1709,7 @@ void UamQueryHandler::HandleSetStorageSettings(CefRefPtr<CefBrowser> browser, co
 		    if (!saved) { cb->Failure(500, error); return; }
 		    uam::PushStateUpdateIfChanged(browser, m_app);
 		    cb->Success("{}");
-	    })) cb->Failure(409, "Storage policy publication is busy or still loading. Retry shortly.");
+	    })) cb->Failure(409, "Storage settings are busy or still loading; try again shortly.");
 }
 
 void UamQueryHandler::HandleSetVcsSettings(CefRefPtr<CefBrowser> browser, const nlohmann::json& payload, CefRefPtr<Callback> cb)
@@ -1630,7 +1773,7 @@ void UamQueryHandler::HandleSetVcsSettings(CefRefPtr<CefBrowser> browser, const 
 	if (policy_changed)
 	{
 		lease = m_app.worktree_retention_gate.TryAcquireMutation();
-		if (!lease) { cb->Failure(409, "Worktree cleanup is finishing. Retry the settings change."); return; }
+		if (!lease) { cb->Failure(409, "Worktree cleanup is finishing; change the setting again shortly."); return; }
 	}
 	const AppSettings previous = m_app.settings;
 	m_app.settings.git_enabled = *git_enabled;

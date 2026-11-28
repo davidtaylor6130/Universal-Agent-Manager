@@ -256,7 +256,7 @@ uam::DataFolderSettingsService::Result uam::DataFolderSettingsService::RollbackP
 	std::lock_guard lock(m_mutex);
 	std::string error;
 	if (m_externalOverride || m_held || !m_transition || expected_revision != TokenLocked())
-		return {false, SnapshotLocked(), "Recovery requires the exact observed local transition owner."};
+		return {false, SnapshotLocked(), "Refresh the folder state before recovering it."};
 	const bool rolled_back = m_transition->RollbackBeforeActivation(error);
 	return {rolled_back, SnapshotLocked(), error};
 }
@@ -280,7 +280,16 @@ uam::DataFolderSettingsService::Snapshot uam::DataFolderSettingsService::Snapsho
 	state.can_change = !m_externalOverride && !held && !m_sourceLease.expired() && m_sourceIdentity && m_sourceIdentity->Current();
 	state.restart_ready = kTransfersValidated && state.can_change && !state.pending_folder.empty() && !passive_choice;
 	state.state = held ? "publicationUnknown" : !state.pending_folder.empty() ? "awaitingMigration" : "none";
-	state.message = m_externalOverride ? "UAM_DATA_DIR controls this launch. Folder choices are unavailable while the startup override is set." : held ? "The folder-choice or handoff publication is unconfirmed. Further changes remain held for recovery." : passive_choice ? "The source was restored and the passive copy is retained. Cancel this choice before choosing another empty folder." : active ? "The selected data folder is active. The original profile is retained and locked for recovery." : !m_choice.destination.empty() ? (kTransfersValidated ? "Folder choice saved. Stop active provider sessions before requesting a guarded restart." : "Folder choice saved. Transfer is unavailable in this build; restarting will keep the current folder.") : "Choose a separate empty folder. Existing chats stay in the current folder until a verified transfer is available.";
+	state.message = m_externalOverride ? "Folder choices are unavailable because UAM_DATA_DIR sets the data folder for this launch." : held ? "Folder changes are on hold because the last folder choice was not confirmed." : passive_choice ? "The original folder was restored; cancel this choice before choosing another empty folder." : active ? "The selected data folder is active, and the original folder is kept locked for recovery." : !m_choice.destination.empty() ? (kTransfersValidated ? "Folder choice saved; stop active provider sessions before restarting." : "Folder choice saved, but this build cannot transfer data, so restarting keeps the current folder.") : "Choose a separate empty folder; existing chats stay in the current folder for now.";
+	if (!held && !m_externalOverride && !state.pending_folder.empty())
+	{
+		if (m_volumeWarningFolder != state.pending_folder)
+		{
+			m_volumeWarningFolder = state.pending_folder;
+			m_volumeWarning = DataFolderVolumeWarning(state.pending_folder);
+		}
+		if (!m_volumeWarning.empty()) state.message += " " + m_volumeWarning;
+	}
 	return state;
 }
 
@@ -311,7 +320,7 @@ uam::DataFolderSettingsService::Result uam::DataFolderSettingsService::PublishLo
 {
 	if (!CheckPrimaryLocked())
 	{
-		return {false, SnapshotLocked(), "The saved folder choice changed or is uncertain. Further publication is held."};
+		return {false, SnapshotLocked(), "The saved folder choice changed or is uncertain, so changes are on hold."};
 	}
 	candidate.revision = m_process->GenerateUuid();
 	if (candidate.operation_id.empty())
@@ -329,27 +338,27 @@ uam::DataFolderSettingsService::Result uam::DataFolderSettingsService::PublishLo
 	const std::string acknowledged = journal.dump();
 	if (bytes.size() > kMaxPreferenceBytes || publishing.size() > kMaxPreferenceBytes || acknowledged.size() > kMaxPreferenceBytes)
 	{
-		return {false, SnapshotLocked(), "The selected folder exceeds the bootstrap record limit. Choose a shorter path."};
+		return {false, SnapshotLocked(), "The selected folder path is too long; choose a shorter path."};
 	}
 	const auto owned = [this](uam::io::AtomicWriteStage) { const auto source = m_sourceLease.lock(); return source && source->Current() && m_controlLease && m_controlLease->Current() && m_controlIdentity && m_controlIdentity->Current() && m_sourceIdentity && m_sourceIdentity->Current(); };
 	const auto intent_result = uam::io::AtomicWriteFileDetailed(m_controlRoot / "intent.json", publishing, owned);
 	if (!intent_result.success)
 	{
 		m_held = true;
-		return {false, SnapshotLocked(), "Could not confirm the folder-choice publication intent. No data was transferred."};
+		return {false, SnapshotLocked(), "The folder choice could not be confirmed, and no data was transferred."};
 	}
 	const auto result = uam::io::AtomicWriteFileDetailed(m_controlRoot / "selection.json", bytes, [&owned, &gate](uam::io::AtomicWriteStage stage) { return (!gate || gate(stage)) && owned(stage); });
 	if (!result.success)
 	{
 		// Retain both the candidate and its prior source in the durable intent; never overwrite uncertain state.
 		m_held = true;
-		return {false, SnapshotLocked(), "The folder-choice save is unconfirmed. No data was transferred; publication is held."};
+		return {false, SnapshotLocked(), "The folder choice save is unconfirmed, so no data was transferred and changes are on hold."};
 	}
 	const auto receipt = uam::io::AtomicWriteFileDetailed(m_controlRoot / "intent.json", acknowledged, owned);
 	if (!receipt.success || !owned(uam::io::AtomicWriteStage::Complete))
 	{
 		m_held = true;
-		return {false, SnapshotLocked(), "The folder choice was written but its final acknowledgement is unconfirmed. Publication is held."};
+		return {false, SnapshotLocked(), "The folder choice was saved but not confirmed, so changes are on hold."};
 	}
 	m_choice = std::move(candidate);
 	m_primaryBytes = bytes;
@@ -364,7 +373,7 @@ uam::DataFolderSettingsService::Result uam::DataFolderSettingsService::Choose(co
 	const auto source_lease = m_sourceLease.lock();
 	if (m_externalOverride || m_held || !m_transition || m_transition->Held() || !source_lease || !m_controlLease || expected_revision != TokenLocked() || (!m_choice.destination.empty() && (m_transition->State() != "active" || m_choice.destination != m_startupRoot)))
 	{
-		return {false, SnapshotLocked(), "Folder selection is overridden, held, stale or already pending. Refresh before changing it."};
+		return {false, SnapshotLocked(), "Refresh the folder state before changing it; it is overridden, on hold, stale or pending."};
 	}
 	// Preserve the final relative default route, while validating its retained absolute identity.
 	const auto preflight = m_transition->InspectDestination(destination);
@@ -386,7 +395,7 @@ uam::DataFolderSettingsService::Result uam::DataFolderSettingsService::Cancel(co
 	const auto source_lease = m_sourceLease.lock();
 	if (m_externalOverride || m_held || !source_lease || !m_controlLease || expected_revision != TokenLocked() || m_choice.destination.empty())
 	{
-		return {false, SnapshotLocked(), "Folder selection cannot be canceled while overridden, held, stale or absent. Refresh its state."};
+		return {false, SnapshotLocked(), "Refresh the folder state; the choice cannot be canceled while overridden, on hold, stale or absent."};
 	}
 	Choice candidate = m_choice;
 	candidate.destination.clear();

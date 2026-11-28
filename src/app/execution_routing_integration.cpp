@@ -1,3 +1,5 @@
+#include "app/host_admission_integration.h"
+#include "common/utils/diagnostic_log.h"
 #include "app/agent_run_scheduler.h"
 #include "execution_routing_integration.h"
 #include "app/repository_route_match_service.h"
@@ -30,6 +32,8 @@
 
 #include <nlohmann/json.hpp>
 #include <algorithm>
+#include <optional>
+#include <array>
 #include <sstream>
 
 namespace uam
@@ -71,15 +75,58 @@ namespace uam
 			return *app.execution_routing_service;
 		}
 
-		std::string WaitReason(ExecutionRoutingReason reason)
+		const char* SkipLabel(ExecutionRoutingHostSkip skip)
 		{
-			switch (reason)
+			switch (skip)
 			{
-			case ExecutionRoutingReason::HostUnavailable: return "The assigned host is unavailable.";
-			case ExecutionRoutingReason::OwnershipChanged: return "The assigned host or provider configuration changed. Confirm the provider for this computer in Routing settings; the chat then continues by itself.";
-			case ExecutionRoutingReason::InconsistentSnapshot: return "Routing ownership is inconsistent. Review the chat before retrying.";
-			default: return "Waiting for an eligible host with a matching workspace and available slot.";
+			case ExecutionRoutingHostSkip::Off: return "off";
+			case ExecutionRoutingHostSkip::Unreachable: return "unreachable";
+			case ExecutionRoutingHostSkip::ProviderUnavailable: return "provider unavailable";
+			case ExecutionRoutingHostSkip::Unconfirmed: return "not confirmed";
+			case ExecutionRoutingHostSkip::NoMapping: return "no folder";
+			case ExecutionRoutingHostSkip::Full: return "full";
 			}
+			return "unavailable";
+		}
+
+		/// One plain line without computer names; the per-computer reasons travel beside it for the interface to name.
+		std::string WaitReason(const ExecutionRoutingDecision& decision)
+		{
+			const ExecutionRoutingHostSkip assigned_skip = decision.skipped.size() == 1 ? decision.skipped.front().reason : ExecutionRoutingHostSkip::Unreachable;
+			switch (decision.reason)
+			{
+			case ExecutionRoutingReason::HostUnavailable:
+				return assigned_skip == ExecutionRoutingHostSkip::ProviderUnavailable ? "The provider is not available on this chat's computer." : "This chat's computer is unreachable.";
+			case ExecutionRoutingReason::OwnershipChanged: return "The assigned host or provider changed; confirm the provider for this computer in Routing settings to continue.";
+			case ExecutionRoutingReason::InconsistentSnapshot: return "This chat's routing is inconsistent; review the chat before retrying.";
+			default: break;
+			}
+			if (!decision.assignment.host_id.empty())
+			{
+				switch (assigned_skip)
+				{
+				case ExecutionRoutingHostSkip::Full: return "Waiting for a free slot on this chat's computer.";
+				case ExecutionRoutingHostSkip::Off: return "Automatic routing or this chat's computer is turned off.";
+				case ExecutionRoutingHostSkip::Unconfirmed: return "Confirm the provider for this chat's computer in Routing settings.";
+				case ExecutionRoutingHostSkip::ProviderUnavailable: return "The provider is not available on this chat's computer.";
+				default: return "This chat's computer is unreachable.";
+				}
+			}
+			if (decision.skipped.empty()) return "No computer is set up for automatic routing.";
+			std::array<std::size_t, 6> counts{};
+			for (const ExecutionRoutingSkippedHost& skipped : decision.skipped) ++counts[static_cast<std::size_t>(skipped.reason)];
+			std::string summary = "No computer can take this chat yet:";
+			const char* separator = " ";
+			// Reasons that clear by themselves first, then the ones that need the user.
+			for (const ExecutionRoutingHostSkip skip : {ExecutionRoutingHostSkip::Full, ExecutionRoutingHostSkip::Unreachable, ExecutionRoutingHostSkip::Unconfirmed,
+			         ExecutionRoutingHostSkip::NoMapping, ExecutionRoutingHostSkip::ProviderUnavailable, ExecutionRoutingHostSkip::Off})
+			{
+				const std::size_t count = counts[static_cast<std::size_t>(skip)];
+				if (count == 0) continue;
+				summary += separator + std::to_string(count) + " " + SkipLabel(skip);
+				separator = ", ";
+			}
+			return summary + ".";
 		}
 
 		/// Version state is runtime-only, so routing starts the check it waits on. Only a check that never ran or
@@ -100,6 +147,7 @@ namespace uam
 			if (now < retry.first) return;
 			// A background check shows no "Checking..." status; its result still replaces the message.
 			const std::string message = known_here ? known->second.message : std::string();
+			if (!AdmitBackgroundStart(app, "version-check:" + provider.id + "@" + host.id, host.id, false).admitted) return;
 			if (!ProviderCliCompatibilityService().StartProviderVersionCheck(app, provider.id, true, host.id)) return;
 			app.runtime_cli_version_check_background = true;
 			app.runtime_cli_versions_by_provider_id[key].message = message;
@@ -280,6 +328,29 @@ namespace uam
 		return false;
 	}
 
+	bool ExecutionRoutingStartHeld(const AppState& app, const ChatSession& chat)
+	{
+		const AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
+		return session != nullptr && !session->running && !session->recovering_remote_turn && !session->recovering_remote_process &&
+		    !session->remote_stop_unconfirmed && session->prompt_request_id == 0 && !session->compute_pool_wait_message.empty() &&
+		    chat.remote_prompt_delivery_id.empty() && chat.remote_active_turn_id.empty() && !chat.remote_turn_reconnect_pending &&
+		    chat.remote_pending_requests.empty() && chat.remote_interaction_responses.empty();
+	}
+
+	bool ExecutionRoutingWorkUnstarted(const AppState& app, const ChatSession& chat)
+	{
+		if (chat.routing_mode != "automatic" || chat.routing_assigned_connection_identity.empty()) return false;
+		// Anything the provider may have seen or still holds pins the chat: a provider session, a remote process, a
+		// delivery in flight, work this app owns, or a reservation restored without its work. A turn staged for a
+		// provider start that host admission holds owns nothing yet: no process exists to have seen it.
+		if (!chat.native_session_id.empty() || chat.remote_process_exists || (ExecutionRoutingOwnsWork(app, chat) && !ExecutionRoutingStartHeld(app, chat)) ||
+		    app.execution_routing_restored_unresolved_chat_ids.contains(chat.id)) return false;
+		if (std::ranges::any_of(app.acp_sessions, [&chat](const std::unique_ptr<AcpSessionState>& session)
+		    { return session && session->chat_id == chat.id && (session->running || session->remote_stop_unconfirmed || !session->session_id.empty()); })) return false;
+		return std::ranges::none_of(app.cli_terminals, [&chat](const std::unique_ptr<CliTerminalState>& terminal)
+		    { return terminal && (terminal->attached_chat_id == chat.id || terminal->frontend_chat_id == chat.id) && (terminal->running || terminal->context_preparation); });
+	}
+
 	ExecutionRoutingDecision AdmitExecutionRouting(AppState& app, ChatSession& chat, bool terminal)
 	{
 		const bool automatic = chat.routing_mode == "automatic";
@@ -289,7 +360,7 @@ namespace uam
 		if (AdoptCurrentIdentityFormat(app, chat) && app.execution_routing_service) (void)app.execution_routing_service->Release(chat.id, true);
 		if (automatic && app.execution_routing_restored_unresolved_chat_ids.contains(chat.id) && !ExecutionRoutingOwnsWork(app, chat))
 		{
-			app.execution_routing_waits[chat.id] = "Previous admission has unresolved ownership. Review and explicitly release its reservation before starting again. The previous runner process may still exist.";
+			app.execution_routing_waits[chat.id] = "A previous run may still be active on its host; review and release its reservation before starting again.";
 			return {ExecutionRoutingStatus::Waiting, ExecutionRoutingReason::OwnershipChanged, AssignmentForChat(chat)};
 		}
 		const double now = GetAppTimeSeconds();
@@ -299,7 +370,13 @@ namespace uam
 		const ProviderProfile* provider = ProviderResolutionService().ProviderForChat(app, chat);
 		if (provider == nullptr) return {ExecutionRoutingStatus::Invalid, ExecutionRoutingReason::InconsistentSnapshot, {}};
 		const bool repository_matches_current = automatic ? RefreshRepositoryRoutes(app) : false;
+		// Unstarted work is not running anywhere: it may move instead of retrying a computer that failed its health
+		// check, and its own pending reservation is bookkeeping, not occupancy, or it could never leave a full,
+		// down or overloaded computer.
+		const bool movable = automatic && ExecutionRoutingWorkUnstarted(app, chat);
 		std::vector<ExecutionRoutingCandidate> candidates;
+		// Unstarted work first looks for another computer; with none, it may still try its own after a failed check.
+		bool own_host_retry_possible = false;
 		for (const ExecutionHost& host : app.settings.execution_hosts)
 		{
 			ExecutionRoutingCandidate candidate;
@@ -308,8 +385,10 @@ namespace uam
 			candidate.provider_configuration_identity = ExecutionRoutingProviderIdentity(app, *provider, host.id);
 			// New work goes only to a host last seen Ready. A chat already assigned to this host may try it
 			// after a failed health check, exactly as an explicit SSH chat does.
-			const bool assigned_here = automatic && !chat.routing_assigned_connection_identity.empty() && chat.execution_host_id == host.id;
+			const bool assigned_host = automatic && !chat.routing_assigned_connection_identity.empty() && chat.execution_host_id == host.id;
+			const bool assigned_here = assigned_host && !movable;
 			candidate.runner_ready = host.id == "local" || host.runner_status == "ready" || (assigned_here && execution_hosts::CanConnectRunner(host));
+			if (movable && assigned_host && !candidate.runner_ready && execution_hosts::CanConnectRunner(host)) own_host_retry_possible = true;
 			candidate.runner_compatible = host.id == "local" || (!host.runner_version.empty() && host.runner_protocol_version == remote::kRunnerProtocolVersion);
 			const std::unordered_map<std::string, CliProviderVersionState>::const_iterator version = app.runtime_cli_versions_by_provider_id.find(CliProviderVersionStateKey(provider->id, host.id));
 			const bool version_usable = version != app.runtime_cli_versions_by_provider_id.end() && version->second.checked && version->second.supported &&
@@ -324,6 +403,18 @@ namespace uam
 				else if (automatic && host.id != "local" && policy.enabled && provider_enabled) RetryRoutingVersionCheck(app, *provider, host, now);
 				candidate.pool_enabled = policy.enabled;
 				candidate.max_active_turns = policy.max_active_turns;
+				// Over its hard load limit, or with every slot taken by any work (explicit chats, CLI Views, Run anyway),
+				// a computer takes no new automatic work and unstarted work may leave it.
+				if (app.host_admission && host.id != execution_hosts::kLocalHostId)
+				{
+					candidate.overloaded = app.host_admission->HealthOf(host.id) == host_admission::Health::Overloaded;
+					host_admission::Request probe;
+					probe.key = (terminal ? "cli:" : "turn:") + chat.id; // Its own place in line, if any, is its own.
+					probe.host_id = host.id;
+					probe.work_class = HostAdmissionClassForChat(FindAcpSessionForChat(app, chat.id), chat);
+					probe.now_s = now;
+					candidate.full = app.host_admission->Peek(probe).reason == host_admission::Reason::SlotsFull;
+				}
 				for (const ExecutionRoutingProviderConfirmation& confirmation : policy.provider_confirmations)
 					if (confirmation.provider_id == provider->id)
 					{
@@ -365,20 +456,22 @@ namespace uam
 		}
 		std::vector<ExecutionRoutingOccupancy> occupancy;
 		for (const ChatSession& other : app.chats)
-			if (ExecutionRoutingOwnsWork(app, other) || other.routing_reservation_pending)
+			if ((ExecutionRoutingOwnsWork(app, other) || other.routing_reservation_pending) && !(movable && other.id == chat.id))
 				occupancy.push_back({other.id, other.execution_host_id});
 		ExecutionRoutingRequest request;
 		request.chat_id = chat.id;
+		request.now_seconds = now;
 		request.automatic_enabled = app.settings.execution_routing.enabled;
-		request.recovery_of_owned_work = ExecutionRoutingOwnsWork(app, chat);
+		request.recovery_of_owned_work = ExecutionRoutingOwnsWork(app, chat) && !ExecutionRoutingStartHeld(app, chat);
 		if (!chat.routing_assigned_connection_identity.empty()) request.assigned = AssignmentForChat(chat);
+		request.movable = movable;
 		if (!request.assigned.host_id.empty())
 		{
 			const ChatFolder* destination = ChatDomainService().FindFolderById(app, request.assigned.destination_folder_id);
 			if (destination == nullptr || destination->execution_host_id != request.assigned.host_id ||
 			    destination->directory != chat.workspace_directory)
 			{
-				app.execution_routing_waits[chat.id] = "The assigned workspace changed. Review the assignment before retrying.";
+				app.execution_routing_waits[chat.id] = "The assigned workspace changed; review the assignment before retrying.";
 				app.execution_routing_retry_at_by_chat_id[chat.id] = now + 1.0;
 				return {ExecutionRoutingStatus::Waiting, ExecutionRoutingReason::OwnershipChanged, request.assigned};
 			}
@@ -425,7 +518,7 @@ namespace uam
 			request.source_workspace_identity = WorkspaceIdentity(app, chat.routing_source_folder_id, chat.routing_source_directory);
 			if (request.assigned.host_id.empty() && (!chat.native_session_id.empty() || chat.remote_process_exists))
 			{
-				app.execution_routing_waits[chat.id] = "This chat already has a provider session from before automatic routing assigned it a computer. Review the chat before retrying.";
+				app.execution_routing_waits[chat.id] = "This chat has a provider session from before routing assigned a computer; review it before retrying.";
 				return {ExecutionRoutingStatus::Waiting, ExecutionRoutingReason::OwnershipChanged, {}};
 			}
 		}
@@ -439,18 +532,37 @@ namespace uam
 			if (request.recovery_of_owned_work) return {ExecutionRoutingStatus::Disabled, ExecutionRoutingReason::None, {}};
 		}
 		ExecutionRoutingDecision decision = RoutingService(app).Admit(request, candidates, occupancy);
+		if (own_host_retry_possible && !decision.moved && decision.status == ExecutionRoutingStatus::Waiting &&
+		    decision.reason == ExecutionRoutingReason::HostUnavailable)
+		{
+			for (ExecutionRoutingCandidate& candidate : candidates)
+				if (candidate.host_id == chat.execution_host_id) candidate.runner_ready = true;
+			decision = RoutingService(app).Admit(request, candidates, occupancy);
+		}
 		if (decision.status == ExecutionRoutingStatus::Waiting || decision.status == ExecutionRoutingStatus::Invalid)
 		{
-			app.execution_routing_waits[chat.id] = decision.reason != ExecutionRoutingReason::OwnershipChanged || !connection_held ? WaitReason(decision.reason)
-			    : saved_before_format_change ? "This chat still has a turn from before its computer's configuration changed. Stop the turn, then confirm the provider for this computer in Routing settings."
-			    : "This chat still has work or a kept provider process on its host's previous connection. Stop the turn and let the provider close, or restore the host's previous SSH settings, then retry.";
+			const std::string& text = app.execution_routing_waits[chat.id] = decision.reason != ExecutionRoutingReason::OwnershipChanged || !connection_held ? WaitReason(decision)
+			    : saved_before_format_change ? "Stop the turn from before this chat's computer changed, then confirm the provider in Routing settings."
+			    : "Stop the turn and let its kept provider process close on the host's previous connection, or restore the old SSH settings.";
+			app.execution_routing_wait_hosts[chat.id] = {text, decision.skipped};
 			app.execution_routing_retry_at_by_chat_id[chat.id] = now + 1.0;
 			return decision;
 		}
 		app.execution_routing_waits.erase(chat.id);
+		app.execution_routing_wait_hosts.erase(chat.id);
 		app.execution_routing_retry_at_by_chat_id.erase(chat.id);
 		if (decision.status == ExecutionRoutingStatus::Assigned) app.execution_routing_reserved_chat_ids.insert(chat.id);
 		if (!automatic || decision.status != ExecutionRoutingStatus::Assigned) return decision;
+		// A new assignment and a move of unstarted work both take the destination's workspace; a pinned chat keeps its own.
+		const bool placing = request.assigned.host_id.empty() || decision.moved;
+		// The launch check remembered the checkouts of the old computer; a moved chat looks them up again once saved.
+		std::optional<std::vector<RepositoryRouteWorkspace>> previous_route_assignment;
+		if (decision.moved)
+		{
+			if (const auto found = app.repository_route_assignments.find(chat.id); found != app.repository_route_assignments.end())
+				previous_route_assignment = found->second;
+			app.repository_route_assignments.erase(chat.id);
+		}
 		const std::string previous_model_id = chat.model_id;
 		const std::string previous_reviewer_model_id = chat.reviewer_model_id;
 		const std::string previous_reasoning_effort = chat.reasoning_effort;
@@ -470,7 +582,7 @@ namespace uam
 			host_scoped_settings::ApplyInheritedRoutingDefaults(app.settings, chat);
 			chat.routing_inherited_default_fields.clear();
 		}
-		if (request.assigned.host_id.empty())
+		if (placing)
 		{
 			chat.workspace_directory = decision.assignment.destination_directory;
 			if (!chat.workspace_worktree_directory.empty()) chat.workspace_worktree_directory = decision.assignment.destination_directory;
@@ -504,11 +616,13 @@ namespace uam
 				(void)RoutingService(app).Release(chat.id, true);
 				app.execution_routing_reserved_chat_ids.erase(chat.id);
 			}
-			app.execution_routing_waits[chat.id] = "Routing assignment could not be saved. The provider was not launched.";
+			if (previous_route_assignment) app.repository_route_assignments[chat.id] = std::move(*previous_route_assignment);
+			app.execution_routing_waits[chat.id] = "The routing assignment could not be saved, so the provider was not started.";
 			app.execution_routing_retry_at_by_chat_id[chat.id] = now + 1.0;
 			return {ExecutionRoutingStatus::Waiting, ExecutionRoutingReason::InconsistentSnapshot, {}};
 		}
-		if (request.assigned.host_id.empty()) RememberRepositoryRouteAssignment(app, chat);
+		if (placing) RememberRepositoryRouteAssignment(app, chat);
+		if (decision.moved) diagnostics::Write("Routing moved an unstarted chat to another remote computer because its own was full, down or overloaded.");
 		return decision;
 	}
 
@@ -547,7 +661,7 @@ namespace uam
 			if (ExecutionRoutingOwnsWork(app, chat)) continue;
 			if (app.execution_routing_restored_unresolved_chat_ids.contains(chat.id))
 			{
-				app.execution_routing_waits[chat.id] = "Previous admission has unresolved ownership. Its runner process may still exist; review before releasing the reservation.";
+				app.execution_routing_waits[chat.id] = "A previous run may still be active on its host; review it before releasing the reservation.";
 				continue;
 			}
 			const AcpSessionState* session = FindAcpSessionForChat(app, chat.id);
@@ -577,6 +691,9 @@ namespace uam
 			if (ChatSession* chat = ChatDomainService().FindChatById(app, id); chat != nullptr)
 				if (AcpSessionState* session = FindAcpSessionForChat(app, id); session != nullptr)
 					changed = DrainNextQueuedAcpUserPrompt(app, *session, *chat) || changed;
+		// A deleted chat gives up its place in the admission queue now rather than after it ages out.
+		for (const std::string& id : app.execution_routing_service->QueuedChatIds())
+			if (ChatDomainService().FindChatById(app, id) == nullptr) (void)app.execution_routing_service->Withdraw(id);
 		const std::unordered_set<std::string> reserved_ids = app.execution_routing_reserved_chat_ids;
 		for (const std::string& id : reserved_ids)
 		{
@@ -592,6 +709,7 @@ namespace uam
 				(void)app.execution_routing_service->Release(id, true);
 				app.execution_routing_reserved_chat_ids.erase(id);
 				app.execution_routing_waits.erase(id);
+				app.execution_routing_wait_hosts.erase(id);
 				app.execution_routing_retry_at_by_chat_id.erase(id);
 			}
 		}
@@ -644,12 +762,12 @@ namespace uam
 		if (!acknowledged || chat == nullptr || !app.execution_routing_restored_unresolved_chat_ids.contains(expected.chat_id) ||
 		    !chat->routing_reservation_pending || AssignmentForChat(*chat) != expected)
 		{
-			error = "The reservation changed or unresolved ownership was not acknowledged. Refresh the chat before releasing it.";
+			error = "The reservation changed or was not acknowledged; refresh the chat before releasing it.";
 			return false;
 		}
 		if (ExecutionRoutingOwnsWork(app, *chat))
 		{
-			error = "The chat still has active owning work. Stop or settle it before releasing its reservation.";
+			error = "Stop or finish this chat's active work before releasing its reservation.";
 			return false;
 		}
 		for (const std::unique_ptr<AcpSessionState>& session : app.acp_sessions)
@@ -669,6 +787,7 @@ namespace uam
 		app.execution_routing_restored_unresolved_chat_ids.erase(chat->id);
 		app.execution_routing_reserved_chat_ids.erase(chat->id);
 		app.execution_routing_waits.erase(chat->id);
+		app.execution_routing_wait_hosts.erase(chat->id);
 		app.execution_routing_retry_at_by_chat_id.erase(chat->id);
 		error.clear();
 		return true;

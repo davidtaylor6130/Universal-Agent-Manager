@@ -2,6 +2,7 @@
 
 #include "common/paths/path_utils.h"
 #include "common/platform/published_file_change_witness.h"
+#include "common/platform/volume_capabilities.h"
 
 #include <utility>
 
@@ -101,7 +102,7 @@ uam::DataFolderPreflightResult uam::InspectDataFolderTransition(const fs::path& 
 	using Blocker = DataFolderPreflightBlocker;
 	if (had_startup_environment_override)
 	{
-		return Blocked(Blocker::StartupEnvironmentOverride, "UAM_DATA_DIR controls this launch. Remove the startup override before choosing a data folder in Settings.");
+		return Blocked(Blocker::StartupEnvironmentOverride, "UAM_DATA_DIR sets the data folder for this launch; remove it before choosing one in Settings.");
 	}
 	fs::path source;
 	fs::path destination;
@@ -112,6 +113,10 @@ uam::DataFolderPreflightResult uam::InspectDataFolderTransition(const fs::path& 
 	if (!ResolveDirectory(selected_root, destination))
 	{
 		return Blocked(Blocker::InvalidDestination, "Choose an existing absolute directory without dot components, a linked root or a filesystem root.");
+	}
+	if (uam::platform::QueryVolumeCapabilities(destination).local == false)
+	{
+		return Blocked(Blocker::NetworkVolume, "Choose a folder on a drive in this computer. Network folders cannot hold UAM's data.");
 	}
 	std::error_code error;
 	std::vector<fs::path> protected_roots{source};
@@ -137,12 +142,19 @@ uam::DataFolderPreflightResult uam::InspectDataFolderTransition(const fs::path& 
 	}
 	if (!empty)
 	{
-		return Blocked(Blocker::DestinationNotEmpty, "Choose an empty folder. Existing data folders cannot be merged or overwritten.");
+		return Blocked(Blocker::DestinationNotEmpty, "Choose an empty folder, because existing data folders cannot be merged or overwritten.");
 	}
 	DataFolderPreflightResult result;
 	result.state = DataFolderPreflightState::RequiresStoppedValidation;
 	result.source_root = std::move(source);
 	result.destination_root = std::move(destination);
-	result.explanation = "Folder paths inspected only. A stopped, exclusively owned and verified transition is still required before changing data folders.";
+	result.explanation = "The folders were only checked; changing the data folder still needs a verified switch while UAM is stopped.";
 	return result;
+}
+
+std::string uam::DataFolderVolumeWarning(const fs::path& folder)
+{
+	if (folder.empty() || uam::platform::QueryVolumeCapabilities(folder).rename_swap != false)
+		return {};
+	return "This drive cannot replace files in a single step, so a power loss during a save there is riskier.";
 }

@@ -1,4 +1,5 @@
 #include "common/provider/opencode_v2_session.h"
+#include <algorithm>
 #include <stdexcept>
 #include <utility>
 
@@ -6,14 +7,27 @@ namespace uam::opencode_v2
 {
 namespace
 {
-Json Rules(bool read_only)
+Json Rules(bool read_only, const std::vector<std::string>& deny = {})
 {
 	// Remove prior session allowances without overriding native agent denials.
 	// Force-ask is imposed after saved grants by the process-local hook.
 	Json rules = Json::array({{{"action", "subagent"}, {"resource", "*"}, {"effect", "deny"}}, {{"action", "task"}, {"resource", "*"}, {"effect", "deny"}}});
 	if (read_only)
 		rules.push_back({{"action", "edit"}, {"resource", "*"}, {"effect", "deny"}});
+	// Imported agent denies as native rules too; wildcard actions are enforced only by the process-local hook.
+	for (const auto& action : deny)
+		if (action.find('*') == std::string::npos && action != "subagent" && action != "task" && !(read_only && action == "edit"))
+			rules.push_back({{"action", action}, {"resource", "*"}, {"effect", "deny"}});
 	return rules;
+}
+/// An exact action, `*`, or a prefix ending in `*`; anything else is refused rather than guessed.
+bool ValidDenyAction(const Json& action)
+{
+	if (!action.is_string()) return false;
+	const auto& text = action.get_ref<const std::string&>();
+	const auto star = text.find('*');
+	return !text.empty() && text.size() <= 64 && (star == std::string::npos || star == text.size() - 1) &&
+	    text.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-./*") == std::string::npos;
 }
 Json Data(const Json& response)
 {
@@ -59,8 +73,9 @@ std::string ToolKey(std::string_view message_id, std::string_view tool_id)
 	return "v2:" + Encode(message_id) + ":" + Encode(tool_id);
 }
 
-Session::Session(Query query, PublishPolicy publish_policy, Emit emit, std::string native_version)
-	: query_(std::move(query)), publish_policy_(std::move(publish_policy)), emit_(std::move(emit)), native_version_(std::move(native_version)) {}
+Session::Session(Query query, PublishPolicy publish_policy, Emit emit, std::string native_version, VerifyPermission verify_permission)
+	: query_(std::move(query)), publish_policy_(std::move(publish_policy)), verify_permission_(std::move(verify_permission)),
+	  emit_(std::move(emit)), native_version_(std::move(native_version)) {}
 
 void Session::Reply(const Json& id, const Json& result)
 {
@@ -78,24 +93,35 @@ std::string Session::Route(const std::string& suffix) const
 void Session::RequireEmptyInbox()
 {
 	const Json inbox = Data(query_("GET", Route("/inbox"), nullptr));
-	if (!inbox.is_array() || !inbox.empty()) throw std::runtime_error("OpenCode V2 has unverified or pre-existing queued native work. Exact resume/input remains held for explicit recovery.");
+	if (!inbox.is_array() || !inbox.empty()) throw std::runtime_error("OpenCode V2 already has queued work, so input is held until you recover it.");
 }
 void Session::Policy(const Json& params)
 {
 	const Json meta = params.value("_meta", Json::object()).value("uamPolicy", Json{});
 	if (!meta.is_object() || !meta.contains("readOnly") || !meta["readOnly"].is_boolean())
 		throw std::runtime_error("OpenCode V2 input has no captured UAM permission policy.");
+	std::vector<std::string> deny;
+	if (meta.contains("deny"))
+	{
+		const Json& list = meta.at("deny");
+		if (!list.is_array() || list.size() > 128 || !std::ranges::all_of(list, ValidDenyAction))
+			throw std::runtime_error("OpenCode V2 input has invalid captured agent deny rules.");
+		for (const auto& action : list) deny.push_back(action.get<std::string>());
+	}
 	read_only_ = meta.at("readOnly").get<bool>() || mode_ == "plan";
+	deny_ = std::move(deny);
 	Json capture = meta; capture["effectiveReadOnly"] = read_only_;
 	if (capture != policy_capture_) session_grants_.clear();
 	policy_capture_ = std::move(capture);
-	publish_policy_(session_id_, cwd_, read_only_);
+	const bool defer_binding = verify_permission_ && !ready_ && !session_id_.empty();
+	if (!defer_binding) publish_policy_(session_id_, cwd_, read_only_, deny_);
 	if (session_id_.empty()) return;
-	const Json rules = Rules(read_only_);
+	const Json rules = Rules(read_only_, deny_);
 	query_("PATCH", Route(), {{"permissions", rules}});
 	const Json observed = Data(query_("GET", Route(), nullptr));
 	if (observed.value("id", "") != session_id_ || observed.value("location", Json::object()).value("directory", "") != cwd_ || observed.value("permissions", Json{}) != rules)
 		throw std::runtime_error("OpenCode V2 did not confirm the exact session, workspace and UAM permission rules.");
+	if (defer_binding) publish_policy_(session_id_, cwd_, read_only_, deny_);
 }
 
 Json Session::Options()
@@ -158,7 +184,9 @@ Json Session::Setup(const Json& params, bool load)
 	cwd_ = params.at("cwd").get<std::string>();
 	if (cwd_.empty()) throw std::runtime_error("OpenCode V2 requires an exact workspace.");
 	Policy(params); // inactive root denies native work until binding is complete
-	query_("GET", "/api/location?location[directory]=" + Encode(cwd_), nullptr);
+	const auto location = query_("GET", "/api/location?location[directory]=" + Encode(cwd_), nullptr);
+	if (verify_permission_ && (!location.is_object() || !location.contains("directory") || location.at("directory") != cwd_))
+		throw std::runtime_error("OpenCode V2 did not confirm the captured workspace. Input remains held.");
 	// Resolve the plugin service explicitly; location lookup alone is not a
 	// registration receipt. The transport still requires the nonce-bound proof.
 	query_("GET", "/api/plugin?location[directory]=" + Encode(cwd_), nullptr);
@@ -192,16 +220,20 @@ Json Session::Setup(const Json& params, bool load)
 		if (info.value("id", "") != id || info.value("location", Json::object()).value("directory", "") != cwd_)
 			throw std::runtime_error("OpenCode V2 resume identity or workspace does not match.");
 	}
-	else info = Data(query_("POST", "/api/session", {{"location", {{"directory", cwd_}}}, {"agent", read_only_ ? "plan" : "build"}, {"permissions", Rules(read_only_)}}));
+	else info = Data(query_("POST", "/api/session", {{"location", {{"directory", cwd_}}}, {"agent", read_only_ ? "plan" : "build"}, {"permissions", Rules(read_only_, deny_)}}));
 	session_id_ = info.at("id").get<std::string>();
-	if (!Id(session_id_) || info.value("location", Json::object()).value("directory", "") != cwd_) throw std::runtime_error("OpenCode V2 returned an invalid session binding.");
+	const bool valid_id = Id(session_id_);
+	startup_created_ = verify_permission_ && !load && valid_id;
+	if (!valid_id || info.value("location", Json::object()).value("directory", "") != cwd_) throw std::runtime_error("OpenCode V2 returned an invalid session binding.");
 	const auto native_model = ModelRef(info.value("model", Json::object()));
 	if (native_model.is_object() && native_model.contains("id")) model_ = native_model.value("providerID", "") + "/" + native_model.value("id", "");
 	if (native_model.is_object() && native_model.contains("variant")) model_ += "/" + native_model.at("variant").get<std::string>();
 	mode_ = info.value("agent", "build");
 	if (mode_ != "build" && mode_ != "plan") throw std::runtime_error("OpenCode V2 resume uses an unverified native agent policy.");
 	if (load) RequireEmptyInbox(); // never rewrite policy for pre-existing queued work
+	if (verify_permission_) verify_permission_(session_id_, cwd_, PermissionProbe::Deny);
 	Policy(params); // replace/read back old session grants before readiness
+	if (verify_permission_) verify_permission_(session_id_, cwd_, PermissionProbe::Ask);
 	Json result = Options();
 	result["sessionId"] = session_id_;
 	ready_ = true;
@@ -224,7 +256,7 @@ void Session::Handle(const Json& message)
 	const Json id = message.value("id", Json{});
 	try
 	{
-		if (disconnected_) throw std::runtime_error("OpenCode V2 event transport lost ownership. Restart explicitly before sending input.");
+		if (disconnected_) throw std::runtime_error("The OpenCode V2 connection was lost; restart it before sending input.");
 		if (!message.contains("method"))
 		{
 			if (!id.is_string()) throw std::runtime_error("Invalid OpenCode V2 approval identity.");
@@ -341,15 +373,15 @@ void Session::Handle(const Json& message)
 		if (id.is_string() && forms_.contains(id.get<std::string>()))
 		{
 			try { query_("DELETE", Route("/form/" + Encode(forms_.at(id.get<std::string>()).at("id").get<std::string>())), nullptr); } catch (...) {}
-			forms_.erase(id.get<std::string>()); Disconnected("OpenCode V2 did not confirm the question reply. This turn is held without automatic replay."); return;
+			forms_.erase(id.get<std::string>()); Disconnected("OpenCode V2 did not confirm the question reply; input is held and never replayed."); return;
 		}
 		if (id.is_string() && permissions_.contains(id.get<std::string>()))
 		{
-			Disconnected("OpenCode V2 did not confirm the approval reply. This turn is held without automatic replay."); return;
+			Disconnected("OpenCode V2 did not confirm the approval reply; input is held and never replayed."); return;
 		}
 		if (message.value("method", "") == "session/cancel")
 		{
-			Disconnected("OpenCode V2 did not confirm cancellation. This turn is held until explicit recovery; input is not replayed."); return;
+			Disconnected("OpenCode V2 did not confirm cancellation; input is held and never replayed."); return;
 		}
 		if (!prompt_id_.is_null() && id == prompt_id_)
 		{
@@ -359,7 +391,20 @@ void Session::Handle(const Json& message)
 			    ". Input is held and is never replayed automatically.");
 			return;
 		}
-		if (!id.is_null()) emit_({{"jsonrpc", "2.0"}, {"id", id}, {"error", {{"code", -32603}, {"message", error.what()}}}});
+		const bool startup_failed = verify_permission_ && !ready_;
+		Json failure{{"code", startup_failed ? kRuntimeVerificationError : -32603}, {"message", error.what()}};
+		if (startup_failed)
+		{
+			try { publish_policy_({}, cwd_, true, {}); } catch (...) {}
+			if (startup_created_)
+			{
+				try { query_("DELETE", Route(), nullptr); session_id_.clear(); } catch (...) {}
+			}
+			if (message.value("method", "") == "session/new" && Id(session_id_))
+				failure["data"] = {{"nativeSessionId", session_id_}};
+			disconnected_ = true;
+		}
+		if (!id.is_null()) emit_({{"jsonrpc", "2.0"}, {"id", id}, {"error", std::move(failure)}});
 	}
 }
 
@@ -518,7 +563,7 @@ try
 }
 catch (const std::exception&)
 {
-	Disconnected("OpenCode V2 returned an unverified event shape or control response. Input is held and is never replayed automatically.");
+	Disconnected("OpenCode V2 sent an unexpected response; input is held and never replayed.");
 }
 
 void Session::InterruptCancelledTurn()
@@ -538,7 +583,7 @@ void Session::InterruptCancelledTurn()
 void Session::CheckDeadlines(std::chrono::steady_clock::time_point now)
 {
 	if (cancel_requested_ && !prompt_id_.is_null() && now >= cancel_deadline_)
-		Disconnected("OpenCode V2 cancellation was not confirmed by the owned native event. Input is held and is never replayed automatically.");
+		Disconnected("OpenCode V2 did not confirm the cancellation event; input is held and never replayed.");
 }
 
 void Session::Disconnected(std::string reason)

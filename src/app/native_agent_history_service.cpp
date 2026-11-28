@@ -59,7 +59,7 @@ public:
 		    (host && (host->id.empty() || host->id == "local" || source.execution_host_id != host->id)) ||
 		    source.imported_read_only || source.id.empty() || source.created_at.empty() || !source.metadata_incarnation ||
 		    !root.is_absolute() || !workspace_absolute || primary.empty() || summary.empty() || (primary == "missing" && summary != "missing"))
-			return fail("This child history no longer matches the selected parent or provider. Reopen it and try again.");
+			return fail("This child history no longer matches its parent or provider; reopen it and try again.");
 		if (ChatRepository::ChatStorageRevision(root, reference) != primary ||
 		    ChatRepository::ChatSummaryStorageRevision(root, reference) != summary)
 			return fail("Saved passive history changed before loading.");

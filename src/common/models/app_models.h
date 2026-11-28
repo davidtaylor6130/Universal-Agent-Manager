@@ -17,6 +17,7 @@
 #include "common/provider/runtime/provider_build_config.h"
 #include "common/utils/uuid.h"
 #include "common/models/revisioned_vector.h"
+#include "common/security/command_rules.h"
 
 // Inert authored-input provenance. Never delivery, replay, cancellation or ownership authority.
 namespace uam::input_provenance
@@ -462,9 +463,14 @@ inline constexpr char kDecisionSourceModelPrefix[] = "model:";
 inline constexpr char kDecisionSourceFilter[] = "filter";
 inline constexpr char kDecisionSourceFallback[] = "fallback";
 inline constexpr char kDecisionSourceUnknown[] = "unknown";
-std::string ModelDecisionSource(std::string_view model_id);
 /// Unrecognized saved values become "unknown" so they can never read as a model review.
 std::string NormalizeDecisionSource(std::string_view source);
+/// Structured id of the decision backend behind a "model:<id>" source (see app/decision_service.h). The only backend
+/// is the chat provider: the goal's reviewer model answering in a private provider session.
+inline constexpr char kDecisionBackendChatProvider[] = "chat_provider";
+/// The backend id when the source names a model and the id is known; empty for filter, fallback, unknown or none,
+/// so a saved or stale backend can never attach to a decision no model made.
+std::string NormalizeDecisionBackend(std::string_view source, std::string_view backend);
 
 /// <summary>
 /// A thread-level goal that persists the agent across turns until it
@@ -483,6 +489,7 @@ struct Goal
 	std::string last_blocker_kind;           // machine-readable blocker category
 	std::string last_diagnostic;             // durable goal-loop diagnostic reason
 	std::string last_decision_source;        // see kDecisionSource*; empty until an automatic decision exists
+	std::string last_decision_backend;       // see kDecisionBackend*; read through NormalizeDecisionBackend
 	std::vector<std::string> completed_items;
 	std::vector<std::string> remaining_items;
 	std::string current_step;
@@ -492,6 +499,7 @@ struct Goal
 	std::string last_assistant_text;             // trimmed text of the last worker turn
 	int same_assistant_text_count = 0;           // consecutive identical worker outputs
 	int loop_count = 0;
+	int unreviewed_resume_count = 0;         // consecutive stalled-loop auto-resumes; only an applied review (or Restart) resets it
 	int max_iterations = 0;                   // per-goal iteration ceiling; 0 uses only the Settings cap
 	std::string created_at;
 	std::string updated_at;
@@ -645,7 +653,7 @@ struct ManagedParentInputReceipt
 	bool operator==(const ManagedParentInputReceipt&) const = default;
 };
 
-inline constexpr const char* kAwaitingAutomationApprovalError = "This automation chat is waiting for approval. Start it from the chat first.";
+inline constexpr const char* kAwaitingAutomationApprovalError = "This automation chat is waiting for approval; start it from the chat first.";
 inline constexpr const char* kAutomationWorktreeRequiredError = "This automation chat needs its own worktree, so it was not started in a shared folder.";
 
 struct ChatSession
@@ -836,6 +844,11 @@ struct ChatSession
 	/// <summary>Owned native context locations retained until chat deletion succeeds.</summary>
 	std::vector<ProviderHandoffCliContext> provider_handoff_cli_contexts;
 	std::string agent_run_id;
+	/// Managed child only: the run's root chat and its exact creation time, saved at birth so a finished child stays
+	/// recognisable as that root's after its run record expires. Workspace-cleanup lineage only; never display
+	/// lineage (see subagent_parent_chat_id), native import, resume, permission or execution authority.
+	std::string managed_root_chat_id;
+	std::string managed_root_created_at;
 	// Fresh, bounded transcript owned by a goal on another visible chat.
 	// Empty on ordinary chats and on all legacy data.
 	std::string goal_owner_chat_id;
@@ -917,6 +930,9 @@ struct ChatFolder
 	std::string availability_directory;
 	std::string availability_host_id;
 	bool directory_missing = false;
+	// Detected project icon data URL from the same worker probe; empty when none.
+	// ponytail: copied with the folder list on each 2 s scan; move to a side map if icon bytes grow.
+	std::string project_icon;
 };
 
 struct ResourceReference
@@ -951,6 +967,10 @@ struct ShellAction
 	bool accepts_folders = true;
 	bool enabled = true;
 	bool open_workspace = false;
+	/// Set only for a saved entry that failed validation on load: a one-line reason. The entry stays disabled, read-only and in
+	/// its place, and is written back from `preserved_json` (its saved form) until the user deletes it.
+	std::string invalid_reason;
+	std::string preserved_json;
 };
 
 struct McpSecretReference
@@ -1100,6 +1120,23 @@ struct ComputePool
 	std::vector<ComputePoolMember> members;
 };
 
+/// <summary>Per-computer admission limits; see docs/settings/compute-pools.md#host-limits.</summary>
+struct HostAdmissionSettings
+{
+	/// User turns and agents running at once on this computer; 0 uses the processor count minus two.
+	int local_slot_limit = 0;
+	/// The same limit for a remote computer that has no routing slot count of its own.
+	int remote_slot_limit = 8;
+	/// Background processes (model discovery, memory workers, history import, checks) at once per computer.
+	int background_budget = 2;
+	int soft_cpu_percent = 70;
+	int soft_free_memory_percent = 15;
+	int hard_cpu_percent = 90;
+	int hard_cpu_seconds = 10;
+	int hard_free_memory_percent = 10;
+	bool operator==(const HostAdmissionSettings&) const = default;
+};
+
 /// <summary>Where one SVN repository keeps its main line, branches and tags, as repository-relative folders.</summary>
 struct SvnRepositoryLayout
 {
@@ -1177,6 +1214,14 @@ struct AppSettings
 	/// saved id back while the fallback is still selected, so a build that includes the provider finds the choice again.</summary>
 	std::map<std::string, std::pair<std::string, std::string>> excluded_provider_selections;
 	std::string permission_reviewer_model_id;
+	/// <summary>User allow/ask/deny rules checked before AI review. Empty in a default-constructed value; a settings
+	/// file without the key seeds uam::command_rules::DefaultRules() on load.</summary>
+	std::vector<uam::command_rules::Rule> permission_command_rules;
+	/// <summary>Whether AI Review asks the reviewer model about requests no rule decides; off leaves them for the user.</summary>
+	bool permission_ai_review_enabled = true;
+	/// <summary>Hidden advanced override, settings key only (permission_remote_commits_without_approval=1): lets pushes,
+	/// merges and other remote commits follow the chat's permission level. Off by default, so they always ask.</summary>
+	bool permission_remote_commits_without_approval = false;
 	std::string default_new_chat_provider_id = provider_build_config::FirstEnabledProviderId();
 	std::map<std::string, ProviderChatDefaults> provider_chat_defaults;
 	std::map<std::string, HostScopedSettings> host_scoped_settings;
@@ -1191,6 +1236,7 @@ struct AppSettings
 	std::vector<McpServerConfiguration> mcp_servers;
 	std::vector<ExecutionHost> execution_hosts;
 	std::vector<ComputePool> compute_pools; // Empty leaves prompt delivery unlimited.
+	HostAdmissionSettings host_admission;
 	ExecutionRoutingSettings execution_routing;
 	std::vector<std::string> favorite_uam_agent_ids;
 	/// <summary>Native sessions whose title (the first user message for most providers) starts with one of these, ignoring case, are never offered for import.</summary>

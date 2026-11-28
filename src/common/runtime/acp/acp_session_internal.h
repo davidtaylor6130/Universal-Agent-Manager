@@ -7,6 +7,7 @@
 #include "common/runtime/acp/acp_session_state_helpers.h"
 #include "common/state/app_state.h"
 #include "common/platform/async_byte_writer.h"
+#include "common/platform/child_process_priority.h"
 #include "common/provider/provider_profile.h"
 
 #include <nlohmann/json.hpp>
@@ -23,6 +24,7 @@
 #include <vector>
 
 struct SavedChatPrimaryWitness;
+struct ChatSaveFailure;
 namespace uam { struct ManagedResultPromptInput; }
 class StoppedChatLaunchStorageReceipt;
 struct StoppedChatLaunchPublicationResult;
@@ -30,6 +32,13 @@ namespace uam::platform { class PublishedFileChangeWitness; }
 
 namespace uam::acp_detail
 {
+/// <summary>
+/// The scheduling class a provider process starts at. Model discovery is background work; a sub-agent, a goal
+/// iteration transcript and an automation chat are agent work; every other chat serves its user's own turns and
+/// keeps normal priority. Fixed at launch: the process keeps its class for its lifetime.
+/// </summary>
+platform::ChildProcessClass ProviderProcessClass(const AcpSessionState& session, const ChatSession& chat);
+
 bool BeginManagedResultPrompt(AppState&, AcpSessionState&, ChatSession&,
     std::shared_ptr<const ManagedResultPromptInput>, const SavedChatPrimaryWitness&);
 
@@ -74,6 +83,8 @@ void AppendQuotedAcpLogField(std::ostringstream& out, const char* name, const st
 std::string JsonRpcIdToDiagnosticString(const nlohmann::json& id);
 nlohmann::json JsonRpcIdOrNull(const nlohmann::json& message);
 std::string FormatAcpDiagnosticLogLine(const AcpSessionState& session, const AcpDiagnosticEntryState& entry);
+/// <summary>False for a model-discovery session's routine success traffic, which stays in memory only.</summary>
+bool ShouldWriteAcpDiagnosticLogLine(const AcpSessionState& session, const AcpDiagnosticEntryState& entry);
 // clang-format off
 void AppendAcpDiagnostic(
     AcpSessionState& session,
@@ -118,6 +129,7 @@ inline constexpr std::size_t kMinAssistantReplayPrefixBytes = 32;
 inline constexpr double kAcpStaleWaitSeconds = 120.0;
 inline constexpr double kAcpCancelTimeoutSeconds = 5.0;
 inline constexpr double kGoalLoopResumeIdleSeconds = 5.0;
+inline constexpr int kGoalMaxUnreviewedResumes = 3; // consecutive stalled-loop auto-resumes without an applied review
 
 // Goal turn kind labels
 inline constexpr std::string_view kGoalTurnKindNone = "";
@@ -169,6 +181,9 @@ struct PermissionReviewDecision
 std::optional<PermissionReviewDecision> ParsePermissionReviewOutput(std::string_view output);
 /// <summary>Return a complete bounded review request, or an empty prompt when safe review is unavailable.</summary>
 std::string BuildPermissionReviewPrompt(const AcpPendingPermissionState& pending);
+/// <summary>Key for this run's in-memory AI review verdict cache: reviewer, model, chat provider, ceiling, kind,
+/// workspace, working directory and the typed command. Empty for requests that must not be cached.</summary>
+std::string PermissionReviewCacheKey(const AppState& app, const AcpSessionState& session, const ChatSession& chat, std::string_view reviewer_provider_id);
 bool TryAutoApprovePendingPermission(AppState& app, AcpSessionState& session, const ChatSession& chat, std::string* error_out = nullptr);
 void QueueAcpPermission(AppState& app, AcpSessionState& session, ChatSession& chat, AcpPendingPermissionState pending);
 void AdvanceAcpPermissionQueue(AppState& app, AcpSessionState& session, const ChatSession& chat, std::string* error_out = nullptr);
@@ -177,12 +192,13 @@ void StopPermissionReviewTasks(AppState& app, std::string_view chat_id = {}, std
 void CancelPendingAcpPermissions(AcpSessionState& session, std::string* error_out = nullptr);
 void AppendIgnoredRequestDuringCancelDiagnostic(AcpSessionState& session, const nlohmann::json& message, const char* reason, const char* diagnostic_message);
 nlohmann::json BuildCodexUserInputResponse(const std::string& request_id_json, const std::map<std::string, std::vector<std::string>>& answers);
-bool SendCodexUserInputResponse(AcpSessionState& session, const std::string& request_id_json, const std::map<std::string, std::vector<std::string>>& answers, std::string* error_out = nullptr);
 void ApplyCommandSafetyDecision(const AppState& app, const ChatSession& chat, AcpPendingPermissionState& pending);
 void HandlePermissionRequest(AppState& app, AcpSessionState& session, ChatSession& chat, const nlohmann::json& message);
 
 // Tool call state helpers
 AcpToolCallState& UpsertToolCall(AcpSessionState& session, const std::string& id);
+/// <summary>Returns the live tool call, or restores it from the saved message that owns it so late task/child events update that message even after the next turn starts.</summary>
+AcpToolCallState& RestoreToolCallFromChat(AcpSessionState& session, const ChatSession& chat, const std::string& id);
 bool LooksLikeSubAgentTool(const nlohmann::json& update, const AcpToolCallState& tool_call, const IProviderRuntime& runtime);
 void ApplySubAgentMetadata(AcpToolCallState& tool_call, const nlohmann::json& update, const IProviderRuntime& runtime);
 
@@ -196,6 +212,8 @@ bool ConfirmTurnInputReceived(const AcpSessionState& session, ChatSession& chat)
 bool AppendThoughtChunk(ChatSession& chat, AcpSessionState& session, const std::string& chunk);
 std::string AppendAssistantChunk(ChatSession& chat, AcpSessionState& session, const std::string& chunk, const std::string& identity = {});
 ToolCall PersistedToolCallFromAcpToolCall(const AcpToolCallState& tool_call);
+/// The reverse of PersistedToolCallFromAcpToolCall for every saved field; keep the two next to each other.
+void ApplyPersistedToolCall(AcpToolCallState& tool_call, const ToolCall& persisted);
 bool UpsertPersistedToolCall(std::vector<ToolCall>& tool_calls, const AcpToolCallState& tool_call);
 bool SyncAcpToolCallsToAssistantMessage(ChatSession& chat, AcpSessionState& session, bool create_if_missing);
 bool FinalizeActiveAcpToolCallsAsCancelled(ChatSession& chat, AcpSessionState& session);
@@ -221,9 +239,10 @@ void ScheduleCompletedAcpPromptRecoverySaveIfReady(AppState& app, std::string_vi
 
 // Goal loop helpers
 std::string MessageTextForGoalReview(const ChatSession& chat, int index);
-std::string GoalTextPrefixForDiagnostics(const std::string& text);
 std::string GoalLoopDiagnosticDetail(const AcpSessionState& session, const std::string& goal_id, const std::string& text = "");
 void AppendGoalLoopDiagnostic(AcpSessionState& session, const std::string& reason, const std::string& goal_id, const std::string& text = "");
+/// <summary>A goal-loop diagnostic with a short error cause in its message; never pass a prompt or a model reply.</summary>
+void AppendGoalLoopDiagnosticCause(AcpSessionState& session, const std::string& reason, const std::string& goal_id, const std::string& cause);
 int64_t EstimateGoalTurnTokens(const ChatSession& chat, const AcpSessionState& session);
 void BeginGoalReviewUsage(AcpSessionState& session, bool fresh_session);
 void RecordGoalReviewTurnUsage(AcpSessionState& session, std::int64_t tokens, bool incremental = false);
@@ -331,7 +350,8 @@ std::string ProviderApprovalModeId(const AcpSessionState& session, const std::st
 
 // Launch argv + request id helpers
 std::vector<std::string> BuildAcpLaunchArgv(const ProviderProfile& provider, const ChatSession& chat);
-std::string JoinAcpArgvForDiagnostics(const std::vector<std::string>& argv);
+/// `private_arguments` keeps only the program and an argument count, for launches whose arguments the user typed.
+std::string JoinAcpArgvForDiagnostics(const std::vector<std::string>& argv, bool private_arguments = false);
 std::string AcpWorkingDirectoryString(const std::filesystem::path& workspace_root);
 std::string BuildAcpLaunchDetail(const ProviderProfile& provider, const AppState& app, const std::filesystem::path& workspace_root, const ChatSession& chat);
 std::string BuildAcpLaunchDetail(const AppState& app, const std::filesystem::path& workspace_root, const ChatSession& chat);
@@ -396,12 +416,8 @@ bool ValidateCapturedAcpAgentPolicy(const AppState& app, const ChatSession& chat
     std::string* error_out = nullptr);
 bool SavedImageRetrySourceMatches(const AppState& app, const AcpSessionState& session, const ChatSession& chat, const SavedImageRetryPermission& permission);
 void RevokeSavedImageRetry(AcpSessionState& session);
-/// No production Retry caller: explicit invocation plus an own launch publication are prerequisites, never permission minted from metadata.
-std::shared_ptr<ColdRetryBinding> PrepareColdRetryLaunchBinding(AppState&, AcpSessionState&, const ChatSession&,
-    std::shared_ptr<const SavedImageRetryPermission>, std::shared_ptr<const StoppedChatLaunchStorageReceipt>);
-void RevokeColdRetryBinding(AcpSessionState&);
 // Only send admission opts into defer_until_saved; other callers launch and report errors synchronously.
-bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession& chat, std::string* error_out = nullptr, const SavedImageRetryPermission* starting_saved_retry = nullptr, std::shared_ptr<ColdRetryBinding> cold_binding = {},
+bool StartAcpProcessForChat(AppState& app, AcpSessionState& session, ChatSession& chat, std::string* error_out = nullptr, const SavedImageRetryPermission* starting_saved_retry = nullptr,
     bool defer_until_saved = false);
 /// <summary>Apply the same captured instructions and current MCP authority to initial and replacement setup.</summary>
 bool DecorateAcpSessionSetupRequest(AppState& app, AcpSessionState& session, std::string_view method,
@@ -433,30 +449,7 @@ struct GoalPromptReceiptScope
 std::optional<GoalPromptReceiptScope> CaptureGoalPromptReceiptScope(const AppState& app, const AcpSessionState& session, const ChatSession& chat);
 bool CanStageRemoteGoalPromptAdmission(const AppState& app, const AcpSessionState& session, const ChatSession& chat);
 /// <summary>Writes only a committed stable marker; initial delivery and reconnect share deduplication identity.</summary>
-bool WriteCommittedRemotePrompt(AppState& app, AcpSessionState& session, const ChatSession& chat, std::optional<int> cold_request_id = std::nullopt);
-/// Historical exact sink DATA only; holding or copying this handle never authorizes input/replay.
-class ColdRetryFinalWriteWitness final
-{
-  public:
-	ColdRetryFinalWriteWitness(const ColdRetryFinalWriteWitness&) = delete;
-	ColdRetryFinalWriteWitness& operator=(const ColdRetryFinalWriteWitness&) = delete;
-	std::string_view Wire() const { return m_wire; }
-	platform::AsyncByteWriter::WriteCompletion Completion() const { return m_receipt->Completion(); }
-	bool OriginalWriterCurrent(const AcpSessionState&) const;
-  private:
-	friend bool WriteCommittedRemotePrompt(AppState&, AcpSessionState&, const ChatSession&, std::optional<int>);
-	ColdRetryFinalWriteWitness(const AcpSessionState& session, std::shared_ptr<const platform::AsyncByteWriter::EnqueueReceipt> receipt,
-	    std::string wire, std::string process)
-	    : m_writer(session.stdin_writer), m_epoch(session.permission_review_incarnation), m_receipt(std::move(receipt)),
-	      m_wire(std::move(wire)), m_process(std::move(process)), m_owner(&session) {}
-	const std::weak_ptr<platform::AsyncByteWriter> m_writer;
-	const std::weak_ptr<const void> m_epoch;
-	const std::shared_ptr<const platform::AsyncByteWriter::EnqueueReceipt> m_receipt;
-	const std::string m_wire, m_process;
-	const AcpSessionState* const m_owner;
-	mutable bool m_original_refused = false;
-};
-std::shared_ptr<const ColdRetryFinalWriteWitness> ObserveColdRetryFinalWrite(const AcpSessionState&);
+bool WriteCommittedRemotePrompt(AppState& app, AcpSessionState& session, const ChatSession& chat);
 bool ResumeQueuedUserPromptsAfterSessionSetup(AppState& app, AcpSessionState& session, ChatSession& chat);
 /// <summary>Blocks local prompt transport until the full native-binding receipt commits.</summary>
 bool PollLocalSessionReceipt(AppState& app, AcpSessionState& session, ChatSession& chat);
@@ -544,12 +537,16 @@ bool StampChatSaveState(AppState& app, ChatSession& chat);
 /// <summary>Saves a mid-turn display update in the background when no caller needs its durable receipt.</summary>
 void SaveChatSoon(AppState& app, const ChatSession& chat);
 /// <summary>Shown once per failing chat through the status line while its transcript cannot be saved.</summary>
-inline constexpr const char* kChatSaveFailedStatus = "Chat history could not be saved. UAM keeps the chat open and retries; if this continues, check disk space and folder access.";
+inline constexpr const char* kChatSaveFailedStatus = "Chat history could not be saved yet; UAM is retrying, so check disk space if this persists.";
 /// <summary>Shown instead when the chat's own content is refused before any write is attempted.</summary>
-inline constexpr const char* kChatSaveRefusedStatus = "Chat history could not be saved because this chat holds input or attachments UAM cannot store. UAM keeps the chat open and retries.";
+inline constexpr const char* kChatSaveRefusedStatus = "Chat history could not be saved because this chat holds input or attachments UAM cannot store.";
 /// <summary>Records a failed transcript save and returns the retry delay: 1 s doubling to 60 s.</summary>
-/// The first failure of a streak sets the status line and writes one diagnostic line; later ones stay quiet.
-double NoteChatSaveFailed(AppState& app, const std::string& chat_id);
+/// The first failure of a streak sets the status line and writes one diagnostic line with the cause,
+/// classified "refused" (a deliberate check before writing) or "failed"; later ones stay quiet.
+/// A durable barrier always writes its line, since it may be the last attempt before exit.
+double NoteChatSaveFailed(AppState& app, const std::string& chat_id, const ChatSaveFailure* cause = nullptr, bool at_durable_barrier = false);
+/// <summary>The single diagnostic line for a failed save; the reason is capped and the chat ID is the only identity.</summary>
+std::string ChatSaveFailureLogLine(const std::string& chat_id, const ChatSaveFailure& cause, bool at_durable_barrier);
 void NoteChatSaveSucceeded(AppState& app, const std::string& chat_id);
 /// <summary>Owner-thread due time for a scheduled save; call after NoteChatSaveScheduled.</summary>
 double ArmChatSave(AppState& app, const std::string& chat_id, double delay_seconds, bool append_only);

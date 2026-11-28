@@ -136,7 +136,7 @@ namespace uam::gemini
 		const auto tmp_status = std::filesystem::status(root / "tmp", error);
 		if (error == std::errc::no_such_file_or_directory || (!error && !std::filesystem::exists(tmp_status))) return result;
 		if (error) { fatal("Could not inspect the Gemini project directory: " + error.message()); return result; }
-		if (!std::filesystem::is_directory(tmp_status)) { fatal("Could not inspect the Gemini project directory: not a directory."); return result; }
+		if (!std::filesystem::is_directory(tmp_status)) { fatal("The Gemini project folder is not a directory."); return result; }
 		std::size_t count = 0;
 		for (std::filesystem::directory_iterator it(root / "tmp", error), end; !error && it != end; it.increment(error))
 		{

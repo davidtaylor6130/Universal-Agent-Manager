@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <vector>
 
@@ -225,7 +226,7 @@ namespace
 			title->SetEnabled(false);
 			title->SetTextColor(CEF_BUTTON_STATE_DISABLED, 0xFFFFFFFF);
 			m_recoveryPanel->AddChildView(title);
-			CefRefPtr<CefLabelButton> detail = CefLabelButton::CreateLabelButton(this, "Active sessions keep running. Unsaved drafts may be lost when reloading.");
+			CefRefPtr<CefLabelButton> detail = CefLabelButton::CreateLabelButton(this, "Active sessions keep running, but reloading may lose unsaved drafts.");
 			detail->SetEnabled(false);
 			detail->SetTextColor(CEF_BUTTON_STATE_DISABLED, 0xFFFFFFFF);
 			m_recoveryPanel->AddChildView(detail);
@@ -361,6 +362,73 @@ void UamCefApp::OnBeforeCommandLineProcessing(const CefString& process_type, Cef
 	{
 		return;
 	}
+
+	// UAM forwards its command line to CEF, so without this filter any launch could open a DevTools port that lets a local
+	// process drive the UI. Only explicit test runs (UAM_TEST_ALLOW_REMOTE_DEBUGGING=1, set by scripts/perf_driven.py) keep it.
+	CefCommandLine::SwitchMap switches;
+	command_line->GetSwitches(switches);
+	std::vector<std::string> switch_names;
+	for (const auto& entry : switches)
+	{
+		switch_names.push_back(entry.first.ToString());
+	}
+	const char* test_env_value = std::getenv(uam::cef::kTestRemoteDebuggingEnv);
+	const bool test_run = test_env_value != nullptr && std::string(test_env_value) == "1";
+	const std::vector<std::string> dropped = uam::cef::RemoteDebuggingSwitchesToDrop(switch_names, test_env_value);
+	if (!dropped.empty())
+	{
+		// CefCommandLine cannot remove a switch, so rebuild it without the dropped ones; switch order does not matter to Chromium.
+		CefCommandLine::ArgumentList arguments;
+		command_line->GetArguments(arguments);
+		command_line->Reset();
+		for (const auto& entry : switches)
+		{
+			const std::string name = entry.first.ToString();
+			if (std::find(dropped.begin(), dropped.end(), name) != dropped.end())
+			{
+				continue;
+			}
+			if (entry.second.empty())
+			{
+				command_line->AppendSwitch(entry.first);
+			}
+			else
+			{
+				command_line->AppendSwitchWithValue(entry.first, entry.second);
+			}
+		}
+		for (const auto& argument : arguments)
+		{
+			command_line->AppendArgument(argument);
+		}
+		if (process_type.empty())
+		{
+			std::string names;
+			for (const std::string& name : dropped)
+			{
+				names += (names.empty() ? "" : ",") + name;
+			}
+			uam::diagnostics::Write(test_run ? "[CEF] Ignored --remote-debugging-address; DevTools stays on 127.0.0.1."
+			                                 : "[CEF] Ignored remote debugging switches outside an explicit test run: " + names);
+		}
+	}
+
+#if defined(_WIN32)
+	if (process_type.empty())
+	{
+		// Chromium leaves the Windows network service unsandboxed unless NetworkServiceSandbox is on; with it, the service runs
+		// in an AppContainer at low integrity (not on ARM64 or before Windows 10 20H1). Chromium reads one --enable-features
+		// value, so merge into any value already given; appending a switch again replaces the value Chromium reads.
+		// Subprocesses receive the feature from the browser process.
+		const std::string enabled_features = command_line->GetSwitchValue("enable-features").ToString();
+		const std::string merged_features = uam::cef::AddFeatureToList(enabled_features, uam::cef::kNetworkServiceSandboxFeature);
+		if (merged_features != enabled_features)
+		{
+			command_line->AppendSwitchWithValue("enable-features", merged_features);
+		}
+		uam::diagnostics::Write(std::string("[CEF] Requested the Windows network service sandbox (") + uam::cef::kNetworkServiceSandboxFeature + ").");
+	}
+#endif
 
 #if defined(__APPLE__)
 	// Disable Chromium features that trigger an EXC_BREAKPOINT / SIGTRAP crash

@@ -246,37 +246,81 @@ namespace uam
 		    ManagedWorktreeBucketDepth(location, folder) > 0;
 	}
 
+	std::size_t& RegisteredWorkspaceFolderResolutionsOnThisThread()
+	{
+		thread_local std::size_t count = 0;
+		return count;
+	}
+
+	ImportedWorkspaceFolderIndex::ImportedWorkspaceFolderIndex(const std::vector<ChatFolder>& folders) : m_folders(folders)
+	{
+		Refresh();
+	}
+
+	ImportedWorkspaceFolderIndex::ImportedWorkspaceFolderIndex(const std::vector<ChatFolder>& folders, const ImportedWorkspaceFolderIndex& prefix) : m_folders(folders)
+	{
+		const std::vector<ChatFolder>& earlier = prefix.m_folders;
+		const bool shared = earlier.size() >= prefix.m_indexed && folders.size() >= prefix.m_indexed &&
+		    std::equal(earlier.begin(), earlier.begin() + static_cast<std::ptrdiff_t>(prefix.m_indexed), folders.begin(), [](const ChatFolder& lhs, const ChatFolder& rhs)
+		    { return lhs.id == rhs.id && lhs.directory == rhs.directory && lhs.execution_host_id == rhs.execution_host_id; });
+		if (shared)
+		{
+			m_registered = prefix.m_registered;
+			m_indexed = prefix.m_indexed;
+		}
+		Refresh();
+	}
+
+	void ImportedWorkspaceFolderIndex::Refresh()
+	{
+		if (m_indexed == m_folders.size()) return;
+		if (m_folders.size() < m_indexed)
+		{
+			// The list shrank, so indexed positions may be past its end: index it again from the start.
+			m_registered.clear();
+			m_indexed = 0;
+		}
+		for (; m_indexed < m_folders.size(); ++m_indexed)
+		{
+			const ChatFolder& folder = m_folders[m_indexed];
+			if (!uam::paths::IsControllerLocalWorkspace(folder) || folder.directory.empty()) continue;
+			const std::filesystem::path directory = uam::paths::NormalizeExistingOrAbsolutePath(uam::paths::PathFromUtf8(folder.directory));
+			m_registered.push_back({m_indexed, FolderDirectoryCompareKey(directory), static_cast<std::size_t>(std::distance(directory.begin(), directory.end()))});
+			++RegisteredWorkspaceFolderResolutionsOnThisThread();
+		}
+		m_found.clear();
+	}
+
 	const ChatFolder* FindImportedWorkspaceFolder(const std::vector<ChatFolder>& folders, const std::filesystem::path& workspace)
 	{
 		if (workspace.empty()) return nullptr;
-		// Resolve every registered folder once per call instead of once per candidate ancestor.
-		struct RegisteredFolder
-		{
-			const ChatFolder* folder;
-			std::filesystem::path key;
-			std::size_t depth;
-		};
-		std::vector<RegisteredFolder> registered;
-		for (const ChatFolder& folder : folders)
-		{
-			if (!uam::paths::IsControllerLocalWorkspace(folder) || folder.directory.empty()) continue;
-			const std::filesystem::path directory = uam::paths::NormalizeExistingOrAbsolutePath(uam::paths::PathFromUtf8(folder.directory));
-			registered.push_back({&folder, FolderDirectoryCompareKey(directory), static_cast<std::size_t>(std::distance(directory.begin(), directory.end()))});
-		}
-		if (registered.empty()) return nullptr;
+		return ImportedWorkspaceFolderIndex(folders).Find(workspace);
+	}
+
+	const ChatFolder* ImportedWorkspaceFolderIndex::Find(const std::filesystem::path& workspace) const
+	{
+		if (workspace.empty() || m_registered.empty()) return nullptr;
+		const auto [cached, inserted] = m_found.try_emplace(uam::paths::PortablePathString(workspace));
+		if (!inserted) return cached->second ? &m_folders[*cached->second] : nullptr;
 		const std::filesystem::path location = uam::paths::NormalizeExistingOrAbsolutePath(workspace);
 		const std::filesystem::path resolved = uam::paths::NormalizeExistingOrAbsolutePath(ResolveImportedWorkspaceFolderDirectory(location));
-		const ChatFolder* managed_owner = nullptr;
+		const RegisteredFolder* managed_owner = nullptr;
 		std::size_t managed_depth = 0;
-		for (const RegisteredFolder& folder : registered)
+		for (const RegisteredFolder& folder : m_registered)
 		{
-			if (const std::size_t depth = ManagedWorktreeBucketDepth(location, uam::paths::PathFromUtf8(folder.folder->directory)); depth > 0)
+			if (const std::size_t depth = ManagedWorktreeBucketDepth(location, uam::paths::PathFromUtf8(m_folders[folder.position].directory)); depth > 0)
 			{
-				managed_owner = folder.folder;
+				managed_owner = &folder;
 				managed_depth = depth;
 				break;
 			}
 		}
+		const auto answer = [&](const RegisteredFolder* folder) -> const ChatFolder*
+		{
+			if (folder == nullptr) return nullptr;
+			cached->second = folder->position;
+			return &m_folders[folder->position];
+		};
 		// A verified linked worktree belongs to its main checkout when both are registered.
 		const std::array<std::filesystem::path, 2> candidates = resolved == location
 		    ? std::array<std::filesystem::path, 2>{location, resolved}
@@ -286,17 +330,16 @@ namespace uam
 			// An identical second candidate cannot find an owner the first missed.
 			if (index > 0 && candidates[index] == candidates[0]) break;
 			const std::vector<std::filesystem::path> parents = RegisteredParentKeys(candidates[index]);
-			const ChatFolder* owner = nullptr;
-			std::size_t owner_depth = 0;
-			for (const RegisteredFolder& folder : registered)
+			const RegisteredFolder* owner = nullptr;
+			for (const RegisteredFolder& folder : m_registered)
 			{
 				if (std::ranges::none_of(parents, [&](const std::filesystem::path& parent) { return FolderDirectoryKeysMatch(parent, folder.key); })) continue;
-				if (owner == nullptr || folder.depth > owner_depth) { owner = folder.folder; owner_depth = folder.depth; }
+				if (owner == nullptr || folder.depth > owner->depth) owner = &folder;
 			}
 			// A broad folder that merely contains the data root does not outrank the managed source.
-			if (owner != nullptr) return managed_owner != nullptr && candidates[index] == location && owner_depth <= managed_depth ? managed_owner : owner;
+			if (owner != nullptr) return answer(managed_owner != nullptr && candidates[index] == location && owner->depth <= managed_depth ? managed_owner : owner);
 		}
-		return managed_owner;
+		return answer(managed_owner);
 	}
 
 	std::string BuildImportedChatTitle(const std::vector<Message>& messages, const std::string& created_at, std::size_t max_length)
@@ -333,29 +376,6 @@ namespace uam
 		}
 		title = uam::strings::Trim(uam::paths::PortablePathString(normalized));
 		return uam::strings::NonEmptyOrFallback(title, "Imported Gemini");
-	}
-
-	bool ImportedProjectRootExists(const std::filesystem::path& project_root)
-	{
-		if (project_root.empty())
-		{
-			return false;
-		}
-		const std::filesystem::path normalized = uam::paths::LexicallyNormalPath(project_root);
-		return uam::paths::IsDirectoryNoThrow(normalized);
-	}
-
-	std::filesystem::path ResolveImportedProjectRootOrFallback(const std::filesystem::path& project_root, const std::filesystem::path& fallback_root)
-	{
-		if (ImportedProjectRootExists(project_root))
-		{
-			return uam::paths::LexicallyNormalPath(project_root);
-		}
-		if (fallback_root.empty())
-		{
-			return {};
-		}
-		return uam::paths::LexicallyNormalPath(fallback_root);
 	}
 
 } // namespace uam

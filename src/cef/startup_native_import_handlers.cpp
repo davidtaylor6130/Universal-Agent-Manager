@@ -135,7 +135,7 @@ void UamQueryHandler::HandleResolveStartupNativeImports(CefRefPtr<CefBrowser> br
 	if (generation.size() > 128 || !m_app.startup_native_import_service->Decide(m_app, generation, selected, declined, &error, folder_id,
 	    import_all != payload.end() && import_all->get<bool>()))
 	{
-		cb->Failure(409, error.empty() ? "Import selection changed. Review it again." : error);
+		cb->Failure(409, error.empty() ? "The import selection changed; review it again." : error);
 		return;
 	}
 	cb->Success(uam::StateSerializer::SerializeStartupNativeImports(m_app.startup_native_import_service->Snapshot(0, 100, folder_id)).dump());

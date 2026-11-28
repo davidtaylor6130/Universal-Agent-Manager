@@ -205,7 +205,7 @@ UAM_TEST(UnloadedChatOpensFromSavedPrimaryWhenPageReadIsRefused)
 	summary->updated_at = "2099-01-01T00:00:00.000Z";
 	paged = uam::TranscriptRetentionService::ReadSavedPage(temp.root, *summary, 50, std::nullopt);
 	UAM_ASSERT(!paged.page.has_value() && paged.refused);
-	UAM_ASSERT_EQ(paged.warning, std::string("Could not read chat history. Retry to refresh it."));
+	UAM_ASSERT_EQ(paged.warning, std::string("Could not read chat history; refresh to retry."));
 	UAM_ASSERT(!uam::TranscriptRetentionService::ReadSavedPage(temp.root, *summary, 50, std::nullopt, []() { return true; }).refused);
 	// The fallback is one full read whose copy stays loaded, so later pages are served from memory.
 	std::optional<ChatSession> loaded = ChatRepository::LoadLocalChat(temp.root, original.id, true);

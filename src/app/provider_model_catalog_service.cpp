@@ -1,4 +1,5 @@
 #include "common/platform/background_thread_priority.h"
+#include "common/platform/child_process_priority.h"
 #include "provider_model_catalog_service.h"
 #include "common/config/build_features.h"
 #include "app/provider_worker_command.h"
@@ -30,10 +31,12 @@
 #include <chrono>
 #include <filesystem>
 #include <optional>
+#include <ranges>
 #include <sstream>
 #include <thread>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -216,8 +219,17 @@ namespace
 		result.canceled = stop.stop_requested();
 		result.timed_out = !exited && !result.canceled && std::chrono::steady_clock::now() >= deadline;
 		std::string cleanup;
-		if (!exited && !client.StopProcess(id, &cleanup)) result.error += " Model discovery stop failed.";
-		if (!client.RemoveProcess(id, &cleanup)) result.error += " Model discovery cleanup failed.";
+		if (!exited && !client.StopProcess(id, &cleanup))
+		{
+			uam::diagnostics::Write("[model-discovery] Remote stop failed: " + cleanup);
+			cleanup.clear();
+			if (result.error.empty()) result.error = "Model discovery could not be stopped.";
+		}
+		if (!client.RemoveProcess(id, &cleanup))
+		{
+			uam::diagnostics::Write("[model-discovery] Remote cleanup failed: " + cleanup);
+			if (result.error.empty()) result.error = "Model discovery could not be cleaned up.";
+		}
 		result.ok = exited && result.exit_code == 0 && result.error.empty() && !result.canceled && !result.timed_out && !result.output_truncated;
 		return result;
 	}
@@ -449,7 +461,7 @@ std::optional<nlohmann::json> ProviderModelCatalogService::ParseAntigravityEffor
 }
 
 bool ProviderModelCatalogService::StartAntigravityEffortDiscovery(const ProviderProfile& profile,
-	const ExecutionHost& host, const std::string& workspace, const std::string& model_id, std::string* error_out)
+	const ExecutionHost& host, const std::string& workspace, const std::string& model_id, std::string* error_out, uam::host_admission::HeldLease admission)
 {
 	const auto fail = [&](const std::string& error) { if (error_out) *error_out = error; return false; };
 	if (!uam::provider_ids::IsCliProviderAliasOf(profile.id, uam::provider_ids::kAntigravityCli) ||
@@ -475,9 +487,11 @@ bool ProviderModelCatalogService::StartAntigravityEffortDiscovery(const Provider
 	task->scope_key = scope; task->workspace = workspace; task->host_id = host.id; task->metadata_only = true;
 	task->state = std::make_shared<NativeModelDiscoveryState>();
 	const auto state = task->state;
-	task->worker = std::make_unique<std::jthread>([state, host, argv, workspace, model_id](std::stop_token stop)
+	task->worker = std::make_unique<std::jthread>([state, host, argv, workspace, model_id, admission = std::move(admission)](std::stop_token stop)
 	{
+		(void)admission; // Released when this worker ends.
 		uam::platform::LowerCurrentThreadToBackgroundPriority();
+		const uam::platform::ScopedChildProcessClass background_children(uam::platform::ChildProcessClass::Background);
 		try
 		{
 			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
@@ -492,7 +506,7 @@ bool ProviderModelCatalogService::StartAntigravityEffortDiscovery(const Provider
 			const auto result = ReadAntigravityCatalogueCommand(host, argv, workspace, stop, deadline);
 			const auto metadata = result.ok && result.exit_code == 0 && !result.output_truncated && !stop.stop_requested() ? ParseAntigravityEffort(result.output, model_id) : std::nullopt;
 			if (metadata) state->models = nlohmann::json::array({*metadata});
-			else state->error = "The CLI could not verify this model's reasoning options. Update Antigravity CLI or retry discovery.";
+			else state->error = "The CLI could not verify this model's reasoning options; update Antigravity CLI or retry discovery.";
 		}
 		catch (...) { state->error = "Antigravity reasoning discovery failed; previous model metadata was retained."; }
 		state->completed.store(true, std::memory_order_release);
@@ -508,7 +522,7 @@ std::size_t ProviderModelCatalogService::ActiveNativeModelDiscoveries() const
 }
 
 bool ProviderModelCatalogService::StartAntigravityModelDiscovery(const ProviderProfile& profile,
-	const ExecutionHost& host, const std::string& workspace, std::string* error_out)
+	const ExecutionHost& host, const std::string& workspace, std::string* error_out, uam::host_admission::HeldLease admission)
 {
 	const auto fail = [&](const std::string& error) { if (error_out) *error_out = error; return false; };
 	if (!uam::provider_ids::IsCliProviderAliasOf(profile.id, uam::provider_ids::kAntigravityCli) || uam::strings::IsBlank(workspace))
@@ -534,9 +548,11 @@ bool ProviderModelCatalogService::StartAntigravityModelDiscovery(const ProviderP
 	task->host_id = host.id;
 	task->state = std::make_shared<NativeModelDiscoveryState>();
 	const auto state = task->state;
-	task->worker = std::make_unique<std::jthread>([state, host, argv, workspace](std::stop_token stop)
+	task->worker = std::make_unique<std::jthread>([state, host, argv, workspace, admission = std::move(admission)](std::stop_token stop)
 	{
+		(void)admission; // Released when this worker ends.
 		uam::platform::LowerCurrentThreadToBackgroundPriority();
+		const uam::platform::ScopedChildProcessClass background_children(uam::platform::ChildProcessClass::Background);
 		try
 		{
 			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
@@ -561,11 +577,11 @@ bool ProviderModelCatalogService::StartAntigravityModelDiscovery(const ProviderP
 					const auto effort = ReadAntigravityCatalogueCommand(host, query, workspace, stop, deadline);
 					const auto metadata = effort.ok && effort.exit_code == 0 && !effort.output_truncated ? ParseAntigravityEffort(effort.output, id) : std::nullopt;
 					if (metadata) for (auto field = metadata->begin(); field != metadata->end(); ++field) (*selected)[field.key()] = field.value();
-					else state->error = "The CLI could not verify this model's reasoning options. Update Antigravity CLI or retry discovery.";
+					else state->error = "The CLI could not verify this model's reasoning options; update Antigravity CLI or retry discovery.";
 					(*selected)["isDefault"] = true;
 					std::rotate(state->models->begin(), selected, std::next(selected));
 				}
-				else state->error = "The CLI did not expose its current model identity. Update Antigravity CLI to discover reasoning options.";
+				else state->error = "Update Antigravity CLI so UAM can read its current model and reasoning options.";
 			}
 
 			if (!state->models) state->error = stop.stop_requested() || result.canceled ? "Antigravity model discovery was cancelled." :
@@ -653,6 +669,7 @@ std::string ProviderModelCatalogService::CatalogKey(const std::string& provider_
 void ProviderModelCatalogService::LoadPersistentCatalogs()
 {
 	m_persistent_catalogs = nlohmann::json::object();
+	m_account_refusals = nlohmann::json::object();
 	const nlohmann::json root = ReadJsonFile(m_data_root / kProviderModelsCacheFile);
 	if (root.is_object())
 	{
@@ -668,6 +685,11 @@ void ProviderModelCatalogService::LoadPersistentCatalogs()
 				    entry.value("executionHostId", "local"));
 			}
 		}
+		if (const nlohmann::json* refusals = uam::nlohmann_json::FindObjectField(root, "accountRefusals"))
+			for (const auto& [key, entry] : refusals->items())
+				if (entry.is_object() && account_refusal::KindFromName(entry.value("kind", "")) != account_refusal::Kind::None &&
+				    !uam::strings::IsBlank(entry.value("notice", "")) && entry.value("expiresAtSec", static_cast<std::int64_t>(0)) > uam::time::TimestampNowSec())
+					m_account_refusals[key] = entry;
 	}
 }
 
@@ -677,7 +699,9 @@ bool ProviderModelCatalogService::WritePersistentCatalogs() const
 	{
 		return false;
 	}
-	return uam::io::WriteTextFile(m_data_root / kProviderModelsCacheFile, nlohmann::json{{"version", 1}, {"catalogs", m_persistent_catalogs}}.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) + "\n");
+	nlohmann::json root{{"version", 1}, {"catalogs", m_persistent_catalogs}};
+	if (!m_account_refusals.empty()) root["accountRefusals"] = m_account_refusals;
+	return uam::io::WriteTextFile(m_data_root / kProviderModelsCacheFile, root.dump(2, ' ', false, nlohmann::json::error_handler_t::replace) + "\n");
 }
 
 bool ProviderModelCatalogService::RememberSuccessfulModels(const std::string& provider_id,
@@ -702,6 +726,8 @@ bool ProviderModelCatalogService::RememberSuccessfulModels(const std::string& pr
 	m_scope_by_catalog_key[key] = CatalogScope(normalized_provider_id, workspace, host);
 	m_pending_discovery_provider_ids.erase(key);
 	m_refresh_attempted_provider_ids.insert(key);
+	// The provider answered on this computer, so an earlier account refusal no longer holds.
+	m_account_refusals.erase(CatalogKey(normalized_provider_id, {}, host));
 	const nlohmann::json previous = m_persistent_catalogs.contains(key) ? m_persistent_catalogs[key] : nlohmann::json{};
 	const nlohmann::json* cached_models = uam::nlohmann_json::FindArrayField(previous, "models");
 	m_persistent_catalogs[key] = {
@@ -712,6 +738,11 @@ bool ProviderModelCatalogService::RememberSuccessfulModels(const std::string& pr
 	    {"updatedAt", uam::time::TimestampNow()},
 	    {"updatedAtSec", uam::time::TimestampNowSec()},
 	};
+	const auto checked_version = m_checked_cli_version_by_provider_host.find(normalized_provider_id + "\n" + host);
+	if (checked_version != m_checked_cli_version_by_provider_host.end() && !checked_version->second.empty())
+	{
+		m_persistent_catalogs[key]["cliVersion"] = checked_version->second;
+	}
 	if (has_config_options)
 	{
 		m_persistent_catalogs[key]["configOptions"] = config_options;
@@ -747,6 +778,97 @@ void ProviderModelCatalogService::RememberRefreshFailure(const std::string& prov
 	m_scope_by_catalog_key[key] = CatalogScope(provider_id, workspace_directory, execution_host_id);
 	m_pending_discovery_provider_ids.erase(key);
 	m_refresh_error_by_provider_id[key] = uam::strings::Trim(std::move(error));
+	// A launch an authentication refusal let through reached the provider; its own failure is the current state.
+	if (const nlohmann::json* refusal = AccountRefusalLocked(provider_id, execution_host_id);
+	    refusal != nullptr && !account_refusal::BlocksChatLaunch(account_refusal::KindFromName(refusal->value("kind", ""))))
+	{
+		m_account_refusals.erase(CatalogKey(provider_id, {}, execution_host_id));
+		(void)WritePersistentCatalogs();
+	}
+	EraseExpiredAccountRefusalLocked(provider_id, execution_host_id);
+}
+
+const nlohmann::json* ProviderModelCatalogService::AccountRefusalLocked(const std::string& provider_id, std::string_view execution_host_id) const
+{
+	if (m_account_refusals.empty()) return nullptr;
+	const std::string key = CatalogKey(provider_id, {}, execution_host_id);
+	return key.empty() ? nullptr : uam::nlohmann_json::FindObjectField(m_account_refusals, key);
+}
+
+bool ProviderModelCatalogService::RememberAccountRefusal(const std::string& provider_id, std::string_view execution_host_id,
+	account_refusal::Kind kind, std::string notice, std::int64_t recorded_at_sec)
+{
+	notice = uam::strings::Trim(std::move(notice));
+	if (kind == account_refusal::Kind::None || notice.empty()) return false;
+	const GenerationMutex::Write lock(m_mutex);
+	const std::string host = uam::strings::NonEmptyOrFallback(uam::strings::Trim(std::string(execution_host_id)), "local");
+	const std::string key = CatalogKey(provider_id, {}, host);
+	if (key.empty()) return false;
+	const std::int64_t recorded = recorded_at_sec > 0 ? recorded_at_sec : uam::time::TimestampNowSec();
+	m_account_refusals[key] = {
+	    {"providerId", uam::provider_ids::NormalizeCliProviderAliasOrSelf(provider_id)},
+	    {"executionHostId", host},
+	    {"kind", account_refusal::KindName(kind)},
+	    {"notice", notice},
+	    {"recordedAtSec", recorded},
+	    {"expiresAtSec", recorded + account_refusal::TtlSeconds(kind)},
+	};
+	// The refusal is still honoured for this run when the cache cannot be written; a restart then asks once more.
+	(void)WritePersistentCatalogs();
+	return true;
+}
+
+std::string ProviderModelCatalogService::GetAccountRefusalNotice(const std::string& provider_id, std::string_view execution_host_id) const
+{
+	const GenerationMutex::Read lock(m_mutex);
+	const nlohmann::json* refusal = AccountRefusalLocked(provider_id, execution_host_id);
+	return refusal == nullptr ? std::string{} : refusal->value("notice", "");
+}
+
+namespace
+{
+	/// <summary>Active until expiresAtSec, and never longer than its kind's TTL from now, so a clock moved back or an edited file cannot hold it indefinitely.</summary>
+	bool AccountRefusalUnexpired(const nlohmann::json& refusal)
+	{
+		const std::int64_t now = uam::time::TimestampNowSec();
+		const std::int64_t expires = refusal.value("expiresAtSec", static_cast<std::int64_t>(0));
+		return now < expires && expires - now <= uam::account_refusal::TtlSeconds(uam::account_refusal::KindFromName(refusal.value("kind", "")));
+	}
+}
+
+bool ProviderModelCatalogService::IsAccountRefusalActive(const std::string& provider_id, std::string_view execution_host_id, bool for_chat_launch) const
+{
+	const GenerationMutex::Read lock(m_mutex);
+	const nlohmann::json* refusal = AccountRefusalLocked(provider_id, execution_host_id);
+	return refusal != nullptr && AccountRefusalUnexpired(*refusal) &&
+	    (!for_chat_launch || account_refusal::BlocksChatLaunch(account_refusal::KindFromName(refusal->value("kind", ""))));
+}
+
+std::string ProviderModelCatalogService::GetChatLaunchRefusalNotice(const std::string& provider_id, std::string_view execution_host_id) const
+{
+	const GenerationMutex::Read lock(m_mutex);
+	const nlohmann::json* refusal = AccountRefusalLocked(provider_id, execution_host_id);
+	return refusal != nullptr && AccountRefusalUnexpired(*refusal) && account_refusal::BlocksChatLaunch(account_refusal::KindFromName(refusal->value("kind", "")))
+	    ? refusal->value("notice", "") : std::string{};
+}
+
+void ProviderModelCatalogService::EraseExpiredAccountRefusalLocked(const std::string& provider_id, std::string_view execution_host_id)
+{
+	const nlohmann::json* refusal = AccountRefusalLocked(provider_id, execution_host_id);
+	if (refusal == nullptr || AccountRefusalUnexpired(*refusal)) return;
+	m_account_refusals.erase(CatalogKey(provider_id, {}, execution_host_id));
+	(void)WritePersistentCatalogs();
+}
+
+bool ProviderModelCatalogService::ClearAccountRefusal(const std::string& provider_id, std::string_view execution_host_id)
+{
+	// Checked under a read lock first, so a retry with nothing recorded does not advance the generation.
+	if (std::as_const(*this).GetAccountRefusalNotice(provider_id, execution_host_id).empty()) return false;
+	const GenerationMutex::Write lock(m_mutex);
+	const std::string key = CatalogKey(provider_id, {}, execution_host_id);
+	if (key.empty() || m_account_refusals.erase(key) == 0) return false;
+	(void)WritePersistentCatalogs();
+	return true;
 }
 
 void ProviderModelCatalogService::ApplyLaunchOptionMetadata(nlohmann::json& models, std::string_view provider_id, std::string_view checked_version)
@@ -787,11 +909,13 @@ nlohmann::json ProviderModelCatalogService::GetCatalogSnapshot(const std::string
 		ApplyLaunchOptionMetadata(models, provider_id, {});
 	}
 	const std::map<std::string, std::string>::const_iterator error = m_refresh_error_by_provider_id.find(key);
+	// An account refusal replaces each workspace's raw error with the provider's one plain line.
+	const nlohmann::json* refusal = AccountRefusalLocked(provider_id, host);
 	return {
 	    {"availableModels", std::move(models)},
 	    {"configOptions", std::move(options)},
 	    {"modelsLoading", m_pending_discovery_provider_ids.contains(key)},
-	    {"modelRefreshError", error == m_refresh_error_by_provider_id.end() ? std::string{} : error->second},
+	    {"modelRefreshError", refusal != nullptr ? refusal->value("notice", "") : error == m_refresh_error_by_provider_id.end() ? std::string{} : error->second},
 	};
 }
 
@@ -882,6 +1006,7 @@ std::string ProviderModelCatalogService::GetProviderRefreshError(const std::stri
 	const GenerationMutex::Read lock(m_mutex);
 	const std::string key = CatalogKey(provider_id, workspace_directory, execution_host_id);
 	if (key.empty()) return {};
+	if (const nlohmann::json* refusal = AccountRefusalLocked(provider_id, execution_host_id)) return refusal->value("notice", "");
 	const auto error = m_refresh_error_by_provider_id.find(key);
 	return error == m_refresh_error_by_provider_id.end() ? std::string{} : error->second;
 }
@@ -911,6 +1036,9 @@ bool ProviderModelCatalogService::BeginDiscoveryIfStale(const std::string& provi
 		return false;
 	}
 	if (m_pending_discovery_provider_ids.contains(key) || m_refresh_attempted_provider_ids.contains(key)) return false;
+	// An automatic request does not ask a provider that refused the account on this computer until its TTL ends.
+	if (const nlohmann::json* refusal = AccountRefusalLocked(normalized, execution_host_id); refusal != nullptr && AccountRefusalUnexpired(*refusal)) return false;
+	EraseExpiredAccountRefusalLocked(normalized, execution_host_id);
 	m_pending_discovery_provider_ids.insert(key);
 	m_refresh_error_by_provider_id.erase(key);
 	return true;
@@ -926,6 +1054,7 @@ bool ProviderModelCatalogService::BeginDiscovery(const std::string& provider_id,
 	if (m_pending_discovery_provider_ids.contains(key)) return false;
 	m_pending_discovery_provider_ids.insert(key);
 	m_refresh_error_by_provider_id.erase(key);
+	EraseExpiredAccountRefusalLocked(provider_id, execution_host_id);
 	return true;
 }
 
@@ -933,6 +1062,98 @@ bool ProviderModelCatalogService::BeginDiscoveryIfMissing(const std::string& pro
 	std::string_view workspace_directory, std::string_view execution_host_id)
 {
 	return BeginDiscoveryIfStale(provider_id, workspace_directory, execution_host_id);
+}
+
+void ProviderModelCatalogService::NoteCheckedCliVersion(const std::string& provider_id,
+	std::string_view execution_host_id, std::string_view version)
+{
+	const GenerationMutex::Write lock(m_mutex);
+	const std::string host = uam::strings::NonEmptyOrFallback(uam::strings::Trim(std::string(execution_host_id)), "local");
+	const std::string key = uam::provider_ids::NormalizeCliProviderAliasOrSelf(provider_id) + "\n" + host;
+	const std::string trimmed = uam::strings::Trim(std::string(version));
+	if (trimmed.empty()) m_checked_cli_version_by_provider_host.erase(key);
+	else m_checked_cli_version_by_provider_host[key] = trimmed;
+}
+
+bool ProviderModelCatalogService::IsCacheFreshForCliVersion(const std::string& provider_id,
+	std::string_view workspace_directory, std::string_view execution_host_id, std::string_view cli_version) const
+{
+	const GenerationMutex::Read lock(m_mutex);
+	const std::string version = uam::strings::Trim(std::string(cli_version));
+	// Without a known version a CLI update cannot be ruled out, so the cache is not treated as current.
+	if (version.empty()) return false;
+	const std::string key = CatalogKey(provider_id, workspace_directory, execution_host_id);
+	if (key.empty()) return false;
+	const nlohmann::json* entry = uam::nlohmann_json::FindObjectField(m_persistent_catalogs, key);
+	if (entry == nullptr) return false;
+	const nlohmann::json* models = uam::nlohmann_json::FindArrayField(*entry, "models");
+	const std::int64_t updated_at = entry->value("updatedAtSec", static_cast<std::int64_t>(0));
+	return models != nullptr && !models->empty() && updated_at > 0 &&
+	       uam::time::TimestampNowSec() - updated_at < kProviderModelCacheFreshnessSeconds &&
+	       uam::nlohmann_json::TrimmedStringValue(*entry, {"cliVersion"}) == version;
+}
+
+nlohmann::json ProviderModelCatalogService::GetPersistentCatalogEntry(const std::string& provider_id,
+	std::string_view workspace_directory, std::string_view execution_host_id) const
+{
+	const GenerationMutex::Read lock(m_mutex);
+	const std::string key = CatalogKey(provider_id, workspace_directory, execution_host_id);
+	if (key.empty()) return nullptr;
+	const nlohmann::json* entry = uam::nlohmann_json::FindObjectField(m_persistent_catalogs, key);
+	return entry == nullptr ? nlohmann::json(nullptr) : *entry;
+}
+
+std::size_t ProviderModelCatalogService::ShareAccountWideCatalog(const std::string& provider_id,
+	std::string_view execution_host_id, std::string_view source_workspace,
+	const std::vector<std::string>& target_workspaces, const nlohmann::json& unchanged_source)
+{
+	const GenerationMutex::Write lock(m_mutex);
+	const std::string normalized = uam::provider_ids::NormalizeCliProviderAliasOrSelf(provider_id);
+	const std::string host = uam::strings::NonEmptyOrFallback(uam::strings::Trim(std::string(execution_host_id)), "local");
+	const std::string source_key = CatalogKey(normalized, source_workspace, host);
+	if (source_key.empty() || m_refresh_error_by_provider_id.contains(source_key)) return 0;
+	const nlohmann::json* source = uam::nlohmann_json::FindObjectField(m_persistent_catalogs, source_key);
+	const nlohmann::json* source_models = source == nullptr ? nullptr : uam::nlohmann_json::FindArrayField(*source, "models");
+	if (source_models == nullptr || source_models->empty() || (!unchanged_source.is_null() && *source == unchanged_source)) return 0;
+	const nlohmann::json shared = *source;
+	const std::int64_t shared_at = shared.value("updatedAtSec", static_cast<std::int64_t>(0));
+	const std::string shared_version = uam::nlohmann_json::TrimmedStringValue(shared, {"cliVersion"});
+	std::vector<std::pair<std::string, nlohmann::json>> replaced;
+	for (const std::string& target : target_workspaces)
+	{
+		const std::string workspace = NormalizedCatalogWorkspace(target, host);
+		const std::string key = CatalogKey(normalized, workspace, host);
+		if (key.empty() || key == source_key || m_pending_discovery_provider_ids.contains(key)) continue;
+		// A target's own result at least as new, from the same CLI version, is kept.
+		if (const nlohmann::json* existing = uam::nlohmann_json::FindObjectField(m_persistent_catalogs, key);
+		    existing != nullptr && existing->value("updatedAtSec", static_cast<std::int64_t>(0)) >= shared_at &&
+		    uam::nlohmann_json::TrimmedStringValue(*existing, {"cliVersion"}) == shared_version) continue;
+		nlohmann::json entry = shared;
+		entry["workspaceDirectory"] = workspace;
+		replaced.emplace_back(key, m_persistent_catalogs.contains(key) ? m_persistent_catalogs[key] : nlohmann::json(nullptr));
+		m_persistent_catalogs[key] = std::move(entry);
+	}
+	if (replaced.empty()) return 0;
+	if (!WritePersistentCatalogs())
+	{
+		// Newest first, so a workspace named twice gets its original entry back.
+		for (const auto& [key, previous] : std::views::reverse(replaced))
+		{
+			if (previous.is_null()) m_persistent_catalogs.erase(key);
+			else m_persistent_catalogs[key] = previous;
+		}
+		return 0;
+	}
+	for (const auto& replacement : replaced)
+	{
+		const std::string& key = replacement.first;
+		const nlohmann::json& stored = m_persistent_catalogs[key];
+		m_scope_by_catalog_key[key] = CatalogScope(normalized, stored.value("workspaceDirectory", ""), host);
+		// Counts as this run's refresh, so a model menu opened there does not start another process.
+		m_refresh_attempted_provider_ids.insert(key);
+		m_refresh_error_by_provider_id.erase(key);
+	}
+	return replaced.size();
 }
 
 bool ProviderModelCatalogService::IsDiscoveryPending(const std::string& provider_id,
@@ -1241,6 +1462,7 @@ void ProviderModelCatalogService::StartRefreshTask()
 	    [state, this](std::stop_token stop_token)
 	    {
 	    	uam::platform::LowerCurrentThreadToBackgroundPriority();
+		    const uam::platform::ScopedChildProcessClass background_children(uam::platform::ChildProcessClass::Background);
 		    const std::optional<nlohmann::json> result = FetchOpenCodeZenModels(stop_token);
 
 		    if (!result.has_value())

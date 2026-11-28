@@ -41,6 +41,7 @@ import {
   type ChatSplitDirection,
 } from '../../utils/chatGridStorage'
 import { SSH_ENABLED } from '../../config/buildFeatures'
+import { HostLoadChip } from '../shared/HostLoadChip'
 
 const PushStatusDot = memo(function PushStatusDot() {
   const pushChannelStatus = useAppStore((s) => s.pushChannelStatus)
@@ -132,7 +133,9 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
   const [nativeFollowupOwner, setNativeFollowupOwner] = useState<string | null>(null)
   const nativeFollowupOpen = nativeFollowupAllowed && nativeFollowupOwner === nativeFollowupOwnerKey
   useLayoutEffect(() => { setNativeFollowupOwner(null) }, [nativeFollowupOwnerKey, nativeFollowupAllowed])
-  const view = session.importedReadOnly || lineage ? 'chat' : session.viewMode
+  // A provider with no native CLI (the Custom ACP agent) has only structured Chat.
+  const providerLacksCli = useAppStore((state) => state.providers.find((provider) => provider.id === session.providerId)?.supportsCli === false)
+  const view = session.importedReadOnly || lineage || providerLacksCli ? 'chat' : session.viewMode
   const setView = (requestedView: 'chat' | 'cli') => {
     const nextView = session.importedReadOnly ? 'chat' : requestedView
     useAppStore.setState((state) => ({ sessions: state.sessions.map((current) =>
@@ -314,16 +317,18 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
         }}
       >
         {/* Session name */}
-        <div className="flex min-w-0 flex-1 flex-col justify-center leading-tight" title={session.name}>
-          <span className="uam-chat-pane__title truncate text-sm font-semibold" style={{ color: 'var(--text)' }}>{session.name}</span>
+        <div className="flex min-w-0 flex-1 flex-col justify-center leading-tight">
+          <span className="uam-chat-pane__title truncate text-sm font-semibold" style={{ color: 'var(--text)' }} title={session.name}>{session.name}</span>
           <span
             data-testid={`chat-workspace-${session.id}`}
             className="uam-chat-pane__workspace flex min-w-0 gap-1 text-[10px] font-normal"
             style={{ color: 'var(--text-3)' }}
-            title={workspaceDirectory ? `${workspaceDirectory} · ${executionHostLabel}` : executionHostLabel}
+            // A remote host is its own chip with its own tooltip, so the native title covers only what the chip does not.
+            title={executionHostIsRemote ? undefined : workspaceDirectory ? `${workspaceDirectory} · ${executionHostLabel}` : executionHostLabel}
           >
-            {workspaceLabel && <span className="min-w-0 truncate">{workspaceLabel}</span>}
-            {executionHostIsRemote && <span data-testid={`chat-host-${session.id}`} className="shrink-0">{workspaceLabel ? ` · ${executionHostLabel}` : executionHostLabel}</span>}
+            {workspaceLabel && <span className="min-w-0 truncate" title={executionHostIsRemote ? workspaceDirectory : undefined}>{workspaceLabel}</span>}
+            {executionHostIsRemote && workspaceLabel && <span className="shrink-0">{' · '}</span>}
+            {executionHostIsRemote && <HostLoadChip hostId={session.executionHostId!} label={executionHostLabel} testId={`chat-host-${session.id}`} />}
           </span>
         </div>
 
@@ -341,7 +346,7 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
               if (next === 'chat') {
                 if (view === 'cli') void loadSessionMessages(session.id, true, true)
                 setView('chat')
-              } else if (!session.importedReadOnly && !cliSwitchLocked) {
+              } else if (!session.importedReadOnly && !providerLacksCli && !cliSwitchLocked) {
                 setView('cli')
               }
             }}
@@ -352,8 +357,8 @@ const ChatPane = memo(function ChatPane({ session, active, leafId, paneIndex, mu
                 label: 'Terminal fallback',
                 icon: <SquareTerminal size={14} aria-hidden />,
                 iconOnly: true,
-                disabled: session.importedReadOnly || (cliSwitchLocked && view !== 'cli'),
-                tooltip: session.importedReadOnly ? 'Imported transcripts are read-only' : cliSwitchLocked && view !== 'cli' ? 'Wait for current output to finish' : 'Terminal fallback',
+                disabled: session.importedReadOnly || providerLacksCli || (cliSwitchLocked && view !== 'cli'),
+                tooltip: session.importedReadOnly ? 'Imported transcripts are read-only' : providerLacksCli ? 'This provider has no CLI View' : cliSwitchLocked && view !== 'cli' ? 'Wait for current output to finish' : 'Terminal fallback',
               },
             ]}
           />

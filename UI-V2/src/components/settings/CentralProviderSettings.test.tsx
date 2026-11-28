@@ -61,7 +61,7 @@ it('keeps a rejected save guarded and leaves only after successful retry', async
   act(() => handle.current!.requestLeave(leave))
   await click('Save and leave')
   expect(leave).not.toHaveBeenCalled()
-  expect(vi.mocked(reportAppFailure)).toHaveBeenCalledWith('Private save rejection', expect.any(String))
+  expect(vi.mocked(reportAppFailure)).toHaveBeenCalledWith('Provider defaults were not saved.', 'Private save rejection. Your changes are kept. Try again.')
   expect(host.textContent).toContain('private-AGENTS.md')
   await click('Save and leave')
   expect(save).toHaveBeenCalledTimes(2)
@@ -174,7 +174,7 @@ it('focuses Retry after a read failure and shows the defaults error when leaving
   act(() => handle.current!.requestLeave(leave))
   await click('Save and leave')
   const dialog = document.querySelector('[role="alertdialog"]')!
-  expect(vi.mocked(reportAppFailure)).toHaveBeenCalledWith('Defaults could not be saved', expect.any(String))
+  expect(vi.mocked(reportAppFailure)).toHaveBeenCalledWith('Provider defaults were not saved.', expect.stringContaining('Defaults could not be saved'))
   expect(leave).not.toHaveBeenCalled()
 })
 
@@ -285,4 +285,91 @@ it('keeps new agent Save disabled for invalid names and allows a valid new draft
   expect(save.disabled).toBe(true)
   change('reviewer')
   expect(save.disabled).toBe(false)
+})
+
+it('keeps read and write unavailable for an agent imported from a read-only source', async () => {
+  vi.mocked(bridge.sendToCEF).mockResolvedValue({ ok: true, data: { agents: [{ id: 'reader', description: 'Reads', mode: 'subagent', workspaceAccess: 'read', maxWorkspaceAccess: 'read', skills: [], delegates: [], instructions: '', builtIn: false }], errors: [] } })
+  await act(async () => root.render(<CentralProviderSettings ref={handle} />))
+  await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Edit reader"]')!.click())
+  await act(async () => document.querySelector<HTMLButtonElement>('button[aria-label="Workspace access"]')!.click())
+  const write = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(option => option.textContent?.includes('Read and write'))!
+  expect(write.getAttribute('aria-disabled') === 'true' || (write as HTMLButtonElement).disabled).toBe(true)
+  expect(write.textContent).toContain('Imported from a read-only source.')
+})
+
+const storeAgent = (id: string, scope: 'global' | 'workspace', mode = 'primary', builtIn = false) =>
+  ({ id, description: `${id} description`, mode, workspaceAccess: 'read', skills: [], delegates: [], instructions: 'Do it.', builtIn, scope })
+const listedAgents = [
+  storeAgent('build', 'global', 'primary', true),
+  storeAgent('shared', 'global'),
+  storeAgent('helper', 'global', 'subagent'),
+  storeAgent('local-reviewer', 'workspace'),
+]
+const rowFor = (id: string) => [...host.querySelectorAll<HTMLElement>('.uam-central-agent')].find(row => row.querySelector('.uam-set-row__title')?.textContent?.startsWith(id))
+
+it("lists the open chat's workspace agents beside global ones with scope and Delegate-only badges", async () => {
+  const send = vi.spyOn(bridge, 'sendToCEF').mockResolvedValue({ ok: true, data: { agents: listedAgents, errors: [] } })
+  useAppStore.setState({ activeSessionId: 'chat-1' })
+  await act(async () => root.render(<CentralProviderSettings ref={handle} />))
+
+  expect(send).toHaveBeenCalledWith({ action: 'listAgentDefinitions', payload: { chatId: 'chat-1' } })
+  const badges = (id: string) => [...rowFor(id)!.querySelectorAll('.uam-badge')].map(badge => badge.textContent)
+  expect(badges('build')).toEqual([])
+  expect(badges('shared')).toEqual(['All workspaces'])
+  expect(badges('helper')).toEqual(['All workspaces', 'Delegate-only'])
+  expect(badges('local-reviewer')).toEqual(['This workspace'])
+  // Workspace agents live in that workspace's files: viewable here, never saved or deleted as global agents.
+  expect(host.querySelector('[aria-label="View local-reviewer"]')).toBeTruthy()
+  expect(host.querySelector('[aria-label="Delete agent local-reviewer"]')).toBeNull()
+  expect(host.querySelector('[aria-label="Delete agent shared"]')).toBeTruthy()
+  // Shared defaults reach every workspace, so they offer only agents saved for all workspaces.
+  await act(async () => (host.querySelector('button[aria-label="Default agent for new chats"]') as HTMLButtonElement).click())
+  const choices = [...document.body.querySelectorAll('[role="option"]')].map(option => option.textContent)
+  expect(choices.some(choice => choice?.startsWith('shared'))).toBe(true)
+  expect(choices.some(choice => choice?.startsWith('local-reviewer'))).toBe(false)
+})
+
+it('lists global agents only when no chat is open', async () => {
+  const send = vi.spyOn(bridge, 'sendToCEF').mockResolvedValue({ ok: true, data: { agents: listedAgents.slice(0, 3), errors: [] } })
+  useAppStore.setState({ activeSessionId: null })
+  await act(async () => root.render(<CentralProviderSettings ref={handle} />))
+  expect(send).toHaveBeenCalledWith({ action: 'listAgentDefinitions', payload: {} })
+})
+
+it('scrolls to, focuses and briefly highlights a just-imported agent', async () => {
+  vi.spyOn(bridge, 'sendToCEF').mockResolvedValue({ ok: true, data: { agents: listedAgents, errors: [] } })
+  useAppStore.setState({ activeSessionId: 'chat-1' })
+  const shown = vi.fn()
+  const scroll = vi.fn()
+  HTMLElement.prototype.scrollIntoView = scroll
+  vi.useFakeTimers()
+  try {
+    await act(async () => root.render(<CentralProviderSettings ref={handle} highlightAgent={{ id: 'local-reviewer', scope: 'workspace', nonce: 1 }} onHighlightShown={shown} />))
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    expect(shown).toHaveBeenCalledOnce()
+    expect(rowFor('local-reviewer')!.dataset.highlighted).toBe('true')
+    expect(rowFor('shared')!.dataset.highlighted).toBeUndefined()
+    expect(scroll).toHaveBeenCalled()
+    expect(document.activeElement?.getAttribute('aria-label')).toBe('View local-reviewer')
+    await act(async () => { await vi.advanceTimersByTimeAsync(4000) })
+    expect(rowFor('local-reviewer')!.dataset.highlighted).toBeUndefined()
+  } finally {
+    vi.useRealTimers()
+    delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView
+  }
+})
+
+it('names the scope in the actions of a global and a workspace agent that share a name', async () => {
+  vi.spyOn(bridge, 'sendToCEF').mockResolvedValue({ ok: true, data: { agents: [storeAgent('reviewer', 'global'), storeAgent('reviewer', 'workspace'), storeAgent('solo', 'global')], errors: [] } })
+  useAppStore.setState({ activeSessionId: 'chat-1' })
+  await act(async () => root.render(<CentralProviderSettings ref={handle} />))
+  expect(host.querySelector('[aria-label="Edit reviewer (all workspaces)"]')).toBeTruthy()
+  expect(host.querySelector('[aria-label="Delete agent reviewer (all workspaces)"]')).toBeTruthy()
+  expect(host.querySelector('[aria-label="View reviewer (this workspace)"]')).toBeTruthy()
+  expect(host.querySelector('[aria-label="Edit solo"]')).toBeTruthy()
+  await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="View reviewer (this workspace)"]')!.click())
+  expect(document.querySelector('[role="dialog"][aria-label="View reviewer (this workspace)"]')).toBeTruthy()
+  await act(async () => document.querySelector<HTMLButtonElement>('[aria-label="Close agent editor"]')!.click())
+  await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Delete agent reviewer (all workspaces)"]')!.click())
+  expect(document.body.textContent).toContain('Delete reviewer (all workspaces)?')
 })

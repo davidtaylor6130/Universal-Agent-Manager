@@ -3,7 +3,7 @@ import { AutomationStartQuestion } from '../chat/AutomationStartQuestion'
 import { LinkedPullRequests, WatchPullRequestDialog } from '../chat/LinkedPullRequests'
 import type { AcpPromptPresentationObserver } from '../../store/storeTypes'
 import { subagentParentFor, subscribeSubagentNavigation, subagentNavigationRevision } from '../../utils/subagentNavigation'
-import { reportAppFailure, reportAppNotice, resolveAppNotice } from '../../utils/appFailure'
+import { failureDetail, firstSentence, reportAppFailure, reportAppNotice, resolveAppNotice } from '../../utils/appFailure'
 import type { AcpBinding, AcpQueuedPrompt, AcpTurnEvent, ManualCompactionAvailability, ProviderSwitchOverride } from '../../store/cpp/types'
 import { attachmentsEquivalent } from '../../store/cpp/reconcile'
 import { MAX_ACTIVE_TURN_INACTIVITY_TIMEOUT_SECONDS, messageAttachments, sanitizeManualCompaction, sanitizeNativeInputId, sanitizeOriginRequestId, sanitizeManagedOriginRunId } from '../../store/cpp/sanitizers'
@@ -41,7 +41,7 @@ import { GoalBanner } from '../shared/GoalBanner'
 import { CODEX_CLI_PROVIDER_ID, DEFAULT_PROVIDER_ID, GEMINI_CLI_PROVIDER_ID, normalizeCliProviderIdAlias, fallbackProviderForId, isClaudeProvider, isCodexProvider, isCopilotProvider, isOpenCodeProvider, permissionTierForProvider, providerCapabilities, providerDisabledOn, providerMetadataForId, providerShortName } from '../../utils/providerMetadata'
 import { buildCodexReasoningOptions, buildCodexSpeedOptions, CODEX_SPEED_INHERIT_ID, buildModelOptions, modelOptionFor, providerRuntimeLabel, selectedRuntimeModel } from '../chat/modelOptions'
 import { CompactingScene, RefreshingScene, SleepingScene } from '../chat/StatusScenes'
-import { buildAcpErrorCopyText, ChatStatusStrip, CopyTextButton, statusColor, statusLabel } from '../chat/StatusHelpers'
+import { buildAcpErrorCopyText, ChatAnnouncer, ChatStatusStrip, CopyTextButton, ReplyAnnouncement, statusColor, statusLabel } from '../chat/StatusHelpers'
 import { restartWithRaisedTimeout, TIMEOUT_RESTART_STEP_SECONDS, TimeoutStopNotice, type TimeoutRestartOutcome } from '../chat/TimeoutStopNotice'
 import { SubAgentDisclosureProvider, WorkSectionContext, ConversationWork, type WorkTraceDisclosureState } from '../chat/ConversationWork'
 import { MessageFrame, ToolCallModal, UserInputInlineCard } from '../chat/ToolCallViews'
@@ -64,6 +64,7 @@ import { ContextChip } from '../chat/ContextChip'
 import { ComposerReferenceChips, useComposerReferences } from '../chat/ComposerContextReferences'
 import { draftFileMentions } from '../../utils/fileContextReferences'
 import { mentionActionToken, replaceSlashAction, slashActionToken } from '../../utils/slashActionToken'
+import { compactCommandInstructions } from '../../utils/compactCommand'
 import { acknowledgeChatComposerDraft, readChatComposerDraft, subscribeComposerDraftAcknowledgements, withoutAcknowledgedComposerDraft, writeChatComposerDraft } from '../../utils/composerDraftStorage'
 import { fromViewportMenu, getTopmostModal, trapModalTab } from '../../utils/modalFocus'
 
@@ -105,8 +106,8 @@ function sameManualCompactionTarget(left: ManualCompactionAvailability, right: M
 }
 
 type ComposerNoticeTone = NoticeTone
-type SlashNotice = { message: string; tone: NoticeTone }
-const noticeFor = (message: string, tone: NoticeTone): SlashNotice | null => message ? { message, tone } : null
+type SlashNotice = { message: string; tone: NoticeTone; detail?: string }
+const noticeFor = (message: string, tone: NoticeTone, detail?: string): SlashNotice | null => message ? { message, tone, detail } : null
 // Last chat-history failure alerted; module-level so remounting ChatView does not re-alert the same stored error.
 let reportedHistoryFailure = ''
 type PermissionChangeResult = { ok: boolean; cancelled?: boolean; error?: string }
@@ -130,7 +131,8 @@ export function uamAgentDisplayName(id: string) {
 }
 
 export function buildUamAgentCycle(agents: UamAgentSummary[], favoriteIds: string[]) {
-  const selectable = new Set(agents.map((agent) => agent.id))
+  // Delegate-only agents are listed in the picker but are never a chat's own agent, so the cycle skips them.
+  const selectable = new Set(agents.filter((agent) => !agent.delegateOnly).map((agent) => agent.id))
   const cycle = ['build', 'plan']
   for (const rawId of favoriteIds) {
     const id = rawId.trim().toLowerCase()
@@ -169,7 +171,8 @@ const PLAN_APPROVE_PROMPT = 'Proceed with the plan.'
 const PLAN_DENY_PROMPT = 'Do not proceed with this plan. Please revise it before making changes.'
 
 type LocalAttachmentStatus = 'ready' | 'staging' | 'failed'
-type WorkspaceFeedback = { message: string; tone: 'success' | 'warning' | 'error' }
+/** `message` is one fixed sentence for the notice; backend text and next steps go in `detail`. */
+type WorkspaceFeedback = { message: string; tone: 'success' | 'warning' | 'error'; detail?: string }
 interface LocalAttachment extends Attachment {
   status: LocalAttachmentStatus
   error?: string
@@ -483,7 +486,6 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const [goalArmNextMessage, setGoalArmNextMessage] = useState(false)
   const [slashIndex, setSlashIndex] = useState(0)
   const [slashNotice, setSlashNotice] = useState<SlashNotice | null>(null)
-  const slashMessage = slashNotice?.message ?? ''
   const [slashGroup, setSlashGroup] = useState('')
   const [slashGroupIndex, setSlashGroupIndex] = useState(0)
   const [permissionMenuOpen, setPermissionMenuOpen] = useState(false)
@@ -937,7 +939,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     const error = response.error || 'Could not start this chat.'
     if (useAppStore.getState().sessions.find((chat) => chat.id === session.id)?.automationPendingPrompt) { setAutomationStartError(error); return }
     // No longer held, so the question that would show this has closed.
-    reportAppFailure(error, 'Check the chat before starting the work again.')
+    reportAppFailure('Could not start this chat.', failureDetail(response.error, 'Check the chat before starting the work again.'))
   }, [session.automationPendingPrompt, session.createdAt, session.id])
   const sendCapturedComposerPrompt = useCallback(async (submission: ComposerReferenceSubmission, text: string, attachments?: Attachment[], steerNow?: boolean, submissionToken?: string) => {
     if (!composerReferenceSubmissionIsCurrent(submission)) return false
@@ -972,8 +974,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     : repositoryChanges?.workspaceDirectory === workspaceDirectory ? repositoryChanges : null
   const composerBranch = composerRepository
     ? composerRepository.available ? composerRepository.branchOrRevision : ''
-    : session.workspaceBranchName
+    : session.workspaceBranchName ?? ''
   const composerVcsType = composerRepository?.activeVcsType ?? 'git'
+  // Before the first send, a chat's chosen Git base (not the checked-out branch) is what its worktree starts from.
+  const composerChosenBase = composerVcsType === 'git' && session.workspaceIsolationKind === 'pendingGitWorktree'
+    && session.gitBaseBranch && session.gitBaseBranch !== composerBranch ? session.gitBaseBranch : ''
   const branchSwitching = useAppStore((s) => s.branchSwitching === true)
   // The global bridge flag is not a per-workspace capability; native validation remains authoritative.
   const canSwitchComposerBranch = branchSwitching && (session.executionHostId || 'local') === 'local'
@@ -1252,12 +1257,20 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     messages[recordedTurnAssistantMessageIndex]?.role === 'assistant'
   // A live turn whose index no longer resolves still owns the latest assistant row when that row holds its text; the
   // timeline replaces the row in place, keeping live tools and controls without a second card.
+  // A steer, queued or prepared user row can follow the answer (#278); the turn's own user row still places it then.
+  // While the turn runs, only priority steers may follow it: an ordinary row there may be this turn's own prompt, with
+  // the stale index left on an older turn whose answer reads the same.
+  const latestAssistantShown = latestAssistantMessageIndex >= earliestRenderedMessageIndex
+  const latestAssistantFollowsLatestUser = latestAssistantShown && latestAssistantMessageIndex > latestUserMessageIndex
+  const latestAssistantFollowsTurnUser = latestAssistantFollowsLatestUser ||
+    (latestAssistantShown && latestAssistantMessageIndex > turnUserMessageIndex && messages[turnUserMessageIndex]?.role === 'user')
+  const onlySteersFollowLatestAssistant = latestAssistantFollowsLatestUser ||
+    (latestAssistantFollowsTurnUser && messages.slice(latestAssistantMessageIndex + 1).every((message) => message.role !== 'user' || message.prioritySteer))
   const liveTurnOwnsLatestAssistant =
     !recordedTurnAssistantMatches && Boolean(acp?.processing) &&
     historyStartIndex + messages.length >= (session.messageCount ?? 0) &&
-    latestAssistantMessageIndex >= earliestRenderedMessageIndex &&
-    latestAssistantMessageIndex > latestUserMessageIndex &&
-    contentIsExactlyTurnText(messages[latestAssistantMessageIndex].content, turnEvents, messages[latestAssistantMessageIndex].isStreaming)
+    onlySteersFollowLatestAssistant &&
+    contentIsExactlyTurnText(messages[latestAssistantMessageIndex]?.content ?? '', turnEvents, messages[latestAssistantMessageIndex]?.isStreaming)
   const turnAssistantMessageIndex = liveTurnOwnsLatestAssistant ? latestAssistantMessageIndex : recordedTurnAssistantMessageIndex
   const turnAssistantMessageMatches = recordedTurnAssistantMatches || liveTurnOwnsLatestAssistant
   const turnUserMessageMatches =
@@ -1268,7 +1281,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       (turnAssistantMessageMatches && turnUserMessageIndex < turnAssistantMessageIndex))
   const completedFallbackAlreadyPersisted =
     !acp?.processing &&
-    latestAssistantMessageIndex > latestUserMessageIndex &&
+    latestAssistantFollowsTurnUser &&
     contentIsExactlyTurnText(messages[latestAssistantMessageIndex]?.content ?? '', turnEvents)
   // Bind only a confirmed assistant; steering can put user messages between turn rows.
   const disclosureAssistant = turnAssistantMessageMatches
@@ -1441,28 +1454,29 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   // Workspace success is a completed system action: it goes to the shared notifications path, not an inline banner.
   useEffect(() => {
     if (workspaceFeedback?.tone !== 'success') return
-    reportAppNotice(workspaceFeedback.message, 'success')
+    reportAppNotice(workspaceFeedback.message, 'success', { detail: workspaceFeedback.detail })
     setWorkspaceFeedback(null)
   }, [workspaceFeedback])
   // Failures and completed actions reach the shared alert path instead of inline banners; error state is cleared once reported.
   useEffect(() => {
     if (!workspaceFeedback || workspaceFeedback.tone === 'success') return
-    reportAppFailure('Workspace action failed', workspaceFeedback.message)
+    if (workspaceFeedback.tone === 'warning') reportAppNotice(workspaceFeedback.message, 'warning', { detail: workspaceFeedback.detail })
+    else reportAppFailure(workspaceFeedback.message, workspaceFeedback.detail ?? '')
     setWorkspaceFeedback(null)
   }, [workspaceFeedback])
   useEffect(() => {
     if (!goalError) return
-    reportAppFailure('Goal update failed', goalError)
+    reportAppFailure('The goal was not updated.', goalError)
     setGoalError('')
   }, [goalError])
   useEffect(() => {
     if (!messageBranchError) return
-    reportAppFailure(editingMessageSource.kind === 'unsent' ? 'Message edit failed' : 'Message branch failed', messageBranchError)
+    reportAppFailure(editingMessageSource.kind === 'unsent' ? 'The message edit was not saved.' : 'The message branch was not created.', messageBranchError)
     setMessageBranchError('')
   }, [messageBranchError])
   useEffect(() => {
     if (!attachmentError) return
-    reportAppFailure('Attachment failed', attachmentError)
+    reportAppFailure('The attachment could not be added.', attachmentError)
     setAttachmentError('')
   }, [attachmentError])
   // Toggling showComposer re-runs this effect; the reported ref keeps one alert per distinct dictation error.
@@ -1470,16 +1484,16 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     if (!dictationError) reportedDictationError.current = ''
     if (!dictationError || showComposer || reportedDictationError.current === dictationError) return
     reportedDictationError.current = dictationError
-    reportAppFailure('Dictation failed', dictationError)
+    reportAppFailure('Dictation stopped with an error.', dictationError)
   }, [dictationError, showComposer])
   // The history error lives in the store, so a remount would re-report it; alert once per distinct failure.
   useEffect(() => {
     if (!chatHistoryError) { reportedHistoryFailure = ''; return }
-    const title = historyRefreshFailed ? 'Chat history did not refresh' : 'Chat history did not load'
+    const title = historyRefreshFailed ? 'Chat history did not refresh.' : 'Chat history did not load.'
     const key = `${session.id}\u0000${title}\u0000${chatHistoryError}`
     if (key === reportedHistoryFailure) return
     reportedHistoryFailure = key
-    reportAppFailure(title, `${chatHistoryError} Use Retry at the top of the transcript to try again.`)
+    reportAppFailure(title, failureDetail(chatHistoryError, 'Use Retry at the top of the transcript to try again.'))
   }, [chatHistoryError, historyRefreshFailed, session.id])
 
   const runtimeBlocksControlChanges = acpRuntimeBlocksControlChanges(acp)
@@ -1523,9 +1537,59 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     }
   }, [modelOpen, workspaceMenuOpen])
 
+  // Both staging paths share this prefix: the browser companion stages no attachments here (no paths or bytes);
+  // see "Browser companion attachments" in docs/documentation-review.md.
+  const canStageAttachments = () => {
+    if (!showComposerRef.current) return false
+    if (isCompanionContext()) { setAttachmentError('Add attachments from the desktop app.'); return false }
+    return true
+  }
+
+  const beginStagingAttachments = (pending: LocalAttachment[]) => {
+    setAttachmentError('')
+    setComposerAttachments((current) => [...current, ...pending])
+  }
+
+  /** Swap staged chips for their copies, or write them into the draft of the chat they were added to. */
+  const applyStagedAttachments = (stagingSessionId: string, staged: Awaited<ReturnType<typeof stageChatAttachments>>) => {
+    if (!mountedRef.current || currentSessionIdRef.current !== stagingSessionId) {
+      if (!useAppStore.getState().sessions.some((candidate) => candidate.id === stagingSessionId)) return
+      const stored = readChatComposerDraft(stagingSessionId)
+      writeChatComposerDraft(stagingSessionId, {
+        ...stored,
+        attachments: [...stored.attachments, ...staged.filter((candidate) =>
+          !removedAttachmentIdsRef.current.has(candidate.id) &&
+          !stored.attachments.some((attachment) => attachment.id === candidate.id)
+        )],
+      })
+      return
+    }
+    setComposerAttachments((current) =>
+      current.map((attachment) => {
+        const replacement = staged.find((candidate) => candidate.id === attachment.id)
+        return replacement
+          ? { ...replacement, status: 'ready' as LocalAttachmentStatus }
+          : attachment
+      })
+    )
+  }
+
+  const failStagedAttachments = (stagingSessionId: string, pending: LocalAttachment[], err: unknown, fallback: string) => {
+    if (!mountedRef.current || currentSessionIdRef.current !== stagingSessionId) return
+    // Every chip of this request was removed while copying: the copy was canceled on purpose, so nothing to report.
+    if (pending.every((attachment) => removedAttachmentIdsRef.current.has(attachment.id))) return
+    const message = err instanceof Error ? err.message : fallback
+    setAttachmentError(message)
+    const failedIds = new Set(pending.map((attachment) => attachment.id))
+    setComposerAttachments((current) =>
+      current.map((attachment) =>
+        failedIds.has(attachment.id) ? { ...attachment, status: 'failed', error: message } : attachment
+      )
+    )
+  }
+
   const stageFiles = async (files: File[], nativeEntries: NativeFileEntry[] = []) => {
-    if (!showComposerRef.current) return
-    if (isCompanionContext()) { setAttachmentError('Add attachments from the desktop app.'); return }
+    if (!canStageAttachments()) return
     const stagingSessionId = session.id
     // A dropped File pairs with the native path of the same name and size; picked files arrive as paths only.
     const unpaired = [...nativeEntries]
@@ -1547,8 +1611,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       path: source.path,
       status: 'staging',
     }))
-    setAttachmentError('')
-    setComposerAttachments((current) => [...current, ...pending])
+    beginStagingAttachments(pending)
 
     try {
       const items: ChatAttachmentInput[] = []
@@ -1565,45 +1628,14 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
           dataBase64: source.path || !source.file ? undefined : await readFileBase64(source.file),
         })
       }
-
-      const staged = await stageChatAttachments(stagingSessionId, items)
-      if (!mountedRef.current || currentSessionIdRef.current !== stagingSessionId) {
-        if (!useAppStore.getState().sessions.some((candidate) => candidate.id === stagingSessionId)) return
-        const stored = readChatComposerDraft(stagingSessionId)
-        writeChatComposerDraft(stagingSessionId, {
-          ...stored,
-          attachments: [...stored.attachments, ...staged.filter((candidate) =>
-            !removedAttachmentIdsRef.current.has(candidate.id) &&
-            !stored.attachments.some((attachment) => attachment.id === candidate.id)
-          )],
-        })
-        return
-      }
-      setComposerAttachments((current) =>
-        current.map((attachment) => {
-          const replacement = staged.find((candidate) => candidate.id === attachment.id)
-          return replacement
-            ? { ...replacement, status: 'ready' as LocalAttachmentStatus }
-            : attachment
-        })
-      )
+      applyStagedAttachments(stagingSessionId, await stageChatAttachments(stagingSessionId, items))
     } catch (err) {
-      if (!mountedRef.current || currentSessionIdRef.current !== stagingSessionId) return
-      // Every chip of this request was removed while copying: the copy was canceled on purpose, so nothing to report.
-      if (pending.every((attachment) => removedAttachmentIdsRef.current.has(attachment.id))) return
-      const message = err instanceof Error ? err.message : 'Failed to stage attachments.'
-      setAttachmentError(message)
-      const failedIds = new Set(pending.map((attachment) => attachment.id))
-      setComposerAttachments((current) =>
-        current.map((attachment) =>
-          failedIds.has(attachment.id) ? { ...attachment, status: 'failed', error: message } : attachment
-        )
-      )
+      failStagedAttachments(stagingSessionId, pending, err, 'Failed to stage attachments.')
     }
   }
 
   const stageDirectoryPaths = async (paths: string[]) => {
-    if (!showComposerRef.current) return
+    if (!canStageAttachments()) return
     const stagingSessionId = session.id
     const uniquePaths = Array.from(new Set(paths.map((path) => path.trim()).filter(Boolean)))
     if (uniquePaths.length === 0) return
@@ -1616,46 +1648,17 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       path,
       status: 'staging',
     }))
-    setAttachmentError('')
-    setComposerAttachments((current) => [...current, ...pending])
+    beginStagingAttachments(pending)
 
     try {
-      const staged = await stageChatAttachments(stagingSessionId, pending.map((attachment) => ({
+      applyStagedAttachments(stagingSessionId, await stageChatAttachments(stagingSessionId, pending.map((attachment) => ({
         id: attachment.id,
         name: attachment.name,
         kind: 'directory',
         path: attachment.path,
-      })))
-      if (!mountedRef.current || currentSessionIdRef.current !== stagingSessionId) {
-        if (!useAppStore.getState().sessions.some((candidate) => candidate.id === stagingSessionId)) return
-        const stored = readChatComposerDraft(stagingSessionId)
-        writeChatComposerDraft(stagingSessionId, {
-          ...stored,
-          attachments: [...stored.attachments, ...staged.filter((candidate) =>
-            !removedAttachmentIdsRef.current.has(candidate.id) &&
-            !stored.attachments.some((attachment) => attachment.id === candidate.id)
-          )],
-        })
-        return
-      }
-      setComposerAttachments((current) =>
-        current.map((attachment) => {
-          const replacement = staged.find((candidate) => candidate.id === attachment.id)
-          return replacement
-            ? { ...replacement, status: 'ready' as LocalAttachmentStatus }
-            : attachment
-        })
-      )
+      }))))
     } catch (err) {
-      if (!mountedRef.current || currentSessionIdRef.current !== stagingSessionId) return
-      const message = err instanceof Error ? err.message : 'Failed to stage directory references.'
-      setAttachmentError(message)
-      const failedIds = new Set(pending.map((attachment) => attachment.id))
-      setComposerAttachments((current) =>
-        current.map((attachment) =>
-          failedIds.has(attachment.id) ? { ...attachment, status: 'failed', error: message } : attachment
-        )
-      )
+      failStagedAttachments(stagingSessionId, pending, err, 'Failed to stage directory references.')
     }
   }
 
@@ -1755,7 +1758,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     return true
   }
 
-  const runCompact = async (commandDraft = draft, closePalette = false) => {
+  // `instructions` is the text after a typed `/compact`; only providers that accept it use it.
+  const runCompact = async (commandDraft = draft, closePalette = false, instructions = '') => {
     if (!mountedRef.current || currentSessionIdRef.current !== session.id || submitInFlightRef.current || goalSubmitting) return
     if (!isCefContext()) {
       setSlashNotice(noticeFor('Manual compaction is unavailable without a connected native runtime.', 'warning'))
@@ -1796,19 +1800,20 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     setCompacting(true)
     setSlashNotice(null)
     try {
-      const response = await sendToCEF<{ accepted?: boolean }>({
+      const response = await sendToCEF<{ accepted?: boolean; instructionsUsed?: boolean }>({
         action: 'compactAcpSession',
-        payload: { chatId: submittedSessionId },
+        payload: instructions ? { chatId: submittedSessionId, instructions } : { chatId: submittedSessionId },
         requestId,
       })
       if (!ownsFeedback()) return
       if (!response.ok || response.data?.accepted !== true) {
         // "failed" keeps this on the error tone; a plain message would show green.
-        setSlashNotice(noticeFor(`Compaction failed: ${response.error || 'the request was not accepted.'}`, 'error'))
+        setSlashNotice(noticeFor('Compaction failed.', 'error', failureDetail(response.error, 'The request was not accepted.')))
         return
       }
       // Acceptance is not completion; the "Compacting context" strip and the transcript show progress.
-      setDraft((current) => current === commandDraft && current.trim() === '/compact' ? '' : current)
+      setDraft((current) => current === commandDraft && compactCommandInstructions(current) !== null ? '' : current)
+      if (instructions && response.data?.instructionsUsed !== true) setSlashNotice(noticeFor('This provider compacts without instructions, so yours were not used.', 'info'))
     } catch {
       if (ownsFeedback()) setSlashNotice(noticeFor('Failed to request compaction.', 'error'))
     } finally {
@@ -1841,7 +1846,9 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     // Explicit row editing above remains available; a hidden ordinary draft cannot submit.
     if (!showComposerRef.current) return
     const prompt = (promptOverride ?? draft).trim()
-    if (prompt === '/compact') { await runCompact(promptOverride ?? draft); return }
+    // Typed `/compact` and `/compact <instructions>` always take the compact action, never an ordinary send.
+    const compactInstructions = compactCommandInstructions(prompt)
+    if (compactInstructions !== null) { await runCompact(promptOverride ?? draft, false, compactInstructions); return }
     if (!providerSupported || session.importedReadOnly || (!prompt && composerAttachments.length === 0) || submitInFlightRef.current || goalSubmitting || referenceCaptureLoading ||
       useAppStore.getState().sessions.find((chat) => chat.id === session.id)?.createdAt.getTime() !== session.createdAt.getTime() ||
       composerAttachments.some((attachment) => attachment.status !== 'ready')) return
@@ -1931,6 +1938,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     ? `${latestAssistantMessage?.id ?? ''}:${turnSerial}:${cli?.terminalId ?? ''}`
     : ''
   const [repositoryReviewRetry, setRepositoryReviewRetry] = useState(0)
+  const repositoryContextRetryKeyRef = useRef('')
   useEffect(() => {
     let cancelled = false
     if (!completedTurnKey || !workspaceDirectory) return
@@ -1939,8 +1947,21 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       includeLineStats: true,
       requestId: `chat-summary:${session.id}:${completedTurnKey}:${repositoryReviewRetry}`,
       comparisonRef: repositoryComparisonRef,
+      reportFailure: true,
     }).then((status) => {
       if (cancelled) return
+      // A read refused because the workspace or host changed under it is stale, not a failure: read once more per
+      // completed turn, and drop a repeat silently so the race never shows as an error or loops.
+      if (status?.contextChanged) {
+        if (repositoryContextRetryKeyRef.current === completedTurnKey) {
+          // Rows or an error from before the change would read as current; clear them rather than keep them.
+          setRepositoryReview(session.id, null)
+          return
+        }
+        repositoryContextRetryKeyRef.current = completedTurnKey
+        setRepositoryReviewRetry((count) => count + 1)
+        return
+      }
       // Any read failure, including a lost remote connection, is shown as such, never as whole-workspace rows.
       setRepositoryReview(session.id, status?.error ? { ...status, changedFiles: [] }
         : status?.available && status.changedFiles.length > 0 ? status : null)
@@ -1990,7 +2011,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     try {
       const dismiss = action === 'dismiss'
       const response = await sendToCEF<{ chatId?: string; parentChatId?: string }>({ action: dismiss ? 'dismissSideChat' : 'createSideChat', payload: { chatId: session.id }, requestId: createRequestId('side') })
-      if (!response.ok) { setSlashNotice(noticeFor(response.error || 'Side chat could not be changed.', 'error')); return }
+      if (!response.ok) { setSlashNotice(noticeFor('Side chat could not be changed.', 'error', failureDetail(response.error))); return }
       const id = dismiss ? response.data?.parentChatId : response.data?.chatId
       if (id) showChatInPane(id)
     } finally { sideBusyRef.current = false; setSideBusy(false) }
@@ -2054,11 +2075,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
       const response = await sendToCEF({ action: 'moveChatWorkspace', payload: { chatId: movingChatId, folderId: destination.id } })
       if (!mountedRef.current || currentSessionIdRef.current !== movingChatId) return
       setWorkspaceFeedback(response.ok
-        ? { tone: 'success', message: 'Moved chat. The next provider session uses the selected workspace.' }
-        : { tone: 'error', message: response.error || 'The workspace move was not confirmed. Check this chat before retrying.' })
+        ? { tone: 'success', message: 'Moved chat to the selected workspace.', detail: 'The next provider session uses the selected workspace.' }
+        : { tone: 'error', message: 'The workspace move was not confirmed.', detail: failureDetail(response.error, 'Check this chat before retrying.') })
       if (response.ok) { setRemoteMoveFolderId(''); setWorkspaceMenuOpen(false) }
     } catch (error) {
-      if (mountedRef.current && currentSessionIdRef.current === movingChatId) setWorkspaceFeedback({ tone: 'error', message: error instanceof Error ? error.message : 'The workspace move was not confirmed. Check this chat before retrying.' })
+      if (mountedRef.current && currentSessionIdRef.current === movingChatId) setWorkspaceFeedback({ tone: 'error', message: 'The workspace move was not confirmed.', detail: failureDetail(error, 'Check this chat before retrying.') })
     } finally {
       if (mountedRef.current) setWorkspaceActionBusy(false)
     }
@@ -2069,7 +2090,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     const ok = await openSessionWorkspace(session.id)
     setWorkspaceFeedback(ok
       ? { message: 'Opened workspace directory.', tone: 'success' }
-      : { message: 'Failed to open workspace directory.', tone: 'error' })
+      : { message: 'Could not open the workspace directory.', tone: 'error' })
   }
   const openWorkspaceEditor = async () => {
     if (!workspaceDirectory) return
@@ -2077,7 +2098,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     const ok = await openSessionWorkspaceEditor(session.id)
     setWorkspaceFeedback(ok
       ? { message: 'Opened workspace editor.', tone: 'success' }
-      : { message: 'Failed to open workspace editor.', tone: 'error' })
+      : { message: 'Could not open the workspace editor.', tone: 'error' })
   }
   const openWorkspaceTerminal = async () => {
     if (!workspaceDirectory) return
@@ -2085,7 +2106,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     const ok = await openSessionTerminal(session.id)
     setWorkspaceFeedback(ok
       ? { message: 'Opened terminal at workspace.', tone: 'success' }
-      : { message: 'Failed to open terminal.', tone: 'error' })
+      : { message: 'Could not open a terminal at the workspace.', tone: 'error' })
   }
   const openSelectedSubAgentSession = async () => {
     if (!selectedToolCall?.isSubAgent || !selectedToolCall.subAgentId || isManagedSubagentTool(selectedToolCall)) return
@@ -2108,12 +2129,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     if (result.ok) {
       setRepositoryReview(session.id, null)
       const warning = result.status?.warning
-      setWorkspaceFeedback({
-        message: warning || result.message || (action === 'port' ? 'Applied chat changes and returned to the source workspace.' : 'Workspace action complete.'),
-        tone: warning ? 'warning' : 'success',
-      })
+      setWorkspaceFeedback(warning
+        ? { message: 'Workspace action finished with a warning.', detail: warning, tone: 'warning' }
+        : { message: result.message || (action === 'port' ? 'Applied chat changes and returned to the source workspace.' : 'Workspace action complete.'), tone: 'success' })
     } else {
-      setWorkspaceFeedback({ message: result.status?.error || result.message || 'Workspace action failed.', tone: 'error' })
+      setWorkspaceFeedback({ message: 'Workspace action failed.', detail: failureDetail(result.status?.error || result.message), tone: 'error' })
     }
   }
   const rollbackLatestTurn = async () => {
@@ -2140,7 +2160,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     const result = await rollbackChatTurn(session.id, messageIndex)
     setWorkspaceActionBusy(false)
     if (!result) {
-      setWorkspaceFeedback({ message: 'Rollback failed. Any later or uncommitted work was left untouched.', tone: 'error' })
+      setWorkspaceFeedback({ message: 'Rollback failed.', detail: 'Any later or uncommitted work was left untouched.', tone: 'error' })
       return
     }
     setRepositoryReview(session.id, null)
@@ -2207,11 +2227,13 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     if (liveDividerOpen && isNearBottomRef.current) bottomRef.current?.scrollIntoView?.({ block: 'end' })
   }, [liveDividerOpen])
   const slashNoticeTone: ComposerNoticeTone = slashNotice?.tone ?? 'success'
-  const slashNoticeTitle = UNSENT_PROMPT_NOTICE.test(slashMessage) ? 'Message not sent' : /chat was replaced/i.test(slashMessage) ? 'Check earlier message' : 'Command'
   useEffect(() => {
     if (!slashNotice) return
-    if (slashNotice.tone === 'error' || slashNotice.tone === 'warning') reportAppFailure(slashNoticeTitle, slashNotice.message)
-    else reportAppNotice(slashNotice.message, slashNotice.tone === 'info' ? 'info' : 'success')
+    // The notice is the first sentence; any further fixed wording (the next step) is its detail.
+    const split = firstSentence(slashNotice.message)
+    const detail = [split.detail, slashNotice.detail ?? ''].filter(Boolean).join(' ')
+    if (slashNotice.tone === 'error') reportAppFailure(split.message, detail)
+    else reportAppNotice(split.message, slashNotice.tone === 'warning' ? 'warning' : slashNotice.tone === 'info' ? 'info' : 'success', { detail })
   }, [slashNotice])
   const unsupportedProviderMessage = providerSupported
     ? ''
@@ -2649,14 +2671,16 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     const byId = new Map(catalogUamAgents.map((agent) => [agent.id, agent]))
     if (!byId.has('build')) byId.set('build', { id: 'build', description: 'Implement changes while obeying the current UAM permission policy.', builtIn: true })
     if (!byId.has('plan')) byId.set('plan', { id: 'plan', description: 'Inspect and plan under a hard read-only workspace ceiling.', builtIn: true })
+    // Chat agents first, then delegate-only agents, each alphabetical.
     return [byId.get('build')!, byId.get('plan')!, ...Array.from(byId.values())
       .filter((agent) => agent.id !== 'build' && agent.id !== 'plan')
-      .sort((left, right) => left.id.localeCompare(right.id))]
+      .sort((left, right) => Number(Boolean(left.delegateOnly)) - Number(Boolean(right.delegateOnly)) || left.id.localeCompare(right.id))]
   }, [catalogUamAgents])
   const uamAgents = useMemo(() => selectableUamAgents.map((agent) => ({
     id: agent.id,
     name: uamAgentDisplayName(agent.id),
     description: agent.description,
+    ...(agent.delegateOnly ? { delegateOnly: true } : {}),
   })), [selectableUamAgents])
   const uamAgentCycle = useMemo(
     () => buildUamAgentCycle(selectableUamAgents, favoriteUamAgentIds),
@@ -2699,7 +2723,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
     return applyPermissionMode(modeId)
   }
   const showPermissionResult = (result: PermissionChangeResult, fallback: string) => {
-    setSlashNotice(noticeFor(result.ok || result.cancelled ? '' : result.error || fallback, 'error'))
+    // A refused permission change names the control; the backend reason (or the fallback) is detail.
+    setSlashNotice(noticeFor(result.ok || result.cancelled ? '' : 'The permission mode was not changed.', 'error', failureDetail(result.error || fallback, 'Try again.')))
   }
   const selectPermissionMode = async (modeId: string) => {
     const mode = permissionModes.find((candidate) => candidate.id === modeId)
@@ -2939,7 +2964,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
   const setComputerUseActive = async (active: boolean): Promise<ComputerUseActionResult> => {
     if (!COMPUTER_USE_ENABLED) return { ok: false }
     const result = await setSessionComputerUseEnabled(session.id, active)
-    if (!result.ok) setSlashNotice(noticeFor(result.error || 'Computer use could not be changed.', 'error'))
+    if (!result.ok) setSlashNotice(noticeFor('Computer use could not be changed.', 'error', failureDetail(result.error, 'Try again.')))
     return result
   }
 
@@ -3327,7 +3352,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
         ? normalizePermissionChangeResult(await setSessionCommandSafetyTier(submittedSessionId, 'acceptEdits'))
         : { ok: true }
       if (!permissionResult.ok) {
-        if (ownsFeedback() && !permissionResult.cancelled) setSlashNotice(noticeFor(permissionResult.error || 'Failed to change permission mode to Accept edits.', 'error'))
+        if (ownsFeedback() && !permissionResult.cancelled) setSlashNotice(noticeFor('The permission mode was not changed to Accept edits.', 'error', failureDetail(permissionResult.error, 'Try again.')))
         return
       }
       if (!composerReferenceSubmissionIsCurrent(submission.context)) {
@@ -3686,8 +3711,8 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
             const modelSet = providerHandoffModelId === null || await setSessionModel(session.id, providerHandoffModelId, (reason) => { modelRefusal = reason })
             setProviderHandoffTargetId('')
             setProviderHandoffModelId(null)
-            // The shared toast shows only its message, so the reason and next step belong there.
-            if (!modelSet) reportAppFailure(`The model was not changed. ${modelRefusal ? `${modelRefusal} ` : ''}This chat is now on ${providerHandoffTargetName} with its default model. Choose the model again from the model picker.`, '')
+            // The shared toast shows only its message, so the refusal reason stays there; the next step is detail.
+            if (!modelSet) reportAppFailure(`The model was not changed, so ${providerHandoffTargetName} uses its default model.${modelRefusal ? ` ${modelRefusal}` : ''}`, 'Choose the model again from the model picker.')
             return true
           }}
         />
@@ -3744,21 +3769,39 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                   openSubagentView(parent, { kind: 'managed', runId })
                 }
               }}>
+              {/* One polite region per open chat, outside the busy message list: state changes only, never ticking time. */}
+              <ChatAnnouncer key={session.id}>
+              <ReplyAnnouncement
+                working={Boolean(acp?.processing)}
+                turnSerial={turnSerial}
+                waitingFor={pendingPermission ? 'permission' : pendingUserInput ? 'answer' : undefined}
+                failed={Boolean(currentAcpError) || acp?.lifecycleState === 'error'}
+                stopReason={acp?.lastStopReason}
+                // A turn with no reply (Cancel turn before any text) did not finish. Reply evidence comes from the
+                // binding's own turn facts, which arrive with processing=false, before the reply row may be loaded.
+                interrupted={!(latestAssistantMessageIndex > latestUserMessageIndex ||
+                  (acp?.turnAssistantMessageIndex ?? -1) > (acp?.turnUserMessageIndex ?? -1) ||
+                  turnEvents.some((event) => event.type === 'tool_call' || (event.type === 'assistant_text' && Boolean(event.text.trim())))) ||
+                  (latestAssistantMessageIndex > latestUserMessageIndex && Boolean(latestAssistantMessage?.interrupted))}
+                // The composer error alert (when it actually shows) and the stopped divider announce themselves.
+                alertKey={currentAcpError && !timeoutStop && (currentAcpErrorKey !== dismissedAcpErrorKey || remoteStopForceAvailable) ? currentAcpErrorKey : ''}
+                stoppedNotice={Boolean(stoppedStatusLabel)}
+              />
               <SubAgentDisclosureProvider expandedTools={subagentDisclosures}>
               <div ref={messageListRef} className="uam-message-list space-y-1.5" aria-busy={historyLoading} data-message-motion={messageMotion}>
               {historyLoading && <div role="status" className="conversation-empty">
                 <div className="conversation-skeleton" aria-hidden>
-                  <span className="conversation-skeleton__bubble" />
+                  <span className="uam-skeleton conversation-skeleton__bubble" />
                   <div className="conversation-skeleton__text">
-                    <span className="conversation-skeleton__line" />
-                    <span className="conversation-skeleton__line" />
-                    <span className="conversation-skeleton__line conversation-skeleton__line--mid" />
-                    <span className="conversation-skeleton__line conversation-skeleton__line--short" />
+                    <span className="uam-skeleton conversation-skeleton__line" />
+                    <span className="uam-skeleton conversation-skeleton__line" />
+                    <span className="uam-skeleton conversation-skeleton__line conversation-skeleton__line--mid" />
+                    <span className="uam-skeleton conversation-skeleton__line conversation-skeleton__line--short" />
                   </div>
-                  <span className="conversation-skeleton__bubble conversation-skeleton__bubble--short" />
+                  <span className="uam-skeleton conversation-skeleton__bubble conversation-skeleton__bubble--short" />
                   <div className="conversation-skeleton__text">
-                    <span className="conversation-skeleton__line" />
-                    <span className="conversation-skeleton__line conversation-skeleton__line--short" />
+                    <span className="uam-skeleton conversation-skeleton__line" />
+                    <span className="uam-skeleton conversation-skeleton__line conversation-skeleton__line--short" />
                   </div>
                 </div>
                 <span>Loading chat history…</span>
@@ -3791,14 +3834,16 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 <div data-testid="compute-pool-wait" role="status" className="uam-turn-starting px-4 py-2 text-xs" style={{ color: 'var(--text-3)' }}>
                   <span className="conversation-work__heading">
                     <span className="conversation-work__live" aria-hidden />
-                    <span>Waiting for {acp.computePoolWait.poolName} slot ({acp.computePoolWait.inUse}/{acp.computePoolWait.limit})</span>
+                    <span>{acp.computePoolWait.message ?? `Waiting for ${acp.computePoolWait.poolName} slot (${acp.computePoolWait.inUse}/${acp.computePoolWait.limit} in use)`}</span>
                   </span>
+                  {acp.computePoolWait.runAnyway && (
+                    <Button size="sm" variant="ghost" className="ml-2" onClick={() => void useAppStore.getState().runHeldWorkAnyway(session.id)}>Run anyway</Button>
+                  )}
                 </div>
               )}
               {acp?.processing && !acp.computePoolWait && turnEvents.length === 0 && (activeWorkMessageIndex < 0 || unsentProjection.hiddenIndices.has(activeWorkMessageIndex)) && (
                 <div
                   data-testid="turn-starting"
-                  role="status"
                   className="uam-turn-starting px-4 py-2 text-xs"
                   style={{ color: 'var(--text-3)' }}
                 >
@@ -3916,6 +3961,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
               )}
               </div>
               </SubAgentDisclosureProvider>
+              </ChatAnnouncer>
               </InlineSubagentProvider>
             </div>
             {/* Follow the padded end so the latest output clears the floating composer. */}
@@ -4155,7 +4201,7 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                           <label className="mt-2 flex items-center gap-2">
                             <input type="checkbox" checked={session.remoteRecoveryEnabled ?? false} disabled={!recoveryHost?.startupEnabled || recoveryHost.startupStatus !== 'enabled'} onChange={(event) => {
                               void sendToCEF({ action: 'setChatRemoteRecovery', payload: { chatId: session.id, enabled: event.target.checked } }).then((response) => {
-                                if (!response.ok) setWorkspaceFeedback({ tone: 'error', message: response.error || 'Chat recovery could not be saved.' })
+                                if (!response.ok) setWorkspaceFeedback({ tone: 'error', message: 'Chat recovery could not be saved.', detail: failureDetail(response.error) })
                               })
                             }} />
                             Recover this chat after host restart
@@ -4188,11 +4234,11 @@ export const ChatView = memo(function ChatView({ session, accentColor, navigatio
                 </div>
                 <span className="inline-flex min-w-0 items-center gap-1 truncate text-xs" title={workspaceDirectory}>
                   <span className="max-w-[12rem] shrink-0 truncate">{workspaceName}</span>
-                  {composerBranch && (canSwitchComposerBranch
+                  {(composerBranch || composerChosenBase) && (canSwitchComposerBranch
                     ? <ChatBranchPicker key={`${composerBranchScope}:${composerVcsType}`} chatId={session.id} branch={composerBranch} vcsType={composerVcsType} disabled={workspaceActionsDisabled} pendingBranch={session.pendingGitBranch} disabledReason="Wait for the agent to finish before switching branches." onSwitched={handleBranchSwitched} />
-                    : <Tooltip label={composerVcsType === 'svn' ? 'SVN folder switching needs a local working copy outside imported, temporary or isolated chats.' : composerBranch}>
-                      <span tabIndex={0} className="inline-flex min-w-0 items-center gap-1 truncate rounded-sm" aria-label={composerVcsType === 'svn' ? `SVN revision ${composerBranch}` : `Branch ${composerBranch}`}>
-                        {composerVcsType !== 'svn' && <GitBranch size={12} aria-hidden />}<span className="truncate font-mono">{composerVcsType === 'svn' ? `SVN r${composerBranch}` : composerBranch}</span>
+                    : <Tooltip label={composerVcsType === 'svn' ? 'SVN folder switching needs a local working copy outside imported, temporary or isolated chats.' : composerChosenBase ? `Starts from ${composerChosenBase}.${composerBranch ? ` Local copy is on ${composerBranch}.` : ''}` : composerBranch}>
+                      <span tabIndex={0} className="inline-flex min-w-0 items-center gap-1 truncate rounded-sm" aria-label={composerVcsType === 'svn' ? `SVN revision ${composerBranch}` : composerChosenBase ? `Base branch ${composerChosenBase}${composerBranch ? `, local copy on ${composerBranch}` : ''}` : `Branch ${composerBranch}`}>
+                        {composerVcsType !== 'svn' && <GitBranch size={12} aria-hidden />}<span className="truncate font-mono">{composerVcsType === 'svn' ? `SVN r${composerBranch}` : composerChosenBase || composerBranch}</span>
                       </span>
                     </Tooltip>)}
                   {isGitWorktree && <span className="uam-composer-workspace-tab__badge">Worktree</span>}

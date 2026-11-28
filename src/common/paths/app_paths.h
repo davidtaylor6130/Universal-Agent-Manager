@@ -21,8 +21,6 @@ class AppPaths
 	static std::filesystem::path DefaultDataRootPath();
 	/// <summary>Returns the user's Gemini home directory.</summary>
 	static std::filesystem::path GeminiHomePath();
-	/// <summary>Returns the global Gemini root directory for shared config.</summary>
-	static std::filesystem::path DefaultGeminiUniversalRootPath();
 	/// <summary>Resolves Gemini's per-project temp directory for a workspace, when available.</summary>
 	static std::optional<std::filesystem::path> ResolveGeminiProjectTmpDir(const std::filesystem::path& project_root);
 	/// <summary>Returns the UAM chat files root directory (separate from native history).</summary>
@@ -39,3 +37,6 @@ bool FolderDirectoryMatches(const std::filesystem::path& lhs, const std::filesys
 /// <summary>Resolved comparison form; FolderDirectoryMatches(a, b) equals FolderDirectoryKeysMatch(FolderDirectoryCompareKey(a), FolderDirectoryCompareKey(b)).</summary>
 std::filesystem::path FolderDirectoryCompareKey(const std::filesystem::path& directory);
 bool FolderDirectoryKeysMatch(const std::filesystem::path& lhs_key, const std::filesystem::path& rhs_key);
+/// <summary>Returns the subpath of `path` below the directory `root` (empty when they name the same directory), or nothing when `path` is outside `root`.
+/// Compares spelled paths first, keeping the recorded subpath spelling, then their resolved forms.</summary>
+std::optional<std::filesystem::path> FolderDirectoryRelativeSubpath(const std::filesystem::path& path, const std::filesystem::path& root);

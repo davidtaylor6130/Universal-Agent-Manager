@@ -26,12 +26,12 @@ namespace uam::structured_attachments
 		for (const auto& attachment : attachments)
 			if (attachment.source != AttachmentSource::LegacyPath || !attachment_sources::IsPersistable(attachment))
 			{
-				error = "Recorded or invalid attachment sources cannot be sent as file paths. Remove them and attach files from the execution host again.";
+				error = "Recorded or invalid attachments cannot be sent as files; remove them and attach the files again.";
 				return false;
 			}
 			else if (strings::TrimAsciiView(attachment.path).empty() || attachment.path.find('\0') != std::string::npos)
 			{
-				error = "An attached resource has an invalid path. Remove it and attach it again.";
+				error = "An attached resource has an invalid path; remove it and attach it again.";
 				return false;
 			}
 		return true;
@@ -54,7 +54,7 @@ namespace uam::structured_attachments
 	std::string ProviderPath(const std::string& workspace, const std::string& path, const std::string& platform, bool remote, std::string& error)
 	{
 		if (path.empty() || path.find('\0') != std::string::npos || workspace.find('\0') != std::string::npos)
-		{ error = "An attached resource has an invalid path. Remove it and attach it again."; return {}; }
+		{ error = "An attached resource has an invalid path; remove it and attach it again."; return {}; }
 		if (remote)
 		{
 			if (execution_hosts::IsAbsoluteRemotePath(platform, path)) return path;
@@ -191,7 +191,7 @@ namespace uam::structured_attachments
 	{
 		if (!ValidateDeliverySources(attachments, error)) return false;
 		using namespace provider_profile_constants;
-		const bool acp = session.protocol_kind == kProtocolGeminiAcp || session.protocol_kind == kProtocolOpenCodeAcp || session.protocol_kind == kProtocolCopilotAcp;
+		const bool acp = IsStandardAcpProtocol(session.protocol_kind);
 		const bool codex = session.protocol_kind == kProtocolCodexAppServer;
 		const bool copilot = session.protocol_kind == "copilot-sdk";
 		const bool claude = session.protocol_kind == kProtocolClaudeCodeStreamJson;
@@ -213,7 +213,7 @@ namespace uam::structured_attachments
 				if (path.empty()) return false;
 				if (!InsideWorkspace(workspace, path, platform, remote))
 				{
-					error = "Antigravity can only open images inside this chat's workspace. Remove the image and attach it again so UAM can copy it there.";
+					error = "Antigravity can only open images in this chat's workspace; attach the image again so UAM can copy it there.";
 					return false;
 				}
 				antigravity_images += "\n- \"" + path + "\"";
@@ -221,8 +221,8 @@ namespace uam::structured_attachments
 			}
 			if (image && ((!acp && !codex && !copilot && !claude) || (claude && remote && !claude_images) || (acp && !session.prompt_image_supported)))
 			{
-				error = claude && remote ? "Native image input for Claude over SSH could not be prepared. Attach the image again and retry."
-				    : "This provider session has not advertised native image input. Remove the image or choose a provider that supports it.";
+				error = claude && remote ? "Could not prepare the image for Claude over SSH; attach it again and retry."
+				    : "This provider session does not accept images; remove the image or choose another provider.";
 				return false;
 			}
 			if (claude || (!acp && !codex && !copilot) || (codex && !image) || (image && inline_images)) continue;
@@ -322,14 +322,14 @@ namespace uam::claude_input
 				if (!reader(image, bytes, 50 * 1024 * 1024 - source_bytes, read_error))
 					return fail(read_error.empty() ? "Could not read attached image: " + image.name : read_error);
 				if (bytes.size() > 50 * 1024 * 1024 - source_bytes)
-					return fail("Images exceed the 50 MiB preparation limit. Send fewer images.");
+					return fail("Images exceed the 50 MiB limit; send fewer images.");
 				source_bytes += bytes.size();
 				uam::attachment_preview::DeliveryImage input;
 				if (prepare_delivery)
 				{
 					input = uam::attachment_preview::PrepareDeliveryImage(bytes, uam::attachment_preview::kMaxSourceBytes, cancel);
 					if (input.bytes.empty())
-						return fail("Invalid or unsupported image. Use PNG, JPEG, GIF or WebP: " + image.name);
+						return fail("Invalid or unsupported image " + image.name + "; use PNG, JPEG, GIF or WebP.");
 				}
 				else
 				{
@@ -340,7 +340,7 @@ namespace uam::claude_input
 						mime = extension == ".png" ? "image/png" : extension == ".jpg" || extension == ".jpeg" ? "image/jpeg" : extension == ".gif" ? "image/gif" : extension == ".webp" ? "image/webp" : "";
 					}
 					if (!uam::ranges::Contains(std::array<std::string_view, 4>{"image/png", "image/jpeg", "image/gif", "image/webp"}, std::string_view(mime)))
-						return fail("Unsupported image. Use PNG, JPEG, GIF or WebP: " + image.name);
+						return fail("Unsupported image " + image.name + "; use PNG, JPEG, GIF or WebP.");
 					input = {bytes, 0, 0, mime};
 				}
 				encoded_bytes += 4 * ((input.bytes.size() + 2) / 3);
@@ -373,7 +373,7 @@ namespace uam::claude_input
 						static_indices.push_back(index);
 				}
 				if (reserved >= available || static_indices.empty())
-					return fail("Animated images must fit unchanged. Send fewer images or shorten the prompt.");
+					return fail("Animated images cannot be shrunk; send fewer images or shorten the prompt.");
 				std::ranges::sort(static_indices, [&inputs](std::size_t left, std::size_t right) { return inputs[left].bytes.size() < inputs[right].bytes.size(); });
 				std::size_t remaining = static_indices.size();
 				// Keep every image that fits its share unchanged before allocating space to larger images.
@@ -397,10 +397,10 @@ namespace uam::claude_input
 					const std::size_t encoded_budget = (available - reserved) * encoded_size / compressible;
 					const std::size_t byte_budget = encoded_budget / 4 * 3;
 					if (byte_budget == 0)
-						return fail("Too little input space remains for images. Shorten the prompt or send fewer images.");
+						return fail("Too little input space remains for images; shorten the prompt or send fewer images.");
 					inputs[index] = uam::attachment_preview::PrepareDeliveryImage(originals[index], byte_budget, cancel);
 					if (inputs[index].bytes.empty())
-						return fail("This image could not fit UAM's input limit. Animated images must fit unchanged: " + images[index].name);
+						return fail("Image " + images[index].name + " is too large for UAM's input limit.");
 					message["message"]["content"][index + 1]["source"]["media_type"] = inputs[index].mime_type;
 				}
 			}
@@ -456,7 +456,7 @@ namespace uam::claude_input
 			}
 			if (uam::attachment_preview::ImageMime(bytes).empty())
 			{
-				error = "Unsupported image. Use PNG, JPEG, GIF or WebP: " + image.name;
+				error = "Unsupported image " + image.name + "; use PNG, JPEG, GIF or WebP.";
 				return false;
 			}
 		}
@@ -478,7 +478,7 @@ namespace uam::claude_input
 		for (const auto& attachment : attachments)
 		{
 			if (policy == SavedImageSourcePolicy::OwnedImagesOnly && attachment.source != AttachmentSource::OwnedNativeAsset)
-				return fail("SSH saved image Retry accepts only retained original images. Attach other files again.");
+				return fail("SSH image retry can only resend the saved original images; attach other files again.");
 			if (attachment.source == AttachmentSource::LegacyPath)
 			{
 				if (!attachment_sources::IsPersistable(attachment))

@@ -1,5 +1,7 @@
 #include "test_harness.h"
 #include "app/worktree_launch_preparation_service.h"
+#include "app/svn_history.h"
+#include "app/vcs_commit_service.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/platform/background_thread_priority.h"
 
@@ -503,7 +505,7 @@ UAM_TEST(WorktreeLaunchPreparationRestartRejectsChangedOwnership)
 			UAM_ASSERT(uam::io::WriteTextFile(interrupted->receipt_file, receipt.dump() + std::string(64 * 1024, ' ')));
 			std::string validation_error;
 			UAM_ASSERT(!uam::GitWorktreeService().ValidatePreparedWorkspace(fixture.app.data_root, interrupted->receipt_file, prepared.metadata, validation_error));
-			UAM_ASSERT(validation_error.find("size limit") != std::string::npos);
+			UAM_ASSERT(validation_error.find("Could not read the prepared workspace record") != std::string::npos);
 		}
 		if (change == "created") chat.created_at += "-replacement";
 		if (change == "source") chat.workspace_directory = fixture.foreign.string();
@@ -538,7 +540,7 @@ UAM_TEST(WorktreeLaunchPreparationRestartRejectsChangedOwnership)
 		fixture.WaitForWorker(rejected);
 		const uam::WorktreeLaunchPreparationResult refusal = uam::PrepareWorktreeForLaunch(fixture.app, chat);
 		UAM_ASSERT_EQ(refusal.state, uam::WorktreeLaunchPreparationState::Failed);
-		if (change == "oversized") UAM_ASSERT(refusal.error.find("size limit") != std::string::npos);
+		if (change == "oversized") UAM_ASSERT(refusal.error.find("workspace record, so the workspace was kept") != std::string::npos);
 		if (change == "policy")
 		{
 			// The refusal names the setting that changed and the way out.
@@ -579,9 +581,16 @@ info)
     wc-root) printf '%s\n' "$UAM_TEST_SVN_ROOT" ;;
     url) printf '%s\n' 'file:///private-fixture/trunk' ;;
     repos-uuid) printf '%s\n' 'private-fixture-uuid' ;;
+    kind)
+        if [ "$UAM_TEST_SVN_MODE" = unversioned ]; then
+            printf '%s\n' "svn: warning: W155010: The node '$PWD' was not found." "svn: E200009: Could not display info for all targets because some targets don't exist" >&2
+            exit 1
+        fi
+        printf '%s\n' dir ;;
     *) exit 2 ;;
     esac ;;
 status)
+    if [ "$UAM_TEST_SVN_MODE" = status-failure ]; then printf '%s\n' "svn: E155037: Previous operation has not finished" >&2; exit 1; fi
     if [ -f "$UAM_TEST_SVN_ROOT/locked" ]; then printf '%s\n' '  L     .'; fi
     if [ "$UAM_TEST_SVN_MODE" = conflict ] && [ -f "$UAM_TEST_SVN_ROOT/updates.log" ]; then
         printf '%s\n' 'C       source.txt'
@@ -589,6 +598,11 @@ status)
 update)
     printf '%s\n' update >> "$UAM_TEST_SVN_ROOT/updates.log"
     if [ "$UAM_TEST_SVN_MODE" = failure ]; then printf '%s\n' "svn: E155004: Run 'svn cleanup' to remove locks" >&2; exit 1; fi
+    if [ "$UAM_TEST_SVN_MODE" = externals ]; then
+        printf '%s' updated > "$UAM_TEST_SVN_ROOT/source.txt"
+        printf '%s\n' "svn: warning: W205011: Error handling externals definition for 'ext':" "svn: E205011: Failure occurred processing one or more externals definitions" >&2
+        exit 1
+    fi
     if [ "$UAM_TEST_SVN_MODE" = truncated ]; then /usr/bin/head -c 5000000 /dev/zero; exit 0; fi
     if [ "$UAM_TEST_SVN_MODE" = blocked ]; then
         while [ ! -f "$UAM_TEST_SVN_ROOT/release" ]; do /bin/sleep 0.02; done
@@ -709,6 +723,97 @@ UAM_TEST(SvnUpdateBeforeChatFailureAndConflictBlockLaunch)
 #endif
 }
 
+UAM_TEST(SvnUpdateBeforeChatPassesABrokenExternalAndNamesTheStepThatFailed)
+{
+#if !defined(_WIN32)
+	{
+		// svn exits 1 with E205011 after updating the working copy; with no conflicts the chat starts.
+		FakeSvnLaunchFixture fixture("externals");
+		const auto task = fixture.Start();
+		fixture.Wait(task);
+		if (!task->merged) throw TestFailure(task->error);
+		fixture.Save(task);
+		UAM_ASSERT_EQ(uam::io::ReadTextFile(fixture.source / "source.txt"), "updated");
+		UAM_ASSERT_EQ(uam::io::ReadTextFile(fixture.log), "update\n");
+	}
+	{
+		// A failed status is reported as status, not as an update, and nothing is updated.
+		FakeSvnLaunchFixture fixture("status-failure");
+		const auto task = fixture.Start();
+		fixture.Wait(task);
+		UAM_ASSERT(!task->merged);
+		UAM_ASSERT(task->error.starts_with("SVN status failed (E155037: Previous operation has not finished)"));
+		UAM_ASSERT(!fs::exists(fixture.log));
+	}
+	{
+		// A folder SVN does not track would report "At revision N." and change nothing; the chat is told instead.
+		FakeSvnLaunchFixture fixture("unversioned");
+		const auto task = fixture.Start();
+		fixture.Wait(task);
+		UAM_ASSERT(!task->merged);
+		UAM_ASSERT(task->error.find("not under version control") != std::string::npos);
+		UAM_ASSERT(!fs::exists(fixture.log));
+	}
+#endif
+}
+
+UAM_TEST(SvnUpdateBeforeChatUpdatesOnlyTheChatsFolderPastABrokenExternal)
+{
+#if !defined(_WIN32)
+	if (!RunTestCommand("svn --version --quiet") || !RunTestCommand("svnadmin --version --quiet"))
+	{
+		std::fprintf(stderr, "SKIP real-svn launch case: svn or svnadmin is not installed\n");
+		return;
+	}
+	FakeSvnLaunchFixture fixture;
+	fixture.path.reset();
+	const fs::path repository = fixture.temporary.root / "repository";
+	UAM_ASSERT(RunTestCommand("svnadmin create " + ShellQuoteForTest(repository.string())));
+	const std::string url = "file://" + repository.generic_string();
+	const fs::path checkout = fixture.temporary.root / "checkout";
+	const fs::path other = fixture.temporary.root / "other";
+	const auto svn = [](const fs::path& cwd, const std::vector<std::string>& args)
+	{
+		const ProcessExecutionResult result = uam::RunSvn(cwd, args);
+		if (!result.ok) throw TestFailure("svn " + args.front() + " failed: " + result.output + result.error);
+	};
+	svn(fixture.temporary.root, {"checkout", "--non-interactive", url, checkout.string()});
+	fs::create_directories(checkout / "sub");
+	UAM_ASSERT(uam::io::WriteTextFile(checkout / "top.txt", "top\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(checkout / "sub" / "f.txt", "one\n"));
+	svn(checkout, {"add", "--non-interactive", "--", "top.txt", "sub"});
+	svn(checkout, {"commit", "--non-interactive", "-m", "start"});
+	// A commit leaves the checkout root at its checkout revision 0; updating puts the whole checkout at revision 1.
+	svn(checkout, {"update", "--non-interactive"});
+	// Revision 2 changes both folders and adds an external on the chat's folder that cannot be reached.
+	svn(fixture.temporary.root, {"checkout", "--non-interactive", url, other.string()});
+	UAM_ASSERT(uam::io::WriteTextFile(other / "top.txt", "top 2\n"));
+	UAM_ASSERT(uam::io::WriteTextFile(other / "sub" / "f.txt", "two\n"));
+	svn(other, {"propset", "--non-interactive", "svn:externals", "ext " + url + "-missing", "sub"});
+	svn(other, {"commit", "--non-interactive", "-m", "second"});
+
+	fixture.app.chats.front().workspace_directory = (checkout / "sub").string();
+	const auto task = fixture.Start();
+	fixture.Wait(task);
+	if (!task->merged) throw TestFailure(task->error);
+	fixture.Save(task);
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(checkout / "sub" / "f.txt"), "two\n");
+	// The rest of the checkout is left where it was, as the commit panel's Update leaves it.
+	UAM_ASSERT_EQ(uam::io::ReadTextFile(checkout / "top.txt"), "top\n");
+	const ProcessExecutionResult version = uam::RunSvnVersion(checkout, {"-n", "."});
+	UAM_ASSERT_EQ(uam::svn_history::ParseSvnVersion(version.output), std::string("1:2"));
+
+	// A folder inside the checkout that SVN does not track is refused rather than reported updated.
+	fs::create_directories(checkout / "scratch");
+	fixture.app.chats.front().workspace_directory = (checkout / "scratch").string();
+	fixture.app.chats.front().svn_update_pending = true;
+	const auto untracked = fixture.Start();
+	fixture.Wait(untracked);
+	UAM_ASSERT(!untracked->merged);
+	UAM_ASSERT(untracked->error.find("not under version control") != std::string::npos);
+#endif
+}
+
 UAM_TEST(SvnUpdateBeforeChatCancellationAndStaleSourceCannotPublish)
 {
 #if !defined(_WIN32)
@@ -750,7 +855,7 @@ UAM_TEST(SvnUpdateBeforeChatCancellationAndStaleSourceCannotPublish)
 			const auto locked = fixture.Start();
 			fixture.Wait(locked);
 			UAM_ASSERT(!locked->merged);
-			UAM_ASSERT(locked->error.find("Run svn cleanup") != std::string::npos);
+			UAM_ASSERT(locked->error.find("run svn cleanup") != std::string::npos);
 			UAM_ASSERT_EQ(uam::PrepareWorktreeForLaunch(fixture.app, fixture.app.chats.front()).state, uam::WorktreeLaunchPreparationState::Failed);
 			UAM_ASSERT_EQ(uam::io::ReadTextFile(fixture.log), "update\n");
 			// A consistent working copy recovers the interrupted receipt by retrying the update once.
@@ -1202,7 +1307,7 @@ UAM_TEST(WorktreeLaunchOlderSshHelperRefusesWithUpdateActionAndNeverDropsIsolati
 	{
 		const uam::WorktreeLaunchPreparationResult refused = uam::PrepareWorktreeForLaunch(app, app.chats.front());
 		UAM_ASSERT_EQ(refused.state, uam::WorktreeLaunchPreparationState::Failed);
-		UAM_ASSERT(refused.error.find("Update the SSH helper on Build box, then retry") != std::string::npos);
+		UAM_ASSERT(refused.error.find("The SSH helper on Build box is too old for isolated worktrees; update it, then retry") != std::string::npos);
 		// The chat keeps its isolation request and nothing about the refusal is stored on it.
 		UAM_ASSERT_EQ(app.chats.front().workspace_isolation_kind, uam::paths::kPendingGitWorktreeIsolationKind);
 		UAM_ASSERT(app.worktree_launch_preparations.empty() && app.worktree_operation_chat_ids.empty());
@@ -1345,7 +1450,7 @@ UAM_TEST(WorktreeLaunchEarlierSessionCreationStillRunningIsNotDuplicated)
 		const auto waiting = launch.Retry();
 		const uam::WorktreeLaunchPreparationResult refusal = uam::PrepareWorktreeForLaunch(launch.fixture.app, chat);
 		UAM_ASSERT_EQ(refusal.state, uam::WorktreeLaunchPreparationState::Failed);
-		UAM_ASSERT(refusal.error.find("Wait a minute, then retry") != std::string::npos);
+		UAM_ASSERT(refusal.error.find("wait a minute and retry") != std::string::npos);
 		// No second worktree or branch, and the journal still owns whatever the earlier session finishes.
 		UAM_ASSERT_EQ(ReadFile(launch.receipt), receipt);
 		UAM_ASSERT_EQ(launch.BranchCount(), branches);

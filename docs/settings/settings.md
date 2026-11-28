@@ -3,9 +3,9 @@
 Settings configure the shared UAM product and its provider defaults through consistent pages and explicit consequences. Draft-based pages use predictable Save/Discard behaviour; controls that save immediately must clearly report failure rather than implying an unsaved draft. A saved setting, an effective inherited value and a live observed state are different things and must be presented separately. Provider-dependent settings follow [environment scope](environment-scope.md); centrally managed resource definitions stay shared unless an explicit override is part of their agreement.
 
 - [Provider configuration](providers.md) and [Chat Defaults](chat-defaults.md)
-- [Permissions](permissions.md) and [Computer Use](computer-use.md)
+- [Permissions](permissions.md), [Permission Rules](permission-rules.md) and [Computer Use](computer-use.md)
 - [Central Setup](central-setup/central-setup.md), [MCP Servers](mcp-servers.md)
-- [Editors](editors.md), [Shell Actions](shell-actions.md), [Compute Pools](compute-pools.md)
+- [Editors](editors.md), [Shell Actions](shell-actions.md), [Compute Pools and host limits](compute-pools.md)
 - [Memory](memory.md), [Voice Input](voice-input.md), [Phone Access](phone-access.md), [Automation](automation.md)
 - [Version Control](version-control/version-control.md)
 - [Appearance](appearance.md), [Storage](storage.md), [Remote Hosts](remote-hosts.md)

@@ -10,11 +10,14 @@
 #include "common/provider/codex/cli/codex_session_index.h"
 #include "common/provider/codex/cli/codex_terminal_activity.h"
 #include "common/runtime/terminal/terminal_identity.h"
+#include "common/runtime/terminal/terminal_lifecycle.h"
 #include "common/provider/codex/cli/codex_thread_id.h"
 #include "common/provider/codex/cli/codex_native_children.h"
 #include "common/provider/codex/codex_options.h"
 #include "common/provider/provider_ids.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
+#include "common/provider/provider_setup.h"
+#include "common/config/execution_host_config.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_session_runtime.h"
 #include "common/runtime/acp/acp_json_rpc.h"
@@ -193,7 +196,18 @@ bool SendDeferredCodexInterruptIfReady(AppState& app, AcpSessionState& session, 
 ProviderTerminalActivity CodexCliProviderRuntime::PollInteractiveActivity(uam::CliTerminalState& terminal,
     std::string_view session_id, const std::filesystem::path& cwd, bool ambiguous) const
 {
-	return uam::PollCodexTerminalActivity(terminal, session_id, cwd, ambiguous);
+	const bool expired_before = terminal.native_turn_receipt_expired;
+	const ProviderTerminalActivity activity = uam::PollCodexTerminalActivity(terminal, session_id, cwd, ambiguous);
+	if (expired_before || !terminal.native_turn_receipt_expired || activity == ProviderTerminalActivity::Busy) return activity;
+	// No turn start was recorded in time. Ready also needs the idle composer drawn since the submission; without it the
+	// turn's end cannot be proven, so the terminal shows Unknown rather than staying busy.
+	if (RecentOutputIndicatesInputPrompt(terminal.current_turn_output_bytes))
+	{
+		terminal.codex_activity_completed = true;
+		return ProviderTerminalActivity::Complete;
+	}
+	uam::MarkCliTerminalTurnUnknown(terminal);
+	return activity;
 }
 
 void CodexCliProviderRuntime::CheckpointInteractiveSubmission(uam::CliTerminalState& terminal) const
@@ -352,6 +366,29 @@ std::vector<std::string> CodexCliProviderRuntime::BuildInteractiveArgv(const Pro
 	return argv;
 }
 
+bool CodexCliProviderRuntime::StageInteractiveAgentInstructions(const ExecutionHost& host, std::string_view instructions, std::vector<std::string>& argv, std::string& staged_context, std::string& error) const
+{
+	staged_context.clear();
+	// Codex has no extra instruction directory, so the agent's role goes in as developer instructions. The marker
+	// lets setup fold this value, and only this one, into its own. An SSH launch without a context channel carries
+	// argv on the controller's own ssh command line, so both the controller's and the executing host's limits apply.
+#if defined(_WIN32)
+	constexpr bool controller_windows = true;
+#else
+	constexpr bool controller_windows = false;
+#endif
+	const bool windows = controller_windows || host.platform == "windows" || host.platform == "Windows";
+	const std::string argument = "developer_instructions=" + uam::provider_setup::TomlString(std::string(uam::provider_setup::kAgentInstructionsIntro) + "\n\n" + std::string(instructions));
+	if (argument.size() > (windows ? 12U : 64U) * 1024U)
+	{
+		error = "This agent's instructions are too long for Codex CLI View's launch arguments. Use Chat for this agent.";
+		return false;
+	}
+	uam::provider_setup::InsertLaunchOptions(argv, {"-c", argument});
+	error.clear();
+	return true;
+}
+
 MessageRole CodexCliProviderRuntime::RoleFromNativeType(const ProviderProfile& profile, std::string_view native_type) const
 {
 	return uam::provider_runtime_internal::RoleFromNativeType(profile, native_type);
@@ -501,7 +538,7 @@ bool CodexCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::AcpSes
 		const std::string error_message = std::string("Codex app-server message handling failed: ") + ex.what();
 		AppendAcpDiagnostic(session, "parse", "codex_message_parse_error", method, "", false, 0,
 		                    error_message, CapDiagnosticString(message.dump(), kMaxAcpDiagnosticDetailBytes));
-		InvalidateAcpTransport(app, session, chat, error_message);
+		InvalidateAcpTransport(app, session, chat, "Codex sent a message UAM could not read.");
 	}
 	return true;
 }
@@ -662,7 +699,7 @@ bool CodexCliProviderRuntime::OnAcpHandleResult(uam::AppState& app, uam::AcpSess
 		if (pending != session.pending_steer_requests.end())
 		{
 			const bool confirmed = uam::nlohmann_json::TrimmedStringValue(result, {"turnId"}) == pending->second.provider_turn_id;
-			FinishCodexSteer(app, session, chat, request_id, confirmed ? "" : "Codex did not confirm the steered message for the requested turn. Retry the message after this turn finishes.");
+			FinishCodexSteer(app, session, chat, request_id, confirmed ? "" : "Codex did not confirm the steered message; send it again after this turn finishes.");
 		}
 		return true;
 	}

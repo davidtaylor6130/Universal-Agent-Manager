@@ -62,7 +62,11 @@ bool ReorderQueuedAcpPrompts(AppState& app, const std::string& chat_id, const st
 /// <summary>Durably resumes only the exact observed held queue before scheduling delivery.</summary>
 bool ResumeQueuedAcpPrompts(AppState& app, const std::string& chat_id, const std::vector<std::pair<std::string, int>>& expected, std::string* error_out = nullptr);
 bool StartAcpModelDiscovery(AppState& app, const std::string& chat_id, std::string* error_out = nullptr, bool stop_when_complete = false);
-bool StartEphemeralAcpModelDiscovery(AppState& app, const std::string& provider_id, const std::string& workspace_directory, const std::string& execution_host_id = "local", std::string* error_out = nullptr);
+/// Host admission may hold the start (background budget or load on that computer): it then returns false with
+/// admission_held set and the one-line wait in error_out; queue it with QueueAcpModelDiscoveryAdmissionRetry.
+bool StartEphemeralAcpModelDiscovery(AppState& app, const std::string& provider_id, const std::string& workspace_directory, const std::string& execution_host_id = "local", std::string* error_out = nullptr, bool* admission_held = nullptr);
+/// Keeps a discovery held by host admission and starts it once its computer admits it.
+void QueueAcpModelDiscoveryAdmissionRetry(AppState& app, const std::string& provider_id, const std::string& workspace_directory, const std::string& execution_host_id);
 bool QueueAcpModelDiscoveryCompatibilityRetry(AppState& app, const std::string& chat_id, const std::string& provider_id, const std::string& workspace_directory, const std::string& execution_host_id, const std::string& blocked_reason);
 bool RetryCompatibilityBlockedAcpModelDiscoveries(AppState& app);
 bool RetryLastAcpPrompt(AppState& app, const std::string& chat_id, std::string* error_out = nullptr);
@@ -101,7 +105,10 @@ bool RetryFailedAcpMessage(AppState& app, const std::string& chat_id, int messag
 bool DrainNextQueuedAcpUserPrompt(AppState& app, AcpSessionState& session, ChatSession& chat);
 bool PersistQueuedAcpUserPromptsAsInterrupted(AcpSessionState& session, ChatSession& chat);
 /// <summary>Requests native compaction in a ready idle session without deleting saved history.</summary>
-bool CompactAcpSession(AppState& app, const std::string& chat_id, std::string* error_out = nullptr);
+/// Whether the checked CLI on the chat's host meets the runtime's compaction minimum; nullopt while no version is known.
+std::optional<bool> AcpCompactionVersionSatisfied(const AppState& app, const IProviderRuntime& runtime, std::string_view provider_id, std::string_view execution_host_id);
+/// Requests native manual compaction. Instructions reach only runtimes that accept them; instructions_used reports whether they will.
+bool CompactAcpSession(AppState& app, const std::string& chat_id, std::string* error_out = nullptr, const std::string& instructions = {}, bool* instructions_used = nullptr);
 /// <summary>Adds one agent-published HTML view to the live turn's assistant message; false when the id already exists.</summary>
 bool AppendAcpHtmlView(AcpSessionState& session, ChatSession& chat, const std::string& view_id, const std::string& title, const std::string& html);
 /// <summary>Removes an HTML view whose publication could not be durably recorded.</summary>
@@ -140,7 +147,7 @@ bool ResolveAcpUserInput(AppState& app,
 
 /// <summary>True while a local stop was settled for the user at its exit deadline but its process has still not been seen to exit. AcpStopInProgress stays true too, so nothing may start another process for the chat.</summary>
 bool AcpStopExitUnobserved(const AppState& app, std::string_view chat_id);
-inline constexpr const char* kAcpProcessExitUnobservedMessage = "The previous provider process for this chat has not exited yet, so nothing new was started. UAM keeps ending it: this clears by itself once it exits, and quitting UAM also ends it.";
+inline constexpr const char* kAcpProcessExitUnobservedMessage = "The previous provider process is still exiting, so nothing new was started.";
 bool PollCompletedAcpProcessStops(AppState& app, CefRefPtr<CefBrowser> browser);
 bool PollAllAcpSessions(AppState& app, CefRefPtr<CefBrowser> browser = nullptr);
 /// A stop that is queued or running now. AcpStopInProgress also counts a remote stop the host never confirmed.
@@ -165,6 +172,8 @@ bool PrepareCodexThreadForRuntimeLaunch(AppState& app, const ChatSession& chat, 
 std::size_t RestoreRemoteAcpSessionsAfterRestart(AppState& app, bool initial_restore = true);
 std::size_t RetryPendingRemoteAcpSessionHydration(AppState& app);
 bool FlushPendingChatSaves(AppState& app, bool force = false);
+/// <summary>Returns every live chat-save worker to its starting priority; call before blocking or spinning on chat saves (#526, #647).</summary>
+void RaiseAllChatSaveWorkersForBarrier(AppState& app) noexcept;
 /// <summary>After normal hydration, settle only proven stopped direct receipts without replay.</summary>
 bool SettleStoppedDirectAcpAdmissions(AppState& app, ChatSession& chat);
 /// Full-primary publication facts are distinct from current caller eligibility.

@@ -2,14 +2,10 @@
 
 #include "app/shell_action_service.h"
 #include "common/platform/platform_services.h"
-#include "common/provider/excluded_provider_data.h"
 #include "common/utils/string_utils.h"
 #include "cef/cef_push.h"
 
 #include <nlohmann/json.hpp>
-
-#include <algorithm>
-#include <cstddef>
 
 namespace
 {
@@ -54,20 +50,19 @@ void UamQueryHandler::HandleSetShellActions(CefRefPtr<CefBrowser> browser, const
 {
 	std::vector<ShellAction> actions;
 	std::string error;
-	if (ParseActions(payload, actions, error))
-	{
-		// The interface never sees an excluded provider's actions, so its full-list save keeps them unchanged and in place.
-		for (std::size_t index = 0; index < m_app.shell_actions.size(); ++index)
-			if (uam::excluded_provider_data::IsExcluded(m_app.shell_actions[index].provider_id))
-				actions.insert(actions.begin() + static_cast<std::ptrdiff_t>(std::min(index, actions.size())), m_app.shell_actions[index]);
-	}
-	if (!error.empty() || !ShellActionService::Save(m_app.data_root, actions, &error))
+	// Excluded providers' actions and kept invalid entries are saved as loaded, never as the interface returned them.
+	if (ParseActions(payload, actions, error)) actions = ShellActionService::MergeInterfaceList(m_app.shell_actions, std::move(actions));
+	if (!error.empty() || !ShellActionService::Save(m_app.data_root, actions, &error, m_app.shell_actions_unreadable))
 	{
 		cb->Failure(400, error);
 		return;
 	}
-	m_app.shell_actions = ShellActionService::Load(m_app.data_root);
-	m_app.shell_action_notification = "Shell action settings saved. Choose Apply to update Finder or Explorer.";
+	bool reload_unreadable = false;
+	std::vector<ShellAction> reloaded = ShellActionService::Load(m_app.data_root, {}, nullptr, &reload_unreadable);
+	// The file now holds exactly what was just written, so a reload blocked by a transient lock keeps that list instead of an empty one.
+	m_app.shell_actions = reload_unreadable ? std::move(actions) : std::move(reloaded);
+	m_app.shell_actions_unreadable = false;
+	m_app.shell_action_notification = "Shell action settings saved; choose Apply to update Finder or Explorer.";
 	uam::PushStateUpdateIfChanged(browser, m_app);
 	cb->Success("{}");
 }
@@ -76,7 +71,9 @@ void UamQueryHandler::HandleApplyShellActions(CefRefPtr<CefBrowser> browser, con
 {
 	std::string error;
 	const std::filesystem::path executable = PlatformServicesFactory::Instance().process_service.ResolveCurrentExecutablePath();
-	if (!ShellActionService::Apply(m_app, executable, &error))
+	// While the saved list could not be read the in-memory list is empty, and applying it would remove every installed menu item.
+	if (m_app.shell_actions_unreadable) error = std::string(ShellActionService::kUnreadableWarning);
+	if (!error.empty() || !ShellActionService::Apply(m_app, executable, &error))
 	{
 		m_app.shell_action_notification = error;
 		uam::PushStateUpdateIfChanged(browser, m_app);

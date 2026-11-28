@@ -1,3 +1,4 @@
+import { sameRoutingWaitHosts } from '../../types/hostLoad'
 import { customIconsEqual } from '../../types/customIcon'
 // Equivalence checkers, binding builders, message reconciler, and request-clear
 // helpers. Extracted from useAppStore.ts (MO-1). Module-level mutable state
@@ -164,6 +165,7 @@ export function sessionsEquivalent(previous: Session, next: Session): boolean {
     previous.routingAssignedConnectionIdentity === next.routingAssignedConnectionIdentity &&
     previous.routingAssignedProviderConfigurationIdentity === next.routingAssignedProviderConfigurationIdentity &&
     previous.routingWaitReason === next.routingWaitReason &&
+    sameRoutingWaitHosts(previous.routingWaitHosts, next.routingWaitHosts) &&
     previous.routingReservationPending === next.routingReservationPending &&
     previous.routingUnresolvedReservation === next.routingUnresolvedReservation &&
     previous.name === next.name &&
@@ -294,6 +296,7 @@ export function sessionFromCppChat(
     routingAssignedConnectionIdentity: chat.routingAssignedConnectionIdentity,
     routingAssignedProviderConfigurationIdentity: chat.routingAssignedProviderConfigurationIdentity,
     routingWaitReason: chat.routingWaitReason,
+    routingWaitHosts: chat.routingWaitHosts,
     routingReservationPending: chat.routingReservationPending,
     routingUnresolvedReservation: chat.routingUnresolvedReservation,
 
@@ -536,6 +539,7 @@ function pendingPermissionEquivalent(existing: AcpPendingPermission | null, next
     existing.safetyRisk === next.safetyRisk &&
     existing.safetyTier === next.safetyTier &&
     existing.safetyRequiresApproval === next.safetyRequiresApproval &&
+    existing.ruleNotice === next.ruleNotice &&
     existing.options.length === next.options.length &&
     existing.options.every((option, index) => {
       const other = next.options[index]
@@ -604,6 +608,7 @@ export function acpBindingsEquivalent(existing: AcpBinding | undefined, next: Ac
     existing.lastStopReason === next.lastStopReason &&
     existing.remoteStopForceAvailable === next.remoteStopForceAvailable &&
     existing.computePoolWait?.poolName === next.computePoolWait?.poolName && existing.computePoolWait?.inUse === next.computePoolWait?.inUse && existing.computePoolWait?.limit === next.computePoolWait?.limit &&
+    existing.computePoolWait?.message === next.computePoolWait?.message && existing.computePoolWait?.runAnyway === next.computePoolWait?.runAnyway &&
     existing.timeoutStop?.label === next.timeoutStop?.label && existing.timeoutStop?.seconds === next.timeoutStop?.seconds &&
     existing.timeoutStop?.kind === next.timeoutStop?.kind && existing.timeoutStop?.count === next.timeoutStop?.count && existing.timeoutStop?.example === next.timeoutStop?.example &&
     diagnosticsEquivalent(existing.diagnostics, next.diagnostics) &&
@@ -657,7 +662,9 @@ export function cliBindingsEquivalent(existing: CliBinding | undefined, next: Cl
     existing.readySinceLastSelect === next.readySinceLastSelect &&
     existing.active === next.active &&
     existing.pendingSteer === next.pendingSteer &&
-    existing.lastError === next.lastError
+    existing.lastError === next.lastError &&
+    existing.hostAdmissionWait?.message === next.hostAdmissionWait?.message &&
+    existing.hostAdmissionWait?.runAnyway === next.hostAdmissionWait?.runAnyway
   )
 }
 
@@ -687,6 +694,7 @@ export function cliBindingFromCppChat(chat: CppChat, previous: CliBinding | unde
     active: lifecycleState === 'idle' && running,
     pendingSteer: Boolean(chat.cliTerminal.pendingSteer),
     lastError: chat.cliTerminal.lastError ?? '',
+    hostAdmissionWait: chat.cliTerminal.hostAdmissionWait,
   }
 
   return cliBindingsEquivalent(previous, next) ? previous! : next

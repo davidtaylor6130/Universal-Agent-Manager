@@ -14,6 +14,7 @@
 #include "common/config/provider_chat_defaults.h"
 #include "common/memory/memory_policy.h"
 #include "common/config/settings_frontend_json.h"
+#include "common/config/permission_command_rules_json.h"
 #include "common/platform/platform_services.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_model_json.h"
@@ -277,6 +278,11 @@ namespace uam
 		constexpr std::size_t kMaxRunningAgents = 4;
 		constexpr std::size_t kMaxQueuedAgents = 32;
 		constexpr std::size_t kMaxDirectChildren = 4;
+		// One parent's agents may hold at most half the running slots, so another parent's agents always find room.
+		constexpr std::size_t kMaxRunningPerParent = kMaxRunningAgents / 2;
+		static_assert(kMaxRunningPerParent >= 1 && kMaxRunningPerParent < kMaxRunningAgents);
+		// Every live run a chat owns at any depth: four top-level runs with four children each.
+		constexpr std::size_t kMaxLiveRunsPerChat = kMaxDirectChildren + kMaxDirectChildren * kMaxDirectChildren;
 		constexpr std::size_t kMaxResultExcerptBytes = 16U * 1024U;
 		constexpr int64_t kMaxRunElapsedMs = 30LL * 60LL * 1000LL;
 		constexpr int64_t kProviderCrashWindowMs = 60LL * 1000LL;
@@ -305,6 +311,25 @@ namespace uam
 			{
 				const bool reserved = owner && ((owner->transition && owner->action == ManagedInitialRuntimeOwner::Action::Running) || (owner->uncertain_candidate && owner->uncertain_candidate->status == "running"));
 				if (reserved && std::ranges::none_of(app.agent_runs, [&](const AgentRun& run) { return run.id == id && run.status == "running"; }))
+					++running;
+			}
+			return running;
+		}
+
+		/// The parent whose share a run uses: the agent run that started it, or the chat for a top-level agent.
+		std::string RunParentKey(const AgentRun& run)
+		{
+			return run.parent_run_id.empty() ? "chat:" + run.root_chat_id : "run:" + run.parent_run_id;
+		}
+
+		/// Running slots held by one parent's agents, counted the same way as RunningAgentSlots.
+		std::size_t RunningSlotsOfParent(const AppState& app, const std::string& parent)
+		{
+			std::size_t running = static_cast<std::size_t>(std::ranges::count_if(app.agent_runs, [&](const AgentRun& run) { return run.status == "running" && RunParentKey(run) == parent; }));
+			for (const auto& [id, owner] : app.managed_initial_runtime_owners)
+			{
+				const bool reserved = owner && ((owner->transition && owner->action == ManagedInitialRuntimeOwner::Action::Running) || (owner->uncertain_candidate && owner->uncertain_candidate->status == "running"));
+				if (reserved && RunParentKey(owner->expected) == parent && std::ranges::none_of(app.agent_runs, [&](const AgentRun& run) { return run.id == id && run.status == "running"; }))
 					++running;
 			}
 			return running;
@@ -598,7 +623,7 @@ namespace uam
 			for (const auto& rule : settings.computer_use_allowed_applications)
 				application_rules.push_back({rule.identity_kind, rule.identity});
 			// Execution policy is independent of presentation, update observations and other UI preferences.
-			const auto execution_settings = nlohmann::json::array({provider_availability::IsEnabled(settings, provider->id, host->id), settings.provider_extra_flags, provider_ids::NormalizeCliProviderAliasOrSelf(settings.permission_reviewer_provider_id), strings::Trim(settings.permission_reviewer_model_id), settings_frontend_json::SerializeMarkdownStoreDirectory(settings), central_configuration::Serialize(settings.central_provider_configuration), mcp_server_config::Serialize(host_scoped_settings::McpServers(settings, host->id)), nlohmann::json::array({defaults.model_id, defaults.approval_mode, defaults.command_safety_tier, defaults.reasoning_effort, defaults.service_tier, defaults.small_model_mode, defaults.memory_enabled, defaults.memory_level, defaults.feature_preference}), settings.git_enabled, settings.git_auto_worktree, settings.git_snapshot_svn, settings.git_snapshot_plain_folders, settings.git_pull_before_chat, settings.git_default_base_branch, settings.svn_enabled, settings.svn_update_before_chat, memory_policy::Resolve(settings, chat), settings.memory_recall_budget_bytes, settings.computer_use_globally_enabled, settings.computer_use_allowlist_enabled, application_rules, settings.acp_turn_output_limit_mib, settings.active_turn_inactivity_timeout_seconds, settings.acp_setup_inactivity_timeout_seconds});
+			const auto execution_settings = nlohmann::json::array({provider_availability::IsEnabled(settings, provider->id, host->id), settings.provider_extra_flags, provider_ids::NormalizeCliProviderAliasOrSelf(settings.permission_reviewer_provider_id), strings::Trim(settings.permission_reviewer_model_id), permission_command_rules::Serialize(settings.permission_command_rules), settings.permission_ai_review_enabled, settings.permission_remote_commits_without_approval, settings_frontend_json::SerializeMarkdownStoreDirectory(settings), central_configuration::Serialize(settings.central_provider_configuration), mcp_server_config::Serialize(host_scoped_settings::McpServers(settings, host->id)), nlohmann::json::array({defaults.model_id, defaults.approval_mode, defaults.command_safety_tier, defaults.reasoning_effort, defaults.service_tier, defaults.small_model_mode, defaults.memory_enabled, defaults.memory_level, defaults.feature_preference}), settings.git_enabled, settings.git_auto_worktree, settings.git_snapshot_svn, settings.git_snapshot_plain_folders, settings.git_pull_before_chat, settings.git_default_base_branch, settings.svn_enabled, settings.svn_update_before_chat, memory_policy::Resolve(settings, chat), settings.memory_recall_budget_bytes, settings.computer_use_globally_enabled, settings.computer_use_allowlist_enabled, application_rules, settings.acp_turn_output_limit_mib, settings.active_turn_inactivity_timeout_seconds, settings.acp_setup_inactivity_timeout_seconds});
 			return nlohmann::json::array({execution_settings, host->id, host->transport, host->ssh_alias, host->platform, host->architecture, host->runner_version, host->runner_protocol_version, host->runner_directory, host->instruction_file, host->instruction_text ? nlohmann::json(*host->instruction_text) : nlohmann::json(nullptr), provider->id, provider->interactive_command, provider->runtime_flags, provider->resume_argument, provider->supports_structured, provider->structured_protocol, provider->execution_mode, provider->output_mode, provider->prompt_bootstrap, provider->prompt_bootstrap_path}).dump();
 		}
 		std::string InitialChildPolicy(const ChatSession& chat, const std::string* comparison_model = nullptr)
@@ -779,7 +804,7 @@ namespace uam
 					    }
 					    catch (...)
 					    {
-						    work->error = "Managed preparation failed. The task was not replayed.";
+						    work->error = "Agent setup failed, so the task was not sent.";
 					    }
 					    work->finished.store(true, std::memory_order_release);
 				    })
@@ -967,7 +992,7 @@ namespace uam
 			return reject("The selected execution host is unavailable.");
 		auto work = native_history::TryCreateWorkerOwnedNativeRefresh<InitialPreparation>();
 		if (!work)
-			return reject("Bounded managed preparation is busy. Retry after it finishes.");
+			return reject("Another agent setup is in progress; retry after it finishes.");
 		auto task = std::make_shared<PendingManagedInitialMention>();
 		task->root = app.data_root;
 		task->root_id = root_id;
@@ -1058,6 +1083,8 @@ namespace uam
 		continuation.turns.push_back(turn);
 		run.managed_continuation = std::move(continuation);
 		transcript.agent_run_id = run.id;
+		transcript.managed_root_chat_id = work->parent.id;
+		transcript.managed_root_created_at = work->parent.created_at;
 		task->transcript_id = transcript.id;
 		app.managed_initial_mentions.emplace(root_id, task);
 		const AgentDefinition selected = *definition;
@@ -1135,7 +1162,7 @@ namespace uam
 					if (parent_result.state != ChatPublicationState::Committed)
 					{
 						task->result.delegation_state = parent_result.state == ChatPublicationState::Uncertain ? ManagedInitialDelegationState::Uncertain : ManagedInitialDelegationState::Rejected;
-						task->result.error = parent_result.state == ChatPublicationState::Uncertain ? "The request's save could not be confirmed. No agent was started." : "The request was not recorded. No agent was started.";
+						task->result.error = parent_result.state == ChatPublicationState::Uncertain ? "Your request's save could not be confirmed, so no agent was started." : "Your request was not saved, so no agent was started.";
 						if (parent_result.state == ChatPublicationState::Uncertain)
 						{
 							task->uncertain_root = true;
@@ -1172,7 +1199,7 @@ namespace uam
 					if (transcript_result.state != ChatPublicationState::Committed)
 					{
 						task->result.delegation_state = transcript_result.state == ChatPublicationState::Uncertain ? ManagedInitialDelegationState::Uncertain : ManagedInitialDelegationState::Rejected;
-						task->result.error = "Your request was recorded, but its managed conversation could not be confirmed. No agent was started.";
+						task->result.error = "Your request was saved, but no agent started because its conversation could not be confirmed.";
 						CleanInitialCreation(*task);
 						changed = true;
 						continue;
@@ -1182,7 +1209,7 @@ namespace uam
 					if (ledger_result.state != AgentRunPublishState::Committed)
 					{
 						task->result.delegation_state = ledger_result.state == AgentRunPublishState::Uncertain ? ManagedInitialDelegationState::Uncertain : ManagedInitialDelegationState::Rejected;
-						task->result.error = "Your request was recorded, but delegation could not be confirmed. No agent was started.";
+						task->result.error = "Your request was saved, but no agent started because delegation could not be confirmed.";
 						CleanInitialCreation(*task);
 						changed = true;
 						continue;
@@ -1271,7 +1298,7 @@ namespace uam
 							                        }
 							                        if (!revision || !saved || !InitialStoredChatMatches(work.root, *saved, work.parent) || ChatRepository::ChatStorageRevision(work.root, work.before.id) != revision)
 							                        {
-								                        work.error = "The unconfirmed parent has a different saved record. Its ticket and evidence were retained.";
+								                        work.error = "The parent chat's saved copy changed, so its agent request was kept unconfirmed.";
 								                        return;
 							                        }
 							                        work.root_prepared = ChatRepository::PrepareChatPublication(work.root, work.parent, ChatPublicationMode::UpdateExisting, *revision, &work.error);
@@ -1340,7 +1367,7 @@ namespace uam
 					if (acked && !task->cancelled && !app.managed_initial_shutdown && !owner->input_forbidden && owner->expected.status == "queued" && !app.pending_agent_run_cancellation_ids.contains(owner->expected.id) && InitialRuntimeOwned(app, *owner))
 						app.queued_agent_run_ids.push_back(owner->expected.id);
 					else if (owner->desired_status.empty())
-						ForbidInitialInput(*owner, "The recorded delegation lost its completion owner. The task was not started.");
+						ForbidInitialInput(*owner, "The agent task lost its owner, so it was not started.");
 				}
 				app.managed_initial_mentions.erase(id);
 				changed = true;
@@ -1368,7 +1395,7 @@ namespace uam
 			return owner && session.managed_initial_owner == owner && owner->session == &session && owner->process == session.last_process_id && InitialSessionOwned(app, session, chat);
 		const bool allowed = owner && session.managed_initial_owner == owner && owner->session == &session && owner->completion_acked && !owner->input_forbidden && !owner->input_written && (owner->phase == ManagedInitialRuntimeOwner::Phase::Starting || owner->phase == ManagedInitialRuntimeOwner::Phase::Row || owner->phase == ManagedInitialRuntimeOwner::Phase::Input) && owner->expected.status == "running" && InitialCurrentTurn(*owner).dispatch_attempted && !session.managed_launch_attempted && !session.running && (owner->resume_only ? (owner->expected.managed_continuation->execution && chat.native_session_id == owner->expected.managed_continuation->execution->native_session_id && (session.session_id.empty() || session.session_id == chat.native_session_id)) : (session.session_id.empty() && chat.native_session_id.empty())) && InitialRuntimeOwned(app, *owner);
 		if (!allowed && error_out)
-			*error_out = "This managed initial input has no current launch permission. It was not replayed.";
+			*error_out = "This agent task is no longer allowed to start, so it was not sent.";
 		return allowed;
 	}
 
@@ -1380,7 +1407,7 @@ namespace uam
 		{
 			if (owner && session.managed_initial_owner == owner && owner->session == &session)
 			{
-				ForbidInitialInput(*owner, "The managed setup lost its exact queued task, captured agent policy or admitted row. No task input was sent.");
+				ForbidInitialInput(*owner, "The agent setup lost its queued task or settings, so no task was sent.");
 				session.last_error = owner->diagnostic;
 			}
 			return false;
@@ -1515,7 +1542,7 @@ namespace uam
 		owner->binding_withheld = true;
 		if (owner->resume_only)
 		{
-			ForbidInitialInput(*owner, diagnostic.empty() ? "The provider did not confirm the saved managed read policy. No input was replayed." : std::string(uam::strings::Utf8Prefix(diagnostic, 1024)));
+			ForbidInitialInput(*owner, diagnostic.empty() ? "The provider did not confirm the agent's read policy, so no input was sent." : std::string(uam::strings::Utf8Prefix(diagnostic, 1024)));
 			session.last_error = owner->diagnostic;
 		}
 	}
@@ -1525,7 +1552,7 @@ namespace uam
 		const auto current = ManagedReadOnlyNativeScope(app, session, chat);
 		if (!current || *current != scope)
 		{
-			RejectManagedReadPolicy(app, session, chat, scope, "The managed native read-policy scope changed before observation. No input was replayed.");
+			RejectManagedReadPolicy(app, session, chat, scope, "The agent's read policy changed before it was checked, so no input was sent.");
 			return false;
 		}
 		const auto owner = session.managed_initial_owner;
@@ -1533,7 +1560,7 @@ namespace uam
 		const bool ready = owner->resume_only ? (!owner->input_attempted && !owner->input_written && native == scope.native_session_id && owner->dispatch_configuration && owner->dispatch_configuration->native_session_id == native) : (owner->input_attempted && owner->input_written && owner->configuration_captured && owner->dispatch_configuration && owner->dispatch_settings == scope.configuration && owner->child_policy == scope.child_policy && owner->dispatch_configuration->effective_model_id == model && owner->dispatch_configuration->workspace_directory == workspace);
 		if (!exact || !ready || (owner->setup_execution_observed && (owner->observed_native != native || owner->observed_model != model || owner->observed_workspace != workspace || owner->observed_mode != mode)))
 		{
-			RejectManagedReadPolicy(app, session, chat, scope, "The provider contradicted the exact managed native model, workspace, Plan mode or read policy. No input was replayed.");
+			RejectManagedReadPolicy(app, session, chat, scope, "The provider reported different agent settings, so no input was sent.");
 			return false;
 		}
 		owner->setup_execution_observed = true;
@@ -1559,7 +1586,7 @@ namespace uam
 				if (!IsTerminal(owner->expected.status))
 				{
 					owner->desired_status = "failed"; owner->diagnostic_code = "native_resume_observation_changed";
-					owner->diagnostic = "The provider contradicted the saved managed model, mode or native identity. Input was not replayed.";
+					owner->diagnostic = "The provider reported a different agent model, mode or conversation, so no input was sent.";
 				}
 			}
 			return;
@@ -1670,7 +1697,7 @@ namespace uam
 		if (!owned || !correlated || !binding || owner->binding_withheld || !read_only_openai_policy_confirmed || !uuid::IsCanonicalUuid(native) || native != binding->native_session_id || session.session_id != native || chat.native_session_id != native || model.empty() || model.size() > 160 || model.find('\0') != std::string_view::npos || model != binding->effective_model_id || workspace.empty() || workspace.size() > 4096 || workspace.find('\0') != std::string_view::npos || workspace != binding->workspace_directory || (!response && !collaboration_supplied) || (collaboration_supplied && (effective_mode != approval_modes::kPlanApprovalMode || collaboration_model != binding->effective_model_id)))
 		{
 			owner->binding_withheld = true;
-			ForbidInitialInput(*owner, "The provider did not confirm the exact saved managed Codex model, policy, mode or native conversation. No input was replayed.");
+			ForbidInitialInput(*owner, "The provider did not confirm the Codex agent's settings, so no input was sent.");
 			session.last_error = owner->diagnostic;
 			return false;
 		}
@@ -1701,7 +1728,7 @@ namespace uam
 			if (!binding || !supplied_fields_valid || native.size() > 160 || model.size() > 160 || workspace.size() > 4096 || native.find('\0') != std::string_view::npos || model.find('\0') != std::string_view::npos || workspace.find('\0') != std::string_view::npos || (!native.empty() && native != binding->native_session_id) || (!model.empty() && model != binding->effective_model_id) || (!workspace.empty() && workspace != binding->workspace_directory))
 			{
 				owner->binding_withheld = true;
-				ForbidInitialInput(*owner, "The provider contradicted the saved managed Codex execution evidence. No input was replayed.");
+				ForbidInitialInput(*owner, "The provider reported different Codex agent settings, so no input was sent.");
 			}
 			return; // Metadata can revoke resume proof, never create it or repair a withheld observation.
 		}
@@ -1749,7 +1776,7 @@ namespace uam
 		// The response dispatcher owns method/id correlation; the adapter clears setup id before this receipt callback.
 		if (owner->resume_only && session.protocol_kind == "copilot-sdk" && (!owner->expected.managed_continuation || !owner->expected.managed_continuation->execution || session.session_id != owner->expected.managed_continuation->execution->native_session_id))
 		{
-			ForbidInitialInput(*owner, "The provider changed the saved managed Copilot conversation. No input was replayed.");
+			ForbidInitialInput(*owner, "The provider changed the Copilot agent's conversation, so no input was sent.");
 			return;
 		}
 		owner->native_response_seen = true;
@@ -1891,7 +1918,7 @@ namespace uam
 	void AgentRunScheduler::InitialStopRequested(AcpSessionState& session)
 	{
 		if (const auto owner = session.managed_initial_owner; owner && owner->session == &session)
-			ForbidInitialInput(*owner, "The managed initial provider was stopped. Task input was not replayed.");
+			ForbidInitialInput(*owner, "The agent's provider was stopped, so the task was not sent.");
 	}
 
 	void AgentRunScheduler::InitialTurnSettled(AcpSessionState& session, std::string_view outcome, std::string_view error)
@@ -2277,7 +2304,7 @@ namespace uam
 				owner->input_forbidden = true;
 				owner->desired_status = app.managed_initial_shutdown ? "interrupted" : task.cancelled ? "cancelled" : "failed";
 				owner->diagnostic_code = "followup_delivery_unknown";
-				owner->diagnostic = "Managed admission was unconfirmed. No task input was attempted or replayed.";
+				owner->diagnostic = "The agent's start could not be confirmed, so no task input was sent.";
 			}
 			app.managed_initial_runtime_owners.emplace(task.run_id, owner);
 			app.managed_followup_completed_owners.erase(task.run_id);
@@ -2370,7 +2397,7 @@ namespace uam
 						auto& owner = *accepted->second;
 						owner.completion_acked = acked;
 						if (acked && !task->cancelled && !app.managed_initial_shutdown && !app.pending_agent_run_cancellation_ids.contains(id) && InitialRuntimeOwned(app, owner)) app.queued_agent_run_ids.push_back(id);
-						else ForbidInitialInput(owner, "The recorded follow-up lost its completion owner. No input was sent.");
+						else ForbidInitialInput(owner, "The follow-up lost its owner, so no input was sent.");
 					}
 				}
 				app.managed_followups.erase(id); changed = true;
@@ -2549,7 +2576,7 @@ namespace uam
 			if (result.state != AgentRunPublishState::Committed)
 			{
 				// Even a rejected first-attempt CAS permanently removes input permission.
-				ForbidInitialInput(owner, "Managed state could not be confirmed. UAM retained the record and did not replay task input.");
+				ForbidInitialInput(owner, "Agent state could not be confirmed, so the record was kept and no task input was sent.");
 				owner.uncertain_candidate = work->candidate;
 				owner.retry_at = InitialClock::now() + std::chrono::milliseconds(500);
 				owner.transition.reset();
@@ -2684,7 +2711,7 @@ namespace uam
 					                        const bool candidate = saved && InitialStoredChatMatches(root_path, *saved, work.parent_candidate);
 					                        if (!revision || (!before && !candidate) || ChatRepository::ChatStorageRevision(root_path, work.parent_before.id) != revision)
 					                        {
-						                        work.error = "Managed result publication is still unconfirmed. Its exact parent record was retained.";
+						                        work.error = "The agent result is still unconfirmed, so the parent chat was kept as is.";
 						                        return;
 					                        }
 					                        work.root_prepared = ChatRepository::PrepareChatPublication(root_path, work.parent_candidate, ChatPublicationMode::UpdateExisting, *revision, &work.error);
@@ -2727,7 +2754,7 @@ namespace uam
 					owner.parent_confirmations = 0;
 					owner.phase = ManagedInitialRuntimeOwner::Phase::Result;
 					owner.transition.reset();
-					app.status_line = "A managed agent result could not be confirmed in this chat's saved history. You can send again; UAM will retry adding the result.";
+					app.status_line = "An agent result could not be confirmed in this chat; UAM will retry adding it when you send again.";
 					diagnostics::Write("[agent-runs] result publication for " + owner.expected.id + " stayed unconfirmed after " + std::to_string(kMaxParentConfirmations) + " checks; released the parent chat.");
 					return true;
 				}
@@ -2837,9 +2864,14 @@ namespace uam
 		bool PollInitialRuntimes(AppState& app, int64_t now_epoch_ms, int64_t now_steady_ms)
 		{
 			bool changed = false;
-			std::vector<std::string> ids;
+			// Oldest first, so a freed running slot goes to the agent that has waited longest.
+			std::vector<std::pair<std::string, std::string>> ordered;
 			for (const auto& [id, owner] : app.managed_initial_runtime_owners)
-				ids.push_back(id);
+				ordered.emplace_back(owner ? owner->expected.created_at : std::string(), id);
+			std::ranges::sort(ordered);
+			std::vector<std::string> ids;
+			for (auto& entry : ordered)
+				ids.push_back(std::move(entry.second));
 			for (const auto& id : ids)
 			{
 				const auto found = app.managed_initial_runtime_owners.find(id);
@@ -2929,7 +2961,7 @@ namespace uam
 				{
 					const auto* setup = FindAcpSessionForChat(app, owner->transcript_id);
 					if (setup && setup == owner->session && setup->managed_initial_owner == owner && setup->lifecycle_state == acp_detail::kAcpLifecycleError)
-						ForbidInitialInput(*owner, strings::NonEmptyOrFallback(setup->last_error, "The managed native setup failed. Input was not replayed."));
+						ForbidInitialInput(*owner, strings::NonEmptyOrFallback(setup->last_error, "The agent's setup failed, so no input was sent."));
 				}
 				if (!owner->desired_status.empty())
 				{
@@ -2962,7 +2994,7 @@ namespace uam
 				if (owner->phase == ManagedInitialRuntimeOwner::Phase::Queued)
 				{
 					const auto running = RunningAgentSlots(app);
-					if (!owner->completion_acked || running >= kMaxRunningAgents)
+					if (!owner->completion_acked || running >= kMaxRunningAgents || RunningSlotsOfParent(app, RunParentKey(owner->expected)) >= kMaxRunningPerParent)
 						continue;
 					auto* routed = ChatDomainService().FindChatById(app, owner->transcript_id);
 					const ChatSession before_routing = *routed;
@@ -2991,7 +3023,7 @@ namespace uam
 						// Captured model/options/policy are never replaced by host defaults in this initial slice.
 						if (InitialChildPolicy(admitted) != InitialChildPolicy(*routed) || !InitialRuntimeOwned(app, *owner, false))
 						{
-							ForbidInitialInput(*owner, "Managed routing changed captured model or policy. No task input was sent.");
+							ForbidInitialInput(*owner, "Agent routing changed the model or policy, so no task input was sent.");
 							continue;
 						}
 						owner->child_policy = InitialChildPolicy(*routed);
@@ -2999,7 +3031,7 @@ namespace uam
 					}
 					if (!InitialRuntimeOwned(app, *owner))
 					{
-						ForbidInitialInput(*owner, "The managed initial route changed. No task input was sent.");
+						ForbidInitialInput(*owner, "The agent's route changed, so no task input was sent.");
 						continue;
 					}
 					if (ProviderCircuitOpen(app, owner->expected.provider_id, now_epoch_ms))
@@ -3189,7 +3221,7 @@ namespace uam
 			if (!IsTerminal(owner->expected.status))
 			{
 				owner->desired_status = "failed"; owner->diagnostic_code = "native_resume_identity_changed";
-				owner->diagnostic = "The provider did not retain the exact saved native conversation. No input was replayed.";
+				owner->diagnostic = "The provider lost the saved agent conversation, so no input was sent.";
 			}
 		}
 		if (!allowed) session.last_error = "The exact saved managed native resume identity is unavailable.";
@@ -3247,6 +3279,8 @@ namespace uam
 			(void)PollCompletedAcpProcessStops(app, nullptr);
 			FinalizePendingAcpRemoteStopsForExit(app);
 			(void)FlushPendingChatSaves(app, false);
+			// This loop waits for chat saves to settle, including ones the flush just started (#526, #647).
+			RaiseAllChatSaveWorkersForBarrier(app);
 			settled = app.managed_initial_mentions.empty() && app.managed_followups.empty();
 			bool workers = std::ranges::any_of(app.managed_initial_mentions, [](const auto& entry) { return entry.second && (entry.second->work || !entry.second->retired->load(std::memory_order_acquire)); });
 			workers = workers || std::ranges::any_of(app.managed_followups, [](const auto& entry)
@@ -3292,7 +3326,7 @@ namespace uam
 			}
 			else valid = ranges::Contains(ManagedAgentModelOptions(app, chat, chat.provider_id, chat.model_id).supported_reasoning_efforts, requested);
 		}
-		if (!valid && error_out) *error_out = "The child execution model or host no longer supports the requested reasoning effort. No child input was sent; inspect agent_list before delegating again.";
+		if (!valid && error_out) *error_out = "The child model or host no longer supports the requested reasoning effort, so no input was sent.";
 		return valid;
 	}
 
@@ -3319,7 +3353,7 @@ namespace uam
 		}
 		if (root_chat->imported_read_only)
 		{
-			if (error_out != nullptr) *error_out = "Imported transcripts are read-only. Create a new chat in a workspace to delegate work.";
+			if (error_out != nullptr) *error_out = "Imported transcripts are read-only; delegate from a new chat in a workspace.";
 			return false;
 		}
 		if (app.worktree_operation_chat_ids.contains(root_chat->id))
@@ -3359,6 +3393,23 @@ namespace uam
 		if (parent != nullptr && std::ranges::count(app.agent_runs, parent->id, &AgentRun::parent_run_id) >= kMaxDirectChildren)
 		{
 			if (error_out != nullptr) *error_out = "An agent run may create at most four direct children.";
+			return false;
+		}
+		// Per-chat bounds, so one chat cannot fill the shared queue. A child can outlive its finished parent, so every
+		// depth counts toward the total; top-level runs use the same bound as mentions and follow-ups.
+		const auto live_in_chat = [&](bool top_level_only)
+		{
+			return static_cast<std::size_t>(std::ranges::count_if(app.agent_runs, [&](const AgentRun& run)
+			    { return run.root_chat_id == root_chat->id && (!top_level_only || run.parent_run_id.empty()) && !IsTerminal(run.status); }));
+		};
+		if (live_in_chat(false) >= kMaxLiveRunsPerChat)
+		{
+			if (error_out != nullptr) *error_out = "This chat already has 20 agents queued or running; wait for some to finish.";
+			return false;
+		}
+		if (parent == nullptr && live_in_chat(true) >= kMaxDirectChildren)
+		{
+			if (error_out != nullptr) *error_out = "This chat already has four agents queued or running; wait for one to finish.";
 			return false;
 		}
 		for (const AgentRun* ancestor = parent; ancestor != nullptr; ancestor = ancestor->parent_run_id.empty() ? nullptr : FindRun(app, ancestor->parent_run_id))
@@ -3460,7 +3511,7 @@ namespace uam
 				const auto options = ManagedAgentModelOptions(app, transcript, selected_provider, transcript.model_id);
 				if (transcript.model_id.empty() || normalized.empty() || !ranges::Contains(options.supported_reasoning_efforts, normalized))
 				{
-					if (error_out) *error_out = "The selected child model on its execution host does not support that reasoning effort. Check agent_list before delegating again.";
+					if (error_out) *error_out = "The selected child model does not support that reasoning effort; check agent_list before delegating again.";
 					return false;
 				}
 			}
@@ -3496,6 +3547,8 @@ namespace uam
 		run.updated_at = run.created_at;
 		run.result_delivery_id = run.id;
 		transcript.agent_run_id = run.id;
+		transcript.managed_root_chat_id = root_chat->id;
+		transcript.managed_root_created_at = root_chat->created_at;
 
 		std::string save_error;
 		if (!AgentRunLedger::Save(app.data_root, run, &save_error))
@@ -3562,7 +3615,8 @@ namespace uam
 		std::string warning;
 		if (!ChatRepository::HydrateChatMessages(app.data_root, *root_chat, &warning))
 		{
-			if (error_out != nullptr) *error_out = "Could not load the @agent parent chat: " + warning;
+			diagnostics::Write("[agent-runs] Could not load the @agent parent chat: " + warning);
+			if (error_out != nullptr) *error_out = "Could not load the @agent parent chat.";
 			return false;
 		}
 		std::string run_id;
@@ -3739,6 +3793,8 @@ namespace uam
 		run.task = "Continue the interrupted managed task from the durable transcript. "
 		           "Complete only the remaining work and do not repeat work already shown there.";
 		transcript.agent_run_id = run.id;
+		transcript.managed_root_chat_id = root_chat->id;
+		transcript.managed_root_created_at = root_chat->created_at;
 
 		std::string save_error;
 		if (!AgentRunLedger::Save(app.data_root, run, &save_error))
@@ -4021,6 +4077,8 @@ namespace uam
 
 		std::size_t running = RunningAgentSlots(app);
 		std::size_t remaining_queued = app.queued_agent_run_ids.size();
+		// Runs that stay queued keep their place ahead of runs not yet visited, so the queue stays first in, first out.
+		std::vector<std::string> held;
 		while (running < kMaxRunningAgents && remaining_queued > 0 && !app.queued_agent_run_ids.empty())
 		{
 			--remaining_queued;
@@ -4031,12 +4089,18 @@ namespace uam
 				continue;
 			if (run->managed_continuation)
 			{
-				app.queued_agent_run_ids.push_back(id);
+				held.push_back(id);
 				continue;
 			}
 			if (app.pending_agent_run_cancellation_ids.contains(id))
 			{
-				app.queued_agent_run_ids.push_back(id);
+				held.push_back(id);
+				continue;
+			}
+			// A parent already using its share waits; the slot stays free for another parent's agent.
+			if (RunningSlotsOfParent(app, RunParentKey(*run)) >= kMaxRunningPerParent)
+			{
+				held.push_back(id);
 				continue;
 			}
 			ChatSession* transcript = ChatDomainService().FindChatById(app, run->transcript_chat_id);
@@ -4050,7 +4114,7 @@ namespace uam
 			{
 				FinishRun(app, *run, "failed", "provider_crash_circuit_open",
 				          "The provider crashed three times within one minute; managed launches are paused for five minutes.");
-				if (run->status == "queued") app.queued_agent_run_ids.push_back(id); // The terminal save failed; retry next tick.
+				if (run->status == "queued") held.push_back(id); // The terminal save failed; retry next tick.
 				changed = true;
 				continue;
 			}
@@ -4065,11 +4129,11 @@ namespace uam
 					const bool invalid = hold == RoutingHold::Invalid;
 					FinishRun(app, *run, "failed", invalid ? "routing_invalid" : "routing_wait_timeout",
 					          RoutingWaitReason(app, run->transcript_chat_id, invalid ? "No execution host can run this agent." : "No execution host became available in time."));
-					if (run->status == "queued") app.queued_agent_run_ids.push_back(id); // The terminal save failed; retry next tick.
+					if (run->status == "queued") held.push_back(id); // The terminal save failed; retry next tick.
 					changed = true;
 					continue;
 				}
-				app.queued_agent_run_ids.push_back(id);
+				held.push_back(id);
 				changed = began || changed; // Only the start of a wait is a state change.
 				continue;
 			}
@@ -4077,7 +4141,7 @@ namespace uam
 			if (!AgentRunScheduler::ValidateRequestedReasoningEffort(app, *transcript, nullptr, &effort_error))
 			{
 				FinishRun(app, *run, "failed", "reasoning_effort_unsupported", effort_error);
-				if (run->status == "queued") app.queued_agent_run_ids.push_back(id);
+				if (run->status == "queued") held.push_back(id);
 				changed = true;
 				continue;
 			}
@@ -4114,6 +4178,23 @@ namespace uam
 			}
 			++running;
 			changed = true;
+		}
+		app.queued_agent_run_ids.insert(app.queued_agent_run_ids.begin(), held.begin(), held.end());
+		// A queued agent that did not ask routing on this poll (no running slot, or its parent's share is full) gives up
+		// its place in the routing queue at once, so it never holds a computer it cannot use yet.
+		if (app.execution_routing_service)
+		{
+			// The retry gate goes too, so the next offer of a slot asks routing at once and takes a fresh ticket.
+			const auto withdraw = [&app](const std::string& transcript_id)
+			{
+				if (app.execution_routing_service->Withdraw(transcript_id)) app.execution_routing_retry_at_by_chat_id.erase(transcript_id);
+			};
+			for (const AgentRun& queued : app.agent_runs)
+				if (queued.status == "queued" && !app.agent_routing_held_this_poll.contains(queued.id))
+					withdraw(queued.transcript_chat_id);
+			for (const auto& [id, owner] : app.managed_initial_runtime_owners)
+				if (owner && owner->phase == ManagedInitialRuntimeOwner::Phase::Queued && !app.agent_routing_held_this_poll.contains(id))
+					withdraw(owner->transcript_id);
 		}
 		// A run that routing did not refuse on this poll is no longer waiting for routing.
 		std::erase_if(app.agent_routing_wait_since_steady_ms, [&](const auto& entry) { return !app.agent_routing_held_this_poll.contains(entry.first); });

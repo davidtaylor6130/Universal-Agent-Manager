@@ -1,7 +1,11 @@
+#include "app/host_admission_integration.h"
 #include "common/platform/background_thread_priority.h"
+#include "common/platform/child_process_priority.h"
+#include "common/chat/chat_process_class.h"
 #include "app/repository_route_match_service.h"
 #include "common/utils/string_utils.h"
 #include "app/execution_routing_integration.h"
+#include "app/vcs_commit_service.h"
 #include "common/config/execution_host_config.h"
 #include <algorithm>
 #include <cctype>
@@ -209,20 +213,16 @@ namespace uam
 						const std::vector<std::string> git_arguments(argv.begin() + (git ? 1 : 0), argv.end());
 						if (runner) result = runner->ExecuteCommand(process.GenerateUuid(), paths::PathFromUtf8(workspace->directory),
 						    git ? vcs::HardenedGitArgv(git_arguments, vcs::IsWindowsHostPlatform(host->platform)) : argv, timeout, stop);
-						else
+						else if (git)
 						{
-							std::vector<std::string> local_argv = argv;
-							if (git)
-							{
-								std::vector<std::string> in_directory{"-C", workspace->directory};
-								in_directory.insert(in_directory.end(), git_arguments.begin(), git_arguments.end());
-								local_argv = vcs::HardenedGitArgv(in_directory, vcs::kLocalHostIsWindows);
-							}
-							else local_argv.back() = workspace->directory;
+							std::vector<std::string> in_directory{"-C", workspace->directory};
+							in_directory.insert(in_directory.end(), git_arguments.begin(), git_arguments.end());
 							std::string command;
-							for (const std::string& argument : local_argv) command += shell::EscapeArg(argument) + " ";
+							for (const std::string& argument : vcs::HardenedGitArgv(in_directory, vcs::kLocalHostIsWindows)) command += shell::EscapeArg(argument) + " ";
 							result = process.ExecuteCommand(command, timeout, stop);
 						}
+						// svn needs the shared SVN environment to read a non-ASCII workspace path; RunSvn runs it in the workspace.
+						else result = RunSvn(paths::PathFromUtf8(workspace->directory), {argv.begin() + 1, argv.end()}, timeout, stop);
 						if (result.timed_out || result.canceled || (runner && !runner->IsConnected())) inconclusive = true;
 						if (!result.ok || result.exit_code != 0 || result.output_truncated || result.canceled || result.timed_out || result.output.size() > 4096) return false;
 						output = result.output;
@@ -241,6 +241,7 @@ namespace uam
 			for (const std::pair<const std::string, std::vector<RepositoryRouteWorkspace*>>& group : by_host)
 				readers.emplace_back([&read_host, &group, &unfinished, &workspaces]
 				{
+					const uam::platform::ScopedChildProcessClass background_children(uam::platform::ChildProcessClass::Background);
 					try { read_host(group.second); }
 					catch (...)
 					{
@@ -302,6 +303,8 @@ namespace uam
 		const bool fresh = app.repository_route_data_root == app.data_root && app.repository_route_observed_at_s >= 0.0 &&
 		    now >= app.repository_route_observed_at_s && now - app.repository_route_observed_at_s <= 30.0 && RepositoryRouteSnapshotMatches(app.repository_route_workspaces, current);
 		if (fresh || app.repository_route_refresh || app.folders.size() > 512) return fresh;
+		// The inventory read is background work run from this computer; the launch check below belongs to its turn.
+		if (!AdmitBackgroundStart(app, "repository-check:start", "local", false).admitted) return fresh;
 		const std::shared_ptr<RepositoryRouteTask> task = std::make_shared<RepositoryRouteTask>();
 		task->data_root = app.data_root;
 		task->captured = current;
@@ -311,6 +314,7 @@ namespace uam
 		task->worker = std::make_unique<std::jthread>([state = task.get(), hosts = app.settings.execution_hosts](std::stop_token stop)
 		{
 			uam::platform::LowerCurrentThreadToBackgroundPriority();
+			const uam::platform::ScopedChildProcessClass background_children(uam::platform::ChildProcessClass::Background);
 			try { state->observed = ReadRepositoryRouteInventory(state->captured, hosts, stop, &state->unread); }
 			catch (...) { state->observed = state->captured; state->unread.clear(); }
 			state->completed_at_s = GetAppTimeSeconds();
@@ -346,7 +350,7 @@ namespace uam
 		const std::vector<RepositoryRouteWorkspace> expected = assignment == app.repository_route_assignments.end()
 		    ? std::vector<RepositoryRouteWorkspace>{} : assignment->second;
 		if (expected.size() != 2 || !expected[0].repository || expected[0].repository != expected[1].repository)
-		{ error = "The assigned checkout no longer matches the source repository. Review its routing mapping."; return RepositoryRouteLaunchState::Failed; }
+		{ error = "The assigned checkout no longer matches the source repository; review its routing mapping."; return RepositoryRouteLaunchState::Failed; }
 		const std::vector<RepositoryRouteWorkspace> current = CaptureRepositoryRouteWorkspaces(app.folders, app.settings.execution_hosts);
 		for (const RepositoryRouteWorkspace& workspace : expected)
 			if (std::ranges::none_of(current, [&](const RepositoryRouteWorkspace& item)
@@ -364,10 +368,10 @@ namespace uam
 			{
 				// Sending again after this starts a new read instead of repeating the old answer.
 				if (now - task->completed_at_s > 2.0) continue;
-				error = "The assigned checkout could not be read before launch. Check the computer's connection, then send again.";
+				error = "The assigned checkout could not be read; check the computer's connection and send again.";
 				return RepositoryRouteLaunchState::Failed;
 			}
-			if (!task->matches) { error = "The assigned repository changed during launch preparation. Review its routing mapping."; return RepositoryRouteLaunchState::Failed; }
+			if (!task->matches) { error = "The assigned repository changed before launch; review its routing mapping."; return RepositoryRouteLaunchState::Failed; }
 			if (now - task->completed_at_s <= 2.0) return RepositoryRouteLaunchState::Ready;
 		}
 		if (std::ranges::count_if(app.repository_route_tasks, [](const std::shared_ptr<RepositoryRouteTask>& active)
@@ -380,9 +384,11 @@ namespace uam
 		task->chat_incarnation = chat.metadata_incarnation;
 		task->started_at_s = now;
 		app.repository_route_tasks.push_back(task);
-		task->worker = std::make_unique<std::jthread>([state = task.get(), hosts = app.settings.execution_hosts](std::stop_token stop)
+		task->worker = std::make_unique<std::jthread>([state = task.get(), hosts = app.settings.execution_hosts, process_class = ChatWorkProcessClass(chat)](std::stop_token stop)
 		{
 			uam::platform::LowerCurrentThreadToBackgroundPriority();
+			// The launch check gates this chat's own turn, so its reads run at the chat's class, not as background work.
+			const uam::platform::ScopedChildProcessClass launch_children(process_class);
 			try
 			{
 				// The reader discards the expected identities it is handed, so a match is always a fresh read.

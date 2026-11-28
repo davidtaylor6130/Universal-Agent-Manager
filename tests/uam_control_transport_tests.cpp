@@ -6,6 +6,8 @@
 #include "common/config/central_provider_configuration.h"
 #include "common/chat/chat_repository.h"
 #include "cef/cef_push.h"
+#include "common/runtime/acp/compute_pool_gate.h"
+#include "injected_acp_input.h"
 
 #ifdef _WIN32
 #include <share.h>
@@ -1248,6 +1250,38 @@ UAM_TEST(ManagedParentContinuationUnacknowledgedWriteStaysQuarantinedUntilItsPro
 	UAM_ASSERT(!session.pending_prompt_delivery);
 }
 
+UAM_TEST(ManagedParentContinuationResultStartsOnAFullComputePoolAndCountsTowardUse)
+{
+	ControlAgentWaitFixture fixture; (void)OrdinaryContinuationChild(fixture); EndOrdinaryOrigin(fixture);
+	auto& parent = *fixture.app.acp_sessions.front();
+	// One Codex slot, already taken by another chat's running turn.
+	fixture.app.settings.compute_pools = {{"pool", "InferDeck", 1, {{"codex-cli", ""}}}};
+	ChatSession other; other.id = "pool-busy-chat"; other.provider_id = "codex-cli";
+	fixture.app.chats.push_back(other);
+	auto busy = std::make_unique<uam::AcpSessionState>();
+	busy->chat_id = other.id; busy->provider_id = other.provider_id;
+	busy->running = busy->processing = true; busy->turn_serial = 1; busy->prompt_request_id = 1; busy->compute_pool_admitted_turn_serial = 1;
+	fixture.app.acp_sessions.push_back(std::move(busy));
+	const auto in_use = [&fixture] { return uam::compute_pools::UsageForFrontend(fixture.app).at("pool").at("inUse").get<int>(); };
+	UAM_ASSERT_EQ(in_use(), 1);
+	uam_test::InjectedAcpInput input; input.Attach(parent);
+	// The delivered child result continues the parent's own work: it is written without waiting for the full pool.
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
+	while (!(parent.managed_parent_continuation && parent.managed_parent_continuation->internal_turn) && std::chrono::steady_clock::now() < deadline)
+	{
+		(void)uam::ManagedParentContinuationService::Poll(fixture.app);
+		(void)uam::FlushPendingChatSaves(fixture.app);
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	UAM_ASSERT(parent.managed_parent_continuation && parent.managed_parent_continuation->internal_turn);
+	UAM_ASSERT(parent.processing && parent.prompt_request_id == parent.managed_parent_continuation->request_id);
+	UAM_ASSERT(parent.stdin_writer->Flush(std::chrono::seconds(1)));
+	UAM_ASSERT(input.Bytes().find("UAM managed-child result data") != std::string::npos);
+	UAM_ASSERT(parent.compute_pool_ticket == 0 && parent.compute_pool_wait_name.empty());
+	UAM_ASSERT(!uam::compute_pools::IsWaiting(parent, uam::GetAppTimeSeconds()));
+	UAM_ASSERT_EQ(in_use(), 2); // Over the limit of 1: the result turn counts, it does not wait.
+}
+
 #endif
 
 #if UAM_ENABLE_RUNTIME_CODEX_CLI
@@ -1483,8 +1517,9 @@ UAM_TEST(UamControlPublicDelegationKeepsGoalCancelAndComputerUseGates)
 		UAM_ASSERT_EQ(fixture.Run(id).status, std::string("queued"));
 		const auto computer = fixture.Call(fixture.capability_id, "computer", "computer_use_request", {{"reason", "Private fixture request"}});
 		UAM_ASSERT(!computer.value("ok", true));
+		// A read-only session is never offered Computer Use, so the manager refuses it as unavailable.
 		if (captured_read)
-			UAM_ASSERT(computer.value("error", "").find("read-only") != std::string::npos);
+			UAM_ASSERT_EQ(computer.value("error", ""), std::string("This UAM tool is not available in this session."));
 		UAM_ASSERT(!fixture.app.uam_control_capabilities.front().pending_approval);
 		const auto goal = fixture.Call(fixture.capability_id, "goal", "goal_create", {{"objective", "Inspect the fixture."}, {"idempotencyKey", "private-policy-goal"}});
 		UAM_ASSERT(fixture.app.chats.front().goals.empty());
@@ -1525,7 +1560,13 @@ UAM_TEST(UamControlPublicReadParentDelegationKeepsSavedListAndDepthCeilings)
 	UAM_ASSERT(transcript && transcript->approval_mode == "plan" && transcript->command_safety_tier == "off");
 	fixture.Run(child_id).status = "running";
 	UAM_ASSERT(uam::AgentRunLedger::Save(fixture.app.data_root, fixture.Run(child_id)));
-	const auto child_cap = fixture.Attach(child.transcript_chat_id, "read", child.agent_id, child.delegates_snapshot);
+	// The leaf's saved definition lists no delegates, so its session is not offered the agent tools and the manager refuses them.
+	const auto leaf_cap = fixture.Attach(child.transcript_chat_id, "read", child.agent_id, child.delegates_snapshot);
+	const auto leaf = fixture.Call(leaf_cap, "leaf-delegate", "agent_delegate", {{"agentId", "policy-worker"}, {"task", "Refuse an unlisted tool."}});
+	UAM_ASSERT_EQ(leaf.value("error", ""), std::string("This UAM tool is not available in this session."));
+	UAM_ASSERT_EQ(fixture.app.agent_runs.size(), std::size_t{2});
+	// A session that does list a delegate still cannot delegate below two levels.
+	const auto child_cap = fixture.Attach(child.transcript_chat_id, "read", child.agent_id, {"policy-worker"});
 	const auto too_deep = fixture.Call(child_cap, "depth-three", "agent_delegate", {{"agentId", "policy-worker"}, {"task", "Refuse depth three."}});
 	UAM_ASSERT(!too_deep.value("ok", true));
 	UAM_ASSERT(too_deep.value("error", "").find("two levels") != std::string::npos);

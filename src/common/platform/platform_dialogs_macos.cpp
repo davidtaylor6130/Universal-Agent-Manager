@@ -1,4 +1,5 @@
 #include "common/platform/file_explorer_application.h"
+#include "common/utils/diagnostic_log.h"
 #include "platform_services_macos_impl_internal.h"
 #include "common/platform/platform_application_macos.h"
 
@@ -6,6 +7,16 @@ using namespace uam::platform_macos_impl;
 
 namespace uam::platform_macos_impl
 {
+
+namespace
+{
+	/// Shows the fixed message and keeps the launcher's detail in diagnostics only.
+	std::string FailureWithLoggedDetail(const std::string& message, const std::string& detail)
+	{
+		if (!detail.empty()) uam::diagnostics::Write("[platform] " + message + " Detail: " + detail);
+		return message;
+	}
+}
 
 class MacFileDialogService final : public IPlatformFileDialogService
 {
@@ -36,7 +47,7 @@ class MacFileDialogService final : public IPlatformFileDialogService
 		{
 			if (!uam::platform::IsFileExplorerApplication(uam::paths::Utf8PathString(application_path), false))
 			{
-				if (error_out != nullptr) *error_out = "Configured file explorer application is unavailable. Choose another application or reset to system default.";
+				if (error_out != nullptr) *error_out = "The chosen file manager is unavailable; pick another or reset to the system default.";
 				return false;
 			}
 			return uam::platform::OpenPathWithApplication(folder_path, uam::paths::Utf8PathString(application_path), error_out);
@@ -45,9 +56,10 @@ class MacFileDialogService final : public IPlatformFileDialogService
 		std::error_code ec;
 		if (!uam::paths::CreateDirectoriesNoThrow(folder_path, &ec))
 		{
+			uam::diagnostics::Write("[platform] Could not create folder for file manager: " + ec.message());
 			if (error_out != nullptr)
 			{
-				*error_out = "Failed to create folder: " + ec.message();
+				*error_out = "Could not create the folder.";
 			}
 
 			return false;
@@ -58,7 +70,7 @@ class MacFileDialogService final : public IPlatformFileDialogService
 		{
 			if (error_out != nullptr)
 			{
-				*error_out = ErrorWithOptionalDetail("Failed to open folder in file manager.", launch_error);
+				*error_out = FailureWithLoggedDetail("Failed to open folder in file manager.", launch_error);
 			}
 
 			return false;
@@ -145,7 +157,7 @@ class MacFileDialogService final : public IPlatformFileDialogService
 		{
 			if (error_out != nullptr)
 			{
-				*error_out = ErrorWithOptionalDetail("Failed to open workspace in " + app_name + ".", launch_error);
+				*error_out = FailureWithLoggedDetail("Failed to open workspace in " + app_name + ".", launch_error);
 			}
 			return false;
 		}
@@ -174,7 +186,7 @@ class MacFileDialogService final : public IPlatformFileDialogService
 		{
 			if (error_out != nullptr)
 			{
-				*error_out = ErrorWithOptionalDetail("Failed to reveal file in file manager.", launch_error);
+				*error_out = FailureWithLoggedDetail("Failed to reveal file in file manager.", launch_error);
 			}
 
 			return false;
@@ -209,7 +221,7 @@ class MacFileDialogService final : public IPlatformFileDialogService
 		{
 			if (error_out != nullptr)
 			{
-				*error_out = ErrorWithOptionalDetail("Failed to open file in text editor.", launch_error);
+				*error_out = FailureWithLoggedDetail("Failed to open file in text editor.", launch_error);
 			}
 			return false;
 		}

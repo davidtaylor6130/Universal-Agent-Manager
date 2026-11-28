@@ -13,6 +13,7 @@
 #include "common/provider/provider_ids.h"
 #include "common/state/app_state.h"
 #include "common/provider/runtime/provider_runtime_internal.h"
+#include "common/provider/provider_setup.h"
 #include "common/runtime/acp/acp_session_internal.h"
 #include "common/runtime/acp/acp_claude_stream.h"
 #include "common/runtime/acp/acp_model_json.h"
@@ -125,6 +126,14 @@ const char* ClaudeCliProviderRuntime::RuntimeId() const
 }
 
 
+/// Claude reads the staged conversation as an appended system prompt file.
+bool ClaudeCliProviderRuntime::StageCliHandoffContext(const ProviderCliHandoffStaging& staging, std::vector<std::string>& argv, std::string&) const
+{
+	// Ahead of any positional "--" that extra launch flags may carry.
+	uam::provider_setup::InsertLaunchOptions(argv, {"--append-system-prompt-file", staging.context_path});
+	return true;
+}
+
 std::vector<std::string> ClaudeCliProviderRuntime::BuildInteractiveArgv(const ProviderProfile& profile, const ChatSession& chat, const AppSettings& settings) const
 {
 	if (!profile.supports_interactive)
@@ -140,6 +149,22 @@ std::vector<std::string> ClaudeCliProviderRuntime::BuildInteractiveArgv(const Pr
 	uam::provider_runtime_internal::AppendArgs(argv, uam::provider_runtime_internal::BuildProviderFlagsArgv(provider_settings, uam::provider_runtime_internal::LaunchHasReadCeiling(chat)));
 	AppendClaudeTerminalFastMode(argv, chat);
 	return argv;
+}
+
+bool ClaudeCliProviderRuntime::StageInteractiveAgentInstructions(const ExecutionHost&, std::string_view instructions, std::vector<std::string>&, std::string& staged_context, std::string& error) const
+{
+	// Written ahead of any handoff text in the file passed to --append-system-prompt-file.
+	staged_context.assign(instructions);
+	error.clear();
+	return true;
+}
+
+std::vector<std::string> ClaudeCliProviderRuntime::CustomAgentNativeSkillArgv() const
+{
+	// Deny rules outrank allow rules in Claude, so native skills cannot be narrowed to the agent's allowlist;
+	// remove the model's skill and slash-command tools instead. Approved skills reach it only through UAM's skill tools
+	// or Central Setup's skill index, so with both off the agent has no skills at all, which is narrower, not wider.
+	return {"--disallowedTools", "Skill", "SlashCommand"};
 }
 
 MessageRole ClaudeCliProviderRuntime::RoleFromNativeType(const ProviderProfile& profile, std::string_view native_type) const
@@ -293,7 +318,7 @@ bool ClaudeCliProviderRuntime::OnAcpHandleMessage(uam::AppState& app, uam::AcpSe
 		const std::string error_message = std::string("Claude stream-json message handling failed: ") + ex.what();
 		AppendAcpDiagnostic(session, "parse", "claude_message_parse_error", "", "", false, 0,
 		                    error_message, CapDiagnosticString(message.dump(), kMaxAcpDiagnosticDetailBytes));
-		InvalidateAcpTransport(app, session, chat, error_message);
+		InvalidateAcpTransport(app, session, chat, "Claude sent a message UAM could not read.");
 	}
 	return true;
 }
@@ -365,7 +390,7 @@ bool ClaudeCliProviderRuntime::OnAcpHandleResult(uam::AppState& app, uam::AcpSes
 		{
 			session.initialized = false;
 			session.session_ready = false;
-			session.last_error = "The selected Claude model did not advertise fast mode. Choose Default speed or a supported model.";
+			session.last_error = "The selected Claude model does not support fast mode; choose Default speed or another model.";
 			session.lifecycle_state = uam::acp_detail::kAcpLifecycleError;
 			return true;
 		}
@@ -411,7 +436,7 @@ nlohmann::json ClaudeCliProviderRuntime::OnAcpBuildCompact(const uam::AcpSession
 	if (!session.claude_manual_compaction_supported || session.session_id.empty()) return nullptr;
 	out_method = "claude/compact";
 	return {{"type", "user"}, {"session_id", session.session_id}, {"parent_tool_use_id", nullptr},
-	    {"message", {{"role", "user"}, {"content", "/compact"}}}};
+	    {"message", {{"role", "user"}, {"content", session.manual_compaction_instructions.empty() ? std::string("/compact") : "/compact " + session.manual_compaction_instructions}}}};
 }
 
 nlohmann::json ClaudeCliProviderRuntime::OnAcpBuildPermissionResponse(const uam::AcpSessionState& session, const uam::AcpPendingPermissionState& pending, const std::string& option_id, bool cancelled) const

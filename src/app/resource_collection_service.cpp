@@ -3,6 +3,7 @@
 #include "common/chat/chat_ids.h"
 #include "common/config/custom_icon.h"
 #include "common/paths/path_utils.h"
+#include "common/utils/diagnostic_log.h"
 #include "common/utils/io_utils.h"
 #include "common/utils/string_utils.h"
 #include "common/utils/time_utils.h"
@@ -84,7 +85,8 @@ namespace uam
 				const bool found = std::ranges::any_of(app.folders, [&](const ChatFolder& folder) { return folder.id == target; });
 				if (!found)
 				{
-					SetError(error_out, "Workspace folder not found: " + target);
+					uam::diagnostics::Write("[collections] Workspace folder not found: " + target);
+					SetError(error_out, "The workspace folder no longer exists.");
 					return false;
 				}
 			}
@@ -93,7 +95,8 @@ namespace uam
 				const bool found = std::ranges::any_of(app.chats, [&](const ChatSession& chat) { return chat.id == target; });
 				if (!found)
 				{
-					SetError(error_out, "Chat not found: " + target);
+					uam::diagnostics::Write("[collections] Chat not found: " + target);
+					SetError(error_out, "The chat no longer exists.");
 					return false;
 				}
 			}
@@ -152,7 +155,8 @@ namespace uam
 				const auto found = by_id.find(parent);
 				if (found == by_id.end())
 				{
-					SetError(error_out, "Parent collection not found: " + parent);
+					uam::diagnostics::Write("[collections] Parent collection not found: " + parent);
+					SetError(error_out, "The parent collection no longer exists.");
 					return false;
 				}
 				// Also bounds the walk when a cycle does not include this collection.
@@ -303,30 +307,25 @@ namespace uam
 		}
 	} // namespace
 
-	std::vector<ResourceCollection> ResourceCollectionService::Load(const std::filesystem::path& data_root)
+	std::vector<ResourceCollection> ResourceCollectionService::Load(const std::filesystem::path& data_root, uam::io::StoreLoadResult* result, uam::io::StoreFenceMode fence)
 	{
-		const std::filesystem::path file = FilePath(data_root);
-		if (uam::paths::PathExistsNoThrow(file))
-		{
-			if (const auto parsed = ParseCollections(uam::io::ReadTextFile(file)); parsed.has_value())
-			{
-				return *parsed;
-			}
-		}
-		const std::filesystem::path backup = uam::io::MakeBackupPath(file);
-		if (uam::paths::PathExistsNoThrow(backup))
-		{
-			if (const auto parsed = ParseCollections(uam::io::ReadTextFile(backup)); parsed.has_value())
-			{
-				return *parsed;
-			}
-		}
-		return {};
+		std::optional<std::vector<ResourceCollection>> parsed;
+		std::string text;
+		const uam::io::StoreLoadResult loaded = uam::io::LoadStoreTextWithBackup(
+		    FilePath(data_root), [&](const std::string& candidate) { return (parsed = ParseCollections(candidate)).has_value(); }, text, "collections", fence);
+		if (result != nullptr) *result = loaded;
+		const bool validated = loaded.status == uam::io::StoreLoadStatus::Valid || loaded.status == uam::io::StoreLoadStatus::RecoveredFromBackup;
+		return validated && !text.empty() && parsed.has_value() ? std::move(*parsed) : std::vector<ResourceCollection>{};
+	}
+
+	bool ResourceCollectionService::IsSaveFenced(const std::filesystem::path& data_root)
+	{
+		return uam::io::UnrecoveredStoreFence::IsFenced(FilePath(data_root));
 	}
 
 	bool ResourceCollectionService::Save(const std::filesystem::path& data_root, const std::vector<ResourceCollection>& collections)
 	{
-		if (collections.size() > kMaxCollections || !ValidateHierarchy(collections, nullptr))
+		if (IsSaveFenced(data_root) || collections.size() > kMaxCollections || !ValidateHierarchy(collections, nullptr))
 		{
 			return false;
 		}
@@ -392,7 +391,8 @@ namespace uam
 		ResourceCollection* collection = FindCollection(next, collection_id);
 		if (collection == nullptr)
 		{
-			SetError(error_out, "Resource collection not found: " + uam::strings::Trim(collection_id));
+			uam::diagnostics::Write("[collections] Resource collection not found: " + uam::strings::Trim(collection_id));
+			SetError(error_out, "The collection no longer exists.");
 			return false;
 		}
 		collection->name = normalized;
@@ -406,7 +406,8 @@ namespace uam
 		const ResourceCollection* deleted = FindCollection(next, id);
 		if (deleted == nullptr)
 		{
-			SetError(error_out, "Resource collection not found: " + id);
+			uam::diagnostics::Write("[collections] Resource collection not found: " + id);
+			SetError(error_out, "The collection no longer exists.");
 			return false;
 		}
 		std::unordered_set<std::string> removed{id};
@@ -470,7 +471,8 @@ namespace uam
 		const auto found = std::ranges::find_if(next, [&](const ResourceCollection& collection) { return collection.id == id; });
 		if (found == next.end())
 		{
-			SetError(error_out, "Resource collection not found: " + id);
+			uam::diagnostics::Write("[collections] Resource collection not found: " + id);
+			SetError(error_out, "The collection no longer exists.");
 			return false;
 		}
 		const std::string parent = uam::strings::Trim(parent_id);
@@ -492,7 +494,8 @@ namespace uam
 		ResourceCollection* collection = FindCollection(next, collection_id);
 		if (collection == nullptr)
 		{
-			SetError(error_out, "Resource collection not found: " + uam::strings::Trim(collection_id));
+			uam::diagnostics::Write("[collections] Resource collection not found: " + uam::strings::Trim(collection_id));
+			SetError(error_out, "The collection no longer exists.");
 			return false;
 		}
 		collection->collapsed = !collection->collapsed;
@@ -516,7 +519,8 @@ namespace uam
 		const std::string normalized_label = uam::strings::Trim(label);
 		if (!IsReferenceType(normalized_type))
 		{
-			SetError(error_out, "Unsupported resource type: " + normalized_type);
+			uam::diagnostics::Write("[collections] Unsupported resource type: " + normalized_type);
+			SetError(error_out, "That resource type is not supported.");
 			return false;
 		}
 		if (normalized_label.size() > kMaxLabelBytes)
@@ -532,7 +536,8 @@ namespace uam
 		ResourceCollection* collection = FindCollection(next, collection_id);
 		if (collection == nullptr)
 		{
-			SetError(error_out, "Resource collection not found: " + uam::strings::Trim(collection_id));
+			uam::diagnostics::Write("[collections] Resource collection not found: " + uam::strings::Trim(collection_id));
+			SetError(error_out, "The collection no longer exists.");
 			return false;
 		}
 		if (collection->references.size() >= kMaxReferencesPerCollection)
@@ -568,14 +573,16 @@ namespace uam
 		ResourceCollection* collection = FindCollection(next, collection_id);
 		if (collection == nullptr)
 		{
-			SetError(error_out, "Resource collection not found: " + uam::strings::Trim(collection_id));
+			uam::diagnostics::Write("[collections] Resource collection not found: " + uam::strings::Trim(collection_id));
+			SetError(error_out, "The collection no longer exists.");
 			return false;
 		}
 		const std::string id = uam::strings::Trim(reference_id);
 		const auto found = std::ranges::find_if(collection->references, [&](const ResourceReference& reference) { return reference.id == id; });
 		if (found == collection->references.end())
 		{
-			SetError(error_out, "Resource reference not found: " + id);
+			uam::diagnostics::Write("[collections] Resource reference not found: " + id);
+			SetError(error_out, "That collection item no longer exists.");
 			return false;
 		}
 		collection->references.erase(found);
@@ -588,7 +595,8 @@ namespace uam
 		ResourceCollection* collection = FindCollection(next, collection_id);
 		if (collection == nullptr)
 		{
-			SetError(error_out, "Resource collection not found: " + uam::strings::Trim(collection_id));
+			uam::diagnostics::Write("[collections] Resource collection not found: " + uam::strings::Trim(collection_id));
+			SetError(error_out, "The collection no longer exists.");
 			return false;
 		}
 		if (!ReorderExact(&collection->references, reference_ids, error_out))

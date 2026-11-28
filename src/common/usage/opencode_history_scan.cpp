@@ -121,7 +121,7 @@ namespace uam::usage
 		if (status != SQLITE_DONE)
 		{
 			if (cancelled && cancelled()) result.cancelled = true;
-			else result.error = status == SQLITE_INTERRUPT ? "OpenCode usage query exceeded its time budget. Refresh to retry." : "OpenCode usage history is locked, oversized or unreadable.";
+			else result.error = status == SQLITE_INTERRUPT ? "Reading OpenCode usage took too long; refresh to retry." : "OpenCode usage history is locked, oversized or unreadable.";
 			return result;
 		}
 		if (m_records.size() + records.size() > 100000) { result.error = "OpenCode usage exceeds the cached-record limit; totals are incomplete."; return result; }

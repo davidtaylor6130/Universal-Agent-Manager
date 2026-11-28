@@ -3,6 +3,8 @@
 
 #include "app/agent_run_ledger.h"
 #include "app/chat_domain_service.h"
+#include "app/svn_history.h"
+#include "app/managed_subagent_control_service.h"
 #include "app/vcs_commit_service.h"
 #include "common/chat/chat_repository.h"
 #include "common/paths/path_utils.h"
@@ -99,19 +101,31 @@ namespace uam
 			if (!paths::IsDirectoryNoThrow(source) || paths::IsLinkOrReparsePointNoThrow(checkout / ".svn"))
 			{ error = "The SVN workspace is unavailable or unsafe."; return false; }
 			bool command_uncertain = false;
-			const auto command = [&](std::vector<std::string> arguments, std::string& output, int timeout = 10000)
+			ProcessExecutionResult last;
+			// Reads get the same two-minute bound as the commit panel: ten seconds was too short for a large working copy.
+			// `step` names the command in the message, so a slow status is not reported as a slow update.
+			const auto command = [&](const char* step, const std::filesystem::path& cwd, std::vector<std::string> arguments, std::string& output, const int timeout = svn_history::kReadTimeoutMs)
 			{
 				arguments.insert(arguments.end(), {"--non-interactive", "--", "."});
-				const ProcessExecutionResult result = RunSvn(checkout, arguments, timeout, stop);
+				const ProcessExecutionResult& result = last = RunSvn(cwd, arguments, timeout, stop);
 				command_uncertain = stop.stop_requested() || result.canceled || result.timed_out || result.output_truncated;
-				if (stop.stop_requested() || result.canceled) { error = "SVN update was canceled. Retry opening the chat."; return false; }
-				if (result.timed_out) { error = "SVN update timed out. Retry after checking the working copy."; return false; }
-				if (!result.ok || result.exit_code != 0 || result.output_truncated)
+				if (stop.stop_requested() || result.canceled) { error = std::string(step) + " was canceled; open the chat again to retry."; return false; }
+				if (result.timed_out) { error = std::string(step) + " timed out; check the working copy and the connection to the repository, then retry."; return false; }
+				// A broken svn:externals definition fails the update (E205011) after the working copy itself was updated.
+				const bool finished = arguments.front() == "update" ? svn_history::UpdateFinished(result) : result.ok && result.exit_code == 0;
+				if (!finished || result.output_truncated)
 				{
-					// Carry svn's own E-code (for example E155004, which needs svn cleanup) through the existing error.
+					// Carry svn's own E-code (for example E155004, which needs svn cleanup) through the existing error; missing
+					// credentials get the shared advice on saving them, which a Finder launch cannot prompt for.
+					LogSvnFailure(result, arguments.front(), paths::Utf8PathString(checkout));
+					if (const std::string message = SvnFailureMessage(result, {}); message.starts_with("SVN needs your credentials."))
+					{
+						error = "SVN preparation failed. " + message;
+						return false;
+					}
 					const std::string detail = SvnFailureSummary(result);
-					error = detail.empty() ? "SVN preparation failed. Check the working copy and authentication, then retry."
-					    : "SVN preparation failed (" + detail + "). Check the working copy and authentication, then retry.";
+					error = detail.empty() ? std::string(step) + " failed; check the working copy and sign-in, then retry."
+					    : std::string(step) + " failed (" + detail + "); check the working copy and sign-in, then retry.";
 					return false;
 				}
 				// Status columns are positional, so leading spaces must survive; info values are trimmed below.
@@ -121,7 +135,7 @@ namespace uam
 			std::string checkout_root, url, uuid;
 			const auto info = [&](const char* item, std::string& value)
 			{
-				const bool ok = command({"info", "--show-item", item}, value);
+				const bool ok = command("SVN info", checkout, {"info", "--show-item", item}, value);
 				value = strings::Trim(value);
 				return ok;
 			};
@@ -130,16 +144,22 @@ namespace uam
 			{ if (error.empty()) error = "SVN checkout ownership could not be verified."; return false; }
 			if (paths::IsLinkOrReparsePointNoThrow(root) || paths::IsLinkOrReparsePointNoThrow(directory) || paths::IsLinkOrReparsePointNoThrow(receipt))
 			{ error = "SVN update ownership storage is unsafe."; return false; }
+			// Status and update cover the chat's folder, as the commit panel's Update does, not the whole checkout around it:
+			// other chats may be working elsewhere in the same checkout.
+			// svn reports an untracked folder as updated ("At revision N.") without changing anything, so it is refused.
+			std::string kind;
+			if (!command("SVN info", source, {"info", "--show-item", "kind"}, kind))
+			{
+				if (svn_history::NotVersioned(last))
+					error = "The chat's folder is not under version control in this SVN checkout, so it cannot be updated. Add it to SVN or turn off Update before new chat.";
+				return false;
+			}
 			std::string status;
 			const auto conflicts = [](const std::string& value)
 			{
-				std::istringstream lines(value);
-				std::string line;
-				while (std::getline(lines, line))
-					if ((!line.empty() && line[0] == 'C') || (line.size() > 1 && line[1] == 'C') || (line.size() > 6 && line[6] == 'C')) return true;
-				return false;
+				return std::ranges::any_of(ParseSvnStatusOutput(value), [](const VcsChangedFile& file) { return svn_history::IsConflicted(file); });
 			};
-			if (!command({"status"}, status)) return false;
+			if (!command("SVN status", source, {"status"}, status)) return false;
 			if (conflicts(status)) { error = "Resolve SVN conflicts before starting the chat."; return false; }
 			const auto locked = [](const std::string& value)
 			{
@@ -163,13 +183,13 @@ namespace uam
 					const std::string state = saved.value("state", "");
 					saved.erase("state");
 					if (saved != identity)
-					{ error = "The saved SVN update belongs to a different workspace. The working copy was preserved."; return false; }
+					{ error = "The saved SVN update belongs to a different workspace, so the working copy was left as is."; return false; }
 					if (state == "complete") return true;
 					if (validate_only) { error = "An interrupted SVN update needs working-copy verification before another update."; return false; }
 					// Fresh info, status, conflict and lock checks verify the working copy, so an interrupted ("started")
 					// update is retried like a failed one instead of blocking every later update.
 					if (state != "failed" && locked(status))
-					{ error = "An interrupted SVN update left the working copy locked. Run svn cleanup, then retry."; return false; }
+					{ error = "An interrupted SVN update left the working copy locked; run svn cleanup, then retry."; return false; }
 				}
 				catch (const std::exception&) { error = "The saved SVN update receipt could not be verified."; return false; }
 			}
@@ -183,16 +203,19 @@ namespace uam
 			if (stop.stop_requested()) { error = "SVN update was canceled."; return false; }
 			if (!save_receipt("started")) { error = "Could not record SVN update ownership."; return false; }
 			std::string output;
-			if (!command({"update", "--accept", "postpone"}, output, 120000))
+			if (!command("SVN update", source, {"update", "--accept", "postpone"}, output, svn_history::kUpdateTimeoutMs))
 			{
 				if (!command_uncertain) (void)save_receipt("failed");
 				return false;
 			}
-			if (!command({"status"}, status)) return false;
+			// Externals that could not be updated do not stop the chat; the commit panel's Update names them.
+			if (const std::size_t externals = svn_history::ExternalUpdateWarnings(output).size(); externals > 0)
+				diagnostics::Write("[worktree-prep] chat_id=" + metadata.id + " event=svn_update_externals_skipped count=" + std::to_string(externals));
+			if (!command("SVN status", source, {"status"}, status)) return false;
 			if (conflicts(status))
-			{ (void)save_receipt("failed"); error = "SVN update left conflicts. Resolve them before starting the chat."; return false; }
+			{ (void)save_receipt("failed"); error = "Resolve the conflicts left by the SVN update before starting the chat."; return false; }
 			if (!save_receipt("complete"))
-			{ error = "SVN updated, but its completion could not be saved. Check the working copy before retrying."; return false; }
+			{ error = "SVN updated but UAM could not record it; check the working copy before retrying."; return false; }
 			return true;
 		}
 
@@ -243,19 +266,29 @@ namespace uam
 
 		/// A finished delegated child of this parent that only names the parent's worktree as its workspace. Lineage comes from the
 		/// run ledger; restart-inert v2 runs are absent from the live ledger, so the worker's read-only observation supplies them.
+		/// Once no readable record names the child, its expired run leaves only the root link saved at its birth.
 		/// Terminal status alone is not settlement: retained input, a runtime, a save or a helper process still protects the worktree.
-		bool SettledChildReference(const AppState& app, const ChatSession& parent, const ChatSession& reference, const std::vector<AgentRun>& observed_runs)
+		bool SettledChildReference(const AppState& app, const ChatSession& parent, const ChatSession& reference, const PreparedLaunchWorktree& prepared)
 		{
 			if (reference.agent_run_id.empty() || reference.execution_host_id != parent.execution_host_id || !reference.workspace_worktree_directory.empty()) return false;
+			const std::vector<AgentRun>& observed_runs = prepared.reference_runs;
 			const auto same_run = [&reference](const AgentRun& run) { return run.id == reference.agent_run_id; };
 			const auto live = std::ranges::find_if(app.agent_runs, same_run);
 			const auto observed = std::ranges::find_if(observed_runs, same_run);
 			const AgentRun* run = live != app.agent_runs.end() ? &*live : observed != observed_runs.end() ? &*observed : nullptr;
-			if (!run || run->root_chat_id != parent.id || run->transcript_chat_id != reference.id ||
+			if (!run)
+			{
+				const auto names_chat = [&reference](const AgentRun& other) { return other.transcript_chat_id == reference.id; };
+				if (!prepared.reference_runs_complete || !ManagedSubagentControlService::SavedRootLinkMatches(parent, reference) ||
+				    std::ranges::any_of(app.agent_runs, names_chat) || std::ranges::any_of(observed_runs, names_chat) ||
+				    app.managed_followups.contains(reference.agent_run_id) || app.managed_initial_runtime_owners.contains(reference.agent_run_id)) return false;
+			}
+			else if (run->root_chat_id != parent.id || run->transcript_chat_id != reference.id ||
 			    (run->status != "completed" && run->status != "failed" && run->status != "cancelled" && run->status != "interrupted")) return false;
 			const ChatSession* live_chat = ChatDomainService().FindChatById(app, reference.id);
 			const ChatSession& chat = live_chat ? *live_chat : reference;
-			if (!chat.acp_queued_prompts.empty() || !chat.acp_unsent_prompt_recoveries.empty() || chat.acp_queue_storage_error ||
+			// The same saved-state settlement Port back and Discard require, plus the live claims only this owner sees.
+			if (!ManagedSubagentControlService::ChildInputSettled(chat) || !chat.acp_queued_prompts.empty() || !chat.acp_unsent_prompt_recoveries.empty() || chat.acp_queue_storage_error ||
 			    chat.remote_process_exists || chat.remote_turn_reconnect_pending || chat.remote_stop_cleanup_pending || chat.remote_restart_pending ||
 			    !chat.remote_pending_requests.empty() || !chat.remote_active_turn_id.empty() || chat.remote_source_exit_pending ||
 			    chat.remote_manual_compaction_pending || !chat.remote_process_control_token.empty() || !chat.remote_interaction_responses.empty() ||
@@ -304,7 +337,7 @@ namespace uam
 			{ error = "The failed SSH worktree receipt could not be safely archived."; return false; }
 			std::error_code ec;
 			std::filesystem::rename(receipt, archived, ec);
-			if (ec) { error = "Could not archive the failed SSH worktree receipt. Its files were preserved."; return false; }
+			if (ec) { error = "Could not archive the failed SSH worktree record, so its files were kept."; return false; }
 			return true;
 		}
 
@@ -334,7 +367,7 @@ namespace uam
 					std::string receipt_text;
 					if (!io::TryReadTextFile(entry.path(), receipt_text, 64 * 1024))
 					{
-						error = "Interrupted workspace ownership receipt could not be read within its size limit. The workspace was preserved.";
+						error = "Could not read the interrupted workspace record, so the workspace was kept.";
 						return false;
 					}
 					const auto witness = platform::PublishedFileChangeWitness::Capture(entry.path());
@@ -360,7 +393,7 @@ namespace uam
 					};
 					const auto refuse = [&]()
 					{
-						if (in_progress) error = "This chat's worktree may still be being created by an earlier UAM session. Wait a minute, then retry. Nothing was changed.";
+						if (in_progress) error = "An earlier UAM session may still be creating this chat's worktree; nothing was changed, so wait a minute and retry.";
 						return false;
 					};
 					const std::string changed = ChangedLaunchPolicy(record.at("launchPolicy"), policy);
@@ -368,8 +401,8 @@ namespace uam
 					    !paths::IsSameOrInsideRoot(paths::PathFromUtf8(record.at("source").get<std::string>()), paths::PathFromUtf8(metadata.workspace_directory)))
 					{
 						if (discard()) return true;
-						if (!in_progress) error = "This chat's interrupted worktree was prepared with different settings: " + (changed.empty() ? std::string("workspace folder") : changed) +
-						    ". Restore them, or turn off automatic worktrees to work in the folder, then retry. The worktree was preserved.";
+						if (!in_progress) error = "This chat's kept worktree used different settings (" + (changed.empty() ? std::string("workspace folder") : changed) +
+						    "); restore them or turn off automatic worktrees, then retry.";
 						return refuse();
 					}
 					const std::string branch = record.at("branch").get<std::string>();
@@ -480,7 +513,7 @@ namespace uam
 					if (found || saved.at("stableHost") != RemoteWorktreeStableHostIdentity(host) || saved.at("requestedSource") != metadata.workspace_directory)
 					{ result.message = "The saved SSH worktree belongs to a different chat, host or creation policy, or is ambiguous."; return result; }
 					if (!paths::IsGitWorktreeIsolated(metadata) && saved.at("launchPolicy") != policy)
-					{ result.message = "The saved SSH worktree belongs to a different creation policy. Its files were preserved."; return result; }
+					{ result.message = "The saved SSH worktree was made with different settings, so its files were kept."; return result; }
 					found = true;
 					if (paths::IsGitWorktreeIsolated(metadata) && (saved.at("source") != metadata.workspace_source_directory ||
 					    saved.at("worktree") != metadata.workspace_worktree_directory || saved.at("branch") != metadata.workspace_branch_name || saved.at("baseSha") != metadata.workspace_base_ref))
@@ -513,7 +546,7 @@ namespace uam
 				return result;
 			}
 			if (paths::IsGitWorktreeIsolated(metadata))
-			{ result.message = "The isolated SSH worktree has no owned receipt. Its files were preserved."; return result; }
+			{ result.message = "The SSH worktree has no UAM record, so its files were kept."; return result; }
 			const GitWorktreeIntentRecorder record = [task, policy, metadata](const GitWorktreeCreationIntent& intent, std::string& error)
 			{ return RemoteRecordIntent(task->data_root, task->receipt_file, metadata, *task->remote_host, policy, intent, error); };
 			return GitWorktreeService().PrepareForChat(snapshot, metadata, record, task->cancellation->get_token(), task->explicit_create);
@@ -535,7 +568,7 @@ namespace uam
 					if (!saved)
 					{
 						(void)RevokeWorkspaceChatSave(app, task->save_ticket);
-						task->error = "Could not save the prepared workspace. Retry opening the chat.";
+						task->error = "Could not save the prepared workspace; open the chat again to retry.";
 					}
 				}
 			});
@@ -543,7 +576,7 @@ namespace uam
 			{
 				task->saving = false;
 				task->saved = false;
-				task->error = "Could not schedule the workspace save. Retry opening the chat.";
+				task->error = "Could not schedule the workspace save; open the chat again to retry.";
 			}
 		}
 
@@ -595,7 +628,7 @@ namespace uam
 				    : GitWorktreeService().ValidatePreparedWorkspace(root, receipt, prepared.metadata, prepared.operation.message, cancellation->get_token());
 				// Keep a specific cause (such as a worktree switched off its branch); it says how to recover.
 				if (!prepared.operation.ok && prepared.operation.message.empty())
-					prepared.operation.message = "Prepared workspace ownership changed. The workspace was preserved.";
+					prepared.operation.message = "The prepared workspace's owner changed, so the workspace was kept.";
 				return prepared;
 			});
 			if (task->remote_host) task->worker_deadline = std::chrono::steady_clock::now() + kRemotePreparationDeadline;
@@ -654,7 +687,7 @@ namespace uam
 				}
 				if (task->worker.wait_for(std::chrono::seconds(0)) != std::future_status::ready) { ++iterator; continue; }
 				try { task->prepared = task->worker.get(); }
-				catch (const std::exception&) { task->error = "Workspace preparation failed. Retry opening the chat."; }
+				catch (const std::exception&) { task->error = "Workspace preparation failed; open the chat again to retry."; }
 				// The save worker excludes active Git operations; the lease still guards the unsaved workspace.
 				app.worktree_operation_chat_ids.erase(iterator->first);
 				changed = true;
@@ -671,7 +704,7 @@ namespace uam
 			{
 				if (!task->saving)
 				{
-					task->error = "The prepared workspace changed before it was saved. Retry opening the chat.";
+					task->error = "The prepared workspace changed before it was saved; open the chat again to retry.";
 					task->lease.reset();
 				task->remote_host_lease.reset();
 				}
@@ -717,7 +750,7 @@ namespace uam
 					{
 						if (!ReferencesPreparedWorkspace(other, task->prepared->metadata, platform) || std::ranges::find(blockers, other.id) != blockers.end()) return;
 						// Finished children of this chat keep their saved workspace field; they no longer use the worktree.
-						if (task->remote_host && SettledChildReference(app, *chat, other, task->prepared->reference_runs)) return;
+						if (task->remote_host && SettledChildReference(app, *chat, other, *task->prepared)) return;
 						blockers.push_back(other.id);
 					};
 					for (const ChatSession& other : app.chats) admit(other);
@@ -728,12 +761,11 @@ namespace uam
 						for (std::size_t index = 0; index < blockers.size() && index < 3; ++index) named += (index ? ", " : "") + blockers[index];
 						if (blockers.size() > 3) named += " and " + std::to_string(blockers.size() - 3) + " more";
 						task->prepared->operation.ok = false;
-						task->prepared->operation.message = "Other chats still use this workspace: " + named +
-						    ". Stop them or let them finish, then retry. The workspace was preserved.";
+						task->prepared->operation.message = "Other chats still use this workspace (" + named + "); stop them or let them finish, then retry.";
 						diagnostics::Write("[worktree-prep] chat_id=" + chat->id + " event=reference_refused blockers=" + named);
 					}
 				}
-				if (!task->prepared->operation.ok) task->error = task->prepared->operation.message.empty() ? "Workspace preparation failed. Retry opening the chat." : task->prepared->operation.message;
+				if (!task->prepared->operation.ok) task->error = task->prepared->operation.message.empty() ? "Workspace preparation failed; open the chat again to retry." : task->prepared->operation.message;
 				else
 				{
 					const ChatSession& metadata = task->prepared->metadata;
@@ -806,7 +838,7 @@ namespace uam
 					    chat.workspace_directory != task->original.workspace_directory || chat.folder_id != task->original.folder_id)
 						return {WorktreeLaunchPreparationState::Failed, "The prepared workspace no longer belongs to this chat.", task->cancellation};
 					if (!task->remote_host && (task->snapshot_svn != app.settings.git_snapshot_svn || task->snapshot_plain_folders != app.settings.git_snapshot_plain_folders))
-						return {WorktreeLaunchPreparationState::Failed, "Managed Git snapshot policy changed before publication. Its files were preserved.", task->cancellation};
+						return {WorktreeLaunchPreparationState::Failed, "Snapshot settings changed while the workspace was prepared, so its files were kept.", task->cancellation};
 					task->git_enabled = app.settings.git_enabled;
 					task->automatic_worktree = app.settings.git_auto_worktree;
 					task->snapshot_svn = app.settings.git_snapshot_svn;
@@ -865,8 +897,8 @@ namespace uam
 			const std::string label = remote_host ? strings::NonEmptyOrFallback(strings::Trim(remote_host->label), remote_host->id) : std::string();
 			return {WorktreeLaunchPreparationState::Failed, !remote_host ? "This chat's SSH host no longer exists, so its isolated worktree cannot be prepared."
 			    : remote_host->runner_protocol_version > 0 && remote_host->runner_protocol_version < 3
-			    ? "The SSH helper on " + label + " is too old to create this chat's isolated worktree. Update the SSH helper on " + label + ", then retry. Nothing ran in the workspace folder."
-			    : "The SSH helper on " + label + " is not installed or not ready, so this chat's isolated worktree cannot be prepared. Install or reconnect the helper on " + label + ", then retry.", {}};
+			    ? "The SSH helper on " + label + " is too old for isolated worktrees; update it, then retry."
+			    : "The SSH helper on " + label + " is not ready for isolated worktrees; install or reconnect it, then retry.", {}};
 		}
 		if (remote_workspace && chat.svn_update_pending)
 			return {WorktreeLaunchPreparationState::Failed, "SSH worktree preparation does not support SVN.", {}};
@@ -946,7 +978,8 @@ namespace uam
 				GitWorktreeOperationResult operation = PrepareRemoteLaunch(snapshot, metadata, task);
 				if (!operation.ok) return PreparedLaunchWorktree{std::move(operation), std::move(metadata)};
 				// Reference admission runs on the owner, which alone sees live runtimes, queues and saves.
-				return PreparedLaunchWorktree{std::move(operation), std::move(metadata), ChatRepository::LoadLocalChatSummariesReadOnly(root), AgentRunLedger::LoadAllReadOnly(root).runs};
+				auto ledger = AgentRunLedger::LoadAllReadOnly(root);
+				return PreparedLaunchWorktree{std::move(operation), std::move(metadata), ChatRepository::LoadLocalChatSummariesReadOnly(root), std::move(ledger.runs), ledger.errors.empty()};
 			}
 			std::string update_error;
 			if (metadata.svn_update_pending && snapshot.settings.svn_enabled && snapshot.settings.svn_update_before_chat &&
@@ -969,7 +1002,7 @@ namespace uam
 			std::string recovery_notice;
 			if (!RecoverOwnedWorkspace(root, live_chats, metadata, policy, task->receipt_file, recovered, resumed_intent, recovery.message, recovery_notice, cancellation->get_token()))
 			{
-				if (recovery.message.empty()) recovery.message = "Interrupted workspace ownership could not be verified. The workspace was preserved.";
+				if (recovery.message.empty()) recovery.message = "Could not verify who owns the interrupted workspace, so it was kept.";
 				return PreparedLaunchWorktree{std::move(recovery), std::move(metadata)};
 			}
 			if (recovered)
@@ -979,7 +1012,7 @@ namespace uam
 			}
 			const GitWorktreeIntentRecorder record = [root, receipt = task->receipt_file, policy, id = metadata.id, created = metadata.created_at, witness = std::move(resumed_intent)](const GitWorktreeCreationIntent& intent, std::string& error) mutable
 			{
-				if (witness && !witness->Current()) { error = "Workspace ownership journal changed before preparation. Its files were preserved."; return false; }
+				if (witness && !witness->Current()) { error = "Workspace records changed before preparation, so its files were kept."; return false; }
 				if (!RecordIntent(root, receipt, id, created, policy, intent, error)) return false;
 				witness = platform::PublishedFileChangeWitness::Capture(receipt);
 				if (!witness) { error = "Workspace ownership journal could not be retained after preparation."; return false; }

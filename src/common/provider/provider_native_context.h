@@ -294,7 +294,7 @@ namespace uam::provider_native_context
 			return false;
 		}
 		const nlohmann::json owner{{"owner", uam::paths::Utf8PathString(directory.filename())},
-		    {"files", {"conversation.md", "GEMINI.md", ".github/instructions/handoff.instructions.md"}}};
+		    {"files", {"conversation.md", "GEMINI.md", "AGENTS.md", ".github/instructions/handoff.instructions.md"}}};
 		std::filesystem::path temporary;
 		if (!WritePrivateSettings(directory, owner.dump(), temporary))
 		{
@@ -480,7 +480,7 @@ namespace uam::provider_native_context
 		    };
 		nlohmann::json result;
 		if (!request(1, "initialize", {{"clientInfo", {{"name", "uam-context-import"}, {"version", "1"}}}, {"capabilities", {{"experimentalApi", true}}}}, result))
-		{ error = "Codex native context import could not initialize. Update Codex and retry."; return false; }
+		{ error = "Codex could not start context import; update Codex and retry."; return false; }
 		const std::string initialized = "{\"method\":\"initialized\"}\n";
 		if (!service.WriteToStdioProcess(process, initialized.data(), initialized.size(), nullptr) ||
 		    !request(2, "thread/start", start, result) || !result.is_object() ||
@@ -492,7 +492,7 @@ namespace uam::provider_native_context
 		const nlohmann::json item{{"type", "message"}, {"role", "assistant"},
 		    {"content", nlohmann::json::array({{{"type", "output_text"}, {"text", context}}})}};
 		if (!request(3, "thread/inject_items", {{"threadId", identity}, {"items", nlohmann::json::array({item})}}, result))
-		{ error = "Codex could not import prior context. Update Codex and retry."; return false; }
+		{ error = "Codex could not import prior context; update Codex and retry."; return false; }
 		const std::vector<std::string>::iterator old_resume = std::find(argv.begin() + 1, argv.end(), "resume");
 		if (old_resume != argv.end())
 		{
