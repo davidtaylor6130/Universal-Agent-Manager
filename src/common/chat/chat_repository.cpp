@@ -1947,6 +1947,14 @@ namespace
 		// A validated consumed revision cannot reintroduce obsolete input or its blocker.
 		if (journal && journal->revision == chat.acp_queue_storage_revision) return;
 		const std::string owner = QueueOwner(root);
+		// Every load repeats the outcome below until a save changes it; say so once per chat per launch.
+		const auto log_once = [&chat](std::string_view kind, const std::string& message)
+		{
+			static std::mutex logged_mutex;
+			static std::unordered_set<std::string> logged;
+			const std::lock_guard<std::mutex> lock(logged_mutex);
+			if (logged.insert(std::string(kind) + "\n" + chat.id).second) uam::diagnostics::Write(message);
+		};
 		// Preserve uncertainty for this owner, without importing a known foreign owner's marker.
 		if (managed_marker && (raw_owner.empty() || raw_owner == owner))
 			chat.managed_followup_input_unavailable = true;
@@ -1966,15 +1974,8 @@ namespace
 			// A rebound journal never sends on its own: its input stays held and visible until the user
 			// resumes it. The next queue or full save records the current primary as its base.
 			chat.acp_queue_held = journal->held || (!matches && !journal->prompts.empty());
-			if (!matches)
-			{
-				// Every load repeats the rebind until a save records the new base; say so once per launch.
-				static std::mutex logged_mutex;
-				static std::unordered_set<std::string> logged;
-				const std::lock_guard<std::mutex> lock(logged_mutex);
-				if (logged.insert(chat.id).second)
-					uam::diagnostics::Write("Queued inputs kept held: journal rebound to a saved chat whose file witness changed " + chat.id);
-			}
+			// The rebind repeats on every load until a save records the new base.
+			if (!matches) log_once("rebound", "Queued inputs kept held: journal rebound to a saved chat whose file witness changed " + chat.id);
 			chat.acp_dispatched_queued_prompt_count = journal->dispatched;
 			chat.acp_queue_storage_revision = journal->revision;
 			// Memory progress counts rows of the transcript the journal was written beside. A restored older
@@ -1987,6 +1988,34 @@ namespace
 			}
 			return;
 		}
+		// A readable journal that holds no input, with a saved chat that holds none either, protects nothing,
+		// whoever it was written for (for example the same chat before its workspace folder moved), as long as
+		// its copy of the recovery records and managed birth matches (checked below). Rebind it
+		// like a consumed journal: the next full save consumes it and the next queue save replaces it under the
+		// current owner. Its memory progress belongs to the other owner's transcript, so the primary's own
+		// progress stays: rows may be processed again, never skipped.
+		// The owner also carries unsent-input recovery records and the managed birth; a journal whose copy of
+		// those differs may be their last record, so it keeps the hold.
+		const auto owner_field = [](const std::string& text, std::string_view key) -> std::optional<std::string>
+		{
+			const std::optional<JsonValue> parsed = ParseJson(text);
+			if (!parsed || parsed->type != JsonValue::Type::Object) return std::nullopt;
+			const JsonValue* field = parsed->Find(key);
+			return field ? SerializeJson(*field) : std::string();
+		};
+		const auto same_owner_field = [&](std::string_view key)
+		{
+			const std::optional<std::string> saved = owner_field(owner, key);
+			return saved && saved == owner_field(journal->owner, key);
+		};
+		if (journal && journal->prompts.empty() && !journal->held && journal->dispatched == 0 &&
+		    chat.acp_queued_prompts.empty() && chat.acp_dispatched_queued_prompt_count == 0 &&
+		    same_owner_field("acp_unsent_prompt_recoveries") && same_owner_field(kChatManagedFollowupBirthField))
+		{
+			chat.acp_queue_storage_revision = journal->revision;
+			log_once("empty", "Empty queue journal rebound: it no longer matches the saved chat and holds no input " + chat.id);
+			return;
+		}
 		if (journal && journal->owner == owner)
 		{
 			chat.acp_queued_prompts = journal->prompts;
@@ -1995,7 +2024,7 @@ namespace
 		}
 		chat.acp_queue_held = true;
 		chat.acp_queue_storage_error = true;
-		uam::diagnostics::Write("Queued inputs held: journal is unreadable or does not match saved chat " + chat.id);
+		log_once("held", "Queued inputs held: journal is unreadable or does not match saved chat " + chat.id);
 	}
 
 	LoadChatResult ParseLocalChatDocument(const fs::path& path, std::string file_text, bool include_messages, std::uintmax_t expected_source_size, bool publish_summary_cache, std::size_t max_read_bytes,
