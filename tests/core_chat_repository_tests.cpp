@@ -1377,6 +1377,9 @@ UAM_TEST(EmptyQueueJournalForMovedWorkspaceAcceptsQueueSaveMemoryProgressAndHydr
 	TempDir temp("uam-queue-journal-empty-moved-queue-save");
 	ChatSession chat = QueueJournalFixture(temp.root);
 	chat.acp_queued_prompts.clear();
+	// A saved chat already carries its native session id. An empty one is filled in on load, which changes the
+	// queue owner, and a queue save then rightly asks for a full save first; that is not what this case covers.
+	chat.native_session_id = chat.id;
 	UAM_ASSERT(ChatRepository::SaveChat(temp.root, chat));
 	UAM_ASSERT(ChatRepository::SaveQueuedPromptOutbox(temp.root, chat));
 	MoveSavedChatWorkspace(temp.root, chat.id, temp.root / "moved-workspace");
